@@ -32,6 +32,12 @@ const NEGATIVE_CACHE_TTL_MS = 5 * 60_000;
 const MAX_HTML_BYTES = 256 * 1024;
 const MAX_ICON_BYTES = 64 * 1024;
 const REQUEST_TIMEOUT_MS = 2_500;
+/** og:image bytes, fetched lazily by the hover card only — never during resolve. */
+const MAX_IMAGE_BYTES = 256 * 1024;
+const MAX_IMAGE_URL_LENGTH = 2_048;
+/** Bounded by payload bytes, not entry count: one image can be 256 KiB. */
+const MAX_IMAGE_CACHE_BYTES = 8 * 1024 * 1024;
+const PREVIEW_IMAGE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif", "image/avif"]);
 const previewCache = new Map<string, CachedPreview>();
 function rememberPreview(key: string, value: SmartLinkPreview, ttlMs: number): SmartLinkPreview {
   previewCache.delete(key);
@@ -187,15 +193,45 @@ function htmlAttribute(tag: string, attribute: string): string | null {
   return match?.[1] ?? match?.[2] ?? match?.[3] ?? null;
 }
 
-function extractHtmlMetadata(html: string, pageUrl: URL): { title: string | null; iconUrl: URL | null } {
+/**
+ * A page-declared preview image, resolved against the page's FINAL url (after
+ * redirects). Only static checks happen here — scheme, credentials, port. The
+ * public-host DNS guard runs when the hover card actually fetches the bytes,
+ * on every redirect hop, exactly like the HTML fetch.
+ */
+function previewImageUrl(raw: string | null, pageUrl: URL): string | null {
+  const value = decodeHtmlEntities(raw ?? "").trim();
+  if (!value) return null;
+  try {
+    const candidate = new URL(value, pageUrl);
+    if (candidate.protocol !== "http:" && candidate.protocol !== "https:") return null;
+    if (candidate.username || candidate.password) return null;
+    if (candidate.port && candidate.port !== "80" && candidate.port !== "443") return null;
+    const href = candidate.toString();
+    return href.length <= MAX_IMAGE_URL_LENGTH ? href : null;
+  } catch {
+    return null;
+  }
+}
+
+const OG_IMAGE_PROPERTIES = ["og:image:secure_url", "og:image:url", "og:image", "twitter:image", "twitter:image:src"];
+
+function extractHtmlMetadata(html: string, pageUrl: URL): { title: string | null; iconUrl: URL | null; imageUrl: string | null } {
   const metaTags = html.match(/<meta\b[^>]*>/gi) ?? [];
   let title: string | null = null;
+  // First valid declaration per property; Open Graph wins over Twitter cards.
+  const imageCandidates = new Map<string, string>();
   for (const tag of metaTags) {
     const property = (htmlAttribute(tag, "property") ?? htmlAttribute(tag, "name") ?? "").toLowerCase();
-    if (property !== "og:title" && property !== "twitter:title") continue;
+    if (OG_IMAGE_PROPERTIES.includes(property) && !imageCandidates.has(property)) {
+      const imageUrl = previewImageUrl(htmlAttribute(tag, "content"), pageUrl);
+      if (imageUrl) imageCandidates.set(property, imageUrl);
+      continue;
+    }
+    if (title || (property !== "og:title" && property !== "twitter:title")) continue;
     title = cleanTitle(htmlAttribute(tag, "content"));
-    if (title) break;
   }
+  const imageUrl = OG_IMAGE_PROPERTIES.map((property) => imageCandidates.get(property)).find(Boolean) ?? null;
   if (!title) title = cleanTitle(html.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i)?.[1]);
 
   const linkTags = html.match(/<link\b[^>]*>/gi) ?? [];
@@ -215,7 +251,7 @@ function extractHtmlMetadata(html: string, pageUrl: URL): { title: string | null
       // Ignore malformed icon candidates and try the next declaration.
     }
   }
-  return { title, iconUrl: iconUrl ?? new URL("/favicon.ico", pageUrl) };
+  return { title, iconUrl: iconUrl ?? new URL("/favicon.ico", pageUrl), imageUrl };
 }
 
 async function fetchIconDataUrl(url: URL): Promise<string | null> {
@@ -239,7 +275,7 @@ async function resolveGenericPreview(base: SmartLinkPreview): Promise<SmartLinkP
     if (!contentType.includes("text/html") && !contentType.includes("application/xhtml+xml")) return base;
     const metadata = extractHtmlMetadata(response.data.toString("utf8"), response.finalUrl);
     const iconDataUrl = metadata.iconUrl ? await fetchIconDataUrl(metadata.iconUrl) : null;
-    return { ...base, title: metadata.title, iconDataUrl };
+    return { ...base, title: metadata.title, iconDataUrl, imageUrl: metadata.imageUrl };
   } catch {
     return base;
   }
@@ -274,12 +310,99 @@ export async function resolveSmartLinkPreview(args: ResolveSmartLinkPreviewArgs)
   const cached = cachedPreview(base.url);
   if (cached) return cached;
   const resolved = await resolveGenericPreview(base);
-  const enriched = Boolean(resolved.title || resolved.iconDataUrl);
+  const enriched = Boolean(resolved.title || resolved.iconDataUrl || resolved.imageUrl);
   return rememberPreview(base.url, resolved, enriched ? CACHE_TTL_MS : NEGATIVE_CACHE_TTL_MS);
+}
+
+type CachedImage = { expiresAt: number; dataUrl: string | null; bytes: number };
+const imageCache = new Map<string, CachedImage>();
+const imageInFlight = new Map<string, Promise<string | null>>();
+let imageCacheBytes = 0;
+
+function forgetImage(key: string): void {
+  const entry = imageCache.get(key);
+  if (!entry) return;
+  imageCacheBytes -= entry.bytes;
+  imageCache.delete(key);
+}
+
+function rememberImage(key: string, dataUrl: string | null, ttlMs: number): void {
+  forgetImage(key);
+  const bytes = dataUrl?.length ?? 0;
+  imageCache.set(key, { dataUrl, bytes, expiresAt: Date.now() + ttlMs });
+  imageCacheBytes += bytes;
+  while ((imageCacheBytes > MAX_IMAGE_CACHE_BYTES || imageCache.size > MAX_CACHE_ENTRIES) && imageCache.size > 1) {
+    const oldest = imageCache.keys().next().value as string | undefined;
+    if (!oldest) break;
+    forgetImage(oldest);
+  }
+}
+
+function cachedImage(key: string): CachedImage | null {
+  const cached = imageCache.get(key);
+  if (!cached) return null;
+  if (cached.expiresAt <= Date.now()) {
+    forgetImage(key);
+    return null;
+  }
+  imageCache.delete(key);
+  imageCache.set(key, cached);
+  return cached;
+}
+
+async function fetchPreviewImageDataUrl(url: URL): Promise<string | null> {
+  try {
+    const response = await fetchWithRedirects(url, MAX_IMAGE_BYTES, [...PREVIEW_IMAGE_MIME_TYPES].join(","));
+    if (response.statusCode < 200 || response.statusCode >= 300) return null;
+    const mimeType = String(response.headers["content-type"] ?? "").split(";")[0]!.trim().toLowerCase();
+    // SVG is deliberately absent: it is a document, not a bitmap.
+    if (!PREVIEW_IMAGE_MIME_TYPES.has(mimeType) || !response.data.length) return null;
+    return `data:${mimeType};base64,${response.data.toString("base64")}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Bytes of a link's preview image (`imageUrl` from `resolveSmartLinkPreview`)
+ * as a data URL, or null. Called by the hover card only when it opens, so a
+ * paste never waits on an image. Same guards as the page fetch: public hosts
+ * only (pinned DNS, every redirect hop), ports 80/443, at most 3 redirects, a
+ * 2.5 s budget per hop; plus a 256 KiB cap and a bitmap image content type.
+ * Answers — misses too — are cached process-wide in a byte-bounded LRU.
+ */
+export async function resolveSmartLinkImage(args: { url: string }): Promise<{ dataUrl: string | null }> {
+  const raw = typeof args?.url === "string" ? args.url.trim() : "";
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return { dataUrl: null };
+  }
+  if ((url.protocol !== "http:" && url.protocol !== "https:") || url.toString().length > MAX_IMAGE_URL_LENGTH) {
+    return { dataUrl: null };
+  }
+  const key = url.toString();
+  const cached = cachedImage(key);
+  if (cached) return { dataUrl: cached.dataUrl };
+  let request = imageInFlight.get(key);
+  if (!request) {
+    request = fetchPreviewImageDataUrl(url).then((dataUrl) => {
+      rememberImage(key, dataUrl, dataUrl ? CACHE_TTL_MS : NEGATIVE_CACHE_TTL_MS);
+      return dataUrl;
+    }).finally(() => {
+      imageInFlight.delete(key);
+    });
+    imageInFlight.set(key, request);
+  }
+  return { dataUrl: await request };
 }
 
 export function clearSmartLinkPreviewCacheForTesting(): void {
   previewCache.clear();
+  imageCache.clear();
+  imageInFlight.clear();
+  imageCacheBytes = 0;
 }
 
 export const smartLinkPreviewTesting = {

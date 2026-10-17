@@ -21,6 +21,8 @@
  */
 
 import type { AgentActionTraceEntry, AgentFrame, ComputerUseActionEffect } from "./agentObservation";
+import { PROJECT_SECRET_REQUEST_METADATA_KEY } from "../projectSecretRequest";
+import { MCP_APP_TOOL_CALL_METADATA_KEY } from "../mcpApp";
 
 // ---------------------------------------------------------------------------
 // Error codes
@@ -110,6 +112,13 @@ export type MacDesktopErrorCode =
 export const MAC_DESKTOP_MACOS_ONLY_MESSAGE =
   "A Mac Desktop display is only available on a macOS runtime host.";
 
+/**
+ * What a Linux host says instead. Neither seat exists there: it is not a
+ * wrong-OS mistake to correct, just not built yet.
+ */
+export const LANE_SCREEN_LINUX_UNSUPPORTED_MESSAGE =
+  "Lane screens are not supported on Linux yet. Use ade browser for web pages and ade app-control for Electron apps.";
+
 /** The one sentence every non-Windows rejection carries. */
 export const WINDOWS_DESKTOP_WINDOWS_ONLY_MESSAGE =
   "A Windows Desktop screen is only available on a Windows runtime host.";
@@ -142,8 +151,8 @@ export type MacDesktopPermissions = {
 export type MacDesktopSigningState = "adhoc" | "identity" | "unknown";
 
 /**
- * Helper health, modelled on `AttentionNotchHealth` so the same settings-style
- * recovery verbs reach the UI.
+ * Helper health, in the same shape as `CaptureGestureHealth` so the same
+ * settings-style recovery verbs reach the UI.
  */
 export type MacDesktopDriverState =
   | "running"
@@ -441,10 +450,21 @@ export type MacDesktopObserveArgs = {
  * How an input command reaches the app.
  *
  * `accessibility` is the default and needs no lease: it performs an action on
- * one element in one process and moves no pointer. `real` posts a `CGEvent`,
- * which is global to the machine, so it is the one capability behind the lease.
+ * one element in one process and moves no pointer. `background` delivers
+ * pointer events (a click at a point, a right or double click, a scroll, a
+ * drag) to the process that owns the lane window under the point and nowhere
+ * else, so it moves no pointer either and needs no lease; it is what a point
+ * target gets on a Mac. `real` posts a `CGEvent` through the window server,
+ * which moves the user's one pointer, so it is the one capability behind the
+ * lease. A hover is real-only.
  */
-export type MacDesktopInputMode = "accessibility" | "real";
+export const MAC_DESKTOP_INPUT_MODES = ["accessibility", "background", "real"] as const;
+
+export type MacDesktopInputMode = (typeof MAC_DESKTOP_INPUT_MODES)[number];
+
+export function isMacDesktopInputMode(value: unknown): value is MacDesktopInputMode {
+  return typeof value === "string" && (MAC_DESKTOP_INPUT_MODES as readonly string[]).includes(value);
+}
 
 /** One way of naming what to act on, in the order the service resolves them. */
 export type MacDesktopTarget = {
@@ -452,7 +472,7 @@ export type MacDesktopTarget = {
   handle?: string | null;
   /** Case-insensitive match against an element's title, label, or value. */
   text?: string | null;
-  /** Global screen point. Needs `mode: "real"` unless an element is under it. */
+  /** Global screen point. Delivered as `background` input on a Mac, `real` elsewhere. */
   x?: number | null;
   y?: number | null;
   windowId?: number | null;
@@ -581,7 +601,10 @@ export type MacDesktopDragArgs = MacDesktopControllerArgs & MacDesktopSilentArgs
   from: MacDesktopTarget;
   to: MacDesktopTarget;
   durationMs?: number | null;
-  /** Always `real`: a drag has no accessibility action. Kept for symmetry. */
+  /**
+   * `real` for a drop onto another app or the Dock. Otherwise a drag is a
+   * pointer action: `background` on a Mac seat, `real` on a Windows seat.
+   */
   mode?: MacDesktopInputMode | null;
   chatSessionId?: string | null;
 };
@@ -840,7 +863,7 @@ export type MacDesktopStopStreamArgs = {
 };
 
 // ---------------------------------------------------------------------------
-// Recording, proof, and the turn time-lapse
+// Recording and proof
 // ---------------------------------------------------------------------------
 
 export type MacDesktopRecordingStatus = {
@@ -929,22 +952,6 @@ export type MacDesktopRecordStartArgs = {
   keepIdle?: boolean | null;
   /** Wall-clock cap in seconds, at most five minutes (the default). */
   maxSeconds?: number | null;
-};
-
-/**
- * A short clip of what an agent turn did on the desktop.
- *
- * Context, not proof: it never reaches the broker, and it is built from frames
- * the stream already kept rather than from a second capture.
- */
-export type MacDesktopTimeLapse = {
-  laneId: string;
-  chatSessionId: string;
-  turnId: string;
-  filePath: string;
-  durationMs: number;
-  frameCount: number;
-  createdAt: string;
 };
 
 export type MacDesktopScreenshotArgs = {
@@ -1167,7 +1174,6 @@ export type MacDesktopEventPayload =
   | { type: "stream-stopped"; status: MacDesktopStreamStatus }
   | { type: "stream-error"; status: MacDesktopStreamStatus }
   | { type: "recording-changed"; status: MacDesktopRecordingStatus }
-  | { type: "time-lapse"; timeLapse: MacDesktopTimeLapse }
   /**
    * The driver could not park a window on the lane's display.
    *
@@ -1722,17 +1728,24 @@ export const MAC_DESKTOP_INPUT_LEASE_METADATA_KEY = "macDesktopInputLease" as co
 
 /**
  * True for a pending-input card only the user may answer: the shared-seat
- * consent and the real-input lease. The answer IS the permission, so an agent
- * caller (session-bound, unbound, or the CTO's tools) is refused.
+ * consent, the real-input lease, the private secret card, and an MCP App's
+ * tool call. The answer IS the permission (or the secret), so an agent caller
+ * (session-bound, unbound, or the CTO's tools) is refused.
  */
 export function isUserOnlyConsentCard(providerMetadata: Record<string, unknown> | null | undefined): boolean {
   return providerMetadata?.[WINDOWS_DESKTOP_SHARED_CONSENT_METADATA_KEY] === true
-    || providerMetadata?.[MAC_DESKTOP_INPUT_LEASE_METADATA_KEY] === true;
+    || providerMetadata?.[MAC_DESKTOP_INPUT_LEASE_METADATA_KEY] === true
+    || providerMetadata?.[MCP_APP_TOOL_CALL_METADATA_KEY] === true
+    || isNonNullRecord(providerMetadata?.[PROJECT_SECRET_REQUEST_METADATA_KEY]);
+}
+
+function isNonNullRecord(value: unknown): boolean {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 /** What an agent is told when it tries to answer one of those cards. */
 export const USER_ONLY_CONSENT_CARD_REFUSAL =
-  "This card asks the user for permission, so only the user can answer it. Wait for the user to choose Allow or Don't allow in the chat.";
+  "This card asks the user directly (for a permission or a secret), so only the user can answer it. Wait for the user to answer it in the chat.";
 
 export function isMacDesktopHandle(value: unknown): value is string {
   return typeof value === "string" && /^obs-[A-Za-z0-9_-]+:e:\d+$/.test(value);
@@ -1839,13 +1852,6 @@ export type MacDesktopServiceApi = {
   renewLease(args: { laneId: string; holderId: string }): Promise<MacDesktopLeaseState | null>;
 
   present(args: MacDesktopPresentArgs): Promise<{ moved: number }>;
-
-  /** Called when an agent turn that used the desktop finishes. */
-  noteTurnEnded(args: {
-    laneId: string;
-    chatSessionId: string;
-    turnId: string;
-  }): Promise<MacDesktopTimeLapse | null>;
 
   /** Runs on every platform: a closing chat must drop its lease anywhere. */
   releaseIfOwnedBy(chatSessionId: string | null | undefined): Promise<{ released: boolean }>;

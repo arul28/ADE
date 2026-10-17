@@ -97,7 +97,7 @@ function resetStore() {
     smartTooltipsEnabled: true,
     launchPromptClipboardEnabled: true,
     launchPromptClipboardNoticeEnabled: true,
-    promptStashButtonEnabled: true,
+    draftsButtonEnabled: true,
     appleDevice: { ...DEFAULT_APPLE_DEVICE_PREFERENCES },
     laneInspectorTabs: {},
     workViewByProject: {},
@@ -461,16 +461,16 @@ describe("appStore", () => {
     });
 
     it("shows the prompt stash button by default and persists hiding it", () => {
-      expect(useAppStore.getState().promptStashButtonEnabled).toBe(true);
-      useAppStore.getState().setPromptStashButtonEnabled(false);
-      expect(useAppStore.getState().promptStashButtonEnabled).toBe(false);
+      expect(useAppStore.getState().draftsButtonEnabled).toBe(true);
+      useAppStore.getState().setDraftsButtonEnabled(false);
+      expect(useAppStore.getState().draftsButtonEnabled).toBe(false);
       const calls = mockLocalStorage.setItem.mock.calls.filter(
         ([key]) => key === "ade.userPreferences.v1",
       );
       const latest = calls[calls.length - 1];
       expect(latest).toBeTruthy();
       expect(JSON.parse(latest![1])).toMatchObject({
-        promptStashButtonEnabled: false,
+        draftsButtonEnabled: false,
       });
     });
 
@@ -501,6 +501,43 @@ describe("appStore", () => {
       const project = { id: "p1", name: "Test", rootPath: "/tmp/test", gitRemoteUrl: null, gitDefaultBranch: "main", createdAt: "" } as any;
       useAppStore.getState().setProject(project);
       expect(useAppStore.getState().project).toBe(project);
+      const binding = useAppStore.getState().projectBinding;
+
+      // The host sends a fresh object on every switch. Equal fields keep the
+      // stored project and binding, so nothing that reads them renders again.
+      useAppStore.getState().setProject({ ...project });
+      expect(useAppStore.getState().project).toBe(project);
+      expect(useAppStore.getState().projectBinding).toBe(binding);
+
+      const renamed = { ...project, displayName: "Renamed" };
+      useAppStore.getState().setProject(renamed);
+      expect(useAppStore.getState().project).toBe(renamed);
+      expect(useAppStore.getState().projectBinding).not.toBe(binding);
+    });
+
+    it("replaces lane selection at binding change before project hydration, including A → B → A", () => {
+      const a = { rootPath: "/repo/a", displayName: "A", baseRef: "main" } as any;
+      const b = { rootPath: "/repo/b", displayName: "B", baseRef: "main" } as any;
+      const laneA = { id: "lane-a", laneType: "primary" } as any;
+      const laneB = { id: "lane-b", laneType: "primary" } as any;
+      useAppStore.setState({
+        laneCacheByProject: {
+          [a.rootPath]: { lanes: [laneA], laneSnapshots: [] },
+          [b.rootPath]: { lanes: [laneB], laneSnapshots: [] },
+        },
+        laneSelectionByProject: { [b.rootPath]: { laneId: laneA.id, sessionId: "stale" } },
+      });
+      useAppStore.getState().setProject(a);
+      for (const [project, lane] of [[b, laneB], [a, laneA]]) {
+        useAppStore.getState().setProjectBinding({
+          kind: "local", key: `local:${project.rootPath}`, rootPath: project.rootPath, displayName: project.displayName,
+        });
+        expect(useAppStore.getState().lanes).toEqual([lane]);
+        expect(useAppStore.getState().selectedLaneId).toBe(lane.id);
+        expect(useAppStore.getState().focusedSessionId).toBeNull();
+        useAppStore.getState().setProject(project);
+        expect(useAppStore.getState().selectedLaneId).toBe(lane.id);
+      }
     });
 
     it("setProject restores a persisted lane cache before the first refresh", () => {
@@ -1231,6 +1268,21 @@ describe("appStore", () => {
       });
     });
 
+    const otherRecovery = { message: "Out of space", code: "disk_full", rootPath: "/repo/b" };
+    it.each([
+      { name: "nothing on screen", existing: null, shown: { code: "project_data_missing", rootPath: "/repo/a" } },
+      {
+        name: "a plain error with no recovery code",
+        existing: { message: "Switching took longer than 30 seconds" },
+        shown: { code: "project_data_missing", rootPath: "/repo/a" },
+      },
+      { name: "another recovery screen", existing: otherRecovery, shown: otherRecovery },
+    ])("reportProjectDataProblem over $name", ({ existing, shown }) => {
+      useAppStore.setState({ projectTransitionError: existing });
+      useAppStore.getState().reportProjectDataProblem("/repo/a", "missing");
+      expect(useAppStore.getState().projectTransitionError).toMatchObject(shown);
+    });
+
     it("clearProjectTransitionError clears project action errors", () => {
       useAppStore.setState({ projectTransitionError: { message: "Switch failed" } });
       useAppStore.getState().clearProjectTransitionError();
@@ -1683,6 +1735,33 @@ describe("appStore", () => {
         recordingOverlays: { tapRings: true, keyBadges: true },
         remoteBitrateKbpsCap: 1000,
         recordingsWarnBytes: 5 * 1024 ** 3,
+      });
+    });
+  });
+
+  describe("background (scene) preferences", () => {
+    // The release that ships pictures puts every user on the shipped default
+    // once — shuffle, a new picture on each wake, every picture in — whatever
+    // they had before. After that, their own choice survives a relaunch.
+    it("resets older preferences to the shipped default once, then keeps the user's choice", async () => {
+      mockStorage.set("ade.userPreferences.v1", JSON.stringify({
+        interfacePreferences: {
+          scene: { mode: "gradient", shuffleEvery: "day", shuffleExclude: ["ade:storm-field"], matchTheme: false },
+        },
+      }));
+      vi.resetModules();
+      const firstLoad = await import("./appStore");
+      const reset = firstLoad.useAppStore.getState().interfacePreferences.scene;
+      expect(reset).toMatchObject({ mode: "shuffle", shuffleEvery: "wake", shuffleExclude: [], matchTheme: true });
+
+      firstLoad.useAppStore.getState().setInterfacePreferences({
+        scene: { ...reset, mode: "gradient", shuffleExclude: ["ade:storm-field"] },
+      });
+      vi.resetModules();
+      const relaunch = await import("./appStore");
+      expect(relaunch.useAppStore.getState().interfacePreferences.scene).toMatchObject({
+        mode: "gradient",
+        shuffleExclude: ["ade:storm-field"],
       });
     });
   });
@@ -2557,5 +2636,31 @@ describe("appStore", () => {
 
       expect(useAppStore.getState().workViewByProject["remote:target:project-a"]).toBeUndefined();
     });
+  });
+});
+
+describe("machine-level top tabs", () => {
+  it("reports a Browser or Music tab once when it joins the tab strip, not on every visit", () => {
+    const capture = vi.fn(async (_payload: any) => undefined);
+    (window as any).ade.analytics = { capture };
+    useAppStore.setState({ browserTabOpen: false, musicTabOpen: false } as any);
+
+    useAppStore.getState().setBrowserTabOpen(true);
+    useAppStore.getState().setBrowserTabOpen(true);
+    useAppStore.getState().setMusicTabOpen(true);
+    useAppStore.getState().setBrowserTabOpen(false);
+    useAppStore.getState().setBrowserTabOpen(true);
+
+    expect(capture.mock.calls.map(([payload]: any[]) => [payload.properties.outcome, payload.dedupeKey])).toEqual([
+      ["tab_browser", "home_tab_opened:tab_browser"],
+      ["tab_music", "home_tab_opened:tab_music"],
+      ["tab_browser", "home_tab_opened:tab_browser"],
+    ]);
+    expect(capture.mock.calls[0]![0]).toMatchObject({
+      event: "ade_feature_used",
+      properties: { feature: "home", action: "tab_opened", source: "renderer_route" },
+      minimumIntervalMs: 24 * 60 * 60_000,
+    });
+    delete (window as any).ade.analytics;
   });
 });

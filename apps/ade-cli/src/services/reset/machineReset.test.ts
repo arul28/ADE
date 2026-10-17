@@ -114,6 +114,39 @@ function buildFixture(): { home: string; project: string; deps: MachineResetDeps
 }
 
 describe("machine reset engine", () => {
+  it("re-enables disabled ADE jobs absent from both plists and launchctl list", async () => {
+    const { home, deps } = buildFixture();
+    const disabled = new Set(["com.ade.runtime", "com.ade.watchdog.beta", "com.example.other"]);
+    const run: MachineResetDeps["run"] = (command, args, options) => {
+      if (command === "launchctl" && args[0] === "list") {
+        return { status: 0, stdout: "", stderr: "" };
+      }
+      if (command === "launchctl" && args[0] === "print-disabled") {
+        return {
+          status: 0,
+          stdout: '{\n"com.ade.runtime" => true\n"com.ade.watchdog.beta" => disabled\n"com.example.other" => disabled\n}',
+          stderr: "",
+        };
+      }
+      if (command === "launchctl" && args[0] === "enable") {
+        disabled.delete(args[1].split("/").at(-1)!);
+        return { status: 0, stdout: "", stderr: "" };
+      }
+      return deps.run(command, args, options);
+    };
+    expect(fs.existsSync(path.join(home, "Library", "LaunchAgents"))).toBe(false);
+
+    const receipt = await executeMachineReset(
+      { rescue: "none", receiptPath: path.join(deps.tmpDir, "receipt.json") },
+      { ...deps, run },
+    );
+
+    expect(receipt.ok).toBe(true);
+    expect(receipt.removed).toContain("launchd:com.ade.runtime");
+    expect(receipt.removed).toContain("launchd:com.ade.watchdog.beta");
+    expect(disabled).toEqual(new Set(["com.example.other"]));
+  });
+
   it("with rescue 'none' keeps a branch with unique commits and deletes a redundant one", async () => {
     const { project, deps } = buildFixture();
 

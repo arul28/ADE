@@ -3,9 +3,11 @@ import * as Popover from "@radix-ui/react-popover";
 import { CaretDown } from "@phosphor-icons/react";
 import { usesCodexNamedEffortLabels, type ModelDescriptor } from "../../../../shared/modelRegistry";
 import { cn } from "../../ui/cn";
+import { toneText } from "../../lanes/laneDesignTokens";
 import { usePortalContainer } from "../../ui/portalContainer";
 import { Z_LAYERS } from "../../ui/zLayers";
 import { resolveModelDescriptorWithRuntimeCatalog } from "./modelCatalog";
+import { capitalizeWord } from "./modelFacts";
 import { useReasoningByFamily } from "./useReasoningByFamily";
 
 export type ReasoningEffortPickerProps = {
@@ -25,6 +27,21 @@ export type ReasoningEffortPickerProps = {
    * the bound machine's. Omitted means the bound machine.
    */
   catalogScopeKey?: string;
+  /**
+   * Bumped by the owner when that catalog arrives. The picker is memoized and
+   * resolves its model once, so without this a model the catalog alone
+   * describes (a Copilot SDK model) kept the static row's empty levels.
+   */
+  catalogRevision?: number;
+  /**
+   * Claude's per-message "ultrathink" switch, shown under the levels. It is
+   * separate from the level because Claude Code reads it as a one-turn nudge
+   * that stacks on any level. Omitted for providers that do not read it.
+   */
+  ultrathink?: { active: boolean; onChange: (active: boolean) => void } | null;
+  copilotAutoTier?: "efficiency" | "balance" | "intelligence" | null;
+  onCopilotAutoTierChange?: (tier: "efficiency" | "balance" | "intelligence") => void;
+  copilotAutoTierPending?: boolean;
 };
 
 export function reasoningChipLabel(
@@ -51,7 +68,7 @@ function tierLabel(tier: string, useCodex56Labels = false): string {
   if (tier === "max") return "Max";
   if (tier === "ultra") return "Ultra";
   if (tier === "ultracode") return "Ultracode";
-  return tier.charAt(0).toUpperCase() + tier.slice(1);
+  return capitalizeWord(tier);
 }
 
 /** The footer's effort label for a tier, so a chip can show the same word. */
@@ -65,6 +82,12 @@ export function reasoningEffortToneColor(effort: string | null, tiers: readonly 
   return REASONING_TONE_STYLES[reasoningToneKeyForTier(effort, index, tiers.length)].color;
 }
 
+/** The same tone as space-separated RGB, for tinted fills (`rgba(var / a)`). */
+export function reasoningEffortToneRgb(effort: string | null, tiers: readonly string[]): string {
+  const index = effort ? tiers.indexOf(effort) : -1;
+  return REASONING_TONE_STYLES[reasoningToneKeyForTier(effort, index, tiers.length)].rgb;
+}
+
 type ReasoningToneKey = "auto" | "low" | "steady" | "smart" | "deep" | "max" | "ultra";
 
 const REASONING_TONE_STYLES: Record<
@@ -72,67 +95,35 @@ const REASONING_TONE_STYLES: Record<
   {
     color: string;
     rgb: string;
-    trigger: string;
-    chip: string;
-    thumb: string;
-    ridge: string;
   }
 > = {
   auto: {
     color: "#A1A1AA",
     rgb: "161 161 170",
-    trigger: "border-white/[0.06] bg-white/[0.03] text-fg/80 hover:border-white/[0.10] hover:bg-white/[0.055]",
-    chip: "border-white/[0.08] bg-white/[0.055] text-muted-fg/78",
-    thumb: "border-zinc-200/70 bg-zinc-200 text-zinc-950",
-    ridge: "bg-white/20",
   },
   low: {
     color: "#6EE7B7",
     rgb: "52 211 153",
-    trigger: "border-emerald-300/22 bg-emerald-500/[0.075] text-emerald-100 hover:border-emerald-300/32 hover:bg-emerald-500/[0.11]",
-    chip: "border-emerald-300/26 bg-emerald-500/[0.14] text-emerald-100",
-    thumb: "border-emerald-50 bg-emerald-200 text-emerald-950",
-    ridge: "bg-emerald-200",
   },
   steady: {
     color: "#67E8F9",
     rgb: "34 211 238",
-    trigger: "border-cyan-300/22 bg-cyan-500/[0.075] text-cyan-100 hover:border-cyan-300/32 hover:bg-cyan-500/[0.11]",
-    chip: "border-cyan-300/26 bg-cyan-500/[0.14] text-cyan-100",
-    thumb: "border-cyan-50 bg-cyan-200 text-cyan-950",
-    ridge: "bg-cyan-200",
   },
   smart: {
     color: "#93C5FD",
     rgb: "96 165 250",
-    trigger: "border-sky-300/22 bg-sky-500/[0.075] text-sky-100 hover:border-sky-300/32 hover:bg-sky-500/[0.11]",
-    chip: "border-sky-300/26 bg-sky-500/[0.14] text-sky-100",
-    thumb: "border-sky-50 bg-sky-200 text-sky-950",
-    ridge: "bg-sky-200",
   },
   deep: {
     color: "#C4B5FD",
     rgb: "167 139 250",
-    trigger: "border-violet-300/24 bg-violet-500/[0.08] text-violet-100 hover:border-violet-300/34 hover:bg-violet-500/[0.12]",
-    chip: "border-violet-300/28 bg-violet-500/[0.15] text-violet-100",
-    thumb: "border-violet-50 bg-violet-200 text-violet-950",
-    ridge: "bg-violet-200",
   },
   max: {
     color: "#D8B4FE",
     rgb: "192 132 252",
-    trigger: "border-fuchsia-300/28 bg-fuchsia-500/[0.09] text-fuchsia-100 hover:border-fuchsia-300/38 hover:bg-fuchsia-500/[0.13]",
-    chip: "border-fuchsia-300/30 bg-fuchsia-500/[0.17] text-fuchsia-100",
-    thumb: "border-fuchsia-50 bg-fuchsia-100 text-fuchsia-950",
-    ridge: "bg-fuchsia-100",
   },
   ultra: {
     color: "#F5D0FE",
     rgb: "232 121 249",
-    trigger: "border-fuchsia-200/45 bg-fuchsia-500/[0.14] text-fuchsia-50 hover:border-fuchsia-100/60 hover:bg-fuchsia-500/[0.2]",
-    chip: "border-fuchsia-100/45 bg-fuchsia-400/[0.22] text-fuchsia-50",
-    thumb: "border-white bg-fuchsia-100 text-fuchsia-950",
-    ridge: "bg-fuchsia-100",
   },
 };
 
@@ -147,9 +138,10 @@ function reasoningToneKeyForIndex(index: number, total: number): ReasoningToneKe
   return "max";
 }
 
-function tierPercent(index: number, total: number): number {
-  if (total <= 1) return 50;
-  return (index / (total - 1)) * 100;
+/** Where the sliding indicator starts, as a fraction of the track, for a tier. */
+function segmentFraction(index: number, total: number): number {
+  if (total <= 0) return 0;
+  return Math.max(0, Math.min(index, total - 1)) / total;
 }
 
 function pointerPercent(clientX: number, rect: DOMRect): number {
@@ -157,38 +149,50 @@ function pointerPercent(clientX: number, rect: DOMRect): number {
   return Math.max(0, Math.min(100, ratio * 100));
 }
 
-function nearestTierIndex(percent: number, total: number): number {
+/** The segment under the pointer. */
+function segmentIndexAt(percent: number, total: number): number {
   if (total <= 1) return 0;
-  return Math.round((percent / 100) * (total - 1));
+  return Math.max(0, Math.min(total - 1, Math.floor((percent / 100) * total)));
 }
 
-function sliderThumbPosition(percent: number): string {
-  const clamped = Math.max(0, Math.min(100, percent));
-  return `calc(${clamped}% + ${8 - (clamped / 100) * 16}px)`;
+/** While dragging, the indicator is centred on the pointer, clamped to the track. */
+function dragFraction(percent: number, total: number): number {
+  if (total <= 0) return 0;
+  const half = 0.5 / total;
+  return Math.max(0, Math.min((total - 1) / total, percent / 100 - half));
 }
 
-function setSliderTrackPosition(track: HTMLDivElement, percent: number, hasFill = true): void {
-  const position = sliderThumbPosition(percent);
-  track.style.setProperty("--reasoning-slider-thumb-position", position);
-  track.style.setProperty("--reasoning-slider-fill-position", hasFill ? position : "0%");
+/**
+ * The indicator is one segment wide and sits at the track's left inset; it
+ * moves by `translateX(offset * 100%)`, where `offset` is in segments. A
+ * transform keeps the slide on the compositor — animating `left` would lay the
+ * popover out on every frame of the move and of a drag.
+ */
+function segmentOffset(fraction: number, total: number): string {
+  return (fraction * Math.max(1, total)).toFixed(4);
+}
+
+function setIndicatorPosition(track: HTMLDivElement, fraction: number, total: number): void {
+  track.style.setProperty("--reasoning-slider-thumb-position", segmentOffset(fraction, total));
+}
+
+/**
+ * Short words for a crowded track (more than four levels); the accessible
+ * name and the header keep the full one. Shared with the model chip's list.
+ */
+export function reasoningEffortTrackLabel(tier: string, total: number, fullLabel: string): string {
+  if (total <= 4) return fullLabel;
+  if (tier === "minimal") return "Min";
+  if (tier === "medium") return "Med";
+  if (tier === "xhigh") return "XHigh";
+  if (tier === "ultracode") return "Ultra";
+  return fullLabel;
 }
 
 function reasoningToneKeyForTier(tier: string | null | undefined, index: number, total: number): ReasoningToneKey {
   if (tier === "ultra" || tier === "ultracode") return "ultra";
   if (tier === "max") return "max";
   return reasoningToneKeyForIndex(index, total);
-}
-
-function reasoningProgressiveGradient(tiers: readonly string[]): string {
-  const total = tiers.length;
-  if (total <= 0) return "linear-gradient(90deg, transparent, transparent)";
-  const stops = tiers.map((tier, index) => {
-    const tone = REASONING_TONE_STYLES[reasoningToneKeyForTier(tier, index, total)];
-    const percent = tierPercent(index, total);
-    const opacity = 0.58 + (index / Math.max(1, total - 1)) * 0.34;
-    return `rgba(${tone.rgb} / ${opacity.toFixed(2)}) ${percent}%`;
-  });
-  return `linear-gradient(90deg, ${stops.join(", ")})`;
 }
 
 const POINTER_DRAG_THRESHOLD_PX = 3;
@@ -211,6 +215,11 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
   className,
   triggerClassName,
   catalogScopeKey,
+  catalogRevision = 0,
+  ultrathink,
+  copilotAutoTier,
+  onCopilotAutoTierChange,
+  copilotAutoTierPending = false,
 }: ReasoningEffortPickerProps) {
   const portalContainer = usePortalContainer();
   const [open, setOpen] = useState(false);
@@ -235,7 +244,8 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
 
   const descriptor = useMemo<ModelDescriptor | undefined>(
     () => resolveModelDescriptorWithRuntimeCatalog(modelId, catalogScopeKey),
-    [catalogScopeKey, modelId],
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the revision is the catalog's arrival
+    [catalogScopeKey, catalogRevision, modelId],
   );
 
   const tiers = useMemo(
@@ -267,10 +277,7 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
   ];
   const activeLabel = activeIndex >= 0 ? tierLabel(tiers[activeIndex]!, useCodex56Labels) : "Auto";
   const isUltraActive = displayedEffort === "ultra" || displayedEffort === "ultracode";
-  const thumbPercent = activeIndex < 0 ? 0 : tierPercent(activeIndex, tiers.length);
-  const thumbLeft = activeIndex < 0 ? "8px" : sliderThumbPosition(thumbPercent);
-  const fillPosition = activeIndex < 0 ? "0%" : thumbLeft;
-  const progressiveGradient = useMemo(() => reasoningProgressiveGradient(tiers), [tiers]);
+  const thumbLeft = segmentOffset(segmentFraction(Math.max(0, activeIndex), tiers.length), tiers.length);
 
   const commitEffort = useCallback(
     (tier: string | null) => {
@@ -292,9 +299,8 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
     (track: HTMLDivElement) => {
       track.removeAttribute("data-dragging");
       track.style.setProperty("--reasoning-slider-thumb-position", thumbLeft);
-      track.style.setProperty("--reasoning-slider-fill-position", fillPosition);
     },
-    [fillPosition, thumbLeft],
+    [thumbLeft],
   );
 
   const releasePointerCapture = useCallback((track: HTMLDivElement, pointerId: number) => {
@@ -329,7 +335,7 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
     (event: React.PointerEvent<HTMLDivElement>) => {
       if (disabled || tiers.length === 0) return;
       const target = event.target as Element | null;
-      const startedOnRidge = Boolean(target?.closest?.("[data-reasoning-slider-ridge-button]"));
+      const startedOnRidge = Boolean(target?.closest?.("[data-reasoning-slider-segment]"));
       if (event.button !== 0 || activePointerGestureRef.current != null) return;
       const gesture: ActivePointerGesture = {
         pointerId: event.pointerId,
@@ -346,9 +352,10 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
         event.currentTarget.setPointerCapture(event.pointerId);
         gesture.captured = true;
       }
-      setSliderTrackPosition(
+      setIndicatorPosition(
         event.currentTarget,
-        pointerPercent(event.clientX, event.currentTarget.getBoundingClientRect()),
+        dragFraction(pointerPercent(event.clientX, event.currentTarget.getBoundingClientRect()), tiers.length),
+        tiers.length,
       );
     },
     [disabled, tiers.length],
@@ -367,11 +374,12 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
       event.currentTarget.setPointerCapture(event.pointerId);
       gesture.captured = true;
     }
-    setSliderTrackPosition(
+    setIndicatorPosition(
       event.currentTarget,
-      pointerPercent(event.clientX, event.currentTarget.getBoundingClientRect()),
+      dragFraction(pointerPercent(event.clientX, event.currentTarget.getBoundingClientRect()), tiers.length),
+      tiers.length,
     );
-  }, []);
+  }, [tiers.length]);
 
   const handleTrackPointerUp = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
@@ -386,10 +394,9 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
       }
       event.preventDefault();
       const percent = pointerPercent(event.clientX, event.currentTarget.getBoundingClientRect());
-      const nextIndex = nearestTierIndex(percent, tiers.length);
-      const snappedPercent = tierPercent(nextIndex, tiers.length);
+      const nextIndex = segmentIndexAt(percent, tiers.length);
       event.currentTarget.removeAttribute("data-dragging");
-      setSliderTrackPosition(event.currentTarget, snappedPercent);
+      setIndicatorPosition(event.currentTarget, segmentFraction(nextIndex, tiers.length), tiers.length);
       if (gesture.captured) releasePointerCapture(event.currentTarget, event.pointerId);
       if (gesture.startedOnRidge) suppressTrailingTierClick();
       commitEffort(tiers[nextIndex] ?? null);
@@ -438,6 +445,26 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
     [activeIndex, commitEffort, disabled, tiers],
   );
 
+  const copilotAuto = descriptor?.family === "github-copilot" && descriptor.providerModelId === "auto";
+  if (copilotAuto && onCopilotAutoTierChange) {
+    const options = [["efficiency", "Efficiency"], ["balance", "Balance"], ["intelligence", "Intelligence"]] as const;
+    const selected = copilotAutoTier ?? "balance";
+    return (
+      <Popover.Root open={open} onOpenChange={(next) => setOpen(disabled ? false : next)}>
+        <Popover.Trigger asChild>
+          <button type="button" disabled={disabled} className={cn("inline-flex h-7 items-center gap-1 rounded-md border border-fg/[0.08] bg-fg/[0.02] px-2 text-[11px] text-fg/75", triggerClassName, className)} aria-label="Copilot Auto profile">
+            {options.find(([value]) => value === selected)?.[1] ?? "Balance"}
+          </button>
+        </Popover.Trigger>
+        <Popover.Portal container={portalContainer ?? undefined}>
+          <Popover.Content side="top" align="start" sideOffset={6} className="rounded-lg border border-fg/10 bg-panel p-1 shadow-xl" style={{ zIndex: Z_LAYERS.popover }}>
+            {options.map(([value, label]) => <button key={value} type="button" className="block w-full rounded px-2 py-1.5 text-left text-xs hover:bg-fg/5" aria-pressed={selected === value} onClick={() => { onCopilotAutoTierChange(value); setOpen(false); }}>{label}</button>)}
+            {copilotAutoTierPending ? <div role="status" className="px-2 py-1.5 text-[11px] text-muted-fg">Applies from the next message</div> : null}
+          </Popover.Content>
+        </Popover.Portal>
+      </Popover.Root>
+    );
+  }
   if (tiers.length === 0) return null;
 
   const shortLabel = reasoningChipLabel(displayedEffort, useCodex56Labels) ?? "AUTO";
@@ -458,6 +485,8 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
           label={activeLabel}
           shortLabel={shortLabel}
           tone={activeTone}
+          tiers={tiers}
+          activeIndex={activeIndex}
           compact={compact}
           disabled={disabled}
           open={open}
@@ -483,8 +512,9 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
           <div
             data-reasoning-effort-picker-content="true"
             className={cn(
-              "ade-reasoning-effort-content relative isolate flex w-[232px] flex-col overflow-hidden rounded-xl border border-white/[0.08]",
-              "bg-[#17151A]/96 p-3 shadow-[0_18px_48px_rgba(0,0,0,0.58)] backdrop-blur-md",
+              "ade-reasoning-effort-content relative isolate flex flex-col overflow-hidden rounded-2xl border border-fg/[0.08]",
+              tiers.length > 4 ? "w-[328px]" : "w-[288px]",
+              "bg-(color:--work-popover-bg) p-2.5 shadow-[0_18px_48px_rgba(0,0,0,0.58)] backdrop-blur-md",
               isUltraActive && "ade-reasoning-effort-content-ultra",
             )}
             data-reasoning-ultra={isUltraActive ? "true" : undefined}
@@ -494,34 +524,26 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
               "--reasoning-fill-rgb": activeTone.rgb,
             } as React.CSSProperties}
           >
-            <div className="flex items-center justify-between gap-3">
-              <div className="min-w-0 font-sans text-[12px] leading-none text-muted-fg/72">
-                <span>Effort </span>
+            <div className="flex items-center justify-between gap-3 px-1 pb-2.5 pt-0.5">
+              <div className="flex min-w-0 items-center gap-2 font-sans text-[12px] leading-none text-muted-fg/72">
+                <EffortMeter tiers={tiers} activeIndex={activeIndex} color={activeTone.color} />
+                <span>Effort</span>
                 <span
                   key={displayedEffort ?? "auto"}
                   className="ade-reasoning-effort-word font-semibold"
                   data-direction={effortTransitionDirection}
-                  style={{ color: activeTone.color }}
+                  style={{ color: toneText(activeTone.color) }}
                 >
                   {activeLabel}
                 </span>
               </div>
+              <span className="shrink-0 font-sans text-[10px] leading-none text-muted-fg/50">
+                Faster → Smarter
+              </span>
             </div>
-            <div className="mt-4 flex items-center justify-between font-sans text-[11px] leading-none text-muted-fg/62">
-              <span>Faster</span>
-              <span>Smarter</span>
-            </div>
-            {isUltraActive ? (
-              <p
-                className="ade-reasoning-ultra-warning mt-3 font-sans text-[10px] leading-4 text-fuchsia-100/75"
-                data-reasoning-ultra-warning="true"
-              >
-                Automatically delegates work across multiple agents and can consume task limits faster.
-              </p>
-            ) : null}
             <div
               data-reasoning-slider-track
-              className="ade-reasoning-slider-track relative mt-3 h-[18px] touch-none cursor-grab rounded-md bg-[#242327] p-[3px] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.045),inset_0_1px_3px_rgba(0,0,0,0.45)] active:cursor-grabbing"
+              className="ade-reasoning-slider-track relative flex h-9 touch-none select-none items-stretch rounded-full bg-black/25 p-[3px] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06)]"
               onPointerDown={handleTrackPointerDown}
               onPointerMove={handleTrackPointerMove}
               onPointerUp={handleTrackPointerUp}
@@ -530,63 +552,80 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
               onClickCapture={handleTrackClickCapture}
               role="presentation"
               style={{
-                "--reasoning-slider-fill-position": fillPosition,
                 "--reasoning-slider-thumb-position": thumbLeft,
-                "--reasoning-progressive-gradient": progressiveGradient,
               } as React.CSSProperties}
             >
-              <div className="relative h-full overflow-hidden rounded-[5px] bg-black/18">
-                <div
-                  data-reasoning-slider-fill
-                  className={cn(
-                    "ade-reasoning-slider-fill absolute inset-0 overflow-hidden rounded-[5px]",
-                    activeIndex === tiers.length - 1 && activeIndex >= 0 && "ade-reasoning-slider-fill-max",
-                  )}
-                  aria-hidden
-                />
-                {tiers.map((tier, index) => {
-                  const percent = tierPercent(index, tiers.length);
-                  const isActive = displayedEffort === tier;
-                  const tone = REASONING_TONE_STYLES[reasoningToneKeyForTier(tier, index, tiers.length)];
-                  return (
-                    <button
-                      key={tier}
-                      type="button"
-                      role="radio"
-                      aria-checked={isActive}
-                      aria-label={tierLabel(tier, useCodex56Labels)}
-                      data-reasoning-slider-ridge-button
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        handleSelect(tier);
-                      }}
-                      onKeyDown={handleSliderKeyDown}
-                      className="absolute top-1/2 flex h-7 w-7 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-white/40"
-                      style={{ left: `${percent}%` }}
-                    >
-                      <span className="sr-only">{tierLabel(tier, useCodex56Labels)}</span>
-                      <span
-                        className={cn(
-                          "h-1 w-1 rounded-full transition-all duration-200",
-                          isActive ? cn("h-1.5 w-1.5", tone.ridge, "shadow-[0_0_10px_currentColor]") : "bg-white/20",
-                        )}
-                        aria-hidden
-                      />
-                    </button>
-                  );
-                })}
-                <div
-                  data-reasoning-slider-thumb
-                  className={cn(
-                    "ade-reasoning-slider-thumb pointer-events-none absolute top-1/2 h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-md border shadow-[0_3px_10px_rgba(0,0,0,0.32)] transition-[left,background-color,border-color,box-shadow] duration-200",
-                    activeTone.thumb,
-                    activeIndex < 0 && "opacity-60",
-                  )}
-                  style={{ left: "var(--reasoning-slider-thumb-position)" }}
-                  aria-hidden
-                />
-              </div>
+              <div
+                data-reasoning-slider-thumb
+                className={cn(
+                  "ade-reasoning-slider-thumb pointer-events-none absolute inset-y-[3px] rounded-full",
+                  activeIndex < 0 && "opacity-0",
+                )}
+                style={{
+                  left: 3,
+                  transform: "translateX(calc(var(--reasoning-slider-thumb-position) * 100%))",
+                  width: `calc((100% - 6px) / ${tiers.length})`,
+                }}
+                aria-hidden
+              />
+              {tiers.map((tier, index) => {
+                const isActive = displayedEffort === tier;
+                return (
+                  <button
+                    key={tier}
+                    type="button"
+                    role="radio"
+                    aria-checked={isActive}
+                    aria-label={tierLabel(tier, useCodex56Labels)}
+                    tabIndex={isActive || (activeIndex < 0 && index === 0) ? 0 : -1}
+                    data-reasoning-slider-segment
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      handleSelect(tier);
+                    }}
+                    onKeyDown={handleSliderKeyDown}
+                    className={cn(
+                      "relative z-[1] min-w-0 flex-1 cursor-pointer rounded-full px-1 text-center font-sans text-[11px] font-medium leading-none outline-none transition-colors duration-200",
+                      "focus-visible:ring-1 focus-visible:ring-fg/25",
+                      isActive ? "text-fg" : "text-muted-fg/65 hover:text-fg/90",
+                    )}
+                    style={isActive ? { color: toneText(activeTone.color) } : undefined}
+                  >
+                    <span className="block truncate">{reasoningEffortTrackLabel(tier, tiers.length, tierLabel(tier, useCodex56Labels))}</span>
+                  </button>
+                );
+              })}
             </div>
+            {isUltraActive ? (
+              <p
+                className="ade-reasoning-ultra-warning mt-2.5 px-1 font-sans text-[10px] leading-4 text-fuchsia-100/75"
+                data-reasoning-ultra-warning="true"
+              >
+                Automatically delegates work across multiple agents and can consume task limits faster.
+              </p>
+            ) : null}
+            {ultrathink ? (
+              <>
+                <div className="mx-0.5 mt-2.5 h-px bg-fg/[0.06]" />
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={ultrathink.active}
+                  disabled={disabled}
+                  data-reasoning-ultrathink-switch="true"
+                  onClick={() => ultrathink.onChange(!ultrathink.active)}
+                  className="mt-1.5 flex w-full items-center justify-between gap-3 rounded-lg px-1 py-1.5 text-left outline-none focus-visible:ring-1 focus-visible:ring-fg/25"
+                >
+                  <span className="flex min-w-0 flex-col gap-1">
+                    <span className="ade-ultrathink-text self-start font-sans text-[12px] font-semibold leading-none">Ultrathink</span>
+                    <span className="font-sans text-[10px] leading-4 text-muted-fg/60">
+                      Asks Claude to reason extra hard on this message only.
+                    </span>
+                  </span>
+                  <span aria-hidden className="ade-ultrathink-switch" data-on={ultrathink.active ? "true" : "false"} />
+                </button>
+              </>
+            ) : null}
           </div>
         </Popover.Content>
       </Popover.Portal>
@@ -598,6 +637,8 @@ type TriggerProps = {
   label: string;
   shortLabel: string;
   tone: (typeof REASONING_TONE_STYLES)[ReasoningToneKey];
+  tiers: readonly string[];
+  activeIndex: number;
   compact: boolean;
   disabled: boolean;
   open: boolean;
@@ -608,7 +649,7 @@ type TriggerProps = {
 const ReasoningEffortTrigger = memo(
   forwardRef<HTMLButtonElement, TriggerProps & React.ButtonHTMLAttributes<HTMLButtonElement>>(
     function ReasoningEffortTrigger(
-      { label, shortLabel, tone, compact, disabled, open, ultra, className, ...rest },
+      { label, shortLabel, tone, tiers, activeIndex, compact, disabled, open, ultra, className, ...rest },
       ref,
     ) {
       return (
@@ -625,24 +666,25 @@ const ReasoningEffortTrigger = memo(
           aria-haspopup="dialog"
           aria-expanded={open}
           className={cn(
-            "inline-flex min-w-0 items-center gap-1 rounded-md border font-sans transition-colors duration-150",
+            "inline-flex min-w-0 items-center rounded-md border font-sans transition-colors duration-150",
             compact
-              ? "h-6 px-1 text-[9px]"
-              : "h-8 px-2 text-[11px] sm:text-[12px]",
-            tone.trigger,
+              ? "h-6 gap-1.5 px-1.5 text-[9px]"
+              : "h-8 gap-2 px-2.5 text-[11px] sm:text-[12px]",
+            "border-fg/[0.06] bg-fg/[0.03] text-fg/80 hover:border-fg/[0.12] hover:bg-fg/[0.06]",
             ultra && "ade-reasoning-effort-trigger-ultra",
-            open && "ring-1 ring-white/[0.06]",
-            disabled && "cursor-not-allowed opacity-60 hover:border-white/[0.06] hover:bg-white/[0.03]",
+            open && "border-fg/[0.12] bg-fg/[0.06]",
+            disabled && "cursor-not-allowed opacity-60 hover:border-fg/[0.06] hover:bg-fg/[0.03]",
             className,
           )}
         >
+          <EffortMeter tiers={tiers} activeIndex={activeIndex} color={tone.color} compact={compact} />
           <span
             data-reasoning-chip="true"
             className={cn(
               "shrink-0 font-medium leading-none",
               compact ? "text-[9px]" : "text-[11px] sm:text-[12px]",
             )}
-            style={{ color: tone.color }}
+            style={{ color: toneText(tone.color) }}
           >
             <span className="hidden @sm:inline">{label}</span>
             <span className="@sm:hidden">{shortLabel}</span>
@@ -660,6 +702,46 @@ const ReasoningEffortTrigger = memo(
     },
   ),
 );
+
+/**
+ * Rising bars, one per tier, lit up to the current effort in its tone. It says
+ * "how hard will it think" at a glance, before the label is read.
+ */
+export const EffortMeter = memo(function EffortMeter({
+  tiers,
+  activeIndex,
+  color,
+  compact = false,
+}: {
+  tiers: readonly string[];
+  activeIndex: number;
+  color: string;
+  compact?: boolean;
+}) {
+  const total = Math.max(1, tiers.length);
+  const minHeight = compact ? 3 : 4;
+  const maxHeight = compact ? 10 : 12;
+  return (
+    <span aria-hidden data-reasoning-meter="true" className="inline-flex shrink-0 items-end gap-[2px]">
+      {tiers.map((tier, index) => {
+        const height = total <= 1
+          ? maxHeight
+          : minHeight + ((maxHeight - minHeight) * index) / (total - 1);
+        const lit = activeIndex >= 0 && index <= activeIndex;
+        return (
+          <span
+            key={tier}
+            className={cn(
+              "w-[3px] rounded-full transition-colors duration-200",
+              !lit && "bg-fg/[0.16]",
+            )}
+            style={{ height, ...(lit ? { backgroundColor: toneText(color) } : {}) }}
+          />
+        );
+      })}
+    </span>
+  );
+});
 
 /**
  * The effort this control WOULD display for a model when no explicit value is

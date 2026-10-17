@@ -130,6 +130,7 @@ function createReaperSpy(): ClaudeSubprocessReaper {
     spawnClaudeCodeProcess: vi.fn(() => ({ pid: 4321 }) as any),
     liveRecords: vi.fn(() => []),
     recordsForSession: vi.fn(() => []),
+    terminatedByAdeSince: vi.fn(() => false),
   };
 }
 
@@ -170,6 +171,7 @@ function createHarness(messages: Array<Record<string, unknown>>) {
     setHeadShaEnd: vi.fn(),
     setLastOutputPreview: vi.fn(),
     clearTurnStartMarkers: vi.fn(),
+    clearAttentionRequest: vi.fn(() => true),
     clearSessionActivity: vi.fn(),
     markLastTurnFailed: vi.fn(),
     clearLastTurnFailed: vi.fn(),

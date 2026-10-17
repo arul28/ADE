@@ -1,0 +1,19 @@
+---
+title: "v1.2.102"
+description: "Release notes for ADE v1.2.102 - October 13, 2026"
+---
+
+ADE 1.2.102 fixes a chat that could not accept a message during a long turn, and adds phone sign-in and PR video.
+
+## Chat
+
+- You can send a message into a running turn even when the chat's model has not loaded yet. Before, the composer refused to send without a model, and the model picker stays locked during a turn, so the chat was stuck until the turn ended (#1606).
+- A chat keeps its model when its pane is reopened, instead of showing "Select model" until the chat summary loads (#1606).
+
+## Accounts
+
+- Sign a machine in from your phone: scan a QR code and approve on the phone, with no password typed on that machine (#1603).
+
+## Pull requests
+
+- A video in a PR plays inside ADE, and the phone shows a PR description's pictures (#1604).

@@ -140,6 +140,14 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     },
   },
   attention: {
+    sendNotification: {
+      description:
+        "Send a push you write to every phone on the ADE account: title up to 64 characters, optional body up to 160, "
+        + "optional ade:// link a tap opens. Respects notifications off, quiet hours and a muted machine. "
+        + "At most 60 per account per hour. Open to agents and automations.",
+      input: "object { title: string, body?: string, open?: string }",
+      example: "ade notify --title \"Deploy finished\" --body \"ADE 1.4.2 is live\" --open \"ade://pr/1514\"",
+    },
     getSnapshot: {
       description: "Read the account-wide Activity stream across every connected machine and project.",
       input: "object { since?: non-negative integer, streamId?: string | null }",
@@ -172,6 +180,11 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     },
   },
   project_secret: {
+    request: {
+      description: "Ask the person in this chat for a project secret through the private secret card, and save their answer to this project's encrypted secrets. Blocks until they save, keep the existing value, or decline. Returns {name, saved: true, replaced} | {name, saved: false, kept: true} | {name, saved: false, declined: true}; the value is never returned, logged, or written to the transcript. Use this instead of asking a person to paste a secret into chat.",
+      input: "object { name: string, reason: string, generate?: boolean, timeoutMs?: number }",
+      example: "ade secrets request GITHUB_WEBHOOK_SECRET --reason \"Signs GitHub deliveries to your triage webhook\" --generate",
+    },
     list: {
       description: "List ADE project secret names and metadata without revealing values.",
       input: "no input",
@@ -365,7 +378,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     },
     getAvailableModels: {
       description: "List available chat models, optionally filtered by provider.",
-      input: "object { provider?: \"claude\" | \"codex\" | \"cursor\" | \"droid\" | \"opencode\" }",
+      input: "object { provider?: \"claude\" | \"codex\" | \"cursor\" | \"droid\" | \"copilot\" | \"opencode\" }",
       example: "ade actions run chat.getAvailableModels --input-json '{\"provider\":\"codex\"}'",
     },
     getSessionSummary: {
@@ -443,6 +456,16 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "object { sessionId: string, text: string, attachments? }",
       example: "ade actions run chat.sendMessage --input-json '{\"sessionId\":\"chat-123\",\"text\":\"next step\"}'",
     },
+    getClaudePluginUi: {
+      description: "Read what Claude Code mods draw for a chat right now: status lines, the latest toast, the band above the prompt and open panes. User clients only.",
+      input: "object { sessionId: string }",
+      example: "ade actions run chat.getClaudePluginUi --input-json '{\"sessionId\":\"chat-123\"}' --json",
+    },
+    actOnClaudePluginUi: {
+      description: "Press a button, submit a field, pick an option or close a pane that a Claude Code mod drew. Names the generation and the control from getClaudePluginUi. User clients only.",
+      input: "object { sessionId: string, generation: number, kind: \"press\" | \"input\" | \"select\" | \"closePane\", target?: { plugin, handle }, key?, value?, site?: { component: \"AbovePrompt\" } | { component: \"Pane\", paneId }, paneId? }",
+      example: "ade actions run chat.actOnClaudePluginUi --input-json '{\"sessionId\":\"chat-123\",\"generation\":1,\"kind\":\"press\",\"target\":{\"plugin\":\"my-mod\",\"handle\":42}}' --json",
+    },
     listThreadComments: {
       description: "List a chat's pending thread comments (the user's unsent notes on parts of agent replies). User clients only.",
       input: "object { sessionId: string }",
@@ -477,6 +500,31 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       description: "Resolve a safe, bounded title and favicon preview for a pasted chat URL.",
       input: "object { url: string }",
       example: "ade actions run chat.resolveSmartLinkPreview --input-json '{\"url\":\"https://github.com/owner/repo/pull/123\"}' --json",
+    },
+    resolveSmartLinkImage: {
+      description: "Fetch a link preview's og:image (public hosts only, max 256 KiB, bitmap image types) as a data URL; null when unavailable.",
+      input: "object { url: string }",
+      example: "ade actions run chat.resolveSmartLinkImage --input-json '{\"url\":\"https://example.com/og.png\"}' --json",
+    },
+    getMcpApp: {
+      description: "Read the MCP App a tool call produced: its HTML page, the network origins it declared, and the tool input and result it replays.",
+      input: "object { sessionId: string, itemId: string }",
+      example: "ade actions run chat.getMcpApp --input-json '{\"sessionId\":\"<chat>\",\"itemId\":\"<tool call id>\"}' --json",
+    },
+    mcpAppRequest: {
+      description: "User clients only. Pass one request from an MCP App's frame (tools/call or resources/read) to the server the app came from, through the chat's live session. A tool not marked read-only asks the user first.",
+      input: "object { sessionId: string, itemId: string, method: \"tools/call\" | \"resources/read\", params: object }",
+      example: "ade actions run chat.mcpAppRequest --input-json '{\"sessionId\":\"<chat>\",\"itemId\":\"<tool call id>\",\"method\":\"resources/read\",\"params\":{\"uri\":\"ui://server/page.html\"}}' --json",
+    },
+    listMcpAppGrants: {
+      description: "List the tools the user always allows for the MCP server an app came from, in this project.",
+      input: "object { sessionId: string, itemId: string }",
+      example: "ade actions run chat.listMcpAppGrants --input-json '{\"sessionId\":\"<chat>\",\"itemId\":\"<tool call id>\"}' --json",
+    },
+    revokeMcpAppGrant: {
+      description: "User clients only. Take back one \"always allow\" answer for a tool of the MCP server an app came from.",
+      input: "object { sessionId: string, itemId: string, tool: string }",
+      example: "ade actions run chat.revokeMcpAppGrant --input-json '{\"sessionId\":\"<chat>\",\"itemId\":\"<tool call id>\",\"tool\":\"add_item\"}' --json",
     },
     resolveSourceFavicons: {
       description: "Fetch the favicons of Sources domains from the sites themselves (HTTPS, public hosts only, cached 7 days) as data URLs; null when a site has none.",
@@ -536,6 +584,15 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "object { sessionId: string, spawnKind: \"subagent\" | \"peer\" }",
       example: "ade actions run chat.setSpawnKind --input-json '{\"sessionId\":\"chat-123\",\"spawnKind\":\"peer\"}' --text",
     },
+    setParent: {
+      description:
+        "Point a chat at a new parent chat, or detach it with parentSessionId null. Use it when a move, a deleted parent, "
+        + "or a launch left the link wrong; reports go to the new parent from the next turn. spawnKind defaults to the "
+        + "chat's current kind, or subagent when its old parent is gone. A chat-bound agent may change its own chat's "
+        + "parent, adopt a chat whose parent is gone (or that has none), or release a chat that reports to it.",
+      input: "object { sessionId: string, parentSessionId: string | null, spawnKind?: \"subagent\" | \"peer\" }",
+      example: "ade actions run chat.setParent --input-json '{\"sessionId\":\"chat-123\",\"parentSessionId\":\"chat-456\"}' --text",
+    },
     dismissSubagentTakeoverPrompt: {
       description: "Record that the subagent takeover banner was shown and answered or dismissed, so it does not reappear.",
       input: "object { sessionId: string }",
@@ -567,6 +624,63 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     },
   },
   automations: {
+    webhookCreateAutomation: {
+      description:
+        "One step: make a private webhook URL and the automation that runs on it. Returns { rule, hookId, setup } where setup has the URL, "
+        + "numbered paste steps for the service, the signature/secret state, and the filters in words. Defaults come from the preset "
+        + "(GitHub/Stripe/Linear/Sentry signature format, suggested filters and prompt). chatSessionId \"this\" sends every delivery to the "
+        + "calling chat as a new turn; an agent may bind only its own chat. Failures leave no URL behind.",
+      input:
+        "object { preset?: \"github\" | \"stripe\" | \"linear\" | \"sentry\" | \"generic\", name?: string, prompt?: string (use {{trigger.body.<path>}}), "
+        + "filters?: Array<string like \"body.action=opened\" | \"headers.x-github-event=issues\" | \"body.ref~main\" | \"body.draft!=true\" | \"body.issue\"> ([] = every request), "
+        + "requireSignature?: boolean, secretName?: string, modelId?: string, reasoningEffort?: string, chatSessionId?: string | \"this\", enabled?: boolean, confirmations?: string[] }",
+      example: "ade automations webhook create --preset github --filter body.action=opened --in-this-chat --text",
+    },
+    webhookList: {
+      description: "Every webhook automation in this project: its URL and route (relay / gateway / this computer), signature and secret state, filters, bound chat, and last delivery.",
+      input: "no input",
+      example: "ade automations webhook list --text",
+    },
+    webhookCreateEndpoint: {
+      description: "Make a bare private webhook URL (no rule). Prefer webhookCreateAutomation, which makes the URL and the rule together.",
+      input: "object { label?: string }",
+      example: "ade automations webhook new --label \"Deploy failures\" --text",
+    },
+    webhookGetEndpoint: {
+      description: "Read one webhook URL: url, route, whether its token lives on this machine, and the last delivery time. Registers it with ADE's relay if that has not happened yet.",
+      input: "object { hookId: string }",
+      example: "ade automations webhook url wh-0123456789abcdef --text",
+    },
+    webhookRotateEndpoint: {
+      description: "Replace a webhook URL's secret token. The old URL stops working at once; the person must paste the new one into the service.",
+      input: "object { hookId: string }",
+      example: "ade automations webhook rotate wh-0123456789abcdef --text",
+    },
+    webhookRetire: {
+      description: "Stop a webhook URL that no automation uses any more (deleting an automation already does this). Refuses while a rule still names it.",
+      input: "object { hookId: string }",
+      example: "ade automations webhook retire wh-0123456789abcdef --text",
+    },
+    webhookListDeliveries: {
+      description: "The newest deliveries to one webhook URL with their outcome (ran, filtered, bad_signature, missing_signature, duplicate, expired, no_rule, disabled, rate_limited, too_large, error) and a one-sentence reason.",
+      input: "object { hookId: string, limit?: number (max 50) }",
+      example: "ade automations webhook deliveries wh-0123456789abcdef --text",
+    },
+    webhookGetDelivery: {
+      description: "One delivery in full: outcome and reason, signature state, the exact prompt the agent got, headers (authorization/cookies hidden), body, and the run's id and chat.",
+      input: "object { id: string }",
+      example: "ade automations webhook delivery whd_0123456789abcdef01 --text",
+    },
+    webhookReplayDelivery: {
+      description: "Run a logged delivery again against the automation as it is now (no signature or duplicate check). Returns the new delivery.",
+      input: "object { id: string }",
+      example: "ade automations webhook replay whd_0123456789abcdef01 --text",
+    },
+    webhookSendTest: {
+      description: "Ring a webhook URL with a sample request signed the way the configured service signs it, through the real route (relay when public). Then read webhookListDeliveries to see the outcome.",
+      input: "object { hookId: string, body?: string (JSON), headers?: Record<string,string> }",
+      example: "ade automations webhook test wh-0123456789abcdef --text",
+    },
     list: {
       description: "List this project's automation rules with their last/next run state.",
       input: "no input",
@@ -601,6 +715,21 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       description: "Fire one automation rule now, optionally against a lane or as a dry run.",
       input: "object { id: string, laneId?: string, dryRun?: boolean, verboseTrace?: boolean }",
       example: "ade actions run automations.triggerManually --input-json '{\"id\":\"nightly-review\",\"dryRun\":true}' --text",
+    },
+    planTest: {
+      description: "Show what a safe or live test of one automation will do with an event, step by step. Changes nothing.",
+      input: "object { id: string, mode: \"safe\" | \"live\", event?: { triggerType?, laneId?, sessionId?, pr?: { number, title?, url?, repo?, headBranch?, baseBranch? }, issue?: { number, title? }, linearIssue?: { id, title? }, webhookBody?, label? } }",
+      example: "ade actions run automations.planTest --input-json '{\"id\":\"nightly-review\",\"mode\":\"safe\",\"event\":{\"pr\":{\"number\":12,\"title\":\"Bump deps\"}}}' --text",
+    },
+    runTest: {
+      description: "Start a test run of one automation. A safe test works in a throwaway lane and only reports steps that post, push, or call outside ADE. A live test runs for real. Both mark notifications [Test] and use no run budget.",
+      input: "object { id: string, mode: \"safe\" | \"live\", event?: same as planTest }",
+      example: "ade actions run automations.runTest --input-json '{\"id\":\"nightly-review\",\"mode\":\"safe\"}' --text",
+    },
+    cleanUpTestRun: {
+      description: "Delete the lanes a finished test run made, with their local branches.",
+      input: "object { runId: string }",
+      example: "ade actions run automations.cleanUpTestRun --input-json '{\"runId\":\"run-123\"}' --text",
     },
   },
   automation_planner: {
@@ -843,10 +972,18 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     },
     remove: {
       description:
-        "Forget a provider account. Nothing on disk is deleted — the config home is returned so the caller can say what is "
-        + "still there. The machine's own login and the current default cannot be removed.",
+        "Forget a provider account, signing it out first (the provider CLI's own logout) so adding it again starts "
+        + "from a fresh sign-in. The config home directory is never deleted and is returned; `signOutError` says when "
+        + "the sign-out failed and the login is still there. The machine's own login and the current default cannot be removed.",
       input: "object { id: string }",
       example: "ade actions run provider_instances.remove --input-json '{\"id\":\"work\"}' --text",
+    },
+    signOut: {
+      description:
+        "Sign one provider account out with the provider CLI's own logout in its config home, keeping the account. "
+        + "Refused for the current default. On the machine's own login this also signs out the terminal's CLI.",
+      input: "object { id: string }",
+      example: "ade actions run provider_instances.signOut --input-json '{\"id\":\"work\"}' --text",
     },
     rename: {
       description: "Rename one provider account. Labels are at most 60 characters.",
@@ -872,8 +1009,14 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade actions run provider_instances.getSettings --input-json '{\"provider\":\"codex\"}' --text",
     },
     setSettings: {
-      description: "Patch the per-provider account settings. Omitted fields keep their current value.",
-      input: "object { provider: \"claude\" | \"codex\", settings: { smartBalance?: boolean, autoStartWindows?: boolean } }",
+      description:
+        "Patch the per-provider account settings. Omitted fields keep their current value. compaction, "
+        + "mainPromptCacheTtl, subagentPromptCacheTtl and onExtraUsage belong to one account and need instanceId; "
+        + "null clears them. mainPromptCacheTtl, subagentPromptCacheTtl and onExtraUsage are Claude only.",
+      input: "object { provider: \"claude\" | \"codex\", instanceId?: string, settings: { smartBalance?: boolean, "
+        + "autoStartWindows?: boolean, compaction?: object | null, mainPromptCacheTtl?: \"5m\" | \"1h\" | null, "
+        + "subagentPromptCacheTtl?: \"1h\" | null, "
+        + "onExtraUsage?: \"stop\" | null } }",
       example: "ade actions run provider_instances.setSettings --input-json '{\"provider\":\"codex\",\"settings\":{\"smartBalance\":true}}' --text",
     },
     loginCommand: {

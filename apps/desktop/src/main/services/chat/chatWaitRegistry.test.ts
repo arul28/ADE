@@ -6,7 +6,7 @@ const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } 
 
 type Summary = Record<string, unknown> | null | Error;
 
-function harness(initial: Record<string, Summary>) {
+function harness(initial: Record<string, Summary>, ownedByAnotherBrain: Set<string> = new Set()) {
   const summaries = new Map<string, Summary>(Object.entries(initial));
   const sent: AgentChatMessageSessionArgs[] = [];
   let store: unknown = null;
@@ -24,6 +24,10 @@ function harness(initial: Record<string, Summary>) {
     describeTarget: async (sessionId) => `- ${sessionId}`,
     sessionExists: (sessionId) => summaries.has(sessionId),
     messageSession: async (args) => { sent.push(args); },
+    ownedByAnotherBrain: (sessionId) => ownedByAnotherBrain.has(sessionId),
+    assertDeliverableHere: (sessionId) => {
+      if (ownedByAnotherBrain.has(sessionId)) throw new Error(`${sessionId} runs under another brain`);
+    },
     whenReady: async () => {},
   });
   // `arm` reads each target once (the fake read waits on a timer).
@@ -85,5 +89,33 @@ describe("chatWaitRegistry", () => {
     registry.signal("a");
     await vi.advanceTimersByTimeAsync(2_000);
     expect(sent).toEqual([{ sessionId: "b", kind: "wake", text: "start the review" }]);
+  });
+
+  // Waiters live in the project database every brain on it loads. A brain
+  // that does not run a chat saw it "idle" and woke the caller with a false
+  // "reached idle" (2026-10-09), starting a second process for the caller.
+  it.each([
+    ["the target", { caller: { status: "active" }, worker: { status: "idle", runtimeOwnedElsewhere: { pid: 4242 } } }, null],
+    // Armed while this brain ran the caller; another brain has taken it since.
+    ["the chat to wake", { caller: { status: "idle" }, worker: { status: "idle" } }, "caller"],
+  ])("leaves a wait alone when another brain runs %s", async (_label, summaries, takenOver) => {
+    const owned = new Set<string>();
+    const { registry, arm, sent } = harness(summaries, owned);
+    await arm({ callerSessionId: "caller", targetSessionIds: ["worker"], waitFor: "idle" });
+    if (takenOver) owned.add(takenOver);
+    registry.signal("worker");
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    expect(sent).toEqual([]);
+    expect(await registry.list()).toHaveLength(1);
+  });
+
+  it("refuses to arm a wait whose chat to wake another brain runs", async () => {
+    const { registry, sent } = harness({ caller: { status: "active" }, worker: { status: "active" } }, new Set(["caller"]));
+    const armed = expect(registry.arm({ callerSessionId: "caller", targetSessionIds: ["worker"] })).rejects.toThrow(/another brain/);
+    await vi.advanceTimersByTimeAsync(150);
+    await armed;
+    expect(await registry.list()).toEqual([]);
+    expect(sent).toEqual([]);
   });
 });

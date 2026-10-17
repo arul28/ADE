@@ -73,12 +73,21 @@ final class MachineConnection {
   /// The backoff ran out: no more dials until the user retries, the app opens,
   /// the network changes, or the account shows the machine online.
   private(set) var gaveUp = false
+  /// The route the live socket took (nil while not live).
+  private(set) var liveRouteKind: SyncConnectionRouteKind?
+  private var relayReauthorizationTask: Task<Void, Never>?
+  /// Sleeping out a backoff delay between failed dials.
+  private var waitingToRetry = false
   /// Chats opened on this machine: session id -> foreign project scope.
   private var chatScopes: [String: (projectId: String, rootPath: String)] = [:]
   private var chatLastSeq: [String: Int] = [:]
   private var snapshotWatchdogs: [String: Task<Void, Never>] = [:]
   private(set) var stalledChatSessionIds: Set<String> = []
   private(set) var pendingSnapshotSessionIds: Set<String> = []
+  /// Per-chat record of what went over this socket, for the empty-thread
+  /// report. Kept across sockets so a report can see reconnects.
+  private var chatStreamTraces: [String: ChatStreamTrace] = [:]
+  private var socketCloseCount = 0
 
   private struct PendingRequest {
     let continuation: CheckedContinuation<Any, Error>
@@ -130,6 +139,7 @@ final class MachineConnection {
     generation &+= 1
     runTask?.cancel()
     runTask = nil
+    waitingToRetry = false
     closeSocket(reason: reason)
     if clearAttention {
       gaveUp = false
@@ -147,6 +157,21 @@ final class MachineConnection {
     gaveUp = false
     consecutiveFailures = 0
     setPhase(.idle)
+  }
+
+  /// Something says the machine may answer now (the user tapped Connect, the
+  /// account shows it online, the network changed): a connection sleeping
+  /// out its backoff (up to 5 minutes) or one that gave up is stopped with a
+  /// fresh retry budget, so the caller's `start()` dials at once. A dial in
+  /// progress or a live link is left alone.
+  func dialSoonerIfWaiting() {
+    if gaveUp {
+      resumeAfterGivingUp()
+      return
+    }
+    guard waitingToRetry else { return }
+    consecutiveFailures = 0
+    stop(reason: "Retrying now.")
   }
 
   private var isAttentionPhase: Bool {
@@ -217,7 +242,9 @@ final class MachineConnection {
         onChange?()
         return
       }
+      waitingToRetry = true
       try? await Task.sleep(nanoseconds: delay)
+      if generation == runGeneration { waitingToRetry = false }
     }
   }
 
@@ -259,6 +286,7 @@ final class MachineConnection {
     }
     chunkAssembler = SyncEnvelopeChunkAssembler()
     socket = result.task
+    liveRouteKind = syncConnectionRouteKind(result.address)
     lastInboundUptime = ProcessInfo.processInfo.systemUptime
     lastUpdateAt = Date()
     setPhase(.live)
@@ -268,6 +296,14 @@ final class MachineConnection {
     )
     subscribeRoster()
     restoreChatSubscriptions()
+    // Over the relay the host closes this socket when the account proof in
+    // the hello expires (about a minute). Renew it like the focused
+    // connection does, or every relay-connected machine drops and redials
+    // once a minute.
+    if syncIsFullWebSocketRoute(result.address),
+       let lease = (payload["relayAuthorization"] as? [String: Any]).flatMap(SyncRelayAuthorizationLease.init) {
+      startRelayReauthorization(lease: lease, generation: generation)
+    }
     machineConnectionLog.notice(
       "fleet live machine=\(self.machineKey, privacy: .public) address=\(result.address, privacy: .public)"
     )
@@ -275,8 +311,21 @@ final class MachineConnection {
   }
 
   private func closeSocket(reason: String) {
+    if socket != nil {
+      socketCloseCount += 1
+      for sessionId in chatScopes.keys { chatStreamTraces[sessionId, default: ChatStreamTrace()].socketClosesWhileSubscribed += 1 }
+      if !chatScopes.isEmpty {
+        CrashReporting.breadcrumb("chat.stream", message: "fleet socket closed", data: [
+          "machine": machineKey,
+          "reason": reason,
+          "openChats": String(chatScopes.count),
+        ])
+      }
+    }
     heartbeatTask?.cancel()
     heartbeatTask = nil
+    relayReauthorizationTask?.cancel()
+    relayReauthorizationTask = nil
     for (_, task) in snapshotWatchdogs { task.cancel() }
     snapshotWatchdogs.removeAll()
     pendingSnapshotSessionIds.removeAll()
@@ -284,6 +333,7 @@ final class MachineConnection {
       socket.cancel(with: .goingAway, reason: reason.data(using: .utf8))
     }
     socket = nil
+    liveRouteKind = nil
     // The roster subscription belongs to the socket; keep the rows for the
     // offline view and ask for a fresh snapshot on the next socket.
     rosterSeq = nil
@@ -314,6 +364,12 @@ final class MachineConnection {
       do {
         message = try await task.receive()
       } catch {
+        if socket === task {
+          let reason = task.closeReason.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+          machineConnectionLog.notice(
+            "fleet socket closed machine=\(self.machineKey, privacy: .public) code=\(task.closeCode.rawValue) reason=\(reason, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+          )
+        }
         return
       }
       guard socket === task, generation == loopGeneration else { return }
@@ -399,7 +455,7 @@ final class MachineConnection {
         let message = dict["message"] as? String ?? "Remote command rejected."
         resolve(requestId: pre.requestId, result: .failure(NSError(domain: "ADE", code: 6, userInfo: [NSLocalizedDescriptionKey: message])))
       }
-    case "command_result", "chat_history", "chat_tool_result", "file_response":
+    case "command_result", "chat_history", "chat_tool_result", "file_response", "relay_reauthorize_result":
       resolve(requestId: pre.requestId, result: .success(payload))
     case "roster_snapshot":
       guard let snapshot = machineConnectionDecode(payload, as: RemoteRosterSnapshotPayload.self) else { return }
@@ -561,6 +617,58 @@ final class MachineConnection {
     }
   }
 
+  // MARK: - Relay authorization
+
+  /// Keeps a relay socket's account proof fresh with the same loop the
+  /// focused connection runs (`syncRunRelayReauthorizationLoop`). When it
+  /// stops (an account change, or retries past the lease) the host closes the
+  /// socket at expiry and the run loop redials.
+  private func startRelayReauthorization(lease: SyncRelayAuthorizationLease, generation leaseGeneration: UInt64) {
+    guard let pairedDeviceId = nonEmptyTrimmed(profile.pairedDeviceId) else { return }
+    relayReauthorizationTask?.cancel()
+    // No strong self here: the loop's closures hold the connection weakly, and
+    // `closeSocket` cancels this task.
+    relayReauthorizationTask = Task { @MainActor [weak self] in
+      await syncRunRelayReauthorizationLoop(
+        lease: lease,
+        isCurrent: { [weak self] in
+          guard let self else { return false }
+          return self.generation == leaseGeneration && self.socket != nil
+        },
+        makeAttempt: { activeLease -> (requestId: String, payload: [String: Any]) in
+          (
+            requestId: UUID().uuidString,
+            payload: try await syncRelayReauthorizationPayload(deviceId: pairedDeviceId, lease: activeLease)
+          )
+        },
+        perform: { [weak self] attempt in
+          guard let self else { throw CancellationError() }
+          let raw = try await self.request(
+            type: "relay_reauthorize",
+            payload: attempt.payload,
+            requestId: attempt.requestId,
+            timeoutNanoseconds: 6_000_000_000,
+            timeoutMessage: "Relay authorization refresh timed out."
+          )
+          return try syncRelayReauthorizationLease(from: raw)
+        },
+        install: { _ in },
+        onAccountChanged: { [weak self] failure in
+          guard let self else { return }
+          machineConnectionLog.notice(
+            "fleet relay account changed machine=\(self.machineKey, privacy: .public) code=\(failure.code, privacy: .public)"
+          )
+        },
+        onGiveUp: { [weak self] error in
+          guard let self else { return }
+          machineConnectionLog.notice(
+            "fleet relay reauthorization gave up machine=\(self.machineKey, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+          )
+        }
+      )
+    }
+  }
+
   // MARK: - Roster
 
   private func subscribeRoster() {
@@ -678,6 +786,11 @@ final class MachineConnection {
 
   func unsubscribeChat(sessionId: String) {
     guard let scope = chatScopes.removeValue(forKey: sessionId) else { return }
+    chatStreamTraces[sessionId, default: ChatStreamTrace()].unsubscribes += 1
+    CrashReporting.breadcrumb("chat.stream", message: "fleet chat_unsubscribe", data: [
+      "machine": machineKey,
+      "session": sessionId,
+    ])
     chatLastSeq.removeValue(forKey: sessionId)
     snapshotWatchdogs.removeValue(forKey: sessionId)?.cancel()
     pendingSnapshotSessionIds.remove(sessionId)
@@ -714,7 +827,22 @@ final class MachineConnection {
     ) {
       payload[field] = value
     }
-    guard send(type: "chat_subscribe", requestId: nil, payload: payload) else { return false }
+    let sent = send(type: "chat_subscribe", requestId: nil, payload: payload)
+    var trace = chatStreamTraces[sessionId, default: ChatStreamTrace()]
+    trace.noteSubscribe(
+      sent: sent,
+      requestSnapshot: requestSnapshot,
+      resume: payload["sinceSequence"] != nil ? "sequence" : payload["sinceSeq"] != nil ? "seq" : "none"
+    )
+    chatStreamTraces[sessionId] = trace
+    CrashReporting.breadcrumb("chat.stream", message: "fleet chat_subscribe", data: [
+      "machine": machineKey,
+      "session": sessionId,
+      "sent": String(sent),
+      "requestSnapshot": String(requestSnapshot),
+      "resume": trace.lastSubscribeResume,
+    ])
+    guard sent else { return false }
     if requestSnapshot {
       pendingSnapshotSessionIds.insert(sessionId)
       stalledChatSessionIds.remove(sessionId)
@@ -752,18 +880,52 @@ final class MachineConnection {
   }
 
   private func handleChatSnapshot(_ payload: Any, generation frameGeneration: UInt64) async {
-    guard supportsChatStreaming,
-          let dict = payload as? [String: Any],
-          let sessionId = dict["sessionId"] as? String,
-          chatScopes[sessionId] != nil
+    guard let dict = payload as? [String: Any],
+          let sessionId = dict["sessionId"] as? String
     else { return }
+    let rawEventCount = (dict["events"] as? [Any])?.count ?? 0
+    guard supportsChatStreaming else {
+      noteSnapshotDropped(sessionId: sessionId, reason: "noChatStreaming", rawEventCount: rawEventCount)
+      return
+    }
+    guard chatScopes[sessionId] != nil else {
+      noteSnapshotDropped(sessionId: sessionId, reason: "notSubscribed", rawEventCount: rawEventCount)
+      return
+    }
     let hostSupportsChatLogV2 = supportsChatLogV2
     let decoded = await Task.detached(priority: .userInitiated) {
       chatThreadDecodeSnapshot(dict, hostSupportsChatLogV2: hostSupportsChatLogV2)
     }.value
-    guard let decoded, generation == frameGeneration, chatScopes[sessionId] != nil,
-          let key = chatThreadKey(sessionId: sessionId)
-    else { return }
+    guard let decoded else {
+      noteSnapshotDropped(sessionId: sessionId, reason: "decodeFailed", rawEventCount: rawEventCount)
+      return
+    }
+    guard generation == frameGeneration else {
+      noteSnapshotDropped(sessionId: sessionId, reason: "staleSocket", rawEventCount: rawEventCount)
+      return
+    }
+    guard chatScopes[sessionId] != nil, let key = chatThreadKey(sessionId: sessionId) else {
+      noteSnapshotDropped(sessionId: sessionId, reason: "unsubscribedDuringDecode", rawEventCount: rawEventCount)
+      return
+    }
+    var trace = chatStreamTraces[sessionId, default: ChatStreamTrace()]
+    trace.noteSnapshotApplied(
+      rawEventCount: rawEventCount,
+      decodedEventCount: decoded.events.count,
+      resumed: decoded.resumed,
+      gap: decoded.gap
+    )
+    chatStreamTraces[sessionId] = trace
+    CrashReporting.breadcrumb("chat.stream", message: "fleet chat_subscribe ack", data: [
+      "machine": machineKey,
+      "session": sessionId,
+      "rawEvents": String(rawEventCount),
+      "decodedEvents": String(decoded.events.count),
+      "resumed": String(decoded.resumed),
+      "resumeKind": decoded.resumeKind ?? "nil",
+      "gap": String(decoded.gap),
+      "truncated": String(decoded.truncated),
+    ])
     registry.routeSnapshot(decoded, key: key)
     pendingSnapshotSessionIds.remove(sessionId)
     snapshotWatchdogs.removeValue(forKey: sessionId)?.cancel()
@@ -776,19 +938,69 @@ final class MachineConnection {
   private func handleChatEvent(_ payload: Any, generation frameGeneration: UInt64) async {
     guard supportsChatStreaming,
           let dict = payload as? [String: Any],
-          let sessionId = dict["sessionId"] as? String,
-          chatScopes[sessionId] != nil
+          let sessionId = dict["sessionId"] as? String
     else { return }
+    guard chatScopes[sessionId] != nil else {
+      chatStreamTraces[sessionId]?.liveEventsDropped += 1
+      return
+    }
     let seq = (dict["seq"] as? NSNumber)?.intValue
-    if let seq, let lastSeq = chatLastSeq[sessionId], seq <= lastSeq { return }
+    if let seq, let lastSeq = chatLastSeq[sessionId], seq <= lastSeq {
+      chatStreamTraces[sessionId, default: ChatStreamTrace()].liveEventsDroppedAsOld += 1
+      return
+    }
     let decoded = await Task.detached(priority: .userInitiated) {
       chatThreadDecodeLiveEvent(dict)
     }.value
     guard let decoded, generation == frameGeneration, chatScopes[sessionId] != nil,
           let key = chatThreadKey(sessionId: sessionId)
-    else { return }
+    else {
+      chatStreamTraces[sessionId, default: ChatStreamTrace()].liveEventsDropped += 1
+      return
+    }
+    chatStreamTraces[sessionId, default: ChatStreamTrace()].noteLiveEvent()
     if let seq { chatLastSeq[sessionId] = seq }
     registry.routeLive(decoded, key: key)
+    // A move's state notices also update the chat's cached summary (its card
+    // and send gate), as they do for chats on the focused machine.
+    syncService?.applyCrossMachineHandoffNoticeIfNeeded(sessionId: sessionId, rawPayload: dict)
+  }
+
+  private func noteSnapshotDropped(sessionId: String, reason: String, rawEventCount: Int) {
+    chatStreamTraces[sessionId, default: ChatStreamTrace()].noteSnapshotDropped(reason: reason)
+    CrashReporting.breadcrumb("chat.stream", message: "fleet chat_subscribe ack dropped", data: [
+      "machine": machineKey,
+      "session": sessionId,
+      "reason": reason,
+      "rawEvents": String(rawEventCount),
+    ])
+  }
+
+  /// Everything this connection knows about one chat's stream, for the
+  /// empty-thread report. Names and counts only.
+  func chatStreamDiagnostics(sessionId: String) -> [String: String] {
+    var fields = (chatStreamTraces[sessionId] ?? ChatStreamTrace()).fields
+    fields["path"] = "fleet"
+    fields["connLive"] = String(isLive)
+    fields["connPhase"] = {
+      switch phase {
+      case .idle: return "idle"
+      case .connecting: return "connecting"
+      case .live: return "live"
+      case .offline: return "offline"
+      case .needsUpdate: return "needsUpdate"
+      case .needsAttention: return "needsAttention"
+      }
+    }()
+    fields["connRoute"] = liveRouteKind.map { String(describing: $0) } ?? "nil"
+    fields["connSocketCloses"] = String(socketCloseCount)
+    fields["hostChatStreaming"] = String(supportsChatStreaming)
+    fields["hostChatLogV2"] = String(supportsChatLogV2)
+    fields["subscribed"] = String(chatScopes[sessionId] != nil)
+    fields["snapshotPending"] = String(pendingSnapshotSessionIds.contains(sessionId))
+    fields["snapshotStalled"] = String(stalledChatSessionIds.contains(sessionId))
+    fields["legacyLastSeq"] = chatLastSeq[sessionId].map(String.init) ?? "nil"
+    return fields
   }
 
   /// One older page for a chat on this machine.

@@ -27,9 +27,12 @@ describe("isUsageLimitChatError", () => {
     expect(isUsageLimitChatError({ errorInfo: "rate-limit-exceeded" })).toBe(true);
   });
 
-  it("recognises the limit in the human message when no code is attached", () => {
-    expect(isUsageLimitChatError({ message: "You've hit your usage limit." })).toBe(true);
-    expect(isUsageLimitChatError({ message: "429 Rate limit reached for this model." })).toBe(true);
+  it.each([
+    "You've hit your usage limit.",
+    "429 Rate limit reached for this model.",
+    "You're out of usage. Switch to Auto, or ask your admin to increase your limit.",
+  ])("recognises the provider limit message %s without a code", (message) => {
+    expect(isUsageLimitChatError({ message })).toBe(true);
   });
 
   it("does not treat other failures as usage limits", () => {

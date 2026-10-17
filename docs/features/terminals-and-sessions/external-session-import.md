@@ -5,10 +5,13 @@ tools keep their own sessions on disk, or expose a provider-native session
 list. ADE's external-session import feature lets the user browse those sessions
 from the Work surface and continue one inside ADE.
 
-ADE imports sessions from 10 providers:
+ADE imports sessions from 11 providers:
 
-- Claude Code, Codex, Cursor `cursor-agent`, Factory Droid, OpenCode, and Pi.
-- The ACP providers: Qwen Code, Kimi Code, Grok, and GitHub Copilot CLI.
+- Claude Code, Codex, Cursor `cursor-agent`, Factory Droid, OpenCode, Pi, and
+  Muse Code.
+- The CLI stores of Qwen Code, Kimi Code, Grok, and GitHub Copilot CLI.
+  Copilot's chat runtime is an SDK provider; its CLI history is imported the
+  same way ([Copilot SDK provider](../chat/copilot-sdk-provider.md)).
 
 Every import has two choices:
 
@@ -535,8 +538,8 @@ Fork commands mostly reuse the same builder and provider-specific flags:
 - Grok fork appends `--fork-session` to `grok -r <id>`. The resume launch
   carries Grok's supervision environment, so the copy command puts those
   `NAME=value` pairs in front of the line.
-- Cursor, Kimi, and Copilot have no fork. The service refuses a fork import for
-  them.
+- Cursor, Kimi, and Copilot have no tracked-CLI fork (`cliCopy` is `none`). The
+  service refuses a fork import for them.
 
 OpenCode, Pi, Qwen, and Grok copies run in the source folder, because these
 CLIs key a session to the folder it ran in. The policy guard has already
@@ -600,9 +603,10 @@ runtime opens the pointer from the store that the CLI writes:
   take a new turn (`OpenCodeSessionInPersonalStoreError`).
 - Pi: `piSessionId`, opened by `SessionManager.list(cwd)` over the one Pi
   session store that chat and CLI share.
-- Copilot: `acpSessionId`, opened by `session/load` on `copilot --acp`, which
-  reads the same `~/.copilot/session-state`. ADE already holds the transcript,
-  so it suppresses the load replay.
+- Copilot: the SDK session id, seeded as `copilotSdkSessionId`, opened by
+  `resumeSession` through the Copilot SDK. The SDK reads the same
+  `~/.copilot/session-state`. ADE already holds the transcript, so the resume
+  does not replay it.
 
 The importer refuses a native continue when the session folder is not the lane
 root, and when the requested model is from another family. The model is the
@@ -1057,10 +1061,11 @@ Pi sessions live in the one native Pi session store that ADE chat and tracked
 Pi terminals also use. CLI continue and CLI copy (`pi --fork <id>`) run in the
 session's own folder. A chat continue seeds `piSessionId`.
 
-### ACP providers (Qwen, Kimi, Grok, Copilot)
+### CLI stores (Qwen, Kimi, Grok, Copilot)
 
-Each ACP CLI keeps sessions in its own store, and each discoverer reads that
-store directly. Each one leaves out three kinds of session: sessions that ADE
+Each of these CLIs keeps sessions in its own store, and each discoverer reads
+that store directly. Copilot's chat runtime is the SDK, but its CLI store is read
+the same way. Each one leaves out three kinds of session: sessions that ADE
 launched (they belong to ADE's chat list), subagent sessions, and sessions with
 no prompt.
 
@@ -1197,7 +1202,7 @@ Copilot 1.0.88 (2026-09-24), on hand-run sessions in the lane root:
 |---|---|
 | Copilot → CLI → Continue | Tracked terminal runs `copilot --resume=<id>`; the resumed CLI answered a question about its earlier turn. |
 | Copilot → ADE chat → Copy | Replay into a new Copilot chat; the chat answered from the copied history. |
-| Copilot → ADE chat → Continue | `acpSessionId` seeded; the same `events.jsonl` grew with the new turn; no replayed history in the chat. |
+| Copilot → ADE chat → Continue | Recorded on the retired ACP build: `acpSessionId` seeded; the same `events.jsonl` grew with the new turn; no replayed history in the chat. The SDK build seeds `copilotSdkSessionId` instead. |
 
 Bugs this found and fixed: every tracked Copilot launch passed
 `--no-alt-screen`, which Copilot 1.0.88 rejects (exit 1); a session on "auto"
@@ -1221,13 +1226,13 @@ startup output (a banner or the folder-trust prompt).
   payloads in lockstep. A server-only change will break mobile decoding or
   hide buttons; a UI-only change will show actions the runtime rejects (the
   host guard refuses them).
-- ACP chat continue is enabled for Copilot only. `PROVIDER_IMPORT_RULES` keeps
-  Qwen, Kimi, and Grok at `none` for chat continue (and their `importToChat` is
-  false) until a live run proves that the ACP runtime can load a session the
-  CLI created, through `session/resume` or `session/load`. To enable one, add
-  it to `NATIVE_CHAT_CONTINUE_PROVIDERS`, seed `acpSessionId` in
-  `importNativeContinueExternalChatSession`, and change the rule in both
-  policy tables (TypeScript and Swift).
+- Chat continue for Copilot opens the CLI session through the Copilot SDK, not
+  ACP. `PROVIDER_IMPORT_RULES` keeps Qwen, Kimi, and Grok at `none` for chat
+  continue (and their `importToChat` is false) until a live run proves that the
+  ACP runtime can load a session the CLI created, through `session/resume` or
+  `session/load`. To enable one, add it to `NATIVE_CHAT_CONTINUE_PROVIDERS`,
+  seed its provider pointer in `importNativeContinueExternalChatSession`, and
+  change the rule in both policy tables (TypeScript and Swift).
 - Kimi is unverified end to end. The discoverer, the event converter, and the
   PTY watcher follow the shipped `kimi` 0.39.1 bundle, not real session files.
   Check them against a real Kimi session.

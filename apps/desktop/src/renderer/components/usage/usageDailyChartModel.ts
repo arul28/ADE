@@ -261,6 +261,40 @@ export function resolveHighlightedSeriesId(
   return null;
 }
 
+/**
+ * Folds a long run of days into whole weeks so the curve stays readable.
+ *
+ * A year of daily points drawn across ~700px is a column of spikes: every
+ * weekend dip and busy Tuesday is its own needle, and the shape the reader
+ * wants — is this going up — drowns in it. Up to `maxDaily` days stay daily;
+ * past that, days are summed into buckets that are a whole number of weeks, so
+ * weekday rhythm cancels out instead of aliasing. Buckets are cut from the END
+ * of the range, so the last point is always the week that ends today and only
+ * the oldest bucket can be partial.
+ *
+ * `date` on a bucket is its first day; `span` is how many days it holds.
+ */
+export function bucketDayColumns(
+  columns: readonly UsageDayColumn[],
+  maxDaily = 62,
+  targetPoints = 60,
+): { columns: UsageDayColumn[]; span: number } {
+  if (columns.length <= maxDaily) return { columns: [...columns], span: 1 };
+  const span = 7 * Math.max(1, Math.ceil(columns.length / (7 * targetPoints)));
+  const buckets: UsageDayColumn[] = [];
+  for (let end = columns.length; end > 0; end -= span) {
+    const chunk = columns.slice(Math.max(0, end - span), end);
+    const values: Record<string, number> = {};
+    let total = 0;
+    for (const column of chunk) {
+      total += column.total;
+      for (const [id, value] of Object.entries(column.values)) values[id] = (values[id] ?? 0) + value;
+    }
+    buckets.push({ date: chunk[0]!.date, values, total });
+  }
+  return { columns: buckets.reverse(), span };
+}
+
 /** Value of one (possibly merged) series on one day. */
 export function seriesValue(column: UsageDayColumn, series: UsageChartSeries): number {
   if (!series.merged) return column.values[series.id] ?? 0;
@@ -460,7 +494,7 @@ export type UsageChartGeometry = {
   paths: UsageChartPaths[];
 };
 
-const PAD = { left: 46, right: 10, top: 14, bottom: 22 } as const;
+const PAD = { left: 44, right: 4, top: 10, bottom: 24 } as const;
 
 export function buildGeometry(
   columns: readonly UsageDayColumn[],
@@ -508,7 +542,7 @@ export function buildGeometry(
     return { id: entry.id, line, area };
   });
 
-  return { plot, xs, max, ticks: [0, max / 2, max], paths };
+  return { plot, xs, max, ticks: [0, max / 4, max / 2, (max * 3) / 4, max], paths };
 }
 
 // ---------------------------------------------------------------------------

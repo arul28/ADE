@@ -239,6 +239,16 @@ describe("chatSessionProjection", () => {
     expect(projected.steeringInput).toBe(true);
   });
 
+  it("reads a sent chat whose turn has not started yet as running from the acceptance", () => {
+    const projected = projectChatOntoSession(session(), chat({
+      status: "idle",
+      turnAcceptedAt: "2026-08-01T10:00:30.000Z",
+    }));
+
+    expect(projected.runtimeState).toBe("running");
+    expect(projected.currentTurnStartedAt).toBe("2026-08-01T10:00:30.000Z");
+  });
+
   it("projects model handoff history onto the Work row", () => {
     const projected = projectChatOntoSession(session(), chat({
       modelHandoffHistory: [{

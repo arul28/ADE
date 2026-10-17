@@ -36,6 +36,13 @@ const HOST_APPLE_COMMANDS = join(
   "../../../../../../ade-cli/src/services/sync/appleRemoteCommands.ts",
 );
 
+// `automations.webhook*` is registered from the `WEBHOOK_REMOTE_COMMAND_ACTIONS`
+// table, the same way.
+const HOST_WEBHOOK_COMMANDS = join(
+  __dirname,
+  "../../../../../../ade-cli/src/services/sync/webhookRemoteCommands.ts",
+);
+
 /**
  * Actions the adapter calls that the host deliberately does not serve. Adding
  * to this list is a decision, not a formality: state why the host cannot or
@@ -116,6 +123,12 @@ function actionsRegisteredByHost(): Set<string> {
   for (const match of synthetic.matchAll(/action:\s*"([\w.]+)"/g)) registered.add(match[1]!);
   const appleCommands = readFileSync(HOST_APPLE_COMMANDS, "utf8");
   for (const match of appleCommands.matchAll(/action:\s*"([\w.]+)"/g)) registered.add(match[1]!);
+  const webhookCommands = readFileSync(HOST_WEBHOOK_COMMANDS, "utf8");
+  const webhookTable = webhookCommands.slice(
+    webhookCommands.indexOf("WEBHOOK_REMOTE_COMMAND_ACTIONS = ["),
+    webhookCommands.indexOf("] as const"),
+  );
+  for (const match of webhookTable.matchAll(/"([\w.]+)"/g)) registered.add(match[1]!);
   return registered;
 }
 

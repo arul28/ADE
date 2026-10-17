@@ -2,12 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import { SCENE_CONTENT_SECURITY_POLICY } from "../../../shared/chatScene";
 import { createSceneDocumentStore, parseSceneRequestId } from "./sceneDocumentStore";
-import { clampSceneCaptureRect, decodeScenePngDataUrl } from "./sceneSnapshot";
+import { clampSceneCaptureRect, decodeScenePngDataUrl, resolveSceneCaptureRect } from "./sceneSnapshot";
 
 describe("scene document store", () => {
   it("serves a prepared document with the scene policy headers", () => {
     const store = createSceneDocumentStore();
-    const prepared = store.put("<!doctype html><p>hello</p>");
+    const prepared = store.put("<!doctype html><p>hello</p>", SCENE_CONTENT_SECURITY_POLICY);
 
     expect(prepared.url).toBe(`ade-scene://view/${prepared.id}`);
 
@@ -21,7 +21,7 @@ describe("scene document store", () => {
 
   it("404s an unknown id, a foreign scheme, and a URL with no id", () => {
     const store = createSceneDocumentStore();
-    store.put("<p>known</p>");
+    store.put("<p>known</p>", SCENE_CONTENT_SECURITY_POLICY);
 
     for (const url of [
       "ade-scene://view/does-not-exist",
@@ -43,21 +43,51 @@ describe("scene document store", () => {
     expect(store.respond("ade-scene:///etc/passwd").status).toBe(404);
   });
 
-  it("evicts the oldest document once the cap is reached", () => {
+  /**
+   * The renderer reuses one prepared URL for every remount of a scene, so a
+   * read is a load. Eviction has to take the documents nobody has loaded
+   * lately, not the ones still on screen: a document that was just read must
+   * outlive the one prepared beside it and never read.
+   */
+  it("evicts by read order once the cap is reached", () => {
     let counter = 0;
     const store = createSceneDocumentStore({ capacity: 3, makeId: () => `id-${counter++}` });
 
-    const first = store.put("<p>1</p>");
-    const second = store.put("<p>2</p>");
-    store.put("<p>3</p>");
+    const first = store.put("<p>1</p>", SCENE_CONTENT_SECURITY_POLICY);
+    const second = store.put("<p>2</p>", SCENE_CONTENT_SECURITY_POLICY);
+    const third = store.put("<p>3</p>", SCENE_CONTENT_SECURITY_POLICY);
     expect(store.size()).toBe(3);
     expect(store.respond(first.url).status).toBe(200);
 
-    const fourth = store.put("<p>4</p>");
+    const fourth = store.put("<p>4</p>", SCENE_CONTENT_SECURITY_POLICY);
     expect(store.size()).toBe(3);
+    // `first` was loaded; `second` was never read and is the oldest.
+    expect(store.respond(first.url).status).toBe(200);
+    expect(store.respond(second.url).status).toBe(404);
+    expect(store.respond(third.url).status).toBe(200);
+    expect(store.respond(fourth.url).status).toBe(200);
+  });
+
+  it("evicts the oldest documents past the size budget, but always keeps the newest", () => {
+    let counter = 0;
+    const store = createSceneDocumentStore({ capacity: 64, budgetChars: 100, makeId: () => `big-${counter++}` });
+
+    const first = store.put("a".repeat(40), SCENE_CONTENT_SECURITY_POLICY);
+    const second = store.put("b".repeat(40), SCENE_CONTENT_SECURITY_POLICY);
+    expect(store.size()).toBe(2);
+
+    // 120 characters held: the oldest goes, count cap nowhere near.
+    const third = store.put("c".repeat(40), SCENE_CONTENT_SECURITY_POLICY);
+    expect(store.size()).toBe(2);
     expect(store.respond(first.url).status).toBe(404);
     expect(store.respond(second.url).status).toBe(200);
-    expect(store.respond(fourth.url).status).toBe(200);
+    expect(store.respond(third.url).status).toBe(200);
+
+    // One document over the whole budget still serves; it is the one a frame is loading.
+    const huge = store.put("d".repeat(500), SCENE_CONTENT_SECURITY_POLICY);
+    expect(store.size()).toBe(1);
+    expect(store.respond(huge.url).body).toBe("d".repeat(500));
+    expect(store.respond(third.url).status).toBe(404);
   });
 
   it("accepts both the authority and rooted URL spellings", () => {
@@ -71,6 +101,26 @@ describe("scene document store", () => {
 /* --- The snapshot half: what a freeze may capture, and what may be decoded. --- */
 
 const PNG_HEADER = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+/**
+ * The renderer measures in CSS px and `capturePage` crops in DIP; they differ
+ * by the page zoom. A rect that pokes out of the page is refused, never cut to
+ * a sliver that would be kept as if it were the whole scene.
+ */
+describe("resolveSceneCaptureRect", () => {
+  const content = { width: 1200, height: 800 };
+  it.each([
+    ["at 100% zoom", { x: 10, y: 20, width: 300, height: 200 }, 1, { x: 10, y: 20, width: 300, height: 200 }],
+    ["at 125% zoom, scaled into DIP", { x: 100, y: 40, width: 400, height: 200 }, 1.25, { x: 125, y: 50, width: 500, height: 250 }],
+    ["at 80% zoom", { x: 100, y: 100, width: 500, height: 250 }, 0.8, { x: 80, y: 80, width: 400, height: 200 }],
+    ["one pixel of rounding past the edge", { x: 0, y: 0, width: 1201, height: 800 }, 1, { x: 0, y: 0, width: 1200, height: 800 }],
+    ["a bad zoom factor, read as 100%", { x: 10, y: 20, width: 300, height: 200 }, Number.NaN, { x: 10, y: 20, width: 300, height: 200 }],
+    ["a rect scrolled half off the top", { x: 0, y: -100, width: 400, height: 300 }, 1, null],
+    ["a rect past the bottom once zoom is applied", { x: 0, y: 500, width: 400, height: 200 }, 1.5, null],
+  ])("%s", (_label, rect, zoom, expected) => {
+    expect(resolveSceneCaptureRect(rect, content, zoom)).toEqual(expected);
+  });
+});
 
 describe("clampSceneCaptureRect", () => {
   const content = { width: 1200, height: 800 };

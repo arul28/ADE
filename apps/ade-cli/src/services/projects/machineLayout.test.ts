@@ -3,7 +3,15 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { resolveMachineAdeLayout } from "./machineLayout";
+import { isMachineAdeHome, resolveMachineAdeLayout } from "./machineLayout";
+
+describe("isMachineAdeHome", () => {
+  it("accepts only the default machine state root", () => {
+    const machineHome = path.join(os.homedir(), ".ade");
+    expect(isMachineAdeHome(machineHome, machineHome)).toBe(true);
+    expect(isMachineAdeHome(path.join(os.tmpdir(), "ade-isolated-home"), machineHome)).toBe(false);
+  });
+});
 
 describe("resolveMachineAdeLayout", () => {
   const arulEnv = {

@@ -36,7 +36,7 @@ final class ActivityDrawerModelTests: XCTestCase {
         XCTAssertEqual(model.inbox.map(\.id), ["pr-ci"])
     }
 
-    func testSessionsAreGroupedByStateInPriorityOrder() {
+    func testSessionsAreGroupedByBoardColumnWithDoneFolded() {
         let model = ActivityDrawerModel(defaults: defaults)
         let now = Date()
 
@@ -44,15 +44,33 @@ final class ActivityDrawerModelTests: XCTestCase {
             item(id: "done", phase: .completed, now: now),
             item(id: "working", phase: .running, now: now),
             item(id: "needs", phase: .needsYou, now: now),
+            item(id: "failed", phase: .failed, now: now),
+            item(id: "ci", phase: .running, now: now, boardColumn: "waiting", waitingReason: "ci"),
         ]))
 
-        // `done` is a resting band, so it is behind the summary line until the
-        // reader asks for it — the sheet leads with live work.
-        XCTAssertEqual(model.sessionSections.map(\.group), [.needsYou, .working])
-        XCTAssertEqual(model.restingSummary?.map(\.group), [.done])
-        model.restingExpanded = true
-        XCTAssertEqual(model.sessionSections.map(\.group), [.needsYou, .working, .done])
-        XCTAssertEqual(model.sessionSections.map { $0.rows.map(\.id) }, [["needs"], ["working"], ["done"]])
+        // Board order, a failure under Needs you, and Done behind one folded
+        // row until the reader opens it.
+        XCTAssertEqual(model.sessionSections.map(\.column), [.needsYou, .working, .waiting])
+        XCTAssertEqual(Set(model.sessionSections[0].rows.map(\.id)), ["needs", "failed"])
+        XCTAssertEqual(model.collapsedDoneCount, 1)
+        XCTAssertEqual(model.sessionSections[2].rows.first?.phaseLabel, "CI running")
+        XCTAssertEqual(
+            model.columnCounts,
+            [.needsYou: 2, .working: 1, .waiting: 1, .done: 1]
+        )
+
+        model.doneExpanded = true
+        XCTAssertEqual(model.sessionSections.map(\.column), [.needsYou, .working, .waiting, .done])
+        XCTAssertNil(model.collapsedDoneCount)
+
+        // A filter shows only its column, Done included, and the counts the
+        // chips read stay unfiltered so the filter can be turned off again.
+        model.doneExpanded = false
+        model.stateFilter = .done
+        XCTAssertEqual(model.sessionSections.map(\.column), [.done])
+        XCTAssertEqual(model.sessionSections.first?.rows.map(\.id), ["done"])
+        XCTAssertNil(model.collapsedDoneCount)
+        XCTAssertEqual(model.columnCounts[.working], 1)
     }
 
     func testFinishedButUnseenAgentRowsAlsoLandInTheInbox() {
@@ -68,20 +86,20 @@ final class ActivityDrawerModelTests: XCTestCase {
         XCTAssertEqual(Set(model.sessions.map(\.id)), ["done-unseen", "done-seen"])
     }
 
-    func testIdleTierNeedsYouNeverReachesTheNeedsYouSection() {
+    func testIdleTierRowsRestInDoneAndNeverBadgeTheBell() {
         let model = ActivityDrawerModel(defaults: defaults)
         let now = Date()
 
         model.rebuild(from: snapshot(items: [
-            item(id: "roster-row", phase: .needsYou, now: now, activityTier: "idle"),
+            item(id: "roster-row", phase: .stale, now: now, activityTier: "idle"),
+            item(id: "roster-question", phase: .needsYou, now: now, activityTier: "idle"),
         ]))
 
-        // Files under `idle`, not `needsYou` and not `done`: a roster row is
-        // quiet history whatever phase it froze at, and `done` is reserved for
-        // work that actually finished.
-        XCTAssertTrue(model.sessionSections.filter { $0.group == .needsYou }.isEmpty)
-        model.restingExpanded = true
-        XCTAssertEqual(model.sessionSections.map(\.group), [.idle])
+        // Quiet roster history rests in Done. A raised hand stays the user's
+        // move on every surface (the shared board rule), but an idle-tier row
+        // is never news, so it does not badge the bell.
+        XCTAssertEqual(model.sessionSections.map(\.column), [.needsYou])
+        XCTAssertEqual(model.collapsedDoneCount, 1)
         XCTAssertEqual(model.unreadCount, 0, "a roster-derived row must never badge the bell")
     }
 
@@ -224,7 +242,7 @@ final class ActivityDrawerModelTests: XCTestCase {
             item(id: "offline", phase: .running, now: now, machine: offline),
         ]))
 
-        let entries = model.sessionSections.first { $0.group == .working }?.entries ?? []
+        let entries = model.sessionSections.first { $0.column == .working }?.entries ?? []
         XCTAssertEqual(entries.map(\.id), ["online", "offline:laptop", "offline"])
         if case .offlineMachine(_, let name, let lastSeen) = entries[1] {
             XCTAssertEqual(name, "MacBook")
@@ -519,6 +537,8 @@ final class ActivityDrawerModelTests: XCTestCase {
         phase: AccountAttentionPhase,
         now: Date,
         activityTier: String? = nil,
+        boardColumn: String? = nil,
+        waitingReason: String? = nil,
         machine: AccountAttentionMachine? = nil,
         seenAt: Date? = nil,
         dismissedAt: Date? = nil,
@@ -532,6 +552,8 @@ final class ActivityDrawerModelTests: XCTestCase {
             eventKind: .agentRunning,
             phase: phase,
             activityTier: activityTier,
+            boardColumn: boardColumn,
+            waitingReason: waitingReason,
             machine: machine ?? AccountAttentionMachine(
                 machineKey: "studio",
                 name: "Studio Mac",

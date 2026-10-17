@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 /**
  * Build the Windows half of the global capture helper.
  *
- * Skips cleanly off Windows for exactly the reason `build-attention-notch.mjs`
+ * Skips cleanly off Windows for exactly the reason `build-capture-helper.mjs`
  * skips off macOS: the source is Win32 C++ against the Windows SDK and cannot
  * be cross-compiled from a Mac, so a `dist:mac` run on a developer machine must
  * not fail because the other platform's helper is missing. What ships is

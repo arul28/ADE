@@ -16,7 +16,9 @@ struct WorkFiltersSection: View {
   @Binding var organization: WorkSessionOrganization
   /// By-lane only: fold lanes with nothing waiting on you into a Working shelf.
   var foldBusyLanes: Binding<Bool>? = nil
-  @Binding var filterOpen: Bool
+  let filterOpen: Bool
+  /// Status, lane and machine filters applied (`workActiveFilterCount`).
+  let activeFilterCount: Int
   /// Serialized machine ids (`workSerializeMachineFilter`). Empty = all.
   var machineFilter: Binding<String> = .constant("")
   var machineOptions: [WorkMachineFilterOption] = []
@@ -35,12 +37,6 @@ struct WorkFiltersSection: View {
     return machineOptions + stale
   }
 
-  private var activeFilterCount: Int {
-    (selectedStatus != .all ? 1 : 0)
-      + (selectedLaneId != "all" ? 1 : 0)
-      + selectedMachines.count
-  }
-
   private var hasActiveFilters: Bool {
     activeFilterCount > 0
       || !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -48,147 +44,193 @@ struct WorkFiltersSection: View {
 
   private var selectedLaneName: String {
     guard selectedLaneId != "all" else { return "All lanes" }
-    return lanes.first(where: { $0.id == selectedLaneId })?.name ?? "All lanes"
+    return lanes.first(where: { $0.id == selectedLaneId }).map(laneMenuTitle) ?? "All lanes"
+  }
+
+  /// Two machines' lanes can share a name ("main"), so a lane from another
+  /// machine names it in the picker entry (never in a title).
+  private func laneMenuTitle(_ lane: LaneSummary) -> String {
+    guard let machine = workRemoteLaneMachineName(lane.id, options: machineOptions) else { return lane.name }
+    return "\(lane.name) — \(machine)"
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      if hasActiveFilters && !filterOpen {
-        HStack(spacing: 6) {
-          Spacer(minLength: 0)
-          clearButton
-        }
+    if filterOpen {
+      panel
+    } else if hasActiveFilters {
+      HStack(spacing: 6) {
+        Spacer(minLength: 0)
+        clearButton
       }
+    }
+  }
 
-      if filterOpen {
-        VStack(alignment: .leading, spacing: 12) {
-          filterRow("Group") {
-            Picker("Group", selection: $organization.animation(.snappy(duration: 0.18))) {
+  /// Desktop's panel (`WorkFilterPanel.tsx`): two short sections, a label on
+  /// the left and one menu button on the right of every row. "View" never
+  /// hides a chat; "Show only" does. Colour stays out of the panel.
+  private var panel: some View {
+    VStack(alignment: .leading, spacing: 16) {
+      VStack(alignment: .leading, spacing: 8) {
+        sectionLabel("View")
+        filterRow("Group by") {
+          menuButton(organization.title, active: false) {
+            Picker("Group by", selection: $organization.animation(.snappy(duration: 0.18))) {
               ForEach(WorkSessionOrganization.allCases) { option in
                 Text(option.title).tag(option)
               }
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
           }
-
-          if organization == .byLane, let foldBusyLanes {
-            filterRow("Focus") {
-              WorkFilterChip(
-                title: "Fold busy lanes",
-                selected: foldBusyLanes.wrappedValue,
-                tint: ADEColor.info,
-                systemImage: "rectangle.compress.vertical"
-              ) {
-                withAnimation(.snappy(duration: 0.18)) {
-                  foldBusyLanes.wrappedValue.toggle()
-                }
-              }
-              .accessibilityHint("Lanes with nothing waiting on you fold into a Working section until something needs you or finishes.")
+        }
+        if organization == .byLane, let foldBusyLanes {
+          filterRow("Focus") {
+            checkRow("Fold busy lanes", checked: foldBusyLanes.wrappedValue) {
+              withAnimation(.snappy(duration: 0.18)) { foldBusyLanes.wrappedValue.toggle() }
             }
+            .accessibilityHint("Lanes with nothing waiting on you fold into a Working section until something needs you or finishes.")
           }
+        }
+      }
 
-          Rectangle()
-            .fill(ADEColor.glassBorder)
-            .frame(height: 0.5)
-            .padding(.horizontal, -12)
-
-          filterRow("Status") {
-            ScrollView(.horizontal, showsIndicators: false) {
-              HStack(spacing: 6) {
-                ForEach(WorkSessionStatusFilter.allCases) { status in
-                  WorkFilterChip(
-                    title: status.title,
-                    selected: selectedStatus == status,
-                    tint: statusFilterTint(status),
-                    dot: status == .all ? nil : statusFilterTint(status)
-                  ) {
-                    withAnimation(.snappy(duration: 0.18)) {
-                      selectedStatus = status
-                    }
-                  }
-                }
-              }
-              .padding(.vertical, 1)
+      VStack(alignment: .leading, spacing: 8) {
+        HStack {
+          sectionLabel("Show only")
+          Spacer(minLength: 0)
+          if activeFilterCount > 0 {
+            Button("Reset") {
+              withAnimation(.snappy(duration: 0.18)) { onClear() }
             }
-            .workChipRowFade()
+            .font(.caption2)
+            .foregroundStyle(ADEColor.textSecondary)
+            .buttonStyle(.plain)
           }
-
-          if visibleMachineOptions.count > 1 {
-            filterRow("Machine") {
-              ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
-                  WorkFilterChip(title: "All", selected: selectedMachines.isEmpty, tint: ADEColor.accent) {
-                    withAnimation(.snappy(duration: 0.18)) { machineFilter.wrappedValue = "" }
-                  }
-                  ForEach(visibleMachineOptions) { machine in
-                    WorkFilterChip(
-                      title: machine.name,
-                      selected: selectedMachines.contains(machine.id),
-                      tint: ADEColor.accent,
-                      systemImage: "desktopcomputer",
-                      dot: machine.isLive ? ADEColor.success : ADEColor.textMuted.opacity(0.5)
-                    ) {
-                      withAnimation(.snappy(duration: 0.18)) { toggleMachine(machine.id) }
-                    }
-                    .accessibilityLabel(machine.isLive ? machine.name : "\(machine.name), offline")
-                  }
-                }
-                .padding(.vertical, 1)
+        }
+        filterRow("Status") {
+          menuButton(selectedStatus == .all ? "Any" : selectedStatus.title, active: selectedStatus != .all) {
+            Picker("Status", selection: $selectedStatus.animation(.snappy(duration: 0.18))) {
+              ForEach(WorkSessionStatusFilter.allCases) { status in
+                Text(status == .all ? "Any" : status.title).tag(status)
               }
-              .workChipRowFade()
-            }
-          }
-
-          filterRow("Lane") {
-            Menu {
-              Picker("Lane", selection: $selectedLaneId) {
-                Text("All lanes").tag("all")
-                ForEach(lanes) { lane in
-                  Text(lane.name).tag(lane.id)
-                }
-              }
-            } label: {
-              HStack(spacing: 6) {
-                Image(systemName: "arrow.triangle.branch")
-                  .font(.system(size: 11, weight: .semibold))
-                  .foregroundStyle(ADEColor.textMuted)
-                Text(selectedLaneName)
-                  .font(.caption.weight(.semibold))
-                  .foregroundStyle(ADEColor.textPrimary)
-                  .lineLimit(1)
-                  .truncationMode(.tail)
-                Spacer(minLength: 0)
-                Image(systemName: "chevron.up.chevron.down")
-                  .font(.system(size: 9, weight: .semibold))
-                  .foregroundStyle(ADEColor.textMuted)
-              }
-              .padding(.horizontal, 10)
-              .frame(height: 30)
-              .frame(maxWidth: .infinity)
-              .background(ADEColor.surfaceBackground.opacity(0.6), in: Capsule(style: .continuous))
-              .overlay(Capsule(style: .continuous).stroke(ADEColor.glassBorder, lineWidth: 0.6))
-              .contentShape(Capsule(style: .continuous))
-            }
-            .accessibilityLabel("Lane filter, \(selectedLaneName)")
-          }
-
-          if hasActiveFilters {
-            HStack {
-              Spacer(minLength: 0)
-              clearButton
             }
           }
         }
-        .padding(12)
-        .background(ADEColor.composerBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(
-          RoundedRectangle(cornerRadius: 14, style: .continuous)
-            .stroke(ADEColor.glassBorder, lineWidth: 0.5)
-        )
-        .transition(.move(edge: .top).combined(with: .opacity))
+        if visibleMachineOptions.count > 1 {
+          filterRow("Machine") {
+            menuButton(machineSummary, active: !selectedMachines.isEmpty) {
+              ForEach(visibleMachineOptions) { machine in
+                Button {
+                  withAnimation(.snappy(duration: 0.18)) { toggleMachine(machine.id) }
+                } label: {
+                  if selectedMachines.contains(machine.id) {
+                    Label(machine.isLive ? machine.name : "\(machine.name) (offline)", systemImage: "checkmark")
+                  } else {
+                    Text(machine.isLive ? machine.name : "\(machine.name) (offline)")
+                  }
+                }
+              }
+              if !selectedMachines.isEmpty {
+                Divider()
+                Button("Show all") {
+                  withAnimation(.snappy(duration: 0.18)) { machineFilter.wrappedValue = "" }
+                }
+              }
+            }
+          }
+        }
+        filterRow("Lane") {
+          menuButton(selectedLaneName, active: selectedLaneId != "all") {
+            Picker("Lane", selection: $selectedLaneId) {
+              Text("All lanes").tag("all")
+              ForEach(lanes) { lane in
+                Text(laneMenuTitle(lane)).tag(lane.id)
+              }
+            }
+          }
+          .accessibilityLabel("Lane filter, \(selectedLaneName)")
+        }
       }
     }
+    .padding(14)
+    .background(ADEColor.raisedBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 16, style: .continuous)
+        .stroke(ADEColor.glassBorder, lineWidth: 0.5)
+    )
+    .shadow(color: .black.opacity(0.14), radius: 20, y: 8)
+  }
+
+  private var machineSummary: String {
+    let picked = visibleMachineOptions.filter { selectedMachines.contains($0.id) }
+    if picked.isEmpty { return "Any" }
+    if picked.count <= 2 { return picked.map(\.name).joined(separator: ", ") }
+    return "\(picked.count) selected"
+  }
+
+  private func sectionLabel(_ text: String) -> some View {
+    Text(text.uppercased())
+      .font(.system(size: 10, weight: .semibold))
+      .tracking(0.8)
+      .foregroundStyle(ADEColor.textMuted)
+  }
+
+  /// One control shape for every setting: the value, then an up-down caret.
+  /// An active filter's button wears a faint accent edge, like desktop.
+  private func menuButton<Content: View>(
+    _ value: String,
+    active: Bool,
+    @ViewBuilder content: () -> Content
+  ) -> some View {
+    Menu {
+      content()
+    } label: {
+      HStack(spacing: 6) {
+        Text(value)
+          .font(.footnote)
+          .foregroundStyle(value == "Any" ? ADEColor.textSecondary : ADEColor.textPrimary)
+          .lineLimit(1)
+          .truncationMode(.tail)
+        Spacer(minLength: 0)
+        Image(systemName: "chevron.up.chevron.down")
+          .font(.system(size: 9, weight: .semibold))
+          .foregroundStyle(ADEColor.textMuted)
+      }
+      .padding(.horizontal, 10)
+      .frame(height: 32)
+      .frame(maxWidth: .infinity)
+      .adeKitPill(
+        in: RoundedRectangle(cornerRadius: 8, style: .continuous),
+        edge: active ? ADEColor.accent.opacity(0.4) : ADEKit.edge
+      )
+    }
+  }
+
+  /// A yes/no setting as a small checkbox row.
+  private func checkRow(_ title: String, checked: Bool, action: @escaping () -> Void) -> some View {
+    Button(action: action) {
+      HStack(spacing: 8) {
+        RoundedRectangle(cornerRadius: 4, style: .continuous)
+          .fill(checked ? ADEColor.accent : Color.clear)
+          .overlay(
+            RoundedRectangle(cornerRadius: 4, style: .continuous)
+              .stroke(checked ? ADEColor.accent : ADEColor.textMuted.opacity(0.5), lineWidth: 1)
+          )
+          .overlay {
+            if checked {
+              Image(systemName: "checkmark")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(.white)
+            }
+          }
+          .frame(width: 16, height: 16)
+        Text(title)
+          .font(.footnote)
+          .foregroundStyle(ADEColor.textPrimary)
+        Spacer(minLength: 0)
+      }
+      .frame(minHeight: 32)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .accessibilityAddTraits(checked ? .isSelected : [])
   }
 
   private var clearButton: some View {
@@ -212,9 +254,9 @@ struct WorkFiltersSection: View {
   private func filterRow<Content: View>(_ label: String, @ViewBuilder content: () -> Content) -> some View {
     HStack(alignment: .center, spacing: 8) {
       Text(label)
-        .font(.caption.weight(.medium))
-        .foregroundStyle(ADEColor.textMuted)
-        .frame(width: 58, alignment: .leading)
+        .font(.caption)
+        .foregroundStyle(ADEColor.textSecondary)
+        .frame(width: 64, alignment: .leading)
       content()
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -258,89 +300,6 @@ private extension View {
         startPoint: .leading,
         endPoint: .trailing
       )
-    )
-  }
-}
-
-struct WorkFilterChip: View {
-  let title: String
-  let selected: Bool
-  let tint: Color
-  var systemImage: String? = nil
-  /// Small leading status dot (or a machine's online dot on its icon).
-  var dot: Color? = nil
-  let action: () -> Void
-
-  var body: some View {
-    Button(action: action) {
-      HStack(spacing: 5) {
-        if let systemImage {
-          Image(systemName: systemImage)
-            .font(.system(size: 10, weight: .semibold))
-            .overlay(alignment: .bottomTrailing) {
-              if let dot {
-                Circle().fill(dot).frame(width: 5, height: 5).offset(x: 2, y: 1)
-              }
-            }
-        } else if let dot {
-          Circle().fill(dot).frame(width: 6, height: 6)
-        }
-        Text(title)
-          .lineLimit(1)
-      }
-      .font(.caption.weight(.semibold))
-      .foregroundStyle(selected ? ADEColor.textPrimary : ADEColor.textSecondary)
-      .padding(.horizontal, 10)
-      .frame(height: 28)
-      .background(
-        selected ? tint.opacity(0.16) : ADEColor.surfaceBackground.opacity(0.5),
-        in: Capsule(style: .continuous)
-      )
-      .overlay(
-        Capsule(style: .continuous)
-          .stroke(selected ? tint.opacity(0.45) : ADEColor.glassBorder, lineWidth: 0.6)
-      )
-      .contentShape(Capsule(style: .continuous))
-    }
-    .buttonStyle(.plain)
-    .accessibilityAddTraits(selected ? .isSelected : [])
-  }
-}
-
-struct WorkFilterMenuLabel: View {
-  let icon: String
-  let title: String
-  let value: String
-
-  var body: some View {
-    HStack(spacing: 7) {
-      Image(systemName: icon)
-        .font(.system(size: 11, weight: .semibold))
-        .foregroundStyle(ADEColor.textMuted)
-      VStack(alignment: .leading, spacing: 1) {
-        Text(title)
-          .font(.caption2.weight(.semibold))
-          .foregroundStyle(ADEColor.textMuted)
-        Text(value)
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .lineLimit(1)
-          // Tail, never middle. Middle truncation eats the distinguishing middle
-          // of a name and leaves two fragments that read as one mangled word.
-          .truncationMode(.tail)
-      }
-      Spacer(minLength: 0)
-      Image(systemName: "chevron.up.chevron.down")
-        .font(.system(size: 9, weight: .semibold))
-        .foregroundStyle(ADEColor.textMuted)
-    }
-    .padding(.horizontal, 10)
-    .padding(.vertical, 8)
-    .frame(maxWidth: .infinity)
-    .background(ADEColor.surfaceBackground.opacity(0.78), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
-        .stroke(ADEColor.glassBorder, lineWidth: 0.5)
     )
   }
 }
@@ -403,10 +362,33 @@ struct WorkSidebarSectionHeader: View {
 
           sectionIcon
 
-          Text(group.isOrphaned ? "Orphaned sessions: \(group.label)" : group.label)
-            .font(isQuietRow ? .caption2.weight(.medium) : .caption.weight(.semibold))
-            .foregroundStyle(quietAwareLabelColor)
-            .lineLimit(1)
+          if group.isShelf, group.id != workWorkingSectionId {
+            // Snoozed and Settled: desktop's quiet shelf label, grey caps.
+            Text(group.label.uppercased())
+              .font(.system(size: 10, weight: .semibold))
+              .tracking(0.8)
+              .foregroundStyle(ADEColor.textMuted)
+              .lineLimit(1)
+          } else if group.id == workWorkingSectionId {
+            // Working keeps its colour on the label, then a hairline rule.
+            Text(group.label)
+              .font(.caption.weight(.medium))
+              .foregroundStyle(ADEColor.info)
+              .lineLimit(1)
+            Rectangle()
+              .fill(ADEColor.textMuted.opacity(0.12))
+              .frame(height: 1)
+              .frame(maxWidth: .infinity)
+              .accessibilityHidden(true)
+          } else {
+            Text(group.isOrphaned ? "Orphaned sessions: \(group.label)" : group.label)
+              .font(isQuietRow ? .caption2.weight(.medium) : .caption.weight(.semibold))
+              .foregroundStyle(quietAwareLabelColor)
+              .lineLimit(1)
+            if let laneId = group.laneId, isWorkRemoteLaneId(laneId) {
+              WorkRemoteLaneGlyph()
+            }
+          }
 
           // Beside the name, not in the trailing cluster: there it sat next to
           // the amber "uncommitted changes" dot and read as the same fact.
@@ -583,15 +565,23 @@ struct WorkSidebarSectionHeader: View {
         .font(.caption)
         .foregroundStyle(ADEColor.warning)
         .frame(width: 12, height: 12)
+    // The three shelves wear desktop's marks (`SessionListPane.tsx`): a
+    // dashed circle for Working, a moon for Snoozed, a hollow ring for Settled.
+    // Snoozed and Settled differ by shape, never by colour.
+    case .working:
+      Image(systemName: "circle.dashed")
+        .font(.system(size: 11, weight: .bold))
+        .foregroundStyle(ADEColor.info)
+        .frame(width: 12, height: 12)
     case .snoozed:
-      Image(systemName: "moon.zzz.fill")
-        .font(.system(size: 10, weight: .semibold))
-        .foregroundStyle(group.tint)
+      Image(systemName: "moon.fill")
+        .font(.system(size: 9, weight: .semibold))
+        .foregroundStyle(ADEColor.textMuted.opacity(0.7))
         .frame(width: 12, height: 12)
     case .settled:
-      Image(systemName: "checkmark.circle")
-        .font(.system(size: 10, weight: .semibold))
-        .foregroundStyle(group.tint)
+      Circle()
+        .strokeBorder(ADEColor.textMuted.opacity(0.7), lineWidth: 1)
+        .frame(width: 8, height: 8)
         .frame(width: 12, height: 12)
     case .none:
       Color.clear.frame(width: 0, height: 0)
@@ -734,6 +724,7 @@ struct WorkSessionListRow: View {
   /// True when no lane header sits above this row — the singleton form, where
   /// the row carries the lane identity itself.
   var showsLaneIdentity: Bool = true
+  var waitingOnSubagent: Bool = false
   var isLaneDeleting = false
   @Binding var selectedSessionId: String?
   let isSelecting: Bool
@@ -780,15 +771,32 @@ struct WorkSessionListRow: View {
   /// Deletes a CLI/shell session (running or stopped). Chats keep `onDelete`;
   /// the two go through different host commands and different confirmations.
   var onDeleteSession: (TerminalSessionSummary) -> Void = { _ in }
-  /// Opens this session in the hosted web client. Purely local — it builds a URL
-  /// and hands it to the system, so it needs no host command and no gate.
-  var onOpenInWeb: (TerminalSessionSummary) -> Void = { _ in }
   /// Lane-scoped actions for the `Lane ▸` submenu. Nil (the default) renders no
   /// submenu at all, which is also what a row with no resolvable lane gets.
   var laneMenu: WorkSessionLaneMenuActions? = nil
   /// The host advertises `chat.regenerateSessionMetadata`.
   var generateNamesAvailable: Bool = false
   var onGenerateNames: (TerminalSessionSummary, [String]) -> Void = { _, _ in }
+  /// The host advertises `chat.updateSession` (desktop "Set tag…").
+  var tagAvailable: Bool = false
+  var onSetTag: (TerminalSessionSummary) -> Void = { _ in }
+  /// The host advertises `chat.restartSession`.
+  var restartAvailable: Bool = false
+  var onRestartAgent: (TerminalSessionSummary) -> Void = { _ in }
+  /// `Hand off ▸` destinations, asked of the brain that owns THIS chat. Each
+  /// false hides its item: `chat.handoff`, `chat.startCrossMachineHandoff`, and
+  /// the three `automations.*` rule commands.
+  var localHandoffAvailable: Bool = false
+  var crossMachineHandoffAvailable: Bool = false
+  /// The chat's brain takes `chat.cancelCrossMachineHandoff` /
+  /// `chat.retryCrossMachineHandoff` (Keep it here or Dismiss / Retry move).
+  var crossMachineCancelAvailable: Bool = false
+  var crossMachineRetryAvailable: Bool = false
+  var autoHandoffAvailable: Bool = false
+  /// Auto-handoff rules already scoped to this chat; nil while unknown. Drives
+  /// "Edit auto handoff…" and "Remove auto handoff" like desktop's menu.
+  var autoHandoffRuleCount: Int? = nil
+  var onHandoff: (TerminalSessionSummary, WorkSessionHandoffIntent) -> Void = { _, _ in }
 
   /// Observed so the muted glyph and menu label re-render the moment a mute
   /// flips anywhere (this menu, the open chat's header menu, settings).
@@ -940,7 +948,8 @@ struct WorkSessionListRow: View {
           isSelectedTransitionSource: selectedSessionId == session.id,
           compact: compact,
           nestedSubagent: nestedSubagent,
-          showsLaneIdentity: showsLaneIdentity
+          showsLaneIdentity: showsLaneIdentity,
+          waitingOnSubagent: waitingOnSubagent
         )
         .equatable()
       }
@@ -1015,9 +1024,13 @@ struct WorkSessionListRow: View {
     // cosmetic here: a mis-tap right after the menu opens lands mid-list, which
     // is exactly where the deletes used to sit.
     .contextMenu {
-      identityMenuSection
+      nameMenuSection
+      fileMenuSection
       lifecycleMenuSection(status: rowStatus)
-      goToMenuSection
+      handoffMenuSection
+      agentMenuSection
+      laneMenuSection
+      copyMenuSection
       destructiveMenuSection(status: rowStatus)
     }
     .overlay {
@@ -1065,63 +1078,60 @@ struct WorkSessionListRow: View {
   }
 
   // MARK: - Menu sections
+  //
+  // Desktop's tree in desktop's order (`SessionContextMenu.tsx`), one native
+  // `Section` per block so iOS draws the dividers:
+  //   name · tag · lifecycle · hand off · agent · lane · copy · delete.
+  // Every item calls the command the desktop item calls, and an item the
+  // session type or the host cannot honour is hidden, not greyed.
 
-  /// What this row is called and how it is filed. Unlabelled: it is the first
-  /// block under the finger and needs no signpost.
+  private var canRename: Bool {
+    !CursorCloudNaming.ownsName(session.cursorCloudAgentId)
+      && !CursorCloudNaming.ownsName(chatSummary?.cursorCloudAgentId)
+  }
+
+  /// Desktop shows "Set tag…" only on a running Claude chat: tag writes need a
+  /// live Claude SDK runtime.
+  private var canSetTag: Bool {
+    tagAvailable && session.toolType == "claude-chat" && session.status == "running"
+  }
+
+  /// Section 1 — what the row is called: Rename, Generate ▸.
   @ViewBuilder
-  private var identityMenuSection: some View {
-    Button {
-      onLongPressSelect(session)
-    } label: {
-      Label("Select", systemImage: "checkmark.circle")
-    }
-    if !CursorCloudNaming.ownsName(session.cursorCloudAgentId)
-      && !CursorCloudNaming.ownsName(chatSummary?.cursorCloudAgentId) {
-      Button {
-        onRename(session)
-      } label: {
-        Label("Rename", systemImage: "pencil")
+  private var nameMenuSection: some View {
+    Section {
+      if canRename {
+        Button {
+          onRename(session)
+        } label: {
+          Label("Rename", systemImage: "pencil")
+        }
       }
+      generateNamesMenu
     }
-    Button {
-      onPin(session)
-    } label: {
-      Label(session.pinned ? "Unpin from front" : "Pin to front",
-            systemImage: session.pinned ? "pin.slash" : "pin")
-    }
-    if isChat {
-      Button {
-        PushNotificationService.shared.setMuted(!isMuted, sessionId: session.id)
-      } label: {
-        Label(isMuted ? "Unmute notifications" : "Mute notifications",
-              systemImage: isMuted ? "bell" : "bell.slash")
-      }
-    }
-    generateNamesMenu
   }
 
   @ViewBuilder
   private var generateNamesMenu: some View {
     if isChat && generateNamesAvailable {
-      let cloudOwned = CursorCloudNaming.ownsName(session.cursorCloudAgentId)
-        || CursorCloudNaming.ownsName(chatSummary?.cursorCloudAgentId)
+      let cloudOwned = !canRename
       Menu {
         if !cloudOwned {
           Button {
             onGenerateNames(session, ["title"])
           } label: {
-            Label("Generate chat title", systemImage: "textformat")
+            Label("Chat title", systemImage: "textformat")
           }
         }
         Button {
           onGenerateNames(session, ["laneName"])
         } label: {
-          Label("Generate lane name", systemImage: "arrow.triangle.branch")
+          Label("Lane name", systemImage: "arrow.triangle.branch")
         }
         Button {
           onGenerateNames(session, ["statusLine"])
         } label: {
-          Label("Generate status line", systemImage: "text.alignleft")
+          Label("Status line", systemImage: "text.alignleft")
         }
         Button {
           onGenerateNames(
@@ -1129,33 +1139,81 @@ struct WorkSessionListRow: View {
             cloudOwned ? ["laneName", "statusLine"] : ["title", "laneName", "statusLine"]
           )
         } label: {
-          Label(cloudOwned ? "Generate lane & status" : "Generate all three", systemImage: "sparkles")
+          Label(cloudOwned ? "Lane & status" : "All three", systemImage: "sparkles")
         }
       } label: {
-        Label("Generate names", systemImage: "sparkles")
+        Label("Generate", systemImage: "sparkles")
       }
     }
   }
 
-  /// Everything that changes where the list files this row: stop (runtime),
-  /// snooze/wake (visibility), settle/keep-active (state). Durations use a
-  /// native nested `Menu`, never a popover — this is a long press on a phone.
-  ///
-  /// Keep it exhaustive. A row that reaches the end of this block with nothing
-  /// rendered is a row the user cannot un-hide.
+  /// Section 2 — how the row is filed: Pin, Set tag…, plus the phone-only
+  /// Mute and Select (the one way into multi-select).
+  @ViewBuilder
+  private var fileMenuSection: some View {
+    Section {
+      Button {
+        onPin(session)
+      } label: {
+        Label(session.pinned ? "Unpin" : "Pin", systemImage: session.pinned ? "pin.slash" : "pin")
+      }
+      if canSetTag {
+        Button {
+          onSetTag(session)
+        } label: {
+          Label("Set tag…", systemImage: "tag")
+        }
+      }
+      if isChat {
+        Button {
+          PushNotificationService.shared.setMuted(!isMuted, sessionId: session.id)
+        } label: {
+          Label(isMuted ? "Unmute notifications" : "Mute notifications",
+                systemImage: isMuted ? "bell" : "bell.slash")
+        }
+      }
+      Button {
+        onLongPressSelect(session)
+      } label: {
+        Label("Select", systemImage: "checkmark.circle")
+      }
+    }
+  }
+
+  /// Section 3 — everything that changes where the list files this row:
+  /// settle (state), snooze/wake (visibility), stop (runtime). Durations use a
+  /// native nested `Menu`. Keep it exhaustive: a row that reaches the end of
+  /// this block with nothing rendered is a row the user cannot un-hide.
   @ViewBuilder
   private func lifecycleMenuSection(status: String) -> some View {
     let canStopRuntime = isStoppableRuntimeStatus(session, status: status)
-    if canStopRuntime || lifecycleAvailable || snoozeAvailable || canDemoteToPeer || canPromoteToSubagent {
-      Divider()
-      // Stop runtime moved here from the identity block: it is a lifecycle
-      // change, and it is NOT destructive — the session and its transcript
-      // survive — so it must not sit next to the deletes.
-      if canStopRuntime {
+    Section {
+      if canSettle {
         Button {
-          onStopRuntime(session)
+          settle()
         } label: {
-          Label("Stop runtime", systemImage: "stop.fill")
+          Label(settleLabel, systemImage: "checkmark.circle")
+        }
+      } else if settleBlockedOnInput {
+        // Disabled on purpose: it states the precondition instead of an item
+        // that silently vanished.
+        Button {} label: {
+          Label("Resolve input to settle", systemImage: "exclamationmark.bubble")
+        }
+        .disabled(true)
+      }
+      if canUnsettle {
+        Button {
+          onUnsettle(session)
+        } label: {
+          Label("Unsettle", systemImage: "arrow.uturn.backward.circle")
+        }
+      }
+      if canKeepActive {
+        Button {
+          onKeepActive(session)
+        } label: {
+          Label("Keep active", systemImage: "pin.circle")
         }
       }
       if snoozeAvailable {
@@ -1179,101 +1237,115 @@ struct WorkSessionListRow: View {
           }
         }
       }
-      if canSettle {
+      // Not destructive — the session and its transcript survive — so it sits
+      // here and never next to the deletes.
+      if canStopRuntime {
         Button {
-          settle()
+          onStopRuntime(session)
         } label: {
-          Label(settleLabel, systemImage: "checkmark.circle")
-        }
-      } else if settleBlockedOnInput {
-        // Disabled on purpose. Hiding Settle here would leave the user hunting
-        // for an item that simply vanished; this states the precondition.
-        Button {} label: {
-          Label("Resolve input to settle", systemImage: "exclamationmark.bubble")
-        }
-        .disabled(true)
-      }
-      if canUnsettle {
-        Button {
-          onUnsettle(session)
-        } label: {
-          Label("Unsettle", systemImage: "arrow.uturn.backward.circle")
-        }
-      }
-      if canKeepActive {
-        Button {
-          onKeepActive(session)
-        } label: {
-          Label("Keep active", systemImage: "pin.circle")
-        }
-      }
-      if canDemoteToPeer {
-        Button {
-          onDemoteToPeer(session)
-        } label: {
-          Label("Demote to peer", systemImage: "arrow.down.forward.and.arrow.up.backward")
-        }
-      }
-      if canPromoteToSubagent {
-        Button {
-          onPromoteToSubagent(session)
-        } label: {
-          Label("Promote to subagent", systemImage: "arrow.up.backward.and.arrow.down.forward")
+          Label("Stop runtime", systemImage: "stop.fill")
         }
       }
     }
   }
 
-  /// The other surfaces that show this same session, plus the clipboard rows and
-  /// the lane submenu. Copy and Lane are nested because a phone context menu
-  /// past roughly ten top-level rows stops being scannable.
+  /// Section 4 — Hand off ▸ (`WorkSessionHandoffMenu`, kept with the hand-off
+  /// sheets it opens).
+  private var handoffMenuSection: some View {
+    WorkSessionHandoffMenu(
+      session: session,
+      record: chatSummary?.crossMachineHandoff ?? session.crossMachineHandoff,
+      isChat: isChat,
+      localHandoffAvailable: localHandoffAvailable,
+      crossMachineHandoffAvailable: crossMachineHandoffAvailable,
+      crossMachineCancelAvailable: crossMachineCancelAvailable,
+      crossMachineRetryAvailable: crossMachineRetryAvailable,
+      autoHandoffAvailable: autoHandoffAvailable,
+      autoHandoffRuleCount: autoHandoffRuleCount,
+      onHandoff: onHandoff
+    )
+  }
+
+  /// Section 5 — the agent itself: restart, promote / demote.
   @ViewBuilder
-  private var goToMenuSection: some View {
-    Divider()
-    Button {
-      onGoToLane(session)
-    } label: {
-      Label("Go to lane", systemImage: "arrow.triangle.branch")
-    }
-    if let pullRequest {
-      Button {
-        onOpenPullRequest(session, pullRequest)
-      } label: {
-        Label("Open in PRs tab", systemImage: "arrow.triangle.pull")
+  private var agentMenuSection: some View {
+    if isChat && (restartAvailable || canDemoteToPeer || canPromoteToSubagent) {
+      Section {
+        if restartAvailable {
+          Button {
+            onRestartAgent(session)
+          } label: {
+            Label("Restart agent session", systemImage: "arrow.clockwise")
+          }
+        }
+        if canPromoteToSubagent {
+          Button {
+            onPromoteToSubagent(session)
+          } label: {
+            Label("Promote to subagent", systemImage: "arrow.up.backward.and.arrow.down.forward")
+          }
+        }
+        if canDemoteToPeer {
+          Button {
+            onDemoteToPeer(session)
+          } label: {
+            Label("Demote to peer", systemImage: "arrow.down.forward.and.arrow.up.backward")
+          }
+        }
       }
     }
-    Button {
-      onOpenInWeb(session)
-    } label: {
-      Label("Open in web", systemImage: "safari")
-    }
-    Menu {
-      Button {
-        onCopyId(session)
-      } label: {
-        Label("Session ID", systemImage: "number")
-      }
-      Button {
-        onCopyDeepLink(session)
-      } label: {
-        Label("Session link", systemImage: "link")
-      }
-    } label: {
-      Label("Copy", systemImage: "doc.on.doc")
-    }
-    laneMenuSection
   }
 
-  /// `Lane ▸`. Rendered only when the row actually resolves a lane and the
-  /// screen wired the actions — on iOS every row has a lane header or a lane
-  /// chip, so this is the lane menu for the whole app, not just singleton rows.
+  /// Section 6 — the lane: Go to lane, Manage lane, the PR shortcut, and the
+  /// `Lane ▸` submenu with the rest of the lane's own menu.
   @ViewBuilder
   private var laneMenuSection: some View {
-    if let lane, let laneMenu {
-      Menu {
-        WorkLaneContextMenuContent(lane: lane, actions: laneMenu)
+    Section {
+      Button {
+        onGoToLane(session)
       } label: {
-        Label("Lane", systemImage: "arrow.triangle.branch")
+        Label("Go to lane", systemImage: "arrow.triangle.branch")
+      }
+      if let lane, let laneMenu, laneMenu.manageAvailable {
+        Button {
+          laneMenu.onManage(lane)
+        } label: {
+          Label("Manage lane", systemImage: "slider.horizontal.3")
+        }
+      }
+      if let pullRequest {
+        Button {
+          onOpenPullRequest(session, pullRequest)
+        } label: {
+          Label("Open in PRs tab", systemImage: "arrow.triangle.pull")
+        }
+      }
+      if let lane, let laneMenu {
+        Menu {
+          WorkLaneContextMenuContent(lane: lane, actions: laneMenu)
+        } label: {
+          Label("Lane", systemImage: "square.stack.3d.up")
+        }
+      }
+    }
+  }
+
+  /// Section 7 — Copy ▸.
+  private var copyMenuSection: some View {
+    Section {
+      Menu {
+        Button {
+          onCopyId(session)
+        } label: {
+          Label("Session ID", systemImage: "number")
+        }
+        Button {
+          onCopyDeepLink(session)
+        } label: {
+          Label("Session deep link", systemImage: "link")
+        }
+      } label: {
+        Label("Copy", systemImage: "doc.on.doc")
       }
     }
   }
@@ -1282,7 +1354,7 @@ struct WorkSessionListRow: View {
   @ViewBuilder
   private func destructiveMenuSection(status: String) -> some View {
     if canStopAndDeleteSession(status: status) || shouldShowDeleteAction || canDeleteStoppedSession(status: status) {
-      Divider()
+      Section {
       if canStopAndDeleteSession(status: status) {
         Button(role: .destructive) {
           onDeleteSession(session)
@@ -1303,6 +1375,7 @@ struct WorkSessionListRow: View {
         } label: {
           Label("Delete session", systemImage: "trash")
         }
+      }
       }
     }
   }
@@ -1670,6 +1743,7 @@ struct WorkRootHeaderActions {
   var onOpenActivity: () -> Void = {}
   var onOpenLinear: () -> Void = {}
   var onOpenCursorCloud: () -> Void = {}
+  var onOpenGitHubIssues: () -> Void = {}
   var onOpenSettings: () -> Void = {}
 }
 
@@ -1689,6 +1763,7 @@ struct WorkRootHeader: View {
   let isLive: Bool
   let showsLinear: Bool
   let showsCursorCloud: Bool
+  var showsGitHubIssues = false
   /// Non-nil while multi-select is on; the row becomes "N selected · Cancel".
   let selectionCount: Int?
   let actions: WorkRootHeaderActions
@@ -1734,6 +1809,7 @@ struct WorkRootHeader: View {
         WorkHeaderOverflowMenu(
           showsLinear: showsLinear,
           showsCursorCloud: showsCursorCloud,
+          showsGitHubIssues: showsGitHubIssues,
           actions: actions
         )
       }
@@ -1873,6 +1949,7 @@ private struct WorkHeaderOverflowMenu: View {
   @EnvironmentObject private var drawer: ActivityDrawerModel
   let showsLinear: Bool
   let showsCursorCloud: Bool
+  var showsGitHubIssues = false
   let actions: WorkRootHeaderActions
 
   private var unread: Int { drawer.unreadCount }
@@ -1894,6 +1971,14 @@ private struct WorkHeaderOverflowMenu: View {
           actions.onOpenLinear()
         } label: {
           Label { Text("Linear") } icon: { Image("LinearLogo") }
+        }
+      }
+      if showsGitHubIssues {
+        Button {
+          ADEHaptics.light()
+          actions.onOpenGitHubIssues()
+        } label: {
+          Label { Text("GitHub Issues") } icon: { Image("ProviderGitHub") }
         }
       }
       if showsCursorCloud {
@@ -1928,7 +2013,18 @@ private struct WorkHeaderOverflowMenu: View {
     .buttonStyle(.plain)
     .animation(.snappy(duration: 0.2), value: unread > 0)
     .accessibilityLabel(unread > 0 ? "More, \(unread) activity \(unread == 1 ? "item needs" : "items need") you" : "More")
-    .accessibilityHint("Activity, Linear, Cursor Cloud and Settings")
+    .accessibilityHint("Activity, Linear, GitHub Issues, Cursor Cloud and Settings")
+  }
+}
+
+/// Marks a lane that lives on another machine, after its name: two machines'
+/// lanes can share a name, and the machine never goes in the title.
+struct WorkRemoteLaneGlyph: View {
+  var body: some View {
+    Image(systemName: "desktopcomputer")
+      .font(.system(size: 9, weight: .medium))
+      .foregroundStyle(ADEColor.textMuted.opacity(0.8))
+      .accessibilityLabel("On another machine")
   }
 }
 
@@ -1938,10 +2034,7 @@ struct WorkLaneFocusDot: View {
   let status: WorkLaneFocusStatus
 
   var body: some View {
-    Circle()
-      .fill(color)
-      .frame(width: 6, height: 6)
-      .accessibilityHidden(true)
+    ADEKitDot(color: color)
   }
 
   private var color: Color {

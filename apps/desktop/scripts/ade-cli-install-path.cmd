@@ -59,20 +59,32 @@ exit /b 0
 :ensure_user_path
 setlocal DisableDelayedExpansion
 set "PATH_DIR=%~1"
+rem PowerShell is named by its System32 path, not looked up on PATH, where any
+rem earlier folder could hold a powershell.exe.
 rem powershell.exe appends tokens after -Command to the command text instead of
 rem exposing them through $args. Carry the path in the child environment so
 rem spaces and PowerShell metacharacters remain data.
 set "ADE_CLI_PATH_TARGET=%PATH_DIR%"
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$target=[System.IO.Path]::GetFullPath($env:ADE_CLI_PATH_TARGET).TrimEnd('\'); $current=[Environment]::GetEnvironmentVariable('Path','User'); $entries=if ([string]::IsNullOrWhiteSpace($current)) { @() } else { $current -split ';' | Where-Object { $_.Trim().Length -gt 0 } }; foreach ($entry in $entries) { try { if ([System.IO.Path]::GetFullPath($entry).TrimEnd('\').ToLowerInvariant() -eq $target.ToLowerInvariant()) { exit 0 } } catch {} }; $next=if ([string]::IsNullOrWhiteSpace($current)) { $target } else { $target + ';' + $current }; [Environment]::SetEnvironmentVariable('Path',$next,'User')" >nul 2>nul
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -Command "$target=[System.IO.Path]::GetFullPath($env:ADE_CLI_PATH_TARGET).TrimEnd('\'); $current=[Environment]::GetEnvironmentVariable('Path','User'); $entries=if ([string]::IsNullOrWhiteSpace($current)) { @() } else { $current -split ';' | Where-Object { $_.Trim().Length -gt 0 } }; foreach ($entry in $entries) { try { if ([System.IO.Path]::GetFullPath($entry).TrimEnd('\').ToLowerInvariant() -eq $target.ToLowerInvariant()) { exit 10 } } catch {} }; $next=if ([string]::IsNullOrWhiteSpace($current)) { $target } else { $target + ';' + $current }; [Environment]::SetEnvironmentVariable('Path',$next,'User')" >nul 2>nul
+rem Exit 10 means the directory was already on the user PATH, which is every
+rem update: nothing changed, so there is nothing to broadcast. Exactly 10:
+rem `if errorlevel 10` is "10 or higher", and a PowerShell that cannot start
+rem leaves 9009.
+if %ERRORLEVEL% EQU 10 exit /b 0
 if errorlevel 1 (
   echo ade install: failed to update the user PATH. Add %PATH_DIR% manually. 1>&2
   exit /b 1
 )
 rem Broadcast WM_SETTINGCHANGE so already-running shells (Explorer, taskbar)
-rem pick up the new user PATH without a logoff. The base64 below decodes to a
+rem pick up the new user PATH without a logoff. The broadcast runs detached:
+rem SendMessageTimeout's 5000ms is per top-level window, so a few busy windows
+rem stack up, and inside the installer this step measured 79-82s against 8s
+rem from a terminal. Start-Process goes through ShellExecute, so the detached
+rem child inherits none of our handles and an installer reading this script's
+rem output (nsExec) does not wait for it either. The base64 below decodes to a
 rem PowerShell script that P/Invokes user32!SendMessageTimeout(HWND_BROADCAST,
 rem WM_SETTINGCHANGE=0x1A, 0, 'Environment', SMTO_ABORTIFHUNG=2, 5000ms). It is
 rem encoded only because cmd cannot reliably embed the multi-line C# DllImport
 rem block inline. Decode with: powershell -Command "[System.Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('<blob>'))"
-powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand JABzAGkAZwBuAGEAdAB1AHIAZQAgAD0AIABAACcACgB1AHMAaQBuAGcAIABTAHkAcwB0AGUAbQA7AAoAdQBzAGkAbgBnACAAUwB5AHMAdABlAG0ALgBSAHUAbgB0AGkAbQBlAC4ASQBuAHQAZQByAG8AcABTAGUAcgB2AGkAYwBlAHMAOwAKAHAAdQBiAGwAaQBjACAAcwB0AGEAdABpAGMAIABjAGwAYQBzAHMAIABOAGEAdABpAHYAZQBNAGUAdABoAG8AZABzACAAewAKACAAIABbAEQAbABsAEkAbQBwAG8AcgB0ACgAIgB1AHMAZQByADMAMgAuAGQAbABsACIALAAgAFMAZQB0AEwAYQBzAHQARQByAHIAbwByAD0AdAByAHUAZQAsACAAQwBoAGEAcgBTAGUAdAA9AEMAaABhAHIAUwBlAHQALgBBAHUAdABvACkAXQAKACAAIABwAHUAYgBsAGkAYwAgAHMAdABhAHQAaQBjACAAZQB4AHQAZQByAG4AIABJAG4AdABQAHQAcgAgAFMAZQBuAGQATQBlAHMAcwBhAGcAZQBUAGkAbQBlAG8AdQB0ACgASQBuAHQAUAB0AHIAIABoAFcAbgBkACwAIAB1AGkAbgB0ACAATQBzAGcALAAgAFUASQBuAHQAUAB0AHIAIAB3AFAAYQByAGEAbQAsACAAcwB0AHIAaQBuAGcAIABsAFAAYQByAGEAbQAsACAAdQBpAG4AdAAgAGYAdQBGAGwAYQBnAHMALAAgAHUAaQBuAHQAIAB1AFQAaQBtAGUAbwB1AHQALAAgAG8AdQB0ACAAVQBJAG4AdABQAHQAcgAgAGwAcABkAHcAUgBlAHMAdQBsAHQAKQA7AAoAfQAKACcAQAAKAEEAZABkAC0AVAB5AHAAZQAgAC0AVAB5AHAAZQBEAGUAZgBpAG4AaQB0AGkAbwBuACAAJABzAGkAZwBuAGEAdAB1AHIAZQAKACQAcgBlAHMAdQBsAHQAIAA9ACAAWwBVAEkAbgB0AFAAdAByAF0AOgA6AFoAZQByAG8ACgBbAE4AYQB0AGkAdgBlAE0AZQB0AGgAbwBkAHMAXQA6ADoAUwBlAG4AZABNAGUAcwBzAGEAZwBlAFQAaQBtAGUAbwB1AHQAKABbAEkAbgB0AFAAdAByAF0AMAB4AGYAZgBmAGYALAAwAHgAMQBBACwAWwBVAEkAbgB0AFAAdAByAF0AOgA6AFoAZQByAG8ALAAnAEUAbgB2AGkAcgBvAG4AbQBlAG4AdAAnACwAMgAsADUAMAAwADAALABbAHIAZQBmAF0AJAByAGUAcwB1AGwAdAApACAAfAAgAE8AdQB0AC0ATgB1AGwAbAA= >nul 2>nul
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -WindowStyle Hidden -FilePath (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-EncodedCommand','JABzAGkAZwBuAGEAdAB1AHIAZQAgAD0AIABAACcACgB1AHMAaQBuAGcAIABTAHkAcwB0AGUAbQA7AAoAdQBzAGkAbgBnACAAUwB5AHMAdABlAG0ALgBSAHUAbgB0AGkAbQBlAC4ASQBuAHQAZQByAG8AcABTAGUAcgB2AGkAYwBlAHMAOwAKAHAAdQBiAGwAaQBjACAAcwB0AGEAdABpAGMAIABjAGwAYQBzAHMAIABOAGEAdABpAHYAZQBNAGUAdABoAG8AZABzACAAewAKACAAIABbAEQAbABsAEkAbQBwAG8AcgB0ACgAIgB1AHMAZQByADMAMgAuAGQAbABsACIALAAgAFMAZQB0AEwAYQBzAHQARQByAHIAbwByAD0AdAByAHUAZQAsACAAQwBoAGEAcgBTAGUAdAA9AEMAaABhAHIAUwBlAHQALgBBAHUAdABvACkAXQAKACAAIABwAHUAYgBsAGkAYwAgAHMAdABhAHQAaQBjACAAZQB4AHQAZQByAG4AIABJAG4AdABQAHQAcgAgAFMAZQBuAGQATQBlAHMAcwBhAGcAZQBUAGkAbQBlAG8AdQB0ACgASQBuAHQAUAB0AHIAIABoAFcAbgBkACwAIAB1AGkAbgB0ACAATQBzAGcALAAgAFUASQBuAHQAUAB0AHIAIAB3AFAAYQByAGEAbQAsACAAcwB0AHIAaQBuAGcAIABsAFAAYQByAGEAbQAsACAAdQBpAG4AdAAgAGYAdQBGAGwAYQBnAHMALAAgAHUAaQBuAHQAIAB1AFQAaQBtAGUAbwB1AHQALAAgAG8AdQB0ACAAVQBJAG4AdABQAHQAcgAgAGwAcABkAHcAUgBlAHMAdQBsAHQAKQA7AAoAfQAKACcAQAAKAEEAZABkAC0AVAB5AHAAZQAgAC0AVAB5AHAAZQBEAGUAZgBpAG4AaQB0AGkAbwBuACAAJABzAGkAZwBuAGEAdAB1AHIAZQAKACQAcgBlAHMAdQBsAHQAIAA9ACAAWwBVAEkAbgB0AFAAdAByAF0AOgA6AFoAZQByAG8ACgBbAE4AYQB0AGkAdgBlAE0AZQB0AGgAbwBkAHMAXQA6ADoAUwBlAG4AZABNAGUAcwBzAGEAZwBlAFQAaQBtAGUAbwB1AHQAKABbAEkAbgB0AFAAdAByAF0AMAB4AGYAZgBmAGYALAAwAHgAMQBBACwAWwBVAEkAbgB0AFAAdAByAF0AOgA6AFoAZQByAG8ALAAnAEUAbgB2AGkAcgBvAG4AbQBlAG4AdAAnACwAMgAsADUAMAAwADAALABbAHIAZQBmAF0AJAByAGUAcwB1AGwAdAApACAAfAAgAE8AdQB0AC0ATgB1AGwAbAA='" >nul 2>nul
 exit /b 0

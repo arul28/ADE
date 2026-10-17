@@ -1,8 +1,8 @@
 /* @vitest-environment jsdom */
 
-import React from "react";
+import React, { useEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { useAppStore } from "../../../state/appStore";
 import { ProjectSidebar } from "./ProjectSidebar";
@@ -73,10 +73,10 @@ describe("ProjectSidebar footer", () => {
   });
 
   it("reopens the project's stored settings page", () => {
-    window.localStorage.setItem(`ade:project-route:local:${ROOT}`, "/settings?tab=appearance#theme");
+    window.localStorage.setItem(`ade:project-route:local:${ROOT}`, "/settings?tab=chat");
     renderSidebar("/work");
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
-    expect(screen.getByTestId("location").textContent).toBe("/settings?tab=appearance#theme");
+    expect(screen.getByTestId("location").textContent).toBe("/settings?tab=chat");
   });
 
   it("returns to where you were when the cog is clicked again", () => {
@@ -89,12 +89,12 @@ describe("ProjectSidebar footer", () => {
   });
 
   it("reopens the last settings section used in this session before the stored one", () => {
-    window.localStorage.setItem(`ade:project-route:local:${ROOT}`, "/settings?tab=appearance#theme");
-    renderSidebar("/settings?tab=providers");
+    window.localStorage.setItem(`ade:project-route:local:${ROOT}`, "/settings?tab=secrets");
+    renderSidebar("/settings?tab=chat");
     cleanup();
     renderSidebar("/lanes");
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
-    expect(screen.getByTestId("location").textContent).toBe("/settings?tab=providers");
+    expect(screen.getByTestId("location").textContent).toBe("/settings?tab=chat");
   });
 
   it("keeps the page under CTO selected and turns the footer into one Back button", () => {
@@ -116,6 +116,19 @@ describe("ProjectSidebar footer", () => {
 function SlotHost({ children }: { children: React.ReactNode }) {
   const setTarget = useProjectSidebarSlotTarget();
   return <div ref={setTarget}>{children}</div>;
+}
+
+function FocusQueueReportProbe({
+  queue,
+  onChange,
+}: {
+  queue: readonly string[];
+  onChange: (queue: readonly string[]) => void;
+}) {
+  useEffect(() => {
+    onChange(queue);
+  }, [onChange, queue]);
+  return null;
 }
 
 describe("settings return routes", () => {
@@ -171,5 +184,40 @@ describe("ProjectSidebarSlot hold", () => {
     const settings = screen.getByText("Settings sections").parentElement;
     expect(held?.hidden).toBe(true);
     expect(settings?.hidden).toBe(false);
+  });
+});
+
+describe("ProjectSidebar Focus queue", () => {
+  beforeEach(() => {
+    useAppStore.setState({ project: { rootPath: ROOT, name: "ADE" }, projectBinding: null } as any);
+  });
+
+  afterEach(() => {
+    cleanup();
+    setProjectSidebarHidden(false);
+    window.localStorage.clear();
+  });
+
+  it("keeps queue reports current while the sidebar is collapsed", () => {
+    const reportedQueues: string[][] = [];
+    const reportQueue = (queue: readonly string[]) => reportedQueues.push([...queue]);
+    const tree = (queue: readonly string[]) => (
+      <MemoryRouter initialEntries={["/work"]}>
+        <ProjectSidebarSlotProvider>
+          <ProjectSidebar route="/work" />
+          <ProjectSidebarSlot active>
+            <FocusQueueReportProbe queue={queue} onChange={reportQueue} />
+          </ProjectSidebarSlot>
+        </ProjectSidebarSlotProvider>
+      </MemoryRouter>
+    );
+
+    const view = render(tree(["first-chat"]));
+    expect(reportedQueues).toEqual([["first-chat"]]);
+
+    act(() => setProjectSidebarHidden(true));
+    view.rerender(tree(["second-chat"]));
+
+    expect(reportedQueues).toEqual([["first-chat"], ["second-chat"]]);
   });
 });

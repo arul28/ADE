@@ -1,5 +1,7 @@
+import * as Sentry from "@sentry/cloudflare";
 import { handleRequest } from "./directory";
 import { logScheduledCleanupFailure } from "./logging";
+import { sentryOptions, type SentryEnv } from "./sentry";
 import { cleanupExpiredPairingGrants } from "./pairingGrants";
 import { cleanupExpiredDeviceAuthorizations } from "./deviceAuthorization";
 import {
@@ -15,15 +17,20 @@ import {
   type ModelRegistryEnv,
 } from "./modelRegistry";
 import {
+  handleMusicDeveloperTokenRequest,
+  isMusicDeveloperTokenRequest,
+  type MusicDeveloperTokenEnv,
+} from "./musicDeveloperToken";
+import {
   cleanupUsageResearch,
   handleUsageResearchRequest,
   isUsageResearchRequest,
   type UsageResearchEnv,
 } from "./usageResearch";
 
-type WorkerEnv = DiagnosticsEnv & UsageResearchEnv & ModelRegistryEnv;
+type WorkerEnv = DiagnosticsEnv & UsageResearchEnv & ModelRegistryEnv & MusicDeveloperTokenEnv & SentryEnv;
 
-export default {
+export default Sentry.withSentry(sentryOptions, {
   fetch(request: Request, env: WorkerEnv): Promise<Response> {
     // Diagnostics and usage research are matched before the directory because
     // they are the routes here that are not account-scoped: `handleRequest`
@@ -37,6 +44,9 @@ export default {
     // it answers GET and HEAD only, has no CORS (the ADE brain is the only
     // caller), and caches with an ETag.
     if (isModelRegistryRequest(url)) return handleModelRegistryRequest(request, env);
+    // Apple Music developer tokens: same shape as the registry (account bearer,
+    // GET only, no CORS — the desktop main process is the only caller).
+    if (isMusicDeveloperTokenRequest(url)) return handleMusicDeveloperTokenRequest(request, env);
     return handleRequest(request, env);
   },
 
@@ -65,4 +75,4 @@ export default {
       settle("model_registry", () => runModelRegistryCron(env)),
     ]));
   },
-};
+});

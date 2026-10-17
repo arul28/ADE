@@ -3,6 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ADE_OPEN_BUILT_IN_BROWSER_EVENT,
+  canOpenUrlOnThisMachine,
   openLinkFromUi,
   openUrlInAdeBrowser,
   setLinkOpenMode,
@@ -180,5 +181,52 @@ describe("resolveLinkOpenTarget", () => {
   it("ignores modifiers that carry no meaning here", () => {
     expect(resolveLinkOpenTarget({ mode: "in-app", modifiers: {} })).toBe("in-app");
     expect(resolveLinkOpenTarget({ mode: "external", modifiers: null })).toBe("external");
+  });
+});
+
+describe("canOpenUrlOnThisMachine", () => {
+  const studio = { kind: "remote", key: "remote:studio:project-1", targetId: "studio" } as never;
+
+  beforeEach(() => {
+    // `remoteMachineForLoopbackLink` falls back to the window's binding when
+    // the caller passes none, so pin it to "this machine" for these cases.
+    setWindowRuntimeBinding(null);
+  });
+
+  afterEach(() => {
+    setWindowRuntimeBinding(null);
+  });
+
+  // The menu offers an OS browser only for what the main process will accept;
+  // every other scheme would come back as an allowlist error after the click.
+  it.each([
+    ["https", "https://example.test/docs", true],
+    ["mailto", "mailto:ada@example.test", true],
+    ["file", "file:///tmp/notes.md", false],
+    ["irc", "irc://irc.libera.chat/ade", false],
+    ["a protocol-relative link", "//example.test/docs", false],
+  ])("agrees with the main-process allowlist about a %s URL", (_label, url, expected) => {
+    expect(canOpenUrlOnThisMachine(url)).toBe(expected);
+  });
+
+  it("refuses a loopback link that belongs to another machine", () => {
+    // A chat on a remote machine printing localhost:4180 means THAT machine's
+    // port; an OS browser here would open this computer's, which is nothing.
+    expect(canOpenUrlOnThisMachine("http://localhost:4180/", { runtimePin: studio })).toBe(false);
+    expect(
+      canOpenUrlOnThisMachine("http://127.0.0.1:4180/", { runtimePin: studio }),
+      "a loopback address is another machine's too",
+    ).toBe(false);
+    // The same address written the way a dev server prints it — no scheme. Only
+    // the normalized form is recognisable as loopback, so this one is the case
+    // that proves the guard normalizes rather than reading the raw string.
+    expect(
+      canOpenUrlOnThisMachine("127.0.0.1:4180", { runtimePin: studio }),
+      "a scheme-less loopback link is another machine's too",
+    ).toBe(false);
+  });
+
+  it("still allows a loopback link when the chat runs here", () => {
+    expect(canOpenUrlOnThisMachine("http://localhost:4180/", { runtimePin: null })).toBe(true);
   });
 });

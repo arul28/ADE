@@ -15,9 +15,14 @@ function rowSizes(total: number, rowCount: number): number[] {
   return Array.from({ length: rowCount }, (_, index) => base + (index < remainder ? 1 : 0));
 }
 
+/**
+ * `columns` (auto preset only) sets how many tiles share a row; rows fill
+ * evenly. Without it, auto picks a near-square grid.
+ */
 export function buildWorkSessionTilingTree(
   sessionIds: string[],
   preset: TilingPreset = "auto",
+  columns?: number,
 ): PaneSplit {
   if (sessionIds.length <= 1) {
     return {
@@ -43,7 +48,9 @@ export function buildWorkSessionTilingTree(
     };
   }
 
-  const columnCount = Math.ceil(Math.sqrt(sessionIds.length));
+  const columnCount = columns && columns > 0
+    ? Math.min(sessionIds.length, Math.floor(columns))
+    : Math.ceil(Math.sqrt(sessionIds.length));
   const rowCount = Math.ceil(sessionIds.length / columnCount);
 
   if (rowCount === 1) {

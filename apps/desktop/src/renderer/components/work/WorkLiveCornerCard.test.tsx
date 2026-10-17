@@ -3,6 +3,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkLiveCornerCard } from "./WorkLiveCornerCard";
+import { setFloatingPlayerSlot } from "../shared/floatingPlayerSlots";
 import { NativeToolFeedsProvider } from "../terminals/NativeToolFeedsContext";
 import { useAppStore } from "../../state/appStore";
 import type { BuiltInBrowserStatus, BuiltInBrowserTab, OpenProjectBinding } from "../../../shared/types";
@@ -683,6 +684,32 @@ describe("WorkLiveCornerCard dismissal", () => {
     expect(readChatCompanionUiState("chat-1").workLiveCardFloating).toEqual([]);
   });
 
+  it("steps aside while the floated tab's page has failed to load, and comes back when it loads", async () => {
+    // A failed load is a plain white page; floating it is a white box. Even a
+    // tool the chat floated by hand steps aside, and nothing is lost: the
+    // float comes back the moment the tab loads again.
+    seedProject();
+    renderCard({ activeTool: "browser" });
+    await waitFor(() => expect(browserListeners.size).toBeGreaterThan(0));
+    emitBrowserEvent({ type: "status", status: BROWSER_STATUS });
+    act(() => { floatWorkLiveCardForChat("chat-1", "browser"); });
+    await screen.findByLabelText("Browser live preview", {}, { timeout: 3_000 });
+
+    const failed = makeBuiltInBrowserStatus({
+      ...BROWSER_STATUS,
+      tabs: [{
+        ...BROWSER_STATUS.tabs[0]!,
+        loadError: { code: -102, description: "ERR_CONNECTION_REFUSED", url: "https://example.test/login" },
+      }],
+    });
+    emitBrowserEvent({ type: "status", status: failed });
+    await waitFor(() => expect(screen.queryByLabelText("Browser live preview")).toBeNull());
+    expect(readChatCompanionUiState("chat-1").workLiveCardFloating).toEqual(["browser"]);
+
+    emitBrowserEvent({ type: "status", status: BROWSER_STATUS });
+    expect(await screen.findByLabelText("Browser live preview", {}, { timeout: 3_000 })).toBeTruthy();
+  });
+
   it("a disabled preview never shows even when the tool is live", async () => {
     seedProject();
     const { card } = await showCard();
@@ -730,6 +757,28 @@ describe("WorkLiveCornerCard dismissal", () => {
     act(() => { setWorkLivePreviewEnabledForChat("chat-1", "browser", true); });
     expect(await screen.findByLabelText("Browser live preview", {}, { timeout: 3_000 })).toBeTruthy();
     expect(readChatCompanionUiState("chat-1").workLiveCardClosedByTool.browser).toBeUndefined();
+  });
+
+  it("steps aside while a floating player is on screen, unless the chat floated the tool", async () => {
+    seedProject();
+    await showCard();
+    const playerFrame = { x: 600, y: 400, width: 280, height: 180 };
+    try {
+      act(() => { setFloatingPlayerSlot("test-floating-player", playerFrame); });
+      await waitFor(() => expect(screen.queryByLabelText("Browser live preview")).toBeNull());
+
+      // Stepping aside is not a dismissal: it comes back when the player goes.
+      act(() => { setFloatingPlayerSlot("test-floating-player", null); });
+      expect(await screen.findByLabelText("Browser live preview", {}, { timeout: 3_000 })).toBeTruthy();
+
+      // Floating it by hand is an explicit ask: it shows beside the player.
+      act(() => { floatWorkLiveCardForChat("chat-1", "browser"); });
+      act(() => { setFloatingPlayerSlot("test-floating-player", playerFrame); });
+      // Still in view: a card stepping aside is aria-hidden at once, before its exit animation ends.
+      expect(screen.getByLabelText("Browser live preview").closest('[aria-hidden="true"]')).toBeNull();
+    } finally {
+      act(() => { setFloatingPlayerSlot("test-floating-player", null); });
+    }
   });
 
   it("reopens a closed card when the chat floats the tool", async () => {

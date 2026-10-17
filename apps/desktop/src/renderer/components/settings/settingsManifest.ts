@@ -12,6 +12,7 @@
  * once. `settingsManifest.test.ts` asserts the anchors and aliases stay live.
  */
 
+import { PROVIDER_DISPLAY_NAME } from "../../../shared/providers";
 import { SCOPE_COPY, type SettingScope, type SettingWebScope } from "../../../shared/types/settingsScope";
 import { isWebClientMode } from "../../lib/webClientMode";
 
@@ -36,6 +37,7 @@ export const SETTINGS_TAB_IDS = [
   "lanes-git",
   "integrations",
   "notifications",
+  "mcp",
   "secrets",
   "storage",
   "archive",
@@ -99,7 +101,7 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
 ] as const;
 
 /** The pages that exist once per machine. */
-export const MACHINE_SETTINGS_TAB_IDS: readonly SettingsTabId[] = ["general", "appearance", "agents", "lanes-git", "integrations", "storage", "archive"];
+export const MACHINE_SETTINGS_TAB_IDS: readonly SettingsTabId[] = ["general", "appearance", "apple", "agents", "lanes-git", "integrations", "storage", "archive"];
 
 export function isMachineSettingsTab(tab: SettingsTabId): boolean {
   return MACHINE_SETTINGS_TAB_IDS.includes(tab);
@@ -108,10 +110,11 @@ export function isMachineSettingsTab(tab: SettingsTabId): boolean {
 /**
  * Machines pages that describe the screen in front of you, not the machine's
  * runtime. Appearance is painted by the window you are looking at and kept in
- * its own storage, so it has one page, under This computer. A remote machine
- * has no copy of it to show or edit from here.
+ * its own storage, so it has one page, under This computer. Apple devices is
+ * edited from the computer whose simulators it drives. A remote machine has no
+ * copy of either to show or edit from here.
  */
-export const THIS_COMPUTER_ONLY_TAB_IDS: readonly SettingsTabId[] = ["appearance"];
+export const THIS_COMPUTER_ONLY_TAB_IDS: readonly SettingsTabId[] = ["appearance", "apple"];
 
 export function isThisComputerOnlyTab(tab: SettingsTabId): boolean {
   return THIS_COMPUTER_ONLY_TAB_IDS.includes(tab);
@@ -122,11 +125,10 @@ export const SETTINGS_TABS: readonly SettingsTab[] = [
   // No description: the page opens on your name and email.
   { id: "account", label: "Account", group: "account" },
   { id: "chat", label: "Chat", description: "How the chat transcript reads, and what the composer does.", group: "account" },
-  // Apple device options follow the account on purpose: the host reads the
-  // remote streaming cap from the account store, so this page cannot be
-  // per computer without moving that read.
-  { id: "apple", label: "Apple devices", description: "Simulator display, recording overlays, and remote streaming.", group: "account" },
   { id: "notifications", label: "Notifications", description: "What ADE tells you about running work, and where.", group: "account" },
+  // The list follows the account. The page also shows what this computer and
+  // this project do with it, because that is where a server is switched off.
+  { id: "mcp", label: "MCP servers", description: "Tools you add once. Every ADE agent gets them, on every computer.", group: "account" },
   { id: "stats", label: "Usage", description: "Spend and pacing across your providers and machines.", group: "account" },
 
   // ── Project: this repository, on every machine ─────────────────────────
@@ -143,8 +145,12 @@ export const SETTINGS_TABS: readonly SettingsTab[] = [
   // No description. The page is a list of named providers with their status —
   // a sentence restating that above it is the caption the owner called out.
   { id: "agents", label: "Providers", group: "machines" },
+  // Apple devices is per computer: each Mac has its own simulators and its own
+  // network. Values are filed under this device's account scope so the brain
+  // on this computer can read the remote streaming cap (see accountSettingsSync).
+  { id: "apple", label: "Apple devices", description: "Simulator display, recording overlays, and remote streaming on this computer.", group: "machines" },
   { id: "lanes-git", label: "Lanes", description: "How lanes start and stay current in this machine's checkout.", group: "machines" },
-  { id: "integrations", label: "Integrations", description: "GitHub and Linear, as connected on this machine.", group: "machines" },
+  { id: "integrations", label: "Integrations", description: "GitHub, Linear and Jira, as connected on this machine.", group: "machines" },
   { id: "storage", label: "Diagnostics", description: "What ADE keeps on disk, and what you can clear.", group: "machines" },
   // No description: the page's own header says what the archive is.
   { id: "archive", label: "Archive", group: "machines" },
@@ -231,6 +237,30 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Account",
   },
 
+  // ── MCP servers ──────────────────────────────────────────────────────────
+  // Hidden on the hosted web client: a browser has no account-settings or
+  // vault bridge, and the checks and the import read files on a computer.
+  {
+    id: "mcp.servers",
+    label: "MCP servers",
+    keywords: ["mcp", "model context protocol", "tools", "server", "stdio", "http", "sse", "context7", "registry", "header", "env", "secret", "token"],
+    tab: "mcp",
+    anchor: "mcp-servers",
+    scope: "account",
+    web: "hidden",
+    group: "In your account",
+  },
+  {
+    id: "mcp.found",
+    label: "Import MCP servers from this computer",
+    keywords: ["mcp", "import", "claude", "codex", "cursor", "opencode", "droid", "found", "config", "mcp.json", "config.toml"],
+    tab: "mcp",
+    anchor: "mcp-found",
+    scope: "account",
+    web: "hidden",
+    group: "Found on this computer",
+  },
+
   // ── General ──────────────────────────────────────────────────────────────
   {
     id: "general.project",
@@ -239,6 +269,16 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "general",
     anchor: "project",
     scope: "machine-repo",
+    web: "hidden",
+    group: "Project",
+  },
+  {
+    id: "general.project-location",
+    label: "Project location",
+    keywords: ["move", "relocate", "drive", "disk", "external", "folder", "path", "space", "storage"],
+    tab: "general",
+    anchor: "project-location",
+    scope: "machine",
     web: "hidden",
     group: "Project",
   },
@@ -253,12 +293,45 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Command line",
   },
   {
+    id: "general.background-service",
+    label: "Background service",
+    keywords: ["background", "service", "brain", "stop", "quit", "agents", "login item", "daemon", "runtime"],
+    tab: "general",
+    anchor: "background-service",
+    scope: "machine",
+    // Stopping the service is a desktop action on this computer.
+    web: "hidden",
+    group: "Background service",
+  },
+  {
+    id: "general.quit-confirmation",
+    label: "Ask before quitting",
+    keywords: ["quit", "close", "exit", "confirm", "background", "agents", "don't ask again"],
+    tab: "general",
+    anchor: "quit-confirmation",
+    scope: "machine",
+    // The question is asked by the desktop app when it quits.
+    web: "hidden",
+    group: "Background service",
+  },
+  {
     id: "general.auto-updates",
     label: "Automatic updates",
     keywords: ["update", "upgrade", "release", "channel", "version"],
     tab: "general",
     anchor: "auto-updates",
     scope: "machine",
+    web: "hidden",
+    group: "Updates",
+  },
+  {
+    id: "general.update-other-machines",
+    label: "Update other machines",
+    keywords: ["update", "upgrade", "version", "machines", "computers", "remote", "update all", "restart"],
+    tab: "general",
+    anchor: "update-other-machines",
+    scope: "machine",
+    // A browser cannot ask a machine to update itself.
     web: "hidden",
     group: "Updates",
   },
@@ -312,27 +385,16 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "ADE browser",
   },
   {
-    id: "general.analytics",
-    label: "Product analytics",
-    keywords: ["telemetry", "posthog", "tracking", "privacy", "opt out"],
-    tab: "general",
-    anchor: "product-analytics",
-    scope: "machine",
-    web: "browser",
-    group: "Privacy",
-  },
-  {
     id: "general.diagnostics-sharing",
     // Not plain "Diagnostics": `storage.diagnostics` already owns that label,
     // and two identically named search hits pointing at different tabs is a
-    // coin flip for whoever is looking for the off switch.
-    label: "Diagnostics sharing",
-    keywords: ["diagnostics", "crash", "report", "report issue", "privacy", "error", "send", "opt out"],
+    // coin flip for whoever is looking for the report button.
+    label: "Send a report to ADE",
+    keywords: ["diagnostics", "crash", "report", "report issue", "error", "send", "support"],
     tab: "general",
     anchor: "diagnostics-sharing",
     scope: "machine",
-    // Machine-local consent written into `~/.ade/secrets` by the main process;
-    // a browser has no such file, so the toggle is not offered there.
+    // The report is built on this machine by the desktop app; a browser cannot build one.
     web: "hidden",
     group: "Privacy",
   },
@@ -367,6 +429,16 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     scope: "machine",
     web: "browser",
     group: "Theme",
+  },
+  {
+    id: "appearance.background",
+    label: "Background",
+    keywords: ["wallpaper", "picture", "image", "photo", "scene", "shuffle", "gradient", "background"],
+    tab: "appearance",
+    anchor: "background",
+    scope: "machine",
+    web: "browser",
+    group: "Background",
   },
   {
     id: "appearance.chat-font-size",
@@ -429,11 +501,11 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Details",
   },
   {
-    id: "appearance.prompt-stash",
-    label: "Prompt stash button",
+    id: "appearance.drafts",
+    label: "Drafts button",
     keywords: ["bookmark", "stash", "composer", "save prompt"],
     tab: "chat",
-    anchor: "prompt-stash-button",
+    anchor: "drafts-button",
     scope: "account",
     web: "browser",
     group: "Details",
@@ -447,6 +519,17 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     scope: "account",
     web: "browser",
     group: "Composer",
+  },
+  {
+    id: "chat.claude-mods",
+    label: "Show what Claude mods draw",
+    keywords: ["mods", "plugins", "claude code", "band", "status line", "pane", "toast"],
+    tab: "chat",
+    anchor: "claude-mods",
+    scope: "account",
+    // The setting is the host's project configuration, which the hosted client cannot write.
+    web: "hidden",
+    group: "Claude mods",
   },
   {
     id: "appearance.preview",
@@ -489,6 +572,16 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Interface",
   },
   {
+    id: "appearance.focus-grid-chats",
+    label: "Focus grid chats per page",
+    keywords: ["focus", "grid", "tiles", "columns", "layout", "work", "screen size"],
+    tab: "appearance",
+    anchor: "focus-grid-chats",
+    scope: "machine",
+    web: "browser",
+    group: "Interface",
+  },
+  {
     id: "appearance.terminal",
     label: "Terminal text",
     keywords: ["terminal", "font", "monospace", "size", "line height", "scrollback", "shell"],
@@ -504,7 +597,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["apple", "simulator", "ios", "3d", "body", "mesh", "apple.realisticBody"],
     tab: "apple",
     anchor: "apple-realistic-body",
-    scope: "account",
+    scope: "machine",
     web: "browser",
     group: "Apple Development",
   },
@@ -514,7 +607,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["apple", "simulator", "ios", "recording", "overlay", "tap", "apple.recordingOverlays.tapRings"],
     tab: "apple",
     anchor: "apple-tap-rings",
-    scope: "account",
+    scope: "machine",
     web: "browser",
     group: "Apple Development",
   },
@@ -524,7 +617,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["apple", "simulator", "ios", "recording", "overlay", "badge", "keyboard", "apple.recordingOverlays.keyBadges"],
     tab: "apple",
     anchor: "apple-typed-badges",
-    scope: "account",
+    scope: "machine",
     web: "browser",
     group: "Apple Development",
   },
@@ -534,7 +627,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["apple", "simulator", "ios", "stream", "bitrate", "kbit", "remote", "apple.remoteBitrateKbpsCap"],
     tab: "apple",
     anchor: "apple-remote-bitrate",
-    scope: "account",
+    scope: "machine",
     web: "browser",
     group: "Apple Development",
   },
@@ -544,7 +637,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["apple", "simulator", "ios", "recording", "storage", "disk", "warn", "apple.recordingsWarnBytes"],
     tab: "apple",
     anchor: "apple-recordings-warn",
-    scope: "account",
+    scope: "machine",
     web: "browser",
     group: "Apple Development",
   },
@@ -628,6 +721,16 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["factory", "droid", "provider", "sign in", "api key", "model", "permission"],
     tab: "agents",
     anchor: "ai-provider-droid",
+    scope: "machine",
+    web: "hidden",
+    group: "Connections",
+  },
+  {
+    id: "agents.provider.muse",
+    label: PROVIDER_DISPLAY_NAME.muse,
+    keywords: ["muse", "meta", "muse code", "spark", "provider", "sign in", "api key", "model", "permission"],
+    tab: "agents",
+    anchor: "ai-provider-muse",
     scope: "machine",
     web: "hidden",
     group: "Connections",
@@ -842,6 +945,56 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     web: "hidden",
     group: "Linear",
   },
+  {
+    id: "integrations.jira",
+    label: "Jira",
+    keywords: ["issue", "ticket", "atlassian", "api token", "jira cloud"],
+    tab: "integrations",
+    anchor: "jira-connection",
+    scope: "machine",
+    web: "hidden",
+    group: "Jira",
+  },
+  {
+    id: "integrations.jira-projects",
+    label: "Jira projects for this project",
+    keywords: ["jira", "project", "issue tracker", "binding", "default"],
+    tab: "integrations",
+    anchor: "jira-projects",
+    scope: "account-repo",
+    web: "hidden",
+    group: "Jira",
+  },
+  {
+    id: "integrations.jira-top-bar",
+    label: "Show Jira in the top bar",
+    keywords: ["jira", "issues", "top bar", "header", "hide", "button"],
+    tab: "integrations",
+    anchor: "jira-top-bar",
+    scope: "machine",
+    web: "hidden",
+    group: "Jira",
+  },
+  {
+    id: "integrations.linear-top-bar",
+    label: "Show Linear in the top bar",
+    keywords: ["linear", "issues", "top bar", "header", "hide", "button"],
+    tab: "integrations",
+    anchor: "linear-top-bar",
+    scope: "machine",
+    web: "hidden",
+    group: "Linear",
+  },
+  {
+    id: "integrations.github-issues-top-bar",
+    label: "Show GitHub issues in the top bar",
+    keywords: ["github", "issues", "top bar", "header", "hide", "button", "count"],
+    tab: "integrations",
+    anchor: "github-issues-top-bar",
+    scope: "machine",
+    web: "hidden",
+    group: "GitHub",
+  },
   // ── Notifications ───────────────────────────────────────────────────────
   {
     id: "notifications.events",
@@ -918,50 +1071,6 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   },
 
   // ── Activity ─────────────────────────────────────────────────────────────
-  {
-    id: "activity.notch-enabled",
-    label: "ADE notch",
-    keywords: ["activity", "notch", "menu bar", "hud", "overlay", "ambient", "attention"],
-    tab: "notifications",
-    anchor: "activity-notch",
-    scope: "account",
-    web: "hidden",
-    group: "Notch",
-  },
-  {
-    id: "activity.notch-reveal",
-    label: "Show the notch strip",
-    keywords: ["notch behavior", "reveal", "hover", "always", "compact", "strip"],
-    tab: "notifications",
-    anchor: "activity-notch-reveal",
-    scope: "account",
-    web: "hidden",
-    group: "Notch",
-  },
-  {
-    id: "activity.notch-expanded",
-    label: "Expanded panel",
-    keywords: ["panel", "expand", "list", "sessions", "tall"],
-    tab: "notifications",
-    anchor: "activity-notch-expanded",
-    scope: "account",
-    web: "hidden",
-    group: "Notch",
-  },
-  // `activity.notch-auto-reveal` and `activity.notch-ticker` are both retired:
-  // the notch always flashes for work that needs you, and the strip has no
-  // ticker to cycle — it is state-group counts, not scrolling text. Neither has
-  // a card left for search to land on.
-  {
-    id: "activity.celebrations",
-    label: "Celebrations",
-    keywords: ["confetti", "flourish", "animation", "success"],
-    tab: "notifications",
-    anchor: "activity-celebrations",
-    scope: "account",
-    web: "hidden",
-    group: "Notch",
-  },
   {
     id: "activity.sounds",
     label: "Activity sounds",
@@ -1139,11 +1248,8 @@ export const LEGACY_HASH_ALIASES: Readonly<Record<string, string>> = {
   // Reset ADE lived inside the About card (#1410) before it got its own section.
   "about.reset": "general.reset",
   "auto-updates": "general.auto-updates",
-  "product-analytics": "general.analytics",
   storage: "storage.usage",
   // Moved out of Notifications when Activity got its own tab.
-  "attention-notch": "activity.notch-enabled",
-  celebrations: "activity.celebrations",
   "attention-sounds": "activity.sounds",
   "hide-previews": "activity.hide-details",
 };
@@ -1323,6 +1429,35 @@ export function resolveSettingsHash(hash: string | null | undefined): SettingEnt
   if (direct) return direct;
   const aliased = LEGACY_HASH_ALIASES[raw];
   return aliased ? (ENTRIES_BY_ID.get(aliased) ?? null) : null;
+}
+
+/**
+ * The tab a `/settings` route opens on, resolved the way `SettingsPage`
+ * resolves it: a `#hash` names one card and wins over `?tab=`, and a missing or
+ * unknown tab opens on `DEFAULT_SETTINGS_TAB`.
+ */
+export function settingsTabForRoute(route: string): SettingsTabId {
+  const url = new URL(route, "http://settings.invalid");
+  let hash = url.hash;
+  try {
+    hash = decodeURIComponent(hash);
+  } catch {
+    // A malformed escape is literal text, as it is on the settings page.
+  }
+  const linked = resolveSettingsHash(hash);
+  if (linked) return linked.tab;
+  return resolveSettingsTab(url.searchParams.get("tab")) ?? DEFAULT_SETTINGS_TAB;
+}
+
+/**
+ * Whether a route is a machine-scoped settings page: one of the This computer
+ * pages (General, Diagnostics, Providers and the rest). Those describe one
+ * computer, so a project must never remember one as its place to return to.
+ */
+export function isMachineScopedSettingsRoute(route: string): boolean {
+  const pathname = route.split(/[?#]/, 1)[0] ?? "";
+  if (pathname !== "/settings" && !pathname.startsWith("/settings/")) return false;
+  return isMachineSettingsTab(settingsTabForRoute(route));
 }
 
 /** The route a palette entry or deeplink should navigate to. */

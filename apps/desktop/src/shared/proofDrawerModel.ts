@@ -42,6 +42,17 @@ export type ProofDrawerFilter = {
 
 export const EMPTY_PROOF_DRAWER_FILTER: ProofDrawerFilter = { query: "", media: "all", inAnswerOnly: false };
 
+/**
+ * The drawer narrowed to the records a thread link counted ("3 proof filed"),
+ * with the words its filter chip shows ("This turn").
+ */
+export type ProofDrawerFocus = { label: string; artifactIds: readonly string[] };
+
+/** The focus a "N proof filed" link opens: these records, under this chip label. */
+export function proofDrawerFocus(label: string, artifacts: readonly { id: string }[]): ProofDrawerFocus {
+  return { label, artifactIds: artifacts.map((artifact) => artifact.id) };
+}
+
 type TurnInfo = {
   turnId: string;
   prompt: string | null;
@@ -153,7 +164,9 @@ export function buildProofDrawerGroups(
   artifacts: readonly ComputerUseArtifactView[],
   events: readonly AgentChatEventEnvelope[],
   filter: ProofDrawerFilter = EMPTY_PROOF_DRAWER_FILTER,
+  focus: ProofDrawerFocus | null = null,
 ): ProofDrawerGroup[] {
+  const focusIds = focus ? new Set(focus.artifactIds) : null;
   const turns = readChatTurns(events);
   const turnsById = new Map(turns.map((turn) => [turn.turnId, turn]));
   const citedByTurn = new Map(turns.map((turn) => [turn.turnId, citedProofArtifactIds(turn.answerText)]));
@@ -167,6 +180,7 @@ export function buildProofDrawerGroups(
   const buckets = new Map<string, { turn: TurnInfo | null; artifacts: ComputerUseArtifactView[] }>();
   const sorted = [...artifacts].sort((left, right) => left.createdAt.localeCompare(right.createdAt));
   for (const artifact of sorted) {
+    if (focusIds && !focusIds.has(artifact.id)) continue;
     if (!matchesFilter(artifact, filter)) continue;
     if (filter.inAnswerOnly && !citedAnywhere.has(artifact.id)) continue;
     const turn = placeArtifact(artifact, turns, turnsById);

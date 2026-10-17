@@ -42,19 +42,18 @@ struct LaneStackGraphSheet: View {
     NavigationStack {
       ScrollView {
         VStack(spacing: 14) {
-          GlassSection(title: "Stack graph") {
-            VStack(alignment: .leading, spacing: 8) {
-              ForEach(orderedSnapshots) { snapshot in
+          LaneFormSection(title: "Stack graph") {
+            LaneChoiceList(items: orderedSnapshots) { snapshot in
                 HStack(alignment: .top, spacing: 12) {
                   HStack(spacing: 0) {
                     if snapshot.lane.stackDepth > 0 {
                       Rectangle()
-                        .fill(ADEColor.glassBorder)
+                        .fill(ADEKit.rule)
                         .frame(width: CGFloat(snapshot.lane.stackDepth) * 12, height: 1)
                         .padding(.top, 10)
                     }
                     Circle()
-                      .fill(snapshot.lane.id == selectedLaneId ? ADEColor.accent : runtimeTint(bucket: snapshot.runtime.bucket))
+                      .fill(LaneColorPalette.displayColor(forHex: snapshot.lane.color, fallback: ADEColor.textMuted))
                       .frame(width: 8, height: 8)
                       .padding(.top, 6)
                   }
@@ -65,21 +64,19 @@ struct LaneStackGraphSheet: View {
                         .foregroundStyle(ADEColor.textPrimary)
                         .lineLimit(1)
                       if snapshot.lane.id == selectedLaneId {
-                        LaneMicroChip(icon: "checkmark.circle.fill", text: "Current", tint: ADEColor.accent)
+                        Image(systemName: "checkmark")
+                          .font(.system(size: 12, weight: .semibold))
+                          .foregroundStyle(ADEColor.accent)
+                          .accessibilityLabel("Current")
                       }
                     }
-                    Text(snapshot.lane.branchRef)
-                      .font(.system(.caption, design: .monospaced))
-                      .foregroundStyle(ADEColor.textSecondary)
+                    Text(normalizedPrBranchName(snapshot.lane.branchRef))
+                      .font(.adeMono(11))
+                      .foregroundStyle(ADEColor.textMuted)
                   }
                   Spacer()
                 }
-                .padding(EdgeInsets(top: 8, leading: 10, bottom: 8, trailing: 10))
-                .background(
-                  RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(snapshot.lane.id == selectedLaneId ? ADEColor.accent.opacity(0.1) : ADEColor.surfaceBackground.opacity(0.6))
-                )
-              }
+                .padding(.vertical, 8)
             }
           }
         }

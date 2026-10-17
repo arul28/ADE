@@ -1,6 +1,26 @@
 import fs from "node:fs";
 import path from "node:path";
 import { writeFileAtomic } from "../../../../desktop/src/main/services/state/durableFile";
+import {
+  readAccountChangeMarks,
+  subscribeAccountChangeMarks,
+  type AccountChangeMarkKind,
+} from "./accountChangeMarks";
+
+/** Marks older than this mean the heartbeat stopped carrying them: poll. */
+const CHANGE_MARK_FRESH_MS = 90_000;
+/** Even with fresh marks, pull at least this often as a safety net. */
+const CHANGE_MARK_SAFETY_SYNC_MS = 5 * 60_000;
+/**
+ * A local write uploads this long after it lands instead of on the next tick.
+ * Long enough to fold a burst (an .env import, a settings drag) into one PUT.
+ */
+const LOCAL_WRITE_FLUSH_DELAY_MS = 250;
+/** First wait after a failed sync; doubles per consecutive failure. */
+const FAILURE_BACKOFF_BASE_MS = 30_000;
+const FAILURE_BACKOFF_MAX_MS = 10 * 60_000;
+/** A relay that answered 429 asked to be left alone for at least this long. */
+const RATE_LIMITED_BACKOFF_MIN_MS = 60_000;
 
 /**
  * The machine-local half of an account-synced store.
@@ -54,6 +74,7 @@ export type AccountCachePending = { seq: number; deleted: boolean };
 export type AccountCacheSyncStatus = "ready" | "unavailable" | "failed";
 
 export type AccountCacheSyncListener = (status: AccountCacheSyncStatus) => void;
+export type AccountCacheRemoteRowsAppliedListener = () => void;
 
 /** One Worker page is 500 rows. Fifty pages is far past any real vault. */
 const MAX_PULL_PAGES = 50;
@@ -95,6 +116,18 @@ export type AccountCacheStoreConfig<
   getAccountUserId: () => string | null;
   logger: AccountCacheLogger;
   defaultSyncIntervalMs: number;
+  /**
+   * Which relay change mark covers this store. When set, a periodic tick pulls
+   * only when that mark moved, local writes are queued, the marks have gone
+   * stale, or the safety interval passed; see `shouldPullOnTick`.
+   */
+  changeMarkKind?: AccountChangeMarkKind;
+  /**
+   * Upload a local write right away instead of on the next tick. The vault
+   * sets it: a secret saved on one machine is wanted on the next one now.
+   * Settings keep the tick (see accountSettingsFlush.ts).
+   */
+  flushOnWrite?: boolean;
   /** Log event names, so each store keeps the telemetry it already emits. */
   events: {
     writeFailed: string;
@@ -158,7 +191,20 @@ export type AccountCacheStore<
     options?: { expectedAccountUserId?: string },
   ): boolean;
   sync(): Promise<AccountCacheSyncStatus>;
-  startPeriodicSync(intervalMs?: number, onSync?: AccountCacheSyncListener): () => void;
+  /**
+   * Sync only when the last successful pull for this account is older than
+   * `maxAgeMs` or local writes are still queued; otherwise answer `ready` from
+   * the cache without the network. For reads that must not miss a change made
+   * on another machine moments ago (an agent asking for a secret by name).
+   */
+  syncIfStale(maxAgeMs: number): Promise<AccountCacheSyncStatus>;
+  /** Cache keys of local writes that have not reached the Worker yet. */
+  pendingKeys(): string[];
+  startPeriodicSync(
+    intervalMs?: number,
+    onSync?: AccountCacheSyncListener,
+    onRemoteRowsApplied?: AccountCacheRemoteRowsAppliedListener,
+  ): () => void;
   /** Empty the cache and write the empty file. */
   reset(): void;
   /** Empty the cache and delete the file, leaving nothing for a later reader. */
@@ -178,6 +224,59 @@ export function createAccountCacheStore<
   let syncInFlight: Promise<AccountCacheSyncStatus> | null = null;
   let syncTimer: ReturnType<typeof setInterval> | null = null;
   const syncListeners = new Set<AccountCacheSyncListener>();
+  const remoteRowsAppliedListeners = new Set<AccountCacheRemoteRowsAppliedListener>();
+  /**
+   * What the last sync covered: its status, the change mark it pulled up to,
+   * when it finished, and for which account. A tick may skip the network only
+   * when all of these still describe the signed-in account.
+   */
+  let lastSyncedMark: string | null | undefined;
+  let lastReadySyncAtMs = 0;
+  let lastSyncStatus: AccountCacheSyncStatus | null = null;
+  let lastSyncedAccountUserId: string | null = null;
+  let lastSyncedEpoch = -1;
+  /** The mark the most recent sync attempt started from, whatever its outcome. */
+  let lastAttemptedMark: string | null | undefined;
+  let lastAttemptedAccountUserId: string | null = null;
+  let consecutiveFailures = 0;
+  /**
+   * Background syncs wait until this time after failures. Without it a relay
+   * that is down or rate-limiting gets the same request every 30 seconds from
+   * every machine, which is exactly the traffic that keeps it rate-limiting.
+   */
+  let backoffUntilMs = 0;
+  /** The account the backoff was earned by; another account is not held by it. */
+  let backoffAccountUserId: string | null = null;
+  /** Whether the current sync attempt failed with a 429 (sets a longer backoff). */
+  let lastErrorRateLimited = false;
+  /** The pending post-write upload, and whether one is owed after the sync in flight. */
+  let flushTimer: ReturnType<typeof setTimeout> | null = null;
+  let flushAfterInFlight = false;
+  const forgetLastSync = (): void => {
+    consecutiveFailures = 0;
+    backoffUntilMs = 0;
+    backoffAccountUserId = null;
+    lastAttemptedMark = undefined;
+    lastAttemptedAccountUserId = null;
+    lastSyncedMark = undefined;
+    lastReadySyncAtMs = 0;
+    lastSyncStatus = null;
+    lastSyncedAccountUserId = null;
+    lastSyncedEpoch = -1;
+  };
+  /**
+   * True when the last sync was a successful pull for this account into the
+   * cache that is loaded now. Reads the cache first: that is what notices an
+   * owner change and bumps the epoch, so an A→B→A switch (which empties A's
+   * cache) never counts as already synced.
+   */
+  const lastSyncWasReadyFor = (accountUserId: string): boolean => {
+    readCache();
+    return lastSyncStatus === "ready"
+      && lastSyncedAccountUserId === accountUserId
+      && lastSyncedEpoch === epoch;
+  };
+  let unsubscribeChangeMarks: (() => void) | null = null;
   /**
    * How many callers asked for the background sync.
    *
@@ -392,18 +491,122 @@ export function createAccountCacheStore<
       cache = before;
       return false;
     }
+    if (config.flushOnWrite && current.pending.length > 0) scheduleFlush();
     return true;
+  }
+
+  /**
+   * Upload a local write now rather than on the next tick, so another machine
+   * can see it within one of its own heartbeats instead of two. A write that
+   * lands while a sync is in flight runs one more pass after it: the in-flight
+   * pass took its queue snapshot before this write existed.
+   */
+  function scheduleFlush(): void {
+    if (!config.hasRelay()) return;
+    if (syncInFlight) {
+      flushAfterInFlight = true;
+      return;
+    }
+    if (flushTimer) return;
+    // Inside a backoff the write waits it out; the tick would retry it then
+    // anyway, and a burst of writes must not become a burst of refused PUTs.
+    const delayMs = Math.max(LOCAL_WRITE_FLUSH_DELAY_MS, backoffRemainingMs());
+    flushTimer = setTimeout(() => {
+      flushTimer = null;
+      syncAndNotify();
+    }, delayMs);
+    flushTimer.unref?.();
+  }
+
+  function syncAndNotify(): void {
+    void store.sync()
+      .then(notifySyncListeners)
+      .catch(() => {
+        // `sync` already logs and already keeps the queue. A rejection here
+        // would be an unhandled one on a timer, which takes the brain down
+        // for a condition that resolves itself.
+      });
+  }
+
+  function backoffRemainingMs(): number {
+    if (backoffAccountUserId !== config.getAccountUserId()) return 0;
+    return Math.max(0, backoffUntilMs - Date.now());
+  }
+
+  function recordSyncOutcome(status: AccountCacheSyncStatus, rateLimited: boolean): void {
+    if (status === "ready") {
+      consecutiveFailures = 0;
+      backoffUntilMs = 0;
+      return;
+    }
+    if (status !== "failed") return;
+    const accountUserId = config.getAccountUserId();
+    if (backoffAccountUserId !== accountUserId) consecutiveFailures = 0;
+    backoffAccountUserId = accountUserId;
+    consecutiveFailures += 1;
+    let waitMs = Math.min(
+      FAILURE_BACKOFF_MAX_MS,
+      FAILURE_BACKOFF_BASE_MS * 2 ** Math.min(consecutiveFailures - 1, 10),
+    );
+    if (rateLimited) waitMs = Math.max(waitMs, RATE_LIMITED_BACKOFF_MIN_MS);
+    backoffUntilMs = Date.now() + waitMs;
   }
 
   const stopPeriodicSync = (): void => {
     if (syncHolders > 0) syncHolders -= 1;
     if (syncHolders > 0) return;
+    unsubscribeChangeMarks?.();
+    unsubscribeChangeMarks = null;
+    if (flushTimer) {
+      clearTimeout(flushTimer);
+      flushTimer = null;
+    }
+    flushAfterInFlight = false;
     if (!syncTimer) return;
     clearInterval(syncTimer);
     syncTimer = null;
   };
 
+  /**
+   * Whether a periodic tick needs the network. Polling stays the default: any
+   * doubt (no mark kind, no account, queued local writes, no fresh mark from
+   * the relay, a mark that moved, or the safety interval elapsed) pulls, so a
+   * relay or publisher that never sends marks behaves exactly as before.
+   */
+  const shouldPullOnTick = (nowMs: number): boolean => {
+    const kind = config.changeMarkKind;
+    if (!kind) return true;
+    const accountUserId = config.getAccountUserId();
+    if (!accountUserId) return true;
+    if (!lastSyncWasReadyFor(accountUserId)) return true;
+    if (readCache().pending.length > 0) return true;
+    if (nowMs - lastReadySyncAtMs >= CHANGE_MARK_SAFETY_SYNC_MS) return true;
+    const entry = readAccountChangeMarks(accountUserId);
+    if (!entry || nowMs - entry.receivedAtMs > CHANGE_MARK_FRESH_MS) return true;
+    return entry.marks[kind] !== lastSyncedMark;
+  };
+
+  /**
+   * Each listener runs behind its own boundary: one that throws must neither
+   * silence the rest nor escape a timer callback, where it would be uncaught.
+   */
+  const notifySyncListeners = (status: AccountCacheSyncStatus): void => {
+    for (const listener of syncListeners) {
+      try {
+        listener(status);
+      } catch {
+        // Contained like the network tick's `.catch`: the listener owns its
+        // own reporting, and the cache has nothing to add.
+      }
+    }
+  };
+
+  const noteError = (error: unknown): void => {
+    lastErrorRateLimited = isRecord(error) && error.status === 429;
+  };
+
   async function runSync(): Promise<AccountCacheSyncStatus> {
+    lastErrorRateLimited = false;
     if (!config.hasRelay()) return "unavailable";
     const entryAccountUserId = config.getAccountUserId();
     if (!entryAccountUserId) return "unavailable";
@@ -434,6 +637,7 @@ export function createAccountCacheStore<
       } catch (error) {
         // Keep the queue. An upload that failed is work still to do, and
         // dropping it would silently lose a change the user believes is saved.
+        noteError(error);
         logger.warn(config.events.uploadFailed, {
           pending: pending.length,
           error: error instanceof Error ? error.message : String(error ?? ""),
@@ -476,6 +680,7 @@ export function createAccountCacheStore<
         if (abandoned()) return "unavailable";
         const after = readCache();
         const stillPending = new Set(after.pending.map((entry) => config.pendingKey(entry)));
+        let appliedRemoteRows = false;
         for (const remote of page.rows) {
           const key = config.remoteKey(remote);
           // A key this machine has queued is not the server's to answer yet.
@@ -500,15 +705,28 @@ export function createAccountCacheStore<
           const next = config.toRow(remote, cached);
           if (next === null) continue;
           after.rows[key] = next;
+          appliedRemoteRows = true;
         }
         if (page.cursor) after.cursor = page.cursor;
         if (!persist()) return "failed";
+        if (appliedRemoteRows) {
+          for (const listener of [...remoteRowsAppliedListeners]) {
+            try {
+              listener();
+            } catch (error) {
+              logger.warn(config.events.pullFailed, {
+                error: error instanceof Error ? error.message : String(error ?? ""),
+              });
+            }
+          }
+        }
         if (!page.truncated) return "ready";
         logger.info(config.events.pullTruncated, { cursor: after.cursor, page: pageIndex + 1 });
         if ((page.cursor ?? null) === (cursorAtPull ?? null)) return "unavailable";
       }
       return "unavailable";
     } catch (error) {
+      noteError(error);
       logger.warn(config.events.pullFailed, {
         error: error instanceof Error ? error.message : String(error ?? ""),
       });
@@ -516,7 +734,7 @@ export function createAccountCacheStore<
     }
   }
 
-  return {
+  const store: AccountCacheStore<TRow, TPending> = {
     readCache,
     mutate,
     cachePath,
@@ -529,10 +747,60 @@ export function createAccountCacheStore<
      */
     async sync(): Promise<AccountCacheSyncStatus> {
       if (syncInFlight) return syncInFlight;
-      syncInFlight = runSync().finally(() => {
-        syncInFlight = null;
-      });
+      // Take the mark before pulling: a change that lands mid-pull moves the
+      // mark past this value, so the next tick pulls again.
+      const accountUserId = config.getAccountUserId();
+      const markAtStart = config.changeMarkKind && accountUserId
+        ? readAccountChangeMarks(accountUserId)?.marks[config.changeMarkKind]
+        : undefined;
+      readCache();
+      const epochAtStart = epoch;
+      lastAttemptedMark = markAtStart;
+      lastAttemptedAccountUserId = accountUserId;
+      syncInFlight = runSync()
+        .then((status) => {
+          lastSyncStatus = status;
+          lastSyncedAccountUserId = accountUserId;
+          lastSyncedEpoch = epochAtStart;
+          if (status === "ready") {
+            lastSyncedMark = markAtStart;
+            lastReadySyncAtMs = Date.now();
+          }
+          // A reset during the pass (sign-out, account switch) owns the state
+          // now; this pass's failure must not hold the next owner back.
+          if (epoch === epochAtStart) recordSyncOutcome(status, lastErrorRateLimited);
+          return status;
+        })
+        .finally(() => {
+          syncInFlight = null;
+          if (flushAfterInFlight) {
+            flushAfterInFlight = false;
+            if (readCache().pending.length > 0) scheduleFlush();
+          }
+        });
       return syncInFlight;
+    },
+
+    async syncIfStale(maxAgeMs: number): Promise<AccountCacheSyncStatus> {
+      if (syncInFlight) return await syncInFlight;
+      // Inside a failure backoff a read answers from the cache: every agent
+      // read retrying a relay that just refused would be the flood the
+      // backoff exists to stop. An explicit `sync()` still goes through.
+      if (backoffRemainingMs() > 0) return "failed";
+      const accountUserId = config.getAccountUserId();
+      if (
+        accountUserId
+        && lastSyncWasReadyFor(accountUserId)
+        && readCache().pending.length === 0
+        && Date.now() - lastReadySyncAtMs <= Math.max(0, maxAgeMs)
+      ) {
+        return "ready";
+      }
+      return await store.sync();
+    },
+
+    pendingKeys(): string[] {
+      return readCache().pending.map((entry) => config.pendingKey(entry));
     },
 
     /**
@@ -549,9 +817,14 @@ export function createAccountCacheStore<
      * is awake and signed in converges within one beat and an idle one costs a
      * single `since`-filtered query.
      */
-    startPeriodicSync(intervalMs = config.defaultSyncIntervalMs, onSync?: AccountCacheSyncListener): () => void {
+    startPeriodicSync(
+      intervalMs = config.defaultSyncIntervalMs,
+      onSync?: AccountCacheSyncListener,
+      onRemoteRowsApplied?: AccountCacheRemoteRowsAppliedListener,
+    ): () => void {
       syncHolders += 1;
       if (onSync) syncListeners.add(onSync);
+      if (onRemoteRowsApplied) remoteRowsAppliedListeners.add(onRemoteRowsApplied);
       let released = false;
       const release = (): void => {
         // Each caller's stop is its own. Calling it twice must not release a
@@ -559,20 +832,39 @@ export function createAccountCacheStore<
         if (released) return;
         released = true;
         if (onSync) syncListeners.delete(onSync);
+        if (onRemoteRowsApplied) remoteRowsAppliedListeners.delete(onRemoteRowsApplied);
         stopPeriodicSync();
       };
       if (syncTimer) return release;
       syncTimer = setInterval(() => {
-        void this.sync()
-          .then((status) => {
-            for (const listener of syncListeners) listener(status);
-          })
-          .catch(() => {
-            // `sync` already logs and already keeps the queue. A rejection here
-            // would be an unhandled one on a timer, which takes the brain down
-            // for a condition that resolves itself.
-          });
+        // Failing or rate-limited: stay quiet until the backoff passes, and do
+        // not tell listeners "ready" about a cache that could not be refreshed.
+        if (!syncInFlight && backoffRemainingMs() > 0) return;
+        // A sync already running (sign-in, a user action) is joined, never
+        // pre-empted by a synthetic "ready" that would land before its pull.
+        if (syncInFlight || shouldPullOnTick(Date.now())) {
+          syncAndNotify();
+          return;
+        }
+        // Nothing moved remotely and nothing is queued: the cache is as fresh
+        // as a pull would make it. Listeners still get their tick so local
+        // follow-up work (applying vault secrets, migration) keeps its cadence.
+        notifySyncListeners("ready");
       }, Math.max(1_000, Math.trunc(intervalMs)));
+      // A moved mark pulls at once instead of waiting for the next tick, so a
+      // change on another machine lands as fast as it did with polling.
+      if (config.changeMarkKind && !unsubscribeChangeMarks) {
+        const kind = config.changeMarkKind;
+        unsubscribeChangeMarks = subscribeAccountChangeMarks((accountUserId, marks) => {
+          if (accountUserId !== config.getAccountUserId()) return;
+          // Only a mark that moved since the last attempt pulls early. Retries
+          // after a failed sync stay on the tick's cadence, so failures never
+          // double the traffic.
+          if (marks[kind] === lastAttemptedMark && lastAttemptedAccountUserId === accountUserId) return;
+          if (backoffRemainingMs() > 0) return;
+          syncAndNotify();
+        });
+      }
       // Never hold the process open for a cache refresh.
       syncTimer.unref?.();
       return release;
@@ -580,12 +872,14 @@ export function createAccountCacheStore<
 
     reset(): void {
       epoch += 1;
+      forgetLastSync();
       cache = emptyCache(config.getAccountUserId());
       persist();
     },
 
     resetAndDelete(): void {
       epoch += 1;
+      forgetLastSync();
       cache = emptyCache(config.getAccountUserId());
       try {
         fs.rmSync(cachePath, { force: true });
@@ -596,6 +890,7 @@ export function createAccountCacheStore<
       }
     },
   };
+  return store;
 }
 
 /**

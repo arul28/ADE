@@ -7,6 +7,7 @@ import "./lib/nodeWarnings";
 // older `ade` first on PATH, before the rest of the bundle loads.
 import { pendingCliDelegation } from "./lib/cliDelegationEntry";
 import { isCliMainArgv } from "./lib/cliDelegation";
+import type { CrossMachineHandoffTransport } from "../../desktop/src/main/services/chat/crossMachineHandoffOrchestrator";
 import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
@@ -15,11 +16,28 @@ import {
   createMachineRemoteConnection,
   executePlanAcrossMachines,
   extractMachineTargeting,
+  flagNamesOutsideFreeText,
   formatMachineFanOut,
   formatMachinesRoster,
   isMachineFanOutResult,
   withMachineColumns,
 } from "./cliMachineTargeting";
+import {
+  isNoneValue,
+  linearLookupNeeds,
+  looksLikeLinearId,
+  milestoneProjectId,
+  parseDueDate,
+  parseLinearEstimate,
+  parseLinearPriority,
+  resolveLinearFields,
+  teamKeyFromIdentifier,
+  type LinearFieldInput,
+  type LinearLookupContext,
+} from "./issueCliFields";
+import { buildGithubIssuePlan } from "./cliGithubIssue";
+import { buildJiraPlan } from "./cliJira";
+import { buildIssuePlan } from "./cliIssue";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -72,9 +90,16 @@ import {
   MAX_STATUS_NOTE_CHARACTERS,
   STATUS_NOTE_GUIDELINE_WORDS,
 } from "../../desktop/src/shared/sessionStatusNote";
+import { SCENE_PREVIEW_WIDTH } from "../../desktop/src/shared/scenePreview";
+import { SCENE_GUIDE } from "../../desktop/src/shared/sceneGuide";
+import { captureError, flushSentry } from "../../desktop/src/shared/sentry/capture";
+import { initBrainSentry } from "./sentry/initBrain";
 import { buildDeeplink, type DeeplinkEnvelope } from "../../desktop/src/shared/deeplinks";
+import { laneIsOnBaseBranch } from "../../desktop/src/shared/laneBaseResolution";
 import { ARCHIVE_ITEM_KINDS, type ArchiveItemKind } from "../../desktop/src/shared/types/archive";
 import { archiveKindCountParts } from "../../desktop/src/shared/archive";
+import { USER_BROWSER_TARGET_PREFIX } from "../../desktop/src/shared/userBrowserLabels";
+import { customNotificationProblem, describeCustomNotificationResult } from "../../desktop/src/shared/types/attention";
 import { buildPairingQrPayload } from "../../desktop/src/shared/pairingQr";
 import { buildWebClientPairUrl } from "../../desktop/src/shared/webClientUrl";
 import { abbreviatePathTail } from "../../desktop/src/shared/pathDisplay";
@@ -84,7 +109,15 @@ import {
 } from "../../desktop/src/shared/projectSecretPullSummary";
 import { isUuid } from "../../desktop/src/shared/uuid";
 import { proofCitationMarkdown } from "../../desktop/src/shared/proofCitation";
-import { publishProofToPullRequest, type ProofPublishResult } from "./proofPublish";
+import {
+  publishProofIntoPullRequestBody,
+  publishProofToPullRequest,
+  readPullRequestBody,
+  type ProofPublishResult,
+} from "./proofPublish";
+import { prBriefHints } from "../../desktop/src/shared/prBrief";
+import { PR_THREAD_CLOSEOUT_RULE } from "../../desktop/src/shared/prWatch";
+import { prBodyProofIds } from "../../desktop/src/shared/prBodyProof";
 import { CURSOR_CLI_EXECUTABLES } from "../../desktop/src/shared/providerCliExecutables";
 import { effectiveCursorModeId } from "../../desktop/src/shared/cursorModes";
 import { stripParentClaudeSessionEnv } from "../../desktop/src/shared/parentAgentEnv";
@@ -95,11 +128,16 @@ import {
   parseAccountMachine,
 } from "../../desktop/src/shared/accountDirectory";
 import {
+  formatAccountMachineSnapshotText,
+  type AccountMachineSnapshot,
+} from "../../desktop/src/shared/accountMachineSnapshot";
+import {
   accountMachinePresence,
   machineStatusLine,
 } from "../../desktop/src/shared/machinePresence";
 import { SEARCH_DOC_KINDS } from "../../desktop/src/shared/types/search";
 import { pathsEqual } from "../../desktop/src/main/services/shared/pathCompare";
+import { stripHostRuntimeEnv } from "../../desktop/src/main/services/shared/hostRuntimeEnv";
 import { withTimeout } from "../../desktop/src/main/services/ai/utils";
 import type { SyncHostStartupLoopDeps } from "./services/sync/syncHostStartupLoop";
 import type { ProjectSecretStorage } from "../../desktop/src/shared/types/projectSecrets";
@@ -135,6 +173,7 @@ import {
   type ChatTurnStatusPhase,
   type ChatTurnStatusSnapshot,
 } from "../../desktop/src/shared/chatTurnStatus";
+import { chatWaitTargetMatches } from "../../desktop/src/shared/chatWait";
 import type { SessionActivitySource, TerminalSessionSummary } from "../../desktop/src/shared/types/sessions";
 import { SESSION_ACTIVITY_VALUES } from "../../desktop/src/shared/types/sessions";
 import {
@@ -218,6 +257,7 @@ import {
 } from "../../desktop/src/shared/types/builtInBrowser";
 import { parseLinearGraphQLInput } from "../../desktop/src/main/services/cto/linearGraphQLInput";
 import { longRunningLocalRuntimeActionTimeoutMs } from "../../desktop/src/main/services/localRuntime/localRuntimeTimeoutPolicy";
+import { PROJECT_SECRET_REQUEST_DEFAULT_TIMEOUT_MS } from "../../desktop/src/main/services/secrets/projectSecretRequest";
 import { browseProjectDirectories } from "../../desktop/src/main/services/projects/projectBrowserService";
 import { createProjectScaffoldService } from "../../desktop/src/main/services/projects/projectScaffoldService";
 import { resolveRepoRoot } from "../../desktop/src/main/services/projects/projectService";
@@ -235,6 +275,7 @@ import { resolveRemoteProjectIcon } from "./services/projects/projectIconResolve
 import type { ProjectRecord } from "./services/projects/projectRegistry";
 import {
   findAdeManagedWorktreeRoot,
+  findLinkedLaneWorktreeRoot,
   normalizeProjectRootPath,
   realpathIfExists,
 } from "./services/projects/projectRoots";
@@ -387,6 +428,13 @@ import {
 } from "./services/account/accountAuthService";
 import { getSharedAccountAuthService } from "./services/account/sharedAccountAuthService";
 import {
+  deviceSignInInstructions,
+  readDeviceSignInPoll,
+  readDeviceSignInStart,
+  waitForBrowserOrDeviceSignIn,
+  type DeviceSignInStart,
+} from "./commands/accountDeviceSignIn";
+import {
   DEFAULT_SYNC_HOST_PORT,
   SYNC_HOST_MAX_PORT,
 } from "./services/sync/syncProtocol";
@@ -445,6 +493,15 @@ export type GlobalOptions = {
   socketPath: string | null;
   pretty: boolean;
   text: boolean;
+  /**
+   * `--json` was asked for explicitly.
+   *
+   * `text` alone cannot tell `--json` from the no-flag default: both leave it
+   * false. A row-oriented command that renders a readable table when nothing is
+   * asked (see `CliPlan.tableText`) needs the difference, so the two output
+   * flags are tracked separately.
+   */
+  json: boolean;
   timeoutMs: number;
   /**
    * Run the command on another machine on the account (`--machine <name>`).
@@ -484,8 +541,12 @@ const MIN_RUNTIME_IDLE_EXIT_MS = 5_000;
 // How long "Reconnect this computer" waits for a sync-host start it kicked
 // off before answering with why nothing hosts sync.
 const REPAIR_SYNC_HOST_START_TIMEOUT_MS = 20_000;
+// A brain this CLI just spawned has to boot before its socket exists. A cold
+// start on a slow or busy machine takes longer than the 5 seconds an
+// already-running brain gets to answer.
+const SPAWNED_RUNTIME_CONNECT_WINDOW_MS = 20_000;
 
-type InvocationStep = {
+export type InvocationStep = {
   key: string;
   method: string;
   params?: JsonObject | ((values: JsonObject) => JsonObject);
@@ -502,6 +563,7 @@ export type FormatterId =
   | "account-auth"
   | "account-token"
   | "account-machines"
+  | "account-machine-show"
   | "machines-roster"
   | "account-machine-rename"
   | "account-machine-remove"
@@ -517,6 +579,7 @@ export type FormatterId =
   | "files-search"
   | "prs-list"
   | "pr-create"
+  | "pr-body"
   | "pr-detail"
   | "pr-checks"
   | "pr-comments"
@@ -533,8 +596,13 @@ export type FormatterId =
   | "session-lifecycle"
   | "lane-drift"
   | "scheduled-work-create"
+  | "drafts-list"
+  | "drafts-entry"
+  | "drafts-show"
+  | "drafts-confirm"
   | "tests-runs"
   | "proof-list"
+  | "scene-preview"
   | "proof-filed"
   | "proof-published"
   | "ios-sim-status"
@@ -566,8 +634,10 @@ export type FormatterId =
   | "apple-action"
   | "apple-point-action"
   | "browser-action"
+  | "browser-attach"
   | "browser-status"
   | "browser-dev-servers"
+  | "browser-text"
   | "browser-sessions"
   | "browser-observation"
   | "browser-trace"
@@ -587,6 +657,12 @@ export type FormatterId =
   | "automation-ingress"
   | "automation-linear-ingress"
   | "automation-cleanups"
+  | "automation-webhook-setup"
+  | "automation-webhook-list"
+  | "automation-webhook-endpoint"
+  | "automation-webhook-deliveries"
+  | "automation-webhook-delivery"
+  | "automation-webhook-test"
   | "search-results"
   | "search-status"
   | "external-sessions"
@@ -612,7 +688,8 @@ export type FormatterId =
   | "usage-prices"
   | "router-efficiency"
   | "router-shadow"
-  | "update-status";
+  | "update-status"
+  | "notify";
 
 type ChatWaitTarget =
   | "idle"
@@ -698,6 +775,25 @@ export type CliPlan =
        */
       exitCodeFromResult?: (result: unknown) => number;
       /**
+       * Build the command's result from every step's value. The steps before
+       * `result` are lookups (a repo, an issue, a catalog); this picks what
+       * the caller sees and may throw when a lookup came back empty.
+       */
+      shapeResult?: (values: JsonObject) => unknown;
+      /** The `--text` rendering of the result, when no shared formatter fits. */
+      formatText?: (result: unknown) => string;
+      /**
+       * The readable rendering used when NEITHER `--json` nor `--text` is given.
+       *
+       * The CLI's global default is JSON, which is right for the machine-facing
+       * commands. A row-oriented command (`ade drafts`) reads better as a table
+       * when a person asks for nothing, keeps `--text` as its compact
+       * one-line-per-row formatter, and stays JSON under `--json`. Only plans
+       * that set this field change their default; every other command is
+       * untouched.
+       */
+      tableText?: (result: unknown) => string;
+      /**
        * Marks a plan that files a proof record, so its result is summarized
        * into an explicit confirmation line and its failures are prefixed with
        * "<command> failed —".
@@ -709,6 +805,11 @@ export type CliPlan =
        * it, so even a naive grep catches the difference.
        */
       proofFiling?: { command: string; verify: boolean };
+      /**
+       * The text a PR command sent, and the PR it named, for the notes the
+       * summary prints for the reader. `ref` is absent for a PR being made.
+       */
+      prText?: { body: string; ref?: string | null };
       /**
        * Run a recovery step and re-execute the plan once, when the first result
        * says the command cannot succeed without it. Returning false leaves the
@@ -804,7 +905,7 @@ export function asCliUsageError(error: unknown): CliUsageError {
   throw error;
 }
 
-class CliToolError extends Error {
+export class CliToolError extends Error {
   details: unknown;
 
   constructor(message: string, details: unknown) {
@@ -1040,6 +1141,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade auth status                               Show ADE account sign-in status
     $ ade account token create                      Print a durable token for ADE_ACCOUNT_TOKEN
     $ ade machines list                             List machines from the ADE account directory
+    $ ade machines show <name|key> --text           Read one machine's status, projects, lanes and recent chats
     $ ade machines connect <id|name>                Connect ADE Code to an account machine
     $ ade code                                      Open ADE Work chat in the terminal
     $ ade new chat --mode chat|cli --no-parent --prompt "fix"   Start an independent ADE Work chat or tracked CLI session
@@ -1071,6 +1173,8 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade diff changes | file | patch               Inspect lane diffs (including raw git patch text)
     $ ade files tree | read | write | search        Read and edit lane workspaces
     $ ade search "<query>" --text                    Search chats, terminals, PRs, commits, lanes, files, Linear
+    $ ade notify --title "<text>" [--body "<text>"] [--open <ade link>]
+                                                    Send a push to the phones on your ADE account
     $ ade prs list | create | show | checks          Manage PRs, queues, and GitHub integration
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
     $ ade terminal list | resume | read | write | signal
@@ -1078,10 +1182,18 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade history list | show | commits | export     Inspect ADE operation timeline and lane commits
     $ ade chat list | create | send | ask | note | interrupt
                                                     Work with ADE agent chats
+    $ ade drafts list | create | schedule | update | delete | now | show
+                                                    Drafts and scheduled sends
     $ ade session show | move | snooze | wake | clear-woke
                                                     Manage a session's lifecycle (file it on the board, snooze until a deadline)
-    $ ade linear attach | comment | set-state | issue | graphql
-                                                    Read and write attached Linear issues
+    $ ade linear create | edit | comment | set-state | assign | issue | graphql
+                                                    Create, read, and edit Linear issues
+    $ ade jira status | connect | projects | list | issue | create | edit
+                                                    Connect to Jira Cloud and manage issues
+    $ ade issue list | view | comment | state | create | open-url
+                                                    Read and update issues across trackers
+    $ ade github issue list | view | create | edit | comment | close
+                                                    Create, read, and edit GitHub issues
     $ ade github app-auth login | status | clear    Authorize the machine ADE GitHub App (device flow)
     $ ade automations list | create | run | runs    Manage automation rules
     $ ade coordinator <tool>                        Call coordinator runtime tools
@@ -1091,6 +1203,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade app-control launch | observe | click | record
                                                     Drive this lane's Electron app, record it, file proof
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
+    $ ade browser attach | detach                  The user's own browser, only when they ask
     $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
     $ ade ui show apple | floating-apple | browser | proof | mac-desktop | floating-mac-desktop
         | app-control | floating-app-control         Show a surface of this chat to the user
@@ -1102,7 +1215,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
                                                     Manage this machine's Claude/Codex logins
     $ ade proxy status | start | stop | login | logout
                                                     Manage local subscription sign-ins
-    $ ade secrets list | get | set | delete          Manage encrypted ADE project secrets (account or device)
+    $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
     $ ade settings pr-transcript-gists enable      Attach ADE chat transcript links to new PRs
     $ ade settings action <method>                  Call project config actions
     $ ade update status | check | install | dismiss Read auto-update state and drive install
@@ -1112,7 +1225,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
                                                     Drive Cursor Cloud agents via @cursor/sdk
 
   Global options:
-    --project-root <path>   ADE project root. Inside .ade/worktrees/<lane>, this resolves to the parent project.
+    --project-root <path>   ADE project root. Inside a lane worktree, this resolves to the parent project.
     --workspace-root <path> Lane/worktree to treat as the active workspace.
     --headless              Skip the machine brain and run an in-process ADE runtime.
     --socket                Require a live ADE endpoint; fail instead of falling back to headless.
@@ -1156,7 +1269,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
   Start with: ade doctor --text
 `;
 
-function topLevelHelpText(): string {
+export function topLevelHelpText(): string {
   let text = TOP_LEVEL_HELP;
   if (!automationsCliEnabled()) {
     text = text.replace(
@@ -1253,12 +1366,12 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --agent                Launch nothing; print contextPath, playbookPath,
                            playbookSource, suggestedPrompt and the detected
                            agent CLIs. Use this from inside an agent session.
-    --provider <name>      claude | codex | cursor-agent | opencode | droid.
+    --provider <name>      claude | codex | cursor-agent | opencode | droid | muse.
     --text                 Human-readable output.
     --json                 Structured JSON output (default).
 
   Notes:
-    Detection order is claude, codex, cursor-agent, opencode, droid. With no
+    Detection order is claude, codex, cursor-agent, opencode, droid, muse. With no
     agent CLI installed, triage prints the --agent output and exits 0 — the
     files are the deliverable, the launch is a convenience.
     When an agent is launched the terminal belongs to it: the file paths are
@@ -1283,14 +1396,15 @@ export const HELP_BY_COMMAND: Record<string, string> = {
 
     $ ade connect                  Connect this machine (prompts to sign in)
     $ ade connect --status --text  Report only; never signs in or installs
-    $ ade connect --headless       Sign in with the copy-paste device flow
+    $ ade connect --headless       Sign in from another device (QR code, link, and code)
     $ ade connect --no-login       Install the service only; stay local/LAN-only
 
   Flags:
     --status                       Report the three steps without changing anything.
     --no-login                     Skip sign-in. The machine stays local/LAN-only.
     --no-service                   Do not register the login service.
-    --headless                     Force the copy-paste device authorization flow.
+    --headless                     Sign in from another device only. The password is
+                                   never typed on this machine.
     --timeout <seconds>            Bound the wait for the account-directory row
                                    (default 60). Also spelled --max-wait.
 
@@ -1299,6 +1413,32 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     the brain must stay running for the machine to remain reachable.
     Undo with "ade logout" and "ade runtime uninstall-service".
 `,
+  notify: `${ADE_BANNER}
+  Send a notification to your phone
+
+  Sends a push you write to every phone signed in to your ADE account. Use it
+  from a terminal, from an agent ("tell me when the deploy is done"), or from
+  an automation. The text arrives exactly as written; nothing is added.
+
+    $ ade notify --title "Deploy finished"
+    $ ade notify --title "Tests failed" --body "3 failures in apps/desktop" --text
+    $ ade notify --title "Review ready" --open "ade://pr/1514"
+
+  Flags:
+    --title <text>                 Required. Up to 64 characters.
+    --body <text>                  Optional second line. Up to 160 characters.
+    --open <ade link>              Optional. What a tap opens: an ade:// or
+                                   https://ade-app.dev/open link for a chat,
+                                   PR, lane, file, commit, branch or Linear
+                                   issue (make one with \`ade link\`), or
+                                   ade://activity[?state=needs_you].
+
+  Notes:
+    Needs a signed-in account (\`ade login\`) and the running brain.
+    Phones that turned notifications off, are in quiet hours, or muted this
+    machine stay quiet. An account can send 60 an hour; past that the command
+    exits non-zero and says when to try again.
+`,
   auth: `${ADE_BANNER}
   ADE Account
 
@@ -1306,14 +1446,15 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   provider keys to every machine you use, and connects them to each other.
   Work already on this machine is never blocked while you are signed out.
 
-    $ ade login                    Sign in with loopback OAuth or auto-detected device flow
-    $ ade login --headless         Print a verification URL + code for another browser
+    $ ade login                    Sign in in the browser here, or scan the QR code with a phone
+    $ ade login --headless         Open no browser here: print the QR code, a link, and a code
     $ ade logout                   Clear the shared machine account session
     $ ade auth status --text       Show the shared machine account status
     $ ade account token create     Print a self-contained durable token once for agent/CI setup
 
   Flags (login):
-    --headless                     Force the copy-paste device authorization flow.
+    --headless                     Sign in from another device only. The password is
+                                   never typed on this machine.
     --max-wait <seconds>           Give up waiting before the authorization
                                    session expires.
 `,
@@ -1324,6 +1465,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   and explicit remote addresses continue to work while signed out.
 
     $ ade machines list --text
+    $ ade machines show <name|machine-key|device-id> --text
     $ ade machines list --projects --text          Agent-safe roster with each machine's projects
     $ ade machines rename <machine-key> "Build workstation"
     $ ade machines rename <machine-key> --clear
@@ -1338,6 +1480,11 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   stable machine keys to choose from. Directory presence is only a recent hint:
   a verified relay route remains connectable after its heartbeat expires.
   Machines without a verified route stay listed but cannot be connected.
+
+  \`show\` is read-only and open to agents: it prints the machine's status and
+  the projects, lanes and up to five recent chats (with their latest activity
+  lines) that the machine published to ADE Activity. It is recent work, not a
+  full listing, and it never reads a whole transcript or changes the machine.
 
   Sign in with \`ade login\`. \`connect\` and its \`hop\` alias securely save the
   selected machine for that account, then launch ADE Code. Signing out removes
@@ -1418,6 +1565,64 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --app-name <name>       Installed app name to open. Defaults to ADE, ADE Beta,
                             or ADE Alpha based on the installed CLI wrapper.
 `,
+  jira: `${ADE_BANNER}
+  ADE Jira
+
+  Connect this machine's ADE brain to Jira Cloud, then read and update issues.
+  Credentials are stored in the machine credential store. Jira Cloud API tokens
+  are read from stdin so they do not appear in shell history or process listings.
+
+  Connection:
+    $ ade --role cto jira connect --site https://example.atlassian.net --email you@example.com --token-stdin
+    $ ade jira status --text
+    $ ade --role cto jira disconnect
+
+  Read:
+    $ ade jira projects --text
+    $ ade jira list --project ADE --state open --mine --limit 30 --text
+    $ ade jira list --query "login crash" --jql 'priority = High' --text
+    $ ade jira issue ADE-42 --text
+
+  Create and update:
+    $ ade jira create --project ADE --type Bug --title "Login fails" --description-file notes.md --label auth
+    $ ade jira edit ADE-42 --title "Updated title" --label triage --remove-label needs-info
+    $ ade jira comment ADE-42 "Fixed in the next build"
+    $ ade jira transition ADE-42 --to "In Progress"
+    $ ade jira assign ADE-42 --assignee "Morgan Lee"
+    $ ade jira label ADE-42 --label triage
+    $ ade jira unlabel ADE-42 --label triage
+
+  Notes:
+    - connect and disconnect require --role cto.
+    - Pipe the API token into connect; ADE never prints or stores it in project files.
+    - Jira list results are paged; pass the returned cursor to --cursor for the next page.
+`,
+  issue: `${ADE_BANNER}
+  ADE Issues
+
+  Read and update issues across the connected Linear, GitHub, and Jira trackers.
+  References may be a Linear key, Jira key, GitHub issue number, repository issue
+  reference, or issue URL.
+
+    $ ade issue list [--tracker linear|github|jira] [--scope <team|project|repo>] --text
+    $ ade issue view <reference> --text
+    $ ade issue resolve <reference> --text
+    $ ade issue comment <reference> --body "Comment text"
+    $ ade issue state <reference> --to "In Progress"
+    $ ade issue create --tracker linear --team ENG --title "Review login flow"
+    $ ade issue create --tracker github --repo owner/repo --title "Fix login flow"
+    $ ade issue create --tracker jira --project ADE --type Task --title "Review login flow"
+    $ ade issue open-url <reference>
+
+  Flags:
+    --tracker <kind>       Select one tracker for list/create.
+    --scope <value>        Linear team key, Jira project key, or GitHub owner/repo.
+    --cursor <cursor>      Continue a paged result.
+    --state <state>        Filter a list, or pass --to with state to change one.
+    --query <text>         Search issue titles and descriptions.
+    --limit <count>        Limit list results (default 25, maximum 100).
+    --body-file <path>     Read a comment or issue description from a file.
+`,
   github: `${ADE_BANNER}
   ADE GitHub
 
@@ -1433,6 +1638,11 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade github actions --text                 List raw github service actions
     $ ade actions run github.getStatus --input-json '{"forceRefresh":true}' --text
                                                 Show active read/write credentials and cooldowns
+
+  Issues (see \`ade github issue --help\`):
+    $ ade github issue list --text              List open issues in this project's repo
+    $ ade github issue view 12 --comments --text
+    $ ade github issue create --title "Crash on launch" --label bug
 
   Notes:
     - login, clear (and the raw start/poll actions) require --role cto.
@@ -1452,6 +1662,41 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   Flags (login):
     --max-wait <seconds>    Give up waiting after N seconds (default: GitHub's
                             device-code expiry, ~15 min).
+`,
+  "github issue": `${ADE_BANNER}
+  GitHub issues
+
+  Read, create, and edit issues in a GitHub repo. ADE uses the GitHub
+  connection of the running brain, so no token is needed here. Every command
+  works on this project's origin repo; pass --repo owner/name for another one.
+  An issue can be 12, #12, owner/name#12, or an issue URL.
+
+  Read:
+    $ ade github issue list --text              Open issues, newest activity first
+        [--state open|closed|all] [--label bug]... [--assignee <login|none>] [--limit 30]
+    $ ade github issue view 12 --text           Title, state, labels, assignees, milestone, body
+        [--comments]                            Also print the comments
+
+  Create:
+    $ ade github issue create --title "Crash on launch" --body-file notes.md --text
+        [--body "..." | --body-file <path|->]   Body inline, from a file, or from stdin with -
+        [--label bug]... [--assignee octocat]... [--milestone "v1.2"|<number>]
+        [--type Bug] [--parent 10]             Issue type (organization repos); parent issue
+        [--attach shot.png]...                  Attach files (needs GitHub CLI on the ADE machine)
+
+  Edit:
+    $ ade github issue edit 12 --title "New title" [--body "..." | --body-file <path|->]
+    $ ade github issue comment 12 "Fixed in #40"
+    $ ade github issue comment 12 --body-file reply.md
+    $ ade github issue close 12 [--reason completed|not-planned|duplicate]
+    $ ade github issue reopen 12
+    $ ade github issue label 12 --add bug --remove triage
+    $ ade github issue assign 12 --add octocat [--remove hubot] [--clear]
+    $ ade github issue milestone 12 "v1.2"      Milestone by title or number, or none
+    $ ade github issue type 12 Bug              Issue type by name, or none
+    $ ade github issue sub-issue 10 12          Put #12 under #10
+
+  Output is JSON by default. Add --text for a short summary.
 `,
   open: `${ADE_BANNER}
   ADE Open
@@ -1685,14 +1930,20 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --type <subagent|peer>  Required for a parented agent spawn. Use subagent
                            whenever you will need, join, or review the result;
                            use peer only for fire-and-forget work.
-    --provider <name>      claude | codex | cursor | droid | opencode | pi | qwen | kimi | grok | copilot. CLI mode also accepts shell.
+    --provider <name>      claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot. CLI mode also accepts shell.
     --model <id>           Runtime model id.
     --reasoning-effort <v> Reasoning tier. Alias: --effort.
     --permissions <mode>   default | auto | plan | edit | full-auto | config-toml.
     --droid-permission-mode <m>
                            Droid only: read-only | auto-low | auto-medium | auto-high | agi.
                            Aliases: --droid-autonomy, --autonomy.
+    --copilot-permission-mode <m>
+                           Copilot only: plan | ask | assisted | auto-edit | full-auto.
+    --copilot-context-tier <t>
+                           Copilot only: default | long_context (long context costs more per token).
+    --copilot-auto-tier <p> Copilot Auto only: efficiency | balance | intelligence.
     --fast                 Request fast service tier when supported.
+    --ultrafast             Codex: Fast at the Ultrafast tier, on models whose catalog offers it.
     --no-fast, --standard  Disable fast service tier explicitly.
     --prompt <text>        First chat message or CLI initial input.
 
@@ -1878,6 +2129,11 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade prs list --text                           List PRs known to ADE
     $ ade prs list-open --text                      List every open GitHub PR in the repo, keyed by head branch
     $ ade prs create --lane <lane> --base main      Open a GitHub PR from a lane; prints GitHub + ADE URLs
+    $ ade prs create --lane <lane> --title "fix(web): new chats no longer spike CPU" --body-file pr.md
+                                                    The text: "## Why", "## What changed", "## Evidence", "## Not checked".
+                                                    Proof cited in it (![caption](ade-proof://<id>), or a proof-compare
+                                                    block) is uploaded into the text. Prints what a reader will miss.
+    $ ade prs body <pr> --body-file pr.md           Replace the PR text; same upload and same notes
     $ ade prs create --lane <lane> --close-linear-issue-on-merge
     $ ade prs land <pr> --method squash             Merge; keeps the remote branch
     $ ade prs land <pr> --delete-remote-branch      Merge and delete the head branch on the remote
@@ -2039,6 +2295,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat list --include-automation --text
     $ ade chat create --lane <lane> --provider codex --model openai/gpt-5.6-sol --no-parent --reasoning-effort xhigh --no-fast --permissions full-auto
     $ ade chat create --personal --provider codex --model openai/gpt-5.6-sol --prompt "Plan my trip"
+    $ ade chat create --personal --provider copilot --model github-copilot/auto --copilot-auto-tier balance
     $ ade chat create --personal --provider claude --model anthropic/claude-opus-5 --arg-json mcpServers='{"docs":{"type":"http","url":"https://mcp.example/mcp"}}'
                                                     Inject caller-owned MCP servers into one chat. There is no typed
                                                     --mcp-server flag: the config is nested JSON, which --arg-json
@@ -2126,6 +2383,18 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     Start a new chat with an extra handoff note
     $ ade chat handoff <session> --model openai/gpt-5.6-sol --target-lane <lane-id>
                                                     Brief handoff into a different lane (same project)
+    $ ade chat handoff <session> --machine "Mac mini" --model anthropic/claude-opus-5 --prompt "run the UI tests next"
+                                                    Move the chat to another machine on your account (brief by
+                                                    default; --fork carries full history). --machine names the
+                                                    DESTINATION; the chat moves from here. Add --effort,
+                                                    --permissions, --include-changes (bring uncommitted and unpushed
+                                                    work), --clone (set the repo up there), --when-turn-ends (queue
+                                                    it; a newer user message cancels it). An agent moves only its
+                                                    own chat, keeps its permissions, and waits for the person's
+                                                    approval unless the chat is full-auto.
+    $ ade chat handoff <session> --options --json   Where the chat can go, and what blocks it (with fixes)
+    $ ade chat handoff <session> --cancel           Keep a queued or awaiting move here, or dismiss an unknown one
+    $ ade chat handoff <session> --retry            Retry a failed or unknown move with the same choices
     $ ade chat fork <session> --model openai/gpt-5.6-sol
                                                     Carry this conversation into a new chat (same provider)
     $ ade chat fork <session> --model <model> --through-turn <turn-id>
@@ -2162,6 +2431,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat restart <session> [--stop]           Restart the agent session: fresh process, same conversation (picks up new skills/plugins/MCP)
     $ ade chat demote <session>                     Take over a subagent: it becomes a peer and reports stop
     $ ade chat promote <session>                    Restore a peer as a subagent so it reports to its parent again
+    $ ade chat set-parent <session> --parent <chat> Make <chat> this chat's parent; reports go there from the next turn
+                                                    [--type subagent|peer]; a chat whose old parent is gone becomes a subagent
+    $ ade chat set-parent <session> --no-parent     Detach the chat from its parent
     $ ade chat keep-reporting <session>             Dismiss the takeover prompt without changing the report channel
     $ ade chat restore-queue <session> <recovery>   Restore a recently cleared queue during its undo window
     $ ade chat slash <session> --text               List slash commands for a session
@@ -2169,7 +2441,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     Start a tracked provider CLI session
 
   Create flags:
-    --provider <name>       claude | codex | cursor | droid | opencode | pi | qwen | kimi | grok | copilot.
+    --provider <name>       claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot.
     --model <id>            Model id, also sent as modelId for runtime parity.
     --reasoning-effort <v>  Reasoning tier when the selected model supports it.
                             Common tiers: minimal, low, medium, high, xhigh, ultra, ultracode.
@@ -2177,12 +2449,14 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --permissions <mode>    Alias for --permission-mode.
     --permission-mode <m>   default | auto | plan | edit | full-auto | config-toml.
     --fast                  Request fast service tier when the model advertises it.
+    --ultrafast             Codex: Fast at the Ultrafast tier, on models whose catalog offers it.
     --no-fast, --standard   Disable fast mode explicitly.
     --print-config          Print the createSession payload and permission mapping.
     --dry-run               Alias for --print-config; does not create a chat.
     --parent <sessionId>    Link the new chat as a child of that session.
                             Defaults to $ADE_CHAT_SESSION_ID in tracked agent shells.
-    --no-parent             Create the chat without a parent link.
+    --no-parent             Create the chat without a parent link. From an agent
+                            it is still recorded as launched by that agent.
     --type <subagent|peer>  Required with a parent. subagent always wakes the
                             parent after every turn; peer leaves quiet notes.
 
@@ -2229,7 +2503,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   Flags:
     --personal              Use machine-owned chats instead of a project/lane chat.
     --lane <lane>           Lane/worktree for the chat.
-    --provider <name>       claude | codex | cursor | droid | opencode | pi | qwen | kimi | grok | copilot.
+    --provider <name>       claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot.
     --model <id>            Model id, also sent as modelId for runtime parity.
     --reasoning-effort <v>  Reasoning tier when supported by the model.
     --effort <v>            Alias for --reasoning-effort.
@@ -2241,7 +2515,13 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --droid-permission-mode <m>
                             Droid only: read-only | auto-low | auto-medium | auto-high | agi.
                             Aliases: --droid-autonomy, --autonomy.
+    --copilot-permission-mode <m>
+                            Copilot only: plan | ask | assisted | auto-edit | full-auto.
+    --copilot-context-tier <t>
+                            Copilot only: default | long_context (long context costs more per token).
+    --copilot-auto-tier <p> Copilot Auto only: efficiency | balance | intelligence.
     --fast                  Request fast service tier when supported.
+    --ultrafast             Codex: Fast at the Ultrafast tier, on models whose catalog offers it.
     --no-fast, --standard   Disable fast mode explicitly.
     --print                 Start the session runtime in print mode.
     --print-config          Print the resolved CLI launch config.
@@ -2249,7 +2529,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --parent <sessionId>    Link the new chat as a child of that session.
                             Defaults to $ADE_CHAT_SESSION_ID when run from a
                             tracked agent shell (the spawning chat).
-    --no-parent             Create the chat without a parent link.
+    --no-parent             Create the chat without a parent link. From an agent
+                            it is still recorded as launched by that agent.
     --type <subagent|peer>  Required with a parent. subagent always wakes the
                             parent after every turn; peer leaves quiet notes.
 
@@ -2301,6 +2582,49 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   Actions:
     run-next  Send the accepted message as the next turn.
     dismiss   Mark the message handled without sending it.
+`,
+  drafts: `${ADE_BANNER}
+  Drafts and scheduled sends
+
+  A draft is unsent composer text; a scheduled draft is one the runtime delivers
+  at a fire time. \`ade drafts\` is the CLI over the chat.*Draft actions.
+
+    $ ade drafts list --text                        Drafts and armed sends, newest first
+    $ ade drafts list --scheduled --text            Only armed sends
+    $ ade drafts list --needs-you --text            Sends that need you (blocked or missed)
+    $ ade drafts list --machine <key> --text        Only sends delivered by that machine
+    $ ade drafts create --prompt "<text>"           Save a plain draft
+    $ cat prompt.md | ade drafts create             Read the prompt from stdin
+    $ ade drafts create --prompt "Ship it" --image ./shot.png
+                                                    --image is repeatable
+    $ ade drafts schedule <id> --in 90m --target <session>
+                                                    Arm an existing chat; --in avoids time-zone math
+    $ ade drafts schedule <id> --at "2026-07-23T01:05:00-04:00" --target <session>
+                                                    Absolute fire time; offset or Z is required
+    $ ade drafts schedule <id> --in 2h --new-chat --lane <lane> --provider codex --model openai/gpt-5.6-sol
+                                                    Start a chat in that lane at the fire time
+    $ ade drafts update <id> --prompt "better text" Edit the draft's text
+    $ ade drafts update <id> --in 30m               Retime an armed send (its target carries over)
+    $ ade drafts update <id> --unschedule           Return it to a plain draft
+    $ ade drafts show <id> --text                   Full prompt and state
+    $ ade drafts now <id>                           Deliver it immediately, whatever the fire time
+    $ ade drafts delete <id>                        Remove it
+
+  Schedule flags (for schedule and create):
+    --at <iso>              Absolute ISO-8601 with an explicit offset or Z.
+    --in <duration>         One-shot relative time: 45s, 90m, 2h, 3d, 1w.
+    --target <session>      Send into an existing chat.
+    --new-chat --lane <lane>  Create a chat in that lane at the fire time; also needs --provider and --model.
+    --provider <id> --model <runtime-facing model string> --model-id <id>
+                            Captured for a new chat; --model is required with --new-chat.
+    --permission <mode>     Captured permission mode.
+    --thinking <effort>     Captured reasoning effort.
+    --machine <key>         Which machine delivers it. Omitted: whichever runtime is up.
+    --if-late <wait|strict|grace>  What happens when the fire time cannot send (default wait).
+    --grace <duration>      How long \`grace\` holds the send (max 24h).
+
+  The target is always explicit: name --target or --new-chat --lane, or the command fails.
+  Output is a readable table by default; --text is one line per row; --json is structured.
 `,
   agent: `${ADE_BANNER}
   Agent sessions
@@ -2373,6 +2697,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade proof capture --real-screen --caption "Done"  Capture the whole real screen
     $ ade proof attach "$TMPDIR/proof.png" --caption "Done" Attach an existing image/video
     $ ade proof publish --pr 12 <id> <id>           Post chosen proof to a PR as one comment (gh 2.99+)
+    $ ade proof publish --pr 12 --in-body           Upload the proof the PR text cites, in place (gh 2.99+)
     $ ade proof step "Open the settings page"       Caption the next part of every recording running on this lane
     $ ade proof rm artifact-id                      Delete stored proof and its record
     $ ade proof broken --text                       List proof whose stored file is unavailable
@@ -2594,19 +2919,26 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade mac-desktop observe --map --limit 80 --text  Add a numbered element-map image
     $ ade mac-desktop click <handle> --text            Click what you observed
     $ ade mac-desktop click --text "Sign in" --text    Click by visible text
-    $ ade mac-desktop click --x 900 --y 420 --real     Click a point with real input
+    $ ade mac-desktop click --x 900 --y 420 --text     Click a point (no pointer moves)
+    $ ade mac-desktop click --x 900 --y 420 --right    Right-click; --double for a double click
     $ ade mac-desktop type "hello" --clear --text      Type into the focused element
     $ ade mac-desktop type "reddit" --submit --text    Type, then press Return
     $ ade mac-desktop press return --text              One key (return, tab, escape, f5…)
     $ ade mac-desktop press return --cmd --shift --text Modifiers: --cmd --shift
                                                        --alt (option) --control
     $ ade mac-desktop scroll down --amount 5 --text    Scroll the display or a target
+    $ ade mac-desktop scroll down --x 900 --y 420      Scroll the view under a point
     $ ade mac-desktop drag --from <handle> --to 900,420
     $ ade mac-desktop wait --label "Done" --timeout 8000 --text
 
   Every acting command re-observes and prints what the screen looks like now.
-  Accessibility input is the default and needs no approval; --real posts real
-  pointer/keyboard events and needs one lease per chat:
+  None of the commands above moves the user's pointer or needs approval. A
+  handle or text target uses Accessibility; a point (--x/--y), a right or double
+  click, a scroll at a point and a drag are delivered to the app under the point
+  alone, so custom-drawn apps (DAWs, games, canvases) and Electron apps work
+  too. --real posts through the user's own pointer instead: it is only for a
+  control that appears on hover or a drop onto another app or the Dock, and it
+  needs one lease per chat:
 
     $ ade mac-desktop lease --reason "drag the file onto the dock" --text
 
@@ -2828,7 +3160,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   tab creation, explicit claims, sessions, and page actions read
   ADE_LANE_ID/ADE_CHAT_SESSION_ID for agent CLI calls. Panel reveal and plain
   tab switching are passive view operations; use
-  "browser claim --tab <tab-id> --lane <lane-id>" to claim an already-open tab.
+  "browser claim --tab <tab-id> --lane <lane-id>" to claim an already-open tab
+  (a personal chat needs no lane: "browser claim --tab <tab-id>").
   ADE-launched agents should list tabs first and use only a tab/session owned
   by their current chat. Plain "browser open <url>" navigates that chat's tab
   (the one it used last) and creates one only when none exists, without
@@ -2841,11 +3174,41 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   waits up to 2 minutes, printing "waiting for the user to allow this chat to
   use the ADE browser" once, and a Block fails with "approval_blocked: the user
   blocked this chat from using the ADE browser". One answer covers every site.
-  The runtime
-  accepts browser commands only from ADE-launched chat/terminal sessions with
-  a browser capability, validates lane/chat identity, and rejects agent force
-  takeovers. Profile diagnostics and remembered-permission administration stay
+  Any process
+  on this machine may drive the browser; a chat's calls are tagged with that
+  chat and its lane so it owns its tabs, and agent force takeovers are
+  refused. Profile diagnostics and remembered-permission administration stay
   in the trusted ADE renderer.
+
+  Every tab shares the user's sign-ins unless it is opened --isolated. An
+  isolated tab has its own cookies and storage, kept in memory and wiped when
+  its last tab closes, so signing in there as a test account does not sign the
+  user out. --profile <name> names the sign-in (one per chat and name), so a
+  test can keep "owner" and "viewer" signed in side by side. A tab's sign-in is
+  fixed when it opens: plain "open" reuses only this chat's shared-profile tab,
+  and "open --profile viewer" reuses only this chat's "viewer" tab.
+
+  The user's own browser (only when the user asks for it):
+    $ ade --socket browser attach --text           The tab the user is looking at
+    $ ade --socket browser attach --tab "Stripe" --text
+                                                   The tab whose title or URL contains "Stripe"
+    $ ade --socket browser attach --browser edge --text
+                                                   chrome, edge, brave, arc, helium or chromium
+    $ ade --socket browser detach --text           Back to ADE's browser
+  ADE's browser is the default for all web work. Attach only when the user asks
+  you to look at or use their own browser ("the tab I have open", "use my
+  Chrome"), never on your own. Attach runs on the machine this chat runs on and
+  prints "attached: <browser> on <machine>, tab "<title>" (<url>)": tell the
+  user which machine and tab. The browser needs remote debugging on; when
+  attach says it is off, ask the user to open the page it names
+  (chrome://inspect/#remote-debugging, or edge:// / brave://) and turn it on.
+  The browser then asks them once to allow the connection. While attached, this
+  chat's observe, click, fill, clear, type, key, scroll, hover, wait, open,
+  reload, back, forward, screenshot, proof and trace act in that tab and print
+  "target: your <browser> on <machine>" first; other commands say to detach.
+  The attachment ends on detach, when the tab closes or the browser quits, or
+  after 30 idle minutes; the next command says so. "status" shows it.
+  --user-data-dir <dir> checks a browser started with that profile directory.
 
   Tabs and navigation:
     $ ade --socket browser status --text           Show active tab and tab list
@@ -2856,6 +3219,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade --socket browser open https://example.com --panel --text
     $ ade --socket browser open localhost:5173 --new-tab --text
     $ ade --socket browser open localhost:5173 --active-tab --text
+    $ ade --socket browser open localhost:3000/login --isolated --text
+    $ ade --socket browser open localhost:3000/login --profile viewer --text
     $ ade --socket browser open https://example.com --no-panel
     $ ade --socket browser new-tab --url https://example.com
     $ ade --socket browser switch --tab <tab-id>
@@ -2931,6 +3296,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade --socket browser open localhost:5173 --device ipad
     $ ade --socket browser zoom --tab <tab-id> --factor 1.25
     $ ade --socket browser zoom --tab <tab-id> --reset
+    $ ade --socket browser text --tab <tab-id> --text           Read the page's text (main content)
+    $ ade --socket browser text --tab <tab-id> --offset 20000 --text
+    $ ade --socket browser text --tab <tab-id> --selector "#content" --max-chars 5000
     $ ade --socket browser find --tab <tab-id> "checkout"
     $ ade --socket browser find-stop --tab <tab-id>
     $ ade --socket browser devtools --tab <tab-id> --mode bottom
@@ -2969,6 +3337,13 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --panel, --show-panel
                          Reveal the Work sidebar Browser panel for this command.
     --no-panel           Keep the Work sidebar panel hidden; alias: --hidden.
+    --here               Use the browser on the machine this agent runs on. Without
+                         it, when the user drives this chat from another computer,
+                         browser commands run in the ADE browser on that computer,
+                         where the user can see them. Use --here to test a page
+                         on this machine, to record, or to upload a local file.
+    --isolated           open/new-tab: use a throwaway sign-in, not the user's.
+    --profile <name>     open/new-tab: the isolated sign-in to use; implies --isolated.
     --tab, --tab-id <id> Target tab for switch/close/open/control/capture/claim.
     --browser-session <id>
                          Target the tab bound to a browser agent session.
@@ -3099,6 +3474,22 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     "ade actions run work_tools.readObservationPreview" when the caller cannot
     see this machine's filesystem.
 `,
+  scene: `${ADE_BANNER}
+  Scenes
+
+  Render a \`\`\`scene the way a chat will, before you put it in a reply: the
+  same document, SDK, policy and sandbox, in a hidden window of the ADE
+  desktop app. Prints the path of a PNG of the drawn scene (read it to check
+  the layout) and every problem found: script errors, blocked requests, a
+  scene that never settles, and source mistakes the policy turns into blanks.
+  Needs the ADE desktop app on this machine.
+
+    $ ade scene guide                                  The short rules for writing a scene (read this first)
+    $ ade scene preview /tmp/chart.html --text         Preview a scene file
+    $ ade scene preview /tmp/chart.html --theme light  In the light theme
+    $ ade scene preview /tmp/chart.html --width 980    At another frame width (default 720)
+    $ cat draft.md | ade scene preview - --text        A fence or a body on stdin
+`,
   tests: `${ADE_BANNER}
   Tests
 
@@ -3203,14 +3594,15 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   Provider accounts on this machine
 
   Claude and Codex each keep a whole signed-in identity inside one config
-  directory (\$CLAUDE_CONFIG_DIR / \$CODEX_HOME). An ADE provider account is one
-  of those directories plus a label, so several logins can live side by side on
-  one machine. Other providers have a single identity per machine and are not
-  listed here.
+  directory (\$CLAUDE_CONFIG_DIR / \$CODEX_HOME). An ADE account for either is
+  one of those directories plus a label, so several logins can live side by side
+  on one machine. OpenCode keeps provider logins in its own credential store;
+  use \`ade providers opencode accounts\` to inspect and manage those logins.
 
-  ADE never drives a provider's sign-in: \`add\` prints the exact command and env
-  var to run so the login lands in the new directory. \`remove\` forgets the
-  account and deletes nothing — the directory (and the login inside it) stays.
+  ADE never drives Claude or Codex sign-in: \`add\` prints the exact command
+  and env var to run so the login lands in the new directory. \`remove\` signs a
+  signed-in account out with the provider CLI's own logout, then forgets it; the
+  directory stays, and so does the login when that sign-out fails.
   The machine's own pre-existing login is always present, is always removable-
   proof, and starts out as the default.
 
@@ -3225,9 +3617,17 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade providers accounts default --instance work --text
                                                     Make an account the provider's default
     $ ade providers accounts remove --instance work --text
-                                                    Forget an account (nothing on disk is deleted)
+                                                    Sign an account out and forget it
     $ ade providers accounts refresh --text         Re-read each config home and record who is signed in
     $ ade providers actions --text                  List raw provider-account service actions
+
+  OpenCode logins (on this machine):
+    $ ade providers opencode accounts list --text
+    $ ade providers opencode accounts activate --id <id> --text
+    $ ade providers opencode accounts rename --id <id> --label Work --text
+    $ ade providers opencode accounts remove --id <id> --text
+    For cloud logins, inspect \`ai.opencodeAuthMethods\` first, then call
+    \`ai.opencodeCloudConnect\` with \`ade actions run\` and the current prompt answers.
 
   Use an account for one session:
     $ ade chat create --lane <lane> --provider claude --instance work
@@ -3297,6 +3697,14 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ printf %s "$TOKEN" | ade secrets set TOKEN --stdin
     $ ade secrets set TOKEN --value-file token.txt
     $ ade secrets delete STRIPE_API_KEY             Delete a secret
+
+  Asking the person for a secret (agents: use this, never ask them to paste a
+  secret into chat). The chat shows a private card; the value is saved to this
+  project's secrets and only the outcome comes back — never the value:
+
+    $ ade secrets request GITHUB_WEBHOOK_SECRET --reason "Signs GitHub deliveries to your triage webhook" --generate
+      --generate offers a strong random value first; --timeout 30m (default)
+      Prints {name, saved: true} | {name, saved: false, kept: true} | {name, saved: false, declined: true}
 `,
   linear: `${ADE_BANNER}
   Linear workflows
@@ -3313,15 +3721,40 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade linear issue ENG-431 --text               Read one issue (defaults to the session's attached issue)
     $ ade linear comment "Pushed a fix, running CI" Comment on the attached issue (or pass an id first)
     $ ade linear comment ENG-431 "Done"             Comment on a specific issue
-    $ ade linear set-state ENG-431 <state-id>       Move an issue to a workflow state
-    $ ade linear assign ENG-431 <user-id|none>      Assign or clear an issue assignee
+    $ ade linear set-state ENG-431 "In Progress"    Move an issue to a state (name in the issue's team, or id)
+    $ ade linear assign ENG-431 me                  Assign: me, none, a name, an email, or a user id
     $ ade linear label ENG-431 "needs-review"       Add a label to an issue
+    $ ade linear unlabel ENG-431 "needs-review"     Remove a label from an issue
     $ ade linear graphql --query 'query { viewer { id name } }'
                                                     Run Linear GraphQL through the project connection
     $ ade linear graphql --query-file query.graphql --variables-file vars.json
                                                     Use files for larger GraphQL operations
     $ ade linear detach --this-session [--issue-id ENG-431]
                                                     Detach one issue (or all) from this session
+
+  Create and edit issues. Names work where Linear has names: states, users,
+  labels, projects, milestones, cycles, and templates. Ids work too.
+
+    $ ade linear create --team ENG --title "Fix login redirect" --text
+                                                    Create an issue; prints its id and URL
+        [--description "..." | --description-file <path|->]
+        [--state "Todo"] [--assignee me|<name|email|id>] [--priority urgent|high|normal|low|none|0-4]
+        [--label bug]... [--project "Mobile"] [--milestone "Beta"] [--cycle current|next|<n>]
+        [--estimate 3] [--due 2026-11-01] [--parent ENG-400] [--template "Bug report"]
+        Inside a session with an attached issue, the new issue is linked to it
+        as related. --blocks, --blocked-by, --sub-issue, or --duplicate pick the
+        link. --standalone skips it. A near-duplicate of an open issue is not
+        created unless you pass --allow-duplicate.
+    $ ade linear edit ENG-431 --title "New title" --description-file notes.md
+                                                    Change any field; takes the create flags plus --remove-label
+    $ ade linear set-priority ENG-431 high          Priority: urgent, high, normal, low, none, or 0-4
+    $ ade linear set-estimate ENG-431 3             Estimate in the team's scale, or none
+    $ ade linear set-cycle ENG-431 current          Cycle: current, next, a number, an id, or none
+    $ ade linear set-project ENG-431 "Mobile"       Project by name or id, or none
+    $ ade linear set-milestone ENG-431 "Beta"       Milestone in the issue's project, or none
+    $ ade linear set-due ENG-431 2026-11-01         Due date as YYYY-MM-DD, or none
+    $ ade linear set-parent ENG-431 ENG-400         Make it a sub-issue, or none to detach it
+    $ ade linear relate ENG-431 --blocks ENG-432    Link issues: --blocks, --blocked-by, --related, --duplicate-of
 
   Workspace + automation (typically run with --role cto):
     $ ade --role cto linear quick-view --text      Show connected workspace, projects, and issues
@@ -3373,6 +3806,14 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade automations update <id> --from-file <path>
     $ ade automations delete <id>                   Remove a local rule
     $ ade automations toggle <id> --enabled true|false
+    $ ade automations test <id> [--mode preview|safe|live] [--pr <n>] [--issue <n>]
+          [--linear <id>] [--lane <id>] [--chat <id>] [--body-file <json>] [--plan] [--yes]
+                                                     Test a rule with an event. preview shows
+                                                     what a real run does; safe runs in a
+                                                     throwaway lane and only reports posts and
+                                                     pushes; live runs for real and needs --yes.
+                                                     --plan shows a test's plan without running it
+    $ ade automations cleanup-test <run-id>         Delete the lanes a test run made
     $ ade automations run <id> [--lane <id>] [--dry-run]
     $ ade automations trigger <id> [--lane <id>]
                                                      Trigger a rule manually
@@ -3388,6 +3829,20 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade --role cto automations linear-ingress disconnect
                                                      Remove the Linear webhook (CTO only)
     $ ade automations linear-ingress poll [--text]    Drain queued Linear events now
+    $ ade automations webhook create --preset github [--filter body.action=opened]
+                 [--prompt "…"] [--model <id>] [--in-this-chat | --chat <id>]
+                 [--name "…"] [--no-signature] [--any-request] [--confirm <key>]
+                                                     One step: a private URL + the rule, then paste steps
+    $ ade automations webhook list [--text]          Every webhook automation, its URL and last delivery
+    $ ade automations webhook deliveries <wh-id> [--text]
+                                                     What arrived and why it ran or was skipped
+    $ ade automations webhook delivery <whd-id> [--text]
+                                                     One delivery: the prompt the agent got, headers, body
+    $ ade automations webhook test <wh-id> [--body <json>]
+                                                     Ring the URL like the real service (signed)
+    $ ade automations webhook replay <whd-id>        Run a logged delivery again
+    $ ade automations webhook url|rotate|retire <wh-id>
+                                                     Show, replace, or stop a URL
     $ ade automations cleanups list [--text]          List scheduled lane cleanups
     $ ade automations cleanups cancel <id>            Cancel a scheduled lane cleanup
     $ ade automations runs [--rule <id>] [--status <s>] [--limit 50]
@@ -3395,7 +3850,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade automations example                       Print an example rule (stdout)
 
   Lane mode flags (apply to create/update on top of --from-file/--stdin/--text):
-    --lane-mode <create|reuse|require-on-trigger>   Create, reuse, or require lane at trigger time
+    --lane-mode <create|reuse|require-on-trigger|pr-branch>
+                                                    Create, reuse, or require lane at trigger time;
+                                                    pr-branch runs in the trigger PR's own branch
     --lane <id>                                     Target lane (only with --lane-mode reuse)
     --lane-name-preset <issue-title|issue-num-title|pr-title-author|custom>
     --lane-name-template <string>                   Template (only with preset custom)
@@ -3562,6 +4019,52 @@ const DROID_PERMISSION_MODE_FLAGS = [
   "--autonomy",
 ];
 
+const COPILOT_PERMISSION_MODE_FLAGS = ["--copilot-permission-mode"] as const;
+const COPILOT_CONTEXT_TIER_FLAGS = ["--copilot-context-tier"] as const;
+const COPILOT_AUTO_TIER_FLAGS = ["--copilot-auto-tier"] as const;
+const COPILOT_PERMISSION_MODE_VALUES = ["plan", "ask", "assisted", "auto-edit", "full-auto"] as const;
+const COPILOT_CONTEXT_TIER_VALUES = ["default", "long_context"] as const;
+const COPILOT_AUTO_TIER_VALUES = ["efficiency", "balance", "intelligence"] as const;
+
+/**
+ * The Copilot-only chat flags. They mean something only for a Copilot chat, so
+ * any of them on another provider is refused rather than dropped. Each value is
+ * checked against the contract's own list.
+ */
+function readCopilotLaunchFlags(args: string[], provider: string): {
+  copilotPermissionMode?: (typeof COPILOT_PERMISSION_MODE_VALUES)[number];
+  copilotContextTier?: (typeof COPILOT_CONTEXT_TIER_VALUES)[number];
+  copilotAutoTier?: (typeof COPILOT_AUTO_TIER_VALUES)[number];
+} {
+  const permission = readValue(args, COPILOT_PERMISSION_MODE_FLAGS)?.trim().toLowerCase();
+  const context = readValue(args, COPILOT_CONTEXT_TIER_FLAGS)?.trim().toLowerCase();
+  const auto = readValue(args, COPILOT_AUTO_TIER_FLAGS)?.trim().toLowerCase();
+  if (permission == null && context == null && auto == null) return {};
+  if (provider !== "copilot") {
+    throw new CliUsageError("--copilot-permission-mode, --copilot-context-tier and --copilot-auto-tier apply to Copilot chats only.");
+  }
+  const flags: ReturnType<typeof readCopilotLaunchFlags> = {};
+  if (permission != null) {
+    if (!(COPILOT_PERMISSION_MODE_VALUES as readonly string[]).includes(permission)) {
+      throw new CliUsageError(`--copilot-permission-mode must be one of ${COPILOT_PERMISSION_MODE_VALUES.join(", ")}.`);
+    }
+    flags.copilotPermissionMode = permission as (typeof COPILOT_PERMISSION_MODE_VALUES)[number];
+  }
+  if (context != null) {
+    if (!(COPILOT_CONTEXT_TIER_VALUES as readonly string[]).includes(context)) {
+      throw new CliUsageError(`--copilot-context-tier must be one of ${COPILOT_CONTEXT_TIER_VALUES.join(", ")}.`);
+    }
+    flags.copilotContextTier = context as (typeof COPILOT_CONTEXT_TIER_VALUES)[number];
+  }
+  if (auto != null) {
+    if (!(COPILOT_AUTO_TIER_VALUES as readonly string[]).includes(auto)) {
+      throw new CliUsageError(`--copilot-auto-tier must be one of ${COPILOT_AUTO_TIER_VALUES.join(", ")}.`);
+    }
+    flags.copilotAutoTier = auto as (typeof COPILOT_AUTO_TIER_VALUES)[number];
+  }
+  return flags;
+}
+
 function readDroidPermissionMode(args: string[]): AgentChatDroidPermissionMode | null {
   const value = readValue(args, DROID_PERMISSION_MODE_FLAGS);
   if (value == null) return null;
@@ -3622,7 +4125,7 @@ export function readValue(args: string[], names: readonly string[]): string | nu
 }
 
 /** Repeatable option (`--file a --file b`), consumed like `readValue`. */
-function readRepeatedValues(args: string[], names: readonly string[]): string[] {
+export function readRepeatedValues(args: string[], names: readonly string[]): string[] {
   const values: string[] = [];
   for (;;) {
     const value = readValue(args, names);
@@ -3722,7 +4225,7 @@ function readCommandTextValue(args: string[], names: readonly string[]): string 
   return null;
 }
 
-function firstPositional(args: string[]): string | null {
+export function firstPositional(args: string[]): string | null {
   const index = args.findIndex((arg) => arg !== "--" && !arg.startsWith("-"));
   if (index < 0) return null;
   const [value] = args.splice(index, 1);
@@ -4138,6 +4641,15 @@ function readBrowserLeaseArgs(args: string[]): JsonObject {
   };
 }
 
+/** `--isolated` and `--profile <name>` for open/new-tab; the service treats a profile as isolated. */
+function readBrowserIsolationArgs(args: string[]): JsonObject {
+  const profile = readValue(args, ["--profile"]);
+  return {
+    ...(readFlag(args, ["--isolated"]) ? { isolated: true } : {}),
+    ...(profile ? { profile } : {}),
+  };
+}
+
 function readBrowserSessionStartArgs(args: string[]): JsonObject {
   return {
     ...readBrowserTabTargetArgs(args),
@@ -4361,7 +4873,7 @@ function parseReviewerRequestValues(args: string[]): {
   return { reviewers, teamReviewers };
 }
 
-function readIntOption(
+export function readIntOption(
   args: string[],
   names: readonly string[],
   fallback?: number,
@@ -4565,24 +5077,6 @@ function normalizeChatWaitTarget(value: string | null): ChatWaitTarget {
   throw new CliUsageError(
     "chat wait --for must be idle, active, awaiting-input, or terminal.",
   );
-}
-
-function chatWaitTargetMatches(summary: JsonObject, waitFor: ChatWaitTarget): boolean {
-  const status = asString(summary.status);
-  const phase = asString(summary.phase);
-  const awaitingInput = summary.awaitingInput === true || phase === "blocked";
-  const cliSession = isRecord(summary.cliSession) ? summary.cliSession : null;
-  const cliStatus = asString(cliSession?.status);
-  if (waitFor === "idle") return status === "idle" || phase === "idle";
-  if (waitFor === "active") {
-    return (status === "active" || phase === "running") && !awaitingInput;
-  }
-  if (waitFor === "awaiting-input") return awaitingInput;
-  return status === "failed"
-    || status === "interrupted"
-    || status === "completed"
-    || summary.endedAt != null
-    || (cliStatus !== null && cliStatus !== "running");
 }
 
 function sleep(ms: number): Promise<void> {
@@ -4861,6 +5355,7 @@ function parseCliArgs(argv: string[]): ParsedCli {
     socketPath: null,
     pretty: true,
     text: false,
+    json: false,
     timeoutMs: 10 * 60 * 1000,
   };
 
@@ -4878,14 +5373,26 @@ function parseCliArgs(argv: string[]): ParsedCli {
         while (rest.length && (rest[rest.length - 1] === "--text" || rest[rest.length - 1] === "--json")) {
           const flag = rest.pop();
           // The rightmost one wins, as it does before `--`.
-          if (!decided) options.text = flag === "--text";
+          if (!decided) {
+            options.text = flag === "--text";
+            options.json = flag === "--json";
+          }
           decided = true;
         }
       }
       command.push(token, ...rest);
       break;
     }
-    const valueFlag = inGlobalPrefix ? readGlobalValueFlag(argv, index) : null;
+    // `ade secrets list --project-root <dir>` and `ade chat send <id>
+    // --project-root <dir>` read naturally, and silently ignoring the flag
+    // there answered from the session's own project: another project's
+    // secrets, or "chat not found" for a chat in another project.
+    const trailingValueFlags = inGlobalPrefix ? null : TRAILING_ROOT_FLAG_COMMANDS.get(command[0] ?? "");
+    const valueFlag = inGlobalPrefix
+      ? readGlobalValueFlag(argv, index)
+      : trailingValueFlags && !trailingValueFlags.has(argv[index - 1] ?? "")
+        ? readRootValueFlag(argv, index)
+        : null;
     if (valueFlag) {
       GLOBAL_VALUE_FLAG_HANDLERS[valueFlag.flag](options, requireValue(valueFlag.value, valueFlag.flag));
       index += valueFlag.consumed;
@@ -4925,16 +5432,49 @@ function parseCliArgs(argv: string[]): ParsedCli {
     }
     if (token === "--text") {
       options.text = true;
+      options.json = false;
       continue;
     }
     if (token === "--json") {
       options.text = false;
+      options.json = true;
       continue;
     }
     command.push(token);
   }
 
   return { options, command };
+}
+
+/**
+ * Command families that take `--project-root` / `--workspace-root` after the
+ * command too, each with the flags whose next token is a value: a secret, a
+ * prompt or a note that happens to read `--project-root` stays the value, not
+ * a root flag. Elsewhere (app-control, the iOS simulator) the command reads
+ * the root flags as its own.
+ */
+const SECRETS_VALUE_FLAGS: ReadonlySet<string> = new Set([
+  "--name", "--value", "--value-file", "--secret", "--secret-file", "--reason", "--session", "--timeout",
+]);
+const CHAT_VALUE_FLAGS: ReadonlySet<string> = new Set([
+  "--text", "--prompt", "--kickoff", "--kickoff-prompt", "--note", "--handoff-note", "--message",
+  "--question", "--objective", "--goal", "--set", "--title", "--reason", "--steer",
+]);
+const TRAILING_ROOT_FLAG_COMMANDS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ["secrets", SECRETS_VALUE_FLAGS],
+  ["secret", SECRETS_VALUE_FLAGS],
+  ["chat", CHAT_VALUE_FLAGS],
+  ["chats", CHAT_VALUE_FLAGS],
+  ["work", CHAT_VALUE_FLAGS],
+]);
+
+/** `--project-root` / `--workspace-root` at `argv[index]`, else null. */
+function readRootValueFlag(
+  argv: string[],
+  index: number,
+): { flag: CliGlobalValueFlag; value: string | null; consumed: number } | null {
+  const valueFlag = readGlobalValueFlag(argv, index);
+  return valueFlag?.flag === "--project-root" || valueFlag?.flag === "--workspace-root" ? valueFlag : null;
 }
 
 /**
@@ -5012,6 +5552,24 @@ export function actionStep(
   toolExtras: JsonObject = {},
 ): InvocationStep {
   return actionCallStep(key, "run_ade_action", { ...toolExtras, domain, action, args });
+}
+
+/**
+ * `step` with `extra` merged into its action's args when it runs an action of
+ * `domain` (the shape `actionStep` builds); any other step comes back as is.
+ */
+function withActionStepArgs(step: InvocationStep, domain: string, extra: JsonObject): InvocationStep {
+  const merge = (params: JsonObject): JsonObject => {
+    const call = isRecord(params.arguments) ? params.arguments : null;
+    if (params.name !== "run_ade_action" || !call || call.domain !== domain) return params;
+    return { ...params, arguments: { ...call, args: { ...(isRecord(call.args) ? call.args : {}), ...extra } } };
+  };
+  const params = step.params;
+  if (params === undefined) return step;
+  return {
+    ...step,
+    params: typeof params === "function" ? (values: JsonObject) => merge(params(values)) : merge(params),
+  };
 }
 
 function accountActionStep(
@@ -5706,6 +6264,8 @@ function readChatLaunchConfig(args: string[]): JsonObject {
     // Mirror to the deprecated alias so older daemons (pre-rename) still see the selection.
     config.codexFastMode = fastMode;
   }
+  const fastTier = readFastTierFlag(args);
+  if (fastTier) config.fastTier = fastTier;
   return config;
 }
 
@@ -5875,7 +6435,9 @@ function buildHarnessPlan(args: string[]): CliPlan {
 }
 
 function readFastModeFlag(args: string[]): boolean | undefined {
-  const fastRequested = readFlag(args, ["--fast", "--codex-fast"]);
+  // `--ultrafast` is Fast at Codex's Ultrafast tier, so it turns Fast on too.
+  // Only peeked here: `readFastTierFlag` consumes it.
+  const fastRequested = readFlag(args, ["--fast", "--codex-fast"]) || args.includes("--ultrafast");
   const standardRequested = readFlag(args, [
     "--standard",
     "--no-fast",
@@ -5883,10 +6445,15 @@ function readFastModeFlag(args: string[]): boolean | undefined {
   ]);
   if (fastRequested && standardRequested) {
     throw new CliUsageError(
-      "Use either --fast/--codex-fast or --standard/--no-fast/--no-codex-fast, not both.",
+      "Use either --fast/--codex-fast/--ultrafast or --standard/--no-fast/--no-codex-fast, not both.",
     );
   }
   return fastRequested ? true : standardRequested ? false : undefined;
+}
+
+/** `--ultrafast`: Codex's tier above Fast, on models whose catalog offers it. */
+function readFastTierFlag(args: string[]): "ultrafast" | undefined {
+  return readFlag(args, ["--ultrafast"]) ? "ultrafast" : undefined;
 }
 
 function autoLaneGenericSuffix(date = new Date()): string {
@@ -6023,6 +6590,10 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
   // and the profile the merged arg bag is checked against cannot drift.
   const launchOpts = { allowShell: mode !== "chat" };
   const provider = requireLaunchProfile(providerRaw, launchOpts) ?? "codex";
+  const copilotFlags = readCopilotLaunchFlags(args, provider);
+  if (mode !== "chat" && Object.keys(copilotFlags).length > 0) {
+    throw new CliUsageError("--copilot-permission-mode, --copilot-context-tier and --copilot-auto-tier apply to chat mode only.");
+  }
   const { instanceId, presetId, credentialId } = readLaunchIdentitySelectors(args, {
     provider: providerRaw,
     model: modelArg,
@@ -6059,6 +6630,7 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
         permissionMode,
         ...lineageArgs,
         ...(droidPermissionMode ? { droidPermissionMode } : {}),
+        ...copilotFlags,
         title,
         surface: readValue(args, ["--surface"]) ?? "work",
         ...(instanceId ? { instanceId } : {}),
@@ -6068,10 +6640,11 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
         ...(presetId ? { presetId } : {}),
         ...(credentialId ? { credentialId } : {}),
         ...(fastMode !== undefined ? { fastMode, codexFastMode: fastMode } : {}),
+        ...(readFastTierFlag(args) ? { fastTier: "ultrafast" } : {}),
       }, launchOptions)
     : collectLaunchArgs(args, {
         provider,
-        permissionMode: permissionMode ?? "default",
+        permissionMode,
         title,
         initialInput: prompt,
         model: modelArg,
@@ -6082,6 +6655,7 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
         ...(presetId ? { presetId } : {}),
         ...(credentialId ? { credentialId } : {}),
         ...(fastMode !== undefined ? { fastMode, codexFastMode: fastMode } : {}),
+        ...(readFastTierFlag(args) ? { fastTier: "ultrafast" } : {}),
         // Spawn lineage rides on resume metadata, which only agent providers
         // have — plain shell terminals can't persist it, so don't pretend. A
         // shell launch read the lineage with `allowSpawnType: false`, so
@@ -7278,7 +7852,100 @@ function buildDiffPlan(args: string[]): CliPlan {
   };
 }
 
-function buildPrPlan(args: string[]): CliPlan {
+/**
+ * The two steps that put cited proof into a PR's own text: read the proof
+ * records, then upload the files, rewrite the citations and record the PR on
+ * each item. Without `ids` the citations are read from the text GitHub holds.
+ * The result lands in `values.publish`, as `ade proof publish` leaves it.
+ */
+function proofIntoPrBodySteps(options: {
+  pr: (values: JsonObject) => string;
+  ids?: string[];
+  explicitProjectRoot?: string | null;
+  optional?: boolean;
+}): InvocationStep[] {
+  const roots = () => {
+    // The same precedence the connection uses: --project-root, then
+    // ADE_PROJECT_ROOT, then the checkout the shell stands in.
+    const found = findProjectRoots(process.cwd());
+    return {
+      projectRoot: options.explicitProjectRoot ?? (process.env.ADE_PROJECT_ROOT?.trim() || found.projectRoot),
+      cwd: options.explicitProjectRoot ?? found.workspaceRoot,
+    };
+  };
+  const fail = (error: unknown): never => {
+    throw new CliToolError(`proof publish failed — ${error instanceof Error ? error.message : String(error)}`, {});
+  };
+  return [
+    {
+      key: "proofList",
+      method: "ade/actions/call",
+      unwrapToolResult: true,
+      optional: options.optional,
+      params: (values) => {
+        let ids = options.ids ?? [];
+        if (!options.ids) {
+          try {
+            ids = prBodyProofIds(readPullRequestBody(options.pr(values), { cwd: roots().cwd }).body);
+          } catch (error) {
+            fail(error);
+          }
+        }
+        if (!ids.length) {
+          throw new CliToolError(
+            "proof publish failed — the PR text cites no proof. Write ![caption](ade-proof://<id>) or a ```proof-compare block where the proof belongs, then run this again.",
+            {},
+          );
+        }
+        return { name: "list_computer_use_artifacts", arguments: { artifactIds: ids, limit: 200 } };
+      },
+    },
+    {
+      key: "proofLink",
+      method: "ade/actions/call",
+      unwrapToolResult: true,
+      // The text is already rewritten when this runs. A failed link must not
+      // hide that; the summary reports it as a warning instead.
+      optional: true,
+      params: (values) => {
+        // The list step failed and said why; an upload with no records would
+        // only spend a GitHub call to fail with a worse reason.
+        if (isRecord(values.proofList) && values.proofList.ok === false) {
+          throw new CliToolError(asString(values.proofList.error) ?? "proof publish failed — the proof records could not be read", {});
+        }
+        const listed = firstArray(unwrapActionEnvelope(values.proofList) as JsonObject, ["artifacts"]);
+        let published: ProofPublishResult;
+        try {
+          published = publishProofIntoPullRequestBody({
+            pr: options.pr(values),
+            ...roots(),
+            artifacts: listed.map(publishableArtifact),
+          });
+        } catch (error) {
+          return fail(error);
+        }
+        values.publish = published as unknown as JsonObject;
+        return {
+          name: "link_computer_use_artifacts_to_pr",
+          arguments: { artifactIds: published.posted.map((entry) => entry.id), prUrl: published.prUrl },
+        };
+      },
+    },
+  ];
+}
+
+function publishableArtifact(artifact: JsonObject) {
+  return {
+    id: asString(artifact.id) ?? "",
+    kind: asString(artifact.kind) ?? "",
+    title: asString(artifact.title) ?? "",
+    description: asString(artifact.description),
+    uri: asString(artifact.uri) ?? "",
+    mimeType: asString(artifact.mimeType),
+  };
+}
+
+function buildPrPlan(args: string[], explicitProjectRoot: string | null = null): CliPlan {
   const sub = firstPositional(args) ?? "list";
   if (sub === "actions")
     return {
@@ -7339,22 +8006,36 @@ function buildPrPlan(args: string[]): CliPlan {
     input.laneId = requireValue(laneId, "laneId");
     maybePut(input, "baseBranch", readValue(args, ["--base", "--base-branch"]));
     maybePut(input, "title", readValue(args, ["--title"]));
-    maybePut(input, "body", readValue(args, ["--body"]));
+    const body = readTextOrFileOption(args, ["--body"], ["--body-file"]);
+    maybePut(input, "body", body);
     input.draft = readFlag(args, ["--draft"]);
     input.closeLinearIssueOnMerge = readFlag(args, [
       "--close-linear-issue-on-merge",
       "--close-linear",
       "--fixes-linear-issue",
     ]);
+    const createArgs = collectGenericObjectArgs(args, input);
+    const citedProof = prBodyProofIds(body);
     return {
       kind: "execute",
       label: "PR create",
+      prText: { body: body ?? "" },
       steps: [
-        actionCallStep(
-          "result",
-          "create_pr_from_lane",
-          collectGenericObjectArgs(args, input),
-        ),
+        actionCallStep("result", "create_pr_from_lane", createArgs),
+        // Proof the text cites goes up after the PR exists. A failed upload
+        // leaves a made PR; the summary says how to run the upload again.
+        ...(citedProof.length
+          ? proofIntoPrBodySteps({
+            pr: (values) => {
+              const url = getPrCreateLinks(values.result).githubUrl;
+              if (!url) throw new CliToolError("the new PR has no GitHub URL to upload proof to", {});
+              return url;
+            },
+            ids: citedProof,
+            explicitProjectRoot,
+            optional: true,
+          })
+          : []),
       ],
     };
   }
@@ -7470,21 +8151,38 @@ function buildPrPlan(args: string[]): CliPlan {
         ),
       ],
     };
-  if (sub === "body" || sub === "update-body")
+  if (sub === "body" || sub === "update-body") {
+    const target = prId ?? firstPositional(args);
+    const body = readTextOrFileOption(args, ["--body"], ["--body-file"]);
+    // A missing flag must not replace the text with nothing. `--body ""` still clears it.
+    if (body === undefined) throw new CliUsageError("prs body needs --body <text> or --body-file <path|->.");
+    const updateArgs = withPr({ prId: target, body });
+    const citedProof = prBodyProofIds(body);
     return {
       kind: "execute",
       label: "PR update body",
+      formatter: "pr-body",
+      prText: { body, ref: target ?? null },
       steps: [
-        actionCallStep(
-          "result",
-          "pr_update_body",
-          withPr({
-            prId: prId ?? firstPositional(args),
-            body: readValue(args, ["--body"]) ?? "",
-          }),
-        ),
+        actionCallStep("result", "pr_update_body", updateArgs),
+        ...(citedProof.length
+          ? proofIntoPrBodySteps({
+            pr: () => {
+              // gh takes a number or a URL. An ADE PR id names no PR to it.
+              const ref = String(target ?? "").replace(/^#/, "");
+              if (!/^\d+$/.test(ref) && !/^https:\/\//i.test(ref)) {
+                throw new CliToolError("to upload the cited proof, name the PR by its number or URL", {});
+              }
+              return ref;
+            },
+            ids: citedProof,
+            explicitProjectRoot,
+            optional: true,
+          })
+          : []),
       ],
     };
+  }
   if (sub === "link") {
     const laneId = readLaneId(args) ?? firstPositional(args);
     const prUrlOrNumber =
@@ -8225,22 +8923,26 @@ function buildCliSessionStartPlan(
     ? promptArgs.join(" ").trim()
     : readValue(args, ["--message", "--prompt", "--initial-input"]);
   const { instanceId, presetId, credentialId } = readLaunchIdentitySelectors(args, { provider: rawProvider });
-  const permissionMode =
-    readValue(args, ["--permission-mode", "--permissions"]) ?? "default";
+  const lineage = readAgentSpawnLineage(args, { allowSpawnType: provider !== "shell" });
+  const requestedPermissionMode = readValue(args, ["--permission-mode", "--permissions"]);
+  // Keep an omitted subagent permission unset so the runtime can inherit the
+  // parent's access. Other launches retain the CLI's historical default.
+  const permissionMode = requestedPermissionMode ?? (
+    lineage.kind === "lineage" && lineage.spawnKind === "subagent" ? undefined : "default"
+  );
   const droidPermissionMode = readDroidPermissionMode(args);
-  if (!isTrackedCliPermissionMode(permissionMode)) {
+  if (!isTrackedCliPermissionMode(permissionMode ?? "default")) {
     throw new CliUsageError(PERMISSION_MODE_ENUM_MESSAGE);
   }
   // The profile/mode pairing is checked on the merged bag in
   // `collectLaunchArgs`; checking it here as well would only answer first for a
   // launch the merged check rejects anyway.
-  const lineage = readAgentSpawnLineage(args, { allowSpawnType: provider !== "shell" });
   const { base: lineageArgs, launchOptions } = spawnLineageLaunchArgs(lineage, launchOpts);
 
   const input = collectLaunchArgs(args, {
     laneId,
     provider,
-    permissionMode,
+    ...(permissionMode !== undefined ? { permissionMode } : {}),
     // No `LAUNCH_PROFILE_TITLE[provider]` fallback here: `--arg provider=…`
     // has not merged yet. `applyMergedProviderTitle` fills it in below.
     title: readValue(args, ["--title"]) ?? undefined,
@@ -8249,6 +8951,7 @@ function buildCliSessionStartPlan(
     modelId: readValue(args, ["--model-id"]),
     reasoningEffort: readValue(args, ["--reasoning", "--reasoning-effort"]),
     fastMode: readFastModeFlag(args),
+    ...(readFastTierFlag(args) ? { fastTier: "ultrafast" as const } : {}),
     cols: readIntOption(args, ["--cols"], 120),
     rows: readIntOption(args, ["--rows"], 36),
     cwd: readValue(args, ["--cwd"]),
@@ -8430,10 +9133,27 @@ function buildSearchPlan(args: string[]): CliPlan {
     }
   }
 
-  const query = firstPositional(args) ?? readValue(args, ["--query", "-q"]);
+  // `--query <text>` first: read after the positional, its value was taken as
+  // the query and the bare flag was left behind as an unknown option. A flag
+  // after `--query` is not its value: it stays for the unknown-option check,
+  // so `--query --socket <path>` is refused rather than searched for.
+  const queryFlagIndex = args.findIndex((arg) => arg === "--query" || arg === "-q");
+  if (queryFlagIndex >= 0 && args[queryFlagIndex + 1]?.startsWith("-")) args.splice(queryFlagIndex, 1);
+  const query = readValue(args, ["--query", "-q"]) ?? firstPositional(args);
   if (!query || !query.trim()) {
     throw new CliUsageError(
       'search requires a query, e.g. ade search "login redirect" --text (or --status / --rebuild).',
+    );
+  }
+  // An option this command does not know is refused, never dropped. A
+  // `--socket <path>` written after the command was read as nothing, and the
+  // search went to the default brain instead of the one the caller named.
+  const unknownOption = args.find((arg) => arg.startsWith("-") && arg !== "--");
+  if (unknownOption) {
+    throw new CliUsageError(
+      unknownOption === "--socket" || unknownOption.startsWith("--socket=")
+        ? '--socket is a global option and goes before the command: ade --socket <path> search "<query>".'
+        : `Unknown search option: ${unknownOption}. Run 'ade help search' for the options it takes.`,
     );
   }
 
@@ -8809,6 +9529,7 @@ function buildChatLaunchPlan(args: string[]): CliPlan {
   maybePut(create, "presetId", presetId);
   maybePut(create, "credentialId", credentialId);
   if (fastMode !== undefined) create.fastMode = fastMode;
+  if (readFastTierFlag(args)) create.fastTier = "ultrafast";
   const launchArgs: JsonObject = {
     kind: "chat",
     // Nothing on this side opens the chat; "foreground" is for a client that does.
@@ -8976,9 +9697,76 @@ export function formatChatLaunches(value: unknown): string {
   );
 }
 
+/**
+ * The row reports an agent makes about its own chat. From inside a personal
+ * (project-less) chat they belong to the personal scope, not to whatever
+ * project the CLI would otherwise resolve from the cwd.
+ */
+const CHAT_SELF_REPORT_SUBCOMMANDS = new Set(["ask", "note", "activity"]);
+
+/**
+ * The target both handoff forms read the same way: the mode, the model (also
+ * `--target` or a bare positional) and its settings. `sub` "fork" implies
+ * fork mode.
+ */
+function readHandoffTarget(args: string[], sub: string): {
+  mode: "brief" | "fork";
+  targetModelId: string;
+  settings: {
+    reasoningEffort?: string;
+    fastMode?: boolean;
+    permissionMode?: string;
+    codexApprovalPolicy?: string;
+    codexSandbox?: string;
+    codexConfigSource?: string;
+  };
+} {
+  const modeArg = readValue(args, ["--mode"]);
+  const forkFlag = readFlag(args, ["--fork"]);
+  const briefFlag = readFlag(args, ["--brief"]);
+  if ((forkFlag && briefFlag) || (modeArg && (forkFlag || briefFlag))) {
+    throw new CliUsageError("Use either --mode, --fork, or --brief for chat handoff.");
+  }
+  const mode = sub === "fork" || forkFlag ? "fork" : briefFlag ? "brief" : modeArg ?? "brief";
+  if (mode !== "brief" && mode !== "fork") {
+    throw new CliUsageError("chat handoff --mode must be brief or fork.");
+  }
+  const targetModelId = requireValue(
+    readValue(args, ["--target-model", "--target-model-id", "--model", "--model-id", "--target"]) ??
+      firstStandalonePositional(args),
+    "targetModelId",
+  );
+  const reasoningEffort = readValue(args, ["--reasoning-effort", "--effort"]);
+  const fastMode = readFastModeFlag(args);
+  const permissionMode = readValue(args, ["--permission-mode", "--permissions"]);
+  const codexApprovalPolicy = readValue(args, ["--codex-approval-policy", "--approval-policy"]);
+  const codexSandbox = readValue(args, ["--codex-sandbox", "--sandbox"]);
+  const codexConfigSource = readValue(args, ["--codex-config-source", "--config-source"]);
+  return {
+    mode,
+    targetModelId,
+    settings: {
+      ...(reasoningEffort !== null ? { reasoningEffort } : {}),
+      ...(fastMode !== undefined ? { fastMode } : {}),
+      ...(readFastTierFlag(args) ? { fastTier: "ultrafast" } : {}),
+      ...(permissionMode !== null ? { permissionMode } : {}),
+      ...(codexApprovalPolicy !== null ? { codexApprovalPolicy } : {}),
+      ...(codexSandbox !== null ? { codexSandbox } : {}),
+      ...(codexConfigSource !== null ? { codexConfigSource } : {}),
+    },
+  };
+}
+
 function buildChatPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "list";
   if (readFlag(args, ["--personal"])) {
+    return buildPersonalChatPlan(sub, args);
+  }
+  // ADE sets ADE_CHAT_SCOPE=personal in a personal chat's agent environment.
+  // Its own `ade chat note|ask|activity` then reaches its row through the
+  // brain; without this they would register the scratch folder as a project
+  // and report to a chat that does not exist there.
+  if (CHAT_SELF_REPORT_SUBCOMMANDS.has(sub) && process.env.ADE_CHAT_SCOPE?.trim() === "personal") {
     return buildPersonalChatPlan(sub, args);
   }
   if (sub === "settle" || sub === "unsettle") {
@@ -9429,6 +10217,13 @@ function buildChatPlan(args: string[]): CliPlan {
       throw new CliUsageError("--no-kickoff cannot be used with --prompt/--kickoff.");
     }
     const attachmentFlags = linearIssue ? readLinearAttachmentFlags(args) : {};
+    // Checked before the lineage read, which consumes `--no-parent`. An agent
+    // that opts out of lineage gets one hint on stderr (stdout may be JSON).
+    if (findFlagName(args, ["--no-parent"]) !== null && process.env.ADE_CHAT_SESSION_ID?.trim()) {
+      process.stderr.write(
+        "note: --no-parent chats do not nest under you or wake you (they are recorded as launched by you). For a fire-and-forget helper, use --type peer.\n",
+      );
+    }
     // `chat create` never launches a shell (no `allowSpawnType` option here,
     // and `allowShell: false` below), so this read always records lineage;
     // there is no dropped ambient parent to forward.
@@ -9454,6 +10249,7 @@ function buildChatPlan(args: string[]): CliPlan {
         "--permissions",
       ]),
       droidPermissionMode: readDroidPermissionMode(args),
+      ...readCopilotLaunchFlags(args, provider ?? ""),
       title: readValue(args, ["--title"]),
       surface: readValue(args, ["--surface"]) ?? "work",
       // Which of this machine's provider accounts the session signs in as.
@@ -9467,6 +10263,7 @@ function buildChatPlan(args: string[]): CliPlan {
       ...(presetId ? { presetId } : {}),
       ...(credentialId ? { credentialId } : {}),
       ...(fastMode !== undefined ? { fastMode, codexFastMode: fastMode } : {}),
+      ...(readFastTierFlag(args) ? { fastTier: "ultrafast" } : {}),
       ...(createRuntimeMode ? { runtimeMode: createRuntimeMode } : {}),
     }, launchOptions);
     const createStep = actionStep("result", "chat", "createSession", actionArgs);
@@ -9943,33 +10740,64 @@ function buildChatPlan(args: string[]): CliPlan {
       steps: [actionStep("result", "chat", "clearCodexGoal", withSession({ sessionId: requireSession() }))],
     };
   }
+  if (sub === "handoff") {
+    // The first control flag present wins. --machine with any of them is
+    // refused earlier, by extractMachineTargeting.
+    const controls = [
+      { flags: ["--cancel"], label: "chat handoff cancel", action: "cancelCrossMachineHandoff" },
+      { flags: ["--retry"], label: "chat handoff retry", action: "retryCrossMachineHandoff" },
+      { flags: ["--options", "--where"], label: "chat handoff options", action: "getCrossMachineHandoffOptions" },
+    ];
+    const flagNames = flagNamesOutsideFreeText(args);
+    const control = controls.find((entry) => entry.flags.some((flag) => flagNames.has(flag))) ?? null;
+    const handoffMachine = readValue(args, ["--machine", "--to-machine"]);
+    if (handoffMachine !== null && !handoffMachine.trim()) {
+      throw new CliUsageError("--machine needs a machine name or key (see `ade machines list`).");
+    }
+    if (control) {
+      return {
+        kind: "execute",
+        label: control.label,
+        steps: [actionStep("result", "chat", control.action, { sourceSessionId: requireSession() })],
+      };
+    }
+    if (handoffMachine !== null) {
+      // Move the chat to another machine on the account. The brain runs the
+      // move (crossMachineHandoffOrchestrator); the chat's banner shows it.
+      // Never forwarded: --machine names the destination (cliMachineTargeting).
+      // Free text first: a prompt of "--fork" is text, not a flag.
+      const continuationPrompt = readValue(args, ["--prompt", "--note", "--handoff-note"]);
+      if (readValue(args, ["--target-lane", "--target-lane-id"]) !== null) {
+        throw new CliUsageError("--target-lane is for a handoff on this machine. The other machine picks or creates the lane.");
+      }
+      const target = readHandoffTarget(args, sub);
+      return {
+        kind: "execute",
+        label: "chat handoff to another machine",
+        steps: [
+          actionStep("result", "chat", "startCrossMachineHandoff", {
+            sourceSessionId: requireSession(),
+            machine: handoffMachine,
+            mode: target.mode,
+            targetModelId: target.targetModelId,
+            ...target.settings,
+            ...(continuationPrompt !== null ? { continuationPrompt } : {}),
+            ...(readFlag(args, ["--include-changes", "--bring-changes"]) ? { includeChanges: true } : {}),
+            ...(readFlag(args, ["--clone"]) ? { clone: true } : {}),
+            ...(readFlag(args, ["--when-turn-ends", "--after-turn"]) ? { whenTurnEnds: true } : {}),
+          }),
+        ],
+      };
+    }
+  }
   if (sub === "handoff" || sub === "fork") {
-    const modeArg = readValue(args, ["--mode"]);
-    const forkFlag = readFlag(args, ["--fork"]);
-    const briefFlag = readFlag(args, ["--brief"]);
-    if ((forkFlag && briefFlag) || (modeArg && (forkFlag || briefFlag))) {
-      throw new CliUsageError("Use either --mode, --fork, or --brief for chat handoff.");
-    }
-    const mode = sub === "fork" || forkFlag ? "fork" : briefFlag ? "brief" : modeArg ?? "brief";
-    if (mode !== "brief" && mode !== "fork") {
-      throw new CliUsageError("chat handoff --mode must be brief or fork.");
-    }
-    const targetModelId = requireValue(
-      readValue(args, ["--target-model", "--target-model-id", "--model", "--model-id", "--target"]) ??
-        firstStandalonePositional(args),
-      "targetModelId",
-    );
+    // Free text first: a note of "--fork" is text, not a flag.
+    const handoffNote = readValue(args, ["--handoff-note", "--note"]);
+    const { mode, targetModelId, settings } = readHandoffTarget(args, sub);
     const targetLaneId = readValue(args, ["--target-lane", "--target-lane-id"]);
     if (targetLaneId !== null && mode === "fork") {
       throw new CliUsageError("chat fork stays in the source lane; --target-lane is only valid for brief handoffs.");
     }
-    const reasoningEffort = readValue(args, ["--reasoning-effort", "--effort"]);
-    const fastMode = readFastModeFlag(args);
-    const permissionMode = readValue(args, ["--permission-mode", "--permissions"]);
-    const codexApprovalPolicy = readValue(args, ["--codex-approval-policy", "--approval-policy"]);
-    const codexSandbox = readValue(args, ["--codex-sandbox", "--sandbox"]);
-    const codexConfigSource = readValue(args, ["--codex-config-source", "--config-source"]);
-    const handoffNote = readValue(args, ["--handoff-note", "--note"]);
     const throughTurnId = readValue(args, ["--through-turn", "--from-turn"]);
     if (throughTurnId !== null && mode !== "fork") {
       throw new CliUsageError("--through-turn only applies to chat fork.");
@@ -9987,12 +10815,8 @@ function buildChatPlan(args: string[]): CliPlan {
             targetModelId,
             mode,
             ...(targetLaneId !== null ? { targetLaneId } : {}),
-            ...(reasoningEffort !== null ? { reasoningEffort } : {}),
-            ...(fastMode !== undefined ? { fastMode, codexFastMode: fastMode } : {}),
-            ...(permissionMode !== null ? { permissionMode } : {}),
-            ...(codexApprovalPolicy !== null ? { codexApprovalPolicy } : {}),
-            ...(codexSandbox !== null ? { codexSandbox } : {}),
-            ...(codexConfigSource !== null ? { codexConfigSource } : {}),
+            ...settings,
+            ...(settings.fastMode !== undefined ? { codexFastMode: settings.fastMode } : {}),
             ...(handoffNote !== null ? { handoffNote } : {}),
             ...(throughTurnId !== null ? { throughTurnId } : {}),
           }),
@@ -10233,6 +11057,35 @@ function buildChatPlan(args: string[]): CliPlan {
       ],
     };
   }
+  if (sub === "set-parent" || sub === "reparent") {
+    const target = requireValue(sessionId ?? asString(process.env.ADE_CHAT_SESSION_ID), "sessionId");
+    const detach = readFlag(args, ["--no-parent", "--detach"]);
+    const parent = readValue(args, [...DEFAULT_PARENT_FLAGS]);
+    if (detach === Boolean(parent)) {
+      throw new Error("Pass --parent <session> to set the parent, or --no-parent to detach the chat.");
+    }
+    const spawnKind = readValue(args, [...SPAWN_TYPE_FLAGS]);
+    if (spawnKind && spawnKind !== "subagent" && spawnKind !== "peer") {
+      throw new Error("--type must be subagent or peer.");
+    }
+    if (detach && spawnKind) throw new Error("--type needs a parent; drop it with --no-parent.");
+    return {
+      kind: "execute",
+      label: "chat set-parent",
+      steps: [
+        actionStep(
+          "result",
+          "chat",
+          "setParent",
+          withSession({
+            sessionId: target,
+            parentSessionId: detach ? null : parent,
+            ...(spawnKind ? { spawnKind } : {}),
+          }),
+        ),
+      ],
+    };
+  }
   if (sub === "promote") {
     return {
       kind: "execute",
@@ -10279,11 +11132,678 @@ function buildChatPlan(args: string[]): CliPlan {
   };
 }
 
+/* ──────────────────────────────────────────────────────────────────────────
+   DRAFTS + SCHEDULED SEND — `ade drafts`.
+
+   The desktop renamed its "prompt stash" feature to Drafts and taught it to
+   send at a time. These commands are the human/agent CLI over the existing
+   `chat.*Draft` actions; they own no state. There is one noun on purpose — no
+   `ade sends` — see docs/features/chat/drafts-and-scheduled-send.md.
+
+   Output is three-way on purpose: rows read best as a table when nobody asked
+   (`CliPlan.tableText`), `--text` is the compact form other formatters already
+   use, and `--json` is the structured payload. That is why `options.json`
+   exists — `text` alone cannot tell `--json` from the no-flag default.
+   ────────────────────────────────────────────────────────────────────────── */
+
+/** The absolute-time grammar the draft scheduler requires: offset or Z, never a bare local time. */
+const DRAFT_ABSOLUTE_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2})$/;
+const DRAFT_DELIVERY_POLICIES: readonly string[] = ["wait", "strict", "grace"];
+/** Mirrors MAX_DRAFT_GRACE_SECONDS in the desktop's chat types. */
+const DRAFT_MAX_GRACE_SECONDS = 24 * 60 * 60;
+/** Schedule-only flags: meaningless without a fire time, and a mistake to drop silently. */
+const DRAFT_SCHEDULE_ONLY_FLAGS: readonly string[] = [
+  "--target",
+  "--target-session",
+  "--new-chat",
+  "--lane",
+  "--lane-id",
+  "--machine",
+  "--if-late",
+  "--grace",
+];
+
+function draftsActionStep(action: string, args: JsonObject = {}): InvocationStep {
+  return actionStep("result", "chat", action, args);
+}
+
+/** True when the caller named a fire time, in either the `--flag value` or `--flag=value` spelling. */
+function hasDraftTimeFlag(args: readonly string[]): boolean {
+  return args.some((token) => (
+    token === "--at" || token.startsWith("--at=") || token === "--in" || token.startsWith("--in=")
+  ));
+}
+
+function hasAnyDraftFlag(args: readonly string[], names: readonly string[]): boolean {
+  return args.some((token) => names.includes(token === "--" ? token : token.split("=")[0]!));
+}
+
+/**
+ * `--prompt`, or STDIN when the flag is omitted (create) or is `-`.
+ *
+ * Reading stdin only when it is not a TTY keeps `ade drafts create` from
+ * hanging on a terminal that will never send EOF; the `-` sentinel is how an
+ * agent asks for stdin explicitly on any command.
+ */
+function readDraftPrompt(args: string[], opts: { fromStdinWhenOmitted: boolean }): string | null {
+  const inline = readValue(args, ["--prompt"]);
+  if (inline === "-") return readAllStdinSync();
+  if (inline != null) return inline;
+  if (opts.fromStdinWhenOmitted && !process.stdin.isTTY) return readAllStdinSync();
+  return null;
+}
+
+/** Repeatable `--image <path>`, as the local image refs the draft store keeps. */
+function readDraftImages(args: string[]): JsonObject[] {
+  return readRepeatedValues(args, ["--image"]).map((value) => ({
+    path: path.resolve(value),
+    type: "image",
+  }));
+}
+
+function requireAbsoluteDraftTime(value: string, flag: string): string {
+  const trimmed = value.trim();
+  if (!DRAFT_ABSOLUTE_TIME.test(trimmed) || !Number.isFinite(Date.parse(trimmed))) {
+    throw new CliUsageError(
+      `${flag} needs an ISO-8601 timestamp with an explicit offset or Z, e.g. 2026-07-23T01:05:00-04:00.`,
+    );
+  }
+  return trimmed;
+}
+
+/**
+ * `--in 90m` as an absolute instant.
+ *
+ * The point of `--in` is that the caller never does time-zone arithmetic: the
+ * duration is added to "now" and serialized with an explicit `Z`, so the fire
+ * time means the same thing on every machine that reads it.
+ */
+function draftFireTimeFromDuration(value: string, nowMs = Date.now()): string {
+  return new Date(nowMs + parseScheduledWorkDelaySeconds(value) * 1000).toISOString();
+}
+
+function parseDraftGraceSeconds(value: string): number {
+  const seconds = parseScheduledWorkDelaySeconds(value);
+  if (seconds > DRAFT_MAX_GRACE_SECONDS) {
+    throw new CliUsageError("--grace cannot be longer than 24h.");
+  }
+  return seconds;
+}
+
+/**
+ * Assemble a `DraftScheduleInput` from the command's flags.
+ *
+ * `existing` is the row being retimed (`ade drafts update`) or null when a
+ * schedule is armed fresh (`ade drafts schedule` / `create --at`). An explicit
+ * flag always wins; an absent one carries the existing row's value forward, so
+ * `update <id> --in 30m` retimes an armed send without restating its target.
+ * That is carrying a decision forward, not guessing one — with no existing row
+ * the target must be named, and its absence is a usage error.
+ */
+function buildDraftScheduleInput(args: string[], existing: JsonObject | null): JsonObject {
+  const at = readValue(args, ["--at"]);
+  const inValue = readValue(args, ["--in"]);
+  if (at != null && inValue != null) {
+    throw new CliUsageError("Use --at or --in, not both.");
+  }
+  const scheduledAt = at != null
+    ? requireAbsoluteDraftTime(at, "--at")
+    : inValue != null
+      ? draftFireTimeFromDuration(inValue)
+      : asString(existing?.scheduledAt);
+  if (!scheduledAt) {
+    throw new CliUsageError("A scheduled send needs a fire time: pass --at <iso> or --in <duration>.");
+  }
+
+  const target = readValue(args, ["--target", "--target-session"]);
+  const newChat = readFlag(args, ["--new-chat"]);
+  const laneId = readValue(args, ["--lane", "--lane-id"]);
+  if (target != null && (newChat || laneId != null)) {
+    throw new CliUsageError("Choose one target: --target <session> or --new-chat --lane <lane>.");
+  }
+  let targetKind: "existing" | "new" | null = null;
+  let targetSessionId: string | null = null;
+  let targetLaneId: string | null = null;
+  if (target != null) {
+    targetKind = "existing";
+    targetSessionId = target;
+  } else if (newChat || laneId != null) {
+    targetKind = "new";
+    targetLaneId = requireValue(laneId, "--lane");
+  } else {
+    // Carry the existing row's target forward (update/retime only).
+    const carriedKind = asString(existing?.targetKind);
+    const carriedSession = asString(existing?.targetSessionId);
+    const carriedLane = asString(existing?.targetLaneId);
+    if (carriedKind === "existing" && carriedSession) {
+      targetKind = "existing";
+      targetSessionId = carriedSession;
+    } else if (carriedKind === "new" && carriedLane) {
+      targetKind = "new";
+      targetLaneId = carriedLane;
+    }
+  }
+  if (!targetKind) {
+    throw new CliUsageError("A scheduled send needs an explicit target: --target <session> or --new-chat --lane <lane>.");
+  }
+  if (targetKind === "existing" && !targetSessionId) {
+    throw new CliUsageError("--target needs the chat session id the send goes into.");
+  }
+  if (targetKind === "new" && !targetLaneId) {
+    throw new CliUsageError("--new-chat needs --lane <lane> for the chat it should start.");
+  }
+
+  const provider = readValue(args, ["--provider"]) ?? asString(existing?.provider);
+  const modelId = readValue(args, ["--model-id"]) ?? asString(existing?.modelId);
+  const model = readValue(args, ["--model"]) ?? asString(existing?.model);
+  const permissionMode = readValue(args, ["--permission", "--permission-mode"])
+    ?? asString(existing?.permissionMode);
+  const thinking = readValue(args, ["--thinking", "--reasoning-effort", "--effort"])
+    ?? asString(existing?.thinking);
+  const machine = readValue(args, ["--machine"]) ?? asString(existing?.targetMachineKey);
+  // A new chat is created by the fire-time delivery, so it must carry its model
+  // and provider up front — nobody is there to pick one when it fires.
+  if (targetKind === "new" && !model) {
+    throw new CliUsageError("--new-chat needs --model <runtime-facing model string> (with --provider <id>).");
+  }
+  if (targetKind === "new" && !provider) {
+    throw new CliUsageError("--new-chat needs --provider <id> (with --model).");
+  }
+
+  const policyRaw = readValue(args, ["--if-late"]) ?? asString(existing?.deliveryPolicy) ?? "wait";
+  if (!DRAFT_DELIVERY_POLICIES.includes(policyRaw)) {
+    throw new CliUsageError("--if-late must be wait, strict, or grace.");
+  }
+  const graceValue = readValue(args, ["--grace"]);
+  let graceSeconds: number | null = null;
+  if (policyRaw === "grace") {
+    graceSeconds = graceValue != null
+      ? parseDraftGraceSeconds(graceValue)
+      : (typeof existing?.graceSeconds === "number" ? existing.graceSeconds : null);
+    if (graceSeconds == null) {
+      throw new CliUsageError("--if-late grace needs --grace <duration>, e.g. --grace 10m.");
+    }
+  } else if (graceValue != null) {
+    throw new CliUsageError("--grace only applies with --if-late grace.");
+  }
+
+  return {
+    scheduledAt,
+    targetKind,
+    targetSessionId,
+    targetLaneId,
+    // Left unset when no machine is named: the send then fires on whichever
+    // runtime is up, which is the default the product wants.
+    ...(machine ? { targetMachineKey: machine } : {}),
+    deliveryPolicy: policyRaw,
+    ...(graceSeconds != null ? { graceSeconds } : {}),
+    ...(provider ? { provider } : {}),
+    ...(modelId ? { modelId } : {}),
+    ...(model ? { model } : {}),
+    ...(permissionMode ? { permissionMode } : {}),
+    ...(thinking ? { thinking } : {}),
+  };
+}
+
+/** A draft row list from an action result, however the envelope is shaped. */
+function draftEntriesFromResult(value: unknown): JsonObject[] {
+  const raw = unwrapActionEnvelope(value);
+  if (Array.isArray(raw)) return raw.filter(isRecord);
+  return firstArray(raw, ["drafts", "items", "entries"]);
+}
+
+function findDraftById(rows: JsonObject[], id: string): JsonObject | null {
+  return rows.find((row) => asString(row.id) === id) ?? null;
+}
+
+function isDraftPending(status: string | null): boolean {
+  return status === "scheduled" || status === "sending";
+}
+
+function selectDraftRows(
+  value: unknown,
+  opts: { filter: "all" | "scheduled" | "needs-you"; machine: string | null },
+): JsonObject[] {
+  let rows = draftEntriesFromResult(value);
+  if (opts.filter === "scheduled") {
+    rows = rows.filter((row) => isDraftPending(asString(row.status)));
+  } else if (opts.filter === "needs-you") {
+    // A blocked send waits on the user; a missed one already refused to go out.
+    // Both are the "you have to act" bucket.
+    rows = rows.filter((row) => row.status === "blocked" || row.status === "missed");
+  }
+  if (opts.machine) {
+    const want = opts.machine.trim().toLowerCase();
+    rows = rows.filter((row) => (asString(row.targetMachineKey) ?? "").toLowerCase() === want);
+  }
+  return rows;
+}
+
+/** Status first, and specific: "needs you" is what a blocked or missed send means to a person. */
+function draftStatusLabel(entry: JsonObject): string {
+  const status = (asString(entry.status) ?? asString(entry.kind) ?? "draft").toLowerCase();
+  if (status === "blocked") return "needs you";
+  return status;
+}
+
+/** `9:00 AM tomorrow` / `Oct 12, 9:00 AM` in the caller's own zone. */
+function formatDraftLocalTime(iso: string, nowMs: number): string | null {
+  const fireMs = Date.parse(iso);
+  if (!Number.isFinite(fireMs)) return null;
+  const fire = new Date(fireMs);
+  const time = fire.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  const startOfDay = (ms: number): number => {
+    const day = new Date(ms);
+    day.setHours(0, 0, 0, 0);
+    return day.getTime();
+  };
+  const dayDiff = Math.round((startOfDay(fireMs) - startOfDay(nowMs)) / 86_400_000);
+  if (dayDiff === 0) return time;
+  if (dayDiff === 1) return `${time} tomorrow`;
+  if (dayDiff === -1) return `${time} yesterday`;
+  return `${fire.toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${time}`;
+}
+
+function formatDraftRelativeTime(iso: string, nowMs: number): string | null {
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) return null;
+  return formatRelativeDelta({ deltaMs: ms - nowMs, compact: true, nowLabel: "just now" });
+}
+
+/** The when column: a scheduled send's fire time, else a plain draft's age. */
+function draftWhenText(entry: JsonObject, nowMs: number): string | null {
+  const scheduledAt = asString(entry.scheduledAt);
+  if (scheduledAt) return formatDraftLocalTime(scheduledAt, nowMs);
+  const createdAt = asString(entry.createdAt);
+  return createdAt ? formatDraftRelativeTime(createdAt, nowMs) : null;
+}
+
+/**
+ * The where column: a blocked/missed send shows why it needs you; otherwise the
+ * explicit target. A lane name is not on the draft row (only its id), so the
+ * target reads as the id the caller can act on rather than a label we do not have.
+ */
+function draftWhereText(entry: JsonObject): string | null {
+  const status = asString(entry.status);
+  if (status === "blocked" || status === "missed") {
+    return asString(entry.lastError) ?? (status === "missed" ? "fire time passed" : "needs attention");
+  }
+  const kind = asString(entry.targetKind);
+  const session = asString(entry.targetSessionId);
+  const lane = asString(entry.targetLaneId);
+  if (kind === "existing" || session) return session ? `→ chat ${session}` : "→ chat";
+  if (kind === "new" || lane) return lane ? `→ new chat in ${lane}` : "→ new chat";
+  return null;
+}
+
+function draftPromptText(entry: JsonObject): string {
+  const text = (asString(entry.text) ?? "").replace(/\s+/g, " ").trim();
+  return text ? `"${truncateCell(text, 48)}"` : "(no text)";
+}
+
+/** One draft as the status-first row summary an agent greps. */
+function formatDraftRow(entry: JsonObject, nowMs = Date.now()): string {
+  return [
+    draftStatusLabel(entry),
+    draftWhenText(entry, nowMs),
+    draftWhereText(entry),
+    draftPromptText(entry),
+  ].filter((part): part is string => Boolean(part)).join("  ");
+}
+
+function renderDraftsTable(rows: JsonObject[], nowMs = Date.now()): string {
+  return renderTable(
+    ["status", "when", "target", "prompt"],
+    rows.map((entry) => [
+      draftStatusLabel(entry),
+      draftWhenText(entry, nowMs) ?? "",
+      draftWhereText(entry) ?? "",
+      draftPromptText(entry),
+    ]),
+    "ADE drafts\n(no drafts)",
+    // The status is short but must never clip ("scheduled" vs "needs you" is the
+    // whole point of the column); ids and times are what an agent copies.
+    { fullColumns: ["status", "when"] },
+  );
+}
+
+function draftEntriesLines(value: unknown, nowMs = Date.now()): string {
+  const rows = draftEntriesFromResult(value);
+  if (rows.length === 0) return "ADE drafts\n(no drafts)";
+  return rows.map((entry) => formatDraftRow(entry, nowMs)).join("\n");
+}
+
+function formatDraftDetail(value: unknown, opts: { fullPrompt: boolean }): string {
+  const entry: JsonObject = isRecord(value) ? value : {};
+  const images = typeof entry.attachmentCount === "number" && entry.attachmentCount > 0
+    ? `${entry.attachmentCount}${entry.attachmentsAvailable === false ? " (on the originating machine)" : ""}`
+    : null;
+  return renderKeyValues(
+    `ADE draft ${asString(entry.id) ?? ""}`.trim(),
+    [
+      ["status", draftStatusLabel(entry)],
+      ["when", draftWhenText(entry, Date.now())],
+      ["target", draftWhereText(entry)],
+      ["policy", asString(entry.deliveryPolicy)],
+      ["grace (s)", typeof entry.graceSeconds === "number" ? entry.graceSeconds : null],
+      ["provider", asString(entry.provider)],
+      ["model", asString(entry.model) ?? asString(entry.modelId)],
+      ["permission", asString(entry.permissionMode)],
+      ["thinking", asString(entry.thinking)],
+      ["machine", asString(entry.targetMachineKey)],
+      ["images", images],
+      ["created", asString(entry.createdAt)],
+      ["updated", asString(entry.updatedAt)],
+      ["error", asString(entry.lastError)],
+      ["prompt", opts.fullPrompt ? asString(entry.text) : draftPromptText(entry)],
+    ],
+    ["prompt"],
+  );
+}
+
+/** delete/now confirmation: one line that says what happened, or the JSON shape under --json. */
+function formatDraftConfirmation(value: unknown): string {
+  const record: JsonObject = isRecord(value) ? value : {};
+  const id = asString(record.id) ?? "the draft";
+  if (typeof record.deleted === "boolean") {
+    return record.deleted
+      ? `Deleted draft ${id}.`
+      : `No draft ${id} on this machine; nothing was deleted.`;
+  }
+  if (typeof record.ok === "boolean") {
+    const error = asString(record.error);
+    return record.ok
+      ? `Delivered draft ${id} now.`
+      : `Could not deliver draft ${id}${error ? ` — ${error}` : "."}`;
+  }
+  return `Draft ${id}.`;
+}
+
+function buildDraftsListPlan(args: string[]): CliPlan {
+  const scheduled = readFlag(args, ["--scheduled"]);
+  const needsYou = readFlag(args, ["--needs-you", "--needs_you"]);
+  if (scheduled && needsYou) {
+    throw new CliUsageError("Use --scheduled or --needs-you, not both.");
+  }
+  const machine = readValue(args, ["--machine"]);
+  const filter: "all" | "scheduled" | "needs-you" = scheduled ? "scheduled" : needsYou ? "needs-you" : "all";
+  return {
+    kind: "execute",
+    label: "drafts list",
+    steps: [draftsActionStep("listDrafts")],
+    shapeResult: (values) => selectDraftRows(values.result, { filter, machine }),
+    formatter: "drafts-list",
+    tableText: (result) => renderDraftsTable(result as JsonObject[]),
+  };
+}
+
+function buildDraftsCreatePlan(args: string[]): CliPlan {
+  const prompt = readDraftPrompt(args, { fromStdinWhenOmitted: true });
+  const images = readDraftImages(args);
+  // The chat this command ran inside, when there is one. It is a target *hint*
+  // for the composer, never the send's target — the target stays explicit.
+  const originSessionId = process.env.ADE_CHAT_SESSION_ID?.trim() || null;
+  if ((prompt ?? "").trim() === "" && images.length === 0) {
+    throw new CliUsageError("ade drafts create needs --prompt \"<text>\" (or a prompt piped on stdin), or at least one --image.");
+  }
+
+  const wantsSchedule = hasDraftTimeFlag(args);
+  if (!wantsSchedule) {
+    // A schedule-only flag without a fire time would be dropped silently, which
+    // reads as the flag having worked. Say so instead.
+    if (hasAnyDraftFlag(args, DRAFT_SCHEDULE_ONLY_FLAGS)) {
+      throw new CliUsageError(
+        "--target/--new-chat/--machine/--if-late describe a scheduled send; add --at <iso> or --in <duration>, or drop them for a plain draft.",
+      );
+    }
+    // A plain draft takes its captured config straight from the flags, and only
+    // here: `readValue` consumes what it reads, so reading them before the
+    // schedule builder would leave that path with none of them.
+    const provider = readValue(args, ["--provider"]);
+    const modelId = readValue(args, ["--model-id"]);
+    const model = readValue(args, ["--model"]);
+    return {
+      kind: "execute",
+      label: "drafts create",
+      steps: [draftsActionStep("createDraft", {
+        text: prompt ?? "",
+        ...(images.length ? { attachments: images } : {}),
+        ...(provider ? { provider } : {}),
+        ...(modelId ? { modelId } : {}),
+        ...(model ? { model } : {}),
+        ...(originSessionId ? { originSessionId } : {}),
+      })],
+      shapeResult: (values) => unwrapActionEnvelope(values.result),
+      formatter: "drafts-entry",
+      tableText: (result) => formatDraftDetail(result, { fullPrompt: false }),
+    };
+  }
+
+  const schedule = buildDraftScheduleInput(args, null);
+  return {
+    kind: "execute",
+    label: "drafts create",
+    steps: [draftsActionStep("createDraft", {
+      text: prompt ?? "",
+      ...(images.length ? { attachments: images } : {}),
+      ...(originSessionId ? { originSessionId } : {}),
+      schedule,
+    })],
+    shapeResult: (values) => unwrapActionEnvelope(values.result),
+    formatter: "drafts-entry",
+    tableText: (result) => formatDraftDetail(result, { fullPrompt: false }),
+  };
+}
+
+function buildDraftsSchedulePlan(args: string[]): CliPlan {
+  const id = requireValue(firstStandalonePositional(args), "a draft id");
+  const schedule = buildDraftScheduleInput(args, null);
+  return {
+    kind: "execute",
+    label: "drafts schedule",
+    steps: [draftsActionStep("updateDraft", { id, schedule })],
+    shapeResult: (values) => unwrapActionEnvelope(values.result),
+    formatter: "drafts-entry",
+    tableText: (result) => formatDraftDetail(result, { fullPrompt: false }),
+  };
+}
+
+function buildDraftsUpdatePlan(args: string[]): CliPlan {
+  const id = requireValue(firstStandalonePositional(args), "a draft id");
+  const prompt = readDraftPrompt(args, { fromStdinWhenOmitted: false });
+  const unschedule = readFlag(args, ["--unschedule", "--clear-schedule"]);
+  const hasTime = hasDraftTimeFlag(args);
+  if (unschedule && hasTime) {
+    throw new CliUsageError("Use --unschedule or --at/--in, not both.");
+  }
+
+  if (!hasTime) {
+    const patch: JsonObject = {
+      id,
+      ...(prompt !== null ? { text: prompt } : {}),
+      ...(unschedule ? { unschedule: true } : {}),
+    };
+    if (Object.keys(patch).length === 1) {
+      throw new CliUsageError("ade drafts update needs --prompt, --at/--in, or --unschedule.");
+    }
+    return {
+      kind: "execute",
+      label: "drafts update",
+      steps: [draftsActionStep("updateDraft", patch)],
+      shapeResult: (values) => unwrapActionEnvelope(values.result),
+      formatter: "drafts-entry",
+      tableText: (result) => formatDraftDetail(result, { fullPrompt: false }),
+    };
+  }
+
+  // Retiming goes through two steps: read the row, then send it back with the
+  // new fire time. The stored target carries forward (see buildDraftScheduleInput),
+  // so the caller does not restate it just to move a send by an hour.
+  return {
+    kind: "execute",
+    label: "drafts update",
+    steps: [
+      // The list publishes under "existing" for the step after it: a step's
+      // result is stored under its own key only once its params have run, so a
+      // step reads the keys of the steps before it, never its own.
+      actionStep("existing", "chat", "listDrafts", {}),
+      {
+        key: "result",
+        method: "ade/actions/call",
+        params: (values) => {
+          const existing = findDraftById(draftEntriesFromResult(values.existing), id);
+          if (!existing) {
+            throw new CliUsageError(`No draft ${id} on this machine; it may have been sent or taken.`);
+          }
+          const schedule = buildDraftScheduleInput(args, existing);
+          return {
+            name: "run_ade_action",
+            arguments: {
+              domain: "chat",
+              action: "updateDraft",
+              args: { id, schedule, ...(prompt !== null ? { text: prompt } : {}) },
+            },
+          };
+        },
+        unwrapToolResult: true,
+      },
+    ],
+    shapeResult: (values) => unwrapActionEnvelope(values.result),
+    formatter: "drafts-entry",
+    tableText: (result) => formatDraftDetail(result, { fullPrompt: false }),
+  };
+}
+
+function buildDraftsDeletePlan(args: string[]): CliPlan {
+  const id = requireValue(firstStandalonePositional(args), "a draft id");
+  return {
+    kind: "execute",
+    label: "drafts delete",
+    steps: [draftsActionStep("deleteDraft", { id })],
+    shapeResult: (values) => ({ id, deleted: unwrapActionEnvelope(values.result) === true }),
+    formatter: "drafts-confirm",
+    tableText: formatDraftConfirmation,
+  };
+}
+
+function buildDraftsNowPlan(args: string[]): CliPlan {
+  const id = requireValue(firstStandalonePositional(args), "a draft id");
+  return {
+    kind: "execute",
+    label: "drafts now",
+    steps: [draftsActionStep("sendDraftNow", { id })],
+    shapeResult: (values) => {
+      const raw = unwrapActionEnvelope(values.result);
+      const record: JsonObject = isRecord(raw) ? raw : {};
+      const error = asString(record.error);
+      return { id, ok: record.ok === true, ...(error ? { error } : {}) };
+    },
+    formatter: "drafts-confirm",
+    tableText: formatDraftConfirmation,
+  };
+}
+
+function buildDraftsShowPlan(args: string[]): CliPlan {
+  const id = requireValue(firstStandalonePositional(args), "a draft id");
+  return {
+    kind: "execute",
+    label: "drafts show",
+    steps: [draftsActionStep("listDrafts", {})],
+    shapeResult: (values) => {
+      const entry = findDraftById(draftEntriesFromResult(values.result), id);
+      if (!entry) {
+        throw new CliUsageError(`No draft ${id} on this machine; it may have been sent or taken.`);
+      }
+      return entry;
+    },
+    formatter: "drafts-show",
+    tableText: (result) => formatDraftDetail(result, { fullPrompt: true }),
+  };
+}
+
+function buildDraftsPlan(args: string[]): CliPlan {
+  const sub = firstStandalonePositional(args) ?? "list";
+  switch (sub) {
+    case "list":
+      return buildDraftsListPlan(args);
+    case "create":
+      return buildDraftsCreatePlan(args);
+    case "schedule":
+      return buildDraftsSchedulePlan(args);
+    case "update":
+      return buildDraftsUpdatePlan(args);
+    case "delete":
+    case "rm":
+      return buildDraftsDeletePlan(args);
+    case "now":
+      return buildDraftsNowPlan(args);
+    case "show":
+      return buildDraftsShowPlan(args);
+    default:
+      throw new CliUsageError(`Unknown drafts subcommand '${sub}'. Run 'ade help drafts'.`);
+  }
+}
+
 function personalChatStep(action: string, args: JsonObject = {}): InvocationStep {
   return {
     key: "result",
     method: "personalChats.call",
     params: { action, args },
+  };
+}
+
+/**
+ * `ade chat ask|note|activity` for a personal chat: `--personal`, or run from
+ * inside one (ADE_CHAT_SCOPE=personal). The session defaults to the caller's
+ * own chat, ADE_CHAT_SESSION_ID, like the project commands.
+ */
+function buildPersonalSelfReportPlan(
+  sub: string,
+  args: string[],
+  base: { kind: "execute"; machineOnly: boolean },
+): CliPlan {
+  const sessionId = requireValue(
+    readValue(args, ["--session", "--session-id"]) ?? (process.env.ADE_CHAT_SESSION_ID?.trim() || null),
+    "sessionId",
+  );
+  if (sub === "ask") {
+    const message = requireValue(
+      readValue(args, ["--question", "--message", "--text"]) ?? args.join(" "),
+      "question",
+    );
+    return {
+      ...base,
+      label: "personal chat ask",
+      steps: [personalChatStep("requestSessionAttention", { sessionId, message })],
+    };
+  }
+  if (sub === "note") {
+    const note = readValue(args, ["--note", "--text"]) ?? args.join(" ");
+    return {
+      ...base,
+      label: "personal chat note",
+      steps: [personalChatStep("setSessionStatusNote", { sessionId, note })],
+    };
+  }
+  const rawValue = firstStandalonePositional(args);
+  const normalizedValue = rawValue?.trim().toLowerCase();
+  if (!normalizedValue) {
+    throw new CliUsageError(
+      `chat activity requires one value: ${[...SESSION_ACTIVITY_VALUES, "clear"].join(" | ")}.`,
+    );
+  }
+  if (normalizedValue !== "clear" && !isSessionActivityValue(normalizedValue)) {
+    throw new CliUsageError(
+      `Unsupported chat activity '${rawValue}'. Use: ${[...SESSION_ACTIVITY_VALUES, "clear"].join(" | ")}.`,
+    );
+  }
+  return {
+    ...base,
+    label: "personal chat activity",
+    steps: [personalChatStep("setSessionActivity", {
+      sessionId,
+      value: normalizedValue === "clear" ? null : normalizedValue,
+    })],
   };
 }
 
@@ -10358,8 +11878,13 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
     const provider = readValue(args, ["--provider"]);
     const prompt = readValue(args, ["--prompt", "--kickoff", "--kickoff-prompt"]);
     const droidPermissionMode = readDroidPermissionMode(args);
+    const copilotFlags = readCopilotLaunchFlags(args, provider ?? "");
     const fastMode = readFastModeFlag(args);
     const createArgs = collectGenericObjectArgs(args, {
+      // A chat started from ADE's own CLI is the user's assistant, like one
+      // started from the Chats page. `--arg personalProfile=embedded` asks for
+      // the SDK-host surface instead.
+      personalProfile: "assistant",
       provider,
       model,
       modelId: model,
@@ -10367,7 +11892,9 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
       reasoningEffort: readValue(args, ["--reasoning-effort", "--effort"]),
       permissionMode: readValue(args, ["--permission-mode", "--permissions"]),
       ...(droidPermissionMode ? { droidPermissionMode } : {}),
+      ...copilotFlags,
       ...(fastMode !== undefined ? { fastMode, codexFastMode: fastMode } : {}),
+      ...(readFastTierFlag(args) ? { fastTier: "ultrafast" } : {}),
       ...(prompt ? { kickoffText: prompt } : {}),
     });
     requireValue(asString(createArgs.provider), "provider");
@@ -10400,6 +11927,10 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
     };
   }
 
+  if (CHAT_SELF_REPORT_SUBCOMMANDS.has(sub)) {
+    return buildPersonalSelfReportPlan(sub, args, base);
+  }
+
   const sessionSubcommands = new Set([
     "read",
     "messages",
@@ -10427,7 +11958,7 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
     "status",
   ]);
   if (!sessionSubcommands.has(sub)) {
-    throw new CliUsageError(`Personal chats support actions, action, list, create, show, read, send, steer, update, models, model-catalog, interrupt, stop-task, restore-queue, recover, resolve-unprocessed, archive, unarchive, or delete; got '${sub}'.`);
+    throw new CliUsageError(`Personal chats support actions, action, list, create, show, read, send, steer, ask, note, activity, update, models, model-catalog, interrupt, stop-task, restore-queue, recover, resolve-unprocessed, archive, unarchive, or delete; got '${sub}'.`);
   }
 
   const sessionId = requireValue(
@@ -10455,6 +11986,9 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
       ...base,
       label: "personal chat send",
       steps: [personalChatStep("send", collectGenericObjectArgs(args, {
+        // ADE's own CLI is one of the user's Chats surfaces: a chat written
+        // before profiles existed becomes an assistant chat when used here.
+        personalProfile: "assistant",
         sessionId,
         text,
         ...(imageUrl ? { attachments: [{ type: "image-url", url: imageUrl, path: imageUrl }] } : {}),
@@ -10471,6 +12005,7 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
       ...base,
       label: "personal chat steer",
       steps: [personalChatStep("steer", collectGenericObjectArgs(args, {
+        personalProfile: "assistant",
         sessionId,
         text,
         ...(dispatchMode ? { dispatchMode } : {}),
@@ -10502,6 +12037,7 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
         ...(permissionMode ? { permissionMode } : {}),
         ...(droidPermissionMode ? { droidPermissionMode } : {}),
         ...(fastMode !== undefined ? { fastMode } : {}),
+        ...(readFastTierFlag(args) ? { fastTier: "ultrafast" } : {}),
       }))],
     };
   }
@@ -10604,6 +12140,63 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
     };
   }
   throw new CliUsageError(`Unhandled personal chat subcommand '${sub}'.`);
+}
+
+/** `ade scene preview <file|->`: render a scene in the desktop and report what broke. */
+function buildScenePlan(args: string[]): CliPlan {
+  // Flags with values come out first: `ade scene --theme light preview f`
+  // would otherwise read `light` as the verb.
+  // Reject an option as another flag's operand before readValue consumes it,
+  // so `--theme --width 980` reports the missing theme value instead of eating
+  // `--width` and losing the width.
+  for (let index = 0; index < args.length - 1; index += 1) {
+    if (
+      (args[index] === "--theme" || args[index] === "--width")
+      && args[index + 1]?.startsWith("--")
+    ) {
+      throw new CliUsageError(`${args[index]} requires a value.`);
+    }
+  }
+  const theme = readValue(args, ["--theme"]);
+  if (theme && theme !== "dark" && theme !== "light") throw new CliUsageError("--theme is dark or light.");
+  const widthRaw = readValue(args, ["--width"]);
+  const stdin = args.includes("-");
+  const sub = firstPositional(args);
+  if (!sub || sub === "help") return { kind: "help", text: HELP_BY_COMMAND.scene };
+  // The short rules for writing a scene: local text, no runtime needed.
+  if (sub === "guide") return { kind: "help", text: SCENE_GUIDE };
+  if (sub !== "preview") throw new CliUsageError(`Unknown scene command '${sub}'. Try: ade scene guide, or ade scene preview <file>`);
+  let width: number | undefined;
+  if (widthRaw) {
+    width = Number(widthRaw);
+    if (!Number.isFinite(width) || width < SCENE_PREVIEW_WIDTH.min || width > SCENE_PREVIEW_WIDTH.max) {
+      throw new CliUsageError(`--width is a number of CSS px from ${SCENE_PREVIEW_WIDTH.min} to ${SCENE_PREVIEW_WIDTH.max}.`);
+    }
+  }
+  // A bare "-" (stdin) is not a positional to firstPositional, which skips flags.
+  const target = stdin ? "-" : firstPositional(args);
+  if (!target) throw new CliUsageError("ade scene preview needs a file, or - for stdin: ade scene preview /tmp/chart.html");
+  let source: string;
+  try {
+    source = target === "-" ? fs.readFileSync(0, "utf8") : fs.readFileSync(path.resolve(target), "utf8");
+  } catch (error) {
+    throw new CliUsageError(`Could not read ${target === "-" ? "stdin" : target}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (!source.trim()) throw new CliUsageError("The scene is empty.");
+  return {
+    kind: "execute",
+    label: "scene preview",
+    formatter: "scene-preview",
+    needsLiveRuntime: "Scene preview",
+    minTimeoutMs: 60_000,
+    steps: [
+      actionCallStep("result", "preview_scene", {
+        source,
+        ...(theme ? { theme } : {}),
+        ...(width ? { width } : {}),
+      }),
+    ],
+  };
 }
 
 function buildTestsPlan(args: string[]): CliPlan {
@@ -11211,6 +12804,9 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
     // the items. They go up as one PR comment through `gh --attach`, then
     // each gets a github_pr owner link so the drawer shows the PR.
     const pr = readValue(args, ["--pr", "--pull-request"]);
+    // `--in-body`: the proof goes into the PR's own text, where it is cited,
+    // not into a comment. The ids come from the text.
+    const inBody = readFlag(args, ["--in-body", "--in-text"]);
     const heading = readValue(args, ["--heading", "--title"]);
     const note = readValue(args, ["--note", "--body"]);
     // `firstPositional` and `readValue` removed "publish" and the flags with
@@ -11221,6 +12817,15 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
       .map((value) => value.trim())
       .filter(Boolean);
     if (!pr) throw new CliUsageError("proof publish needs --pr <number or URL>.");
+    if (inBody) {
+      if (ids.length) throw new CliUsageError("proof publish --in-body takes no ids: it uploads the proof the PR text cites.");
+      return {
+        kind: "execute",
+        label: "proof publish",
+        formatter: "proof-published",
+        steps: proofIntoPrBodySteps({ pr: () => pr, explicitProjectRoot }),
+      };
+    }
     if (!ids.length) throw new CliUsageError("proof publish needs one or more artifact ids. Copy them from the cite: lines or `ade proof list --text`.");
     return {
       kind: "execute",
@@ -11262,17 +12867,7 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
                 heading,
                 note,
                 cwd: explicitProjectRoot ?? roots.workspaceRoot,
-                artifacts: ids.map((id) => {
-                  const artifact = byId.get(id)!;
-                  return {
-                    id,
-                    kind: asString(artifact.kind) ?? "",
-                    title: asString(artifact.title) ?? "",
-                    description: asString(artifact.description),
-                    uri: asString(artifact.uri) ?? "",
-                    mimeType: asString(artifact.mimeType),
-                  };
-                }),
+                artifacts: ids.map((id) => publishableArtifact(byId.get(id)!)),
               });
             } catch (error) {
               throw new CliToolError(`proof publish failed — ${error instanceof Error ? error.message : String(error)}`, {});
@@ -13616,6 +15211,7 @@ const BROWSER_SESSION_SUBCOMMANDS = {
   zoom: ["zoom"],
   findStop: ["find-stop", "stop-find"],
   find: ["find", "find-in-page", "search-page"],
+  text: ["text", "read", "read-text", "page-text"],
   devtools: ["devtools", "dev-tools", "inspector"],
   network: ["network", "net", "requests"],
   har: ["har", "export-har"],
@@ -13888,10 +15484,24 @@ function buildBrowserHandoffPlan(args: string[], literalTail: string[] = []): Cl
  * flag (or its own name demanded a value) long before the fallback was reached.
  */
 function buildBrowserPlan(args: string[]): CliPlan {
-  return buildBrowserPlanWithLiteralTail(
-    args,
-    takeArgsAfterTerminator(args, BROWSER_VALUE_CARRIER_FLAGS) ?? [],
-  );
+  // The tail first: a `--here` after `--` is text to type, not this flag.
+  const literalTail = takeArgsAfterTerminator(args, BROWSER_VALUE_CARRIER_FLAGS) ?? [];
+  const here = readFlag(args, ["--here"]);
+  const plan = buildBrowserPlanWithLiteralTail(args, literalTail);
+  return here ? withBrowserOnThisMachine(plan) : plan;
+}
+
+/**
+ * `--here`: run the plan's browser commands in the browser on the machine the
+ * agent runs on. Without it, a chat whose user sits at another desktop has
+ * its commands sent to the browser on that desktop (`remoteBrowserForwarder`).
+ */
+function withBrowserOnThisMachine(plan: CliPlan): CliPlan {
+  if (plan.kind !== "execute") return plan;
+  return {
+    ...plan,
+    steps: plan.steps.map((step) => withActionStepArgs(step, "built_in_browser", { here: true })),
+  };
 }
 
 function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]): CliPlan {
@@ -13934,6 +15544,39 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
           collectGenericObjectArgs(args, readBrowserOwnedTabTargetArgs(args)),
         ),
       ],
+    };
+  }
+  // The user's own browser: only when the user asked for it. Runs on this
+  // chat's runtime host, which reaches the browser directly (no desktop).
+  // `--tab` here names a tab by title or URL text, not an ADE tab id.
+  if (sub === "attach" || sub === "connect") {
+    const browser = readValue(args, ["--browser"]);
+    const tab = readValue(args, ["--tab", "--tab-match"]);
+    const userDataDir = readValue(args, ["--user-data-dir", "--profile-dir"]);
+    const attachArgs: JsonObject = {
+      ...(browser ? { browser } : {}),
+      ...(tab ? { tab } : {}),
+      ...(userDataDir ? { userDataDir: path.resolve(userDataDir) } : {}),
+    };
+    return {
+      kind: "execute",
+      label: "browser attach",
+      formatter: "browser-attach",
+      // The attachment lives in the runtime's memory; a headless one-shot
+      // runtime would drop it when this command ends.
+      needsLiveRuntime: "Browser attachment",
+      // Chrome asks the user to allow the connection; the attach waits for them.
+      minTimeoutMs: 90_000,
+      progressNotice: "Connecting to the user's browser. If it asks to allow remote debugging, the user must click Allow.",
+      steps: [actionStep("result", "built_in_browser", "attachUserBrowser", attachArgs)],
+    };
+  }
+  if (sub === "detach" || sub === "disconnect") {
+    return {
+      kind: "execute",
+      label: "browser detach",
+      formatter: "browser-attach",
+      steps: [actionStep("result", "built_in_browser", "detachUserBrowser", {})],
     };
   }
   if (sub === "status" || sub === "tabs" || sub === "list") {
@@ -14053,7 +15696,12 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
     return buildBrowserHandoffPlan(args, tail);
   }
   if (sub === "claim") {
-    const claimArgs: JsonObject = readRequiredToolClaimArgs(args, "browser");
+    // A personal (project-less) chat has no lane: the runtime puts its claim
+    // in the personal tab collection, owned by its chat id.
+    // The runtime decides personal scope from ADE_CHAT_SCOPE alone, so a flag
+    // here would only skip the lane check without changing where the claim goes.
+    const personal = process.env.ADE_CHAT_SCOPE?.trim() === "personal";
+    const claimArgs: JsonObject = personal ? { ...readToolClaimArgs(args) } : readRequiredToolClaimArgs(args, "browser");
     Object.assign(claimArgs, readBrowserTabTargetArgs(args));
     Object.assign(claimArgs, readBrowserLeaseArgs(args));
     return {
@@ -14105,6 +15753,7 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
       "--same-tab",
     ]);
     const newTab = readFlag(args, ["--new-tab"]);
+    const isolation = readBrowserIsolationArgs(args);
     const showPanel = readFlag(args, ["--panel", "--show-panel", "--reveal-panel"]);
     const noPanel = readFlag(args, ["--no-panel", "--hidden"]);
     const claimArgs = {
@@ -14133,6 +15782,7 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
       activate: agentOwnedCall && !activeTab && !showPanel ? false : undefined,
       reuseOwnedTab: autoReuseOwnedTab ? true : undefined,
       openPanel: showPanel || (!noPanel && !agentOwnedCall),
+      ...isolation,
       ...claimArgs,
       ...genericArgs,
     });
@@ -14149,8 +15799,10 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
             unwrapToolResult: true,
             params: (values) => {
               const status = unwrapActionEnvelope(values.result);
+              // The tab the open drove: an agent's open stays in the background,
+              // so the active tab is often somebody else's.
               const resolvedTabId = tabId
-                ?? (isRecord(status) ? asString(status.activeTabId) : null);
+                ?? (isRecord(status) ? asString(status.targetTabId) ?? asString(status.activeTabId) : null);
               return {
                 name: "run_ade_action",
                 arguments: {
@@ -14172,6 +15824,7 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
   }
   if (sub === "new-tab" || sub === "tab" || sub === "new") {
     const background = readFlag(args, ["--background"]);
+    const isolation = readBrowserIsolationArgs(args);
     const showPanel = readFlag(args, ["--panel", "--show-panel", "--reveal-panel"]);
     const noPanel = readFlag(args, ["--no-panel", "--hidden"]);
     const explicitUrl = readValue(args, ["--url"]);
@@ -14195,6 +15848,7 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
           url,
           activate: background || (Boolean(claimArgs.laneId || claimArgs.chatSessionId) && !showPanel) ? false : undefined,
           openPanel: showPanel || (!noPanel && !claimArgs.laneId && !claimArgs.chatSessionId),
+          ...isolation,
           ...claimArgs,
           ...genericArgs,
         }),
@@ -14398,10 +16052,18 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
     };
   }
   if (isBrowserSubcommand(sub, "scroll")) {
-    const deltaX = readNumberOption(args, ["--dx", "--delta-x"]) ?? 0;
-    const deltaY = readNumberOption(args, ["--dy", "--delta-y"]) ?? 0;
+    // `--down 800` / `--up 800` / `--right` / `--left` are what agents reach
+    // for first; they are the same deltas with the sign spelled out.
+    const down = readNumberOption(args, ["--down"]);
+    const up = readNumberOption(args, ["--up"]);
+    const right = readNumberOption(args, ["--right"]);
+    const left = readNumberOption(args, ["--left"]);
+    const deltaX = readNumberOption(args, ["--dx", "--delta-x"])
+      ?? (right != null ? Math.abs(right) : left != null ? -Math.abs(left) : 0);
+    const deltaY = readNumberOption(args, ["--dy", "--delta-y"])
+      ?? (down != null ? Math.abs(down) : up != null ? -Math.abs(up) : 0);
     if (deltaX === 0 && deltaY === 0)
-      throw new CliUsageError("browser scroll requires --dy or --dx.");
+      throw new CliUsageError("browser scroll requires --dy or --dx (or --down/--up/--left/--right <px>).");
     return {
       kind: "execute",
       label: "browser scroll",
@@ -14528,6 +16190,28 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
           collectGenericObjectArgs(args, {
             ...readBrowserOwnedTabTargetArgs(args),
             ...(action ? { action } : {}),
+          }),
+        ),
+      ],
+    };
+  }
+  if (isBrowserSubcommand(sub, "text")) {
+    const selector = readValue(args, ["--selector", "--css"]);
+    const offset = readNumberOption(args, ["--offset", "--from"]);
+    const maxChars = readNumberOption(args, ["--max-chars", "--chars", "--limit"]);
+    return {
+      kind: "execute",
+      label: "browser text",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "readText",
+          collectGenericObjectArgs(args, {
+            ...readBrowserOwnedTabTargetArgs(args),
+            ...(selector ? { selector } : {}),
+            ...(offset == null ? {} : { offset }),
+            ...(maxChars == null ? {} : { maxChars }),
           }),
         ),
       ],
@@ -15132,6 +16816,13 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
         ),
       ],
     };
+  // No chat, project or personal, runs its own JavaScript in a page; say so
+  // instead of sending an action name the runtime does not have.
+  if (sub === "eval" || sub === "evaluate" || sub === "exec" || sub === "js") {
+    throw new CliUsageError(
+      "ADE's browser does not run page JavaScript for agents. Read the page with `ade browser snapshot --tab <tab-id> --text`, then act with click, fill, type, select-option, scroll, key or wait.",
+    );
+  }
   return {
     kind: "execute",
     label: `browser ${sub}`,
@@ -15800,6 +17491,41 @@ function buildSecretsPlan(args: string[]): CliPlan {
       })],
     };
   }
+  if (sub === "request" || sub === "ask") {
+    // The private secret card: ask the person in this chat, store the answer,
+    // and print only the outcome. The value never reaches the agent.
+    //
+    // Read every value flag before the positional helper: `firstPositional`
+    // skips a flag token but not its value, so `--reason "…" NAME` would
+    // otherwise resolve the name to the reason text.
+    const nameFlag = readValue(args, ["--name"]);
+    const reason = readValue(args, ["--reason", "--why", "--message"]);
+    const generate = readFlag(args, ["--generate"]);
+    const timeoutValue = readValue(args, ["--timeout"]);
+    const sessionId = readValue(args, ["--session", "--session-id"]);
+    const name = nameFlag ?? firstPositional(args);
+    if (!name) throw new CliUsageError("Secret name is required.");
+    if (!reason?.trim()) {
+      throw new CliUsageError("secrets request needs --reason \"…\": one line telling the person what the secret is for.");
+    }
+    const timeoutMs = timeoutValue ? parseSnoozeDurationMs(timeoutValue) : PROJECT_SECRET_REQUEST_DEFAULT_TIMEOUT_MS;
+    return {
+      kind: "execute",
+      label: "secrets request",
+      formatter: "project-secrets",
+      steps: [actionStep("result", "project_secret", "request", {
+        name,
+        reason: reason.trim(),
+        timeoutMs,
+        ...(generate ? { generate: true } : {}),
+        ...(sessionId ? { chatSessionId: sessionId } : {}),
+      })],
+      // The wait for the person is the point of the command; the transport
+      // must outlive it.
+      minTimeoutMs: timeoutMs + 30_000,
+      progressNotice: `Asked the user for ${name} in the chat. Waiting for them to save or decline…`,
+    };
+  }
   if (sub === "delete" || sub === "remove" || sub === "rm") {
     const name = readValue(args, ["--name"]) ?? firstPositional(args);
     if (!name) throw new CliUsageError("Secret name is required.");
@@ -15818,7 +17544,7 @@ function buildSecretsPlan(args: string[]): CliPlan {
       steps: [listActionsStep("result", "project_secret")],
     };
   }
-  throw new CliUsageError("secrets supports list, get, set, delete, or actions.");
+  throw new CliUsageError("secrets supports list, get, set, request, delete, or actions.");
 }
 
 function buildProxyPlan(args: string[]): CliPlan {
@@ -15886,14 +17612,15 @@ function buildProxyPlan(args: string[]): CliPlan {
  * An account is a label plus a provider config directory (`CLAUDE_CONFIG_DIR` /
  * `CODEX_HOME`), never a credential: ADE does not drive the provider's OAuth
  * flow, so `add` prints the exact command and env var a shell must run for the
- * login to land in the new directory, and `remove` forgets the entry without
- * deleting anything on disk.
+ * login to land in the new directory, and `remove` signs the account out, then
+ * forgets the entry; the directory itself is never deleted.
  */
 function buildProvidersPlan(args: string[]): CliPlan {
   if (hasHelpFlag(args)) {
     return { kind: "help", text: HELP_BY_COMMAND.providers ?? topLevelHelpText() };
   }
   const group = firstPositional(args) ?? "accounts";
+  if (group === "opencode") return buildOpenCodeProvidersPlan(args);
   if (group === "actions") {
     return {
       kind: "execute",
@@ -15985,6 +17712,44 @@ function buildProvidersPlan(args: string[]): CliPlan {
   throw new CliUsageError(
     "providers accounts supports list, add, remove, rename, default, login, or refresh.",
   );
+}
+
+const OPENCODE_ACCOUNT_ACTIONS: Record<string, string> = {
+  list: "opencodeAccounts",
+  ls: "opencodeAccounts",
+  activate: "opencodeAccountActivate",
+  use: "opencodeAccountActivate",
+  default: "opencodeAccountActivate",
+  rename: "opencodeAccountRename",
+  remove: "opencodeAccountRemove",
+  rm: "opencodeAccountRemove",
+  delete: "opencodeAccountRemove",
+};
+
+/** OpenCode credentials live in OpenCode's own machine-local store. */
+function buildOpenCodeProvidersPlan(args: string[]): CliPlan {
+  if (hasHelpFlag(args)) return { kind: "help", text: HELP_BY_COMMAND.providers ?? topLevelHelpText() };
+  const group = firstPositional(args);
+  if (group !== "accounts" && group !== "account") {
+    throw new CliUsageError("providers opencode supports `accounts <list|activate|rename|remove>`.");
+  }
+  const sub = firstPositional(args) ?? "list";
+  const action = OPENCODE_ACCOUNT_ACTIONS[sub];
+  if (!action) {
+    throw new CliUsageError("OpenCode accounts supports list, activate, rename, or remove.");
+  }
+  let input: JsonObject = {};
+  if (action !== "opencodeAccounts") {
+    input.id = requireValue(readValue(args, ["--id", "--account-id"]) ?? firstPositional(args), "account id");
+  }
+  if (action === "opencodeAccountRename") {
+    input.label = requireValue(readValue(args, ["--label", "--name"]) ?? firstPositional(args), "account label");
+  }
+  return {
+    kind: "execute",
+    label: `providers opencode accounts ${sub}`,
+    steps: [actionStep("result", "ai", action, input)],
+  };
 }
 
 function buildActionsPlan(args: string[]): CliPlan {
@@ -16151,6 +17916,7 @@ const AUTOMATION_LANE_MODES = [
   "create",
   "reuse",
   "require-on-trigger",
+  "pr-branch",
 ] as const;
 const AUTOMATION_LANE_NAME_PRESETS = [
   "issue-title",
@@ -16223,9 +17989,10 @@ function applyLaneFlagsToDraft(draft: JsonObject, args: string[]): JsonObject {
   ) {
     throw new CliUsageError("--lane is only valid with --lane-mode reuse.");
   }
-  if (preset != null && effectiveLaneMode !== "create") {
+  const namesLane = effectiveLaneMode === "create" || effectiveLaneMode === "pr-branch";
+  if (preset != null && !namesLane) {
     throw new CliUsageError(
-      "--lane-name-preset is only valid with --lane-mode create.",
+      "--lane-name-preset is only valid with --lane-mode create or pr-branch.",
     );
   }
   if (template != null && preset != null && preset !== "custom") {
@@ -16233,14 +18000,17 @@ function applyLaneFlagsToDraft(draft: JsonObject, args: string[]): JsonObject {
       "--lane-name-template is only valid with --lane-name-preset custom.",
     );
   }
-  if (template != null && preset == null && effectiveLaneMode !== "create") {
+  if (template != null && preset == null && !namesLane) {
     throw new CliUsageError(
-      "--lane-name-template requires --lane-mode create (with --lane-name-preset custom).",
+      "--lane-name-template requires --lane-mode create or pr-branch (with --lane-name-preset custom).",
     );
   }
 
   const execution: JsonObject = { ...existingExecution };
   if (laneMode != null) execution.laneMode = laneMode;
+  // Only "reuse" names a fixed lane. Switching a saved rule to another mode
+  // drops the old target, which validation rejects next to that mode.
+  if (laneMode != null && laneMode !== "reuse") delete execution.targetLaneId;
   if (laneId != null) execution.targetLaneId = laneId;
   if (preset != null) execution.laneNamePreset = preset;
   if (template != null) execution.laneNameTemplate = template;
@@ -16329,7 +18099,9 @@ function buildAutomationsPlan(args: string[]): CliPlan {
     return { kind: "help", text: automationsExampleText() };
   }
 
-  if (sub === "ingress" || sub === "webhook" || sub === "webhook-gateway") {
+  // `webhook` is the webhook-automation command below; the gateway keeps
+  // `ingress` and `webhook-gateway`.
+  if (sub === "ingress" || sub === "webhook-gateway") {
     const mode = firstPositional(args) ?? "status";
     if (mode === "status" || mode === "show") {
       return {
@@ -16457,6 +18229,136 @@ function buildAutomationsPlan(args: string[]): CliPlan {
     );
   }
 
+  if (sub === "webhook" || sub === "webhooks") {
+    const mode = firstPositional(args) ?? "list";
+    const target = () => readValue(args, ["--hook", "--id"]) ?? firstPositional(args);
+    if (mode === "create") {
+      // One step: URL + rule. Everything has a sensible default from the preset.
+      const preset = readValue(args, ["--preset", "--service"]);
+      const filters = readRepeatedValues(args, ["--filter", "--only-when"]);
+      const confirmations = readRepeatedValues(args, ["--confirm"]);
+      const inThisChat = readFlag(args, ["--in-this-chat"]);
+      const chat = readValue(args, ["--chat"]);
+      const noSignature = readFlag(args, ["--no-signature"]);
+      const anyRequest = readFlag(args, ["--any-request"]);
+      const disabled = readFlag(args, ["--disabled"]);
+      // readValue consumes the flag, so each one is read exactly once.
+      const name = readValue(args, ["--name"]);
+      const prompt = readValue(args, ["--prompt"]);
+      const secretName = readValue(args, ["--secret-name"]);
+      const modelId = readValue(args, ["--model"]);
+      const reasoningEffort = readValue(args, ["--effort", "--reasoning-effort"]);
+      const input: JsonObject = {
+        ...(name ? { name } : {}),
+        ...(preset ? { preset } : {}),
+        ...(prompt ? { prompt } : {}),
+        ...(filters.length ? { filters } : anyRequest ? { filters: [] } : {}),
+        ...(noSignature ? { requireSignature: false } : {}),
+        ...(secretName ? { secretName } : {}),
+        ...(modelId ? { modelId } : {}),
+        ...(reasoningEffort ? { reasoningEffort } : {}),
+        ...(inThisChat ? { chatSessionId: "this" } : chat ? { chatSessionId: chat } : {}),
+        ...(disabled ? { enabled: false } : {}),
+        ...(confirmations.length ? { confirmations } : {}),
+      };
+      return {
+        kind: "execute",
+        label: "automations webhook create",
+        formatter: "automation-webhook-setup",
+        steps: [actionStep("result", "automations", "webhookCreateAutomation", input)],
+      };
+    }
+    if (mode === "list" || mode === "ls") {
+      return {
+        kind: "execute",
+        label: "automations webhook list",
+        formatter: "automation-webhook-list",
+        steps: [actionStep("result", "automations", "webhookList")],
+      };
+    }
+    if (mode === "new") {
+      const label = readValue(args, ["--label"]);
+      return {
+        kind: "execute",
+        label: "automations webhook new",
+        formatter: "automation-webhook-endpoint",
+        steps: [actionStep("result", "automations", "webhookCreateEndpoint", label ? { label } : {})],
+      };
+    }
+    if (mode === "url" || mode === "show") {
+      const hookId = requireValue(target(), "webhook id (wh-…)");
+      return {
+        kind: "execute",
+        label: `automations webhook url ${hookId}`,
+        formatter: "automation-webhook-endpoint",
+        steps: [actionStep("result", "automations", "webhookGetEndpoint", { hookId })],
+      };
+    }
+    if (mode === "rotate") {
+      const hookId = requireValue(target(), "webhook id (wh-…)");
+      return {
+        kind: "execute",
+        label: `automations webhook rotate ${hookId}`,
+        formatter: "automation-webhook-endpoint",
+        steps: [actionStep("result", "automations", "webhookRotateEndpoint", { hookId })],
+      };
+    }
+    if (mode === "retire") {
+      const hookId = requireValue(target(), "webhook id (wh-…)");
+      return {
+        kind: "execute",
+        label: `automations webhook retire ${hookId}`,
+        steps: [actionStep("result", "automations", "webhookRetire", { hookId })],
+      };
+    }
+    if (mode === "deliveries" || mode === "log") {
+      // Read `--limit` before the positional helper: `firstPositional` skips a
+      // flag token but not its value, so `--limit 20 wh-…` would otherwise
+      // resolve the hook id to "20".
+      const limit = readIntOption(args, ["--limit"]);
+      const hookId = requireValue(target(), "webhook id (wh-…)");
+      return {
+        kind: "execute",
+        label: `automations webhook deliveries ${hookId}`,
+        formatter: "automation-webhook-deliveries",
+        steps: [actionStep("result", "automations", "webhookListDeliveries", { hookId, ...(typeof limit === "number" ? { limit } : {}) })],
+      };
+    }
+    if (mode === "delivery") {
+      const id = requireValue(target(), "delivery id (whd_…)");
+      return {
+        kind: "execute",
+        label: `automations webhook delivery ${id}`,
+        formatter: "automation-webhook-delivery",
+        steps: [actionStep("result", "automations", "webhookGetDelivery", { id })],
+      };
+    }
+    if (mode === "replay") {
+      const id = requireValue(target(), "delivery id (whd_…)");
+      return {
+        kind: "execute",
+        label: `automations webhook replay ${id}`,
+        formatter: "automation-webhook-deliveries",
+        steps: [actionStep("result", "automations", "webhookReplayDelivery", { id })],
+      };
+    }
+    if (mode === "test") {
+      // Read `--body` before the positional helper so its value is not taken
+      // as the hook id.
+      const body = readValue(args, ["--body"]);
+      const hookId = requireValue(target(), "webhook id (wh-…)");
+      return {
+        kind: "execute",
+        label: `automations webhook test ${hookId}`,
+        formatter: "automation-webhook-test",
+        steps: [actionStep("result", "automations", "webhookSendTest", { hookId, ...(body ? { body } : {}) })],
+      };
+    }
+    throw new CliUsageError(
+      "automations webhook supports create, list, new, url <wh-id>, rotate <wh-id>, retire <wh-id>, deliveries <wh-id>, delivery <whd-id>, replay <whd-id>, or test <wh-id>. See `ade help automations`.",
+    );
+  }
+
   if (sub === "create") {
     const allowLegacy = readFlag(args, ["--allow-legacy"]);
     const raw = parseDraftInput(args);
@@ -16551,6 +18453,57 @@ function buildAutomationsPlan(args: string[]): CliPlan {
     };
   }
 
+  if (sub === "test") {
+    const id = requireValue(
+      readValue(args, ["--id"]) ?? firstPositional(args),
+      "rule id",
+    );
+    const mode = readEnumOption(args, ["--mode"], ["preview", "safe", "live"] as const, "--mode") ?? "preview";
+    const prNumber = readIntOption(args, ["--pr"]);
+    const issueNumber = readIntOption(args, ["--issue"]);
+    const linearIssueId = readValue(args, ["--linear"]);
+    const sessionId = readValue(args, ["--chat", "--session"]);
+    const laneId = readLaneId(args);
+    const webhookBody = readJsonFileOption(args, ["--body-file"], "--body-file");
+    const event = {
+      ...(typeof prNumber === "number" ? { pr: { number: prNumber, title: "" } } : {}),
+      ...(typeof issueNumber === "number" ? { issue: { number: issueNumber, title: "" } } : {}),
+      ...(linearIssueId ? { linearIssue: { id: linearIssueId } } : {}),
+      ...(sessionId ? { sessionId } : {}),
+      ...(laneId ? { laneId } : {}),
+      ...(webhookBody !== undefined ? { webhookBody } : {}),
+    };
+    // preview and --plan show the plan and run nothing. A live test posts and
+    // pushes for real, so without --yes it only shows the plan too. A preview
+    // shows what a real run does, as the Test dialog's Preview does.
+    const planOnly = mode === "preview" || readFlag(args, ["--plan"]);
+    const runs = !planOnly && (mode === "safe" || readFlag(args, ["--yes", "-y"]));
+    const testMode = mode === "safe" ? "safe" : "live";
+    return {
+      kind: "execute",
+      label: `automations test ${id}`,
+      steps: [
+        actionStep("result", "automations", runs ? "runTest" : "planTest", {
+          id,
+          mode: testMode,
+          ...(Object.keys(event).length ? { event } : {}),
+        }),
+      ],
+    };
+  }
+
+  if (sub === "cleanup-test") {
+    const runId = requireValue(
+      readValue(args, ["--run"]) ?? firstPositional(args),
+      "run id",
+    );
+    return {
+      kind: "execute",
+      label: `automations cleanup-test ${runId}`,
+      steps: [actionStep("result", "automations", "cleanUpTestRun", { runId })],
+    };
+  }
+
   if (sub === "runs") {
     const automationId = readValue(args, ["--rule", "--automation", "--id"]);
     const limit = readIntOption(args, ["--limit"]);
@@ -16590,6 +18543,204 @@ function buildAutomationsPlan(args: string[]): CliPlan {
     "automations supports list, show, create, update, delete, toggle, run, ingress, linear-ingress, cleanups, runs, run-show, or example.",
   );
 }
+
+/** Run a shared field parser, reporting its failure as a usage error. */
+export function asUsage<T>(run: () => T): T {
+  try {
+    return run();
+  } catch (error) {
+    throw error instanceof CliUsageError ? error : asCliUsageError(error);
+  }
+}
+
+/**
+ * A `run_ade_action` step whose arguments come from earlier steps (a repo, an
+ * issue, a catalog). A lookup that cannot resolve what was typed stops the
+ * plan with a usage error before the write is sent.
+ */
+export function derivedActionStep(
+  key: string,
+  domain: string,
+  action: string,
+  build: (values: JsonObject) => { args: JsonObject } | { argsList: unknown[] },
+): InvocationStep {
+  return {
+    key,
+    method: "ade/actions/call",
+    unwrapToolResult: true,
+    params: (values) => asUsage(() => ({
+      name: "run_ade_action",
+      arguments: { domain, action, ...build(values) },
+    })),
+  };
+}
+
+/**
+ * Text from an inline flag or a file flag. A file of `-` reads stdin, so a
+ * long body can be piped in on any shell.
+ */
+export function readTextOrFileOption(
+  args: string[],
+  inlineNames: readonly string[],
+  fileNames: readonly string[],
+): string | undefined {
+  const inline = readValue(args, inlineNames);
+  const filePath = readValue(args, fileNames);
+  if (inline != null && filePath != null) {
+    throw new CliUsageError(`Use either ${inlineNames[0]} or ${fileNames[0]}, not both.`);
+  }
+  if (inline != null) return inline;
+  if (filePath == null) return undefined;
+  if (filePath === "-") return fs.readFileSync(0, "utf8");
+  try {
+    return fs.readFileSync(path.resolve(filePath), "utf8");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new CliUsageError(`Could not read ${fileNames[0]} file '${filePath}': ${message}`);
+  }
+}
+
+const LINEAR_TRACKER = "linear_issue_tracker";
+
+/** Every field flag `ade linear create` and `ade linear edit` accept. */
+function readLinearFieldFlags(args: string[], mode: "create" | "update"): LinearFieldInput {
+  const input: LinearFieldInput = {};
+  const put = <K extends keyof LinearFieldInput>(key: K, value: LinearFieldInput[K] | null | undefined) => {
+    if (value != null) input[key] = value;
+  };
+  put("title", readValue(args, ["--title", "-t"]));
+  put("description", readTextOrFileOption(args, ["--description", "--body", "-d"], ["--description-file", "--body-file"]));
+  put("state", readValue(args, ["--state", "--status", "--state-id"]));
+  put("assignee", readValue(args, ["--assignee", "--assignee-id"]));
+  put("priority", readValue(args, ["--priority"]));
+  const labels = readRepeatedValues(args, ["--label", "--add-label"]);
+  if (labels.length) input.labels = labels;
+  if (mode === "update") {
+    const removeLabels = readRepeatedValues(args, ["--remove-label", "--unlabel"]);
+    if (removeLabels.length) input.removeLabels = removeLabels;
+  }
+  put("project", readValue(args, ["--project", "--project-id"]));
+  put("milestone", readValue(args, ["--milestone"]));
+  put("cycle", readValue(args, ["--cycle"]));
+  put("estimate", readValue(args, ["--estimate"]));
+  put("due", readValue(args, ["--due", "--due-date"]));
+  put("parent", readValue(args, ["--parent"]));
+  if (mode === "create") put("template", readValue(args, ["--template"]));
+  // Values that need no lookup fail here, before ADE connects.
+  asUsage(() => {
+    if (input.priority !== undefined) parseLinearPriority(input.priority);
+    if (input.estimate !== undefined) parseLinearEstimate(input.estimate);
+    if (input.due !== undefined) parseDueDate(input.due);
+  });
+  return input;
+}
+
+/**
+ * The lookups a Linear write needs (issue, picker catalog, viewer, team
+ * options, milestones, parent), then the write itself as the `result` step.
+ */
+function linearFieldWriteSteps(
+  input: LinearFieldInput,
+  target:
+    | { mode: "update"; issueId: string }
+    | { mode: "create"; teamKey: string; action: string; base: JsonObject },
+): InvocationStep[] {
+  const needs = linearLookupNeeds(input, target.mode);
+  const issueRef = target.mode === "update" ? target.issueId : null;
+  const steps: InvocationStep[] = [];
+  if (needs.issue && issueRef) steps.push(actionArgsListStep("issue", LINEAR_TRACKER, "fetchIssueById", [issueRef]));
+  if (needs.picker) steps.push(actionStep("picker", LINEAR_TRACKER, "getIssuePickerData"));
+  if (needs.viewer) steps.push(actionStep("viewer", LINEAR_TRACKER, "getConnectionStatus"));
+  if (needs.parent && input.parent) {
+    steps.push(actionArgsListStep("parent", LINEAR_TRACKER, "fetchIssueById", [input.parent.trim()]));
+  }
+  const context = (values: JsonObject): LinearLookupContext => {
+    const issue = needs.issue ? unwrapActionEnvelope(values.issue) : null;
+    if (needs.issue && !isRecord(issue)) throw new Error(`Linear issue ${issueRef} was not found.`);
+    const viewer = unwrapActionEnvelope(values.viewer);
+    const milestones = unwrapActionEnvelope(values.milestones);
+    const options = unwrapActionEnvelope(values.options);
+    const picker = unwrapActionEnvelope(values.picker);
+    const parentIssue = unwrapActionEnvelope(values.parent);
+    return {
+      issue: isRecord(issue) ? issue : null,
+      teamKey: target.mode === "create" ? target.teamKey : isRecord(issue) ? asString(issue.teamKey) : null,
+      picker: isRecord(picker) ? picker : null,
+      viewerId: isRecord(viewer) ? asString(viewer.viewerId) : null,
+      options: isRecord(options) ? options : null,
+      milestones: Array.isArray(milestones) ? milestones.filter(isRecord) : null,
+      parentIssue: isRecord(parentIssue) ? parentIssue : null,
+    };
+  };
+  if (needs.options) {
+    steps.push(derivedActionStep("options", LINEAR_TRACKER, "getIssueCreateOptions", (values) => {
+      const team = context(values).teamKey;
+      if (!team) throw new Error("ADE could not tell which Linear team this issue is in.");
+      return { argsList: [team] };
+    }));
+  }
+  if (needs.milestones) {
+    steps.push(derivedActionStep("milestones", LINEAR_TRACKER, "listProjectMilestones", (values) => ({
+      argsList: [milestoneProjectId(input, context(values))],
+    })));
+  }
+  if (target.mode === "update") {
+    steps.push(derivedActionStep("result", LINEAR_TRACKER, "updateIssue", (values) => ({
+      argsList: [target.issueId, resolveLinearFields(input, context(values), "update")],
+    })));
+  } else {
+    steps.push(derivedActionStep("result", LINEAR_TRACKER, target.action, (values) => ({
+      args: { ...resolveLinearFields(input, context(values), "create"), ...target.base },
+    })));
+  }
+  return steps;
+}
+
+function hasLinearFieldInput(input: LinearFieldInput): boolean {
+  return Object.values(input).some((value) => (Array.isArray(value) ? value.length > 0 : value !== undefined));
+}
+
+/** `Updated ADE-12: Title` plus the state line and URL; `fallbackId` when the action returns nothing. */
+function formatLinearIssueWrite(verb: string, fallbackId: string | null = null): (result: unknown) => string {
+  return (result) => {
+    const value = isRecord(result) ? result : {};
+    if (value.created === false && isRecord(value.duplicateOf)) {
+      const duplicate = value.duplicateOf;
+      return [
+        `Not created. An open issue looks the same: ${asString(duplicate.identifier) ?? ""} ${asString(duplicate.title) ?? ""}`.trim(),
+        asString(duplicate.url),
+        "Pass --allow-duplicate to create it anyway.",
+      ].filter(Boolean).join("\n");
+    }
+    const issue = isRecord(value.issue) ? value.issue : value;
+    const identifier = asString(issue.identifier);
+    if (!identifier) return fallbackId ? `${verb} ${fallbackId}.` : `${verb}.`;
+    const facts = [
+      asString(issue.stateName),
+      asString(issue.assigneeName) ? `assigned to ${asString(issue.assigneeName)}` : null,
+      asString(issue.priorityLabel) && issue.priority !== 0 ? `${asString(issue.priorityLabel)} priority` : null,
+      asString(issue.cycleName) ? `cycle ${asString(issue.cycleName)}` : null,
+      asString(issue.projectName),
+    ].filter(Boolean);
+    return [
+      `${verb} ${identifier}: ${asString(issue.title) ?? ""}`.trimEnd(),
+      facts.length ? facts.join(" · ") : null,
+      asString(issue.url),
+    ].filter(Boolean).join("\n");
+  };
+}
+
+/** `ade linear set-<field> <id> <value>`: the field each shorthand edits. */
+const LINEAR_SET_FIELD_COMMANDS: Record<string, { field: keyof LinearFieldInput; flags: string[]; noun: string }> = {
+  "set-priority": { field: "priority", flags: ["--priority"], noun: "priority" },
+  "set-estimate": { field: "estimate", flags: ["--estimate"], noun: "estimate" },
+  "set-cycle": { field: "cycle", flags: ["--cycle"], noun: "cycle" },
+  "set-project": { field: "project", flags: ["--project", "--project-id"], noun: "project" },
+  "set-milestone": { field: "milestone", flags: ["--milestone"], noun: "milestone" },
+  "set-due": { field: "due", flags: ["--due", "--due-date"], noun: "due date" },
+  "set-parent": { field: "parent", flags: ["--parent"], noun: "parent issue" },
+  "set-title": { field: "title", flags: ["--title", "-t"], noun: "title" },
+};
 
 function buildLinearPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "quick-view";
@@ -16701,25 +18852,89 @@ function buildLinearPlan(args: string[]): CliPlan {
   }
   if (sub === "set-state" || sub === "status" || sub === "state" || sub === "move") {
     const { issueId, value } = resolveLinearWriteCommand(args, ["--state-id", "--state", "--status"]);
-    const stateId = requireValue(value, "state id");
+    const state = requireValue(value, "state name or id");
+    // A state id goes straight through; a name ("In Progress") is matched
+    // within the issue's team first.
+    if (looksLikeLinearId(state)) {
+      return {
+        kind: "execute",
+        label: "linear set-state",
+        steps: [actionArgsListStep("result", LINEAR_TRACKER, "updateIssueState", [issueId, state])],
+        formatText: formatLinearIssueWrite("Updated", issueId),
+      };
+    }
     return {
       kind: "execute",
       label: "linear set-state",
-      steps: [actionArgsListStep("result", "linear_issue_tracker", "updateIssueState", [issueId, stateId])],
+      steps: linearFieldWriteSteps({ state }, { mode: "update", issueId }),
+      formatText: formatLinearIssueWrite("Updated", issueId),
     };
   }
   if (sub === "assign") {
     const { issueId, value } = resolveLinearWriteCommand(args, ["--assignee", "--assignee-id", "--user"]);
     // `none`/`null`/`unassigned` (or an omitted assignee) clears the assignee.
-    const normalized = (value ?? "").trim().toLowerCase();
-    const assigneeId =
-      value == null || normalized === "none" || normalized === "null" || normalized === "unassigned"
-        ? null
-        : value.trim();
+    const assignee = value?.trim() ?? "";
+    if (!assignee || isNoneValue(assignee) || looksLikeLinearId(assignee)) {
+      return {
+        kind: "execute",
+        label: "linear assign",
+        steps: [
+          actionArgsListStep("result", LINEAR_TRACKER, "updateIssueAssignee", [
+            issueId,
+            assignee && !isNoneValue(assignee) ? assignee : null,
+          ]),
+        ],
+        formatText: formatLinearIssueWrite("Updated", issueId),
+      };
+    }
+    // `me`, a name, or an email is matched against the workspace's users.
     return {
       kind: "execute",
       label: "linear assign",
-      steps: [actionArgsListStep("result", "linear_issue_tracker", "updateIssueAssignee", [issueId, assigneeId])],
+      steps: linearFieldWriteSteps({ assignee }, { mode: "update", issueId }),
+      formatText: formatLinearIssueWrite("Updated", issueId),
+    };
+  }
+  if (sub === "unlabel" || sub === "remove-label") {
+    const { issueId, value } = resolveLinearWriteCommand(args, ["--label", "--label-name", "--name"]);
+    const label = requireValue(value, "label name");
+    return {
+      kind: "execute",
+      label: "linear unlabel",
+      steps: linearFieldWriteSteps({ removeLabels: [label] }, { mode: "update", issueId }),
+      formatText: formatLinearIssueWrite("Updated", issueId),
+    };
+  }
+  if (sub === "edit" || sub === "update") {
+    const input = readLinearFieldFlags(args, "update");
+    const issueId = requireLinearIssueId(args);
+    if (!hasLinearFieldInput(input)) {
+      throw new CliUsageError(
+        "linear edit needs at least one field to change, like --title, --description, --state, or --priority.",
+      );
+    }
+    return {
+      kind: "execute",
+      label: "linear edit",
+      steps: linearFieldWriteSteps(input, { mode: "update", issueId }),
+      formatText: formatLinearIssueWrite("Updated", issueId),
+    };
+  }
+  const setField = LINEAR_SET_FIELD_COMMANDS[sub];
+  if (setField) {
+    const { issueId, value } = resolveLinearWriteCommand(args, setField.flags);
+    const fieldValue = requireValue(value, setField.noun);
+    const input: LinearFieldInput = { [setField.field]: fieldValue };
+    asUsage(() => {
+      if (input.priority !== undefined) parseLinearPriority(input.priority);
+      if (input.estimate !== undefined) parseLinearEstimate(input.estimate);
+      if (input.due !== undefined) parseDueDate(input.due);
+    });
+    return {
+      kind: "execute",
+      label: `linear ${sub}`,
+      steps: linearFieldWriteSteps(input, { mode: "update", issueId }),
+      formatText: formatLinearIssueWrite("Updated", issueId),
     };
   }
   if (sub === "label" || sub === "add-label") {
@@ -16729,6 +18944,7 @@ function buildLinearPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "linear add-label",
       steps: [actionArgsListStep("result", "linear_issue_tracker", "addLabel", [issueId, labelName])],
+      formatText: formatLinearIssueWrite("Updated", issueId),
     };
   }
   if (sub === "issue" || sub === "show-issue" || sub === "get-issue") {
@@ -16841,13 +19057,14 @@ function buildLinearPlan(args: string[]): CliPlan {
     // Files a follow-up issue. By default it links to the session's attached
     // issue (the one being worked on) as "related", in the same team/project,
     // and refuses near-duplicates of open issues unless --allow-duplicate.
-    const title = requireValue(asString(readValue(args, ["--title", "-t"]) ?? firstPositional(args)), "--title");
-    const input: JsonObject = { title };
-    maybePut(input, "description", readValue(args, ["--description", "--body", "-d"]));
+    // Every field flag is read before the positional title, so a flag's value
+    // (`--team ADE`) is never taken for the title.
+    const fields = readLinearFieldFlags(args, "create");
+    const base: JsonObject = {};
     const sourceIssueId = readFlag(args, ["--standalone", "--no-link"])
       ? null
       : asString(readValue(args, ["--from", "--source", "--source-issue"])) ?? sessionLinearIssueId();
-    if (sourceIssueId) input.sourceIssueId = sourceIssueId;
+    if (sourceIssueId) base.sourceIssueId = sourceIssueId;
     const relationFlags: Array<[string[], string]> = [
       [["--blocks"], "blocks"],
       [["--blocked-by"], "blocked_by"],
@@ -16855,18 +19072,29 @@ function buildLinearPlan(args: string[]): CliPlan {
       [["--duplicate"], "duplicate"],
     ];
     const relationFlag = relationFlags.find(([flags]) => readFlag(args, flags))?.[1];
-    if (relationFlag) input.relation = relationFlag;
+    if (relationFlag) base.relation = relationFlag;
     const teamKey = asString(readValue(args, ["--team", "--team-key"]))
-      ?? (sourceIssueId?.match(/^([A-Za-z0-9]+)-\d+$/)?.[1]?.toUpperCase() ?? null);
-    input.teamKey = requireValue(teamKey, "--team (or a --from issue to take the team from)");
-    maybePut(input, "projectId", readValue(args, ["--project-id"]));
-    const priority = readNumberOption(args, ["--priority"]);
-    if (priority !== undefined) input.priority = priority;
-    if (readFlag(args, ["--allow-duplicate", "--force"])) input.allowDuplicate = true;
+      ?? teamKeyFromIdentifier(sourceIssueId)
+      ?? teamKeyFromIdentifier(fields.parent);
+    base.teamKey = requireValue(teamKey, "--team (or a --from or --parent issue to take the team from)");
+    if (readFlag(args, ["--allow-duplicate", "--force"])) base.allowDuplicate = true;
+    Object.assign(base, collectGenericObjectArgs(args));
+    if (fields.title === undefined) {
+      const words: string[] = [];
+      for (let next = firstPositional(args); next != null; next = firstPositional(args)) words.push(next);
+      if (words.length) fields.title = words.join(" ");
+    }
+    requireValue(fields.title ?? null, "--title");
     return {
       kind: "execute",
       label: "linear create",
-      steps: [actionStep("result", "linear_issue_tracker", "createFollowUpIssue", collectGenericObjectArgs(args, input))],
+      steps: linearFieldWriteSteps(fields, {
+        mode: "create",
+        teamKey: String(base.teamKey),
+        action: "createFollowUpIssue",
+        base,
+      }),
+      formatText: formatLinearIssueWrite("Created"),
     };
   }
   if (sub === "relate" || sub === "link") {
@@ -16885,6 +19113,7 @@ function buildLinearPlan(args: string[]): CliPlan {
           kind: "execute",
           label: "linear relate",
           steps: [actionStep("result", "linear_issue_tracker", "createIssueRelation", { issueId, relatedIssueId, type })],
+          formatText: () => `Linked: ${issueId} ${({ blocks: "blocks", blocked_by: "is blocked by", related: "is related to", duplicate: "duplicates" } as Record<string, string>)[type]} ${relatedIssueId}.`,
         };
       }
     }
@@ -16915,7 +19144,9 @@ function buildLinearPlan(args: string[]): CliPlan {
   }
   throw new CliUsageError(
     `Unknown linear command '${sub}'. Supported: quick-view, picker-data, issues, my-issues, `
-      + `search-issues, issue, comments, attach, detach, comment, assign, label, set-state, create, relate, inbox, project-update, graphql.`,
+      + `search-issues, issue, comments, attach, detach, create, edit, comment, assign, label, unlabel, set-state, `
+      + `set-priority, set-estimate, set-cycle, set-project, set-milestone, set-due, set-parent, relate, inbox, `
+      + `project-update, graphql.`,
   );
 }
 
@@ -17033,6 +19264,7 @@ const BROWSER_VALUE_FLAGS: readonly string[] = [
   // without them `ade browser --arg-json '{}' open` dispatched on the JSON.
   "--arg",
   "--arg-json",
+  "--browser",
   "--browser-session",
   "--browser-session-id",
   "--button",
@@ -17105,6 +19337,8 @@ const BROWSER_VALUE_FLAGS: readonly string[] = [
   "--path",
   "--position",
   "--preset",
+  "--profile",
+  "--profile-dir",
   "--query",
   "--reason",
   "--ref",
@@ -17120,6 +19354,7 @@ const BROWSER_VALUE_FLAGS: readonly string[] = [
   "--steps",
   "--tab",
   "--tab-id",
+  "--tab-match",
   "--test-id",
   "--testid",
   "--text-match",
@@ -17145,6 +19380,7 @@ const BROWSER_VALUE_FLAGS: readonly string[] = [
   "--upload",
   "--url",
   "--user-agent",
+  "--user-data-dir",
   "--value",
   "--wait-after-ms",
   "--why",
@@ -17168,6 +19404,11 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   "-m",
   "-q",
   "-t",
+  // `chat handoff` keeps --machine (it names the move's destination, so it
+  // is not extracted for forwarding); a session given after it must not be
+  // read as the machine's value.
+  "--machine",
+  "--to-machine",
   "--additional-instructions",
   "--app",
   "--accent",
@@ -17265,6 +19506,12 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   "--image",
   "--image-url",
   "--in",
+  // `ade drafts schedule|create` value flags. Listed here so a positional
+  // draft id written after one of them is still found by the shared readers.
+  "--if-late",
+  "--grace",
+  "--permission",
+  "--thinking",
   "--index",
   "--initial-input",
   "--input",
@@ -17697,6 +19944,36 @@ function buildCliPlan(
   if (primary === "sync") {
     return buildSyncPlan(args);
   }
+  if (primary === "notify") {
+    const title = readValue(args, ["--title", "-t"]) ?? firstStandalonePositional(args) ?? "";
+    const body = readValue(args, ["--body", "-b"]);
+    const open = readValue(args, ["--open", "--link"]);
+    const problem = customNotificationProblem({ title, body, open });
+    if (problem) {
+      throw new CliUsageError(`${problem} Usage: ade notify --title "<text>" [--body "<text>"] [--open <ade link>]`);
+    }
+    return {
+      kind: "execute",
+      label: "notify",
+      formatter: "notify",
+      needsLiveRuntime: "Notifications",
+      // Machine-wide (`notify.send`): it works from any folder and never
+      // registers the current one as a project. The folder only names the
+      // project a chat or PR link belongs to, when it is one.
+      steps: [{
+        key: "result",
+        method: "notify.send",
+        params: {
+          args: {
+            title: title.trim(),
+            ...(body?.trim() ? { body: body.trim() } : {}),
+            ...(open?.trim() ? { open: open.trim() } : {}),
+          },
+          projectRoot: resolveRoots({ projectRoot: options.projectRoot, workspaceRoot: null } as GlobalOptions).projectRoot,
+        },
+      }],
+    };
+  }
   if (primary === "status") {
     return {
       kind: "execute",
@@ -17832,7 +20109,7 @@ function buildCliPlan(
   if (primary === "diff" || primary === "diffs") return buildDiffPlan(args);
   if (primary === "files" || primary === "file") return buildFilesPlan(args);
   if (primary === "search") return buildSearchPlan(args);
-  if (primary === "prs" || primary === "pr") return buildPrPlan(args);
+  if (primary === "prs" || primary === "pr") return buildPrPlan(args, options.projectRoot ?? null);
   if (primary === "shell" || primary === "pty") return buildShellPlan(args);
   if (primary === "terminal" || primary === "term")
     return buildTerminalPlan(args);
@@ -17841,6 +20118,10 @@ function buildCliPlan(
     return buildSessionPlan(args);
   if (primary === "chat" || primary === "chats" || primary === "work")
     return buildChatPlan(args);
+  // Drafts (formerly "prompt stash") and their scheduled sends. One noun: there
+  // is deliberately no `ade sends`.
+  if (primary === "drafts")
+    return buildDraftsPlan(args);
   if (primary === "agent" || primary === "agents") return buildAgentPlan(args);
   if (primary === "linear") return buildLinearPlan(args);
   if (primary === "automations" || primary === "automation") {
@@ -17865,6 +20146,7 @@ function buildCliPlan(
       ],
     };
   if (primary === "tests" || primary === "test") return buildTestsPlan(args);
+  if (primary === "scene" || primary === "scenes") return buildScenePlan(args);
   if (
     primary === "proof" ||
     primary === "computer-use" ||
@@ -17940,6 +20222,8 @@ function buildCliPlan(
   )
     return buildUpdatePlan(args);
   if (primary === "cursor") return buildCursorPlan(args);
+  if (primary === "issue") return buildIssuePlan(args);
+  if (primary === "jira") return buildJiraPlan(args);
   if (primary === "github" || primary === "gh") return buildGithubPlan(args);
   throw new CliUsageError(`Unknown command '${primary}'. Run 'ade help'.`);
 }
@@ -17986,10 +20270,14 @@ function buildGithubPlan(args: string[]): CliPlan {
       "github app-auth supports status, login, or clear.",
     );
   }
+  if (sub === "issue" || sub === "issues") {
+    return buildGithubIssuePlan(args);
+  }
   throw new CliUsageError(
-    "github supports app-auth (status | login | clear) and actions.",
+    "github supports issue, app-auth (status | login | clear), and actions.",
   );
 }
+
 
 function buildCursorPlan(args: string[]): CliPlan {
   // ade cursor <surface> <group> <sub> ... — only "cloud" is wired today.
@@ -18019,6 +20307,10 @@ function findProjectRoots(startDir: string): {
   const canonicalStart = realpathIfExists(startDir);
   const managedWorktree = findAdeManagedWorktreeRoot(canonicalStart);
   if (managedWorktree) return managedWorktree;
+  // Checked before the walk up for `.ade`: a lane outside `.ade/worktrees/` has
+  // its own `.ade` folder whenever the repository commits `.ade/ade.yaml`.
+  const linkedLane = findLinkedLaneWorktreeRoot(canonicalStart);
+  if (linkedLane) return linkedLane;
 
   let cursor = canonicalStart;
   while (true) {
@@ -18890,9 +21182,10 @@ function connectSocket(
   socketPath: string,
   timeoutMs: number,
   label: string,
+  connectWindowMs = 5000,
 ): Promise<net.Socket> {
   return new Promise((resolve, reject) => {
-    const connectTimeoutMs = Math.min(timeoutMs, 5000);
+    const connectTimeoutMs = Math.min(timeoutMs, connectWindowMs);
     const deadline = Date.now() + connectTimeoutMs;
     const attempt = () => {
       const socket = createSocketConnection(socketPath);
@@ -18974,8 +21267,9 @@ class SocketJsonRpcClient {
     socketPath: string,
     timeoutMs: number,
     label = "ADE endpoint",
+    connectWindowMs?: number,
   ): Promise<SocketJsonRpcClient> {
-    const socket = await connectSocket(socketPath, timeoutMs, label);
+    const socket = await connectSocket(socketPath, timeoutMs, label, connectWindowMs);
     return new SocketJsonRpcClient(
       socket,
       timeoutMs,
@@ -19335,6 +21629,10 @@ function reportContainedJsonRpcError(
  * `ade report-issue` tails — so the `ref` the user was shown is searchable.
  */
 function reportInternalJsonRpcError(report: JsonRpcInternalErrorReport): void {
+  captureError(report.error, {
+    tags: { "rpc.method": report.method, "rpc.error_id": report.errorId },
+    fingerprint: ["rpc-internal", report.method, report.error instanceof Error ? report.error.name : "unknown"],
+  });
   try {
     process.stderr.write(
       `ade jsonrpc internal error ref=${report.errorId} method=${report.method}: ${formatDiagnosticError(report.error)}\n`,
@@ -19454,7 +21752,12 @@ function installRuntimeProcessErrorBoundary(label: string): () => void {
   };
   const onUncaughtException = (error: Error): void => {
     write("fatal uncaught exception", error);
-    process.exit(1);
+    // Sentry captured this already (its handler runs first); give the report
+    // a moment to leave before the process does.
+    // The exit must not depend on the flush: a brain that just threw is not
+    // fit to keep serving chats while a network call decides when it stops.
+    setTimeout(() => process.exit(1), 3_000).unref();
+    void flushSentry(2_000).finally(() => process.exit(1));
   };
   process.on("unhandledRejection", onUnhandledRejection);
   process.on("uncaughtException", onUncaughtException);
@@ -19662,6 +21965,7 @@ function isMachineRuntimeScopedMethod(method: string): boolean {
     method === "runtime/info" ||
     method === "machineInfo.get" ||
     method.startsWith("account.") ||
+    method === "notify.send" ||
     method.startsWith("sync.") ||
     method.startsWith("projects.") ||
     method.startsWith("personalChats.")
@@ -19714,6 +22018,29 @@ function buildMachinesPlan(args: string[]): CliPlan {
       machineAutoStart: true,
       connectRole: "cto",
       steps: [accountActionStep("result", "listMachines")],
+    };
+  }
+  if (sub === "show" || sub === "get" || sub === "view" || sub === "info") {
+    // Read-only, so no `connectRole: "cto"`: a chat agent reads the machine a
+    // user @-mentioned with this. `account.showMachine` returns presence plus
+    // the machine's recent ADE Activity and changes nothing.
+    const machine = readValue(args, ["--machine", "--target"])
+      ?? firstStandalonePositional(args);
+    if (!machine?.trim()) {
+      throw new CliUsageError(
+        `machines ${sub} requires a machine name, machine key, or device id.`,
+      );
+    }
+    if (firstStandalonePositional(args)) {
+      throw new CliUsageError(`machines ${sub} accepts one machine selector. Quote names with spaces.`);
+    }
+    return {
+      kind: "execute",
+      label: "account machine show",
+      formatter: "account-machine-show",
+      machineOnly: true,
+      machineAutoStart: true,
+      steps: [accountActionStep("result", "showMachine", { machine: machine.trim() })],
     };
   }
   if (sub === "rename") {
@@ -19821,7 +22148,7 @@ function buildMachinesPlan(args: string[]): CliPlan {
       remoteArgs: args,
     };
   }
-  throw new CliUsageError("machines supports list, rename, remove, reconnect, connect, or hop.");
+  throw new CliUsageError("machines supports list, show, rename, remove, reconnect, connect, or hop.");
 }
 
 function buildSyncPlan(args: string[]): CliPlan {
@@ -19876,6 +22203,9 @@ Usage:
             forceTransferReadiness: readFlag(args, [
               "--force-transfer-readiness",
             ]),
+            // Without the full read this is the light read. Wait for a cold
+            // cache, or "not ready" is printed while the brain is up.
+            awaitTransferReadiness: true,
           },
         },
       ],
@@ -20038,9 +22368,16 @@ Usage:
 
 function buildProjectsPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "list";
+  // The registry lives only in the machine brain, so these never fall back to
+  // a headless single-project runtime.
+  const base = {
+    kind: "execute" as const,
+    machineOnly: true,
+    machineAutoStart: true,
+  };
   if (sub === "list" || sub === "ls") {
     return {
-      kind: "execute",
+      ...base,
       label: "projects list",
       machineList: "projects",
       formatter: "projects-list",
@@ -20053,7 +22390,7 @@ function buildProjectsPlan(args: string[]): CliPlan {
       "project path",
     );
     return {
-      kind: "execute",
+      ...base,
       label: "projects add",
       formatter: "projects-list",
       steps: [{
@@ -20073,7 +22410,7 @@ function buildProjectsPlan(args: string[]): CliPlan {
       "project id",
     );
     return {
-      kind: "execute",
+      ...base,
       label: "projects remove",
       steps: [
         { key: "result", method: "projects.remove", params: { projectId } },
@@ -20086,7 +22423,7 @@ function buildProjectsPlan(args: string[]): CliPlan {
       "project id",
     );
     return {
-      kind: "execute",
+      ...base,
       label: "projects touch",
       formatter: "projects-list",
       steps: [
@@ -20100,7 +22437,7 @@ function buildProjectsPlan(args: string[]): CliPlan {
       "path",
     );
     return {
-      kind: "execute",
+      ...base,
       label: "projects inspect",
       steps: [
         {
@@ -20411,7 +22748,7 @@ function buildInitializeParams(
   const envStepId = asString(process.env.ADE_STEP_ID);
   const envAttemptId = asString(process.env.ADE_ATTEMPT_ID);
   const envOwnerId = asString(process.env.ADE_OWNER_ID);
-  const browserActorToken = asString(process.env.ADE_BROWSER_ACTOR_TOKEN);
+  const envChatScope = asString(process.env.ADE_CHAT_SCOPE);
   return {
     protocolVersion: PROTOCOL_VERSION,
     clientInfo: { name: clientName, version: VERSION },
@@ -20424,7 +22761,7 @@ function buildInitializeParams(
       ...(envStepId ? { stepId: envStepId } : {}),
       ...(envAttemptId ? { attemptId: envAttemptId } : {}),
       ...(envOwnerId ? { ownerId: envOwnerId } : {}),
-      ...(browserActorToken ? { browserActorToken } : {}),
+      ...(envChatScope === "personal" ? { chatScope: "personal" } : {}),
       computerUsePolicy: {
         mode: "auto",
         allowLocalFallback: options.role !== "external",
@@ -20641,10 +22978,46 @@ function machineRuntimeMismatchReason(
     : failed.join("; ");
 }
 
+/**
+ * Whether this CLI may treat the brain on `socketPath` as its own: check its
+ * build and, when it is stale, shut it down and start a replacement.
+ *
+ * Only the machine's own socket is the CLI's to manage. A brain on any other
+ * socket belongs to whoever started it — `npm run dev:desktop`, a manual
+ * `ade runtime run`, a test home — and an `ade` that reaches it, whether by
+ * `--socket` or by `ADE_RUNTIME_SOCKET_PATH`, must connect to it as it is.
+ * Before this, an installed `ade` pointed at a lane's dev socket through the
+ * env var saw a different build, shut the dev brain down and started the
+ * installed one in its place, so the dev app silently ran released code and
+ * its chats lost their turns (2026-10-09).
+ */
 export function shouldEnforceMachineRuntimeBuildCompatibility(
-  socketPathOverride?: string | null,
+  socketPathOverride: string | null | undefined,
+  socketPath: string,
 ): boolean {
-  return !socketPathOverride?.trim();
+  if (socketPathOverride?.trim()) return false;
+  // A TCP brain is never replaced, but its build and version checks still run.
+  if (socketPath.startsWith("tcp://")) return true;
+  return isMachineDefaultRuntimeSocket(socketPath);
+}
+
+/** A live brain on a socket this CLI does not manage did not match it; it stays up. */
+class UnmanagedRuntimeMismatchError extends Error {
+  constructor(socketPath: string, mismatch: string) {
+    super(
+      `ADE runtime at ${socketPath}: ${mismatch}. This ade did not start it, so it is left running. Use the ade that started it, or stop it first.`,
+    );
+    this.name = "UnmanagedRuntimeMismatchError";
+  }
+}
+
+function isMachineDefaultRuntimeSocket(socketPath: string): boolean {
+  const defaultSocketPath = normalizeRuntimeSocketPath(resolveMachineAdeLayout().socketPath);
+  const candidate = normalizeRuntimeSocketPath(socketPath);
+  if (isAdeRuntimeNamedPipePath(candidate) || isAdeRuntimeNamedPipePath(defaultSocketPath)) {
+    return namedPipeComparisonKey(candidate) === namedPipeComparisonKey(defaultSocketPath);
+  }
+  return candidate === defaultSocketPath;
 }
 
 function prepareMachineRuntimeDaemonCommand(serviceCommand: AdeServiceCommand): {
@@ -20981,11 +23354,12 @@ async function connectMachineRuntimeDaemon(
   const isTcpSocket = socketPath.startsWith("tcp://");
   const isLocalRuntime = isLocalRuntimeSocketPath(socketPath);
   const enforceBuildCompatibility =
-    shouldEnforceMachineRuntimeBuildCompatibility(socketPathOverride);
+    shouldEnforceMachineRuntimeBuildCompatibility(socketPathOverride, socketPath);
   const expectedBuildHash = isTcpSocket || !enforceBuildCompatibility
     ? null
     : await resolveExpectedMachineRuntimeBuildHash();
-  const preferServiceRepair = shouldRepairMachineRuntimeServiceBeforeSpawn(
+  // Service install and uninstall only ever act for the machine's own socket.
+  const preferServiceRepair = enforceBuildCompatibility && shouldRepairMachineRuntimeServiceBeforeSpawn(
     socketPath,
     socketPathOverride,
   );
@@ -21021,6 +23395,14 @@ async function connectMachineRuntimeDaemon(
           `ADE runtime ${mismatch}.`,
         );
       }
+      // Off the machine socket the build and version checks are skipped, so a
+      // mismatch that reaches here is a role mismatch. The brain is left running:
+      // this CLI does not manage it (see shouldEnforceMachineRuntimeBuildCompatibility).
+      // An explicit override that names the machine socket keeps the replace path.
+      if (!enforceBuildCompatibility && !isMachineDefaultRuntimeSocket(socketPath)) {
+        client.close();
+        throw new UnmanagedRuntimeMismatchError(socketPath, mismatch);
+      }
       const selfShutdownBlock = runtimeSelfShutdownBlockedError(runtimeInfo, "repair", {
         localRuntime: isLocalRuntime,
       });
@@ -21050,6 +23432,7 @@ async function connectMachineRuntimeDaemon(
         socketPath,
         options.timeoutMs,
         label,
+        SPAWNED_RUNTIME_CONNECT_WINDOW_MS,
       );
       const restartedInfo = await initializeMachineRuntimeDaemon(
         restarted,
@@ -21079,6 +23462,7 @@ async function connectMachineRuntimeDaemon(
     return client;
   } catch (firstError) {
     if (firstError instanceof RuntimeSelfShutdownBlockedError) throw firstError;
+    if (firstError instanceof UnmanagedRuntimeMismatchError) throw firstError;
     if (!allowSpawn) throw firstError;
     const repaired = await repairServiceConnection();
     if (repaired) return repaired;
@@ -21092,6 +23476,7 @@ async function connectMachineRuntimeDaemon(
         socketPath,
         options.timeoutMs,
         label,
+        SPAWNED_RUNTIME_CONNECT_WINDOW_MS,
       );
       const runtimeInfo = await initializeMachineRuntimeDaemon(
         client,
@@ -21145,8 +23530,10 @@ async function runRuntimeCommand(
   // is no watchdog. It reads a file and, at most, kills one pid.
   if (sub === "watchdog-check") {
     const { runBrainWatchdogCheck } = await import("./services/runtime/brainWatchdogCheck");
+    const { kickstartLaunchdServiceAfterExit } = await import("./serviceManager/installLaunchd");
     return runBrainWatchdogCheck({
       runtimeDir: resolveMachineAdeLayout().runtimeDir,
+      restartService: process.platform === "darwin" ? kickstartLaunchdServiceAfterExit : undefined,
     });
   }
 
@@ -21953,10 +24340,15 @@ async function launchWindowsDesktopApp(
   executablePath: string,
   appName: string,
 ): Promise<Record<string, unknown>> {
-  const env = { ...process.env };
   // The installed CLI wrapper runs ADE.exe as Node. Carrying this flag into
   // the child would launch another CLI process instead of the desktop UI.
-  delete env.ELECTRON_RUN_AS_NODE;
+  // The other host-only keys (the brain's compile cache included) stay behind too.
+  const env = stripHostRuntimeEnv({ ...process.env });
+  // Electron reads this to decide whether to attach to the caller's console;
+  // the launched app keeps the caller's choice, as it did before the strip.
+  if (process.env.ELECTRON_NO_ATTACH_CONSOLE !== undefined) {
+    env.ELECTRON_NO_ATTACH_CONSOLE = process.env.ELECTRON_NO_ATTACH_CONSOLE;
+  }
   return await new Promise((resolve) => {
     let child: ReturnType<typeof spawn>;
     try {
@@ -22252,7 +24644,7 @@ async function runServe(
   try {
   const removeRuntimeProcessErrorBoundary = installRuntimeProcessErrorBoundary("ADE brain");
   const [
-    { resolveMachineAdeLayout },
+    { resolveMachineAdeLayout, isMachineAdeHome },
     { ProjectRegistry },
     { ProjectScopeRegistry, SYNC_HOST_ADOPT_TIMEOUT_MS, describeSyncHostBlocker, getSyncHostBlocker },
     {
@@ -22317,8 +24709,16 @@ async function runServe(
     logger: headlessProjectLogger,
     capture: (input) => brainProductAnalytics.capture(input),
   });
+  const rawSocketPath =
+    readValue(args, ["--socket"]) ??
+    process.env.ADE_RPC_SOCKET_PATH?.trim() ??
+    layout.socketPath;
+  const socketPath = isAdeRuntimeNamedPipePath(rawSocketPath)
+    ? rawSocketPath
+    : path.resolve(rawSocketPath);
   stopBrainLoopWatchdog = startBrainLoopWatchdog({
     runtimeDir: layout.runtimeDir,
+    socketPath,
     warn: (event, meta) => headlessProjectLogger.warn(event, meta),
     info: (event, meta) => headlessProjectLogger.info(event, meta),
     onRecovered: (breadcrumb) => {
@@ -22343,13 +24743,6 @@ async function runServe(
   // `com.ade.watchdog` launch agent on macOS, the PowerShell supervisor loop on
   // Windows. It ticks even when the brain is completely idle, which is exactly
   // the state a wedge otherwise hides in.
-  const rawSocketPath =
-    readValue(args, ["--socket"]) ??
-    process.env.ADE_RPC_SOCKET_PATH?.trim() ??
-    layout.socketPath;
-  const socketPath = isAdeRuntimeNamedPipePath(rawSocketPath)
-    ? rawSocketPath
-    : path.resolve(rawSocketPath);
   // A launchd brain gets no --socket and no socket env, only ADE_HOME. Record
   // the socket it serves so the `ade` shim it hands its agents names it.
   publishServedRuntimeSocket(socketPath);
@@ -22368,7 +24761,12 @@ async function runServe(
     });
   }
   const port = parseOptionalPort(readValue(args, ["--port"]), "--port");
-  const syncEnabled = !readFlag(args, ["--no-sync"]);
+  const isMachineSecretsHome = isMachineAdeHome(path.dirname(layout.secretsDir));
+  const syncEnabled = !readFlag(args, ["--no-sync"]) && isMachineSecretsHome;
+  if (!isMachineSecretsHome && !readFlag(args, ["--no-sync"])) {
+    process.stderr.write("ADE: sync disabled because ADE_HOME is not the machine's default home.\n");
+  }
+  const localDeviceIdPath = path.join(layout.secretsDir, "sync-device-id");
   // `--profile` was read at the top of the function, before the identity notes.
   const projectRegistry = new ProjectRegistry(layout);
   const brainAccountAuthService = getSharedAccountAuthService({
@@ -22690,9 +25088,11 @@ async function runServe(
         // The mobile handoff already succeeded; a stale registry touch should
         // not fail the sync protocol completion.
       }
+      // `switchSyncHost` refuses a project that follows another machine before
+      // it touches the current host, so this handoff cannot drop every client
+      // for a target that never takes over.
       await scopeRegistry.switchSyncHost(projectId, {
         deactivatePreviousHost: true,
-        requireHostRole: true,
       });
       await scopeRegistry.deactivateInactiveSyncHosts();
     },
@@ -22968,7 +25368,7 @@ async function runServe(
       bootstrapCredentialStore: machineCredentialStore,
       legacyBootstrapTokenPath: path.join(layout.secretsDir, "sync-bootstrap-token"),
       secretsDir: layout.secretsDir,
-      localDeviceIdPath: path.join(layout.secretsDir, "sync-device-id"),
+      localDeviceIdPath,
       localSiteIdPath: path.join(layout.secretsDir, "sync-site-id"),
       getCloudRelayWssUrl: () => machineCloudRelayStore.getRelayWssUrl(),
       personalChatScope,
@@ -23036,17 +25436,26 @@ async function runServe(
         logger: headlessProjectLogger,
       }),
   };
+  // Bound once the agents' machine bridge exists (below); a move asked for
+  // before then is refused as "can't reach other machines".
+  let crossMachineHandoffTransport: CrossMachineHandoffTransport | null = null;
   scopeRegistry = new ProjectScopeRegistry(projectRegistry, {
     runtimeSocketPath: socketPath,
+    // An embedded guest can't reach other machines, so it owns no moves (and
+    // its chat services never sweep any).
+    ...(embedded ? {} : { crossMachineHandoffTransport: () => crossMachineHandoffTransport }),
     syncRuntime: {
       enabled: syncEnabled,
       sharedSyncListener,
-      hostStartupEnabled: true,
+      hostStartupEnabled: isMachineSecretsHome,
+      // The machine's own brain may claim the cluster record for any project it
+      // serves, including before that project is selected as the host.
+      mayClaimCluster: syncEnabled,
       hostDiscoveryEnabled: true,
       forceHostRole: false,
       runtimeKind: "headless",
       appVersion: VERSION,
-      localDeviceIdPath: path.join(layout.secretsDir, "sync-device-id"),
+      localDeviceIdPath,
       phonePairingStateDir: layout.secretsDir,
       getAccountDirectoryHealth,
       requestAccountMachinePublish: () =>
@@ -23106,6 +25515,21 @@ async function runServe(
     });
   };
 
+  // "Update & restart" asks this machine's desktop app, when one is running, to
+  // install its own update: an app that owns the brain puts its own runtime
+  // back over a standalone one.
+  const requestDesktopAppUpdateFromServe = async (targetVersion: string | null) => {
+    const { requestDesktopAppUpdate } = await import("./services/runtime/desktopAppUpdateBridge");
+    const routing = await requestDesktopAppUpdate({
+      socketPath: process.env.ADE_DESKTOP_BRIDGE_SOCKET_PATH?.trim() || layout.desktopBridgeSocketPath,
+      targetVersion,
+    });
+    headlessProjectLogger.info("brain.remote_update_route", routing.attached
+      ? { route: "desktop_app", outcome: routing.result.outcome, version: routing.result.version }
+      : { route: "standalone", detail: routing.detail });
+    return routing;
+  };
+
   // This brain's agents reaching the account's other machines. One per brain
   // (it owns the agents' paired connections), built on first use; an embedded
   // guest has no machine authority and gets none.
@@ -23126,6 +25550,46 @@ async function runServe(
       call: async (input) => (await getAgentMachineBridge()).call(input),
       listMachines: async (input) => (await getAgentMachineBridge()).listMachines(input),
     };
+
+  // Moving a chat to another machine rides the same paired connection. The
+  // destination applies its own action policy to every step.
+  if (!embedded) {
+    crossMachineHandoffTransport = {
+      listMachines: async (options) => {
+        // Loaded on first use, not at startup: nothing on the brain's way to
+        // answering `ade/initialize` should wait for a move nobody asked for.
+        const { normalizeGitRemoteIdentity } = await import("../../desktop/src/shared/crossMachineHandoff");
+        const roster = await (await getAgentMachineBridge()).listMachines({ includeProjects: options?.includeProjects === true });
+        return roster.machines.map((machine) => ({
+          machineKey: machine.machineKey,
+          name: machine.name,
+          online: machine.online,
+          isThisMachine: machine.isThisMachine,
+          ...(machine.projects
+            ? { projects: machine.projects.map((project) => ({ origin: normalizeGitRemoteIdentity(project.origin) })) }
+            : {}),
+          note: machine.note ?? null,
+        }));
+      },
+      callAction: async (input) => (await getAgentMachineBridge()).call({
+        machine: input.machine,
+        scope: { kind: "repo", originUrl: input.originUrl },
+        method: "ade/actions/call",
+        params: { name: "run_ade_action", arguments: { domain: "chat", action: input.action, args: input.args } },
+        caller: { chatSessionId: null, permissionLevel: null },
+        ...(input.timeoutMs ? { timeoutMs: input.timeoutMs } : {}),
+        ...(input.clone ? { clone: true } : {}),
+      }),
+      // A timeout or a dropped connection after sending (machineBridge's
+      // MachineCallTimeoutError / MachineConnectionDroppedError, matched by
+      // code). Offline, this-machine and refusals are thrown before or by
+      // the destination, so they are plain failures.
+      isLostAnswer: (error) => {
+        const code = error && typeof error === "object" ? (error as { code?: unknown }).code : undefined;
+        return code === "machine_call_timeout" || code === "machine_connection_dropped";
+      },
+    };
+  }
 
   // Children reporting to parents outside their own scope: another project,
   // the personal scope, or another machine. The brain owns the outbox; each
@@ -23194,6 +25658,7 @@ async function runServe(
             version: VERSION,
             logger: headlessProjectLogger,
             requestRestart: requestBrainServiceRestartFromServe,
+            requestDesktopAppUpdate: requestDesktopAppUpdateFromServe,
           }),
           reportMachinePowerTransition: reportDesktopMachinePowerTransition,
         }),
@@ -23305,7 +25770,8 @@ async function runServe(
   // connection" and "Reconnect this computer": a repair that lands mid-attempt
   // joins it instead of racing a second start against the same lease.
   let startSyncHostInFlight: ReturnType<typeof startSyncHostOnce> | null = null;
-  const startSyncHost = (): ReturnType<typeof startSyncHostOnce> => {
+  const startSyncHost = (deliberateRepair = false): ReturnType<typeof startSyncHostOnce> => {
+    if (deliberateRepair) scopeRegistry.clearSyncHostPhaseBackoff();
     startSyncHostInFlight ??= startSyncHostOnce().finally(() => {
       startSyncHostInFlight = null;
     });
@@ -23316,7 +25782,10 @@ async function runServe(
       ReturnType<InstanceType<typeof ProjectScopeRegistry>["resolveActiveSyncHost"]>
     >;
     if (preferredSyncProjectId) {
-      activeScope = await scopeRegistry.switchSyncHost(preferredSyncProjectId);
+      // ADE_PROJECT_ROOT selects the project whose sync scope this brain
+      // should serve. It may already follow another machine, so resolve it as
+      // a reader and let the scope's blocker determine whether it is a viewer.
+      activeScope = await scopeRegistry.switchSyncHost(preferredSyncProjectId, { purpose: "serve" });
     } else {
       activeScope = await scopeRegistry.resolveActiveSyncHost();
     }
@@ -23391,7 +25860,7 @@ async function runServe(
     // authoritative while a newly selected project boots on demand.
     return activeScope ?? null;
   };
-  startSyncHostForRepair = startSyncHost;
+  startSyncHostForRepair = () => startSyncHost(true);
   const disposeServeResources = async () => {
     releaseAccountPublisherAuthoritySubscription?.();
     releaseAccountPublisherAuthoritySubscription = null;
@@ -23550,7 +26019,7 @@ async function runServe(
       const { configureSyncHostRecovery } = await import("./services/sync/syncHostRecovery");
       configureSyncHostRecovery({
         startSyncHost: async () => {
-          await startSyncHost();
+          await startSyncHost(true);
         },
         prove: async () => {
           await machineProjectCatalogProvider.listProjects();
@@ -23683,7 +26152,12 @@ async function runServe(
         });
       } else {
         process.stderr.write(`ADE brain sync host startup loop failed: ${message}\n`);
-        headlessProjectLogger.error("sync.host_startup_loop_failed", { error: message });
+        // The Error itself keeps its stack in the log file; `errorText` keeps the
+        // sentence for the stderr mirror, which writes an Error as `{}`.
+        headlessProjectLogger.error("sync.host_startup_loop_failed", {
+          error: error instanceof Error ? error : new Error(message),
+          errorText: message,
+        });
         syncHostStartupFailure = error;
       }
       finish();
@@ -23896,9 +26370,13 @@ async function runServe(
         return accountMachinePublisher != null;
       } catch (error) {
         accountMachinePublisher = null;
+        // The Error itself keeps its stack in the log file; `errorText` keeps the
+        // sentence for the stderr mirror, which writes an Error as `{}`.
+        const failure = error instanceof Error ? error : new Error(String(error));
         headlessProjectLogger.error("account_publisher.start_failed", {
           reason,
-          error: error instanceof Error ? error.message : String(error),
+          error: failure,
+          errorText: failure.message,
         });
         return false;
       }
@@ -25859,6 +28337,130 @@ function formatAutomationLinearIngress(value: unknown): string {
   ]);
 }
 
+function textOr(value: unknown, fallback = ""): string {
+  return typeof value === "string" && value.trim() ? value : fallback;
+}
+
+/** `ade automations webhook create`: everything the person needs next, in order. */
+function formatWebhookSetup(value: unknown): string {
+  const result = unwrapActionEnvelope(value);
+  if (!isRecord(result) || !isRecord(result.setup)) return JSON.stringify(result, null, 2);
+  const setup = result.setup;
+  const rule = isRecord(result.rule) ? result.rule : {};
+  const signature = isRecord(setup.signature) ? setup.signature : {};
+  const lines = [
+    `Created ${textOr(rule.name, "the webhook automation")} (${textOr(rule.id)}) · webhook ${textOr(result.hookId)}`,
+    "",
+    `URL  ${textOr(setup.url, "(no URL on this machine)")}`,
+  ];
+  if (textOr(setup.urlWarning)) lines.push(`     ! ${setup.urlWarning}`);
+  lines.push("", `Paste it into ${textOr(setup.service, "the service")}:`);
+  (Array.isArray(setup.pasteSteps) ? setup.pasteSteps : []).forEach((step, index) => lines.push(`  ${index + 1}. ${String(step)}`));
+  lines.push("");
+  if (signature.required === true) {
+    const name = textOr(signature.secretName, "the signing secret");
+    if (signature.secretSaved === true) {
+      lines.push(`Signature: required · ${name} is saved in this project.`);
+    } else if (signature.secretSource === "sender") {
+      lines.push(`Signature: required · paste the service's signing secret into project secret ${name}`);
+      lines.push(`  (from a chat: ade secrets request ${name} --reason "…"; or the automation's webhook panel).`);
+    } else {
+      lines.push(`Signature: required · save a secret as ${name}, then paste the same value into the service`);
+      lines.push(`  (from a chat: ade secrets request ${name} --reason "…" --generate).`);
+    }
+  } else {
+    lines.push("Signature: not required (anyone with the URL can start a run).");
+  }
+  const filters = Array.isArray(setup.filters) ? setup.filters.map(String) : [];
+  lines.push(filters.length ? `Only runs when: ${filters.join(" and ")}` : "Runs on every request.");
+  lines.push("", `Check it: ade automations webhook test ${textOr(result.hookId)} · then ade automations webhook deliveries ${textOr(result.hookId)}`);
+  return lines.join("\n");
+}
+
+function formatWebhookList(value: unknown): string {
+  const result = unwrapActionEnvelope(value);
+  const entries = Array.isArray(result) ? result.filter((entry): entry is JsonObject => isRecord(entry)) : [];
+  return renderTable(
+    ["automation", "webhook", "service", "url", "signature", "last delivery"],
+    entries.map((entry) => {
+      const last = isRecord(entry.lastDelivery) ? entry.lastDelivery : null;
+      return [
+        `${textOr(entry.ruleName)}${entry.enabled === false ? " (off)" : ""}`,
+        entry.hookId,
+        entry.preset,
+        entry.url ? `${entry.route === "relay" || entry.route === "gateway" ? "" : "[this computer] "}${String(entry.url)}` : "(other machine)",
+        entry.signatureRequired === true ? (entry.secretSaved === true ? "ok" : `missing ${textOr(entry.secretName)}`) : "none",
+        last ? `${textOr(last.outcome)} ${textOr(last.eventLabel)} ${textOr(last.receivedAt)}`.trim() : "never",
+      ];
+    }),
+    "(no webhook automations)",
+    // The hook id and URL are pasted into a command or the service; a clipped
+    // one is unusable.
+    { fullColumns: ["webhook", "url"] },
+  );
+}
+
+function formatWebhookEndpoint(value: unknown): string {
+  const result = unwrapActionEnvelope(value);
+  if (!isRecord(result)) return JSON.stringify(result, null, 2);
+  return renderKeyValues("ADE webhook URL", [
+    ["webhook", result.hookId],
+    ["url", result.url ?? "(none on this machine)"],
+    ["route", result.route],
+    ["note", result.setupError],
+    ["lastDelivery", result.lastDeliveryAt],
+  ], ["url"]);
+}
+
+function formatWebhookDeliveries(value: unknown): string {
+  const result = unwrapActionEnvelope(value);
+  const entries = (Array.isArray(result) ? result : result ? [result] : []).filter((entry): entry is JsonObject => isRecord(entry));
+  return renderTable(
+    ["id", "outcome", "method", "event", "via", "received", "why"],
+    entries.map((entry) => [entry.id, entry.outcome, entry.method, entry.eventLabel ?? "", entry.via, entry.receivedAt, entry.detail ?? ""]),
+    "(no deliveries yet)",
+    // The delivery id is pasted into `webhook delivery <whd-id>`; clip it and
+    // the next command cannot find it.
+    { fullColumns: ["id"] },
+  );
+}
+
+function formatWebhookDelivery(value: unknown): string {
+  const result = unwrapActionEnvelope(value);
+  if (!isRecord(result)) return "(that delivery is no longer in the log)";
+  const headers = isRecord(result.headers) ? Object.entries(result.headers).map(([name, header]) => `  ${name}: ${String(header)}`) : [];
+  return [
+    renderKeyValues("ADE webhook delivery", [
+      ["id", result.id],
+      ["outcome", result.outcome],
+      ["why", result.detail],
+      ["signature", result.signature],
+      ["event", result.eventLabel],
+      ["via", result.via],
+      ["received", result.receivedAt],
+      ["run", result.runId],
+      ["chat", result.chatSessionId],
+    ], ["id"]),
+    "",
+    "Prompt the agent got:",
+    textOr(result.prompt, "(no run started)"),
+    "",
+    "Headers:",
+    ...headers,
+    "",
+    "Body:",
+    textOr(result.body, "(empty)"),
+  ].join("\n");
+}
+
+function formatWebhookTest(value: unknown): string {
+  const result = unwrapActionEnvelope(value);
+  if (!isRecord(result)) return JSON.stringify(result, null, 2);
+  const ok = result.ok === true;
+  return `${ok ? "Delivered" : "Not delivered"} through ${textOr(result.route, "?")} (HTTP ${String(result.status)}). `
+    + (ok ? "See it with: ade automations webhook deliveries <wh-id>" : textOr(result.response));
+}
+
 function formatAutomationCleanups(value: unknown): string {
   const result = unwrapActionEnvelope(value);
   const cleanups = Array.isArray(result) ? result : [];
@@ -26087,6 +28689,11 @@ function formatUpdateStatus(value: unknown): string {
       asString(errorDetails.phase) ?? "unknown phase"
     }${errorDetails.preservesDownload === true ? " · download preserved" : ""}`
     : null;
+  const checkFailure = isRecord(value.checkFailure) ? value.checkFailure : null;
+  const checkFailureAt = formatEpochTimestamp(checkFailure?.at);
+  const checkFailureLine = checkFailure
+    ? `${asString(checkFailure.kind) ?? "unknown"}${checkFailureAt ? ` at ${checkFailureAt}` : ""}`
+    : null;
 
   return renderKeyValues("ADE update", [
     ["status", value.status],
@@ -26100,6 +28707,8 @@ function formatUpdateStatus(value: unknown): string {
     ["recently installed", recentlyInstalledLine],
     ["auto-apply at", formatEpochTimestamp(autoApplyPending?.deadlineAt)],
     ["auto-apply suppressed until", formatEpochTimestamp(value.autoApplySuppressedUntil)],
+    ["last checked", formatEpochTimestamp(value.lastCheckedAt)],
+    ["check failed", checkFailureLine],
     ["error", errorLine],
     ["error detail", errorDetailLine],
   ]);
@@ -26339,7 +28948,45 @@ function formatPrCreate(value: unknown): string {
     ["lane", pr.laneId],
     ["GitHub URL", githubUrl],
     ["ADE URL", adeUrl],
-  ]);
+  ]) + formatPrTextNotes(value, prNumber ? String(prNumber) : null);
+}
+
+/**
+ * What the author can still do for the reader, printed after a PR is made or
+ * its text is replaced. These lines guide; the PR exists whatever they say.
+ */
+function formatPrTextNotes(value: unknown, prRef: string | null): string {
+  const record = isRecord(value) ? value : {};
+  const lines: string[] = [];
+  const proof = isRecord(record.proofInText) ? record.proofInText : null;
+  const uploadCommand = `ade proof publish --pr ${prRef ?? "<number or URL>"} --in-body`;
+  if (proof) {
+    const posted = firstArray(proof, ["posted"]);
+    lines.push(`proof: ${posted.length} item${posted.length === 1 ? "" : "s"} uploaded into the PR text`);
+    for (const entry of firstArray(proof, ["skipped"])) {
+      lines.push(`  not uploaded ${asString(entry.id)}  ${asString(entry.reason)}`);
+    }
+    for (const warning of Array.isArray(proof.warnings) ? proof.warnings : []) {
+      if (typeof warning === "string") lines.push(`  warning: ${warning}`);
+    }
+  } else if (asString(record.proofInTextError)) {
+    lines.push(
+      `proof: not uploaded. GitHub shows the captions only. ${asString(record.proofInTextError)}`,
+      `  run it again: ${uploadCommand}`,
+    );
+  }
+  const hints = Array.isArray(record.briefHints)
+    ? record.briefHints.filter((entry): entry is string => typeof entry === "string")
+    : [];
+  if (hints.length) {
+    lines.push(
+      "",
+      "For the reader (the PR is made; these are optional):",
+      ...hints.map((hint) => `  - ${hint}`),
+      `  Update the text: ade prs body ${prRef ?? "<pr>"} --body-file <file>`,
+    );
+  }
+  return lines.length ? `\n${lines.join("\n")}` : "";
 }
 
 /**
@@ -26435,6 +29082,9 @@ function formatPrComments(value: unknown): string {
   }
   if (threads.length === 0 && comments.length === 0)
     lines.push("(no comments)");
+  // ADE shows every open thread as work that waits for a person. Say how to
+  // close one out where the agent that handles it will read it.
+  if (threads.some((thread) => !thread.isResolved)) lines.push("", PR_THREAD_CLOSEOUT_RULE);
   return lines.join("\n");
 }
 
@@ -27174,6 +29824,27 @@ function proofListScopeLabel(value: unknown, artifactCount: number): string {
   return `Proof for ${target}: ${artifactCount} artifact${artifactCount === 1 ? "" : "s"}`;
 }
 
+/** `ade scene preview --text`: the picture's path, timings, then one problem per line. */
+function formatScenePreview(value: unknown): string {
+  const record = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
+  const problems = Array.isArray(record.problems) ? record.problems as Array<{ kind?: unknown; message?: unknown }> : [];
+  const ms = (raw: unknown) => (typeof raw === "number" ? `${raw} ms` : "never");
+  const lines = [
+    `${record.ok ? "ok" : "problems found"}${typeof record.title === "string" ? ` · ${record.title}` : ""}`,
+    `screenshot  ${typeof record.screenshotPath === "string" ? record.screenshotPath : "(none)"}`,
+    `size        ${record.width ?? "?"} × ${record.height ?? "?"} px (the chat clamps height to 120–960)`,
+    `ready       ${ms(record.readyMs)}`,
+    `settled     ${ms(record.settledMs)}`,
+  ];
+  if (problems.length) {
+    lines.push("", "problems");
+    for (const problem of problems) {
+      lines.push(`  [${String(problem.kind ?? "?")}] ${String(problem.message ?? "").replace(/\s+/g, " ").trim()}`);
+    }
+  }
+  return lines.join("\n");
+}
+
 function formatProofList(value: unknown): string {
   const artifacts = firstArray(value, ["artifacts", "items"]);
   const header = proofListScopeLabel(value, artifacts.length);
@@ -27216,7 +29887,7 @@ function formatProofPublished(value: unknown): string {
   const skipped = firstArray(record, ["skipped"]);
   const warnings = Array.isArray(record.warnings) ? record.warnings.filter((entry): entry is string => typeof entry === "string") : [];
   return [
-    `Posted ${posted.length} proof item${posted.length === 1 ? "" : "s"} to ${asString(record.prUrl) ?? "the PR"}`,
+    `${record.inBody === true ? "Put" : "Posted"} ${posted.length} proof item${posted.length === 1 ? "" : "s"} ${record.inBody === true ? "in the text of" : "to"} ${asString(record.prUrl) ?? "the PR"}`,
     ...(asString(record.commentUrl) ? [`comment: ${asString(record.commentUrl)}`] : []),
     ...posted.map((entry) => `  posted  ${asString(entry.id)}  ${asString(entry.caption)}`),
     ...skipped.map((entry) => `  skipped ${asString(entry.id)}  ${asString(entry.reason)}`),
@@ -27772,8 +30443,63 @@ function saveScreenshotResult(
   };
 }
 
+/**
+ * `ade browser attach` / `detach`. The first line is the one the transcript
+ * keys on (`attached:` / `detached:` / `not attached:`).
+ */
+function formatBrowserAttach(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  const message = asString(result.message) ?? "";
+  if (result.attached !== true) return message;
+  const tab = firstRecord(result, ["tab"]);
+  const notes = Array.isArray(result.notes) ? result.notes.map((note) => asString(note)).filter(Boolean) : [];
+  return [
+    message,
+    "",
+    renderKeyValues("Your browser", [
+      ["browser", result.browserLabel],
+      ["machine", result.machine],
+      ["tab", tab?.title],
+      ["url", tab?.url],
+    ]),
+    ...notes.map((note) => `note: ${note}`),
+    "",
+    "This chat's ade browser commands now act in this tab. Tell the user which machine and tab, and run ade browser detach when you are done.",
+  ].join("\n");
+}
+
+/** The chat's attachment to the user's own browser, as `browser status` shows it. */
+function formatUserBrowserStatus(userBrowser: JsonObject): string {
+  const tab = firstRecord(userBrowser, ["tab"]);
+  const available = firstArray(userBrowser, ["available"]);
+  const rows: Array<[string, unknown]> = userBrowser.attached === true
+    ? [
+      ["attached", `${asString(userBrowser.browserLabel) ?? "browser"} on ${asString(userBrowser.machine) ?? "this computer"}`],
+      ["tab", tab?.title],
+      ["url", tab?.url],
+      ["since", userBrowser.attachedAt],
+    ]
+    : [
+      ["attached", "no — this chat uses ADE's browser"],
+      [
+        "remote debugging on",
+        available.filter((entry) => entry.remoteDebugging === true).map((entry) => entry.label).join(", ") || "none",
+      ],
+    ];
+  return renderKeyValues("Your browser", rows);
+}
+
 function formatBrowserStatus(value: unknown): string {
   const status = isRecord(value) ? value : {};
+  const userBrowser = firstRecord(status, ["userBrowser"]);
+  if (userBrowser) {
+    const { userBrowser: _userBrowser, builtInUnavailable, ...builtIn } = status;
+    const unavailable = asString(builtInUnavailable);
+    const rest = unavailable
+      ? `ADE browser: ${unavailable}`
+      : Object.keys(builtIn).length ? formatBrowserStatus(builtIn) : "";
+    return [formatUserBrowserStatus(userBrowser), ...(rest ? ["", rest] : [])].join("\n");
+  }
   // This machine has no desktop attached, so there is no browser here to
   // report on: the daemon handed the URL to a desktop that has this lane
   // pinned, which opens it over a tunnel back to this machine's localhost.
@@ -27816,6 +30542,16 @@ function formatBrowserStatus(value: unknown): string {
     return [lane, chat].filter(Boolean).join(" / ");
   };
   const callerChatSessionId = process.env.ADE_CHAT_SESSION_ID?.trim() || null;
+  const signInForTab = (tab: Record<string, unknown>): string => {
+    const profile = asString(tab.isolatedProfile);
+    return profile ? `isolated profile "${profile}"` : "shared (the user's)";
+  };
+  // A failed main-frame load shows as a plain white page, which a screenshot
+  // cannot explain; the status names the failure instead.
+  const loadFailureForTab = (tab: Record<string, unknown> | null | undefined): string | null => {
+    const failure = isRecord(tab?.loadError) ? tab.loadError : null;
+    return failure ? asString(failure.description) ?? "the page did not load" : null;
+  };
   // `open` / `new-tab` name the tab they drove in one line, so the agent does
   // not have to pick it out of the table (an agent's tab is not the active
   // one: agent opens do not take the human's focus).
@@ -27837,7 +30573,9 @@ function formatBrowserStatus(value: unknown): string {
       renderKeyValues("ADE browser", [
         ["title", targetTab?.title],
         ["loading", targetTab?.isLoading ?? targetTab?.loading],
+        ["load failed", loadFailureForTab(targetTab)],
         ["owner", targetTab ? ownerForTab(targetTab) : null],
+        ["sign-in", targetTab ? signInForTab(targetTab) : null],
         ["other tabs", otherTabs > 0 ? `${otherTabs} (ade browser status lists them)` : null],
       ]),
     ].join("\n");
@@ -27850,6 +30588,7 @@ function formatBrowserStatus(value: unknown): string {
       ["url", status.url],
       ["title", status.title],
       ["loading", status.isLoading ?? status.loading],
+      ["load failed", loadFailureForTab(tabs.find((tab) => asString(tab.id) === activeTabId))],
       ["back", status.canGoBack],
       ["forward", status.canGoForward],
       ["inspecting", status.isInspecting ?? status.inspecting],
@@ -27880,6 +30619,23 @@ function formatBrowserStatus(value: unknown): string {
  * "nothing is listening" — the empty-state line says so rather than leaving an
  * agent to conclude its server failed to start.
  */
+/** The page text itself, under one line saying which slice of how much it is. */
+function formatBrowserText(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  const text = asString(result.text) ?? "";
+  const offset = typeof result.offset === "number" ? result.offset : 0;
+  const total = typeof result.totalChars === "number" ? result.totalChars : text.length;
+  const nextOffset = typeof result.nextOffset === "number" ? result.nextOffset : null;
+  const header = [
+    asString(result.title) ?? asString(result.url) ?? "ADE browser text",
+    `chars ${offset}-${offset + text.length} of ${total} (${asString(result.source) ?? "body"})`,
+  ];
+  const footer = nextOffset == null
+    ? []
+    : ["", `(more: ade browser text --offset ${nextOffset}${result.tabId ? ` --tab ${String(result.tabId)}` : ""})`];
+  return [...header, "", text || "(no text on this page)", ...footer].join("\n");
+}
+
 function formatBrowserDevServers(value: unknown): string {
   const result = isRecord(value) ? value : {};
   const servers = firstArray(result, ["servers"]);
@@ -28226,6 +30982,10 @@ function formatBrowserObservation(value: unknown): string {
     ["scratch deleted", cleanup?.deletedCount],
   ]);
   const sections = [header];
+  // A full sentence with two commands in it: its own line, where a key/value
+  // row would cut it short.
+  const narrowPageHint = asString(observation.narrowPageHint);
+  if (narrowPageHint) sections.push("", `note: ${narrowPageHint}`);
   if (elements.length) sections.push("", domElementTable(elements));
   if (consoleDiagnostics.length) {
     sections.push(
@@ -28507,6 +31267,15 @@ function formatProjectSecrets(value: unknown): string {
   if (typeof record.value === "string") {
     return record.value;
   }
+  if (typeof record.name === "string" && typeof record.saved === "boolean") {
+    // `secrets request`: the outcome only. The value never comes back.
+    if (record.saved) {
+      return `${record.replaced ? "Replaced" : "Saved"} project secret ${record.name}. The value stays hidden; use it by name.`;
+    }
+    return record.kept
+      ? `Kept the existing project secret ${record.name}.`
+      : `The user declined to provide ${record.name}.`;
+  }
   if (typeof record.name === "string" && typeof record.deleted === "boolean") {
     return record.deleted
       ? `Deleted ADE secret ${record.name}.`
@@ -28524,7 +31293,7 @@ function formatProjectSecrets(value: unknown): string {
   const rows = secrets.map((secret) => [
     secret.name,
     secret.valueLength,
-    secret.storage,
+    secret.uploadPending === true ? `${secret.storage} (uploading)` : secret.storage,
     secret.updatedAt,
   ]);
   const storage = isRecord(record.storage) ? record.storage : {};
@@ -28577,6 +31346,9 @@ function formatProviderAccounts(value: unknown): string {
       ["same login as", instance.sameLoginAs],
       ["replaced login", isRecord(instance.replacedAccount) ? instance.replacedAccount.email : undefined],
       ["accent", instance.accentColor],
+      ["main chat cache", instance.mainPromptCacheTtl === "1h" ? "1 hour" : instance.mainPromptCacheTtl === "5m" ? "5 minutes" : undefined],
+      ["subagent cache", instance.subagentPromptCacheTtl === "1h" ? "1 hour" : undefined],
+      ["extra usage", instance.onExtraUsage === "stop" ? "stop the turn" : undefined],
       ["config home", instance.configHome],
       ["created", instance.createdAt],
     ]);
@@ -29124,6 +31896,14 @@ function formatTextOutput(
     }
     case "account-machines":
       return formatAccountMachines(value);
+    case "account-machine-show": {
+      const result = isRecord(value) ? value : {};
+      if (asString(result.state) !== "ok" || !isRecord(result.machine)) {
+        // Same sentences as `machines list` for every non-ok directory state.
+        return formatAccountMachines(value);
+      }
+      return formatAccountMachineSnapshotText(result.machine as unknown as AccountMachineSnapshot);
+    }
     case "machines-roster":
       return formatMachinesRoster(value);
     case "account-machine-rename": {
@@ -29176,6 +31956,10 @@ function formatTextOutput(
       return formatPrList(value);
     case "pr-create":
       return formatPrCreate(value);
+    case "pr-body": {
+      const ref = isRecord(value) ? asString(value.prRef) : null;
+      return `Updated the text of pull request ${ref ?? ""}`.trimEnd() + formatPrTextNotes(value, ref);
+    }
     case "pr-detail":
       return renderKeyValues(
         "ADE pull request",
@@ -29212,6 +31996,14 @@ function formatTextOutput(
       return formatSessionLifecycle(value);
     case "lane-drift":
       return formatLaneDrift(value);
+    case "drafts-list":
+      return draftEntriesLines(value);
+    case "drafts-entry":
+      return formatDraftDetail(value, { fullPrompt: false });
+    case "drafts-show":
+      return formatDraftDetail(value, { fullPrompt: true });
+    case "drafts-confirm":
+      return formatDraftConfirmation(value);
     case "scheduled-work-create": {
       const result = isRecord(value) && isRecord(value.result) ? value.result : value;
       const item = isRecord(result) && isRecord(result.item) ? result.item : {};
@@ -29240,6 +32032,8 @@ function formatTextOutput(
       return formatTestsRuns(value);
     case "proof-list":
       return formatProofList(value);
+    case "scene-preview":
+      return formatScenePreview(value);
     case "proof-filed":
       return formatProofFiled(value);
     case "proof-published":
@@ -29304,8 +32098,12 @@ function formatTextOutput(
       return formatAppControlRecording(value);
     case "browser-status":
       return formatBrowserStatus(value);
+    case "browser-attach":
+      return formatBrowserAttach(value);
     case "browser-dev-servers":
       return formatBrowserDevServers(value);
+    case "browser-text":
+      return formatBrowserText(value);
     case "work-tools-state":
       return formatWorkToolsState(value);
     case "work-tool-show":
@@ -29346,6 +32144,18 @@ function formatTextOutput(
       return formatAutomationLinearIngress(value);
     case "automation-cleanups":
       return formatAutomationCleanups(value);
+    case "automation-webhook-setup":
+      return formatWebhookSetup(value);
+    case "automation-webhook-list":
+      return formatWebhookList(value);
+    case "automation-webhook-endpoint":
+      return formatWebhookEndpoint(value);
+    case "automation-webhook-deliveries":
+      return formatWebhookDeliveries(value);
+    case "automation-webhook-delivery":
+      return formatWebhookDelivery(value);
+    case "automation-webhook-test":
+      return formatWebhookTest(value);
     case "search-results":
       return formatSearchResults(value);
     case "search-status":
@@ -29394,6 +32204,11 @@ function formatTextOutput(
       return formatUpdateStatus(value);
     case "github-app-auth":
       return formatGithubAppUserAuth(value);
+    case "notify": {
+      const result = isRecord(value) && isRecord(value.result) ? value.result : value;
+      if (!isRecord(result)) return "Notification sent.";
+      return describeCustomNotificationResult(result).message;
+    }
     case "action-result":
     default:
       if (isRecord(value))
@@ -29518,6 +32333,7 @@ function inferFormatter(
   )
     return "browser-status";
   if (label === "browser dev servers") return "browser-dev-servers";
+  if (label === "browser text") return "browser-text";
   if (label === "work tools state") return "work-tools-state";
   if (
     label === "browser session start" ||
@@ -29709,6 +32525,9 @@ function summarizeProofFiling(
           : null,
       ].filter(Boolean).join(" ")
     : null;
+  // Proof of a page in the user's own browser says so, like every command there.
+  const observed = unwrapActionEnvelope(values.observation);
+  const userBrowserTarget = isRecord(observed) ? asString(observed.userBrowserTarget) : null;
   const owner = [
     `lane ${laneId ? shortProofOwnerId(laneId) : "none"}`,
     `chat ${chatSessionId ? shortProofOwnerId(chatSessionId) : "none"}`,
@@ -29729,6 +32548,7 @@ function summarizeProofFiling(
     })),
     ...(warnings.length ? { warnings } : {}),
     ...(capturedFrom ? { capturedFrom } : {}),
+    ...(userBrowserTarget ? { userBrowserTarget } : {}),
     confirmation:
       `Attached ${artifacts.length} artifact${artifacts.length === 1 ? "" : "s"} `
       + `to ${owner} (${title})`,
@@ -29790,6 +32610,10 @@ function summarizeExecution(args: {
     };
   }
 
+  if (plan.shapeResult) {
+    return plan.shapeResult(values);
+  }
+
   if (plan.proofFiling) {
     return summarizeProofFiling(plan.proofFiling, values);
   }
@@ -29821,24 +32645,54 @@ function summarizeExecution(args: {
   if (plan.label === "proof publish") {
     // No `publish` value means nothing reached the PR: the ids, gh or the
     // upload failed. That is a failed command, never a warning.
+    // `--in-body` names its link step `proofLink`; the comment form `result`.
+    const link = values.proofLink ?? values.result;
     if (!isRecord(values.publish)) {
-      const cause = isRecord(values.result) ? asString(values.result.error) : null;
+      const cause = isRecord(link) ? asString(link.error) : null;
       throw new CliToolError(cause ?? "proof publish failed — nothing was posted", {});
     }
     const published = values.publish;
-    const linkFailure = isRecord(values.result) && values.result.ok === false
-      ? asString(values.result.error) ?? "the runtime refused the link"
+    const linkFailure = isRecord(link) && link.ok === false
+      ? asString(link.error) ?? "the runtime refused the link"
       : null;
-    const linked = linkFailure ? [] : firstArray(unwrapActionEnvelope(values.result) as JsonObject, ["artifacts"]);
+    const linked = linkFailure ? [] : firstArray(unwrapActionEnvelope(link) as JsonObject, ["artifacts"]);
     const warnings = [
       ...(Array.isArray(published.warnings) ? published.warnings : []),
       ...(linkFailure ? [`posted, but ADE could not record the PR on the items: ${linkFailure}`] : []),
     ];
-    return { ok: true, ...published, warnings, linked: linked.length };
+    return { ok: true, ...published, warnings, linked: linked.length, inBody: values.proofLink !== undefined };
   }
 
-  if (plan.label === "PR create") {
-    return summarizePrCreateResult(values.result ?? values);
+  if (plan.label === "PR create" || plan.label === "PR update body") {
+    // The body update keeps the result it always returned, with the notes added.
+    const summary = plan.label === "PR create"
+      ? summarizePrCreateResult(values.result ?? values)
+      : values.result;
+    if (!isRecord(summary) || !plan.prText) return summary;
+    const proofFailure = [values.proofList, values.proofLink]
+      .map((step) => (isRecord(step) && step.ok === false ? asString(step.error) : null))
+      .find(Boolean) ?? null;
+    return {
+      ...summary,
+      ...(plan.prText.ref !== undefined ? { prRef: plan.prText.ref } : {}),
+      briefHints: prBriefHints(plan.prText.body).map((hint) => hint.message),
+      ...(isRecord(values.publish)
+        ? {
+          proofInText: {
+            ...values.publish,
+            warnings: [
+              ...(Array.isArray(values.publish.warnings) ? values.publish.warnings : []),
+              // The pictures are in the text; only ADE's own record of the PR is missing.
+              ...(isRecord(values.proofLink) && values.proofLink.ok === false
+                ? [`uploaded, but ADE could not record the PR on the items: ${asString(values.proofLink.error) ?? "the runtime refused the link"}`]
+                : []),
+            ],
+          },
+        }
+        : {}),
+      // The upload failed before anything reached the PR text.
+      ...(proofFailure && !isRecord(values.publish) ? { proofInTextError: proofFailure } : {}),
+    };
   }
 
   if (
@@ -30157,6 +33011,8 @@ async function runAccountLogin(
   // Track either pending flow so every non-success exit drops daemon-held
   // verifier/secret state. Cleared on success so a completed login is not cancelled.
   let pendingSessionId: string | null = null;
+  // The device sign-in that runs beside a browser sign-in, when there is one.
+  let otherDeviceSessionId: string | null = null;
 
   try {
     const explicitHeadless = plan.explicitHeadless || options.headless;
@@ -30236,50 +33092,39 @@ async function runAccountLogin(
     const runDeviceFlow = async (
       onStarted?: () => Promise<void>,
     ): Promise<{ output: string; exitCode: number }> => {
-      const start = await runAccountAction("startDeviceLogin", {
+      const answer = await runAccountAction("startDeviceLogin", {
         projectRoot,
         ignoreEnvCredential: plan.explicitHeadless || options.headless,
       });
-      const sessionId = asString(start.sessionId);
-      const userCode = asString(start.userCode);
-      const verificationUri = asString(start.verificationUri);
-      const verificationUriComplete = asString(start.verificationUriComplete);
-      const expiresAt = asString(start.expiresAt);
-      if (!sessionId || !userCode || !verificationUri) {
-        throw new CliExecutionError("ADE account device login did not start.", { start });
+      const device = readDeviceSignInStart(answer);
+      if (!device) {
+        throw new CliExecutionError("ADE account device login did not start.", { start: answer });
       }
       await onStarted?.();
-      pendingSessionId = sessionId;
-      let intervalSec = typeof start.intervalSec === "number" && start.intervalSec > 0
-        ? start.intervalSec
-        : 5;
-      const deadlineMs = deadlineFor(expiresAt);
+      pendingSessionId = device.sessionId;
+      let intervalSec = device.intervalSec;
+      const deadlineMs = deadlineFor(device.expiresAt);
       process.stderr.write(
-        `\nTo finish signing in, open ${verificationUri} and enter code: ${userCode}\n` +
-        (verificationUriComplete ? `Or open: ${verificationUriComplete}\n` : "") +
-        "\nWaiting for sign-in…\n",
+        `\n${deviceSignInInstructions("To finish signing in", device)}\nWaiting for sign-in…\n`,
       );
       while (true) {
         const sleepMs = Math.max(1, intervalSec) * 1000;
         await sleep(Number.isFinite(deadlineMs)
           ? Math.min(sleepMs, Math.max(1, deadlineMs - Date.now()))
           : sleepMs);
-        const poll = await runAccountAction("pollDeviceLogin", { sessionId });
-        const pollStatus = asString(poll.status);
-        const authStatus = isRecord(poll.authStatus) ? poll.authStatus : poll;
-        if (pollStatus === "signed_in") return finishSignedIn(authStatus);
-        if (pollStatus === "pending" || pollStatus === "slow_down") {
-          if (typeof poll.intervalSec === "number" && poll.intervalSec > 0) {
-            intervalSec = poll.intervalSec;
-          }
+        const poll = readDeviceSignInPoll(
+          await runAccountAction("pollDeviceLogin", { sessionId: device.sessionId }),
+        );
+        if (poll.kind === "signed_in") return finishSignedIn(poll.authStatus);
+        if (poll.kind === "waiting") {
+          intervalSec = poll.intervalSec ?? intervalSec;
           if (Number.isFinite(deadlineMs) && Date.now() >= deadlineMs) {
-            return timedOut("pollDeviceLogin", sessionId);
+            return timedOut("pollDeviceLogin", device.sessionId);
           }
           continue;
         }
-        const message = asString(poll.message) ?? "ADE account device sign-in failed.";
-        process.stderr.write(`${message}\n`);
-        return { output: formatOutput(authStatus, options, "account-auth"), exitCode: 1 };
+        process.stderr.write(`${poll.message ?? "ADE account device sign-in failed."}\n`);
+        return { output: formatOutput(poll.authStatus, options, "account-auth"), exitCode: 1 };
       }
     };
 
@@ -30294,6 +33139,8 @@ async function runAccountLogin(
     }
     pendingSessionId = sessionId;
     const openResult = openUrlViaOs(authorizeUrl);
+    // Set when a device sign-in already failed to start, so it is tried once.
+    let deviceSignInUnavailable = false;
     if (detectAccountLoginMode({ browserOpenFailed: openResult.failed }) === "device") {
       process.stderr.write(
         `Could not open the browser automatically: ${openResult.message}\nTrying device sign-in.\n`,
@@ -30310,38 +33157,75 @@ async function runAccountLogin(
         });
       } catch (error) {
         if (deviceFlowStarted) throw error;
+        deviceSignInUnavailable = true;
         process.stderr.write(
           "Device sign-in is unavailable; continuing with manual browser sign-in.\n",
         );
       }
     }
-    process.stderr.write(
-      `\nSign in or create your ADE account in your browser. If it did not open, visit:\n  ${authorizeUrl}\n\nWaiting for sign-in…\n`,
-    );
-    const deadlineMs = deadlineFor(expiresAt);
-    while (true) {
-      await sleep(Number.isFinite(deadlineMs)
-        ? Math.min(500, Math.max(1, deadlineMs - Date.now()))
-        : 500);
-      const poll = await runAccountAction("pollLogin", { sessionId });
-      const pollStatus = asString(poll.status);
-      const authStatus = isRecord(poll.authStatus) ? poll.authStatus : poll;
-      if (pollStatus === "signed_in") return finishSignedIn(authStatus);
-      if (pollStatus === "pending") {
-        if (Number.isFinite(deadlineMs) && Date.now() >= deadlineMs) {
-          return timedOut("pollLogin", sessionId);
-        }
-        continue;
+    // The browser on this machine is one way in. A device sign-in runs beside
+    // it, so the same command also works from a phone or another computer:
+    // whichever one the person completes signs this machine in. It is
+    // optional. When it cannot start, the browser sign-in continues alone.
+    let otherDevice: DeviceSignInStart | null = null;
+    if (!deviceSignInUnavailable) {
+      try {
+        otherDevice = readDeviceSignInStart(await runAccountAction("startDeviceLogin", { projectRoot }));
+        otherDeviceSessionId = otherDevice?.sessionId ?? null;
+      } catch {
+        // Fixed fallback only: the browser sign-in below needs none of this.
       }
-      const message = asString(poll.message) ?? "ADE account sign-in failed.";
-      process.stderr.write(`${message}\n`);
-      return { output: formatOutput(authStatus, options, "account-auth"), exitCode: 1 };
+      // Said, so nobody waits for a QR code that is not coming.
+      if (!otherDevice) {
+        process.stderr.write(
+          "Sign-in from another device is not available right now; use the browser on this machine.\n",
+        );
+      }
     }
+    process.stderr.write(
+      `\nSign in or create your ADE account in your browser. If it did not open, visit:\n  ${authorizeUrl}\n` +
+      (otherDevice ? `\n${deviceSignInInstructions("Or, to sign in on another device", otherDevice)}` : "") +
+      "\nWaiting for sign-in…\n",
+    );
+
+    const deviceSessionId = otherDevice?.sessionId;
+    const result = await waitForBrowserOrDeviceSignIn({
+      pollBrowser: () => runAccountAction("pollLogin", { sessionId }),
+      device: otherDevice && deviceSessionId
+        ? {
+          intervalSec: otherDevice.intervalSec,
+          poll: () => runAccountAction("pollDeviceLogin", { sessionId: deviceSessionId }),
+        }
+        : null,
+      // The two sessions expire at different times; wait for the later one.
+      deadlineMs: otherDevice
+        ? Math.max(deadlineFor(expiresAt), deadlineFor(otherDevice.expiresAt))
+        : deadlineFor(expiresAt),
+      sleep,
+      write: (text) => process.stderr.write(text),
+    });
+    if (result.winner === "browser") return finishSignedIn(result.authStatus);
+    if (result.winner === "device") {
+      // The other device won. Close this machine's listener first, so the
+      // browser tab that is still open here cannot complete a second time.
+      try {
+        await runAccountAction("cancelLogin", { sessionId });
+      } catch {
+        // The listener expires on its own.
+      }
+      otherDeviceSessionId = null;
+      return finishSignedIn(result.authStatus);
+    }
+    // The browser sign-in was still open at the deadline: one last look at it.
+    if (!result.browserStatus) return timedOut("pollLogin", sessionId);
+    if (result.timedOut) process.stderr.write("ADE account sign-in timed out.\n");
+    return { output: formatOutput(result.browserStatus, options, "account-auth"), exitCode: 1 };
   } finally {
     // Best-effort and idempotent: cancellation must not mask the real result.
-    if (pendingSessionId) {
+    for (const sessionId of [pendingSessionId, otherDeviceSessionId]) {
+      if (!sessionId) continue;
       try {
-        await runAccountAction("cancelLogin", { sessionId: pendingSessionId });
+        await runAccountAction("cancelLogin", { sessionId });
       } catch {
         // The pending session may already be gone; the exit result is what matters.
       }
@@ -30545,10 +33429,21 @@ function createLinkEnvelopeResolver(
       // deeplink envelope with the PR a human would name: open before draft
       // before terminal history, newest first. Same comparator as the desktop
       // lane badge, so a link minted here points where the badge points.
-      const pr = pickPrimaryPrRecord(records(prsValue, ["prs", "items", "result"])
+      //
+      // A primary lane parked on its base branch names no PR at all (its row
+      // cannot be deleted, so history would otherwise be stamped onto `main`
+      // forever). The badge answers the same way, so a link and a badge agree —
+      // the rule is imported from `shared/laneBaseResolution.ts`, not restated.
+      const laneBranch = asString(lane?.branchRef)?.replace(/^refs\/heads\//, "") ?? null;
+      const primaryOnBase = laneIsOnBaseBranch({
+        laneType: asString(lane?.laneType),
+        branchRef: asString(lane?.branchRef),
+        baseRef: asString(lane?.baseRef),
+      });
+      const pr = primaryOnBase ? null : pickPrimaryPrRecord(records(prsValue, ["prs", "items", "result"])
         .filter((candidate) => asString(candidate.laneId) === context.laneId));
 
-      const branch = asString(lane?.branchRef)?.replace(/^refs\/heads\//, "") ?? null;
+      const branch = laneBranch;
       const laneIssue = isRecord(lane?.linearIssue) ? lane.linearIssue : null;
       const linearIssue = asString(laneIssue?.identifier);
       // `pickPrimaryPrRecord` accepts `githubPrNumber`, `number`, or `prNumber`,
@@ -30571,6 +33466,50 @@ function createLinkEnvelopeResolver(
       if (connection) await Promise.resolve(connection.close()).catch(() => undefined);
     }
   };
+}
+
+/** The first `runtimeOwnedElsewhere` / `ownedElsewhere` record in a result, two levels deep. */
+function findChatRuntimeOwnerRef(value: unknown, depth = 0): { pid: number; socketPath: string | null } | null {
+  if (!isRecord(value) || depth > 2) return null;
+  for (const key of ["runtimeOwnedElsewhere", "ownedElsewhere"]) {
+    const owner = value[key];
+    if (isRecord(owner) && typeof owner.pid === "number") {
+      return { pid: owner.pid, socketPath: asString(owner.socketPath) ?? null };
+    }
+  }
+  for (const nested of Object.values(value)) {
+    const found = findChatRuntimeOwnerRef(nested, depth + 1);
+    if (found) return found;
+  }
+  return null;
+}
+
+/**
+ * The stderr line for a chat that runs under a different brain than the one
+ * this CLI reached. That brain cannot see the chat's turn and refuses to send
+ * to it, so without this a caller reads its stale "idle" as the truth — the
+ * 2026-10-09 incident, where a shell pointed at a dev brain's socket kept
+ * re-sending to workers the installed brain was running.
+ */
+function chatOwnerSocketWarning(value: unknown, connection: Pick<CliConnection, "mode" | "socketPath">): string | null {
+  const owner = findChatRuntimeOwnerRef(value);
+  if (!owner) return null;
+  // A headless CLI runs its own in-process runtime; its socketPath is only
+  // the default endpoint, not a brain it reached.
+  const cliSocketPath = connection.mode === "headless" ? null : connection.socketPath;
+  if (owner.socketPath && cliSocketPath) {
+    const ownerSocket = normalizeRuntimeSocketPath(owner.socketPath);
+    const cliSocket = normalizeRuntimeSocketPath(cliSocketPath);
+    const same = process.platform === "win32"
+      ? ownerSocket.toLowerCase() === cliSocket.toLowerCase()
+      : ownerSocket === cliSocket;
+    if (same) return null;
+  }
+  return [
+    `ADE: this chat runs under another ADE brain (pid ${owner.pid}${owner.socketPath ? `, socket ${owner.socketPath}` : ""}),`,
+    `not the one this CLI reached${cliSocketPath ? ` (${cliSocketPath})` : ""}. Its status here is not live and sends are refused.`,
+    owner.socketPath ? `Use: ade --socket "${owner.socketPath}" …` : "Use the ade CLI of the brain that owns it.",
+  ].join(" ");
 }
 
 async function executePlan(
@@ -30641,7 +33580,7 @@ async function executePlan(
         workspaceRoot: roots.workspaceRoot,
         socketPath,
         nextAction: plan.machineOnly
-          ? "Start the machine-owned ADE brain with `ade brain start`, then retry the personal chat command."
+          ? "Start the machine-owned ADE brain with `ade brain start`, then retry."
           : options.requireSocket
             ? "Open the ADE app for this channel, or run the `ade` on PATH in an ADE terminal or agent shell. `--socket <endpoint>` picks another brain."
           : sourceRuntimeInterop
@@ -30710,6 +33649,8 @@ async function executePlan(
         };
       }
     }
+    const ownerWarning = chatOwnerSocketWarning(values, connection);
+    if (ownerWarning) process.stderr.write(`${ownerWarning}\n`);
     return summarizeExecution({ plan, connection, values });
   } catch (error) {
     if (
@@ -30830,6 +33771,7 @@ async function runChatWaitCommand(
   // The brain waits on the chat's own events (`chat.waitFor`, one ≤25 s
   // long-poll per call); an older brain without it is polled as before.
   let serverWaitSupported = true;
+  let ownerWarned = false;
   const serverWait = async (budgetMs: number): Promise<JsonObject | null | "unsupported"> => {
     try {
       const raw = await connection.request("ade/actions/call", {
@@ -30876,6 +33818,13 @@ async function runChatWaitCommand(
           elapsedMs,
         };
         return { output: formatOutput(result, options), exitCode: 1 };
+      }
+      if (!ownerWarned) {
+        const warning = chatOwnerSocketWarning(summary, connection);
+        if (warning) {
+          process.stderr.write(`${warning}\n`);
+          ownerWarned = true;
+        }
       }
       if (chatWaitTargetMatches(summary, plan.waitFor)) {
         const result = {
@@ -30973,9 +33922,48 @@ function formatOutput(
 ): string {
   if (options.text) {
     if (isMachineFanOutResult(value)) return `${formatMachineFanOut(value)}\n`;
-    return `${formatTextOutput(value, formatter)}\n`;
+    const targetLine = browserTargetLine(value);
+    // Said once, on the first line; not again as a row of the result.
+    const shown = targetLine && isRecord(value)
+      ? (({ userBrowserTarget: _target, browserHost: _host, ...rest }) => rest)(value)
+      : value;
+    return `${targetLine}${formatTextOutput(shown, formatter)}\n`;
   }
   return `${JSON.stringify(value, null, options.pretty ? 2 : 0)}\n`;
+}
+
+/** The first line of a browser command's text output: which browser it ran in, when that needs saying. */
+function browserTargetLine(value: unknown): string {
+  return userBrowserTargetLine(value) || builtInBrowserHostLine(value);
+}
+
+/**
+ * `target: your Google Chrome on <machine>` — printed first by every command
+ * that acted in the user's own browser (`ade browser attach`), so neither the
+ * agent nor the user mistakes it for ADE's browser. Empty otherwise.
+ */
+function userBrowserTargetLine(value: unknown): string {
+  if (!isRecord(value) || value.attached === true) return "";
+  const target = asString(value.userBrowserTarget);
+  return target ? `${USER_BROWSER_TARGET_PREFIX} ${target}\n` : "";
+}
+
+/**
+ * Which machine's ADE browser a command ran in, when that is not simply "the
+ * one beside the agent" (`BuiltInBrowserHostNote`). Printed first, so an agent
+ * whose user sits at another computer knows where its tab is and can say so.
+ */
+function builtInBrowserHostLine(value: unknown): string {
+  const host = isRecord(value) && isRecord(value.browserHost) ? value.browserHost : null;
+  if (!host) return "";
+  const machine = asString(host.machine) ?? "another computer";
+  if (host.userComputer === true) {
+    return `browser: on ${machine}, the computer the user sits at. They see this tab and it uses their sign-ins.\n`;
+  }
+  if (host.userElsewhere === true) {
+    return "browser: on this machine. The user drives this chat from another computer, which did not take the command, so they cannot see this browser and it has none of their tabs.\n";
+  }
+  return "";
 }
 
 function appendOutputSuffix(output: string, suffix: string): string {
@@ -31084,9 +34072,15 @@ async function runResetCommand(
     try {
       // This process runs the app binary as plain Node. Handed down, that
       // setting would start the relaunched app as Node too, not as ADE.
-      const appEnv: NodeJS.ProcessEnv = { ...process.env };
+      // The other host-only keys (the brain's compile cache included) stay behind too.
+      const appEnv: NodeJS.ProcessEnv = stripHostRuntimeEnv({ ...process.env });
+      // Electron reads this to decide whether to attach to the caller's console;
+      // the relaunched app keeps the caller's choice, as it did before the strip.
+      if (process.env.ELECTRON_NO_ATTACH_CONSOLE !== undefined) {
+        appEnv.ELECTRON_NO_ATTACH_CONSOLE = process.env.ELECTRON_NO_ATTACH_CONSOLE;
+      }
       for (const key of Object.keys(appEnv)) {
-        if (key === "ELECTRON_RUN_AS_NODE" || key === "NODE_PATH" || key.startsWith("ADE_")) delete appEnv[key];
+        if (key === "NODE_PATH" || key.startsWith("ADE_")) delete appEnv[key];
       }
       const child = process.platform === "darwin"
         ? spawn("open", ["-n", plan.relaunch], { detached: true, stdio: "ignore", env: appEnv })
@@ -31430,6 +34424,7 @@ async function runParsedCli(
       // The brain hosts terminals and chats; it is never a child of the
       // Claude session it may have been started from.
       stripParentClaudeSessionEnv(process.env);
+      initBrainSentry({ mode: "serve" });
       const result = await runServe(plan.rest, parsed.options);
       return {
         output:
@@ -31490,7 +34485,7 @@ async function runParsedCli(
       const saved = saveScreenshotResult(result, plan.saveScreenshot.outPath);
       return {
         output: parsed.options.text
-          ? `${renderKeyValues("ADE browser screenshot", [
+          ? `${browserTargetLine(unwrapActionEnvelope(result))}${renderKeyValues("ADE browser screenshot", [
             ["saved", saved.savedPath],
             ["size", saved.width && saved.height ? `${saved.width}x${saved.height}` : null],
             ["bytes", saved.bytes],
@@ -31501,9 +34496,18 @@ async function runParsedCli(
     }
     const formatter = inferFormatter(plan);
     const flagEffects = applySyncWebPairingFlags(plan, parsed.options, result);
+    // A plan that carries a readable rendering (`ade drafts`) shows it when the
+    // caller asked for neither `--json` nor `--text`. `--json` is the explicit
+    // machine mode, so it must keep printing JSON even without `--text`.
+    const output =
+      plan.tableText && !parsed.options.text && !parsed.options.json && !isMachineFanOutResult(result)
+        ? `${plan.tableText(result)}\n`
+        : parsed.options.text && plan.formatText && !isMachineFanOutResult(result)
+          ? `${plan.formatText(result)}\n`
+          : formatOutput(result, parsed.options, formatter);
     return {
       output: appendOutputSuffix(
-        formatOutput(result, parsed.options, formatter),
+        output,
         flagEffects.outputSuffix,
       ),
       exitCode:

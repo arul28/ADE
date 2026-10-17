@@ -1,4 +1,14 @@
-import { createElement, memo, useRef, type ComponentType, type FunctionComponent } from "react";
+import {
+  createElement,
+  memo,
+  useCallback,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ComponentType,
+  type FunctionComponent,
+  type SetStateAction,
+} from "react";
 
 /** Compare maps by key/value identity so derived values can retain identity across renders. */
 export function sameMapContents<K, V>(previous: ReadonlyMap<K, V>, next: ReadonlyMap<K, V>): boolean {
@@ -26,6 +36,45 @@ export function sameKeyList(previous: readonly string[], next: readonly string[]
     if (previous[index] !== next[index]) return false;
   }
   return true;
+}
+
+/**
+ * `current` when `incoming` holds the same values in the same order (compared
+ * by reference, then by JSON), else `incoming`. For lists re-read over IPC,
+ * where a fresh read is never reference-equal to the last one.
+ */
+export function reuseStructurallyEqualArray<T>(incoming: T[], current: T[] | undefined): T[];
+export function reuseStructurallyEqualArray<T>(incoming: T[] | undefined, current: T[] | undefined): T[] | undefined;
+export function reuseStructurallyEqualArray<T>(
+  incoming: T[] | undefined,
+  current: T[] | undefined,
+): T[] | undefined {
+  if (!incoming || !current || incoming.length !== current.length) return incoming;
+  for (let index = 0; index < incoming.length; index += 1) {
+    const nextValue = incoming[index];
+    const currentValue = current[index];
+    if (nextValue === currentValue) continue;
+    if (JSON.stringify(nextValue) !== JSON.stringify(currentValue)) return incoming;
+  }
+  return current;
+}
+
+/**
+ * A re-read list with the previous object kept for every row whose contents
+ * did not change (matched by id), and the previous array itself when nothing
+ * changed. Rows passed to memoized children then keep their identity.
+ */
+export function reconcileRowsById<T extends { id: string }>(previous: T[], next: T[]): T[] {
+  if (previous === next) return previous;
+  const previousById = new Map(previous.map((row) => [row.id, row]));
+  let changed = previous.length !== next.length;
+  const merged = next.map((row, index) => {
+    const prior = previousById.get(row.id);
+    const kept = prior && (prior === row || JSON.stringify(prior) === JSON.stringify(row)) ? prior : row;
+    if (!changed && previous[index] !== kept) changed = true;
+    return kept;
+  });
+  return changed ? merged : previous;
 }
 
 /** Retain a derived value's identity while its relevant contents are unchanged. */
@@ -61,10 +110,18 @@ export function useLatestCallback<F extends (...args: never[]) => unknown>(fn: F
  * renders only when a non-function prop changes. A handler that is absent
  * stays absent, so controls gated on its presence behave as before. Plain
  * callbacks only: a component type or render prop must not go through here.
+ *
+ * `options.keepIdentityFor` names handlers whose *identity* is itself an input:
+ * an effect keyed on one re-runs when it changes (the composer's attachment
+ * search refetches when the search source changes). A proxy would freeze that
+ * signal, so those pass through untouched — and the component then re-renders
+ * whenever they change, exactly as it did before the memo.
  */
 export function memoWithLatestHandlers<P extends object>(
   Component: ComponentType<P>,
+  options?: { keepIdentityFor?: readonly string[] },
 ): FunctionComponent<P> {
+  const keepIdentity = new Set(options?.keepIdentityFor ?? []);
   const Inner = memo(Component) as unknown as ComponentType<P>;
   function WithLatestHandlers(props: P) {
     const latest = useRef(props);
@@ -72,7 +129,7 @@ export function memoWithLatestHandlers<P extends object>(
     const proxies = useRef(new Map<string, (...args: unknown[]) => unknown>());
     const forwarded: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(props)) {
-      if (typeof value !== "function") {
+      if (typeof value !== "function" || keepIdentity.has(key)) {
         forwarded[key] = value;
         continue;
       }
@@ -87,4 +144,30 @@ export function memoWithLatestHandlers<P extends object>(
   }
   WithLatestHandlers.displayName = `WithLatestHandlers(${Component.displayName ?? Component.name ?? "Component"})`;
   return WithLatestHandlers;
+}
+
+/**
+ * `useState` whose setter drops a plain value equal to the one most recently
+ * asked for. React cannot drop a same-value write early while the component
+ * has other updates queued, so each such write renders the component again.
+ * A functional update always goes through.
+ */
+export function useStateSkippingSameValue<T>(initial: T): [T, (next: SetStateAction<T>) => void] {
+  const [value, setValue] = useState(initial);
+  // The value most recently asked for; `pending` while a functional update is queued.
+  const requested = useRef<{ pending: true } | { pending: false; value: T }>({ pending: false, value });
+  const set = useCallback((next: SetStateAction<T>) => {
+    if (typeof next === "function") {
+      requested.current = { pending: true };
+    } else {
+      if (!requested.current.pending && Object.is(requested.current.value, next)) return;
+      requested.current = { pending: false, value: next };
+    }
+    setValue(next);
+  }, []);
+  // Every commit: a functional update that kept the value must still clear the mark.
+  useLayoutEffect(() => {
+    requested.current = { pending: false, value };
+  });
+  return [value, set];
 }

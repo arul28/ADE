@@ -6,6 +6,7 @@ import path from "node:path";
 import { pathKey } from "../../../desktop/src/main/services/shared/pathCompare";
 
 export type TrustedWindowsTool =
+  | "cmd"
   | "powercfg"
   | "powershell"
   | "reg"
@@ -17,6 +18,7 @@ export type TrustedWindowsTool =
   | "whoami";
 
 const TRUSTED_TOOL_RELATIVE_PATHS: Record<TrustedWindowsTool, string> = {
+  cmd: "cmd.exe",
   powercfg: "powercfg.exe",
   powershell: path.win32.join("WindowsPowerShell", "v1.0", "powershell.exe"),
   reg: "reg.exe",
@@ -161,7 +163,7 @@ export function applyWindowsOwnerOnlyAcl(
       return { status: spawned.status, stderr: spawned.stderr ?? "", error: spawned.error };
     })();
   if (result.error || result.status !== 0) {
-    const detail = result.stderr?.trim();
+    const detail = result.stderr?.trim() || (result.error instanceof Error ? result.error.message.trim() : "");
     throw new Error(`Unable to secure Windows path with icacls${detail ? `: ${detail}` : ""}`);
   }
 }

@@ -3,6 +3,7 @@ import type {
   AgentChatCodexApprovalPolicy,
   AgentChatCodexSandbox,
   AgentChatDroidPermissionMode,
+  AgentChatMusePermissionMode,
   AgentChatPermissionMode,
   TerminalResumeLaunchConfig,
   TerminalResumeMetadata,
@@ -12,6 +13,7 @@ import type {
 } from "../../shared/types";
 import {
   buildTrackedCliResumeCommand as buildCanonicalTrackedCliResumeCommand,
+  isProviderBinaryCommand,
   normalizeCliFlagValue,
   preassignedSessionIdInArgs,
   readOpenCodeLaunchIntent,
@@ -19,6 +21,7 @@ import {
   sanitizeTrackedCliResumeTargetId,
 } from "../../shared/cliLaunch";
 import { parseCommandLine } from "../../shared/shell";
+import { legacyPermissionModeFromMusePermissionMode } from "../../shared/modelPermissions";
 
 const OSC_133_REGEX = /\u001b\]133;([ABCD])(?:;[^\u0007\u001b]*)?(?:\u0007|\u001b\\)/g;
 const RESUME_BACKTICK_REGEX = /`([^`\r\n]*(?:claude|codex|cursor-agent|droid|opencode|pi|qwen|kimi|grok|copilot)\s+[^`\r\n]*(?:--resume|-r|resume|--continue|-c|--session|-s)[^`\r\n]*)`/gi;
@@ -26,6 +29,16 @@ const RESUME_HINT_PREFIX_REGEX = /\b(?:resume|continue)\s+with\s+(.+)$/i;
 const RESUME_COMMAND_LINE_REGEX = /^(?:.*?(?:[%$#❯›]\s+))?((?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s]+)\s+)*(?:claude|codex|cursor-agent|droid|opencode|pi)\s+.+)$/i;
 
 export const sanitizeResumeTargetId = sanitizeTrackedCliResumeTargetId;
+
+/**
+ * Muse prints its session id twice, never as a bare command line: on exit,
+ * "To continue this session, run muse resume <uuid>", and after a resume,
+ * "resumed session <uuid>" (muse 1.4.7). Both carry the id of the session
+ * this terminal is running.
+ */
+const MUSE_EXIT_RESUME_HINT_REGEX = /\brun\s+(muse\s+resume\s+[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i;
+// Drawn with cursor positioning, not on its own line, so it is not anchored.
+const MUSE_RESUMED_SESSION_REGEX = /\bresumed session ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i;
 
 const RESUME_NATIVE_ACP_COMMAND_LINE_REGEX = /^((?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s]+)\s+)*(?:qwen|kimi|grok|copilot)\s.+)$/i;
 
@@ -161,6 +174,9 @@ function toolFromCommand(raw: string): TerminalToolType | null {
   if (/^grok(?:\s|$)/.test(normalized)) return "grok";
   if (/^copilot(?:\s|$)/.test(normalized)) return "copilot";
   if (/^pi(?:\s|$)/.test(normalized)) return "pi";
+  // Muse usually runs as ADE's pinned binary, so its first word is a path.
+  const firstWord = normalized.match(/^(?:"[^"]*"|'[^']*'|\S+)/)?.[0] ?? "";
+  if (isProviderBinaryCommand(firstWord, "muse")) return "muse";
   return null;
 }
 
@@ -171,6 +187,7 @@ export function providerFromTool(toolType: TerminalToolType | null | undefined):
   if (toolType === "droid") return "droid";
   if (toolType === "opencode" || toolType === "opencode-orchestrated" || toolType === "opencode-chat") return "opencode";
   if (toolType === "pi" || toolType === "pi-chat") return "pi";
+  if (toolType === "muse" || toolType === "muse-chat") return "muse";
   if (toolType === "qwen" || toolType === "qwen-chat") return "qwen";
   if (toolType === "kimi" || toolType === "kimi-chat") return "kimi";
   if (toolType === "grok" || toolType === "grok-chat") return "grok";
@@ -267,11 +284,31 @@ function extractTrackedCliPermissionMode(command: string, provider: TerminalResu
     return "default";
   }
 
+  if (provider === "muse") {
+    return legacyPermissionModeFromMusePermissionMode(extractMusePermissionMode(command)) ?? "config-toml";
+  }
+
   if (provider === "opencode") {
     // No intent means ADE set no policy: the user's own OpenCode config rules.
     return readOpenCodeLaunchIntent(command)?.permissionMode ?? "config-toml";
   }
 
+  return undefined;
+}
+
+/** The Muse approval mode a launch line sets, read back from the flags ADE writes. */
+function extractMusePermissionMode(command: string): AgentChatMusePermissionMode | undefined {
+  const normalized = command.toLowerCase();
+  if (/(?:^|\s)--yolo(?:\s|$)/.test(normalized)) return "allowAll";
+  const profile = extractCliFlagValue(normalized, "--permission-profile");
+  if (profile === ":read-only") return "denyUnmatched";
+  if (profile === ":unrestricted") return "allowAll";
+  if (profile === ":ask-me") return "promptUnmatched";
+  if (profile === ":auto-review") return "onRequest";
+  const approvalMode = extractCliFlagValue(normalized, "--approval-mode");
+  if (approvalMode === "never") return "allowAll";
+  if (approvalMode === "on-request") return "onRequest";
+  if (approvalMode === "untrusted") return "promptUnmatched";
   return undefined;
 }
 
@@ -288,6 +325,7 @@ export function parseTrackedCliLaunchConfig(
   const droidPermissionMode = provider === "droid"
     ? droidNativePermissionModeFromSettings(droidSettings)
     : null;
+  const musePermissionMode = provider === "muse" ? extractMusePermissionMode(normalized) ?? null : null;
   const permissionMode = droidPermissionModeFromSettings(droidSettings)
     ?? extractTrackedCliPermissionMode(normalized, provider);
   const openCodeIntent = provider === "opencode" ? readOpenCodeLaunchIntent(normalized) : null;
@@ -355,6 +393,7 @@ export function parseTrackedCliLaunchConfig(
   return {
     ...(permissionMode ? { permissionMode } : {}),
     ...(droidPermissionMode ? { droidPermissionMode } : {}),
+    ...(musePermissionMode ? { musePermissionMode } : {}),
     ...(model ? { model } : {}),
     ...(reasoningEffort ? { reasoningEffort } : {}),
     ...(fastMode !== undefined ? { fastMode } : {}),
@@ -494,6 +533,23 @@ function parseProviderResumeTarget(provider: TerminalResumeProvider, command: st
     return parseAcpResumeTarget(provider, command);
   }
 
+  if (provider === "muse") {
+    let parts: string[];
+    try {
+      parts = parseCommandLine(command);
+    } catch {
+      return undefined;
+    }
+    if (!isProviderBinaryCommand(parts[0], "muse")) return undefined;
+    // `resume` is position-independent among Muse's root flags. A bare
+    // `resume` (picker) or `resume --last` names no session ADE can own.
+    const resumeIndex = parts.findIndex((part, index) => index > 0 && part === "resume");
+    if (resumeIndex < 0) return undefined;
+    const raw = parts[resumeIndex + 1];
+    if (raw == null || raw.startsWith("-")) return null;
+    return sanitizeResumeTargetId(raw) ?? undefined;
+  }
+
   if (provider === "kimi") {
     let parts: string[];
     try {
@@ -610,6 +666,9 @@ export function defaultResumeCommandForTool(toolType: TerminalToolType | null | 
   // fresh terminal reopened a four-day-old transcript this way. Pi is resumed
   // only by a session id ADE actually captured for that terminal.
   if (toolType === "pi") return null;
+  // Null for Muse for the same reason: `muse resume --last` is "the most
+  // recent session in this workspace", which can be an ADE chat's.
+  if (toolType === "muse") return null;
   return null;
 }
 
@@ -632,6 +691,10 @@ export function extractResumeCommandFromOutput(
       .flatMap((line) => {
         const trimmed = line.trim();
         if (!trimmed) return [];
+        const museExit = trimmed.match(MUSE_EXIT_RESUME_HINT_REGEX)?.[1];
+        if (museExit) return [museExit];
+        const museResumed = trimmed.match(MUSE_RESUMED_SESSION_REGEX)?.[1];
+        if (museResumed) return [`muse resume ${museResumed}`];
         const hinted = trimmed.match(RESUME_HINT_PREFIX_REGEX)?.[1]?.trim();
         if (hinted && toolFromCommand(hinted)) return [hinted];
         const command = (

@@ -2,11 +2,14 @@ import {
   clampGenericPermissionMode,
   permissionFieldsForLevel,
   permissionLevelForDroid,
+  permissionLevelForMuse,
   permissionLevelRank,
   type PermissionLevel,
 } from "../../desktop/src/shared/permissionLadder";
 import { RECORDING_MAX_MS } from "../../desktop/src/shared/demoVideo/demoContract";
+import { QUESTION_DECLINED_MODEL_MESSAGE, answersForModel } from "../../desktop/src/shared/pendingInputAnswers";
 import { THREAD_COMMENT_ACTION_NAMES } from "../../desktop/src/shared/threadComments";
+import { CLAUDE_PLUGIN_UI_ACTION_NAMES } from "../../desktop/src/shared/claudePluginUi";
 import { demoTrackRegistry } from "../../desktop/src/main/services/demoVideo/demoTrackRegistry";
 import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
@@ -49,12 +52,28 @@ import {
   listAllowedAdeActionNames,
   scopeAccountStatusForRole,
 } from "../../desktop/src/main/services/adeActions/registry";
+import { readRuntimeFileWatchSenderId, toRuntimeFileWatchArgs } from "../../desktop/src/main/services/adeActions/actionArgs";
+import { createFileWatchLedger } from "../../desktop/src/main/services/files/fileWatchLedger";
 import { captureAppControlAnalytics } from "../../desktop/src/main/services/analytics/agentTurnProductAnalytics";
 import { stripHostAuthoredMessageProvenance } from "../../desktop/src/main/services/chat/spawnMissionOwnership";
 import { runGit } from "../../desktop/src/main/services/git/git";
 import { resolvePathWithinRoot } from "../../desktop/src/main/services/shared/utils";
 import { getDefaultModelDescriptor } from "../../desktop/src/shared/modelRegistry";
 import { buildAdeCliInlineGuidance } from "../../desktop/src/shared/adeCliGuidance";
+import { isSceneParseFailure, parseSceneFence } from "../../desktop/src/shared/chatScene";
+import {
+  SCENE_PREVIEW_MAX_SOURCE_BYTES,
+  SCENE_PREVIEW_WIDTH,
+  sceneSourceFromInput,
+} from "../../desktop/src/shared/scenePreview";
+import { SCENE_PREVIEW_NO_DESKTOP } from "./services/builtInBrowser/scenePreviewBridgeClient";
+import {
+  SCENE_DATA_MAX_SESSIONS,
+  projectSceneLanes,
+  projectScenePrs,
+  projectSceneSessions,
+  type SceneDataPayload,
+} from "../../desktop/src/shared/sceneDataProjection";
 import { buildDeeplink, isValidCommitSha, isValidRepoRelativePath } from "../../desktop/src/shared/deeplinks";
 import {
   PROOF_LISTING_ARTIFACT_FILTER,
@@ -66,7 +85,10 @@ import {
   ACTION_NOT_CALLABLE_CODE,
   ACTION_NOT_EXPOSED_CODE,
   encodeCodedErrorMessage,
+  parseCodedErrorMessage,
 } from "../../desktop/src/shared/codedError";
+import { isExpectedFailure, isExpectedOutcome } from "../../desktop/src/shared/sentry/expectedFailure";
+import { forwardLogToSentry } from "../../desktop/src/shared/sentry/logBridge";
 import {
   ADE_AGENT_SKILLS_DIRS_ENV,
   joinAdeAgentSkillRoots,
@@ -104,7 +126,7 @@ import {
   type LaunchProfile,
   type TrackedCliLaunchCommand,
 } from "../../desktop/src/shared/cliLaunch";
-import type { AgentChatDroidPermissionMode, AgentChatPermissionMode, AgentChatRuntimeActor, AgentChatSpawnKind, TerminalResumeMetadata, TerminalSessionSummary } from "../../desktop/src/shared/types";
+import type { AgentChatDroidPermissionMode, AgentChatMusePermissionMode, AgentChatPermissionMode, AgentChatRuntimeActor, AgentChatSpawnKind, TerminalResumeMetadata, TerminalSessionSummary } from "../../desktop/src/shared/types";
 import type { AdeRuntime } from "./bootstrap";
 import {
   recordUsageInteraction,
@@ -112,14 +134,15 @@ import {
   usageClientSurfaceFromRpcName,
 } from "../../desktop/src/main/services/usage/usageStatsStore";
 import { JsonRpcError, JsonRpcErrorCode, type JsonRpcHandler, type JsonRpcRequest } from "./jsonrpc";
+import { captureError } from "../../desktop/src/shared/sentry/capture";
 import { callerIdentityIsAgent, normalizeAdeRuntimeRole, resolveSessionBoundRole } from "./runtimeRoles";
 import { getSharedModelPickerStore } from "./services/modelPickerStore";
 import { resolveLaneCreateRemoteBase } from "./services/laneCreateRemoteBase";
 import {
   BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD,
-  BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM,
+  BUILT_IN_BROWSER_REPLY_REMOTE_CALL_METHOD,
 } from "./services/builtInBrowser/desktopBridgeMethods";
-import { FORWARDABLE_BUILT_IN_BROWSER_METHODS } from "./services/builtInBrowser/remoteBrowserForwarder";
+import { USER_BROWSER_ROUTE_PARAM, isUserBrowserRuntimeMethod } from "./services/builtInBrowser/userBrowserRouting";
 import {
   ctoCallerInitializeParams,
   DESKTOP_CLIENT_NAMES,
@@ -137,8 +160,10 @@ import {
 import { resolveCodexComputerUseMcpConfig } from "../../desktop/src/main/utils/codexComputerUse";
 import { parseTrackedCliLaunchConfig } from "../../desktop/src/main/utils/terminalSessionSignals";
 import { RUNTIME_COMPAT_LEVEL } from "../../desktop/src/shared/adeRuntimeProtocol";
+import { trackBrainLoopWatchdogCommand } from "./services/runtime/brainLoopWatchdog";
 import {
   AGENT_CHAT_DROID_PERMISSION_MODE_VALUES,
+  AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES,
   AGENT_CHAT_PERMISSION_MODE_VALUES,
   isAgentChatDroidPermissionMode,
 } from "../../desktop/src/shared/types/chat";
@@ -233,7 +258,8 @@ type SessionIdentity = {
   stepId: string | null;
   attemptId: string | null;
   ownerId: string | null;
-  browserActorToken: string | null;
+  /** The caller's chat is a personal (project-less) chat — its `ADE_CHAT_SCOPE`. */
+  personalChat: boolean;
 };
 
 type SessionState = {
@@ -248,12 +274,15 @@ type SessionState = {
   };
 };
 
-/**
- * Thread comments are the user's unsent review of an agent's reply. Only a
- * user client may read or change them, or send them (`includeThreadComments`);
- * an agent that could would be editing what the user is about to tell it.
- */
-const THREAD_COMMENT_ACTIONS: ReadonlySet<string> = new Set(THREAD_COMMENT_ACTION_NAMES);
+/** Chat actions only a user client may call; an agent caller is refused. */
+const USER_ONLY_CHAT_ACTIONS: ReadonlySet<string> = new Set([
+  // Thread comments are the user's unsent review of an agent's reply. Only a
+  // user client may read or change them, or send them (`includeThreadComments`);
+  // an agent that could would be editing what the user is about to tell it.
+  ...THREAD_COMMENT_ACTION_NAMES,
+  // What a mod draws is for the person at the chat; a press runs plugin code on the host.
+  ...CLAUDE_PLUGIN_UI_ACTION_NAMES,
+]);
 const THREAD_COMMENT_SEND_ACTIONS = new Set(["sendMessage", "steer", "messageSession"]);
 
 function withoutIncludeThreadComments(args: Record<string, unknown>): Record<string, unknown> {
@@ -433,9 +462,13 @@ const TOOL_SPECS: ToolSpec[] = [
       additionalProperties: false,
       properties: {
         laneId: { type: "string", minLength: 1 },
-        provider: { type: "string", enum: ["claude", "codex", "cursor", "droid", "opencode", "pi", "qwen", "kimi", "grok", "copilot", "devin", "shell"] },
+        provider: { type: "string", enum: ["claude", "codex", "muse", "cursor", "droid", "opencode", "pi", "qwen", "kimi", "grok", "copilot", "devin", "shell"] },
         permissionMode: { type: "string", enum: [...AGENT_CHAT_PERMISSION_MODE_VALUES], default: "default" },
         droidPermissionMode: { type: "string", enum: [...AGENT_CHAT_DROID_PERMISSION_MODE_VALUES] },
+        musePermissionMode: { type: "string", enum: [...AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES] },
+        copilotPermissionMode: { type: "string", enum: ["plan", "ask", "assisted", "auto-edit", "full-auto"] },
+        copilotContextTier: { type: "string", enum: ["default", "long_context"] },
+        copilotAutoTier: { type: "string", enum: ["efficiency", "balance", "intelligence"] },
         title: { type: "string" },
         initialInput: { type: "string" },
         cols: { type: "number", minimum: 20, maximum: 400, default: 120 },
@@ -784,6 +817,20 @@ const TOOL_SPECS: ToolSpec[] = [
         ownerId: { type: "string" },
         laneId: { type: "string" },
         chatSessionId: { type: "string" },
+      }
+    }
+  },
+  {
+    name: "preview_scene",
+    description: "Render a ```scene the way a chat will (same document, SDK, policy and sandbox) in a hidden desktop window, before putting it in a reply. Returns the path of a PNG of the drawn scene (written on this runtime's machine, under the project's .ade/cache/scene-previews) and the problems found: script errors, blocked requests, scenes that never settle, and source mistakes the scene policy turns into blanks. Needs the ADE desktop app on this machine.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["source"],
+      properties: {
+        source: { type: "string", minLength: 1, maxLength: SCENE_PREVIEW_MAX_SOURCE_BYTES, description: "The scene: a fence body or a whole ```scene fence." },
+        width: { type: "number", minimum: SCENE_PREVIEW_WIDTH.min, maximum: SCENE_PREVIEW_WIDTH.max, description: "Frame width in CSS px. A chat's reply column is about 720." },
+        theme: { type: "string", enum: ["dark", "light"] },
       }
     }
   },
@@ -1512,6 +1559,48 @@ const LOCAL_COMPUTER_USE_TOOL_NAMES = new Set([
   "record_environment",
 ]);
 
+/**
+ * The live data a previewed scene asked for (`data=` on its marker line), built
+ * from this brain's services with the same projection the chat uses, so a
+ * data-driven scene previews with real content instead of its empty state.
+ */
+async function scenePreviewData(runtime: AdeRuntime, source: string): Promise<SceneDataPayload | null> {
+  const parsed = parseSceneFence(sceneSourceFromInput(source));
+  if (isSceneParseFailure(parsed) || !parsed.data.length) return null;
+  const wanted = new Set(parsed.data);
+  const payload: SceneDataPayload = { at: new Date().toISOString() };
+  try {
+    if (wanted.has("lanes")) payload.lanes = projectSceneLanes(await runtime.laneService.list({ includeStatus: true }));
+    if (wanted.has("sessions")) payload.sessions = projectSceneSessions(await Promise.resolve(runtime.sessionService.list({ limit: SCENE_DATA_MAX_SESSIONS })));
+    if (wanted.has("prs")) payload.prs = projectScenePrs(runtime.prService?.listAll() ?? []);
+  } catch {
+    // A preview without data still checks the layout; the empty state shows.
+  }
+  return payload;
+}
+
+/** Previews kept per project; older ones are removed as new ones are written. */
+const SCENE_PREVIEW_KEEP = 20;
+
+/** Write a preview PNG under `.ade/cache/scene-previews/` and prune the oldest. */
+function writeScenePreviewImage(projectRoot: string, bytes: Buffer): string {
+  const dir = path.join(projectRoot, ".ade", "cache", "scene-previews");
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, `scene-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}.png`);
+  fs.writeFileSync(file, bytes);
+  try {
+    const previews = fs.readdirSync(dir)
+      .filter((entry) => entry.startsWith("scene-") && entry.endsWith(".png"))
+      .sort();
+    for (const stale of previews.slice(0, Math.max(0, previews.length - SCENE_PREVIEW_KEEP))) {
+      fs.rmSync(path.join(dir, stale), { force: true });
+    }
+  } catch {
+    // Pruning is housekeeping; the preview itself is written.
+  }
+  return file;
+}
+
 const ALL_TOOL_SPECS: ToolSpec[] = [
   ...TOOL_SPECS,
   ...CTO_OPERATOR_TOOL_SPECS,
@@ -1519,6 +1608,7 @@ const ALL_TOOL_SPECS: ToolSpec[] = [
 ];
 const READ_ONLY_TOOLS = new Set([
   "check_conflicts",
+  "preview_scene",
   "read_remote_caller_capture",
   "list_ade_actions",
   "get_ade_action_status",
@@ -1830,6 +1920,34 @@ function projectLaneLinearIssueLink(value: unknown): LaneLinearIssueLink | null 
   };
 }
 
+/** Caller mistakes, answered to the caller; not failures of the brain. */
+const CALLER_ERROR_CODES = new Set<number>([
+  JsonRpcErrorCode.invalidParams,
+  JsonRpcErrorCode.methodNotFound,
+  JsonRpcErrorCode.policyDenied,
+]);
+
+/**
+ * One Sentry issue per action and error code for a failed `ade/actions/call`.
+ * The endpoint turns every failure into an `ok: false` reply, which is right
+ * for the caller and left nothing behind for anyone else.
+ */
+function reportFailedAction(actionName: string, error: unknown): void {
+  if (error instanceof JsonRpcError && CALLER_ERROR_CODES.has(error.code)) return;
+  if (isExpectedFailure(error)) return;
+  if (isExpectedOutcome(error)) {
+    forwardLogToSentry("warn", `runtime_action.expected.${actionName}`, {
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return;
+  }
+  const code = parseCodedErrorMessage(error).code ?? null;
+  captureError(error, {
+    tags: { "runtime.action": actionName, ...(code ? { "error.code": code } : {}) },
+    fingerprint: ["runtime-action", actionName, code ?? (error instanceof Error ? error.name : "unknown")],
+  });
+}
+
 function assertNonEmptyString(value: unknown, field: string): string {
   const text = asTrimmedString(value);
   if (!text.length) {
@@ -1874,6 +1992,16 @@ function parseCliSessionDroidPermissionMode(value: unknown): AgentChatDroidPermi
   throw new JsonRpcError(
     JsonRpcErrorCode.invalidParams,
     "droidPermissionMode must be one of read-only, auto-low, auto-medium, auto-high, or agi",
+  );
+}
+
+function parseCliSessionMusePermissionMode(value: unknown): AgentChatMusePermissionMode | undefined {
+  const mode = asTrimmedString(value);
+  if (!mode) return undefined;
+  if ((AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES as readonly string[]).includes(mode)) return mode as AgentChatMusePermissionMode;
+  throw new JsonRpcError(
+    JsonRpcErrorCode.invalidParams,
+    `musePermissionMode must be one of ${AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES.join(", ")}`,
   );
 }
 
@@ -3232,6 +3360,20 @@ function scopeTerminalAdeActionArgs(
   }
 }
 
+/**
+ * The move actions that name a source chat (`sourceSessionId`). A chat-bound
+ * agent may aim them only at its own chat; see runTool. Approving a move is
+ * user-only (ADE_ACTION_USER_ONLY), so it is not here.
+ */
+const CROSS_MACHINE_MOVE_ACTIONS = new Set([
+  "startCrossMachineHandoff",
+  "cancelCrossMachineHandoff",
+  "retryCrossMachineHandoff",
+  "acknowledgeCrossMachineHandoff",
+  "previewCrossMachineHandoff",
+  "getCrossMachineHandoffOptions",
+]);
+
 const SCOPED_CHAT_ACTIONS = new Set([
   "getChatEventHistory",
   "getChatEventHistoryPage",
@@ -3263,6 +3405,9 @@ const SCOPED_CHAT_ACTIONS = new Set([
   "interrupt",
   "interruptWithQueueMode",
   "stopTask",
+  // Messaging or controlling one subagent acts on the chat that owns it.
+  "messageSubagent",
+  "controlSubagent",
   // Restarting tears down the target's runtime (and stops its turn with
   // stopFirst); holding background work arms wakes on its terminals. Both act
   // on a chat the way `interrupt` does, so a bound agent aims them at itself.
@@ -3285,6 +3430,13 @@ const RUNTIME_ACTOR_CHAT_ACTIONS = new Set([
   "launchHeadless",
   "startLaunch",
   "launchCli",
+  // The Codex goal RPCs record whether a person or the harness mutated the
+  // goal, and `ade chat goal` reaches the same method the chat's goal controls
+  // use. Without the actor an agent's call would be indistinguishable from the
+  // user's and would claim their authorization.
+  "setCodexGoal",
+  "setCodexGoalStatus",
+  "clearCodexGoal",
 ]);
 
 /**
@@ -3345,6 +3497,22 @@ function scopeChatAdeActionArgs(
       chatAccessDenied(method, { callerChatSessionId, requestedSessionId: requestedCaller });
     }
     return { ...waitArgs, callerSessionId: callerChatSessionId };
+  }
+  if (action === "setParent") {
+    if (isUnboundAdeCliCaller(session)) return chatArgs;
+    // A bound agent may move its own chat. On another chat it may only adopt
+    // it or release it, and the service decides which chats qualify from the
+    // actor stamped here.
+    const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+    const requestedSessionId = asOptionalTrimmedString(chatArgs.sessionId) ?? callerChatSessionId;
+    const requestedParentId = asOptionalTrimmedString(chatArgs.parentSessionId);
+    const { actingAgentSessionId: _callerSent, ...parentArgs } = chatArgs;
+    if (!callerChatSessionId || !requestedSessionId) chatAccessDenied(method, { callerChatSessionId, requestedSessionId });
+    if (requestedSessionId === callerChatSessionId) return { ...parentArgs, sessionId: requestedSessionId };
+    if (requestedParentId != null && requestedParentId !== callerChatSessionId) {
+      chatAccessDenied(method, { callerChatSessionId, requestedSessionId });
+    }
+    return { ...parentArgs, sessionId: requestedSessionId, actingAgentSessionId: callerChatSessionId };
   }
   const spawnKindUpdate = action === "updateSession" && chatUpdateSessionMutatesSpawnKind(chatArgs);
   if (!SCOPED_CHAT_ACTIONS.has(action) && !spawnKindUpdate) return chatArgs;
@@ -3439,28 +3607,16 @@ function scopeSearchAdeActionArgs(
 }
 
 function scopeBuiltInBrowserAdeActionArgs(
+  runtime: AdeRuntime,
   session: SessionState,
   action: string,
   browserArgs: Record<string, unknown>,
 ): Record<string, unknown> {
-  const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
   const method = `run_ade_action:built_in_browser.${action}`;
-  const browserActorToken = asOptionalTrimmedString(session.identity.browserActorToken);
-  // Headless machines cannot mint an actor capability: the issuer asks the
-  // desktop bridge for one, and on a box running only `ade serve` that socket
-  // is not listening. Without this carve-out the capability gate denies the
-  // call before it ever reaches the forwarder's `route`, so the whole remote
-  // forwarding path (publish `built_in_browser_remote_request`, wait for a
-  // pinned desktop to ack) is unreachable. Only the three "put this URL on a
-  // screen" methods are exempt — they are exactly the forwardable set. This is
-  // not a privilege grant: if a desktop IS attached here, `desktopBridgeServer`
-  // still refuses a capability-less call, so the authority stays on the side
-  // that owns the browser.
-  const forwardableWithoutCapability =
-    !browserActorToken
-    && Boolean(callerChatSessionId)
-    && FORWARDABLE_BUILT_IN_BROWSER_METHODS.has(action);
-  if (!callerChatSessionId || (!browserActorToken && !forwardableWithoutCapability)) {
+  // Anything on this machine may drive the browser, exactly like Mac Desktop:
+  // the brain's socket is owner-only, so a local caller is already the user.
+  // Only a call arriving from another machine's brain is refused here.
+  if (isRemoteBrainCallerClientName(session.clientName)) {
     builtInBrowserAccessDenied(method);
   }
   if (
@@ -3470,18 +3626,72 @@ function scopeBuiltInBrowserAdeActionArgs(
   ) {
     builtInBrowserAccessDenied(method);
   }
+  // A chat acts as itself and nobody else: its tabs, its lane, and — for a
+  // personal chat — the personal collection. The chat id is a label for tab
+  // ownership, not a lock. A chatless caller (the user's own terminal) owns no
+  // tab and keeps the lane it asked for.
+  const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+  const { chatSessionId: _callerSupplied, ...rest } = browserArgs;
+  // Only the user-browser scoping below may route a call to the user's browser.
+  const scoped = { ...rest, projectRoot: undefined, force: false, [USER_BROWSER_ROUTE_PARAM]: undefined };
+  if (!callerChatSessionId) {
+    return { ...scoped, chatSessionId: undefined, laneId: asOptionalTrimmedString(rest.laneId) ?? undefined, tabCollection: undefined };
+  }
+  // A personal chat's call is routed to whatever runtime its scratch directory
+  // resolves to, which does not know the chat; its own `ADE_CHAT_SCOPE` claim
+  // is what says it is personal, trusted like its chat id.
+  if (session.identity.personalChat) {
+    return { ...scoped, chatSessionId: callerChatSessionId, laneId: undefined, tabCollection: "personal" };
+  }
+  return {
+    ...scoped,
+    chatSessionId: callerChatSessionId,
+    laneId: resolveChatSessionLaneId(runtime, session) ?? undefined,
+    tabCollection: undefined,
+  };
+}
+
+/** Session statuses of a chat that can still act; the rest mean it ended. */
+const LIVE_CHAT_SESSION_STATUSES = new Set(["running", "detached"]);
+
+/**
+ * Authorize a call that acts in the user's own browser (`attach` / `detach`,
+ * or a page command from a chat attached to it). It never reaches ADE's
+ * browser or the desktop bridge, so it is checked here:
+ *
+ * - the chat must be one this project knows, and not ended;
+ * - a caller may only name its own chat, and never `force`.
+ *
+ * The chat id is the one the caller reports, like every browser call: a
+ * process running as the same OS user can already read that chat's
+ * environment, so a token would add nothing it could not also read.
+ */
+function scopeUserBrowserAdeActionArgs(
+  runtime: AdeRuntime,
+  session: SessionState,
+  action: string,
+  browserArgs: Record<string, unknown>,
+): Record<string, unknown> {
+  const method = `run_ade_action:built_in_browser.${action}`;
+  const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+  if (!callerChatSessionId) {
+    scopeAccessDenied("the user's browser is reached only from an ADE chat", method);
+  }
   const requestedChatSessionId = asOptionalTrimmedString(browserArgs.chatSessionId);
   if (requestedChatSessionId && requestedChatSessionId !== callerChatSessionId) {
-    builtInBrowserAccessDenied(method);
+    scopeAccessDenied("a chat acts only in its own attachment to the user's browser", method, {
+      callerChatSessionId,
+      requestedSessionId: requestedChatSessionId,
+    });
   }
-  if (browserArgs.force === true) {
-    builtInBrowserAccessDenied(method);
+  if (browserArgs.force === true) builtInBrowserAccessDenied(method);
+  const chat = runtime.sessionService.get(callerChatSessionId);
+  if (!chat) {
+    scopeAccessDenied(`chat ${callerChatSessionId} is not a chat of this project`, method);
   }
-
-  // The capability registry intentionally lives only in Electron, where chat
-  // and terminal launches issue and revoke tokens. The separate runtime strips
-  // caller routing and carries the opaque token over its authenticated bridge;
-  // desktopBridgeServer performs the authoritative lookup and scope restore.
+  if (!LIVE_CHAT_SESSION_STATUSES.has(String(chat.status))) {
+    scopeAccessDenied(`chat ${callerChatSessionId} has ended`, method);
+  }
   return {
     ...browserArgs,
     chatSessionId: callerChatSessionId,
@@ -3489,9 +3699,7 @@ function scopeBuiltInBrowserAdeActionArgs(
     projectRoot: undefined,
     tabCollection: undefined,
     force: false,
-    ...(browserActorToken
-      ? { [BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM]: browserActorToken }
-      : {}),
+    [USER_BROWSER_ROUTE_PARAM]: true,
   };
 }
 
@@ -3812,8 +4020,9 @@ async function resolveUnboundCallerLane(
  *
  * - It never speaks for someone else. `chatSessionId`, `controllerId` and
  *   `holderId` are stripped, so its input is held under no one's lease: the
- *   accessibility-mode commands work (they check no lease), and `mode: "real"`
- *   is refused by the service because no lease is held by an anonymous caller.
+ *   accessibility- and background-mode commands work (they check no lease),
+ *   and `mode: "real"` is refused by the service because no lease is held by
+ *   an anonymous caller.
  *   `requestInputLease` is refused outright rather than stripped: the lease is
  *   granted to the chat that asks, after a card in that chat, and this caller
  *   has no chat to ask in. A person who wants real input takes control from
@@ -4463,9 +4672,7 @@ async function runCtoOperatorBridgeTool(
   // The same caller stamp `run_ade_action` puts on chat creates and updates:
   // the real CTO is trusted, a CTO-role run or step agent is capped. Resolved
   // only when a create or update actually runs.
-  const bridgeActor = async (): Promise<AgentChatRuntimeActor> => (await callerIsTrustedCto(runtime, session)
-    ? { kind: "cto" }
-    : { kind: "agent", chatSessionId: asOptionalTrimmedString(session.identity.chatSessionId) ?? null });
+  const bridgeActor = async () => (await callerRuntimeActor(runtime, session, false)) ?? undefined;
   const ctoIdentity = runtime.ctoStateService.getIdentity();
   // Null until the user picks a model the CTO can steer live; the Claude/Codex
   // fallback below already covers "nothing chosen yet".
@@ -4596,6 +4803,22 @@ async function callerIsTrustedCto(runtime: AdeRuntime, session: SessionState): P
   } catch {
     return false;
   }
+}
+
+/**
+ * Who the runtime says is calling, the one definition every chat stamp and CLI
+ * launch reads: null for one of the user's own clients (nothing is stamped),
+ * the CTO for the trusted CTO thread, otherwise the calling agent with its
+ * bound chat (null when unbound).
+ */
+async function callerRuntimeActor(
+  runtime: AdeRuntime,
+  session: SessionState,
+  isUserClient: boolean,
+): Promise<AgentChatRuntimeActor | null> {
+  if (isUserClient) return null;
+  if (await callerIsTrustedCto(runtime, session)) return { kind: "cto" };
+  return { kind: "agent", chatSessionId: asOptionalTrimmedString(session.identity.chatSessionId) ?? null };
 }
 
 /**
@@ -4860,10 +5083,6 @@ function parseInitializeIdentity(_runtime: AdeRuntime, params: unknown): Session
   const resolvedRunId = envIdentity.runId ?? asOptionalTrimmedString(identity.runId);
   const resolvedStepId = envIdentity.stepId ?? asOptionalTrimmedString(identity.stepId);
   const resolvedAttemptId = envIdentity.attemptId ?? asOptionalTrimmedString(identity.attemptId);
-  // Browser actor capabilities belong to the connecting CLI process. The
-  // long-lived runtime daemon must never lend an inherited token to another
-  // client, even if it was accidentally launched from an agent-owned shell.
-  const browserActorToken = asOptionalTrimmedString(identity.browserActorToken);
 
   const standaloneChatSession = Boolean(resolvedChatSessionId)
     && !resolvedRunId
@@ -4879,7 +5098,7 @@ function parseInitializeIdentity(_runtime: AdeRuntime, params: unknown): Session
     stepId: resolvedStepId,
     attemptId: resolvedAttemptId,
     ownerId: asOptionalTrimmedString(identity.ownerId) ?? envIdentity.ownerId,
-    browserActorToken,
+    personalChat: identity.chatScope === "personal",
   };
 }
 
@@ -5415,7 +5634,7 @@ async function runTool(args: {
       );
     }
     const agentCaller = !isUserClientSession(session);
-    if (domain === "chat" && agentCaller && THREAD_COMMENT_ACTIONS.has(action)) {
+    if (domain === "chat" && agentCaller && USER_ONLY_CHAT_ACTIONS.has(action)) {
       scopeAccessDenied(`chat.${action} is limited to user clients`, `run_ade_action:chat.${action}`);
     }
     // Stripped here, at the source, because the chat scoping below rebuilds
@@ -5484,6 +5703,120 @@ async function runTool(args: {
             : `chat.${action} needs object arguments with sessionId and itemId.`,
         );
       }
+    }
+    if (domain === "project_secret" && action === "request") {
+      // The private secret card is raised in a chat, and a session-bound agent
+      // may raise it only in its OWN chat — the person answering must be
+      // looking at the agent that asked. User clients and the CTO may name a
+      // chat explicitly. It shares ask_user's rate limit: both put a blocking
+      // card in front of the person.
+      if (argsList || hasScalarArg) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "project_secret.request requires object arguments.");
+      }
+      const boundChatSessionId = asOptionalTrimmedString(callerCtx.chatSessionId)
+        ?? asOptionalTrimmedString(session.identity.chatSessionId);
+      const { sessionId: requestedSessionAlias, chatSessionId: requestedChatSessionId, ...secretArgs } = rawObjectArgs;
+      const requestedSessionId = asOptionalTrimmedString(requestedChatSessionId)
+        ?? asOptionalTrimmedString(requestedSessionAlias);
+      if (boundChatSessionId && requestedSessionId && requestedSessionId !== boundChatSessionId && !callerIsCto) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.policyDenied,
+          "project_secret.request asks in your own chat only.",
+        );
+      }
+      const targetChatSessionId = requestedSessionId && (isUserClient || callerIsCto)
+        ? requestedSessionId
+        : boundChatSessionId;
+      if (!targetChatSessionId) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidParams,
+          "project_secret.request needs a chat to ask in. Run `ade secrets request` from inside an ADE chat, or pass --session <chat id>.",
+        );
+      }
+      ensureAskUserAllowed(session);
+      scopedObjectArgs = { ...secretArgs, chatSessionId: targetChatSessionId };
+    }
+    if (domain === "automations" && action === "webhookSendTest" && !isUserClient && !callerIsCto) {
+      // `config` is the builder's unsaved draft, and it names the secret the
+      // test is signed with. An agent tests the rule as saved, so it cannot
+      // pick a different project secret to sign with.
+      if (argsList || hasScalarArg) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "automations.webhookSendTest requires object arguments.");
+      }
+      const { config: _ignoredDraftConfig, ...testArgs } = rawObjectArgs;
+      scopedObjectArgs = testArgs;
+    }
+    if (domain === "chat" && CROSS_MACHINE_MOVE_ACTIONS.has(action)) {
+      if (argsList || hasScalarArg) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `chat.${action} requires object arguments.`);
+      }
+      // Same bar as user-only actions: an agent's shell with no chat identity
+      // looks exactly like a person's terminal, so only the desktop (or the
+      // CTO) counts as the person here. The phone reaches these through its
+      // own remote commands, which are always the person.
+      // A run/step agent that merely inherited the CTO role is an agent here:
+      // only the CTO thread itself (callerIsTrustedCto) speaks for the person.
+      const callerIsPerson = mayUseUserOnlyActions(session)
+        || (callerIsCto && await callerIsTrustedCto(runtime, session));
+      // A chat-bound agent moves, cancels, retries or previews ITS OWN chat
+      // only, the way SCOPED_CHAT_ACTIONS holds it to its own row. An unbound
+      // caller keeps project-wide reach, and its start still needs approval.
+      const boundChatSessionId = asOptionalTrimmedString(callerCtx.chatSessionId)
+        ?? asOptionalTrimmedString(session.identity.chatSessionId);
+      const requestedSourceSessionId = asOptionalTrimmedString(rawObjectArgs.sourceSessionId);
+      if (!callerIsPerson && boundChatSessionId && requestedSourceSessionId !== boundChatSessionId) {
+        chatAccessDenied(`run_ade_action:chat.${action}`, {
+          callerChatSessionId: boundChatSessionId,
+          requestedSessionId: requestedSourceSessionId,
+        });
+      }
+      if (action === "startCrossMachineHandoff") {
+        // Who asked decides whether the person must approve the move, so it is
+        // derived from the caller's identity and never taken from its
+        // arguments. The orchestrator then sets an agent's move to the source
+        // chat's own permission level, whatever permissions it passed.
+        const { requestedBy: _ignoredRequestedBy, ...startArgs } = rawObjectArgs;
+        if (callerIsPerson) {
+          scopedObjectArgs = { ...startArgs, requestedBy: "user" };
+        } else {
+          // Each agent start may put an approval card (and a push) in front of
+          // the person, so it shares ask_user's rate limit.
+          ensureAskUserAllowed(session);
+          scopedObjectArgs = { ...startArgs, requestedBy: "agent" };
+        }
+      }
+    }
+    if (domain === "automations" && action === "webhookCreateAutomation") {
+      // The calling chat is derived from the caller's identity, never taken
+      // from its arguments. `chatSessionId: "this"` binds the automation to
+      // that chat; a session-bound agent may bind it to its own chat only, so
+      // it cannot route webhook-started turns into someone else's chat.
+      if (argsList || hasScalarArg) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "automations.webhookCreateAutomation requires object arguments.");
+      }
+      const boundChatSessionId = asOptionalTrimmedString(callerCtx.chatSessionId)
+        ?? asOptionalTrimmedString(session.identity.chatSessionId);
+      const { callerChatSessionId: _ignoredCaller, chatSessionId: requestedChat, ...createArgs } = rawObjectArgs;
+      let chatSessionId = asOptionalTrimmedString(requestedChat);
+      if (chatSessionId === "this") {
+        if (!boundChatSessionId) {
+          throw new JsonRpcError(
+            JsonRpcErrorCode.invalidParams,
+            "--in-this-chat needs a chat: run it from inside an ADE chat, or pass --chat <chat id>.",
+          );
+        }
+        chatSessionId = boundChatSessionId;
+      }
+      // Only a user client or the CTO may name another chat; an agent binds its
+      // own chat or none, bound to a chat or not.
+      if (chatSessionId && chatSessionId !== boundChatSessionId && !callerIsCto && !isUserClient) {
+        throw new JsonRpcError(JsonRpcErrorCode.policyDenied, "An agent can send webhook runs only to its own chat.");
+      }
+      scopedObjectArgs = {
+        ...createArgs,
+        ...(chatSessionId ? { chatSessionId } : {}),
+        ...(boundChatSessionId ? { callerChatSessionId: boundChatSessionId } : {}),
+      };
     }
     if (domain === "analytics" && action === "capture") {
       if (!isUserClient) {
@@ -5573,6 +5906,7 @@ async function runTool(args: {
       && (
         SCOPED_CHAT_ACTIONS.has(action)
         || action === "armWait"
+        || action === "setParent"
         || (action === "updateSession" && chatUpdateSessionMutatesSpawnKind(rawObjectArgs))
       )
     ) {
@@ -5653,15 +5987,19 @@ async function runTool(args: {
       );
     } else if (
       domain === "built_in_browser"
-      && action === BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD
+      && (
+        action === BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD
+        // The same gate for a desktop's answer to a browser command this
+        // machine sent it: an agent must not be able to write the result its
+        // own `ade browser` call is about to read.
+        || action === BUILT_IN_BROWSER_REPLY_REMOTE_CALL_METHOD
+      )
     ) {
       // Not a browser action. This machine has no desktop attached, so a
       // `browser open` here was published to whichever desktop holds a remote
       // pin on this lane; this is that desktop saying it took it. It reaches
-      // nothing on this machine and grants nothing, so it cannot be gated on a
-      // browser actor capability — the desktop's capability lives on its own
-      // machine, not here. Still user-clients-only: an agent must not be able
-      // to forge the outcome its own CLI is about to print.
+      // nothing on this machine and grants nothing. User-clients-only: an agent
+      // must not be able to forge the outcome its own CLI is about to print.
       if (!isUserClient) {
         builtInBrowserAccessDenied(`run_ade_action:${domain}.${action}`);
       }
@@ -5768,11 +6106,17 @@ async function runTool(args: {
         rawObjectArgs,
       );
     } else if (domain === "built_in_browser") {
-      scopedObjectArgs = scopeBuiltInBrowserAdeActionArgs(
-        session,
-        action,
-        requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
-      );
+      // Decided once, here: the scoping authorizes the call for this
+      // destination and stamps it, and the router obeys the stamp. Asking
+      // again at dispatch would let an attachment that ended (or began) in
+      // between send the call somewhere it was not authorized for.
+      const callerChat = asOptionalTrimmedString(session.identity.chatSessionId);
+      const userBrowserCall = isUserBrowserRuntimeMethod(action)
+        || Boolean(runtime.userBrowserAttachService?.routes(callerChat, action));
+      const browserArgs = requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs);
+      scopedObjectArgs = userBrowserCall
+        ? scopeUserBrowserAdeActionArgs(runtime, session, action, browserArgs)
+        : scopeBuiltInBrowserAdeActionArgs(runtime, session, action, browserArgs);
       // The allowlist and the scoping above are both behind us, so reaching this
       // line means a real, exposed browser action is about to run. The desktop
       // records presence itself (it is the only side that sees tabs close and
@@ -5788,20 +6132,14 @@ async function runTool(args: {
       // is what opened the window, so one failure inside a busy agent's stream
       // cannot retract presence the rest of that stream still justifies.
       //
-      // Only for a caller carrying a browser actor capability. The one caller
-      // the scoping lets through without one is the remote-forwarding carve-out
-      // — a chat on a headless box publishing "put this URL on a screen" to a
-      // desktop somewhere else — which drives no browser here and must not make
-      // this machine's Work-tools mirror claim an agent picked one up. (A user
-      // client cannot reach this branch at all: the scoping denies a caller with
-      // no chat session, and a session carrying one is not a user client.)
-      const bearsBrowserCapability = Boolean(
-        asOptionalTrimmedString(session.identity.browserActorToken),
-      );
-      if (bearsBrowserCapability) {
+      // Only for a chat: presence says which chat is browsing, and a chatless
+      // caller (the user's own terminal) is not an agent. Acting in the user's
+      // own browser is not ADE's browser in use either.
+      const presenceChatSessionId = userBrowserCall ? null : asOptionalTrimmedString(scopedObjectArgs.chatSessionId);
+      if (presenceChatSessionId) {
         const presenceArgs = {
-          laneId: resolveChatSessionLaneId(runtime, session),
-          chatSessionId: asOptionalTrimmedString(session.identity.chatSessionId) ?? null,
+          laneId: asOptionalTrimmedString(scopedObjectArgs.laneId),
+          chatSessionId: presenceChatSessionId,
         };
         const opened = runtime.workToolsStateService?.noteAgentBrowserActivity(presenceArgs)
           ?? null;
@@ -5854,11 +6192,7 @@ async function runTool(args: {
           `run_ade_action:chat.${action} takes one object argument.`,
         );
       }
-      const actor = isUserClient
-        ? null
-        : await callerIsTrustedCto(runtime, session)
-          ? { kind: "cto" as const }
-          : { kind: "agent" as const, chatSessionId: asOptionalTrimmedString(session.identity.chatSessionId) ?? null };
+      const actor = await callerRuntimeActor(runtime, session, isUserClient);
       scopedObjectArgs = stampChatRuntimeActor(action, scopedObjectArgs, actor);
       if (action === "launchCli" && actor?.kind === "agent") {
         // A terminal agent has no chat record to clamp later, so its
@@ -6014,6 +6348,13 @@ async function runTool(args: {
         "droidPermissionMode is only supported for Droid CLI sessions.",
       );
     }
+    const requestedMusePermissionMode = parseCliSessionMusePermissionMode(toolArgs.musePermissionMode);
+    if (requestedMusePermissionMode && provider !== "muse") {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        "musePermissionMode is only supported for Muse CLI sessions.",
+      );
+    }
     const orchestrationParentSessionId = toolArgs.orchestrationParentSessionId == null
       ? null
       : assertNonEmptyString(toolArgs.orchestrationParentSessionId, "orchestrationParentSessionId");
@@ -6027,16 +6368,40 @@ async function runTool(args: {
         ptyAccessDenied("start_cli_session");
       }
     }
+    const callerActor = await callerRuntimeActor(runtime, session, isUserClientSession(session));
     // An agent's CLI child never runs above the agent, or above its parent.
     const cliCeiling = await agentCliPermissionCeiling(runtime, session, orchestrationParentSessionId);
-    const permissionMode = cliCeiling
-      ? clampGenericPermissionMode(requestedPermissionMode, cliCeiling) as AgentChatPermissionMode
+    const spawnKind = parseCliSessionSpawnKind(toolArgs.spawnKind);
+    const parentLevel = orchestrationParentSessionId
+      ? runtime.agentChatService?.getPermissionCeiling?.({ parentSessionId: orchestrationParentSessionId })
+      : null;
+    const defaultPermissionMode = spawnKind === "subagent"
+      && parentLevel === "full-auto"
+      && !asOptionalTrimmedString(toolArgs.permissionMode)
+      && !requestedDroidPermissionMode
+      && !requestedMusePermissionMode
+      ? "full-auto"
       : requestedPermissionMode;
+    const permissionMode = cliCeiling
+      ? clampGenericPermissionMode(defaultPermissionMode, cliCeiling) as AgentChatPermissionMode
+      : defaultPermissionMode;
     const droidPermissionMode = cliCeiling && requestedDroidPermissionMode
       && permissionLevelRank(permissionLevelForDroid(requestedDroidPermissionMode)) > permissionLevelRank(cliCeiling)
       ? permissionFieldsForLevel("droid", cliCeiling).droidPermissionMode
       : requestedDroidPermissionMode;
-    const spawnKind = parseCliSessionSpawnKind(toolArgs.spawnKind);
+    // Same ceiling rule as Droid: an agent's Muse child never runs above it.
+    const musePermissionMode = cliCeiling && requestedMusePermissionMode
+      && permissionLevelRank(permissionLevelForMuse(requestedMusePermissionMode)) > permissionLevelRank(cliCeiling)
+      ? permissionFieldsForLevel("muse", cliCeiling).musePermissionMode
+      : requestedMusePermissionMode;
+    // A parentless CLI launched by a bound agent records who launched it. This
+    // is a passive fact: it does not nest the session or wake the launcher.
+    // The CTO is not an agent launcher, so it records nothing here.
+    const launchedBySessionId = !orchestrationParentSessionId
+      && isCliProvider(provider)
+      && callerActor?.kind === "agent"
+      ? callerActor.chatSessionId
+      : null;
     const instanceId = toolArgs.instanceId == null
       ? null
       : assertNonEmptyString(toolArgs.instanceId, "instanceId");
@@ -6118,6 +6483,7 @@ async function runTool(args: {
         permissionMode,
         sessionActivityReportingEnabled: runtime.sessionActivityReportingEnabled,
         ...(droidPermissionMode ? { droidPermissionMode } : {}),
+        ...(musePermissionMode ? { musePermissionMode } : {}),
         sessionId: preassignedSessionId,
         model,
         reasoningEffort,
@@ -6158,6 +6524,7 @@ async function runTool(args: {
           ...(presetId ? { presetId } : {}),
           ...(trackedPreset && !presetId && credentialId ? { credentialId } : {}),
           ...(orchestrationParentSessionId ? { orchestrationParentSessionId } : {}),
+          ...(launchedBySessionId ? { launchedBySessionId } : {}),
           ...(spawnKind ? { spawnKind } : {}),
         }
       : null;
@@ -6219,6 +6586,7 @@ async function runTool(args: {
       title,
       permissionMode,
       droidPermissionMode: droidPermissionMode ?? null,
+      musePermissionMode: musePermissionMode ?? null,
       model: provider === "claude" ? model ?? null : null,
       ptyId: created.ptyId,
       sessionId: created.sessionId,
@@ -6519,8 +6887,9 @@ async function runTool(args: {
       const trimmed = typeof responseText === "string" ? responseText.trim() : "";
       if (trimmed.length) return trimmed;
       if (answered) return null;
-      if (decision === "cancel") return "The user cancelled the question.";
-      if (decision === "decline") return "The user declined to answer the question.";
+      // Escape sends "cancel" and the card's decline button sends "decline";
+      // both are the user saying no, so the model hears the same thing.
+      if (decision === "cancel" || decision === "decline") return QUESTION_DECLINED_MODEL_MESSAGE;
       if (decision === "timeout") return "The question timed out before the user answered.";
       return "The user did not answer the question.";
     };
@@ -6593,7 +6962,14 @@ async function runTool(args: {
       blocking: false,
       outcome,
       decision: result.decision,
-      answers: result.answers,
+      answers: answered && structuredQuestions?.length
+        ? answersForModel({
+            questions: structuredQuestions.map((question) => ({
+              ...question,
+              options: question.options?.map((option) => ({ label: option.label, value: option.value ?? option.label })),
+            })),
+          }, result.answers)
+        : result.answers,
       responseText: summarizeAskUserDecision(result.decision, result.responseText, answered),
     });
   }
@@ -6827,13 +7203,50 @@ async function runTool(args: {
     }
     const authorized = await resolveAuthorizedComputerUseIngestRoot(runtime, session, toolArgs);
     validateComputerUseOwnerClaims(runtime, session, toolArgs);
+    // Lanes outside `.ade/worktrees/` (a sibling `repo-worktrees/feature`
+    // checkout) need the same boundary. Lanes whose folder holds the caller's
+    // — its own, and the primary — are not "another lane". Loaded on first need.
+    //
+    // A lane nested INSIDE the caller's folder is another lane too when the
+    // caller is bound to an ordinary lane. A project-wide caller and the
+    // primary lane are both rooted at the project folder, which holds every
+    // lane, so for them a nested lane is part of what they may file.
+    let otherLaneRoots: Promise<string[]> | null = null;
+    const loadOtherLaneRoots = () => {
+      otherLaneRoots ??= runtime.laneService.list({ includeArchived: false, includeStatus: false })
+        .then((lanes) => {
+          const callerLane = authorized.laneId ? lanes.find((lane) => lane.id === authorized.laneId) : null;
+          const callerHoldsLanes = !callerLane || callerLane.laneType === "primary";
+          return lanes
+            // An attached lane may be known only by its attached root.
+            .flatMap((lane) => [lane.worktreePath, lane.attachedRootPath])
+            .map((root) => root?.trim() ?? "")
+            .filter((root) => root
+              && !isPathWithinAuthorizedRoot(root, authorized.root)
+              && !(callerHoldsLanes && isPathWithinAuthorizedRoot(authorized.root, root)));
+        });
+      // No `.catch`: a lane list that fails must refuse the ingest, not read as
+      // "no other lanes" and let another lane's files through.
+      return otherLaneRoots;
+    };
     for (const input of inputs) {
-      const localPath = asOptionalTrimmedString(input.path)
+      const rawPath = asOptionalTrimmedString(input.path)
         ?? (() => {
           const uri = asOptionalTrimmedString(input.uri);
           return uri && !/^https?:\/\//i.test(uri) ? uri : null;
         })();
-      if (!localPath || !path.isAbsolute(localPath)) continue;
+      if (!rawPath) continue;
+      // The broker resolves a relative path against the caller's root, so the
+      // boundary is checked on that same resolved path.
+      const localPath = path.isAbsolute(rawPath) ? rawPath : path.resolve(authorized.callerRoot, rawPath);
+      // Checked before the own-root allowance: a lane nested inside an
+      // ordinary lane's folder would otherwise pass as the caller's own file.
+      if ((await loadOtherLaneRoots()).some((root) => isPathWithinAuthorizedRoot(root, localPath))) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidParams,
+          "Artifact paths from another lane worktree are not authorized for this caller",
+        );
+      }
       if (isPathWithinAuthorizedRoot(authorized.root, localPath)) continue;
       // Absolute proof paths may also come from broker-approved external
       // roots such as the OS temp directory or ~/.agent-browser. Preserve the
@@ -6981,6 +7394,28 @@ async function runTool(args: {
     };
   }
 
+  if (name === "preview_scene") {
+    const source = typeof toolArgs.source === "string" ? toolArgs.source : "";
+    if (!source.trim()) throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "Provide the scene's source.");
+    const previewer = runtime.getScenePreviewer?.() ?? null;
+    if (!previewer) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        SCENE_PREVIEW_NO_DESKTOP,
+      );
+    }
+    const theme = toolArgs.theme === "light" ? "light" : "dark";
+    const width = typeof toolArgs.width === "number" && Number.isFinite(toolArgs.width) ? toolArgs.width : undefined;
+    const data = await scenePreviewData(runtime, source);
+    const result = await previewer.render({ source, theme, ...(width ? { width } : {}), ...(data ? { data } : {}) });
+    let screenshotPath: string | null = null;
+    if (result.screenshotBase64) {
+      screenshotPath = writeScenePreviewImage(runtime.projectRoot, Buffer.from(result.screenshotBase64, "base64"));
+    }
+    const { screenshotBase64: _bytes, ...rest } = result;
+    return { ...rest, screenshotPath, ok: result.problems.every((problem) => problem.kind === "lint") && Boolean(screenshotPath) };
+  }
+
   if (name === "note_demo_step") {
     const text = asOptionalTrimmedString(toolArgs.text);
     if (!text) throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "Provide the step's text.");
@@ -6998,15 +7433,14 @@ async function runTool(args: {
     const browser = getAdeActionDomainServices(runtime).built_in_browser as
       | { noteDemoStep?: (args: Record<string, unknown>) => unknown }
       | undefined;
-    // The desktop bridge accepts a call only with the chat's browser
-    // capability, and it scopes the step to that chat's lane itself. A caller
-    // without one (a plain terminal) has no browser recording to caption.
-    const browserActorToken = asOptionalTrimmedString(session.identity.browserActorToken);
+    // Browser recordings belong to a chat; a caller without one (a plain
+    // terminal) has no browser recording to caption.
     const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
-    if (typeof browser?.noteDemoStep === "function" && browserActorToken && callerChatSessionId) {
+    if (typeof browser?.noteDemoStep === "function" && callerChatSessionId) {
       try {
+        const scoped = scopeBuiltInBrowserAdeActionArgs(runtime, session, "noteDemoStep", { text });
         const reply = await Promise.race([
-          Promise.resolve(browser.noteDemoStep(scopeBuiltInBrowserAdeActionArgs(session, "noteDemoStep", { text }))),
+          Promise.resolve(browser.noteDemoStep(scoped)),
           new Promise<null>((resolve) => setTimeout(() => resolve(null), 3_000).unref?.()),
         ]);
         const extra = reply && typeof reply === "object" ? (reply as { noted?: unknown }).noted : null;
@@ -7911,7 +8345,7 @@ export function createAdeRpcRequestHandler(args: {
       stepId: null,
       attemptId: null,
       ownerId: null,
-      browserActorToken: null,
+      personalChat: false,
     },
     askUserEvents: [],
     askUserRateLimit: {
@@ -7929,6 +8363,18 @@ export function createAdeRpcRequestHandler(args: {
         inputSchema: sanitizeToolSchema(tool.inputSchema),
       })),
     };
+  };
+
+  /** File watches opened over this connection and not yet stopped. */
+  const fileWatches = createFileWatchLedger();
+  const noteFileWatchAction = (actionName: string, actionArgs: Record<string, unknown>, result: unknown): void => {
+    if (actionName !== "run_ade_action" || actionArgs.domain !== "file") return;
+    if (actionArgs.action !== "watchWorkspace" && actionArgs.action !== "stopWatching") return;
+    if (isRecord(result) && (result.ok === false || result.isError === true)) return;
+    const watchArgs = safeObject(actionArgs.args);
+    const clientId = readRuntimeFileWatchSenderId(watchArgs);
+    if (actionArgs.action === "watchWorkspace") fileWatches.noteWatch(watchArgs, clientId);
+    else fileWatches.noteStop(watchArgs, clientId);
   };
 
   const callAction = async (actionName: string, actionArgs: Record<string, unknown>): Promise<unknown> => {
@@ -7954,19 +8400,7 @@ export function createAdeRpcRequestHandler(args: {
         ?? asOptionalTrimmedString(clientInfo.name)
         ?? "unknown";
       session.identity = parseInitializeIdentity(runtime, params);
-      const desktopBridgeAuthToken = asOptionalTrimmedString(params.desktopBridgeAuthToken);
-      if (
-        session.clientName === DESKTOP_CLIENT_NAMES.local
-        && desktopBridgeAuthToken
-        && runtime.configureBuiltInBrowserDesktopBridgeAuth
-      ) {
-        const configured = await runtime.configureBuiltInBrowserDesktopBridgeAuth(desktopBridgeAuthToken);
-        if (!configured) {
-          runtime.logger.warn("built_in_browser_bridge.runtime_auth_rejected", {
-            clientName: session.clientName,
-          });
-        }
-      }
+      if (session.clientName === DESKTOP_CLIENT_NAMES.local) runtime.noteDesktopAppConnected?.();
       return {
         protocolVersion: session.protocolVersion,
         runtimeInfo: {
@@ -8018,6 +8452,7 @@ export function createAdeRpcRequestHandler(args: {
         return await syncService.getStatus({
           includeTransferReadiness: params.includeTransferReadiness === true,
           forceTransferReadiness: params.forceTransferReadiness === true,
+          awaitTransferReadiness: params.awaitTransferReadiness === true,
         });
       }
       if (method === "sync.runSelfProbe") {
@@ -8196,10 +8631,26 @@ export function createAdeRpcRequestHandler(args: {
     if (method === "ade/actions/call") {
       const actionName = assertNonEmptyString(params.name, "name");
       const actionArgs = safeObject(params.arguments);
+      // Name the call for the loop watchdog, so a wedge a local `ade` command
+      // causes is reported as that command instead of "idle". Only remote sync
+      // commands were tracked before.
+      const domain = asOptionalTrimmedString(actionArgs.domain);
+      const domainAction = asOptionalTrimmedString(actionArgs.action);
+      const stopTrackingCommand = trackBrainLoopWatchdogCommand(
+        domain && domainAction ? `${domain}.${domainAction}` : actionName,
+      );
       try {
-        return await callAction(actionName, actionArgs);
+        const result = await callAction(actionName, actionArgs);
+        noteFileWatchAction(actionName, actionArgs, result);
+        return result;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        // `run_ade_action` carries every domain action; name the real one, or
+        // all of them share one Sentry issue whatever actually failed.
+        reportFailedAction(
+          actionName === "run_ade_action" && domain && domainAction ? `${domain}.${domainAction}` : actionName,
+          error,
+        );
         return {
           ok: false,
           error: {
@@ -8210,6 +8661,8 @@ export function createAdeRpcRequestHandler(args: {
               : {}),
           },
         };
+      } finally {
+        stopTrackingCommand();
       }
     }
 
@@ -8363,7 +8816,17 @@ export function createAdeRpcRequestHandler(args: {
     throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Method not found: ${method}`);
   }) as JsonRpcHandler & { dispose: () => void };
 
-  handler.dispose = () => {};
+  // The connection is gone, and with it every client that could still send a
+  // stop for the watches it opened here.
+  handler.dispose = () => {
+    for (const ref of fileWatches.drain()) {
+      try {
+        runtime.fileService?.stopWatching(toRuntimeFileWatchArgs(ref.args), ref.clientId);
+      } catch {
+        // The project may already be closing; its watchers go with it.
+      }
+    }
+  };
 
   return handler;
 }

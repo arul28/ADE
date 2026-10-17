@@ -21,9 +21,14 @@ struct ADEApp: App {
   /// Pending cross-machine deep link awaiting a "Send to Mac" confirmation.
   /// Driven by `.adeSendToMacRequested` notifications from `DeepLinkRouter`.
   @State private var sendToMacTarget: SendToMacTarget?
+  /// Pending sign-in of another computer awaiting approval on this phone.
+  /// Driven by `.adeDeviceSignInRequested` notifications from `DeepLinkRouter`.
+  @State private var deviceSignInRequest: DeviceSignInRequest?
 
   @MainActor
   init() {
+    // First, so a crash later in launch is still captured.
+    CrashReporting.start()
     ADEIntentCommandRegistry.register(ADESyncIntentBridge.shared)
     // Nothing from a previous launch can still be on screen, so this is the one
     // moment the whole preview cache is provably unreferenced. Previews are
@@ -85,7 +90,11 @@ struct ADEApp: App {
           syncService.warmRecentChatThreads()
           // Every other paired machine gets its light roster connection.
           machineFleet.attach(syncService)
-          machineFleet.setAppActive(scenePhase == .active)
+          // The live state, not `scenePhase`: this task captured the phase it
+          // started with (inactive at launch), and the move to active usually
+          // lands during the awaits above. The stale read paused every roster
+          // connection until the next background/foreground.
+          machineFleet.setAppActive(UIApplication.shared.applicationState == .active)
           await syncService.handleForegroundTransition()
         }
         .onChange(of: scenePhase) { _, newPhase in
@@ -164,6 +173,19 @@ struct ADEApp: App {
           }
           .environmentObject(syncService)
         }
+        .onReceive(NotificationCenter.default.publisher(for: .adeDeviceSignInRequested)) { note in
+          guard let raw = note.userInfo?["url"] as? String, let url = URL(string: raw) else { return }
+          deviceSignInRequest = DeviceSignInRequest(url: url)
+        }
+        .sheet(item: $deviceSignInRequest) { request in
+          DeviceSignInApprovalSheet(request: request) {
+            deviceSignInRequest = nil
+          }
+          // One sheet, and so one approval model, for each code: a second link
+          // cannot reset an approval that is in flight for the first.
+          .id(request.userCode)
+          .environmentObject(accountService)
+        }
   }
 }
 
@@ -173,6 +195,19 @@ struct ADEApp: App {
 /// Kept in a tiny bridge so App Intent actions do not link `SyncService`.
 @MainActor
 private final class ADESyncIntentBridge: ADEIntentCommandBridge {
+  /// A notification action can launch the app in the background before the
+  /// account has started. Restore the account and its machine list first, so
+  /// the push's machine can be found. When they cannot load, the push's machine
+  /// cannot be verified, and the action sends nothing (see `dispatch`).
+  @MainActor
+  private static func accountMachinesReady() async -> Bool {
+    let account = AccountService.shared
+    await account.bootstrap()
+    guard account.phase == .signedIn else { return false }
+    if account.machines.isEmpty { await account.loadMachines() }
+    return !account.machines.isEmpty
+  }
+
   static let shared = ADESyncIntentBridge()
 
   private init() {}
@@ -186,6 +221,27 @@ private final class ADESyncIntentBridge: ADEIntentCommandBridge {
     case .retryPrChecks: mapped = .retryPrChecks
     }
     guard let sync = SyncService.shared else { return }
+    // An account push names the machine that asked. Approve or deny THAT
+    // machine's request, never whichever host happens to be focused: connect to
+    // it first, and send nothing if it cannot be reached.
+    if let machineKey = (payload["accountMachineKey"] as? String)?
+      .trimmingCharacters(in: .whitespacesAndNewlines),
+      !machineKey.isEmpty {
+      // A machine that cannot be verified is never assumed to be the focused
+      // one: sending there could approve another machine's request.
+      var reached = await Self.accountMachinesReady()
+      if reached, !sync.accountMachineIsCurrent(machineKey) {
+        // Notification actions run in the background, where nobody can answer
+        // a Wake & open sheet: one bounded attempt, no prompt.
+        reached = await sync.ensureAccountMachineForNavigation(machineKey, promptToWake: false)
+      }
+      guard reached else {
+        let name = AccountService.shared.machines
+          .first { $0.machineKey == machineKey }?.displayName ?? "that computer"
+        sync.landOnHub(notice: "Could not reach \(name). Nothing was sent.")
+        return
+      }
+    }
     // A notification action or Live Activity button can background-launch the
     // app before the sync socket is up; these commands are not queueable
     // (approving a stale item later would be wrong), so give the socket a

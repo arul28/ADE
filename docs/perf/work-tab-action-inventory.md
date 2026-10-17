@@ -160,6 +160,7 @@ Coverage states:
 | work.chat.open-url | Open transcript external URL | external-skip | `AgentChatMessageList.tsx` |
 | work.chat.open-pr-browser | Open PR URL in ADE browser | measured | `AgentChatMessageList.tsx` |
 | work.chat.message.disclosure | Toggle message disclosure/details | measured | `AgentChatMessageList.tsx` |
+| work.chat.message.jira-context-refresh | Refresh Jira context chip after a turn-end snapshot update | not measured | `AgentChatPane.tsx`, `UserMessageIssueContext.tsx` |
 | work.chat.message.markdown-brief | Render a user markdown brief formatted in the bubble | not measured | `AgentChatMessageList.tsx` |
 | work.chat.message.tool-show-all | Show all/collapse tool result items | measured | `AgentChatMessageList.tsx` |
 | work.chat.message.minimap | Jump via chat minimap | measured | `AgentChatMessageList.tsx` |

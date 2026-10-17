@@ -62,6 +62,12 @@ resolve docs + the matching `ade-perf-*` skill via `references/doc-map.md`.
 
   The rules that go with it (own socket, stop if the report says `sync : ON`,
   why a plain `&` is not enough): `docs/development/local-development.md`.
+- **Leave the user's other machines alone.** A dev app connects to paired
+  machines only when someone presses Connect in it; the report's `machines`
+  line says so. Do not press Connect or Disconnect on a paired machine in a dev
+  app unless that is the task: either takes the machine away from the user's
+  installed ADE. When you are done, stop the app's process group and confirm
+  its brain exited (`pgrep -fl "<your socket>"`).
 - `docs/README.md` — the internal-docs navigation map.
 - `docs/PRD.md` — what ADE is, who it's for, the feature index.
 - `docs/ARCHITECTURE.md` — read the **section** relevant to the touched area
@@ -127,7 +133,10 @@ invariant usually deserves care (and a test later in `/test`).
 
 If the area maps to a performance skill (`ade-perf-boot`, `ade-perf-lanes`,
 `ade-perf-prs`, `ade-perf-work`, or `ade-tui-web-preview`), open that skill too
-**before editing** — it records measured patterns you must preserve.
+**before editing** — it records measured patterns you must preserve. When the
+work can move performance, also read `docs/perf/macos-baseline.md`: the
+measured numbers and ceilings the **Performance budget** in `AGENTS.md` holds
+the work to.
 
 ### UI primitives doc
 
@@ -135,7 +144,10 @@ If the lane touches renderer UI (`apps/desktop/src/renderer/**/*.tsx`) or the
 keywords mention UI, banners, toasts, dialogs, modals, popovers, or z-index,
 also load `docs/design/notices.md`. That doc is the one source for
 which banner, toast, dialog, or sheet primitive to use, the tones, and
-`Z_LAYERS`. Never invent a new notice or overlay style. Its `ade-ui/*` lint
+`Z_LAYERS`. Never invent a new notice or overlay style. Also load
+`docs/design/visual-language.md`, the house look (surface kit, settings
+primitives, scenes, colour rules, the performance budget for always-visible
+chrome); new UI follows it rather than inventing a panel style. Its `ade-ui/*` lint
 rules are ratcheted in CI (`npm run lint:ci` in `apps/desktop`). Name the
 doc in the summary's **Docs** line.
 

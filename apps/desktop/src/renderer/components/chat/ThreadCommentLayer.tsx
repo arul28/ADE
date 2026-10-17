@@ -1,4 +1,6 @@
+import { useOnSurfaceHidden } from "../../lib/parkedSurface";
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { POPOVER_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { createPortal } from "react-dom";
 import { ChatTeardropText } from "@phosphor-icons/react";
 import type { OpenProjectBinding } from "../../../shared/types";
@@ -8,6 +10,7 @@ import { cn } from "../ui/cn";
 import { ViewportOverlayPortal } from "../ui/ViewportOverlayHost";
 import { AssistantOutputSelectionToolbar } from "./AssistantOutputSelectionToolbar";
 import type { AssistantOutputSelection } from "./assistantOutputSelection";
+import { createHighlightGroup } from "../../lib/highlightRegistry";
 import {
   THREAD_COMMENT_MESSAGE_SELECTOR,
   captureTableRowAnchor,
@@ -21,7 +24,15 @@ import {
   threadCommentErrorText,
   useThreadCommentActions,
 } from "./ThreadCommentControls";
-import { THREAD_COMMENT_FOCUS_EVENT, threadCommentsApi } from "./threadCommentsStore";
+import {
+  addLocalThreadComment,
+  THREAD_COMMENT_FOCUS_EVENT,
+  threadCommentsApi,
+  discardUnsavedDraftBody,
+  keepUnsavedDraftBody,
+  readUnsavedDraftBody,
+  unsavedDraftKey,
+} from "./threadCommentsStore";
 
 const HIGHLIGHT_PENDING = "ade-thread-comment";
 const HIGHLIGHT_HELD = "ade-thread-comment-held";
@@ -32,6 +43,8 @@ const CARD_GAP_PX = 8;
 const POPOVER_WIDTH_PX = 300;
 
 type Draft = {
+  /** The chat the box was opened in. */
+  sessionId: string;
   messageKey: string;
   messageExcerpt: string;
   anchor: ChatThreadCommentAnchor;
@@ -39,6 +52,8 @@ type Draft = {
   rect: DOMRect;
   /** The text being commented on; it stays highlighted while the box is open. */
   range: Range;
+  /** What the box holds when it reopens after a failed save. */
+  body?: string;
 };
 
 type Resolved = {
@@ -46,36 +61,15 @@ type Resolved = {
   range: Range;
 };
 
-type HighlightRegistry = {
-  set: (name: string, highlight: unknown) => void;
-  delete: (name: string) => void;
-};
-
-function highlightRegistry(): HighlightRegistry | null {
-  const css = (globalThis as { CSS?: { highlights?: HighlightRegistry } }).CSS;
-  const HighlightCtor = (globalThis as { Highlight?: unknown }).Highlight;
-  return css?.highlights && typeof HighlightCtor === "function" ? css.highlights : null;
-}
-
 /**
- * `CSS.highlights` is one registry for the whole document, and a grid can
- * show several chats at once. Each layer files its ranges here under its own
- * id, and the three named highlights are rebuilt from all of them.
+ * A grid can show several chats at once; each layer publishes its ranges under
+ * its own id (`lib/highlightRegistry`).
  */
 type LayerHighlights = Record<typeof HIGHLIGHT_PENDING | typeof HIGHLIGHT_HELD | typeof HIGHLIGHT_ACTIVE, Range[]>;
-const highlightsByLayer = new Map<string, LayerHighlights>();
+const commentHighlights = createHighlightGroup([HIGHLIGHT_PENDING, HIGHLIGHT_HELD, HIGHLIGHT_ACTIVE] as const);
 
 function publishLayerHighlights(layerId: string, next: LayerHighlights | null): void {
-  if (next) highlightsByLayer.set(layerId, next);
-  else highlightsByLayer.delete(layerId);
-  const registry = highlightRegistry();
-  if (!registry) return;
-  const HighlightCtor = (globalThis as unknown as { Highlight: new (...ranges: Range[]) => unknown }).Highlight;
-  for (const name of [HIGHLIGHT_PENDING, HIGHLIGHT_HELD, HIGHLIGHT_ACTIVE] as const) {
-    const ranges = [...highlightsByLayer.values()].flatMap((entry) => entry[name]);
-    if (ranges.length) registry.set(name, new HighlightCtor(...ranges));
-    else registry.delete(name);
-  }
+  commentHighlights.publish(layerId, next);
 }
 
 function messageElement(root: HTMLElement, messageKey: string): HTMLElement | null {
@@ -128,6 +122,7 @@ export function ThreadCommentLayer({
   comments,
   layoutVersion,
   onAddToChat,
+  onCreateIssue,
 }: {
   rootRef: { current: HTMLElement | null };
   contentRef: { current: HTMLElement | null };
@@ -139,10 +134,17 @@ export function ThreadCommentLayer({
   layoutVersion: unknown;
   /** The selection toolbar's "Add to chat" action. */
   onAddToChat?: (text: string) => void;
+  onCreateIssue?: (text: string) => void;
 }) {
-  const actions = useThreadCommentActions(sessionId, pin, comments);
+  const actions = useThreadCommentActions(sessionId, pin);
+  const sessionIdRef = useRef(sessionId);
+  sessionIdRef.current = sessionId;
   const [draft, setDraft] = useState<Draft | null>(null);
-  const [draftBusy, setDraftBusy] = useState(false);
+  // Read after an await, so a failed save can tell whether a newer box is open.
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  // What the open box holds right now, kept when the box closes because the user left.
+  const draftBodyRef = useRef("");
   const [draftError, setDraftError] = useState<string | null>(null);
   const [openCommentId, setOpenCommentId] = useState<string | null>(null);
   const { editingId, stopEditing } = actions;
@@ -159,16 +161,54 @@ export function ThreadCommentLayer({
   const commentsRef = useRef(comments);
   commentsRef.current = comments;
 
+  /** Closes the new-comment box, keeping what was typed for the same text. */
+  const closeDraftKeepingText = useCallback(() => {
+    const open = draftRef.current;
+    if (open) keepUnsavedDraftBody(open, draftBodyRef.current);
+    draftRef.current = null;
+    setDraft(null);
+    setDraftError(null);
+  }, []);
+
+  /** Closes the box for good (Cancel, Escape, saved): nothing comes back. */
+  const discardDraft = useCallback(() => {
+    const open = draftRef.current;
+    if (open) discardUnsavedDraftBody(open);
+    draftRef.current = null;
+    setDraft(null);
+    setDraftError(null);
+  }, []);
+
+  const openDraft = useCallback((next: Draft) => {
+    closeDraftKeepingText();
+    const body = next.body ?? readUnsavedDraftBody(next);
+    draftBodyRef.current = body ?? "";
+    setOpenCommentId(null);
+    setDraft(body ? { ...next, body } : next);
+  }, [closeDraftKeepingText]);
+
   // ── Start a comment from a text selection ──
   const startFromSelection = useCallback((selection: AssistantOutputSelection) => {
     const messageKey = selection.output.dataset.threadCommentKey;
     if (!messageKey) return;
     const anchor = captureTextAnchor(selection.output, selection.range);
     if (!anchor) return;
-    setDraftError(null);
+    openDraft({ sessionId, messageKey, messageExcerpt: messageExcerptOf(selection.output), anchor, rect: selection.rect, range: selection.range });
+  }, [openDraft, sessionId]);
+
+  // What is open belongs to the chat on screen. Another chat or machine, or
+  // the pane going away, closes it; typed text is kept for later.
+  const closeAll = useCallback(() => {
+    closeDraftKeepingText();
     setOpenCommentId(null);
-    setDraft({ messageKey, messageExcerpt: messageExcerptOf(selection.output), anchor, rect: selection.rect, range: selection.range });
-  }, []);
+    setRowButton(null);
+    stopEditing();
+  }, [closeDraftKeepingText, stopEditing]);
+  const pinKey = pin?.key ?? null;
+  // Cleanup only: it runs when the chat or machine changes, and on unmount.
+  useEffect(() => () => closeAll(), [closeAll, pinKey, sessionId]);
+  // So does its surface parking (another app tab or project tab on screen).
+  useOnSurfaceHidden(rootRef, Boolean(draft || openCommentId || editingId), closeAll);
 
   // ── Find every comment's text again ──
   const resolvedRef = useRef<Resolved[]>([]);
@@ -289,12 +329,12 @@ export function ThreadCommentLayer({
         }
       });
       if (!hit) return;
-      setDraft(null);
+      closeDraftKeepingText();
       setOpenCommentId(hit.comment.id);
     };
     root.addEventListener("click", onClick);
     return () => root.removeEventListener("click", onClick);
-  }, [resolved, rootRef]);
+  }, [closeDraftKeepingText, resolved, rootRef]);
 
   // ── Table rows: a comment button at the row's right edge ──
   useEffect(() => {
@@ -335,11 +375,9 @@ export function ThreadCommentLayer({
     const anchor = captureTableRowAnchor(message, row);
     if (!anchor) return;
     setRowButton(null);
-    setDraftError(null);
-    setOpenCommentId(null);
     const range = document.createRange();
     range.selectNodeContents(row);
-    setDraft({ messageKey, messageExcerpt: messageExcerptOf(message), anchor, rect: row.getBoundingClientRect(), range });
+    openDraft({ sessionId, messageKey, messageExcerpt: messageExcerptOf(message), anchor, rect: row.getBoundingClientRect(), range });
   };
 
   // ── "Show in thread" from the composer list ──
@@ -354,24 +392,24 @@ export function ThreadCommentLayer({
       const range = message ? resolveThreadCommentRange(message, comment.anchor) : null;
       const target = range?.startContainer.parentElement ?? message;
       target?.scrollIntoView({ block: "center", behavior: "smooth" });
-      setDraft(null);
+      closeDraftKeepingText();
       setOpenCommentId(comment.id);
     };
     window.addEventListener(THREAD_COMMENT_FOCUS_EVENT, onFocus);
     return () => window.removeEventListener(THREAD_COMMENT_FOCUS_EVENT, onFocus);
-  }, [rootRef, sessionId]);
+  }, [closeDraftKeepingText, rootRef, sessionId]);
 
   // Escape closes whatever is open.
   useEffect(() => {
     if (!draft && !openCommentId) return undefined;
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || editingId) return;
-      setDraft(null);
+      discardDraft();
       setOpenCommentId(null);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [draft, editingId, openCommentId]);
+  }, [discardDraft, draft, editingId, openCommentId]);
 
   // A comment that went with a send, or was deleted elsewhere, closes.
   useEffect(() => {
@@ -386,21 +424,31 @@ export function ThreadCommentLayer({
       setDraftError("This version of ADE cannot save comments.");
       return;
     }
-    setDraftBusy(true);
-    setDraftError(null);
+    // The comment shows (highlight, margin card, send badge) the moment it is
+    // saved; the host's answer only confirms it. A refusal puts the box back.
+    const saving = draft;
+    const fields = {
+      messageKey: saving.messageKey,
+      messageExcerpt: saving.messageExcerpt,
+      anchor: saving.anchor,
+      body,
+    };
+    const settle = addLocalThreadComment(sessionId, fields);
+    discardDraft();
     try {
-      await api.create({
-        sessionId,
-        messageKey: draft.messageKey,
-        messageExcerpt: draft.messageExcerpt,
-        anchor: draft.anchor,
-        body,
-      }, pin ?? null);
-      setDraft(null);
+      settle(await api.create({ sessionId, ...fields }, pin ?? null));
     } catch (error) {
+      settle(null);
+      // Reopen the box with the text and the reason, unless another comment
+      // was started since (that box is the user's now) or the user left this
+      // chat; then the text waits for the next box on the same words.
+      if (draftRef.current || saving.sessionId !== sessionIdRef.current) {
+        keepUnsavedDraftBody(saving, body);
+        return;
+      }
+      draftBodyRef.current = body;
+      setDraft({ ...saving, body });
       setDraftError(threadCommentErrorText(error));
-    } finally {
-      setDraftBusy(false);
     }
   };
 
@@ -452,10 +500,10 @@ export function ThreadCommentLayer({
                   data-thread-comment-ignore=""
                   data-testid="thread-comment-card"
                   className={cn(
-                    "pointer-events-auto absolute left-5 right-0 rounded-lg border bg-[#15131c]/95 shadow-[0_8px_24px_rgba(0,0,0,0.35)] transition-[border-color,top] duration-150",
+                    "pointer-events-auto absolute left-5 right-0 rounded-lg border bg-(color:--work-popover-bg) shadow-[0_8px_24px_rgba(0,0,0,0.35)] transition-[border-color,top] duration-150",
                     active
                       ? "border-[color:color-mix(in_srgb,var(--chat-accent)_55%,transparent)]"
-                      : "border-white/[0.07] hover:border-white/[0.14]",
+                      : "border-fg/[0.07] hover:border-fg/[0.14]",
                   )}
                   style={{ top }}
                   onMouseEnter={() => {
@@ -481,7 +529,7 @@ export function ThreadCommentLayer({
             <div
               data-thread-comment-ignore=""
               data-testid="thread-comment-popover"
-              className="pointer-events-auto absolute rounded-xl border border-white/[0.08] bg-[#13111A]/95 p-1 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
+              className={cn("pointer-events-auto absolute", POPOVER_SURFACE_CLASS, "p-1")}
               style={{ ...placeNear(openRange.getBoundingClientRect(), "below"), width: POPOVER_WIDTH_PX }}
               onMouseDown={(event) => event.stopPropagation()}
             >
@@ -493,7 +541,7 @@ export function ThreadCommentLayer({
                     stopEditing();
                     setOpenCommentId(null);
                   }}
-                  className="rounded-md px-2 py-0.5 font-sans text-[11px] text-fg/55 hover:bg-white/[0.06] hover:text-fg/85"
+                  className="rounded-md px-2 py-0.5 font-sans text-[11px] text-fg/55 hover:bg-fg/[0.06] hover:text-fg/85"
                 >
                   Close
                 </button>
@@ -510,15 +558,20 @@ export function ThreadCommentLayer({
             <div
               data-thread-comment-ignore=""
               data-testid="thread-comment-draft"
-              className="pointer-events-auto absolute rounded-xl border border-[color:color-mix(in_srgb,var(--chat-accent)_40%,transparent)] bg-[#13111A]/95 p-2 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
+              className="pointer-events-auto absolute rounded-xl border border-[color:color-mix(in_srgb,var(--chat-accent)_40%,transparent)] bg-(color:--work-popover-bg) p-2 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
               style={{ ...placeNear(draft.rect, "above"), width: POPOVER_WIDTH_PX }}
             >
               <ThreadCommentEditor
-                busy={draftBusy}
+                // A box on other text starts from that text's own body.
+                key={unsavedDraftKey(draft)}
+                initialBody={draft.body}
                 error={draftError}
                 placeholder="Comment for the agent. It goes with your next message."
                 onSave={(body) => void saveDraft(body)}
-                onCancel={() => setDraft(null)}
+                onCancel={discardDraft}
+                onBodyChange={(body) => {
+                  draftBodyRef.current = body;
+                }}
               />
             </div>
           </ViewportOverlayPortal>
@@ -535,7 +588,7 @@ export function ThreadCommentLayer({
               data-testid="thread-comment-row-button"
               aria-label="Comment on this row"
               title="Comment on this row"
-              className="pointer-events-auto absolute inline-flex h-6 w-6 items-center justify-center rounded-md border border-white/[0.1] bg-[#15131c]/95 text-[var(--chat-accent)] shadow-[0_6px_18px_rgba(0,0,0,0.4)] transition-colors hover:bg-[#1d1a26]"
+              className="pointer-events-auto absolute inline-flex h-6 w-6 items-center justify-center rounded-md border border-fg/[0.1] bg-(color:--work-popover-bg) text-[var(--chat-accent)] shadow-[0_6px_18px_rgba(0,0,0,0.4)] transition-colors hover:bg-(color:--color-surface-raised)"
               style={(() => {
                 const zoom = cssZoomOf();
                 return {
@@ -556,7 +609,7 @@ export function ThreadCommentLayer({
         )
         : null}
 
-      <AssistantOutputSelectionToolbar rootRef={rootRef} onAddToChat={onAddToChat} onComment={startFromSelection} />
+      <AssistantOutputSelectionToolbar rootRef={rootRef} onAddToChat={onAddToChat} onComment={startFromSelection} onCreateIssue={onCreateIssue} />
     </>
   );
 }

@@ -80,7 +80,8 @@ function paneChildState(
 }
 
 /**
- * Rewrite every subagent row that claims to be running but demonstrably is not.
+ * Rewrite every subagent row that claims to be running but demonstrably is not,
+ * and every settled spawned-chat row whose chat is demonstrably running again.
  *
  * Returns the same array identity when nothing changes, so the pane's memos do
  * not re-render on a healthy chat.
@@ -95,7 +96,25 @@ export function selfHealSubagentSnapshots(
 
   let changed = false;
   const healed = snapshots.map((snapshot) => {
-    if (snapshot.status !== "running") return snapshot;
+    if (snapshot.status !== "running") {
+      // A spawned chat whose row settled but which is mid-turn again (a
+      // transcript from before the brain reopened such rows) is running.
+      const settledChildId = snapshot.childSessionId?.trim();
+      if (!settledChildId || statuses?.get(settledChildId) !== "active") return snapshot;
+      changed = true;
+      return {
+        ...snapshot,
+        status: "running" as const,
+        elapsedStartAt: null,
+        summary: null,
+        finalSummary: null,
+        lastToolName: undefined,
+        workflowName: undefined,
+        workflowProgress: undefined,
+        resourceLinks: undefined,
+        usage: undefined,
+      };
+    }
     const childSessionId = paneRowChildSessionId(snapshot);
     const childState = paneChildState(
       childSessionId ? statuses?.get(childSessionId) : undefined,

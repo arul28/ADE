@@ -43,7 +43,7 @@ export function normalizeSessionActivityReport(value: unknown): SessionActivityR
   if (!updatedAt) return null;
   const reportedAt = normalizeTimestamp(record.reportedAt);
 
-  return { value: record.value, source: record.source, updatedAt, ...(reportedAt ? { reportedAt } : {}) };
+  return { ...(typeof record.contextTokens === "number" && record.contextTokens >= 0 ? { contextTokens: record.contextTokens } : {}), ...(typeof record.failDetail === "string" ? { failDetail: record.failDetail } : {}), value: record.value, source: record.source, updatedAt, ...(reportedAt ? { reportedAt } : {}) };
 }
 
 function isSessionActivitySource(value: unknown): value is SessionActivitySource {
@@ -69,6 +69,8 @@ const AGENT_REPORT_COVERS: Record<SessionActivityValue, ReadonlySet<SessionActiv
   shipping: new Set(["shipping", "testing", "exploring"]),
   monitoring: new Set(["monitoring", "exploring"]),
   recording: new Set(["recording"]),
+  compacting: new Set(["compacting"]),
+  compaction_failed: new Set(["compaction_failed"]),
 };
 
 /**

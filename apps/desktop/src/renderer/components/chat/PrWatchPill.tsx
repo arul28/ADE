@@ -129,7 +129,7 @@ export function PrWatchPill({
         data-testid="chat-header-pr-watch"
         className={cn(
           "relative inline-flex h-6 items-center gap-0.5 rounded-md px-1.5 transition-colors disabled:opacity-40",
-          open ? "bg-white/[0.08]" : "hover:bg-white/[0.06]",
+          open ? "bg-fg/[0.08]" : "hover:bg-fg/[0.06]",
           mode === "ship" ? "text-amber-300" : mode === "watch" ? "text-sky-300" : "text-fg/40 hover:text-fg/70",
         )}
         onClick={() => setOpen((value) => !value)}
@@ -165,7 +165,7 @@ export function PrWatchPill({
               type="button"
               role="menuitemradio"
               aria-checked={selected}
-              className={cn(MENU_ITEM_CLASS, "w-full text-left hover:bg-white/[0.07]", selected && "text-fg")}
+              className={cn(MENU_ITEM_CLASS, "w-full text-left hover:bg-fg/[0.07]", selected && "text-fg")}
               onClick={() => void choose(choice.mode)}
             >
               <ChoiceIcon

@@ -1,3 +1,4 @@
+import { PROVIDER_DISPLAY_NAME } from "../providers";
 export type ExternalSessionProvider =
   | "claude"
   | "codex"
@@ -5,6 +6,7 @@ export type ExternalSessionProvider =
   | "droid"
   | "opencode"
   | "pi"
+  | "muse"
   // ACP providers: discovered from their own on-disk stores.
   | "qwen"
   | "kimi"
@@ -19,6 +21,7 @@ export const EXTERNAL_SESSION_PROVIDERS: readonly ExternalSessionProvider[] = [
   "droid",
   "opencode",
   "pi",
+  "muse",
   "qwen",
   "kimi",
   "grok",
@@ -32,6 +35,7 @@ export const EXTERNAL_SESSION_PROVIDER_LABELS: Record<ExternalSessionProvider, s
   droid: "Droid",
   opencode: "OpenCode",
   pi: "Pi",
+  muse: PROVIDER_DISPLAY_NAME.muse,
   qwen: "Qwen",
   kimi: "Kimi",
   grok: "Grok",
@@ -114,6 +118,15 @@ export const EXTERNAL_SESSION_PROVIDER_CAPABILITIES: Record<ExternalSessionProvi
     resumeInPlace: true,
     resumeInDifferentCwd: false,
     fork: true,
+    forkIntoDifferentCwd: false,
+    importToChat: true,
+  },
+  // Muse restores a session's workspace itself, so a CLI continue stays in
+  // that folder. The CLI has no fork command.
+  muse: {
+    resumeInPlace: true,
+    resumeInDifferentCwd: false,
+    fork: false,
     forkIntoDifferentCwd: false,
     importToChat: true,
   },

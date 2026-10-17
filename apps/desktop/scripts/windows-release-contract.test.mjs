@@ -129,7 +129,7 @@ test("local Windows test builds omit only cross-platform runtime sidecars", () =
   assert.match(windowsTestBuild, /npm\.cmd.*"run", "dist:win"/s);
   assert.match(runtimeValidator, /const runtimeTargetSet = resolveRuntimeTargets\(\);/);
   assert.match(winArtifactValidator, /Local test build: skipping the remote runtime sidecar assertion/);
-  assert.match(whisperValidator, /Local Windows test build: Whisper CLI is not bundled/);
+  assert.match(whisperValidator, /Local Windows test build: transcribe-cli is not bundled/);
   assert.match(electronBuilderWrapper, /windowsHide: process\.platform === "win32"/);
   // `@opencode/cli`'s postinstall copies the native binary into its own bin/ on
   // every platform. OpenCode is fetched into the machine tools cache now, so that
@@ -543,7 +543,11 @@ test("Windows release assets are validated and published as one release set", ()
   const buildResults = jobBlock(releaseWorkflow, "build-results", null);
   assert.match(buildResults, /if: always\(\)/);
   assert.match(buildResults, /runtime_result: \$\{\{ needs\.build-runtime-binaries\.result \}\}/);
-  assert.match(buildResults, /mac_result: \$\{\{ needs\.build-mac-release\.result \}\}/);
+  // The macOS result counts only when the x64 smoke on x64 hardware passed too.
+  assert.match(
+    buildResults,
+    /mac_result: \$\{\{ needs\.build-mac-release\.result != 'success' && needs\.build-mac-release\.result \|\| needs\.smoke-mac-x64\.result \}\}/,
+  );
   assert.match(buildResults, /windows_result: \$\{\{ needs\.build-win-release\.result \}\}/);
   // verify fails fast on missing signing material instead of on stale proof
   // bindings, which no longer exist.
@@ -676,7 +680,13 @@ test("Windows builds fresh on the release tag with no approved-proof promotion",
   // a v* tag builds, signs, validates and publishes Windows in-run.
   assert.doesNotMatch(windowsRelease, /inputs\.publish == false/);
   assert.match(windowsRelease, /runs-on: windows-latest/);
-  assert.match(windowsRelease, /- verify\s*\n\s+- build-runtime-binaries/);
+  // It starts with verify and waits for this run's own win32-x64 runtime
+  // artifact before downloading it, instead of needing every runtime build.
+  assert.match(windowsRelease, /needs:\s*\n\s+- verify\n/);
+  assert.match(
+    windowsRelease,
+    /wait-for-run-artifact\.sh ade-runtime-win32-x64 "build-runtime-binaries \(win32-x64,"[\s\S]*name: ade-runtime-win32-x64/,
+  );
   assert.match(windowsRelease, /name: Upload validated Windows release artifacts/);
   assert.match(windowsRelease, /name: ade-win-release-\$\{\{ inputs\.release_tag \}\}/);
   // The published artifact carries the installer set only; standalone runtime

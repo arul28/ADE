@@ -1,4 +1,5 @@
 import type { PendingInputRequest } from "../../../shared/types";
+import { redactCommandLine } from "../../../shared/secretRedaction";
 
 /**
  * The thing an approval is actually about, pulled out of the request.
@@ -39,7 +40,8 @@ export function approvalRequestDetail(
   const input = asRecord(metadata.input) ?? asRecord(metadata.toolInput);
   if (!input) return null;
   const command = nonEmptyString(input.command) ?? nonEmptyString(input.cmd);
-  if (command) return { text: command, kind: "command" };
+  // Shown on the approval card: masked, like every other command on screen.
+  if (command) return { text: redactCommandLine(command), kind: "command" };
   const path = nonEmptyString(input.file_path)
     ?? nonEmptyString(input.filePath)
     ?? nonEmptyString(metadata.blockedPath);

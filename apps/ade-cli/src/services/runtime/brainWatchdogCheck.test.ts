@@ -168,10 +168,49 @@ describe("runBrainWatchdogCheck", () => {
     expect(lastWedge?.blockedMs).toBe(600_000);
   });
 
+  // On macOS the CLI asks launchd to start the job after the kill, because a
+  // domain in on-demand-only mode ignores KeepAlive and would leave the brain
+  // dead. A restart that failed must show up in the result, not read as done.
+  it.each([
+    { name: "succeeds", restart: (): string | null => null, reported: null },
+    { name: "is refused by launchd", restart: (): string | null => "Could not find service", reported: "Could not find service" },
+    {
+      name: "throws",
+      restart: (): string | null => {
+        throw new Error("spawn launchctl ENOENT");
+      },
+      reported: "spawn launchctl ENOENT",
+    },
+  ])("asks for a restart after the kill and reports one that $name", ({ restart, reported }) => {
+    const runtimeDir = tempRuntimeDir();
+    writeBrainHeartbeat(runtimeDir, { pid: 4242, ts: NOW - 600_000, seq: 3, startedAt: 1 });
+    const restartService = vi.fn(restart);
+    const result = runBrainWatchdogCheck({
+      runtimeDir,
+      now: () => NOW,
+      selfPid: 1,
+      kill: vi.fn(),
+      restartService,
+      pidAlive: () => true,
+      processIdentity: MATCHING_IDENTITY,
+      readCheckRecord: CONFIRMED_STALE(NOW - 600_000),
+    });
+
+    expect(result.action).toBe("killed");
+    expect(restartService).toHaveBeenCalledWith(4242);
+    if (reported) {
+      expect(result.message).toContain(`Restarting it failed: ${reported}`);
+    } else {
+      expect(result.message).not.toContain("failed");
+    }
+  });
+
   it("reports a kill it could not perform instead of claiming success", () => {
     const runtimeDir = tempRuntimeDir();
     writeBrainHeartbeat(runtimeDir, { pid: 4242, ts: NOW - 600_000, seq: 3, startedAt: 1 });
+    const restartService = vi.fn((): string | null => null);
     const result = runBrainWatchdogCheck({
+      restartService,
       runtimeDir,
       now: () => NOW,
       selfPid: 1,
@@ -184,6 +223,8 @@ describe("runBrainWatchdogCheck", () => {
     });
     expect(result.action).toBe("kill_failed");
     expect(result.message).toContain("EPERM");
+    // A brain that is still alive must not get a second instance started beside it.
+    expect(restartService).not.toHaveBeenCalled();
   });
 
   // The 2026-08-05 shape: the brain crashed, the heartbeat file outlived it, and

@@ -1,6 +1,10 @@
+import { reconcileRowsById } from "../../lib/stableIdentity";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { setSessionsPinned as setSessionsPinnedAction } from "./sessionLifecycleActions";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
-import type { AgentChatSession, LaneSummary, PrSummary, TerminalSessionSummary } from "../../../shared/types";
+import type { AgentChatSession, LaneSummary, TerminalSessionSummary } from "../../../shared/types";
+import { nextScheduledWakeDeadlineMs, scheduledWakeState } from "../../../shared/sessionStatusPresentation";
+import { parentsWithBusySubagents } from "../../../shared/sessionSpawnNesting";
 import type { WorkBoardColumn } from "../../../shared/types/chat";
 import { machineIdForBinding } from "../../../shared/machineIdentity";
 import {
@@ -223,27 +227,11 @@ function getStatusBucketLabel(bucket: WorkStatusGroupBucket): string {
  */
 export type WorkBoardBuckets = Record<WorkBoardColumn, TerminalSessionSummary[]>;
 
-/** Why a running row was pulled out of Working. Rendered as the card's reason chip. */
-export type WorkBoardWaitingReason = "snoozed" | "ci" | "review";
+import type { WorkBoardWaitingReason } from "../../../shared/types/chat";
+import { lanePrWaitingReason } from "../../../shared/sessionCanonicalState";
 
-/**
- * Does this lane's PR park a running session in Waiting?
- *
- * Only live PRs count: a merged or closed PR's last check state is history, and
- * a lane whose PR landed hours ago is not "waiting on CI". `pending` is the
- * only checks value that means work is in flight — `none`/`not_run` mean nobody
- * looked, which is not the same claim (ADE-135), and `failing` is the agent's
- * problem, not a wait.
- */
-export function lanePrWaitingReason(prs: readonly PrSummary[]): WorkBoardWaitingReason | null {
-  let sawReviewRequest = false;
-  for (const pr of prs) {
-    if (pr.state !== "open" && pr.state !== "draft") continue;
-    if (pr.checksStatus === "pending") return "ci";
-    if (pr.reviewStatus === "requested") sawReviewRequest = true;
-  }
-  return sawReviewRequest ? "review" : null;
-}
+export type { WorkBoardWaitingReason };
+export { lanePrWaitingReason };
 
 export type WorkBoardModel = {
   buckets: WorkBoardBuckets;
@@ -297,17 +285,30 @@ export function partitionRosterForBoard(
     else ended.push(session);
   }
   return {
-    runningFiltered: running,
+    runningFiltered: pinnedFirst(running),
     // The list's "Your move" section keeps both tiers: it is a container, and
     // each card states its own phase. The board splits them, because its
     // first column is a claim rather than a container.
-    awaitingInputFiltered: [...loud, ...quiet],
-    needsYouFiltered: loud,
-    restingFiltered: quiet,
-    endedFiltered: ended,
+    awaitingInputFiltered: [...pinnedFirst(loud), ...pinnedFirst(quiet)],
+    needsYouFiltered: pinnedFirst(loud),
+    restingFiltered: pinnedFirst(quiet),
+    endedFiltered: pinnedFirst(ended),
     settledFiltered: settled.sort(compareSessionsBySettledAtDesc),
     snoozedFiltered: snoozed.sort(compareSessionsByWakeAtAsc),
   };
+}
+
+/**
+ * Pinned rows lead their section; both halves keep the order they came in.
+ * The pin is the synced `terminal_sessions.pinned` column, so a pin made on
+ * one machine or on the phone orders the list everywhere.
+ */
+function pinnedFirst(sessions: TerminalSessionSummary[]): TerminalSessionSummary[] {
+  if (!sessions.some((session) => session.pinned)) return sessions;
+  return [
+    ...sessions.filter((session) => session.pinned),
+    ...sessions.filter((session) => !session.pinned),
+  ];
 }
 
 /**
@@ -320,6 +321,11 @@ export function appendForeignMachinesToBoard(args: {
   waitingReasons: ReadonlyMap<string, WorkBoardWaitingReason>;
   machines: readonly {
     sessions: readonly TerminalSessionSummary[];
+    /**
+     * That machine's whole roster, unfiltered. Busy parents are read from it so
+     * a search that hides a subagent cannot file its parent as Done.
+     */
+    rosterSessions: readonly TerminalSessionSummary[];
     filingBuckets: ReadonlyMap<string, ReturnType<typeof sessionFilingBucket>>;
     laneWaitingReason: (laneId: string) => WorkBoardWaitingReason | null;
   }[];
@@ -350,6 +356,8 @@ export function appendForeignMachinesToBoard(args: {
       settledFiltered: partitioned.settledFiltered,
       snoozedFiltered: partitioned.snoozedFiltered,
       laneWaitingReason: machine.laneWaitingReason,
+      busySubagentParentIds: parentsWithBusySubagents(machine.rosterSessions, args.nowMs),
+      nowMs: args.nowMs,
     });
     for (const column of Object.keys(buckets) as WorkBoardColumn[]) {
       buckets[column].push(...model.buckets[column]);
@@ -381,12 +389,36 @@ export function buildWorkBoardModel(args: {
   snoozedFiltered: readonly TerminalSessionSummary[];
   /** Lane → the PR-derived wait, if any. Injected so the model stays pure. */
   laneWaitingReason: (laneId: string) => WorkBoardWaitingReason | null;
+  /**
+   * Chats whose subagent is still busy (`parentsWithBusySubagents`), from the
+   * unfiltered roster so a search that hides the subagent cannot file its
+   * parent as Done.
+   */
+  busySubagentParentIds?: ReadonlySet<string>;
+  /** The clock for the scheduled-wake rule. */
+  nowMs?: number;
 }): WorkBoardModel {
+  const nowMs = args.nowMs ?? Date.now();
   const waitingReasonBySessionId = new Map<string, WorkBoardWaitingReason>();
   const waiting: TerminalSessionSummary[] = [];
   const working: TerminalSessionSummary[] = [];
+  const resting: TerminalSessionSummary[] = [];
+  // A failed turn is the user's move: it files under Needs you, not Done, like
+  // `canonicalBoardColumnForPhase` on the host. The list keeps it in Ended.
+  const failed: TerminalSessionSummary[] = [];
+  const ended: TerminalSessionSummary[] = [];
+  for (const session of args.endedFiltered) {
+    const phase = sessionCanonicalUiState(canonicalInputFromSummary(session)).phase;
+    (phase === "failed" ? failed : ended).push(session);
+  }
 
   for (const session of args.snoozedFiltered) {
+    // The host never files a failure as snoozed (`buildRosterItems`), so a
+    // snoozed failure stays in Needs you here too, or the counts disagree.
+    if (sessionCanonicalUiState(canonicalInputFromSummary(session)).phase === "failed") {
+      failed.push(session);
+      continue;
+    }
     waitingReasonBySessionId.set(session.id, "snoozed");
     waiting.push(session);
   }
@@ -399,16 +431,28 @@ export function buildWorkBoardModel(args: {
     waitingReasonBySessionId.set(session.id, reason);
     waiting.push(session);
   }
+  // A finished chat that will start again on its own is not Done yet.
+  for (const session of args.restingFiltered) {
+    const reason: WorkBoardWaitingReason | null = scheduledWakeState(session.nextWakeAt, nowMs) === "pending"
+      ? "scheduled"
+      : args.busySubagentParentIds?.has(session.id) ? "subagent" : null;
+    if (!reason) {
+      resting.push(session);
+      continue;
+    }
+    waitingReasonBySessionId.set(session.id, reason);
+    waiting.push(session);
+  }
 
   return {
     buckets: {
-      needs_you: [...args.needsYouFiltered],
+      needs_you: [...args.needsYouFiltered, ...failed],
       working,
       waiting,
       // Loudest tier first. Resting rows are live sessions that just finished a
       // turn, so they are the ones worth looking at; ended is a dead process;
       // settled is the quietest, because the user already filed it.
-      done: [...args.restingFiltered, ...args.endedFiltered, ...args.settledFiltered],
+      done: [...resting, ...ended, ...args.settledFiltered],
     },
     waitingReasonBySessionId,
   };
@@ -664,6 +708,23 @@ type UseWorkSessionsOptions = {
 
 const LOCAL_RUNNING_SESSION_REFRESH_INTERVAL_MS = 5_000;
 const REMOTE_RUNNING_SESSION_REFRESH_INTERVAL_MS = 15_000;
+
+/**
+ * Whether an installation uses the Work Focus view and its Focus grid. Emitted
+ * at the two setters every entry point goes through, only when a mode turns
+ * on. Coarse and closed: the mode and nothing else, never a lane, chat, count
+ * or page. A per-mode 24-hour deduplication key holds this to at most two
+ * accepted events per installation per UTC day, inside the existing
+ * `ade_feature_used` limits; no ceiling was raised.
+ */
+function captureWorkFocusMode(mode: "focus" | "focus_grid"): void {
+  void window.ade?.analytics?.capture({
+    event: "ade_feature_used",
+    properties: { feature: "work", action: "focus_mode", outcome: `mode_${mode}`, source: "renderer_route" },
+    dedupeKey: `work_focus_mode:${mode}`,
+    minimumIntervalMs: 24 * 60 * 60_000,
+  }).catch(() => undefined);
+}
 
 export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) {
   const navigate = useNavigate();
@@ -926,12 +987,14 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const workSidebarOpen = projectViewState.workSidebarOpen ?? false;
   const workSidebarWidthPct = projectViewState.workSidebarWidthPct ?? 36;
   const laneSessionOrder = projectViewState.laneSessionOrder ?? EMPTY_LANE_SESSION_ORDER;
-  const pinnedSessionIds = projectViewState.pinnedSessionIds ?? EMPTY_STRING_ARRAY;
+  // Local pins from before pins synced. Read only to migrate them once.
+  const legacyPinnedSessionIds = projectViewState.pinnedSessionIds ?? EMPTY_STRING_ARRAY;
   const workPinnedLaneIds = projectViewState.workPinnedLaneIds ?? EMPTY_STRING_ARRAY;
   const workLaneSortMode = projectViewState.workLaneSortMode ?? "created";
   const workLaneOrder = projectViewState.workLaneOrder ?? EMPTY_STRING_ARRAY;
   const workSessionFilters = projectViewState.workSessionFilters ?? EMPTY_WORK_SESSION_FILTERS;
   const workFoldBusyLanes = projectViewState.workFoldBusyLanes === true;
+  const workFocusGrid = projectViewState.workFocusGrid === true;
   const workSeenAtBySessionId = projectViewState.workSeenAtBySessionId ?? EMPTY_WORK_SEEN_AT;
   // This index is intentionally active-binding-only: local lane selection,
   // refresh cadence, and optimistic writes must never target a foreign slice.
@@ -968,11 +1031,14 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     // snooze expires even if the roster array retains its identity. Reading the
     // route also refreshes it when Work is re-entered after a deadline elapsed
     // while the page was parked on another tab (the timer is intentionally
-    // disabled off-route).
+    // disabled off-route). Reading the roster refreshes it when a row arrives
+    // after its wake turned overdue, because the timer never fires for a
+    // deadline that has already passed.
     void snoozeEpoch;
     void isWorkRoute;
+    void allKnownSessions;
     return Date.now();
-  }, [isWorkRoute, snoozeEpoch]);
+  }, [allKnownSessions, isWorkRoute, snoozeEpoch]);
   const effectiveFilingBuckets = useMemo(
     () => effectiveSessionFilingBuckets(allKnownSessions, filingNowMs),
     [allKnownSessions, filingNowMs],
@@ -1003,6 +1069,17 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       selectLane(session.laneId);
     },
     [localSessionsById, selectLane],
+  );
+
+  /** Ids of pinned rows across the whole roster, read from the synced column. */
+  const pinnedSessionIdsKey = useMemo(() => {
+    const ids: string[] = [];
+    for (const session of sessionsById.values()) if (session.pinned) ids.push(session.id);
+    return ids.sort().join("\n");
+  }, [sessionsById]);
+  const pinnedSessionIds = useMemo(
+    () => (pinnedSessionIdsKey ? pinnedSessionIdsKey.split("\n") : EMPTY_STRING_ARRAY),
+    [pinnedSessionIdsKey],
   );
 
   const openSessions = useMemo(() => {
@@ -1130,10 +1207,29 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     [clearDeeplinkViewOverride, setProjectViewState],
   );
 
+  /**
+   * Focus folds busy lanes, and folding needs the by-lane list, so turning
+   * Focus on also groups by lane. Turning a mode on reports its adoption
+   * (`captureWorkFocusMode`). Turning Focus off also leaves the grid,
+   * because the grid shows what Focus left unfolded.
+   */
   const setWorkFoldBusyLanes = useCallback(
     (enabled: boolean) => {
       clearDeeplinkViewOverride();
-      setProjectViewState({ workFoldBusyLanes: enabled });
+      setProjectViewState(enabled
+        ? { workFoldBusyLanes: true, sessionListOrganization: "by-lane" }
+        : { workFoldBusyLanes: false, workFocusGrid: false });
+      if (enabled) captureWorkFocusMode("focus");
+    },
+    [clearDeeplinkViewOverride, setProjectViewState],
+  );
+  const setWorkFocusGrid = useCallback(
+    (enabled: boolean) => {
+      clearDeeplinkViewOverride();
+      setProjectViewState(enabled
+        ? { workFocusGrid: true, workFoldBusyLanes: true, sessionListOrganization: "by-lane", workViewMode: "list" }
+        : { workFocusGrid: false });
+      if (enabled) captureWorkFocusMode("focus_grid");
     },
     [clearDeeplinkViewOverride, setProjectViewState],
   );
@@ -1148,12 +1244,33 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     projectStateKey: null,
     sessionId: null,
   });
+  // Set by the undo of a press-open (`selectionRestorer`): the row that the
+  // press opened, and the seen stamps of the two rows as they were before it.
+  // The press stamped the row it left, and the undo is about to leave the
+  // pressed row; neither was a visit.
+  const undonePressSeenRef = useRef<{
+    pressedId: string;
+    seenBefore: Record<string, string | undefined>;
+  } | null>(null);
   useLayoutEffect(() => {
     const previous = lastSelectionRef.current;
     lastSelectionRef.current = { projectStateKey, sessionId: selectedSessionId };
     if (!previous.sessionId || !previous.projectStateKey) return;
     if (previous.sessionId === selectedSessionId && previous.projectStateKey === projectStateKey) return;
     const leftId = previous.sessionId;
+    const undonePress = undonePressSeenRef.current;
+    undonePressSeenRef.current = null;
+    if (undonePress?.pressedId === leftId) {
+      setWorkViewState(previous.projectStateKey, (prev) => {
+        const seen = { ...(prev.workSeenAtBySessionId ?? {}) };
+        for (const [id, at] of Object.entries(undonePress.seenBefore)) {
+          if (at === undefined) delete seen[id];
+          else seen[id] = at;
+        }
+        return { ...prev, workSeenAtBySessionId: seen };
+      });
+      return;
+    }
     const at = new Date().toISOString();
     setWorkViewState(previous.projectStateKey, (prev) => ({
       ...prev,
@@ -1275,7 +1392,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
 
         const next = reorderLaneSessionIdsForDisplay({
           baseOrder,
-          pinnedSessionIds: prev.pinnedSessionIds ?? [],
+          pinnedSessionIds,
           movedSessionId,
           targetSessionId,
           edge,
@@ -1291,23 +1408,65 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
         };
       });
     },
-    [sessionsById, setProjectViewState],
+    [pinnedSessionIds, sessionsById, setProjectViewState],
   );
 
+  /**
+   * Pin or unpin rows. The pin is the synced `terminal_sessions.pinned`
+   * column, written on the machine that owns each row, so the phone and every
+   * other machine see the same pins.
+   */
+  const setSessionsPinned = useCallback(
+    /** Resolves to the ids that now hold `pinned`, already-matching rows included. */
+    async (targetSessions: ReadonlyArray<TerminalSessionSummary>, pinned: boolean): Promise<string[]> => {
+      const already = targetSessions.filter((session) => Boolean(session.pinned) === pinned).map((session) => session.id);
+      const changing = targetSessions.filter((session) => Boolean(session.pinned) !== pinned);
+      if (!changing.length) return already;
+      // The write emits a session change on the owning machine, which
+      // refreshes the roster; no local refresh is needed.
+      const written = await setSessionsPinnedAction(
+        changing.map((session) => ({ session, pin: machineRouter.pinForSession(session) })),
+        pinned,
+      );
+      return [...already, ...written.map(({ session }) => session.id)];
+    },
+    [machineRouter],
+  );
   const togglePinnedSession = useCallback(
     (sessionId: string) => {
-      if (!sessionId) return;
-      setProjectViewState((prev) => {
-        const cur = prev.pinnedSessionIds ?? [];
-        const has = cur.includes(sessionId);
-        return {
-          ...prev,
-          pinnedSessionIds: has ? cur.filter((id) => id !== sessionId) : [...cur, sessionId],
-        };
-      });
+      const session = sessionsById.get(sessionId);
+      if (!session) return;
+      void setSessionsPinned([session], !session.pinned);
     },
-    [setProjectViewState],
+    [sessionsById, setSessionsPinned],
   );
+
+  // Move pins made before pins synced. Each legacy pin is written to its row
+  // once that row is in the roster (another machine's rows load later), and
+  // only a pin that was written leaves the local list, so a later unpin
+  // elsewhere is not undone from here and a failed write is retried next start.
+  const legacyPinAttemptedRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (legacyPinnedSessionIds.length === 0) return;
+    const attempted = legacyPinAttemptedRef.current;
+    const ready = legacyPinnedSessionIds
+      .filter((id) => !attempted.has(id))
+      .map((id) => sessionsById.get(id))
+      .filter((session): session is TerminalSessionSummary => session != null);
+    if (ready.length === 0) return;
+    for (const session of ready) attempted.add(session.id);
+    void setSessionsPinned(ready, true)
+      .then((doneIds) => {
+        if (!doneIds.length) return;
+        const done = new Set(doneIds);
+        setProjectViewState((prev) => ({
+          ...prev,
+          pinnedSessionIds: (prev.pinnedSessionIds ?? []).filter((id) => !done.has(id)),
+        }));
+      })
+      .catch((error) => console.warn("[work] legacy pin migration failed", error));
+  }, [legacyPinnedSessionIds, sessionsById, setProjectViewState, setSessionsPinned]);
+
 
   const setWorkSidebarOpen = useCallback(
     (open: boolean) => {
@@ -1412,6 +1571,43 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       });
     },
     [selectLaneForActiveTab, setProjectViewState],
+  );
+
+  /**
+   * How to put back what opening `sessionId` replaces: the active and the
+   * selected item, the lane, the open list without `sessionId` when it was not
+   * in it, and the seen stamps of the two rows. Take it before the open. A row
+   * opens on the press of the mouse, and a press that becomes a drag of that
+   * row must leave nothing opened and nothing marked as visited.
+   */
+  const selectionRestorer = useCallback(
+    (sessionId: string): (() => void) => {
+      const before = {
+        activeItemId,
+        selectedItemId: selectedSessionId,
+        wasOpen: openItemIds.includes(sessionId),
+        laneId: appStore.getState().selectedLaneId,
+        seen: {
+          [sessionId]: workSeenAtBySessionId[sessionId],
+          ...(selectedSessionId ? { [selectedSessionId]: workSeenAtBySessionId[selectedSessionId] } : {}),
+        },
+      };
+      return () => {
+        // A press on the row that was selected already changed no selection,
+        // so no stamp was made and none is due.
+        if (sessionId !== before.selectedItemId) {
+          undonePressSeenRef.current = { pressedId: sessionId, seenBefore: before.seen };
+        }
+        if (appStore.getState().selectedLaneId !== before.laneId) selectLane(before.laneId);
+        setProjectViewState((prev) => ({
+          ...prev,
+          openItemIds: before.wasOpen ? prev.openItemIds : prev.openItemIds.filter((id) => id !== sessionId),
+          activeItemId: before.activeItemId,
+          selectedItemId: before.selectedItemId,
+        }));
+      };
+    },
+    [activeItemId, appStore, openItemIds, selectLane, selectedSessionId, setProjectViewState, workSeenAtBySessionId],
   );
 
   const closeTab = useCallback(
@@ -1538,7 +1734,9 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
           }
         }
       }
-      setHostSessions(rows);
+      // Every refresh is a fresh IPC read; unchanged rows keep their objects so
+      // session cards, the Work view and the chat pane do not all re-render.
+      setHostSessions((prev) => reconcileRowsById(prev, rows));
       hasLoadedOnceRef.current = true;
       hasAuthoritativeSessionsRef.current = true;
       if (pendingProjectSwitchRef.current === requestedProjectRoot) {
@@ -2067,8 +2265,12 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       settledFiltered,
       snoozedFiltered,
       laneWaitingReason: (laneId) => lanePrWaitingReason(boundMachineLanePrs(prsByLaneId, laneId)),
+      busySubagentParentIds: parentsWithBusySubagents(allKnownSessions, filingNowMs),
+      nowMs: filingNowMs,
     }),
     [
+      allKnownSessions,
+      filingNowMs,
       endedFiltered,
       needsYouFiltered,
       prsByLaneId,
@@ -2079,17 +2281,21 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     ],
   );
 
-  // Exactly one timer, armed only while something is actually snoozed, firing at
-  // the soonest deadline (clamped so a 100-year "until I'm asked" snooze can't
-  // overflow setTimeout). No polling and no document-level listener.
+  // Exactly one timer, armed only while something is snoozed or parked on a
+  // scheduled wake, firing at the soonest deadline (clamped so a 100-year
+  // "until I'm asked" snooze can't overflow setTimeout). A wake's deadline is
+  // when it turns overdue, which moves its card out of Waiting. No polling and
+  // no document-level listener.
   //
   // Reads the complete Work roster, NOT a filtered view, on purpose: a snoozed
   // row hidden by search, lane, status chips, or a foreign-machine slice must
   // still schedule its own wake so its filing bucket is fresh when visible.
   useEffect(() => {
     if (!isWorkRoute) return undefined;
-    const deadlineMs = nextSnoozeDeadlineMs(allKnownSessions);
-    if (deadlineMs == null) return undefined;
+    const deadlines = [nextSnoozeDeadlineMs(allKnownSessions), nextScheduledWakeDeadlineMs(allKnownSessions)]
+      .filter((value): value is number => value != null);
+    if (deadlines.length === 0) return undefined;
+    const deadlineMs = Math.min(...deadlines);
     const delay = Math.min(Math.max(deadlineMs - Date.now(), 250), SNOOZE_TICK_MAX_DELAY_MS);
     const timer = window.setTimeout(() => setSnoozeEpoch((value) => value + 1), delay);
     return () => window.clearTimeout(timer);
@@ -2518,6 +2724,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
               createdAt: chat.startedAt,
               lastActivityAt: chat.lastActivityAt,
               idleSinceAt: chat.idleSinceAt,
+              promptCache: chat.promptCache,
             },
             laneName: lanes.find((lane) => lane.id === chat.laneId)?.name ?? chat.laneId,
           });
@@ -2612,6 +2819,8 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     setWorkLaneSortMode,
     workFoldBusyLanes,
     setWorkFoldBusyLanes,
+    workFocusGrid,
+    setWorkFocusGrid,
     workSeenAtBySessionId,
     workLaneOrder,
     reorderWorkLanes,
@@ -2637,6 +2846,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     pinnedSessionIds,
     reorderLaneSessions,
     togglePinnedSession,
+    setSessionsPinned,
 
     workSidebarOpen,
     setWorkSidebarOpen,
@@ -2656,6 +2866,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     setDraftMachineId,
     showDraftKind,
     openSessionTab,
+    selectionRestorer,
     closeTab,
 
     closingPtyIds,

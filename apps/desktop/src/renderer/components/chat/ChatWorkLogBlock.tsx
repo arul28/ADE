@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { ArrowDown, ArrowSquareOut, ArrowUp, CaretDown, CaretRight, Check, GitDiff, Globe, Terminal, Warning, Wrench, XCircle } from "@phosphor-icons/react";
 import type { OperatorNavigationSuggestion } from "../../../shared/types";
+import { redactCommandLine } from "../../../shared/secretRedaction";
 import {
   deriveWebSearchResultDisplay,
   formatStructuredValue,
@@ -17,12 +18,15 @@ import {
 } from "./chatTranscriptRows";
 import { cn } from "../ui/cn";
 import { getToolMeta } from "./chatToolAppearance";
-import { replaceInternalToolNames } from "./toolPresentation";
+import { maskShellCommandArgs, replaceInternalToolNames } from "./toolPresentation";
 import { openLinkFromUi } from "../../lib/openExternal";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
-import { pinKey } from "../../state/projectMachines";
+import { pinKey } from "../../state/pinKey";
 import type { OpenProjectBinding } from "../../../shared/types";
 import { useChatWorkspacePaths } from "./chatWorkspacePaths";
+import { ComputerUseInlineIcon } from "./ChatComputerUseActions";
+import { computerUseEntryCommand, computerUseSummaryForEntry } from "./chatComputerUseRows";
+import { computerUseActionText } from "../../../shared/computerUseActionPresentation";
 
 const NAVIGATION_SURFACES = new Set(["work", "lanes", "cto"]);
 const WORK_LOG_DETAIL_TRUNCATE_LIMIT = 500;
@@ -86,15 +90,20 @@ function isCodeChangeEntry(entry: ChatWorkLogEntry): boolean {
   return false;
 }
 
+/** Redacts before it summarises: a key cut at 140 chars would leak its prefix. */
+function summarizeArgText(value: string, maxChars: number): string {
+  return summarizeInlineText(redactCommandLine(value), maxChars);
+}
+
 function entryArgText(entry: ChatWorkLogEntry): string {
   if (entry.entryKind === "command") {
-    return summarizeInlineText(entry.command ?? "", 140);
+    return summarizeArgText(entry.command ?? "", 140);
   }
   if (entry.entryKind === "web_search") {
-    return summarizeInlineText(entry.query ?? "", 140);
+    return summarizeArgText(entry.query ?? "", 140);
   }
   if (entry.entryKind === "hook") {
-    return summarizeInlineText(entry.detail ?? entry.label, 140);
+    return summarizeArgText(entry.detail ?? entry.label, 140);
   }
   if (entry.entryKind === "tool" && entry.toolName) {
     if (entry.mcp) {
@@ -102,16 +111,16 @@ function entryArgText(entry: ChatWorkLogEntry): string {
       for (const key of ["query", "url", "path", "file_path", "name", "id"] as const) {
         const value = args[key];
         if (typeof value === "string" && value.trim().length) {
-          return summarizeInlineText(value, 140);
+          return summarizeArgText(value, 140);
         }
       }
-      return summarizeInlineText(entry.detail ?? entry.mcp.tool, 140);
+      return summarizeArgText(entry.detail ?? entry.mcp.tool, 140);
     }
     const meta = getToolMeta(entry.toolName);
     const args = readRecord(entry.args) ?? {};
     const target = meta.getTarget ? meta.getTarget(args) : null;
-    if (target) return summarizeInlineText(target, 140);
-    if (entry.detail) return summarizeInlineText(entry.detail, 140);
+    if (target) return summarizeArgText(target, 140);
+    if (entry.detail) return summarizeArgText(entry.detail, 140);
   }
   return "";
 }
@@ -215,8 +224,12 @@ function commandForLocalhostUrl(entries: ChatWorkLogEntry[], url: ChatLocalhostU
     (entry.localUrls ?? []).some((candidate) => candidate.href === url.href),
   ) ?? entries[0];
   if (!sourceEntry) return null;
-  const trimmed = (sourceEntry.command ?? entryArgText(sourceEntry)).trim();
-  return trimmed.length ? trimmed : null;
+  const raw = (sourceEntry.command ?? entryArgText(sourceEntry)).trim();
+  if (!raw.length) return null;
+  // The draft is text the agent may run, so a masked command is never offered:
+  // `<redacted>` in `--command` would become a shell redirection. The argument
+  // fallback is already masked, so a marker in it counts too.
+  return redactCommandLine(raw) === raw && !raw.includes("<redacted") ? raw : null;
 }
 
 function terminalizePrompt(args: {
@@ -394,7 +407,7 @@ export function dedupeChatToolActivityEntries(entries: ChatWorkLogEntry[]): Chat
 function FlatPre({ children, failed = false }: { children: React.ReactNode; failed?: boolean }) {
   return (
     <pre className={cn(
-      "mt-1 ml-[18px] max-h-80 overflow-auto whitespace-pre-wrap break-words border-t border-white/[0.05] pt-2 font-mono text-[length:calc(var(--chat-font-size)*11/14)] leading-[1.55]",
+      "mt-1 ml-[18px] max-h-80 overflow-auto whitespace-pre-wrap break-words border-t border-fg/[0.05] pt-2 font-mono text-[length:calc(var(--chat-font-size)*11/14)] leading-[1.55]",
       failed ? "text-red-300/75" : "text-fg/55",
     )}>
       {children}
@@ -405,7 +418,7 @@ function FlatPre({ children, failed = false }: { children: React.ReactNode; fail
 function DiffBody({ diff }: { diff: string }) {
   const lines = diff.split(/\r?\n/);
   return (
-    <pre className="mt-1 ml-[18px] max-h-80 overflow-auto whitespace-pre-wrap break-words border-t border-white/[0.05] pt-2 font-mono text-[length:calc(var(--chat-font-size)*11/14)] leading-[1.55] text-fg/65">
+    <pre className="mt-1 ml-[18px] max-h-80 overflow-auto whitespace-pre-wrap break-words border-t border-fg/[0.05] pt-2 font-mono text-[length:calc(var(--chat-font-size)*11/14)] leading-[1.55] text-fg/65">
       {lines.map((line, index) => {
         let tone = "text-fg/65";
         if (line.startsWith("+")) tone = "text-emerald-400/85";
@@ -452,7 +465,7 @@ function WebSearchResultRows({ entry }: { entry: ChatWorkLogEntry }) {
   const total = typeof entry.resultsTotal === "number" ? entry.resultsTotal : results.length;
   const moreCount = Math.max(0, total - results.length);
   return (
-    <div className="mt-1 ml-[18px] flex min-w-0 max-w-full flex-col gap-0.5 border-t border-white/[0.05] pt-2">
+    <div className="mt-1 ml-[18px] flex min-w-0 max-w-full flex-col gap-0.5 border-t border-fg/[0.05] pt-2">
       {results.map((result, index) => {
         const display = deriveWebSearchResultDisplay(result);
         const body = (
@@ -512,8 +525,13 @@ function ToolCallRow({
     if (navigationSuggestions.length > 0) setOpen(true);
   }, [navigationSuggestions.length]);
 
+  // An ADE computer-use command reads as its action ("Clicked “Run” in
+  // Xcode"); opening the row still shows the raw command output.
+  const computerUse = computerUseSummaryForEntry(entry);
   const kindSlug = workLogEntryKindSlug(entry);
-  const argText = replaceInternalToolNames(entryArgText(entry));
+  const argText = computerUse
+    ? computerUseActionText(computerUse)
+    : replaceInternalToolNames(entryArgText(entry));
   const kindTone = workLogEntryKindToneClass(entry);
   const searchResults = webSearchResults(entry);
   const resultCount = webResultCount(entry);
@@ -536,12 +554,16 @@ function ToolCallRow({
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
-        className="flex w-full min-w-0 max-w-full items-center gap-2.5 rounded-[6px] px-1.5 py-1 text-left transition-colors hover:bg-white/[0.025]"
+        className="flex w-full min-w-0 max-w-full items-center gap-2.5 rounded-[6px] px-1.5 py-1 text-left transition-colors hover:bg-fg/[0.025]"
       >
         {workLogStatusGlyph(entry)}
-        <span className={cn("shrink-0 font-mono text-[length:calc(var(--chat-font-size)*11/14)] font-medium tracking-tight", kindTone)}>
-          {kindSlug}
-        </span>
+        {computerUse ? (
+          <ComputerUseInlineIcon summary={computerUse} />
+        ) : (
+          <span className={cn("shrink-0 font-mono text-[length:calc(var(--chat-font-size)*11/14)] font-medium tracking-tight", kindTone)}>
+            {kindSlug}
+          </span>
+        )}
         {argText ? (
           <span className="min-w-0 truncate font-sans text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.55] text-fg/88">{argText}</span>
         ) : null}
@@ -564,7 +586,7 @@ function ToolCallRow({
         ) : null}
       </button>
       {open && navigationSuggestions.length > 0 && onNavigateSuggestion ? (
-        <div className="mt-1 ml-[18px] flex min-w-0 max-w-full flex-wrap gap-1.5 border-t border-white/[0.05] pt-2">
+        <div className="mt-1 ml-[18px] flex min-w-0 max-w-full flex-wrap gap-1.5 border-t border-fg/[0.05] pt-2">
           {navigationSuggestions.map((suggestion) => (
             <button
               key={`${suggestion.surface}:${suggestion.href}`}
@@ -579,7 +601,7 @@ function ToolCallRow({
       ) : null}
       {open && searchResults.length > 0 ? <WebSearchResultRows entry={entry} /> : null}
       {open && searchUrlActions.length > 0 ? (
-        <div className="mt-1 ml-[18px] flex min-w-0 max-w-full flex-wrap gap-1.5 border-t border-white/[0.05] pt-2">
+        <div className="mt-1 ml-[18px] flex min-w-0 max-w-full flex-wrap gap-1.5 border-t border-fg/[0.05] pt-2">
           {searchUrlActions.slice(0, 6).map((action, index) => {
             const label = action.title ?? action.url ?? `Result ${index + 1}`;
             return (
@@ -626,7 +648,10 @@ function buildEntryDetail(entry: ChatWorkLogEntry): string | null {
   if (entry.entryKind === "command") {
     const out = entry.output?.trim();
     if (!out) return null;
-    return out;
+    // A computer-use row reads as its action, so the command it ran leads
+    // the detail.
+    const command = computerUseEntryCommand(entry);
+    return command ? `$ ${command}\n${out}` : out;
   }
   if (entry.entryKind === "hook") {
     const out = entry.output?.trim();
@@ -638,11 +663,16 @@ function buildEntryDetail(entry: ChatWorkLogEntry): string | null {
     return action && action.length ? action : null;
   }
   if (entry.entryKind === "tool") {
+    const command = computerUseEntryCommand(entry);
+    if (command?.trim()) {
+      const out = entry.result === undefined ? "" : (toolEntryFailureText(entry) ?? formatStructuredValue(entry.result));
+      return out.trim() ? `$ ${command}\n${out}` : `$ ${command}`;
+    }
     if (entry.result !== undefined) {
       return toolEntryFailureText(entry) ?? formatStructuredValue(entry.result);
     }
     const args = readRecord(entry.args);
-    if (args && Object.keys(args).length > 0) return formatStructuredValue(args);
+    if (args && Object.keys(args).length > 0) return formatStructuredValue(maskShellCommandArgs(entry.toolName, args));
   }
   if (entry.detail?.trim().length) {
     return replaceInternalToolNames(entry.detail);
@@ -783,7 +813,7 @@ function FilesChangedPanel({
           type="button"
           onClick={() => setOpen((v) => !v)}
           aria-expanded={open}
-          className="flex min-w-0 flex-1 items-center gap-2 rounded-[6px] px-1 py-0.5 text-left transition-colors hover:bg-white/[0.025]"
+          className="flex min-w-0 flex-1 items-center gap-2 rounded-[6px] px-1 py-0.5 text-left transition-colors hover:bg-fg/[0.025]"
         >
           <Caret size={10} weight="bold" className="text-fg/35" />
           <span className="font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-medium text-fg/70">
@@ -812,9 +842,9 @@ function FilesChangedPanel({
                     setExpandedFiles((current) => ({ ...current, [file.path]: !expanded }))
                   }
                   aria-expanded={expanded}
-                  className="flex w-full min-w-0 max-w-full items-center gap-3 rounded-[6px] px-1.5 py-1 text-left transition-colors hover:bg-white/[0.025]"
+                  className="flex w-full min-w-0 max-w-full items-center gap-3 rounded-[6px] px-1.5 py-1 text-left transition-colors hover:bg-fg/[0.025]"
                 >
-                  <span className="inline-flex h-3.5 w-7 shrink-0 items-center justify-center rounded-[3px] border border-white/[0.06] bg-white/[0.02] font-mono text-[length:calc(var(--chat-font-size)*8/14)] font-bold tracking-wider text-fg/40">
+                  <span className="inline-flex h-3.5 w-7 shrink-0 items-center justify-center rounded-[3px] border border-fg/[0.06] bg-fg/[0.02] font-mono text-[length:calc(var(--chat-font-size)*8/14)] font-bold tracking-wider text-fg/40">
                     {fileExtBadge(file.path)}
                   </span>
                   <span className="min-w-0 flex-1 truncate font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/65">
@@ -838,7 +868,7 @@ function FilesChangedPanel({
                 </button>
                 {expanded && file.diff.trim().length ? <DiffBody diff={file.diff} /> : null}
                 {expanded && !file.diff.trim().length ? (
-                  <div className="mt-1 ml-[18px] border-t border-white/[0.05] pt-2 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/35">
+                  <div className="mt-1 ml-[18px] border-t border-fg/[0.05] pt-2 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/35">
                     No diff payload available.
                   </div>
                 ) : null}
@@ -925,7 +955,7 @@ export const ChatTurnFilesChangedSummary = React.memo(function ChatTurnFilesChan
             setOpen((value) => !value);
           }}
           aria-expanded={open}
-          className="flex min-w-0 flex-1 items-center gap-2 rounded-[6px] px-1 py-0.5 text-left transition-colors hover:bg-white/[0.025]"
+          className="flex min-w-0 flex-1 items-center gap-2 rounded-[6px] px-1 py-0.5 text-left transition-colors hover:bg-fg/[0.025]"
         >
           <Caret size={10} weight="bold" className="text-fg/35" />
           <span className="font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-medium text-fg/70">
@@ -964,7 +994,7 @@ export const ChatTurnFilesChangedSummary = React.memo(function ChatTurnFilesChan
               <div
                 className={cn(
                   "group/file relative flex w-full min-w-0 max-w-full items-center gap-3 rounded-[6px] px-1.5 py-1",
-                  hasDiff && "hover:bg-white/[0.025]",
+                  hasDiff && "hover:bg-fg/[0.025]",
                 )}
               >
                 {/* The diff payload rides on the work-log entry, so it is the
@@ -981,7 +1011,7 @@ export const ChatTurnFilesChangedSummary = React.memo(function ChatTurnFilesChan
                     className="absolute inset-0 rounded-[6px]"
                   />
                 ) : null}
-                <span className="pointer-events-none inline-flex h-3.5 w-7 shrink-0 items-center justify-center rounded-[3px] border border-white/[0.06] bg-white/[0.02] font-mono text-[length:calc(var(--chat-font-size)*8/14)] font-bold tracking-wider text-fg/40">
+                <span className="pointer-events-none inline-flex h-3.5 w-7 shrink-0 items-center justify-center rounded-[3px] border border-fg/[0.06] bg-fg/[0.02] font-mono text-[length:calc(var(--chat-font-size)*8/14)] font-bold tracking-wider text-fg/40">
                   {fileExtBadge(file.path)}
                 </span>
                 {onOpenPath ? (
@@ -1173,7 +1203,7 @@ export function ChatTurnWorkSummary({
         </div>
       </div>
       {open === "tools" ? (
-        <div className="mb-2 min-w-0 overflow-hidden border-l border-white/[0.08] pl-4">
+        <div className="mb-2 min-w-0 overflow-hidden border-l border-fg/[0.08] pl-4">
           <ChatToolActivityDetails
             entries={tools}
             onNavigateSuggestion={onNavigateSuggestion}
@@ -1229,7 +1259,7 @@ function LocalhostServersStrip({
       let terminal: Awaited<ReturnType<NonNullable<NonNullable<typeof window.ade>["terminal"]>["activeForChat"]>> | undefined;
       if (sessionId && onRevealChatTerminal) {
         try {
-          terminal = await window.ade?.terminal?.activeForChat?.({ chatSessionId: sessionId });
+          terminal = await window.ade?.terminal?.activeForChat?.({ chatSessionId: sessionId }, runtimePin);
         } catch (error) {
           console.error("[ChatWorkLogBlock] activeForChat lookup failed", error);
           terminal = undefined;
@@ -1289,7 +1319,7 @@ function LocalhostServersStrip({
         disabled={busy}
         title={logsTitle}
         aria-label="Open terminal logs or ask the agent to run this server in the chat terminal"
-        className="inline-flex h-[22px] shrink-0 items-center gap-1 rounded-full border border-white/[0.07] bg-white/[0.03] px-2 text-fg/45 transition-colors hover:border-white/[0.13] hover:bg-white/[0.06] hover:text-fg/75 disabled:cursor-progress disabled:opacity-50"
+        className="inline-flex h-[22px] shrink-0 items-center gap-1 rounded-full border border-fg/[0.07] bg-fg/[0.03] px-2 text-fg/45 transition-colors hover:border-fg/[0.13] hover:bg-fg/[0.06] hover:text-fg/75 disabled:cursor-progress disabled:opacity-50"
       >
         <Terminal size={12} weight="bold" aria-hidden />
         <span className="font-sans text-[length:calc(var(--chat-font-size)*9/14)] font-semibold">Logs</span>

@@ -119,7 +119,7 @@ const MacDesktopWindowCard = memo(function MacDesktopWindowCard({
         "cursor-default",
         selected
           ? "bg-[color-mix(in_srgb,var(--color-accent)_14%,transparent)] shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--color-accent)_55%,transparent)]"
-          : "hover:bg-white/[0.05]",
+          : "hover:bg-fg/[0.05]",
       )}
     >
       <MacDesktopAppIcon iconPng={iconPng ?? entry.iconPng} appName={entry.appName} />
@@ -531,7 +531,7 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
               onClick={() => setExpanded(false)}
               className={cn(
                 WORK_TOOL_CHROME_CHIP,
-                "ml-1 shrink-0 gap-1.5 whitespace-nowrap px-2 text-fg/90 hover:bg-white/[0.08]",
+                "ml-1 shrink-0 gap-1.5 whitespace-nowrap px-2 text-fg/90 hover:bg-fg/[0.08]",
               )}
             >
               <ArrowsInSimple size={14} />
@@ -1072,7 +1072,7 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
                 className={cn(
                   "flex h-8 shrink-0 items-center gap-1 rounded-[var(--radius-sm)] px-2",
                   "border border-dashed border-border/70 text-[11.5px] text-muted-fg",
-                  "transition-colors duration-[120ms] ease-out hover:bg-white/[0.06] hover:text-fg",
+                  "transition-colors duration-[120ms] ease-out hover:bg-fg/[0.06] hover:text-fg",
                 )}
               >
                 <Plus size={12} />
@@ -1105,13 +1105,13 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
                   <li
                     key={entry.windowId}
                     data-testid="mac-desktop-not-parked"
-                    className="group flex h-8 min-w-0 items-center gap-2 rounded-[var(--radius-sm)] px-1.5 text-[12px] hover:bg-white/[0.04]"
+                    className="group flex h-8 min-w-0 items-center gap-2 rounded-[var(--radius-sm)] px-1.5 text-[12px] hover:bg-fg/[0.04]"
                   >
                     <WarningCircle size={14} weight="fill" className="shrink-0 text-[var(--color-warning)]" />
                     <span className="min-w-0 flex-1 truncate text-fg/85" title={sentence}>{sentence}</span>
                     <button
                       type="button"
-                      className="shrink-0 rounded-[var(--radius-sm)] px-1.5 py-0.5 text-[11px] text-muted-fg transition-colors hover:bg-white/[0.07] hover:text-fg"
+                      className="shrink-0 rounded-[var(--radius-sm)] px-1.5 py-0.5 text-[11px] text-muted-fg transition-colors hover:bg-fg/[0.07] hover:text-fg"
                       data-testid="mac-desktop-not-parked-dismiss"
                       onClick={() => dismissNotParked(entry.windowId)}
                     >
@@ -1123,7 +1123,7 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
               {lastObservation ? (
                 <li
                   data-testid="mac-desktop-last-observation"
-                  className="flex h-8 min-w-0 items-center gap-2 rounded-[var(--radius-sm)] px-1.5 text-[12px] hover:bg-white/[0.04]"
+                  className="flex h-8 min-w-0 items-center gap-2 rounded-[var(--radius-sm)] px-1.5 text-[12px] hover:bg-fg/[0.04]"
                 >
                   {lastFrame ? (
                     <img

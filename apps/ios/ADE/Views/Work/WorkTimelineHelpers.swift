@@ -599,6 +599,8 @@ private func combineUsageSummary(_ usage: WorkUsageSummary?, into hasher: inout 
   hasher.combine(usage.cacheCreationTokens)
   hasher.combine(usage.reasoningTokens)
   hasher.combine(usage.totalTokens)
+  combineOptional(usage.compactAtTokens, into: &hasher)
+  combineOptional(usage.compactAtSource, into: &hasher)
   combineOptional(usage.contextWindow, into: &hasher)
   hasher.combine(usage.costUsd)
   hasher.combine(usage.isContextSnapshot)
@@ -806,7 +808,7 @@ struct WorkBackgroundCommandPresentation: Equatable {
 /// Mirrors desktop `chatScheduledWork.ts` `backgroundCommandLabel`, with cwd
 /// extraction from the same leading `cd <path> &&` prefix for the iOS detail.
 func workBackgroundCommandPresentation(_ command: String) -> WorkBackgroundCommandPresentation {
-  let original = command
+  let original = workRedactCommandLine(command)
     .split(whereSeparator: { $0.isNewline })
     .map(String.init)
     .map(workCollapsedCommandWhitespace)
@@ -1975,7 +1977,7 @@ func assembleWorkTimeline(
   })
 
   entries.append(contentsOf: artifacts.enumerated().map { index, artifact in
-    WorkTimelineEntry(id: "artifact-\(artifact.id)", timestamp: artifact.createdAt, rank: 2_000 + index, payload: .artifact(artifact))
+    WorkTimelineEntry(id: "artifact-\(artifact.id)", timestamp: artifact.createdAt, rank: 2_000 + index, payload: .proof([artifact]))
   })
 
   entries.append(contentsOf: visibleLocalEchoMessages.enumerated().map { index, echo in
@@ -2017,16 +2019,54 @@ func assembleWorkTimeline(
     }
   }
   if !artifacts.isEmpty { workStampTurnProofCounts(&deduped) }
-  // The spawn-completion fold runs FIRST, on raw transcript adjacency. The tool
+  // The spawn-completion folds run FIRST, on raw transcript adjacency. The tool
   // collapse buffers soft-break rows past a cluster, so `notice · tool · notice`
   // comes out of it as `toolGroup · notice · notice` — folding after that would
-  // join two runs the parent's own work had separated. Desktop folds at the same
-  // point: while rows are being appended, before any grouping.
+  // join two runs the parent's own work had separated. Desktop runs the same two
+  // steps before any grouping: adjacency while rows are appended, then the stale
+  // fold in `filterVisibleTranscriptRows`. The stale fold needs the adjacency
+  // runs' counts, so it goes straight after.
   var folded = collapseConsecutiveSpawnCompletionEntries(deduped)
+  folded = workFoldStaleSpawnCompletionEntries(folded)
   folded = collapseConsecutiveWorkToolEntries(folded)
   folded = collapseConsecutiveWorkActivityEntries(folded)
   folded = collapseActivityPhaseTimelineEntries(folded)
+  if !artifacts.isEmpty { folded = workCollapsingInlineProof(folded) }
   return folded
+}
+
+/// Desktop's inline proof count: a run of consecutive proof rows becomes one
+/// "N proof filed ›" line, keeping the first row's identity so the line holds
+/// its place as it grows. Proof a "Filed proof" action row already pictures is
+/// left out; the turn-end count still includes it.
+private func workCollapsingInlineProof(_ entries: [WorkTimelineEntry]) -> [WorkTimelineEntry] {
+  var shownByActions = Set<String>()
+  for entry in entries {
+    guard case .toolGroup(let group) = entry.payload else { continue }
+    for action in group.computerUseActions {
+      shownByActions.formUnion(workComputerUseShownProofIds(action))
+    }
+  }
+  var result: [WorkTimelineEntry] = []
+  result.reserveCapacity(entries.count)
+  var runIndex: Int?
+  for entry in entries {
+    guard case .proof(let artifacts) = entry.payload else {
+      result.append(entry)
+      runIndex = nil
+      continue
+    }
+    let unshown = artifacts.filter { !shownByActions.contains($0.id) }
+    guard !unshown.isEmpty else { continue }
+    if let runIndex, case .proof(let earlier) = result[runIndex].payload {
+      let anchor = result[runIndex]
+      result[runIndex] = WorkTimelineEntry(id: anchor.id, timestamp: anchor.timestamp, rank: anchor.rank, payload: .proof(earlier + unshown), turnId: anchor.turnId)
+    } else {
+      runIndex = result.count
+      result.append(WorkTimelineEntry(id: entry.id, timestamp: entry.timestamp, rank: entry.rank, payload: .proof(unshown), turnId: entry.turnId))
+    }
+  }
+  return result
 }
 
 /// Stamp each turn-end marker with the proof captured while its turn ran
@@ -2040,8 +2080,8 @@ private func workStampTurnProofCounts(_ entries: inout [WorkTimelineEntry]) {
   for index in entries.indices {
     let entry = entries[index]
     switch entry.payload {
-    case .artifact(let artifact):
-      if turnStarted { proof.append(artifact) }
+    case .proof(let artifacts):
+      if turnStarted { proof.append(contentsOf: artifacts) }
     case .turnEndMarker(var marker):
       if !proof.isEmpty {
         marker.proofArtifacts = proof
@@ -2058,8 +2098,10 @@ private func workStampTurnProofCounts(_ entries: inout [WorkTimelineEntry]) {
 }
 
 /// Fold a run of 2+ ADJACENT `spawn_completed` peer notices for the SAME child
-/// chat into one row carrying a trailing `×N` — desktop parity with the
-/// adjacency fold in `collapseTranscriptRows`.
+/// chat into one row that counts its turns — desktop parity with the adjacency
+/// fold in `collapseTranscriptRows`. The trailing `×N` is stamped by
+/// `workFoldStaleSpawnCompletionEntries`, the step after this one, once the
+/// child's total is known.
 ///
 /// A parent that spawned a peer gets one notice per sibling TURN, so a chatty
 /// child stacks a wall of identical ribbons. Adjacency-only on purpose: anything
@@ -2093,24 +2135,15 @@ func collapseConsecutiveSpawnCompletionEntries(_ entries: [WorkTimelineEntry]) -
     }
     let anchorCard = anchor.card
     let newestCard = newest.card
-    // The count trails the host's own sentence. iOS re-states nothing: a legacy
-    // transcript's `Peer "X" turn finished` keeps those words and still gets the
-    // multiplier, because the fold never re-derives the line.
-    let multiplier = "×\(run.count)"
-    let foldedBody = nonEmptyWorkTimelineText(newestCard.body)
-      .map { "\($0) \(multiplier)" } ?? multiplier
-    let folded = WorkEventCardModel(
+    // The wording stays the host's own: iOS re-states nothing, so a legacy
+    // transcript's `Peer "X" turn finished` keeps those words through the fold.
+    let folded = workSpawnCompletionRow(
+      newestCard,
       id: anchorCard.id,
-      kind: newestCard.kind,
-      title: newestCard.title,
-      icon: newestCard.icon,
-      tint: newestCard.tint,
-      timestamp: newestCard.timestamp,
       turnId: anchorCard.turnId ?? newestCard.turnId,
-      body: foldedBody,
-      bullets: newestCard.bullets,
-      metadata: newestCard.metadata,
-      spawnCompletionChildId: anchor.childId
+      body: newestCard.body,
+      turns: run.count,
+      childId: anchor.childId
     )
     result.append(WorkTimelineEntry(
       id: run[0].id,
@@ -2121,6 +2154,93 @@ func collapseConsecutiveSpawnCompletionEntries(_ entries: [WorkTimelineEntry]) -
     ))
   }
   return result
+}
+
+/// The stale half of desktop `foldSpawnCompletionLines` (desktop also puts
+/// neighbouring children on one line; the phone keeps a row per child): a
+/// child's older notices are out of date as
+/// soon as a newer one lands, wherever they sit. Only the child's NEWEST notice
+/// stays, at its own position with its own timestamp, and it stands for every
+/// turn the child has finished in this transcript. Without this a phone keeps a
+/// stale "finished its turn" row for each child that spoke again after it.
+///
+/// Runs right after the adjacency fold, so each entry already carries its run's
+/// count. A notice with no child id is never matched: it neither drops nor
+/// counts, and keeps its own row. A child with one notice keeps its wording; a
+/// child with more than one gets the trailing `×N` stamped here.
+func workFoldStaleSpawnCompletionEntries(_ entries: [WorkTimelineEntry]) -> [WorkTimelineEntry] {
+  // Newest first: the first notice seen per child is the one that stays, and
+  // each older one is dropped after its turns are added to the child's total.
+  var turnsByChild: [String: Int] = [:]
+  var stale = Set<Int>()
+  for index in entries.indices.reversed() {
+    guard let completion = workSpawnCompletionEntryCard(entries[index]) else { continue }
+    if turnsByChild[completion.childId] != nil { stale.insert(index) }
+    turnsByChild[completion.childId, default: 0] += completion.card.spawnCompletionTurns
+  }
+  guard !turnsByChild.isEmpty else { return entries }
+
+  var result: [WorkTimelineEntry] = []
+  result.reserveCapacity(entries.count - stale.count)
+  for index in entries.indices where !stale.contains(index) {
+    let entry = entries[index]
+    guard let completion = workSpawnCompletionEntryCard(entry),
+          let turns = turnsByChild[completion.childId],
+          turns > 1
+    else {
+      result.append(entry)
+      continue
+    }
+    // The count trails the host's sentence, as the adjacency fold always did.
+    let multiplier = "×\(turns)"
+    let body = nonEmptyWorkTimelineText(completion.card.body)
+      .map { "\($0) \(multiplier)" } ?? multiplier
+    let card = workSpawnCompletionRow(
+      completion.card,
+      id: completion.card.id,
+      turnId: completion.card.turnId,
+      body: body,
+      turns: turns,
+      childId: completion.childId
+    )
+    result.append(WorkTimelineEntry(
+      id: entry.id,
+      timestamp: entry.timestamp,
+      rank: entry.rank,
+      payload: .eventCard(card),
+      turnId: entry.turnId
+    ))
+  }
+  return result
+}
+
+/// A spawn-completion row rebuilt with a new identity, body and turn count. The
+/// notice's own fields (kind, timestamp, icon, tint, bullets, metadata and the
+/// host's noticeKind) carry over, so the rebuilt row reads like the one it
+/// replaces.
+private func workSpawnCompletionRow(
+  _ source: WorkEventCardModel,
+  id: String,
+  turnId: String?,
+  body: String?,
+  turns: Int,
+  childId: String
+) -> WorkEventCardModel {
+  WorkEventCardModel(
+    id: id,
+    kind: source.kind,
+    title: source.title,
+    icon: source.icon,
+    tint: source.tint,
+    timestamp: source.timestamp,
+    turnId: turnId,
+    body: body,
+    bullets: source.bullets,
+    metadata: source.metadata,
+    noticeKind: source.noticeKind,
+    spawnCompletionChildId: childId,
+    spawnCompletionTurns: turns
+  )
 }
 
 /// The spawn-completion notice an entry carries, if it is one: the child chat it
@@ -2302,7 +2422,8 @@ private enum WorkTurnFoldRole {
   case boundary
   /// The turn's `done` (its turn-end line).
   case turnEnd
-  /// Assistant prose: the answer candidates. Non-answer prose folds.
+  /// Assistant prose: the answer candidates. Non-answer narration folds;
+  /// substantive prose and proof stay (`workTurnFoldProseStaysVisible`).
   case text
   /// Finished work that folds: thoughts, plan proposals, receipts, chips.
   case history
@@ -2389,7 +2510,7 @@ private func workTurnFoldRow(for entry: WorkTimelineEntry) -> WorkTurnFoldFacts 
     // A new-lane setup record folds once setup finished; every other card stays.
     let role: WorkTurnFoldRole = card.variant == "lane_setup" ? .keepIfLive(liveKeys: [entry.id]) : .keep
     return WorkTurnFoldFacts(role: role, turnId: turnId, trivial: false)
-  case .subagent, .subagentGrid, .subagentStoppedGroup, .artifact, .turnFold,
+  case .subagent, .subagentGrid, .subagentStoppedGroup, .proof, .turnFold,
        .pendingQuestion, .pendingPermission, .pendingPlanApproval, .pendingModelSelection:
     return WorkTurnFoldFacts(role: .keep, turnId: turnId, trivial: false)
   }
@@ -2425,16 +2546,51 @@ private struct WorkTurnFoldPlan {
   let duplicateAnswers: Set<Int>
 }
 
-private let workTurnFoldPostscriptMaxChars = 280
 private let workTurnFoldAnswerMinChars = 400
 private let workTurnFoldAnswerToPostscriptRatio = 3
 private let workTurnFoldPostscriptMaxWorkRows = 3
+/// Non-answer prose at least this long is substance, not narration, and stays
+/// visible (desktop `TURN_FOLD_SUBSTANTIVE_PROSE_MIN_CHARS`).
+private let workTurnFoldSubstantiveProseMinChars = workTurnFoldAnswerMinChars
+/// Desktop `PROSE_IMAGE_PATTERN`: a markdown image.
+private let workTurnFoldProseImagePattern = #"!\[[^\]\n]*\]\([^)\s][^)]*\)"#
+/// Desktop `PROSE_PROOF_PATTERN`: any proof artifact reference.
+private let workTurnFoldProseProofPattern = #"(?i)ade-proof://"#
+/// Desktop `PROSE_STRUCTURE_PATTERN`: a list item, heading, fence or table separator.
+private let workTurnFoldProseStructurePattern = #"(?m)^ {0,3}(?:[-*+] +\S|\d{1,3}[.)] +\S|#{1,6} +\S|```|~~~|\|? *:?-{3,}:? *\|)"#
+
+/// A non-answer prose row that stays visible under the fold row instead of
+/// folding (desktop `proseStaysVisible`). Proof always stays; otherwise long or
+/// markdown-structured prose stays unless the provider labelled it
+/// `commentary`. Short plain narration folds.
+private func workTurnFoldProseStaysVisible(_ message: WorkChatMessage) -> Bool {
+  let text = message.markdown.trimmingCharacters(in: .whitespacesAndNewlines)
+  guard !text.isEmpty else { return false }
+  if text.range(of: workTurnFoldProseProofPattern, options: .regularExpression) != nil
+    || text.range(of: workTurnFoldProseImagePattern, options: .regularExpression) != nil {
+    return true
+  }
+  let phase = message.textPhase?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  if phase == "commentary" {
+    return false
+  }
+  // A partial answer is content the terminal answer does not repeat, so it is
+  // never narration to fold away — no matter how short it is (desktop
+  // `proseStaysVisible`). The length bar governs providers that label nothing.
+  if phase == "partial_answer" {
+    return true
+  }
+  // UTF-16 code units, matching desktop `String.length`.
+  return text.utf16.count >= workTurnFoldSubstantiveProseMinChars
+    || text.range(of: workTurnFoldProseStructurePattern, options: .regularExpression) != nil
+}
 
 /// The answer of a turn with no `final_answer` label (desktop
-/// `answerBeforePostscript`). The last prose, except when it is a short
-/// postscript to a much longer text: the model answers in full, runs a cleanup
-/// tool, then writes one more line. Then the long text is the answer, and the
-/// postscript stays visible below it.
+/// `answerBeforePostscript`). The last prose, except when it is a postscript
+/// to a much longer text: the model answers in full, runs a cleanup tool (or
+/// starts an agent), then writes one more line or a status paragraph. Then the
+/// long text is the answer, and the postscript stays visible below it. The
+/// postscript has no length cap of its own; the ratio is the test.
 private func workTurnFoldAnswerBeforePostscript(
   entries: [WorkTimelineEntry],
   rows: [WorkTurnFoldFacts],
@@ -2451,7 +2607,7 @@ private func workTurnFoldAnswerBeforePostscript(
     return message.markdown.trimmingCharacters(in: .whitespacesAndNewlines).utf16.count
   }
   let postscriptLength = proseLength(lastText)
-  guard postscriptLength > 0, postscriptLength <= workTurnFoldPostscriptMaxChars else { return lastText }
+  guard postscriptLength > 0 else { return lastText }
   var workRows = 0
   var index = lastText - 1
   while index >= windowStart {
@@ -2549,14 +2705,19 @@ private func workTurnFoldPlan(
       folds = false
     }
     guard folds else { continue }
+    if case .text = row.role, case .message(let message) = entries[index].payload {
+      // A word-for-word repeat of the answer folds however long it is; other
+      // substantive prose and proof stay visible.
+      if !answerText.isEmpty,
+         message.markdown.utf8.count >= answerText.utf8.count,
+         message.markdown.trimmingCharacters(in: .whitespacesAndNewlines) == answerText {
+        duplicates.insert(index)
+      } else if workTurnFoldProseStaysVisible(message) {
+        continue
+      }
+    }
     hidden.insert(index)
     if !row.trivial { hidesContent = true }
-    if case .text = row.role, !answerText.isEmpty,
-       case .message(let message) = entries[index].payload,
-       message.markdown.utf8.count >= answerText.utf8.count,
-       message.markdown.trimmingCharacters(in: .whitespacesAndNewlines) == answerText {
-      duplicates.insert(index)
-    }
   }
   // A fold over nothing but receipts and empty rows is noise: draw the rows.
   guard hidesContent else { return nil }
@@ -2603,7 +2764,8 @@ private func workTurnFoldPlan(
       subagentCount: subagentIds.count,
       jobCount: jobCount,
       failedJobCount: failedJobCount,
-      sourceCount: marker.sourceCount
+      sourceCount: marker.sourceCount,
+      proofArtifactIds: marker.proofArtifacts.map(\.id)
     ),
     spanStart: windowStart,
     markerIndex: markerIndex,
@@ -2759,26 +2921,65 @@ func workPresentedTimelineEntries(
   let index = toolActivity ?? workTurnToolActivityIndex(from: timeline)
   let claimedInlineGroupIds = index.claimedInlineGroupIds
   let liveGroupIds = isStreaming ? index.activeInlineGroupIds : []
-  let drawn = timeline.filter { entry in
+  let drawn = timeline.compactMap { entry -> WorkTimelineEntry? in
     switch entry.payload {
-    case .toolGroup, .changedFiles:
+    case .toolGroup(let group):
       if claimedInlineGroupIds.contains(entry.id) || liveGroupIds.contains(entry.id) {
-        return false
+        // A cluster holding computer-use actions (`ade screen click …`) stays
+        // in the thread as those actions (desktop keeps the same
+        // `work_log_group` rows); the rest of its tools live on the turn line.
+        let actions = workComputerUseActions(from: group.members)
+        guard !actions.isEmpty else { return nil }
+        var actionGroup = group
+        actionGroup.computerUseActions = actions
+        return WorkTimelineEntry(
+          id: entry.id,
+          timestamp: entry.timestamp,
+          rank: entry.rank,
+          payload: .toolGroup(actionGroup),
+          turnId: entry.turnId
+        )
+      }
+    case .changedFiles:
+      if claimedInlineGroupIds.contains(entry.id) || liveGroupIds.contains(entry.id) {
+        return nil
       }
     default:
       break
     }
-    guard case .eventCard(let card) = entry.payload else { return true }
+    guard case .eventCard(let card) = entry.payload else { return entry }
     switch card.kind {
     case "activity", "activityBundle", "todo":
-      return false
+      return nil
     case "promptSuggestion":
-      return !hidesPromptSuggestions
+      return hidesPromptSuggestions ? nil : entry
     default:
-      return true
+      return entry
     }
   }
-  return workGroupingPresentedRuns(drawn)
+  return workGroupingPresentedRuns(workMarkCompactComputerUseRuns(drawn))
+}
+
+/// Only a turn's newest computer-use run draws its newest action in full;
+/// every earlier run of that turn draws compact, as on desktop.
+func workMarkCompactComputerUseRuns(_ entries: [WorkTimelineEntry]) -> [WorkTimelineEntry] {
+  func turnKey(_ entry: WorkTimelineEntry, _ group: WorkToolGroupModel) -> String {
+    entry.turnId ?? group.turnId ?? "entry:\(entry.id)"
+  }
+  var lastIndexByTurn: [String: Int] = [:]
+  for (index, entry) in entries.enumerated() {
+    if case .toolGroup(let group) = entry.payload, !group.computerUseActions.isEmpty {
+      lastIndexByTurn[turnKey(entry, group)] = index
+    }
+  }
+  guard lastIndexByTurn.count > 0 else { return entries }
+  return entries.enumerated().map { index, entry in
+    guard case .toolGroup(var group) = entry.payload, !group.computerUseActions.isEmpty else { return entry }
+    let compact = lastIndexByTurn[turnKey(entry, group)] != index
+    guard compact != group.computerUseCompact else { return entry }
+    group.computerUseCompact = compact
+    return WorkTimelineEntry(id: entry.id, timestamp: entry.timestamp, rank: entry.rank, payload: .toolGroup(group), turnId: entry.turnId)
+  }
 }
 
 /// Up to three subagent cards side by side on desktop (`SUBAGENT_CARD_GRID_MAX_COLUMNS`).
@@ -4590,6 +4791,26 @@ private func mergedWorkEventCard(_ existing: WorkEventCardModel, with incoming: 
       planSteps: incoming.planSteps.isEmpty ? existing.planSteps : incoming.planSteps
     )
   }
+  if existing.kind == "contextCompact", existing.isInProgress, incoming.isInProgress {
+    // A host that repeats Claude's `compacting` status while one compaction
+    // runs emits another "started" under the same card id. Last-wins would
+    // move the card's timestamp forward, restarting the "Compacting context ·
+    // 42 s" clock mid-run; keep the first start and let the incoming card win
+    // everywhere else.
+    return WorkEventCardModel(
+      id: incoming.id,
+      kind: incoming.kind,
+      title: incoming.title,
+      icon: incoming.icon,
+      tint: incoming.tint,
+      timestamp: existing.timestamp,
+      turnId: incoming.turnId,
+      body: incoming.body ?? existing.body,
+      bullets: incoming.bullets.isEmpty ? existing.bullets : incoming.bullets,
+      metadata: incoming.metadata.isEmpty ? existing.metadata : incoming.metadata,
+      isInProgress: incoming.isInProgress
+    )
+  }
   return incoming
 }
 
@@ -4749,6 +4970,12 @@ func eventCard(
       )
     case .systemNotice(let kind, let message, let detail, _, _):
       guard kind != "queue_recovery" else { return nil }
+      // A cross-machine move's live state carrier and a destination's arrival
+      // marker are state, not conversation (desktop hides both). Their kind is
+      // promoted from `status` on the live and replay paths alike.
+      guard kind != AgentChatNoticeKind.crossMachineHandoffState.rawValue,
+            kind != AgentChatNoticeKind.crossMachineHandoffArrived.rawValue
+      else { return nil }
       // Automatic provider retries/reconnects are live working state. Older
       // hosts persisted one notice per attempt; keep replay from rebuilding
       // the same wall of cards that desktop and TUI intentionally suppress.
@@ -4865,6 +5092,8 @@ func eventCard(
         tint: noticeTint(for: kind),
         timestamp: envelope.timestamp,
         body: message,
+        // A move's "ended" notice arrives without its detail
+        // (`systemNoticeStatusHidesDetail`), so it shows its message only.
         bullets: detail.map { [$0] } ?? [],
         metadata: [kind.replacingOccurrences(of: "_", with: " ").capitalized],
         // The raw kind, so the diagnostics fold can treat a routine kind whose
@@ -5342,6 +5571,7 @@ func workTerminalReasonLabel(_ reason: String?) -> String? {
   case "budget_exhausted": return "budget limit reached"
   case "max_turns": return "max turns reached"
   case "prompt_too_long": return "context window overflow"
+  case "image_error": return "attached image rejected"
   case "api_error": return "API error after retries"
   case "malformed_tool_use_exhausted": return "tool-call retries exhausted"
   case "structured_output_retry_exhausted": return "output retries exhausted"
@@ -5456,13 +5686,19 @@ func workTurnModelMetadataByTurn(
   return metadataByTurn
 }
 
+/// Claude Code stamps the messages it fabricates client-side (a refused image,
+/// an API error) with this model; it names no model, so it never labels a turn.
+private let workClaudeSyntheticModel = "<synthetic>"
+
 private func workTurnModelMetadata(
-  model: String?,
-  modelId: String?,
+  model rawReportedModel: String?,
+  modelId rawReportedModelId: String?,
   fallbackProvider: String,
   fallbackModelLabel: String = "Model",
   fallbackModelId: String? = nil
 ) -> WorkTurnModelMetadata {
+  let model = rawReportedModel == workClaudeSyntheticModel ? nil : rawReportedModel
+  let modelId = rawReportedModelId == workClaudeSyntheticModel ? nil : rawReportedModelId
   let rawModel = [model, modelId]
     .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
     .first { !$0.isEmpty }
@@ -5545,7 +5781,9 @@ func makeWorkUsageSummary(
   contextWindow: Int? = nil,
   contextTokens: Int? = nil,
   costUsd: Double?,
-  isContextSnapshot: Bool = false
+  isContextSnapshot: Bool = false,
+  compactAtTokens: Int? = nil,
+  compactAtSource: String? = nil
 ) -> WorkUsageSummary? {
   guard inputTokens != nil
     || outputTokens != nil
@@ -5561,6 +5799,8 @@ func makeWorkUsageSummary(
   }
 
   return WorkUsageSummary(
+    compactAtTokens: compactAtTokens,
+    compactAtSource: compactAtSource,
     turnCount: 1,
     inputTokens: inputTokens ?? 0,
     outputTokens: outputTokens ?? 0,
@@ -5633,7 +5873,13 @@ func workContextUsageViewModel(
 
   for envelope in sortedWorkChatEnvelopes(transcript) {
     switch envelope.event {
-    case .contextCompact(_, let isInProgress, let postTokens, let turnId, _):
+    case .contextCompact(let summary, let isInProgress, let postTokens, let turnId, _):
+      if workCompactSummaryHeader(summary).contains("state:failed") {
+        compactionProtected = true
+        protectedCompactionTurnId = turnId
+        usageState = .measured
+        continue
+      }
       if isInProgress {
         compactionProtected = true
         protectedCompactionTurnId = turnId
@@ -5644,6 +5890,8 @@ func workContextUsageViewModel(
       protectedCompactionTurnId = turnId
       if let postTokens {
         latestUsage = WorkUsageSummary(
+          compactAtTokens: latestUsage?.compactAtTokens,
+          compactAtSource: latestUsage?.compactAtSource,
           turnCount: 1,
           inputTokens: postTokens,
           outputTokens: 0,
@@ -5682,6 +5930,8 @@ func workContextUsageViewModel(
           // fields sum every request in the turn and would overstate it.
           if !doneTurnId.isEmpty { snapshotTurnIds.insert(doneTurnId) }
           latestUsage = WorkUsageSummary(
+            compactAtTokens: latestUsage?.compactAtTokens,
+            compactAtSource: latestUsage?.compactAtSource,
             turnCount: 1,
             inputTokens: contextTokens,
             outputTokens: 0,
@@ -5780,7 +6030,7 @@ private func makeWorkContextUsageViewModel(
       return max(0, usage.inputTokens)
     }
     if workProviderUsesCodexTokenOccupancy(provider) {
-      return inputTokens ?? positiveWorkTokenCount(usage.inputTokens + usage.outputTokens) ?? totalTokens
+      return inputTokens
     }
     let occupancy = (inputTokens ?? 0) + (cacheReadTokens ?? 0) + (cacheWriteTokens ?? 0)
     return occupancy > 0 ? occupancy : positiveWorkTokenCount(usage.inputTokens + usage.outputTokens) ?? totalTokens
@@ -5794,6 +6044,8 @@ private func makeWorkContextUsageViewModel(
   }
 
   return WorkContextUsageViewModel(
+    compactAtTokens: usage.compactAtTokens,
+    compactAtSource: usage.compactAtSource,
     provider: provider,
     state: state,
     contextWindow: contextWindow,

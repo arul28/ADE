@@ -348,6 +348,40 @@ describe("PrTimeline", () => {
     expect(screen.getByTestId("review-thread-card").getAttribute("data-thread-id")).toBe("bot-thread");
   });
 
+  it("says what needs the reader in one line, and opens the list on a click", () => {
+    const events = [
+      makeEvent({ id: "desc", type: "description", body: "The text.", timestamp: "2026-01-01T00:00:00.000Z" }),
+      makeEvent({
+        id: "open", type: "review_thread", threadId: "t1", path: "a.ts", line: 10, startLine: null,
+        isResolved: false, isOutdated: false, commentCount: 1, firstCommentBody: "why is this here?",
+      }),
+    ];
+    const onOpenChecks = vi.fn();
+    render(
+      <PrTimeline
+        events={events}
+        digest={buildDigestTimelineModel(events, { failingChecks: ["lint", "unit"] })}
+        prId="pr-1"
+        laneId={null}
+        repoOwner="acme"
+        repoName="ade"
+        viewerLogin="alice"
+        onOpenChecks={onOpenChecks}
+      />,
+    );
+    const toggle = screen.getByTestId("pr-digest-attention-toggle");
+    expect(toggle.textContent).toContain("2 checks fail");
+    expect(toggle.textContent).toContain("1 open thread");
+    // Closed by default: the description is what a reader came for.
+    expect(screen.queryByTestId("pr-digest-attention-row")).toBeNull();
+    expect(screen.queryByTestId("pr-digest-attention-checks")).toBeNull();
+
+    fireEvent.click(toggle);
+    expect(screen.getAllByTestId("pr-digest-attention-row")).toHaveLength(1);
+    fireEvent.click(screen.getByTestId("pr-digest-attention-checks"));
+    expect(onOpenChecks).toHaveBeenCalledTimes(1);
+  });
+
   it("shows an empty state when there are no events", () => {
     renderTimeline([]);
     expect(screen.getByText("No activity yet.")).toBeTruthy();

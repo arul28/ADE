@@ -115,6 +115,12 @@ export type PrSummary = {
   /** Chats that explicitly opened or worked on this PR. Empty/absent means legacy lane-wide routing. */
   chatSessionIds?: string[];
   /**
+   * The subset of `chatSessionIds` whose chat lives on another lane, such as a
+   * stack coordinator that linked every layer. Those links reference the PR;
+   * they do not take it away from the chats on the PR's own lane.
+   */
+  crossLaneChatSessionIds?: string[];
+  /**
    * Chats that unlinked this PR. Fallback display must not revive these;
    * an explicit re-link clears the tombstone.
    */
@@ -505,6 +511,19 @@ export type PrDetailBundle = {
 
 export type PrEventPayload =
   | {
+      /**
+       * A GitHub issue (not a pull request) changed: an `issues` or
+       * `issue_comment` webhook delivery. Open issue views re-read it; nothing
+       * else reacts. Rides the PR event channel because that is where GitHub
+       * webhook deliveries already land on both the desktop and the runtime.
+       */
+      type: "github-issue-changed";
+      repoOwner: string;
+      repoName: string;
+      issueNumber: number;
+      action: string | null;
+    }
+  | {
       type: "prs-updated";
       polledAt: string;
       prs: PrSummary[];
@@ -625,6 +644,26 @@ export type LandResult = {
   mergeStatus?: "merged" | "enqueued" | "pending";
   /** For a GitHub Stack merge: every PR in the stack that this merge covers. */
   stackPrNumbers?: number[];
+  /**
+   * Set when the merge was refused because the PR head moved past the
+   * `expectedHeadSha` the caller sent. Nothing was merged; the caller can show
+   * the new commits and merge again against `currentHeadSha`.
+   */
+  headChanged?: LandHeadChange;
+};
+
+export type LandHeadChange = {
+  expectedHeadSha: string;
+  currentHeadSha: string;
+  /**
+   * `appended`: the old head is an ancestor of the new one. `rewritten`: it is
+   * not (a force-push or rebase). `unknown`: GitHub could not compare them.
+   */
+  history: "appended" | "rewritten" | "unknown";
+  /** Commits on the new head that the old head did not have, oldest first. Capped. */
+  newCommits: Array<{ sha: string; title: string; author: string | null; committedAt: string | null }>;
+  /** How many new commits there are in total (may exceed `newCommits.length`). */
+  totalNewCommits: number;
 };
 
 export type PrCreationStrategy = "pr_target" | "lane_base";

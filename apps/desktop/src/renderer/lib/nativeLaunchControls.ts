@@ -7,9 +7,17 @@ import type {
 } from "../../shared/types";
 import {
   AGENT_CHAT_DROID_PERMISSION_MODE_OPTIONS,
+  AGENT_CHAT_MUSE_PERMISSION_MODE_DETAILS,
+  AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES,
+  DEFAULT_MUSE_PERMISSION_MODE,
   droidPermissionModeFromLegacyPermissionMode,
   legacyPermissionModeFromDroidPermissionMode,
+  type AgentChatMusePermissionMode,
 } from "../../shared/types/chat";
+import {
+  legacyPermissionModeFromMusePermissionMode,
+  musePermissionModeFromLegacyPermissionMode,
+} from "../../shared/modelPermissions";
 import {
   CURSOR_AVAILABLE_MODE_IDS,
   formatCursorModeLabel,
@@ -26,6 +34,7 @@ import { resolveModelDescriptorWithRuntimeCatalog } from "../components/shared/M
 type ChatRuntimeProviderKey =
   | "claude"
   | "codex"
+  | "muse"
   | "cursor"
   | "droid"
   | "opencode"
@@ -47,6 +56,7 @@ export function defaultNativeControls(profile: ChatSurfaceProfile = "standard"):
       codexConfigSource: "flags",
       opencodePermissionMode: "full-auto",
       droidPermissionMode: "auto-high",
+      musePermissionMode: "allowAll",
       cursorModeId: "full-auto",
       cursorConfigValues: {},
     };
@@ -59,6 +69,7 @@ export function defaultNativeControls(profile: ChatSurfaceProfile = "standard"):
     codexConfigSource: "flags",
     opencodePermissionMode: "edit",
     droidPermissionMode: "auto-low",
+    musePermissionMode: DEFAULT_MUSE_PERMISSION_MODE,
     cursorModeId: "agent",
     cursorConfigValues: {},
   };
@@ -85,6 +96,10 @@ export function summarizeNativeControls(
   | "codexConfigSource"
   | "opencodePermissionMode"
   | "droidPermissionMode"
+  | "copilotPermissionMode"
+  | "copilotContextTier"
+  | "copilotAutoTier"
+  | "musePermissionMode"
   | "permissionMode"
   | "cursorModeId"
 > {
@@ -146,6 +161,29 @@ export function summarizeNativeControls(
     return {
       droidPermissionMode: controls.droidPermissionMode,
       permissionMode: legacyPermissionModeFromDroidPermissionMode(controls.droidPermissionMode),
+    };
+  }
+  if (provider === "muse") {
+    // Plan mode is `denyUnmatched` plus ADE's plan guidance, so a chat in plan
+    // reports `plan` whatever its stored approval mode is.
+    return {
+      interactionMode: controls.interactionMode,
+      musePermissionMode: controls.musePermissionMode,
+      permissionMode: controls.interactionMode === "plan"
+        ? "plan"
+        : legacyPermissionModeFromMusePermissionMode(controls.musePermissionMode),
+    };
+  }
+  if (provider === "copilot") {
+    const copilotMode = controls.copilotPermissionMode ?? "ask";
+    return {
+      copilotPermissionMode: copilotMode,
+      permissionMode: copilotMode === "plan" ? "plan"
+        : copilotMode === "full-auto" ? "full-auto"
+          : copilotMode === "auto-edit" || copilotMode === "assisted" ? "edit"
+            : "default",
+      copilotContextTier: controls.copilotContextTier ?? "default",
+      copilotAutoTier: controls.copilotAutoTier ?? null,
     };
   }
   // Pi's native permission field IS `permissionMode` — it has no provider
@@ -248,6 +286,17 @@ export function applyUnifiedPermissionToNativeControls(
     return { ...next, droidPermissionMode };
   }
 
+  if (provider === "copilot") {
+    const copilotPermissionMode: NonNullable<NativeControlState["copilotPermissionMode"]> =
+      mode === "plan" ? "plan" : mode === "edit" ? "auto-edit" : mode === "full-auto" ? "full-auto" : "ask";
+    return { ...next, copilotPermissionMode };
+  }
+
+  if (provider === "muse") {
+    const musePermissionMode = musePermissionModeFromLegacyPermissionMode(mode) ?? DEFAULT_MUSE_PERMISSION_MODE;
+    return { ...next, interactionMode: mode === "plan" ? "plan" : "default", musePermissionMode };
+  }
+
   const opencodePermissionMode: AgentChatOpenCodePermissionMode =
     mode === "plan"
       ? "plan"
@@ -343,6 +392,9 @@ export const OPENCODE_PERMISSION_OPTIONS: Array<{ value: AgentChatOpenCodePermis
 ];
 
 export const DROID_PERMISSION_OPTIONS = AGENT_CHAT_DROID_PERMISSION_MODE_OPTIONS;
+
+export const MUSE_PERMISSION_OPTIONS: Array<{ value: AgentChatMusePermissionMode; label: string; detail: string }> =
+  AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES.map((value) => ({ value, ...AGENT_CHAT_MUSE_PERMISSION_MODE_DETAILS[value] }));
 
 export function claudeSelectionMode(controls: NativeControlState): AgentChatClaudePermissionMode {
   return controls.interactionMode === "plan" ? "plan" : controls.claudePermissionMode;

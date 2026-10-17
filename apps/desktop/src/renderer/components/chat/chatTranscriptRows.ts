@@ -4,9 +4,10 @@ import {
   mergeReasoningTextFragments,
   type ActivityPhaseMergeMeta,
 } from "../../../shared/chatActivityPhase";
-import type { AgentChatEvent, AgentChatEventEnvelope, AgentChatScheduledWorkStatus, AgentChatSpawnKind, AgentChatStopSource, CodexWebSearchResult } from "../../../shared/types";
+import type { AgentChatEvent, AgentChatEventEnvelope, AgentChatScheduledWorkStatus, AgentChatSpawnKind, AgentChatStopSource, AgentChatWorkflowProgress, CodexWebSearchResult } from "../../../shared/types";
 import {
   deriveSubagentCardName,
+  isAgentChatWorkflowProgress,
   isBackgroundShellCommand,
   isGenericSubagentName,
   isRealSubagent,
@@ -20,6 +21,8 @@ import {
   type NormalizedSubagentLifecycleEvent,
 } from "../../../shared/chatSubagents";
 import { backgroundCommandLabel } from "../../../shared/chatScheduledWork";
+import { readWorkflowScriptPlan } from "../../../shared/chatWorkflowScript";
+import { redactCommandLine } from "../../../shared/secretRedaction";
 import { sceneRowIdentity } from "../../../shared/chatScene";
 import { adeCardProgressTotal, adeCardRowKey } from "../../../shared/adeCard";
 import {
@@ -38,6 +41,9 @@ import {
 import { isLegacyProviderRetryNotice } from "../../../shared/providerRetryPresentation";
 import { groupStoppedSubagentResultCards, subagentResultKey, subagentSpawnKey } from "./chatSubagentCardGrid";
 import { groupedEnvelopeTurnId } from "./chatTranscriptTurnFolds";
+import { computerUseEntryWroteImage } from "./chatComputerUseRows";
+import { imageViewLocalPath } from "../../../shared/chatImageUrls";
+import { foldSpawnCompletionLines, readSpawnCompletionChildId, type SpawnCompletionSibling } from "./spawnCompletionLines";
 import {
   isChatTaskListEvent,
   reduceChatTaskList,
@@ -99,6 +105,13 @@ export type ChatWorkLogEntry = {
   itemId?: string;
   turnId?: string;
   parentItemId?: string;
+  /**
+   * Images the agent opened that this computer-use action wrote (its
+   * screenshot, or the picture its observation saved), folded into its line
+   * instead of drawing rows of their own (`foldImageViewIntoAction`).
+   * Render-side only.
+   */
+  imageViews?: CodexImageViewRenderEvent[];
 };
 
 type HiddenTranscriptEvent =
@@ -155,6 +168,12 @@ export type ChatWorkLogGroupEvent = {
   summary?: string;
   toolUseIds?: string[];
   turnId?: string | null;
+  /**
+   * Desktop timeline only: a run of computer-use actions that is not the
+   * turn's last one, so all of its rows draw compact
+   * (`arrangeComputerUseRuns`).
+   */
+  computerUseCompact?: boolean;
 };
 
 export type ChatActivityBundleItem = {
@@ -217,6 +236,29 @@ export type SubagentSpawnAnchorRenderEvent = {
   spawnKind: AgentChatSpawnKind | null;
   /** Best-effort parent label (parent's description/agentType); null/absent if unknown. */
   parentLabel?: string | null;
+  /** Claude dynamic-workflow snapshot, when this card is a workflow task. */
+  workflowProgress?: AgentChatWorkflowProgress | null;
+  /** The workflow's `meta.name`, when this card is a workflow task. */
+  workflowName?: string | null;
+};
+
+/**
+ * The script a dynamic workflow ran, as the Workflow tool call carried it.
+ * One row in the transcript, above the workflow's own card: the script is the
+ * run's plan (`meta.name`, `meta.phases`), and reading it is the only way to
+ * see what a run was asked to do when the provider never publishes live phase
+ * telemetry (`workflow_progress`).
+ */
+export type WorkflowScriptRenderEvent = {
+  type: "workflow_script";
+  /** `meta.name` from the script, when it parses. */
+  name: string | null;
+  /** The phases the script declares, in order. Planned, not live. */
+  phases: ReadonlyArray<string>;
+  lines: number;
+  script: string;
+  /** The Workflow tool call this script came from. */
+  itemId: string | null;
 };
 
 /**
@@ -228,6 +270,7 @@ export type SubagentSpawnAnchorRenderEvent = {
  * summary arrives later. Jumps that name `subagent-result:${agentKey}` resolve
  * to whichever key the card holds (`subagentCardRowKeyCandidates`).
  */
+
 export type SubagentResultCardRenderEvent = {
   type: "subagent_result_card";
   agentKey: string;
@@ -268,6 +311,16 @@ export type SubagentResultCardRenderEvent = {
   childSessionId: string | null;
   /** Cosmetic relationship; null for runtime-native subagents. */
   spawnKind: AgentChatSpawnKind | null;
+  /**
+   * Provider task id, carried over from the running card so a settled card can
+   * still be recognized (stop, workflow grouping). Optional: older stored
+   * events and hand-built fixtures predate it.
+   */
+  taskId?: string | null;
+  /** Claude dynamic-workflow snapshot, when this card is a workflow task. */
+  workflowProgress?: AgentChatWorkflowProgress | null;
+  /** The workflow's `meta.name`, when this card is a workflow task. */
+  workflowName?: string | null;
 };
 
 /** One folded agent inside a {@link SubagentStoppedGroupEvent}. */
@@ -566,6 +619,7 @@ export type ChatTranscriptRenderEvent =
   | WorkLogRenderEvent
   | SubagentSpawnAnchorRenderEvent
   | SubagentResultCardRenderEvent
+  | WorkflowScriptRenderEvent
   | BackgroundJobLineRenderEvent
   | ScheduledWakeDividerRenderEvent
   | SpawnWakeDividerRenderEvent
@@ -577,8 +631,9 @@ export type ChatTranscriptRenderEnvelope = {
   timestamp: string;
   event: ChatTranscriptRenderEvent;
   /**
-   * How many folded events this row stands for. Set only by the adjacency fold
-   * for `spawn_completed` notices, which the chip renders as a trailing `×N`.
+   * How many folded events this row stands for. Set only for `spawn_completed`
+   * notices (the adjacency fold, then `foldSpawnCompletionLines`), which the
+   * line renders as a trailing `×N`.
    * Render-side only: nothing persists it and no emitter produces it.
    */
   repeatCount?: number;
@@ -588,6 +643,12 @@ export type ChatTranscriptRenderEnvelope = {
    * row per file. Render-side only, like `repeatCount`.
    */
   imageViewSiblings?: CodexImageViewRenderEvent[];
+  /**
+   * Other children's `spawn_completed` rows drawn on this one's line, in
+   * transcript order. Set only by `foldSpawnCompletionLines`. Render-side
+   * only, like `repeatCount`.
+   */
+  spawnCompletionSiblings?: SpawnCompletionSibling[];
   /**
    * Copied off the source envelope's `provenance.timestampSynthetic`. True when
    * `timestamp` is an ordering placeholder with no provider time behind it; the
@@ -629,6 +690,14 @@ export type ChatTranscriptGroupedEnvelope = {
   repeatCount?: number;
   /** Carried through from `ChatTranscriptRenderEnvelope`; see its `imageViewSiblings`. */
   imageViewSiblings?: CodexImageViewRenderEvent[];
+  /** Carried through from `ChatTranscriptRenderEnvelope`; see its `spawnCompletionSiblings`. */
+  spawnCompletionSiblings?: SpawnCompletionSibling[];
+  /**
+   * On a `done` row: the turn ended at a usage limit, so its turn-end line
+   * says so and the error row is not drawn. Set only by `foldTurnFailureRows`.
+   * Render-side only, like `repeatCount`.
+   */
+  endedAtUsageLimit?: boolean;
   /** Carried through from `ChatTranscriptRenderEnvelope`; see its `timestampSynthetic`. */
   timestampSynthetic?: boolean;
   /** Carried through from `ChatTranscriptRenderEnvelope`; see its `sceneScopeKey`. */
@@ -721,6 +790,14 @@ type SubagentAnchorState = {
   worktreePath: string | null;
   /** Parent agent id carried on any lifecycle event; resolves the parent label. */
   parentAgentId: string | null;
+  /**
+   * Claude dynamic-workflow snapshot carried on the workflow task's own
+   * lifecycle events (`meta.name` lands in `workflowName`). Null for every
+   * ordinary subagent. Phases + per-agent phase titles live here, which is how
+   * the timeline groups a workflow run.
+   */
+  workflowProgress: AgentChatWorkflowProgress | null;
+  workflowName: string | null;
 };
 
 type CollapseTranscriptContext = {
@@ -729,6 +806,11 @@ type CollapseTranscriptContext = {
   subagentAnchors: Map<string, SubagentAnchorState>;
   /** Semantic provider failures already rendered for a specific turn. */
   errorKeysByTurn: Set<string>;
+  /**
+   * Item ids of Workflow tool calls whose script already has its own row, so
+   * the call and its result do not also render as generic tool rows.
+   */
+  workflowScriptItemIds: Set<string>;
   /** Durable user-message lifecycle rows keyed by ADE steer id. */
   userMessageRowIndexBySteer: Map<string, number>;
   /** Resolution events that arrived before their durable user-message row. */
@@ -791,13 +873,51 @@ type CollapseTranscriptContext = {
   foreignTurnEndKeys: Set<string>;
   /** Position of the one `task_list` row, or null while the chat has none. */
   taskListRowIndex: number | null;
+  /**
+   * `work_log_entry` rows keyed by `collapseKey`. A tool call, its resend and
+   * its result all land on one row; without this every first sighting of a
+   * tool scanned the whole transcript for a row that is not there.
+   */
+  workLogRowIndexByCollapseKey: Map<string, number>;
+  /**
+   * True when this context has seen every row since the list was empty. Only
+   * then does a key missing from one of the row-index maps prove the row does
+   * not exist; a context made for rows it did not build keeps the full scan.
+   */
+  rowIndexesComplete: boolean;
+  /**
+   * The two most recent {@link CollapseCheckpoint}s, oldest first. See
+   * {@link collapseChatTranscriptEventsIncrementalWithContext}.
+   */
+  checkpoints: CollapseCheckpoint[];
 };
 
-export function createCollapseTranscriptContext(): CollapseTranscriptContext {
+/**
+ * The collapse state as it was after the first `eventCount` events. A provider
+ * resend replaces an envelope a few events back, and the rows after it depend
+ * on everything before it, so the only exact answer is a replay. A checkpoint
+ * lets that replay start a few hundred events back instead of at the first
+ * event of the chat. Never mutated: a resume works on a clone.
+ */
+type CollapseCheckpoint = {
+  eventCount: number;
+  firstEvent: AgentChatEventEnvelope;
+  lastEvent: AgentChatEventEnvelope;
+  rows: ChatTranscriptRenderEnvelope[];
+  context: CollapseTranscriptContext;
+};
+
+/** A checkpoint is taken each time this many events have passed the newest one. */
+const COLLAPSE_CHECKPOINT_INTERVAL = 128;
+
+export function createCollapseTranscriptContext(
+  { rowIndexesComplete = false }: { rowIndexesComplete?: boolean } = {},
+): CollapseTranscriptContext {
   return {
     latestTodoItemsByTurn: new Map(),
     subagentAnchors: new Map(),
     errorKeysByTurn: new Set(),
+    workflowScriptItemIds: new Set(),
     userMessageRowIndexBySteer: new Map(),
     unmatchedUserMessageResolutionsBySteer: new Map(),
     turnDetailsRowIndexByTurn: new Map(),
@@ -811,7 +931,72 @@ export function createCollapseTranscriptContext(): CollapseTranscriptContext {
     eventRowKeyOrdinals: new Map(),
     foreignTurnEndKeys: new Set(),
     taskListRowIndex: null,
+    workLogRowIndexByCollapseKey: new Map(),
+    rowIndexesComplete,
+    checkpoints: [],
   };
+}
+
+/**
+ * An independent copy of a collapse context, without its checkpoints. Every
+ * field is copied by name so a field added to the context fails to compile
+ * here until it is copied too. Values are primitives, immutable events, or
+ * snapshots written once; only the subagent states are mutated in place, and
+ * several map keys alias one state, so the copy keeps that aliasing.
+ */
+function cloneCollapseTranscriptContext(context: CollapseTranscriptContext): CollapseTranscriptContext {
+  const stateCopies = new Map<SubagentAnchorState, SubagentAnchorState>();
+  const subagentAnchors = new Map<string, SubagentAnchorState>();
+  for (const [key, state] of context.subagentAnchors) {
+    let copy = stateCopies.get(state);
+    if (!copy) {
+      copy = { ...state };
+      stateCopies.set(state, copy);
+    }
+    subagentAnchors.set(key, copy);
+  }
+  return {
+    latestTodoItemsByTurn: new Map(context.latestTodoItemsByTurn),
+    subagentAnchors,
+    errorKeysByTurn: new Set(context.errorKeysByTurn),
+    workflowScriptItemIds: new Set(context.workflowScriptItemIds),
+    userMessageRowIndexBySteer: new Map(context.userMessageRowIndexBySteer),
+    unmatchedUserMessageResolutionsBySteer: new Map(context.unmatchedUserMessageResolutionsBySteer),
+    turnDetailsRowIndexByTurn: new Map(context.turnDetailsRowIndexByTurn),
+    turnDetailsWindowRowIndex: context.turnDetailsWindowRowIndex,
+    stalledRowIndexByTurn: new Map(context.stalledRowIndexByTurn),
+    adeCardRowIndexById: new Map(context.adeCardRowIndexById),
+    backgroundJobRowIndexByKey: new Map(context.backgroundJobRowIndexByKey),
+    systemNoticeSignatures: new Set(context.systemNoticeSignatures),
+    resolvedInputItemIds: new Set(context.resolvedInputItemIds),
+    turnEndSnapshots: new Map(context.turnEndSnapshots),
+    eventRowKeyOrdinals: new Map(context.eventRowKeyOrdinals),
+    foreignTurnEndKeys: new Set(context.foreignTurnEndKeys),
+    taskListRowIndex: context.taskListRowIndex,
+    workLogRowIndexByCollapseKey: new Map(context.workLogRowIndexByCollapseKey),
+    rowIndexesComplete: context.rowIndexesComplete,
+    checkpoints: [],
+  };
+}
+
+/** Record the state after `eventCount` events; keeps the two newest. */
+function recordCollapseCheckpoint(
+  context: CollapseTranscriptContext,
+  rows: ChatTranscriptRenderEnvelope[],
+  events: readonly AgentChatEventEnvelope[],
+  eventCount: number,
+): void {
+  if (eventCount <= 0) return;
+  context.checkpoints = [
+    ...context.checkpoints.slice(-1),
+    {
+      eventCount,
+      firstEvent: events[0]!,
+      lastEvent: events[eventCount - 1]!,
+      rows: rows.slice(),
+      context: cloneCollapseTranscriptContext(context),
+    },
+  ];
 }
 
 /** Turn-end snapshots recorded by a collapse pass; empty without a context. */
@@ -1197,6 +1382,10 @@ function normalizeLocalhostHref(url: string, host: string): string {
 }
 
 export function extractLocalhostUrlsFromText(text: string): ChatLocalhostUrl[] {
+  // Every match has a scheme. Tool output and args are scanned again on every
+  // streamed event; most of it has no URL at all, and `includes` is far
+  // cheaper than running the case-insensitive Unicode pattern over it.
+  if (!text.includes("://")) return [];
   const urls: ChatLocalhostUrl[] = [];
   const seen = new Set<string>();
 
@@ -1497,6 +1686,22 @@ function toolResultWebResults(
   };
 }
 
+/**
+ * The script a `Workflow` tool call carries, or null for any other call. The
+ * tool name is Claude's; the args hold one `script` string whose `meta` block
+ * names the run and its phases.
+ */
+function readWorkflowScriptCall(
+  event: Extract<AgentChatEvent, { type: "tool_call" }>,
+): Omit<WorkflowScriptRenderEvent, "type" | "itemId"> | null {
+  if (event.tool !== "Workflow") return null;
+  const args = readRecord(event.args);
+  const script = typeof args?.script === "string" ? args.script : null;
+  const plan = readWorkflowScriptPlan(script);
+  if (!plan || !script) return null;
+  return { name: plan.name, phases: plan.phases, lines: plan.lines, script };
+}
+
 function buildToolWorkLogEvent(
   event: Extract<AgentChatEvent, { type: "tool_call" | "tool_result" }>,
   timestamp: string,
@@ -1675,36 +1880,68 @@ function buildHookErrorWorkLogEvent(
   };
 }
 
+/**
+ * Position of each path in a changed-file list that {@link mergeFileChanges}
+ * returned without a "(pending file)" row. A turn can touch thousands of files
+ * under one work-log row, and every streamed change merges into that row: the
+ * index lets a merge find a path without rebuilding the whole list's map. It
+ * moves to the list a merge returns, so it only ever describes that list.
+ */
+const changedFileIndexByList = new WeakMap<ReadonlyArray<ChatWorkLogFileChange>, Map<string, number>>();
+
+function mergeFileChange(existing: ChatWorkLogFileChange, change: ChatWorkLogFileChange): ChatWorkLogFileChange {
+  const diff = mergeStreamingText(existing.diff, change.diff);
+  const stats = summarizeDiffStats(diff);
+  return {
+    ...existing,
+    ...change,
+    additions: stats.additions,
+    deletions: stats.deletions,
+    diff,
+  };
+}
+
 function mergeFileChanges(
   previous: ReadonlyArray<ChatWorkLogFileChange> | undefined,
   next: ReadonlyArray<ChatWorkLogFileChange> | undefined,
 ): ChatWorkLogFileChange[] {
+  const indexed = previous ? changedFileIndexByList.get(previous) : undefined;
+  if (previous) changedFileIndexByList.delete(previous);
+  const incoming = next ?? [];
+  // The common case: a list this function built, extended by changes for new
+  // paths or by updates to known ones. Same result as the full pass below,
+  // which handles everything else, including a "(pending file)" row that the
+  // filter at its end may drop.
+  if (indexed && !incoming.some((change) => change.path === "(pending file)")) {
+    const fileChanges = previous!.slice();
+    for (const change of incoming) {
+      const at = indexed.get(change.path);
+      if (at === undefined) {
+        indexed.set(change.path, fileChanges.length);
+        fileChanges.push(change);
+      } else {
+        fileChanges[at] = mergeFileChange(fileChanges[at]!, change);
+      }
+    }
+    changedFileIndexByList.set(fileChanges, indexed);
+    return fileChanges;
+  }
+
   const merged = new Map<string, ChatWorkLogFileChange>();
 
   const ingest = (change: ChatWorkLogFileChange) => {
     const existing = merged.get(change.path);
-    if (!existing) {
-      merged.set(change.path, change);
-      return;
-    }
-    const diff = mergeStreamingText(existing.diff, change.diff);
-    const stats = summarizeDiffStats(diff);
-    merged.set(change.path, {
-      ...existing,
-      ...change,
-      additions: stats.additions,
-      deletions: stats.deletions,
-      diff,
-    });
+    merged.set(change.path, existing ? mergeFileChange(existing, change) : change);
   };
 
   for (const change of previous ?? []) ingest(change);
-  for (const change of next ?? []) ingest(change);
+  for (const change of incoming) ingest(change);
 
-  const fileChanges = [...merged.values()];
-  const knownFiles = fileChanges.filter((change) => change.path !== "(pending file)");
-  if (knownFiles.length > 0) {
-    return knownFiles;
+  const allFileChanges = [...merged.values()];
+  const knownFiles = allFileChanges.filter((change) => change.path !== "(pending file)");
+  const fileChanges = knownFiles.length > 0 ? knownFiles : allFileChanges;
+  if (!fileChanges.some((change) => change.path === "(pending file)")) {
+    changedFileIndexByList.set(fileChanges, new Map(fileChanges.map((change, index) => [change.path, index])));
   }
   return fileChanges;
 }
@@ -1744,8 +1981,16 @@ function mergeWorkLogEntries(previous: ChatWorkLogEntry, next: ChatWorkLogEntry)
 function findMatchingWorkLogEntryIndex(
   rows: ChatTranscriptRenderEnvelope[],
   collapseKey: string | undefined,
+  context: CollapseTranscriptContext | undefined,
 ): number {
   if (!collapseKey) return -1;
+  const stored = context?.workLogRowIndexByCollapseKey.get(collapseKey);
+  if (stored != null) {
+    const candidate = rows[stored];
+    if (candidate?.event.type === "work_log_entry" && candidate.event.collapseKey === collapseKey) return stored;
+  } else if (context?.rowIndexesComplete) {
+    return -1;
+  }
   for (let index = rows.length - 1; index >= 0; index -= 1) {
     const candidate = rows[index];
     if (!candidate || candidate.event.type !== "work_log_entry") continue;
@@ -1759,11 +2004,13 @@ function appendWorkLogRow(
   envelope: AgentChatEventEnvelope,
   rowKey: string,
   nextEvent: WorkLogRenderEvent,
+  context: CollapseTranscriptContext | undefined,
 ): void {
-  const matchIndex = findMatchingWorkLogEntryIndex(rows, nextEvent.collapseKey);
+  const matchIndex = findMatchingWorkLogEntryIndex(rows, nextEvent.collapseKey, context);
   if (matchIndex >= 0) {
     const existing = rows[matchIndex];
     if (existing?.event.type === "work_log_entry") {
+      if (nextEvent.collapseKey) context?.workLogRowIndexByCollapseKey.set(nextEvent.collapseKey, matchIndex);
       rows[matchIndex] = {
         ...existing,
         timestamp: envelope.timestamp,
@@ -1776,11 +2023,73 @@ function appendWorkLogRow(
     }
   }
 
+  if (nextEvent.collapseKey) context?.workLogRowIndexByCollapseKey.set(nextEvent.collapseKey, rows.length);
   rows.push({
     key: rowKey,
     timestamp: envelope.timestamp,
     event: nextEvent,
   });
+}
+
+/** How far back an image view looks for the action that wrote its file. */
+const IMAGE_VIEW_WRITER_SCAN_LIMIT = 400;
+
+function sameImageView(left: CodexImageViewRenderEvent, right: CodexImageViewRenderEvent): boolean {
+  return left.itemId === right.itemId && (left.turnId ?? null) === (right.turnId ?? null);
+}
+
+function mergeImageView(previous: CodexImageViewRenderEvent, next: CodexImageViewRenderEvent): CodexImageViewRenderEvent {
+  return {
+    ...previous,
+    ...next,
+    path: next.path ?? previous.path,
+    url: next.url ?? previous.url,
+    title: next.title ?? previous.title,
+  };
+}
+
+/**
+ * An image the agent opened that a computer-use action of the same turn wrote
+ * (the screenshot it took, the picture its observation saved) joins that
+ * action's line instead of drawing a row of its own: one line says the agent
+ * took the screenshot and looked at it, and the picture opens under it. A later
+ * update of the same view (Codex sends `running`, then `completed`) lands on
+ * the same line. Returns false when the view stays a row of its own: no action
+ * of this turn printed its path, or it already has a row.
+ */
+function foldImageViewIntoAction(rows: ChatTranscriptRenderEnvelope[], event: CodexImageViewRenderEvent): boolean {
+  const turnId = event.turnId ?? null;
+  const path = imageViewLocalPath(event);
+  let writerIndex = -1;
+  const stop = Math.max(0, rows.length - IMAGE_VIEW_WRITER_SCAN_LIMIT);
+  for (let index = rows.length - 1; index >= stop; index -= 1) {
+    const row = rows[index]!;
+    const candidate = row.event;
+    if (candidate.type === "user_message") break;
+    if (candidate.type === "codex_image_view") {
+      if (sameImageView(candidate, event) || row.imageViewSiblings?.some((sibling) => sameImageView(sibling, event))) return false;
+      continue;
+    }
+    if (candidate.type !== "work_log_entry") continue;
+    const { entry } = candidate;
+    if (turnId && entry.turnId && entry.turnId !== turnId) break;
+    const held = entry.imageViews?.findIndex((view) => sameImageView(view, event)) ?? -1;
+    if (held >= 0) {
+      const imageViews = [...entry.imageViews!];
+      imageViews[held] = mergeImageView(imageViews[held]!, event);
+      rows[index] = { ...row, event: { ...candidate, entry: { ...entry, imageViews } } };
+      return true;
+    }
+    if (writerIndex < 0 && path && computerUseEntryWroteImage(entry, path)) writerIndex = index;
+  }
+  if (writerIndex < 0) return false;
+  const writer = rows[writerIndex]!;
+  const writerEvent = writer.event as WorkLogRenderEvent;
+  rows[writerIndex] = {
+    ...writer,
+    event: { ...writerEvent, entry: { ...writerEvent.entry, imageViews: [...(writerEvent.entry.imageViews ?? []), event] } },
+  };
+  return true;
 }
 
 // ── Subagent lifecycle rows ────────────────────────────────────────────────
@@ -1848,26 +2157,6 @@ function resolveSubagentCardRowIndex(
   return null;
 }
 
-/**
- * The child a `spawn_completed` system notice reports on, or `null` for
- * anything else — including a notice whose detail lost its `spawnCompletion`
- * (an old or truncated transcript). An unidentified completion folds into
- * nothing, so it keeps its own row rather than silently absorbing a different
- * child's.
- *
- * Takes the RENDER event type, not `AgentChatEvent`: the fold compares an
- * incoming event against one already stored on a row, and a row holds the
- * render union. Narrowing on `type` rejects the synthetic render-only members
- * anyway, so widening the parameter costs nothing and removes a cast.
- */
-function readSpawnCompletionChildId(event: ChatTranscriptRenderEvent): string | null {
-  if (event.type !== "system_notice") return null;
-  if (event.noticeKind !== "info" || event.status !== "spawn_completed") return null;
-  const detail = event.detail;
-  if (!detail || typeof detail === "string") return null;
-  return detail.spawnCompletion?.childSessionId?.trim() || null;
-}
-
 function repairSubagentRowPositionsAfterSplice(
   context: CollapseTranscriptContext,
   removedIndex: number,
@@ -1898,6 +2187,7 @@ function repairIndexedTranscriptRowsAfterSplice(
     context.stalledRowIndexByTurn,
     context.adeCardRowIndexById,
     context.backgroundJobRowIndexByKey,
+    context.workLogRowIndexByCollapseKey,
   ]) {
     for (const [key, storedIndex] of rowIndexes) {
       if (storedIndex === removedIndex) rowIndexes.delete(key);
@@ -1918,9 +2208,13 @@ function resolveKeyedRowIndex(
   rowIndexes: Map<string, number> | undefined,
   lookupKey: string,
   expectedKey: string,
+  rowIndexesComplete = false,
 ): number | null {
   const stored = rowIndexes?.get(lookupKey);
   if (stored != null && rows[stored]?.key === expectedKey) return stored;
+  // No entry in a complete index: the row was never added. A subagent's every
+  // progress tick asks for a background-job line it never had.
+  if (stored == null && rowIndexes && rowIndexesComplete) return null;
   for (let index = rows.length - 1; index >= 0; index -= 1) {
     if (rows[index]?.key === expectedKey) return index;
   }
@@ -1933,7 +2227,7 @@ function resolveAdeCardRowIndex(
   cardId: string,
   expectedKey: string,
 ): number | null {
-  return resolveKeyedRowIndex(rows, context?.adeCardRowIndexById, cardId, expectedKey);
+  return resolveKeyedRowIndex(rows, context?.adeCardRowIndexById, cardId, expectedKey, context?.rowIndexesComplete);
 }
 
 type AdeCardEvent = Extract<AgentChatEvent, { type: "ade_card" }>;
@@ -2019,9 +2313,12 @@ function backgroundExitCode(event: NormalizedSubagentLifecycleEvent): number | n
  * command and description are the fallbacks, in that order.
  */
 function backgroundJobLabel(state: SubagentAnchorState): string {
-  return backgroundCommandLabel(state.command ?? state.description ?? "")
-    || state.command
-    || state.description
+  // Masked before the shell noise is stripped and the label is cut, so no secret is split.
+  const command = state.command ? redactCommandLine(state.command) : state.command;
+  const description = state.description ? redactCommandLine(state.description) : state.description;
+  return backgroundCommandLabel(command ?? description ?? "")
+    || command
+    || description
     || "Background command";
 }
 
@@ -2033,7 +2330,13 @@ function resolveBackgroundJobRowIndex(
   context: CollapseTranscriptContext | undefined,
   expectedKey: string,
 ): number | null {
-  return resolveKeyedRowIndex(rows, context?.backgroundJobRowIndexByKey, expectedKey, expectedKey);
+  return resolveKeyedRowIndex(
+    rows,
+    context?.backgroundJobRowIndexByKey,
+    expectedKey,
+    expectedKey,
+    context?.rowIndexesComplete,
+  );
 }
 
 /**
@@ -2183,6 +2486,8 @@ function spawnAnchorEvent(
     taskId: state.taskId,
     spawnKind: state.spawnKind,
     parentLabel: anchors ? resolveParentLabel(state, anchors) : null,
+    workflowProgress: state.workflowProgress,
+    workflowName: state.workflowName,
   };
 }
 
@@ -2231,6 +2536,11 @@ function enrichSubagentStateFromEvent(
   }
   const parentAgentId = subagentText((event as { parentAgentId?: unknown }).parentAgentId);
   if (parentAgentId) state.parentAgentId = parentAgentId;
+  const workflowName = subagentText((event as { workflowName?: unknown }).workflowName);
+  if (workflowName) state.workflowName = workflowName;
+  // The workflow snapshot rides the workflow task's own events, newest wins.
+  const workflowProgress = (event as { workflowProgress?: unknown }).workflowProgress;
+  if (isAgentChatWorkflowProgress(workflowProgress)) state.workflowProgress = workflowProgress;
 }
 
 /**
@@ -2334,6 +2644,8 @@ function handleSubagentLifecycleEvent(
       worktreeBranch: null,
       worktreePath: null,
       parentAgentId: null,
+      workflowProgress: null,
+      workflowName: null,
     };
     anchors.set(agentKey, state);
     if (taskId) anchors.set(taskId, state);
@@ -2527,6 +2839,9 @@ function handleSubagentLifecycleEvent(
     resultLanded: resultLandedBeforeStop,
     childSessionId: state.childSessionId,
     spawnKind: state.spawnKind,
+    taskId: state.taskId,
+    workflowProgress: state.workflowProgress,
+    workflowName: state.workflowName,
   };
   // Settle IN PLACE: the card row keeps its position and key, so a grid keeps
   // its cards in order and React
@@ -2842,6 +3157,10 @@ export function appendCollapsedChatTranscriptEvent(
     // Hide this legacy durable shape during replay so old transcripts upgrade
     // to the same calm presentation as new events.
     if (isLegacyProviderRetryNotice(event)) return;
+    // A chat's move to or from another machine shows as a banner above the
+    // composer (the live move record, and the destination's arrival marker);
+    // it is state, not conversation. `cross_machine_handoff_ended` still renders.
+    if (event.status === "cross_machine_handoff_state" || event.status === "cross_machine_handoff_arrived") return;
     if (event.noticeKind === "info" && event.message.trim().toLowerCase() === "session ready") {
       return;
     }
@@ -2855,6 +3174,7 @@ export function appendCollapsedChatTranscriptEvent(
         envelope,
         rowKey,
         buildHookErrorWorkLogEvent(event, envelope.timestamp, rowKey, preToolUseHookError),
+        context,
       );
       return;
     }
@@ -3067,11 +3387,9 @@ export function appendCollapsedChatTranscriptEvent(
     return;
   }
 
-  // Subagent lifecycle → two-row spawn/result cards (or a single live one-liner
-  // for background shell commands). Normalize canonical dotted events first, then
-  // fold every lifecycle event into the anchor state (handled BEFORE the generic
-  // passthrough so no raw subagent_* row ever reaches the activity bundler).
   if (event.type === "codex_image_view") {
+    // The screenshot or observation picture an action just took: its line.
+    if (foldImageViewIntoAction(rows, event)) return;
     // An update to an image already folded into a strip: merge it in place.
     for (let index = rows.length - 1; index >= 0; index -= 1) {
       const siblings = rows[index]!.imageViewSiblings;
@@ -3149,6 +3467,9 @@ export function appendCollapsedChatTranscriptEvent(
           };
           return;
         }
+        // A row that draws nothing (an automatic context-usage snapshot) sits
+        // between nearly every step of some providers and must not split it.
+        if (!rowDrawsVisibleItem(candidate)) continue;
         if (candidate.event.type !== "text" && classifyTurnFoldEvent(candidate.event) !== "history") break;
       }
     }
@@ -3181,6 +3502,10 @@ export function appendCollapsedChatTranscriptEvent(
     return;
   }
 
+  // Subagent lifecycle → two-row spawn/result cards (or a single live one-liner
+  // for background shell commands). Normalize canonical dotted events first, then
+  // fold every lifecycle event into the anchor state (handled BEFORE the generic
+  // passthrough so no raw subagent_* row ever reaches the activity bundler).
   const normalizedSubagentEvent = normalizeSubagentLifecycleEvent(event);
   if (normalizedSubagentEvent) {
     const activeContext = context ?? createCollapseTranscriptContext();
@@ -3194,22 +3519,55 @@ export function appendCollapsedChatTranscriptEvent(
   }
 
   if (event.type === "tool_call" || event.type === "tool_result") {
-    appendWorkLogRow(rows, envelope, rowKey, buildToolWorkLogEvent(event, envelope.timestamp));
+    // A dynamic workflow's script gets its own row (the run's plan), and the
+    // call's result is swallowed with it: "Workflow" as a generic tool line
+    // says nothing, and the script is the only description of what the run was
+    // asked to do.
+    const workflowScript = event.type === "tool_call" ? readWorkflowScriptCall(event) : null;
+    if (workflowScript) {
+      context?.workflowScriptItemIds.add(event.itemId);
+      rows.push({
+        key: rowKey,
+        timestamp: envelope.timestamp,
+        event: { type: "workflow_script", ...workflowScript, itemId: event.itemId },
+      });
+      return;
+    }
+    if (event.type === "tool_result") {
+      // With a context, the set answers, and it is the only source consulted:
+      // a `workflow_script` row is pushed in exactly one place (above), which
+      // records its item id in this set in the same breath. Scanning the rows
+      // for one would walk the whole transcript once per tool result, which is
+      // quadratic over a long chat — and backfill re-collapses the whole
+      // transcript on every page it lands.
+      //
+      // Without a context (a caller that collapses a single event), the script
+      // row already in the list answers — a per-call context would not survive
+      // to this event, so the row is the only durable record that this call's
+      // script has its own line.
+      const scriptRowExists = context
+        ? context.workflowScriptItemIds.has(event.itemId)
+        : rows.some((row) => (
+            row.event.type === "workflow_script" && row.event.itemId === event.itemId
+          ));
+      if (scriptRowExists) return;
+    }
+    appendWorkLogRow(rows, envelope, rowKey, buildToolWorkLogEvent(event, envelope.timestamp), context);
     return;
   }
 
   if (event.type === "command") {
-    appendWorkLogRow(rows, envelope, rowKey, buildCommandWorkLogEvent(event, envelope.timestamp));
+    appendWorkLogRow(rows, envelope, rowKey, buildCommandWorkLogEvent(event, envelope.timestamp), context);
     return;
   }
 
   if (event.type === "file_change") {
-    appendWorkLogRow(rows, envelope, rowKey, buildFileWorkLogEvent(event, envelope.timestamp));
+    appendWorkLogRow(rows, envelope, rowKey, buildFileWorkLogEvent(event, envelope.timestamp), context);
     return;
   }
 
   if (event.type === "web_search") {
-    appendWorkLogRow(rows, envelope, rowKey, buildWebSearchWorkLogEvent(event, envelope.timestamp));
+    appendWorkLogRow(rows, envelope, rowKey, buildWebSearchWorkLogEvent(event, envelope.timestamp), context);
     return;
   }
 
@@ -3233,7 +3591,13 @@ export function appendCollapsedChatTranscriptEvent(
       if (previous) {
         rows[actualIndex] = {
           ...rows[actualIndex]!,
-          timestamp: envelope.timestamp,
+          // Two "started" rows are one compaction still running (an older peer
+          // repeats Claude's `compacting` status every ~30s). The row counts
+          // its elapsed from this timestamp, so a repeat must not move it
+          // forward — that is what restarted the "Compacting 42s" clock.
+          timestamp: previous.state === "started" && incoming.state === "started"
+            ? rows[actualIndex]!.timestamp
+            : envelope.timestamp,
           event: toContextCompactChatEvent(mergeNormalizedContextCompact(previous, incoming)),
         };
         return;
@@ -3282,14 +3646,15 @@ export function appendCollapsedChatTranscriptEvent(
     return;
   }
 
-  // ── Spawned-chat turn completions: ONE chip per adjacent run ──
+  // ── Spawned-chat turn completions: ONE row per adjacent run ──
   // A parent that spawned a peer gets one `spawn_completed` notice per sibling
   // TURN, which stacks identical rows. Fold an incoming notice into the LAST
   // row when that row is a completion for the SAME child, carrying a
-  // `repeatCount` the chip renders as `×N`. Adjacency-only on purpose:
-  // anything the parent said or did in between separates the runs, and
+  // `repeatCount` the line renders as `×N`. Adjacency-only on purpose:
   // consulting only the row just appended is what keeps the incremental and
-  // full collapses byte-identical.
+  // full collapses byte-identical. Folding across other rows (and dropping a
+  // child's out-of-date notices) happens later, on the visible rows, in
+  // `foldSpawnCompletionLines`.
   const spawnCompletionChildId = readSpawnCompletionChildId(event);
   if (spawnCompletionChildId) {
     const last = rows[rows.length - 1];
@@ -3390,9 +3755,16 @@ export function collapseChatTranscriptEventsWithContext(
   events: AgentChatEventEnvelope[],
 ): CollapseTranscriptResult {
   const rows: ChatTranscriptRenderEnvelope[] = [];
-  const context = createCollapseTranscriptContext();
-  for (const envelope of events) {
-    appendCollapsedEventWithStamp(rows, envelope, context);
+  const context = createCollapseTranscriptContext({ rowIndexesComplete: true });
+  // Leave the pass with checkpoints one and two intervals behind the end, so
+  // the first resend after opening a long chat replays a tail, not the chat.
+  const olderCheckpointAt = events.length - 2 * COLLAPSE_CHECKPOINT_INTERVAL;
+  const newerCheckpointAt = events.length - COLLAPSE_CHECKPOINT_INTERVAL;
+  for (let index = 0; index < events.length; index += 1) {
+    if (index > 0 && (index === olderCheckpointAt || index === newerCheckpointAt)) {
+      recordCollapseCheckpoint(context, rows, events, index);
+    }
+    appendCollapsedEventWithStamp(rows, events[index]!, context);
   }
   return { rows, context };
 }
@@ -3422,13 +3794,53 @@ export function collapseChatTranscriptEventsIncrementalWithContext(
     return collapseChatTranscriptEventsWithContext(events);
   }
 
-  if (events[previousEvents.length - 1] !== previousEvents[previousEvents.length - 1]) {
+  // History is not strictly append-only: a provider can resend a tool call
+  // under the same item id (Claude sends `tool_call` with empty args, then
+  // again with the command), and the live merge replaces the earlier envelope
+  // in place (`upsertRepeatedToolCalls`). When another event arrived between
+  // the two, the last event is unchanged, so only a scan finds the
+  // replacement. Reference compares only.
+  let firstChangedIndex = -1;
+  for (let index = 0; index < previousEvents.length; index += 1) {
+    if (events[index] !== previousEvents[index]) {
+      firstChangedIndex = index;
+      break;
+    }
+  }
+
+  if (firstChangedIndex >= 0) {
+    // Replay from the newest checkpoint that ends at or before the replaced
+    // event. Everything before a checkpoint is unchanged (the scan above), so
+    // the result is the one a full pass produces; without a usable checkpoint
+    // (the replacement is older than both) it is a full pass.
+    const checkpoints = previousContext.checkpoints;
+    for (let pick = checkpoints.length - 1; pick >= 0; pick -= 1) {
+      const checkpoint = checkpoints[pick]!;
+      if (
+        checkpoint.eventCount > firstChangedIndex
+        || events[0] !== checkpoint.firstEvent
+        || events[checkpoint.eventCount - 1] !== checkpoint.lastEvent
+      ) {
+        continue;
+      }
+      const rows = checkpoint.rows.slice();
+      const context = cloneCollapseTranscriptContext(checkpoint.context);
+      context.checkpoints = checkpoints.slice(0, pick + 1);
+      for (let index = checkpoint.eventCount; index < events.length; index += 1) {
+        appendCollapsedEventWithStamp(rows, events[index]!, context);
+      }
+      return { rows, context };
+    }
     return collapseChatTranscriptEventsWithContext(events);
   }
 
   const rows = previousRows.slice();
   for (let index = previousEvents.length; index < events.length; index += 1) {
     appendCollapsedEventWithStamp(rows, events[index]!, previousContext);
+  }
+  const newestCheckpoint = previousContext.checkpoints[previousContext.checkpoints.length - 1];
+  if (events.length - (newestCheckpoint?.eventCount ?? 0) >= COLLAPSE_CHECKPOINT_INTERVAL) {
+    recordCollapseCheckpoint(previousContext, rows, events, events.length);
   }
   return { rows, context: previousContext };
 }
@@ -3813,19 +4225,22 @@ export function groupChatTranscriptRows(
   return groupChatTranscriptRowsCore(rows, previousRows);
 }
 
+function rowDrawsVisibleItem({ event }: ChatTranscriptRenderEnvelope): boolean {
+  if (event.type === "context_usage" && event.origin !== undefined && event.origin !== "command") return false;
+  if (event.type === "model_handoff" && event.fromProvider === event.toProvider) return false;
+  return true;
+}
+
 /**
- * Rows that never mount a visible transcript item are dropped before grouping.
- * Anchor lookup must use the same filter so stable row keys agree with the
- * rendered transcript.
+ * Rows that never mount a visible transcript item are dropped before grouping,
+ * and "finished its turn" notices are folded to one line per run (see
+ * `foldSpawnCompletionLines`). Anchor lookup must use the same filter so
+ * stable row keys agree with the rendered transcript.
  */
 export function filterVisibleTranscriptRows(
   rows: readonly ChatTranscriptRenderEnvelope[],
 ): ChatTranscriptRenderEnvelope[] {
-  return rows.filter(({ event }) => {
-    if (event.type === "context_usage" && event.origin !== undefined && event.origin !== "command") return false;
-    if (event.type === "model_handoff" && event.fromProvider === event.toProvider) return false;
-    return true;
-  });
+  return foldSpawnCompletionLines(rows.filter(rowDrawsVisibleItem));
 }
 
 type TerminusDoneEvent = Extract<AgentChatEvent, { type: "done" }>;

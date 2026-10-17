@@ -29,51 +29,62 @@ Your repo root is always the **primary lane** — it exists from the moment you 
 
 ## New worktree off a branch
 
-This is the default path. Open the **Create lane** dialog, name the task, and choose what to branch from.
+This is the default path. Open the **New lane** dialog, name the task, and choose what to branch from. The dialog opens in **As new branch** mode.
 
 <Steps>
-  <Step title="Open Create lane">
+  <Step title="Open New lane">
     Click **New lane** in the Lanes view.
   </Step>
   <Step title="Name the task">
-    Use a short, outcome-shaped name like `fix-auth-redirect` or `add-health-endpoint`. The name becomes the branch and the worktree folder slug; ADE also picks an unused accent color for the lane.
+    Use a short, outcome-shaped name like `fix-auth-redirect` or `add-health-endpoint`. The name becomes the branch and the worktree folder slug. ADE picks an unused accent color for the lane; click the colored dot inside the name field to change it.
   </Step>
   <Step title="Choose the base">
-    By default ADE branches from your default branch. Open the branch picker to start from a specific branch instead.
+    Open **Based on**. Your default branch is listed first and tagged `default`. Use the **Remote** / **Local** switch in that popover to start from a remote or local branch instead.
   </Step>
   <Step title="Create">
-    ADE runs `git worktree add`, checks the new branch out under `.ade/worktrees/`, and the lane appears in the list.
+    Click **Create lane**. ADE runs `git worktree add`, checks the new branch out under `.ade/worktrees/`, and the lane appears in the list.
   </Step>
 </Steps>
+
+<Tip>
+Press **Enter** in the name field to create the lane. **⌘ Enter** (Ctrl+Enter on Windows and Linux) creates it from anywhere in the dialog.
+</Tip>
 
 <Frame caption="Name the lane and choose what to branch from.">
   <img src="/media/features/worktrees/new-lane-options.webp" alt="Naming a lane and choosing its base branch" />
 </Frame>
 
 <Note>
-The branch picker filters as you type and shows each branch's last-commit author and date. Branches with an open pull request carry a **PR pill** (`#NNN`, dimmed for drafts) so you can tell at a glance what's already in review.
+Every branch or lane choice opens an inline popover above the form. The popover has a search field and a list. Each row shows the branch name, its last commit message, author, and age, plus a **current** tag on the checked-out branch and a **PR pill** (`#NNN`, with *draft* added for draft pull requests) when the branch has an open pull request. Search accepts free text plus `pr:open`, `pr:none`, `mine` (or `author:me`), `stale:30d`, and a PR number such as `#812`. Pressing Enter in the search field picks the top row.
 </Note>
+
+### Machine and extras
+
+The three modes sit under the name field, and each has a tooltip that explains it. Two more rows appear as needed:
+
+- **Machine** appears only when more than one machine is connected. **Least loaded** lets ADE pick the least-loaded machine right now; otherwise choose a specific machine. Each one shows its free disk and repo path. Machines without the repository are disabled, and **Connect another machine…** is at the bottom of the list.
+- **Extras** holds **Attach Linear issue** and **Use a template**. Attaching an issue shows a card with its identifier, title, and branch name. While an issue is attached, **As existing branch** is unavailable. **Use a template** chooses the lane template that sets up env files, installs, and services, or **No template**; it also links to **Manage templates…** or **Create a template…**.
 
 ### Auto-create from a task or Linear issue
 
-You don't have to fill in the dialog by hand. Hand ADE a task — or connect a Linear issue — and it derives the branch name, names the lane, and attaches the issue as context so the agent starts with the right spec.
+You don't have to fill in the dialog by hand. Hand ADE a task — or attach a Linear issue — and it derives the branch name, names the lane, and attaches the issue as context so the agent starts with the right spec.
 
 <video autoPlay muted loop playsInline className="w-full aspect-video rounded-xl" src="/media/demos/autocreateLane.mp4"></video>
 
 <Tip>
-Connecting a Linear issue derives the branch name from the issue identifier and title (`IDENT-title-slug`). ADE refuses to create the lane if that branch already exists locally or on the remote, so you don't accidentally collide with existing work.
+Attaching a Linear issue derives the branch name from the issue identifier and title (`IDENT-title-slug`), or uses Linear's own branch name when it provides one. If that branch already exists locally or on the remote, the issue card warns and **Create lane** stays disabled until you detach the issue, so you don't accidentally collide with existing work.
 </Tip>
 
 ## Child lane (stacked)
 
-To build on top of work that hasn't merged yet, create a **child lane**: its branch is based on the parent lane's branch instead of `main`. Select the parent lane, choose **New child lane**, and the chain forms automatically. The full review flow — stacked PRs and rebase propagation — lives in [Stack lanes](/lanes/stacks).
+To build on top of work that hasn't merged yet, create a **child lane**: its branch is based on the parent lane's branch instead of `main`. In the New lane dialog, choose **As child lane**, pick the **Parent** lane, and click **Create child lane**. The child rebases when its parent moves. **Based on** defaults to the parent's branch, tagged `parent`; you can pick any other branch, including remote `origin/` branches. It stays disabled until a parent is picked. The full review flow — stacked PRs and rebase propagation — lives in [Stack lanes](/lanes/stacks).
 
 ## Import an existing branch
 
-Have a branch already, local or remote, that you want ADE to manage as a worktree? Use the **import existing branch** path inside the Create lane dialog. It swaps the dialog body for the branch picker; pick a branch and ADE creates a managed worktree checked out to it.
+Have a branch already, local or remote, that you want ADE to manage as a worktree? Choose **As existing branch** in the New lane dialog, pick the branch, and click **Import branch**. ADE creates a managed worktree checked out to that branch, and the lane works on it directly; no new branch is made. The checked-out branch is listed first, then the rest by most recent commit. Picking a branch fills in the lane name if the name is empty or still auto-filled.
 
 <Note>
-The same picker that backs new worktrees powers import — search by name, filter to your own branches (`author:me`), or jump straight to a PR number (`#NNN`). The PR pills come from GitHub and are fail-soft: if the PR lookup errors, the picker still works, just without pills.
+The same popover search that backs new worktrees powers import — search by name, filter to your own branches (`mine` or `author:me`), or jump straight to a PR number (`#NNN`). The PR pills come from GitHub and are fail-soft: if the PR lookup errors, the list still works, just without pills.
 </Note>
 
 ## Attach an external worktree

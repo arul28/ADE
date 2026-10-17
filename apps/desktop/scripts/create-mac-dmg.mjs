@@ -4,6 +4,7 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
+import { retryTransient } from "./release-retry.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -81,17 +82,26 @@ try {
   await verifyAppSignature(stagedAppPath, "staged DMG app signature");
 
   console.log(`[release:mac] Creating ${arch || "universal"} DMG with hdiutil: ${dmgPath}`);
-  await run("hdiutil", [
-    "create",
-    "-volname",
-    "ADE",
-    "-srcfolder",
-    stagingDir,
-    "-ov",
-    "-format",
-    "UDZO",
-    dmgPath,
-  ]);
+  // "Resource busy" is hdiutil racing the copy it was just handed; it clears
+  // within seconds and cost five release jobs a full rebuild before this retry.
+  await retryTransient(
+    `hdiutil create for ${path.basename(dmgPath)}`,
+    async () => {
+      await fs.rm(dmgPath, { force: true });
+      await run("hdiutil", [
+        "create",
+        "-volname",
+        "ADE",
+        "-srcfolder",
+        stagingDir,
+        "-ov",
+        "-format",
+        "UDZO",
+        dmgPath,
+      ]);
+    },
+    { attempts: 5, delayMs: 10_000, isTransient: /Resource busy/i },
+  );
   // The staged app (signed via ditto --extattr, verified above) is what hdiutil
   // packs, so the dmg's app signature is intact. We deliberately do NOT re-verify
   // by mounting the dmg: codesign --verify on an app inside a read-only mounted

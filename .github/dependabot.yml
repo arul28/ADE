@@ -1,1 +1,45 @@
-
+# Dependabot watches only the provider SDKs that ADE pins and ships.
+# Other dependencies stay manual.
+#
+# A provider bump also needs `npm run tools:manifest` in apps/ade-cli, and
+# Dependabot cannot run it, so its PRs fail CI until someone does. A
+# `@muse-code/sdk` bump needs `npm run tools:muse-pin` instead: it re-pins the
+# Muse binary that pairs with the new SDK version (SDK X.Y.Z pairs with muse
+# X.Y.Z-R…) and regenerates the manifest. Either run the command on the PR
+# branch by hand, or enable an ADE automation from the
+# "Dependabot PR → its branch + agent" template that runs it and checks each
+# provider live before the PR merges.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directories:
+      - /apps/desktop
+      - /apps/ade-cli
+    schedule:
+      interval: daily
+      time: "21:00"
+      timezone: "America/New_York"
+    # GitHub holds a new version back for about 3 days by default. These SDKs
+    # release every day or two, and the automation checks each bump live, so
+    # open the PR as soon as a version is published.
+    cooldown:
+      default-days: 0
+    allow:
+      - dependency-name: "@anthropic-ai/claude-agent-sdk"
+      - dependency-name: "@openai/codex"
+      - dependency-name: "@opencode/cli"
+      - dependency-name: "@opencode/client"
+      - dependency-name: "@cursor/sdk"
+      - dependency-name: "@factory/droid-sdk"
+      - dependency-name: "@muse-code/sdk"
+    # One PR for each SDK. group-by puts the bump for both folders in that
+    # one PR, so apps/desktop and apps/ade-cli stay on the same version.
+    groups:
+      each-provider-sdk:
+        group-by: dependency-name
+    labels:
+      - dependencies
+    commit-message:
+      prefix: "deps"
+    # One open PR for each of the 7 SDKs.
+    open-pull-requests-limit: 7

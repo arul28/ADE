@@ -16,6 +16,12 @@
 //   a message, the chat's progress is relayed as context, and its final answer
 //   is spoken back.
 //
+// Voice narrates. Both transports set `clientManagedHandoffs`, so Codex never
+// speaks an agent's output on its own: ADE streams the followed turn's prose
+// into speech as it is written (code stripped out), says the milestones worth
+// hearing, and holds the floor only until the user takes it. A `quiet` update
+// preference opts out of all of it and speaks the answer once, as voice used to.
+//
 // The service keeps live captions for the renderer's voice bar (read through
 // `getState`) and writes one summary line to the chat when a session ends.
 // ---------------------------------------------------------------------------
@@ -46,14 +52,13 @@ import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import type { Logger } from "../logging/logger";
 import { captureFeatureUsedAnalytics, type FeatureAnalytics } from "../analytics/featureProductAnalytics";
 import { startCodexVoiceHost, type CodexVoiceHost } from "./codexVoiceHost";
+import { createVoiceNarration, type VoiceNarrator } from "./codexVoiceNarration";
 
 const ANSWER_TIMEOUT_MS = 20_000;
 const CAPTION_LIMIT = 4;
 const ENDED_RETENTION_MS = 60_000;
 /** A hand-off starts its turn within a second or two; older requests never got one. */
 const REQUEST_CLAIM_MS = 15_000;
-const STATUS_INTERVAL_MS = 8_000;
-const SPOKEN_ANSWER_CHARS = 2_000;
 /** The renderer reads state every 300 ms; this long without a read means its window is gone. */
 const ORPHAN_AFTER_MS = 15_000;
 const ORPHAN_CHECK_MS = 5_000;
@@ -124,9 +129,12 @@ type VoiceSession<TRuntime> = {
   realtimeSessionId: string | null;
   /** native: spoken requests waiting for the turn they start (or shown in the running one). */
   voiceRequests: Array<{ text: string; shownInTurnId: string | null; at: number }>;
-  /** host: the chat's answer to the latest routed request, while it is awaited. */
-  pendingAnswer: { waitForNextTurn: boolean; text: string } | null;
-  lastStatusAt: number;
+  /**
+   * What the voice says, and when. The turn it follows, the milestones it has
+   * said, the barge-in clock and the ending all live in there, behind one
+   * surface, rather than as a dozen flags on the call.
+   */
+  narration: VoiceNarrator;
   /**
    * Set just before this session's `thread/realtime/start` goes out. On a Codex
    * chat the thread is shared, so an earlier call's late `closed` or `error`
@@ -136,8 +144,11 @@ type VoiceSession<TRuntime> = {
   lastReadAt: number;
   orphanTimer: NodeJS.Timeout | null;
   /**
-   * Codex sends transcript items (`item/*`) in native mode but only the flat
-   * `transcript/delta` / `transcript/done` pair with client-managed hand-offs.
+   * Captions come from `item/*` on a native transport and from the flat
+   * `transcript/delta` / `transcript/done` pair on a host one. Both transports
+   * are client-managed (`clientManagedHandoffs` is set either way), so the mode
+   * chooses only which shape supplies captions — never whether the user's own
+   * words reach barge-in or an out-loud request to end the call.
    */
   flatCaptionSeq: number;
 };
@@ -197,6 +208,7 @@ export function createCodexVoiceSessions<
     if (session.finished) return;
     session.finished = true;
     if (session.orphanTimer) clearInterval(session.orphanTimer);
+    session.narration.clearTimers();
     if (session.answer) {
       clearTimeout(session.answer.timer);
       session.answer.reject(new Error(error ?? "Voice was stopped."));
@@ -232,8 +244,22 @@ export function createCodexVoiceSessions<
     deps.emitChatEvent(chat, {
       type: "system_notice",
       noticeKind: error ? "warning" : "info",
+      status: "voice_session",
+      // `message` stays the one-line summary every other surface reads, and
+      // `detail` stays the readable transcript: the phone prints `detail`, and
+      // it renders an object there as pretty-printed JSON. The numbers the
+      // chat's card needs ride beside them on the event, where a decoder that
+      // does not know the field ignores it.
       message: error ? `${parts.join(" · ")} · ended: ${error}` : parts.join(" · "),
       ...(transcript ? { detail: transcript } : {}),
+      voiceSession: {
+        durationMs: now - session.startedAt,
+        requests,
+        handoffs: session.handoffs,
+        endedByVoice: session.narration.endedByVoice(),
+        error,
+        transcript: session.transcript.map((line) => ({ role: line.role, text: line.text })),
+      },
     });
   };
 
@@ -264,40 +290,6 @@ export function createCodexVoiceSessions<
     deps.emitChatEvent(chat, { type: "user_message", text, turnId, metadata: voiceInputMetadata(session) });
   };
 
-  /** Gives the live voice session one line: context for later, or something to say now. */
-  const tell = (chat: TChat, mode: "context" | "speak", text: string): void => {
-    const session = sessions.get(chat.session.id);
-    if (!session?.live || !session.transport) return;
-    const method = mode === "speak" ? "thread/realtime/appendSpeech" : "thread/realtime/appendText";
-    const threadId = session.transport.threadId;
-    const params = mode === "speak" ? { threadId, text } : { threadId, text, role: "developer" };
-    void session.transport.request(method, params).catch((error: unknown) => {
-      logger.warn("agent_chat.codex_realtime_tell_failed", {
-        sessionId: chat.session.id,
-        method,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    });
-  };
-
-  /** A short, speakable description of what the agent is doing, or null. */
-  const describeProgress = (event: AgentChatEvent): string | null => {
-    switch (event.type) {
-      case "command": {
-        const command = event.command.trim().split("\n")[0] ?? "";
-        return command ? `running a command: ${command.slice(0, 80)}` : "running a command";
-      }
-      case "tool_call":
-        return event.tool.trim() ? `using ${event.tool.trim()}` : "using a tool";
-      case "file_change":
-        return "editing files";
-      case "web_search":
-        return "searching the web";
-      default:
-        return null;
-    }
-  };
-
   /**
    * host mode. Sends the spoken request into the chat the same way typing
    * does: a new turn when the chat is idle, into the running turn when the
@@ -311,13 +303,14 @@ export function createCodexVoiceSessions<
     const inline = running && activeTurnDispatchModes(chat.session.provider).includes("inline");
     // A queued request is answered by the turn after the running one, so the
     // running turn's end must not be spoken as its answer.
-    session.pendingAnswer = { waitForNextTurn: running && !inline, text: "" };
+    session.narration.beginTurn(running && !inline);
     try {
       if (inline) {
         await deps.steer({ sessionId, text: framed, displayText: text, metadata, dispatchMode: "inline" });
       } else {
         await deps.sendMessage({ sessionId, text: framed, displayText: text, metadata });
       }
+      session.handoffs += 1;
       logger.info("agent_chat.codex_realtime_routed", {
         sessionId,
         provider: chat.session.provider,
@@ -326,78 +319,21 @@ export function createCodexVoiceSessions<
         chars: text.length,
       });
     } catch (error) {
-      session.pendingAnswer = null;
+      session.narration.endTurn();
       const message = error instanceof Error ? error.message : String(error);
       logger.warn("agent_chat.codex_realtime_route_failed", { sessionId, error: message });
-      tell(chat, "speak", `That did not reach the chat: ${message}`);
+      session.narration.say(`That did not reach the chat: ${message}`);
     }
   };
 
-  /** Relays the chat's own events into its live voice session. Called for every chat event. */
+  /** Relays the chat's own events to whichever session is narrating it. */
   const observeChatEvent = (chat: TChat, event: AgentChatEvent): void => {
     const session = sessions.get(chat.session.id);
+    // A call that has not gone live narrates nothing. The sink refuses each
+    // spoken line, but a result would still be held back and then said, late,
+    // the moment the call starts.
     if (!session?.live) return;
-    if (event.type === "subagent_started" || event.type === "subagent_result") {
-      const name = event.label?.trim()
-        || (event.type === "subagent_started" ? event.description?.trim() : undefined)
-        || "The subagent";
-      if (event.type === "subagent_started") {
-        tell(
-          chat,
-          "context",
-          `[ADE] Subagent "${name}" started. It keeps running after the agent's turn ends; it is not done until ADE says it finished.`,
-        );
-        return;
-      }
-      const outcome = event.status === "completed" ? "finished" : event.status === "failed" ? "failed" : "was stopped";
-      tell(chat, "speak", `${name} ${outcome}.`);
-      const summary = (event.finalSummary ?? event.summary ?? "").trim();
-      if (summary) {
-        tell(chat, "context", `[ADE] Subagent "${name}" ${outcome}. Its report (shown in the chat): ${summary.slice(0, 1_500)}`);
-      }
-      return;
-    }
-    // The rest relays a non-Codex chat's work; a Codex chat's voice gets it from Codex.
-    const pending = session.pendingAnswer;
-    if (session.mode !== "host" || !pending) return;
-    if (event.type === "status" && event.turnStatus === "started") {
-      pending.waitForNextTurn = false;
-      pending.text = "";
-      return;
-    }
-    if (pending.waitForNextTurn) return;
-    if (event.type === "text") {
-      pending.text += event.text;
-      return;
-    }
-    const progress = describeProgress(event);
-    if (progress) {
-      const now = Date.now();
-      if (now - session.lastStatusAt >= STATUS_INTERVAL_MS) {
-        session.lastStatusAt = now;
-        tell(chat, "context", `[STATUS] The agent is ${progress}.`);
-      }
-      return;
-    }
-    if (event.type === "error") {
-      session.pendingAnswer = null;
-      const message = event.message.trim();
-      tell(chat, "speak", `The agent hit an error${message ? `: ${message.slice(0, 200)}` : "."}`);
-      return;
-    }
-    if (event.type === "done") {
-      session.pendingAnswer = null;
-      const answer = pending.text.trim();
-      // Codex prefixes this as a [BACKEND] message; voice presents it briefly
-      // under its own instructions instead of reading it word for word.
-      tell(
-        chat,
-        "speak",
-        answer
-          ? answer.length > SPOKEN_ANSWER_CHARS ? `${answer.slice(0, SPOKEN_ANSWER_CHARS)}…` : answer
-          : "The agent finished without a written answer.",
-      );
-    }
+    session.narration.observeChatEvent(event);
   };
 
   /**
@@ -408,6 +344,9 @@ export function createCodexVoiceSessions<
   const adoptTurn = (chat: TChat, runtime: TRuntime, turnId: string): boolean => {
     const session = sessions.get(chat.session.id);
     if (!session || session.transport?.kind !== "native" || session.transport.runtime !== runtime) return false;
+    // A turn nobody routed — Codex's own follow-up to a hand-off — is still the
+    // voice's to narrate, so follow it when no hand-off already did.
+    if (!session.narration.isFollowing()) session.narration.beginTurn(false);
     const now = Date.now();
     const request = session.voiceRequests.find(
       (entry) => entry.shownInTurnId === null && now - entry.at <= REQUEST_CLAIM_MS,
@@ -425,10 +364,23 @@ export function createCodexVoiceSessions<
   };
 
   const handleHandoff = (chat: TChat, session: VoiceSession<TRuntime>, text: string): void => {
+    // Asking to hang up is not work for the agent. The voice hands it over like
+    // any other request, and routing it produced a chat turn explaining that
+    // the agent could not end a call it was never able to end. The call ends
+    // instead, whichever of the two notices arrives first.
+    const endRequest = session.narration.endRequestOf(text);
+    if (endRequest) {
+      session.narration.requestEnd(endRequest);
+      return;
+    }
     if (session.mode === "host") {
       void routeRequest(chat, session, text);
       return;
     }
+    // Codex runs the hand-off as a turn on the chat's own thread. ADE follows
+    // it exactly as it follows a routed turn on any other provider.
+    session.handoffs += 1;
+    session.narration.beginTurn(false);
     const runtime = session.transport?.runtime ?? null;
     const runningTurnId = runtime?.activeTurnId ?? null;
     if (runningTurnId && chat.runtime === runtime) {
@@ -487,9 +439,18 @@ export function createCodexVoiceSessions<
       case "thread/realtime/started":
         if (typeof params.realtimeSessionId === "string") session.realtimeSessionId = params.realtimeSessionId;
         return;
+      case "thread/realtime/outputAudio/delta":
+        // The model is talking. That counts as speaking, so the silence the
+        // progress narration waits for is real silence and never the model's
+        // own words being talked over.
+        session.narration.noteModelSpoke();
+        return;
       case "thread/realtime/item/started": {
         if (session.mode === "host") return;
         if (item?.type !== "transcriptSegment" || typeof item.id !== "string") return;
+        // The user's own words are the barge-in signal: from here the voice
+        // stays quiet until they have finished.
+        if (item.role === "user") session.narration.noteUserSpoke("");
         upsertCaption(session, item.id, {
           role: item.role === "user" ? "user" : "assistant",
           text: typeof item.text === "string" ? item.text : "",
@@ -510,11 +471,18 @@ export function createCodexVoiceSessions<
         const text = typeof item.text === "string" ? item.text.trim() : "";
         upsertCaption(session, item.id, { role, text, final: true });
         if (text) session.transcript.push({ role, text });
+        if (role === "user" && text) session.narration.noteUserSpoke(text);
         return;
       }
       // With client-managed hand-offs Codex sends only this flat pair; native
       // sessions use the items above, so each mode reads exactly one source.
       case "thread/realtime/transcript/delta": {
+        // Barge-in is driven by the user's own words, so it is read before the
+        // per-mode caption gate below: both transports are client-managed now,
+        // and which shape carries captions must not decide who wins the floor.
+        if (params.role === "user" && typeof params.delta === "string" && params.delta) {
+          session.narration.noteUserSpoke("");
+        }
         if (session.mode !== "host") return;
         const role = params.role === "user" ? "user" : "assistant";
         const delta = typeof params.delta === "string" ? params.delta : "";
@@ -525,9 +493,13 @@ export function createCodexVoiceSessions<
         return;
       }
       case "thread/realtime/transcript/done": {
-        if (session.mode !== "host") return;
         const role = params.role === "user" ? "user" : "assistant";
         const text = typeof params.text === "string" ? params.text.trim() : "";
+        // Same reason as the delta above: an out-loud request to hang up has to
+        // be honoured whichever transcript shape this transport sends, or a
+        // client-managed Codex call silently loses it.
+        if (role === "user" && text) session.narration.noteUserSpoke(text);
+        if (session.mode !== "host") return;
         const id = `flat-${role}-${session.flatCaptionSeq}`;
         session.flatCaptionSeq += 1;
         if (!text) return;
@@ -541,7 +513,9 @@ export function createCodexVoiceSessions<
           ? (() => { try { return JSON.parse(raw) as Record<string, unknown>; } catch { return null; } })()
           : item;
         if (added?.type !== "handoff_request") return;
-        session.handoffs += 1;
+        // Counted where the request actually reaches a chat: a hand-off the
+        // route refuses was never handed to the agent, and the summary line
+        // must not claim it was.
         const text = typeof added.input_transcript === "string" ? added.input_transcript.trim() : "";
         if (text) handleHandoff(chat, session, text);
         return;
@@ -569,10 +543,14 @@ export function createCodexVoiceSessions<
       `Worktree: ${chat.laneWorktreePath}`,
       `Model doing the work: ${chat.session.model}`,
       "The messages that follow are this chat's most recent turns. For anything about the code, files, lane, or tasks, pass the request to the agent instead of answering from memory.",
-      "Do not read file paths, IDs, code, or long output aloud unless asked; the chat shows them.",
+      "Do not read file paths, IDs, code, or long output aloud unless asked; the chat shows them. Never read code aloud.",
+      "You are the narrator of this chat, not a log reader. You are told what the agent is doing while it works: say the parts worth hearing, in your own words — what it is doing, what it found, where it seems to be going.",
+      "Work in progress has not concluded. While the agent is still going, say what it looks like it is doing or leaning toward, never what it has decided. State a result flatly only when the agent's own finished message says it.",
+      "The user can cut in at any time. When they speak, stop and answer them; whatever you were about to say about the work can wait.",
       "Everything you hand to the agent appears in the chat as the user's message, followed by the agent's work. Only say work is done when the agent's result says so.",
       "A subagent the agent starts keeps running after the agent's turn ends. Say it is running; say it finished only when a message from ADE reports that. Never make up a subagent's result.",
       "Questions about you (the voice) are yours to answer, not the agent's. Your settings (personality, voice, progress updates, what you call the user, language) are in ADE under Settings, Chat, Voice conversations. The waveform button in the prompt box starts and ends a conversation.",
+      "So is the call itself: the user's controls are yours, not the agent's. When they ask to end the call, say a short goodbye — never hand it to the agent, which has no control over it. The call then closes on its own.",
       buildCodexVoiceStyleInstructions(preferences),
     ].join("\n");
     const history = chat.recentConversationEntries
@@ -670,6 +648,10 @@ export function createCodexVoiceSessions<
     const chat = deps.ensureChat(sessionId.trim());
     const previous = sessions.get(chat.session.id);
     if (previous) finish(chat, previous, null, true);
+    // The sink inside the narrator has to reach the session it narrates, and
+    // the session has to hold the narrator. One holder breaks the cycle without
+    // a placeholder session anyone could read from by mistake.
+    const sessionRef: { current: VoiceSession<TRuntime> | null } = { current: null };
     const session: VoiceSession<TRuntime> = {
       token: randomUUID(),
       mode: chat.session.provider === "codex" ? "native" : "host",
@@ -683,13 +665,54 @@ export function createCodexVoiceSessions<
       handoffs: 0,
       realtimeSessionId: null,
       voiceRequests: [],
-      pendingAnswer: null,
-      lastStatusAt: 0,
+      narration: createVoiceNarration({
+        updates: preferences.updates,
+        logger,
+        sessionId: chat.session.id,
+        sink: {
+          // The narrator decides whether a line is worth saying; the session
+          // answers whether there is still a call to say it on.
+          speak: (text) => {
+            const live = sessionRef.current;
+            if (!live?.live || live.finished || !live.transport) return false;
+            void live.transport.request("thread/realtime/appendSpeech", {
+              threadId: live.transport.threadId,
+              text,
+            }).catch((error: unknown) => {
+              logger.warn("agent_chat.codex_realtime_speak_failed", {
+                sessionId: chat.session.id,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            });
+            return true;
+          },
+          tell: (text) => {
+            const live = sessionRef.current;
+            if (!live?.live || live.finished || !live.transport) return;
+            void live.transport.request("thread/realtime/appendText", {
+              threadId: live.transport.threadId,
+              text,
+              role: "developer",
+            }).catch((error: unknown) => {
+              logger.warn("agent_chat.codex_realtime_tell_failed", {
+                sessionId: chat.session.id,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            });
+          },
+          end: () => {
+            const live = sessionRef.current;
+            if (live) finish(chat, live, null, true);
+          },
+          isLive: () => Boolean(sessionRef.current?.live),
+        },
+      }),
       startSent: false,
       lastReadAt: 0,
       orphanTimer: null,
       flatCaptionSeq: 0,
     };
+    sessionRef.current = session;
     // Registered before any await, so a stop or a second start can end it.
     sessions.set(chat.session.id, session);
     ended.delete(chat.session.id);
@@ -726,8 +749,13 @@ export function createCodexVoiceSessions<
       // Based on the Codex TUI's voice start. WebRTC defaults to realtime v1,
       // which OpenAI's call endpoint now rejects (it wants the v3 "quicksilver
       // v2" protocol). Unlike the TUI, ADE keeps Codex's startup context and
-      // seeds its own. A Codex chat leaves hand-offs to the app server; any
-      // other chat manages them itself (routeRequest).
+      // seeds its own.
+      //
+      // `clientManagedHandoffs` is set in both modes. It stops Codex forwarding
+      // its own responses straight into the voice; ADE decides what the voice
+      // says and when, which is the only way a Codex chat can be narrated the
+      // same way every other provider is. A Codex chat still runs each hand-off
+      // as a turn on its own thread — that is the chat, not the forwarding.
       session.startSent = true;
       await transport.request("thread/realtime/start", {
         threadId: transport.threadId,
@@ -736,7 +764,7 @@ export function createCodexVoiceSessions<
         initialItems,
         delegationAckFiller: true,
         backendReasoningStatus: session.mode === "native",
-        ...(session.mode === "host" ? { clientManagedHandoffs: true } : {}),
+        clientManagedHandoffs: true,
         voice: preferences.voice,
         version: "v3",
         transport: { type: "webrtc", sdp: offer },
@@ -744,6 +772,10 @@ export function createCodexVoiceSessions<
       const answerSdp = await answer;
       session.live = true;
       session.lastReadAt = Date.now();
+      // The narrator anchors its own silence clock at the moment the call goes
+      // live, so the first progress line waits a real pause rather than firing
+      // on the greeting.
+      session.narration.noteModelSpoke();
       session.orphanTimer = setInterval(() => {
         if (Date.now() - session.lastReadAt > ORPHAN_AFTER_MS) {
           logger.info("agent_chat.codex_realtime_orphaned", { sessionId: chat.session.id });
@@ -789,7 +821,7 @@ export function createCodexVoiceSessions<
     const runtime = session.transport?.runtime ?? null;
     const working = session.mode === "native"
       ? Boolean(runtime?.activeTurnId || runtime?.awaitingTurnStart)
-      : deps.chatIsRunning(chat) || Boolean(session.pendingAnswer);
+      : deps.chatIsRunning(chat) || session.narration.isFollowing();
     return {
       status: "live",
       working,

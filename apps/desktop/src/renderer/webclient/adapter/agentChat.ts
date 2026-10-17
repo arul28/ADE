@@ -9,6 +9,9 @@ import type {
   AgentChatInterruptResult,
   AgentChatLaunchCliResult,
   AgentChatMarkCrossMachineHandoffArgs,
+  AgentChatCrossMachineHandoffOptionsResult,
+  AgentChatCrossMachineHandoffRecord,
+  AgentChatPreviewCrossMachineHandoffResult,
   AgentChatModelCatalog,
   AgentChatLaunchDefaults,
   AgentChatPrepareCrossMachineHandoffResult,
@@ -25,9 +28,11 @@ import type {
   AgentChatSetScheduledWorkPausedResult,
   AgentChatSteerResult,
   AutoLaneIdentitySuggestion,
-  PromptStashCreateArgs,
-  PromptStashDeleteArgs,
-  PromptStashEntry,
+  DraftClaimArgs,
+  DraftCreateArgs,
+  DraftDeleteArgs,
+  DraftEntry,
+  DraftUpdateArgs,
 } from "../../../shared/types/chat";
 import { deriveSmartLinkPreview } from "../../../shared/smartLinks";
 import type {
@@ -245,19 +250,33 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
         await call("chat.setParallelLaunchState", args, undefined, false);
       },
     },
-    promptStashes: {
+    drafts: {
       list: async (pin?: RuntimePinArg) => {
-        guardPin("promptStashes.list", pin);
-        const result = await call<unknown>("chat.listPromptStashes", {}, []);
-        return Array.isArray(result) ? result as PromptStashEntry[] : [];
+        guardPin("drafts.list", pin);
+        const result = await call<unknown>("chat.listDrafts", {}, []);
+        return Array.isArray(result) ? result as DraftEntry[] : [];
       },
-      create: async (args: PromptStashCreateArgs, pin?: RuntimePinArg) => {
-        guardPin("promptStashes.create", pin);
-        return await callRequiredMutation<PromptStashEntry>("chat.createPromptStash", args);
+      create: async (args: DraftCreateArgs, pin?: RuntimePinArg) => {
+        guardPin("drafts.create", pin);
+        return await callRequiredMutation<DraftEntry>("chat.createDraft", args);
       },
-      delete: async (args: PromptStashDeleteArgs, pin?: RuntimePinArg) => {
-        guardPin("promptStashes.delete", pin);
-        return await callRequiredMutation<boolean>("chat.deletePromptStash", args);
+      delete: async (args: DraftDeleteArgs, pin?: RuntimePinArg) => {
+        guardPin("drafts.delete", pin);
+        return await callRequiredMutation<boolean>("chat.deleteDraft", args);
+      },
+      update: async (args: DraftUpdateArgs, pin?: RuntimePinArg) => {
+        guardPin("drafts.update", pin);
+        const result = await call<unknown>("chat.updateDraft", args, null);
+        return (result ?? null) as DraftEntry | null;
+      },
+      claim: async (args: DraftClaimArgs, pin?: RuntimePinArg) => {
+        guardPin("drafts.claim", pin);
+        const result = await call<unknown>("chat.claimDraft", args, null);
+        return (result ?? null) as DraftEntry | null;
+      },
+      sendNow: async (args: DraftDeleteArgs, pin?: RuntimePinArg) => {
+        guardPin("drafts.sendNow", pin);
+        return await callRequiredMutation<{ ok: boolean; error?: string }>("chat.sendDraftNow", args);
       },
     },
     threadComments: {
@@ -303,6 +322,38 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     markCrossMachineHandoff: async (args: AgentChatMarkCrossMachineHandoffArgs, pin) => {
       guardPin("markCrossMachineHandoff", pin);
       await callRequiredMutation<void>("chat.markCrossMachineHandoff", args);
+    },
+    // The brain-owned move (registered `chat.*` remote commands). Reads are
+    // idempotent; start/cancel/retry/approve/acknowledge are not replayed.
+    getCrossMachineHandoffOptions: async (args, pin) => {
+      guardPin("getCrossMachineHandoffOptions", pin);
+      return await callRequiredRead<AgentChatCrossMachineHandoffOptionsResult>("chat.getCrossMachineHandoffOptions", args);
+    },
+    // Asks the destination through the source brain's own transport; a read,
+    // so it is safe to repeat.
+    previewCrossMachineHandoff: async (args, pin) => {
+      guardPin("previewCrossMachineHandoff", pin);
+      return await callRequiredRead<AgentChatPreviewCrossMachineHandoffResult>("chat.previewCrossMachineHandoff", args);
+    },
+    startCrossMachineHandoff: async (args, pin) => {
+      guardPin("startCrossMachineHandoff", pin);
+      return await callRequiredMutation<AgentChatCrossMachineHandoffRecord>("chat.startCrossMachineHandoff", args);
+    },
+    cancelCrossMachineHandoff: async (args, pin) => {
+      guardPin("cancelCrossMachineHandoff", pin);
+      return await callRequiredMutation<AgentChatCrossMachineHandoffRecord | null>("chat.cancelCrossMachineHandoff", args);
+    },
+    retryCrossMachineHandoff: async (args, pin) => {
+      guardPin("retryCrossMachineHandoff", pin);
+      return await callRequiredMutation<AgentChatCrossMachineHandoffRecord>("chat.retryCrossMachineHandoff", args);
+    },
+    resolveCrossMachineHandoffApproval: async (args, pin) => {
+      guardPin("resolveCrossMachineHandoffApproval", pin);
+      return await callRequiredMutation<AgentChatCrossMachineHandoffRecord | null>("chat.resolveCrossMachineHandoffApproval", args);
+    },
+    acknowledgeCrossMachineHandoff: async (args, pin) => {
+      guardPin("acknowledgeCrossMachineHandoff", pin);
+      return await callRequiredMutation<AgentChatCrossMachineHandoffRecord | null>("chat.acknowledgeCrossMachineHandoff", args);
     },
     send: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("send", pin);
@@ -574,6 +625,8 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       const url = stringField(record, "url");
       return call("chat.resolveSmartLinkPreview", record, deriveSmartLinkPreview(url));
     },
+    resolveSmartLinkImage: (args: { url: string }) =>
+      call<{ dataUrl: string | null }>("chat.resolveSmartLinkImage", { url: args.url }, { dataUrl: null }),
     resolveSourceFavicons: (args: { domains: string[] }) =>
       call<{ icons: Record<string, string | null> }>("chat.resolveSourceFavicons", { domains: args.domains }, { icons: {} }),
     getEventHistory: async (args: unknown, pin?: RuntimePinArg) => {

@@ -158,7 +158,7 @@ export function IosSimToolChips({ chips, onCopy, className }: IosSimToolChipsPro
                 "inline-flex h-6 items-center gap-1.5 rounded-full border px-2 font-sans text-[10px] font-medium transition-colors",
                 chipTone(chip),
                 interactive ? "hover:brightness-125" : "cursor-default",
-                expandedKey === chip.key ? "ring-1 ring-white/15" : null,
+                expandedKey === chip.key ? "ring-1 ring-fg/15" : null,
               )}
               title={chip.hint ?? undefined}
               onClick={() => {
@@ -174,7 +174,7 @@ export function IosSimToolChips({ chips, onCopy, className }: IosSimToolChipsPro
         })}
       </div>
       {expanded?.hint ? (
-        <div className="mt-1 flex items-center gap-1.5 rounded-md border border-white/[0.07] bg-black/25 px-2 py-1">
+        <div className="mt-1 flex items-center gap-1.5 rounded-md border border-fg/[0.07] bg-black/25 px-2 py-1">
           {expanded.hintIsCommand ? (
             <code className="min-w-0 flex-1 truncate font-mono text-[10px] text-fg/80">{expanded.hint}</code>
           ) : (
@@ -182,7 +182,7 @@ export function IosSimToolChips({ chips, onCopy, className }: IosSimToolChipsPro
           )}
           <button
             type="button"
-            className="inline-flex shrink-0 items-center gap-1 rounded border border-white/[0.08] bg-white/[0.03] px-1.5 py-0.5 font-sans text-[9px] text-muted-fg/70 transition-colors hover:text-fg/90"
+            className="inline-flex shrink-0 items-center gap-1 rounded border border-fg/[0.08] bg-fg/[0.03] px-1.5 py-0.5 font-sans text-[9px] text-muted-fg/70 transition-colors hover:text-fg/90"
             onClick={() => onCopy(expanded.hint ?? "")}
             title="Copy"
           >
@@ -205,7 +205,7 @@ export function IosSimUnsupportedCard({ chips, onCopy }: IosSimUnsupportedCardPr
   const macOk = chips.find((chip) => chip.key === "macos")?.state === "ok";
   return (
     <div className="flex h-full min-h-[300px] items-center justify-center px-5 py-5">
-      <div className="w-full max-w-[360px] rounded-md border border-white/[0.08] bg-white/[0.02] px-3.5 py-3">
+      <div className="w-full max-w-[360px] rounded-md border border-fg/[0.08] bg-fg/[0.02] px-3.5 py-3">
         <div className="flex items-center gap-2">
           <DeviceMobile size={16} className="shrink-0 text-rose-200/70" />
           <div className="font-sans text-[12px] font-medium text-fg/85">

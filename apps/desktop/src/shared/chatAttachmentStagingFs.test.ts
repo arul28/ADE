@@ -144,6 +144,52 @@ describe("stageAttachmentBytes", () => {
     const projectRoot = path.dirname(path.dirname(attachmentsDir));
     expect(fs.existsSync(path.join(projectRoot, "evil.sh"))).toBe(false);
   });
+
+  it("keeps a pasted-text name, so the agent's `[File #k: name]` label matches", async () => {
+    const content = Buffer.from("line one\nline two\n");
+    const result = await stageAttachmentBytes({
+      content,
+      filename: "pasted-1792109142144.log",
+      attachmentsDir,
+    });
+
+    expect(path.basename(result.path)).toBe("pasted-1792109142144.log");
+    await expect(fs.promises.readFile(result.path)).resolves.toEqual(content);
+  });
+
+  it("falls back to a UUID name when the pasted name is already taken", async () => {
+    const first = await stageAttachmentBytes({
+      content: Buffer.from("first"),
+      filename: "pasted-42.txt",
+      attachmentsDir,
+    });
+    const second = await stageAttachmentBytes({
+      content: Buffer.from("second"),
+      filename: "pasted-42.txt",
+      attachmentsDir,
+    });
+
+    // The `wx` write refuses to overwrite, so the second paste takes a fresh
+    // UUID name rather than clobbering the first paste's bytes.
+    expect(path.basename(first.path)).toBe("pasted-42.txt");
+    expect(second.path).not.toBe(first.path);
+    expect(path.basename(second.path)).not.toBe("pasted-42.txt");
+    await expect(fs.promises.readFile(first.path)).resolves.toEqual(Buffer.from("first"));
+    await expect(fs.promises.readFile(second.path)).resolves.toEqual(Buffer.from("second"));
+  });
+
+  it("does not keep a name that only looks like a pasted-text file", async () => {
+    // Anything the pattern rejects is a UUID under a validated extension: the
+    // name is a display string the caller chose, never a path.
+    for (const filename of ["pasted-42.exe", "pasted-x.txt", "PASTED-42.TXT", "pasted-42.txt.exe"]) {
+      const result = await stageAttachmentBytes({
+        content: Buffer.from("x"),
+        filename,
+        attachmentsDir,
+      });
+      expect(path.basename(result.path)).not.toBe(filename);
+    }
+  });
 });
 
 describe("stageAttachmentCopy", () => {

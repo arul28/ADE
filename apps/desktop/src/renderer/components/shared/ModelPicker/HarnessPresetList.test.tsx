@@ -56,7 +56,7 @@ function setPresets(presets: HarnessPreset[]) {
 function renderPicker(onSelect = vi.fn()) {
   const result = render(
     <ModelPickerContent
-      value="anthropic/claude-haiku-4-5"
+      value="anthropic/claude-haiku-5-5"
       models={MODEL_REGISTRY.filter((model) => model.family === "anthropic")}
       isAvailable={() => true}
       onSelect={onSelect}
@@ -102,7 +102,7 @@ describe("model picker custom tab", () => {
 
   /** Same shape as a provider's model row: mark, name, a chip, one subtitle. */
   it("shows one row per preset, drawn like a model row", () => {
-    setPresets([preset(), preset({ id: "hp_2", name: "Haiku sweeps", model: "anthropic/claude-haiku-4-5" })]);
+    setPresets([preset(), preset({ id: "hp_2", name: "Haiku sweeps", model: "anthropic/claude-haiku-5-5" })]);
     renderPicker();
     openHarnessesTab();
 
@@ -117,7 +117,7 @@ describe("model picker custom tab", () => {
   });
 
   it("keeps the preset's details behind the arrow until it is opened", () => {
-    setPresets([preset({ subagentModel: "anthropic/claude-haiku-4-5", agentOverrides: { explore: "anthropic/claude-haiku-4-5" } })]);
+    setPresets([preset({ subagentModel: "anthropic/claude-haiku-5-5", agentOverrides: { explore: "anthropic/claude-haiku-5-5" } })]);
     renderPicker();
     openHarnessesTab();
 
@@ -126,8 +126,8 @@ describe("model picker custom tab", () => {
 
     const details = document.querySelector('[data-harness-preset-details="hp_1"]') as HTMLElement;
     expect(details.textContent).toContain("Claude Code account");
-    expect(details.textContent).toContain("Claude Haiku 4.5");
-    expect(details.textContent).toContain("Explore: Claude Haiku 4.5");
+    expect(details.textContent).toContain("Claude Haiku 5.5");
+    expect(details.textContent).toContain("Explore: Claude Haiku 5.5");
     // No permission tier here: the tier belongs to the harness and is chosen
     // at launch, so the saved setup never states one.
     expect(details.textContent).not.toContain("Plan mode");
@@ -148,7 +148,7 @@ describe("model picker custom tab", () => {
   });
 
   it("filters presets by name as you search", () => {
-    setPresets([preset(), preset({ id: "hp_2", name: "Haiku sweeps", model: "anthropic/claude-haiku-4-5" })]);
+    setPresets([preset(), preset({ id: "hp_2", name: "Haiku sweeps", model: "anthropic/claude-haiku-5-5" })]);
     renderPicker();
     openHarnessesTab();
 
@@ -185,7 +185,7 @@ describe("model picker custom tab", () => {
   });
 
   it("walks preset rows with the arrow keys and opens details with ArrowRight", () => {
-    setPresets([preset(), preset({ id: "hp_2", name: "Haiku sweeps", model: "anthropic/claude-haiku-4-5" })]);
+    setPresets([preset(), preset({ id: "hp_2", name: "Haiku sweeps", model: "anthropic/claude-haiku-5-5" })]);
     renderPicker();
     openHarnessesTab();
 

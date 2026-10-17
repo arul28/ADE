@@ -112,6 +112,70 @@ struct WorkChatOpeningSessionPlaceholder: View {
   }
 }
 
+/// The chat's own frame while it connects: the destination's header stays on
+/// top (title and machine), a centred "Connecting to <machine>…" line fills the
+/// thread, and the composer sits at the bottom, disabled until the chat loads.
+/// It replaces a bare top-aligned skeleton that showed no header and no
+/// composer, and read as a broken screen.
+struct WorkChatConnectingFrame: View {
+  let machineName: String?
+
+  private var connectingText: String {
+    guard let machineName = machineName?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !machineName.isEmpty else { return "Connecting…" }
+    return "Connecting to \(machineName)…"
+  }
+
+  var body: some View {
+    VStack(spacing: 0) {
+      Spacer(minLength: 0)
+      VStack(spacing: 10) {
+        ProgressView()
+          .controlSize(.regular)
+        Text(connectingText)
+          .font(.subheadline.weight(.medium))
+          .foregroundStyle(ADEColor.textSecondary)
+          .multilineTextAlignment(.center)
+      }
+      .padding(.horizontal, 32)
+      .accessibilityElement(children: .combine)
+      .accessibilityAddTraits(.updatesFrequently)
+      Spacer(minLength: 0)
+      disabledComposer
+        .padding(.horizontal, 12)
+        .padding(.bottom, 8)
+    }
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+    .adeScreenBackground()
+    .adeInspectable("Work.Chat.Connecting")
+  }
+
+  /// The composer's shape with nothing live in it: you cannot send until the
+  /// chat has loaded, and the frame says so instead of hiding the field.
+  private var disabledComposer: some View {
+    HStack(spacing: 8) {
+      Text("Message")
+        .font(.body)
+        .foregroundStyle(ADEColor.textMuted)
+        .frame(maxWidth: .infinity, alignment: .leading)
+      Image(systemName: "arrow.up")
+        .font(.system(size: 15, weight: .semibold))
+        .foregroundStyle(ADEColor.textMuted)
+        .frame(width: 32, height: 32)
+        .background(ADEColor.textMuted.opacity(0.15), in: Circle())
+    }
+    .padding(.leading, 16)
+    .padding(.trailing, 6)
+    .padding(.vertical, 6)
+    .frame(minHeight: 44)
+    .workChatGlass(in: Capsule(style: .continuous))
+    .opacity(0.6)
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel("Message field")
+    .accessibilityValue("Unavailable while connecting")
+  }
+}
+
 /// `distanceFromTop` is how far the reader has scrolled from the first row, so
 /// it grows downward — the inverse of the geometry-probe `topY` this used to
 /// take, which was published from a per-frame `GeometryReader` riding the
@@ -165,6 +229,14 @@ func workChatShouldContinueAutomaticOlderHistory(
 }
 
 struct WorkChatSummaryRenderContext: Equatable {
+  let compactionIdleMode: String
+  /// Idle time after which the chat's prompt cache is gone: the lifetime Claude wrote, or an hour when unknown.
+  let compactFirstIdleSeconds: TimeInterval
+  /// When the cache lifetime started, when the host reported it; the turn end stands in otherwise.
+  let promptCacheSince: Date?
+  let compactFirstMinTokens: Int
+  let compactFirstSupported: Bool
+  let manualCompactAvailable: Bool
   let isAvailable: Bool
   let provider: String
   let model: String
@@ -172,6 +244,8 @@ struct WorkChatSummaryRenderContext: Equatable {
   let reasoningEffort: String
   let effectiveFastMode: Bool
   let runtimeMode: String
+  /// False while the summary is a roster stand-in: its access mode is unknown.
+  let accessModeKnown: Bool
   /// Set once a Cursor chat has been promoted to a cloud agent. A cloud run
   /// refuses every inline steer, so the send capability withholds that mode.
   let cursorCloudAgentId: String?
@@ -186,6 +260,10 @@ struct WorkChatSummaryRenderContext: Equatable {
   let contextWindowFallback: Int?
   let claudeGoal: AgentChatClaudeGoal?
   let codexGoal: AgentChatCodexGoal?
+  /// Copilot's context tier, Auto profile, and whether a profile change is still pending.
+  let copilotContextTier: String
+  let copilotAutoTier: String?
+  let copilotAutoTierPending: Bool
   let spawnKind: AgentChatSpawnKind?
   let orchestrationParentSessionId: String?
   let subagentTakeoverPromptShownAt: String?
@@ -199,15 +277,25 @@ struct WorkChatSummaryRenderContext: Equatable {
   /// deprecated `usageLimitParkedUntil` mirror for older hosts). Non-nil is the
   /// one and only reason the resume pill renders.
   let usageLimitResume: WorkUsageLimitResumeModel?
+  /// This chat's move to another machine, when there is one (drives the card
+  /// above the composer and the first-send confirmation).
+  let crossMachineHandoff: AgentChatCrossMachineHandoffRecord?
 
   init(_ summary: AgentChatSessionSummary?, parentTitle: String? = nil) {
     guard let summary else {
+      self.compactionIdleMode = "ask"
+      self.compactFirstIdleSeconds = 3600
+      self.promptCacheSince = nil
+      self.compactFirstMinTokens = 200_000
+      self.compactFirstSupported = false
+      self.manualCompactAvailable = false
       self.isAvailable = false
       self.provider = ""
       self.model = ""
       self.modelId = nil
       self.reasoningEffort = ""
       self.effectiveFastMode = false
+      self.accessModeKnown = false
       self.runtimeMode = ""
       self.cursorCloudAgentId = nil
       self.cursorRuntime = nil
@@ -220,6 +308,9 @@ struct WorkChatSummaryRenderContext: Equatable {
       self.contextWindowFallback = nil
       self.claudeGoal = nil
       self.codexGoal = nil
+      self.copilotContextTier = "default"
+      self.copilotAutoTier = nil
+      self.copilotAutoTierPending = false
       self.spawnKind = nil
       self.orchestrationParentSessionId = nil
       self.subagentTakeoverPromptShownAt = nil
@@ -227,15 +318,26 @@ struct WorkChatSummaryRenderContext: Equatable {
       self.pendingInputItemId = nil
       self.activeBackgroundTaskCount = nil
       self.usageLimitResume = nil
+      self.crossMachineHandoff = nil
       return
     }
 
+    self.compactionIdleMode = summary.compactionIdleMode ?? "ask"
+    // The brain resolves the window (Claude's measured 5m/1h, OpenAI's 30m, an
+    // hour when the model's vendor is unknown); older brains send only the cache.
+    self.compactFirstIdleSeconds = summary.compactFirstIdleMs.map { TimeInterval($0) / 1000 }
+      ?? (summary.promptCache?.ttl == "5m" ? 300 : 3600)
+    self.promptCacheSince = summary.promptCache?.since.flatMap(workParsedDate)
+    self.compactFirstMinTokens = summary.compactFirstMinTokens ?? 200_000
+    self.compactFirstSupported = summary.compactionIdleMode != nil
+    self.manualCompactAvailable = summary.manualCompactAvailable == true
     self.isAvailable = true
     self.provider = summary.provider
     self.model = summary.model
     self.modelId = summary.modelId
     self.reasoningEffort = summary.reasoningEffort ?? ""
     self.effectiveFastMode = summary.effectiveFastMode
+    self.accessModeKnown = summary.rosterDerived != true
     self.runtimeMode = workInitialRuntimeMode(summary)
     self.cursorCloudAgentId = summary.cursorCloudAgentId
     self.cursorRuntime = summary.cursorRuntime
@@ -248,6 +350,9 @@ struct WorkChatSummaryRenderContext: Equatable {
     self.contextWindowFallback = workContextWindowFallback(modelId: summary.modelId, model: summary.model)
     self.claudeGoal = summary.claudeGoal
     self.codexGoal = summary.codexGoal
+    self.copilotContextTier = workCopilotContextTier(summary.copilotContextTier)
+    self.copilotAutoTier = summary.copilotAutoTier
+    self.copilotAutoTierPending = summary.copilotAutoTierPending == true
     self.spawnKind = summary.spawnKind
     self.orchestrationParentSessionId = summary.orchestrationParentSessionId
     self.subagentTakeoverPromptShownAt = summary.subagentTakeoverPromptShownAt
@@ -255,6 +360,7 @@ struct WorkChatSummaryRenderContext: Equatable {
     self.pendingInputItemId = summary.pendingInputItemId
     self.activeBackgroundTaskCount = summary.activeBackgroundTaskCount
     self.usageLimitResume = workUsageLimitResumeModel(for: summary)
+    self.crossMachineHandoff = summary.crossMachineHandoff
   }
 
   var currentModelId: String {
@@ -343,13 +449,11 @@ func workTimelineEntryExpansionSignature(
   case .subagentStoppedGroup(let model): owned.insert(model.id)
   case .eventCard(let card): owned.insert(card.id)
   case .adeCard(let card): owned.insert(card.id)
-  case .artifact(let artifact): owned.insert(artifact.id)
   case .backgroundJobRun(let run): owned.insert(run.id)
   case .turnFold(let model):
     owned.insert(model.id)
     ownTurnWork(model.turnEndTurnId ?? model.turnId)
   case .turnEndMarker(let marker):
-    owned.insert(workTurnProofExpansionId(turnId: marker.turnId))
     ownTurnWork(marker.turnId)
   case .toolGroup(let group):
     owned.insert(group.id)
@@ -465,6 +569,9 @@ struct WorkChatSessionView: View {
   /// The transcript's handle on its own `UICollectionView`. Replaces the
   /// `ScrollViewProxy` that used to be threaded through every row builder.
   @State var transcriptScroller = WorkChatTranscriptScroller()
+  /// What the scenes in this transcript reach the chat through: the timeline,
+  /// to see whether the reader answered, and the prompt box.
+  @State var sceneBridge = WorkSceneChatBridge()
   @State var contextUsageViewModelCache = WorkContextUsageViewModelCache()
   /// One presentation host for every box in this transcript. Boxes reach it
   /// through `\.workOutputViewer` rather than each carrying its own cover.
@@ -500,6 +607,7 @@ struct WorkChatSessionView: View {
   let transitionNamespace: Namespace.ID?
   let onOpenLane: (() -> Void)?
   let onSend: @MainActor (String, [WorkChatInputAttachment], WorkActiveSendMode) async -> Bool
+  var onSendWithCompaction: (@MainActor (String, [WorkChatInputAttachment], WorkActiveSendMode, Bool) async -> Bool)? = nil
   let onInterrupt: @MainActor (AgentChatStopMode) async -> Void
   let onRestoreCancelledQueue: (@MainActor (String) async -> Void)?
   /// `chat.updateSession { autoContinueAtUsageLimit: }` — false for Don't
@@ -534,6 +642,7 @@ struct WorkChatSessionView: View {
   let onSelectRuntimeMode: @MainActor (String) async -> Bool
   let onSelectEffort: @MainActor (String) async -> Void
   let onSelectCodexFastMode: @MainActor (Bool) async -> Bool
+  let onSelectCopilotTiers: @MainActor (String, String?) async -> Bool
 
   /// Opens the parent chat for a standalone spawned child session. The nested
   /// transcript viewer uses its own back control and leaves this unset.
@@ -600,10 +709,21 @@ struct WorkChatSessionView: View {
   /// hides the comments chip, which is how an older host shows nothing new.
   var onUpdateThreadComment: (@MainActor (String, String?, Bool?) async throws -> Void)? = nil
   var onDeleteThreadComment: (@MainActor (String) async throws -> Void)? = nil
+  /// Cross-machine handoff card actions and the send gate (where new messages
+  /// go). Nil hides the card's buttons and sends without asking (an older host
+  /// has no record).
+  var crossMachineHandoffActions: WorkCrossMachineHandoffActions? = nil
 
   @State private var threadCommentsSheetPresented = false
+  /// A thread link ("3 proof filed") opens the proof drawer narrowed to the
+  /// records it counted. Dismissing the drawer clears it, so every other way
+  /// in opens on everything.
+  @State var proofDrawerFocus: WorkProofDrawerFocus?
+  @StateObject var handoffSendGate = WorkHandoffSendGate()
   @State var steerEditDrafts: [String: String] = [:]
   @State var modelPickerPresented = false
+  /// The Copilot tiers the picker reported for the selection in progress.
+  @State var pickedCopilotTiers: (String, String?)? = nil
   @State var toolActivitySheet: WorkToolActivitySheetSelection?
   @State var modelUpdateInFlight = false
   /// Bumped each time a NEW blocking pending input arrives so the body can fire
@@ -1062,7 +1182,7 @@ struct WorkChatSessionView: View {
     // their inline treatment in the timeline instead.
     //
     // When offline, we no longer stack "Reconnect to respond" banners here.
-    // The top-right ADEConnectionDot already signals "Offline" and the
+    // The top bar already signals "Offline" and the
     // pending cards themselves stay visible in the timeline in a read-only
     // state, so duplicating the reconnect nag at the top added noise
     // without new information.
@@ -1393,13 +1513,41 @@ struct WorkChatSessionView: View {
       usageState: usage.state,
       canSend: canSendMessages,
       pendingInput: hasPendingInputGate,
-      turnBusy: sending || sendingSnapshot || actionInFlight || isStreamingTurn || sessionStatus == "active"
+      turnBusy: sending || sendingSnapshot || actionInFlight || isStreamingTurn || sessionStatus == "active",
+      openCodeCompactAvailable: chatSummaryContext.manualCompactAvailable
     )
     return WorkComposerContextMeterModel(
       usage: usage,
       modelLabel: chatSummaryContext.modelLabel,
-      compact: compact
+      compact: compact,
+      sessionId: session.id
     )
+  }
+
+  var composerCompactFirstOffer: WorkCompactFirstOffer? {
+    guard chatSummaryContext.compactFirstSupported, chatSummaryContext.compactionIdleMode != "never",
+          // OpenCode only offers `/compact` when its server lists the command.
+          chatSummaryContext.provider != "opencode" || chatSummaryContext.manualCompactAvailable,
+          !hasPendingInputGate, !isStreamingTurn, sessionStatus != "active",
+          // A queued message is about to send on its own; the offer would only flash.
+          pendingSteers.isEmpty,
+          let usage = composerContextMeter?.usage, usage.state == .measured,
+          let context = usage.usedTokens, context >= chatSummaryContext.compactFirstMinTokens,
+          let lastDoneIndex = transcript.lastIndex(where: { if case .done = $0.event { return true }; return false }),
+          let ended = workParsedDate(transcript[lastDoneIndex].timestamp) else { return nil }
+    let post = transcript.reversed().compactMap { entry -> Int? in
+      guard case .contextCompact(let summary, false, let tokens, _, _) = entry.event,
+            !workCompactSummaryHeader(summary).contains("state:failed") else { return nil }
+      return tokens
+    }.first
+    // A `since` older than the last turn's start is from an earlier turn (the
+    // summary has not caught up); that turn restarted the cache, so its end is nearer.
+    // The start of the turn that `lastDoneIndex` ended, as desktop's `lastFinishedTurnMs`.
+    let started = transcript[..<lastDoneIndex].last(where: { if case .status("started", _, _) = $0.event { return true }; return false })
+      .flatMap { workParsedDate($0.timestamp) }
+    var since = chatSummaryContext.promptCacheSince ?? ended
+    if let started, since < started { since = ended }
+    return WorkCompactFirstOffer(endedAt: since, contextTokens: context, estimatedPostTokens: post ?? max(5_000, Int(Double(context) * 0.02)), mode: chatSummaryContext.compactionIdleMode, idleSeconds: chatSummaryContext.compactFirstIdleSeconds)
   }
 
   /// The chat's goal for the composer chip: the transcript's live Claude goal
@@ -1419,6 +1567,39 @@ struct WorkChatSessionView: View {
     Task { @MainActor in
       if await !onSend("/goal \(argument)", [], .queue), $errorMessage.wrappedValue == nil {
         $errorMessage.wrappedValue = "Couldn't send the goal change to the chat."
+      }
+    }
+  }
+
+  /// After a move the work lives on the other machine, so a send here asks
+  /// where it goes: "Continue on <machine>" copies the message and opens that
+  /// chat; "Work here instead" records `resumedHere` (acknowledge) and sends
+  /// here, after which sends go straight through.
+  var crossMachineSendGate: (@MainActor (String) async -> Bool)? {
+    let record = chatSummaryContext.crossMachineHandoff
+    guard let actions = crossMachineHandoffActions,
+          let record,
+          workCrossMachineHandoffNeedsSendConfirmation(record)
+    else { return nil }
+    let gate = handoffSendGate
+    let branch = lanes.first { $0.id == session.laneId }?.branchRef
+      .replacingOccurrences(of: "refs/heads/", with: "")
+    let machine = record.sendsElsewhere?.targetMachineName ?? record.machineLabel
+    return { text in
+      switch await gate.ask(machine: machine, branch: branch) {
+      case .workHere:
+        // Sending here proceeds only once "working here" is recorded.
+        return await actions.acknowledge()
+      case .continueThere:
+        // This phone can't send to a chat on another machine from here, so
+        // the words travel by clipboard into the chat that opens; the draft
+        // stays put too.
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { UIPasteboard.general.string = trimmed }
+        actions.open()
+        return false
+      case .cancel:
+        return false
       }
     }
   }
@@ -1553,6 +1734,17 @@ struct WorkChatSessionView: View {
         .workChatGlass(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
       }
 
+      if let record = chatSummaryContext.crossMachineHandoff,
+         let model = workCrossMachineHandoffCardModel(record) {
+        WorkCrossMachineHandoffCard(
+          record: record,
+          model: model,
+          enabled: !hostUnreachable,
+          actions: crossMachineHandoffActions
+        )
+        .workChatGlass(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+      }
+
       if chatSummaryContext.spawnKind == .subagent,
          let parentId = chatSummaryContext.orchestrationParentSessionId,
          !parentId.isEmpty,
@@ -1577,6 +1769,7 @@ struct WorkChatSessionView: View {
       WorkChatComposerCard(
         chatSummary: chatSummaryContext,
         contextMeter: composerContextMeter,
+        compactFirstOffer: composerCompactFirstOffer,
         onCompactContext: { [onSend, $errorMessage] in
           Task { @MainActor in
             // Most send failures set their own message; the rest (a send
@@ -1631,13 +1824,39 @@ struct WorkChatSessionView: View {
           }
         },
         onSend: onSend,
+        onSendWithCompaction: onSendWithCompaction,
         onSent: {
           transcriptScroller.scrollToLatest(animated: true, reason: "composer-sent")
         },
-        hasSendableThreadComments: hasSendableThreadComments
+        hasSendableThreadComments: hasSendableThreadComments,
+        sendGate: crossMachineSendGate
       )
     }
     .padding(.horizontal, compactComposer ? 12 : 16)
+    // A prompt left open when the chat goes away would strand its send
+    // forever; answer it for the person.
+    .onDisappear { handoffSendGate.answer(.cancel) }
+    .onChange(of: session.id) { _, _ in handoffSendGate.answer(.cancel) }
+    .confirmationDialog(
+      "This chat continues on \(handoffSendGate.prompt?.machine ?? "another machine")",
+      isPresented: Binding(
+        get: { handoffSendGate.prompt != nil },
+        set: { if !$0 { handoffSendGate.answer(.cancel) } }
+      ),
+      titleVisibility: .visible
+    ) {
+      Button("Continue on \(handoffSendGate.prompt?.machine ?? "the other machine")") {
+        handoffSendGate.answer(.continueThere)
+      }
+      Button("Work here instead") { handoffSendGate.answer(.workHere) }
+      Button("Cancel", role: .cancel) { handoffSendGate.answer(.cancel) }
+    } message: {
+      Text(
+        "Continue there takes your message to that chat (it's copied, paste it there). "
+          + (handoffSendGate.prompt?.branch.map { "Working here instead means both machines may change \($0)." }
+            ?? "Working here instead means both machines may change the same branch.")
+      )
+    }
   }
 
   /// The transcript.
@@ -1673,6 +1892,9 @@ struct WorkChatSessionView: View {
         // point at another entry by now (a prepend, a fold). Resolve by id;
         // nil (the row is gone) draws nothing and is reconfigured by the
         // next apply rather than measured into the height cache.
+        sceneBridge.sessionId = session.id
+        sceneBridge.canReply = canComposeMessages
+        sceneBridge.timeline = { [thread] in thread.untrackedFrame?.snapshot.timeline ?? [] }
         var row = requested
         if case .entry(let index) = requested.kind {
           let entries = visibleTimelineRenderEntries
@@ -1697,6 +1919,7 @@ struct WorkChatSessionView: View {
             .modifier(WorkOptionalSyncServiceObject(service: syncServiceReference.service))
             .environment(\.workOutputViewer, outputViewer)
             .environment(\.workProofCitations, proofCitationContext)
+            .environment(\.workSceneBridge, sceneBridge)
             .modifier(
               WorkChatTranscriptEnvironmentModifier(
                 provider: chatSummaryContext.provider,
@@ -1962,6 +2185,8 @@ struct WorkChatSessionView: View {
         .onChange(of: timelinePresentation.timelineLastId) { oldTailId, newTailId in
           guard oldTailId != newTailId else { return }
           lastTimelineTailId = newTailId
+          // A new message may be the reader answering a scene on screen.
+          sceneBridge.timelineChanged()
         }
         .onChange(of: isNearBottom) { _, nearBottom in
           guard nearBottom, unreadBelowCount > 0 else { return }
@@ -2078,7 +2303,7 @@ struct WorkChatSessionView: View {
         .fullScreenCover(item: $outputViewer.request) { request in
           WorkOutputViewerScreen(request: request)
         }
-        .sheet(isPresented: $artifactDrawerPresented) {
+        .sheet(isPresented: $artifactDrawerPresented, onDismiss: { proofDrawerFocus = nil }) {
           WorkProofSheet(
             artifacts: artifacts,
             transcript: transcript,
@@ -2086,7 +2311,9 @@ struct WorkChatSessionView: View {
             isRefreshing: artifactRefreshInFlight,
             refreshError: artifactRefreshError,
             onRefresh: onRefreshArtifacts,
-            onLoadArtifact: onLoadArtifact
+            onLoadArtifact: onLoadArtifact,
+            focus: proofDrawerFocus,
+            onClearFocus: { proofDrawerFocus = nil }
           )
           .presentationDetents([.medium, .large])
           .presentationDragIndicator(.visible)
@@ -2108,6 +2335,10 @@ struct WorkChatSessionView: View {
             lanes: lanes,
             commandScope: isPersonalChat ? .personal : .project,
             isBusy: modelUpdateInFlight,
+            currentCopilotContextTier: chatSummaryContext.copilotContextTier,
+            currentCopilotAutoTier: chatSummaryContext.copilotAutoTier,
+            copilotAutoTierPending: chatSummaryContext.copilotAutoTierPending,
+            onSelectCopilotTiers: { context, auto in pickedCopilotTiers = (context, auto) },
             onSelect: { option, pickedReasoning, _, pickedFastMode in
               Task { @MainActor in
                 modelUpdateInFlight = true
@@ -2126,6 +2357,13 @@ struct WorkChatSessionView: View {
                 if chatSummaryContext.effectiveFastMode != pickedFastMode {
                   _ = await onSelectCodexFastMode(pickedFastMode)
                 }
+                guard !Task.isCancelled else { return }
+                // Apply Copilot's tiers only when they differ from what the chat already runs on.
+                if let picked = pickedCopilotTiers,
+                   picked.0 != chatSummaryContext.copilotContextTier || picked.1 != chatSummaryContext.copilotAutoTier {
+                  _ = await onSelectCopilotTiers(picked.0, picked.1)
+                }
+                pickedCopilotTiers = nil
               }
             }
           )
@@ -2394,6 +2632,7 @@ private struct WorkChatComposerCard: View {
   let chatSummary: WorkChatSummaryRenderContext
   /// The context meter rides the composer, as on desktop.
   let contextMeter: WorkComposerContextMeterModel?
+  var compactFirstOffer: WorkCompactFirstOffer? = nil
   let onCompactContext: () -> Void
   let sessionId: String
   let isPersonalChat: Bool
@@ -2427,15 +2666,21 @@ private struct WorkChatComposerCard: View {
   let onOpenModelPicker: (() -> Void)?
   let onSelectRuntimeMode: ((String) -> Void)?
   let onSend: @MainActor (String, [WorkChatInputAttachment], WorkActiveSendMode) async -> Bool
+  var onSendWithCompaction: (@MainActor (String, [WorkChatInputAttachment], WorkActiveSendMode, Bool) async -> Bool)? = nil
   let onSent: () -> Void
   /// Pending thread comments will ride the next send, so an empty field may
   /// still send.
   var hasSendableThreadComments = false
+  /// Asked BEFORE the field is emptied (a chat that continues on another
+  /// machine asks where the message goes). False keeps the draft untouched
+  /// and shows no failure, because nothing was sent.
+  var sendGate: (@MainActor (String) async -> Bool)? = nil
 
   var body: some View {
     WorkChatComposerDraftInput(
       chatSummary: chatSummary,
       contextMeter: contextMeter,
+      compactFirstOffer: compactFirstOffer,
       onCompactContext: onCompactContext,
       sessionId: sessionId,
       isPersonalChat: isPersonalChat,
@@ -2463,8 +2708,10 @@ private struct WorkChatComposerCard: View {
       onOpenModelPicker: onOpenModelPicker,
       onSelectRuntimeMode: onSelectRuntimeMode,
       onSend: onSend,
+      onSendWithCompaction: onSendWithCompaction,
       onSent: onSent,
-      hasSendableThreadComments: hasSendableThreadComments
+      hasSendableThreadComments: hasSendableThreadComments,
+      sendGate: sendGate
     )
   }
 }
@@ -2472,6 +2719,7 @@ private struct WorkChatComposerCard: View {
 private struct WorkChatComposerDraftInput: View {
   let chatSummary: WorkChatSummaryRenderContext
   let contextMeter: WorkComposerContextMeterModel?
+  var compactFirstOffer: WorkCompactFirstOffer? = nil
   let onCompactContext: () -> Void
   let sessionId: String
   let isPersonalChat: Bool
@@ -2505,17 +2753,26 @@ private struct WorkChatComposerDraftInput: View {
   let onOpenModelPicker: (() -> Void)?
   let onSelectRuntimeMode: ((String) -> Void)?
   let onSend: @MainActor (String, [WorkChatInputAttachment], WorkActiveSendMode) async -> Bool
+  var onSendWithCompaction: (@MainActor (String, [WorkChatInputAttachment], WorkActiveSendMode, Bool) async -> Bool)? = nil
   let onSent: () -> Void
   /// Pending thread comments will ride the next send, so an empty field may
   /// still send.
   var hasSendableThreadComments = false
+  /// Asked BEFORE the field is emptied (a chat that continues on another
+  /// machine asks where the message goes). False keeps the draft untouched
+  /// and shows no failure, because nothing was sent.
+  var sendGate: (@MainActor (String) async -> Bool)? = nil
 
   @EnvironmentObject private var syncService: SyncService
+  @Environment(\.colorScheme) private var colorScheme
   @StateObject private var draftState = WorkChatComposerDraftState()
   @StateObject private var suggestionController = WorkComposerSuggestionController()
   @StateObject private var dictationCoordinator = DictationInsertionCoordinator()
+  @State private var compactFirstChoice: Bool? = nil
   @State private var isDictating = false
   @State private var inputAttachments: [WorkChatInputAttachment] = []
+  /// Set by a tap on an image or file pill; the tray opens that preview.
+  @State private var attachmentPreviewRequest: UUID?
   @State private var presentedPicker: WorkComposerPicker?
   /// Collapsed composer: the keyboard is down and the card is one capsule —
   /// [⋯ menu] [one-line field] [send / stop]. It follows focus: the field
@@ -2627,8 +2884,8 @@ private struct WorkChatComposerDraftInput: View {
     }
   }
 
-  private var stashAvailable: Bool {
-    !isPersonalChat && syncService.canInvokeRemoteAction("chat.listPromptStashes")
+  private var draftsAvailable: Bool {
+    !isPersonalChat && syncService.canInvokeRemoteAction("chat.listDrafts")
   }
 
   /// The fold is a gesture, not a control: a downward swipe anywhere on the
@@ -2657,6 +2914,15 @@ private struct WorkChatComposerDraftInput: View {
     }
   }
 
+  /// Whether a big text paste may become a file here: the host must take the
+  /// chunked file route, and personal chats are images-only.
+  private var acceptsPastedFiles: Bool {
+    canAttach
+      && attachmentsAvailable
+      && !isPersonalChat
+      && syncService.supportsViewerRemoteAction(workChatFileAttachmentHostAction)
+  }
+
   /// The folded one-line capsule. The CTO (compact) composer folds the same
   /// way now.
   private var showsFoldedCapsule: Bool {
@@ -2683,6 +2949,20 @@ private struct WorkChatComposerDraftInput: View {
   @MainActor
   private func performSend(mode: WorkActiveSendMode) {
     guard sendEnabled else { return }
+    if let sendGate {
+      let text = draftState.text
+      Task { @MainActor in
+        guard await sendGate(text) else { return }
+        sendNow(mode: mode)
+      }
+      return
+    }
+    sendNow(mode: mode)
+  }
+
+  @MainActor
+  private func sendNow(mode: WorkActiveSendMode) {
+    guard sendEnabled else { return }
     let key = draftPersistenceKey
     let pendingSend = draftState.beginPendingSend()
     let originalText = pendingSend.text
@@ -2694,7 +2974,14 @@ private struct WorkChatComposerDraftInput: View {
     sendFailureNotice = nil
     lastSendMode = mode
     Task { @MainActor in
-      let sent = await onSend(text, outgoingAttachments, mode)
+      let sent: Bool
+      if let offer = compactFirstOffer, offer.isEligible(at: Date()), let onSendWithCompaction {
+        let enabled = compactFirstChoice ?? (offer.mode == "always")
+        compactFirstChoice = nil
+        sent = await onSendWithCompaction(text, outgoingAttachments, mode, enabled)
+      } else {
+        sent = await onSend(text, outgoingAttachments, mode)
+      }
       // Drops the stored draft only on a confirmed send; a failure keeps it, so
       // the composer copy below and the stored copy stay the same message.
       draftState.finishPendingSend(pendingSend, sent: sent)
@@ -2747,7 +3034,8 @@ private struct WorkChatComposerDraftInput: View {
       attachments: $inputAttachments,
       compact: composerCollapsed,
       onExpand: { applyFold(.expand) },
-      chatSessionId: sessionId.isEmpty ? nil : sessionId
+      chatSessionId: sessionId.isEmpty ? nil : sessionId,
+      openRequest: $attachmentPreviewRequest
     )
   }
 
@@ -2763,67 +3051,80 @@ private struct WorkChatComposerDraftInput: View {
   /// [⋯][one-line field][send/stop], unfolded on focus to the field plus the
   /// model/access controls row. The CTO's composer is this same card.
   var body: some View {
-    ADEGlassComposerCard(
-      collapsed: showsFoldedCapsule,
-      isDictating: isDictating,
-      // No send-mode hint under the draft: the mode lives in "Stop and send
-      // settings", and the line only took room from the prompt.
-      hint: nil,
-      onFold: applyFold,
-      accessory: {
-        sendFailureRow
-
-        if !composerCollapsed {
-          WorkComposerSuggestionStrip(controller: suggestionController)
-            .animation(.smooth(duration: 0.16), value: suggestionController.isVisible)
-        }
-
-        attachmentTray
-      },
-      field: {
-        WorkChatComposerTextField(
-          draftState: draftState,
-          controller: suggestionController,
-          canCompose: canCompose,
-          placeholder: composerPlaceholder,
-          acceptsPastedImages: canCompose && attachmentsAvailable,
-          onPasteImages: { images in
-            workChatInputPasteImages(images, into: $inputAttachments)
-          },
-          maxLines: composerMaxLines,
-          collapsed: composerCollapsed,
-          onFoldSwipeDown: { applyFold(.collapse) }
-        )
-      },
-      menu: {
-        composerOverflowMenu()
-      },
-      controls: {
-        WorkComposerChipStrip(
-          chatSummary: chatSummary,
-          settingsMutationInFlight: settingsMutationInFlight,
-          codexFastModeOverride: codexFastModeOverride,
-          onOpenModelPicker: onOpenModelPicker,
-          onSelectRuntimeMode: onSelectRuntimeMode
-        )
-
-        DictationRawUndoChip(coordinator: dictationCoordinator, draft: $draftState.text)
-      },
-      trailing: {
-        if !isDictating, let contextMeter {
-          WorkComposerContextMeter(
-            model: contextMeter,
-            onCompact: contextMeter.compact == .ready ? onCompactContext : nil
-          )
-        }
-
-        composerDictationControl
-
-        if !isDictating {
-          sendOrInterruptControls()
-        }
+    // Spacing 0: the pill carries its own gap, so a pill that is not yet
+    // eligible (its timeline draws nothing) leaves no band above the card.
+    VStack(alignment: .leading, spacing: 0) {
+      // Compact first floats above the prompt box, as on desktop, instead of
+      // taking width from the send row.
+      if !isDictating, let compactFirstOffer, onSendWithCompaction != nil {
+        WorkCompactFirstPill(offer: compactFirstOffer, choice: $compactFirstChoice)
       }
-    )
+
+      ADEGlassComposerCard(
+        collapsed: showsFoldedCapsule,
+        isDictating: isDictating,
+        // No send-mode hint under the draft: the mode lives in "Stop and send
+        // settings", and the line only took room from the prompt.
+        hint: nil,
+        onFold: applyFold,
+        accessory: {
+          sendFailureRow
+
+          if !composerCollapsed {
+            WorkComposerSuggestionStrip(controller: suggestionController)
+              .animation(.smooth(duration: 0.16), value: suggestionController.isVisible)
+          }
+
+          attachmentTray
+        },
+        field: {
+          WorkChatComposerTextField(
+            draftState: draftState,
+            controller: suggestionController,
+            canCompose: canCompose,
+            placeholder: composerPlaceholder,
+            acceptsPastedImages: canCompose && attachmentsAvailable,
+            onPasteImages: { images in
+              workChatInputPasteImages(images, into: $inputAttachments)
+            },
+            attachments: $inputAttachments,
+            acceptsPastedFiles: acceptsPastedFiles,
+            onOpenAttachment: { attachmentPreviewRequest = $0 },
+            maxLines: composerMaxLines,
+            collapsed: composerCollapsed,
+            onFoldSwipeDown: { applyFold(.collapse) }
+          )
+        },
+        menu: {
+          composerOverflowMenu()
+        },
+        controls: {
+          WorkComposerChipStrip(
+            chatSummary: chatSummary,
+            settingsMutationInFlight: settingsMutationInFlight,
+            codexFastModeOverride: codexFastModeOverride,
+            onOpenModelPicker: onOpenModelPicker,
+            onSelectRuntimeMode: onSelectRuntimeMode
+          )
+
+          DictationRawUndoChip(coordinator: dictationCoordinator, draft: $draftState.text)
+        },
+        trailing: {
+          if !isDictating, let contextMeter {
+            WorkComposerContextMeter(
+              model: contextMeter,
+              onCompact: contextMeter.compact == .ready ? onCompactContext : nil
+            )
+          }
+
+          composerDictationControl
+
+          if !isDictating {
+            sendOrInterruptControls()
+          }
+        }
+      )
+    }
     .onAppear {
       configureSuggestionController()
     }
@@ -2847,6 +3148,11 @@ private struct WorkChatComposerDraftInput: View {
     }
     .task(id: composerDraftRestore?.id) {
       draftState.applyRestore(composerDraftRestore)
+    }
+    // A scene's button put a reply in this chat's prompt box. Never sent here.
+    .onReceive(WorkSceneReplyCenter.replies) { request in
+      guard request.sessionId == sessionId else { return }
+      draftState.applySceneReply(request.text)
     }
     // The 400ms autosave debounce can't survive a navigation pop; flush here so
     // backing out of a chat mid-sentence keeps the sentence.
@@ -2989,10 +3295,14 @@ private struct WorkChatComposerDraftInput: View {
       attachHint: workChatComposerAttachHint(canCompose: canCompose, canAttach: canAttach),
       attachmentsAvailable: attachmentsAvailable,
       onDictate: { dictationCoordinator.requestStart() },
-      stashAvailable: stashAvailable,
-      scope: WorkPromptStashScope(chatSessionId: sessionId),
+      draftsAvailable: draftsAvailable,
+      scheduleAvailable: syncService.canInvokeRemoteAction("chat.createDraft"),
+      scope: WorkDraftScope(chatSessionId: sessionId),
       provider: chatSummary.provider,
       modelId: chatSummary.currentModelId,
+      // The render context already carries this: its `runtimeMode` is
+      // `workInitialRuntimeMode` of the summary it was built from.
+      runtimeMode: chatSummary.runtimeMode,
       extraMenuContent: AnyView(stopAndSendSettingsMenu)
     )
   }
@@ -3181,6 +3491,7 @@ private struct WorkChatComposerDraftInput: View {
     suggestionController.provider = chatSummary.provider
     suggestionController.laneId = laneId.isEmpty ? nil : laneId
     suggestionController.syncService = syncService
+    suggestionController.sessionId = sessionId.isEmpty ? nil : sessionId
   }
 
   /// Red stop circle, the desktop's colour
@@ -3428,6 +3739,7 @@ final class WorkChatComposerDraftState: ObservableObject {
   }
   @Published var isFocused = false
   private var appliedRestoreId: UUID?
+  private var lastSceneReply: String?
   /// Surface this composer's draft is persisted under. Empty means "don't
   /// persist" (the key is unresolved), which is the safe default.
   private var persistenceKey = ""
@@ -3463,6 +3775,7 @@ final class WorkChatComposerDraftState: ObservableObject {
     let isFirstBind = persistenceKey.isEmpty
     flushDraft()
     persistenceKey = key
+    lastSceneReply = nil
     let stored = key.isEmpty ? "" : WorkComposerDraftStore.load(key)
 
     guard !isFirstBind else {
@@ -3528,6 +3841,8 @@ final class WorkChatComposerDraftState: ObservableObject {
   func beginPendingSend() -> WorkChatComposerPendingSend {
     let value = trimmedText
     isFocused = false
+    // The pick goes out with this message; the next draft starts with none.
+    lastSceneReply = nil
     autosaveTask?.cancel()
     autosaveTask = nil
     var issued = WorkChatComposerPendingSend(token: nil, key: "", text: value)
@@ -3579,6 +3894,22 @@ final class WorkChatComposerDraftState: ObservableObject {
     isFocused = true
   }
 
+  /// A reply a scene offered. It joins the draft and is never sent: the reader
+  /// can add to it. Picking another option swaps the earlier pick for the new
+  /// one, and anything the reader typed stays (desktop: `handleSceneReply`).
+  func applySceneReply(_ reply: String) {
+    let previous = lastSceneReply
+    lastSceneReply = reply
+    // The pick was added at the end, so look for it from the end.
+    if let previous, let range = text.range(of: previous, options: .backwards) {
+      text.replaceSubrange(range, with: reply)
+    } else if trimmedText.isEmpty {
+      text = reply
+    } else {
+      text += (text.hasSuffix("\n") ? "" : "\n") + reply
+    }
+  }
+
   func applyRestore(_ restore: WorkChatComposerDraftRestore?) {
     guard let restore, appliedRestoreId != restore.id else { return }
     appliedRestoreId = restore.id
@@ -3598,6 +3929,9 @@ private struct WorkChatComposerTextField: View {
   let placeholder: String
   var acceptsPastedImages = true
   var onPasteImages: (([UIImage]) -> Void)? = nil
+  var attachments: Binding<[WorkChatInputAttachment]>? = nil
+  var acceptsPastedFiles = false
+  var onOpenAttachment: ((UUID) -> Void)? = nil
   var maxLines = 6
   /// Folded composer. The field keeps its measured height and is clipped to one
   /// line from the top, so folding a long draft animates one frame height
@@ -3629,6 +3963,9 @@ private struct WorkChatComposerTextField: View {
       measuredHeight: $measuredHeight,
       acceptsPastedImages: acceptsPastedImages,
       onPasteImages: onPasteImages,
+      attachments: attachments,
+      acceptsPastedFiles: acceptsPastedFiles,
+      onOpenAttachment: onOpenAttachment,
       maxLines: maxLines,
       collapsed: collapsed,
       onFoldSwipeDown: onFoldSwipeDown
@@ -3648,7 +3985,10 @@ private struct WorkChatComposerSendButton: View {
   let sending: Bool
   var accessibilityLabelText = "Send message"
   var systemImageName = "arrow.up"
-  var minimumTapTargetSize: CGFloat = 28
+  var minimumTapTargetSize: CGFloat = 34
+  /// The disc. 34pt in the chat composer; the active-turn split control keeps
+  /// it at its 32pt row height.
+  var diameter: CGFloat = 34
   var hasSendableThreadComments = false
   /// The send itself lives on the composer, not here: the retry row runs the
   /// exact same action, and two copies of "clear the field, stage, restore on
@@ -3671,7 +4011,8 @@ private struct WorkChatComposerSendButton: View {
       sending: sending,
       accessibilityLabelText: accessibilityLabelText,
       systemImageName: systemImageName,
-      minimumTapTargetSize: minimumTapTargetSize
+      minimumTapTargetSize: minimumTapTargetSize,
+      diameter: diameter
     ) {
       action()
     }

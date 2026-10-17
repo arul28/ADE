@@ -34,6 +34,10 @@ export function makeEnv(overrides: Partial<Env> = {}): Env & { DB: FakeD1Databas
     CLERK_OAUTH_CLIENT_ID: OAUTH_CLIENT_ID,
     PUSH_RELAY_URL: RELAY_URL,
     DIRECTORY_AUTH_SECRET,
+    // The cron handler also refreshes the model registry, which fetches public
+    // sites. Off here so these tests never touch the network; the registry has
+    // its own tests with a faked fetch.
+    MODEL_REGISTRY_REFRESH: "0",
     ...overrides,
   } as unknown as Env & { DB: FakeD1Database };
 }

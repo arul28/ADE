@@ -25,7 +25,9 @@ const MB = 1024 * 1024;
 type Env = UsageResearchEnv & { DB: FakeD1Database };
 
 function makeEnv(overrides: Partial<UsageResearchEnv> = {}): Env {
-  return { DB: new FakeD1Database(), ...overrides } as unknown as Env;
+  // MODEL_REGISTRY_REFRESH off: the cron handler would otherwise fetch the
+  // public model-registry sources, which these tests must not touch.
+  return { DB: new FakeD1Database(), MODEL_REGISTRY_REFRESH: "0", ...overrides } as unknown as Env;
 }
 
 /** What a report row counts against the storage ceiling. */
@@ -669,7 +671,10 @@ describe("usage research sweep", () => {
     await cleanupUsageResearch(env, FIXED_NOW);
     const third = await cleanupUsageResearch(env, FIXED_NOW);
     expect(third.reports).toBe(100);
+    // Once nothing is expired, a sweep (it runs every minute) writes nothing.
+    const totalsWritesBeforeIdleSweep = env.DB.usageResearchTotalsWrites;
     expect((await cleanupUsageResearch(env, FIXED_NOW)).reports).toBe(0);
+    expect(env.DB.usageResearchTotalsWrites).toBe(totalsWritesBeforeIdleSweep);
     expect(env.DB.usageResearchRows.size).toBe(100);
     expect(env.DB.usageResearchTotalBytes).toBe(storedBytes(env));
     // The four statements always travel as one transaction.
@@ -739,9 +744,9 @@ describe("usage research sweep", () => {
     try {
       let cleanup: Promise<unknown> = Promise.resolve();
       await worker.scheduled(
-        {} as ScheduledEvent,
+        { scheduledTime: Date.now(), cron: "* * * * *" } as ScheduledEvent,
         env as never,
-        { waitUntil: (promise) => { cleanup = promise; } } as ExecutionContext,
+        { waitUntil: (promise) => { cleanup = Promise.all([cleanup, promise]); } } as ExecutionContext,
       );
       // The tick settles instead of rejecting, and the other sweeps still ran.
       await expect(cleanup).resolves.toBeDefined();
@@ -762,9 +767,9 @@ describe("usage research sweep", () => {
     seedReport(env, 2, today);
     let cleanup: Promise<unknown> = Promise.resolve();
     await worker.scheduled(
-      {} as ScheduledEvent,
+      { scheduledTime: Date.now(), cron: "* * * * *" } as ScheduledEvent,
       env as never,
-      { waitUntil: (promise) => { cleanup = promise; } } as ExecutionContext,
+      { waitUntil: (promise) => { cleanup = Promise.all([cleanup, promise]); } } as ExecutionContext,
     );
     await cleanup;
     expect([...env.DB.usageResearchRows.values()].map((row) => row.day)).toEqual([today]);

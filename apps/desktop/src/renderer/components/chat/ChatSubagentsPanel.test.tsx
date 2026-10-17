@@ -3,9 +3,14 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type * as React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AgentChatEventEnvelope } from "../../../shared/types";
+import type { AgentChatEventEnvelope, OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
 import { SUBAGENT_CAPABILITIES } from "../../../shared/subagentCapabilities";
-import type { ChatScheduledWorkSnapshot, ChatSubagentSnapshot } from "./chatExecutionSummary";
+import {
+  deriveChatSubagentSnapshots,
+  type ChatScheduledWorkSnapshot,
+  type ChatSubagentSnapshot,
+} from "./chatExecutionSummary";
+import { selfHealSubagentSnapshots } from "./chatPaneSelfHeal";
 import { ChatSubagentsPanel, type SubagentSelection } from "./ChatSubagentsPanel";
 import { deriveChatWorkflowRuns } from "./ChatWorkflowActiveCard";
 
@@ -122,7 +127,7 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     expect(screen.getByText("3/5")).toBeTruthy();
   });
 
-  it("opens workflow details from the active card with phases and agent telemetry", () => {
+  it("draws a workflow run inline: its phases, its agent rows and its telemetry", () => {
     const workflow: ChatSubagentSnapshot = {
       ...baseSnapshot,
       taskId: "workflow-1",
@@ -176,26 +181,36 @@ describe("ChatSubagentsPanel (pane variant)", () => {
         events={[]}
         variant="pane"
         onStopSubagent={stopWorkflow}
+        onSelectSubagent={() => undefined}
       />,
     );
 
-    fireEvent.click(screen.getByTestId("chat-workflow-active-card"));
-
-    expect(screen.getByTestId("chat-workflow-details-dialog")).toBeTruthy();
-    expect(screen.getByText("Foundation")).toBeTruthy();
-    expect(screen.getAllByText("CodeReview").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("cloud:security").length).toBeGreaterThan(0);
-    expect(screen.getByText("2 agents queued behind the current phase")).toBeTruthy();
-    expect(screen.getByText("1,234 total tokens reported by the workflow")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Stop cloud:security" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Stop workflow" }));
-    expect(stopWorkflow).toHaveBeenCalledWith(workflow);
-
-    fireEvent.keyDown(screen.getByTestId("chat-workflow-details-dialog"), { key: "Escape" });
+    // Drawn where it is: one section, no card to open and no dialog to escape.
+    expect(screen.getByTestId("chat-workflow-active-card-list")).toBeTruthy();
     expect(screen.queryByTestId("chat-workflow-details-dialog")).toBeNull();
+
+    const run = screen.getByTestId("chat-workflow-run");
+    expect(run.getAttribute("data-workflow-name")).toBe("CodeReview");
+    expect(within(run).getByText("Active")).toBeTruthy();
+    // One agent published a row and two are still queued behind the phase.
+    expect(within(run).getByText("0/3 agents")).toBeTruthy();
+    expect(within(run).getByText("1 running")).toBeTruthy();
+    expect(within(run).getByText("2 queued")).toBeTruthy();
+    expect(within(run).getByText("1.2k tok")).toBeTruthy();
+    expect(within(run).getByText("2 tools")).toBeTruthy();
+    // The phase holding the agent, and that agent's own telemetry.
+    expect(within(run).getAllByText("CodeReview").length).toBeGreaterThan(0);
+    expect(within(run).queryByText("Foundation")).toBeNull();
+    const agentRow = within(run).getByTestId("chat-workflow-agent-row");
+    expect(within(agentRow).getByText("cloud:security")).toBeTruthy();
+    expect(within(agentRow).getByText("4.2k")).toBeTruthy();
+    // An agent with a row behind it is reachable, and the run carries its Stop.
+    expect(within(run).getByRole("button", { name: "Open cloud:security details" })).toBeTruthy();
+    fireEvent.click(within(run).getByRole("button", { name: "Stop workflow" }));
+    expect(stopWorkflow).toHaveBeenCalledWith(workflow);
   });
 
-  it("keeps a running workflow duration ticking past a stale provider sample", () => {
+  it("shows a running run's live span, and its script's plan when no phase detail was published", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-05-12T00:00:10.000Z"));
     const workflow: ChatSubagentSnapshot = {
@@ -212,22 +227,33 @@ describe("ChatSubagentsPanel (pane variant)", () => {
         doneCount: 0,
         failedCount: 0,
       },
-      // This is an interim provider sample, not the live elapsed duration.
+      // An interim provider sample, not the run's live elapsed span.
       usage: { durationMs: 1_000, toolUses: 1, totalTokens: 10 },
     };
 
-    render(<ChatSubagentsPanel snapshots={[workflow]} events={[]} variant="pane" />);
-    fireEvent.click(screen.getByTestId("chat-workflow-active-card"));
-    const dialog = within(screen.getByTestId("chat-workflow-details-dialog"));
+    render(
+      <ChatSubagentsPanel
+        snapshots={[workflow]}
+        events={[]}
+        variant="pane"
+        workflowPlans={new Map([["workflow-duration", { name: "Duration check", phases: ["Scan", "Report"], lines: 42 }]])}
+      />,
+    );
 
-    expect(dialog.getByText("10s")).toBeTruthy();
-    act(() => {
-      vi.advanceTimersByTime(1_000);
-    });
-    expect(dialog.getByText("11s")).toBeTruthy();
+    const run = screen.getByTestId("chat-workflow-run");
+    // 10s since it started, never the 1s sample the provider happened to send.
+    expect(within(run).getByText("10s")).toBeTruthy();
+    expect(within(run).queryByText("1s")).toBeNull();
+    // No agent rows exist to draw, so the script's own plan stands in — named
+    // as the plan it is rather than passed off as progress.
+    const planned = screen.getByTestId("chat-workflow-planned-phases");
+    expect(planned.textContent).toContain("Plan from its script · 42 lines · no agent rows published");
+    expect(within(planned).getByText("Scan")).toBeTruthy();
+    expect(within(planned).getByText("Report")).toBeTruthy();
+    expect(within(run).queryByTestId("chat-workflow-agent-row")).toBeNull();
   });
 
-  it("reveals older workflow runs through the Show all control", () => {
+  it("draws every tracked run, newest first, with no disclosure control", () => {
     const workflows = Array.from({ length: 4 }, (_, index): ChatSubagentSnapshot => ({
       ...baseSnapshot,
       taskId: "workflow-" + index,
@@ -259,11 +285,14 @@ describe("ChatSubagentsPanel (pane variant)", () => {
       />,
     );
 
-    expect(screen.getAllByTestId("chat-workflow-active-card")).toHaveLength(3);
-    fireEvent.click(screen.getByTestId("chat-workflow-show-all"));
-    expect(screen.getAllByTestId("chat-workflow-active-card")).toHaveLength(4);
-    fireEvent.click(screen.getAllByTestId("chat-workflow-active-card")[0]!);
-    expect(screen.getByTestId("chat-workflow-details-dialog")).toBeTruthy();
+    expect(screen.getByText("4 tracked")).toBeTruthy();
+    expect(screen.getByTestId("chat-workflow-active-card-list").querySelectorAll("[data-workflow-name]"))
+      .toHaveLength(4);
+    expect([...screen.getAllByTestId("chat-workflow-run")].map((node) => node.getAttribute("data-workflow-name")))
+      .toEqual(["Workflow 3", "Workflow 2", "Workflow 1", "Workflow 0"]);
+    // Every run's agents stay reachable without an expander.
+    expect(screen.getAllByTestId("chat-workflow-agent-row")).toHaveLength(4);
+    expect(screen.queryByTestId("chat-workflow-show-all")).toBeNull();
   });
 
   it("keeps same-named legacy workflow lineage separate from a rich workflow", () => {
@@ -374,11 +403,15 @@ describe("ChatSubagentsPanel (pane variant)", () => {
       />,
     );
 
-    fireEvent.click(screen.getByTestId("chat-workflow-active-card"));
-
-    expect(screen.getByText("0/1 agents complete · 1 stopped")).toBeTruthy();
-    expect(screen.getByText("1 stopped when the workflow ended")).toBeTruthy();
-    expect(screen.getByText("Workflow ended before this agent finished.")).toBeTruthy();
+    const run = screen.getByTestId("chat-workflow-run");
+    expect(within(run).getByText("Complete")).toBeTruthy();
+    // The provider still calls the agent "running", but its own row ended
+    // stopped, so the run counts it as stopped rather than as work in flight.
+    expect(within(run).getByText("1 stopped")).toBeTruthy();
+    expect(within(run).queryByText("1 running")).toBeNull();
+    const agentRow = within(run).getByTestId("chat-workflow-agent-row");
+    expect(within(agentRow).getByText("cloud:security")).toBeTruthy();
+    expect(agentRow.textContent).toContain("Workflow ended before this agent finished.");
     expect(screen.queryByRole("button", { name: "Stop workflow" })).toBeNull();
   });
 
@@ -1116,15 +1149,65 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     const sessionId = "pane-persistence";
     window.localStorage.removeItem(`ade.chat.paneUi.v1:${sessionId}`);
     window.localStorage.removeItem(`ade.chat.paneCleared.v1:${sessionId}`);
-    const completed = ["done-1", "done-2"].map((taskId): ChatSubagentSnapshot => ({
-      ...baseSnapshot,
-      taskId,
-      description: taskId,
+    const oldWorkflowProgress = {
+      phases: [],
+      agents: [],
+      queuedCount: 0,
+      runningCount: 1,
+      doneCount: 0,
+      failedCount: 0,
+    };
+    const childEvents: AgentChatEventEnvelope[] = [
+      {
+        sessionId,
+        timestamp: "2026-10-01T12:00:10.000Z",
+        event: {
+          type: "subagent_progress",
+          taskId: "chat:child-1",
+          agentId: "child-1",
+          description: "Spawned chat",
+          summary: "Working on the first turn",
+          lastToolName: "rg",
+          workflowName: "CodeReview",
+          workflowProgress: oldWorkflowProgress,
+          resourceLinks: [{ path: "src/old-turn.ts" }],
+        },
+      },
+      {
+        sessionId,
+        timestamp: "2026-10-01T12:00:30.000Z",
+        event: {
+          type: "subagent_result",
+          taskId: "chat:child-1",
+          agentId: "child-1",
+          status: "completed",
+          summary: "Finished the first turn",
+          finalSummary: "Finished the first turn",
+          usage: { durationMs: 30_000, totalTokens: 1_200 },
+        },
+      },
+    ];
+    const [completedChild] = deriveChatSubagentSnapshots(childEvents);
+    expect(completedChild).toMatchObject({
       status: "completed",
-      background: false,
-    }));
+      summary: "Finished the first turn",
+      lastToolName: "rg",
+      resourceLinks: [{ path: "src/old-turn.ts" }],
+      workflowProgress: oldWorkflowProgress,
+      usage: { durationMs: 30_000, totalTokens: 1_200 },
+    });
+    const completed: ChatSubagentSnapshot[] = [
+      completedChild!,
+      {
+        ...baseSnapshot,
+        taskId: "done-2",
+        description: "done-2",
+        status: "completed",
+        background: false,
+      },
+    ];
 
-    render(
+    const { rerender } = render(
       <ChatSubagentsPanel
         sessionId={sessionId}
         snapshots={completed}
@@ -1140,12 +1223,68 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Clear" }));
     expect(screen.getByText("Subagents · all clear")).toBeTruthy();
     expect(JSON.parse(window.localStorage.getItem(`ade.chat.paneCleared.v1:${sessionId}`) ?? "null")).toEqual({
-      subagents: ["done-1", "done-2"],
+      subagents: ["chat:child-1", "done-2"],
       background: [],
       schedule: [],
     });
-    fireEvent.click(screen.getAllByRole("button", { name: "Restore (2)" })[0]);
-    expect(screen.getByRole("button", { name: "Completed (2)" })).toBeTruthy();
+
+    const [legacyChild] = selfHealSubagentSnapshots([completedChild!], {
+      childChatStatuses: new Map([["child-1", "active" as const]]),
+    });
+    expect(legacyChild).toMatchObject({
+      status: "running",
+      elapsedStartAt: null,
+      summary: null,
+      finalSummary: null,
+    });
+    expect(legacyChild?.usage).toBeUndefined();
+    expect(legacyChild?.lastToolName).toBeUndefined();
+    expect(legacyChild?.workflowName).toBeUndefined();
+    expect(legacyChild?.resourceLinks).toBeUndefined();
+    expect(legacyChild?.workflowProgress).toBeUndefined();
+
+    rerender(
+      <ChatSubagentsPanel
+        sessionId={sessionId}
+        snapshots={[legacyChild!, completed[1]!]}
+        events={[]}
+        variant="pane"
+        runtimeAlive={false}
+        childChatStatuses={new Map([["child-1", "active" as const]])}
+      />,
+    );
+    expect(screen.getByText("running")).toBeTruthy();
+    expect(screen.queryByText("Subagents · all clear")).toBeNull();
+
+    const resumedEvents: AgentChatEventEnvelope[] = [
+      ...childEvents,
+      {
+        sessionId,
+        timestamp: "2026-10-01T12:01:00.000Z",
+        event: {
+          type: "subagent_started",
+          taskId: "chat:child-1",
+          agentId: "child-1",
+          description: "Spawned chat",
+          spawnKind: "subagent",
+          resumed: true,
+        },
+      },
+    ];
+    const [resumedChild] = deriveChatSubagentSnapshots(resumedEvents);
+    expect(resumedChild).toMatchObject({
+      status: "running",
+      startedAt: "2026-10-01T12:01:00.000Z",
+      summary: null,
+      finalSummary: null,
+    });
+    expect(resumedChild?.usage).toBeUndefined();
+    expect(resumedChild?.lastToolName).toBeUndefined();
+    expect(resumedChild?.workflowName).toBeUndefined();
+    expect(resumedChild?.resourceLinks).toBeUndefined();
+    expect(resumedChild?.workflowProgress).toBeUndefined();
+    fireEvent.click(screen.getByRole("button", { name: "Restore (1)" }));
+    expect(screen.getByRole("button", { name: "Completed (1)" })).toBeTruthy();
   });
 
   // A spawned ADE child chat row navigates to that chat instead of taking over
@@ -1484,5 +1623,110 @@ describe("ChatSubagentsPanel stale-run self-heal", () => {
     expect(screen.queryByText("running")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Completed (1)" }));
     expect(screen.getByText("halted")).toBeTruthy();
+  });
+});
+
+/**
+ * A terminal session as `session.list` returns one. The pane's Shells section
+ * is the only place a chat's shells are drawn now, so these fixtures stand in
+ * for what the list used to file under a chat.
+ */
+function shellSession(overrides: Partial<TerminalSessionSummary> = {}): TerminalSessionSummary {
+  return {
+    id: "shell-1",
+    laneId: "lane-1",
+    laneName: "Lane one",
+    ptyId: "pty-shell-1",
+    tracked: true,
+    pinned: false,
+    manuallyNamed: false,
+    goal: null,
+    toolType: "shell",
+    title: "npm run dev",
+    status: "running",
+    startedAt: "2026-05-12T00:00:00.000Z",
+    endedAt: null,
+    exitCode: null,
+    transcriptPath: ".ade/transcripts/shell-1.jsonl",
+    headShaStart: null,
+    headShaEnd: null,
+    lastOutputPreview: "listening on 5173",
+    lastActivityAt: "2026-05-12T00:00:05.000Z",
+    summary: null,
+    runtimeState: "running",
+    resumeCommand: null,
+    ...overrides,
+  };
+}
+
+describe("ChatSubagentsPanel shells section", () => {
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  it("draws a chat's shells when they are the pane's only content", () => {
+    // A chat can hold nothing but shells. The pane's empty gate used to count
+    // goals, tasks, subagents and schedules only, so that chat rendered no pane
+    // at all — and the shells it was meant to show had nowhere else to appear.
+    const { container } = render(
+      <ChatSubagentsPanel snapshots={[]} events={[]} variant="pane" shells={[shellSession()]} />,
+    );
+
+    expect(container.textContent).toContain("npm run dev");
+    expect(screen.getByText("Shells")).toBeTruthy();
+  });
+
+  it("opens a shell, and its menu, on the chat's own machine", () => {
+    const dispatchSpy = vi.spyOn(window, "dispatchEvent");
+    const pin: OpenProjectBinding = {
+      kind: "remote",
+      key: "machine-b",
+      targetId: "target-b",
+      runtimeName: "Machine B",
+      projectId: "project-b",
+      rootPath: "/remote/project",
+      displayName: "Machine B",
+      gitOriginUrl: null,
+    };
+    render(
+      <ChatSubagentsPanel
+        snapshots={[]}
+        events={[]}
+        variant="pane"
+        shells={[shellSession()]}
+        shellsPin={pin}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("npm run dev"));
+    const open = dispatchSpy.mock.calls
+      .map(([event]) => event)
+      .find((event): event is CustomEvent => event instanceof CustomEvent && event.type === "ade:work:select-session");
+    expect(open?.detail).toEqual({ sessionId: "shell-1", laneId: "lane-1", binding: pin });
+
+    fireEvent.contextMenu(screen.getByText("npm run dev"), { clientX: 10, clientY: 20 });
+    const menu = dispatchSpy.mock.calls
+      .map(([event]) => event)
+      .find((event): event is CustomEvent => event instanceof CustomEvent && event.type === "ade:work:open-session-menu");
+    expect(menu?.detail).toMatchObject({ x: 10, y: 20, binding: pin, session: expect.objectContaining({ id: "shell-1" }) });
+  });
+
+  it("states a failed shells read with a retry, never as an empty chat", () => {
+    const onRetryShells = vi.fn();
+    render(
+      <ChatSubagentsPanel
+        snapshots={[]}
+        events={[]}
+        variant="pane"
+        shells={[]}
+        shellsLoadError
+        onRetryShells={onRetryShells}
+      />,
+    );
+
+    expect(screen.getByTestId("chat-shells-error").textContent).toContain("Couldn’t load this chat’s shells.");
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(onRetryShells).toHaveBeenCalledTimes(1);
   });
 });

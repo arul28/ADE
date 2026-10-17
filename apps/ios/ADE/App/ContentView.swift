@@ -63,7 +63,6 @@ struct ContentView: View {
     let saved = UserDefaults.standard.string(forKey: "ade.navigation.lastRootTab")
     return saved.flatMap(RootTab.init(rawValue:)) ?? .work
   }()
-  @State private var analyticsConsentPresented = false
   @State private var mobileLaunchAccess = MobileLaunchAccessPolicy()
   @AppStorage("ade.colorScheme") private var colorSchemeRaw: String = ADEColorSchemeChoice.system.rawValue
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -163,6 +162,10 @@ struct ContentView: View {
         CursorCloudPaneSheet(syncService: syncService)
           .environmentObject(syncService)
       }
+      .sheet(isPresented: $syncService.githubIssuesPanePresented) {
+        GitHubIssuesPaneSheet(syncService: syncService)
+          .environmentObject(syncService)
+      }
       // Presented rather than bound to the request itself: the card's stage
       // changes under a stable id as the wake runs, and `sheet(item:)` would
       // keep rendering the state the card was opened with.
@@ -175,18 +178,6 @@ struct ContentView: View {
       )) {
         MachineWakeCard()
           .environmentObject(syncService)
-      }
-      .alert("Share anonymous product usage?", isPresented: $analyticsConsentPresented) {
-        Button("Don't share", role: .cancel) {
-          ProductAnalytics.shared.setEnabled(false)
-        }
-        Button("Share usage") {
-          ProductAnalytics.shared.setEnabled(true)
-          ProductAnalytics.shared.captureAppOpened(.coldStart)
-          captureCurrentRootScreen()
-        }
-      } message: {
-        Text("ADE can send a small, daily-capped set of screen and feature categories to help improve the app. It never sends prompts, code, project or file names, terminal content, raw errors, or screen recordings. You can change this later in Settings.")
       }
   }
 
@@ -265,12 +256,10 @@ struct ContentView: View {
       .onAppear {
         mobileLaunchAccess.observeInitialAccountPhase(accountService.phase)
         captureCurrentRootScreen()
-        analyticsConsentPresented = hasMobileAccess && ProductAnalytics.shared.shouldRequestConsent
       }
       .onChange(of: hasMobileAccess) { _, hasAccess in
         guard hasAccess else { return }
         captureCurrentRootScreen()
-        analyticsConsentPresented = ProductAnalytics.shared.shouldRequestConsent
       }
       .onChange(of: accountService.phase) { _, phase in
         mobileLaunchAccess.observeInitialAccountPhase(phase)
@@ -346,7 +335,7 @@ struct ContentView: View {
   }
 
   private var lanesTab: some View {
-    LanesTabView(isActive: selectedTab == .lanes)
+    LanesTabShell(isActive: selectedTab == .lanes)
       .tag(RootTab.lanes)
       .tabItem {
         Label("Lanes", systemImage: "square.stack.3d.up")
@@ -354,7 +343,7 @@ struct ContentView: View {
   }
 
   private var prsTab: some View {
-    PRsTabView(isActive: selectedTab == .prs)
+    PRsTabShell(isActive: selectedTab == .prs)
       .tag(RootTab.prs)
       .tabItem {
         Label("PRs", systemImage: "arrow.triangle.pull")
@@ -534,8 +523,16 @@ private struct WorkSessionNavigationModifier: ViewModifier {
       // build is one of those. Only an externally-minted request offers it:
       // this task also runs for the cold-launch restore, and resolving an owner
       // there would turn a plain launch into a machine transition.
-      guard await syncService.ensureAccountMachineForNavigation(for: request),
-      syncService.requestedWorkSessionNavigation?.id == request.id else { return }
+      let reached = await syncService.ensureAccountMachineForNavigation(for: request)
+      guard syncService.requestedWorkSessionNavigation?.id == request.id else { return }
+      guard reached else {
+        // The owner is offline, unknown, or the user said "Not now" to Wake &
+        // open. An outside tap must still land somewhere: the Hub, with why.
+        if request.origin == .external {
+          syncService.landOnHub(notice: syncService.unresolvedNavigationNotice(for: request))
+        }
+        return
+      }
       // A scoped or roster-resolved session may belong to any project. Keep
       // the machine-wide Hub mounted so it can activate and hydrate the target.
       if syncService.navigationDestination(request) == .hub {

@@ -48,6 +48,13 @@ export type AdeCardVariant =
   | "claude_session_quota"
   /** A chat's new-lane setup record (fetch, checkout, environment, start agent). */
   | "lane_setup"
+  /**
+   * An MCP App: the page an MCP server ships with a tool (`./mcpApp.ts`). The
+   * desktop runs it in a sandboxed frame. Not in the known list below on
+   * purpose: every other surface shows `fallbackText`, which says where apps
+   * run.
+   */
+  | "mcp_app"
   | (string & {});
 
 /** Semantic row glyph. Surfaces map these to their own icon vocabulary. */

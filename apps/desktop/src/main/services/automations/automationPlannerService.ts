@@ -47,6 +47,25 @@ import type { createLaneService } from "../lanes/laneService";
 import { resolveCliSpawnInvocation } from "../shared/processExecution";
 import { userProcessEnv } from "../shared/hostRuntimeEnv";
 import { getErrorMessage, quoteIfNeeded, resolvePathWithinRoot } from "../shared/utils";
+import { normalizeWebhookTriggerConfig } from "../../../shared/automationWebhooks";
+import { customNotificationProblem } from "../../../shared/types/attention";
+
+/**
+ * What is wrong with a "Send notification to mobile app" step, checked when
+ * the rule is saved. Text and links that use `{{…}}` values are only checked
+ * for what can be known now; the rest is checked when the run fills them in.
+ */
+function sendNotificationStepProblem(args: unknown): string | null {
+  const record = args && typeof args === "object" && !Array.isArray(args) ? args as Record<string, unknown> : {};
+  const hasValue = (value: unknown) => typeof value === "string" && /\{\{[^}]*\}\}/.test(value);
+  const title = typeof record.title === "string" ? record.title : "";
+  if (!title.trim()) return "Send notification needs a title.";
+  return customNotificationProblem({
+    title: hasValue(title) ? "x" : title,
+    body: hasValue(record.body) ? null : record.body,
+    open: hasValue(record.open) ? null : record.open,
+  });
+}
 
 /** How a handoff step's lane target reads in the simulation list. */
 function handoffLaneSummary(action: AutomationAction): string {
@@ -103,7 +122,7 @@ function safeTrim(value: unknown): string {
 function normalizeLaneMode(value: unknown): NonNullable<AutomationRule["execution"]>["laneMode"] | undefined {
   const raw = safeTrim(value);
   if (raw === "provided" || raw === "prompt-at-run") return "require-on-trigger";
-  return raw === "create" || raw === "reuse" || raw === "require-on-trigger" ? raw : undefined;
+  return raw === "create" || raw === "reuse" || raw === "require-on-trigger" || raw === "pr-branch" ? raw : undefined;
 }
 
 function normalizeLaneNamePreset(value: unknown): NonNullable<AutomationRule["execution"]>["laneNamePreset"] | undefined {
@@ -492,7 +511,11 @@ async function runCodexExec(args: {
   } catch (error) {
     args.logger.error("automations.planner.codex_executable_resolution_failed", {
       cwd: args.cwd,
-      error: getErrorMessage(error),
+      // The Error itself, so `logBridge` lifts it into the Sentry event and the
+      // issue groups by the real failure; `errorText` keeps the sentence on
+      // disk, which `JSON.stringify` writes an Error without.
+      error,
+      errorText: getErrorMessage(error),
     });
     throw error;
   }
@@ -741,8 +764,12 @@ function normalizeDraft(args: {
       if (start && end) trigger.activeHours = { start, end, timezone };
     }
     const secretRef = safeTrim(raw?.secretRef);
-    if ((triggerType === "webhook" || triggerType === "github-webhook") && !secretRef) {
+    const webhook = normalizeWebhookTriggerConfig(raw?.webhook);
+    if (webhook) trigger.webhook = webhook;
+    if (triggerType === "github-webhook" && !secretRef) {
       issues.push({ level: "error", path: `triggers[${index}].secretRef`, message: "Webhook triggers require secretRef." });
+    } else if (triggerType === "webhook" && !webhook && !secretRef) {
+      issues.push({ level: "error", path: `triggers[${index}].webhook`, message: "Webhook triggers need a webhook URL. Create one with automations.webhookCreateEndpoint." });
     } else if (secretRef) {
       trigger.secretRef = secretRef;
     }
@@ -850,6 +877,10 @@ function normalizeDraft(args: {
       if (!domain || !actionName) {
         issues.push({ level: "error", path: `actions[${idx}].adeAction`, message: "ade-action requires domain and action." });
         continue;
+      }
+      if (domain === "attention" && actionName === "sendNotification") {
+        const problem = sendNotificationStepProblem(adeAction?.args);
+        if (problem) issues.push({ level: "error", path: `actions[${idx}].adeAction.args`, message: problem });
       }
       normalizedActions.push({
         ...(base as AutomationAction),
@@ -999,10 +1030,12 @@ function normalizeDraft(args: {
       });
     });
   }
+  // The PR's branch can be named like a created lane; other modes reuse a name.
+  const namesLane = requestedLaneMode === "create" || requestedLaneMode === "pr-branch";
   const laneExecutionFields = {
     ...(requestedLaneMode ? { laneMode: requestedLaneMode } : {}),
-    ...(requestedLaneMode === "create" && requestedLaneNamePreset ? { laneNamePreset: requestedLaneNamePreset } : {}),
-    ...(requestedLaneMode === "create" && requestedLaneNamePreset === "custom" && requestedLaneNameTemplate
+    ...(namesLane && requestedLaneNamePreset ? { laneNamePreset: requestedLaneNamePreset } : {}),
+    ...(namesLane && requestedLaneNamePreset === "custom" && requestedLaneNameTemplate
       ? { laneNameTemplate: requestedLaneNameTemplate }
       : {}),
   };
@@ -1016,6 +1049,9 @@ function normalizeDraft(args: {
             ? {
                 session: {
                   ...(safeTrim(requestedExecution.session?.title) ? { title: safeTrim(requestedExecution.session?.title) } : {}),
+                  ...(safeTrim(requestedExecution.session?.chatSessionId)
+                    ? { chatSessionId: safeTrim(requestedExecution.session?.chatSessionId) }
+                    : {}),
                   ...(safeTrim(requestedExecution.session?.reasoningEffort)
                     ? { reasoningEffort: safeTrim(requestedExecution.session?.reasoningEffort) }
                     : {}),
@@ -1596,6 +1632,9 @@ export function createAutomationPlannerService({
       }
       if (execution.laneMode === "require-on-trigger") {
         notes.push("Lane resolution: trigger caller must supply a lane.");
+      }
+      if (execution.laneMode === "pr-branch") {
+        notes.push("Lane resolution: the lane on the trigger PR's own branch.");
       }
 
       return { normalized, actions, notes, issues };

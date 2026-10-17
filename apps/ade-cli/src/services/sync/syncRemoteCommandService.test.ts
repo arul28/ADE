@@ -235,6 +235,46 @@ describe("createSyncRemoteCommandService", () => {
     await expect(service.execute(makePayload("chat.listLaunches"))).resolves.toEqual([]);
   });
 
+  it("strips a client-sent runtimeActor from chat.create and chat.startLaunch before the chat service sees it", async () => {
+    const createSession = vi.fn(async (_args: Record<string, unknown>) => ({ id: "chat-1", laneId: "lane-1", provider: "codex", model: "openai/gpt-5.5" }));
+    const getSessionSummary = vi.fn().mockResolvedValue({ sessionId: "chat-1", laneId: "lane-1" });
+    const start = vi.fn(async (args: unknown) => ({ launchId: (args as { launchId: string }).launchId, phase: "running" }));
+    const { service } = createService({
+      agentChatService: { createSession, getSessionSummary, getAvailableModels: vi.fn().mockResolvedValue([]) },
+      chatLaunchService: { start, list: vi.fn(() => []) },
+    });
+
+    await service.execute(makePayload("chat.create", {
+      laneId: "lane-1",
+      provider: "codex",
+      model: "openai/gpt-5.5",
+      runtimeActor: { kind: "cto" },
+    }));
+    expect(createSession).toHaveBeenCalledTimes(1);
+    const created = createSession.mock.calls[0]![0] as Record<string, unknown>;
+    expect(created).toMatchObject({ laneId: "lane-1", provider: "codex", model: "openai/gpt-5.5" });
+    expect(created).not.toHaveProperty("runtimeActor");
+
+    await service.execute(makePayload("chat.startLaunch", {
+      kind: "chat",
+      mode: "foreground",
+      launchId: "6f1c2a4e-1b2c-4d5e-8f90-123456789abc",
+      laneId: "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+      laneName: "fix-flaky-test",
+      prompt: "fix the flaky test",
+      runtimeActor: { kind: "cto" },
+      chat: {
+        create: { provider: "codex", model: "openai/gpt-5.5", runtimeActor: { kind: "cto" } },
+        message: { text: "fix the flaky test" },
+      },
+    }));
+    expect(start).toHaveBeenCalledTimes(1);
+    const launch = start.mock.calls[0]![0] as Record<string, any>;
+    expect(launch).not.toHaveProperty("runtimeActor");
+    expect(launch.chat.create).toMatchObject({ provider: "codex", model: "openai/gpt-5.5" });
+    expect(launch.chat.create).not.toHaveProperty("runtimeActor");
+  });
+
   it("rejects an oversized Cursor Cloud artifact before returning it to a peer", async () => {
     const downloadCursorCloudArtifact = vi.fn().mockResolvedValue({
       path: "build.zip",
@@ -1820,6 +1860,30 @@ describe("createSyncRemoteCommandService", () => {
     });
   });
 
+  it("returns spawn lineage on finished chat rows, but no running-only runtime fields", async () => {
+    const finishedChat = (id: string) => ({ id, laneId: "lane-1", status: "completed", runtimeState: "idle", toolType: "codex-chat" });
+    const { service } = createService({
+      sessionService: { list: vi.fn().mockReturnValue([finishedChat("helper"), finishedChat("subagent")]) },
+      agentChatService: {
+        listSessions: vi.fn().mockResolvedValue([
+          { sessionId: "helper", laneId: "lane-1", launchedBySessionId: "launcher-1", currentTurnStartedAt: "2026-07-31T12:00:00.000Z" },
+          { sessionId: "subagent", laneId: "lane-1", orchestrationParentSessionId: "parent-1", spawnKind: "subagent", currentTurnStartedAt: "2026-07-31T12:00:00.000Z" },
+        ]),
+      },
+    });
+
+    const rows = await service.execute(makePayload("work.listSessions", {})) as Array<Record<string, unknown>>;
+    const byId = new Map(rows.map((row) => [row.id, row] as const));
+
+    expect(byId.get("helper")).toMatchObject({ launchedBySessionId: "launcher-1" });
+    expect(byId.get("helper")).not.toHaveProperty("orchestrationParentSessionId");
+    expect(byId.get("subagent")).toMatchObject({ orchestrationParentSessionId: "parent-1", spawnKind: "subagent" });
+    expect(byId.get("subagent")).not.toHaveProperty("launchedBySessionId");
+    // The chat's turn clock is a running-row projection; a finished row keeps its own shape.
+    expect(byId.get("helper")).not.toHaveProperty("currentTurnStartedAt");
+    expect(byId.get("subagent")).not.toHaveProperty("currentTurnStartedAt");
+  });
+
   it("routes work.getSession through session enrichment and chat state projection", async () => {
     const session = { id: "session-1", status: "running", toolType: "codex-chat", ptyId: "pty-1" };
     const enrichedSession = { ...session, runtimeState: "running" };
@@ -2153,7 +2217,7 @@ describe("createSyncRemoteCommandService", () => {
     };
     const { service } = createService({ db });
 
-    await expect(service.execute(makePayload("chat.createPromptStash", {
+    await expect(service.execute(makePayload("chat.createDraft", {
       text: created.text,
       attachments: created.attachments,
       provider: created.provider,
@@ -2164,10 +2228,32 @@ describe("createSyncRemoteCommandService", () => {
       provider: created.provider,
       modelId: created.modelId,
     });
-    await expect(service.execute(makePayload("chat.listPromptStashes"))).resolves.toEqual([
+    await expect(service.execute(makePayload("chat.listDrafts"))).resolves.toEqual([
       expect.objectContaining({ id: "stash-1", text: created.text, attachmentsAvailable: true }),
     ]);
-    await expect(service.execute(makePayload("chat.deletePromptStash", { id: "stash-1" }))).resolves.toBe(true);
+    await expect(service.execute(makePayload("chat.deleteDraft", { id: "stash-1" }))).resolves.toBe(true);
+  });
+
+  // An update from another machine or the phone must keep Fast's tier: the
+  // parser copies known fields only, so a dropped field is a silent no-op.
+  it.each([
+    { sent: "ultrafast", received: "ultrafast" },
+    { sent: null, received: null },
+    { sent: "turbo", received: undefined },
+  ])("carries fastTier $sent on chat.updateSession as $received", async ({ sent, received }) => {
+    const updateSession = vi.fn().mockResolvedValue({ id: "session-1" });
+    const { service } = createService({ agentChatService: { updateSession } });
+
+    await service.execute(makePayload("chat.updateSession", {
+      sessionId: "session-1",
+      fastMode: true,
+      fastTier: sent,
+    }));
+
+    expect(updateSession).toHaveBeenCalledTimes(1);
+    const args = updateSession.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(args.fastMode).toBe(true);
+    expect(args.fastTier).toBe(received);
   });
 
   it("routes chat.handoff with a trimmed handoff note", async () => {
@@ -2292,6 +2378,7 @@ describe("createSyncRemoteCommandService", () => {
       continuationPrompt: capsule.continuationPrompt,
       reasoningEffort: " high ",
       fastMode: true,
+      fastTier: "ultrafast",
       untrustedExtraField: "must-not-pass-through",
     }))).resolves.toMatchObject({ capsuleFingerprint: "fingerprint-1" });
     expect(prepareCrossMachineHandoff).toHaveBeenCalledWith({
@@ -2301,6 +2388,7 @@ describe("createSyncRemoteCommandService", () => {
       continuationPrompt: capsule.continuationPrompt,
       reasoningEffort: "high",
       fastMode: true,
+      fastTier: "ultrafast",
     });
     await expect(service.execute(makePayload("chat.prepareCrossMachineHandoff", {
       sourceSessionId: "session-1",
@@ -3299,17 +3387,10 @@ describe("web-reachable settings and lane-risk commands", () => {
     // viewers ("not available to paired controller devices" in syncHostService),
     // so registering these that way left AI settings silently unsaveable from
     // the web client — the bug this command exists to fix.
-    const save = vi.fn();
+    const updateAiConfig = vi.fn();
     const refreshScheduledWork = vi.fn();
     const { service } = createService({
-      projectConfigService: {
-        // `defaultModel` used to stand in here. It is gone: nothing ever read
-        // it, so the Settings control that wrote it was deleted and the key
-        // with it. Any surviving `ai` key proves the same thing this test is
-        // about — that a paired device's write reaches `save`.
-        get: vi.fn().mockReturnValue({ shared: { ai: { defaultProvider: "claude" } }, local: {} }),
-        save,
-      },
+      projectConfigService: { updateAiConfig },
       agentChatService: { refreshScheduledWork },
     });
 
@@ -3318,10 +3399,10 @@ describe("web-reachable settings and lane-risk commands", () => {
 
     await service.execute(makePayload("ai.updateConfig", { defaultProvider: "codex" }));
 
-    expect(save).toHaveBeenCalledTimes(1);
-    expect(save.mock.calls[0]![0].shared.ai).toEqual(
-      expect.objectContaining({ defaultProvider: "codex" }),
-    );
+    // The write goes through the AI-config writer (local layer), never a
+    // whole-snapshot save that would put `ai` back into the dropped shared layer.
+    expect(updateAiConfig).toHaveBeenCalledTimes(1);
+    expect(updateAiConfig).toHaveBeenCalledWith(expect.objectContaining({ defaultProvider: "codex" }));
     // The desktop IPC handler does this too; omitting it leaves scheduled runs
     // on the previous AI configuration.
     expect(refreshScheduledWork).toHaveBeenCalledTimes(1);

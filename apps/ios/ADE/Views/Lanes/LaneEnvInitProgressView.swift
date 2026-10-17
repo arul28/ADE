@@ -20,7 +20,7 @@ struct LaneEnvInitProgressView: View {
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
-    .adeGlassCard(cornerRadius: 14, padding: 14)
+    .adeKitCard(padding: 14)
     .padding(.bottom, 4)
     .accessibilityElement(children: .contain)
   }
@@ -40,13 +40,13 @@ struct LaneEnvInitProgressView: View {
   private var statusChip: some View {
     switch progress.overallStatus {
     case "completed":
-      LaneMicroChip(icon: "checkmark.circle.fill", text: "Done", tint: ADEColor.success)
+      ADEKitTag(text: "Done", tone: .ok)
     case "failed":
-      LaneMicroChip(icon: "xmark.octagon.fill", text: "Failed", tint: ADEColor.danger)
+      ADEKitTag(text: "Failed", tone: .crit)
     case "running":
-      LaneMicroChip(icon: "hourglass", text: "Running", tint: ADEColor.warning)
+      ADEKitTag(text: "Running", tone: .warn)
     default:
-      LaneMicroChip(icon: "circle", text: progress.overallStatus.capitalized, tint: ADEColor.textSecondary)
+      ADEKitTag(text: progress.overallStatus)
     }
   }
 }
@@ -125,16 +125,13 @@ struct LaneEnvInitProgressPanel: View {
             .foregroundStyle(ADEColor.textSecondary)
         }
         .frame(maxWidth: .infinity)
-        .adeGlassCard(cornerRadius: 14, padding: 18)
+        .adeKitCard(padding: 18)
       }
 
       Button(action: onDone) {
         Text(doneTitle)
-          .font(.subheadline.weight(.semibold))
-          .frame(maxWidth: .infinity)
-          .padding(.vertical, 6)
       }
-      .buttonStyle(.glassProminent)
+      .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
       .disabled(disableDone)
     }
   }

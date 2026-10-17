@@ -120,6 +120,11 @@ export class MachineCallTimeoutError extends Error {
   readonly code = "machine_call_timeout";
 }
 
+/** The connection dropped mid-call; the call may or may not have run there. */
+export class MachineConnectionDroppedError extends Error {
+  readonly code = "machine_connection_dropped";
+}
+
 export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -496,7 +501,7 @@ export function createMachineConnectionPool(options: MachineConnectionPoolOption
       if (error instanceof MachineCallTimeoutError) throw error;
       if (entry.client.isClosed()) {
         dropConnection(entry.hostDeviceId, entry);
-        throw new Error(
+        throw new MachineConnectionDroppedError(
           `The connection to ${machineName(machine)} dropped during ${label} (${errorMessage(error)}). It may or may not have run there; check before repeating it.`,
           { cause: error },
         );

@@ -9,6 +9,7 @@ import type { FileDiff, FilePatch, GitCommitSummary, LaneDiffMode, OpenProjectBi
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { cn } from "../ui/cn";
 import { getFileIcon } from "../files/filePresentation";
+import { createPinnedFilesApi } from "../files/v2/pinnedFilesApi";
 import { COLORS, MONO_FONT, outlineButton } from "./laneDesignTokens";
 
 function normalizePath(pathValue: string): string {
@@ -84,9 +85,10 @@ export function LaneDiffPane({
 }) {
   const navigate = useNavigate();
   const pin = runtimePin ?? null;
-  // File-workspace IPC (watch/save) has no pin parameter yet, so a foreign
-  // lane's diff is read-only and does not live-sync.
+  // A foreign lane's diff stays read-only. Live sync watches the lane's own
+  // machine through the pinned Files API, so it follows edits made there.
   const isForeign = pin != null;
+  const files = createPinnedFilesApi(pin);
   const diffRef = useRef<AdeDiffViewerHandle | null>(null);
   const workingDiffRequestSeq = useRef(0);
   const commitFilesRequestSeq = useRef(0);
@@ -159,7 +161,7 @@ export function LaneDiffPane({
   }, [refreshWorkingDiff]);
 
   useEffect(() => {
-    if (!liveSync || isForeign) return;
+    if (!liveSync) return;
     if (!laneId || !selectedPath || !selectedFileMode || selectedCommit) return;
 
     let cancelled = false;
@@ -178,17 +180,17 @@ export function LaneDiffPane({
       }, 120);
     };
 
-    void window.ade.files
+    void files
       .listWorkspaces()
       .then((workspaces) => {
         if (cancelled) return;
         const workspace = workspaces.find((candidate) => candidate.laneId === laneId);
         if (!workspace) return;
         watchedWorkspaceId = workspace.id;
-        void window.ade.files.watchChanges({ workspaceId: workspace.id }).catch(() => {
+        void files.watchChanges({ workspaceId: workspace.id }).catch(() => {
           // best effort
         });
-        unsubscribe = window.ade.files.onChange((event) => {
+        unsubscribe = files.onChange((event) => {
           if (event.workspaceId !== workspace.id) return;
           const nextPath = normalizePath(event.path);
           const oldPath = normalizePath(event.oldPath ?? "");
@@ -211,12 +213,12 @@ export function LaneDiffPane({
       unsubscribe();
       if (refreshTimer != null) window.clearTimeout(refreshTimer);
       if (watchedWorkspaceId) {
-        void window.ade.files.stopWatching({ workspaceId: watchedWorkspaceId }).catch(() => {
+        void files.stopWatching({ workspaceId: watchedWorkspaceId }).catch(() => {
           // best effort
         });
       }
     };
-  }, [liveSync, isForeign, laneId, selectedPath, selectedFileMode, selectedCommit, refreshWorkingDiff]);
+  }, [liveSync, files, laneId, selectedPath, selectedFileMode, selectedCommit, refreshWorkingDiff]);
 
   useEffect(() => {
     const requestId = ++commitFilesRequestSeq.current;

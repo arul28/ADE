@@ -290,7 +290,34 @@ export type LinearIssueCreateInput = {
   assigneeId?: string | null;
   priority?: number | null;
   labelIds?: string[];
+  projectMilestoneId?: string | null;
+  cycleId?: string | null;
+  /** In the team's estimate scale. */
+  estimate?: number | null;
+  /** `YYYY-MM-DD`. */
+  dueDate?: string | null;
+  /** A Linear issue template; it fills what the input leaves empty. */
+  templateId?: string | null;
 };
+
+/** What a team offers the create form beyond the picker catalog. */
+export type LinearIssueCreateOptions = {
+  teamId: string;
+  teamKey: string;
+  cyclesEnabled: boolean;
+  /** `notUsed`, `exponential`, `fibonacci`, `linear` or `tShirt`. */
+  estimationType: string;
+  estimationAllowZero: boolean;
+  estimationExtended: boolean;
+  /** The active cycle and the upcoming ones. */
+  cycles: Array<{ id: string; number: number; name: string | null; startsAt: string; endsAt: string; active: boolean }>;
+  templates: Array<{ id: string; name: string; description: string | null; title: string | null; priority: number | null; labelIds: string[] }>;
+};
+
+export type LinearProjectMilestone = { id: string; name: string; targetDate: string | null };
+
+/** One file put on Linear's storage; `assetUrl` goes into markdown. */
+export type LinearUploadResult = { assetUrl: string; filename: string; contentType: string };
 
 /** One entry of the viewer's Linear inbox. */
 export type LinearInboxNotification = {
@@ -370,6 +397,23 @@ export type CtoUpdateLinearIssueArgs = {
   priority?: number;
   addedLabelIds?: string[];
   removedLabelIds?: string[];
+  /** A non-blank title replaces the issue's title. */
+  title?: string;
+  /** Markdown; an empty string clears the description. */
+  description?: string;
+  /** `null` clears each of these. */
+  projectId?: string | null;
+  projectMilestoneId?: string | null;
+  cycleId?: string | null;
+  estimate?: number | null;
+  /** `YYYY-MM-DD`. */
+  dueDate?: string | null;
+  parentId?: string | null;
+};
+
+export type CtoCreateLinearIssueCommentArgs = {
+  issueId: string;
+  body: string;
 };
 
 export type CtoGetLinearIssueCommentsArgs = {
@@ -382,6 +426,8 @@ export type CtoLinearIssueComment = {
   createdAt: string;
   userName: string;
   userDisplayName: string;
+  /** Absent from older brains. */
+  userAvatarUrl?: string | null;
 };
 
 export type CtoGetLinearIssuePickerDataResult = {

@@ -48,9 +48,10 @@ for vendored runtimes without changing the union.
 | Provider | Runtime | Adapter location |
 |---|---|---|
 | `claude` | `@anthropic-ai/claude-agent-sdk` `query()` stream with an ADE async input pump, `startup()` warmup, bundled Claude Code binary, SDK sessions, hooks, output styles, plugins, context usage, rewind, and slash-command dispatch. | `agentChatService.ts` (inline; the file carries the full Claude adapter). |
-| `codex` | Pinned `@openai/codex` 0.160.0 `codex app-server` subprocess, JSON-RPC protocol. Spawn failures surface as error events. | `agentChatService.ts` (Codex adapter and thread config); executable resolution via `services/ai/codexExecutable.ts`. |
+| `codex` | Pinned `@openai/codex` 0.162.1 `codex app-server` subprocess, JSON-RPC protocol. Spawn failures surface as error events. | `agentChatService.ts` (Codex adapter and thread config); executable resolution via `services/ai/codexExecutable.ts`. |
 | `opencode` | OpenCode server runtime: the provider catalog and model list come from OpenCode/Models.dev, with provider-native OAuth, API-key, custom, and local-server paths. | `agentChatService.ts` (OpenCode adapter); inventory in `openCodeInventory.ts`; auth in `openCodeAuthService.ts`. |
 | `cursor` | Official `@cursor/sdk` running in a Node worker pool. ADE owns permissions, hooks, and the system prompt; the SDK owns the model + tool execution. Slash commands are discovered from `.cursor/commands/`, `.cursor/agents/`, built-in subagents, and Agent Skill roots via `cursorSlashCommandDiscovery.ts`. A transport failure can wedge the server-side agent thread while the worker process stays alive, so every local turn carries a 90 s first-event watchdog and one automatic recycle-and-resend — see [Cursor thread recycling and the first-event watchdog](README.md#cursor-thread-recycling-and-the-first-event-watchdog). | `cursorSdkPool.ts`, `cursorSdkWorker.ts`, `cursorSdkProtocol.ts`, `cursorSdkPolicy.ts`, `cursorSdkSystemPrompt.ts`, `cursorSdkEventMapper.ts`, `cursorSdkErrors.ts`, `cursorSlashCommandDiscovery.ts`. |
+| `copilot` | The installed `copilot` CLI driven through `@github/copilot-sdk` over stdio. Each Copilot chat gets its own forked worker. Workers are keyed by the CLI path, `COPILOT_HOME`, and the environment, which carries the chat id. The model list is `client.listModels()`; an Auto-only plan shows one `auto` model. Permissions use ADE's five levels (plan, ask, assisted, auto-edit, full-auto). Background utility tasks run on a session that never starts a user MCP server. | `copilotSdkPool.ts`, `copilotSdkWorker.ts`, `copilotSdkProtocol.ts`, `copilotSdkEventMapper.ts`, `copilotModelsDiscovery.ts`, `ai/copilotSdkLoader.ts`; the Copilot branch of `agentChatService.ts`. Full design: [copilot-sdk-provider.md](copilot-sdk-provider.md). |
 | `devin` | The user's `devin` CLI spawned as `devin acp` over the shared ACP host (JSON-RPC stdio). Devin Cloud chats use the same CLI login over the cloud relay, `devin acp --cloud`, listed and launched through the provider-neutral cloud agents service. The same provider id covers the tracked `devin` CLI for PTY sessions. | `acpHost/acpDialects/devin.ts`, `acpHost/acpDialects/devinCloud.ts`; cloud listing in `services/chat/cloudAgentsService.ts` and `devinCloudDirectory.ts`. |
 | `droid` | Factory Droid models exposed as dynamic `droid/<modelId>` descriptors and driven through the official `@factory/droid-sdk` running in a forked Node worker pool. The adapter reports cumulative turn token usage, live context occupancy, provider-reported compaction, and Factory subscription account identity; mission-worker token usage is derived from the worker's bounded local settings file. The legacy ACP bridge (`droidAcpPool.ts`) has been retired. | `droidSdkPool.ts`, `droidSdkWorker.ts`, `droidSdkProtocol.ts`, `droidSdkEventMapper.ts`, `droidModelsDiscovery.ts`; model helpers in `modelRegistry.ts`. |
 | `pi` | The user's own Pi installation, loaded as a library inside a forked Node worker (never a static import — the worker resolves the installation only after init validation). The worker owns the Pi agent session, its model runtime, its tool registry, and its sign-in; ADE owns the cards the session blocks on. | `piSdkPool.ts`, `piSdkWorker.ts`, `piSdkProtocol.ts`, `piSdkEventMapper.ts`, `piSdkUiBridge.ts`, `piSdkEnvironment.ts`; the shared native session store in `piSessionStore.ts` (resolving the tree, reading headers, authorizing files), `piSessionLease.ts` (the live-writer lock), and `piSessionOwnership.ts` (the durable ownership claim); installation and sign-in in `services/ai/piInstallation.ts` and `services/ai/piAuthService.ts`. |
@@ -72,7 +73,7 @@ type ModelDescriptor = {
   capabilities: { tools, vision, reasoning, streaming };
   reasoningTiers?: string[];
   defaultReasoningEffort?: string; // runtime-recommended initial tier
-  serviceTiers?: string[]; // optional provider service tiers, currently "fast"
+  serviceTiers?: string[]; // optional provider service tiers: "fast", plus "ultrafast" from a Codex catalog
   color: string;
   providerRoute: string;
   providerModelId: string;
@@ -170,8 +171,11 @@ Claude's global quick-pick vocabulary is `low | medium | high | max`
 descriptors advertise their provider-native ladders to model-specific
 pickers. Opus 5.5 and Opus 5 expose `low|medium|high|xhigh|max`;
 Fable 5.1 adds `ultracode`; Sonnet 5.5 exposes `low|medium|high|xhigh|max`;
-Sonnet 5 exposes `low|medium|high|max`; Haiku 4.5 has no reasoning control.
-The Claude registry is ordered as Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 4.5,
+Sonnet 5 exposes `low|medium|high|max`; Haiku 5.5 exposes
+`low|medium|high|xhigh|max` and defaults to `medium`. Haiku 4.5 is retired:
+every Haiku 4.5 id on the Claude route resolves to Haiku 5.5, while OpenCode,
+Droid and Copilot keep the Haiku rows their own catalogs serve.
+The Claude registry is ordered as Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 5.5,
 then the retained Sonnet 5 and Opus 5. Claude and Codex are the two providers
 whose default is not hoisted to the front of `listModelDescriptorsForProvider`,
 so the desktop picker catalog, Settings, ADE Code, and the CTO picker all show
@@ -226,7 +230,12 @@ picker offers them.
 
 On 0.156.0 a resumed thread reports its `collaborationMode`; ADE adopts that
 mode (plan or default) as the chat's interaction mode, so the plan toggle
-matches a thread switched from another Codex client. `/personality` is not
+matches a thread switched from another Codex client. The report is the mode of
+the thread's last turn, so it is ignored while ADE holds a mode the thread has
+not run under yet (`codexPendingCollaborationMode`, persisted): an approved
+plan or a composer mode change sets it, and the first `turn/start` sent with
+that same mode clears it. Without this, approving a plan forced a resume that
+echoed `plan` and the implementation turn ran read-only. `/personality` is not
 offered for Codex: 0.156 retired personality styles.
 
 On 0.156.0 ADE always enables `tools.update_plan` on `thread/start` and
@@ -260,7 +269,12 @@ host-advertised model metadata over their static compatibility catalogs.
   credential). The Cursor CLI is still not the chat credential source,
   but ADE now probes `cursor-agent` for CLI-launch model inventory and
   merges those rows with the SDK registry so the picker can distinguish
-  SDK chat models from Cursor CLI-only models.
+  SDK chat models from Cursor CLI-only models. On Windows, CLI auth and model
+  probes use the expanded installation PATH, including cached registry entries.
+  Model discovery accepts plain or terminal-decorated JSON arrays and
+  `{ models: [...] }` responses, as well as the CLI table. Cursor SDK workers
+  hide helper-command consoles on Windows; user-launched terminals retain their
+  normal behavior.
 - API-key providers check encrypted machine storage via `apiKeyStore.ts` and
   then the `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / etc. env vars. ADE-managed
   keys can be account-owned (`provider_api_key` in the account vault) or
@@ -474,6 +488,16 @@ configured style, and materialising a fallback onto the session record makes it
 read back as a real choice on the next launch, pinning it forever. The session's
 own cached value is therefore consulted *after* the settings files, not before.
 
+ADE states no prompt cache TTL of its own. A Claude account can choose the
+1-hour subagent prompt cache, and a 5-minute or 1-hour main-conversation cache,
+in Settings; `claudeAccountPromptCacheEnv` (`providerInstanceStore.ts`) then
+sets `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL` and `CLAUDE_CODE_PROMPT_CACHE_TTL`
+for that account's SDK chats and terminal `claude` sessions (in
+`ptyService.create`, the one path every fresh launch and resume takes). It leaves
+out a TTL that the environment already states, and a launch on a preset or
+a stored credential never gets it. See
+[Onboarding and settings](../onboarding-and-settings/README.md).
+
 The precedence walk honours `CLAUDE_CONFIG_DIR` as well, and so does the plugin
 registry (`<claudeConfigHome>/plugins/installed_plugins.json`). A lane normally
 sits under `$HOME`, so the ancestor walk would reach the real `~/.claude` and
@@ -486,7 +510,8 @@ Windows reaches the same directory through more than one spelling and a
 duplicate root would shadow the tier below it.
 
 **Codex.** Service tier is stated only when the Fast chip is on
-(`serviceTier: "fast"`); otherwise the key is omitted so `config.toml`'s
+(`serviceTier: "fast"`, or `"ultrafast"` when the stored tier is Ultrafast and
+the model is not known to lack it); otherwise the key is omitted so `config.toml`'s
 `service_tier` resolves. Fast-off cannot mean "force default" either: `fastMode`
 is persisted only when true and rehydrated as `persisted?.fastMode === true`, so
 `false` is indistinguishable from never-set. The app-server re-resolves per
@@ -595,6 +620,39 @@ fails `session.get`, only a confirmed 404 (`isOpenCodeNotFoundError`) falls
 through to fresh-session creation; any other error surfaces rather than
 silently resetting the thread into a new empty session.
 
+## Compaction per provider
+
+Every harness compacts by itself. ADE does not replace that. It sets each harness's own compaction config, renders
+one `context_compact` lifecycle, and adds a guarded Claude fallback at 97%.
+
+| Provider | Compacts by itself | ADE setting applied as | `/compact` in ADE | Context window source |
+|---|---|---|---|---|
+| Claude | Yes (`auto` window from Anthropic, per model) | SDK query `settings.autoCompactWindow` (100k–1M); subagents get `autoCompactWindow` on each `agents` entry | Passed to the SDK as a slash command | `modelUsage[].contextWindow`, else the registry; `getContextUsage().raw_max_tokens` is the compaction point |
+| Codex | Yes | `codex app-server -c model_auto_compact_token_limit=<n>`, capped at the model window | `thread/compact/start`; custom instructions are not supported, and ADE says so | `thread/tokenUsage/updated` `modelContextWindow`; occupancy is `last` only, never the cumulative total |
+| OpenCode | Yes | OpenCode config `compaction: { buffer, keep: { tokens } }` | `session.command` when the server lists `compact` | `min(models.dev limit.context, ADE registry)` |
+| Pi | Yes | `settingsManager.applyOverrides({ compaction: { reserveTokens, keepRecentTokens } })` | `sdk.compact()` | SDK `context_usage` |
+| Cursor | Yes | None ("This provider compacts by itself. ADE cannot change when.") | Not supported | The SDK's per-model window or the preCompact hook's `context_window_size` |
+| Droid, ACP agents | Varies | None | Sent as a prompt where the agent accepts it | `contextStats.limit` / `usage_update` |
+
+Settings live in project config `ai.compaction.<provider>` (`shared/compactionSettings.ts`:
+`atTokens` (`null` = Auto, the harness default), `subagentAtTokens` (Claude), `reserveTokens`, `keepRecentTokens`,
+`idleMode`). `idleMode` is the Compact first offer: Claude, Codex, Pi and OpenCode — the providers whose
+`/compact` ADE can run — each wait out their own prompt-cache window (`compactFirstIdleMs`: Claude's measured
+5m/1h, OpenAI's documented `30m`, or the window of the model's vendor for Pi/OpenCode) and then offer to
+compact before the next send. Claude defaults to `ask`; the other three default to `never`, so their offer
+appears only once someone enables it on the provider page. Only Claude has the automatic warm timer. Compaction itself is always on: a chat that cannot compact only overflows, so there is no off switch,
+and an `enabled: false` saved before is dropped on read. `subagentAtTokens` reaches Claude as `autoCompactWindow` on
+every subagent definition. The SDK only lets it lower the window a subagent inherits, so Settings says "No effect"
+when it is at or above `atTokens`. Built-ins the chat does not already replace (Explore, Plan, general-purpose) get
+ADE's copy of their definition (`withClaudeSubagentCompactWindow`, `shared/claudeBuiltinAgentPrompts.ts`) as Claude
+Code runs them: the main model for Explore and Plan (Explore capped at Opus under a Fable or Mythos main model), the
+default subagent model for general-purpose, and no CLAUDE.md for Explore and Plan. On a Windows machine whose Claude
+has not yet reported its shell, the built-ins are left to Claude rather than given a copy naming the wrong tools. Claude and
+Codex accounts can override them on the account record (`ProviderInstance.compaction`); the effective value is
+the provider setting with the account's fields on top. A change restarts an idle Claude or Codex runtime, so it
+applies at the next query start. ADE never writes the user's `~/.claude/settings.json` and never sets
+`CLAUDE_CODE_AUTO_COMPACT_WINDOW`, which would override a user's own `/autocompact`.
+
 ## Permission modes
 
 Permission controls are provider-native. The session carries an abstract
@@ -639,7 +697,10 @@ Claude permission mode can be changed mid-session via the SDK
 `done.usage` is the SDK result's `usage`, which is already the turn total.
 `extractClaudeResultMetadata` adds `usage.cache_creation.ephemeral_1h_input_tokens`
 as `done.usage.cacheWrite1hTokens` (the one-hour-TTL share of
-`cacheCreationTokens`). The result's `modelUsage` map is keyed by the model that
+`cacheCreationTokens`). At turn end the pair becomes the session's
+`promptCache` (`claudePromptCacheTtlOfWrites`, with the last request's start
+time from the per-turn request tally), which times the cache
+countdown and the Compact first offer. The result's `modelUsage` map is keyed by the model that
 served each request. `done.servedModel` is set when that map names a different
 model than the session asked for: its only key, or, when subagents or side calls
 ran on other models, the key with the most output tokens (a tie names none).
@@ -865,7 +926,8 @@ directive so resumed/continued sessions keep the same boundary.
 #### Provider service tiers (Fast Mode)
 
 `ModelDescriptor.serviceTiers?: string[]` advertises the optional
-service tiers a model accepts (today only `"fast"`). The composer's
+service tiers a model accepts (`"fast"` from every provider catalog, and
+`"ultrafast"` only from a Codex catalog). The composer's
 **Fast** toggle (a yellow Lightning chip next to the model picker)
 shows whenever `modelSupportsFastMode(descriptor)` is true for the
 selected model, independent of provider. `AgentChatSession` carries
@@ -874,10 +936,11 @@ selected model, independent of provider. `AgentChatSession` carries
 clients.
 
 Codex forwards Fast as `serviceTier: "fast"` on every `turn/start` and
-`thread/start` JSON-RPC call, and **omits the key entirely** when Fast is off so
-the user's `config.toml` `service_tier` resolves — an explicit `null` reports
-`"default"`, which is a real downgrade ADE has no UI for. See
-[Provider config ownership](#provider-config-ownership). Claude Fable and Opus descriptors advertise
+`thread/start` JSON-RPC call — `"ultrafast"` instead when the stored tier is
+Ultrafast and the model is not known to lack it — and **omits the key entirely**
+when Fast is off so the user's `config.toml` `service_tier` resolves — an
+explicit `null` reports `"default"`, which is a real downgrade ADE has no UI
+for. See [Provider config ownership](#provider-config-ownership). Claude Fable and Opus descriptors advertise
 `serviceTiers: ["fast"]`; Claude chat sends the effective flag through
 the Agent SDK `settings.fastMode` layer, and Claude CLI launches/resumes
 pass `--settings '{"fastMode":true|false}'` so ADE can explicitly
@@ -903,6 +966,29 @@ It does not wait for a fetch, because a fetch can take up to 5 seconds. A cold
 catalog, or a model that the catalog does not list, is "unknown". Unknown keeps
 the flag. The send-time resolver applies the flag only where Cursor has a tier.
 Session create is unchanged: the raw preference is kept there.
+
+**Ultrafast** is Codex's tier above Fast, offered per account. It rides
+`fastTier?: "ultrafast" | null` beside `fastMode` on the session, its summary,
+the create/update/handoff args, the cross-machine capsule target, and the
+tracked-CLI launch and resume metadata. The Codex `model/list` is the only
+thing that can grant it, so the runtime remembers each model's advertised
+`serviceTiers` in a module cache keyed by the app-server model id and ADE's
+descriptor id; the static registry ships `fast` only. The picker cycles the
+chip Off → Fast → Ultrafast only on models whose catalog lists `ultrafast` and
+only where the surface passes `fastTier` (the composer and the handoff modal).
+At send time Codex asks for `serviceTier: "ultrafast"` when the stored tier is
+Ultrafast and the cache does not say the model lacks it; an unknown model keeps
+the stored choice, because the user could only have picked the tier from a
+catalog that offered it. `updateSession` changes the tier only when the update
+names `fastTier` — Fast-only clients (the TUI, the phone, older desktops)
+resend `fastMode: true` with every model or effort change, and reading that as
+plain Fast would drop a choice made elsewhere. Fast off clears the tier; a
+model switch keeps it only when the update names it or the new model is known
+to offer it; it is never stored for a non-Codex provider. The Codex CLI launch
+passes `-c service_tier="ultrafast"` (with `-c features.fast_mode=true`), and a
+resume that itself sets Fast means plain Fast rather than inheriting the
+launch's tier.
+
 Parallel-model rows track Fast mode per slot
 (`ParallelModelRowState.fastMode`) so launching multiple
 fast-capable runs side-by-side can mix Fast and Standard turns. Codex
@@ -941,7 +1027,10 @@ ADE plan-approval requests. Accepting that request moves the session to
 already reviewed exactly what the plan will do, so `stageCodexPlanApprovalFollowup`
 hands the session straight to full access rather than dropping to `edit`
 and gating every file change behind another approval round that would just
-relitigate the plan.
+relitigate the plan. The approval emits `session_meta_updated` with the new
+mode fields, so every composer showing the chat leaves Plan without waiting for
+a session refetch. Claude plan entry/exit and Cursor plan approval emit the
+same patch.
 
 Default Codex chats map to the "Default permissions" preset
 (`workspace-write` + `on-request`). The older implicit fallback that
@@ -1788,10 +1877,18 @@ ADE names chats and auto-created lanes from the ADE provider that owns
 the session, not from a Settings picker and not from the model's
 registry family:
 
-- Claude → Haiku 4.5, then this session's model, then a deterministic slug
-- Codex → GPT-5.6 Luna (`low`), then this session's model, then a slug
-- Cursor → Composer 2.5, then this session's model, then a slug
+- Claude → Haiku 5.5 (`low`), then this session's model, then a deterministic slug
+- Codex → GPT-6 Luna (`low`), then this session's model, then a slug
+- Cursor → Composer 2.5 (standard speed; it has no effort control), then this session's model, then a slug
 - OpenCode, Droid, Pi, ACP, local → this session's model, then a slug
+
+These helper calls go through `summarizeTerminal`, which always runs as a
+background utility task (`ProviderTaskRunnerArgs.backgroundUtility`): every
+input is in the prompt, so Claude runs with no tools and no MCP servers
+(`--tools= --strict-mcp-config`, default permission mode rather than plan
+mode, JSON asked for in the prompt instead of `--json-schema`), and Codex and
+Cursor are pinned to standard speed so a global Fast setting never applies.
+The models, efforts and flags live in `shared/backgroundUtilityModel.ts`.
 
 OpenCode wrapping Anthropic does not spawn `claude -p` Haiku. Cursor
 Cloud names stay on Cursor; ADE never overlays them. ADE chats wait
@@ -1799,23 +1896,24 @@ about 8s for a native provider title, then ADE-name if the title is
 still the default. CLI sessions are always ADE-named. `ade chat
 generate-names` regenerates title, lane name, and status line.
 
-ACP model selection is provider-specific. Copilot receives the selected model
-through its native `session/set_model` request when the installed CLI supports
-it; its older ACP builds can accept the request without changing inference and
-then remain on Copilot Auto. ACP metadata generation uses the provider's own
-one-shot CLI: Qwen uses safe mode and receives its prompt over stdin, Kimi uses
-its model alias plus supported non-interactive prompt mode, Grok uses its model
-plus plan mode, and Copilot
-receives the selected model with tools and MCP servers disabled and its prompt
-over stdin. Qwen, Kimi, and Grok one-shot metadata routes are text-only; an
-image-backed metadata request is rejected explicitly so the naming fallback can
-try another provider instead of silently discarding the image. Copilot's
-one-shot route forwards supported image attachments.
+ACP model selection is provider-specific. Qwen, Kimi and Grok receive the
+selected model through their own ACP requests. ACP metadata generation uses the
+provider's own one-shot CLI: Qwen uses safe mode and receives its prompt over
+stdin, Kimi uses its model alias plus supported non-interactive prompt mode, and
+Grok uses its model plus plan mode. Qwen, Kimi, and Grok one-shot metadata routes
+are text-only; an image-backed metadata request is rejected explicitly so the
+naming fallback can try another provider instead of silently discarding the
+image.
+
+Copilot is an SDK provider. It selects its model with `session.setModel`, and its
+one-shot metadata runs on a utility SDK session with tools and every configured
+MCP server disabled. That task takes text only, so a task with images is
+refused. See [copilot-sdk-provider.md](copilot-sdk-provider.md).
 
 Both stages walk `buildSessionIntelligenceModelCandidates` in
 `sessionNaming.ts`. A provider-level failure condemns every remaining
-model behind that provider. An empty candidate list uses the
-deterministic title.
+model behind that provider. For a chat title, an empty candidate list
+uses the deterministic title.
 
 `ai.sessionIntelligence.titles.enabled` is not a gate. Naming always
 runs (except Cursor Cloud titles and `manuallyNamed`).
@@ -1835,11 +1933,33 @@ the title write, not after, because adopting a title has side effects (session
 meta, runtime push) that a rename landing mid-request must stop.
 
 The same chain — cheap helper for the ADE provider, then this session's
-model, then deterministic — covers chat titles, idle status lines,
-explicit session-metadata regeneration, automatic lane names, handoff
-briefs, and identity-continuity summaries. CLI sessions are always
-ADE-named from the cheap helper plus the stored launch model. See
+model — covers chat titles, idle status lines, explicit
+session-metadata regeneration, automatic lane names, handoff briefs,
+and identity-continuity summaries. Chat titles and automatic lane
+names end in a deterministic name when every model misses; explicit
+regeneration and idle status lines do not (see below). CLI sessions
+are always ADE-named from the cheap helper plus the stored launch
+model. See
 [AI-driven titles](../terminals-and-sessions/pty-and-sessions.md#ai-driven-titles).
+
+**Every helper call runs as the chat's own provider account.** The
+Claude or Codex CLI behind a name, status line, summary or turn-end
+question check gets the same `CLAUDE_CONFIG_DIR` / `CODEX_HOME` the
+chat's runtime uses (a harness preset's config home first, then the
+chat's account; the base account inherits the environment). A call
+with no chat yet — naming a new lane from its opening prompt — runs
+on smart balance's pick, the account the new chat gets. Any other
+one-shot task runs on the provider's default account. Before this, a
+helper call read whatever config home the process environment named,
+so a chat on a healthy account failed to rename because another
+account had hit its usage limit.
+
+A failed Claude run is reported with Claude's own reason: in JSON mode
+the CLI prints `{"is_error":true,"result":"…","api_error_status":429}`
+on stdout with an empty stderr, and ADE surfaces it as
+`Claude failed: <result> (HTTP 429)`. A usage limit or HTTP 429 is a
+provider-level failure, so the chain does not retry the session model
+on the same exhausted account.
 
 ## One-shot utility tasks
 

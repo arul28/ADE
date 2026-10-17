@@ -36,6 +36,7 @@
 
 import {
   ACCOUNT_SCOPE_ALL,
+  accountDeviceSettingKey,
   accountRepoScopeKey,
   isAccountScope,
 } from "../../shared/accountSettingsScope";
@@ -47,6 +48,7 @@ import type {
 import { HARNESS_PRESETS_SETTING_KEY } from "../../shared/harnessPresets";
 import type { SettingScope } from "../components/settings/settingsManifest";
 import type { AppState } from "../state/appStore";
+import { mergeStarPillPrefs } from "./starPill";
 
 /** How often a signed-in machine reconciles with the account. */
 export const ACCOUNT_SETTINGS_POLL_MS = 30_000;
@@ -83,6 +85,12 @@ export type AccountSyncedSetting<State = AccountSyncedState> = {
   /** The store key, which is also the account store's key. One name, not two. */
   key: string;
   scope: SettingScope;
+  /**
+   * Account-scoped, but one value per computer: stored under this device's
+   * own key (`accountDeviceSettingKey`) in the account-wide scope, and kept
+   * local until the device id is known.
+   */
+  perDevice?: boolean;
   read: (state: State) => unknown;
   apply: (state: State, value: unknown) => void;
 };
@@ -93,10 +101,12 @@ function pref<Value>(
   read: (state: AppState) => Value,
   apply: (state: AppState, value: Value) => void,
   scope: SettingScope = "account",
+  options?: { perDevice?: boolean },
 ): AccountSyncedSetting {
   return {
     key,
     scope,
+    ...(options?.perDevice ? { perDevice: true } : {}),
     read,
     apply: (state, value) => apply(state, value as Value),
   };
@@ -121,7 +131,11 @@ export const ACCOUNT_SYNCED_SETTINGS: readonly AccountSyncedSetting[] = [
   pref("smartTooltipsEnabled", (state) => state.smartTooltipsEnabled, (state, value) => state.setSmartTooltipsEnabled(value)),
   pref("launchPromptClipboardEnabled", (state) => state.launchPromptClipboardEnabled, (state, value) => state.setLaunchPromptClipboardEnabled(value)),
   pref("launchPromptClipboardNoticeEnabled", (state) => state.launchPromptClipboardNoticeEnabled, (state, value) => state.setLaunchPromptClipboardNoticeEnabled(value)),
-  pref("promptStashButtonEnabled", (state) => state.promptStashButtonEnabled, (state, value) => state.setPromptStashButtonEnabled(value)),
+  // The account field keeps its original name on purpose. It is an opaque key
+  // in the account store, not a label, and renaming it would orphan the value
+  // already saved there — so a device where the button was hidden would show it
+  // again. The local preference and every user-facing string are "drafts".
+  pref("promptStashButtonEnabled", (state) => state.draftsButtonEnabled, (state, value) => state.setDraftsButtonEnabled(value)),
   pref("voiceInputEnabled", (state) => state.voiceInputEnabled, (state, value) => state.setVoiceInputEnabled(value)),
   pref("codexVoice", (state) => state.codexVoice, (state, value) => state.setCodexVoicePreferences(value)),
   pref("codeBlockCopyButtonPosition", (state) => state.codeBlockCopyButtonPosition, (state, value) => state.setCodeBlockCopyButtonPosition(value)),
@@ -138,14 +152,27 @@ export const ACCOUNT_SYNCED_SETTINGS: readonly AccountSyncedSetting[] = [
   // rule applies to the list as a whole and two machines never interleave
   // half of each other's edits into one preset.
   pref(HARNESS_PRESETS_SETTING_KEY, (state) => state.harnessPresets, (state, value) => state.setHarnessPresets(value)),
-  // Apple device options stay on the account: the host reads the remote
-  // streaming cap from the account store, so this one is not per computer.
+  // The star pill's counters live under their own storage key rather than in
+  // the preferences blob (see `STAR_PILL_STORAGE_KEY`). Applying merges rather
+  // than replaces: every field only grows, and a whole-value overwrite would
+  // let one machine's chat counter erase another machine's star or snooze.
+  pref(
+    "starPill",
+    (state) => state.starPill,
+    (state, value: unknown) => state.updateStarPill((local) => mergeStarPillPrefs(local, value)),
+  ),
+  // Apple device options are per computer (Settings › This computer › Apple
+  // devices). They still go through the account store, under this device's
+  // own scope, because the brain on this computer reads the remote streaming
+  // cap from its account-settings store.
   pref(
     "apple.realisticBody",
     (state) => state.appleDevice.realisticBody,
     (state, value) => {
       if (typeof value === "boolean") state.setAppleDevicePreferences({ realisticBody: value });
     },
+    "account",
+    { perDevice: true },
   ),
   pref(
     "apple.recordingOverlays.tapRings",
@@ -153,6 +180,8 @@ export const ACCOUNT_SYNCED_SETTINGS: readonly AccountSyncedSetting[] = [
     (state, value) => {
       if (typeof value === "boolean") state.setAppleDevicePreferences({ recordingTapRings: value });
     },
+    "account",
+    { perDevice: true },
   ),
   pref(
     "apple.recordingOverlays.keyBadges",
@@ -160,6 +189,8 @@ export const ACCOUNT_SYNCED_SETTINGS: readonly AccountSyncedSetting[] = [
     (state, value) => {
       if (typeof value === "boolean") state.setAppleDevicePreferences({ recordingKeyBadges: value });
     },
+    "account",
+    { perDevice: true },
   ),
   pref(
     "apple.remoteBitrateKbpsCap",
@@ -167,6 +198,8 @@ export const ACCOUNT_SYNCED_SETTINGS: readonly AccountSyncedSetting[] = [
     (state, value) => {
       if (typeof value === "number") state.setAppleDevicePreferences({ remoteBitrateKbpsCap: value });
     },
+    "account",
+    { perDevice: true },
   ),
   pref(
     "apple.recordingsWarnBytes",
@@ -174,6 +207,8 @@ export const ACCOUNT_SYNCED_SETTINGS: readonly AccountSyncedSetting[] = [
     (state, value) => {
       if (typeof value === "number") state.setAppleDevicePreferences({ recordingsWarnBytes: value });
     },
+    "account",
+    { perDevice: true },
   ),
 ] as const;
 
@@ -183,6 +218,8 @@ export type AccountSettingsApi = {
     args: { scope: string; key: string; value: unknown } & AccountSettingsWriteOptions,
   ): Promise<AccountSettingsResult<null>>;
   sync(): Promise<AccountSettingsResult<null>>;
+  /** Fired when the brain persists account rows pulled from the relay. */
+  onChanged?(listener: () => void): () => void;
 };
 
 /**
@@ -216,8 +253,16 @@ type AccountSettingsSyncOptionsBase<State> = {
   getAccountUserId?: () => string | null;
   /** Fires whenever the signed-in account changes. */
   subscribeSignedIn?: (listener: () => void) => () => void;
+  /**
+   * Fires when `getLocalDeviceId` starts returning an id. Per-device settings
+   * have nowhere to be stored before that, so the engine pulls (and pushes any
+   * held edits) the moment it is known instead of waiting for the next tick.
+   */
+  subscribeLocalDeviceId?: (listener: () => void) => () => void;
   /** The open project's git remote, for `account-repo` keys. */
   getProjectRemote?: () => string | null;
+  /** This computer's sync device id, for per-device settings; null until known. */
+  getLocalDeviceId?: () => string | null;
   settings?: readonly AccountSyncedSetting<State>[];
   pollMs?: number;
   now?: () => number;
@@ -347,6 +392,16 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
   let stopped = false;
   let applying = false;
   /**
+   * Whether a relay pass has completed for the account signed in now.
+   *
+   * The timer needs this to tell "the account has been merged, and this
+   * machine's pre-existing preferences have been offered to it" from "the first
+   * merge is still owed". Only the second has to keep asking, offline or
+   * mid-restart, exactly as the poll always did; a machine that has never
+   * merged has nothing else that would ever upload its existing preferences.
+   */
+  let mergedAccount = false;
+  /**
    * The REAL account id, or null.
    *
    * Never synthesised. The brain fences a settings write against the owner it
@@ -397,15 +452,26 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
   };
 
   /**
-   * The account-store scope for one setting, or null when it must stay local.
+   * Where one setting is stored in the account store — its scope and key — or
+   * null when it must stay local.
    *
-   * Null is a real answer for a repo-scoped key in a project with no remote:
-   * such a checkout has no identity that means anything on a second machine,
-   * so its settings wait here until it gets one.
+   * Null is a real answer for a repo-scoped key in a project with no remote
+   * (no identity that means anything on a second machine) and for a
+   * per-device key before this computer's device id is known.
+   *
+   * A per-device setting keeps the account-wide scope and carries the device in
+   * its key (`accountDeviceSettingKey`): the relay accepts only the `all` and
+   * `repo:` scopes, and other machines skip the row because no entry of theirs
+   * has that key.
    */
-  const scopeKeyFor = (entry: AccountSyncedSetting<State>): string | null => {
-    if (entry.scope === "account") return ACCOUNT_SCOPE_ALL;
-    return accountRepoScopeKey(options.getProjectRemote?.() ?? null);
+  const targetFor = (entry: AccountSyncedSetting<State>): { scope: string; key: string } | null => {
+    if (entry.perDevice) {
+      const key = accountDeviceSettingKey(options.getLocalDeviceId?.() ?? null, entry.key);
+      return key ? { scope: ACCOUNT_SCOPE_ALL, key } : null;
+    }
+    if (entry.scope === "account") return { scope: ACCOUNT_SCOPE_ALL, key: entry.key };
+    const scope = accountRepoScopeKey(options.getProjectRemote?.() ?? null);
+    return scope ? { scope, key: entry.key } : null;
   };
 
   const stampKey = (scopeKey: string, key: string): string => `${scopeKey} ${key}`;
@@ -435,11 +501,15 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
       && identityGeneration === generationAtStart
       && resolveAccountUserId() === userIdAtStart
       && accountUserId === userIdAtStart;
-    const byKey = new Map(settings.map((entry) => [entry.key, entry]));
+    // Indexed by where each entry is stored, so a row matches only its own
+    // scope and (for per-device settings) this computer's key.
+    const byTarget = new Map<string, AccountSyncedSetting<State>>();
     const scopes = new Set<string>();
     for (const entry of settings) {
-      const scopeKey = scopeKeyFor(entry);
-      if (scopeKey) scopes.add(scopeKey);
+      const target = targetFor(entry);
+      if (!target) continue;
+      byTarget.set(stampKey(target.scope, target.key), entry);
+      scopes.add(target.scope);
     }
     const seenRemoteKeys = new Set<string>();
     for (const scope of scopes) {
@@ -447,8 +517,8 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
       if (!isCurrentIdentity() || !result.ok) return;
       const state = options.store.getState();
       for (const row of result.value) {
-        const entry = byKey.get(row.key);
-        if (!entry || scopeKeyFor(entry) !== row.scope) continue;
+        const entry = byTarget.get(stampKey(row.scope, row.key));
+        if (!entry) continue;
         seenRemoteKeys.add(stampKey(row.scope, row.key));
         if (dirtyKeys.has(dirtyKey(userIdAtStart, entry.key)) || dirtyKeys.has(dirtyKey(null, entry.key))) continue;
         const stamp = stamps[stampKey(row.scope, row.key)];
@@ -477,9 +547,9 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
     if (!hydrateOptions.seedMissing) return;
     const localState = options.store.getState();
     for (const entry of settings) {
-      const scopeKey = scopeKeyFor(entry);
-      if (!scopeKey) continue;
-      const key = stampKey(scopeKey, entry.key);
+      const target = targetFor(entry);
+      if (!target) continue;
+      const key = stampKey(target.scope, target.key);
       if (seenRemoteKeys.has(key) || stamps[key]) continue;
       void push(entry, entry.read(localState));
     }
@@ -508,6 +578,12 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
     ) {
       return;
     }
+    // The guard above proved this pass belongs to the account signed in now, so
+    // the merge it is about to perform counts for that account. Set before the
+    // hydrate: an account switch during the hydrate resets this, and a reset
+    // that landed after a late write here would leave the new owner looking
+    // merged when it never was.
+    if (synced) mergedAccount = true;
     await hydrate({ seedMissing: synced });
   };
 
@@ -523,9 +599,9 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
     existingDirtyKey = dirtyKey(accountUserId, entry.key),
   ): Promise<AccountSettingsResult<null>> {
     const api = options.getApi();
-    const scopeKey = scopeKeyFor(entry);
+    const target = targetFor(entry);
     const userIdAtQueue = accountUserId;
-    if (!scopeKey || !api || !options.isSignedIn() || !userIdAtQueue) {
+    if (!target || !api || !options.isSignedIn() || !userIdAtQueue) {
       markDirtyKey(existingDirtyKey);
       return Promise.resolve(unsyncedResult(true));
     }
@@ -539,8 +615,8 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
       // Calling set is the queue boundary. Do not move the stamp earlier: a
       // signed-out edit must remain dirty and must not suppress its next pull.
       const pending = api.set({
-        scope: scopeKey,
-        key: entry.key,
+        scope: target.scope,
+        key: target.key,
         value,
         // Only ever a real id. See `realAccountUserId`.
         ...(owner ? { expectedAccountUserId: owner } : {}),
@@ -549,7 +625,7 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
         markDirtyKey(existingDirtyKey);
         return Promise.resolve(unsyncedResult(false, undefined, IDENTITY_CHANGED_MESSAGE));
       }
-      stamps[stampKey(scopeKey, entry.key)] = new Date(now()).toISOString();
+      stamps[stampKey(target.scope, target.key)] = new Date(now()).toISOString();
       dirtyKeys.delete(existingDirtyKey);
       persistStamps();
       persistDirtyKeys();
@@ -602,6 +678,25 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
     }
   };
 
+  /**
+   * Whether this machine is holding an edit the brain has not accepted yet.
+   *
+   * Same pair of markers `flushDirty` acts on — the account's namespace and the
+   * signed-out one — so "there is something to push" can never disagree between
+   * the tick that decides and the flush that runs.
+   */
+  const hasDirtyKeys = (): boolean => {
+    for (const entry of settings) {
+      if (
+        dirtyKeys.has(dirtyKey(accountUserId, entry.key))
+        || dirtyKeys.has(dirtyKey(null, entry.key))
+      ) {
+        return true;
+      }
+    }
+    return false;
+  };
+
   const onStoreChange = (): void => {
     if (applying || stopped) return;
     const state = options.store.getState();
@@ -615,17 +710,34 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
 
   const unsubscribeStore = options.store.subscribe(onStoreChange);
 
+  /** Push held edits, then merge the account's rows: every resync path runs this. */
+  const resync = (): void => {
+    flushDirty();
+    void pullThenHydrate();
+  };
+
   const unsubscribeAccount = options.subscribeSignedIn?.(() => {
     const nextUserId = resolveAccountUserId();
     if (nextUserId === accountUserId) return;
     // Invalidate every pending list response before switching the namespace.
     identityGeneration += 1;
     accountUserId = nextUserId;
+    // The new owner has not been merged yet, so the tick goes back to asking
+    // until it has been.
+    mergedAccount = false;
     stamps = readStamps(storage, accountUserId);
     lastSeen.clear();
     for (const [key, value] of snapshot()) lastSeen.set(key, value);
-    flushDirty();
-    void pullThenHydrate();
+    resync();
+  });
+
+  const unsubscribeDevice = options.subscribeLocalDeviceId?.(() => {
+    if (!options.getApi() || !options.isSignedIn()) return;
+    resync();
+  });
+
+  const unsubscribeSettingsChanged = options.getApi()?.onChanged?.(() => {
+    if (!stopped && options.getApi() && options.isSignedIn()) void hydrate();
   });
 
   void pullThenHydrate();
@@ -633,15 +745,36 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
   const timer = schedule(() => {
     if (!options.getApi() || !options.isSignedIn()) return;
     // Same sync-then-hydrate path as first sign-in, including the identity
-    // abort. Seed still happens only when that merge succeeded.
-    flushDirty();
-    void pullThenHydrate();
+    // abort. Seed still happens only when that merge succeeded — and the merge
+    // still owes itself while `mergedAccount` is false, so an offline first
+    // sign-in keeps retrying here exactly as it always has.
+    //
+    // With the account already merged and nothing of this machine's queued,
+    // though, there is nothing for this tick to SEND, and the pull would be
+    // asking for an answer the brain already holds. The brain's own store runs
+    // a change-mark-gated periodic sync on the same beat
+    // (`accountSettingsStore.startPeriodicSync` → `shouldPullOnTick`): it pulls
+    // the moment the relay's settings mark moves, and otherwise not at all for
+    // up to five minutes, falling back to a plain pull whenever a mark is
+    // missing or stale. `sync()` from here bypasses that gate, so an
+    // unconditional tick is a second pull of the same cursor from every
+    // signed-in machine every 30 seconds — whether or not anything changed, and
+    // whether or not the window is even visible. The brain signals this
+    // renderer after it persists newly pulled rows; this local-cache read stays
+    // as a safety net for missed events and runtime restarts.
+    if (!mergedAccount || hasDirtyKeys()) {
+      resync();
+      return;
+    }
+    void hydrate();
   }, options.pollMs ?? ACCOUNT_SETTINGS_POLL_MS);
 
   const stop = (): void => {
     stopped = true;
     unsubscribeStore();
     unsubscribeAccount?.();
+    unsubscribeDevice?.();
+    unsubscribeSettingsChanged?.();
     unschedule(timer);
   };
   // One function, one extra method: a caller that must not read a stale copy

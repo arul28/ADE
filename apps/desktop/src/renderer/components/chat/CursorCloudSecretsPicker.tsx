@@ -55,7 +55,7 @@ export function CursorCloudSecretsList({
         Attach ADE secrets
       </p>
       {injectableNames.length > 0 ? (
-        <label className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 font-sans text-[11px] font-medium text-fg/90 hover:bg-white/[0.06]">
+        <label className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 font-sans text-[11px] font-medium text-fg/90 hover:bg-fg/[0.06]">
           <input
             ref={selectAllRef}
             type="checkbox"
@@ -79,7 +79,7 @@ export function CursorCloudSecretsList({
           return (
             <label
               key={name}
-              className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 font-sans text-[11px] text-fg/90 hover:bg-white/[0.06]"
+              className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 font-sans text-[11px] text-fg/90 hover:bg-fg/[0.06]"
             >
               <input
                 type="checkbox"
@@ -94,7 +94,7 @@ export function CursorCloudSecretsList({
           );
         })}
       </div>
-      <label className="flex cursor-pointer items-center gap-2 border-t border-white/[0.06] px-2 py-2 font-sans text-[11px] text-muted-fg/85 hover:bg-white/[0.04]">
+      <label className="flex cursor-pointer items-center gap-2 border-t border-fg/[0.06] px-2 py-2 font-sans text-[11px] text-muted-fg/85 hover:bg-fg/[0.04]">
         <input
           type="checkbox"
           aria-label="Remember for this lane"

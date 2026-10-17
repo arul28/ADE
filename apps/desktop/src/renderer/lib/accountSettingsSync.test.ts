@@ -78,11 +78,22 @@ const MACHINE_SETTINGS: readonly AccountSyncedSetting<FakeState>[] = [
   },
 ];
 
+const DEVICE_SETTINGS: readonly AccountSyncedSetting<FakeState>[] = [
+  {
+    key: "theme",
+    scope: "account",
+    perDevice: true,
+    read: (state) => state.theme,
+    apply: (state, value) => state.setTheme(value as string),
+  },
+];
+
 function row(key: string, value: unknown, updatedAt: string, scope = "all"): AccountSettingRow {
   return { scope, key, value, updatedAt, changedAt: updatedAt, writerDeviceId: "other" };
 }
 
 function createApi(rows: AccountSettingRow[] = []) {
+  const eventListeners = new Set<() => void>();
   const api: AccountSettingsApi & {
     list: ReturnType<typeof vi.fn>;
     set: ReturnType<typeof vi.fn>;
@@ -94,7 +105,12 @@ function createApi(rows: AccountSettingRow[] = []) {
     })),
     set: vi.fn(async () => ({ ok: true as const, value: null })),
     sync: vi.fn(async () => ({ ok: true as const, value: null })),
+    onChanged: (listener) => {
+      eventListeners.add(listener);
+      return () => eventListeners.delete(listener);
+    },
   };
+  Object.assign(api, { emitChanged: () => eventListeners.forEach((listener) => listener()) });
   return api;
 }
 
@@ -147,6 +163,8 @@ describe("accountSettingsSync (renderer)", () => {
       "smartTooltipsEnabled",
       "launchPromptClipboardEnabled",
       "launchPromptClipboardNoticeEnabled",
+      // The account field keeps its pre-rename name so an already-saved value
+      // is not orphaned; the setting it maps to is the drafts button.
       "promptStashButtonEnabled",
       "voiceInputEnabled",
       "codexVoice",
@@ -160,6 +178,9 @@ describe("accountSettingsSync (renderer)", () => {
       "chatChromeTint",
       "chatShellGeometry",
       "harnessPresets",
+      // The Star on GitHub pill: its snooze and "already starred" flags must
+      // follow the account, or a second machine re-asks after the user starred.
+      "starPill",
       "apple.realisticBody",
       "apple.recordingOverlays.tapRings",
       "apple.recordingOverlays.keyBadges",
@@ -452,6 +473,47 @@ describe("accountSettingsSync (renderer)", () => {
     stop();
   });
 
+  // Per-computer settings (Apple devices) live in the account store so the
+  // brain on that computer can read them, but each computer has its own copy:
+  // one machine's edit must never land on another, and nothing is written
+  // until this computer's id is known.
+  it("keeps a per-device setting to this computer, holding edits until its id is known", async () => {
+    const { store, state } = createStore({ theme: "dark" });
+    const api = createApi([
+      row("device.other-mac.theme", "sepia", "2030-01-01T00:00:00.000Z"),
+      row("theme", "light", "2030-01-01T00:00:00.000Z"),
+    ]);
+    let deviceId: string | null = null;
+    const deviceListeners = new Set<() => void>();
+    const stop = startAccountSettingsSync(
+      baseOptions({
+        store,
+        settings: DEVICE_SETTINGS,
+        getApi: () => api,
+        isSignedIn: () => true,
+        getLocalDeviceId: () => deviceId,
+        subscribeLocalDeviceId: (listener) => {
+          deviceListeners.add(listener);
+          return () => deviceListeners.delete(listener);
+        },
+      }),
+    );
+    await settle();
+    // Neither another computer's copy nor an account-wide row applies here.
+    expect(state.theme).toBe("dark");
+
+    state.setTheme("midnight");
+    expect(api.set).not.toHaveBeenCalled();
+
+    deviceId = "this-mac";
+    for (const listener of deviceListeners) listener();
+    await settle();
+    expect(api.set).toHaveBeenCalledWith({ scope: "all", key: "device.this-mac.theme", value: "midnight" });
+    expect(api.set).not.toHaveBeenCalledWith(expect.objectContaining({ key: "theme" }));
+    expect(state.theme).toBe("midnight");
+    stop();
+  });
+
   it("applies a newer row that arrives on the poll", async () => {
     const { store, state } = createStore({ theme: "dark", chatFontSizePx: 14 });
     const rows: AccountSettingRow[] = [];
@@ -465,8 +527,92 @@ describe("accountSettingsSync (renderer)", () => {
     rows.push(row("chatFontSizePx", 18, "2030-02-01T00:00:00.000Z"));
     timers[0]?.();
     await settle();
-    expect(api.sync).toHaveBeenCalledTimes(2);
     expect(state.chatFontSizePx).toBe(18);
+    // The row came out of the brain's own cache, which the brain's
+    // change-mark-gated sync keeps current. The one `sync` is the startup
+    // merge; the tick did not ask the relay again.
+    expect(api.sync).toHaveBeenCalledTimes(1);
+    stop();
+  });
+
+  it("hydrates a newly pulled brain-cache row on its event without waiting for the renderer tick", async () => {
+    const { store, state } = createStore({ theme: "dark", chatFontSizePx: 14 });
+    const rows: AccountSettingRow[] = [];
+    const api = createApi(rows) as ReturnType<typeof createApi> & { emitChanged: () => void };
+    const stop = startAccountSettingsSync(
+      baseOptions({ store, getApi: () => api, isSignedIn: () => true }),
+    );
+    await settle();
+    rows.push(row("chatFontSizePx", 18, "2030-02-01T00:00:00.000Z"));
+
+    api.emitChanged();
+    await settle();
+
+    expect(state.chatFontSizePx).toBe(18);
+    expect(api.list).toHaveBeenCalledTimes(2);
+    expect(timers).toHaveLength(1);
+    stop();
+  });
+
+  it("costs no relay pass on the 30-second beat when nothing is queued", async () => {
+    vi.useFakeTimers();
+    try {
+      const { store, state } = createStore({ theme: "dark", chatFontSizePx: 14 });
+      const rows: AccountSettingRow[] = [];
+      const api = createApi(rows);
+      // No `setInterval` override: this drives the shipped timer, so the
+      // cadence the numbers below pin is the one that runs in the app.
+      const stop = startAccountSettingsSync({
+        settings: SETTINGS,
+        storage: createStorage(),
+        store,
+        getApi: () => api,
+        isSignedIn: () => true,
+      });
+      await settle();
+      expect(api.sync).toHaveBeenCalledTimes(1);
+
+      // A change made on another machine, landing mid-beat.
+      rows.push(row("chatFontSizePx", 18, "2030-02-01T00:00:00.000Z"));
+      // Ten minutes: twenty ticks of `ACCOUNT_SETTINGS_POLL_MS`.
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      await settle();
+
+      // It still arrives here, on this machine's own beat.
+      expect(state.chatFontSizePx).toBe(18);
+      // Twenty ticks, one cache read each — and still the one startup `sync`.
+      expect(api.list).toHaveBeenCalledTimes(21);
+      expect(api.sync).toHaveBeenCalledTimes(1);
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("still hands a queued local edit to the brain on the next tick", async () => {
+    const { store, state } = createStore({ theme: "dark" });
+    const api = createApi();
+    // The account refuses the write once: the edit stays queued on this
+    // machine, which is the state the tick has to keep servicing.
+    api.set.mockImplementation(async (args: { value?: unknown }) => (args.value === "light"
+      ? { ok: false as const, unavailable: true as const, message: "no token yet" }
+      : { ok: true as const, value: null }));
+    const stop = startAccountSettingsSync(
+      baseOptions({ store, getApi: () => api, isSignedIn: () => true }),
+    );
+    await settle();
+    // Past the first-merge seed, which uploads this machine's existing
+    // preferences and is not what this test is about.
+    api.set.mockClear();
+    state.setTheme("light");
+    await settle();
+    expect(api.set).toHaveBeenCalledTimes(1);
+
+    timers[0]?.();
+    await settle();
+    expect(api.set).toHaveBeenCalledTimes(2);
+    expect(api.set).toHaveBeenLastCalledWith({ scope: "all", key: "theme", value: "light" });
+    expect(api.sync).toHaveBeenCalledTimes(2);
     stop();
   });
 

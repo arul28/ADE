@@ -7,7 +7,6 @@ import {
   GithubLogo,
   HardDrives,
   Info,
-  Kanban,
   ShieldCheck,
   Stack,
   Timer,
@@ -17,26 +16,32 @@ import {
 import { AccountPage } from "../account/AccountPage";
 import { AppearanceSection } from "./AppearanceSection";
 import { AppleDevicesSection } from "./AppleDevicesSection";
-import { SettingsColumn, SettingsRowIcon, SettingsSectionRail, type SettingsTone } from "./primitives";
+import { ModernPage, SettingsColumn, SettingsSectionRail, type SettingsTone } from "./primitives";
 import { ChatSection } from "./ChatSection";
 import { BudgetCapSettings } from "./BudgetCapEditor";
 import { AboutSection } from "./AboutSection";
 import { AdeCliSection } from "./AdeCliSection";
 import { AdeUsageSection } from "./AdeUsageSection";
 import { GitHubIntegrationSection } from "./GitHubIntegrationSection";
+import { GITHUB_BRAND } from "../lanes/githubBrand";
+import { LinearMark, LINEAR_BRAND } from "../lanes/linearBrand";
+import { JiraMark } from "../lanes/jiraBrand";
 import { KeepAwakeSection } from "./KeepAwakeSection";
+import { BackgroundServiceSection } from "./BackgroundServiceSection";
 import { CaptureGestureSection } from "./CaptureGestureSection";
 import { LaneBehaviorSection } from "./LaneBehaviorSection";
 import { LaneTemplatesSection } from "./LaneTemplatesSection";
 import { LinearIntegrationSection } from "./LinearIntegrationSection";
+import { JiraSection } from "./JiraSection";
 import { NotificationsSection } from "./NotificationsSection";
+import { McpServersSection } from "./mcp/McpServersSection";
 import { PrChatTranscriptsSection } from "./PrChatTranscriptsSection";
 import { BrowserLinksSection } from "./BrowserLinksSection";
 import { BrowserAgentAccessSection } from "./BrowserAgentAccessSection";
-import { ProductAnalyticsSection } from "./ProductAnalyticsSection";
 import { DiagnosticsSharingSection } from "./DiagnosticsSharingSection";
 import { ResetAdeSection } from "./ResetAdeSection";
 import { ProjectSection } from "./ProjectSection";
+import { ProjectLocationSection } from "./ProjectLocationSection";
 import { ProvidersSection } from "./ProvidersSection";
 import { ProviderAccountsPanel } from "./providers/accounts/ProviderAccountsPanel";
 import { SettingsManagerPage } from "./primitives/SettingsManagerPage";
@@ -167,7 +172,7 @@ function AgentsTabContent() {
   }
 
   return (
-    <>
+    <ModernPage>
       <WebSettingsSection entryIds={["agents.providers"]}>
         <ProvidersSection
           forceRefreshOnMount
@@ -181,7 +186,7 @@ function AgentsTabContent() {
       <WebSettingsSection entryIds={["agents.budget"]}>
         <BudgetCapSettings />
       </WebSettingsSection>
-    </>
+    </ModernPage>
   );
 }
 
@@ -219,6 +224,12 @@ type TabSection = {
   render: () => React.ReactNode;
   /** For pages under Machines: how the section reaches its machine. */
   machine?: MachineSectionKind;
+  /**
+   * A link to this section with no `?machine=` opens the tab's machine rather
+   * than This computer: it is about the project tab's own connection (a banner
+   * or a PR reporting that machine's GitHub, say). Implied by `bound`.
+   */
+  linksToTabMachine?: true;
   /** How the section is named in "not available here" notes. */
   title?: string;
   /** The block it sits in on a section-list page (`TAB_GROUPS`). */
@@ -284,14 +295,20 @@ const TAB_GROUPS = {
   github: {
     title: "GitHub",
     description: "Pull requests, checks and reviews.",
-    icon: <GithubLogo size={15} weight="duotone" />,
+    icon: <GithubLogo size={15} weight="duotone" color={GITHUB_BRAND.primary} />,
     tone: "slate",
   },
   linear: {
     title: "Linear",
     description: "Issues, and the agent that works them.",
-    icon: <Kanban size={15} weight="duotone" />,
+    icon: <span style={{ color: LINEAR_BRAND.primary }}><LinearMark size={15} /></span>,
     tone: "violet",
+  },
+  jira: {
+    title: "Jira",
+    description: "Issues and the Jira Cloud site connected on this machine.",
+    icon: <JiraMark size={15} />,
+    tone: "blue",
   },
   disk: {
     title: "Disk",
@@ -336,7 +353,7 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
   ],
   general: [
     {
-      entryIds: ["general.about", "general.auto-updates"],
+      entryIds: ["general.about", "general.auto-updates", "general.update-other-machines"],
       // About has no section file of its own, so the page supplies its anchor.
       render: () => (
         <div id="about" data-settings-anchor="about">
@@ -348,7 +365,16 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
       group: "ade",
     },
     { entryIds: ["general.ade-cli"], render: () => <AdeCliSection />, machine: "local", title: "ADE command line", group: "ade" },
+    {
+      entryIds: ["general.background-service", "general.quit-confirmation"],
+      render: () => <BackgroundServiceSection />,
+      machine: "local",
+      title: "Background service",
+      group: "ade",
+    },
     { entryIds: ["general.project"], render: () => <ProjectSection />, machine: "routed", title: "Project health", group: "project" },
+    // The move runs in this computer's main process, on a project this computer has.
+    { entryIds: ["general.project-location"], render: () => <ProjectLocationSection />, machine: "local", title: "Project location", group: "project" },
     { entryIds: ["general.keep-awake"], render: () => <KeepAwakeSection />, machine: "local", title: "Keep awake", group: "computer" },
     { entryIds: ["general.capture-gesture"], render: () => <CaptureGestureSection />, machine: "local", title: "Capture gesture", group: "computer" },
     {
@@ -361,13 +387,11 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
     // `.ade/local.yaml`, read by the link router of the window bound to that
     // checkout, so it has an effect only on the tab's own machine.
     { entryIds: ["general.link-open-mode"], render: () => <BrowserLinksSection />, machine: "bound", title: "Open links", group: "computer" },
-    // Consent files in this install's ADE home (`~/.ade`), not the account.
-    { entryIds: ["general.analytics"], render: () => <ProductAnalyticsSection />, machine: "local", title: "Product analytics", group: "privacy" },
     {
       entryIds: ["general.diagnostics-sharing"],
       render: () => <DiagnosticsSharingSection />,
       machine: "local",
-      title: "Diagnostics sharing",
+      title: "Send a report to ADE",
       group: "privacy",
     },
     // Last on purpose: the hard reset is its own section at the very bottom of
@@ -412,13 +436,16 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
     { entryIds: ["lanes-git.lane-templates"], render: () => <LaneTemplatesSection />, machine: "routed", title: "Lane templates", group: "templates" },
   ],
   // Connections live in the machine's credential store and are read by its
-  // runtime. Their calls follow the tab's binding (no pin yet), so they are
-  // shown for the machine the tab is bound to.
+  // runtime. Every call takes the machine's pin, so each machine's page shows
+  // and changes that machine's own GitHub and Linear connections. Browser
+  // steps (device codes, OAuth pages) still open on This computer.
   integrations: [
-    { entryIds: ["integrations.github"], render: () => <GitHubIntegrationSection />, machine: "bound", title: "GitHub", group: "github" },
-    { entryIds: ["integrations.linear"], render: () => <LinearIntegrationSection />, machine: "bound", title: "Linear", group: "linear" },
+    { entryIds: ["integrations.github"], render: () => <GitHubIntegrationSection />, machine: "routed", linksToTabMachine: true, title: "GitHub", group: "github" },
+    { entryIds: ["integrations.linear"], render: () => <LinearIntegrationSection />, machine: "routed", linksToTabMachine: true, title: "Linear", group: "linear" },
+    { entryIds: ["integrations.jira", "integrations.jira-projects", "integrations.jira-top-bar"], render: () => <JiraSection />, machine: "routed", linksToTabMachine: true, title: "Jira", group: "jira" },
   ],
   notifications: [{ entryIds: "tab", render: () => <NotificationsSection /> }],
+  mcp: [{ entryIds: "tab", render: () => <McpServersSection /> }],
   secrets: [{ entryIds: ["secrets.secrets"], render: () => <SecretsSection /> }],
   storage: [
     {
@@ -468,10 +495,10 @@ export const STANDALONE_TAB_IDS: ReadonlySet<SettingsTabId> = new Set(
   }),
 );
 
-/** Manifest entries whose section only works on the tab's own machine. */
+/** Manifest entries whose links open the tab's own machine page. */
 export const BOUND_MACHINE_ENTRY_IDS: ReadonlySet<string> = new Set(
   Object.values(TAB_SECTIONS).flatMap((sections) =>
-    (sections ?? []).filter((section) => section.machine === "bound")
+    (sections ?? []).filter((section) => section.machine === "bound" || section.linksToTabMachine)
       .flatMap((section) => (section.entryIds === "tab" ? [] : [...section.entryIds]))),
 );
 
@@ -574,12 +601,10 @@ export function TabContent({
           data-tone={block.group?.tone}
         >
           {block.group ? (
-            <header className="ade-settings-group-head">
-              <SettingsRowIcon icon={block.group.icon} tone={block.group.tone} />
-              <div style={{ minWidth: 0 }}>
-                <h2 className="ade-settings-group-title">{block.group.title}</h2>
-                <p className="ade-settings-group-description">{block.group.description}</p>
-              </div>
+            // A quiet mono label on a hairline: the sections under it carry
+            // their own headings, so the block only needs to name the group.
+            <header className="ade-settings-group-head" title={block.group.description}>
+              <h2 className="ade-settings-group-title">{block.group.title}</h2>
             </header>
           ) : null}
           {block.items.map((item) => (

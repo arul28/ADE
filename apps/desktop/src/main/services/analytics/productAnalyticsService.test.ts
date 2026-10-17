@@ -15,6 +15,7 @@ import {
   captureAgentTurnSettledAnalytics,
   captureClaudeHooksIgnoredAnalytics,
   captureClaudePluginsIgnoredAnalytics,
+  captureCrossMachineMoveAnalytics,
   captureSessionMetadataRegeneratedAnalytics,
 } from "./agentTurnProductAnalytics";
 import {
@@ -178,6 +179,20 @@ describe("productAnalyticsService", () => {
     fs.rmSync(harness.root, { recursive: true, force: true });
   });
 
+  it.each(["project_data_restore", "project_data_start_fresh", "project_move"])("accepts the project storage %s fact with only its coarse fields", (action) => {
+    const harness = makeHarness();
+    expect(harness.service.capture({
+      event: "ade_feature_used",
+      surface: "desktop",
+      properties: { feature: "storage_doctor", action, outcome: "completed", root_path: "/Users/someone/project" },
+      projectId: null,
+      dedupeKey: `${action}:completed`,
+      minimumIntervalMs: 60 * 60 * 1_000,
+    })).toEqual({ accepted: true, reason: "accepted" });
+    expect(harness.messages[0]?.properties).toMatchObject({ feature: "storage_doctor", action, outcome: "completed" });
+    expect(harness.messages[0]?.properties).not.toHaveProperty("root_path");
+  });
+
   it("accepts the connections brain_repair fact and strips anything beyond the coarse enums", () => {
     const harness = makeHarness();
     expect(harness.service.capture({
@@ -221,6 +236,30 @@ describe("productAnalyticsService", () => {
       action: "brain_repair",
       outcome: "sign_in_required",
     });
+    fs.rmSync(harness.root, { recursive: true, force: true });
+  });
+
+  it.each(["completed", "rejected", "failed"])("accepts the connections background_service_stop fact (%s) with only the coarse enums", (outcome) => {
+    const harness = makeHarness();
+    expect(harness.service.capture({
+      event: "ade_feature_used",
+      surface: "desktop",
+      properties: {
+        feature: "connections",
+        action: "background_service_stop",
+        outcome,
+        error_text: "launchctl bootout failed for /Users/someone/Library/LaunchAgents",
+      },
+      projectId: null,
+      dedupeKey: `background_service_stop:${outcome}`,
+      minimumIntervalMs: 60 * 60 * 1_000,
+    })).toEqual({ accepted: true, reason: "accepted" });
+    expect(harness.messages[0]?.properties).toMatchObject({
+      feature: "connections",
+      action: "background_service_stop",
+      outcome,
+    });
+    expect(harness.messages[0]?.properties).not.toHaveProperty("error_text");
     fs.rmSync(harness.root, { recursive: true, force: true });
   });
 
@@ -419,6 +458,52 @@ describe("productAnalyticsService", () => {
       dedupeKey: `chat_${action}:session-1`,
       minimumIntervalMs: 60 * 60_000,
     })).toEqual({ accepted: false, reason: "duplicate" });
+    fs.rmSync(harness.root, { recursive: true, force: true });
+  });
+
+  it("records how a cross-machine move ended once per move and outcome, with no ids", () => {
+    const harness = makeHarness();
+    const move = (outcome: "continued" | "failed" | "cancelled" | "unknown", handoffId = "handoff-7c1e9a") =>
+      captureCrossMachineMoveAnalytics({
+        analytics: harness.service,
+        projectId: "/Users/ada/secret-repo",
+        event: { handoffId, outcome },
+      });
+
+    for (const outcome of ["continued", "failed", "cancelled", "unknown"] as const) move(outcome);
+    // A retried move that ends `unknown` again within the hour is the same fact.
+    move("unknown");
+    // Another move with the same outcome is a new fact.
+    move("unknown", "handoff-55d0b2");
+
+    const moves = harness.messages
+      .map((message) => (message as { properties: Record<string, unknown> }).properties)
+      .filter((properties) => properties.action === "cross_machine_move");
+    expect(moves.map((properties) => properties.outcome))
+      .toEqual(["continued", "failed", "cancelled", "unknown", "unknown"]);
+    for (const properties of moves) {
+      expect(properties).toMatchObject({ feature: "chat", source: "runtime" });
+      expect(properties).not.toHaveProperty("session_id");
+    }
+    // The handoff id only keys the local dedupe; the project path is hashed.
+    const sent = JSON.stringify(harness.messages);
+    expect(sent).not.toContain("handoff-7c1e9a");
+    expect(sent).not.toContain("handoff-55d0b2");
+    expect(sent).not.toContain("secret-repo");
+
+    // An outcome outside the closed set is dropped, and the machine, the reason
+    // and the chats on either side can't ride along.
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "chat",
+      action: "cross_machine_move",
+      outcome: "landed",
+      source: "runtime",
+      machine_name: "Mac mini",
+      target_machine: "Mac mini",
+      reason: "ADE lost the answer from Mac mini.",
+      target_session_id: "chat-9f2a",
+      handoff_id: "handoff-7c1e9a",
+    })).toEqual({ feature: "chat", action: "cross_machine_move", source: "runtime" });
     fs.rmSync(harness.root, { recursive: true, force: true });
   });
 
@@ -1794,6 +1879,32 @@ describe("product analytics producers", () => {
     });
   });
 
+  it.each(["compaction", "compact_first"])("keeps the %s fact coarse: outcome and mode survive, compaction details do not", (action) => {
+    for (const [outcome, mode] of [["completed", "manual"], ["failed", "automatic"]] as const) {
+      expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+        feature: "chat",
+        action,
+        outcome,
+        mode,
+        provider: "claude",
+        source: "runtime",
+        // Token counts, the summary, the failure text and the account are the
+        // whole risk; none of them is on the key list.
+        pre_tokens: 481636,
+        post_tokens: 6225,
+        summary: "Red. Blue. Green.",
+        fail_detail: "You've hit your weekly limit",
+        account_label: "Work",
+      })).toEqual({ feature: "chat", action, outcome, mode, provider: "claude", source: "runtime" });
+    }
+    // An unlisted trigger spelling is dropped, not widened.
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "chat",
+      action,
+      mode: "ade_fallback",
+    })).not.toHaveProperty("mode");
+  });
+
   it("keeps the five handoff-replay outcomes and nothing that names the chat", () => {
     // The funnel only answers "does a handoff carry the conversation?" if all
     // five ends survive the sanitizer under one filter.
@@ -1844,7 +1955,18 @@ describe("product analytics producers", () => {
     });
   });
 
-  it("keeps the three Mac Desktop outcomes and drops anything that identifies the screen", () => {
+  it("keeps the Mac Desktop and user-browser outcomes and drops anything that identifies the screen or tab", () => {
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "work",
+      action: "user_browser",
+      outcome: "started",
+      browser: "chrome",
+      machine: "Arul's Mac Studio",
+      tab_title: "Payments",
+      url: "https://dashboard.stripe.com/payments",
+      chat_session_id: "chat-1",
+    })).toEqual({ feature: "work", action: "user_browser", outcome: "started" });
+
     for (const outcome of ["started", "agent_drove", "recorded"]) {
       expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
         feature: "work",
@@ -1874,6 +1996,95 @@ describe("product analytics producers", () => {
       action: "mac_desktop",
       outcome: "started",
     });
+  });
+
+  it("keeps the two Work Focus modes through the sanitizer and nothing else", () => {
+    for (const outcome of ["mode_focus", "mode_focus_grid"]) {
+      expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+        feature: "work",
+        action: "focus_mode",
+        outcome,
+        source: "renderer_route",
+      })).toEqual({ feature: "work", action: "focus_mode", outcome, source: "renderer_route" });
+    }
+    // A third mode, or anything about what the grid shows, does not cross.
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "work",
+      action: "focus_mode",
+      outcome: "mode_focus_board",
+      waiting_count: 7,
+      lane_id: "lane-1",
+    })).toEqual({ feature: "work", action: "focus_mode" });
+  });
+
+  it("keeps the issue-created tracker through the sanitizer and nothing about the issue", () => {
+    for (const outcome of ["tracker_linear", "tracker_github", "tracker_jira"]) {
+      expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+        feature: "issues",
+        action: "issue_created",
+        outcome,
+        source: "renderer_route",
+      })).toEqual({ feature: "issues", action: "issue_created", outcome, source: "renderer_route" });
+    }
+    // Another tracker, the repository, the title, or the issue's number does not cross.
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "issues",
+      action: "issue_created",
+      outcome: "tracker_asana",
+      repo: "arul28/ADE",
+      title: "Crash on launch",
+      issue_number: 1520,
+    })).toEqual({ feature: "issues", action: "issue_created" });
+  });
+
+  it.each([
+    ["tab_opened", "tab_browser"],
+    ["tab_opened", "tab_music"],
+    ["widget_added", "widget_now_playing"],
+    ["widget_added", "widget_clipboard"],
+    ["music_connected", "completed"],
+    ["music_connected", "cancelled"],
+    ["music_connected", "failed"],
+  ])("keeps the dev home's %s %s fact and nothing about what was opened", (action, outcome) => {
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "home",
+      action,
+      outcome,
+      source: "renderer_route",
+      // None of these is on `ade_feature_used`'s key list.
+      url: "https://music.example.test/song",
+      widget_settings: "Lisbon",
+    })).toEqual({ feature: "home", action, outcome, source: "renderer_route" });
+    // A tab or widget nobody registered is dropped, not widened.
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "home",
+      action,
+      outcome: `${outcome.split("_")[0]}_spreadsheet`,
+    })).toEqual({ feature: "home", action });
+  });
+
+  it.each([
+    "chat_shortcut",
+    "chat_palette",
+    "chat_palette_hit",
+    "diff_shortcut",
+  ])("keeps the find-opened outcome %s and nothing about the query, chat, or diff", (outcome) => {
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "find",
+      action: "find_opened",
+      outcome,
+      source: "renderer_route",
+      // None of these is on `ade_feature_used`'s key list.
+      query: "the words typed",
+      chat_id: "chat-1",
+      match_count: 12,
+    })).toEqual({ feature: "find", action: "find_opened", outcome, source: "renderer_route" });
+    // An outcome nobody registered is dropped, not widened.
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "find",
+      action: "find_opened",
+      outcome: "find_query_text",
+    })).toEqual({ feature: "find", action: "find_opened" });
   });
 
   it("keeps every Work tool id through the sanitizer and nothing that is not one", () => {

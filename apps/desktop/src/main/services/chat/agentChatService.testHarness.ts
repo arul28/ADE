@@ -32,10 +32,6 @@ import {
 } from "../opencode/openCodeInventory";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { injectFsFault } from "../../../test/faultInjection";
-import {
-  resolveBuiltInBrowserActorCapability,
-  type BrowserActorCapabilityIssuer,
-} from "../builtInBrowser/builtInBrowserActorCapabilities";
 import { loadQwenUserSettings } from "../ai/qwenUserSettings";
 import {
   buildLaneAppleDeviceDirective,
@@ -106,6 +102,7 @@ const cursorModelsListMock = vi.hoisted(() => vi.fn());
 const ORIGINAL_CURSOR_API_KEY = process.env.CURSOR_API_KEY;
 const ORIGINAL_CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR;
 const ORIGINAL_CODEX_HOME = process.env.CODEX_HOME;
+const ORIGINAL_ADE_HOME = process.env.ADE_HOME;
 
 vi.mock("@opencode-ai/sdk", () => ({
   createOpencodeServer: vi.fn(async () => ({
@@ -174,6 +171,10 @@ const mockState = vi.hoisted(() => ({
   openCodeV2SteerError: null as Error | null,
   /** When set, the mocked v2 steer waits on this before answering. */
   openCodeV2SteerBarrier: null as Promise<void> | null,
+  /** When set, the mocked `session.create` waits on this: a session-setup RPC that never answers. */
+  openCodeSessionCreateBarrier: null as Promise<void> | null,
+  /** Launches of the mocked `opencode serve` process. */
+  openCodeServeLaunches: 0,
   openCodeTitleForNextPrompt: null as string | null,
   openCodeQuestionForNextPrompt: null as null | {
     id: string;
@@ -188,6 +189,13 @@ const mockState = vi.hoisted(() => ({
   droidSessionCounter: 0,
   codexRequestPayloads: [] as Array<Record<string, unknown>>,
   codexResponseOverrides: new Map<string, Record<string, unknown> | ((payload: Record<string, unknown>) => Record<string, unknown>)>(),
+  /**
+   * The mocked app-server's `initialize` result. Empty by default — no
+   * `userAgent`, so the runtime learns no version and every version-gated
+   * request takes its "server predates this" path. A test that exercises a
+   * gate sets `{ userAgent: "codex_app_server/0.162.1" }` here.
+   */
+  codexInitializeResult: {} as Record<string, unknown>,
   delayedCodexMethods: new Set<string>(),
   pendingCodexResponses: [] as Array<() => void>,
   codexCollaborationModes: [{ mode: "default" }, { mode: "plan" }] as Array<Record<string, unknown> | string>,
@@ -227,6 +235,8 @@ const mockState = vi.hoisted(() => ({
   droidPromptCalls: [] as Array<Record<string, unknown>>,
   droidSettingsUpdates: [] as Array<Record<string, unknown>>,
   droidPooled: null as any,
+  /** The fake Copilot SDK worker of the last opened Copilot chat. */
+  copilotPooled: null as any,
   droidPromptGate: null as Promise<void> | null,
   droidPromptError: null as unknown,
   emitCodexPayload(payload: Record<string, unknown>) {
@@ -296,6 +306,7 @@ vi.mock("node:child_process", () => ({
   spawnSync: vi.fn(() => ({ error: new Error("process listing unavailable in test"), status: 1, stdout: "" })),
   spawn: vi.fn((command: string, args: string[] = []) => {
     if (args.includes("serve")) {
+      mockState.openCodeServeLaunches += 1;
       const proc = new EventEmitter() as EventEmitter & Record<string, any>;
       const stdout = new EventEmitter() as EventEmitter & { resume: ReturnType<typeof vi.fn> };
       const stderr = new EventEmitter() as EventEmitter & { resume: ReturnType<typeof vi.fn> };
@@ -343,6 +354,8 @@ vi.mock("node:child_process", () => ({
             } else {
               result = override;
             }
+          } else if (payload.method === "initialize") {
+            result = mockState.codexInitializeResult;
           } else if (payload.method === "thread/start") {
             mockState.codexThreadCounter += 1;
             result = { thread: { id: `thread-${mockState.codexThreadCounter}` } };
@@ -510,7 +523,10 @@ vi.mock("@opencode/client", () => ({
         permission: { reply: vi.fn(async () => ({ data: {} })) },
         question: { reply: vi.fn(async () => ({ data: {} })), reject: vi.fn(async () => ({ data: {} })) },
         session: {
-          create: vi.fn(async (args: any) => createSession(args)),
+          create: vi.fn(async (args: any) => {
+            if (mockState.openCodeSessionCreateBarrier) await mockState.openCodeSessionCreateBarrier;
+            return createSession(args);
+          }),
           get: vi.fn(async ({ sessionID }: { sessionID: string }) => findSession(sessionID)),
           update: vi.fn(async ({ sessionID, ...args }: any) => Object.assign(findSession(sessionID), args)),
           switchAgent: vi.fn(async ({ sessionID, agent }: any) => { findSession(sessionID).agent = agent; return {}; }),
@@ -1008,6 +1024,49 @@ vi.mock("./droidSdkPool", () => ({
   releaseDroidSdkConnection: vi.fn(),
 }));
 
+// The Copilot SDK worker is a forked process: the pool is its boundary. The fake
+// opens sessions at the requested level and finishes each turn with `session.idle`.
+vi.mock("./copilotSdkPool", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./copilotSdkPool")>();
+  return {
+    ...actual,
+    acquireCopilotSdkConnection: vi.fn(async () => {
+      const pooled: any = {
+        process: { exitCode: null, signalCode: null, killed: false, connected: true },
+        bridge: {
+          onEvent: null,
+          onWorkerExit: null,
+          onPermissionRequest: null,
+          onExitPlanRequest: null,
+          onUserInputRequest: null,
+          onMcpAuthRequest: null,
+        },
+        openSession: vi.fn(async (config: Record<string, unknown>) => ({
+          sessionId: typeof config.sessionId === "string" ? config.sessionId : "copilot-sdk-session-1",
+          events: [],
+          permissionMode: config.permissionMode === "full-auto" ? "allow-all" : config.permissionMode === "assisted" ? "assisted" : "manual",
+          permissionError: null,
+        })),
+        send: vi.fn(async (chatId: string) => {
+          queueMicrotask(() => pooled.bridge.onEvent?.(chatId, { type: "session.idle", data: {} }));
+          return "copilot-message-1";
+        }),
+        request: vi.fn(async () => null),
+        setModel: vi.fn(async () => {}),
+        setAutoTier: vi.fn(async () => ({ status: "unchanged" })),
+        setPermissionMode: vi.fn(async () => ({ mode: "manual", error: null })),
+        forkSession: vi.fn(async () => "copilot-forked-1"),
+        abort: vi.fn(async () => {}),
+        disconnect: vi.fn(async () => {}),
+        dispose: vi.fn(),
+      };
+      mockState.copilotPooled = pooled;
+      return { pooled, generation: 1, poolKey: "copilot-pool" };
+    }),
+    releaseCopilotSdkConnection: vi.fn(),
+  };
+});
+
 // Pass-through: records which provider handles a settled turn's follow-ups were given.
 vi.mock("../usage/turnUsageReconcilers", async (importOriginal) => {
   const actual = await importOriginal<typeof TurnUsageReconcilersModule>();
@@ -1068,6 +1127,7 @@ import {
   writeSessionLinearIssueContextFile,
   createAgentChatService,
   restartRecoveryStopAttribution,
+  flushAllQueuedTranscriptWrites,
   CURSOR_SDK_FIRST_EVENT_WATCHDOG_MS,
   CURSOR_SDK_RECYCLE_CANCEL_TIMEOUT_MS,
 } from "./agentChatService";
@@ -1630,6 +1690,16 @@ function createMockSessionService() {
     setHeadShaStart: vi.fn(),
     setHeadShaEnd: vi.fn(),
     setLastOutputPreview: vi.fn(),
+    clearAttentionRequest: vi.fn((sessionId: string, expectedSource?: string, notAfter?: string) => {
+      const row = sessions.get(sessionId);
+      if (!row) return false;
+      if (expectedSource && row.attentionSource !== expectedSource) return true;
+      if (notAfter && (!expectedSource || !row.attentionRequestedAt || Date.parse(row.attentionRequestedAt) > Date.parse(notAfter))) return true;
+      row.attentionRequestedAt = null;
+      row.attentionMessage = null;
+      row.attentionSource = null;
+      return true;
+    }),
     clearTurnStartMarkers: vi.fn(),
     clearSessionActivity: vi.fn(),
     setDetectedSessionActivity: vi.fn((sessionId: string) => Boolean(sessions.get(sessionId))),
@@ -2132,6 +2202,10 @@ beforeEach(() => {
   // (~/.claude/commands, ~/.codex/prompts) doesn't leak the developer's real
   // home dir into tests, while project-local .claude roots remain distinct.
   vi.spyOn(os, "homedir").mockReturnValue(tmpHomeRoot);
+  // `ADE_HOME` wins over `os.homedir()` for the machine directory (the account
+  // registry lives there), so a test run from an agent shell that exports it
+  // would otherwise write the developer's real accounts.
+  process.env.ADE_HOME = path.join(tmpHomeRoot, ".ade");
   mockState.generation += 1;
   turnDiffMockState.beforeTreeGates = [];
   turnDiffMockState.collectSummary = null;
@@ -2153,11 +2227,14 @@ beforeEach(() => {
   mockState.openCodePromptError = null;
   mockState.openCodeV2SteerError = null;
   mockState.openCodeV2SteerBarrier = null;
+  mockState.openCodeSessionCreateBarrier = null;
+  mockState.openCodeServeLaunches = 0;
   mockState.openCodeTitleForNextPrompt = null;
   mockState.openCodeQuestionForNextPrompt = null;
   mockState.droidSessionCounter = 0;
   mockState.codexRequestPayloads = [];
   mockState.codexResponseOverrides.clear();
+  mockState.codexInitializeResult = {};
   mockState.delayedCodexMethods.clear();
   mockState.pendingCodexResponses = [];
   mockState.codexCollaborationModes = [{ mode: "default" }, { mode: "plan" }];
@@ -2193,6 +2270,7 @@ beforeEach(() => {
   mockState.droidPromptCalls = [];
   mockState.droidSettingsUpdates = [];
   mockState.droidPooled = null;
+  mockState.copilotPooled = null;
   mockState.droidPromptGate = null;
   mockState.droidPromptError = null;
   cursorModelsListMock.mockReset();
@@ -2276,6 +2354,8 @@ afterEach(async () => {
   else process.env.CLAUDE_CONFIG_DIR = ORIGINAL_CLAUDE_CONFIG_DIR;
   if (ORIGINAL_CODEX_HOME === undefined) delete process.env.CODEX_HOME;
   else process.env.CODEX_HOME = ORIGINAL_CODEX_HOME;
+  if (ORIGINAL_ADE_HOME === undefined) delete process.env.ADE_HOME;
+  else process.env.ADE_HOME = ORIGINAL_ADE_HOME;
   try {
     fs.rmSync(tmpHomeRoot, { recursive: true, force: true });
   } catch { /* ignore */ }
@@ -2353,6 +2433,7 @@ export {
   detectAllAuth,
   detectCliAuthStatuses,
   enforceCrossMachineForkEncodedBudget,
+  flushAllQueuedTranscriptWrites,
   flushCursorSdkSilenceRecycle,
   fs,
   getDefaultModelDescriptor,
@@ -2395,7 +2476,6 @@ export {
   renameSession,
   replaceDynamicOpenCodeModelDescriptors,
   replaceDynamicPiModelDescriptors,
-  resolveBuiltInBrowserActorCapability,
   resolveLaneAppleDeviceDirective,
   respondWithSession,
   restartRecoveryStopAttribution,
@@ -2429,7 +2509,6 @@ export type {
   AgentChatCreateScheduledWorkArgs,
   AgentChatCrossMachineHandoffCapsule,
   AgentChatEventEnvelope,
-  BrowserActorCapabilityIssuer,
   ChatScheduledWorkRecord,
   ChatScheduledWorkState,
   ComputerUseBackendStatus,

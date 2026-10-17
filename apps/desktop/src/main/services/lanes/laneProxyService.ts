@@ -161,7 +161,11 @@ export function createLaneProxyService({
         if (fn(req, res)) return;
       } catch (error) {
         logger.error("lane_proxy.interceptor_error", {
-          error: error instanceof Error ? error.message : String(error),
+          // The Error itself, so `logBridge` lifts it into the Sentry event and
+          // the issue groups by the real failure; `errorText` keeps the
+          // sentence on disk, which `JSON.stringify` writes an Error without.
+          error,
+          errorText: error instanceof Error ? error.message : String(error),
         });
         if (!res.headersSent) {
           res.writeHead(500, { "Content-Type": "text/plain" });
@@ -216,7 +220,11 @@ export function createLaneProxyService({
 
       const finalizeStartFailure = (error: NodeJS.ErrnoException): never => {
         logger.error("lane_proxy.server_error", {
-          error: error.message,
+          // The Error itself, so `logBridge` lifts it into the Sentry event and
+          // the issue groups by the real failure; `errorText` keeps the
+          // sentence on disk, which `JSON.stringify` writes an Error without.
+          error,
+          errorText: error.message,
           code: error.code,
           port: requestedPort,
         });

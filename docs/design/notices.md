@@ -30,6 +30,7 @@ its own folder. Do not build a one-off version in a feature folder.
 | Yes/no before an action | `await confirmDialog({...})` |
 | One line of text input | `await promptDialog({...})` |
 | A modal with its own content: a form or a picker | `<Dialog open onOpenChange title ...>` |
+| One thing to read beside the page you are on (an issue) | `<Dialog placement="right" ...>`, the side sheet |
 | A dropdown that hangs off the top bar | `<HeaderSheet>` |
 
 Rules of thumb. A banner describes a **state**: it stays while the state
@@ -140,7 +141,7 @@ clicks ×. It does not run on auto-dismiss.
 | Kind | `durationMs` |
 |---|---|
 | Ordinary event | omit it: the 6 s default |
-| Worth reading: PR checks failed, review requested, a multi-line message | `18_000` (see `PR_TOAST_DURATION_MS`) |
+| Worth reading: PR checks failed, review requested, a multi-line message | `READABLE_TOAST_DURATION_MS` (18 s, from `toastStore`) |
 | Represents live state or needs an answer: a progress list, "N sessions idle" | `0` (sticky; dismiss or update it yourself) |
 
 Hovering a toast pauses its timer. Pass a stable `id` to replace a toast in
@@ -155,12 +156,13 @@ Pick a named layer and never type a z-index:
 
 | Layer | Value | For |
 |---|---|---|
+| `menuPanel` | 60 | A submenu panel floating off its host menu row. Relative, not absolute: the panel is a child of the host menu, so the host's own layer decides what the whole menu covers |
 | `chatDraftDeparture` | 79 | Departing Work draft chrome during the first-message handoff |
 | `chatFirstMessageHandoff` | 80 | Composer and first-message handoff animation |
 | `popover` | 100 | Anchored pickers and menus (model picker, reasoning effort) |
 | `sidebar` | 100 | The app sidebar |
+| `floatingBanner` | 115 | Floating top-center banners, below the sheets: a sheet someone just opened is what they are looking at, and a banner drawn over it covers its header |
 | `sheet` | 120 | `HeaderSheet` top-bar dropdowns and their click-away layer |
-| `floatingBanner` | 140 | Floating top-center banners |
 | `dialog` | 200 | `Dialog` panel and scrim |
 | `dialogPopover` | 205 | An anchored menu or picker opened from inside a dialog; below nested confirms |
 | `nestedDialog` | 210 | A confirm or prompt raised from inside another dialog |
@@ -182,6 +184,14 @@ the capture notice and chat handoff animation. The hosts
 you are probably building an overlay the hosts already provide. A new layer
 goes in `zLayers.ts`, with a comment explaining why the existing layers do not
 work.
+
+These layers order surfaces across the app. Inside one surface — a find bar
+over its own transcript or diff, a pill over its own list — the small Tailwind
+steps (`z-10` to `z-40`) order that surface's children against each other.
+They create no stacking context, so they share one with their neighbours:
+keep them below every `Z_LAYERS` value (all are 60 or more) and do not use
+them for anything that must cover another surface. The lint only flags `z-50`
+and arbitrary `z-[N]` with N ≥ 50, so this rule is yours to keep.
 
 ## Copy
 

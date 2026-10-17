@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IPC } from "../shared/ipc";
 import { BUILT_IN_BROWSER_REMOTE_REQUEST_EVENT } from "../shared/types/builtInBrowserRemote";
 
-describe("preload Attention Notch bridge", () => {
+describe("preload Activity bridge", () => {
   beforeEach(() => {
     vi.resetModules();
     delete (globalThis as any).__adeBridge;
@@ -14,7 +14,7 @@ describe("preload Attention Notch bridge", () => {
     delete (globalThis as any).__adeBridge;
   });
 
-  it("publishes typed helper state and cleans up acknowledgement listeners", async () => {
+  it("routes every Activity call to its own IPC channel", async () => {
     const invoke = vi.fn(async () => undefined);
     const on = vi.fn();
     const removeListener = vi.fn();
@@ -34,22 +34,6 @@ describe("preload Attention Notch bridge", () => {
 
     await import("./preload");
     const bridge = (globalThis as any).__adeBridge;
-    const snapshot = {
-      contractVersion: 1,
-      revision: 1,
-      generatedAt: "2026-07-28T12:00:00.000Z",
-      items: [],
-      tombstones: [],
-    };
-    const settings = {
-      enabled: true,
-      preferredDisplayId: null,
-      hideDetails: false,
-      celebrationsEnabled: true,
-      soundsEnabled: false,
-    };
-    await bridge.attentionNotch.publishSnapshot(snapshot);
-    await bridge.attentionNotch.updateSettings(settings);
     const item = { id: "agent-1" };
     await bridge.attention.getSnapshot(7, "account-stream");
     await bridge.attention.acknowledge({
@@ -63,8 +47,6 @@ describe("preload Attention Notch bridge", () => {
     await bridge.attention.putPreferences("account-a", preferences);
     await bridge.attention.openItem(item);
 
-    expect(invoke).toHaveBeenCalledWith(IPC.attentionNotchPublishSnapshot, snapshot);
-    expect(invoke).toHaveBeenCalledWith(IPC.attentionNotchUpdateSettings, settings);
     expect(invoke).toHaveBeenCalledWith(IPC.attentionGetSnapshot, {
       since: 7,
       streamId: "account-stream",
@@ -91,35 +73,6 @@ describe("preload Attention Notch bridge", () => {
       expect.anything(),
     );
 
-    const callback = vi.fn();
-    const unsubscribe = bridge.attentionNotch.onAcknowledgeRequested(callback);
-    expect(on).toHaveBeenCalledWith(
-      IPC.attentionNotchAcknowledgeRequested,
-      expect.any(Function),
-    );
-    const listener = on.mock.calls.at(-1)?.[1];
-    listener({}, { itemId: "agent-1", mode: "seen" });
-    expect(callback).toHaveBeenCalledWith({ itemId: "agent-1", mode: "seen" });
-    unsubscribe();
-    expect(removeListener).toHaveBeenCalledWith(
-      IPC.attentionNotchAcknowledgeRequested,
-      listener,
-    );
-
-    const refreshCallback = vi.fn();
-    const unsubscribeRefresh = bridge.attentionNotch.onRefreshRequested(refreshCallback);
-    expect(on).toHaveBeenCalledWith(
-      IPC.attentionNotchRefreshRequested,
-      expect.any(Function),
-    );
-    const refreshListener = on.mock.calls.at(-1)?.[1];
-    refreshListener({});
-    expect(refreshCallback).toHaveBeenCalledOnce();
-    unsubscribeRefresh();
-    expect(removeListener).toHaveBeenCalledWith(
-      IPC.attentionNotchRefreshRequested,
-      refreshListener,
-    );
   });
 });
 
@@ -527,6 +480,82 @@ describe("preload Apple device input routing", () => {
     await expect(bridge.iosSimulator.tap({ deviceUdid: "device-1", x: 1, y: 2 }))
       .rejects.toThrow(/needs an open project/i);
     expect(ipcCalls).toBe(1);
+  });
+
+  it.each([true, false])("guards binding-callback mutations until a project switch settles (success=%s)", async (success) => {
+    const binding = { kind: "local", key: "local:/original", rootPath: "/original", displayName: "Original" };
+    let finishSwitch!: (result: unknown) => void;
+    let failSwitch!: (error: Error) => void;
+    const switchResult = new Promise((resolve, reject) => { finishSwitch = resolve; failSwitch = reject; });
+    const mutations: string[] = [];
+    const invoke = vi.fn(async (channel: string, payload?: any) => {
+      if (channel === IPC.appGetWindowSession) return { windowId: 1, binding };
+      if (channel === IPC.projectSwitchToPath) return switchResult;
+      if (channel === IPC.localRuntimeCallAction) {
+        mutations.push(payload.rootPath);
+        return { result: { released: true } };
+      }
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+    const bridge = await mountBridge(invoke);
+    await bridge.app.getWindowSession();
+    const callbackResults: Promise<unknown>[] = [];
+    const unsubscribe = bridge.app.onProjectBindingChanged(() => {
+      callbackResults.push(bridge.iosSimulator.shutdown({ laneId: "lane-1" }).catch((error: unknown) => error));
+    });
+    const switching = bridge.project.switchToPath("/next").catch((error: unknown) => error);
+    expect(callbackResults).toHaveLength(1);
+    expect(await callbackResults[0]).toBeInstanceOf(Error);
+    expect(mutations).toEqual([]);
+    if (success) finishSwitch({ rootPath: "/next", displayName: "Next", baseRef: "main" });
+    else failSwitch(new Error("Open failed"));
+    await switching;
+    for (const result of callbackResults) expect(await result).toBeInstanceOf(Error);
+    expect(mutations).toEqual([]);
+    unsubscribe();
+    // The guard is released after both a successful open and a rollback.
+    await bridge.iosSimulator.shutdown({ laneId: "lane-1" });
+    expect(mutations).toEqual([success ? "/next" : "/original"]);
+  });
+
+  it.each([
+    ["local", "shutdown"], ["local", "recordStop"], ["local", "stopStream"],
+    ["remote", "shutdown"], ["remote", "recordStop"], ["remote", "stopStream"],
+  ])("finishes %s simulator %s on its original project during a tab switch", async (kind, action) => {
+    const binding = kind === "local"
+      ? { kind: "local", key: "local:/original", rootPath: "/original", displayName: "Original" }
+      : { kind: "remote", key: "remote:mac:original", rootPath: "/original", displayName: "Original", targetId: "mac", projectId: "original" };
+    let completeAction!: (result: unknown) => void;
+    const actionResult = new Promise((resolve) => { completeAction = resolve; });
+    let actionStarted!: () => void;
+    const started = new Promise<void>((resolve) => { actionStarted = resolve; });
+    let completeSwitch!: (result: unknown) => void;
+    const switchResult = new Promise((resolve) => { completeSwitch = resolve; });
+    const routedProjects: string[] = [];
+    const invoke = vi.fn(async (channel: string, payload?: any) => {
+      if (channel === IPC.appGetWindowSession) return { windowId: 1, binding };
+      if (channel === IPC.projectSwitchToPath) return switchResult;
+      if (channel === IPC.localRuntimeCallAction || channel === IPC.remoteRuntimeCallAction) {
+        routedProjects.push(payload.rootPath ?? payload.projectId);
+        actionStarted();
+        return actionResult;
+      }
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+    const bridge = await mountBridge(invoke);
+    await bridge.app.getWindowSession();
+    const finishing = action === "stopStream"
+      ? bridge.iosSimulator.stopStream(null, { laneId: "lane-1" })
+      : bridge.iosSimulator[action]({ laneId: "lane-1" });
+    await started;
+    const switching = bridge.project.switchToPath("/next");
+    // A new, unpinned mutation is still unsafe while the switch is in flight.
+    await expect(bridge.iosSimulator.shutdown({ laneId: "lane-2" })).rejects.toThrow(/Project is switching/);
+    completeAction({ result: { released: true } });
+    await finishing;
+    completeSwitch({ rootPath: "/next", displayName: "Next", baseRef: "main" });
+    await switching;
+    expect(routedProjects).toEqual([kind === "local" ? "/original" : "original"]);
   });
 });
 
@@ -1261,6 +1290,41 @@ describe("preload Apple device input routing", () => {
       relativePath: "file.txt",
       target: "cursor",
     });
+  });
+
+  it.each([["local", "git"], ["remote", "git"], ["local", "file"], ["remote", "file"]])("drops a late %s %s read after switching projects", async (kind, domain) => {
+    const binding = kind === "local"
+      ? { kind: "local", key: "local:/a", rootPath: "/a", displayName: "A" }
+      : { kind: "remote", key: "remote:target:project-a", rootPath: "/a", displayName: "A", targetId: "target", projectId: "project-a", runtimeName: "Remote" };
+    const actionChannel = kind === "local" ? IPC.localRuntimeCallAction : IPC.remoteRuntimeCallAction;
+    let resolveRead!: (value: unknown) => void;
+    let readStarted!: () => void;
+    const started = new Promise<void>((resolve) => { readStarted = resolve; });
+    const response = new Promise((resolve) => { resolveRead = resolve; });
+    const invoke = vi.fn(async (channel: string, _args?: unknown) => {
+      if (channel === IPC.appGetWindowSession) return { binding };
+      if (channel === actionChannel) { readStarted(); return response; }
+      return undefined;
+    });
+    const on = vi.fn();
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld: (_name: string, value: unknown) => { (globalThis as any).__adeBridge = value; } },
+      ipcRenderer: { invoke, on, removeListener: vi.fn() },
+      webFrame: { getZoomLevel: () => 0, setZoomLevel: vi.fn(), getZoomFactor: () => 1 },
+    }));
+    await import("./preload");
+    const bridge = (globalThis as any).__adeBridge;
+    bridge.app.onProjectBindingChanged(vi.fn());
+    const read = domain === "file"
+      ? bridge.files.quickOpen({ query: "src" })
+      : bridge.git.getSyncStatus({ laneId: "lane-a" });
+    const rejected = expect(read).rejects.toThrow(/Project is switching/);
+    await started;
+    const bindingListener = on.mock.calls.find(([channel]) => channel === IPC.appProjectBindingChanged)?.[1];
+    bindingListener({}, { kind: "local", key: "local:/b", rootPath: "/b", displayName: "B" });
+    resolveRead({ result: { laneId: "lane-a" } });
+    await rejected;
+    expect(invoke.mock.calls.filter(([channel]) => channel === actionChannel).map(([, args]) => kind === "local" ? (args as any).rootPath : (args as any).projectId)).toEqual([kind === "local" ? "/a" : "project-a"]);
   });
 
   it("does not let stale window-session refreshes overwrite a newer project binding", async () => {
@@ -2858,7 +2922,7 @@ describe("preload Apple device input routing", () => {
     };
     const delta = { sessionId: "session-1", filesChanged: 2 };
     const preview = "data:image/png;base64,AAAA";
-    const promptStashes = [{
+    const drafts = [{
       id: "stash-1",
       text: "Fix the parser",
       provider: "codex",
@@ -2883,29 +2947,29 @@ describe("preload Apple device input routing", () => {
             statusHints: {},
           };
         }
-        if (request?.domain === "chat" && request.action === "listPromptStashes") {
+        if (request?.domain === "chat" && request.action === "listDrafts") {
           return {
             ok: true,
             domain: "chat",
-            action: "listPromptStashes",
-            result: promptStashes,
+            action: "listDrafts",
+            result: drafts,
             statusHints: {},
           };
         }
-        if (request?.domain === "chat" && request.action === "createPromptStash") {
+        if (request?.domain === "chat" && request.action === "createDraft") {
           return {
             ok: true,
             domain: "chat",
-            action: "createPromptStash",
-            result: promptStashes[0],
+            action: "createDraft",
+            result: drafts[0],
             statusHints: {},
           };
         }
-        if (request?.domain === "chat" && request.action === "deletePromptStash") {
+        if (request?.domain === "chat" && request.action === "deleteDraft") {
           return {
             ok: true,
             domain: "chat",
-            action: "deletePromptStash",
+            action: "deleteDraft",
             result: true,
             statusHints: {},
           };
@@ -2935,11 +2999,11 @@ describe("preload Apple device input routing", () => {
     const bridge = (globalThis as any).__adeBridge;
     await expect(bridge.sessions.getDelta("session-1")).resolves.toEqual(delta);
     await expect(bridge.computerUse.readArtifactPreview({ uri: ".ade/artifacts/proof.png" })).resolves.toBe(preview);
-    await expect(bridge.agentChat.promptStashes.list()).resolves.toEqual(promptStashes);
-    await expect(bridge.agentChat.promptStashes.create({
+    await expect(bridge.agentChat.drafts.list()).resolves.toEqual(drafts);
+    await expect(bridge.agentChat.drafts.create({
       text: "Fix the parser",
-    })).resolves.toEqual(promptStashes[0]);
-    await expect(bridge.agentChat.promptStashes.delete({
+    })).resolves.toEqual(drafts[0]);
+    await expect(bridge.agentChat.drafts.delete({
       id: "stash-1",
     })).resolves.toBe(true);
 
@@ -2957,7 +3021,7 @@ describe("preload Apple device input routing", () => {
       projectId: "project-1",
       request: {
         domain: "chat",
-        action: "listPromptStashes",
+        action: "listDrafts",
       },
     });
     expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
@@ -2965,7 +3029,7 @@ describe("preload Apple device input routing", () => {
       projectId: "project-1",
       request: {
         domain: "chat",
-        action: "createPromptStash",
+        action: "createDraft",
         args: { text: "Fix the parser" },
       },
     });
@@ -2974,7 +3038,7 @@ describe("preload Apple device input routing", () => {
       projectId: "project-1",
       request: {
         domain: "chat",
-        action: "deletePromptStash",
+        action: "deleteDraft",
         args: { id: "stash-1" },
       },
     });
@@ -2989,12 +3053,12 @@ describe("preload Apple device input routing", () => {
     });
     expect(invoke).not.toHaveBeenCalledWith(IPC.sessionsGetDelta, { sessionId: "session-1" });
     expect(invoke).not.toHaveBeenCalledWith(IPC.computerUseReadArtifactPreview, { uri: ".ade/artifacts/proof.png" });
-    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatPromptStashesList);
-    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatPromptStashesCreate, expect.anything());
-    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatPromptStashesDelete, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatDraftsList);
+    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatDraftsCreate, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatDraftsDelete, expect.anything());
   });
 
-  it("routes prompt-stash list, create, and delete through their explicit captured binding", async () => {
+  it("routes drafts list, create, and delete through their explicit captured binding", async () => {
     const activeBinding = {
       kind: "local",
       key: "local:/active",
@@ -3025,9 +3089,9 @@ describe("preload Apple device input routing", () => {
         const request = (payload as {
           request?: { domain?: string; action?: string };
         } | undefined)?.request;
-        if (request?.action === "listPromptStashes") return { result: [created] };
-        if (request?.action === "createPromptStash") return { result: created };
-        if (request?.action === "deletePromptStash") return { result: true };
+        if (request?.action === "listDrafts") return { result: [created] };
+        if (request?.action === "createDraft") return { result: created };
+        if (request?.action === "deleteDraft") return { result: true };
       }
       throw new Error(`unexpected IPC: ${channel}`);
     });
@@ -3053,12 +3117,12 @@ describe("preload Apple device input routing", () => {
     await import("./preload");
 
     const bridge = (globalThis as any).__adeBridge;
-    await expect(bridge.agentChat.promptStashes.list(capturedBinding)).resolves.toEqual([created]);
-    await expect(bridge.agentChat.promptStashes.create(
+    await expect(bridge.agentChat.drafts.list(capturedBinding)).resolves.toEqual([created]);
+    await expect(bridge.agentChat.drafts.create(
       { text: "Keep this owner" },
       capturedBinding,
     )).resolves.toEqual(created);
-    await expect(bridge.agentChat.promptStashes.delete(
+    await expect(bridge.agentChat.drafts.delete(
       { id: created.id },
       capturedBinding,
     )).resolves.toBe(true);
@@ -3068,7 +3132,7 @@ describe("preload Apple device input routing", () => {
       projectId: capturedBinding.projectId,
       request: {
         domain: "chat",
-        action: "listPromptStashes",
+        action: "listDrafts",
       },
     });
     expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
@@ -3076,7 +3140,7 @@ describe("preload Apple device input routing", () => {
       projectId: capturedBinding.projectId,
       request: {
         domain: "chat",
-        action: "createPromptStash",
+        action: "createDraft",
         args: { text: "Keep this owner" },
       },
     });
@@ -3085,13 +3149,13 @@ describe("preload Apple device input routing", () => {
       projectId: capturedBinding.projectId,
       request: {
         domain: "chat",
-        action: "deletePromptStash",
+        action: "deleteDraft",
         args: { id: created.id },
       },
     });
-    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatPromptStashesList);
-    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatPromptStashesCreate, expect.anything());
-    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatPromptStashesDelete, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatDraftsList);
+    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatDraftsCreate, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatDraftsDelete, expect.anything());
   });
 
   // The action registry answers lifecycle mutations with an `{ ok, sessionId,
@@ -6463,13 +6527,26 @@ describe("preload Apple device input routing", () => {
     await pendingSwitch;
   });
 
-  it("blocks private prompt-stash reads and mutations while a project switch is in flight", async () => {
+  it("holds a private drafts read until a project switch ends, and refuses draft writes during it", async () => {
     let resolveSwitch!: (project: unknown) => void;
     const switchPromise = new Promise((resolve) => {
       resolveSwitch = resolve;
     });
-    const invoke = vi.fn(async (channel: string) => {
+    const runtimeCalls: Array<{ rootPath?: string; action?: string }> = [];
+    const invoke = vi.fn(async (channel: string, arg?: unknown) => {
       if (channel === IPC.projectSwitchToPath) return switchPromise;
+      if (channel === IPC.localRuntimeCallAction) {
+        const request = arg as { rootPath?: string; request?: { action?: string } };
+        runtimeCalls.push({ rootPath: request.rootPath, action: request.request?.action });
+        return { result: [] };
+      }
+      if (channel === IPC.appGetWindowSession) {
+        return {
+          windowId: 1,
+          project: { rootPath: "/next", displayName: "Next", baseRef: "main" },
+          binding: { kind: "local", key: "local:/next", rootPath: "/next", displayName: "Next" },
+        };
+      }
       throw new Error(`unexpected IPC: ${channel}`);
     });
     const on = vi.fn();
@@ -6494,15 +6571,65 @@ describe("preload Apple device input routing", () => {
     const bridge = (globalThis as any).__adeBridge;
     const pendingSwitch = bridge.project.switchToPath("/next");
 
-    await expect(bridge.agentChat.promptStashes.list()).rejects.toThrow(/Project is switching/i);
-    await expect(bridge.agentChat.promptStashes.create({ text: "Keep this private" })).rejects.toThrow(/Project is switching/i);
-    await expect(bridge.agentChat.promptStashes.delete({ id: "stash-1" })).rejects.toThrow(/Project is switching/i);
-    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatPromptStashesList);
-    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatPromptStashesCreate, expect.anything());
-    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatPromptStashesDelete, expect.anything());
+    let listSettled = false;
+    const pendingList = bridge.agentChat.drafts.list().finally(() => {
+      listSettled = true;
+    });
+    await expect(bridge.agentChat.drafts.create({ text: "Keep this private" })).rejects.toThrow(/Project is switching/i);
+    await expect(bridge.agentChat.drafts.delete({ id: "stash-1" })).rejects.toThrow(/Project is switching/i);
+    expect(listSettled).toBe(false);
+    expect(runtimeCalls).toEqual([]);
+    // Never the window's own process database: drafts belong to the chat's host.
+    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatDraftsList);
+    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatDraftsCreate, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatDraftsDelete, expect.anything());
 
     resolveSwitch({ rootPath: "/next", displayName: "Next", baseRef: "main" });
     await pendingSwitch;
+    await expect(pendingList).resolves.toEqual([]);
+    expect(runtimeCalls).toEqual([{ rootPath: "/next", action: "listDrafts" }]);
+    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatDraftsList);
+  });
+
+  it("fails a private drafts read with the switching error when a project switch never ends", async () => {
+    vi.useFakeTimers();
+    try {
+      const invoke = vi.fn(async (channel: string) => {
+        // A switch that hangs: the read must not wait on it forever.
+        if (channel === IPC.projectSwitchToPath) return new Promise(() => {});
+        throw new Error(`unexpected IPC: ${channel}`);
+      });
+      const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+        (globalThis as any).__bridgeName = name;
+        (globalThis as any).__adeBridge = value;
+      });
+      vi.doMock("electron", () => ({
+        contextBridge: { exposeInMainWorld },
+        ipcRenderer: { invoke, on: vi.fn(), removeListener: vi.fn() },
+        webFrame: {
+          getZoomLevel: vi.fn(() => 0),
+          setZoomLevel: vi.fn(),
+          getZoomFactor: vi.fn(() => 1),
+        },
+      }));
+
+      await import("./preload");
+      const bridge = (globalThis as any).__adeBridge;
+      void bridge.project.switchToPath("/next");
+
+      const pendingList = bridge.agentChat.drafts.list();
+      const outcome = expect(pendingList).rejects.toThrow(/Project is switching.*reading project state/i);
+      await vi.advanceTimersByTimeAsync(59_000);
+      let settled = false;
+      void pendingList.then(() => { settled = true; }, () => { settled = true; });
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1_000);
+      await outcome;
+      expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatDraftsList);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("routes local runtime reads to the target project while a project switch is in flight", async () => {
@@ -6566,18 +6693,21 @@ describe("preload Apple device input routing", () => {
 
     await expect(bridge.lanes.list()).resolves.toEqual([]);
     await expect(bridge.iosSimulator.resolvePreviewMatch({ projectRoot: "/next" })).resolves.toEqual([]);
+    // A read whose name says nothing about reading: the simulator picker's list.
+    await expect(bridge.iosSimulator.deviceList({ installed: true })).resolves.toEqual([]);
     expect(invoke).not.toHaveBeenCalledWith(IPC.lanesList, expect.anything());
-    expect(localRuntimeRoots).toEqual(["/next", "/next"]);
+    expect(localRuntimeRoots).toEqual(["/next", "/next", "/next"]);
     expect(localRuntimeRequests).toEqual([
       { domain: "lane", action: "list" },
       { domain: "ios_simulator", action: "resolvePreviewMatch" },
+      { domain: "ios_simulator", action: "deviceList" },
     ]);
 
     resolveSwitch({ rootPath: "/next", displayName: "Next", baseRef: "main" });
     await pendingSwitch;
 
     await expect(bridge.lanes.list()).resolves.toEqual([]);
-    expect(localRuntimeRoots).toEqual(["/next", "/next", "/next"]);
+    expect(localRuntimeRoots).toEqual(["/next", "/next", "/next", "/next"]);
   });
 
   it("rejects empty project switch paths before updating local runtime binding", async () => {
@@ -7209,15 +7339,15 @@ describe("per-chat runtime routing", () => {
       if (channel === IPC.externalSessionsGetDetail) {
         return { provider: "codex", id: "session-1", messages: [], watchable: false };
       }
-      if (channel === IPC.agentChatPromptStashesList) return [];
-      if (channel === IPC.agentChatPromptStashesCreate) {
+      if (channel === IPC.agentChatDraftsList) return [];
+      if (channel === IPC.agentChatDraftsCreate) {
         return {
           id: "stash-1",
           text: (arg as { text?: string } | undefined)?.text ?? "",
           createdAt: "2026-08-17T12:00:00.000Z",
         };
       }
-      if (channel === IPC.agentChatPromptStashesDelete) return true;
+      if (channel === IPC.agentChatDraftsDelete) return true;
       throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(arg)}`);
     });
     const exposeInMainWorld = vi.fn((_name: string, value: unknown) => {
@@ -7442,25 +7572,25 @@ describe("per-chat runtime routing", () => {
     });
   });
 
-  it("routes prompt-stash operations through the selected project runtime", async () => {
+  it("routes drafts operations through the selected project runtime", async () => {
     const { bridge, invoke } = await mountBridge(machineB);
-    await bridge.agentChat.promptStashes.list(machineA);
-    await bridge.agentChat.promptStashes.create({ text: "Keep this local" }, machineA);
-    await bridge.agentChat.promptStashes.delete({ id: "stash-1" }, machineA);
+    await bridge.agentChat.drafts.list(machineA);
+    await bridge.agentChat.drafts.create({ text: "Keep this local" }, machineA);
+    await bridge.agentChat.drafts.delete({ id: "stash-1" }, machineA);
 
     expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
       rootPath: machineA.rootPath,
-      request: { domain: "chat", action: "listPromptStashes" },
+      request: { domain: "chat", action: "listDrafts" },
     });
     expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
       rootPath: machineA.rootPath,
-      request: { domain: "chat", action: "createPromptStash", args: { text: "Keep this local" } },
+      request: { domain: "chat", action: "createDraft", args: { text: "Keep this local" } },
     });
     expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
       rootPath: machineA.rootPath,
-      request: { domain: "chat", action: "deletePromptStash", args: { id: "stash-1" } },
+      request: { domain: "chat", action: "deleteDraft", args: { id: "stash-1" } },
     });
-    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatPromptStashesList);
+    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatDraftsList);
   });
 
   it("routes pinned session-card mutations to the owning machine", async () => {
@@ -7622,6 +7752,45 @@ describe("per-chat runtime routing", () => {
       IPC.localRuntimeCallAction,
       expect.anything(),
     );
+  });
+
+  it("routes a machine's GitHub and Linear settings to that machine without rebinding the window", async () => {
+    const { bridge, invoke } = await mountBridge(machineA);
+
+    await bridge.github.getStatus({ forceRefresh: true }, machineB);
+    await bridge.github.setToken("ghp_test", machineB);
+    await bridge.github.getAppUserAuthStatus(machineB);
+    await bridge.github.getAppInstallationStatus({}, machineB);
+    await bridge.cto.getLinearConnectionStatus(machineB);
+    await bridge.cto.setLinearToken({ token: "lin_api_test" }, machineB);
+    await bridge.cto.clearLinearToken(machineB);
+
+    const remoteRequests = invoke.mock.calls
+      .filter(([channel]) => channel === IPC.remoteRuntimeCallAction)
+      .map(([, payload]) => payload as {
+        id: string;
+        projectId: string;
+        request: { domain: string; action: string };
+      });
+    expect(remoteRequests.map(({ request }) => `${request.domain}.${request.action}`)).toEqual([
+      "github.getStatus",
+      "github.setToken",
+      "github.getAppUserAuthStatus",
+      "github.getAppInstallationStatus",
+      "linear_issue_tracker.getConnectionStatus",
+      "linear_credentials.setToken",
+      "linear_issue_tracker.getConnectionStatus",
+      "linear_credentials.clearToken",
+      "linear_issue_tracker.getConnectionStatus",
+    ]);
+    for (const call of remoteRequests) {
+      expect(call.id).toBe("target-b");
+      expect(call.projectId).toBe("project-b");
+    }
+    // Nothing reached the window's own machine or its plain IPC handlers.
+    expect(invoke).not.toHaveBeenCalledWith(IPC.localRuntimeCallAction, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.githubGetStatus, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.ctoSetLinearToken, expect.anything());
   });
 
   it("routes pinned file writes to the machine that owns the bytes", async () => {
@@ -8118,6 +8287,58 @@ describe("per-chat runtime routing", () => {
       IPC.localRuntimeCallAction,
       expect.anything(),
     );
+  });
+
+  it("delivers a pinned machine's file changes plus this computer's loose folders, and nothing else", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-28T12:00:00.500Z"));
+    try {
+      const { bridge, invoke, on } = await mountBridge(machineB);
+      await bridge.app.getWindowSession();
+      const pinnedLaneEdit = { workspaceId: "lane-on-a", type: "modified", path: "src/app.ts" };
+      invoke.mockImplementation(async (channel: string, arg?: unknown) => {
+        if (channel === IPC.localRuntimeStreamEvents) {
+          return {
+            events: [{
+              id: 11,
+              timestamp: "2026-07-28T12:00:01.000Z",
+              category: "file",
+              payload: { type: "file_change", event: pinnedLaneEdit },
+            }],
+            nextCursor: 11,
+            hasMore: false,
+            eventEpoch: "machine-a-epoch",
+          };
+        }
+        throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(arg)}`);
+      });
+
+      const onChange = vi.fn();
+      const remove = bridge.files.onChange(onChange, machineA);
+      await vi.advanceTimersByTimeAsync(0);
+
+      const localFilesListeners = on.mock.calls
+        .filter(([channel]) => channel === IPC.filesChange)
+        .map(([, listener]) => listener);
+      expect(localFilesListeners.length).toBeGreaterThan(0);
+      // This process watches loose folders whatever the pin says, so their
+      // changes arrive on local IPC; a lane id on local IPC is this computer's
+      // lane, not the pinned machine's, and must not leak into the pane.
+      const looseFolderEdit = { workspaceId: "external-local:abc123", type: "modified", path: "notes.md" };
+      const localLaneEdit = { workspaceId: "lane-on-a", type: "modified", path: "src/other.ts" };
+      for (const listener of localFilesListeners) {
+        listener({}, looseFolderEdit);
+        listener({}, localLaneEdit);
+      }
+
+      expect(onChange).toHaveBeenCalledWith(pinnedLaneEdit);
+      expect(onChange).toHaveBeenCalledWith(looseFolderEdit);
+      expect(onChange).not.toHaveBeenCalledWith(localLaneEdit);
+
+      remove();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("delivers pinned PTY data and exit events without rebinding the active project", async () => {
@@ -8665,7 +8886,6 @@ describe("per-chat runtime routing", () => {
 
   it("tears down a pinned PTY pump and frees its sender-filter state after the last listener", async () => {
     vi.useFakeTimers();
-    vi.clearAllTimers();
     try {
       const { bridge, invoke, on } = await mountBridge(machineA);
       await bridge.app.getWindowSession();
@@ -8673,7 +8893,7 @@ describe("per-chat runtime routing", () => {
       invoke.mockImplementation(async (channel: string, arg?: unknown) => {
         if (channel === IPC.ptyDataSubscriptions) return undefined;
         if (channel === IPC.remoteRuntimeStreamEvents) {
-          streamCalls += 1;
+          if ((arg as { id?: string } | undefined)?.id === machineB.targetId) streamCalls += 1;
           return {
             events: [],
             nextCursor: 0,
@@ -8685,12 +8905,6 @@ describe("per-chat runtime routing", () => {
       });
 
       await bridge.pty.setDataSubscriptions({ ptyIds: ["pty-a"] });
-      // Measure the pump's OWN timer against a baseline, not the whole
-      // environment's count. `getTimerCount()` is global: it counts every
-      // pending fake timer, so any unrelated one shifts the total and fails
-      // this test for a reason it is not about. That is what happened on CI
-      // while it passed locally.
-      const timersBeforePump = vi.getTimerCount();
       const onData = vi.fn();
       const onExit = vi.fn();
       const removeData = bridge.pty.onData(onData, machineB);
@@ -8700,13 +8914,15 @@ describe("per-chat runtime routing", () => {
       expect(streamCalls).toBe(1);
 
       removeData();
-      // The exit listener still holds the pump, so its timer must survive.
-      expect(vi.getTimerCount()).toBe(timersBeforePump + 1);
+      // The exit listener still owns the pump after the last data listener
+      // leaves, so it must poll again.
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(streamCalls).toBeGreaterThan(1);
+      const callsBeforeLastListenerLeaves = streamCalls;
       removeExit();
       await Promise.resolve();
-      // Last listener gone: the pump releases its timer and leaves nothing of
-      // its own pending.
-      expect(vi.getTimerCount()).toBe(timersBeforePump);
+      // The last listener releases the pump. Its later timer ticks cannot
+      // issue another read for this pinned runtime.
       expect(
         invoke.mock.calls
           .filter(([channel]) => channel === IPC.ptyDataSubscriptions)
@@ -8732,7 +8948,7 @@ describe("per-chat runtime routing", () => {
       await vi.advanceTimersByTimeAsync(30_000);
       expect(onData).not.toHaveBeenCalled();
       expect(onExit).not.toHaveBeenCalled();
-      expect(streamCalls).toBe(1);
+      expect(streamCalls).toBe(callsBeforeLastListenerLeaves);
     } finally {
       vi.useRealTimers();
     }
@@ -8886,6 +9102,76 @@ describe("per-chat runtime routing", () => {
       ]);
       expect(callback).toHaveBeenCalledWith(oldEnvelope);
       expect(callback).toHaveBeenCalledWith(newEnvelope);
+
+      unsubscribe();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("delivers a remote pinned chat's pushed events at once, once, and re-polls on a restarted runtime's push", async () => {
+    vi.useFakeTimers();
+    try {
+      const { bridge, invoke, on } = await mountBridge();
+      const envelope = (text: string) => ({
+        sessionId: "chat-on-b",
+        timestamp: "2026-07-27T18:00:00.000Z",
+        event: { type: "text", text },
+      });
+      const pushed = envelope("pushed");
+      const streamRequests: Array<{ request: Record<string, unknown> }> = [];
+      invoke.mockImplementation(async (channel: string, arg?: unknown) => {
+        if (channel !== IPC.remoteRuntimeStreamEvents) {
+          throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(arg)}`);
+        }
+        streamRequests.push(arg as { request: Record<string, unknown> });
+        if (streamRequests.length === 1) {
+          return { events: [], nextCursor: 6, hasMore: false, eventEpoch: "epoch-a" };
+        }
+        if (streamRequests.length === 2) {
+          // The poll returns the event the push already delivered.
+          return {
+            events: [{ id: 7, timestamp: pushed.timestamp, category: "runtime", payload: pushed }],
+            nextCursor: 7,
+            hasMore: false,
+            eventEpoch: "epoch-a",
+          };
+        }
+        return { events: [], nextCursor: 0, hasMore: false, eventEpoch: "epoch-b" };
+      });
+
+      const callback = vi.fn();
+      const unsubscribe = bridge.agentChat.onEvent(callback, machineB);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(streamRequests).toHaveLength(1);
+      const runtimeListener = on.mock.calls.find(([channel]) => channel === IPC.runtimeEvent)?.[1];
+      expect(runtimeListener).toBeTypeOf("function");
+
+      // Pushed while the pump idles: delivered now, not at the next poll.
+      runtimeListener({}, {
+        bindingKey: machineB.key,
+        eventEpoch: "epoch-a",
+        event: { id: 7, timestamp: pushed.timestamp, category: "runtime", payload: pushed },
+      });
+      expect(callback).toHaveBeenCalledTimes(1);
+      expect(callback).toHaveBeenCalledWith(pushed);
+
+      // The next poll brings the same event; it is not delivered twice.
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(streamRequests).toHaveLength(2);
+      expect(callback).toHaveBeenCalledTimes(1);
+
+      // A push from a restarted runtime is not dispatched; the pump re-polls
+      // at once to re-anchor instead of waiting out its idle delay.
+      runtimeListener({}, {
+        bindingKey: machineB.key,
+        eventEpoch: "epoch-b",
+        event: { id: 1, timestamp: pushed.timestamp, category: "runtime", payload: envelope("after restart") },
+      });
+      expect(callback).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(streamRequests.length).toBeGreaterThanOrEqual(3);
+      expect(streamRequests[2].request).toEqual({ cursor: 7, limit: 200 });
 
       unsubscribe();
     } finally {

@@ -3,6 +3,7 @@ import type {
   AgentChatCodexConfigSource,
   AgentChatCodexSandbox,
   AgentChatDroidPermissionMode,
+  AgentChatMusePermissionMode,
   AgentChatPermissionMode,
   PtySendToSessionArgs,
   TerminalResumeLaunchConfig,
@@ -18,8 +19,10 @@ import {
   PROVIDER_INSTANCE_ENV_KEY,
 } from "./types/providerInstances";
 import {
+  AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES,
   AGENT_CHAT_PERMISSION_MODE_VALUES,
   droidPermissionModeFromLegacyPermissionMode,
+  museCliApprovalFlag,
 } from "./types/chat";
 import {
   ADE_AGENT_SKILLS_DIRS_ENV,
@@ -28,8 +31,7 @@ import {
   joinAdeAgentSkillRoots,
 } from "./agentSkillRoots";
 import {
-  buildAdeCliAgentGuidance,
-  buildAdeCliInlineGuidance,
+  buildAdeCliSessionGuidance,
   buildAdePosixTrackedCliActivityGuidance,
   buildAdeWindowsTrackedCliActivityGuidance,
 } from "./adeCliGuidance";
@@ -37,7 +39,9 @@ import { isProviderSlashCommandInput } from "./chatSlashCommands";
 import { resolveClaudeCliModelAlias } from "./claudeCliModels";
 import { grokSupervisionEnv } from "./grokSupervision";
 import { decodeOpenCodeRegistryId, decodePiRegistryId } from "./modelRegistry";
+import { musePermissionModeFromLegacyPermissionMode } from "./modelPermissions";
 import { PI_THINKING_LEVELS } from "./piThinkingLevels";
+import { PROVIDER_DISPLAY_NAME } from "./providers";
 import { commandArrayToLine, parseCommandLine, quoteShellArg } from "./shell";
 
 export { PI_THINKING_LEVELS } from "./piThinkingLevels";
@@ -49,6 +53,7 @@ export type CliProvider =
   | "droid"
   | "opencode"
   | "pi"
+  | "muse"
   | "qwen"
   | "kimi"
   | "grok"
@@ -154,9 +159,11 @@ export type CliIdentityResumeMetadataArgs = {
   targetId: string | null;
   permissionMode: NonNullable<TerminalResumeLaunchConfig["permissionMode"]>;
   droidPermissionMode?: TerminalResumeLaunchConfig["droidPermissionMode"];
+  musePermissionMode?: TerminalResumeLaunchConfig["musePermissionMode"];
   model: string | null;
   reasoningEffort: string | null;
   fastMode: boolean | null;
+  fastTier?: "ultrafast" | null;
   instanceId?: string | null;
   presetId?: string | null;
   credentialId?: string | null;
@@ -183,9 +190,11 @@ export function buildCliIdentityResumeMetadata(
     launch: {
       permissionMode: args.permissionMode,
       ...(args.droidPermissionMode !== undefined ? { droidPermissionMode: args.droidPermissionMode } : {}),
+      ...(args.musePermissionMode !== undefined ? { musePermissionMode: args.musePermissionMode } : {}),
       model: args.model,
       reasoningEffort: args.reasoningEffort,
       fastMode: args.fastMode,
+      ...(args.fastMode === true && args.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
       ...identity,
     },
     // Mirror the ids so older readers and the resume path can recover the
@@ -219,6 +228,7 @@ export const LAUNCH_PROFILES = [
   "droid",
   "opencode",
   "pi",
+  "muse",
   "qwen",
   "kimi",
   "grok",
@@ -245,6 +255,7 @@ export const LAUNCH_PROFILE_TOOL_TYPE: Record<LaunchProfile, TerminalToolType> =
   droid: "droid",
   opencode: "opencode",
   pi: "pi",
+  muse: "muse",
   qwen: "qwen",
   kimi: "kimi",
   grok: "grok",
@@ -261,6 +272,7 @@ export const LAUNCH_PROFILE_TITLE: Record<LaunchProfile, string> = {
   droid: "Factory Droid CLI",
   opencode: "OpenCode CLI",
   pi: "Pi CLI",
+  muse: PROVIDER_DISPLAY_NAME.muse,
   qwen: "Qwen Code CLI",
   kimi: "Kimi Code CLI",
   grok: "Grok CLI",
@@ -387,6 +399,7 @@ export function isLaunchProfilePlaceholderTitle(
   if (defaultTitle && normalized === defaultTitle) return true;
   if (profile === "codex") return normalized === "codex cli" || normalized === "codex session";
   if (profile === "claude") return normalized === "claude" || normalized === "claude cli" || normalized === "claude session";
+  if (profile === "muse") return normalized === "muse" || normalized === "muse cli" || normalized === "muse code cli" || normalized === "muse session";
   return false;
 }
 
@@ -420,6 +433,7 @@ const LAUNCH_PROFILE_TOOL_TYPES: Record<LaunchProfile, readonly TerminalToolType
   droid: ["droid", "droid-chat"],
   opencode: ["opencode", "opencode-orchestrated", "opencode-chat"],
   pi: ["pi"],
+  muse: ["muse", "muse-chat"],
   qwen: ["qwen", "qwen-chat"],
   kimi: ["kimi", "kimi-chat"],
   grok: ["grok", "grok-chat"],
@@ -479,6 +493,12 @@ export function validateLaunchProfilePermissionMode(
     if (mode === "auto" || mode === "config-toml") {
       throw new Error(`permissionMode ${mode} is not supported for GitHub Copilot CLI sessions.`);
     }
+    return;
+  }
+  if (profile === "muse") {
+    // Every ADE word has a Muse posture (see `musePermissionCliFlags`):
+    // `config-toml` defers to the user's own Muse settings, and `auto` is
+    // Muse's default, where an AI reviewer decides eligible approvals.
     return;
   }
   if (profile === "devin") {
@@ -829,6 +849,7 @@ export function defaultTrackedCliStartupCommand(provider: CliProvider): string {
   if (provider === "droid") return "droid";
   if (provider === "opencode") return "opencode";
   if (provider === "pi") return "pi";
+  if (provider === "muse") return "muse --contributor-mode off";
   if (provider === "qwen") return "qwen";
   if (provider === "kimi") return "kimi";
   if (provider === "grok") return "grok --no-alt-screen";
@@ -871,7 +892,7 @@ function workTabCliPreamblePrompt(
   return [
     launchInstruction,
     "",
-    buildAdeCliInlineGuidance(skillRoots),
+    buildAdeCliSessionGuidance(skillRoots),
   ].join("\n");
 }
 
@@ -968,6 +989,10 @@ export function buildTrackedCliStartupCommand(args: {
   provider: CliProvider;
   permissionMode: AgentChatPermissionMode;
   droidPermissionMode?: AgentChatDroidPermissionMode | null;
+  /** Muse's own approval mode; wins over the `permissionMode` mapping when set. */
+  musePermissionMode?: AgentChatMusePermissionMode | null;
+  /** Extra stdio MCP servers for a Muse run, attached with `-c mcpServers.<name>=…`. */
+  museMcpServers?: readonly MuseCliMcpServer[] | null;
   /** Pre-assigned session ID for Claude CLI (enables reliable resume). */
   sessionId?: string;
   /** Optional runtime model for fresh launches. Continuation commands intentionally ignore it. */
@@ -976,6 +1001,8 @@ export function buildTrackedCliStartupCommand(args: {
   reasoningEffort?: string | null;
   /** Optional fast-mode override for runtimes that expose a fast tier. */
   fastMode?: boolean | null;
+  /** Fast's tier for Codex: "ultrafast" asks for Ultrafast; absent is plain Fast. */
+  fastTier?: "ultrafast" | null;
   /** Optional user prompt to submit with the fresh launch. */
   initialPrompt?: string | null;
   /** Active lane worktree used to make ADE skill roots lane-aware. */
@@ -1001,6 +1028,10 @@ export function buildTrackedCliLaunchCommand(args: {
   provider: CliProvider;
   permissionMode: AgentChatPermissionMode;
   droidPermissionMode?: AgentChatDroidPermissionMode | null;
+  /** Muse's own approval mode; wins over the `permissionMode` mapping when set. */
+  musePermissionMode?: AgentChatMusePermissionMode | null;
+  /** Extra stdio MCP servers for a Muse run, attached with `-c mcpServers.<name>=…`. */
+  museMcpServers?: readonly MuseCliMcpServer[] | null;
   /** Pre-assigned session ID for Claude CLI (enables reliable resume). */
   sessionId?: string;
   /** Optional runtime model for fresh launches. Continuation commands intentionally ignore it. */
@@ -1009,6 +1040,8 @@ export function buildTrackedCliLaunchCommand(args: {
   reasoningEffort?: string | null;
   /** Optional fast-mode override for runtimes that expose a fast tier. */
   fastMode?: boolean | null;
+  /** Fast's tier for Codex: "ultrafast" asks for Ultrafast; absent is plain Fast. */
+  fastTier?: "ultrafast" | null;
   /** Optional user prompt to submit with the fresh launch. */
   initialPrompt?: string | null;
   /** Active lane worktree used to make ADE skill roots lane-aware. */
@@ -1071,7 +1104,7 @@ export function buildTrackedCliLaunchCommand(args: {
     }
     commandArgs.push(...claudeRuntimeEffortFlags(args.reasoningEffort));
     commandArgs.push(...claudeSessionSettingsFlags(args.fastMode, args.reasoningEffort));
-    const guidance = [buildAdeCliAgentGuidance(skillRoots), activityGuidance]
+    const guidance = [buildAdeCliSessionGuidance(skillRoots), activityGuidance]
       .filter((part): part is string => Boolean(part))
       .join("\n\n");
     commandArgs.push("--append-system-prompt", guidance);
@@ -1120,7 +1153,7 @@ export function buildTrackedCliLaunchCommand(args: {
       "--no-alt-screen",
       ...modelToCliFlag(codexModel),
       ...codexReasoningEffortFlags(args.reasoningEffort),
-      ...codexServiceTierFlags(args.fastMode),
+      ...codexServiceTierFlags(args.fastMode, args.fastTier),
       ...codexComputerUseMcpFlags(args.codexComputerUse),
       ...permissionModeToCodexFlags(permissionMode),
     ];
@@ -1211,7 +1244,7 @@ export function buildTrackedCliLaunchCommand(args: {
 
   if (args.provider === "pi") {
     const guidance = [
-      buildAdeCliAgentGuidance(skillRoots),
+      buildAdeCliSessionGuidance(skillRoots),
       activityGuidance,
       `ADE permission policy for this Pi session: ${permissionMode}. Pi has no supported native ADE permission flag, so follow this policy and the ADE guidance without bypassing it.`,
     ].filter((part): part is string => Boolean(part)).join("\n\n");
@@ -1237,6 +1270,38 @@ export function buildTrackedCliLaunchCommand(args: {
     };
   }
 
+  if (args.provider === "muse") {
+    const museModel = passthroughModelId
+      ? normalizeCliFlagValue(args.model)
+      : resolveMuseCliModelForLaunch(args.model);
+    const workspace = normalizeCliFlagValue(args.laneWorktreePath);
+    const commandArgs: string[] = [
+      ...museBaseFlags({
+        model: museModel,
+        reasoningEffort: args.reasoningEffort,
+        permissionMode,
+        musePermissionMode: args.musePermissionMode,
+      }),
+      ...(workspace ? ["--workspace", workspace] : []),
+      ...museMcpServerConfigFlags(args.museMcpServers),
+    ];
+    // Muse has no system-prompt flag, so ADE's guidance rides the first user
+    // message, as it does for Codex. The prompt goes in argv on every
+    // platform: Muse ships only as a native executable (`muse` / `muse.exe`,
+    // never a `.cmd` shim) and the PTY boundary substitutes ADE's pinned
+    // binary path, so the spawn is direct and argv arrives intact. Typing it
+    // into the TUI instead would land it in Muse's first-run "Do you trust
+    // this workspace?" dialog; an argv prompt waits behind that dialog and is
+    // submitted once the user answers (verified against muse 1.4.7).
+    commandArgs.push(workTabCliPrompt(initialPrompt, skillRoots, activityGuidance));
+    return {
+      command: MUSE_CLI_COMMAND,
+      args: commandArgs,
+      startupCommand: commandArrayToLine([MUSE_CLI_COMMAND, ...commandArgs], { platform: "linux" }),
+      ...(agentSkillEnv ? { env: agentSkillEnv } : {}),
+    };
+  }
+
   if (args.provider === "qwen") {
     const assignedSessionId = args.sessionId?.trim() || null;
     const commandArgs: string[] = [];
@@ -1247,7 +1312,7 @@ export function buildTrackedCliLaunchCommand(args: {
     }
     commandArgs.push(...qwenModelFlags(modelForLaunch));
     commandArgs.push(...permissionModeToQwenFlags(permissionMode));
-    commandArgs.push("--append-system-prompt", buildAdeCliAgentGuidance(skillRoots));
+    commandArgs.push("--append-system-prompt", buildAdeCliSessionGuidance(skillRoots));
     // `qwen` is an npm bin, so on Windows it resolves to a `.cmd` shim and the
     // prompt goes through `cmd.exe`, which expands `%NAME%`, flattens newlines,
     // and caps the command line at ~8191 characters. Same rule as Claude:
@@ -1273,7 +1338,10 @@ export function buildTrackedCliLaunchCommand(args: {
 
   if (args.provider === "kimi") {
     // Kimi's interactive TUI takes no argv prompt at all, so the prompt is
-    // typed in after launch — the Cursor branch's shape. Kimi also cannot be
+    // typed in after launch — the Cursor branch's shape. It has no flag for
+    // system text either, so ADE's guidance rides in front of that first
+    // message, and an empty launch stays idle rather than submitting guidance
+    // as work, exactly as Cursor's does. Kimi also cannot be
     // handed a session id at launch; the id is captured from its sessions
     // directory afterwards, so no `assignedSessionId` is returned here.
     const commandArgs = [
@@ -1284,7 +1352,9 @@ export function buildTrackedCliLaunchCommand(args: {
       command: "kimi",
       args: commandArgs,
       startupCommand: commandArrayToLine(["kimi", ...commandArgs], { platform: "linux" }),
-      ...(initialPrompt ? { initialInput: initialPrompt, initialInputDelayMs: 750 } : {}),
+      ...(initialPrompt
+        ? { initialInput: workTabCliPrompt(initialPrompt, skillRoots, activityGuidance), initialInputDelayMs: 750 }
+        : {}),
       ...(agentSkillEnv ? { env: agentSkillEnv } : {}),
     };
   }
@@ -1300,7 +1370,7 @@ export function buildTrackedCliLaunchCommand(args: {
     commandArgs.push(...grokModelFlags(modelForLaunch));
     commandArgs.push(...grokReasoningEffortFlags(args.reasoningEffort));
     commandArgs.push(...permissionModeToGrokFlags(permissionMode));
-    commandArgs.push("--rules", buildAdeCliAgentGuidance(skillRoots));
+    commandArgs.push("--rules", buildAdeCliSessionGuidance(skillRoots));
     const promptRidesInArgv = Boolean(initialPrompt) && currentPlatform() !== "win32";
     if (initialPrompt && promptRidesInArgv) {
       commandArgs.push(initialPrompt);
@@ -1338,17 +1408,28 @@ export function buildTrackedCliLaunchCommand(args: {
     commandArgs.push(...copilotModelFlags(modelForLaunch));
     commandArgs.push(...copilotReasoningEffortFlags(args.reasoningEffort));
     commandArgs.push(...permissionModeToCopilotFlags(permissionMode));
-    const promptRidesInArgv = Boolean(initialPrompt) && currentPlatform() !== "win32";
-    if (initialPrompt && promptRidesInArgv) {
-      commandArgs.push("-i", initialPrompt);
+    // Copilot has no flag for system text, so ADE's guidance rides in front of
+    // the first message. An empty launch stays idle, as Cursor's does.
+    const copilotFirstMessage = initialPrompt
+      ? workTabCliPrompt(initialPrompt, skillRoots, activityGuidance)
+      : null;
+    const promptRidesInArgv = Boolean(copilotFirstMessage) && currentPlatform() !== "win32";
+    if (copilotFirstMessage && promptRidesInArgv) {
+      commandArgs.push("-i", copilotFirstMessage);
     }
     return {
       command: "copilot",
       args: commandArgs,
-      startupCommand: commandArrayToLine(["copilot", ...commandArgs], { platform: "linux" }),
+      // The shell fallback types this line; it carries the user's prompt only.
+      // The guidance is several KB of multi-line text with apostrophes, which
+      // the direct argv path carries safely and a typed line does not.
+      startupCommand: commandArrayToLine(
+        ["copilot", ...commandArgs.map((arg) => (arg === copilotFirstMessage && initialPrompt ? initialPrompt : arg))],
+        { platform: "linux" },
+      ),
       ...(assignedSessionId ? { assignedSessionId } : {}),
-      ...(initialPrompt && !promptRidesInArgv
-        ? { initialInput: initialPrompt, initialInputDelayMs: 750 }
+      ...(copilotFirstMessage && !promptRidesInArgv
+        ? { initialInput: copilotFirstMessage, initialInputDelayMs: 750 }
         : {}),
       ...(agentSkillEnv ? { env: agentSkillEnv } : {}),
     };
@@ -1362,14 +1443,23 @@ export function buildTrackedCliLaunchCommand(args: {
     // `devin` is a native binary on every platform (no `.cmd` shim), and its
     // documented initial-prompt spelling is `devin -- <prompt>` — argv is a
     // safe transport for it on Windows too. Devin discovers AGENTS.md and
-    // `.agents/skills/` in the lane itself, so no prompt injection rides here.
-    if (initialPrompt) {
-      commandArgs.push("--", initialPrompt);
+    // `.agents/skills/` in the lane itself, but neither names the `ade`
+    // commands, so ADE's guidance rides in front of the first message. An
+    // empty launch stays idle, as Cursor's does.
+    const devinFirstMessage = initialPrompt
+      ? workTabCliPrompt(initialPrompt, skillRoots, activityGuidance)
+      : null;
+    if (devinFirstMessage) {
+      commandArgs.push("--", devinFirstMessage);
     }
     return {
       command: "devin",
       args: commandArgs,
-      startupCommand: commandArrayToLine(["devin", ...commandArgs], { platform: "linux" }),
+      // As for Copilot: the typed fallback line carries the user's prompt only.
+      startupCommand: commandArrayToLine(
+        ["devin", ...commandArgs.map((arg) => (arg === devinFirstMessage && initialPrompt ? initialPrompt : arg))],
+        { platform: "linux" },
+      ),
       ...(agentSkillEnv ? { env: agentSkillEnv } : {}),
     };
   }
@@ -1441,7 +1531,7 @@ export function buildTrackedCliSessionActivityGuidance(args: {
       supported = mode === "full-auto";
       break;
     default:
-      // Qwen, Kimi, Grok, and Copilot do not yet have a verified tracked-CLI
+      // Muse, Qwen, Kimi, Grok, and Copilot do not yet have a verified tracked-CLI
       // path that combines ADE's system guidance, scoped CLI access, and shell.
       supported = false;
   }
@@ -1585,14 +1675,132 @@ export function piThinkingFlags(reasoningEffort: string | null | undefined): str
   return thinking ? ["--thinking", thinking] : [];
 }
 
+/**
+ * The word ADE launches Muse with. The PTY boundary swaps it for the pinned
+ * binary ADE fetched (`resolveMuseExecutable`); ADE never runs a user's own
+ * `muse` install.
+ */
+export const MUSE_CLI_COMMAND = "muse";
+
+/** Every reasoning effort `muse --reasoning-effort` accepts (1.4.7). */
+const MUSE_REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
+
+/** Muse takes its own model id; ADE's registry ids carry a `muse/` prefix. */
+export function resolveMuseCliModelForLaunch(model: string | null | undefined): string | null {
+  return stripRegistryPrefix(model, "muse");
+}
+
+/** ADE's effort as a Muse effort, or null when Muse has no such tier (Muse keeps its default). */
+export function resolveMuseReasoningEffort(reasoningEffort: string | null | undefined): string | null {
+  const effort = normalizeCliFlagValue(reasoningEffort)?.toLowerCase();
+  if (!effort) return null;
+  const mapped = effort === "ultracode" ? "ultra" : effort;
+  return (MUSE_REASONING_EFFORTS as readonly string[]).includes(mapped) ? mapped : null;
+}
+
+export function isMusePermissionMode(value: unknown): value is AgentChatMusePermissionMode {
+  return typeof value === "string" && (AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES as readonly string[]).includes(value);
+}
+
+/**
+ * The CLI flags for a Muse permission posture.
+ *
+ * The CLI knows three approval words (`untrusted | on-request | never`), so
+ * `museCliApprovalFlag` folds the two cautious wire modes together. The most
+ * cautious one is the exception here: `untrusted` still lets the user approve
+ * a write, which is more than "plan" allows, so `denyUnmatched` uses Muse's
+ * built-in `:read-only` permission profile ("Reads files only") instead. Muse
+ * refuses `--permission-profile` together with `--approval-mode`, so it is one
+ * or the other.
+ *
+ * Full access is `--approval-mode never`, never `--yolo`: `--yolo` also turns
+ * the sandbox off and trusts the workspace, which no ADE mode asks for.
+ */
+export function musePermissionCliFlags(args: {
+  permissionMode: AgentChatPermissionMode | null | undefined;
+  musePermissionMode?: AgentChatMusePermissionMode | null;
+}): string[] {
+  const mode = isMusePermissionMode(args.musePermissionMode)
+    ? args.musePermissionMode
+    : musePermissionModeFromLegacyPermissionMode(args.permissionMode);
+  if (!mode) return [];
+  if (mode === "denyUnmatched") return ["--permission-profile", ":read-only"];
+  return ["--approval-mode", museCliApprovalFlag(mode)];
+}
+
+/** One stdio MCP server for a Muse CLI run. */
+export type MuseCliMcpServer = {
+  name: string;
+  command: string;
+  args?: readonly string[];
+  /**
+   * Names of environment variables the server needs. Muse starts stdio
+   * servers with only a small allowlist of the caller's environment, and its
+   * `-c` overrides accept secret values only as a whole-value `${VAR}`, so
+   * each name is passed as a reference, never as a value.
+   */
+  envVars?: readonly string[];
+};
+
+const MUSE_MCP_SERVER_NAME = /^[A-Za-z0-9_-]{1,64}$/u;
+const ENV_VAR_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u;
+
+/**
+ * `-c mcpServers.<name>=<json>` for each server. Muse 1.4.7 accepts one server
+ * per `-c` (it refuses the whole `mcpServers` map, and refuses a `type` key
+ * there), with `command` a string and `args` an array. `mode: "optional"`
+ * keeps a server that fails to start from blocking the whole run: Muse's
+ * default is `required`, which fails the run.
+ */
+export function museMcpServerConfigFlags(servers: readonly MuseCliMcpServer[] | null | undefined): string[] {
+  const flags: string[] = [];
+  for (const server of servers ?? []) {
+    const name = server.name?.trim() ?? "";
+    const command = server.command?.trim() ?? "";
+    if (!MUSE_MCP_SERVER_NAME.test(name) || !command) continue;
+    const envVars = (server.envVars ?? []).filter((key) => ENV_VAR_NAME.test(key));
+    const value: Record<string, unknown> = {
+      command,
+      args: [...(server.args ?? [])],
+      ...(envVars.length ? { env: Object.fromEntries(envVars.map((key) => [key, `\${${key}}`])) } : {}),
+      mode: "optional",
+    };
+    flags.push("-c", `mcpServers.${name}=${JSON.stringify(value)}`);
+  }
+  return flags;
+}
+
+/** Flags every Muse CLI launch (fresh or resumed) carries, in a stable order. */
+function museBaseFlags(args: {
+  model: string | null;
+  reasoningEffort: string | null | undefined;
+  permissionMode: AgentChatPermissionMode | null | undefined;
+  musePermissionMode?: AgentChatMusePermissionMode | null;
+}): string[] {
+  const effort = resolveMuseReasoningEffort(args.reasoningEffort);
+  return [
+    // Contributor mode is never offered. `serve` ignores the saved setting
+    // since 1.4.6, so ADE states it on every launch rather than relying on it.
+    "--contributor-mode",
+    "off",
+    ...modelToCliFlag(args.model),
+    ...(effort ? ["--reasoning-effort", effort] : []),
+    ...musePermissionCliFlags(args),
+  ];
+}
+
 export function codexReasoningEffortFlags(reasoningEffort: string | null | undefined): string[] {
   const effort = normalizeCliFlagValue(reasoningEffort);
   return effort ? ["-c", `model_reasoning_effort="${effort}"`] : [];
 }
 
-export function codexServiceTierFlags(fastMode: boolean | null | undefined): string[] {
+export function codexServiceTierFlags(
+  fastMode: boolean | null | undefined,
+  fastTier?: "ultrafast" | null,
+): string[] {
   if (fastMode === true) {
-    return ["-c", "service_tier=\"fast\"", "-c", "features.fast_mode=true"];
+    const tier = fastTier === "ultrafast" ? "ultrafast" : "fast";
+    return ["-c", `service_tier="${tier}"`, "-c", "features.fast_mode=true"];
   }
   if (fastMode === false) {
     return ["-c", "service_tier=\"default\""];
@@ -1606,7 +1814,7 @@ export function claudeFastModeSettingsFlags(fastMode: boolean | null | undefined
   return [];
 }
 
-function claudeRuntimeEffortFlags(reasoningEffort: string | null | undefined): string[] {
+export function claudeRuntimeEffortFlags(reasoningEffort: string | null | undefined): string[] {
   const effort = normalizeCliFlagValue(reasoningEffort);
   if (!effort) return [];
   if (effort === "ultracode") return ["--effort", "xhigh"];
@@ -2217,10 +2425,18 @@ function buildProviderResumeLaunchCommand(
   const fastMode = overrides.fastMode !== undefined
     ? overrides.fastMode
     : metadata.launch.fastMode ?? metadata.launch.codexFastMode;
+  // A resume that sets Fast itself means plain Fast; otherwise keep the tier
+  // the session launched with.
+  const fastTier = overrides.fastMode !== undefined ? null : metadata.launch.fastTier ?? null;
   const droidPermissionMode = overrides.permissionMode !== undefined
     ? droidPermissionModeFromLegacyPermissionMode(permissionMode)
     : metadata.launch.droidPermissionMode
       ?? droidPermissionModeFromLegacyPermissionMode(permissionMode);
+  // A permission override speaks ADE's generic ladder, so it replaces the
+  // stored Muse mode rather than sitting beside it.
+  const musePermissionMode = overrides.permissionMode !== undefined
+    ? null
+    : metadata.launch.musePermissionMode ?? null;
   const prompt = normalizeCliFlagValue(overrides.prompt);
   const passthroughModelId = overrides.preset?.passthroughModelId === true;
   const modelForLaunch = passthroughModelId
@@ -2256,7 +2472,7 @@ function buildProviderResumeLaunchCommand(
       "--no-alt-screen",
       ...modelToCliFlag(codexModel),
       ...codexReasoningEffortFlags(reasoningEffort),
-      ...codexServiceTierFlags(fastMode),
+      ...codexServiceTierFlags(fastMode, fastTier),
       ...codexComputerUseMcpFlags(overrides.codexComputerUse),
       ...codexResumePermissionFlags({
         permissionMode,
@@ -2365,6 +2581,38 @@ function buildProviderResumeLaunchCommand(
       args: parts.slice(1),
       startupCommand: commandArrayToLine(parts, { platform: "linux" }),
       ...(prompt && !promptRidesInArgv ? { initialInput: prompt, initialInputDelayMs: 750 } : {}),
+    };
+  }
+
+  if (metadata.provider === "muse") {
+    const museModel = passthroughModelId
+      ? normalizeCliFlagValue(model)
+      : resolveMuseCliModelForLaunch(model);
+    const parts = [
+      MUSE_CLI_COMMAND,
+      ...museBaseFlags({ model: museModel, reasoningEffort, permissionMode, musePermissionMode }),
+    ];
+    // Only a captured session id resumes. `muse resume --last` means "the most
+    // recent session in this workspace", which can be another terminal's or an
+    // ADE chat's (the same hazard Pi and Cursor refuse). Without an id this is
+    // a fresh launch, and the prompt rides argv as on any fresh launch.
+    if (targetId) {
+      parts.push("resume", targetId);
+      // `muse resume <id>` refuses a second positional ("unknown argument
+      // `resume`" in 1.4.7), so a continuation prompt is typed into the TUI
+      // once it is ready.
+      return {
+        command: parts[0]!,
+        args: parts.slice(1),
+        startupCommand: commandArrayToLine(parts, { platform: "linux" }),
+        ...(prompt ? { initialInput: prompt, initialInputDelayMs: 750 } : {}),
+      };
+    }
+    if (prompt) parts.push(prompt);
+    return {
+      command: parts[0]!,
+      args: parts.slice(1),
+      startupCommand: commandArrayToLine(parts, { platform: "linux" }),
     };
   }
 

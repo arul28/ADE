@@ -14,6 +14,7 @@ public enum ADESharedTheme {
     public static let brandClaude   = Color(red: 0xD9 / 255.0, green: 0x77 / 255.0, blue: 0x57 / 255.0) // #D97757
     public static let brandCodex    = Color(red: 0x2D / 255.0, green: 0xD4 / 255.0, blue: 0xBF / 255.0) // #2DD4BF
     public static let brandPi       = Color(red: 0xF9 / 255.0, green: 0x73 / 255.0, blue: 0x16 / 255.0) // #F97316
+    public static let brandMuse     = Color(red: 0x4A / 255.0, green: 0x9B / 255.0, blue: 0xFF / 255.0) // #4A9BFF (Meta blue)
     public static let brandCursor   = Color(red: 0x93 / 255.0, green: 0xA6 / 255.0, blue: 0xC4 / 255.0) // #93A6C4
     public static let brandOpenCode = Color(red: 0xA7 / 255.0, green: 0x8B / 255.0, blue: 0xFA / 255.0) // #A78BFA
     public static let brandGoogle   = Color(red: 0x5B / 255.0, green: 0x93 / 255.0, blue: 0xF5 / 255.0) // #5B93F5
@@ -22,8 +23,9 @@ public enum ADESharedTheme {
     public static let brandXAI      = Color(red: 0xB4 / 255.0, green: 0xB4 / 255.0, blue: 0xBD / 255.0) // #B4B4BD
     public static let brandGroq     = Color(red: 0x06 / 255.0, green: 0xB6 / 255.0, blue: 0xD4 / 255.0) // #06B6D4
     public static let brandCTO      = Color(red: 0xC4 / 255.0, green: 0xB5 / 255.0, blue: 0xFD / 255.0) // #C4B5FD
-    // ACP providers. Hexes mirror the shared TypeScript table; Grok reuses
-    // brandXAI, which carries the xAI group color.
+    // Brand colors for Qwen, Kimi, Copilot (an SDK provider now) and Grok. Hexes
+    // mirror the shared TypeScript table; Grok reuses brandXAI, which carries
+    // the xAI group color.
     public static let brandQwen     = Color(red: 0x6D / 255.0, green: 0x4A / 255.0, blue: 0xFF / 255.0) // #6D4AFF
     public static let brandKimi     = Color(red: 0x1F / 255.0, green: 0x1F / 255.0, blue: 0x1F / 255.0) // #1F1F1F
     public static let brandCopilot  = Color(red: 0x3F / 255.0, green: 0xB9 / 255.0, blue: 0x50 / 255.0) // #3FB950
@@ -67,11 +69,12 @@ public enum ADESharedTheme {
         if raw == "openai" { return "openai" }
         if raw == "openai-codex" || raw.hasPrefix("codex") { return "codex" }
         if raw == "pi" || raw.hasPrefix("pi/") || raw.hasPrefix("pi-") { return "pi" }
+        if raw.hasPrefix("muse") { return "muse" }
         if raw.hasPrefix("opencode") { return "opencode" }
         if raw.hasPrefix("cursor") { return "cursor" }
         if raw == "factory" || raw.hasPrefix("droid") { return "droid" }
         if raw == "gemini" || raw.hasPrefix("google") { return "google" }
-        // Copilot before the bare `github` fold: `github-copilot` is the ACP
+        // Copilot before the bare `github` fold: `github-copilot` is the legacy
         // provider, not the GitHub integration that fold was written for.
         if raw == "github-copilot" || raw == "githubcopilot" || raw.hasPrefix("copilot") { return "copilot" }
         if raw.hasPrefix("github") { return "github" }
@@ -90,6 +93,7 @@ public enum ADESharedTheme {
         case "claude", "anthropic": return brandClaude
         case "codex", "openai":     return brandCodex
         case "pi":                   return brandPi
+        case "muse":                return brandMuse
         case "cursor":              return brandCursor
         case "opencode":            return brandOpenCode
         case "google", "gemini":    return brandGoogle
@@ -123,6 +127,7 @@ public enum ADESharedTheme {
         case "opencode":            return "ProviderOpenCode"
         case "droid", "factory":    return "ProviderDroid"
         case "pi":                   return nil
+        case "muse":                return "ProviderMuse"
         case "github":              return "ProviderGitHub"
         case "qwen":                return "ProviderQwen"
         case "kimi":                return "ProviderKimi"
@@ -148,6 +153,7 @@ public enum ADESharedTheme {
         case "opencode":            return "OpenCode"
         case "droid", "factory":    return "Droid"
         case "pi":                   return "Pi"
+        case "muse":                return "Muse"
         case "google", "gemini":    return "Gemini"
         case "mistral":             return "Mistral"
         case "deepseek":            return "DeepSeek"
@@ -171,13 +177,14 @@ public enum ADESharedTheme {
     public static func providerSlug(forModel model: String?) -> String? {
         guard let model else { return nil }
         let value = model.lowercased()
-        // ACP registry ids are namespaced and go first: `github-copilot/...`
-        // ids name the upstream vendor after the slash, so the vendor checks
-        // below would otherwise claim them.
+        // Legacy ACP-era registry ids are namespaced and go first:
+        // `github-copilot/...` ids name the upstream vendor after the slash, so
+        // the vendor checks below would otherwise claim them.
         if value.hasPrefix("github-copilot/") { return "copilot" }
         if value.hasPrefix("qwen/") || value.contains("qwen") { return "qwen" }
         if value.hasPrefix("moonshot/") || value.contains("kimi") { return "kimi" }
         if value.hasPrefix("xai/") || value.contains("grok") { return "grok" }
+        if value.hasPrefix("muse/") || value.hasPrefix("muse-") { return "muse" }
         if value.contains("claude") || value.contains("anthropic") { return "claude" }
         if value.contains("codex") { return "codex" }
         if value.contains("gpt") || value.contains("openai") || value.hasPrefix("o3") || value.hasPrefix("o4") {

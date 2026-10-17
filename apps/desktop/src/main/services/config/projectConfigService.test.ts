@@ -788,6 +788,7 @@ describe("projectConfigService - AI mode migration", () => {
             autoAllowAskUser: false,
             scheduledWorkPaused: true,
             piExtensionsEnabled: false,
+            claudePluginUiEnabled: true,
             codexSandbox: "workspace-write",
           },
         },
@@ -818,6 +819,8 @@ describe("projectConfigService - AI mode migration", () => {
     // The opt-out only works if the coercer copies it; a dropped field would
     // silently read back as undefined and leave extensions enabled.
     expect(snapshot.effective.ai?.chat?.piExtensionsEnabled).toBe(false);
+    // The opt-in, for the same reason: a dropped field reads back as off.
+    expect(snapshot.effective.ai?.chat?.claudePluginUiEnabled).toBe(true);
     expect(snapshot.effective.ai?.chat?.codexSandbox).toBe("workspace-write");
 
     service.save({
@@ -1260,7 +1263,7 @@ describe("projectConfigService - automation execution", () => {
     expect(laneCleanupRule.enabled).toBe(true);
   });
 
-  it("flags fixed target lanes on require-on-trigger automation execution", () => {
+  it("flags fixed target lanes on require-on-trigger and pr-branch on a trigger with no PR", () => {
     const { root, adeDir } = makeProjectFixture("ade-project-config-automation-execution-validation-");
 
     const service = createProjectConfigService({
@@ -1328,6 +1331,46 @@ describe("projectConfigService - automation execution", () => {
             verification: { verifyBeforePublish: false, mode: "intervention" },
             billingCode: "auto:test",
           },
+          // The PR's branch needs a trigger that carries a PR.
+          ...(["manual", "github.pr_opened"] as const).map((type) => ({
+            id: `pr-branch-${type}`,
+            name: `PR branch on ${type}`,
+            enabled: true,
+            mode: "review",
+            trigger: { type },
+            triggers: [{ type }],
+            execution: { kind: "agent-session", laneMode: "pr-branch" },
+            executor: { mode: "automation-bot" },
+            prompt: "Run.",
+            reviewProfile: "quick",
+            toolPalette: ["repo"],
+            contextSources: [],
+            guardrails: {},
+            outputs: { disposition: "comment-only", createArtifact: true },
+            verification: { verifyBeforePublish: false, mode: "intervention" },
+            billingCode: "auto:test",
+          })),
+          {
+            id: "pr-branch-step-lane",
+            name: "PR branch with a step lane",
+            enabled: true,
+            mode: "review",
+            trigger: { type: "github.pr_opened" },
+            triggers: [{ type: "github.pr_opened" }],
+            execution: {
+              kind: "built-in",
+              laneMode: "pr-branch",
+              builtIn: { actions: [{ type: "run-command", command: "git push", targetLaneId: "lane-old" }] },
+            },
+            executor: { mode: "automation-bot" },
+            reviewProfile: "quick",
+            toolPalette: ["repo"],
+            contextSources: [],
+            guardrails: {},
+            outputs: { disposition: "comment-only", createArtifact: true },
+            verification: { verifyBeforePublish: false, mode: "intervention" },
+            billingCode: "auto:test",
+          },
         ],
       },
     } as any);
@@ -1341,8 +1384,17 @@ describe("projectConfigService - automation execution", () => {
         expect.objectContaining({
           path: "effective.automations[1].execution.builtIn.actions[0].targetLaneId",
         }),
+        expect.objectContaining({
+          path: "effective.automations[2].triggers[0].type",
+        }),
+        // A step lane would push the PR's work to another branch.
+        expect.objectContaining({
+          path: "effective.automations[4].execution.builtIn.actions[0].targetLaneId",
+        }),
       ]),
     );
+    // A PR trigger is a valid home for the mode, and the mode survives the read.
+    expect(validation.issues.filter((issue) => issue.path.startsWith("effective.automations[3]"))).toEqual([]);
   });
 });
 
@@ -1382,5 +1434,28 @@ describe("projectConfigService - reads", () => {
     fs.utimesSync(localPath, new Date(), new Date(Date.now() + 5_000));
     expect(service.getEffective().laneEnvInit?.dependencies?.[0]?.cwd).toBe("packages/web");
     expect(suiteRewrites()).toBe(2);
+  });
+
+  it("updateAiConfig merges the ai section into local.yaml and keeps existing local ai keys", () => {
+    const { root, adeDir } = makeProjectFixture("config-update-ai-");
+    const localPath = path.join(adeDir, "local.yaml");
+    fs.writeFileSync(localPath, YAML.stringify({
+      version: 1,
+      testSuites: [],
+      laneOverlayPolicies: [],
+      automations: [],
+      ai: { chat: { sendOnEnter: false }, compaction: { codex: { atTokens: 300_000 } } },
+    }), "utf8");
+    const service = createProjectConfigService({ projectRoot: root, adeDir, projectId: "project-1", db: makeDb(), logger: makeLogger() });
+
+    service.updateAiConfig({ compaction: { claude: { atTokens: 400_000 } } } as any);
+
+    const persisted = YAML.parse(fs.readFileSync(localPath, "utf8")) as Record<string, any>;
+    expect(persisted.ai.compaction.claude.atTokens).toBe(400_000);
+    expect(persisted.ai.compaction.codex.atTokens).toBe(300_000);
+    expect(persisted.ai.chat).toEqual({ sendOnEnter: false });
+    expect(service.get().effective.ai?.compaction?.claude?.atTokens).toBe(400_000);
+    // Nothing is written to a shared layer.
+    expect(fs.existsSync(path.join(adeDir, "ade.yaml"))).toBe(false);
   });
 });

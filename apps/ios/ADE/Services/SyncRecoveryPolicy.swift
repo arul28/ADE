@@ -449,3 +449,83 @@ func syncReconnectFlapMessage(machineName: String, closeReason: String?, retryIn
   let reasonSuffix = trimmedReason.isEmpty ? "" : " (\(trimmedReason))"
   return "\(machineName) keeps closing the connection right after connecting\(reasonSuffix). Retrying in \(seconds) s."
 }
+
+/// One relay re-authorization loop, shared by the focused connection and the
+/// fleet's roster connections: refresh shortly before the lease expires,
+/// resend the exact same attempt after a transport miss (the host dedupes it),
+/// rebuild it when the host says the token went stale, and stop on an account
+/// change or once retries would run past the lease. Returns when cancelled or
+/// when `isCurrent` turns false.
+@MainActor
+func syncRunRelayReauthorizationLoop<Attempt>(
+  lease: SyncRelayAuthorizationLease,
+  refreshImmediately: Bool = false,
+  isCurrent: @MainActor () -> Bool,
+  makeAttempt: @MainActor (SyncRelayAuthorizationLease) async throws -> Attempt,
+  perform: @MainActor (Attempt) async throws -> SyncRelayAuthorizationLease,
+  install: @MainActor (SyncRelayAuthorizationLease) throws -> Void,
+  onAccountChanged: @MainActor (RelayReauthorizationFailure) -> Void,
+  onGiveUp: @MainActor (Error) -> Void
+) async {
+  var activeLease = lease
+  var activeAttempt: Attempt?
+  var refreshNow = refreshImmediately
+  var retryAttempt = 0
+  while !Task.isCancelled {
+    guard isCurrent() else { return }
+    if !refreshNow {
+      let delay = syncRelayReauthorizationScheduleDelayNanoseconds(
+        lease: activeLease,
+        nowMilliseconds: Date().timeIntervalSince1970 * 1_000
+      )
+      if delay > 0 { try? await Task.sleep(nanoseconds: delay) }
+      guard !Task.isCancelled else { return }
+    }
+    refreshNow = true
+    do {
+      let attemptToSend: Attempt
+      if let pending = activeAttempt {
+        attemptToSend = pending
+      } else {
+        attemptToSend = try await makeAttempt(activeLease)
+        activeAttempt = attemptToSend
+      }
+      let refreshed = try await perform(attemptToSend)
+      try install(refreshed)
+      activeLease = refreshed
+      activeAttempt = nil
+      retryAttempt = 0
+      refreshNow = false
+    } catch is CancellationError {
+      return
+    } catch {
+      if let failure = error as? RelayReauthorizationFailure {
+        let action = syncRelayReauthorizationRetryAction(
+          receivedHostResult: failure.receivedHostResult,
+          errorCode: failure.code,
+          retryable: failure.retryable
+        )
+        if action == .accountChanged {
+          onAccountChanged(failure)
+          return
+        }
+        if action == .rebuildAttempt { activeAttempt = nil }
+        guard action == .retryExactAttempt || action == .rebuildAttempt else {
+          onGiveUp(failure)
+          return
+        }
+      }
+      guard let retryDelay = syncRelayReauthorizationRetryDelayNanoseconds(
+        attempt: retryAttempt,
+        lease: activeLease,
+        nowMilliseconds: Date().timeIntervalSince1970 * 1_000
+      ) else {
+        onGiveUp(error)
+        return
+      }
+      retryAttempt += 1
+      try? await Task.sleep(nanoseconds: retryDelay)
+      guard !Task.isCancelled else { return }
+    }
+  }
+}

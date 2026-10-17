@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { ChatGitToolbar } from "../chat/ChatGitToolbar";
-import { WorkHeaderToolsToggle } from "./WorkHeaderPaneToggles";
+import { WorkHeaderOpenFullViewButton, WorkHeaderToolsToggle } from "./WorkHeaderPaneToggles";
 import { WorkHeaderDevServerButton } from "./WorkHeaderDevServerButton";
 import { LaneBranchDriftChip } from "../lanes/LaneBranchDrift";
 import { LaneChip } from "../terminals/LaneChip";
+import type { ClaudePromptCache } from "../../../shared/claudePromptCache";
 import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
 import { useFloatingPaneEmbeddedChrome } from "../ui/FloatingPane";
 import { cn } from "../ui/cn";
@@ -68,7 +69,7 @@ function WorkSurfaceTitle({ title, generating = false }: { title: string; genera
 
   return (
     <span
-      className={cn("min-w-0 shrink truncate font-sans text-[13px] font-bold tracking-tight text-white", landed && "ade-title-landed")}
+      className={cn("min-w-0 shrink truncate font-sans text-[13px] font-bold tracking-tight text-fg", landed && "ade-title-landed")}
       title={generating ? "Naming chat…" : title}
       data-title-landed={landed ? "true" : undefined}
       data-title-generating={generating ? "true" : undefined}
@@ -99,10 +100,10 @@ export const WORK_SURFACE_HEADER_ACTION_BASE =
   "relative inline-flex h-6 shrink-0 items-center gap-1 rounded-md border px-2 font-sans text-[10px] font-medium transition-colors";
 
 export const WORK_SURFACE_HEADER_ACTION_IDLE =
-  "border-white/[0.06] bg-white/[0.02] text-muted-fg/40 hover:border-white/[0.10] hover:text-fg/65";
+  "border-fg/[0.06] bg-fg/[0.02] text-muted-fg/40 hover:border-fg/[0.10] hover:text-fg/65";
 
 /** Canonical 32px title rail shared by chat and CLI work surfaces. */
-export const WORK_SURFACE_HEADER_CLASS = "flex h-8 items-center px-2";
+export const WORK_SURFACE_HEADER_CLASS = "ade-work-surface-header flex h-8 items-center px-2";
 
 export type WorkSurfaceHeaderProps = {
   /** Primary surface title (chat name, CLI session label, etc.). */
@@ -121,10 +122,12 @@ export type WorkSurfaceHeaderProps = {
   /**
    * When true, renders the Claude cache TTL badge. Caller decides whether
    * the gate applies (e.g. via `shouldShowClaudeCacheTtl`). The badge is
-   * surface-agnostic — it reads `idleSinceAt` and counts down.
+   * surface-agnostic — it reads `idleSinceAt` and `promptCache` and counts down.
    */
   showCacheBadge?: boolean;
   cacheIdleSinceAt?: string | null;
+  /** The chat's prompt cache after its last turn; the badge needs it. */
+  promptCache?: ClaudePromptCache | null;
   /** Session id whose metadata-generation state controls the title shimmer. */
   lifecycleSessionId?: string | null;
   /** When true and laneId is set, renders the ChatGitToolbar. */
@@ -144,6 +147,11 @@ export type WorkSurfaceHeaderProps = {
   trailingActions?: ReactNode;
   /** Far-right Tools-pane toggle. When provided, renders after trailingActions. */
   onToggleToolsPane?: () => void;
+  /**
+   * Focus grid: a far-right "open in full view" button instead of the Tools
+   * toggle. The grid has no Tools pane; this is the way to one.
+   */
+  onOpenFullView?: () => void;
   /** Icon immediately left of the Tools toggle. Chat progress uses this. */
   actionsToggle?: ReactNode;
   toolsPaneOpen?: boolean;
@@ -181,6 +189,7 @@ function useWorkSurfaceHeaderParts({
   prBadgeOnly = false,
   onToggleToolsPane,
   toolsPaneOpen = false,
+  onOpenFullView,
 }: CenteredWorkSurfaceHeaderProps) {
   // When this header is the title row of a grid tile (FloatingPane with hidden
   // header), the embedded chrome lets the title act as the tile's drag handle —
@@ -188,18 +197,24 @@ function useWorkSurfaceHeaderParts({
   const embeddedChrome = useFloatingPaneEmbeddedChrome();
   const tileDragProps = embeddedChrome?.dragHandleProps ?? null;
   const generatingTitle = useSessionFieldGenerating(lifecycleSessionId, "title");
+  // Only a Focus grid tile offers "open in full view". It has no Tools pane,
+  // so its PR badge goes to the PRs tab instead of a PR pane.
+  const focusTile = onOpenFullView != null;
   const gitToolbar = showGitToolbar && laneId ? (
     <ChatGitToolbar
       laneId={laneId}
       sessionId={prSessionId}
-      onTogglePrPane={onTogglePrPane}
+      onTogglePrPane={focusTile ? undefined : onTogglePrPane}
+      prOpensPrsTab={focusTile}
       prPaneOpen={prPaneOpen}
       runtimePin={runtimePin}
       linkedPrOnly={prBadgeOnly}
     />
   ) : null;
   // Beside the Tools toggle on Work surfaces: lit while the lane serves a page.
-  const toolButtons = onToggleToolsPane ? (
+  const toolButtons = onOpenFullView ? (
+    <WorkHeaderOpenFullViewButton onOpen={onOpenFullView} />
+  ) : onToggleToolsPane ? (
     <>
       {laneId ? <WorkHeaderDevServerButton laneId={laneId} runtimePin={runtimePin} /> : null}
       <WorkHeaderToolsToggle open={toolsPaneOpen} onToggle={onToggleToolsPane} />
@@ -228,6 +243,7 @@ export function WorkSurfaceHeader(props: WorkSurfaceHeaderProps) {
     onLaneChipClick,
     showCacheBadge = false,
     cacheIdleSinceAt,
+    promptCache,
     runtimePin = null,
     trailingActions,
     actionsToggle,
@@ -257,7 +273,7 @@ export function WorkSurfaceHeader(props: WorkSurfaceHeaderProps) {
           ) : null}
           {laneId ? <LaneBranchDriftChip laneId={laneId} /> : null}
           {showCacheBadge ? (
-            <ClaudeCacheTtlBadge idleSinceAt={cacheIdleSinceAt ?? null} />
+            <ClaudeCacheTtlBadge idleSinceAt={cacheIdleSinceAt ?? null} cache={promptCache} />
           ) : null}
         </div>
         <div className="relative z-10 ml-auto flex shrink-0 items-center gap-2">
@@ -286,6 +302,7 @@ export function CenteredWorkSurfaceHeader(props: CenteredWorkSurfaceHeaderProps)
     titleAccessory,
     showCacheBadge = false,
     cacheIdleSinceAt,
+    promptCache,
     runtimePin = null,
     trailingActions,
     actionsToggle,
@@ -294,21 +311,58 @@ export function CenteredWorkSurfaceHeader(props: CenteredWorkSurfaceHeaderProps)
     testId,
   } = props;
   const { tileDragging, titleDragProps, generatingTitle, gitToolbar, toolButtons } = useWorkSurfaceHeaderParts(props);
+  // The title is centred on the whole row, so it needs the right cluster's
+  // width reserved on BOTH sides; a fixed inset let a PR badge in a narrow grid
+  // tile run straight over the title. Measured, because the cluster's contents
+  // (PR state, cache chip, snooze) change per chat.
+  const rowRef = useRef<HTMLDivElement | null>(null);
+  const clusterRef = useRef<HTMLDivElement | null>(null);
+  const [widths, setWidths] = useState({ row: 0, cluster: 0 });
+  useLayoutEffect(() => {
+    const row = rowRef.current;
+    const cluster = clusterRef.current;
+    if (!row || !cluster || typeof ResizeObserver === "undefined") return;
+    const update = () => {
+      const next = {
+        row: Math.floor(row.getBoundingClientRect().width),
+        cluster: Math.ceil(cluster.getBoundingClientRect().width),
+      };
+      setWidths((previous) => (previous.row === next.row && previous.cluster === next.cluster ? previous : next));
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(row);
+    observer.observe(cluster);
+    return () => observer.disconnect();
+  }, []);
+  const centredInset = Math.max(64, widths.cluster + 12);
+  // Too narrow to centre with the cluster's width reserved on both sides: the
+  // title moves to the left edge and truncates, instead of vanishing.
+  const leftAligned = widths.row > 0 && widths.row - centredInset * 2 < 140;
+  const titleBoxStyle = leftAligned
+    ? { paddingLeft: 12, paddingRight: widths.cluster + 12, justifyContent: "flex-start" as const }
+    : { paddingInline: centredInset };
   return (
     <div className={cn(WORK_SURFACE_HEADER_CLASS, "relative", className)} data-testid={testId} onContextMenu={onContextMenu}>
-      <div className="relative z-10 flex w-full items-center">
-        <div className="pointer-events-none absolute inset-0 flex items-center justify-center px-16">
+      <div ref={rowRef} className="relative z-10 flex w-full items-center">
+        <div
+          className="pointer-events-none absolute inset-0 flex items-center justify-center"
+          style={titleBoxStyle}
+        >
           <div
             className={cn("pointer-events-auto flex min-w-0 max-w-full items-center gap-2", tileDragging && "cursor-grab active:cursor-grabbing")}
             {...titleDragProps}
           >
             <WorkSurfaceTitle title={title} generating={generatingTitle} />
-            {titleAccessory}
+            {/* A narrow tile keeps the title and drops the accessory (for
+                example the Cursor Cloud or Devin link); the full view still
+                has it. */}
+            {leftAligned ? null : titleAccessory}
           </div>
         </div>
-        <div className="relative z-10 ml-auto flex shrink-0 items-center gap-2">
+        <div ref={clusterRef} className="relative z-10 ml-auto flex shrink-0 items-center gap-2">
           {showCacheBadge ? (
-            <ClaudeCacheTtlBadge idleSinceAt={cacheIdleSinceAt ?? null} />
+            <ClaudeCacheTtlBadge idleSinceAt={cacheIdleSinceAt ?? null} cache={promptCache} />
           ) : null}
           {trailingActions}
           {gitToolbar || actionsToggle || toolButtons ? (

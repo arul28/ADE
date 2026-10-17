@@ -16,7 +16,6 @@ import {
   openKvDb,
   path,
   readPersistedChatState,
-  resolveBuiltInBrowserActorCapability,
   runGit,
   spawn,
   storedWakeup,
@@ -129,8 +128,8 @@ describe("createAgentChatService", () => {
         text: "Help me organize my week.",
       });
 
-      await vi.waitFor(() => {
-        expect(service.getSlashCommands({ sessionId: session.id }))
+      await vi.waitFor(async () => {
+        expect(await service.getSlashCommands({ sessionId: session.id }))
           .toEqual(expect.arrayContaining([
             expect.objectContaining({ name: "/personal-helper" }),
           ]));
@@ -147,7 +146,7 @@ describe("createAgentChatService", () => {
         forceReload: true,
       });
       expect(JSON.stringify(skillsListPayload?.params)).not.toContain(bundledSkillRoot);
-      expect(service.getSlashCommands({ sessionId: session.id })
+      expect((await service.getSlashCommands({ sessionId: session.id }))
         .some((command) => /^\/ade(?:-|$)/i.test(command.name))).toBe(false);
     });
 
@@ -446,16 +445,7 @@ describe("createAgentChatService", () => {
         ADE_LANE_ID: "lane-1",
         ADE_PROJECT_ROOT: tmpRoot,
       }));
-      const actorToken = baseEnv?.ADE_BROWSER_ACTOR_TOKEN;
-      expect(resolveBuiltInBrowserActorCapability(actorToken)).toMatchObject({
-        chatSessionId: session.id,
-        laneId: "lane-1",
-        projectRoot: tmpRoot,
-      });
-
       await service.dispose({ sessionId: session.id });
-
-      expect(resolveBuiltInBrowserActorCapability(actorToken)).toBeNull();
     });
 
     it("targets Cursor SDK activity reports at the service runtime and disables them without an exact socket", async () => {
@@ -836,6 +826,29 @@ describe("createAgentChatService", () => {
       });
 
       expect(sessionService.setHeadShaStart).toHaveBeenLastCalledWith(session.id, "lane-1-sha");
+    });
+
+    it("does not wait for the best-effort HEAD lookup before creating a chat", async () => {
+      let finishGit!: (result: { stdout: string; stderr: string; exitCode: number }) => void;
+      vi.mocked(runGit).mockImplementation(() => new Promise<Awaited<ReturnType<typeof runGit>>>((resolve) => {
+        finishGit = resolve;
+      }));
+
+      const { service, sessionService } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/anthropic/claude-sonnet-5",
+      });
+
+      expect(session.id).toBeTruthy();
+      expect(sessionService.setHeadShaStart).not.toHaveBeenCalled();
+
+      finishGit({ stdout: "lane-1-sha\n", stderr: "", exitCode: 0 });
+      await vi.waitFor(() => {
+        expect(sessionService.setHeadShaStart).toHaveBeenCalledWith(session.id, "lane-1-sha");
+      });
     });
 
     it("ignores native provider permission overrides for pinned identities on create", async () => {

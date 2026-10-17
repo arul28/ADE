@@ -1,13 +1,19 @@
 import SwiftUI
 import UIKit
 
-struct PRsTabView: View {
+struct PRsTabView: View, Equatable {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  @EnvironmentObject private var syncService: SyncService
-  @EnvironmentObject private var machineFleet: MachineFleet
+  /// Deliberately not observed: what the body draws arrives in `inputs`.
+  let syncService: SyncService
+  let machineFleet: MachineFleet
   /// PR ↔ lane links and lanes of the other machines holding this repository.
   @StateObject private var remotePrs = PrRemoteMachinesModel()
-  var isActive = true
+  let isActive: Bool
+  let inputs: PrsRootInputs
+
+  nonisolated static func == (lhs: PRsTabView, rhs: PRsTabView) -> Bool {
+    lhs.isActive == rhs.isActive && lhs.inputs == rhs.inputs
+  }
 
   @State private var path = NavigationPath()
   @State private var prs: [PullRequestListItem] = []
@@ -67,8 +73,11 @@ struct PRsTabView: View {
     prsStatus.phase == .ready && syncService.connectionState == .connected && syncService.projectHostIsLive
   }
 
+  /// Skeletons only stand in for rows the phone has never had: cached rows
+  /// show (and refresh in place) while a sync runs.
   private var isLoadingSkeleton: Bool {
-    prsStatus.phase == .hydrating || prsStatus.phase == .syncingInitialData
+    (prsStatus.phase == .hydrating || prsStatus.phase == .syncingInitialData)
+      && prs.isEmpty && githubSnapshot == nil
   }
 
   private var selectedRootSurface: Binding<PrRootSurface> {
@@ -159,7 +168,7 @@ struct PRsTabView: View {
 
   /// Stable registry key for root-level workflow actions (integration /
   /// create / link). These share one in-flight banner, so one key is correct.
-  private static let rootActionKey = "prs.root"
+  static let rootActionKey = "prs.root"
 
   /// Label of the in-flight root action, if any. Read from the durable service
   /// registry so the banner survives a tab switch + remount.
@@ -293,9 +302,8 @@ struct PRsTabView: View {
   /// Re-read the other machines while the tab is visible, for the focused
   /// project, and again when a machine's live link comes or goes.
   private var remotePrsPollKey: String? {
-    guard isActive, let projectId = syncService.activeProjectId else { return nil }
-    let live = machineFleet.machines.filter { $0.state == .live }.map(\.machineKey).sorted()
-    return "\(projectId)|\(live.joined(separator: ","))"
+    guard isActive, let projectId = inputs.activeProjectId else { return nil }
+    return "\(projectId)|\(inputs.liveMachineKeys.joined(separator: ","))"
   }
 
   private var focusedMachineName: String {
@@ -355,6 +363,7 @@ struct PRsTabView: View {
   }
 
   var body: some View {
+    let _ = ScrollDiagnostics.shared.count(.prListBody)
     NavigationStack(path: $path) {
       List {
         noticeRows
@@ -375,6 +384,7 @@ struct PRsTabView: View {
       }
       .adeFlatList()
       .contentMargins(.bottom, 24, for: .scrollContent)
+      .adeScrollDiagnosticsSurface(.prList, key: "pr-list")
       .searchable(
         text: $searchText,
         isPresented: $searchPresented,
@@ -423,7 +433,20 @@ struct PRsTabView: View {
         }
       }
       .onChange(of: syncService.activeProjectId) { _, _ in
+        // The tab stays mounted across a project switch: drop the previous
+        // project's rows so they never show (or hide the skeleton) while the
+        // new project loads.
         remotePrs.reset()
+        prs = []
+        lanes = []
+        laneSnapshots = []
+        integrationProposals = []
+        mobileSnapshot = nil
+        githubSnapshot = nil
+        githubExternalHistoryLoaded = false
+        githubHistoryPageLimit = 2
+        laneContextLaneId = nil
+        path = NavigationPath()
       }
       .onChange(of: remotePrs.machines) { _, _ in recomputeGitHubDerived() }
       .onChange(of: githubCategoryRawValue) { _, _ in
@@ -521,23 +544,30 @@ struct PRsTabView: View {
     }
     .sharedBackgroundVisibility(.hidden)
 
-    ToolbarItemGroup(placement: .topBarTrailing) {
+    ToolbarItem(placement: .topBarTrailing) {
       Button {
         searchPresented = true
       } label: {
-        Image(systemName: "magnifyingglass")
+        ADEKitCircleIcon(systemImage: "magnifyingglass")
       }
+      .buttonStyle(.plain)
       .accessibilityLabel("Search pull requests")
+    }
+    .sharedBackgroundVisibility(.hidden)
 
+    ToolbarItem(placement: .topBarTrailing) {
       Button {
         createInitialLaneId = nil
         createPresented = true
       } label: {
-        Image(systemName: "plus")
+        ADEKitCircleIcon(systemImage: "plus")
       }
+      .buttonStyle(.plain)
       .disabled(!canCreatePr)
+      .opacity(canCreatePr ? 1 : 0.45)
       .accessibilityLabel("Create pull request")
     }
+    .sharedBackgroundVisibility(.hidden)
 
     ToolbarItem(placement: .topBarTrailing) {
       ADERootToolbarControls(scopeKey: "PRs")

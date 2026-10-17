@@ -6,6 +6,7 @@
 
 import {
   ArrowsLeftRight,
+  BellRinging,
   Code,
   Lightning,
   TerminalWindow,
@@ -99,6 +100,25 @@ export const ADD_STEP_ORDER: readonly StepKind[] = [
   "predict-conflicts",
   "delete-lane",
 ];
+
+/**
+ * "Send notification to mobile app" is an `ade-action` step for
+ * `attention.sendNotification` with its own entry in the add menu and its own
+ * editor. It is stored like any other ADE action, so saving and running it
+ * need nothing special.
+ */
+export const NOTIFY_STEP = {
+  id: "notify",
+  kind: "ade-action",
+  label: "Send notification to mobile app",
+  icon: BellRinging,
+  accent: "#F2A33A",
+  description: "Push a message to your phone. A tap can open a chat, a PR, Activity and more.",
+} as const;
+
+export function isNotifyAdeAction(action: { domain?: string; action?: string } | null | undefined): boolean {
+  return action?.domain === "attention" && action?.action === "sendNotification";
+}
 
 export function stepDef(kind: StepKind): StepDef {
   return STEP_DEFS[kind] ?? STEP_DEFS["ade-action"];

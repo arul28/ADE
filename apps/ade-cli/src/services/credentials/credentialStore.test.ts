@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { monitorEventLoopDelay } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -109,6 +110,81 @@ afterEach(() => {
 });
 
 describe("EncryptedFileCredentialStore", () => {
+  it("waits for a peer lock without blocking the event loop on async writes", async () => {
+    const store = new EncryptedFileCredentialStore({ secretsDir: tempDir });
+    const lockPath = `${path.join(tempDir, "credentials.json.enc")}.lock`;
+    const delay = monitorEventLoopDelay({ resolution: 1 });
+    delay.enable();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    delay.reset();
+    // Long enough that a blocked loop (sync) and a free one (async) sit far
+    // apart, so CI load cannot push the async lag across the line.
+    const heldForMs = 300;
+    const lockMetadata = JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() });
+    const releaseFromPeer = (): Promise<void> => new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, [
+        "-e",
+        "setTimeout(() => require('node:fs').unlinkSync(process.argv[1]), Number(process.argv[2]))",
+        lockPath,
+        String(heldForMs),
+      ], { stdio: "ignore" });
+      child.once("error", reject);
+      child.once("exit", (code) => code === 0 ? resolve() : reject(new Error(`lock holder exited ${code}`)));
+    });
+    fs.writeFileSync(lockPath, lockMetadata);
+    const beforeStartedAt = Date.now();
+    const syncTimerScheduledAt = Date.now();
+    let syncTimerLagMs = 0;
+    setTimeout(() => { syncTimerLagMs = Date.now() - syncTimerScheduledAt - 20; }, 20);
+    const peerRelease = releaseFromPeer();
+    try {
+      store.setSync("sync-lock-baseline", "value");
+      await peerRelease;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      const syncWaitMs = Date.now() - beforeStartedAt;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      const syncDelayMaxMs = delay.max / 1e6;
+
+      fs.writeFileSync(lockPath, lockMetadata);
+      delay.reset();
+      const asyncStartedAt = Date.now();
+      const asyncTimerScheduledAt = Date.now();
+      let asyncTimerLagMs = 0;
+      setTimeout(() => { asyncTimerLagMs = Date.now() - asyncTimerScheduledAt - 20; }, 20);
+      const asyncPeerRelease = releaseFromPeer();
+      await store.set("async-lock-test", "value");
+      await asyncPeerRelease;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      const asyncWaitMs = Date.now() - asyncStartedAt;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      const asyncDelayMaxMs = delay.max / 1e6;
+
+      console.info(`credential lock wait ${heldForMs}ms: sync ${syncWaitMs}ms / ${syncTimerLagMs}ms timer lag / ${syncDelayMaxMs.toFixed(1)}ms histogram max; async ${asyncWaitMs}ms / ${asyncTimerLagMs}ms timer lag / ${asyncDelayMaxMs.toFixed(1)}ms histogram max`);
+      expect(syncTimerLagMs).toBeGreaterThan(heldForMs * 0.5);
+      expect(asyncWaitMs).toBeGreaterThanOrEqual(heldForMs - 10);
+      expect(asyncTimerLagMs).toBeLessThan(heldForMs * 0.5);
+      expect(asyncDelayMaxMs).toBeLessThan(heldForMs * 0.5);
+    } finally {
+      delay.disable();
+      try { fs.unlinkSync(lockPath); } catch { /* already released */ }
+    }
+  });
+
+  it("answers repeated reads of a missing credential file without taking the lock", () => {
+    const store = new EncryptedFileCredentialStore({ secretsDir: tempDir });
+    expect(store.getSync("agent.token")).toBeNull();
+    // A peer holding the lock would make an uncached read wait the full 15 s timeout.
+    const lockPath = `${path.join(tempDir, "credentials.json.enc")}.lock`;
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() }));
+    try {
+      const startedAt = Date.now();
+      expect(store.getSync("agent.token")).toBeNull();
+      expect(Date.now() - startedAt).toBeLessThan(1_000);
+    } finally {
+      fs.unlinkSync(lockPath);
+    }
+  });
+
   it.runIf(process.platform === "win32")(
     "resolves Windows DPAPI PowerShell through kernel SystemRoot despite poisoned environment paths",
     () => {

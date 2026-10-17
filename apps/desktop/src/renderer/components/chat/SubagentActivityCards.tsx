@@ -1,7 +1,9 @@
-import React, { useEffect, useState } from "react";
-import { CaretDown, CaretRight, Check, Square, Stop, X } from "@phosphor-icons/react";
+import React, { useState } from "react";
+import { useLiveDurationMs } from "../../lib/liveDuration";
+import { CaretDown, CaretRight, Check, ListChecks, Square, Stop, X } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { formatSubagentDurationMs } from "../../lib/format";
+import { pluralCount } from "../../../shared/formatting";
 import { chatToolTypeForProvider } from "../../lib/sessions";
 import { ToolLogo } from "../terminals/ToolLogos";
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
@@ -21,6 +23,7 @@ import { modelMentionEffortLabel } from "../../../shared/modelMentions";
 import { formatContextTokens } from "./usage/contextUsageModel";
 import {
   subagentCardGridSpan,
+  type SubagentCardGridMember,
   type SubagentResultCardRenderEvent,
   type SubagentSpawnAnchorRenderEvent,
   type SubagentStoppedGroupEvent,
@@ -37,35 +40,6 @@ export { navigateToSpawnedChat };
 // states reads as one set of cards; only the glyph badge and the status line
 // change. Background shell commands get no cards at all — just a compact row
 // (`BackgroundJobRunRow`).
-
-/**
- * Live elapsed since a start timestamp, ticking once a second while `running`.
- * The spawn card's live-duration ticker.
- *
- * Anchored to the real start timestamp rather than to mount time, so scrolling
- * the row out of the virtualizer and back keeps the true elapsed instead of
- * restarting from zero. Same shape as `useElapsedLabel` in `SessionStatusLabel`
- * — a state tick on a leaf that renders one line, so the per-second re-render
- * never reaches the memoized transcript rows around it. (`WorkingIndicator`'s
- * ticker is deliberately NOT this: it mutates `textContent` through a ref to
- * avoid a per-second commit on the message list itself.)
- *
- * Returns null for an absent or unparseable timestamp so callers render no
- * duration rather than `NaN`.
- */
-function useLiveDurationMs(startedAt: string | null, running: boolean): number | null {
-  const startMs = startedAt ? Date.parse(startedAt) : Number.NaN;
-  const anchored = Number.isFinite(startMs) ? startMs : null;
-  const [nowMs, setNowMs] = useState(() => Date.now());
-  useEffect(() => {
-    if (!running || anchored == null) return undefined;
-    setNowMs(Date.now());
-    const id = window.setInterval(() => setNowMs(Date.now()), 1_000);
-    return () => window.clearInterval(id);
-  }, [running, anchored]);
-  if (anchored == null) return null;
-  return Math.max(0, nowMs - anchored);
-}
 
 type SubagentCardStatus =
   | SubagentSpawnAnchorRenderEvent["status"]
@@ -147,8 +121,10 @@ function SubagentProviderMark({ provider }: { provider?: string | null }) {
  */
 export const SUBAGENT_CARD_CHROME = "rounded-[calc(var(--chat-radius-card)-6px)] border border-fg/[0.07] bg-fg/[0.03] px-3.5 py-3 hover:border-fg/[0.12]";
 
-const CARD_META_TEXT = "font-mono text-[length:calc(var(--chat-font-size)*10/14)] tabular-nums";
-const QUIET_ACTION = "inline-flex items-center gap-1 whitespace-nowrap font-sans text-[length:calc(var(--chat-font-size)*9.5/14)] text-fg/45 transition-colors hover:text-fg/75 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[color:var(--chat-accent)]";
+export const CARD_META_TEXT = "font-mono text-[length:calc(var(--chat-font-size)*10/14)] tabular-nums";
+/** The card's status word and its one overview line. */
+const SUBAGENT_STATUS_WORD_TEXT = "font-sans text-[length:calc(var(--chat-font-size)*10.5/14)]";
+const SUBAGENT_OVERVIEW_TEXT = "font-sans text-[length:calc(var(--chat-font-size)*11/14)]";
 
 /**
  * A click anywhere on the card opens it, except on a control inside it and
@@ -164,20 +140,35 @@ function openOnCardClick(event: React.MouseEvent<HTMLElement>, open: (() => void
   open();
 }
 
+/** The status word's tone: colour is for meaning, so only these four states differ. */
+const SUBAGENT_STATUS_WORD_TONE: Record<SubagentCardStatus, string> = {
+  running: "text-[color:var(--color-accent-bright,#C4B5FD)]",
+  completed: "text-fg/40",
+  failed: "text-rose-300/80",
+  stopped: "text-amber-300/60",
+};
+
 /**
- * The one layout both subagent cards share:
- * `[glyph + status] [name / status line / body] [open · stop | provider mark]`.
- * Fills its grid cell (`h-full`), so cards in one grid row are equally tall.
+ * The one layout both subagent cards share — short, so a run of agents reads
+ * as a list instead of a wall of paragraphs:
+ * `[glyph] [name · status / one overview line] [metrics · provider · stop · open]`.
+ * Anything the card does not need to say on its face (agent type, model,
+ * effort, tool count, who spawned it) lives in `metaTitle`, the card's
+ * tooltip. Fills its grid cell (`h-full`), so cards in one grid row are
+ * equally tall.
  */
 function SubagentCardFrame({
   agentKey,
   status,
   name,
-  statusLine,
-  body,
-  footer,
+  statusWord,
+  overview,
+  overviewTone = "quiet",
+  metrics,
+  metaTitle,
   action,
   provider,
+  workflowName = null,
   open,
   openLabel,
   openTitle,
@@ -186,9 +177,17 @@ function SubagentCardFrame({
   agentKey: string;
   status: SubagentCardStatus;
   name: string;
-  statusLine: string | null;
-  body?: React.ReactNode;
-  footer?: React.ReactNode;
+  /** Set on a dynamic workflow's own card: it wears the workflow mark and chip. */
+  workflowName?: string | null;
+  /** `running` / `done` / `failed` / `stopped` — the day the agent is having. */
+  statusWord: string;
+  /** The one line under the name: what it is doing, or what it found. */
+  overview: string | null;
+  overviewTone?: "quiet" | "crit";
+  /** Right-aligned counts, mono: tools, tokens, elapsed. */
+  metrics: string | null;
+  /** The full quiet facts, shown on hover. */
+  metaTitle: string;
   /** A control other than open (the running card's Stop). */
   action?: React.ReactNode;
   provider?: string | null;
@@ -203,47 +202,78 @@ function SubagentCardFrame({
       data-subagent-status={status}
       data-testid={testId}
       onClick={open ? (event) => openOnCardClick(event, open) : undefined}
+      title={metaTitle}
       className={cn(
-        "flex h-full w-full min-w-0 items-stretch gap-3 overflow-hidden text-left transition-colors",
+        "flex h-full w-full min-w-0 items-center gap-2.5 overflow-hidden text-left transition-colors",
         SUBAGENT_CARD_CHROME,
         open && "cursor-pointer",
       )}
     >
-      <SubagentCardGlyph agentKey={agentKey} status={status} />
+      {workflowName ? (
+        <span
+          aria-hidden
+          data-subagent-workflow-mark={workflowName}
+          className="grid h-[27px] w-[27px] shrink-0 place-items-center rounded-[9px] border border-amber-200/20 bg-amber-200/[0.08] text-amber-100/85"
+        >
+          <ListChecks size={14} weight="bold" />
+        </span>
+      ) : (
+        <SubagentCardGlyph agentKey={agentKey} status={status} />
+      )}
       <div className="flex min-w-0 flex-1 flex-col">
-        <div className="flex min-w-0 items-center gap-1.5">
+        <div className="flex min-w-0 items-baseline gap-2">
           <span
-            className="min-w-0 flex-1 truncate font-sans text-[length:calc(var(--chat-font-size)*12/14)] font-semibold text-fg/85"
+            className={cn(
+              "min-w-0 truncate font-sans text-[length:calc(var(--chat-font-size)*12/14)] font-semibold",
+              workflowName ? "text-amber-100/90" : "text-fg/85",
+            )}
             title={name}
             data-subagent-name
           >
             {name}
           </span>
-        </div>
-        {statusLine ? (
-          <div className={cn("mt-1 min-w-0 truncate text-fg/45", CARD_META_TEXT)} title={statusLine}>
-            {statusLine}
-          </div>
-        ) : null}
-        {body}
-        {footer}
-      </div>
-      <div className="flex shrink-0 flex-col items-end justify-between gap-2">
-        <div className="flex items-center gap-0.5">
-          {action}
-          {open ? (
-            <button
-              type="button"
-              onClick={open}
-              aria-label={openLabel}
-              title={openTitle}
-              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-fg/35 transition-colors hover:bg-fg/[0.06] hover:text-fg/75 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[color:var(--chat-accent)]"
-            >
-              <CaretRight size={12} weight="bold" aria-hidden />
-            </button>
+          {workflowName ? (
+            <span className="shrink-0 rounded-sm bg-amber-200/[0.12] px-1 py-px font-sans text-[length:calc(var(--chat-font-size)*9.5/14)] uppercase tracking-[0.05em] text-amber-200/70">
+              workflow
+            </span>
+          ) : null}
+          {/* Only the states the glyph badge cannot say on its own: a spinner
+              reads as "still going" and a red cross as "this one broke"; a
+              settled success keeps the name's width instead. */}
+          {status === "running" || status === "failed" ? (
+            <span className={cn("shrink-0", SUBAGENT_STATUS_WORD_TEXT, SUBAGENT_STATUS_WORD_TONE[status])}>
+              {statusWord}
+            </span>
           ) : null}
         </div>
+        {overview ? (
+          <div
+            className={cn(
+              "mt-0.5 min-w-0 truncate",
+              SUBAGENT_OVERVIEW_TEXT,
+              overviewTone === "crit" ? "text-rose-200/85" : "text-fg/50",
+            )}
+            data-subagent-overview
+          >
+            {overview}
+          </div>
+        ) : null}
+      </div>
+      <div className="flex shrink-0 items-center gap-1.5">
+        {metrics ? <span className={cn("whitespace-nowrap text-fg/40", CARD_META_TEXT)}>{metrics}</span> : null}
         <SubagentProviderMark provider={provider} />
+        {action}
+        {open ? (
+          <button
+            type="button"
+            onClick={open}
+            aria-label={openLabel}
+            title={openTitle}
+            className="inline-flex h-6 w-6 items-center justify-center rounded-md text-fg/35 transition-colors hover:bg-fg/[0.06] hover:text-fg/75 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[color:var(--chat-accent)]"
+          >
+            <CaretRight size={12} weight="bold" aria-hidden />
+          </button>
+        ) : null}
       </div>
     </div>
   );
@@ -281,8 +311,7 @@ function subagentQuietMetadata(
  * Running card — one row anchored where the agent started, titled with the
  * agent's name (`deriveSubagentCardName`: the task description, else the
  * explicit label, else the agent type; a Codex path reads `Desktop scan`, never
- * `/root/desktop_scan`). Under it ONE live status line
- * (`running · <activity> · <N> tools · <elapsed>`), ticking only while running.
+ * `/root/desktop_scan`). Under the name ONE live line says what it is doing.
  * Clicking the card opens the spawned chat, or the agent's transcript in Chat
  * Info for a runtime-native subagent; Stop ends a native one in place.
  */
@@ -299,14 +328,17 @@ export function SubagentSpawnCard({
   onOpenTranscript?: () => void;
   /** Lane of the spawner, forwarded to the navigation event when known. */
   laneId?: string | null;
-  /** Runtime that owns this agent; drives the bottom-right provider mark. */
+  /** Runtime that owns this agent; drives the quiet provider mark. */
   provider?: string | null;
 }) {
   const isRunning = event.status === "running";
   const liveMs = useLiveDurationMs(event.startedAt, isRunning);
   const elapsed = formatSubagentDurationMs(liveMs);
 
-  const name = deriveSubagentCardName(event);
+  const workflowName = event.workflowName?.trim() || null;
+  // A workflow card is named by the run's `meta.name`; the task description
+  // becomes its one line.
+  const name = workflowName ?? deriveSubagentCardName(event);
   // Suppress activity text that just echoes the name (e.g. name
   // "Run affected suites" + status "running · Run affected suites · 27s").
   const rawActivity = event.statusLine?.trim() || event.lastToolName?.trim() || null;
@@ -314,13 +346,16 @@ export function SubagentSpawnCard({
     && ![name, event.description].some((title) => title && title.toLowerCase().includes(rawActivity.toLowerCase()))
     ? rawActivity
     : null;
-  const statusLine = [
+  const tools = typeof event.toolCount === "number" && event.toolCount > 0
+    ? `${event.toolCount} tool${event.toolCount === 1 ? "" : "s"}`
+    : null;
+  const metrics = [tools, elapsed].filter((part): part is string => Boolean(part)).join(" · ");
+  const metaTitle = [
+    name,
     "running",
     ...subagentQuietMetadata(event, provider),
     activity,
-    typeof event.toolCount === "number" && event.toolCount > 0
-      ? `${event.toolCount} tool${event.toolCount === 1 ? "" : "s"}`
-      : null,
+    tools,
     elapsed,
     event.parentLabel ? `spawned by ${event.parentLabel}` : null,
   ].filter((part): part is string => Boolean(part)).join(" · ");
@@ -341,7 +376,7 @@ export function SubagentSpawnCard({
         if (!taskId) return;
         onStop(taskId);
       }}
-      className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-fg/40 transition-colors hover:bg-rose-500/10 hover:text-rose-400 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-rose-400/40"
+      className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-fg/40 transition-colors hover:bg-rose-500/10 hover:text-rose-400 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-rose-400/40"
     >
       <Square size={10} weight="fill" aria-hidden />
     </button>
@@ -352,7 +387,11 @@ export function SubagentSpawnCard({
       agentKey={event.agentKey}
       status={event.status}
       name={name}
-      statusLine={statusLine || null}
+      statusWord="running"
+      overview={activity ?? (workflowName ? event.description : null)}
+      metrics={metrics || null}
+      workflowName={workflowName}
+      metaTitle={metaTitle}
       action={stopControl}
       provider={event.provider ?? provider}
       open={open}
@@ -364,14 +403,15 @@ export function SubagentSpawnCard({
 
 /**
  * A settled agent's card, in the running card's place (the row settles in
- * place). Same layout and chrome as the running card — the agent's name, its glyph now wearing a status badge,
- * a `ran for 1m` line with counters, then the report (clamped to three lines).
- * The card opens the spawned chat or the transcript, like the running card, so
- * there is no separate "view transcript" link.
+ * place). Same short layout and chrome as the running card — the agent's name,
+ * its glyph now wearing a status badge, one line of what it found (a failure
+ * shows its own message in the error tone), and the counts on the right. The
+ * full facts (type, model, effort, tools, worktree, the whole error) are the
+ * card's tooltip; the card itself opens the spawned chat or the transcript.
  *
  * Runtime filler (`"Agent completed"`, an all-zero `+0 −0 · 0 files` diff stat)
- * is filtered out by {@link firstMeaningfulSummary}. A failure keeps its full error behind a quiet
- * `Details` disclosure; a stopped agent names who stopped it.
+ * is filtered out by {@link firstMeaningfulSummary}; a stopped agent names who
+ * stopped it.
  */
 export function SubagentResultCard({
   event,
@@ -382,110 +422,81 @@ export function SubagentResultCard({
   event: SubagentResultCardRenderEvent;
   laneId?: string | null;
   onViewTranscript?: () => void;
-  /** Runtime that owns this agent; drives the bottom-right provider mark. */
+  /** Runtime that owns this agent; drives the quiet provider mark. */
   provider?: string | null;
 }) {
-  const [detailsOpen, setDetailsOpen] = useState(false);
   const isStopped = event.status === "stopped";
   const isFailed = event.status === "failed";
   const duration = formatSubagentDurationMs(event.durationMs);
-  const name = deriveSubagentCardName(event);
+  const workflowName = event.workflowName?.trim() || null;
+  const name = workflowName ?? deriveSubagentCardName(event);
   // A stopped card's summary is usually just the stop sentence ("Interrupted",
-  // "Stopped: the ADE brain restarted"), which the status line already says.
-  // Reports are markdown; the clamped preview shows them as plain prose.
+  // "Stopped: the ADE brain restarted"), which the status word already says.
+  // Reports are markdown; the one-line preview shows them as plain prose.
   const summary = subagentSummaryPlainText(
     firstMeaningfulSummary(isStopped ? meaningfulStoppedSummary(event) : event.summaryPreview),
   );
-  // Without a report of its own, a stopped card says what the agent was doing
-  // and whether its work survived, so a grid cell is never an empty frame.
+  const stopCause = isStopped
+    ? (event.stopSource === "user" ? "you interrupted" : (event.stopReason?.trim() || null))
+    : null;
+  // Without a report of its own, a stopped card says what the agent was doing,
+  // WHO stopped it and whether the work survived — a stopped card that only
+  // says "stopped" hides the difference between an interrupt and a lost run.
   const stoppedOutcome = isStopped && !summary
-    ? [subagentSummaryPlainText(event.lastActivity), stoppedResultOutcome(event.resultLanded === true)]
-      .filter((part): part is string => Boolean(part))
-      .join(" · ")
+    ? [
+      subagentSummaryPlainText(event.lastActivity),
+      stopCause,
+      stoppedResultOutcome(event.resultLanded === true),
+    ].filter((part): part is string => Boolean(part)).join(" · ")
     : null;
   const childSessionId = event.childSessionId?.trim() || null;
   const open = childSessionId
     ? () => navigateToSpawnedChat(childSessionId, laneId ?? null)
     : onViewTranscript ?? null;
   const errorText = isFailed ? event.error?.trim() || null : null;
-
-  const stopCause = isStopped
-    ? (event.stopSource === "user" ? "you interrupted" : (event.stopReason?.trim() || null))
+  // A failed agent's message IS its card: its first line shows in the error
+  // tone (`error` and the summary hold the same sentence for a failure, so the
+  // summary is the fallback, never a second copy). The rest of the error rides
+  // the tooltip.
+  const errorHeadline = errorText ? (errorText.split(/\r?\n/, 1)[0] ?? "").trim() || null : null;
+  const failureMessage = isFailed ? (errorHeadline ?? summary) : null;
+  const statusWord = isStopped ? "stopped" : isFailed ? "failed" : "done";
+  // A workflow card says what the run was for; "Dynamic workflow … completed"
+  // is filler the status word already carries.
+  const overview = failureMessage ?? (workflowName ? event.description : null) ?? summary ?? stoppedOutcome;
+  const tokens = typeof event.totalTokens === "number" && event.totalTokens > 0
+    ? formatContextTokens(event.totalTokens)
     : null;
-  const statusLine = [
-    isStopped ? "stopped" : isFailed ? "failed" : null,
+  const tools = typeof event.toolUseCount === "number" && event.toolUseCount > 0
+    ? `${event.toolUseCount} tool${event.toolUseCount === 1 ? "" : "s"}`
+    : null;
+  const worktreeLabel = event.worktreeBranch?.trim() || null;
+  const metrics = [tokens, duration].filter((part): part is string => Boolean(part)).join(" · ");
+  const metaTitle = [
+    name,
+    statusWord,
     ...subagentQuietMetadata(event, provider),
     stopCause,
     duration ? `ran for ${duration}` : null,
-    typeof event.toolUseCount === "number" && event.toolUseCount > 0
-      ? `${event.toolUseCount} tool${event.toolUseCount === 1 ? "" : "s"}`
-      : null,
-    typeof event.totalTokens === "number" && event.totalTokens > 0
-      ? `${formatContextTokens(event.totalTokens)} tokens`
-      : null,
+    tools,
+    tokens ? `${tokens} tokens` : null,
     event.parentLabel ? `spawned by ${event.parentLabel}` : null,
+    worktreeLabel ? `worktree ${event.worktreePath || worktreeLabel}` : null,
+    errorText,
   ].filter((part): part is string => Boolean(part)).join(" · ");
-
-  const worktreeLabel = event.worktreeBranch?.trim() || null;
-  const footer = errorText || worktreeLabel ? (
-    <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
-      {errorText ? (
-        <button
-          type="button"
-          onClick={() => setDetailsOpen((value) => !value)}
-          aria-expanded={detailsOpen}
-          className={QUIET_ACTION}
-        >
-          {detailsOpen ? <CaretDown size={11} weight="bold" aria-hidden /> : <CaretRight size={11} weight="bold" aria-hidden />}
-          Details
-        </button>
-      ) : null}
-      {worktreeLabel ? (
-        <button
-          type="button"
-          onClick={() => void navigator.clipboard?.writeText(event.worktreePath || worktreeLabel)}
-          title={`Copy ${event.worktreePath || worktreeLabel}`}
-          className={cn(QUIET_ACTION, "min-w-0 font-mono")}
-        >
-          <span className="truncate">worktree: {worktreeLabel}</span>
-        </button>
-      ) : null}
-    </div>
-  ) : null;
 
   return (
     <SubagentCardFrame
       agentKey={event.agentKey}
       status={event.status}
       name={name}
-      statusLine={statusLine || null}
-      body={(
-        <>
-          {summary ? (
-            <div
-              className="mt-1.5 line-clamp-3 whitespace-normal break-words text-[length:calc(var(--chat-font-size)*11/14)] leading-relaxed text-fg/66"
-              data-subagent-summary
-            >
-              {summary}
-            </div>
-          ) : null}
-          {stoppedOutcome ? (
-            <div
-              className="mt-1.5 line-clamp-2 whitespace-normal break-words text-[length:calc(var(--chat-font-size)*11/14)] leading-relaxed text-fg/50"
-              data-subagent-stopped-outcome
-            >
-              {stoppedOutcome}
-            </div>
-          ) : null}
-          {errorText && detailsOpen ? (
-            <div className="mt-1.5 whitespace-pre-wrap break-words rounded-md border border-fg/[0.08] bg-fg/[0.04] px-2.5 py-2 font-mono text-[length:calc(var(--chat-font-size)*10/14)] leading-relaxed text-fg/62">
-              {errorText}
-            </div>
-          ) : null}
-        </>
-      )}
-      footer={footer}
+      statusWord={statusWord}
+      overview={overview}
+      overviewTone={isFailed ? "crit" : "quiet"}
+      metrics={metrics || null}
+      metaTitle={metaTitle}
       provider={event.provider ?? provider}
+      workflowName={workflowName}
       open={open}
       openLabel={childSessionId ? `Open ${name}` : `View ${name} transcript`}
       openTitle={childSessionId ? "Open the spawned chat" : "View transcript"}
@@ -524,6 +535,92 @@ export function subagentCardGridCellClass(index: number, count: number): string 
 }
 
 /**
+ * The tally a run's header shows: how many agents are doing what, in the same
+ * words the drawer's rows use (`running` / `done` / `failed` / `stopped`).
+ */
+export function subagentStatusTally(members: readonly { event: { status: SubagentCardStatus } }[]): {
+  total: number;
+  running: number;
+  completed: number;
+  failed: number;
+  stopped: number;
+} {
+  const counts = { total: members.length, running: 0, completed: 0, failed: 0, stopped: 0 };
+  for (const member of members) {
+    const status = member.event.status;
+    if (status === "running") counts.running += 1;
+    else if (status === "failed") counts.failed += 1;
+    else if (status === "stopped") counts.stopped += 1;
+    else counts.completed += 1;
+  }
+  return counts;
+}
+
+/** The `·`-separated status tally both run headers show, zeroes omitted. */
+export function subagentStatusParts(counts: ReturnType<typeof subagentStatusTally>): Array<{ key: string; text: string; className: string }> {
+  return [
+    counts.running > 0
+      ? { key: "running", text: `${counts.running} running`, className: SUBAGENT_STATUS_WORD_TONE.running }
+      : null,
+    counts.completed > 0 ? { key: "done", text: `${counts.completed} done`, className: "text-fg/45" } : null,
+    counts.failed > 0 ? { key: "failed", text: `${counts.failed} failed`, className: "text-rose-300/80" } : null,
+    counts.stopped > 0 ? { key: "stopped", text: `${counts.stopped} stopped`, className: "text-amber-300/60" } : null,
+  ].filter((part): part is { key: string; text: string; className: string } => part !== null);
+}
+export const SUBAGENT_RUN_HEADER_TEXT = "font-sans text-[length:calc(var(--chat-font-size)*11.5/14)]";
+
+/** An agent run this long earns a header; below it the cards read fine alone. */
+export const SUBAGENT_RUN_HEADER_MIN = 4;
+/** Identicons drawn in the header's stack before it stops and just counts. */
+const SUBAGENT_RUN_HEADER_GLYPHS = 4;
+
+/**
+ * One quiet line over a run of agent cards: the stack of the agents' own
+ * identicons, the count, and a `·`-separated tally of what each is doing —
+ * the same rollup the background-job row (`BackgroundJobRunRow`) gives a run
+ * of shell commands. A summary, not a control: no disclosure yet, so it never
+ * promises a click it does not honour. The timeline's subagent renderer draws
+ * it above a grid of `SUBAGENT_RUN_HEADER_MIN` or more agents; the grid itself
+ * stays a layout primitive.
+ */
+export function SubagentRunHeader({ members }: { members: readonly SubagentCardGridMember[] }) {
+  const counts = subagentStatusTally(members);
+  const parts = subagentStatusParts(counts);
+
+  return (
+    <div
+      data-subagent-run-header=""
+      data-subagent-run-count={members.length}
+      className="mb-1.5 flex min-w-0 items-center gap-2"
+    >
+      <span aria-hidden className="flex shrink-0 items-center">
+        {members.slice(0, SUBAGENT_RUN_HEADER_GLYPHS).map((member, index) => (
+          <span
+            key={member.key}
+            className={cn(
+              "inline-flex items-center justify-center rounded-[4px] ring-2 ring-[color:var(--color-bg,#0c0b10)]",
+              index > 0 && "-ml-1.5",
+            )}
+          >
+            <ChatSubagentGlyph
+              id={member.event.agentKey}
+              color={chatSubagentColor(member.event.agentKey)}
+              size={16}
+            />
+          </span>
+        ))}
+      </span>
+      <span className={cn("min-w-0 truncate", SUBAGENT_RUN_HEADER_TEXT)} title={`${members.length} agents`}>
+        <span className="text-fg/60">{pluralCount(members.length, "agent")}</span>
+        {parts.map((part) => (
+          <span key={part.key} className={part.className}> · {part.text}</span>
+        ))}
+      </span>
+    </div>
+  );
+}
+
+/**
  * Consecutive subagent cards, running and settled alike, side by side
  * (`subagent_card_grid`). A lone card renders through this too, with one
  * member, so a card joining it keeps the first one mounted. Rows fill left to
@@ -532,7 +629,8 @@ export function subagentCardGridCellClass(index: number, count: number): string 
  * + 1). Full rows never reflow when a card joins, so a new spawn never moves
  * an earlier card. Cells stretch, so every card in a grid row is as tall as
  * the tallest. A count change only rewrites span classes on the keyed cells;
- * no card remounts.
+ * no card remounts. Layout only: the run rollup above it is
+ * `SubagentRunHeader`, drawn by the timeline's subagent renderer.
  */
 export function SubagentCardGrid<Member extends { key: string }>({
   members,

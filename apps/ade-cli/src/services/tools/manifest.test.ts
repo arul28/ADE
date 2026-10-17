@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import packageJson from "../../../package.json";
 import { ToolError } from "./errors";
 import {
   TOOLS_MANIFEST_SCHEMA_VERSION,
@@ -48,7 +49,7 @@ describe("parseToolsManifest", () => {
   it("accepts a well-formed manifest", () => {
     const parsed = parseToolsManifest(manifestWith());
     expect(parsed.tools).toHaveLength(1);
-    expect(parsed.tools[0].targets["darwin-arm64"]).toEqual(VALID_PIN);
+    expect(parsed.tools[0].targets["darwin-arm64"]).toEqual({ format: "npm-tarball", ...VALID_PIN });
   });
 
   it("refuses a schema version this build does not understand", () => {
@@ -154,7 +155,7 @@ describe("generated tools manifest", () => {
   const manifest = loadToolsManifest();
 
   it("pins every supported target for every tool", () => {
-    expect(manifest.tools.map((tool) => tool.name)).toEqual(["codex", "claude-code", "opencode"]);
+    expect(manifest.tools.map((tool) => tool.name)).toEqual(["codex", "claude-code", "opencode", "muse"]);
     for (const tool of manifest.tools) {
       expect(Object.keys(tool.targets).sort()).toEqual([...TOOL_TARGETS].sort());
     }
@@ -170,11 +171,14 @@ describe("generated tools manifest", () => {
   });
 
   it("keeps the codex alias version, which is not plain semver", () => {
+    // The pinned Codex version, so a routine bump does not break this test.
+    const pinned = (packageJson as { dependencies: Record<string, string> }).dependencies["@openai/codex"];
+    expect(pinned).toMatch(/^\d+\.\d+\.\d+$/);
     const pin = findToolTargetPin(manifest, "codex", "darwin-arm64");
     expect(pin.package).toBe("@openai/codex-darwin-arm64");
-    expect(pin.version).toBe("0.160.0-darwin-arm64");
+    expect(pin.version).toBe(`${pinned}-darwin-arm64`);
     // The alias publishes under the base package path, not the suffixed one.
-    expect(pin.tarball).toContain("/@openai/codex/-/codex-0.160.0-darwin-arm64.tgz");
+    expect(pin.format === "npm-tarball" ? pin.tarball : null).toContain(`/@openai/codex/-/codex-${pinned}-darwin-arm64.tgz`);
   });
 
   it("uses .exe entry spellings on Windows", () => {

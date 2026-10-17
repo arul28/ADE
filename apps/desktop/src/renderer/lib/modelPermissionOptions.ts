@@ -61,6 +61,13 @@ const DROID_PRESENTATION: Record<string, ModelPermissionPresentation> = {
   agi: { tone: "purple", icon: "agi" },
 };
 
+const MUSE_PRESENTATION: Record<string, ModelPermissionPresentation> = {
+  denyUnmatched: { tone: "green", icon: "manual" },
+  promptUnmatched: { tone: "green", icon: "edit" },
+  onRequest: { tone: "amber", icon: "auto" },
+  allowAll: { tone: "red", icon: "full" },
+};
+
 const FALLBACK: ModelPermissionPresentation = { tone: "green", icon: "manual" };
 
 /** The tone and glyph the footer shows for a provider's native permission mode. */
@@ -77,7 +84,9 @@ export function modelPermissionPresentation(
         ? CURSOR_PRESENTATION
         : p === "droid" || p === "factory"
           ? DROID_PRESENTATION
-          : OPENCODE_PRESENTATION;
+          : p === "muse"
+            ? MUSE_PRESENTATION
+            : OPENCODE_PRESENTATION;
   return table[value] ?? FALLBACK;
 }
 

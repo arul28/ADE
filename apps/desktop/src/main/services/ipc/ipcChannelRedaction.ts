@@ -18,6 +18,9 @@ export const ipcChannelRedactionMap: Record<string, ReadonlySet<string>> = {
   [IPC.ptySendToSession]: new Set(["text"]),
   [IPC.ptyWrite]: new Set(["data"]),
   [IPC.appOpenExternal]: new Set(["url"]),
+  // A link a user handed to a browser can be a signed or presigned URL, or an
+  // OAuth callback still carrying its `code`.
+  [IPC.appOpenInBrowser]: new Set(["url"]),
   [IPC.builtInBrowserNavigate]: new Set(["url"]),
   [IPC.builtInBrowserCreateTab]: new Set(["url"]),
   [IPC.builtInBrowserShowPanel]: new Set(["url"]),
@@ -27,8 +30,6 @@ export const ipcChannelRedactionMap: Record<string, ReadonlySet<string>> = {
   [IPC.accountPairMachine]: new Set(["machineKey"]),
   [IPC.accountRenameMachine]: new Set(["machineKey", "customName"]),
   [IPC.accountRemoveMachine]: new Set(["machineKey"]),
-  [IPC.attentionNotchPublishSnapshot]: new Set(["items"]),
-  [IPC.attentionNotchPublishToast]: new Set(["title", "subtitle"]),
   // A Pi sign-in prompt answer is the credential itself when Pi asks for an
   // API key, so it must never reach a verbose IPC trace.
   [IPC.aiPiLoginSubmit]: new Set(["value"]),
@@ -44,6 +45,9 @@ export const ipcChannelRedactionMap: Record<string, ReadonlySet<string>> = {
   [IPC.projectSecretsSet]: new Set(["value"]),
   [IPC.projectSecretsPreviewEnvImport]: new Set(["content"]),
   [IPC.projectSecretsImportEnv]: new Set(["secrets"]),
+  // An answer can be a secret: the private secret card and every `isSecret`
+  // question send their value here, under a generic word.
+  [IPC.agentChatRespondToInput]: new Set(["answers", "responseText"]),
 };
 
 /**

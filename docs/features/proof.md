@@ -44,7 +44,7 @@ promotes any of them after the fact.
 | `apps/desktop/src/main/services/adeActions/registry.ts`, `apps/desktop/src/main/services/ipc/registerIpc.ts`, `apps/desktop/src/preload/preload.ts` | Runtime action, IPC, and renderer bridge for the proof surface. |
 | `apps/ade-cli/src/cli.ts`, `apps/ade-cli/src/adeRpcServer.ts` | Typed `ade proof …` commands and JSON-RPC tools. |
 | `apps/desktop/src/renderer/components/chat/ChatComputerUsePanel.tsx` | Full proof drawer, artifact tiles, preview states, and delete action. |
-| `apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx`, `chatCardPrimitives.tsx` | Turn-time bucketing plus the collapsible inline proof filmstrip. |
+| `apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx`, `chatCardPrimitives.tsx` | Turn-time bucketing plus the "N proof filed" count (`ChatProofCount`) that opens the drawer narrowed to a turn. |
 | `apps/desktop/src/shared/demoVideo/demoContract.ts`, `demoPlanner.ts`, `demoProofText.ts` | The demo contract (track, analysis, plan, `.aderaw`, limits), the pure planner, and the proof sentences and chapters every surface shares. |
 | `apps/desktop/src/main/services/demoVideo/` | The track registry, the render service, the recording guard, the engine set, the two engine clients, and `demoMp4Source.ts` (an H.264 MP4, such as the Windows driver's recording, read for the Chromium engine). |
 | `apps/desktop/native/ADEMedia/` | `ade-media`, the macOS demo engine. |
@@ -267,6 +267,21 @@ ade proof publish --pr <number|url> <artifact-id> [<artifact-id>...] [--heading 
   the command still reports the comment and prints a warning.
 - Exit codes: `0` when the comment posted; `1` when nothing posted.
 
+#### In the PR's own text
+
+```
+ade proof publish --pr <number|url> --in-body
+```
+
+Takes no ids. It reads the PR text from GitHub, uploads each proof item the
+text cites (`![caption](ade-proof://<id>)` or a `proof-compare` fence) with
+`gh pr edit --attach`, and rewrites the citations in place
+(`publishProofIntoPullRequestBody`, `shared/prBodyProof.ts`). `ade prs create`
+and `ade prs body` run the same upload when the text they send cites proof.
+An item that cannot go up keeps its citation and is listed as not uploaded.
+The same `gh` version, size limits and `github_pr` link apply. How ADE draws
+the result: `docs/features/pull-requests/README.md` ("Proof in the PR text").
+
 ### `ade proof list`
 
 Print the proof set for the current session as JSON, or as a table with `--text`.
@@ -484,10 +499,12 @@ ADE browser-agent observations are intentionally not proof. `ade browser observe
 Proof surfaces across chat and linked workflow contexts:
 
 - **Chat transcript** — proof is bucketed by capture time into the turn that
-  produced it. The turn rule shows a compact `N proof` control; expanding it
-  reveals a horizontally scrollable filmstrip directly below that turn. It
-  starts collapsed, remains in chronology when newer messages arrive, and is
-  never pinned to the thread tail.
+  produced it. The turn rule and the turn's fold line show a "N proof filed"
+  count that opens the drawer narrowed to those records. The pictures open
+  under the "Filed proof" action rows that filed them on a click: a small
+  thumbnail (`ProofActionThumbnail`) that enlarges in place, no drawer needed.
+  They start closed, since the turn's proof shows at its end. Proof is never
+  pinned to the thread tail.
 - **Proof drawer** — the Proof section of the chat actions drawer
   (`ChatComputerUsePanel.tsx`, grouping in `shared/proofDrawerModel.ts`).
   Proof is grouped by the turn that filed it, newest first, under that turn's
@@ -495,8 +512,10 @@ Proof surfaces across chat and linked workflow contexts:
   order) comes before "Also filed". Two items a `proof-compare` block names
   show as one Before/After pair. A search box, a Pictures/Videos filter, an
   "In answers" filter and a PR chip (from the `github_pr` owner link) sit on
-  top. Deletion stays. A turn's "N proof" chip in the thread counts only proof
-  the answer does not already show.
+  top. Deletion stays. Opened from a thread count, the drawer shows only those
+  records under a "This turn · N ✕" chip; the chip clears it, and so does
+  closing the drawer or switching chats. A turn's count in the thread counts
+  only proof the answer does not already show.
 - **Chat actions drawer layout** — the drawer never scrolls as a whole
   (`ChatActionsDrawerPanel.tsx`). It grows with its content up to the pane's
   height; past that, each section keeps its own region and scrolls inside it.
@@ -526,12 +545,11 @@ runtime host's filesystem path. Desktop shows local images through the
 video, local or remote, plays from main's token-guarded loopback media server,
 which answers each Range read; a remote one is pulled in 2 MiB slices from that
 machine's broker. See
-[computer use › Renderer](./computer-use/README.md#renderer). The inline filmstrip resolves a local
-image synchronously and every recording through that same media-server preview —
-local or on a paired machine — so a recording shows its first frame behind a
-play badge just as the drawer does. A tile a caller cannot draw a picture for
-(a remote image, a trace, a log) falls back to its kind label and opens the
-drawer, which performs the bounded runtime read. iOS requests artifact content over its
+[computer use › Renderer](./computer-use/README.md#renderer). The thumbnail a
+"Filed proof" row opens reads its picture through the same preview path as answer
+citations, local or on a paired machine; a record it cannot draw (a trace, a
+log, a missing file) draws nothing, since the row's words already say what was
+filed. iOS requests artifact content over its
 sync command surface and caches renderable images locally. When a runtime is
 unreachable or a desktop remote preview exceeds its bound, the artifact remains
 listed with an unavailable-preview state.

@@ -14,6 +14,18 @@ export const KEYBINDING_DEFINITIONS: KeybindingDefinition[] = [
     scope: "global"
   },
   {
+    id: "shell.browser.open",
+    description: "Open the Browser tab",
+    defaultBinding: "Mod+Shift+B",
+    scope: "global"
+  },
+  {
+    id: "shell.music.open",
+    description: "Open the Music tab",
+    defaultBinding: "Mod+Shift+M",
+    scope: "global"
+  },
+  {
     id: "shell.tab.work",
     description: "Open Work",
     defaultBinding: "Mod+1",
@@ -78,6 +90,67 @@ export const KEYBINDING_DEFINITIONS: KeybindingDefinition[] = [
     description: "Pin selected lane tab",
     defaultBinding: "Enter",
     scope: "lanes"
+  },
+  // Scope "work": the Work page's own actions. Every one is a modifier chord,
+  // so the composer and the terminals keep their keys — see
+  // `components/work/workShortcuts.ts` for the dispatcher and the rules.
+  {
+    id: "work.chat.next",
+    description: "Next chat",
+    defaultBinding: "Mod+ArrowDown",
+    scope: "work"
+  },
+  {
+    id: "work.chat.prev",
+    description: "Previous chat",
+    defaultBinding: "Mod+ArrowUp",
+    scope: "work"
+  },
+  {
+    id: "work.chat.focusComposer",
+    description: "Jump into the prompt box",
+    defaultBinding: "Mod+I",
+    scope: "work"
+  },
+  {
+    id: "work.chat.actions",
+    description: "Chat actions and progress",
+    defaultBinding: "Mod+Shift+A",
+    scope: "work"
+  },
+  {
+    id: "work.chat.new",
+    description: "New chat",
+    defaultBinding: "Mod+Shift+N",
+    scope: "work"
+  },
+  {
+    id: "work.tools.toggle",
+    description: "Open or close the tools pane",
+    defaultBinding: "Mod+T",
+    scope: "work"
+  },
+  // Scope "global": the project tabs at the top of the window, reachable from
+  // any page (Ctrl, not ⌘, because ⌘⇧] / ⌘⇧[ belong to the surfaces' own
+  // lists and the browser's tab convention).
+  {
+    id: "project.tab.next",
+    description: "Next project",
+    defaultBinding: "Ctrl+Tab",
+    scope: "global"
+  },
+  {
+    id: "project.tab.prev",
+    description: "Previous project",
+    defaultBinding: "Ctrl+Shift+Tab",
+    scope: "global"
+  },
+  // Scope "home": handled by the home page while it is showing.
+  {
+    id: "home.layout.next",
+    description: "Switch to the next saved home layout",
+    defaultBinding: "Mod+Shift+L",
+    scope: "home"
   },
   // Scope "work" means "handled inside the Work tools pane", not globally: the
   // pane attaches this to its own keydown handler. A global Escape binding would

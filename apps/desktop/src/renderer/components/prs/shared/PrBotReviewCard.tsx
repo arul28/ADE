@@ -9,7 +9,7 @@ import devinMark from "../../../assets/provider-logos/devin.svg";
 
 import type { PrReview } from "../../../../shared/types";
 import { classifyPrAuthor } from "../../../../shared/prBotIdentity";
-import { COLORS, SANS_FONT, inlineBadge } from "../../lanes/laneDesignTokens";
+import { COLORS, SANS_FONT, inlineBadge, fgTint } from "../../lanes/laneDesignTokens";
 import { formatTimeAgo } from "./prFormatters";
 import { PrMarkdown } from "./PrMarkdown";
 import { PrUserAvatar } from "./PrUserAvatar";
@@ -167,7 +167,7 @@ export const PrBotReviewCard = memo(function PrBotReviewCard({
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
-        className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-white/[0.04]"
+        className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-fg/[0.04]"
         style={{ fontFamily: SANS_FONT, color: COLORS.textPrimary }}
       >
         <PrAgentAvatar
@@ -224,7 +224,7 @@ export const PrBotReviewCard = memo(function PrBotReviewCard({
       {open && body ? (
         <div
           className="border-t px-4 py-3"
-          style={{ borderColor: COLORS.border, background: "rgba(255,255,255,0.01)" }}
+          style={{ borderColor: COLORS.border, background: fgTint(1) }}
         >
           <PrMarkdown repoOwner={repoOwner} repoName={repoName} dense>
             {body}

@@ -79,6 +79,14 @@ export function isRequireLaneMode(mode: string | null | undefined): boolean {
   return mode != null && REQUIRE_LANE_MODES.has(mode);
 }
 
+/**
+ * Modes that take the run's lane from the event: the trigger's own lane, or
+ * the trigger PR's branch. A per-step lane override would run work elsewhere.
+ */
+export function laneComesFromEvent(mode: string | null | undefined): boolean {
+  return isRequireLaneMode(mode) || mode === "pr-branch";
+}
+
 /** Only a shell command has a process to kill; other steps drop a stored timeoutMs. */
 function carriesTimeout(kind: AutomationAction["type"] | StepKind): boolean {
   return kind === "run-command";
@@ -315,7 +323,7 @@ function stripStepTargetLane(step: WorkflowStep): WorkflowStep {
 
 /** Fold an edited step list back into a draft. */
 export function applyStepsToDraft(draft: AutomationRuleDraft, steps: WorkflowStep[]): AutomationRuleDraft {
-  const stepsForSave = isRequireLaneMode(readLaneMode(draft)) ? steps.map(stripStepTargetLane) : steps;
+  const stepsForSave = laneComesFromEvent(readLaneMode(draft)) ? steps.map(stripStepTargetLane) : steps;
 
   const soloAgent =
     stepsForSave.length === 1

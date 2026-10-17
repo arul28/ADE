@@ -16,11 +16,13 @@ import {
   attachmentPathHint,
   type AgentChatFileRef,
 } from "../../../../shared/types/chat";
+import { labelAttachments } from "../../../../shared/attachmentLabels";
 import { hasNullByte } from "../../shared/utils";
 import {
-  exceedsProviderInlineLimit,
+  imageNotInlinedHintPart,
   inlineAttachmentHintPart,
 } from "../attachmentInlineGuard";
+import { fitImageForProviderInline } from "../providerInlineImage";
 import type { AcpImagePromptBehavior } from "./acpHostTypes";
 import type { AcpContentBlock } from "./acpProtocolTypes";
 
@@ -69,8 +71,13 @@ export async function buildAcpPromptBlocks(
   args: BuildAcpPromptBlocksArgs,
 ): Promise<AcpContentBlock[]> {
   const blocks: AcpContentBlock[] = [textBlock(args.promptText)];
+  const labels = labelAttachments(args.attachments);
 
-  for (const attachment of args.attachments) {
+  for (const [index, attachment] of args.attachments.entries()) {
+    // The `[Image #k]` / `[File #k: name]` label goes right before the
+    // attachment's own block, so a label in the prompt names this block.
+    const token = labels[index]?.token;
+    if (token) blocks.push(textBlock(`\n${token}`));
     if (attachment.type === "image-url") {
       const url = attachment.url?.trim();
       if (!url) {
@@ -101,19 +108,22 @@ export async function buildAcpPromptBlocks(
       if (attachment.type === "image") {
         if (!args.agentSupportsImages || !args.imagePrompt) {
           blocks.push(textBlock(`\nImage attachment omitted: ${attachment.path} (this provider does not support image prompts).`));
-        } else if (exceedsProviderInlineLimit(bytes.byteLength)) {
-          blocks.push(inlineAttachmentHintPart(attachment.path, bytes.byteLength));
         } else {
-          blocks.push(args.imagePrompt({
-            base64Data: bytes.toString("base64"),
-            mimeType: imageMimeType(attachmentAgentPath(attachment)),
-          }));
+          // ACP agents may route to an Anthropic model, which rejects an image
+          // over 5 MB of base64, so images are fitted before they are inlined.
+          const fitted = await fitImageForProviderInline(bytes, imageMimeType(attachmentAgentPath(attachment)), { provider: "acp" });
+          blocks.push(fitted.kind === "omit"
+            ? imageNotInlinedHintPart(attachment.path, fitted.reason)
+            : args.imagePrompt({
+              base64Data: fitted.data.toString("base64"),
+              mimeType: fitted.mediaType,
+            }));
         }
         continue;
       }
 
       if (bytes.byteLength > MAX_INLINE_TEXT_BYTES) {
-        blocks.push(inlineAttachmentHintPart(attachment.path, bytes.byteLength));
+        blocks.push(inlineAttachmentHintPart(attachment.path, bytes.byteLength, MAX_INLINE_TEXT_BYTES));
       } else if (hasNullByte(bytes)) {
         blocks.push(textBlock(`\nAttachment omitted: ${attachment.path} (binary or unsupported file).`));
       } else {

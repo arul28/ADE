@@ -1,0 +1,83 @@
+/*
+ * The issue viewer's layout (LinearIssueView and the hosts around it).
+ *
+ * Two columns when there is room, one when there is not, decided by the
+ * viewer's own width: the Work tools pane is often narrow on a wide window, so
+ * a viewport query would pick the wrong layout there.
+ *
+ * Narrow: title, then the properties, then the description and activity, so
+ * the facts you scan for sit right under the title instead of after a long
+ * description. Wide: the properties are a sidebar beside both.
+ */
+
+.ade-issue-view {
+  container: issue-view / inline-size;
+  min-width: 0;
+}
+
+.ade-issue-view-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 18px 20px;
+}
+
+.ade-issue-view-head { order: 0; min-width: 0; }
+.ade-issue-view-side {
+  order: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--kit-panel-edge);
+  background: var(--kit-panel-bg);
+}
+.ade-issue-view-body { order: 2; min-width: 0; }
+
+/*
+ * Wide: the properties box floats top-right and the conversation flows around
+ * it, then wraps underneath once the box ends. A fixed second column left the
+ * description squeezed into a narrow strip for its whole length.
+ */
+@container issue-view (min-width: 600px) {
+  .ade-issue-view-grid {
+    display: flow-root;
+    padding: 20px 22px 24px;
+  }
+  .ade-issue-view-side {
+    float: right;
+    width: 248px;
+    margin: 0 0 14px 22px;
+  }
+  .ade-issue-view-body { margin-top: 14px; }
+}
+
+.ade-issue-section {
+  /* Its own block context: beside the floated properties box the divider
+     stops at the box instead of running underneath it. */
+  display: flow-root;
+  margin-top: 18px;
+  padding-top: 12px;
+  border-top: 1px solid var(--kit-rule);
+}
+
+/* The host frame: a 40px header, a scrolling body, an optional action dock. */
+.ade-issue-frame {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+}
+.ade-issue-frame-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.ade-issue-frame-dock {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--kit-rule);
+}

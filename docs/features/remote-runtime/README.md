@@ -113,8 +113,10 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   shared PTY pump per pinned binding (polling plus `ade.runtime.event` push
   delivery, with its own cursor, epoch generation, dedupe ring, in-flight
   epoch-rewind guard, and failure backoff), the per-listener generic pump used by
-  pinned chat/project subscriptions, and the helpers the active pump in
-  `preload.ts` shares. Main-side subscriptions are reference-counted per
+  pinned chat/project subscriptions (also fed by polling plus push: a pushed
+  event is delivered at once, a repeat by id is dropped, and a push carrying a
+  new epoch triggers an immediate re-poll instead of a dispatch), and the
+  helpers the active pump in `preload.ts` shares. Main-side subscriptions are reference-counted per
   `(binding, category)` so sibling pumps share one and only the last teardown
   releases it; the active pump never retains a reference and therefore never
   releases a subscription a pinned pump is still reading.
@@ -184,6 +186,16 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   the brain's `pid`, its bound `syncPort`, the account-directory `publishHealth`
   slice (state + `failingSinceMs` + last-leg durations), and the one-shot
   `lastWedge` recovered by the event-loop watchdog.
+  When a packaged desktop cannot start the machine service after its own
+  repair attempt, it starts an app-owned brain on the primary socket with
+  `--no-sync` if the failure is service installation or service startup. This
+  keeps local work available while phone sync is off. The desktop status reports
+  `runtimeMode: "app_fallback"` and the typed `appFallback` reason; an app banner
+  offers **Fix it**. Disk, database, and migration failures do not trigger this
+  fallback. The child exits with the desktop. Repair reinstalls the real service
+  and reconnects to it; on Linux the pool first releases its fallback child
+  because systemd only stops children it owns. A new desktop launch attempts
+  the service again before considering fallback.
   `probeMachineRuntimeIdentity()` is the side-effect-free question "what is
   answering on this machine's endpoint, exactly": a `MachineRuntimeIdentity`
   carrying version, build hash, pid, the build hash this desktop expected, and
@@ -248,15 +260,15 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   brain-independent project diagnosis and ordered repair for storage,
   database, migration, endpoint, and chat continuity failures. It also owns
   `restartBrain()`, the machine-scoped restart behind the Connections **Repair**
-  button. Both it and `repair()`'s restart_service/verify_endpoint steps go
+  button and the brain-down notice's **Fix it**. Both it and `repair()`'s restart_service/verify_endpoint steps go
   through one `restartServiceAndWait()` sequence — install, wait up to 90 s for
   the machine endpoint to rebind, then `ping` — which reports which stage lost
   rather than the copy, because its two callers phrase the same stage
   differently (`repair()` speaks in repair steps, `restartBrain()` throws).
   `force` is more than the install flag: a forced restart is the only caller that
   actually asked for one, so an install that resolves having *skipped* is a
-  failure for it, and its message becomes "A newer ADE runtime is already
-  running — quit and reopen ADE instead." (the release-build block is passed
+  failure for it, and its message becomes "A newer version of ADE is already
+  running. Restart ADE to switch to it." (the release-build block is passed
   through verbatim, since it is already written as instructions) rather than the
   installer's log line. The two are mutually exclusive: `restartBrain()` rejects
   with "Recovery is already running." while a `repair()` is in flight, because
@@ -284,7 +296,29 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   wait and the real handover get a full budget **each**: when they shared one
   install-wide deadline, a young brain that died late in its wait left the
   restart with no time and its replacement was reported as a `replacement_pid`
-  failure. `installSystemd.ts` reads unit state from a single
+  failure. The job is registered through `loadLaunchAgent`
+  (`serviceManager/common.ts`), shared with the watchdog agent: `launchctl
+  enable` (clears launchd's disabled list), `launchctl bootstrap gui/<uid>`,
+  `launchctl load -w` as the fallback for a session with no gui domain, then
+  `launchctl print` to confirm the job exists, with one retry a second later.
+  The exit code of `launchctl load` is never trusted: for a disabled job it
+  prints `Load failed: 5: Input/output error`, exits 0 and registers nothing,
+  which left two Macs unable to start ADE after an update while Repair and
+  Reset reinstalled through the same load. A job that still is not registered
+  fails with `failureStep: "launchd_register"` and launchctl's own text; the
+  status check names the disabled list, the diagnostic report reads it
+  (`launchctl print-disabled`), and `ade reset --all` re-enables every ADE label
+  on it. After registering, `installLaunchd.ts` runs `launchctl
+  kickstart` (no `-k`, so a running job is untouched) whenever launchd has not
+  started the job: a launchd domain in on-demand-only mode ignores `RunAtLoad`
+  and `KeepAlive`, leaves the job at `runs = 0` / `pended nondemand spawn =
+  speculative`, and logs `pending spawn, domain in on-demand-only mode`. Without
+  the kickstart every Repair, reinstall and machine reset on such a Mac ended in
+  `replacement_pid`; a failed kickstart's own error is appended to that message.
+  The heartbeat watchdog kickstarts the service after it kills a wedged brain
+  for the same reason, and the diagnostic report carries launchd's spawn log
+  (`log show --last 10m`) plus a Notes line naming the state.
+  `installSystemd.ts` reads unit state from a single
   `systemctl --user show -p ActiveState -p MainPID` and treats systemd's own
   `activating` as a live brain. The desktop then keeps
   dialling the socket for `LOCAL_RUNTIME_SERVICE_REPAIR_CONNECT_TIMEOUT_MS`
@@ -362,19 +396,32 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   is also a row in this ADE account's directory (there is otherwise nothing to
   re-adopt); pressing it re-runs `account.pairMachine`. Nothing re-pairs on its
   own.
-- `apps/desktop/src/renderer/components/remoteTargets/SavedMachineRow.tsx` and
-  `remoteMachineModel.ts` (`accountMachineMatchesTarget`,
-  `isMachineVersionOutdated`, `newestKnownAdeVersion`) — the **Update &
-  restart** button on a connected machine that is behind. "Behind" is measured
-  against the newest ADE *this* computer knows about — what it runs, or a newer
-  build it has already seen published — using the shared
+- `apps/desktop/src/renderer/components/remoteTargets/SavedMachineRow.tsx`,
+  `MachineIdentity.tsx`, and `remoteMachineModel.ts` (`accountMachineMatchesTarget`,
+  `isMachineVersionOutdated`, `isMachineVersionCurrent`, `newestKnownAdeVersion`)
+  — one machine row. `MachineIdentity.tsx` draws the computer with its platform's
+  logo in the machine's own color (`machinePlatform`, `machineFormFactor`), on
+  the stable key `machineColorKey` picks, so every device paints the same
+  machine the same color; a hand-picked color overrides it for this computer
+  only (`ade.machineColors.v1`). Beside it sit a presence dot, a version chip
+  that reads `from → to` when the machine is behind, and a detail line naming
+  the winning route ("Local network", "Tailscale", "ADE relay", "SSH") and its
+  latency. The **Update** button appears on a connected machine that is behind.
+  "Behind" is measured against the newest ADE *this* computer knows about — what
+  it runs, or a newer build it has already seen published — using the shared
   `compareUpdateVersions`; a machine level with us gets no button. The click
   calls `window.ade.remoteRuntime.updateAndRestart(targetId, targetVersion)` and
-  renders the host's step-attributed message in the row.
-- `apps/desktop/src/renderer/components/remoteTargets/` — Machines panel with
-  connected / available / unavailable sections, Pair and SSH entry paths,
-  share-this-machine and connection-doctor cards, saved/discovered machine
-  rows, route and latency status, SSH host-key trust, structured connection
+  renders the host's step-attributed message in the row, then checks the
+  machine's reported version against the reply's `pendingVersion`
+  (`describeMachineUpdateAttempt`) to say whether the update landed. While it
+  runs, `UpdateSteps.tsx` shows Sending → Restarting → Back on <version>
+  (`machineUpdatePhase`), and the row stays under Connected for the restart even
+  though the update drops its connection on purpose.
+- `apps/desktop/src/renderer/components/remoteTargets/` — Machines panel ("Your
+  machines") with connected / available / unavailable sections, Pair and SSH
+  entry paths, share-this-machine and connection-doctor cards, saved/discovered
+  machine rows, machine-identity tiles and colors (`MachineIdentity.tsx`),
+  route and latency status, SSH host-key trust, structured connection
   errors, project picker, and the This-computer
   route-publish health indicator. A connect stopped because the host key still
   has to be confirmed is not a failure, and `blockingHostKeyTrust` reports it as
@@ -726,22 +773,94 @@ relay payload E2E encryption is planned security work. See the trust boundary in
     oldest evicted first. A request carrying no usable id cannot be arbitrated
     and is let through, so an older daemon's unlabelled request stays answerable.
 
-    Only navigation forwards;
-    `observe` / `click` and the rest act on a specific live tab and still fail,
-    with an error that says where the browser runs.
+    **The browser where the user sits.** The rule since 2026-10-13: an agent's
+    `ade browser` commands run in the browser of the desktop that sent its chat
+    the last message (see "Which desktop shows it" below), when that desktop is
+    not on the agent's machine. A chat on a Windows PC, driven from a Mac
+    Studio, works in the Mac Studio's browser: the user watches it in their own
+    pane, the page uses their sign-ins, and the agent can take a tab they
+    attach. Before this only "show the user" opens crossed over; `observe`,
+    `click` and the rest ran in a browser on the agent's machine that the user
+    could not see and that held none of their tabs, and the agent could only
+    answer "I cannot see what you see".
 
-    **A machine WITH a desktop also reaches the user's other screen.** When the
-    Mac Studio runs ADE Desktop, its bridge takes every browser call, because an
-    agent drives the tab it opened through that bridge (`observe`, `click`). A
-    call that asks to show the user (`showPanel`, which `ade browser panel`
-    sends, or `openPanel: true`, which `ade browser open --panel` sends) is
-    also forwarded as a
+    `BUILT_IN_BROWSER_METHOD_ROUTES` (`desktopBridgeMethods.ts`) gives every
+    bridge method one route, and the compiler refuses a method without one:
+    `open`, `user-desktop` (acts on a chat's tab), `local-file` (`upload`,
+    `har`, `record`: a file on the agent's machine) or `agent-machine` (its dev
+    servers, a recording's step caption, the pane's own layout). Two paths
+    carry the first two, both chosen by `remoteBrowserForwarder.ts#route`:
+
+    - **Opens** (`navigate`, `createTab`). The agent's own open is sent as a
+      command (below) and loads quietly in a background tab the chat owns, as
+      it does for a chat on the desktop's own machine. A loopback URL cannot
+      load quietly, because its port forward may need a person's yes: the
+      desktop answers `needs_pane`, and the daemon sends the open as a
+      `built_in_browser_remote_request`, which brings the Browser pane and its
+      approval bar up. `showPanel` and `--panel` always take the request path.
+    - **Commands** (`built_in_browser_remote_call`, the methods in
+      `BUILT_IN_BROWSER_REMOTE_CALL_METHODS`): `observe`, `click`, `fill`,
+      `readText`, `claim`, `getStatus`, the element picker, DevTools and the
+      other calls that act on a tab. The daemon publishes the command,
+      addressed to that one desktop, and takes a reply only from that desktop's
+      id. The desktop answers through the `built_in_browser.replyRemoteCall`
+      runtime action twice: `taken` at once, then `done` with the result. A
+      `wait` or a sign-in handoff gets its own time budget
+      (`builtInBrowserRemoteCallDoneTimeoutMs`) on both machines. A result's
+      screenshot is a file on the desktop, so its bytes travel in the reply and
+      the daemon writes them under `.ade/cache/browser-observations/remote/`
+      and points the result at that copy.
+
+    On the desktop, `renderer/lib/remoteBrowserCallHost.ts` answers. It is not
+    a component: the agent keeps working while the user reads another chat or
+    has Git in the tools pane. A chat is registered when the Work page shows it
+    and stays registered; one event subscription per machine, the four most
+    recently shown machines. It swaps the agent's project path (a path on
+    another machine) for the project its own window shows, runs the command
+    through `builtInBrowser.runRemoteAgentCall` (main:
+    `builtInBrowserRemoteCalls.ts`, the same `dispatchBuiltInBrowserAgentCall`
+    the bridge socket uses, so ownership, presence and agent access apply
+    unchanged), and replies on the pinned runtime. Two windows showing the chat
+    are arbitrated by `remoteRequestClaims`, as for an open.
+
+    The agent's own machine is the fallback and the opt-out:
+
+    - No desktop takes a command within 4 s (the laptop is closed): it runs in
+      the browser on the agent's machine, and the chat's commands stay there for
+      60 s before the desktop is asked again.
+    - The last message came from the phone or the CLI: there is no desktop to
+      name, so nothing changes from before.
+    - `--here` on any `ade browser` command, and every isolated sign-in
+      (`--isolated`, `--profile`): the browser on the agent's machine.
+    - `upload`, `har` and `record` read or write a file on the agent's machine.
+      They are refused with a pointer to `--here` while the chat's browser is on
+      the user's computer.
+
+    Every result says where it ran (`browserHost`, printed by `--text` as a
+    first line), so an agent whose command fell back can tell the user why they
+    cannot see its browser.
+
+    Known limits: a tab opened through a tunnel reports its forward port
+    (`127.0.0.1:<ephemeral>`) to the agent rather than the port it asked for; a
+    personal chat on another machine is not served (only chats shown on the
+    Work page are); a download lands on the user's computer.
+
+    On the desktop, three things say where a remote chat's browser is, and no
+    more: the Browser card in the tools picker ends with `chat on <machine>`;
+    the floating preview pictures only a tab that chat owns (it used to fall
+    back to the person's own active tab); and "Attach to chat" works, with a
+    sentence in the attached block telling the agent the tab is on the user's
+    computer.
+
+    **A request to show the user also reaches every screen when nobody can
+    tell.** A call that asks to show the user (`showPanel`, which
+    `ade browser panel` sends, or `openPanel: true`, which
+    `ade browser open --panel` sends) is forwarded as a
     `built_in_browser_remote_request`, addressed to the desktop that sent the
-    chat its last message (see "Which desktop shows it" below). When that
-    desktop is another machine, the Studio's own copy loads without revealing
-    its panel. When nobody can tell where the user is, the request goes to
-    every connected desktop and the Studio's panel opens too. If the addressed
-    desktop does not acknowledge, the request is sent again to every desktop.
+    chat its last message. When nobody can tell where the user is, the request
+    goes to every connected desktop and the agent machine's panel opens too. If
+    the addressed desktop does not acknowledge, the request is sent again to
+    every desktop.
 
     **Links in a chat open the chat machine's `localhost`.** A chat link to
     `http://localhost:4180` carries the chat's pin (`openLinkFromUi(url,
@@ -786,7 +905,10 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   current binding, tracks the newest open generation, waits for active remote
   opens before retrying read-only project calls, blocks mutating action/sync
   calls with the "Project is switching" error, and avoids refreshing a stale
-  runtime binding. Remote event polling suppresses buffered replay on the first
+  runtime binding. Read or write comes from each action's declaration in
+  `apps/desktop/src/shared/adeActionAccess.ts`, not from its name; chat reads
+  that must reach the chat's own host (drafts, thread comments) wait for the
+  switch to finish. Remote event polling suppresses buffered replay on the first
   live subscription, resets cursors on `eventEpoch` changes, notifies project
   refresh paths on `gap: true`, and backs off when idle; lane preview URLs
   returned by a remote runtime are localized through a local TCP forward before
@@ -1070,6 +1192,15 @@ run a local repair against data owned by the remote machine. See
    failure surfaces inline with a one-tap jump into Nearby + PIN pairing
    when the same machine is discoverable locally.
 
+   A connect locks only its own row in the Machines pane (`useRowActions`); every
+   other row keeps Connect, Edit and Remove. A connecting or reconnecting row shows
+   Cancel, which is a manual disconnect: main's disconnect generation ends the
+   in-flight connect for that target, including one still in the account ownership
+   check, and the renderer ignores its late answer. Remove works while connecting
+   and cancels first. Main cannot interrupt an account pairing, so a cancelled
+   pairing keeps its row at "Stopping…" until it settles, and a second pairing for
+   the same machine cannot start meanwhile.
+
    `ade-adopt-v1` protects the *credentials* exchanged during adoption (the
    account bearer, the DPoP proof, and the minted paired secret are all
    sealed), not the confidentiality of the ongoing session. After adoption
@@ -1165,7 +1296,7 @@ WebSocket/auth wait is capped by the remaining budget and observes cancellation;
 authentication failure stops redundant channel-home probes for that route, and
 the final error aggregates the routes/runtimes that were actually attempted.
 
-After connecting, the desktop persists the active remote project to `globalState.lastRemoteProjectBinding` and records it in the unified recent-project list with target id, project id, runtime name, and hostname. Remote recents are keyed as `remote:<targetId>:<projectId>`, so a remote project can share a path string with a local checkout without colliding; the welcome screen can reconnect/open the remote row directly from that metadata. Each target also persists an explicit `autoConnect` preference: a successful Connect enables it, and Disconnect disables it. Only targets with that preference enabled reconnect at launch or after wake; an explicit failed Connect does not change the saved preference. Implicit retries use bounded exponential backoff from 30 s through 5 minutes and remain eligible after repeated failures. Pressing Connect bypasses the current backoff without bypassing SSH or pairing authentication.
+After connecting, the desktop persists the active remote project to `globalState.lastRemoteProjectBinding` and records it in the unified recent-project list with target id, project id, runtime name, and hostname. Remote recents are keyed as `remote:<targetId>:<projectId>`, so a remote project can share a path string with a local checkout without colliding; the welcome screen can reconnect/open the remote row directly from that metadata. Each target also persists an explicit `autoConnect` preference: a successful Connect enables it, and Disconnect disables it. Only targets with that preference enabled reconnect at launch or after wake; an explicit failed Connect does not change the saved preference. Implicit retries use bounded exponential backoff from 30 s through 5 minutes and remain eligible after repeated failures. Pressing Connect bypasses the current backoff without bypassing SSH or pairing authentication. An unpackaged (development) desktop runs with `explicitConnectOnly`: it never reconnects saved targets at launch, after wake, or for implicit use, and connects only when the person presses Connect in it. A paired host keeps one connection per device and every ADE on a computer shares that device pairing, so a dev app reconnecting on its own took machines from the installed app (which then shows the superseded error and waits). `ADE_DEV_REMOTE_AUTOCONNECT=1` turns auto-connect back on for a dev app.
 
 Per-channel layout: builds with `ADE_PACKAGE_CHANNEL=alpha|beta` upload to `~/.ade-alpha/` or `~/.ade-beta/` instead of `~/.ade/` so a remote machine can host stable, beta, and alpha runtimes side by side. Runtime binaries, native deps, PTY workers, and bundled ADE agent skills all live under the selected home. Remote compatibility launches keep `ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1` so remote probes do not fight the user's login service.
 
@@ -1212,9 +1343,9 @@ won the same connection attempt; nothing is wrong.
 
 ## Compatibility warnings
 
-Version skew and capability skew no longer fail the connect outright. The bootstrap performs the JSON-RPC `ade/initialize` handshake, normalizes the `capabilities.machineProjects` flags returned by the remote runtime, and reports the result as `RemoteRuntimeCapabilities` plus a `compatibilityWarnings` array on the `RemoteRuntimeConnectResult`. The renderer's remote target panel displays each warning inline under the connection chip. Warnings cover:
+Version skew and capability skew no longer fail the connect outright. The bootstrap performs the JSON-RPC `ade/initialize` handshake, normalizes the `capabilities.machineProjects` flags returned by the remote runtime, and reports the result as `RemoteRuntimeCapabilities` plus a `compatibilityWarnings` array on the `RemoteRuntimeConnectResult`. The renderer's remote target panel displays the capability warnings inline in the machine row. Warnings cover:
 
-- Runtime version mismatch, shown as a quiet Connections-row note from the two versions (`This machine is on ADE X. {name} is on Y. They can still connect — update the older machine when you can.`).
+- Runtime version mismatch, shown as the machine row's version chip (`X → Y`) rather than a sentence; the older machine is the one to update.
 - Remote package channel mismatch (e.g. desktop is `beta`, remote runtime advertises `stable`).
 - Missing `machineProjects` capabilities — `browseDirectories`, `getDetail`, `getWorkSummary`, `getDefaultParentDir`, `create`, `clone`, `listMyGitHubRepos`. These map to the `projects.*` RPCs the renderer uses for the project picker / new-project / clone flows. Missing capabilities do not block connect, but the connection pool refuses the matching call with a self-describing error when the renderer attempts it (e.g. `Remote ADE service 0.7.2 does not support cloning remote projects.`).
 - The bootstrap fell back to a different ADE home (`Using remote runtime home .ade-beta because .ade did not contain an ADE service for darwin-arm64.`).
@@ -1437,6 +1568,8 @@ diagnostics with `ADE_ENABLE_DESKTOP_SYNC_HOST=1`.
 
 - `Remote target was not found` — the saved target was removed or the UI has a stale selection. Refresh the target list.
 - `Remote machine was manually disconnected. Connect again to use this remote project.` — the user explicitly disconnected the target; ADE will not implicitly reconnect or restore it until Connect is pressed.
+- `Not connected · you disconnected it on <date>` — the row's line for a manual disconnect. The same rule applies: ADE waits for Connect.
+- `Not connected · Reconnect automatically is off` — the machine has connected before, but its **Reconnect automatically** checkbox (Edit) is off, so ADE does not reconnect it when the app opens. Connect makes a one-off connection and leaves the checkbox as it is. A machine that has never connected shows `Never connected` instead.
 - `Remote ADE service connection failed.` — the target is currently unreachable or its route failed. Automatic reconnects continue with bounded backoff; press Connect to bypass the current backoff when you want an immediate retry.
 - `SSH server at <host:port> closed the connection before ADE could finish the SSH handshake` — the TCP route opened but the server reset or closed the SSH handshake. Check Remote Login/sshd, firewall rules, and Tailscale SSH policy.
 - `ADE service is not installed ... no bundled ADE service is available` — install or build `ade` on the remote, or use a release build that includes runtime resources for the remote architecture.
@@ -1649,13 +1782,93 @@ inherits the paired/authenticated channel; it is never automatic and never
 silent.
 
 The client names the version it believes is newest (`targetVersion`); the host
-refuses to "update" to the version it is already running and just restarts,
-which is still the useful action for a wedge-adjacent machine. The reply is
-step-attributed — `check`, `apply`, `restart` — so a failure names the step
-instead of saying "something went wrong". The `restart` step comes back
+refuses to "update" to a version it already runs or has passed. A versioned
+request the machine already satisfies installs nothing and restarts nothing — it
+answers "Already on X — nothing to update, nothing restarted"
+(`alreadyCurrentResult`) — because a needless restart stops every agent on that
+machine. A request naming no version is the "fix a stuck machine" button and
+still restarts. The reply is step-attributed — `check`, `apply`, `restart` — so
+a failure names the step instead of saying "something went wrong". The `restart`
+step comes back
 `pending` on purpose: it tears down the process answering the call, so the
 client confirms by reconnecting and reading the version. A brain cannot report
 on its own replacement.
+
+Which updater runs depends on whether the host's desktop app is open. A brain
+served by an open app belongs to that app: the app re-registers its own runtime
+whenever it sees the brain go missing, so a standalone runtime installed under
+it is replaced again within milliseconds (on 2026-10-05 a Mac Studio's open app
+put 1.2.90 back 10 ms after a remote update installed 1.2.91). So the host asks
+first: the brain calls `app_update.install` on this machine's desktop bridge
+when an app answers there
+(`apps/ade-cli/src/services/runtime/desktopAppUpdateBridge.ts`). The app
+(`apps/desktop/src/main/services/updates/remoteUpdateInstall.ts`) checks its own
+feed, then answers `installing` (staged: it runs its consented
+`quitAndInstall` 1.5 s after replying, so the reply reaches the caller before
+the service uninstall takes the brain down), `downloading` (it installs when
+the download finishes, giving up after 30 minutes), `already_current`,
+`no_update`, `unsupported` (development and channel builds), or `failed`. The
+app's post-update transaction then restarts the brain on the new build. This is
+the same path on macOS and Windows. With no app attached, an app too old to
+know the method, or `unsupported`, the standalone `ade brain update` runs as
+before. The reply's `route` says which (`desktop_app` or `standalone`), and
+`pendingVersion` names the version the machine should come back on.
+
+A brain update this app did not start (`ade brain update` on the machine, or a
+remote one that fell back to the standalone route) writes its progress to
+`<ADE home>/runtime/update-status.json`. While that file says `staged` (2 min),
+`applying` or `restarting` (5 min), or `succeeded` (60 s), the desktop's
+connection pool treats it as an update window and does not repair the service,
+so an open app cannot put its older runtime back over the new one.
+
+The client does not trust "reconnecting…". Before it sends anything it re-reads
+each machine's live version and skips one already on the target (or newer) with
+the same "Already on X — nothing to update, nothing restarted" answer, so a
+stale list cannot stop work on a machine that needs nothing. It then records
+`pendingVersion` (or, from a host that predates it, `targetVersion` for an
+applied update) and checks the machine against it: once the machine reports that
+version the row says
+"Updated to X"; if it has not after 5 minutes (35 for a download) it says
+"Still on Y — the update to X didn't apply" with the version it is actually on.
+A call that reconnects the machine after its restart refreshes the recorded
+version (`RemoteConnectionPool.onEntryConnected`), so a finished update is never
+called a failed one. The button stays busy until then.
+
+Nothing restarts without a yes. Before the call, the desktop asks the machine
+what the update would stop (`ade.remoteRuntime.getUpdateImpact`, which calls the
+projectless `runtime.updateImpact`) and shows it in the confirmation: the chats
+mid-turn by name, plus counts of the CLI sessions and terminals that are open (a restart closes each one, quiet or not).
+`runtime.updateImpact` is `cto`-gated, reads only projects the brain has already
+booted (it never boots one to answer), and includes personal chats. A machine
+that needs the update is usually too old to have the method, so the desktop
+falls back to `runtime.activitySummary` and says only "Work is running" or
+"Nothing is running". One 3-second deadline covers both asks; a machine that
+has not answered by then (or is no longer saved) reads "Couldn't check what's
+running", never as idle. The IPC never rejects. When two or more connected
+machines are behind, a banner above the section header offers **Update all**
+(`MachinesBehindBanner`, "N machines are behind", naming the target version):
+one confirmation with a block per machine, then the same per-machine update in
+parallel.
+
+The same action is offered where this computer's own update lives: **Update
+other machines** (`components/settings/OtherMachinesUpdateSection.tsx`) sits
+under Updates in Settings > General and under Your computers on the Account
+page. It lists each connected machine with its version, "Update & restart" for
+the ones behind, and "Update all N". Every place that starts or shows one of
+these updates, the install dialog below included, goes through one store
+(`components/remoteTargets/machineUpdates.ts`), so an update started in one
+shows as in flight in the others and its outcome survives leaving the page.
+The words for what is running live in
+`components/remoteTargets/MachineUpdateImpact.tsx`. The
+browser client cannot ask a machine to update, so the section is not rendered
+there.
+
+The same blocks appear in this computer's own install dialog
+(`components/app/autoUpdateInstallAction.tsx`) for connected machines older
+than the version being installed, with an "Update … too" checkbox that is on by
+default (the confirm dialog takes several checkboxes, each answered by key). Those machines update first and this computer installs last, because
+its relaunch ends the run. If one refuses, the dialog names it and asks whether
+to install here anyway.
 
 ### Account state and reachability
 

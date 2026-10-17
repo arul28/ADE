@@ -8,7 +8,9 @@ import Foundation
 ///
 ///   a. Trim surrounding whitespace.
 ///   b. Remove fillers — each filler only as a standalone token/phrase
-///      (case-insensitive word boundary), then collapse the doubled spaces.
+///      (case-insensitive word boundary) plus a comma right after it, then
+///      collapse the doubled spaces. An opening filler also takes the
+///      punctuation attached to it ("Um. Ship it" -> "Ship it").
 ///   c. Apply corrections longest-key-first, replacing case-insensitive
 ///      whole-phrase matches (word boundaries) with the canonical value.
 ///   d. Capitalize the first letter of each sentence (start of string and
@@ -51,10 +53,24 @@ enum DictationCleanup {
   /// resulting double spaces.
   private static func removeFillers(_ input: String, fillers: [String]) -> String {
     var text = input
+    let alternatives = fillers
+      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .filter { !$0.isEmpty }
+      .sorted { $0.count > $1.count }
+      .map { NSRegularExpression.escapedPattern(for: $0) }
+    // The run of fillers opening the transcript goes with the punctuation
+    // attached to each ("Um. Uh, ship it" -> "ship it"); a transcript that
+    // itself starts with ".env" keeps it. Longest filler first.
+    if !alternatives.isEmpty {
+      let opening = "^(?:(?:" + alternatives.joined(separator: "|") + ")\\b[,.;:!?]*\\s*)+"
+      text = replaceRegex(in: text, pattern: opening, with: "", caseInsensitive: true)
+    }
     for filler in fillers {
       let trimmed = filler.trimmingCharacters(in: .whitespacesAndNewlines)
       guard !trimmed.isEmpty else { continue }
-      let pattern = "\\b" + NSRegularExpression.escapedPattern(for: trimmed) + "\\b"
+      let escaped = NSRegularExpression.escapedPattern(for: trimmed)
+      // A punctuating recognizer writes "Um, rebase"; take the comma too.
+      let pattern = "\\b" + escaped + "\\b(?:\\s*,)?"
       text = replaceRegex(in: text, pattern: pattern, with: " ", caseInsensitive: true)
     }
     // Collapse the spaces the removals left behind.

@@ -25,7 +25,7 @@ import {
 const CONTROL_CLASS = cn(
   "ade-shell-control inline-flex h-6 shrink-0 items-center justify-center gap-1.5 rounded-[6px] px-1.5",
   "border-0 text-[12px] font-medium text-muted-fg",
-  "transition-colors duration-[120ms] ease-out hover:bg-white/[0.06] hover:text-fg",
+  "transition-colors duration-[120ms] ease-out hover:bg-fg/[0.06] hover:text-fg",
   "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
 );
 
@@ -317,7 +317,7 @@ export function WorkToolHeader({
             // The picker IS a page you are on, so the button that shows it is
             // lit while you are there — the one state in this bar that is not
             // hover.
-            activeTool === null && "bg-white/[0.06] text-fg",
+            activeTool === null && "bg-fg/[0.06] text-fg",
           )}
           data-variant="ghost"
           data-state={activeTool === null ? "open" : undefined}
@@ -372,7 +372,7 @@ export function WorkToolHeader({
                 <button
                   type="button"
                   aria-label={`${layout.overflow.length} more open tools`}
-                  className={cn(CONTROL_CLASS, "w-6 px-0", "data-[state=open]:bg-white/[0.09] data-[state=open]:text-fg")}
+                  className={cn(CONTROL_CLASS, "w-6 px-0", "data-[state=open]:bg-fg/[0.09] data-[state=open]:text-fg")}
                   data-variant="ghost"
                 >
                   <DotsThree size={16} weight="bold" />
@@ -450,7 +450,7 @@ export function WorkToolHeader({
                   data-tool-dot={entry.id}
                   className={cn(
                     "relative inline-flex h-5 w-5 items-center justify-center rounded-full",
-                    "transition-colors duration-[120ms] ease-out hover:bg-white/[0.06]",
+                    "transition-colors duration-[120ms] ease-out hover:bg-fg/[0.06]",
                     "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
                   )}
                 >
@@ -540,8 +540,8 @@ function WorkToolTab({
             "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
             showLabel ? "px-1.5 pr-[20px]" : "w-6 justify-center px-0",
             active
-              ? "bg-white/[0.07] text-fg"
-              : "bg-transparent text-muted-fg hover:bg-white/[0.04] hover:text-fg",
+              ? "bg-fg/[0.07] text-fg"
+              : "bg-transparent text-muted-fg hover:bg-fg/[0.04] hover:text-fg",
           )}
         >
           <Icon
@@ -587,7 +587,7 @@ function WorkToolTab({
         className={cn(
           "absolute inline-flex items-center justify-center rounded-[4px]",
           "text-muted-fg transition-opacity duration-[120ms] ease-out",
-          "hover:bg-white/[0.09] hover:text-fg",
+          "hover:bg-fg/[0.09] hover:text-fg",
           "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
           "group-hover/tab:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100",
           // A labelled tab has a reserved slot, so its ✕ is always there and

@@ -11,6 +11,7 @@ describe("model picker provider order", () => {
     expect(MODEL_PICKER_PROVIDER_ORDER).toEqual([
       "claude",
       "codex",
+      "muse",
       "cursor",
       "devin",
       "opencode",

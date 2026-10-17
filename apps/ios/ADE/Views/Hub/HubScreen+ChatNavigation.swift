@@ -280,7 +280,11 @@ private struct HubChatCover: View {
             // subscribe before CRR catches up. CLI rows intentionally pass nil
             // here so the destination hydrates their real PTY-backed row.
             initialSession: sessionStub,
-            initialChatSummary: nil,
+            // A chat on another machine has no host summary on this phone;
+            // its roster row names the provider and model the composer shows.
+            initialChatSummary: hubChatTargetIsOnOtherMachine(target, focusedMachineKey: syncService.focusedMachineKey)
+              ? target.chat.rosterChatSummary
+              : nil,
             transitionNamespace: nil,
             isLive: true,
             navigationChrome: .pushedDetail,
@@ -448,8 +452,7 @@ private struct HubChatActivationFailedView: View {
         message: message
       ) {
         Button("Retry", action: onRetry)
-          .buttonStyle(.glassProminent)
-          .tint(ADEColor.accent)
+          .buttonStyle(ADEKitButtonStyle(prominent: true))
       }
       .padding(.horizontal, 20)
     }

@@ -384,6 +384,7 @@ describe("buildRosterSnapshot", () => {
   it("overlays live running/awaiting fidelity for a booted scope", async () => {
     const scopeRegistry = bootedScopes([
       { sessionId: "chat-run", status: "active", awaitingInput: false, provider: "claude", model: "opus" },
+      { sessionId: "chat-await", status: "idle", nextWakeAt: "2026-01-04T00:00:00Z" },
     ]);
     const projects = await buildRosterSnapshot({ projectRegistry, scopeRegistry, hostProjectId: PROJECT_ID });
     const project = projects[0]!;
@@ -393,6 +394,36 @@ describe("buildRosterSnapshot", () => {
     expect(byId.get("chat-run")!.status).toBe("running");
     expect(byId.get("chat-run")!.provider).toBe("claude");
     expect(project.runningCount).toBe(1);
+    // A parked wake travels so Activity can file the chat under Waiting; a
+    // chat without one carries no field at all.
+    expect(byId.get("chat-await")!.nextWakeAt).toBe("2026-01-04T00:00:00Z");
+    expect(byId.get("chat-run")).not.toHaveProperty("nextWakeAt");
+  });
+
+  it("tells each lane why its running chats wait on the lane's open PR", async () => {
+    const db = new DatabaseSync(path.join(projectRoot, ".ade", "ade.db"));
+    db.exec(`
+      create table pull_requests (
+        id text primary key, lane_id text not null, state text not null,
+        checks_status text, review_status text
+      );
+    `);
+    const insertPr = db.prepare(
+      "insert into pull_requests (id, lane_id, state, checks_status, review_status) values (?, ?, ?, ?, ?)",
+    );
+    // CI in flight on an open PR outranks a requested review on another one.
+    insertPr.run("pr-1", "lane-primary", "open", "pending", "none");
+    insertPr.run("pr-2", "lane-primary", "draft", "passing", "requested");
+    // A merged PR's last check state is history, not a wait.
+    insertPr.run("pr-3", "lane-work", "merged", "pending", "requested");
+    db.close();
+
+    const projects = await buildRosterSnapshot({ projectRegistry, scopeRegistry: unbootedScopes });
+    const byId = new Map(projects[0]!.lanes.map((lane) => [lane.id, lane]));
+
+    expect(byId.get("lane-primary")!.prWaitingReason).toBe("ci");
+    expect(byId.get("lane-work")!.prWaitingReason).toBeNull();
+    expect([...byId.keys()]).toEqual(["lane-primary", "lane-work"]);
   });
 
   it("reports a chat with live background tasks as running, not idle", async () => {

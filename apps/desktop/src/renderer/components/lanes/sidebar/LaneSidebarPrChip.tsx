@@ -70,7 +70,7 @@ export const LaneSidebarPrChip = React.memo(function LaneSidebarPrChip({
             <button
               key={pr.id}
               type="button"
-              className="flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-white/[0.05]"
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-fg/[0.05]"
               onClick={(event) => {
                 event.stopPropagation();
                 onOpenPr(pr);

@@ -498,51 +498,36 @@ describe("createAgentChatService", () => {
     it("throttles live Claude context usage by both time and percentage movement", async () => {
       let now = 0;
       const dateNow = vi.spyOn(Date, "now").mockImplementation(() => now);
-      const messages = [
-        {
-          type: "stream_event",
-          event: {
-            type: "message_start",
-            message: {
-              id: "usage-message",
-              usage: {
-                input_tokens: 100_000,
-                cache_read_input_tokens: 20_000,
-                cache_creation_input_tokens: 30_000,
-                output_tokens: 0,
-              },
+      // Live occupancy is input + cache read + cache creation. Output tokens are
+      // not part of it, so the huge output delta must never move the ring.
+      const messageStart = (input: number, cacheRead: number, cacheCreation: number) => ({
+        type: "stream_event",
+        event: {
+          type: "message_start",
+          message: {
+            id: "usage-message",
+            usage: {
+              input_tokens: input,
+              cache_read_input_tokens: cacheRead,
+              cache_creation_input_tokens: cacheCreation,
+              output_tokens: 0,
             },
           },
         },
-        {
-          type: "stream_event",
-          event: { type: "message_delta", usage: { output_tokens: 20_000 } },
-        },
-        {
-          type: "stream_event",
-          event: { type: "message_delta", usage: { output_tokens: 5_000 } },
-        },
-        {
-          type: "stream_event",
-          event: { type: "message_delta", usage: { output_tokens: 20_000 } },
-        },
-        { type: "result", subtype: "success", is_error: false, usage: { input_tokens: 1, output_tokens: 1 } },
+      });
+      const timeline: Array<{ at: number; message: Record<string, unknown> }> = [
+        // 100k + 20k + 30k = 150k of a 1M window -> 15%. First reading always emits.
+        { at: 0, message: messageStart(100_000, 20_000, 30_000) },
+        // 20% but only 1s after the last emit -> held back by the 5s floor.
+        { at: 1_000, message: messageStart(150_000, 20_000, 30_000) },
+        // 5s have passed but 15.5% is under one point from 15% -> held back.
+        { at: 6_000, message: messageStart(105_000, 20_000, 30_000) },
+        // Output tokens are not occupancy.
+        { at: 6_500, message: { type: "stream_event", event: { type: "message_delta", usage: { output_tokens: 500_000 } } } },
+        // 17% and 7s since the last emit -> emits.
+        { at: 7_000, message: messageStart(120_000, 20_000, 30_000) },
+        { at: 7_000, message: { type: "result", subtype: "success", is_error: false, usage: { input_tokens: 1, output_tokens: 1 } } },
       ];
-      const timedMessages = (async function* () {
-        now = 0;
-        yield messages[0]!;
-        now = 1_000;
-        yield messages[1]!;
-        now = 6_000;
-        yield messages[2]!;
-        now = 7_000;
-        yield messages[3]!;
-        yield messages[4]!;
-      })();
-      const materialized: Array<Record<string, unknown>> = [];
-      for await (const message of timedMessages) materialized.push(message);
-      // Re-apply the intended times from inside the SDK stream rather than while
-      // materializing the fixtures.
       let streamCall = 0;
       const send = vi.fn().mockResolvedValue(undefined);
       const stream = vi.fn(() => (async function* () {
@@ -551,15 +536,10 @@ describe("createAgentChatService", () => {
           yield { type: "system", subtype: "init", session_id: "sdk-live-usage", slash_commands: [] };
           return;
         }
-        now = 0;
-        yield materialized[0]!;
-        now = 1_000;
-        yield materialized[1]!;
-        now = 6_000;
-        yield materialized[2]!;
-        now = 7_000;
-        yield materialized[3]!;
-        yield materialized[4]!;
+        for (const step of timeline) {
+          now = step.at;
+          yield step.message;
+        }
       })());
       vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
         send,
@@ -596,7 +576,7 @@ describe("createAgentChatService", () => {
           ],
           totalTokens: 50_000,
           maxTokens: 200_000,
-          rawMaxTokens: 200_000,
+          rawMaxTokens: 150_000,
           percentage: 25,
           gridRows: [],
           model: "claude-sonnet-5",
@@ -647,7 +627,9 @@ describe("createAgentChatService", () => {
                 type: "context_usage",
                 origin: "snapshot",
                 state: "measured",
-                usage: expect.objectContaining({ percentage: 25 }),
+                // The ring measures against the model's 1M window (50k -> 5%), not the
+                // SDK's 200k; the SDK's raw max becomes the compaction threshold.
+                usage: expect.objectContaining({ totalTokens: 50_000, maxTokens: 1_000_000, percentage: 5, compactAtTokens: 150_000 }),
               }),
             ]));
         });
@@ -779,7 +761,7 @@ describe("createAgentChatService", () => {
         ...extra,
         event: { type: "message_start", message: { id: `msg-${Object.values(usage).join("-")}`, usage } },
       });
-      const { events, session } = await createClaudeStreamFixture({
+      const { events, session, service } = await createClaudeStreamFixture({
         sdkSessionId: "sdk-ledger-complete",
         serviceOverrides: { turnUsageLedger: ledger },
         messages: [
@@ -840,6 +822,18 @@ describe("createAgentChatService", () => {
       });
       expect(done?.servedModel).toBeUndefined();
       expect(done?.account).not.toHaveProperty("routedAway");
+
+      // The chat remembers the prompt cache this turn left: most of the write
+      // was 1-hour, and Claude times it from the last main request's start.
+      // The countdown badge and Compact first read this, not a fixed number.
+      const lastRequestStartedAt = done?.usage?.lastRequestStartedAt;
+      expect(lastRequestStartedAt, "the turn reports when its last request started").toEqual(expect.any(String));
+      await expect(service.getSessionSummary(session.id)).resolves.toMatchObject({
+        promptCache: { ttl: "1h", since: lastRequestStartedAt },
+      });
+      expect(readPersistedChatState(session.id)).toMatchObject({
+        promptCache: { ttl: "1h", since: lastRequestStartedAt },
+      });
 
       expect(rows).toHaveLength(1);
       expect(rows[0]).toMatchObject({
@@ -1202,11 +1196,42 @@ describe("createAgentChatService", () => {
         expect(harness.send.mock.calls.map(([message]) => claudeInputText(message)).filter((text) => text === "/compact"))
           .toHaveLength(1);
       });
-      expect(harness.events.find((entry) =>
-        entry.event.type === "context_compact"
-        && entry.event.trigger === "ade_fallback"
-        && entry.event.state === "started"
-      )?.event).toMatchObject({ compactionId: expect.any(String) });
+      // Asked for, not running: Claude has not said it is compacting.
+      expect(harness.events.some((entry) => entry.event.type === "context_compact" && entry.event.state === "started"))
+        .toBe(false);
+    });
+
+    it("says Compacting once Claude starts the compaction ADE asked for, and pairs it with the result", async () => {
+      const harness = await createClaudeCompactionFixture({
+        sdkSessionId: "sdk-fallback-compact-started",
+        first: [
+          {
+            type: "stream_event",
+            event: { type: "message_start", message: { id: "fallback-started", usage: { input_tokens: 970_000, output_tokens: 0 } } },
+          },
+          { type: "result", subtype: "success", is_error: false, usage: { input_tokens: 1, output_tokens: 1 } },
+        ],
+        afterCompact: [
+          // Claude repeats its status while it works.
+          { type: "system", subtype: "status", status: "compacting" },
+          { type: "system", subtype: "status", status: "compacting" },
+          {
+            type: "system",
+            subtype: "compact_boundary",
+            compact_metadata: { trigger: "manual", pre_tokens: 970_000, post_tokens: 20_000 },
+          },
+          { type: "result", subtype: "success", is_error: false, usage: { input_tokens: 1, output_tokens: 1 } },
+        ],
+      });
+
+      const compactions = () => harness.events.flatMap((entry) => entry.event.type === "context_compact" ? [entry.event] : []);
+      await vi.waitFor(() => {
+        expect(compactions().some((event) => event.state === "completed")).toBe(true);
+      }, { timeout: 5_000 });
+      const startedEvents = compactions().filter((event) => event.state === "started");
+      expect(startedEvents).toHaveLength(1);
+      expect(startedEvents[0]).toMatchObject({ trigger: "ade_fallback", compactionId: expect.any(String) });
+      expect(compactions().find((event) => event.state === "completed")?.compactionId).toBe(startedEvents[0]?.compactionId);
     });
 
     it("claims a compaction only after the SDK confirms the boundary", async () => {
@@ -1458,6 +1483,137 @@ describe("createAgentChatService", () => {
         .not.toContain("context overflowed — compacted; please re-send your last message");
       expect(harness.send.mock.calls.map(([message]) => claudeInputText(message)).filter((text) =>
         text.includes("Exercise Claude streaming text."))).toHaveLength(1);
+    });
+
+    it.each([
+      { path: "foreground turn", idleReader: false },
+      { path: "idle reader", idleReader: true },
+    ])("shows a Claude image_error turn as one readable failure on the $path, not as a reply", async ({ idleReader }) => {
+      const sdkSessionId = `sdk-image-error-${idleReader ? "idle" : "foreground"}`;
+      const sizeText = "Image base64 size (8.3MB) exceeds API limit (5MB). Please resize the image before sending.";
+      const imageErrorFrames = [
+        {
+          type: "assistant",
+          error: "invalid_request",
+          message: { model: "<synthetic>", content: [{ type: "text", text: sizeText }] },
+        },
+        {
+          type: "result",
+          subtype: "success",
+          is_error: true,
+          terminal_reason: "image_error",
+          result: sizeText,
+          errors: [],
+          usage: { input_tokens: 1, output_tokens: 0 },
+        },
+      ];
+      const events: AgentChatEventEnvelope[] = [];
+      let releaseIdle!: () => void;
+      const idleGate = new Promise<void>((resolve) => { releaseIdle = resolve; });
+      let streamCall = 0;
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream: vi.fn(() => (async function* () {
+          streamCall += 1;
+          if (streamCall === 1) {
+            yield { type: "system", subtype: "init", session_id: sdkSessionId, slash_commands: [] };
+            return;
+          }
+          if (!idleReader) {
+            for (const message of imageErrorFrames) yield message;
+            return;
+          }
+          // The foreground turn ends on a clean result; the image failure
+          // arrives later, while the query is read by the idle reader.
+          yield { type: "result", subtype: "success", is_error: false, session_id: sdkSessionId, usage: { input_tokens: 1, output_tokens: 1 } };
+          await idleGate;
+          for (const message of imageErrorFrames) yield message;
+        })()),
+        close: vi.fn(),
+        sessionId: sdkSessionId,
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "claude-sonnet-5",
+        modelId: "anthropic/claude-sonnet-5",
+      });
+      await service.runSessionTurn({ sessionId: session.id, text: "Attach the screenshot." });
+      if (idleReader) releaseIdle();
+
+      const isImageErrorDone = (event: AgentChatEventEnvelope["event"]): event is Extract<AgentChatEventEnvelope["event"], { type: "done" }> =>
+        event.type === "done" && event.terminalReason === "image_error";
+      await waitForCondition(() => events.some((entry) => isImageErrorDone(entry.event)), "the image_error turn to settle");
+      const failedDone = events.map((entry) => entry.event).find(isImageErrorDone);
+
+      const errors = events.map((entry) => entry.event).filter((event) => event.type === "error");
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toMatchObject({
+        type: "error",
+        detail: expect.stringContaining("8.3MB"),
+        errorInfo: { presentation: expect.any(Object) },
+      });
+      expect(failedDone).toMatchObject({
+        type: "done",
+        status: "failed",
+        terminalReason: "image_error",
+      });
+      expect(failedDone?.model).not.toBe("<synthetic>");
+      expect(events.some((entry) => entry.event.type === "text" && entry.event.text.includes("exceeds API limit"))).toBe(false);
+      service.forceDisposeAll();
+    });
+
+    it("says a Claude process killed by a signal ADE did not send was stopped from outside", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream: vi.fn(() => (async function* () {
+          streamCall += 1;
+          if (streamCall === 1) {
+            yield { type: "system", subtype: "init", session_id: "sdk-session-sigterm", slash_commands: [] };
+            return;
+          }
+          yield { type: "assistant", message: { id: "m1", content: [{ type: "text", text: "Working" }], usage: { input_tokens: 1, output_tokens: 1 } } };
+          // What the SDK throws when its process dies of an outside `kill -TERM`.
+          throw new Error("Claude Code process exited with code 143");
+        })()),
+        close: vi.fn(),
+        sessionId: "sdk-session-sigterm",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "claude-sonnet-5",
+        modelId: "anthropic/claude-sonnet-5",
+      });
+      await service.runSessionTurn({ sessionId: session.id, text: "Do the work." }).catch(() => undefined);
+      await waitForCondition(
+        () => events.some((entry) => entry.event.type === "done" && entry.event.status === "failed"),
+        "the killed turn to settle",
+      );
+
+      const errors = events.map((entry) => entry.event).filter((event) => event.type === "error");
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toMatchObject({
+        detail: "Claude Code process exited with code 143",
+        errorInfo: {
+          provider: "Claude",
+          presentation: { technicalDetail: "Claude Code process exited with code 143" },
+        },
+      });
+      // The card names the signal instead of forwarding the bare exit code.
+      const presentation = (errors[0] as { errorInfo: { presentation: { body: string } } }).errorInfo.presentation;
+      expect(presentation.body).toContain("SIGTERM");
+      expect(presentation.body).not.toContain("exited with code");
+      service.forceDisposeAll();
     });
 
     it("does not duplicate Claude thinking when the final assistant message repeats streamed content", async () => {

@@ -152,7 +152,6 @@ function makeService(options: {
   requestChatInput?: MacDesktopRequestChatInput;
   /** Replaces the fake demo engine; `[]` is a host with none. */
   demoEngines?: DemoEngine[];
-  isArtifactFileReferenced?: (filePath: string) => boolean;
 } = {}) {
   const events: MacDesktopEventPayload[] = [];
   const driver = options.driver ?? createFakeDriver();
@@ -178,7 +177,6 @@ function makeService(options: {
     ...(options.ingestArtifacts ? { ingestArtifacts: options.ingestArtifacts } : {}),
     ...(options.captureAnalytics ? { captureAnalytics: options.captureAnalytics } : {}),
     ...(options.requestChatInput ? { requestChatInput: options.requestChatInput } : {}),
-    ...(options.isArtifactFileReferenced ? { isArtifactFileReferenced: options.isArtifactFileReferenced } : {}),
     demoEngines: { engines: () => options.demoEngines ?? [demoEngine] },
     onEvent: (event) => events.push(event),
     createDriverClient: () => driver as unknown as MacDesktopDriverClient,
@@ -441,10 +439,16 @@ describe("Windows Desktop seats, consent and window verbs", () => {
       // A caller with no chat is nobody's consent.
       await expect(real("shared-1", null)).rejects.toMatchObject({ code: "MAC_DESKTOP_INPUT_LEASE_REQUIRED" });
 
+      // A point with no mode stays real input on a Windows seat: its driver
+      // has no background path, and the private seat has its own pointer.
+      await expect(service.click({ laneId: "private", x: 20, y: 20, chatSessionId: "chat-p" }))
+        .resolves.toMatchObject({ ok: true, mode: "real" });
+      expect(inputOps(driver, "private").at(-1)?.payload.mode).toBe("real");
+
       // A person who took control keeps it, on either seat.
       await service.takeControl({ laneId: "private", controllerId: "ade-window:user" });
       await expect(real("private", "chat-p")).rejects.toMatchObject({ code: "MAC_DESKTOP_USER_HAS_CONTROL" });
-      expect(inputOps(driver, "private")).toHaveLength(1);
+      expect(inputOps(driver, "private")).toHaveLength(2);
     } finally { service.dispose(); }
 
     // A Mac still needs the chat's own lease.
@@ -624,12 +628,16 @@ describe("desktop seat summary (the status `seat` every text surface leads with)
 });
 
 describe("macDesktopService capability gate", () => {
-  it("getStatus answers on Windows with supported:false and an unsupported driver", async () => {
-    const { service, driver } = makeService({ platform: "win32" });
+  it.each([
+    ["Windows", "win32", /macOS/],
+    // Linux has no seat at all: it says so instead of "needs macOS".
+    ["Linux", "linux", /not supported on Linux/],
+  ] as const)("getStatus answers on %s with supported:false and an unsupported driver", async (_host, platform, reason) => {
+    const { service, driver } = makeService({ platform });
     const status = await service.getStatus({ laneId: "lane-1" });
     expect(status.supported).toBe(false);
-    expect(status.platform).toBe("win32");
-    expect(status.unsupportedReason).toContain("macOS");
+    expect(status.platform).toBe(platform);
+    expect(status.unsupportedReason).toMatch(reason);
     expect(status.displayMode).toBe("unavailable");
     expect(status.driver.state).toBe("unsupported");
     // Nothing was asked of any helper: a Windows host has none to ask.
@@ -1186,6 +1194,89 @@ describe("macDesktopService real input and the lease", () => {
     }
   });
 
+  it("delivers a Mac point click, scroll and drag as background input, with no lease and no card", async () => {
+    const driver = createFakeDriver({
+      // The driver answers with the path it took; a handle click it had to
+      // deliver at the element's centre says so.
+      [MAC_DESKTOP_DRIVER_OPS.input]: (payload) => (
+        payload.mode === "accessibility" && payload.command === "click"
+          ? { resolvedIndex: null, deliveredMode: "background" }
+          : { resolvedIndex: null }
+      ),
+    });
+    const { service } = makeService({ driver });
+    await service.start({ laneId: "lane-1" });
+    const modeOf = () => {
+      const input = driver.calls.filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.input).at(-1);
+      return { mode: input?.payload.mode, lease: input?.payload.lease };
+    };
+
+    await expect(service.click({ laneId: "lane-1", x: 10, y: 10, button: "right", chatSessionId: "chat-1" }))
+      .resolves.toMatchObject({ ok: true, mode: "background" });
+    expect(modeOf()).toEqual({ mode: "background", lease: undefined });
+    await service.scroll({ laneId: "lane-1", x: 10, y: 10, direction: "down", chatSessionId: "chat-1" });
+    expect(modeOf().mode).toBe("background");
+    await service.drag({ laneId: "lane-1", from: { x: 10, y: 10 }, to: { x: 60, y: 10 }, chatSessionId: "chat-1" });
+    expect(modeOf().mode).toBe("background");
+    // `background` means nothing to a key: it is the accessibility path.
+    await service.press({ laneId: "lane-1", key: "return", mode: "background", chatSessionId: "chat-1" });
+    expect(modeOf().mode).toBe("accessibility");
+    // The reported mode is the path the driver actually took.
+    await expect(service.click({ laneId: "lane-1", text: "Canvas", chatSessionId: "chat-1" }))
+      .resolves.toMatchObject({ mode: "background" });
+
+    // `--real` still means the user's pointer, and still needs the lease.
+    await expect(service.drag({ laneId: "lane-1", from: { x: 10, y: 10 }, to: { x: 60, y: 10 }, mode: "real", chatSessionId: "chat-1" }))
+      .rejects.toMatchObject({ code: "MAC_DESKTOP_INPUT_LEASE_REQUIRED" });
+    service.dispose();
+  });
+
+  it("refuses an agent's background and accessibility input while a person has control", async () => {
+    const driver = createFakeDriver();
+    const { service } = makeService({ driver });
+    await service.start({ laneId: "lane-1" });
+    await service.takeControl({ laneId: "lane-1", controllerId: "ade-window:abc" });
+    const inputs = () => driver.calls.filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.input).length;
+
+    await expect(service.click({ laneId: "lane-1", x: 10, y: 10, chatSessionId: "chat-1" }))
+      .rejects.toMatchObject({ code: "MAC_DESKTOP_USER_HAS_CONTROL" });
+    await expect(service.click({ laneId: "lane-1", text: "OK", chatSessionId: "chat-1" }))
+      .rejects.toMatchObject({ code: "MAC_DESKTOP_USER_HAS_CONTROL" });
+    // A controller id that does not hold the lease is nobody in particular.
+    await expect(service.click({ laneId: "lane-1", x: 10, y: 10, controllerId: "ade-window:other" }))
+      .rejects.toMatchObject({ code: "MAC_DESKTOP_USER_HAS_CONTROL" });
+    expect(inputs()).toBe(0);
+    // The person holding control still drives.
+    await expect(service.click({ laneId: "lane-1", text: "OK", controllerId: "ade-window:abc" }))
+      .resolves.toMatchObject({ ok: true });
+    expect(inputs()).toBe(1);
+    service.dispose();
+  });
+
+  it("follows a display the helper moved, including a move reported before its start stored the display", async () => {
+    const driver = createFakeDriver();
+    // The helper reports a move of lane-1's display while lane-1's start is
+    // still waiting for its create reply (another lane's display pushed it).
+    driver.overrides[MAC_DESKTOP_DRIVER_OPS.createDisplay] = (payload) => {
+      for (const listener of driver.listeners) {
+        listener({ event: "display-moved", laneId: payload.laneId, origin: { x: -5120, y: 0 } });
+      }
+      return { displayId: 7, name: payload.name, mode: "virtual", width: 2560, height: 1440, scale: 2, origin: { x: -2560, y: 0 }, createdAt: new Date(0).toISOString() };
+    };
+    const { service, events } = makeService({ driver });
+    await service.start({ laneId: "lane-1" });
+    expect((await service.getStatus({ laneId: "lane-1" })).display?.origin).toEqual({ x: -5120, y: 0 });
+
+    // A later move updates the stored display and tells every client.
+    for (const listener of driver.listeners) {
+      listener({ event: "display-moved", laneId: "lane-1", origin: { x: -7680, y: 0 } });
+    }
+    expect((await service.getStatus({ laneId: "lane-1" })).display?.origin).toEqual({ x: -7680, y: 0 });
+    const published = events.filter((event) => event.type === "display-created").at(-1);
+    expect(published?.type === "display-created" ? published.display.origin : null).toEqual({ x: -7680, y: 0 });
+    service.dispose();
+  });
+
   it("sends no lease on an accessibility action", async () => {
     const driver = createFakeDriver();
     const { service } = makeService({ driver });
@@ -1427,103 +1518,6 @@ describe("macDesktopService wait and the gesture gate", () => {
 });
 
 describe("macDesktopService recordings", () => {
-  it("a user recording stops the turn clip first — one lane, one writer", async () => {
-    const driver = createFakeDriver();
-    const { service } = makeService({ driver });
-    await service.start({ laneId: "lane-1" });
-    await service.beginTurn({ laneId: "lane-1", chatSessionId: "chat-1", turnId: "turn-1" });
-    expect(driver.calls.filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.startRecording)).toHaveLength(1);
-
-    await service.startRecording({ laneId: "lane-1", caption: "the bug" });
-    const ops = driver.calls.map((call) => call.op);
-    const firstStop = ops.indexOf(MAC_DESKTOP_DRIVER_OPS.stopRecording);
-    const secondStart = ops.lastIndexOf(MAC_DESKTOP_DRIVER_OPS.startRecording);
-    expect(firstStop).toBeGreaterThanOrEqual(0);
-    expect(secondStart).toBeGreaterThan(firstStop);
-
-    // And the turn clip is gone, so the turn ending cannot stop the user's
-    // recording out from under them.
-    driver.calls.length = 0;
-    expect(await service.noteTurnEnded({ laneId: "lane-1", chatSessionId: "chat-1", turnId: "turn-1" }))
-      .toBeNull();
-    expect(driver.calls.filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.stopRecording)).toHaveLength(0);
-    service.dispose();
-  });
-
-  /*
-   * The lane's recorder is shared by every chat's clip and the user's
-   * recording. A start refused because someone else holds it must leave that
-   * recording alone; only a start the helper's watchdog answered for (which
-   * may still install its recording late) is followed by a stop.
-   */
-  it.each([
-    ["refused because another chat's clip holds the recorder", "internal_error: Lane lane-1 is already recording.", 0],
-    [
-      "answered for by the helper's watchdog",
-      "internal_error: record.start did not complete within 15s. The driver gave up waiting and answered on its behalf; the operation may still be running.",
-      1,
-    ],
-  ] as const)("a second chat's clip start %s stops the recorder only when the start was its own", async (_label, message, expectedStops) => {
-    const driver = createFakeDriver();
-    const { service } = makeService({ driver });
-    await service.start({ laneId: "lane-1" });
-    await service.beginTurn({ laneId: "lane-1", chatSessionId: "chat-1", turnId: "turn-1" });
-    expect(driver.calls.filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.startRecording)).toHaveLength(1);
-
-    driver.overrides[MAC_DESKTOP_DRIVER_OPS.startRecording] = () => {
-      throw new Error(message);
-    };
-    driver.calls.length = 0;
-    await service.beginTurn({ laneId: "lane-1", chatSessionId: "chat-2", turnId: "turn-2" });
-
-    expect(driver.calls.filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.startRecording)).toHaveLength(1);
-    expect(driver.calls.filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.stopRecording)).toHaveLength(expectedStops);
-    service.dispose();
-  });
-
-  it("ends a turn clip whose turn id no longer matches", async () => {
-    const driver = createFakeDriver({
-      [MAC_DESKTOP_DRIVER_OPS.stopRecording]: () => ({ filePath: "/tmp/clip.mp4", durationMs: 1_200 }),
-    });
-    const { service, events } = makeService({ driver });
-    await service.start({ laneId: "lane-1" });
-    await service.beginTurn({ laneId: "lane-1", chatSessionId: "chat-1", turnId: "turn-1" });
-    // A turn that never emitted its own `done`: the next one closes the clip
-    // rather than leaving the helper's one recorder held forever.
-    const lapse = await service.noteTurnEnded({
-      laneId: "lane-1",
-      chatSessionId: "chat-1",
-      turnId: "turn-2",
-    });
-    expect(lapse).toMatchObject({ laneId: "lane-1", turnId: "turn-1", durationMs: 1_200 });
-    expect(lapse?.filePath).toMatch(/mac-desktop-turn-turn-1-[a-f0-9-]+\.mp4$/);
-    expect(events.some((event) => event.type === "time-lapse")).toBe(true);
-    service.dispose();
-  });
-
-  it("stops the turn clip when the lane's display is destroyed", async () => {
-    const driver = createFakeDriver();
-    const { service } = makeService({ driver });
-    await service.start({ laneId: "lane-1" });
-    await service.beginTurn({ laneId: "lane-1", chatSessionId: "chat-1", turnId: "turn-1" });
-    driver.calls.length = 0;
-    await service.destroyForLane("lane-1");
-    expect(driver.calls.some((call) => call.op === MAC_DESKTOP_DRIVER_OPS.stopRecording)).toBe(true);
-    service.dispose();
-  });
-
-  it("stops the turn clip when the chat that opened it ends", async () => {
-    const driver = createFakeDriver();
-    const { service } = makeService({ driver });
-    await service.start({ laneId: "lane-1" });
-    await service.takeControl({ laneId: "lane-1", controllerId: "chat-1" });
-    await service.beginTurn({ laneId: "lane-1", chatSessionId: "chat-1", turnId: "turn-1" });
-    driver.calls.length = 0;
-    await service.releaseIfOwnedBy("chat-1");
-    expect(driver.calls.some((call) => call.op === MAC_DESKTOP_DRIVER_OPS.stopRecording)).toBe(true);
-    service.dispose();
-  });
-
   it("a stop that fails marks the recording failed instead of leaving it running", async () => {
     // The driver removed its recorder before it finalised, so a stop that
     // timed out left the local status on `running: true` with no file while
@@ -1587,67 +1581,6 @@ describe("macDesktopService recordings", () => {
     expect(unusable).toMatchObject({ running: false, filePath: null, proofArtifactId: null, durationMs: 0, wallDurationMs: 2_000 });
     expect(unusable.lastError).toMatch(/not filed/);
     expect(broker.requests).toHaveLength(1);
-    service.dispose();
-  });
-
-  it.each([
-    // The driver names the clip exactly as ADE did.
-    ["darwin", "as ADE spelled it", (filePath: string) => filePath],
-    // Both seats' file systems fold case, and Windows takes either separator:
-    // a clip the driver names another way is still the clip being published.
-    ["darwin", "in another case", (filePath: string) => filePath.toUpperCase()],
-    ["win32", "as ADE spelled it", (filePath: string) => filePath],
-    ["win32", "in another case and separator", (filePath: string) => filePath.toUpperCase().replace(/\//g, "\\")],
-  ] as const)("prunes a chat's superseded turn clip, but never one a proof points at or another chat's current one (%s, driver path %s)", async (platform, _spelling, driverSpelling) => {
-    const referenced = new Set<string>();
-    const isArtifactFileReferenced = (filePath: string) => referenced.has(path.resolve(filePath));
-    const driver = createFakeDriver(platform === "win32" ? {
-      [MAC_DESKTOP_DRIVER_OPS.windowsStatus]: () => ({ state: "ready", locked: false, childSessionsEnabled: true, remoteDesktopAllowed: true, passwordSaved: true, consoleSessionId: 1, sessionId: 1, inConsoleSession: true, holderLaneId: null, childSessionId: null, edition: "Professional" }),
-    } : {});
-    // Only the newest clip is reported in the driver's own spelling: it is the
-    // one that must survive its own publication. (An older one is deleted by
-    // the name the driver gave, which a case-sensitive test host cannot do.)
-    let spellLikeDriver = false;
-    const answer = driver.request.bind(driver);
-    driver.request = async (op, payload, options) => {
-      const reply = await answer(op, payload, options);
-      if (!spellLikeDriver || op !== MAC_DESKTOP_DRIVER_OPS.stopRecording) return reply;
-      const values = reply as Record<string, unknown>;
-      return typeof values.filePath === "string" ? { ...values, filePath: driverSpelling(values.filePath) } : reply;
-    };
-    const { service } = platform === "win32"
-      ? makeService({
-        platform,
-        seat: { ...createWindowsDesktopSeatAdapter({ logger, adeHome: "C:\\ADE" }), createDriverClient: null },
-        driver,
-        hostIsLocal: () => true,
-        isArtifactFileReferenced,
-      })
-      : makeService({ driver, isArtifactFileReferenced });
-    await service.start({ laneId: "lane-1" });
-    let turn = 0;
-    /** The clip's file as ADE asked the driver to write it. */
-    const clip = async (chatSessionId: string): Promise<string> => {
-      turn += 1;
-      await service.beginTurn({ laneId: "lane-1", chatSessionId, turnId: `turn-${turn}` });
-      const lapse = await service.noteTurnEnded({ laneId: "lane-1", chatSessionId, turnId: `turn-${turn}` });
-      expect(lapse?.filePath, "setup: the turn produced a clip").toBeTruthy();
-      const started = driver.calls.filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.startRecording).at(-1);
-      return String(started!.payload.filePath);
-    };
-
-    const filedAsProof = await clip("chat-1");
-    referenced.add(path.resolve(filedAsProof));
-    const otherChats = await clip("chat-2");
-    const superseded = await clip("chat-1");
-    spellLikeDriver = true;
-    const current = await clip("chat-1");
-
-    expect(fs.existsSync(filedAsProof)).toBe(true);
-    expect(fs.existsSync(otherChats)).toBe(true);
-    expect(fs.existsSync(current)).toBe(true);
-    // Only the newest clip per chat is shown, so the one before it goes.
-    expect(fs.existsSync(superseded)).toBe(false);
     service.dispose();
   });
 

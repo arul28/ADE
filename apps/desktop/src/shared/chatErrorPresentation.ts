@@ -214,6 +214,53 @@ function failureCopy(
   }
 }
 
+export type ExternalStopSignal = "SIGTERM" | "SIGKILL";
+
+/**
+ * The signal behind a provider process's death, read off its failure text.
+ * 143 and 137 are 128 + SIGTERM / SIGKILL, which is how the Claude SDK and a
+ * shell report a process killed by a signal ("Claude Code process exited with
+ * code 143"). A real exit status never lands on those two values by accident.
+ */
+export function externalStopSignal(...texts: Array<string | null | undefined>): ExternalStopSignal | null {
+  for (const text of texts) {
+    if (!text) continue;
+    const code = /\bexited with (?:exit )?code (143|137)\b/i.exec(text)?.[1];
+    if (code) return code === "143" ? "SIGTERM" : "SIGKILL";
+    const named = /\b(?:killed by |terminated by |signal )(SIGTERM|SIGKILL)\b/.exec(text)?.[1];
+    if (named) return named as ExternalStopSignal;
+  }
+  return null;
+}
+
+/**
+ * Card for a provider process killed by a signal ADE did not send. The bare
+ * "process exited with code 143" read as a model or provider failure; what
+ * actually happened is that something outside ADE stopped the process —
+ * typically a `kill`, or a second ADE brain running the same chat.
+ */
+export function presentExternalProcessStop(args: {
+  signal: ExternalStopSignal;
+  provider?: string | null;
+  message?: string | null;
+  /** Another live ADE brain that holds this chat, when the host knows of one. */
+  otherBrain?: { pid: number; socketPath?: string | null } | null;
+}): ChatErrorPresentation {
+  const provider = providerCardLabel(args.provider);
+  const subject = provider ? `${provider}'s process` : "The agent's process";
+  const other = args.otherBrain;
+  return {
+    title: "Stopped from outside ADE",
+    body: other
+      ? `${subject} was stopped from outside this ADE (${args.signal}) while another ADE brain (pid ${other.pid}${other.socketPath ? `, socket ${other.socketPath}` : ""}) was running this chat.`
+      : `${subject} was stopped from outside ADE (${args.signal}). ADE did not end this turn.`,
+    nextAction: other
+      ? "Continue the chat from the brain that runs it."
+      : "Retry the turn.",
+    ...(trimText(args.message) ? { technicalDetail: trimText(args.message) } : {}),
+  };
+}
+
 const PRESENTABLE_ERROR_CATEGORIES = new Set(["rate_limit", "auth", "network", "busy"]);
 
 /**

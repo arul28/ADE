@@ -3,6 +3,7 @@ import { Chip } from "../../ui/Chip";
 import { cn } from "../../ui/cn";
 import { formatDate, formatDurationMs, statusToneAutomation as statusTone } from "../../../lib/format";
 import { eventLabel } from "../triggerCatalog";
+import { readTestRunInfo, testRunLabel } from "./testRunInfo";
 
 function summarizeExecution(run: AutomationRun): string {
   if (run.executionKind === "agent-session") return "Agent session";
@@ -19,6 +20,7 @@ export function RunRow({
   selected: boolean;
   onSelect: () => void;
 }) {
+  const test = readTestRunInfo(run);
   const durationMs = run.startedAt && run.endedAt ? Date.parse(run.endedAt) - Date.parse(run.startedAt) : null;
   return (
     <button
@@ -26,7 +28,7 @@ export function RunRow({
       onClick={onSelect}
       className={cn(
         "w-full rounded-lg px-3 py-2.5 text-left transition-colors",
-        selected ? "border-l-2 border-accent bg-white/[0.04]" : "border border-white/[0.06] hover:bg-white/[0.05]",
+        selected ? "border-l-2 border-accent bg-fg/[0.04]" : "border border-fg/[0.06] hover:bg-fg/[0.05]",
       )}
     >
       <div className="flex items-start justify-between gap-3">
@@ -36,6 +38,9 @@ export function RunRow({
             <span className="shrink-0 text-[10.5px] text-muted-fg/55">{formatDate(run.startedAt)}</span>
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10.5px] text-muted-fg/60">
+            {test ? (
+              <span className="kit-tag" data-tone="warn" data-testid="automation-run-test-badge">{testRunLabel(test)}</span>
+            ) : null}
             <span>{formatDurationMs(durationMs)}</span>
             <span>{summarizeExecution(run)}</span>
           </div>

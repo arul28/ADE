@@ -87,15 +87,6 @@ export const ACP_PROVIDER_SPECS: readonly AcpProviderSpec[] = [
     setup: "Install the Grok CLI and run `grok login`, or set XAI_API_KEY. ADE passes GROK_HOME through to the ACP process and defaults to ~/.grok. Permission cards in ADE chats are the ones ADE can honour; Grok's own defaultMode is not the source of truth.",
   },
   {
-    ...ACP_PROVIDER_METADATA.copilot,
-    id: "copilot",
-    tagline: "Uses your GitHub account through the copilot CLI.",
-    logoFamily: "github-copilot",
-    installCommand: acpInstallDisplayCommand(ACP_PROVIDER_METADATA.copilot.install),
-    credentialSource: "Signed in through `copilot login`; the free plan includes the CLI. ADE does not write ~/.copilot.",
-    setup: "Install the Copilot CLI and run `copilot login`. ADE reuses that GitHub login and never writes Copilot's config.json. Cancelled turns can still look finished on Copilot's side; ADE marks them stopped.",
-  },
-  {
     ...ACP_PROVIDER_METADATA.devin,
     id: "devin",
     tagline: "Your local Devin CLI.",
@@ -356,36 +347,43 @@ function DevinBody() {
 }
 
 /**
- * Grok's update advisory.
+ * Where the installed CLI sits against the versions ADE has tested.
  *
- * ADE launches Grok with `--no-auto-update`, so nothing else surfaces a stale
- * install. The one-click button exists only when the host resolved the binary
- * to a known installer (`update.canUpdate`); otherwise the note says how to
- * update by hand, and there is no button to run the wrong command.
+ * An update installs the newest tested version, never npm `latest`. The button
+ * exists only when the host resolved the binary to a known installer
+ * (`update.canUpdate`); otherwise the note says how to update by hand, and
+ * there is no button to run the wrong command.
  */
-function GrokUpdateBody({ ctx }: { ctx: ProvidersViewContext }) {
-  const diagnostics = ctx.acpDiagnostics.grok ?? null;
+function AcpVersionBody({ ctx, id, label }: { ctx: ProvidersViewContext; id: AcpSettingsProviderId; label: string }) {
+  const diagnostics = ctx.acpDiagnostics[id] ?? null;
   const update = diagnostics?.update ?? null;
   if (!diagnostics || !update) return null;
-  const busy = ctx.acpUpdateBusy === "grok";
-  const error = ctx.acpDiagnosticsError.grok ?? null;
-  const statusLine = update.updateAvailable
-    ? `Update available: Grok ${diagnostics.version ?? "installed"} → ${update.latestVersion ?? "latest"}.`
-    : update.latestVersion
-      ? `Up to date (${diagnostics.version ?? "unknown"} · latest ${update.latestVersion}).`
-      : "Latest version unknown.";
+  const busy = ctx.acpUpdateBusy === id;
+  const error = ctx.acpDiagnosticsError[id] ?? null;
+  const installed = update.installedVersion ?? diagnostics.version ?? "unknown";
+  const { min, max } = update.testedRange;
+  const statusLine = update.standing === "below"
+    ? `${label} ${installed} is older than ADE supports. Update to ${update.targetVersion}.`
+    : update.standing === "above"
+      ? `${label} ${installed} is newer than ADE has tested. Some features may not work.`
+      : update.updateAvailable
+        ? `Update available: ${installed} → ${update.targetVersion}.`
+        : update.standing === "unknown"
+          ? `ADE could not read the ${label} version.`
+          : `Up to date (${installed}).`;
+  const tone = update.standing === "below"
+    ? COLORS.warning
+    : update.updateAvailable
+      ? COLORS.textPrimary
+      : COLORS.textMuted;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-      <SubsectionTitle>Updates</SubsectionTitle>
-      <div
-        style={{
-          fontSize: 11,
-          fontFamily: SANS_FONT,
-          lineHeight: 1.5,
-          color: update.updateAvailable ? COLORS.warning : COLORS.textMuted,
-        }}
-      >
+      <SubsectionTitle>Version</SubsectionTitle>
+      <div style={{ fontSize: 11, fontFamily: SANS_FONT, lineHeight: 1.5, color: tone }}>
         {statusLine}
+      </div>
+      <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
+        ADE is tested with {min === max ? min : `${min} to ${max}`}.
       </div>
       {update.note ? (
         <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
@@ -397,9 +395,9 @@ function GrokUpdateBody({ ctx }: { ctx: ProvidersViewContext }) {
           type="button"
           style={outlineButton({ height: 28 })}
           disabled={busy}
-          onClick={() => void ctx.actions.updateAcpProvider("grok")}
+          onClick={() => void ctx.actions.updateAcpProvider(id)}
         >
-          {busy ? "Updating…" : "Update now"}
+          {busy ? "Updating…" : `Update to ${update.targetVersion}`}
         </button>
       ) : null}
       {error ? (
@@ -410,6 +408,11 @@ function GrokUpdateBody({ ctx }: { ctx: ProvidersViewContext }) {
     </div>
   );
 }
+
+const ACP_EXTRA_BODIES: Partial<Record<AcpSettingsProviderId, () => React.JSX.Element>> = {
+  kimi: KimiBody,
+  devin: DevinBody,
+};
 
 function buildAcpDescriptor(spec: AcpProviderSpec): ProviderDescriptor {
   return {
@@ -422,7 +425,7 @@ function buildAcpDescriptor(spec: AcpProviderSpec): ProviderDescriptor {
     // chip on its own.
     preview: providerTierIsPreview(spec.id),
     // All four share one permission vocabulary because they share one host.
-    permissions: { family: spec.id === "kimi" ? "moonshot" : spec.id === "grok" ? "xai" : spec.id === "copilot" ? "github-copilot" : spec.id === "devin" ? "devin" : "qwen", isCliWrapped: true, key: spec.id },
+    permissions: { family: spec.id === "kimi" ? "moonshot" : spec.id === "grok" ? "xai" : spec.id === "devin" ? "devin" : "qwen", isCliWrapped: true, key: spec.id },
     status: (ctx) => acpStatus(ctx, spec.id),
     models: (ctx) => acpModels(ctx, spec.id),
     version: (ctx) => acpVersion(ctx, spec.id),
@@ -432,11 +435,15 @@ function buildAcpDescriptor(spec: AcpProviderSpec): ProviderDescriptor {
     ...(spec.id === "grok" || spec.id === "kimi"
       ? { Diagnostics: ({ ctx }: { ctx: ProvidersViewContext }) => <AcpDiagnostics ctx={ctx} id={spec.id} /> }
       : {}),
-    ...(spec.id === "kimi" ? { Body: KimiBody } : {}),
-    ...(spec.id === "devin" ? { Body: DevinBody } : {}),
-    ...(spec.id === "grok"
-      ? { Body: ({ ctx }: { ctx: ProvidersViewContext }) => <GrokUpdateBody ctx={ctx} /> }
-      : {}),
+    Body: ({ ctx }: { ctx: ProvidersViewContext }) => {
+      const Extra = ACP_EXTRA_BODIES[spec.id];
+      return (
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <AcpVersionBody ctx={ctx} id={spec.id} label={spec.label} />
+          {Extra ? <Extra /> : null}
+        </div>
+      );
+    },
   };
 }
 

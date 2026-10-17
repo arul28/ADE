@@ -7,6 +7,12 @@ or changed.
 The Worker also hosts ADE's device-authorization bridge for headless sign-in:
 
 - `POST /device/code` creates a short-lived code bound to a daemon-generated secret.
+  The `verification_uri` it returns is this worker's own `/device`, or
+  `<DEVICE_PAGE_ORIGIN>/device` when that var is set. Production sets it to
+  `https://ade-app.dev`: that link opens ADE Mobile as a universal link, and
+  the website redirects a browser to this worker's `/device`. Deploy the
+  website before a worker that sets it: the deploy preflight probes the page
+  and refuses to publish when it does not redirect.
   An optional `machine_key` names the machine signing in, which is what a pairing
   grant (below) can later be spent on. An optional `machine_name` (cleaned, at
   most 80 characters) is display text only.
@@ -23,6 +29,21 @@ The Worker also hosts ADE's device-authorization bridge for headless sign-in:
   meta refresh and a link), not a 302: browsers apply the page's
   `form-action 'self'` to every redirect after a form POST, and Clerk's
   authorize URL redirects on through more hosts.
+- `GET /device/approve?user_code=` and `POST /device/approve` are the approval
+  from a signed-in ADE app (a phone that scanned the sign-in QR code). Both take
+  an account bearer. `GET` answers `{ status, machine_name }`, so the app can
+  ask before anything changes and can tell when the sign-in it opened has
+  finished (`pending`, `started`, `approved`, `failed`); it is not rate
+  limited, like the browser page. `POST` mints a one-time Clerk sign-in ticket for the
+  verified caller (`CLERK_SECRET_KEY`, 120 seconds) and answers `{ url }`: the
+  ticket link with `redirect_url` set to this sign-in's authorize URL. The app
+  opens it in a web sheet, Clerk signs the caller in with no password and shows
+  its consent page, and the sign-in ends at `/device/callback` like any other.
+  The ticket is for the user the bearer was verified as, so the computer gets
+  the approver's own session. Errors are JSON: 401 `unauthorized`, 404
+  `not_found`, 410 `expired`, 409 `already_used`, 429 `rate_limited`, and
+  503/502 `unavailable` (no `CLERK_SECRET_KEY`, or Clerk refused). On
+  `unavailable` the app offers a button that opens the `/device` page.
 - `GET /device/callback` exchanges the Clerk code and holds the token pair briefly.
 - `POST /device/token` lets the initiating daemon redeem the pair once, and returns
   a `pairing_grant` alongside it when the request declared a `machine_key`.
@@ -611,6 +632,33 @@ npx wrangler d1 execute DB --remote --env production --command \
   "SELECT id, generated_at, bytes, etag FROM model_registry_snapshots ORDER BY id DESC"
 ```
 
+## Apple Music developer tokens
+
+`GET /music/developer-token` returns `{ token, expiresAt }` (ms) to a signed-in
+ADE caller: the same Clerk bearer check as `GET /router/registry`, GET only, no
+CORS, `cache-control: no-store`. The token is an ES256 JWT with header
+`{ alg: "ES256", kid: MUSICKIT_KEY_ID }` and claims
+`{ iss: MUSICKIT_TEAM_ID, iat, exp }`, lifetime `MUSICKIT_TOKEN_TTL_SECONDS`
+(default 30 days, capped at Apple's six months). One token per isolate is
+reused until it has under seven days left (half its lifetime when that is
+shorter), because a desktop player keeps the token it started with; it is
+public by design (MusicKit JS sends it from the page), the key is not.
+
+The key is the secret `MUSICKIT_PRIVATE_KEY`, the `.p8` file's PEM text. Without
+it (or with a malformed one) the route answers 503 `music_unavailable` and the
+desktop Music tab says it is unavailable; nothing else depends on it, so the
+deploy preflight does not require it.
+
+```bash
+cd apps/account-directory
+wrangler secret put MUSICKIT_PRIVATE_KEY < "$USERPROFILE/.ade/secrets/musickit/AuthKey_3NNQ5Y43RA.p8"
+wrangler secret put MUSICKIT_PRIVATE_KEY --env production < "$USERPROFILE/.ade/secrets/musickit/AuthKey_3NNQ5Y43RA.p8"
+npm run deploy && npm run deploy:production
+```
+
+Logs: one `music_developer_token_request` line per call with status, reason and
+duration, never the token.
+
 ## Local checks
 
 ```sh
@@ -642,6 +690,9 @@ deployment:
    of the hosted ADE web client; this is the only cross-origin caller allowed
    to send an account bearer to `GET /account/machines`. Set `PUSH_RELAY_URL`
    to the push relay origin; machine removal fails loudly without it. Set
+   `CLERK_SECRET_KEY` (`npx wrangler secret put CLERK_SECRET_KEY`) to the Clerk
+   Backend API key of the same Clerk instance; it is optional, and only
+   `/device/approve` uses it. Set
    `DIRECTORY_AUTH_SECRET` (`npx wrangler secret put DIRECTORY_AUTH_SECRET`) to
    the same value configured on the push relay; machine removal and re-pairing
    both fail loudly without it.

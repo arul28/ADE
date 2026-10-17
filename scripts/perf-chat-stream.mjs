@@ -137,13 +137,16 @@ for (let i = 0; i < history.length; i += 400) {
   const batch = history.slice(i, i + 400).map((e) => [e.event, e.timestamp]);
   await ev(`(() => { for (const [event] of ${JSON.stringify(batch)}) window.__adeMockEmitChatEvent(${JSON.stringify(sessionId)}, event, true); return 1; })()`);
 }
+const openAt = Date.now();
 await ev(`(() => { history.pushState({}, "", "/work?sessionId=${sessionId}"); dispatchEvent(new PopStateEvent("popstate")); return 1; })()`);
+let openToFirstRowsMs = null;
 for (let i = 0; ; i++) {
   const rows = await ev(`document.querySelectorAll(".ade-chat-timeline-pane [data-chat-row-key]").length`);
   if (rows > 0) break;
-  if (i > 300) throw new Error("Chat never rendered");
-  await delay(100);
+  if (i > 6000) throw new Error("Chat never rendered");
+  await delay(10);
 }
+openToFirstRowsMs = Date.now() - openAt;
 await delay(5_000);
 
 await cdp.send("Performance.enable");
@@ -201,6 +204,7 @@ const result = {
   background: Boolean(opt.background),
   historyEvents: history.length,
   streamedEvents: live.length,
+  openToFirstRowsMs,
   ratePerSec: opt.rate,
   wallS: +wallS.toFixed(1),
   rendererCpuPct: +(((cpu1 - cpu0) / wallS) * 100).toFixed(1),

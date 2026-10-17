@@ -13,6 +13,7 @@ import {
   cmdQuote,
   isPidAlive,
   listStaleChannelServePids,
+  powerShellSingleQuotedLiteral,
   renderWindowsCommand,
   resolveAdeServeCliScriptPath,
   resolveAdeServeCommand,
@@ -321,13 +322,6 @@ export function buildWindowsEndTaskArgs(
   taskName = resolveWindowsTaskName(),
 ): string[] {
   return ["/End", "/TN", taskName];
-}
-
-function powerShellSingleQuotedLiteral(value: string): string {
-  if (value.includes("\0")) {
-    throw new Error("Windows scheduled task names cannot contain NUL bytes.");
-  }
-  return `'${value.replace(/'/g, "''")}'`;
 }
 
 export function buildWindowsQueryTaskArgs(

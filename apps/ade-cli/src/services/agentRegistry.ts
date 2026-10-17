@@ -78,9 +78,11 @@ function shellInstallCommand(displayCommand: string): string {
 /**
  * The install and login commands for one `ShippedProvider`, from the one table.
  *
- * A provider that is not a `ShippedProvider` — Qwen, Kimi, Grok, Copilot — is
- * an ACP provider and writes its own strings below, because the shared table
- * deliberately does not carry them.
+ * A provider that is not a `ShippedProvider` — Qwen, Kimi, Grok — is an ACP
+ * provider and writes its own strings below, because the shared table
+ * deliberately does not carry them. Copilot is an SDK provider in ADE, but its
+ * native CLI install and login strings are still written below for the
+ * terminal CLI.
  */
 function sharedRemediation(provider: ShippedProvider): {
   installCommand: string;
@@ -151,6 +153,20 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
     ],
   },
   {
+    agent: "muse",
+    displayName: "Muse Code",
+    binaryNames: ["muse"],
+    // No installer: ADE fetches its own pinned build (the shared table's
+    // `installCommand` is null), so recovery points at Meta's docs.
+    ...sharedRemediation("muse"),
+    notAuthErrorPatterns: [
+      // muse 1.4.7: "missing meta credentials: run `muse login` or set META_API_KEY, …"
+      /missing meta credentials/i,
+      /muse.*(not logged in|not authenticated|unauthorized|authentication failed|login required)/i,
+      /run\s+[`'"]?muse\s+login[`'"]?/i,
+    ],
+  },
+  {
     agent: "droid",
     displayName: "Factory Droid",
     binaryNames: ["droid"],
@@ -207,7 +223,7 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
     agent: "copilot",
     displayName: "GitHub Copilot CLI",
     binaryNames: ["copilot"],
-    installCommand: acpInstallCommand(ACP_PROVIDER_METADATA.copilot.install),
+    installCommand: "npm install -g @github/copilot",
     authCommand: "copilot login",
     notAuthErrorPatterns: [
       /\bcopilot\b.*\b(not logged in|not authenticated|unauthorized|authentication failed|login required|no credentials)\b/i,

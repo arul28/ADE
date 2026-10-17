@@ -881,6 +881,7 @@ private func workImportToolType(provider: String) -> String {
   case "cursor": return "cursor-cli"
   case "droid": return "droid"
   case "pi": return "pi"
+  case "muse": return "muse"
   case "opencode": return "opencode"
   case "qwen": return "qwen"
   case "kimi": return "kimi"

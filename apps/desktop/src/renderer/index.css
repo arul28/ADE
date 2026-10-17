@@ -1,4 +1,9 @@
 @import "tailwindcss";
+@import "./styles/surfaceKit.css";
+@import "./styles/scene.css";
+@import "./styles/foundation.css";
+@import "./styles/toolPickerBackdrop.css";
+@import "./styles/smartTooltip.css";
 /* The config, named rather than found, and load-bearing today.
    `@tailwindcss/postcss` 4.2.1 does NOT auto-detect `tailwind.config.cjs`
    beside package.json. I compiled this stylesheet both ways: with the line,
@@ -7,489 +12,6 @@
    token utility then compiles to nothing and every panel that uses one
    renders see-through. Do not remove this line. */
 @config "../../tailwind.config.cjs";
-
-[data-theme="dark"] .editor-target-logo--invert-in-dark {
-  filter: invert(1);
-}
-
-/* Font @font-face declarations are injected from main.tsx via Vite ?url imports
-   so the dev server resolves them correctly (CSS-relative ../../node_modules
-   paths fall outside Vite's served root and 403). */
-
-@theme {
-  --radius-xl: 16px;
-  --radius-lg: 12px;
-  --radius-md: 8px;
-  --radius-sm: 6px;
-  --radius-full: 9999px;
-
-  --pane-gap: 4px;
-  --pane-radius: 12px;
-  --pane-minimized-height: 28px;
-
-  /* Both Apple fallbacks are unresolvable off macOS, so a Windows box with no
-     Geist landed on Arial. `system-ui` and "Segoe UI" keep it on the platform
-     UI face instead — same stack webclient.html already ships. */
-  /* A theme may set its own interface face through `--theme-font-sans`. The
-     Interface font preference writes `--font-sans` inline on <html>, which still
-     wins, so a user's explicit choice is never overridden by a theme. */
-  --font-sans: var(--theme-font-sans, "Geist", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
-  --font-mono: "JetBrains Mono", "Geist Mono", ui-monospace, monospace;
-  --animate-pulse: ade-duty-pulse 2s infinite;
-  --animate-ping: ade-duty-ping 2s infinite;
-
-  --shadow-card: 0 4px 16px -4px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(45, 40, 64, 0.25);
-  --shadow-card-hover: 0 8px 30px -6px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(167, 139, 250, 0.15);
-  --shadow-float: 0 20px 50px -16px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(167, 139, 250, 0.08);
-
-  --chat-radius-shell: 18px;
-  --chat-radius-card: 16px;
-  /*
-   * Chat surfaces overwrite both of these per pane. They are declared here so a
-   * chat component rendered OUTSIDE a pane still computes: an undefined var in
-   * `calc(var(--chat-font-size) * 13 / 14)` makes the whole declaration invalid,
-   * which silently fell back to the document size, and an undefined
-   * `--chat-accent` fell back to the operating system's accent colour.
-   * 14px is the base every `* n / 14` ratio in the chat components is written
-   * against.
-   */
-  --chat-font-size: 14px;
-  --chat-accent: var(--color-accent);
-  --chat-radius-pill: 9999px;
-  /* 32px title rail + 1px hairline. Shared by `.ade-tool-header` and
-     `.ade-chat-shell-header` so the Work split's two bars meet. */
-  --ade-work-chrome-rail-h: 33px;
-  /* The one hairline under the sidebar tab row, the chat header and the
-     tools header, so the three read as one bar. */
-  --ade-work-chrome-rail-border: rgba(255, 255, 255, 0.07);
-}
-
-/* ═══════════════════════════════════════════════════════════
-   Dark Theme (DEFAULT)
-   ═══════════════════════════════════════════════════════════ */
-
-:root,
-[data-theme="dark"] {
-  --color-bg: #0C0B10;
-  /* Neutral codex-style canvas (shared by the chat surface + work-tab chrome so
-     there is no color split). rgb(15, 15, 17). */
-  --chat-canvas-bg: #0f0f11;
-  --color-fg: #F0F0F2;
-  --color-surface: #16141E;
-  --color-card: #1A1830;
-  --color-card-fg: #F0F0F2;
-  --color-card-rgb: 28, 25, 38;
-  --color-secondary: #252232;
-  --color-secondary-fg: #A8A8B4;
-  --color-muted: #1E1B28;
-  --color-muted-fg: #908FA0;
-  --color-border: #302C42;
-  --color-accent: #A78BFA;
-  --color-accent-fg: #0C0B10;
-  --color-accent-muted: rgba(167, 139, 250, 0.20);
-  --color-accent-bright: #C4B5FD;
-  --color-accent-deep: #7C3AED;
-  --color-accent-glow-strong: rgba(168, 130, 255, 0.22);
-  --color-surface-raised: #1E1B2E;
-  --color-surface-recessed: #0A090E;
-  --color-surface-overlay: #1E1B2E;
-  --color-popup-bg: #151325;
-  --color-modal-bg: #1A1830;
-  --color-composer-bg: #14121F;
-  --color-glass-card: #141220;
-  --gradient-popup-border: linear-gradient(180deg, rgba(167, 139, 250, 0.20), rgba(124, 58, 237, 0.10));
-  --gradient-accent: linear-gradient(135deg, #7C3AED, #A78BFA);
-  --gradient-accent-soft: linear-gradient(135deg, rgba(124, 58, 237, 0.20), rgba(167, 139, 250, 0.10));
-  --shadow-popup: 0 20px 50px -12px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(167, 139, 250, 0.12);
-  --shadow-modal: 0 28px 64px -16px rgba(0, 0, 0, 0.67), 0 0 0 1px rgba(167, 139, 250, 0.10);
-  --blur-popup: 40px;
-  --blur-modal: 60px;
-  --shadow-inset: inset 0 1px 2px rgba(0, 0, 0, 0.5);
-  --shadow-separator: inset 0 0 4px 0 rgba(0, 0, 0, 0.4);
-  --shadow-panel: 0 2px 12px -2px rgba(0, 0, 0, 0.6);
-  --color-separator: #302C42;
-  --color-separator-active: #A78BFA;
-  --border-separator: #38334E;
-  --gradient-surface: linear-gradient(180deg, #16141E 0%, #0C0B10 100%);
-  --gradient-panel: linear-gradient(180deg, #211E2E 0%, #16141E 100%);
-  --color-glow: rgba(167, 139, 250, 0.22);
-  --pane-bg: rgba(28, 25, 38, 0.94);
-  --pane-border: rgba(48, 44, 66, 0.6);
-  --chat-shell-shadow: 0 24px 64px -34px rgba(0, 0, 0, 0.85), 0 0 0 1px rgba(167, 139, 250, 0.12);
-  --chat-card-shadow: 0 16px 32px -24px rgba(0, 0, 0, 0.7);
-  --chat-composer-shadow: 0 -12px 30px -26px rgba(0, 0, 0, 0.7);
-  --chat-glass-bg: rgba(20, 18, 32, 0.75);
-  --chat-glass-border: rgba(255, 255, 255, 0.08);
-  --chat-glass-highlight: rgba(255, 255, 255, 0.10);
-  --chat-glass-lowlight: rgba(10, 8, 18, 0.34);
-  --chat-glass-sheen: rgba(167, 139, 250, 0.10);
-  --chat-panel-bg: rgba(20, 18, 32, 0.85);
-  --chat-panel-border: rgba(255, 255, 255, 0.10);
-  --chat-panel-bg-strong: rgba(28, 25, 38, 0.92);
-  --chat-streaming-shimmer: linear-gradient(90deg, transparent, rgba(255,255,255,0.07), transparent);
-  --chat-block-bg: rgba(0, 0, 0, 0.25);
-  --chat-block-border: rgba(255, 255, 255, 0.06);
-  --chat-inline-code-bg: rgba(0, 0, 0, 0.30);
-  --chat-table-border: rgba(255, 255, 255, 0.08);
-  --chat-copy-button-bg: rgba(255, 255, 255, 0.03);
-  --chat-copy-button-border: rgba(255, 255, 255, 0.08);
-  --chat-copy-button-fg: rgba(240, 240, 242, 0.45);
-  --chat-copy-button-hover-bg: rgba(255, 255, 255, 0.05);
-  --chat-copy-button-hover-border: rgba(255, 255, 255, 0.14);
-  --chat-copy-button-hover-fg: rgba(240, 240, 242, 0.72);
-  --color-success: #22c55e;
-  --color-warning: #f59e0b;
-  --color-error: #ef4444;
-  --color-info: #3b82f6;
-  --color-diff-add: #22c55e;
-  --color-diff-del: #ef4444;
-  --color-diff-hunk: #3b82f6;
-  /* Muted "passed/green" for PR checks — desaturated so green reads as a quiet
-     status, not a neon highlight. Resolves per-theme via var() at use time. */
-  --color-check-pass: color-mix(in srgb, var(--color-success) 60%, var(--color-muted-fg));
-
-  /* PRs tab surfaces (premium overhaul): neutral near-black tab + thread cards,
-     faintly-violet floating side panels. */
-  --pr-surface: rgb(15, 16, 16);
-  --pr-thread-card: rgb(23, 23, 24);
-  --pr-panel-card: rgb(24, 23, 43);
-
-  /* App shell primitives (shared contract for TopBar + sidebar) */
-  --shell-header-height: 32px;
-  --shell-header-padding-start: 14px;
-  --shell-header-padding-end: 14px;
-  --shell-header-bg: rgba(12, 11, 16, 0.82);
-  --shell-header-fg: var(--color-fg);
-  --shell-header-border: rgba(255, 255, 255, 0.04);
-  --shell-header-divider: rgba(255, 255, 255, 0.04);
-
-  --shell-sidebar-bg: linear-gradient(180deg, rgba(22, 20, 30, 0.88) 0%, rgba(12, 11, 16, 0.92) 100%);
-  --shell-sidebar-border: rgba(255, 255, 255, 0.04);
-  --shell-sidebar-item-fg: rgba(255, 255, 255, 0.45);
-  --shell-sidebar-item-hover-fg: rgba(255, 255, 255, 0.85);
-  --shell-sidebar-item-hover-bg: rgba(255, 255, 255, 0.05);
-  --shell-sidebar-item-active-fg: var(--color-accent);
-  --shell-sidebar-item-active-bg: rgba(167, 139, 250, 0.1);
-
-  --shell-sidebar-item-active-rail: var(--color-accent);
-  --shell-sidebar-separator: rgba(255, 255, 255, 0.04);
-
-  --shell-project-tab-bg: transparent;
-  --shell-project-tab-fg: rgba(255, 255, 255, 0.45);
-  --shell-project-tab-hover-bg: rgba(255, 255, 255, 0.06);
-  --shell-project-tab-hover-fg: rgba(255, 255, 255, 0.85);
-  --shell-project-tab-hover-border: rgba(255, 255, 255, 0.08);
-  --shell-project-tab-active-bg: color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 22%, rgba(255, 255, 255, 0.03));
-  --shell-project-tab-active-fg: color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 24%, #ffffff);
-  --shell-project-tab-active-border: color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 44%, transparent);
-  --shell-project-tab-missing-bg: rgba(239, 68, 68, 0.08);
-  --shell-project-tab-missing-fg: color-mix(in srgb, var(--color-error) 82%, var(--color-fg) 18%);
-  --shell-project-tab-missing-border: rgba(239, 68, 68, 0.2);
-  --shell-project-tab-open-bg: color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 14%, transparent);
-  --shell-project-tab-open-fg: rgba(255, 255, 255, 0.85);
-  --shell-project-tab-open-border: color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 32%, transparent);
-  --shell-project-tab-focus-bg: color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 12%, transparent);
-  --shell-project-tab-focus-fg: rgba(255, 255, 255, 0.85);
-  --shell-project-tab-focus-border: color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 32%, transparent);
-  --shell-project-tab-focus-ring: color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 24%, transparent);
-  --shell-project-tab-font-family: var(--font-sans);
-  --shell-project-tab-font-size: 12px;
-  --shell-project-tab-letter-spacing: 0;
-  --shell-project-tab-height: 22px;
-
-  --shell-control-bg: rgba(255, 255, 255, 0.03);
-  --shell-control-fg: rgba(255, 255, 255, 0.5);
-  --shell-control-border: rgba(255, 255, 255, 0.06);
-  --shell-control-hover-bg: rgba(255, 255, 255, 0.06);
-  --shell-control-hover-fg: rgba(255, 255, 255, 0.85);
-  --shell-control-hover-border: rgba(255, 255, 255, 0.1);
-  --shell-control-open-bg: rgba(167, 139, 250, 0.1);
-  --shell-control-open-fg: rgba(255, 255, 255, 0.9);
-  --shell-control-open-border: rgba(167, 139, 250, 0.2);
-  --shell-control-focus-bg: rgba(255, 255, 255, 0.06);
-  --shell-control-focus-fg: rgba(255, 255, 255, 0.85);
-  --shell-control-focus-border: rgba(167, 139, 250, 0.2);
-  --shell-control-focus-ring: rgba(167, 139, 250, 0.12);
-  --shell-control-kbd-bg: rgba(255, 255, 255, 0.04);
-  --shell-control-kbd-fg: rgba(255, 255, 255, 0.4);
-
-  --shell-status-running: #34d399;
-  --shell-status-attention: #fbbf24;
-
-  /* Work tab (sessions + view panes) */
-  --work-chrome-surface: var(--chat-canvas-bg, var(--color-card));
-  --work-pane-border: rgba(255, 255, 255, 0.06);
-  --work-pane-header-bg: rgba(255, 255, 255, 0.03);
-  --work-sidebar-bg: #161618;
-  --work-session-sidebar-bg: rgb(11, 11, 16);
-
-  /* Work tab combobox / popover */
-  --work-popover-bg: rgba(22, 20, 30, 0.96);
-  --work-popover-border: rgba(255, 255, 255, 0.10);
-  --work-popover-shadow: 0 12px 40px -12px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.06);
-  --work-popover-item-hover: rgba(255, 255, 255, 0.06);
-  --work-popover-item-active: rgba(255, 255, 255, 0.08);
-}
-
-/* ═══════════════════════════════════════════════════════════
-   Native title-bar insets (platform chrome clearance)
-   ═══════════════════════════════════════════════════════════
-
-   The OS draws its own window controls on top of the title bar: the traffic
-   lights at the start on macOS, the caption buttons at the end on Windows. The
-   shell header has to leave room for whichever applies.
-
-   These deliberately do NOT live in the theme token block above. `data-theme`
-   is set on <html>, <body>, AND the shell wrapper (see App.tsx), so every one
-   of those elements re-declares the `--shell-header-padding-*` defaults — which
-   would shadow a platform value inherited from <html> long before it reached
-   the header. Only <html> carries `data-ade-platform`, so a dedicated property
-   name declared here survives all the way down.
-
-   Both values are only the pre-paint fallback. `applyShellHeaderInset()`
-   (renderer/lib/zoom.ts) and `trackWindowsCaptionInset()`
-   (renderer/lib/windowControlsOverlay.ts) overwrite them with live geometry,
-   because the native controls are a fixed physical size that does not follow
-   the renderer's zoom factor. */
-
-:root[data-ade-platform="darwin"] {
-  --shell-header-inset-start: 80px;
-}
-
-:root[data-ade-platform="win32"] {
-  /* Three 46 DIP caption buttons plus an 8px gutter. */
-  --shell-header-inset-end: 146px;
-}
-
-/* ═══════════════════════════════════════════════════════════
-   Light Theme
-   ═══════════════════════════════════════════════════════════ */
-
-[data-theme="light"] {
-  --ade-work-chrome-rail-border: rgba(26, 26, 30, 0.1);
-  --color-bg: #f5f3f0;
-  --chat-canvas-bg: #f5f3f0;
-  --color-fg: #1a1a1e;
-  --color-surface: #faf8f5;
-  --color-card: #ffffff;
-  --color-card-fg: #1a1a1e;
-  --color-card-rgb: 255, 255, 255;
-  --color-secondary: #e8e5e0;
-  --color-secondary-fg: #52525b;
-  --color-muted: #ece9e4;
-  --color-muted-fg: #636370;
-  --color-border: #d6d3ce;
-  --color-accent: #049068;
-  --color-accent-fg: #ffffff;
-  --color-accent-muted: rgba(4, 144, 104, 0.10);
-  /* Light never defined these, so every light surface that reached for them —
-     the tools picker backdrop among them — silently got the DARK theme's
-     violets on a green page. */
-  --color-accent-bright: #4FC49B;
-  --color-accent-deep: #0E9A72;
-  --color-surface-raised: #ffffff;
-  --color-surface-recessed: #eae7e2;
-  --color-surface-overlay: rgba(255, 255, 255, 0.92);
-  --shadow-inset: inset 0 1px 3px rgba(0, 0, 0, 0.06);
-  --shadow-separator: inset 0 0 4px 0 rgba(0, 0, 0, 0.06);
-  --shadow-panel: 0 4px 16px -4px rgba(0, 0, 0, 0.08), 0 1px 3px -1px rgba(0, 0, 0, 0.05);
-  --color-separator: #e8e5e0;
-  --color-separator-active: #049068;
-  --border-separator: #d6d3ce;
-  --gradient-surface: linear-gradient(180deg, #faf8f5, #f5f3f0);
-  --gradient-panel: linear-gradient(180deg, #ffffff 0%, #faf8f5 100%);
-  --color-glow: rgba(4, 144, 104, 0.12);
-  --pane-bg: rgba(255, 255, 255, 0.88);
-  --pane-border: rgba(212, 209, 204, 0.5);
-  --chat-shell-shadow: 0 18px 42px -28px rgba(15, 23, 42, 0.18), 0 0 0 1px rgba(4, 144, 104, 0.1);
-  --chat-card-shadow: 0 14px 28px -24px rgba(15, 23, 42, 0.14);
-  --chat-composer-shadow: 0 -12px 22px -24px rgba(15, 23, 42, 0.12);
-  --chat-glass-bg: rgba(255, 255, 255, 0.76);
-  --chat-glass-border: rgba(26, 26, 30, 0.08);
-  --chat-glass-highlight: rgba(255, 255, 255, 0.65);
-  --chat-glass-lowlight: rgba(182, 190, 204, 0.14);
-  --chat-glass-sheen: rgba(4, 144, 104, 0.08);
-  --chat-panel-bg: rgba(255, 255, 255, 0.82);
-  --chat-panel-border: rgba(26, 26, 30, 0.10);
-  --chat-panel-bg-strong: rgba(255, 255, 255, 0.92);
-  --chat-streaming-shimmer: linear-gradient(90deg, transparent, rgba(26,26,30,0.08), transparent);
-  --chat-block-bg: rgba(15, 23, 42, 0.04);
-  --chat-block-border: rgba(15, 23, 42, 0.08);
-  --chat-inline-code-bg: rgba(15, 23, 42, 0.06);
-  --chat-table-border: rgba(15, 23, 42, 0.10);
-  --chat-copy-button-bg: rgba(15, 23, 42, 0.04);
-  --chat-copy-button-border: rgba(15, 23, 42, 0.10);
-  --chat-copy-button-fg: rgba(26, 26, 30, 0.55);
-  --chat-copy-button-hover-bg: rgba(15, 23, 42, 0.07);
-  --chat-copy-button-hover-border: rgba(15, 23, 42, 0.18);
-  --chat-copy-button-hover-fg: rgba(26, 26, 30, 0.80);
-  --color-success: #16a34a;
-  --color-warning: #d97706;
-  --color-error: #dc2626;
-  --color-info: #2563eb;
-  --color-diff-add: #16a34a;
-  --color-diff-del: #dc2626;
-  --color-diff-hunk: #2563eb;
-  /* PRs tab surfaces — light-theme equivalents. */
-  --pr-surface: var(--color-bg);
-  --pr-thread-card: var(--color-card);
-  --pr-panel-card: color-mix(in srgb, var(--color-accent) 6%, var(--color-card));
-
-  --shell-header-bg: color-mix(in srgb, var(--color-surface-raised) 90%, var(--color-bg));
-  --shell-header-fg: var(--color-fg);
-  --shell-header-border: color-mix(in srgb, var(--color-border) 78%, transparent);
-  --shell-header-divider: color-mix(in srgb, var(--color-border) 60%, transparent);
-
-  --shell-sidebar-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.95) 0%, rgba(245, 243, 240, 0.98) 100%);
-  --shell-sidebar-border: color-mix(in srgb, var(--color-border) 72%, transparent);
-  --shell-sidebar-item-fg: color-mix(in srgb, var(--color-muted-fg) 86%, var(--color-fg) 14%);
-  --shell-sidebar-item-hover-fg: var(--color-fg);
-  --shell-sidebar-item-hover-bg: color-mix(in srgb, var(--color-muted) 86%, transparent);
-  --shell-sidebar-item-active-fg: var(--color-accent);
-  --shell-sidebar-item-active-bg: color-mix(in srgb, var(--color-accent) 10%, transparent);
-  --shell-sidebar-item-active-rail: var(--color-accent);
-  --shell-sidebar-separator: color-mix(in srgb, var(--color-border) 62%, transparent);
-
-  --shell-project-tab-bg: transparent;
-  --shell-project-tab-fg: color-mix(in srgb, var(--color-muted-fg) 86%, var(--color-fg) 14%);
-  --shell-project-tab-hover-bg: color-mix(in srgb, var(--color-muted) 86%, transparent);
-  --shell-project-tab-hover-fg: var(--color-fg);
-  --shell-project-tab-hover-border: color-mix(in srgb, var(--color-accent) 24%, var(--color-border));
-  --shell-project-tab-active-bg: color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 18%, var(--color-surface-raised));
-  --shell-project-tab-active-fg: color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 34%, var(--color-fg));
-  --shell-project-tab-active-border: color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 48%, transparent);
-  --shell-project-tab-missing-bg: color-mix(in srgb, var(--color-error) 9%, transparent);
-  --shell-project-tab-missing-fg: color-mix(in srgb, var(--color-error) 86%, var(--color-fg) 14%);
-  --shell-project-tab-missing-border: color-mix(in srgb, var(--color-error) 38%, transparent);
-  --shell-project-tab-open-bg: color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 12%, transparent);
-  --shell-project-tab-open-fg: var(--color-fg);
-  --shell-project-tab-open-border: color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 42%, var(--color-border));
-  --shell-project-tab-focus-bg: color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 10%, transparent);
-  --shell-project-tab-focus-fg: var(--color-fg);
-  --shell-project-tab-focus-border: color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 36%, var(--color-border));
-  --shell-project-tab-focus-ring: color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 26%, transparent);
-
-  --shell-control-bg: var(--color-surface-recessed);
-  --shell-control-fg: color-mix(in srgb, var(--color-muted-fg) 86%, var(--color-fg) 14%);
-  --shell-control-border: color-mix(in srgb, var(--color-border) 84%, var(--color-muted-fg) 16%);
-  --shell-control-hover-bg: var(--color-surface-recessed);
-  --shell-control-hover-fg: var(--color-fg);
-  --shell-control-hover-border: color-mix(in srgb, var(--color-accent) 24%, var(--color-border));
-  --shell-control-open-bg: color-mix(in srgb, var(--color-accent) 10%, var(--shell-control-bg));
-  --shell-control-open-fg: var(--color-fg);
-  --shell-control-open-border: color-mix(in srgb, var(--color-accent) 40%, var(--shell-control-border));
-  --shell-control-focus-bg: var(--shell-control-hover-bg);
-  --shell-control-focus-fg: var(--shell-control-hover-fg);
-  --shell-control-focus-border: color-mix(in srgb, var(--color-accent) 32%, var(--shell-control-border));
-  --shell-control-focus-ring: color-mix(in srgb, var(--color-accent) 26%, transparent);
-  --shell-control-kbd-bg: color-mix(in srgb, var(--color-surface) 80%, var(--color-bg));
-  --shell-control-kbd-fg: color-mix(in srgb, var(--color-muted-fg) 84%, var(--color-fg) 16%);
-
-  --shell-status-running: #10b981;
-  --shell-status-attention: #d97706;
-
-  --work-pane-border: color-mix(in srgb, var(--color-border) 70%, transparent);
-  --work-pane-header-bg: color-mix(in srgb, var(--color-card) 88%, transparent);
-  --work-sidebar-bg: color-mix(in srgb, var(--color-card) 60%, var(--color-bg));
-  --work-session-sidebar-bg: var(--work-sidebar-bg);
-
-  --work-popover-bg: color-mix(in srgb, var(--color-card) 96%, white);
-  --work-popover-border: color-mix(in srgb, var(--color-border) 90%, transparent);
-  --work-popover-shadow: 0 8px 24px -8px rgba(0, 0, 0, 0.15), 0 0 0 1px color-mix(in srgb, var(--color-border) 88%, transparent);
-  --work-popover-item-hover: color-mix(in srgb, var(--color-muted) 70%, transparent);
-  --work-popover-item-active: color-mix(in srgb, var(--color-fg) 8%, var(--color-card));
-}
-
-/* ═══════════════════════════════════════════════════════════
-   Per-Tab Tint System
-   ═══════════════════════════════════════════════════════════ */
-
-.tab-tint-project { --tab-tint-rgb: 167, 139, 250; }
-.tab-tint-lanes { --tab-tint-rgb: 245, 158, 11; }
-.tab-tint-files { --tab-tint-rgb: 113, 113, 122; }
-/* Neutral zinc — work surface matches rest of UI, not a second brand tint. */
-.tab-tint-work { --tab-tint-rgb: 113, 113, 122; }
-.tab-tint-conflicts { --tab-tint-rgb: 239, 68, 68; }
-.tab-tint-prs { --tab-tint-rgb: 167, 139, 250; }
-.tab-tint-history { --tab-tint-rgb: 217, 119, 6; }
-.tab-tint-automations { --tab-tint-rgb: 249, 115, 22; }
-.tab-tint-cto { --tab-tint-rgb: 59, 130, 246; }
-.tab-tint-settings { --tab-tint-rgb: 113, 113, 122; }
-
-/* ═══════════════════════════════════════════════════════════
-   Base Styles
-   ═══════════════════════════════════════════════════════════ */
-
-html,
-body {
-  height: 100%;
-}
-
-/* Sharp corners reach past the radius variables. Most corners are the
-   `--radius-*` variables, which a theme's flair already sets, but a few hundred
-   surfaces state a radius of their own, inline or as an arbitrary utility. A
-   stylesheet `!important` outranks an inline value, so one rule squares them.
-   Circles (999px, 50%, rounded-full) keep their shape, and nothing here runs
-   unless the active theme asked for sharp corners. */
-html[data-theme-radius="sharp"] :is([style*="border-radius"], [class*="rounded-["]):not([style*="999"], [style*="50%"], [class*="rounded-full"]) {
-  border-radius: var(--radius-sm) !important;
-}
-
-/* A theme with its own depth (hard, flat or glow) applies it to the main
-   surfaces that draw their own shadow. The shadow values are the engine's
-   `--shadow-*` variables, so the theme's colours and offsets come through. */
-html[data-theme-shadow] :is(.ade-settings-panel, .ade-theme-stage, .ade-theme-search, .ade-settings-toolbar) {
-  box-shadow: var(--shadow-card) !important;
-}
-
-html[data-theme-shadow] :is([role="dialog"], [role="alertdialog"]) {
-  box-shadow: var(--shadow-modal) !important;
-}
-
-html[data-theme-shadow] :is([role="menu"], [role="listbox"]) {
-  box-shadow: var(--shadow-popup) !important;
-}
-
-/* A theme's backdrop: one static layer over the whole window (grid, dots,
-   scanlines, grain or aurora light). The engine writes the image, size and
-   opacity as `--ade-flair-backdrop*` on <html> and `applyTheme` sets the
-   attribute only while a theme has one. It never takes a click, and it paints
-   no filter or blend mode, so it costs one composited layer. */
-html[data-theme-backdrop]::after {
-  content: "";
-  position: fixed;
-  inset: 0;
-  z-index: 2147483000;
-  pointer-events: none;
-  background-image: var(--ade-flair-backdrop);
-  background-size: var(--ade-flair-backdrop-size, auto);
-  opacity: var(--ade-flair-backdrop-opacity, 1);
-}
-
-body {
-  margin: 0;
-  color: var(--color-fg);
-  background-color: var(--color-bg);
-  font-family: var(--font-sans);
-  -webkit-font-smoothing: antialiased;
-  font-feature-settings: "ss01";
-  letter-spacing: 0;
-}
-
-button,
-input,
-textarea,
-select,
-option {
-  font-family: var(--font-sans);
-}
-
-code,
-pre,
-kbd,
-samp {
-  font-family: var(--font-mono);
-}
 
 /* lib/xtermCursorBlink.ts drives a focused cursor's blink: xterm's own
    `step-end` keyframes stay, held paused at 25% (on) or 75% (off) and flipped
@@ -760,6 +282,12 @@ h6 {
   box-shadow: inset 0 0 0 1px var(--shell-control-focus-ring);
 }
 
+/* A collapsed project sidebar: its toggle takes the accent, and the dot the
+   toggle renders marks it (see ProjectSidebarToggle). */
+.ade-shell-control[data-collapsed="true"] {
+  color: var(--color-accent);
+}
+
 .ade-shell-control-kbd {
   color: var(--shell-control-kbd-fg);
   background: var(--shell-control-kbd-bg);
@@ -939,6 +467,66 @@ h6 {
   flex: 1 1 auto;
   flex-direction: column;
   min-height: 0;
+}
+
+/* "Star ADE on GitHub" pill above the footer (StarRepoPill.tsx). */
+.ade-star-pill {
+  flex-shrink: 0;
+  padding: 6px 8px 2px;
+  transition: opacity 320ms ease;
+}
+.ade-star-pill[data-leaving] {
+  opacity: 0;
+}
+.ade-star-pill-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ade-star-pill-link:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.ade-star-pill-link:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-accent) 70%, transparent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+.ade-star-pill-burst {
+  position: relative;
+  display: inline-flex;
+}
+.ade-star-pill-burst[data-animate] > svg {
+  animation: ade-star-pill-pop 420ms cubic-bezier(0.2, 0, 0, 1.4);
+}
+.ade-star-pill-spark {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 3px;
+  height: 3px;
+  margin: -1.5px 0 0 -1.5px;
+  border-radius: 999px;
+  background: var(--color-accent);
+  opacity: 0;
+  animation: ade-star-pill-spark 700ms ease-out 80ms;
+}
+@keyframes ade-star-pill-pop {
+  from { transform: scale(0.4); }
+  to { transform: scale(1); }
+}
+@keyframes ade-star-pill-spark {
+  from { opacity: 1; transform: rotate(var(--spark-turn)) translateY(0); }
+  to { opacity: 0; transform: rotate(var(--spark-turn)) translateY(-11px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ade-star-pill { transition: none; }
+  .ade-star-pill-burst > svg,
+  .ade-star-pill-spark { animation: none; }
 }
 
 .ade-project-sidebar-footer {
@@ -1700,6 +1288,358 @@ body.ade-project-sidebar-resizing {
   background: color-mix(in srgb, var(--color-fg) 8%, var(--color-card));
 }
 
+/* Focus pill: the Work sidebar's Focus toggle with the Focus-grid half
+   attached. Same height, radius and border as `.ade-work-segmented` beside it,
+   so the bar reads as one row of one family of controls. The accent marks
+   "on" and nothing else. */
+.ade-work-focus-pill {
+  display: inline-flex;
+  align-items: stretch;
+  height: 22px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--work-pane-border);
+  background: rgba(255, 255, 255, 0.03);
+  overflow: hidden;
+  transition: border-color 120ms ease, background 120ms ease, opacity 120ms ease;
+}
+
+.ade-work-focus-pill[data-on="true"] {
+  border-color: color-mix(in srgb, var(--color-accent) 45%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+}
+
+.ade-work-focus-pill[data-disabled="true"] {
+  opacity: 0.4;
+}
+
+.ade-work-focus-pill-main,
+.ade-work-focus-pill-grid {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--color-muted-fg);
+  font-size: 10px;
+  cursor: pointer;
+  outline: none;
+  transition: color 100ms ease, background 100ms ease, width 140ms ease;
+}
+
+.ade-work-focus-pill-main {
+  gap: 4px;
+  padding: 0 7px;
+}
+
+.ade-work-focus-pill-main:hover,
+.ade-work-focus-pill-grid:hover {
+  color: var(--color-fg);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.ade-work-focus-pill-main:focus-visible,
+.ade-work-focus-pill-grid:focus-visible {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-fg) 35%, transparent);
+}
+
+.ade-work-focus-pill[data-on="true"] .ade-work-focus-pill-main {
+  color: var(--color-fg);
+  font-weight: 500;
+}
+
+.ade-work-focus-pill-count {
+  min-width: 14px;
+  padding: 0 4px;
+  border-radius: 999px;
+  font-size: 9.5px;
+  font-weight: 600;
+  line-height: 14px;
+  text-align: center;
+  color: var(--color-fg);
+  background: color-mix(in srgb, var(--color-accent) 32%, transparent);
+}
+
+/* The grid half exists only while Focus is on; it slides out of the pill. */
+.ade-work-focus-pill-grid {
+  width: 0;
+  padding: 0;
+  overflow: hidden;
+  border-left: 1px solid transparent;
+}
+
+.ade-work-focus-pill[data-on="true"]:not([data-disabled="true"]) .ade-work-focus-pill-grid {
+  width: 24px;
+  border-left-color: color-mix(in srgb, var(--color-accent) 35%, transparent);
+}
+
+.ade-work-focus-pill[data-grid="true"] .ade-work-focus-pill-grid {
+  color: var(--color-fg);
+  background: color-mix(in srgb, var(--color-accent) 26%, transparent);
+}
+
+/* Focus grid roster: every waiting chat, grouped by page. Same height (41px
+   with its rule) and top rule as `.ade-project-sidebar-footer`, so the bottom
+   edge of the sidebar and of the grid line up as one. */
+.ade-focus-roster {
+  container-type: inline-size;
+  container-name: focus-roster;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 41px;
+  flex-shrink: 0;
+  padding: 0 8px;
+  border-top: 1px solid var(--shell-sidebar-separator, var(--work-pane-border));
+}
+
+.ade-focus-roster-strip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  /* A chip cut by the edge fades out instead of ending in a hard line, which
+     also says "there is more to scroll to". */
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 8px, #000 calc(100% - 28px), transparent 100%);
+  mask-image: linear-gradient(to right, transparent 0, #000 8px, #000 calc(100% - 28px), transparent 100%);
+}
+
+.ade-focus-roster-strip::-webkit-scrollbar {
+  display: none;
+}
+
+/* One group per page. The page on screen carries a quiet accent wash so the
+   eye finds "where am I" without reading. */
+.ade-focus-roster-page {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  padding: 2px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  transition: background-color 140ms ease, border-color 140ms ease;
+}
+
+.ade-focus-roster-page[data-active="true"] {
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+  border-color: color-mix(in srgb, var(--color-accent) 28%, transparent);
+}
+
+.ade-focus-roster-chip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  max-width: 190px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-muted-fg);
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+/* Wider windows give each chat's name more room before it truncates. */
+@container focus-roster (min-width: 1100px) {
+  .ade-focus-roster-chip { max-width: 240px; }
+}
+
+@container focus-roster (min-width: 1500px) {
+  .ade-focus-roster-chip { max-width: 300px; }
+}
+
+@container focus-roster (min-width: 1900px) {
+  .ade-focus-roster-chip { max-width: 380px; }
+}
+
+.ade-focus-roster-chip:hover {
+  background: color-mix(in srgb, var(--color-fg) 7%, transparent);
+  color: var(--color-fg);
+}
+
+.ade-focus-roster-page[data-active="true"] .ade-focus-roster-chip {
+  color: color-mix(in srgb, var(--color-fg) 85%, transparent);
+}
+
+.ade-focus-roster-chip[data-focused="true"] {
+  background: color-mix(in srgb, var(--color-fg) 9%, transparent);
+  color: var(--color-fg);
+}
+
+.ade-focus-roster-chip[data-unseen="true"]::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  right: 3px;
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--color-accent);
+}
+
+.ade-focus-roster-chip:focus-visible,
+.ade-focus-roster-arrow:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-fg) 35%, transparent);
+}
+
+.ade-focus-roster-summary {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 10.5px;
+  line-height: 1.25;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.ade-focus-roster-arrow {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-muted-fg);
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease, opacity 120ms ease;
+}
+
+.ade-focus-roster-arrow:hover {
+  background: color-mix(in srgb, var(--color-fg) 7%, transparent);
+  color: var(--color-fg);
+}
+
+.ade-focus-roster-arrow:disabled {
+  opacity: 0.3;
+  pointer-events: none;
+}
+
+/* One short slide in the direction of travel when the page changes. It runs
+   once and stops; nothing loops. */
+@keyframes ade-focus-page-next {
+  from { opacity: 0; transform: translateX(24px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes ade-focus-page-previous {
+  from { opacity: 0; transform: translateX(-24px); }
+  to { opacity: 1; transform: none; }
+}
+
+.ade-focus-page-enter-next {
+  animation: ade-focus-page-next 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.ade-focus-page-enter-previous {
+  animation: ade-focus-page-previous 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-focus-page-enter-next,
+  .ade-focus-page-enter-previous {
+    animation: none;
+  }
+
+  .ade-focus-roster-page,
+  .ade-focus-roster-chip,
+  .ade-focus-roster-arrow {
+    transition: none;
+  }
+}
+
+/* Focus pager in the sidebar toolbar: one control, the pill's height and
+   border, so the row stays one family of controls. */
+.ade-focus-toolbar-pager {
+  display: inline-flex;
+  align-items: stretch;
+  height: 22px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--work-pane-border);
+  background: rgba(255, 255, 255, 0.03);
+  overflow: hidden;
+}
+
+.ade-focus-toolbar-pager-arrow {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  border: none;
+  background: transparent;
+  color: var(--color-muted-fg);
+  cursor: pointer;
+  transition: color 100ms ease, background 100ms ease;
+}
+
+.ade-focus-toolbar-pager-arrow:hover {
+  color: var(--color-fg);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.ade-focus-toolbar-pager-arrow:disabled {
+  opacity: 0.3;
+  pointer-events: none;
+}
+
+.ade-focus-toolbar-pager-arrow:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-fg) 35%, transparent);
+}
+
+.ade-focus-toolbar-pager-label {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 2px;
+  font-size: 10px;
+  color: var(--color-fg);
+}
+
+.ade-focus-toolbar-pager-new {
+  position: absolute;
+  top: 3px;
+  right: 2px;
+  width: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--color-accent);
+}
+
+[data-theme="light"] .ade-focus-toolbar-pager {
+  background: color-mix(in srgb, var(--color-fg) 3%, var(--color-card));
+}
+
+[data-theme="light"] .ade-work-focus-pill {
+  background: color-mix(in srgb, var(--color-fg) 3%, var(--color-card));
+}
+
+[data-theme="light"] .ade-work-focus-pill[data-on="true"] {
+  background: color-mix(in srgb, var(--color-accent) 12%, var(--color-card));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-work-focus-pill,
+  .ade-work-focus-pill-main,
+  .ade-work-focus-pill-grid {
+    transition: none;
+  }
+}
+
 /* ═══════════════════════════════════════════════════════════
    Pane Gutters (inside floating pane containers)
    ═══════════════════════════════════════════════════════════ */
@@ -2166,14 +2106,18 @@ input.ade-palette-search:focus-visible {
   to { opacity: 0; transform: scaleY(0.96); }
 }
 
-[data-radix-popper-content-wrapper] [data-state="open"],
+/* The wrapper's child only. A descendant selector also caught every nested
+   Radix part that carries `data-state` (each model row's context-menu
+   trigger, switches, tooltip triggers): on every open they faded to nothing
+   and snapped back, and restyled the whole popover on each frame. */
+[data-radix-popper-content-wrapper] > [data-state="open"],
 [data-radix-select-content][data-state="open"],
 [data-radix-dropdown-menu-content][data-state="open"] {
   transform-origin: var(--radix-popper-transform-origin, top);
   animation: ade-popover-in 150ms cubic-bezier(0.2, 0, 0, 1);
 }
 
-[data-radix-popper-content-wrapper] [data-state="closed"],
+[data-radix-popper-content-wrapper] > [data-state="closed"],
 [data-radix-select-content][data-state="closed"],
 [data-radix-dropdown-menu-content][data-state="closed"] {
   animation: ade-popover-out 100ms ease-in;
@@ -2207,118 +2151,6 @@ button, [role="button"] {
 }
 .ade-help-menu-item:hover {
   background: color-mix(in srgb, var(--color-fg) 6%, transparent);
-}
-
-/* ═══════════════════════════════════════════════════════════
-   Smart Tooltips
-   ═══════════════════════════════════════════════════════════ */
-
-.ade-smart-tooltip {
-  width: max-content;
-  max-width: min(280px, calc(100vw - 24px));
-  background: var(--color-popup-bg, #151325);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: var(--radius-md);
-  padding: 7px 10px 8px;
-  box-shadow: 0 8px 24px -6px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.04);
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
-  animation: ade-stt-in 120ms ease forwards;
-}
-
-@keyframes ade-stt-in {
-  from { opacity: 0; }
-  to   { opacity: 1; }
-}
-
-/* ── head row ── */
-.ade-stt-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.ade-stt-label {
-  font-family: var(--font-sans);
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--color-fg, #F0F0F2);
-  line-height: 1.3;
-}
-
-.ade-stt-kbd {
-  flex-shrink: 0;
-  font-family: var(--font-sans);
-  font-size: 9px;
-  line-height: 1;
-  color: var(--color-muted-fg, #908FA0);
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 3px;
-  padding: 2px 5px;
-}
-
-/* ── description ── */
-.ade-stt-desc {
-  margin: 2px 0 0;
-  font-family: var(--font-sans);
-  font-size: 10.5px;
-  line-height: 1.45;
-  color: var(--color-muted-fg, #908FA0);
-}
-
-/* ── extra section (cmd / effect / warning) ── */
-.ade-stt-extra {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  margin-top: 5px;
-  padding-top: 5px;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
-}
-
-.ade-stt-cmd {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  line-height: 1.35;
-  color: var(--color-accent, #A78BFA);
-  word-break: break-all;
-}
-
-.ade-stt-effect {
-  font-family: var(--font-sans);
-  font-size: 10.5px;
-  line-height: 1.35;
-  color: var(--color-success, #22c55e);
-}
-
-.ade-stt-warn {
-  font-family: var(--font-sans);
-  font-size: 10.5px;
-  line-height: 1.35;
-  color: var(--color-warning, #f59e0b);
-}
-
-/* Docs deep-link: same weight as .ade-stt-extra, underlined to hint interactivity. */
-.ade-stt-doc {
-  display: inline-block;
-  margin-top: 5px;
-  padding-top: 5px;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
-  font-family: var(--font-sans);
-  font-size: 10.5px;
-  line-height: 1.35;
-  color: var(--color-accent, #A78BFA);
-  text-decoration: underline;
-  text-underline-offset: 2px;
-  cursor: pointer;
-}
-
-.ade-stt-doc:hover,
-.ade-stt-doc:focus-visible {
-  color: var(--color-accent-strong, #C4B5FD);
-  outline: none;
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -2411,11 +2243,6 @@ button, [role="button"] {
   94.24% { opacity: 1.00; }
 }
 
-/* Session row detail tooltips render a key/value list, one pair per line.
-   Only strings that actually contain newlines are affected. */
-.ade-smart-tooltip .ade-stt-desc {
-  white-space: pre-line;
-}
 
 /* Status motion is intentionally duty-cycled. Long flat holds let Chromium
    skip compositor frames while preserving a clear active/working signal. */
@@ -2589,56 +2416,6 @@ button, [role="button"] {
   .ade-pane-tooltip {
     animation: none;
   }
-}
-
-/* Work tools picker: a shader backdrop with cards floating on it.
-
-   The backdrop is a <canvas> (or, with no WebGL, this same box painted as a
-   static gradient) pinned behind the column and untouchable — a canvas that
-   swallowed a click meant for a card would be a decoration breaking the page
-   it decorates. */
-.ade-tool-picker-backdrop {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-}
-
-/* The no-WebGL fallback: the same corner light, flat. A software-rendered mesh
-   would be the most expensive thing in the window. */
-.ade-tool-picker-static {
-  background:
-    radial-gradient(
-      130% 100% at 18% 12%,
-      color-mix(in srgb, var(--backdrop-lobe, #6366F1) 28%, transparent),
-      transparent 64%
-    ),
-    radial-gradient(
-      120% 90% at 82% 78%,
-      color-mix(in srgb, var(--color-accent) 22%, transparent),
-      transparent 62%
-    ),
-    var(--color-bg);
-}
-
-/* A window-field part: the flat fallback is fixed to the window too, so
-   separate parts still read as one gradient without WebGL. */
-.ade-tool-picker-backdrop[data-field="window"] .ade-tool-picker-static {
-  background-attachment: fixed;
-}
-
-[data-theme="light"] .ade-tool-picker-static {
-  background:
-    radial-gradient(
-      130% 100% at 18% 12%,
-      color-mix(in srgb, var(--backdrop-lobe, #A5B4FC) 30%, transparent),
-      transparent 64%
-    ),
-    radial-gradient(
-      120% 90% at 82% 78%,
-      color-mix(in srgb, var(--color-accent-bright) 22%, transparent),
-      transparent 62%
-    ),
-    var(--color-surface);
 }
 
 /* The card: a piece of glass standing on the gradient, not a flat rectangle
@@ -3137,7 +2914,7 @@ button, [role="button"] {
   height: 200px;
   border: 2px dashed rgba(249, 115, 22, 0.06);
   border-radius: 50%;
-  animation: ade-gear-spin 20s linear infinite;
+  animation: ade-gear-spin 20s steps(600) infinite;
   opacity: 0.4;
 }
 
@@ -3150,7 +2927,7 @@ button, [role="button"] {
   height: 140px;
   border: 2px dashed rgba(249, 115, 22, 0.05);
   border-radius: 50%;
-  animation: ade-gear-spin-reverse 15s linear infinite;
+  animation: ade-gear-spin-reverse 15s steps(450) infinite;
   opacity: 0.35;
 }
 
@@ -3275,22 +3052,6 @@ button, [role="button"] {
   box-shadow: 0 0 6px 2px rgba(56, 189, 248, 0.3), 0 0 2px 1px rgba(56, 189, 248, 0.15);
 }
 
-/* Glass card for conflict/PR panels */
-.ade-glass-card {
-  background: rgba(var(--color-card-rgb, 19, 16, 26), 0.5);
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-  border: 1px solid rgba(var(--tab-tint-rgb, 113, 113, 122), 0.1);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-card);
-  transition: border-color 150ms ease, box-shadow 200ms ease, transform 150ms ease;
-}
-
-.ade-glass-card:hover {
-  border-color: rgba(var(--tab-tint-rgb, 113, 113, 122), 0.22);
-  box-shadow: var(--shadow-card-hover);
-}
-
 /*
  * Launch shelf beneath the new-chat composer.
  *
@@ -3310,13 +3071,27 @@ button, [role="button"] {
   border: 1px solid var(--chat-glass-border);
   border-top: 0;
   border-radius: 0 0 var(--chat-radius-shell) var(--chat-radius-shell);
+  /* A drawer tucked under the composer: frosted like the composer so it reads
+     on a picture as well as on the gradient, a touch darker so it sits behind
+     it, and a soft shadow at its top edge where the composer overlaps it. */
   background:
     linear-gradient(
       to bottom,
-      color-mix(in srgb, var(--chat-glass-bg) 76%, transparent) 0%,
-      color-mix(in srgb, var(--chat-panel-bg) 48%, transparent) 100%
+      color-mix(in srgb, var(--chat-panel-bg) 86%, transparent) 0%,
+      color-mix(in srgb, var(--chat-panel-bg) 72%, transparent) 100%
     );
-  box-shadow: 0 14px 32px -18px rgb(0 0 0 / 75%);
+  backdrop-filter: blur(18px) saturate(1.3);
+  -webkit-backdrop-filter: blur(18px) saturate(1.3);
+  box-shadow:
+    inset 0 14px 14px -14px rgb(0 0 0 / 55%),
+    inset 0 -1px 0 color-mix(in srgb, var(--chat-glass-highlight, white) 60%, transparent),
+    0 18px 36px -22px rgb(0 0 0 / 70%);
+}
+
+[data-theme="light"] .ade-chat-launch-shelf {
+  box-shadow:
+    inset 0 14px 14px -14px rgb(0 0 0 / 14%),
+    0 14px 30px -22px rgb(0 0 0 / 30%);
 }
 
 .ade-liquid-glass {
@@ -3501,6 +3276,24 @@ button, [role="button"] {
   text-underline-offset: 3px;
 }
 
+/* Find (⌘F) in a chat or a diff: every match amber, the current one gold with
+   dark text, so neither reads as a code tint or a comment highlight. Diffs
+   repeat these two rules inside their shadow roots (AdeDiffViewer). */
+:root {
+  --ade-find-match: rgba(253, 184, 51, 0.3);
+  --ade-find-current: #eea52b;
+  --ade-find-current-fg: #1a1206;
+}
+
+::highlight(ade-find) {
+  background-color: var(--ade-find-match);
+}
+
+::highlight(ade-find-active) {
+  background-color: var(--ade-find-current);
+  color: var(--ade-find-current-fg);
+}
+
 .ade-liquid-glass-menu {
   border-radius: var(--radius-xl);
   border: 1px solid var(--work-popover-border, var(--chat-panel-border));
@@ -3546,6 +3339,11 @@ button, [role="button"] {
 }
 
 .ade-chat-message-card-user {
+  /* The bubble is the accent colour on every theme, so what sits on it keeps
+     the dark-page ink and chip backing. */
+  --chat-ink: #ffffff;
+  --chat-inline-code-bg: rgba(0, 0, 0, 0.30);
+  --chat-table-bg: rgba(10, 9, 14, 0.6);
   /* Kept in sync with CHAT_USER_BUBBLE_GRADIENT_DEFAULT in chatSurfaceTheme.ts. */
   background: var(--chat-user-bubble-gradient,
     linear-gradient(135deg, color-mix(in srgb, var(--chat-accent) 76%, #ffffff 6%) 0%, color-mix(in srgb, var(--chat-accent) 60%, #7c3aed 40%) 50%, color-mix(in srgb, var(--chat-accent) 58%, #4c1d95 42%) 100%));
@@ -3933,6 +3731,96 @@ button, [role="button"] {
   opacity: 1;
 }
 
+/*
+  Work grid: tiles meet edge to edge, like the chat and the tools pane do.
+
+  The generic pane gutter is an 8px band with a short pill, and each tile had a
+  rounded border and a shadow, so a grid showed a dark gap between chats and a
+  frame of empty space at the window edges. Here the splitter takes no layout
+  width: a 1px line is the resting divider, the hit area overlays both edges,
+  and the line turns accent while hovered or dragged — the same gesture as
+  `.ade-tool-gutter`. Tiles are square and borderless; the lane tint stays on
+  the header, which is what separates one chat from the next.
+*/
+.ade-work-surface .ade-work-grid-tiling .ade-pane-gutter.vertical {
+  width: 0 !important;
+  min-width: 0 !important;
+  margin: 0 !important;
+  z-index: 20;
+  background: transparent !important;
+  border-radius: 0 !important;
+}
+
+.ade-work-surface .ade-work-grid-tiling .ade-pane-gutter.horizontal {
+  height: 0 !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+  z-index: 20;
+  background: transparent !important;
+  border-radius: 0 !important;
+}
+
+.ade-work-surface .ade-work-grid-tiling .ade-pane-gutter.vertical::after {
+  inset: 0 -4px;
+}
+
+.ade-work-surface .ade-work-grid-tiling .ade-pane-gutter.horizontal::after {
+  inset: -4px 0;
+}
+
+.ade-work-surface .ade-work-grid-tiling .ade-pane-gutter::before {
+  opacity: 1;
+  border-radius: 0;
+  background: var(--work-pane-border);
+  box-shadow: none;
+  transition: background-color 0.12s ease;
+}
+
+.ade-work-surface .ade-work-grid-tiling .ade-pane-gutter.vertical::before {
+  top: 0;
+  width: 1px;
+  height: 100%;
+  transform: translateX(-50%);
+}
+
+.ade-work-surface .ade-work-grid-tiling .ade-pane-gutter.horizontal::before {
+  left: 0;
+  width: 100%;
+  height: 1px;
+  transform: translateY(-50%);
+}
+
+.ade-work-surface .ade-work-grid-tiling .ade-pane-gutter:hover::before,
+.ade-work-surface .ade-work-grid-tiling .ade-pane-gutter[data-resize-handle-active]::before {
+  background: var(--color-accent);
+  box-shadow: none;
+}
+
+.ade-work-surface .ade-work-grid-tiling .ade-pane-gutter.vertical:hover::before,
+.ade-work-surface .ade-work-grid-tiling .ade-pane-gutter.vertical[data-resize-handle-active]::before {
+  width: 2px;
+}
+
+.ade-work-surface .ade-work-grid-tiling .ade-pane-gutter.horizontal:hover::before,
+.ade-work-surface .ade-work-grid-tiling .ade-pane-gutter.horizontal[data-resize-handle-active]::before {
+  height: 2px;
+}
+
+.ade-work-surface .ade-work-grid-tiling .ade-floating-pane,
+.ade-work-surface .ade-work-grid-tiling .ade-floating-pane.ade-floating-pane--lane-accent,
+.ade-work-surface .ade-work-grid-tiling .ade-floating-pane.ade-floating-pane--lane-accent:hover,
+.ade-work-surface .ade-work-grid-tiling .ade-floating-pane.ade-floating-pane--lane-accent:focus-within {
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* Drag and drop still needs to show where a tile will land. */
+.ade-work-surface .ade-work-grid-tiling .ade-floating-pane.ade-floating-pane--lane-accent.dragging,
+.ade-work-surface .ade-work-grid-tiling .ade-floating-pane.ade-floating-pane--lane-accent.drop-target {
+  box-shadow: inset 0 0 0 1px var(--color-accent);
+}
+
 /* Thin header strip inside a tile */
 .ade-work-glass-tile-header {
   background: linear-gradient(180deg,
@@ -4265,6 +4153,19 @@ button, [role="button"] {
   min-height: var(--ade-work-header-side-h);
 }
 
+/* Work surface header: in a narrow grid tile, labelled header links collapse
+   to their icon (the tooltip keeps the words), so the chat title keeps room. */
+.ade-work-surface-header {
+  container-type: inline-size;
+  container-name: work-surface-header;
+}
+
+@container work-surface-header (max-width: 640px) {
+  .ade-header-collapsible-label {
+    display: none;
+  }
+}
+
 /* Session list sidebar toolbar — search hides when pane is narrow; New Chat + Filter stay visible */
 .ade-session-list-toolbar {
   container-type: inline-size;
@@ -4284,6 +4185,15 @@ button, [role="button"] {
   /* Search stays visible at every sidebar width — never collapse it. */
   flex: 1 1 auto;
   min-width: 3.25rem;
+}
+
+/* With Focus in the row, a default-width sidebar has no room for the word.
+   Drop the word, keep the glyph and the shortcut, so the control never shows a
+   clipped "S". */
+@container session-list-toolbar (max-width: 360px) {
+  .ade-session-list-toolbar-search-label {
+    display: none;
+  }
 }
 
 /* Chat composer footer — permission preset collapses to dot-only in narrow grid tiles */
@@ -4759,7 +4669,7 @@ button, [role="button"] {
 
 /* Running status indicator spin */
 .ade-timeline-running-spin {
-  animation: ade-running-spin 1.2s linear infinite;
+  animation: ade-running-spin 1.2s steps(36) infinite;
 }
 
 @keyframes ade-running-spin {
@@ -5035,7 +4945,33 @@ button, [role="button"] {
   scroll-behavior: smooth;
 }
 
+/* A scene being drawn (SceneDrawingBox.tsx): a soft band sweeping across the
+   box. Transform only, so it composites without repainting the box, and
+   stepped like the thinking shimmer so it costs little on high refresh. */
+.ade-scene-drawing-sweep {
+  position: relative;
+  overflow: hidden;
+}
+.ade-scene-drawing-sweep::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 45%;
+  background: var(--chat-streaming-shimmer);
+  transform: translateX(-100%);
+  animation: ade-scene-drawing-sweep 2.4s steps(72) infinite;
+  pointer-events: none;
+}
+@keyframes ade-scene-drawing-sweep {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(330%); }
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .ade-scene-drawing-sweep::after {
+    animation: none;
+    display: none;
+  }
   .ade-thinking-shimmer {
     animation: none;
     background-image: none;
@@ -5264,7 +5200,10 @@ button, [role="button"] {
   width: 40%;
   border-radius: 9999px;
   background: linear-gradient(90deg, transparent 0%, rgba(221, 214, 254, 0.7) 50%, transparent 100%);
-  animation: ade-launch-rail-sheen 1.5s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  /* steps = 1.5s x 30. A smooth sweep re-runs full-window paint at the display
+     rate; quantized it is ~3x cheaper (traced: 3 sheens over 8s, 206-256ms of
+     compositor draw smooth, 65-68ms stepped). The easing is traded for that. */
+  animation: ade-launch-rail-sheen 1.5s steps(45) infinite;
   will-change: transform;
   pointer-events: none;
 }
@@ -5295,7 +5234,7 @@ button, [role="button"] {
   .ade-launch-rail-sheen { animation: none; opacity: 0; }
 }
 
-/* Model reasoning slider: progressive fill, active-tier pulse, and drag state. */
+/* Reasoning effort track: label roll, sliding segment indicator, and drag state. */
 @keyframes ade-reasoning-effort-word-roll-up {
   0% { opacity: 0; transform: translateY(65%) perspective(90px) rotateX(-78deg); filter: blur(2px); }
   72% { opacity: 1; transform: translateY(-4%) perspective(90px) rotateX(6deg); filter: blur(0); }
@@ -5306,12 +5245,6 @@ button, [role="button"] {
   0% { opacity: 0; transform: translateY(-65%) perspective(90px) rotateX(78deg); filter: blur(2px); }
   72% { opacity: 1; transform: translateY(4%) perspective(90px) rotateX(-6deg); filter: blur(0); }
   100% { opacity: 1; transform: translateY(0) perspective(90px) rotateX(0); filter: blur(0); }
-}
-
-@keyframes ade-reasoning-fill-sheen {
-  0% { transform: translateX(-80%); opacity: 0; }
-  35% { opacity: 0.55; }
-  100% { transform: translateX(80%); opacity: 0; }
 }
 
 .ade-reasoning-effort-word {
@@ -5327,28 +5260,20 @@ button, [role="button"] {
   animation: ade-reasoning-effort-word-roll-down 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
-.ade-reasoning-slider-fill {
-  background: var(--reasoning-progressive-gradient);
-  clip-path: inset(0 calc(100% - var(--reasoning-slider-fill-position)) 0 0);
-  box-shadow: 0 0 18px rgba(var(--reasoning-fill-rgb), 0.24);
-  transition: clip-path 220ms cubic-bezier(0.2, 0.8, 0.2, 1), background 220ms ease, box-shadow 220ms ease;
+/* The indicator takes the current tier's tone; it slides between segments. */
+.ade-reasoning-slider-thumb {
+  background: rgba(var(--reasoning-fill-rgb) / 0.16);
+  box-shadow:
+    inset 0 0 0 1px rgba(var(--reasoning-fill-rgb) / 0.34),
+    0 1px 3px rgba(0, 0, 0, 0.3);
+  transition: transform 240ms cubic-bezier(0.22, 1, 0.36, 1), background-color 200ms ease, box-shadow 200ms ease;
 }
 
-.ade-reasoning-slider-fill::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: linear-gradient(100deg, transparent 20%, rgba(255, 255, 255, 0.22) 50%, transparent 78%);
-  animation: ade-reasoning-fill-sheen 700ms ease-out 1;
-}
-
-.ade-reasoning-slider-fill-max {
-  background:
-    radial-gradient(circle at center, rgba(255, 255, 255, 0.20) 0 0.8px, transparent 1px),
-    var(--reasoning-progressive-gradient);
-  background-size: 4px 4px, 100% 100%;
-  box-shadow: 0 0 24px rgba(167, 139, 250, 0.34);
+/* Permission menu: one highlight follows the pointed mode, tinted by it. */
+.ade-permission-mode-highlight {
+  background: rgba(var(--permission-mode-rgb) / 0.13);
+  box-shadow: inset 0 0 0 1px rgba(var(--permission-mode-rgb) / 0.3);
+  transition: transform 200ms cubic-bezier(0.22, 1, 0.36, 1), background-color 160ms ease, box-shadow 160ms ease;
 }
 
 @keyframes ade-reasoning-ultra-sheen {
@@ -5385,7 +5310,8 @@ button, [role="button"] {
   background-size: auto, auto, 220% 100%;
   background-position: center, center, 0 0;
   background-repeat: no-repeat;
-  animation: ade-reasoning-ultra-sheen 3.8s ease-in-out infinite;
+  /* steps = 3.8s x 30; see the note on `ade-launch-rail-sheen`. */
+  animation: ade-reasoning-ultra-sheen 3.8s steps(114) infinite;
 }
 
 .ade-reasoning-effort-trigger-ultra > *,
@@ -5406,10 +5332,121 @@ button, [role="button"] {
     0 0 42px rgba(34, 211, 238, 0.08);
 }
 
-.ade-reasoning-effort-content-ultra .ade-reasoning-slider-fill-max {
+.ade-reasoning-effort-content-ultra .ade-reasoning-slider-thumb {
   box-shadow:
-    0 0 24px rgba(232, 121, 249, 0.44),
-    0 0 12px rgba(34, 211, 238, 0.24);
+    inset 0 0 0 1px rgba(232, 121, 249, 0.5),
+    0 0 14px rgba(232, 121, 249, 0.36),
+    0 0 8px rgba(34, 211, 238, 0.2);
+}
+
+/* Prompt box frame: a rainbow while the message says "ultrathink", else the
+   highest thinking level's colour while that level is selected. A still,
+   masked border (no animation) so it costs nothing while it shows. The shell's
+   own ::before is its glass sheen, so the border is a child element. */
+.ade-composer-effort-frame {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  padding: 1.5px;
+  border-radius: inherit;
+  pointer-events: none;
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+}
+
+[data-effort-frame="ultrathink"] > .ade-composer-effort-frame {
+  background: linear-gradient(120deg, #ff6b6b 0%, #f59e0b 18%, #22c55e 36%, #14b8a6 54%, #3b82f6 72%, #ec4899 90%, #ff6b6b 100%);
+  filter: saturate(0.82) brightness(0.92);
+}
+
+[data-effort-frame="top"] > .ade-composer-effort-frame {
+  background: linear-gradient(
+    120deg,
+    rgba(var(--effort-frame-rgb) / 0.85),
+    rgba(var(--effort-frame-rgb) / 0.4) 50%,
+    rgba(var(--effort-frame-rgb) / 0.85)
+  );
+}
+
+[data-effort-frame="ultra"] > .ade-composer-effort-frame {
+  background: linear-gradient(120deg, #a78bfa, #e879f9 50%, #67e8f9);
+}
+
+[data-chat-composer-mode][data-effort-frame="top"] {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 18px 44px -30px rgba(0, 0, 0, 0.72),
+    0 0 22px -4px rgba(var(--effort-frame-rgb) / 0.26);
+}
+
+[data-chat-composer-mode][data-effort-frame="ultra"] {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 18px 44px -30px rgba(0, 0, 0, 0.72),
+    0 0 24px -4px rgba(217, 70, 239, 0.26);
+}
+
+/* The word "ultrathink" in the prompt, one colour per letter. The plain
+   editor paints it in its overlay; the rich editor uses CSS highlights.
+   Colours match ULTRATHINK_LETTER_COLORS. */
+.ade-ultrathink-letter-0 { color: #f87171; }
+::highlight(ade-ultrathink-0) { color: #f87171; }
+.ade-ultrathink-letter-1 { color: #fb923c; }
+::highlight(ade-ultrathink-1) { color: #fb923c; }
+.ade-ultrathink-letter-2 { color: #facc15; }
+::highlight(ade-ultrathink-2) { color: #facc15; }
+.ade-ultrathink-letter-3 { color: #4ade80; }
+::highlight(ade-ultrathink-3) { color: #4ade80; }
+.ade-ultrathink-letter-4 { color: #2dd4bf; }
+::highlight(ade-ultrathink-4) { color: #2dd4bf; }
+.ade-ultrathink-letter-5 { color: #60a5fa; }
+::highlight(ade-ultrathink-5) { color: #60a5fa; }
+.ade-ultrathink-letter-6 { color: #c084fc; }
+::highlight(ade-ultrathink-6) { color: #c084fc; }
+
+/* The Ultrathink label and switch in the effort popover. */
+.ade-ultrathink-text {
+  background: linear-gradient(120deg, #f87171, #fb923c 18%, #facc15 34%, #4ade80 50%, #2dd4bf 64%, #60a5fa 80%, #c084fc);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.ade-ultrathink-switch {
+  position: relative;
+  width: 28px;
+  height: 16px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  transition: background-color 160ms ease;
+}
+
+.ade-ultrathink-switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  background: rgba(228, 228, 231, 0.85);
+  transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1), background-color 160ms ease;
+}
+
+.ade-ultrathink-switch[data-on="true"] {
+  background: linear-gradient(120deg, #f87171, #facc15, #4ade80, #60a5fa, #c084fc);
+}
+
+.ade-ultrathink-switch[data-on="true"]::after {
+  transform: translateX(12px);
+  background: #fff;
 }
 
 /* Workflow activity card: one restrained sweep keeps a live orchestration
@@ -5427,10 +5464,10 @@ button, [role="button"] {
   pointer-events: none;
   background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.12), transparent);
   filter: blur(4px);
-  animation: ade-workflow-card-sheen 3.8s ease-in-out infinite;
+  /* steps = 3.8s x 30; see the note on `ade-launch-rail-sheen`. */
+  animation: ade-workflow-card-sheen 3.8s steps(114) infinite;
 }
 
-.ade-reasoning-slider-track[data-dragging="true"] .ade-reasoning-slider-fill,
 .ade-reasoning-slider-track[data-dragging="true"] .ade-reasoning-slider-thumb {
   transition: none;
 }
@@ -5439,14 +5476,13 @@ button, [role="button"] {
   .ade-reasoning-effort-word,
   .ade-reasoning-effort-word[data-direction="up"],
   .ade-reasoning-effort-word[data-direction="down"],
-  .ade-reasoning-slider-fill::after,
-  .ade-reasoning-slider-fill-max,
   .ade-workflow-active-card__sheen,
   .ade-reasoning-effort-trigger-ultra::after,
   .ade-reasoning-effort-content-ultra::after {
     animation: none;
   }
-  .ade-reasoning-slider-fill { transition: none; }
+  .ade-reasoning-slider-thumb,
+  .ade-permission-mode-highlight { transition: none; }
 }
 
 /*
@@ -5843,17 +5879,6 @@ button, [role="button"] {
   color: var(--color-fg);
 }
 
-/* Settings → Appearance → Reduce motion. Stronger than the OS query: it stops
-   every transition and animation, including ones that ignore that query. */
-html[data-motion="reduced"] *,
-html[data-motion="reduced"] *::before,
-html[data-motion="reduced"] *::after {
-  animation-duration: 0.01ms !important;
-  animation-iteration-count: 1 !important;
-  transition-duration: 0.01ms !important;
-  scroll-behavior: auto !important;
-}
-
 /* The settings segmented control: the checked option lifts as a card, the
    same treatment as the Appearance mode switch. */
 .ade-settings-segmented {
@@ -6247,54 +6272,58 @@ html[data-motion="reduced"] *::after {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tone) 22%, transparent);
 }
 
-/* Section pages (General, Lanes, Integrations, Diagnostics, Secrets): one
-   single-column list of named blocks, top to bottom. The even two-column grid
-   was tried and read as two columns of uneven height, so it is gone. */
+/* Section pages (General, Lanes, Integrations, Diagnostics): one column of
+   named blocks. A block is led by a quiet mono label on a hairline, then its
+   sections run at the modern settings rhythm (44px apart, see
+   settingsModern.css). */
 .ade-settings-flow {
+  container: modernpage / inline-size;
   display: flex;
   flex-direction: column;
-  gap: 48px;
+  gap: 56px;
+  min-width: 0;
 }
 
-/* One named block: a heading with its icon and one line, then its sections. */
 .ade-settings-group-block {
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: 44px;
   scroll-margin-top: 12px;
+  min-width: 0;
 }
 
 .ade-settings-group-head {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding-bottom: 14px;
-  border-bottom: 1px solid color-mix(in srgb, var(--color-fg) 7%, transparent);
+  margin-bottom: -22px;
+}
+
+.ade-settings-group-head::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: color-mix(in srgb, var(--color-fg) 8%, transparent);
 }
 
 .ade-settings-group-title {
   margin: 0;
-  font-family: var(--font-sans);
-  font-size: 15px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  color: var(--color-fg);
-}
-
-.ade-settings-group-description {
-  margin: 3px 0 0;
-  font-family: var(--font-sans);
-  font-size: 12px;
-  color: var(--color-muted-fg);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 14px;
+  font-weight: 500;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--kit-text-3);
 }
 
 /* The danger zone says so before anything in it is read. */
-.ade-settings-group-block[data-tone="red"] .ade-settings-group-head {
-  border-bottom-color: color-mix(in srgb, var(--color-error) 35%, transparent);
-}
-
 .ade-settings-group-block[data-tone="red"] .ade-settings-group-title {
   color: var(--color-error);
+}
+
+.ade-settings-group-block[data-tone="red"] .ade-settings-group-head::after {
+  background: color-mix(in srgb, var(--color-error) 30%, transparent);
 }
 
 .ade-settings-rail svg {
@@ -6305,7 +6334,7 @@ html[data-motion="reduced"] *::after {
 .ade-settings-flow-item {
   display: flex;
   flex-direction: column;
-  gap: 32px;
+  gap: 44px;
   min-width: 0;
 }
 
@@ -6332,52 +6361,6 @@ html[data-motion="reduced"] *::after {
     display: block;
     position: sticky;
     top: 8px;
-  }
-}
-
-/* Settings → Providers: one tile per provider, as many across as fit. */
-.ade-provider-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 10px;
-}
-
-.ade-provider-tile {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  min-width: 0;
-  padding: 14px;
-  border-radius: var(--radius-lg);
-  border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
-  background: color-mix(in srgb, var(--color-fg) 2%, transparent);
-  text-align: left;
-  font: inherit;
-  color: inherit;
-  cursor: pointer;
-  transition: border-color 150ms ease, background-color 150ms ease, transform 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
-}
-
-.ade-provider-tile:hover {
-  border-color: color-mix(in srgb, var(--color-fg) 22%, var(--color-border));
-  background: color-mix(in srgb, var(--color-fg) 4%, transparent);
-  transform: translateY(-1px);
-}
-
-.ade-provider-tile[data-state="connected"] {
-  border-color: color-mix(in srgb, var(--color-success) 30%, var(--color-border));
-}
-
-.ade-provider-tile:focus-visible {
-  outline: 2px solid var(--color-accent);
-  outline-offset: 2px;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .ade-provider-tile,
-  .ade-provider-tile:hover {
-    transition: none;
-    transform: none;
   }
 }
 

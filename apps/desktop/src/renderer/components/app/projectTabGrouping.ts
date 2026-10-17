@@ -264,6 +264,28 @@ export function activeMachineForGroup(group: ProjectTabGroup): ProjectTabMachine
   );
 }
 
+/**
+ * This computer's checkout of the repo another machine's checkout belongs to,
+ * when there is one on disk. A project tab always runs on it: another
+ * machine's copy is only for a repo this computer does not have. Open tabs
+ * win over recents, and lane worktrees never stand in for the repo itself.
+ */
+export function localCheckoutForRemote(args: {
+  remoteOrigin: string | null | undefined;
+  openLocalTabs: readonly RecentProjectSummary[];
+  knownLocalTabs: readonly RecentProjectSummary[];
+}): string | null {
+  const origin = cachedGitRemoteIdentity(args.remoteOrigin ?? null);
+  if (!origin) return null;
+  const match = [...args.openLocalTabs, ...args.knownLocalTabs].find((entry) =>
+    entry.kind !== "remote"
+    && entry.exists !== false
+    && !entry.worktreeOf
+    && Boolean(entry.rootPath)
+    && cachedGitRemoteIdentity(entry.gitOriginUrl ?? null) === origin);
+  return match?.rootPath ?? null;
+}
+
 /** Where a project tab moves when its machine is disconnected or removed. */
 export type ProjectTabFallback =
   | { kind: "local"; rootPath: string }
@@ -506,7 +528,12 @@ export function groupRecentProjects(args: {
       const locations = [...group.locations].sort(
         (left, right) => recentTimestamp(right.summary) - recentTimestamp(left.summary),
       );
-      const primary = locations.find((location) => location.reachable) ?? locations[0]!;
+      // This computer's checkout first: opening a project should never land
+      // on another machine's copy just because that one was opened last.
+      const primary =
+        locations.find((location) => location.summary.kind !== "remote" && location.reachable)
+        ?? locations.find((location) => location.reachable)
+        ?? locations[0]!;
       return {
         id: group.id,
         displayName: group.displayName,

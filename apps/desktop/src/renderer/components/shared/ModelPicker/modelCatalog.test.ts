@@ -25,7 +25,9 @@ import {
 import type { AgentChatModelCatalog } from "../../../../shared/types";
 import {
   createDynamicAcpModelDescriptor,
+  createDynamicOpenCodeModelDescriptor,
   createDynamicPiModelDescriptor,
+  replaceDynamicOpenCodeModelDescriptors,
 } from "../../../../shared/modelRegistry";
 
 describe("mergeSelectorModels", () => {
@@ -896,5 +898,37 @@ describe("ensureRuntimeCatalogDescriptors", () => {
     ensureRuntimeCatalogDescriptors("machine-empty");
     expect(getRuntimeCatalogModelDescriptor("opencode/opencode-go/deepseek-v4.1-flash", "machine-empty"))
       .toBeUndefined();
+  });
+
+  // An unfiltered parse is memoized per scope on the catalog object's identity,
+  // so the pane's read-only callers stop rebuilding a descriptor per row on every
+  // mount. The registry is the other half of each row: a parse reads
+  // `resolveModelDescriptor(id)` for everything the catalog does not state, so a
+  // memo that outlived a registry change would keep serving the old answer — a
+  // picker still showing a replaced OpenCode inventory. The generation key is
+  // what prevents that, and this is the test that goes red without it.
+  it("re-parses a catalog it has already parsed once the registry changes under it", () => {
+    const id = "opencode/deepseek/deepseek-reparse";
+    const catalog = openCodeCatalog(id, ["low", "high"]);
+    rememberRuntimeCatalog(catalog, { mode: "cached", scopeKey: "machine-a" });
+
+    const first = descriptorsFromAgentChatModelCatalog(catalog, undefined, "machine-a");
+    const firstRow = first.models.find((model) => model.id === id);
+    expect(firstRow).toBeDefined();
+    expect(firstRow?.contextWindow).not.toBe(424242);
+
+    // The catalog row says nothing about the context window, so it comes from the
+    // registry. Replace the registry's answer for this id.
+    replaceDynamicOpenCodeModelDescriptors([
+      createDynamicOpenCodeModelDescriptor("", {
+        openCodeProviderId: "deepseek",
+        openCodeModelId: "deepseek-reparse",
+        contextWindow: 424242,
+      }),
+    ]);
+
+    // Same catalog OBJECT, so only the generation key can force the re-parse.
+    const second = descriptorsFromAgentChatModelCatalog(catalog, undefined, "machine-a");
+    expect(second.models.find((model) => model.id === id)?.contextWindow).toBe(424242);
   });
 });

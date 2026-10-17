@@ -35,12 +35,12 @@ import { ProviderMark, UsageAccountRow } from "./UsageAccountRow";
 import {
   USAGE_BAR_TRACK_CLASS,
   USAGE_CARD_CLASS,
-  USAGE_DIVIDER_COLOR_CLASS,
   USAGE_NUMERIC_CLASS,
   USAGE_TEXT,
   usagePressureColor,
 } from "./usageDesign";
 import { formatUpdatedAge } from "./usageWindowFormat";
+import "./usageSurfaces.css";
 import {
   type AccountLimitRow,
   type UsageAccountView,
@@ -50,6 +50,7 @@ import {
 } from "./usageLimitModel";
 import type { UsageRefreshOutcome, UsageSnapshotSource } from "./useUsageSnapshot";
 import { setUsageProviderVisible, useUsageHeaderPreferences } from "./usageHeaderPreferences";
+import { humanizeProvider } from "./usageProviderNames";
 
 // Display names only. The limits URL is NOT re-listed here: it comes from
 // `usageProviderAccountUrl`, which is also what the host stamps onto
@@ -64,15 +65,6 @@ function providerConnection(
   return connections[provider] ?? null;
 }
 
-const PROVIDER_META: Record<UsageProvider, { label: string }> = {
-  claude: { label: "Claude" },
-  codex: { label: "Codex" },
-  cursor: { label: "Cursor" },
-  copilot: { label: "Copilot" },
-  grok: { label: "Grok" },
-  opencode: { label: "OpenCode" },
-  kimi: { label: "Kimi" },
-};
 
 function providerSourceLabel(status: UsageProviderStatus | null): string {
   if (status?.source === "oauth") return "OAuth";
@@ -353,12 +345,11 @@ export function UsageLimitsBand({
       ) : (
         // A logo, a hairline, then the accounts. The old rounded box made every
         // provider a card stacked on the popover's own card.
-        <div className="flex flex-col">
+        <div className="flex flex-col gap-2">
           {visibleProviders.map((provider) => (
             <ProviderLimitsRow
               key={provider}
               provider={provider}
-              theme={theme}
               windows={windowsByProvider[provider] ?? []}
               accounts={accounts}
               connection={providerConnection(providerConnections, provider)}
@@ -413,7 +404,6 @@ function SkeletonRows() {
 
 function ProviderLimitsRow({
   provider,
-  theme,
   windows,
   accounts,
   connection,
@@ -426,7 +416,6 @@ function ProviderLimitsRow({
   onRefresh,
 }: {
   provider: UsageProvider;
-  theme: ThemeId;
   windows: UsageWindow[];
   accounts: UsageAccountView[];
   connection: AiProviderConnectionStatus | null;
@@ -438,7 +427,7 @@ function ProviderLimitsRow({
   refreshing: boolean;
   onRefresh: () => Promise<UsageRefreshOutcome>;
 }) {
-  const meta = PROVIDER_META[provider];
+  const providerLabel = humanizeProvider(provider);
   const headerPreferences = useUsageHeaderPreferences();
   const shownInHeader = headerPreferences.providers[provider];
   const isAuthed = connection?.authAvailable !== false;
@@ -496,22 +485,20 @@ function ProviderLimitsRow({
     : [{ key: `${provider}:this-machine`, provider, account: null, cells: [] }];
 
   return (
-    <section data-provider-limits={provider} className="flex min-w-0 flex-col gap-2 py-2 first:pt-0">
-      {/* Logo, then a hairline, then the accounts. The name stays for the
-          screen reader; the mark is what the row shows. */}
-      <div className="flex min-w-0 items-center justify-between gap-2">
-        <span className="flex min-w-0 items-center gap-2" title={`${meta.label} · ${sourceLine}`}>
-          <ProviderMark provider={provider} size={18} dim={dim} />
-          <span className="sr-only">{meta.label}</span>
-        </span>
-        <span className="inline-flex shrink-0 items-center gap-0.5">
+    <section data-provider-limits={provider} className="flex min-w-0 flex-col gap-1.5 pb-3 pt-1 last:pb-0">
+      {/* Logo · name · where the reading came from ……… actions, then a
+          hairline, then the accounts. */}
+      <div className="usage-provider-head">
+        <ProviderMark provider={provider} size={16} dim={dim} />
+        <span className="usage-provider-name">{providerLabel}</span>
+        <span className="usage-provider-source">{sourceLine}</span>
+        <span className="usage-provider-actions">
           <button
             type="button"
             onClick={() => setUsageProviderVisible(provider, !shownInHeader)}
-            className="inline-flex h-5 w-5 items-center justify-center rounded text-muted-fg hover:bg-muted hover:text-fg"
-            aria-label={`${shownInHeader ? "Hide" : "Show"} ${meta.label} in usage bar`}
+            aria-label={`${shownInHeader ? "Hide" : "Show"} ${providerLabel} in usage bar`}
             aria-pressed={shownInHeader}
-            title={`${shownInHeader ? "Hide" : "Show"} ${meta.label} in usage bar`}
+            title={`${shownInHeader ? "Hide" : "Show"} ${providerLabel} in usage bar`}
           >
             {shownInHeader ? <Eye size={12} weight="regular" /> : <EyeSlash size={12} weight="regular" />}
           </button>
@@ -519,18 +506,17 @@ function ProviderLimitsRow({
             <button
               type="button"
               onClick={() => openExternalUrl(usageUrl)}
-              className="inline-flex h-5 w-5 items-center justify-center rounded text-muted-fg hover:bg-muted hover:text-fg"
-              aria-label={`Open ${meta.label} limits in browser`}
-              title={`Open ${meta.label} limits in browser`}
+              aria-label={`Open ${providerLabel} limits in browser`}
+              title={`Open ${providerLabel} limits in browser`}
             >
               <ArrowSquareOut size={12} weight="regular" />
             </button>
           ) : null}
         </span>
       </div>
-      <div data-provider-divider className={cn("border-b", USAGE_DIVIDER_COLOR_CLASS)} />
+      <hr data-provider-divider className="kit-rule" />
 
-      <div className="flex min-w-0 flex-col gap-2">
+      <div className="flex min-w-0 flex-col gap-2.5">
       {spendControlReached ? <NoticeRow message="Spending cap reached" /> : null}
 
       {/* A failed refresh sits above the readings it could not update — with
@@ -630,7 +616,7 @@ function ExtraUsageCard({
   if (!extra.isEnabled) return null;
   if (extra.provider === "cursor") return null;
 
-  const meta = PROVIDER_META[extra.provider];
+  const providerLabel = humanizeProvider(extra.provider);
   const tone = providerColor(extra.provider, theme);
   const usedUsd = extra.usedCreditsUsd;
   const limitUsd = extra.monthlyLimitUsd;
@@ -653,7 +639,7 @@ function ExtraUsageCard({
       <div className="flex items-center justify-between gap-3">
         <ProviderHeading
           provider={extra.provider}
-          label={`${meta.label} extra usage`}
+          label={`${providerLabel} extra usage`}
           usageUrl={usageProviderAccountUrl(extra.provider)}
         />
         <span className={cn(USAGE_TEXT.detail, USAGE_NUMERIC_CLASS, "text-fg")}>

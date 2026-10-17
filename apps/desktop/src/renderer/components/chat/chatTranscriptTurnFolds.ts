@@ -23,6 +23,8 @@ export function describeTurnFoldRow(row: ChatTranscriptGroupedEnvelope): TurnFol
   const { event } = row;
   const described: TurnFoldRow = {
     key: row.key,
+    // Computer-use actions fold with the rest of the turn's work: the folded
+    // turn is what most readers see, and it reads as the answer, not a log.
     role: classifyTurnFoldEvent(event),
     turnId: groupedEnvelopeTurnId(row),
   };

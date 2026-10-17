@@ -21,6 +21,7 @@ import { buildLanePrsByLaneId } from "../../terminals/useLanePrs";
 import {
   normalizeProvider,
   parseCoAuthorProvider,
+  providerFromCoAuthors,
   selectLaneCommits,
   type LaneHistoryPr,
   type LaneHistorySession,
@@ -208,11 +209,21 @@ export function useLaneCommits(
     }
     let cancelled = false;
     // Unpinned calls keep their exact pre-pin shape (the tab's machine).
+    // The rows carry each commit's Co-authored-by trailers from the same
+    // `git log`, so the trailer pass below reads no message for a commit whose
+    // trailers name an agent.
     void (pin
-      ? window.ade.git.listRecentCommits({ laneId, limit }, pin)
-      : window.ade.git.listRecentCommits({ laneId, limit }))
+      ? window.ade.git.listRecentCommits({ laneId, limit, includeCoAuthors: true }, pin)
+      : window.ade.git.listRecentCommits({ laneId, limit, includeCoAuthors: true }))
       .then((rows) => {
         if (cancelled) return;
+        for (const row of rows) {
+          // Only a hit is final. git reads trailers from the message's last
+          // block only, so a commit without one still gets the full-message
+          // read below, as before.
+          const provider = row.coAuthors ? providerFromCoAuthors(row.coAuthors) : null;
+          if (provider && !trailerProviderCache.has(row.sha)) trailerProviderCache.set(row.sha, provider);
+        }
         setCommits(rows);
         setLoaded(true);
       })
@@ -228,8 +239,9 @@ export function useLaneCommits(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [branchKey]);
 
-  // Read the full message of only the newest few commits, one at a time, to
-  // find Co-Authored-By trailers. Older commits fall back to other signals.
+  // Commits whose trailers named no agent (or a host that predates trailers in
+  // the commit list): read the full message of only the newest few, one at a
+  // time. Older commits fall back to other signals.
   useEffect(() => {
     if (!laneId || !lane) return;
     const pending = selectLaneCommits(commits, lane)

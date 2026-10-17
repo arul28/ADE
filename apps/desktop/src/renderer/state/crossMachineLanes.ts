@@ -2137,6 +2137,42 @@ export function requestCrossMachineLanesForMachine(machineId: string): void {
 }
 
 /**
+ * Resolves once `laneId` is no longer in `machineId`'s lane list in the union,
+ * or once `timeoutMs` has passed, whichever comes first. Never rejects.
+ *
+ * Pair it with {@link requestCrossMachineLanesForMachine}, which asks for a
+ * re-read and returns nothing to await. A machine with no slice does not count
+ * as "gone": it may not have been read yet, so the wait runs out instead of
+ * resolving early.
+ */
+export function waitForForeignLaneToLeave(
+  machineId: string,
+  laneId: string,
+  timeoutMs: number,
+): Promise<void> {
+  const hasLeft = (state: Pick<AppState, "crossMachineLanesByMachineId">): boolean => {
+    const entry = state.crossMachineLanesByMachineId[machineId];
+    return entry != null && !entry.lanes.some((lane) => lane.id === laneId);
+  };
+  return new Promise((resolve) => {
+    if (hasLeft(rootAppStoreApi.getState())) {
+      resolve();
+      return;
+    }
+    let unsubscribe: (() => void) | null = null;
+    const finish = () => {
+      clearTimeout(timer);
+      unsubscribe?.();
+      resolve();
+    };
+    const timer = setTimeout(finish, timeoutMs);
+    unsubscribe = rootAppStoreApi.subscribe((state) => {
+      if (hasLeft(state)) finish();
+    });
+  });
+}
+
+/**
  * Starts (or joins) the union sync for a repo scope. Ref-counted: many mounted
  * consumers share ONE set of subscriptions and one fetch path.
  */

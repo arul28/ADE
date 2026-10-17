@@ -420,6 +420,15 @@ function parseContentLength(headerBlock: string): number | null {
 
 type ParsedPayload =
   | {
+      /**
+       * Not enough bytes yet. `needBytes` is the buffer length the first
+       * framed message completes at, or 0 when that is not known yet (no full
+       * header, or a JSONL line).
+       */
+      kind: "incomplete";
+      needBytes: number;
+    }
+  | {
       kind: "payload";
       payloadText: string;
       transport: TransportMode;
@@ -432,15 +441,17 @@ type ParsedPayload =
       rest: Buffer;
     };
 
-function takeNextPayload(buffer: Buffer): ParsedPayload | null {
-  if (!buffer.length) return null;
+const INCOMPLETE: ParsedPayload = { kind: "incomplete", needBytes: 0 };
+
+function takeNextPayload(buffer: Buffer): ParsedPayload {
+  if (!buffer.length) return INCOMPLETE;
 
   let offset = 0;
   while (offset < buffer.length && isWhitespaceByte(buffer[offset]!)) {
     offset += 1;
   }
   if (offset >= buffer.length) {
-    return null;
+    return INCOMPLETE;
   }
 
   const first = buffer[offset]!;
@@ -448,7 +459,7 @@ function takeNextPayload(buffer: Buffer): ParsedPayload | null {
   // Compatibility mode for newline-delimited local tests.
   if (first === 0x7b || first === 0x5b) {
     const newline = buffer.indexOf(0x0a, offset);
-    if (newline === -1) return null;
+    if (newline === -1) return INCOMPLETE;
 
     const payloadText = buffer.slice(offset, newline).toString("utf8").trim();
     return {
@@ -460,7 +471,7 @@ function takeNextPayload(buffer: Buffer): ParsedPayload | null {
   }
 
   const boundary = findHeaderBoundary(buffer, offset);
-  if (!boundary) return null;
+  if (!boundary) return INCOMPLETE;
 
   const headerBlock = buffer.slice(offset, boundary.index).toString("utf8");
   const contentLength = parseContentLength(headerBlock);
@@ -483,7 +494,7 @@ function takeNextPayload(buffer: Buffer): ParsedPayload | null {
   }
 
   if (buffer.length < bodyStart + contentLength) {
-    return null;
+    return { kind: "incomplete", needBytes: bodyStart + contentLength };
   }
 
   const payloadText = buffer.slice(bodyStart, bodyStart + contentLength).toString("utf8");
@@ -586,6 +597,17 @@ export interface JsonRpcServerOptions {
 
 export function startJsonRpcServer(handler: JsonRpcHandler, transport: JsonRpcTransport, options?: JsonRpcServerOptions): JsonRpcServerHandle {
   let buffer: Buffer = Buffer.alloc(0);
+  // Chunks that arrived after `buffer`, joined only once the frame they belong
+  // to is complete. Appending each chunk to the whole buffer copied a large
+  // message once per chunk — quadratic, and it blocked the brain's event loop
+  // for hundreds of milliseconds on multi-megabyte requests.
+  let pendingChunks: Buffer[] = [];
+  let pendingBytes = 0;
+  let awaitingBytes = 0;
+  // A buffered message whose size is not known yet (a JSONL line, or a frame
+  // without its full header) completes only on a newline: both line ends and
+  // header delimiters end in `\n`.
+  let awaitingNewline = false;
   let stopped = false;
   let draining = false;
   let responseTransport: TransportMode | null = null;
@@ -650,7 +672,13 @@ export function startJsonRpcServer(handler: JsonRpcHandler, transport: JsonRpcTr
     try {
       while (!stopped) {
         const parsed = takeNextPayload(buffer);
-        if (!parsed) break;
+        if (parsed.kind === "incomplete") {
+          awaitingBytes = parsed.needBytes;
+          awaitingNewline = parsed.needBytes === 0 && buffer.length > 0;
+          break;
+        }
+        awaitingBytes = 0;
+        awaitingNewline = false;
 
         buffer = parsed.rest as Buffer;
         if (responseTransport == null) {
@@ -678,10 +706,14 @@ export function startJsonRpcServer(handler: JsonRpcHandler, transport: JsonRpcTr
   const onData = (chunk: Buffer | string): void => {
     if (stopped) return;
 
-    const part: Buffer = typeof chunk === "string" ? Buffer.from(chunk, "utf8") : Buffer.from(chunk);
-    buffer = buffer.length ? (Buffer.concat([buffer, part]) as Buffer) : part;
+    const part: Buffer = typeof chunk === "string"
+      ? Buffer.from(chunk, "utf8")
+      : Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    pendingChunks.push(part);
+    pendingBytes += part.length;
+    const totalBytes = buffer.length + pendingBytes;
 
-    if (buffer.length > MAX_BUFFER_BYTES) {
+    if (totalBytes > MAX_BUFFER_BYTES) {
       try {
         writeMessage({
           jsonrpc: "2.0",
@@ -701,6 +733,13 @@ export function startJsonRpcServer(handler: JsonRpcHandler, transport: JsonRpcTr
       return;
     }
 
+    if (totalBytes < awaitingBytes) return;
+    if (awaitingNewline && !part.includes(0x0a)) return;
+    buffer = buffer.length || pendingChunks.length > 1
+      ? (Buffer.concat([buffer, ...pendingChunks], totalBytes) as Buffer)
+      : part;
+    pendingChunks = [];
+    pendingBytes = 0;
     void drain();
   };
 

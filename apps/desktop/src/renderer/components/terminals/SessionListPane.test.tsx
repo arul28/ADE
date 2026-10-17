@@ -494,7 +494,8 @@ describe("SessionListPane", () => {
     expect(filterButton).toBeTruthy();
 
     fireEvent.click(filterButton!);
-    fireEvent.click(within(view.container).getByRole("button", { name: "Time" }));
+    fireEvent.keyDown(within(view.container).getByRole("button", { name: /^Group by:/ }), { key: "Enter" });
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "Time" }));
 
     expect(setSessionListOrganization).toHaveBeenCalledWith("by-time");
     expect(screen.queryByText("Tiers")).toBeNull();
@@ -507,7 +508,7 @@ describe("SessionListPane", () => {
 
     rerender(paneElement({ filterLaneId: "lane-known" }));
 
-    expect(screen.getByRole("button", { name: "Filters, lane filter active" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Filters, 1 on" })).toBeTruthy();
     expect(screen.getByTestId("work-lane-filter-active-indicator")).toBeTruthy();
   });
 
@@ -516,7 +517,9 @@ describe("SessionListPane", () => {
   // and the canonical `stale` phase tells the story through the status label.
   // Its presentation is asserted in SessionCard.test.tsx, where the label lives.
 
-  it("starts a chat's shell drawer collapsed and opens it with an explicit marker", () => {
+  it("draws a chat as one row and its attached shell nowhere in the list", () => {
+    // A chat's shells are drawn in that chat's actions pane now; the list draws
+    // the chat itself and never a shell row of its own.
     const parent = makeSession({
       id: "chat-parent",
       laneId: "lane-known",
@@ -533,77 +536,14 @@ describe("SessionListPane", () => {
       ptyId: "pty-child",
       chatSessionId: parent.id,
     });
-    const sessionsGroupedByLane = new Map([[parent.laneId, [parent, child]]]);
-    const toggleWorkSectionCollapsed = vi.fn();
 
-    const view = renderPane({
-      runningFiltered: [parent, child],
-      sessionsGroupedByLane,
-      toggleWorkSectionCollapsed,
-    });
-
-    expect(screen.queryByText("Child shell")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: /Show 1 shell/i }));
-    expect(toggleWorkSectionCollapsed).toHaveBeenCalledWith("drawer-open:chat:chat-parent");
-
-    view.unmount();
     renderPane({
       runningFiltered: [parent, child],
-      sessionsGroupedByLane,
-      workCollapsedSectionIds: ["drawer-open:chat:chat-parent"],
-      toggleWorkSectionCollapsed,
+      sessionsGroupedByLane: new Map([[parent.laneId, [parent, child]]]),
     });
 
-    expect(screen.getByText("Child shell")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: /1 shell/i }));
-    expect(toggleWorkSectionCollapsed).toHaveBeenCalledTimes(2);
-    expect(toggleWorkSectionCollapsed).toHaveBeenLastCalledWith("drawer-open:chat:chat-parent");
-  });
-
-  it("reveals a collapsed drawer once when the selection lands inside it", () => {
-    const parent = makeSession({
-      id: "chat-parent",
-      laneId: "lane-known",
-      laneName: "Known Lane",
-      toolType: "codex-chat",
-      title: "Parent chat",
-    });
-    const child = makeSession({
-      id: "child-shell",
-      laneId: "lane-known",
-      laneName: "Known Lane",
-      toolType: "shell",
-      title: "Child shell",
-      ptyId: "pty-child",
-      chatSessionId: parent.id,
-    });
-    const sessionsGroupedByLane = new Map([[parent.laneId, [parent, child]]]);
-    const toggleWorkSectionCollapsed = vi.fn();
-
-    const view = renderPane({
-      runningFiltered: [parent, child],
-      allSessionsUnfiltered: [parent, child],
-      sessionsGroupedByLane,
-      selectedSessionId: child.id,
-      toggleWorkSectionCollapsed,
-    });
-
-    // A deeplink/notification landing on the child opens the drawer holding it.
-    expect(toggleWorkSectionCollapsed).toHaveBeenCalledTimes(1);
-    expect(toggleWorkSectionCollapsed).toHaveBeenCalledWith(
-      "drawer-open:chat:chat-parent",
-      { preserveDeeplink: true },
-    );
-
-    // Re-rendering the same selection must not toggle it again.
-    view.rerender(paneElement({
-      runningFiltered: [parent, child],
-      allSessionsUnfiltered: [parent, child],
-      sessionsGroupedByLane,
-      selectedSessionId: child.id,
-      toggleWorkSectionCollapsed,
-    }));
-    expect(toggleWorkSectionCollapsed).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("Parent chat")).toBeTruthy();
+    expect(screen.queryByText("Child shell")).toBeNull();
   });
 
   it("nests same-lane subagent chats under the parent in a second drawer", () => {
@@ -1676,7 +1616,7 @@ describe("SessionListPane", () => {
       ]);
     });
 
-    it("nests a foreign parent and child shell as one headerless unit", () => {
+    it("draws a foreign chat as one headerless row and its shell nowhere", () => {
       const parent = makeSession({
         id: "foreign-chat-parent",
         laneId: "lane-elsewhere",
@@ -1694,12 +1634,11 @@ describe("SessionListPane", () => {
       });
       seedForeignMachine({ sessions: [parent, child] });
 
-      const { container } = renderPane({ workCollapsedSectionIds: ["drawer-open:chat:foreign-chat-parent"] });
+      const { container } = renderPane({});
 
       expect(container.querySelector('[data-section-id="target-studio:lane-elsewhere"]')).toBeNull();
       expect(screen.getByText("Foreign parent chat")).toBeTruthy();
-      expect(screen.getByRole("button", { name: /1 shell/i })).toBeTruthy();
-      expect(screen.getByText("Foreign child shell")).toBeTruthy();
+      expect(screen.queryByText("Foreign child shell")).toBeNull();
     });
 
     it("nests a settled foreign subagent under its active parent instead of the quiet tail", () => {
@@ -2500,8 +2439,11 @@ describe("SessionListPane singleton lanes and shelves", () => {
       sessionsGroupedByLane: new Map([["lane-solo", [parent, child]]]),
     });
 
+    // The shell is filed under the chat, so the lane still holds one top-level
+    // row and keeps its headerless look.
     expect(container.querySelector('[data-section-id="lane-solo"]')).toBeNull();
-    expect(screen.getByRole("button", { name: /1 shell/i })).toBeTruthy();
+    expect(screen.getByText("The only chat")).toBeTruthy();
+    expect(screen.queryByText("Drawer shell")).toBeNull();
   });
 
   it("keeps the divider off while search narrows a two-chat lane to one row", () => {
@@ -2791,14 +2733,15 @@ describe("SessionListPane singleton lanes and shelves", () => {
       settledFiltered: [parent],
       allSessionsUnfiltered: [parent, child],
       sessionsGroupedByLane: new Map([["lane-known", [parent, child]]]),
-      workCollapsedSectionIds: [...OPEN_QUIET_SHELVES, "drawer-open:chat:settled-parent-chat"],
+      workCollapsedSectionIds: [...OPEN_QUIET_SHELVES],
     });
 
     const settledShelf = container.querySelector('[data-testid="shelf-body-settled"]');
     expect(settledShelf).toBeTruthy();
     expect(settledShelf?.contains(screen.getByText("Settled parent chat"))).toBe(true);
-    expect(settledShelf?.contains(screen.getByText("Attached running shell"))).toBe(true);
-    expect(screen.getByRole("button", { name: /1 shell/i })).toBeTruthy();
+    // The still-running shell follows its settled chat out of the running rows
+    // rather than standing on its own.
+    expect(screen.queryByText("Attached running shell")).toBeNull();
   });
 
   it("files a lane mixing both quiet kinds by the dominant one, still flat", () => {
@@ -2990,12 +2933,14 @@ describe("SessionListPane visual hierarchy", () => {
       });
     }
 
-    it("pins Primary above every other lane, pinned ones included", () => {
-      const { container } = renderWithPrimary({ workPinnedLaneIds: ["lane-other"] });
-      const order = Array.from(container.querySelectorAll("[data-section-id]"))
+    it("lists a pinned lane above Primary, and Primary above unpinned lanes", () => {
+      const pinned = renderWithPrimary({ workPinnedLaneIds: ["lane-other"] });
+      const laneOrder = (root: HTMLElement) => Array.from(root.querySelectorAll("[data-section-id]"))
         .map((el) => el.getAttribute("data-section-id") ?? "")
         .filter((id) => id.startsWith("lane-") && !id.startsWith("lane-shelf:"));
-      expect(order).toEqual(["lane-primary", "lane-other"]);
+      expect(laneOrder(pinned.container)).toEqual(["lane-other", "lane-primary"]);
+      pinned.unmount();
+      expect(laneOrder(renderWithPrimary().container)).toEqual(["lane-primary", "lane-other"]);
     });
 
     it("marks the offline Primary while leaving this computer's Primary alone", () => {

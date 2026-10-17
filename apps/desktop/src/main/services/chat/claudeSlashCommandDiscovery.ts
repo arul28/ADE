@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,12 +7,16 @@ import { isPathInside, pathKey } from "../shared/pathCompare";
 import {
   ancestorConfigRoots,
   discoverMarkdownCommandFiles,
+  discoverMarkdownCommandFilesAsync,
   discoverSkillCommands,
+  discoverSkillCommandsAsync,
   parseSlashCommandInput,
   resolveMarkdownCommandFile,
   resolveMarkdownSlashCommandFromFile,
   resolveSkillCommandFile,
   slashCommandKey,
+  slashCommandNameOrder,
+  type DiscoveredMarkdownSlashCommand,
 } from "./markdownSlashCommandDiscovery";
 
 export type DiscoveredClaudeSlashCommand = {
@@ -71,7 +76,21 @@ function skillRootsByPrecedence(cwd: string): string[] {
  * file someone just edited shows up on the next turn.
  */
 const DISCOVERY_TTL_MS = 5_000;
-const discoveryCache = new Map<string, { at: number; value: DiscoveredClaudeSlashCommand[] }>();
+const discoveryCache = new Map<string, { at: number; stamp: number; value: DiscoveredClaudeSlashCommand[] }>();
+/** Asynchronous walks still running, by key, so concurrent asks share one walk. */
+const discoveryInFlight = new Map<string, Promise<DiscoveredClaudeSlashCommand[]>>();
+/** Bumped on invalidation, so a walk that started before it does not refill the cache. */
+let discoveryGeneration = 0;
+/**
+ * Counts every memo write. An entry's `stamp` is the count at its write, so a walk
+ * can tell whether its folder was written after the walk began.
+ */
+let discoveryWrites = 0;
+
+function storeDiscovery(key: string, value: DiscoveredClaudeSlashCommand[]): void {
+  discoveryWrites += 1;
+  discoveryCache.set(key, { at: Date.now(), stamp: discoveryWrites, value });
+}
 
 /**
  * Drop the memo. Only the tests use this — nothing in the app writes a command
@@ -79,6 +98,41 @@ const discoveryCache = new Map<string, { at: number; value: DiscoveredClaudeSlas
  */
 export function invalidateClaudeSlashCommandCache(): void {
   discoveryCache.clear();
+  discoveryInFlight.clear();
+  discoveryGeneration += 1;
+  for (const cache of listingCaches) cache.clear();
+}
+
+/** Memos of things built from a discovery result; dropped with it. */
+const listingCaches = new Set<Map<string, unknown>>();
+
+/**
+ * A memo, on discovery's own TTL, for a listing built from a discovery
+ * result: a listing that is rebuilt on every turn would otherwise stat the
+ * disk again each time, for a result that cannot be newer than the discovery
+ * it was built from. `invalidateClaudeSlashCommandCache` clears it too.
+ */
+export function createSlashCommandListingCache<V>(): (key: string, build: () => V) => V {
+  const cache = new Map<string, { at: number; value: V }>();
+  listingCaches.add(cache);
+  return (key, build) => {
+    const now = Date.now();
+    const cached = cache.get(key);
+    if (cached && now - cached.at < DISCOVERY_TTL_MS) return cached.value;
+    for (const [entryKey, entry] of cache) {
+      if (now - entry.at >= DISCOVERY_TTL_MS) cache.delete(entryKey);
+    }
+    const value = build();
+    cache.set(key, { at: Date.now(), value });
+    return value;
+  };
+}
+
+/** Drops the entries whose TTL has run out; the walk that misses is the slow path, so sweep there. */
+function sweepExpiredDiscovery(now: number): void {
+  for (const [entryKey, entry] of discoveryCache) {
+    if (now - entry.at >= DISCOVERY_TTL_MS) discoveryCache.delete(entryKey);
+  }
 }
 
 export function discoverClaudeSlashCommands(cwd: string): DiscoveredClaudeSlashCommand[] {
@@ -91,42 +145,93 @@ export function discoverClaudeSlashCommands(cwd: string): DiscoveredClaudeSlashC
   if (cached && now - cached.at < DISCOVERY_TTL_MS) return cached.value.slice();
   // Nothing else ever removes an entry, so every cwd asked about once would
   // hold a full command list (22.7MB of files' worth of metadata) for the
-  // process lifetime. A miss is already the slow path; sweep there.
-  for (const [entryKey, entry] of discoveryCache) {
-    if (now - entry.at >= DISCOVERY_TTL_MS) discoveryCache.delete(entryKey);
-  }
+  // process lifetime.
+  sweepExpiredDiscovery(now);
   const value = discoverClaudeSlashCommandsUncached(cwd);
-  discoveryCache.set(key, { at: Date.now(), value });
+  storeDiscovery(key, value);
   // Callers mutate the array (filter/map chains are fine, but nothing stops a
   // sort in place), so never hand out the cached instance itself.
   return value.slice();
 }
 
-function discoverClaudeSlashCommandsUncached(cwd: string): DiscoveredClaudeSlashCommand[] {
-  const byName = new Map<string, DiscoveredClaudeSlashCommand>();
+/**
+ * The same list as `discoverClaudeSlashCommands`, from a walk that yields to the
+ * event loop between folders and files. `chat.getSlashCommands` uses this: a
+ * synchronous walk on a miss stalls every other RPC the brain is serving for as
+ * long as it runs. It shares the memo, the TTL and the key with the synchronous
+ * call, and a second ask while a walk is running waits for that walk.
+ */
+export async function discoverClaudeSlashCommandsAsync(cwd: string): Promise<DiscoveredClaudeSlashCommand[]> {
+  const key = pathKey(cwd);
+  const cached = discoveryCache.get(key);
+  if (cached && Date.now() - cached.at < DISCOVERY_TTL_MS) return cached.value.slice();
+  let walk = discoveryInFlight.get(key);
+  if (!walk) {
+    const generation = discoveryGeneration;
+    const startedStamp = discoveryWrites;
+    sweepExpiredDiscovery(Date.now());
+    const started: Promise<DiscoveredClaudeSlashCommand[]> = discoverClaudeSlashCommandsUncachedAsync(cwd)
+      .then((value) => {
+        // A walk can finish after a newer listing for this folder was stored (a
+        // sync walk, say), and its own listing may be the older one. Keep the newer entry.
+        const stored = discoveryCache.get(key);
+        const storedSinceStart = stored !== undefined && stored.stamp > startedStamp;
+        if (generation === discoveryGeneration && !storedSinceStart) storeDiscovery(key, value);
+        return value;
+      })
+      .finally(() => {
+        if (discoveryInFlight.get(key) === started) discoveryInFlight.delete(key);
+      });
+    discoveryInFlight.set(key, started);
+    walk = started;
+  }
+  return (await walk).slice();
+}
 
+function discoverClaudeSlashCommandsUncached(cwd: string): DiscoveredClaudeSlashCommand[] {
+  return mergeClaudeSlashCommands(
+    claudeRootsByPrecedence(cwd).map((root) => discoverMarkdownCommandFiles(path.join(root, "commands"))),
+    skillRootsByPrecedence(cwd).map((root) => discoverSkillCommands(root)),
+  );
+}
+
+async function discoverClaudeSlashCommandsUncachedAsync(cwd: string): Promise<DiscoveredClaudeSlashCommand[]> {
+  const commandLists: DiscoveredMarkdownSlashCommand[][] = [];
   for (const root of claudeRootsByPrecedence(cwd)) {
-    for (const command of discoverMarkdownCommandFiles(path.join(root, "commands"))) {
-      const key = slashCommandKey(command.name);
-      if (!byName.has(key)) {
-        byName.set(key, { ...command, source: "command" });
-      }
-    }
+    commandLists.push(await discoverMarkdownCommandFilesAsync(path.join(root, "commands")));
   }
+  const skillLists: DiscoveredMarkdownSlashCommand[][] = [];
   for (const root of skillRootsByPrecedence(cwd)) {
-    for (const command of discoverSkillCommands(root)) {
+    skillLists.push(await discoverSkillCommandsAsync(root));
+  }
+  return mergeClaudeSlashCommands(commandLists, skillLists);
+}
+
+/** Command files outrank skills, and within each kind the first root in precedence order wins a name. */
+function mergeClaudeSlashCommands(
+  commandLists: readonly (readonly DiscoveredMarkdownSlashCommand[])[],
+  skillLists: readonly (readonly DiscoveredMarkdownSlashCommand[])[],
+): DiscoveredClaudeSlashCommand[] {
+  const byName = new Map<string, DiscoveredClaudeSlashCommand>();
+  const add = (list: readonly DiscoveredMarkdownSlashCommand[], source: DiscoveredClaudeSlashCommand["source"]): void => {
+    for (const command of list) {
       const key = slashCommandKey(command.name);
       if (!byName.has(key)) {
-        byName.set(key, { ...command, source: "skill" });
+        byName.set(key, { ...command, source });
       }
     }
-  }
+  };
+  for (const list of commandLists) add(list, "command");
+  for (const list of skillLists) add(list, "skill");
 
   return [...byName.values()].sort((a, b) => {
     if (a.source !== b.source) return a.source === "command" ? -1 : 1;
-    return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+    return slashCommandNameOrder.compare(a.name, b.name);
   });
 }
+
+/** The command and skill roots a harness reads for itself, so ADE lists nothing under them. */
+export type NativeSlashCommandRoots = { commandRoots: readonly string[]; skillRoots: readonly string[] };
 
 /**
  * The command and skill roots Claude Code finds without ADE's help.
@@ -144,7 +249,7 @@ export function claudeNativeSlashCommandRoots(
   cwd: string,
   pluginRoots: readonly string[] = [],
   home: string = os.homedir(),
-): { commandRoots: string[]; skillRoots: string[] } {
+): NativeSlashCommandRoots {
   // Deliberately only the session directory and the home directory, not ADE's
   // full ancestor walk. Claude Code stops walking at ITS project root, and
   // reproducing that boundary here would mean reproducing its git logic. Under-
@@ -160,7 +265,40 @@ export function claudeNativeSlashCommandRoots(
   };
 }
 
-export type ClaudeSlashCommandInjectionPlan = {
+function realPathOrNull(target: string): string | null {
+  try {
+    return fs.realpathSync(target);
+  } catch {
+    return null;
+  }
+}
+
+/** Skill roots hold one folder per skill; a few hundred is already far past any real collection. */
+const MAX_SKILL_DIRS_PER_ROOT = 500;
+
+/**
+ * The real folders behind the entries of Claude's own skill roots that are
+ * links. An entry that is a plain folder is already matched by its path.
+ */
+function realSkillDirsUnder(skillRoots: readonly string[]): Set<string> {
+  const dirs = new Set<string>();
+  for (const root of skillRoots) {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(root, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries.slice(0, MAX_SKILL_DIRS_PER_ROOT)) {
+      if (!entry.isSymbolicLink()) continue;
+      const real = realPathOrNull(path.join(root, entry.name));
+      if (real) dirs.add(pathKey(real));
+    }
+  }
+  return dirs;
+}
+
+export type SlashCommandInjectionPlan = {
   commands: DiscoveredClaudeSlashCommand[];
   skills: DiscoveredClaudeSlashCommand[];
   nativeCount: number;
@@ -178,18 +316,36 @@ export type ClaudeSlashCommandInjectionPlan = {
 export function planClaudeSlashCommandInjection(
   commands: readonly DiscoveredClaudeSlashCommand[],
   options: { cwd: string; pluginRoots?: readonly string[]; home?: string },
-): ClaudeSlashCommandInjectionPlan {
-  const native = claudeNativeSlashCommandRoots(
+): SlashCommandInjectionPlan {
+  return planSlashCommandInjection(commands, claudeNativeSlashCommandRoots(
     options.cwd,
     options.pluginRoots ?? [],
     options.home ?? os.homedir(),
-  );
+  ));
+}
+
+/** Drops everything under the roots a harness already reads for itself. */
+export function planSlashCommandInjection(
+  commands: readonly DiscoveredClaudeSlashCommand[],
+  native: NativeSlashCommandRoots,
+): SlashCommandInjectionPlan {
+  // A skill Claude reaches through a link counts as native too. A common setup
+  // keeps the real skill in `~/.agents/skills` and links it into
+  // `~/.claude/skills`, so Claude lists it under the link while ADE finds the
+  // same folder under the root Claude does not read, and the skill appeared
+  // twice. Matched on the folder's real path only: two different skills that
+  // share a name are both kept, because hiding one Claude does not have is the
+  // worse mistake.
+  const linkedSkillDirs = realSkillDirsUnder(native.skillRoots);
   const isNative = (entry: DiscoveredClaudeSlashCommand): boolean => {
     const roots = entry.source === "command" ? native.commandRoots : native.skillRoots;
-    return roots.some((root) => isPathInside(entry.filePath, root));
+    if (roots.some((root) => isPathInside(entry.filePath, root))) return true;
+    if (entry.source !== "skill" || !linkedSkillDirs.size) return false;
+    const real = realPathOrNull(path.dirname(entry.filePath));
+    return real !== null && linkedSkillDirs.has(pathKey(real));
   };
 
-  const plan: ClaudeSlashCommandInjectionPlan = { commands: [], skills: [], nativeCount: 0 };
+  const plan: SlashCommandInjectionPlan = { commands: [], skills: [], nativeCount: 0 };
   for (const entry of commands) {
     if (isNative(entry)) {
       plan.nativeCount += 1;
@@ -231,18 +387,19 @@ export function formatClaudeSlashCommandEntry(entry: DiscoveredClaudeSlashComman
 }
 
 /**
- * Renders entries newest-budget-first, returning what did not fit so the caller
- * can say so in the prompt instead of hiding it.
+ * Renders entries in order until the budget is spent, counting what did not
+ * fit. The first entry always goes in: a list of nothing helps nobody.
  */
-export function renderClaudeSlashCommandEntries(
-  entries: readonly DiscoveredClaudeSlashCommand[],
-  budgetBytes: number = CLAUDE_SKILL_LISTING_BUDGET_BYTES,
+export function renderWithinBudget<T>(
+  entries: readonly T[],
+  format: (entry: T) => string,
+  budgetBytes: number,
 ): { lines: string[]; omitted: number } {
   const lines: string[] = [];
   let used = 0;
   let omitted = 0;
   for (const entry of entries) {
-    const rendered = formatClaudeSlashCommandEntry(entry);
+    const rendered = format(entry);
     const cost = Buffer.byteLength(rendered, "utf8") + 1;
     if (lines.length && used + cost > budgetBytes) {
       omitted += 1;
@@ -252,6 +409,17 @@ export function renderClaudeSlashCommandEntries(
     used += cost;
   }
   return { lines, omitted };
+}
+
+/**
+ * Renders entries newest-budget-first, returning what did not fit so the caller
+ * can say so in the prompt instead of hiding it.
+ */
+export function renderClaudeSlashCommandEntries(
+  entries: readonly DiscoveredClaudeSlashCommand[],
+  budgetBytes: number = CLAUDE_SKILL_LISTING_BUDGET_BYTES,
+): { lines: string[]; omitted: number } {
+  return renderWithinBudget(entries, formatClaudeSlashCommandEntry, budgetBytes);
 }
 
 export function resolveClaudeSlashCommandInvocation(

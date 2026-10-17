@@ -1,0 +1,56 @@
+/*
+ * The mesh backdrop (`WorkToolPickerBackdrop`). A file of its own because two
+ * stylesheets need it: `index.css` for the Work tools picker, and the hosted
+ * client's sign-in stylesheet (`webclient/gate.css`), which draws the same
+ * backdrop behind the sign-in card before the app's stylesheet has loaded.
+ */
+
+/* A shader backdrop with cards floating on it.
+
+   The backdrop is a <canvas> (or, with no WebGL, this same box painted as a
+   static gradient) pinned behind the column and untouchable — a canvas that
+   swallowed a click meant for a card would be a decoration breaking the page
+   it decorates. */
+.ade-tool-picker-backdrop {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* The no-WebGL fallback: the same corner light, flat. A software-rendered mesh
+   would be the most expensive thing in the window. */
+.ade-tool-picker-static {
+  background:
+    radial-gradient(
+      130% 100% at 18% 12%,
+      color-mix(in srgb, var(--backdrop-lobe, #6366F1) 28%, transparent),
+      transparent 64%
+    ),
+    radial-gradient(
+      120% 90% at 82% 78%,
+      color-mix(in srgb, var(--color-accent) 22%, transparent),
+      transparent 62%
+    ),
+    var(--color-bg);
+}
+
+/* A window-field part: the flat fallback is fixed to the window too, so
+   separate parts still read as one gradient without WebGL. */
+.ade-tool-picker-backdrop[data-field="window"] .ade-tool-picker-static {
+  background-attachment: fixed;
+}
+
+[data-theme="light"] .ade-tool-picker-static {
+  background:
+    radial-gradient(
+      130% 100% at 18% 12%,
+      color-mix(in srgb, var(--backdrop-lobe, #A5B4FC) 30%, transparent),
+      transparent 64%
+    ),
+    radial-gradient(
+      120% 90% at 82% 78%,
+      color-mix(in srgb, var(--color-accent-bright) 22%, transparent),
+      transparent 62%
+    ),
+    var(--color-surface);
+}

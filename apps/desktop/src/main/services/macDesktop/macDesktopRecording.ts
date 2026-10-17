@@ -1,13 +1,10 @@
 /**
  * Everything that writes a movie file for a lane's display.
  *
- * Two writers want the same helper: the per-turn time-lapse the chat runtime
- * opens on a turn's first action, and the captioned recording a user or an
- * agent starts deliberately. The helper has exactly one recorder per lane, so
- * this module is where the two are serialized — a user recording stops a
- * running turn clip before it starts, and every path that ends a lane's work
- * closes the turn clip rather than leaving the helper writing into a file
- * nobody will ever claim.
+ * One writer, the captioned recording a user or an agent starts deliberately.
+ * The helper has exactly one recorder per lane, so every path that ends a
+ * lane's work closes its recording rather than leaving the helper writing into
+ * a file nobody will ever claim.
  *
  * The captioned recording follows the Apple device's rules (065f48808):
  *
@@ -30,7 +27,6 @@
  */
 
 import fs from "node:fs";
-import path from "node:path";
 import { demoProofSentence, isLimitStop, recordingStopSentence } from "../../../shared/demoVideo/demoProofText";
 import type { DemoArtifactMetadata } from "../../../shared/demoVideo/demoContract";
 import { RECORDING_MAX_MS } from "../../../shared/demoVideo/demoContract";
@@ -42,7 +38,6 @@ import {
   type MacDesktopRecordStartArgs,
   type MacDesktopRecordingStatus,
   type MacDesktopRecordingStopReason,
-  type MacDesktopTimeLapse,
   desktopProductName,
   macDesktopPaneCaption,
 } from "../../../shared/types/macDesktop";
@@ -56,12 +51,9 @@ import {
 } from "../demoVideo/demoRenderService";
 import { demoRecordingKey, demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
 import type { Logger } from "../logging/logger";
-import { pathsEqual } from "../shared/pathCompare";
+import { isMacDesktopDriverStillRunning } from "./macDesktopDriverClient";
 import type { MacDesktopObservations } from "./macDesktopObservations";
 import { clampFps } from "./macDesktopStreamServer";
-
-/** The turn clip's rate. Low on purpose: it is a time-lapse, not a recording. */
-const TURN_CLIP_FPS = 4;
 
 /** How long any recording may run, whoever started it. */
 export const MAC_DESKTOP_RECORDING_MAX_MS = RECORDING_MAX_MS;
@@ -73,15 +65,6 @@ function isRecorderTakenError(error: unknown): boolean {
   if (error && typeof error === "object" && (error as { code?: unknown }).code === "capture_starting") return true;
   const message = error instanceof Error ? error.message : String(error);
   return /is already recording|recording is already starting/i.test(message);
-}
-
-/**
- * The helper's watchdog reply for a request it gave up on. The work behind it
- * may still be running (`PendingRequestTracker.swift`).
- */
-function isWatchdogTimeout(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /did not complete within \d+s/.test(message);
 }
 
 /** The file a `record.stop` reply names, if it names one. */
@@ -128,7 +111,7 @@ export async function startHelperRecording(args: {
     }
   };
   const clearIfTimedOut = async (error: unknown): Promise<void> => {
-    if (isWatchdogTimeout(error) && (args.stillOwned?.() ?? true)) await clear("timed_out");
+    if (isMacDesktopDriverStillRunning(error) && (args.stillOwned?.() ?? true)) await clear("timed_out");
   };
   try {
     await args.start();
@@ -234,12 +217,6 @@ export type MacDesktopRecordingDeps = {
   demoEngines?: DemoEngineSet | null;
   /** The seat's host platform, which names the product in default captions. */
   seatPlatform: NodeJS.Platform;
-  /**
-   * True when a proof artifact stores its bytes at this path. The broker
-   * files a captured video in place, so a turn clip a proof points at is
-   * never pruned.
-   */
-  isFileReferenced?: ((filePath: string) => boolean) | null;
 };
 
 /** The recording's key in the demo track registry. */
@@ -273,66 +250,6 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
   const stopping = new Map<string, Promise<MacDesktopRecordingStatus>>();
   /** laneId → where the running recording's raw file goes and what it becomes. */
   const raws = new Map<string, RawRecording>();
-  /**
-   * `${laneId}:${chatSessionId}` → the turn clip that chat's card can still
-   * play. Only the newest is ever shown, so each newer one deletes the last,
-   * and a clip that was closed without being published is deleted at once.
-   * Nothing else removed them, so every turn on a lane screen left an MP4 in
-   * `.ade/artifacts/computer-use` for good (both platforms).
-   */
-  const publishedClips = new Map<string, string>();
-  /**
-   * One file, whichever way it is spelled: the driver may name a clip with
-   * another case or separator than ADE did (Windows and macOS fold case).
-   * Both are absolute: ADE builds one under the project, the driver reports
-   * the other.
-   */
-  const sameFile = (left: string, right: string): boolean => pathsEqual(left, right, deps.seatPlatform);
-  const isPublishedClip = (filePath: string): boolean =>
-    [...publishedClips.values()].some((published) => sameFile(published, filePath));
-  /** A clip a card still plays, or a proof row points at, is kept. */
-  const mustKeepClip = (filePath: string): boolean => {
-    if (isPublishedClip(filePath)) return true;
-    try {
-      return deps.isFileReferenced?.(filePath) === true;
-    } catch {
-      // An unreadable index is not permission to delete.
-      return true;
-    }
-  };
-  /**
-   * Once per process, on the first turn clip: clips an earlier run left (no
-   * card shows them after a restart). An hour old at least, so a clip another
-   * brain process is still writing is never touched.
-   */
-  let staleClipsSwept = false;
-  const sweepStaleTurnClips = async (dir: string): Promise<void> => {
-    const cutoffMs = deps.now() - 60 * 60_000;
-    const names = await fs.promises.readdir(dir).catch(() => [] as string[]);
-    let removed = 0;
-    for (const name of names) {
-      if (!/-mac-desktop-turn-.+\.mp4$/.test(name)) continue;
-      const filePath = path.join(dir, name);
-      if (mustKeepClip(filePath)) continue;
-      const stat = await fs.promises.stat(filePath).catch(() => null);
-      if (!stat || stat.mtimeMs > cutoffMs) continue;
-      await fs.promises.rm(filePath, { force: true }).then(() => { removed += 1; }, () => {});
-    }
-    if (removed) deps.logger.info("mac_desktop.turn_clips_swept", { removed });
-  };
-  const discardClipFiles = async (filePaths: Array<string | null | undefined>): Promise<void> => {
-    for (const filePath of filePaths) {
-      if (!filePath || mustKeepClip(filePath)) continue;
-      // Windows: a file the driver still holds cannot be removed; the startup
-      // sweep gets it next time.
-      await fs.promises.rm(filePath, { force: true }).catch((error: unknown) => {
-        deps.logger.debug("mac_desktop.turn_clip_remove_failed", {
-          filePath,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
-    }
-  };
 
   const endRaw = (laneId: string): RawRecording | null => {
     const raw = raws.get(laneId) ?? null;
@@ -554,161 +471,8 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
     return status;
   };
 
-  /**
-   * Closes any turn clip on the lane, whichever chat and turn opened it.
-   *
-   * One lane has one writer, so this is a lane question. Asking it per turn id
-   * is what let a stale clip keep the helper's recorder — and therefore the
-   * lane's only recording slot — after the turn that opened it was gone.
-   */
-  type EndedTurnClips = ReturnType<MacDesktopObservations["endTurnRecordingsForLane"]>;
-  /**
-   * Closes any turn clip on the lane, whichever chat and turn opened it, and
-   * deletes the files of the clips it closed. `keep` names the one file that
-   * stays (the time-lapse being published); it sees the backend's reply.
-   */
-  const closeTurnClips = async (
-    laneId: string,
-    options: {
-      stopBackend?: boolean;
-      keep?: (ended: EndedTurnClips, reply: Record<string, unknown> | null) => string | null;
-    } = {},
-  ): Promise<void> => {
-    const ended = deps.observations.endTurnRecordingsForLane(laneId);
-    if (!ended.length) return;
-    let reply: Record<string, unknown> | null = null;
-    const provider = options.stopBackend === false ? null : deps.activeProvider();
-    if (provider) {
-      reply = await provider.stopRecording({ laneId }).catch((error: unknown) => {
-        deps.logger.debug("mac_desktop.turn_clip_stop_failed", {
-          laneId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        return null;
-      });
-    }
-    const kept = options.keep?.(ended, reply) ?? null;
-    await discardClipFiles(
-      ended.map((entry) => entry.filePath).filter((filePath) => !kept || !sameFile(filePath, kept)),
-    );
-  };
-
   return {
     recordings,
-
-    /** Counts one action against the turn's clip, if one is open. */
-    noteTurnActivity(laneId: string, chatSessionId: string | null | undefined): void {
-      const chatId = chatSessionId?.trim();
-      if (!chatId) return;
-      if (isUserRecording(laneId)) return;
-      if (!deps.observations.getTurnRecording(laneId, chatId)) return;
-      deps.observations.noteTurnFrame(laneId, chatId);
-    },
-
-    /**
-     * Starts (or extends) the clip for the turn that is acting right now.
-     *
-     * There is no cheap frame-assembler in the runtime — no ffmpeg, no encoder —
-     * so the clip is the helper's own low-rate recording rather than a pile of
-     * stills stitched later. A user-started recording wins: one lane has one
-     * writer, and the reviewer-facing capture is the one that matters.
-     */
-    async startTurnClip(laneId: string, chatSessionId: string, turnId: string): Promise<void> {
-      if (isUserRecording(laneId)) return;
-      // Under the artifact root, not the scratch root: the thread plays the clip
-      // through `ade-artifact://<path>`, and main only serves that scheme from
-      // inside `.ade/artifacts`. A clip written anywhere else is a 404 in the UI.
-      const filePath = deps.observations.artifactPath(`mac-desktop-turn-${turnId}`, "mp4");
-      if (!staleClipsSwept) {
-        staleClipsSwept = true;
-        void sweepStaleTurnClips(path.dirname(filePath));
-      }
-      const recording = deps.observations.beginTurnRecording({
-        laneId,
-        chatSessionId,
-        turnId,
-        filePath,
-      });
-      if (!recording) return;
-      try {
-        const provider = await deps.ensureProvider();
-        await startHelperRecording({
-          start: () => provider.startRecording({ laneId, fps: TURN_CLIP_FPS, filePath }),
-          stop: async () => stoppedFilePath(await provider.stopRecording({ laneId })),
-          logger: deps.logger,
-          key: laneId,
-          // Another chat's clip or a user recording can hold this lane's recorder.
-          exclusive: false,
-          stillOwned: () => !isUserRecording(laneId)
-            && deps.observations.getTurnRecording(laneId, chatSessionId)?.turnId === turnId,
-        });
-      } catch (error) {
-        deps.observations.endTurnRecording(laneId, chatSessionId);
-        deps.logger.debug("mac_desktop.turn_clip_start_failed", {
-          laneId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    },
-
-    /**
-     * Closes the turn clip and publishes the time-lapse.
-     *
-     * Deliberately not keyed on the turn id: a clip that outlived its turn —
-     * a turn that ended without a `done` event, a restarted chat — still holds
-     * the lane's one recorder, so whatever is open is what gets closed, and the
-     * event carries the turn the clip actually belongs to.
-     */
-    async noteTurnEnded(args: {
-      laneId: string;
-      chatSessionId: string;
-      turnId: string;
-    }): Promise<MacDesktopTimeLapse | null> {
-      if (!deps.isDarwin) return null;
-      const laneId = args.laneId.trim();
-      const chatSessionId = args.chatSessionId.trim();
-      // A user recording owns the helper's recorder; the turn clip never
-      // started, so its bookkeeping is dropped without touching the backend.
-      const userOwnsRecorder = isUserRecording(laneId);
-      let timeLapse: MacDesktopTimeLapse | null = null;
-      await closeTurnClips(laneId, {
-        stopBackend: !userOwnsRecorder,
-        keep: (ended, reply) => {
-          if (userOwnsRecorder || !reply) return null;
-          const recording = ended.find((entry) => entry.turnId === args.turnId) ?? ended[0]!;
-          const replyPath = typeof reply.filePath === "string" && reply.filePath.trim().length
-            ? reply.filePath.trim()
-            : null;
-          const replyDuration = typeof reply.durationMs === "number" && Number.isFinite(reply.durationMs)
-            ? reply.durationMs
-            : null;
-          timeLapse = {
-            laneId,
-            chatSessionId: recording.chatSessionId || chatSessionId,
-            turnId: recording.turnId,
-            filePath: replyPath ?? recording.filePath,
-            durationMs: replyDuration ?? Math.max(0, deps.now() - recording.startedAtMs),
-            frameCount: recording.frameCount,
-            createdAt: new Date(deps.now()).toISOString(),
-          };
-          return timeLapse.filePath;
-        },
-      });
-      const published = timeLapse as MacDesktopTimeLapse | null;
-      if (!published) return null;
-      const clipKey = `${laneId}:${published.chatSessionId}`;
-      const previous = publishedClips.get(clipKey) ?? null;
-      publishedClips.set(clipKey, published.filePath);
-      await discardClipFiles([previous]);
-      // Context, not proof: it never reaches the artifact broker.
-      deps.emit({ type: "time-lapse", timeLapse: published });
-      return published;
-    },
-
-    /** Teardown: the lane's display is going away, or its chat ended. */
-    async stopTurnClips(laneId: string): Promise<void> {
-      await closeTurnClips(laneId, { stopBackend: !isUserRecording(laneId) });
-    },
 
     async startRecording(args: MacDesktopRecordStartArgs): Promise<MacDesktopRecordingStatus> {
       const laneId = args.laneId.trim();
@@ -721,12 +485,8 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
       if (inFlight) await inFlight.catch(() => null);
       const existing = recordings.get(laneId);
       if (existing?.running) return existing;
-      // The helper records one file per lane. A turn clip already writing one
-      // would have had its file silently taken over by this start, so it is
-      // closed first and the deliberate, reviewer-facing capture wins.
-      await closeTurnClips(laneId);
-      // Same root as the turn clip: a captioned recording is played back in
-      // the thread before it is ever filed as proof.
+      // A captioned recording is played back in the thread before it is ever
+      // filed as proof.
       const finalPath = deps.observations.artifactPath(`mac-desktop-recording-${laneId}`, "mp4");
       // The helper writes the raw recording (wall clock, nothing cut); the
       // stop turns it into the demo at `finalPath` and deletes it.

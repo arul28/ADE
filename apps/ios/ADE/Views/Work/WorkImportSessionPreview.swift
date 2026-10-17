@@ -189,6 +189,8 @@ struct WorkImportSessionPreview: View {
         onToggle: { toggleCard(card.id) }
       )
       .equatable()
+    case .toolGroup(let group) where !group.computerUseActions.isEmpty:
+      WorkComputerUseRunView(actions: group.computerUseActions)
     case .toolGroup(let group):
       WorkToolCallsPanelView(
         group: group,

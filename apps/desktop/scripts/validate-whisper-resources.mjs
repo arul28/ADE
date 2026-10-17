@@ -7,15 +7,15 @@ const desktopRoot = path.resolve(scriptDir, "..");
 const whisperRoot = path.join(desktopRoot, "resources", "whisper");
 const voiceRoot = path.join(desktopRoot, "resources", "voice");
 
-const MODEL_BASENAME = "ggml-base.en.bin";
-const MIN_MODEL_BYTES = 50 * 1024 * 1024; // base.en is ~142 MB; guard against a truncated download.
+const MODEL_BASENAME = "parakeet-ultra-Q4_K_M.gguf";
+const MIN_MODEL_BYTES = 400 * 1024 * 1024; // ~464 MB; guard against a truncated download.
 const GLOSSARY_BASENAME = "voice-glossary.json";
 const MAX_CONTEXTUAL_TERMS = 100;
 
-// Candidate whisper binary names accepted at runtime (transcriptionService).
-function whisperBinaryNamesForHost() {
+// The binary name accepted at runtime (transcriptionService).
+function transcribeBinaryNamesForHost() {
   const exeSuffix = process.platform === "win32" ? ".exe" : "";
-  return [`whisper-cli${exeSuffix}`, `main${exeSuffix}`, `whisper${exeSuffix}`];
+  return [`transcribe-cli${exeSuffix}`];
 }
 
 function fail(message) {
@@ -35,7 +35,7 @@ async function statFile(filePath, label) {
 }
 
 async function firstExistingBinary() {
-  for (const name of whisperBinaryNamesForHost()) {
+  for (const name of transcribeBinaryNamesForHost()) {
     const candidate = path.join(whisperRoot, name);
     try {
       const stat = await fs.stat(candidate);
@@ -93,9 +93,9 @@ async function main() {
   await statFile(glossaryPath, "voice glossary");
   await validateVoiceGlossary(glossaryPath);
 
-  // Model is downloaded at runtime (whisperModelStore), NOT bundled — so it is
+  // Model is downloaded at runtime (speechModelStore), NOT bundled — so it is
   // optional at build/package time. Validate it only if a copy is present
-  // (e.g. an offline build with ADE_WHISPER_BUNDLE_MODEL=1).
+  // (fetched for local dev runs with ADE_SPEECH_BUNDLE_MODEL=1).
   const modelPath = path.join(whisperRoot, MODEL_BASENAME);
   let modelStat = null;
   try {
@@ -106,32 +106,32 @@ async function main() {
   if (modelStat) {
     if (!modelStat.isFile() || modelStat.size < MIN_MODEL_BYTES) {
       fail(
-        `Whisper model looks truncated (${modelStat.size} bytes, expected >= ${MIN_MODEL_BYTES}): ${modelPath}`,
+        `Speech model looks truncated (${modelStat.size} bytes, expected >= ${MIN_MODEL_BYTES}): ${modelPath}`,
       );
     }
   } else {
     console.log("[whisper-resources] Model not bundled (runtime-downloaded) — skipping model validation.");
   }
 
-  // A whisper.cpp CLI binary for the host platform must be present + executable.
+  // A transcribe.cpp CLI binary for the host platform must be present + executable.
   const binary = await firstExistingBinary();
   if (!binary) {
     if (process.platform === "win32" && process.env.ADE_WINDOWS_TEST_BUILD === "1") {
       console.warn(
-        "[whisper-resources] Local Windows test build: Whisper CLI is not bundled; voice transcription will be unavailable.",
+        "[whisper-resources] Local Windows test build: transcribe-cli is not bundled; voice transcription will be unavailable.",
       );
       return;
     }
     fail(
-      `No whisper.cpp CLI binary found in ${whisperRoot} (looked for ${whisperBinaryNamesForHost().join(", ")}).`,
+      `No transcribe.cpp CLI binary found in ${whisperRoot} (looked for ${transcribeBinaryNamesForHost().join(", ")}).`,
     );
   }
   if (process.platform !== "win32" && (binary.stat.mode & 0o111) === 0) {
-    fail(`Expected whisper.cpp CLI binary to be executable: ${binary.candidate}`);
+    fail(`Expected transcribe.cpp CLI binary to be executable: ${binary.candidate}`);
   }
 
   const modelSummary = modelStat
-    ? `base.en model (${Math.round(modelStat.size / 1024 / 1024)} MB), `
+    ? `speech model (${Math.round(modelStat.size / 1024 / 1024)} MB), `
     : "model deferred to runtime download, ";
   console.log(
     `[whisper-resources] Validated voice glossary, ${modelSummary}` +
@@ -142,9 +142,9 @@ async function main() {
 main().catch((error) => {
   console.error(error instanceof Error ? error.message : String(error));
   console.error(
-    "[whisper-resources] Populate apps/desktop/resources/whisper with `ggml-base.en.bin` and a per-platform " +
-      "whisper.cpp CLI binary (whisper-cli). Run `npm --prefix apps/desktop run materialize:whisper-resources` " +
-      "with ADE_WHISPER_MODEL_URL / ADE_WHISPER_CLI_URL configured, or drop prebuilt files in manually. " +
+    "[whisper-resources] Populate apps/desktop/resources/whisper with a per-platform transcribe.cpp CLI " +
+      "binary (transcribe-cli). Run `npm --prefix apps/desktop run materialize:whisper-resources` " +
+      "(builds it from source with git + cmake, or set ADE_TRANSCRIBE_CLI_URL), or drop a prebuilt binary in manually. " +
       "These large binaries are gitignored and delivered to existing users by the auto-updater on update.",
   );
   process.exit(1);

@@ -650,6 +650,7 @@ const WORK_LIVE_ACTION_CAPTIONS: Readonly<Record<string, string>> = {
   screenshot: "Captured",
   findInPage: "Searched",
   stopFindInPage: "Closed find",
+  readText: "Read",
   setEmulation: "Changed device",
   setZoom: "Zoomed",
   setDevTools: "Toggled DevTools",
@@ -771,16 +772,14 @@ export function workLiveCardAspect(
   sourceAspect?: number | null,
 ): number {
   if (typeof sourceAspect === "number" && Number.isFinite(sourceAspect) && sourceAspect > 0) {
-    // A parked browser tab can keep the size of a narrow, tall Work pane, and
-    // a card of that shape is a sliver down the column. The card stays a
-    // landscape box, and the page is shrunk to fit inside it.
-    return tool === "browser" ? Math.max(sourceAspect, WORK_LIVE_BROWSER_MIN_ASPECT) : sourceAspect;
+    // The card takes the picture's own shape, browser included: parking lays
+    // a hidden tab out at a usable size, so a tall picture is a real page (a
+    // phone preset, a tall pane), and a landscape box would show it as a strip.
+    // `workLiveCardSize` keeps a tall card inside the column.
+    return sourceAspect;
   }
   return tool ? WORK_LIVE_TOOL_ASPECT[tool] : WORK_LIVE_CARD_DEFAULT_ASPECT;
 }
-
-/** The narrowest box the browser card takes: 4:3. */
-export const WORK_LIVE_BROWSER_MIN_ASPECT = 4 / 3;
 
 /**
  * The width range available in a column of this width.
@@ -835,13 +834,20 @@ export function workLiveCardSize(args: {
     height = maxHeight;
     width = height * aspect;
   }
-  // The user's floor is a hard one: for a source taller than
-  // `minWidth / maxHeight` (~0.59) the two constraints cannot both hold, and a
-  // 200px card that is taller than the soft cap is better than a 136px card
-  // nobody can see. The exact aspect is kept either way.
+  // The width floor beats the soft height cap: for a source taller than
+  // `minWidth / maxHeight` (~0.59) the two cannot both hold, and a 200px card
+  // taller than the cap is better than a 136px card nobody can see. The exact
+  // aspect is kept either way.
   if (width < bounds.min) {
     width = bounds.min;
     height = width / aspect;
+    // The column's own height beats the floor: a card that cannot fit is not
+    // shown, so a phone preset (~430px tall at the floor) in a short window
+    // would vanish. Narrower than the floor but on screen beats gone.
+    if (height > availableHeight) {
+      height = Math.max(1, availableHeight);
+      width = height * aspect;
+    }
   }
   return { width: Math.round(width), height: Math.round(height) };
 }

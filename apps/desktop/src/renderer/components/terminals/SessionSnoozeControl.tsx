@@ -105,7 +105,7 @@ export function SessionSnoozeControl({
           // Same hover pill as `SESSION_ACTION_BUTTON_CLASS` in
           // SessionStatusSlot (spelled out rather than imported: that module
           // renders THIS one, and importing back would close a module cycle).
-          "hover:bg-white/[0.06] hover:text-fg focus-visible:bg-white/[0.06] focus-visible:text-fg",
+          "hover:bg-fg/[0.06] hover:text-fg focus-visible:bg-fg/[0.06] focus-visible:text-fg",
           compact ? "px-1" : "px-1.5",
         )}
         onClick={(event) => {

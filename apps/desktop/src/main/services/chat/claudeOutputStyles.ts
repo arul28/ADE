@@ -150,6 +150,12 @@ function readPluginManifest(pluginRoot: string): ClaudePluginManifest {
   return parsed ?? {};
 }
 
+/** A mod is a plugin whose `hooks/hooks.json` names a hooks module. */
+function pluginHasHooksModule(pluginRoot: string): boolean {
+  const modules = readJsonObject(path.join(pluginRoot, "hooks", "hooks.json"))?.modules;
+  return Array.isArray(modules) && modules.some((entry) => typeof entry === "string" && entry.length > 0);
+}
+
 function pathsOverlap(left: string, right: string): boolean {
   const leftPath = realpathOrResolve(left);
   const rightPath = realpathOrResolve(right);
@@ -347,6 +353,7 @@ export function discoverClaudePlugins(cwd: string): AgentChatClaudePlugin[] {
       source: "local",
       ...(maybeString(manifest.description) ? { description: maybeString(manifest.description) } : {}),
       ...(maybeString(manifest.version) ? { version: maybeString(manifest.version) } : {}),
+      ...(pluginHasHooksModule(pluginPath) ? { isMod: true } : {}),
     };
   });
 }

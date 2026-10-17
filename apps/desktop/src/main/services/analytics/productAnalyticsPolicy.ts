@@ -128,6 +128,17 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "header_opened",
   "preferences_changed",
   "brain_repair",
+  // The project recovery screen's choices when a project's ADE data went
+  // missing or was swapped: put it back from the Trash, or open with new data
+  // (Start fresh, Use this copy). completed | failed.
+  "project_data_restore",
+  "project_data_start_fresh",
+  // Settings → General → Project location → Move…: whether people move a
+  // project at all, and how often a move fails. completed | failed.
+  "project_move",
+  // Settings → Background service → "Stop and quit ADE": whether people turn
+  // the always-on service off at all. completed | rejected (a guard refused) | failed.
+  "background_service_stop",
   "machine_reconnect",
   "mention_expanded",
   "hooks_ignored",
@@ -163,6 +174,13 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // says the surface was reached — it cannot tell a Browser install from a Git
   // one. Never a lane, project, tab, URL, or session.
   "tool_opened",
+  // An issue made in ADE's create composer, by tracker. Never the repository,
+  // team, title, labels, or the issue's number or id.
+  "issue_created",
+  // Whether an installation uses the Work tab's Focus view (busy lanes folded)
+  // and its Focus grid (every waiting chat side by side). Two coarse modes,
+  // never a lane, chat, count, or page.
+  "focus_mode",
   // Which live view an installation actually watches an iOS simulator through.
   // `tool_ios` says the pane was opened; it cannot tell an install that drives
   // a simulator on this Mac from one driving a Mac across the room, which is
@@ -176,6 +194,9 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // The same three coarse outcomes for the lane's App Control session: one
   // started, an agent drove it, or a recording was filed as proof.
   "app_control",
+  // Whether agents use the user's own browser (`ade browser attach`): one
+  // coarse `started` outcome. Never the browser, machine, tab, URL, or chat.
+  "user_browser",
   // One coarse fact per capture-gesture press: whether the shot reached the
   // composer. Never the window, its title, the app it belonged to, the path the
   // PNG passed through, or the image.
@@ -186,14 +207,29 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // with less history. Never the transcript, the models, the turn counts, or
   // the share of the window it took.
   "handoff_replay",
+  // How a move of a chat to another machine ended: continued there, failed,
+  // cancelled, or unknown (the answer was lost). Never the machine, the reason,
+  // the branch, or any capsule content.
+  "cross_machine_move",
+  // How a context compaction ended (completed or failed), and whether it was
+  // asked for (`mode: manual`) or not (`automatic`, which includes ADE's own
+  // fallback). `compact_first` is the same fact for a compaction the user turned
+  // on with the "Compact first" pill before a send. Never the token counts, the
+  // summary, the failure text, the account, or the model.
+  "compaction",
+  "compact_first",
   // Durable provider/account decisions. These are closed facts emitted by
   // brain/main owners; ids, labels, paths, keys, and model names never enter
   // the event.
   "account_created",
   "account_removed",
+  "account_signed_out",
   "default_selected",
   "balance_changed",
   "auto_start_changed",
+  "subagent_cache_changed",
+  "main_cache_changed",
+  "extra_usage_stop_changed",
   "credential_stored",
   "credential_removed",
   "preset_created",
@@ -219,6 +255,30 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "session_copy_chat",
   "session_continue_cli",
   "session_copy_cli",
+  // A private webhook URL was made, and how an agent's private secret card
+  // ended. Never the URL, the hook, the secret's name or value, or the chat.
+  "webhook_url_created",
+  "secret_requested",
+  // A person started a safe or live test of an automation. Never the rule or event.
+  "safe_test_started",
+  "live_test_started",
+  // ADE's one-click update of a user-installed provider CLI. Never the version.
+  "provider_cli_updated",
+  // A custom notification (`ade notify`, an agent, an automation's "Send
+  // notification to mobile app" step): sent, refused by the hourly cap, or
+  // failed. Never the title, the body, the link, or which phones got it.
+  "notification_sent",
+  // The dev home. Which machine-level top tab was opened, which widget was
+  // added to the home page, and how connecting Apple Music or Spotify ended.
+  // Never a URL, a tab, a song, a layout, an account, or a widget's settings.
+  "tab_opened",
+  "widget_added",
+  "music_connected",
+  "spotify_connected",
+  // Find in a chat or a diff (⌘F), and the ⌘K "Find … in this chat" hand-off.
+  // Whether an installation opens find, on which surface, and whether the
+  // palette's words get used. Never the query, the chat, the diff, or a match.
+  "find_opened",
 ]);
 
 const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>> = {
@@ -324,6 +384,15 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     "cto",
     // Account/provider decisions owned by the brain or desktop main process.
     "provider_accounts", "api_credentials", "presets", "proxy",
+    // Linear and GitHub issues opened, edited and created in ADE.
+    "issues",
+    // The dev home: which machine-level tabs (Browser, Music) and home widgets
+    // an installation uses, and whether Apple Music gets connected.
+    "home",
+    // Find (⌘F) in a chat or a diff, and the ⌘K hand-off into a chat's find bar.
+    "find",
+    // Settings › MCP servers: a browser sign-in to a registry server.
+    "mcp_servers",
   ]),
   outcome: new Set([
     "success", "started", "completed", "failure", "timeout", "opened", "cancelled", "approved", "denied",
@@ -346,6 +415,9 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     // product question is whether Repair recovers a session or only confirms it
     // is gone, and collapsing the two into `completed` answers neither.
     "sign_in_required",
+    // A private secret card answered by keeping the value already saved.
+    // Distinct from `completed` (a value was saved) and `cancelled` (declined).
+    "kept",
     // Which usage scope an installation actually looked at. Reuses `outcome`
     // rather than adding a parallel `scope` key, the same way the update
     // transaction reuses it for its failed step. These are the three values of
@@ -361,7 +433,12 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     // `shared/types/workTools.ts` — a new tool has to be added here
     // deliberately rather than arriving as free text.
     "tool_terminal", "tool_git", "tool_files", "tool_ios", "tool_app_control",
-    "tool_browser", "tool_pr", "tool_mac_desktop", "tool_windows_desktop",
+    "tool_browser", "tool_pr", "tool_mac_desktop", "tool_windows_desktop", "tool_issues",
+    // Which tracker an issue made in ADE went to. Prefixed like the tool ids.
+    "tracker_linear", "tracker_github", "tracker_jira",
+    // The two Work Focus modes, prefixed like the tool ids so they cannot be
+    // confused with another action's outcome.
+    "mode_focus", "mode_focus_grid",
     // The two iOS live-view backends, prefixed for the same reason the tool ids
     // are. `backend_window` captures the Simulator window on this Mac;
     // `backend_host_encoded` encodes on the machine that owns the simulator and
@@ -387,15 +464,32 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     // same for a brief handoff, and this funnel is only legible if fitting,
     // truncating, refusing, retrying and giving up are separable in one filter.
     "fit", "truncated", "refused", "retried", "gave_up",
+    // The two terminal states of a cross-machine move that the generic set
+    // lacks (`failed` and `cancelled` above cover the others): it continued on
+    // the other machine, or ADE lost the answer and can't tell.
+    "continued", "unknown",
     // Provider/account settings and reset-credit states. `enabled` and
     // `disabled` are the two boolean setting outcomes; the other mutations use
     // the existing completed/success buckets.
     "enabled", "disabled", "nothing_to_reset", "no_credit", "already_redeemed",
+    // Which machine-level top tab was opened, prefixed like the Work tool ids.
+    "tab_browser", "tab_music",
+    // Which home widget was added, prefixed for the same reason. Closed to the
+    // widget types in `renderer/components/home/homeLayout.ts`: a new widget
+    // has to be added here deliberately rather than arriving as free text.
+    "widget_projects", "widget_running", "widget_activity", "widget_limits", "widget_prs", "widget_clock",
+    "widget_pomodoro", "widget_clipboard", "widget_machine", "widget_heatmap", "widget_shipped", "widget_feed",
+    "widget_now_playing",
+    // Where find was opened: ⌘F in a chat, the ⌘K "Find … in this chat" row, a
+    // chat opened from a ⌘K message hit with the words handed off, or ⌘F in a
+    // diff. Prefixed like the other renderer surfaces so none can be confused
+    // with another action's outcome. A fifth spelling is dropped, not widened.
+    "chat_shortcut", "chat_palette", "chat_palette_hit", "diff_shortcut",
   ]),
-  provider: new Set(["codex", "openai", "claude", "cursor", "droid", "opencode", "pi", "gemini", "lmstudio", "local", "other"]),
+  provider: new Set(["codex", "openai", "claude", "cursor", "droid", "opencode", "pi", "muse", "gemini", "lmstudio", "local", "other"]),
   model_family: new Set([
     "gpt_5", "openai_reasoning", "claude_sonnet", "claude_opus", "claude_haiku", "cursor", "gemini",
-    "grok", "local", "other",
+    "grok", "muse", "local", "other",
   ]),
   duration_bucket: new Set(["under_10s", "under_1m", "under_5m", "under_30m", "under_2h", "over_2h"]),
   // Bucketed, never a raw count: a fleet that fails to stop must not become a

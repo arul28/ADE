@@ -27,6 +27,12 @@ export type AdeCodeProviderSettingsMemory = {
   codexConfigSource: string;
   opencodePermissionMode: string;
   droidPermissionMode: string;
+  /** Absent in memory written before Muse shipped; read as Muse's default. */
+  musePermissionMode?: string;
+  /** Absent in memory written before Copilot's round-3 settings; read as the defaults. */
+  copilotPermissionMode?: string;
+  copilotContextTier?: string;
+  copilotAutoTier?: string | null;
   cursorModeId: string | null;
 };
 
@@ -202,6 +208,10 @@ export function providerSettingsFromModelMemory(
     codexConfigSource: memory.codexConfigSource,
     opencodePermissionMode: memory.opencodePermissionMode,
     droidPermissionMode: memory.droidPermissionMode,
+    musePermissionMode: memory.musePermissionMode,
+    copilotPermissionMode: memory.copilotPermissionMode,
+    copilotContextTier: memory.copilotContextTier,
+    copilotAutoTier: memory.copilotAutoTier,
     cursorModeId: memory.cursorModeId,
   };
 }
@@ -388,6 +398,10 @@ function normalizeProviderSettings(value: unknown): AdeCodeProviderSettingsMemor
     codexConfigSource: optionalString(parsed.codexConfigSource, "flags"),
     opencodePermissionMode: optionalString(parsed.opencodePermissionMode, "edit"),
     droidPermissionMode: optionalString(parsed.droidPermissionMode, "auto-low"),
+    musePermissionMode: optionalString(parsed.musePermissionMode, "onRequest"),
+    copilotPermissionMode: optionalString(parsed.copilotPermissionMode, "ask"),
+    copilotContextTier: optionalString(parsed.copilotContextTier, "default"),
+    copilotAutoTier: nullableString(parsed.copilotAutoTier),
     cursorModeId: nullableString(parsed.cursorModeId),
   };
 }

@@ -19,8 +19,8 @@ import { armLaneBranchDriftWarning } from "../lanes/LaneBranchDrift";
 import { useLaneGitActionRuntimeState } from "../lanes/LaneGitActionsPane";
 import { formatPrBadgeLabel } from "../prs/shared/prFormatters";
 import { buildPrsRouteSearch } from "../prs/prsRouteState";
-import { useChatRuntimeScopeForPin } from "./ChatRuntimeScope";
-import { refreshLinkedPrCoalesced } from "../../lib/prReadCache";
+import { chatRunsOnThisComputer, useChatRuntimeScopeForPin } from "./ChatRuntimeScope";
+import { refreshLinkedPrCoalesced, requestMachinePrReconcile } from "../../lib/prReadCache";
 import { rollupPrChecks } from "../../../shared/prChecksRollup";
 import type { PrChecksStatus } from "../../../shared/types/prs";
 import {
@@ -30,7 +30,7 @@ import {
   openLanePr,
   selectPrimaryLanePr,
 } from "../../lib/lanePrBadge";
-import { selectPrsForChatInLane } from "../../../shared/prChatScope";
+import { prClaimedByOtherChat, selectPrsForChatInLane } from "../../../shared/prChatScope";
 import { requestChatPrSelection } from "./chatPrPaneRequests";
 import { Z_LAYERS } from "../ui/zLayers";
 import { selectChatPrs } from "../lanes/lanePageModel";
@@ -51,6 +51,11 @@ type ChatGitToolbarProps = {
    * omit it, preserving the original menu behaviour.
    */
   onTogglePrPane?: () => void;
+  /**
+   * Focus grid: there is no Tools pane, so the PR badge goes to the PRs tab
+   * (also for another machine's lane) instead of a PR pane or menu.
+   */
+  prOpensPrsTab?: boolean;
   prPaneOpen?: boolean;
   /**
    * The machine this lane lives on, when it is not the machine the project tab
@@ -141,6 +146,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
   laneId,
   sessionId = null,
   onTogglePrPane,
+  prOpensPrsTab = false,
   prPaneOpen,
   runtimePin = null,
   linkedPrOnly = false,
@@ -246,7 +252,11 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
           if (!refreshed) return pr;
           const enriched = refreshed.chatSessionIds || !pr.chatSessionIds
             ? refreshed
-            : { ...refreshed, chatSessionIds: pr.chatSessionIds };
+            : {
+                ...refreshed,
+                chatSessionIds: pr.chatSessionIds,
+                crossLaneChatSessionIds: pr.crossLaneChatSessionIds,
+              };
           setLinkedPrs((current) => current.map((candidate) => candidate.id === enriched.id ? enriched : candidate));
           setLinkedPr(enriched);
           return enriched;
@@ -310,6 +320,19 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
     };
   }, [refreshPr, runtimePinKey]);
 
+  // See `requestMachinePrReconcile`; the subscription above re-reads the PR
+  // when the reconcile finishes.
+  const laneOnOtherMachine = !chatRunsOnThisComputer(scope);
+  useEffect(() => {
+    if (!laneOnOtherMachine) return;
+    const request = () => requestMachinePrReconcile(projectRoot, runtimePinRef.current);
+    request();
+    window.addEventListener("focus", request);
+    return () => {
+      window.removeEventListener("focus", request);
+    };
+  }, [laneOnOtherMachine, projectRoot, runtimePinKey]);
+
   // Subscribe to backend PR events so the linked-PR pill reflects external
   // changes (PR closed, merged, checks finished, etc.) without a manual refresh.
   useEffect(() => {
@@ -321,11 +344,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
       }
       if (event.type !== "prs-updated") return;
       const eventIncludesLanePr = event.prs.some((pr) => (
-        pr.laneId === laneId && (
-          !sessionId
-          || !pr.chatSessionIds?.length
-          || pr.chatSessionIds.includes(sessionId)
-        )
+        pr.laneId === laneId && (!sessionId || !prClaimedByOtherChat(pr, sessionId))
       ));
       const eventIncludesLinkedPr = current ? event.prs.some((pr) => pr.id === current.id) : false;
       if (eventIncludesLanePr || eventIncludesLinkedPr) {
@@ -359,6 +378,23 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
         selectedRebaseItemId: null,
       })}`,
     });
+  }, [laneId, navigate, runtimePin]);
+
+  /**
+   * Focus grid: always the PRs tab, never GitHub. A lane on another machine has
+   * no PR row here, so its PR is routed by number and repo, which the PRs tab
+   * resolves on its own (a coordinate route needs no local row).
+   */
+  const openPrInPrsTab = useCallback((pr: PrSummary) => {
+    navigate(`/prs${buildPrsRouteSearch({
+      activeTab: "normal",
+      selectedPrId: runtimePin ? null : pr.id,
+      selectedPrNumber: pr.githubPrNumber,
+      repoOwner: pr.repoOwner,
+      repoName: pr.repoName,
+      selectedLaneId: runtimePin ? null : laneId,
+      selectedRebaseItemId: null,
+    })}`);
   }, [laneId, navigate, runtimePin]);
 
   const handlePr = useCallback(async () => {
@@ -501,7 +537,10 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
           type="button"
           data-testid="chat-header-pr-badge"
           className="inline-flex h-6 shrink-0 items-center gap-1.5 text-white drop-shadow-[0_1px_1px_rgba(0,0,0,0.85)] transition-opacity hover:opacity-80"
-          onClick={() => openLinkedPrInPane()}
+          onClick={() => {
+            if (prOpensPrsTab) { openPrInPrsTab(linkedPr); return; }
+            openLinkedPrInPane();
+          }}
           title={`${label}: ${linkedPr.title}`}
           aria-label={label}
         >
@@ -516,6 +555,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
           type="button"
           className={cn(btnBase, "gap-1.5", prPillActive && "border-violet-400/25 bg-violet-500/[0.08] text-fg/80")}
           onClick={() => {
+            if (prOpensPrsTab) { openPrInPrsTab(linkedPr); return; }
             if (onTogglePrPane) { openLinkedPrInPane(); return; }
             setPrMenuOpen((open) => !open);
           }}
@@ -535,13 +575,13 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
         </button>
         {allPrs.length > 1 ? (
           <div style={{ zIndex: Z_LAYERS.popover }} className="pointer-events-none invisible absolute right-0 top-full w-[280px] pt-2 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:visible group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:visible group-focus-within:opacity-100">
-            <div className="rounded-lg border border-white/[0.10] bg-[#17171b] p-1.5 shadow-2xl shadow-black/30">
+            <div className="rounded-lg border border-fg/[0.10] bg-(color:--work-popover-bg) p-1.5 shadow-2xl shadow-black/30">
               <div className="px-2 pb-1.5 pt-1 text-[9px] font-semibold uppercase tracking-[0.12em] text-muted-fg/45">Pull requests · {allPrs.length}</div>
               {allPrs.map((candidate) => (
                 <button
                   type="button"
                   key={candidate.id}
-                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-white/[0.06]"
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-fg/[0.06]"
                   onClick={() => openPr(candidate)}
                   title={candidate.title || `PR #${candidate.githubPrNumber}`}
                 >
@@ -561,7 +601,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
               ))}
               <button
                 type="button"
-                className="mt-0.5 flex w-full items-center rounded-md border-t border-white/[0.06] px-2 pb-1 pt-1.5 text-left text-[10px] text-muted-fg/60 transition-colors hover:bg-white/[0.06] hover:text-fg/85"
+                className="mt-0.5 flex w-full items-center rounded-md border-t border-fg/[0.06] px-2 pb-1 pt-1.5 text-left text-[10px] text-muted-fg/60 transition-colors hover:bg-fg/[0.06] hover:text-fg/85"
                 onClick={() => {
                   if (runtimePin) {
                     // The local PR tab cannot resolve a foreign machine's rows,
@@ -584,7 +624,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
         ) : null}
       </div>
     );
-  }, [laneId, linkedPr, linkedPrOnly, linkedPrs, navigate, onTogglePrPane, openLinkedPrInPane, openPr, prPillActive, runtimePin]);
+  }, [laneId, linkedPr, linkedPrOnly, linkedPrs, navigate, onTogglePrPane, openLinkedPrInPane, openPr, openPrInPrsTab, prOpensPrsTab, prPillActive, runtimePin]);
 
   // Slide-out panel that appears to the right of the PR badge when toggled.
   const prMenu = useMemo(() => {
@@ -630,10 +670,10 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
         </button>
 
         {/* Vertical separator */}
-        <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-white/[0.08]" />
+        <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-fg/[0.08]" />
 
         {/* Live status preview */}
-        <div className="flex items-center gap-2 whitespace-nowrap rounded-lg border border-white/[0.04] bg-white/[0.015] px-2.5 py-1 font-mono text-[10px] text-fg/55">
+        <div className="flex items-center gap-2 whitespace-nowrap rounded-lg border border-fg/[0.04] bg-fg/[0.015] px-2.5 py-1 font-mono text-[10px] text-fg/55">
           {prChecksLoading && !prChecks ? (
             <span className="inline-flex items-center gap-1 text-fg/35">
               <CircleNotch size={9} className="animate-spin" />
@@ -773,4 +813,4 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
 });
 
 const btnBase =
-  "inline-flex items-center gap-1 rounded-md border border-white/[0.06] bg-white/[0.02] px-2 py-0.5 font-sans text-[10px] font-medium text-fg/50 transition-all hover:border-violet-400/15 hover:bg-violet-500/[0.04] hover:text-fg/80 disabled:pointer-events-none disabled:opacity-40";
+  "inline-flex items-center gap-1 rounded-md border border-fg/[0.06] bg-fg/[0.02] px-2 py-0.5 font-sans text-[10px] font-medium text-fg/50 transition-all hover:border-violet-400/15 hover:bg-violet-500/[0.04] hover:text-fg/80 disabled:pointer-events-none disabled:opacity-40";

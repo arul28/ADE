@@ -6,14 +6,24 @@ import type {
   OpenProjectBinding,
 } from "../../../shared/types";
 import { stripElectronErrorWrapper } from "../../../shared/codedError";
+import { machineIdForBinding } from "../../../shared/machineIdentity";
 import { createPendingLaneDeleteProgress } from "../../lib/laneDeleteProgress";
 import { useAppStore } from "../../state/appStore";
+import { requestCrossMachineLanesForMachine, waitForForeignLaneToLeave } from "../../state/crossMachineLanes";
+import { foreignLaneKey } from "../../state/laneMachineRouting";
 import { showToast } from "../app/toast/toastStore";
 import {
   EMPTY_LANE_DELETE_SELECTION,
   ManageLaneDialog,
   type LaneDeleteSelection,
 } from "../lanes/ManageLaneDialog";
+
+/**
+ * How long a deleted lane on another machine keeps its deleting state while that
+ * machine is re-read. The lane normally leaves the list within about a second;
+ * this bound keeps a stalled or failed re-read from holding the state forever.
+ */
+const FOREIGN_LANE_DELETE_SETTLE_MS = 15_000;
 
 export type WorkManageLaneDialogHostProps = {
   laneId: string | null;
@@ -135,39 +145,49 @@ export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
         ? { deleteRemoteBranch: true, remoteName: "origin" }
         : {}),
     };
-    const pending = createPendingLaneDeleteProgress(lane.id);
-    if (!runtimePin) {
-      setDeleteProgressByLaneId((current) => ({ ...current, [lane.id]: pending }));
-    }
+    // A lane on another machine is keyed the way the Work sidebar names it, so its
+    // card and open chat find the entry. A bare id would belong to this machine's lane.
+    const machineId = runtimePin ? machineIdForBinding(runtimePin) : null;
+    const progressKey = machineId ? foreignLaneKey(machineId, lane.id) : lane.id;
+    const pending = createPendingLaneDeleteProgress(progressKey);
+    setDeleteProgressByLaneId((current) => ({ ...current, [progressKey]: pending }));
     setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
     onClose();
 
+    const clearPending = () => {
+      setDeleteProgressByLaneId((current) => {
+        if (current[progressKey]?.startedAt !== pending.startedAt) return current;
+        const next = { ...current };
+        delete next[progressKey];
+        return next;
+      });
+    };
     const deletion = runtimePin
       ? window.ade.lanes.delete(args, runtimePin)
       : window.ade.lanes.delete(args);
-    void deletion.catch((error) => {
-      if (runtimePin) {
+    void deletion.then(
+      () => {
+        // A local delete ends on `lanes.delete.event`, which useWorkLaneDeleteProgress
+        // reads and clears once its own refresh settles. Another machine has no such
+        // feed on this tab, so its entry stays until a re-read of that machine no
+        // longer lists the lane, or until the bound runs out.
+        if (!machineId) return;
+        requestCrossMachineLanesForMachine(machineId);
+        return waitForForeignLaneToLeave(machineId, lane.id, FOREIGN_LANE_DELETE_SETTLE_MS)
+          .then(clearPending);
+      },
+      (error: unknown) => {
+        clearPending();
         showToast({
           title: `Could not delete ${lane.name}`,
           message: stripElectronErrorWrapper(error instanceof Error ? error.message : String(error)),
           tone: "error",
           durationMs: 0,
         });
-        return;
-      }
-      setDeleteProgressByLaneId((current) => {
-        if (current[lane.id]?.startedAt !== pending.startedAt) return current;
-        const next = { ...current };
-        delete next[lane.id];
-        return next;
-      });
-      showToast({
-        title: `Could not delete ${lane.name}`,
-        message: stripElectronErrorWrapper(error instanceof Error ? error.message : String(error)),
-        tone: "error",
-        durationMs: 0,
-      });
-    });
+        // Re-read the machine so the sidebar shows what a failed delete left behind.
+        if (machineId) requestCrossMachineLanesForMachine(machineId);
+      },
+    );
   }, [deleteForce, deleteSelection, lane, onClose, runtimePin, setDeleteProgressByLaneId]);
 
   if (!laneId || !lane) return null;

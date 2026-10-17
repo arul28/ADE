@@ -53,7 +53,10 @@ type OpenCodePermissionAction =
   | "external_directory"
   | "question"
   | "subagent"
-  | "skill";
+  | "skill"
+  | "opencode_worktree_create"
+  | "opencode_worktree_list"
+  | "opencode_session_move";
 
 export type OpenCodePermissionRule = {
   action: OpenCodePermissionAction;
@@ -67,6 +70,8 @@ export type OpenCodeProviderBlock = {
   name?: string;
   package?: string;
   settings?: Record<string, unknown>;
+  /** Wire quirks of the endpoint (2.0.28+), such as which prompt-cache markers it takes. */
+  compatibility?: Record<string, unknown>;
   models?: Record<string, OpenCodeModelBlock>;
 };
 
@@ -106,11 +111,37 @@ const rule = (action: OpenCodePermissionAction, effect: PermissionEffect, resour
 });
 
 /**
- * Ordered rules per ADE mode. OpenCode evaluates the last match, after its own
+ * Rules that keep a chat inside the lane ADE gave it, in every mode.
+ *
+ * OpenCode 2.0.27 added Code Mode tools that create, list and remove git
+ * worktrees and move a session to another directory. ADE owns worktrees (they
+ * are lanes), so a worktree an agent creates is one ADE never tracks, and a
+ * session that moves leaves the lane its chat is bound to. A tool whose
+ * permission name is denied outright is left out of the model's catalog; Code
+ * Mode tools without a permission of their own go by `opencode_<name>`
+ * (verified against 2.0.29). `worktree_remove` asks for `edit` on the
+ * worktree's path, relative to the session directory, so denying `edit` on
+ * `.` keeps a chat from removing its own lane without touching file edits,
+ * whose resources are file paths.
+ */
+export const OPENCODE_LANE_GUARD_RULES: readonly OpenCodePermissionRule[] = [
+  { action: "opencode_worktree_create", resource: "*", effect: "deny" },
+  { action: "opencode_worktree_list", resource: "*", effect: "deny" },
+  { action: "opencode_session_move", resource: "*", effect: "deny" },
+  { action: "edit", resource: ".", effect: "deny" },
+];
+
+/**
+ * Ordered rules per ADE mode, then the lane guard (last, so a mode's
+ * `* allow` cannot re-open it). OpenCode evaluates the last match, after its own
  * base policy (`* allow`, then asks for external directories and `.env` reads)
  * and its managed-directory allows, so these rules only state what ADE changes.
  */
 export function buildOpenCodePermissions(mode: PermissionMode | "helper"): OpenCodePermissionRule[] {
+  return [...buildOpenCodeModeRules(mode), ...OPENCODE_LANE_GUARD_RULES];
+}
+
+function buildOpenCodeModeRules(mode: PermissionMode | "helper"): OpenCodePermissionRule[] {
   if (mode === "full-auto") {
     // Full access means no prompts at all, including external directories and
     // `.env` reads, which the base policy asks about.
@@ -162,11 +193,13 @@ export function adeOpenCodeMode(mode: string | null | undefined): PermissionMode
 /**
  * The rules ADE puts on the session itself. OpenCode gives a child session its
  * parent's session rules, but not its parent's agent rules, so without these a
- * `general` subagent in edit mode writes files with no ask.
+ * `general` subagent in edit mode writes files with no ask. A session on the
+ * user's own config (`config-toml`) gets only the lane guard: its permission
+ * policy is the user's, but the lane is still ADE's.
  */
 export function openCodeSessionRulesFor(mode: string | null | undefined): OpenCodePermissionRule[] {
   const effective = adeOpenCodeMode(mode);
-  return effective ? buildOpenCodePermissions(effective) : [];
+  return effective ? buildOpenCodePermissions(effective) : [...OPENCODE_LANE_GUARD_RULES];
 }
 
 /** The ADE agent a session runs under for a permission mode, or null when ADE sets none. */
@@ -347,7 +380,15 @@ function addCustomProviders(
       ...existing,
       package: aiSdkPackage(entry.npm),
       name: trimToUndefined(entry.name) ?? id,
-      settings: { ...existing?.settings, baseURL, ...(apiKey ? { apiKey } : {}) },
+      settings: {
+        ...existing?.settings,
+        baseURL,
+        ...(apiKey ? { apiKey } : {}),
+        ...(entry.encoding ? { encoding: entry.encoding } : {}),
+      },
+      ...(entry.cacheFormat
+        ? { compatibility: { ...existing?.compatibility, cacheFormat: entry.cacheFormat } }
+        : {}),
       models: {
         ...existing?.models,
         ...Object.fromEntries(models.map((modelId) => [modelId, {}])),
@@ -402,6 +443,10 @@ export function buildOpenCodeConfig(args: BuildOpenCodeConfigArgs): OpenCodeServ
       "ade-helper": agent("helper", { steps: 1 }),
     },
     // ADE has no share UI, and pins the binary itself.
+    ...(args.projectConfig.ai?.compaction?.opencode ? { compaction: {
+      ...(args.projectConfig.ai.compaction.opencode.reserveTokens ? { buffer: args.projectConfig.ai.compaction.opencode.reserveTokens } : {}),
+      ...(args.projectConfig.ai.compaction.opencode.keepRecentTokens ? { keep: { tokens: args.projectConfig.ai.compaction.opencode.keepRecentTokens } } : {}),
+    } } : {}),
     share: "disabled",
     update: "disable",
   };
@@ -418,6 +463,7 @@ export const SHARED_OPENCODE_PROFILE: OpenCodeServerProfile = { key: "shared", i
 export const PERSONAL_OPENCODE_PROFILE: OpenCodeServerProfile = { key: "shared:personal", isolated: false, shared: true };
 
 type ProjectOpenCodeSettings = {
+  compaction: unknown;
   apiKeys: NonNullable<NonNullable<EffectiveProjectConfig["ai"]>["apiKeys"]>;
   localProviders: NonNullable<NonNullable<EffectiveProjectConfig["ai"]>["localProviders"]>;
   customProviders: NonNullable<NonNullable<EffectiveProjectConfig["ai"]>["customProviders"]>;
@@ -428,6 +474,7 @@ type ProjectOpenCodeSettings = {
 function projectOpenCodeSettings(projectConfig: ProjectConfigFile | EffectiveProjectConfig): ProjectOpenCodeSettings {
   const ai = projectConfig.ai ?? {};
   return {
+    compaction: projectConfig.ai?.compaction?.opencode ?? null,
     apiKeys: ai.apiKeys ?? {},
     localProviders: ai.localProviders ?? {},
     customProviders: ai.customProviders ?? [],
@@ -436,7 +483,7 @@ function projectOpenCodeSettings(projectConfig: ProjectConfigFile | EffectivePro
 }
 
 function hasProjectOpenCodeSettings(settings: ProjectOpenCodeSettings): boolean {
-  return Object.keys(settings.apiKeys).length > 0
+  return Boolean(settings.compaction) || Object.keys(settings.apiKeys).length > 0
     || Object.keys(settings.localProviders).length > 0
     || settings.customProviders.length > 0
     || settings.customModelSlugs.length > 0;

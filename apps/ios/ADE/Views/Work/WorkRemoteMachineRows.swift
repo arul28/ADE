@@ -91,6 +91,14 @@ func workParseRemoteLaneId(_ laneId: String) -> (machineKey: String, laneId: Str
   return (machineKey, plain)
 }
 
+/// The machine name of another machine's namespaced lane id, for a picker
+/// entry ("main — Studio"). Nil for a focused-machine lane or an unknown
+/// machine.
+func workRemoteLaneMachineName(_ laneId: String, options: [WorkMachineFilterOption]) -> String? {
+  guard let machineKey = workParseRemoteLaneId(laneId)?.machineKey else { return nil }
+  return options.first { $0.id == machineKey }?.name
+}
+
 /// The other machines' checkouts of the repository `identity`.
 func workRemoteMachineRepos(
   machines: [MachineFleet.Machine],
@@ -150,7 +158,9 @@ func workMergeRemoteMachineRows(
     for chat in repo.chats where chat.isChatTool {
       guard seenSessionIds.insert(chat.id).inserted else { continue }
       let lane = laneById[chat.laneId]
-      let laneName = "\(lane?.name ?? "Lane") · \(repo.machineName)"
+      // The lane's own name, as desktop shows it: a machine name is not part
+      // of a title (the chat header and the Machine filter say where it is).
+      let laneName = lane?.name ?? "Lane"
       var session = chat.asTerminalSessionSummary(laneName: laneName)
       session.laneId = workRemoteLaneId(machineKey: repo.machineKey, laneId: chat.laneId)
       mergedSessions.append(session)
@@ -166,7 +176,6 @@ func workMergeRemoteMachineRows(
       guard seenLaneIds.insert(namespaced).inserted else { continue }
       var summary = (laneById[laneId] ?? RemoteRosterLane(id: laneId, name: "Lane", color: nil, icon: nil, laneType: nil, branchRef: nil)).asLaneSummary()
       summary.id = namespaced
-      summary.name = "\(summary.name) · \(repo.machineName)"
       // Never the focused project's primary lane.
       if summary.laneType == "primary" { summary.laneType = "worktree" }
       mergedLanes.append(summary)
@@ -223,4 +232,12 @@ func workParseMachineFilter(_ raw: String) -> Set<String> {
 
 func workSerializeMachineFilter(_ ids: Set<String>) -> String {
   ids.sorted().joined(separator: "\n")
+}
+
+/// The roster row of a chat that lives on another machine's checkout.
+func workRemoteMachineRosterChat(sessionId: String, in repos: [WorkRemoteMachineRepo]) -> RemoteRosterChat? {
+  for repo in repos {
+    if let chat = repo.chats.first(where: { $0.id == sessionId }) { return chat }
+  }
+  return nil
 }

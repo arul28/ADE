@@ -4,7 +4,11 @@ import type { TerminalSessionSummary } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { COLORS, laneRailTint } from "../lanes/laneDesignTokens";
 import { relativeTimeCompact } from "../../lib/format";
-import { WORK_BOARD_COLUMN_LABEL, type WorkBoardColumn } from "../../../shared/types/chat";
+import {
+  WORK_BOARD_COLUMN_LABEL,
+  WORK_BOARD_WAITING_REASON_LABEL,
+  type WorkBoardColumn,
+} from "../../../shared/types/chat";
 import type { WorkBoardWaitingReason } from "./useWorkSessions";
 import { sessionActivityInstant } from "../../lib/sessions";
 
@@ -85,10 +89,10 @@ export const WORK_BOARD_COLUMNS: readonly BoardColumnSpec[] = [
   {
     key: "waiting",
     label: WORK_BOARD_COLUMN_LABEL.waiting,
-    emptyHint: "Nothing is snoozed or waiting on CI.",
+    emptyHint: "Nothing is snoozed, scheduled or waiting on CI.",
     accent: COLORS.textMuted,
     droppable: false,
-    hint: "Snoozed, or waiting on CI or review",
+    hint: "Snoozed, waiting on a scheduled wake or a subagent, or on CI or review",
   },
   {
     key: "done",
@@ -102,12 +106,6 @@ export const WORK_BOARD_COLUMNS: readonly BoardColumnSpec[] = [
     hint: "Finished, idle, or settled",
   },
 ] as const;
-
-const WAITING_REASON_LABEL: Record<WorkBoardWaitingReason, string> = {
-  snoozed: "Snoozed",
-  ci: "CI running",
-  review: "Review requested",
-};
 
 export type WorkKanbanBoardProps = {
   buckets: Record<WorkBoardColumn, TerminalSessionSummary[]>;
@@ -450,10 +448,12 @@ function BoardCard({
           >
             {waitingReason === "snoozed" ? (
               <Moon size={9} weight="fill" aria-hidden />
+            ) : waitingReason === "scheduled" || waitingReason === "subagent" ? (
+              <Clock size={9} aria-hidden />
             ) : (
               <GitPullRequest size={9} aria-hidden />
             )}
-            <span className="truncate">{WAITING_REASON_LABEL[waitingReason]}</span>
+            <span className="truncate">{WORK_BOARD_WAITING_REASON_LABEL[waitingReason]}</span>
           </span>
         ) : null}
         {activityLabel ? (

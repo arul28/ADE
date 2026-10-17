@@ -74,6 +74,33 @@ describe("chat history ordering", () => {
     expect(merged[1]).toBe(result);
   });
 
+  it("keeps resends and replays deduped across several live merges of one thread", () => {
+    const call = (itemId: string, timestamp: string, args: Record<string, unknown>) => toolEnvelope(timestamp, {
+      type: "tool_call", tool: "bash", args, itemId, logicalItemId: itemId, turnId: "turn-1",
+    });
+    const first = call("call-1", "2026-07-29T10:00:00.000Z", {});
+    const text = envelope("2026-07-29T10:00:01.000Z", "working");
+
+    // A call and its own resend arrive in one batch: one row, the later payload.
+    const second = call("call-2", "2026-07-29T10:00:02.000Z", {});
+    const secondResent = call("call-2", "2026-07-29T10:00:03.000Z", { command: "npm test" });
+    const once = mergeAgentChatLiveEvents([first, text], [second, secondResent]);
+    expect(once).toHaveLength(3);
+    expect(once[2]).toMatchObject({ timestamp: second.timestamp, event: { itemId: "call-2", args: { command: "npm test" } } });
+
+    // A later batch resends the oldest call of the merged list.
+    const twice = mergeAgentChatLiveEvents(once, [call("call-1", "2026-07-29T10:00:04.000Z", { command: "ls" })]);
+    expect(twice).toHaveLength(3);
+    expect(twice[0]).toMatchObject({ timestamp: first.timestamp, event: { itemId: "call-1", args: { command: "ls" } } });
+    expect(twice[1]).toBe(text);
+    expect(twice[2]).toBe(once[2]);
+
+    // A replay of rows the list already holds changes nothing.
+    expect(mergeAgentChatLiveEvents(twice, [text, twice[0]!, twice[2]!])).toBe(twice);
+    const tail = envelope("2026-07-29T10:00:05.000Z", "done");
+    expect(mergeAgentChatLiveEvents(twice, [text, tail])).toEqual([...twice, tail]);
+  });
+
   it("drops a preexisting tool result omitted by the authoritative snapshot", () => {
     const call = toolEnvelope("2026-07-29T10:00:00.000Z", {
       type: "tool_call", tool: "bash", args: {}, itemId: "call-2", logicalItemId: "logical-2", turnId: "turn-2",
@@ -189,6 +216,33 @@ describe("chat history ordering", () => {
       timestamp: call.timestamp,
       event: { type: "tool_call", args: { command: "npm test" } },
     });
+  });
+
+  it("hands back the held list when a snapshot with a resent tool call changed nothing", () => {
+    const say = envelope("2026-07-29T09:59:59.000Z", "running the tests");
+    const call = toolEnvelope("2026-07-29T10:00:00.000Z", {
+      type: "tool_call", tool: "bash", args: {}, itemId: "call-first", logicalItemId: "logical-first", turnId: "turn-first",
+    });
+    const resend = toolEnvelope("2026-07-29T10:00:01.000Z", {
+      type: "tool_call", tool: "bash", args: { command: "npm test" }, itemId: "call-first",
+      logicalItemId: "logical-first", turnId: "turn-first",
+    });
+    const done = envelope("2026-07-29T10:00:02.000Z", "all green");
+    // A history read parses fresh objects every time.
+    const read = () => structuredClone([say, call, resend, done]);
+
+    const held = mergeAgentChatHistorySnapshot(read(), []);
+    expect(held).toHaveLength(3);
+
+    // The pane renders again for a new list, so an unchanged read must be the same one.
+    expect(mergeAgentChatHistorySnapshot(read(), held)).toBe(held);
+
+    const later = envelope("2026-07-29T10:00:03.000Z", "one more line");
+    const grown = mergeAgentChatHistorySnapshot([...read(), later], held);
+    expect(grown).not.toBe(held);
+    expect(grown.slice(0, 3)).toEqual(held);
+    expect(grown.slice(0, 3).every((entry, index) => entry === held[index])).toBe(true);
+    expect(grown[3]).toEqual(later);
   });
 
   it("inserts a delayed old envelope before the completed tail", () => {

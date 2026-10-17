@@ -1,5 +1,5 @@
 import type { OpenProjectBinding } from "../../shared/types";
-import { pinKey } from "../state/projectMachines";
+import { pinKey } from "../state/pinKey";
 
 /**
  * A clicked `localhost` link waiting for the Browser pane to mount.

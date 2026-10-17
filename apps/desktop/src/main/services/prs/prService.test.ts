@@ -49,11 +49,13 @@ vi.mock("../shared/remoteTrackingBranch", () => ({
 import { missingFeatureModelMessage } from "../ai/aiIntegrationService";
 import { buildIntegrationPreflight } from "./integrationPlanning";
 import { githubReadFailureBackoffMs } from "./githubReadBackoff";
+import { fetchRemoteTrackingBranch } from "../shared/remoteTrackingBranch";
 import {
   createPrService,
   GITHUB_SNAPSHOT_TTL_MS as GITHUB_SNAPSHOT_TTL_MS_FOR_TEST,
 } from "./prService";
 import { parseSyntheticGithubPrId, syntheticGithubPrId } from "../../../shared/types/prs";
+import { parsePrBrief, prBriefHints } from "../../../shared/prBrief";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -284,6 +286,7 @@ function makeLaneService(lanes?: unknown[]) {
   return {
     list: vi.fn(async () => lanes ?? [makeFakeLane()]),
     getLaneBaseAndBranch: vi.fn(),
+    updateBranchRef: vi.fn(),
     delete: vi.fn(async () => undefined),
   } as any;
 }
@@ -310,8 +313,12 @@ function makeProjectConfigService() {
 interface BuildServiceOpts {
   githubService?: any;
   laneService?: any;
+  laneWorktreeLockService?: any;
   db?: any;
   conflictService?: any;
+  rebaseSuggestionService?: any;
+  autoRebaseService?: any;
+  refreshDefaultBranchAfterMerge?: (baseBranch: string) => Promise<void>;
   projectConfigService?: any;
   aiIntegrationService?: any;
   onHotRefreshChanged?: () => void;
@@ -324,6 +331,11 @@ interface BuildServiceOpts {
    * against.
    */
   remoteTrackingRefs?: string[] | "unavailable";
+  /**
+   * The branch a lane's worktree reports from `git rev-parse --abbrev-ref
+   * HEAD`. Default: the branch ADE's lane record names.
+   */
+  checkedOutBranch?: string;
 }
 
 function buildService(opts: BuildServiceOpts = {}) {
@@ -332,8 +344,13 @@ function buildService(opts: BuildServiceOpts = {}) {
   const laneService = opts.laneService ?? makeLaneService();
   const logger = makeLogger();
 
-  mockGit.runGit.mockImplementation(async (args: unknown[]) => {
+  mockGit.runGit.mockImplementation(async (args: unknown[], options?: { cwd?: string }) => {
     const command = Array.isArray(args) ? args[0] : null;
+    if (command === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "HEAD") {
+      const lanes: Array<{ worktreePath?: string; branchRef?: string }> = await laneService.list();
+      const recorded = lanes.find((lane) => lane.worktreePath === options?.cwd)?.branchRef ?? "";
+      return { exitCode: 0, stdout: `${opts.checkedOutBranch ?? recorded.replace(/^refs\/heads\//, "")}\n`, stderr: "" };
+    }
     if (command === "rev-list") {
       return { exitCode: 0, stdout: "0\t1\n", stderr: "" };
     }
@@ -373,6 +390,10 @@ function buildService(opts: BuildServiceOpts = {}) {
     githubService,
     conflictService: opts.conflictService,
     projectConfigService: opts.projectConfigService ?? makeProjectConfigService(),
+    laneWorktreeLockService: opts.laneWorktreeLockService,
+    rebaseSuggestionService: opts.rebaseSuggestionService,
+    autoRebaseService: opts.autoRebaseService,
+    refreshDefaultBranchAfterMerge: opts.refreshDefaultBranchAfterMerge,
     ...(opts.aiIntegrationService ? { aiIntegrationService: opts.aiIntegrationService } : {}),
     onHotRefreshChanged: opts.onHotRefreshChanged,
     openExternal: vi.fn(async () => {}),
@@ -703,6 +724,33 @@ describe("prService.getForLane", () => {
     ]);
 
     expect(service.getForLane(lane.id)).toBeNull();
+  });
+
+  it("hands no history row to the bridge for a primary lane back on its base branch", () => {
+    // The lane cannot be deleted, so the single-value bridge must not answer
+    // with the newest previous-branch row either — that is what pinned an old
+    // merged PR to `main` on lane links, Linear cards and proof owners.
+    const lane = makeFakeLane({
+      laneType: "primary",
+      branchRef: "main",
+      baseRef: "main",
+    });
+    const service = buildGetForLaneService(lane, [
+      makePrRow({
+        lane_id: lane.id,
+        state: "merged",
+        head_branch: "fix/update-recovery",
+      }),
+    ]);
+
+    expect(service.getForLane(lane.id)).toBeNull();
+
+    // The same lane checked out on the PR's branch still answers with it.
+    const working = buildGetForLaneService(
+      makeFakeLane({ id: lane.id, laneType: "primary", branchRef: "fix/update-recovery", baseRef: "main" }),
+      [makePrRow({ lane_id: lane.id, state: "merged", head_branch: "fix/update-recovery" })],
+    );
+    expect(working.getForLane(lane.id)?.githubPrNumber).toBe(90);
   });
 
   it("returns a stale PR row as lane history when the lane moved on", () => {
@@ -2701,6 +2749,23 @@ describe("prService.ingestGithubWebhook", () => {
       reason: "processed",
     }));
     expect(db.run).not.toHaveBeenCalled();
+  });
+
+  it("prunes webhook deliveries at most once across a delivery burst", async () => {
+    const db = makeMockDb();
+    const { service } = buildService({ db });
+    const pruneStatements = () => db.run.mock.calls.filter(
+      ([sql]: unknown[]) => String(sql).includes("delete from github_webhook_deliveries"),
+    ).length;
+
+    for (let index = 0; index < 50; index += 1) {
+      await service.ingestGithubWebhook({
+        eventName: "ping",
+        deliveryId: `burst-${index}`,
+        payload: { zen: "keep it logically awesome" },
+      });
+    }
+    expect(pruneStatements()).toBeLessThanOrEqual(2);
   });
 
   it("allows errored GitHub webhook deliveries to retry with the same delivery id", async () => {
@@ -6187,11 +6252,83 @@ describe("prService.land", () => {
     vi.clearAllMocks();
   });
 
+  it("refreshes rebase suggestions through the post-merge cleanup service", async () => {
+    vi.mocked(fetchRemoteTrackingBranch).mockResolvedValue(false);
+    const row = makePrRow({ id: "pr-refresh-suggestions" });
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [row]);
+    const scanRebaseNeeds = vi.fn(async () => []);
+    const refresh = vi.fn(async () => {});
+    const conflictService = { scanRebaseNeeds } as any;
+    const rebaseSuggestionService = { refresh } as any;
+    const laneService = makeLaneService([]);
+    const { service } = buildService({ db, conflictService, rebaseSuggestionService, laneService });
+
+    await service.runPostMergeCleanup({ prId: row.id });
+
+    expect(scanRebaseNeeds).toHaveBeenCalledTimes(1);
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("continues post-merge cleanup when the default-branch refresh rejects", async () => {
+    vi.mocked(fetchRemoteTrackingBranch).mockResolvedValue(false);
+    const row = makePrRow({ id: "pr-refresh-rejects" });
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [row]);
+    const refreshDefaultBranchAfterMerge = vi.fn(async () => { throw new Error("refresh failed"); });
+    const archive = vi.fn(async () => {});
+    const laneService = { ...makeLaneService([]), archive } as any;
+    const { service } = buildService({ db, laneService, refreshDefaultBranchAfterMerge });
+
+    await expect(service.runPostMergeCleanup({ prId: row.id, archiveLane: true })).resolves.toMatchObject({
+      laneArchived: true,
+    });
+
+    expect(refreshDefaultBranchAfterMerge).toHaveBeenCalledWith("main");
+    expect(archive).toHaveBeenCalledWith({ laneId: row.lane_id });
+  });
+
+  it("uses the live GitHub base when refreshing after a mapped PR lands", async () => {
+    vi.mocked(fetchRemoteTrackingBranch).mockResolvedValue(false);
+    const row = makePrRow({ id: "pr-retargeted-base", base_branch: "stack-parent" });
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [row]);
+    const refreshDefaultBranchAfterMerge = vi.fn(async () => {});
+    const githubService = makeGithubService({
+      apiRequest: vi.fn(async (request: { method: string; path: string }) => {
+        if (request.method === "GET" && request.path.endsWith("/pulls/90")) {
+          return { data: makeGitHubPull({ number: 90, base: { ref: "main" }, mergeable: true, mergeable_state: "clean" }) };
+        }
+        if (request.method === "PUT" && request.path.endsWith("/pulls/90/merge")) {
+          return { data: { sha: "merge-sha" } };
+        }
+        return { data: {} };
+      }),
+    });
+    const { service } = buildService({ db, githubService, refreshDefaultBranchAfterMerge });
+
+    await expect(service.land({ prId: row.id, method: "squash" })).resolves.toMatchObject({ success: true });
+
+    expect(refreshDefaultBranchAfterMerge).toHaveBeenCalledWith("main");
+  });
+
   /**
    * A stacked PR (#91, position 2 over open #90 in Stack #19) merges through
    * the async merge API. `replies` scripts the PUT, then each poll in order.
    */
-  const buildStackLand = (replies: Array<{ status?: number; body: unknown }>) => {
+  const buildStackLand = (
+    replies: Array<{ status?: number; body: unknown }>,
+    opts: {
+      headSha?: string;
+      compare?: unknown;
+      baseBranches?: Record<number, string>;
+      layered?: boolean;
+      restackedContentChanged?: boolean;
+      mergedOnRefusal?: boolean;
+      lowerLayerMoved?: boolean;
+      refreshDefaultBranchAfterMerge?: (baseBranch: string) => Promise<void>;
+    } = {},
+  ) => {
     const row = makePrRow({ id: "pr-stacked", github_pr_number: 91 });
     const db = makeMockDb();
     installPullRequestRowStore(db, [row]);
@@ -6200,11 +6337,13 @@ describe("prService.land", () => {
       if (String(sql).includes("from github_pr_stack_entries")) return { github_stack_number: 19 };
       return getPullRequestRow?.(sql, params) ?? null;
     });
+    let bottomLayerMerged = false;
+    let refusedLayerMergedElsewhere: number | null = null;
     const stackPayload = {
       id: 1019, number: 19, node_id: "PRS_19", base: { ref: "main" }, open: true, created_at: "2026-10-01T00:00:00Z",
       pull_requests: [
         { number: 89, state: "closed", draft: false, merged_at: "2026-09-30T00:00:00Z", head: { ref: "s-0", sha: "s0" } },
-        { number: 90, state: "open", draft: false, merged_at: null, head: { ref: "s-1", sha: "s1" } },
+        { number: 90, state: "open", draft: false, merged_at: null, head: { ref: "s-1", sha: opts.lowerLayerMoved ? "s1-pushed" : "s1" } },
         { number: 91, state: "open", draft: false, merged_at: null, head: { ref: "s-2", sha: "s2" } },
         { number: 92, state: "open", draft: false, merged_at: null, head: { ref: "s-3", sha: "s3" } },
       ],
@@ -6213,24 +6352,71 @@ describe("prService.land", () => {
     const asyncCalls: Array<{ method: string; path: string; body?: any }> = [];
     const githubService = makeGithubService({
       apiRequest: vi.fn(async (args: { method: string; path: string; body?: unknown }) => {
-        if (args.path === `/repos/${REPO.owner}/${REPO.name}/stacks/19`) return { data: stackPayload };
+        if (args.path === `/repos/${REPO.owner}/${REPO.name}/stacks/19`) {
+          if (opts.layered && bottomLayerMerged) {
+            stackPayload.pull_requests[1] = {
+              ...stackPayload.pull_requests[1]!,
+              state: "closed",
+              merged_at: "2026-10-08T00:00:00Z",
+            };
+            stackPayload.pull_requests[2] = {
+              ...stackPayload.pull_requests[2]!,
+              head: { ref: "s-2", sha: "restacked-s2" },
+            };
+          }
+          return { data: stackPayload };
+        }
         if (args.path.includes("/merge-async")) {
           asyncCalls.push(args as any);
           const reply = queue.length > 1 ? queue.shift()! : queue[0]!;
           if (reply.status && reply.status >= 400) {
+            const pullNumber = Number(args.path.match(/\/pulls\/(\d+)\//)?.[1]);
+            if (opts.mergedOnRefusal) refusedLayerMergedElsewhere = pullNumber;
             throw Object.assign(new Error((reply.body as any)?.details?.message ?? "failed"), {
               status: reply.status,
               responseBody: reply.body,
             });
           }
+          if (opts.layered && args.method === "PUT" && args.path.endsWith("/pulls/90/merge-async")) {
+            bottomLayerMerged = true;
+          }
           return { data: reply.body };
         }
-        if (args.method === "GET" && /\/pulls\/\d+$/.test(args.path)) return { data: { state: "open", merged_at: null } };
+        if (args.method === "GET" && /\/pulls\/\d+$/.test(args.path)) {
+          const pullNumber = Number(args.path.split("/").pop());
+          return {
+            data: {
+              state: "open",
+              merged_at: pullNumber === refusedLayerMergedElsewhere ? "2026-10-01T00:00:00Z" : null,
+              base: { ref: opts.baseBranches?.[pullNumber] ?? "main" },
+              ...(opts.layered && bottomLayerMerged && pullNumber === 91
+                ? { head: { sha: "restacked-s2" } }
+                : opts.headSha ? { head: { sha: opts.headSha } } : {}),
+            },
+          };
+        }
+        if (args.method === "GET" && args.path.includes("/compare/")) {
+          if (opts.layered && args.path.endsWith("/compare/s1-pushed...s2")) {
+            return { data: { status: "diverged", total_commits: 1, commits: [{ commit: { message: "second layer" } }], files: [{ filename: "second.ts", status: "modified", sha: "content-a" }] } };
+          }
+          if (opts.layered && args.path.endsWith("/compare/s1...s2")) {
+            return { data: { status: "ahead", total_commits: 1, commits: [{ commit: { message: "second layer" } }], files: [{ filename: "second.ts", status: "modified", sha: "content-a" }] } };
+          }
+          if (opts.layered && args.path.endsWith("/compare/main...restacked-s2")) {
+            return { data: { total_commits: 1, commits: [{ commit: { message: "second layer" } }], files: [{ filename: "second.ts", status: "modified", sha: opts.restackedContentChanged ? "content-b" : "content-a" }] } };
+          }
+          if (opts.compare) return { data: opts.compare };
+        }
         return { data: {} };
       }),
     });
     const operationService = makeOperationService();
-    const { service } = buildService({ db, githubService, operationService });
+    const { service } = buildService({
+      db,
+      githubService,
+      operationService,
+      refreshDefaultBranchAfterMerge: opts.refreshDefaultBranchAfterMerge,
+    });
     return { service, asyncCalls, operationService };
   };
 
@@ -6265,15 +6451,29 @@ describe("prService.land", () => {
       puts: 1,
     },
     {
+      // Its own options, and no result commit yet: still this merge.
+      name: "already running (409) with matching options follows it",
+      replies: [{
+        status: 409,
+        body: { status: "pending", details: { message: "A merge request already exists for this pull request.", uuid: "u-running", sha: null, merge_method: "rebase", expected_head_sha: "s2" } },
+      }, { body: merged }],
+      expected: { success: true, mergeStatus: "merged", mergeCommitSha: "merge-sha", error: null },
+      puts: 1,
+    },
+    {
       name: "a rule fails during the merge",
       replies: [{ status: 202, body: pending() }, { body: { status: "failed", details: { message: "Required status check \"ci\" is expected." } } }],
-      expected: { success: false, mergeCommitSha: null, error: "Required status check \"ci\" is expected." },
+      expected: {
+        success: false,
+        mergeCommitSha: null,
+        error: "Required status check \"ci\" is expected. To override, merge again with \"Bypass branch rules\" (needs bypass permission).",
+      },
       puts: 1,
     },
     {
       name: "the head moved since the card opened",
       replies: [{ status: 400, body: { status: "failed", details: { message: "Pull request head branch was modified." } } }],
-      expected: { success: false, error: "PR head changed since you opened the merge dialog — refresh and retry." },
+      expected: { success: false, mergeCommitSha: null },
       puts: 1,
     },
     {
@@ -6299,6 +6499,143 @@ describe("prService.land", () => {
     if (replies[0]!.status === 409) {
       expect(asyncCalls.some((call) => call.method === "GET" && call.path.endsWith("/merge-async/u-running"))).toBe(true);
     }
+  });
+
+  it("bypass-merges each covered layer bottom-up with its guarded head SHA", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { service, asyncCalls } = buildStackLand([{ body: merged }, { body: merged }], { layered: true });
+
+    const result = await landWithTimers(() => service.land({ prId: "pr-stacked", method: "squash", bypassRules: true }));
+
+    expect(result).toMatchObject({ success: true, mergeStatus: "merged", stackPrNumbers: [90, 91] });
+    expect(asyncCalls.filter((call) => call.method === "PUT")).toEqual([
+      expect.objectContaining({
+        path: `/repos/${REPO.owner}/${REPO.name}/pulls/90/merge-async`,
+        body: expect.objectContaining({ merge_method: "squash", merge_action: "default", bypass_rules: true, sha: "s1" }),
+      }),
+      expect.objectContaining({
+        path: `/repos/${REPO.owner}/${REPO.name}/pulls/91/merge-async`,
+        body: expect.objectContaining({ merge_method: "squash", merge_action: "default", bypass_rules: true, sha: "restacked-s2" }),
+      }),
+    ]);
+  });
+
+  it.each([
+    { name: "a lower layer inside the confirmed head merges", lowerLayerMoved: false, puts: 2, success: true },
+    { name: "a lower layer pushed to after the confirm stops the run", lowerLayerMoved: true, puts: 0, success: false },
+  ])("binds a layered bypass to the confirmed top head: $name", async ({ lowerLayerMoved, puts, success }) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { service, asyncCalls } = buildStackLand([{ body: merged }, { body: merged }], { layered: true, lowerLayerMoved, headSha: "s2" });
+
+    const result = await landWithTimers(() => service.land({
+      prId: "pr-stacked",
+      method: "squash",
+      bypassRules: true,
+      expectedHeadSha: "s2",
+    }));
+
+    expect(result.success).toBe(success);
+    expect(asyncCalls.filter((call) => call.method === "PUT")).toHaveLength(puts);
+    if (!success) expect(result.error).toMatch(/#90 has commits that #91/);
+  });
+
+  it.each([
+    { name: "another merge method", options: { merge_method: "squash", expected_head_sha: "s2" } },
+    { name: "another head", options: { merge_method: "rebase", expected_head_sha: "other-head" } },
+  ])("does not adopt a running merge of $name", async ({ options }) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const { service, asyncCalls } = buildStackLand([
+      {
+        status: 409,
+        body: { status: "pending", details: { message: "A merge request already exists.", uuid: "u-different", ...options } },
+      },
+    ]);
+
+    const result = await landWithTimers(() => service.land({ prId: "pr-stacked", method: "rebase", expectedHeadSha: "s2" }));
+
+    expect(result.error).toMatch(/another merge of #91 with different options is already running on GitHub/i);
+    expect(asyncCalls.some((call) => call.method === "GET" && call.path.endsWith("/merge-async/u-different"))).toBe(false);
+  });
+
+  it("leaves a layered operation open when a layer stays pending through the background wait", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const refreshDefaultBranchAfterMerge = vi.fn(async () => {});
+    const { service, asyncCalls, operationService } = buildStackLand([
+      { body: merged },
+      { status: 202, body: pending("u-layer-pending") },
+    ], { layered: true, refreshDefaultBranchAfterMerge });
+
+    const result = await landWithTimers(() => service.land({ prId: "pr-stacked", method: "squash", bypassRules: true }));
+    // Past the 15-minute background wait.
+    await vi.advanceTimersByTimeAsync(16 * 60_000);
+
+    expect(result).toMatchObject({ success: false, mergeStatus: "pending", stackPrNumbers: [90, 91] });
+    expect(asyncCalls.filter((call) => call.method === "PUT").map((call) => call.path)).toEqual([
+      `/repos/${REPO.owner}/${REPO.name}/pulls/90/merge-async`,
+      `/repos/${REPO.owner}/${REPO.name}/pulls/91/merge-async`,
+    ]);
+    expect(operationService.finish).not.toHaveBeenCalled();
+    expect(refreshDefaultBranchAfterMerge).toHaveBeenCalledWith("main");
+  });
+
+  it("stops before the higher layer when its restacked changes differ", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { service, asyncCalls } = buildStackLand([{ body: merged }], { layered: true, restackedContentChanged: true });
+
+    const result = await landWithTimers(() => service.land({ prId: "pr-stacked", method: "squash", bypassRules: true }));
+
+    expect(result).toMatchObject({ success: false, stackPrNumbers: [90, 91] });
+    expect(result.error).toMatch(/Merged #90\. #91 did not merge:.*changes moved/);
+    expect(asyncCalls.filter((call) => call.method === "PUT").map((call) => call.path)).toEqual([
+      `/repos/${REPO.owner}/${REPO.name}/pulls/90/merge-async`,
+    ]);
+  });
+
+  it("counts a layer merged elsewhere after GitHub refuses its merge start", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { service, asyncCalls } = buildStackLand([
+      { body: merged },
+      { status: 422, body: { details: { message: "Pull request cannot be merged" } } },
+    ], { layered: true, mergedOnRefusal: true });
+
+    const result = await landWithTimers(() => service.land({ prId: "pr-stacked", method: "squash", bypassRules: true }));
+
+    expect(result).toMatchObject({ success: true, mergeStatus: "merged", stackPrNumbers: [90, 91] });
+    expect(asyncCalls.filter((call) => call.method === "PUT")).toHaveLength(2);
+  });
+
+  it("does not retry a moved head on the bottom layer", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { service, asyncCalls } = buildStackLand([
+      { status: 400, body: { details: { message: "Pull request head branch was modified." } } },
+    ], { layered: true });
+
+    const result = await landWithTimers(() => service.land({ prId: "pr-stacked", method: "squash", bypassRules: true }));
+    await vi.advanceTimersByTimeAsync(40_000);
+
+    expect(result).toMatchObject({ success: false, stackPrNumbers: [90, 91] });
+    expect(result.error).toMatch(/#90 did not merge: its head changed/);
+    expect(asyncCalls.filter((call) => call.method === "PUT")).toHaveLength(1);
+    expect(asyncCalls.find((call) => call.method === "PUT")?.path).toMatch(/\/pulls\/90\/merge-async$/);
+  });
+
+  it("does not retry a branch-rules refusal on a layer", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { service, asyncCalls } = buildStackLand([
+      { body: merged },
+      { status: 403, body: { details: { message: "Required status check is expected." } } },
+    ], { layered: true });
+
+    const result = await landWithTimers(() => service.land({ prId: "pr-stacked", method: "squash", bypassRules: true }));
+    await vi.advanceTimersByTimeAsync(40_000);
+
+    expect(result).toMatchObject({ success: false, stackPrNumbers: [90, 91] });
+    expect(result.error).toMatch(/Merged #90\. #91 did not merge: Required status check is expected\./);
+    expect(asyncCalls.filter((call) => call.method === "PUT")).toHaveLength(2);
+    expect(asyncCalls.filter((call) => call.method === "PUT").map((call) => call.path)).toEqual([
+      `/repos/${REPO.owner}/${REPO.name}/pulls/90/merge-async`,
+      `/repos/${REPO.owner}/${REPO.name}/pulls/91/merge-async`,
+    ]);
   });
 
   it("answers 'still merging' after the wait, then finishes the merge in the background", async () => {
@@ -6342,6 +6679,25 @@ describe("prService.land", () => {
     expect(operationService.finish).not.toHaveBeenCalled();
   });
 
+  it("routes each live stack base through the brain's default-branch gate after the stack lands", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const refreshDefaultBranchAfterMerge = vi.fn(async () => {});
+    const { service } = buildStackLand(
+      [{ status: 202, body: pending() }, { body: merged }],
+      {
+        baseBranches: { 90: "main", 91: "stack-parent" },
+        refreshDefaultBranchAfterMerge,
+      },
+    );
+
+    const result = await landWithTimers(() => service.land({ prId: "pr-stacked", method: "squash" }));
+
+    expect(result).toMatchObject({ success: true, mergeStatus: "merged" });
+    expect(refreshDefaultBranchAfterMerge).toHaveBeenCalledTimes(2);
+    expect(refreshDefaultBranchAfterMerge).toHaveBeenCalledWith("main");
+    expect(refreshDefaultBranchAfterMerge).toHaveBeenCalledWith("stack-parent");
+  });
+
   it("refuses auto-merge for a stacked PR", async () => {
     const { service } = buildStackLand([{ body: merged }]);
     await expect(service.setAutoMerge({ prId: "pr-stacked", enabled: true, method: "squash" }))
@@ -6375,6 +6731,102 @@ describe("prService.land", () => {
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/draft/i);
     expect(githubService.apiRequest).not.toHaveBeenCalledWith(expect.objectContaining({ method: "PUT" }));
+  });
+
+  describe("when the PR head moved past the SHA the user saw", () => {
+    const compare = {
+      status: "ahead",
+      ahead_by: 2,
+      commits: [
+        { sha: "new-1", commit: { message: "first new\n\nbody", committer: { date: "2026-10-05T18:20:00Z" } }, author: { login: "alice" } },
+        { sha: "new-2", commit: { message: "second new", committer: { date: "2026-10-05T18:20:30Z" } }, author: { login: "bob" } },
+      ],
+    };
+
+    /**
+     * A single PR (#97). `heads` scripts what each fresh read of the PR says
+     * its head is; `putError` makes GitHub refuse the merge call.
+     */
+    const buildSingleLand = (heads: string[], putError?: string) => {
+      const row = makePrRow({ id: "pr-moved", github_pr_number: 97 });
+      const db = makeMockDb();
+      installPullRequestRowStore(db, [row]);
+      const queue = [...heads];
+      const githubService = makeGithubService({
+        apiRequest: vi.fn(async (args: { method: string; path: string }) => {
+          if (args.method === "GET" && args.path.endsWith("/pulls/97")) {
+            const sha = queue.length > 1 ? queue.shift()! : queue[0]!;
+            return { data: makeGitHubPull({ number: 97, mergeable: true, mergeable_state: "clean", head: { ref: "feature", sha } }) };
+          }
+          if (args.method === "GET" && args.path.includes("/compare/old-head...new-2")) return { data: compare };
+          if (args.method === "PUT" && args.path.endsWith("/pulls/97/merge")) {
+            if (putError) throw Object.assign(new Error(putError), { status: 409 });
+            return { data: { sha: "merge-sha" } };
+          }
+          return { data: {} };
+        }),
+      });
+      const operationService = makeOperationService();
+      const { service } = buildService({ db, githubService, operationService });
+      return { service, githubService, operationService };
+    };
+
+    const putCalls = (githubService: { apiRequest: ReturnType<typeof vi.fn> }) =>
+      githubService.apiRequest.mock.calls.filter(([args]: any[]) => args.method === "PUT");
+
+    it.each([
+      { name: "before the merge call", heads: ["new-2"], putError: undefined, puts: 0 },
+      {
+        name: "between the check and the merge call",
+        heads: ["old-head", "new-2"],
+        putError: "Head branch was modified. Review and try the merge again.",
+        puts: 1,
+      },
+    ])("single PR, moved $name: nothing merges and the result lists what landed", async ({ heads, putError, puts }) => {
+      const { service, githubService, operationService } = buildSingleLand(heads, putError);
+
+      const result = await service.land({ prId: "pr-moved", method: "squash", bypassRules: true, expectedHeadSha: "old-head" });
+
+      expect(result).toMatchObject({ success: false, mergeCommitSha: null });
+      expect(result.headChanged).toEqual({
+        expectedHeadSha: "old-head",
+        currentHeadSha: "new-2",
+        history: "appended",
+        totalNewCommits: 2,
+        newCommits: [
+          { sha: "new-1", title: "first new", author: "alice", committedAt: "2026-10-05T18:20:00Z" },
+          { sha: "new-2", title: "second new", author: "bob", committedAt: "2026-10-05T18:20:30Z" },
+        ],
+      });
+      expect(putCalls(githubService)).toHaveLength(puts);
+      expect(operationService.finish).toHaveBeenCalledWith(expect.objectContaining({ status: "failed" }));
+      expect(operationService.finish).not.toHaveBeenCalledWith(expect.objectContaining({ status: "succeeded" }));
+    });
+
+    it("merges when the SHA the user saw is still the head", async () => {
+      const { service, githubService } = buildSingleLand(["old-head"]);
+
+      const result = await service.land({ prId: "pr-moved", method: "squash", expectedHeadSha: "old-head" });
+
+      expect(result).toMatchObject({ success: true, mergeCommitSha: "merge-sha" });
+      expect(result.headChanged).toBeUndefined();
+      expect(putCalls(githubService)).toHaveLength(1);
+      expect(putCalls(githubService)[0]![0]).toEqual(expect.objectContaining({ body: expect.objectContaining({ sha: "old-head" }) }));
+    });
+
+    it("a stacked PR whose head moved starts no stack merge and reports a force-push", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const { service, asyncCalls } = buildStackLand([{ status: 202, body: pending() }], {
+        headSha: "s2-rebased",
+        compare: { status: "diverged", ahead_by: 1, commits: [{ sha: "s2-rebased", commit: { message: "rebased" } }] },
+      });
+
+      const result = await landWithTimers(() => service.land({ prId: "pr-stacked", method: "rebase", expectedHeadSha: "s2" }));
+
+      expect(result).toMatchObject({ success: false, stackPrNumbers: [90, 91] });
+      expect(result.headChanged).toMatchObject({ expectedHeadSha: "s2", currentHeadSha: "s2-rebased", history: "rewritten", totalNewCommits: 1 });
+      expect(asyncCalls.filter((call) => call.method === "PUT")).toHaveLength(0);
+    });
   });
 
   it("short-circuits dirty mergeability before calling GitHub merge", async () => {
@@ -6554,6 +7006,16 @@ describe("prService.land", () => {
   });
 });
 
+/**
+ * The parts of a draft nobody has written yet, as the PR view reads them. The
+ * author is told each one is still a placeholder, so an empty draft cannot be
+ * opened as a finished description without a note.
+ */
+function emptyDraftParts(body: string): string[] {
+  expect(prBriefHints(body).map((hint) => hint.code)).toEqual(["placeholder"]);
+  return (parsePrBrief(body)?.parts ?? []).map((part) => part.kind);
+}
+
 describe("prService.draftDescription", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -6602,7 +7064,7 @@ describe("prService.draftDescription", () => {
     const draft = await (service as any).draftDescription({ laneId: LANE_ID });
 
     expect(aiIntegrationService.draftPrDescription).not.toHaveBeenCalled();
-    expect(draft.body).toContain("## Summary");
+    expect(emptyDraftParts(draft.body)).toEqual(["why", "changed", "evidence", "not_checked"]);
   });
 
   it("treats an empty (non-throwing) model response as a failure when requireAi is set", async () => {
@@ -6647,7 +7109,7 @@ describe("prService.draftDescription", () => {
     const draft = await (service as any).draftDescription({ laneId: LANE_ID });
 
     expect(aiIntegrationService.draftPrDescription).not.toHaveBeenCalled();
-    expect(draft.body).toContain("## Summary");
+    expect(emptyDraftParts(draft.body)).toEqual(["why", "changed", "evidence", "not_checked"]);
   });
 
   it("uses the configured PR Descriptions model when the caller omits model", async () => {
@@ -6734,6 +7196,35 @@ describe("prService.createFromLane", () => {
       }),
     ).rejects.toThrow(
       'Failed to create pull request for "my-feature" \u2192 "main": Validation Failed: A pull request already exists',
+    );
+  });
+
+  it("opens the PR for the branch the worktree is on when the lane record is stale", async () => {
+    // `git switch -c` inside the worktree; ADE's record still names my-feature.
+    const ghService = makeGithubService({
+      apiRequest: vi.fn().mockRejectedValue(new Error("stop after the request")),
+    });
+    const laneService = makeLaneService();
+    const { service } = buildService({ githubService: ghService, laneService, checkedOutBranch: "my-feature-v2" });
+
+    await expect(
+      service.createFromLane({
+        laneId: LANE_ID,
+        title: "My PR",
+        body: "",
+        draft: false,
+        allowDirtyWorktree: true,
+      }),
+    ).rejects.toThrow('"my-feature-v2" \u2192 "main"');
+
+    const createRequest = ghService.apiRequest.mock.calls.find(([request]: any[]) => request?.method === "POST")?.[0];
+    expect(createRequest?.body).toMatchObject({ head: "my-feature-v2", base: "main" });
+    expect(laneService.updateBranchRef).toHaveBeenCalledWith(LANE_ID, "my-feature-v2");
+    // Its upstream still names my-feature, so the new branch is pushed by name.
+    expect(mockGit.runGit).toHaveBeenCalledWith(["push", "-u", "origin", "my-feature-v2"], expect.anything());
+    expect(mockGit.runGit).not.toHaveBeenCalledWith(
+      expect.arrayContaining(["my-feature"]),
+      expect.anything(),
     );
   });
 
@@ -7277,6 +7768,7 @@ describe("prService.createFromLane", () => {
       apiRequest: vi.fn().mockRejectedValue(new Error("should not create")),
     });
     mockGit.runGit
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "my-feature\n", stderr: "" })
       .mockResolvedValueOnce({ exitCode: 0, stdout: "origin/my-feature\n", stderr: "" })
       .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" })
       .mockResolvedValueOnce({ exitCode: 0, stdout: "1\t0\n", stderr: "" });
@@ -7295,7 +7787,7 @@ describe("prService.createFromLane", () => {
 
     expect(ghService.apiRequest).not.toHaveBeenCalled();
     expect(mockGit.runGit).toHaveBeenNthCalledWith(
-      2,
+      3,
       ["fetch", "--prune", "origin", "+refs/heads/my-feature:refs/remotes/origin/my-feature"],
       expect.objectContaining({ cwd: "/tmp/lane-wt" }),
     );
@@ -7308,6 +7800,7 @@ describe("prService.createFromLane", () => {
       apiRequest: vi.fn().mockRejectedValue(new Error("should not create")),
     });
     mockGit.runGit
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "my-feature\n", stderr: "" })
       .mockResolvedValueOnce({ exitCode: 0, stdout: "origin/my-feature\n", stderr: "" })
       .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" })
       .mockResolvedValueOnce({ exitCode: 0, stdout: "not-a-count\n", stderr: "" });
@@ -7333,6 +7826,7 @@ describe("prService.createFromLane", () => {
       apiRequest: vi.fn().mockRejectedValue(new Error("should not create")),
     });
     mockGit.runGit
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "my-feature\n", stderr: "" })
       .mockResolvedValueOnce({ exitCode: 0, stdout: "origin/my-feature\n", stderr: "" })
       .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" })
       .mockResolvedValueOnce({ exitCode: 0, stdout: "0\t1\n", stderr: "" })
@@ -7391,7 +7885,10 @@ describe("prService.createFromLane", () => {
     ).rejects.toThrow("Lane not found: nonexistent");
   });
 
-  it("throws before git or GitHub work when the lane has no branch", async () => {
+  it.each([
+    { worktree: "on no branch", checkedOutBranch: undefined },
+    { worktree: "detached", checkedOutBranch: "HEAD" },
+  ])("throws before pushing or GitHub work when the lane has no branch and its worktree is $worktree", async ({ checkedOutBranch }) => {
     const ghService = makeGithubService({
       apiRequest: vi.fn().mockRejectedValue(new Error("should not create")),
       getRepoOrThrow: vi.fn(async () => REPO),
@@ -7401,7 +7898,7 @@ describe("prService.createFromLane", () => {
         branchRef: "",
       }),
     ]);
-    const { service } = buildService({ githubService: ghService, laneService });
+    const { service } = buildService({ githubService: ghService, laneService, checkedOutBranch });
 
     await expect(
       service.createFromLane({
@@ -7413,7 +7910,8 @@ describe("prService.createFromLane", () => {
       }),
     ).rejects.toThrow('Lane "my-feature" has no branch checked out');
 
-    expect(mockGit.runGit).not.toHaveBeenCalled();
+    expect(mockGit.runGit.mock.calls.some(([args]) => Array.isArray(args) && args[0] === "push")).toBe(false);
+    expect(laneService.updateBranchRef).not.toHaveBeenCalled();
     expect(ghService.getRepoOrThrow).not.toHaveBeenCalled();
     expect(ghService.apiRequest).not.toHaveBeenCalled();
   });
@@ -7491,7 +7989,7 @@ describe("prService.createIntegrationLane", () => {
     } as any;
   }
 
-  function buildIntegrationService(opts: { laneService?: any; db?: any } = {}) {
+  function buildIntegrationService(opts: { laneService?: any; db?: any; laneWorktreeLockService?: any } = {}) {
     const db = opts.db ?? makeMockDb();
     const laneService = opts.laneService ?? makeIntegrationLaneService();
 
@@ -7507,6 +8005,7 @@ describe("prService.createIntegrationLane", () => {
       operationService: makeOperationService(),
       githubService: makeGithubService(),
       projectConfigService: makeProjectConfigService(),
+      laneWorktreeLockService: opts.laneWorktreeLockService,
       openExternal: vi.fn(async () => {}),
     });
 
@@ -7655,6 +8154,44 @@ describe("prService.createIntegrationLane", () => {
       (call: unknown[]) => Array.isArray(call[0]) && (call[0] as string[])[0] === "merge",
     );
     expect(mergeCalls.length).toBe(2);
+  });
+
+  it("holds a worktree lease while merging source branches into the integration lane", async () => {
+    vi.mocked(buildIntegrationPreflight).mockReturnValue({
+      baseLane: baseLane as any,
+      uniqueSourceLaneIds: [SOURCE_LANE_A_ID],
+      duplicateSourceLaneIds: [],
+      missingSourceLaneIds: [],
+    });
+    let leaseActive = false;
+    let mergeRanWithLease = false;
+    const laneWorktreeLockService = {
+      acquire: vi.fn(() => {
+        leaseActive = true;
+        return { token: "lease-1", lock: {} };
+      }),
+      release: vi.fn(() => { leaseActive = false; }),
+    };
+    const { service } = buildIntegrationService({ laneWorktreeLockService });
+    mockGit.runGit.mockImplementation(async (args: string[]) => {
+      if (args[0] === "merge") mergeRanWithLease = leaseActive;
+      return { exitCode: 0, stdout: "", stderr: "" };
+    });
+
+    await service.createIntegrationLane({
+      sourceLaneIds: [SOURCE_LANE_A_ID],
+      integrationLaneName: "integration/test",
+      baseBranch: "main",
+      allowDirtyWorktree: true,
+    });
+
+    expect(laneWorktreeLockService.acquire).toHaveBeenCalledWith(expect.objectContaining({
+      laneId: integrationLane.id,
+      worktreePath: integrationLane.worktreePath,
+      ownerKind: "integration_resolution",
+    }));
+    expect(laneWorktreeLockService.release).toHaveBeenCalledWith({ token: "lease-1" });
+    expect(mergeRanWithLease).toBe(true);
   });
 
   it("records merge failure and aborts when a source branch fails to merge", async () => {
@@ -8046,9 +8583,21 @@ describe("prService auto-map by branch", () => {
     };
   }
 
-  it("links on an exact single same-repo branch match and emits an auto-link event", async () => {
+  it("links on an exact single same-repo branch match, edges the lane's chat, and emits an auto-link event", async () => {
     const db = makeMockDb();
     installPullRequestRowStore(db, []);
+    // A PR an agent opened with `gh pr create` from its chat names no chat. The
+    // edge to the chat open in the lane is what lets the merge settle it.
+    const pullRequestAll = db.all.getMockImplementation();
+    db.all.mockImplementation((sql: string, params: unknown[] = []) => {
+      if (String(sql).includes("from terminal_sessions")) return [{ id: "chat-lane" }];
+      return pullRequestAll?.(sql, params) ?? [];
+    });
+    const pullRequestGet = db.get.getMockImplementation();
+    db.get.mockImplementation((sql: string, params: unknown[] = []) => {
+      if (String(sql).includes("from terminal_sessions")) return { id: params[0] };
+      return pullRequestGet?.(sql, params) ?? null;
+    });
     const githubService = makeAutoMapGithub([makeAutoMapPull()]);
     const laneService = makeLaneService([makeFakeLane()]);
     const { service } = buildService({ db, githubService, laneService });
@@ -8061,6 +8610,10 @@ describe("prService auto-map by branch", () => {
       expect.stringContaining("insert into pull_requests("),
       expect.arrayContaining([LANE_ID, REPO.owner, REPO.name, 777]),
     );
+    const chatEdge = db.run.mock.calls.find(([sql]: [unknown]) =>
+      String(sql).includes("insert into pull_request_chat_sessions"));
+    expect(chatEdge?.[1]?.[3]).toBe(LANE_ID);
+    expect(chatEdge?.[1]?.[4]).toBe("chat-lane");
     expect(events).toEqual([
       expect.objectContaining({
         type: "pr-auto-linked",
@@ -8073,6 +8626,32 @@ describe("prService auto-map by branch", () => {
     // never an empty string (otherwise Undo silently no-ops).
     expect(typeof events[0].prId).toBe("string");
     expect(events[0].prId.length).toBeGreaterThan(0);
+  });
+
+  it("syncLanePr maps an open PR on the lane branch without the repo-wide sweep", async () => {
+    const db = makeMockDb();
+    installPullRequestRowStore(db, []);
+    const readStoreRow = db.get.getMockImplementation()!;
+    db.get.mockImplementation((sql: string, params: unknown[] = []) =>
+      String(sql).includes("from lanes")
+        ? { lane_type: "worktree", branch_ref: `refs/heads/${AUTO_BRANCH}`, base_ref: "main", archived_at: null }
+        : readStoreRow(sql, params));
+    const githubService = makeAutoMapGithub([makeAutoMapPull()]);
+    const laneService = makeLaneService([makeFakeLane()]);
+    const { service } = buildService({ db, githubService, laneService });
+
+    const synced = await service.syncLanePr(LANE_ID);
+
+    expect(synced).toEqual(expect.objectContaining({ laneId: LANE_ID, githubPrNumber: 777 }));
+    // Every PR list it asked GitHub for was scoped to the lane's branch; the
+    // closed-history sweep that took about a minute never ran.
+    const listCalls = (githubService.apiRequest as any).mock.calls
+      .map(([args]: [{ method?: string; path: string; query?: Record<string, unknown> }]) => args)
+      .filter((args: { method?: string; path: string }) =>
+        (args.method ?? "GET") === "GET" && args.path === `/repos/${REPO.owner}/${REPO.name}/pulls`);
+    expect(listCalls.length).toBeGreaterThan(0);
+    expect(listCalls.every((args: { query?: Record<string, unknown> }) =>
+      args.query?.head === `${REPO.owner}:${AUTO_BRANCH}`)).toBe(true);
   });
 
   it("skips a fork PR (different head repo)", async () => {
@@ -9139,7 +9718,8 @@ describe("prService destructive paths on a PR with no local row", () => {
       head: { ref: "feature/unmapped", repo: { owner: { login: REPO.owner }, name: REPO.name } },
     });
     const githubService = githubWithPull(pull);
-    const { service } = buildService({ db, githubService });
+    const refreshDefaultBranchAfterMerge = vi.fn(async () => {});
+    const { service } = buildService({ db, githubService, refreshDefaultBranchAfterMerge });
 
     const result = await service.land({
       prId: SYNTHETIC,
@@ -9153,6 +9733,7 @@ describe("prService destructive paths on a PR with no local row", () => {
       method: "DELETE",
       path: `/repos/${REPO.owner}/${REPO.name}/git/refs/heads/feature/unmapped`,
     }));
+    expect(refreshDefaultBranchAfterMerge).toHaveBeenCalledWith("main");
   });
 
   it("keeps the branch, and says so, when the merge did not ask for a delete", async () => {

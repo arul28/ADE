@@ -160,7 +160,7 @@ describe("thread comments riding a steer", () => {
 
 describe("thread review block ordering", () => {
   it("keeps the review block first when a pasted prompt is folded into the send", async () => {
-    const { service, send } = createServiceWithClaudeResponse();
+    const { service, send, events } = createServiceWithClaudeResponse();
     const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
     const block = formatThreadReviewBlock([{
       messageExcerpt: "an earlier reply",
@@ -188,6 +188,15 @@ describe("thread review block ordering", () => {
     expect(blockIndex).toBeGreaterThanOrEqual(0);
     expect(pastedIndex).toBeGreaterThan(blockIndex);
     expect(typedIndex).toBeGreaterThan(pastedIndex);
+    expect(prompt).toContain(path.basename(pastedPath));
+    expect(prompt.match(/copy and paste/gi)).toHaveLength(1);
+    const userMessage = events.find((entry): entry is AgentChatEventEnvelope & {
+      event: Extract<AgentChatEventEnvelope["event"], { type: "user_message" }>;
+    } =>
+      entry.event.type === "user_message" && Boolean(entry.event.attachments?.some((attachment) => attachment.path === pastedPath)),
+    );
+    expect(userMessage?.event).toMatchObject({ displayText: "USER TYPED" });
+    expect(userMessage?.event.attachments?.map((attachment) => attachment.path)).toContain(pastedPath);
     service.forceDisposeAll();
   });
 });
@@ -197,6 +206,7 @@ function createServiceWithClaudeResponse() {
     sdkSessionId: "sdk-review-paste",
     responseText: "ok",
   });
-  const { service } = createService();
-  return { service, send };
+  const events: AgentChatEventEnvelope[] = [];
+  const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+  return { service, send, events };
 }

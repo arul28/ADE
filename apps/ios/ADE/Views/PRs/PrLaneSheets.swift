@@ -69,76 +69,44 @@ struct PrAutoMapSheet: View {
   }
 
   var body: some View {
-    PrLiquidSheetShell(
-      title: "Create lane from PR branch",
-      trailingLabel: "Cancel",
-      onTrailing: {
-        onCancel()
+    PrKitSheet(title: "Create lane", onCancel: { onCancel(); dismiss() }) {
+      PrSheetSummary(number: item.githubPrNumber, title: item.title, state: item.isDraft ? "draft" : item.state, author: item.author)
+
+      if machines.count > 1 {
+        machinePicker
+      }
+
+      if loading {
+        HStack(spacing: 10) {
+          ProgressView().controlSize(.small)
+          Text("Checking branch ownership and PR head…")
+            .font(.system(size: 13))
+            .foregroundStyle(ADEColor.textSecondary)
+          Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 4)
+      } else if hasMachine {
+        ADESettingsSection("Branches") {
+          ADESettingsRows {
+            ADESettingsValueRow(title: "Source branch", value: sourceBranch, symbol: "arrow.triangle.branch", mono: true)
+            ADESettingsValueRow(title: "Target lane", value: targetLane, symbol: "rectangle.stack", mono: true)
+            ADESettingsValueRow(title: "Base branch", value: baseBranch, symbol: "arrow.down.to.line", mono: true)
+          }
+        }
+      }
+
+      if let blockingMessage, !blockingMessage.isEmpty {
+        ADESettingsNotice(message: blockingMessage, tone: .crit)
+      }
+
+      Button {
+        onCreate(selectedMachine)
         dismiss()
+      } label: {
+        Label("Create lane", systemImage: "arrow.triangle.branch")
       }
-    ) {
-      VStack(alignment: .leading, spacing: 16) {
-        VStack(alignment: .leading, spacing: 8) {
-          HStack(spacing: 8) {
-            Text(verbatim: "#\(item.githubPrNumber)")
-              .font(.system(size: 18, weight: .bold, design: .monospaced))
-              .foregroundStyle(PrGlassPalette.purpleBright)
-            Spacer(minLength: 0)
-          }
-          Text(item.title)
-            .font(.system(size: 15, weight: .semibold))
-            .foregroundStyle(PrsGlass.textPrimary)
-            .fixedSize(horizontal: false, vertical: true)
-        }
-
-        if machines.count > 1 {
-          machinePicker
-        }
-
-        if loading {
-          HStack(spacing: 10) {
-            ProgressView().tint(PrGlassPalette.purpleBright)
-            Text("Checking branch ownership and PR head…")
-              .font(.system(size: 12))
-              .foregroundStyle(PrsGlass.textSecondary)
-            Spacer(minLength: 0)
-          }
-        } else if hasMachine {
-          VStack(spacing: 8) {
-            PrGlassMonoRow(eyebrow: "Source branch", value: sourceBranch, icon: "arrow.triangle.branch")
-            PrGlassMonoRow(eyebrow: "Target lane", value: targetLane, icon: "rectangle.stack")
-            PrGlassMonoRow(eyebrow: "Base branch", value: baseBranch, icon: "arrow.down.to.line")
-          }
-        }
-
-        if let blockingMessage, !blockingMessage.isEmpty {
-          HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "exclamationmark.triangle.fill")
-              .font(.system(size: 13))
-              .foregroundStyle(PrGlassPalette.danger)
-              .padding(.top, 1)
-            Text(blockingMessage)
-              .font(.system(size: 12))
-              .foregroundStyle(PrGlassPalette.danger)
-              .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
-          }
-          .padding(12)
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .prGlassCard(cornerRadius: 12, tint: PrGlassPalette.danger.opacity(0.55), shadow: false)
-        }
-
-        Button {
-          onCreate(selectedMachine)
-          dismiss()
-        } label: {
-          Label("Create lane", systemImage: "arrow.triangle.branch")
-        }
-        .buttonStyle(PrGlassPrimaryButtonStyle())
-        .disabled(!createEnabled)
-        .opacity(createEnabled ? 1 : 0.5)
-      }
-      .padding(16)
+      .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
+      .disabled(!createEnabled)
     }
     .task(id: selectedMachineId) {
       await runPreflight()
@@ -146,40 +114,25 @@ struct PrAutoMapSheet: View {
   }
 
   private var machinePicker: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      PrsEyebrowLabel(text: "Machine")
-        .padding(.horizontal, 2)
-      VStack(spacing: 6) {
+    ADESettingsSection("Machine") {
+      ADESettingsRows {
         ForEach(Array(machines.enumerated()), id: \.element.id) { index, machine in
           Button {
             selectedMachineId = machine.id
           } label: {
-            HStack(spacing: 12) {
-              Image(systemName: "desktopcomputer")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(PrGlassPalette.purpleBright)
-                .frame(width: 24)
-              VStack(alignment: .leading, spacing: 2) {
-                Text(machine.name)
-                  .font(.system(size: 13, weight: .semibold))
-                  .foregroundStyle(PrsGlass.textPrimary)
-                Text(machineChoiceSubtitle(runningCount: machine.runningCount, isLeastBusy: index == 0))
-                  .font(.system(size: 11))
-                  .foregroundStyle(PrsGlass.textSecondary)
-              }
-              Spacer(minLength: 0)
+            ADESettingsRow(
+              title: machine.name,
+              hint: machineChoiceSubtitle(runningCount: machine.runningCount, isLeastBusy: index == 0),
+              symbol: "desktopcomputer"
+            ) {
               if selectedMachineId == machine.id {
                 Image(systemName: "checkmark")
-                  .font(.system(size: 13, weight: .semibold))
-                  .foregroundStyle(PrGlassPalette.purpleBright)
+                  .font(.system(size: 14, weight: .semibold))
+                  .foregroundStyle(ADEColor.accent)
               }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .contentShape(Rectangle())
-            .prGlassCard(cornerRadius: 12, shadow: false)
           }
-          .buttonStyle(.plain)
+          .buttonStyle(ADEKitRowButtonStyle())
           .accessibilityAddTraits(selectedMachineId == machine.id ? .isSelected : [])
         }
       }
@@ -247,118 +200,67 @@ struct PrLaneLinkSheet: View {
   }
 
   var body: some View {
-    PrLiquidSheetShell(
-      title: "Link to lane",
-      trailingLabel: "Cancel",
-      onTrailing: { dismiss() }
-    ) {
-      VStack(alignment: .leading, spacing: 14) {
-        // PR summary card.
-        VStack(alignment: .leading, spacing: 6) {
-          Text(item.title)
-            .font(.system(size: 14, weight: .semibold))
-            .foregroundStyle(PrsGlass.textPrimary)
-            .fixedSize(horizontal: false, vertical: true)
+    PrKitSheet(title: "Link to lane", onCancel: { dismiss() }) {
+      PrSheetSummary(
+        number: item.githubPrNumber,
+        title: item.title,
+        state: item.isDraft ? "draft" : item.state,
+        detail: [item.headBranch.flatMap { head in item.baseBranch.map { "\(head) → \($0)" } }, "\(item.repoOwner)/\(item.repoName)"]
+          .compactMap { $0 }
+          .joined(separator: " · "),
+        author: item.author
+      )
 
-          Text(verbatim: "#\(item.githubPrNumber) · \(item.repoOwner)/\(item.repoName)")
-            .font(.system(size: 11, design: .monospaced))
-            .foregroundStyle(PrsGlass.textSecondary)
+      if !canLink {
+        ADESettingsNotice(message: "Reconnect to a machine that supports PR lane linking.")
+      }
 
-          if let head = item.headBranch, let base = item.baseBranch {
-            Text("\(head) → \(base)")
-              .font(.system(size: 11, design: .monospaced))
-              .foregroundStyle(PrsGlass.textSecondary)
+      ADESettingsSection("Lane", hint: laneSelectionMessage) {
+        if availableLanes.isEmpty {
+          ADESettingsRows {
+            ADESettingsRow(emptyLaneMessage, symbol: "tray", titleColor: ADEColor.textSecondary)
           }
-
-          HStack(spacing: 6) {
-            if let author = item.author, !author.isEmpty {
-              Text("@\(author)")
-            }
-            Text("· updated \(prRelativeTime(item.updatedAt))")
-          }
-          .font(.system(size: 11, design: .monospaced))
-          .foregroundStyle(PrsGlass.textMuted)
-        }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .prGlassCard(cornerRadius: 14, shadow: false)
-
-        if !canLink {
-          HStack(alignment: .center, spacing: 10) {
-            Image(systemName: "wifi.exclamationmark")
-              .font(.system(size: 13, weight: .semibold))
-              .foregroundStyle(PrGlassPalette.warning)
-            Text("Reconnect to a machine that supports PR lane linking.")
-              .font(.system(size: 11))
-              .foregroundStyle(PrGlassPalette.warning)
-              .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
-          }
-          .padding(.horizontal, 12)
-          .padding(.vertical, 10)
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .prGlassCard(cornerRadius: 12, tint: PrGlassPalette.warning.opacity(0.45), shadow: false)
-        }
-
-        VStack(alignment: .leading, spacing: 8) {
-          PrsEyebrowLabel(text: "Lane")
-            .padding(.horizontal, 2)
-
-          Text(laneSelectionMessage)
-            .font(.system(size: 11))
-            .foregroundStyle(laneSelectionTint)
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(.horizontal, 2)
-            .padding(.bottom, 2)
-
-          if availableLanes.isEmpty {
-            HStack(spacing: 10) {
-              Image(systemName: "tray")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(PrsGlass.textMuted)
-              Text(emptyLaneMessage)
-                .font(.system(size: 12))
-                .foregroundStyle(PrsGlass.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-              Spacer(minLength: 0)
-            }
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .prGlassCard(cornerRadius: 12, shadow: false)
-          } else {
-            VStack(spacing: 6) {
-              ForEach(availableLanes) { lane in
-                PrGlassLaneRow(
-                  name: machineContext.machineName(forLaneId: lane.id).map { "\(lane.name) · \($0)" } ?? lane.name,
-                  branch: lane.branchRef,
-                  isSelected: selectedLaneId == lane.id
+        } else {
+          ADESettingsRows {
+            ForEach(availableLanes) { lane in
+              Button {
+                selectedLaneId = lane.id
+              } label: {
+                ADESettingsRow(
+                  title: machineContext.machineName(forLaneId: lane.id).map { "\(lane.name) · \($0)" } ?? lane.name,
+                  hint: lane.branchRef,
+                  symbol: "arrow.triangle.branch"
                 ) {
-                  selectedLaneId = lane.id
+                  if selectedLaneId == lane.id {
+                    Image(systemName: "checkmark")
+                      .font(.system(size: 14, weight: .semibold))
+                      .foregroundStyle(ADEColor.accent)
+                  }
                 }
               }
+              .buttonStyle(ADEKitRowButtonStyle())
+              .accessibilityAddTraits(selectedLaneId == lane.id ? .isSelected : [])
             }
           }
         }
-
-        VStack(spacing: 10) {
-          Button {
-            onLink(selectedLaneId)
-          } label: {
-            Label("Link to lane", systemImage: "link")
-          }
-          .buttonStyle(PrGlassPrimaryButtonStyle())
-          .disabled(!canLink || selectedLaneId.isEmpty)
-
-          Button {
-            onOpenGitHub()
-          } label: {
-            Label("Open on GitHub", systemImage: "arrow.up.right.square")
-          }
-          .buttonStyle(PrGlassOutlineButtonStyle())
-        }
-        .padding(.top, 4)
       }
-      .padding(16)
+
+      VStack(spacing: 10) {
+        Button {
+          onLink(selectedLaneId)
+        } label: {
+          Label("Link to lane", systemImage: "link")
+        }
+        .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
+        .disabled(!canLink || selectedLaneId.isEmpty)
+
+        Button {
+          onOpenGitHub()
+        } label: {
+          Label("Open on GitHub", systemImage: "arrow.up.right.square")
+        }
+        .buttonStyle(ADEKitButtonStyle(wide: true))
+      }
     }
     .onAppear {
       if selectedLaneId.isEmpty {
@@ -396,10 +298,6 @@ struct PrLaneLinkSheet: View {
     return "Confirm this lane before linking; ADE will attach this GitHub PR to the selected lane."
   }
 
-  private var laneSelectionTint: Color {
-    selectedLaneId.isEmpty ? PrGlassPalette.warning : PrsGlass.textSecondary
-  }
-
   private var emptyLaneMessage: String {
     let expectedBranch = normalizedPrBranchName(item.headBranch)
     guard !expectedBranch.isEmpty else {
@@ -409,237 +307,69 @@ struct PrLaneLinkSheet: View {
   }
 }
 
-// MARK: - File-private liquid-glass primitives (sheets)
+// MARK: - Sheet pieces
 
-/// Standard liquid-glass sheet shell: deep-ink backdrop, 36×5 grab handle,
-/// inline title bar with a single trailing label (Done/Cancel).
-private struct PrLiquidSheetShell<Content: View>: View {
+/// A PR sheet on the kit: inline title, Cancel, one calm column of sections.
+struct PrKitSheet<Content: View>: View {
   let title: String
-  let trailingLabel: String
-  let onTrailing: () -> Void
+  let onCancel: () -> Void
   @ViewBuilder let content: () -> Content
 
   var body: some View {
-    ZStack {
-      prLiquidGlassBackdrop().ignoresSafeArea()
-
-      VStack(spacing: 0) {
-        Capsule(style: .continuous)
-          .fill(Color.white.opacity(0.25))
-          .frame(width: 36, height: 5)
-          .padding(.top, 8)
-          .padding(.bottom, 8)
-
-        HStack {
-          Text(title)
-            .font(.system(size: 15, weight: .semibold))
-            .foregroundStyle(PrsGlass.textPrimary)
-          Spacer(minLength: 0)
-          Button(action: onTrailing) {
-            Text(trailingLabel)
-              .font(.system(size: 14, weight: .semibold))
-              .foregroundStyle(PrGlassPalette.purpleBright)
-          }
+    NavigationStack {
+      ScrollView {
+        VStack(alignment: .leading, spacing: 22) {
+          content()
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .overlay(alignment: .bottom) {
-          Rectangle()
-            .fill(Color.white.opacity(0.06))
-            .frame(height: 0.5)
-        }
-
-        ScrollView {
-          content()
+        .padding(.top, 12)
+        .padding(.bottom, 24)
+      }
+      .adeScreenBackground()
+      .adeNavigationGlass()
+      .navigationTitle(title)
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        ToolbarItem(placement: .cancellationAction) {
+          Button("Cancel", action: onCancel)
         }
       }
     }
     .presentationDetents([.large])
-    .presentationDragIndicator(.hidden)
   }
 }
 
-/// Small "EXTERNAL" info chip used on the GitHub PR detail sheet.
-private struct PrExternalInfoChip: View {
-  var body: some View {
-    HStack(spacing: 4) {
-      Image(systemName: "arrow.up.right.square.fill")
-        .font(.system(size: 9, weight: .bold))
-      Text("EXTERNAL")
-        .font(.system(size: 9, weight: .bold))
-        .tracking(1.0)
-    }
-    .foregroundStyle(PrGlassPalette.blue)
-    .padding(.horizontal, 8)
-    .padding(.vertical, 4)
-    .background(
-      Capsule(style: .continuous)
-        .fill(PrGlassPalette.blue.opacity(0.18))
-    )
-    .overlay(
-      Capsule(style: .continuous)
-        .strokeBorder(PrGlassPalette.blue.opacity(0.35), lineWidth: 0.75)
-    )
-  }
-}
-
-/// Glass row: eyebrow label + monospaced value, with a small glyph disc.
-private struct PrGlassMonoRow: View {
-  let eyebrow: String
-  let value: String
-  let icon: String
+/// The PR a sheet acts on: state icon, number, title, one detail line, author.
+struct PrSheetSummary: View {
+  let number: Int
+  let title: String
+  var state: String = "open"
+  var detail: String? = nil
+  var author: String? = nil
+  var avatarUrl: String? = nil
 
   var body: some View {
-    HStack(alignment: .center, spacing: 12) {
-      ZStack {
-        RoundedRectangle(cornerRadius: 8, style: .continuous)
-          .fill(Color.white.opacity(0.06))
-          .frame(width: 30, height: 30)
-        Image(systemName: icon)
-          .font(.system(size: 12, weight: .semibold))
-          .foregroundStyle(PrsGlass.textSecondary)
-      }
-
-      VStack(alignment: .leading, spacing: 2) {
-        Text(eyebrow.uppercased())
-          .font(.system(size: 9, weight: .bold))
-          .tracking(1.0)
-          .foregroundStyle(PrsGlass.textMuted)
-        Text(value)
-          .font(.system(size: 12, design: .monospaced))
-          .foregroundStyle(PrsGlass.textPrimary)
-          .lineLimit(1)
-          .truncationMode(.middle)
-      }
-
-      Spacer(minLength: 0)
-    }
-    .padding(.horizontal, 12)
-    .padding(.vertical, 10)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .prGlassCard(cornerRadius: 12, shadow: false)
-  }
-}
-
-/// Lane row for the Lane-Link sheet: lane-icon disc + name + mono branch +
-/// selection checkmark.
-private struct PrGlassLaneRow: View {
-  let name: String
-  let branch: String
-  let isSelected: Bool
-  let onTap: () -> Void
-
-  var body: some View {
-    Button(action: onTap) {
-      HStack(alignment: .center, spacing: 12) {
-        ZStack {
-          if isSelected {
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-              .fill(PrGlassPalette.accentGradient)
-          } else {
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-              .fill(Color.white.opacity(0.06))
-          }
-          Image(systemName: "arrow.triangle.branch")
-            .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(isSelected ? Color.white : PrsGlass.textSecondary)
-        }
-        .frame(width: 32, height: 32)
-
-        VStack(alignment: .leading, spacing: 2) {
-          Text(name)
-            .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(PrsGlass.textPrimary)
-            .lineLimit(1)
-          Text(branch)
-            .font(.system(size: 11, design: .monospaced))
-            .foregroundStyle(PrsGlass.textSecondary)
-            .lineLimit(1)
+    HStack(alignment: .top, spacing: 10) {
+      PrStateIcon(state: state, size: 26)
+      VStack(alignment: .leading, spacing: 4) {
+        Text("\(Text(verbatim: "#\(number)").font(.adeMono(14, weight: .medium)).foregroundStyle(ADEColor.textMuted)) \(title)")
+          .font(.system(size: 15, weight: .semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .fixedSize(horizontal: false, vertical: true)
+        if let detail, !detail.isEmpty {
+          Text(verbatim: detail)
+            .font(.adeMono(11))
+            .foregroundStyle(ADEColor.textMuted)
+            .lineLimit(2)
             .truncationMode(.middle)
         }
-
-        Spacer(minLength: 0)
-
-        if isSelected {
-          Image(systemName: "checkmark.circle.fill")
-            .font(.system(size: 17, weight: .semibold))
-            .foregroundStyle(PrGlassPalette.purpleBright)
-        } else {
-          Circle()
-            .strokeBorder(Color.white.opacity(0.18), lineWidth: 1)
-            .frame(width: 17, height: 17)
-        }
       }
-      .padding(.horizontal, 12)
-      .padding(.vertical, 10)
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .prGlassCard(
-        cornerRadius: 12,
-        tint: isSelected ? PrGlassPalette.purple.opacity(0.55) : nil,
-        strokeOpacity: isSelected ? 0.22 : 0.10,
-        shadow: false
-      )
+      Spacer(minLength: 0)
+      if let author, !author.isEmpty {
+        PrAvatar(login: author, avatarUrl: avatarUrl, size: 22)
+      }
     }
-    .buttonStyle(.plain)
-  }
-}
-
-/// Gradient primary CTA (purple, with glow + inner highlight).
-private struct PrGlassPrimaryButtonStyle: ButtonStyle {
-  @Environment(\.isEnabled) private var isEnabled
-
-  func makeBody(configuration: Configuration) -> some View {
-    configuration.label
-      .font(.system(size: 14, weight: .semibold))
-      .foregroundStyle(Color.white)
-      .frame(maxWidth: .infinity)
-      .frame(height: 44)
-      .background(
-        ZStack {
-          RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .fill(PrGlassPalette.accentGradient)
-          RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .stroke(
-              LinearGradient(
-                colors: [Color.white.opacity(0.45), Color.white.opacity(0.05)],
-                startPoint: .top,
-                endPoint: .bottom
-              ),
-              lineWidth: 1
-            )
-        }
-      )
-      .opacity(isEnabled ? (configuration.isPressed ? 0.85 : 1.0) : 0.45)
-      .shadow(
-        color: PrGlassPalette.purpleDeep.opacity(isEnabled ? 0.45 : 0.0),
-        radius: 16,
-        x: 0,
-        y: 6
-      )
-      .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
-  }
-}
-
-/// Glass-outline secondary CTA.
-private struct PrGlassOutlineButtonStyle: ButtonStyle {
-  @Environment(\.isEnabled) private var isEnabled
-
-  func makeBody(configuration: Configuration) -> some View {
-    configuration.label
-      .font(.system(size: 14, weight: .semibold))
-      .foregroundStyle(PrsGlass.textPrimary)
-      .frame(maxWidth: .infinity)
-      .frame(height: 44)
-      .background(
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-          .fill(.ultraThinMaterial)
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-          .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
-      )
-      .opacity(isEnabled ? (configuration.isPressed ? 0.85 : 1.0) : 0.45)
-      .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+    .adeKitCard()
   }
 }
 

@@ -22,7 +22,10 @@ func workChipFixtureKindName(_ kind: WorkSmartLink.Kind) -> String {
   case .model: return "model"
   case .permission: return "permission"
   case .skill: return "skill"
+  case .browserTab: return "browser_tab"
   case .adeLink: return "ade_link"
+  case .machine: return "machine"
+  case .image: return "image"
   }
 }
 
@@ -132,6 +135,35 @@ final class WorkChipDetectorTests: XCTestCase {
     XCTAssertEqual(WorkModelMentionDetector.permissionLabel(nil), "Default")
   }
 
+  /// Mirrors `modelMentions.test.ts` "orders recents": recents break ties
+  /// among equally good matches; they never beat a better match.
+  func testModelRankingLeadsWithRecentsAmongEqualMatches() {
+    func entry(_ id: String, _ title: String) -> WorkModelMentionDirectory.Entry {
+      .init(modelId: id, title: title, subtitle: "", provider: "opencode", brandKey: "deepseek",
+            reasoningTiers: [], defaultEffort: nil, isAvailable: true)
+    }
+    let models = [
+      entry("anthropic/claude-opus-5", "Claude Opus 5"),
+      entry("opencode/deepseek/deepseek-v4.1-flash", "DeepSeek V4.1 Flash"),
+      entry("opencode/opencode-go/deepseek-v4.1-flash", "DeepSeek V4.1 Flash"),
+    ]
+    let ids = { (rows: [WorkModelMentionDirectory.Entry]) in rows.map(\.modelId) }
+
+    XCTAssertEqual(
+      ids(WorkModelMentionDetector.rank(models, query: "deep", recentModelIds: ["opencode/opencode-go/deepseek-v4.1-flash"]).rows),
+      ["opencode/opencode-go/deepseek-v4.1-flash", "opencode/deepseek/deepseek-v4.1-flash"]
+    )
+    // "Claude" only contains "de"; DeepSeek starts with it.
+    XCTAssertEqual(
+      ids(WorkModelMentionDetector.rank(models, query: "de", recentModelIds: ["anthropic/claude-opus-5"]).rows).first,
+      "opencode/deepseek/deepseek-v4.1-flash"
+    )
+    XCTAssertEqual(
+      ids(WorkModelMentionDetector.rank(models, query: "deep").rows),
+      ["opencode/deepseek/deepseek-v4.1-flash", "opencode/opencode-go/deepseek-v4.1-flash"]
+    )
+  }
+
   func testFormatTokenRoundTrips() {
     for kind in [WorkChatMention.Kind.chat, .lane, .terminal] {
       let token = WorkChatMentionDetector.formatToken(kind: kind, id: "abc-123")
@@ -159,6 +191,16 @@ final class WorkChipDetectorTests: XCTestCase {
       consumedTo = NSMaxRange(chip.range)
     }
     XCTAssertEqual(found.map(\.kind), [.chat, .chat, .terminal, .webPage])
+  }
+
+  func testBrowserTabRoundTripsHostileTitleAndMasksNestedMentions() {
+    let token = #"<ade-browser-tab id="tab-1" title="Quotes &quot;&lt;&gt;&amp; @chat:secret&quot;" url="https://example.test/a?x=1&amp;y=2">The user attached ADE browser tab tab-1. Take it over.</ade-browser-tab>"#
+    let text = "open \(token) then @chat:real"
+    let found = chips(text)
+    XCTAssertEqual(found.map(\.kind), [.browserTab, .chat])
+    XCTAssertEqual(found[0].label, "Quotes \"<>& @chat:secret\"")
+    XCTAssertEqual(found[0].token, token)
+    XCTAssertEqual(WorkChipDetector.canonicalPlainText(text), text)
   }
 
   func testChipTokenIsTheCanonicalTextNotTheLabel() {
@@ -567,6 +609,24 @@ final class WorkChatLinkedPrSelectionTests: XCTestCase {
     ]
     let visible = workChatPullRequests(lane: l, pullRequests: prs, sessionId: "chat-1")
     XCTAssertEqual(visible.map(\.id), ["pr-1"])
+  }
+
+  func testPrimaryLaneBackOnMainHidesItsPrsWhileTheLinkingChatKeepsThem() {
+    // The Primary lane cannot be deleted, so its lane surfaces must shed every
+    // PR once it is parked on `main` — while the chat that opened the PR still
+    // shows the thread that did the work. Mirrors desktop `selectLanePrs` /
+    // `selectChatPrs`.
+    let primary = lane(id: "lane-primary", branch: "main", type: "primary")
+    let prs = [
+      pr(id: "pr-linked", laneId: "lane-primary", number: 1501, headBranch: "fix/update-recovery", chatSessionIds: ["chat-1"]),
+    ]
+
+    XCTAssertEqual(selectLanePrs(lane: primary, pullRequests: prs).map(\.id), [])
+    XCTAssertEqual(workChatPullRequests(lane: primary, pullRequests: prs, sessionId: "chat-1").map(\.id), ["pr-linked"])
+
+    // The same lane checked out on the PR's branch shows it again.
+    let working = lane(id: "lane-primary", branch: "fix/update-recovery", type: "primary")
+    XCTAssertEqual(selectLanePrs(lane: working, pullRequests: prs).map(\.id), ["pr-linked"])
   }
 
   func testNewestOpenPrLeadsTheList() {

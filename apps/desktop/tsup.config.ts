@@ -12,24 +12,31 @@ export default defineConfig({
     "main/main": "src/main/main.ts",
     "main/cursorSdkWorker": "src/main/services/chat/cursorSdkWorker.ts",
     "main/droidSdkWorker": "src/main/services/chat/droidSdkWorker.ts",
+    "main/copilotSdkWorker": "src/main/services/chat/copilotSdkWorker.ts",
     "main/piSdkWorker": "src/main/services/chat/piSdkWorker.ts",
     "main/ptyHostWorker": "src/main/services/pty/ptyHostWorker.ts",
     "main/usageLedgerWorker": "src/main/services/usage/usageLedgerWorkerEntry.ts",
     "main/loginImportReadWorker":
       "src/main/services/builtInBrowser/loginImport/loginImportReadWorkerEntry.ts",
     "main/packagedRuntimeSmoke": "src/main/packagedRuntimeSmoke.ts",
-    "preload/preload": "src/preload/preload.ts"
+    "preload/preload": "src/preload/preload.ts",
+    "preload/browserMedia": "src/preload/browserMedia.ts"
   },
   format: ["cjs"],
   platform: "node",
   target: "node18",
   // Electron provides the "electron" module at runtime; bundling the npm package breaks it.
   // node-pty is native and must be resolved at runtime for Electron.
-  external: ["electron", "node-pty", "@cursor/sdk", "@factory/droid-sdk"],
+  external: ["electron", "node-pty", "@cursor/sdk", "@factory/droid-sdk", "@github/copilot-sdk"],
   // @opencode/client is ESM-only (no "require" export); force-inline it so
   // the CJS bundle doesn't emit a bare require() that Node/Electron can't resolve.
   // It is a devDependency, so neither it nor its `effect` dependency ships.
-  noExternal: [/^@opencode\/client(?:\/.*)?$/],
+  // @muse-code/sdk is ESM-only and zero-dependency for the same reason: a
+  // devDependency, force-inlined, never shipped as a package.
+  // @sentry/*: the preload half runs in the sandboxed preload, which can only
+  // require "electron", and main loads one file instead of a few hundred small
+  // ones, which costs most of a second on Windows (Defender scans each).
+  noExternal: [/^@opencode\/client(?:\/.*)?$/, /^@muse-code\/sdk(?:\/.*)?$/, /^@sentry\//],
   outDir: "dist",
   sourcemap: process.env.ADE_BUILD_SOURCEMAPS === "1",
   // Preserve Vite's dist/renderer output during main/preload watch rebuilds in dev.

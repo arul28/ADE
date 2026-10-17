@@ -1,6 +1,6 @@
 ---
 name: test
-description: 'Prove the new code works: enforce the logging/PostHog ground truth, prune dead tests, consolidate fragments, add only tests that prove new contracts or close a real coverage gap (no tautological, change-detector, or duplicate regression tests), then run CI-mirrored shards and harvest the early PR. Also keeps docs/mobile/CLI/TUI parity in lockstep, and syncs the published @ade-dev SDK packages when a mirrored ADE surface changes (mirror-sync only, never scope expansion).'
+description: 'Prove the new code works: enforce the logging/PostHog ground truth, prune dead tests, consolidate fragments, add only tests that prove new contracts or close a real coverage gap (no tautological, change-detector, or duplicate regression tests; the default is zero new tests), then run only the touched test files and harvest the early PR. Also keeps docs/mobile/CLI/TUI parity in lockstep, and syncs the published @ade-dev SDK packages when a mirrored ADE surface changes (mirror-sync only, never scope expansion).'
 ---
 
 # /test — Test Suite Steward
@@ -52,7 +52,7 @@ Handle the rest of the "For /test" list too:
 List both groups in the summary with their outcome. No quality result available → derive
 the findings from the diff and say that quality evidence was unavailable.
 
-**Run the way CI would.** After the suite work, run only the affected shards, never the full suite (that's `/finalize`'s local gate and `/ship`'s remote CI). Verify every new/edited test file matches a vitest workspace glob so CI actually picks it up.
+**Run only what you touched.** After the suite work, run the new and edited test files once — never a shard and never the full suite (CI is the full gate; `/quality` already ran the branch's one check pass). Verify every new/edited test file matches a vitest workspace glob so CI actually picks it up.
 
 ---
 
@@ -93,6 +93,12 @@ skill enforces them on the branch.
   that.
 - **Combine before you add.** Trivial cases of one contract are one
   `it.each` table. Extend an existing test before you write a new one.
+- **New tests are the exception.** The default outcome of this skill is zero
+  new tests. A new test must guard a critical contract — data loss or
+  corruption, security or privacy, a race or process/lifecycle seam, a
+  cross-machine, IPC or sync contract a caller depends on — and no existing
+  test may already catch its failure. UI layout, copy, wiring, render-only
+  checks, and one past bug instance do not qualify. Most branches add none.
 - **Double-check every test you wrote.** Revert the fix locally or break the
   behavior on purpose and confirm the test fails. A test that still passes
   proves nothing — delete it.
@@ -117,6 +123,18 @@ claims, token refresh ordering) that an E2E run cannot reach reliably.
 8. For `apps/web`, preserve direct browser-to-PostHog capture. Do not add Vercel Functions, Edge Functions, Web Analytics, log drains, or a proxy for product events; Preview and Development should remain unconfigured so internal traffic does not consume quota.
 
 The gate applies even when the branch's main purpose is unrelated to analytics. Future agents should leave ADE with broad, decision-useful coverage and a small, predictable event budget.
+
+### Error tracking (Sentry) gate (always runs)
+
+`docs/logging.md`, "Error tracking (Sentry)", is the ground truth. For the whole branch diff:
+
+1. **New failure paths report.** Every new `catch` that recovers silently, returns a fallback (`null`, `[]`, a default), or turns an error into a status must either call `captureError` / `captureProblem` (`apps/desktop/src/shared/sentry/capture.ts`; Swift `CrashReporting.capture`) or log it with `logger.warn` / `logger.error` so the log bridge carries it. An expected outcome (user cancel, not-installed, offline) is the one exception, and the summary names it. Grep the diff for `catch {`, `catch (_`, `.catch(() =>`, `try?`, and `?? []` after an await.
+2. **New surfaces and processes are wired.** A new Electron window or preload, a new forked worker, a new runtime process, a new Worker or Durable Object, or a new app target: confirm it reports to the right project (the table in `docs/logging.md`), or record why it does not. A forked worker reports through its parent; do not load an SDK into it.
+3. **Grouping and budget.** New capture calls set a `fingerprint` that names the failure, so repeats are one issue. A call site that can fire per keystroke, frame, poll or streamed event must not capture per occurrence; capture the first and aggregate. Never raise the limits in `shared/sentry/guardrails.ts` to fit a call site.
+4. **Nothing forbidden crosses.** No prompt, transcript, model output, file content, diff, terminal output or secret in `extra`, tags, messages or breadcrumbs. New field names that carry such content are added to `CONTENT_KEY` in `shared/sentry/scrub.ts`; new secret shapes to its patterns (and to each Worker's `src/sentry.ts` and the iOS `ADECrashScrubber`).
+5. **Release plumbing.** A new bundle, entry point or deploy target gets source maps uploaded under the shared release name, maps never ship, and the upload never fails the release.
+6. **Prove one path.** For a new capture site, run it once with `ADE_SENTRY_DEV=1` and confirm the issue with `sentry issue list ade-app/<project> --query "environment:development" --period 1h`, then resolve or delete the test issue. When that is not possible (no packaged runtime, no display), say so.
+7. **Update the doc** when a project, surface, capture category, scrub rule or budget changes.
 
 ---
 
@@ -252,7 +270,7 @@ Spot files where 20+ tests assert constants exist, enum keys are defined, or for
 
 `*.test.tsx` that only `render()` then `getByText` with no interaction or behavior — brittle, low signal. Delete or rewrite as a behavior test.
 
-**At end of Pass 1:** record what was deleted (file + reason) for the summary. Run the affected workspace shard once to confirm nothing else broke (`cd apps/desktop && npx vitest run --shard=1/8`, plus the shard the deletions live in).
+**At end of Pass 1:** record what was deleted (file + reason) for the summary. Deleting a test file cannot break another test unless something imports from it: `rg` for imports of each deleted path, and run only the files that import it. Do not run a shard.
 
 ---
 
@@ -314,7 +332,7 @@ Identify the *contracts* the new feature introduces:
 ### 3b. Hard caps (override only with a one-line justification in the summary)
 
 - **Max 1 new test file per feature.** Prefer extending an existing file. If extending would push that file past 300 `it(` blocks, that file itself needs consolidation review — flag it but still extend.
-- **Max 15 new `it(` blocks total** for the whole feature. If you want more, you're testing internals.
+- **Max 5 new `it(` blocks total** for the whole branch, and only for critical contracts (see **New tests are the exception**). If you want more, you're testing internals.
 - **Min 3 meaningful assertions per test** (not `toBeDefined` × 3).
 - **No test of a private/internal helper** unless it has non-obvious branching that the public API can't easily reach.
 - **No render-only React tests.** If the change is purely visual, do not add a test — say so in the summary.
@@ -798,14 +816,11 @@ named helper whose contract a test can pin.
 
 After the passes that applied:
 
-1. **Run the affected shards**, not the full suite (`/finalize` runs everything):
+1. **Run the new and edited test files once**, never a shard or the full suite (CI is the full gate):
    ```bash
    cd apps/desktop && npx vitest run <new + edited test files>
    ```
-   Plus rerun the shard(s) containing files you deleted from, in case a helper was depending on them:
-   ```bash
-   cd apps/desktop && npx vitest run --shard=<n>/8
-   ```
+   For deleted files, run only the files that imported them (Pass 1).
 
 2. **CI coverage check** — vitest workspace + CI are glob-based and shard 8-way (`.github/workflows/ci.yml` runs `npx vitest run --shard=${{ matrix.shard }}/8`). Any colocated `*.test.{ts,tsx}` file inside these globs is auto-picked-up; consolidating or deleting test files NEVER requires CI/workspace edits:
    - `unit-main`: `src/main/**/*.test.{ts,tsx}`
@@ -918,7 +933,6 @@ Parity:
 
 Verification:
 - Affected files: PASS (<N> tests)
-- Shard re-run: PASS
 
 Notes / assumptions:
 - <anything non-obvious>

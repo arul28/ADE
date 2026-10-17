@@ -70,7 +70,7 @@ export function useHarnessPresets(): HarnessPresetsApi {
   // delete never reaches — the row lands in localStorage and the account, and
   // the table silently stays one edit behind. The list is an account-scoped
   // preference, so the root store is its only owner (same rule the composer
-  // already follows for `promptStashButtonEnabled`).
+  // already follows for `draftsButtonEnabled`).
   const presets = useRootAppStore((state) => state.harnessPresets);
   const setHarnessPresets = useRootAppStore((state) => state.setHarnessPresets);
 

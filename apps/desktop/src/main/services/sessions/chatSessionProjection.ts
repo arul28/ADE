@@ -155,6 +155,7 @@ export function projectChatOntoSession(
     usageLimitResume: chat.usageLimitResume ?? null,
     chatActivityMode: chatIsPlanning(chat) ? "planning" : null,
     activeBackgroundTaskCount: chat.activeBackgroundTaskCount ?? 0,
+    ...(chat.turnOpenWorkCount != null ? { turnOpenWorkCount: chat.turnOpenWorkCount } : {}),
     ...(projectActiveGoal(chat) ? { activeGoal: projectActiveGoal(chat) } : {}),
     ...(chat.backgroundWork ? { backgroundWork: chat.backgroundWork } : {}),
     ...(chat.backgroundWorkSince ? { backgroundWorkSince: chat.backgroundWorkSince } : {}),
@@ -162,6 +163,7 @@ export function projectChatOntoSession(
     ...(chat.modelHandoffHistory?.length
       ? { modelHandoffHistory: chat.modelHandoffHistory }
       : {}),
+    ...(chat.crossMachineHandoff ? { crossMachineHandoff: chat.crossMachineHandoff } : {}),
     // Whatever the provider actually reported, and nothing more. A blank or
     // absent model must stay absent on the row: the card renders the chip only
     // when there is a real answer, so "we do not know" and "no model" have to
@@ -181,6 +183,7 @@ export function projectChatOntoSession(
     ...(chat.orchestrationParentSessionId
       ? { orchestrationParentSessionId: chat.orchestrationParentSessionId }
       : {}),
+    ...(chat.launchedBySessionId ? { launchedBySessionId: chat.launchedBySessionId } : {}),
     // Only stamped when there genuinely is an identity parent. Writing an
     // explicit `null` would make every ordinary spawned chat carry the field,
     // and "present but null" and "absent" would then have to mean the same
@@ -194,6 +197,7 @@ export function projectChatOntoSession(
     ...(chat.spawnKind ? { spawnKind: chat.spawnKind } : {}),
     ...(chat.steeringInput ? { steeringInput: true } : {}),
     ...(chat.asyncQuestion ? { asyncQuestion: true } : {}),
+    ...(chat.promptCache ? { chatPromptCache: chat.promptCache } : {}),
     lastActivityAt: chat.lastActivityAt ?? session.lastActivityAt ?? null,
     ...(chat.cursorCloudAgentId ? { cursorCloudAgentId: chat.cursorCloudAgentId } : {}),
     ...(chat.cursorRuntime ? { cursorRuntime: chat.cursorRuntime } : {}),
@@ -225,6 +229,20 @@ export function projectChatOntoSession(
   if (chat.status === "active") {
     return {
       ...base,
+      runtimeState: "running",
+      chatIdleSinceAt: null,
+      pendingInputItemId: null,
+      attentionSource: session.attentionSource === "provider_structured" ? null : session.attentionSource,
+    };
+  }
+  // Accepted but not started: a lazily-started provider runtime is still coming
+  // up, so the chat reads idle. The send already happened, so the turn is in
+  // flight. Without this a just-sent chat is filed as resting ("Done") until the
+  // turn starts.
+  if (chat.status === "idle" && chat.turnAcceptedAt) {
+    return {
+      ...base,
+      currentTurnStartedAt: chat.turnAcceptedAt,
       runtimeState: "running",
       chatIdleSinceAt: null,
       pendingInputItemId: null,

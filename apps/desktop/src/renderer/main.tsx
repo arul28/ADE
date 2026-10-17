@@ -14,6 +14,14 @@ import { initPerfRuntime } from "./perf/harness";
 import { rendererPlatformAttribute } from "./lib/platform";
 import { trackWindowsCaptionInset } from "./lib/windowControlsOverlay";
 import { installScrollingIndicator } from "./lib/scrollingIndicator";
+import { installAnimationPhaseAlignment } from "./lib/animationPhaseAlignment";
+
+// Error tracking, loaded as its own chunk and only when main's Sentry client is
+// running (the preload installs the bridge in that case alone), so dev builds
+// and the browser mock never pay for it.
+if ("__SENTRY_IPC__" in window) {
+  void import("./sentry/initRenderer").then((module) => module.initRendererSentry()).catch(() => undefined);
+}
 
 document.documentElement.dataset.adePlatform = rendererPlatformAttribute();
 
@@ -24,6 +32,7 @@ trackWindowsCaptionInset();
 
 // Scrollbars show only while you scroll the region under the pointer.
 installScrollingIndicator();
+installAnimationPhaseAlignment();
 
 (function injectFontFaces() {
   const style = document.createElement("style");

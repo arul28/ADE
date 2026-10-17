@@ -10,6 +10,8 @@ import packagedAdeCliResourcesModule from "./packaged-ade-cli-resources.cjs";
 import runtimeResourceTargets from "./runtime-resource-targets.cjs";
 import { RUNTIME_FETCHED_TOOL_EXPLANATION } from "./runtime-fetched-tool-packages.mjs";
 import { createPackagedTreeAssertions, findNodePtyAddon } from "./validate-packaged-tree.mjs";
+import { isAppleNetworkError, retryTransient } from "./release-retry.mjs";
+import { assertMachOArchitectures } from "./validate-macho-arch.mjs";
 
 const { RUNTIME_TARGETS, runtimeBinaryNameForTarget } = runtimeResourceTargets;
 
@@ -33,6 +35,17 @@ const {
 } = createPackagedTreeAssertions({ fail });
 
 const execFileAsync = promisify(execFile);
+
+// `stapler validate` asks Apple's ticket service (CloudKit) about the ticket, so
+// a dropped connection fails it just as a missing ticket would. Retry only the
+// network failures; a ticket that is really absent still fails at once.
+function staplerValidate(targetPath) {
+  return retryTransient(
+    `stapler validate for ${path.basename(targetPath)}`,
+    () => execFileAsync("xcrun", ["stapler", "validate", targetPath]),
+    { attempts: 5, delayMs: 15_000, isTransient: isAppleNetworkError },
+  );
+}
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const appDir = path.resolve(scriptDir, "..");
@@ -244,19 +257,25 @@ async function assertBundledCrsqliteRuntime(unpackedPath, unpackedPaths, descrip
   }
 }
 
-async function assertBundledMacDesktopDriver(resourcesPath, description) {
-  const helperPath = path.join(resourcesPath, "native", "ade-desktop-driver");
-  await assertPathExists(helperPath, `native Mac Desktop driver for ${description}`);
-  await assertExecutable(helperPath, `native Mac Desktop driver for ${description}`);
+/**
+ * A helper must carry both architectures: built for one, it ships happily and
+ * then fails to spawn on the other half of the install base.
+ */
+async function assertUniversalBinary(helperPath, label, description) {
   const { stdout } = await execFileAsync("lipo", ["-archs", helperPath]);
   const architectures = new Set(stdout.trim().split(/\s+/).filter(Boolean));
   for (const architecture of ["arm64", "x86_64"]) {
     if (!architectures.has(architecture)) {
-      throw new Error(
-        `[release:mac] Native Mac Desktop driver for ${description} is missing ${architecture}: ${helperPath}`,
-      );
+      throw new Error(`[release:mac] ${label} for ${description} is missing ${architecture}: ${helperPath}`);
     }
   }
+}
+
+async function assertBundledMacDesktopDriver(resourcesPath, description) {
+  const helperPath = path.join(resourcesPath, "native", "ade-desktop-driver");
+  await assertPathExists(helperPath, `native Mac Desktop driver for ${description}`);
+  await assertExecutable(helperPath, `native Mac Desktop driver for ${description}`);
+  await assertUniversalBinary(helperPath, "Native Mac Desktop driver", description);
 }
 
 /**
@@ -268,59 +287,38 @@ async function assertBundledAdeMedia(resourcesPath, description) {
   const helperPath = path.join(resourcesPath, "native", "ade-media");
   await assertPathExists(helperPath, `native demo engine for ${description}`);
   await assertExecutable(helperPath, `native demo engine for ${description}`);
-  const { stdout } = await execFileAsync("lipo", ["-archs", helperPath]);
-  const architectures = new Set(stdout.trim().split(/\s+/).filter(Boolean));
-  for (const architecture of ["arm64", "x86_64"]) {
-    if (!architectures.has(architecture)) {
-      throw new Error(
-        `[release:mac] Native demo engine for ${description} is missing ${architecture}: ${helperPath}`,
-      );
-    }
-  }
-}
-
-async function assertBundledAttentionNotch(resourcesPath, description) {
-  const helperPath = path.join(resourcesPath, "native", "ade-attention-notch");
-  const resourceBundlePath = path.join(
-    resourcesPath,
-    "native",
-    "ADEAttentionNotch_ADEAttentionNotch.bundle",
-  );
-  await assertPathExists(helperPath, `native Attention Notch helper for ${description}`);
-  await assertExecutable(helperPath, `native Attention Notch helper for ${description}`);
-  await assertPathExists(
-    resourceBundlePath,
-    `native Attention Notch resource bundle for ${description}`,
-  );
-  const { stdout } = await execFileAsync("lipo", ["-archs", helperPath]);
-  const architectures = new Set(stdout.trim().split(/\s+/).filter(Boolean));
-  for (const architecture of ["arm64", "x86_64"]) {
-    if (!architectures.has(architecture)) {
-      throw new Error(
-        `[release:mac] Native Attention Notch helper for ${description} is missing ${architecture}: ${helperPath}`,
-      );
-    }
-  }
+  await assertUniversalBinary(helperPath, "Native demo engine", description);
 }
 
 /**
- * The capture helper is a universal Mach-O like the notch, and the arch check is
- * the point: a helper built for one arch ships happily, then fails to spawn on
- * the other half of the install base with nothing but an EACCES-shaped silence.
+ * The music player host and its pages (Apple Music's and Spotify's). Missing, the Music tab says the
+ * install is broken; one arch short, Music fails on half the Macs.
+ */
+async function assertBundledMusicHost(resourcesPath, description) {
+  const hostDir = path.join(resourcesPath, "native", "ade-music-host");
+  const helperPath = path.join(hostDir, "ade-music-host");
+  await assertPathExists(helperPath, `Apple Music player host for ${description}`);
+  await assertExecutable(helperPath, `Apple Music player host for ${description}`);
+  // Not ade-icon.png: the shared page links it at https://music.ade.local/,
+  // which only WebView2 (Windows) serves; the macOS host never loads it.
+  for (const pageFile of ["index.html", "player.js"]) {
+    await assertPathExists(path.join(hostDir, "page", pageFile), `Apple Music player page ${pageFile} for ${description}`);
+    // Spotify plays inside ADE from its own page in the same host.
+    await assertPathExists(path.join(hostDir, "page-spotify", pageFile), `Spotify player page ${pageFile} for ${description}`);
+  }
+  await assertUniversalBinary(helperPath, "Apple Music player host", description);
+}
+
+/**
+ * The capture helper is a universal Mach-O, and the arch check is the point
+ * (see assertUniversalBinary): a one-arch helper fails with nothing but an
+ * EACCES-shaped silence.
  */
 async function assertBundledCaptureHelper(resourcesPath, description) {
   const helperPath = path.join(resourcesPath, "native", "ade-capture-helper");
   await assertPathExists(helperPath, `native capture helper for ${description}`);
   await assertExecutable(helperPath, `native capture helper for ${description}`);
-  const { stdout } = await execFileAsync("lipo", ["-archs", helperPath]);
-  const architectures = new Set(stdout.trim().split(/\s+/).filter(Boolean));
-  for (const architecture of ["arm64", "x86_64"]) {
-    if (!architectures.has(architecture)) {
-      throw new Error(
-        `[release:mac] Native capture helper for ${description} is missing ${architecture}: ${helperPath}`,
-      );
-    }
-  }
+  await assertUniversalBinary(helperPath, "Native capture helper", description);
   // The gesture is useless without the usage string: macOS refuses the Screen
   // Recording prompt outright for an app that does not declare one, so the
   // capture fails with no way for the user to find out why.
@@ -412,7 +410,7 @@ async function findArtifact(regex, description) {
 async function validateSignedApp(appPath, description) {
   console.log(`[release:mac] Validating ${description}: ${appPath}`);
   await execFileAsync("codesign", ["--verify", "--deep", "--strict", "--verbose=4", appPath]);
-  await execFileAsync("xcrun", ["stapler", "validate", appPath]);
+  await staplerValidate(appPath);
   await execFileAsync("spctl", ["-a", "-vvv", "--type", "execute", appPath]);
 }
 
@@ -528,10 +526,10 @@ async function validatePackagedRuntime(appPath, description, expectedArch, optio
   await assertExecutable(adeCliInstallerPath, "bundled ADE CLI PATH installer");
   await assertPathExists(nodePtyModulePath, "unpacked node-pty module");
   await assertPathExists(smokeScriptPath, "unpacked packaged runtime smoke script");
-  await assertBundledAttentionNotch(resourcesPath, description);
   await assertBundledMacDesktopDriver(resourcesPath, description);
   await assertBundledCaptureHelper(resourcesPath, description);
   await assertBundledAdeMedia(resourcesPath, description);
+  await assertBundledMusicHost(resourcesPath, description);
   await assertNoRuntimeFetchedToolPayload(nodeModulesPath, description);
   await assertBundledCrsqliteRuntime(unpackedPath, unpackedPaths, description, expectedArch);
   assertPackagedTuiEsmShims(await fs.readFile(adeCliTuiPath, "utf8"));
@@ -696,23 +694,12 @@ async function validateLatestMacFeed(latestMacPath) {
   );
 }
 
-// Confirm a DMG is notarized + stapled (no mount needed — the per-arch .app it
-// wraps is already validated directly).
-async function validateDmgStapled(dmgPath, description) {
+// Confirm a DMG is intact. The DMG itself is not notarized: the app it wraps
+// was notarized and stapled before the DMG was made, and is validated directly
+// above, so Gatekeeper finds the ticket on the app when ADE is opened.
+async function validateDmg(dmgPath, description) {
   await assertPathExists(dmgPath, description);
-  await execFileAsync("xcrun", ["stapler", "validate", dmgPath]);
-  try {
-    await execFileAsync("spctl", ["-a", "-vvv", "--type", "open", dmgPath]);
-  } catch (error) {
-    const combinedOutput = `${error?.stdout ?? ""}\n${error?.stderr ?? ""}`;
-    if (!combinedOutput.includes("source=Insufficient Context")) {
-      throw error;
-    }
-    console.warn(
-      `[release:mac] DMG Gatekeeper open assessment for ${description} returned 'Insufficient Context' ` +
-        "(expected for some locally-built, non-quarantined DMGs); notarization staple already validated.",
-    );
-  }
+  await execFileAsync("hdiutil", ["verify", dmgPath]);
 }
 
 const ARCH_OUTPUT_DIRS = [
@@ -746,6 +733,7 @@ for (const { arch, appPath } of archApps) {
   const label = `signed ${arch} app bundle`;
   await assertPathExists(appPath, label);
   await validateSignedApp(appPath, label);
+  await assertMachOArchitectures(appPath, arch, label);
   await validateProvisionedWebAuthnEntitlement(appPath, label);
   await validateAppUpdateYaml(path.join(appPath, "Contents", "Resources"), label);
   await validatePackagedRuntime(appPath, label, arch, { deepSmoke: arch === "universal" || arch === hostArch });
@@ -758,7 +746,7 @@ if (!skipDmg) {
   for (const { arch } of archApps) {
     const dmgPath =
       resolveAbsolute(readFlag("--dmg")) ?? (await findArtifact(new RegExp(`^ADE-.+-${arch}\\.dmg$`), `${arch} mac dmg`));
-    await validateDmgStapled(dmgPath, `${arch} dmg artifact`);
+    await validateDmg(dmgPath, `${arch} dmg artifact`);
   }
 }
 

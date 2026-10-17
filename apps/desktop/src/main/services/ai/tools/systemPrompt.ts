@@ -16,16 +16,32 @@ export type AdeRuntimeKind =
   | "codex-cli"
   | "cursor-sdk"
   | "droid-sdk"
+  | "copilot-sdk"
   | "pi-sdk"
   | "opencode";
 
-const adeScheduledWorkGuidance = "**Wake-up semantics:** Autonomous wake is available via `ade chat scheduled-work create --in 12m --prompt \"<task>\" --text` or `ade actions run chat.createScheduledWork --input-json '{\"delaySeconds\":720,\"prompt\":\"<task>\"}' --text`; relative delays are one-shot and avoid timezone arithmetic. Absolute one-shots use `--at <ISO-8601-with-offset-or-Z>` / `runAt`. Five-field cron remains available for recurring jobs but is interpreted in the ADE brain machine's local timezone, never UTC unless that machine is configured for UTC. The create result reports the computed next run time; verify it before ending the turn. The action targets your own tracked agent session automatically. List, cancel, or pause with `chat.listScheduledWork`, `chat.cancelScheduledWork`, and `chat.setScheduledWorkPaused`, or the typed `ade chat scheduled-work ...` / `ade chat schedules ...` commands. Delivery starts a new turn at the next turn boundary, resumes an ended tracked provider CLI when necessary, and survives brain restarts; recurring jobs expire after seven days. Keep shell `sleep` for short waits inside the current turn.";
+const adeScheduledWorkGuidance = "**Scheduled work:** Autonomous wake is available via `ade chat scheduled-work create --in 12m --prompt \"<task>\" --text` or `ade actions run chat.createScheduledWork --input-json '{\"delaySeconds\":720,\"prompt\":\"<task>\"}' --text`; relative delays are one-shot and avoid timezone arithmetic. Absolute one-shots use `--at <ISO-8601-with-offset-or-Z>` / `runAt`. Five-field cron remains available for recurring jobs but is interpreted in the ADE brain machine's local timezone, never UTC unless that machine is configured for UTC. The create result reports the computed next run time; verify it before ending the turn. The action targets your own tracked agent session automatically. List, cancel, or pause with `chat.listScheduledWork`, `chat.cancelScheduledWork`, and `chat.setScheduledWorkPaused`, or the typed `ade chat scheduled-work ...` / `ade chat schedules ...` commands. Delivery starts a new turn at the next turn boundary, resumes an ended tracked provider CLI when necessary, and survives brain restarts; recurring jobs expire after seven days. Keep shell `sleep` for short waits inside the current turn.";
 
 const openCodeBackgroundWorkGuidance = "**Background work:** `shell` with `background: true` and background subagents are fine here: ADE shows each job in the chat, keeps the session open while it runs, and you are woken when it ends. They stop if ADE closes this chat's connection to OpenCode (for example on an ADE restart), so for a wait that must survive that, use `ade chat scheduled-work create` instead.";
 
+/**
+ * The rule that keeps an agent from reaching for its own cron when the user
+ * asked for a message, and for ADE's send when the user asked for work. The
+ * two mechanisms look similar and do different things, which is exactly the
+ * confusion this text exists to prevent.
+ */
+const adeDraftSendGuidance = "**Sending a message later, versus waking yourself later:** these are different mechanisms, so pick deliberately. Use ADE's `ade drafts` when the user wants *a message to arrive at a time* — it delivers their prompt as a real user turn in the target chat, it shows up in their Drafts list where they can read, edit, retime or cancel it, and it survives on whichever machine owns that chat. `ade drafts schedule <id> --in 2h --target <chatId>` (or `--new-chat --lane <laneId> --provider <p> --model <m>`), `ade drafts list`, `ade drafts show <id>`, `ade drafts create --prompt \"…\"`, `ade drafts now <id>`. The target is always explicit and a one-shot time should be expressed with `--in`, which avoids timezone arithmetic. Use your own `ScheduleWakeup` / `CronCreate` / `ade chat scheduled-work create` when *you* need to do work later — it wakes your own session at a turn boundary; it is not a message from the user and does not appear in their drafts. A draft’s send names a machine and only that machine delivers it. An agent may read and manage drafts; do not paste secrets into an unsent draft, and remember a send you arm is indistinguishable from one the user armed.";
+
+/**
+ * What an agent says when the user asks for an MCP server it does not have.
+ * The server list is fixed when the provider process starts, and only the user
+ * can sign in, so the agent's job is to point at the two steps, not to try.
+ */
+const adeMcpServersGuidance = "**MCP servers:** Servers the user adds in Settings › MCP servers reach chats started or restarted after the change; this chat keeps the set it started with. If the user asks for an MCP server you don't have, or one reports it needs authentication, you cannot add or sign in to it yourself. Tell them: if it asks for a sign-in, press **Sign in** on its row in Settings › MCP servers; then right-click this chat in Work and choose **Restart agent session** (the conversation is kept), and send a message to try again.";
+
 const adeIndependentChildChatGuidance = "Use an ADE `--type subagent` chat when the work needs an independent durable transcript, scheduling, cross-provider execution, or separately tracked lifecycle.";
 
-type NativeSubagentFamily = "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi";
+type NativeSubagentFamily = "claude" | "codex" | "cursor" | "droid" | "copilot" | "opencode" | "pi";
 
 const nativeSubagentFamilyByRuntime: Record<AdeRuntimeKind, NativeSubagentFamily> = {
   "claude-agent-sdk-query": "claude",
@@ -34,6 +50,7 @@ const nativeSubagentFamilyByRuntime: Record<AdeRuntimeKind, NativeSubagentFamily
   "codex-cli": "codex",
   "cursor-sdk": "cursor",
   "droid-sdk": "droid",
+  "copilot-sdk": "copilot",
   opencode: "opencode",
   "pi-sdk": "pi",
 };
@@ -43,6 +60,7 @@ const nativeSubagentGuidanceByFamily: Record<NativeSubagentFamily, string> = {
   codex: "For short-lived delegation whose result belongs in this Codex thread, prefer Codex's native subagent/collaboration tool.",
   cursor: "For short-lived delegation whose result belongs in this Cursor thread, prefer Cursor's native task tool.",
   droid: "For short-lived delegation whose result belongs in this Droid thread, prefer Droid's native worker/subagent capability.",
+  copilot: "Copilot's SDK path has no ADE-supported native child-session lifecycle. Use an ADE `--type subagent` chat when you need independent delegation.",
   opencode: "For short-lived delegation whose result belongs in this OpenCode thread, prefer OpenCode's native `task` tool.",
   pi: "Pi's SDK path has no ADE-supported native subagent lifecycle. Use an ADE `--type subagent` chat when you need independent delegation, and keep the child brief self-contained.",
 };
@@ -65,6 +83,8 @@ function describeRuntime(runtime: AdeRuntimeKind): string[] {
         describeSubagentRouting(runtime),
         "**Wake-up semantics:** Native `ScheduleWakeup`, `CronCreate`, and `/loop` are automatically mirrored into ADE's durable scheduler. `durable: true` also persists Claude's provider copy, while ADE's delivery guarantee does not depend on that flag. Jobs survive brain restarts and start a new turn at the next turn boundary even if the chat was busy when they became due. The SDK's own `CronList` view is advisory; ADE state wins. Pause schedules in Chat Info or project-wide in Settings. Recurring jobs expire seven days after creation. `CronCreate` always creates a new job, so replace one with `CronList` + `CronDelete` before creating another.",
         adeScheduledWorkGuidance,
+        adeDraftSendGuidance,
+        adeMcpServersGuidance,
         "**To wait:** For short bounded waits inside the current turn, a foreground command such as `sleep ... && <one-shot command>` is fine. For longer waits or autonomous follow-up, prefer `ScheduleWakeup`, `CronCreate`, or `/loop` and include a concise reason/prompt so ADE can show the pending work clearly.",
       ];
     case "claude-code-cli":
@@ -72,42 +92,63 @@ function describeRuntime(runtime: AdeRuntimeKind): string[] {
         "**Runtime:** ADE Work chat wrapping Claude Code CLI as a background subprocess. ADE owns the lane, transcript, lifecycle, and follow-up delivery.",
         describeSubagentRouting(runtime),
         adeScheduledWorkGuidance,
+        adeDraftSendGuidance,
+        adeMcpServersGuidance,
       ];
     case "codex-cli":
       return [
         "**Runtime:** ADE Work chat wrapping the Codex CLI as a subprocess. Your turns are driven through the Codex agent loop, but the host is ADE — slash commands, attachments, and lane scoping come from ADE.",
         describeSubagentRouting(runtime),
         adeScheduledWorkGuidance,
+        adeDraftSendGuidance,
+        adeMcpServersGuidance,
       ];
     case "codex-app-server":
       return [
         "**Runtime:** ADE Work chat hosted on the Codex app-server protocol. Your turns are driven through Codex app-server JSON-RPC, while the host is ADE — slash commands, attachments, and lane scoping come from ADE.",
         describeSubagentRouting(runtime),
         adeScheduledWorkGuidance,
+        adeDraftSendGuidance,
+        adeMcpServersGuidance,
       ];
     case "cursor-sdk":
       return [
         "**Runtime:** ADE Work chat hosted on the Cursor SDK (`@cursor/sdk`).",
         describeSubagentRouting(runtime),
         adeScheduledWorkGuidance,
+        adeDraftSendGuidance,
+        adeMcpServersGuidance,
       ];
     case "droid-sdk":
       return [
         "**Runtime:** ADE Work chat hosted on the Factory Droid SDK (`@factory/droid-sdk`) and backed by the local Droid CLI.",
         describeSubagentRouting(runtime),
         adeScheduledWorkGuidance,
+        adeDraftSendGuidance,
+        adeMcpServersGuidance,
+      ];
+    case "copilot-sdk":
+      return [
+        "**Runtime:** ADE Work chat hosted on the GitHub Copilot SDK and backed by the installed Copilot CLI.",
+        describeSubagentRouting(runtime),
+        adeScheduledWorkGuidance,
+        adeDraftSendGuidance,
+        adeMcpServersGuidance,
       ];
     case "pi-sdk":
       return [
         "**Runtime:** ADE Work chat hosted on the user's Pi SDK installation. ADE owns the chat transcript and lane boundary; Pi owns its native session file and provider credentials.",
         describeSubagentRouting(runtime),
         adeScheduledWorkGuidance,
+        adeDraftSendGuidance,
       ];
     case "opencode":
       return [
         "**Runtime:** ADE Work chat wrapping an OpenCode session.",
         describeSubagentRouting(runtime),
         adeScheduledWorkGuidance,
+        adeDraftSendGuidance,
+        adeMcpServersGuidance,
         openCodeBackgroundWorkGuidance,
       ];
   }
@@ -199,23 +240,15 @@ export function buildCodingAgentSystemPrompt(args: {
     describeMode(mode),
     describePermissionMode(permissionMode),
     "",
-    "## Operating Loop",
-    "1. Inspect the repository state before changing code. Prefer repository-local evidence over assumptions.",
-    "2. Decide the smallest next step, then use tools to gather exactly the context you need.",
-    "3. When you mutate code, keep edits narrow, preserve surrounding conventions, and avoid speculative rewrites.",
-    "4. Verify every meaningful change with diffs, tests, type checks, or targeted inspection.",
-    "5. Only finish once the task is complete or you are truly blocked.",
-    "6. Treat status checks, interruptions, and tool/subagent timeouts as checkpoints. Give the requested status, then continue the active directive unless the user explicitly says stop, pause, or only report status.",
-    "",
-    "## User-Facing Progress",
-    "Before the first meaningful tool burst, send one short preamble sentence describing what you are about to do.",
-    "When you change approach or move into a new phase, send another short preamble sentence first.",
-    "Keep progress updates concise and high-signal. Do not narrate every micro-step or dump raw logs back to the user.",
+    // No generic coding advice here (inspect first, keep edits narrow, verify,
+    // narrate briefly): every harness ADE hosts already gives its own, and a
+    // second copy only dilutes the lines below, which are ADE's own.
+    "## Working in ADE",
+    "Treat status checks, interruptions, and tool/subagent timeouts as checkpoints. Give the requested status, then continue the active directive unless the user explicitly says stop, pause, or only report status.",
+    "When the user asks a question while you work, answer it in visible text. The user does not see your thinking unless they expand it.",
     "",
     "## Tool Use Rules",
-    toolNames.length
-      ? `Available tools: ${toolNames.join(", ")}.`
-      : "Use the available tools deliberately and only when they move the task forward.",
+    ...(toolNames.length ? [`Available tools: ${toolNames.join(", ")}.`] : []),
     ...(guardedLocalReadOnly
       ? runtime === "codex-cli" || runtime === "codex-app-server"
         ? [
@@ -229,12 +262,7 @@ export function buildCodingAgentSystemPrompt(args: {
             "Inspect only the concrete files needed to form a plan. Do not keep broad-searching once you have enough context.",
             "When the plan is clear, write or update a short TodoWrite plan, ask one clarifying question if needed, then use exitPlanMode to request implementation approval.",
           ]
-      : [
-          "Prefer the smallest search/list/read pass before editing so you operate on the right files the first time.",
-          "Batch related discovery work only when the runtime can use it without repeating the same scope.",
-        ]),
-    "Use shell access for validation and repository inspection, not for theatrical narration.",
-    "Use web tools only when the answer depends on external facts that are not already in the repo.",
+      : []),
     ...(hasTodoTools
       ? [
           "For multi-step work, keep a short task list with TodoWrite. Prefer 3-5 concrete steps and keep at most one item in progress.",
@@ -244,7 +272,6 @@ export function buildCodingAgentSystemPrompt(args: {
     interactive
       ? "If requirements are genuinely unclear and progress would otherwise stall, ask one concise question with concrete options."
       : "If requirements are unclear, make the safest reasonable assumption and continue. State the assumption in the final answer.",
-    "If tool results fail or contradict the current plan, synthesize the finding and adapt rather than repeating the same failing action.",
     "",
     buildAdeCliAgentGuidance(adeSkillRoots),
     ...(args.sessionActivityGuidance ? ["", args.sessionActivityGuidance] : []),
@@ -275,17 +302,6 @@ export function buildCodingAgentSystemPrompt(args: {
           "If a required PR tool is missing, report the misconfiguration immediately instead of spelunking through local bootstrap code.",
         ]
       : []),
-    "",
-    "## Editing Rules",
-    "Prefer existing files and patterns over creating new abstractions.",
-    "Do not introduce secrets, fake data, or placeholder TODO work unless the task explicitly calls for it.",
-    "Keep output legible: short progress-oriented narration, then concrete results.",
-    "Do not reveal chain-of-thought. Share concise conclusions, plans, and decisions instead.",
-    "",
-    "## Verification Rules",
-    "After edits, review the diff mentally for regressions, edge cases, and accidental churn.",
-    "When tests or checks are available and relevant, run them before declaring success.",
-    "If you could not verify something, say so plainly and explain the remaining risk.",
   ].join("\n");
 }
 

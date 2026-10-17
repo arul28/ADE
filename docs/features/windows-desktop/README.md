@@ -169,7 +169,9 @@ CLI and the pane unchanged:
   starts normally.
 - `WINDOWS_DESKTOP_LOCKED` — the PC is locked; unlock resumes.
 - `WINDOWS_DESKTOP_NOT_CONSOLE_SESSION` — the brain is not in the console
-  session (for example, started over SSH), so the private seat is unavailable.
+  session (for example, it started while the user was on Remote Desktop, or
+  over SSH), so the private seat is unavailable. The brain itself runs there
+  normally; signing in at the PC brings that session back to the console.
 - `WINDOWS_DESKTOP_SIGN_IN_FAILED` / `WINDOWS_DESKTOP_WRONG_PASSWORD` /
   `WINDOWS_DESKTOP_CANCELLED` — the interactive sign-in step.
 - `WINDOWS_DESKTOP_CONSENT_REQUIRED` — a shared seat was asked for without the
@@ -221,6 +223,9 @@ Policy lives at the service and action boundaries, never in prompts:
 
 ## Tooling
 
+- The brain runs one Windows driver per ADE home, shared by every open
+  project. A lane's driver events reach only the project that owns the lane,
+  and a project's cleanup keeps the other projects' screens.
 - On a private screen the pane has no **Release**, **Add app** or **Bring to
   my screen**: a window cannot move between two Windows sessions. The shared
   seat keeps them.
@@ -294,9 +299,8 @@ Policy lives at the service and action boundaries, never in prompts:
   `macDesktop.stop`), and so is a lane with no Windows screen. The older
   `macDesktop.stopPrivate` (private screen only) stays for phones that predate
   `stopSeat`; a host that advertises neither shows no **Stop**.
-- Proof, recording, streaming and the turn time-lapse are the Mac Desktop
-  contract, unchanged, so a phone or browser can watch a Windows lane with the
-  same viewers.
+- Proof, recording and streaming are the Mac Desktop contract, unchanged, so a
+  phone or browser can watch a Windows lane with the same viewers.
 - A recording's raw file is the driver's H.264 MP4. At the stop the desktop
   app's Chromium demo engine makes the demo from it (cuts, speed-ups, zoom,
   pointer, step captions, chapters), as `ade-media` does on macOS; see
@@ -307,8 +311,6 @@ Policy lives at the service and action boundaries, never in prompts:
   with the reason (text and JSON). A movie whose sample tables claim more
   entries than the file holds is refused the same way, before anything is
   allocated for it.
-- A turn's time-lapse clip is deleted when a newer one replaces it, unless a
-  proof artifact points at the file.
 - An ADE desktop app started as administrator cannot be reached by the
   background service (Windows refuses the medium-integrity brain access to the
   elevated app's pipe), so agents get no built-in browser, App Control

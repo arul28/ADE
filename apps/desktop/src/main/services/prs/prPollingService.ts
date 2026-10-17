@@ -201,11 +201,11 @@ export function createPrPollingService({
   const DEFAULT_INTERVAL_MS = 60_000;
   const MIN_INTERVAL_MS = 5_000;
   const MAX_INTERVAL_MS = 5 * 60_000;
-  const EMPTY_DISCOVERY_MIN_INTERVAL_MS = 10 * 60_000;
-  const RELAY_EMPTY_DISCOVERY_MIN_INTERVAL_MS = 30 * 60_000;
+  const DISCOVERY_MIN_INTERVAL_MS = 10 * 60_000;
+  const RELAY_DISCOVERY_MIN_INTERVAL_MS = 30 * 60_000;
   const RELAY_SAFETY_SWEEP_INTERVAL_MS = 15 * 60_000;
   // Epoch (not "never") so the first tick after start still discovers.
-  let lastEmptyDiscoveryAtMs = 0;
+  let lastDiscoveryAtMs = 0;
 
   const readIntervalMs = (): number => {
     const seconds = projectConfigService.get().effective.github?.prPollingIntervalSeconds;
@@ -319,21 +319,22 @@ export function createPrPollingService({
       pendingTargetedPrIds.clear();
       const relayHealthy = isGithubRelayHealthy?.() === true;
       let existing = prService.listAll();
-      if (existing.length === 0) {
-        // Discovery force-refreshes the whole repo snapshot, which is far
-        // heavier than a tracked-PR delta poll. With zero tracked PRs (new
-        // users, non-PR projects) run it on a slow cadence instead of every
-        // tick — user-driven surfaces discover PRs on their own reads anyway.
-        const discoveryIntervalMs = relayHealthy
-          ? RELAY_EMPTY_DISCOVERY_MIN_INTERVAL_MS
-          : EMPTY_DISCOVERY_MIN_INTERVAL_MS;
-        if (Date.now() - lastEmptyDiscoveryAtMs >= discoveryIntervalMs) {
-          lastEmptyDiscoveryAtMs = Date.now();
-          try {
-            existing = await prService.discoverLanePullRequests();
-          } catch (error) {
-            logger.warn("prs.discovery_failed", { error: error instanceof Error ? error.message : String(error) });
-          }
+      // Discovery force-refreshes the whole repo snapshot, which is far
+      // heavier than a tracked-PR delta poll, so it runs on a slow cadence
+      // instead of every tick. It also runs when PRs are already tracked: a PR
+      // an agent opens with `gh pr create` has no row until a snapshot maps it
+      // to its lane by branch, and the desktop's focus reconcile only reaches
+      // a project open on this computer. A viewer on another machine (or a
+      // phone) depends on this sweep to see the PR at all.
+      const discoveryIntervalMs = relayHealthy
+        ? RELAY_DISCOVERY_MIN_INTERVAL_MS
+        : DISCOVERY_MIN_INTERVAL_MS;
+      if (Date.now() - lastDiscoveryAtMs >= discoveryIntervalMs) {
+        lastDiscoveryAtMs = Date.now();
+        try {
+          existing = await prService.discoverLanePullRequests();
+        } catch (error) {
+          logger.warn("prs.discovery_failed", { error: error instanceof Error ? error.message : String(error) });
         }
       }
       if (existing.length === 0) {

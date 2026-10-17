@@ -17,6 +17,7 @@ import type {
 } from "../../../../shared/types";
 import type { Logger } from "../../logging/logger";
 import { getErrorMessage } from "../../shared/utils";
+import { acpProviderOutdatedNotice, readAcpProviderLaunchStanding } from "../../ai/acpProviderDiagnostics";
 import type { ChatRuntimeBudget } from "../chatRuntimeBudget";
 import { AcpRpcError } from "./acpConnection";
 import {
@@ -130,6 +131,29 @@ export type CreateAcpRuntimeArgs<TSteer> = {
 };
 
 /** Identity used to decide whether a process-global model/effort changed. */
+/** Chats already warned this run, so a resumed runtime does not repeat the notice. */
+const outdatedNoticeSessions = new Set<string>();
+
+/**
+ * Warn in the chat when the CLI is older than the range ADE has tested. Runs
+ * after the chat is ready and never delays it; a spawn override (a cloud
+ * runtime) is not the local binary, so it is not checked.
+ */
+function warnWhenProviderOutdated<TSteer>(args: CreateAcpRuntimeArgs<TSteer>, runtime: AcpRuntimeState<TSteer>): void {
+  const sessionId = args.owner.session.id;
+  if (args.spawnOverride || outdatedNoticeSessions.has(sessionId)) return;
+  void readAcpProviderLaunchStanding({ provider: args.provider, cwd: args.spawnPlan.cwd, env: args.spawnPlan.env })
+    .then((info) => {
+      const notice = acpProviderOutdatedNotice(args.provider, info);
+      if (!notice || outdatedNoticeSessions.has(sessionId)) return;
+      outdatedNoticeSessions.add(sessionId);
+      args.callbacks.onEvents(runtime, [notice]);
+    })
+    .catch((error) => {
+      args.logger.warn("agent_chat.acp_version_check_failed", { sessionId, provider: args.provider, error: getErrorMessage(error) });
+    });
+}
+
 export function acpInvocationKey(plan: Pick<AcpSpawnPlan, "command" | "args">): string {
   return JSON.stringify([plan.command, plan.args]);
 }
@@ -158,19 +182,26 @@ function acpSessionAdvertisesEffort<TSteer>(runtime: AcpRuntimeState<TSteer>): b
 /**
  * True when an open runtime can serve `plan` although the invocation keys
  * differ. That is so only when the effort spawn flag is the difference and the
- * session advertises the effort option: the config option already moved the
- * session's effort, so a restart would buy nothing. A build that does not
- * advertise the option (Grok before 1.0.40) takes the effort only from the
- * flag, so it restarts.
+ * session offers the requested effort through its config option: setting the
+ * option then moves the session's effort, so a restart would buy nothing. A
+ * build that does not advertise the option (Grok before 1.0.40), or a session
+ * that does not offer that level (a model whose listing has only low and
+ * medium), takes the effort only from the flag, so it restarts; the flag is
+ * process-wide, and reusing the process would keep the old effort.
  */
 function acpEffortFlagChangeOnly<TSteer>(
   existing: AcpRuntimeState<TSteer>,
   plan: Pick<AcpSpawnPlan, "command" | "args">,
 ): boolean {
-  const withoutFlag = acpInvocationKeyWithout(plan, existing.dialect.reasoningEffortOption?.spawnFlag);
-  return withoutFlag !== null
-    && withoutFlag === existing.invocationKeyWithoutEffortFlag
-    && acpSessionAdvertisesEffort(existing);
+  const option = existing.dialect.reasoningEffortOption;
+  const withoutFlag = acpInvocationKeyWithout(plan, option?.spawnFlag);
+  if (withoutFlag === null || withoutFlag !== existing.invocationKeyWithoutEffortFlag) return false;
+  if (!option || !acpSessionAdvertisesEffort(existing)) return false;
+  const flagIndex = option.spawnFlag ? plan.args.indexOf(option.spawnFlag) : -1;
+  const requested = flagIndex >= 0 ? plan.args[flagIndex + 1] : undefined;
+  // No flag means "the agent's default", which the session can always take.
+  if (requested === undefined) return true;
+  return resolveAcpConfigValue(existing.configOptions, option.configId, requested).kind === "advertised";
 }
 
 /** True when ADE already has a transcript and must suppress `session/load` replay. */
@@ -222,8 +253,8 @@ export function resolveAcpConfigValue(
 
 /**
  * Keep the option set an agent reported back from a config change. An agent
- * that accepted the change and reported no options (Kimi, Copilot's
- * `session/set_model`) runs the value ADE sent, so the local option takes it.
+ * that accepted the change and reported no options (Kimi) runs the value ADE
+ * sent, so the local option takes it.
  * Otherwise a later call would skip a value as current when it is not.
  */
 function recordConfigChange<TSteer>(
@@ -333,9 +364,9 @@ export async function setAcpReasoningEffort<TSteer>(
 /**
  * Put the chat's model on an open session.
  *
- * Copilot takes it through `session/set_model`; Grok, Qwen, and Kimi take it
- * through the `model` config option. A resumed session comes back on the model
- * it last ran, whatever the spawn flag says (Grok 1.0.40), so this runs after
+ * Grok, Qwen, and Kimi take it through the `model` config option. A resumed
+ * session comes back on the model it last ran, whatever the spawn flag says
+ * (Grok 1.0.40), so this runs after
  * every entry, not only after `session/new`. A model the agent does not offer
  * is logged and the session keeps its own model; the turn still runs, and the
  * served-model notice tells the user which model answered. A model the agent
@@ -567,6 +598,7 @@ export async function createAcpRuntime<TSteer>(
   }
 
   await args.callbacks.onReady(runtime);
+  warnWhenProviderOutdated(args, runtime);
   args.setResumeCommand(`chat:${args.provider}:${args.owner.session.id}`);
   args.logger.info("agent_chat.acp_runtime_ready", {
     sessionId: args.owner.session.id,

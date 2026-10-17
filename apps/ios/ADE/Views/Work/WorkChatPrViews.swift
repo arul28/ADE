@@ -61,7 +61,7 @@ func workChatStackOffer(
     guard candidate.repoOwner.caseInsensitiveCompare(selected.repoOwner) == .orderedSame else { return false }
     guard candidate.repoName.caseInsensitiveCompare(selected.repoName) == .orderedSame else { return false }
     if linkedIds.contains(candidate.id) { return false }
-    let claimedByOther = (candidate.chatSessionIds ?? []).contains { $0 != trimmed }
+    let claimedByOther = lanePrClaimingChatSessionIds(candidate).contains { $0 != trimmed }
     return !claimedByOther
   }
   guard !siblings.isEmpty else { return nil }
@@ -79,7 +79,7 @@ func workChatLinkableCatalog(
   let linkedIds = Set(linked.map(\.id))
   return catalog.filter { candidate in
     if linkedIds.contains(candidate.id) { return false }
-    return !((candidate.chatSessionIds ?? []).contains { $0 != trimmed })
+    return !(lanePrClaimingChatSessionIds(candidate).contains { $0 != trimmed })
   }
 }
 

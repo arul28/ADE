@@ -39,6 +39,7 @@ import { SYNC_HOST_BIND_LOOPBACK_ONLY } from "./sharedSyncListener";
 import type { SyncCredentialStore } from "../credentials/credentialStore";
 import { isValidDpopPublicKey, type SyncPairingRecord } from "./syncPairingStore";
 import { resolveBrainMachineSyncStores } from "./brainMachineSyncStores";
+import { readOrCreateLocalDeviceId } from "./deviceRegistryService";
 import { createSyncDpopNonceCache, evaluatePairedHelloDpop, syncDpopFailureMessage } from "./syncDpop";
 import {
   authenticateSyncAccountHello,
@@ -609,7 +610,7 @@ export function createBrainProjectActionsSyncHandler(
       return null;
     }
   };
-  const localDeviceId = ensureSecretFile(args.localDeviceIdPath, 16);
+  const localDeviceId = readOrCreateLocalDeviceId(args.localDeviceIdPath);
   const localSiteId = ensureSecretFile(args.localSiteIdPath, 16);
   // This fallback has no host-side heartbeat timeout; the value is advertised
   // to clients. A 5s default made an otherwise idle Relay tunnel wake its DO

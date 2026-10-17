@@ -15,9 +15,12 @@ import {
   startup,
   tmpHomeRoot,
   tmpRoot,
+  fs,
   waitFor,
+  waitForEvent,
 } from "./agentChatService.testHarness";
 import { describe, expect, it, test, vi } from "vitest";
+import { PERSONAL_CHAT_SYSTEM_PROMPT } from "./personalSession";
 
 
 // ---------------------------------------------------------------------------
@@ -1116,5 +1119,186 @@ describe("Codex approvals under a host permission policy", () => {
         && event.event.itemId === "perm-deny-1"
         && event.event.resolution === "declined")).toBe(true);
     });
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// Personal chat profiles
+//
+// An `embedded` personal chat (an SDK host's, and every row written before
+// profiles) must launch exactly as before; an `assistant` chat (ADE's own
+// Chats surface) launches as a full chat with its own prompt and the reduced
+// skill catalog. A legacy row becomes `assistant` only through the explicit
+// adoption call, and a provider already mid-turn keeps running until the next
+// fresh message.
+// ---------------------------------------------------------------------------
+
+type ClaudeLaunchOptions = {
+  systemPrompt?: string | { type?: string; preset?: string; append?: string };
+  settingSources?: string[];
+  plugins?: Array<{ path: string }>;
+};
+
+function lastClaudeLaunch(): ClaudeLaunchOptions {
+  return vi.mocked(claudeSdkCreateSessionCompat).mock.calls.at(-1)?.[0] as ClaudeLaunchOptions;
+}
+
+/** Every Claude process launched: fresh ones and ones resuming a thread. */
+function claudeLaunches(): ClaudeLaunchOptions[] {
+  return [
+    ...vi.mocked(claudeSdkCreateSessionCompat).mock.calls.map((call) => call[0] as ClaudeLaunchOptions),
+    ...vi.mocked(claudeSdkResumeSessionCompat).mock.calls.map((call) => call[1] as ClaudeLaunchOptions),
+  ];
+}
+
+function expectAssistantLaunch(opts: ClaudeLaunchOptions): void {
+  expect(opts.systemPrompt).toMatchObject({ type: "preset", preset: "claude_code" });
+  const append = (opts.systemPrompt as { append?: string }).append ?? "";
+  expect(append).toContain("You are the user's assistant inside ADE");
+  // The lane-only skills are withheld from the prompt and from every plugin root.
+  expect(append).not.toMatch(/ade-lanes-git|ade-pr-workflows/);
+  for (const plugin of opts.plugins ?? []) {
+    expect(fs.existsSync(path.join(plugin.path, "ade-lanes-git"))).toBe(false);
+  }
+}
+
+/**
+ * A Claude V2 session: the first stream is the init, each later stream is one
+ * turn. When `gate` is given, the first turn says "Still working" and holds
+ * until the gate opens.
+ */
+function makeTurnSession(sessionId: string, gate: Promise<void> | null = null) {
+  let streams = 0;
+  return {
+    sessionId,
+    send: vi.fn(async () => undefined),
+    close: vi.fn(),
+    setPermissionMode: vi.fn(async () => undefined),
+    stream: vi.fn(() => (async function* () {
+      streams += 1;
+      if (streams === 1) {
+        yield { type: "system", subtype: "init", session_id: sessionId, slash_commands: [] };
+        return;
+      }
+      if (streams === 2 && gate) {
+        yield {
+          type: "assistant",
+          message: { content: [{ type: "text", text: "Still working" }], usage: { input_tokens: 1, output_tokens: 1 } },
+        };
+        await gate;
+      }
+      yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+    })()),
+  };
+}
+
+describe("personal chat profiles", () => {
+  it.each([
+    ["absent (an SDK host or a pre-profile row)", undefined],
+    ["embedded", "embedded"],
+    ["assistant", "assistant"],
+  ] as const)("launches a Claude personal chat whose profile is %s", async (_label, personalProfile) => {
+    vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(claudeSdkSession(`sdk-profile-${personalProfile}`) as any);
+    const { service } = createService();
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "sonnet",
+      sessionProfile: personalProfile === "assistant" ? "workflow" : "light",
+      surface: "personal",
+      ...(personalProfile ? { personalProfile } : {}),
+    } as never);
+    await vi.waitFor(() => expect(claudeSdkCreateSessionCompat).toHaveBeenCalled());
+    const opts = lastClaudeLaunch();
+
+    expect((await service.getSessionSummary(session.id))?.personalProfile).toBe(personalProfile);
+    if (personalProfile === "assistant") {
+      expectAssistantLaunch(opts);
+      // The user's own Claude layer loads; the scratch folder has no project layer.
+      expect(opts.settingSources).toEqual(["user"]);
+    } else {
+      // Exactly the pre-profile launch: ADE's neutral prompt, no on-disk
+      // settings, no ADE skill plugins.
+      expect(opts.systemPrompt).toBe(PERSONAL_CHAT_SYSTEM_PROMPT);
+      expect(opts.settingSources).toEqual([]);
+      expect(opts.plugins ?? []).toEqual([]);
+    }
+  });
+
+  it("adopts only a legacy personal row, and relaunches an idle provider as the assistant", async () => {
+    vi.mocked(claudeSdkCreateSessionCompat).mockImplementation(() => makeTurnSession("sdk-adopt-idle") as any);
+    vi.mocked(claudeSdkResumeSessionCompat).mockImplementation(() => makeTurnSession("sdk-adopt-idle-resumed") as any);
+    const { service } = createService();
+    const create = (extra: Record<string, unknown>) => service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "sonnet",
+      sessionProfile: "light",
+      ...extra,
+    } as never);
+    const work = await create({});
+    const embedded = await create({ surface: "personal", personalProfile: "embedded" });
+    const legacy = await create({ surface: "personal" });
+    await vi.waitFor(() => expect(claudeSdkCreateSessionCompat).toHaveBeenCalledTimes(3));
+
+    expect(service.adoptLegacyPersonalSessionAsAssistant(work.id)).toBe(false);
+    expect(service.adoptLegacyPersonalSessionAsAssistant(embedded.id)).toBe(false);
+    expect((await service.getSessionSummary(embedded.id))?.personalProfile).toBe("embedded");
+
+    expect(service.adoptLegacyPersonalSessionAsAssistant(legacy.id)).toBe(true);
+    expect(service.adoptLegacyPersonalSessionAsAssistant(legacy.id)).toBe(false);
+    expect((await service.getSessionSummary(legacy.id))?.personalProfile).toBe("assistant");
+
+    // The idle process was built for the old profile; the next turn gets a new one.
+    await service.runSessionTurn({ sessionId: legacy.id, text: "hello", timeoutMs: 15_000 });
+    expect(claudeLaunches()).toHaveLength(4);
+    expectAssistantLaunch(claudeLaunches().at(-1)!);
+  });
+
+  it("keeps a mid-turn provider through the turn and its steers, and restarts it on the next new message", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    let finishTurn!: () => void;
+    const gate = new Promise<void>((resolve) => { finishTurn = resolve; });
+    let launches = 0;
+    const launch = () => {
+      launches += 1;
+      return makeTurnSession(`sdk-adopt-midturn-${launches}`, launches === 1 ? gate : null) as any;
+    };
+    vi.mocked(claudeSdkCreateSessionCompat).mockImplementation(launch);
+    vi.mocked(claudeSdkResumeSessionCompat).mockImplementation(launch);
+    const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "sonnet",
+      sessionProfile: "light",
+      surface: "personal",
+    } as never);
+
+    const activeTurn = service.runSessionTurn({ sessionId: session.id, text: "long job", timeoutMs: 15_000 });
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope => event.event.type === "text" && event.event.text.includes("Still working"),
+    );
+    expect(launches).toBe(1);
+
+    expect(service.adoptLegacyPersonalSessionAsAssistant(session.id)).toBe(true);
+    const steer = await service.sendMessage({ sessionId: session.id, text: "also this" }, { routeActiveToSteer: true });
+    expect(steer).toMatchObject({ queued: true });
+    // Neither the adoption nor the steer replaced the process mid-turn.
+    expect(launches).toBe(1);
+
+    finishTurn();
+    await activeTurn;
+    // The queued steer is delivered on the same process as its own turn.
+    await vi.waitFor(() => {
+      expect(events.filter((event) => event.event.type === "done")).toHaveLength(2);
+    });
+    expect(launches).toBe(1);
+
+    await service.runSessionTurn({ sessionId: session.id, text: "next question", timeoutMs: 15_000 });
+    expect(launches).toBe(2);
+    expectAssistantLaunch(claudeLaunches().at(-1)!);
   });
 });

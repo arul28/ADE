@@ -7,19 +7,23 @@
  *
  * Two provider-specific notes:
  *
- * - `qwen` and `copilot` are npm bins, so on Windows they resolve to a `.cmd`
- *   shim. `resolveCliSpawnInvocation` in the ACP connection rewrites that into
- *   the form Node will spawn, so a shim is a usable answer here.
+ * - `qwen` is an npm bin, so on Windows it resolves to a `.cmd` shim.
+ *   `resolveCliSpawnInvocation` in the ACP connection rewrites that into the
+ *   form Node will spawn, so a shim is a usable answer here. `copilot` is an
+ *   npm bin too, but the Copilot SDK spawns it with no shell, so its resolver
+ *   follows the shim to the native `copilot.exe` (see below).
  * - `kimi` is a native binary and `grok` is a Rust binary, so
  *   `preferNativeExecutablePath` picks the real executable when a shim sits
  *   beside it.
  */
 
 import fs from "node:fs";
+import path from "node:path";
 import type { DetectedAuth } from "./authDetector";
 import { resolveExecutableCandidatesFromKnownLocations } from "./cliExecutableResolver";
 import { preferNativeExecutablePath } from "../shared/processExecution";
 import type { AcpChatProvider } from "../../../shared/types/chat";
+type ResolvableCliProvider = AcpChatProvider | "copilot";
 
 export type AcpExecutableResolution = {
   path: string;
@@ -27,7 +31,7 @@ export type AcpExecutableResolution = {
 };
 
 /** Environment overrides ADE honors, in order, per provider. */
-const ACP_EXECUTABLE_ENV_KEYS: Record<AcpChatProvider, readonly string[]> = {
+const ACP_EXECUTABLE_ENV_KEYS: Record<ResolvableCliProvider, readonly string[]> = {
   qwen: ["QWEN_EXECUTABLE", "QWEN_CODE_EXECUTABLE"],
   kimi: ["KIMI_EXECUTABLE", "KIMI_CODE_EXECUTABLE"],
   grok: ["GROK_EXECUTABLE", "XAI_GROK_EXECUTABLE"],
@@ -36,7 +40,7 @@ const ACP_EXECUTABLE_ENV_KEYS: Record<AcpChatProvider, readonly string[]> = {
 };
 
 /** The command name each provider installs. */
-const ACP_EXECUTABLE_COMMANDS: Record<AcpChatProvider, string> = {
+const ACP_EXECUTABLE_COMMANDS: Record<ResolvableCliProvider, string> = {
   qwen: "qwen",
   kimi: "kimi",
   grok: "grok",
@@ -44,7 +48,7 @@ const ACP_EXECUTABLE_COMMANDS: Record<AcpChatProvider, string> = {
   devin: "devin",
 };
 
-function findAcpAuthPath(provider: AcpChatProvider, auth?: DetectedAuth[]): string | null {
+function findAcpAuthPath(provider: ResolvableCliProvider, auth?: DetectedAuth[]): string | null {
   for (const entry of auth ?? []) {
     if (entry.type !== "cli-subscription" || entry.cli !== provider) continue;
     const candidate = entry.path.trim();
@@ -57,7 +61,7 @@ function findAcpAuthPath(provider: AcpChatProvider, auth?: DetectedAuth[]): stri
 
 /** Resolve one ACP provider CLI. Never throws; always returns something spawnable. */
 export function resolveAcpExecutable(
-  provider: AcpChatProvider,
+  provider: ResolvableCliProvider,
   args?: { auth?: DetectedAuth[]; env?: NodeJS.ProcessEnv },
 ): AcpExecutableResolution {
   const env = args?.env ?? process.env;
@@ -109,8 +113,40 @@ export function resolveGrokExecutable(args?: {
 export function resolveCopilotExecutable(args?: {
   auth?: DetectedAuth[];
   env?: NodeJS.ProcessEnv;
+  platform?: NodeJS.Platform;
+  arch?: string;
 }): AcpExecutableResolution {
-  return resolveAcpExecutable("copilot", args);
+  const resolved = resolveAcpExecutable("copilot", args);
+  const native = copilotNativeExecutableForShim(resolved.path, args?.platform ?? process.platform, args?.arch ?? process.arch);
+  return native ? { ...resolved, path: native } : resolved;
+}
+
+/**
+ * The real `copilot.exe` behind an npm shim on Windows.
+ *
+ * `npm i -g @github/copilot` writes `copilot.cmd`/`copilot.ps1` beside a
+ * `node_modules` tree whose platform package (`@github/copilot-win32-<arch>`)
+ * carries a native `copilot.exe`. The Copilot SDK spawns the CLI path with no
+ * shell, and Node refuses to spawn a `.cmd` that way (CVE-2024-27980), so chats
+ * need the `.exe`. npm may nest the platform package or hoist it.
+ */
+function copilotNativeExecutableForShim(shimPath: string, platform: NodeJS.Platform, arch: string): string | null {
+  if (platform !== "win32") return null;
+  const ext = path.win32.extname(shimPath).toLowerCase();
+  if (ext !== ".cmd" && ext !== ".bat" && ext !== ".ps1" && ext !== "") return null;
+  const shimDir = path.win32.dirname(shimPath);
+  const platformPackage = path.win32.join("@github", `copilot-win32-${arch}`, "copilot.exe");
+  const candidates = [
+    path.win32.join(shimDir, "node_modules", "@github", "copilot", "node_modules", platformPackage),
+    path.win32.join(shimDir, "node_modules", platformPackage),
+  ];
+  return candidates.find((candidate) => {
+    try {
+      return fs.existsSync(candidate);
+    } catch {
+      return false;
+    }
+  }) ?? null;
 }
 
 /**

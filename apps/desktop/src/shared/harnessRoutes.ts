@@ -226,9 +226,45 @@ export const OPENCODE_GO_MODEL_PROTOCOLS: Readonly<Record<string, readonly Route
  * OpenCode Zen's free tier answers "can only be used from within OpenCode" to
  * every other client, so offering it in Claude Code would be a combo that is
  * guaranteed to fail.
+ *
+ * A free-tier model usually spells `-free`, but not always: `big-pickle` was
+ * measured (2026-10-15) with a one-token request on every protocol, and the
+ * gateway answered the same "free tier can only be used from within OpenCode"
+ * on all three. The measured ids below carry no suffix, so they are listed.
  */
+const OPENCODE_ZEN_FREE_TIER_IDS: ReadonlySet<string> = new Set(["big-pickle"]);
+
 export function modelOnlyRunsInOpenCode(sourceProvider: string, modelId: string): boolean {
-  return canonicalSourceProvider(sourceProvider) === "opencode" && /-free$/i.test(modelId.trim());
+  if (canonicalSourceProvider(sourceProvider) !== "opencode") return false;
+  const id = modelId.trim().toLowerCase();
+  return /-free$/.test(id) || OPENCODE_ZEN_FREE_TIER_IDS.has(id);
+}
+
+/**
+ * A source's sign-in kind, when the catalog knows it. An OpenCode OAuth sign-in
+ * is the vendor's own subscription login; a `key` sign-in is a pasted API key.
+ */
+export type HarnessSourceSignInKind = "key" | "oauth" | "external";
+
+/**
+ * OpenCode sign-ins whose token is the vendor's own subscription login, which
+ * answers only inside OpenCode.
+ *
+ * Measured 2026-10-15: an OpenAI sign-in inside OpenCode holds a ChatGPT
+ * token, and api.openai.com refuses it on every protocol ("You have
+ * insufficient permissions for this operation. Missing scopes:
+ * model.request" / "api.responses.write"), so no outside harness can ever
+ * route it. A key-based sign-in of the same provider routes fine; only the
+ * OAuth login is confined to OpenCode.
+ */
+const OPENCODE_SUBSCRIPTION_ONLY_REASONS: Readonly<Record<string, string>> = {
+  openai:
+    "The OpenAI sign-in inside OpenCode is a ChatGPT subscription; it only answers inside OpenCode. Use an OpenAI API key, or sign the account in through ADE's proxy as a Codex subscription.",
+};
+
+/** Why an OpenCode sign-in cannot leave OpenCode, or null when it can. */
+export function openCodeSubscriptionSignInReason(providerId: string): string | null {
+  return OPENCODE_SUBSCRIPTION_ONLY_REASONS[canonicalSourceProvider(providerId)] ?? null;
 }
 
 /** A probe verdict for one (source, model), as persisted by main. */
@@ -299,6 +335,12 @@ export function resolveHarnessRoute(args: {
   /** Required for `key`/`opencode` sources: where the source answers. */
   endpoints?: RouteEndpoints;
   probe?: RouteProbeVerdict | null;
+  /**
+   * The source's sign-in kind when the caller knows it. An OpenCode OAuth
+   * sign-in of a subscription-only provider (`OPENCODE_SUBSCRIPTION_ONLY_REASONS`)
+   * is impossible outside OpenCode, whatever the model.
+   */
+  sourceSignInKind?: HarnessSourceSignInKind;
 }): HarnessRoute {
   const { harness, source } = args;
   if (source.kind === "account") {
@@ -315,6 +357,10 @@ export function resolveHarnessRoute(args: {
   }
   const blocked = harnessRouteBlockedReason(harness);
   if (blocked) return { kind: "impossible", reason: blocked };
+  if (source.kind === "opencode" && args.sourceSignInKind === "oauth") {
+    const reason = openCodeSubscriptionSignInReason(source.providerId);
+    if (reason) return { kind: "impossible", reason };
+  }
   if (source.kind === "subscription") {
     // Subscriptions only exist inside the proxy; the harness talks to the proxy
     // in its own protocol and the proxy holds the login.
@@ -514,6 +560,11 @@ export type HarnessRouteSource = {
   /** Provider id for the row's logo. */
   logoProvider: string;
   endpoints: RouteEndpoints;
+  /**
+   * How the source is signed in, when the catalog knows. An OpenCode OAuth
+   * sign-in of a subscription-only provider cannot leave OpenCode.
+   */
+  signInKind?: HarnessSourceSignInKind;
   models: HarnessRouteModel[];
 };
 
@@ -543,6 +594,7 @@ export function routeForListedModel(
     modelId: model.id,
     endpoints: source.endpoints,
     probe: model.probe ?? null,
+    ...(source.signInKind ? { sourceSignInKind: source.signInKind } : {}),
   });
 }
 

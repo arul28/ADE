@@ -1,9 +1,10 @@
-import React, { useCallback, useMemo } from "react";
+import React, { useCallback, useContext, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import { remarkCachedParse } from "./remarkCachedParse";
 import { FileCode } from "@phosphor-icons/react";
 
-import { MOSAIC_FENCE_LANGUAGE } from "../../../shared/chatMosaic";
 import { openFence, SCENE_FENCE_LANGUAGE, sceneScopeKeyFor } from "../../../shared/chatScene";
 import { MermaidDiagram } from "../shared/MermaidDiagram";
 import {
@@ -22,11 +23,13 @@ import {
   type WorkspacePathLocation,
 } from "./chatWorkspacePaths";
 import { HighlightedCode } from "./CodeHighlighter";
-import { MosaicCard } from "./MosaicCard";
+import { normalizeMathDelimiters } from "./chatMath";
+import { MathFormula } from "./MathFormula";
 import { ProofCitationFigure, ProofCompareFigure } from "./ChatProofCitation";
-import { SceneFrame } from "./SceneFrame";
+import { SceneAnswerContext, SceneFrame } from "./SceneFrame";
 import { TranscriptChip } from "./ChipText";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
+import { useChatLinkContextMenu } from "./useChatLinkContextMenu";
 import { chipFromDeeplinkTarget } from "../../../shared/chips";
 import { parseDeeplink } from "../../../shared/deeplinks";
 import {
@@ -36,17 +39,6 @@ import {
   useThreadEntityLookup,
 } from "./threadEntities";
 
-/**
- * Threaded into MarkdownBlock only for Claude-family sessions. When present, a
- * ```mosaic fence renders as an interactive card instead of a plain code block.
- * `scope` is the transcript row's stable key so byte-identical cards at
- * different positions keep independent answered state.
- */
-export type MosaicRenderContext = {
-  cardKeyFor: (source: string, scope: string) => string;
-  onSubmit: (submission: { text: string; displayText: string }) => void | Promise<void>;
-};
-
 // File links read as code that happens to be clickable: a quiet tint, the
 // file glyph, and an underline only on hover. A border plus an underline plus
 // a glyph on every path made a dense paragraph look like a form.
@@ -54,7 +46,7 @@ const PATH_LINK_BASE =
   "inline-flex max-w-full cursor-pointer items-baseline gap-1 whitespace-normal [overflow-wrap:anywhere] rounded-md align-baseline"
   + " decoration-1 underline-offset-[3px] transition-colors hover:underline focus-visible:outline-none focus-visible:ring-1";
 const PATH_LINK_TONE = {
-  neutral: "bg-white/[0.06] text-white/88 decoration-white/40 hover:bg-white/[0.1] hover:text-white focus-visible:ring-white/30",
+  neutral: "bg-(color:--chat-ink)/[0.06] text-(color:--chat-ink)/88 decoration-(color:--chat-ink)/40 hover:bg-(color:--chat-ink)/[0.1] hover:text-(color:--chat-ink) focus-visible:ring-(color:--chat-ink)/30",
   accent: "bg-sky-400/[0.08] text-sky-200/95 decoration-sky-300/45 hover:bg-sky-400/[0.14] hover:text-sky-100 focus-visible:ring-sky-300/40",
 } as const;
 
@@ -108,7 +100,8 @@ function WorkspacePathLink({
       {content}
     </span>
   ) : (
-    <button type="button" className={className} onClick={onOpen} title={title}>
+    // The label is reply text: find (⌘F) searches it.
+    <button type="button" data-ade-find-include="" className={className} onClick={onOpen} title={title}>
       {content}
     </button>
   );
@@ -172,8 +165,6 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
   markdown,
   tailMarkdown,
   onOpenWorkspacePath,
-  mosaic,
-  mosaicScopeKey,
   sceneScopeKey,
   sceneLive,
   tone,
@@ -186,21 +177,15 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
    */
   tailMarkdown?: string;
   onOpenWorkspacePath?: (path: string | WorkspacePathLocation) => void;
-  mosaic?: MosaicRenderContext;
-  /** Stable transcript-row key scoping mosaic answered state per message. */
-  mosaicScopeKey?: string;
   /**
    * What names the ROW a scene in this body belongs to, on disk.
    *
-   * Separate from `mosaicScopeKey` because the two need different things from
-   * a key. Mosaic answers live in this window and die with it, so the render
-   * key is fine; a scene's still is a file in the project, looked up again on
-   * every reopen, and the render key moves when the transcript is rebuilt from
-   * a different window of events. See `sceneRowIdentity`.
+   * Not the render key: a scene's still is a file in the project, looked up
+   * again on every reopen, and the render key moves when the transcript is
+   * rebuilt from a different window of events. See `sceneRowIdentity`.
    *
    * Absent means this body's scenes leave no picture behind — the honest answer
-   * for a caller with no row identity. It is never the mosaic key: the two
-   * would be silently interchangeable, and one of them is wrong on disk.
+   * for a caller with no row identity.
    */
   sceneScopeKey?: string;
   /**
@@ -232,6 +217,9 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
   // document that is still arriving.
   const openTail = sceneLive ? openFence(tailMarkdown ? `${markdown}${tailMarkdown}` : markdown) : null;
   const sceneStreaming = openTail?.language === SCENE_FENCE_LANGUAGE;
+  // The reader's message that followed this row, when its scene was answered.
+  const sceneAnswers = useContext(SceneAnswerContext);
+  const sceneAnswer = (sceneScopeKey && sceneAnswers?.get(sceneScopeKey)) || null;
   // A mermaid fence still arriving is shown as its source: half a diagram
   // either fails to parse or draws the wrong graph. Only that fence holds;
   // the diagrams above it, already closed, stay drawn.
@@ -243,13 +231,21 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
   }, [onOpenWorkspacePath]);
   // A `localhost` link in this reply means the chat's machine.
   const runtimePin = useChatRuntimeScope().pin;
+  // Right-click on a link: copy it, or send it to a browser of your choosing.
+  const { onContextMenu: onLinkContextMenu, menu: linkContextMenu } = useChatLinkContextMenu(runtimePin);
   // Lanes, chats, models and the rest that this reply names. The lookup only
   // changes identity when an id or name changes, so settled bodies stay memoized.
   const entityLookup = useThreadEntityLookup();
   const remarkPlugins = useMemo(
-    () => [remarkGfm, [remarkThreadEntities, { lookup: entityLookup, filePathOf: workspaceFilePathOf }]] as React.ComponentProps<typeof ReactMarkdown>["remarkPlugins"],
+    // Single-dollar math stays off: `normalizeMathDelimiters` decides which `$`
+    // are math (money is not) and rewrites those to `$$`.
+    () => [remarkCachedParse, remarkGfm, [remarkMath, { singleDollarTextMath: false }], [remarkThreadEntities, { lookup: entityLookup, filePathOf: workspaceFilePathOf }]] as React.ComponentProps<typeof ReactMarkdown>["remarkPlugins"],
     [entityLookup],
   );
+
+  // Memoized per body, so the settled half is rewritten once, not per tick.
+  const mathMarkdown = useMemo(() => normalizeMathDelimiters(markdown), [markdown]);
+  const mathTail = useMemo(() => (tailMarkdown ? normalizeMathDelimiters(tailMarkdown) : tailMarkdown), [tailMarkdown]);
 
   const components: MarkdownComponents = useMemo(() => ({
     ...(thought
@@ -283,29 +279,29 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
     ul: ({ children }) => <ul className="my-3 list-disc space-y-1.5 pl-5">{children}</ul>,
     ol: ({ children }) => <ol className="my-3 list-decimal space-y-1.5 pl-5">{children}</ol>,
     li: ({ children }) => (
-      <li className={neu ? "pl-1 text-white/86" : "pl-1 text-fg/88"}>{children}</li>
+      <li className={neu ? "pl-1 text-(color:--chat-ink)/86" : "pl-1 text-fg/88"}>{children}</li>
     ),
     blockquote: ({ children }) => (
       <blockquote
-        className={neu ? "border-l-2 border-white/20 pl-4 italic text-white/74" : "border-l-2 border-white/20 pl-4 italic text-fg/72"}
+        className={neu ? "border-l-2 border-(color:--chat-ink)/20 pl-4 italic text-(color:--chat-ink)/74" : "border-l-2 border-(color:--chat-ink)/20 pl-4 italic text-fg/72"}
       >
         {children}
       </blockquote>
     ),
     table: ({ children }) => (
-      <div className="my-4 overflow-x-auto rounded-xl border border-white/[0.06] bg-[#0A090E]/60 shadow-[inset_0_1px_0_rgba(255,255,255,0.02)]">
+      <div className="my-4 overflow-x-auto rounded-xl border border-(color:--chat-ink)/[0.06] bg-(color:--chat-table-bg) shadow-[inset_0_1px_0_rgba(255,255,255,0.02)]">
         <table className="min-w-full border-separate border-spacing-0 text-[length:calc(var(--chat-font-size)*12/14)]">{children}</table>
       </div>
     ),
-    thead: ({ children, node: _, ...props }) => <thead className="bg-white/[0.04]" {...props}>{children}</thead>,
+    thead: ({ children, node: _, ...props }) => <thead className="bg-(color:--chat-ink)/[0.04]" {...props}>{children}</thead>,
     tbody: ({ children, node: _, ...props }) => <tbody {...props}>{children}</tbody>,
     tr: ({ children, node: _, ...props }) => <tr className="align-top" {...props}>{children}</tr>,
     th: ({ children, node: _, ...props }) => (
       <th
         className={
           neu
-            ? "break-words border-b border-white/[0.06] px-3 py-2 text-left font-medium text-white/88 first:rounded-tl-xl last:rounded-tr-xl"
-            : "break-words border-b border-white/[0.06] px-3 py-2 text-left font-medium text-fg/82 first:rounded-tl-xl last:rounded-tr-xl"
+            ? "break-words border-b border-(color:--chat-ink)/[0.06] px-3 py-2 text-left font-medium text-(color:--chat-ink)/88 first:rounded-tl-xl last:rounded-tr-xl"
+            : "break-words border-b border-(color:--chat-ink)/[0.06] px-3 py-2 text-left font-medium text-fg/82 first:rounded-tl-xl last:rounded-tr-xl"
         }
         {...props}
       >
@@ -316,8 +312,8 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
       <td
         className={
           neu
-            ? "break-words border-b border-white/[0.05] px-3 py-2 align-top text-white/82 last:border-r-0"
-            : "break-words border-b border-white/[0.05] px-3 py-2 align-top text-fg/76 last:border-r-0"
+            ? "break-words border-b border-(color:--chat-ink)/[0.05] px-3 py-2 align-top text-(color:--chat-ink)/82 last:border-r-0"
+            : "break-words border-b border-(color:--chat-ink)/[0.05] px-3 py-2 align-top text-fg/76 last:border-r-0"
         }
         {...props}
       >
@@ -329,15 +325,17 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
     ),
     code: ({ className, children }) => {
       const text = String(children ?? "");
+      // remark-math hands formulas over as code with these classes.
+      const classes = typeof className === "string" ? className.split(/\s+/) : [];
+      if (classes.includes("language-math")) {
+        return <MathFormula tex={text} display={classes.includes("math-display")} />;
+      }
       const isBlock = /\n/.test(text) || (typeof className === "string" && className.length > 0);
       const workspacePath = !isBlock ? parseWorkspacePathLocation(text) : null;
       const pathIsClickable = Boolean(workspacePath && looksLikeWorkspacePath(text));
       const language = typeof className === "string"
         ? (className.match(/language-([^\s]+)/)?.[1] ?? "text")
         : "text";
-      if (isBlock && language === MOSAIC_FENCE_LANGUAGE && mosaic) {
-        return <MosaicCard source={text} cardKey={mosaic.cardKeyFor(text, mosaicScopeKey ?? "")} onSubmit={mosaic.onSubmit} />;
-      }
       if (isBlock && language === PROOF_COMPARE_FENCE_LANGUAGE) {
         const block = parseProofCompareBlock(text);
         // A block that names no pair renders as the code it is.
@@ -352,6 +350,7 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
           <SceneFrame
             source={text}
             scopeKey={sceneScopeKey ? sceneScopeKeyFor(sceneScopeKey, text) : null}
+            answeredText={sceneAnswer}
             live={sceneLive}
             streaming={sceneStreaming}
           />
@@ -382,8 +381,8 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
               // Wrap at the token, not inside it: `break-all` split identifiers
               // mid-word ("technic|alDetail"). `anywhere` breaks only a token
               // too long for a line of its own.
-              ? "whitespace-normal [overflow-wrap:anywhere] rounded-md border border-white/[0.1] bg-black/30 px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-white/90"
-              : "whitespace-normal [overflow-wrap:anywhere] rounded-md border border-white/[0.08] bg-black/30 px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/90"
+              ? "whitespace-normal [overflow-wrap:anywhere] rounded-md border border-(color:--chat-ink)/[0.1] bg-(color:--chat-inline-code-bg) px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-(color:--chat-ink)/90"
+              : "whitespace-normal [overflow-wrap:anywhere] rounded-md border border-(color:--chat-ink)/[0.08] bg-(color:--chat-inline-code-bg) px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/90"
           }
         >
           {children}
@@ -431,9 +430,10 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
             event.preventDefault();
             openUrlInAdeBrowser(href, { runtimePin });
           }}
+          onContextMenu={(event) => onLinkContextMenu(event, href)}
           className={
             neu
-              ? "text-white/85 underline decoration-white/28 underline-offset-2 transition-colors hover:text-white hover:decoration-white/45"
+              ? "text-(color:--chat-ink)/85 underline decoration-(color:--chat-ink)/28 underline-offset-2 transition-colors hover:text-(color:--chat-ink) hover:decoration-(color:--chat-ink)/45"
               : "text-accent underline decoration-accent/30 underline-offset-2 transition-colors hover:text-accent/80 hover:decoration-accent/50"
           }
         >
@@ -441,7 +441,7 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
         </a>
       );
     },
-  }), [mosaic, mosaicScopeKey, sceneScopeKey, neu, openWorkspacePath, runtimePin, sceneLive, sceneStreaming, streamingMermaidBody, bubble, thought]);
+  }), [sceneScopeKey, sceneAnswer, neu, openWorkspacePath, runtimePin, sceneLive, sceneStreaming, streamingMermaidBody, bubble, thought, onLinkContextMenu]);
 
   return (
     <div
@@ -453,15 +453,16 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
             ? "ade-bubble-prose text-[length:var(--chat-font-size)] leading-[1.7]"
             : "text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.8]",
         neu
-          ? "text-white/92 prose-headings:text-white/95 prose-p:text-white/88 prose-li:text-white/86 prose-strong:text-white prose-blockquote:text-white/76"
+          ? "text-(color:--chat-ink)/92 prose-headings:text-(color:--chat-ink)/95 prose-p:text-(color:--chat-ink)/88 prose-li:text-(color:--chat-ink)/86 prose-strong:text-(color:--chat-ink) prose-blockquote:text-(color:--chat-ink)/76"
           : "text-fg/96 prose-headings:text-fg prose-p:text-fg/88 prose-li:text-fg/86 prose-strong:text-fg prose-blockquote:text-fg/76",
         "prose-headings:mb-3 prose-headings:mt-6 prose-headings:font-sans prose-headings:font-semibold prose-headings:tracking-tight",
         "prose-p:my-3 prose-p:break-words prose-ul:my-3 prose-ul:pl-5 prose-ol:my-3 prose-ol:pl-5 prose-li:my-1.5 prose-li:break-words prose-li:pl-1",
-        "prose-blockquote:border-l-2 prose-blockquote:border-l-white/20 prose-blockquote:pl-4 prose-hr:my-5 prose-hr:border-white/[0.08]",
+        "prose-blockquote:border-l-2 prose-blockquote:border-l-(color:--chat-ink)/20 prose-blockquote:pl-4 prose-hr:my-5 prose-hr:border-(color:--chat-ink)/[0.08]",
       )}
     >
-      <MarkdownBody markdown={markdown} components={components} remarkPlugins={remarkPlugins} />
-      {tailMarkdown ? <MarkdownBody markdown={tailMarkdown} components={components} remarkPlugins={remarkPlugins} /> : null}
+      <MarkdownBody markdown={mathMarkdown} components={components} remarkPlugins={remarkPlugins} />
+      {mathTail ? <MarkdownBody markdown={mathTail} components={components} remarkPlugins={remarkPlugins} /> : null}
+      {linkContextMenu}
     </div>
   );
 });

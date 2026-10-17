@@ -181,7 +181,7 @@ struct WorkSubagentCapability: Equatable {
 
 func workResolveSubagentCapability(provider: String?) -> WorkSubagentCapability {
   switch providerFamilyKey(provider ?? "") {
-  case "codex", "claude", "opencode", "cursor", "droid", "factory":
+  case "codex", "claude", "opencode", "cursor", "droid", "factory", "muse":
     return WorkSubagentCapability(canList: true)
   default:
     return .none
@@ -426,7 +426,7 @@ func workToolActivityPresentation(tool: String, argsText: String?) -> WorkToolAc
 
 func workToolArgPreview(tool: String, argsText: String?) -> String? {
   guard let argsText else { return nil }
-  let trimmed = argsText.trimmingCharacters(in: .whitespacesAndNewlines)
+  let trimmed = workMaskShellCommandArgsText(tool: tool, argsText: argsText).trimmingCharacters(in: .whitespacesAndNewlines)
   guard !trimmed.isEmpty else { return nil }
 
   if let object = workJSONObject(from: trimmed) {
@@ -465,6 +465,8 @@ func defaultWorkChatTitle(provider: String) -> String {
     return "Codex chat"
   case "pi":
     return "Pi chat"
+  case "muse":
+    return "Muse chat"
   case "opencode":
     return "OpenCode chat"
   case "cursor":
@@ -478,6 +480,7 @@ func toolTypeForProvider(_ provider: String) -> String {
   switch provider.lowercased() {
   case "codex": return "codex-chat"
   case "pi": return "pi-chat"
+  case "muse": return "muse-chat"
   case "opencode": return "opencode-chat"
   case "cursor": return "cursor"
   default: return "claude-chat"
@@ -512,6 +515,7 @@ func providerLabel(_ provider: String) -> String {
   case "cursor": return "Cursor Composer"
   case "droid", "factory": return "Droid"
   case "pi": return "Pi"
+  case "muse": return "Muse"
   case "google": return "Google"
   case "ollama": return "Ollama"
   case "lmstudio": return "LM Studio"
@@ -539,6 +543,7 @@ func shortProviderLabel(_ toolType: String?) -> String {
   if raw.hasPrefix("claude") { return "Claude" }
   if raw.hasPrefix("codex") { return "Codex" }
   if raw == "pi" || raw.hasPrefix("pi-") || raw.hasPrefix("pi/") { return "Pi" }
+  if raw.hasPrefix("muse") { return "Muse" }
   if raw.hasPrefix("opencode") { return "OpenCode" }
   return raw.replacingOccurrences(of: "-", with: " ").capitalized
 }
@@ -567,6 +572,8 @@ func providerIcon(_ provider: String) -> String {
     return "hammer.fill"
   case "pi":
     return "terminal.fill"
+  case "muse":
+    return "sparkles"
   case "cursor":
     return "cursorarrow"
   case "droid", "factory":
@@ -613,6 +620,8 @@ func providerAssetName(_ provider: String?) -> String? {
     return "ProviderOpenCode"
   case "droid", "factory":
     return "ProviderDroid"
+  case "muse":
+    return "ProviderMuse"
   case "qwen":
     return "ProviderQwen"
   case "kimi":
@@ -646,6 +655,8 @@ func workRailLogoProvider(for catalogGroupKey: String) -> String {
     return "opencode"
   case "pi":
     return "pi"
+  case "muse":
+    return "muse"
   case "ollama":
     return "ollama"
   case "lmstudio":
@@ -832,6 +843,8 @@ func providerTint(_ provider: String?) -> Color {
     return .teal
   case "pi":
     return .orange
+  case "muse":
+    return ADESharedTheme.brandMuse
   case "cursor":
     return .indigo
   case "droid":
@@ -875,6 +888,9 @@ func providerFamilyKey(_ provider: String) -> String {
   if raw == "pi" || raw.hasPrefix("pi/") || raw.hasPrefix("pi-") {
     return "pi"
   }
+  if raw.hasPrefix("muse") {
+    return "muse"
+  }
   if raw.hasPrefix("opencode") {
     return "opencode"
   }
@@ -884,7 +900,8 @@ func providerFamilyKey(_ provider: String) -> String {
   if raw == "droid" || raw == "factory" || raw.hasPrefix("droid") {
     return "droid"
   }
-  // ACP providers. Each folds its brand aliases onto the ADE provider id, so a
+  // Qwen, Kimi, Grok and Copilot each fold their brand aliases onto the ADE
+  // provider id, so a
   // session labelled "moonshot" and one labelled "kimi-chat" resolve to one
   // family and cannot draw different marks for the same runtime.
   if raw.hasPrefix("qwen") { return "qwen" }
@@ -907,7 +924,7 @@ func workChatProviderFamilyFromToolType(_ toolType: String?) -> String? {
 /// Routed Pi models must stay on Pi rather than falling through to Claude.
 func workNormalizedChatProvider(_ provider: String) -> String {
   let family = providerFamilyKey(provider)
-  return ["claude", "codex", "cursor", "opencode", "droid", "pi", "qwen", "kimi", "grok", "copilot"].contains(family)
+  return ["claude", "codex", "muse", "cursor", "opencode", "droid", "pi", "qwen", "kimi", "grok", "copilot"].contains(family)
     ? family
     : "claude"
 }
@@ -1090,6 +1107,28 @@ func workRuntimeModeOptions(provider: String) -> [WorkRuntimeModeOption] {
       WorkRuntimeModeOption(id: "auto-high", title: "Auto high"),
       WorkRuntimeModeOption(id: "agi", title: "AGI"),
     ]
+  // Copilot runs on ADE's permission ladder (`PERMISSION_LEVELS` in the desktop
+  // shared permissionLadder). Auto edit approves reads and writes in the lane
+  // worktree and asks for the rest; Full access approves without asking unless
+  // managed policy requires a decision.
+  case "copilot":
+    return [
+      WorkRuntimeModeOption(id: "plan", title: "Plan"),
+      WorkRuntimeModeOption(id: "ask", title: "Ask"),
+      WorkRuntimeModeOption(id: "assisted", title: "Assisted"),
+      WorkRuntimeModeOption(id: "auto-edit", title: "Auto-edit"),
+      WorkRuntimeModeOption(id: "full-auto", title: "Full-auto"),
+    ]
+  // Muse's own approval modes (`AGENT_CHAT_MUSE_PERMISSION_MODE_DETAILS`), plus
+  // ADE's plan mode, which runs on `denyUnmatched` with plan guidance.
+  case "muse":
+    return [
+      WorkRuntimeModeOption(id: "plan", title: "Plan"),
+      WorkRuntimeModeOption(id: "denyUnmatched", title: "Read-only"),
+      WorkRuntimeModeOption(id: "promptUnmatched", title: "Ask"),
+      WorkRuntimeModeOption(id: "onRequest", title: "Auto"),
+      WorkRuntimeModeOption(id: "allowAll", title: "Full access"),
+    ]
   // Pi chats gate bash/edit/write behind an approval card, so `default` is the
   // ask-first tier and `plan` is the read-only one — the same split desktop's
   // `piSdkToolPolicyForPermissionMode` applies. A Pi CLI terminal launched with
@@ -1149,6 +1188,22 @@ func workRuntimeModeLabel(provider: String, mode: String) -> String {
     case "agi": return "AGI"
     default: return "Auto low"
     }
+  case "muse":
+    switch mode {
+    case "plan": return "Plan"
+    case "denyUnmatched", "read-only": return "Read-only"
+    case "promptUnmatched", "edit": return "Ask"
+    case "allowAll", "full-auto": return "Full access"
+    default: return "Auto"
+    }
+  case "copilot":
+    switch mode {
+    case "plan": return "Plan"
+    case "assisted": return "Assisted"
+    case "auto-edit": return "Auto-edit"
+    case "full-auto": return "Full-auto"
+    default: return "Ask"
+    }
   case "pi":
     switch mode {
     case "edit": return "Edit access"
@@ -1198,6 +1253,20 @@ func workRuntimeModeTint(provider: String, mode: String) -> Color {
     case "agi": return ADEColor.purpleAccent
     default: return ADEColor.success
     }
+  case "muse":
+    switch mode {
+    case "plan": return ADEColor.purpleAccent
+    case "allowAll", "full-auto": return ADEColor.danger
+    case "onRequest", "default": return ADEColor.warning
+    default: return ADEColor.success
+    }
+  case "copilot":
+    switch mode {
+    case "plan": return ADEColor.purpleAccent
+    case "full-auto": return ADEColor.danger
+    case "auto-edit", "assisted": return ADEColor.warning
+    default: return ADEColor.success
+    }
   case "pi":
     switch mode {
     case "full-auto": return ADEColor.danger
@@ -1231,6 +1300,8 @@ func workDefaultRuntimeMode(provider: String) -> String {
   case "opencode": return "edit"
   case "cursor": return "default"
   case "droid", "factory": return "auto-low"
+  case "muse": return "onRequest"
+  case "copilot": return "ask"
   default: return ""
   }
 }
@@ -1245,6 +1316,10 @@ struct WorkRuntimeWireFields {
   var codexConfigSource: String?
   var opencodePermissionMode: String?
   var droidPermissionMode: String?
+  var musePermissionMode: String?
+  var copilotPermissionMode: String?
+  var copilotContextTier: String?
+  var copilotAutoTier: String?
   var cursorModeId: String?
 }
 
@@ -1342,6 +1417,36 @@ func workRuntimeWireFields(provider: String, mode: String) -> WorkRuntimeWireFie
       fields.droidPermissionMode = "auto-low"
       fields.permissionMode = "edit"
     }
+  case "copilot":
+    // The ladder level the desktop reads from `copilotPermissionMode`. Only the
+    // level travels; the generic permissionMode stays empty for Copilot.
+    fields.copilotPermissionMode = workCopilotPermissionLevel(mode)
+  case "muse":
+    // Mirrors `musePermissionModeFromLegacyPermissionMode` in
+    // shared/modelPermissions.ts, and plan rides interactionMode the way the
+    // desktop composer sends it.
+    switch mode {
+    case "plan":
+      fields.interactionMode = "plan"
+      fields.musePermissionMode = "denyUnmatched"
+      fields.permissionMode = "plan"
+    case "denyUnmatched", "read-only":
+      fields.interactionMode = "default"
+      fields.musePermissionMode = "denyUnmatched"
+      fields.permissionMode = "plan"
+    case "promptUnmatched", "edit":
+      fields.interactionMode = "default"
+      fields.musePermissionMode = "promptUnmatched"
+      fields.permissionMode = "edit"
+    case "allowAll", "full-auto":
+      fields.interactionMode = "default"
+      fields.musePermissionMode = "allowAll"
+      fields.permissionMode = "full-auto"
+    default:
+      fields.interactionMode = "default"
+      fields.musePermissionMode = "onRequest"
+      fields.permissionMode = "default"
+    }
   case "pi":
     switch mode {
     case "edit":
@@ -1371,6 +1476,8 @@ func modelSupportsReasoning(modelId: String, provider: String) -> Bool {
   if lower.contains("opus") || lower.contains("sonnet") { return true }
   switch provider.lowercased() {
   case "codex": return true
+  // Every Muse model takes Muse's full effort ladder.
+  case "muse": return true
   case "claude":
     return lower.contains("opus") || lower.contains("sonnet")
   case "pi":
@@ -1395,7 +1502,9 @@ func workInitialRuntimeMode(_ summary: AgentChatSessionSummary) -> String {
     cursorModeId: summary.cursorModeIdWasCleared == true
       ? nil
       : (summary.cursorModeId ?? workCursorCurrentModeId(summary.cursorModeSnapshot)),
-    droidPermissionMode: summary.droidPermissionMode
+    droidPermissionMode: summary.droidPermissionMode,
+    musePermissionMode: summary.musePermissionMode,
+    copilotPermissionMode: summary.copilotPermissionMode
   )
 }
 
@@ -1411,7 +1520,9 @@ func workRuntimeMode(
   codexSandbox: String?,
   opencodePermissionMode: String?,
   cursorModeId: String?,
-  droidPermissionMode: String?
+  droidPermissionMode: String?,
+  musePermissionMode: String? = nil,
+  copilotPermissionMode: String? = nil
 ) -> String {
   switch providerFamilyKey(provider) {
   case "claude":
@@ -1456,6 +1567,21 @@ func workRuntimeMode(
       droidPermissionMode: droidPermissionMode,
       permissionMode: permissionMode
     ) ?? "auto-low"
+  case "muse":
+    if interactionMode == "plan" { return "plan" }
+    switch musePermissionMode {
+    case "denyUnmatched", "promptUnmatched", "onRequest", "allowAll":
+      return musePermissionMode ?? "onRequest"
+    default:
+      switch permissionMode {
+      case "plan": return "denyUnmatched"
+      case "edit": return "promptUnmatched"
+      case "full-auto": return "allowAll"
+      default: return "onRequest"
+      }
+    }
+  case "copilot":
+    return workCopilotPermissionLevel(copilotPermissionMode ?? "")
   case "pi":
     switch permissionMode {
     case "edit": return "edit"
@@ -1477,6 +1603,60 @@ func workNormalizedOpenCodeRuntimeMode(_ mode: String?) -> String {
   default:
     return "edit"
   }
+}
+
+/// Copilot's permission levels, spelled as the desktop's contract: the four ladder
+/// words plus `assisted` (Copilot's LLM-reviewed approvals). Anything else,
+/// including an empty or unknown value, is the ask tier.
+func workCopilotPermissionLevel(_ mode: String) -> String {
+  switch mode {
+  case "plan", "assisted", "auto-edit", "full-auto": return mode
+  default: return "ask"
+  }
+}
+
+/// The Copilot context tier a chat runs on. Missing or invalid is the default
+/// tier; only `long_context` selects the long window.
+func workCopilotContextTier(_ raw: String?) -> String {
+  raw == "long_context" ? "long_context" : "default"
+}
+
+/// Copilot's Auto routing profiles, in the order the effort slot lists them.
+let workCopilotAutoTiers = ["efficiency", "balance", "intelligence"]
+
+func workCopilotAutoTierLabel(_ tier: String) -> String {
+  switch tier {
+  case "efficiency": return "Efficiency"
+  case "balance": return "Balance"
+  case "intelligence": return "Intelligence"
+  default: return tier.capitalized
+  }
+}
+
+/// Copilot's Auto model. The catalog id is `github-copilot/auto` (or bare `auto`).
+func workCopilotIsAutoModel(modelId: String, provider: String) -> Bool {
+  guard providerFamilyKey(provider) == "copilot" else { return false }
+  let id = modelId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  return id == "auto" || id.hasSuffix("/auto")
+}
+
+/// `300k`, `1M`, `1.5M`: a context window in the form the picker shows.
+func workCompactContextWindow(_ tokens: Int) -> String {
+  if tokens >= 1_000_000 {
+    let millions = Double(tokens) / 1_000_000
+    return millions.rounded() == millions ? "\(Int(millions))M" : String(format: "%.1fM", millions)
+  }
+  return "\(tokens / 1_000)k"
+}
+
+/// The label of one Copilot context tier. The default tier shows its catalog
+/// window when the catalog gave one; the long tier shows its window, or `Long`
+/// when the catalog did not give a long size.
+func workCopilotContextTierLabel(_ tier: String, contextWindow: Int?, longContextWindow: Int?) -> String {
+  if tier == "long_context" {
+    return longContextWindow.map(workCompactContextWindow) ?? "Long"
+  }
+  return contextWindow.map(workCompactContextWindow) ?? "Default"
 }
 
 func workDroidModeFromPermissionMode(_ permissionMode: String?) -> String? {
@@ -1771,8 +1951,9 @@ func workSummarizeInlineText(_ value: String, maxChars: Int = 120) -> String {
 /// command, search pattern, etc. Avoids leaking raw `{` from pretty-printed
 /// JSON in collapsed work-log rows (desktop `entryArgText` parity).
 func workToolArgPreview(toolName: String, argsText: String?) -> String? {
-  guard let object = workJSONObject(from: argsText) else {
-    guard let argsText else { return nil }
+  let displayArgs = argsText.map { workMaskShellCommandArgsText(tool: toolName, argsText: $0) }
+  guard let object = workJSONObject(from: displayArgs) else {
+    guard let argsText = displayArgs else { return nil }
     let trimmed = argsText.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return nil }
     let preview = workSummarizeInlineText(trimmed, maxChars: 140)

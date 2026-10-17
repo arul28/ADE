@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { selectEffectiveThemeId, useAppStore, type ThemeId } from "../../state/appStore";
+import { selectEffectiveThemeId, useAppearanceStore, type ThemeId } from "../../state/appearanceStore";
 import { resolveTheme, resolveThemeById, STYLESHEET_THEME_IDS } from "../../../shared/theme";
 import { cn } from "../ui/cn";
 import { createBackdropRenderer, type BackdropRenderer } from "./workToolPickerBackdropRenderer";
+import { useActiveScene } from "../../scene/useScene";
+import { backdropThemeFromScene } from "../../scene/scenePalette";
+import { SceneImageLayer } from "../../scene/SceneImageLayer";
 
 export {
   BACKDROP_FRAME_MS,
@@ -70,16 +73,27 @@ export function WorkToolPickerBackdrop({
   // The two stylesheet themes keep their hand-tuned ramps; every other theme
   // paints the mesh from its own accent, so the header and the start screen
   // change with the theme instead of staying violet.
-  const themeId = useAppStore(selectEffectiveThemeId);
-  const customThemes = useAppStore((s) => s.customThemes);
+  const themeId = useAppearanceStore(selectEffectiveThemeId);
+  const customThemes = useAppearanceStore((s) => s.customThemes);
   // The app's own Reduce-motion preference, so it stops this mesh too and not
   // only the CSS the `data-motion` attribute covers.
-  const reduceMotion = useAppStore((s) => s.interfacePreferences.reduceMotion);
+  const reduceMotion = useAppearanceStore((s) => s.interfacePreferences.reduceMotion);
   const palette = useMemo(() => {
     const resolved = resolveThemeById(themeId, customThemes);
     if (resolved.source === "builtin" && STYLESHEET_THEME_IDS.includes(resolved.id)) return undefined;
     return resolveTheme(resolved).palette;
   }, [themeId, customThemes]);
+  // A scene picture either fills the window field itself or, everywhere else
+  // (and when the user asked for colours only), lends the mesh its colours.
+  const scene = useActiveScene();
+  const showPicture = field === "window" && scene.kind === "image" && scene.showImage;
+  // The `plain` scene: the flat CSS background below, with no mesh and no loop.
+  const still = scene.kind === "plain";
+  const scenePalette = scene.kind === "image" ? scene.palette : null;
+  const override = useMemo(
+    () => (scenePalette ? backdropThemeFromScene(scenePalette, theme) : undefined),
+    [scenePalette, theme],
+  );
   const playingRef = useRef(playing);
   playingRef.current = playing;
   // Optimistic: the canvas mounts, and only a refused context downgrades the
@@ -99,13 +113,14 @@ export function WorkToolPickerBackdrop({
   }, []);
 
   useEffect(() => {
-    if (webglRefused) return;
+    if (webglRefused || showPicture || still) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
     const renderer = createBackdropRenderer({
       canvas,
       theme,
       palette,
+      override,
       reduceMotion,
       playing: playingRef.current,
       clockOrigin,
@@ -117,7 +132,7 @@ export function WorkToolPickerBackdrop({
       renderer?.dispose();
       if (rendererRef.current === renderer) rendererRef.current = null;
     };
-  }, [theme, palette, reduceMotion, clockOrigin, field, webglRefused, motionEpoch]);
+  }, [theme, palette, override, reduceMotion, clockOrigin, field, webglRefused, motionEpoch, showPicture, still]);
 
   useEffect(() => {
     rendererRef.current?.setPlaying(playing);
@@ -128,12 +143,14 @@ export function WorkToolPickerBackdrop({
   return (
     <div
       aria-hidden="true"
-      data-backdrop={webglRefused ? "static" : "shader"}
+      data-backdrop={showPicture ? "scene" : webglRefused || still ? "static" : "shader"}
       data-field={field}
       className={cn("ade-tool-picker-backdrop", className)}
     >
       <div className="ade-tool-picker-static absolute inset-0" />
-      {webglRefused ? null : (
+      {showPicture && scene.kind === "image" ? (
+        <SceneImageLayer scene={scene} />
+      ) : webglRefused || still ? null : (
         <canvas
           ref={canvasRef}
           data-backdrop-canvas=""

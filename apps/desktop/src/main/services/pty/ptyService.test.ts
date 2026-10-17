@@ -362,10 +362,6 @@ import {
   BACKGROUND_UTILITY_CODEX_MODEL_ID,
   BACKGROUND_UTILITY_CURSOR_MODEL_ID,
 } from "../../../shared/backgroundUtilityModel";
-import {
-  resolveBuiltInBrowserActorCapability,
-  type BrowserActorCapabilityIssuer,
-} from "../builtInBrowser/builtInBrowserActorCapabilities";
 import { claudeConfigHome } from "../shared/providerConfigHomes";
 import { devServerRegistry } from "../devServers/devServerRegistry";
 
@@ -430,7 +426,7 @@ function createHarness(overrides: {
   projectConfigService?: {
     get: ReturnType<typeof vi.fn>;
   };
-  browserActorCapabilityIssuer?: BrowserActorCapabilityIssuer;
+  releaseChatBrowser?: (chatSessionId: string) => void;
 } = {}) {
   const mockPty = createMockPty();
   const broadcastData = vi.fn();
@@ -602,9 +598,7 @@ function createHarness(overrides: {
       ? { sessionActivityReportingEnabled: overrides.sessionActivityReportingEnabled }
       : {}),
     ...(overrides.projectConfigService ? { projectConfigService: overrides.projectConfigService as any } : {}),
-    ...(overrides.browserActorCapabilityIssuer
-      ? { browserActorCapabilityIssuer: overrides.browserActorCapabilityIssuer }
-      : {}),
+    ...(overrides.releaseChatBrowser ? { releaseChatBrowser: overrides.releaseChatBrowser } : {}),
     logger: logger as any,
     broadcastData,
     broadcastExit,
@@ -887,6 +881,71 @@ describe("ptyService", () => {
       const spawn = (loadPty.mock.results[0]?.value as { spawn: ReturnType<typeof vi.fn> }).spawn;
       const opts = spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
       expect(opts?.env?.CLAUDE_CONFIG_DIR).toBe(WORK_HOME);
+    });
+
+    it.each<{
+      name: string;
+      instanceId?: string;
+      presetId?: string;
+      env?: Record<string, string>;
+      expected: string | undefined;
+      expectedMain: string | undefined;
+    }>([
+      { name: "the account that chose them", instanceId: "acct-work", expected: "1h", expectedMain: "5m" },
+      { name: "the default account, which chose nothing", expected: undefined, expectedMain: undefined },
+      { name: "that account on a preset, which bills elsewhere", instanceId: "acct-work", presetId: "hp_other_endpoint", expected: undefined, expectedMain: undefined },
+      {
+        // Each lifetime yields to the caller on its own: stating one leaves the other to the account.
+        name: "that account when the caller already stated the subagent TTL",
+        instanceId: "acct-work",
+        env: { CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL: "5m" },
+        expected: "5m",
+        expectedMain: "5m",
+      },
+      {
+        name: "that account when the caller already stated the main TTL",
+        instanceId: "acct-work",
+        env: { CLAUDE_CODE_PROMPT_CACHE_TTL: "1h" },
+        expected: "1h",
+        expectedMain: "1h",
+      },
+    ])("gives a Claude terminal the prompt cache TTLs of $name", async ({ instanceId, presetId, env, expected, expectedMain }) => {
+      const registryPath = path.join(adeHome, "provider-instances.json");
+      const registry = JSON.parse(mocks.fileContents.get(registryPath) ?? "{}");
+      registry.instances[0].subagentPromptCacheTtl = "1h";
+      registry.instances[0].mainPromptCacheTtl = "5m";
+      mocks.fileContents.set(registryPath, JSON.stringify(registry));
+      resetSharedProviderInstanceStoresForTests();
+      const { service, loadPty } = createHarness();
+
+      const result = await service.create({
+        laneId: "lane-1",
+        title: "CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "claude",
+        command: "claude",
+        ...(env ? { env } : {}),
+        resumeMetadata: {
+          provider: "claude",
+          targetKind: "session",
+          targetId: null,
+          ...(instanceId ? { instanceId } : {}),
+          ...(presetId ? { presetId } : {}),
+          launch: {
+            permissionMode: "default",
+            ...(instanceId ? { instanceId } : {}),
+            ...(presetId ? { presetId } : {}),
+          },
+        },
+      });
+
+      const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+      const opts = ptyLib.spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+      expect(opts?.env?.ADE_LANE_ID, "the launch env reached the spawn").toBe("lane-1");
+      expect(opts?.env?.CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL).toBe(expected);
+      expect(opts?.env?.CLAUDE_CODE_PROMPT_CACHE_TTL).toBe(expectedMain);
+      service.dispose({ ptyId: result.ptyId, sessionId: result.sessionId });
     });
 
     it("silently falls back to the provider default when the account is gone", () => {
@@ -1600,112 +1659,7 @@ describe("ptyService", () => {
         ADE_LANE_ID: "lane-1",
         ADE_PROJECT_ROOT: "/tmp/test-project",
       }));
-      const actorToken = opts?.env?.ADE_BROWSER_ACTOR_TOKEN;
-      expect(resolveBuiltInBrowserActorCapability(actorToken)).toMatchObject({
-        chatSessionId: result.sessionId,
-        laneId: "lane-1",
-        projectRoot: "/tmp/test-project",
-      });
-
       service.dispose({ ptyId: result.ptyId, sessionId: result.sessionId });
-
-      expect(resolveBuiltInBrowserActorCapability(actorToken)).toBeNull();
-    });
-
-    // The ACP CLIs joined `TrackedAgentCliToolType` before the runtime predicate
-    // caught up, and the browser-actor token is issued unconditionally — so a
-    // qwen/kimi/grok/copilot terminal used to leave a live capability behind
-    // after its session closed.
-    it.each(["qwen", "kimi", "grok", "copilot"] as const)(
-      "revokes the browser actor capability when a %s session closes",
-      async (toolType) => {
-        const { service, loadPty } = createHarness();
-
-        const result = await service.create({
-          laneId: "lane-1",
-          title: `${toolType} CLI`,
-          cols: 80,
-          rows: 24,
-          toolType,
-          command: toolType,
-        });
-
-        const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
-        const opts = ptyLib.spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
-        const actorToken = opts?.env?.ADE_BROWSER_ACTOR_TOKEN;
-        expect(resolveBuiltInBrowserActorCapability(actorToken)).toMatchObject({
-          chatSessionId: result.sessionId,
-        });
-
-        service.dispose({ ptyId: result.ptyId, sessionId: result.sessionId });
-
-        expect(resolveBuiltInBrowserActorCapability(actorToken)).toBeNull();
-      },
-    );
-
-    // The registry that validates `ADE_BROWSER_ACTOR_TOKEN` lives in Electron
-    // main; the runtime daemon that builds this env is a different process. It
-    // must take the token from the desktop rather than mint a local one that
-    // nothing could ever validate.
-    it("takes the browser actor capability from the injected desktop issuer", async () => {
-      const issue = vi.fn(async () => "desktop-issued-token");
-      const revoke = vi.fn(async () => {});
-      const { service, loadPty } = createHarness({
-        browserActorCapabilityIssuer: { issue, revoke } satisfies BrowserActorCapabilityIssuer,
-      });
-
-      const result = await service.create({
-        laneId: "lane-1",
-        title: "Codex CLI",
-        cols: 80,
-        rows: 24,
-        toolType: "codex",
-        command: "codex",
-      });
-
-      const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
-      const opts = ptyLib.spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
-      expect(opts?.env?.ADE_BROWSER_ACTOR_TOKEN).toBe("desktop-issued-token");
-      expect(issue).toHaveBeenCalledWith({
-        chatSessionId: result.sessionId,
-        laneId: "lane-1",
-        projectRoot: "/tmp/test-project",
-        tabCollection: null,
-      });
-      // Nothing was written to this process's registry.
-      expect(resolveBuiltInBrowserActorCapability("desktop-issued-token")).toBeNull();
-
-      service.dispose({ ptyId: result.ptyId, sessionId: result.sessionId });
-
-      expect(revoke).toHaveBeenCalledWith(result.sessionId);
-    });
-
-    // Headless machine, or ADE Desktop closed: the bridge cannot mint a
-    // capability. Launching the terminal without one is right — failing the
-    // launch, or leaking the host process's token, is not.
-    it("omits the browser actor token when the desktop issuer is unreachable", async () => {
-      const { service, loadPty } = createHarness({
-        browserActorCapabilityIssuer: {
-          issue: async () => {
-            throw new Error("Desktop browser bridge not running at /tmp/desktop-bridge.sock.");
-          },
-          revoke: async () => {},
-        },
-      });
-
-      const result = await service.create({
-        laneId: "lane-1",
-        title: "Codex CLI",
-        cols: 80,
-        rows: 24,
-        toolType: "codex",
-        command: "codex",
-      });
-
-      const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
-      const opts = ptyLib.spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
-      expect(opts?.env).not.toHaveProperty("ADE_BROWSER_ACTOR_TOKEN");
-      expect(opts?.env?.ADE_CHAT_SESSION_ID).toBe(result.sessionId);
     });
 
     it("exports spawn lineage without replacing the tracked CLI session identity", async () => {
@@ -3806,6 +3760,7 @@ describe("ptyService", () => {
       process.env.APPDATA = appData;
       process.env.ComSpec = "C:\\Windows\\System32\\cmd.exe";
       mocks.fileStats.set(agentPath, { isDirectory: false, size: 1 });
+      mocks.dirEntries.set(path.dirname(agentPath), [path.basename(agentPath)]);
       try {
         const harness = createHarness();
         await harness.service.create({
@@ -3847,6 +3802,7 @@ describe("ptyService", () => {
       process.env.USERPROFILE = home;
       process.env.ComSpec = "C:\\Windows\\System32\\cmd.exe";
       mocks.fileStats.set(claudePath, { isDirectory: false, size: 1 });
+      mocks.dirEntries.set(path.dirname(claudePath), [path.basename(claudePath)]);
       try {
         const harness = createHarness();
         const guidance = "ADE guidance\nsecond line with %USERPROFILE% inside";
@@ -4241,6 +4197,77 @@ describe("ptyService", () => {
           }),
         }),
       );
+    });
+
+    it("records the launching chat beside the parsed launch fields, and a resume never changes it", async () => {
+      const { service, sessionService } = createHarness();
+      const seedEndedCodex = (sessionId: string, resumeMetadata: Record<string, unknown>) => {
+        sessionService.create({
+          sessionId,
+          laneId: "lane-1",
+          ptyId: null,
+          tracked: true,
+          title: "Codex CLI",
+          startedAt: "2026-04-09T12:00:00.000Z",
+          transcriptPath: `/tmp/transcripts/${sessionId}.log`,
+          toolType: "codex",
+          resumeCommand: "codex --no-alt-screen resume thread-launched",
+          resumeMetadata: {
+            provider: "codex",
+            targetKind: "thread",
+            targetId: "thread-launched",
+            launch: { permissionMode: "config-toml" },
+            ...resumeMetadata,
+          },
+        });
+        sessionService.end({
+          sessionId,
+          endedAt: "2026-04-09T12:30:00.000Z",
+          exitCode: 0,
+          status: "completed",
+        });
+      };
+      const resumeCodex = (sessionId: string, launchedBySessionId: string, extra: Record<string, unknown> = {}) => service.create({
+        sessionId,
+        laneId: "lane-1",
+        title: "Codex CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "codex",
+        startupCommand: "codex --no-alt-screen resume thread-launched",
+        launchedBySessionId,
+        ...extra,
+      });
+
+      const launched = await service.create({
+        laneId: "lane-1",
+        title: "Claude CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "claude",
+        startupCommand: "claude --permission-mode default",
+        launchedBySessionId: "launcher-chat",
+      });
+      expect(sessionService.get(launched.sessionId)?.resumeMetadata).toMatchObject({
+        provider: "claude",
+        launch: { permissionMode: "default" },
+        launchedBySessionId: "launcher-chat",
+      });
+
+      seedEndedCodex("session-recorded", { launchedBySessionId: "launcher-original" });
+      const createsBeforeResume = sessionService.create.mock.calls.length;
+      await resumeCodex("session-recorded", "launcher-other");
+      expect(sessionService.get("session-recorded")?.resumeMetadata?.launchedBySessionId).toBe("launcher-original");
+      expect(sessionService.create).toHaveBeenCalledTimes(createsBeforeResume);
+
+      // A session a person started has no launcher, and a resume does not add one,
+      // even when the resume backfills a model onto the stored record.
+      seedEndedCodex("session-user-started", {});
+      await resumeCodex("session-user-started", "launcher-other", {
+        runtimeCliLaunch: { provider: "codex", permissionMode: "config-toml", model: "gpt-5.4" },
+      });
+      expect(sessionService.get("session-user-started")?.resumeMetadata?.launch).toMatchObject({ model: "gpt-5.4" });
+      expect(sessionService.get("session-user-started")?.resumeMetadata?.launchedBySessionId).toBeUndefined();
     });
 
     it("stores structured resume metadata for Codex launches", async () => {
@@ -6949,6 +6976,16 @@ describe("ptyService", () => {
       expect(broadcastExit).toHaveBeenCalledWith(
         expect.objectContaining({ ptyId, sessionId, exitCode: null }),
       );
+    });
+
+    it("releases a user-browser attachment when an unbound tracked CLI ends", async () => {
+      const releaseChatBrowser = vi.fn();
+      const { service, mockPty } = createHarness({ releaseChatBrowser });
+      const { sessionId } = await service.create({ laneId: "lane-1", title: "d", cols: 80, rows: 24, toolType: "codex" });
+
+      mockPty._emitter.emit("exit", { exitCode: 0 });
+
+      expect(releaseChatBrowser).toHaveBeenCalledWith(sessionId);
     });
 
     it("does not kill a live PTY when the supplied session id belongs to another session", async () => {

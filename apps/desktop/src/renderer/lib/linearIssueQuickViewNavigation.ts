@@ -1,54 +1,37 @@
 import { createPendingRequestChannel } from "./pendingRequestChannel";
 
 /**
- * "Open the Linear quick view for this issue" — a one-shot request channel.
+ * "Open the Linear pane" — a one-shot request channel.
  *
- * Asked for by deeplinks, the command palette and session cards; answered by
- * the top bar's `LinearQuickViewButton`, which may not have mounted yet when
- * the request arrives. The mechanics are `createPendingRequestChannel`; only
- * the payload and its normalization are this module's.
+ * The pane is the place to browse many issues. Opening ONE issue is not this
+ * channel's job any more: that goes through `issueNavigation`, which shows the
+ * issue directly (in the Work tools pane or the issue sheet) instead of opening
+ * this browser and searching for its identifier.
+ *
+ * Asked for by the Issues tool's empty state and the issue sheet's "View all
+ * issues"; answered by the top bar's `LinearQuickViewButton`, which may not
+ * have mounted yet when the request arrives.
  */
-export type LinearIssueQuickViewRequest = {
-  issueIdentifier: string;
-  branch?: string | null;
-  source?: "deeplink" | "manual";
+export type LinearPaneOpenRequest = {
   requestedAt: number;
 };
 
-const channel = createPendingRequestChannel<LinearIssueQuickViewRequest>("linear-quick-view");
+const channel = createPendingRequestChannel<LinearPaneOpenRequest>("linear-pane");
 
-function normalizeRequest(
-  request: Omit<LinearIssueQuickViewRequest, "requestedAt"> & { requestedAt?: number },
-): LinearIssueQuickViewRequest | null {
-  const issueIdentifier = request.issueIdentifier.trim().toUpperCase();
-  if (!issueIdentifier) return null;
-  const branch = request.branch?.trim() || null;
-  return {
-    issueIdentifier,
-    branch,
-    source: request.source ?? "manual",
-    requestedAt: request.requestedAt ?? Date.now(),
-  };
+export function requestLinearPaneOpen(): void {
+  channel.request({ requestedAt: Date.now() });
 }
 
-export function requestLinearIssueQuickView(
-  request: Omit<LinearIssueQuickViewRequest, "requestedAt"> & { requestedAt?: number },
-): void {
-  const normalized = normalizeRequest(request);
-  if (!normalized) return;
-  channel.request(normalized);
-}
-
-export function consumePendingLinearIssueQuickViewRequest(): LinearIssueQuickViewRequest | null {
+export function consumePendingLinearPaneOpenRequest(): LinearPaneOpenRequest | null {
   return channel.takePending();
 }
 
-export function subscribeLinearIssueQuickViewRequests(
-  onRequest: (request: LinearIssueQuickViewRequest) => void,
+export function subscribeLinearPaneOpenRequests(
+  onRequest: (request: LinearPaneOpenRequest) => void,
 ): () => void {
   return channel.subscribe((request) => {
     // This subscriber owns the request now; drop the hold so a later mount
-    // cannot drain it again and re-open a quick view nobody asked for.
+    // cannot drain it again and re-open a pane nobody asked for.
     channel.clearPending();
     onRequest(request);
   });

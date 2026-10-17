@@ -17,6 +17,7 @@ import type {
   BuiltInBrowserCreateTabArgs,
   BuiltInBrowserExportHarArgs,
   BuiltInBrowserFindInPageArgs,
+  BuiltInBrowserIsolationArgs,
   BuiltInBrowserNavigateArgs,
   BuiltInBrowserNetworkLogArgs,
   BuiltInBrowserOpenPanelArgs,
@@ -102,7 +103,10 @@ export function createBuiltInBrowserIpcArgParsers(args: {
       visible: visibleValue as boolean,
       ...(record.scale === undefined || record.scale === null
         ? {}
-        : { scale: builtInBrowserNumber(record, "scale", channel, { min: 0.05, max: 1 }) }),
+        // A pane mid-collapse measures 0×0 and its letterbox fit is 0. That is
+        // a layout reading, not a bad request: rejecting it dropped the whole
+        // bounds update and left the view where it was. The service clamps.
+        : { scale: builtInBrowserNumber(record, "scale", channel, { min: 0, max: 1 }) }),
     };
   };
 
@@ -118,8 +122,17 @@ export function createBuiltInBrowserIpcArgParsers(args: {
     }
     const tabId = optionalBuiltInBrowserString(record, "tabId", channel, 128);
     const newTab = record.newTab === true ? true : undefined;
+    const reuseOwnedTab = record.reuseOwnedTab === true ? true : undefined;
     const openPanel = optionalBoolean(record.openPanel);
-    return { url, tabId, newTab, openPanel, ...parseBuiltInBrowserClaimArgs(record, channel) };
+    return {
+      url,
+      tabId,
+      newTab,
+      reuseOwnedTab,
+      openPanel,
+      ...parseBuiltInBrowserIsolationArgs(record, channel),
+      ...parseBuiltInBrowserClaimArgs(record, channel),
+    };
   };
 
   function optionalBuiltInBrowserString(
@@ -238,8 +251,26 @@ export function createBuiltInBrowserIpcArgParsers(args: {
     const url = optionalBuiltInBrowserString(record, "url", channel, 4096);
     const activate = record.activate === false ? false : undefined;
     const openPanel = optionalBoolean(record.openPanel);
-    return { url, activate, openPanel, ...parseBuiltInBrowserClaimArgs(record, channel) };
+    return {
+      url,
+      activate,
+      openPanel,
+      ...parseBuiltInBrowserIsolationArgs(record, channel),
+      ...parseBuiltInBrowserClaimArgs(record, channel),
+    };
   };
+
+  /** The service validates the profile name; this only keeps the shape. */
+  function parseBuiltInBrowserIsolationArgs(
+    record: Record<string, unknown>,
+    channel: string,
+  ): BuiltInBrowserIsolationArgs {
+    const profile = optionalBuiltInBrowserString(record, "profile", channel, 64);
+    return {
+      ...(record.isolated === true ? { isolated: true } : {}),
+      ...(profile ? { profile } : {}),
+    };
+  }
 
   const parseBuiltInBrowserOpenPanelArgs = (value: unknown, channel: string): BuiltInBrowserOpenPanelArgs => {
     const record = builtInBrowserRecord(value, channel, false);

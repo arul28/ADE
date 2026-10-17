@@ -31,12 +31,9 @@ import {
   ShieldCheck,
   CopySimple,
   Brain,
-  Image,
   Code,
-  Paperclip,
   Target,
   Clock,
-  Cube,
   Moon,
   Play,
   Microphone,
@@ -50,7 +47,6 @@ import type {
   AgentChatEvent,
   AgentChatEventEnvelope,
   AgentChatNoticeDetail,
-  AgentChatSpawnCompletion,
   AgentChatRecoverCodexTurnArgs,
   AgentChatRecoverCodexTurnResult,
   AgentChatRecoverContinuityArgs,
@@ -63,37 +59,47 @@ import type {
   TurnDiffSummary,
 } from "../../../shared/types";
 import type { OpenProjectBinding } from "../../../shared/types/core";
-import { WORK_BOARD_COLUMN_LABEL, spawnCompletedNoticeMessage, spawnParentGoneNoticeMessage } from "../../../shared/types/chat";
+import { CLAUDE_SYNTHETIC_MODEL, WORK_BOARD_COLUMN_LABEL, readVoiceSessionNotice, spawnCompletedNoticeMessage, spawnParentGoneNoticeMessage } from "../../../shared/types/chat";
 import { getModelById, resolveModelDescriptor, type ModelDescriptor } from "../../../shared/modelRegistry";
+import { oneLineRedacted, redactCommandLine } from "../../../shared/secretRedaction";
 import { cn } from "../ui/cn";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { formatTime } from "../../lib/format";
+import { toLayoutPx } from "../../lib/webZoom";
 import { navigateToAppTarget, openExternalUrl, openLinkFromUi } from "../../lib/openExternal";
 import { ChipText } from "./ChipText";
 import { normalizePath } from "../../lib/pathUtils";
-import { artifactImageSrc } from "../../../shared/artifactStreamUrl";
-import { isImageArtifact } from "./useArtifactPreview";
 import { ProofCitationProvider } from "./ChatProofCitation";
+import { computerUseShownProofIds } from "../../../shared/computerUseActionPresentation";
 import { citedProofArtifactIds, PROOF_COMPARE_FENCE_LANGUAGE } from "../../../shared/proofCitation";
 import { useStreamSmoothnessSampler } from "../../perf/streamSmoothness";
 import { AssistantTextBody } from "./AssistantTextBody";
-import { MarkdownBlock, type MosaicRenderContext } from "./chatMarkdownBlock";
+import { SceneAnswerContext } from "./SceneFrame";
+import { canHostMcpApps, McpAppCard } from "./McpAppFrame";
+import { MCP_APP_CARD_VARIANT } from "../../../shared/mcpApp";
+import { latestScenePreviewOutput, ScenePreviewThumb } from "./ScenePreviewThumb";
+import { SCENE_FENCE_LANGUAGE } from "../../../shared/chatScene";
+import { userMessageStartsTurn } from "../../../shared/chatTranscript";
+import { MarkdownBlock } from "./chatMarkdownBlock";
 import { splitChatOutputContextSegments } from "../../../shared/chatOutputContext";
 import {
   ChatContextSegments,
   ThreadReviewSentCard,
   UserTypedText,
-  userTextLooksLikeMarkdown,
 } from "./chatUserMessageCards";
 import { AssistantOutputSelectionToolbar } from "./AssistantOutputSelectionToolbar";
+import { issueCreateRequestFromSelection, requestIssueCreate } from "../../lib/issueCreateRequests";
 import { ThreadCommentLayer } from "./ThreadCommentLayer";
-import { parseThreadReviewBlock, type ChatThreadComment } from "../../../shared/threadComments";
+import { resolveUserMessageBody, userMessageHasPastedPrompt } from "./userMessageBody";
+import { ChatFindLayer } from "./ChatFindLayer";
+import type { ChatFindSource, ChatFindSourceSnapshot } from "./useChatFindIndex";
+import type { ChatThreadComment } from "../../../shared/threadComments";
 import {
   ChatWorkspacePathProvider,
   useWorkspacePathOpener,
   type WorkspacePathLocation,
 } from "./chatWorkspacePaths";
-import { describeToolIdentifier, replaceInternalToolNames } from "./toolPresentation";
+import { describeToolIdentifier, maskShellCommandArgs, replaceInternalToolNames } from "./toolPresentation";
 import { chatChipToneClass } from "./chatSurfaceTheme";
 import {
   CHAT_TRANSCRIPT_GLASS_CARD_CLASS,
@@ -102,9 +108,11 @@ import {
 } from "./chatTranscriptChrome";
 import { useAppStore } from "../../state/appStore";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
+import { ProviderOutdatedNoticeRow } from "./ProviderOutdatedNoticeRow";
 import { transcriptRowGapPx } from "./chatAppearance";
 import { UserMessageIssueContext } from "./UserMessageIssueContext";
-import type { AgentChatContextAttachment, AgentChatFileRef } from "../../../shared/types";
+import type { AgentChatContextAttachment, AgentChatEventMetadata, AgentChatFileRef } from "../../../shared/types";
+import type { LaneJiraIssue } from "../../../shared/types/jira";
 import { getToolMeta } from "./chatToolAppearance";
 import { deriveChatSources, type ChatSource, type ChatSources } from "../../../shared/chatSources";
 import { ChatSourceIcon } from "./ChatSourcesPanel";
@@ -120,7 +128,6 @@ import { formatLegacyProviderRetryActivityDetail } from "../../../shared/provide
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import { isHostResumedNoticeEvent, isHostSleepNoticeEvent } from "../../../shared/hostSleepNotice";
 import { isClaudeContextCategoryKind } from "../../../shared/claudeContextUsage";
-import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
 import {
   ChatToolActivityDetails,
   ChatTurnWorkSummary,
@@ -128,6 +135,14 @@ import {
   dedupeChatToolActivityEntries,
 } from "./ChatWorkLogBlock";
 import { ChatStatusGlyph } from "./chatStatusVisuals";
+import { ChatComputerUseActionRun } from "./ChatComputerUseActions";
+import {
+  arrangeComputerUseRuns,
+  collectComputerUseActions,
+  computerUseSummaryForEntry,
+  estimateComputerUseRunHeight,
+  hasComputerUseEntries,
+} from "./chatComputerUseRows";
 import {
   applyChatTranscriptTurnFolds,
   buildTranscriptEventRowKeys,
@@ -179,20 +194,26 @@ import {
   formatThinkingElapsed,
 } from "./ThinkingPreview";
 import { renderSubagentTimelineRow, type SpawnedChatProviderProps } from "./chatSubagentTimelineRenderer";
+import { WorkflowScriptRow } from "./WorkflowScriptRow";
+import type { WorkflowScriptRenderEvent } from "./chatTranscriptRows";
+import { SUBAGENT_RUN_HEADER_MIN } from "./SubagentActivityCards";
+import { workflowRunShape } from "./SubagentWorkflowRunView";
 import { AdeCard } from "./AdeCard";
 import { LaneSetupTranscriptCard } from "./launch/LaneSetupCard";
 import { navigateToSpawnedChat } from "./spawnNavigation";
+import { spawnCompletionNoticeOf, type SpawnCompletionSibling } from "./spawnCompletionLines";
 import { ChatUserMinimap } from "./ChatUserMinimap";
 import { promptHistoryEventKey } from "./chatPromptHistory";
 import { buildDrawnRowKeyIndex, resolveDrawnRowKey } from "./chatDrawnRowIndex";
 import { AgentCliAuthCard, type AgentCliAuthCardInfo } from "./AgentCliAuthCard";
 import { ChatContinuityRecoveryCard } from "./ChatContinuityRecoveryCard";
-import { classifyProviderFailure, ProviderFailureRecoveryCard } from "./ProviderFailureRecoveryCard";
+import { VoiceSessionCard } from "./VoiceSessionCard";
+import { TurnFailureLine } from "./TurnFailureLine";
+import { classifyProviderFailure, foldTurnFailureRows } from "./turnFailureRows";
 import {
   isUsageLimitTurn,
   usageLimitTurnFooterLabel,
 } from "../../../shared/usageLimitResumePresentation";
-import { InstructionErrorCard } from "../shared/InstructionErrorCard";
 import { chatErrorKindFromCategory, presentChatFailure, readChatErrorPresentation } from "../../../shared/chatErrorPresentation";
 import {
   CHAT_TIMELINE_ROW_GAP_PX,
@@ -207,12 +228,15 @@ import {
 import { buildLegacyPendingInputFromApprovalEvent } from "./pendingInput";
 import { readPendingInputRequest } from "../../../shared/pendingInputRequest";
 import { AnsweredQuestionReceipt, OpenQuestionReceipt } from "./QuestionReceipts";
+import { ProjectSecretRequestReceipt } from "./ProjectSecretCard";
+import { readProjectSecretRequestCard } from "../../../shared/projectSecretRequest";
 import { isQuestionKind } from "../../../shared/pendingInputAnswers";
 import { CodexPlanCard } from "./codex/CodexPlanCard";
 import { ChatTaskListCard } from "./ChatTaskListCard";
 import { CodexImageGenerationCard } from "./codex/CodexImageGenerationCard";
 import { CodexImageViewLine } from "./codex/CodexImageViewLine";
 import { ContextCompactDivider } from "./ContextCompactDivider";
+import { contextCompactMergeKey, isManualCompactCommand, providerSupportsManualCompact } from "../../../shared/contextCompaction";
 import { terminalReasonLabel, formatTimedOutAfter, formatGrepTotalsPrefix } from "./chatEventDisplay";
 import { peekPendingSessionAnchor, takePendingSessionAnchor } from "../terminals/pendingSessionAnchors";
 import { ChatTurnFileChangesPanel, aggregateFiles } from "./ChatFileChangesPanel";
@@ -279,13 +303,27 @@ import {
   type TranscriptRowDrawContext,
   thoughtDurationSeconds,
 } from "./chatThoughtRuns";
-import { ChatProofFilmstrip } from "./chatCardPrimitives";
+import { ChatProofCount } from "./chatCardPrimitives";
+import { proofDrawerFocus, type ProofDrawerFocus } from "../../../shared/proofDrawerModel";
 import { useChatComposerOverlayInset } from "./chatComposerOverlayInset";
 import { ChatJumpToLatestPill } from "./ChatJumpToLatestPill";
 
+/**
+ * A line that opens a scene fence, as `chatScene.ts`'s scanner reads one: up to
+ * three spaces, ``` or ~~~, and the scene language as the info string's first
+ * token (more info may follow; CRLF endings count). See
+ * `activeTurnReplyWritesScene`.
+ */
+const SCENE_FENCE_OPENER = new RegExp(`(?:^|\n) {0,3}(?:\`{3,}|~{3,})${SCENE_FENCE_LANGUAGE}(?=\\s|$)`, "i");
+
 /** Stable empty array so a proof-free turn never re-renders the divider. */
 const EMPTY_PROOF_ARTIFACTS: ComputerUseArtifactView[] = [];
-const EMPTY_CITED_PROOF_IDS: ReadonlySet<string> = new Set();
+const EMPTY_PROOF_IDS: ReadonlySet<string> = new Set();
+
+/** The drawer narrowed to one turn's proof, for its "N proof filed" link. */
+function turnProofFocus(artifacts: readonly ComputerUseArtifactView[]): ProofDrawerFocus {
+  return proofDrawerFocus("This turn", artifacts);
+}
 
 /** Cited proof ids in one turn's answer text; cheap for a turn with none. */
 function turnCitedProofIds(text: string): string[] {
@@ -296,14 +334,6 @@ const EMPTY_WORK_LOG_ENTRIES: ChatWorkLogEntry[] = [];
 
 const NAVIGATION_SURFACES = new Set(["work", "lanes", "cto"]);
 
-/**
- * Recovers the child chat's title from a `spawn_completed` notice whose detail
- * lost its `spawnCompletion`. Matches both the current
- * `spawnCompletedNoticeMessage` sentence and the pre-rename `Peer "<title>"
- * turn finished`, which persisted transcripts still hold. Not global, so `exec`
- * has no `lastIndex` to carry between calls.
- */
-const SPAWN_COMPLETED_TITLE_PATTERN = /^(?:Peer|Chat)\s+"?(.*?)"?\s+(?:turn finished|finished its turn)$/;
 type PendingInputResolution = Extract<AgentChatEvent, { type: "pending_input_resolved" }>["resolution"];
 type CodexTurnStalledEvent = Extract<AgentChatEvent, { type: "codex_turn_stalled" }>;
 type CodexTurnRecoveryEvent = Extract<
@@ -365,7 +395,7 @@ function ResetCreditNoticeRow({
           disabled={spending}
           onClick={() => { void spend(); }}
           data-testid="reset-credit-use"
-          className="rounded border border-border/30 px-1.5 py-[1px] text-[length:calc(var(--chat-font-size)*9/14)] font-medium normal-case tracking-normal text-fg/70 hover:bg-white/[0.06] disabled:opacity-50"
+          className="rounded border border-border/30 px-1.5 py-[1px] text-[length:calc(var(--chat-font-size)*9/14)] font-medium normal-case tracking-normal text-fg/70 hover:bg-fg/[0.06] disabled:opacity-50"
         >
           Use reset
         </button>
@@ -624,7 +654,7 @@ function TurnDiffSummaryFallback({
   const threadAdditions = threadFiles.reduce((sum, file) => sum + file.additions, 0);
   const threadDeletions = threadFiles.reduce((sum, file) => sum + file.deletions, 0);
   return (
-    <div className="my-2 w-full max-w-full rounded-lg border border-white/10 bg-white/[0.035] px-3 py-2 font-sans text-[length:calc(var(--chat-font-size)*12/14)] text-fg/70">
+    <div className="my-2 w-full max-w-full rounded-lg border border-fg/10 bg-fg/[0.035] px-3 py-2 font-sans text-[length:calc(var(--chat-font-size)*12/14)] text-fg/70">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         <span className="inline-flex items-center gap-1.5 font-semibold text-fg/85">
           <FileCode size={13} weight="bold" aria-hidden />
@@ -718,21 +748,40 @@ export type AssistantTurnCopyInfo = {
   textEventCount: number;
 };
 
+function appendAssistantTurnCopyRow(
+  result: Map<string, AssistantTurnCopyInfo>,
+  row: TranscriptRenderEnvelope,
+): void {
+  if (row.event.type !== "text") return;
+  const turnId = getEventTurnId(row.event);
+  if (!turnId) return;
+  const existing = result.get(turnId);
+  result.set(turnId, {
+    text: existing ? `${existing.text}\n\n${row.event.text}` : row.event.text,
+    lastTextEventKey: row.key,
+    textEventCount: (existing?.textEventCount ?? 0) + 1,
+  });
+}
+
+function deriveAssistantTurnCopyMaps(
+  rows: readonly TranscriptRenderEnvelope[],
+  excludedRowKeys: ReadonlySet<string>,
+): { allText: Map<string, AssistantTurnCopyInfo>; visibleText: Map<string, AssistantTurnCopyInfo> } {
+  const allText = new Map<string, AssistantTurnCopyInfo>();
+  const visibleText = new Map<string, AssistantTurnCopyInfo>();
+  for (const row of rows) {
+    if (row.event.type !== "text") continue;
+    appendAssistantTurnCopyRow(allText, row);
+    if (!excludedRowKeys.has(row.key)) appendAssistantTurnCopyRow(visibleText, row);
+  }
+  return { allText, visibleText };
+}
+
 export function deriveAssistantTurnCopyMap(
   rows: readonly TranscriptRenderEnvelope[],
 ): Map<string, AssistantTurnCopyInfo> {
   const result = new Map<string, AssistantTurnCopyInfo>();
-  for (const row of rows) {
-    if (row.event.type !== "text") continue;
-    const turnId = getEventTurnId(row.event);
-    if (!turnId) continue;
-    const existing = result.get(turnId);
-    result.set(turnId, {
-      text: existing ? `${existing.text}\n\n${row.event.text}` : row.event.text,
-      lastTextEventKey: row.key,
-      textEventCount: (existing?.textEventCount ?? 0) + 1,
-    });
-  }
+  for (const row of rows) appendAssistantTurnCopyRow(result, row);
   return result;
 }
 
@@ -929,7 +978,7 @@ function ChatOriginDivider({ icon, label, className, testId }: {
   return (
     <div
       className={cn(
-        "flex w-full items-center gap-2.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-[color:color-mix(in_srgb,var(--chat-accent)_72%,var(--chat-fg,#e6e6e6))]",
+        "flex w-full items-center gap-2.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-[color:color-mix(in_srgb,var(--chat-accent)_72%,var(--color-fg))]",
         className,
       )}
       data-testid={testId}
@@ -1014,44 +1063,14 @@ function UserMessageStatusRow({
 const IOS_SIMULATOR_CONTEXT_PREFIX = "Selected iOS simulator context:";
 
 /**
- * Mirror the cyan chip pill the composer renders when an iOS-inspect packet is
- * staged. Sent user messages keep the same backtick-wrapped label tokens at the
- * front of `event.text`, so we can re-promote them to the same chip treatment
- * here. Without this they render as inline-code-styled text and reviewers can't
- * tell the message actually carried packet context (vs. the user just typing
- * the label by hand).
+ * Whether a user message's attachments reached the agent. Only a state that
+ * proves delivery counts: `processed`, `delivered` or `inline`. A message with
+ * no delivery state predates the field and was delivered. `accepted` ("Steering…",
+ * not read yet), `queued`, `unprocessed` and `failed` do not get the check.
  */
-function parseLeadingIosContextChips(text: string): { chips: string[]; rest: string } {
-  const chips: string[] = [];
-  let i = 0;
-  while (i < text.length && text[i] === "`") {
-    const close = text.indexOf("`", i + 1);
-    if (close === -1) break;
-    const inner = text.slice(i + 1, close);
-    if (!inner.length || inner.includes("`") || inner.includes("\n")) break;
-    // Promote only when the closing backtick is followed by a valid token
-    // boundary — whitespace, end-of-string, or an accepted punctuation char.
-    // Adjacent non-space text (e.g. `ctx`message) is plain code, not a chip.
-    const next = text[close + 1];
-    const atValidBoundary =
-      next === undefined
-      || next === " "
-      || next === "\t"
-      || next === "\n"
-      || next === ","
-      || next === "."
-      || next === ":"
-      || next === ";";
-    if (!atValidBoundary) break;
-    chips.push(inner);
-    i = close + 1;
-    if (next === " ") {
-      i += 1;
-      continue;
-    }
-    break;
-  }
-  return { chips, rest: text.slice(i) };
+function userMessageAttachmentsAccepted(event: Extract<AgentChatEvent, { type: "user_message" }>): boolean {
+  const state = event.deliveryState;
+  return state === undefined || state === "processed" || state === "delivered" || state === "inline";
 }
 
 function UserMessageSendConfirmations({
@@ -1061,37 +1080,15 @@ function UserMessageSendConfirmations({
 }) {
   if (event.deliveryState === "queued") return null;
 
-  const attachments = event.attachments ?? [];
   const contextAttachments = event.contextAttachments ?? [];
-  const hasImage = attachments.some((a) => a.type === "image");
-  const hasFile = attachments.some((a) => a.type === "file");
-  const hasIssueContext = contextAttachments.some((a) => a.type === "linear_issue" || a.type === "github_issue");
-  const showFilesRow = hasImage || hasFile;
+  const hasIssueContext = contextAttachments.some((a) =>
+    a.type === "linear_issue" || a.type === "github_issue" || a.type === "jira_issue");
   const showSimRow = event.text.startsWith(IOS_SIMULATOR_CONTEXT_PREFIX);
 
-  if (!showFilesRow && !showSimRow && !hasIssueContext) return null;
-
-  const attachmentCount = attachments.length;
-  const attachmentLabel = attachmentCount <= 1 ? "Attachment analyzed" : "Attachments analyzed";
+  if (!showSimRow && !hasIssueContext) return null;
 
   return (
     <div className="mt-2 flex flex-col gap-1" data-testid="user-message-send-confirmations">
-      {showFilesRow ? (
-        <motion.div
-          className="flex items-center gap-1.5 font-sans text-[length:calc(var(--chat-font-size)*12/14)] italic text-emerald-400/80"
-          data-testid="user-message-attachment-analyzed"
-          initial={{ opacity: 0, y: 2 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.15, ease: "easeOut" }}
-        >
-          {hasImage ? (
-            <Image size={12} weight="regular" className="shrink-0 text-emerald-400/85" aria-hidden />
-          ) : (
-            <Paperclip size={12} weight="regular" className="shrink-0 text-emerald-400/85" aria-hidden />
-          )}
-          <span>{attachmentLabel}</span>
-        </motion.div>
-      ) : null}
       {showSimRow ? (
         <motion.div
           className="flex items-center gap-1.5 font-sans text-[length:calc(var(--chat-font-size)*12/14)] italic text-emerald-400/80"
@@ -1195,7 +1192,7 @@ function UnprocessedMessageAction({
           <button
             type="button"
             disabled={running}
-            className="rounded-md px-2.5 py-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] font-medium text-fg/58 transition-colors hover:bg-white/[0.06] hover:text-fg/82 disabled:pointer-events-none disabled:opacity-55"
+            className="rounded-md px-2.5 py-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] font-medium text-fg/58 transition-colors hover:bg-fg/[0.06] hover:text-fg/82 disabled:pointer-events-none disabled:opacity-55"
             onClick={() => onEdit(event)}
           >
             Edit
@@ -1205,7 +1202,7 @@ function UnprocessedMessageAction({
           <button
             type="button"
             disabled={running}
-            className="rounded-md px-2.5 py-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] font-medium text-fg/45 transition-colors hover:bg-white/[0.06] hover:text-fg/72 disabled:pointer-events-none disabled:opacity-55"
+            className="rounded-md px-2.5 py-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] font-medium text-fg/45 transition-colors hover:bg-fg/[0.06] hover:text-fg/72 disabled:pointer-events-none disabled:opacity-55"
             onClick={() => void dismiss()}
           >
             Dismiss
@@ -1234,11 +1231,16 @@ type RenderEnvelope = {
   | ScheduledWakeDividerRenderEvent
   | SpawnWakeDividerRenderEvent
   | TurnDetailsRenderEvent
-  | TaskListRenderEvent;
+  | TaskListRenderEvent
+  | WorkflowScriptRenderEvent;
   /** Folded-row count from the transcript collapse; see ChatTranscriptRenderEnvelope. */
   repeatCount?: number;
   /** Image views folded into this row by adjacency; see ChatTranscriptRenderEnvelope. */
   imageViewSiblings?: Array<Extract<AgentChatEvent, { type: "codex_image_view" }>>;
+  /** Other children's finished-turn notices on this line; see ChatTranscriptRenderEnvelope. */
+  spawnCompletionSiblings?: SpawnCompletionSibling[];
+  /** On a `done` row: the turn ended at a usage limit; see ChatTranscriptRenderEnvelope. */
+  endedAtUsageLimit?: boolean;
   /** True when `timestamp` is an ordering placeholder with no real clock behind it. */
   timestampSynthetic?: boolean;
   /** Row identity for a scene's still; see ChatTranscriptRenderEnvelope. */
@@ -1250,11 +1252,13 @@ function MessageCopyButton({
   className,
   label = "Copy",
   title = "Copy message",
+  iconOnly = false,
 }: {
   value: string;
   className?: string;
   label?: string;
   title?: string;
+  iconOnly?: boolean;
 }) {
   const { copy, copied } = useCopyToClipboard();
 
@@ -1262,7 +1266,9 @@ function MessageCopyButton({
     <button
       type="button"
       className={cn(
-        "inline-flex items-center gap-1 rounded-md border border-white/[0.06] bg-white/[0.03] px-1.5 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*9/14)] text-fg/40 transition-all hover:border-violet-400/20 hover:bg-violet-500/[0.06] hover:text-fg/70",
+        iconOnly
+          ? "inline-flex h-5 w-5 items-center justify-center rounded-md border border-fg/[0.06] bg-fg/[0.03] text-fg/40 transition-colors hover:border-violet-400/20 hover:bg-violet-500/[0.06] hover:text-fg/70"
+          : "inline-flex items-center gap-1 rounded-md border border-fg/[0.06] bg-fg/[0.03] px-1.5 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*9/14)] text-fg/40 transition-all hover:border-violet-400/20 hover:bg-violet-500/[0.06] hover:text-fg/70",
         className,
       )}
       onClick={() => void copy(value)}
@@ -1270,7 +1276,7 @@ function MessageCopyButton({
       aria-label={copied ? "Copied" : title}
     >
       {copied ? <Checks size={10} weight="bold" /> : <CopySimple size={10} weight="regular" />}
-      <span>{copied ? "Copied" : label}</span>
+      {!iconOnly ? <span>{copied ? "Copied" : label}</span> : null}
     </button>
   );
 }
@@ -1481,7 +1487,7 @@ function InlineDisclosureRow({
         type="button"
         aria-expanded={expandable ? open : undefined}
         className={cn(
-          "flex w-full items-center gap-2 rounded-lg px-1.5 py-1 text-left transition-colors hover:bg-white/[0.04]",
+          "flex w-full items-center gap-2 rounded-lg px-1.5 py-1 text-left transition-colors hover:bg-fg/[0.04]",
           !expandable && "cursor-default hover:bg-transparent",
         )}
         onClick={() => {
@@ -1491,7 +1497,7 @@ function InlineDisclosureRow({
         {expandable ? (
           open ? <CaretDown size={10} weight="bold" className="text-fg/28" /> : <CaretRight size={10} weight="bold" className="text-fg/28" />
         ) : (
-          <span className="ml-[2px] inline-flex h-1.5 w-1.5 rounded-full bg-white/12" aria-hidden="true" />
+          <span className="ml-[2px] inline-flex h-1.5 w-1.5 rounded-full bg-fg/12" aria-hidden="true" />
         )}
         <div className="min-w-0 flex-1">{summary}</div>
       </button>
@@ -1613,12 +1619,12 @@ function CollapsibleCard({
   const isOpen = forceOpen === true ? !userCollapsed : open;
 
   return (
-    <div className={cn(GLASS_CARD_CLASS, "transition-all hover:border-white/[0.08]", className)} style={styleProp ?? SURFACE_INLINE_CARD_STYLE}>
+    <div className={cn(GLASS_CARD_CLASS, "transition-all hover:border-fg/[0.08]", className)} style={styleProp ?? SURFACE_INLINE_CARD_STYLE}>
       <button
         type="button"
         aria-expanded={isOpen}
         aria-controls={panelId}
-        className="flex w-full items-center gap-2.5 px-4 py-3 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] transition-colors hover:bg-white/[0.02]"
+        className="flex w-full items-center gap-2.5 px-4 py-3 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] transition-colors hover:bg-fg/[0.02]"
         onClick={() => {
           if (forceOpen === true) {
             setUserCollapsed((v) => !v);
@@ -1630,7 +1636,7 @@ function CollapsibleCard({
         {isOpen ? <CaretDown size={10} weight="bold" className="text-violet-400/40" /> : <CaretRight size={10} weight="bold" className="text-violet-400/40" />}
         <div className="flex flex-1 flex-wrap items-center gap-2">{summary}</div>
       </button>
-      {isOpen ? <div id={panelId} className="border-t border-white/[0.05] px-4 pb-4 pt-3">{children}</div> : null}
+      {isOpen ? <div id={panelId} className="border-t border-fg/[0.05] px-4 pb-4 pt-3">{children}</div> : null}
     </div>
   );
 }
@@ -1729,9 +1735,9 @@ export function resolveWorkingIndicatorLabel(
 
 const RUNNING_COMMAND_LABEL_MAX = 72;
 
+/** Secrets are masked before the cut: a key sliced at 72 chars would leak its prefix. */
 function oneLineCommand(command: string): string {
-  const line = command.replace(/\s+/g, " ").trim();
-  return line.length > RUNNING_COMMAND_LABEL_MAX ? `${line.slice(0, RUNNING_COMMAND_LABEL_MAX - 1)}…` : line;
+  return oneLineRedacted(command, RUNNING_COMMAND_LABEL_MAX);
 }
 
 /**
@@ -1743,6 +1749,9 @@ function runningToolLabel(entries: readonly ChatWorkLogEntry[]): string | null {
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index]!;
     if (entry.status !== "running") continue;
+    // A computer-use action already shows as its own row in the thread
+    // ("Clicking “Checkout”…"); repeating it here would say it twice.
+    if (computerUseSummaryForEntry(entry)) return null;
     if (entry.entryKind === "command" && entry.command?.trim()) return `Running ${oneLineCommand(entry.command)}`;
     if (entry.entryKind !== "tool" || !entry.toolName) continue;
     const args = readRecord(entry.args) ?? {};
@@ -1769,13 +1778,6 @@ function ThinkingDots({ toneClass = "bg-emerald-300/70" }: { toneClass?: string 
     </span>
   );
 }
-
-// After the turn has been active this long with no terminal event, the
-// indicator adds a quiet "taking longer than usual" note so a long silent wait
-// doesn't read as frozen. Provider overloads (HTTP 529) and transient errors
-// are retried *inside* the model SDK with nothing surfaced to us until they
-// resolve or finally fail — so a long "Thinking" is the only signal we get.
-const LONG_RUNNING_TURN_SECONDS = 30;
 
 /**
  * Formats the elapsed turn time as a compact "working for" duration. Stays as
@@ -1805,6 +1807,7 @@ function WorkingIndicator({
   activity,
   startedAt,
   toolEntries,
+  replyWritesScene,
   onNavigateSuggestion,
   onInsertDraft,
   onRevealChatTerminal,
@@ -1813,6 +1816,8 @@ function WorkingIndicator({
   activity: string | null;
   startedAt: number | null;
   toolEntries: ChatWorkLogEntry[];
+  /** The reply has started its own scene fence, whose box now stands in for the draft. */
+  replyWritesScene?: boolean;
   onNavigateSuggestion?: (suggestion: OperatorNavigationSuggestion) => void;
   onInsertDraft?: (text: string) => void;
   onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
@@ -1820,7 +1825,6 @@ function WorkingIndicator({
 }) {
   const timerRef = useRef<HTMLSpanElement | null>(null);
   const startMsRef = useRef<number | null>(null);
-  const [longRunning, setLongRunning] = useState(false);
   const [activityOpen, setActivityOpen] = useState(false);
   const hasToolActivity = toolEntries.length > 0;
   // The status line swaps between a bare <span> and an expander <button> the
@@ -1829,7 +1833,7 @@ function WorkingIndicator({
   // an element captured once when the ticker started) reattaches the counter to
   // whichever node is currently mounted and repaints it in the same commit, so
   // the swap can't strand the ticker on a detached node — the bug that froze
-  // the display at "0s" while "taking longer than usual" still appeared.
+  // the display at "0s" while the turn kept running.
   const attachTimer = useCallback((el: HTMLSpanElement | null) => {
     timerRef.current = el;
     if (!el) return;
@@ -1845,12 +1849,15 @@ function WorkingIndicator({
       // Re-read the ref every tick — see attachTimer above.
       const el = timerRef.current;
       if (el) el.textContent = formatElapsedSeconds(elapsedSec);
-      setLongRunning(elapsedSec >= LONG_RUNNING_TURN_SECONDS);
       handle = window.setTimeout(tick, 1000);
     };
     tick();
     return () => window.clearTimeout(handle);
   }, [startedAt]);
+  const scenePreview = useMemo(() => {
+    if (replyWritesScene) return null;
+    return latestScenePreviewOutput(toolEntries);
+  }, [toolEntries, replyWritesScene]);
   const status = (
     <span className="inline-flex min-w-0 items-center gap-2 font-sans text-[length:calc(var(--chat-font-size)*12/14)]">
       <ThinkingDots toneClass="bg-violet-400/70" />
@@ -1859,12 +1866,6 @@ function WorkingIndicator({
       <span className="shrink-0 text-fg/38">
         working for <span ref={attachTimer} className="tabular-nums">0s</span>
       </span>
-      {longRunning ? (
-        <>
-          <span className="shrink-0 text-fg/28" aria-hidden>·</span>
-          <span className="shrink-0 text-fg/35">taking longer than usual</span>
-        </>
-      ) : null}
       {hasToolActivity ? (
         activityOpen
           ? <CaretDown size={10} weight="bold" className="shrink-0 text-violet-300/45" />
@@ -1904,6 +1905,8 @@ function WorkingIndicator({
           </motion.div>
         ) : null}
       </AnimatePresence>
+      {/* The scene being drafted, last: the turn's output streams in above it. */}
+      {scenePreview ? <ScenePreviewThumb output={scenePreview} /> : null}
     </div>
   );
 }
@@ -2038,7 +2041,7 @@ function ToolResultCard({ event }: { event: Extract<AgentChatEvent, { type: "too
           ) : null}
           {timedOutLabel ? (
             <span
-              className="inline-flex items-center gap-1 rounded-md border border-white/[0.07] bg-white/[0.025] px-2 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] text-fg/55"
+              className="inline-flex items-center gap-1 rounded-md border border-fg/[0.07] bg-fg/[0.025] px-2 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] text-fg/55"
               title={event.backgroundCwdHint ? `Running in ${event.backgroundCwdHint}` : undefined}
             >
               auto-backgrounded after {timedOutLabel}
@@ -2095,7 +2098,13 @@ function isKnownModelRefForDescriptor(desc: ModelDescriptor, value?: string): bo
     || (desc.aliases ?? []).some((alias) => alias.trim().toLowerCase() === normalized);
 }
 
-function resolveModelLabel(modelId?: string, model?: string): string | null {
+/** The Claude placeholder names no model, so it is treated as no model at all. */
+function realModelName(model?: string): string | undefined {
+  return model === CLAUDE_SYNTHETIC_MODEL ? undefined : model;
+}
+
+function resolveModelLabel(modelId?: string, rawModel?: string): string | null {
+  const model = realModelName(rawModel);
   if (modelId) {
     const desc = getModelById(modelId);
     if (desc) {
@@ -2119,13 +2128,14 @@ function resolveModelLabel(modelId?: string, model?: string): string | null {
   return null;
 }
 
-function resolveModelMeta(modelId?: string, model?: string): {
+function resolveModelMeta(modelId?: string, rawModel?: string): {
   label: string | null;
   family: string | null;
   cliCommand: string | null;
   modelId: string | null;
   providerModelId: string | null;
 } {
+  const model = realModelName(rawModel);
   const key = modelId ?? model;
   const descriptor = key ? (getModelById(key) ?? resolveModelDescriptor(key)) : undefined;
   const idHint = String(modelId ?? model ?? "").trim();
@@ -2162,9 +2172,13 @@ export function deriveTurnModelState(
       || previous.lastProcessedEnvelope === events[previous.processedLength - 1]
     );
 
-  const map = canIncrementallyAppend && previous
-    ? new Map(previous.map)
-    : new Map<string, TurnModelDescriptor>();
+  // The map is copied only when a turn end changes it, and a descriptor that
+  // reads the same as the previous one for its turn is that same object. Every
+  // mounted row takes its turn's descriptor as a prop; a provider resend of the
+  // newest tool call breaks the append check above, and a rebuilt map of equal
+  // descriptors re-rendered every row.
+  let map = canIncrementallyAppend && previous ? previous.map : new Map<string, TurnModelDescriptor>();
+  let ownsMap = map !== previous?.map;
   let lastModel = canIncrementallyAppend ? (previous?.lastModel ?? null) : null;
   const startIndex = canIncrementallyAppend && previous ? previous.processedLength : 0;
 
@@ -2173,12 +2187,21 @@ export function deriveTurnModelState(
     if (!evt || evt.type !== "done") continue;
     const modelLabel = resolveModelLabel(evt.modelId, evt.model);
     if (!evt.turnId || !modelLabel) continue;
-    const model = {
-      label: modelLabel,
-      ...(evt.modelId ? { modelId: evt.modelId } : {}),
-      ...(evt.model ? { model: evt.model } : {}),
-    };
-    map.set(evt.turnId, model);
+    const known = previous?.map.get(evt.turnId);
+    const model = known && known.label === modelLabel && known.modelId === (evt.modelId || undefined) && known.model === (evt.model || undefined)
+      ? known
+      : {
+          label: modelLabel,
+          ...(evt.modelId ? { modelId: evt.modelId } : {}),
+          ...(evt.model ? { model: evt.model } : {}),
+        };
+    if (map.get(evt.turnId) !== model) {
+      if (!ownsMap) {
+        map = new Map(map);
+        ownsMap = true;
+      }
+      map.set(evt.turnId, model);
+    }
     lastModel = model;
   }
 
@@ -2217,6 +2240,18 @@ function ModelGlyph({
       />
     );
   }
+  if (meta.family === "muse" || meta.cliCommand === "muse") {
+    return (
+      <ModelRowLogo
+        modelFamily="muse"
+        cliCommand="muse"
+        modelId={meta.modelId ?? modelId ?? model}
+        providerModelId={meta.providerModelId ?? undefined}
+        size={size}
+        className={className}
+      />
+    );
+  }
   if (meta.family === "anthropic" || meta.cliCommand === "claude") {
     return <ClaudeLogo size={size} className={className} />;
   }
@@ -2247,7 +2282,7 @@ function CommandEventCard({
       </span>
       <Terminal size={11} weight="regular" className="text-fg/34" />
       <span className="font-medium text-fg/62">{timelineVerb}</span>
-      <span className="min-w-0 flex-1 truncate text-fg/76">{event.command}</span>
+      <span className="min-w-0 flex-1 truncate text-fg/76">{redactCommandLine(event.command ?? "")}</span>
       {event.durationMs != null ? <span className="text-[length:calc(var(--chat-font-size)*10/14)] text-fg/28">{Math.max(0, event.durationMs)}ms</span> : null}
       {event.exitCode != null ? (
         <span className={cn("text-[length:calc(var(--chat-font-size)*10/14)]", event.exitCode === 0 ? "text-emerald-300/60" : "text-red-300/65")}>
@@ -2259,12 +2294,12 @@ function CommandEventCard({
 
   const commandBody = (
     <>
-      <div className="rounded-lg border border-white/[0.06] bg-black/25 px-3.5 py-2.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/80">
+      <div className="rounded-lg border border-fg/[0.06] bg-black/25 px-3.5 py-2.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/80">
         <span className="select-none text-amber-500/40">$ </span>
-        {event.command}
+        {redactCommandLine(event.command ?? "")}
       </div>
       {hasOutput ? (
-        <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-white/[0.06] bg-black/25 px-3.5 py-2.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] leading-[1.5] text-fg/60">
+        <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-fg/[0.06] bg-black/25 px-3.5 py-2.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] leading-[1.5] text-fg/60">
           {event.output}
         </pre>
       ) : null}
@@ -2443,6 +2478,58 @@ function dispatchAdeCardAction(
   }
 }
 
+/**
+ * True for a message the reader wrote. ADE, the scheduler and other agents
+ * also deliver `user_message` events (a board move, a PR watch wake, a
+ * scheduled wake, a child's completion, a relay, a resume prompt); none of
+ * those is the reader answering a scene.
+ */
+function isReaderAuthoredMessage(metadata: AgentChatEventMetadata | null | undefined): boolean {
+  if (!metadata) return true;
+  return !(
+    metadata.boardMove
+    || metadata.prWatchWake
+    || metadata.scheduledWake
+    || metadata.spawnCompletion
+    || metadata.agentRelay
+    || metadata.hostContinuation
+    || metadata.usageLimitResume
+  );
+}
+
+/**
+ * Whether a text event holds a ```scene fence. Remembered per event object and
+ * text length, so a settled row is scanned once and a row still growing is
+ * scanned again.
+ */
+const sceneFenceByTextEvent = new WeakMap<object, { length: number; has: boolean }>();
+function textHasSceneFence(event: { text: string }): boolean {
+  const known = sceneFenceByTextEvent.get(event);
+  if (known && known.length === event.text.length) return known.has;
+  const has = event.text.includes("```scene");
+  sceneFenceByTextEvent.set(event, { length: event.text.length, has });
+  return has;
+}
+
+/**
+ * A `/compact` the user sent as its own turn, on a provider where that is a
+ * real compact action. A `/compact` steered into a running turn, or still
+ * queued, belongs to that turn and stays an ordinary message; so does one that
+ * carries attachments, which the chip could not show.
+ */
+function isCompactCommandMessage(
+  event: TranscriptGroupedEnvelope["event"] | AgentChatEvent,
+  provider: string | null | undefined,
+): boolean {
+  return event.type === "user_message"
+    && !event.steerId
+    && (event.deliveryState == null || event.deliveryState === "delivered")
+    && !event.attachments?.length
+    && !event.contextAttachments?.length
+    && providerSupportsManualCompact(provider)
+    && isManualCompactCommand(event.text);
+}
+
 function renderEvent(
   envelope: RenderEnvelope,
   options?: SpawnedChatProviderProps & {
@@ -2450,6 +2537,10 @@ function renderEvent(
     onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
     onRecoverContinuity?: (args: AgentChatRecoverContinuityArgs) => Promise<AgentChatContinuityRecoveryResult>;
     onRetryProviderFailure?: (turnId: string | null) => Promise<string | null>;
+    /** Re-runs compaction through the pane's guarded compact action. */
+    onRetryCompaction?: () => void;
+    /** Merge key of the chat's latest compaction; only that divider offers Retry. */
+    latestCompactionKey?: string | null;
     onChooseProviderFailureModel?: () => void;
     onRunUnprocessedMessage?: (event: UserMessageEvent) => void | Promise<void>;
     onEditUnprocessedMessage?: (event: UserMessageEvent) => void;
@@ -2471,13 +2562,12 @@ function renderEvent(
     laneId?: string | null;
     sessionId?: string | null;
     runtimeName?: string | null;
+    jiraIssueSnapshotsById?: ReadonlyMap<string, LaneJiraIssue>;
     onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
     onRewindFiles?: (request: { messageId: string; timestamp: string; text: string }) => void;
     turnDiffSummaries?: TurnDiffSummary[];
-    mosaic?: MosaicRenderContext;
     /** Scroll a row into view by its stable render key (subagent jump affordances). */
     onScrollToRowKey?: (rowKey: string) => void;
-    assistantTurnCopy?: { text: string } | null;
     /**
      * A narration line that is not its turn's last reply. Its hover actions
      * float below it instead of reserving a strip, so a run of short progress
@@ -2507,6 +2597,19 @@ function renderEvent(
 
   // One rule for "this row draws nothing", shared with Thought-run merging.
   if (transcriptEventDrawsNothing(event, options)) return null;
+
+  // A jump to a spawned chat. A child that ran on this chat's machine lives
+  // there too, so the jump carries this chat's pin; without it a chat on
+  // another machine is focused against the tab's machine and resolves to
+  // nothing. A child that ran elsewhere (`childMachineName`) is left to the
+  // Work list, which knows every machine's sessions. Its lane is passed only
+  // when known: the listener otherwise resolves the child's own lane, where
+  // this chat's lane would open the wrong one.
+  const openSpawnedChat = (
+    childSessionId: string | null | undefined,
+    childLaneId: string | null,
+    childMachineName?: string | null,
+  ) => navigateToSpawnedChat(childSessionId, childLaneId, childMachineName ? null : options?.runtimePin ?? null);
 
   if (event.type === "model_handoff") {
     // Same-provider handoffs never reach here: they are dropped upstream by
@@ -2575,7 +2678,7 @@ function renderEvent(
         </div>
         <button
           type="button"
-          onClick={() => navigateToSpawnedChat(event.childSessionId, options?.laneId ?? null)}
+          onClick={() => openSpawnedChat(event.childSessionId, null, event.childMachineName)}
           className="mx-auto inline-flex max-w-[var(--chat-content-width,52rem)] items-center gap-1.5 rounded-full border border-violet-300/18 bg-violet-400/[0.06] px-3 py-1 text-left font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-fg/70 transition-colors hover:border-violet-300/30 hover:text-fg/90"
           title="Open the spawned chat"
         >
@@ -2594,8 +2697,11 @@ function renderEvent(
      with the exact text the agent received folded underneath it, quiet and
      centred. Rendering it as a user bubble would put words in the user's mouth
      that they never wrote. */
-  if (event.type === "user_message" && event.metadata?.boardMove) {
-    const boardMove = event.metadata.boardMove;
+  // One decision for what a user-message row shows (`userMessageBody.ts`);
+  // find (⌘F) searches the same text.
+  const userBody = event.type === "user_message" ? resolveUserMessageBody(event) : null;
+  if (userBody?.kind === "board-move") {
+    const boardMove = userBody.move;
     return (
       <div className="my-3 flex flex-col gap-1" data-board-move-to={boardMove.to}>
         <div className="flex items-center gap-2 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/45">
@@ -2605,8 +2711,8 @@ function renderEvent(
           </span>
           <span className="h-px flex-1 bg-fg/[0.08]" />
         </div>
-        <p className="mx-auto max-w-[var(--chat-content-width,52rem)] text-center font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] leading-relaxed text-fg/55">
-          {event.displayText?.trim() || event.text}
+        <p data-chat-find-text="" className="mx-auto max-w-[var(--chat-content-width,52rem)] text-center font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] leading-relaxed text-fg/55">
+          {userBody.line}
         </p>
       </div>
     );
@@ -2617,8 +2723,8 @@ function renderEvent(
      write this message, so it is never a user bubble: the card says what
      changed and that the agent was told, and the exact text sits folded
      underneath for anyone who wants to see what the agent read. */
-  const prWatchWake = event.type === "user_message" ? event.metadata?.prWatchWake : undefined;
-  if (event.type === "user_message" && prWatchWake?.card) {
+  if (event.type === "user_message" && userBody?.kind === "wake-card") {
+    const prWatchWake = userBody.wake;
     const card: Extract<AgentChatEvent, { type: "ade_card" }> = { ...prWatchWake.card, type: "ade_card" };
     return (
       <div className="my-2 flex flex-col gap-1" data-pr-watch-wake={prWatchWake.watchId}>
@@ -2631,7 +2737,7 @@ function renderEvent(
             <span className="group-open:hidden">What the agent was told</span>
             <span className="hidden group-open:inline">Hide what the agent was told</span>
           </summary>
-          <pre className="mt-1 whitespace-pre-wrap break-words rounded-md border border-white/[0.06] bg-white/[0.02] p-2 font-sans leading-relaxed text-fg/60">
+          <pre className="mt-1 whitespace-pre-wrap break-words rounded-md border border-fg/[0.06] bg-fg/[0.02] p-2 font-sans leading-relaxed text-fg/60">
             {event.text}
           </pre>
         </details>
@@ -2639,10 +2745,34 @@ function renderEvent(
     );
   }
 
+  /* ── Compact command ──
+     `/compact` is an action, not something the user said: the compaction line
+     under it carries the result. A quiet chip keeps the record of who asked
+     without a full message bubble. */
+  if (event.type === "user_message" && isCompactCommandMessage(event, options?.sessionProvider)) {
+    return (
+      <div className="flex w-full justify-end" data-chat-compact-command="">
+        <span
+          title={event.displayText?.trim() || event.text.trim()}
+          className="inline-flex max-w-[82%] items-center rounded-full border border-fg/[0.08] bg-fg/[0.03] px-2.5 py-1 font-mono text-[length:calc(var(--chat-font-size)*11.5/14)] text-fg/55"
+        >
+          <span className="min-w-0 truncate">{event.displayText?.trim() || event.text.trim()}</span>
+        </span>
+      </div>
+    );
+  }
+
   /* ── User message ── */
-  if (event.type === "user_message") {
+  if (event.type === "user_message" && userBody) {
     const playSendEntrance = !animatedUserMessageKeys.has(envelope.key);
     if (playSendEntrance) animatedUserMessageKeys.add(envelope.key);
+    const hasPastedTextPromptAttachment = userMessageHasPastedPrompt(event);
+    const copyText = event.displayText?.trim() || (
+      event.metadata?.hideFullPrompt === true
+      || hasPastedTextPromptAttachment
+        ? ""
+        : event.text
+    );
     const metadataKind = event.metadata?.hideFullPrompt === true && typeof event.metadata?.kind === "string"
       ? event.metadata.kind
       : null;
@@ -2678,17 +2808,20 @@ function renderEvent(
           )}
           style={MESSAGE_CARD_STYLE}
           data-chat-user-message-card=""
+          // ⌘F searches the bubble's text; its hover actions, review card and
+          // attachments are marked to skip.
+          data-chat-find-text=""
         >
           {/* Frosted so the actions stay legible over a long first line or a
               brief's heading, instead of printing on top of the words. */}
-          <div className="absolute right-1.5 top-1.5 z-10 flex items-center gap-1 rounded-md bg-black/30 px-1 py-0.5 opacity-0 backdrop-blur-md transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100">
+          <div data-ade-find-skip="" className="absolute right-1.5 top-1.5 z-10 flex items-center gap-1 rounded-md bg-black/30 px-1 py-0.5 opacity-0 backdrop-blur-md transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100">
             {envelope.timestampSynthetic === true
               ? null
               : <RowHoverTimestamp iso={envelope.timestamp} className="mr-0.5" />}
             {event.messageId && options?.onRewindFiles ? (
               <button
                 type="button"
-                className="inline-flex h-5 w-5 items-center justify-center rounded text-white/45 transition-colors hover:bg-amber-300/12 hover:text-amber-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-300/45"
+                className="inline-flex h-5 w-5 items-center justify-center rounded text-white/45 transition-colors hover:bg-amber-300/12 hover:text-[#fef3c7] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-300/45"
                 title="Undo the file changes the agent made after this message. Conversation stays intact."
                 aria-label="Undo file changes after this message"
                 onClick={() => options.onRewindFiles?.({
@@ -2700,77 +2833,80 @@ function renderEvent(
                 <span aria-hidden>↶</span>
               </button>
             ) : null}
-            <MessageCopyButton value={event.displayText?.trim() || (event.metadata?.hideFullPrompt === true ? "" : event.text)} />
+            {copyText.trim() || event.metadata?.hideFullPrompt === true
+              ? <MessageCopyButton value={copyText} />
+              : null}
           </div>
           {(() => {
-            const displayText = event.displayText?.trim();
-            if (event.metadata?.hideFullPrompt === true) {
-              return displayText ? (
-                <ChipText className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] font-medium leading-[1.7] text-white" text={displayText} />
-              ) : null;
-            }
-            // A send that carried thread comments: the review card, then what
-            // the user typed (if anything) under it.
-            const review = parseThreadReviewBlock(event.text);
-            if (review) {
-              const typed = displayText || review.rest.trim();
-              return (
-                <div className="flex min-w-0 flex-col gap-2">
-                  <ThreadReviewSentCard comments={review.comments} />
-                  {typed ? <UserTypedText text={typed} onOpenWorkspacePath={options?.onOpenWorkspacePath} /> : null}
-                </div>
-              );
-            }
-            // `text` is what the provider received (mention blocks expanded);
-            // `displayText` is what the user typed. Show only what they typed.
-            if (displayText && displayText !== event.text.trim()) {
-              return userTextLooksLikeMarkdown(displayText) ? (
-                <MarkdownBlock markdown={displayText} tone="bubble" onOpenWorkspacePath={options?.onOpenWorkspacePath} />
-              ) : (
-                <ChipText className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] leading-[1.7] text-white" text={displayText} />
-              );
-            }
-            const parsed = parseLeadingIosContextChips(event.text);
-            const contextSegments = splitChatOutputContextSegments(parsed.rest);
-            const hasOutputContext = contextSegments.some((segment) => segment.kind === "context");
-            const body = !parsed.chips.length && !hasOutputContext ? (
-              userTextLooksLikeMarkdown(event.text) ? (
-                <MarkdownBlock markdown={event.text} tone="bubble" onOpenWorkspacePath={options?.onOpenWorkspacePath} />
-              ) : (
-                <ChipText className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] leading-[1.7] text-white" text={event.text} />
-              )
-            ) : (
-              <div className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] leading-[1.7] text-white">
-                {parsed.chips.length ? (
-                  <span className="mr-1 inline-flex flex-wrap items-baseline gap-1 align-baseline">
-                    {parsed.chips.map((label, idx) => (
-                      <span
-                        key={`ios-chip-${idx}`}
-                        className="mx-0.5 inline-flex max-w-[260px] translate-y-[1px] items-center gap-1.5 rounded-md border border-cyan-300/22 bg-cyan-500/12 px-2 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] leading-5 text-cyan-50/85 align-baseline"
-                        title={label}
-                        data-testid="user-message-ios-context-chip"
-                      >
-                        <span className="max-w-[200px] truncate">{label}</span>
+            const body = userBody;
+            switch (body.kind) {
+              case "brief":
+                return body.text ? (
+                  <ChipText className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] font-medium leading-[1.7] text-white" text={body.text} attachments={event.attachments} />
+                ) : null;
+              case "review":
+                return (
+                  <div className="flex min-w-0 flex-col gap-2">
+                    <div data-ade-find-skip="" className="contents">
+                      <ThreadReviewSentCard comments={body.comments} />
+                    </div>
+                    {body.typed ? <UserTypedText text={body.typed} onOpenWorkspacePath={options?.onOpenWorkspacePath} /> : null}
+                  </div>
+                );
+              case "typed":
+                return body.text ? <UserTypedText text={body.text} onOpenWorkspacePath={options?.onOpenWorkspacePath} /> : null;
+              case "text":
+                return body.markdown ? (
+                  <MarkdownBlock markdown={body.text} tone="bubble" onOpenWorkspacePath={options?.onOpenWorkspacePath} />
+                ) : (
+                  <ChipText className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] leading-[1.7] text-white" text={body.text} attachments={event.attachments} />
+                );
+              case "chips":
+                // Prompts render in full, however long.
+                return (
+                  <div className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] leading-[1.7] text-white">
+                    {body.chips.length ? (
+                      <span className="mr-1 inline-flex flex-wrap items-baseline gap-1 align-baseline">
+                        {body.chips.map((label, idx) => (
+                          <span
+                            key={`ios-chip-${idx}`}
+                            className="mx-0.5 inline-flex max-w-[260px] translate-y-[1px] items-center gap-1.5 rounded-md border border-cyan-300/22 bg-cyan-500/12 px-2 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] leading-5 text-[#ecfeff]/85 align-baseline"
+                            title={label}
+                            data-testid="user-message-ios-context-chip"
+                          >
+                            <span className="max-w-[200px] truncate">{label}</span>
+                          </span>
+                        ))}
                       </span>
-                    ))}
-                  </span>
-                ) : null}
-                {hasOutputContext ? <ChatContextSegments segments={contextSegments} /> : parsed.rest}
-              </div>
-            );
-            // Prompts render in full, however long. The hidden-prompt brief
-            // keeps its own chip.
-            return body;
+                    ) : null}
+                    {body.segments ? <ChatContextSegments segments={body.segments} /> : body.rest}
+                  </div>
+                );
+              case "wake-card":
+                // Returned above (as is `board-move`), never as a bubble.
+                return null;
+              default: {
+                // Exhaustive: a new kind is a compile error here.
+                const unhandled: never = body;
+                return unhandled;
+              }
+            }
           })()}
           {event.attachments?.length || event.contextAttachments?.length ? (
-            <UserMessageIssueContext
-              attachments={event.attachments ?? []}
-              contextAttachments={event.contextAttachments ?? []}
-              mode={options?.surfaceMode ?? "standard"}
-              sessionId={options?.sessionId}
-            />
+            <div data-ade-find-skip="" className="contents">
+              <UserMessageIssueContext
+                attachments={event.attachments ?? []}
+                contextAttachments={event.contextAttachments ?? []}
+                jiraIssueSnapshotsById={options?.jiraIssueSnapshotsById}
+                mode={options?.surfaceMode ?? "standard"}
+                sessionId={options?.sessionId}
+                accepted={userMessageAttachmentsAccepted(event)}
+              />
+            </div>
           ) : null}
-          <UserMessageSendConfirmations event={event} />
+          <div data-ade-find-skip="" className="contents">
+            <UserMessageSendConfirmations event={event} />
+          </div>
         </div>
         <UserMessageStatusRow
           event={event}
@@ -2799,8 +2935,6 @@ function renderEvent(
             text={event.text}
             paced={options?.pacedTextReveal === true}
             onOpenWorkspacePath={options?.onOpenWorkspacePath}
-            mosaic={options?.mosaic}
-            mosaicScopeKey={envelope.key}
             // NOT the render key. A scene's still is filed on disk under this
             // and looked up again on every reopen, and the render key carries
             // the event's index in the events array — so prepending an older
@@ -2833,14 +2967,7 @@ function renderEvent(
             {event.originTimestamp || envelope.timestampSynthetic !== true
               ? <RowHoverTimestamp iso={event.originTimestamp ?? envelope.timestamp} className="mr-0.5" />
               : null}
-            <MessageCopyButton value={event.text} />
-            {options?.assistantTurnCopy ? (
-              <MessageCopyButton
-                value={options.assistantTurnCopy.text}
-                label="Copy turn"
-                title="Copy whole turn"
-              />
-            ) : null}
+            <MessageCopyButton value={event.text} iconOnly />
           </div>
         </div>
       </motion.div>
@@ -2885,7 +3012,7 @@ function renderEvent(
           "group relative overflow-hidden rounded-xl border p-0",
           isFailed
             ? "border-red-500/12 bg-gradient-to-br from-red-950/20 to-red-950/5"
-            : "border-cyan-500/10 bg-gradient-to-br from-cyan-950/25 via-[#0a0e14] to-[#0d0d10]",
+            : "border-cyan-500/10 bg-gradient-to-br from-cyan-950/25 via-(color:--color-surface-recessed) to-(color:--chat-canvas-bg)",
         )}
       >
         {/* Subtle top accent line */}
@@ -2975,6 +3102,11 @@ function renderEvent(
   /* ── Turn details: the turn's diagnostics and recovery receipt, one row ── */
   if (event.type === "turn_details") {
     return <TurnDetailsDisclosure event={event} />;
+  }
+
+  /* ── A dynamic workflow's script: the run's plan, one quiet line ── */
+  if (event.type === "workflow_script") {
+    return <WorkflowScriptRow event={event} />;
   }
 
   /* ── Subagent cards: running (spawn) and settled (result), which is the
@@ -3079,7 +3211,12 @@ function renderEvent(
           turnId: event.turnId,
           compactionId: event.compactionId ?? event.turnId,
         };
-    return <ContextCompactDivider event={compactEvent} />;
+    // Only the chat's latest compaction offers Retry; an older failure was
+    // already superseded. The pane's action refuses while a turn is live.
+    const retry = options?.onRetryCompaction && !options.sessionTurnActive && options.latestCompactionKey === contextCompactMergeKey(compactEvent)
+      ? options.onRetryCompaction
+      : undefined;
+    return <ContextCompactDivider event={compactEvent} startedAt={envelope.timestamp} onRetry={retry} />;
   }
 
   if (event.type === "codex_safety_buffering") {
@@ -3102,7 +3239,7 @@ function renderEvent(
     const duration = formatCompactDuration(event.durationMs);
     const isRunning = event.status === "running";
     return (
-      <div className="inline-flex max-w-[var(--chat-content-width,52rem)] items-center gap-2 rounded-lg border border-white/[0.08] bg-white/[0.035] px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/64">
+      <div className="inline-flex max-w-[var(--chat-content-width,52rem)] items-center gap-2 rounded-lg border border-fg/[0.08] bg-fg/[0.035] px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/64">
         {isRunning ? <ChatStatusGlyph status="working" size={12} /> : <Circle size={10} weight="fill" className="shrink-0 text-fg/32" />}
         <span className="shrink-0 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em] text-fg/38">wait</span>
         <span className="min-w-0 truncate">{duration ? `Sleeping ${duration}` : "Sleeping"}</span>
@@ -3308,8 +3445,8 @@ function renderEvent(
     }
     // Spawn notices. The "spawned" announcement is now carried by the unified,
     // navigable spawn-anchor card (SubagentSpawnCard) — do NOT render a second
-    // quiet pill here. A `peer` child that finishes emits a `spawn_completed`
-    // notice; render a single quiet steel chip that navigates to the child.
+    // quiet pill here. A child that finishes a turn emits a `spawn_completed`
+    // notice, drawn below as one quiet line that navigates to the child.
     if (event.noticeKind === "info" && event.status === "subagent_spawned") {
       const detail = (event.detail && typeof event.detail === "object" ? event.detail : {}) as {
         spawnKind?: "subagent" | "peer";
@@ -3323,7 +3460,7 @@ function renderEvent(
         <button
           type="button"
           disabled={!childSessionId}
-          onClick={() => navigateToSpawnedChat(childSessionId, spawned?.laneId ?? options?.laneId ?? null)}
+          onClick={() => openSpawnedChat(childSessionId, spawned?.laneId ?? null)}
           className={cn(
             "inline-flex max-w-full items-center gap-2 rounded-full border px-3 py-1 text-left font-sans text-[length:calc(var(--chat-font-size)*10/14)] transition-colors",
             isPeer
@@ -3351,7 +3488,7 @@ function renderEvent(
         <button
           type="button"
           disabled={!childSessionId}
-          onClick={() => navigateToSpawnedChat(childSessionId, options?.laneId ?? null)}
+          onClick={() => openSpawnedChat(childSessionId, null)}
           className="inline-flex max-w-full items-center gap-2 rounded-full border border-slate-400/16 bg-slate-400/[0.05] px-3 py-1 text-left font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-slate-300/70 transition-colors enabled:hover:border-slate-300/28 enabled:hover:text-slate-100/90"
           title={childSessionId ? "Open the chat the user took over" : undefined}
         >
@@ -3371,46 +3508,54 @@ function renderEvent(
         </div>
       );
     }
-    if (event.noticeKind === "info" && event.status === "spawn_completed") {
-      const completion: AgentChatSpawnCompletion | undefined =
-        event.detail && typeof event.detail === "object" ? event.detail.spawnCompletion : undefined;
-      // Fallback title parse for a notice whose detail lost its completion —
-      // which happens to notices in EITHER wording, so both are handled here:
-      // the current `spawnCompletedNoticeMessage` sentence, and the pre-rename
-      // `Peer "<title>" turn finished` that persisted transcripts still hold
-      // and are never re-emitted.
-      //
-      // One anchored match with a capture group rather than subtracting the
-      // two ends with a /g replace: a message that is not a completion notice
-      // at all now fails to match and falls through to "Chat", instead of
-      // being handed back mangled.
-      const parsedChildTitle = SPAWN_COMPLETED_TITLE_PATTERN.exec(event.message)?.[1]?.trim();
-      const childTitle = completion?.childTitle?.trim() || parsedChildTitle || "Chat";
-      const childSessionId = typeof completion?.childSessionId === "string" && completion.childSessionId.length
-        ? completion.childSessionId
-        : null;
-      const repeatCountRaw = envelope.repeatCount;
-      const repeatCount = typeof repeatCountRaw === "number" && Number.isFinite(repeatCountRaw) && repeatCountRaw > 1
-        ? Math.floor(repeatCountRaw)
-        : null;
-      return (
+    const spawnCompletion = spawnCompletionNoticeOf(event);
+    if (spawnCompletion) {
+      // One quiet line, not a pill: background news about other chats. The
+      // row pipeline keeps only each child's newest notice (with the count of
+      // turns it stands for) and puts neighbours on the same line.
+      const entries = [
+        { key: envelope.key, notice: spawnCompletion, repeatCount: envelope.repeatCount ?? 1 },
+        ...(envelope.spawnCompletionSiblings ?? []),
+      ];
+      const single = entries.length === 1 ? entries[0] : null;
+      const chip = (entry: (typeof entries)[number], label: string) => (
         <button
           type="button"
-          disabled={!childSessionId}
-          onClick={() => navigateToSpawnedChat(childSessionId, options?.laneId ?? null)}
-          className="inline-flex max-w-full items-center gap-2 rounded-full border border-slate-400/16 bg-slate-400/[0.05] px-3 py-1 text-left font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-slate-300/70 transition-colors enabled:hover:border-slate-300/28 enabled:hover:text-slate-100/90"
-          title={childSessionId ? "Open the chat" : undefined}
+          disabled={!entry.notice.childSessionId}
+          onClick={() => openSpawnedChat(entry.notice.childSessionId, null, entry.notice.childMachineName)}
+          className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-sm text-left transition-colors enabled:hover:text-fg/80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-fg/20"
+          title={entry.notice.childSessionId ? "Open the chat" : undefined}
         >
-          <span aria-hidden className="shrink-0 text-slate-300/60">◦</span>
-          <span className="min-w-0 truncate">{spawnCompletedNoticeMessage(childTitle)}</span>
-          {completion?.childMachineName ? (
-            <span className="shrink-0 text-slate-300/50">· on {completion.childMachineName}</span>
+          <span className="min-w-0 truncate">{label}</span>
+          {entry.notice.childMachineName ? (
+            <span className="shrink-0 text-fg/30">· on {entry.notice.childMachineName}</span>
           ) : null}
-          {repeatCount ? (
-            <span className="shrink-0 tabular-nums text-slate-300/45">×{repeatCount}</span>
+          {entry.repeatCount > 1 ? (
+            <span className="shrink-0 tabular-nums text-fg/30" title={`${entry.repeatCount} turns`}>×{entry.repeatCount}</span>
           ) : null}
-          {childSessionId ? <CaretRight size={10} className="shrink-0 text-slate-300/55" /> : null}
+          {entry.notice.childSessionId ? <CaretRight size={9} className="shrink-0 text-fg/30" aria-hidden /> : null}
         </button>
+      );
+      return (
+        <div
+          className="flex min-w-0 max-w-[var(--chat-content-width,52rem)] items-start gap-1.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] leading-[1.6] text-fg/45"
+          data-testid="spawn-completed-line"
+        >
+          <CheckCircle size={11} className="mt-[0.3em] shrink-0 text-fg/30" aria-hidden />
+          <span className="flex min-w-0 flex-wrap items-center gap-x-1.5">
+            {single ? chip(single, spawnCompletedNoticeMessage(single.notice.childTitle)) : (
+              <>
+                <span className="shrink-0">{entries.length} chats finished their turns:</span>
+                {entries.map((entry, index) => (
+                  <React.Fragment key={entry.key}>
+                    {index > 0 ? <span aria-hidden className="text-fg/25">·</span> : null}
+                    {chip(entry, entry.notice.childTitle)}
+                  </React.Fragment>
+                ))}
+              </>
+            )}
+          </span>
+        </div>
       );
     }
     // ── Host sleep ──
@@ -3456,6 +3601,12 @@ function renderEvent(
         />
       );
     }
+
+    // A finished voice conversation draws its own card — a head with the
+    // duration and what the call produced, the transcript under it. It is not
+    // a system event with a fold, so it never reaches the generic notice row.
+    const voiceSession = readVoiceSessionNotice(event);
+    if (voiceSession) return <VoiceSessionCard session={voiceSession} />;
 
     const inferredSeverity = event.severity
       ?? (
@@ -3504,6 +3655,23 @@ function renderEvent(
           chipLabel={chipLabel}
         />
       );
+    }
+
+    if (event.status === "acp_provider_outdated") {
+      const providerUpdate = typeof event.detail === "object" && event.detail && !Array.isArray(event.detail)
+        ? event.detail.providerUpdate
+        : undefined;
+      if (providerUpdate) {
+        return (
+          <ProviderOutdatedNoticeRow
+            message={event.message}
+            update={providerUpdate}
+            className={cn(style.border, style.bg, style.text)}
+            icon={<NoticeIcon size={11} weight="bold" />}
+            chipLabel="update"
+          />
+        );
+      }
     }
 
     // Warnings are one text-sized line, like the thread's other rows; the full
@@ -3603,9 +3771,10 @@ function renderEvent(
     const ToolIcon = meta.icon;
     const toolDisplay = describeToolIdentifier(event.tool);
     const args = event.args as Record<string, unknown> | null;
-    const safeArgs = args && typeof args === "object" ? args : {};
+    const safeArgs = maskShellCommandArgs(event.tool, args && typeof args === "object" ? args : {});
 
-    const targetLine = meta.getTarget ? meta.getTarget(safeArgs) : null;
+    const rawTargetLine = meta.getTarget ? meta.getTarget(safeArgs) : null;
+    const targetLine = rawTargetLine ? redactCommandLine(rawTargetLine) : null;
     const label = targetLine
       ? `${meta.label} ${targetLine}`
       : toolDisplay.secondaryLabel
@@ -3617,6 +3786,8 @@ function renderEvent(
     const argsDisplay = kvPairs.length > 0 ? (
       <div className="space-y-1 border border-border/10 bg-surface-recessed/90 px-4 py-2.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)]">
         {kvPairs.map(([k, v]) => {
+          // Shell commands arrive already masked (maskShellCommandArgs); other arguments
+          // (edit, write and patch content, diffs) are shown as the agent wrote them.
           const val = typeof v === "string" ? v : JSON.stringify(v);
           const isLongStr = typeof v === "string" && v.includes("\n");
           return (
@@ -3709,6 +3880,19 @@ function renderEvent(
        resolves, and a one-line "awaiting you" row while it is still open (which
        is also where a *queued* second question waits until it becomes the
        composer's primary gate). */
+    const secretRequestCard = pendingRequest ? readProjectSecretRequestCard(pendingRequest) : null;
+    if (secretRequestCard) {
+      // The private secret card's record. Its value never reached the event,
+      // so the receipt is built from the name and the outcome alone.
+      return (
+        <ProjectSecretRequestReceipt
+          card={secretRequestCard}
+          resolution={isResolved ? (resolvedState ?? "cancelled") : null}
+          answers={options?.resolvedInputAnswers?.get(event.itemId)}
+        />
+      );
+    }
+
     if (isAskUser && pendingRequest && pendingRequest.questions.length > 0) {
       if (!isResolved) {
         return (
@@ -3762,7 +3946,7 @@ function renderEvent(
           )}
         </div>
         {isPlanApproval && bodyText.trim().length > 0 ? (
-          <div className="mt-2 rounded-lg border border-white/[0.06] bg-black/15 px-3 py-2">
+          <div className="mt-2 rounded-lg border border-fg/[0.06] bg-black/15 px-3 py-2">
             <MarkdownBlock markdown={bodyText} onOpenWorkspacePath={options?.onOpenWorkspacePath} />
           </div>
         ) : null}
@@ -3817,7 +4001,7 @@ function renderEvent(
               <summary className="cursor-pointer list-none font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em] text-muted-fg/40 transition-colors hover:text-muted-fg/65">
                 Details
               </summary>
-              <div className="mt-1.5 flex items-start gap-2 rounded-[calc(var(--chat-radius-card)-8px)] border border-white/[0.06] bg-black/15 px-3 py-2">
+              <div className="mt-1.5 flex items-start gap-2 rounded-[calc(var(--chat-radius-card)-8px)] border border-fg/[0.06] bg-black/15 px-3 py-2">
                 <div className="min-w-0 flex-1 whitespace-pre-wrap break-words font-mono text-[length:calc(var(--chat-font-size)*10/14)] leading-relaxed text-fg/55">
                   {errorCopyValue}
                 </div>
@@ -3829,41 +4013,17 @@ function renderEvent(
       );
     }
     return (
-      <div className={cn(GLASS_CARD_CLASS, "group border-border/50 p-0")} style={SURFACE_INLINE_CARD_STYLE}>
-        <div className="p-3">
-          <InstructionErrorCard
-            presentation={presentation}
-            disabled={Boolean(options?.sessionTurnActive)}
-            onRetry={options?.onRetryProviderFailure && !recovery
-              ? () => { void options.onRetryProviderFailure!(event.turnId ?? null); }
-              : undefined}
-          />
-          {recovery ? (
-            <ProviderFailureRecoveryCard
-              recovery={recovery}
-              disabled={Boolean(options?.sessionTurnActive)}
-              onRetry={options?.onRetryProviderFailure
-                ? () => options.onRetryProviderFailure!(event.turnId ?? null)
-                : undefined}
-              onChooseModel={options?.onChooseProviderFailureModel}
-            />
-          ) : null}
-          {renderAgentCliAuthCard()}
-          {/* Names the failure class ("Provider capacity", "Usage limit") or the
-              raw provider/model identity. The instruction card above says what
-              to do; this says which thing went wrong, and dropping it would
-              lose the only place a Codex usage limit is distinguishable from a
-              generic stop. */}
-          {event.errorInfo && !agentCliInfo ? (
-            <div
-              className="mt-2 font-mono text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/40"
-              title={typeof event.errorInfo === "string" ? event.errorInfo : undefined}
-            >
-              {recovery?.label
-                ?? (typeof event.errorInfo === "string" ? event.errorInfo : `${event.errorInfo.provider ? `${event.errorInfo.provider}` : ""}${event.errorInfo.model ? ` / ${event.errorInfo.model}` : ""}`)}
-            </div>
-          ) : null}
-        </div>
+      <div className="flex flex-col gap-2">
+        <TurnFailureLine
+          presentation={presentation}
+          title={recovery?.kind === "capacity" ? "Model at capacity" : undefined}
+          repeatCount={envelope.repeatCount ?? 1}
+          disabled={Boolean(options?.sessionTurnActive)}
+          onRetry={options?.onRetryProviderFailure
+            ? () => options.onRetryProviderFailure!(event.turnId ?? null)
+            : undefined}
+        />
+        {renderAgentCliAuthCard()}
       </div>
     );
   }
@@ -3929,6 +4089,12 @@ function renderEvent(
     // while setup runs; afterwards it is a one-line summary that expands.
     if (event.variant === "lane_setup") {
       return <LaneSetupTranscriptCard card={event} />;
+    }
+    // An MCP App: the page a server ships with a tool, run in the scene
+    // sandbox. Where this build cannot host one (the web client) the card
+    // falls through to its fallback text, which says where apps do run.
+    if (event.variant === MCP_APP_CARD_VARIANT && canHostMcpApps()) {
+      return <McpAppCard card={event} />;
     }
     // Without a dispatcher the card filters out every non-`open` action, so the
     // schema's action row could never be used. `retry`/`refresh` re-enter the
@@ -4074,9 +4240,9 @@ function renderEvent(
   /* ── Fallback ── */
   return (
     <div className="flex items-center gap-3 py-0.5">
-      <div className="h-px flex-1 bg-white/6" />
+      <div className="h-px flex-1 bg-fg/6" />
       <span className="font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/20">event</span>
-      <div className="h-px flex-1 bg-white/6" />
+      <div className="h-px flex-1 bg-fg/6" />
     </div>
   );
 }
@@ -4119,13 +4285,13 @@ function TurnSourcesChip({
       <span>{label}</span>
     </>
   );
-  const className = "inline-flex shrink-0 items-center gap-1.5 rounded-[5px] border border-white/[0.07] px-1.5 py-px font-mono text-[length:calc(var(--chat-font-size)*9.5/14)] tabular-nums text-fg/45";
+  const className = "hidden shrink-0 items-center gap-1.5 rounded-[5px] border border-fg/[0.07] px-1.5 py-px font-mono text-[length:calc(var(--chat-font-size)*9.5/14)] tabular-nums text-fg/45 sm:inline-flex";
   return onOpen ? (
     <button
       type="button"
       onClick={() => onOpen(turnId)}
       title="Show the sources used in this turn"
-      className={cn(className, "transition-colors hover:border-white/[0.16] hover:text-fg/75")}
+      className={cn(className, "transition-colors hover:border-fg/[0.16] hover:text-fg/75")}
       data-testid="turn-sources-chip"
     >
       {body}
@@ -4133,132 +4299,6 @@ function TurnSourcesChip({
   ) : (
     <span className={className} data-testid="turn-sources-chip">{body}</span>
   );
-}
-
-type TurnSummary = {
-  turnId: string;
-  taskCount: number;
-  completedTaskCount: number;
-  changedFileCount: number;
-  backgroundAgentCount: number;
-  activeBackgroundAgentCount: number;
-  turnModel: { label: string; modelId?: string; model?: string } | null;
-  durationMs: number | null;
-  ended: boolean;
-};
-
-function deriveTurnSummary(
-  events: AgentChatEventEnvelope[],
-  turnModelState: DerivedTurnModelState | null,
-): TurnSummary | null {
-  let latestTurnId: string | null = null;
-  for (let i = events.length - 1; i >= 0; i -= 1) {
-    latestTurnId = getEventTurnId(events[i]!.event);
-    if (latestTurnId) break;
-  }
-  if (!latestTurnId) return null;
-
-  let latestTodoUpdate: Extract<AgentChatEvent, { type: "todo_update" }> | null = null;
-  let latestPlan: Extract<AgentChatEvent, { type: "plan" }> | null = null;
-  let turnStartedAt: number | null = null;
-  let turnEndedAt: number | null = null;
-  let ended = false;
-  const changedFilePaths = new Set<string>();
-  const subagents = new Map<string, { background: boolean; status: ChatSubagentSnapshot["status"] }>();
-
-  for (const envelope of events) {
-    const event = envelope.event;
-    if (getEventTurnId(event) !== latestTurnId) continue;
-
-    const ts = Date.parse(envelope.timestamp);
-    if (Number.isFinite(ts)) {
-      if (turnStartedAt === null || ts < turnStartedAt) turnStartedAt = ts;
-      if (turnEndedAt === null || ts > turnEndedAt) turnEndedAt = ts;
-    }
-    if (event.type === "done" || (event.type === "status" && event.turnStatus !== "started")) {
-      ended = true;
-    }
-
-    if (event.type === "todo_update") {
-      latestTodoUpdate = event;
-      continue;
-    }
-
-    if (event.type === "plan") {
-      latestPlan = event;
-      continue;
-    }
-
-    if (event.type === "file_change") {
-      changedFilePaths.add(event.path);
-      continue;
-    }
-
-    if (event.type === "subagent_started") {
-      const existing = subagents.get(event.taskId);
-      subagents.set(event.taskId, {
-        background: event.background ?? existing?.background ?? false,
-        status: "running",
-      });
-      continue;
-    }
-
-    if (event.type === "subagent_progress") {
-      const existing = subagents.get(event.taskId);
-      subagents.set(event.taskId, {
-        background: existing?.background ?? false,
-        status: "running",
-      });
-      continue;
-    }
-
-    if (event.type === "subagent_result") {
-      const existing = subagents.get(event.taskId);
-      subagents.set(event.taskId, {
-        background: existing?.background ?? false,
-        status: event.status,
-      });
-    }
-  }
-
-  let taskCount = 0;
-  let completedTaskCount = 0;
-  const taskSource = latestTodoUpdate?.items ?? latestPlan?.steps ?? [];
-  for (const task of taskSource) {
-    taskCount += 1;
-    if (task.status === "completed") completedTaskCount += 1;
-  }
-  const changedFileCount = changedFilePaths.size;
-  let backgroundAgentCount = 0;
-  let activeBackgroundAgentCount = 0;
-  for (const entry of subagents.values()) {
-    if (!entry.background) continue;
-    backgroundAgentCount += 1;
-    if (entry.status === "running") {
-      activeBackgroundAgentCount += 1;
-    }
-  }
-
-  if (!taskCount && !changedFileCount && !backgroundAgentCount) {
-    return null;
-  }
-
-  const durationMs =
-    turnStartedAt !== null && turnEndedAt !== null && turnEndedAt > turnStartedAt
-      ? turnEndedAt - turnStartedAt
-      : null;
-
-  return {
-    turnId: latestTurnId,
-    taskCount,
-    completedTaskCount,
-    changedFileCount,
-    durationMs,
-    ended,
-    backgroundAgentCount,
-    activeBackgroundAgentCount,
-    turnModel: turnModelState?.map.get(latestTurnId) ?? null,
-  };
 }
 
 /** `<1s`, `4.2s`, `12s`, `3m 32s`. Sub-second turns read `<1s`, never milliseconds. */
@@ -4307,13 +4347,14 @@ export function deriveTurnEndDurations(
  * universal `done` event, so it renders identically for every runtime (Codex /
  * Claude / Cursor / Droid / OpenCode).
  *
- * When the turn captured proof, a small `N proof` chip sits on the rule and
- * opens the drawer. The artifacts themselves render inline where they were
- * captured — the chip is a way back, not a second copy.
+ * When the turn captured proof, a small "N proof filed" link sits on the rule
+ * and opens the drawer narrowed to it. The pictures show on the rows that
+ * filed them — the link is a way back, not a second copy.
  */
 function DoneTurnDivider({
   event,
   timestamp,
+  assistantTurnCopyText,
   durationMs,
   toolEntries,
   proofArtifacts,
@@ -4321,8 +4362,6 @@ function DoneTurnDivider({
   turnEndFold = null,
   wakeChain = null,
   onToggleFold,
-  resolveProofThumbnailSrc,
-  allowLocalProofArtifactProtocol = false,
   onOpenProofDrawer,
   onNavigateSuggestion,
   onInsertDraft,
@@ -4334,12 +4373,16 @@ function DoneTurnDivider({
   turnDiffSummary = null,
   turnDiffSummaries = null,
   usageLimitResumeTurnId,
+  endedAtUsageLimit = false,
+  repeatCount = 1,
   workSummaryInFold = false,
   turnSources,
   onOpenTurnSources,
   onForkFromTurn,
 }: {
   event: Extract<AgentChatEvent, { type: "done" }>;
+  /** Assistant prose from this turn, excluding the user prompt and folded work. */
+  assistantTurnCopyText?: string | null;
   /** "Fork from here": a new chat holding the conversation through this turn. */
   onForkFromTurn?: (request: { turnId: string; timestamp: string }) => void;
   /**
@@ -4358,6 +4401,10 @@ function DoneTurnDivider({
    * attach a 429 to the result frame.
    */
   usageLimitResumeTurnId?: string | null;
+  /** The transcript read this turn's own error as a usage limit (`foldTurnFailureRows`). */
+  endedAtUsageLimit?: boolean;
+  /** Identical failed retries folded into this turn, itself included. */
+  repeatCount?: number;
   toolEntries: ChatWorkLogEntry[];
   /** Opens the Files tab for this lane. Not a revert — see handleReviewChanges. */
   onReviewInFiles?: () => void;
@@ -4379,18 +4426,13 @@ function DoneTurnDivider({
   /** Earlier wake checks folded right below this line: a chip that opens them. */
   wakeChain?: { chainId: string; checkCount: number; open: boolean } | null;
   onToggleFold?: (foldId: string) => void;
-  resolveProofThumbnailSrc?: (artifact: ComputerUseArtifactView) => string | null;
-  allowLocalProofArtifactProtocol?: boolean;
-  onOpenProofDrawer?: () => void;
+  onOpenProofDrawer?: (focus?: ProofDrawerFocus) => void;
   onNavigateSuggestion?: (suggestion: OperatorNavigationSuggestion) => void;
   onInsertDraft?: (text: string) => void;
   onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
   sessionId?: string | null;
 }) {
   const [usageDetailsOpen, setUsageDetailsOpen] = useState(false);
-  // Proof captured during this turn renders inline, at the moment it happened,
-  // and starts collapsed so a long capture run never buries the reply.
-  const [proofOpen, setProofOpen] = useState(false);
   const turnProof = proofArtifacts ?? EMPTY_PROOF_ARTIFACTS;
   const completed = event.status === "completed";
   const { label: modelLabel } = resolveModelMeta(event.modelId, event.model);
@@ -4406,9 +4448,15 @@ function DoneTurnDivider({
   // So the loud `FAILED · api error · USAGE …` line collapses to one quiet
   // sentence and the token accounting moves behind the details toggle, where
   // it stays available without competing with the one fact that matters.
-  const usageLimitPaused = !completed && isUsageLimitTurn(event, usageLimitResumeTurnId);
+  const usageLimitLive = isUsageLimitTurn(event, usageLimitResumeTurnId);
+  const usageLimitPaused = !completed && (usageLimitLive || endedAtUsageLimit);
+  const usageLimitElapsed = durationMs !== null ? formatTurnDuration(durationMs) : null;
+  // Only the turn the live limit is anchored to is "paused"; an older limited
+  // turn is history and says just what happened.
   const usageLimitLabel = usageLimitPaused
-    ? usageLimitTurnFooterLabel(durationMs !== null ? formatTurnDuration(durationMs) : null)
+    ? `${usageLimitLive
+      ? usageLimitTurnFooterLabel(usageLimitElapsed)
+      : usageLimitElapsed ? `Usage limit · ${usageLimitElapsed}` : "Usage limit"}${repeatCount > 1 ? ` · ×${repeatCount}` : ""}`
     : null;
   const usageLimitDetails = Boolean(usageLimitPaused && tokenLine);
   const content = usageLimitPaused ? (
@@ -4429,7 +4477,7 @@ function DoneTurnDivider({
     >
         {!completed && modelLabel ? (
           <span className="inline-flex items-center gap-1.5 font-sans">
-            <ModelGlyph modelId={event.modelId} model={event.model} size={12} className="shrink-0" />
+            <ModelGlyph modelId={event.modelId} model={realModelName(event.model)} size={12} className="shrink-0" />
             <span className="font-medium">{modelLabel}</span>
           </span>
         ) : null}
@@ -4484,16 +4532,10 @@ function DoneTurnDivider({
     />
   ) : null;
   const proofChip = turnProof.length > 0 ? (
-    <button
-      type="button"
-      aria-expanded={proofOpen}
-      onClick={() => setProofOpen((open) => !open)}
-      title={proofOpen ? "Hide the proof captured in this turn" : "Show the proof captured in this turn"}
-      className="inline-flex shrink-0 items-center gap-1 rounded-[5px] border border-white/[0.07] px-1.5 py-px font-mono text-[length:calc(var(--chat-font-size)*9.5/14)] tabular-nums text-fg/45 transition-colors hover:border-white/[0.16] hover:text-fg/75"
-    >
-      <Cube size={10} weight="bold" aria-hidden />
-      {turnProof.length} proof
-    </button>
+    <ChatProofCount
+      count={turnProof.length}
+      onOpen={onOpenProofDrawer ? () => onOpenProofDrawer(turnProofFocus(turnProof)) : undefined}
+    />
   ) : null;
   const turnLeading = (
     <span className="inline-flex min-w-0 items-center gap-2">
@@ -4503,7 +4545,7 @@ function DoneTurnDivider({
           aria-expanded={usageDetailsOpen}
           aria-label={`${usageDetailsOpen ? "Hide" : "Show"} details from this turn`}
           onClick={() => setUsageDetailsOpen((open) => !open)}
-          className="rounded-md py-0.5 transition-colors hover:bg-white/[0.025] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-violet-300/35"
+          className="rounded-md py-0.5 transition-colors hover:bg-fg/[0.025] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-violet-300/35"
         >
           {content}
         </button>
@@ -4512,6 +4554,15 @@ function DoneTurnDivider({
       {turnSources?.length && event.turnId ? (
         <TurnSourcesChip turnId={event.turnId} sources={turnSources} onOpen={onOpenTurnSources} />
       ) : null}
+      {assistantTurnCopyText?.trim() ? (
+        <MessageCopyButton
+          value={assistantTurnCopyText}
+          label="Copy turn"
+          title="Copy whole turn"
+          iconOnly
+          className="[@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/turnend:opacity-100 focus-visible:opacity-100"
+        />
+      ) : null}
       {onForkFromTurn && event.turnId ? (
         <button
           type="button"
@@ -4519,7 +4570,7 @@ function DoneTurnDivider({
           aria-label="Fork from here"
           title="Fork from here: a new chat with the conversation up to this point"
           onClick={() => onForkFromTurn({ turnId: event.turnId!, timestamp })}
-          className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg/35 transition-[color,opacity] hover:bg-white/[0.05] hover:text-[color:color-mix(in_srgb,var(--chat-accent)_80%,var(--chat-fg,#e6e6e6))] focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--chat-accent)]/40 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/turnend:opacity-100"
+          className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg/35 transition-[color,opacity] hover:bg-fg/[0.05] hover:text-[color:color-mix(in_srgb,var(--chat-accent)_80%,var(--color-fg))] focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--chat-accent)]/40 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/turnend:opacity-100"
         >
           <GitFork size={11} weight="bold" aria-hidden />
         </button>
@@ -4569,7 +4620,7 @@ function DoneTurnDivider({
             animate={{ opacity: 1, height: "auto", y: 0 }}
             exit={{ opacity: 0, height: 0, y: -4 }}
             transition={{ duration: 0.16, ease: "easeOut" }}
-            className="mt-2 w-full max-w-[var(--chat-content-width,52rem)] overflow-hidden border-l border-white/[0.08] pl-4"
+            className="mt-2 w-full max-w-[var(--chat-content-width,52rem)] overflow-hidden border-l border-fg/[0.08] pl-4"
           >
             <div
               data-testid="done-turn-usage-detail"
@@ -4580,17 +4631,6 @@ function DoneTurnDivider({
           </motion.div>
         ) : null}
       </AnimatePresence>
-      {turnProof.length > 0 && proofOpen ? (
-        <div className="mt-2 w-full max-w-[var(--chat-content-width,52rem)]">
-          <ChatProofFilmstrip
-            artifacts={turnProof}
-            resolveThumbnailSrc={resolveProofThumbnailSrc}
-            allowLocalArtifactProtocol={allowLocalProofArtifactProtocol}
-            onOpenAll={onOpenProofDrawer}
-            onOpenArtifact={onOpenProofDrawer}
-          />
-        </div>
-      ) : null}
     </div>
   );
 }
@@ -4617,6 +4657,8 @@ function TurnFoldRow({
   onRevealChatTerminal,
   sessionId,
   sourceCount = 0,
+  proofArtifacts = EMPTY_PROOF_ARTIFACTS,
+  onOpenProofDrawer,
 }: {
   event: TurnFoldRenderEvent;
   open: boolean;
@@ -4633,6 +4675,9 @@ function TurnFoldRow({
   sessionId?: string | null;
   /** Sources the agent used in this turn (same count as the turn-end chip). */
   sourceCount?: number;
+  /** Proof the turn filed (same records as the turn-end link). */
+  proofArtifacts?: ComputerUseArtifactView[];
+  onOpenProofDrawer?: (focus?: ProofDrawerFocus) => void;
 }) {
   const toolCount = useMemo(() => dedupeChatToolActivityEntries(toolEntries).length, [toolEntries]);
   const checkpointSummary = hasCheckpointDiffSummary
@@ -4687,6 +4732,8 @@ function TurnFoldRow({
   const detailFileEntries = checkpointSummary ? EMPTY_WORK_LOG_ENTRIES : fileEntries;
   return (
     <div className="min-w-0" data-testid="turn-fold-row">
+      {/* One line at every width: the counts truncate, the proof link never does. */}
+      <div className="flex min-w-0 max-w-full items-center">
       <button
         type="button"
         aria-expanded={open}
@@ -4709,6 +4756,14 @@ function TurnFoldRow({
           ? <CaretDown size={9} weight="bold" className="shrink-0" aria-hidden />
           : <CaretRight size={9} weight="bold" className="shrink-0" aria-hidden />}
       </button>
+      {proofArtifacts.length > 0 ? (
+        <ChatProofCount
+          compact
+          count={proofArtifacts.length}
+          onOpen={onOpenProofDrawer ? () => onOpenProofDrawer(turnProofFocus(proofArtifacts)) : undefined}
+        />
+      ) : null}
+      </div>
       {open && (toolCount > 0 || detailFileEntries.length > 0) ? (
         <div className="min-w-0 pl-1.5">
           <ChatTurnWorkSummary
@@ -4752,6 +4807,10 @@ type EventRowProps = SpawnedChatProviderProps & {
   onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
   onRecoverContinuity?: (args: AgentChatRecoverContinuityArgs) => Promise<AgentChatContinuityRecoveryResult>;
   onRetryProviderFailure?: (turnId: string | null) => Promise<string | null>;
+  /** Re-runs compaction through the pane's guarded compact action. */
+  onRetryCompaction?: () => void;
+  /** Merge key of the chat's latest compaction; only that divider offers Retry. */
+  latestCompactionKey?: string | null;
   onChooseProviderFailureModel?: () => void;
   onRunUnprocessedMessage?: (event: UserMessageEvent) => void | Promise<void>;
   onEditUnprocessedMessage?: (event: UserMessageEvent) => void;
@@ -4783,10 +4842,10 @@ type EventRowProps = SpawnedChatProviderProps & {
   laneId?: string | null;
   sessionId?: string | null;
   runtimeName?: string | null;
-  mosaic?: MosaicRenderContext;
+  jiraIssueSnapshotsById?: ReadonlyMap<string, LaneJiraIssue>;
   anchored?: boolean;
   onScrollToRowKey?: (rowKey: string) => void;
-  assistantTurnCopy?: { text: string } | null;
+  assistantTurnCopyText?: string | null;
   interimText?: boolean;
   staleInterruptReceipts?: Set<string>;
   onCancelQueuedMessage?: (uuid: string) => void;
@@ -4804,13 +4863,13 @@ type EventRowProps = SpawnedChatProviderProps & {
   turnEndWakeChain?: { chainId: string; checkCount: number; open: boolean } | null;
   /** Proof captured after this row but outside a completed turn window. */
   inlineProof?: ComputerUseArtifactView[];
-  resolveProofThumbnailSrc?: (artifact: ComputerUseArtifactView) => string | null;
-  allowLocalProofArtifactProtocol?: boolean;
-  onOpenProofDrawer?: () => void;
+  onOpenProofDrawer?: (focus?: ProofDrawerFocus) => void;
   /** This row is the trailing streaming assistant text row (paced reveal). */
   pacedTextReveal?: boolean;
   /** This reasoning row is the live turn's newest, still-streaming row. */
   liveThinking?: boolean;
+  /** A finished `/compact` turn: the compaction line stands in for the turn-end line. */
+  compactOnlyTurn?: boolean;
   /** `turn_fold` rows: whether the fold is open. */
   turnFoldOpen?: boolean;
   onToggleTurnFold?: (foldId: string) => void;
@@ -4834,6 +4893,8 @@ const EventRow = React.memo(function EventRow({
   onCodexRecovery,
   onRecoverContinuity,
   onRetryProviderFailure,
+  onRetryCompaction,
+  latestCompactionKey,
   onChooseProviderFailureModel,
   onRunUnprocessedMessage,
   onEditUnprocessedMessage,
@@ -4864,10 +4925,11 @@ const EventRow = React.memo(function EventRow({
   laneId,
   sessionId,
   runtimeName,
-  mosaic,
+  jiraIssueSnapshotsById,
+  runtimePin,
   anchored,
   onScrollToRowKey,
-  assistantTurnCopy,
+  assistantTurnCopyText,
   interimText,
   staleInterruptReceipts,
   onCancelQueuedMessage,
@@ -4879,11 +4941,10 @@ const EventRow = React.memo(function EventRow({
   turnEndFold,
   turnEndWakeChain,
   inlineProof,
-  resolveProofThumbnailSrc,
-  allowLocalProofArtifactProtocol = false,
   onOpenProofDrawer,
   pacedTextReveal,
   liveThinking = false,
+  compactOnlyTurn = false,
   turnFoldOpen = false,
   onToggleTurnFold,
   turnWorkInFold = false,
@@ -4898,7 +4959,10 @@ const EventRow = React.memo(function EventRow({
       data-chat-row-key={envelope.key}
       data-chat-anchored-row={anchored ? "true" : undefined}
       className={cn(
-        "min-w-0 max-w-full space-y-3 overflow-hidden transition-colors duration-700",
+        "min-w-0 max-w-full space-y-3 transition-colors duration-700",
+        // Interim assistant hover actions extend below their text row; keep
+        // horizontal overflow contained without clipping that vertical footer.
+        interimText ? "overflow-x-clip" : "overflow-hidden",
         anchored && "rounded-lg bg-amber-300/[0.08] ring-1 ring-amber-300/15",
       )}
     >
@@ -4912,14 +4976,14 @@ const EventRow = React.memo(function EventRow({
       ) : null}
       {showTurnDivider ? (
         <div className="my-4 flex items-center gap-3">
-          <span className="h-px flex-1 bg-white/[0.06]" />
+          <span className="h-px flex-1 bg-fg/[0.06]" />
           <span
             className="shrink-0 px-1 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/38"
             title={turnModel?.label ?? undefined}
           >
             {turnDividerLabel ?? "Turn"}
           </span>
-          <span className="h-px flex-1 bg-white/[0.06]" />
+          <span className="h-px flex-1 bg-fg/[0.06]" />
         </div>
       ) : null}
       {envelope.event.type === "turn_fold" ? (
@@ -4938,11 +5002,17 @@ const EventRow = React.memo(function EventRow({
           onRevealChatTerminal={onRevealChatTerminal}
           sessionId={sessionId}
           sourceCount={turnSources?.length ?? 0}
+          proofArtifacts={turnProof}
+          onOpenProofDrawer={onOpenProofDrawer}
         />
       ) : envelope.event.type === "new_since_divider" ? (
         <NewSinceDivider sinceMs={envelope.event.sinceMs} />
       ) : envelope.event.type === "wake_chain" ? (
         <WakeChainRow event={envelope.event} open={turnFoldOpen} onToggle={onToggleTurnFold} />
+      ) : envelope.event.type === "work_log_group" ? (
+        // Only groups holding computer-use actions reach the timeline; their
+        // other tools stay in the tools toggle.
+        <ChatComputerUseActionRun entries={envelope.event.entries} compactAll={envelope.event.computerUseCompact === true} />
       ) : envelope.event.type === "activity_bundle"
         ? <ChatActivityBundle event={envelope.event} sessionId={sessionId} />
         : renderEvent(envelope as RenderEnvelope, {
@@ -4950,6 +5020,8 @@ const EventRow = React.memo(function EventRow({
             onCodexRecovery,
             onRecoverContinuity,
             onRetryProviderFailure,
+            onRetryCompaction,
+            latestCompactionKey,
             onChooseProviderFailureModel,
             onRunUnprocessedMessage,
             onEditUnprocessedMessage,
@@ -4972,13 +5044,13 @@ const EventRow = React.memo(function EventRow({
             laneId,
             sessionId,
             runtimeName,
+            jiraIssueSnapshotsById,
+            runtimePin,
             onRevealChatTerminal,
             chatInfoHostAvailable,
             onRewindFiles,
             turnDiffSummaries,
-            mosaic,
             onScrollToRowKey,
-            assistantTurnCopy,
             interimText,
             staleInterruptReceipts,
             onCancelQueuedMessage,
@@ -4988,10 +5060,11 @@ const EventRow = React.memo(function EventRow({
             pacedTextReveal,
             liveThinking,
           })}
-      {envelope.event.type === "done" ? (
+      {envelope.event.type === "done" && !(compactOnlyTurn && envelope.event.status === "completed") ? (
         <DoneTurnDivider
           event={envelope.event}
           timestamp={envelope.timestamp}
+          assistantTurnCopyText={assistantTurnCopyText}
           durationMs={turnEndDurationMs ?? null}
           toolEntries={turnToolEntries}
           proofArtifacts={turnProof}
@@ -4999,8 +5072,6 @@ const EventRow = React.memo(function EventRow({
           turnEndFold={turnEndFold}
           wakeChain={turnEndWakeChain}
           onToggleFold={onToggleTurnFold}
-          resolveProofThumbnailSrc={resolveProofThumbnailSrc}
-          allowLocalProofArtifactProtocol={allowLocalProofArtifactProtocol}
           onOpenProofDrawer={onOpenProofDrawer}
           onNavigateSuggestion={onNavigateSuggestion}
           onInsertDraft={onInsertDraft}
@@ -5014,6 +5085,8 @@ const EventRow = React.memo(function EventRow({
             : null}
           turnDiffSummaries={turnDiffSummaries}
           usageLimitResumeTurnId={usageLimitResumeTurnId}
+          endedAtUsageLimit={envelope.endedAtUsageLimit === true}
+          repeatCount={envelope.repeatCount ?? 1}
           workSummaryInFold={turnWorkInFold}
           turnSources={turnSources}
           onOpenTurnSources={onOpenTurnSources}
@@ -5021,14 +5094,13 @@ const EventRow = React.memo(function EventRow({
         />
       ) : null}
       {inlineProof?.length ? (
-        <ChatProofFilmstrip
-          artifacts={inlineProof}
-          title="Proof added"
-          resolveThumbnailSrc={resolveProofThumbnailSrc}
-          allowLocalArtifactProtocol={allowLocalProofArtifactProtocol}
-          onOpenAll={onOpenProofDrawer}
-          onOpenArtifact={onOpenProofDrawer}
-        />
+        <div className="w-full max-w-[var(--chat-content-width,52rem)]">
+          <ChatProofCount
+            count={inlineProof.length}
+            // Proof between rows: mid-turn, or idle between turns, so not "This turn".
+            onOpen={onOpenProofDrawer ? () => onOpenProofDrawer(proofDrawerFocus("Filed here", inlineProof)) : undefined}
+          />
+        </div>
       ) : null}
     </div>
   );
@@ -5050,7 +5122,9 @@ const MeasuredEventRow = React.memo(function MeasuredEventRow({
     if (!el) return;
     let raf: number | null = null;
     const measureNow = (fallbackHeight = 0) => {
-      const height = Math.max(el.offsetHeight, el.getBoundingClientRect().height, fallbackHeight);
+      // The rect is screen pixels under hosted-web body zoom; the heights the
+      // scroll math stores are layout pixels.
+      const height = Math.max(el.offsetHeight, toLayoutPx(el.getBoundingClientRect().height), fallbackHeight);
       if (height > 0) onMeasure(index, height);
     };
 
@@ -5067,7 +5141,7 @@ const MeasuredEventRow = React.memo(function MeasuredEventRow({
       const entry = entries[0];
       if (!entry) return;
       const measuredHeight = entry.target instanceof HTMLElement
-        ? Math.max(entry.target.offsetHeight, entry.target.getBoundingClientRect().height, entry.contentRect.height)
+        ? Math.max(entry.target.offsetHeight, toLayoutPx(entry.target.getBoundingClientRect().height), entry.contentRect.height)
         : entry.contentRect.height;
       measureNow(measuredHeight);
     });
@@ -5084,6 +5158,9 @@ const MeasuredEventRow = React.memo(function MeasuredEventRow({
     </div>
   );
 });
+
+/** Shared empty set: a chat with no duplicate answers keeps one identity. */
+const EMPTY_FIND_EXCLUDED_KEYS: ReadonlySet<string> = new Set();
 
 /* ── Virtualization constants ── */
 
@@ -5123,9 +5200,10 @@ export function estimateTranscriptRowHeight(
       return 26;
     case "done":
       return 34;
+    case "work_log_group":
+      return estimateComputerUseRunHeight(event.entries, event.computerUseCompact === true) || 30;
     case "reasoning":
     case "activity_bundle":
-    case "work_log_group":
     case "status":
     case "system_notice":
     case "turn_details":
@@ -5158,12 +5236,26 @@ export function estimateTranscriptRowHeight(
       return 96;
     case "background_job_line":
     case "background_job_group":
-      // One compact line; a group opens inline only on a click.
+    case "codex_image_view":
+      // One compact line; a group or a picture opens inline only on a click.
       return 28;
+    case "workflow_script":
+      // One compact line; the script opens inline only on a click.
+      return 26;
     case "subagent_card_grid": {
+      const workflow = workflowRunShape(event.members);
+      if (workflow) {
+        // Workflow run view: a header, one block per phase (label + one line
+        // per agent), and a line for queued agents.
+        const blocks = workflow.blocks.length + (workflow.unphased.length > 0 ? 1 : 0);
+        const rows = event.members.length - 1;
+        return (workflow.queued > 0 ? 22 : 0) + 30 + blocks * 22 + rows * 60 + workflow.foreign.length * 60;
+      }
       // Cards in one grid row share its height; rows stack with an 8px gap.
       const gridRows = Math.ceil(event.members.length / subagentCardGridColumns(event.members.length, width));
-      return gridRows * 96 + (gridRows - 1) * 8;
+      // A long run leads with the rollup line (SubagentRunHeader) above its cards.
+      const headRow = event.members.length >= SUBAGENT_RUN_HEADER_MIN ? 26 : 0;
+      return headRow + gridRows * 96 + (gridRows - 1) * 8;
     }
     default:
       return ESTIMATED_ROW_HEIGHT;
@@ -5344,7 +5436,7 @@ export function resetTurnFoldMemoryForTests(): void {
 function readChatRowTop(container: HTMLElement, rowKey: string): number | null {
   const containerTop = container.getBoundingClientRect().top;
   for (const node of container.querySelectorAll<HTMLElement>("[data-chat-row-key]")) {
-    if (node.dataset.chatRowKey === rowKey) return node.getBoundingClientRect().top - containerTop;
+    if (node.dataset.chatRowKey === rowKey) return toLayoutPx(node.getBoundingClientRect().top - containerTop);
   }
   return null;
 }
@@ -5367,7 +5459,7 @@ function readVisibleChatRows(container: HTMLElement, limit: number): { key: stri
     const rect = node.getBoundingClientRect();
     const key = node.dataset.chatRowKey;
     if (!key || rect.bottom <= containerTop + 1) continue;
-    visible.push({ key, top: rect.top - containerTop });
+    visible.push({ key, top: toLayoutPx(rect.top - containerTop) });
     if (visible.length >= limit) break;
   }
   return visible;
@@ -5383,7 +5475,7 @@ function readLaidOutChatRowTop(container: HTMLElement, rowKey: string): number |
   for (const node of container.querySelectorAll<HTMLElement>("[data-chat-row-key]")) {
     if (node.dataset.chatRowKey !== rowKey) continue;
     const rect = node.getBoundingClientRect();
-    return rect.height > 0 ? rect.top - containerTop : null;
+    return rect.height > 0 ? toLayoutPx(rect.top - containerTop) : null;
   }
   return null;
 }
@@ -5463,6 +5555,8 @@ function AgentChatMessageListMain({
   onCodexRecovery,
   onRecoverContinuity,
   onRetryProviderFailure,
+  onRetryCompaction,
+  latestCompactionKey,
   onChooseProviderFailureModel,
   onRunUnprocessedMessage,
   onEditUnprocessedMessage,
@@ -5479,6 +5573,7 @@ function AgentChatMessageListMain({
   laneId,
   runtimePin = null,
   sessionId,
+  jiraIssueSnapshotsById,
   scrollMemoryKey,
   transcriptCollapseCacheKey,
   onInsertDraft,
@@ -5498,7 +5593,6 @@ function AgentChatMessageListMain({
   backfillOlderHistory = false,
   onRetryOlderHistory,
   onReturnToLatest,
-  mosaic,
   scrollToRowKeyRequest,
   unreadSince = null,
   scrollToPromptHistoryRequest,
@@ -5533,6 +5627,10 @@ function AgentChatMessageListMain({
   onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
   onRecoverContinuity?: (args: AgentChatRecoverContinuityArgs) => Promise<AgentChatContinuityRecoveryResult>;
   onRetryProviderFailure?: (turnId: string | null) => Promise<string | null>;
+  /** Re-runs compaction through the pane's guarded compact action. */
+  onRetryCompaction?: () => void;
+  /** Merge key of the chat's latest compaction; only that divider offers Retry. */
+  latestCompactionKey?: string | null;
   onChooseProviderFailureModel?: () => void;
   onRunUnprocessedMessage?: (event: UserMessageEvent) => void | Promise<void>;
   onEditUnprocessedMessage?: (event: UserMessageEvent) => void;
@@ -5572,6 +5670,8 @@ function AgentChatMessageListMain({
    * read `useChatRuntimeScope()`, which the pane provides with this same value.
    */
   runtimePin?: OpenProjectBinding | null;
+  /** Fresh Jira snapshots from the owning chat session, overlaid on old message attachments. */
+  jiraIssueSnapshotsById?: ReadonlyMap<string, LaneJiraIssue>;
   sessionId?: string | null;
   /** Separate scroll state for the parent and a drilled-in native transcript. */
   scrollMemoryKey?: string | null;
@@ -5596,8 +5696,6 @@ function AgentChatMessageListMain({
   onRetryOlderHistory?: () => void;
   /** Called when a detached historical window returns to the live transcript tail. */
   onReturnToLatest?: () => void;
-  /** Present only for Claude-family sessions; enables interactive mosaic cards. */
-  mosaic?: MosaicRenderContext;
   /** Imperative jump to a row key: reveals the folds hiding it, then scrolls to it. */
   scrollToRowKeyRequest?: { key: string; requestId: number } | null;
   /**
@@ -5612,7 +5710,7 @@ function AgentChatMessageListMain({
   proofArtifacts?: ComputerUseArtifactView[];
   /** Local Electron can stream larger artifacts through its range protocol. */
   allowLocalProofArtifactProtocol?: boolean;
-  onOpenProofDrawer?: () => void;
+  onOpenProofDrawer?: (focus?: ProofDrawerFocus) => void;
   /** Opens the drawer's Sources section narrowed to one turn (the turn chip). */
   onOpenTurnSources?: (turnId: string) => void;
   /** "Fork from here" on a finished turn's end line. Absent where forking is unavailable. */
@@ -5627,6 +5725,12 @@ function AgentChatMessageListMain({
   const timelineRowGapPx = useMemo(() => transcriptRowGapPx(chatTranscriptDensity), [chatTranscriptDensity]);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const listRootRef = useRef<HTMLDivElement | null>(null);
+  // The lane is read from the chat's own machine, which a remote chat's tab
+  // does not hold.
+  const scopeLaneName = chatScope.lane?.id === laneId ? chatScope.lane?.name ?? null : null;
+  const createIssueFromSelection = useCallback((text: string) => {
+    requestIssueCreate(issueCreateRequestFromSelection(text, { sessionId: sessionId ?? null, laneId: laneId ?? null, laneName: scopeLaneName }));
+  }, [laneId, scopeLaneName, sessionId]);
   const contentWrapperRef = useRef<HTMLDivElement | null>(null);
   const olderHistorySentinelRef = useRef<HTMLDivElement | null>(null);
   const lastHandledScrollToRowRequestIdRef = useRef<number | null>(null);
@@ -6017,32 +6121,6 @@ function AgentChatMessageListMain({
     writeTranscriptCollapseCache(resolvedTranscriptCollapseCacheKey, nextCache);
     return nextRows;
   }, [collapseCacheState, events, resolvedTranscriptCollapseCacheKey]);
-  // Rebuilt on every event; a turn whose copy text did not change keeps its
-  // previous info object, so its memoized last text row is not re-rendered.
-  const previousAssistantTurnCopyRef = useRef<Map<string, AssistantTurnCopyInfo>>(new Map());
-  const { assistantTurnCopyByRowKey, interimTextRowKeys } = useMemo(() => {
-    const previous = previousAssistantTurnCopyRef.current;
-    const byRowKey = new Map<string, AssistantTurnCopyInfo>();
-    const turnCopy = deriveAssistantTurnCopyMap(rows);
-    for (const info of turnCopy.values()) {
-      if (info.textEventCount < 2) continue;
-      const prior = previous.get(info.lastTextEventKey);
-      byRowKey.set(
-        info.lastTextEventKey,
-        prior && prior.text === info.text && prior.textEventCount === info.textEventCount ? prior : info,
-      );
-    }
-    previousAssistantTurnCopyRef.current = byRowKey;
-    // Every text row of a turn except its last one is interim narration.
-    const interim = new Set<string>();
-    for (const row of rows) {
-      if (row.event.type !== "text") continue;
-      const turnId = getEventTurnId(row.event);
-      const last = turnId ? turnCopy.get(turnId)?.lastTextEventKey : null;
-      if (last && last !== row.key) interim.add(row.key);
-    }
-    return { assistantTurnCopyByRowKey: byRowKey, interimTextRowKeys: interim };
-  }, [rows]);
   const previousAllGroupedRowsRef = useRef<readonly TranscriptGroupedEnvelope[]>([]);
   const allGroupedRows = useMemo(
     // Drop automatic context-usage snapshots and same-provider "handoffs"
@@ -6051,10 +6129,10 @@ function AgentChatMessageListMain({
     // broke activity phases — two Thinking rows separated only by a hidden
     // `context_usage` row stayed two rows instead of merging into one.
     () => {
-      const next = groupChatTranscriptRows(
+      const next = foldTurnFailureRows(groupChatTranscriptRows(
         filterVisibleTranscriptRows(rows),
         previousAllGroupedRowsRef.current,
-      );
+      ));
       previousAllGroupedRowsRef.current = next;
       return next;
     },
@@ -6079,6 +6157,27 @@ function AgentChatMessageListMain({
     showStreamingIndicator,
     sessionEnded,
   });
+  // True once the active turn's reply has opened a ```scene fence: from then
+  // on the reply's own drawing box stands for the scene, and the drafting box
+  // under the working indicator goes. Text arrives in fragments, so a short
+  // carry joins each fragment to the start of the one after it.
+  const activeTurnReplyWritesScene = useMemo(() => {
+    if (!activeTurnId) return false;
+    let carry = "";
+    // Backwards, stopping at the turn's own start: the active turn is the tail
+    // of the transcript, and this runs on every streamed event.
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index]!.event;
+      // A steer the live turn took in belongs to it; only a message that
+      // started a turn ends the scan (the rule the transcript groups by).
+      if (event.type === "user_message" && userMessageStartsTurn(event, activeTurnId)) break;
+      if (event.type !== "text" || event.turnId !== activeTurnId) continue;
+      const joined = event.text + carry;
+      if (SCENE_FENCE_OPENER.test(joined)) return true;
+      carry = joined.slice(0, 16);
+    }
+    return false;
+  }, [events, activeTurnId]);
   const doneTurnIds = useMemo(() => {
     const ids = new Set<string>();
     for (const row of allGroupedRows) {
@@ -6086,6 +6185,24 @@ function AgentChatMessageListMain({
     }
     return ids;
   }, [allGroupedRows]);
+  // Turns that `/compact` opened and that did nothing else. The compaction
+  // line is their whole story, so they get no working indicator and no
+  // turn-end line of their own. A turn that also drew anything (text, tools,
+  // an error) keeps both: its turn-end line carries that work.
+  const compactOnlyTurnIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const row of allGroupedRows) {
+      if (row.event.type === "user_message" && row.event.turnId && isCompactCommandMessage(row.event, sessionProvider)) ids.add(row.event.turnId);
+    }
+    if (ids.size === 0) return ids;
+    for (const row of allGroupedRows) {
+      const type = row.event.type;
+      if (type === "user_message" || type === "done" || type === "context_compact" || type === "codex_context_compaction") continue;
+      const turnId = getGroupedTurnId(row);
+      if (turnId && ids.has(turnId) && !transcriptEventDrawsNothing(row.event)) ids.delete(turnId);
+    }
+    return ids;
+  }, [allGroupedRows, sessionProvider]);
   // Row keys that were live when their turn ended. Consecutive background jobs
   // group only with jobs that share that fate, so the fold can hide the ones
   // that finished and keep the ones still running (`groupBackgroundJobRuns`).
@@ -6099,14 +6216,15 @@ function AgentChatMessageListMain({
   // `work_log_group` rows no longer render anything in the timeline: tool
   // calls are shown by the working indicator / done divider, and file changes
   // are summarized ONCE per turn at the done divider instead of once per
-  // burst. A checkpoint `turn_diff_summary` folds into that same line when
+  // burst. The exception is a group holding computer-use actions (`ade screen
+  // click …`): it stays, and draws only those actions as readable rows. A checkpoint `turn_diff_summary` folds into that same line when
   // the turn has a done row. Dropping the rows outright (rather than
   // rendering an empty block) keeps them from consuming a `--chat-row-gap`.
   // Then one row per schedule (`foldScheduledWorkRows`), and an ended turn's
   // schedules move onto its turn-end line (`moveScheduledWorkToTurnEnds`).
   const scheduledWorkAtTurnEnd = useMemo(
     () => moveScheduledWorkToTurnEnds(foldScheduledWorkRows(allGroupedRows.filter((row) => {
-      if (row.event.type === "work_log_group") return false;
+      if (row.event.type === "work_log_group") return hasComputerUseEntries(row.event.entries);
       if (
         row.event.type === "turn_diff_summary"
         && row.event.turnId
@@ -6134,6 +6252,28 @@ function AgentChatMessageListMain({
     },
     [scheduledWorkAtTurnEnd, turnEndLiveRowKeys],
   );
+  // Which scene rows the reader has answered: the message of theirs that
+  // follows the row. Walked from the end so a row after the last user message
+  // costs nothing, and equal contents keep one identity, so a streaming delta
+  // never re-renders a scene.
+  const sceneAnswers = useStableIdentity(useMemo(() => {
+    const answers = new Map<string, string>();
+    let nextUserText: string | null = null;
+    for (let index = presentedRows.length - 1; index >= 0; index -= 1) {
+      const row = presentedRows[index]!;
+      const event = row.event;
+      if (event.type === "user_message") {
+        if (isReaderAuthoredMessage(event.metadata)) {
+          nextUserText = event.displayText?.trim() || event.text;
+        }
+        continue;
+      }
+      if (nextUserText !== null && event.type === "text" && row.sceneScopeKey && textHasSceneFence(event)) {
+        answers.set(row.sceneScopeKey, nextUserText);
+      }
+    }
+    return answers;
+  }, [presentedRows]), sameMapContents);
   // A card drawn inside a grid row answers to that row: jumps, highlights, and
   // event anchors that name the card land on its grid.
   const subagentGridKeyByMemberKey = useMemo(
@@ -6163,6 +6303,36 @@ function AgentChatMessageListMain({
     ),
     sameTurnFolds,
   );
+  // Copy turn follows the readable transcript: prose hidden inside a closed
+  // turn fold is omitted. Per-message copy remains available on any text row
+  // that the reader reveals by opening the fold.
+  const previousAssistantTurnCopyRef = useRef<Map<string, AssistantTurnCopyInfo>>(new Map());
+  const { assistantTurnCopyByTurnId, interimTextRowKeys } = useMemo(() => {
+    const previous = previousAssistantTurnCopyRef.current;
+    const hiddenTextRowKeys = new Set<string>();
+    for (const fold of turnFolds) {
+      for (const key of fold.hiddenKeys) hiddenTextRowKeys.add(key);
+    }
+    const byTurnId = new Map<string, AssistantTurnCopyInfo>();
+    const { allText, visibleText: turnCopy } = deriveAssistantTurnCopyMaps(rows, hiddenTextRowKeys);
+    for (const [turnId, info] of turnCopy) {
+      const prior = previous.get(turnId);
+      byTurnId.set(
+        turnId,
+        prior && prior.text === info.text && prior.textEventCount === info.textEventCount ? prior : info,
+      );
+    }
+    previousAssistantTurnCopyRef.current = byTurnId;
+    // Every text row of a turn except its last visible one is interim narration.
+    const interim = new Set<string>();
+    for (const row of rows) {
+      if (row.event.type !== "text") continue;
+      const turnId = getEventTurnId(row.event);
+      const last = turnId ? allText.get(turnId)?.lastTextEventKey : null;
+      if (last && last !== row.key) interim.add(row.key);
+    }
+    return { assistantTurnCopyByTurnId: byTurnId, interimTextRowKeys: interim };
+  }, [rows, turnFolds]);
   // Unfolded row keys: the logical order jumps, the fork divider, the "N new"
   // count, and the measured-height cache work in. Stable across pure content
   // deltas, like `groupedRowKeys` below.
@@ -6244,6 +6414,7 @@ function AgentChatMessageListMain({
   const previousFoldRowsRef = useRef<ReadonlyMap<string, TranscriptGroupedEnvelope>>(new Map());
   const previousWakeChainRowsRef = useRef<ReadonlyMap<string, TranscriptGroupedEnvelope>>(new Map());
   const previousThoughtRunRowsRef = useRef<ReadonlyMap<string, TranscriptGroupedEnvelope>>(new Map());
+  const previousComputerUseRunRowsRef = useRef<ReadonlyMap<string, TranscriptGroupedEnvelope>>(new Map());
   // The reasoning row that draws the live ThinkingPreview: the newest row of
   // the live turn, read from the rows BEFORE work-log groups leave the drawn
   // timeline so a tool starting after the thought collapses it.
@@ -6316,9 +6487,12 @@ function AgentChatMessageListMain({
     }
     previousWakeChainRowsRef.current = chainRows;
     const withUnread = insertNewSinceDivider(folded, unreadSince);
-    const next = mergeAdjacentThoughtRows(withUnread, previousThoughtRunRowsRef.current, rowDrawContext);
-    previousThoughtRunRowsRef.current = next === withUnread ? new Map() : collectMergedThoughtRows(next);
-    return next;
+    const merged = mergeAdjacentThoughtRows(withUnread, previousThoughtRunRowsRef.current, rowDrawContext);
+    previousThoughtRunRowsRef.current = merged === withUnread ? new Map() : collectMergedThoughtRows(merged);
+    // Only a turn's newest computer-use action is drawn in full.
+    const arranged = arrangeComputerUseRuns(merged, previousComputerUseRunRowsRef.current);
+    previousComputerUseRunRowsRef.current = arranged.built;
+    return arranged.rows;
   }, [openTurnFolds, presentedRows, rowDrawContext, turnFolds, unreadSince, wakeChains, wakeTurnIds]);
   // A Thought row merged into the row before it answers to that row: jumps,
   // highlights, event anchors, inline proof, and scroll-memory anchors that
@@ -6577,7 +6751,6 @@ function AgentChatMessageListMain({
     turnModelStateRef.current = nextState;
     return nextState;
   }, [events]);
-  const turnSummary = useMemo(() => deriveTurnSummary(events, turnModelState), [events, turnModelState]);
   // Per-turn worked-for duration, keyed by grouped-row index, derived from the
   // universal `done` event (runtime-agnostic — no reliance on turnId).
   const turnEndDurationByRowKey = useMemo(
@@ -6586,34 +6759,8 @@ function AgentChatMessageListMain({
   );
 
   /**
-   * Proof captured during each turn, keyed by the turn's `done` row.
-   *
-   * Proof itself renders inline where it was captured (an `ade_card` row), so
-   * this is only the turn summary's "N proof" chip — a way back to the drawer
-   * from the turn that produced the capture, not a second copy of the artifacts.
-   * Bucketing is by wall clock because artifacts carry `createdAt`, not turnId.
-   */
-  /**
-   * Picture source for inline proof. The stored `uri` is project-relative
-   * (`.ade/artifacts/...`), and the `ade-artifact://project/` handler resolves
-   * exactly that against the chat's project root (named in the URL) — so a local project gets real
-   * previews synchronously, with no per-tile IPC. A remote project has no such
-   * handler, so picture tiles fall back to their kind label and the drawer
-   * (which reads bytes over the runtime) stays the way to view them.
-   *
-   * Only pictures come back. A recording is not an `<img>`, so the filmstrip
-   * resolves it through the same media-server preview the drawer uses (see
-   * `ChatProofFilmstrip`); returning its raw `.mp4` uri here is what drew a
-   * broken tile in the thread while the drawer played the same recording.
-   */
-  const resolveProofThumbnailSrc = useCallback((artifact: ComputerUseArtifactView): string | null => {
-    if (!allowLocalProofArtifactProtocol || !isImageArtifact(artifact)) return null;
-    return artifactImageSrc(artifact.uri, chatScope.rootPath);
-  }, [allowLocalProofArtifactProtocol, chatScope.rootPath]);
-
-  /**
-   * Proof an answer already shows inline. The turn's "N proof" chip and the
-   * inline filmstrip skip it, so a picture never shows twice in one thread.
+   * Proof an answer already shows inline. The turn's "N proof filed" links
+   * skip it, so a picture never shows twice in one thread.
    *
    * Text streams in pieces, so each turn's pieces are joined before reading
    * citations, which keeps a split citation whole. Per turn, the result is
@@ -6622,7 +6769,7 @@ function AgentChatMessageListMain({
    */
   const citedIdsByTurnRef = useRef(new Map<string, { pieces: number; chars: number; ids: string[] }>());
   const answerCitedProofIds = useMemo(() => {
-    if (!proofArtifacts.length) return EMPTY_CITED_PROOF_IDS;
+    if (!proofArtifacts.length) return EMPTY_PROOF_IDS;
     const piecesByTurn = new Map<string, string[]>();
     for (const envelope of events) {
       if (envelope.event.type !== "text") continue;
@@ -6645,9 +6792,29 @@ function AgentChatMessageListMain({
       for (const id of entry.ids) cited.add(id);
     }
     citedIdsByTurnRef.current = next;
-    return cited.size ? cited : EMPTY_CITED_PROOF_IDS;
+    return cited.size ? cited : EMPTY_PROOF_IDS;
   }, [events, proofArtifacts.length]);
 
+  // Proof a "Filed proof" row already shows under its line. While the turn
+  // runs, the inline "N proof filed" line skips it; the turn-end count keeps it.
+  const actionShownProofIds = useMemo(() => {
+    let ids: Set<string> | null = null;
+    for (const env of allGroupedRows) {
+      if (env.event.type !== "work_log_group") continue;
+      for (const { summary } of collectComputerUseActions(env.event.entries)) {
+        for (const id of computerUseShownProofIds(summary)) (ids ??= new Set()).add(id);
+      }
+    }
+    return ids ?? EMPTY_PROOF_IDS;
+  }, [allGroupedRows]);
+
+  /**
+   * Proof captured during each turn, keyed by the turn's `done` row, for its
+   * "N proof filed" link — a way into the drawer, not a second copy of the
+   * pictures, which show on the rows that filed them. Proof outside a finished
+   * turn anchors on the row it follows. Bucketing is by wall clock because
+   * artifacts carry `createdAt`, not turnId.
+   */
   const turnProofTimeline = useMemo(() => {
     const byDoneRowKey = new Map<string, ComputerUseArtifactView[]>();
     const inlineByRowKey = new Map<string, ComputerUseArtifactView[]>();
@@ -6709,7 +6876,7 @@ function AgentChatMessageListMain({
       .sort((left, right) => left.at - right.at);
     const unanchored: ComputerUseArtifactView[] = [];
     for (const entry of visibleStamped) {
-      if (assignedIds.has(entry.artifact.id)) continue;
+      if (assignedIds.has(entry.artifact.id) || actionShownProofIds.has(entry.artifact.id)) continue;
       let anchorKey: string | null = null;
       for (const row of visibleRows) {
         if (row.at > entry.at) break;
@@ -6729,7 +6896,7 @@ function AgentChatMessageListMain({
       inlineByRowKey,
       unanchored,
     };
-  }, [allGroupedRows, presentedRows, hasOlderHistory, proofArtifacts, answerCitedProofIds]);
+  }, [allGroupedRows, presentedRows, hasOlderHistory, proofArtifacts, answerCitedProofIds, actionShownProofIds]);
   const turnProofByRowKey = turnProofTimeline.byDoneRowKey;
   // Sources the agent used per turn: the turn-end chip and the fold count.
   // A turn's list keeps its identity while its sources are unchanged, so a
@@ -6821,8 +6988,8 @@ function AgentChatMessageListMain({
     const el = listRootRef.current;
     if (!el) return;
     const rect = el.getBoundingClientRect();
-    const width = Math.max(el.clientWidth, rect.width);
-    const height = Math.max(el.clientHeight, rect.height);
+    const width = Math.max(el.clientWidth, toLayoutPx(rect.width));
+    const height = Math.max(el.clientHeight, toLayoutPx(rect.height));
     setListRootBoxPx((current) => (
       movedByAPixel(current.width, width)
         || movedByAPixel(current.height, height)
@@ -6835,7 +7002,7 @@ function AgentChatMessageListMain({
   const measureContentColumnWidth = useCallback(() => {
     const el = contentWrapperRef.current;
     if (!el) return;
-    const width = Math.max(el.clientWidth, el.getBoundingClientRect().width);
+    const width = Math.max(el.clientWidth, toLayoutPx(el.getBoundingClientRect().width));
     setColumnWidthPx((current) => (movedByAPixel(current, width) ? width : current));
   }, []);
 
@@ -7072,11 +7239,10 @@ function AgentChatMessageListMain({
     [groupedRowKeys, heightForKey, estimateWidthStep],
   );
 
-  const scrollToRowIndexNearTop = useCallback((rowIndex: number) => {
+  /** Scroll to `targetTop` as a reader's own scroll would: bottom-follow lets go. */
+  const scrollContainerTo = useCallback((targetTop: number) => {
     const el = scrollRef.current;
-    if (!el || rowIndex < 0 || rowIndex >= groupedRows.length) return false;
-    const offsets = computeRowStartOffsets(groupedRows.length, rowHeight, timelineRowGapPx);
-    const targetTop = computeScrollTopForRow(rowIndex, offsets);
+    if (!el) return false;
     const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
     const clamped = Math.max(0, Math.min(maxScroll, targetTop));
     stickToBottomRef.current = false;
@@ -7093,7 +7259,13 @@ function AgentChatMessageListMain({
     }
     setScrollTop(el.scrollTop);
     return true;
-  }, [groupedRows.length, rowHeight, timelineRowGapPx]);
+  }, []);
+
+  const scrollToRowIndexNearTop = useCallback((rowIndex: number) => {
+    if (!scrollRef.current || rowIndex < 0 || rowIndex >= groupedRows.length) return false;
+    const offsets = computeRowStartOffsets(groupedRows.length, rowHeight, timelineRowGapPx);
+    return scrollContainerTo(computeScrollTopForRow(rowIndex, offsets));
+  }, [groupedRows.length, rowHeight, scrollContainerTo, timelineRowGapPx]);
 
   // Scroll a grouped row into view by its stable render key — used by the
   // subagent spawn/result "jump to result ↓" / "↑ jump to start" affordances.
@@ -7113,6 +7285,32 @@ function AgentChatMessageListMain({
     const rowIndex = drawnRowKeyIndexRef.current.get(rowKey);
     if (rowIndex !== undefined && rowIndex >= 0) scrollToRowIndexNearTop(rowIndex);
   }, [revealTurnFoldRow, scrollToRowIndexNearTop]);
+
+  // Find (⌘F): a stable way in for the layer, and the rows it searches. The
+  // layer subscribes only while its bar is open, so a closed find costs the
+  // streaming path one ref write and an empty listener loop.
+  const scrollToRowKeyRef = useRef(scrollToRowKey);
+  scrollToRowKeyRef.current = scrollToRowKey;
+  const revealRowForFind = useCallback((rowKey: string) => scrollToRowKeyRef.current(rowKey), []);
+  const findSnapshotRef = useRef<ChatFindSourceSnapshot>({ rows: [], excludedKeys: new Set(), hasOlderHistory: false });
+  const findListenersRef = useRef(new Set<() => void>());
+  const findSource = useMemo<ChatFindSource>(() => ({
+    get: () => findSnapshotRef.current,
+    subscribe: (listener) => {
+      findListenersRef.current.add(listener);
+      return () => findListenersRef.current.delete(listener);
+    },
+  }), []);
+  useEffect(() => {
+    findSnapshotRef.current = {
+      rows: presentedRows,
+      excludedKeys: answerKeyByDuplicateKeyRef.current.size
+        ? new Set(answerKeyByDuplicateKeyRef.current.keys())
+        : EMPTY_FIND_EXCLUDED_KEYS,
+      hasOlderHistory,
+    };
+    for (const listener of findListenersRef.current) listener();
+  }, [presentedRows, turnFolds, hasOlderHistory]);
 
   useEffect(() => {
     if (!scrollToRowKeyRequest?.key) return;
@@ -7957,6 +8155,7 @@ function AgentChatMessageListMain({
     // A fold row reads the same per-turn facts as its turn's `done` row.
     const foldEvent = envelope.event.type === "turn_fold" ? envelope.event : null;
     const turnEndKey = envelope.event.type === "done" ? envelope.key : (foldEvent?.turnEndKey ?? null);
+    const compactOnlyTurn = envelope.event.type === "done" && envelope.event.turnId != null && compactOnlyTurnIds.has(envelope.event.turnId);
     const turnEndDurationMs = turnEndKey
       ? (turnEndDurationByRowKey.get(turnEndKey) ?? null)
       : undefined;
@@ -7970,9 +8169,8 @@ function AgentChatMessageListMain({
       ? openTurnFolds.has(foldEvent.foldId)
       : envelope.event.type === "wake_chain" ? openTurnFolds.has(envelope.event.chainId) : false;
     const turnWorkInFold = envelope.event.type === "done" && foldedTurnEndKeys.has(envelope.key);
-    const turnProof = envelope.event.type === "done"
-      ? turnProofByRowKey.get(envelope.key)
-      : undefined;
+    // A fold row counts the same proof as its turn's `done` row.
+    const turnProof = turnEndKey ? turnProofByRowKey.get(turnEndKey) : undefined;
     const turnScheduledWork = envelope.event.type === "done"
       ? scheduledWorkByTurnEndKey.get(envelope.key)
       : undefined;
@@ -7998,7 +8196,9 @@ function AgentChatMessageListMain({
 
     const rowTurnActive = Boolean(currentTurn && activeTurnId && currentTurn === activeTurnId) && !sessionEnded;
     const anchored = envelope.key === anchoredRowKey;
-    const assistantTurnCopy = assistantTurnCopyByRowKey.get(envelope.key) ?? null;
+    const assistantTurnCopyText = envelope.event.type === "done" && envelope.event.turnId
+      ? assistantTurnCopyByTurnId.get(envelope.event.turnId)?.text ?? null
+      : null;
     const interimText = interimTextRowKeys.has(envelope.key);
     const showForkHistoryDivider = envelope.key === forkHistoryDividerRowKey;
 
@@ -8023,13 +8223,13 @@ function AgentChatMessageListMain({
           onOpenTurnSources={onOpenTurnSources}
           onForkFromTurn={onForkFromTurn}
           inlineProof={inlineProof}
-          resolveProofThumbnailSrc={resolveProofThumbnailSrc}
-          allowLocalProofArtifactProtocol={allowLocalProofArtifactProtocol}
           onOpenProofDrawer={onOpenProofDrawer}
           onApproval={handleApproval}
           onCodexRecovery={onCodexRecovery}
           onRecoverContinuity={onRecoverContinuity}
           onRetryProviderFailure={onRetryProviderFailure}
+          onRetryCompaction={onRetryCompaction}
+          latestCompactionKey={latestCompactionKey}
           onChooseProviderFailureModel={onChooseProviderFailureModel}
           onRunUnprocessedMessage={onRunUnprocessedMessage}
           onEditUnprocessedMessage={onEditUnprocessedMessage}
@@ -8060,10 +8260,11 @@ function AgentChatMessageListMain({
           laneId={laneId}
           sessionId={sessionId}
           runtimeName={runtimeName}
-          mosaic={mosaic}
+          jiraIssueSnapshotsById={jiraIssueSnapshotsById}
+          runtimePin={runtimePin}
           anchored={anchored}
           onScrollToRowKey={rowScrollToRowKey}
-          assistantTurnCopy={assistantTurnCopy}
+          assistantTurnCopyText={assistantTurnCopyText}
           interimText={interimText}
           staleInterruptReceipts={staleInterruptReceipts}
           onCancelQueuedMessage={onCancelQueuedMessage}
@@ -8072,6 +8273,7 @@ function AgentChatMessageListMain({
           onStopSubagent={onStopSubagent}
           pacedTextReveal={envelope.key === pacedTextRowKey}
           liveThinking={envelope.key === liveThinkingDrawnKey}
+          compactOnlyTurn={compactOnlyTurn}
           turnFoldOpen={turnFoldOpen}
           onToggleTurnFold={toggleTurnFold}
           turnWorkInFold={turnWorkInFold}
@@ -8097,13 +8299,13 @@ function AgentChatMessageListMain({
         onOpenTurnSources={onOpenTurnSources}
         onForkFromTurn={onForkFromTurn}
         inlineProof={inlineProof}
-        resolveProofThumbnailSrc={resolveProofThumbnailSrc}
-        allowLocalProofArtifactProtocol={allowLocalProofArtifactProtocol}
         onOpenProofDrawer={onOpenProofDrawer}
         onApproval={handleApproval}
         onCodexRecovery={onCodexRecovery}
         onRecoverContinuity={onRecoverContinuity}
         onRetryProviderFailure={onRetryProviderFailure}
+        onRetryCompaction={onRetryCompaction}
+        latestCompactionKey={latestCompactionKey}
         onChooseProviderFailureModel={onChooseProviderFailureModel}
         onRunUnprocessedMessage={onRunUnprocessedMessage}
         onEditUnprocessedMessage={onEditUnprocessedMessage}
@@ -8134,10 +8336,11 @@ function AgentChatMessageListMain({
         laneId={laneId}
         sessionId={sessionId}
         runtimeName={runtimeName}
-        mosaic={mosaic}
+        jiraIssueSnapshotsById={jiraIssueSnapshotsById}
+        runtimePin={runtimePin}
         anchored={anchored}
         onScrollToRowKey={rowScrollToRowKey}
-        assistantTurnCopy={assistantTurnCopy}
+        assistantTurnCopyText={assistantTurnCopyText}
         interimText={interimText}
         staleInterruptReceipts={staleInterruptReceipts}
         onCancelQueuedMessage={onCancelQueuedMessage}
@@ -8146,12 +8349,13 @@ function AgentChatMessageListMain({
         onStopSubagent={onStopSubagent}
         pacedTextReveal={envelope.key === pacedTextRowKey}
         liveThinking={envelope.key === liveThinkingDrawnKey}
+        compactOnlyTurn={compactOnlyTurn}
         turnFoldOpen={turnFoldOpen}
         onToggleTurnFold={toggleTurnFold}
         turnWorkInFold={turnWorkInFold}
       />
     );
-  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, interimTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, rowMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, mosaic, rowScrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, scheduledWorkByTurnEndKey, wakeTurnFoldIdByTurnEndKey, wakeChainByAnchorKey, inlineProofByRowKey, resolveProofThumbnailSrc, allowLocalProofArtifactProtocol, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, onForkFromTurn, pacedTextRowKey, liveThinkingDrawnKey]);
+  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByTurnId, interimTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, rowMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, runtimePin, jiraIssueSnapshotsById, rowScrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, scheduledWorkByTurnEndKey, wakeTurnFoldIdByTurnEndKey, wakeChainByAnchorKey, inlineProofByRowKey, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, onForkFromTurn, pacedTextRowKey, liveThinkingDrawnKey, compactOnlyTurnIds]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {
@@ -8167,7 +8371,7 @@ function AgentChatMessageListMain({
     return Math.max(0, h);
   }, [shouldVirtualize, endIndex, groupedRows.length, rowHeight, timelineRowGapPx]);
 
-  const streamingIndicator = showStreamingIndicator && !sessionEnded ? (
+  const streamingIndicator = showStreamingIndicator && !sessionEnded && !(activeTurnId && compactOnlyTurnIds.has(activeTurnId)) ? (
     <motion.div
       className="w-fit max-w-[var(--chat-content-width,52rem)] pt-3 pb-2"
       initial={{ opacity: 0 }}
@@ -8186,6 +8390,7 @@ function AgentChatMessageListMain({
         }
         startedAt={activeTurnStartedAt}
         toolEntries={transcriptToolActivity.activeEntries}
+        replyWritesScene={activeTurnReplyWritesScene}
         onNavigateSuggestion={handleNavigateSuggestion}
         onInsertDraft={onInsertDraft}
         onRevealChatTerminal={onRevealChatTerminal}
@@ -8199,13 +8404,11 @@ function AgentChatMessageListMain({
   const turnDivider = null;
   const trailingProof = unanchoredProofArtifacts.length > 0 ? (
     <div className="w-full max-w-[var(--chat-content-width,52rem)]">
-      <ChatProofFilmstrip
-        artifacts={unanchoredProofArtifacts}
-        title="Proof added"
-        resolveThumbnailSrc={resolveProofThumbnailSrc}
-        allowLocalArtifactProtocol={allowLocalProofArtifactProtocol}
-        onOpenAll={onOpenProofDrawer}
-        onOpenArtifact={onOpenProofDrawer}
+      <ChatProofCount
+        count={unanchoredProofArtifacts.length}
+        onOpen={onOpenProofDrawer
+          ? () => onOpenProofDrawer(proofDrawerFocus("Latest proof", unanchoredProofArtifacts))
+          : undefined}
       />
     </div>
   ) : null;
@@ -8217,9 +8420,11 @@ function AgentChatMessageListMain({
   return (
     <ChatWorkspacePathProvider value={workspacePaths}>
     <ProofCitationProvider artifacts={proofArtifacts} allowLocalArtifactProtocol={allowLocalProofArtifactProtocol}>
+    <SceneAnswerContext.Provider value={sceneAnswers}>
     <div
       ref={listRootRef}
       data-chat-message-list-root=""
+      data-ade-find-scope="chat-transcript"
       className={cn("relative h-full min-h-0 min-w-0 max-w-full overflow-hidden", className)}
     >
       {/* Direct child of the list root on purpose: the rail's `left-0` and all of
@@ -8268,7 +8473,7 @@ function AgentChatMessageListMain({
                   type="button"
                   onClick={onRetryOlderHistory}
                   disabled={loadingOlderHistory}
-                  className="rounded px-2 py-0.5 text-fg/55 transition-colors hover:bg-white/[0.05] hover:text-fg/80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/60"
+                  className="rounded px-2 py-0.5 text-fg/55 transition-colors hover:bg-fg/[0.05] hover:text-fg/80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/60"
                   aria-label={loadingOlderHistory ? "Loading earlier messages" : "Retry loading earlier messages"}
                   aria-busy={loadingOlderHistory}
                   title={olderHistoryError}
@@ -8312,6 +8517,15 @@ function AgentChatMessageListMain({
         </div>
       </div>
       {showJumpToLatest ? <ChatJumpToLatestPill newRows={newRowsSinceDetach} onJump={jumpToLatest} /> : null}
+      <ChatFindLayer
+        rootRef={listRootRef}
+        contentRef={contentWrapperRef}
+        scrollRef={scrollRef}
+        source={findSource}
+        sessionId={sessionId ?? null}
+        revealRow={revealRowForFind}
+        scrollContainerTo={scrollContainerTo}
+      />
       {/* With comments on, the layer owns the selection toolbar (it adds "Comment"). */}
       {threadComments ? (
         <ThreadCommentLayer
@@ -8323,11 +8537,13 @@ function AgentChatMessageListMain({
           comments={threadComments.comments}
           layoutVersion={`${groupedRows.length}:${shouldVirtualize ? `${startIndex}-${endIndex}` : "all"}`}
           onAddToChat={onInsertDraft}
+          onCreateIssue={createIssueFromSelection}
         />
       ) : (
-        <AssistantOutputSelectionToolbar rootRef={listRootRef} onAddToChat={onInsertDraft} />
+        <AssistantOutputSelectionToolbar rootRef={listRootRef} onAddToChat={onInsertDraft} onCreateIssue={createIssueFromSelection} />
       )}
     </div>
+    </SceneAnswerContext.Provider>
     </ProofCitationProvider>
     </ChatWorkspacePathProvider>
   );

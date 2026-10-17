@@ -6,7 +6,7 @@ import { getModelById, resolveModelAlias } from "../../../shared/modelRegistry";
  *
  * Runtimes report the model that answered in their own spelling: a vendor or
  * harness prefix (`anthropic/`, `opencode/openai/`), a context tier
- * (`claude-opus-5-5[1m]`), a dated snapshot (`claude-haiku-4-5-20251001`), a
+ * (`claude-opus-5-5[1m]`), a dated snapshot (`claude-sonnet-4-5-20250929`), a
  * build or effort variant (`grok-4.5-build`, `gpt-5.4-high`), a Factory
  * `custom:` id, or `.` for `-` in a version. None of those is a different
  * model. A router pick (`auto`) is never a mismatch either: the user asked

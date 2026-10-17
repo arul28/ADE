@@ -3,7 +3,12 @@ import { extractError } from "../lib/format";
 import { useAsyncAction } from "./useAsyncAction";
 
 /** What a finished repair should tell the user, or null when there is nothing to say. */
-export type BrainRepairNotice = { tone: "ok" | "warn"; text: string } | null;
+export type BrainRepairNotice = {
+  tone: "ok" | "warn";
+  text: string;
+  /** The service stayed down: Restart ADE is the next thing to offer. */
+  offerRestart?: boolean;
+} | null;
 
 export type BrainRepair = {
   /** Repairs the stored sign-in and restarts the brain; ignores repeat clicks. */
@@ -53,9 +58,10 @@ export function useBrainRepair(onSettled?: () => void): BrainRepair {
       if (result.brainRestarted === false) {
         return {
           tone: "warn",
+          offerRestart: true,
           text: result.outcome === "repaired"
-            ? "Your sign-in is back, but the ADE background service didn't come back. Wait a moment and try again; if it keeps failing, quit and reopen ADE."
-            : "The ADE background service didn't come back. Wait a moment and try again; if it keeps failing, quit and reopen ADE.",
+            ? "Your sign-in is back, but ADE's background service didn't come back. Try Repair again, or restart ADE."
+            : "ADE's background service didn't come back. Try Repair again, or restart ADE.",
         };
       }
       if (result.outcome === "repaired") {

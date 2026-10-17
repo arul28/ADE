@@ -19,6 +19,7 @@ import {
 import { verifyAttentionBearerToken } from "../src/attentionAuth";
 import {
   handleRequest,
+  pruneRelayState,
   resetSpendGuardsForTests,
   signPushRelayRequest,
   type PushRelayEnv,
@@ -188,9 +189,14 @@ class SqliteD1Statement {
     };
   }
 
-  async run(): Promise<{ success: boolean }> {
-    this.runSync();
-    return { success: true };
+  async run(): Promise<{ success: boolean; meta: { changes: number } }> {
+    if (/\breturning\b/i.test(this.sql)) {
+      const rows = this.runSync();
+      return { success: true, meta: { changes: rows.length } };
+    }
+    // Real D1 reports affected rows in `meta.changes`; callers branch on it.
+    const result = this.database.prepare(this.sql).run(...this.values) as { changes?: number | bigint };
+    return { success: true, meta: { changes: Number(result.changes ?? 0) } };
   }
 
   runSync(): Array<Record<string, unknown>> {
@@ -219,6 +225,10 @@ class SqliteD1Database {
         "../migrations/0004_device_registration_generation.sql",
         "../migrations/0005_activity_feed.sql",
         "../migrations/0006_machine_revocation.sql",
+        "../migrations/0007_revoked_machine_key_index.sql",
+        "../migrations/0008_account_settings.sql",
+        "../migrations/0009_account_vault.sql",
+        "../migrations/0010_heartbeat_write_costs.sql",
       ]) {
         this.native.exec(readFileSync(new URL(migration, import.meta.url), "utf8"));
       }
@@ -2004,6 +2014,146 @@ describe("account Attention contract", () => {
         machine_name: "Studio refreshed",
         last_seen_at: "2026-07-28T08:01:00.000Z",
       });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("retries Live Activity counts the push window held back on a presence heartbeat", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-07-28T08:10:00.000Z"));
+    const database = new SqliteD1Database();
+    const authorization = await machinePublishAuthorization();
+    const apnsBodies: Array<Record<string, unknown>> = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url === authorization.jwksUrl) return Response.json(authorization.jwks);
+      apnsBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(null, { status: 200, headers: { "apns-id": "presence-retry" } });
+    }));
+    try {
+      database.native.prepare(`
+        insert into attention_machine_links(
+          machine_key, user_id, machine_name, last_seen_at, linked_at,
+          legacy_devices_imported_at
+        ) values (?, ?, 'Studio', '2026-07-28T08:00:00.000Z',
+          '2026-07-28T08:00:00.000Z', null)
+      `).run(MACHINE_KEY, authorization.userId);
+      insertAttentionDevice(database, {
+        userId: authorization.userId,
+        deviceId: "phone-1",
+        pushToStartToken: "ab".repeat(32),
+      });
+      const parsed = attentionTestInternals.parseAttentionItem({
+        ...validAgentItem(),
+        updatedAt: "2026-07-28T08:09:00.000Z",
+      }, MACHINE_KEY);
+      expect(parsed, "setup precondition: the item must parse").not.toBeNull();
+      database.native.prepare(`
+        insert into attention_items(
+          user_id, item_id, machine_key, source_revision, account_revision,
+          fingerprint, event_kind, phase, payload_json, seen_at, dismissed_at,
+          expires_at, updated_at
+        ) values (?, ?, ?, ?, 1, ?, ?, ?, ?, null, null, null, ?)
+      `).run(
+        authorization.userId,
+        parsed!.id,
+        MACHINE_KEY,
+        parsed!.revision,
+        parsed!.fingerprint,
+        parsed!.eventKind,
+        parsed!.phase,
+        JSON.stringify(parsed),
+        parsed!.updatedAt,
+      );
+      // The phone holds an activity whose last push carried older counts.
+      database.native.prepare(`
+        insert into attention_activity_tokens(user_id, device_id, activity_id, token, updated_at)
+        values (?, 'phone-1', 'agent-runs', ?, '2026-07-28T08:00:00.000Z')
+      `).run(authorization.userId, "cd".repeat(32));
+      database.native.prepare(`
+        insert into attention_activity_state(user_id, device_id, activity_id, started, fingerprint, updated_at)
+        values (?, 'phone-1', 'agent-runs', 1, 'older|0.1.0.0', '2026-07-28T08:00:00.000Z')
+      `).run(authorization.userId);
+
+      const response = await publishActivityForTest(
+        makeAttentionEnv(database, {
+          CLERK_JWKS_URL: authorization.jwksUrl,
+          CLERK_ISSUER: authorization.issuer,
+          CLERK_OAUTH_CLIENT_ID: "attention-test-client",
+          APNS_KEY: await generateTestP8(),
+          APNS_KEY_ID: "PRESENCE01",
+          APNS_TEAM_ID: "PRESENCET1",
+        }),
+        authorization,
+        { machineName: "Studio", mode: "presence", rosterEpoch: 1, items: [], tombstones: [] },
+      );
+
+      expect(response.status).toBe(200);
+      const liveActivity = apnsBodies.filter((body) =>
+        (body.aps as Record<string, unknown> | undefined)?.event === "update");
+      expect(liveActivity).toHaveLength(1);
+      expect(liveActivity[0]).toMatchObject({
+        aps: { "content-state": { columns: { needsYou: 1, working: 0, waiting: 0, done: 0 } } },
+      });
+    } finally {
+      database.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it("reports settings and vault change marks on presence, and omits them when they cannot be read", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-28T08:01:00.000Z"));
+    const database = new SqliteD1Database();
+    const authorization = await machinePublishAuthorization();
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url === authorization.jwksUrl) return Response.json(authorization.jwks);
+      throw new Error(`Unexpected fetch: ${url}`);
+    }));
+    const env = makeAttentionEnv(database, {
+      CLERK_JWKS_URL: authorization.jwksUrl,
+      CLERK_ISSUER: authorization.issuer,
+      CLERK_OAUTH_CLIENT_ID: "attention-test-client",
+    });
+    const presence = async () => {
+      const response = await publishActivityForTest(env, authorization, {
+        machineName: "Studio",
+        mode: "presence",
+        rosterEpoch: 1,
+        items: [],
+        tombstones: [],
+      });
+      expect(response.status).toBe(200);
+      return await response.json() as { accountChanges?: { accountUserId: string; settings: string | null; vault: string | null } };
+    };
+    const writeSetting = (key: string, updatedAt: string) => database.native.prepare(`
+      insert into account_settings(user_id, scope_key, setting_key, value_json, updated_at, deleted)
+      values (?, 'all', ?, '1', ?, 0)
+    `).run(authorization.userId, key, updatedAt);
+    try {
+      const empty = await presence();
+      expect(empty.accountChanges).toEqual({ accountUserId: authorization.userId, settings: null, vault: null });
+
+      writeSetting("a", "2026-07-28T08:00:30.000Z");
+      const afterFirst = (await presence()).accountChanges?.settings;
+      expect(afterFirst).not.toBeNull();
+
+      // A second write in the same millisecond still moves the mark, because
+      // the pull cursor orders by (updated_at, key) and would return it.
+      writeSetting("b", "2026-07-28T08:00:30.000Z");
+      const afterSameInstant = await presence();
+      expect(afterSameInstant.accountChanges?.settings).not.toBe(afterFirst);
+      expect(afterSameInstant.accountChanges?.vault).toBeNull();
+
+      // Marks are advisory: when they cannot be read the heartbeat still lands.
+      database.native.exec("drop table account_vault_items");
+      const withoutMarks = await presence();
+      expect(withoutMarks.accountChanges).toBeUndefined();
+      expect(row(database, `
+        select last_seen_at from attention_machine_links where machine_key = ?
+      `, MACHINE_KEY)).toEqual({ last_seen_at: "2026-07-28T08:01:00.000Z" });
     } finally {
       database.close();
     }
@@ -4146,10 +4296,14 @@ describe("account Attention contract", () => {
       expect(liveActivityPushes[0]).toMatchObject({
         aps: {
           event: "start",
+          // The start alert is only the counts: never agent text, even before
+          // hide-details redacts the rows.
           alert: {
-            title: "ADE activity started",
+            title: "ADE",
+            body: "1 needs you",
           },
           "content-state": {
+            columns: { needsYou: 1, working: 0, waiting: 0, done: 0 },
             runs: [{
               title: "Agent activity",
               model: null,
@@ -4296,25 +4450,123 @@ describe("account Attention contract", () => {
     });
   });
 
+  it.each([
+    { name: "a question notifies by default", eventKind: "agent_needs_you", saved: null, version: null, notifies: true },
+    { name: "red CI notifies by default", eventKind: "pr_checks_failing", saved: null, version: null, notifies: true },
+    { name: "a review request stays quiet by default", eventKind: "pr_review_requested", saved: null, version: null, notifies: false },
+    { name: "an old-default notify for merge-ready reads as the new default", eventKind: "pr_merge_ready", saved: "notify", version: null, notifies: false },
+    { name: "a notify chosen on the new defaults is kept", eventKind: "pr_merge_ready", saved: "notify", version: 2, notifies: true },
+    { name: "a question the user silenced stays silent", eventKind: "agent_needs_you", saved: "ambient", version: null, notifies: false },
+  ] as const)("$name", async ({ eventKind, saved, version, notifies }) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-28T08:00:10.000Z"));
+    const database = new SqliteD1Database();
+    const isPullRequest = eventKind.startsWith("pr_");
+    const raw = {
+      ...validAgentItem(),
+      eventKind,
+      ...(isPullRequest
+        ? {
+            id: `pull-request:${MACHINE_KEY}:owner:repo:7`,
+            kind: "pull_request",
+            phase: eventKind.replace(/^pr_/, ""),
+            destination: { kind: "pull_request", repoOwner: "owner", repoName: "repo", number: 7, tab: "overview" },
+            actions: [],
+          }
+        : {}),
+    };
+    const parsed = attentionTestInternals.parseAttentionItem(raw, MACHINE_KEY);
+    expect(parsed, "setup precondition: the item must parse").not.toBeNull();
+    const sendNotification = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      apnsId: "policy",
+      reason: null,
+      tokenInvalid: false,
+    }));
+    try {
+      insertAttentionDevice(database, {
+        userId: "account-a",
+        deviceId: "phone-1",
+        apnsToken: "ab".repeat(32),
+        preferences: { enabled: true },
+      });
+      database.native.prepare(`
+        insert into attention_items(
+          user_id, item_id, machine_key, source_revision, account_revision,
+          fingerprint, event_kind, phase, payload_json, seen_at, dismissed_at,
+          expires_at, updated_at
+        ) values ('account-a', ?, ?, ?, 1, ?, ?, ?, ?, null, null, ?, ?)
+      `).run(
+        parsed!.id,
+        MACHINE_KEY,
+        parsed!.revision,
+        parsed!.fingerprint,
+        parsed!.eventKind,
+        parsed!.phase,
+        JSON.stringify(parsed),
+        parsed!.expiresAt,
+        parsed!.updatedAt,
+      );
+      database.native.prepare(`
+        insert into attention_preferences(user_id, payload_json, updated_at)
+        values ('account-a', ?, '2026-07-28T08:00:00.000Z')
+      `).run(JSON.stringify({
+        account: {
+          ...(saved ? { eventPolicies: { [eventKind]: saved } } : {}),
+          ...(version ? { eventPolicyDefaultsVersion: version } : {}),
+        },
+        devices: {},
+      }));
+      const env = makeAttentionEnv(database, {
+        APNS_KEY: await generateTestP8(),
+        APNS_KEY_ID: "POLICYKEY1",
+        APNS_TEAM_ID: "POLICYTEAM",
+      });
+
+      await attentionTestInternals.deliverAttentionNotifications(
+        env,
+        "account-a",
+        [parsed!],
+        sendNotification,
+      );
+      expect(sendNotification).toHaveBeenCalledTimes(notifies ? 1 : 0);
+    } finally {
+      database.close();
+      vi.useRealTimers();
+    }
+  });
+
   it("redacts notification titles as well as bodies when previews are hidden", () => {
     const parsed = attentionTestInternals.parseAttentionItem(validAgentItem(), MACHINE_KEY);
     expect(parsed).not.toBeNull();
     if (!parsed) throw new Error("setup precondition: agent Attention item must parse");
 
-    expect(attentionTestInternals.notificationTitle(parsed, false)).toBe(
-      "Approve the migration",
-    );
-    expect(attentionTestInternals.notificationTitle(parsed, true)).toBe(
-      "ADE agent update",
-    );
+    expect(attentionTestInternals.attentionAlertCopy(parsed, false)).toEqual({
+      title: "Approve the migration",
+      body: "Needs you · ADE · Studio",
+    });
+    // One short line each: long names are cut, never wrapped into a paragraph.
+    const longNames = attentionTestInternals.parseAttentionItem({
+      ...validAgentItem(),
+      machine: { ...(validAgentItem().machine as Record<string, unknown>), name: "M".repeat(80) },
+    }, MACHINE_KEY);
+    const longBody = attentionTestInternals.attentionAlertCopy(longNames!, false).body ?? "";
+    expect(longBody.length).toBeLessThanOrEqual(64);
+    expect(longBody.endsWith("…")).toBe(true);
+    expect(attentionTestInternals.attentionAlertCopy(parsed, true)).toEqual({
+      title: "Agent: Needs you",
+      body: null,
+    });
 
     const pullRequest = {
       ...parsed,
       kind: "pull_request",
     } as typeof parsed;
-    expect(attentionTestInternals.notificationTitle(pullRequest, true)).toBe(
-      "ADE pull request update",
-    );
+    expect(attentionTestInternals.attentionAlertCopy(pullRequest, true)).toEqual({
+      title: "Pull request: Needs you",
+      body: null,
+    });
   });
 
   it("keeps exact account-machine routing in cross-machine alerts and Live Activity rows", () => {
@@ -6364,9 +6616,13 @@ describe("Live Activity island tallies", () => {
     chatActivityMode?: unknown;
     alertFingerprint?: string;
     contentFingerprint?: string;
+    boardColumn?: string;
+    waitingReason?: string;
   }): Record<string, unknown> {
     return {
       ...validAgentItem(),
+      ...(args.boardColumn ? { boardColumn: args.boardColumn } : {}),
+      ...(args.waitingReason ? { waitingReason: args.waitingReason } : {}),
       id: `agent:${MACHINE_KEY}:${args.sessionId}`,
       fingerprint: args.contentFingerprint ?? `content-${args.sessionId}`,
       contentFingerprint: args.contentFingerprint ?? `content-${args.sessionId}`,
@@ -6557,6 +6813,33 @@ describe("Live Activity island tallies", () => {
     }
   });
 
+  it("keeps a seen finished chat in Waiting while its wake is pending, and drops other seen finished work", async () => {
+    const database = new SqliteD1Database();
+    try {
+      seedActivityItem(database, "account-a", islandItem({
+        sessionId: "parked",
+        phase: "completed",
+        eventKind: "agent_completed",
+        boardColumn: "waiting",
+        waitingReason: "scheduled",
+      }));
+      seedActivityItem(database, "account-a", islandItem({
+        sessionId: "finished",
+        phase: "completed",
+        eventKind: "agent_completed",
+        boardColumn: "done",
+      }));
+      database.native.prepare(`
+        update attention_items set seen_at = '2026-07-28T08:00:30.000Z' where user_id = 'account-a'
+      `).run();
+
+      const contentState = await contentStateFor(database, "account-a");
+      expect(contentState.columns).toEqual({ needsYou: 0, working: 0, waiting: 1, done: 0 });
+    } finally {
+      database.close();
+    }
+  });
+
   it("derives planning from chatActivityMode and never from a phase", async () => {
     const database = new SqliteD1Database();
     try {
@@ -6618,6 +6901,8 @@ describe("Live Activity island tallies", () => {
   });
 
   it("spends an APNs push on a needs-you transition but not on per-turn churn", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-07-28T08:01:00.000Z"));
     const database = new SqliteD1Database();
     const apnsBodies: Array<Record<string, unknown>> = [];
     vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
@@ -6692,6 +6977,7 @@ describe("Live Activity island tallies", () => {
         aps: {
           event: "update",
           "content-state": {
+            columns: { needsYou: 1, working: 1, waiting: 0, done: 0 },
             groups: [
               { group: "needs_you", count: 1 },
               { group: "working", count: 1 },
@@ -6699,8 +6985,31 @@ describe("Live Activity island tallies", () => {
           },
         },
       });
+
+      // A run that starts waiting on CI changes only the quiet counts, so it
+      // waits for the 5-minute window instead of spending a push now...
+      seedActivityItem(database, "account-a", islandItem({
+        sessionId: "turn-2",
+        phase: "running",
+        activityTier: "signal",
+        boardColumn: "waiting",
+        waitingReason: "ci",
+        contentFingerprint: "content-turn-2-waiting",
+      }));
+      vi.setSystemTime(new Date("2026-07-28T08:03:00.000Z"));
+      await attentionTestInternals.deliverAccountLiveActivity(env, "account-a");
+      expect(apnsBodies).toHaveLength(2);
+
+      // ...and goes out once the window has passed, so every count settles.
+      vi.setSystemTime(new Date("2026-07-28T08:07:00.000Z"));
+      await attentionTestInternals.deliverAccountLiveActivity(env, "account-a");
+      expect(apnsBodies).toHaveLength(3);
+      expect(apnsBodies[2]).toMatchObject({
+        aps: { "content-state": { columns: { needsYou: 1, working: 0, waiting: 1, done: 0 } } },
+      });
     } finally {
       database.close();
+      vi.useRealTimers();
     }
   });
 });
@@ -6756,6 +7065,39 @@ describe("Activity state-group conformance", () => {
       } as never)).toBe(relayGroup(testCase.expected));
     });
   }
+});
+
+/**
+ * The relay's copy of the four-state rule every Activity surface counts by,
+ * pinned to the same fixture as the TypeScript and Swift copies. Canonical
+ * source: `activityBoardColumn` in
+ * apps/desktop/src/shared/attention/activityBoardColumn.ts.
+ */
+describe("Activity board-column conformance", () => {
+  type BoardColumnCase = {
+    name: string;
+    kind: "agent" | "pull_request";
+    phase: string;
+    tier: "signal" | "ambient" | "idle" | null;
+    boardColumn: string | null;
+    expected: string | null;
+  };
+  const fixture = JSON.parse(readFileSync(
+    new URL(
+      "../../desktop/src/shared/attention/activityBoardColumn.cases.json",
+      import.meta.url,
+    ),
+    "utf8",
+  )) as { cases: BoardColumnCase[] };
+
+  it.each(fixture.cases)("matches the canonical table: $name", (testCase) => {
+    expect(liveActivityTestInternals.activityBoardColumn({
+      kind: testCase.kind,
+      phase: testCase.phase,
+      ...(testCase.tier ? { activityTier: testCase.tier } : {}),
+      ...(testCase.boardColumn ? { boardColumn: testCase.boardColumn } : {}),
+    } as never)).toBe(testCase.expected);
+  });
 });
 
 describe("cross-machine project identity", () => {
@@ -6869,6 +7211,136 @@ describe("cross-machine project identity", () => {
     } finally {
       database.close();
       vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe("custom notifications", () => {
+  async function apnsEnv(): Promise<Omit<Partial<AttentionRelayEnv>, "DB">> {
+    return {
+      APNS_KEY: await generateTestP8(),
+      APNS_KEY_ID: "NOTIFYKEY1",
+      APNS_TEAM_ID: "NOTIFYTEAM",
+    };
+  }
+
+  function captureApns(): Array<{ token: string; payload: Record<string, unknown> }> {
+    const sent: Array<{ token: string; payload: Record<string, unknown> }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (!url.startsWith("https://api.sandbox.push.apple.com/3/device/")) {
+        throw new Error(`Unexpected fetch: ${url}`);
+      }
+      sent.push({
+        token: url.slice(url.lastIndexOf("/") + 1),
+        payload: JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>,
+      });
+      return new Response(null, { status: 200, headers: { "apns-id": `notify-${sent.length}` } });
+    }));
+    return sent;
+  }
+
+  it("sends exactly the caller's text to each phone that is not muted, off, or in quiet hours", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-28T12:00:00.000Z"));
+    const database = new SqliteD1Database();
+    const sent = captureApns();
+    const userId = "account-notify";
+    try {
+      insertAttentionDevice(database, { userId, deviceId: "phone-on", apnsToken: "aa".repeat(32) });
+      insertAttentionDevice(database, { userId, deviceId: "phone-off", apnsToken: "bb".repeat(32) });
+      insertAttentionDevice(database, { userId, deviceId: "phone-quiet", apnsToken: "cc".repeat(32) });
+      insertAttentionDevice(database, { userId, deviceId: "phone-private", apnsToken: "ee".repeat(32) });
+      insertAttentionDevice(database, { userId: "someone-else", deviceId: "phone-other", apnsToken: "dd".repeat(32) });
+      database.native.prepare(`
+        insert into attention_preferences(user_id, payload_json, updated_at)
+        values (?, ?, '2026-07-28T08:00:00.000Z')
+      `).run(userId, JSON.stringify({
+        devices: {
+          "phone-off": { notificationsEnabled: false },
+          "phone-quiet": { quietHours: { enabled: true, start: "11:00", end: "13:00", timeZone: "UTC" } },
+          "phone-private": { hideDetails: true },
+        },
+        machines: { "muted-mac": { notificationsEnabled: false } },
+      }));
+      const env = await apnsEnv();
+
+      const response = await accountRoute(database, userId, "POST", "/attention/account/notify", {
+        title: "  Deploy finished  ",
+        body: "ADE 1.4.2 is live · 3 checks green",
+        deepLink: "ade://session/abc?accountMachineKey=m1",
+        machineKey: "studio-mac",
+      }, { env });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ ok: true, devices: 4, delivered: 2, skipped: 2, failed: 0 });
+      expect(sent).toHaveLength(2);
+      const byToken = new Map(sent.map((push) => [push.token, push.payload]));
+      expect(byToken.get("aa".repeat(32))).toMatchObject({
+        aps: { alert: { title: "Deploy finished", body: "ADE 1.4.2 is live · 3 checks green" } },
+        deepLink: "ade://session/abc?accountMachineKey=m1",
+      });
+      // Hide previews: the title still arrives, the body never reaches the
+      // lock screen, and the tap still opens the link.
+      const hidden = byToken.get("ee".repeat(32)) as { aps: { alert: Record<string, unknown> } } | undefined;
+      expect(hidden?.aps.alert).toEqual({ title: "Deploy finished" });
+      expect(hidden).toMatchObject({ deepLink: "ade://session/abc?accountMachineKey=m1" });
+
+      // A muted machine silences its notifications on every phone.
+      const muted = await accountRoute(database, userId, "POST", "/attention/account/notify", {
+        title: "From the muted Mac",
+        machineKey: "muted-mac",
+      }, { env });
+      expect(await muted.json()).toMatchObject({ ok: true, delivered: 0, skipped: 4 });
+      expect(sent).toHaveLength(2);
+    } finally {
+      database.close();
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
+  });
+
+  it("refuses bad input and stops at the hourly cap with a retry hint", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-28T12:00:00.000Z"));
+    const database = new SqliteD1Database();
+    const sent = captureApns();
+    const userId = "account-notify-cap";
+    try {
+      insertAttentionDevice(database, { userId, deviceId: "phone", apnsToken: "ee".repeat(32) });
+      const env = await apnsEnv();
+      const notify = (body: unknown) =>
+        accountRoute(database, userId, "POST", "/attention/account/notify", body, { env });
+
+      for (const bad of [
+        {},
+        { title: "x".repeat(65) },
+        { title: "ok", body: "y".repeat(161) },
+        { title: "ok", deepLink: "https://example.com/phish" },
+      ]) {
+        expect((await notify(bad)).status).toBe(400);
+      }
+      expect(sent).toHaveLength(0);
+
+      for (let index = 0; index < 60; index += 1) {
+        expect((await notify({ title: `Ping ${index}` })).status).toBe(200);
+      }
+      vi.setSystemTime(new Date("2026-07-28T12:20:00.000Z"));
+      const limited = await notify({ title: "One too many" });
+      expect(limited.status).toBe(429);
+      expect(limited.headers.get("retry-after")).toBe(String(40 * 60));
+      expect(await limited.json()).toMatchObject({ ok: false, retryAfterSeconds: 40 * 60 });
+      expect(sent).toHaveLength(60);
+
+      // Pruning after a quiet spell must not reopen the hour early.
+      vi.setSystemTime(new Date("2026-07-28T12:40:00.000Z"));
+      await pruneRelayState(makeAttentionEnv(database) as unknown as PushRelayEnv);
+      expect((await notify({ title: "Still capped" })).status).toBe(429);
+      vi.setSystemTime(new Date("2026-07-28T13:00:01.000Z"));
+      expect((await notify({ title: "New hour" })).status).toBe(200);
+    } finally {
+      database.close();
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
     }
   });
 });

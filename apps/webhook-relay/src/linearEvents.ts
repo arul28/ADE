@@ -3,6 +3,7 @@
 
 import {
   type AccountMappingRow,
+  claimPeriodicRun,
   constantTimeEqual,
   contentLengthExceedsLimit,
   type CursorRow,
@@ -221,6 +222,8 @@ export function handleLinearOAuthCallback(request: Request): Response {
 }
 
 async function pruneOldLinearEvents(env: RelayEnv): Promise<void> {
+  // Retention is measured in days; sweeping on every webhook only adds reads.
+  if (!claimPeriodicRun(env.DB, "prune-linear-events", 10 * 60 * 1000)) return;
   const days = Number(env.EVENT_RETENTION_DAYS ?? DEFAULT_RETENTION_DAYS);
   const retentionDays = Number.isFinite(days) ? Math.max(1, Math.trunc(days)) : DEFAULT_RETENTION_DAYS;
   const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();

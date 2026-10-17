@@ -377,6 +377,34 @@ final class ActivityWidgetPresentationTests: XCTestCase {
         XCTAssertNil(state.moreCount)
     }
 
+    /// The four tiles read `columns`; a frame from a relay that predates it is
+    /// counted from `groups`, then from the run roster. A bad count reads as
+    /// zero instead of dropping the whole frame.
+    func testContentStateResolvesColumnsWithFallbacks() throws {
+        let cases: [(name: String, json: String, expected: [ActivityBoardColumn: Int])] = [
+            ("published columns win over groups",
+             #"{"updatedAt":1,"activeCount":9,"runs":[],"columns":{"needsYou":2,"working":5,"waiting":1,"done":12},"groups":[{"group":"working","count":40}]}"#,
+             [.needsYou: 2, .working: 5, .waiting: 1, .done: 12]),
+            ("a bad or missing column count reads as zero",
+             #"{"updatedAt":1,"activeCount":0,"runs":[],"columns":{"needsYou":"x","working":-3,"done":4}}"#,
+             [.needsYou: 0, .working: 0, .waiting: 0, .done: 4]),
+            ("an older relay's groups fold into the columns",
+             #"{"updatedAt":1,"activeCount":9,"runs":[],"groups":[{"group":"needs_you","count":2},{"group":"failed","count":1},{"group":"planning","count":1},{"group":"working","count":3},{"group":"idle","count":4},{"group":"done","count":2}]}"#,
+             [.needsYou: 3, .working: 4, .waiting: 0, .done: 6]),
+            ("without groups, the roster plus its hidden live runs is counted",
+             #"{"updatedAt":1,"activeCount":4,"runs":[{"id":"a","title":"A","phase":"waiting_for_input"},{"id":"b","title":"B","phase":"running"}]}"#,
+             [.needsYou: 1, .working: 3, .waiting: 0, .done: 0]),
+        ]
+
+        for testCase in cases {
+            let state = try JSONDecoder().decode(
+                ADEAgentRunsAttributes.ContentState.self,
+                from: Data(testCase.json.utf8)
+            )
+            XCTAssertEqual(state.resolvedColumns, testCase.expected, testCase.name)
+        }
+    }
+
     // MARK: - Fixtures
 
     private func makeItem(

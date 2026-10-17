@@ -1,7 +1,7 @@
 import { memo } from "react";
 import { MagnifyingGlass } from "@phosphor-icons/react";
 
-import { COLORS, SANS_FONT } from "../../lanes/laneDesignTokens";
+import { COLORS, SANS_FONT, fgTint } from "../../lanes/laneDesignTokens";
 
 export type GitHubPrSearchInputProps = {
   value: string;
@@ -22,8 +22,8 @@ export const GitHubPrSearchInput = memo(function GitHubPrSearchInput({
         gap: 8,
         height: 28,
         padding: "0 9px",
-        background: "rgba(255,255,255,0.03)",
-        border: "1px solid rgba(255,255,255,0.06)",
+        background: COLORS.cardBg,
+        border: `1px solid ${fgTint(6)}`,
         borderRadius: 8,
       }}
     >

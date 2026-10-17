@@ -1,6 +1,7 @@
 import { DEMO_RECORDING_STOP_TIMEOUT_MS } from "../../../shared/demoVideo/demoContract";
 import { LEDGER_WORKER_TIMEOUT_MS } from "../usage/usageLedgerWorkerClient";
 import { WINDOWS_DESKTOP_TYPE_MAX_TIMEOUT_MS } from "../../../shared/types/macDesktop";
+import { ACP_PROVIDER_UPDATE_RUN_BUDGET_MS } from "../ai/acpProviderUpdate";
 
 export const LOCAL_RUNTIME_PROJECT_TIMEOUT_MS = 120_000;
 
@@ -25,6 +26,15 @@ export const USAGE_REFRESH_HISTORY_TIMEOUT_MS = LEDGER_WORKER_TIMEOUT_MS + 30_00
  */
 export const USAGE_REFRESH_HISTORY_REMOTE_TRANSPORT_TIMEOUT_MS =
   LEDGER_WORKER_TIMEOUT_MS + 15_000;
+
+/**
+ * ADE's one-click update of a provider CLI runs an npm or vendor install, then
+ * re-reads the version. On the 30s default the renderer reported a failure
+ * while the install went on, and "Try again" could start a second install
+ * against the same CLI. Each budget outward is longer than the one inside it.
+ */
+export const ACP_PROVIDER_UPDATE_REMOTE_TRANSPORT_TIMEOUT_MS = ACP_PROVIDER_UPDATE_RUN_BUDGET_MS + 10_000;
+export const ACP_PROVIDER_UPDATE_TIMEOUT_MS = ACP_PROVIDER_UPDATE_RUN_BUDGET_MS + 20_000;
 
 /**
  * A cold simulator launch is boot (90s) + xcodebuild (600s) + install (180s)
@@ -78,6 +88,54 @@ export const IOS_SIMULATOR_DEVICE_CLEANUP_REMOTE_TRANSPORT_TIMEOUT_MS =
 export const LOCAL_RUNTIME_ACTION_TIMEOUT_MS = 30_000;
 export const LOCAL_RUNTIME_FILE_ACTION_TIMEOUT_MS = 8_000;
 export const LOCAL_RUNTIME_SYNC_TIMEOUT_MS = 30_000;
+
+/**
+ * The longest a machine-scope sync STATUS READ waits for the local runtime
+ * before the desktop answers for itself.
+ *
+ * `sync.getLocalStatus` is the only source for the This-Machine card and the
+ * app shell's connection indicator, and the renderer re-reads it on every
+ * `sync-status` broadcast. A healthy answer is milliseconds — the whole family
+ * is local file work — so the read has no work to wait out, only a wedged
+ * runtime to stop waiting on. On the 30s IPC default the two budgets were the
+ * same 30s and the IPC timer, which starts first (at handler entry, before the
+ * runtime is even connected), always won: it replaced the read's own legible
+ * reason with `IPC handler for 'ade.sync.getLocalStatus' timed out after
+ * 30000ms` for six users across 1.2.104–1.2.107, so the synthesized
+ * machine-only snapshot the handler already builds for an unreachable runtime
+ * never got the chance to answer. Bounding the read here restores the chain's
+ * invariant —
+ * every budget expires monotonically outward, inner before outer — with 3.75x
+ * of headroom under that IPC timer for building the fallback snapshot and
+ * delivering it. 8s matches LOCAL_RUNTIME_FILE_ACTION_TIMEOUT_MS, the existing
+ * budget for "a local runtime read that must not hold its caller".
+ *
+ * This budget is the RPC transport's clock, and it starts only once the
+ * connection is up: `callSync` awaits `connect()` before it sends, so a cold
+ * runtime start (up to 10s on macOS, 30s on Windows) never spends this budget.
+ * Counting connect against it produced a false "listener not bound" card and
+ * a degraded reading on every cold start.
+ *
+ * The whole handler is still capped at LOCAL_RUNTIME_SYNC_STATUS_OVERALL_TIMEOUT_MS,
+ * which covers connect. A read that loses either race lands in the
+ * already-designed degraded state (buildMachineOnlySyncSnapshot), whose
+ * `degradedReason` tells the renderer's shared reader to back off and retry —
+ * never in a snapshot that claims the machine is healthy or reachable.
+ */
+export const LOCAL_RUNTIME_SYNC_STATUS_READ_TIMEOUT_MS = 8_000;
+
+/**
+ * The firm cap on one machine-scope sync status read, connect included.
+ *
+ * It must stay under the 30s IPC timer for `sync.getLocalStatus`, so the
+ * handler's own fallback answer, not the opaque IPC timeout, is what the
+ * renderer sees. 25s leaves 5s for building that fallback and delivering it.
+ * On macOS it sits well clear of a cold connect (10s) plus a read (8s). On
+ * Windows a cold connect may legitimately take up to 30s, which this cap cuts
+ * short; that case still returns the honest degraded snapshot rather than the
+ * IPC timeout. Raising it would need the IPC timer raised too.
+ */
+export const LOCAL_RUNTIME_SYNC_STATUS_OVERALL_TIMEOUT_MS = 25_000;
 export const LOCAL_RUNTIME_ACTION_REGISTRY_TIMEOUT_MS = 30_000;
 export const LOCAL_RUNTIME_EVENT_POLL_TIMEOUT_MS = 2_000;
 /**
@@ -156,6 +214,8 @@ export const WINDOWS_DESKTOP_TYPE_REMOTE_TRANSPORT_TIMEOUT_MS = WINDOWS_DESKTOP_
 const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = new Map([
   ["ai.piLoginStart", PI_LOGIN_IPC_TIMEOUT_MS],
   ["ai.cursorAuthLogin", CURSOR_LOGIN_IPC_TIMEOUT_MS],
+  // See ACP_PROVIDER_UPDATE_TIMEOUT_MS.
+  ["ai.acpProviderUpdate", ACP_PROVIDER_UPDATE_TIMEOUT_MS],
   // Lane deletion can legitimately include a 60s worktree removal followed by
   // a 45s remote-branch deletion. The old 30s client budget reported failure
   // while the daemon kept mutating state to a successful completion.
@@ -186,6 +246,12 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   // daemon later created an empty session (ADE-122 class).
   ["ai.openCursorCloudChat", 120_000],
   ["ai.createCursorCloudRun", 120_000],
+  // An issue with pictures runs `gh issue create --attach` (up to 120s), then
+  // a PATCH, a read and a sub-issue link. Timing out first would report a
+  // failure while the issue is created, and a retry would file it twice.
+  ["github.createIssue", 180_000],
+  // Up to 10 MB of picture bytes to Linear's storage.
+  ["linear_issue_tracker.uploadFile", 120_000],
   // See USAGE_REFRESH_HISTORY_TIMEOUT_MS: in runtime-backed (production) mode
   // the Usage page's Refresh reaches the ledger worker through this action.
   ["usage.refreshHistory", USAGE_REFRESH_HISTORY_TIMEOUT_MS],

@@ -10,9 +10,8 @@
  * Neither 0.22.3 nor 0.25.0 advertises `session/close`, and a dummy
  * `session/close` is -32601 on both. Ending a chat therefore ends the process
  * (one process per session), using the private-process posture required by
- * this dialect. Copilot 1.0.82 has the same missing-close wire and keeps
- * `close_request` + pool by product call; Qwen follows the handshake so leaked
- * agent sessions cannot pile up in a pooled process.
+ * this dialect. Qwen follows the handshake so leaked agent sessions cannot pile
+ * up in a pooled process.
  *
  * Cancel is a **notification**, not a request: both versions answer a
  * `session/cancel` request with -32601 and register only the notification

@@ -245,6 +245,15 @@ describe("projectIconResolver", () => {
     readdirSpy.mockRestore();
   });
 
+  it("finds an icon added to an existing folder on the next read", () => {
+    const root = makeProjectRoot();
+    writeFile(root, "public/robots.txt", "User-agent: *");
+    expect(resolveProjectIconPath(root)).toBeNull();
+
+    const iconPath = writeFile(root, "public/favicon.svg", "<svg>favicon</svg>");
+    expect(resolveProjectIconPath(root)).toBe(iconPath);
+  });
+
   it("uses an Electron nativeImage thumbnail for mobile when one can be decoded", () => {
     const root = makeProjectRoot();
     writeFile(root, "icon.png", PNG_DATA);

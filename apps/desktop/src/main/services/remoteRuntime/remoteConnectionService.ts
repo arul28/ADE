@@ -99,7 +99,18 @@ type RemoteConnectionServiceOptions = {
    * do not participate in account lifecycle.
    */
   getAuthorizedAccountOwnerId?: () => Promise<string | null>;
+  /**
+   * Open a connection only when the person presses Connect in this app. A
+   * remote host keeps one connection per paired device, and every ADE on this
+   * computer shares the device pairing in ~/.ade, so a dev desktop that
+   * reconnected saved machines on its own took them from the installed ADE,
+   * which then (rightly) waits for the person instead of fighting back.
+   */
+  explicitConnectOnly?: boolean;
 };
+
+const EXPLICIT_CONNECT_ONLY_MESSAGE =
+  "This development ADE connects to other machines only when you press Connect, so the installed ADE keeps its connections.";
 
 export type AccountMachineReconciliationResult = {
   removedTargetIds: string[];
@@ -270,6 +281,8 @@ function sameStatusValue(a: unknown, b: unknown): boolean {
 export class RemoteConnectionService {
   private readonly statusById = new Map<string, StatusPatch>();
   private readonly manuallyDisconnectedTargetIds = new Set<string>();
+  /** With `explicitConnectOnly`: machines the person connected in this app. */
+  private readonly explicitlyConnectedTargetIds = new Set<string>();
   private readonly automaticReconnectFailuresByTargetId = new Map<
     string,
     number
@@ -296,6 +309,26 @@ export class RemoteConnectionService {
     private readonly options: RemoteConnectionServiceOptions = {},
     private readonly pairedStore: DesktopPairedMachineStore = new DesktopPairedMachineStore(),
   ) {
+    // A call that finds the machine gone reconnects on its own, without
+    // `connect()`. The machine may have restarted on a new version (an update
+    // it was just sent), so what it reports now replaces what it reported at
+    // the last explicit Connect. Without this the list kept the old version
+    // and called a finished update "didn't apply".
+    this.pool.onEntryConnected((targetId, result) => {
+      // A connect that finishes after the machine was removed or disconnected
+      // by hand must not write it back.
+      if (!this.registry.get(targetId) || this.manuallyDisconnectedTargetIds.has(targetId)) return;
+      this.mergeStatus(targetId, {
+        version: result.version,
+        arch: result.arch,
+        ...(result.route ? { route: result.route } : {}),
+        ...(result.capabilities ? { capabilities: result.capabilities } : {}),
+        // Warnings come from the version too ("missing capabilities … update
+        // ADE on that machine"); an updated machine must not keep the old ones.
+        compatibilityWarnings: result.compatibilityWarnings,
+        connectedAt: result.target.lastConnectedAt ?? Date.now(),
+      });
+    });
     this.pool.onEntryEvicted((targetId, error) => {
       const current = this.statusById.get(targetId);
       if (current?.state !== "connected" && current?.state !== "connecting") {
@@ -305,6 +338,7 @@ export class RemoteConnectionService {
       // opens a new channel, so the machine is still reachable.
       if (isPairedRuntimeRpcOverBudgetError(error)) return;
       if (isPairedRuntimeSupersededError(error)) {
+        this.explicitlyConnectedTargetIds.delete(targetId);
         // Another client with this computer's pairing took the connection.
         // Reconnecting would close it in turn, and the two would trade the
         // machine every few seconds. Held in memory only: nothing is written
@@ -394,6 +428,7 @@ export class RemoteConnectionService {
       this.pool.disconnect(targetId);
       this.statusById.delete(targetId);
       this.manuallyDisconnectedTargetIds.delete(targetId);
+      this.explicitlyConnectedTargetIds.delete(targetId);
       this.clearAutomaticReconnectState(targetId);
       this.latencyProbeTargetIds.delete(targetId);
       this.pairedFallbackSshTrustByTargetId.delete(targetId);
@@ -730,6 +765,7 @@ export class RemoteConnectionService {
   }
 
   startAutoconnect(): void {
+    if (this.options.explicitConnectOnly) return;
     for (const target of this.registry.list()) {
       if (!shouldAutoconnectTarget(target)) continue;
       if (this.manuallyDisconnectedTargetIds.has(target.id)) continue;
@@ -754,7 +790,15 @@ export class RemoteConnectionService {
     options: RemoteConnectionConnectOptions = {},
   ): Promise<RemoteRuntimeConnectResult> {
     const target = this.requireTarget(targetId);
+    // Taken before the first await so a cancel (disconnect or remove) that
+    // lands during the ownership check still stops this attempt.
+    const disconnectGeneration = this.getDisconnectGeneration(target.id);
     await this.assertAccountOwnershipAuthorized(target);
+    if (!this.isDisconnectGenerationCurrent(target.id, disconnectGeneration)) {
+      throw new Error(
+        "Remote target was disconnected before ADE finished connecting.",
+      );
+    }
     this.pairedFallbackSshTrustByTargetId.delete(target.id);
     const explicit = options.explicit === true;
     if (explicit) {
@@ -763,7 +807,6 @@ export class RemoteConnectionService {
     } else {
       this.assertImplicitReconnectAllowed(target.id);
     }
-    const disconnectGeneration = this.getDisconnectGeneration(target.id);
     this.mergeStatus(target.id, {
       state: "connecting",
       lastAttemptedAt: Date.now(),
@@ -810,6 +853,7 @@ export class RemoteConnectionService {
       });
       this.clearAutomaticReconnectState(connectedResult.target.id);
       this.pairedFallbackSshTrustByTargetId.delete(connectedResult.target.id);
+      if (explicit) this.explicitlyConnectedTargetIds.add(connectedResult.target.id);
       return connectedResult;
     } catch (error) {
       if (!this.isDisconnectGenerationCurrent(target.id, disconnectGeneration)) {
@@ -836,6 +880,7 @@ export class RemoteConnectionService {
   ): void {
     let persistenceError: unknown = null;
     if (options.manual) {
+      this.explicitlyConnectedTargetIds.delete(targetId);
       this.manuallyDisconnectedTargetIds.add(targetId);
       if (this.registry.get(targetId)) {
         try {
@@ -1476,6 +1521,9 @@ export class RemoteConnectionService {
   }
 
   private assertImplicitReconnectAllowed(targetId: string): void {
+    if (this.options.explicitConnectOnly && !this.explicitlyConnectedTargetIds.has(targetId)) {
+      throw new Error(EXPLICIT_CONNECT_ONLY_MESSAGE);
+    }
     const target = this.registry.get(targetId);
     if (
       this.manuallyDisconnectedTargetIds.has(targetId) ||

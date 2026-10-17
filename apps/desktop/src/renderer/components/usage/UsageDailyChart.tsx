@@ -6,16 +6,11 @@ import { usePrefersMoreContrast } from "../../hooks/usePrefersMoreContrast";
 import { usePrefersReducedMotion } from "../../hooks/usePrefersReducedMotion";
 import type { ThemeId } from "../../state/appStore";
 import { cn } from "../ui/cn";
-import { ClaudeLogo, CodexLogo } from "../terminals/ToolLogos";
-import {
-  USAGE_HAIRLINE_CLASS,
-  USAGE_NUMERIC_CLASS,
-  USAGE_OVERLAY_CLASS,
-  USAGE_TEXT,
-  USAGE_TYPE,
-} from "./usageDesign";
+import { USAGE_OVERLAY_CLASS } from "./usageDesign";
+import { humanizeProvider } from "./usageProviderNames";
 import {
   USAGE_CHART_COMBINED_ID,
+  bucketDayColumns,
   buildDayColumns,
   buildGeometry,
   formatMetric,
@@ -26,6 +21,7 @@ import {
   type UsageChartMetric,
   type UsageChartSeries,
 } from "./usageDailyChartModel";
+import "./usageSurfaces.css";
 
 /**
  * The model is re-exported here so `UsageDailyChart` stays the one import path
@@ -77,45 +73,16 @@ function useElementWidth<T extends HTMLElement>(fallback: number) {
 // Legend
 // ---------------------------------------------------------------------------
 
-const BRAND_MARKS: Record<string, React.FC<{ size?: number; className?: string }>> = {
-  claude: ClaudeLogo,
-  anthropic: ClaudeLogo,
-  codex: CodexLogo,
-  openai: CodexLogo,
-};
-
-function SeriesMark({
-  series,
-  theme,
-  size = 14,
-}: {
-  series: UsageChartSeries;
-  theme: ThemeId;
-  size?: number;
-}) {
-  const color = seriesColor(series, theme);
-  const Brand = series.merged ? undefined : BRAND_MARKS[series.id.toLowerCase()];
-  if (Brand) {
-    // The brand mark carries the series colour, so it is the legend swatch —
-    // no separate row of colour dots to keep in sync with the paths.
-    return (
-      <span
-        className="inline-flex shrink-0 items-center justify-center"
-        style={{ color, width: size, height: size }}
-      >
-        <Brand size={size} />
-      </span>
-    );
-  }
-  return (
-    <span
-      aria-hidden
-      className="inline-block shrink-0 rounded-[3px]"
-      style={{ width: size, height: size, backgroundColor: color }}
-    />
-  );
+function seriesLabel(series: UsageChartSeries): string {
+  if (series.merged || series.id === USAGE_CHART_COMBINED_ID) return series.label;
+  return humanizeProvider(series.label);
 }
 
+/**
+ * Legend chips: swatch · name · range total. Each chip is the series' key and
+ * its headline number at once, and hovering one lights its band in the chart
+ * (and the matching row elsewhere on the page).
+ */
 export function UsageChartLegend({
   series,
   metric,
@@ -134,26 +101,20 @@ export function UsageChartLegend({
   const activeSeriesId = resolveHighlightedSeriesId(series, highlightedProvider);
   if (series.length === 0) return null;
   return (
-    <ul className={cn("flex flex-wrap items-center gap-x-4 gap-y-2", className)}>
+    <ul className={cn("usage-legend-chips", className)}>
       {series.map((entry) => {
         const dimmed = activeSeriesId != null && activeSeriesId !== entry.id;
         return (
           <li
             key={entry.id}
-            className="flex items-center gap-2 transition-opacity"
-            style={{ opacity: dimmed ? 0.35 : 1 }}
+            className="usage-legend-chip"
+            data-dimmed={dimmed ? "true" : undefined}
             onMouseEnter={onHighlight ? () => onHighlight(entry.id) : undefined}
             onMouseLeave={onHighlight ? () => onHighlight(null) : undefined}
           >
-            <SeriesMark series={entry} theme={theme} />
-            <span className={cn(USAGE_TEXT.detail, "text-fg")}>
-              {entry.label}
-            </span>
-            <span
-              className={cn(USAGE_TEXT.detail, "text-muted-fg", USAGE_NUMERIC_CLASS)}
-            >
-              {formatMetric(entry.total, metric)}
-            </span>
+            <i aria-hidden style={{ background: seriesColor(entry, theme) }} />
+            <span>{seriesLabel(entry)}</span>
+            <b>{formatMetric(entry.total, metric)}</b>
           </li>
         );
       })}
@@ -171,8 +132,9 @@ export type UsageDailyChartProps = {
   metric: UsageChartMetric;
   theme: ThemeId;
   /**
-   * Driven by the parent from hovering a pace bar elsewhere on the page.
-   * Changing it must only change opacity — never re-derive geometry.
+   * Driven by the parent from hovering a legend chip or a cost row elsewhere
+   * on the page. Changing it must only change opacity — never re-derive
+   * geometry.
    */
   highlightedProvider?: string | null;
   height?: number;
@@ -180,16 +142,32 @@ export type UsageDailyChartProps = {
   ariaLabel?: string;
 };
 
-const DRAW_KEYFRAMES = `
-@keyframes ade-usage-chart-draw {
-  from { stroke-dashoffset: var(--ade-usage-chart-len); }
-  to { stroke-dashoffset: 0; }
-}
+const FADE_KEYFRAMES = `
 @keyframes ade-usage-chart-fade {
   from { opacity: 0; }
   to { opacity: 1; }
 }
 `;
+
+/** Five evenly spaced x labels; fewer when there are fewer points. */
+function xTickIndexes(count: number): number[] {
+  if (count <= 0) return [];
+  const want = Math.min(count, 5);
+  const indexes = Array.from({ length: want }, (_, i) =>
+    want === 1 ? 0 : Math.round((i / (want - 1)) * (count - 1)),
+  );
+  return indexes.filter((index, position) => indexes.indexOf(index) === position);
+}
+
+/** Axis labels drop the cents a readout keeps: "$200", not "$200.00". */
+function formatTick(value: number, metric: UsageChartMetric): string {
+  if (metric === "cost" && value >= 10 && value < 1000) return `$${Math.round(value)}`;
+  return formatMetric(value, metric);
+}
+
+function bucketLabel(date: string, span: number): string {
+  return span > 1 ? `Week of ${formatDayShort(date)}` : formatDayShort(date);
+}
 
 export function UsageDailyChart({
   days,
@@ -197,7 +175,7 @@ export function UsageDailyChart({
   metric,
   theme,
   highlightedProvider = null,
-  height = 220,
+  height = 232,
   className,
   ariaLabel,
 }: UsageDailyChartProps) {
@@ -205,60 +183,60 @@ export function UsageDailyChart({
   const moreContrast = usePrefersMoreContrast();
   const { ref, width } = useElementWidth<HTMLDivElement>(720);
   const [hoverIndex, setHoverIndex] = React.useState<number | null>(null);
+  const gradientPrefix = React.useId().replace(/:/g, "");
 
   // Data reduction. Keyed on (days, daily, metric) only — hover and highlight
   // are deliberately absent so neither can invalidate it.
-  const { columns, providers } = React.useMemo(
+  const { columns: dayColumns, providers } = React.useMemo(
     () => buildDayColumns(days, daily, metric),
     [days, daily, metric],
   );
 
+  // Series are ranked over the real days, then long ranges fold into weeks
+  // for drawing. Ranking first keeps the legend totals exact.
   const series = React.useMemo(
-    () => selectTopSeries(columns, providers),
-    [columns, providers],
+    () => selectTopSeries(dayColumns, providers),
+    [dayColumns, providers],
   );
+  const { columns, span } = React.useMemo(() => bucketDayColumns(dayColumns), [dayColumns]);
 
   // Geometry. Depends on the reduced data plus the measured box — never on
-  // hoverIndex or highlightedProvider. This is the whole performance
-  // requirement: moving the cursor across 90 days must not rebuild 5 path
-  // strings 90 times.
+  // hoverIndex or highlightedProvider, so moving the cursor across the plot
+  // never rebuilds the path strings.
   const geometry = React.useMemo(
     () => buildGeometry(columns, series, width, height),
     [columns, series, width, height],
   );
 
-  const dayCount = columns.length;
+  const dayCount = dayColumns.length;
+  const pointCount = columns.length;
   const hovered = hoverIndex != null ? columns[hoverIndex] : undefined;
 
   const handleMove = React.useCallback(
     (event: React.MouseEvent<HTMLDivElement>) => {
-      if (dayCount === 0) return;
+      if (pointCount === 0) return;
       const rect = event.currentTarget.getBoundingClientRect();
-      const x = event.clientX - rect.left;
-      const plotX = x - geometry.plot.left;
-      const step = dayCount === 1 ? geometry.plot.width : geometry.plot.width / (dayCount - 1);
+      const plotX = event.clientX - rect.left - geometry.plot.left;
+      const step = pointCount === 1 ? geometry.plot.width : geometry.plot.width / (pointCount - 1);
       const index = step <= 0 ? 0 : Math.round(plotX / step);
-      setHoverIndex(Math.min(dayCount - 1, Math.max(0, index)));
+      setHoverIndex(Math.min(pointCount - 1, Math.max(0, index)));
     },
-    [dayCount, geometry.plot.left, geometry.plot.width],
+    [pointCount, geometry.plot.left, geometry.plot.width],
   );
 
   const handleLeave = React.useCallback(() => setHoverIndex(null), []);
 
-  // Resolved once per render: which drawn band, if any, the page-wide highlight
-  // belongs to. See `resolveHighlightedSeriesId`.
   const activeSeriesId = resolveHighlightedSeriesId(series, highlightedProvider);
 
-  const fillOpacity = moreContrast ? 0.3 : 0.14;
-  const strokeWidth = moreContrast ? 2.5 : 1.75;
+  const topOpacity = moreContrast ? 0.5 : 0.32;
+  const strokeWidth = moreContrast ? 2.25 : 1.5;
 
   const label = ariaLabel
     ?? `Daily ${metric === "cost" ? "cost" : "token"} usage across ${dayCount} ${
       dayCount === 1 ? "day" : "days"
     }${
       // The single synthetic "all providers" band names no provider, so the
-      // label omits the provider count for it. Read off the series rather than
-      // `combined`, which is false for an empty range that still plots one band.
+      // label omits the provider count for it.
       series.length === 1 && series[0]?.id === USAGE_CHART_COMBINED_ID
         ? ""
         : ` for ${series.length} ${series.length === 1 ? "provider" : "providers"}`
@@ -266,16 +244,7 @@ export function UsageDailyChart({
 
   if (dayCount === 0) {
     return (
-      <div
-        ref={ref}
-        className={cn(
-          USAGE_TEXT.detail,
-          "flex items-center justify-center rounded-lg border bg-card text-muted-fg",
-          USAGE_HAIRLINE_CLASS,
-          className,
-        )}
-        style={{ height }}
-      >
+      <div ref={ref} className={cn("usage-chart-empty", className)} style={{ height }}>
         No days in range
       </div>
     );
@@ -283,12 +252,13 @@ export function UsageDailyChart({
 
   const hoverX = hoverIndex != null ? geometry.xs[hoverIndex] : undefined;
   const readoutRight = hoverX != null && hoverX > geometry.plot.left + geometry.plot.width / 2;
+  const gradientId = (index: number) => `${gradientPrefix}-g${index}`;
 
   return (
-    <div className={cn("flex flex-col gap-3", className)}>
+    <div className={cn("flex flex-col", className)}>
       <div
         ref={ref}
-        className="relative w-full"
+        className="usage-chart relative w-full"
         style={{ height }}
         onMouseMove={handleMove}
         onMouseLeave={handleLeave}
@@ -302,10 +272,18 @@ export function UsageDailyChart({
           preserveAspectRatio="none"
           className="block overflow-visible"
         >
-          {!reducedMotion ? <style>{DRAW_KEYFRAMES}</style> : null}
+          {!reducedMotion ? <style>{FADE_KEYFRAMES}</style> : null}
+          <defs>
+            {series.map((entry, index) => (
+              <linearGradient key={entry.id} id={gradientId(index)} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor={seriesColor(entry, theme)} stopOpacity={topOpacity} />
+                <stop offset="100%" stopColor={seriesColor(entry, theme)} stopOpacity={0} />
+              </linearGradient>
+            ))}
+          </defs>
 
-          {/* Gridlines + y ticks */}
-          {geometry.ticks.map((tick) => {
+          {/* Muted dashed grid + mono y ticks. The baseline is solid. */}
+          {geometry.ticks.map((tick, index) => {
             const y = geometry.plot.top + geometry.plot.height * (1 - tick / geometry.max);
             return (
               <g key={tick}>
@@ -314,20 +292,13 @@ export function UsageDailyChart({
                   x2={geometry.plot.left + geometry.plot.width}
                   y1={y}
                   y2={y}
-                  stroke="currentColor"
-                  strokeWidth={1}
-                  className="text-border"
+                  className={index === 0 ? "usage-chart-baseline" : "usage-chart-grid"}
                 />
-                <text
-                  x={geometry.plot.left - 8}
-                  y={y + 3}
-                  textAnchor="end"
-                  fill="currentColor"
-                  className={cn("text-muted-fg", USAGE_NUMERIC_CLASS)}
-                  style={{ fontSize: USAGE_TYPE.micro }}
-                >
-                  {formatMetric(tick, metric)}
-                </text>
+                {index % 2 === 0 ? (
+                  <text x={geometry.plot.left - 10} y={y + 3} textAnchor="end" className="usage-chart-tick">
+                    {formatTick(tick, metric)}
+                  </text>
+                ) : null}
               </g>
             );
           })}
@@ -350,11 +321,10 @@ export function UsageDailyChart({
               <path
                 key={`fill-${path.id}`}
                 d={path.area}
-                fill={seriesColor(entry, theme)}
-                fillOpacity={fillOpacity}
+                fill={`url(#${gradientId(index)})`}
                 stroke="none"
                 style={{
-                  opacity: dimmed ? 0.12 : 1,
+                  opacity: dimmed ? 0.1 : 1,
                   transition: reducedMotion ? undefined : "opacity 140ms ease",
                   animation: reducedMotion ? undefined : "ade-usage-chart-fade 260ms ease-out",
                 }}
@@ -374,6 +344,7 @@ export function UsageDailyChart({
                 strokeWidth={strokeWidth}
                 strokeLinecap="round"
                 strokeLinejoin="round"
+                vectorEffect="non-scaling-stroke"
                 style={{
                   opacity: dimmed ? 0.15 : 1,
                   transition: reducedMotion ? undefined : "opacity 140ms ease",
@@ -390,10 +361,7 @@ export function UsageDailyChart({
                 x2={hoverX}
                 y1={geometry.plot.top}
                 y2={geometry.plot.baseline}
-                stroke="currentColor"
-                strokeWidth={1}
-                className="text-muted-fg"
-                opacity={0.5}
+                className="usage-chart-guide"
               />
               {series.map((entry) => {
                 const value = hovered ? seriesValue(hovered, entry) : 0;
@@ -407,31 +375,24 @@ export function UsageDailyChart({
                     cy={y}
                     r={3}
                     fill={seriesColor(entry, theme)}
-                    stroke="currentColor"
-                    strokeWidth={1.5}
-                    className="text-bg"
+                    className="usage-chart-dot"
                   />
                 );
               })}
             </g>
           ) : null}
 
-          {/* x ticks: first / middle / last only — one label per day is unreadable. */}
-          {[0, Math.floor((dayCount - 1) / 2), dayCount - 1]
-            .filter((index, position, all) => all.indexOf(index) === position)
-            .map((index) => (
-              <text
-                key={`x-${index}`}
-                x={geometry.xs[index]}
-                y={geometry.plot.baseline + 14}
-                textAnchor={index === 0 ? "start" : index === dayCount - 1 ? "end" : "middle"}
-                fill="currentColor"
-                className={cn("text-muted-fg", USAGE_NUMERIC_CLASS)}
-                style={{ fontSize: USAGE_TYPE.micro }}
-              >
-                {formatDayShort(columns[index]!.date)}
-              </text>
-            ))}
+          {xTickIndexes(pointCount).map((index, position, all) => (
+            <text
+              key={`x-${index}`}
+              x={geometry.xs[index]}
+              y={geometry.plot.baseline + 16}
+              textAnchor={position === 0 ? "start" : position === all.length - 1 ? "end" : "middle"}
+              className="usage-chart-tick"
+            >
+              {formatDayShort(columns[index]!.date)}
+            </text>
+          ))}
         </svg>
 
         {/*
@@ -441,49 +402,30 @@ export function UsageDailyChart({
         */}
         {hovered ? (
           <div
-            className={cn(
-              "pointer-events-none absolute z-10 min-w-[9rem] px-3 py-2",
-              USAGE_OVERLAY_CLASS,
-            )}
+            className={cn("usage-chart-readout pointer-events-none absolute z-10", USAGE_OVERLAY_CLASS)}
             style={{
               top: geometry.plot.top,
               left: readoutRight ? undefined : (hoverX ?? 0) + 12,
               right: readoutRight ? Math.max(0, width - (hoverX ?? 0) + 12) : undefined,
             }}
           >
-            <div className={cn(USAGE_TEXT.micro, "text-muted-fg")}>
-              {formatDayShort(hovered.date)}
-            </div>
-            <div className="mt-1 flex flex-col gap-1">
+            <div className="kit-eyebrow">{bucketLabel(hovered.date, span)}</div>
+            <div className="usage-chart-readout-rows">
               {series.map((entry) => {
                 const value = seriesValue(hovered, entry);
                 if (value <= 0) return null;
                 return (
-                  <div key={entry.id} className="flex items-center justify-between gap-3">
-                    <span className="flex items-center gap-1.5">
-                      <SeriesMark series={entry} theme={theme} size={10} />
-                      <span className={cn(USAGE_TEXT.detail, "text-fg")}>
-                        {entry.label}
-                      </span>
-                    </span>
-                    <span
-                      className={cn(USAGE_TEXT.detail, "text-fg", USAGE_NUMERIC_CLASS)}
-                    >
-                      {formatMetric(value, metric)}
-                    </span>
+                  <div key={entry.id} className="usage-chart-readout-row">
+                    <i aria-hidden style={{ background: seriesColor(entry, theme) }} />
+                    <span>{seriesLabel(entry)}</span>
+                    <b>{formatMetric(value, metric)}</b>
                   </div>
                 );
               })}
             </div>
-            <div className="mt-1.5 flex items-center justify-between gap-3 border-t border-[color:color-mix(in_srgb,var(--color-border)_60%,transparent)] pt-1.5">
-              <span className={cn(USAGE_TEXT.micro, "text-muted-fg")}>
-                Total
-              </span>
-              <span
-                className={cn(USAGE_TEXT.detail, "text-fg", USAGE_NUMERIC_CLASS)}
-              >
-                {formatMetric(hovered.total, metric)}
-              </span>
+            <div className="usage-chart-readout-row" data-total="true">
+              <span>Total</span>
+              <b>{formatMetric(hovered.total, metric)}</b>
             </div>
           </div>
         ) : null}

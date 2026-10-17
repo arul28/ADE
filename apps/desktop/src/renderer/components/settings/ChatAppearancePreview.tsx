@@ -1,3 +1,5 @@
+import { PROVIDER_DISPLAY_NAME } from "../../../shared/providers";
+
 import React from "react";
 import { ChatMarkdown } from "../chat/chatMarkdown";
 import { buildChatAppearanceRootStyle } from "../chat/chatAppearance";
@@ -10,7 +12,11 @@ import {
   CHAT_USER_MESSAGE_CARD_STYLE,
 } from "../chat/chatTranscriptChrome";
 import { ClaudeLogo, CodexLogo, CursorAgentLogo, OpenCodeLogo } from "../terminals/ToolLogos";
-import { DroidLogo, PiLogo } from "../shared/ProviderLogos";
+import { DroidLogo, PiLogo, ProviderLogo } from "../shared/ProviderLogos";
+
+function MuseLogo({ size, className }: { size?: number; className?: string }) {
+  return <ProviderLogo family="muse" size={size} className={className} />;
+}
 import { cn } from "../ui/cn";
 import type { ChatChromeTint, ChatShellGeometry, ChatTranscriptDensity, ThemeId } from "../../state/appStore";
 
@@ -97,11 +103,12 @@ export const PREVIEW_PROVIDER_META = {
   cursor: { name: "Cursor", Logo: CursorAgentLogo },
   droid: { name: "Droid", Logo: DroidLogo },
   pi: { name: "Pi", Logo: PiLogo },
+  muse: { name: PROVIDER_DISPLAY_NAME.muse, Logo: MuseLogo },
 } as const;
 
 export type PreviewProviderKey = keyof typeof PREVIEW_PROVIDER_META;
 
-export const PREVIEW_PROVIDER_KEYS: readonly PreviewProviderKey[] = ["codex", "claude", "opencode", "cursor", "droid", "pi"];
+export const PREVIEW_PROVIDER_KEYS: readonly PreviewProviderKey[] = ["codex", "claude", "muse", "opencode", "cursor", "droid", "pi"];
 
 /** Sample model line per column — structure matches `AgentChatMessageList` “done” usage row. */
 const PREVIEW_USAGE_MODEL: Record<
@@ -114,12 +121,13 @@ const PREVIEW_USAGE_MODEL: Record<
   cursor: { Logo: CursorAgentLogo, label: "cursor · auto" },
   droid: { Logo: DroidLogo, label: "droid · factory" },
   pi: { Logo: PiLogo, label: "pi · xai / grok" },
+  muse: { Logo: MuseLogo, label: "Muse Spark 1.3" },
 };
 
 /** Mirrors `event.type === "done"` usage footer in `AgentChatMessageList` (completed turn). */
 function PreviewUsageRow({ provider }: { provider: PreviewProviderKey }) {
   const { Logo, label } = PREVIEW_USAGE_MODEL[provider];
-  const statusTone = "border-white/[0.04] bg-[#141220]/60 text-fg/45";
+  const statusTone = "border-fg/[0.04] bg-surface-recessed/60 text-fg/45";
   return (
     <div className="flex w-full min-w-0 justify-center">
       <div
@@ -188,7 +196,7 @@ function PreviewColumn({
         autoHeight
         header={<PreviewShellHeader provider={provider} />}
         className={cn(
-          "w-full min-w-0 border border-white/[0.06] shadow-[var(--chat-shell-shadow)]",
+          "w-full min-w-0 border border-fg/[0.06] shadow-[var(--chat-shell-shadow)]",
           "rounded-[var(--chat-radius-shell)]",
         )}
       >

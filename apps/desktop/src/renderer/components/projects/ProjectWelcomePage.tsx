@@ -1,13 +1,18 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useNavigate } from "react-router-dom";
+import { BROWSER_TAB_ROUTE, browserTabAvailable } from "../browser/browserTab";
+import { HomeAppButton, openMusicApp } from "../music/musicApps";
+import { musicTabAvailable } from "../music/musicTab";
 import {
   AppWindow,
   ArrowCounterClockwise,
   ChatCircleDots,
   FolderOpen,
-  GearSix,
   GitMerge,
+  Globe,
+  MusicNotes,
   Plus,
+  SlidersHorizontal,
   Trash,
 } from "@phosphor-icons/react";
 import { cloneTargetFor, projectMenuSections } from "./projectMenuEntries";
@@ -34,11 +39,14 @@ import {
 import { isWebClientMode } from "../../lib/webClientMode";
 import { useOptionalWebWorkspace, useWebMachines } from "../../webclient/workspace/WebWorkspaceContext";
 import { webRecentProjects } from "../../webclient/workspace/webWorkspaceModel";
-import {
-  RecentProjectRow,
-  type WebRowChrome,
-} from "./ProjectWelcomeWebRows";
-import { WelcomeSideColumn } from "./ProjectWelcomeSidePanels";
+import { ProjectsCard } from "./ProjectWelcomeProjectsCard";
+import { HomeAction, WelcomeHero, useMachineRows } from "./ProjectWelcomeHome";
+import { HomeWidgetGrid, useHomeGridMetrics } from "../home/HomeWidgetGrid";
+import { gridMetrics } from "../home/homeGridPack";
+import { HomeDataContext, HomeRenderWidgetContext } from "../home/homeData";
+import { useHomeLayoutStore } from "../home/homeLayout";
+import { useHomePageWiring } from "../home/useHomePageWiring";
+import { useBackgroundContextMenu } from "../../scene/BackgroundContextMenu";
 import {
   WebAddProjectNotice,
   WebZeroMachines,
@@ -51,6 +59,10 @@ import type {
   RemoteRuntimeConnectionState,
 } from "../../../shared/types";
 import "./ProjectWelcomePage.css";
+
+// Edit mode's toolbar, gallery and appearance sliders: loaded the first time
+// someone customizes the page, never on the boot path.
+const HomeEditTools = lazy(() => import("../home/HomeEditTools"));
 
 function recentKey(rp: RecentProjectSummary): string {
   return recentProjectLocationKey(rp);
@@ -70,7 +82,6 @@ export function ProjectWelcomePage() {
   const theme = useAppStore((s) => s.theme);
   const projectBinding = useAppStore((s) => s.projectBinding);
   const cancelNewTab = useAppStore((s) => s.cancelNewTab);
-  const setStandaloneSettingsOpen = useAppStore((s) => s.setStandaloneSettingsOpen);
   const [recentProjects, setRecentProjects] = useState<RecentProjectSummary[]>(
     [],
   );
@@ -123,6 +134,9 @@ export function ProjectWelcomePage() {
   // The side column folds into a tabbed strip when the page itself is narrow
   // (the page can sit in a pane, so this is the page's width, not the window's).
   const [narrow, setNarrow] = useState(false);
+  // The grid's width: as many columns as the page holds (homeGridPack), so
+  // the hero lines up with the grid at every window size.
+  const [gridWidth, setGridWidth] = useState<number | null>(null);
   useEffect(() => {
     // Measure the page, not the body: the body narrows itself in the
     // one-column layout, which would latch this state on.
@@ -131,10 +145,27 @@ export function ProjectWelcomePage() {
     const observer = new ResizeObserver((entries) => {
       const width = entries[0]?.contentRect.width ?? element.clientWidth;
       setNarrow(width < 880);
+      setGridWidth(gridMetrics(Math.max(0, width - 40), 0).width);
     });
     observer.observe(element);
     return () => observer.disconnect();
   }, []);
+  // The width the grid actually packed to (fewer, centred columns on a wide
+  // window), so the hero's buttons end where the cards end.
+  const packedGridWidth = useHomeGridMetrics((s) => s.packedWidth);
+  const editingHome = useHomeLayoutStore((s) => s.editing);
+  const hiddenApps = useHomeLayoutStore((s) => s.layout.hiddenApps);
+  const setEditingHome = useHomeLayoutStore((s) => s.setEditing);
+  const homeAppearance = useHomeLayoutStore((s) => s.layout.appearance);
+  useEffect(() => {
+    if (!editingHome) return undefined;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !event.defaultPrevented) setEditingHome(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [editingHome, setEditingHome]);
+  useEffect(() => () => setEditingHome(false), [setEditingHome]);
   const forgetTimerRef = useRef<number | null>(null);
   const dragDepthRef = useRef(0);
 
@@ -192,6 +223,8 @@ export function ProjectWelcomePage() {
   // before the first relay dial and fills in as machines come up.
   // ---------------------------------------------------------------------
   const webMachines = useWebMachines();
+  const machineRows = useMachineRows(webMode, remoteSnapshot, webMachines);
+  const machinesOnline = machineRows.filter((row) => row.dot === "online").length;
   const webMachineByKey = useMemo(
     () => new Map(webMachines.map((machine) => [machine.key, machine])),
     [webMachines],
@@ -583,27 +616,145 @@ export function ProjectWelcomePage() {
     focusRowButton(next);
   }, [focusRowButton]);
 
-  const hasProjects = visibleProjectGroups.length > 0;
+  const browserAvailable = !webMode && browserTabAvailable();
+  const musicAvailable = !webMode && musicTabAvailable();
   const showSide = !webMode || webMachines.length > 0;
+
+
+
+  // The page's own card look, when the user set one in edit mode. Scoped to
+  // this page: the same tokens drive every other kit card in the app.
+  const appearanceStyle = useMemo((): CSSProperties | undefined => {
+    const style: Record<string, string> = {};
+    if (homeAppearance.cardOpacity != null) {
+      style["--kit-card-bg"] = `color-mix(in srgb, var(--color-bg) ${homeAppearance.cardOpacity}%, transparent)`;
+    }
+    if (homeAppearance.cardBlur != null) {
+      style["--kit-card-blur"] = homeAppearance.cardBlur > 0 ? `blur(${homeAppearance.cardBlur}px) saturate(1.25)` : "none";
+    }
+    return Object.keys(style).length > 0 ? (style as CSSProperties) : undefined;
+  }, [homeAppearance.cardBlur, homeAppearance.cardOpacity]);
+  // Memoized, so the widget renderer (and the gallery's previews) stay stable between page renders.
+  const projectsCard = useCallback((preview: boolean) => (
+    <ProjectsCard
+      preview={preview}
+      rows={rows}
+      count={visibleProjectGroups.length}
+      webMode={webMode}
+      listRef={listRef}
+      onListKeyDown={handleListKeyDown}
+      connectionByTarget={connectionByTarget}
+      connectingKeys={connectingKeys}
+      pendingForgetKeys={pendingForgetKeys}
+      openingRowKey={openingRowKey}
+      openRootPath={project?.rootPath ?? null}
+      projectBinding={projectBinding}
+      webMachineByKey={webMachineByKey}
+      onOpen={handleOpen}
+      onTogglePin={handleTogglePin}
+      onForget={handleForget}
+      onMerge={setMergeTarget}
+      onRowMenu={setRowMenu}
+    />
+  ), [
+    connectingKeys,
+    connectionByTarget,
+    handleForget,
+    handleListKeyDown,
+    handleOpen,
+    handleTogglePin,
+    openingRowKey,
+    pendingForgetKeys,
+    project?.rootPath,
+    projectBinding,
+    rows,
+    visibleProjectGroups.length,
+    webMachineByKey,
+    webMode,
+  ]);
+
+
+  const { homeData, headline, openHeadlineTarget, renderWidget } = useHomePageWiring({
+    navigate,
+    project,
+    webMode,
+    machineRows,
+    remoteSnapshot,
+    visibleProjectGroups,
+    renderProjects: projectsCard,
+  });
+
+  const backgroundPageEntries = useMemo((): ContextMenuEntry[] => {
+    const entries: ContextMenuEntry[] = [
+      {
+        kind: "item",
+        key: "add-project",
+        label: "Add project…",
+        icon: Plus,
+        disabled: webMode && !activeWebMachine,
+        onSelect: () => (webMode ? setWebAddProjectNoticeOpen(true) : setProjectBrowserOpen(true)),
+      },
+      {
+        kind: "item",
+        key: "chat",
+        label: "Chat without a project",
+        icon: ChatCircleDots,
+        disabled: webMode && !activeWebMachine,
+        onSelect: () => (webMode ? openWebChats() : navigate("/chats")),
+      },
+    ];
+    entries.push({
+      kind: "item",
+      key: "customize-home",
+      label: "Customize home page",
+      icon: SlidersHorizontal,
+      onSelect: () => setEditingHome(true),
+    });
+    if (musicAvailable) {
+      entries.push(
+        { kind: "item", key: "apple-music", label: "Open Apple Music", icon: MusicNotes, onSelect: () => openMusicApp("appleMusic") },
+        { kind: "item", key: "spotify", label: "Open Spotify", icon: MusicNotes, onSelect: () => openMusicApp("spotify") },
+      );
+    }
+    if (browserAvailable) {
+      entries.push({
+        kind: "item",
+        key: "browser",
+        label: "Open the browser",
+        icon: Globe,
+        onSelect: () => navigate(BROWSER_TAB_ROUTE),
+      });
+    }
+    return entries;
+  }, [activeWebMachine, browserAvailable, musicAvailable, navigate, openWebChats, setEditingHome, webMode]);
+  const backgroundMenu = useBackgroundContextMenu(backgroundPageEntries);
 
   return (
     <div
       ref={pageRef}
       className="ade-welcome"
       onDragEnter={(event) => {
+        // Only a folder from outside; a widget being moved in edit mode is not one.
+        if (!event.dataTransfer.types.includes("Files")) return;
         event.preventDefault();
         dragDepthRef.current += 1;
         setIsDragOver(true);
       }}
       onDragOver={(event) => {
+        if (!event.dataTransfer.types.includes("Files")) return;
         event.preventDefault();
         event.dataTransfer.dropEffect = "copy";
       }}
-      onDragLeave={() => {
+      onDragLeave={(event) => {
+        if (!event.dataTransfer.types.includes("Files")) return;
         dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
         if (dragDepthRef.current === 0) setIsDragOver(false);
       }}
-      onDrop={handleDropFolder}
+      onDrop={(event) => {
+        if (!event.dataTransfer.types.includes("Files")) return;
+        handleDropFolder(event);
+      }}
+      onContextMenu={backgroundMenu.onContextMenu}
       data-ade-web-welcome={webMode ? "true" : undefined}
       style={{
         // The window gradient paints over this base; see the backdrop below.
@@ -651,58 +802,83 @@ export function ProjectWelcomePage() {
         </div>
       ) : null}
 
-      {/* Header: logo + the two ways in */}
-      <div className="ade-welcome-head">
-        <img
-          src="./logo.png"
-          alt="ADE Logo"
-          className="ade-welcome-logo"
-          data-ade-welcome-motion={webMode ? "true" : undefined}
-          style={webMode
-            ? { animation: "ade-welcome-mark 620ms cubic-bezier(0.16, 1, 0.3, 1) both" }
-            : undefined}
+      <HomeDataContext.Provider value={homeData}>
+      <HomeRenderWidgetContext.Provider value={renderWidget}>
+      <div
+        className="ade-home"
+        data-narrow={narrow ? "true" : undefined}
+        data-editing={editingHome ? "true" : undefined}
+        style={{
+          ...(gridWidth ? { "--welcome-grid-max": `${gridWidth}px` } : {}),
+          ...(packedGridWidth ? { "--welcome-hero-max": `${packedGridWidth}px` } : {}),
+        } as CSSProperties}
+      >
+        <WelcomeHero
+          headline={headline}
+          onHeadline={openHeadlineTarget}
+          machinesOnline={machinesOnline}
+          machinesTotal={machineRows.length}
+          actions={editingHome ? (
+            <Suspense fallback={null}>
+              <HomeEditTools onDone={() => setEditingHome(false)} />
+            </Suspense>
+          ) : (
+            <>
+              <HomeAction
+                icon={Plus}
+                primary
+                label="Add project"
+                tour="project.welcomeAddButton"
+                disabled={webMode && !activeWebMachine}
+                title={
+                  webMode && !activeWebMachine
+                    ? "Connect a machine first — projects are added on the machine that hosts them."
+                    : undefined
+                }
+                onClick={() => {
+                  if (!webMode) {
+                    setProjectBrowserOpen(true);
+                    return;
+                  }
+                  setWebAddProjectNoticeOpen(true);
+                }}
+              />
+              <HomeAction
+                icon={ChatCircleDots}
+                label={webMode && activeWebMachine ? `Chat on ${activeWebMachine.name}` : "Chat without a project"}
+                disabled={webMode && !activeWebMachine}
+                onClick={() => (webMode ? openWebChats() : navigate("/chats"))}
+              />
+              {/* The desktop's own browser and Apple Music, each a tab of its
+                  own, as square app-icon buttons beside the text actions. */}
+              {browserAvailable ? (
+                <button
+                  type="button"
+                  className="ade-home-action ade-home-icon-action"
+                  aria-label="Browser"
+                  title="Browser"
+                  onClick={() => navigate(BROWSER_TAB_ROUTE)}
+                >
+                  <Globe size={17} aria-hidden />
+                </button>
+              ) : null}
+              {musicAvailable && !hiddenApps.includes("appleMusic") ? <HomeAppButton app="appleMusic" /> : null}
+              {musicAvailable && !hiddenApps.includes("spotify") ? <HomeAppButton app="spotify" /> : null}
+              {showSide ? (
+                <button
+                  type="button"
+                  className="ade-home-action ade-home-customize"
+                  aria-label="Customize home page"
+                  title="Customize home page"
+                  onClick={() => setEditingHome(true)}
+                >
+                  <SlidersHorizontal size={15} aria-hidden />
+                </button>
+              ) : null}
+            </>
+          )}
         />
 
-        <div className="ade-welcome-actions">
-          <button
-            type="button"
-            className="ade-welcome-button"
-            data-variant="primary"
-            data-remote-ready={connectedRemoteCount > 0 ? "true" : undefined}
-            data-tour="project.welcomeAddButton"
-            disabled={webMode && !activeWebMachine}
-            title={
-              webMode && !activeWebMachine
-                ? "Connect a machine first — projects are added on the machine that hosts them."
-                : undefined
-            }
-            onClick={() => {
-              if (!webMode) {
-                setProjectBrowserOpen(true);
-                return;
-              }
-              setWebAddProjectNoticeOpen(true);
-            }}
-          >
-            <Plus size={15} weight="bold" />
-            Add project
-          </button>
-          <button
-            type="button"
-            className="ade-welcome-button"
-            data-variant="secondary"
-            disabled={webMode && !activeWebMachine}
-            onClick={() => (webMode ? openWebChats() : navigate("/chats"))}
-          >
-            <ChatCircleDots size={15} weight="regular" />
-            Chat without a project
-            {webMode && activeWebMachine ? (
-              <span style={{ color: COLORS.textMuted, fontWeight: 400 }}>
-                on {activeWebMachine.name}
-              </span>
-            ) : null}
-          </button>
-        </div>
         {webMode && webAddProjectNoticeOpen && activeWebMachine ? (
           <WebAddProjectNotice
             machineName={activeWebMachine.name}
@@ -725,126 +901,17 @@ export function ProjectWelcomePage() {
           />
         ) : null}
         {webZeroMachines ? <WebZeroMachines notice={webZeroMachines} /> : null}
+
+        <HomeWidgetGrid
+          single={!showSide}
+          style={appearanceStyle}
+          renderWidget={renderWidget}
+        />
       </div>
+      </HomeRenderWidgetContext.Provider>
+      </HomeDataContext.Provider>
 
-      <div
-        className="ade-welcome-body"
-        data-single={showSide ? undefined : "true"}
-        data-narrow={showSide && narrow ? "true" : undefined}
-      >
-        <section className="ade-welcome-plane ade-welcome-main" aria-label="Recent projects">
-          {hasProjects ? (
-            <div
-              id="ade-welcome-project-list"
-              ref={listRef}
-              className="ade-welcome-list"
-              onKeyDown={handleListKeyDown}
-            >
-              {rows.map(({ group, rp, key }) => {
-                const primary = group.primary;
-                const isRemote = rp.kind === "remote" && Boolean(rp.remote);
-                const targetId = rp.remote?.targetId;
-                const baseState = isRemote && targetId
-                  ? (connectionByTarget.get(targetId) ?? "idle")
-                  : null;
-                const connectionState: RemoteRuntimeConnectionState | null =
-                  connectingKeys.has(key) ? "connecting" : baseState;
-                const isOpenLocal =
-                  !isRemote && project?.rootPath === rp.rootPath;
-                const isOpenRemote =
-                  isRemote
-                  && projectBinding?.kind === "remote"
-                  && projectBinding.targetId === rp.remote?.targetId
-                  && projectBinding.projectId === rp.remote?.projectId;
-                const canMerge = !isRemote && Boolean(rp.worktreeOf) && rp.exists;
-                const machine = webMode && targetId ? webMachineByKey.get(targetId) ?? null : null;
-                // The connect/open stages belong to the row that was clicked.
-                // Every other row on the same machine sees the same machine-level
-                // "connecting", so it has to be suppressed there explicitly —
-                // otherwise one click spins the whole list.
-                const isOpeningRow = openingRowKey === key;
-                const web: WebRowChrome | null = machine
-                  ? {
-                      status: isOpeningRow
-                        ? "connecting"
-                        : machine.status === "connecting"
-                          ? "available"
-                          : machine.status,
-                      connectStage: isOpeningRow
-                        ? machine.connectStage ?? "Dialing relay…"
-                        : null,
-                      stale: machine.stale,
-                    }
-                  : null;
-                return (
-                  <RecentProjectRow
-                    key={group.id}
-                    rp={rp}
-                    connectionState={connectionState}
-                    isOpen={isOpenLocal || isOpenRemote}
-                    isForgetting={pendingForgetKeys.has(group.id)}
-                    busy={openingRowKey != null && !isOpeningRow}
-                    onOpen={() => handleOpen(rp)}
-                    onTogglePin={() => void handleTogglePin(group)}
-                    onForget={() => handleForget(group)}
-                    onMerge={canMerge ? () => setMergeTarget(rp) : undefined}
-                    onContextMenu={(event) => {
-                      event.preventDefault();
-                      setRowMenu({ x: event.clientX, y: event.clientY, key });
-                    }}
-                    primary={primary}
-                    locations={group.locations}
-                    onSelectMachine={(location) => handleOpen(location.summary)}
-                    lastActiveAt={group.lastOpenedAt}
-                    web={web}
-                  />
-                );
-              })}
-            </div>
-          ) : (
-            <div className="ade-welcome-empty">
-              <strong>No projects yet</strong>
-              {webMode
-                ? "Projects you open on your machines show up here."
-                : "Add a folder or clone a repository to get started. You can also drop a folder anywhere on this page."}
-            </div>
-          )}
-        </section>
-
-        {showSide ? (
-          <WelcomeSideColumn
-            webMode={webMode}
-            remoteSnapshot={remoteSnapshot}
-            webMachines={webMachines}
-            narrow={narrow}
-          />
-        ) : null}
-      </div>
-
-      {/* The way into Settings with no project open. Bottom-left, so it reads
-          as an app-level door rather than one of the project actions above.
-          The hosted client keeps its own navigation. */}
-      {webMode ? null : (
-        <footer className="ade-welcome-foot">
-          <button
-            type="button"
-            className="ade-welcome-button"
-            data-variant="secondary"
-            data-tour="project.settings"
-            onClick={() => {
-              // Leave the new-tab state first: it is what is holding this page
-              // in front, so a bare navigate would leave Settings behind it.
-              cancelNewTab();
-              setStandaloneSettingsOpen(true);
-              navigate("/settings");
-            }}
-          >
-            <GearSix size={15} weight="regular" />
-            Settings
-          </button>
-        </footer>
-      )}
-
+      {backgroundMenu.menu}
       <ContextMenu
         menu={rowMenu}
         entries={rowMenuEntries}

@@ -1,4 +1,7 @@
+import { normalizeCompactionSettings } from "../../../shared/compactionSettings";
 import fs from "node:fs";
+import { parseGitHubIssueCreateInput, parseGitHubIssueUpdate } from "../../../shared/laneGitHubIssue";
+import { parseGitHubIssueListState } from "../../../shared/githubIssueList";
 import nodePath from "node:path";
 import { randomUUID } from "node:crypto";
 import type { AdeRuntime } from "../../../../../ade-cli/src/bootstrap";
@@ -12,6 +15,13 @@ import {
   startOAuth as startOpenCodeOAuth,
   type OpenCodeAuthDeps,
 } from "../opencode/openCodeAuthService";
+import {
+  activateOpenCodeAccount,
+  connectOpenCodeCloudLogin,
+  listOpenCodeAccounts,
+  removeOpenCodeAccount,
+  renameOpenCodeAccount,
+} from "../opencode/openCodeAccounts";
 import {
   addPiAuthStatusListener,
   cancelPiLogin,
@@ -45,6 +55,9 @@ import {
 } from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
 import type {
   AutomationManualTriggerRequest,
+  AutomationTestCleanupResult,
+  AutomationTestPlan,
+  AutomationTestRequest,
   AutomationIngressEventRecord,
   AutomationIngressStatus,
   AutomationRun,
@@ -52,14 +65,27 @@ import type {
   AutomationRunListArgs,
   AutomationRuleSummary,
   AutomationScheduledCleanup,
+  AutomationWebhookTestRequest,
+  AutomationWebhookEndpoint,
+  AutomationWebhookDeliverySummary,
+  AutomationWebhookDelivery,
+  AutomationWebhookTestResult,
   AutomationSaveDraftRequest,
   AutomationSaveDraftResult,
 } from "../../../shared/types/automations";
-import type {
-  AttentionPreferenceScope,
-  AttentionPreferences,
-  AttentionPresence,
+import {
+  CUSTOM_NOTIFICATION_HOURLY_LIMIT,
+  customNotificationProblem,
+  type AttentionPreferenceScope,
+  type AttentionPreferences,
+  type AttentionPresence,
 } from "../../../shared/types/attention";
+import { normalizeCustomNotificationLink } from "../../../shared/customNotificationLink";
+import { deriveProjectId } from "../../../../../ade-cli/src/services/projects/projectRegistry";
+import {
+  PushRelayNotifyRateLimitedError,
+  PushRelayRequestError,
+} from "../../../../../ade-cli/src/services/push/pushRelayClient";
 import type { ComputerUseOwnerSnapshotArgs } from "../../../shared/types/computerUseArtifacts";
 import { buildMacDesktopDomainService } from "../macDesktop/macDesktopActionDomain";
 import { normalizeExternalSessionDetailArgs } from "../externalSessions/externalSessionDetail";
@@ -77,8 +103,11 @@ import type {
   AgentChatParallelLaunchState,
   AgentChatSetParallelLaunchStateArgs,
   AgentChatTurnFileDiff,
-  PromptStashCreateArgs,
-  PromptStashDeleteArgs,
+  DraftClaimArgs,
+  DraftCreateArgs,
+  DraftDeleteArgs,
+  DraftGetArgs,
+  DraftUpdateArgs,
 } from "../../../shared/types/chat";
 import type { AutomationRule } from "../../../shared/types/config";
 import { isAcpChatProvider } from "../../../shared/types/chat";
@@ -86,15 +115,30 @@ import { collectAcpProviderDiagnostics, runAcpProviderUpdate } from "../ai/acpPr
 import { stripHostOnlyChatMetadata } from "../../../shared/chatAutoResume";
 import { areAutomationsEnabledForPackagedState } from "../../../shared/automationAvailability";
 import type { LinearIngressStatus } from "../automations/linearIngressService";
+import type { AutomationWebhookTriggerConfig } from "../../../shared/types/config";
+import {
+  buildWebhookAutomationDraft,
+  listWebhookAutomations,
+  webhookSetupGuide,
+  webhookTriggersOf,
+  type WebhookAutomationCreateArgs,
+  listProjectSecretNames,
+  type WebhookSetupGuide,
+} from "../automations/webhookAutomationFactory";
+import { defaultAutomationChatModelId } from "../automations/automationService";
+import type { AutomationWebhookListEntry, SessionAttentionSource } from "../../../shared/types";
 import {
   buildPrAiResolutionContextKey,
   isTrackedAgentCliToolType,
 } from "../../../shared/types";
 import {
-  createPromptStash,
-  deletePromptStash,
-  listPromptStashes,
-} from "../chat/promptStashService";
+  claimDraft,
+  createDraft,
+  deleteDraft,
+  getDraft,
+  listDrafts,
+  updateDraft,
+} from "../chat/draftService";
 import type {
   AiConfig,
   ApplyLaneTemplateArgs,
@@ -156,7 +200,6 @@ import {
   parseChatLaunchQueueMessageArgs,
 } from "../chat/chatLaunchArgs";
 import { resolveLaneOverlayContext } from "../lanes/laneOverlayContext";
-import { mergeAiConfig } from "../config/projectConfigService";
 import { appendDiffTruncationNotice, MAX_DIFF_SIDE_TEXT_BYTES } from "../diffs/diffService";
 import { isPathInside } from "../shared/pathCompare";
 import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
@@ -173,10 +216,12 @@ import { parseLinearGraphQLInput } from "../cto/linearGraphQLInput";
 import type { CtoMemoryTags } from "../cto/ctoMemoryService";
 import { launchAgentChatCli } from "../chat/agentChatCliLaunch";
 import { getSourceFaviconService, type ResolveSourceFaviconsArgs } from "../chat/sourceFaviconService";
+import { resolveSmartLinkImage } from "../chat/smartLinkPreviewService";
 import { assertCursorCloudRenameAllowed } from "../../../shared/cursorCloudNaming";
 import { deleteTerminalSessionWithRuntimeCleanup } from "../sessions/deleteTerminalSession";
 import { getMachineProviderLoginRunner } from "../providerAccounts/machineProviderLoginRunner";
 import { refreshProviderAccounts } from "../providerAccounts/refreshProviderAccounts";
+import { removeProviderAccount, signOutProviderAccount } from "../providerAccounts/signOutProviderAccount";
 import { settleTerminalSession } from "../sessions/settleTerminalSession";
 import {
   getSessionLifecycleSettings,
@@ -188,7 +233,15 @@ import {
 } from "../sessions/chatSessionProjection";
 import { createAccountActionDomainService } from "../../../../../ade-cli/src/services/account/accountAuthService";
 import { createProxyActionDomainService } from "../../../../../ade-cli/src/services/proxy/proxyService";
-import { providerAccountAnalyticsCapture } from "../analytics/featureProductAnalytics";
+import {
+  captureSecretRequestedAnalytics,
+  captureNotificationSentAnalytics,
+  captureProviderCliUpdateAnalytics,
+  captureWebhookUrlCreatedAnalytics,
+  captureAutomationTestAnalytics,
+  captureProviderAccountSettingsChange,
+  providerAccountAnalyticsCapture,
+} from "../analytics/featureProductAnalytics";
 
 // The names themselves live in `./domains`, which has no imports, so consumers
 // that need only the vocabulary (the analytics policy) do not have to load this
@@ -216,6 +269,8 @@ import {
 } from "./actionArgs";
 import { createSessionBoardMoveActions } from "./sessionBoardMove";
 import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
+import { requestProjectSecretFromUser } from "../secrets/projectSecretRequest";
+import { isClaudePromptCacheTtl } from "../../../shared/claudePromptCache";
 
 export { ADE_ACTION_DOMAIN_NAMES } from "./domains";
 export type { AdeActionDomain } from "./domains";
@@ -287,6 +342,9 @@ type AutomationsDomainService = {
   deleteRule(args: { id: string }): AutomationRuleSummary[];
   toggleRule(args: { id: string; enabled: boolean }): AutomationRuleSummary[];
   triggerManually(args: AutomationManualTriggerRequest): Promise<AutomationRun>;
+  planTest(args: AutomationTestRequest): Promise<AutomationTestPlan>;
+  runTest(args: AutomationTestRequest): Promise<AutomationRun>;
+  cleanUpTestRun(args: { runId: string }): Promise<AutomationTestCleanupResult>;
   getHistory(args: { id: string; limit?: number }): AutomationRun[];
   listRuns(args?: AutomationRunListArgs): AutomationRun[];
   getRunDetail(args: { runId: string }): Promise<AutomationRunDetail | null>;
@@ -301,7 +359,26 @@ type AutomationsDomainService = {
   linearIngressSetup(): Promise<LinearIngressStatus>;
   linearIngressTeardown(): Promise<LinearIngressStatus>;
   linearIngressPollNow(): Promise<LinearIngressStatus>;
+  webhookCreateEndpoint(args?: { label?: string | null }): Promise<AutomationWebhookEndpoint>;
+  webhookGetEndpoint(args: { hookId: string }): Promise<AutomationWebhookEndpoint>;
+  webhookRotateEndpoint(args: { hookId: string }): Promise<AutomationWebhookEndpoint>;
+  webhookListDeliveries(args: { hookId: string; limit?: number }): AutomationWebhookDeliverySummary[];
+  webhookGetDelivery(args: { id: string }): AutomationWebhookDelivery | null;
+  webhookReplayDelivery(args: { id: string }): Promise<AutomationWebhookDeliverySummary | null>;
+  webhookSendTest(args: AutomationWebhookTestRequest & { config?: AutomationWebhookTriggerConfig | null }): Promise<AutomationWebhookTestResult>;
+  webhookCreateAutomation(args: WebhookAutomationCreateArgs & { callerChatSessionId?: string | null }): Promise<{
+    rule: AutomationRuleSummary | null;
+    hookId: string;
+    setup: WebhookSetupGuide;
+  }>;
+  webhookList(): Promise<AutomationWebhookListEntry[]>;
+  webhookRetire(args: { hookId: string }): Promise<{ hookId: string; retired: boolean; stillUsedBy: string[] }>;
 };
+
+function requireWebhooks(runtime: AdeRuntime) {
+  if (!runtime.automationIngressService) throw new Error("Automation ingress service is not available.");
+  return runtime.automationIngressService.webhooks;
+}
 
 function buildAutomationsDomainService(runtime: AdeRuntime): AutomationsDomainService | null {
   const automationService = runtime.automationService;
@@ -319,6 +396,19 @@ function buildAutomationsDomainService(runtime: AdeRuntime): AutomationsDomainSe
     deleteRule: ({ id }) => automationService.deleteRule({ id }),
     toggleRule: ({ id, enabled }) => automationService.toggle({ id, enabled }),
     triggerManually: (args) => automationService.triggerManually(args),
+    planTest: (args) => automationService.planTest(args),
+    runTest: async (args) => {
+      const mode = args?.mode === "live" ? "live" : "safe";
+      try {
+        const run = await automationService.runTest(args);
+        captureAutomationTestAnalytics({ analytics: runtime.productAnalyticsService, surface: "api", mode, outcome: "completed" });
+        return run;
+      } catch (error) {
+        captureAutomationTestAnalytics({ analytics: runtime.productAnalyticsService, surface: "api", mode, outcome: "failed" });
+        throw error;
+      }
+    },
+    cleanUpTestRun: (args) => automationService.cleanUpTestRun(args),
     getHistory: (args) => automationService.getHistory(args),
     listRuns: (args = {}) => automationService.listRuns(args),
     getRunDetail: ({ runId }) => automationService.getRunDetail({ runId }),
@@ -340,6 +430,72 @@ function buildAutomationsDomainService(runtime: AdeRuntime): AutomationsDomainSe
       const service = requireLinearIngress(runtime);
       await service.pollNow();
       return service.getStatus();
+    },
+    webhookCreateEndpoint: async (args = {}) => {
+      const endpoint = await requireWebhooks(runtime).createEndpoint(args);
+      captureWebhookUrlCreatedAnalytics({ analytics: runtime.productAnalyticsService, surface: "api" });
+      return endpoint;
+    },
+    webhookGetEndpoint: (args) => requireWebhooks(runtime).getEndpoint(args),
+    webhookRotateEndpoint: (args) => requireWebhooks(runtime).rotateEndpoint(args),
+    webhookListDeliveries: (args) => requireWebhooks(runtime).listDeliveries(args),
+    webhookGetDelivery: (args) => requireWebhooks(runtime).getDelivery(args),
+    webhookReplayDelivery: (args) => requireWebhooks(runtime).replayDelivery(args),
+    webhookSendTest: (args) => requireWebhooks(runtime).sendTest(args),
+    webhookCreateAutomation: async (args) => {
+      const webhooks = requireWebhooks(runtime);
+      const endpoint = await webhooks.createEndpoint({ label: args.name ?? null });
+      captureWebhookUrlCreatedAnalytics({ analytics: runtime.productAnalyticsService, surface: "api" });
+      const draft = buildWebhookAutomationDraft({
+        ...args,
+        // A chat creating the rule is its origin; "this chat" is the caller's own chat.
+        originChatSessionId: args.originChatSessionId ?? args.callerChatSessionId ?? null,
+        hookId: endpoint.hookId,
+        // The same default a new automation gets in the builder.
+        defaultModelId: defaultAutomationChatModelId(),
+      });
+      let saved: AutomationSaveDraftResult;
+      try {
+        saved = plannerService.saveDraft({ draft, confirmations: args.confirmations ?? [] });
+      } catch (error) {
+        // Nothing saved: the URL must not linger as an orphan.
+        await webhooks.retireEndpoint(endpoint.hookId).catch(() => false);
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`The webhook automation was not saved: ${message}`);
+      }
+      // The rule and URL exist from here on, so describing them must not fail
+      // the call: a retry would make a second of each. The URL read back falls
+      // back to the one just made, and the trigger to the draft's.
+      const trigger = webhookTriggersOf(saved.rule)[0] ?? webhookTriggersOf(draft)[0]!;
+      const secretName = trigger.signature?.secretName ?? null;
+      return {
+        rule: automationService.list().find((rule) => rule.id === saved.rule!.id) ?? null,
+        hookId: endpoint.hookId,
+        setup: webhookSetupGuide({
+          endpoint: await webhooks.getEndpoint({ hookId: endpoint.hookId }).catch(() => endpoint),
+          trigger,
+          secretSaved: Boolean(secretName && listProjectSecretNames(runtime.projectSecretService).has(secretName)),
+        }),
+      };
+    },
+    webhookList: async () => {
+      const webhooks = requireWebhooks(runtime);
+      return await listWebhookAutomations({
+        rules: automationService.list(),
+        webhooks,
+        projectSecrets: runtime.projectSecretService,
+      });
+    },
+    webhookRetire: async ({ hookId }) => {
+      const id = hookId?.trim();
+      if (!id) throw new Error("hookId is required (wh-…).");
+      const stillUsedBy = automationService.list()
+        .filter((rule) => webhookTriggersOf(rule).some((trigger) => trigger.hookId === id))
+        .map((rule) => rule.name);
+      if (stillUsedBy.length) {
+        throw new Error(`Still used by ${stillUsedBy.join(", ")}. Delete or change that automation first; deleting it retires the URL.`);
+      }
+      return { hookId: id, retired: await requireWebhooks(runtime).retireEndpoint(id), stillUsedBy };
     },
   };
 }
@@ -611,6 +767,11 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
     // icons of domains it already shows. Same resolver as the sync command.
     resolveSourceFavicons: (args?: unknown) =>
       getSourceFaviconService().resolve(asActionRecord(args) as ResolveSourceFaviconsArgs),
+    // Stateless and public-only, like favicons: a link hover card's og:image.
+    resolveSmartLinkImage: (args?: unknown) => {
+      const url = asActionRecord(args).url;
+      return resolveSmartLinkImage({ url: typeof url === "string" ? url : "" });
+    },
     ensureCtoSession: async (args?: { modelId?: string | null; reasoningEffort?: string | null }) => {
       const laneId = await resolvePrimaryLaneId(runtime);
       return agentChatService.ensureIdentitySession({
@@ -833,17 +994,45 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
       const key = agentChatParallelLaunchStateKey(runtime.projectRoot, parentLaneId);
       runtime.db.setJson(key, normalizeAgentChatParallelLaunchState(args?.state ?? null, parentLaneId));
     },
-    listPromptStashes: () => listPromptStashes(runtime.db),
-    createPromptStash: (args?: PromptStashCreateArgs) => {
-      const record = readObjectActionArg(args, "chat.createPromptStash");
-      // The service owns validation for both text and attachment-only stashes.
+    listDrafts: () => listDrafts(runtime.db),
+    getDraft: (args?: DraftGetArgs) => {
+      const record = readObjectActionArg(args, "chat.getDraft");
+      return getDraft(runtime.db, requireNonEmptyString(record.id, "id"));
+    },
+    createDraft: (args?: DraftCreateArgs) => {
+      const record = readObjectActionArg(args, "chat.createDraft");
+      // The service owns validation for both text and attachment-only drafts.
       // Keeping the full object intact is essential on the daemon path: this is
       // the path every runtime-backed desktop uses.
-      return createPromptStash(runtime.db, record);
+      const created = createDraft(runtime.db, record);
+      // A newly armed send should not wait for the periodic sweep to be seen.
+      // Optional on purpose: re-arming is an optimisation, and a service that
+      // cannot do it still picks the row up on its next sweep.
+      agentChatService.refreshDraftScheduler?.();
+      return created;
     },
-    deletePromptStash: (args?: PromptStashDeleteArgs) => {
-      const record = readObjectActionArg(args, "chat.deletePromptStash");
-      return deletePromptStash(runtime.db, requireNonEmptyString(record.id, "id"));
+    deleteDraft: (args?: DraftDeleteArgs) => {
+      const record = readObjectActionArg(args, "chat.deleteDraft");
+      const deleted = deleteDraft(runtime.db, requireNonEmptyString(record.id, "id"));
+      agentChatService.refreshDraftScheduler?.();
+      return deleted;
+    },
+    updateDraft: (args?: DraftUpdateArgs) => {
+      const record = readObjectActionArg(args, "chat.updateDraft");
+      const updated = updateDraft(runtime.db, record);
+      agentChatService.refreshDraftScheduler?.();
+      return updated;
+    },
+    claimDraft: (args?: DraftClaimArgs) => {
+      const record = readObjectActionArg(args, "chat.claimDraft");
+      return claimDraft(runtime.db, requireNonEmptyString(record.id, "id"));
+    },
+    // Delivers the draft as a real user turn now, whatever its fire time. Owned
+    // by the chat service rather than the draft store: sending is a chat
+    // concern, and this is the same path the scheduler uses at a fire time.
+    sendDraftNow: async (args?: { id?: string }) => {
+      const record = readObjectActionArg(args, "chat.sendDraftNow");
+      return await agentChatService.sendDraftNow(requireNonEmptyString(record.id, "id"));
     },
     fileSearch: async (args?: AgentChatFileSearchArgs): Promise<AgentChatFileSearchResult[]> => {
       const sessionId = requireNonEmptyString(args?.sessionId, "sessionId");
@@ -1230,9 +1419,89 @@ function buildComputerUseArtifactsDomainService(runtime: AdeRuntime): OpaqueServ
   };
 }
 
+/**
+ * `ade notify`: a push the caller wrote, to every phone on the account. Open to
+ * agents and automation steps; the relay caps an account at
+ * `CUSTOM_NOTIFICATION_HOURLY_LIMIT` an hour.
+ */
+/**
+ * `attention.sendNotification`, and `notify.send` for `ade notify` (which runs
+ * machine-wide, outside any project). `projectRoot` names the project a chat
+ * or PR link belongs to; it defaults to the runtime's own, and null stamps no
+ * project.
+ */
+export function buildSendNotificationAction(
+  runtime: Pick<AdeRuntime, "accountAuthService" | "projectRoot" | "productAnalyticsService">,
+  send: NonNullable<AdeRuntime["sendCustomNotification"]>,
+  options: { projectRoot?: string | null } = {},
+) {
+  const projectRoot = options.projectRoot === undefined ? runtime.projectRoot : options.projectRoot;
+  return async (args?: { title?: unknown; body?: unknown; open?: unknown }) => {
+    // The link is checked apart from the text: an automation whose trigger
+    // left a link value empty still sends its notification, opening ADE, and
+    // says why the link was left off. `ade notify` refuses a bad link itself.
+    const problem = customNotificationProblem({ title: args?.title, body: args?.body });
+    if (problem) throw new Error(problem);
+    if (args?.open != null && typeof args.open !== "string") {
+      throw new Error("The open link must be text.");
+    }
+    // A process without the account service (desktop automations) learns the
+    // sign-in state from the relay's 401 below instead.
+    if (runtime.accountAuthService && !runtime.accountAuthService.getStatus().signedIn) {
+      throw new Error(
+        "Sign in to ADE first: run `ade login`. Notifications go to the phones on your ADE account.",
+      );
+    }
+    const body = typeof args?.body === "string" ? args.body.trim() : "";
+    const rawOpen = typeof args?.open === "string" ? args.open.trim() : "";
+    const link = rawOpen ? normalizeCustomNotificationLink(rawOpen) : null;
+    try {
+      const result = await send({
+        title: String(args?.title).trim(),
+        body: body || null,
+        deepLink: link?.ok ? link.link : null,
+        // The sender stamps its machine onto a chat or PR link; the project
+        // is this one, by the id every machine derives the same way.
+        projectId: projectRoot ? deriveProjectId(projectRoot) : null,
+      });
+      captureNotificationSentAnalytics({
+        analytics: runtime.productAnalyticsService,
+        surface: "api",
+        outcome: result.devices > 0 && result.failed === 0 ? "completed" : "failed",
+      });
+      return {
+        sent: result.delivered > 0,
+        ...result,
+        ...(link && !link.ok ? { linkSkipped: link.problem } : {}),
+      };
+    } catch (error) {
+      captureNotificationSentAnalytics({
+        analytics: runtime.productAnalyticsService,
+        surface: "api",
+        outcome: error instanceof PushRelayNotifyRateLimitedError ? "skipped_budget" : "failed",
+      });
+      if (error instanceof PushRelayNotifyRateLimitedError) {
+        const minutes = error.retryAfterSeconds ? Math.max(1, Math.ceil(error.retryAfterSeconds / 60)) : null;
+        throw new Error(
+          `This account has sent ${CUSTOM_NOTIFICATION_HOURLY_LIMIT} notifications in the last hour.`
+            + (minutes ? ` Try again in ${minutes} minute${minutes === 1 ? "" : "s"}.` : " Try again later."),
+        );
+      }
+      if (error instanceof PushRelayRequestError && error.status === 401) {
+        throw new Error("Your ADE sign-in did not work. Run `ade login`, then try again.");
+      }
+      throw error;
+    }
+  };
+}
+
 function buildAttentionDomainService(runtime: AdeRuntime): OpaqueService | null {
   const publisher = runtime.pushPublisherService;
-  if (!publisher) return null;
+  if (!publisher) {
+    // Desktop automations run without a publisher; they can still notify.
+    const send = runtime.sendCustomNotification;
+    return send ? { sendNotification: buildSendNotificationAction(runtime, send) } : null;
+  }
   const requireCurrentAccountOwner = (value: unknown): string => {
     const accountOwnerId = typeof value === "string" ? value.trim() : "";
     const status = runtime.accountAuthService?.getStatus();
@@ -1294,6 +1563,8 @@ function buildAttentionDomainService(runtime: AdeRuntime): OpaqueService | null 
         args.preferences,
       );
     },
+    sendNotification: buildSendNotificationAction(runtime, (notification) =>
+      publisher.sendCustomNotification(notification)),
     putMachinePreferences: (args?: {
       accountOwnerId?: unknown;
       machineKey?: unknown;
@@ -1312,6 +1583,54 @@ function buildAttentionDomainService(runtime: AdeRuntime): OpaqueService | null 
       );
     },
   };
+}
+
+/**
+ * Raise a session's hand: the one path behind `ade chat ask`. Writes the
+ * attention marker, flips a live tracked CLI to waiting-input, and pushes the
+ * question to paired phones. ADE's own turn-end question check
+ * (`turn_end_question`) comes through here too, so its hand reads and
+ * notifies exactly like one the agent raised. False when the session is gone.
+ */
+export function requestSessionAttentionForRuntime(
+  runtime: AdeRuntime,
+  args: {
+    sessionId: string;
+    message: string;
+    source?: SessionAttentionSource;
+    alertTitle?: string | null;
+    alertBody?: string | null;
+  },
+): boolean {
+  const sessionService = runtime.sessionService;
+  if (!sessionService) return false;
+  const { sessionId, message } = args;
+  if (!sessionService.requestAttention(sessionId, message, args.source)) return false;
+  const session = sessionService.get(sessionId);
+  const isTrackedCli = isTrackedAgentCliToolType(session?.toolType);
+  if (isTrackedCli && runtime.ptyService?.hasLivePty(sessionId)) {
+    runtime.ptyService.markSessionAttentionRequested(sessionId);
+    runtime.ptyService.setSessionRuntimeState(sessionId, "waiting-input");
+  }
+  try {
+    runtime.pushPublisherService?.handleSessionAttentionRequested(runtime.projectId, {
+      sessionId,
+      kind: isTrackedCli ? "cli" : "chat",
+      title: session?.title ?? "ADE session",
+      message,
+      laneId: session?.laneId ?? null,
+      // Only asks whose headline is the ask itself set these — today that is
+      // `ade browser handoff`, which pushes "Sign in for me" / the reason.
+      alertTitle: args.alertTitle,
+      alertBody: args.alertBody,
+    });
+  } catch (error) {
+    runtime.logger.warn("session.attention_notification_failed", {
+      sessionId,
+      error: getErrorMessage(error),
+    });
+  }
+  return true;
 }
 
 function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
@@ -1358,32 +1677,14 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
       const record = readObjectActionArg(args, "session.requestSessionAttention");
       const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
       const message = requireNonEmptyString(record.message, "message");
-      if (!sessionService.requestAttention(sessionId, message)) {
+      const raised = requestSessionAttentionForRuntime(runtime, {
+        sessionId,
+        message,
+        alertTitle: optionalNonEmptyString(record.alertTitle),
+        alertBody: optionalNonEmptyString(record.alertBody),
+      });
+      if (!raised) {
         throw new Error(`Session '${sessionId}' was not found.`);
-      }
-      const session = sessionService.get(sessionId);
-      const isTrackedCli = isTrackedAgentCliToolType(session?.toolType);
-      if (isTrackedCli && runtime.ptyService?.hasLivePty(sessionId)) {
-        runtime.ptyService.markSessionAttentionRequested(sessionId);
-        runtime.ptyService.setSessionRuntimeState(sessionId, "waiting-input");
-      }
-      try {
-        runtime.pushPublisherService?.handleSessionAttentionRequested(runtime.projectId, {
-          sessionId,
-          kind: isTrackedCli ? "cli" : "chat",
-          title: session?.title ?? "ADE session",
-          message,
-          laneId: session?.laneId ?? null,
-          // Only asks whose headline is the ask itself set these — today that is
-          // `ade browser handoff`, which pushes "Sign in for me" / the reason.
-          alertTitle: optionalNonEmptyString(record.alertTitle),
-          alertBody: optionalNonEmptyString(record.alertBody),
-        });
-      } catch (error) {
-        runtime.logger.warn("session.attention_notification_failed", {
-          sessionId,
-          error: getErrorMessage(error),
-        });
       }
       return { ok: true, sessionId };
     },
@@ -1726,6 +2027,22 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
       folder: lane.folder ?? null,
     });
   };
+  /**
+   * The lane id a positional lane action runs against. Two callers hand it over
+   * two ways: `ade lanes children` / `ade lanes stack` send it positionally (an
+   * `argsList` holding one string), while an automation step — whose editor
+   * renders the schema's `laneId` param — and `run_ade_action`'s `args` send the
+   * object `{ laneId }`. `getChildren`, `getStackChain`, `getDeleteRisk` and
+   * `cancelDelete` take a bare lane id and pass it straight to a
+   * `select * from lanes` lookup, and `node:sqlite` refuses an object as a bound
+   * parameter ("Unsupported database value at parameter 1: object"), so reading
+   * both shapes here is what keeps the object out of the query. `lane.getSummary`
+   * needs only the object shape; these four also have positional callers.
+   */
+  const readLaneIdActionArg = (args: unknown, actionName: string): string =>
+    typeof args === "string"
+      ? requireNonEmptyString(args, "laneId")
+      : requireNonEmptyString(readObjectActionArg(args, actionName).laneId, "laneId");
   return {
     ...laneService,
     getSummary: async (args?: unknown) => {
@@ -1735,6 +2052,14 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
         includeStatus: record.includeStatus !== false,
       });
     },
+    getChildren: async (args?: unknown) =>
+      runtime.laneService.getChildren(readLaneIdActionArg(args, "lane.getChildren")),
+    getStackChain: async (args?: unknown) =>
+      runtime.laneService.getStackChain(readLaneIdActionArg(args, "lane.getStackChain")),
+    getDeleteRisk: async (args?: unknown) =>
+      runtime.laneService.getDeleteRisk(readLaneIdActionArg(args, "lane.getDeleteRisk")),
+    cancelDelete: async (args?: unknown) =>
+      runtime.laneService.cancelDelete(readLaneIdActionArg(args, "lane.cancelDelete")),
     listSnapshots: async (args?: ListLanesArgs): Promise<LaneListSnapshot[]> => {
       const lanes = await runtime.laneService.list({
         includeArchived: Boolean(args?.includeArchived),
@@ -2046,10 +2371,30 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
       });
     }
   };
+  const accountSettingsStore = runtime.accountSettingsStore;
+  // OpenCode account changes are provider-account decisions, recorded like
+  // Claude and Codex accounts: the harness family only, never the upstream
+  // provider, label or account.
+  const captureOpenCodeAccount = providerAccountAnalyticsCapture(runtime.productAnalyticsService, "api");
+  const captureOpenCodeAccountOutcome = <T extends { ok: boolean }>(
+    action: "account_created" | "account_signed_out" | "default_selected",
+    result: T,
+  ): T => {
+    if (result.ok) captureOpenCodeAccount(action, "completed", "opencode");
+    return result;
+  };
   const buildOpenCodeAuthDeps = (): OpenCodeAuthDeps => ({
     projectRoot: runtime.projectRoot,
     projectConfig: runtime.projectConfigService.getEffective(),
     logger: runtime.logger,
+    // Cloud logins are saved to the ADE account through the brain's store.
+    accountSettings: accountSettingsStore
+      ? {
+          isSignedIn: () => runtime.accountAuthService?.getStatus().signedIn === true,
+          get: (scope, key) => accountSettingsStore.get(scope, key),
+          set: (scope, key, value) => accountSettingsStore.set(scope, key, value),
+        }
+      : null,
   });
   return {
     getStatus: (args?: { force?: boolean; refreshOpenCodeInventory?: boolean }) =>
@@ -2073,13 +2418,45 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
       clearOpenCodeProviderKey(buildOpenCodeAuthDeps(), {
         providerId: requireNonEmptyString(args?.providerId, "providerId"),
       }),
+    opencodeAccounts: (args?: { providerId?: string | null }) =>
+      listOpenCodeAccounts(buildOpenCodeAuthDeps(), { providerId: args?.providerId ?? null }),
+    opencodeAccountActivate: async (args?: { id?: string }) =>
+      captureOpenCodeAccountOutcome(
+        "default_selected",
+        await activateOpenCodeAccount(buildOpenCodeAuthDeps(), { id: requireNonEmptyString(args?.id, "id") }),
+      ),
+    opencodeAccountRename: (args?: { id?: string; label?: string }) =>
+      renameOpenCodeAccount(buildOpenCodeAuthDeps(), {
+        id: requireNonEmptyString(args?.id, "id"),
+        label: requireNonEmptyString(args?.label, "label"),
+      }),
+    opencodeAccountRemove: async (args?: { id?: string }) =>
+      captureOpenCodeAccountOutcome(
+        "account_signed_out",
+        await removeOpenCodeAccount(buildOpenCodeAuthDeps(), { id: requireNonEmptyString(args?.id, "id") }),
+      ),
+    opencodeCloudConnect: async (args?: {
+      providerId?: string;
+      methodIndex?: number;
+      inputs?: Record<string, string>;
+      label?: string;
+    }) =>
+      captureOpenCodeAccountOutcome(
+        "account_created",
+        await connectOpenCodeCloudLogin(buildOpenCodeAuthDeps(), {
+          providerId: requireNonEmptyString(args?.providerId, "providerId"),
+          methodIndex: typeof args?.methodIndex === "number" ? args.methodIndex : 0,
+          inputs: args?.inputs,
+          ...(typeof args?.label === "string" ? { label: args.label } : {}),
+        }),
+      ),
     // Diagnostics and the updater report on the CLIs installed on the machine
     // this runtime runs on. Exposed as actions so Settings can show (and
     // update) another machine's install through that machine's own runtime,
     // rather than reading This computer's answer and labelling it theirs.
     acpProviderDiagnostics: (args?: { provider?: string; runDoctor?: boolean }) => {
       const provider = args?.provider;
-      if (!isAcpChatProvider(provider)) throw new Error("provider must be one of qwen, kimi, grok, copilot, devin.");
+      if (!isAcpChatProvider(provider)) throw new Error("provider must be one of qwen, kimi, grok, devin.");
       return collectAcpProviderDiagnostics({
         provider,
         cwd: runtime.projectRoot,
@@ -2088,8 +2465,16 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
     },
     acpProviderUpdate: (args?: { provider?: string }) => {
       const provider = args?.provider;
-      if (!isAcpChatProvider(provider)) throw new Error("provider must be one of qwen, kimi, grok, copilot, devin.");
-      return runAcpProviderUpdate({ provider, cwd: runtime.projectRoot });
+      if (!isAcpChatProvider(provider)) throw new Error("provider must be one of qwen, kimi, grok, devin.");
+      return runAcpProviderUpdate({ provider, cwd: runtime.projectRoot }).then((result) => {
+        captureProviderCliUpdateAnalytics({
+          analytics: runtime.productAnalyticsService,
+          surface: "api",
+          provider,
+          outcome: result.ok ? "completed" : "failed",
+        });
+        return result;
+      });
     },
     piLoginProviders: () => listPiLoginProviders(),
     piLoginStart: async (args?: { providerId?: string; method?: "oauth" | "api_key" }) => {
@@ -2193,6 +2578,36 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
       const info = resolveOpenCodeBinary();
       return { installed: Boolean(info.path), source: info.source };
     },
+    // The pinned Muse binary on THIS machine. `ensureMuseBinary` starts a
+    // background fetch and returns at once (330-470 MB must not hold a remote
+    // action open); callers poll `museBinaryStatus` for progress.
+    museBinaryStatus: async () => {
+      const { getMuseBinaryStatus } = await import("../ai/museExecutable");
+      return getMuseBinaryStatus();
+    },
+    ensureMuseBinary: async () => {
+      const { startMuseBinaryFetch } = await import("../ai/museExecutable");
+      return startMuseBinaryFetch();
+    },
+    // Settings > Providers > Muse Code on THIS machine: plugins, marketplaces,
+    // skills, hooks, computer use and feedback, through a short-lived
+    // Settings-owned `muse serve` host per page visit (never a chat's host).
+    museSettings: async (args?: { handleId?: string; request?: unknown }) => {
+      const { runMuseSettingsFor, parseMuseSettingsRunArgs } = await import("../ai/museSettingsService");
+      return runMuseSettingsFor(
+        {
+          projectRoot: runtime.projectRoot,
+          logger: runtime.logger,
+          clientVersion: process.env.ADE_CLI_VERSION?.trim() || undefined,
+        },
+        parseMuseSettingsRunArgs(args),
+      );
+    },
+    museSettingsClose: async (args?: { handleId?: string }) => {
+      const { closeMuseSettingsHost } = await import("../ai/museSettingsService");
+      await closeMuseSettingsHost(requireNonEmptyString(args?.handleId, "handleId"));
+      return { ok: true as const };
+    },
     verifyApiKeyConnection: (args?: { provider?: string }) =>
       aiIntegrationService.verifyApiKeyConnection(requireNonEmptyString(args?.provider, "provider")),
     storeApiKey: (args?: { provider?: string; key?: string }) =>
@@ -2234,16 +2649,11 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
     },
     updateConfig: (partial?: Partial<AiConfig>) => {
       const projectConfigService = requireService(runtime.projectConfigService, "Project config service not available.");
-      const snapshot = projectConfigService.get();
-      const currentAi = snapshot.shared?.ai ?? {};
-      const merged = mergeAiConfig(currentAi, partial ?? {}) ?? {};
-      projectConfigService.save({
-        shared: { ...snapshot.shared, ai: merged },
-        local: snapshot.local ?? {},
-      });
+      projectConfigService.updateAiConfig(partial ?? {});
       void runtime.agentChatService?.refreshScheduledWork();
     },
-    listCursorCloudRepositories: () => aiIntegrationService.listCursorCloudRepositories(),
+    listCursorCloudRepositories: (args?: { refresh?: boolean }) =>
+      aiIntegrationService.listCursorCloudRepositories({ refresh: args?.refresh === true }),
     listCursorCloudAgents: (args?: { includeArchived?: boolean; limit?: number; cursor?: string | null }) =>
       aiIntegrationService.listCursorCloudAgents(args ?? {}),
     listCursorCloudRuns: (args?: { agentId?: string; limit?: number; cursor?: string | null }) =>
@@ -2264,6 +2674,11 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
       aiIntegrationService.deleteCursorCloudAgent(requireNonEmptyString(args?.agentId, "agentId")),
     getCursorCloudAgent: (args?: { agentId?: string }) =>
       aiIntegrationService.getCursorCloudAgent(requireNonEmptyString(args?.agentId, "agentId")),
+    getCursorAgentUsage: (args?: { agentId?: string; runId?: string | null }) =>
+      aiIntegrationService.getCursorAgentUsage({
+        agentId: requireNonEmptyString(args?.agentId, "agentId"),
+        ...(typeof args?.runId === "string" ? { runId: args.runId } : {}),
+      }),
     listCursorCloudArtifacts: async (args?: { agentId?: string }) => {
       const items = await aiIntegrationService.listCursorCloudArtifacts(requireNonEmptyString(args?.agentId, "agentId"));
       return items.map((entry) => ({
@@ -2995,6 +3410,109 @@ function buildGithubDomainService(runtime: AdeRuntime): OpaqueService | null {
         number,
       );
     },
+    async getRepoIssueSummary(args?: unknown) {
+      const actionArgs = asActionRecord(args);
+      return githubService.getRepoIssueSummary(
+        requireNonEmptyString(actionArgs.owner, "owner"),
+        requireNonEmptyString(actionArgs.name, "name"),
+      );
+    },
+    async createIssue(args?: unknown) {
+      const actionArgs = asActionRecord(args);
+      return githubService.createIssue(
+        requireNonEmptyString(actionArgs.owner, "owner"),
+        requireNonEmptyString(actionArgs.name, "name"),
+        parseGitHubIssueCreateInput(actionArgs.input),
+      );
+    },
+    async listIssueTemplates(args?: unknown) {
+      const actionArgs = asActionRecord(args);
+      return githubService.listIssueTemplates(
+        requireNonEmptyString(actionArgs.owner, "owner"),
+        requireNonEmptyString(actionArgs.name, "name"),
+      );
+    },
+    async linkSubIssue(args?: unknown) {
+      const actionArgs = asActionRecord(args);
+      const parentNumber = Number(actionArgs.parentNumber);
+      const childNumber = Number(actionArgs.childNumber);
+      if (!Number.isInteger(parentNumber) || parentNumber <= 0 || !Number.isInteger(childNumber) || childNumber <= 0) {
+        throw new Error("Expected positive integer 'parentNumber' and 'childNumber'.");
+      }
+      return githubService.linkSubIssue(
+        requireNonEmptyString(actionArgs.owner, "owner"),
+        requireNonEmptyString(actionArgs.name, "name"),
+        parentNumber,
+        childNumber,
+      );
+    },
+    async listIssueTypes(args?: unknown) {
+      const actionArgs = asActionRecord(args);
+      return githubService.listIssueTypes(requireNonEmptyString(actionArgs.owner, "owner"));
+    },
+    async getIssueWriteAccess(args?: unknown) {
+      const actionArgs = asActionRecord(args);
+      return githubService.getIssueWriteAccess(
+        requireNonEmptyString(actionArgs.owner, "owner"),
+        requireNonEmptyString(actionArgs.name, "name"),
+        { force: actionArgs.force === true },
+      );
+    },
+    async updateIssue(args?: unknown) {
+      const actionArgs = asActionRecord(args);
+      const number = Number(actionArgs.number);
+      if (!Number.isInteger(number) || number <= 0) {
+        throw new Error("Expected 'number' to be a positive integer.");
+      }
+      return githubService.updateIssue(
+        requireNonEmptyString(actionArgs.owner, "owner"),
+        requireNonEmptyString(actionArgs.name, "name"),
+        number,
+        parseGitHubIssueUpdate(actionArgs.patch),
+      );
+    },
+    async commentOnIssue(args?: unknown) {
+      const actionArgs = asActionRecord(args);
+      const number = Number(actionArgs.number);
+      if (!Number.isInteger(number) || number <= 0) {
+        throw new Error("Expected 'number' to be a positive integer.");
+      }
+      return githubService.commentOnIssue(
+        requireNonEmptyString(actionArgs.owner, "owner"),
+        requireNonEmptyString(actionArgs.name, "name"),
+        number,
+        requireNonEmptyString(actionArgs.body, "body"),
+      );
+    },
+    async listRepoMilestones(args?: unknown) {
+      const actionArgs = asActionRecord(args);
+      return githubService.listRepoMilestones(
+        requireNonEmptyString(actionArgs.owner, "owner"),
+        requireNonEmptyString(actionArgs.name, "name"),
+      );
+    },
+    async listRepoIssueList(args?: unknown) {
+      const actionArgs = asActionRecord(args);
+      return githubService.listRepoIssueList(
+        requireNonEmptyString(actionArgs.owner, "owner"),
+        requireNonEmptyString(actionArgs.name, "name"),
+        parseGitHubIssueListState(actionArgs.state),
+      );
+    },
+    async listIssueComments(args?: unknown) {
+      const actionArgs = asActionRecord(args);
+      const number = typeof actionArgs.number === "number"
+        ? actionArgs.number
+        : Number(actionArgs.number);
+      if (!Number.isInteger(number) || number <= 0) {
+        throw new Error("Expected 'number' to be a positive integer.");
+      }
+      return githubService.listIssueComments(
+        requireNonEmptyString(actionArgs.owner, "owner"),
+        requireNonEmptyString(actionArgs.name, "name"),
+        number,
+      );
+    },
     async publishCurrentProject(args?: unknown) {
       const actionArgs = asActionRecord(args);
       const isPrivate = actionArgs.isPrivate;
@@ -3418,12 +3936,18 @@ export function buildProviderInstancesDomainService(
       capture("account_created", "completed", result.instance.provider);
       return result;
     },
-    remove(args: unknown) {
+    async remove(args: unknown) {
       const id = String((isRecord(args) ? args.id : "") ?? "");
       const provider = store.get(id)?.provider;
-      const result = store.remove(id);
+      const result = await removeProviderAccount(id);
       capture("account_removed", "completed", provider);
       return result;
+    },
+    async signOut(args: unknown) {
+      const id = String((isRecord(args) ? args.id : "") ?? "");
+      const instance = await signOutProviderAccount(id, runtime.usageTrackingService);
+      capture("account_signed_out", "completed", instance?.provider);
+      return { instance };
     },
     rename(args: unknown) {
       const input = isRecord(args) ? args : {};
@@ -3478,17 +4002,20 @@ export function buildProviderInstancesDomainService(
       }
       const requestedSettings = isRecord(input.settings) ? input.settings : {};
       const settings = store.setProviderSettings(input.provider, {
+        ...(Object.hasOwn(requestedSettings, "compaction") ? { compaction: requestedSettings.compaction === null ? null : normalizeCompactionSettings(requestedSettings.compaction) } : {}),
+        ...(Object.hasOwn(requestedSettings, "subagentPromptCacheTtl") ? { subagentPromptCacheTtl: requestedSettings.subagentPromptCacheTtl === "1h" ? "1h" as const : null } : {}),
+        ...(Object.hasOwn(requestedSettings, "mainPromptCacheTtl") ? { mainPromptCacheTtl: isClaudePromptCacheTtl(requestedSettings.mainPromptCacheTtl) ? requestedSettings.mainPromptCacheTtl : null } : {}),
+        ...(Object.hasOwn(requestedSettings, "onExtraUsage") ? { onExtraUsage: requestedSettings.onExtraUsage === "stop" ? "stop" as const : null } : {}),
         ...(typeof requestedSettings.smartBalance === "boolean" ? { smartBalance: requestedSettings.smartBalance } : {}),
         ...(typeof requestedSettings.autoStartWindows === "boolean"
           ? { autoStartWindows: requestedSettings.autoStartWindows }
           : {}),
+      }, typeof input.instanceId === "string" ? input.instanceId : undefined);
+      captureProviderAccountSettingsChange(capture, {
+        settings: requestedSettings,
+        provider: input.provider,
+        instanceId: typeof input.instanceId === "string" ? input.instanceId : undefined,
       });
-      if (typeof requestedSettings.smartBalance === "boolean") {
-        capture("balance_changed", requestedSettings.smartBalance ? "enabled" : "disabled", input.provider);
-      }
-      if (typeof requestedSettings.autoStartWindows === "boolean") {
-        capture("auto_start_changed", requestedSettings.autoStartWindows ? "enabled" : "disabled", input.provider);
-      }
       return { settings };
     },
     loginCommand(args: unknown) {
@@ -3500,6 +4027,43 @@ export function buildProviderInstancesDomainService(
       return { instances: await refreshProviderAccounts({ provider, instanceId }, runtime.usageTrackingService) };
     },
   } as OpaqueService;
+}
+
+/**
+ * The project secret service, plus `request`: ask the person in a chat for a
+ * secret through the private secret card. `request` needs the chat service,
+ * so it is absent on a runtime without one.
+ */
+function buildProjectSecretDomainService(runtime: AdeRuntime): OpaqueService | null {
+  const projectSecretService = runtime.projectSecretService;
+  if (!projectSecretService) return null;
+  const agentChatService = runtime.agentChatService;
+  return {
+    ...(projectSecretService as unknown as OpaqueService),
+    // Callers by name (agents, `ade secrets`, the Secrets page) get the copy
+    // the account holds now, not whatever the last heartbeat brought in.
+    get: (args?: unknown) => projectSecretService.getFresh(args as Parameters<typeof projectSecretService.getFresh>[0]),
+    list: () => projectSecretService.listFresh(),
+    ...(agentChatService
+      ? {
+          request: async (args?: unknown) => {
+            const capture = (outcome: "completed" | "kept" | "cancelled" | "failed") =>
+              captureSecretRequestedAnalytics({ analytics: runtime.productAnalyticsService, surface: "api", outcome });
+            try {
+              const result = await requestProjectSecretFromUser({
+                requestChatInput: (input) => agentChatService.requestChatInput(input),
+                projectSecrets: projectSecretService,
+              }, args);
+              capture(result.saved ? "completed" : "kept" in result && result.kept ? "kept" : "cancelled");
+              return result;
+            } catch (error) {
+              capture("failed");
+              throw error;
+            }
+          },
+        }
+      : {}),
+  };
 }
 
 function buildStorageDomainService(runtime: AdeRuntime): OpaqueService | null {
@@ -3552,7 +4116,7 @@ export function getAdeActionDomainServices(
     operation: toService(runtime.operationService),
     ade_project: toService(runtime.adeProjectService),
     project_config: toService(runtime.projectConfigService),
-    project_secret: toService(runtime.projectSecretService),
+    project_secret: toService(buildProjectSecretDomainService(runtime)),
     account_settings: toService(runtime.accountSettingsStore),
     account_vault: toService(runtime.accountVaultStore),
     linear_credentials: toService(runtime.linearCredentialService),
@@ -3560,6 +4124,8 @@ export function getAdeActionDomainServices(
     linear_agent: buildLinearAgentDomainService(runtime),
     linear_issue_tracker: toService(buildLinearIssueTrackerDomainService(runtime)),
     github: buildGithubDomainService(runtime),
+    jira: toService(runtime.jiraService),
+    issues: toService(runtime.issueTrackerService),
     feedback: toService(runtime.feedbackReporterService),
     usage: toService(runtime.usageTrackingService),
     analytics: toService(runtime.productAnalyticsService),

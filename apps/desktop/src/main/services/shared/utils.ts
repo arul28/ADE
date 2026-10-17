@@ -9,7 +9,7 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { resolveCliSpawnInvocation, windowsTaskkillCommand } from "./processExecution";
+import { isWindowsCmdCommandNotFound, resolveCliSpawnInvocation, windowsTaskkillCommand } from "./processExecution";
 
 // ── Type guards ─────────────────────────────────────────────────────
 
@@ -248,21 +248,43 @@ export function terminateChildProcessTree(
   }, killAfterMs);
 }
 
+export type SpawnAsyncResult = {
+  /** Exit code, or null when the process never ran, was killed, or timed out. */
+  status: number | null;
+  stdout: string;
+  stderr: string;
+  /**
+   * Why `status` is null or the command was missing: the spawn error's message
+   * (with its code, e.g. ENOENT/EINVAL), a timeout, or cmd.exe's "not
+   * recognized" report. Absent on a normal exit.
+   */
+  error?: string;
+  /**
+   * The command does not exist: an ENOENT spawn error, or on Windows the
+   * `cmd.exe` wrapper's "is not recognized" exit (which otherwise looks like an
+   * ordinary exit 1).
+   */
+  notFound?: boolean;
+  timedOut?: boolean;
+};
+
 /** Spawn a child process and collect stdout/stderr with a timeout. */
 export function spawnAsync(
   command: string,
   args: string[],
-  opts?: { timeout?: number; maxOutputBytes?: number; cwd?: string },
-): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  opts?: { timeout?: number; maxOutputBytes?: number; cwd?: string; env?: NodeJS.ProcessEnv },
+): Promise<SpawnAsyncResult> {
   return new Promise((resolve) => {
     try {
-      const invocation = resolveCliSpawnInvocation(command, args);
+      const invocation = resolveCliSpawnInvocation(command, args, opts?.env);
+      const wrappedInCmd = invocation.command !== command && invocation.windowsVerbatimArguments === true;
       const child = spawn(invocation.command, invocation.args, {
         stdio: ["ignore", "pipe", "pipe"],
         detached: process.platform !== "win32",
         windowsVerbatimArguments: invocation.windowsVerbatimArguments,
         windowsHide: true,
         ...(opts?.cwd ? { cwd: opts.cwd } : {}),
+        ...(opts?.env ? { env: opts.env } : {}),
       });
       let stdout = "";
       let stderr = "";
@@ -272,14 +294,28 @@ export function spawnAsync(
       let hardResolveHandle: NodeJS.Timeout | null = null;
       let killEscalationHandle: NodeJS.Timeout | null = null;
       let settled = false;
-      const settle = (status: number | null): void => {
+      let timedOut = false;
+      const settle = (status: number | null, spawnError?: NodeJS.ErrnoException): void => {
         if (settled) return;
         settled = true;
         if (timeoutHandle) clearTimeout(timeoutHandle);
         if (hardResolveHandle) clearTimeout(hardResolveHandle);
         if (killEscalationHandle) clearTimeout(killEscalationHandle);
         destroyChildProcessStreams(child);
-        resolve({ status, stdout, stderr });
+        // A timed-out child is reported as null whatever it exited with: on
+        // Windows the tree kill makes it exit 1, which read as a real failure.
+        const result: SpawnAsyncResult = { status: timedOut ? null : status, stdout, stderr };
+        if (spawnError) {
+          result.error = describeSpawnError(spawnError);
+          if (spawnError.code === "ENOENT") result.notFound = true;
+        } else if (timedOut) {
+          result.timedOut = true;
+          result.error = `timed out after ${timeoutMs} ms`;
+        } else if (wrappedInCmd && isWindowsCmdCommandNotFound(status, stderr)) {
+          result.notFound = true;
+          result.error = stderr.trim().split(/\r?\n/)[0] ?? "command not found";
+        }
+        resolve(result);
       };
       child.stdout?.on("data", (chunk: Buffer) => {
         stdout += chunk.toString("utf8").slice(0, Math.max(0, limit - stdout.length));
@@ -287,19 +323,33 @@ export function spawnAsync(
       child.stderr?.on("data", (chunk: Buffer) => {
         stderr += chunk.toString("utf8").slice(0, Math.max(0, limit - stderr.length));
       });
-      child.once("error", () => settle(null));
+      child.once("error", (error: NodeJS.ErrnoException) => settle(null, error));
       child.once("close", (code) => settle(code));
       timeoutHandle = setTimeout(() => {
         if (settled) return;
+        timedOut = true;
         // Retain the SIGKILL escalation timer so we can clear it if the
         // SIGTERM induces a clean exit before the kill window elapses.
         killEscalationHandle = terminateChildProcessTree(child, null, 1_500);
         hardResolveHandle = setTimeout(() => settle(null), 5_000);
       }, timeoutMs);
-    } catch {
-      resolve({ status: null, stdout: "", stderr: "" });
+    } catch (error) {
+      const spawnError = error as NodeJS.ErrnoException;
+      resolve({
+        status: null,
+        stdout: "",
+        stderr: "",
+        error: describeSpawnError(spawnError),
+        ...(spawnError?.code === "ENOENT" ? { notFound: true } : {}),
+      });
     }
   });
+}
+
+function describeSpawnError(error: NodeJS.ErrnoException | null | undefined): string {
+  const message = error instanceof Error ? error.message : String(error ?? "spawn failed");
+  const code = typeof error?.code === "string" ? error.code : null;
+  return code && !message.includes(code) ? `${code}: ${message}` : message;
 }
 
 /** Resolve the absolute path of a command, or null if not found. */
@@ -351,6 +401,16 @@ export function safeJsonParse<T>(raw: string | null | undefined, fallback: T): T
 export function isWithinDir(root: string, candidate: string): boolean {
   const rel = path.relative(root, candidate);
   return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+}
+
+/**
+ * Whether `candidate` lies inside `root` by its spelling alone, without touching
+ * the filesystem. `..` segments are collapsed first, so `root/../elsewhere` is
+ * outside. Used to decide which root a missing-path failure belongs to.
+ */
+export function isLexicallyWithinRoot(root: string, candidate: string): boolean {
+  const rootAbs = path.resolve(root);
+  return isWithinDir(rootAbs, path.resolve(rootAbs, candidate));
 }
 
 function realpathExisting(filePath: string): string {
@@ -450,6 +510,38 @@ export function resolvePathWithinRoot(
     throw new Error(PATH_ESCAPES_ROOT_MESSAGE);
   }
   return candidateReal;
+}
+
+/**
+ * Whether `candidate`, resolved from `root` with names it does not find allowed,
+ * lands outside every root in `roots`.
+ *
+ * A missing name under an in-root symlink that points outside fails on that
+ * name before containment is checked, so the plain resolve reports "does not
+ * exist" for a path that is really outside the root. Resolving again with
+ * missing names allowed shows where the path really lands. That spot still
+ * counts as allowed when another root contains it: a link under `A` that points
+ * into `B` leaves `A`, but a missing name under it is a missing file in `B`.
+ */
+export function escapesAllRootsWhenMissingAllowed(
+  roots: readonly string[],
+  root: string,
+  candidate: string,
+): boolean {
+  let landed: string;
+  try {
+    landed = resolveCandidatePath(root, candidate, { allowMissing: true });
+  } catch {
+    return false;
+  }
+  return !roots.some((other) => {
+    try {
+      resolvePathWithinRoot(other, landed, { allowMissing: true });
+      return true;
+    } catch {
+      return false;
+    }
+  });
 }
 
 function openReadOnlyNoFollow(filePath: string): number {
@@ -622,7 +714,11 @@ export function readFileWithinRootSecure(
     }
     const currentPath = resolvePathWithinRoot(root, expectedPath, { allowMissing: false });
     const currentStat = fs.statSync(currentPath);
-    if (openStat.dev !== currentStat.dev || openStat.ino !== currentStat.ino) {
+    // Node 22.13 on Windows reports `dev` as 0 from statSync but the volume
+    // serial from fstatSync, so a zero `dev` on either side proves nothing;
+    // the file index (`ino`) still has to match.
+    const sameDevice = openStat.dev === currentStat.dev || openStat.dev === 0 || currentStat.dev === 0;
+    if (!sameDevice || openStat.ino !== currentStat.ino) {
       throw new Error("Path changed during open");
     }
     return fs.readFileSync(fd);

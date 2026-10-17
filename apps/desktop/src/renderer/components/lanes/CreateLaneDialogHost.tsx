@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import { useLaneMachineChoice } from "./useLaneMachineChoice";
 import { requestCrossMachineLanesForMachine } from "../../state/crossMachineLanes";
@@ -159,8 +159,11 @@ function runDetachedLaneSetup(params: DetachedSetupParams): void {
  * - `close-on-create` (Work tab): closes the dialog as soon as the lane record
  *   exists and runs env setup in the background; a failure surfaces a sticky,
  *   retryable toast instead of in-dialog UI.
+ *
+ * Memoized: the chat pane mounts a closed host and re-renders on every streamed
+ * event; with stable props a closed dialog must not re-render its whole form.
  */
-export function CreateLaneDialogHost({
+export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
   open,
   onOpenChange,
   behavior,
@@ -207,7 +210,6 @@ export function CreateLaneDialogHost({
   const [createBranches, setCreateBranches] = useState<LaneBranchOption[]>([]);
   const [createBranchesLoading, setCreateBranchesLoading] = useState(false);
   const [createBranchPullRequests, setCreateBranchPullRequests] = useState<BranchPullRequest[]>([]);
-  const [createBranchPullRequestsLoading, setCreateBranchPullRequestsLoading] = useState(false);
   const [createGitUserName, setCreateGitUserName] = useState<string>("");
   const [createBusy, setCreateBusy] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
@@ -362,7 +364,6 @@ export function CreateLaneDialogHost({
     setCreateGitUserName("");
     const loadSeq = ++createBaseBranchesLoadSeqRef.current;
     setCreateBranchesLoading(false);
-    setCreateBranchPullRequestsLoading(false);
     if (primary) {
       setCreateBranchesLoading(true);
       // The default base source is a per-checkout setting, so read it from
@@ -410,11 +411,9 @@ export function CreateLaneDialogHost({
 
       // Lazily attach open-PR metadata. Repo-wide (GitHub), so the tab's
       // machine answers it for every target. Fail-soft.
-      setCreateBranchPullRequestsLoading(true);
       window.ade.prs.listOpenForRepo()
         .then(setCreateBranchPullRequests)
-        .catch(() => setCreateBranchPullRequests([]))
-        .finally(() => setCreateBranchPullRequestsLoading(false));
+        .catch(() => setCreateBranchPullRequests([]));
     }
     Promise.all([
       window.ade.lanes.listTemplates(...pinArg(pin)).catch(() => [] as LaneTemplate[]),
@@ -938,11 +937,10 @@ export function CreateLaneDialogHost({
       branchPullRequests={createBranchPullRequests}
       currentGitUserName={createGitUserName}
       loadingBranches={createBranchesLoading}
-      loadingBranchPullRequests={createBranchPullRequestsLoading}
       onOpenLinearSettings={onOpenLinearSettings}
       onNavigateToTemplates={onNavigateToTemplates}
       importBranchWarning={importBranchWarning}
       selectedMachineId={selectedMachineId}
     />
   );
-}
+});

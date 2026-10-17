@@ -120,7 +120,7 @@ export function AppControlOffCard({
                   className={cn(
                     "flex h-7 w-full min-w-0 items-center gap-2 rounded-[var(--radius-sm)] px-1.5 text-left",
                     "font-mono text-[11.5px] text-fg/85 transition-colors duration-[120ms] ease-out",
-                    "hover:bg-white/[0.05] disabled:pointer-events-none disabled:opacity-45",
+                    "hover:bg-fg/[0.05] disabled:pointer-events-none disabled:opacity-45",
                   )}
                 >
                   <Play size={11} className="shrink-0 text-muted-fg" />

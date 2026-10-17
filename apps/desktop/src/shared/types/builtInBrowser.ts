@@ -57,13 +57,33 @@ export type BuiltInBrowserClaimArgs = BuiltInBrowserProjectScopeArgs & {
   leaseTtlMs?: number | null;
 };
 
-export type BuiltInBrowserNavigateArgs = BuiltInBrowserClaimArgs & {
+/**
+ * Open the tab in its own throwaway sign-in instead of the shared profile: an
+ * in-memory cookie jar and storage that nobody else's tabs see, wiped when the
+ * last tab using it closes and never restored after a restart. Use it to sign
+ * in as a test account without signing the user out. `profile` names the jar
+ * so several tabs of one chat can share it ("owner", "viewer"); it implies
+ * `isolated`. Without a name the chat gets one jar called "default".
+ */
+export type BuiltInBrowserIsolationArgs = {
+  isolated?: boolean;
+  profile?: string | null;
+};
+
+export type BuiltInBrowserNavigateArgs = BuiltInBrowserClaimArgs & BuiltInBrowserIsolationArgs & {
   url: string;
   tabId?: string | null;
   newTab?: boolean;
   activate?: boolean;
   reuseOwnedTab?: boolean;
   openPanel?: boolean;
+};
+
+export type BuiltInBrowserTabLoadError = {
+  /** Chromium's net error code, e.g. -102 for a refused connection. */
+  code: number;
+  description: string;
+  url: string | null;
 };
 
 export type BuiltInBrowserTab = {
@@ -77,6 +97,19 @@ export type BuiltInBrowserTab = {
    * title reads "New tab" rather than the empty document title.
    */
   isLaunchpad: boolean;
+  /**
+   * Why the current page failed to load (connection refused, DNS, timeout), or
+   * null. Chromium shows such a page as plain white, so the Work tab's floating
+   * preview hides while it is set. Cleared when the tab starts loading again.
+   * Absent on a main process that predates it, which reads as null.
+   */
+  loadError?: BuiltInBrowserTabLoadError | null;
+  /**
+   * The isolated profile this tab signs in with, or null for the shared
+   * profile. Fixed for the tab's life. Absent on a main process that predates
+   * isolated tabs, which reads as null.
+   */
+  isolatedProfile?: string | null;
   /**
    * Best favicon Chromium reported for the current document: the first http(s)
    * URL, or a `data:` icon under 32 KB. Cleared the moment the tab navigates to
@@ -101,8 +134,9 @@ export type BuiltInBrowserTab = {
   devToolsOpen: boolean;
   emulation: BuiltInBrowserEmulationState | null;
   /**
-   * The fixed page size an agent-owned or recording tab is laid out at
-   * (`BUILT_IN_BROWSER_AGENT_VIEWPORT`), or null when the tab follows its box.
+   * The fixed page size a recording tab is laid out at
+   * (`BUILT_IN_BROWSER_RECORDING_VIEWPORT`), or null when the tab follows its box.
+   * The wire name predates recording-only use and stays for compatibility.
    * The pane letterboxes it exactly like a device preset. Absent on a main
    * process that predates it, which reads as null.
    */
@@ -428,7 +462,7 @@ export type BuiltInBrowserSessionsResult = {
   sessions: BuiltInBrowserSession[];
 };
 
-export type BuiltInBrowserCreateTabArgs = BuiltInBrowserClaimArgs & {
+export type BuiltInBrowserCreateTabArgs = BuiltInBrowserClaimArgs & BuiltInBrowserIsolationArgs & {
   url?: string | null;
   activate?: boolean;
   openPanel?: boolean;
@@ -483,6 +517,11 @@ export type BuiltInBrowserObservation = {
   relativePath: string | null;
   /** Why there is no image, when there is none: "Browser screenshot is unavailable for tab …". */
   screenshotUnavailable?: string;
+  /**
+   * For the agent, when the page is narrow because the person's pane is: why a
+   * site may be in its mobile layout, and the command for a desktop one.
+   */
+  narrowPageHint?: string;
   dataUrl?: string;
   dom?: BuiltInBrowserDomSnapshot | null;
   elementMap?: BuiltInBrowserObservationElementMap | null;
@@ -1110,6 +1149,32 @@ export type BuiltInBrowserNetworkLogResult = {
   entries: BuiltInBrowserNetworkLogEntry[];
 };
 
+/**
+ * Read a tab's text the way a person reads it: the rendered text of the page's
+ * main content (or one element), in pages of `maxChars`. `observe` maps what an
+ * agent can click; this is what it can read.
+ */
+export type BuiltInBrowserReadTextArgs = BuiltInBrowserTabTargetArgs & {
+  /** CSS selector to read instead of the page's main content. */
+  selector?: string | null;
+  /** Characters to skip, to read on from an earlier result's `nextOffset`. */
+  offset?: number | null;
+  maxChars?: number | null;
+};
+
+export type BuiltInBrowserReadTextResult = {
+  tabId: string;
+  url: string | null;
+  title: string | null;
+  /** Where the text came from: the selector, the page's main/article region, or the whole body. */
+  source: "selector" | "main" | "body";
+  text: string;
+  offset: number;
+  totalChars: number;
+  /** Where the next page starts, or null when this one reached the end. */
+  nextOffset: number | null;
+};
+
 export type BuiltInBrowserExportHarArgs = BuiltInBrowserTabTargetArgs & {
   filter?: string | null;
   failedOnly?: boolean;
@@ -1308,27 +1373,30 @@ export const BUILT_IN_BROWSER_PREVIEW_JPEG_QUALITY = 80;
  * The view has to stay attached and visible to keep a compositor surface (a
  * detached or hidden `WebContentsView` captures nothing at all), so it is parked
  * this far past the bottom-right corner of the union of every display, where no
- * window on any screen can reach it. The size floors only apply to a panel that
- * was never opened — a zero-sized view would capture an empty image.
+ * window on any screen can reach it. The size floors only apply to a tab the
+ * panel never showed — a zero-sized view would capture an empty image.
  */
 export const BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN = 64;
 export const BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_WIDTH = 960;
 export const BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_HEIGHT = 600;
-/** A remembered pane smaller than this parks at the floors above instead. */
-export const BUILT_IN_BROWSER_PARKED_PREVIEW_USABLE_WIDTH = 640;
-export const BUILT_IN_BROWSER_PARKED_PREVIEW_USABLE_HEIGHT = 400;
+/**
+ * A page narrower than this, because the person's pane is, gets a
+ * `narrowPageHint` on an agent's observation. The page keeps
+ * the size of the pane that showed it; the hint tells the agent how to ask
+ * for a desktop layout.
+ */
+export const BUILT_IN_BROWSER_NARROW_PAGE_WIDTH = 640;
 
 /**
- * The page size of a tab an agent owns or that is being recorded.
+ * The page size of a tab that is being recorded.
  *
- * A page lays out at its native view's size, so an agent's tab opened in a
- * narrow Work pane reflowed to a thin strip — and every screenshot, recording
- * and floating preview the agent took of it was that strip. While a tab is
- * agent-owned or recording its layout viewport is pinned here (the same CDP
- * device-metrics override a device preset uses) and scaled to fit whatever box
- * shows it; parked off screen, it is exactly this size at scale 1.
+ * A page lays out at its native view's size, so a recording made in a narrow
+ * Work pane was a thin strip. While a tab records, its layout viewport is
+ * pinned here (the same CDP device-metrics override a device preset uses) and
+ * scaled to fit whatever box shows it; parked off screen, it is exactly this
+ * size at scale 1. Agent-owned tabs are not pinned: they lay out at the pane.
  */
-export const BUILT_IN_BROWSER_AGENT_VIEWPORT: { readonly width: number; readonly height: number } = {
+export const BUILT_IN_BROWSER_RECORDING_VIEWPORT: { readonly width: number; readonly height: number } = {
   width: 1280,
   height: 800,
 };

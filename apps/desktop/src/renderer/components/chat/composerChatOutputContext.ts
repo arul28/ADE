@@ -4,6 +4,7 @@ import {
   hasChatOutputContext,
   parseChatOutputContextBlocks,
 } from "../../../shared/chatOutputContext";
+import { hydrateTokenChipsInEditor } from "./composerChipDom";
 
 const CHIP_CLASS =
   "mx-0.5 inline-flex max-w-[300px] translate-y-[1px] cursor-default items-center gap-1.5 rounded-md border border-[color:color-mix(in_srgb,var(--chat-accent)_30%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_12%,transparent)] py-0.5 pl-1.5 pr-2 font-sans text-[length:calc(var(--chat-font-size)*11.5/14)] leading-5 text-[color:color-mix(in_srgb,var(--chat-accent)_45%,var(--chat-fg,#e6e6e6))] align-baseline outline-none transition-colors hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)] focus:ring-1 focus:ring-[color:color-mix(in_srgb,var(--chat-accent)_45%,transparent)]";
@@ -38,38 +39,9 @@ export function createChatOutputContextChipNode(block: string): HTMLElement {
 }
 
 export function hydrateChatOutputContextChipsInEditor(editor: HTMLElement): boolean {
-  const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT, {
-    acceptNode(node) {
-      const parent = node.parentElement;
-      if (
-        !parent
-        || parent.closest("[data-composer-chip], [data-ios-context-id], [data-app-control-context-id], [data-built-in-browser-context-id]")
-      ) {
-        return NodeFilter.FILTER_REJECT;
-      }
-      return hasChatOutputContext(node.textContent ?? "") ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
-    },
+  return hydrateTokenChipsInEditor(editor, {
+    has: hasChatOutputContext,
+    parse: parseChatOutputContextBlocks,
+    createNode: (match) => createChatOutputContextChipNode(match.block),
   });
-  const nodes: Text[] = [];
-  let current = walker.nextNode();
-  while (current) {
-    nodes.push(current as Text);
-    current = walker.nextNode();
-  }
-  if (!nodes.length) return false;
-  for (const node of nodes) {
-    const text = node.textContent ?? "";
-    const matches = parseChatOutputContextBlocks(text);
-    if (!matches.length) continue;
-    const fragment = document.createDocumentFragment();
-    let offset = 0;
-    for (const match of matches) {
-      if (match.start > offset) fragment.append(document.createTextNode(text.slice(offset, match.start)));
-      fragment.append(createChatOutputContextChipNode(match.block));
-      offset = match.end;
-    }
-    if (offset < text.length) fragment.append(document.createTextNode(text.slice(offset)));
-    node.replaceWith(fragment);
-  }
-  return true;
 }

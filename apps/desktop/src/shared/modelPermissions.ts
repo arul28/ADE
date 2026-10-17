@@ -19,9 +19,14 @@
 import { CURSOR_AVAILABLE_MODE_IDS, formatCursorModeLabel } from "./cursorModes";
 import {
   AGENT_CHAT_DROID_PERMISSION_MODE_OPTIONS,
+  AGENT_CHAT_MUSE_PERMISSION_MODE_DETAILS,
+  AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES,
+  DEFAULT_MUSE_PERMISSION_MODE,
   droidPermissionModeFromLegacyPermissionMode,
   legacyPermissionModeFromDroidPermissionMode,
   type AgentChatDroidPermissionMode,
+  type AgentChatMusePermissionMode,
+  type AgentChatPermissionMode,
 } from "./types/chat";
 
 export type ModelPermissionOption = { value: string; label: string };
@@ -59,6 +64,43 @@ const DROID_OPTIONS: ModelPermissionOption[] = AGENT_CHAT_DROID_PERMISSION_MODE_
   label: option.label,
 }));
 
+const MUSE_OPTIONS: ModelPermissionOption[] = AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES.map((value) => ({
+  value,
+  label: AGENT_CHAT_MUSE_PERMISSION_MODE_DETAILS[value].label,
+}));
+
+/**
+ * ADE's generic launch word as a Muse approval mode. Same convention as Droid:
+ * `default` is the provider's own default (`onRequest`), `edit` the cautious
+ * editing tier. `config-toml` has no Muse meaning.
+ */
+export function musePermissionModeFromLegacyPermissionMode(
+  mode: AgentChatPermissionMode | string | null | undefined,
+): AgentChatMusePermissionMode | undefined {
+  switch (mode) {
+    case "plan": return "denyUnmatched";
+    case "edit": return "promptUnmatched";
+    case "default":
+    case "auto":
+      return "onRequest";
+    case "full-auto": return "allowAll";
+    default: return undefined;
+  }
+}
+
+/** A Muse approval mode as ADE's generic word, for the `--permissions` flags. */
+export function legacyPermissionModeFromMusePermissionMode(
+  mode: AgentChatMusePermissionMode | string | null | undefined,
+): AgentChatPermissionMode | undefined {
+  switch (mode) {
+    case "denyUnmatched": return "plan";
+    case "promptUnmatched": return "edit";
+    case "onRequest": return "default";
+    case "allowAll": return "full-auto";
+    default: return undefined;
+  }
+}
+
 function isDroidProvider(provider: string): boolean {
   return provider === "droid" || provider === "factory";
 }
@@ -70,6 +112,7 @@ export function modelPermissionOptions(provider: string | null | undefined): Mod
   if (p === "codex") return CODEX_OPTIONS;
   if (p === "cursor") return CURSOR_OPTIONS;
   if (isDroidProvider(p)) return DROID_OPTIONS;
+  if (p === "muse") return MUSE_OPTIONS;
   return OPENCODE_OPTIONS;
 }
 
@@ -80,6 +123,7 @@ export function defaultModelPermission(provider: string | null | undefined): str
   if (p === "codex") return "default";
   if (p === "cursor") return "agent";
   if (isDroidProvider(p)) return "auto-low";
+  if (p === "muse") return DEFAULT_MUSE_PERMISSION_MODE;
   return "edit";
 }
 
@@ -130,6 +174,7 @@ export function legacyPermissionToNative(provider: string | null | undefined, le
       droidPermissionModeFromLegacyPermissionMode(legacy as Parameters<typeof droidPermissionModeFromLegacyPermissionMode>[0]);
     return native ?? null;
   }
+  if (p === "muse") return musePermissionModeFromLegacyPermissionMode(legacy) ?? null;
   // OpenCode / Pi / ACP tail: `default` and `auto` both mean the cautious
   // editing tier; `edit` is that tier's native name.
   switch (legacy) {
@@ -201,5 +246,6 @@ export function nativePermissionToCliMode(provider: string | null | undefined, n
     if (native === "agi") return "full-auto";
     return legacyPermissionModeFromDroidPermissionMode(native as AgentChatDroidPermissionMode) ?? null;
   }
+  if (p === "muse") return legacyPermissionModeFromMusePermissionMode(native) ?? null;
   return isModelPermissionValue(p, native) ? native : null;
 }

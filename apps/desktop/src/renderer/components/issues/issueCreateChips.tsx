@@ -1,0 +1,418 @@
+import React from "react";
+import type {
+  CtoGetLinearIssuePickerDataResult,
+  GitHubIssueTypeOption,
+  LinearIssueCreateOptions,
+  LinearProjectMilestone,
+} from "../../../shared/types";
+import type { JiraCreateMeta, JiraProject, JiraUser } from "../../../shared/types/jira";
+import { LinearAssigneeAvatar } from "../app/LinearIssueBrowserRows";
+import { PRIORITY_CHOICES } from "../app/linearIssueBrowserModel";
+import { LinearPriorityIcon, LinearStateIcon } from "../lanes/linearBrand";
+import { githubLabelOptions, githubPersonOptions } from "./IssuePickerMenu";
+import type { GitHubRepoCatalog } from "./githubIssueStore";
+import type { GitHubFields, JiraFields, LinearFields } from "./issueCreateDraft";
+import { ChipPicker } from "./issuePickerChip";
+import { IssueDueDatePicker } from "./issueDueDatePicker";
+
+/**
+ * The create composer's property chips: a chip shows the value and opens the
+ * same filterable picker the issue viewer uses. One set per tracker, plus the
+ * fields most issues skip, shown under `⋯`.
+ */
+
+/* ── Small pieces ──────────────────────────────────────────────────────── */
+
+export function toggle(list: string[], id: string): string[] {
+  return list.includes(id) ? list.filter((entry) => entry !== id) : [...list, id];
+}
+
+function estimateScale(options: LinearIssueCreateOptions | null): Array<{ value: number; label: string }> {
+  if (!options || options.estimationType === "notUsed") return [];
+  const extended = options.estimationExtended;
+  let scale: Array<{ value: number; label: string }>;
+  switch (options.estimationType) {
+    case "exponential":
+      scale = [1, 2, 4, 8, 16, ...(extended ? [32, 64] : [])].map((value) => ({ value, label: String(value) }));
+      break;
+    case "fibonacci":
+      scale = [1, 2, 3, 5, 8, ...(extended ? [13, 21] : [])].map((value) => ({ value, label: String(value) }));
+      break;
+    case "tShirt":
+      scale = [["XS", 1], ["S", 2], ["M", 3], ["L", 5], ["XL", 8], ...(extended ? [["XXL", 13], ["XXXL", 21]] : [])]
+        .map(([label, value]) => ({ value: value as number, label: label as string }));
+      break;
+    default:
+      scale = [1, 2, 3, 4, 5, ...(extended ? [6, 7] : [])].map((value) => ({ value, label: String(value) }));
+  }
+  return options.estimationAllowZero ? [{ value: 0, label: "0" }, ...scale] : scale;
+}
+
+type Setter<T> = React.Dispatch<React.SetStateAction<T>>;
+
+export function LinearCreateChips({
+  linear,
+  setLinear,
+  catalog,
+  teamKey,
+}: {
+  linear: LinearFields;
+  setLinear: Setter<LinearFields>;
+  catalog: CtoGetLinearIssuePickerDataResult | null;
+  teamKey: string | null;
+}) {
+  const linearStates = (catalog?.states ?? []).filter((state) => state.teamKey === teamKey);
+  const state = linearStates.find((entry) => entry.id === linear.stateId) ?? null;
+  const assignee = catalog?.users.find((user) => user.id === linear.assigneeId) ?? null;
+  const teamLabels = (catalog?.labels ?? []).filter((label) => !label.teamKey || label.teamKey === teamKey);
+  const pickedLabels = teamLabels.filter((label) => linear.labelIds.includes(label.id));
+  const projects = linearTeamProjects(catalog, teamKey);
+  const project = projects.find((entry) => entry.id === linear.projectId) ?? null;
+  return (
+    <>
+      <ChipPicker
+        label="Status"
+        display={state ? <><LinearStateIcon stateType={state.type} size={12} />{state.name}</> : "Default status"}
+        muted={!state}
+        options={linearStates.map((entry) => ({ id: entry.id, label: entry.name, icon: <LinearStateIcon stateType={entry.type} size={12} /> }))}
+        selected={linear.stateId ? [linear.stateId] : []}
+        placeholder="Status…"
+        onPick={(id) => setLinear((current) => ({ ...current, stateId: id }))}
+      />
+      <ChipPicker
+        label="Priority"
+        display={<><LinearPriorityIcon priority={linear.priority ?? 0} size={12} />{PRIORITY_CHOICES.find((choice) => choice.value === (linear.priority ?? 0))?.label ?? "No priority"}</>}
+        muted={!linear.priority}
+        options={PRIORITY_CHOICES.map((choice) => ({ id: String(choice.value), label: choice.label, icon: <LinearPriorityIcon priority={choice.value} size={12} /> }))}
+        selected={[String(linear.priority ?? 0)]}
+        placeholder="Priority…"
+        onPick={(id) => setLinear((current) => ({ ...current, priority: Number(id) }))}
+      />
+      <ChipPicker
+        label="Assignee"
+        display={<><LinearAssigneeAvatar name={assignee ? assignee.displayName ?? assignee.name : null} avatarUrl={assignee?.avatarUrl ?? null} size={14} />{assignee ? assignee.displayName ?? assignee.name : "Assignee"}</>}
+        muted={!assignee}
+        options={[
+          { id: "", label: "Unassigned" },
+          ...(catalog?.users ?? []).filter((user) => user.active).map((user) => ({
+            id: user.id,
+            label: user.displayName ?? user.name,
+            keywords: `${user.name} ${user.email ?? ""}`,
+            icon: <LinearAssigneeAvatar name={user.displayName ?? user.name} avatarUrl={user.avatarUrl ?? null} size={14} />,
+          })),
+        ]}
+        selected={[linear.assigneeId ?? ""]}
+        placeholder="Assign to…"
+        onPick={(id) => setLinear((current) => ({ ...current, assigneeId: id || null }))}
+      />
+      <ChipPicker
+        label="Labels"
+        display={pickedLabels.length
+          ? <><span className="flex gap-0.5">{pickedLabels.slice(0, 3).map((label) => <span key={label.id} className="block h-2 w-2 rounded-full" style={{ backgroundColor: label.color ?? "var(--kit-fill)" }} />)}</span>{pickedLabels.length === 1 ? pickedLabels[0]!.name : `${pickedLabels.length} labels`}</>
+          : "Labels"}
+        muted={!pickedLabels.length}
+        multi
+        options={teamLabels.map((label) => ({ id: label.id, label: label.name, icon: <span className="block h-2 w-2 rounded-full" style={{ backgroundColor: label.color ?? "var(--kit-fill)" }} /> }))}
+        selected={linear.labelIds}
+        placeholder="Labels…"
+        onPick={(id) => setLinear((current) => ({ ...current, labelIds: toggle(current.labelIds, id) }))}
+      />
+      <ChipPicker
+        label="Project"
+        display={project ? project.name : "Project"}
+        muted={!project}
+        options={[{ id: "", label: "No project" }, ...projects.map((entry) => ({ id: entry.id, label: entry.name }))]}
+        selected={[linear.projectId ?? ""]}
+        placeholder="Project…"
+        onPick={(id) => setLinear((current) => ({ ...current, projectId: id || null, milestoneId: null }))}
+      />
+    </>
+  );
+}
+
+/** Projects the team can file into (a project with no team belongs to all). */
+export function linearTeamProjects(catalog: CtoGetLinearIssuePickerDataResult | null, teamKey: string | null) {
+  return (catalog?.projects ?? []).filter((project) => !project.teamKey || project.teamKey === teamKey);
+}
+
+export function LinearMoreFields({
+  linear,
+  setLinear,
+  hasProject,
+  milestones,
+  createOptions,
+  parentLocked,
+}: {
+  linear: LinearFields;
+  setLinear: Setter<LinearFields>;
+  hasProject: boolean;
+  milestones: LinearProjectMilestone[];
+  createOptions: LinearIssueCreateOptions | null;
+  parentLocked: boolean;
+}) {
+  const cycle = createOptions?.cycles.find((entry) => entry.id === linear.cycleId) ?? null;
+  const scale = estimateScale(createOptions);
+  return (
+    <>
+      {hasProject ? (
+        <ChipPicker
+          label="Milestone"
+          display={milestones.find((entry) => entry.id === linear.milestoneId)?.name ?? "Milestone"}
+          muted={!linear.milestoneId}
+          options={[{ id: "", label: "No milestone" }, ...milestones.map((entry) => ({ id: entry.id, label: entry.name }))]}
+          selected={[linear.milestoneId ?? ""]}
+          placeholder="Milestone…"
+          onPick={(id) => setLinear((current) => ({ ...current, milestoneId: id || null }))}
+        />
+      ) : null}
+      {createOptions?.cyclesEnabled ? (
+        <ChipPicker
+          label="Cycle"
+          display={cycle ? `Cycle ${cycle.number}${cycle.active ? " (current)" : ""}` : "Cycle"}
+          muted={!cycle}
+          options={[{ id: "", label: "No cycle" }, ...createOptions.cycles.map((entry) => ({
+            id: entry.id,
+            label: `${entry.name || `Cycle ${entry.number}`}${entry.active ? " (current)" : ""}`,
+          }))]}
+          selected={[linear.cycleId ?? ""]}
+          placeholder="Cycle…"
+          onPick={(id) => setLinear((current) => ({ ...current, cycleId: id || null }))}
+        />
+      ) : null}
+      {scale.length ? (
+        <ChipPicker
+          label="Estimate"
+          display={linear.estimate != null ? `Estimate ${scale.find((entry) => entry.value === linear.estimate)?.label ?? linear.estimate}` : "Estimate"}
+          muted={linear.estimate == null}
+          options={[{ id: "", label: "No estimate" }, ...scale.map((entry) => ({ id: String(entry.value), label: entry.label }))]}
+          selected={[linear.estimate == null ? "" : String(linear.estimate)]}
+          placeholder="Estimate…"
+          onPick={(id) => setLinear((current) => ({ ...current, estimate: id === "" ? null : Number(id) }))}
+        />
+      ) : null}
+      <div className="inline-flex h-7 items-center gap-1.5 text-[11.5px] text-[color:var(--kit-text-3)]">
+        Due
+        <IssueDueDatePicker
+          ariaLabel="Linear due date"
+          value={linear.dueDate || null}
+          onPick={(dueDate) => setLinear((current) => ({ ...current, dueDate: dueDate ?? "" }))}
+        />
+      </div>
+      <label className="inline-flex h-7 items-center gap-1.5 rounded-md border border-fg/[0.08] px-2 text-[11.5px] text-[color:var(--kit-text-3)]">
+        Parent
+        <input
+          aria-label="Parent issue"
+          placeholder="ADE-123"
+          className="w-[84px] bg-transparent font-mono text-fg/85 outline-none placeholder:text-[color:var(--kit-text-3)]"
+          value={linear.parent}
+          disabled={parentLocked}
+          onChange={(event) => setLinear((current) => ({ ...current, parent: event.target.value.toUpperCase() }))}
+        />
+      </label>
+    </>
+  );
+}
+
+export function GitHubCreateChips({
+  github,
+  setGitHub,
+  repoCatalog,
+  types,
+}: {
+  github: GitHubFields;
+  setGitHub: Setter<GitHubFields>;
+  repoCatalog: GitHubRepoCatalog | null;
+  types: GitHubIssueTypeOption[];
+}) {
+  const ghMilestones = repoCatalog?.milestones ?? [];
+  return (
+    <>
+      <ChipPicker
+        label="Labels"
+        display={github.labels.length ? (github.labels.length === 1 ? github.labels[0]! : `${github.labels.length} labels`) : "Labels"}
+        muted={!github.labels.length}
+        multi
+        options={githubLabelOptions(repoCatalog?.labels ?? [])}
+        selected={github.labels}
+        placeholder={repoCatalog ? "Labels…" : "Loading labels…"}
+        onPick={(id) => setGitHub((current) => ({ ...current, labels: toggle(current.labels, id) }))}
+      />
+      <ChipPicker
+        label="Assignees"
+        display={github.assignees.length ? (github.assignees.length === 1 ? github.assignees[0]! : `${github.assignees.length} people`) : "Assignees"}
+        muted={!github.assignees.length}
+        multi
+        options={githubPersonOptions(repoCatalog?.people ?? [])}
+        selected={github.assignees}
+        placeholder={repoCatalog ? "Assign people…" : "Loading people…"}
+        onPick={(id) => setGitHub((current) => ({ ...current, assignees: toggle(current.assignees, id) }))}
+      />
+      {ghMilestones.length ? (
+        <ChipPicker
+          label="Milestone"
+          display={ghMilestones.find((entry) => entry.number === github.milestone)?.title ?? "Milestone"}
+          muted={github.milestone == null}
+          options={[{ id: "", label: "No milestone" }, ...ghMilestones.map((entry) => ({ id: String(entry.number), label: entry.title }))]}
+          selected={[github.milestone == null ? "" : String(github.milestone)]}
+          placeholder="Milestone…"
+          onPick={(id) => setGitHub((current) => ({ ...current, milestone: id ? Number(id) : null }))}
+        />
+      ) : null}
+      {types.length ? (
+        <ChipPicker
+          label="Type"
+          display={github.type ?? "Type"}
+          muted={!github.type}
+          options={[{ id: "", label: "No type" }, ...types.map((entry) => ({ id: entry.name, label: entry.name }))]}
+          selected={[github.type ?? ""]}
+          placeholder="Issue type…"
+          onPick={(id) => setGitHub((current) => ({ ...current, type: id || null }))}
+        />
+      ) : null}
+    </>
+  );
+}
+
+export function GitHubMoreFields({
+  github,
+  setGitHub,
+  parentLocked,
+}: {
+  github: GitHubFields;
+  setGitHub: Setter<GitHubFields>;
+  parentLocked: boolean;
+}) {
+  return (
+    <label className="inline-flex h-7 items-center gap-1.5 rounded-md border border-fg/[0.08] px-2 text-[11.5px] text-[color:var(--kit-text-3)]">
+      Parent
+      <input
+        aria-label="Parent issue number"
+        placeholder="#123"
+        className="w-[64px] bg-transparent font-mono text-fg/85 outline-none placeholder:text-[color:var(--kit-text-3)]"
+        value={github.parent}
+        disabled={parentLocked}
+        onChange={(event) => setGitHub((current) => ({ ...current, parent: event.target.value }))}
+      />
+    </label>
+  );
+}
+
+export function JiraCreateChips({
+  jira,
+  setJira,
+  projects,
+  meta,
+  users,
+  labels,
+  onProjectPick,
+}: {
+  jira: JiraFields;
+  setJira: Setter<JiraFields>;
+  projects: JiraProject[];
+  meta: JiraCreateMeta | null;
+  users: JiraUser[];
+  labels: string[];
+  onProjectPick?: () => void;
+}) {
+  const projectKey = jira.projectKey;
+  const types = meta?.issueTypes ?? [];
+  const issueType = types.find((entry) => entry.id === jira.issueTypeId) ?? null;
+  const assignee = users.find((entry) => entry.accountId === jira.assigneeAccountId) ?? null;
+  const pickedLabels = labels.filter((label) => jira.labels.includes(label));
+  const priorities = meta?.priorities ?? [];
+  const priority = priorities.find((entry) => entry.id === jira.priorityId) ?? null;
+  return (
+    <>
+      <ChipPicker
+        label="Jira project"
+        display={projectKey || "Project"}
+        muted={!projectKey}
+        options={projects.map((entry) => ({ id: entry.key, label: `${entry.key} · ${entry.name}` }))}
+        selected={projectKey ? [projectKey] : []}
+        placeholder="Project…"
+        onPick={(id) => {
+          onProjectPick?.();
+          setJira((current) => ({ ...current, projectKey: id, issueTypeId: "", assigneeAccountId: null, priorityId: null, labels: [] }));
+        }}
+      />
+      <ChipPicker
+        label="Type"
+        display={issueType ? <>{issueType.iconUrl ? <img src={issueType.iconUrl} alt="" className="h-3.5 w-3.5 shrink-0" /> : null}{issueType.name}</> : "Issue type"}
+        muted={!issueType}
+        disabled={!meta || types.length === 0}
+        options={types.map((entry) => {
+          const missing = entry.fields.filter((field) => field.required && !field.supported);
+          return {
+            id: entry.id,
+            label: entry.name,
+            icon: entry.iconUrl ? <img src={entry.iconUrl} alt="" className="h-3.5 w-3.5" /> : undefined,
+            disabled: missing.length > 0,
+            detail: missing.length ? `Required fields aren't supported: ${missing.map((field) => field.name).join(", ")}` : undefined,
+          };
+        })}
+        selected={jira.issueTypeId ? [jira.issueTypeId] : []}
+        placeholder={meta ? "Issue type…" : "Loading issue types…"}
+        onPick={(id) => setJira((current) => ({ ...current, issueTypeId: id }))}
+      />
+      <ChipPicker
+        label="Assignee"
+        display={assignee ? <><LinearAssigneeAvatar name={assignee.displayName} avatarUrl={assignee.avatarUrl} size={14} />{assignee.displayName}</> : "Assignee"}
+        muted={!assignee}
+        options={[{ id: "", label: "Unassigned" }, ...users.map((entry) => ({
+          id: entry.accountId,
+          label: entry.displayName,
+          keywords: entry.emailAddress ?? "",
+          icon: <LinearAssigneeAvatar name={entry.displayName} avatarUrl={entry.avatarUrl} size={14} />,
+        }))]}
+        selected={[jira.assigneeAccountId ?? ""]}
+        placeholder="Assign to…"
+        onPick={(id) => setJira((current) => ({ ...current, assigneeAccountId: id || null }))}
+      />
+      <ChipPicker
+        label="Priority"
+        display={priority?.name ?? "Priority"}
+        muted={!priority}
+        options={[{ id: "", label: "No priority" }, ...priorities.map((entry) => ({ id: entry.id, label: entry.name }))]}
+        selected={[jira.priorityId ?? ""]}
+        placeholder="Priority…"
+        onPick={(id) => setJira((current) => ({ ...current, priorityId: id || null }))}
+      />
+      <ChipPicker
+        label="Labels"
+        display={pickedLabels.length ? (pickedLabels.length === 1 ? pickedLabels[0]! : `${pickedLabels.length} labels`) : "Labels"}
+        muted={!pickedLabels.length}
+        multi
+        options={labels.map((label) => ({ id: label, label }))}
+        selected={jira.labels}
+        placeholder="Labels…"
+        onPick={(id) => setJira((current) => ({ ...current, labels: toggle(current.labels, id) }))}
+      />
+    </>
+  );
+}
+
+export function JiraMoreFields({ jira, setJira, parentLocked }: { jira: JiraFields; setJira: Setter<JiraFields>; parentLocked: boolean }) {
+  return (
+    <>
+      <div className="inline-flex h-7 items-center gap-1.5 text-[11.5px] text-[color:var(--kit-text-3)]">
+        Due
+        <IssueDueDatePicker
+          ariaLabel="Jira due date"
+          value={jira.dueDate || null}
+          onPick={(dueDate) => setJira((current) => ({ ...current, dueDate: dueDate ?? "" }))}
+        />
+      </div>
+      <label className="inline-flex h-7 items-center gap-1.5 rounded-md border border-fg/[0.08] px-2 text-[11.5px] text-[color:var(--kit-text-3)]">
+        Parent
+        <input
+          aria-label="Jira parent issue"
+          placeholder="PROJ-123"
+          className="w-[84px] bg-transparent font-mono text-fg/85 outline-none placeholder:text-[color:var(--kit-text-3)]"
+          value={jira.parentKey}
+          disabled={parentLocked}
+          onChange={(event) => setJira((current) => ({ ...current, parentKey: event.target.value.toUpperCase() }))}
+        />
+      </label>
+    </>
+  );
+}

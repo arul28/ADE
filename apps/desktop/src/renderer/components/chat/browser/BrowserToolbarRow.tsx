@@ -223,7 +223,7 @@ export function BrowserToolbarRow({
         {urlField.tunnel ? (
           <span
             className={cn(
-              "inline-flex h-5 shrink-0 items-center rounded-full bg-white/[0.06] px-1.5",
+              "inline-flex h-5 shrink-0 items-center rounded-full bg-fg/[0.06] px-1.5",
               "text-[10px] font-medium text-fg/70",
             )}
             title={`Tunneled to port ${urlField.tunnel.tunnel.remotePort} on ${urlField.tunnel.tunnel.machineLabel}`}
@@ -288,7 +288,7 @@ export function BrowserToolbarRow({
             disabled={Boolean(busy) || !apiAvailable}
             className={cn(
               "inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full",
-              "bg-white/[0.08] text-fg/75 hover:bg-white/[0.14] hover:text-fg",
+              "bg-fg/[0.08] text-fg/75 hover:bg-fg/[0.14] hover:text-fg",
               TOOLBAR_MOTION,
               TOOLBAR_FOCUS,
             )}

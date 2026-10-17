@@ -43,10 +43,9 @@ export type AcpPoolKeyParts = {
   /**
    * Hash of the command and its arguments.
    *
-   * This is not decoration. Several providers take the model and the reasoning
+   * This is not decoration. Some providers take the model and the reasoning
    * effort as process-global spawn flags: Grok uses `-m` and
-   * `--reasoning-effort`, and Copilot uses `--effort`, which `session/new`
-   * cannot override. Without the argument hash, two chats on different models
+   * `--reasoning-effort`, which `session/new` cannot override. Without the argument hash, two chats on different models
    * would share one process and the second chat would silently run on the
    * first chat's model.
    */

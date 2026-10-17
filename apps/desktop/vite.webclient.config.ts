@@ -3,6 +3,7 @@ import react from "@vitejs/plugin-react";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { sceneThreePlugin } from "./vite.sceneThree";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -48,7 +49,8 @@ function webClientDevEntry(): Plugin {
         const accepts = String(req.headers.accept ?? "");
         const isNavigation = accepts.includes("text/html");
         const isAsset = pathname.includes(".") && !pathname.endsWith(".html");
-        if (isNavigation && !isAsset && pathname !== "/webclient.html") {
+        // The scene frame is a real page of its own (public/scene-frame.html).
+        if (isNavigation && !isAsset && pathname !== "/webclient.html" && pathname !== "/scene-frame.html") {
           req.url = "/webclient.html";
         }
         next();
@@ -117,10 +119,16 @@ const DEV_PUSH_RELAY_PROXY_TARGET =
 // followed by another character, so a bare `/attention` request was not proxied.
 const DEV_PUSH_RELAY_PROXY_ROUTE = "^/attention(?:[/?]|$)";
 
+// The deploy passes the tag-derived version (deploy-web.yml); package.json's
+// version is a placeholder that releases never bump.
+const desktopPackageVersion = process.env.ADE_WEB_VERSION?.trim()
+  || (JSON.parse(fs.readFileSync(path.resolve(__dirname, "package.json"), "utf8")) as { version?: string }).version
+  || "";
+
 export default defineConfig({
   root: "src/renderer",
   base: "/",
-  plugins: [react(), webClientDevEntry(), cloudflarePagesOutput()],
+  plugins: [react(), webClientDevEntry(), cloudflarePagesOutput(), sceneThreePlugin()],
   server: {
     host: true,
     port: 5174,
@@ -154,9 +162,16 @@ export default defineConfig({
       }
     }
   },
+  define: {
+    // Sentry's release name: the desktop version this client was built from.
+    __ADE_WEB_VERSION__: JSON.stringify(desktopPackageVersion),
+  },
   build: {
     outDir: "../../dist/web-client",
     emptyOutDir: true,
+    // Hidden maps for Sentry: written only when the release pipeline asks,
+    // uploaded, then deleted before deploy (see deploy-web.yml).
+    sourcemap: process.env.ADE_BUILD_SOURCEMAPS === "1" ? "hidden" : false,
     cssMinify: "lightningcss",
     rollupOptions: {
       input: {

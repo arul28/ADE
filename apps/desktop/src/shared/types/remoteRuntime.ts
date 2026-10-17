@@ -361,6 +361,11 @@ export type RemoteRuntimeHandoffStoragePreflightArgs = {
   originUrl?: string;
   branchRef?: string;
   sourceHeadSha?: string;
+  /**
+   * The handoff carries its commits in a git bundle, so the destination does
+   * not require origin's branch to be at `sourceHeadSha`.
+   */
+  hasGitBundle?: boolean;
 };
 
 export type RemoteRuntimeCloneProjectOptions = {
@@ -504,6 +509,13 @@ export type RemoteRuntimeUpdateStep = {
   detail: string;
 };
 
+/**
+ * Which updater took the request. `desktop_app`: the ADE app open on that
+ * machine installs its own update and brings the brain with it.
+ * `standalone`: no app is open there, so the standalone runtime is replaced.
+ */
+export type RemoteRuntimeUpdateRoute = "desktop_app" | "standalone";
+
 export type RemoteRuntimeUpdateAndRestartResult = {
   ok: boolean;
   /** True when a new version was actually installed, not just a restart. */
@@ -513,6 +525,14 @@ export type RemoteRuntimeUpdateAndRestartResult = {
   steps: RemoteRuntimeUpdateStep[];
   /** One plain line to show the user. Already names the failed step. */
   message: string;
+  /** Absent from hosts that predate it; those only had the standalone route. */
+  route?: RemoteRuntimeUpdateRoute;
+  /**
+   * The version the machine should report once it is back, when the update is
+   * still in flight. Absent from older hosts: the client then falls back to
+   * `targetVersion` for an `ok` result that applied an update.
+   */
+  pendingVersion?: string | null;
 };
 
 export type RemoteRuntimeLocalWorkMatch = {

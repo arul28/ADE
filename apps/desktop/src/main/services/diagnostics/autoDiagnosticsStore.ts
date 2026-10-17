@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { FAILURE_CODE_PATTERN } from "../../../shared/diagnosticsUpload";
+import { doNotTrackRequested } from "../../../shared/doNotTrack";
 import { writeFileAtomic } from "../state/durableFile";
 
 /**
@@ -346,9 +347,13 @@ function mutate<T>(
   }
 }
 
-/** Is automatic sending on? Default ON; an unreadable store still reads ON. */
+/**
+ * Is automatic sending on? Default ON. It is off only for `DO_NOT_TRACK=1` or
+ * an explicit `enabled: false` persisted before the Settings control was
+ * removed. An unreadable store still reads ON.
+ */
 export function isAutoDiagnosticsEnabled(filePath: string): boolean {
-  return readState(filePath).state.enabled;
+  return !doNotTrackRequested() && readState(filePath).state.enabled;
 }
 
 /**
@@ -444,6 +449,9 @@ export function claimAutoDiagnosticsSend(args: {
   const now = args.now ?? Date.now;
   const code = normalizeAutoDiagnosticsFailureCode(args.failureCode);
   if (!code) return { allowed: false, reason: "state_unavailable" };
+  // The reservation is the budget boundary, so the opt-out is enforced here as
+  // well as at the sender's early check. Nothing is reserved when it applies.
+  if (doNotTrackRequested()) return { allowed: false, reason: "disabled" };
   return mutate<AutoDiagnosticsClaim>(
     args.filePath,
     now,

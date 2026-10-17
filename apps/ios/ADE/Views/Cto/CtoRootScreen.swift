@@ -62,12 +62,7 @@ struct CtoRootScreen: View {
       Button {
         showingSettings = true
       } label: {
-        Image(systemName: "gearshape")
-          .font(.system(size: 16, weight: .semibold))
-          .foregroundStyle(ADEColor.textSecondary)
-          .frame(width: 32, height: 32)
-          .background(ADEColor.surfaceBackground.opacity(0.6), in: Circle())
-          .overlay(Circle().stroke(ADEColor.glassBorder, lineWidth: 0.5))
+        ADEKitCircleIcon(systemImage: "gearshape")
       }
       .buttonStyle(.plain)
       .accessibilityLabel("CTO settings")
@@ -126,7 +121,7 @@ struct CtoRootScreen: View {
           .font(.system(size: 17, weight: .semibold))
           .foregroundStyle(ADEColor.textPrimary)
           .multilineTextAlignment(.center)
-        Text("The CTO is interrupted constantly — by the chats it starts, by its own wake-ups. It can only run on a model that accepts a message into a turn already underway.")
+        Text("The CTO needs a model that accepts messages mid-turn.")
           .font(.subheadline)
           .foregroundStyle(ADEColor.textSecondary)
           .multilineTextAlignment(.center)
@@ -141,10 +136,8 @@ struct CtoRootScreen: View {
           Text(modelPickInFlight ? "Moving the thread…" : "Choose a model")
             .fontWeight(.semibold)
         }
-        .frame(maxWidth: .infinity, minHeight: 30)
       }
-      .buttonStyle(.glassProminent)
-      .tint(ADEColor.ctoAccent)
+      .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
       .disabled(modelPickInFlight)
       .accessibilityLabel("Choose a CTO model")
 

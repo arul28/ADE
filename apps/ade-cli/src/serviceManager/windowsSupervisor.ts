@@ -12,9 +12,11 @@ import {
 import {
   type AdeServiceCommand,
   cmdQuote,
+  powerShellSingleQuotedLiteral,
   serviceManagerResultText,
   type ServiceManagerSpawnSync,
 } from "./common";
+import { renderWindowsSupervisorGuardLines } from "./windowsSupervisorGuards";
 
 /**
  * Trusted `powershell.exe`, resolved on first use and then memoized.
@@ -133,11 +135,6 @@ export type WindowsSupervisorState =
       diagnostic: null;
     };
 
-function powerShellSingleQuotedLiteral(value: string): string {
-  if (value.includes("\0")) throw new Error("PowerShell values cannot contain NUL bytes.");
-  return `'${value.replace(/'/g, "''")}'`;
-}
-
 export function renderWindowsServiceLauncher(
   command: AdeServiceCommand,
   options: {
@@ -221,108 +218,8 @@ export function renderWindowsServiceLauncher(
       "}",
     ]
     : ["function Write-SupervisorLog([string]$message) { }"];
-  // ADE-160. Three guards run before any brain work, in this order:
-  //
-  // 1. Session check. The Run entry fires at EVERY logon of the user, so a
-  //    Remote Desktop child session, an ordinary RDP logon, or fast user
-  //    switching starts a supervisor too. A brain there would end with that
-  //    session; the console session is where the always-on brain belongs.
-  // 2. Child-session branch. When this is not the console session, the Windows
-  //    Desktop feature leaves a short-lived launch request in
-  //    `<adeDir>\windows-desktop\child-launch.json`. The launcher starts that
-  //    driver (hidden, no wait) so it can connect back to the console brain over
-  //    the pipe — it never starts a supervisor or a brain here.
-  // 3. Single-instance mutex. `Global\` rather than `Local\` on purpose: a
-  //    `Local\` name is per session and would not exclude the second session.
-  //    The name is baked in at render time (channel launcher hash + the user's
-  //    SID), so every session of the account computes the same one. A
-  //    supervisor that cannot take it logs why and exits 0, leaving the owner
-  //    alone. The handle is held for the supervisor's lifetime; Windows
-  //    releases it when the process exits.
-  const childLaunchPath = options.adeDir
-    ? path.win32.join(options.adeDir, "windows-desktop", "child-launch.json")
-    : null;
   const guardLines = options.mutexName
-    ? [
-      `$mutexName = ${powerShellSingleQuotedLiteral(options.mutexName)}`,
-      `$childLaunchPath = ${
-        childLaunchPath ? powerShellSingleQuotedLiteral(childLaunchPath) : "$null"
-      }`,
-      "$mutexApiReady = $false",
-      "$sessionApiReady = $false",
-      // C# 5 only, like the JobApi block below: Windows PowerShell 5.1 compiles
-      // Add-Type sources with the .NET Framework compiler.
-      "try {",
-      "  Add-Type -Namespace AdeSupervisor -Name SessionApi -MemberDefinition @'",
-      "[DllImport(\"kernel32.dll\")]",
-      "public static extern uint WTSGetActiveConsoleSessionId();",
-      "'@",
-      "  $sessionApiReady = $true",
-      "} catch { }",
-      // `CreateMutex` through the API rather than New-Object: the
-      // already-exists answer comes back in GetLastWin32Error, which PowerShell's
-      // New-Object cannot surface from a [ref] argument reliably.
-      "try {",
-      "  Add-Type -Namespace AdeSupervisor -Name MutexApi -MemberDefinition @'",
-      "[DllImport(\"kernel32.dll\", SetLastError=true, CharSet=CharSet.Unicode)]",
-      "public static extern IntPtr CreateMutex(IntPtr attributes, bool initialOwner, string name);",
-      "'@",
-      "  $mutexApiReady = $true",
-      "} catch { }",
-      "$inConsoleSession = $false",
-      "if ($sessionApiReady) {",
-      "  try {",
-      "    $consoleSessionId = [AdeSupervisor.SessionApi]::WTSGetActiveConsoleSessionId()",
-      "    $currentSessionId = [uint32][System.Diagnostics.Process]::GetCurrentProcess().SessionId",
-      "    $inConsoleSession = ($consoleSessionId -ne [uint32]::MaxValue) -and ($currentSessionId -eq $consoleSessionId)",
-      "  } catch {",
-      "    Write-SupervisorLog \"session check failed; refusing to start a brain: $($_.Exception.Message)\"",
-      "    exit 1",
-      "  }",
-      "}",
-      "if (-not $sessionApiReady) { Write-SupervisorLog 'session API unavailable; refusing to start a brain'; exit 1 }",
-      "if (-not $inConsoleSession) {",
-      "  Write-SupervisorLog \"not the console session (current=$currentSessionId console=$consoleSessionId); not starting a supervisor\"",
-      "  if (-not [string]::IsNullOrEmpty($childLaunchPath) -and (Test-Path -LiteralPath $childLaunchPath -PathType Leaf)) {",
-      "    try {",
-      "      $child = (Get-Content -LiteralPath $childLaunchPath -Raw -ErrorAction Stop) | ConvertFrom-Json",
-      "      $driverPath = [string]$child.driverPath",
-      "      $expiresAt = [DateTimeOffset]::MinValue",
-      "      $expiryOk = [DateTimeOffset]::TryParse([string]$child.expiresAt, [ref]$expiresAt) -and ($expiresAt -gt [DateTimeOffset]::UtcNow)",
-      "      $driverOk = (-not [string]::IsNullOrEmpty($driverPath)) -and (Test-Path -LiteralPath $driverPath -PathType Leaf) -and ($driverPath -match 'ade-desktop-driver\\.exe$')",
-      "      if ($expiryOk -and $driverOk) {",
-      "        $childArgs = @($child.args | ForEach-Object { [string]$_ })",
-      "        Start-Process -FilePath $driverPath -ArgumentList $childArgs -WindowStyle Hidden",
-      "        Write-SupervisorLog 'child session: started the desktop driver'",
-      "      } else {",
-      "        Write-SupervisorLog \"child session: child-launch.json is not usable (expiry=$expiryOk driver=$driverOk)\"",
-      "      }",
-      "    } catch {",
-      "      Write-SupervisorLog \"child session: child-launch.json could not be used: $($_.Exception.Message)\"",
-      "    }",
-      "  } else {",
-      "    Write-SupervisorLog 'child session: no child-launch.json; nothing to start'",
-      "  }",
-      "  exit 0",
-      "}",
-      "$mutexHandle = [IntPtr]::Zero",
-      "if ($mutexApiReady) {",
-      "  $mutexHandle = [AdeSupervisor.MutexApi]::CreateMutex([IntPtr]::Zero, $true, $mutexName)",
-      "  $mutexError = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()",
-      "  if ($mutexHandle -eq [IntPtr]::Zero) {",
-      "    Write-SupervisorLog \"could not create the supervisor mutex $mutexName (error $mutexError); refusing to start a brain\"",
-      "    exit 1",
-      "  } elseif ($mutexError -eq 183) {",
-      // ERROR_ALREADY_EXISTS: another supervisor of this account and channel
-      // already holds it — the ADE-160 case. Leave the owner alone.
-      "    Write-SupervisorLog \"another ADE supervisor already owns $mutexName; exiting\"",
-      "    exit 0",
-      "  }",
-      "} else {",
-      "  Write-SupervisorLog 'supervisor mutex API unavailable; refusing to start a brain'",
-      "  exit 1",
-      "}",
-    ]
+    ? renderWindowsSupervisorGuardLines({ mutexName: options.mutexName, adeDir: options.adeDir })
     : [];
   // The brain's stdout/stderr are drained by background threads compiled in
   // here, NOT by PowerShell event handlers: the supervisor thread spends its

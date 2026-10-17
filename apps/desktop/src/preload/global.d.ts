@@ -1,4 +1,26 @@
+import type { MuseBinaryStatus } from "../shared/museBinary";
+import type { MuseSettingsRequest, MuseSettingsResult, MuseSettingsRunArgs } from "../shared/museSettings";
+import type { HomeWidgetsBridge } from "../shared/types/homeWidgets";
+import type { MusicBridge } from "../shared/types/music";
 import type { SmartLinkPreview } from "../shared/smartLinks";
+import type { GitHubIssueTemplateSet } from "../shared/githubIssueTemplates";
+import type {
+  JiraComment,
+  JiraConnectArgs,
+  JiraConnectionStatus,
+  JiraCreateIssueArgs,
+  JiraCreateIssueResult,
+  JiraCreateMeta,
+  JiraIssueDetail,
+  JiraIssuePage,
+  JiraListIssuesArgs,
+  JiraProject,
+  JiraTransition,
+  LaneJiraIssue,
+  JiraUpdateIssueArgs,
+  JiraUser,
+} from "../shared/types/jira";
+import type { McpRegistryServer } from "../shared/mcpRegistry";
 import type { GetPrChatWatchArgs, PrChatWatchSummary, SetPrChatWatchArgs } from "../shared/prWatch";
 import type {
   ChatThreadComment,
@@ -7,6 +29,12 @@ import type {
   ChatThreadCommentListArgs,
   ChatThreadCommentUpdateArgs,
 } from "../shared/threadComments";
+import type {
+  ClaudePluginUiActArgs,
+  ClaudePluginUiActResult,
+  ClaudePluginUiGetArgs,
+  ClaudePluginUiSnapshot,
+} from "../shared/claudePluginUi";
 import type {
   AppleDeviceAttachArgs,
   AppleDeviceStartArgs,
@@ -82,10 +110,14 @@ import type {
   WindowsDesktopTakeoverArgs,
 } from "../shared/types/macDesktop";
 import type {
+  BuiltInBrowserRemoteCall,
+  BuiltInBrowserRemoteAgentCallOutcome,
+  BuiltInBrowserRemoteCallReply,
   BuiltInBrowserRemoteRequest,
   BuiltInBrowserRemoteRequestAck,
 } from "../shared/types/builtInBrowserRemote";
 import type { EditorTarget, OpenPathInEditorRemote, OpenPathTarget } from "../shared/editorTargets";
+import type { InstalledBrowser } from "../shared/browserTargets";
 import type { MachineInventoryDetail } from "../shared/types/machineInventory";
 import type {
   AdeCleanupResult,
@@ -132,6 +164,12 @@ import type {
   ApplyConflictProposalArgs,
   AppInfo,
   LocalRuntimeStatus,
+  BackgroundServiceSummary,
+  QuitPromptAnswer,
+  QuitPromptRepairResult,
+  QuitPromptRequest,
+  StopBackgroundServiceRequest,
+  StopBackgroundServiceResult,
   AppWelcomeVideoState,
   AppResourceUsageSnapshot,
   LatestReleaseInfo,
@@ -143,6 +181,7 @@ import type {
   KeepAwakeLevel,
   KeepAwakeSnapshot,
   AutoUpdateSnapshot,
+  UpdateImpact,
   UpdateInstallImpact,
   ClearLocalAdeDataArgs,
   ClearLocalAdeDataResult,
@@ -152,6 +191,13 @@ import type {
   AutomationIngressStatus,
   AutomationLinearIngressStatus,
   AutomationScheduledCleanup,
+  AutomationWebhookTestRequest,
+  AutomationWebhookListEntry,
+  AutomationWebhookTriggerConfig,
+  AutomationWebhookEndpoint,
+  AutomationWebhookDeliverySummary,
+  AutomationWebhookDelivery,
+  AutomationWebhookTestResult,
   AutomationWebhookGatewayStatus,
   ConflictProposal,
   ConflictExternalResolverRunSummary,
@@ -249,11 +295,24 @@ import type {
   AgentChatMarkCrossMachineHandoffArgs,
   AgentChatPrepareCrossMachineHandoffArgs,
   AgentChatPrepareCrossMachineHandoffResult,
+  AgentChatAcknowledgeCrossMachineHandoffArgs,
+  AgentChatCrossMachineHandoffSessionArgs,
+  AgentChatRetryCrossMachineHandoffArgs,
+  AgentChatPreviewCrossMachineHandoffArgs,
+  AgentChatPreviewCrossMachineHandoffResult,
+  AgentChatCrossMachineHandoffOptionsResult,
+  AgentChatCrossMachineHandoffRecord,
+  AgentChatResolveCrossMachineHandoffApprovalArgs,
+  AgentChatStartCrossMachineHandoffArgs,
   AgentChatValidateCrossMachineSourceArgs,
   AgentChatInterruptArgs,
   AgentChatInterruptResult,
   AgentChatStopTaskArgs,
   AgentChatStopTaskResult,
+  AgentChatMessageSubagentArgs,
+  AgentChatMessageSubagentResult,
+  AgentChatControlSubagentArgs,
+  AgentChatControlSubagentResult,
   AgentChatRestartSessionArgs,
   AgentChatRestartSessionResult,
   AgentChatRestoreCancelledQueueArgs,
@@ -318,9 +377,11 @@ import type {
   AgentChatFileSearchResult,
   ChatMentionSuggestArgs,
   ChatMentionSuggestResult,
-  PromptStashCreateArgs,
-  PromptStashDeleteArgs,
-  PromptStashEntry,
+  DraftClaimArgs,
+  DraftCreateArgs,
+  DraftDeleteArgs,
+  DraftEntry,
+  DraftUpdateArgs,
   AgentChatGetTurnFileDiffArgs,
   AgentChatSession,
   AgentChatSessionCapabilities,
@@ -346,6 +407,9 @@ import type {
   AgentChatUpdateSessionArgs,
   AutomationsEventPayload,
   AutomationManualTriggerRequest,
+  AutomationTestCleanupResult,
+  AutomationTestPlan,
+  AutomationTestRequest,
   AutomationRuleSummary,
   AutomationRun,
   AutomationRunDetail,
@@ -375,6 +439,9 @@ import type {
   OpenCodeOAuthStartResult,
   OpenCodeOAuthStatusEvent,
   OpenCodeProviderAuthMethods,
+  OpenCodeAccountActionResult,
+  OpenCodeAccountsResult,
+  OpenCodeCloudConnectResult,
   PiAuthStatusEvent,
   PiLoginMethod,
   PiLoginProvider,
@@ -441,6 +508,11 @@ import type {
   CtoCountLinearIssuesArgs,
   CtoCountLinearIssuesResult,
   CtoGetLinearIssueArgs,
+  CtoCreateLinearIssueCommentArgs,
+  LinearIssueCreateInput,
+  LinearIssueCreateOptions,
+  LinearProjectMilestone,
+  LinearUploadResult,
   CtoLinearCustomView,
   LinearAgentOverview,
   LinearInboxNotification,
@@ -496,9 +568,15 @@ import type {
   GitHubAppDeviceAuthPollResult,
   GitHubAppDeviceAuthStartResult,
   GitHubAppInstallationStatus,
+  GitHubRepoIssueSummary,
+  GitHubIssueWriteAccess,
+  GitHubIssueCreateInput,
+  GitHubIssueCreateResult,
+  GitHubIssueTypeOption,
   GitHubAppUserAuthStatus,
   GitHubAutolink,
   GitHubRepoRef,
+  GitHubRepoStarState,
   GitHubRequestBudget,
   GitHubSetTokenResult,
   GitHubStatus,
@@ -515,6 +593,13 @@ import type {
   AdeAccountSessionRepairResult,
   AccountSettingRow,
   AccountSettingsResult,
+  McpRegistryCheck,
+  McpRegistryContext,
+  McpRegistryImportResult,
+  McpRegistryResult,
+  McpRegistryScan,
+  McpRegistrySecretRef,
+  McpRegistrySignInResult,
   AccountSettingsWriteOptions,
   AdeAccountMachinesResult,
   AdeAccountMachinePairResult,
@@ -700,6 +785,7 @@ import type {
   SessionDeltaSummary,
   SessionLifecycleSettings,
   SessionGitHubIssueLink,
+  SessionJiraIssueLink,
   SessionLinearIssueLink,
   SessionBoardMoveResult,
   SessionBoardMoveUndoResult,
@@ -990,7 +1076,7 @@ import type {
   ApiCredentialStoreArgs,
   ApiCredentialSummary,
 } from "../shared/types/apiCredentials";
-import type { GitHubIssueLike } from "../shared/laneGitHubIssue";
+import type { GitHubIssueCommentLike, GitHubIssueLike, GitHubIssuePatch } from "../shared/laneGitHubIssue";
 import type {
   AgentChatCopyTempAttachmentArgs,
   ChatAttachmentStagingMode,
@@ -1015,7 +1101,17 @@ import type {
   StorageCompressionResult,
   StorageSnapshot,
 } from "../shared/types/storage";
-import type { ProjectRecoveryDiagnosis, ProjectRepairReport, RepairStepResult } from "../shared/types/recovery";
+import type { ProjectDataProblem, ProjectDataRestoreResult, ProjectDataStatus, ProjectRecoveryDiagnosis, ProjectRepairReport, RepairStepResult } from "../shared/types/recovery";
+import type {
+  ProjectMoveAttention,
+  ProjectMoveCleanupArgs,
+  ProjectMovePreflight,
+  ProjectMoveProgress,
+  ProjectMoveRecord,
+  ProjectMoveResult,
+  ProjectMoveStartArgs,
+  ProjectMoveVolume,
+} from "../shared/types/projectMove";
 import type { MachineResetOptions, MachineResetPlan } from "../shared/types/machineReset";
 import type {
   WorkToolId,
@@ -1073,6 +1169,20 @@ declare global {
         setIgnoreMenuShortcuts: (ignore: boolean) => Promise<{ ok: true }>;
         getInfo: () => Promise<AppInfo>;
         getInstalledEditors: () => Promise<EditorTarget[]>;
+        /**
+         * The browsers this machine can open a link in, each with its app icon
+         * as a data URL. Desktop only — the hosted-web client has no OS apps to
+         * detect, so callers feature-detect before offering the choice.
+         */
+        getInstalledBrowsers?: () => Promise<InstalledBrowser[]>;
+        /** Open a URL in one of the browsers `getInstalledBrowsers` returned. */
+        openInBrowser?: (args: { url: string; browserId: string }) => Promise<void>;
+        /**
+         * An installed app's icon by its name ("Xcode", "Notes"), as a data
+         * URL, or null. macOS only; elsewhere, and on the hosted-web client,
+         * the method is absent or answers null, and callers draw a glyph.
+         */
+        getAppIcon?: (args: { name: string }) => Promise<string | null>;
         onRuntimeStatusChanged: (
           cb: (status: LocalRuntimeStatus) => void,
         ) => () => void;
@@ -1085,6 +1195,24 @@ declare global {
          * touch a launch agent, so callers must feature-detect before offering it.
          */
         restartBackgroundService?: () => Promise<void>;
+        /**
+         * The quit confirmation main asks this window to show. Call
+         * `quitPromptShown` once it is on screen, then answer. Native desktop
+         * only; absent on the hosted-web client and browser mock.
+         */
+        onQuitPrompt?: (cb: (request: QuitPromptRequest) => void) => () => void;
+        /** Main is asking natively instead; drop the prompt with this id. */
+        onQuitPromptDismiss?: (cb: (requestId: string) => void) => () => void;
+        quitPromptShown?: (requestId: string) => void;
+        /** Resolves with the repair outcome for a "repair" choice, else null. */
+        answerQuitPrompt?: (answer: QuitPromptAnswer) => Promise<QuitPromptRepairResult | null>;
+        /** Whether ADE confirms before quitting; "Don't ask again" turns it off. */
+        getAskBeforeQuit?: () => Promise<boolean>;
+        setAskBeforeQuit?: (ask: boolean) => Promise<boolean>;
+        /** What runs agents on this computer, and what stopping would end. */
+        getBackgroundService?: () => Promise<BackgroundServiceSummary>;
+        /** Stops the background service and every agent in it, then quits ADE. */
+        stopBackgroundServiceAndQuit?: (request: StopBackgroundServiceRequest) => Promise<StopBackgroundServiceResult>;
         getLatestRelease: () => Promise<LatestReleaseInfo | null>;
         getProject: () => Promise<ProjectInfo | null>;
         getWindowSession: () => Promise<{
@@ -1092,6 +1220,8 @@ declare global {
           project: ProjectInfo | null;
           binding: OpenProjectBinding | null;
           openProjectTabs: ProjectInfo[];
+          /** Every local tab root, including ones whose project is not loaded. */
+          openProjectTabRoots?: string[];
           /** Hosted web persists remote machine/project tabs in this browser. */
           openProjectBindings?: OpenProjectBinding[];
         }>;
@@ -1270,9 +1400,10 @@ declare global {
          * proves the group's rule: `diagnostics` shipped before this existed,
          * so a preload that exposes the group need not expose this. The
          * settings control checks for it and hides itself rather than offering
-         * a button that cannot work.
+         * a button that cannot work, and "Report issue" falls back to
+         * `openIssue`. Pass an error screen's context to report about it.
          */
-        sendManual?: () => Promise<DiagnosticsManualSendResult>;
+        sendManual?: (context?: DiagnosticReportRequestPayload) => Promise<DiagnosticsManualSendResult>;
         getSharing: () => Promise<DiagnosticsSharingStatus>;
         setSharing: (enabled: boolean) => Promise<DiagnosticsSharingStatus>;
         revealReport: (reportPath: string) => Promise<void>;
@@ -1283,11 +1414,34 @@ declare global {
          */
         ackAutoSent: (references: string[]) => Promise<void>;
       };
+      /**
+       * Moving a project to a new folder on this Mac. Optional: older preloads
+       * lack it, and the Settings row hides itself then. Local only: the
+       * project must live on the machine this window runs on.
+       */
+      projectMove?: {
+        listVolumes: () => Promise<ProjectMoveVolume[]>;
+        preflight: (args: { projectRoot: string; destinationRoot: string }) => Promise<ProjectMovePreflight>;
+        start: (args: ProjectMoveStartArgs) => Promise<ProjectMoveResult>;
+        status: (projectRoot: string) => Promise<ProjectMoveRecord | null>;
+        attention: () => Promise<ProjectMoveAttention>;
+        cleanup: (args: ProjectMoveCleanupArgs) => Promise<ProjectMoveRecord>;
+        reveal: (args: { moveId: string; which: "original" | "moved" }) => Promise<void>;
+        chooseFolder: (defaultPath?: string) => Promise<string | null>;
+        onProgress: (cb: (progress: ProjectMoveProgress) => void) => () => void;
+      };
       recovery: {
         diagnose: (projectRoot: string) => Promise<ProjectRecoveryDiagnosis>;
         repair: (projectRoot: string) => Promise<ProjectRepairReport>;
         /** Opens System Settings at Login Items (macOS). Optional: older preloads lack it. */
         openBackgroundSettings?: () => Promise<{ opened: boolean }>;
+        /** Optional: older preloads lack the missing-data recovery calls. */
+        restoreProjectData?: (projectRoot: string) => Promise<ProjectDataRestoreResult>;
+        startFresh?: (projectRoot: string) => Promise<void>;
+        /** Whether a project's ADE data is missing or swapped; no root asks about the project that failed to reopen at launch. */
+        projectDataStatus?: (projectRoot?: string) => Promise<ProjectDataStatus | null>;
+        /** An open project's .ade folder or database was moved or deleted. */
+        onProjectDataMissing?: (cb: (payload: { projectRoot: string; status: ProjectDataProblem }) => void) => () => void;
         /**
          * Live repair steps for the window that started the repair. Optional
          * for the same reason `diagnostics` is: an older preload does not have
@@ -1344,6 +1498,11 @@ declare global {
           id: string,
           targetVersion?: string | null,
         ) => Promise<RemoteRuntimeUpdateAndRestartResult>;
+        /**
+         * What "Update & restart" would stop on that machine right now. Never
+         * rejects: a machine that cannot answer comes back `checked: false`.
+         */
+        getUpdateImpact: (id: string) => Promise<UpdateImpact>;
         listProjects: (id: string) => Promise<RemoteRuntimeProjectRecord[]>;
         addProject: (
           id: string,
@@ -1438,6 +1597,14 @@ declare global {
         }, pin?: OpenProjectBinding | null) => Promise<AiSettingsStatus>;
         getOpenCodeRuntimeDiagnostics: () => Promise<OpenCodeRuntimeSnapshot>;
         isOpenCodeInstalled: (pin?: OpenProjectBinding | null) => Promise<{ installed: boolean; source: "user-installed" | "tools-cache" | "bundled" | "missing" }>;
+        museBinaryStatus: (pin?: OpenProjectBinding | null) => Promise<MuseBinaryStatus>;
+        ensureMuseBinary: (pin?: OpenProjectBinding | null) => Promise<MuseBinaryStatus>;
+        /** Settings > Muse Code on the machine `pin` names: a Settings-owned `muse serve` host per `handleId`. */
+        museSettings: <R extends MuseSettingsRequest>(
+          args: MuseSettingsRunArgs<R>,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MuseSettingsResult<R["kind"]>>;
+        museSettingsClose: (args: { handleId: string }, pin?: OpenProjectBinding | null) => Promise<{ ok: true }>;
         getToolsCache: () => Promise<AgentToolsCacheSnapshot>;
         ensureToolsCache: () => Promise<AgentToolsCacheSnapshot>;
         onToolsCacheEvent: (cb: (snapshot: AgentToolsCacheSnapshot) => void) => () => void;
@@ -1475,6 +1642,19 @@ declare global {
         clearOpencodeProviderKey: (args: {
           providerId: string;
         }, pin?: OpenProjectBinding | null) => Promise<{ ok: boolean; error?: string }>;
+        /** OpenCode logins on the pinned machine, one provider's or all; never a secret. */
+        opencodeAccounts: (args: { providerId?: string | null }, pin?: OpenProjectBinding | null) => Promise<OpenCodeAccountsResult>;
+        /** Make one login the one every chat on that machine uses for its provider. */
+        opencodeAccountActivate: (args: { id: string }, pin?: OpenProjectBinding | null) => Promise<OpenCodeAccountActionResult>;
+        opencodeAccountRename: (args: { id: string; label: string }, pin?: OpenProjectBinding | null) => Promise<OpenCodeAccountActionResult>;
+        opencodeAccountRemove: (args: { id: string }, pin?: OpenProjectBinding | null) => Promise<OpenCodeAccountActionResult>;
+        /** Add a cloud login (gcloud, an AWS profile) and save it to the ADE account. */
+        opencodeCloudConnect: (args: {
+          providerId: string;
+          methodIndex: number;
+          inputs?: Record<string, string>;
+          label?: string;
+        }, pin?: OpenProjectBinding | null) => Promise<OpenCodeCloudConnectResult>;
         refreshModelsDev: (pin?: OpenProjectBinding | null) => Promise<{ lastFetchedAt: number | null }>;
         /** Every model a harness can reach outside its own sign-in (Custom providers). */
         listHarnessRoutes: (pin?: OpenProjectBinding | null) => Promise<import("../shared/harnessRoutes").HarnessRouteCatalog>;
@@ -1505,7 +1685,8 @@ declare global {
         cursorAuthLogout: (pin?: OpenProjectBinding | null) => Promise<{ ok: boolean; error?: string }>;
         cursorAuthCancel: (pin?: OpenProjectBinding | null) => Promise<void>;
         onCursorAuthStatus: (cb: (event: CursorSdkAuthEvent) => void, pin?: OpenProjectBinding | null) => () => void;
-        cursorCloudListRepositories: () => Promise<CursorCloudRepository[]>;
+        /** `refresh` skips the host's few-minute cache (Retry). */
+        cursorCloudListRepositories: (args?: { refresh?: boolean }) => Promise<CursorCloudRepository[]>;
         cursorCloudListAgents: (args?: {
           includeArchived?: boolean;
           limit?: number;
@@ -1591,7 +1772,7 @@ declare global {
           modelPath: string | null;
         }>;
         onModelDownloadProgress: (
-          handler: (progress: { receivedBytes: number; totalBytes: number | null }) => void,
+          handler: (progress: { receivedBytes: number; totalBytes: number | null; stage?: "warmup" }) => void,
         ) => () => void;
         requestMicAccess: () => Promise<{
           status: "granted" | "denied" | "not-determined" | "restricted" | "unknown";
@@ -1679,6 +1860,18 @@ declare global {
           args: AutomationManualTriggerRequest,
           pin?: OpenProjectBinding | null,
         ) => Promise<AutomationRun>;
+        planTest: (
+          args: AutomationTestRequest,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AutomationTestPlan>;
+        runTest: (
+          args: AutomationTestRequest,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AutomationRun>;
+        cleanUpTestRun: (
+          args: { runId: string },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AutomationTestCleanupResult>;
         getHistory: (
           args: {
             id: string;
@@ -1725,12 +1918,36 @@ declare global {
           teardown: (pin?: OpenProjectBinding | null) => Promise<AutomationLinearIngressStatus>;
           pollNow: (pin?: OpenProjectBinding | null) => Promise<AutomationLinearIngressStatus>;
         };
+        /** Custom webhook URLs. `pin` targets the machine the rule runs on. */
+        webhooks: {
+          /** Every webhook automation with its URL, secret state and last delivery. */
+          list: (pin?: OpenProjectBinding | null) => Promise<AutomationWebhookListEntry[]>;
+          createEndpoint: (args?: { label?: string | null }, pin?: OpenProjectBinding | null) => Promise<AutomationWebhookEndpoint>;
+          getEndpoint: (args: { hookId: string }, pin?: OpenProjectBinding | null) => Promise<AutomationWebhookEndpoint>;
+          rotateEndpoint: (args: { hookId: string }, pin?: OpenProjectBinding | null) => Promise<AutomationWebhookEndpoint>;
+          listDeliveries: (args: { hookId: string; limit?: number }, pin?: OpenProjectBinding | null) => Promise<AutomationWebhookDeliverySummary[]>;
+          getDelivery: (args: { id: string }, pin?: OpenProjectBinding | null) => Promise<AutomationWebhookDelivery | null>;
+          replayDelivery: (args: { id: string }, pin?: OpenProjectBinding | null) => Promise<AutomationWebhookDeliverySummary | null>;
+          sendTest: (
+            args: AutomationWebhookTestRequest & { config?: AutomationWebhookTriggerConfig | null },
+            pin?: OpenProjectBinding | null,
+          ) => Promise<AutomationWebhookTestResult>;
+        };
         onEvent: (cb: (ev: AutomationsEventPayload) => void) => () => void;
       };
       actions: {
         listRegistry: () => Promise<AdeActionRegistryEntry[]>;
       };
       attention: {
+        /**
+         * Sends a notification to the phones on the ADE account through the
+         * project's runtime (`attention.sendNotification`). The automation
+         * editor's "Send a test" uses it. Absent where no runtime can send.
+         */
+        sendNotification?: (
+          args: { title: string; body?: string | null; open?: string | null },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<import("../shared/types").CustomNotificationResult>;
         getSnapshot: (
           since?: number,
           streamId?: string | null,
@@ -1807,42 +2024,10 @@ declare global {
           ) => void,
         ) => () => void;
       };
-      attentionNotch: {
-        publishSnapshot: (
-          snapshot: import("../shared/types").AttentionSnapshot,
-        ) => Promise<void>;
-        // Optional like `onRefreshRequested`: the web adapter has no notch at
-        // all, so every call site must optional-chain through it.
-        publishToast?: (
-          toast: import("../shared/types").AttentionNotchToast,
-        ) => Promise<void>;
-        updateSettings: (
-          settings: import("../shared/types").AttentionNotchSettings,
-        ) => Promise<void>;
-        getHealth: () => Promise<
-          import("../shared/types").AttentionNotchHealth
-        >;
-        retry: () => Promise<
-          import("../shared/types").AttentionNotchHealth
-        >;
-        onAcknowledgeRequested: (
-          cb: (
-            request: import("../shared/types").AttentionNotchAcknowledgeRequest,
-          ) => void,
-        ) => () => void;
-        onRefreshRequested?: (
-          cb: (request?: { force?: boolean }) => void,
-        ) => () => void;
-        onSettingsChanged?: (
-          cb: (
-            settings: import("../shared/types").AttentionNotchSettings,
-          ) => void,
-        ) => () => void;
-      };
       usage: {
         getAdeStats: (args?: GetAdeUsageStatsArgs) => Promise<AdeUsageStats | null>;
-        getSnapshot: () => Promise<UsageSnapshot | null>;
-        refresh: () => Promise<UsageSnapshot | null>;
+        getSnapshot: (pin?: OpenProjectBinding | null) => Promise<UsageSnapshot | null>;
+        refresh: (pin?: OpenProjectBinding | null) => Promise<UsageSnapshot | null>;
         refreshHistory: () => Promise<UsageSnapshot | null>;
         noteDemand: () => Promise<UsageSnapshot | null>;
         /**
@@ -1867,6 +2052,13 @@ declare global {
           args: import("../shared/types").GetAdeUsageModelDetailArgs,
         ) => Promise<import("../shared/types").AdeUsageModelDetail | null>;
         getModelPriceOverrides?: () => Promise<import("../shared/types").AdeUsagePriceOverrides | null>;
+        /**
+         * This machine's GitHub contribution calendar (the profile's year of
+         * green squares), read with its `gh` login; null without one.
+         * Optional on the bridge: the web client does not expose it, and the
+         * home page's Contributions card falls back to the usage stats.
+         */
+        getGithubContributions?: () => Promise<import("../shared/types").GithubContributionCalendar | null>;
         setModelPriceOverride?: (
           args: import("../shared/types").SetAdeUsageModelPriceArgs,
         ) => Promise<import("../shared/types").AdeUsagePriceOverrides>;
@@ -1897,6 +2089,7 @@ declare global {
         ) => Promise<LaneSummary>;
         createFromUnstaged: (
           args: CreateLaneFromUnstagedArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<LaneSummary>;
         importBranch: (args: ImportBranchLaneArgs, pin?: OpenProjectBinding | null) => Promise<LaneSummary>;
         previewBranchSwitch: (
@@ -1958,7 +2151,7 @@ declare global {
           includeInPr?: boolean;
           closeOnMerge?: boolean;
         }) => Promise<SessionLinearIssueLink[]>;
-        detachLinearIssueFromSession: (args: { chatSessionId: string; issueId?: string }) => Promise<boolean>;
+        detachLinearIssueFromSession: (args: { chatSessionId: string; issueId?: string }, pin?: OpenProjectBinding | null) => Promise<boolean>;
         listLinearIssuesForSession: (args: { chatSessionId: string }) => Promise<SessionLinearIssueLink[]>;
         listLinearIssuesForLaneSessions: (args: { laneId: string }) => Promise<SessionLinearIssueLink[]>;
         attachGitHubIssueToSession: (args: {
@@ -1969,9 +2162,20 @@ declare global {
           includeInPr?: boolean;
           closeOnMerge?: boolean;
         }) => Promise<SessionGitHubIssueLink[]>;
-        detachGitHubIssueFromSession: (args: { chatSessionId: string; issueId?: string }) => Promise<boolean>;
+        detachGitHubIssueFromSession: (args: { chatSessionId: string; issueId?: string }, pin?: OpenProjectBinding | null) => Promise<boolean>;
         listGitHubIssuesForSession: (args: { chatSessionId: string }) => Promise<SessionGitHubIssueLink[]>;
         listGitHubIssuesForLaneSessions: (args: { laneId: string }) => Promise<SessionGitHubIssueLink[]>;
+        attachJiraIssueToSession: (args: {
+          chatSessionId: string;
+          issues: LaneJiraIssue[];
+          role?: string;
+          source?: string;
+          includeInPr?: boolean;
+          closeOnMerge?: boolean;
+        }, pin?: OpenProjectBinding | null) => Promise<SessionJiraIssueLink[]>;
+        detachJiraIssueFromSession: (args: { chatSessionId: string; issueId?: string }, pin?: OpenProjectBinding | null) => Promise<boolean>;
+        listJiraIssuesForSession: (args: { chatSessionId: string }, pin?: OpenProjectBinding | null) => Promise<SessionJiraIssueLink[]>;
+        listJiraIssuesForLaneSessions: (args: { laneId: string }, pin?: OpenProjectBinding | null) => Promise<SessionJiraIssueLink[]>;
         unlinkLinearIssues: (args: { laneId: string; issueId?: string }) => Promise<boolean>;
         rebaseStart: (args: RebaseStartArgs, pin?: OpenProjectBinding | null) => Promise<RebaseStartResult>;
         rebasePush: (args: RebasePushArgs, pin?: OpenProjectBinding | null) => Promise<RebaseRun>;
@@ -1994,6 +2198,7 @@ declare global {
         dismissAutoRebaseStatus: (args: { laneId: string }, pin?: OpenProjectBinding | null) => Promise<void>;
         onAutoRebaseEvent: (
           cb: (ev: AutoRebaseEventPayload) => void,
+          pin?: OpenProjectBinding | null,
         ) => () => void;
         openFolder: (args: { laneId: string }) => Promise<void>;
         initEnv: (args: InitLaneEnvArgs, pin?: OpenProjectBinding | null) => Promise<LaneEnvInitProgress>;
@@ -2143,6 +2348,7 @@ declare global {
         ) => Promise<SessionDeltaSummary | null>;
         onChanged: (
           cb: (ev: TerminalSessionChangedEvent) => void,
+          pin?: OpenProjectBinding | null,
         ) => () => void;
       };
       chatLaunch: {
@@ -2207,6 +2413,34 @@ declare global {
           args: AgentChatMarkCrossMachineHandoffArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<void>;
+        getCrossMachineHandoffOptions: (
+          args: AgentChatCrossMachineHandoffSessionArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatCrossMachineHandoffOptionsResult>;
+        previewCrossMachineHandoff: (
+          args: AgentChatPreviewCrossMachineHandoffArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatPreviewCrossMachineHandoffResult>;
+        startCrossMachineHandoff: (
+          args: AgentChatStartCrossMachineHandoffArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatCrossMachineHandoffRecord>;
+        cancelCrossMachineHandoff: (
+          args: AgentChatCrossMachineHandoffSessionArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatCrossMachineHandoffRecord | null>;
+        retryCrossMachineHandoff: (
+          args: AgentChatRetryCrossMachineHandoffArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatCrossMachineHandoffRecord>;
+        resolveCrossMachineHandoffApproval: (
+          args: AgentChatResolveCrossMachineHandoffApprovalArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatCrossMachineHandoffRecord | null>;
+        acknowledgeCrossMachineHandoff: (
+          args: AgentChatAcknowledgeCrossMachineHandoffArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatCrossMachineHandoffRecord | null>;
         send: (args: AgentChatSendArgs, pin?: OpenProjectBinding | null) => Promise<void>;
         steer: (
           args: AgentChatSteerArgs,
@@ -2237,6 +2471,16 @@ declare global {
           args: AgentChatStopTaskArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatStopTaskResult>;
+        /** Note or follow-up task to one subagent (Muse: `subagent/sendMessage` / `followupTask`). */
+        messageSubagent: (
+          args: AgentChatMessageSubagentArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatMessageSubagentResult>;
+        /** Interrupt/resume/reopen/close a subagent, pause/resume a workflow, skip/retry a workflow child. */
+        controlSubagent: (
+          args: AgentChatControlSubagentArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatControlSubagentResult>;
         /** Stop the provider process, keep the conversation; the next message starts fresh. */
         restartSession: (
           args: AgentChatRestartSessionArgs,
@@ -2400,18 +2644,36 @@ declare global {
           args: ChatMentionSuggestArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<ChatMentionSuggestResult>;
-        promptStashes: {
+        drafts: {
           list: (
             pin?: OpenProjectBinding | null,
-          ) => Promise<PromptStashEntry[]>;
+          ) => Promise<DraftEntry[]>;
           create: (
-            args: PromptStashCreateArgs,
+            args: DraftCreateArgs,
             pin?: OpenProjectBinding | null,
-          ) => Promise<PromptStashEntry>;
+          ) => Promise<DraftEntry>;
+          update: (
+            args: DraftUpdateArgs,
+            pin?: OpenProjectBinding | null,
+          ) => Promise<DraftEntry | null>;
+          claim: (
+            args: DraftClaimArgs,
+            pin?: OpenProjectBinding | null,
+          ) => Promise<DraftEntry | null>;
           delete: (
-            args: PromptStashDeleteArgs,
+            args: DraftDeleteArgs,
             pin?: OpenProjectBinding | null,
           ) => Promise<boolean>;
+          /** Deliver now, whatever the fire time; keeps the schedule armed. */
+          sendNow: (
+            args: DraftDeleteArgs,
+            pin?: OpenProjectBinding | null,
+          ) => Promise<{ ok: boolean; error?: string }>;
+        };
+        /** Claude mod UI. Absent in a client that draws none (the hosted web client). */
+        claudePluginUi?: {
+          get: (args: ClaudePluginUiGetArgs, pin?: OpenProjectBinding | null) => Promise<ClaudePluginUiSnapshot>;
+          act: (args: ClaudePluginUiActArgs, pin?: OpenProjectBinding | null) => Promise<ClaudePluginUiActResult>;
         };
         threadComments: {
           list: (args: ChatThreadCommentListArgs, pin?: OpenProjectBinding | null) => Promise<ChatThreadComment[]>;
@@ -2454,6 +2716,28 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<{ dataUrl: string }>;
         resolveSmartLinkPreview: (args: { url: string }) => Promise<SmartLinkPreview | null>;
+        /** A preview's og:image as a data URL (null: unavailable). Fetched lazily by the hover card. */
+        resolveSmartLinkImage: (args: { url: string }) => Promise<{ dataUrl: string | null }>;
+        /** The MCP App a tool call produced, from the machine that owns the chat. */
+        getMcpApp: (
+          args: import("../shared/mcpApp").McpAppGetArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<import("../shared/mcpApp").McpAppGetResult>;
+        /** One call from an MCP App's frame, to the server the app came from. */
+        mcpAppRequest: (
+          args: import("../shared/mcpApp").McpAppRequestArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<import("../shared/mcpApp").McpAppRequestResult>;
+        /** The tools the user always allows for the server an app came from. */
+        listMcpAppGrants: (
+          args: import("../shared/mcpApp").McpAppGrantsArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<import("../shared/mcpApp").McpAppGrantsResult>;
+        /** Take one "always allow" back; answers the grants that are left. */
+        revokeMcpAppGrant: (
+          args: import("../shared/mcpApp").McpAppRevokeGrantArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<import("../shared/mcpApp").McpAppGrantsResult>;
         /** Sources favicons as data URLs (null: the site has none), keyed by each domain as given. */
         resolveSourceFavicons: (args: { domains: string[] }) => Promise<{ icons: Record<string, string | null> }>;
         getEventHistory: (
@@ -2553,6 +2837,8 @@ declare global {
            */
           scopeKey?: string | null;
         }) => Promise<import("../shared/chatScene").SceneStillRecord | null>;
+        /** The URL an MCP App's frame loads its page from; main builds the page's policy. */
+        prepareApp: (args: { html: string; csp: import("../shared/mcpApp").McpAppCsp }) => Promise<string>;
       };
       computerUse: {
         listArtifacts: (
@@ -3304,6 +3590,8 @@ declare global {
           args: BuiltInBrowserTabArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<BuiltInBrowserStatus>;
+        /** "Attach to chat": move a tab's lease to one chat (or drop it). Optional for older preloads. */
+        handTabToChat?: (args: BuiltInBrowserTabArgs) => Promise<BuiltInBrowserStatus>;
         closeTab: (
           args: BuiltInBrowserTabArgs,
           pin?: OpenProjectBinding | null,
@@ -3381,6 +3669,18 @@ declare global {
          * other window's panel is told no. Always local; feature-detect before use.
          */
         claimRemoteRequest: (args: { requestId: string }) => Promise<{ claimed: boolean }>;
+        /**
+         * Run a browser command an agent on another machine sent to this
+         * desktop, in this desktop's browser. Always local.
+         */
+        runRemoteAgentCall: (
+          args: { method: string; input: Record<string, unknown> },
+        ) => Promise<BuiltInBrowserRemoteAgentCallOutcome>;
+        /** Answer a browser command on the pinned runtime that sent it. */
+        replyRemoteCall: (
+          args: BuiltInBrowserRemoteCallReply,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ ok: boolean }>;
         setDevTools: (
           args: BuiltInBrowserSetDevToolsArgs,
           pin?: OpenProjectBinding | null,
@@ -3426,6 +3726,14 @@ declare global {
          */
         onRemoteRequest: (
           cb: (ev: BuiltInBrowserRemoteRequest) => void,
+          pin?: OpenProjectBinding | null,
+        ) => () => void;
+        /**
+         * Browser commands of an agent on the pinned machine, to run in this
+         * desktop's browser. A no-op unsubscribe for any non-remote pin.
+         */
+        onRemoteCall: (
+          cb: (ev: BuiltInBrowserRemoteCall) => void,
           pin?: OpenProjectBinding | null,
         ) => () => void;
       };
@@ -3531,6 +3839,11 @@ declare global {
           args: ProviderInstanceDismissReplacedArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<ProviderInstance>;
+        /** Signs the account out with the provider CLI; refused for the default. */
+        signOut: (
+          args: ProviderInstanceDismissReplacedArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ProviderInstance | null>;
         loginStart: (args: ProviderLoginStartArgs, pin?: OpenProjectBinding | null) => Promise<ProviderLoginStatus>;
         loginStatus: (args: ProviderLoginRefArgs, pin?: OpenProjectBinding | null) => Promise<ProviderLoginStatus>;
         loginSubmitCode: (args: ProviderLoginSubmitCodeArgs, pin?: OpenProjectBinding | null) => Promise<ProviderLoginStatus>;
@@ -3690,7 +4003,7 @@ declare global {
           args: FilesSearchTextArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<FilesSearchTextMatch[]>;
-        onChange: (cb: (ev: FileChangeEvent) => void) => () => void;
+        onChange: (cb: (ev: FileChangeEvent) => void, pin?: OpenProjectBinding | null) => () => void;
       };
       git: {
         stageFile: (
@@ -3919,22 +4232,24 @@ declare global {
         onUpdate: (cb: (event: FeedbackSubmissionEvent) => void) => () => void;
       };
       github: {
-        getStatus: (opts?: { forceRefresh?: boolean }) => Promise<GitHubStatus>;
+        getStatus: (opts?: { forceRefresh?: boolean }, pin?: OpenProjectBinding | null) => Promise<GitHubStatus>;
         getRemoteStatus: (opts?: {
           forceRefresh?: boolean;
         }) => Promise<{ repo: GitHubRepoRef | null; hasOrigin: boolean }>;
-        setToken: (token: string) => Promise<GitHubSetTokenResult>;
-        clearToken: () => Promise<GitHubStatus>;
-        getAppUserAuthStatus: () => Promise<GitHubAppUserAuthStatus>;
-        startAppUserDeviceAuth: () => Promise<GitHubAppDeviceAuthStartResult>;
+        setToken: (token: string, pin?: OpenProjectBinding | null) => Promise<GitHubSetTokenResult>;
+        clearToken: (pin?: OpenProjectBinding | null) => Promise<GitHubStatus>;
+        getAppUserAuthStatus: (pin?: OpenProjectBinding | null) => Promise<GitHubAppUserAuthStatus>;
+        startAppUserDeviceAuth: (pin?: OpenProjectBinding | null) => Promise<GitHubAppDeviceAuthStartResult>;
         pollAppUserDeviceAuth: (args: {
           sessionId: string;
-        }) => Promise<GitHubAppDeviceAuthPollResult>;
-        clearAppUserAuth: () => Promise<GitHubAppUserAuthStatus>;
+        }, pin?: OpenProjectBinding | null) => Promise<GitHubAppDeviceAuthPollResult>;
+        clearAppUserAuth: (pin?: OpenProjectBinding | null) => Promise<GitHubAppUserAuthStatus>;
         // Optional: an older remote runtime does not implement the budget read.
         // Callers must feature-detect and fall back to their own local backoff.
         getRequestBudget?: () => Promise<GitHubRequestBudget>;
-        detectRepo: () => Promise<{ owner: string; name: string } | null>;
+        // Optional for the same reason: an older runtime lacks the star check.
+        isRepoStarred?: () => Promise<GitHubRepoStarState>;
+        detectRepo: (pin?: OpenProjectBinding | null) => Promise<{ owner: string; name: string } | null>;
         listRepoIssues: (args?: {
           owner?: string;
           name?: string;
@@ -3946,22 +4261,35 @@ declare global {
           name?: string;
           number: number;
         }) => Promise<GitHubIssueLike | null>;
+        /** Issues enabled + open count, one GraphQL point. */
+        getRepoIssueSummary: (args: { owner: string; name: string }) => Promise<GitHubRepoIssueSummary>;
+        listIssueComments: (args: { owner: string; name: string; number: number }) => Promise<GitHubIssueCommentLike[]>;
+        createIssue: (args: { owner: string; name: string; input: GitHubIssueCreateInput }) => Promise<GitHubIssueCreateResult>;
+        listIssueTemplates: (args: { owner: string; name: string }) => Promise<GitHubIssueTemplateSet>;
+        listIssueTypes: (args: { owner: string; name: string }) => Promise<GitHubIssueTypeOption[]>;
+        /** Which credential an issue edit would use, and the App's issues permission. */
+        getIssueWriteAccess: (args: { owner: string; name: string; force?: boolean }) => Promise<GitHubIssueWriteAccess>;
+        updateIssue: (args: { owner: string; name: string; number: number; patch: GitHubIssuePatch }) => Promise<GitHubIssueLike | null>;
+        commentOnIssue: (args: { owner: string; name: string; number: number; body: string }) => Promise<GitHubIssueCommentLike | null>;
+        listRepoMilestones: (args: { owner: string; name: string }) => Promise<Array<{ number: number; title: string }>>;
+        /** Issues only (no pull requests), newest activity first, one GraphQL page. */
+        listRepoIssueList: (args: { owner: string; name: string; state: "open" | "closed" | "all" }) => Promise<GitHubIssueLike[]>;
         listRepoAutolinks: (args?: {
           owner?: string;
           name?: string;
-        }) => Promise<GitHubAutolink[]>;
+        }, pin?: OpenProjectBinding | null) => Promise<GitHubAutolink[]>;
         getAppInstallationStatus: (args?: {
           owner?: string;
           name?: string;
           forceRefresh?: boolean;
-        }) => Promise<GitHubAppInstallationStatus>;
+        }, pin?: OpenProjectBinding | null) => Promise<GitHubAppInstallationStatus>;
         createRepoAutolink: (args: {
           owner?: string;
           name?: string;
           keyPrefix: string;
           urlTemplate: string;
           isAlphanumeric?: boolean;
-        }) => Promise<GitHubAutolink>;
+        }, pin?: OpenProjectBinding | null) => Promise<GitHubAutolink>;
         listRepoLabels: (args: {
           owner: string;
           name: string;
@@ -3977,6 +4305,23 @@ declare global {
           input: PublishProjectInput,
         ) => Promise<PublishProjectResult>;
         onStatusChanged: (cb: (status: GitHubStatus) => void) => () => void;
+      };
+      jira: {
+        getConnectionStatus: (pin?: OpenProjectBinding | null) => Promise<JiraConnectionStatus>;
+        connect: (args: JiraConnectArgs, pin?: OpenProjectBinding | null) => Promise<JiraConnectionStatus>;
+        disconnect: (pin?: OpenProjectBinding | null) => Promise<JiraConnectionStatus>;
+        listProjects: (args?: { query?: string }, pin?: OpenProjectBinding | null) => Promise<JiraProject[]>;
+        listIssues: (args?: JiraListIssuesArgs, pin?: OpenProjectBinding | null) => Promise<JiraIssuePage>;
+        getIssue: (args: { key: string }, pin?: OpenProjectBinding | null) => Promise<JiraIssueDetail>;
+        listComments: (args: { key: string; cursor: string | null }, pin?: OpenProjectBinding | null) => Promise<{ comments: JiraComment[]; nextCursor: string | null }>;
+        addComment: (args: { key: string; body: string }, pin?: OpenProjectBinding | null) => Promise<JiraComment>;
+        updateIssue: (args: JiraUpdateIssueArgs, pin?: OpenProjectBinding | null) => Promise<void>;
+        listTransitions: (args: { key: string }, pin?: OpenProjectBinding | null) => Promise<JiraTransition[]>;
+        transitionIssue: (args: { key: string; transitionId: string }, pin?: OpenProjectBinding | null) => Promise<void>;
+        listAssignableUsers: (args?: { projectKey?: string; key?: string; query?: string }, pin?: OpenProjectBinding | null) => Promise<JiraUser[]>;
+        listLabels: (args?: { query?: string }, pin?: OpenProjectBinding | null) => Promise<string[]>;
+        getCreateMeta: (args: { projectKey: string }, pin?: OpenProjectBinding | null) => Promise<JiraCreateMeta>;
+        createIssue: (args: JiraCreateIssueArgs, pin?: OpenProjectBinding | null) => Promise<JiraCreateIssueResult>;
       };
       account: {
         status: () => Promise<AdeAccountStatus>;
@@ -4035,6 +4380,32 @@ declare global {
           args: { scope: string; key: string; value: unknown } & AccountSettingsWriteOptions,
         ) => Promise<AccountSettingsResult<null>>;
         sync: () => Promise<AccountSettingsResult<null>>;
+        onChanged?: (listener: () => void) => () => void;
+      };
+      /**
+       * Settings > MCP servers: this computer's view of the registry, and the
+       * one path that writes a registry secret to the account vault. No call
+       * returns a secret value.
+       *
+       * Optional because the hosted web client does not expose it; the page
+       * is hidden there.
+       */
+      mcpRegistry?: {
+        context: (args: { projectRoot: string | null }) => Promise<McpRegistryContext>;
+        check: (args: { servers: McpRegistryServer[] }) => Promise<McpRegistryResult<McpRegistryCheck>>;
+        setSecret: (args: McpRegistrySecretRef & { value: string }) => Promise<McpRegistryResult<null>>;
+        removeSecret: (args: McpRegistrySecretRef) => Promise<McpRegistryResult<null>>;
+        /** Drops the vault items `server` no longer names; all of them when `keep` is null. */
+        pruneSecrets: (args: { server: string; keep: McpRegistryServer | null }) => Promise<McpRegistryResult<null>>;
+        scan: (args: { projectRoot: string | null }) => Promise<McpRegistryScan>;
+        import: (args: { name: string; projectRoot: string | null }) => Promise<McpRegistryImportResult>;
+        /**
+         * Browser sign-in, run on this computer; the token goes to the account
+         * vault. Resolves when the browser comes back, or on cancel / timeout.
+         */
+        signIn: (args: { server: McpRegistryServer }) => Promise<McpRegistrySignInResult>;
+        cancelSignIn: (args: { server: string }) => Promise<boolean>;
+        signOut: (args: { server: string }) => Promise<McpRegistryResult<null>>;
       };
       prs: {
         createFromLane: (args: CreatePrFromLaneArgs) => Promise<PrSummary>;
@@ -4061,7 +4432,9 @@ declare global {
           laneId: string,
           pin?: OpenProjectBinding | null,
         ) => Promise<PrSummary | null>;
-        reconcileNow: () => Promise<void>;
+        reconcileNow: (pin?: OpenProjectBinding | null) => Promise<void>;
+        /** Throttled catch-up reconcile on the machine `pin` names (bound machine when omitted). */
+        reconcileOnFocus: (pin?: OpenProjectBinding | null) => Promise<void>;
         listAll: (pin?: OpenProjectBinding | null) => Promise<PrSummary[]>;
         listOpenForRepo: () => Promise<BranchPullRequest[]>;
         refresh: (
@@ -4379,11 +4752,12 @@ declare global {
         getMemory: (pin?: OpenProjectBinding | null) => Promise<CtoMemorySnapshot>;
         updateMemory: (args: CtoUpdateMemoryArgs, pin?: OpenProjectBinding | null) => Promise<CtoMemorySnapshot>;
         searchMemory: (args: CtoSearchMemoryArgs, pin?: OpenProjectBinding | null) => Promise<CtoSearchMemoryResult>;
-        getLinearConnectionStatus: () => Promise<LinearConnectionStatus>;
+        getLinearConnectionStatus: (pin?: OpenProjectBinding | null) => Promise<LinearConnectionStatus>;
         setLinearToken: (
           args: CtoSetLinearTokenArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<LinearConnectionStatus>;
-        clearLinearToken: () => Promise<LinearConnectionStatus>;
+        clearLinearToken: (pin?: OpenProjectBinding | null) => Promise<LinearConnectionStatus>;
         getOnboardingState: (pin?: OpenProjectBinding | null) => Promise<CtoOnboardingState>;
         completeOnboardingStep: (args: {
           stepId: string;
@@ -4391,7 +4765,7 @@ declare global {
         previewSystemPrompt: (args?: {
           identityOverride?: Record<string, unknown>;
         }, pin?: OpenProjectBinding | null) => Promise<CtoSystemPromptPreview>;
-        getLinearProjects: () => Promise<CtoLinearProject[]>;
+        getLinearProjects: (pin?: OpenProjectBinding | null) => Promise<CtoLinearProject[]>;
         getLinearQuickView: () => Promise<CtoLinearQuickView>;
         getLinearIssuePickerData: () => Promise<CtoGetLinearIssuePickerDataResult>;
         searchLinearIssues: (
@@ -4400,6 +4774,11 @@ declare global {
         getLinearIssueComments: (
           args: { issueId: string },
         ) => Promise<CtoLinearIssueComment[]>;
+        createLinearIssueComment: (args: CtoCreateLinearIssueCommentArgs) => Promise<{ commentId: string }>;
+        createLinearIssue: (args: LinearIssueCreateInput) => Promise<NormalizedLinearIssue>;
+        getLinearIssueCreateOptions: (args: { teamKey: string }) => Promise<LinearIssueCreateOptions>;
+        listLinearProjectMilestones: (args: { projectId: string }) => Promise<LinearProjectMilestone[]>;
+        uploadLinearFile: (args: { filename: string; contentType: string; dataBase64: string }) => Promise<LinearUploadResult>;
         /** Full detail read (relations, parent, sub-issues). */
         getLinearIssue: (
           args: CtoGetLinearIssueArgs,
@@ -4414,13 +4793,13 @@ declare global {
           args: CtoCountLinearIssuesArgs,
         ) => Promise<CtoCountLinearIssuesResult>;
         getLinearCustomViews: () => Promise<CtoLinearCustomView[]>;
-        getLinearAgentOverview: () => Promise<LinearAgentOverview>;
-        startLinearAgentInstall: () => Promise<LinearAgentInstallStart>;
-        getLinearAgentInstallSession: (sessionId: string) => Promise<LinearAgentInstallSession>;
-        registerLinearAgentMember: (args?: { replace?: boolean }) => Promise<LinearAgentOverview>;
-        unregisterLinearAgentMember: () => Promise<LinearAgentOverview>;
-        updateLinearAgentSettings: (args: { fallbackMode: "reply" | "runner"; runner: "self" | null }) => Promise<LinearAgentOverview>;
-        uninstallLinearAgent: () => Promise<LinearAgentOverview>;
+        getLinearAgentOverview: (pin?: OpenProjectBinding | null) => Promise<LinearAgentOverview>;
+        startLinearAgentInstall: (pin?: OpenProjectBinding | null) => Promise<LinearAgentInstallStart>;
+        getLinearAgentInstallSession: (sessionId: string, pin?: OpenProjectBinding | null) => Promise<LinearAgentInstallSession>;
+        registerLinearAgentMember: (args?: { replace?: boolean }, pin?: OpenProjectBinding | null) => Promise<LinearAgentOverview>;
+        unregisterLinearAgentMember: (pin?: OpenProjectBinding | null) => Promise<LinearAgentOverview>;
+        updateLinearAgentSettings: (args: { fallbackMode: "reply" | "runner"; runner: "self" | null }, pin?: OpenProjectBinding | null) => Promise<LinearAgentOverview>;
+        uninstallLinearAgent: (pin?: OpenProjectBinding | null) => Promise<LinearAgentOverview>;
         getLinearInbox: (args?: { first?: number; includeRead?: boolean }) => Promise<LinearInboxNotification[]>;
         markLinearNotification: (args: { notificationId: string; action: "read" | "archive" }) => Promise<void>;
         getLinearIssueRelationsIssue: (issueId: string) => Promise<LinearAgentNormalizedIssue | null>;
@@ -4428,9 +4807,10 @@ declare global {
           args: CtoSetLinearOAuthClientArgs,
         ) => Promise<LinearConnectionStatus>;
         clearLinearOAuthClient: () => Promise<LinearConnectionStatus>;
-        startLinearOAuth: () => Promise<CtoStartLinearOAuthResult>;
+        startLinearOAuth: (pin?: OpenProjectBinding | null) => Promise<CtoStartLinearOAuthResult>;
         getLinearOAuthSession: (
           args: CtoGetLinearOAuthSessionArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<CtoGetLinearOAuthSessionResult>;
         runProjectScan: (pin?: OpenProjectBinding | null) => Promise<CtoRunProjectScanResult>;
         getAttention: (pin?: OpenProjectBinding | null) => Promise<CtoAttentionState>;
@@ -4446,7 +4826,13 @@ declare global {
       updateQuitAndInstall: (options?: { resumeChats?: boolean }) => Promise<boolean>;
       updateCancelAutoApply: () => Promise<boolean>;
       updateDismissInstalledNotice: () => Promise<void>;
+      /** Quits and reopens ADE after the usual quit warnings. False when unavailable. */
+      updateRelaunchApp: () => Promise<boolean>;
       onUpdateEvent: (cb: (snapshot: AutoUpdateSnapshot) => void) => () => void;
+      /** Home page widgets backed by the desktop main process. Absent on the web client. */
+      home?: HomeWidgetsBridge;
+      /** Desktop-local Music: Apple Music playback and Spotify Connect, with catalog and library browsing. */
+      music?: MusicBridge;
       perf: {
         getConfig: () => Promise<{
           active: boolean;

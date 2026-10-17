@@ -116,7 +116,9 @@ describe("modelRegistry", () => {
     }
   });
 
-  it("prefers a Qwen model discovered from the CLI settings over curated Alibaba rows", () => {
+  it("shows only the live Qwen list once one exists, in place of the curated Alibaba rows", () => {
+    const curatedId = listModelDescriptorsForProvider("qwen").find((model) => model.providerModelId === "qwen3-coder-plus")?.id;
+    expect(curatedId, "curated qwen3-coder-plus row").toBeTruthy();
     try {
       replaceDynamicAcpModelDescriptors("qwen", [
         createDynamicAcpModelDescriptor("qwen", "gpt-5.5"),
@@ -124,7 +126,10 @@ describe("modelRegistry", () => {
       const models = listModelDescriptorsForProvider("qwen");
       expect(models[0]?.providerModelId).toBe("gpt-5.5");
       expect(getDefaultModelDescriptor("qwen")?.providerModelId).toBe("gpt-5.5");
-      expect(models.some((model) => model.providerModelId === "qwen3-coder-plus")).toBe(true);
+      expect(models.some((model) => model.providerModelId === "qwen3-coder-plus")).toBe(false);
+      // Hidden from the picker, not deleted: a chat saved on it still resolves and launches.
+      expect(getModelById(curatedId!)?.providerModelId).toBe("qwen3-coder-plus");
+      expect(resolveModelDescriptor(curatedId!)?.providerModelId).toBe("qwen3-coder-plus");
     } finally {
       clearDynamicAcpModelDescriptors();
     }
@@ -232,10 +237,10 @@ describe("modelRegistry", () => {
   });
 
   it("marks only the preview-tier ACP providers and leaves first-class ones unmarked", () => {
-    for (const provider of ["copilot"] as const) {
+    for (const provider of ["devin"] as const) {
       expect(listModelDescriptorsForProvider(provider).every((m) => m.previewTier === true)).toBe(true);
     }
-    for (const provider of ["qwen", "kimi", "grok"] as const) {
+    for (const provider of ["qwen", "kimi", "grok", "copilot"] as const) {
       expect(listModelDescriptorsForProvider(provider).some((m) => m.previewTier === true)).toBe(false);
     }
   });
@@ -707,7 +712,7 @@ describe("modelRegistry", () => {
         "anthropic/claude-fable-5-1",
         "anthropic/claude-opus-5-5",
         "anthropic/claude-sonnet-5-5",
-        "anthropic/claude-haiku-4-5",
+        "anthropic/claude-haiku-5-5",
         "anthropic/claude-sonnet-5",
         "anthropic/claude-opus-5",
       ]);
@@ -743,10 +748,14 @@ describe("modelRegistry", () => {
         outputPricePer1M: 20,
         defaultReasoningEffort: "medium",
       });
-      expect(opus55?.reasoningTiers).toEqual(["low", "medium", "high", "xhigh", "max"]);
+      expect(opus55?.reasoningTiers).toEqual(["low", "medium", "high", "xhigh", "max", "ultracode"]);
       expect(opus55?.serviceTiers).toEqual(["fast"]);
       expect(resolveModelAlias("opus")?.id).toBe("anthropic/claude-opus-5-5");
       expect(getRuntimeModelRefForDescriptor(opus55!, "claude")).toBe("claude-opus-5-5");
+
+      expect(getModelById("anthropic/claude-haiku-5-5")?.reasoningTiers).toEqual([
+        "low", "medium", "high", "xhigh", "max", "ultracode",
+      ]);
 
       const opus5 = getModelById("anthropic/claude-opus-5");
       expect(opus5).toBeTruthy();
@@ -762,7 +771,7 @@ describe("modelRegistry", () => {
         outputPricePer1M: 25,
         defaultReasoningEffort: "high",
       });
-      expect(opus5?.reasoningTiers).toEqual(["low", "medium", "high", "xhigh", "max"]);
+      expect(opus5?.reasoningTiers).toEqual(["low", "medium", "high", "xhigh", "max", "ultracode"]);
       expect(opus5?.serviceTiers).toEqual(["fast"]);
       expect(resolveModelAlias("opus-5")?.id).toBe("anthropic/claude-opus-5");
       expect(getRuntimeModelRefForDescriptor(opus5!, "claude")).toBe("claude-opus-5");
@@ -792,7 +801,7 @@ describe("modelRegistry", () => {
         providerModelId: "claude-sonnet-5-5",
         contextWindow: 1_000_000,
         maxOutputTokens: 128_000,
-        reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
+        reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
         defaultReasoningEffort: "high",
         inputPricePer1M: 2,
         outputPricePer1M: 10,
@@ -833,6 +842,26 @@ describe("modelRegistry", () => {
       expect(normalizeAnthropicRuntimeAlias("anthropic/claude-opus-4-8-1m")?.modelId).toBe("claude-opus-5");
       expect(normalizeAnthropicRuntimeAlias("claude-opus-4-8")?.wasAlias).toBe(true);
       expect(normalizeAnthropicRuntimeAlias("claude-opus-5")?.wasAlias).toBe(false);
+    });
+
+    it("retires every Haiku 4.5 spelling onto Haiku 5.5 without touching a harness's own row", () => {
+      for (const spelling of [
+        "haiku-4.5",
+        "haiku-4-5",
+        "claude-haiku-4-5",
+        "claude-haiku-4-5-20251001",
+        "anthropic/claude-haiku-4-5",
+        "anthropic/claude-haiku-4-5-api",
+      ]) {
+        expect(resolveModelAlias(spelling)?.id).toBe("anthropic/claude-haiku-5-5");
+      }
+      expect(MODEL_REGISTRY.some((model) => model.id === "anthropic/claude-haiku-4-5")).toBe(false);
+      expect(resolveModelAlias("anthropic/claude-haiku-5-5")?.id).toBe("anthropic/claude-haiku-5-5");
+
+      // A harness's own Haiku 4.5 row keeps the model it actually serves: the
+      // runtime alias normalizer deliberately has no 4.5 branch.
+      expect(normalizeAnthropicRuntimeAlias("claude-haiku-4-5")).toBeNull();
+      expect(openCodeRegistryIdFor("anthropic", "claude-haiku-4-5")).toBe("opencode/anthropic/claude-haiku-4-5");
     });
 
     it("maps removed Sonnet aliases forward without listing Sonnet 4.6 as a row", () => {

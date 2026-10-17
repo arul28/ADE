@@ -26,6 +26,7 @@ function coarseProvider(value: string): string {
   // Pi is the harness, so a Pi-routed model reports as Pi rather than as the
   // upstream provider its id happens to name.
   if (normalized === "pi" || normalized.startsWith("pi/")) return "pi";
+  if (normalized === "muse" || normalized.startsWith("muse/") || normalized.startsWith("muse-")) return "muse";
   if (normalized.includes("codex")) return "codex";
   if (normalized.includes("openai")) return "openai";
   if (normalized.includes("claude") || normalized.includes("anthropic")) return "claude";
@@ -47,6 +48,7 @@ function coarseModelFamily(value: string): string {
   if (normalized.includes("cursor")) return "cursor";
   if (normalized.includes("gemini")) return "gemini";
   if (normalized.includes("grok")) return "grok";
+  if (normalized.includes("muse")) return "muse";
   if (normalized.includes("local") || normalized.includes("ollama")) return "local";
   return "other";
 }

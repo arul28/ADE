@@ -149,7 +149,7 @@ export function RuleRow({
         "group cursor-pointer rounded-lg border px-3 py-2.5 text-left transition-colors focus:outline-none",
         selected
           ? "border-accent/40 bg-accent/[0.06]"
-          : "border-white/[0.06] bg-white/[0.02] hover:border-white/[0.12] hover:bg-white/[0.04]",
+          : "border-fg/[0.06] bg-fg/[0.02] hover:border-fg/[0.12] hover:bg-fg/[0.04]",
         offlineMessage && "opacity-60",
       )}
       title={offlineMessage ?? undefined}
@@ -177,7 +177,7 @@ export function RuleRow({
               data-testid="rule-origin-cto"
               tabIndex={0}
               aria-label="Written by the CTO"
-              className="inline-flex shrink-0 items-center gap-1 rounded-full border border-white/10 bg-white/[0.05] px-1.5 py-px text-[10px] font-medium leading-none text-muted-fg/70"
+              className="inline-flex shrink-0 items-center gap-1 rounded-full border border-fg/10 bg-fg/[0.05] px-1.5 py-px text-[10px] font-medium leading-none text-muted-fg/70"
             >
               <Brain size={10} weight="duotone" aria-hidden />
               <span>CTO</span>

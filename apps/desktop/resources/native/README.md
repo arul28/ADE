@@ -1,15 +1,14 @@
 # ADE native helpers
 
-`ade-attention-notch` and its adjacent SwiftPM resource bundle, and
-`ade-desktop-driver` (the Mac Desktop native helper), are materialized here by:
+`ade-desktop-driver` (the Mac Desktop native helper) is materialized here by:
 
 ```bash
 npm --prefix apps/desktop run build:mac-native
 ```
 
-or one at a time with `build:notch` / `build:desktop-driver`.
+or alone with `build:desktop-driver`.
 
-The generated universal Mach-O files are intentionally ignored by git. Electron Builder
+The generated universal Mach-O file is intentionally ignored by git. Electron Builder
 copies it into `ADE.app/Contents/Resources/native/` for macOS releases.
 
 ## Capture helper
@@ -23,7 +22,7 @@ npm --prefix apps/desktop run build:capture-helper      # macOS, SwiftPM
 npm --prefix apps/desktop run build:capture-helper:win  # Windows, cl.exe or mingw
 ```
 
-Unlike the notch, these ship through a **top-level** `build.extraResources`
+Unlike the Mac Desktop driver, these ship through a **top-level** `build.extraResources`
 entry filtered to the two names, so one entry covers both platforms and the
 package only ever contains the helper its own build produced.
 

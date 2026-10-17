@@ -341,6 +341,29 @@ describe("gitOperationsService.pull", () => {
     );
   });
 
+  it("serializes pulls for the same lane until the active pull completes", async () => {
+    mockGit.getHeadSha.mockResolvedValue("abc123");
+    let finishFirstPull = () => {};
+    mockGit.runGitOrThrow
+      .mockImplementationOnce(() => new Promise<void>((resolve) => {
+        finishFirstPull = resolve;
+      }))
+      .mockResolvedValue(undefined);
+    const { service } = createTestGitOperationsService();
+
+    const firstPull = service.pull({ laneId: "lane-1" });
+    await vi.waitFor(() => expect(mockGit.runGitOrThrow).toHaveBeenCalledTimes(1));
+
+    const secondPull = service.pull({ laneId: "lane-1", mode: "ff-only" });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(mockGit.runGitOrThrow).toHaveBeenCalledTimes(1);
+
+    finishFirstPull();
+    await Promise.all([firstPull, secondPull]);
+
+    expect(mockGit.runGitOrThrow).toHaveBeenCalledTimes(2);
+  });
+
   it("rejects unknown pull modes before running git", async () => {
     const { service } = createTestGitOperationsService();
 
@@ -1223,7 +1246,7 @@ describe("gitOperationsService.generateCommitMessage", () => {
       aiIntegrationService: {
         getFeatureFlag: () => true,
         getStatus: vi.fn(async () => ({
-          availableModelIds: ["anthropic/claude-haiku-4-5"],
+          availableModelIds: ["anthropic/claude-haiku-5-5"],
         })),
         generateCommitMessage: vi.fn(async (args: { prompt: string; model?: string }) => {
           capturedPrompt = args.prompt;
@@ -1255,9 +1278,9 @@ describe("gitOperationsService.generateCommitMessage", () => {
 
     expect(result).toEqual({
       message: "Update git service",
-      model: "anthropic/claude-haiku-4-5",
+      model: "anthropic/claude-haiku-5-5",
     });
-    expect(capturedModel).toBe("anthropic/claude-haiku-4-5");
+    expect(capturedModel).toBe("anthropic/claude-haiku-5-5");
     expect(capturedPrompt).toContain("Changed files:");
     expect(capturedPrompt).toContain("M\tapps/desktop/src/main/foo.ts");
     expect(capturedPrompt).toContain("A\tapps/desktop/src/main/bar.ts");
@@ -1439,7 +1462,7 @@ describe("gitOperationsService.generateCommitMessage", () => {
       aiIntegrationService: {
         getFeatureFlag: () => true,
         getStatus: vi.fn(async () => ({
-          availableModelIds: ["anthropic/claude-haiku-4-5"],
+          availableModelIds: ["anthropic/claude-haiku-5-5"],
         })),
         generateCommitMessage: vi.fn(async () => ({
           text: "Update git service.",
@@ -1467,7 +1490,7 @@ describe("gitOperationsService.generateCommitMessage", () => {
 
     expect(result).toEqual({
       message: "Refs ADE-123: Update git service",
-      model: "anthropic/claude-haiku-4-5",
+      model: "anthropic/claude-haiku-5-5",
     });
   });
 });
@@ -2041,10 +2064,11 @@ describe("gitOperationsService commit history reads", () => {
 
     const plain = await service.listRecentCommits({ laneId: "lane-1", limit: 20 });
     const detailed = await service.listRecentCommits({ laneId: "lane-1", limit: 20, scope: "lane" });
+    const withCoAuthors = await service.listRecentCommits({ laneId: "lane-1", limit: 20, includeCoAuthors: true });
 
-    // A shared cache entry would serve the plain rows to the detailed read and
-    // skip the second git call entirely.
-    expect(mockGit.runGitOrThrow).toHaveBeenCalledTimes(2);
+    // A shared cache entry would serve one read's rows to another and skip its
+    // git call entirely.
+    expect(mockGit.runGitOrThrow).toHaveBeenCalledTimes(3);
     const formats = mockGit.runGitOrThrow.mock.calls.map((call) => (call[0] as string[]).join(" "));
     expect(formats.some((format) => format.includes("%ae"))).toBe(true);
     expect(formats.some((format) => !format.includes("%ae"))).toBe(true);
@@ -2052,6 +2076,12 @@ describe("gitOperationsService commit history reads", () => {
     expect(detailed[0]?.authorEmail).toBe("arul@example.com");
     expect(detailed[0]?.coAuthors).toEqual(["Claude <noreply@anthropic.com>"]);
     expect(detailed[0]?.subject).toBe("Initial commit");
+    // The lane overview asks for co-authors only: trailers ride along, but a
+    // branch without an upstream still reads as unpushed, as in the plain read.
+    expect(withCoAuthors[0]?.coAuthors).toEqual(["Claude <noreply@anthropic.com>"]);
+    expect(withCoAuthors[0]?.subject).toBe("Initial commit");
+    expect(withCoAuthors[0]?.pushed).toBe(plain[0]?.pushed);
+    expect(detailed[0]?.pushed).not.toBe(plain[0]?.pushed);
   });
 
   it("does not serve one page from another page's cache entry", async () => {

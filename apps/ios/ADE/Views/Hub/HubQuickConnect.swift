@@ -54,12 +54,44 @@ struct HubQuickConnectSection: View {
     let accountTargets = accountMachines.map(Target.account)
     let accountIdentities = Set(accountMachines.compactMap { normalizedIdentity($0.deviceId) })
     let savedTargets = savedHosts.compactMap { host -> Target? in
-      if let identity = normalizedIdentity(host.hostIdentity), accountIdentities.contains(identity) {
+      if let identity = identity(of: .saved(host)), accountIdentities.contains(identity) {
         return nil
       }
       return .saved(host)
     }
     return accountTargets + savedTargets
+  }
+
+  /// The cards on screen, in directory order with the machine the phone was
+  /// last on first. Every online machine gets one (up to four), so the machine
+  /// the user wants is never behind "See all machines" for its directory
+  /// order; with none online, the first two show. The last-used machine and
+  /// the one being connected always keep their card.
+  private var visibleTargets: [Target] {
+    let lastIdentity = syncService.activeHostProfile?.machineIdentity
+    let entries = targets.map { target in
+      (target: target, online: isOnline(target), isLast: lastIdentity != nil && identity(of: target) == lastIdentity)
+    }
+    let ordered = entries.filter(\.isLast) + entries.filter { !$0.isLast }
+    let anyOnline = ordered.contains(where: \.online)
+    let shown = ordered.filter { entry in
+      !anyOnline || entry.online || entry.isLast || connectingId == entry.target.id
+    }
+    return Array(shown.prefix(anyOnline ? 4 : 2)).map(\.target)
+  }
+
+  private func identity(of target: Target) -> String? {
+    switch target {
+    case .account(let machine): return normalizedIdentity(machine.deviceId)
+    case .saved(let host): return normalizedIdentity(host.hostIdentity)
+    }
+  }
+
+  private func isOnline(_ target: Target) -> Bool {
+    switch target {
+    case .account(let machine): return machine.online
+    case .saved(let host): return hubSavedMachineIsRecentlyReachable(host, liveHosts: syncService.discoveredHosts)
+    }
   }
 
   private var hasTargets: Bool {
@@ -74,7 +106,7 @@ struct HubQuickConnectSection: View {
     Group {
       if hasTargets {
         VStack(spacing: 10) {
-          ForEach(targets.prefix(2)) { target in
+          ForEach(visibleTargets) { target in
             switch target {
             case .account(let machine):
               HubQuickConnectCard(
@@ -108,12 +140,21 @@ struct HubQuickConnectSection: View {
               ) { connectSaved(host) }
             }
           }
-          if targets.count > 2 {
-            Button("See all machines", systemImage: "chevron.right") {
+          if targets.count > visibleTargets.count {
+            Button {
               syncService.settingsPresented = true
+            } label: {
+              HStack(spacing: 5) {
+                Text("See all machines")
+                Image(systemName: "chevron.right")
+                  .font(.system(size: 10, weight: .semibold))
+              }
+              .font(.system(size: 14, weight: .medium))
+              .foregroundStyle(ADEColor.textSecondary)
+              .frame(minHeight: 44)
+              .contentShape(Rectangle())
             }
-            .font(.subheadline.bold())
-            .frame(minHeight: 44)
+            .buttonStyle(.plain)
           }
           if connectingId != nil, let stage = syncService.accountConnectStageLabel {
             Text(stage)
@@ -143,16 +184,14 @@ struct HubQuickConnectSection: View {
         }
       } else if showsEmptyNote {
         HStack(spacing: 8) {
-          Circle().fill(ADEColor.textMuted).frame(width: 7, height: 7)
+          ADEKitDot(tone: .neutral, size: 7)
           Text("No saved machines yet")
             .font(.system(.caption, design: .rounded).weight(.medium))
             .foregroundStyle(ADEColor.textMuted)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .frame(maxWidth: .infinity)
-        .background(ADEColor.cardBackground.opacity(0.4), in: Capsule())
-        .overlay(Capsule().stroke(ADEColor.border.opacity(0.5), lineWidth: 1))
+        .padding(.horizontal, 12)
+        .frame(height: 30)
+        .background(ADEKit.track, in: Capsule())
       }
     }
     .frame(maxWidth: 420)
@@ -249,10 +288,9 @@ struct HubQuickConnectCard: View {
         routeHint: routeHint,
         online: online,
         statusPill: nil,
-        affordance: isConnecting ? .connecting : .chevron,
-        surface: .card
+        affordance: isConnecting ? .connecting : .chevron
       )
-      .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+      .contentShape(RoundedRectangle(cornerRadius: ADEKit.radius, style: .continuous))
     }
     .buttonStyle(ADEScaleButtonStyle())
     .disabled(isDisabled)

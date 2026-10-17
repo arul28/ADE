@@ -138,7 +138,7 @@ const ADE_CLI_PATH_SPELLING = /^(?:\S*[\\/])?ade(?:\.exe|\.cmd)?(?=\s|$)/i;
  */
 const MAX_UNWRAPPED_COMMAND_CHARS = 64_000;
 
-function unwrapShell(command: string): string {
+export function unwrapShell(command: string): string {
   let text = command.slice(0, MAX_UNWRAPPED_COMMAND_CHARS).trim();
   // Two passes cover one wrapper inside another (`cmd /c powershell -Command …`).
   for (let pass = 0; pass < 2; pass += 1) {
@@ -375,6 +375,7 @@ export type SessionActivityDetector = {
 
 export function createSessionActivityDetector(): SessionActivityDetector {
   let state: SessionActivityValue | null = null;
+  let beforeCompaction: SessionActivityValue | null = null;
   let readStreak = 0;
   let lastTestingAtMs = Number.NEGATIVE_INFINITY;
   let recentWeak: Array<{ activity: SessionActivityValue; atMs: number }> = [];
@@ -386,6 +387,7 @@ export function createSessionActivityDetector(): SessionActivityDetector {
 
   const reset = (): void => {
     state = null;
+    beforeCompaction = null;
     readStreak = 0;
     lastTestingAtMs = Number.NEGATIVE_INFINITY;
     recentWeak = [];
@@ -447,6 +449,25 @@ export function createSessionActivityDetector(): SessionActivityDetector {
   };
 
   const observe = (event: AgentChatEvent, atMs: number) => {
+    if (event.type === "status" && event.turnStatus === "started" && state === "compaction_failed") reset();
+    if (event.type === "context_compact" || event.type === "codex_context_compaction") {
+      if (event.state === "started") {
+        if (state !== "compacting") beforeCompaction = state;
+        state = "compacting";
+      } else {
+        // Back to what the chat was doing; null when nothing was known, rather
+        // than claiming an activity the chat never reported. A cancellation is
+        // not a failure — the person's Stop or the provider aborting its own
+        // `/compact` asks nothing of anyone, so it must not leave the amber
+        // "Compaction failed" row standing.
+        state = event.state === "failed" && event.failReason !== "interrupted"
+          ? "compaction_failed"
+          : beforeCompaction;
+        beforeCompaction = null;
+      }
+      return { activity: state, counted: true };
+    }
+    if (state === "compacting" || state === "compaction_failed") return { activity: state, counted: false };
     const signal = classifySessionActivityEvent(event);
     if (!signal || !firstSighting(event, signal)) return { activity: state, counted: false };
     return { activity: apply(signal, atMs), counted: true };

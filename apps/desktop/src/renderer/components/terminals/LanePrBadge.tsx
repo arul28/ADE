@@ -100,7 +100,7 @@ export function LanePrBadge({
             openPill(event);
           }
         }}
-        className="inline-flex shrink-0 items-center gap-1 rounded-full border border-white/10 bg-white/[0.04] px-1.5 py-px text-[10px] font-medium leading-none text-muted-fg/70 transition-colors hover:bg-white/[0.09]"
+        className="inline-flex shrink-0 items-center gap-1 rounded-full border border-fg/10 bg-fg/[0.04] px-1.5 py-px text-[10px] font-medium leading-none text-muted-fg/70 transition-colors hover:bg-fg/[0.09]"
         title={`${prTitle(primaryPr)}${stackDescription}`}
         aria-label={`Pull request #${primaryPr.githubPrNumber}, ${label}${stackDescription}`}
       >
@@ -125,7 +125,7 @@ export function LanePrBadge({
         label={`Pull requests · ${allPrs.length}`}
         width={260}
         content={(
-          <div className="overflow-hidden rounded-lg border border-white/[0.10] bg-[#17171b] p-1.5 shadow-2xl shadow-black/30">
+          <div className="overflow-hidden rounded-lg border border-fg/[0.10] bg-(color:--work-popover-bg) p-1.5 shadow-2xl shadow-black/30">
           <span className="block px-2 pb-1.5 pt-1 text-[9px] font-semibold uppercase tracking-[0.12em] text-muted-fg/45">
             Pull requests · {allPrs.length}
           </span>
@@ -136,7 +136,7 @@ export function LanePrBadge({
                 key={candidate.id}
                 role="button"
                 tabIndex={0}
-                className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-white/[0.06]"
+                className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-fg/[0.06]"
                 onClick={(event) => open(event, candidate)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" || event.key === " ") {
@@ -175,7 +175,7 @@ export function LanePrBadge({
             <span
               role="button"
               tabIndex={0}
-              className="mt-0.5 flex cursor-pointer items-center rounded-md border-t border-white/[0.06] px-2 pb-1 pt-1.5 text-[10px] text-muted-fg/60 transition-colors hover:bg-white/[0.06] hover:text-fg/85"
+              className="mt-0.5 flex cursor-pointer items-center rounded-md border-t border-fg/[0.06] px-2 pb-1 pt-1.5 text-[10px] text-muted-fg/60 transition-colors hover:bg-fg/[0.06] hover:text-fg/85"
               onClick={(event) => {
                 event.stopPropagation();
                 onOpenList?.();
@@ -204,7 +204,7 @@ export function LanePrBadge({
               openPill(event);
             }
           }}
-          className="inline-flex shrink-0 items-center gap-1 rounded-full border border-white/10 bg-white/[0.04] py-px pl-1.5 pr-1 text-[10px] font-medium leading-none text-muted-fg/70 transition-colors hover:bg-white/[0.09]"
+          className="inline-flex shrink-0 items-center gap-1 rounded-full border border-fg/10 bg-fg/[0.04] py-px pl-1.5 pr-1 text-[10px] font-medium leading-none text-muted-fg/70 transition-colors hover:bg-fg/[0.09]"
           aria-label={`${prTitle(primaryPr)}; ${allPrs.length - 1} other pull requests on this lane`}
           aria-haspopup="dialog"
         >

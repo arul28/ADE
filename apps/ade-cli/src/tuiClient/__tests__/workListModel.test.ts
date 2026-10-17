@@ -231,6 +231,22 @@ describe("workListModel grouping", () => {
     expect(model.rows.some((row) => row.kind === "shelf" && row.shelf === "settled")).toBe(true);
   });
 
+  it("reads a finished parent as Waiting while its subagent is mid-turn or parked on a wake", () => {
+    const parentLabel = (child: Partial<TuiChatSessionSummary>) => sessionRows(build({
+      lanes: [lane("lane-1", "Feature")],
+      sessions: [
+        session({ sessionId: "parent", laneId: "lane-1", title: "Lead" }),
+        session({ sessionId: "helper", laneId: "lane-1", spawnKind: "subagent", orchestrationParentSessionId: "parent", ...child }),
+      ],
+      activeSessionId: null,
+    })).find((row) => row.sessionId === "parent")?.status?.label;
+
+    expect(parentLabel({ status: "active" })).toBe("Waiting");
+    expect(parentLabel({ status: "idle", nextWakeAt: "2026-05-12T12:12:00.000Z" })).toBe("Waiting");
+    expect(parentLabel({ status: "idle" })).toBe("Done");
+    expect(parentLabel({ status: "idle", nextWakeAt: "2026-05-12T11:50:00.000Z" })).toBe("Done");
+  });
+
   it("orders chats inside a lane by last activity, then session id, so the list does not shuffle", () => {
     const model = build({
       lanes: [lane("lane-1", "Feature")],

@@ -6,6 +6,7 @@ import {
   createService,
   detectAllAuth,
   fs,
+  installRealTranscriptParser,
   makeDefaultClaudeSession,
   mockState,
   path,
@@ -17,6 +18,7 @@ import {
   waitFor,
   waitForEvent,
   waitForSessionTitle,
+  writeTestTranscriptEnvelopes,
 } from "./agentChatService.testHarness";
 import { describe, expect, it, test, vi } from "vitest";
 
@@ -61,7 +63,7 @@ describe("createAgentChatService", () => {
   describe("getSlashCommands", () => {
     it("returns empty array for unknown session", async () => {
       const { service } = createService();
-      const commands = service.getSlashCommands({ sessionId: "unknown-id" });
+      const commands = await service.getSlashCommands({ sessionId: "unknown-id" });
       expect(commands).toEqual([]);
     });
 
@@ -78,7 +80,7 @@ describe("createAgentChatService", () => {
       ].join("\n"));
       const { service } = createService();
 
-      const commands = service.getSlashCommands({ laneId: "lane-1", provider: "claude" });
+      const commands = await service.getSlashCommands({ laneId: "lane-1", provider: "claude" });
       const names = commands.map((command) => command.name);
 
       expect(names).toContain("/agents");
@@ -102,7 +104,7 @@ describe("createAgentChatService", () => {
       fs.writeFileSync(path.join(promptsDir, "audit.md"), "Audit recent work.");
       const { service } = createService();
 
-      const commands = service.getSlashCommands({ laneId: "lane-1", provider: "codex" });
+      const commands = await service.getSlashCommands({ laneId: "lane-1", provider: "codex" });
       const names = commands.map((command) => command.name);
 
       expect(names).toContain("/permissions");
@@ -137,7 +139,7 @@ describe("createAgentChatService", () => {
       fs.writeFileSync(path.join(codexPromptsDir, "triage.md"), "Triage the inbox.");
       const { service } = createService();
 
-      const commands = service.getSlashCommands({ laneId: "lane-1", provider: "droid" });
+      const commands = await service.getSlashCommands({ laneId: "lane-1", provider: "droid" });
       const names = commands.map((command) => command.name);
 
       expect(names).toContain("/clear");
@@ -189,7 +191,7 @@ describe("createAgentChatService", () => {
       ].join("\n"));
       const { service } = createService();
 
-      const commands = service.getSlashCommands({ laneId: "lane-1", provider: "cursor" });
+      const commands = await service.getSlashCommands({ laneId: "lane-1", provider: "cursor" });
       const names = commands.map((command) => command.name);
 
       expect(names).toContain("/clear");
@@ -244,7 +246,7 @@ describe("createAgentChatService", () => {
         expect(warmupComplete).toBe(true);
       });
 
-      const names = service.getSlashCommands({ sessionId: session.id }).map((command) => command.name);
+      const names = (await service.getSlashCommands({ sessionId: session.id })).map((command) => command.name);
       expect(names).toContain("/compact");
       expect(names).not.toContain("/exit");
       expect(names).not.toContain("/quit");
@@ -271,7 +273,7 @@ describe("createAgentChatService", () => {
         model: "sonnet",
       });
 
-      const commands = service.getSlashCommands({ sessionId: session.id });
+      const commands = await service.getSlashCommands({ sessionId: session.id });
       const loginCmd = commands.find((c: any) => c.name === "/login");
       expect(loginCmd).toBeUndefined();
     });
@@ -298,7 +300,7 @@ describe("createAgentChatService", () => {
         model: "gpt-5.4",
       });
 
-      const commands = service.getSlashCommands({ sessionId: session.id });
+      const commands = await service.getSlashCommands({ sessionId: session.id });
       expect(commands.filter((command: any) => command.name.toLowerCase() === "/shiplane")).toHaveLength(1);
       expect(commands).toEqual(expect.arrayContaining([
         expect.objectContaining({
@@ -453,7 +455,7 @@ describe("createAgentChatService", () => {
         agents: [expect.objectContaining({ name: "reviewer", description: "Review code" })],
         errorCount: 0,
       }));
-      expect(service.getSlashCommands({ sessionId: session.id })).toEqual(expect.arrayContaining([
+      expect(await service.getSlashCommands({ sessionId: session.id })).toEqual(expect.arrayContaining([
         expect.objectContaining({ name: "/review-plugin:audit", description: "Audit" }),
       ]));
     });
@@ -1977,6 +1979,40 @@ describe("createAgentChatService", () => {
       expect(result.skipped).toEqual(["statusLine"]);
       expect(sessionService.get(session.id)?.title).toBe(generatedMetadata.chatTitle);
       expect(sessionService.setStatusNote).not.toHaveBeenCalled();
+    });
+
+    it("hands the namer each streamed reply as whole words, one paragraph per message", async () => {
+      installAutoTitleAuth();
+      installRealTranscriptParser();
+      const { service, aiIntegrationService } = createService();
+      const session = await service.createSession({
+        laneId: "lane-2",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/anthropic/claude-sonnet-5",
+      });
+      const at = "2026-10-09T21:25:49.000Z";
+      writeTestTranscriptEnvelopes(session.id, [
+        { sessionId: session.id, timestamp: at, event: { type: "user_message", text: "What can you do alone?" } },
+        ...["Anything that raises a", " Windows admin (UAC) prompt,", " I can't click through."].map((text) => ({
+          sessionId: session.id,
+          timestamp: at,
+          event: { type: "text" as const, text, turnId: "turn-1", messageId: "msg-1" },
+        })),
+        { sessionId: session.id, timestamp: at, event: { type: "text", text: "Nothing is started yet.", turnId: "turn-1", messageId: "msg-2" } },
+      ] as AgentChatEventEnvelope[]);
+      aiIntegrationService.summarizeTerminal.mockResolvedValue({
+        text: JSON.stringify(generatedMetadata),
+        structuredOutput: generatedMetadata,
+      } as never);
+
+      await service.regenerateSessionMetadata({ sessionId: session.id, fields: ["statusLine"] });
+
+      expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledWith(expect.objectContaining({
+        prompt: expect.stringContaining(
+          "Anything that raises a Windows admin (UAC) prompt, I can't click through.\n\nNothing is started yet.",
+        ),
+      }));
     });
 
     it("keeps a same-text manual rename made while generation is in flight", async () => {

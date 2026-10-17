@@ -144,6 +144,7 @@ public enum DriverErrorCode {
     public static let windowNotFound = "MAC_DESKTOP_WINDOW_NOT_FOUND"
     public static let handleExpired = "MAC_DESKTOP_HANDLE_EXPIRED"
     public static let inputLeaseRequired = "MAC_DESKTOP_INPUT_LEASE_REQUIRED"
+    public static let userHasControl = "MAC_DESKTOP_USER_HAS_CONTROL"
     public static let recordingNotRunning = "MAC_DESKTOP_RECORDING_NOT_RUNNING"
     /// ⌘Q on an app that also has windows outside the lane's display: one
     /// process owns all of an app's windows, so quitting it would close the
@@ -161,12 +162,12 @@ public enum DriverErrorCode {
     /// grant look identical at the call site and must not read identically to
     /// the user.
     public static let windowNotReady = "window_not_ready"
-    /// A request that was parked behind a real gesture waited longer than the
+    /// A request that was parked behind a drag waited longer than the
     /// caller could plausibly still be listening for, and was answered instead
     /// of run. Distinct from `internal_error` because nothing went wrong in the
     /// driver: the world simply moved on.
     public static let deferredExpired = "deferred_expired"
-    /// A `wait` arrived while a real gesture was holding the mouse button.
+    /// A `wait` arrived while a drag was in flight.
     ///
     /// `wait` is deliberately not deferred — it would sit in the queue for up
     /// to two minutes and hold everything parked behind it — but it is also not

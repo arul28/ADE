@@ -78,7 +78,7 @@ const MEANINGFUL_ACTIONS = new Set([
   "chat.restartSession",
   "chat.handoff",
   "chat.rewindFiles",
-  "chat.createPromptStash",
+  "chat.createDraft",
   "chat.createScheduledWork",
   "chat.cancelScheduledWork",
   "chat.delete",
@@ -185,7 +185,7 @@ export function usageActionFromIpcChannel(channel: string): string {
   if (action.startsWith("agentChat.")) {
     const chatAction = action.slice("agentChat.".length);
     const aliases: Record<string, string> = {
-      "promptStashes.create": "createPromptStash",
+      "drafts.create": "createDraft",
       "scheduledWork.create": "createScheduledWork",
       "scheduledWork.cancel": "cancelScheduledWork",
     };
@@ -361,6 +361,7 @@ function providerFromToolType(toolType: unknown): string {
   if (value.includes("cursor")) return "cursor";
   if (value.includes("opencode")) return "opencode";
   if (value.includes("droid")) return "droid";
+  if (value.includes("muse")) return "muse";
   return value.includes("shell") ? "shell" : "other";
 }
 

@@ -6,17 +6,13 @@
  * Those callers used to carry their own hand-copied chain and retry loop, which
  * had already drifted apart. They live here so "the same chain" is a fact
  * rather than a comment: the cheap ADE-provider helper, then this session's
- * model, then a deterministic name. Settings pickers are not part of the chain.
+ * model. Settings pickers are not part of the chain.
  */
 import {
   adeBackgroundUtilityProvider,
   adeBackgroundUtilityProviderFromToolType,
   backgroundUtilityModelId,
 } from "../../../shared/backgroundUtilityModel";
-import {
-  deriveDeterministicLaneTitleFromPrompt,
-  GENERIC_LANE_FALLBACK_TITLE,
-} from "../../../shared/laneNameFallback";
 import {
   resolveModelDescriptor,
   resolveProviderGroupForModel,
@@ -221,27 +217,6 @@ export function parseGeneratedSessionMetadata(args: {
   const statusLine = statusLineRaw ? args.normalizeStatusLine(statusLineRaw) : null;
   if (!chatTitle && !laneName && !statusLine) return null;
   return { chatTitle, laneName, statusLine };
-}
-
-/**
- * Last-resort names when every model returns unusable JSON. Prefer the
- * conversation summary over the original kickoff prompt so "Generate all
- * three" does not restamp the launch-instruction slug.
- */
-export function deriveDeterministicSessionMetadata(args: {
-  seeds: Array<string | null | undefined>;
-  normalizeTitle: (value: string) => string | null;
-  normalizeStatusLine: (value: string) => string | null;
-}): GeneratedSessionMetadata | null {
-  const seed = args.seeds
-    .map((value) => (typeof value === "string" ? value.trim() : ""))
-    .find((value) => value.length > 0) ?? "";
-  if (!seed) return null;
-  const title = args.normalizeTitle(deriveDeterministicLaneTitleFromPrompt(seed));
-  const chatTitle = title && title !== GENERIC_LANE_FALLBACK_TITLE ? title : null;
-  const statusLine = args.normalizeStatusLine(seed);
-  if (!chatTitle && !statusLine) return null;
-  return { chatTitle, laneName: chatTitle, statusLine };
 }
 
 export const SESSION_METADATA_TRANSCRIPT_CHAR_LIMIT = 64_000;
@@ -457,9 +432,12 @@ export async function runSessionMetadataGeneration(args: {
  * It deliberately excludes "not supported for/on/by", "model not found", and
  * "does not exist", which describe a single unavailable model or a capability
  * it lacks — those must still retry a sibling model on the same provider.
+ *
+ * A plan's usage limit ("You've hit your weekly limit", HTTP 429) belongs to
+ * the account, so every model behind it fails the same way.
  */
 const PROVIDER_LEVEL_NAMING_FAILURE_PATTERN =
-  /enoent|eacces|spawn\b|command not found|no such file|unauthor|unauthenticated|not (?:logged in|authenticated)|\b40[13]\b|api[_ -]?key|credential|not supported (?:with|when)|insufficient|quota|rate limit/i;
+  /enoent|eacces|spawn\b|command not found|no such file|unauthor|unauthenticated|not (?:logged in|authenticated)|\b40[13]\b|\b429\b|api[_ -]?key|credential|not supported (?:with|when)|insufficient|quota|rate limit|usage limit|hit your (?:\w+ )?limit/i;
 
 export function isProviderLevelNamingFailure(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error ?? "");

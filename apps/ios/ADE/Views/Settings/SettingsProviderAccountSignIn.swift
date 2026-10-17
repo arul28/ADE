@@ -131,10 +131,9 @@ struct ProviderAccountSignInSheet: View {
           stepList
           content
           if let error = controller.errorMessage ?? failureMessage {
-            ADEFlatInlineNotice(message: error, tint: ADEColor.danger) {
+            ADESettingsNotice(message: error, tone: .crit, actionTitle: "Retry") {
               Task { await controller.start() }
             }
-            .padding(.horizontal, 4)
           }
         }
         .padding(.horizontal, 20)
@@ -260,12 +259,8 @@ struct ProviderAccountSignInSheet: View {
               openURL(url)
             } label: {
               Label("Open sign-in page again", systemImage: "safari")
-                .font(.subheadline.weight(.semibold))
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 4)
             }
-            .buttonStyle(.glass)
-            .tint(ADEColor.accent)
+            .buttonStyle(ADEKitButtonStyle(wide: true))
           } else {
             Button {
               if let deviceCode = login.deviceCode {
@@ -276,12 +271,8 @@ struct ProviderAccountSignInSheet: View {
               openURL(url)
             } label: {
               Label(login.deviceCode == nil ? "Open sign-in page" : "Copy code & open sign-in page", systemImage: "safari")
-                .font(.body.weight(.semibold))
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 6)
             }
-            .buttonStyle(.glassProminent)
-            .tint(ADEColor.accent)
+            .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
           }
         } else {
           progressCard("Starting sign-in on your computer…")
@@ -310,22 +301,15 @@ struct ProviderAccountSignInSheet: View {
         Task { await controller.start() }
       } label: {
         Label("Try again", systemImage: "arrow.clockwise")
-          .font(.body.weight(.semibold))
-          .frame(maxWidth: .infinity)
-          .padding(.vertical, 6)
       }
-      .buttonStyle(.glassProminent)
-      .tint(ADEColor.accent)
+      .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
     }
   }
 
 
   private func deviceCodeCard(_ deviceCode: String) -> some View {
     VStack(spacing: 10) {
-      Text("YOUR CODE")
-        .font(.caption2.weight(.semibold))
-        .tracking(0.8)
-        .foregroundStyle(ADEColor.textMuted)
+      ADEEyebrow("Your code")
       Text(deviceCode)
         .font(.system(size: 34, weight: .semibold, design: .monospaced))
         .tracking(3)
@@ -339,15 +323,12 @@ struct ProviderAccountSignInSheet: View {
         copied = true
       } label: {
         Label(copied ? "Copied" : "Copy code", systemImage: copied ? "checkmark" : "doc.on.doc")
-          .font(.footnote.weight(.semibold))
       }
-      .buttonStyle(.glass)
-      .controlSize(.small)
+      .buttonStyle(ADEKitButtonStyle())
     }
     .frame(maxWidth: .infinity)
     .padding(.vertical, 18)
-    .background(ADEColor.textPrimary.opacity(0.04), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-    .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(ADEColor.border.opacity(0.6), lineWidth: 0.75))
+    .adeKitCard(padding: nil)
   }
 
   private var codeEntry: some View {
@@ -372,31 +353,26 @@ struct ProviderAccountSignInSheet: View {
             .font(.caption.weight(.semibold))
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
-            .background(ADEColor.accent.opacity(0.12), in: Capsule())
-            .foregroundStyle(ADEColor.accent)
+            .background(ADEKit.track, in: Capsule())
+            .foregroundStyle(ADEColor.textPrimary)
         }
         .buttonStyle(.plain)
       }
       .padding(.leading, 14)
       .padding(.trailing, 8)
       .padding(.vertical, 8)
-      .background(ADEColor.textPrimary.opacity(0.05), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+      .background(ADEKit.surface, in: RoundedRectangle(cornerRadius: ADEKit.radius, style: .continuous))
       .overlay(
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-          .stroke(codeFocused ? ADEColor.accent.opacity(0.6) : Color.clear, lineWidth: 1)
+        RoundedRectangle(cornerRadius: ADEKit.radius, style: .continuous)
+          .strokeBorder(codeFocused ? ADEColor.accent : ADEKit.edge, lineWidth: codeFocused ? 1.25 : 0.75)
       )
       Button(action: submit) {
         Group {
           if controller.submitting { ProgressView().tint(.white) } else { Text("Finish sign-in") }
         }
-        .font(.body.weight(.semibold))
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 6)
       }
-      .buttonStyle(.glassProminent)
-      .tint(ADEColor.accent)
+      .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
       .disabled(!hasCode || controller.submitting)
-      .opacity(hasCode ? 1 : 0.45)
       .padding(.top, 4)
     }
   }
@@ -419,12 +395,8 @@ struct ProviderAccountSignInSheet: View {
         reportDone()
       } label: {
         Text("Done")
-          .font(.body.weight(.semibold))
-          .frame(maxWidth: .infinity)
-          .padding(.vertical, 6)
       }
-      .buttonStyle(.glassProminent)
-      .tint(ADEColor.accent)
+      .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
       .padding(.top, 6)
     }
     .frame(maxWidth: .infinity)

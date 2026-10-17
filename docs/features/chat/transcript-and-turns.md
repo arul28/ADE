@@ -128,7 +128,7 @@ Two helpers summarise a parsed stream:
 | Type | Purpose |
 |---|---|
 | `user_message` | A user turn; carries text, attachments, `turnId`, optional `steerId` and `deliveryState`. `deliveryState` is `"queued"` while a steer waits for turn-end delivery, `"delivered"` once flushed at turn boundary, `"inline"` when the message was folded into the active turn rather than queued behind it (Claude's SDK `shouldQuery:false` send, Cursor's `Run.steer()`, OpenCode's `session.prompt` with `delivery: "steer"`, or Pi's `steer`), and `"failed"` if dispatch errored. Cursor, OpenCode, and Pi first write the row as `"accepted"` ("Steering…") before they await the provider, then move the same `steerId` to `"inline"` ("Steered") when the turn takes it. Cursor's `Run.steer()` resolves only once the turn reads the message at its next model step, so without the early row the message was invisible for that whole step. A refusal moves the row to `"queued"` (staged again), `"delivered"` (sent as its own turn), or `"failed"` (dropped), so it never stays `"accepted"`. The desktop draws the delivery state as one small line under the bubble, right-aligned with it and never inside it (see [Message delivery](README.md#message-delivery-turn-health-and-quiet-diagnostics)). Same-turn steers (`queued`, `inline`, `accepted` from every inline provider, and Codex `processed`/`unprocessed`) do not clear the live provider-retry working indicator; only a primary user message, `delivered`/`failed` user message, or a terminal status/`done` starts the next retry-replay segment. A `user_message` carrying `metadata.boardMove` is intercepted before the user-bubble branch and rendered as a divider (`Moved on the board · <from> → <to>`) with the exact text the agent received centred underneath — never a bubble, because the user dragged a card between Work-board columns rather than typing that sentence. |
-| `text` | Streaming assistant text; identified by `messageId` (preferred) or turn/item identity. Fragments merge when `shouldMergeTextRows()` returns true. Codex text may carry an optional `phase` (`commentary` / `final_answer`); see Text merging. |
+| `text` | Streaming assistant text; identified by `messageId` (preferred) or turn/item identity. Fragments merge when `shouldMergeTextRows()` returns true. Codex text may carry an optional `phase` (`commentary` / `partial_answer` / `final_answer`); see Text merging. |
 | `transcript_retraction` | Provider-level retraction signal. Claude emits this for refusal fallback `retracted_message_uuids` and assistant `supersedes`; renderers remove prior assistant text rows whose `messageId` matches `messageIds`, optionally retaining `replacementMessageId` as the new provider message id. The persisted JSONL remains append-only. |
 | `reasoning` | Chain-of-thought or assistant-internal reasoning; surfaces as a distinct transcript row with a collapsible header. |
 | `tool_call` / `tool_result` | Paired per tool invocation; rendered inside work-log groups. `tool_result.status` can be `running`, `completed`, `failed`, or `interrupted`. Claude SDK `tool_result_meta` is retained as optional `toolResultMeta`, and the provider's raw payload as optional `structured`; both are local-only debug material — they are bounded on disk and stripped from the sync wire, because no renderer, TUI, web, or iOS client decodes either. Provider-native MCP calls retain `mcp: AgentChatMcpToolSource` (`server`, `tool`, optional plugin/resource/app context) so transcript labels, the TUI/iOS, and Sources use the connector identity instead of a generic tool name. Provider web tools add an optional `sources: ChatSourceRef[]` (at most 20, http(s) only, strings clipped) to their `tool_result`; unlike `structured` it travels on every wire, and the desktop row lists those hits like a native web search. |
@@ -160,10 +160,10 @@ Two helpers summarise a parsed stream:
 | `turn_diff_summary` | Git-level before/after SHA + per-file stats for a completed turn. |
 | `delegation_state` | Delegated worker state updates. |
 | `context_usage` | Provider-neutral context occupancy. Automatic Claude samples use `origin: "live" \| "snapshot" \| "compact"` and are filtered out of the transcript; `live` is the responsive stream estimate, while `snapshot`/`compact` come from the SDK control channel after initialization, settled turns, and compact completion. `state` is `measured`, `compacting`, `recalculating`, or `unknown`; non-measured states deliberately hide the old percentage. Monotonic `sampleId` plus `capturedAt` support stale-response rejection and diagnostics. The user-invoked `/context` command carries `origin: "command"` (historical undefined-origin snapshots are treated the same) and still renders its inline breakdown card, classified by each category's `kind` (`used` / `free` / `buffer` / `deferred`) — never by the display name `"free"`. Optional typed fields (`inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheCreationTokens`) carry the breakdown the meter's hover shows without reparsing the display `categories`. |
-| `context_compact` | Provider-neutral manual/automatic compaction lifecycle. `state: "started"` begins the boundary and `state: "completed"` may carry `preTokens`, `postTokens`, `tokensRemoved`, `durationMs`, provider, and per-session count. `trigger: "ade_fallback"` identifies ADE's guarded fallback. A completed boundary invalidates older context-meter usage on desktop, ADE Code, and iOS; exact post-compaction snapshots may refill the meter immediately, while stale same-turn aggregate counters are ignored. |
+| `context_compact` | Provider-neutral manual/automatic compaction lifecycle. `state: "started"` begins the boundary, `"completed"` may carry `preTokens`, `postTokens`, `tokensRemoved`, `durationMs`, provider, per-session count, and `summary` (Claude's `PostCompact` hook, OpenCode's summary text), and `"failed"` carries `failReason` (`interrupted`, `timed_out`, `teardown`, `provider_error`, `quota`), the provider's `failDetail`, and the account's `accountLabel`. `trigger` is `manual` (the turn was a typed or clicked `/compact`), `auto`, or `ade_fallback` (ADE's guarded fallback). A compaction says `started` exactly once: an `ade_fallback` one when Claude reports `compacting` (the `/compact` waits behind whatever Claude runs next, and saying "Compacting" when ADE asked left the label up for half an hour while the context kept growing), and a native one on its first `compacting` status frame — Claude repeats that status every ~30 s while one compaction runs, and a repeat must not open a second row or restart the elapsed clock above it. When a turn ends, ADE closes every compaction still open for it as `failed`, so no divider spins after its turn; an `interrupted` one closes as a cancellation (see the divider table). A completed boundary invalidates older context-meter usage on desktop, ADE Code, and iOS; a failed one leaves the last measured value. |
 | `web_search` | Provider-neutral web-search/fetch lifecycle; renderers group these with other tool calls instead of showing them as standalone event cards. Actions can carry `query`, `queries`, `title`, `url`, and `snippet`; desktop and iOS render URL actions as in-app-browser result chips, while the TUI keeps a concise one-line action summary. Codex 0.145 additionally emits structured `results` (an array of `{ url, title, snippet }` capped at 8 by the adapter) plus `resultsTotal` (the pre-cap hit count). Renderers thread these onto the same grouped row — desktop/iOS surface them as `Sources` chips (deduped against the action URLs) and the Sources tab, and the TUI shows up to three `title — domain` preview lines with a `+N more` tail. Codex emits native web-search items; `claudeStructuredActivity.ts` maps Claude server-tool blocks into the same event. Every surface that lists sources reads these results and URL actions through `shared/chatSources.ts`; the queries are metadata on the sources they produced, never items of their own. The desktop row header shows the result count (`resultsTotal`, else the results, else the URL actions) without being expanded. |
 | `sources` | Data-only citations for an assistant message: `sources: ChatSourceRef[]` plus optional `itemId`/`turnId`. Claude text-block citations, Codex `agentMessage.memoryCitation`, and ACP `resource_link` message blocks emit it. It draws no row on any surface (desktop hides it with the token events; iOS decodes it as `.unknown`; the TUI prints nothing for it) and does not break the streaming assistant message (`shouldFlushBufferedAssistantTextForEvent` returns false). Sources, the turn chip, and the fold count read it. |
-| `codex_image_generation` / `codex_image_view` | Compact generated/viewed-image lifecycle used across providers despite the legacy type prefix. Codex emits native image items, Cursor maps `generateImage`, OpenCode maps image `file` parts, and Droid maps assistant image blocks. OpenCode's two origins are split by where the `file` part lives: an assistant-owned part is model output (`codex_image_generation`), while a tool attachment is what the tool returned (`codex_image_view`) — except attachments from a recognized image-generation tool, which keep the generation card. The view line renders an inline preview for data URIs only (the renderer CSP pins `img-src` to an allowlist plus data:/blob:, so a remote preview would paint an empty box unless it is read through the chat's machine as a data URL — `CodexImageViewLine` loads a local one via `readAttachmentImageDataUrl` with the runtime pin) and never prints a data URI as its name; remote and local sources keep the `open` affordance. Consecutive views in one turn fold into a single `Viewed N images` strip (`imageViewSiblings`, carried through `ChatTranscriptRenderEnvelope` / `ChatTranscriptGroupedEnvelope`): a later view joins the strip when only folded work — tool calls, commands, narration — sits between them, and a row the reader keeps seeing starts a new strip. Large stored data URIs are removed with original/omitted byte metadata. |
+| `codex_image_generation` / `codex_image_view` | Compact generated/viewed-image lifecycle used across providers despite the legacy type prefix. Codex emits native image items, Cursor maps `generateImage`, OpenCode maps image `file` parts, and Droid maps assistant image blocks. OpenCode's two origins are split by where the `file` part lives: an assistant-owned part is model output (`codex_image_generation`), while a tool attachment is what the tool returned (`codex_image_view`) — except attachments from a recognized image-generation tool, which keep the generation card. A view is one quiet line in the grid of the computer-use rows (`CodexImageViewLine`): "Viewed banner.png", named by the file name (never a whole path or a data URI). A click opens the picture small under the line and a click on it opens `MediaLightbox`; nothing is read until then. A picture is a local file read through the chat's machine (`readAttachmentImageDataUrl` with the runtime pin, `ChatViewedImages.tsx`) or an inline data URI; a remote URL is not previewable (the renderer CSP pins `img-src` to an allowlist plus data:/blob:). A view of a file that a computer-use action of the same turn printed — its screenshot, the picture its observation saved — draws no row: it joins that action's line (`foldImageViewIntoAction`, on `ChatWorkLogEntry.imageViews`), see the computer-use rows below. Consecutive views in one turn fold into a single `Viewed N images` line (`imageViewSiblings`, carried through `ChatTranscriptRenderEnvelope` / `ChatTranscriptGroupedEnvelope`): a later view joins it when only folded work — tool calls, commands, narration, rows that draw nothing such as automatic `context_usage` snapshots — sits between them, and a row the reader keeps seeing starts a new one. OpenCode's `read` names its attachment with the absolute path it read; the mapper records that as the view's `path` and its file name as the title, so the picture stays reachable after storage drops a large data URI (original/omitted byte metadata is kept). |
 | `codex_safety_buffering` / `codex_moderation_metadata` / `codex_sleep` / `codex_thread_deleted` / `codex_turn_stalled` | Codex app-server runtime state. Safety buffering, moderation metadata, and sleep are compact status rows; `codex_thread_deleted` clears the stored upstream thread; `codex_turn_stalled` is the structured recovery event shown when a turn produced no useful output after app-server reconciliation. Its actions are `wait`, `steer`, `interrupt_retry_same_thread`, and `restart_resume_thread`. |
 | `auto_approval_review` | When auto-approval policy kicks in, this event carries the review text. |
 | `prompt_suggestion` | Suggested follow-up prompts for the user. |
@@ -193,10 +193,48 @@ resolves the child's own provider from the session list and the card wears
 that; an unresolved child falls back to the parent runtime's mark rather than
 rendering nothing or a guess.
 
+## Compaction divider and activity
+
+Every surface draws one line per `compactionId` across the thread: everything above it was replaced
+by a summary. On desktop (`ContextCompactDivider.tsx`) the line is one pill between two rules:
+
+| State | Pill |
+|---|---|
+| Running | A spinner, `Compacting`, the token count (`481k`), and the seconds after five seconds. The elapsed counts from the first `started` of this compaction, so a provider that re-reports its `compacting` status (Claude, every ~30 s) cannot restart it. |
+| Done | `Compacted`, then `481k → 6k`. Hover gives who asked (`You asked`, `Automatic`, or ADE near the limit), how long it took, and `2nd time in this chat` from the second compaction on. |
+| Cancelled | Warning tone, `Compaction cancelled`: the compaction was aborted — the person's Stop, or the provider cancelling its own `/compact` (Claude Code prints "Compaction canceled.") — with a **Retry** action that sends `/compact`. Hover shows the provider's text when there is one. |
+| Failed | Warning tone: `Compaction failed` (or `Compaction timed out`), plus `— weekly limit on <account>` or `— usage limit on <account>` when the provider said so, and a **Retry** action that sends `/compact`. Hover shows the provider's text. |
+
+A done pill with a `summary` is a button. It opens a `.kit-card` under the line, "Summary the chat
+continues from", with the provider's wrapper tags removed and a fixed height that scrolls.
+
+A turn that only ran `/compact` is drawn as that line and nothing else (`AgentChatMessageList.tsx`):
+the command is a quiet right-aligned chip instead of a message bubble, the working indicator stays
+hidden while it runs, and the finished turn gets no turn-end line. Every provider goes through this
+one component (`context_compact`, and Codex's `codex_context_compaction` mapped onto it).
+
+iOS is `WorkContextCompactDivider.swift`. It still draws the earlier one-line text divider
+(`Context compacted · 481k → 6k · 28 s`, then the trigger), with the same
+cancelled/failed wording as desktop, and its running elapsed counts from the card's first `started` for the
+same reason.
+
+`sessionActivityDetector` sets the system activity `compacting` while a compaction runs ("Compacting… · 481k" on
+the Work row and sidebar), restores the prior activity when it completes, and sets `compaction_failed`
+("Compaction failed", amber) when it fails. A cancellation (`failReason: "interrupted"`) restores the prior
+activity like a completion — nobody has a move to make — and only a real failure leaves the amber row. The
+next turn clears `compaction_failed`.
+
+A compaction-only turn that hits a usage limit does not move accounts or schedule a resume "continue". Assistant
+text whose origin timestamp is older than the turn's start is dropped, so a resumed thread cannot replay an older
+turn's error under a new turn.
+
 ## Claude context guardrails
 
-Live Claude occupancy emits at most once every five seconds and only after a
-one-point percentage change. ADE never preempts the SDK's natural compaction.
+Live Claude occupancy is the last request's input + cache read + cache creation tokens (output tokens are not
+counted), measured against the model's maximum window (`modelUsage[].contextWindow`, else the registry). The SDK's
+`getContextUsage().raw_max_tokens` is the auto-compact window, not the model maximum, so ADE keeps it separately as
+`compactAtTokens`; the 80/90/97% guardrail gates measure against `compactAtTokens`. It emits at most once every
+five seconds and only after a one-point percentage change. ADE never preempts the SDK's natural compaction.
 The streamed reading is refreshed from authoritative SDK `getContextUsage()`
 snapshots after runtime initialization, every settled turn, and compact
 completion. A compact start emits `compacting`; completion emits
@@ -458,9 +496,11 @@ bounded by `boundChatSourceRefs` (http(s) only, deduped, 20 per event).
   button. A cited row carries a small `cited` mark. Opened from a turn chip it
   lists that turn's sources with `This turn · Show all`.
 - **Turn chip.** `N sources` with up to three stacked favicons sits on the
-  turn-end line (`DoneTurnDivider`, next to the proof chip), not in the
-  answer's hover footer. A turn's list keeps its identity while its sources
-  are unchanged, so streaming does not re-render every turn-end row.
+  turn-end line (`DoneTurnDivider`, next to the proof count) on wider screens,
+  not in the answer's hover footer. It is hidden on mobile to keep the turn
+  summary readable; the Sources section remains available in the chat Actions
+  drawer. A turn's list keeps its identity while its sources are unchanged, so
+  streaming does not re-render every turn-end row.
 - **Fold row.** `· N sources` behind a globe icon (see Turn fold).
 - **Rows.** Provider web tool rows (`webSearch`, `websearch`, `webfetch`,
   `FetchUrl`, …) use the same globe meta as Claude's `WebSearch`/`WebFetch`
@@ -875,6 +915,17 @@ implements a two-layer transform:
    entries — a turn whose bursts were broken up by prose used to stack six
    near-identical panels through one reply. Assistant narration is unchanged.
 
+   **The live turn's tools.** The working status names the running tool and
+   its dropdown lists the open turn's tools (`deriveTranscriptToolActivity` in
+   `chatTranscriptPresentation.ts`). The open turn ends at `done`, or at a user
+   message that starts a new one. A message that carries the open turn's id
+   (Codex's `!` shell command sent mid-turn) never starts one. A steer the live
+   turn took in (`accepted`, `inline`, `processed`, `unprocessed`) or that went
+   nowhere (`failed`) never starts one either, so it does not cut the
+   activity. The rule is `userMessageStartsTurn` in `shared/chatTranscript.ts`,
+   which the `ade code` TUI uses too. A queued steer is still in the composer
+   and is ignored.
+
    **Desktop and hosted web** implement this in `AgentChatMessageList` through
    `ChatTurnWorkSummary` on the done divider: one expandable `N tools · M files`
    row sits immediately above the turn's existing time/usage cutout, left-aligned
@@ -883,7 +934,7 @@ implements a two-layer transform:
    `work_log_group` envelopes out of the rendered timeline entirely so grouped
    tools never occupy a second inline row. When the turn folds (step 5), the
    tool and file counts and their disclosure move to the fold row, and the done
-   divider keeps time, usage, the proof chip, and the checkpoint diff.
+   divider keeps time, usage, the proof count, and the checkpoint diff.
 
    **iOS** puts the same counts on `WorkTurnEndMarkerView` at each
    `turnEndMarker`, including turns that pause at a usage limit (the marker
@@ -901,6 +952,84 @@ implements a two-layer transform:
    are omitted from scrollback (`isTranscriptBlockVisible`). A turn that
    already has a checkpoint `turn_diff_summary` keeps that `[diff]` notice and
    leaves `turn-end.fileEntries` empty so the files half is not listed twice.
+
+   **Computer-use action rows (desktop, hosted web, iOS).** The one exception
+   to "tool groups are not drawn": a group holding ADE computer-use shell
+   commands (`ade screen|mac-desktop|desk …`, `ade app-control …`,
+   `ade browser …`, `ade apple …`, `ade proof …`, also through
+   `"$ADE_CLI_PATH"`, from any provider's shell tool) stays in the thread and
+   draws only those commands, as sentences naming what they acted on:
+   "Clicked “Checkout” on localhost:5173", "Pressed “Escape” in ADE". `shared/computerUseActionSummary.ts` reads the command,
+   and `shared/computerUseActionOutput.ts` its output (the CLI's `hit:` /
+   `effect:` lines, key-value rows, the Mac Desktop windows footer, `ade:`
+   errors, the `attached:` / `target:` lines from `shared/userBrowserLabels.ts`,
+   `--json` results); the summary returns null
+   whenever it is unsure (unknown verb, two acting commands in one call, shell
+   control flow), which keeps the plain shell row. The tokenizer splits shell
+   redirections (`2>&1`, `>out`, `> out`, `&>log`, `*>$null`, and `snapshot>out`
+   with no space) off the words, but only the unquoted ones, so a redirection
+   is never a flag's value or a click target (`click --text 2>&1` has none), and
+   a quoted `"<x>"` stays an argument.
+
+   A row names the app it touched ("in TextEdit"). A surface names itself only
+   when no app says where: a screen or simulator for a screen-level action
+   ("Pressed “cmd+space” on Mac Desktop", "Looked at iPhone 17"), a page by its
+   site, and the user's own browser always, in amber. App Control never names
+   itself: one App Control session drives one app, so a run carries the last
+   window title forward to the steps that printed none. `app-control launch`
+   (alias `open`) reads as the app's label or title, or "the app", never the
+   shell command it ran. Consecutive actions with the same words, outcome and
+   proof records merge into one line with a count ("Looked at ADE ×3"). An
+   element with no name is named by its role or tag (`hit: button (…)` reads
+   "Clicked a button", `AXPopUpButton` "a pop-up button"), and a click on a
+   bare point by the point, so no line reads a bare "Clicked".
+
+   A proof call (`proof capture` / `attach`, `app-control proof`, …) counts as
+   filed only when its output names the record: a `cite:` line, the JSON
+   record, or the filed table above `Attached N artifact(s) to …`. A call that
+   printed output without one reads "Couldn't file proof" (the exit code can
+   belong to a later command in the same call); output a pipe or redirect cut
+   off reads as unconfirmed; no output at all stays neutral. A later
+   `proof publish` adds "· posted to PR #N" to the lines whose records it
+   reports posted, instead of a row of its own.
+
+   An image the agent opens (a `codex_image_view`) whose file a computer-use
+   action of the same turn printed — the screenshot it took, the picture its
+   observation saved — joins that action's line instead of drawing a row
+   (`foldImageViewIntoAction` in `chatTranscriptRows.ts`; the match allows
+   macOS `/private` and Windows slash spellings, and compares a Windows drive or
+   UNC path case-insensitively, as a tool may print `c:\users\…` where the event
+   says `C:\Users\…`). A screenshot line then moves
+   on: "Taking a screenshot", "Took a screenshot", "Viewing a screenshot" while
+   the agent opens it, "Viewed a screenshot". A line with pictures — the proof
+   it filed, else the images its actions wrote — is a button with a small
+   caret: a click opens the pictures small under it, flush with the thread's
+   left edge, and a click on one enlarges it. Pictures start closed: the
+   reader gets the turn's proof at its end.
+
+   The latest action of a run draws in a stronger colour, with the "no change
+   seen" note when ADE could not confirm it. Earlier ones are one muted line.
+   Only a warning (amber) or a failure (red) gets a mark, the same on every
+   line; success has none, since the words already say what happened. A
+   failure always says why under its line, newest or not. Every line is the
+   same size, so the newest stands out by colour, not by size. A running
+   action shimmers
+   as one sweep across the line. App icons come from `app.getAppIcon` (macOS,
+   cached per name in both processes); browsers use the installed-browser
+   icons; everything else draws a glyph. In the tools list the same commands
+   read as their sentence.
+   A finished turn's fold hides them with the rest of its work (desktop and
+   iOS), as it hides the image-view lines: the folded turn is the view most
+   readers see, so it reads as the answer. Opening the fold shows them.
+   `shared/computerUseActionPresentation.ts` turns a summary into words, and
+   `chat/chatComputerUseRows.ts` decides which entries are actions and how runs
+   sit in the timeline (`ChatComputerUseActions.tsx` draws them). A run that is
+   not the turn's last one draws all compact (`computerUseCompact` on the work
+   log group). iOS ports the parser to
+   `WorkComputerUseSummary.swift`, the words to
+   `WorkComputerUsePresentation.swift` (rows in `WorkComputerUseActions.swift`) and
+   keeps the cluster in `workPresentedTimelineEntries` with
+   `computerUseActions` set.
 
    This is capability preserving: clients show only events and file data the
    selected provider actually emitted, without synthesizing Claude-style file
@@ -936,12 +1065,18 @@ implements a two-layer transform:
      working indicator.
    - **The answer** is the turn's last `text` row, or its last
      `phase: "final_answer"` row when the provider labelled one; a
-     `commentary` row is never the answer. When the provider labels none
-     (Claude), a short last text can be a postscript to an earlier answer: if
-     the last text is at most 280 characters, the previous non-empty text of
-     the same turn is at least 400 characters and at least three times as long,
-     and no more than three non-trivial drawn rows sit between them, that
-     earlier text is the answer and the postscript draws below it. The search
+     `commentary` row is never the answer. A `phase: "partial_answer"` row is
+     an answer candidate — the last one wins if no `final_answer` follows —
+     but never displaces a `final_answer`. Codex emits it for a finished
+     statement it may follow with more output, and the terminal answer usually
+     restates only its own part. When the provider labels none
+     (Claude), the last text can be a postscript to an earlier answer: if the
+     previous non-empty text of the same turn is at least 400 characters and
+     at least three times as long as the last text, and no more than three
+     non-trivial drawn rows sit between them, that earlier text is the answer
+     and the postscript draws below it. The last text has no length cap of its
+     own; a paragraph of status after an in-depth answer is a postscript too.
+     The search
      steps over empty text and rows of another turn, and stops at a
      `commentary` row. A turn with no answer (tool-only,
      interrupted before any text, an error) does not fold. Neither does a turn
@@ -973,16 +1108,30 @@ implements a two-layer transform:
      cluster, else an id-less `done` (given the inferred id). Only when none of
      that exists does the most-tokens `done` win. Usage and cost are still
      summed across the cluster.
-   - **Only history folds.** Thought rows, interim (non-answer) text, a Codex
+   - **Narration folds; substance stays.** A non-answer text row folds only
+     when it is narration ("Now I'll scroll to the DRM section."). It stays
+     visible below the fold row when it embeds proof or any markdown image
+     (`ade-proof://…`), is at least 400 UTF-16 code units, or has markdown
+     structure (a list item, heading, fenced code, or table separator) —
+     typically the reply to a question the user asked alongside the work,
+     written before the agent went off to work and ended on a status message
+     (`proseStaysVisible`). A `commentary` row is narration by the provider's
+     own label and folds unless it embeds proof. A `partial_answer` row is the
+     provider's own label for content, so it stays visible however short it
+     is: the terminal answer does not repeat it, and folding it away would
+     hide an answer the user asked for. A text that repeats the
+     answer word for word still folds, however long. The decision reads only
+     the row's own prose, so replays reproduce it.
+   - **Only history folds.** Thought rows, interim narration text, a Codex
      plan-mode proposal card, finished activity bundles, the Turn details row,
-     spawned/completed chips, compaction dividers, goal pills, the host-sleep
+     spawned chips, completion lines, compaction dividers, goal pills, the host-sleep
      chip, a finished stall card, and warning, info, hook, and config notices
      (including a usage notice marked `warning`/`info`) fold: they have nothing
      to act on. These stay visible below the fold row, in order, above the
      answer: subagent spawn, result, and stopped-group cards and their
      side-by-side grids; `ade_card` rows
      (PR/CI/review/merge/conflict, proof, quota, and any variant this build
-     does not know); errors (with `ProviderFailureRecoveryCard` /
+     does not know); errors (`TurnFailureLine` /
      `AgentCliAuthCard`); continuity-recovery and reset-credit notices; error,
      sign-in (`auth`), provider-health, thread-error, and limit-reached usage
      notices; interrupt receipts and queue-recovery cards; model-switch/handoff
@@ -1079,9 +1228,8 @@ implements a two-layer transform:
      (`countVisibleRowsAppendedSince`). A turn folding the anchor row away
      therefore neither zeroes the count nor counts hidden rows. Inline proof
      anchors on the unfolded rows and draws on the fold row while its row is
-     hidden. "Copy turn" copies the whole turn, folded narration included; its
-     button sits on the turn's last text row, which is the answer or comes
-     after it and so is never folded.
+     hidden. "Copy turn" sits on the turn-end row and copies assistant text
+     outside the fold, leaving folded narration out of the clipboard.
 
 Each work-log entry carries a `collapseKey` built from `turnId`,
 `logicalItemId` (preferred) or `itemId`, and tool/command identity.
@@ -1101,14 +1249,13 @@ that route into the in-app browser.
 
 ## Assistant text hover actions (desktop and hosted web)
 
-Every assistant text row has a hover footer: the row's time, `Copy`, and on
-the turn's last text row `Copy turn`. It sits on its own line under the prose
-(`assistant-text-hover-footer`) and keeps that line's height while hidden, so
-it never covers text. It used to be pinned over the top-right corner of the
-prose. That covered the end of a short line, such as interim narration in a
-live turn, and the first line of a long one. The line is there in live turns
-and after the fold alike. Copy always copies the stored text, never a paced
-prefix.
+Every assistant text row has a compact icon-only `Copy` action beside its
+timestamp. On hover-capable displays, interim rows float this footer below the
+prose without reserving another line; their row clips horizontally while
+leaving the footer visible. The turn-end row has one compact `Copy turn` action
+that joins the assistant text outside the fold with blank lines. It excludes
+the user prompt, reasoning, tool output, and narration hidden by the turn fold.
+Message Copy always copies that row's stored text, never a paced prefix.
 
 ## Text merging
 
@@ -1118,7 +1265,9 @@ Adjacent `text` events merge via `shouldMergeTextRows()`:
   `phase` and the phases differ. ADE reuses one `messageId` for consecutive
   assistant text until a tool call flushes it, so a Codex `commentary` message
   and its `final_answer` can share an id; they stay separate rows so the turn
-  fold can pick the answer. A merged row adopts a later fragment's `phase`
+  fold can pick the answer. A `partial_answer` stays separate from both for
+  the same reason — merging it into the narration that follows it would leave
+  it wearing the narration's label, which the fold then hides. A merged row adopts a later fragment's `phase`
   when its first fragment had none.
 - Events without `messageId` fall back to matching `turnId` and
   `itemId`.
@@ -1134,9 +1283,11 @@ next `message_start`. Each frame has its own `uuid`, so using it per delta
 gave every delta its own id and its own row, and the turn fold then hid
 all but the last fragment behind `Worked for …`.
 
-A `text` event can carry an optional `phase` (`"commentary"` or
-`"final_answer"`): the provider's own label for interim narration versus the
-turn's answer. Only Codex sends it, on the `agentMessage` item in
+A `text` event can carry an optional `phase` (`"commentary"`,
+`"partial_answer"`, or `"final_answer"`): the provider's own label for interim
+narration, a finished statement more output may follow, or the turn's terminal
+answer. `partial_answer` arrived with Codex 0.162. Only Codex sends any of
+them, on the `agentMessage` item in
 `item/started` / `item/completed` rather than on the text deltas, and not for
 every model, so an absent `phase` means unknown. The Codex handler records the
 phase per item id (cleared when the item or the turn ends) and stamps it on
@@ -1265,9 +1416,10 @@ as `reasoning` events, so one presentation covers all of them
   A click that ends a text selection or lands on a link does not toggle. Thought
   rows inside an open turn fold behave the same way. They never show the live
   preview.
-- **Performance.** The only timer is one 1s interval in the header's elapsed
-  leaf, so a tick never re-renders the text. The paced reveal re-renders only
-  the `LiveThoughtText` leaf. Tail-following is at most one `scrollTop` write
+- **Performance.** The header's elapsed leaf subscribes to the renderer's shared
+  1s timer (one timer for every subscriber), so a tick never re-renders the
+  text. The paced reveal re-renders only the `LiveThoughtText` leaf.
+  Tail-following is at most one `scrollTop` write
   per frame, coalesced through a ref and `requestAnimationFrame`. A layout
   effect triggers it when the text changes, and a `ResizeObserver` on the
   content triggers it as the reveal grows the text between deltas. The same
@@ -1403,16 +1555,14 @@ container instead (see Card layout above).
 Notable rendering rules:
 
 - Assistant messages and transcript cards share the responsive content width.
-- Completed-turn dividers show local time and measured duration. Tool activity
-  and proof each have independent collapsed controls. Chat-owned proof is
-  bucketed into turns by `artifact.createdAt`; expanding `N proof` renders the
-  horizontal `ChatProofFilmstrip` immediately below that divider. The filmstrip
-  is chronological, starts collapsed, and never moves to a pinned thread
-  footer. Local project-relative images render through the artifact protocol,
-  and a recording — local or on a paired machine — draws its first frame behind
-  a play badge through the media server (never an `<img>` of the `.mp4`); a tile
-  with no picture falls back to its kind label and opens the runtime-backed
-  drawer.
+- Completed-turn dividers show local time and measured duration. Chat-owned
+  proof is bucketed into turns by `artifact.createdAt` and shows as a
+  "N proof filed ›" count on the divider and, compact ("▣ N proof ›"), at the
+  end of the turn's fold line, where it never wraps: the fold's other counts
+  truncate first. The count opens the proof drawer narrowed to exactly those
+  records. Proof filed between rows (mid-turn, or idle between turns) is the
+  same one-line count at that point, minus any record a "Filed proof" row
+  already pictures. Proof an answer cites is left out of every count.
 - Code blocks in assistant messages render through `HighlightedCode`.
 - User messages animate in with a `motion/react` spring transition and
   render in full, however long; there is no length-based clamp.
@@ -1578,7 +1728,9 @@ chronologically. iOS continues to sort and dedupe its materialized event set by
 the same lifecycle contract.
 
 The renderer keeps a bounded per-session view cache so switching back can paint
-immediately. A hidden chat's retention subscription captures the concrete
+immediately. Its bound is bytes (128 MB of cached events, 32 MB for one chat)
+and not a number of chats, so a return to any recent chat is warm while the
+cache has room. A hidden chat's retention subscription captures the concrete
 outgoing project binding, even when that binding was the active unpinned path,
 so a later project switch cannot silently retarget the retained stream.
 Returning adopts that subscription synchronously, renders the cached tail, and
@@ -1586,6 +1738,51 @@ reconciles against authoritative history without blanking the list. Composer
 controls are withheld for the one-frame interval where the incoming transcript
 id and internal selected-session id differ; an outgoing Stop button or pending
 input can therefore never appear over a settled incoming transcript.
+
+An unchanged transcript reconciles to the same list. The history read that
+follows a switch must hand back the event list the pane already holds when
+nothing changed, or the transcript renders a second time after every switch.
+Two things used to break that. A tool call that a provider sends twice is
+stored as one envelope with the first send's time and the resend's payload;
+neither snapshot row has that identity, so `mergeAgentChatHistorySnapshot`
+maps the envelope it rebuilds back to the held one. And the desktop's
+`RuntimeRpcClient` decodes the reply stream with a `StringDecoder`: decoding
+each socket read alone turned a multi-byte character at a read boundary into
+U+FFFD, at a different place on every read of the same history.
+
+### What one streamed event costs
+
+A streamed event must cost that event, not the transcript. Four mechanisms
+keep it so; each falls back to the full computation when its shortcut does
+not apply, and the full computation is the definition of the result.
+
+- **The live merge carries its indexes.** `mergeAgentChatLiveEvents` hands
+  the list it returns the set of identity keys and the position of every tool
+  call (`liveMergeIndexByList`), and the next merge takes them. A provider
+  resend of a tool call (Claude sends each call twice) updates the stored
+  envelope in place through that index.
+- **A merged list knows what it extended.** `agentChatLiveAppendOf(list)`
+  names the list an append extended, where the new events start, and which
+  positions a resend replaced. Folds that keep their answer per list
+  (`deriveRuntimeState` in `chatRuntimeState.ts`, the active turn, its start time, the turn-start map)
+  read only the appended events, and fold again only when one of them can
+  change the answer.
+- **The display filter extends its previous answer** (`chatDisplayEvents` in
+  `chatHistoryWindow.ts`) and records the same relation for the filtered list
+  (`recordAgentChatLiveAppend`), so the folds above work on it too. A batch
+  that shows nothing new (dotted `subagent.*` twins) returns the previous
+  list and the transcript does not render.
+- **The row builder replays from a checkpoint.** A replaced envelope used to
+  mean a full pass over the transcript. The collapse context keeps its two
+  most recent checkpoints (one each 128 events, and two left behind by every
+  full pass) and replays from the newest one that ends before the replaced
+  event. Its row indexes are complete after a full pass
+  (`rowIndexesComplete`), so a key with no entry means no such row and no
+  scan. `cloneCollapseTranscriptContext` copies the context field by field;
+  a new field does not compile until it is copied.
+
+`scripts/perf/service/chat-transcript.bench.mts` runs this pipeline on real
+transcripts and checks the incremental rows against a full pass.
 
 ### `unavailable` — "could not reach the runtime", not "no such session"
 

@@ -19,9 +19,28 @@ const LANE_MARK = svg(
 const TERMINAL_MARK = svg(
   '<rect x="3" y="4" width="18" height="16" rx="2" /><path d="m8 9 3 3-3 3" /><path d="M13 15h4" />',
 );
+// Lucide git-pull-request and monitor.
+const PR_MARK = svg(
+  '<circle cx="18" cy="18" r="3" /><circle cx="6" cy="6" r="3" /><path d="M13 6h3a2 2 0 0 1 2 2v7" /><path d="M6 9v12" />',
+);
+const MACHINE_MARK = svg(
+  '<rect x="2" y="3" width="20" height="14" rx="2" /><path d="M8 21h8" /><path d="M12 17v4" />',
+);
 const FILE_MARK = svg(
   '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" /><path d="M14 2v6h6" />',
 );
+
+/** A globe, for the browser-tab chip. */
+export const GLOBE_MARK = svg(
+  '<circle cx="12" cy="12" r="10" /><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20" /><path d="M2 12h20" />',
+);
+
+/** The violet pill every composer mention-style chip wears (width left to the chip), and its icon slot. */
+export const COMPOSER_PILL_CHIP_BASE_CLASS =
+  "mx-0.5 inline-flex translate-y-px items-center gap-1 rounded border border-violet-300/22 bg-violet-500/12 px-1 py-px font-sans text-[length:calc(var(--chat-font-size)*11/14)] leading-4 text-violet-100/88 align-baseline";
+export const COMPOSER_MENTION_CHIP_CLASS = `${COMPOSER_PILL_CHIP_BASE_CLASS} max-w-[10.5rem]`;
+export const COMPOSER_TOKEN_CHIP_ICON_CLASS =
+  "inline-flex h-3 w-3 shrink-0 items-center justify-center text-violet-100/75";
 
 export type ComposerAtChipKind = ChatMentionKind | "file";
 
@@ -34,6 +53,10 @@ export function mentionChipMarkSvg(kind: ComposerAtChipKind): string {
       return LANE_MARK;
     case "terminal":
       return TERMINAL_MARK;
+    case "pr":
+      return PR_MARK;
+    case "machine":
+      return MACHINE_MARK;
     case "file":
       return FILE_MARK;
     default: {

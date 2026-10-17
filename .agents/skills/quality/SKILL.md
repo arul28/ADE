@@ -197,6 +197,11 @@ Before the review starts, follow **Early PR and harvests → Open** in
 review (not a draft), and write the ship state with `status: "prepping"`. Then
 start Phase 1 immediately — do not wait for CI or the bots.
 
+When the diff touches Windows-specific code (named pipes, PowerShell, the
+Windows service manager or installer, path/drive handling, `win32` branches),
+open the PR with `--label windows` so CI runs the native Windows job; other PRs
+skip it.
+
 Skip this step only when the branch is `main`, the tree holds changes that do
 not belong to this lane, or the user asked for no PR. Say which one applied.
 When a PR already exists, push the checkpoint only if HEAD is ahead of the
@@ -231,6 +236,12 @@ Apply all three reference files:
    actually hit and the named helper that resolves each one. Windows parity is
    a default requirement (see **Windows parity rules** above), so this file
    applies to every diff, not only obviously path-or-process work.
+
+Also flag, as a correctness finding, any new failure that disappears: a
+`catch` that recovers silently or returns a fallback without `captureError` /
+`captureProblem` or a `logger.warn`/`logger.error` line. ADE only learns about
+those through Sentry (`docs/logging.md`, "Error tracking (Sentry)"); `/test`
+runs the full Sentry gate.
 
 Return prioritized findings. Mark each fix **unambiguous + behavior-preserving**
 (synthesis may auto-apply) or **needs human judgment** (synthesis surfaces it).
@@ -300,18 +311,32 @@ Cite the doc section in the finding.
    fix-induced correctness regressions and maintainability debt before `/test`
    or `/ship`.
 
-   **Cap: one full review, then at most two delta re-reviews.** If the second
-   delta re-review still finds a Blocker, High, or Medium, fix it and run one
-   last delta check. Do not loop further:
-   - Fix a Blocker, High, or Medium from the last check, but leave it out of
-     the reviewed range: set `qualityReviewedSha` (step 10) to the commit
-     before that fix, so the next delta review at push time covers it.
-   - List a Low from the last check under **Leftovers** in the summary. It is
-     not a gate row and does not block `/ship`.
+   **Cap: one full review, then at most two delta re-reviews.** The cap limits
+   how many times you *review*. It never limits what you *fix*. If the second
+   delta re-review still finds anything, run one last delta check, then stop
+   reviewing:
+   - Fix every accepted finding from the last check, at any severity, Low
+     included. Leave those fixes out of the reviewed range: set
+     `qualityReviewedSha` (step 10) to the commit before them, so the next
+     delta review at push time covers them.
+   - **Leftovers** is only for a Low you could not fix in this run, with the
+     reason (for example, the code it needs to change is owned by another
+     lane). A small, clear fix is never a leftover. A finding that matches one
+     of step 8's three gate reasons goes to the gate, not to Leftovers.
+     Leftovers are not gate rows and do not block `/ship`.
 
    A long chain of re-reviews usually chases fix-induced regressions, not real
    progress. The cap never moves a finding to the gate; only step 8's three
    reasons do that.
+
+   **Check pass — once, here.** Do not typecheck or run tests after each fix in
+   steps 6–7. When the last fix is in, run one pass (see **Running checks** in
+   `AGENTS.md`): the typecheck of each package the branch touched, and the test
+   files that cover the touched code (colocated `*.test.ts(x)` and the tests
+   that import it). Never the full suite or all shards; CI is the full gate.
+   On a failure, fix it and re-run only the failed files and the typecheck that
+   failed. This is the branch's only local check pass; `/test` and `/ship`
+   re-check only their own fixes.
 8. **Gate — the narrow exception, not the escape hatch.** Only three kinds of
    accepted finding may go to the gate unfixed:
    - it needs a **product decision you cannot make** (which of two valid
@@ -374,7 +399,8 @@ the two permitted reasons — not findings you chose to defer.
 - Auto-applied: [count] (safe correctness fixes + structural judo moves)
 - Re-review passes: [n]
 - Reviewed head: `qualityReviewedSha` [sha]
-- Leftovers (Low, found by the last capped check): [list | none]
+- Leftovers (Low from the last capped check that could not be fixed, each with the reason): [list | none]
+- Check pass: typecheck [packages] [PASS | FAIL]; tests [n files, n tests] [PASS | FAIL]
 
 ### PR harvest
 - PR: #[n] ([opened by this run | existing | skipped — reason])
@@ -405,5 +431,5 @@ Next: /test (pass it the "For /test" list and the accepted correctness
 findings; it adds a test only where no existing test would catch the bug).
 
 **Before you print this:** every accepted finding is in "Auto-applied", the
-Gate section, or (Low from the last capped check only) Leftovers. If one is in neither, go back to step 6 and fix it.
+Gate section, or (an unfixable Low from the last capped check only, with its reason) Leftovers. If one is in neither, go back to step 6 and fix it.
 ```

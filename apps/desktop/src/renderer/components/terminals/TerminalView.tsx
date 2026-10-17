@@ -3208,16 +3208,6 @@ export function clearTerminalRuntimeScrollback(sessionId: string): boolean {
   return true;
 }
 
-export function __resetTerminalRuntimesForTests(): void {
-  for (const runtime of Array.from(runtimeCache.values())) {
-    teardownRuntime(runtime);
-  }
-  runtimeCache.clear();
-  pinnedPtyRuntimeCount = 0;
-  ptyDataSubscriptionSignature = null;
-  pinnedPtyDataSubscriptionSignatures.clear();
-}
-
 export function TerminalView({
   ptyId,
   sessionId,

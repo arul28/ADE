@@ -10,13 +10,17 @@ import {
   foldScheduledWorkRows,
   moveScheduledWorkToTurnEnds,
 } from "./chatScheduledWorkRows";
+import { arrangeComputerUseRuns, hasComputerUseEntries } from "./chatComputerUseRows";
+import { foldTurnFailureRows } from "./turnFailureRows";
 import {
+  appendCollapsedChatTranscriptEvent,
   applyChatTranscriptTurnFolds,
   buildTranscriptEventRowKeys,
   collapseChatTranscriptEvents,
   collapseChatTranscriptEventsIncremental,
   collapseChatTranscriptEventsIncrementalWithContext,
   collapseChatTranscriptEventsWithContext,
+  filterVisibleTranscriptRows,
   collapseGroupedActivityPhaseRows,
   countRowsAppendedSince,
   countVisibleRowsAppendedSince,
@@ -37,6 +41,7 @@ import {
   summarizeInlineText,
   summarizeTurnDetails,
   type ChatTranscriptGroupedEnvelope,
+  type ChatTranscriptRenderEnvelope,
 } from "./chatTranscriptRows";
 
 function groupEvents(events: AgentChatEventEnvelope[]) {
@@ -44,6 +49,77 @@ function groupEvents(events: AgentChatEventEnvelope[]) {
 }
 
 describe("chatTranscriptRows", () => {
+  const failureRows = (events: AgentChatEventEnvelope[]) => foldTurnFailureRows(groupEvents(events));
+
+  it("drops usage-limit error rows and marks their done row", () => {
+    const rows = failureRows([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-09-08T19:28:00.000Z",
+        sequence: 1,
+        event: { type: "user_message", text: "Continue after the limit clears.", turnId: "turn-limit" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-09-08T19:28:01.000Z",
+        sequence: 2,
+        event: { type: "error", message: "You have reached your usage limit.", turnId: "turn-limit", errorInfo: { category: "rate_limit" } },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-09-08T19:28:02.000Z",
+        sequence: 3,
+        event: { type: "done", status: "failed", turnId: "turn-limit" },
+      },
+    ]);
+
+    expect(rows.filter((row) => row.event.type === "error")).toHaveLength(0);
+    expect(rows.filter((row) => row.event.type === "user_message")).toHaveLength(1);
+    expect(rows.find((row) => row.event.type === "done")).toMatchObject({ endedAtUsageLimit: true });
+  });
+
+  it("folds an identical failed retry into the newest prompt and done row", () => {
+    const rows = failureRows([
+      { sessionId: "session-1", timestamp: "2026-09-08T19:28:00.000Z", sequence: 1, event: { type: "user_message", text: "Retry this prompt", turnId: "turn-1" } },
+      { sessionId: "session-1", timestamp: "2026-09-08T19:28:01.000Z", sequence: 2, event: { type: "error", message: "Provider unavailable.", turnId: "turn-1", errorInfo: "responseStreamDisconnected" } },
+      { sessionId: "session-1", timestamp: "2026-09-08T19:28:02.000Z", sequence: 3, event: { type: "done", status: "failed", turnId: "turn-1" } },
+      { sessionId: "session-1", timestamp: "2026-09-08T19:29:00.000Z", sequence: 4, event: { type: "user_message", text: "Retry this prompt", turnId: "turn-2" } },
+      { sessionId: "session-1", timestamp: "2026-09-08T19:29:01.000Z", sequence: 5, event: { type: "error", message: "Provider unavailable.", turnId: "turn-2", errorInfo: "responseStreamDisconnected" } },
+      { sessionId: "session-1", timestamp: "2026-09-08T19:29:02.000Z", sequence: 6, event: { type: "done", status: "failed", turnId: "turn-2" } },
+    ]);
+    const prompts = rows.filter((row) => row.event.type === "user_message");
+    const errors = rows.filter((row) => row.event.type === "error");
+    const done = rows.filter((row) => row.event.type === "done");
+
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]?.event).toMatchObject({ text: "Retry this prompt", turnId: "turn-2" });
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({ repeatCount: 2, event: { turnId: "turn-2" } });
+    expect(done).toHaveLength(1);
+    expect(done[0]).toMatchObject({ repeatCount: 2, event: { turnId: "turn-2" } });
+  });
+
+  it.each([
+    ["a different failure", "Retry this prompt", "A different provider failure."],
+    ["a different prompt", "Try a new prompt", "Provider unavailable."],
+  ])("does not fold retries with %s", (_reason, retryText, retryFailure) => {
+    const rows = failureRows([
+      { sessionId: "session-1", timestamp: "2026-09-08T19:28:00.000Z", sequence: 1, event: { type: "user_message", text: "Retry this prompt", turnId: "turn-1" } },
+      { sessionId: "session-1", timestamp: "2026-09-08T19:28:01.000Z", sequence: 2, event: { type: "error", message: "Provider unavailable.", turnId: "turn-1", errorInfo: "responseStreamDisconnected" } },
+      { sessionId: "session-1", timestamp: "2026-09-08T19:28:02.000Z", sequence: 3, event: { type: "done", status: "failed", turnId: "turn-1" } },
+      { sessionId: "session-1", timestamp: "2026-09-08T19:29:00.000Z", sequence: 4, event: { type: "user_message", text: retryText, turnId: "turn-2" } },
+      { sessionId: "session-1", timestamp: "2026-09-08T19:29:01.000Z", sequence: 5, event: { type: "error", message: retryFailure, turnId: "turn-2", errorInfo: "responseStreamDisconnected" } },
+      { sessionId: "session-1", timestamp: "2026-09-08T19:29:02.000Z", sequence: 6, event: { type: "done", status: "failed", turnId: "turn-2" } },
+    ]);
+    const errors = rows.filter((row) => row.event.type === "error");
+    const done = rows.filter((row) => row.event.type === "done");
+
+    expect(errors).toHaveLength(2);
+    expect(done).toHaveLength(2);
+    expect(errors.every((row) => row.repeatCount === undefined)).toBe(true);
+    expect(done.every((row) => row.repeatCount === undefined)).toBe(true);
+  });
+
   /**
    * A scene's still is a FILE, named by the key derived here, looked up again
    * on every reopen.
@@ -126,6 +202,27 @@ describe("chatTranscriptRows", () => {
       type: "error",
       errorInfo: "responseStreamDisconnected",
     }));
+  });
+
+  it("keeps the first started time when a repeated compaction start merges", () => {
+    const base = { sessionId: "session-1", timestamp: "2026-07-10T18:18:53.000Z" };
+    const start = (timestamp: string, sequence: number): AgentChatEventEnvelope => ({
+      ...base,
+      timestamp,
+      sequence,
+      event: { type: "context_compact", trigger: "manual", state: "started", turnId: "turn-compact" },
+    });
+    // Claude repeats its `compacting` status every ~30s while one compaction
+    // runs. The row counts its elapsed from this timestamp, so the repeat must
+    // merge into the first row rather than move it forward — that reset is the
+    // "Compacting 42s" clock restarting mid-run.
+    const [row] = collapseChatTranscriptEvents([
+      start("2026-07-10T18:18:53.000Z", 1),
+      start("2026-07-10T18:19:23.000Z", 2),
+    ]);
+
+    expect(row?.timestamp).toBe("2026-07-10T18:18:53.000Z");
+    expect(row?.event).toEqual(expect.objectContaining({ type: "context_compact", state: "started" }));
   });
 
   it("extracts and normalizes localhost URLs from tool output text", () => {
@@ -739,6 +836,50 @@ describe("chatTranscriptRows", () => {
     expect(rows[0]!.event.entry.output).toBe("running\ncompleted");
     expect(rows[1]!.event.entry.status).toBe("completed");
     expect(rows[1]!.event.entry.changedFiles?.[0]?.diff).toContain("+ const second = true;");
+  });
+
+  it("folds a turn that touches thousands of files into one row, in order, and matches a full pass", () => {
+    // One turn's file changes share a logical item id, so they all merge into
+    // one work-log row. Each change merges into that row's file list: a streamed
+    // update to an earlier file still lands on its own line, and the incremental
+    // path must agree with a full pass over the same events.
+    const fileCount = 3000;
+    const at = (index: number) => new Date(Date.UTC(2026, 5, 1, 10, 0, 0, index)).toISOString();
+    const fileChange = (index: number, diff: string) =>
+      env(at(index), {
+        type: "file_change",
+        path: `packages/generated/file-${index}.json`,
+        diff,
+        kind: "modify",
+        itemId: `msg-1:file-${index}`,
+        logicalItemId: "msg-1",
+        turnId: "turn-1",
+        status: "completed",
+      });
+    const stream: AgentChatEventEnvelope[] = [];
+    for (let index = 0; index < fileCount; index += 1) {
+      stream.push(fileChange(index, `+ ${index}\n`));
+    }
+    stream.push(fileChange(5, "+ 5 again\n"));
+
+    const full = collapseChatTranscriptEvents(stream);
+    expect(full).toHaveLength(1);
+    const entry = full[0]!.event.type === "work_log_entry" ? full[0]!.event.entry : null;
+    expect(entry?.changedFiles).toHaveLength(fileCount);
+    expect(entry?.changedFiles?.map((change) => change.path)).toEqual(
+      Array.from({ length: fileCount }, (_, index) => `packages/generated/file-${index}.json`),
+    );
+    expect(entry?.changedFiles?.[5]?.diff).toBe("+ 5\n+ 5 again\n");
+    expect(entry?.changedFiles?.[5]?.additions).toBe(2);
+
+    const head = collapseChatTranscriptEventsWithContext(stream.slice(0, 2000));
+    const incremental = collapseChatTranscriptEventsIncrementalWithContext(
+      stream,
+      stream.slice(0, 2000),
+      head.rows,
+      head.context,
+    );
+    expect(incremental.rows).toEqual(full);
   });
 
   it("carries detected localhost URLs through merged command output deltas", () => {
@@ -1425,6 +1566,40 @@ describe("readRecord", () => {
 });
 
 describe("collapseChatTranscriptEventsIncremental", () => {
+  it("matches a full recompute when a long thread has an old tool call rewritten, then a newer one", () => {
+    const second = (index: number) => new Date(Date.UTC(2026, 5, 1, 10, 0, index)).toISOString();
+    const stream: AgentChatEventEnvelope[] = [];
+    for (let index = 0; index < 420; index += 1) {
+      stream.push(index % 7 === 3
+        ? env(second(index), { type: "tool_call", tool: "bash", args: {}, itemId: `call-${index}`, turnId: "turn-1" })
+        : env(second(index), { type: "text", text: `part ${index}`, messageId: `m-${Math.floor(index / 5)}`, turnId: "turn-1" }));
+    }
+    const rewrite = (events: AgentChatEventEnvelope[], index: number): AgentChatEventEnvelope[] => {
+      const call = events[index]!;
+      expect(call.event.type, "setup: a tool call sits at this index").toBe("tool_call");
+      const next = events.slice();
+      next[index] = { ...call, event: { ...call.event, args: { command: `echo ${index}` } } as AgentChatEventEnvelope["event"] };
+      next.push(env(second(events.length), { type: "text", text: "after", messageId: `tail-${events.length}`, turnId: "turn-1" }));
+      return next;
+    };
+
+    let prevEvents: AgentChatEventEnvelope[] = [];
+    let prev = collapseChatTranscriptEventsWithContext(prevEvents);
+    const advance = (nextEvents: AgentChatEventEnvelope[]) => {
+      prev = collapseChatTranscriptEventsIncrementalWithContext(nextEvents, prevEvents, prev.rows, prev.context);
+      prevEvents = nextEvents;
+      expect(prev.rows).toEqual(collapseChatTranscriptEvents(nextEvents));
+    };
+    for (let index = 1; index <= stream.length; index += 1) advance(stream.slice(0, index));
+
+    // Index 3 is older than every checkpoint; 388 is newer than most of them.
+    advance(rewrite(prevEvents, 3));
+    advance(rewrite(prevEvents, 388));
+    advance(rewrite(prevEvents, 199));
+    advance([...prevEvents, env(second(prevEvents.length), { type: "done", turnId: "turn-1", status: "completed" })]);
+    expect(prev.rows.length).toBeGreaterThan(1);
+  });
+
   it("reuses previous rows and only processes new events", () => {
     const events1: AgentChatEventEnvelope[] = [
       {
@@ -2949,6 +3124,68 @@ describe("spawn_completed notice folding", () => {
     expect(incremental).toEqual(rows);
   });
 
+  it("folds an image view into the computer-use action whose output printed its file", () => {
+    // macOS reaches the same file as /var and /private/var; a Windows path is
+    // case-insensitive and may use either slash. The view joins the action in
+    // every spelling instead of drawing a row of its own.
+    const cases: Array<{ printed: string; viewed: string }> = [
+      { printed: "/private/var/folders/xy/T/shot.png", viewed: "/var/folders/xy/T/shot.png" },
+      { printed: "/var/folders/xy/T/shot.png", viewed: "/private/var/folders/xy/T/shot.png" },
+      { printed: "C:\\Users\\dev\\AppData\\shot.png", viewed: "c:/users/dev/appdata/shot.png" },
+    ];
+    for (const { printed, viewed } of cases) {
+      const rows = collapseChatTranscriptEvents([
+        env("2026-06-01T10:00:00.000Z", { type: "user_message", text: "look", turnId: "turn-1" }),
+        env("2026-06-01T10:00:01.000Z", {
+          type: "command",
+          command: "ade screen screenshot",
+          cwd: "/repo",
+          output: `screenshot  ${printed}`,
+          itemId: "c-1",
+          turnId: "turn-1",
+          status: "completed",
+        }),
+        env("2026-06-01T10:00:02.000Z", {
+          type: "codex_image_view",
+          itemId: "v-1",
+          turnId: "turn-1",
+          path: viewed,
+          status: "completed",
+        }),
+      ]);
+
+      // No row of its own: the view joined the screenshot action.
+      expect(rows.some((row) => row.event.type === "codex_image_view"), printed).toBe(false);
+      const action = rows.find((row) => row.event.type === "work_log_entry");
+      expect(action, printed).toBeTruthy();
+      if (action?.event.type !== "work_log_entry") throw new Error("Expected work_log_entry");
+      expect(action.event.entry.imageViews?.map((view) => view.path), printed).toEqual([viewed]);
+    }
+
+    // An image no action of the turn printed keeps its own row: the fold is not
+    // unconditional.
+    const stray = collapseChatTranscriptEvents([
+      env("2026-06-01T10:00:00.000Z", { type: "user_message", text: "read", turnId: "turn-1" }),
+      env("2026-06-01T10:00:01.000Z", {
+        type: "command",
+        command: "ade screen screenshot",
+        cwd: "/repo",
+        output: "screenshot  /var/folders/xy/T/other.png",
+        itemId: "c-1",
+        turnId: "turn-1",
+        status: "completed",
+      }),
+      env("2026-06-01T10:00:02.000Z", {
+        type: "codex_image_view",
+        itemId: "v-1",
+        turnId: "turn-1",
+        path: "/tmp/pasted.png",
+        status: "completed",
+      }),
+    ]);
+    expect(stray.filter((row) => row.event.type === "codex_image_view")).toHaveLength(1);
+  });
+
   it("does not fold across an intervening row, and never folds a different child", () => {
     const rows = collapseChatTranscriptEvents([
       env("2026-06-01T10:00:00.000Z", completion("child-1", "Engine")),
@@ -2966,6 +3203,45 @@ describe("spawn_completed notice folding", () => {
       undefined,
       undefined,
     ]);
+  });
+
+  it("draws each child once, at its newest notice, and puts neighbouring children on one line", () => {
+    // What the reader sees: an older notice is out of date once a newer one
+    // for the same child lands, wherever it sits, and its turns still count.
+    const legacy = {
+      type: "system_notice",
+      noticeKind: "info",
+      status: "spawn_completed",
+      message: 'Peer "Old lane" turn finished',
+    } satisfies AgentChatEventEnvelope["event"];
+    const rows = filterVisibleTranscriptRows(collapseChatTranscriptEvents([
+      env("2026-06-01T10:00:00.000Z", completion("child-1", "Engine")),
+      env("2026-06-01T10:00:01.000Z", completion("child-1", "Engine")),
+      env("2026-06-01T10:00:02.000Z", completion("child-2", "Docs")),
+      env("2026-06-01T10:00:03.000Z", { type: "text", text: "Thanks.", messageId: "m-1" }),
+      env("2026-06-01T10:00:04.000Z", completion("child-1", "Engine")),
+      env("2026-06-01T10:00:05.000Z", completion("child-2", "Docs")),
+      env("2026-06-01T10:00:06.000Z", completion("child-2", "Docs")),
+      // A notice that lost its child id cannot be matched, so it keeps its row.
+      env("2026-06-01T10:00:07.000Z", legacy),
+    ]));
+
+    const childOf = (event: (typeof rows)[number]["event"]) =>
+      event.type === "system_notice" && event.detail && typeof event.detail === "object"
+        ? event.detail.spawnCompletion?.childSessionId ?? null
+        : null;
+    expect(rows.map((row) => ({
+      type: row.event.type,
+      child: childOf(row.event),
+      turns: row.repeatCount ?? 1,
+      sharedWith: (row.spawnCompletionSiblings ?? []).map((sibling) => [sibling.notice.childSessionId, sibling.repeatCount]),
+    }))).toEqual([
+      { type: "text", child: null, turns: 1, sharedWith: [] },
+      { type: "system_notice", child: "child-1", turns: 3, sharedWith: [["child-2", 3]] },
+      { type: "system_notice", child: null, turns: 1, sharedWith: [] },
+    ]);
+    // The line sorts with its newest notice, not the out-of-date ones.
+    expect(rows[1]!.timestamp).toBe("2026-06-01T10:00:04.000Z");
   });
 
   it("keeps the incremental collapse byte-identical to a full recompute", () => {
@@ -3501,14 +3777,14 @@ describe("subagent one-card rendering", () => {
         type: "subagent_started",
         taskId: "bg-1",
         taskType: "background",
-        description: "cd /repo && npm install",
+        description: "cd /repo && npm install --token=fake",
       }),
     ]);
 
     expect(rows).toHaveLength(1);
     if (rows[0]!.event.type !== "background_job_line") throw new Error("Expected background job line");
     expect(rows[0]!.event.status).toBe("running");
-    expect(rows[0]!.event.label).toBe("npm install");
+    expect(rows[0]!.event.label).toBe("npm install --token=<redacted>");
     expect(rows[0]!.event.taskId).toBe("bg-1");
     expect(rows[0]!.key).toBe("background-chip:bg-1");
   });
@@ -4520,6 +4796,27 @@ describe("text adjacency across an older-history prepend", () => {
       previous.context,
     );
     expect(after.rows).toEqual(collapseChatTranscriptEventsWithContext(merged).rows);
+
+    // An earlier event replaced in place, with the last one unchanged: Claude
+    // resends a tool call under the same item id once its args arrive, after
+    // other events already landed.
+    const toolCall = (args: Record<string, unknown>): AgentChatEventEnvelope => ({
+      sessionId: "session-1",
+      timestamp: "2026-03-17T10:00:01.000Z",
+      event: { type: "tool_call", tool: "Bash", args, itemId: "tool-1", turnId: "turn-1" },
+    } as never);
+    const live = [toolCall({}), textEvent("running it", 2)];
+    const liveRows = collapseChatTranscriptEventsWithContext(live);
+    const resent = [toolCall({ command: "ade screen status" }), live[1]!, textEvent(" now", 3)];
+    expect(resent[live.length - 1]).toBe(live[live.length - 1]);
+    const afterResend = collapseChatTranscriptEventsIncrementalWithContext(
+      resent,
+      live,
+      liveRows.rows,
+      liveRows.context,
+    );
+    expect(afterResend.rows).toEqual(collapseChatTranscriptEventsWithContext(resent).rows);
+    expect(JSON.stringify(afterResend.rows)).toContain("ade screen status");
   });
 
   it("keeps an intervening non-text event between the halves of a message", () => {
@@ -4553,7 +4850,8 @@ describe("turn fold (desktop adapter)", () => {
   /** The same presentation filter the message list applies before folding. */
   function present(rows: ReturnType<typeof collapseChatTranscriptEventsWithContext>["rows"]) {
     return mergeAdjacentActivityBundleRows(
-      groupChatTranscriptRows(rows).filter((row) => row.event.type !== "work_log_group"),
+      groupChatTranscriptRows(rows).filter((row) =>
+        row.event.type !== "work_log_group" || hasComputerUseEntries(row.event.entries)),
     );
   }
 
@@ -4636,9 +4934,11 @@ describe("turn fold (desktop adapter)", () => {
     }
   });
 
-  it("keeps subagent results and proof visible, and never folds rows after the answer", () => {
-    const { display } = fold([
+  it("folds a turn's computer-use work, keeps subagent results and proof visible, and never folds rows after the answer", () => {
+    const { display, folds } = fold([
       ev({ type: "user_message", text: "fan out", turnId: "t1" }),
+      ev({ type: "command", command: "ade screen click --label Save", cwd: "/r", output: 'hit: AXButton "Save" (e1)', itemId: "c1", turnId: "t1", status: "completed" }),
+      ev({ type: "reasoning", text: "Clicked.", turnId: "t1" }),
       ev({ type: "subagent_started", taskId: "chat:child-1", agentId: "child-1", agentType: "claude", description: "Scout", spawnKind: "peer", taskType: "subagent" }),
       ev({ type: "subagent_result", taskId: "chat:child-1", agentId: "child-1", status: "completed", summary: "Found it." }),
       ev({ type: "ade_card", cardId: "proof-1", variant: "proof_artifact", state: "terminal", title: "Screenshot", fallbackText: "Screenshot", turnId: "t1" }),
@@ -4647,6 +4947,9 @@ describe("turn fold (desktop adapter)", () => {
       ev({ type: "reasoning", text: "Late thought.", turnId: "t1" }),
       ev({ type: "done", turnId: "t1", status: "completed" }),
     ]);
+    // The computer-use group is work, not answer: it folds with the turn, so its
+    // row is a hidden key of the fold. A subagent result card and a filed proof
+    // stay visible — the reader keeps both.
     expect(types(display)).toEqual([
       "user_message",
       "turn_fold",
@@ -4656,6 +4959,7 @@ describe("turn fold (desktop adapter)", () => {
       "reasoning",
       "done",
     ]);
+    expect([...folds[0]!.hiddenKeys].some((key) => key.includes("c1"))).toBe(true);
     const foldRow = display[1]!.event;
     if (foldRow.type !== "turn_fold") throw new Error("expected fold row");
     expect(foldRow.subagentCount).toBe(1);
@@ -5020,6 +5324,88 @@ describe("turn fold (desktop adapter)", () => {
       expect(rows.map((row) => [(row.event as { text: string }).text, (row.event as { phase?: string }).phase]))
         .toEqual([["Hello world.", undefined], ["Late label.", "final_answer"]]);
     });
+
+    it("keeps a partial answer apart from the narration it shares a message id with", () => {
+      // Codex reuses one message id across consecutive assistant text until a
+      // tool call flushes it, and 0.162 labels a finished-but-not-terminal
+      // answer `partial_answer`. Merging the two would leave the partial answer
+      // wearing the narration's label, which the turn fold then hides.
+      const { rows } = collapseChatTranscriptEventsWithContext([
+        ev({ type: "text", text: "The first result is ready. ", turnId: "t1", messageId: "msg-1", phase: "partial_answer" }),
+        ev({ type: "text", text: "Checking the rest. ", turnId: "t1", messageId: "msg-1", phase: "commentary" }),
+        ev({ type: "text", text: "Both results are in.", turnId: "t1", messageId: "msg-1", phase: "final_answer" }),
+      ]);
+      expect(rows.map((row) => [(row.event as { text: string }).text, (row.event as { phase?: string }).phase]))
+        .toEqual([
+          ["The first result is ready. ", "partial_answer"],
+          ["Checking the rest. ", "commentary"],
+          ["Both results are in.", "final_answer"],
+        ]);
+    });
+
+    it("keeps a partial answer out of the fold at turn end", () => {
+      // The sequence codex 0.162 actually emits (its own
+      // `scenarios_partial_answers` suite): a partial answer, then narration,
+      // then the terminal answer, which restates only its own part. The user
+      // asked for both results, so folding the first one away loses content.
+      const { display } = fold([
+        ev({ type: "user_message", text: "Give me both results.", turnId: "t1" }),
+        ev({ type: "reasoning", text: "Thinking.", turnId: "t1" }),
+        ev({ type: "text", text: "The first result is ready.", turnId: "t1", messageId: "m", phase: "partial_answer" }),
+        ev({ type: "text", text: "Checking the remaining result.", turnId: "t1", messageId: "m", phase: "commentary" }),
+        ev({ type: "text", text: "The second result is ready.", turnId: "t1", messageId: "m", phase: "final_answer" }),
+        ev({ type: "done", turnId: "t1", status: "completed" }),
+      ]);
+      const shown = display.flatMap((row) => row.event.type === "text" ? [(row.event as { text: string }).text] : []);
+      expect(shown).toEqual(["The first result is ready.", "The second result is ready."]);
+    });
+  });
+});
+
+describe("computer-use runs (desktop timeline)", () => {
+  let clock = 0;
+  const ev = (event: AgentChatEventEnvelope["event"]): AgentChatEventEnvelope => ({
+    sessionId: "session-1",
+    timestamp: new Date(Date.UTC(2026, 8, 23, 11, 0, clock++)).toISOString(),
+    event,
+  });
+  const screenCommand = (itemId: string, command: string) =>
+    ev({ type: "command", command, cwd: "/r", output: "", itemId, turnId: "t1", status: "completed" });
+  const groups = (rows: ChatTranscriptGroupedEnvelope[]) =>
+    rows.flatMap((row) => row.event.type === "work_log_group"
+      ? [{ key: row.key, compact: Boolean(row.event.computerUseCompact), commands: row.event.entries.map((entry) => entry.command) }]
+      : []);
+
+  it("draws only a turn's last run in full, joins adjacent runs, and reuses unchanged envelopes", () => {
+    const events = [
+      ev({ type: "user_message", text: "go", turnId: "t1" }),
+      screenCommand("c1", "ade screen click --label Save"),
+      ev({ type: "text", text: "Saved.", turnId: "t1", itemId: "m1" }),
+      screenCommand("c2", "ade screen observe"),
+      ev({ type: "text", text: "Done.", turnId: "t1", itemId: "m2" }),
+    ];
+    const grouped = groupChatTranscriptRows(collapseChatTranscriptEventsWithContext(events).rows);
+
+    const first = arrangeComputerUseRuns(grouped, new Map());
+    const [earlierRun, lastRun] = groups(first.rows);
+    expect([earlierRun, lastRun]).toEqual([
+      { key: expect.stringContaining("c1"), compact: true, commands: ["ade screen click --label Save"] },
+      { key: expect.stringContaining("c2"), compact: false, commands: ["ade screen observe"] },
+    ]);
+
+    // Same rows again: every run keeps the envelope it had.
+    const again = arrangeComputerUseRuns(grouped, first.built);
+    expect(again.rows).toHaveLength(first.rows.length);
+    again.rows.forEach((row, index) => expect(row).toBe(first.rows[index]));
+
+    // The narration between them folded away: one run, keyed by the first, in full.
+    const withoutNarration = grouped.filter((row) => !(row.event.type === "text" && row.event.text === "Saved."));
+    const joined = arrangeComputerUseRuns(withoutNarration, first.built);
+    expect(groups(joined.rows)).toEqual([
+      { key: earlierRun!.key, compact: false, commands: ["ade screen click --label Save", "ade screen observe"] },
+    ]);
+    // Its fields changed, so its envelope is rebuilt rather than the stale one reused.
+    expect(joined.rows.find((row) => row.key === earlierRun!.key)).not.toBe(first.built.get(earlierRun!.key));
   });
 });
 
@@ -5368,5 +5754,87 @@ describe("scheduled work presentation (wake loops)", () => {
       "Checking sooner.",
       "Still queued.",
     ]);
+  });
+});
+
+describe("workflow script rows", () => {
+  const script = [
+    "const meta = { name: 'skate-build', phases: [{ title: 'Scan' }, { title: 'Report' }] }",
+    "export default async function run() {}",
+  ].join("\n");
+
+  /**
+   * A dynamic workflow's script gets its own row — it is the only description
+   * of what the run was asked to do — and the call's result is swallowed with
+   * it, because a generic "Workflow" tool row underneath says nothing.
+   *
+   * The per-event append carries no shared collapse context (a caller folding
+   * one event at a time has none), so the row list is the only record that this
+   * call already owns a script row. Without looking there, the result drew a
+   * second, generic row under the script.
+   */
+  it("gives a Workflow call one script row, and no generic row for its result", () => {
+    const rows: ChatTranscriptRenderEnvelope[] = [];
+    appendCollapsedChatTranscriptEvent(rows, {
+      sessionId: "session-1",
+      timestamp: "2026-10-16T10:00:00.000Z",
+      event: { type: "tool_call", tool: "Workflow", args: { script }, itemId: "wf-1", turnId: "turn-1" },
+    }, "row-wf-1");
+
+    expect(rows.map((row) => row.event.type)).toEqual(["workflow_script"]);
+    expect(rows[0]!.event).toMatchObject({
+      type: "workflow_script",
+      name: "skate-build",
+      phases: ["Scan", "Report"],
+    });
+
+    appendCollapsedChatTranscriptEvent(rows, {
+      sessionId: "session-1",
+      timestamp: "2026-10-16T10:00:01.000Z",
+      event: {
+        type: "tool_result",
+        tool: "Workflow",
+        result: { ok: true },
+        itemId: "wf-1",
+        turnId: "turn-1",
+        status: "completed",
+      },
+    }, "row-wf-1-result");
+
+    expect(rows.map((row) => row.event.type)).toEqual(["workflow_script"]);
+  });
+
+  /**
+   * Every collapse the app itself runs carries a shared context (a chat opening,
+   * a streamed turn, a backfilled page), and there the context's own
+   * `workflowScriptItemIds` set is what says the call already owns a script row.
+   * The row list is the answer only for the context-less per-event append above.
+   * Both must swallow the result, and the incremental path must agree with a
+   * full pass — the two are required to be byte-identical.
+   */
+  it("swallows a Workflow result through the shared collapse context too", () => {
+    const stream = [
+      env("2026-10-16T10:00:00.000Z", {
+        type: "tool_call", tool: "Workflow", args: { script }, itemId: "wf-1", turnId: "turn-1",
+      }),
+      env("2026-10-16T10:00:01.000Z", {
+        type: "tool_result", tool: "Workflow", result: { ok: true }, itemId: "wf-1", turnId: "turn-1", status: "completed",
+      }),
+      env("2026-10-16T10:00:02.000Z", { type: "text", text: "all done", messageId: "m-1", turnId: "turn-1" }),
+    ];
+    const full = collapseChatTranscriptEvents(stream);
+    expect(full.map((row) => row.event.type)).toEqual(["workflow_script", "text"]);
+
+    let prevEvents: AgentChatEventEnvelope[] = [];
+    let { rows, context } = collapseChatTranscriptEventsWithContext(prevEvents);
+    for (const event of stream) {
+      const nextEvents = [...prevEvents, event];
+      const result = collapseChatTranscriptEventsIncrementalWithContext(nextEvents, prevEvents, rows, context);
+      prevEvents = nextEvents;
+      rows = result.rows;
+      context = result.context;
+    }
+    expect(rows.map((row) => row.event.type)).toEqual(["workflow_script", "text"]);
+    expect(rows).toEqual(full);
   });
 });

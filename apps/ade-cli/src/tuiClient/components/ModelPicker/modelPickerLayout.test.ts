@@ -39,6 +39,7 @@ describe("buildModelPickerLayout", () => {
       .toEqual([
         "claude",
         "codex",
+        "muse",
         "cursor",
         "devin",
         "opencode",
@@ -191,7 +192,7 @@ describe("buildModelPickerLayout", () => {
       "anthropic/claude-fable-5-1",
       "anthropic/claude-opus-5-5",
       "anthropic/claude-sonnet-5-5",
-      "anthropic/claude-haiku-4-5",
+      "anthropic/claude-haiku-5-5",
       "anthropic/claude-sonnet-5",
       "anthropic/claude-opus-5",
     ]);

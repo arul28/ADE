@@ -43,6 +43,7 @@ import {
 } from "./LinearIssueBrowserRows";
 import { LinearBatchActionView, LinearIssueDetails } from "./LinearIssueDetailPane";
 import { LinearInboxList } from "./LinearInboxList";
+import { subscribeIssueCreated } from "../../lib/issueCreateRequests";
 import {
   applyIssueEdit,
   formatLinearCount,
@@ -166,6 +167,21 @@ type LinearIssueBrowserCacheEntry = {
 };
 
 const linearIssueBrowserCache = new Map<string, LinearIssueBrowserCacheEntry>();
+
+/**
+ * Every issue this window already read in the browser, for the create form's
+ * "similar issues" hint. Reads memory only; never a request.
+ */
+export function cachedLinearBrowserIssues(): NormalizedLinearIssue[] {
+  const byId = new Map<string, NormalizedLinearIssue>();
+  for (const entry of linearIssueBrowserCache.values()) {
+    for (const search of entry.searches.values()) {
+      for (const issue of search.result?.issues ?? []) byId.set(issue.id, issue);
+    }
+    for (const detail of entry.details.values()) byId.set(detail.issue.id, detail.issue);
+  }
+  return [...byId.values()];
+}
 const ctoCacheScopes = new WeakMap<object, number>();
 let nextCtoCacheScope = 1;
 
@@ -524,8 +540,6 @@ export function LinearIssueBrowser({
   showBranchPreview = true,
   singleSelect = false,
   refreshKey = 0,
-  requestedIssueIdentifier,
-  requestedIssueRequestKey,
   onIssueAction,
   onOpenLinearSettings,
   onConnectionVisibilityChange,
@@ -544,8 +558,6 @@ export function LinearIssueBrowser({
   showBranchPreview?: boolean;
   singleSelect?: boolean;
   refreshKey?: number;
-  requestedIssueIdentifier?: string | null;
-  requestedIssueRequestKey?: string | number | null;
   onIssueAction: (issue: BrowserIssue) => void | Promise<void>;
   onOpenLinearSettings?: () => void;
   onConnectionVisibilityChange?: (visible: boolean) => void;
@@ -602,7 +614,6 @@ export function LinearIssueBrowser({
   const quickViewRequestIdRef = useRef(0);
   const catalogRequestIdRef = useRef(0);
   const searchRequestIdRef = useRef(0);
-  const lastRequestedIssueKeyRef = useRef<string | null>(null);
   // Accumulated data for every issue displayed this session, so a selection
   // built across multiple searches stays resolvable when an earlier pick is no
   // longer on the current page. seenVersion forces a re-render when it grows.
@@ -931,42 +942,10 @@ export function LinearIssueBrowser({
   }, [canAutoLoadIssues, issues.length, lastRenderedIndex, listRows.length, loadingIssues, pageInfo.hasNextPage, searchIssues]);
 
   useEffect(() => {
-    const normalized = requestedIssueIdentifier?.trim().toUpperCase() ?? "";
-    const requestKey = `${normalized}:${requestedIssueRequestKey ?? ""}`;
-    if (!normalized || lastRequestedIssueKeyRef.current === requestKey) return;
-    lastRequestedIssueKeyRef.current = requestKey;
-    const nextFilters: LinearIssueBrowserFilters = {
-      ...DEFAULT_FILTERS,
-      query: normalized,
-      statePreset: "all",
-    };
-    setFilters(nextFilters);
-    safeSaveFilters(projectRoot, nextFilters);
-    setIssues([]);
-    setPageInfo({ hasNextPage: false, endCursor: null });
-    setSearchTotalCount(null);
-    setSelectedIssueId(null);
-    setSelectedIssueIds(new Set());
-    safeSaveSelection(projectRoot, new Set());
-    setCollapsedGroups({});
-  }, [projectRoot, requestedIssueIdentifier, requestedIssueRequestKey]);
-
-  useEffect(() => {
     if (selectedIssueId && displayIssues.some((issue) => issue.id === selectedIssueId)) return;
     if (selectedIssueId && externalIssue?.id === selectedIssueId) return;
     setSelectedIssueId(displayIssues[0]?.id ?? null);
   }, [displayIssues, externalIssue, selectedIssueId]);
-
-  useEffect(() => {
-    const normalized = requestedIssueIdentifier?.trim().toUpperCase() ?? "";
-    if (!normalized) return;
-    const match = displayIssues.find((issue) =>
-      issue.identifier.trim().toUpperCase() === normalized
-      || issue.id.trim() === requestedIssueIdentifier?.trim()
-    );
-    if (!match || selectedIssueId === match.id) return;
-    setSelectedIssueId(match.id);
-  }, [displayIssues, requestedIssueIdentifier, selectedIssueId]);
 
   const listSelectedIssue = displayIssues.find((issue) => issue.id === selectedIssueId)
     ?? (externalIssue && externalIssue.id === selectedIssueId ? externalIssue : null)
@@ -1018,6 +997,15 @@ export function LinearIssueBrowser({
     }, 120);
     return () => window.clearTimeout(timer);
   }, [detailIssues, fetchIssueDetail, selectedIssueKey]);
+
+  // An issue made from the pane's "New" is selected at once; the list gains it
+  // at its next refresh.
+  useEffect(() => subscribeIssueCreated((event) => {
+    if (event.provider !== "linear") return;
+    rememberDetail(event.issue);
+    setExternalIssue(event.issue);
+    setSelectedIssueId(event.issue.id);
+  }), [rememberDetail]);
 
   const handleOpenRelatedIssue = useCallback(async (ref: LinearIssueRef) => {
     if (displayIssues.some((issue) => issue.id === ref.id)) {
@@ -1430,7 +1418,7 @@ export function LinearIssueBrowser({
       ) : null}
 
       <div className="grid min-h-0 flex-1 overflow-hidden md:grid-cols-[220px_minmax(0,1fr)_420px] lg:grid-cols-[240px_minmax(480px,1fr)_460px] 2xl:grid-cols-[280px_minmax(520px,1fr)_600px]">
-        <aside className="flex min-h-0 flex-col overflow-hidden border-r border-white/10 bg-black/10">
+        <aside className="flex min-h-0 flex-col overflow-hidden border-r border-fg/10 bg-black/10">
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 py-2" data-linear-pane="projects">
             <div className="space-y-px" data-linear-rail="views">
               <ScopeNavButton
@@ -1506,7 +1494,7 @@ export function LinearIssueBrowser({
             </div>
 
             {loadingCatalog && projectFilters.length === 0 ? (
-              <div className="rounded-lg border border-white/[0.06] px-3 py-6 text-center text-[12px] text-muted-fg/50">
+              <div className="rounded-lg border border-fg/[0.06] px-3 py-6 text-center text-[12px] text-muted-fg/50">
                 Loading projects...
               </div>
             ) : projectFilters.length > 0 ? (
@@ -1522,15 +1510,15 @@ export function LinearIssueBrowser({
                 ))}
               </div>
             ) : (
-              <div className="rounded-lg border border-white/[0.06] px-3 py-6 text-center text-[12px] text-muted-fg/50">
+              <div className="rounded-lg border border-fg/[0.06] px-3 py-6 text-center text-[12px] text-muted-fg/50">
                 No visible projects.
               </div>
             )}
           </div>
         </aside>
 
-        <section className="flex min-h-0 flex-col overflow-hidden border-r border-white/10">
-          <div className={cn("shrink-0 space-y-2 border-b border-white/[0.06] px-3 py-2.5", inboxScope && "hidden")}>
+        <section className="flex min-h-0 flex-col overflow-hidden border-r border-fg/10">
+          <div className={cn("shrink-0 space-y-2 border-b border-fg/[0.06] px-3 py-2.5", inboxScope && "hidden")}>
             <div className="relative">
               <MagnifyingGlass size={13} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-fg/45" />
               <input
@@ -1546,7 +1534,7 @@ export function LinearIssueBrowser({
                 }}
                 placeholder="Search issues…  /"
                 aria-label="Search issues"
-                className="h-8 w-full rounded-md border border-white/[0.07] bg-black/20 pl-8 pr-3 text-[12px] text-fg outline-none transition-colors placeholder:text-muted-fg/40 focus:border-white/18"
+                className="h-8 w-full rounded-md border border-fg/[0.07] bg-black/20 pl-8 pr-3 text-[12px] text-fg outline-none transition-colors placeholder:text-muted-fg/40 focus:border-fg/18"
               />
             </div>
 
@@ -1558,8 +1546,8 @@ export function LinearIssueBrowser({
                   className={cn(
                     "rounded-md px-2 py-1 text-[11px] transition-colors",
                     filters.statePreset === tab.value
-                      ? "bg-white/[0.08] text-fg"
-                      : "text-muted-fg/60 hover:bg-white/[0.04] hover:text-fg/85",
+                      ? "bg-fg/[0.08] text-fg"
+                      : "text-muted-fg/60 hover:bg-fg/[0.04] hover:text-fg/85",
                   )}
                   onClick={() => updateFilters({ statePreset: tab.value })}
                 >
@@ -1592,7 +1580,7 @@ export function LinearIssueBrowser({
           </div>
 
           {multiSelectEnabled && !inboxScope && displayIssues.length > 0 && (
-            <div className="flex shrink-0 items-center gap-2 border-b border-white/[0.05] px-3 py-1.5">
+            <div className="flex shrink-0 items-center gap-2 border-b border-fg/[0.05] px-3 py-1.5">
               <span
                 role="checkbox"
                 tabIndex={0}
@@ -1606,13 +1594,13 @@ export function LinearIssueBrowser({
                     ? "border-[color:var(--color-accent,#A78BFA)] bg-[color:var(--color-accent,#A78BFA)]"
                     : selectedIssueIds.size > 0
                       ? "border-[color:var(--color-accent,#A78BFA)] bg-[color:var(--color-accent,#A78BFA)]/50"
-                      : "border-white/[0.15] bg-transparent hover:border-white/30",
+                      : "border-fg/[0.15] bg-transparent hover:border-white/30",
                 )}
               >
                 {selectedIssueIds.size === displayIssues.length && displayIssues.length > 0 ? (
-                  <Check size={10} weight="bold" className="text-[#0F0D14]" />
+                  <Check size={10} weight="bold" className="text-accent-fg" />
                 ) : selectedIssueIds.size > 0 ? (
-                  <Minus size={10} weight="bold" className="text-[#0F0D14]" />
+                  <Minus size={10} weight="bold" className="text-accent-fg" />
                 ) : null}
               </span>
               <span className="text-[11px] tabular-nums text-muted-fg/55">
@@ -1688,7 +1676,7 @@ export function LinearIssueBrowser({
                         {row.kind === "header" ? (
                           <button
                             type="button"
-                            className="flex h-full w-full items-center gap-1.5 border-b border-white/[0.05] bg-[color:var(--ade-shell-surface,#121019)] px-3 text-left text-[12px] text-muted-fg/70 transition-colors hover:text-fg/85"
+                            className="flex h-full w-full items-center gap-1.5 border-b border-fg/[0.05] bg-[color:var(--ade-shell-surface,#121019)] px-3 text-left text-[12px] text-muted-fg/70 transition-colors hover:text-fg/85"
                             onClick={() => setCollapsedGroups((current) => ({ ...current, [row.group.key]: !row.collapsed }))}
                           >
                             {row.collapsed ? <CaretRight size={11} className="shrink-0" /> : <CaretDown size={11} className="shrink-0" />}
@@ -1725,7 +1713,7 @@ export function LinearIssueBrowser({
                   <button
                     type="button"
                     disabled={loadingIssues}
-                    className="flex w-full items-center justify-center gap-2 px-3 py-2.5 text-[12px] text-muted-fg/70 transition-colors hover:bg-white/[0.04] hover:text-fg"
+                    className="flex w-full items-center justify-center gap-2 px-3 py-2.5 text-[12px] text-muted-fg/70 transition-colors hover:bg-fg/[0.04] hover:text-fg"
                     onClick={() => searchIssues(true)}
                   >
                     Load more
@@ -1788,7 +1776,7 @@ function FilterSelect({
       <select
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        className="h-8 w-full appearance-none rounded-lg border border-white/[0.07] bg-black/20 px-2.5 pr-7 text-[11px] text-fg outline-none transition-colors focus:border-white/18"
+        className="h-8 w-full appearance-none rounded-lg border border-fg/[0.07] bg-black/20 px-2.5 pr-7 text-[11px] text-fg outline-none transition-colors focus:border-fg/18"
         aria-label={label}
       >
         {options.map((option) => (

@@ -1,13 +1,16 @@
-import { isLoopbackHostname } from "./trustedOrigin";
+import { isLoopbackHostname, trustedHttpsOrigin } from "./trustedOrigin";
 import { boundedDisplayText } from "./displayText";
 
 const DEVICE_CODE_TTL_SECONDS = 10 * 60;
 const DEVICE_POLL_INTERVAL_SECONDS = 5;
 const DEVICE_SLOW_DOWN_INCREMENT_SECONDS = 5;
-const DEVICE_RATE_LIMIT_WINDOW_MS = 60_000;
+export const DEVICE_RATE_LIMIT_WINDOW_MS = 60_000;
 const DEVICE_CODE_RATE_LIMIT_MAX_ATTEMPTS = 10;
 const APPROVAL_RATE_LIMIT_MAX_ATTEMPTS = 10;
 const DEVICE_AUTHORIZATION_RETENTION_MS = 60 * 60_000;
+// The same 32 characters are spelled out in `apps/web/api/device.ts` (the
+// website redirect) and `apps/ios/ADE/Services/DeviceSignInApproval.swift`
+// (the phone app). Change all three together.
 const USER_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const MAX_MACHINE_KEY_CHARS = 128;
 const MAX_MACHINE_NAME_CHARS = 80;
@@ -16,6 +19,22 @@ export interface DeviceAuthorizationEnv {
   DB: D1Database;
   CLERK_ISSUER: string;
   CLERK_OAUTH_CLIENT_ID: string;
+  /**
+   * Clerk Backend API key. Optional: only `/device/approve`
+   * (`deviceAppApproval.ts`) needs it, to mint
+   * the one-time sign-in ticket for a user who approved from a signed-in ADE
+   * app. Without it that route answers 503 and the app offers the browser
+   * page, which needs no key.
+   */
+  CLERK_SECRET_KEY?: string;
+  /**
+   * Origin of the page a person opens to confirm a sign-in, when it is not
+   * this worker: `https://ade-app.dev`, whose `/device` opens the ADE phone
+   * app as a universal link and otherwise redirects a browser here. Optional;
+   * unset, or anything but an exact https origin, the link points at this
+   * worker's own `/device`. The deploy preflight refuses such a value.
+   */
+  DEVICE_PAGE_ORIGIN?: string;
 }
 
 export type DeviceAuthorizationRequestOptions = {
@@ -39,7 +58,7 @@ export type DeviceAuthorizationRequestOptions = {
   }) => Promise<string | null>;
 };
 
-type DeviceAuthorizationRow = {
+export type DeviceAuthorizationRow = {
   device_code: string;
   user_code: string;
   device_secret_hash: string;
@@ -67,7 +86,7 @@ type DeviceAuthorizationRow = {
   consumed_at: number | null;
 };
 
-function json(value: unknown, init: ResponseInit = {}): Response {
+export function json(value: unknown, init: ResponseInit = {}): Response {
   return new Response(JSON.stringify(value), {
     ...init,
     headers: {
@@ -95,11 +114,11 @@ function html(value: string, status = 200): Response {
   });
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+export function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
-function nonEmptyString(value: unknown): string | null {
+export function nonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
@@ -147,7 +166,7 @@ function randomUserCode(randomBytes: (size: number) => Uint8Array): string {
   return `${characters.slice(0, 4).join("")}-${characters.slice(4).join("")}`;
 }
 
-function normalizeUserCode(value: string): string | null {
+export function normalizeUserCode(value: string): string | null {
   const compact = value.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
   if (compact.length !== 8) return null;
   for (const character of compact) {
@@ -259,7 +278,7 @@ function approvalMessage(title: string, message: string, status = 200): Response
   return page({ title, status, body: `<h1>${title}</h1><p>${message}</p>` });
 }
 
-async function parseJsonBody(request: Request): Promise<Record<string, unknown> | null> {
+export async function parseJsonBody(request: Request): Promise<Record<string, unknown> | null> {
   try {
     const value = await request.json();
     return isRecord(value) ? value : null;
@@ -298,7 +317,15 @@ async function findByDeviceCode(env: DeviceAuthorizationEnv, deviceCode: string)
     .first<DeviceAuthorizationRow>();
 }
 
-async function findByUserCode(env: DeviceAuthorizationEnv, userCode: string): Promise<DeviceAuthorizationRow | null> {
+/**
+ * Has this code run out of time? An expired row cannot be confirmed, and
+ * `/device/token` refuses it even when the sign-in was approved in time.
+ */
+export function isDeviceAuthorizationExpired(row: DeviceAuthorizationRow, now: number): boolean {
+  return row.expires_at <= now || row.status === "expired";
+}
+
+export async function findByUserCode(env: DeviceAuthorizationEnv, userCode: string): Promise<DeviceAuthorizationRow | null> {
   return env.DB.prepare("select * from device_authorizations where user_code = ?")
     .bind(userCode)
     .first<DeviceAuthorizationRow>();
@@ -338,6 +365,18 @@ async function checkDeviceRateLimit(
     maxAttempts,
   ).run();
   return changes(admitted) === 1;
+}
+
+/**
+ * Counts one approval attempt against this client's budget, and says whether
+ * it is within it. The browser page and the app route share the budget.
+ */
+export function admitApprovalAttempt(
+  request: Request,
+  env: DeviceAuthorizationEnv,
+  now: number,
+): Promise<boolean> {
+  return checkDeviceRateLimit(request, env, now, "approval", APPROVAL_RATE_LIMIT_MAX_ATTEMPTS);
 }
 
 async function handleDeviceCode(
@@ -398,7 +437,8 @@ async function handleDeviceCode(
     }
   }
 
-  const origin = new URL(request.url).origin;
+  const origin = trustedHttpsOrigin(env.DEVICE_PAGE_ORIGIN, { requireExactOrigin: true })
+    ?? new URL(request.url).origin;
   const verificationUri = `${origin}/device`;
   return json({
     device_code: deviceCode,
@@ -466,12 +506,12 @@ async function handleDeviceApproval(
   if (!userCode) return approvalForm("");
 
   const now = options.now();
-  if (!(await checkDeviceRateLimit(request, env, now, "approval", APPROVAL_RATE_LIMIT_MAX_ATTEMPTS))) {
+  if (!(await admitApprovalAttempt(request, env, now))) {
     return approvalMessage("Try again shortly", "Too many device-code attempts were made from this browser.", 429);
   }
   const row = await findByUserCode(env, userCode);
   if (!row) return approvalMessage("Code not found", "Check the code shown by ADE and try again.", 404);
-  if (row.expires_at <= now || row.status === "expired") {
+  if (isDeviceAuthorizationExpired(row, now)) {
     await env.DB.prepare(`
       update device_authorizations
          set status = 'expired', code_verifier = null, oauth_state_hash = null,
@@ -489,15 +529,39 @@ async function handleDeviceApproval(
     return approvalMessage("Sign-in already started", "Finish the Clerk sign-in already open in this browser.", 409);
   }
 
-  let issuer: string;
-  try {
-    issuer = normalizeIssuer(env.CLERK_ISSUER);
-  } catch {
-    return approvalMessage("Sign-in unavailable", "ADE account login is not configured.", 503);
-  }
-  const clientId = env.CLERK_OAUTH_CLIENT_ID.trim();
-  if (!clientId) return approvalMessage("Sign-in unavailable", "ADE account login is not configured.", 503);
+  const oauth = clerkOAuthConfig(env);
+  if (!oauth) return approvalMessage("Sign-in unavailable", "ADE account login is not configured.", 503);
+  const authorizeUrl = await claimForClerkSignIn(env, oauth, row.device_code, url.origin, options);
+  if (!authorizeUrl) return approvalMessage("Code unavailable", "Return to ADE and start sign-in again.", 409);
+  return continueToSignIn(authorizeUrl);
+}
 
+export type ClerkOAuthConfig = { issuer: string; clientId: string };
+
+/** This worker's Clerk OAuth application, or `null` when it is not configured. */
+export function clerkOAuthConfig(env: DeviceAuthorizationEnv): ClerkOAuthConfig | null {
+  const clientId = env.CLERK_OAUTH_CLIENT_ID.trim();
+  if (!clientId) return null;
+  try {
+    return { issuer: normalizeIssuer(env.CLERK_ISSUER), clientId };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Claim a pending device authorization for one Clerk sign-in and return its
+ * authorize URL, or `null` when the code cannot be claimed any more. The claim
+ * is atomic, so a code confirmed twice (two tabs, or the browser page and the
+ * app) starts exactly one sign-in.
+ */
+export async function claimForClerkSignIn(
+  env: DeviceAuthorizationEnv,
+  oauth: ClerkOAuthConfig,
+  deviceCode: string,
+  origin: string,
+  options: Required<Pick<DeviceAuthorizationRequestOptions, "now" | "randomBytes">>,
+): Promise<string | null> {
   const codeVerifier = bytesToBase64Url(options.randomBytes(32));
   const codeChallenge = await sha256(codeVerifier);
   const oauthState = bytesToBase64Url(options.randomBytes(32));
@@ -507,20 +571,18 @@ async function handleDeviceApproval(
        set code_verifier = ?, oauth_state_hash = ?
      where device_code = ? and status = 'pending' and expires_at > ?
        and code_verifier is null and oauth_state_hash is null
-  `).bind(codeVerifier, oauthStateHash, row.device_code, now).run();
-  if (changes(updated) < 1) return approvalMessage("Code unavailable", "Return to ADE and start sign-in again.", 409);
+  `).bind(codeVerifier, oauthStateHash, deviceCode, options.now()).run();
+  if (changes(updated) < 1) return null;
 
-  const redirectUri = `${url.origin}/device/callback`;
-  const authorizeUrl = `${issuer}/oauth/authorize?${encodeQuery([
+  return `${oauth.issuer}/oauth/authorize?${encodeQuery([
     ["response_type", "code"],
-    ["client_id", clientId],
-    ["redirect_uri", redirectUri],
+    ["client_id", oauth.clientId],
+    ["redirect_uri", `${origin}/device/callback`],
     ["code_challenge", codeChallenge],
     ["code_challenge_method", "S256"],
     ["state", oauthState],
     ["scope", "openid profile email offline_access"],
   ])}`;
-  return continueToSignIn(authorizeUrl);
 }
 
 async function handleDeviceCallback(
@@ -573,16 +635,14 @@ async function handleDeviceCallback(
     return approvalMessage("Sign-in cancelled", "Return to ADE and try again.", 400);
   }
 
-  let issuer: string;
-  try {
-    issuer = normalizeIssuer(env.CLERK_ISSUER);
-  } catch {
+  const oauth = clerkOAuthConfig(env);
+  if (!oauth) {
     await env.DB.prepare("update device_authorizations set status = 'error', error_message = ? where device_code = ? and status = 'pending'")
       .bind("ADE account login is not configured.", row.device_code)
       .run();
     return approvalMessage("Sign-in unavailable", "ADE account login is not configured.", 503);
   }
-  const clientId = env.CLERK_OAUTH_CLIENT_ID.trim();
+  const { issuer, clientId } = oauth;
   const redirectUri = `${url.origin}/device/callback`;
   let tokenResponse: Response;
   try {
@@ -660,7 +720,7 @@ async function handleDeviceToken(
   }
 
   const now = options.now();
-  if (row.expires_at <= now || row.status === "expired") {
+  if (isDeviceAuthorizationExpired(row, now)) {
     await env.DB.prepare(`
       update device_authorizations
          set status = 'expired', code_verifier = null, oauth_state_hash = null,
@@ -693,14 +753,8 @@ async function handleDeviceToken(
     return json({ error: "server_error" }, { status: 500 });
   }
 
-  let oauthIssuer: string;
-  try {
-    oauthIssuer = normalizeIssuer(env.CLERK_ISSUER);
-  } catch {
-    return json({ error: "server_error" }, { status: 500 });
-  }
-  const oauthClientId = env.CLERK_OAUTH_CLIENT_ID.trim();
-  if (!oauthClientId) return json({ error: "server_error" }, { status: 500 });
+  const oauth = clerkOAuthConfig(env);
+  if (!oauth) return json({ error: "server_error" }, { status: 500 });
 
   const approvedToken = {
     access_token: row.access_token,
@@ -709,8 +763,8 @@ async function handleDeviceToken(
     expires_in: row.approved_at == null
       ? row.expires_in
       : Math.max(1, Math.ceil((row.approved_at + row.expires_in * 1000 - now) / 1000)),
-    oauth_issuer: oauthIssuer,
-    oauth_client_id: oauthClientId,
+    oauth_issuer: oauth.issuer,
+    oauth_client_id: oauth.clientId,
   };
 
   const consumed = await env.DB.prepare(`
@@ -734,23 +788,28 @@ async function handleDeviceToken(
   return json(pairingGrant ? { ...approvedToken, pairing_grant: pairingGrant } : approvedToken);
 }
 
+/** The request options with their production defaults filled in. */
+export function resolveDeviceRequestOptions(options: DeviceAuthorizationRequestOptions) {
+  return {
+    // Wrapped, never stored bare: the callback calls this as
+    // `options.fetchImpl(...)`, and the Workers runtime refuses a `fetch`
+    // whose `this` is not the global scope ("Illegal invocation"). Stored bare,
+    // every token exchange threw, and every "Confirm it's you" ended as
+    // "Sign-in failed" with "OAuth token exchange failed." in the row.
+    fetchImpl: options.fetchImpl ?? ((input: RequestInfo | URL, init?: RequestInit) => fetch(input, init)),
+    now: options.now ?? Date.now,
+    randomBytes: options.randomBytes ?? defaultRandomBytes,
+    mintPairingGrant: options.mintPairingGrant,
+  };
+}
+
 export async function handleDeviceAuthorizationRequest(
   request: Request,
   env: DeviceAuthorizationEnv,
   options: DeviceAuthorizationRequestOptions = {},
 ): Promise<Response | null> {
   const pathname = new URL(request.url).pathname;
-  const resolved = {
-    // Wrapped, never stored bare: the callback calls this as
-    // `options.fetchImpl(...)`, and the Workers runtime refuses a `fetch`
-    // whose `this` is not the global scope ("Illegal invocation"). Stored bare,
-    // every token exchange threw, and every "Confirm it's you" ended as
-    // "Sign-in failed" with "OAuth token exchange failed." in the row.
-    fetchImpl: options.fetchImpl ?? ((input, init) => fetch(input, init)),
-    now: options.now ?? Date.now,
-    randomBytes: options.randomBytes ?? defaultRandomBytes,
-    mintPairingGrant: options.mintPairingGrant,
-  };
+  const resolved = resolveDeviceRequestOptions(options);
   if (pathname === "/device/code") return handleDeviceCode(request, env, resolved);
   if (pathname === "/device") return handleDeviceApproval(request, env, resolved);
   if (pathname === "/device/callback") return handleDeviceCallback(request, env, resolved);

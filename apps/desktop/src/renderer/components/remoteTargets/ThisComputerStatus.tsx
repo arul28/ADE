@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CheckCircle, Warning } from "@phosphor-icons/react";
 import { useBrainRepair } from "../../hooks/useBrainRepair";
 import { useReconnectThisComputer } from "../../hooks/useReconnectThisComputer";
 import { useThisComputerRefusal } from "../../hooks/useThisComputerRefusal";
@@ -218,12 +217,21 @@ export function ThisComputerStatus({
             fontFamily: SANS_FONT,
             fontSize: 11.5,
             lineHeight: 1.4,
-            color: tone === "healthy" ? COLORS.textSecondary : COLORS.warning,
+            color: COLORS.textSecondary,
           }}
         >
-          {tone === "healthy"
-            ? <CheckCircle size={13} weight="fill" color={COLORS.accent} style={{ flexShrink: 0 }} />
-            : <Warning size={13} weight="fill" style={{ flexShrink: 0 }} />}
+          {/* A quiet dot, not a warning sign: this is a state with a fix
+              beside it, not an alarm. */}
+          <span
+            aria-hidden
+            style={{
+              width: 7,
+              height: 7,
+              borderRadius: 999,
+              flexShrink: 0,
+              background: tone === "healthy" ? COLORS.success : COLORS.warning,
+            }}
+          />
           <span>{summary}</span>
         </span>
         {button}
@@ -248,6 +256,12 @@ export function ThisComputerStatus({
           }}
         >
           {shownOutcome.message}
+        </div>
+      ) : null}
+
+      {reconnectOutcome?.offerRepair && repair.available ? (
+        <div>
+          <BrainRepairButton repair={repair} height={24} />
         </div>
       ) : null}
     </div>

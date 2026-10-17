@@ -37,6 +37,11 @@ export const ACTIVITY_EVENT_GROUPS = [
  * One ordered source of truth for every event ADE can put in Activity.
  * Existing Notifications copy stays verbatim so adopting the catalog is a
  * structural refactor rather than a settings-page copy change.
+ *
+ * Only the urgent events notify by default: a question, a failure, and red CI.
+ * Everything else shows in Activity and the Live Activity without a push.
+ * `ATTENTION_EVENT_POLICY_DEFAULTS_VERSION` moves accounts that saved the older,
+ * louder defaults onto these once.
  */
 export const ACTIVITY_EVENT_CATALOG = [
   {
@@ -95,7 +100,7 @@ export const ACTIVITY_EVENT_CATALOG = [
     label: "Review requested",
     description: "Someone asked you to review.",
     iconKey: "review",
-    defaultPolicy: "notify",
+    defaultPolicy: "ambient",
     supportsAmbient: true,
     order: 5,
   },
@@ -105,7 +110,7 @@ export const ACTIVITY_EVENT_CATALOG = [
     label: "Changes requested",
     description: "A reviewer asked for changes.",
     iconKey: "changes",
-    defaultPolicy: "notify",
+    defaultPolicy: "ambient",
     supportsAmbient: true,
     order: 6,
   },
@@ -115,7 +120,7 @@ export const ACTIVITY_EVENT_CATALOG = [
     label: "PR ready to merge",
     description: "Checks passed and reviews are in.",
     iconKey: "merge-ready",
-    defaultPolicy: "notify",
+    defaultPolicy: "ambient",
     supportsAmbient: true,
     order: 7,
   },

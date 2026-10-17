@@ -6,10 +6,11 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type { AdeDb } from "../state/kvDb";
 import { getHeadSha, parseGitCheckoutProgressLine, runGit, runGitOrThrow, type GitCheckoutProgress } from "../git/git";
-import { detachPullRequestRowsForLane } from "../prs/pullRequestRowCleanup";
+import { detachPullRequestRowsForLane, deletePullRequestChatLinksForSessions } from "../prs/pullRequestRowCleanup";
 import { isWithinDir, normalizeBranchName, resolvePathWithinRoot } from "../shared/utils";
 import { fetchRemoteTrackingBranch } from "../shared/remoteTrackingBranch";
 import { isPathInside, pathKey, pathsEqual } from "../shared/pathCompare";
+import { nonAsarFs } from "../shared/nonAsarFs";
 import { detectConflictKind } from "../git/gitConflictState";
 import { invalidateProjectPathInspectionCache } from "../projects/projectPathInspector";
 import { branchNameFromLaneRef, shouldLaneTrackParent } from "../../../shared/laneBaseResolution";
@@ -27,6 +28,13 @@ import {
   parseLaneGitHubIssueJson,
   parseLaneGitHubIssueValue,
 } from "../../../shared/laneGitHubIssue";
+import {
+  cloneLaneJiraIssue,
+  parseLaneJiraIssueJson,
+  parseLaneJiraIssueValue,
+} from "../../../shared/laneJiraIssue";
+import type { IssueRef } from "../../../shared/issueRefs";
+import type { LaneJiraIssue } from "../../../shared/types/jira";
 import type { createOperationService } from "../history/operationService";
 import type { Logger } from "../logging/logger";
 import { createWorktreeResidualCleanup } from "./worktreeResidualCleanup";
@@ -51,11 +59,14 @@ import type {
   LaneIcon,
   LaneBranchActiveWorkItem,
   LaneBranchDrift,
+  LaneBranchDriftKind,
   LaneBranchProfile,
   LaneBranchSwitchArgs,
   LaneBranchSwitchPreview,
   LaneBranchSwitchResult,
   LaneGitHubIssue,
+  LaneGitHubIssueLink,
+  LaneJiraIssueLink,
   LaneLinearIssue,
   LinearIssueSnapshotPatch,
   LaneLinearIssueLink,
@@ -84,6 +95,7 @@ import type {
   RebasePushArgs,
   PushMode,
   SessionGitHubIssueLink,
+  SessionJiraIssueLink,
   SessionLinearIssueLink,
   StackChainItem,
   UpdateLaneAppearanceArgs
@@ -91,6 +103,7 @@ import type {
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { requireNormalizedUuid } from "../../../shared/uuid";
 import {
+  classifyMissingLaneBranchDriftKind,
   detectLaneBranchDrift,
   parseWorktreeStatusPorcelainV2,
 } from "./laneBranchDrift";
@@ -189,6 +202,14 @@ type SessionLinearIssueLinkRow = {
 };
 
 type SessionGitHubIssueLinkRow = SessionLinearIssueLinkRow;
+type SessionJiraIssueLinkRow = SessionLinearIssueLinkRow;
+
+export type LinkedIssueSnapshotPatch = {
+  reference: IssueRef;
+  title: string;
+  state: { name: string; type?: string | null } | null;
+  updatedAt?: string | null;
+};
 
 const DEFAULT_LANE_STATUS: LaneStatus = {
   dirty: false,
@@ -204,21 +225,15 @@ const DEFAULT_LANE_STATUS: LaneStatus = {
   rebaseInProgress: false,
 };
 const LANE_LIST_CACHE_TTL_MS = 10_000;
-/** Tracked-file totals change with the committed tree, not every status poll. */
-const TRACKED_FILE_COUNT_CACHE_TTL_MS = 10 * 60_000;
 /**
- * How many committed trees the count cache remembers.
- *
- * Keyed by tree hash, so every commit in every lane adds a key that nothing
- * ever looks up again — the entry is only dropped when that exact tree is
- * asked for after its TTL, which for an abandoned tree is never. The map is
- * per-service and lives for the process, so it is swept and capped on insert:
- * expired entries go first, then the oldest survivors.
+ * How many worktree index states the count cache remembers. The map is per
+ * service and capped on insert so a long-lived desktop does not retain every
+ * historical edit.
  */
 const TRACKED_FILE_COUNT_CACHE_MAX_ENTRIES = 200;
 
 type TrackedFileCountCache = {
-  entries: Map<string, { count: number | null; expiresAt: number }>;
+  entries: Map<string, { count: number | null }>;
   inFlight: Map<string, Promise<number | null>>;
 };
 
@@ -275,7 +290,7 @@ function isPermissionError(error: unknown): boolean {
 async function makeTreeWritableForRemoval(targetPath: string): Promise<void> {
   let stat: fs.Stats;
   try {
-    stat = await fs.promises.lstat(targetPath);
+    stat = await nonAsarFs.promises.lstat(targetPath);
   } catch {
     return;
   }
@@ -283,7 +298,7 @@ async function makeTreeWritableForRemoval(targetPath: string): Promise<void> {
   if (stat.isSymbolicLink()) return;
 
   try {
-    await fs.promises.chmod(targetPath, stat.mode | 0o700);
+    await nonAsarFs.promises.chmod(targetPath, stat.mode | 0o700);
   } catch {
     // Best effort. The following rm will surface any remaining failure.
   }
@@ -292,12 +307,12 @@ async function makeTreeWritableForRemoval(targetPath: string): Promise<void> {
 
   let entries: string[];
   try {
-    entries = await fs.promises.readdir(targetPath);
+    entries = await nonAsarFs.promises.readdir(targetPath);
   } catch (error) {
     if (!isPermissionError(error)) return;
     try {
-      await fs.promises.chmod(targetPath, stat.mode | 0o700);
-      entries = await fs.promises.readdir(targetPath);
+      await nonAsarFs.promises.chmod(targetPath, stat.mode | 0o700);
+      entries = await nonAsarFs.promises.readdir(targetPath);
     } catch {
       return;
     }
@@ -319,12 +334,13 @@ function isRetryableRemoveError(error: unknown): boolean {
  * Windows — handles a just-killed git (or an indexer/AV scanner) still holds:
  * those fail with EBUSY/EPERM/EACCES until the handle closes, so retry on a
  * bounded schedule (~5 s) instead of failing the cleanup outright. Exported
- * only for the Windows lock-retry regression test.
+ * only for the Windows lock-retry regression test. Uses `nonAsarFs`: under
+ * Electron a plain `fs` rm fails on every `.asar` file in the tree.
  */
 export async function removeWorktreeDirectoryWithRecovery(targetPath: string): Promise<void> {
   for (let attempt = 1; ; attempt += 1) {
     try {
-      await fs.promises.rm(targetPath, { recursive: true, force: true });
+      await nonAsarFs.promises.rm(targetPath, { recursive: true, force: true });
       return;
     } catch (error) {
       if (!isRetryableRemoveError(error) || attempt >= WORKTREE_REMOVE_ATTEMPTS) throw error;
@@ -482,7 +498,8 @@ function cloneLaneStatus(status: LaneStatus): LaneStatus {
     lastCommitAt: status.lastCommitAt ?? null,
     trackedFileCount: status.trackedFileCount ?? null,
     rebaseInProgress: status.rebaseInProgress,
-    headBranchRef: status.headBranchRef ?? null
+    headBranchRef: status.headBranchRef ?? null,
+    branchDriftKind: status.branchDriftKind ?? null
   };
 }
 
@@ -506,7 +523,17 @@ function cloneLaneSummary(summary: LaneSummary): LaneSummary {
     tags: [...summary.tags],
     activeBranchProfile: summary.activeBranchProfile ? { ...summary.activeBranchProfile } : null,
     linearIssue: summary.linearIssue ? cloneLaneLinearIssue(summary.linearIssue) : null,
-    linearIssueLinks: (summary.linearIssueLinks ?? []).map(cloneLaneLinearIssueLink)
+    linearIssueLinks: (summary.linearIssueLinks ?? []).map(cloneLaneLinearIssueLink),
+    githubIssueLinks: (summary.githubIssueLinks ?? []).map((link) => ({
+      ...link,
+      issue: cloneLaneGitHubIssue(link.issue),
+      evidence: link.evidence ? { ...link.evidence } : link.evidence,
+    })),
+    jiraIssueLinks: (summary.jiraIssueLinks ?? []).map((link) => ({
+      ...link,
+      issue: cloneLaneJiraIssue(link.issue),
+      evidence: link.evidence ? { ...link.evidence } : link.evidence,
+    })),
   };
 }
 
@@ -797,6 +824,39 @@ function parseSessionGitHubIssueLink(row: SessionGitHubIssueLinkRow | null | und
   };
 }
 
+function parseSessionJiraIssueLink(row: SessionJiraIssueLinkRow | null | undefined): SessionJiraIssueLink | null {
+  if (!row) return null;
+  const issue = parseLaneJiraIssueJson(row.issue_json);
+  if (!issue) return null;
+  return {
+    id: row.id,
+    sessionId: row.session_id,
+    laneId: row.lane_id ?? null,
+    issue,
+    role: normalizeLaneLinearIssueLinkRole(row.role),
+    source: normalizeLaneLinearIssueLinkSource(row.source),
+    includeInPr: row.include_in_pr === 1,
+    closeOnMerge: row.close_on_merge === 1,
+    evidence: parseIssueLinkEvidence(row.evidence_json),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+/** The lane-shaped view of a GitHub issue link; a lane's own link has no chat in its evidence. */
+function laneGitHubIssueLinkFromSession(link: SessionGitHubIssueLink | null): LaneGitHubIssueLink | null {
+  if (!link?.laneId) return null;
+  const { sessionId: _sessionId, ...rest } = link;
+  return { ...rest, laneId: link.laneId };
+}
+
+/** The lane-shaped view of a Jira issue link. */
+function laneJiraIssueLinkFromSession(link: SessionJiraIssueLink | null): LaneJiraIssueLink | null {
+  if (!link?.laneId) return null;
+  const { sessionId: _sessionId, ...rest } = link;
+  return { ...rest, laneId: link.laneId };
+}
+
 function makePrimaryLinearIssueLink(laneId: string, issue: LaneLinearIssue, timestamp: string): LaneLinearIssueLink {
   return {
     id: `primary:${laneId}:${issue.id}`,
@@ -843,6 +903,8 @@ function toLaneSummary(args: {
   activeBranchProfile?: LaneBranchProfile | null;
   linearIssue?: LaneLinearIssue | null;
   linearIssueLinks?: LaneLinearIssueLink[];
+  githubIssueLinks?: LaneGitHubIssueLink[];
+  jiraIssueLinks?: LaneJiraIssueLink[];
 }): LaneSummary {
   const { row, status, parentStatus, childCount, stackDepth, activeBranchProfile, linearIssue } = args;
   const linearIssueLinks = mergePrimaryLinearIssueLink(row.id, linearIssue ?? null, args.linearIssueLinks ?? [], row.created_at);
@@ -865,6 +927,7 @@ function toLaneSummary(args: {
     branchDrift: detectLaneBranchDrift({
       expectedBranchRef: row.branch_ref,
       headBranchRef: status.headBranchRef,
+      kind: status.branchDriftKind,
     }),
     color: row.color,
     icon: parseLaneIcon(row.icon),
@@ -876,7 +939,9 @@ function toLaneSummary(args: {
     trackedFileCount: status.trackedFileCount ?? null,
     activeBranchProfile: activeBranchProfile ?? null,
     linearIssue: linearIssue ?? null,
-    linearIssueLinks
+    linearIssueLinks,
+    githubIssueLinks: args.githubIssueLinks ?? [],
+    jiraIssueLinks: args.jiraIssueLinks ?? [],
   };
 }
 
@@ -921,10 +986,7 @@ function countGitFiles(stdout: string): number {
  * `Map` preserves insertion order, so the first keys are the least recently
  * written — good enough for a cache whose entries are immutable once written.
  */
-function pruneTrackedFileCountCache(cache: TrackedFileCountCache, now: number): void {
-  for (const [key, entry] of [...cache.entries]) {
-    if (entry.expiresAt <= now) cache.entries.delete(key);
-  }
+function pruneTrackedFileCountCache(cache: TrackedFileCountCache): void {
   const overflow = cache.entries.size - (TRACKED_FILE_COUNT_CACHE_MAX_ENTRIES - 1);
   if (overflow <= 0) return;
   let dropped = 0;
@@ -937,47 +999,59 @@ function pruneTrackedFileCountCache(cache: TrackedFileCountCache, now: number): 
 
 async function resolveTrackedFileCount(
   worktreePath: string,
-  treeHash: string,
+  headOid: string,
   cache: TrackedFileCountCache,
 ): Promise<number | null> {
-  if (!treeHash) return null;
+  if (!headOid) return null;
 
-  const now = Date.now();
-  const cached = cache.entries.get(treeHash);
-  if (cached && cached.expiresAt > now) return cached.count;
-  if (cached) cache.entries.delete(treeHash);
-
-  const inFlight = cache.inFlight.get(treeHash);
-  if (inFlight) return await inFlight;
-
-  const request = (async (): Promise<number | null> => {
-    let count: number | null = null;
-    let cacheable = true;
-    try {
-      const trackedFilesRes = await runGit(["ls-files", "-z"], { cwd: worktreePath, timeoutMs: 8_000 });
-      // A truncated listing is a wrong total, not a smaller one: `runGit` caps
-      // stdout, so a large index would silently report "N files" for whatever
-      // fit. Say nothing instead, and do not cache the nothing — the next
-      // refresh may run under a smaller index.
-      if (trackedFilesRes.stdoutTruncated) cacheable = false;
-      else if (trackedFilesRes.exitCode === 0) count = countGitFiles(trackedFilesRes.stdout);
-    } catch {
-      // A missing tracked-file total must not hide the status we already read.
-    }
-    if (cacheable) {
-      pruneTrackedFileCountCache(cache, now);
-      cache.entries.set(treeHash, {
-        count,
-        expiresAt: now + TRACKED_FILE_COUNT_CACHE_TTL_MS,
-      });
-    }
-    return count;
-  })();
-  cache.inFlight.set(treeHash, request);
+  let indexPath = path.join(worktreePath, ".git", "index");
   try {
-    return await request;
-  } finally {
-    if (cache.inFlight.get(treeHash) === request) cache.inFlight.delete(treeHash);
+    // A linked worktree's .git is a pointer to its private gitdir.
+    if (fs.statSync(path.join(worktreePath, ".git")).isFile()) {
+      const gitdirLine = fs.readFileSync(path.join(worktreePath, ".git"), "utf8").trim();
+      const match = /^gitdir:\s*(.+)$/i.exec(gitdirLine);
+      if (!match) throw new Error("Invalid worktree gitdir pointer");
+      indexPath = path.resolve(worktreePath, match[1], "index");
+    }
+    const indexStat = fs.statSync(indexPath, { bigint: true });
+    const fingerprint = `${worktreePath}\0${headOid}\0${indexStat.size}\0${indexStat.mtimeNs}\0${indexStat.ctimeNs}`;
+    const cached = cache.entries.get(fingerprint);
+    if (cached) return cached.count;
+    const inFlight = cache.inFlight.get(fingerprint);
+    if (inFlight) return await inFlight;
+
+    const request = (async (): Promise<number | null> => {
+      let count: number | null = null;
+      let cacheable = true;
+      try {
+        const trackedFilesRes = await runGit(["ls-files", "-z"], { cwd: worktreePath, timeoutMs: 8_000 });
+        // A truncated listing is a wrong total, not a smaller one.
+        if (trackedFilesRes.stdoutTruncated) cacheable = false;
+        else if (trackedFilesRes.exitCode === 0) count = countGitFiles(trackedFilesRes.stdout);
+      } catch {
+        // A missing tracked-file total must not hide the status we already read.
+      }
+      if (cacheable) {
+        pruneTrackedFileCountCache(cache);
+        cache.entries.set(fingerprint, { count });
+      }
+      return count;
+    })();
+    cache.inFlight.set(fingerprint, request);
+    try {
+      return await request;
+    } finally {
+      if (cache.inFlight.get(fingerprint) === request) cache.inFlight.delete(fingerprint);
+    }
+  } catch {
+    // An unavailable index fingerprint is not safe to cache. Still return a
+    // fresh answer so the summary remains useful for unusual/bare worktrees.
+    try {
+      const result = await runGit(["ls-files", "-z"], { cwd: worktreePath, timeoutMs: 8_000 });
+      return result.stdoutTruncated || result.exitCode !== 0 ? null : countGitFiles(result.stdout);
+    } catch {
+      return null;
+    }
   }
 }
 
@@ -993,6 +1067,84 @@ function remoteTrackingBaseRef(baseRef: string): string | null {
   // (e.g. "deadbeef") is a branch, so it still deserves the remote retry.
   if (/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(base)) return null;
   return `refs/remotes/origin/${base}`;
+}
+
+/**
+ * Rename evidence only ever accumulates, and a lane can sit drifted for a long
+ * time while the lane list keeps refreshing, so the reflog verdict is memoized
+ * per (worktree, recorded branch, head branch). The recorded ref's existence is
+ * deliberately NOT memoized: a deleted branch can be created again, and that
+ * turns the drift back into a plain switch the lane can undo.
+ */
+const laneBranchDriftKindCache = new Map<string, Exclude<LaneBranchDriftKind, "switched">>();
+const LANE_BRANCH_DRIFT_KIND_CACHE_LIMIT = 256;
+
+async function readReflogSubjects(worktreePath: string, ref: string): Promise<string[]> {
+  const res = await runGit(["reflog", "show", "--format=%gs", "-n", "50", ref], {
+    cwd: worktreePath,
+    timeoutMs: 5_000,
+  }).catch(() => null);
+  if (!res || res.exitCode !== 0) return [];
+  // Reflogs are written LF-terminated even on Windows, but a stray CR must not
+  // be able to hide the one subject this reads them for.
+  return res.stdout.split("\n").map((line) => line.replace(/\r$/, "")).filter((line) => line.length > 0);
+}
+
+/**
+ * Classify an existing branch drift. One probe while the recorded branch still
+ * exists (the common `switched` case); the two reflog reads happen only once it
+ * is gone, which is the rare case. A healthy lane pays nothing: callers only
+ * ask while `headBranchRef` differs from the recorded branch.
+ */
+async function classifyLaneBranchDriftKind(args: {
+  worktreePath: string;
+  expectedBranchRef: string;
+  headBranchRef: string;
+}): Promise<LaneBranchDriftKind> {
+  const exists = await runGit(["show-ref", "--verify", "--quiet", `refs/heads/${args.expectedBranchRef}`], {
+    cwd: args.worktreePath,
+    timeoutMs: 5_000,
+  }).catch(() => null);
+  if (exists?.exitCode === 0) return "switched";
+  // `show-ref --verify` answers 1 for "no such ref" and anything else (a
+  // timeout, a lock, a broken repo) is not evidence the branch is gone. Keep
+  // the historical `switched` reading then — it offers switch-back, which
+  // fails loudly rather than silently, and nothing is memoized from it.
+  if (!exists || exists.exitCode !== 1) return "switched";
+  const cacheKey = `${args.worktreePath}\u0000${args.expectedBranchRef}\u0000${args.headBranchRef}`;
+  const cached = laneBranchDriftKindCache.get(cacheKey);
+  if (cached) return cached;
+  const reflogSubjects = [
+    ...(await readReflogSubjects(args.worktreePath, "HEAD")),
+    ...(await readReflogSubjects(args.worktreePath, `refs/heads/${args.headBranchRef}`)),
+  ];
+  const kind = classifyMissingLaneBranchDriftKind({
+    expectedBranchRef: args.expectedBranchRef,
+    headBranchRef: args.headBranchRef,
+    reflogSubjects,
+  });
+  if (laneBranchDriftKindCache.size >= LANE_BRANCH_DRIFT_KIND_CACHE_LIMIT) {
+    const oldestKey = laneBranchDriftKindCache.keys().next().value;
+    if (oldestKey != null) laneBranchDriftKindCache.delete(oldestKey);
+  }
+  laneBranchDriftKindCache.set(cacheKey, kind);
+  return kind;
+}
+
+/**
+ * Detected drift plus its classification, shaped the same way
+ * `detectLaneBranchDrift` shapes it: `switched` stays implicit.
+ */
+async function classifyDetectedLaneBranchDrift(
+  worktreePath: string,
+  drift: LaneBranchDrift,
+): Promise<LaneBranchDrift> {
+  const kind = await classifyLaneBranchDriftKind({
+    worktreePath,
+    expectedBranchRef: drift.expectedBranchRef,
+    headBranchRef: drift.headBranchRef,
+  });
+  return kind === "switched" ? drift : { ...drift, kind };
 }
 
 async function computeLaneStatus(
@@ -1019,19 +1171,18 @@ async function computeLaneStatus(
       return null;
     }
   };
-  // One spawn for both metadata reads: `%T` is the tip commit's tree — the same
-  // hash `rev-parse HEAD^{tree}` returns — and `%cI` its commit date, split by
-  // a NUL so neither can be confused for the other. A routine refresh therefore
+  // One spawn for both metadata reads: `%H` identifies HEAD, `%T` is its tree,
+  // and `%cI` its commit date, split by NULs. A routine refresh therefore
   // adds one process per lane, not two, on top of the ~6 it already costs.
   const [dirtyRes, headMetaRes] = await Promise.all([
     runGit(["status", "--porcelain=v2", "--branch", "--untracked-files=normal", "-z"], { cwd: worktreePath, timeoutMs: 8_000 }),
-    optionalGit(["log", "-1", "--format=%T%x00%cI"], 8_000),
+    optionalGit(["log", "-1", "--format=%H%x00%T%x00%cI"], 8_000),
   ]);
   const headMeta = headMetaRes?.exitCode === 0
     ? headMetaRes.stdout.split("\0")
     : null;
-  const treeHash = headMeta?.[0]?.trim() ?? "";
-  const lastCommitIso = headMeta?.[1]?.trim() ?? "";
+  const headOid = headMeta?.[0]?.trim() ?? "";
+  const lastCommitIso = headMeta?.[2]?.trim() ?? "";
   const parsedStatus = dirtyRes?.exitCode === 0
     ? parseWorktreeStatusPorcelainV2(dirtyRes.stdout)
     : {
@@ -1044,8 +1195,18 @@ async function computeLaneStatus(
       };
   const dirty = parsedStatus.dirty;
   const headBranchRef = parsedStatus.headBranchRef;
+  // Renamed vs. missing only matters while the worktree is off its recorded
+  // branch, and the classification is what decides whether `switch-back` is a
+  // live option, so it rides along with the drift the status already detects.
+  const branchDriftKind = detectLaneBranchDrift({ expectedBranchRef: branchRef, headBranchRef })
+    ? await classifyLaneBranchDriftKind({
+        worktreePath,
+        expectedBranchRef: normalizeBranchName(branchRef).trim(),
+        headBranchRef: normalizeBranchName(headBranchRef ?? "").trim(),
+      })
+    : null;
   const lastCommitAt = lastCommitIso || null;
-  const trackedFileCountPromise = resolveTrackedFileCount(worktreePath, treeHash, options.trackedFileCountCache);
+  const trackedFileCountPromise = resolveTrackedFileCount(worktreePath, headOid, options.trackedFileCountCache);
 
   const countAgainst = (base: string) =>
     runGit(["rev-list", "--left-right", "--count", `${base}...${branchRef}`], {
@@ -1115,6 +1276,7 @@ async function computeLaneStatus(
     trackedFileCount,
     rebaseInProgress,
     headBranchRef,
+    branchDriftKind,
   };
 }
 
@@ -1799,6 +1961,131 @@ export function createLaneService({
     return [...touched];
   };
 
+  const refreshLinkedIssueSnapshot = (patch: LinkedIssueSnapshotPatch): string[] => {
+    const touched = new Set<string>();
+    const reference = patch.reference;
+    const now = new Date().toISOString();
+    const updatedAt = patch.updatedAt || now;
+    const isFreshEnough = (current: { updatedAt: string }) => !(current.updatedAt && current.updatedAt > updatedAt);
+    const applyLaneId = (laneId: string | null) => { if (laneId) touched.add(laneId); };
+
+    if (reference.provider === "linear") {
+      const update = (table: "lane_linear_issues" | "lane_linear_issue_links" | "session_linear_issues") => {
+        const rows = db.all<{ id: string; lane_id: string | null; issue_json: string }>(
+          `select id, lane_id, issue_json from ${table} where project_id = ?`,
+          [projectId],
+        );
+        for (const row of rows) {
+          const current = parseLaneLinearIssueJson(row.issue_json);
+          if (!current || (current.identifier.toUpperCase() !== reference.identifier.toUpperCase() && current.id !== reference.identifier) || !isFreshEnough(current)) continue;
+          const next = { ...current, title: patch.title || current.title, updatedAt };
+          if (patch.state) {
+            next.stateName = patch.state.name;
+            if (patch.state.type) next.stateType = patch.state.type;
+          }
+          if (next.title === current.title && next.stateName === current.stateName && next.stateType === current.stateType) continue;
+          db.run(`update ${table} set issue_json = ?, updated_at = ? where id = ?`, [JSON.stringify(next), now, row.id]);
+          applyLaneId(row.lane_id);
+        }
+      };
+      update("lane_linear_issues");
+      update("lane_linear_issue_links");
+      update("session_linear_issues");
+    } else if (reference.provider === "github") {
+      const rows = db.all<{ id: string; lane_id: string | null; issue_json: string }>(
+        "select id, lane_id, issue_json from session_github_issues where project_id = ?",
+        [projectId],
+      );
+      for (const row of rows) {
+        const current = parseLaneGitHubIssueJson(row.issue_json);
+        if (!current || current.owner.toLocaleLowerCase() !== reference.owner.toLocaleLowerCase()
+          || current.repo.toLocaleLowerCase() !== reference.repo.toLocaleLowerCase()
+          || current.number !== reference.number || !isFreshEnough(current)) continue;
+        const stateName = patch.state?.name.toLocaleLowerCase();
+        const state = stateName === "closed" || stateName === "done" || stateName === "completed"
+          || patch.state?.type === "completed" ? "closed"
+          : stateName === "open" || patch.state?.type === "open" ? "open"
+            : current.state;
+        const next = { ...current, title: patch.title || current.title, state, updatedAt };
+        if (next.title === current.title && next.state === current.state) continue;
+        db.run("update session_github_issues set issue_json = ?, updated_at = ? where id = ?", [JSON.stringify(next), now, row.id]);
+        applyLaneId(row.lane_id);
+      }
+    } else {
+      const rows = db.all<{ id: string; lane_id: string | null; issue_json: string }>(
+        "select id, lane_id, issue_json from session_jira_issues where project_id = ?",
+        [projectId],
+      );
+      for (const row of rows) {
+        const current = parseLaneJiraIssueJson(row.issue_json);
+        if (!current || current.key.toLocaleUpperCase() !== reference.key.toLocaleUpperCase()
+          || current.siteUrl.replace(/\/+$/, "").toLocaleLowerCase() !== reference.siteUrl.replace(/\/+$/, "").toLocaleLowerCase()
+          || !isFreshEnough(current)) continue;
+        const category = patch.state?.type === "new" || patch.state?.type === "indeterminate" || patch.state?.type === "done"
+          ? patch.state.type
+          : patch.state?.name.toLocaleLowerCase().includes("done") ? "done"
+            : patch.state?.name.toLocaleLowerCase().includes("progress") ? "indeterminate"
+              : patch.state ? "new" : current.statusCategory;
+        const next = {
+          ...current,
+          title: patch.title || current.title,
+          ...(patch.state ? { statusName: patch.state.name, statusCategory: category } : {}),
+          updatedAt,
+        };
+        if (next.title === current.title && next.statusName === current.statusName && next.statusCategory === current.statusCategory) continue;
+        db.run("update session_jira_issues set issue_json = ?, updated_at = ? where id = ?", [JSON.stringify(next), now, row.id]);
+        applyLaneId(row.lane_id);
+      }
+    }
+
+    if (touched.size) {
+      invalidateLaneListCache();
+      for (const laneId of touched) broadcastLifecycleEvent({ type: "lanes-invalidated", laneId, laneName: "" });
+    }
+    return [...touched];
+  };
+
+  /**
+   * GitHub issues the lane is linked to: its own link (a lane made for an
+   * issue, stored under the session id `lane:<laneId>`) and every chat in it
+   * that was handed one.
+   */
+  const getLaneGitHubIssueLinks = (laneId: string): LaneGitHubIssueLink[] => {
+    try {
+      return db.all<SessionGitHubIssueLinkRow>(
+        `
+          select *
+          from session_github_issues
+          where project_id = ?
+            and lane_id = ?
+          order by updated_at desc
+        `,
+        [projectId, laneId],
+      ).map((row) => laneGitHubIssueLinkFromSession(parseSessionGitHubIssueLink(row)))
+        .filter((link): link is LaneGitHubIssueLink => Boolean(link));
+    } catch {
+      return [];
+    }
+  };
+
+  const getLaneJiraIssueLinks = (laneId: string): LaneJiraIssueLink[] => {
+    try {
+      return db.all<SessionJiraIssueLinkRow>(
+        `
+          select *
+          from session_jira_issues
+          where project_id = ?
+            and lane_id = ?
+          order by updated_at desc
+        `,
+        [projectId, laneId],
+      ).map((row) => laneJiraIssueLinkFromSession(parseSessionJiraIssueLink(row)))
+        .filter((link): link is LaneJiraIssueLink => Boolean(link));
+    } catch {
+      return [];
+    }
+  };
+
   const getLaneLinearIssueLinks = (laneId: string): LaneLinearIssueLink[] => {
     try {
       return db.all<LaneLinearIssueLinkRow>(
@@ -2040,6 +2327,27 @@ export function createLaneService({
     }
   };
 
+  const getSessionJiraIssueLinks = (sessionId: string): SessionJiraIssueLink[] => {
+    const id = sessionId.trim();
+    if (!id) return [];
+    try {
+      return db.all<SessionJiraIssueLinkRow>(
+        `
+          select *
+          from session_jira_issues
+          where project_id = ?
+            and session_id = ?
+          order by
+            case role when 'primary' then 0 when 'worked' then 1 when 'referenced' then 2 else 3 end,
+            updated_at desc
+        `,
+        [projectId, id],
+      ).map(parseSessionJiraIssueLink).filter((link): link is SessionJiraIssueLink => Boolean(link));
+    } catch {
+      return [];
+    }
+  };
+
   const upsertSessionGitHubIssueLink = (args: {
     sessionId: string;
     laneId?: string | null;
@@ -2109,6 +2417,125 @@ export function createLaneService({
     } catch (err) {
       try { db.run("rollback"); } catch { /* keep original issue-link error */ }
       throw err;
+    }
+  };
+
+  const upsertSessionJiraIssueLink = (args: {
+    sessionId: string;
+    laneId?: string | null;
+    issue: LaneJiraIssue;
+    role: LaneLinearIssueLinkRole;
+    source: LaneLinearIssueLinkSource;
+    includeInPr?: boolean;
+    closeOnMerge?: boolean;
+    evidence?: SessionJiraIssueLink["evidence"];
+  }): SessionJiraIssueLink => {
+    const sessionId = args.sessionId.trim();
+    const laneId = args.laneId?.trim() || null;
+    const now = new Date().toISOString();
+    const includeInPr = args.includeInPr !== false;
+    const closeOnMerge = args.closeOnMerge === true;
+    db.run("begin");
+    try {
+      db.run(
+        `
+          delete from session_jira_issues
+          where project_id = ?
+            and session_id = ?
+            and issue_id = ?
+            and role = ?
+        `,
+        [projectId, sessionId, args.issue.id, args.role],
+      );
+      const id = randomUUID();
+      db.run(
+        `
+          insert into session_jira_issues(
+            id, project_id, session_id, lane_id, issue_id, issue_json, role, source,
+            include_in_pr, close_on_merge, evidence_json, created_at, updated_at
+          )
+          values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          id,
+          projectId,
+          sessionId,
+          laneId,
+          args.issue.id,
+          JSON.stringify(args.issue),
+          args.role,
+          args.source,
+          includeInPr ? 1 : 0,
+          closeOnMerge ? 1 : 0,
+          args.evidence ? JSON.stringify(args.evidence) : null,
+          now,
+          now,
+        ],
+      );
+      db.run("commit");
+      return {
+        id,
+        sessionId,
+        laneId,
+        issue: cloneLaneJiraIssue(args.issue),
+        role: args.role,
+        source: args.source,
+        includeInPr,
+        closeOnMerge,
+        evidence: args.evidence ?? null,
+        createdAt: now,
+        updatedAt: now,
+      };
+    } catch (err) {
+      try { db.run("rollback"); } catch { /* keep original issue-link error */ }
+      throw err;
+    }
+  };
+
+  /** A lane made for a GitHub issue: one link row under `lane:<laneId>`, so its PR closes the issue. */
+  const linkGitHubIssueToLane = (laneId: string, value: LaneGitHubIssue | null): void => {
+    const issue = value ? parseLaneGitHubIssueValue(value) : null;
+    if (!issue) return;
+    try {
+      upsertSessionGitHubIssueLink({
+        sessionId: `lane:${laneId}`,
+        laneId,
+        issue,
+        role: "primary",
+        source: "lane_link",
+        includeInPr: true,
+        closeOnMerge: true,
+      });
+    } catch (error) {
+      logger.warn("laneService.github_issue_link_failed", {
+        laneId,
+        issueId: issue.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  /** A lane made for a Jira issue keeps its own issue link for PR references. */
+  const linkJiraIssueToLane = (laneId: string, value: LaneJiraIssue | null): void => {
+    const issue = value ? parseLaneJiraIssueValue(value) : null;
+    if (!issue) return;
+    try {
+      upsertSessionJiraIssueLink({
+        sessionId: `lane:${laneId}`,
+        laneId,
+        issue,
+        role: "primary",
+        source: "lane_link",
+        includeInPr: true,
+        closeOnMerge: false,
+      });
+    } catch (error) {
+      logger.warn("laneService.jira_issue_link_failed", {
+        laneId,
+        issueId: issue.id,
+        issueKey: issue.key,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   };
 
@@ -3053,6 +3480,11 @@ export function createLaneService({
       duplicateId,
       projectId,
     ]);
+    db.run("update session_jira_issues set lane_id = ? where lane_id = ? and project_id = ?", [
+      keeperId,
+      duplicateId,
+      projectId,
+    ]);
     // Child lanes / branch profiles re-parent onto the keeper.
     db.run("update lanes set parent_lane_id = ? where parent_lane_id = ? and project_id = ?", [
       keeperId,
@@ -3655,6 +4087,52 @@ export function createLaneService({
       // Non-fatal — linked issue metadata is additive.
     }
 
+    const githubIssueLinksByLaneId = new Map<string, LaneGitHubIssueLink[]>();
+    try {
+      const githubRows = db.all<SessionGitHubIssueLinkRow>(
+        `
+          select *
+          from session_github_issues
+          where project_id = ?
+            and lane_id is not null
+          order by updated_at desc
+        `,
+        [projectId],
+      );
+      for (const githubRow of githubRows) {
+        const link = laneGitHubIssueLinkFromSession(parseSessionGitHubIssueLink(githubRow));
+        if (!link) continue;
+        const list = githubIssueLinksByLaneId.get(link.laneId) ?? [];
+        list.push(link);
+        githubIssueLinksByLaneId.set(link.laneId, list);
+      }
+    } catch {
+      // Non-fatal — linked issue metadata is additive.
+    }
+
+    const jiraIssueLinksByLaneId = new Map<string, LaneJiraIssueLink[]>();
+    try {
+      const jiraRows = db.all<SessionJiraIssueLinkRow>(
+        `
+          select *
+          from session_jira_issues
+          where project_id = ?
+            and lane_id is not null
+          order by updated_at desc
+        `,
+        [projectId],
+      );
+      for (const jiraRow of jiraRows) {
+        const link = laneJiraIssueLinkFromSession(parseSessionJiraIssueLink(jiraRow));
+        if (!link) continue;
+        const list = jiraIssueLinksByLaneId.get(link.laneId) ?? [];
+        list.push(link);
+        jiraIssueLinksByLaneId.set(link.laneId, list);
+      }
+    } catch {
+      // Non-fatal — linked issue metadata is additive.
+    }
+
     for (const row of activeRows) {
       if (!row.parent_lane_id) continue;
       childCountMap.set(row.parent_lane_id, (childCountMap.get(row.parent_lane_id) ?? 0) + 1);
@@ -3743,6 +4221,8 @@ export function createLaneService({
             activeBranchProfile: ensureBranchProfileForRow(row),
             linearIssue: linearIssueByLaneId.get(row.id) ?? null,
             linearIssueLinks: linearIssueLinksByLaneId.get(row.id) ?? [],
+            githubIssueLinks: githubIssueLinksByLaneId.get(row.id) ?? [],
+            jiraIssueLinks: jiraIssueLinksByLaneId.get(row.id) ?? [],
           })
         );
         if (includeStatus) {
@@ -3808,6 +4288,8 @@ export function createLaneService({
     folder?: string;
     branchName?: string | null;
     linearIssue?: LaneLinearIssue | null;
+    githubIssue?: LaneGitHubIssue | null;
+    jiraIssue?: LaneJiraIssue | null;
   }, runtimeOptions: LaneCreateRuntimeOptions = {}): Promise<LaneSummary> => {
     const laneId = resolvePresetLaneId(runtimeOptions.laneId);
     const now = new Date().toISOString();
@@ -3944,6 +4426,8 @@ export function createLaneService({
         linearIssue = args.linearIssue
           ? upsertLaneLinearIssue(laneId, args.linearIssue, branchRef)
           : null;
+        linkGitHubIssueToLane(laneId, args.githubIssue ?? null);
+        linkJiraIssueToLane(laneId, args.jiraIssue ?? null);
         invalidateLanePathCaches();
 
       } catch (error) {
@@ -3994,6 +4478,8 @@ export function createLaneService({
       activeBranchProfile: ensureBranchProfileForRow(row),
       linearIssue,
       linearIssueLinks: getLaneLinearIssueLinks(laneId),
+      githubIssueLinks: getLaneGitHubIssueLinks(laneId),
+      jiraIssueLinks: getLaneJiraIssueLinks(laneId),
     });
     if (linearIssue) notifyLinearIssueLinked(summary, linearIssue);
 
@@ -4460,6 +4946,18 @@ export function createLaneService({
       `,
       [projectId, laneId, laneId, laneId],
     );
+    db.run(
+      `
+        delete from session_jira_issues
+        where project_id = ?
+          and (
+            lane_id = ?
+            or session_id in (select id from terminal_sessions where lane_id = ?)
+            or session_id in (select session_id from claude_sessions where lane_id = ?)
+          )
+      `,
+      [projectId, laneId, laneId, laneId],
+    );
     // Proof captured in this lane goes with the lane. Transfer shared captures
     // to a surviving chat's lane before deleting this lane's ownership; the
     // later delete can then collect the capture when its final lane is removed.
@@ -4523,6 +5021,17 @@ export function createLaneService({
       [laneId, laneId],
     );
     db.run("delete from claude_sessions where lane_id = ?", [laneId]);
+    // A chat that goes with its lane takes its PR links with it. The detach
+    // above only clears edges for PRs THIS lane owns; a cross-lane link (a
+    // stack coordinator, an explicit pick) is keyed to another lane's PR, and
+    // once its session row is gone the dangling edge flips from a cross-lane
+    // reference to a claim — which pins that other lane's PR forever. Select
+    // the ids before the session rows go.
+    deletePullRequestChatLinksForSessions(
+      db,
+      db.all<{ id: string }>("select id from terminal_sessions where lane_id = ?", [laneId])
+        .map((session) => session.id),
+    );
     db.run("delete from terminal_sessions where lane_id = ?", [laneId]);
     // The settle-lifecycle token table is local-only with no foreign key, so a
     // bulk session delete would otherwise leave permanent orphans. Sweep by
@@ -4717,7 +5226,12 @@ export function createLaneService({
         laneId: args.laneId,
         branchRef: args.branchRef,
         worktreePath: args.worktreePath,
-        error: originalMessage,
+        // The Error itself, so `logBridge` lifts it into the Sentry event and
+        // the issue groups by the real failure; `errorText` keeps the sentence
+        // on disk, which `JSON.stringify` writes an Error without. The cause is
+        // `unknown`, so only an `Error` cause becomes the captured exception.
+        error: args.cause instanceof Error ? args.cause : undefined,
+        errorText: originalMessage,
         cleanupErrors,
       });
       throw new Error(`${originalMessage} Cleanup after failed lane creation also failed: ${cleanupErrors.join("; ")}`);
@@ -5006,6 +5520,7 @@ export function createLaneService({
     },
 
     refreshLinearIssueSnapshots,
+    refreshLinkedIssueSnapshot,
     hasLinearLinkedLanes,
 
     async getSummary(laneId: string, options: { includeStatus?: boolean } = {}): Promise<LaneSummary | null> {
@@ -5062,6 +5577,8 @@ export function createLaneService({
         activeBranchProfile: ensureBranchProfileForRow(row),
         linearIssue: getLaneLinearIssue(row.id),
         linearIssueLinks: getLaneLinearIssueLinks(row.id),
+        githubIssueLinks: getLaneGitHubIssueLinks(row.id),
+        jiraIssueLinks: getLaneJiraIssueLinks(row.id),
       });
     },
 
@@ -5375,6 +5892,8 @@ export function createLaneService({
           evidence,
         }));
       }
+      // The lane summary carries these links ("Linked in ADE", the PR's closes).
+      if (laneId && links.length > 0) invalidateLaneListCache();
       return links;
     },
 
@@ -5394,12 +5913,22 @@ export function createLaneService({
             "delete from session_github_issues where project_id = ? and id = ?",
             [projectId, link.id],
           );
+          // The lane made for this issue carries its own link (`lane:<laneId>`).
+          // Taking the issue off the chat also takes it off the lane, or the
+          // lane's PR would still close an issue the user detached.
+          if (link.laneId && !chatSessionId.startsWith("lane:")) {
+            db.run(
+              "delete from session_github_issues where project_id = ? and session_id = ? and issue_id = ?",
+              [projectId, `lane:${link.laneId}`, link.issue.id],
+            );
+          }
         }
         db.run("commit");
       } catch (err) {
         try { db.run("rollback"); } catch { /* keep original detach error */ }
         throw err;
       }
+      if (target.some((link) => link.laneId)) invalidateLaneListCache();
       return true;
     },
 
@@ -5423,6 +5952,161 @@ export function createLaneService({
           `,
           [projectId, id],
         ).map(parseSessionGitHubIssueLink).filter((link): link is SessionGitHubIssueLink => Boolean(link));
+      } catch {
+        return [];
+      }
+    },
+
+    /** Attach Jira issues to a chat or CLI session, and mirror them onto its lane. */
+    attachJiraIssueToSession(args: {
+      chatSessionId: string;
+      issues: LaneJiraIssue[];
+      role?: LaneLinearIssueLinkRole;
+      source?: LaneLinearIssueLinkSource;
+      includeInPr?: boolean;
+      closeOnMerge?: boolean;
+      evidence?: SessionJiraIssueLink["evidence"];
+    }): SessionJiraIssueLink[] {
+      const chatSessionId = args.chatSessionId.trim();
+      if (!chatSessionId) throw new Error("chatSessionId is required.");
+      const laneId = resolveSessionLaneId(chatSessionId);
+      const role = args.role ?? "worked";
+      const source = args.source ?? "chat_attach";
+      const includeInPr = args.includeInPr ?? true;
+      const closeOnMerge = args.closeOnMerge ?? false;
+      const evidence = args.evidence ?? { chatSessionId };
+      const links: SessionJiraIssueLink[] = [];
+      const seen = new Set<string>();
+      for (const issue of args.issues) {
+        const normalized = parseLaneJiraIssueValue(issue);
+        if (!normalized || seen.has(normalized.id)) continue;
+        seen.add(normalized.id);
+        links.push(upsertSessionJiraIssueLink({
+          sessionId: chatSessionId,
+          laneId,
+          issue: normalized,
+          role,
+          source,
+          includeInPr,
+          closeOnMerge,
+          evidence,
+        }));
+      }
+      if (laneId && links.length > 0) invalidateLaneListCache();
+      return links;
+    },
+
+    detachJiraIssueFromSession(args: { chatSessionId: string; issueId?: string }): boolean {
+      const chatSessionId = args.chatSessionId.trim();
+      if (!chatSessionId) throw new Error("chatSessionId is required.");
+      const issueId = args.issueId?.trim() || null;
+      const before = getSessionJiraIssueLinks(chatSessionId);
+      const target = issueId
+        ? before.filter((link) => link.issue.id === issueId || link.issue.key === issueId)
+        : before;
+      if (!target.length) return false;
+      db.run("begin");
+      try {
+        for (const link of target) {
+          db.run(
+            "delete from session_jira_issues where project_id = ? and id = ?",
+            [projectId, link.id],
+          );
+          if (link.laneId && !chatSessionId.startsWith("lane:")) {
+            db.run(
+              "delete from session_jira_issues where project_id = ? and session_id = ? and issue_id = ?",
+              [projectId, `lane:${link.laneId}`, link.issue.id],
+            );
+          }
+        }
+        db.run("commit");
+      } catch (err) {
+        try { db.run("rollback"); } catch { /* keep original detach error */ }
+        throw err;
+      }
+      if (target.some((link) => link.laneId)) invalidateLaneListCache();
+      return true;
+    },
+
+    listJiraIssuesForSession(args: { chatSessionId: string }): SessionJiraIssueLink[] {
+      return getSessionJiraIssueLinks(args.chatSessionId);
+    },
+
+    /** Read a bounded, rotating page of every tracker linked to one session. */
+    listLinkedIssueSnapshotReferences(args: {
+      chatSessionId: string;
+      offset: number;
+      limit: number;
+    }): { references: IssueRef[]; totalCount: number; scanned: number } {
+      const sessionId = args.chatSessionId.trim();
+      if (!sessionId) return { references: [], totalCount: 0, scanned: 0 };
+      const limit = Math.min(12, Math.max(1, Math.floor(args.limit)));
+      const countRow = db.get<{ count: number }>(
+        `
+          select
+            (select count(*) from session_linear_issues where project_id = ? and session_id = ?) +
+            (select count(*) from session_github_issues where project_id = ? and session_id = ?) +
+            (select count(*) from session_jira_issues where project_id = ? and session_id = ?) as count
+        `,
+        [projectId, sessionId, projectId, sessionId, projectId, sessionId],
+      );
+      const totalCount = Math.max(0, Number(countRow?.count) || 0);
+      if (!totalCount) return { references: [], totalCount: 0, scanned: 0 };
+
+      const offset = Math.max(0, Math.floor(args.offset)) % totalCount;
+      const readPage = (pageLimit: number, pageOffset: number) => db.all<{ provider: string; issue_json: string }>(
+        `
+          select provider, issue_json
+          from (
+            select 'linear' as provider, issue_json, role, updated_at, issue_id
+            from session_linear_issues where project_id = ? and session_id = ?
+            union all
+            select 'github' as provider, issue_json, role, updated_at, issue_id
+            from session_github_issues where project_id = ? and session_id = ?
+            union all
+            select 'jira' as provider, issue_json, role, updated_at, issue_id
+            from session_jira_issues where project_id = ? and session_id = ?
+          ) as linked_issues
+          order by case role when 'primary' then 0 when 'worked' then 1 when 'referenced' then 2 else 3 end,
+            updated_at desc, provider, issue_id
+          limit ? offset ?
+        `,
+        [projectId, sessionId, projectId, sessionId, projectId, sessionId, pageLimit, pageOffset],
+      );
+      const rows = readPage(limit, offset);
+      if (rows.length < limit && offset > 0) rows.push(...readPage(limit - rows.length, 0));
+      const references: IssueRef[] = [];
+      for (const row of rows) {
+        if (row.provider === "linear") {
+          const issue = parseLaneLinearIssueJson(row.issue_json);
+          if (issue) references.push({ provider: "linear", identifier: issue.identifier, url: issue.url });
+        } else if (row.provider === "github") {
+          const issue = parseLaneGitHubIssueJson(row.issue_json);
+          if (issue) references.push({ provider: "github", owner: issue.owner, repo: issue.repo, number: issue.number, url: issue.url });
+        } else if (row.provider === "jira") {
+          const issue = parseLaneJiraIssueJson(row.issue_json);
+          if (issue) references.push({ provider: "jira", siteUrl: issue.siteUrl, key: issue.key, url: issue.url });
+        }
+      }
+      return { references, totalCount, scanned: rows.length };
+    },
+
+    listJiraIssuesForLaneSessions(args: { laneId: string }): SessionJiraIssueLink[] {
+      const id = args.laneId.trim();
+      if (!id) return [];
+      try {
+        return db.all<SessionJiraIssueLinkRow>(
+          `
+            select *
+            from session_jira_issues
+            where project_id = ?
+              and lane_id = ?
+            order by
+              case role when 'primary' then 0 when 'worked' then 1 when 'referenced' then 2 else 3 end,
+              updated_at desc
+          `,
+          [projectId, id],
+        ).map(parseSessionJiraIssueLink).filter((link): link is SessionJiraIssueLink => Boolean(link));
       } catch {
         return [];
       }
@@ -5469,7 +6153,17 @@ export function createLaneService({
     cleanupReservedWorktree,
 
     async create(
-      { name, description, parentLaneId, baseBranch, branchName, startPoint, linearIssue }: CreateLaneArgs,
+      {
+        name,
+        description,
+        parentLaneId,
+        baseBranch,
+        branchName,
+        startPoint,
+        linearIssue,
+        githubIssue,
+        jiraIssue,
+      }: CreateLaneArgs,
       runtimeOptions: LaneCreateRuntimeOptions = {},
     ): Promise<LaneSummary> {
       const requestedStartPoint = startPoint?.trim() ?? "";
@@ -5531,6 +6225,8 @@ export function createLaneService({
           parentLaneId: parent.lane_type === "primary" ? null : parent.id,
           branchName,
           linearIssue,
+          githubIssue,
+          jiraIssue,
         }, runtimeOptions);
       }
 
@@ -5556,6 +6252,8 @@ export function createLaneService({
         parentLaneId: null,
         branchName,
         linearIssue,
+        githubIssue,
+        jiraIssue,
       }, runtimeOptions);
     },
 
@@ -5780,7 +6478,18 @@ export function createLaneService({
     },
 
     async importBranch(
-      args: { branchRef: string; name?: string; description?: string; baseBranch?: string },
+      args: {
+        branchRef: string;
+        name?: string;
+        description?: string;
+        baseBranch?: string;
+        /**
+         * Push the branch to origin when it tracks nothing. Default true. A
+         * cross-machine move carrying unpushed commits passes false: arriving
+         * on another machine must not publish work the person never pushed.
+         */
+        publishUpstream?: boolean;
+      },
       runtimeOptions: { laneId?: string } = {},
     ): Promise<LaneSummary> {
       const rawRef = (args.branchRef ?? "").trim();
@@ -5913,13 +6622,15 @@ export function createLaneService({
         invalidateLanePathCaches();
 
         // Best-effort push to establish upstream if not already tracking a remote
-        try {
-          const upstreamCheck = await runGit(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], { cwd: worktreePath, timeoutMs: 5_000 });
-          if (upstreamCheck.exitCode !== 0) {
-            await runGit(["push", "-u", "origin", branchRef], { cwd: worktreePath, timeoutMs: 60_000 });
+        if (args.publishUpstream !== false) {
+          try {
+            const upstreamCheck = await runGit(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], { cwd: worktreePath, timeoutMs: 5_000 });
+            if (upstreamCheck.exitCode !== 0) {
+              await runGit(["push", "-u", "origin", branchRef], { cwd: worktreePath, timeoutMs: 60_000 });
+            }
+          } catch {
+            // Non-fatal: lane works locally even without remote tracking
           }
-        } catch {
-          // Non-fatal: lane works locally even without remote tracking
         }
 
         const row = getLaneRow(laneId);
@@ -6004,7 +6715,7 @@ export function createLaneService({
             );
           } catch (cleanupError) {
             try {
-              fs.rmSync(worktreePath, { recursive: true, force: true });
+              nonAsarFs.rmSync(worktreePath, { recursive: true, force: true });
               // Directory removed but git metadata may be orphaned; prune to clean up
               try {
                 await runGitWorktreeMutation(() =>
@@ -6289,7 +7000,13 @@ export function createLaneService({
         timeoutMs: 5_000,
       }).catch(() => null);
       const headBranchRef = headRes?.exitCode === 0 ? headRes.stdout.trim() : null;
-      return detectLaneBranchDrift({ expectedBranchRef: row.branch_ref, headBranchRef });
+      const drift = detectLaneBranchDrift({ expectedBranchRef: row.branch_ref, headBranchRef });
+      if (!drift) return null;
+      // Callers act on this answer (the composer chip re-reads it just before a
+      // turn), so it must carry the same renamed/missing distinction the lane
+      // list does — otherwise the chip falls back to offering switch-back for a
+      // branch that no longer exists.
+      return classifyDetectedLaneBranchDrift(row.worktree_path, drift);
     },
 
     /**
@@ -6299,7 +7016,8 @@ export function createLaneService({
      * - `switch-back` restores the worktree to the recorded `branch_ref`. It
      *   delegates to `switchBranch`, which refuses (throwing, changing nothing)
      *   when the worktree is dirty, and rolls the checkout back if the DB write
-     *   fails.
+     *   fails. It refuses up front when that branch was renamed or deleted,
+     *   naming the new branch instead of reporting a missing pathspec.
      * - `keep-head` re-points `branch_ref` (and the branch profile) at the
      *   live HEAD in one transaction. It never renames the lane.
      *
@@ -6325,13 +7043,14 @@ export function createLaneService({
         timeoutMs: 5_000,
       });
       const liveHeadBranchRef = headRes.exitCode === 0 ? headRes.stdout.trim() : "";
-      const drift = detectLaneBranchDrift({
+      const detectedDrift = detectLaneBranchDrift({
         expectedBranchRef: row.branch_ref,
         headBranchRef: liveHeadBranchRef,
       });
-      if (!drift) {
+      if (!detectedDrift) {
         throw new Error("This lane is already on its recorded branch.");
       }
+      const drift = await classifyDetectedLaneBranchDrift(row.worktree_path, detectedDrift);
       const expectedHeadBranchRef = args.expectedHeadBranchRef?.trim();
       if (expectedHeadBranchRef && normalizeBranchKey(expectedHeadBranchRef) !== drift.headBranchRef) {
         throw new Error(
@@ -6340,6 +7059,19 @@ export function createLaneService({
       }
 
       if (args.resolution === "switch-back") {
+        // Switching back needs the recorded branch to still exist. A rename is
+        // not a failure the user can retry away, so say what actually happened
+        // instead of letting git report a missing pathspec.
+        if (drift.kind === "renamed") {
+          throw new Error(
+            `Branch '${drift.expectedBranchRef}' was renamed to '${drift.headBranchRef}'. Update this lane to the new name instead of switching back.`,
+          );
+        }
+        if (drift.kind === "missing") {
+          throw new Error(
+            `Branch '${drift.expectedBranchRef}' no longer exists, so there is nothing to switch back to. Update this lane to '${drift.headBranchRef}' instead.`,
+          );
+        }
         const result = await laneServiceApi.switchBranch({
           laneId: row.id,
           branchName: drift.expectedBranchRef,
@@ -7423,7 +8155,11 @@ export function createLaneService({
           temporaryBranch,
           targetRef,
           rollbackSucceeded: rollback.exitCode === 0,
-          error: error instanceof Error ? error.message : String(error),
+          // The Error itself, so `logBridge` lifts it into the Sentry event and
+          // the issue groups by the real failure; `errorText` keeps the
+          // sentence on disk, which `JSON.stringify` writes an Error without.
+          error,
+          errorText: error instanceof Error ? error.message : String(error),
         });
         if (rollback.exitCode !== 0) {
           db.run("update lanes set branch_ref = ? where id = ? and project_id = ?", [
@@ -7514,7 +8250,10 @@ export function createLaneService({
       invalidateLaneListCache();
     },
 
-    async getReclaimRisk(laneId: string): Promise<LaneReclaimRisk> {
+    // Takes the `lane.getReclaimRisk` action's `{ laneId }`, like `unarchive`
+    // and `archiveAndReclaim`: the CLI, the TUI and a paired desktop call it
+    // through the action, not only through IPC.
+    async getReclaimRisk({ laneId }: { laneId: string }): Promise<LaneReclaimRisk> {
       const row = getLaneRow(laneId);
       if (!row) throw new Error(`Lane not found: ${laneId}`);
       const deleteRisk = await laneServiceApi.getDeleteRisk(laneId);
@@ -7651,7 +8390,7 @@ export function createLaneService({
         throw new Error("ADE will not reclaim a folder through a symbolic link.");
       }
 
-      const risk = await laneServiceApi.getReclaimRisk(args.laneId);
+      const risk = await laneServiceApi.getReclaimRisk({ laneId: args.laneId });
       const hardBlock = risk.blockedReasons.find((reason) => reason.disposition === "blocked");
       if (hardBlock) throw new Error(hardBlock.message);
       if (risk.dirty && args.forceDirty !== true) {
@@ -7962,7 +8701,7 @@ export function createLaneService({
         } catch (error) {
           await runGitWorktreeMutation(async () => {
             await runGit(["worktree", "remove", "--force", targetPath], { cwd: projectRoot, timeoutMs: 120_000 });
-            await fs.promises.rm(targetPath, { recursive: true, force: true });
+            await nonAsarFs.promises.rm(targetPath, { recursive: true, force: true });
             await runGit(["worktree", "prune"], { cwd: projectRoot, timeoutMs: 30_000 });
           });
           throw error;
@@ -8753,7 +9492,25 @@ export function createLaneService({
       }
       // Same Windows lock retries as a lane delete: the files left behind are
       // often the ones an AV scan or indexer was holding a moment ago.
-      await removeWorktreeDirectoryWithRecovery(targetPath);
+      try {
+        await removeWorktreeDirectoryWithRecovery(targetPath);
+      } catch (error) {
+        // A removal that stops partway has usually taken the token with it,
+        // and without the token every retry reads as "folder was replaced"
+        // and is refused for good. The folder is still the one verified above
+        // (same device and inode), so put the token back for the retry.
+        if (leftover.tokenName && leftover.token && leftover.dev !== null && leftover.ino !== null) {
+          try {
+            const stat = await fs.promises.lstat(targetPath);
+            if (stat.isDirectory() && stat.dev === leftover.dev && stat.ino === leftover.ino) {
+              await fs.promises.writeFile(path.join(targetPath, leftover.tokenName), leftover.token);
+            }
+          } catch {
+            // The folder is gone or unreadable; the retry reports which.
+          }
+        }
+        throw error;
+      }
       leftoverWorktreeByLaneId.delete(laneId);
       persistLeftoverWorktrees();
       return { removed: true };

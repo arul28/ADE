@@ -1,10 +1,9 @@
 import { useEffect, useState } from "react";
+import { MachineAvatar, machineFormFactor, machinePlatform } from "./MachineIdentity";
 import {
   CaretDown,
   CaretUp,
   Check,
-  CheckCircle,
-  Cloud,
   PencilSimple,
   PlugsConnected,
   X,
@@ -16,7 +15,8 @@ import type {
 import {
   accountMachineConnectionState,
   accountMachineDisplayName,
-  accountMachineRowLabel,
+  accountMachineInstallLabel,
+  accountMachineRowName,
 } from "../../../shared/accountDirectory";
 import type { MachinePresence } from "../../../shared/types/power";
 import {
@@ -25,7 +25,7 @@ import {
   machineIsAwake,
   machineStatusLine,
 } from "../../../shared/machinePresence";
-import { COLORS, SANS_FONT, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
+import { COLORS, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import { ConnectionDoctorPanel } from "./ConnectionDoctorPanel";
 import { ConnectionRouteDetails } from "./ConnectionRouteDetails";
 import {
@@ -41,12 +41,19 @@ import {
   inlineSuccessTextStyle,
   machineRowStyle,
   nameStyle,
+  connectButtonStyle,
+  iconActionButtonStyle,
   subTextStyle,
 } from "./remoteTargetListStyles";
 
 type AccountMachineRowProps = {
   row: AccountMachineRowModel;
   section: MachineSection;
+  /**
+   * This row is locked: its connect is in flight, or a cancelled pairing is
+   * still finishing in main (`"stopping"` in useRowActions; busy while
+   * not connecting). Other rows' work never sets it.
+   */
   busy: boolean;
   connecting: boolean;
   /**
@@ -68,6 +75,8 @@ type AccountMachineRowProps = {
   detailOpen: boolean;
   onToggleDetail: (rowId: string) => void;
   onConnect: (machine: AdeAccountMachine) => void;
+  /** Stops this row's connect while it is in progress. */
+  onCancelConnect: (machine: AdeAccountMachine) => void;
   onRenamed?: () => void;
 };
 
@@ -121,10 +130,13 @@ export function AccountMachineRow({
   detailOpen,
   onToggleDetail,
   onConnect,
+  onCancelConnect,
   onRenamed,
 }: AccountMachineRowProps) {
   const { machine } = row;
   const displayName = accountMachineDisplayName(machine) ?? "Unnamed machine";
+  const installLabel = accountMachineInstallLabel(machine);
+  const installTag = installLabel && installLabel !== "ADE" ? installLabel : null;
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState(displayName);
   const [renameBusy, setRenameBusy] = useState(false);
@@ -170,23 +182,17 @@ export function AccountMachineRow({
       style={{ display: "grid", gap: 8 }}
     >
       <div style={{ ...machineRowStyle, opacity: !awake && section === "unavailable" ? 0.62 : 1 }}>
-        <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 12, alignItems: "start" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "auto minmax(0,1fr) auto", gap: 12, alignItems: "center" }}>
+          <MachineAvatar
+            colorKey={machine.machineKey}
+            name={displayName}
+            platform={machinePlatform(machine.platform)}
+            formFactor={machineFormFactor({ name: displayName, power: machine.power })}
+            editable
+            dimmed={!awake && section === "unavailable"}
+          />
           <div style={{ minWidth: 0, display: "grid", gap: 5 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-              {/* The dot states the SAME presence as the line below it. The
-                  attribute is how a test pins that, since a CSS variable does
-                  not survive to a style assertion. */}
-              <span
-                aria-hidden
-                data-machine-presence={presence}
-                style={{
-                  width: 7,
-                  height: 7,
-                  borderRadius: "50%",
-                  flexShrink: 0,
-                  background: awake ? COLORS.success : COLORS.textDim,
-                }}
-              />
               {renaming ? (
                 <form
                   onSubmit={(event) => {
@@ -238,42 +244,50 @@ export function AccountMachineRow({
                   </button>
                 </form>
               ) : (
-                <span style={nameStyle} title={machine.adeHome ?? undefined}>
-                  {accountMachineRowLabel(machine) ?? displayName}
-                </span>
+                <>
+                  <span style={nameStyle} title={machine.adeHome ?? undefined}>
+                    {installTag ? accountMachineRowName(machine) ?? displayName : displayName}
+                  </span>
+                  {/* The install is named only when it is not the regular
+                      app, which is the case where two rows share a name. */}
+                  {installTag ? (
+                    <span style={{ ...helperTextStyle, fontSize: 11, whiteSpace: "nowrap" }}>{installTag}</span>
+                  ) : null}
+                </>
               )}
-              {/* The same mark a connected saved row wears, for the same
-                  reason: the status line below says only the power. */}
-              {!renaming && presence === "connected" ? (
-                <CheckCircle
-                  size={15}
-                  weight="fill"
-                  color={COLORS.success}
-                  aria-label="Connected"
-                  style={{ flexShrink: 0 }}
-                />
-              ) : null}
-            </div>
-            <div style={{ ...subTextStyle, display: "flex", alignItems: "center", gap: 5 }}>
-              <Cloud size={12} weight="fill" color={COLORS.accent} style={{ flexShrink: 0 }} />
-              Connected to your ADE account
+              {/* The dot states the SAME presence as the line below it. The
+                  attribute is how a test pins that, since a CSS variable does
+                  not survive to a style assertion. */}
+              <span
+                {...(presence === "connected"
+                  ? { role: "img", "aria-label": "Connected" }
+                  : { "aria-hidden": true })}
+                data-machine-presence={presence}
+                style={{
+                  width: 7,
+                  height: 7,
+                  borderRadius: "50%",
+                  flexShrink: 0,
+                  background: awake ? COLORS.success : COLORS.textDim,
+                }}
+              />
             </div>
             <div style={helperTextStyle}>
               {accountMachineStatusLabel(machine, connectionState, presence)}
             </div>
           </div>
 
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end" }}>
             {!renaming ? (
               <button
                 type="button"
                 aria-label={`Rename ${displayName}`}
                 disabled={busy}
+                title="Rename"
                 onClick={() => setRenaming(true)}
-                style={outlineButton({ height: 30, padding: "0 8px", fontSize: 11 })}
+                style={{ ...iconActionButtonStyle, opacity: busy ? 0.35 : 0.7, order: 1 }}
               >
-                <PencilSimple size={13} weight="bold" />
-                Rename
+                <PencilSimple size={15} />
               </button>
             ) : null}
             {machine.customName && !renaming ? (
@@ -286,15 +300,27 @@ export function AccountMachineRow({
                 Use hostname
               </button>
             ) : null}
-            {available ? (
+            {connecting ? (
+              <button
+                type="button"
+                aria-label={`Cancel connecting to ${displayName}`}
+                title="Stop connecting"
+                onClick={() => onCancelConnect(machine)}
+                style={outlineButton({ height: 30, padding: "0 10px", fontSize: 11 })}
+              >
+                <X size={13} weight="bold" />
+                Cancel
+              </button>
+            ) : available ? (
               <button
                 type="button"
                 disabled={busy}
                 onClick={() => onConnect(machine)}
-                style={primaryButton({ height: 30, padding: "0 10px", fontSize: 11 })}
+                style={{ ...connectButtonStyle, opacity: busy ? 0.5 : 1, cursor: busy ? "not-allowed" : "pointer" }}
               >
                 <PlugsConnected size={14} weight="bold" />
-                {connecting ? "Connecting…" : machineActionLabel(presence)}
+                {/* Busy and not connecting: a cancelled pairing is finishing. */}
+                {busy ? "Stopping…" : machineActionLabel(presence)}
               </button>
             ) : null}
             {canExplain ? (

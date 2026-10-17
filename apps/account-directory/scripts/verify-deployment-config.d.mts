@@ -1,6 +1,7 @@
 export declare const REQUIRED_SECRETS: readonly string[];
 export declare const REQUIRED_VARS: readonly string[];
 export declare const DEFAULTED_VARS: readonly { name: string; codeDefault: string }[];
+export declare const OPTIONAL_SECRETS: readonly { name: string; effect: string }[];
 export declare const ENVIRONMENTS: readonly string[];
 
 export declare class DeploymentConfigError extends Error {}
@@ -11,7 +12,10 @@ export declare function verifyDirectoryDeploymentConfig(args: {
   environments?: readonly string[];
   listSecretNames: (environment: string) => Iterable<string>;
   readConfig: () => unknown;
-}): { warnings: string[] };
+}): { warnings: string[]; devicePageOrigins: { environment: string; origin: string }[] };
+
+/** Rejects with a `DeploymentConfigError` unless `<origin>/device` redirects to a sign-in page. */
+export declare function verifyDevicePage(origin: string, fetchImpl?: typeof fetch): Promise<void>;
 
 export declare function wranglerSecretListInvocation(
   environment: string,

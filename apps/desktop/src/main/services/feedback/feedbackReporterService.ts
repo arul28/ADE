@@ -503,7 +503,11 @@ export function createFeedbackReporterService({
 
       logger.error("feedback.failed", {
         id: submission.id,
-        error: submission.error,
+        // The Error itself, so `logBridge` lifts it into the Sentry event and
+        // the issue groups by the real failure; `errorText` keeps the sentence
+        // on disk, which `JSON.stringify` writes an Error without.
+        error,
+        errorText: submission.error,
       });
     }
 

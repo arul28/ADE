@@ -174,6 +174,8 @@ struct WorkChatMessage: Identifiable, Equatable {
   var steerId: String? = nil
   var deliveryState: String? = nil
   var processed: Bool? = nil
+  /// True for a user message that ADE wrote for the user (a wake, a relay).
+  var writtenByAde = false
   var attachments: [AgentChatFileRef]? = nil
   var unprocessedResolution: WorkUserMessageResolution? = nil
   /// Monotonic content revision for the incremental streaming path. The
@@ -364,6 +366,7 @@ func workChatSurfaceProviderName(_ source: String?) -> String {
   case "droid", "factory": return "Droid"
   case "opencode": return "OpenCode"
   case "pi": return "Pi"
+  case "muse": return "Muse"
   case "qwen": return "Qwen"
   case "kimi", "moonshot": return "Kimi"
   case "grok", "xai": return "Grok"
@@ -537,6 +540,8 @@ struct WorkPendingModelSelectionModel: Identifiable, Hashable {
 }
 
 struct WorkUsageSummary: Hashable {
+  var compactAtTokens: Int? = nil
+  var compactAtSource: String? = nil
   var turnCount: Int
   var inputTokens: Int
   var outputTokens: Int
@@ -558,6 +563,8 @@ struct WorkUsageSummary: Hashable {
 }
 
 struct WorkContextUsageViewModel: Equatable {
+  var compactAtTokens: Int? = nil
+  var compactAtSource: String? = nil
   var provider: String
   var state: WorkContextUsageState = .measured
   var contextWindow: Int?
@@ -672,6 +679,11 @@ struct WorkActiveSendCapability: Equatable {
       return WorkActiveSendCapability(modes: [.inline, .queue, .interrupt], agentLabel: "Claude", interruptContinues: false)
     case "codex":
       return WorkActiveSendCapability(modes: [.inline, .queue], agentLabel: "Codex", interruptContinues: false)
+    case "muse":
+      // `turn/steer` joins the live turn, `turn/start` with `ifBusy: queue`
+      // stages it, and interrupt is `turn/interrupt` then a fresh turn, so it
+      // continues the way Cursor's does.
+      return WorkActiveSendCapability(modes: [.inline, .queue, .interrupt], agentLabel: "Muse", interruptContinues: true)
     case "cursor":
       // Cursor gained `.inline` when `@cursor/sdk` 1.0.31 added `Run.steer()`.
       // `interruptContinues` stays true: its interrupt still cancels the run and
@@ -692,7 +704,12 @@ struct WorkActiveSendCapability: Equatable {
       // boundary ("send during turn") or after the current reply (queue). No
       // interrupt: like Codex there is no cancel-and-resend.
       return WorkActiveSendCapability(modes: [.inline, .queue], agentLabel: "OpenCode", interruptContinues: false)
-    // The four ACP providers are queue-only in `ACTIVE_TURN_DISPATCH_MODES`,
+    // Copilot is an SDK provider: `session.send` with `mode: "immediate"` joins
+    // the live turn and `enqueue` waits for it. Like Codex and OpenCode there is
+    // no cancel-and-resend, so interrupt just stops the turn.
+    case "copilot":
+      return WorkActiveSendCapability(modes: [.inline, .queue], agentLabel: "GitHub Copilot", interruptContinues: false)
+    // The three ACP providers are queue-only in `ACTIVE_TURN_DISPATCH_MODES`,
     // which is what the default arm already gives them. They are listed anyway
     // so the label reads with the provider's name instead of "the agent", and
     // so the next person diffing this table against the TS one sees them here.
@@ -702,8 +719,6 @@ struct WorkActiveSendCapability: Equatable {
       return WorkActiveSendCapability(modes: [.queue], agentLabel: "Kimi", interruptContinues: false)
     case "grok":
       return WorkActiveSendCapability(modes: [.queue], agentLabel: "Grok", interruptContinues: false)
-    case "copilot":
-      return WorkActiveSendCapability(modes: [.queue], agentLabel: "GitHub Copilot", interruptContinues: false)
     default:
       return WorkActiveSendCapability(modes: [.queue], agentLabel: "the agent", interruptContinues: false)
     }
@@ -827,6 +842,7 @@ struct WorkChatStopCapability: Equatable {
     case "cursor": return "Cursor"
     case "droid": return "Droid"
     case "pi": return "Pi"
+    case "muse": return "Muse"
     case "": return "This provider"
     default: return key.prefix(1).uppercased() + key.dropFirst()
     }
@@ -839,8 +855,8 @@ struct WorkChatStopCapability: Equatable {
   static func unsupportedReason(provider: String?, mode: AgentChatStopMode) -> String? {
     let key = (provider ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     let name = providerLabel(provider)
-    let canStopBackground = ["claude", "opencode", "codex"].contains(key)
-    let keepsQueue = ["claude", "opencode", "codex", "cursor", "droid"].contains(key)
+    let canStopBackground = ["claude", "opencode", "codex", "muse"].contains(key)
+    let keepsQueue = ["claude", "opencode", "codex", "muse", "cursor", "droid"].contains(key)
     if stopsBackground(mode) && !canStopBackground {
       return "\(name) can't stop background work its agent started."
     }
@@ -1248,7 +1264,10 @@ indirect enum WorkTimelinePayload: Equatable {
   /// Generic host/agent-emitted `ade_card`. One row per `cardId`, merged in
   /// place as the card progresses.
   case adeCard(WorkAdeCardModel)
-  case artifact(ComputerUseArtifactSummary)
+  /// Proof filed mid-turn: one quiet "N proof filed ›" line for a run of
+  /// consecutive records (desktop's inline `ChatProofCount`). Records a
+  /// "Filed proof" action row already pictures are left out.
+  case proof([ComputerUseArtifactSummary])
   /// The turn-end line after a terminal `done` event (desktop
   /// `DoneTurnDivider`): `ran 4m 30s · 2:15 AM · ↑in/↓out/~cache · tools ›
   /// files ›` on one line. The turn's usage rides on it; there is no separate
@@ -1323,7 +1342,7 @@ extension WorkTimelinePayload: Hashable {
     case .adeCard(let model):
       hasher.combine(9)
       hasher.combine(model)
-    case .artifact(let model):
+    case .proof(let model):
       hasher.combine(11)
       hasher.combine(model)
     case .turnEndMarker(let model):
@@ -1467,6 +1486,13 @@ struct WorkToolGroupModel: Identifiable, Hashable {
   let id: String
   let members: [WorkToolGroupMember]
   var turnId: String? = nil
+  /// Set only when the transcript draws this cluster as computer-use action
+  /// rows (`workPresentedTimelineEntries`): the cluster's other tools stay on
+  /// the turn's tools toggle, like every other tool cluster.
+  var computerUseActions: [WorkComputerUseAction] = []
+  /// Not the turn's newest computer-use run, so its newest action draws
+  /// compact too (desktop `computerUseCompact`, `arrangeComputerUseRuns`).
+  var computerUseCompact = false
 
   var count: Int { members.count }
 }
@@ -1518,8 +1544,9 @@ struct WorkTurnEndMarker: Hashable {
   /// The turn's token usage from its `done`. Drawn on the turn-end line; a
   /// usage-limit turn moves it behind the footer's details toggle instead.
   var usage: WorkUsageSummary? = nil
-  /// Proof artifacts captured while the turn ran: the `N proof` chip and the
-  /// filmstrip it opens (desktop `DoneTurnDivider` + `ChatProofFilmstrip`).
+  /// Proof artifacts captured while the turn ran: its "N proof filed" link,
+  /// which opens the proof drawer narrowed to them (desktop `DoneTurnDivider`
+  /// + `ChatProofCount`).
   var proofArtifacts: [ComputerUseArtifactSummary] = []
   var proofCount: Int { proofArtifacts.count }
   /// The turn folded: its tool and file counts moved up to the fold row, so
@@ -1569,6 +1596,8 @@ struct WorkTurnFoldModel: Identifiable, Hashable {
   var jobCount: Int = 0
   var failedJobCount: Int = 0
   var sourceCount: Int = 0
+  /// The proof the turn filed (the same records its turn-end line counts).
+  var proofArtifactIds: [String] = []
 
   /// `Worked for 4m 12s`, or `Stopped after …` for an interrupted turn
   /// (desktop `formatTurnFoldHead`).
@@ -2002,14 +2031,20 @@ struct WorkEventCardModel: Identifiable, Hashable {
   /// config notice — still folds with the diagnostics beside it.
   let noticeKind: String?
   /// Child chat a `spawn_completed` peer notice reports on, resolved once at
-  /// card-build time out of the notice's `detail` JSON. Only the adjacency fold
-  /// in `collapseConsecutiveSpawnCompletionEntries` reads it — a parent that
-  /// spawned a peer gets one notice per sibling turn, and this is the key that
-  /// tells two runs apart. `nil` for every other card, including a completion
+  /// card-build time out of the notice's `detail` JSON. The spawn-completion
+  /// folds read it (`collapseConsecutiveSpawnCompletionEntries`, then
+  /// `workFoldStaleSpawnCompletionEntries`) — a parent that spawned a peer gets
+  /// one notice per sibling turn, and this is the key that tells the child's
+  /// notices apart from another child's. `nil` for every other card, including a completion
   /// notice whose detail lost its `spawnCompletion` (old or truncated
   /// transcript): an unidentified completion folds into nothing and keeps its
   /// own row rather than silently absorbing a different child's.
   let spawnCompletionChildId: String?
+  /// Child turns a `spawn_completed` row stands for. The adjacency fold sets it
+  /// to its run length; `workFoldStaleSpawnCompletionEntries` sums a child's
+  /// whole transcript into its newest row and stamps the `×N` from it. `1` for
+  /// every other card.
+  let spawnCompletionTurns: Int
   let technicalDetail: String?
   let nextAction: String?
   let taskList: WorkChatTaskListSnapshot?
@@ -2045,6 +2080,7 @@ struct WorkEventCardModel: Identifiable, Hashable {
     diagnosticWarnings: [WorkTurnDiagnosticWarning] = [],
     noticeKind: String? = nil,
     spawnCompletionChildId: String? = nil,
+    spawnCompletionTurns: Int = 1,
     technicalDetail: String? = nil,
     nextAction: String? = nil,
     taskList: WorkChatTaskListSnapshot? = nil
@@ -2074,6 +2110,7 @@ struct WorkEventCardModel: Identifiable, Hashable {
     self.diagnosticWarnings = diagnosticWarnings
     self.noticeKind = noticeKind
     self.spawnCompletionChildId = spawnCompletionChildId
+    self.spawnCompletionTurns = spawnCompletionTurns
     self.technicalDetail = technicalDetail
     self.nextAction = nextAction
     self.taskList = taskList
@@ -2233,6 +2270,8 @@ struct WorkChatEnvelope: Identifiable, Equatable {
   let event: WorkChatEvent
   /// Provider text phase retained beside the normalized event.
   var textPhase: String? = nil
+  /// True for a user message that ADE wrote for the user, not the reader.
+  var userMessageWrittenByAde = false
   /// Raw fields intentionally kept beside the normalized event so the broad
   /// WorkChatEvent associated-value surface does not need to grow just for
   /// subagent classification.

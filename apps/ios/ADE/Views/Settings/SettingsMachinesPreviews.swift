@@ -50,41 +50,25 @@ struct SettingsMachinesPreviewHost: View {
           .navigationBarTitleDisplayMode(.inline)
       } else {
         let sections = settingsMachineSections(Self.machines)
-        List {
-          Section {
-            HStack(spacing: 12) {
-              Circle().fill(ADEColor.purpleAccent.opacity(0.3)).frame(width: 44, height: 44)
-                .overlay(Text("AS").font(.system(size: 16, weight: .bold, design: .rounded)).foregroundStyle(ADEColor.purpleAccent))
-              VStack(alignment: .leading, spacing: 2) {
-                Text("Arul Sharma").font(.body.weight(.semibold))
-                Text("arulsharma90@gmail.com").font(.caption).foregroundStyle(ADEColor.textSecondary)
-              }
-              Spacer()
-              Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(ADEColor.textMuted)
-            }
-            .adeFlatRow()
-          }
-          Section {
-            ForEach(sections.connected) { SettingsMachineRow(machine: $0).adeFlatRow() }
-          } header: {
-            ADEFlatSectionHeader("Connected", detail: "2 of 4 live") {
-              Image(systemName: "plus").font(.system(size: 13, weight: .semibold)).foregroundStyle(ADEColor.accent)
+        ADESettingsPage(title: "Settings") {
+          ADESettingsSection("Connected", hint: "2 of 4 live") {
+            ADESettingsRows {
+              ForEach(sections.connected) { SettingsMachineRow(machine: $0) }
             }
           }
-          Section {
-            ForEach(sections.available) { SettingsMachineRow(machine: $0).adeFlatRow() }
-          } header: {
-            ADEFlatSectionHeader("Available")
+          ADESettingsSection("Available") {
+            ADESettingsRows {
+              ForEach(sections.available) { SettingsMachineRow(machine: $0) }
+            }
           }
-          Section {
-            Label("Appearance", systemImage: "circle.lefthalf.filled").adeFlatRow()
-            Label("Notifications", systemImage: "bell.badge").adeFlatRow()
-            Label("Usage", systemImage: "chart.line.uptrend.xyaxis").adeFlatRow()
-          } header: {
-            ADEFlatSectionHeader("App")
+          ADESettingsSection("App") {
+            ADESettingsRows {
+              ADESettingsRow("Appearance", symbol: "circle.lefthalf.filled")
+              ADESettingsRow("Notifications", symbol: "bell")
+              ADESettingsRow("Usage", symbol: "chart.bar")
+            }
           }
         }
-        .adeFlatList()
         .navigationTitle("Settings")
       }
     }

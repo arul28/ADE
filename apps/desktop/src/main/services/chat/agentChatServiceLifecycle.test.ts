@@ -12,6 +12,7 @@ import {
   mockState,
   path,
   query,
+  readPersistedChatState,
   spawn,
   storedWakeup,
   streamText,
@@ -20,8 +21,28 @@ import {
   waitFor,
   waitForEvent,
   waitForFakeTimers,
+  writePersistedChatState,
 } from "./agentChatService.testHarness";
 import { describe, expect, it, test, vi } from "vitest";
+import { ChatRuntimeOwnedElsewhereError, resolveAdeHomeForOwnership } from "./chatRuntimeOwnership";
+import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
+import { createJiraCredentialService } from "../jira/jiraCredentialService";
+import { createJiraService } from "../jira/jiraService";
+import { createIssueTrackerService } from "../issueTrackers/issueTrackerService";
+
+class MemoryJiraCredentialStore implements SyncCredentialStore {
+  private values = new Map<string, string>();
+  async get(key: string): Promise<string | null> { return this.getSync(key); }
+  async set(key: string, value: string): Promise<void> { this.setSync(key, value); }
+  async delete(key: string): Promise<void> { this.deleteSync(key); }
+  getSync(key: string): string | null { return this.values.get(key) ?? null; }
+  setSync(key: string, value: string): void { this.values.set(key, value); }
+  deleteSync(key: string): void { this.values.delete(key); }
+  updateSync(updater: (values: Record<string, string>) => boolean | void): void {
+    const next = Object.fromEntries(this.values);
+    if (updater(next) !== false) this.values = new Map(Object.entries(next));
+  }
+}
 
 describe("createAgentChatService", () => {
   describe("hasRetainableSessions", () => {
@@ -241,7 +262,7 @@ describe("createAgentChatService", () => {
         modelId: "opencode/anthropic/claude-sonnet-5",
       });
 
-      expect(service.getSlashCommands({ sessionId: session.id })).toEqual(
+      expect(await service.getSlashCommands({ sessionId: session.id })).toEqual(
         expect.arrayContaining([
           expect.objectContaining({ name: "/clear" }),
         ]),
@@ -249,7 +270,7 @@ describe("createAgentChatService", () => {
 
       await service.dispose({ sessionId: session.id });
 
-      expect(service.getSlashCommands({ sessionId: session.id })).toEqual([]);
+      expect(await service.getSlashCommands({ sessionId: session.id })).toEqual([]);
     });
 
     it("terminates the Codex runtime process tree when disposing a live Codex chat", async () => {
@@ -292,6 +313,34 @@ describe("createAgentChatService", () => {
       });
 
   describe("disposeAll", () => {
+    it("cancels the startup handoff sweep before the database closes", async () => {
+      vi.useFakeTimers();
+      let databaseOpen = true;
+      const db = {
+        getJson: vi.fn(() => null),
+        setJson: vi.fn(),
+        all: vi.fn(() => {
+          if (!databaseOpen) throw new Error("database is not open");
+          return [];
+        }),
+      };
+      const transport = {
+        listMachines: vi.fn(async () => []),
+        callAction: vi.fn(async () => ({ machine: { machineKey: "machine", name: "Machine" }, result: null })),
+      };
+      const { service } = createService({
+        db,
+        crossMachineHandoffTransport: () => transport,
+      });
+
+      await service.disposeAll();
+      databaseOpen = false;
+      db.all.mockClear();
+      await vi.advanceTimersByTimeAsync(5_001);
+
+      expect(db.all).not.toHaveBeenCalled();
+    });
+
     it("disposes all active sessions without throwing", async () => {
       const { service } = createService();
 
@@ -546,6 +595,94 @@ describe("createAgentChatService", () => {
           }),
         }),
       ]));
+    });
+
+    it("leaves the move store alone when a settled turn's callback runs after the database closes", async () => {
+      // The turn-settled path defers the cross-machine check to a microtask,
+      // and shutdown emits the interrupted `done` from inside the same
+      // synchronous block that later closes the project database. So the
+      // callback resumes against a closed handle unless it refuses to run for
+      // a disposed service. A move waiting for this turn's end is the fixture:
+      // unguarded, the callback reads it and writes it back after the close.
+      const events: AgentChatEventEnvelope[] = [];
+      let databaseOpen = true;
+      let moveKey = "";
+      const moveStoreAccessAfterClose: string[] = [];
+      const db = {
+        getJson: vi.fn((key: string) => {
+          if (key !== moveKey) return null;
+          if (!databaseOpen) moveStoreAccessAfterClose.push(`get ${key}`);
+          return {
+            record: {
+              handoffId: "handoff-1",
+              state: "pending",
+              checkpoint: null,
+              targetMachineKey: "machine-b",
+              targetMachineName: "Machine B",
+              mode: "brief",
+              targetModelId: "gpt-5.4",
+              includeChanges: false,
+              requestedBy: "user",
+              requestedAt: "2026-01-01T00:00:00.000Z",
+              updatedAt: "2026-01-01T00:00:00.000Z",
+              reason: null,
+              targetLaneId: null,
+              targetSessionId: null,
+              continuedOn: null,
+              resumedHere: false,
+            },
+            request: {
+              machine: "machine-b",
+              mode: "brief",
+              continuationPrompt: null,
+              includeChanges: false,
+              clone: false,
+              targetModelId: "gpt-5.4",
+              queued: true,
+            },
+          };
+        }),
+        setJson: vi.fn((key: string) => {
+          if (key === moveKey && !databaseOpen) moveStoreAccessAfterClose.push(`set ${key}`);
+        }),
+        all: vi.fn(() => []),
+      };
+      const { service } = createService({
+        db,
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      moveKey = `agent-chat-cross-machine-move:v1:${session.id}`;
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Start a turn that is still active during shutdown.",
+      }, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "status"
+          && event.event.turnStatus === "started"
+          && event.event.turnId === "turn-1",
+      );
+
+      service.forceDisposeAll();
+      // The drain's last step, in the same synchronous block: the store closes.
+      databaseOpen = false;
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // The shutdown did settle this turn, so the microtask really was queued;
+      // it just found nothing it was allowed to do.
+      expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "done",
+            status: "interrupted",
+            turnId: "turn-1",
+          }),
+        }),
+      ]));
+      expect(moveStoreAccessAfterClose).toEqual([]);
     });
   });
 
@@ -835,6 +972,71 @@ describe("createAgentChatService", () => {
     });
   });
 
+  describe("turn-end linked Jira issue refresh", () => {
+    it("skips Jira snapshots whose site differs from the connected site", async () => {
+      installClaudeResponseFixture({ sdkSessionId: "sdk-linked-jira-site", responseText: "Done." });
+      const jiraFetch = vi.fn(async (input: RequestInfo | URL) => {
+        const url = new URL(String(input));
+        if (!url.pathname.endsWith("/myself")) throw new Error(`Unexpected Jira request: ${url.pathname}`);
+        return new Response(JSON.stringify({ accountId: "jira-account", displayName: "Jira User" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      });
+      const credentials = createJiraCredentialService({ credentialStore: new MemoryJiraCredentialStore() });
+      const jiraService = createJiraService({ credentials, fetchImpl: jiraFetch });
+      await jiraService.connect({
+        siteUrl: "https://connected.atlassian.net",
+        email: "user@example.test",
+        apiToken: "jira-test-token",
+      });
+      const actualTrackerService = createIssueTrackerService({ jiraService });
+      let resolveRead!: () => void;
+      const readFinished = new Promise<void>((resolve) => { resolveRead = resolve; });
+      let readFailure: unknown;
+      const reference = {
+        provider: "jira" as const,
+        siteUrl: "https://other.atlassian.net",
+        key: "OTHER-1",
+        url: "https://other.atlassian.net/browse/OTHER-1",
+      };
+      const observedTrackerService = {
+        isConnected: actualTrackerService.isConnected.bind(actualTrackerService),
+        get: async (args: Parameters<typeof actualTrackerService.get>[0]) => {
+          try {
+            return await actualTrackerService.get(args);
+          } catch (error) {
+            readFailure = error;
+            throw error;
+          } finally {
+            resolveRead();
+          }
+        },
+      };
+      const { service, laneService } = createService({
+        issueTrackerService: observedTrackerService,
+        jiraService,
+      });
+      const listReferences = vi.fn(() => ({ references: [reference], totalCount: 1, scanned: 1 }));
+      const refreshSnapshot = vi.fn();
+      laneService.listLinkedIssueSnapshotReferences = listReferences as any;
+      laneService.refreshLinkedIssueSnapshot = refreshSnapshot as any;
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+
+      try {
+        await service.runSessionTurn({ sessionId: session.id, text: "Read the linked issue." });
+        await readFinished;
+
+        expect(listReferences).toHaveBeenCalledWith({ chatSessionId: session.id, offset: 0, limit: 12 });
+        expect(readFailure).toMatchObject({ name: "IssueTrackerError", tracker: "jira", reason: "not-connected" });
+        expect(jiraFetch).toHaveBeenCalledTimes(1);
+        expect(refreshSnapshot).not.toHaveBeenCalled();
+      } finally {
+        service.forceDisposeAll();
+      }
+    });
+  });
+
   describe("session lifecycle", () => {
     it("creates multiple sessions and lists them independently", async () => {
       const { service } = createService();
@@ -1000,6 +1202,86 @@ describe("createAgentChatService", () => {
       const textInput = turnParams?.input?.map((entry) => String(entry.text ?? "")).join("\n") ?? "";
       expect(textInput).toContain("Attached issue context");
       expect(textInput).toContain("Use the attached issue context.");
+    });
+  });
+
+  describe("a chat another live brain runs", () => {
+    // Two brains on one ADE home share the project database and each chat's
+    // persisted state. The owner stamp is the only thing that tells the second
+    // brain the chat already has a provider process; the OS process table (the
+    // registry's liveness probe) is the boundary faked here.
+    const OWNER = {
+      brainId: "brain-other",
+      pid: 4242,
+      startedAt: "2026-10-09T03:00:00.000Z",
+      socketPath: "/tmp/owner-brain.sock",
+      claimedAt: "2026-10-09T03:00:00.000Z",
+    };
+
+    const secondBrainOnChat = async (ownerAlive: boolean) => {
+      const first = createService();
+      const session = await first.service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      first.service.forceDisposeAll();
+      writePersistedChatState(session.id, {
+        ...readPersistedChatState(session.id),
+        runtimeOwner: { ...OWNER, adeHome: resolveAdeHomeForOwnership() },
+      });
+      const processRegistry = {
+        pid: process.pid,
+        startedAt: "2026-10-09T03:30:00.000Z",
+        isProcessIdentityLive: (pid: number) => ownerAlive && pid === OWNER.pid,
+      };
+      const second = createService({ processRegistry, runtimeSocketPath: "/tmp/second-brain.sock" });
+      return { service: second.service, sessionId: session.id };
+    };
+
+    it.each([
+      ["send", (service: any, sessionId: string) => service.sendMessage({ sessionId, text: "continue" })],
+      ["steer", (service: any, sessionId: string) => service.steer({ sessionId, text: "continue" })],
+      ["message", (service: any, sessionId: string) => service.messageSession({ sessionId, text: "continue", kind: "auto" })],
+      ["interrupt", (service: any, sessionId: string) => service.interrupt({ sessionId })],
+      ["resume", (service: any, sessionId: string) => service.resumeSession({ sessionId })],
+    ])("refuses to %s it, starts no provider process, and keeps the owner's stamp", async (_label, act) => {
+      const { service, sessionId } = await secondBrainOnChat(true);
+      const threadsBefore = mockState.codexThreadCounter;
+      const turnsBefore = mockState.codexTurnCounter;
+
+      const error = await act(service, sessionId).then(() => null, (caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(ChatRuntimeOwnedElsewhereError);
+      expect((error as ChatRuntimeOwnedElsewhereError).owner).toMatchObject({ pid: OWNER.pid, socketPath: OWNER.socketPath });
+      expect(mockState.codexThreadCounter).toBe(threadsBefore);
+      expect(mockState.codexTurnCounter).toBe(turnsBefore);
+      expect(readPersistedChatState(sessionId).runtimeOwner).toMatchObject({ brainId: OWNER.brainId, pid: OWNER.pid });
+      service.forceDisposeAll();
+    });
+
+    it("reports the chat busy under its owner instead of idle", async () => {
+      const { service, sessionId } = await secondBrainOnChat(true);
+
+      const summary = await service.getSessionSummary(sessionId);
+      const status = await service.getTurnStatus(sessionId);
+
+      expect(summary?.runtimeOwnedElsewhere).toEqual({ pid: OWNER.pid, socketPath: OWNER.socketPath });
+      expect(summary?.runtimeAlive).toBeUndefined();
+      expect(status?.phase).toBe("running");
+      expect(status?.ownedElsewhere).toEqual({ pid: OWNER.pid, socketPath: OWNER.socketPath });
+      service.forceDisposeAll();
+    });
+
+    it("adopts the chat once its owner is gone", async () => {
+      const { service, sessionId } = await secondBrainOnChat(false);
+
+      await service.sendMessage({ sessionId, text: "continue" }, { awaitDispatch: true });
+
+      const summary = await service.getSessionSummary(sessionId);
+      expect(summary?.runtimeOwnedElsewhere).toBeUndefined();
+      await vi.waitFor(() => {
+        const owner = readPersistedChatState(sessionId).runtimeOwner;
+        expect(owner?.brainId).not.toBe(OWNER.brainId);
+        expect(owner?.socketPath).toBe("/tmp/second-brain.sock");
+      });
+      service.forceDisposeAll();
     });
   });
 });

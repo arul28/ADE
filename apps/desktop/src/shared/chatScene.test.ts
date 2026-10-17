@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { sceneUsesThree } from "./chatSceneThree";
 import {
-  buildSceneDocument,
   hasOpenSceneFence,
   openFence,
   openFenceLanguage,
@@ -14,6 +14,7 @@ import {
   sceneScopeKeyFor,
   summarizeSceneFence,
 } from "./chatScene";
+import { buildSceneDocument } from "./chatSceneDocument";
 
 describe("parseSceneFence", () => {
   it("reads the title off the marker line and keeps the markup", () => {
@@ -179,8 +180,6 @@ describe("parseSceneHostMessage", () => {
   it("carries a usable nonce through and drops an unusable one", () => {
     expect(parseSceneHostMessage({ __adeScene: 1, type: "settled", nonce: "doc-7", payload: {} }))
       .toEqual({ nonce: "doc-7", type: "settled", payload: { height: undefined } });
-    expect(parseSceneHostMessage({ __adeScene: 1, type: "emit", nonce: "doc-7", payload: { name: "go" } }))
-      .toMatchObject({ nonce: "doc-7", type: "emit" });
     // Neither a wrong type nor an empty string may look like a real nonce.
     expect(parseSceneHostMessage({ __adeScene: 1, type: "ready", nonce: 7, payload: {} }))
       .not.toHaveProperty("nonce");
@@ -192,8 +191,7 @@ describe("parseSceneHostMessage", () => {
     expect(long?.nonce?.length).toBe(120);
   });
 
-  it("drops an emit with no name and truncates a long error", () => {
-    expect(parseSceneHostMessage({ __adeScene: 1, type: "emit", payload: {} })).toBeNull();
+  it("truncates a long error", () => {
     const err = parseSceneHostMessage({ __adeScene: 1, type: "error", payload: { message: "e".repeat(900) } });
     expect(err?.type).toBe("error");
     expect(err && "message" in err.payload ? err.payload.message.length : 0).toBe(500);
@@ -285,5 +283,20 @@ describe("the settle watcher in the injected SDK", () => {
       expect(sceneScopeKeyFor("row-1", "<p>a</p>")).toBe(sceneScopeKeyFor("row-1", "<p>a</p>"));
       expect(sceneScopeKeyFor("row-1", "<p>a</p>").startsWith("row-1:")).toBe(true);
     });
+  });
+});
+
+/** Which scenes get three.js inlined: the ones that use it, and no others. */
+describe("sceneUsesThree", () => {
+  it.each([
+    ["THREE.Mesh", "<script>new THREE.Mesh()</script>", true],
+    ["the ade.three helper", "<script>ade.three.view('#m')</script>", true],
+    ["window.THREE", "<script>var lib = window.THREE;</script>", true],
+    ["an alias of the global", "<script>var T = THREE; new T.Scene();</script>", true],
+    ["the word in prose", "<p>THREE planets and three moons</p>", false],
+    ["a plain 2D scene", "<div id=\"c\"></div><script>ade.chart('#c', {})</script>", false],
+    ["a lookalike name", "<script>var THREEJS_OFF = 1; myTHREE.x = 2;</script>", false],
+  ])("%s → %s", (_name, html, expected) => {
+    expect(sceneUsesThree(html)).toBe(expected);
   });
 });

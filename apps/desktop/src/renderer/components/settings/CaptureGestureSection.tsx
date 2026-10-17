@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Camera } from "@phosphor-icons/react";
+import { WarningCircle } from "@phosphor-icons/react";
 
 import type { CaptureGestureHealth } from "../../../shared/types/captureGesture";
 import {
@@ -13,8 +13,8 @@ import {
   readCaptureGestureEnabled,
   writeCaptureGestureEnabled,
 } from "../capture/captureGestureLocalSettings";
-import { SettingsCard, SettingsGroup, SettingsToggle } from "./primitives";
-import { COLORS, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
+import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitives";
+import "./machineSettings.css";
 
 /**
  * The on/off switch for the global capture gesture, plus whatever the native
@@ -83,9 +83,11 @@ export function CaptureGestureSection() {
   const blocker = captureGestureBlocker();
 
   return (
-    <SettingsGroup
+    <ModernSection
+      group="Screen capture"
+      anchor="capture-gesture"
       title="Screen capture"
-      description={
+      hint={
         supported
           ? "Grab the window in front and hand it to the CTO, from anywhere on this computer."
           // Two different reasons land here, and only one of them is the
@@ -94,57 +96,47 @@ export function CaptureGestureSection() {
           : blocker ?? "The capture gesture is not available on this computer."
       }
     >
-      <SettingsCard
-        anchor="capture-gesture"
-        icon={<Camera size={15} weight="duotone" />}
-        tone="pink"
-        title="Capture with a key gesture"
-        description={
-          available
-            ? `Press ${chord} anywhere to capture the window in front. Over ADE, its tab, lane, PR and open file come along with the image.`
-            : blocker ?? "This ADE surface cannot run the native capture helper."
-        }
-
-        disabled={!available}
-        control={
-          <SettingsToggle
-            id="capture-gesture-toggle"
-            label="Capture with a key gesture"
-            checked={enabled && available}
-            disabled={!available || busy}
-            onChange={(next) => void toggle(next)}
-          />
-        }
-      >
-        {available && health && health.state !== "running" && health.state !== "disabled" ? (
-          <div
-            style={{
-              display: "flex",
-              alignItems: "flex-start",
-              justifyContent: "space-between",
-              gap: 12,
-              padding: "10px 12px",
-              borderRadius: 8,
-              border: `1px solid ${COLORS.borderMuted}`,
-              background: "color-mix(in srgb, var(--color-bg) 70%, transparent)",
-            }}
+      <div style={{ opacity: available ? 1 : 0.6 }}>
+        <ModernRows>
+          <ModernRow
+            title={(
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                Capture with a key gesture
+                {available ? <kbd className="ade-ms-kbd">{chord}</kbd> : null}
+              </span>
+            )}
+            hint={
+              available
+                ? `Press ${chord} anywhere to capture the window in front. Over ADE, its tab, lane, PR and open file come along with the image.`
+                : blocker ?? "This ADE surface cannot run the native capture helper."
+            }
+            control={
+              <SettingsToggle
+                id="capture-gesture-toggle"
+                label="Capture with a key gesture"
+                checked={enabled && available}
+                disabled={!available || busy}
+                onChange={(next) => void toggle(next)}
+              />
+            }
           >
-            <div style={{ minWidth: 0 }}>
-              <div style={{ fontFamily: SANS_FONT, fontSize: 12, fontWeight: 600, color: COLORS.textPrimary }}>
-                {health.title}
+            {available && health && health.state !== "running" && health.state !== "disabled" ? (
+              <div className="ade-modern-note" data-tone="warn">
+                <WarningCircle size={14} weight="fill" />
+                <div className="ade-modern-note-body">
+                  <strong style={{ fontWeight: 600, color: "var(--color-fg)" }}>{health.title}</strong>
+                  <span>{health.message}</span>
+                </div>
+                {health.recovery === "retry" ? (
+                  <button type="button" className="ade-modern-btn" data-size="sm" disabled={busy} onClick={() => void retry()}>
+                    Try again
+                  </button>
+                ) : null}
               </div>
-              <div style={{ fontFamily: SANS_FONT, fontSize: 11, lineHeight: 1.5, color: COLORS.textMuted }}>
-                {health.message}
-              </div>
-            </div>
-            {health.recovery === "retry" ? (
-              <button type="button" style={outlineButton()} disabled={busy} onClick={() => void retry()}>
-                Try again
-              </button>
             ) : null}
-          </div>
-        ) : null}
-      </SettingsCard>
-    </SettingsGroup>
+          </ModernRow>
+        </ModernRows>
+      </div>
+    </ModernSection>
   );
 }

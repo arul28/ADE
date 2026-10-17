@@ -12,20 +12,20 @@
  * page opens, and again when someone presses "Run doctor".
  */
 
-import type { AcpChatProvider } from "../../../shared/types/chat";
-import type { AcpProviderDiagnostics, AcpProviderUpdateResult } from "../../../shared/types/config";
+import type { AcpChatProvider, AgentChatEvent } from "../../../shared/types/chat";
+import type { AcpProviderDiagnostics, AcpProviderUpdateInfo, AcpProviderUpdateResult } from "../../../shared/types/config";
 import { spawnAsync } from "../shared/utils";
 import { grokConfigHome } from "../shared/providerConfigHomes";
 import { acpProbeConfigHome, getCachedAcpAuthProbe } from "./acpAuthProbe";
 import { resolveAcpExecutable } from "./acpExecutables";
 import {
-  decideGrokUpdate,
-  fetchGrokUpdateBaseline,
-  resolveGrokInstaller,
-  runGrokUpdate,
-  type GrokInstallerIo,
-  type GrokSpawn,
-} from "./grokUpdate";
+  ACP_PROVIDER_VERSION_POLICY,
+  decideAcpProviderUpdate,
+  resolveAcpInstaller,
+  runAcpProviderInstall,
+  type AcpInstallerIo,
+  type AcpSpawn,
+} from "./acpProviderUpdate";
 
 const VERSION_TIMEOUT_MS = 6_000;
 const DOCTOR_TIMEOUT_MS = 25_000;
@@ -76,18 +76,8 @@ export type CollectAcpProviderDiagnosticsArgs = {
   env?: NodeJS.ProcessEnv;
   /** Test seam. Same contract as `spawnAsync`: resolves, never rejects. */
   run?: typeof spawnAsync;
-  /** Test seam for Grok's install-kind detection. */
-  installerIo?: GrokInstallerIo;
-  /** Test seam for the npm registry read; never used in unit tests by default. */
-  fetchImpl?: typeof fetch;
-};
-
-const EMPTY_UPDATE_INFO: NonNullable<AcpProviderDiagnostics["update"]> = {
-  latestVersion: null,
-  updateAvailable: false,
-  installer: null,
-  canUpdate: false,
-  note: null,
+  /** Test seam for install-kind detection. */
+  installerIo?: AcpInstallerIo;
 };
 
 export async function collectAcpProviderDiagnostics(
@@ -119,15 +109,6 @@ export async function collectAcpProviderDiagnostics(
     return { ...base, versionError: `\`${args.provider}\` was not found on this machine.` };
   }
 
-  // Start the registry round-trip before the version spawn so a slow or
-  // offline registry overlaps `--version` instead of following it.
-  const updateBaseline = args.provider === "grok"
-    ? fetchGrokUpdateBaseline({
-      binaryPath,
-      ...(args.installerIo ? { installerIo: args.installerIo } : {}),
-      ...(args.fetchImpl ? { fetchImpl: args.fetchImpl } : {}),
-    }).catch(() => null)
-    : null;
   const version = await run(executable.path, ["--version"], {
     timeout: VERSION_TIMEOUT_MS,
     cwd: args.cwd,
@@ -140,12 +121,13 @@ export async function collectAcpProviderDiagnostics(
       ? null
       : firstVersionLine(version.stderr, version.stdout) ?? "The CLI did not report a version.",
   };
-  if (updateBaseline) {
-    const baseline = await updateBaseline;
-    result.update = baseline
-      ? decideGrokUpdate({ currentVersion: versionLine, latestVersion: baseline.latestVersion, installer: baseline.installer })
-      : EMPTY_UPDATE_INFO;
-  }
+  result.update = versionLine
+    ? decideAcpProviderUpdate({
+      provider: args.provider,
+      versionLine,
+      installer: resolveAcpInstaller(args.provider, binaryPath, args.installerIo),
+    })
+    : null;
 
   const doctorArgs = DOCTOR_COMMANDS[args.provider];
   if (!args.runDoctor || !doctorArgs) return result;
@@ -171,42 +153,132 @@ export async function collectAcpProviderDiagnostics(
 }
 
 /**
- * Run one provider's one-click updater.
+ * The version standing of the CLI a chat is about to use, read once per binary.
  *
- * Currently Grok only. It re-resolves the binary and refuses when the installer
- * is unknown, so the renderer's button can never run a guess. The update runs
- * with the provider's config home in `GROK_HOME`, so a custom home updates
- * itself rather than the default `~/.grok`.
+ * A chat start pays one `--version` spawn the first time a binary is seen; later
+ * chats reuse the answer for 30 minutes, so an update made outside ADE is seen
+ * without a restart. An update through ADE clears it at once. Never rejects: an
+ * unreadable version is `null`, which raises no warning.
+ */
+const LAUNCH_STANDING_TTL_MS = 30 * 60_000;
+const launchStandingCache = new Map<string, { readAt: number; pending: Promise<AcpProviderUpdateInfo | null> }>();
+
+export function readAcpProviderLaunchStanding(args: {
+  provider: AcpChatProvider;
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+  run?: typeof spawnAsync;
+}): Promise<AcpProviderUpdateInfo | null> {
+  const env = args.env ?? process.env;
+  const executable = resolveAcpExecutable(args.provider, { env });
+  if (executable.source === "fallback-command") return Promise.resolve(null);
+  const key = `${args.provider}\0${executable.path}`;
+  const cached = launchStandingCache.get(key);
+  if (cached && Date.now() - cached.readAt < LAUNCH_STANDING_TTL_MS) return cached.pending;
+  const run = args.run ?? spawnAsync;
+  // The chat's environment: the brain adds the user's shell PATH there, and an
+  // npm CLI may need the Node it finds on it.
+  const pending = run(executable.path, ["--version"], { timeout: VERSION_TIMEOUT_MS, cwd: args.cwd, env })
+    .then((version) => {
+      const versionLine = version.status === 0 ? firstVersionLine(version.stdout, version.stderr) : null;
+      if (!versionLine) return null;
+      return decideAcpProviderUpdate({
+        provider: args.provider,
+        versionLine,
+        installer: resolveAcpInstaller(args.provider, executable.path),
+      });
+    })
+    .catch(() => null);
+  launchStandingCache.set(key, { readAt: Date.now(), pending });
+  return pending;
+}
+
+/** The chat warning for a CLI older than ADE supports, or null when none is due. */
+export function acpProviderOutdatedNotice(
+  provider: AcpChatProvider,
+  info: AcpProviderUpdateInfo | null,
+): AgentChatEvent | null {
+  if (!info || info.standing !== "below" || !info.installedVersion) return null;
+  const label = ACP_PROVIDER_VERSION_POLICY[provider].label;
+  return {
+    type: "system_notice",
+    noticeKind: "warning",
+    severity: "warning",
+    status: "acp_provider_outdated",
+    message: `${label} ${info.installedVersion} is older than ADE supports. Update to ${info.targetVersion}.`,
+    detail: {
+      providerUpdate: {
+        provider,
+        installedVersion: info.installedVersion,
+        targetVersion: info.targetVersion,
+        canUpdate: info.canUpdate,
+        note: info.note,
+      },
+    },
+  };
+}
+
+/**
+ * Updates in flight, by provider and binary. Two chat warnings, or a warning and
+ * Settings, would otherwise run two installs into the same npm prefix at once;
+ * a second request joins the first instead.
+ */
+const updatesInFlight = new Map<string, Promise<AcpProviderUpdateResult>>();
+
+/**
+ * Install the newest tested version of one provider CLI.
+ *
+ * It re-resolves the binary and refuses when the installer is unknown, so the
+ * renderer's button can never run a guess. Grok runs with its config home in
+ * `GROK_HOME`, so a custom home updates itself rather than the default `~/.grok`.
  */
 export async function runAcpProviderUpdate(args: {
   provider: AcpChatProvider;
   cwd: string;
   env?: NodeJS.ProcessEnv;
-  /** Test seam, same contract as `GrokSpawn`. */
-  run?: GrokSpawn;
+  /** Test seam, same contract as `AcpSpawn`. */
+  run?: AcpSpawn;
+  installerIo?: AcpInstallerIo;
 }): Promise<AcpProviderUpdateResult> {
-  if (args.provider !== "grok") {
+  const policy = ACP_PROVIDER_VERSION_POLICY[args.provider];
+  if (!policy) {
     return { ok: false, message: `Updates are not supported for ${args.provider}.`, version: null };
   }
-  const env = args.env ?? process.env;
-  const executable = resolveAcpExecutable("grok", { env });
+  const env = { ...(args.env ?? process.env) };
+  const executable = resolveAcpExecutable(args.provider, { env });
   if (executable.source === "fallback-command") {
-    return { ok: false, message: "Grok was not found on this machine.", version: null };
+    return { ok: false, message: `${policy.label} was not found on this machine.`, version: null };
   }
-  if (!resolveGrokInstaller(executable.path).installer) {
+  const installer = resolveAcpInstaller(args.provider, executable.path, args.installerIo);
+  if (!installer) {
     return {
       ok: false,
-      message: "ADE could not tell how this Grok was installed. Update it with the installer you used.",
+      message: `ADE could not tell how this ${policy.label} was installed. Update it with the installer you used.`,
       version: null,
     };
   }
-  return runGrokUpdate({
-    binaryPath: executable.path,
-    configHome: configHomeFor("grok", env) || null,
+  if (args.provider === "grok") {
+    const home = configHomeFor("grok", env);
+    if (home) env.GROK_HOME = home;
+  }
+  const key = `${args.provider}\0${executable.path}`;
+  const running = updatesInFlight.get(key);
+  if (running) return running;
+  const pending = runAcpProviderInstall({
+    provider: args.provider,
+    installer,
     env,
     cwd: args.cwd,
     ...(args.run ? { run: args.run } : {}),
+    ...(args.installerIo ? { io: args.installerIo } : {}),
+  }).finally(() => {
+    updatesInFlight.delete(key);
+    // Any attempt may have changed the binary, even one whose version check
+    // then failed; the next chat re-reads it (one `--version` spawn).
+    launchStandingCache.delete(key);
   });
+  updatesInFlight.set(key, pending);
+  return pending;
 }
 
 /**
@@ -233,9 +305,10 @@ export function formatAcpProviderDiagnosticsReport(
   ];
   if (diagnostics.update) {
     const versionIndex = lines.findIndex((line) => line.startsWith("version:"));
-    const updateLine = `latest: ${diagnostics.update.latestVersion ?? "unknown"}`
-      + ` (update available: ${diagnostics.update.updateAvailable ? "yes" : "no"},`
-      + ` installer: ${diagnostics.update.installer ?? "unknown"})`;
+    const { testedRange, standing, updateAvailable, installer } = diagnostics.update;
+    const updateLine = `tested: ${testedRange.min} to ${testedRange.max} (${standing},`
+      + ` update available: ${updateAvailable ? "yes" : "no"},`
+      + ` installer: ${installer ?? "unknown"})`;
     lines.splice(versionIndex + 1, 0, updateLine);
   }
   if (diagnostics.doctor) {

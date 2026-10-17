@@ -24,6 +24,7 @@ import {
   type SessionStatusPresentation,
 } from "../../../shared/sessionStatusPresentation";
 import { cn } from "../ui/cn";
+import { useTicker } from "../../lib/ticker";
 
 /** Renderer-only mapping from shared glyph identity to Phosphor icons. */
 function StatusGlyph({ glyph }: { glyph: SessionStatusGlyph }) {
@@ -79,16 +80,13 @@ function useElapsedLabel(sinceIso: string | null | undefined, enabled: boolean):
     const parsed = sinceIso ? Date.parse(sinceIso) : Number.NaN;
     return Number.isFinite(parsed) ? parsed : null;
   }, [sinceIso]);
-  const [nowMs, setNowMs] = React.useState(() => Date.now());
+  const active = enabled && sinceMs != null;
+  // One shared one-second timer for every elapsed label on screen, instead of
+  // an interval per row. The tick still lands every second, so the copy moves
+  // exactly when it did before.
+  const nowMs = useTicker(1_000, active);
 
-  React.useEffect(() => {
-    if (!enabled || sinceMs == null) return undefined;
-    setNowMs(Date.now());
-    const intervalId = window.setInterval(() => setNowMs(Date.now()), 1_000);
-    return () => window.clearInterval(intervalId);
-  }, [enabled, sinceMs]);
-
-  if (!enabled || sinceMs == null) return "";
+  if (!active || sinceMs == null) return "";
   return formatWorkingDuration(nowMs - sinceMs);
 }
 
@@ -97,16 +95,12 @@ function useFutureLabel(atIso: string | null | undefined, enabled: boolean): str
     const parsed = atIso ? Date.parse(atIso) : Number.NaN;
     return Number.isFinite(parsed) ? parsed : null;
   }, [atIso]);
-  const [nowMs, setNowMs] = React.useState(() => Date.now());
+  const active = enabled && atMs != null;
+  // The copy is minute-granular; the shared thirty-second tick is the same
+  // period the per-row timer used.
+  const nowMs = useTicker(30_000, active);
 
-  React.useEffect(() => {
-    if (!enabled || atMs == null) return undefined;
-    setNowMs(Date.now());
-    const intervalId = window.setInterval(() => setNowMs(Date.now()), 30_000);
-    return () => window.clearInterval(intervalId);
-  }, [atMs, enabled]);
-
-  if (!enabled || atMs == null) return "";
+  if (!active || atMs == null) return "";
   return formatFutureDuration(atMs, nowMs);
 }
 

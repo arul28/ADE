@@ -22,6 +22,7 @@ import type {
 } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { Button } from "../ui/Button";
+import { Banner } from "../ui/notice";
 import { AppleDeviceStage, isWebCodecsAvailable } from "./AppleDeviceStage";
 import type { AppleDevice3DFailure, AppleDeviceDuoProps } from "./AppleDevice3DView";
 import {
@@ -203,6 +204,9 @@ export function AppleDevicePane({
     runtimes,
     defaultNewDevice,
     refreshing,
+    listLoaded,
+    listFailed,
+    listError,
     bootedRead,
     refreshList,
     dropLaneDevice,
@@ -804,6 +808,29 @@ export function AppleDevicePane({
           />
         );
       case "no-device":
+        // Until a list read answers, "no device" only means "not known yet":
+        // the picker's empty card would claim no simulators are installed.
+        if (!listLoaded) {
+          return listFailed ? (
+            <div data-apple-list-failed="" className="flex size-full items-start justify-center px-4 py-6">
+              <div className="w-full max-w-sm">
+                <Banner
+                  layout="inline"
+                  model={{
+                    id: "apple-device-list",
+                    tone: "error",
+                    title: "Couldn't load this lane's simulators.",
+                    detail: describeAppleError(listError).sentence,
+                    busy: refreshing,
+                    actions: [{ label: "Retry", onClick: refreshList, disabled: refreshing }],
+                  }}
+                />
+              </div>
+            </div>
+          ) : (
+            <PaneMessage title="Loading simulators…" description={null} />
+          );
+        }
         return (
           <AppleDevicePicker
             installed={installed}
@@ -880,7 +907,17 @@ export function AppleDevicePane({
               deviceTypeIdentifier={deviceTypeIdentifier}
               orientation={orientation}
               devicePointSize={stream.devicePointSize}
-              interactive={appleInputAllowed(state)}
+              /*
+               * §A4: while Inspect owns the pointer, so does the overlay.
+               *
+               * In FLAT that gesture layer IS the container the overlay is
+               * drawn inside, and its pointer-down calls `setPointerCapture`,
+               * which retargets the click to the container — so a layer left
+               * live swallowed every click the overlay was there to receive.
+               * The input hook already refuses to send while inspecting
+               * (`enabled` above); this is the other half of that gate.
+               */
+              interactive={appleInputAllowed(state) && !inspectOn}
               duo={duoProps}
               onDeviceInput={input.send}
               onDeviceScroll={input.scroll}

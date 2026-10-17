@@ -33,6 +33,7 @@ import {
   buildClaudeBuiltinAgentOverrides,
   type ClaudeBuiltinAgentOverride,
 } from "../../../shared/claudeBuiltinAgentPrompts";
+import { claudeToolProfileBestGuess } from "../ai/claudeCodeInit";
 import {
   hasSubagentLaunch,
   subagentTypeName,
@@ -185,7 +186,8 @@ export function claudeSubagentLaunchExtras(
     agentEfforts.generalPurpose = efforts.defaultSubagentEffort;
     if (!pins.generalPurpose) pins.generalPurpose = followedModel;
   }
-  const agents = buildClaudeBuiltinAgentOverrides(pins, agentEfforts);
+  // A pin replaces the built-in either way, so an unknown machine gets the best guess.
+  const agents = buildClaudeBuiltinAgentOverrides(pins, agentEfforts, claudeToolProfileBestGuess());
   return {
     env: claudeSubagentEnv(subagentModel ? `${modelPrefix}${subagentModel}` : undefined),
     ...(Object.keys(agents).length ? { claudeAgents: agents } : {}),

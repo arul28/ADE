@@ -17,6 +17,55 @@ struct WorkSpawnNestingIndex: Equatable {
   )
 }
 
+/// Root parents whose same-lane nested subagents still keep them busy.
+/// Mirrors desktop `parentsWithBusySubagents`; the nesting index owns lineage
+/// validation and grandchild flattening, while this predicate owns liveness.
+func workBusySubagentParentIds(
+  sessions: [TerminalSessionSummary],
+  chatSummaries: [String: AgentChatSessionSummary],
+  archivedSessionIds: Set<String> = [],
+  now: Date
+) -> Set<String> {
+  let nesting = workIndexNestedSubagents(
+    sessions: sessions,
+    chatSummaries: chatSummaries,
+    now: now,
+    visibleParentIds: Set(sessions.map(\.id))
+  )
+  var parents: Set<String> = []
+  for (rootParentId, children) in nesting.childrenByRootParentId {
+    for child in children {
+      let archivedAt = child.archivedAt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+      guard archivedAt.isEmpty, !archivedSessionIds.contains(child.id),
+        !child.isFiledAsSnoozed(summary: chatSummaries[child.id], now: now)
+      else { continue }
+      let phase = workCanonicalSessionState(
+        session: child,
+        summary: chatSummaries[child.id],
+        now: now
+      ).phase
+      switch phase {
+      case .starting, .running, .stale:
+        parents.insert(rootParentId)
+      case .ready, .idle:
+        if workScheduledWakeIsPending(chatSummaries[child.id]?.nextWakeAt, now: now) {
+          parents.insert(rootParentId)
+        }
+      case .needsYou, .failed, .stopped, .ended, .settled:
+        continue
+      }
+    }
+  }
+  return parents
+}
+
+/// Desktop keeps an armed wake pending for two minutes after its fire time so
+/// small scheduler/delivery delays do not make a row jump to Done.
+func workScheduledWakeIsPending(_ nextWakeAt: String?, now: Date) -> Bool {
+  guard let wakeAt = workParsedDate(nextWakeAt) else { return false }
+  return now < wakeAt.addingTimeInterval(120)
+}
+
 func workSessionChildSectionId(parentId: String) -> String {
   "chat:\(parentId)"
 }

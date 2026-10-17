@@ -39,6 +39,7 @@ import type { createFileService } from "../../../../desktop/src/main/services/fi
 import type { createDiffService } from "../../../../desktop/src/main/services/diffs/diffService";
 import type { createGitOperationsService } from "../../../../desktop/src/main/services/git/gitOperationsService";
 import type { createGithubService } from "../../../../desktop/src/main/services/github/githubService";
+import type { createJiraService } from "../../../../desktop/src/main/services/jira/jiraService";
 import type { createConflictService } from "../../../../desktop/src/main/services/conflicts/conflictService";
 import type { createLaneEnvironmentService } from "../../../../desktop/src/main/services/lanes/laneEnvironmentService";
 import type { createLaneService } from "../../../../desktop/src/main/services/lanes/laneService";
@@ -110,6 +111,8 @@ import {
   type SyncLoopbackProbeResult,
   type SyncLoopbackValidationStatus,
 } from "./syncLoopbackProbe";
+import type { WebhookRemoteSource } from "./webhookRemoteCommands";
+import type { AutomationRuleRemoteSource } from "./automationRuleRemoteCommands";
 
 type SyncServiceArgs = {
   db: AdeDb;
@@ -166,6 +169,7 @@ type SyncServiceArgs = {
   ctoMemoryService?: CtoMemoryService | null;
   linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
   linearOAuthService?: ReturnType<typeof createLinearOAuthService> | null;
+  getJiraService?: () => ReturnType<typeof createJiraService> | null;
   /**
    * Resolvers for services that are constructed AFTER createSyncService in
    * main.ts. Using lazy getters lets the sync router forward remote commands
@@ -180,6 +184,10 @@ type SyncServiceArgs = {
   workToolsStateService?: WorkToolsStateService | null;
   /** Apple device environment for remote surfaces; absent off macOS. */
   appleDeviceService?: AppleDeviceRemoteService | null;
+  /** Webhook automations for remote surfaces (read-only). */
+  getWebhookAutomations?: () => WebhookRemoteSource | null;
+  /** Auto-handoff rules for the phone's session menu; null when automations are off. */
+  getAutomationRules?: () => AutomationRuleRemoteSource | null;
   appleStreamRelay?: AppleStreamTicketIssuer | null;
   getAppleRemoteBitrateKbpsCap?: () => number | null;
   /**
@@ -202,6 +210,15 @@ type SyncServiceArgs = {
    */
   sharedSyncListener?: SharedSyncListener | null;
   hostStartupEnabled?: boolean;
+  /**
+   * Whether this runtime may write the cluster record as its brain while it is
+   * not the selected host. Fixed at construction; only the machine's own ADE
+   * home sets it. Its project scopes boot with host startup off until one is
+   * selected, and must still claim a missing or dead record at startup. Every
+   * other runtime claims only while its host startup is on, so a runtime that
+   * cannot host (the desktop in-process runtime) never writes the record.
+   */
+  mayClaimCluster?: boolean;
   hostDiscoveryEnabled?: boolean;
   /**
    * Phone sync is hosted by the local ADE service. When enabled, legacy
@@ -414,7 +431,11 @@ const LOCAL_LANE_PRESENCE_HEARTBEAT_MS = 30_000;
 const CANONICAL_SYNC_PORT_MIGRATE_FIRST_MS = 2_000;
 const CANONICAL_SYNC_PORT_MIGRATE_MS = 15_000;
 const TRANSFER_READINESS_CACHE_MS = 15_000;
+const LIGHTWEIGHT_TRANSFER_READINESS_WAIT_MS = 2_000;
+const TRANSFER_READINESS_RETRY_COOLDOWN_MS = 5_000;
 const STALE_BRAIN_LAST_SEEN_MS = 5 * 60_000;
+const STALE_VIEWER_DRAFT_BRAIN_LAST_SEEN_MS = 3 * 24 * 60 * 60_000;
+const GHOST_BRAIN_LAST_SEEN_MS = 60 * 60_000;
 
 /**
  * This project follows another machine's sync brain, so this machine cannot
@@ -519,6 +540,51 @@ function isViewerDraftTransportError(error: unknown): boolean {
   }
   const message = error instanceof Error ? error.message : String(error);
   return VIEWER_DRAFT_TRANSPORT_ERROR_PATTERN.test(message);
+}
+
+export function shouldReclaimStaleViewerDraftAfterTransportFailure(args: {
+  hostStartupEnabled: boolean;
+  crdtSyncAvailable: boolean;
+  cluster: { brainDeviceId: string } | null;
+  localDevice: SyncRoleSnapshot["localDevice"];
+  brain: { lastSeenAt: string | null; updatedAt: string; metadata: Record<string, unknown> } | null;
+  draft: SyncDesktopConnectionDraft;
+  error: unknown;
+  now?: number;
+}): boolean {
+  if (!args.hostStartupEnabled || !args.crdtSyncAvailable) return false;
+  if (!isViewerDraftTransportError(args.error)) return false;
+  const originalLastSeenRaw = args.brain?.lastSeenAt ?? args.brain?.updatedAt;
+  const originalLastSeenMs = originalLastSeenRaw ? Date.parse(originalLastSeenRaw) : Number.NaN;
+  const lastSeenMs = args.brain?.lastSeenAt ? Date.parse(args.brain.lastSeenAt) : Number.NaN;
+  const staleByOriginalRule = args.cluster != null
+    && args.cluster.brainDeviceId !== args.localDevice.deviceId
+    && (!args.brain || !Number.isFinite(originalLastSeenMs)
+      || (args.now ?? Date.now()) - originalLastSeenMs > STALE_BRAIN_LAST_SEEN_MS);
+  // Preserve the original recovery for a draft that explicitly points back
+  // to this device; no cluster or the original stale check is enough.
+  if (isDraftTargetLocalDevice(args.draft, args.localDevice) && (!args.cluster || staleByOriginalRule)) return true;
+  if (!args.cluster) return false;
+  if (args.cluster.brainDeviceId === args.localDevice.deviceId) return false;
+  const localHostname = normalizeHostKey(
+    typeof args.localDevice.metadata?.hostname === "string" ? args.localDevice.metadata.hostname : null,
+  );
+  const brainHostname = normalizeHostKey(
+    typeof args.brain?.metadata.hostname === "string" ? args.brain.metadata.hostname : null,
+  );
+  const unseenForMs = Number.isFinite(lastSeenMs) ? (args.now ?? Date.now()) - lastSeenMs : Number.NaN;
+  // Default macOS hostnames collide, so require a distinct device id and a
+  // full hour without a heartbeat before treating a matching name as a ghost.
+  if (
+    localHostname
+    && brainHostname === localHostname
+    && args.cluster.brainDeviceId !== args.localDevice.deviceId
+    && unseenForMs >= GHOST_BRAIN_LAST_SEEN_MS
+  ) return true;
+  // A remote machine may be offline for hours; the longer threshold avoids
+  // disrupting ordinary reconnects while still clearing abandoned clusters.
+  return Number.isFinite(unseenForMs)
+    && unseenForMs > STALE_VIEWER_DRAFT_BRAIN_LAST_SEEN_MS;
 }
 
 function isRetryableHostBindError(error: unknown): boolean {
@@ -643,9 +709,18 @@ export function createSyncService(args: SyncServiceArgs) {
   let initializingPromise: Promise<void> | null = null;
   let initialized = false;
   let hostStartupEnabled = args.hostStartupEnabled !== false;
+  // Writing the cluster record as this device is allowed only for the machine
+  // brain (`mayClaimCluster`) or while this runtime is starting its own host.
+  // Read at each claim, never cached: `hostStartupEnabled` changes at runtime.
+  const mayClaimCluster = args.mayClaimCluster === true;
+  const canClaimCluster = (): boolean => mayClaimCluster || hostStartupEnabled;
   let hostDiscoveryEnabled = args.hostDiscoveryEnabled !== false;
   let transferReadinessCache: { value: SyncTransferReadiness; expiresAtMs: number } | null = null;
   let transferReadinessInFlight: Promise<SyncTransferReadiness> | null = null;
+  // Set when a computation fails. Awaiting light reads do not start another one
+  // before this passes, so a readiness that keeps throwing is not re-enumerated
+  // on every poll.
+  let transferReadinessRetryAtMs = 0;
   const forceHostRole = args.forceHostRole === true;
   const isCrdtSyncAvailable = (): boolean => args.db.sync.isAvailable?.() !== false;
   const assertPhonePairingAvailable = (): void => {
@@ -853,6 +928,7 @@ export function createSyncService(args: SyncServiceArgs) {
     linearCredentialService: args.linearCredentialService,
     linearOAuthService: args.linearOAuthService,
     getLinearIssueTracker: args.getLinearIssueTracker,
+    getJiraService: args.getJiraService,
     getExternalSessionsService: args.getExternalSessionsService,
     workToolsStateService: args.workToolsStateService,
     macDesktopService,
@@ -861,6 +937,8 @@ export function createSyncService(args: SyncServiceArgs) {
     appleDeviceService: args.appleDeviceService,
     appleStreamRelay: args.appleStreamRelay,
     getAppleRemoteBitrateKbpsCap: args.getAppleRemoteBitrateKbpsCap,
+    getWebhookAutomations: args.getWebhookAutomations,
+    getAutomationRules: args.getAutomationRules,
     projectConfigService: args.projectConfigService,
     portAllocationService: args.portAllocationService,
     laneEnvironmentService: args.laneEnvironmentService,
@@ -881,6 +959,50 @@ export function createSyncService(args: SyncServiceArgs) {
   const emitStatus = async (): Promise<void> => {
     if (disposed) return;
     args.onStatusChanged?.(await service.getStatus());
+  };
+
+  /**
+   * Offer a status snapshot without making the caller wait for it.
+   *
+   * `emitStatus` builds a whole `SyncRoleSnapshot`, and building one is not
+   * free: `getStatus` awaits `getTransferReadiness`, which enumerates
+   * `agentChatService.listSessions` and `sessionService.list`. `refreshRoleState`
+   * is the shared drain every role change joins, and `projectScope.ts` calls it
+   * as the sync-host "activation" phase under a 10 s budget, so a slow snapshot
+   * was reported as "Sync host activation … timed out" even when the host was
+   * up. The drain now finishes reaching the role and offers the snapshot after
+   * it; a caller that wants a snapshot reads `getStatus()` itself, which is what
+   * every one of them already did.
+   *
+   * The snapshot is still the same snapshot: the first offer calls
+   * `getStatus()` synchronously, at the exact point `await emitStatus()` used
+   * to, so it reads the same state and is built no later than before. Offers are
+   * serialized and coalesced, so a burst of role changes cannot run several
+   * enumerations at once and a listener never sees an older snapshot after a
+   * newer one — dropping a superseded snapshot is what `syncStatusEventPublisher`
+   * already does with them downstream.
+   */
+  let statusEmitInFlight: Promise<void> | null = null;
+  let statusEmitQueued = false;
+  const scheduleStatusEmit = (): void => {
+    if (statusEmitInFlight) {
+      statusEmitQueued = true;
+      return;
+    }
+    statusEmitInFlight = emitStatus()
+      .catch((error) => {
+        // Reaching the role succeeded; only the notification failed. Failing
+        // the caller for it is the confusion this path exists to remove.
+        args.logger.warn("sync.status_emit_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      })
+      .finally(() => {
+        statusEmitInFlight = null;
+        if (!statusEmitQueued || disposed) return;
+        statusEmitQueued = false;
+        scheduleStatusEmit();
+      });
   };
 
   const releaseHostSingletonLease = (): void => {
@@ -1021,6 +1143,7 @@ export function createSyncService(args: SyncServiceArgs) {
       // error anywhere.
       workToolsStateService: args.workToolsStateService,
       macDesktopService,
+      getWebhookAutomations: args.getWebhookAutomations,
       macDesktopSyncStream,
       appControlSyncStream,
       appleDeviceService: args.appleDeviceService,
@@ -1231,10 +1354,18 @@ export function createSyncService(args: SyncServiceArgs) {
     draft: SyncDesktopConnectionDraft;
     error: unknown;
   }): boolean => {
-    if (!hostStartupEnabled || !isCrdtSyncAvailable()) return false;
-    if (!isViewerDraftTransportError(argsIn.error)) return false;
-    if (!isDraftTargetLocalDevice(argsIn.draft, argsIn.localDevice)) return false;
-    return !argsIn.cluster || isStaleNonLocalBrainCluster(argsIn.cluster, argsIn.localDevice.deviceId);
+    const brain = argsIn.cluster
+      ? deviceRegistryService.getDevice(argsIn.cluster.brainDeviceId)
+      : null;
+    return shouldReclaimStaleViewerDraftAfterTransportFailure({
+      hostStartupEnabled,
+      crdtSyncAvailable: isCrdtSyncAvailable(),
+      cluster: argsIn.cluster,
+      localDevice: argsIn.localDevice,
+      brain,
+      draft: argsIn.draft,
+      error: argsIn.error,
+    });
   };
 
   /**
@@ -1250,16 +1381,19 @@ export function createSyncService(args: SyncServiceArgs) {
     if (cluster?.brainDeviceId === localDevice.deviceId) return null;
     const savedDraft = readSavedDraft();
     if (savedDraft) {
-      // A draft aimed at this machine is a leftover the refresh reclaims once
-      // the dial fails, so it ends with this machine hosting. The reclaim only
-      // runs when the cluster record is absent or names a stale brain: a fresh
-      // record naming another machine wins, and the refresh leaves this
-      // project a viewer. Report the blocker there too, so a caller never tears
-      // down the current host for a target that will not take over.
-      if (
-        isDraftTargetLocalDevice(savedDraft, localDevice)
-        && (!cluster || isStaleNonLocalBrainCluster(cluster, localDevice.deviceId))
-      ) return null;
+      // A failed viewer dial may lead this project to host. Use the same
+      // stale-host criteria as refresh so the pre-switch guard agrees.
+      if (shouldReclaimStaleViewerDraftAfterTransportFailure({
+        hostStartupEnabled,
+        crdtSyncAvailable: isCrdtSyncAvailable(),
+        cluster,
+        localDevice,
+        brain: cluster ? deviceRegistryService.getDevice(cluster.brainDeviceId) : null,
+        draft: savedDraft,
+        error: Object.assign(new Error("Synthetic transport failure for blocker evaluation."), {
+          code: "ECONNREFUSED",
+        }),
+      })) return null;
       return {
         reason: "saved_connection",
         host: savedDraft.host,
@@ -1302,7 +1436,10 @@ export function createSyncService(args: SyncServiceArgs) {
                 updatedByDeviceId: localDevice.deviceId,
               });
             }
-          } else if (!savedDraft) {
+          } else if (!savedDraft && canClaimCluster()) {
+            // Only a runtime that may claim writes the cluster record. A runtime
+            // that cannot host and still claimed would make peers follow a brain
+            // that never serves sync.
             if (!cluster) {
               cluster = deviceRegistryService.bootstrapLocalBrainIfNeeded();
             } else if (isStaleNonLocalBrainCluster(cluster, localDevice.deviceId)) {
@@ -1345,7 +1482,7 @@ export function createSyncService(args: SyncServiceArgs) {
                 args.logger.warn("sync.role.viewer_connect_failed", {
                   error: error instanceof Error ? error.message : String(error),
                 });
-                if (shouldReclaimStaleViewerDraft({ cluster, localDevice, draft, error })) {
+                if (canClaimCluster() && shouldReclaimStaleViewerDraft({ cluster, localDevice, draft, error })) {
                   args.logger.warn("sync.role.viewer_stale_draft_reclaimed", {
                     host: draft.host,
                     port: draft.port,
@@ -1370,7 +1507,9 @@ export function createSyncService(args: SyncServiceArgs) {
             }
           }
         } finally {
-          await emitStatus();
+          // Offered, not awaited: reaching the role is what a caller of this
+          // drain is waiting for, and the snapshot is a notification about it.
+          scheduleStatusEmit();
         }
       } while (refreshQueued && !disposed);
       } finally {
@@ -1477,10 +1616,60 @@ export function createSyncService(args: SyncServiceArgs) {
         };
         return value;
       })
+      .catch((error: unknown) => {
+        transferReadinessRetryAtMs = Date.now() + TRANSFER_READINESS_RETRY_COOLDOWN_MS;
+        throw error;
+      })
       .finally(() => {
         transferReadinessInFlight = null;
       });
     return transferReadinessInFlight;
+  };
+
+  /**
+   * Lightweight status reads take the cached value. Before the first computation
+   * lands there is no cache, and the skipped placeholder reads "not ready".
+   *
+   * A read that acts on `ready` (`awaitTransferReadiness`: `ade sync status`)
+   * joins the running computation, or starts one, and waits for it. The wait is
+   * bounded: the computation waits on the chat scheduler and summarizes every
+   * chat, and a status read must not hang on that. Past the bound the read
+   * returns the placeholder, and the computation still fills the cache for the
+   * next read. A computation that just failed is not started again by these
+   * reads until the retry cooldown passes.
+   *
+   * Every other lightweight read (the desktop top bar's) keeps the behavior it
+   * had before this option: the cache, the computation already running, or the
+   * placeholder. It never starts a computation, so it cannot wait on a cold one.
+   */
+  const getLightweightTransferReadiness = async (
+    awaitReadiness: boolean,
+  ): Promise<SyncTransferReadiness> => {
+    if (transferReadinessCache) return transferReadinessCache.value;
+    if (!awaitReadiness) {
+      if (transferReadinessInFlight) {
+        return transferReadinessInFlight.catch(() => buildSkippedTransferReadiness());
+      }
+      return buildSkippedTransferReadiness();
+    }
+    if (!transferReadinessInFlight && Date.now() < transferReadinessRetryAtMs) {
+      return buildSkippedTransferReadiness();
+    }
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    const bound = new Promise<SyncTransferReadiness>((resolve) => {
+      timeoutId = setTimeout(
+        () => resolve(buildSkippedTransferReadiness()),
+        LIGHTWEIGHT_TRANSFER_READINESS_WAIT_MS,
+      );
+    });
+    try {
+      return await Promise.race([
+        getTransferReadiness().catch(() => buildSkippedTransferReadiness()),
+        bound,
+      ]);
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
+    }
   };
 
   const service = {
@@ -1663,7 +1852,7 @@ export function createSyncService(args: SyncServiceArgs) {
         routeHealth,
         client,
         transferReadiness: options?.includeTransferReadiness === false
-          ? (transferReadinessCache?.value ?? buildSkippedTransferReadiness())
+          ? await getLightweightTransferReadiness(options?.awaitTransferReadiness === true)
           : await getTransferReadiness({ force: options?.forceTransferReadiness === true }),
         crdtSyncAvailable,
         survivableStateText:
@@ -1758,6 +1947,11 @@ export function createSyncService(args: SyncServiceArgs) {
 
     getPin(): string | null {
       return pinStore.getPin();
+    },
+
+    /** This computer's sync device id — the key for per-device account settings. */
+    getLocalDeviceId(): string {
+      return deviceRegistryService.getLocalDeviceId();
     },
 
     async setPin(pin: string): Promise<SyncRoleSnapshot> {
@@ -1916,6 +2110,13 @@ export function createSyncService(args: SyncServiceArgs) {
     async transferBrainToLocal(): Promise<SyncRoleSnapshot> {
       const current = await this.getStatus({ forceTransferReadiness: true });
       if (current.role === "brain") return current;
+      // Refused before any write: a runtime that cannot host would claim the
+      // record here, peers would follow it, and it would never serve sync.
+      if (!canClaimCluster()) {
+        throw new Error(
+          "This ADE runtime cannot host sync, so it cannot take the host role. Make this project the host from the machine's ADE runtime.",
+        );
+      }
       if (!current.transferReadiness.ready) {
         throw new Error(
           "Stop live chats and terminals before transferring the host role.",

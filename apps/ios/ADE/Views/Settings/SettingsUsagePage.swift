@@ -212,7 +212,7 @@ struct SettingsUsagePage: View {
 
   var body: some View {
     ScrollView {
-      LazyVStack(alignment: .leading, spacing: ADEUsageLayout.sectionGap) {
+      LazyVStack(alignment: .leading, spacing: 14) {
         rangeControl
         costBand
         chartBand
@@ -220,16 +220,14 @@ struct SettingsUsagePage: View {
         metricStrip
         breakdownBand
         if let error = store.statsErrorMessage ?? store.errorMessage {
-          Text(error)
-            .font(ADEUsageType.detailFont())
-            .foregroundStyle(ADEColor.warning)
-            .frame(maxWidth: .infinity, alignment: .leading)
+          ADESettingsNotice(message: error, tone: .warn)
         }
       }
       .padding(.horizontal, 16)
-      .padding(.vertical, 20)
+      .padding(.top, 8)
+      .padding(.bottom, 36)
     }
-    .background(SettingsUsageBackdrop().ignoresSafeArea())
+    .background(ADEColor.pageBackground.ignoresSafeArea())
     .adeNavigationGlass()
     .navigationTitle("Usage")
     .navigationBarTitleDisplayMode(.inline)
@@ -295,98 +293,64 @@ struct SettingsUsagePage: View {
   // MARK: Range
 
   private var rangeControl: some View {
-    Picker("Range", selection: $rangeRaw) {
-      ForEach(Self.ranges, id: \.id) { range in
-        Text(range.title).tag(range.id)
-      }
-    }
-    .pickerStyle(.segmented)
-    .accessibilityLabel("Usage range")
+    ADEKitSegmented(selection: $rangeRaw, options: Self.ranges.map { (value: $0.id, title: $0.title) })
+      .accessibilityLabel("Usage range")
   }
 
-  // MARK: Cost hero
+  // MARK: Cost
 
   private var costBand: some View {
-    VStack(alignment: .leading, spacing: ADEUsageLayout.rowGap) {
-      Text("ESTIMATED COST")
-        .font(ADEUsageType.microFont(.semibold))
-        .tracking(0.8)
-        .foregroundStyle(ADEColor.textMuted)
-
-      HStack(alignment: .firstTextBaseline, spacing: 2) {
-        Text(adeUsageCost(model.totalCostUsd))
-          .font(ADEUsageType.heroFont())
-          .foregroundStyle(ADEColor.textPrimary)
-        Button {
-          estimationSheetPresented = true
-        } label: {
-          Text("*")
-            .font(ADEUsageType.titleFont())
-            .foregroundStyle(ADEColor.purpleAccent)
-            .padding(.horizontal, 8)
-            .frame(minWidth: 44, minHeight: 44, alignment: .leading)
-            .contentShape(Rectangle())
-        }
+    ADEKitCard(title: "Cost", symbol: "dollarsign.circle", action: {
+      Button("How it's worked out") { estimationSheetPresented = true }
         .buttonStyle(.plain)
         .accessibilityLabel("How this figure was worked out")
-        Spacer(minLength: 0)
-      }
+    }) {
+      VStack(alignment: .leading, spacing: 14) {
+        ADEKitStat(
+          label: "At full API rates",
+          value: adeUsageCost(model.totalCostUsd),
+          detail: billing.flatMap { $0.turns > 0
+            ? "ADE chats: \(adeUsageCost($0.billedUsd)) billed · \(adeUsageCost($0.planValueUsd)) plan value"
+            : nil },
+          size: 30
+        )
 
-      Text("* if billed at full API rate")
-        .font(ADEUsageType.microFont())
-        .foregroundStyle(ADEColor.textMuted)
-
-      if let billing, billing.turns > 0 {
-        Text("ADE chats · billed to API keys \(adeUsageCost(billing.billedUsd)) · plan value \(adeUsageCost(billing.planValueUsd))")
-          .font(ADEUsageType.detailFont())
-          .monospacedDigit()
-          .foregroundStyle(ADEColor.textSecondary)
-          .fixedSize(horizontal: false, vertical: true)
-      }
-
-      if let split = model.costSplit, split.total > 0 {
-        SettingsUsageCostSplitBars(split: split)
-      }
-
-      if !model.providers.isEmpty {
-        costSplitBar
-        VStack(spacing: 8) {
-          ForEach(model.providers.prefix(5)) { provider in
-            HStack(spacing: 8) {
-              if let assetName = provider.assetName {
-                Image(assetName)
-                  .resizable()
-                  .scaledToFit()
-                  .frame(width: 14, height: 14)
-                  .accessibilityHidden(true)
-              } else {
-                Circle().fill(provider.color).frame(width: 8, height: 8)
-                  .accessibilityHidden(true)
+        if !model.providers.isEmpty {
+          costSplitBar
+          VStack(spacing: 0) {
+            ForEach(model.providers.prefix(5)) { provider in
+              HStack(spacing: 9) {
+                if let assetName = provider.assetName {
+                  ADEProviderMark(assetName: assetName, size: 15)
+                } else {
+                  ADEKitDot(color: provider.color, size: 8)
+                    .frame(width: 15)
+                }
+                Text(provider.label)
+                  .font(.system(size: 14))
+                  .foregroundStyle(ADEColor.textPrimary)
+                  .lineLimit(1)
+                Spacer(minLength: 8)
+                Text("\(Int((provider.share * 100).rounded()))%")
+                  .font(.adeMono(11.5))
+                  .foregroundStyle(ADEColor.textMuted)
+                  .frame(width: 40, alignment: .trailing)
+                Text(adeUsageCost(provider.costUsd))
+                  .font(.adeMono(13, weight: .medium))
+                  .foregroundStyle(ADEColor.textPrimary)
+                  .frame(width: 80, alignment: .trailing)
               }
-              Text(provider.label)
-                .font(ADEUsageType.bodyFont())
-                .foregroundStyle(ADEColor.textSecondary)
-                .lineLimit(1)
-              Spacer(minLength: 8)
-              Text("\(Int((provider.share * 100).rounded()))%")
-                .font(ADEUsageType.detailFont())
-                .monospacedDigit()
-                .foregroundStyle(ADEColor.textMuted)
-                .frame(width: 44, alignment: .trailing)
-              Text(adeUsageCost(provider.costUsd))
-                .font(ADEUsageType.bodyFont(.semibold))
-                .monospacedDigit()
-                .foregroundStyle(ADEColor.textPrimary)
-                .frame(width: 76, alignment: .trailing)
+              .frame(minHeight: 30)
+              .accessibilityElement(children: .combine)
             }
-            .accessibilityElement(children: .combine)
           }
+        }
+
+        if let split = model.costSplit, split.total > 0 {
+          SettingsUsageCostSplitBars(split: split)
         }
       }
     }
-    .padding(ADEUsageLayout.cardPadding)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(usageCardBackground)
   }
 
   private var costSplitBar: some View {
@@ -401,58 +365,32 @@ struct SettingsUsagePage: View {
       }
       .clipShape(Capsule())
     }
-    .frame(height: 8)
+    .frame(height: 6)
     .accessibilityHidden(true)
   }
 
   // MARK: Chart
 
   private var chartBand: some View {
-    VStack(alignment: .leading, spacing: ADEUsageLayout.rowGap) {
-      HStack(alignment: .firstTextBaseline) {
-        Text(model.chart.metric == .cost ? "DAILY COST" : "DAILY TOKENS")
-          .font(ADEUsageType.microFont(.semibold))
-          .tracking(0.8)
-          .foregroundStyle(ADEColor.textMuted)
-        Spacer(minLength: 8)
-        if model.chart.isCombinedFallback, model.chart.hasData {
-          Text("Combined")
-            .font(ADEUsageType.microFont())
-            .foregroundStyle(ADEColor.textMuted)
-        }
-      }
+    ADEKitCard(
+      title: model.chart.metric == .cost ? "Daily cost" : "Daily tokens",
+      symbol: "chart.bar",
+      count: model.chart.isCombinedFallback && model.chart.hasData ? "combined" : nil
+    ) {
       SettingsUsageDailyChart(model: model.chart)
-      if model.chart.isCombinedFallback, model.chart.hasData {
-        Text("This machine reports daily totals without a provider split. Update ADE on it to see one line per provider.")
-          .font(ADEUsageType.microFont())
-          .foregroundStyle(ADEColor.textMuted)
-          .fixedSize(horizontal: false, vertical: true)
-      }
     }
-    .padding(ADEUsageLayout.cardPadding)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(usageCardBackground)
   }
 
   // MARK: Live limits
 
   private var limitsBand: some View {
-    VStack(alignment: .leading, spacing: ADEUsageLayout.rowGap) {
-      HStack(alignment: .firstTextBaseline) {
-        Text("LIVE LIMITS")
-          .font(ADEUsageType.microFont(.semibold))
-          .tracking(0.8)
-          .foregroundStyle(ADEColor.textMuted)
-        Spacer(minLength: 8)
-        if let snapshot = store.snapshot {
-          Text("Checked \(adeUsageRelativeTime(snapshot.lastPolledAt))")
-            .font(ADEUsageType.microFont())
-            .foregroundStyle(ADEColor.textMuted)
-        }
-      }
-
+    ADEKitCard(
+      title: "Limits",
+      symbol: "gauge.with.dots.needle.33percent",
+      count: store.snapshot.map { "checked \(adeUsageRelativeTime($0.lastPolledAt))" }
+    ) {
       if let snapshot = store.snapshot {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: 22) {
           ForEach(quotaProviders(snapshot), id: \.self) { provider in
             ADEUsageLimitsProviderSection(
               provider: provider,
@@ -466,14 +404,11 @@ struct SettingsUsagePage: View {
           }
         }
       } else {
-        Text("Pair with an updated ADE machine to see live Claude and Codex limits.")
-          .font(ADEUsageType.detailFont())
+        Text("Connect an up-to-date ADE computer to see live limits.")
+          .font(.system(size: 13))
           .foregroundStyle(ADEColor.textMuted)
       }
     }
-    .padding(ADEUsageLayout.cardPadding)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(usageCardBackground)
   }
 
   /// Accounts pooled by email: the same login reported by two machines is one
@@ -497,74 +432,42 @@ struct SettingsUsagePage: View {
   // MARK: Metric strip
 
   private var metricStrip: some View {
-    VStack(alignment: .leading, spacing: ADEUsageLayout.rowGap) {
-      Text("TOKENS")
-        .font(ADEUsageType.microFont(.semibold))
-        .tracking(0.8)
-        .foregroundStyle(ADEColor.textMuted)
-
+    ADEKitCard(title: "Tokens", symbol: "number") {
       LazyVGrid(
         columns: [GridItem(.flexible(), alignment: .leading), GridItem(.flexible(), alignment: .leading)],
         alignment: .leading,
-        spacing: 18
+        spacing: 16
       ) {
-        metricTile("Total", adeUsageCompact(model.totalTokens))
-        metricTile("Cached", adeUsageCompact(model.cachedTokens))
-        metricTile("Uncached", adeUsageCompact(model.uncachedTokens))
-        metricTile("Output", adeUsageCompact(model.outputTokens))
-        metricTile("Cached share", "\(Int(model.cacheSharePercent.rounded()))%")
+        ADEKitStat(label: "Total", value: adeUsageCompact(model.totalTokens), size: 19)
+        ADEKitStat(label: "Output", value: adeUsageCompact(model.outputTokens), size: 19)
+        ADEKitStat(label: "Cached", value: adeUsageCompact(model.cachedTokens), size: 19)
+        ADEKitStat(label: "Uncached", value: adeUsageCompact(model.uncachedTokens), size: 19)
+        ADEKitStat(label: "Cached share", value: "\(Int(model.cacheSharePercent.rounded()))%", size: 19)
       }
     }
-    .padding(ADEUsageLayout.cardPadding)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(usageCardBackground)
-  }
-
-  private func metricTile(_ label: String, _ value: String) -> some View {
-    VStack(alignment: .leading, spacing: 4) {
-      Text(value)
-        .font(ADEUsageType.titleFont())
-        .monospacedDigit()
-        .foregroundStyle(ADEColor.textPrimary)
-        .lineLimit(1)
-      Text(label)
-        .font(ADEUsageType.detailFont())
-        .foregroundStyle(ADEColor.textMuted)
-    }
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .accessibilityElement(children: .combine)
-    .accessibilityLabel("\(label), \(value)")
   }
 
   // MARK: Breakdown
 
   private var breakdownBand: some View {
-    VStack(alignment: .leading, spacing: ADEUsageLayout.rowGap) {
-      Text("BREAKDOWN")
-        .font(ADEUsageType.microFont(.semibold))
-        .tracking(0.8)
-        .foregroundStyle(ADEColor.textMuted)
-
-      if ledgerAvailable {
-        Picker("Breakdown", selection: $breakdownView) {
-          ForEach(SettingsUsageBreakdownView.allCases, id: \.self) { view in
-            Text(view.title).tag(view)
-          }
+    ADEKitCard(title: "Breakdown", symbol: "list.bullet") {
+      VStack(alignment: .leading, spacing: 12) {
+        if ledgerAvailable {
+          ADEKitSegmented(
+            selection: $breakdownView,
+            options: SettingsUsageBreakdownView.allCases.map { (value: $0, title: $0.title) }
+          )
+          .onChange(of: breakdownView) { _, _ in breakdownLane = nil }
+          .accessibilityLabel("Breakdown view")
         }
-        .pickerStyle(.segmented)
-        .onChange(of: breakdownView) { _, _ in breakdownLane = nil }
-        .accessibilityLabel("Breakdown view")
-      }
 
-      if breakdownView == .models {
-        modelsList
-      } else {
-        ledgerList
+        if breakdownView == .models {
+          modelsList
+        } else {
+          ledgerList
+        }
       }
     }
-    .padding(ADEUsageLayout.cardPadding)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(usageCardBackground)
   }
 
   @ViewBuilder
@@ -572,13 +475,13 @@ struct SettingsUsagePage: View {
     if model.models.isEmpty {
       Text(model.hasAnything
         ? "This range has activity but no per-model ledger yet."
-        : "Nothing here yet — your first Claude or Codex turn shows up within a minute.")
-        .font(ADEUsageType.detailFont())
+        : "Nothing here yet. Your first chat shows up within a minute.")
+        .font(.system(size: 13))
         .foregroundStyle(ADEColor.textSecondary)
         .fixedSize(horizontal: false, vertical: true)
     } else {
       let total = model.models.reduce(0) { $0 + ($1.costUsd ?? 0) }
-      VStack(spacing: 12) {
+      VStack(spacing: 0) {
         ForEach(model.models.prefix(12)) { entry in
           NavigationLink {
             SettingsUsageModelDetailScreen(syncService: syncService, provider: entry.provider, model: entry.model, preset: rangeRaw)
@@ -592,7 +495,7 @@ struct SettingsUsagePage: View {
               showsChevron: true
             )
           }
-          .buttonStyle(.plain)
+          .buttonStyle(ADEKitRowButtonStyle())
         }
       }
     }
@@ -605,16 +508,15 @@ struct SettingsUsagePage: View {
         breakdownLane = nil
         breakdownView = .lane
       } label: {
-        Text("Lanes › \(lane.name)")
-          .font(ADEUsageType.detailFont(.medium))
-          .foregroundStyle(ADEColor.purpleAccent)
+        Label("Lanes › \(lane.name)", systemImage: "chevron.left")
+          .font(.system(size: 13, weight: .medium))
+          .foregroundStyle(ADEColor.accent)
       }
       .buttonStyle(.plain)
     }
-    Text(breakdownView == .account ? "ADE chats on this machine. Billed is what API keys were charged." : "ADE chats in this project. Billed is what API keys were charged.")
-      .font(ADEUsageType.microFont())
+    Text(breakdownView == .account ? "ADE chats on this machine." : "ADE chats in this project.")
+      .font(.system(size: 12))
       .foregroundStyle(ADEColor.textMuted)
-      .fixedSize(horizontal: false, vertical: true)
     if let breakdown, breakdown.by == breakdownView.rawValue {
       if breakdown.rows.isEmpty {
         Text("No ADE chat turns in this range.")
@@ -622,7 +524,7 @@ struct SettingsUsagePage: View {
           .foregroundStyle(ADEColor.textSecondary)
       } else {
         let total = breakdown.totals.costUsd
-        VStack(spacing: 12) {
+        VStack(spacing: 0) {
           ForEach(breakdown.rows) { row in
             let rowView = SettingsUsageBreakdownRowView(
               label: row.label,
@@ -638,7 +540,7 @@ struct SettingsUsagePage: View {
                 breakdownLane = (laneId, row.label)
                 breakdownView = .chat
               } label: { rowView }
-              .buttonStyle(.plain)
+              .buttonStyle(ADEKitRowButtonStyle())
             } else {
               rowView
             }
@@ -663,15 +565,6 @@ struct SettingsUsagePage: View {
       ProgressView().frame(maxWidth: .infinity)
     }
   }
-
-  private var usageCardBackground: some View {
-    RoundedRectangle(cornerRadius: ADEUsageLayout.cardCorner, style: .continuous)
-      .fill(ADEColor.surfaceBackground.opacity(0.82))
-      .overlay(
-        RoundedRectangle(cornerRadius: ADEUsageLayout.cardCorner, style: .continuous)
-          .stroke(ADEColor.glassBorder, lineWidth: 0.75)
-      )
-  }
 }
 
 // MARK: - Estimation footnote
@@ -688,7 +581,7 @@ struct SettingsUsageEstimationSheet: View {
   var body: some View {
     NavigationStack {
       ScrollView {
-        VStack(alignment: .leading, spacing: ADEUsageLayout.rowGap) {
+        VStack(alignment: .leading, spacing: 12) {
           Text("This is what the range would have cost at full API rates. Subscription plans bill separately, so it is a yardstick, not a bill.")
             .font(ADEUsageType.bodyFont())
             .foregroundStyle(ADEColor.textSecondary)
@@ -711,19 +604,13 @@ struct SettingsUsageEstimationSheet: View {
               VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
                   if let assetName = provider.assetName {
-                    Image(assetName)
-                      .resizable()
-                      .scaledToFit()
-                      .frame(width: 16, height: 16)
-                      .accessibilityHidden(true)
+                    ADEProviderMark(assetName: assetName, size: 16)
                   }
                   Text(provider.label)
                     .font(ADEUsageType.bodyFont(.semibold))
                     .foregroundStyle(ADEColor.textPrimary)
                   Spacer(minLength: 8)
-                  Text(provider.estimation.shortLabel)
-                    .font(ADEUsageType.microFont(.semibold))
-                    .foregroundStyle(provider.estimation.isEstimated ? ADEColor.warning : ADEColor.success)
+                  ADEKitTag(text: provider.estimation.shortLabel, tone: provider.estimation.isEstimated ? .warn : .ok)
                 }
                 Text(provider.estimation.explanation)
                   .font(ADEUsageType.detailFont())
@@ -738,7 +625,7 @@ struct SettingsUsageEstimationSheet: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(20)
       }
-      .background(SettingsUsageBackdrop().ignoresSafeArea())
+      .background(ADEColor.pageBackground.ignoresSafeArea())
       .navigationTitle("How this is worked out")
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
@@ -749,14 +636,6 @@ struct SettingsUsageEstimationSheet: View {
     }
   }
 }
-
-/// Quiet page backdrop, matched to the rest of Settings.
-struct SettingsUsageBackdrop: View {
-  var body: some View {
-    ADEColor.recessedBackground.opacity(0.55)
-  }
-}
-
 
 // MARK: - Cost split and breakdown pieces
 
@@ -791,8 +670,8 @@ struct SettingsUsageCostSplitBars: View {
           ("Ultrafast premium", split.ultrafastPremium, color(0x4A3AA7, 0x9085E9)),
         ])
       } else {
-        Text("By speed · all at standard rates")
-          .font(ADEUsageType.microFont())
+        Text("All at standard speed rates")
+          .font(.system(size: 12))
           .foregroundStyle(ADEColor.textMuted)
       }
     }
@@ -806,10 +685,8 @@ struct SettingsUsageSplitBar: View {
   var body: some View {
     let visible = segments.filter { $0.1 > 0 }
     let total = visible.reduce(0) { $0 + $1.1 }
-    VStack(alignment: .leading, spacing: 6) {
-      Text(title)
-        .font(ADEUsageType.microFont())
-        .foregroundStyle(ADEColor.textMuted)
+    VStack(alignment: .leading, spacing: 7) {
+      ADEEyebrow(title)
       GeometryReader { proxy in
         HStack(spacing: 2) {
           ForEach(Array(visible.enumerated()), id: \.offset) { _, segment in
@@ -820,7 +697,7 @@ struct SettingsUsageSplitBar: View {
         }
         .clipShape(Capsule())
       }
-      .frame(height: 8)
+      .frame(height: 6)
       .accessibilityHidden(true)
       FlowLegend(items: visible.map { (label: $0.0, value: adeUsageCost($0.1), color: $0.2) })
     }
@@ -837,13 +714,7 @@ private struct FlowLegend: View {
     let columns = [GridItem(.adaptive(minimum: 130), spacing: 8, alignment: .leading)]
     LazyVGrid(columns: columns, alignment: .leading, spacing: 4) {
       ForEach(Array(items.enumerated()), id: \.offset) { _, item in
-        HStack(spacing: 5) {
-          RoundedRectangle(cornerRadius: 2).fill(item.color).frame(width: 8, height: 8)
-          Text(item.label).foregroundStyle(ADEColor.textMuted)
-          Text(item.value).foregroundStyle(ADEColor.textPrimary).monospacedDigit()
-        }
-        .font(ADEUsageType.microFont())
-        .lineLimit(1)
+        ADEKitLegendItem(color: item.color, label: item.label, value: item.value)
       }
     }
   }
@@ -860,37 +731,33 @@ struct SettingsUsageBreakdownRowView: View {
   var body: some View {
     HStack(alignment: .center, spacing: 10) {
       if let assetName {
-        Image(assetName).resizable().scaledToFit().frame(width: 16, height: 16).accessibilityHidden(true)
+        ADEProviderMark(assetName: assetName, size: 15)
       }
       VStack(alignment: .leading, spacing: 2) {
         Text(label)
-          .font(ADEUsageType.bodyFont(.medium))
+          .font(.system(size: 14, weight: .medium))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
         if let detail, !detail.isEmpty {
           Text(detail)
-            .font(ADEUsageType.detailFont())
+            .font(.system(size: 12))
             .foregroundStyle(ADEColor.textMuted)
             .lineLimit(1)
         }
       }
       Spacer(minLength: 8)
       Text("\(Int((share * 100).rounded()))%")
-        .font(ADEUsageType.detailFont())
-        .monospacedDigit()
+        .font(.adeMono(11.5))
         .foregroundStyle(ADEColor.textMuted)
       Text(adeUsageCost(cost))
-        .font(ADEUsageType.bodyFont(.semibold))
-        .monospacedDigit()
+        .font(.adeMono(13, weight: .medium))
         .foregroundStyle(ADEColor.textPrimary)
         .frame(width: 76, alignment: .trailing)
       if showsChevron {
-        Image(systemName: "chevron.right")
-          .font(.system(size: 11, weight: .semibold))
-          .foregroundStyle(ADEColor.textMuted)
-          .accessibilityHidden(true)
+        ADESettingsChevron()
       }
     }
+    .frame(minHeight: 44)
     .contentShape(Rectangle())
     .accessibilityElement(children: .combine)
   }
@@ -917,19 +784,30 @@ struct SettingsUsageModelDetailScreen: View {
 
   var body: some View {
     ScrollView {
-      VStack(alignment: .leading, spacing: 18) {
+      VStack(alignment: .leading, spacing: 14) {
         if let detail {
-          HStack(spacing: 12) {
-            kpi("Cost", adeUsageCost(detail.costUsd))
-            kpi("Tokens", adeUsageCompact(detail.totalTokens))
-            kpi("Per 1M", detail.costPerMillionUsd.map(adeUsageCost) ?? "—")
-            kpi("Cache hit", detail.cacheHitRate.map { "\(Int(($0 * 100).rounded()))%" } ?? "—")
+          LazyVGrid(
+            columns: [GridItem(.flexible(), alignment: .leading), GridItem(.flexible(), alignment: .leading)],
+            alignment: .leading,
+            spacing: 16
+          ) {
+            ADEKitStat(label: "Cost", value: adeUsageCost(detail.costUsd), size: 19)
+            ADEKitStat(label: "Tokens", value: adeUsageCompact(detail.totalTokens), size: 19)
+            ADEKitStat(label: "Per 1M", value: detail.costPerMillionUsd.map(adeUsageCost) ?? "—", size: 19)
+            ADEKitStat(label: "Cache hit", value: detail.cacheHitRate.map { "\(Int(($0 * 100).rounded()))%" } ?? "—", size: 19)
           }
-          trend(detail.daily)
+          .adeKitCard()
+          ADEKitCard(title: "Daily cost", symbol: "chart.bar") {
+            trend(detail.daily)
+          }
           if let split = detail.costSplit, split.total > 0 {
-            SettingsUsageCostSplitBars(split: split)
+            ADEKitCard(title: "Split", symbol: "square.split.2x1") {
+              SettingsUsageCostSplitBars(split: split)
+            }
           }
-          priceSection(detail)
+          ADEKitCard(title: "Price", symbol: "tag") {
+            priceSection(detail)
+          }
         } else if failed {
           Text("This machine can't show model detail yet. Update ADE on it and reconnect.")
             .font(ADEUsageType.detailFont())
@@ -946,7 +824,7 @@ struct SettingsUsageModelDetailScreen: View {
       }
       .padding(16)
     }
-    .background(SettingsUsageBackdrop().ignoresSafeArea())
+    .background(ADEColor.pageBackground.ignoresSafeArea())
     .navigationTitle(model)
     .navigationBarTitleDisplayMode(.inline)
     .task { await load() }
@@ -969,31 +847,16 @@ struct SettingsUsageModelDetailScreen: View {
     }
   }
 
-  private func kpi(_ label: String, _ value: String) -> some View {
-    VStack(alignment: .leading, spacing: 2) {
-      Text(label.uppercased())
-        .font(ADEUsageType.microFont(.semibold))
-        .foregroundStyle(ADEColor.textMuted)
-      Text(value)
-        .font(ADEUsageType.bodyFont(.semibold))
-        .monospacedDigit()
-        .foregroundStyle(ADEColor.textPrimary)
-        .lineLimit(1)
-        .minimumScaleFactor(0.7)
-    }
-    .frame(maxWidth: .infinity, alignment: .leading)
-  }
-
   private func trend(_ days: [MobileAdeUsageModelDetailDay]) -> some View {
     let peak = days.map(\.costUsd).max() ?? 0
     return VStack(alignment: .leading, spacing: 6) {
-      Text("Daily cost · peak \(adeUsageCost(peak))")
-        .font(ADEUsageType.microFont())
+      Text("Peak \(adeUsageCost(peak))")
+        .font(.adeMono(11))
         .foregroundStyle(ADEColor.textMuted)
       HStack(alignment: .bottom, spacing: 2) {
         ForEach(days) { day in
           RoundedRectangle(cornerRadius: 1.5)
-            .fill(ADEColor.purpleAccent)
+            .fill(ADEColor.providerBrand(for: provider))
             .frame(height: max(2, peak > 0 ? 56 * day.costUsd / peak : 2))
             .frame(maxWidth: 14)
         }
@@ -1006,9 +869,6 @@ struct SettingsUsageModelDetailScreen: View {
   @ViewBuilder
   private func priceSection(_ detail: MobileAdeUsageModelDetail) -> some View {
     VStack(alignment: .leading, spacing: 8) {
-      Text("PRICE")
-        .font(ADEUsageType.microFont(.semibold))
-        .foregroundStyle(ADEColor.textMuted)
       Text(detail.price.unpriced == true
         ? "No public price, so this model counts as $0."
         : "$\(detail.price.input.formatted()) in · $\(detail.price.output.formatted()) out per 1M · \(detail.price.source == "custom" ? "your price" : detail.price.source == "list" ? "models.dev" : "built-in estimate")")
@@ -1026,12 +886,10 @@ struct SettingsUsageModelDetailScreen: View {
           Button("Back to automatic") { Task { await save(clearPrice: true, done: "Back to automatic pricing.") } }
             .disabled(saving)
         }
-        Text("MAP TO")
-          .font(ADEUsageType.microFont(.semibold))
-          .foregroundStyle(ADEColor.textMuted)
+        ADEEyebrow("Map to")
           .padding(.top, 6)
-        Text("Count this model as another one. Its tokens and cost move to that model, at that model's price.")
-          .font(ADEUsageType.microFont())
+        Text("Count this model as another one, at that model's price.")
+          .font(.system(size: 12))
           .foregroundStyle(ADEColor.textMuted)
           .fixedSize(horizontal: false, vertical: true)
         HStack {

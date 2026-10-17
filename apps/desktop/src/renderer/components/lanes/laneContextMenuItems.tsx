@@ -24,7 +24,7 @@ import { buildWebClientUrl } from "../../../shared/webClientUrl";
 import { openExternalUrl } from "../../lib/openExternal";
 import { revealLabel } from "../../lib/platform";
 import { revealLaneWorktree } from "../../lib/revealLaneWorktree";
-import { COLORS, MONO_FONT } from "./laneDesignTokens";
+import { COLORS, MONO_FONT, fgTint } from "./laneDesignTokens";
 import { LANE_CLASSIC_COLORS, LANE_RAINBOW_COLORS, colorsInUse, type LaneColor } from "./laneColorPalette";
 
 export function LaneMenuGlyph({ icon: Icon }: { icon: Icon }) {
@@ -194,9 +194,7 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
     top.push({
       kind: "action",
       key: "work-pin",
-      label: isWorkPinned
-        ? "Unpin from Work sidebar"
-        : "Pin to Work sidebar",
+      label: isWorkPinned ? "Unpin" : "Pin",
       icon: isWorkPinned ? PushPinSlash : PushPin,
       onSelect: () => { onClose(); onToggleWorkPin(pinId); },
     });
@@ -596,7 +594,7 @@ function SwatchGroup({
                 cursor: isTaken ? "not-allowed" : "pointer",
                 outline: isSelected ? `2px solid ${COLORS.textPrimary}` : "none",
                 outlineOffset: 1,
-                boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.18)",
+                boxShadow: `inset 0 0 0 1px ${fgTint(18)}`,
                 border: "none",
                 padding: 0,
                 display: "inline-flex",

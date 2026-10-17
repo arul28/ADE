@@ -20,8 +20,7 @@
  * - `usageConfidence` is set only when the totals are not `measured`: read back
  *   from a local ledger or summed from per-request counts (`derived`), or taken
  *   from the prompt result of a dialect whose ledger could not be read
- *   (`estimated`, because Copilot answers `/compact` with the previous turn's
- *   usage verbatim).
+ *   (`estimated`).
  * - `subagentUsage` is helper agents' usage the ledger reported. It is usage,
  *   not work the user watched, so it never becomes a subagent event (which
  *   would draw a card).
@@ -30,12 +29,11 @@
  *   told to the user in one `system_notice` per served model. The shared
  *   `isServedModelMismatch` decides: another spelling, a build or effort
  *   variant (`grok-4.7-build` for `grok-4.7`), or a router pick (`auto`) is
- *   the same model. Copilot on a plan that includes only Auto serves its own
- *   pick whatever ADE asks for.
+ *   the same model.
  *
  * ## Inferred compaction
  *
- * Qwen, Kimi, and Copilot report context size but never report a compaction.
+ * Qwen and Kimi report context size but never report a compaction.
  * When a sample falls by more than 40% AND by more than 20k tokens against the
  * previous sample in the same session, with the same window size and no model
  * switch in between, the host publishes one `context_compact` marked
@@ -43,7 +41,7 @@
  * so the drop that follows it is never inferred as a second one, and no drop
  * is inferred while a provider compaction is still open. The reverse
  * holds too: when a drop already produced an inferred compaction during a
- * turn, the Copilot ledger's compaction row for that turn confirms it and is
+ * turn, the provider's ledger compaction row for that turn confirms it and is
  * not published again, so the session's compaction count rises once.
  */
 
@@ -356,9 +354,7 @@ export function createAcpTurnTelemetry(args: CreateAcpTurnTelemetryArgs): AcpTur
     // Totals, in order of trust: the provider's own turn report, the local
     // ledger read back after the turn, the prompt result, and last the sum of
     // the per-request reports. The ledger outranks the prompt result because
-    // it is the provider's own per-request record: Copilot answers a slash
-    // command such as `/compact` with the PREVIOUS turn's usage verbatim
-    // (verified live on 1.0.88), while its ledger holds the real rows.
+    // it is the provider's own per-request record.
     let totals: AcpUsageSample | null = null;
     let usageConfidence: AcpDoneTelemetry["usageConfidence"];
     if (hasTokenCounts(turn.turnUsage)) totals = turn.turnUsage;
@@ -368,7 +364,7 @@ export function createAcpTurnTelemetry(args: CreateAcpTurnTelemetryArgs): AcpTur
     } else if (hasTokenCounts(promptUsage)) {
       totals = promptUsage;
       // The ledger exists but gave nothing back, so the prompt result cannot
-      // be checked against it, and Copilot's can be the previous turn's.
+      // be checked against it.
       if (args.hasLocalUsage) usageConfidence = "estimated";
     } else if (turn.requestCount > 0 && hasTokenCounts(turn.requestTotals)) {
       totals = turn.requestTotals;

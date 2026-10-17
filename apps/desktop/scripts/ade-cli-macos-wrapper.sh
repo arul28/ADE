@@ -32,6 +32,13 @@ case "$CLI_NAME:$CHANNEL" in
     ;;
 esac
 
+# Node's compile cache stops the ~19 MB cli.cjs bundle from being re-parsed on every launch.
+# Node ignores a cache directory it cannot use, so a bad path only loses the speedup.
+# An explicit NODE_COMPILE_CACHE or NODE_DISABLE_COMPILE_CACHE from the caller wins.
+if [ -z "${NODE_COMPILE_CACHE:-}" ] && [ -z "${NODE_DISABLE_COMPILE_CACHE:-}" ]; then
+  export NODE_COMPILE_CACHE="${ADE_HOME:-$HOME/.ade}/cache/node-compile"
+fi
+
 if [ -n "${ADE_CLI_NODE:-}" ]; then
   exec "$ADE_CLI_NODE" "$CLI_JS" "$@"
 fi

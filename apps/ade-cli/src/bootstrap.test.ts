@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { createEventBuffer, type BufferedEvent } from "./eventBuffer";
 import { spawnSync } from "node:child_process";
 import {
@@ -24,12 +24,24 @@ import {
 import { createTestDirectoryLink, removeTestTree } from "./test/filesystem";
 
 const tempRoots: string[] = [];
+const worktreeTempRoots: string[] = [];
 
 function makeTempRoot(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-bootstrap-skills-"));
   tempRoots.push(root);
   return root;
 }
+
+function makeWorktreeTempRoot(): string {
+  const root = fs.mkdtempSync(path.join(process.cwd(), ".test-brain-wiring-"));
+  tempRoots.push(root);
+  worktreeTempRoots.push(root);
+  return root;
+}
+
+afterAll(async () => {
+  await Promise.all(worktreeTempRoots.map(removeTestTree));
+});
 
 function writeFile(filePath: string, contents = ""): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -46,6 +58,7 @@ function writeSkillsManifest(skillsRoot: string): void {
 afterEach(async () => {
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
+  await new Promise<void>((resolve) => setImmediate(resolve));
   for (const root of tempRoots.splice(0)) {
     await removeTestTree(root);
   }
@@ -78,7 +91,11 @@ describe("createAdeRuntime dispose", () => {
 
   // A runtime that outlives its dispose keeps the database handle and every
   // started service alive; the sync-host retry loop builds one per attempt.
-  it.each(["embedded", "chat", "full"] as const)(
+  // Skipped on Windows: the check counts every pipe in the process, and on a
+  // Windows runner unrelated pipes outlive the window (and a cold build can
+  // pass the timeout), so it failed there on unrelated branches. The Linux
+  // job runs the same contract.
+  it.skipIf(process.platform === "win32").each(["embedded", "chat", "full"] as const)(
     "releases the database and everything a %s runtime started",
     async (runtimeProfile) => {
       vi.stubEnv("ADE_HOME", makeTempRoot());
@@ -102,6 +119,94 @@ describe("createAdeRuntime dispose", () => {
     },
     60_000,
   );
+
+  it("routes brain post-merge cleanup through the rebase suggestion service", async () => {
+    const isolatedRoot = makeWorktreeTempRoot();
+    const projectRoot = path.join(isolatedRoot, "project");
+    const adeHome = path.join(isolatedRoot, "home");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    vi.stubEnv("ADE_HOME", adeHome);
+    vi.stubEnv("ADE_PROJECT_ROOT", "");
+    for (const key of Object.keys(process.env).filter((name) => name.startsWith("ADE_RPC_"))) {
+      vi.stubEnv(key, "");
+    }
+    const gitInit = spawnSync("git", ["init"], { cwd: projectRoot, windowsHide: true, encoding: "utf8" });
+    expect(gitInit.status, gitInit.stderr).toBe(0);
+    const setDefaultBranch = spawnSync("git", ["symbolic-ref", "HEAD", "refs/heads/main"], {
+      cwd: projectRoot,
+      windowsHide: true,
+      encoding: "utf8",
+    });
+    expect(setDefaultBranch.status, setDefaultBranch.stderr).toBe(0);
+
+    const runtime = await createAdeRuntime({
+      projectRoot,
+      workspaceRoot: projectRoot,
+      runtimeProfile: "full",
+      chatRuntime: "headless-stub",
+    });
+    try {
+      const lane = runtime.laneService.getPrimaryLane();
+      expect(lane).not.toBeNull();
+      runtime.db.run(
+        `insert into pull_requests (
+           id, project_id, lane_id, repo_owner, repo_name, github_pr_number,
+           github_url, state, base_branch, head_branch, created_at, updated_at
+         ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          "pr-brain-cleanup",
+          runtime.projectId,
+          lane!.laneId,
+          "test-owner",
+          "test-repo",
+          1,
+          "https://github.com/test-owner/test-repo/pull/1",
+          "merged",
+          "main",
+          "feature/test",
+          new Date().toISOString(),
+          new Date().toISOString(),
+        ],
+      );
+      if (!runtime.rebaseSuggestionService || !runtime.prService) {
+        throw new Error("Headless PR cleanup services were not created.");
+      }
+      const rebaseSuggestions = runtime.rebaseSuggestionService as { refresh: () => Promise<void> };
+      const refresh = vi.spyOn(rebaseSuggestions, "refresh").mockResolvedValue(undefined);
+
+      const cleanup = await runtime.prService.runPostMergeCleanup({ prId: "pr-brain-cleanup" });
+
+      expect(cleanup).toEqual({ branchDeleted: false, laneArchived: false, childAutoRebaseBlockedCleanup: false });
+      expect(refresh).toHaveBeenCalledTimes(1);
+    } finally {
+      await runtime.dispose();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await removeTestTree(isolatedRoot);
+      expect(fs.existsSync(isolatedRoot)).toBe(false);
+    }
+  }, 60_000);
+
+  it("does not schedule background auto-pull in an embedded runtime", async () => {
+    const projectRoot = makeWorktreeTempRoot();
+    vi.stubEnv("ADE_HOME", path.join(projectRoot, "home"));
+    vi.stubEnv("ADE_PROJECT_ROOT", "");
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    const runtime = await createAdeRuntime({
+      projectRoot,
+      workspaceRoot: projectRoot,
+      runtimeProfile: "embedded",
+      chatRuntime: "headless-stub",
+    });
+    try {
+      expect(setTimeoutSpy.mock.calls.filter(([, delay]) => delay === 20_000)).toHaveLength(0);
+    } finally {
+      await runtime.dispose();
+      setTimeoutSpy.mockRestore();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await removeTestTree(projectRoot);
+      expect(fs.existsSync(projectRoot)).toBe(false);
+    }
+  }, 60_000);
 });
 
 describe("bindDeviceReleaseOnChatEnd", () => {
@@ -720,4 +825,51 @@ describe("createEventBuffer", () => {
     expect(scanCapped.nextCursor).toBe(3);
     expect(scanCapped.hasMore).toBe(true);
   });
+});
+
+describe("project database open failure", () => {
+  /**
+   * A directory where the database belongs, so SQLite answers "unable to open
+   * database file" — a failure `classifySqliteOpenError` has no bucket for.
+   * The code the recovery UI reads is then `unknown` and the sentence every
+   * caller gets is the generic one, which is correct: raw platform text must
+   * not cross to a renderer or a phone. The platform's own words must still be
+   * reported somewhere, or "ADE could not open the project" reaches every
+   * surface with nothing that says why — the state that made this failure
+   * class unreadable.
+   */
+  it("reports the cause behind the generic project-open sentence", async () => {
+    vi.stubEnv("ADE_HOME", makeTempRoot());
+    const projectRoot = makeTempRoot();
+    fs.mkdirSync(path.join(projectRoot, ".ade", "ade.db"), { recursive: true });
+
+    const failure = await createAdeRuntime({
+      projectRoot,
+      workspaceRoot: projectRoot,
+      runtimeProfile: "embedded",
+      chatRuntime: "headless-stub",
+    }).then(
+      () => null,
+      (error: unknown) => error as Error & { code?: string; detail?: string },
+    );
+
+    expect(failure?.message).toBe("ADE could not open the project data store.");
+    expect(failure?.code).toBe("unknown");
+    expect(failure?.detail).toContain("unable to open database file");
+
+    const logPath = path.join(projectRoot, ".ade", "transcripts", "logs", "ade-cli.jsonl");
+    await vi.waitFor(() => {
+      expect(fs.readFileSync(logPath, "utf8")).toContain("unable to open database file");
+    }, { timeout: 10_000 });
+    const line = fs.readFileSync(logPath, "utf8")
+      .split("\n")
+      .find((entry) => entry.includes("project.db_open_failed"));
+    const meta = JSON.parse(line ?? "{}").meta ?? {};
+    expect(meta.code).toBe("unknown");
+    expect(meta.detail).toContain("unable to open database file");
+    // The raw Error travels as a live object so `logBridge` titles the Sentry
+    // issue by it. `JSON.stringify` drops an Error's non-enumerable name and
+    // message, so the line shows `{}`; the key is what proves it was passed.
+    expect(meta).toHaveProperty("error");
+  }, 60_000);
 });

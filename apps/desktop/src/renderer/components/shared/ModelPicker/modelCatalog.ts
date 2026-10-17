@@ -5,6 +5,7 @@ import {
   LOCAL_PROVIDER_LABELS,
   MODEL_REGISTRY,
   getLocalModelIdTail,
+  modelRegistryGeneration,
   parseDynamicDroidModelRef,
   parseDynamicOpenCodeModelRef,
   parseLocalProviderFromModelId,
@@ -27,6 +28,8 @@ import {
   isPersonalChatCatalogScopeKey,
   clearRuntimeCatalogScopeDescriptors,
   peekRuntimeCatalogScopeDescriptors,
+  peekRuntimeCatalogScopeParse,
+  rememberRuntimeCatalogScopeParse,
   runtimeCatalogScopeDescriptors,
 } from "./runtimeCatalogCache";
 
@@ -342,6 +345,7 @@ export function filterFallbackModelsToRuntimeCatalog(
 const PICKER_FAMILY_BY_CATALOG_GROUP: Record<ProviderGroupKey, ProviderFamily> = {
   claude: "anthropic",
   codex: "openai",
+  muse: "muse",
   droid: "factory",
   cursor: "cursor",
   opencode: "opencode",
@@ -368,6 +372,7 @@ const PICKER_FALLBACK_FAMILIES: readonly ProviderFamily[] = [
   "moonshot",
   "xai",
   "github-copilot",
+  "muse",
 ];
 
 function pickerFamilyForCatalogGroup(groupKey: string, fallbackFamily?: string): ProviderFamily {
@@ -395,6 +400,18 @@ export function descriptorsFromAgentChatModelCatalog(
   scopeKey: string = DEFAULT_RUNTIME_CATALOG_SCOPE,
 ): { models: RuntimeCatalogModelDescriptor[]; availableModelIds: string[] } {
   if (!catalog) return { models: [], availableModelIds: [] };
+  const generation = modelRegistryGeneration();
+  if (!filter) {
+    const memo = peekRuntimeCatalogScopeParse(scopeKey);
+    if (memo && memo.catalog === catalog && memo.registryGeneration === generation) {
+      // Keep the scope's descriptor map in step with the memo. Both are dropped
+      // together now, so this is cheap insurance rather than a load-bearing
+      // repair: it means a memo hit and a real parse leave identical state.
+      const scoped = runtimeCatalogScopeDescriptors(scopeKey);
+      for (const descriptor of memo.models) scoped.set(descriptor.id, descriptor);
+      return { models: memo.models, availableModelIds: memo.availableModelIds };
+    }
+  }
   const merged = new Map<string, RuntimeCatalogModelDescriptor>();
   const available = new Set<string>();
   const scopedDescriptors = runtimeCatalogScopeDescriptors(scopeKey);
@@ -456,6 +473,10 @@ export function descriptorsFromAgentChatModelCatalog(
                 ? { cursorCliVariants: base.cursorCliVariants }
                 : {}),
             ...(model.openCodeFast ? { openCodeFast: model.openCodeFast } : {}),
+            // Copilot reports its context tiers and window sizes per model.
+            ...(model.supportedContextTiers?.length ? { supportedContextTiers: model.supportedContextTiers } : {}),
+            ...(typeof model.contextWindow === "number" && model.contextWindow > 0 ? { contextWindow: model.contextWindow } : {}),
+            ...(typeof model.longContextWindow === "number" && model.longContextWindow > 0 ? { longContextWindow: model.longContextWindow } : {}),
             subProvider: useSubsectionAsProvider
               ? subsection.label || model.providerName || provider.displayName || undefined
               : model.providerName || provider.displayName || subsection.label || undefined,
@@ -475,5 +496,9 @@ export function descriptorsFromAgentChatModelCatalog(
       }
     }
   }
-  return { models: [...merged.values()], availableModelIds: [...available] };
+  const parsed = { models: [...merged.values()], availableModelIds: [...available] };
+  if (!filter) {
+    rememberRuntimeCatalogScopeParse(scopeKey, { catalog, registryGeneration: generation, ...parsed });
+  }
+  return parsed;
 }

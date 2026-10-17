@@ -46,6 +46,8 @@ let workProviderImportRules: [String: WorkProviderImportRules] = [
   "droid": WorkProviderImportRules(chatContinue: .root, chatCopy: .any, cliContinue: .home, cliCopy: .any),
   "opencode": WorkProviderImportRules(chatContinue: .root, chatCopy: .any, cliContinue: .home, cliCopy: .home),
   "pi": WorkProviderImportRules(chatContinue: .root, chatCopy: .any, cliContinue: .home, cliCopy: .home),
+  // Chat continue resumes the same Muse session over MSP.
+  "muse": WorkProviderImportRules(chatContinue: .root, chatCopy: .any, cliContinue: .home, cliCopy: .none),
   "qwen": WorkProviderImportRules(chatContinue: .none, chatCopy: .any, cliContinue: .home, cliCopy: .home),
   "kimi": WorkProviderImportRules(chatContinue: .none, chatCopy: .any, cliContinue: .home, cliCopy: .none),
   "grok": WorkProviderImportRules(chatContinue: .none, chatCopy: .any, cliContinue: .home, cliCopy: .home),
@@ -314,14 +316,16 @@ func workSetImportSurfacePreference(_ provider: String, surface: String, default
 /// Every provider the importer scans, in display order. Mirrors
 /// `EXTERNAL_SESSION_PROVIDERS`.
 let workImportSessionProviders = [
-  "claude", "codex", "cursor", "droid", "opencode", "pi", "qwen", "kimi", "grok", "copilot",
+  "claude", "codex", "cursor", "droid", "opencode", "pi", "muse", "qwen", "kimi", "grok", "copilot",
 ]
 
-/// The ACP providers a host learned together with `work.getExternalSessionDetail`.
+/// The providers a host learned together with `work.getExternalSessionDetail`.
+/// Copilot is here for its CLI history import, which the SDK provider change
+/// leaves alone; its chat provider is no longer ACP.
 let workImportAcpProviders: Set<String> = ["qwen", "kimi", "grok", "copilot"]
 
 /// Providers worth asking this host about. An older host (no
-/// `work.getExternalSessionDetail`) refuses the ACP providers by name, so the
+/// `work.getExternalSessionDetail`) refuses these providers by name, so the
 /// phone does not ask it about them at all.
 func workImportScanProviders(hostKnowsAcpProviders: Bool) -> [String] {
   hostKnowsAcpProviders
@@ -359,6 +363,7 @@ func workExternalSessionProviderName(_ provider: String) -> String {
   case "droid": return "Droid"
   case "opencode": return "OpenCode"
   case "pi": return "Pi"
+  case "muse": return "Muse"
   case "qwen": return "Qwen"
   case "kimi": return "Kimi"
   case "grok": return "Grok"

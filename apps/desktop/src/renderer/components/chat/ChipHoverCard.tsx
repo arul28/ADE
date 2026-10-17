@@ -18,10 +18,12 @@
 //   - **Degrades to nothing.** No lane, no session row, no PR record, no
 //     network: the card simply does not appear. There is no error state for a
 //     hover.
-//   - **Reads, never fetches, except for PRs.** Lanes, chats, and Linear issues
-//     already live in app state. PRs go through `listPrsCoalesced`, the same
-//     coalesced reader the composer's `#` suggestions use, and only once the
-//     user has actually hovered.
+//   - **Reads, never fetches, except for PRs and Linear issues.** Lanes and
+//     chats already live in app state. PRs go through `listPrsCoalesced`, the
+//     same coalesced reader the composer's `#` suggestions use; Linear issues go
+//     through the issue viewer's cache (`linearIssueStore`), so a hover after
+//     the issue was opened costs nothing and a hover before it warms the tab.
+//     Both only once the user has actually hovered.
 //   - **The CHAT's machine, not the tab's.** A lane id is unique per machine,
 //     not globally, so resolving one against the project tab's lane list can
 //     match a DIFFERENT lane that happens to share the id — and then print its
@@ -41,11 +43,17 @@ import type {
   TerminalSessionSummary,
 } from "../../../shared/types";
 import { listPrsCoalesced } from "../../lib/prReadCache";
+import { loadLinearIssue, peekLinearIssue } from "../issues/linearIssueStore";
+import { loadGitHubIssue, peekGitHubIssue } from "../issues/githubIssueStore";
+import { GitHubIssueStateIcon } from "../lanes/githubBrand";
+import { issueRefFromUrl } from "../../../shared/issueRefs";
+import { LinearStateIcon } from "../lanes/linearBrand";
 import { relativeWhen } from "../../lib/format";
 import { useLanesForPin, useSessionsForPin } from "../../state/crossMachineLanes";
 import { computeTooltipPosition, type TooltipPlacement } from "../ui/tooltipPosition";
 import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
+import { useChipPreviewImage } from "./chipPreviewStore";
 
 /** Everything a card may read, all of it belonging to the CHAT's machine. */
 export type ChipCardSources = {
@@ -93,13 +101,31 @@ export type ChipCardData =
   | { kind: "pr"; number: number; title: string | null; state: PrState; repo: string | null }
   | { kind: "lane"; name: string; branch: string | null }
   | { kind: "chat"; title: string; lastActivity: string | null }
-  | { kind: "linear"; identifier: string; title: string };
+  | {
+    kind: "linear";
+    identifier: string;
+    title: string;
+    stateName?: string | null;
+    stateType?: string | null;
+    assigneeName?: string | null;
+  }
+  | {
+    kind: "github-issue";
+    reference: string;
+    title: string;
+    state: "open" | "closed";
+    stateReason: string | null;
+    assignees: string[];
+  }
+  | { kind: "link"; host: string; title: string | null; imageUrl: string };
 
 type ChipCardTarget =
   | { kind: "pr"; number: number; owner: string | null; repo: string | null }
   | { kind: "lane"; laneId: string }
   | { kind: "chat"; sessionId: string }
-  | { kind: "linear"; identifier: string };
+  | { kind: "linear"; identifier: string }
+  | { kind: "link"; host: string }
+  | { kind: "github-issue"; owner: string; repo: string; number: number };
 
 function githubPullTarget(url: string): ChipCardTarget | null {
   try {
@@ -143,6 +169,18 @@ export function chipCardTarget(chip: Chip): ChipCardTarget | null {
         : null;
     case "linear_issue":
       return chip.label.trim() ? { kind: "linear", identifier: chip.label.trim().toUpperCase() } : null;
+    case "web_page": {
+      if (source.origin !== "url") return null;
+      try {
+        return { kind: "link", host: new URL(source.url).hostname.replace(/^www\./i, "") };
+      } catch {
+        return null;
+      }
+    }
+    case "issue": {
+      const ref = source.origin === "url" ? issueRefFromUrl(source.url) : null;
+      return ref?.provider === "github" ? { kind: "github-issue", owner: ref.owner, repo: ref.repo, number: ref.number } : null;
+    }
     default:
       return null;
   }
@@ -162,13 +200,21 @@ function linearTitleFromLanes(lanes: LaneSummary[], identifier: string): string 
 /**
  * Resolve one card's contents. `previewTitle` is the already-fetched smart-link
  * title for the same chip, so a Linear issue nobody has linked to a lane still
- * has something to show without a second round trip.
+ * has something to show without a second round trip. `previewImageUrl` is the
+ * same preview's og:image: a web page gets a card only when it has one — the
+ * pill already shows the title, so a title-only card would repeat it.
  */
 export async function loadChipCardData(
   sources: ChipCardSources,
   target: ChipCardTarget,
   previewTitle: string | null,
+  previewImageUrl: string | null = null,
 ): Promise<ChipCardData | null> {
+  if (target.kind === "link") {
+    return previewImageUrl
+      ? { kind: "link", host: target.host, title: previewTitle, imageUrl: previewImageUrl }
+      : null;
+  }
   if (target.kind === "lane") {
     const lane = sources.lanes.find((candidate) => candidate.id === target.laneId);
     return lane ? { kind: "lane", name: lane.name, branch: lane.branchRef || null } : null;
@@ -182,7 +228,32 @@ export async function loadChipCardData(
       lastActivity: session.lastActivityAt || session.endedAt || session.startedAt || null,
     };
   }
+  if (target.kind === "github-issue") {
+    const issue = peekGitHubIssue(sources.rootPath, target.owner, target.repo, target.number)
+      ?? await loadGitHubIssue(sources.rootPath, target.owner, target.repo, target.number).catch(() => null);
+    if (!issue || issue.isPullRequest) return null;
+    return {
+      kind: "github-issue",
+      reference: `${issue.owner}/${issue.repo}#${issue.number}`,
+      title: issue.title,
+      state: issue.state,
+      stateReason: issue.stateReason,
+      assignees: issue.assignees.map((entry) => entry.login),
+    };
+  }
   if (target.kind === "linear") {
+    const issue = peekLinearIssue(sources.rootPath, target.identifier)
+      ?? await loadLinearIssue(sources.rootPath, target.identifier).catch(() => null);
+    if (issue) {
+      return {
+        kind: "linear",
+        identifier: issue.identifier,
+        title: issue.title,
+        stateName: issue.stateName,
+        stateType: issue.stateType,
+        assigneeName: issue.assigneeName,
+      };
+    }
     const title = linearTitleFromLanes(sources.lanes, target.identifier) ?? previewTitle;
     return title ? { kind: "linear", identifier: target.identifier, title } : null;
   }
@@ -225,44 +296,110 @@ const PR_STATE_DOT: Record<PrState, string> = {
   closed: "bg-rose-400",
 };
 
+/** og:image width; the box is reserved at 1.91:1 (the Open Graph ratio) before bytes land. */
+const LINK_IMAGE_WIDTH = 240;
+
+function LinkCardBody({ data }: { data: Extract<ChipCardData, { kind: "link" }> }) {
+  // Requested here, i.e. only once the card is open — never by the pill.
+  const image = useChipPreviewImage(data.imageUrl);
+  const [loaded, setLoaded] = useState(false);
+  return (
+    <div style={{ width: LINK_IMAGE_WIDTH }}>
+      {image?.status === "failed" ? null : (
+        <div className="mb-1.5 aspect-[1.91/1] w-full overflow-hidden rounded-md bg-white/[0.05]">
+          {image?.status === "ready" ? (
+            <img
+              src={image.dataUrl}
+              alt=""
+              draggable={false}
+              onLoad={() => setLoaded(true)}
+              className={`h-full w-full object-cover transition-opacity duration-200 ease-out ${loaded ? "opacity-100" : "opacity-0"}`}
+            />
+          ) : null}
+        </div>
+      )}
+      {data.title ? <div className="line-clamp-2 text-[12px] font-medium text-white/90">{data.title}</div> : null}
+      <div className="mt-0.5 truncate text-[11px] text-white/55">{data.host}</div>
+    </div>
+  );
+}
+
 function ChipCardBody({ data }: { data: ChipCardData }) {
+  if (data.kind === "link") return <LinkCardBody data={data} />;
   if (data.kind === "pr") {
     return (
       <>
-        <div className="flex items-center gap-1.5 text-[11px] text-white/60">
+        <div className="flex items-center gap-1.5 text-[11px] text-fg/60">
           <span aria-hidden className={`h-1.5 w-1.5 shrink-0 rounded-full ${PR_STATE_DOT[data.state]}`} />
-          <span className="font-medium text-white/85">#{data.number}</span>
+          <span className="font-medium text-fg/85">#{data.number}</span>
           <span className="capitalize">{data.state}</span>
           {data.repo ? <span className="truncate">· {data.repo}</span> : null}
         </div>
-        {data.title ? <div className="mt-1 line-clamp-2 text-[12px] text-white/90">{data.title}</div> : null}
+        {data.title ? <div className="mt-1 line-clamp-2 text-[12px] text-fg/90">{data.title}</div> : null}
       </>
     );
   }
   if (data.kind === "lane") {
     return (
       <>
-        <div className="truncate text-[12px] font-medium text-white/90">{data.name}</div>
-        {data.branch ? <div className="mt-0.5 truncate font-mono text-[11px] text-white/55">{data.branch}</div> : null}
+        <div className="truncate text-[12px] font-medium text-fg/90">{data.name}</div>
+        {data.branch ? <div className="mt-0.5 truncate font-mono text-[11px] text-fg/55">{data.branch}</div> : null}
       </>
     );
   }
   if (data.kind === "chat") {
     return (
       <>
-        <div className="line-clamp-2 text-[12px] font-medium text-white/90">{data.title}</div>
+        <div className="line-clamp-2 text-[12px] font-medium text-fg/90">{data.title}</div>
         {data.lastActivity
-          ? <div className="mt-0.5 text-[11px] text-white/55">Last activity {relativeWhen(data.lastActivity)}</div>
+          ? <div className="mt-0.5 text-[11px] text-fg/55">Last activity {relativeWhen(data.lastActivity)}</div>
           : null}
+      </>
+    );
+  }
+  if (data.kind === "github-issue") {
+    return (
+      <>
+        <div className="flex items-center gap-1.5 text-[11px] text-fg/60">
+          <GitHubIssueStateIcon state={data.state} stateReason={data.stateReason} size={11} />
+          <span className="truncate font-medium text-fg/85">{data.reference}</span>
+        </div>
+        <div className="mt-0.5 line-clamp-2 text-[12px] text-fg/90">{data.title}</div>
+        {data.assignees.length > 0 ? <div className="mt-0.5 truncate text-[11px] text-fg/55">{data.assignees.join(", ")}</div> : null}
       </>
     );
   }
   return (
     <>
-      <div className="text-[11px] font-medium text-white/60">{data.identifier}</div>
-      <div className="mt-0.5 line-clamp-2 text-[12px] text-white/90">{data.title}</div>
+      <div className="flex items-center gap-1.5 text-[11px] text-fg/60">
+        {data.stateType ? <LinearStateIcon stateType={data.stateType} size={11} /> : null}
+        <span className="font-medium text-fg/85">{data.identifier}</span>
+        {data.stateName ? <span className="truncate">{data.stateName}</span> : null}
+      </div>
+      <div className="mt-0.5 line-clamp-2 text-[12px] text-fg/90">{data.title}</div>
+      {data.assigneeName ? <div className="mt-0.5 truncate text-[11px] text-fg/55">{data.assigneeName}</div> : null}
     </>
   );
+}
+
+function cardPlacement(trigger: HTMLElement, card: HTMLElement): TooltipPlacement {
+  const triggerBox = trigger.getBoundingClientRect();
+  const cardBox = card.getBoundingClientRect();
+  return computeTooltipPosition({
+    preferredSide: "top",
+    trigger: {
+      top: triggerBox.top,
+      left: triggerBox.left,
+      right: triggerBox.right,
+      bottom: triggerBox.bottom,
+      width: triggerBox.width,
+      height: triggerBox.height,
+    },
+    tooltip: { width: cardBox.width, height: cardBox.height },
+    viewport: { width: window.innerWidth, height: window.innerHeight },
+    gap: GAP,
+    pad: VIEWPORT_PAD,
+  });
 }
 
 export type ChipHoverCard = {
@@ -297,6 +434,7 @@ export function useChipHoverCard(
    * hundreds of pills subscribes to each list once per pill, not twice.
    */
   scoped: ChipScopeSources,
+  previewImageUrl: string | null = null,
 ): ChipHoverCard {
   const cardId = useId();
   const scope = useChatRuntimeScope();
@@ -360,7 +498,7 @@ export function useChipHoverCard(
   useEffect(() => {
     if (!open || !target) return;
     let cancelled = false;
-    void loadChipCardData(sourcesRef.current, target, previewTitle)
+    void loadChipCardData(sourcesRef.current, target, previewTitle, previewImageUrl)
       .catch(() => null)
       .then((loaded) => {
         if (!cancelled) setData(loaded);
@@ -368,7 +506,7 @@ export function useChipHoverCard(
     return () => {
       cancelled = true;
     };
-  }, [open, target, previewTitle, pinKey]);
+  }, [open, target, previewTitle, previewImageUrl, pinKey]);
 
   // Escape dismisses, and any scroll does too: the card is absolutely placed
   // against a trigger that a scrolling transcript moves out from under it.
@@ -390,27 +528,21 @@ export function useChipHoverCard(
     const trigger = triggerElementRef.current;
     const card = cardRef.current;
     if (!trigger || !card) return;
-    const triggerBox = trigger.getBoundingClientRect();
-    const cardBox = card.getBoundingClientRect();
-    const next = computeTooltipPosition({
-      preferredSide: "top",
-      trigger: {
-        top: triggerBox.top,
-        left: triggerBox.left,
-        right: triggerBox.right,
-        bottom: triggerBox.bottom,
-        width: triggerBox.width,
-        height: triggerBox.height,
-      },
-      tooltip: { width: cardBox.width, height: cardBox.height },
-      viewport: { width: window.innerWidth, height: window.innerHeight },
-      gap: GAP,
-      pad: VIEWPORT_PAD,
-    });
-    setCoords((prev) => (
-      prev && prev.x === next.x && prev.y === next.y && prev.side === next.side ? prev : next
-    ));
+    const place = () => {
+      const next = cardPlacement(trigger, card);
+      setCoords((prev) => (
+        prev && prev.x === next.x && prev.y === next.y && prev.side === next.side ? prev : next
+      ));
+    };
+    place();
+    // A link card's reserved image box collapses when the image fails; re-place
+    // so a top-placed card stays attached to its chip instead of floating.
+    if (data.kind !== "link" || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(place);
+    observer.observe(card);
+    return () => observer.disconnect();
   }, [open, data]);
+
 
   const triggerRef = useCallback((node: HTMLElement | null) => {
     triggerElementRef.current = node;
@@ -429,8 +561,8 @@ export function useChipHoverCard(
             role="tooltip"
             data-chip-hover-card={data.kind}
             className={
-              "pointer-events-none absolute max-w-[300px] rounded-lg border border-white/12"
-              + " bg-[#16161b]/95 px-2.5 py-2 shadow-[0_12px_32px_rgba(0,0,0,0.45)] backdrop-blur-sm"
+              "pointer-events-none absolute max-w-[300px] rounded-lg border border-fg/12"
+              + " bg-(color:--work-popover-bg) px-2.5 py-2 shadow-[0_12px_32px_rgba(0,0,0,0.45)] backdrop-blur-sm"
             }
             style={{
               top: coords?.y ?? 0,

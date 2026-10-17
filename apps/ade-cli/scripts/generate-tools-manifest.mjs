@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Generate `src/services/tools/toolsManifest.generated.json` from
- * `package-lock.json`.
+ * `package-lock.json` and `scripts/muse-release.json`.
  *
  * The manifest pins the agent CLI platform packages ADE no longer vendors, so
  * that a fresh install can fetch them from the npm registry instead of shipping
@@ -9,16 +9,25 @@
  * tarball URLs, and sha512 integrity all come from the lockfile — nothing here
  * is invented, and nothing talks to the network.
  *
+ * Meta's `muse` binary is not on npm. Its pins (url + sha256 + size per target)
+ * come from the checked-in `scripts/muse-release.json`, which
+ * `npm run tools:muse-pin` writes from Meta's versioned release manifest. This
+ * generator stays offline: it only reads that file, and refuses it when its
+ * `sdkVersion` no longer matches the locked `@muse-code/sdk`, so a bumped SDK
+ * without a re-pinned binary fails `tools:manifest:check` in CI.
+ *
  *   node scripts/generate-tools-manifest.mjs           # write
  *   node scripts/generate-tools-manifest.mjs --check   # fail if stale (CI)
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { FILE_PIN_HOST } from "./file-pin-host.mjs";
 
 const packageRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const lockPath = path.join(packageRoot, "package-lock.json");
 const outputPath = path.join(packageRoot, "src", "services", "tools", "toolsManifest.generated.json");
+const museReleasePath = path.join(packageRoot, "scripts", "muse-release.json");
 
 const SCHEMA_VERSION = 1;
 const TARGETS = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-x64"];
@@ -84,6 +93,22 @@ const TOOLS = [
   },
 ];
 
+/**
+ * Tools published as one bare executable per target, pinned from a checked-in
+ * release file rather than the lockfile. `pairedPackage` is the npm package
+ * whose locked version the release must match.
+ */
+const FILE_TOOLS = [
+  {
+    name: "muse",
+    description: "Meta Muse Code CLI native binary, spawned as `muse serve` and in ADE terminals.",
+    entry: { kind: "binary", path: "muse", windowsPath: "muse.exe" },
+    releasePath: museReleasePath,
+    pairedPackage: "@muse-code/sdk",
+    cacheDirPrefix: "muse-code",
+  },
+];
+
 function fail(message) {
   process.stderr.write(`generate-tools-manifest: ${message}\n`);
   process.exit(1);
@@ -124,6 +149,53 @@ function pinFor(packages, toolName, target, packageName) {
   return { package: packageName, version, tarball: resolved, integrity };
 }
 
+function readFileToolRelease(packages, tool) {
+  const relative = path.relative(packageRoot, tool.releasePath);
+  let release;
+  try {
+    release = JSON.parse(readFileSync(tool.releasePath, "utf8"));
+  } catch (error) {
+    fail(`could not read ${relative}: ${error.message}. Run: npm run tools:muse-pin`);
+  }
+  const locked = packages[`node_modules/${tool.pairedPackage}`]?.version;
+  if (typeof locked !== "string") {
+    fail(`${tool.pairedPackage} is not in package-lock.json; ${tool.name} cannot be paired with it.`);
+  }
+  if (release.sdkVersion !== locked) {
+    fail(
+      `${relative} pins ${tool.name} for ${tool.pairedPackage}@${String(release.sdkVersion)}, `
+      + `but package-lock.json has ${locked}. Run: npm run tools:muse-pin`,
+    );
+  }
+  if (typeof release.version !== "string" || !release.version.startsWith(`${locked}-`)) {
+    fail(`${relative} version ${String(release.version)} does not pair with ${tool.pairedPackage}@${locked}.`);
+  }
+  const targets = {};
+  for (const target of TARGETS) {
+    const pin = release.targets?.[target];
+    if (!pin) fail(`${relative} has no ${tool.name} build for supported target ${target}.`);
+    if (typeof pin.url !== "string" || !pin.url.startsWith("https://")) {
+      fail(`${relative} ${target} has no https url.`);
+    }
+    if (new URL(pin.url).hostname !== FILE_PIN_HOST) {
+      fail(`${relative} ${target} downloads from ${new URL(pin.url).hostname}; a file pin must be on ${FILE_PIN_HOST}.`);
+    }
+    if (typeof pin.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(pin.sha256)) {
+      fail(`${relative} ${target} has no lowercase hex sha256.`);
+    }
+    if (!Number.isSafeInteger(pin.size) || pin.size <= 0) fail(`${relative} ${target} has no byte size.`);
+    targets[target] = {
+      format: "file",
+      package: `${tool.cacheDirPrefix}-${target}`,
+      version: release.version,
+      url: pin.url,
+      sha256: pin.sha256,
+      size: pin.size,
+    };
+  }
+  return { name: tool.name, description: tool.description, entry: tool.entry, targets };
+}
+
 function buildManifest() {
   const packages = readLockPackages();
   const tools = TOOLS.map((tool) => {
@@ -140,10 +212,11 @@ function buildManifest() {
       : { kind: tool.entry.kind, path: tool.entry.path };
     return { name: tool.name, description: tool.description, entry, targets };
   });
+  for (const tool of FILE_TOOLS) tools.push(readFileToolRelease(packages, tool));
 
   return {
     schemaVersion: SCHEMA_VERSION,
-    generatedFrom: "apps/ade-cli/package-lock.json",
+    generatedFrom: "apps/ade-cli/package-lock.json + apps/ade-cli/scripts/muse-release.json",
     tools,
   };
 }
@@ -160,7 +233,7 @@ if (process.argv.includes("--check")) {
     fail(`${outputPath} is missing. Run: npm run tools:manifest`);
   }
   if (current !== serialized) {
-    fail(`${outputPath} is out of date with package-lock.json. Run: npm run tools:manifest`);
+    fail(`${outputPath} is out of date with package-lock.json or muse-release.json. Run: npm run tools:manifest`);
   }
   process.stdout.write("tools manifest is up to date\n");
 } else {

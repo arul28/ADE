@@ -90,6 +90,14 @@ export type PairWithAccountMachineOptions = Omit<
     kind: "relay" | "tailnet" | "lan";
     phase: "connecting" | "verifying";
   }) => void;
+  /**
+   * Route outcomes for the pairing log. Never receives tokens or key material:
+   * only the route kind, timings, and bounded failure text.
+   */
+  logger?: {
+    info(message: string, meta?: Record<string, unknown>): void;
+    warn(message: string, meta?: Record<string, unknown>): void;
+  };
 };
 
 class AccountPairingAuthorizationError extends Error {
@@ -156,6 +164,20 @@ function boundedInlineText(value: string, maxChars: number): string {
   return normalized.length <= maxChars
     ? normalized
     : `${normalized.slice(0, Math.max(0, maxChars - 1))}…`;
+}
+
+function logAccountRouteFailure(
+  logger: PairWithAccountMachineOptions["logger"],
+  failure: AccountMachineAdoptionFailure,
+  durationMs: number,
+): void {
+  logger?.warn("account.pair.route_failed", {
+    route: failure.route.kind,
+    classification: classifyAccountMachineAdoptionFailure(failure),
+    ...(failure.helloCode ? { helloCode: failure.helloCode } : {}),
+    durationMs,
+    reason: boundedInlineText(failure.reason, 200),
+  });
 }
 
 function accountMachineAdoptionRouteHost(route: AccountMachineAdoptionRoute): string {
@@ -1031,6 +1053,7 @@ export class DesktopPairedMachineStore {
     const failures: AccountMachineAdoptionFailure[] = [];
     for (const route of accountAuthenticationRoutes) {
       throwIfAborted(options.signal);
+      const routeStartedAt = Date.now();
       if (route.kind !== "relay" && !hostSigningPublicKey) {
         throw new Error(
           "Refusing to send plaintext account authentication over a direct route.",
@@ -1051,11 +1074,13 @@ export class DesktopPairedMachineStore {
         });
       } catch (error) {
         throwIfAborted(options.signal);
-        failures.push({
+        const failure = {
           route,
           reason: error instanceof Error ? error.message : String(error),
           helloCode: null,
-        });
+        };
+        failures.push(failure);
+        logAccountRouteFailure(options.logger, failure, Date.now() - routeStartedAt);
         continue;
       }
       try {
@@ -1290,7 +1315,7 @@ export class DesktopPairedMachineStore {
             "Your ADE account changed before this machine could be saved.",
           );
         }
-        return this.save({
+        const saved = this.save({
           version: 1,
           hostIdentity,
           machineKey: machine.machineKey,
@@ -1312,19 +1337,26 @@ export class DesktopPairedMachineStore {
           createdAt,
           updatedAt: nowIso(),
         });
+        options.logger?.info("account.pair.route_ok", {
+          route: route.kind,
+          durationMs: Date.now() - routeStartedAt,
+        });
+        return saved;
       } catch (error) {
         throwIfAborted(options.signal);
         if (error instanceof AccountPairingAuthorizationError) throw error;
         if (error instanceof AccountHostIdentityVerificationError) {
           throw error;
         }
-        failures.push({
+        const failure = {
           route,
           reason: error instanceof Error ? error.message : String(error),
           helloCode: error instanceof AccountMachineHelloRejectedError
             ? error.helloCode
             : null,
-        });
+        };
+        failures.push(failure);
+        logAccountRouteFailure(options.logger, failure, Date.now() - routeStartedAt);
       } finally {
         connection.close(1000, "Account pairing finished.");
       }

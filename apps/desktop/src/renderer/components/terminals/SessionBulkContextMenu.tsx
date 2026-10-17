@@ -228,7 +228,7 @@ export function SessionBulkContextMenu({
         ? {
             kind: "item",
             key: "pin",
-            label: "Pin to front",
+            label: "Pin",
             icon: PushPin,
             hint: hint(unpinnedIds.length),
             onSelect: () => onSetPinned(unpinnedIds, true),
@@ -236,7 +236,7 @@ export function SessionBulkContextMenu({
         : {
             kind: "item",
             key: "unpin",
-            label: "Unpin from front",
+            label: "Unpin",
             icon: PushPinSlash,
             onSelect: () => onSetPinned(sessions.map((session) => session.id), false),
           },

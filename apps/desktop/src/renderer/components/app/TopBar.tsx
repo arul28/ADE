@@ -10,8 +10,8 @@ import {
   ArrowLineRight,
   ArrowSquareOut,
   ChatCircleDots,
+  Globe,
   CircleNotch,
-  DesktopTower,
   DownloadSimple,
   Folder,
   FolderOpen,
@@ -47,7 +47,7 @@ import { isWebClientMode } from "../../lib/webClientMode";
 import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
 import { rememberProjectOriginSummaries } from "../lanes/laneMachines";
 import { resetAppZoom, zoomAppIn, zoomAppOut } from "../../lib/appZoom";
-import { consumeAppMenuCommand } from "../../lib/appMenuCommands";
+import { consumeAppMenuCommand, installFindKeyBridge } from "../../lib/appMenuCommands";
 import { consumeAppZoomCommand } from "../../lib/appZoomCommands";
 import { cn } from "../ui/cn";
 import {
@@ -59,6 +59,7 @@ import {
   PROJECT_SIDEBAR_TOGGLE_KEYBINDING,
   projectSidebarShortcutLabel,
 } from "./projectSidebar/projectSidebarTabs";
+import { closeMusicTab, MusicTabContent } from "../music/MusicTabContent";
 import {
   activeMachineForGroup,
   groupProjectTabs,
@@ -71,7 +72,9 @@ import {
 } from "./projectTabGrouping";
 import { deriveIconAccentColor } from "../../lib/iconAccent";
 import { PROJECT_TAB_KEY_ATTR } from "./useProjectTabDrag";
+import { pressActivation } from "../../lib/pressActivation";
 import { useProjectTabLifecycle } from "./useProjectTabLifecycle";
+import { usePreferLocalCheckout } from "./usePreferLocalCheckout";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { confirmDialog } from "../ui/dialog/confirm";
 import { isMac } from "../../lib/platform";
@@ -91,6 +94,8 @@ import { AccountBalanceIndicator } from "./AccountBalanceIndicator";
 import { ChannelBadge } from "./ChannelBadge";
 import { HeaderSheet } from "./HeaderSheet";
 import { LinearQuickViewButton } from "./LinearQuickViewButton";
+import { GitHubIssuesButton } from "../issues/GitHubIssuesButton";
+import { JiraIssuesButton } from "../issues/JiraIssuesButton";
 import { CloudAgentsQuickViewButton } from "./cloudAgents/CloudAgentsQuickViewButton";
 import { PublishToGitHubDialog } from "../projects/PublishToGitHubDialog";
 import { ConnectionsPanel } from "./ConnectionsPanel";
@@ -240,6 +245,28 @@ function useHeaderStatusCompactLayout(): boolean {
   return compact;
 }
 
+/** Everything `ResourcePressureIndicator` draws from a sample; null when it is hidden. */
+function resourcePressureView(usage: AppResourceUsageSnapshot | null) {
+  const level = appResourcePressureLevel(usage);
+  if (level === 0) return null;
+  return {
+    level,
+    description: resourcePressureDescription(usage),
+    attributes: {
+      "data-ade-resource-pressure-level": level,
+      "data-ade-resource-pressure-active-ptys": usage?.activePtyCount ?? 0,
+      "data-ade-resource-pressure-pty-processes": usage?.ptyProcessCount ?? 0,
+      "data-ade-resource-pressure-pty-cpu": usage?.ptyCpuPercent ?? "",
+      "data-ade-resource-pressure-pty-memory-mb": usage?.ptyMemoryMB ?? "",
+      "data-ade-resource-pressure-sample-status": usage?.processSample?.status ?? "",
+    },
+  };
+}
+
+function resourcePressureIndicatorKey(usage: AppResourceUsageSnapshot | null): string {
+  return JSON.stringify(resourcePressureView(usage));
+}
+
 function useResourcePressureUsage(enabled: boolean): AppResourceUsageSnapshot | null {
   const [usage, setUsage] = useState<AppResourceUsageSnapshot | null>(null);
 
@@ -256,7 +283,13 @@ function useResourcePressureUsage(enabled: boolean): AppResourceUsageSnapshot | 
       const version = ++requestVersion;
       void getAppResourceUsageCoalesced()
         .then((snapshot) => {
-          if (!cancelled && version === requestVersion) setUsage(snapshot);
+          if (cancelled || version !== requestVersion) return;
+          // Every sample is a new object with fresh CPU numbers. Keep the old
+          // one unless the indicator would draw something different: a new
+          // object re-renders the whole top bar every 2 s.
+          setUsage((previous) => (
+            resourcePressureIndicatorKey(previous) === resourcePressureIndicatorKey(snapshot) ? previous : snapshot
+          ));
         })
     };
 
@@ -279,11 +312,11 @@ function useResourcePressureUsage(enabled: boolean): AppResourceUsageSnapshot | 
 }
 
 function ResourcePressureIndicator({ usage }: { usage: AppResourceUsageSnapshot | null }) {
-  const level = appResourcePressureLevel(usage);
-  if (level === 0) return null;
+  const view = resourcePressureView(usage);
+  if (!view) return null;
+  const { level, description } = view;
   const color =
     level >= 4 ? "#F87171" : level === 3 ? "#FB7185" : level === 2 ? "#FB923C" : "#FBBF24";
-  const description = resourcePressureDescription(usage);
   return (
     <SmartTooltip
       forceEnabled
@@ -299,12 +332,7 @@ function ResourcePressureIndicator({ usage }: { usage: AppResourceUsageSnapshot 
         role="status"
         aria-label={`ADE resource pressure level ${level}`}
         title={description}
-        data-ade-resource-pressure-level={level}
-        data-ade-resource-pressure-active-ptys={usage?.activePtyCount ?? 0}
-        data-ade-resource-pressure-pty-processes={usage?.ptyProcessCount ?? 0}
-        data-ade-resource-pressure-pty-cpu={usage?.ptyCpuPercent ?? ""}
-        data-ade-resource-pressure-pty-memory-mb={usage?.ptyMemoryMB ?? ""}
-        data-ade-resource-pressure-sample-status={usage?.processSample?.status ?? ""}
+        {...view.attributes}
         className={cn(
           "ade-shell-control inline-flex h-[24px] w-[24px] shrink-0 items-center justify-center rounded-md",
           "border transition-[background-color,color,border-color,box-shadow] duration-150",
@@ -327,7 +355,7 @@ function ResourcePressureIndicator({ usage }: { usage: AppResourceUsageSnapshot 
 }
 
 const HEADER_STATUS_MENU_ROW_CLASS =
-  "flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] font-medium text-muted-fg/80 transition-colors duration-150 hover:bg-white/[0.06] hover:text-fg/90";
+  "flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] font-medium text-muted-fg/80 transition-colors duration-150 hover:bg-fg/[0.06] hover:text-fg/90";
 
 function ShellConnectionChip({
   label,
@@ -463,7 +491,7 @@ function HeaderStatusMenu({
           maxHeight: "calc(100vh - 80px)",
           overflowY: "auto",
         } : undefined}
-        surfaceClassName="min-w-[220px] overflow-hidden rounded-xl border border-white/10 bg-[color:var(--ade-shell-surface,#121019)] p-1.5 shadow-2xl shadow-black/45"
+        surfaceClassName="min-w-[220px] overflow-hidden rounded-xl border border-fg/10 bg-[color:var(--ade-shell-surface,#121019)] p-1.5 shadow-2xl shadow-black/45"
         onClose={close}
       >
         <div role="menu" aria-label="Connections and usage">
@@ -529,6 +557,14 @@ function HeaderActionPill({
     </SmartTooltip>
   );
 }
+
+const REMOTE_TAB_STATUS_LABEL: Record<RemoteRuntimeConnectionState, string> = {
+  connected: "Connected",
+  connecting: "Reconnecting",
+  parked: "Parked",
+  idle: "Disconnected",
+  error: "Disconnected",
+};
 
 function ProjectTabIcon({
   rootPath,
@@ -667,22 +703,33 @@ function ProjectTabIcon({
 
 export function TopBar({
   personalChatsRouteActive = false,
+  browserRouteActive = false,
+  musicRouteActive = false,
   accountRouteActive = false,
   hubRouteActive = false,
   settingsRouteActive = false,
+  projectSidebarLocked = false,
   onOpenActivityPane,
   onNavigate,
 }: {
   personalChatsRouteActive?: boolean;
+  /** The machine-level Browser tab (`/browser`) is in front. */
+  browserRouteActive?: boolean;
+  /** The machine-level Music tab (`/music`) is in front. */
+  musicRouteActive?: boolean;
   accountRouteActive?: boolean;
   hubRouteActive?: boolean;
   /** The `#/settings` route is in front. Drives the standalone Settings tab. */
   settingsRouteActive?: boolean;
+  /** Settings is in front and holds the project sidebar open, so its toggle is disabled. */
+  projectSidebarLocked?: boolean;
   onNavigate?: (path: string, opts?: { replace?: boolean }) => void;
   /** Raises the shell's Activity pane over whatever tab is in front. */
   onOpenActivityPane?: () => void;
 } = {}) {
   const project = useAppStore((s) => s.project);
+  // A machine-level tab (Chats, Browser) is in front, not a project surface.
+  const machineRouteActive = personalChatsRouteActive || browserRouteActive || musicRouteActive;
   const theme = useAppStore((s) => s.theme);
   const usageHeaderPreferences = useUsageHeaderPreferences();
   const hasProject = Boolean(project?.rootPath);
@@ -702,8 +749,14 @@ export function TopBar({
   const isSettingsTabOpen = settingsRouteActive && !hasProject && standaloneSettingsOpen;
   const personalChatsTabOpen = useAppStore((s) => s.personalChatsTabOpen);
   const closePersonalChatsTab = useAppStore((s) => s.closePersonalChatsTab);
+  const browserTabOpen = useAppStore((s) => s.browserTabOpen);
+  const setBrowserTabOpen = useAppStore((s) => s.setBrowserTabOpen);
+  const musicTabOpen = useAppStore((s) => s.musicTabOpen);
+  const setMusicTabOpen = useAppStore((s) => s.setMusicTabOpen);
   const projectTransition = useAppStore((s) => s.projectTransition);
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
+  // Which open tabs have a loaded project: only those switch at once.
+  const projectInfoByRoot = useAppStore((s) => s.projectInfoByRoot);
   const switchRemoteProject = useAppStore((s) => s.switchRemoteProject);
   const [recentProjects, setRecentProjects] = useState<RecentProjectSummary[]>(
     [],
@@ -793,7 +846,7 @@ export function TopBar({
     showWelcome !== true &&
     isNewTabOpen !== true &&
     Boolean(project?.rootPath) &&
-    !personalChatsRouteActive &&
+    !machineRouteActive &&
     !accountRouteActive &&
     !hubRouteActive;
   const keybindings = useAppStore((s) => s.keybindings);
@@ -884,7 +937,10 @@ export function TopBar({
    */
   useEffect(() => {
     const onMenuCommand = window.ade?.app?.onMenuCommand;
-    if (typeof onMenuCommand !== "function") return;
+    if (typeof onMenuCommand !== "function") {
+      // No native menu (the web client): ⌘F arrives as a keydown.
+      return installFindKeyBridge();
+    }
     return onMenuCommand((command) => {
       if (consumeAppMenuCommand(command)) return;
       if (command === "close-tab") {
@@ -1098,6 +1154,22 @@ export function TopBar({
         : { ...current, [activeGroup.id]: activeTabBindingKey });
   }, [activeTabBindingKey, tabGroups]);
 
+  usePreferLocalCheckout({
+    enabled: !webMode
+      && windowSessionRestored
+      && !machineRouteActive
+      && !isProjectBusy
+      && !isNewTabOpen,
+    remoteBinding,
+    remoteOrigin: remoteBinding
+      ? (remoteOriginByKey[remoteBinding.key] ?? remoteBinding.gitOriginUrl ?? null)
+      : null,
+    openLocalTabs: projectTabs,
+    knownLocalTabs: localRecentProjects,
+    setOpenRemoteProjectTabs,
+    setTabOrder,
+  });
+
   useEffect(() => {
     let cancelled = false;
     window.ade.app
@@ -1117,16 +1189,17 @@ export function TopBar({
             });
           }
         }
-        if (session.openProjectTabs.length > 0) {
+        // Restore every local tab root, loaded or not: an idle project's
+        // context may be released while its tab stays open. Hosted web sends
+        // only the loaded list.
+        const restored = session.openProjectTabRoots
+          ?? session.openProjectTabs.map((entry) => entry.rootPath);
+        if (restored.length > 0) {
           for (const tabProject of session.openProjectTabs) {
             useAppStore.getState().rememberProjectInfo(tabProject);
           }
-          // Merge, don't replace. The main-process snapshot
-          // (projectsForWindowTabs) drops any tab root whose context was
-          // evicted while idle, so a remount could otherwise lose a local tab
-          // that the renderer still has. Restored roots come first; keep any
-          // extra local roots the renderer already knows about.
-          const restored = session.openProjectTabs.map((entry) => entry.rootPath);
+          // Merge, don't replace: keep any extra local roots the renderer
+          // already knows about after the restored ones.
           setOpenProjectTabRoots((prev) => {
             const merged = [...restored];
             for (const root of prev) {
@@ -1324,8 +1397,8 @@ export function TopBar({
   const handleOpenNew = useCallback(() => {
     if (isProjectBusy) return;
     openNewTab();
-    if (personalChatsRouteActive || accountRouteActive || hubRouteActive) onNavigate?.("/work");
-  }, [accountRouteActive, hubRouteActive, isProjectBusy, onNavigate, openNewTab, personalChatsRouteActive]);
+    if (machineRouteActive || accountRouteActive || hubRouteActive) onNavigate?.("/work");
+  }, [accountRouteActive, hubRouteActive, isProjectBusy, onNavigate, openNewTab, machineRouteActive]);
   // The batch launcher's model picker needs a way out of its empty Harnesses
   // tab. It routes through the same `onNavigate` the shell supplies, so a top
   // bar rendered without a router (tests) simply has no CTA.
@@ -1354,7 +1427,7 @@ export function TopBar({
   // route-cache effect writes that same value back instead of stamping /work
   // over the project's remembered position.
   const leaveMachineRoute = useCallback(() => {
-    if (!personalChatsRouteActive && !accountRouteActive && !hubRouteActive) return;
+    if (!machineRouteActive && !accountRouteActive && !hubRouteActive) return;
     const currentBindingKey = remoteBinding
       ? remoteBinding.key
       : project?.rootPath
@@ -1362,7 +1435,7 @@ export function TopBar({
         : null;
     const route = (currentBindingKey ? readStoredProjectRoute(currentBindingKey) : null) ?? "/work";
     onNavigate?.(route, { replace: true });
-  }, [accountRouteActive, hubRouteActive, onNavigate, personalChatsRouteActive, project?.rootPath, remoteBinding]);
+  }, [accountRouteActive, hubRouteActive, onNavigate, machineRouteActive, project?.rootPath, remoteBinding]);
 
   // Resolves when the switch has settled, so a caller that has to reconcile tab
   // state afterwards runs against the new binding rather than racing the
@@ -1412,6 +1485,10 @@ export function TopBar({
     ],
   );
 
+  // The switch that the last press or click of a project tab started. A drag
+  // that takes the tab out of this window waits for it before it closes the
+  // tab here.
+  const tabSwitchRef = useRef<Promise<void> | null>(null);
   const {
     closeTabGroups,
     handleRemoveTab,
@@ -1427,7 +1504,24 @@ export function TopBar({
     setTabOrder,
     checkForActiveWorkloads,
     isProjectBusy,
+    tabSwitchRef,
   });
+
+  // A project tab comes to the front on the press, as a browser tab does, so a
+  // drag of a background tab also shows its project. Only from the plain
+  // state, a project in front and nothing in transition: from a machine,
+  // account or hub page, a new tab or the Settings tab a switch does more than
+  // change the project, and those keep the click. So does a tab whose switch
+  // is not immediate (another machine's project, or a project that is not
+  // loaded): that switch is a transition, and a transition stops a tear-off.
+  const tabSwitchesOnPress =
+    !isProjectBusy
+    && !machineRouteActive
+    && !accountRouteActive
+    && !hubRouteActive
+    && !isNewTabOpen
+    && !isSettingsTabOpen
+    && (remoteBinding != null || project?.rootPath != null);
 
   const confirmAndCloseRemoteTargetTabs = useCallback(
     async (
@@ -1848,6 +1942,8 @@ export function TopBar({
         onOpenHarnessSettings={openHarnessSettings}
         showTrigger={projectSurfaceVisible}
       />
+      <GitHubIssuesButton showTrigger={projectSurfaceVisible} />
+      <JiraIssuesButton showTrigger={projectSurfaceVisible} />
     </>
   );
 
@@ -1895,6 +1991,8 @@ export function TopBar({
         onOpenHarnessSettings={openHarnessSettings}
         showTrigger={projectSurfaceVisible}
       />
+      <GitHubIssuesButton variant="menu-row" onMenuActivate={onActivate} showTrigger={projectSurfaceVisible} />
+      <JiraIssuesButton variant="menu-row" onMenuActivate={onActivate} showTrigger={projectSurfaceVisible} />
       {usageHeaderPreferences.showInHeader ? (
         <HeaderUsageControl
           variant="menu-row"
@@ -1956,7 +2054,9 @@ export function TopBar({
       <div aria-hidden className="pointer-events-none absolute inset-0 -z-10 overflow-hidden">
         <WorkToolPickerBackdrop theme={theme} field="window" />
       </div>
-      {projectSurfaceVisible ? <ProjectSidebarToggle shortcut={sidebarToggleShortcut} /> : null}
+      {projectSurfaceVisible ? (
+        <ProjectSidebarToggle shortcut={sidebarToggleShortcut} locked={projectSidebarLocked} />
+      ) : null}
 
       {/* Branding */}
       <img
@@ -1983,7 +2083,9 @@ export function TopBar({
         {tabGroups.length > 0 ||
         isNewTabOpen ||
         isSettingsTabOpen ||
-        personalChatsTabOpen ? (
+        personalChatsTabOpen ||
+        browserTabOpen ||
+        musicTabOpen ? (
           <>
             {tabGroups.map((group) => {
               const machine = activeMachineForGroup(group);
@@ -1997,18 +2099,10 @@ export function TopBar({
                 if (!remoteTab) return null;
                 const isCurrentRemote = remoteBinding?.key === remoteTab.key;
                 const remoteTabState = remoteConnectionState(remoteTab.targetId);
-                const remoteTabConnected = remoteTabState === "connected";
                 const remoteTabConnecting = remoteTabState === "connecting";
-                const remoteTabParked = remoteTabState === "parked";
                 const remoteTabDisconnected =
                   remoteTabState === "error" || remoteTabState === "idle";
-                const remoteTabStatusLabel = remoteTabConnected
-                  ? "Connected"
-                  : remoteTabConnecting
-                    ? "Reconnecting"
-                    : remoteTabParked
-                      ? "Parked"
-                      : "Disconnected";
+                const remoteTabStatusLabel = REMOTE_TAB_STATUS_LABEL[remoteTabState];
                 const remoteTabKey = tabOrderKey(group);
                 return (
                   <div
@@ -2020,20 +2114,17 @@ export function TopBar({
                       if (!isProjectBusy) projectTabDrag.onTabPointerDown(event, remoteTabKey);
                     }}
                     onContextMenu={(event) => openTabMenu(event, group.id)}
-                    data-state={isCurrentRemote && !personalChatsRouteActive && !hubRouteActive ? "active" : undefined}
+                    data-state={isCurrentRemote && !machineRouteActive && !hubRouteActive ? "active" : undefined}
                     data-remote-state={remoteTabState}
                     aria-current={isCurrentRemote ? "true" : undefined}
+                    // A project tab looks the same wherever its checkout
+                    // lives. The machine is in the tooltip; only a connection
+                    // problem, which stops the tab from loading, is marked.
                     className={cn(
                       "ade-shell-project-tab group inline-flex w-auto min-w-[104px] max-w-[180px] shrink-0 items-center gap-1.5 px-2.5",
-                      "font-semibold transition-[background-color,color,border-color,box-shadow,opacity] duration-150",
-                      "cursor-pointer border",
-                      remoteTabConnected
-                        ? "border-[color-mix(in_srgb,var(--color-warning)_40%,transparent)]"
-                        : remoteTabConnecting
-                          ? "border-amber-400/60"
-                          : remoteTabParked
-                            ? "border-sky-400/50"
-                          : "border-red-400/60",
+                      "transition-[background-color,color,border-color,box-shadow,opacity] duration-150",
+                      "cursor-pointer",
+                      isCurrentRemote && "font-semibold",
                     )}
                     style={
                       {
@@ -2072,13 +2163,6 @@ export function TopBar({
                         className="shrink-0 animate-spin text-amber-300"
                         aria-label={`Reconnecting: ${remoteTab.runtimeName}`}
                       />
-                    ) : remoteTabParked ? (
-                      <DesktopTower
-                        size={11}
-                        weight="duotone"
-                        className="shrink-0 text-sky-300"
-                        aria-label={`Parked: ${remoteTab.runtimeName}`}
-                      />
                     ) : remoteTabDisconnected ? (
                       <WarningCircle
                         size={11}
@@ -2086,14 +2170,7 @@ export function TopBar({
                         className="shrink-0 text-red-300"
                         aria-label={`Disconnected: ${remoteTab.runtimeName}`}
                       />
-                    ) : (
-                      <DesktopTower
-                        size={11}
-                        weight="duotone"
-                        className="shrink-0 text-[var(--color-warning)]"
-                        aria-label={`Machine: ${remoteTab.runtimeName}`}
-                      />
-                    )}
+                    ) : null}
                     <button
                       type="button"
                       className={cn(
@@ -2106,7 +2183,7 @@ export function TopBar({
                         e.stopPropagation();
                         handleCloseRemoteTab(remoteTab);
                       }}
-                      title="Close remote project"
+                      title="Close project"
                     >
                       <X size={13} weight="regular" />
                     </button>
@@ -2143,8 +2220,12 @@ export function TopBar({
               else if (isMissing) projectTabState = "missing";
               // While the Chats machine tab is the foreground surface, the
               // bound project tab stays rendered but must not also read active.
-              else if (isCurrent && !personalChatsRouteActive && !hubRouteActive) projectTabState = "active";
+              else if (isCurrent && !machineRouteActive && !hubRouteActive) projectTabState = "active";
               const indicator = terminalAttention?.indicator;
+              const localTabPress = pressActivation(() => {
+                if (projectTabDrag.isDragClick()) return;
+                if (!isMissing) tabSwitchRef.current = handleSwitchProject(rp.rootPath);
+              }, tabSwitchesOnPress && canDragTab && !isCurrent && projectInfoByRoot[rp.rootPath] != null);
               return (
                 <div
                   key={group.id}
@@ -2163,6 +2244,7 @@ export function TopBar({
                   {...{ [PROJECT_TAB_KEY_ATTR]: localTabKey }}
                   onPointerDown={(event) => {
                     if (canDragTab) projectTabDrag.onTabPointerDown(event, localTabKey);
+                    localTabPress.onPointerDown(event);
                   }}
                   onContextMenu={(event) => openTabMenu(event, group.id)}
                   className={cn(
@@ -2175,10 +2257,7 @@ export function TopBar({
                       "pointer-events-none opacity-80",
                   )}
                   style={{ ...projectTabStyle, ...projectTabDrag.tabDragStyle(localTabKey) }}
-                  onClick={() => {
-                    if (projectTabDrag.isDragClick()) return;
-                    if (!isMissing) handleSwitchProject(rp.rootPath);
-                  }}
+                  onClick={localTabPress.onClick}
                   onKeyDown={(event) => {
                     if (isMissing) return;
                     if (event.key === "Enter" || event.key === " ") {
@@ -2302,6 +2381,46 @@ export function TopBar({
                 <span className="min-w-0 flex-1 truncate text-center text-[12px]">Chats</span>
               </ShellNavTab>
             ) : null}
+            {browserTabOpen ? (
+              <ShellNavTab
+                active={browserRouteActive}
+                label="Browser"
+                onActivate={() => {
+                  if (!browserRouteActive) onNavigate?.("/browser");
+                }}
+                onClose={() => {
+                  setBrowserTabOpen(false);
+                  if (browserRouteActive) {
+                    onNavigate?.("/work", { replace: true });
+                  }
+                }}
+                closeTitle="Close browser"
+              >
+                <Globe size={15} weight="duotone" className="shrink-0 text-accent" />
+                <span className="min-w-0 flex-1 truncate text-center text-[12px]">Browser</span>
+              </ShellNavTab>
+            ) : null}
+            {musicTabOpen ? (
+              <ShellNavTab
+                active={musicRouteActive}
+                label="Music"
+                className="relative max-w-[220px]"
+                onActivate={() => {
+                  if (!musicRouteActive) onNavigate?.("/music");
+                }}
+                onClose={() => {
+                  // The tab is the player: closing it turns the music off.
+                  closeMusicTab();
+                  setMusicTabOpen(false);
+                  if (musicRouteActive) {
+                    onNavigate?.("/work", { replace: true });
+                  }
+                }}
+                closeTitle="Close Music"
+              >
+                <MusicTabContent active={musicRouteActive} />
+              </ShellNavTab>
+            ) : null}
             {isSettingsTabOpen && (
               <ShellNavTab
                 active
@@ -2320,17 +2439,23 @@ export function TopBar({
             )}
             {isNewTabOpen && (
               <ShellNavTab
-                active={!personalChatsRouteActive && !isSettingsTabOpen}
+                active={!machineRouteActive && !isSettingsTabOpen}
                 label="New Tab"
                 onActivate={() => {
-                  if (personalChatsRouteActive) onNavigate?.("/work");
+                  if (machineRouteActive) onNavigate?.("/work");
                 }}
                 onClose={() => {
                   if (isProjectBusy) return;
                   cancelNewTab();
-                  if (!hasProject && personalChatsTabOpen) {
-                    onNavigate?.("/chats");
-                  }
+                  // With no project, fall back to the first machine tab still open.
+                  const machineTabRoute = hasProject
+                    ? null
+                    : ([
+                      [personalChatsTabOpen, "/chats"],
+                      [browserTabOpen, "/browser"],
+                      [musicTabOpen, "/music"],
+                    ] as const).find(([open]) => open)?.[1];
+                  if (machineTabRoute) onNavigate?.(machineTabRoute);
                 }}
                 closeTitle="Close new tab"
                 closeDisabled={isProjectBusy}
@@ -2426,7 +2551,8 @@ export function TopBar({
         </div>
       ) : null}
 
-      {activeCloneTarget && !isProjectBusy ? (
+      {/* Cloning is to this machine, which the web client has no notion of. */}
+      {!webMode && activeCloneTarget && !isProjectBusy ? (
         <HeaderActionPill
           icon={DownloadSimple}
           label="Clone locally"
@@ -2470,6 +2596,7 @@ export function TopBar({
         {/* App-global voice capture — visible from any tab while recording. */}
         <GlobalVoiceCaptureIndicator />
 
+
         <div className="hidden md:flex items-center gap-1.5">
           {renderDesktopIntegrationControls()}
           {renderDesktopUsageControl()}
@@ -2478,6 +2605,35 @@ export function TopBar({
         {/* Account-wide Activity — the one place every machine's work surfaces,
             reachable from every tab and project without a nav detour. */}
         <HeaderActivityControl onOpenPane={handleOpenActivityPane} />
+
+        {/* App settings with no project surface in front (welcome page, new
+            tab, Chats). A project's own sidebar carries Settings otherwise. */}
+        {!webMode && !projectSurfaceVisible && !isSettingsTabOpen ? (
+          <SmartTooltip
+            forceEnabled
+            side="bottom"
+            content={{ label: "Settings", description: "App preferences" }}
+            wrapperStyle={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+          >
+            <button
+              type="button"
+              className="ade-shell-control inline-flex h-[24px] w-[24px] shrink-0 items-center justify-center rounded-md"
+              data-variant="ghost"
+              data-tour="project.settings"
+              aria-label="Settings"
+              style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+              onClick={() => {
+                // Leave the new-tab state first: it is what holds the welcome
+                // page in front, so a bare navigate would leave Settings behind it.
+                cancelNewTab();
+                setStandaloneSettingsOpen(true);
+                onNavigate?.("/settings");
+              }}
+            >
+              <GearSix size={14} weight="regular" />
+            </button>
+          </SmartTooltip>
+        ) : null}
 
         <div className="hidden md:flex items-center gap-1.5">
           {renderDesktopConnectionsControl()}

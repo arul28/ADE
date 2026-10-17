@@ -146,7 +146,6 @@ const KEYCHAIN_SERVICES = [
   "ade-desktop Safe Storage",
 ] as const;
 const NATIVE_HELPER_NAMES = [
-  "ade-attention-notch",
   "ade-desktop-driver",
   "ade-media",
   "ade-capture-helper",
@@ -419,6 +418,15 @@ function inventoryServices(deps: MachineResetDeps): ServiceTarget[] {
       for (const line of listed.stdout.split("\n")) {
         const label = line.trim().split(/\s+/).pop() ?? "";
         if (/^com\.ade\./.test(label) && !byLabel.has(label)) byLabel.set(label, null);
+      }
+    }
+    // A disabled job is neither listed nor loadable; only this list names it.
+    if (deps.uid != null) {
+      const disabled = deps.run("launchctl", ["print-disabled", `gui/${deps.uid}`]);
+      if (disabled.status === 0) {
+        for (const match of disabled.stdout.matchAll(/"(com\.ade\.[^"]+)"\s*=>\s*(?:disabled|true)\b/g)) {
+          if (!byLabel.has(match[1])) byLabel.set(match[1], null);
+        }
       }
     }
     return [...byLabel].map(([label, plistPath]) => ({ kind: "launchd", label, plistPath }));

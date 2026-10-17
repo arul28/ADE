@@ -249,8 +249,7 @@ struct PrDetailPreviewHost: View {
       List {
         Section {
           PrFlatDetailHeader(
-            number: 1367, author: "arul28", authorIsBot: false, createdAt: pr.createdAt, updatedAt: pr.updatedAt,
-            state: state, title: pr.title, baseBranch: pr.baseBranch, headBranch: pr.headBranch,
+            createdAt: pr.createdAt, updatedAt: pr.updatedAt, title: pr.title, baseBranch: pr.baseBranch, headBranch: pr.headBranch,
             laneName: "cross-machine", ghostLaneName: nil, machineName: "MacBook Pro", stackLabel: nil,
             onOpenLane: {}, onOpenStack: nil, canCreateLane: true, canLinkLane: true, onCreateLane: {}, onLinkLane: {}
           )
@@ -312,6 +311,43 @@ struct PrDiffPreviewHost: View {
   var body: some View {
     NavigationStack {
       PrFileDiffPage(files: PrFlatPreviewData.files, initialIndex: 1, canOpenFiles: true, onOpenFile: { _ in }, onCopyPath: { _ in })
+    }
+  }
+}
+
+/// `-adePreviewScreen pr-media`: a description whose text holds media. Unlike
+/// the other fixture screens this one needs the network: the pictures and the
+/// video are real GitHub attachments of a public pull request, because how a
+/// remote attachment loads is the thing on show.
+struct PrDescriptionMediaPreviewHost: View {
+  private static let text = """
+  ## What changed
+
+  One line on top says what needs you. The description is right under it.
+
+  | Before | After |
+  | --- | --- |
+  | ![The description is first. The open threads are below it.](https://github.com/user-attachments/assets/c7542908-8982-4bab-b3d0-5d961e4e528f)<!-- ade-proof:8b381a30 --> | ![One line on top says what needs you.](https://github.com/user-attachments/assets/697ac6b5-88c3-4527-bf54-0f389f7909e7)<!-- ade-proof:4a817cd7 --> |
+
+  ## Evidence
+
+  A click on the line opens the list:
+
+  ![A click on the line opens the list of open threads](https://github.com/user-attachments/assets/bdfdb4f9-c868-4844-b502-75e0597caefa)
+
+  "Add to chat" on a part of the text:
+
+  https://github.com/user-attachments/assets/83908590-2459-482d-bce8-9fbe8c7b7974
+  """
+
+  var body: some View {
+    NavigationStack {
+      ScrollView {
+        PrFlatDescription(text: prCleanBody(Self.text).body)
+          .padding(16)
+      }
+      .navigationTitle("#1595")
+      .navigationBarTitleDisplayMode(.inline)
     }
   }
 }

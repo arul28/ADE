@@ -127,7 +127,7 @@ export async function pasteRuntimeClipboardImageAttachment(
   try {
     image = await window.ade.app.readClipboardImage();
   } catch (error) {
-    // The read refuses an image over the size cap; that reason is worth showing.
+    // The read refuses an image it cannot fit under the size cap; that reason is worth showing.
     reportImagePasteFailure(runtime, io, error);
     return true;
   }

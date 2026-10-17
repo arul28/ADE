@@ -18,7 +18,7 @@ import type {
   PrMergeContext,
   PrWithConflicts,
 } from "../../../../shared/types";
-import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, cardStyle, inlineBadge, outlineButton, primaryButton } from "../../lanes/laneDesignTokens";
+import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, cardStyle, inlineBadge, outlineButton, primaryButton, fgTint } from "../../lanes/laneDesignTokens";
 import { formatTimestampShort } from "../shared/prFormatters";
 import { RebaseTab } from "./RebaseTab";
 import { IntegrationTab } from "./IntegrationTab";
@@ -114,7 +114,7 @@ function cleanupBadgeStyle(cleanupState: string | null | undefined): React.CSSPr
     case "completed":
       return inlineBadge(COLORS.success, { background: "color-mix(in srgb, var(--color-success) 18%, transparent)", fontWeight: 600 });
     case "declined":
-      return inlineBadge(COLORS.textSecondary, { background: "rgba(255,255,255,0.06)", fontWeight: 600 });
+      return inlineBadge(COLORS.textSecondary, { background: COLORS.hoverBg, fontWeight: 600 });
     default:
       return null;
   }
@@ -355,12 +355,12 @@ function IntegrationWorkflowsTab({
                 padding: "14px 16px",
                 textAlign: "left",
                 border: "none",
-                borderBottom: "1px solid rgba(255,255,255,0.04)",
+                borderBottom: `1px solid ${fgTint(4)}`,
                 background: selected ? theme.bg : "transparent",
                 cursor: "pointer",
                 transition: "background 150ms ease",
               }}
-              onMouseEnter={(e) => { if (!selected) e.currentTarget.style.background = "rgba(255,255,255,0.03)"; }}
+              onMouseEnter={(e) => { if (!selected) e.currentTarget.style.background = fgTint(3); }}
               onMouseLeave={(e) => { if (!selected) e.currentTarget.style.background = selected ? theme.bg : "transparent"; }}
             >
               {/* Colored outcome sidebar */}
@@ -431,7 +431,7 @@ function IntegrationWorkflowsTab({
                 return (
                   <React.Fragment key={step.num}>
                     {i > 0 && (
-                      <div style={{ flex: 1, height: 2, background: isComplete ? theme.color : "rgba(255,255,255,0.08)", borderRadius: 1, transition: "background 200ms" }} />
+                      <div style={{ flex: 1, height: 2, background: isComplete ? theme.color : fgTint(8), borderRadius: 1, transition: "background 200ms" }} />
                     )}
                     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
                       <div style={{
@@ -526,7 +526,7 @@ function IntegrationWorkflowsTab({
                   <div style={{ fontFamily: SANS_FONT, fontSize: 13, color: COLORS.textSecondary }}>
                     Ready for cleanup. Integration lane is preselected; source lanes are optional.
                   </div>
-                  <div style={{ padding: 14, borderRadius: 12, background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.05)" }}>
+                  <div style={{ padding: 14, borderRadius: 12, background: COLORS.recessedBg, border: `1px solid ${fgTint(5)}` }}>
                     {selectedWorkflow.integrationLaneId ? (
                       <label style={{ display: "flex", alignItems: "center", gap: 10, fontFamily: SANS_FONT, fontSize: 13, color: COLORS.textPrimary, cursor: "pointer", padding: "4px 0" }}>
                         <input type="checkbox" checked={archiveIntegrationLane} onChange={(event) => setArchiveIntegrationLane(event.target.checked)} style={{ accentColor: theme.color }} />
@@ -793,7 +793,7 @@ export function WorkflowsTab({
   const toolbar = (
     <div style={{ flexShrink: 0 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "0 10px 6px" }}>
-        <div style={{ display: "flex", flex: 1, minWidth: 0, alignItems: "center", gap: 2, borderRadius: 8, background: "rgba(255,255,255,0.03)", padding: 2, border: "1px solid rgba(255,255,255,0.05)" }}>
+        <div style={{ display: "flex", flex: 1, minWidth: 0, alignItems: "center", gap: 2, borderRadius: 8, background: COLORS.cardBg, padding: 2, border: `1px solid ${fgTint(5)}` }}>
           {(["active", "history"] as WorkflowView[]).map((mode) => {
             const selected = view === mode;
             const Icon = mode === "active" ? CheckCircle : Clock;
@@ -816,7 +816,7 @@ export function WorkflowsTab({
                   fontWeight: selected ? 600 : 500,
                   fontFamily: SANS_FONT,
                   color: selected ? COLORS.textPrimary : COLORS.textMuted,
-                  background: selected ? "rgba(255,255,255,0.08)" : "transparent",
+                  background: selected ? fgTint(8) : "transparent",
                   border: "none",
                   borderRadius: 6,
                   cursor: "pointer",
@@ -835,7 +835,7 @@ export function WorkflowsTab({
           aria-label="Refresh workflows"
           title="Refresh"
           onClick={() => void refreshWorkflows()}
-          className="hover:bg-white/[0.06]"
+          className="hover:bg-fg/[0.06]"
           style={{
             display: "inline-flex",
             alignItems: "center",
@@ -853,7 +853,7 @@ export function WorkflowsTab({
           <ArrowsClockwise size={13} className={loading ? "animate-spin" : ""} />
         </button>
       </div>
-      <div style={{ display: "flex", alignItems: "center", padding: "0 6px", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+      <div style={{ display: "flex", alignItems: "center", padding: "0 6px", borderBottom: `1px solid ${fgTint(6)}` }}>
         {([
           { id: "integration" as WorkflowCategory, label: "Integration", icon: GitBranch },
           { id: "rebase" as WorkflowCategory, label: "Rebase/Merge", icon: Sparkle },
@@ -896,7 +896,7 @@ export function WorkflowsTab({
         })}
       </div>
       {error ? (
-        <div style={{ padding: "8px 12px", borderBottom: "1px solid rgba(255,255,255,0.06)", color: COLORS.danger, fontFamily: SANS_FONT, fontSize: 11, lineHeight: 1.4, overflowWrap: "anywhere" }}>
+        <div style={{ padding: "8px 12px", borderBottom: `1px solid ${fgTint(6)}`, color: COLORS.danger, fontFamily: SANS_FONT, fontSize: 11, lineHeight: 1.4, overflowWrap: "anywhere" }}>
           {error}
         </div>
       ) : null}

@@ -100,6 +100,15 @@ export type ChatScheduledWorkSchedulerOptions = {
   isGlobalPaused(): boolean;
   sessionState(sessionId: string): "active" | "ended" | "archived" | "missing";
   shouldDefer?(schedule: ChatScheduledWorkRecord): boolean;
+  /**
+   * Claims one occurrence (`id` + `fireAt`) across processes. Every brain that
+   * opens the project loads the same rows and arms its own timer, and
+   * `inFlight` only guards this process, so without a shared claim each brain
+   * delivered the same wake. Returns false when another process holds it.
+   */
+  claimFire?(schedule: ChatScheduledWorkRecord): boolean;
+  /** Gives up a claim whose delivery is being retried at a later boundary. */
+  releaseFire?(schedule: ChatScheduledWorkRecord): void;
   fire(
     schedule: ChatScheduledWorkRecord,
     context: { late: boolean },
@@ -231,6 +240,10 @@ function normalizeState(value: unknown): ChatScheduledWorkState {
     schedules,
     pausedSessionIds: [...new Set(pausedSessionIds)],
   };
+}
+
+function nextCronOccurrence(schedule: ChatScheduledWorkRecord, after: number): number | undefined {
+  return schedule.cron ? nextChatScheduledCronFireAt(schedule.cron, after) ?? undefined : undefined;
 }
 
 function cloneSchedule(schedule: ChatScheduledWorkRecord): ChatScheduledWorkRecord {
@@ -380,6 +393,11 @@ export function createChatScheduledWorkScheduler(
       return;
     }
 
+    if (options.claimFire && !options.claimFire(cloneSchedule(schedule))) {
+      await followClaimOwner(schedule);
+      return;
+    }
+
     inFlight.add(scheduleId);
     const lateThresholdMs = nativeFireGraceMs(schedule) + TIMER_LATE_TOLERANCE_MS;
     const late = overdueWhenArmed || currentTime - schedule.fireAt > lateThresholdMs;
@@ -388,7 +406,20 @@ export function createChatScheduledWorkScheduler(
     schedule.status = "fired";
     schedule.lastFiredAt = currentTime;
     schedule.lateFlag = late;
-    await persist();
+    try {
+      await persist();
+    } catch (error) {
+      // Nothing was delivered: give the occurrence back so a later attempt,
+      // here or in another brain, can claim it.
+      schedule.status = "scheduled";
+      if (previousLastFiredAt == null) delete schedule.lastFiredAt;
+      else schedule.lastFiredAt = previousLastFiredAt;
+      schedule.lateFlag = previousLateFlag;
+      inFlight.delete(scheduleId);
+      options.releaseFire?.(cloneSchedule(schedule));
+      armBusyDeferRetry(schedule);
+      throw error;
+    }
     await emitTransition(schedule, "fired");
 
     // A cancel (a user message, a superseding schedule) can land inside those
@@ -418,6 +449,7 @@ export function createChatScheduledWorkScheduler(
     const current = schedules.get(scheduleId);
     if (!current || current.status === "cancelled" || current.status === "done") return;
     if (retry) {
+      options.releaseFire?.(cloneSchedule(current));
       current.status = isEffectivelyPaused(current) ? "paused" : "scheduled";
       if (previousLastFiredAt == null) delete current.lastFiredAt;
       else current.lastFiredAt = previousLastFiredAt;
@@ -437,13 +469,48 @@ export function createChatScheduledWorkScheduler(
       return;
     }
 
-    current.fireAt = current.cron
-      ? nextChatScheduledCronFireAt(current.cron, now()) ?? undefined
-      : undefined;
+    current.fireAt = nextCronOccurrence(current, now());
     current.status = isEffectivelyPaused(current) ? "paused" : "scheduled";
     await persist();
     await emitTransition(current, current.status);
     arm(current);
+  };
+
+  /**
+   * Another brain claimed this occurrence. Its delivery may still be retried
+   * or never start, so settle nothing on its behalf: adopt the outcome it
+   * persisted (started, finished, or a cron moved to its next occurrence) and
+   * check again later until there is one.
+   */
+  const followClaimOwner = async (schedule: ChatScheduledWorkRecord): Promise<void> => {
+    clearTimer(schedule.id);
+    let persisted: ChatScheduledWorkRecord | undefined;
+    try {
+      persisted = normalizeState(await options.loadState()).schedules
+        .find((candidate) => candidate.id === schedule.id);
+    } catch {
+      // Unreadable shared state: look again at the next check.
+    }
+    // A cron stays armed here for its later occurrences, so wait for the owner
+    // to move it on; a one-shot the owner started is settled by the owner. An
+    // older fireAt is a stale write, not the owner's outcome.
+    const ownerMoved = persisted != null && (
+      isTerminal(persisted)
+      || (persisted.fireAt != null && schedule.fireAt != null && persisted.fireAt > schedule.fireAt)
+      || (persisted.status === "fired" && schedule.kind !== "cron")
+    );
+    if (!ownerMoved || !persisted || schedules.get(schedule.id) !== schedule) {
+      armBusyDeferRetry(schedule);
+      return;
+    }
+    schedule.status = persisted.status;
+    schedule.fireAt = persisted.fireAt;
+    schedule.lastFiredAt = persisted.lastFiredAt;
+    schedule.lateFlag = persisted.lateFlag;
+    schedule.terminalAt = persisted.terminalAt;
+    if (isTerminal(schedule)) pruneTerminalHistory();
+    else if (schedule.status === "scheduled") arm(schedule);
+    await emitTransition(schedule, schedule.status);
   };
 
   const armBusyDeferRetry = (schedule: ChatScheduledWorkRecord): void => {
@@ -507,9 +574,7 @@ export function createChatScheduledWorkScheduler(
 
     if (schedule.status === "fired") {
       if (schedule.kind === "cron") {
-        schedule.fireAt = schedule.cron
-          ? nextChatScheduledCronFireAt(schedule.cron, Math.max(now(), schedule.lastFiredAt ?? 0)) ?? undefined
-          : undefined;
+        schedule.fireAt = nextCronOccurrence(schedule, Math.max(now(), schedule.lastFiredAt ?? 0));
         schedule.status = isEffectivelyPaused(schedule) ? "paused" : "scheduled";
       } else {
         // A persisted fired one-shot was already claimed before the previous
@@ -768,9 +833,7 @@ export function createChatScheduledWorkScheduler(
             // Only clear the turn we claimed — a newer fire's recordTurnStarted
             // may already own activeTurnId, and its outcome summary must land.
             if (schedule.activeTurnId === turnId) delete schedule.activeTurnId;
-            schedule.fireAt = schedule.cron
-              ? nextChatScheduledCronFireAt(schedule.cron, currentTime) ?? undefined
-              : undefined;
+            schedule.fireAt = nextCronOccurrence(schedule, currentTime);
             schedule.status = isEffectivelyPaused(schedule) ? "paused" : "scheduled";
             await persist();
             await emitTransition(schedule, schedule.status);

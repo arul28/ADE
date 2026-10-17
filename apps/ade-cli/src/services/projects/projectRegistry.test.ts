@@ -6,6 +6,7 @@ import {
   ProjectRegistry,
   deriveProjectId,
   isDisallowedProjectRoot,
+  recordLocalProjectDatabaseIdentity,
 } from "./projectRegistry";
 import { createTestDirectoryLink, removeTestTree } from "../../test/filesystem";
 
@@ -25,6 +26,7 @@ function makeTempRoot(prefix = "ade-project-registry-"): string {
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   for (const root of tempRoots) {
     await removeTestTree(root);
   }
@@ -35,6 +37,58 @@ describe("ProjectRegistry", () => {
   beforeEach(() => {
     spawnSyncMock.mockReset();
     spawnSyncMock.mockReturnValue({ status: 1, stdout: "" });
+  });
+
+  it.each([
+    ["folder", "brain", false],
+    ["database", "brain", false],
+    ["folder", "desktop", false],
+    ["database", "desktop", false],
+    // An older ADE on the same machine rewrites projects.json with only the
+    // fields it knows; the record that the database existed must survive.
+    ["database", "brain", true],
+  ] as const)("blocks recreating initialized project data after losing its %s (%s, older ADE rewrote projects.json: %s) and accepts restoration", (missing, opener, olderAdeRewrites) => {
+    const root = makeTempRoot();
+    const projectRoot = path.join(root, "project");
+    fs.mkdirSync(projectRoot);
+    const registryDir = path.join(root, "machine");
+    const layout = { adeDir: registryDir, projectsPath: path.join(registryDir, "projects.json") } as any;
+    const registry = new ProjectRegistry(layout);
+    const record = registry.add(projectRoot);
+    const adeDir = path.join(projectRoot, ".ade");
+    const dbPath = path.join(adeDir, "ade.db");
+    fs.writeFileSync(dbPath, "fixture");
+    if (opener === "desktop") {
+      vi.stubEnv("ADE_HOME", registryDir);
+      recordLocalProjectDatabaseIdentity(projectRoot);
+    } else {
+      registry.touch(record.projectId);
+    }
+    if (olderAdeRewrites) {
+      const file = JSON.parse(fs.readFileSync(layout.projectsPath, "utf8"));
+      file.projects = file.projects.map((project: Record<string, unknown>) => ({
+        projectId: project.projectId,
+        rootPath: project.rootPath,
+        displayName: project.displayName,
+        addedAt: project.addedAt,
+        lastOpenedAt: project.lastOpenedAt,
+        gitOriginUrl: project.gitOriginUrl,
+        catalogVisibility: project.catalogVisibility,
+        registrationSource: project.registrationSource,
+      }));
+      fs.writeFileSync(layout.projectsPath, JSON.stringify(file));
+    }
+    const source = missing === "folder" ? adeDir : dbPath;
+    const saved = path.join(root, "saved");
+    fs.renameSync(source, saved);
+    // Re-read from disk as a restarted brain would.
+    const restarted = new ProjectRegistry(layout);
+    expect(() => restarted.assertProjectDataAvailable(restarted.get(record.projectId))).toThrowError(expect.objectContaining({ code: "project_data_missing" }));
+    expect(() => restarted.add(projectRoot)).toThrowError(expect.objectContaining({ code: "project_data_missing" }));
+    expect(fs.existsSync(source)).toBe(false);
+    fs.renameSync(saved, source);
+    expect(() => restarted.add(projectRoot)).not.toThrow();
+    expect(fs.readFileSync(dbPath, "utf8")).toBe("fixture");
   });
 
   it("migrates v1 records by desktop membership or Git-root existence", () => {

@@ -282,7 +282,7 @@ export function BrowserLoginImportDialog({
                 exit={reduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.98, y: 4 }}
                 transition={{ duration: 0.2, ease: [0.34, 1.56, 0.64, 1] }}
               >
-                <div className="flex shrink-0 items-center gap-2 border-b border-white/[0.07] px-3.5 py-2.5">
+                <div className="flex shrink-0 items-center gap-2 border-b border-fg/[0.07] px-3.5 py-2.5">
                   <SignIn size={15} weight="duotone" className="shrink-0 text-[var(--color-accent)]" />
                   <Dialog.Title className="min-w-0 truncate text-[12.5px] font-medium text-fg">
                     Import logins
@@ -292,7 +292,7 @@ export function BrowserLoginImportDialog({
                     <button
                       type="button"
                       aria-label="Close"
-                      className="ml-auto inline-flex h-6 w-6 items-center justify-center rounded-[var(--radius-sm)] text-muted-fg/70 transition-colors duration-[120ms] ease-out hover:bg-white/[0.06] hover:text-fg focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]"
+                      className="ml-auto inline-flex h-6 w-6 items-center justify-center rounded-[var(--radius-sm)] text-muted-fg/70 transition-colors duration-[120ms] ease-out hover:bg-fg/[0.06] hover:text-fg focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]"
                     >
                       <X size={13} />
                     </button>
@@ -354,7 +354,7 @@ export function BrowserLoginImportDialog({
                   {step === "done" && result ? <ImportSummary result={result} /> : null}
                 </div>
 
-                <div className="flex shrink-0 items-center gap-2 border-t border-white/[0.07] px-3.5 py-2.5">
+                <div className="flex shrink-0 items-center gap-2 border-t border-fg/[0.07] px-3.5 py-2.5">
                   {step === "domains" ? (
                     <>
                       <button
@@ -451,7 +451,7 @@ function StepIndicator({ step }: { step: Step }) {
             {index > 0 ? (
               <span
                 aria-hidden="true"
-                className={cn("h-px w-3", done || active ? "bg-[var(--color-accent)]/40" : "bg-white/[0.10]")}
+                className={cn("h-px w-3", done || active ? "bg-[var(--color-accent)]/40" : "bg-fg/[0.10]")}
               />
             ) : null}
             <span
@@ -509,15 +509,15 @@ function SourceList({
           <li key={source.id}>
             <div
               className={cn(
-                "flex items-center gap-2.5 rounded-[var(--radius-lg)] border border-white/[0.07] bg-card/55 px-2.5 py-2",
+                "flex items-center gap-2.5 rounded-[var(--radius-lg)] border border-fg/[0.07] bg-card/55 px-2.5 py-2",
                 "transition-colors duration-[120ms] ease-out",
-                ready ? "hover:border-white/[0.14]" : "opacity-70",
+                ready ? "hover:border-fg/[0.14]" : "opacity-70",
               )}
             >
               <span
                 aria-hidden="true"
                 className={cn(
-                  "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white/[0.05]",
+                  "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-fg/[0.05]",
                   ready ? "text-fg/80" : "text-muted-fg/60",
                 )}
               >
@@ -584,7 +584,7 @@ function DomainPicker({
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-center gap-2">
-        <label className="flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded-[var(--radius-md)] border border-white/[0.08] bg-black/25 px-2 focus-within:border-[color-mix(in_srgb,var(--color-accent)_35%,transparent)]">
+        <label className="flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded-[var(--radius-md)] border border-fg/[0.08] bg-black/25 px-2 focus-within:border-[color-mix(in_srgb,var(--color-accent)_35%,transparent)]">
           <MagnifyingGlass size={12} className="shrink-0 text-muted-fg/60" />
           <input
             value={search}
@@ -611,7 +611,7 @@ function DomainPicker({
             : "No sites match that search."}
         </div>
       ) : (
-        <ul className="flex flex-col divide-y divide-white/[0.05] overflow-hidden rounded-[var(--radius-lg)] border border-white/[0.07]">
+        <ul className="flex flex-col divide-y divide-fg/[0.05] overflow-hidden rounded-[var(--radius-lg)] border border-fg/[0.07]">
           {domains.map((entry) => {
             const checked = selected.has(entry.domain);
             return (
@@ -619,7 +619,7 @@ function DomainPicker({
                 <label
                   className={cn(
                     "flex cursor-pointer items-center gap-2.5 px-2.5 py-1.5",
-                    "transition-colors duration-[120ms] ease-out hover:bg-white/[0.035]",
+                    "transition-colors duration-[120ms] ease-out hover:bg-fg/[0.035]",
                   )}
                 >
                   <input
@@ -658,7 +658,7 @@ function ImportSummary({
         ) : null}
       </div>
       {result.domains.length > 0 ? (
-        <ul className="flex flex-col divide-y divide-white/[0.05] overflow-hidden rounded-[var(--radius-lg)] border border-white/[0.07]">
+        <ul className="flex flex-col divide-y divide-fg/[0.05] overflow-hidden rounded-[var(--radius-lg)] border border-fg/[0.07]">
           {result.domains.map((entry) => (
             <li
               key={entry.domain}

@@ -112,7 +112,7 @@ export type CredentialFileStatSnapshot = {
   size: number;
 } | null;
 
-function readCredentialFileStatSnapshot(filePath: string): CredentialFileStatSnapshot | undefined {
+export function readCredentialFileStatSnapshot(filePath: string): CredentialFileStatSnapshot | undefined {
   try {
     const stat = fs.statSync(filePath);
     return { ino: stat.ino, mtimeMs: stat.mtimeMs, size: stat.size };
@@ -122,7 +122,7 @@ function readCredentialFileStatSnapshot(filePath: string): CredentialFileStatSna
   }
 }
 
-function isSameCredentialFileStat(
+export function isSameCredentialFileStat(
   left: CredentialFileStatSnapshot,
   right: CredentialFileStatSnapshot,
 ): boolean {
@@ -286,6 +286,46 @@ export function withCredentialFileLock<T>(
     } catch {
       // ignore
     }
+  }
+}
+
+/** Acquire the same cross-process lock without blocking the calling event loop. */
+export async function withCredentialFileLockAsync<T>(
+  lockPath: string,
+  fn: () => T | Promise<T>,
+  options: { timeoutMs?: number } = {},
+): Promise<T> {
+  await fs.promises.mkdir(path.dirname(lockPath), { recursive: true, mode: 0o700 });
+  const deadline = Date.now() + (options.timeoutMs ?? LOCK_TIMEOUT_MS);
+  let handle: fs.promises.FileHandle | null = null;
+
+  while (handle === null) {
+    try {
+      handle = await fs.promises.open(lockPath, "wx", 0o600);
+      try {
+        await handle.writeFile(JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() }));
+      } catch (error: unknown) {
+        await handle.close().catch(() => undefined);
+        handle = null;
+        await fs.promises.unlink(lockPath).catch(() => undefined);
+        throw error;
+      }
+      ensureMode600(lockPath);
+    } catch (error: unknown) {
+      if (!isLockContention(error)) throw error;
+      removeStaleLock(lockPath);
+      if (Date.now() >= deadline) {
+        throw new Error("Timed out waiting for ADE credential store lock.", { cause: error });
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, LOCK_RETRY_MS));
+    }
+  }
+
+  try {
+    return await fn();
+  } finally {
+    await handle.close().catch(() => undefined);
+    await fs.promises.unlink(lockPath).catch(() => undefined);
   }
 }
 

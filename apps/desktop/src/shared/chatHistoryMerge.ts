@@ -82,11 +82,35 @@ function logicalToolItemKey(entry: AgentChatEventEnvelope): string | null {
   return itemId ? `${event.turnId ?? ""}\u0000${itemId}` : null;
 }
 
+/**
+ * Lists this module produced through {@link upsertRepeatedToolCalls}, or a
+ * copy of one with the same tool calls: no two tool calls in them share a
+ * logical item key. Appending events that are not
+ * tool calls or results to such a list cannot create a duplicate, so the live
+ * merge skips the full-history pass for them (two scans of the whole transcript
+ * per streamed event otherwise).
+ */
+const toolCallDedupedLists = new WeakSet<readonly AgentChatEventEnvelope[]>();
+
+function isToolEvent(entry: AgentChatEventEnvelope): boolean {
+  return entry.event.type === "tool_call" || entry.event.type === "tool_result";
+}
+
 /** Replace streamed tool-call payloads in place, retaining their original order and results. */
 function upsertRepeatedToolCalls(
   events: AgentChatEventEnvelope[],
   previous: readonly AgentChatEventEnvelope[] = [],
   shouldRetainPreviousResult: (entry: AgentChatEventEnvelope) => boolean = () => true,
+): AgentChatEventEnvelope[] {
+  const result = upsertRepeatedToolCallsUnmarked(events, previous, shouldRetainPreviousResult);
+  toolCallDedupedLists.add(result);
+  return result;
+}
+
+function upsertRepeatedToolCallsUnmarked(
+  events: AgentChatEventEnvelope[],
+  previous: readonly AgentChatEventEnvelope[],
+  shouldRetainPreviousResult: (entry: AgentChatEventEnvelope) => boolean,
 ): AgentChatEventEnvelope[] {
   let result = events;
   const callIndexes = new Map<string, number>();
@@ -127,17 +151,10 @@ function upsertRepeatedToolCalls(
     }
     if (result === events) result = [...events];
     const kept = result[earlier]!;
-    const selectedSource = callSources.get(key)!;
-    // For equal millisecond stamps, array order is the available arrival order.
-    const useIncomingPayload = compareAgentChatEventTime(selectedSource, entry) <= 0;
-    const timestamp = compareAgentChatEventTime(kept, entry) <= 0 ? kept.timestamp : entry.timestamp;
-    if (useIncomingPayload || timestamp !== kept.timestamp) {
-      result[earlier] = {
-        ...kept,
-        ...(useIncomingPayload ? { event: entry.event } : {}),
-        timestamp,
-      };
-      if (useIncomingPayload) callSources.set(key, entry);
+    const resend = applyToolCallResend(kept, callSources.get(key)!, entry);
+    if (resend) {
+      result[earlier] = resend.call;
+      if (resend.tookPayload) callSources.set(key, entry);
     }
     duplicateIndexes.add(index);
   }
@@ -175,9 +192,152 @@ export function orderAgentChatEventsChronologically(
 }
 
 /**
+ * What the live merge knows about a list it produced, so the next merge costs
+ * the new events and not the whole transcript: every identity key in the list,
+ * and where each tool call sits by logical item key. A list hands this on to
+ * the list made from it and gives it up (the maps then describe the longer
+ * list), so a list merged a second time rebuilds from scratch.
+ */
+type LiveMergeIndex = {
+  identityKeys: Set<string>;
+  /** Null until a tool event first needs it. */
+  toolCallIndexByKey: Map<string, number> | null;
+};
+
+const liveMergeIndexByList = new WeakMap<readonly AgentChatEventEnvelope[], LiveMergeIndex>();
+
+/**
+ * How a list the live merge produced relates to the list it was made from:
+ * the same events up to `appendedFrom` and new ones after it. The one
+ * exception is a tool call a resend updated in place; `replacedIndexes` are
+ * their positions (the same in both lists).
+ */
+export type AgentChatLiveAppend = {
+  base: readonly AgentChatEventEnvelope[];
+  appendedFrom: number;
+  replacedIndexes: readonly number[];
+};
+
+const NO_REPLACED_INDEXES: readonly number[] = [];
+const liveAppendByList = new WeakMap<readonly AgentChatEventEnvelope[], AgentChatLiveAppend>();
+
+/**
+ * The append that produced `events`, or null when the list came from anywhere
+ * else (a history snapshot, a trim, an out-of-order arrival). A value derived
+ * from the base list can be carried forward by looking at the appended events
+ * alone, instead of folding the whole transcript again on every streamed event.
+ */
+export function agentChatLiveAppendOf(events: readonly AgentChatEventEnvelope[]): AgentChatLiveAppend | null {
+  return liveAppendByList.get(events) ?? null;
+}
+
+/**
+ * Declare the same relation for a list derived from a merged one (a filtered
+ * view of it), so what is folded from the view carries forward too.
+ */
+export function recordAgentChatLiveAppend(
+  events: readonly AgentChatEventEnvelope[],
+  append: AgentChatLiveAppend,
+): void {
+  liveAppendByList.set(events, append);
+}
+
+/**
+ * A value folded from a whole transcript, kept per event list. A list the live
+ * merge appended to asks `carry` first: given the answer for the list before
+ * it and the append, either the new answer or null for "fold again". One
+ * streamed event then costs that event, not the transcript.
+ */
+export function foldedOverAppends<T>(
+  cache: WeakMap<readonly AgentChatEventEnvelope[], { value: T }>,
+  events: AgentChatEventEnvelope[],
+  carry: (before: T, append: AgentChatLiveAppend) => { value: T } | null,
+  fold: () => T,
+): T {
+  const known = cache.get(events);
+  if (known) return known.value;
+  const append = agentChatLiveAppendOf(events);
+  const before = append ? cache.get(append.base) : undefined;
+  const next = (append && before ? carry(before.value, append) : null) ?? { value: fold() };
+  cache.set(events, next);
+  return next.value;
+}
+
+/**
+ * A tool call sent again for a call already held. `source` is the envelope
+ * whose payload the held call shows now. Returns the updated call, or null
+ * when the resend changes nothing. The held call keeps its row either way.
+ */
+function applyToolCallResend(
+  kept: AgentChatEventEnvelope,
+  source: AgentChatEventEnvelope,
+  entry: AgentChatEventEnvelope,
+): { call: AgentChatEventEnvelope; tookPayload: boolean } | null {
+  // For equal millisecond stamps, array order is the available arrival order.
+  const tookPayload = compareAgentChatEventTime(source, entry) <= 0;
+  const timestamp = compareAgentChatEventTime(kept, entry) <= 0 ? kept.timestamp : entry.timestamp;
+  if (!tookPayload && timestamp === kept.timestamp) return null;
+  return { call: { ...kept, ...(tookPayload ? { event: entry.event } : {}), timestamp }, tookPayload };
+}
+
+function toolCallIndexFor(events: readonly AgentChatEventEnvelope[]): Map<string, number> {
+  const indexByKey = new Map<string, number>();
+  for (let index = 0; index < events.length; index += 1) {
+    const entry = events[index]!;
+    if (entry.event.type !== "tool_call") continue;
+    const key = logicalToolItemKey(entry);
+    if (key && !indexByKey.has(key)) indexByKey.set(key, index);
+  }
+  return indexByKey;
+}
+
+/**
+ * {@link upsertRepeatedToolCalls} for events appended to a list that already
+ * holds one tool call per logical item: only the appended events can repeat
+ * one, so only they are visited. Same result as the full pass over
+ * `[...existing, ...fresh]` with `existing` as the previous list; that pass
+ * also restores results the new list lost, and an append loses none.
+ */
+function appendToToolCallDedupedList(
+  existing: AgentChatEventEnvelope[],
+  fresh: readonly AgentChatEventEnvelope[],
+  index: LiveMergeIndex,
+): AgentChatEventEnvelope[] {
+  const toolCallIndexByKey = index.toolCallIndexByKey ??= toolCallIndexFor(existing);
+  const result = existing.slice();
+  const replacedIndexes: number[] = [];
+  // The envelope whose payload a call currently shows; the stored one until a
+  // resend in this batch replaces it.
+  const sources = new Map<string, AgentChatEventEnvelope>();
+  for (const entry of fresh) {
+    const key = entry.event.type === "tool_call" ? logicalToolItemKey(entry) : null;
+    const earlier = key ? toolCallIndexByKey.get(key) : undefined;
+    if (!key || earlier === undefined) {
+      if (key) toolCallIndexByKey.set(key, result.length);
+      result.push(entry);
+      continue;
+    }
+    // A resend: it updates the stored call and takes no row of its own.
+    const kept = result[earlier]!;
+    const resend = applyToolCallResend(kept, sources.get(key) ?? kept, entry);
+    index.identityKeys.delete(agentChatEventIdentityKey(entry));
+    if (resend) {
+      index.identityKeys.delete(agentChatEventIdentityKey(kept));
+      index.identityKeys.add(agentChatEventIdentityKey(resend.call));
+      result[earlier] = resend.call;
+      // A call first seen in this same batch sits in the appended part.
+      if (earlier < existing.length && !replacedIndexes.includes(earlier)) replacedIndexes.push(earlier);
+      if (resend.tookPayload) sources.set(key, entry);
+    }
+  }
+  liveAppendByList.set(result, { base: existing, appendedFrom: existing.length, replacedIndexes });
+  return result;
+}
+
+/**
  * Merge genuinely live envelopes into their chronological position. The common
- * append-only path keeps O(n) identity and avoids sorting; only a delayed or
- * replayed envelope pays for a stable sort.
+ * append-only path costs the new events (plus one array copy) and avoids
+ * sorting; only a delayed or replayed envelope pays for a stable sort.
  */
 export function mergeAgentChatLiveEvents(
   existing: AgentChatEventEnvelope[],
@@ -185,7 +345,8 @@ export function mergeAgentChatLiveEvents(
 ): AgentChatEventEnvelope[] {
   if (!incoming.length) return existing;
 
-  const seen = new Set(existing.map(agentChatEventIdentityKey));
+  const carried = liveMergeIndexByList.get(existing);
+  const seen = carried?.identityKeys ?? new Set(existing.map(agentChatEventIdentityKey));
   const fresh: AgentChatEventEnvelope[] = [];
   for (const entry of incoming) {
     const key = agentChatEventIdentityKey(entry);
@@ -194,6 +355,10 @@ export function mergeAgentChatLiveEvents(
     fresh.push(entry);
   }
   if (!fresh.length) return existing;
+  // `seen` now also holds the new events: it describes the merged list, so the
+  // old list must not keep it.
+  liveMergeIndexByList.delete(existing);
+  const index: LiveMergeIndex = { identityKeys: seen, toolCallIndexByKey: carried?.toolCallIndexByKey ?? null };
 
   let appendAnchor = existing[existing.length - 1];
   let appendOnly = true;
@@ -204,9 +369,24 @@ export function mergeAgentChatLiveEvents(
     }
     appendAnchor = entry;
   }
-  if (appendOnly) {
-    return upsertRepeatedToolCalls([...existing, ...fresh], existing);
+  if (appendOnly && toolCallDedupedLists.has(existing)) {
+    let appended: AgentChatEventEnvelope[];
+    if (fresh.some(isToolEvent)) {
+      appended = appendToToolCallDedupedList(existing, fresh, index);
+    } else {
+      // New entries sit after every stored tool call, so its positions hold.
+      appended = [...existing, ...fresh];
+      liveAppendByList.set(appended, {
+        base: existing,
+        appendedFrom: existing.length,
+        replacedIndexes: NO_REPLACED_INDEXES,
+      });
+    }
+    toolCallDedupedLists.add(appended);
+    liveMergeIndexByList.set(appended, index);
+    return appended;
   }
+  if (appendOnly) return upsertRepeatedToolCalls([...existing, ...fresh], existing);
 
   return upsertRepeatedToolCalls(orderAgentChatEventsChronologically([...existing, ...fresh]), existing);
 }
@@ -241,11 +421,16 @@ export function mergeAgentChatHistorySnapshot(
     if (!existingIndexByKey.has(key)) existingIndexByKey.set(key, index);
   }
 
+  // The envelope already held for an identity, so that an event the pane has
+  // keeps its object. Safe because the identity covers the whole payload: the
+  // two envelopes differ in nothing a reader can see.
+  const heldOrSelf = (entry: AgentChatEventEnvelope): AgentChatEventEnvelope => (
+    existingByKey.get(identityKey(entry)) ?? entry
+  );
   const snapshotKeys = new Set<string>();
   const normalizedSnapshot = snapshot.map((entry) => {
-    const key = identityKey(entry);
-    snapshotKeys.add(key);
-    return existingByKey.get(key) ?? entry;
+    snapshotKeys.add(identityKey(entry));
+    return heldOrSelf(entry);
   });
 
   let firstOverlapIndex = -1;
@@ -277,7 +462,18 @@ export function mergeAgentChatHistorySnapshot(
         : isAfter(entry, snapshotTail)
     )
   ));
-  const olderPrefix = firstOverlapIndex > 0
+  // The prefix is scrollback only when it joins the snapshot: the snapshot's
+  // first event is already on screen, or the prefix reaches into the
+  // snapshot's span. A prefix that ends before a snapshot head it never saw
+  // (a stale cached view that then took live events) ends at a hole. Keeping
+  // it would pin that hole, and every agent whose result fell in it would
+  // read "running" forever.
+  const snapshotHead = snapshot[0]!;
+  const prefixJoinsSnapshot = firstOverlapIndex > 0 && (
+    existingIndexByKey.has(identityKey(snapshotHead))
+    || isAtOrAfter(existing[firstOverlapIndex - 1]!, snapshotHead)
+  );
+  const olderPrefix = prefixJoinsSnapshot
     ? existing
       .slice(0, firstOverlapIndex)
       .filter((entry) => !snapshotKeys.has(identityKey(entry)))
@@ -300,11 +496,27 @@ export function mergeAgentChatHistorySnapshot(
   const merged = inFlightEvents.length
     ? orderAgentChatEventsChronologically([...baseMerged, ...inFlightEvents])
     : baseMerged;
-  const reconciled = upsertRepeatedToolCalls(
+  const upserted = upsertRepeatedToolCalls(
     merged,
     existing,
     (entry) => arrivalWatermark !== undefined && !arrivalWatermark.has(identityKey(entry)),
   );
+  // A tool call that a resend updated has the first send's time and the
+  // resend's payload, so neither snapshot row has its identity and the pass
+  // above builds it again as a new envelope. Hand back the envelope already
+  // held for it. Without this an unchanged transcript is a new list on every
+  // read, and each chat switch renders the transcript a second time.
+  let reconciled = upserted;
+  for (let index = 0; index < upserted.length; index += 1) {
+    const entry = upserted[index]!;
+    // Already the held envelope, in place: the common case, with no key to build.
+    if (entry === existing[index]) continue;
+    const held = heldOrSelf(entry);
+    if (held === entry) continue;
+    if (reconciled === upserted) reconciled = [...upserted];
+    reconciled[index] = held;
+  }
+  if (reconciled !== upserted) toolCallDedupedLists.add(reconciled);
 
   if (
     reconciled.length === existing.length

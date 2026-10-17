@@ -91,6 +91,17 @@ export function applyHostedWebZoom(factor: number): void {
   paintHostedWebZoom();
 }
 
+/**
+ * A length taken from a rect (screen pixels) as layout pixels, the unit of
+ * `scrollTop`, `offsetHeight`, `clientHeight` and the stored row heights. Under
+ * hosted-web body zoom a rect is `appliedFactor` times its layout size; at
+ * factor 1, and in Electron, this is the identity. Reads the stored factor, so
+ * it costs no layout and is cheap to call per row.
+ */
+export function toLayoutPx(rectPx: number): number {
+  return rectPx / appliedFactor;
+}
+
 /** Test seam. */
 export function __resetHostedWebZoomForTests(): void {
   if (

@@ -1,6 +1,7 @@
 import path from "node:path";
 import { Lexer, type Token, type Tokens } from "marked";
 import type { AgentChatEvent, AgentChatEventEnvelope, AgentChatSessionSummary } from "../../../desktop/src/shared/types/chat";
+import { readSpawnCompletedNotice, spawnCompletedNoticeMessage } from "../../../desktop/src/shared/types/chat";
 import {
   chatTaskItemDisplayLabel,
   chatTaskListProgress,
@@ -10,6 +11,8 @@ import {
   type ChatTaskListSnapshot,
 } from "../../../desktop/src/shared/chatTaskList";
 import { deriveChatSources } from "../../../desktop/src/shared/chatSources";
+import { redactCommandLine } from "../../../desktop/src/shared/secretRedaction";
+import { maskShellCommandArgs } from "../../../desktop/src/renderer/components/chat/toolPresentation";
 import { deriveSubagentCardName, subagentSummaryPlainText } from "../../../desktop/src/shared/chatSubagents";
 import { describeUserMessageStatus } from "../../../desktop/src/shared/chatUserMessageStatus";
 import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
@@ -192,39 +195,6 @@ export function compactPath(value: string, max = 42): string {
   const base = path.basename(value);
   if (base.length + 3 >= max) return `...${base.slice(-(max - 3))}`;
   return `.../${base}`;
-}
-
-/**
- * Whether the event is a spawned-chat turn completion notice at all —
- * regardless of whether it names the child it reports on.
- *
- * Kept separate from `spawnCompletionChildId` on purpose: this answers "should
- * this bypass `pushLine`", which would otherwise silently DROP a byte-identical
- * repeat, while the child id answers "which run does this fold into". An
- * unidentified completion therefore still gets its own line instead of
- * vanishing, and still folds into nothing.
- */
-function isSpawnCompletionNotice(event: AgentChatEvent): boolean {
-  if (event.type !== "system_notice") return false;
-  return event.noticeKind === "info" && event.status === "spawn_completed";
-}
-
-/**
- * The child a spawn-completion notice reports on, or null when the event is not
- * a completion or lost its `spawnCompletion` detail (an old or truncated
- * transcript). Mirrors desktop's `readSpawnCompletionChildId`
- * (renderer/components/chat/chatTranscriptRows.ts) and iOS's
- * `spawnCompletionChildId` (WorkModels.swift): an unidentified completion folds
- * into nothing, so it keeps its own line rather than silently absorbing a
- * different child's.
- */
-function spawnCompletionChildId(event: AgentChatEvent): string | null {
-  if (!isSpawnCompletionNotice(event)) return null;
-  const detail = event.type === "system_notice" ? event.detail : undefined;
-  const childSessionId = detail && typeof detail === "object"
-    ? detail.spawnCompletion?.childSessionId?.trim()
-    : undefined;
-  return childSessionId ? childSessionId : null;
 }
 
 export type RenderedChatLine = {
@@ -832,6 +802,10 @@ export function renderChatLines(args: {
   const latestQueueRecoveryIndexById = new Map<string, number>();
   const neutralHealthTurnIds = new Set<string>();
   const latestHealthIndexByTurn = new Map<string, number>();
+  // A child's `spawn_completed` notices fold to ONE line, at its newest finish,
+  // carrying every turn it stands for — desktop's line, not one row per run.
+  const latestSpawnCompletionIndexByChild = new Map<string, number>();
+  const spawnCompletionTurnsByChild = new Map<string, number>();
   // `ade_card` merges by `cardId` like it does on desktop: the row stays at the
   // position of the FIRST emit and carries the MERGED payload, so a card that
   // ticks through states does not walk down the transcript.
@@ -882,6 +856,11 @@ export function renderChatLines(args: {
       neutralHealthTurnIds.add(event.turnId);
       latestHealthIndexByTurn.set(event.turnId, entry.index);
     }
+    const completedChildId = readSpawnCompletedNotice(event)?.childSessionId;
+    if (completedChildId) {
+      latestSpawnCompletionIndexByChild.set(completedChildId, entry.index);
+      spawnCompletionTurnsByChild.set(completedChildId, (spawnCompletionTurnsByChild.get(completedChildId) ?? 0) + 1);
+    }
   }
 
   const pushLine = (line: RenderedChatLine): void => {
@@ -897,21 +876,10 @@ export function renderChatLines(args: {
     lines.push(line);
   };
 
-  // ── Spawned-chat turn completions: ONE line per adjacent run, counted ──
   // A parent that spawned peers gets one byte-identical `spawn_completed`
-  // notice per sibling TURN. `pushLine`'s general dedupe would drop every
-  // repeat with no trace, so the user could not tell one finish from twelve.
-  // Count them here and render `×N` instead, matching desktop's chip.
-  //
-  // Scoped to this run rather than loosened inside `pushLine`: the dedupe is
-  // shared with local notices and every other notice kind, and those must keep
-  // collapsing silently. Adjacency-only, like desktop — anything pushed in
-  // between ends the run, which the trailing-line id check enforces (it also
-  // survives `transcript_retraction` splicing lines out from under us).
-  let spawnCompletionRun:
-    | { childId: string; lineId: string; count: number }
-    | null = null;
-
+  // notice per sibling TURN. Those are not left to `pushLine`'s general dedupe,
+  // which would drop every repeat with no trace: the completion branch below
+  // draws them, see `latestSpawnCompletionIndexByChild`.
   for (const entry of timeline) {
     if (entry.kind === "notice") {
       const notice = entry.notice;
@@ -1015,10 +983,13 @@ export function renderChatLines(args: {
       continue;
     }
     if (event.type === "tool_call") {
+      // The TUI prints the arguments on screen: a shell command is masked as the desktop masks it.
+      const isArgsRecord = event.args !== null && typeof event.args === "object" && !Array.isArray(event.args);
+      const shownArgs = isArgsRecord ? maskShellCommandArgs(event.tool, event.args as Record<string, unknown>) : event.args;
       lines.push({
         id,
         tone: "tool",
-        body: `> ${event.tool}  ${singleLine(event.args, 96)}`,
+        body: `> ${event.tool}  ${singleLine(shownArgs, 96)}`,
       });
       continue;
     }
@@ -1044,12 +1015,14 @@ export function renderChatLines(args: {
     }
     if (event.type === "command") {
       const failed = event.status === "failed" || (event.exitCode ?? 0) !== 0;
+      // The TUI prints the command on screen: mask secrets the same way the desktop does.
+      const shownCommand = redactCommandLine(event.command ?? "");
       lines.push({
         id,
         tone: failed ? "error" : "tool",
         body: failed && expanded
-          ? `x run ${event.command}  ${event.durationMs ? `${event.durationMs}ms` : ""}\n${multiLine(event.output, 24)}`
-          : `${failed ? "x" : "✓"} run ${event.command}  ${event.durationMs ? `${event.durationMs}ms` : ""}${failed ? "  ↵ expands" : ""}\n${summarizeCommandOutput(event.output)}`,
+          ? `x run ${shownCommand}  ${event.durationMs ? `${event.durationMs}ms` : ""}\n${multiLine(event.output, 24)}`
+          : `${failed ? "x" : "✓"} run ${shownCommand}  ${event.durationMs ? `${event.durationMs}ms` : ""}${failed ? "  ↵ expands" : ""}\n${summarizeCommandOutput(event.output)}`,
       });
       continue;
     }
@@ -1501,7 +1474,9 @@ export function renderChatLines(args: {
         message = merged.message;
       }
       const normalizedMessage = message.trim().toLowerCase();
-      if (!normalizedMessage) continue;
+      // A finished-turn line rebuilds its own sentence from the child's title,
+      // so a blank host message must not hide the child's only line.
+      if (!normalizedMessage && !readSpawnCompletedNotice(event)) continue;
       if (noticeKind === "info" && normalizedMessage === "session ready") continue;
       if (isLowValueHookNotice(noticeKind, message)) continue;
 
@@ -1519,38 +1494,24 @@ export function renderChatLines(args: {
         ))
         ? "error"
         : "notice";
-      if (isSpawnCompletionNotice(event)) {
-        const childId = spawnCompletionChildId(event);
-        // A child on another machine says where it ran, like desktop and iOS.
-        const completionDetail = event.type === "system_notice" && event.detail && typeof event.detail === "object"
-          ? event.detail.spawnCompletion
-          : undefined;
-        const childMachine = completionDetail?.childMachineName?.trim();
-        const machineSuffix = childMachine ? ` · on ${childMachine}` : "";
-        const last = lines[lines.length - 1];
-        if (
-          childId
-          && spawnCompletionRun
-          && spawnCompletionRun.childId === childId
-          && last
-          && last.id === spawnCompletionRun.lineId
-        ) {
-          spawnCompletionRun.count += 1;
-          // Render the NEWEST body, like desktop (which swaps the row's event
-          // for the incoming one) and iOS — a child renamed mid-run must read
-          // the same on all three surfaces.
-          lines[lines.length - 1] = {
-            ...last,
-            body: `${message}${machineSuffix} ×${spawnCompletionRun.count}`,
-          };
-          continue;
-        }
-        // A different child, an unidentified completion, or a broken run starts
-        // its own line. Pushed directly rather than through `pushLine` so two
-        // peers with the same title still render as two lines — and so a repeat
-        // that lost its `spawnCompletion` detail is never silently dropped.
-        lines.push({ id, tone, body: `${message}${machineSuffix}` });
-        spawnCompletionRun = childId ? { childId, lineId: id, count: 1 } : null;
+      const completion = readSpawnCompletedNotice(event);
+      if (completion) {
+        const childId = completion.childSessionId;
+        // Only the child's newest finish draws, at its position. An unidentified
+        // completion (no child to count by) keeps its own line rather than
+        // folding into a different child's.
+        if (childId && latestSpawnCompletionIndexByChild.get(childId) !== index) continue;
+        const turns = childId ? spawnCompletionTurnsByChild.get(childId) ?? 1 : 1;
+        // Desktop's line: the title, then where a remote child ran, then the turn count.
+        const machineSuffix = completion.childMachineName ? ` · on ${completion.childMachineName}` : "";
+        const countSuffix = turns > 1 ? ` ×${turns}` : "";
+        // Pushed directly rather than through `pushLine`: two peers with the same
+        // title still render as two lines, and a repeat is never silently dropped.
+        lines.push({
+          id,
+          tone,
+          body: `${singleLine(spawnCompletedNoticeMessage(completion.childTitle), 160)}${machineSuffix}${countSuffix}`,
+        });
         continue;
       }
       pushLine({

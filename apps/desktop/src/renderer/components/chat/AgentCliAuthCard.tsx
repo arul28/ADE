@@ -4,6 +4,7 @@ import { cn } from "../ui/cn";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { ProviderSignInModal } from "../settings/providers/ProviderSignInModal";
 import { acpLoginCommand } from "../settings/providers/acpProviders";
+import { useChatRuntimeScope } from "./ChatRuntimeScope";
 
 export type AgentCliAuthCardInfo = {
   agent: string;
@@ -54,11 +55,11 @@ const AMBER_ACCENT: AccentTokens = {
 const CLAUDE_ACCENT: AccentTokens = {
   cardBorder: "border-[#d97757]/16",
   cardBg: "bg-[#d97757]/[0.06]",
-  iconChip: "border-[#d97757]/22 bg-[#d97757]/[0.12] text-[#f3b79b]",
-  title: "text-[#f5cbb6]",
+  iconChip: "border-[#d97757]/22 bg-[#d97757]/[0.12] text-tone-[#f3b79b]",
+  title: "text-tone-[#f5cbb6]",
   label: "text-[#d97757]/65",
   runButton:
-    "border-[#d97757]/28 bg-[#d97757]/[0.12] text-[#ffd9c6] hover:border-[#d97757]/45 hover:bg-[#d97757]/[0.18]",
+    "border-[#d97757]/28 bg-[#d97757]/[0.12] text-tone-[#ffd9c6] hover:border-[#d97757]/45 hover:bg-[#d97757]/[0.18]",
 };
 
 function CommandCopyButton({ command, label }: { command: string; label: string }) {
@@ -68,7 +69,7 @@ function CommandCopyButton({ command, label }: { command: string; label: string 
     <button
       type="button"
       onClick={() => void copy(command)}
-      className="inline-flex items-center gap-1.5 rounded-md border border-white/[0.08] bg-white/[0.04] px-2 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.14em] text-fg/58 transition-colors hover:border-amber-300/25 hover:bg-amber-300/[0.07] hover:text-amber-100"
+      className="inline-flex items-center gap-1.5 rounded-md border border-fg/[0.08] bg-fg/[0.04] px-2 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.14em] text-fg/58 transition-colors hover:border-amber-300/25 hover:bg-amber-300/[0.07] hover:text-amber-100"
       title={copied ? "Copied" : `Copy ${label}`}
     >
       <CopySimple size={12} weight={copied ? "fill" : "regular"} aria-hidden />
@@ -98,6 +99,8 @@ function ShellRunButton({
 }) {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The CLI that needs the login is the one on the chat's machine.
+  const runtimePin = useChatRuntimeScope().pin;
   const disabled = running || !window.ade?.pty?.create || (!laneId && !window.ade?.lanes?.list);
 
   const handleRun = useCallback(() => {
@@ -109,7 +112,7 @@ function ShellRunButton({
       const resolvedLaneId = laneId ?? (await window.ade.lanes.list({
         includeArchived: false,
         includeStatus: false,
-      }))[0]?.id ?? null;
+      }, runtimePin))[0]?.id ?? null;
       if (!resolvedLaneId) {
         throw new Error("No active lane is available for this project.");
       }
@@ -123,7 +126,7 @@ function ShellRunButton({
         toolType: "shell",
         startupCommand: command,
         ...(initialInput ? { initialInput, initialInputDelayMs: 1_200 } : {}),
-      });
+      }, runtimePin);
     })()
       .then((created) => {
         onRevealTerminal?.({
@@ -137,7 +140,7 @@ function ShellRunButton({
         setError(err instanceof Error ? err.message : String(err));
       })
       .finally(() => setRunning(false));
-  }, [chatSessionId, command, disabled, initialInput, label, laneId, onLaunched, onRevealTerminal]);
+  }, [chatSessionId, command, disabled, initialInput, label, laneId, onLaunched, onRevealTerminal, runtimePin]);
 
   return (
     <div className="flex flex-col items-end gap-1">
@@ -177,6 +180,11 @@ export function AgentCliAuthCard({
   onRevealTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
 }) {
   const missing = agentCli.category === "missing";
+  // The agent runs on the chat's machine, so its sign-in and shell commands
+  // run there, in the chat's lane on that machine.
+  const chatScope = useChatRuntimeScope();
+  const runtimePin = chatScope.pin;
+  const chatLaneId = chatScope.laneId ?? laneId ?? null;
   const accent = agentCli.agent === "claude" ? CLAUDE_ACCENT : AMBER_ACCENT;
   // Retry only makes sense for the logged-out variant (not the "missing CLI"
   // variant) and only when there's a session to resend the last message into.
@@ -289,14 +297,14 @@ export function AgentCliAuthCard({
                 <div className={cn("font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em]", accent.label)}>
                   Install
                 </div>
-                <div className="flex flex-wrap items-center gap-2 rounded-lg border border-white/[0.06] bg-black/20 px-2.5 py-2">
+                <div className="flex flex-wrap items-center gap-2 rounded-lg border border-fg/[0.06] bg-black/20 px-2.5 py-2">
                   <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/78">
                     {agentCli.installCommand}
                   </code>
                   <ShellRunButton
                     command={agentCli.installCommand}
                     label="Run install"
-                    laneId={laneId}
+                    laneId={chatLaneId}
                     chatSessionId={chatSessionId}
                     accent={accent}
                     onRevealTerminal={onRevealTerminal}
@@ -309,7 +317,7 @@ export function AgentCliAuthCard({
               <div className={cn("font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em]", accent.label)}>
                 Authenticate
               </div>
-              <div className="flex flex-wrap items-center gap-2 rounded-lg border border-white/[0.06] bg-black/20 px-2.5 py-2">
+              <div className="flex flex-wrap items-center gap-2 rounded-lg border border-fg/[0.06] bg-black/20 px-2.5 py-2">
                 <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/78">
                   {agentCli.authCommand}
                 </code>
@@ -329,8 +337,14 @@ export function AgentCliAuthCard({
                   <ShellRunButton
                     command={agentCli.authCommand}
                     {...(agentCli.agent === "pi" ? { initialInput: "/login\n" } : {})}
-                    label={agentCli.agent === "claude" ? "Log in to Claude" : agentCli.agent === "pi" ? "Log in to Pi" : "Run auth"}
-                    laneId={laneId}
+                    label={agentCli.agent === "claude"
+                      ? "Log in to Claude"
+                      : agentCli.agent === "pi"
+                        ? "Log in to Pi"
+                        : agentCli.agent === "muse"
+                          ? "Log in to Muse"
+                          : "Run auth"}
+                    laneId={chatLaneId}
                     chatSessionId={chatSessionId}
                     accent={accent}
                     onRevealTerminal={onRevealTerminal}
@@ -355,7 +369,7 @@ export function AgentCliAuthCard({
                     "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.14em] transition-colors disabled:pointer-events-none disabled:opacity-55",
                     loginStarted
                       ? "border-emerald-400/40 bg-emerald-400/[0.12] text-emerald-100 shadow-[0_0_18px_rgba(52,211,153,0.16)] hover:border-emerald-400/55 hover:bg-emerald-400/[0.18]"
-                      : "border-white/[0.1] bg-white/[0.04] text-fg/70 hover:border-white/[0.18] hover:bg-white/[0.07] hover:text-fg",
+                      : "border-fg/[0.1] bg-fg/[0.04] text-fg/70 hover:border-fg/[0.18] hover:bg-fg/[0.07] hover:text-fg",
                   )}
                   title="Re-check authentication and resend the last message"
                 >
@@ -372,14 +386,15 @@ export function AgentCliAuthCard({
           providerId={agentCli.agent}
           providerLabel={agentCli.displayName}
           command={embeddedSignInCommand}
-          laneId={laneId ?? null}
+          laneId={chatLaneId}
+          runtimePin={runtimePin}
           onClose={() => setSignInOpen(false)}
           // Signing in does not resend anything on its own: the retry button
           // above is the one place a turn is re-dispatched, and it now reads as
           // the obvious next step.
           onSignedIn={() => setLoginStarted(true)}
           checkSignedIn={async () => {
-            const status = await window.ade?.ai?.getStatus?.({ force: true });
+            const status = await window.ade?.ai?.getStatus?.({ force: true }, runtimePin);
             const connection = (status?.providerConnections as Record<string, { authAvailable?: boolean }> | undefined)
               ?.[agentCli.agent];
             return connection?.authAvailable === true;

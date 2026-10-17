@@ -6,6 +6,7 @@ import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import { openLinkFromUi } from "../../lib/openExternal";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
+import { useChatLinkContextMenu } from "./useChatLinkContextMenu";
 import { parseProofCitationUrl } from "../../../shared/proofCitation";
 import { parseDeeplink } from "../../../shared/deeplinks";
 import { cn } from "../ui/cn";
@@ -123,8 +124,8 @@ function toneAccents(tone: Tone) {
   if (tone === "neutral") {
     return {
       headerText: "text-zinc-200/95",
-      blockquoteBorder: "border-white/18",
-      hr: "border-white/10",
+      blockquoteBorder: "border-fg/18",
+      hr: "border-fg/10",
       link: "text-zinc-200/90 underline underline-offset-2 transition-colors hover:text-white",
     };
   }
@@ -159,6 +160,8 @@ function ChatMarkdownAnchor({
   const workspacePath = resolveWorkspacePathFromHref(href);
   // A `localhost` link means the chat's machine, not necessarily this one.
   const runtimePin = useChatRuntimeScope().pin;
+  // Right-click on a link: copy it, or open it in a browser of your choosing.
+  const { onContextMenu: onLinkContextMenu, menu: linkContextMenu } = useChatLinkContextMenu(runtimePin);
 
   // Allowing `file:` and drive schemes past the sanitizer (above) means an href
   // that is NEITHER a resolvable workspace path NOR a real URL — `file:///tmp`,
@@ -188,18 +191,22 @@ function ChatMarkdownAnchor({
   }
 
   return (
-    <a
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      className={className}
-      onClick={(event) => {
-        event.preventDefault();
-        openLinkFromUi(href, event, { runtimePin });
-      }}
-    >
-      {children}
-    </a>
+    <>
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className={className}
+        onClick={(event) => {
+          event.preventDefault();
+          openLinkFromUi(href, event, { runtimePin });
+        }}
+        onContextMenu={(event) => onLinkContextMenu(event, href)}
+      >
+        {children}
+      </a>
+      {linkContextMenu}
+    </>
   );
 }
 

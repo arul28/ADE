@@ -1,3 +1,5 @@
+import type { ClaudePromptCacheTtl } from "../claudePromptCache";
+import type { ProviderCompactionSettings } from "../compactionSettings";
 /**
  * Provider accounts ("instances").
  *
@@ -38,6 +40,7 @@ export const PROVIDER_INSTANCE_ENV_KEY: Record<ProviderInstanceProvider, string>
 
 /** One local account for one provider. */
 export type ProviderInstance = {
+  compaction?: ProviderCompactionSettings;
   /** Stable machine-local id. The default instance's id IS the provider slug. */
   id: string;
   provider: ProviderInstanceProvider;
@@ -75,6 +78,24 @@ export type ProviderInstance = {
    * account. Absent once any account holds that email again, or once dismissed.
    */
   replacedAccount?: ProviderInstanceReplacedAccount;
+  /**
+   * Claude only. The user chose the 1-hour prompt cache for this account's
+   * subagents, workflows and helper requests. Absent means ADE states nothing
+   * and Claude Code applies its own default (5 minutes).
+   */
+  subagentPromptCacheTtl?: "1h";
+  /**
+   * Claude only. The prompt cache lifetime the user chose for this account's
+   * main conversation. Absent means ADE states nothing and Claude Code decides:
+   * 1 hour on a subscription within its limits, 5 minutes otherwise.
+   */
+  mainPromptCacheTtl?: ClaudePromptCacheTtl;
+  /**
+   * Claude only. `"stop"` means ADE stops a turn when Claude reports that the
+   * turn draws on extra usage (billed past the plan limit). Absent means the
+   * turn continues, which is what Claude Code does by itself.
+   */
+  onExtraUsage?: "stop";
 };
 
 export type ProviderInstanceReplacedAccount = {
@@ -94,6 +115,7 @@ export function providerInstanceHasAccount(instance: Pick<ProviderInstance, "sig
 
 /** Per-provider settings that are about the set of accounts, not one account. */
 export type ProviderInstanceSettings = {
+  compaction?: ProviderCompactionSettings;
   /**
    * Spread new chats across signed-in accounts instead of always using the
    * default. Stored here; the scheduler that reads it lands with the UI.
@@ -156,8 +178,10 @@ export type ProviderInstanceRemoveArgs = {
 
 export type ProviderInstanceRemoveResult = {
   removed: boolean;
-  /** The config home left on disk; removing an account never deletes credentials. */
+  /** The config home left on disk; removing an account never deletes the directory. */
   configHome: string;
+  /** Why the sign-out before the removal failed; the login is still in `configHome`. */
+  signOutError?: string;
 };
 
 export type ProviderInstanceRenameArgs = {
@@ -184,9 +208,28 @@ export type ProviderInstanceGetSettingsArgs = {
 };
 
 export type ProviderInstanceSetSettingsArgs = {
+  /** Account override; null compaction restores provider inheritance. */
+  instanceId?: string;
   provider: ProviderInstanceProvider;
-  settings: Partial<ProviderInstanceSettings>;
+  settings: ProviderInstanceSettingsPatch;
 };
+
+/**
+ * `compaction`, the two prompt cache lifetimes and `onExtraUsage` are account
+ * settings: they need an `instanceId`, a missing key leaves the stored value
+ * alone, and null clears it.
+ */
+export type ProviderInstanceSettingsPatch = Omit<Partial<ProviderInstanceSettings>, "compaction"> & {
+  compaction?: ProviderCompactionSettings | null;
+  subagentPromptCacheTtl?: "1h" | null;
+  mainPromptCacheTtl?: ClaudePromptCacheTtl | null;
+  onExtraUsage?: "stop" | null;
+};
+
+/** The env var Claude Code reads for the prompt cache TTL outside the main conversation. */
+export const CLAUDE_SUBAGENT_PROMPT_CACHE_TTL_ENV = "CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL";
+/** The env var Claude Code reads for the prompt cache TTL of the main conversation. */
+export const CLAUDE_MAIN_PROMPT_CACHE_TTL_ENV = "CLAUDE_CODE_PROMPT_CACHE_TTL";
 
 export type ProviderInstanceLoginCommandArgs = {
   id: string;

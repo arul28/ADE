@@ -1,16 +1,19 @@
 import React, { useEffect, useMemo } from "react";
-import { ArrowClockwise, CheckCircle, CircleNotch, WarningCircle } from "@phosphor-icons/react";
+import { ArrowClockwise, CheckCircle, CircleNotch, GithubLogo, WarningCircle } from "@phosphor-icons/react";
 import {
   isBatchLaunchInFlight,
   type BatchLaunchItemState,
   type BatchLaunchItemStatus,
+  type LaunchIssue,
 } from "../../lib/linearBatchLaunch";
-import { LinearMark } from "../lanes/linearBrand";
+import { LinearMark, LinearStateIcon } from "../lanes/linearBrand";
+import { GitHubIssueStateIcon } from "../lanes/githubBrand";
+import { JiraMark, JiraStatusIcon } from "../lanes/jiraBrand";
 import { noticeTone, type NoticeTone } from "../ui/notice/noticeTones";
-import { dismissToast, showToast } from "./toast/toastStore";
+import { dismissToast, READABLE_TOAST_DURATION_MS, showToast } from "./toast/toastStore";
 
 /** One batch at a time, so a new launch (or retry) takes over the same card. */
-export const BATCH_LAUNCH_TOAST_ID = "linear-batch-launch";
+export const BATCH_LAUNCH_TOAST_ID = "issue-batch-launch";
 
 function statusLabel(status: BatchLaunchItemStatus): string {
   switch (status) {
@@ -38,13 +41,28 @@ function StatusIcon({ status }: { status: BatchLaunchItemStatus }): React.ReactE
   if (isBatchLaunchInFlight(status)) {
     return <CircleNotch size={13} className="animate-spin" style={{ color: noticeTone("info").color }} />;
   }
-  return <span className="inline-block h-2 w-2 rounded-full bg-fg/25" />;
+  return <span className="kit-dot" />;
 }
 
 function statusTextStyle(status: BatchLaunchItemStatus): React.CSSProperties {
-  if (status === "failed") return { color: noticeTone("error").text, fontWeight: 500 };
-  if (status === "agent-error") return { color: noticeTone("warning").text, fontWeight: 500 };
-  return { color: "var(--color-muted-fg)" };
+  if (status === "failed") return { color: noticeTone("error").text };
+  if (status === "agent-error") return { color: noticeTone("warning").text };
+  return { color: "var(--kit-text-3)" };
+}
+
+function IssueMark({ issue }: { issue: LaunchIssue }): React.ReactElement {
+  if (issue.tracker === "linear") return <LinearMark size={12} className="shrink-0" />;
+  if (issue.tracker === "jira") return <JiraMark size={12} className="shrink-0" />;
+  return <GithubLogo size={12} weight="fill" className="shrink-0" />;
+}
+
+function IssueStateIcon({ issue }: { issue: LaunchIssue }): React.ReactElement {
+  const link = issue.createLaneLink;
+  if ("linearIssue" in link) return <LinearStateIcon stateType={link.linearIssue.stateType} size={11} />;
+  if ("githubIssue" in link) {
+    return <GitHubIssueStateIcon state={link.githubIssue.state} stateReason={link.githubIssue.stateReason} size={11} />;
+  }
+  return <JiraStatusIcon category={link.jiraIssue.statusCategory} size={11} />;
 }
 
 function batchHeadline({
@@ -76,32 +94,33 @@ function BatchLaunchRows({
   onOpenLane: (laneId: string) => void;
 }) {
   return (
-    <div
-      className="-mx-1 max-h-64 overflow-y-auto rounded-lg border border-fg/[0.07] bg-fg/[0.025] p-1"
-      data-testid="batch-launch-rows"
-    >
-      {rows.map((row) => {
-        const clickable = Boolean(row.laneId);
-        return (
-          <button
-            key={row.issue.id}
-            type="button"
-            disabled={!clickable}
-            onClick={() => row.laneId && onOpenLane(row.laneId)}
-            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors enabled:hover:bg-fg/[0.05] disabled:cursor-default"
-            title={row.error ?? (clickable ? "Open lane" : undefined)}
-          >
-            <StatusIcon status={row.status} />
-            <span className="shrink-0 rounded bg-fg/[0.06] px-1.5 py-0.5 font-mono text-[10px] text-fg/80">
-              {row.issue.identifier}
-            </span>
-            <span className="min-w-0 flex-1 truncate text-[11.5px] text-muted-fg">{row.issue.title}</span>
-            <span className="shrink-0 text-[10px]" style={statusTextStyle(row.status)}>
-              {statusLabel(row.status)}
-            </span>
-          </button>
-        );
-      })}
+    <div className="kit-card max-h-64 overflow-y-auto" data-testid="batch-launch-rows">
+      <div className="kit-card-body p-1" data-flush="true">
+        {rows.map((row) => {
+          const clickable = Boolean(row.laneId);
+          return (
+            <button
+              key={`${row.issue.tracker}:${row.issue.id}`}
+              type="button"
+              disabled={!clickable}
+              onClick={() => row.laneId && onOpenLane(row.laneId)}
+              className="kit-row flex w-full items-center gap-2 px-2 py-1.5 text-left disabled:cursor-default"
+              title={row.error ?? (clickable ? "Open lane" : undefined)}
+            >
+              <IssueMark issue={row.issue} />
+              <IssueStateIcon issue={row.issue} />
+              <span className="kit-num shrink-0 text-[10.5px] text-[color:var(--kit-text-2)]">
+                {row.issue.key}
+              </span>
+              <span className="min-w-0 flex-1 truncate text-[11.5px] text-muted-fg">{row.issue.title}</span>
+              <StatusIcon status={row.status} />
+              <span className="shrink-0 text-[10px]" style={statusTextStyle(row.status)}>
+                {statusLabel(row.status)}
+              </span>
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -147,7 +166,7 @@ export function BatchLaunchStatusToast({
     showToast({
       id: BATCH_LAUNCH_TOAST_ID,
       tone,
-      icon: <LinearMark size={14} />,
+      icon: rows.length === 1 ? <IssueMark issue={rows[0]!.issue} /> : undefined,
       title: batchHeadline({
         rowCount: rows.length,
         readyCount: doneCount,
@@ -175,7 +194,7 @@ export function BatchLaunchStatusToast({
   useEffect(() => {
     if (!rows.length) return;
     if (inFlight || failedCount > 0 || attentionCount > 0) return;
-    const timer = window.setTimeout(onDismiss, 3200);
+    const timer = window.setTimeout(onDismiss, READABLE_TOAST_DURATION_MS);
     return () => window.clearTimeout(timer);
   }, [rows.length, inFlight, failedCount, attentionCount, onDismiss]);
 

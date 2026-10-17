@@ -444,6 +444,6 @@ private struct FilesSearchContentGroupView: View {
         .padding(.bottom, 6)
       }
     }
-    .adeGlassCard(cornerRadius: 16, padding: 0)
+    .adeKitCard(padding: 0)
   }
 }

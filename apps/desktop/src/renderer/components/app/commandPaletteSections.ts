@@ -8,18 +8,18 @@
 import type { ProjectDetail, ProjectIcon } from "../../../shared/types";
 
 /**
- * The palette's default list is three sections whose ORDER varies (see
+ * The palette's default list is four sections whose ORDER varies (see
  * `commandsLeadPaletteResults`). Both the rendered nodes and the flat keyboard
  * index are derived from a single ordered array of these, so there is exactly
  * one place that knows what comes first.
  */
-export type PaletteSectionKey = "threads" | "commands" | "entities";
+export type PaletteSectionKey = "chatFind" | "threads" | "commands" | "entities";
 
 export type PaletteSection = { key: PaletteSectionKey; count: number };
 
 export type PaletteSectionsInput = {
   /**
-   * True when the query looks like a command title, which flips commands ahead
+   * True when the query looks like a command title, which puts commands ahead
    * of threads. See `commandsLeadPaletteResults`.
    */
   commandsLead: boolean;
@@ -29,14 +29,22 @@ export type PaletteSectionsInput = {
   commandCount: number;
   /** Flattened entity rows, including each section's "show more" row. */
   entityCount: number;
+  /** True when "Find "…" in this chat" is offered (a chat is on screen and words are typed). */
+  chatFindOffered: boolean;
 };
 
 /**
  * The ONE statement of palette order.
  *
- * Threads lead because the palette is the Work sidebar's search now — with an
- * empty query the thing you most likely came here for is a chat you were just
- * in, not a command. Typing a command's full title flips it.
+ * Threads lead by default because the palette is the Work sidebar's search now
+ * — with an empty query the thing you most likely came here for is a chat you
+ * were just in, not a command. "Find "…" in this chat" leads with them when it
+ * is offered: with a chat on screen, the words typed are most likely words in
+ * that chat.
+ *
+ * Typing a command's full title flips the order: the commands lead, and the
+ * find row sits directly under them, so Enter on the command you typed runs
+ * that command, not find.
  *
  * A section with `count === 0` renders nothing and claims no flat indices, so
  * it is kept in the array rather than dropped: presence never shifts an index,
@@ -47,13 +55,15 @@ export function buildPaletteSections({
   threadCount,
   commandCount,
   entityCount,
+  chatFindOffered,
 }: PaletteSectionsInput): PaletteSection[] {
+  const chatFind: PaletteSection = { key: "chatFind", count: chatFindOffered ? 1 : 0 };
   const threads: PaletteSection = { key: "threads", count: threadCount };
   const commands: PaletteSection = { key: "commands", count: commandCount };
   const entities: PaletteSection = { key: "entities", count: entityCount };
   return commandsLead
-    ? [commands, threads, entities]
-    : [threads, commands, entities];
+    ? [commands, chatFind, threads, entities]
+    : [chatFind, threads, commands, entities];
 }
 
 /** Total number of keyboard-navigable rows across every section. */

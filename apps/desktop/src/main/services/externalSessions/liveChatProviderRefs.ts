@@ -15,6 +15,7 @@ const PROVIDERS = new Set<ExternalSessionProvider>([
   "droid",
   "opencode",
   "pi",
+  "muse",
   "qwen",
   "kimi",
   "grok",
@@ -106,6 +107,7 @@ function pointersFromRecord(raw: unknown): ProviderPointer[] {
   pushPointer(pointers, provider === "opencode" || !provider ? "opencode" : provider, asId(record.providerSessionId));
   pushPointer(pointers, "droid", asId(record.droidSdkSessionId));
   pushPointer(pointers, "pi", asId(record.piSessionId) ?? asId(record.piSessionFile));
+  pushPointer(pointers, "muse", asId(record.museSessionId));
   pushPointer(pointers, "cursor", asId(record.cursorSdkAgentId));
   pushPointer(pointers, "cursor", asId(record.cursorCloudAgentId));
   if (provider === "qwen" || provider === "kimi" || provider === "grok" || provider === "copilot") {

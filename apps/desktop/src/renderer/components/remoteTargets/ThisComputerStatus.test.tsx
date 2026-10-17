@@ -88,6 +88,26 @@ describe("ThisComputerStatus", () => {
     await waitFor(() => expect(accountMock.repairMachinePairing).toHaveBeenCalledTimes(1));
   });
 
+  it("renders the Repair the reconnect outcome names when no ADE hosts sync on this computer", async () => {
+    installAdeMock(refusal("machine_revoked"));
+    accountMock.repairMachinePairing.mockResolvedValue({
+      repaired: false,
+      wasRevoked: true,
+      published: false,
+      pushRestored: false,
+      state: "sync_host_not_running",
+      reason: "No ADE on this computer is hosting sync right now, so it can't be put on your account.",
+    });
+    appMock.restartBackgroundService.mockResolvedValue(undefined);
+
+    render(<ThisComputerStatus accountSignedIn />);
+    fireEvent.click(await screen.findByRole("button", { name: "Reconnect this computer" }));
+
+    expect(await screen.findByText(/is hosting sync right now/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Repair" }));
+    await waitFor(() => expect(appMock.restartBackgroundService).toHaveBeenCalledTimes(1));
+  });
+
   it("says Confirm it's you, never Sign in again, when the directory wants fresh proof", async () => {
     installAdeMock(refusal("pairing_authentication_required"));
     render(<ThisComputerStatus accountSignedIn />);
@@ -182,7 +202,7 @@ describe("ThisComputerStatus", () => {
     accountMock.startSyncHost.mockResolvedValue({ ok: true, state: "ready", message: "ok" });
 
     render(<ThisComputerStatus accountSignedIn />);
-    expect(await screen.findByText("Sync hasn't started on this computer yet")).toBeTruthy();
+    expect(await screen.findByText("Other devices can't reach this computer yet")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Start sync" }));
 
     await waitFor(() => expect(accountMock.startSyncHost).toHaveBeenCalledTimes(1));

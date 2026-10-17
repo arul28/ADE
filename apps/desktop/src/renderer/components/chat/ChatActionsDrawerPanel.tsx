@@ -79,7 +79,7 @@ function DrawerSectionRegion({
       className={cn(
         "flex min-h-0 shrink flex-col",
         hidden && "hidden",
-        divided && "border-t border-white/[0.06]",
+        divided && "border-t border-fg/[0.06]",
       )}
       style={{ flexBasis: "auto", minHeight: floor }}
     >
@@ -153,7 +153,7 @@ export function ChatActionsDrawerPanel({
         </div>
       </div>
       {footer ? (
-        <div data-testid="chat-actions-drawer-footer" className="shrink-0 border-t border-white/[0.06] empty:hidden">
+        <div data-testid="chat-actions-drawer-footer" className="shrink-0 border-t border-fg/[0.06] empty:hidden">
           {footer}
         </div>
       ) : null}

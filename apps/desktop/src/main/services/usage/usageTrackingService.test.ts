@@ -24,6 +24,7 @@ const mockState = vi.hoisted(() => ({
   spawn: vi.fn(),
   spawnSync: vi.fn(),
   resolveCodexExecutable: vi.fn(),
+  ptySpawn: vi.fn(),
 }));
 
 const requireForTest = createRequire(path.join(process.cwd(), "usage-test.cjs"));
@@ -32,6 +33,12 @@ vi.mock("node:child_process", () => ({
   spawn: (...args: unknown[]) => mockState.spawn(...args),
   spawnSync: (...args: unknown[]) => mockState.spawnSync(...args),
 }));
+
+// The Claude CLI `/usage` probe runs in a pty: the process boundary.
+vi.mock("node-pty", () => {
+  const spawn = (...args: unknown[]) => mockState.ptySpawn(...args);
+  return { spawn, default: { spawn } };
+});
 
 vi.mock("../ai/codexExecutable", () => ({
   resolveCodexExecutable: (...args: unknown[]) => mockState.resolveCodexExecutable(...args),
@@ -234,6 +241,7 @@ function createFakeCodexChild({
 
 beforeEach(() => {
   mockState.spawn.mockReset();
+  mockState.ptySpawn.mockReset();
   mockState.spawnSync.mockReset();
   mockState.spawnSync.mockReturnValue({ status: 0, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) });
   mockState.resolveCodexExecutable.mockReset();
@@ -1290,6 +1298,13 @@ describe("resolveTokenPrice", () => {
     expect(resolveTokenPrice("gpt-6-sol").input).toBe(2 / 1_000_000);
     expect(resolveTokenPrice("gemini-2.5-pro").input).toBe(0);
     expect(tokenPriceSource("gemini-2.5-pro")).toBe("fallback");
+
+    // A retired row keeps its own rate in the fallback, not the cheaper
+    // successor its alias now resolves to (Haiku 4.5 $1/$5, not 5.5's $0.10/$0.50).
+    expect(resolveTokenPrice("claude-haiku-4-5").input).toBe(1 / 1_000_000);
+    expect(resolveTokenPrice("claude-haiku-4-5").output).toBe(5 / 1_000_000);
+    expect(resolveTokenPrice("claude-4.5-haiku").input).toBe(1 / 1_000_000);
+    expect(tokenPriceSource("claude-haiku-4-5")).toBe("fallback");
   });
 
   it("keeps the Codex list price when another runtime shares the wire id", () => {
@@ -1372,8 +1387,8 @@ describe("resolveTokenPrice", () => {
     expect(resolveTokenPrice("opus").input).toBe(4 / 1_000_000);
     expect(resolveTokenPrice("opus").cacheRead).toBe(0.2 / 1_000_000);
     expect(tokenPriceSource("opus")).toBe("list");
-    expect(resolveTokenPrice("haiku").input).toBe(1 / 1_000_000);
-    expect(resolveTokenPrice("haiku").output).toBe(5 / 1_000_000);
+    expect(resolveTokenPrice("haiku").input).toBe(0.1 / 1_000_000);
+    expect(resolveTokenPrice("haiku").output).toBe(0.5 / 1_000_000);
   });
 
   it("prices every spelling of Sonnet 4.6 at Sonnet 4.6's row, not Sonnet 5's", () => {
@@ -6297,8 +6312,8 @@ describe("ADE database usage aggregation", () => {
     expect(isMeaningfulUsageAction("chat.createScheduledWork")).toBe(true);
     expect(usageActionFromIpcChannel("ade.agentChat.scheduledWork.cancel")).toBe("chat.cancelScheduledWork");
     expect(isMeaningfulUsageAction("chat.cancelScheduledWork")).toBe(true);
-    expect(usageActionFromIpcChannel("ade.agentChat.promptStashes.create")).toBe("chat.createPromptStash");
-    expect(isMeaningfulUsageAction("chat.createPromptStash")).toBe(true);
+    expect(usageActionFromIpcChannel("ade.agentChat.drafts.create")).toBe("chat.createDraft");
+    expect(isMeaningfulUsageAction("chat.createDraft")).toBe(true);
     expect(usageActionFromIpcChannel("ade.agentChat.restartSession")).toBe("chat.restartSession");
     expect(isMeaningfulUsageAction(usageActionFromRpcDomain("chat", "restartSession"))).toBe(true);
     expect(isMeaningfulUsageAction(usageActionFromRpcDomain("pr", "getChatWatches"))).toBe(false);
@@ -6753,6 +6768,55 @@ describe("usage ledger end-to-end accuracy", () => {
     }
   });
 
+  it("counts a lane outside .ade/worktrees in project usage, but not a worktree opened as its own project", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ade-usage-linked-"));
+    try {
+      const projectRoot = path.join(tmp, "repo");
+      // Git's own layout for linked worktrees: `<checkout>/.git` names the admin
+      // directory, and the admin directory's `gitdir` names the checkout back.
+      const linkWorktree = (name: string): string => {
+        const checkout = path.join(tmp, "repo-worktrees", name);
+        const adminDir = path.join(projectRoot, ".git", "worktrees", name);
+        fs.mkdirSync(checkout, { recursive: true });
+        fs.mkdirSync(adminDir, { recursive: true });
+        fs.writeFileSync(path.join(checkout, ".git"), `gitdir: ${adminDir}\n`);
+        fs.writeFileSync(path.join(adminDir, "gitdir"), `${path.join(checkout, ".git")}\n`);
+        return checkout;
+      };
+      const lane = linkWorktree("feature lane");
+      const standalone = linkWorktree("standalone");
+      const { DatabaseSync } = requireForTest("node:sqlite") as { DatabaseSync: new (dbPath: string) => any };
+      for (const root of [projectRoot, standalone]) {
+        fs.mkdirSync(path.join(root, ".ade"), { recursive: true });
+        const db = new DatabaseSync(path.join(root, ".ade", "ade.db"));
+        db.exec("create table lanes (worktree_path text, attached_root_path text, archived_at text)");
+        if (root === projectRoot) {
+          db.prepare("insert into lanes(worktree_path, attached_root_path, archived_at) values (?, null, null)").run(lane);
+        }
+        db.close();
+      }
+      const base = Date.now();
+      const entry = (messageId: string, inputTokens: number, where: { projectPath?: string; projectKey?: string }): TokenEntry => ({
+        messageId, model: "claude-opus-5", inputTokens, outputTokens: 0, cachedTokens: 0, cacheWriteTokens: 0, timestamp: base, ...where,
+      });
+      const costs = buildCostSnapshots(new Map([["claude", [
+        entry("in-root", 1, { projectPath: projectRoot }),
+        entry("in-lane-by-path", 10, { projectPath: path.join(lane, "src") }),
+        entry("in-lane-by-key", 100, { projectKey: lane.replace(/[^A-Za-z0-9]/g, "-") }),
+        entry("in-standalone", 1_000, { projectPath: standalone }),
+        entry("elsewhere", 10_000, { projectPath: path.join(tmp, "unrelated") }),
+      ]]]), "project", projectRoot);
+
+      const claude = costs.find((cost) => cost.provider === "claude");
+      expect(claude, "claude project snapshot").toBeDefined();
+      const allTime = claude!.tokenBreakdownByPreset?.all ?? claude!.tokenBreakdown;
+      const inputTokens = Object.values(allTime).reduce((sum, row) => sum + (row?.input ?? 0), 0);
+      expect(inputTokens).toBe(111);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it("gives every day's tokens a provider so the chart series sum to the day total", () => {
     const base = Date.now();
     const costs = buildCostSnapshots(new Map([
@@ -7047,6 +7111,127 @@ describe("per-account quota attribution", () => {
 
     expect(result.errors).toEqual([]);
     expect(result.windows.every((window) => window.accountId === "claude:claude")).toBe(true);
+  });
+
+  /** A fake Claude CLI in its pty that answers `/usage`, recording the home it ran for. */
+  function fakeClaudeCli(spawnedHomes: Array<string | undefined>): void {
+    mockState.ptySpawn.mockImplementation((_command: string, _args: string[], options: { env: NodeJS.ProcessEnv }) => {
+      spawnedHomes.push(options.env.CLAUDE_CONFIG_DIR);
+      let emit: ((chunk: string) => void) | null = null;
+      return {
+        onData: (cb: (chunk: string) => void) => { emit = cb; },
+        onExit: () => undefined,
+        write: (data: string) => {
+          if (data.startsWith("/usage")) {
+            emit?.("Settings: Usage\nCurrent session\n70% left\nResets 5pm\nCurrent week (all models)\n12% used\nResets Jul 12 at 3pm\n");
+          }
+        },
+        kill: () => undefined,
+      };
+    });
+  }
+
+  /** One background poll. It reads real files between its timers, so the fake clock moves one step at a time. */
+  async function backgroundPoll(instances: TestInstance[]) {
+    let settled = false;
+    const pending = _testing.pollClaudeUsage(logger as never, { reason: "automatic" }, instances)
+      .finally(() => { settled = true; });
+    while (!settled) {
+      await new Promise((resolve) => setImmediate(resolve));
+      await vi.advanceTimersByTimeAsync(100);
+    }
+    return await pending;
+  }
+
+  function withPlatform(platform: NodeJS.Platform): () => void {
+    const original = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { ...original, value: platform });
+    return () => Object.defineProperty(process, "platform", original);
+  }
+
+  it.each([
+    { name: "a second account", platform: "darwin" as const, base: false, refreshes: true },
+    { name: "the base account off macOS", platform: "linux" as const, base: true, refreshes: true },
+    // Its background poll skips the Keychain and could never read the result.
+    { name: "the base account on macOS", platform: "darwin" as const, base: true, refreshes: false },
+  ])("has the Claude CLI refresh $name's expired login from a background poll, once per allowance", async ({ platform, base, refreshes }) => {
+    // Claude tokens last about eight hours and ADE never refreshes one itself,
+    // and smart balance never sends a chat to an account it has no reading
+    // for, so an idle account's login has no chat coming to refresh it.
+    const instance = base ? defaultInstance() : workInstance();
+    const expired = { accessToken: "stale", refreshToken: "refresh", expiresAt: Date.now() - 60_000 };
+    writeJson(path.join(instance.configHome, ".credentials.json"), { claudeAiOauth: expired });
+    vi.stubEnv("CLAUDE_CODE_EXECUTABLE_PATH", "/fake/claude");
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      throw new Error("an expired token must not be sent");
+    }));
+    const spawnedHomes: Array<string | undefined> = [];
+    fakeClaudeCli(spawnedHomes);
+    const restorePlatform = withPlatform(platform);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+    try {
+      const first = await backgroundPoll([instance]);
+      const accountWindows = first.windows.filter((window) => window.accountId === `claude:${instance.id}`);
+      if (!refreshes) {
+        expect(spawnedHomes).toEqual([]);
+        expect(accountWindows).toEqual([]);
+        return;
+      }
+      expect(spawnedHomes).toEqual([instance.configHome]);
+      expect(accountWindows.map((window) => [window.windowType, window.percentUsed]).sort())
+        .toEqual([["five_hour", 30], ["weekly", 12]]);
+
+      // A CLI run that did not fix the login is not repeated on the next tick…
+      await backgroundPoll([instance]);
+      expect(spawnedHomes).toHaveLength(1);
+
+      // …but is once the allowance runs out.
+      vi.setSystemTime(Date.now() + 31 * 60_000);
+      await backgroundPoll([instance]);
+      expect(spawnedHomes).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+      restorePlatform();
+    }
+  });
+
+  it("does not resend a Claude token the usage API rejected, and reads the CLI's replacement", async () => {
+    const credentials = (accessToken: string) => ({
+      claudeAiOauth: { accessToken, refreshToken: "refresh", expiresAt: Date.now() + 60 * 60_000 },
+    });
+    writeJson(path.join(workHome, ".credentials.json"), credentials("rejected"));
+    vi.stubEnv("CLAUDE_CODE_EXECUTABLE_PATH", "/fake/claude");
+    const sent: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init: { headers: Record<string, string> }) => {
+      const token = init.headers.Authorization.replace("Bearer ", "");
+      sent.push(token);
+      return token === "rejected"
+        ? { ok: false, status: 401, headers: { get: () => null }, json: async () => ({}) }
+        : { ok: true, status: 200, headers: { get: () => null }, json: async () => claudeUsageBody(40) };
+    }));
+    // The CLI cannot refresh it this time.
+    mockState.ptySpawn.mockImplementation(() => {
+      throw new Error("claude is not installed");
+    });
+    const poll = () => _testing.pollClaudeUsage(logger as never, { reason: "automatic" }, [workInstance()]);
+
+    const first = await poll();
+    expect(sent).toEqual(["rejected"]);
+    expect(mockState.ptySpawn).toHaveBeenCalledTimes(1);
+    expect(first.errors).toEqual(["claude: API returned 401"]);
+
+    // The same token is answered locally, with the same error.
+    const second = await poll();
+    expect(sent).toEqual(["rejected"]);
+    expect(second.errors).toEqual(["claude: API returned 401"]);
+
+    // A new token in the login is read and sent.
+    writeJson(path.join(workHome, ".credentials.json"), credentials("renewed"));
+    const third = await poll();
+    expect(sent).toEqual(["rejected", "renewed"]);
+    expect(third.windows.find((window) => window.windowType === "five_hour")?.percentUsed).toBe(40);
+    vi.unstubAllEnvs();
   });
 
   it("keeps a signed-in account's last windows when a background pass cannot read its login", async () => {
@@ -7570,7 +7755,7 @@ describe("per-account quota attribution", () => {
           errors: [] as never[],
         })),
         pollCodexUsage: vi.fn(async () => ({ windows: [] as never[], errors: [] as never[] })),
-        listProviderInstances: (provider) => (provider === "claude"
+        listProviderInstances: (provider: string) => (provider === "claude"
           ? [defaultInstance(), workInstance()]
           : []),
         ...scannerStubs(),
@@ -7602,7 +7787,10 @@ describe("per-account quota attribution", () => {
     service.dispose();
   });
 
-  it("shows one account for two config homes on the same live login, with only its windows", async () => {
+  it.each([
+    { name: "the base account", defaultId: "claude" },
+    { name: "a second account", defaultId: "work" },
+  ])("shows one account for two config homes on the same live login, the default ($name), with only its windows", async ({ defaultId }) => {
     writeClaudeAccount(path.join(tempHome, ".claude"), "shared@example.com");
     writeClaudeAccount(workHome, "shared@example.com");
     const service = createUsageTrackingService({
@@ -7630,8 +7818,11 @@ describe("per-account quota attribution", () => {
           errors: [] as never[],
         })),
         pollCodexUsage: vi.fn(async () => ({ windows: [] as never[], errors: [] as never[] })),
-        listProviderInstances: (provider) => (provider === "claude"
-          ? [defaultInstance(), workInstance()]
+        listProviderInstances: (provider: string) => (provider === "claude"
+          ? [
+            { ...defaultInstance(), isDefault: defaultId === "claude" },
+            { ...workInstance(), isDefault: defaultId === "work" },
+          ]
           : []),
         ...scannerStubs(),
       },
@@ -7640,64 +7831,126 @@ describe("per-account quota attribution", () => {
     const snapshot = await service.poll({ reason: "user" });
     const claudeAccounts = (snapshot.accounts ?? []).filter((account) => account.provider === "claude");
 
-    // One login is one quota: the second home is dropped, default first, and
-    // its windows go with it so balance cannot count the same plan twice.
-    expect(claudeAccounts.map((account) => account.id)).toEqual(["claude:claude"]);
-    expect(snapshot.windows.map((window) => window.accountId)).toEqual(["claude:claude"]);
+    // One login is one quota: the default keeps it, the other home is dropped,
+    // and its windows go with it so balance cannot count the same plan twice.
+    // The registry names the same owner, so balance counts the kept reading.
+    expect(claudeAccounts.map((account) => account.id)).toEqual([`claude:${defaultId}`]);
+    expect(snapshot.windows.map((window) => window.accountId)).toEqual([`claude:${defaultId}`]);
 
     service.dispose();
   });
 
-  it("marks the account smart balance would use next for a new chat", async () => {
+  it("keeps the next-chat preview in sync with Claude's capacity rotation", async () => {
     writeClaudeAccount(path.join(tempHome, ".claude"), "default@example.com");
     writeClaudeAccount(workHome, "work@example.com");
     const signedInInstances = (): ProviderInstance[] => [
       { ...defaultInstance(), provider: "claude", createdAt: new Date(0).toISOString(), signedIn: true },
       { ...workInstance(), provider: "claude", createdAt: new Date(0).toISOString(), signedIn: true },
     ];
-    const service = createUsageTrackingService({
-      logger,
-      dependencies: {
-        pollClaudeUsage: vi.fn(async () => ({
-          windows: [
-            {
-              provider: "claude" as const,
-              windowType: "weekly" as const,
-              accountId: "claude:claude",
-              percentUsed: 50,
-              resetsAt: new Date(Date.now() + 6 * 24 * 60 * 60_000).toISOString(),
-              resetsInMs: 6 * 24 * 60 * 60_000,
-              windowDurationMs: 7 * 24 * 60 * 60_000,
-            },
-            {
-              provider: "claude" as const,
-              windowType: "weekly" as const,
-              accountId: "claude:work",
-              percentUsed: 50,
-              resetsAt: new Date(Date.now() + 60 * 60_000).toISOString(),
-              resetsInMs: 60 * 60_000,
-              windowDurationMs: 7 * 24 * 60 * 60_000,
-            },
-          ],
-          errors: [] as never[],
-        })),
-        pollCodexUsage: vi.fn(async () => ({ windows: [] as never[], errors: [] as never[] })),
-        listProviderInstances: (provider) => (provider === "claude"
-          ? [defaultInstance(), workInstance()]
-          : []),
-        providerInstanceStore: {
-          getProviderSettings: () => ({ smartBalance: true, autoStartWindows: false }),
-          list: (provider?: string) => (provider === "claude" ? signedInInstances() : []),
-        },
-        ...scannerStubs(),
+    const dependencies = {
+      pollClaudeUsage: vi.fn(async () => ({
+        windows: [
+          {
+            provider: "claude" as const,
+            windowType: "five_hour" as const,
+            accountId: "claude:claude",
+            percentUsed: 44,
+            resetsAt: new Date(Date.now() + 47 * 60_000).toISOString(),
+            resetsInMs: 47 * 60_000,
+          },
+          {
+            provider: "claude" as const,
+            windowType: "weekly" as const,
+            accountId: "claude:claude",
+            percentUsed: 76,
+            resetsAt: new Date(Date.now() + (2 * 24 + 13) * 60 * 60_000).toISOString(),
+            resetsInMs: (2 * 24 + 13) * 60 * 60_000,
+            windowDurationMs: 7 * 24 * 60 * 60_000,
+          },
+          {
+            provider: "claude" as const,
+            windowType: "five_hour" as const,
+            accountId: "claude:work",
+            percentUsed: 0,
+            resetsAt: new Date(Date.now() + (2 * 60 + 7) * 60_000).toISOString(),
+            resetsInMs: (2 * 60 + 7) * 60_000,
+          },
+        ],
+        errors: [] as never[],
+      })),
+      pollCodexUsage: vi.fn(async () => ({ windows: [] as never[], errors: [] as never[] })),
+      listProviderInstances: (provider: string) => (provider === "claude"
+        ? [defaultInstance(), workInstance()]
+        : []),
+      providerInstanceStore: {
+        getProviderSettings: () => ({ smartBalance: true, autoStartWindows: false }),
+        list: (provider?: string) => (provider === "claude" ? signedInInstances() : []),
       },
+      ...scannerStubs(),
+    };
+    const service = createUsageTrackingService({ logger, dependencies });
+
+    const initial = await service.poll({ reason: "user" });
+
+    // The default has the sooner weekly reset; work has a fresh 100% five-hour
+    // window and no weekly reading, so it receives the third capacity slot.
+    expect(initial.balanceNext).toEqual([{ provider: "claude", instanceId: "claude" }]);
+    expect(service.peekBalancedInstance("claude")).toMatchObject({ instanceId: "claude" });
+    expect(service.peekBalancedInstance("claude")).toMatchObject({ instanceId: "claude" });
+    expect(service.resolveBalancedInstance("claude")).toMatchObject({
+      instanceId: "claude",
+      reason: "soonest weekly reset",
     });
+    expect(service.getUsageSnapshot().balanceNext).toEqual([{ provider: "claude", instanceId: "claude" }]);
 
-    const snapshot = await service.poll({ reason: "user" });
+    // A quota poll recomputes the preview without consuming another slot.
+    const afterPoll = await service.poll({ reason: "user" });
+    expect(afterPoll.balanceNext).toEqual([{ provider: "claude", instanceId: "claude" }]);
+    expect(service.peekBalancedInstance("claude")).toMatchObject({ instanceId: "claude" });
+    expect(service.resolveBalancedInstance("claude")).toMatchObject({ instanceId: "claude" });
+    expect(service.getUsageSnapshot().balanceNext).toEqual([{ provider: "claude", instanceId: "work" }]);
 
-    // `work`'s weekly room resets in an hour, `claude`'s in six days.
-    expect(snapshot.balanceNext).toEqual([{ provider: "claude", instanceId: "work" }]);
+    const staleCachedSnapshot = service.getUsageSnapshot();
+    expect(staleCachedSnapshot.balanceNext).toEqual([{ provider: "claude", instanceId: "work" }]);
+    expect(service.peekBalancedInstance("claude")).toMatchObject({ instanceId: "work" });
+    expect(service.resolveBalancedInstance("claude")).toMatchObject({
+      instanceId: "work",
+      reason: "higher five-hour headroom",
+    });
+    expect(service.getUsageSnapshot().balanceNext).toEqual([{ provider: "claude", instanceId: "claude" }]);
     service.dispose();
+
+    const originalVitest = process.env.VITEST;
+    const originalNodeEnv = process.env.NODE_ENV;
+    const originalReadFileSync = fs.readFileSync.bind(fs);
+    process.env.NODE_ENV = "production";
+    delete process.env.VITEST;
+    const cacheRead = vi.spyOn(fs, "readFileSync");
+    cacheRead.mockImplementation(((filePath: unknown, ...args: unknown[]) => {
+      if (String(filePath).endsWith("usage-snapshot.json")) {
+        return JSON.stringify({
+          version: _testing.USAGE_SNAPSHOT_CACHE_VERSION,
+          snapshot: staleCachedSnapshot,
+        }) as never;
+      }
+      return Reflect.apply(originalReadFileSync, fs, [filePath, ...args]) as never;
+    }) as typeof fs.readFileSync);
+    let restartedService: ReturnType<typeof createUsageTrackingService> | undefined;
+    try {
+      restartedService = createUsageTrackingService({ logger, dependencies });
+      const reloaded = restartedService.getUsageSnapshot();
+
+      expect(reloaded.balanceNext).toEqual([{ provider: "claude", instanceId: "claude" }]);
+      expect(reloaded.revision).toMatchObject({ producerId: restartedService.producerId, seq: 1 });
+      expect(staleCachedSnapshot.balanceNext).toEqual([{ provider: "claude", instanceId: "work" }]);
+    } finally {
+      restartedService?.dispose();
+      cacheRead.mockRestore();
+      if (originalVitest === undefined) delete process.env.VITEST;
+      else process.env.VITEST = originalVitest;
+      if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = originalNodeEnv;
+    }
   });
 
   it("leaves a skipped balance pick off the snapshot's next-account mark", async () => {

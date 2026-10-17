@@ -34,6 +34,8 @@ export type ChatSubagentSnapshot = {
   status: "running" | "completed" | "failed" | "stopped";
   turnId?: string;
   startedAt: string;
+  /** Current run's clock for elapsed labels; null when a legacy row resumed without a start event. */
+  elapsedStartAt?: string | null;
   updatedAt: string;
   summary: string | null;
   finalSummary?: string | null;
@@ -229,7 +231,9 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
       const taskId = mergeSubagentTaskId(existing?.taskId, event.taskId, true);
       const agentId = event.agentId ?? existing?.agentId;
       const spawnKind = event.spawnKind ?? existing?.spawnKind;
-      const workflowProgress = workflowProgressForSnapshot(event, existing);
+      // A settled spawned child that starts again is a new run of the same row.
+      const resumed = event.resumed === true;
+      const workflowProgress = workflowProgressForSnapshot(event, resumed ? undefined : existing);
       snapshots.set(key, {
         taskId,
         childSessionId: mergeSubagentChildSessionId({ existing, taskId, agentId, spawnKind }),
@@ -243,21 +247,24 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
         description: event.description.trim() || existing?.description || "Subagent task",
         status: "running",
         turnId: event.turnId ?? existing?.turnId,
-        startedAt: existing?.startedAt ?? envelope.timestamp,
+        startedAt: resumed ? envelope.timestamp : existing?.startedAt ?? envelope.timestamp,
+        elapsedStartAt: resumed
+          ? envelope.timestamp
+          : existing?.elapsedStartAt ?? existing?.startedAt ?? envelope.timestamp,
         updatedAt: envelope.timestamp,
-        summary: existing?.summary ?? null,
-        finalSummary: existing?.finalSummary ?? null,
-        lastToolName: existing?.lastToolName,
+        summary: resumed ? null : existing?.summary ?? null,
+        finalSummary: resumed ? null : existing?.finalSummary ?? null,
+        lastToolName: resumed ? undefined : existing?.lastToolName,
         background: event.background ?? existing?.background ?? false,
         taskType: event.taskType ?? existing?.taskType,
         // Only the underscore event carries spawnKind; the dot twin does not, so
         // fall back to the existing snapshot to survive the twin's overwrite.
         spawnKind,
-        workflowName: event.workflowName ?? existing?.workflowName,
+        workflowName: resumed ? event.workflowName : event.workflowName ?? existing?.workflowName,
         ...(workflowProgress ? { workflowProgress } : {}),
         spawnDepth: event.spawnDepth ?? existing?.spawnDepth,
-        resourceLinks: event.resourceLinks?.length ? event.resourceLinks : existing?.resourceLinks,
-        usage: existing?.usage,
+        resourceLinks: event.resourceLinks?.length ? event.resourceLinks : resumed ? undefined : existing?.resourceLinks,
+        usage: resumed ? undefined : existing?.usage,
       });
       continue;
     }
@@ -287,6 +294,7 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
         status: "running",
         turnId: event.turnId ?? existing?.turnId,
         startedAt: existing?.startedAt ?? envelope.timestamp,
+        elapsedStartAt: existing?.elapsedStartAt ?? existing?.startedAt ?? envelope.timestamp,
         updatedAt: envelope.timestamp,
         summary: event.summary?.trim() || existing?.summary || null,
         finalSummary: existing?.finalSummary ?? null,
@@ -323,6 +331,7 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
         status: event.status,
         turnId: event.turnId ?? existing?.turnId,
         startedAt: existing?.startedAt ?? envelope.timestamp,
+        elapsedStartAt: existing?.elapsedStartAt ?? existing?.startedAt ?? envelope.timestamp,
         updatedAt: envelope.timestamp,
         summary: event.summary?.trim() || existing?.summary || null,
         finalSummary: event.finalSummary?.trim() || event.summary?.trim() || existing?.finalSummary || null,
@@ -342,7 +351,76 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
   // Stable order: newest-spawned subagent at the top, and it stays put. Sorting
   // on startedAt (fixed at spawn) — NOT updatedAt/status — keeps the list from
   // reshuffling every time a tool result streams in from any subagent.
-  return [...snapshots.values()].sort((left, right) => compareIsoDesc(left.startedAt, right.startedAt));
+  // A background shell the host already shows as a background row
+  // (`scheduled_work_update` for `background:<taskId>`) is never a subagent.
+  // Older hosts sent a stray "Task updated" progress for such a shell when it
+  // arrived between turns; with no end event of its own, that row read
+  // "running" forever.
+  const backgroundShellIds = new Set<string>();
+  for (const envelope of events) {
+    const event = envelope.event;
+    if (event.type !== "scheduled_work_update" || event.kind !== "background_task") continue;
+    if (event.id.startsWith("background:")) backgroundShellIds.add(event.id.slice("background:".length));
+  }
+  return [...snapshots.values()]
+    .filter((snapshot) => !(
+      backgroundShellIds.has(snapshot.taskId)
+      && !snapshot.agentType
+      // A dynamic workflow is not a background shell. It has no `agentType`
+      // (the CLI reports it as a `local_workflow` task), so this rule used to
+      // swallow it: the host writes a `background:<taskId>` row for a workflow
+      // it launched in the background, and the run then vanished from the whole
+      // actions pane — no workflow card, no subagents section. The run stays.
+      && snapshot.taskType !== "local_workflow"
+    ))
+    .sort((left, right) => compareIsoDesc(left.startedAt, right.startedAt));
+}
+
+/** The events a subagent derivation read, and what it returned for them. */
+export type ChatSubagentDerivation = {
+  events: readonly AgentChatEventEnvelope[];
+  snapshots: ChatSubagentSnapshot[];
+};
+
+/**
+ * `deriveChatSubagentSnapshots` for a list that is the previous list plus events
+ * with no subagent lifecycle. The derivation reads only those events, so the
+ * previous snapshots still hold and keep their identity (a streamed text delta
+ * does not re-render every subagent card). The prefix is compared by element
+ * identity, so a trim or a reorder takes the full path. A rewritten tool call
+ * does not: a provider resends every tool call, the merge replaces the stored
+ * one in place, and a tool call is not a subagent event before or after the
+ * rewrite.
+ */
+export function deriveChatSubagentSnapshotsIncremental(
+  previous: ChatSubagentDerivation | null,
+  events: AgentChatEventEnvelope[],
+): ChatSubagentDerivation {
+  if (previous && events.length >= previous.events.length) {
+    let samePrefix = true;
+    for (let index = 0; index < previous.events.length; index += 1) {
+      const event = events[index]!;
+      const previousEvent = previous.events[index]!;
+      if (
+        event !== previousEvent
+        && !(event.event.type === "tool_call" && previousEvent.event.type === "tool_call")
+      ) {
+        samePrefix = false;
+        break;
+      }
+    }
+    if (samePrefix) {
+      let tailHasSubagent = false;
+      for (let index = previous.events.length; index < events.length; index += 1) {
+        if (normalizeSubagentLifecycleEvent(events[index]!.event)) {
+          tailHasSubagent = true;
+          break;
+        }
+      }
+      if (!tailHasSubagent) return { events, snapshots: previous.snapshots };
+    }
+  }
+  return { events, snapshots: deriveChatSubagentSnapshots(events) };
 }
 
 export function deriveTurnDiffSummaries(events: AgentChatEventEnvelope[]): TurnDiffSummary[] {

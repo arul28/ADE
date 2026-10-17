@@ -30,6 +30,7 @@ import {
 } from "./providerUi";
 import { providerStatusFor } from "./descriptors";
 import { ProviderAccountsPanel } from "./accounts/ProviderAccountsPanel";
+import { CompactionSettings } from "./CompactionSettings";
 import { ProviderApiKeysPanel } from "./keys/ProviderApiKeysPanel";
 import { extraKeyProviders } from "./keys/providerKeySpecs";
 import { persistOpenCodeProviderBlock } from "./keys/openCodeCustomProviders";
@@ -52,6 +53,7 @@ function ModelsListBody({
   const [query, setQuery] = useState("");
   const models = descriptor.models(ctx);
   const status = providerStatusFor(descriptor, ctx);
+  const modelsNote = descriptor.modelsNote?.(ctx) ?? null;
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return models;
@@ -79,6 +81,9 @@ function ModelsListBody({
       {/* The model list IS the health check: an enumerate that failed says so
           here, in place of a Verify button that would only ask again. */}
       {status.errorLine && status.errorLine !== status.message ? <ProviderErrorRow message={status.errorLine} /> : null}
+      {modelsNote ? (
+        <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.45 }}>{modelsNote}</div>
+      ) : null}
       {filtered.length === 0 ? (
         <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textDim }}>
           {status.state === "checking"
@@ -268,6 +273,11 @@ export function ProviderDetailPage({
 
         {/* ── Right: this provider's extras (scrolls on its own) ── */}
         <div style={{ display: "flex", flexDirection: "column", gap: 12, minHeight: 0, overflowY: "auto" }}>
+          <CompactionSettings provider={descriptor.id} value={ctx.projectConfigSnapshot?.effective.ai?.compaction?.[descriptor.id]}
+            onChange={async (value) => {
+              await window.ade.ai.updateConfig({ compaction: { [descriptor.id]: value ?? {} } }, pin);
+              await ctx.actions.refreshStatus();
+            }} />
           {/* Above keys/models elsewhere: which account a chat runs as decides
               what quota it spends, which matters more than which model it picks. */}
           {multiAccountProvider ? (

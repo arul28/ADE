@@ -60,7 +60,7 @@ export function TimelineGraph({
       {wipNodes.length > 0 && <WIPRow wipNodes={wipNodes} />}
 
       {/* Column Headers */}
-      <div className="flex items-center border-b border-white/[0.06] bg-white/[0.02] backdrop-blur-xl shrink-0">
+      <div className="flex items-center border-b border-fg/[0.06] bg-fg/[0.02] backdrop-blur-xl shrink-0">
         {/* Graph-area lane indicators */}
         <div className="shrink-0" style={{ width: layout.graphWidth }}>
           <div
@@ -202,7 +202,7 @@ export function TimelineGraph({
               return (
                 <React.Fragment key={event.id}>
                   {sep && i > 0 && (
-                    <div className="flex items-center h-5 px-2 border-t border-white/[0.04]">
+                    <div className="flex items-center h-5 px-2 border-t border-fg/[0.04]">
                       <span className="font-mono text-[9px] text-[var(--color-muted-fg)]/50 uppercase tracking-[1px]">
                         {sep.label}
                       </span>

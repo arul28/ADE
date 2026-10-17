@@ -588,6 +588,7 @@ function spawnDaemon(socketPath: string): boolean {
       detached: true,
       stdio: "ignore",
       env,
+      windowsHide: true,
     },
   );
   if (child.pid != null) recordRuntimeSpawn(socketPath, child.pid);

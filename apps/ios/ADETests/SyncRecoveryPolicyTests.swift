@@ -1179,6 +1179,85 @@ final class SyncRecoveryPolicyTests: XCTestCase {
     XCTAssertTrue(negotiation.ready)
   }
 
+  /// The loop every relay socket runs (the focused connection and each
+  /// roster connection). Only the paths that end without a retry sleep are
+  /// driven here; the retry decisions themselves are pinned by the action and
+  /// delay tests below.
+  @MainActor
+  func testRelayReauthorizationLoopInstallsRenewalsAndStopsOnAccountChangeOrSpentLease() async {
+    final class Log { var made = 0; var sent: [Int] = []; var installed: [String] = []; var accountChanged = 0; var gaveUp = 0 }
+    let nowMs = Date().timeIntervalSince1970 * 1_000
+    let liveLease = SyncRelayAuthorizationLease(
+      expiresAtMilliseconds: nowMs + 60_000, refreshAfterMilliseconds: nowMs - 1, challenge: "c1", graceMilliseconds: 10_000
+    )
+
+    // 1. A renewal installs the new lease, and the loop ends once the socket is gone.
+    let renew = Log()
+    var current = true
+    await syncRunRelayReauthorizationLoop(
+      lease: liveLease,
+      refreshImmediately: true,
+      isCurrent: { current },
+      makeAttempt: { _ -> Int in renew.made += 1; return renew.made },
+      perform: { attempt in
+        renew.sent.append(attempt)
+        current = false  // the socket goes away right after this renewal
+        return SyncRelayAuthorizationLease(
+          expiresAtMilliseconds: nowMs + 120_000, refreshAfterMilliseconds: nowMs + 100_000, challenge: "c2", graceMilliseconds: 10_000
+        )
+      },
+      install: { lease in renew.installed.append(lease.challenge) },
+      onAccountChanged: { _ in renew.accountChanged += 1 },
+      onGiveUp: { _ in renew.gaveUp += 1 }
+    )
+    XCTAssertEqual(renew.sent, [1])
+    XCTAssertEqual(renew.installed, ["c2"])
+    XCTAssertEqual(renew.accountChanged + renew.gaveUp, 0)
+
+    // 2. The host reports another account: stop at once, no retry, no recovery.
+    let changed = Log()
+    await syncRunRelayReauthorizationLoop(
+      lease: liveLease,
+      refreshImmediately: true,
+      isCurrent: { true },
+      makeAttempt: { _ -> Int in changed.made += 1; return changed.made },
+      perform: { attempt -> SyncRelayAuthorizationLease in
+        changed.sent.append(attempt)
+        throw RelayReauthorizationFailure(code: "relay_account_changed", message: "x", retryable: false, receivedHostResult: true)
+      },
+      install: { _ in changed.installed.append("unexpected") },
+      onAccountChanged: { _ in changed.accountChanged += 1 },
+      onGiveUp: { _ in changed.gaveUp += 1 }
+    )
+    XCTAssertEqual(changed.sent, [1])
+    XCTAssertEqual(changed.accountChanged, 1)
+    XCTAssertEqual(changed.gaveUp, 0)
+    XCTAssertTrue(changed.installed.isEmpty)
+
+    // 3. A transport miss with no time left before the lease (plus grace)
+    //    runs out: give up instead of retrying past it.
+    let spent = Log()
+    let spentLease = SyncRelayAuthorizationLease(
+      expiresAtMilliseconds: nowMs - 20_000, refreshAfterMilliseconds: nowMs - 30_000, challenge: "old", graceMilliseconds: 1_000
+    )
+    await syncRunRelayReauthorizationLoop(
+      lease: spentLease,
+      refreshImmediately: true,
+      isCurrent: { true },
+      makeAttempt: { _ -> Int in spent.made += 1; return spent.made },
+      perform: { attempt -> SyncRelayAuthorizationLease in
+        spent.sent.append(attempt)
+        throw RelayReauthorizationFailure(code: "invalid_response", message: "x", retryable: true, receivedHostResult: false)
+      },
+      install: { _ in spent.installed.append("unexpected") },
+      onAccountChanged: { _ in spent.accountChanged += 1 },
+      onGiveUp: { _ in spent.gaveUp += 1 }
+    )
+    XCTAssertEqual(spent.sent, [1])
+    XCTAssertEqual(spent.gaveUp, 1)
+    XCTAssertEqual(spent.accountChanged, 0)
+  }
+
   func testRelayReauthorizationScheduleRetryGraceAndForegroundDue() {
     let lease = SyncRelayAuthorizationLease(
       expiresAtMilliseconds: 20_000,

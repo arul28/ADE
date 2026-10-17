@@ -2,17 +2,16 @@ import SwiftUI
 import WidgetKit
 
 // The home-screen half of `ADELockScreenWidget`: the systemSmall / systemMedium
-// / systemLarge families. They render the unified row design — state glyph in
-// the phase's tone, title, phase word — with per-row deep links, an "N more"
-// tail and one events line, which is a different job from the accessory
-// families' single fact and single tap target.
+// / systemLarge families. Small and medium show the four column tiles the Live
+// Activity shows (Needs you, Working, Waiting, Done). Large adds rows under a
+// four-count header: per-row deep links, an "N more" tail and one events line.
 
 /// Everything the home-screen families render, resolved once so the layouts
 /// stay layout-only.
 struct ActivityHomeModel {
-    /// Nonzero state buckets, in display order. Empty on the machine-local
+    /// Agents per board column, all four present. Empty on the machine-local
     /// fallback path, which has no per-item feed.
-    let groups: [ActivityWidgetPresentation.GroupCount]
+    let columns: [ActivityBoardColumn: Int]
     let rows: [ActivityWidgetPresentation.CompactLine]
     /// Agent rows the visible ones left off.
     let moreCount: Int
@@ -46,7 +45,7 @@ struct ActivityHomeModel {
         self.hideDetails = entry.hideDetails
         self.freshness = entry.freshness
         guard let account else {
-            groups = []
+            columns = [:]
             rows = []
             moreCount = 0
             signal = nil
@@ -55,7 +54,7 @@ struct ActivityHomeModel {
             return
         }
         let limit = Self.rowCapacity(for: family)
-        groups = ActivityWidgetPresentation.groupCounts(for: account.items, now: entry.date)
+        columns = ActivityWidgetPresentation.columnCounts(for: account.items, now: entry.date)
         rows = ActivityWidgetPresentation.compactLines(
             for: account.items,
             limit: limit,
@@ -78,10 +77,6 @@ struct ActivityHomeModel {
 
     var totalAgents: Int { rows.count + moreCount }
 
-    /// The bucket the headline speaks for: your move if anything is, else
-    /// whatever is loudest.
-    var leadGroup: ActivityWidgetPresentation.GroupCount? { groups.first }
-
     var isEmpty: Bool { rows.isEmpty && signal == nil }
 }
 
@@ -94,8 +89,8 @@ struct ActivityHomeWidgetView: View {
             if let fallback = model.fallback {
                 ActivityHomeFallbackView(status: fallback, family: family)
                     .widgetURL(model.destination)
-            } else if family == .systemSmall {
-                ActivityHomeSmallView(model: model)
+            } else if family == .systemSmall || family == .systemMedium {
+                ActivityHomeTilesView(model: model, family: family)
                     .widgetURL(model.destination)
             } else {
                 ActivityHomeListView(model: model, family: family)
@@ -105,7 +100,7 @@ struct ActivityHomeWidgetView: View {
     }
 }
 
-/// Medium and large. Header strip, rows, then one footer bar.
+/// Large. Header strip, rows, then one footer bar.
 ///
 /// The footer carries both tails — the events signal on the left, "N more" on
 /// the right — rather than spending a whole row on each. On a medium widget
@@ -145,35 +140,31 @@ private struct ActivityHomeListView: View {
     }
 }
 
-/// The state strip: one glyph and one count per nonzero bucket, plus the age
-/// when the snapshot is behind. This is the headline — five short facts instead
-/// of one number that has to stand for whichever thing sorted first.
+/// The state strip: one glyph and one count per column, plus the age when the
+/// snapshot is behind. A zero column dims rather than disappears, so the four
+/// always sit in the same place.
 private struct ActivityHomeHeader: View {
     let model: ActivityHomeModel
     let compact: Bool
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: compact ? 9 : 11) {
-            if model.groups.isEmpty {
-                Text("ADE")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.secondary)
-            }
-            ForEach(model.groups) { entry in
+            ForEach(ActivityBoardColumn.allCases, id: \.self) { column in
+                let count = model.columns[column, default: 0]
                 HStack(spacing: 3) {
-                    Image(systemName: entry.group.glyph.systemImage)
+                    Image(systemName: column.systemImage)
                         .font(.system(size: compact ? 10 : 11, weight: .semibold))
-                        .foregroundStyle(activityToneColor(entry.group.tone))
-                    Text("\(entry.count)")
+                    Text("\(count)")
                         .font(.system(
                             size: compact ? 12 : 13,
                             weight: .bold,
                             design: .rounded
                         ).monospacedDigit())
-                        .foregroundStyle(activityToneColor(entry.group.tone))
                 }
+                .foregroundStyle(activityToneColor(column.tone))
+                .opacity(count == 0 ? 0.4 : 1)
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel("\(entry.count) \(entry.group.label)")
+                .accessibilityLabel("\(count) \(column.label)")
             }
             Spacer(minLength: 4)
             if let label = model.freshness?.label {
@@ -297,7 +288,7 @@ private struct ActivityHomeRowLink<Content: View>: View {
 /// between three legible rows and three clipped ones — and the two tails are
 /// the same sentence anyway: *here is what else there is*.
 ///
-/// The events line is the mirror of the notch's right-wing signal slot: PR/CI
+/// The events line is PR/CI
 /// traffic compressed into one sentence *inside* the agents widget, rather than
 /// a second widget or a row of its own. A PR rendered as a row is how "3
 /// agents" came to mean "1 agent and 2 pull requests".
@@ -385,67 +376,20 @@ private struct ActivityHomeAllClear: View {
     }
 }
 
-/// Small: one bucket said loudly, the top row named underneath, the rest of the
-/// buckets compressed into a footer strip.
-private struct ActivityHomeSmallView: View {
+/// Small and medium: the four column tiles, the same ones the Live Activity
+/// shows, with the staleness tag under them when the snapshot is behind. Small
+/// is a two-by-two grid; medium is one row.
+private struct ActivityHomeTilesView: View {
     let model: ActivityHomeModel
+    let family: WidgetFamily
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            if let lead = model.leadGroup {
-                HStack(alignment: .firstTextBaseline, spacing: 5) {
-                    Image(systemName: lead.group.glyph.systemImage)
-                        .font(.system(size: 15, weight: .semibold))
-                    Text("\(lead.count)")
-                        .font(.system(size: 26, weight: .bold, design: .rounded).monospacedDigit())
-                    Spacer(minLength: 0)
-                }
-                .foregroundStyle(activityToneColor(lead.group.tone))
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("\(lead.count) \(lead.group.label)")
-
-                Text(lead.group.label)
-                    .font(.system(size: 11, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.secondary)
-                    .padding(.top, -5)
-            } else {
-                Text("All clear")
-                    .font(.system(.subheadline, design: .rounded).weight(.semibold))
-                    .foregroundStyle(.secondary)
-            }
-
-            if let top = model.rows.first {
-                Text(top.title)
-                    .font(.system(size: 11.5, design: .rounded).weight(.medium))
-                    .foregroundStyle(.primary)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.85)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-
-            Spacer(minLength: 0)
-
-            HStack(spacing: 8) {
-                ForEach(model.groups.dropFirst().prefix(3)) { entry in
-                    HStack(spacing: 2) {
-                        Image(systemName: entry.group.glyph.systemImage)
-                            .font(.system(size: 8.5, weight: .semibold))
-                        Text("\(entry.count)")
-                            .font(.system(size: 10, weight: .bold, design: .rounded).monospacedDigit())
-                    }
-                    .foregroundStyle(activityToneColor(entry.group.tone))
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel("\(entry.count) \(entry.group.label)")
-                }
-                Spacer(minLength: 0)
-                if let signal = model.signal {
-                    Image(systemName: signal.glyph?.systemImage ?? "arrow.triangle.pull")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(activityToneColor(signal.tone))
-                        .accessibilityLabel(signal.label)
-                }
-            }
-
+        VStack(spacing: 6) {
+            ActivityColumnTiles(
+                counts: model.columns,
+                dimmed: model.freshness?.confidence == .untrusted,
+                style: family == .systemSmall ? .grid : .widget
+            )
             if let label = model.freshness?.label {
                 ActivityHomeStalenessTag(
                     label: label,
@@ -453,7 +397,7 @@ private struct ActivityHomeSmallView: View {
                 )
             }
         }
-        .padding(.horizontal, 2)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -611,7 +555,7 @@ private enum ActivityHomePreviewData {
         agent("s3", "Audit pairing", .running, minutesAgo: 4, chatActivityMode: .planning),
         agent("s4", "Ship mobile status", .completed, minutesAgo: 9),
         agent("s5", "Fix flaky shard", .failed, minutesAgo: 14),
-        agent("s6", "Port notch design", .running, project: "ade-web", minutesAgo: 3),
+        agent("s6", "Port the widget design", .running, project: "ade-web", minutesAgo: 3),
         agent("s7", "Rewrite roster builder", .running, minutesAgo: 6),
         agent("s8", "Bump relay deps", .completed, minutesAgo: 22),
         pr("pr1", 1038, .checksFailing),

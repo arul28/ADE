@@ -49,15 +49,15 @@ describe("orderWorkLanes tiers", () => {
     expect(ids(orderWorkLanes(lanes, "created", []))).toEqual(["pinned-and-settled", "active"]);
   });
 
-  it("puts the primary lane first in every mode, ahead of pins and manual order", () => {
+  it("puts pinned lanes first and the primary lane next in every mode, ahead of manual order", () => {
     const lanes = [
-      lane({ id: "pinned", pinned: true }),
-      lane({ id: "primary", laneType: "primary", quiet: true }),
       lane({ id: "active" }),
+      lane({ id: "primary", laneType: "primary", quiet: true }),
+      lane({ id: "pinned", pinned: true }),
     ];
     for (const mode of ["created", "name", "activity", "manual"] as const) {
-      expect(ids(orderWorkLanes(lanes, mode, ["active", "pinned", "primary"]))[0])
-        .toBe("primary");
+      expect(ids(orderWorkLanes(lanes, mode, ["active", "primary", "pinned"])))
+        .toEqual(["pinned", "primary", "active"]);
     }
   });
 });

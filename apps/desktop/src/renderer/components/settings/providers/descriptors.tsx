@@ -7,7 +7,7 @@
  */
 import React from "react";
 import { ClaudeLogo, CodexLogo, CursorAgentLogo, OpenCodeLogo } from "../../terminals/ToolLogos";
-import { PiLogo, ProviderLogo } from "../../shared/ProviderLogos";
+import { MuseLogo, PiLogo, ProviderLogo } from "../../shared/ProviderLogos";
 import { cursorProviderAvailable } from "../../../lib/platform";
 import { buildPiMessage } from "../PiProvidersPanel";
 import {
@@ -17,10 +17,14 @@ import {
   describeProviderCredentialLine,
   shortCredentialSource,
 } from "./cliTools";
-import { ClaudeAuthActions, CodexAuthActions, DroidAuthActions } from "./bodies/CliAuthActions";
+import { ClaudeAuthActions, CodexAuthActions, DroidAuthActions, CopilotAuthActions } from "./bodies/CliAuthActions";
 import { CodexBody } from "./bodies/CodexBody";
 import { CursorAuthActions, cursorOauthSignedIn } from "./bodies/CursorBody";
 import { PiBody } from "./bodies/PiBody";
+import { MuseAuthActions } from "./bodies/MuseAuthActions";
+import { MuseBody } from "./bodies/MuseBody";
+import { MUSE_DEFAULT_MODEL_ID, listCuratedModelDescriptors } from "../../../../shared/modelRegistry";
+import { PROVIDER_DISPLAY_NAME } from "../../../../shared/providers";
 import { OpenCodeBody } from "./bodies/OpenCodeBody";
 import { ACP_PROVIDER_DESCRIPTORS } from "./acpProviders";
 import type {
@@ -54,7 +58,7 @@ function credentialFacts(ctx: ProvidersViewContext, cli: "claude" | "codex" | "c
 }
 
 /** The tile's one-line credential, read from the same source as the fact row. */
-function credentialLine(ctx: ProvidersViewContext, cli: "claude" | "codex" | "cursor" | "droid" | "pi"): string | null {
+function credentialLine(ctx: ProvidersViewContext, cli: "claude" | "codex" | "cursor" | "droid" | "pi" | "muse"): string | null {
   if (ctx.isInitialCheckInFlight) return null;
   return shortCredentialSource(ctx.status?.providerConnections?.[cli] ?? null);
 }
@@ -68,6 +72,12 @@ function descriptorModels(rows: Array<{ id: string; label: string; description?:
   }));
 }
 
+/** Muse's curated models from the registry, shown while none are usable yet. */
+function museCuratedModels(): ProviderModelRow[] {
+  return listCuratedModelDescriptors("muse")
+    .map((model) => ({ id: model.id, label: model.displayName, isDefault: model.id === MUSE_DEFAULT_MODEL_ID }));
+}
+
 function probeFailedView(ctx: ProvidersViewContext, who: string): ProviderStatusView {
   return {
     state: "attention",
@@ -78,7 +88,7 @@ function probeFailedView(ctx: ProvidersViewContext, who: string): ProviderStatus
 }
 
 /** Status for the three providers ADE only detects on PATH. */
-function cliStatus(ctx: ProvidersViewContext, cli: "codex" | "droid" | "cursor"): ProviderStatusView {
+function cliStatus(ctx: ProvidersViewContext, cli: "codex" | "droid" | "cursor" | "copilot"): ProviderStatusView {
   if (statusProbeFailed(ctx)) return probeFailedView(ctx, cliTool(cli).label);
   if (ctx.isInitialCheckInFlight) return CHECKING;
   const tool = cliTool(cli);
@@ -124,6 +134,9 @@ export const PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
       return { state: "not-installed", label: "Not installed", message, errorLine: message };
     },
     models: (ctx) => descriptorModels(ctx.status?.models?.claude ?? []),
+    // What the runtime reported at its last start, so it fills in after the
+    // first chat or settings check on this machine.
+    version: (ctx) => ctx.status?.availableProviders?.claude?.binary.version ?? null,
     facts: (ctx) => [
       ...pathFacts(ctx.status?.availableProviders?.claude?.binary.path ?? ctx.status?.providerConnections?.claude?.path, "Binary"),
       ...credentialFacts(ctx, "claude"),
@@ -213,6 +226,72 @@ export const PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
     ],
     credentialLine: (ctx) => credentialLine(ctx, "droid"),
     AuthActions: DroidAuthActions,
+  },
+  {
+    id: "copilot",
+    label: "GitHub Copilot",
+    tagline: "Uses your GitHub Copilot sign-in through the Copilot CLI and SDK.",
+    logo: (size) => <ProviderLogo family="github-copilot" size={size} />,
+    permissions: { family: "github-copilot", isCliWrapped: true, key: "copilot" },
+    status: (ctx) => cliStatus(ctx, "copilot"),
+    models: (ctx) => descriptorModels(ctx.status?.models?.copilot ?? []),
+    facts: (ctx) => {
+      const login = ctx.status?.detectedAuth?.find((entry) => entry.cli === "copilot")?.login;
+      return [
+        ...pathFacts(ctx.status?.providerConnections?.copilot?.path, "Binary"),
+        ...(login ? [{ label: "Signed in", value: login }] : []),
+      ];
+    },
+    credentialLine: (ctx) => shortCredentialSource(ctx.status?.providerConnections?.copilot ?? null),
+    AuthActions: CopilotAuthActions,
+  },
+  {
+    id: "muse",
+    label: PROVIDER_DISPLAY_NAME.muse,
+    tagline: "Meta's coding agent. ADE runs its own pinned build with your Meta sign-in or a Meta API key.",
+    logo: (size) => <MuseLogo size={size} />,
+    permissions: { family: "muse", isCliWrapped: true, key: "muse" },
+    status: (ctx) => {
+      if (statusProbeFailed(ctx)) return probeFailedView(ctx, PROVIDER_DISPLAY_NAME.muse);
+      if (ctx.isInitialCheckInFlight) {
+        return { ...CHECKING, message: "Checking ADE's Muse build and sign-in." };
+      }
+      const connection = ctx.status?.providerConnections?.muse ?? null;
+      const message = connection?.blocker ?? "Ready.";
+      if (connection?.runtimeAvailable && connection.authAvailable) {
+        return { state: "connected", label: "Connected", message };
+      }
+      // Detected but no sign-in on disk: on macOS chat is still offered (the
+      // login may be in the Keychain), so this says "sign in", not "broken".
+      if (connection?.runtimeDetected) {
+        return { state: "sign-in", label: "Sign in required", message };
+      }
+      return { state: "not-installed", label: "Not installed", message, errorLine: connection?.blocker ?? null };
+    },
+    models: (ctx) => {
+      const live = descriptorModels(ctx.status?.models?.muse ?? []);
+      return live.length ? live : museCuratedModels();
+    },
+    // The curated list stands in while nothing is signed in, so the page says
+    // which models Muse offers instead of "0 models"; this line says why they
+    // cannot be picked yet.
+    modelsNote: (ctx) => {
+      if (ctx.isInitialCheckInFlight || (ctx.status?.models?.muse ?? []).length) return null;
+      const connection = ctx.status?.providerConnections?.muse ?? null;
+      if (!connection?.runtimeDetected) return "Muse's models. Download Muse and sign in to use them.";
+      return "Muse's models. Sign in to use them.";
+    },
+    facts: (ctx) => {
+      const connection = ctx.status?.providerConnections?.muse ?? null;
+      const description = describeProviderCredentialLine(connection);
+      return [
+        ...pathFacts(connection?.path, "Binary"),
+        ...(description && !ctx.isInitialCheckInFlight ? [{ label: "Credentials", value: description }] : []),
+      ];
+    },
+    credentialLine: (ctx) => credentialLine(ctx, "muse"),
+    AuthActions: MuseAuthActions,
+    Body: MuseBody,
   },
   {
     id: "pi",

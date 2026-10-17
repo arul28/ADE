@@ -71,7 +71,7 @@ export function ClaudeAuthActions({ ctx }: { ctx: ProvidersViewContext }) {
   return null;
 }
 
-function CliAuthActions({ ctx, cli }: { ctx: ProvidersViewContext; cli: "codex" | "droid" }) {
+function CliAuthActions({ ctx, cli }: { ctx: ProvidersViewContext; cli: "codex" | "droid" | "copilot" }) {
   const tool = cliTool(cli);
   const connection = ctx.status?.providerConnections?.[cli] ?? null;
   if (ctx.isInitialCheckInFlight || connection?.runtimeAvailable) return null;
@@ -93,4 +93,8 @@ export function CodexAuthActions({ ctx }: { ctx: ProvidersViewContext }) {
 
 export function DroidAuthActions({ ctx }: { ctx: ProvidersViewContext }) {
   return <CliAuthActions ctx={ctx} cli="droid" />;
+}
+
+export function CopilotAuthActions({ ctx }: { ctx: ProvidersViewContext }) {
+  return <CliAuthActions ctx={ctx} cli="copilot" />;
 }

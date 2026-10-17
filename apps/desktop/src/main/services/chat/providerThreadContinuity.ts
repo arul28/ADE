@@ -21,11 +21,13 @@ export type ThreadPointerFields = {
   sdkSessionId?: string | null;
   providerSessionId?: string | null;
   droidSdkSessionId?: string | null;
+  copilotSdkSessionId?: string | null;
   piSessionId?: string | null;
   piSessionFile?: string | null;
   cursorSdkAgentId?: string | null;
   cursorCloudAgentId?: string | null;
   acpSessionId?: string | null;
+  museSessionId?: string | null;
 };
 
 export type PersistedPointerState = {
@@ -61,8 +63,12 @@ export function persistedPointerState(state: ThreadPointerFields): PersistedPoin
       return { provider: "opencode", pointer: normalizedPersistedPointer(state.providerSessionId) };
     case "droid":
       return { provider: state.provider, pointer: normalizedPersistedPointer(state.droidSdkSessionId) };
+    case "copilot":
+      return { provider: state.provider, pointer: normalizedPersistedPointer(state.copilotSdkSessionId ?? state.acpSessionId) };
     case "pi":
       return { provider: state.provider, pointer: normalizedPersistedPointer(state.piSessionId ?? state.piSessionFile) };
+    case "muse":
+      return { provider: state.provider, pointer: normalizedPersistedPointer(state.museSessionId) };
     case "cursor":
       return {
         provider: state.provider,

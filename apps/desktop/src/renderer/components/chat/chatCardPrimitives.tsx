@@ -6,15 +6,10 @@ import {
   Cube,
   Prohibit,
   SpinnerGap,
-  VideoCamera,
-  WarningCircle,
   XCircle,
   type Icon as PhosphorIcon,
 } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
-import type { ComputerUseArtifactView } from "../../../shared/types";
-import { isImageArtifact, isVideoArtifact, useArtifactPreview } from "./useArtifactPreview";
-import { ProofVideoPoster } from "./ProofVideoPoster";
 
 /**
  * The chat transcript's card primitives.
@@ -64,10 +59,10 @@ export type ChatCardSkin = "line" | "inset" | "bordered" | "rail" | "plain";
 
 /** Card shells. `line` is the default — no box, just a hairline rule. */
 export const CHAT_CARD_SKIN: Record<ChatCardSkin, string> = {
-  line: "px-0.5 py-2 border-b border-white/[0.06] last:border-b-0",
-  inset: `px-3 py-2.5 bg-white/[0.03] ${CARD_RADIUS}`,
-  bordered: `px-3 py-2.5 bg-white/[0.025] border border-white/[0.07] ${CARD_RADIUS}`,
-  rail: `px-3 py-2.5 bg-white/[0.03] border-l-2 rounded-r-[calc(var(--chat-radius-card)-6px)]`,
+  line: "px-0.5 py-2 border-b border-fg/[0.06] last:border-b-0",
+  inset: `px-3 py-2.5 bg-fg/[0.03] ${CARD_RADIUS}`,
+  bordered: `px-3 py-2.5 bg-fg/[0.025] border border-fg/[0.07] ${CARD_RADIUS}`,
+  rail: `px-3 py-2.5 bg-fg/[0.03] border-l-2 rounded-r-[calc(var(--chat-radius-card)-6px)]`,
   plain: "py-1",
 };
 
@@ -162,11 +157,6 @@ export function ChatCardSub({ children, className }: { children: React.ReactNode
   return <div className={cn("truncate text-fg/50", CHAT_CARD_BODY_TEXT, className)}>{children}</div>;
 }
 
-/** Secondary half of a title — "Merged #927 → main", where the tail is faint. */
-export function ChatCardFaint({ children }: { children: React.ReactNode }) {
-  return <span className="font-normal text-fg/40">{children}</span>;
-}
-
 export function ChatCardChip({
   tone = "neutral",
   title,
@@ -180,8 +170,8 @@ export function ChatCardChip({
     ok: "text-emerald-300/85 border-emerald-300/25",
     warn: "text-amber-300/85 border-amber-300/25",
     running: "text-[color:var(--chat-accent)] border-[color:color-mix(in_srgb,var(--chat-accent)_30%,transparent)]",
-    idle: "text-fg/40 border-white/[0.07]",
-    neutral: "text-fg/48 border-white/[0.07]",
+    idle: "text-fg/40 border-fg/[0.07]",
+    neutral: "text-fg/48 border-fg/[0.07]",
   }[tone];
   return (
     <span
@@ -190,36 +180,6 @@ export function ChatCardChip({
     >
       {children}
     </span>
-  );
-}
-
-/** Text-weight affordance ("diff ›", "open all ›") that sits in a row's meta column. */
-export function ChatCardAction({
-  children,
-  onClick,
-  title,
-}: {
-  children: React.ReactNode;
-  onClick?: () => void;
-  title?: string;
-}) {
-  return (
-    <button
-      type="button"
-      title={title}
-      onClick={(clickEvent) => {
-        // Cards are often whole-card clickable; an inline action must not also navigate.
-        clickEvent.stopPropagation();
-        onClick?.();
-      }}
-      className={cn(
-        "flex items-center gap-0.5 whitespace-nowrap text-fg/45 transition-colors hover:text-fg/80",
-        CHAT_CARD_MICRO_TEXT,
-      )}
-    >
-      {children}
-      <CaretRight size={10} weight="bold" aria-hidden />
-    </button>
   );
 }
 
@@ -247,7 +207,7 @@ export function ChatCardButton({
         CHAT_CARD_MICRO_TEXT,
         primary
           ? "border-[color:color-mix(in_srgb,var(--chat-accent)_35%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_12%,transparent)] text-[color:var(--chat-accent)] hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)]"
-          : "border-white/[0.08] bg-white/[0.03] text-fg/60 hover:text-fg/85",
+          : "border-fg/[0.08] bg-fg/[0.03] text-fg/60 hover:text-fg/85",
       )}
     >
       {children}
@@ -263,12 +223,12 @@ export function ChatCardMeter({ progress, className }: { progress: ChatCardProgr
     ["passed", "bg-emerald-400/70"],
     ["failed", "bg-amber-400/80"],
     ["running", "bg-[color:var(--chat-accent)]"],
-    ["queued", "bg-white/12"],
+    ["queued", "bg-fg/12"],
   ];
   const total = segments.reduce((sum, [bucket]) => sum + Math.max(0, progress[bucket]), 0);
   if (total <= 0) return null;
   return (
-    <div className={cn("flex h-[3px] overflow-hidden rounded-full bg-white/[0.05]", className)} aria-hidden>
+    <div className={cn("flex h-[3px] overflow-hidden rounded-full bg-fg/[0.05]", className)} aria-hidden>
       {segments.map(([bucket, fill]) => {
         const value = Math.max(0, progress[bucket]);
         if (value <= 0) return null;
@@ -283,7 +243,7 @@ export function ChatCardMeter({ progress, className }: { progress: ChatCardProgr
  * text direction so a truncated file path keeps its filename visible.
  */
 export function ChatCardDetail({ children, className }: { children: React.ReactNode; className?: string }) {
-  return <div className={cn("mt-2 flex flex-col border-t border-white/[0.06] pt-2", className)}>{children}</div>;
+  return <div className={cn("mt-2 flex flex-col border-t border-fg/[0.06] pt-2", className)}>{children}</div>;
 }
 
 export function ChatCardDetailRow({
@@ -342,7 +302,7 @@ export function ChatCardDetailRow({
         clickEvent.stopPropagation();
         onClick();
       }}
-      className={cn(className, "w-full rounded-sm text-left transition-colors hover:bg-white/[0.03]")}
+      className={cn(className, "w-full rounded-sm text-left transition-colors hover:bg-fg/[0.03]")}
     >
       {body}
     </button>
@@ -365,10 +325,10 @@ export function ChatCardDiffStat({ additions, deletions }: { additions: number; 
 export function ChatTurnRule({ label, children }: { label?: React.ReactNode; children?: React.ReactNode }) {
   return (
     <div className="flex items-center gap-2.5">
-      <span className="h-px flex-1 bg-white/[0.06]" />
+      <span className="h-px flex-1 bg-fg/[0.06]" />
       <span className={cn("shrink-0 font-mono tabular-nums text-fg/40", CHAT_CARD_META_TEXT)}>{label}</span>
       {children}
-      <span className="h-px flex-1 bg-white/[0.06]" />
+      <span className="h-px flex-1 bg-fg/[0.06]" />
     </div>
   );
 }
@@ -376,167 +336,35 @@ export function ChatTurnRule({ label, children }: { label?: React.ReactNode; chi
 /* ── Proof ──────────────────────────────────────────────────────────────── */
 
 /**
- * Collapsible proof filmstrip: a `▣ Proof · N` head plus a horizontally
- * scrollable thumbnail strip. Rendered inline at the point of capture — proof
- * is a chronological transcript row, not a thread footer.
- *
- * Exported for the proof drawer to reuse. An image tile resolves from the
- * image `src` each caller supplies; a video tile resolves through the same
- * runtime preview the drawer uses, because a recording is not an `<img>`. Every
- * non-image tile the caller cannot supply a picture for falls back to its kind
- * label rather than a broken image.
+ * Proof in the thread is a count, not a strip of pictures: "3 proof filed ›".
+ * The pictures live on the rows that filed them and in the proof drawer, which
+ * this opens narrowed to the same records. `compact` drops the word for a line
+ * that has little room (the turn fold), so the count never wraps.
  */
-export function ChatProofFilmstrip({
-  artifacts,
-  title = "Proof",
-  defaultOpen = true,
-  onOpenAll,
-  onOpenArtifact,
-  resolveThumbnailSrc,
-  allowLocalArtifactProtocol = false,
-}: {
-  artifacts: ComputerUseArtifactView[];
-  title?: string;
-  defaultOpen?: boolean;
-  onOpenAll?: () => void;
-  onOpenArtifact?: (artifact: ComputerUseArtifactView) => void;
-  /** Returns a renderable image URL, or null when the artifact has no picture. */
-  resolveThumbnailSrc?: (artifact: ComputerUseArtifactView) => string | null;
-  /** Local proof can stream through the artifact protocol and media server. */
-  allowLocalArtifactProtocol?: boolean;
-}) {
-  const [open, setOpen] = React.useState(defaultOpen);
-  if (!artifacts.length) return null;
-
-  return (
-    <ChatCard skin="inset" data-chat-proof-filmstrip="">
-      <ChatCardRow
-        icon={Cube}
-        tone="neutral"
-        action={onOpenAll ? <ChatCardAction onClick={onOpenAll}>open all</ChatCardAction> : null}
-      >
-        <button
-          type="button"
-          aria-expanded={open}
-          onClick={() => setOpen((value) => !value)}
-          className="min-w-0 text-left"
-        >
-          <ChatCardTitle>
-            {title} <ChatCardFaint>· {artifacts.length}</ChatCardFaint>
-          </ChatCardTitle>
-        </button>
-      </ChatCardRow>
-      {open ? (
-        <div className="mt-2.5 flex gap-1.5 overflow-x-auto">
-          {artifacts.map((artifact) => {
-            const broken = artifact.availability != null && artifact.availability !== "available";
-            if (!broken && isVideoArtifact(artifact)) {
-              return (
-                <ProofFilmstripVideoTile
-                  key={artifact.id}
-                  artifact={artifact}
-                  allowLocalArtifactProtocol={allowLocalArtifactProtocol}
-                  onOpen={onOpenArtifact}
-                />
-              );
-            }
-            const src = broken || !isImageArtifact(artifact) ? null : (resolveThumbnailSrc?.(artifact) ?? null);
-            return (
-              <button
-                key={artifact.id}
-                type="button"
-                title={artifact.title || artifact.uri || artifact.id}
-                onClick={() => onOpenArtifact?.(artifact)}
-                data-chat-proof-broken={broken ? "true" : undefined}
-                className={cn(
-                  "w-24 shrink-0 overflow-hidden rounded-[7px] border bg-black/25 transition-colors",
-                  broken
-                    ? "border-amber-200/[0.16] bg-amber-300/[0.04] hover:border-amber-200/30"
-                    : "border-white/[0.07] hover:border-white/[0.16]",
-                )}
-              >
-                {src ? (
-                  <img src={src} alt={artifact.title || "Proof"} className="aspect-[16/10] w-full object-cover" />
-                ) : broken ? (
-                  <span
-                    className={cn(
-                      "flex aspect-[16/10] w-full flex-col items-center justify-center gap-1 px-1 text-center text-amber-200/60",
-                      CHAT_CARD_MICRO_TEXT,
-                    )}
-                  >
-                    <WarningCircle size={14} weight="duotone" aria-hidden />
-                    Missing proof
-                  </span>
-                ) : (
-                  <span
-                    className={cn(
-                      "flex aspect-[16/10] w-full items-center justify-center px-1 text-center text-fg/35",
-                      CHAT_CARD_MICRO_TEXT,
-                    )}
-                  >
-                    {artifact.kind}
-                  </span>
-                )}
-              </button>
-            );
-          })}
-        </div>
-      ) : null}
-    </ChatCard>
-  );
-}
-
-/**
- * One recorded proof in the filmstrip: the recording's first frame behind a
- * play badge, resolved through the drawer's preview path (the media server on
- * this computer, or the runtime on a paired one) so it shows the same poster
- * the drawer shows. Until that resolves — and when it cannot — the tile shows
- * the kind instead of a broken image. Clicking opens the drawer, which plays it.
- */
-function ProofFilmstripVideoTile({
-  artifact,
-  allowLocalArtifactProtocol,
+export function ChatProofCount({
+  count,
   onOpen,
+  compact = false,
 }: {
-  artifact: ComputerUseArtifactView;
-  allowLocalArtifactProtocol: boolean;
-  onOpen?: (artifact: ComputerUseArtifactView) => void;
+  count: number;
+  onOpen?: () => void;
+  compact?: boolean;
 }) {
-  const { containerRef, preview, failed, onMediaError } = useArtifactPreview<HTMLButtonElement>(
-    artifact,
-    allowLocalArtifactProtocol,
-  );
-  const label = artifact.kind.replace(/_/g, " ");
+  if (count <= 0) return null;
+  const label = compact ? `${count} proof` : `${count} proof filed`;
   return (
     <button
-      ref={containerRef}
       type="button"
-      title={artifact.title || artifact.uri || artifact.id}
-      aria-label={artifact.title || artifact.uri || "Open proof"}
-      onClick={() => onOpen?.(artifact)}
-      data-chat-proof-video=""
-      className="w-24 shrink-0 overflow-hidden rounded-[7px] border border-white/[0.07] bg-black/25 transition-colors hover:border-white/[0.16]"
+      onClick={onOpen}
+      disabled={!onOpen}
+      title="Show this proof in the proof drawer"
+      aria-label={`${count} proof filed. Show in the proof drawer`}
+      data-chat-proof-count=""
+      className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-1 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] tabular-nums text-fg/50 transition-colors hover:text-fg/80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-violet-300/35 disabled:cursor-default disabled:hover:text-fg/50"
     >
-      {preview && !failed ? (
-        <ProofVideoPoster
-          artifact={artifact}
-          preview={preview}
-          badgeSize="sm"
-          interactive={false}
-          className="aspect-[16/10] w-full"
-          onError={onMediaError}
-        />
-      ) : (
-        <span
-          className={cn(
-            "flex aspect-[16/10] w-full flex-col items-center justify-center gap-1 px-1 text-center text-fg/35",
-            CHAT_CARD_MICRO_TEXT,
-          )}
-        >
-          <VideoCamera size={14} weight="duotone" aria-hidden />
-          {label}
-        </span>
-      )}
+      <Cube size={10} weight="bold" className="shrink-0 text-fg/40" aria-hidden />
+      {label}
+      {onOpen ? <CaretRight size={9} weight="bold" className="shrink-0" aria-hidden /> : null}
     </button>
   );
 }

@@ -223,7 +223,7 @@ describe("suggestLaneNameFromPrompt", () => {
 
     expect(result).toBe("auto-create-lane-fix");
     expect(aiIntegrationService.summarizeTerminal).toHaveBeenNthCalledWith(1, expect.objectContaining({
-      model: "openai/gpt-5.6-luna",
+      model: "openai/gpt-6-luna",
       taskType: "session_title",
     }));
     expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledTimes(1);
@@ -386,6 +386,36 @@ describe("suggestLaneNameFromPrompt", () => {
     }));
   });
 
+  it("previews Claude's lane-naming account without consuming the next chat slot", async () => {
+    vi.mocked(detectAllAuth).mockResolvedValue([
+      { type: "cli-subscription" as any, cli: "claude", authenticated: true, path: "/usr/bin/claude", verified: true },
+    ]);
+    const accountUsage = {
+      getUsageSnapshot: vi.fn(() => ({ windows: [], accounts: [] })),
+      resolveBalancedInstance: vi.fn(() => ({ instanceId: "claude", reason: "weekly-first" })),
+      peekBalancedInstance: vi.fn(() => ({ instanceId: "work", reason: "reserve-preview" })),
+    };
+    const { service, aiIntegrationService } = createService({
+      getAccountUsage: () => accountUsage as any,
+    });
+    vi.mocked(aiIntegrationService.summarizeTerminal).mockResolvedValueOnce({
+      text: JSON.stringify({ laneTitle: "Capacity Rotation", branchFragment: "capacity-rotation" }),
+    } as any);
+
+    const result = await service.generateAutoLaneIdentity({
+      prompt: "Use the reserve Claude account for one of every three chats.",
+      provider: "claude",
+      modelId: "anthropic/claude-haiku-4-5",
+      laneId: "lane-1",
+      temporaryBranch: "ade/capacity-rotation",
+    });
+
+    expect(result).toMatchObject({ source: "ai", laneTitle: "Capacity Rotation" });
+    expect(accountUsage.peekBalancedInstance).toHaveBeenCalledWith("claude");
+    expect(accountUsage.resolveBalancedInstance).not.toHaveBeenCalled();
+    expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledTimes(1);
+  });
+
   it("preserves a valid title when structured branch output is invalid", async () => {
     vi.mocked(detectAllAuth).mockResolvedValue([
       { type: "cli-subscription" as any, cli: "codex", authenticated: true, path: "/usr/bin/codex", verified: true },
@@ -512,7 +542,7 @@ describe("suggestLaneNameFromPrompt", () => {
       source: "ai",
     });
     expect(aiIntegrationService.summarizeTerminal).toHaveBeenNthCalledWith(1, expect.objectContaining({
-      model: "openai/gpt-5.6-luna",
+      model: "openai/gpt-6-luna",
     }));
     expect(aiIntegrationService.summarizeTerminal).toHaveBeenNthCalledWith(2, expect.objectContaining({
       model: "openai/gpt-5.4",
@@ -538,7 +568,7 @@ describe("suggestLaneNameFromPrompt", () => {
     });
 
     expect(aiIntegrationService.summarizeTerminal).toHaveBeenNthCalledWith(1, expect.objectContaining({
-      model: "openai/gpt-5.6-luna",
+      model: "openai/gpt-6-luna",
     }));
   });
 
@@ -1150,7 +1180,16 @@ describe("explicit provider-thread continuity recovery", () => {
       && entry.event.detail?.spawnedSession?.sessionId === result.newSessionId)).toBe(true);
   });
 
-  it("moves a stale Claude SDK pointer into continuity recovery and records the prior pointer", async () => {
+  it.each([
+    { surfacedBy: "the turn's stream", streamError: "session not found", permissionModeError: null },
+    // The permission-mode switch is the first call on a resumed query, so a
+    // missing thread usually surfaces there; it must not quietly start fresh.
+    {
+      surfacedBy: "the permission-mode switch",
+      streamError: null,
+      permissionModeError: "Claude Code returned an error result: No conversation found with session ID: sdk-stale",
+    },
+  ])("moves a stale Claude SDK pointer into continuity recovery when $surfacedBy reports it", async ({ streamError, permissionModeError }) => {
     let streamCall = 0;
     const handle = {
       send: vi.fn().mockResolvedValue(undefined),
@@ -1160,16 +1199,26 @@ describe("explicit provider-thread continuity recovery", () => {
           yield { type: "system", subtype: "init", session_id: "sdk-stale", slash_commands: [] };
           return;
         }
-        throw new Error("session not found");
+        // The first turn writes the thread; it goes stale after.
+        if (streamCall === 2) {
+          yield { type: "result", subtype: "success", is_error: false, usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        if (streamError) throw new Error(streamError);
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
       })()),
       close: vi.fn(),
       sessionId: "sdk-stale",
-      setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      // Stale only once the first turn has written the thread.
+      setPermissionMode: vi.fn(async () => {
+        if (permissionModeError && streamCall >= 2) throw new Error(permissionModeError);
+      }),
     };
     vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(handle as any);
     vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(handle as any);
     const { service } = createService();
     const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "claude-sonnet-5" });
+    await service.runSessionTurn({ sessionId: session.id, text: "Start the Claude task." });
     await vi.waitFor(() => expect(readPersistedChatState(session.id).sdkSessionId).toBeTruthy());
     const originalSdkSessionId = readPersistedChatState(session.id).sdkSessionId as string;
 

@@ -45,6 +45,8 @@
   <string>$(ADE_ACCOUNT_DIRECTORY_BASE_URL)</string>
   <key>ADEPushRelayBaseURL</key>
   <string>$(ADE_PUSH_RELAY_BASE_URL)</string>
+  <key>ADESentryDSN</key>
+  <string>https://34f4268deff0b404a2d509dfe5c59bed@o4512249455640576.ingest.us.sentry.io/4512249615089664</string>
   <key>LSRequiresIPhoneOS</key>
   <true/>
   <key>NSAppTransportSecurity</key>

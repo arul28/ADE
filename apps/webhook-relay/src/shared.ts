@@ -55,6 +55,25 @@ export type AccountMappingRow = {
 const DEFAULT_EVENT_LIMIT = 100;
 const MAX_EVENT_LIMIT = 500;
 export const DEFAULT_RETENTION_DAYS = 7;
+
+const lastRunByTask = new WeakMap<object, Map<string, number>>();
+
+/**
+ * True at most once per `intervalMs` for a task on one D1 binding, within one
+ * isolate. Best effort only: a new isolate or binding object runs the task
+ * again, so every throttled query must still be an index seek on its own.
+ */
+export function claimPeriodicRun(db: object, task: string, intervalMs: number): boolean {
+  let byTask = lastRunByTask.get(db);
+  if (!byTask) {
+    byTask = new Map();
+    lastRunByTask.set(db, byTask);
+  }
+  const now = Date.now();
+  if (now - (byTask.get(task) ?? Number.NEGATIVE_INFINITY) < intervalMs) return false;
+  byTask.set(task, now);
+  return true;
+}
 export const encoder = new TextEncoder();
 export function json(value: unknown, init: ResponseInit = {}): Response {
   return new Response(JSON.stringify(value), {
@@ -175,3 +194,30 @@ export function parseSequenceCursor(after: string): number | null {
   const value = Number(match[1]);
   return Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
+
+// GitHub-style `sha256=<hex>` HMAC webhook signatures (GitHub and Cursor).
+export function hasValidGitHubSignatureShape(signature: string): boolean {
+  return /^sha256=[0-9a-f]{64}$/i.test(signature);
+}
+
+export async function signGitHubWebhookBody(secret: string, body: string | ArrayBuffer): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const data = typeof body === "string" ? encoder.encode(body) : body;
+  const digest = await crypto.subtle.sign("HMAC", key, data);
+  return `sha256=${toHex(digest)}`;
+}
+
+
+export async function verifyGitHubSignature(secret: string, body: ArrayBuffer, signature: string): Promise<boolean> {
+  if (!secret.trim()) return false;
+  if (!signature.startsWith("sha256=")) return false;
+  const expected = await signGitHubWebhookBody(secret, body);
+  return constantTimeEqual(expected, signature);
+}
+

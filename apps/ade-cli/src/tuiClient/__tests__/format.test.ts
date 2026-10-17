@@ -1239,6 +1239,7 @@ describe("renderChatLines", () => {
     const spawnCompleted = (args: {
       childTitle: string;
       childSessionId?: string;
+      childMachineName?: string;
       timestamp: string;
       sequence: number;
     }) => ({
@@ -1251,7 +1252,15 @@ describe("renderChatLines", () => {
         status: "spawn_completed",
         message: `Chat "${args.childTitle}" finished its turn`,
         ...(args.childSessionId
-          ? { detail: { spawnCompletion: { childSessionId: args.childSessionId, childTitle: args.childTitle } } }
+          ? {
+            detail: {
+              spawnCompletion: {
+                childSessionId: args.childSessionId,
+                childTitle: args.childTitle,
+                ...(args.childMachineName ? { childMachineName: args.childMachineName } : {}),
+              },
+            },
+          }
           : {}),
       } as never,
     });
@@ -1301,7 +1310,7 @@ describe("renderChatLines", () => {
       ]);
     });
 
-    it("breaks the run on an intervening line", () => {
+    it("keeps a child's newest finish at its position, counting every turn, across an intervening line", () => {
       const lines = renderChatLines({
         activeSession: null,
         notices: [],
@@ -1320,10 +1329,61 @@ describe("renderChatLines", () => {
       });
 
       expect(lines.map((line) => line.body)).toEqual([
-        'Chat "Docs sweep" finished its turn ×2',
         "keep going",
+        'Chat "Docs sweep" finished its turn ×4',
+      ]);
+    });
+
+    it("drops a child's older finish when another child finishes between its turns", () => {
+      const lines = renderChatLines({
+        activeSession: null,
+        notices: [],
+        events: [
+          spawnCompleted({ childTitle: "Docs sweep", childSessionId: "c1", timestamp: "2026-01-01T12:00:00.000Z", sequence: 1 }),
+          spawnCompleted({ childTitle: "Docs rewrite", childSessionId: "c2", timestamp: "2026-01-01T12:00:01.000Z", sequence: 2 }),
+          spawnCompleted({ childTitle: "Docs sweep", childSessionId: "c1", timestamp: "2026-01-01T12:00:02.000Z", sequence: 3 }),
+        ],
+      });
+
+      expect(lines.map((line) => line.body)).toEqual([
+        'Chat "Docs rewrite" finished its turn',
         'Chat "Docs sweep" finished its turn ×2',
       ]);
+    });
+
+    it("says where a remote child ran, before its turn count", () => {
+      const lines = renderChatLines({
+        activeSession: null,
+        notices: [],
+        events: [
+          spawnCompleted({ childTitle: "Docs sweep", childSessionId: "c1", childMachineName: "Mac mini", timestamp: "2026-01-01T12:00:00.000Z", sequence: 1 }),
+          spawnCompleted({ childTitle: "Docs sweep", childSessionId: "c1", childMachineName: "Mac mini", timestamp: "2026-01-01T12:00:01.000Z", sequence: 2 }),
+        ],
+      });
+
+      expect(lines.map((line) => line.body)).toEqual(['Chat "Docs sweep" finished its turn · on Mac mini ×2']);
+    });
+
+    it("draws a legacy 'Peer … turn finished' notice in the current wording", () => {
+      const lines = renderChatLines({
+        activeSession: null,
+        notices: [],
+        events: [
+          {
+            sessionId: "s1",
+            timestamp: "2026-01-01T12:00:00.000Z",
+            sequence: 1,
+            event: {
+              type: "system_notice",
+              noticeKind: "info",
+              status: "spawn_completed",
+              message: 'Peer "Docs sweep" turn finished',
+            } as never,
+          },
+        ],
+      });
+
+      expect(lines.map((line) => line.body)).toEqual(['Chat "Docs sweep" finished its turn']);
     });
 
     it("gives each unidentified completion its own line instead of dropping it", () => {
@@ -1626,7 +1686,7 @@ describe("renderChatLines", () => {
           sessionId: "s1",
           timestamp: "2026-01-01T12:00:02.000Z",
           sequence: 2,
-          event: { type: "tool_call", tool: "shell", args: { command: "git branch" }, itemId: "tool-1" },
+          event: { type: "tool_call", tool: "shell", args: { command: "API_KEY=fake git branch" }, itemId: "tool-1" },
         },
         {
           sessionId: "s1",
@@ -1637,6 +1697,8 @@ describe("renderChatLines", () => {
       ],
     });
     expect(lines.map((line) => line.tone)).toEqual(["assistant", "tool", "assistant"]);
+    expect(lines[1]?.body).toContain("API_KEY=<redacted> git branch");
+    expect(lines[1]?.body).not.toContain("API_KEY=fake");
     expect(lines[0]?.body).toBe("I'll check the branch.");
     expect(lines[2]?.body).toBe("We're on main.");
     expect(lines[2]?.header).toBeUndefined();

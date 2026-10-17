@@ -236,11 +236,11 @@ export function EditorGroup(props: EditorGroupProps) {
               </div>
             ) : null}
             {viewerIsEditable(activeTab.viewerKind) ? (
-              <button type="button" onClick={saveActive} title={`Save (${modifierKeyLabel}+S)`} className="rounded p-1 hover:bg-white/5" style={{ color: COLORS.textMuted }}>
+              <button type="button" onClick={saveActive} title={`Save (${modifierKeyLabel}+S)`} className="rounded p-1 hover:bg-fg/5" style={{ color: COLORS.textMuted }}>
                 <FloppyDisk size={14} />
               </button>
             ) : null}
-            <button type="button" onClick={() => props.onSplit(group.id)} title="Split editor" className="rounded p-1 hover:bg-white/5" style={{ color: COLORS.textMuted }}>
+            <button type="button" onClick={() => props.onSplit(group.id)} title="Split editor" className="rounded p-1 hover:bg-fg/5" style={{ color: COLORS.textMuted }}>
               <SplitHorizontal size={14} />
             </button>
           </div>
@@ -385,7 +385,7 @@ function TabButton({
           e.stopPropagation();
           onClose();
         }}
-        className="ml-0.5 rounded p-0.5 opacity-0 hover:bg-white/10 group-hover:opacity-100"
+        className="ml-0.5 rounded p-0.5 opacity-0 hover:bg-fg/10 group-hover:opacity-100"
         style={{ color: COLORS.textMuted }}
         aria-label={`Close ${tab.title}`}
       >

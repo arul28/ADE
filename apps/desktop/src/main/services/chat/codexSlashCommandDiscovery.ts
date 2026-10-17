@@ -3,9 +3,11 @@ import os from "node:os";
 import path from "node:path";
 import {
   discoverMarkdownCommandFiles,
+  discoverMarkdownCommandFilesAsync,
   parseSlashCommandInput,
   resolveMarkdownCommandFile,
   stripFrontmatter,
+  type DiscoveredMarkdownSlashCommand,
 } from "./markdownSlashCommandDiscovery";
 
 export type DiscoveredCodexSlashCommand = {
@@ -60,16 +62,14 @@ function codexPromptRoots(cwd: string, env: NodeJS.ProcessEnv = process.env): st
   return roots;
 }
 
-export function discoverCodexSlashCommands(
-  cwd: string,
-  env: NodeJS.ProcessEnv = process.env,
+const CODEX_PROMPT_FILE_OPTIONS = { lowercaseNames: true, useFrontmatterDescription: false } as const;
+
+function collectCodexSlashCommands(
+  lists: readonly (readonly DiscoveredMarkdownSlashCommand[])[],
 ): DiscoveredCodexSlashCommand[] {
   const byName = new Map<string, DiscoveredCodexSlashCommand>();
-  for (const root of codexPromptRoots(cwd, env)) {
-    for (const command of discoverMarkdownCommandFiles(root, {
-      lowercaseNames: true,
-      useFrontmatterDescription: false,
-    })) {
+  for (const list of lists) {
+    for (const command of list) {
       byName.set(command.name, {
         name: command.name,
         description: command.description,
@@ -78,6 +78,27 @@ export function discoverCodexSlashCommands(
     }
   }
   return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export function discoverCodexSlashCommands(
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+): DiscoveredCodexSlashCommand[] {
+  return collectCodexSlashCommands(
+    codexPromptRoots(cwd, env).map((root) => discoverMarkdownCommandFiles(root, CODEX_PROMPT_FILE_OPTIONS)),
+  );
+}
+
+/** The async twin of `discoverCodexSlashCommands`, for the chat-switch RPC: same list, yielding between files. */
+export async function discoverCodexSlashCommandsAsync(
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<DiscoveredCodexSlashCommand[]> {
+  const lists: DiscoveredMarkdownSlashCommand[][] = [];
+  for (const root of codexPromptRoots(cwd, env)) {
+    lists.push(await discoverMarkdownCommandFilesAsync(root, CODEX_PROMPT_FILE_OPTIONS));
+  }
+  return collectCodexSlashCommands(lists);
 }
 
 export function resolveCodexSlashCommandInvocation(

@@ -14,6 +14,8 @@ import {
   SANS_FONT,
   outlineButton,
   primaryButton,
+  toneText,
+  fgTint,
 } from "../../lanes/laneDesignTokens";
 import { PrDetailPane } from "../detail/PrDetailPane";
 import { GitHubPrSearchInput } from "../shared/GitHubPrSearchInput";
@@ -36,7 +38,7 @@ import { PRS_LIST_ROOT_CLASS, PrsListPortal, usePrsListHost } from "../shared/Pr
 
 const FILTER_ACCENTS: Record<GitHubFilter, string> = {
   open: "#60A5FA",
-  closed: "#A1A1AA",
+  closed: "var(--color-secondary-fg)",
   merged: "#4ADE80",
 };
 
@@ -114,7 +116,7 @@ export function GitHubTabView({ chrome, list, detail }: GitHubTabViewProps) {
       </button>
     </EmptyState>
   ) : (
-    <GitHubTabDetail chrome={chrome} detail={detail} />
+    <GitHubTabDetail chrome={chrome} detail={detail} prsByIdMap={list.prsByIdMap} />
   );
   const listColumn = connectNeeded ? null : <GitHubTabListColumn chrome={chrome} list={list} />;
 
@@ -130,7 +132,7 @@ export function GitHubTabView({ chrome, list, detail }: GitHubTabViewProps) {
               width: INLINE_LIST_WIDTH_PX,
               flexShrink: 0,
               minHeight: 0,
-              borderRight: "1px solid rgba(255,255,255,0.06)",
+              borderRight: `1px solid ${fgTint(6)}`,
             }}
           >
             {listColumn}
@@ -225,12 +227,12 @@ function GitHubTabListColumn({
           padding: "0 6px",
           flexShrink: 0,
           overflow: "hidden",
-          borderBottom: "1px solid rgba(255,255,255,0.06)",
+          borderBottom: `1px solid ${fgTint(6)}`,
         }}
       >
         {(["open", "merged", "closed"] as GitHubFilter[]).map((state) => {
           const active = list.filter === state;
-          const accent = FILTER_ACCENTS[state];
+          const accent = toneText(FILTER_ACCENTS[state]);
           const count = list.filterCounts[state];
           const tabLoading = active && (
             list.loading
@@ -305,7 +307,7 @@ function GitHubTabListColumn({
             padding: blockedCompact ? "0 5px" : "0 7px",
             marginRight: 4,
             borderRadius: 6,
-            border: `1px solid ${list.sort === "blocked" ? `color-mix(in srgb, ${COLORS.warning} 40%, transparent)` : "rgba(255,255,255,0.08)"}`,
+            border: `1px solid ${list.sort === "blocked" ? `color-mix(in srgb, ${COLORS.warning} 40%, transparent)` : fgTint(8)}`,
             background: list.sort === "blocked" ? `color-mix(in srgb, ${COLORS.warning} 14%, transparent)` : "transparent",
             color: list.sort === "blocked" ? COLORS.warning : COLORS.textMuted,
             fontFamily: SANS_FONT,
@@ -382,7 +384,7 @@ function GitHubTabListColumn({
           />
         )}
         {list.canLoadOlderHistory ? (
-          <div style={{ padding: "12px 12px 16px", borderTop: "1px solid rgba(255,255,255,0.04)" }}>
+          <div style={{ padding: "12px 12px 16px", borderTop: `1px solid ${fgTint(4)}` }}>
             <button
               type="button"
               aria-label="Load older pull requests"
@@ -400,7 +402,7 @@ function GitHubTabListColumn({
       </div>
 
       {chrome.repoLabel ? (
-        <div style={{ flexShrink: 0, padding: "4px 8px 4px 12px", borderTop: "1px solid rgba(255,255,255,0.06)" }}>
+        <div style={{ flexShrink: 0, padding: "4px 8px 4px 12px", borderTop: `1px solid ${fgTint(6)}` }}>
           <GitHubRepoSyncBar
             repoLabel={chrome.repoLabel}
             syncing={chrome.syncing}
@@ -417,9 +419,11 @@ function GitHubTabListColumn({
 function GitHubTabDetail({
   chrome,
   detail,
+  prsByIdMap,
 }: {
   chrome: GitHubTabViewChrome;
   detail: GitHubTabViewDetail;
+  prsByIdMap: Map<string, PrSummary>;
 }) {
   const selectedItem = detail.selectedItem;
   const selectedStack = detail.selectedStack;
@@ -461,6 +465,7 @@ function GitHubTabDetail({
               { prNumber: null, repoOwner: selectedStack.repoOwner, repoName: selectedStack.repoName },
             ),
           )}
+          prsById={prsByIdMap}
           selectedPrNumber={selectedItem.githubPrNumber}
           syncing={chrome.syncing}
           onSelectPr={detail.onSelect}

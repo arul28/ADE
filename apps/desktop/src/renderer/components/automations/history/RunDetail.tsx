@@ -1,5 +1,7 @@
+import { useState } from "react";
 import { ArrowSquareOut, GitBranch } from "@phosphor-icons/react";
-import type { AutomationRunDetail } from "../../../../shared/types";
+import type { AutomationRunDetail, OpenProjectBinding } from "../../../../shared/types";
+import { Banner } from "../../ui/notice/Banner";
 import { AgentChatPane } from "../../chat/AgentChatPane";
 import { Button } from "../../ui/Button";
 import { Chip } from "../../ui/Chip";
@@ -7,6 +9,7 @@ import { cn } from "../../ui/cn";
 import { statusToneAutomation as statusTone } from "../../../lib/format";
 import { cardCls, labelCls, recessedCls } from "../designTokens";
 import { eventLabel } from "../triggerCatalog";
+import { readTestRunInfo, summarizeTestRun, testRunLabel } from "./testRunInfo";
 
 function MetaCard({ label, value }: { label: string; value: string }) {
   return (
@@ -25,7 +28,77 @@ function openExternal(url: string) {
   void (window as unknown as { ade?: { app?: { openExternal?: (u: string) => Promise<void> } } }).ade?.app?.openExternal?.(url);
 }
 
-export function RunDetail({ detail, loading }: { detail: AutomationRunDetail | null; loading: boolean }) {
+/** What a test run did, with Clean up for the lanes it made. */
+function TestRunNotice({
+  detail,
+  pin,
+  onChanged,
+}: {
+  detail: AutomationRunDetail;
+  pin: OpenProjectBinding | null;
+  onChanged: () => void;
+}) {
+  const [cleaning, setCleaning] = useState(false);
+  const [cleanupError, setCleanupError] = useState<string | null>(null);
+  const test = readTestRunInfo(detail.run);
+  if (!test) return null;
+  const canClean = test.lanes.length > 0 && !test.cleanedUpAt && Boolean(detail.run.endedAt);
+  const cleanUp = async () => {
+    setCleaning(true);
+    setCleanupError(null);
+    try {
+      const result = await window.ade.automations.cleanUpTestRun({ runId: detail.run.id }, pin);
+      // A partial cleanup keeps this notice and its error; the reload would clear them.
+      if (result.failed.length) {
+        setCleanupError(result.failed.map((lane) => `${lane.name}: ${lane.error}`).join(" "));
+      } else {
+        onChanged();
+      }
+    } catch (err) {
+      setCleanupError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCleaning(false);
+    }
+  };
+  return (
+    <Banner
+      layout="inline"
+      testId="automation-run-test"
+      model={{
+        id: `automation-run-test-${detail.run.id}`,
+        tone: "info",
+        title: `This was a ${testRunLabel(test).toLowerCase()}.`,
+        detail: [
+          summarizeTestRun(test, detail.actions),
+          !detail.run.endedAt && test.lanes.length ? "Clean up is available when it finishes." : null,
+          cleanupError ? `Clean up did not finish: ${cleanupError}` : null,
+        ].filter(Boolean).join(" "),
+        busy: cleaning,
+        actions: canClean
+          ? [{
+            label: test.lanes.length === 1 ? "Clean up the lane" : `Clean up ${test.lanes.length} lanes`,
+            onClick: () => void cleanUp(),
+            busy: cleaning,
+          }]
+          : undefined,
+      }}
+    />
+  );
+}
+
+export function RunDetail({
+  detail,
+  loading,
+  pin = null,
+  onChanged,
+}: {
+  detail: AutomationRunDetail | null;
+  loading: boolean;
+  /** The machine the run is on. */
+  pin?: OpenProjectBinding | null;
+  /** Called after Clean up, so the history reloads. */
+  onChanged?: () => void;
+}) {
   if (loading) return <div className="p-5 text-sm text-muted-fg/60">Loading run detail…</div>;
   if (!detail) return <div className="p-5 text-sm text-muted-fg/60">Select a run to inspect what ADE did.</div>;
 
@@ -41,6 +114,7 @@ export function RunDetail({ detail, loading }: { detail: AutomationRunDetail | n
   return (
     <div className="h-full overflow-y-auto px-5 py-5">
       <div className="mx-auto flex max-w-4xl flex-col gap-4">
+        <TestRunNotice detail={detail} pin={pin} onChanged={() => onChanged?.()} />
         <section className={cardCls}>
           <div className="flex flex-wrap items-center gap-2">
             <Chip className={cn("text-[9px]", statusTone(detail.run.status))}>{detail.run.status}</Chip>
@@ -60,7 +134,7 @@ export function RunDetail({ detail, loading }: { detail: AutomationRunDetail | n
           {(laneId || prUrl) ? (
             <div className="mt-3 flex flex-wrap items-center gap-2">
               {laneId ? (
-                <span className="inline-flex items-center gap-1.5 rounded-md border border-white/[0.08] bg-white/[0.03] px-2 py-1 text-[10.5px] text-muted-fg/75">
+                <span className="inline-flex items-center gap-1.5 rounded-md border border-fg/[0.08] bg-fg/[0.03] px-2 py-1 text-[10.5px] text-muted-fg/75">
                   <GitBranch size={11} weight="regular" />
                   <span className="font-mono">{laneId.slice(0, 12)}</span>
                 </span>
@@ -90,7 +164,7 @@ export function RunDetail({ detail, loading }: { detail: AutomationRunDetail | n
               <div className="text-sm font-semibold text-fg">Automation thread</div>
               <div className="mt-1 text-xs text-muted-fg/60">This thread lives in Automations history. It doesn't appear in the Work tab.</div>
             </div>
-            <div className="h-[560px] overflow-hidden rounded-xl border border-white/[0.06] bg-black/[0.18]">
+            <div className="h-[560px] overflow-hidden rounded-xl border border-fg/[0.06] bg-black/[0.18]">
               <AgentChatPane
                 laneId={detail.chatSession.laneId}
                 initialSessionSummary={detail.chatSession}
@@ -119,7 +193,7 @@ export function RunDetail({ detail, loading }: { detail: AutomationRunDetail | n
                 return (
                   <div
                     key={action.id}
-                    className={cn("rounded-lg border p-3", isLaneSetup ? "border-accent/25 bg-accent/[0.04]" : "border-white/[0.06] bg-black/[0.14]")}
+                    className={cn("rounded-lg border p-3", isLaneSetup ? "border-accent/25 bg-accent/[0.04]" : "border-fg/[0.06] bg-black/[0.14]")}
                   >
                     <div className="flex items-center justify-between gap-3">
                       <div className="flex items-center gap-2 text-sm font-semibold text-fg">
@@ -130,7 +204,7 @@ export function RunDetail({ detail, loading }: { detail: AutomationRunDetail | n
                     </div>
                     {action.errorMessage ? <div className="mt-2 text-sm text-red-400">{action.errorMessage}</div> : null}
                     {action.output ? (
-                      <pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap rounded-lg border border-white/[0.06] bg-black/[0.3] p-3 font-mono text-[11px] leading-relaxed text-fg/80">
+                      <pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap rounded-lg border border-fg/[0.06] bg-black/[0.3] p-3 font-mono text-[11px] leading-relaxed text-fg/80">
                         {action.output}
                       </pre>
                     ) : null}

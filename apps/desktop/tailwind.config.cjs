@@ -17,6 +17,7 @@ module.exports = {
         // the class compiles to nothing. `bg-secondary` is a rail button's
         // PRESSED state, so a toggled-on control showed no background at all.
         secondary: "var(--color-secondary)",
+        "secondary-fg": "var(--color-secondary-fg)",
         // The bare token, which the product spells and the config did not
         // register: `--color-surface` exists in BOTH themes in index.css,
         // three `surface-*` variants were registered, and `surface` itself

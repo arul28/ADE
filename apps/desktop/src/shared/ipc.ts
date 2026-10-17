@@ -4,10 +4,24 @@ export const IPC = {
   appSetIgnoreMenuShortcuts: "ade.app.setIgnoreMenuShortcuts",
   appGetInfo: "ade.app.getInfo",
   appGetInstalledEditors: "ade.app.getInstalledEditors",
+  appGetInstalledBrowsers: "ade.app.getInstalledBrowsers",
+  appOpenInBrowser: "ade.app.openInBrowser",
+  appGetAppIcon: "ade.app.getAppIcon",
   appRuntimeStatusChanged: "ade.app.runtimeStatusChanged",
   appGetResourceUsage: "ade.app.getResourceUsage",
   appGetRuntimeHealth: "ade.app.getRuntimeHealth",
   appRestartBackgroundService: "ade.app.restartBackgroundService",
+  /** main → window: ask the quit confirmation in ADE's own dialog. */
+  appQuitPrompt: "ade.app.quitPrompt",
+  /** window → main: the prompt is on screen, so main does not ask natively too. */
+  appQuitPromptShown: "ade.app.quitPromptShown",
+  /** main → window: drop the prompt; main is asking natively instead. */
+  appQuitPromptDismiss: "ade.app.quitPromptDismiss",
+  appAnswerQuitPrompt: "ade.app.answerQuitPrompt",
+  appGetAskBeforeQuit: "ade.app.getAskBeforeQuit",
+  appSetAskBeforeQuit: "ade.app.setAskBeforeQuit",
+  appGetBackgroundService: "ade.app.getBackgroundService",
+  appStopBackgroundServiceAndQuit: "ade.app.stopBackgroundServiceAndQuit",
   storageGetPressure: "ade.storage.getPressure",
   storageGetSnapshot: "ade.storage.getSnapshot",
   storageCompressNow: "ade.storage.compressNow",
@@ -76,14 +90,6 @@ export const IPC = {
   captureGestureCaptureNow: "ade.captureGesture.captureNow",
   captureGestureShot: "ade.captureGesture.shot",
   captureGestureFailed: "ade.captureGesture.failed",
-  attentionNotchPublishSnapshot: "ade.attentionNotch.publishSnapshot",
-  attentionNotchPublishToast: "ade.attentionNotch.publishToast",
-  attentionNotchUpdateSettings: "ade.attentionNotch.updateSettings",
-  attentionNotchGetHealth: "ade.attentionNotch.getHealth",
-  attentionNotchRetry: "ade.attentionNotch.retry",
-  attentionNotchAcknowledgeRequested: "ade.attentionNotch.acknowledgeRequested",
-  attentionNotchRefreshRequested: "ade.attentionNotch.refreshRequested",
-  attentionNotchSettingsChanged: "ade.attentionNotch.settingsChanged",
   attentionGetSnapshot: "ade.attention.getSnapshot",
   attentionAcknowledge: "ade.attention.acknowledge",
   attentionReportPresence: "ade.attention.reportPresence",
@@ -117,6 +123,32 @@ export const IPC = {
   recoveryRepairStep: "ade.recovery.repairStep",
   /** Open System Settings at Login Items, where "Allow in the Background" lives (macOS). */
   recoveryOpenBackgroundSettings: "ade.recovery.openBackgroundSettings",
+  /** Put a project's trashed .ade folder back. */
+  recoveryRestoreProjectData: "ade.recovery.restoreProjectData",
+  /** Let a project whose ADE data is gone open with new data. */
+  recoveryStartFresh: "ade.recovery.startFresh",
+  /** Main → renderer: an open project's .ade folder or database was moved or deleted. */
+  recoveryProjectDataMissing: "ade.recovery.projectDataMissing",
+  /** Whether a project's ADE data is missing or swapped (no root: the project that failed to reopen at launch). */
+  recoveryProjectDataStatus: "ade.recovery.projectDataStatus",
+  /** Drives that could take a moved project (macOS). */
+  projectMoveListVolumes: "ade.projectMove.listVolumes",
+  /** Read-only checks before moving a project to a new folder. */
+  projectMovePreflight: "ade.projectMove.preflight",
+  /** Copy, rewrite, verify and switch a project to its new folder. */
+  projectMoveStart: "ade.projectMove.start",
+  /** Main → renderer: one line of move progress. */
+  projectMoveProgress: "ade.projectMove.progress",
+  /** The latest finished move into a project, with its cleanup choice. */
+  projectMoveStatus: "ade.projectMove.status",
+  /** Kept originals that want a decision now, and when the next reminder is due. */
+  projectMoveAttention: "ade.projectMove.attention",
+  /** Delete the kept original, remind later, or keep it. */
+  projectMoveCleanup: "ade.projectMove.cleanup",
+  /** Show a move's kept original (or the moved project) in Finder. */
+  projectMoveReveal: "ade.projectMove.reveal",
+  /** Pick a folder to move a project into. */
+  projectMoveChooseFolder: "ade.projectMove.chooseFolder",
   /** The hard reset's plan: every project, lane and machine item it would remove. */
   machineResetPlan: "ade.machineReset.plan",
   /** Hand the hard reset to a detached engine process, then quit. */
@@ -134,9 +166,9 @@ export const IPC = {
    * watching.
    */
   diagnosticsSendManual: "ade.diagnostics.sendManual",
-  /** Read the "share diagnostics automatically" setting. */
+  /** Read the automatic-report setting. No UI reads it any more; kept for the preload contract. */
   diagnosticsGetSharing: "ade.diagnostics.getSharing",
-  /** Flip that setting; also what the toast's "Turn off" action calls. */
+  /** Flip the automatic-report setting. No UI calls it any more; kept for the preload contract. */
   diagnosticsSetSharing: "ade.diagnostics.setSharing",
   /** Reveal a saved auto-report in Finder/Explorer. Reports directory only. */
   diagnosticsRevealReport: "ade.diagnostics.revealReport",
@@ -194,6 +226,7 @@ export const IPC = {
   remoteRuntimeCallAction: "ade.remoteRuntime.callAction",
   remoteRuntimeCallSync: "ade.remoteRuntime.callSync",
   remoteRuntimeUpdateAndRestart: "ade.remoteRuntime.updateAndRestart",
+  remoteRuntimeGetUpdateImpact: "ade.remoteRuntime.getUpdateImpact",
   remoteRuntimeEnsurePortForward: "ade.remoteRuntime.ensurePortForward",
   /**
    * Main → renderer: every loopback forward for this machine is gone.
@@ -261,6 +294,10 @@ export const IPC = {
   lanesDetachGitHubIssueFromSession: "ade.lanes.detachGitHubIssueFromSession",
   lanesListGitHubIssuesForSession: "ade.lanes.listGitHubIssuesForSession",
   lanesListGitHubIssuesForLaneSessions: "ade.lanes.listGitHubIssuesForLaneSessions",
+  lanesAttachJiraIssueToSession: "ade.lanes.attachJiraIssueToSession",
+  lanesDetachJiraIssueFromSession: "ade.lanes.detachJiraIssueFromSession",
+  lanesListJiraIssuesForSession: "ade.lanes.listJiraIssuesForSession",
+  lanesListJiraIssuesForLaneSessions: "ade.lanes.listJiraIssuesForLaneSessions",
   lanesUnlinkLinearIssues: "ade.lanes.unlinkLinearIssues",
   lanesRebaseStart: "ade.lanes.rebaseStart",
   lanesRebasePush: "ade.lanes.rebasePush",
@@ -352,9 +389,14 @@ export const IPC = {
   agentChatGenerateAutoLaneIdentity: "ade.agentChat.generateAutoLaneIdentity",
   agentChatParallelLaunchStateGet: "ade.agentChat.parallelLaunchState.get",
   agentChatParallelLaunchStateSet: "ade.agentChat.parallelLaunchState.set",
-  agentChatPromptStashesList: "ade.agentChat.promptStashes.list",
-  agentChatPromptStashesCreate: "ade.agentChat.promptStashes.create",
-  agentChatPromptStashesDelete: "ade.agentChat.promptStashes.delete",
+  agentChatDraftsList: "ade.agentChat.drafts.list",
+  agentChatDraftsCreate: "ade.agentChat.drafts.create",
+  agentChatDraftsDelete: "ade.agentChat.drafts.delete",
+  agentChatDraftsUpdate: "ade.agentChat.drafts.update",
+  agentChatDraftsClaim: "ade.agentChat.drafts.claim",
+  agentChatDraftsSendNow: "ade.agentChat.drafts.sendNow",
+  agentChatClaudePluginUiGet: "ade.agentChat.claudePluginUi.get",
+  agentChatClaudePluginUiAct: "ade.agentChat.claudePluginUi.act",
   agentChatThreadCommentsList: "ade.agentChat.threadComments.list",
   agentChatThreadCommentsCreate: "ade.agentChat.threadComments.create",
   agentChatThreadCommentsUpdate: "ade.agentChat.threadComments.update",
@@ -363,6 +405,13 @@ export const IPC = {
   agentChatPrepareCrossMachineHandoff: "ade.agentChat.prepareCrossMachineHandoff",
   agentChatValidateCrossMachineSource: "ade.agentChat.validateCrossMachineSource",
   agentChatMarkCrossMachineHandoff: "ade.agentChat.markCrossMachineHandoff",
+  agentChatGetCrossMachineHandoffOptions: "ade.agentChat.getCrossMachineHandoffOptions",
+  agentChatPreviewCrossMachineHandoff: "ade.agentChat.previewCrossMachineHandoff",
+  agentChatStartCrossMachineHandoff: "ade.agentChat.startCrossMachineHandoff",
+  agentChatCancelCrossMachineHandoff: "ade.agentChat.cancelCrossMachineHandoff",
+  agentChatRetryCrossMachineHandoff: "ade.agentChat.retryCrossMachineHandoff",
+  agentChatResolveCrossMachineHandoffApproval: "ade.agentChat.resolveCrossMachineHandoffApproval",
+  agentChatAcknowledgeCrossMachineHandoff: "ade.agentChat.acknowledgeCrossMachineHandoff",
   agentChatSend: "ade.agentChat.send",
   agentChatSteer: "ade.agentChat.steer",
   agentChatCancelSteer: "ade.agentChat.cancelSteer",
@@ -372,6 +421,8 @@ export const IPC = {
   agentChatCancelDispatchedSteer: "ade.agentChat.cancelDispatchedSteer",
   agentChatInterrupt: "ade.agentChat.interrupt",
   agentChatStopTask: "ade.agentChat.stopTask",
+  agentChatMessageSubagent: "ade.agentChat.messageSubagent",
+  agentChatControlSubagent: "ade.agentChat.controlSubagent",
   agentChatRestartSession: "ade.agentChat.restartSession",
   agentChatRestoreCancelledQueue: "ade.agentChat.restoreCancelledQueue",
   agentChatRecoverTurn: "ade.agentChat.recoverTurn",
@@ -381,6 +432,14 @@ export const IPC = {
   agentChatApprove: "ade.agentChat.approve",
   agentChatRespondToInput: "ade.agentChat.respondToInput",
   agentChatDismissPendingInput: "ade.agentChat.dismissPendingInput",
+  // MCP Apps (`shared/mcpApp.ts`). `get` reads the page a tool call produced,
+  // `request` passes one call from the app's frame to its own server, and
+  // `prepare` mints the ade-scene://app/ URL the frame loads the page from.
+  agentChatGetMcpApp: "ade.agentChat.getMcpApp",
+  agentChatMcpAppRequest: "ade.agentChat.mcpAppRequest",
+  agentChatListMcpAppGrants: "ade.agentChat.listMcpAppGrants",
+  agentChatRevokeMcpAppGrant: "ade.agentChat.revokeMcpAppGrant",
+  mcpAppPrepare: "ade.mcpApp.prepare",
   agentChatModels: "ade.agentChat.models",
   agentChatLaunchDefaults: "ade.agentChat.launchDefaults",
   agentChatModelCatalog: "ade.agentChat.modelCatalog",
@@ -617,6 +676,7 @@ export const IPC = {
   builtInBrowserNavigate: "ade.builtInBrowser.navigate",
   builtInBrowserCreateTab: "ade.builtInBrowser.createTab",
   builtInBrowserSwitchTab: "ade.builtInBrowser.switchTab",
+  builtInBrowserHandTabToChat: "ade.builtInBrowser.handTabToChat",
   builtInBrowserCloseTab: "ade.builtInBrowser.closeTab",
   builtInBrowserReload: "ade.builtInBrowser.reload",
   builtInBrowserGoBack: "ade.builtInBrowser.goBack",
@@ -644,6 +704,7 @@ export const IPC = {
    * because the panels that would race for it live in different windows.
    */
   builtInBrowserClaimRemoteRequest: "ade.builtInBrowser.claimRemoteRequest",
+  builtInBrowserRunRemoteAgentCall: "ade.builtInBrowser.runRemoteAgentCall",
   builtInBrowserSetDevTools: "ade.builtInBrowser.setDevTools",
   builtInBrowserSetNetworkLogging: "ade.builtInBrowser.setNetworkLogging",
   builtInBrowserGetNetworkLog: "ade.builtInBrowser.getNetworkLog",
@@ -682,6 +743,7 @@ export const IPC = {
   providerInstancesSetDefault: "ade.providerInstances.setDefault",
   providerInstancesSetAccent: "ade.providerInstances.setAccent",
   providerInstancesDismissReplaced: "ade.providerInstances.dismissReplaced",
+  providerInstancesSignOut: "ade.providerInstances.signOut",
   providerInstancesLoginStart: "ade.providerInstances.loginStart",
   providerInstancesLoginStatus: "ade.providerInstances.loginStatus",
   providerInstancesLoginSubmitCode: "ade.providerInstances.loginSubmitCode",
@@ -776,6 +838,9 @@ export const IPC = {
   automationsToggle: "ade.automations.toggle",
   automationsDeleteRule: "ade.automations.deleteRule",
   automationsTriggerManually: "ade.automations.triggerManually",
+  automationsPlanTest: "ade.automations.planTest",
+  automationsRunTest: "ade.automations.runTest",
+  automationsCleanUpTestRun: "ade.automations.cleanUpTestRun",
   automationsGetHistory: "ade.automations.getHistory",
   automationsListRuns: "ade.automations.listRuns",
   automationsGetRunDetail: "ade.automations.getRunDetail",
@@ -791,6 +856,14 @@ export const IPC = {
   automationsLinearIngressSetup: "ade.automations.linearIngress.setup",
   automationsLinearIngressTeardown: "ade.automations.linearIngress.teardown",
   automationsLinearIngressPollNow: "ade.automations.linearIngress.pollNow",
+  automationsWebhookList: "ade.automations.webhook.list",
+  automationsWebhookCreateEndpoint: "ade.automations.webhook.createEndpoint",
+  automationsWebhookGetEndpoint: "ade.automations.webhook.getEndpoint",
+  automationsWebhookRotateEndpoint: "ade.automations.webhook.rotateEndpoint",
+  automationsWebhookListDeliveries: "ade.automations.webhook.listDeliveries",
+  automationsWebhookGetDelivery: "ade.automations.webhook.getDelivery",
+  automationsWebhookReplayDelivery: "ade.automations.webhook.replayDelivery",
+  automationsWebhookSendTest: "ade.automations.webhook.sendTest",
   automationsListScheduledCleanups: "ade.automations.listScheduledCleanups",
   automationsCancelScheduledCleanup: "ade.automations.cancelScheduledCleanup",
   automationsEvent: "ade.automations.event",
@@ -799,6 +872,10 @@ export const IPC = {
   keybindingsSet: "ade.keybindings.set",
   aiGetStatus: "ade.ai.getStatus",
   aiIsOpenCodeInstalled: "ade.ai.isOpenCodeInstalled",
+  aiMuseBinaryStatus: "ade.ai.museBinaryStatus",
+  aiEnsureMuseBinary: "ade.ai.ensureMuseBinary",
+  aiMuseSettings: "ade.ai.museSettings",
+  aiMuseSettingsClose: "ade.ai.museSettingsClose",
   aiGetOpenCodeRuntimeDiagnostics: "ade.ai.getOpenCodeRuntimeDiagnostics",
   aiStoreApiKey: "ade.ai.storeApiKey",
   aiDeleteApiKey: "ade.ai.deleteApiKey",
@@ -829,6 +906,11 @@ export const IPC = {
   aiOpencodeOAuthCancel: "ade.ai.opencodeOAuthCancel",
   aiSetOpencodeProviderKey: "ade.ai.setOpencodeProviderKey",
   aiClearOpencodeProviderKey: "ade.ai.clearOpencodeProviderKey",
+  aiOpencodeAccounts: "ade.ai.opencodeAccounts",
+  aiOpencodeAccountActivate: "ade.ai.opencodeAccountActivate",
+  aiOpencodeAccountRename: "ade.ai.opencodeAccountRename",
+  aiOpencodeAccountRemove: "ade.ai.opencodeAccountRemove",
+  aiOpencodeCloudConnect: "ade.ai.opencodeCloudConnect",
   aiRefreshModelsDev: "ade.ai.refreshModelsDev",
   aiListHarnessRoutes: "ade.ai.listHarnessRoutes",
   aiTestHarnessRoute: "ade.ai.testHarnessRoute",
@@ -912,6 +994,7 @@ export const IPC = {
   githubClearToken: "ade.github.clearToken",
   githubStatusChanged: "ade.github.statusChanged",
   githubGetRequestBudget: "ade.github.getRequestBudget",
+  githubIsRepoStarred: "ade.github.isRepoStarred",
   githubGetAppUserAuthStatus: "ade.github.getAppUserAuthStatus",
   githubStartAppUserDeviceAuth: "ade.github.startAppUserDeviceAuth",
   githubPollAppUserDeviceAuth: "ade.github.pollAppUserDeviceAuth",
@@ -923,6 +1006,16 @@ export const IPC = {
   githubListRepoCollaborators: "ade.github.listRepoCollaborators",
   githubListRepoIssues: "ade.github.listRepoIssues",
   githubGetIssue: "ade.github.getIssue",
+  githubGetRepoIssueSummary: "ade.github.getRepoIssueSummary",
+  githubListIssueComments: "ade.github.listIssueComments",
+  githubListRepoIssueList: "ade.github.listRepoIssueList",
+  githubGetIssueWriteAccess: "ade.github.getIssueWriteAccess",
+  githubCreateIssue: "ade.github.createIssue",
+  githubListIssueTemplates: "ade.github.listIssueTemplates",
+  githubListIssueTypes: "ade.github.listIssueTypes",
+  githubUpdateIssue: "ade.github.updateIssue",
+  githubCommentOnIssue: "ade.github.commentOnIssue",
+  githubListRepoMilestones: "ade.github.listRepoMilestones",
   githubListMyRepos: "ade.github.listMyRepos",
   githubPublishCurrentProject: "ade.github.publishCurrentProject",
   accountStatus: "ade.account.status",
@@ -954,6 +1047,23 @@ export const IPC = {
   accountSettingsGet: "ade.accountSettings.get",
   accountSettingsSet: "ade.accountSettings.set",
   accountSettingsSync: "ade.accountSettings.sync",
+
+  /**
+   * Settings > MCP servers: what the renderer cannot do itself. It reads and
+   * writes the registry's settings rows through `accountSettings`; these look
+   * at this computer and put secret values in the account vault. None of them
+   * returns a secret value.
+   */
+  mcpRegistryContext: "ade.mcpRegistry.context",
+  mcpRegistryCheck: "ade.mcpRegistry.check",
+  mcpRegistrySetSecret: "ade.mcpRegistry.setSecret",
+  mcpRegistryRemoveSecret: "ade.mcpRegistry.removeSecret",
+  mcpRegistryPruneSecrets: "ade.mcpRegistry.pruneSecrets",
+  mcpRegistryScan: "ade.mcpRegistry.scan",
+  mcpRegistryImport: "ade.mcpRegistry.import",
+  mcpRegistrySignIn: "ade.mcpRegistry.signIn",
+  mcpRegistryCancelSignIn: "ade.mcpRegistry.cancelSignIn",
+  mcpRegistrySignOut: "ade.mcpRegistry.signOut",
   prsCreateFromLane: "ade.prs.createFromLane",
   prsLinkToLane: "ade.prs.linkToLane",
   prsPreflightCreateLaneFromPrBranch: "ade.prs.preflightCreateLaneFromPrBranch",
@@ -1082,6 +1192,7 @@ export const IPC = {
   projectConfigDiffAgainstDisk: "ade.projectConfig.diffAgainstDisk",
   getAggregatedUsage: "ade.usage.getAggregated",
   usageGetAdeStats: "ade.usage.getAdeStats",
+  usageGetGithubContributions: "ade.usage.getGithubContributions",
   usageGetSnapshot: "ade.usage.getSnapshot",
   usageRefresh: "ade.usage.refresh",
   usageRefreshHistory: "ade.usage.refreshHistory",
@@ -1117,6 +1228,11 @@ export const IPC = {
   ctoGetLinearIssuePickerData: "ade.cto.getLinearIssuePickerData",
   ctoSearchLinearIssues: "ade.cto.searchLinearIssues",
   ctoGetLinearIssueComments: "ade.cto.getLinearIssueComments",
+  ctoCreateLinearIssueComment: "ade.cto.createLinearIssueComment",
+  ctoCreateLinearIssue: "ade.cto.createLinearIssue",
+  ctoGetLinearIssueCreateOptions: "ade.cto.getLinearIssueCreateOptions",
+  ctoListLinearProjectMilestones: "ade.cto.listLinearProjectMilestones",
+  ctoUploadLinearFile: "ade.cto.uploadLinearFile",
   ctoGetLinearIssue: "ade.cto.getLinearIssue",
   ctoUpdateLinearIssue: "ade.cto.updateLinearIssue",
   ctoCountLinearIssues: "ade.cto.countLinearIssues",
@@ -1141,6 +1257,7 @@ export const IPC = {
   updateQuitAndInstall: "ade.update.quitAndInstall",
   updateCancelAutoApply: "ade.update.cancelAutoApply",
   updateDismissInstalledNotice: "ade.update.dismissInstalledNotice",
+  updateRelaunchApp: "ade.update.relaunchApp",
   updateEvent: "ade.update.event",
   transcriptionTranscribe: "ade.transcription.transcribe",
   transcriptionStatus: "ade.transcription.status",

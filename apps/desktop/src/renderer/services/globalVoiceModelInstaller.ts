@@ -1,7 +1,7 @@
 /**
  * App-global voice-model installer (renderer singleton).
  *
- * The ~141 MB whisper speech model is downloaded on demand (not bundled). The
+ * The ~464 MB Parakeet Ultra speech model is downloaded on demand (not bundled). The
  * actual download runs in the MAIN process (transcription.downloadModel), which
  * is single-flight and streams to disk — so it keeps running even if the user
  * navigates away from Settings or unmounts the UI that started it. This module
@@ -20,13 +20,15 @@ export type VoiceModelPhase = "idle" | "downloading" | "installed" | "error";
 
 export interface VoiceModelInstallState {
   phase: VoiceModelPhase;
-  /** Bundled whisper-cli binary present (the half that ships with the app). */
+  /** Bundled transcribe-cli binary present (the half that ships with the app). */
   binaryInstalled: boolean;
   /** Downloaded model present on disk. */
   modelInstalled: boolean;
   receivedBytes: number;
   totalBytes: number | null;
   error: string | null;
+  /** Download finished; main is loading the model once so the first dictation is fast. */
+  warmingUp: boolean;
   /** True once we've probed the main process at least once (else state is unknown). */
   probed: boolean;
 }
@@ -34,7 +36,7 @@ export interface VoiceModelInstallState {
 type Listener = (state: VoiceModelInstallState) => void;
 
 // Best-effort total for the progress bar before the server reports content-length.
-export const VOICE_MODEL_BYTES = 147_964_211;
+export const VOICE_MODEL_BYTES = 486_280_096;
 /** User-facing model size label, derived once so prose can't drift from the byte count. */
 export const VOICE_MODEL_SIZE_LABEL = `${Math.round(VOICE_MODEL_BYTES / 1024 / 1024)} MB`;
 
@@ -49,6 +51,7 @@ class VoiceModelInstaller {
     receivedBytes: 0,
     totalBytes: null,
     error: null,
+    warmingUp: false,
     probed: false,
   };
 
@@ -137,6 +140,7 @@ class VoiceModelInstaller {
     this.set({
       phase: "downloading",
       error: null,
+      warmingUp: false,
       receivedBytes: 0,
       totalBytes: VOICE_MODEL_BYTES,
     });
@@ -149,12 +153,25 @@ class VoiceModelInstaller {
         this.set({
           receivedBytes: progress.receivedBytes,
           totalBytes: progress.totalBytes ?? this.state.totalBytes,
+          warmingUp: progress.stage === "warmup",
         });
       }) ?? null;
 
     this.inFlight = (async () => {
       try {
-        const next = await api.downloadModel();
+        let next: Awaited<ReturnType<typeof api.downloadModel>>;
+        for (;;) {
+          try {
+            next = await api.downloadModel();
+            break;
+          } catch (error) {
+            // The call can fail while the main process is still downloading
+            // (an IPC timeout, for one). Main is single-flight, so calling
+            // again joins that same download instead of starting over.
+            const status = await api.status?.().catch(() => null);
+            if (!status?.downloading) throw error;
+          }
+        }
         // Main resolves the model on every call, and every mic subscribes here,
         // so this push enables voice input live — no restart.
         this.set({
@@ -170,6 +187,7 @@ class VoiceModelInstaller {
           error: error instanceof Error && error.message ? error.message : DEFAULT_DOWNLOAD_ERROR,
         });
       } finally {
+        this.set({ warmingUp: false });
         this.progressUnsub?.();
         this.progressUnsub = null;
         this.inFlight = null;

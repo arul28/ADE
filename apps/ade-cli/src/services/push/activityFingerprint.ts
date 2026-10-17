@@ -33,6 +33,11 @@ export function activityContentFingerprint(item: AttentionItem): string {
     // below: planning↔working flips several times a turn and must never read as
     // a new phase entry worth notifying about.
     chatActivityMode: item.chatActivityMode ?? null,
+    // The column is what every Activity surface groups by, so moving between
+    // columns (Working → Waiting while CI runs) is a visible change. It is not
+    // an alert: only a phase entry notifies.
+    boardColumn: item.boardColumn ?? null,
+    waitingReason: item.waitingReason ?? null,
     activityTier: item.activityTier ?? null,
     laneId: item.laneId ?? null,
     laneName: item.laneName ?? null,

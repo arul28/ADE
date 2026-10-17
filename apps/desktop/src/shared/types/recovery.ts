@@ -6,6 +6,10 @@ export const ADE_RECOVERY_ERROR_CODES = [
   "migration_unknown_state",
   /** The data files exist but the filesystem refuses to read them. */
   "storage_read_failed",
+  /** ADE opened this project's data before, and its .ade folder or database is gone. */
+  "project_data_missing",
+  /** The open database was moved or replaced while ADE was using it. */
+  "db_path_changed",
   "brain_not_installed",
   "brain_crash_looping",
   /** macOS loaded the launch agent but "Allow in the Background" is off for ADE. */
@@ -55,6 +59,18 @@ export type ProjectRecoveryDiagnosis = {
      * the fix is to move the folder.
      */
     | "storage_unreadable"
+    /**
+     * The project's .ade folder or its database was moved or deleted. Nothing
+     * is repaired automatically: the person puts it back, or starts fresh.
+     */
+    | "data_missing"
+    /**
+     * A different database appeared where the open one was, while the project
+     * was open. ADE does not switch to it mid-session; the person chooses to.
+     * (A database swapped while ADE was closed, such as a restored backup, is
+     * simply opened.)
+     */
+    | "data_replaced"
     | "brain_crash_looping"
     | "brain_not_installed"
     /**
@@ -82,8 +98,35 @@ export type ProjectRecoveryDiagnosis = {
   requiresFreeSpaceBytes?: number;
   freeBytes?: number;
   lastFailure?: AdeLastFailureReport;
+  /** `data_missing` only: ADE found this project's data in the Trash and can put it back. */
+  restoreAvailable?: boolean;
+  /**
+   * `data_missing` only: the project folder itself is gone (moved, deleted,
+   * or on a drive that is not plugged in). Nothing can be restored into it.
+   */
+  projectFolderMissing?: boolean;
   technicalDetail: string;
 };
+
+export type ProjectDataRestoreResult = { restored: true } | { restored: false; reason: string };
+
+/**
+ * `data_missing` when the project folder itself is gone (moved, deleted, or on
+ * a drive that is not plugged in): nothing can be restored into it, so the
+ * screen only says how to bring it back.
+ */
+export const PROJECT_FOLDER_MISSING_COPY = {
+  headline: "This project's folder isn't there",
+  body: "If it's on a drive, plug it in. If you moved it, move it back. Your files aren't touched.",
+  /** Why Restore, Start fresh and Repair refuse. */
+  refusal: "The project folder itself isn't there. Put it back first.",
+} as const;
+
+/** What happened to a project's ADE data: gone, or swapped for another copy while open. */
+export type ProjectDataProblem = "missing" | "replaced";
+
+/** An open project whose ADE data went missing or was swapped, or one that could not reopen at launch. */
+export type ProjectDataStatus = { projectRoot: string; status: ProjectDataProblem };
 
 export type RepairStepId =
   | "check_space"
@@ -117,9 +160,13 @@ export type RecoveryState = ProjectRecoveryDiagnosis["state"];
 /**
  * What the person reads for each recovery state: the one table both the main
  * process and the recovery screen use, so they can never say different
- * things. Written for someone who has never heard of ADE's internals — no
- * "service", "brain", "socket" or "endpoint". `steps` is what the person does
- * themselves, and only states with a real chore have it.
+ * things. `headline` names the actual cause in plain words; `body` is the one
+ * hint line under it. The one internal part it names is "ADE's background
+ * service" — what Activity Monitor and Task Manager show people anyway —
+ * never "brain", "socket", "endpoint" or "launchd". What Fix it, Restart ADE
+ * and Reset ADE do is said once, by the recovery screen's ladder, not here.
+ * `steps` is what the person does themselves, and only states with a real
+ * chore have it.
  */
 export const RECOVERY_COPY: Record<RecoveryState, {
   headline: string;
@@ -152,7 +199,7 @@ export const RECOVERY_COPY: Record<RecoveryState, {
   },
   db_repair_needed: {
     headline: "This project needs a quick fix",
-    body: "ADE was interrupted while it was saving. Fix it finishes the job. Your files and chats stay where they are.",
+    body: "ADE was interrupted while it was saving. Fix it finishes the job.",
     canAutoRepair: true,
   },
   storage_unreadable: {
@@ -164,34 +211,43 @@ export const RECOVERY_COPY: Record<RecoveryState, {
       "Then choose Try again.",
     ],
   },
+  data_missing: {
+    headline: "This project's ADE data is missing",
+    body: "Your code is safe. Only ADE's lanes and chat history for it are gone.",
+    canAutoRepair: false,
+  },
+  data_replaced: {
+    headline: "This project's ADE data changed",
+    body: "Your code is safe. A different copy of ADE's data appeared while the project was open.",
+    canAutoRepair: false,
+  },
   brain_not_installed: {
-    headline: "ADE isn't fully set up",
-    body: "A part of ADE that runs in the background is missing. Fix it sets it up again.",
+    headline: "ADE's background service is missing",
+    body: "Nothing in ADE can run until it's set up again. Your work is safe.",
     canAutoRepair: true,
   },
   brain_crash_looping: {
-    headline: "ADE keeps stopping",
-    body: "A part of ADE that runs in the background keeps stopping. Fix it starts it again.",
+    headline: "ADE's background service keeps stopping",
+    body: "It stopped several times in a row. Your work is safe.",
     canAutoRepair: true,
   },
   brain_not_running: {
-    headline: "ADE didn't start",
-    body: "A part of ADE that runs in the background is set up, but it didn't start. Fix it starts it.",
+    headline: "ADE's background service didn't start",
+    body: "It's set up, but it isn't running. Your work is safe.",
     canAutoRepair: true,
   },
   background_blocked: {
-    headline: "Your Mac is blocking ADE",
-    body: "ADE needs permission to run in the background, and that permission is turned off in System Settings.",
+    headline: "macOS isn't letting ADE's background service run",
+    body: "ADE is switched off under \"Allow in the Background\" in System Settings.",
     canAutoRepair: false,
     steps: [
       "Choose Open System Settings.",
       "Under \"Allow in the Background\", turn on ADE. On some Macs it shows under the name of ADE's developer instead.",
-      "Come back here. ADE continues by itself.",
     ],
   },
   socket_stale_no_owner: {
     headline: "ADE didn't close properly last time",
-    body: "Fix it cleans up and starts ADE again.",
+    body: "Something left over from the last run is in the way. Your work is safe.",
     canAutoRepair: true,
   },
   socket_owned_by_other: {
@@ -210,7 +266,7 @@ export const RECOVERY_COPY: Record<RecoveryState, {
   },
   unknown_failure: {
     headline: "ADE couldn't open this project",
-    body: "Fix it restarts ADE and checks this project. Your files and chats stay where they are.",
+    body: "Your files and chats stay where they are.",
     canAutoRepair: true,
   },
 };
@@ -282,6 +338,8 @@ export function stateForCode(code: AdeRecoveryErrorCode): ProjectRecoveryDiagnos
     case "migration_incomplete":
     case "migration_unknown_state": return "db_repair_needed";
     case "storage_read_failed": return "storage_unreadable";
+    case "project_data_missing": return "data_missing";
+    case "db_path_changed": return "data_replaced";
     case "brain_crash_looping": return "brain_crash_looping";
     case "brain_not_installed": return "brain_not_installed";
     case "background_item_blocked": return "background_blocked";

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent, type PointerEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent, type PointerEvent, type ReactNode } from "react";
 import {
   Check,
   WarningCircle,
@@ -56,6 +56,7 @@ import {
   urlLockKind,
 } from "../../lib/browserUrl";
 import { claimAppMenuCommands } from "../../lib/appMenuCommands";
+import { findTargetIsElsewhere } from "../../lib/findScope";
 import { isTypingTarget } from "../../lib/typingTarget";
 import { claimAppZoomCommands } from "../../lib/appZoomCommands";
 import {
@@ -67,7 +68,7 @@ import {
 } from "../../lib/openExternal";
 import { takeHeldBrowserLinkOpens } from "../../lib/pendingBrowserLinkOpens";
 import { useLaneDevServers } from "../../lib/laneDevServers";
-import { pinKey } from "../../state/projectMachines";
+import { pinKey } from "../../state/pinKey";
 import { isAddressedToThisDesktop } from "../../lib/desktopClient";
 import { showToast } from "../app/toast/toastStore";
 import { useChatMachineLanes, useChatRuntimeScope, useChatRuntimeScopeForPin } from "./ChatRuntimeScope";
@@ -85,6 +86,7 @@ import {
 } from "../../../shared/remoteLoopbackUrl";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import type { BuiltInBrowserRemoteRequest } from "../../../shared/types/builtInBrowserRemote";
+import type { BrowserTabMentionTarget } from "../../../shared/browserTabMention";
 import { useAppStore, type WorkProjectViewState } from "../../state/appStore";
 import {
   commitTunnelApproval,
@@ -144,6 +146,7 @@ import {
   pointerToCapturePoint,
 } from "./browser/browserCapture";
 import { isInParkedSurface } from "../../lib/parkedSurface";
+import { useAgentChatApi } from "./agentChatApi";
 
 /**
  * The preload's declared browser namespace, with presence relaxed.
@@ -198,11 +201,15 @@ type PendingTunnelApproval = {
 
 type ChatBuiltInBrowserPanelProps = {
   sessionId: string | null;
+  /** Page hosts already supply their outer frame. */
+  flush?: boolean;
   /** Override project tab routing. `null` selects the personal-chat tab collection. */
   projectRootOverride?: string | null;
   onAddContext?: (item: BuiltInBrowserContextItem) => void;
   onAddAttachment?: (attachment: AgentChatFileRef) => void;
   onInsertDraft?: (text: string) => void;
+  /** "Attach to chat" on a tab. Absent where there is no chat to attach to. */
+  onAttachTab?: (tab: BrowserTabMentionTarget) => void;
   runtimePin?: OpenProjectBinding | null;
   /**
    * Lane whose tabs lead the strip, and the group a tab opened from this pane
@@ -210,6 +217,15 @@ type ChatBuiltInBrowserPanelProps = {
    * prop: the pane is not inside the chat's runtime scope.
    */
   groupLaneId?: string | null;
+  /**
+   * The host's own controls at the toolbar's far right, in place of the Work
+   * pane's preview toggle and maximize. Those two only mean something inside
+   * the Work tools pane; a host that is a page of its own (the Browser tab)
+   * draws what it needs here instead.
+   */
+  toolbarEnd?: ReactNode;
+  /** How many toolbar controls `toolbarEnd` is as wide as, so the omnibox is priced around it. */
+  toolbarEndControlCount?: number;
 };
 
 type MessageTone = "info" | "error";
@@ -288,6 +304,18 @@ function panelOwnsAppCommands(panel: HTMLElement | null, hasTab: boolean): boole
 }
 
 /**
+ * ⌘F only: "focus is nowhere" also follows a click on plain text elsewhere (a
+ * chat reply, a diff line). While this window still has focus — so the page,
+ * a separate WebContents, is not what the user clicked into — the find scope
+ * they are in owns find (`lib/findScope`).
+ */
+function findBelongsElsewhere(panel: HTMLElement | null): boolean {
+  if (!panel || typeof document === "undefined" || !document.hasFocus()) return false;
+  return findTargetIsElsewhere(panel);
+}
+
+
+/**
  * The browser window belongs to ONE computer: it is a view owned by that
  * desktop's main process, positioned over this panel's on-screen bounds. So the
  * pane always drives THIS window's browser, whatever machine the chat is on — a
@@ -304,13 +332,20 @@ function panelOwnsAppCommands(panel: HTMLElement | null, hasTab: boolean): boole
  */
 export function ChatBuiltInBrowserPanel({
   sessionId,
+  flush = false,
   projectRootOverride,
   onAddContext,
   onAddAttachment,
   onInsertDraft,
+  onAttachTab,
   runtimePin = null,
   groupLaneId = null,
+  toolbarEnd,
+  toolbarEndControlCount = 1,
 }: ChatBuiltInBrowserPanelProps) {
+  // Screenshots go to the surrounding chat's attachment store: a personal
+  // chat's own, not the active project's.
+  const agentChatApi = useAgentChatApi();
   // Also rendered from the Work sidebar and the personal-chats page, so the
   // scope is derived from the pin this panel is handed.
   const chatScope = useChatRuntimeScopeForPin(runtimePin, null);
@@ -756,7 +791,7 @@ export function ChatBuiltInBrowserPanel({
     const screenshotDataUrl = item.screenshotDataUrl ?? null;
     if (screenshotDataUrl && !attachmentPath && onAddAttachment) {
       try {
-        const saved = await window.ade.agentChat.saveTempAttachment({
+        const saved = await agentChatApi.saveTempAttachment({
           data: stripDataUrlPrefix(screenshotDataUrl),
           filename: item.kind === "built_in_browser_capture" ? "built-in-browser-capture.png" : "built-in-browser-selection.png",
         }, ...(runtimePin ? [runtimePin] as const : []));
@@ -795,7 +830,7 @@ export function ChatBuiltInBrowserPanel({
     }
     setMessage({ tone: "info", text: messageText });
     return contextItem;
-  }, [onAddAttachment, onAddContext, runtimePin, sessionId]);
+  }, [agentChatApi, onAddAttachment, onAddContext, runtimePin, sessionId]);
 
   /**
    * Capture the frame the underlay paints, without touching the UI.
@@ -1052,6 +1087,11 @@ export function ChatBuiltInBrowserPanel({
               ...(request.openPanel ? { openPanel: true } : {}),
               ...(request.laneId ? { laneId: request.laneId } : {}),
               ...(request.chatSessionId ? { chatSessionId: request.chatSessionId } : {}),
+              // Which tab, as the agent asked: its named tab, a new one, or
+              // the one this chat already owns. An older daemon sends none.
+              ...(request.tabId ? { tabId: request.tabId } : {}),
+              ...(request.newTab ? { newTab: true } : {}),
+              ...(request.reuseOwnedTab ? { reuseOwnedTab: true } : {}),
             }),
             pin,
           );
@@ -1298,6 +1338,41 @@ export function ChatBuiltInBrowserPanel({
     return true;
   }, [handleCloseTab]);
 
+  /**
+   * "Attach to chat": hand the chat a tab's id, title and URL so its agent can
+   * claim it. The URL is the one the human sees — the remote origin behind a
+   * tunnel — which is what an agent on that machine can make sense of.
+   */
+  const handleAttachTab = useCallback((tabId: string) => {
+    const tab = statusRef.current?.tabs.find((candidate) => candidate.id === tabId);
+    if (!onAttachTab || !tab) return;
+    try {
+      onAttachTab({
+        tabId: tab.id,
+        title: tab.title?.trim() || null,
+        url: tunnelAwareUrl(tab.url ?? "", tabTunnelsRef.current[tab.id] ?? null) || null,
+        // The chat's agent is on the pinned machine; the tab is on this one.
+        ...(remotePinRef.current ? { onUserMachine: true } : {}),
+      });
+    } catch (error) {
+      setMessage({ tone: "error", text: errorMessage(error) });
+      return;
+    }
+    // Attaching is handing the tab over: move its lease to this chat (or drop
+    // it, for a draft), so another chat's lease cannot refuse the claim.
+    void getBrowserApi()?.handTabToChat?.(withBrowserScope({
+      tabId: tab.id,
+      chatSessionId: sessionId ?? null,
+      laneId: contextLaneId ?? null,
+    })).catch((error: unknown) => {
+      setMessage({ tone: "error", text: errorMessage(error) });
+    });
+  }, [contextLaneId, onAttachTab, sessionId, withBrowserScope]);
+  const handleAttachActiveTab = useCallback(() => {
+    const tabId = statusRef.current?.activeTabId ?? null;
+    if (tabId) handleAttachTab(tabId);
+  }, [handleAttachTab]);
+
   const handleHandBack = useCallback((endedBy: "human" | "auto-offer") => {
     void runBusy("hand-back", async () => {
       const api = requireBrowserApi();
@@ -1305,8 +1380,8 @@ export function ChatBuiltInBrowserPanel({
         throw new Error("This ADE build does not support handing the browser back.");
       }
       // Deliberately un-pinned. The handed-off tab is THIS Electron process's
-      // own WebContentsView; the daemon round trip cannot reach it, and the
-      // bridge refuses a user client for having no chat capability. Preload
+      // own WebContentsView, which the daemon round trip cannot reach, and
+      // hand-back is the person's move, not on the bridge at all. Preload
       // routes this one call straight to local IPC.
       await api.endHandoff(withBrowserScope({ endedBy }));
       setHandoffOfferSilencedOrigin(null);
@@ -1424,7 +1499,7 @@ export function ChatBuiltInBrowserPanel({
 
     let attachmentPath: string | null = null;
     if (onAddAttachment) {
-      const saved = await window.ade.agentChat.saveTempAttachment({
+      const saved = await agentChatApi.saveTempAttachment({
         data: stripDataUrlPrefix(crop.dataUrl),
         filename: "built-in-browser-capture.png",
       }, ...(runtimePin ? [runtimePin] as const : []));
@@ -1515,7 +1590,7 @@ export function ChatBuiltInBrowserPanel({
       label: domItem ? "Browser capture + DOM attached." : "Browser capture attached.",
     });
     restoreLiveBrowserView();
-  }, [attachBrowserContextItem, captureBase, onAddAttachment, onAddContext, restoreLiveBrowserView, runtimePin, sessionId, withBrowserScope]);
+  }, [agentChatApi, attachBrowserContextItem, captureBase, onAddAttachment, onAddContext, restoreLiveBrowserView, runtimePin, sessionId, withBrowserScope]);
 
   const handleBrowserCapturePointerDown = useCallback((event: PointerEvent<HTMLDivElement>) => {
     if (!captureImageDataUrl || !captureBase?.width || !captureBase.height) return;
@@ -2152,6 +2227,10 @@ export function ChatBuiltInBrowserPanel({
     return claimAppMenuCommands((command) => {
       if (!panelOwnsAppCommands(panelRef.current, hasTabRef.current)) return false;
       if (command === "find") {
+        // Focus "nowhere" also follows a click on plain text elsewhere (a chat
+        // reply, a diff line). When this window still has focus — so the page
+        // is not what the user clicked into — the text they pressed wins.
+        if (findBelongsElsewhere(panelRef.current)) return false;
         openFind();
         return true;
       }
@@ -2471,14 +2550,15 @@ export function ChatBuiltInBrowserPanel({
   // so Inspect, Attach and "screenshot to chat" are not shown here rather than
   // shown broken.
   const canAttachContext = Boolean(onAddContext);
+  const hostToolbarEnd = toolbarEnd !== undefined;
   const toolbar = useMemo(() => browserToolbarLayout(paneWidth, {
     hasSelection,
     canAttachContext,
     recording: isRecording,
-    // The pane always draws two fixed controls at the far right (preview
-    // toggle + maximize); price them so the omnibox is not clipped by them.
-    extraRightControlCount: 2,
-  }), [canAttachContext, hasSelection, isRecording, paneWidth]);
+    // The pane draws two fixed controls at the far right (preview toggle +
+    // maximize), or the host's own; price them so the omnibox is not clipped.
+    extraRightControlCount: hostToolbarEnd ? toolbarEndControlCount : 2,
+  }), [canAttachContext, hasSelection, hostToolbarEnd, isRecording, paneWidth, toolbarEndControlCount]);
   /**
    * `status != null` matters: before the first status lands the panel knows
    * nothing, and flashing the launchpad there would both blink the surface and
@@ -2526,7 +2606,7 @@ export function ChatBuiltInBrowserPanel({
     urlDisplay,
     urlInput,
   ]);
-  // An agent-owned or recording tab is laid out at a fixed desktop size by
+  // A recording tab is laid out at a fixed desktop size by
   // main (`agentViewport`); it letterboxes exactly like a device preset, so a
   // narrow pane shows the whole page shrunk rather than a page reflowed into a
   // strip. An explicit preset wins.
@@ -2708,7 +2788,7 @@ export function ChatBuiltInBrowserPanel({
           onChange={(event) => setResponsiveWidth(event.target.value)}
           inputMode="numeric"
           aria-label="Responsive width"
-          className="h-6 w-[58px] rounded-[5px] border border-white/[0.08] bg-black/25 px-1.5 text-center font-mono text-[10.5px] text-fg/85 outline-none focus:border-[color-mix(in_srgb,var(--color-accent)_35%,transparent)]"
+          className="h-6 w-[58px] rounded-[5px] border border-fg/[0.08] bg-black/25 px-1.5 text-center font-mono text-[10.5px] text-fg/85 outline-none focus:border-[color-mix(in_srgb,var(--color-accent)_35%,transparent)]"
         />
         <span aria-hidden="true" className="text-[10px] text-muted-fg/60">×</span>
         <input
@@ -2716,7 +2796,7 @@ export function ChatBuiltInBrowserPanel({
           onChange={(event) => setResponsiveHeight(event.target.value)}
           inputMode="numeric"
           aria-label="Responsive height"
-          className="h-6 w-[58px] rounded-[5px] border border-white/[0.08] bg-black/25 px-1.5 text-center font-mono text-[10.5px] text-fg/85 outline-none focus:border-[color-mix(in_srgb,var(--color-accent)_35%,transparent)]"
+          className="h-6 w-[58px] rounded-[5px] border border-fg/[0.08] bg-black/25 px-1.5 text-center font-mono text-[10.5px] text-fg/85 outline-none focus:border-[color-mix(in_srgb,var(--color-accent)_35%,transparent)]"
         />
         <button
           type="button"
@@ -2771,10 +2851,11 @@ export function ChatBuiltInBrowserPanel({
     <div
       ref={panelRef}
       data-testid="browser-panel"
+      data-ade-find-scope="browser"
       onKeyDownCapture={handlePanelKeyDown}
       className="flex h-full min-h-0 min-w-0 flex-col font-sans text-[12px] text-fg/75"
     >
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-md border border-white/[0.08] bg-[var(--color-bg)]">
+      <div className={cn("ade-browser-frame flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--color-bg)]", !flush && "rounded-md border border-fg/[0.08]")}>
         <BrowserTabStrip
           stripRef={tabStripRef}
           tabs={orderedBrowserTabs}
@@ -2791,6 +2872,7 @@ export function ChatBuiltInBrowserPanel({
           onSwitchTab={handleSwitchTab}
           onCloseTab={handleCloseTab}
           onNewTab={handleNewTab}
+          onAttachTab={onAttachTab ? handleAttachTab : undefined}
         />
 
         {pendingApproval ? (
@@ -2843,6 +2925,7 @@ export function ChatBuiltInBrowserPanel({
               onOpenFind={openFind}
               onNewTab={handleNewTab}
               onCloseTab={hasTab ? handleCloseActiveTab : null}
+              onAttachTab={hasTab && onAttachTab ? handleAttachActiveTab : null}
               devToolsOpen={devToolsOpen}
               onToggleDevTools={handleToggleDevTools}
               networkLogging={networkLogging}
@@ -2862,7 +2945,9 @@ export function ChatBuiltInBrowserPanel({
               selectionFrame={selectionFrame}
             />
           )}
-          previewControls={<WorkToolPreviewControls tool="browser" chatSessionId={sessionId} />}
+          previewControls={hostToolbarEnd
+            ? toolbarEnd
+            : <WorkToolPreviewControls tool="browser" chatSessionId={sessionId} />}
         />
 
         <BrowserFindBar
@@ -2890,7 +2975,7 @@ export function ChatBuiltInBrowserPanel({
         {message ? (
           <div
             className={cn(
-              "flex shrink-0 items-start gap-2 border-b border-white/[0.07] px-2.5 py-1.5 text-[11.5px]",
+              "flex shrink-0 items-start gap-2 border-b border-fg/[0.07] px-2.5 py-1.5 text-[11.5px]",
               message.tone === "error" ? "text-rose-200/85" : "text-fg/75",
             )}
             role={message.tone === "error" ? "alert" : "status"}

@@ -1,3 +1,4 @@
+import type { ProviderCompactionSettings } from "../../../shared/compactionSettings";
 /**
  * Versioned, dependency-free IPC contract for the Pi SDK worker.
  *
@@ -51,6 +52,7 @@ export type PiSdkSessionTarget = {
 };
 
 export type PiSdkWorkerInit = PiSdkPackageLocation & {
+  compaction?: ProviderCompactionSettings;
   protocolVersion: typeof PI_SDK_PROTOCOL_VERSION;
   cwd: string;
   /** Passed to Pi as PI_CODING_AGENT_DIR. */

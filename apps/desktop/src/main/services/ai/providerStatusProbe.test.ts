@@ -15,7 +15,7 @@ import {
   type ProviderStatusProbeOptions,
   type SpawnLike,
 } from "./providerStatusProbe";
-import { REMEDIATION_PROVIDERS } from "../../../shared/providerRemediation";
+import { PROVIDER_REMEDIATION, REMEDIATION_PROVIDERS } from "../../../shared/providerRemediation";
 import { CURSOR_WINDOWS_ARM_BLOCKER } from "../../../shared/providerPlatformSupport";
 import type { ShippedProvider } from "../../../shared/providers";
 
@@ -802,7 +802,13 @@ describe("probeProviderStatuses — report shape", () => {
       expect(record.provider).toBe(provider);
       expect(record.source).toBe("probed");
       expect(record.docsUrl).toMatch(/^https:\/\//);
-      expect(record.installCommand).toBeTruthy();
+      // A null install command is a row's deliberate "nothing to install"
+      // (Muse: ADE downloads its own pinned build); every other row has one.
+      if (PROVIDER_REMEDIATION[provider].installCommand === null) {
+        expect(record.installCommand).toBeNull();
+      } else {
+        expect(record.installCommand).toBeTruthy();
+      }
       expect(record.loginCommand).toBeTruthy();
     }
   });

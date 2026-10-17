@@ -63,7 +63,7 @@ export function HistoryLanePicker({
             }}
             className={cn(
               "inline-flex h-7 min-w-0 max-w-[260px] shrink items-center gap-1.5 rounded-[7px] px-2 text-[12.5px] font-medium text-fg/90",
-              "transition-colors duration-100 hover:bg-white/[0.06] data-[state=open]:bg-white/[0.08]",
+              "transition-colors duration-100 hover:bg-fg/[0.06] data-[state=open]:bg-fg/[0.08]",
               WORK_TOOL_CHROME_FOCUS,
             )}
             data-testid="history-lane-picker"
@@ -90,12 +90,12 @@ export function HistoryLanePicker({
           onCloseAutoFocus={(event) => {
             if (lastInput.current === "pointer") event.preventDefault();
           }}
-          className="max-h-[min(70vh,520px)] min-w-[260px] max-w-[380px] overflow-y-auto rounded-[9px] border border-white/[0.08] bg-[var(--color-card)] p-1 shadow-xl"
+          className="max-h-[min(70vh,520px)] min-w-[260px] max-w-[380px] overflow-y-auto rounded-[9px] border border-fg/[0.08] bg-[var(--color-card)] p-1 shadow-xl"
           style={{ zIndex: Z_LAYERS.popover }}
         >
           {groups.map((group, index) => (
             <React.Fragment key={group.key}>
-              {index > 0 ? <DropdownMenu.Separator className="my-1 h-px bg-white/[0.06]" /> : null}
+              {index > 0 ? <DropdownMenu.Separator className="my-1 h-px bg-fg/[0.06]" /> : null}
               {group.machineName ? (
                 <DropdownMenu.Label className="px-2 pb-0.5 pt-1 text-[11px] text-muted-fg" title={group.disabledReason ?? undefined}>
                   {group.machineName}
@@ -116,7 +116,7 @@ export function HistoryLanePicker({
                     onSelect={() => onChange(option.value)}
                     className={cn(
                       "flex cursor-pointer select-none items-center gap-2 rounded-[6px] px-2 py-1.5 outline-none",
-                      "data-[highlighted]:bg-white/[0.07] data-[disabled]:cursor-default data-[disabled]:opacity-40",
+                      "data-[highlighted]:bg-fg/[0.07] data-[disabled]:cursor-default data-[disabled]:opacity-40",
                     )}
                   >
                     <LaneIcon size={13} style={{ color: colorFor(group, option.lane) }} />

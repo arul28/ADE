@@ -6,6 +6,7 @@ import type {
   AgentChatCodexApprovalPolicy,
   AgentChatCodexSandbox,
   AgentChatDroidPermissionMode,
+  AgentChatMusePermissionMode,
   AgentChatOpenCodePermissionMode,
   AgentChatPermissionMode,
 } from "./types.js";
@@ -24,6 +25,7 @@ export type PermissionArgs = {
   codexSandbox?: AgentChatCodexSandbox;
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
   droidPermissionMode?: AgentChatDroidPermissionMode;
+  musePermissionMode?: AgentChatMusePermissionMode;
   permissionPolicy?: ThreadPermissionPolicy;
 };
 
@@ -303,6 +305,11 @@ export function permissionArgs(
       return { permissionMode: "full-auto" };
     case "pi":
       return { permissionMode: "full-auto" };
+    case "muse":
+      return {
+        permissionMode: "full-auto",
+        musePermissionMode: "allowAll",
+      };
   }
 }
 
@@ -313,6 +320,7 @@ export const SUPPORTED_PROVIDERS: readonly AdeProvider[] = [
   "droid",
   "opencode",
   "pi",
+  "muse",
 ];
 
 /**

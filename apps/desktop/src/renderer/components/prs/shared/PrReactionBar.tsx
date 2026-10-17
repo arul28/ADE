@@ -109,7 +109,7 @@ export const PrReactionBar = memo(function PrReactionBar({
             onClick={() => void react(reaction.content)}
             aria-label={label}
             title={mine ? "You reacted" : label}
-            className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] transition-colors hover:bg-white/[0.04]"
+            className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] transition-colors hover:bg-fg/[0.04]"
             style={{
               borderColor: mine ? COLORS.accentBorder : COLORS.border,
               background: mine ? COLORS.accentSubtle : COLORS.recessedBg,
@@ -145,7 +145,7 @@ export const PrReactionBar = memo(function PrReactionBar({
             aria-label="Add reaction"
             aria-haspopup="true"
             aria-expanded={pickerOpen}
-            className="inline-flex h-[22px] w-[22px] items-center justify-center rounded-full border text-[11px] transition-colors hover:bg-white/[0.04]"
+            className="inline-flex h-[22px] w-[22px] items-center justify-center rounded-full border text-[11px] transition-colors hover:bg-fg/[0.04]"
             style={{ borderColor: COLORS.border, color: COLORS.textMuted }}
           >
             +
@@ -169,7 +169,7 @@ export const PrReactionBar = memo(function PrReactionBar({
                   setPickerOpen(false);
                 }}
                 aria-label={`React ${option.content}`}
-                className="inline-flex h-[22px] w-[22px] items-center justify-center rounded-[4px] text-[13px] transition-colors hover:bg-white/[0.08]"
+                className="inline-flex h-[22px] w-[22px] items-center justify-center rounded-[4px] text-[13px] transition-colors hover:bg-fg/[0.08]"
               >
                 {option.label}
               </button>

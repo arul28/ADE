@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { runAdeCliAutoInstall } from "./adeCliAutoInstall";
 import type { GlobalState } from "../state/globalState";
@@ -33,6 +36,7 @@ function harness(args: {
   getStatus?: () => Promise<AdeCliStatus>;
   installForUser?: () => Promise<AdeCliInstallResult>;
   env?: NodeJS.ProcessEnv;
+  repairRequestPath?: string;
 }) {
   let state: GlobalState = args.state ?? {};
   const installForUser = vi.fn(
@@ -54,6 +58,7 @@ function harness(args: {
         writeState: (next) => {
           state = next;
         },
+        repairRequestPath: args.repairRequestPath,
         env: args.env ?? {},
         now: () => new Date("2026-08-19T00:00:00.000Z"),
       }),
@@ -93,6 +98,41 @@ describe("runAdeCliAutoInstall", () => {
     await expect(h.run()).resolves.toBe("already-settled");
     expect(h.getStatus).not.toHaveBeenCalled();
     expect(h.installForUser).not.toHaveBeenCalled();
+  });
+
+  it("rewrites a shim the installer could not restore, even once settled, and clears the request only on success", async () => {
+    // The Windows installer leaves the request when an update could neither
+    // refresh nor restore the shim. The half-written file still resolves as
+    // `ade`, and the machine is already settled; neither may skip the rewrite.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-repair-"));
+    const repairRequestPath = path.join(dir, "cli-shim-repair-request");
+    fs.writeFileSync(repairRequestPath, "shim refresh failed");
+    const settled: GlobalState = {
+      adeCliAutoInstall: { completedAt: "2026-08-01T00:00:00.000Z", outcome: "installed", command: "ade" },
+    };
+    try {
+      const failing = harness({
+        state: settled,
+        repairRequestPath,
+        getStatus: async () => status({ terminalInstalled: true }),
+        installForUser: async () => ({ ok: false, message: "locked", status: status() }),
+      });
+      await expect(failing.run()).resolves.toBe("failed");
+      expect(failing.installForUser).toHaveBeenCalledTimes(1);
+      expect(fs.existsSync(repairRequestPath)).toBe(true);
+
+      const repaired = harness({
+        state: settled,
+        repairRequestPath,
+        getStatus: async () => status({ terminalInstalled: true }),
+      });
+      await expect(repaired.run()).resolves.toBe("installed");
+      expect(repaired.installForUser).toHaveBeenCalledTimes(1);
+      expect(fs.existsSync(repairRequestPath)).toBe(false);
+      expect(repaired.readState().adeCliAutoInstall?.completedAt).toBe("2026-08-19T00:00:00.000Z");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("installs once and records the marker when ade is missing", async () => {

@@ -1,7 +1,7 @@
 # File Watcher and Trust Boundary
 
 Detail reference for the file services — how filesystem access is
-gated, how `chokidar` is shared across subscriptions, and how external
+gated, how one watcher is shared across subscriptions, and how external
 changes propagate to open editor tabs without racing against user
 edits.
 
@@ -97,7 +97,7 @@ has:
 
 ```ts
 type WatchSubscription = {
-  watcher: FSWatcher | null;
+  watcher: ManagedWatcher | null; // a `TreeWatcher` from `watchTree`
   workspaceId: string;
   senderId: number;
   rootPath: string;
@@ -126,11 +126,30 @@ is not closed immediately — instead, an idle timer fires
 idle. This avoids churn when the user briefly toggles views.
 
 `stopAllForSender(senderId)` fires on window close and tears down
-every subscription owned by that sender.
+every subscription owned by that sender. That hook exists only when the
+file service runs in the desktop's own process. When it runs in the brain,
+a page that vanishes is covered by the watch ledger
+(`fileWatchLedger.ts`): the runtime bridge replays the stops the page did
+not send when it reloads, crashes or is destroyed, and the brain's
+connection handler does the same when a connection closes. Both call the
+ordinary `stopWatching`, once per outstanding reference, so another
+client's references on the same workspace are not touched.
+
+A connection can also close while its page stays open (a dropped link to
+a remote machine). The brain releases the watches of that connection, but
+the page still holds them and its Files view stays mounted. The bridge
+marks the ledger entry when the event stream of the page ends
+(`notePageRuntimeDisconnected`) and opens every held watch again when the
+page subscribes to events on the new connection
+(`restorePageFileWatches`).
+
+The watcher itself comes from `watchTree`
+(`services/shared/treeWatcher.ts`): chokidar off macOS, one recursive
+native watch per root on macOS. See "File watching" in the README.
 
 `stopAllForWorkspace(workspaceId)` is the lane-teardown entry point.
 The lane delete pipeline calls it during the `stop_watchers` step
-(see [`features/lanes/README.md`](../lanes/README.md)) so chokidar
+(see [`features/lanes/README.md`](../lanes/README.md)) so the watcher
 releases its file handles on the worktree before
 `git worktree remove` runs. The companion `countActiveForWorkspace`
 returns the live watcher count for the same workspace and feeds the
@@ -311,8 +330,9 @@ is unchanged: the pin is a preload-level routing argument, not a new channel.
 | `ade.files.createDirectory` | recursive mkdir |
 | `ade.files.rename` | enforces both paths in root |
 | `ade.files.delete` | recursive rm, rejects root itself |
-| `ade.files.watchChanges` | increments watcher ref count, sends events via `ade.files.change` |
+| `ade.files.watchChanges` | increments watcher ref count, sends events via `ade.files.change`; takes an optional trailing `OpenProjectBinding` pin so a pinned workspace watches (and hears changes from) the lane's own machine |
 | `ade.files.stopWatching` | decrements ref count |
+| `ade.files.onChange` | the `ade.files.change` subscription; takes an optional trailing pin, subscribing to the lane's machine's `file_change` feed while still forwarding this process's local `external-local:*` events |
 | `ade.files.quickOpen` | scores the workspace's file-name index |
 | `ade.files.searchText` | `git grep` in a git work tree, else a streaming JS scan over the name index |
 
@@ -327,12 +347,18 @@ their caches.
   (`ignoreCache`, `ignoredPrefixCache`) keyed by `rootPath::relPath`.
   It is invalidated by `clearIgnoreCacheForRoot` when the watcher
   reports a change that might affect gitignore rules.
+- **Search index listing.** In a git work tree the quick-open index is
+  built from one `git ls-files -z --cached --others --exclude-standard`
+  instead of a directory walk with per-directory ignore checks. Nested
+  repositories (listed as `dir/`) are walked; `--cached` entries missing
+  from disk are skipped. A `.gitmodules` file, a failed command or
+  truncated output falls back to the walk. `includeIgnored` always walks.
 - **Git status cache TTL.** Tree listings reuse the porcelain status
   for 5 seconds (`GIT_STATUS_CACHE_TTL_MS`). If you need a fresh
   status immediately after a git op, call `invalidateGitStatusCache`.
 - **Watcher restart on mode change.** Adding a subscription with a
   different `includeIgnored` value than the current effective mode
-  tears down the chokidar instance. Rapid toggling will churn — the
+  tears down the watcher. Rapid toggling will churn — the
   renderer throttles toggle frequency.
 - **Large repositories.** The initial `git check-ignore` batch is
   bounded by a `7_000 ms` timeout; timeouts fall back to "not

@@ -2,6 +2,8 @@
 // ("claude" -> "Claude", "codex" -> "Codex", ...). Shared by the desktop chat
 // card, the iOS companion, and the `ade code` TUI so the question/plan header
 // reads the same on every surface.
+import { PROVIDER_DISPLAY_NAME } from "./providers";
+
 const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   claude: "Claude",
   anthropic: "Claude",
@@ -12,6 +14,7 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   factory: "Droid",
   opencode: "OpenCode",
   pi: "Pi",
+  muse: PROVIDER_DISPLAY_NAME.muse,
   qwen: "Qwen",
   kimi: "Kimi",
   moonshot: "Kimi",
@@ -46,6 +49,7 @@ const CHAT_PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   droid: "Droid",
   opencode: "OpenCode",
   pi: "Pi",
+  muse: PROVIDER_DISPLAY_NAME.muse,
   qwen: "Qwen",
   kimi: "Kimi",
   grok: "Grok",

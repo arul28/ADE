@@ -1,5 +1,9 @@
 import { stripParentClaudeSessionEnv } from "../shared/parentAgentEnv";
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, powerSaveBlocker, protocol, safeStorage, type WebContents } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerSaveBlocker, protocol, safeStorage, type WebContents } from "electron";
+import { initMainSentry, isMainSentryStarted } from "./sentry/initMain";
+import { SENTRY_ENABLED_ARGV } from "../shared/sentry/config";
+import { flushSentry } from "../shared/sentry/capture";
+import { setSentryUserResolver } from "../shared/sentry/eventFilter";
 
 if (app.isPackaged && process.env.ADE_RUNTIME_PACKAGED === undefined) {
   process.env.ADE_RUNTIME_PACKAGED = "1";
@@ -43,6 +47,7 @@ type NodePtyType = typeof NodePty;
 import { isAdeRuntimeNamedPipePath } from "../shared/adeRuntimeIpc";
 import {
   PACKAGE_CHANNEL_ARGV_PREFIX,
+  appPackageChannelDisplayName,
   normalizeAppPackageChannel,
 } from "../shared/packageChannel";
 import {
@@ -65,6 +70,9 @@ import {
   selectWindowForProjectNavigation,
 } from "./services/deeplinks/projectNavigationWindowSelection";
 import { registerIpc } from "./services/ipc/registerIpc";
+import { connectBrowserToNowPlaying, registerHomeWidgetsIpc } from "./services/home/registerHomeWidgetsIpc";
+import { registerMusicIpc } from "./services/music/registerMusicIpc";
+import { createMusicTokenStore } from "./services/music/musicTokenStore";
 import { AttemptedProjectRoots } from "./services/ipc/knownProjectRoots";
 import { createFileLogger } from "./services/logging/logger";
 import {
@@ -84,12 +92,13 @@ import {
   captureMacDesktopAnalytics,
   captureAppControlAnalytics,
   captureChatHandoffReplayAnalytics,
+  captureChatCompactionAnalytics,
   captureChatMentionsExpandedAnalytics,
   captureClaudeHooksIgnoredAnalytics,
   captureClaudePluginsIgnoredAnalytics,
   captureSessionMetadataRegeneratedAnalytics,
 } from "./services/analytics/agentTurnProductAnalytics";
-import { captureChatAccountSwitchedAnalytics, capturePendingInputDismissedAnalytics, captureSessionImportAnalytics } from "./services/analytics/featureProductAnalytics";
+import { captureChatAccountSwitchedAnalytics, captureFeatureUsedAnalytics, capturePendingInputDismissedAnalytics, captureSessionImportAnalytics } from "./services/analytics/featureProductAnalytics";
 import { initPerfRunFromEnv } from "./services/perf/perfLog";
 import { startMetricsSampler } from "./services/perf/metricsSampler";
 import { registerPerfIpcHandlers } from "./services/perf/perfIpc";
@@ -114,11 +123,6 @@ import { createLaneService, type LaneDeleteTeardownDeps } from "./services/lanes
 import { createLaneEnvironmentService } from "./services/lanes/laneEnvironmentService";
 import { createLaneTemplateService } from "./services/lanes/laneTemplateService";
 import { createLaneWorktreeLockService } from "./services/lanes/laneWorktreeLockService";
-import {
-  createDefaultBranchAutoPullService,
-  detectInProgressGitOperation,
-} from "./services/lanes/defaultBranchAutoPull";
-import { parseWorktreeStatusPorcelainV2 } from "./services/lanes/laneBranchDrift";
 import { createPortAllocationService } from "./services/lanes/portAllocationService";
 import { createLaneProxyService } from "./services/lanes/laneProxyService";
 import { createProxyService, type ProxyService } from "../../../ade-cli/src/services/proxy/proxyService";
@@ -133,7 +137,7 @@ import {
   createSessionService,
   STALE_RUNNING_SESSION_RESCAN_DELAY_MS,
 } from "./services/sessions/sessionService";
-import type { SettleResidueItem, SettleTeardownContext, SettleTeardownOutcome } from "./services/sessions/sessionSettleTeardown";
+import type { SettleResidueItem, SettleTeardownContext, SettleTeardownOutcome, SubagentLink } from "./services/sessions/sessionSettleTeardown";
 import { createSettleTeardownWiring } from "./services/sessions/settleTeardownWiring";
 import { createSessionDeltaService } from "./services/sessions/sessionDeltaService";
 import { createPtyService } from "./services/pty/ptyService";
@@ -173,7 +177,7 @@ import {
   runGit,
   trustGitSafeDirectory,
 } from "./services/git/git";
-import { codedError, GIT_UNTRUSTED_FOLDER_CODE } from "../shared/codedError";
+import { codedError, GIT_UNTRUSTED_FOLDER_CODE, isCodedError } from "../shared/codedError";
 import { createJobEngine } from "./services/jobs/jobEngine";
 import { createTranscriptionService } from "./services/transcription/transcriptionService";
 import { installEditableContextMenu } from "./editorContextMenu";
@@ -199,11 +203,6 @@ import {
 import { createPrSummaryService } from "./services/prs/prSummaryService";
 import { openExternalUrl } from "./services/shared/externalLinks";
 import {
-  AttentionNotchHelper,
-  type AttentionNotchOutput,
-} from "./services/attention/attentionNotchHelper";
-import { resolveAttentionNotchExecutablePath } from "./services/native/nativeHelperPaths";
-import {
   CaptureHelper,
   resolveCaptureHelperExecutablePath,
 } from "./services/capture/captureHelper";
@@ -220,15 +219,11 @@ import {
 } from "./services/analytics/captureGestureProductAnalytics";
 
 import {
-  attentionNotchAppNavigation,
   attentionItemNavigationRequest,
-  createAttentionNotchToastDeduper,
   remoteBindingMatchesProject,
-  resolveAttentionNotchOutput,
-  type AttentionNotchResolvedOutput,
-} from "./services/attention/attentionNotchRouter";
-import { pathsEqual } from "./services/shared/pathCompare";
-import { deriveProjectId } from "../../../ade-cli/src/services/projects/projectRegistry";
+} from "./services/attention/attentionItemRouting";
+import { pathKey, pathsEqual } from "./services/shared/pathCompare";
+import { assertLocalProjectDataAvailable, deriveProjectId, ProjectRegistry, recordLocalProjectDatabaseIdentity } from "../../../ade-cli/src/services/projects/projectRegistry";
 import { buildRosterSnapshot } from "../../../ade-cli/src/services/sync/rosterBuilder";
 import {
   detectDefaultBaseRef,
@@ -249,6 +244,7 @@ import { selectUpdateWorkspaceRestore } from "./services/updates/updateWorkspace
 import { createAdeProjectService } from "./services/projects/adeProjectService";
 import { createConfigReloadService } from "./services/projects/configReloadService";
 import { IPC } from "../shared/ipc";
+import { readRuntimeActionRequest } from "./services/ipc/ipcTimeouts";
 import { remoteProjectBindingKey } from "../shared/projectIdentity";
 import { resolveAdeLayout } from "../shared/adeLayout";
 import { mobileProjectRepositoryIdentityFromGitOrigin } from "../shared/syncMobileProjectIdentity";
@@ -258,9 +254,6 @@ import type {
   AppNavigationRequest,
   AgentChatInterruptedChatRef,
   AttentionItem,
-  AttentionNotchAcknowledgeRequest,
-  AttentionNotchSettings,
-  AttentionSnapshot,
   AppMenuCommand,
   AppZoomCommand,
   CloneProjectInput,
@@ -281,6 +274,7 @@ import type {
   SyncProjectConnectionPayload,
   SyncProjectSwitchRequestPayload,
   SyncProjectSwitchResultPayload,
+  RecentlyInstalledUpdate,
   UpdateInstallImpact,
   UpdateInterruptedChat,
 } from "../shared/types";
@@ -298,7 +292,7 @@ import {
   type JsonRpcServerErrorContext,
   type JsonRpcTransport,
 } from "../../../ade-cli/src/jsonrpc";
-import { resolveMachineAdeLayout } from "../../../ade-cli/src/services/projects/machineLayout";
+import { resolveMachineAdeDir, resolveMachineAdeLayout } from "../../../ade-cli/src/services/projects/machineLayout";
 import { takeMachineResetReceipt } from "./services/runtime/machineResetLauncher";
 import { localIpcListenOptions } from "../../../ade-cli/src/services/runtime/localIpcListenOptions";
 import { normalizeProjectRootPath } from "../../../ade-cli/src/services/projects/projectRoots";
@@ -312,9 +306,15 @@ import { createPushRegistrationStore } from "../../../ade-cli/src/services/push/
 import { resolvePushRelayStateFile } from "../../../ade-cli/src/services/push/pushPublisherService";
 import {
   getSharedAccountAuthService,
+  getSharedAccountDirectoryBaseUrl,
   registerAccountConfigProjectRoot,
 } from "../../../ade-cli/src/services/account/sharedAccountAuthService";
 import { installRuntimeService, uninstallRuntimeService } from "../../../ade-cli/src/serviceManager";
+import {
+  deferToRunningWindowsInstall,
+  startWindowsInstallProgress,
+  takeWindowsInstallProgressReport,
+} from "./services/updates/windowsInstallProgress";
 import {
   ElectronSafeStorageCredentialStore,
   EncryptedFileCredentialStore,
@@ -351,6 +351,7 @@ import {
   createAutomationAdeActionLookup,
   flushStagedBoardMoves,
   getAdeActionDomainServices,
+  requestSessionAttentionForRuntime,
 } from "./services/adeActions/registry";
 import {
   createUsageTrackingService,
@@ -358,6 +359,7 @@ import {
   type AccountRollupFetcher,
 } from "./services/usage/usageTrackingService";
 import { bootedUsageScopeRoot } from "./services/usage/bootedUsageScope";
+import { createMuseQuotaStore } from "./services/usage/museLiveQuota";
 import { createBudgetCapService } from "./services/usage/budgetCapService";
 import {
   markMachineStateMigrationComplete,
@@ -374,6 +376,10 @@ import { createCtoStateService } from "./services/cto/ctoStateService";
 import { createCtoMemoryService } from "./services/cto/ctoMemoryService";
 import { createLinearCredentialService } from "./services/cto/linearCredentialService";
 import { createAccountVaultBridge } from "./services/account/accountVaultBridge";
+import { createMcpRegistryAuthTokenResolver } from "./services/mcp/mcpRegistryService";
+import { MCP_SECRET_VAULT_KIND } from "../shared/mcpRegistry";
+import { getOrCreateLocalAccountMachineIdentity } from "./services/account/localMachineIdentity";
+import { stampCustomNotificationLinkOwner } from "../shared/customNotificationLink";
 import {
   buildRendererCspPolicy,
   isRendererFrameNavigationAllowed,
@@ -386,6 +392,7 @@ import {
   createRendererCrashRecoveryBudget,
   isRecoverableRenderProcessGone,
 } from "./rendererCrashRecovery";
+import { isWindowLoadTargetGone } from "./windowLoadTarget";
 import { createLinearClient } from "./services/cto/linearClient";
 import { createLinearIssueTracker, type LinearIssueTracker } from "./services/cto/linearIssueTracker";
 import { createLinearLiveStatusService, type LinearLiveStatusService } from "./services/cto/linearLiveStatusService";
@@ -398,7 +405,7 @@ import {
   type RemoteArtifactRangeReader,
 } from "./services/computerUse/artifactStreamProtocol";
 import { createArtifactMediaServer } from "./services/computerUse/artifactMediaServer";
-import { sceneDocumentStore } from "./services/scenes/sceneDocumentStore";
+import { respondToSceneProtocolRequest } from "./services/scenes/sceneDocumentStore";
 import { createIosSimulatorService } from "./services/ios/iosSimulatorService";
 import { createMacDesktopService } from "./services/macDesktop/macDesktopService";
 import { createMacDesktopLogger } from "./services/macDesktop/macDesktopLogger";
@@ -417,11 +424,13 @@ import { createBuiltInBrowserService } from "./services/builtInBrowser/builtInBr
 import { createBuiltInBrowserHandoffSessionListener } from "./services/builtInBrowser/builtInBrowserHandoffSession";
 import { BUILT_IN_BROWSER_PARTITION } from "./services/builtInBrowser/builtInBrowserConstants";
 import { startBuiltInBrowserDesktopBridgeServer } from "./services/builtInBrowser/desktopBridgeServer";
+import { renderScenePreview } from "./services/scenes/scenePreviewRenderer";
 import { configureBuiltInBrowserWebAuthn } from "./services/builtInBrowser/builtInBrowserWebAuthn";
 import { LocalRuntimeConnectionPool } from "./services/localRuntime/localRuntimeConnectionPool";
 import { createSyncService } from "./services/sync/syncService";
 import { blockPackagedLaunchForCrossChannelSyncConflict } from "./services/sync/packagedSyncHostLaunchGate";
-import { createAutoUpdateService } from "./services/updates/autoUpdateService";
+import { createAutoUpdateService, shouldShowInstalledNotice } from "./services/updates/autoUpdateService";
+import { createRemoteUpdateInstaller, type RemoteUpdateInstaller } from "./services/updates/remoteUpdateInstall";
 import { createKeepAwakeService } from "./services/power/keepAwakeService";
 import { getPowerStateService } from "./services/power/powerStateService";
 import { createMachinePowerBrainBridge } from "./services/power/machinePowerBrainBridge";
@@ -430,7 +439,17 @@ import {
   checkRuntimeIdentity,
   runVerifiedRuntimeRestart,
 } from "./services/updates/runtimeRestartVerification";
-import { createProjectRecoveryService } from "./services/runtime/projectRecoveryService";
+import { createProjectRecoveryService, restartBrainForRepair } from "./services/runtime/projectRecoveryService";
+import {
+  classifyProjectActivity,
+  createProjectMoveController,
+  remapGlobalStateForMove,
+  replaceMovedRoots,
+} from "./services/projects/projectMoveController";
+import { createQuitPrompt } from "./services/runtime/quitPrompt";
+import { createUpdateImpactProbe, settledWithin } from "./services/runtime/updateImpactProbe";
+import { registerBackgroundServiceControls } from "./services/runtime/backgroundServiceControls";
+import { createOpenProjectDataWatch } from "./services/runtime/openProjectDataWatch";
 import { createAutoDiagnosticsService } from "./services/diagnostics/autoDiagnosticsService";
 import { resolveAutoDiagnosticsStateFile } from "./services/diagnostics/autoDiagnosticsStore";
 import { collectDiagnosticReport } from "./services/diagnostics/diagnosticReportService";
@@ -439,6 +458,7 @@ import { DEFAULT_RELEASE_REPOSITORY } from "./services/updates/autoUpdateVersion
 import { cleanupStaleTempArtifacts } from "./services/runtime/tempCleanupService";
 import type { Logger } from "./services/logging/logger";
 import { resolveDesktopUserDataPath, resolveElectronAppDataPath } from "./desktopUserDataPath";
+import { createWebhookRemoteSource } from "./services/automations/webhookAutomationFactory";
 
 /** One warm-runtime budget for every project context in this process. */
 const chatRuntimeBudget = createChatRuntimeBudget();
@@ -448,6 +468,8 @@ const APP_CONTROL_WINDOWS_FRAME_DEMAND_SOURCE = "desktop-windows";
 
 
 const AUTO_UPDATER_CACHE_DIR_NAME = "ade-desktop-updater";
+/** Appended to the user agent of the app window when it loads from the Vite dev server. */
+const DEV_APP_WINDOW_USER_AGENT_MARK = "ADEDevShell";
 
 type AdePackageChannel = "alpha" | "beta";
 
@@ -516,6 +538,20 @@ function applyPackagedChannelDefaults(): void {
 }
 
 applyPackagedChannelDefaults();
+
+// Opened by hand while a Windows update installs: this is the old copy, and the
+// installer would kill it a few seconds into startup. The update window comes
+// forward instead, before ADE starts anything of its own.
+if (
+  process.platform === "win32"
+  && app.isPackaged
+  && deferToRunningWindowsInstall({
+    channel: normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL),
+    appVersion: app.getVersion(),
+  })
+) {
+  process.exit(0);
+}
 const packagedReleaseRepository = readBundledAdeReleaseRepository();
 
 function configureDesktopUserDataPath(): void {
@@ -542,6 +578,18 @@ function configureDesktopUserDataPath(): void {
 }
 
 configureDesktopUserDataPath();
+// Error tracking starts here: the earliest point where its crash dumps and
+// offline queue have a userData directory to live in.
+initMainSentry({
+  // The runtime action channels (this machine's brain and a paired machine's)
+  // carry every action; name the action.
+  ipcLabel: (channel, args) => {
+    if (channel !== IPC.localRuntimeCallAction && channel !== IPC.remoteRuntimeCallAction) return channel;
+    const request = readRuntimeActionRequest(args);
+    if (!request) return channel;
+    return request.action ? `${request.domain}.${request.action}` : request.domain;
+  },
+});
 
 function resolveAutoUpdaterCacheDir(): string {
   const homeDir = os.homedir();
@@ -617,6 +665,7 @@ function installAdeCliForTerminalInBackground(
       logger,
       readState: () => readGlobalState(globalStatePath),
       writeState: (state) => writeGlobalState(globalStatePath, state),
+      repairRequestPath: path.join(resolveMachineAdeLayout().runtimeDir, "cli-shim-repair-request"),
     }).catch((error) => {
       logger.warn("ade_cli.auto_install_failed", {
         error: error instanceof Error ? error.message : String(error),
@@ -642,7 +691,6 @@ const defaultEnabledBackgroundTaskFlags = new Set<string>([
   "ADE_ENABLE_CONFIG_RELOAD",
   "ADE_ENABLE_USAGE_TRACKING",
   "ADE_ENABLE_HEAD_WATCHER",
-  "ADE_ENABLE_AUTO_PULL_DEFAULT",
   "ADE_ENABLE_PORT_ALLOCATION_RECOVERY",
   "ADE_ENABLE_PR_POLLING",
   // reconcile-on-focus is the default catch-up safety net (the brain has no PR
@@ -656,9 +704,10 @@ const defaultEnabledBackgroundTaskFlags = new Set<string>([
 // ---------------------------------------------------------------------------
 // PR reconcile-on-focus: global anti-stampede limiter.
 //
-// The always-on brain has NO PR poller, so unfocused projects go stale unless a
-// webhook fires. When a project comes into focus/opens we run a throttled
-// catch-up reconcile (prService.reconcileOnFocus). Per-project throttle +
+// The brain's PR poller only refreshes tracked rows each tick and discovers new
+// lane PRs on a slow cadence, so when a project comes into focus/opens we run a
+// throttled catch-up reconcile (prService.reconcileOnFocus). Projects on other
+// machines: see `requestMachinePrReconcile`. Per-project throttle +
 // single-flight lives on each prService instance; THIS module-level limiter
 // caps the whole app at RECONCILE_GLOBAL_MAX concurrent reconciles and staggers
 // extra opens with jitter so launching several projects at once cannot stampede
@@ -781,7 +830,7 @@ function createDesktopCredentialStore(secretsDir: string): SyncCredentialStore {
 }
 
 // Voice-to-text transcription is a project-independent capability (it only needs
-// the bundled whisper binary + model + shared glossary), so it lives as a single
+// the bundled transcribe-cli binary + model + shared glossary), so it lives as a single
 // shared instance threaded into every project/dormant context. Constructed lazily
 // on first context build.
 let sharedTranscriptionService: ReturnType<typeof createTranscriptionService> | null = null;
@@ -791,8 +840,8 @@ function getSharedTranscriptionService(logger: Logger): ReturnType<typeof create
       logger,
       isPackaged: app.isPackaged,
       resourcesPath: process.resourcesPath,
-      // The ~141 MB model is downloaded at runtime (not bundled) into userData
-      // so it never bloats the auto-update zip. See whisperModelStore.
+      // The ~464 MB model is downloaded at runtime (not bundled) into userData
+      // so it never bloats the auto-update zip. See speechModelStore.
       modelDir: path.join(app.getPath("userData"), "whisper"),
     });
   }
@@ -895,6 +944,7 @@ async function createWindow(args: {
       // does not depend on when Chromium snapshotted process.env.
       additionalArguments: [
         `${PACKAGE_CHANNEL_ARGV_PREFIX}${normalizeAppPackageChannel(process.env.ADE_PACKAGE_CHANNEL)}`,
+        ...(isMainSentryStarted() ? [SENTRY_ENABLED_ARGV] : []),
       ],
     },
   });
@@ -1044,7 +1094,11 @@ async function createWindow(args: {
             windowId: win.id,
             reason: details.reason,
             attempt,
-            err: toErrorMessage(error),
+            // The Error itself, so `logBridge` lifts it into the Sentry event
+            // and the issue groups by the real failure; `errorText` keeps the
+            // sentence on disk, which `JSON.stringify` writes an Error without.
+            error,
+            errorText: toErrorMessage(error),
           });
           reportRecovery(false);
         },
@@ -1056,7 +1110,11 @@ async function createWindow(args: {
     args.logger?.error("window.preload_error", {
       windowId: win.id,
       preloadPath,
-      err: toErrorMessage(error),
+      // The Error itself, so `logBridge` lifts it into the Sentry event and the
+      // issue groups by the real failure; `errorText` keeps the sentence on
+      // disk, which `JSON.stringify` writes an Error without.
+      error,
+      errorText: toErrorMessage(error),
     });
   });
 
@@ -1219,6 +1277,14 @@ async function createWindow(args: {
   }
 
   const rendererUrl = getRendererUrl();
+  if (/^https?:/i.test(rendererUrl)) {
+    // The window loads from the Vite dev server (an unpackaged launch does so
+    // with or without VITE_DEV_SERVER_URL). The server uses this mark to tell
+    // the app window from a page of the built-in browser, which has the same
+    // Electron user agent (`skipBrowserMockSnapshotForAppWindow` in vite.config.ts).
+    win.webContents.setUserAgent(`${win.webContents.getUserAgent()} ${DEV_APP_WINDOW_USER_AGENT_MARK}`);
+  }
+
   args.logger?.info("window.loading_url", {
     windowId: win.id,
     url: rendererUrl,
@@ -1227,10 +1293,36 @@ async function createWindow(args: {
   try {
     await win.loadURL(rendererUrl);
   } catch (error) {
+    // The load did not finish because there is no window left to finish it in:
+    // the app is quitting, or the user closed the window while the renderer was
+    // still coming up. Chromium words that exactly like a real failure —
+    // `ERR_FAILED (-2) loading '<url>'` — so it cannot be told apart by message,
+    // and a second launch that loses the single-instance lock reaches here on
+    // every start: `app.quit()` before `ready` does not stop `ready` (Electron
+    // 41.5.0, measured), so the whole boot — this window, its load, and the
+    // built-in browser bridge — runs inside a process that is already leaving
+    // and closes the window under the load (2026-10-16, ADE-DESKTOP-1T).
+    //
+    // A warning, not an error: nothing failed, and the fallback page below has
+    // nobody to be shown to — loading it anyway throws `Object has been
+    // destroyed` out of the un-caught `app.whenReady()` chain, which is how this
+    // line used to cost an unhandled rejection on top of the issue.
+    if (isWindowLoadTargetGone(win)) {
+      args.logger?.warn("window.load_url_abandoned", {
+        windowId: win.id,
+        url: rendererUrl,
+        err: toErrorMessage(error),
+      });
+      return win;
+    }
     args.logger?.error("window.load_url_failed", {
       windowId: win.id,
       url: rendererUrl,
-      err: toErrorMessage(error),
+      // The Error itself, so `logBridge` lifts it into the Sentry event and the
+      // issue groups by the real failure; `errorText` keeps the sentence on
+      // disk, which `JSON.stringify` writes an Error without.
+      error,
+      errorText: toErrorMessage(error),
     });
     const fallbackHtml = encodeURIComponent(
       `<html><body style="margin:0;background:#0f0d14;color:#f8f8f2;font-family:Geist,-apple-system,BlinkMacSystemFont,sans-serif;padding:24px;">` +
@@ -1285,9 +1377,19 @@ let dispatchAppNavigationForProjectRoot:
   | null = null;
 
 // Queue rather than drop when the window layer has not registered its
-// dispatcher yet. The notch, `ade://` deeplinks, and file opens can all fire
+// dispatcher yet. Activity opens, `ade://` deeplinks, and file opens can all fire
 // during launch, and a silent no-op is indistinguishable from a dead button.
 const MAX_PENDING_APP_NAVIGATION_REQUESTS = 32;
+
+// How long a launch waits for the post-update transaction to release the pool
+// before going ahead without it. Every install recorded so far took two to four
+// seconds for the whole transaction, so this is the "this install is not going
+// the way it should" bound, not a budget the working case reaches — the pool
+// itself grants a service install 90s and its window 120s, but a launch has no
+// window on screen yet and holding one back that long reads as a hang. Past
+// this, a launch with something to open falls back to what it did before the
+// wait; the resume, which needs no window, does not (see below).
+const POST_UPDATE_TRANSACTION_WAIT_MS = 30_000;
 
 const dispatchOrQueueAppNavigationRequest = (request: AppNavigationRequest): void => {
   if (!dispatchAppNavigationRequest) {
@@ -1405,6 +1507,10 @@ if (process.platform !== "darwin") {
   }
 }
 
+// One Muse quota store for the process: the chat service records what its hosts
+// report, and the usage tracker publishes it in the header meter.
+const museQuota = createMuseQuotaStore();
+
 app.whenReady().then(async () => {
   // Perf run init — must come first so subsequent IPC + sampler hooks can see the active run.
   const perfRun = initPerfRunFromEnv();
@@ -1497,7 +1603,7 @@ app.whenReady().then(async () => {
   // a path: this scheme has no filesystem reach by construction, so there is no
   // jail here to widen and none of `ade-artifact`'s allow-root applies to it.
   protocol.handle("ade-scene", (request) => {
-    const { status, body, headers } = sceneDocumentStore.respond(request.url);
+    const { status, body, headers } = respondToSceneProtocolRequest(request.url);
     return new Response(body, { status, headers });
   });
 
@@ -1816,6 +1922,18 @@ app.whenReady().then(async () => {
         ?? appWindows[0]
         ?? null;
     },
+    getFallbackWindowForPersonalCollection: () => {
+      // Personal chats have no project binding to route through. When an agent
+      // opens a tab without showing the Browser pane, host its capture surface
+      // in the focused ADE window (or the first live one) without activating
+      // the personal collection in that window.
+      const appWindows = BrowserWindow.getAllWindows().filter(
+        (win) => !win.isDestroyed() && win.isVisible() && !win.isMinimized(),
+      );
+      return appWindows.find((win) => win.isFocused())
+        ?? appWindows[0]
+        ?? null;
+    },
     onEvent: (payload, targetWindow) => {
       if (targetWindow && !targetWindow.isDestroyed()) {
         try {
@@ -1922,6 +2040,9 @@ app.whenReady().then(async () => {
     logger: builtInBrowserBridgeLogger,
   });
   let builtInBrowserBridgeServer: ReturnType<typeof startBuiltInBrowserDesktopBridgeServer> | null = null;
+  // "Update & restart" pressed on another machine, forwarded by this machine's
+  // brain. Built once the update service exists, further down.
+  let remoteUpdateInstaller: RemoteUpdateInstaller | null = null;
   /** Windows: this desktop runs elevated, so the background service cannot reach it. */
   let elevatedDesktop = false;
   ipcMain.handle(IPC.appGetElevatedDesktop, () => elevatedDesktop);
@@ -1932,6 +2053,14 @@ app.whenReady().then(async () => {
       logger: builtInBrowserBridgeLogger,
       appControlScreencastRecorder,
       demoEngine: chromiumDemoEngine,
+      getAppUpdateInstaller: () => remoteUpdateInstaller,
+      // `ade scene preview`: a hidden, isolated window per render. The fonts
+      // come from the packaged renderer's assets, or the packages in a dev run.
+      scenePreview: (request) => renderScenePreview(request, {
+        appPath: app.getAppPath(),
+        rendererDir: path.join(__dirname, "../renderer"),
+        logger: builtInBrowserBridgeLogger,
+      }),
       // Windows: an elevated desktop's pipe refuses the background service.
       // A lasting state, so the renderer docks a banner for it.
       onElevatedDesktop: () => {
@@ -2037,6 +2166,7 @@ app.whenReady().then(async () => {
       appVersion: app.getVersion(),
       runtimeMode: app.isPackaged ? "desktop_packaged" : "desktop_development",
     }));
+  setSentryUserResolver(() => productAnalyticsService.getDistinctId());
   /**
    * One reporter for every window: a third `createWindow` site that forgets to
    * wire this would silently stop reporting lost renderers.
@@ -2075,6 +2205,9 @@ app.whenReady().then(async () => {
     app.isPackaged
     && process.env.NODE_ENV !== "test"
     && process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL !== "1";
+  // Set once the diagnostics service exists, which is created after the pool.
+  let reportAppFallback: ((reason: string) => void) | null = null;
+  let reportedAppFallbackSince: string | null = null;
   const localRuntimePool = new LocalRuntimeConnectionPool(app.getVersion(), localRuntimeLogger, {
     // A dev app's brain must never compete for the machine-wide sync host
     // lease: on 2026-09-21 a lane dev brain on a custom socket took the lease
@@ -2082,9 +2215,15 @@ app.whenReady().then(async () => {
     // died with it. Set ADE_DEV_RUNTIME_SYNC=1 to opt a dev brain in on purpose.
     disableSync: !app.isPackaged && process.env.ADE_DEV_RUNTIME_SYNC !== "1",
     preferServiceRepair: shouldRepairRuntimeServiceOnFallback,
-    desktopBridgeAuthToken: builtInBrowserBridgeServer?.authToken ?? null,
     onRuntimeStatusChange: (status) => {
       broadcast(IPC.appRuntimeStatusChanged, status);
+      // A service manager that refused the brain is the fleet failure nobody
+      // reports by hand: ADE keeps working, so nobody presses anything.
+      const fallback = status.appFallback;
+      if (fallback && fallback.since !== reportedAppFallbackSince) {
+        reportedAppFallbackSince = fallback.since;
+        reportAppFallback?.(fallback.reason);
+      }
     },
     onRuntimeModeChange: (mode) => {
       localRuntimeLogger.warn("local_runtime.runtime_mode_changed", { mode });
@@ -2120,6 +2259,15 @@ app.whenReady().then(async () => {
   const accountVaultBridge = createAccountVaultBridge({
     getPool: () => localRuntimePool,
     getRootPath: () => bootedUsageScopeRoot([...projectContexts.values()]),
+    logger: localRuntimeLogger,
+  });
+  const resolveMcpAuthToken = createMcpRegistryAuthTokenResolver({
+    adeHome: machineAdeLayout.adeDir,
+    readSecret: async (key) => {
+      const result = await accountVaultBridge.get("all", MCP_SECRET_VAULT_KIND, key);
+      return result.ok ? result.value : null;
+    },
+    writeSecret: async (key, value) => (await accountVaultBridge.set("all", MCP_SECRET_VAULT_KIND, key, value)).ok,
     logger: localRuntimeLogger,
   });
   // Carry this machine's OS-level suspend/resume into the brain, which has no
@@ -2892,6 +3040,11 @@ app.whenReady().then(async () => {
   });
   let runtimeServiceUninstalledForUpdate = false;
   let autoUpdateInstallRollbackReason: string | null = null;
+  // The launch half of an install holds the pool in an update window until it
+  // finishes, and nothing connects while that window is open. Launch work that
+  // has to reach a runtime waits on this. Null on every launch that is not
+  // landing an install.
+  let postUpdateTransactionDone: Promise<void> | null = null;
   const reinstallRuntimeServiceAfterUpdateAbort = async (reason: string): Promise<void> => {
     // The install is off. Normal recovery owns the service again from here,
     // whether or not this abort has anything to reinstall.
@@ -2934,7 +3087,9 @@ app.whenReady().then(async () => {
     // here — the list is persisted with the pending install and only becomes a
     // resume on the launch that actually lands it. That is what makes an
     // aborted handoff harmless: no install, no resume rows.
-    const interruptedChats = resumeRequested ? await collectInterruptedChats() : [];
+    const interruptedChats = resumeRequested
+      ? (await updateImpactProbe.liveChats()).filter((chat) => chat.resumable !== false)
+      : [];
     if (!shouldRepairRuntimeServiceOnFallback) {
       updateLogger.info("autoUpdate.prepare_quit_and_install_done", {
         serviceManaged: false,
@@ -2988,6 +3143,22 @@ app.whenReady().then(async () => {
     autoCheckEnabled: app.isPackaged && !normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL),
     beforeQuitAndInstall: prepareAutoUpdateInstall,
     rollbackQuitAndInstall: rollbackAutoUpdateInstall,
+    onInstallHandoff: process.platform === "win32" && app.isPackaged
+      ? ({ version, installerPath }) => startWindowsInstallProgress({
+          channel: normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL),
+          productName: appPackageChannelDisplayName(normalizeAppPackageChannel(process.env.ADE_PACKAGE_CHANNEL)),
+          currentVersion: app.getVersion(),
+          targetVersion: version,
+          appExe: process.execPath,
+          installerPath,
+          resourcesPath: process.resourcesPath,
+          adeHome: resolveMachineAdeDir(),
+          log: (event, data) => updateLogger.info(event, data),
+        })
+      : undefined,
+    // The remedy for a wedged updater session. Same quit warnings as any quit,
+    // so running agents are never ended without the user seeing them.
+    relaunchApp: () => requestQuitAfterWarnings(null, "relaunch"),
     getRuntimeActivitySummary: () => localRuntimePool.activitySummary(),
     productAnalyticsService,
     releaseRepository: packagedReleaseRepository,
@@ -3001,6 +3172,21 @@ app.whenReady().then(async () => {
       }
       app.exit(0);
     },
+  });
+  if (process.platform === "win32" && app.isPackaged) {
+    // The update window keeps running until this launch's window is on screen,
+    // so its account is read a little later, once it has closed itself.
+    setTimeout(() => {
+      const report = takeWindowsInstallProgressReport(normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL));
+      if (report) updateLogger.info("autoUpdate.install_progress_report", { lines: report });
+    }, 30_000).unref();
+  }
+  remoteUpdateInstaller = createRemoteUpdateInstaller({
+    getService: () => autoUpdateService,
+    // The same gate as the update checks themselves: a development or channel
+    // build has no feed of its own, so the brain updates its standalone runtime.
+    supported: app.isPackaged && !normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL),
+    logger: updateLogger,
   });
   // Opt-in, default off: ADE holds no power assertion until the user picks a
   // level, and even then only while an agent turn is actually running. Turns
@@ -3066,9 +3252,10 @@ app.whenReady().then(async () => {
         {
           surface: request.surface,
           headline: request.headline ?? null,
-          code: request.failureCode,
+          code: request.code ?? request.failureCode,
           technicalDetail: request.technicalDetail ?? null,
           projectRoot,
+          extraNotes: request.extraNotes,
         },
       );
       return { report: result.report, filePath: result.filePath, installId: result.installId };
@@ -3089,6 +3276,25 @@ app.whenReady().then(async () => {
     },
   });
 
+  // A project whose database disappears or is swapped while open gets the
+  // recovery screen instead of every panel failing.
+  const openProjectDataWatch = createOpenProjectDataWatch({
+    openRoots: function* () {
+      for (const [root, ctx] of projectContexts) if (ctx.project) yield root;
+    },
+    onChange: (projectRoot, status) => {
+      localRuntimeLogger.warn("project.data_moved_while_open", { projectRoot, status });
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (win.isDestroyed()) continue;
+        try {
+          win.webContents.send(IPC.recoveryProjectDataMissing, { projectRoot, status });
+        } catch {
+          // A closing window has nothing to show it in.
+        }
+      }
+    },
+  });
+  app.on("will-quit", () => openProjectDataWatch.dispose());
   // The one recovery service for this machine. It owns `restartServiceAndWait`,
   // the verified restart sequence behind the Repair button, and the post-update
   // transaction below reuses it rather than growing a second restart path.
@@ -3097,6 +3303,13 @@ app.whenReady().then(async () => {
     adeHome: machineAdeLayout.adeDir,
     logger: localRuntimeLogger,
     connectionPool: localRuntimePool,
+    openProjectDataProblem: (projectRoot) => openProjectDataWatch.problem(normalizeProjectRoot(projectRoot)),
+    closeProject: async (projectRoot) => {
+      await closeProjectByPath(projectRoot);
+      // After the close, so a tick that was already running cannot put the
+      // closed project's identity back.
+      openProjectDataWatch.forget(normalizeProjectRoot(projectRoot));
+    },
     // One call at the point the diagnosis is final. The service's own budget
     // makes a re-diagnosed screen cost nothing.
     onTerminalDiagnosis: ({ code, projectRoot }) => {
@@ -3113,6 +3326,66 @@ app.whenReady().then(async () => {
         .catch(() => undefined);
     },
   });
+
+  // Moving a project to a new folder (macOS). The move runs here, in the
+  // process that owns the windows, because it has to close the project in
+  // every window and in the background service, then reopen it at the new
+  // location. The engine itself is shared with the CLI.
+  const projectMoveController = process.platform === "darwin"
+    ? createProjectMoveController({
+        logger: localRuntimeLogger,
+        getActivity: async (projectRoot) => {
+          const root = normalizeProjectRoot(projectRoot);
+          const inProcess = shouldUseInProcessProjectRuntime() ? projectContexts.get(root)?.agentChatService ?? null : null;
+          const chats = inProcess
+            ? runtimeChatRefs(await inProcess.listInterruptedChats())
+            : runtimeChatRefs((await localRuntimePool.callActionForRoot(root, { domain: "chat", action: "listInterruptedChats" })).result);
+          const sessions = inProcess
+            ? []
+            : (await localRuntimePool.callActionForRoot(root, { domain: "session", action: "list" })).result;
+          return classifyProjectActivity(chats.map((chat) => chat.title), sessions);
+        },
+        releaseProject: async (projectRoot) => {
+          const root = normalizeProjectRoot(projectRoot);
+          await closeProjectByPath(root);
+          openProjectDataWatch.forget(root);
+          const record = new ProjectRegistry().findByRootPath(root);
+          if (record) await localRuntimePool.removeProject(root, record.projectId);
+        },
+        afterMove: async (record, windowId) => {
+          writeGlobalState(globalStatePath, remapGlobalStateForMove(readGlobalState(globalStatePath), record, normalizeProjectRoot));
+          // Every window that knew the project keeps it, at its new folder.
+          for (const roots of [...windowKnownLocalProjectRoots.values(), ...windowProjectTabRoots.values()]) {
+            replaceMovedRoots(roots, record, normalizeProjectRoot);
+          }
+          attemptedProjectRoots.record(record.destinationRoot);
+          await ipcWindowScope.run(windowId, () => switchProjectFromDialog(record.destinationRoot));
+          // A switch the renderer did not start: tell the window, so its
+          // cached binding (and every call it routes) uses the new folder.
+          if (windowId != null) bindWindowToProject(windowId, record.destinationRoot, { emit: true });
+          persistUpdateWorkspace();
+        },
+        afterFailedMove: async (sourceRoot, windowId) => {
+          if (!fs.existsSync(sourceRoot)) return;
+          await ipcWindowScope.run(windowId, () => switchProjectFromDialog(sourceRoot));
+          if (windowId != null) bindWindowToProject(windowId, sourceRoot, { emit: true });
+        },
+        emitProgress: (progress) => broadcast(IPC.projectMoveProgress, progress),
+      })
+    : null;
+  // A move a crash interrupted is settled before the last project reopens
+  // (awaited below), so recents point at wherever the project ended up.
+  const projectMoveRecovery = (projectMoveController?.recover() ?? Promise.resolve([])).then((settled) => {
+    for (const record of settled) {
+      if (record.state !== "done") continue;
+      writeGlobalState(globalStatePath, remapGlobalStateForMove(readGlobalState(globalStatePath), record, normalizeProjectRoot));
+    }
+  });
+  reportAppFallback = (reason) => {
+    void autoDiagnosticsService
+      .report({ failureCode: `app_fallback_${reason}`, surface: "local_runtime" })
+      .catch(() => undefined);
+  };
 
   const shouldRefreshRuntimeServiceAfterUpdate =
     app.isPackaged
@@ -3136,7 +3409,7 @@ app.whenReady().then(async () => {
     // would otherwise race these steps: it reinstalls and restarts the service
     // this transaction is already reinstalling and restarting.
     localRuntimePool.beginUpdateWindow("post_update_transaction");
-    void runUpdateTransaction({
+    postUpdateTransactionDone = runUpdateTransaction({
       installedVersion: app.getVersion(),
       expectedVersion: recentlyInstalledVersion,
       reinstallService: async () => {
@@ -3249,6 +3522,7 @@ app.whenReady().then(async () => {
     // The .ade directory may exist from git (shared scaffold files like ade.yaml),
     // but the db is gitignored and machine-local. A missing db, or a scaffold
     // first-open marker, means this machine has not finished a real bind yet.
+    assertLocalProjectDataAvailable(projectRoot);
     const hadAdeDir = fs.existsSync(path.join(projectRoot, ".ade", "ade.db"));
     const scaffoldedFirstOpen = consumeFirstOpenStabilityMarker(projectRoot);
     const adePaths = ensureAdeDirs(projectRoot);
@@ -3324,6 +3598,7 @@ app.whenReady().then(async () => {
         hasSyncPeers,
       }),
     );
+    recordLocalProjectDatabaseIdentity(projectRoot, logger);
     const keybindingsService = createKeybindingsService({ db });
     const agentToolsService = createAgentToolsService({ logger });
     const adeCliService = createAdeCliService({
@@ -3555,11 +3830,17 @@ app.whenReady().then(async () => {
       run: ((sessionId: string, ctx: SettleTeardownContext) => Promise<SettleTeardownOutcome>) | null;
       report: ((args: { columns: string[]; changesetSessionCount: number }) => void) | null;
       residue: ((args: { provider: string | null; items: SettleResidueItem[] }) => void) | null;
-    } = { run: null, report: null, residue: null };
+      subagentLinks: ((parentSessionIds: readonly string[]) => Promise<SubagentLink[]>) | null;
+    } = { run: null, report: null, residue: null, subagentLinks: null };
     const sessionService = createSessionService({
       db,
+      logger,
       onRemoteSettleWrite: (args) => settleTeardownRef.report?.(args),
       onSettleResidue: (args) => settleTeardownRef.residue?.(args),
+      // Read at call time: the automation service is built later.
+      onChatSettled: (chat) => automationService?.onSessionSettled(chat),
+      listSubagentLinks: async (parentSessionIds) =>
+        settleTeardownRef.subagentLinks ? await settleTeardownRef.subagentLinks(parentSessionIds) : [],
       runSettleTeardown: async (sessionId, ctx) =>
         settleTeardownRef.run
           ? await settleTeardownRef.run(sessionId, ctx)
@@ -4318,7 +4599,20 @@ app.whenReady().then(async () => {
     };
 
     const agentChatService = createAgentChatService({
+      museQuota,
+      // This host's account machine key, so a scheduled send that names a
+      // machine can be matched to it. Resolved lazily and defensively: the
+      // bridge may not exist yet at construction time, and a null simply means
+      // this runtime owns only machine-agnostic sends.
+      getLocalMachineKey: () => {
+        try {
+          return ipcBridge?.getLocalMachineIdentity?.().machineKey ?? null;
+        } catch {
+          return null;
+        }
+      },
       machineAdeHome: machineAdeLayout.adeDir,
+      resolveMcpAuthToken,
       runtimeBudget: chatRuntimeBudget,
       projectRoot,
       analytics: productAnalyticsService,
@@ -4361,11 +4655,9 @@ app.whenReady().then(async () => {
       getIosSimulatorService: () => iosSimulatorService,
       // Lazy like the rest: `macDesktopService` is constructed further down
       // this same bootstrap, and every call here is read per-turn.
-      macDesktopTurnRecorder: {
+      macDesktopRuntime: {
         hasDisplaySync: (laneId) => macDesktopService.hasDisplaySync(laneId),
         supportsLaneDisplaySync: () => macDesktopService.supportsLaneDisplaySync(),
-        beginTurn: (args) => macDesktopService.beginTurn(args),
-        noteTurnEnded: (args) => macDesktopService.noteTurnEnded(args),
       },
       getAppControlService: () => appControlService,
       getBuiltInBrowserService: () => builtInBrowserService,
@@ -4393,6 +4685,8 @@ app.whenReady().then(async () => {
         projectId,
         event,
       }),
+      requestSessionAttention: (request) =>
+        requestSessionAttentionForRuntime(buildAdeActionRuntimeForAutomations(), request),
       onClaudeHooksIgnored: (event) => captureClaudeHooksIgnoredAnalytics({
         analytics: productAnalyticsService,
         projectId,
@@ -4407,6 +4701,20 @@ app.whenReady().then(async () => {
         analytics: productAnalyticsService,
         projectId,
         sessionId: event.sessionId,
+      }),
+      // `@mac:` mentions on the in-process path. Activity (projects, lanes,
+      // chats) is brain-owned and not readable here, so the snapshot reports
+      // it as unavailable rather than guessing.
+      accountMachineMentions: {
+        listAccountMachines: () => ipcBridge
+          ? ipcBridge.listAccountMachines()
+          : Promise.resolve({ state: "unavailable" as const, machines: [], message: null }),
+        getLocalMachineKey: () => ipcBridge?.getLocalMachineIdentity().machineKey ?? null,
+      },
+      onCompactionOutcome: (event) => captureChatCompactionAnalytics({
+        analytics: productAnalyticsService,
+        projectId,
+        event,
       }),
       onChatHandoffReplay: (event) => captureChatHandoffReplayAnalytics({
         analytics: productAnalyticsService,
@@ -4496,6 +4804,7 @@ app.whenReady().then(async () => {
     });
     prMergeAutoSettlementServiceRef = createPrMergeAutoSettlementService({
       db,
+      projectId,
       sessionService,
       emitEvent: emitPrEvent,
       logger,
@@ -4515,6 +4824,7 @@ app.whenReady().then(async () => {
       settleTeardownRef.run = wiring.runSettleTeardown;
       settleTeardownRef.report = wiring.onRemoteSettleWrite;
       settleTeardownRef.residue = wiring.onSettleResidue;
+      settleTeardownRef.subagentLinks = wiring.listSubagentLinks;
     }
     autoRebaseActivityReady = true;
     void autoRebaseService
@@ -4563,52 +4873,6 @@ app.whenReady().then(async () => {
     testServiceRef = testService;
     gitServiceRef = gitService;
 
-    /*
-     * Default-branch auto-pull.
-     *
-     * Keeps the primary checkout's default branch current without a manual
-     * pull. Fast-forward only, and only when every local safety gate passes:
-     * the primary lane, an attached HEAD on the lane's branch, no tracked
-     * change in the index or worktree, no rebase/merge/cherry-pick in flight,
-     * no held worktree lease, and a configured upstream. A failed fetch
-     * (offline, no auth, no remote) is a silent skip. Started on project open
-     * and repeated on a bounded background timer — the same "startup plus
-     * background refresh" trigger t3code uses (#9277).
-     */
-    const defaultBranchAutoPullService = createDefaultBranchAutoPullService({
-      logger,
-      getPrimaryLane: () => laneService.getPrimaryLane(),
-      readWorktreeStatus: async (worktreePath) => {
-        const res = await runGit(
-          ["status", "--porcelain=v2", "--branch", "--untracked-files=normal", "-z"],
-          { cwd: worktreePath, timeoutMs: 10_000 },
-        );
-        if (res.exitCode !== 0) return null;
-        const parsed = parseWorktreeStatusPorcelainV2(res.stdout);
-        return { staged: parsed.staged, unstaged: parsed.unstaged, headBranchRef: parsed.headBranchRef };
-      },
-      detectInProgressOperation: async (worktreePath) => {
-        const res = await runGit(["rev-parse", "--absolute-git-dir"], {
-          cwd: worktreePath,
-          timeoutMs: 5_000,
-        });
-        if (res.exitCode !== 0) return null;
-        const gitDir = res.stdout.trim();
-        return gitDir ? detectInProgressGitOperation(gitDir) : null;
-      },
-      isWorktreeLocked: (laneId) => laneWorktreeLockService.getActiveForLane(laneId).length > 0,
-      readSyncStatus: async (laneId) => {
-        const status = await gitService.getSyncStatus({ laneId });
-        return { hasUpstream: status.hasUpstream, ahead: status.ahead, behind: status.behind };
-      },
-      fetch: async (laneId) => {
-        await gitService.fetch({ laneId });
-      },
-      pullFastForward: async (laneId) => {
-        await gitService.pull({ laneId, mode: "ff-only" });
-      },
-    });
-
     if (automationsEnabled) {
       automationService = createAutomationService({
         db,
@@ -4620,6 +4884,7 @@ app.whenReady().then(async () => {
         conflictService,
         testService,
         agentChatService,
+        prService,
         onEvent: (event) =>
           emitProjectEvent(projectRoot, IPC.automationsEvent, event),
       });
@@ -4639,6 +4904,17 @@ app.whenReady().then(async () => {
       getAccountAccessToken,
       listRules: () => (automationService ? projectConfigService.get().effective.automations ?? [] : []),
       ingressCursorStore: createKvIngressCursorStore(db),
+      webhooks: {
+        db,
+        projectId,
+        readSecret: (name) => {
+          try {
+            return projectSecretService.get({ name }).value;
+          } catch {
+            return null;
+          }
+        },
+      },
       // 30s halves worst-case webhook latency. Each poll is one request to
       // our own relay worker (no GitHub data cost); the service floors at 30s.
       pollIntervalMs: 30_000,
@@ -4701,6 +4977,8 @@ app.whenReady().then(async () => {
       db,
       projectId,
       credentialStore: openCursorCloudCredentialStore(projectRoot),
+      // Only a project with an enabled cursor.* rule polls the relay.
+      wantsEvents: () => automationService?.hasEnabledCursorCloudRules() ?? false,
       getAccountAccessToken,
       cursorStore: createKvIngressCursorStore(db),
       dispatch: async (record) => {
@@ -4780,8 +5058,11 @@ app.whenReady().then(async () => {
       resolveDevinBinary: resolveDevinCloudBinary,
     });
     automationService?.setCursorCloudIngressAvailable(() => {
+      // Unconfigured counts as available: enabling the first cursor.* rule is
+      // what starts the self-configuring poll, so gating on "ready" would make
+      // that first rule impossible to enable.
       const status = cursorCloudIngressService.getStatus();
-      return status.state === "ready" || Boolean(status.webhookId && !status.lastError);
+      return status.state !== "error" || Boolean(status.webhookId);
     });
 
     const deferredProjectStartCancels = new Set<() => void>();
@@ -5054,7 +5335,6 @@ app.whenReady().then(async () => {
       resolvePrimaryPrUrl: (laneId: string): string | null =>
         prService?.getForLane(laneId)?.githubUrl ?? null,
       ingestArtifacts: (request) => computerUseArtifactBrokerService.ingest(request),
-      isArtifactFileReferenced: (filePath) => computerUseArtifactBrokerService.isFileReferenced(filePath),
       // A lane may not claim another lane's App Control app. Read at call
       // time: the App Control service is built just below.
       appControlLaneForProcess: (pid: number) => appControlService.laneForAppProcess(pid),
@@ -5160,6 +5440,7 @@ app.whenReady().then(async () => {
     const usageTrackingService = createUsageTrackingService({
       logger,
       db,
+      museQuota,
       pollIntervalMs: 120_000,
       // In-process (tests): unbound windows have no runtime pump, so this
       // tracker is the producer and must broadcast. Production project open
@@ -5246,6 +5527,11 @@ app.whenReady().then(async () => {
       autoRebaseService,
       computerUseArtifactBrokerService,
       appleDeviceService: iosSimulatorService,
+      getWebhookAutomations: () => createWebhookRemoteSource({
+        automationService,
+        webhooks: automationIngressService?.webhooks,
+        projectSecrets: projectSecretService,
+      }),
       appleStreamRelay,
       getAppleRemoteBitrateKbpsCap: () => DEFAULT_APPLE_REMOTE_BITRATE_KBPS,
       agentChatService,
@@ -5258,6 +5544,9 @@ app.whenReady().then(async () => {
       macDesktopService,
       usageTrackingService,
       hostStartupEnabled: syncHostAutoStart,
+      // Never the machine brain. It claims the cluster record only while its
+      // own host startup is on (the ADE_ENABLE_DESKTOP_SYNC_HOST debug host).
+      mayClaimCluster: false,
       phonePairingStateDir: machineAdeLayout.secretsDir,
       hostDiscoveryEnabled: isMobileSyncHostContext,
       forceHostRole: false,
@@ -5616,7 +5905,6 @@ app.whenReady().then(async () => {
 
     const disposeHeadWatcher = () => {
       headWatcherActive = false;
-      defaultBranchAutoPullService.stop();
       for (const cancel of deferredProjectStartCancels) {
         cancel();
       }
@@ -5637,23 +5925,6 @@ app.whenReady().then(async () => {
       15_000,
       "ADE_ENABLE_HEAD_WATCHER",
     );
-
-    // Local-runtime only: a remote-bound desktop must never mutate a checkout
-    // that lives on another machine. The service's own gates make it a no-op
-    // when the project has no primary lane yet.
-    if (shouldUseInProcessProjectRuntime()) {
-      scheduleBackgroundProjectTask(
-        "git.auto_pull_default.start",
-        () => defaultBranchAutoPullService.start(),
-        (error) => {
-          logger.warn("git.auto_pull_start_failed", {
-            error: error instanceof Error ? error.message : String(error),
-          });
-        },
-        20_000,
-        "ADE_ENABLE_AUTO_PULL_DEFAULT",
-      );
-    }
 
     const state = upsertRecentProject(
       readGlobalState(globalStatePath),
@@ -5885,8 +6156,58 @@ app.whenReady().then(async () => {
     // locally-created services so that the registry's service map resolves.
     // Using a function closure means this stays reactive to late-bound refs
     // like CTO state bindings.
+    // Desktop automations run in this process, where no push publisher lives.
+    // A "Send notification" step still reaches the relay directly, with the
+    // same account sign-in and machine identity the brain's publisher uses.
+    let automationNotifyRelay: {
+      client: ReturnType<typeof createPushRelayClient>;
+      store: ReturnType<typeof createPushRegistrationStore>;
+    } | null = null;
+    const sendCustomNotificationFromDesktop: NonNullable<AdeRuntime["sendCustomNotification"]> = async (
+      notification,
+    ) => {
+      if (!automationNotifyRelay) {
+        const authService = getSharedAccountAuthService();
+        const store = createPushRegistrationStore({
+          filePath: resolvePushRelayStateFile(machineAdeLayout.secretsDir),
+        });
+        const client = createPushRelayClient({
+          store,
+          logger: localRuntimeLogger,
+          getAccountAccessToken: (options) => getSignedInAccountAccessToken(authService, options),
+          getAccountUserId: () => {
+            const status = authService.getStatus();
+            return status.signedIn ? status.userId?.trim() || null : null;
+          },
+        });
+        automationNotifyRelay = { client, store };
+      }
+      const { projectId, ...rest } = notification;
+      let accountMachineKey: string | null = null;
+      try {
+        accountMachineKey = getOrCreateLocalAccountMachineIdentity({
+          secretsDir: machineAdeLayout.secretsDir,
+        }).machineKey;
+      } catch {
+        // No machine identity: the link goes out as written.
+      }
+      return await automationNotifyRelay.client.sendAccountNotification({
+        ...rest,
+        deepLink: rest.deepLink
+          ? stampCustomNotificationLinkOwner(rest.deepLink, { accountMachineKey, projectId })
+          : null,
+        machineKey: automationNotifyRelay.store.getOrCreateIdentity().machineKey,
+      });
+    };
+
     function buildAdeActionRuntimeForAutomations(): AdeRuntime {
       return {
+        // The notification step names its project (so a chat or PR link opens
+        // on this machine), refuses while signed out, and is counted.
+        projectRoot,
+        accountAuthService,
+        productAnalyticsService,
+        sendCustomNotification: sendCustomNotificationFromDesktop,
         laneService,
         gitService,
         diffService,
@@ -6012,6 +6333,7 @@ app.whenReady().then(async () => {
     baseRef: string;
     userSelectedProject: boolean;
   }): Promise<AppContext> => {
+    assertLocalProjectDataAvailable(projectRoot);
     const adePaths = ensureAdeDirs(projectRoot);
     const logger = createFileLogger(path.join(adePaths.logsDir, "main.jsonl"));
     const project = toProjectInfo(projectRoot, baseRef);
@@ -6021,6 +6343,7 @@ app.whenReady().then(async () => {
       // this dormant fallback has no authoritative local peer signal.
       hasSyncPeers: () => true,
     });
+    recordLocalProjectDatabaseIdentity(projectRoot, logger);
     const shellContext = createDormantProjectContext(projectRoot, { enableUsageTracking: false });
     const storageInsightsService = createStorageInsightsService({
       projectRoot,
@@ -6121,6 +6444,7 @@ app.whenReady().then(async () => {
     if (options.enableUsageTracking !== false) {
       usageTrackingService = createUsageTrackingService({
         logger,
+        museQuota,
         pollIntervalMs: 120_000,
         onUpdate: (snapshot) => {
           const currentDormantUsageService =
@@ -6383,7 +6707,11 @@ app.whenReady().then(async () => {
       } catch (error) {
         ctx.logger.error("app.staged_board_move_flush_failed", {
           projectRoot: ctx.project?.rootPath ?? null,
-          error: error instanceof Error ? error.message : String(error),
+          // The Error itself, so `logBridge` lifts it into the Sentry event and
+          // the issue groups by the real failure; `errorText` keeps the
+          // sentence on disk, which `JSON.stringify` writes an Error without.
+          error,
+          errorText: error instanceof Error ? error.message : String(error),
         });
       }
     }
@@ -7381,8 +7709,17 @@ app.whenReady().then(async () => {
         selectedPath,
         repoRoot,
         durationMs: Date.now() - startedAt,
-        error: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined,
+        // The error itself, under the key `logBridge` lifts: an `Error`
+        // instance becomes the Sentry event's exception, so the issue is
+        // titled and grouped by the real failure. A stringified copy left
+        // every project-open failure in the fleet under one issue named
+        // "project.open.failed", with the reason buried in `extra` — which is
+        // what made this failure class unreadable.
+        error,
+        // The message as text beside it, because `JSON.stringify` writes an
+        // `Error` as `{}`: without this the line on disk would lose the
+        // sentence every log grep and `ade report-issue` reads.
+        errorText: error instanceof Error ? error.message : String(error),
       });
       throw error;
     } finally {
@@ -7453,7 +7790,6 @@ app.whenReady().then(async () => {
   let quitWarningAcknowledged = false;
   let quitConfirmationInFlight = false;
   let shutdownForceTimer: NodeJS.Timeout | null = null;
-  let attentionNotchHelper: AttentionNotchHelper | null = null;
   let captureHelper: CaptureHelper | null = null;
   /**
    * The ADE window the user was last in.
@@ -7524,12 +7860,6 @@ app.whenReady().then(async () => {
       });
     }
     try {
-      attentionNotchHelper?.dispose();
-    } catch {
-      // ignore
-    }
-    attentionNotchHelper = null;
-    try {
       captureHelper?.dispose();
     } catch {
       // ignore
@@ -7551,10 +7881,22 @@ app.whenReady().then(async () => {
     } catch {
       // ignore
     }
-    try {
-      localRuntimePool.dispose();
-    } catch {
-      // ignore
+    // Deliberately NOT on the fast-kill prelude. The pool is not a resource to
+    // free first: it is the transport the rest of this teardown still uses —
+    // `replaceDormantContext` and every `closeProjectContext` below reach it
+    // through the machine usage-event bridge, and the renderer is still alive
+    // (its windows are only destroyed in `finalizeAppExit`), polling it over
+    // IPC. Disposing it here answered those calls with "the pool is disposed",
+    // which is an internal invariant, and `ipcCapture` reported each one to
+    // Sentry. The shutdown body's own completion, the force timer, `will-quit`
+    // and `process.once("exit")` all still dispose it, so nothing is leaked by
+    // waiting.
+    if (!reason.startsWith("fast_kill:")) {
+      try {
+        localRuntimePool.dispose();
+      } catch {
+        // ignore
+      }
     }
     const contexts = new Set<AppContext>(projectContexts.values());
     contexts.add(getActiveContext());
@@ -7615,6 +7957,28 @@ app.whenReady().then(async () => {
     terminateLoginImportWorkersBestEffort();
   };
 
+  /**
+   * Stop the renderer before the process's services are torn down.
+   *
+   * A live window is a producer: its runtime event pump, status poll and
+   * attention poll all reach `localRuntimePool` over IPC, and an IPC handler
+   * that rejects is reported to Sentry (`main/sentry/ipcCapture.ts`). Tearing
+   * the pool down under a live renderer therefore turns an ordinary quit into a
+   * reported defect. Every window is destroyed here, while the pool is still
+   * alive, so nothing is left to call it. `app.exit` destroys them anyway; this
+   * only makes that happen first.
+   */
+  const destroyWindowsForExit = (): void => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (win.isDestroyed()) continue;
+      try {
+        win.destroy();
+      } catch {
+        // Keep escalating through every window; app.exit is the hard bound.
+      }
+    }
+  };
+
   const finalizeAppExit = (exitCode: number): void => {
     if (shutdownFinalized) return;
     shutdownFinalized = true;
@@ -7622,6 +7986,7 @@ app.whenReady().then(async () => {
       clearTimeout(shutdownForceTimer);
       shutdownForceTimer = null;
     }
+    destroyWindowsForExit();
     runImmediateProcessCleanup("process_exit_finalize");
     if (app.isReady()) {
       app.exit(exitCode);
@@ -7677,7 +8042,11 @@ app.whenReady().then(async () => {
       } catch (error) {
         shutdownLogger.error("app.staged_board_move_flush_failed", {
           reason: args.reason,
-          error: error instanceof Error ? error.message : String(error),
+          // The Error itself, so `logBridge` lifts it into the Sentry event and
+          // the issue groups by the real failure; `errorText` keeps the
+          // sentence on disk, which `JSON.stringify` writes an Error without.
+          error,
+          errorText: error instanceof Error ? error.message : String(error),
         });
       }
 
@@ -7696,7 +8065,11 @@ app.whenReady().then(async () => {
       } catch (error) {
         shutdownLogger.error("app.browser_storage_flush_failed", {
           reason: args.reason,
-          error: error instanceof Error ? error.message : String(error),
+          // The Error itself, so `logBridge` lifts it into the Sentry event and
+          // the issue groups by the real failure; `errorText` keeps the
+          // sentence on disk, which `JSON.stringify` writes an Error without.
+          error,
+          errorText: error instanceof Error ? error.message : String(error),
         });
       }
       try {
@@ -7705,6 +8078,7 @@ app.whenReady().then(async () => {
         // ignore
       }
       try {
+        remoteUpdateInstaller?.dispose();
         builtInBrowserBridgeServer?.dispose();
       } catch {
         // ignore
@@ -7723,53 +8097,32 @@ app.whenReady().then(async () => {
       } catch (error) {
         shutdownLogger.error("app.shutdown_cleanup_failed", {
           reason: args.reason,
-          error: error instanceof Error ? error.message : String(error),
+          // The Error itself, so `logBridge` lifts it into the Sentry event and
+          // the issue groups by the real failure; `errorText` keeps the
+          // sentence on disk, which `JSON.stringify` writes an Error without.
+          error,
+          errorText: error instanceof Error ? error.message : String(error),
         });
       } finally {
-        await productAnalyticsService.shutdown();
+        // Stop the producers, then let what is already in flight settle, then
+        // dispose. The windows go first: their runtime event pump and status
+        // polls are the calls that keep arriving, and `runImmediateProcessCleanup`
+        // below disposes the pool they reach. What is left in flight is a call
+        // that started before the quit — a `callSync` parked in a connect or a
+        // service repair — and `drain()` lets it finish instead of answering it
+        // with "the pool is disposed", an internal invariant reported to Sentry
+        // as a defect. Bounded, so a brain that never answers still cannot hold
+        // quit past the force timer.
+        destroyWindowsForExit();
+        await localRuntimePool.drain({ timeoutMs: 2_000 });
+        // Sentry flushes alongside analytics: a crash that triggered this
+        // shutdown is the report that must not be lost to the exit.
+        await Promise.all([productAnalyticsService.shutdown(), flushSentry(2_000)]);
         runImmediateProcessCleanup(`complete:${args.reason}`);
       }
     })().finally(() => {
       finalizeAppExit(exitCode);
     });
-  };
-
-  const showWindowCloseWarning = (
-    ownerWindow: BrowserWindow | null | undefined,
-    options: {
-      buttons: string[];
-      title: string;
-      message: string;
-      detail: string;
-      rememberQuitAcknowledgement?: boolean;
-    },
-  ): boolean => {
-    if (shutdownRequested) return true;
-    if (options.rememberQuitAcknowledgement && quitWarningAcknowledged) return true;
-    const dialogOptions = {
-      type: "warning" as const,
-      buttons: options.buttons,
-      defaultId: 0,
-      cancelId: 0,
-      noLink: true,
-      title: options.title,
-      message: options.message,
-      detail: options.detail,
-    };
-    const parentWindow =
-      ownerWindow && !ownerWindow.isDestroyed()
-        ? ownerWindow
-        : BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
-    const response = parentWindow
-      ? dialog.showMessageBoxSync(parentWindow, dialogOptions)
-      : dialog.showMessageBoxSync(dialogOptions);
-    if (response !== 1) {
-      return false;
-    }
-    if (options.rememberQuitAcknowledgement) {
-      quitWarningAcknowledged = true;
-    }
-    return true;
   };
 
   const isRunningLaneDeleteProgress = (value: unknown): value is LaneDeleteProgress => {
@@ -7843,7 +8196,9 @@ app.whenReady().then(async () => {
   /**
    * Runs one chat action across every project runtime this machine knows
    * about: in-process services in test, the runtime action channel in packaged
-   * builds. Best-effort — an unreachable runtime contributes nothing.
+   * builds. Best-effort — an unreachable runtime contributes nothing. Answers
+   * how many projects it asked, which is the only way a caller can tell "no
+   * project answered" from "there was no project to ask".
    */
   const forEachProjectRuntime = async (
     run: (target: {
@@ -7851,24 +8206,32 @@ app.whenReady().then(async () => {
       projectRoot: string;
       inProcessService: AppContext["agentChatService"] | null;
     }) => Promise<void>,
-  ): Promise<void> => {
+    /** Projects with no tab open that the action must still reach. */
+    extraRoots: Iterable<string> = [],
+  ): Promise<number> => {
     if (shouldUseInProcessProjectRuntime()) {
-      for (const ctx of projectContexts.values()) {
+      const contexts = Array.from(projectContexts.values());
+      for (const ctx of contexts) {
         await run({
           projectName: labelForProjectRoot(ctx.project?.rootPath ?? ""),
           projectRoot: ctx.project?.rootPath ?? "",
           inProcessService: ctx.agentChatService,
         });
       }
-      return;
+      return contexts.length;
     }
-    const roots = new Set<string>([
-      ...rootsBoundToWindows(),
-      ...projectContexts.keys(),
-    ]);
-    await Promise.all(Array.from(roots).map(async (root) => {
+    // An extra root comes from the brain and can spell an open project's path
+    // differently (drive-letter case, slashes), so the set is keyed, not raw.
+    const roots = new Map<string, string>();
+    for (const root of [...rootsBoundToWindows(), ...projectContexts.keys(), ...extraRoots]) {
+      const key = pathKey(root);
+      if (!roots.has(key)) roots.set(key, root);
+    }
+    const targets = Array.from(roots.values());
+    await Promise.all(targets.map(async (root) => {
       await run({ projectName: labelForProjectRoot(root), projectRoot: root, inProcessService: null });
     }));
+    return targets.length;
   };
 
   /** The chat list a chat-domain action returned, or nothing. */
@@ -7877,9 +8240,12 @@ app.whenReady().then(async () => {
     return Array.isArray(payload?.chats) ? payload.chats : [];
   };
 
-  // Chats with a live turn on this machine right now. An ADE restart stops
-  // them mid-flight, so the install dialog names them and offers to resume.
-  const collectInterruptedChats = async (): Promise<UpdateInterruptedChat[]> => {
+  /**
+   * Chats with a live turn in the projects open in a window, asked one project
+   * at a time: all an in-process runtime has, and all a brain from before
+   * `runtime.updateImpact` can answer.
+   */
+  const listOpenProjectChats = async (strict: boolean): Promise<UpdateInterruptedChat[]> => {
     const chats: UpdateInterruptedChat[] = [];
     await forEachProjectRuntime(async ({ projectName, projectRoot, inProcessService }) => {
       try {
@@ -7890,24 +8256,40 @@ app.whenReady().then(async () => {
               action: "listInterruptedChats",
             })).result);
         for (const chat of refs) {
-          chats.push({ sessionId: chat.sessionId, title: chat.title, projectName });
+          chats.push({ sessionId: chat.sessionId, title: chat.title, projectName, projectRoot });
         }
-      } catch {
-        // Best-effort probe.
+      } catch (error) {
+        // Best-effort for the dialogs; a decision that stops agents needs every project.
+        if (strict) throw error;
       }
     });
     return chats;
   };
 
-  // Arms one durable continue row per chat the update interrupted. Called on
-  // the launch that lands an install, with the ids the previous process
-  // persisted — a freshly started brain has no live turns to discover.
-  const armUpdateResumeForSessions = async (
-    sessionIds: readonly string[],
+  /**
+   * Live chats for a decision that stops or resumes agents. Null when any
+   * project could not answer in time, so "unknown" is never read as "none".
+   */
+  const collectLiveChatsOrNull = async (timeoutMs = 3_000): Promise<UpdateInterruptedChat[] | null> =>
+    await settledWithin<UpdateInterruptedChat[] | null>(
+      updateImpactProbe.liveChats({ strict: true }),
+      timeoutMs,
+      null,
+    );
+
+  // Arms one durable continue row per chat a restart interrupted: on the
+  // launch that lands an install, with the ids the previous process persisted
+  // (a freshly started brain has no live turns to discover), and after a
+  // quit-prompt Repair.
+  const armResumeForChats = async (
+    chats: readonly Pick<UpdateInterruptedChat, "sessionId" | "projectRoot">[],
   ): Promise<UpdateInterruptedChat[]> => {
-    if (sessionIds.length === 0) return [];
+    if (chats.length === 0) return [];
+    const sessionIds = chats.map((chat) => chat.sessionId);
     const armed: UpdateInterruptedChat[] = [];
-    await forEachProjectRuntime(async ({ projectName, projectRoot, inProcessService }) => {
+    // A chat's project may have no tab open; its root is how the arm reaches it.
+    const chatRoots = chats.flatMap((chat) => (chat.projectRoot ? [chat.projectRoot] : []));
+    const projectsAsked = await forEachProjectRuntime(async ({ projectName, projectRoot, inProcessService }) => {
       try {
         const refs = inProcessService
           ? runtimeChatRefs(await inProcessService.armUpdateResume({ sessionIds }))
@@ -7925,7 +8307,15 @@ app.whenReady().then(async () => {
           error: error instanceof Error ? error.message : String(error),
         });
       }
-    });
+    }, chatRoots);
+    // Nothing to ask is never a good answer: no project was reachable to ask,
+    // and the continue row the user asked for is missing. Left unsaid, this is
+    // exactly how a resume disappears without a trace. A chat that names its
+    // own project is asked there directly, so a refusal shows up as
+    // `update_resume.arm_failed` instead — a log dig looks for both.
+    if (projectsAsked === 0) {
+      localRuntimeLogger.warn("update_resume.arm_no_project", { chats: sessionIds.length });
+    }
     return armed;
   };
 
@@ -7943,22 +8333,45 @@ app.whenReady().then(async () => {
       const remaining = (installed?.resumedChats ?? []).filter((chat) => !armed.has(chat.sessionId));
       if (!installed || remaining.length === (installed.resumedChats?.length ?? 0)) return;
       const { resumedChats: _armed, ...installedWithoutResume } = installed;
+      let nextInstalled: RecentlyInstalledUpdate | undefined;
+      if (remaining.length > 0) {
+        nextInstalled = { ...installed, resumedChats: remaining };
+      } else if (shouldShowInstalledNotice(installed)) {
+        // Nothing left to arm: the record stays for the installed notice, the
+        // only thing it has left to say.
+        nextInstalled = installedWithoutResume;
+      } else {
+        // Dismissed, and nothing left to arm: nothing keeps it here.
+        nextInstalled = undefined;
+      }
       writeGlobalState(globalStatePath, {
         ...state,
-        recentlyInstalledUpdate: remaining.length > 0
-          ? { ...installed, resumedChats: remaining }
-          : installedWithoutResume,
+        recentlyInstalledUpdate: nextInstalled,
       });
     } catch {
       // Best-effort: a failed consume only means a later launch retries.
     }
   };
 
-  // Live-connection probe shown before an update install or quit. Mirrors the
-  // lane-delete quit probe: in-process services in dev, runtime actions against
-  // the brain in packaged builds. Best-effort — an unreachable runtime simply
-  // reports no phones.
-  const collectUpdateInstallImpact = async (): Promise<UpdateInstallImpact> => {
+  /**
+   * Arms one continue row per chat it is handed, and drops the ones that armed
+   * from the record. Its contract is one call per launch: a chat armed twice
+   * gets its row re-scheduled, and a row that has already fired tells the chat
+   * to continue a second time. The single call site is in the launch, on the
+   * far side of the update transaction that would refuse the runtime.
+   */
+  const armOwedResumes = async (
+    owed: readonly Pick<UpdateInterruptedChat, "sessionId" | "projectRoot">[],
+  ): Promise<void> => {
+    const armed = await armResumeForChats(owed);
+    consumeArmedResumeChats(armed.map((chat) => chat.sessionId));
+  };
+
+  // Phones connected through ADE phone sync, which drop while ADE restarts.
+  // Mirrors the lane-delete quit probe: in-process services in dev, runtime
+  // actions against the brain in packaged builds. Best-effort — an unreachable
+  // runtime simply reports no phones.
+  const collectConnectedPhones = async (): Promise<UpdateInstallImpact["connectedPhones"]> => {
     const phonesById = new Map<string, string>();
     const recordPeers = (peers: readonly SyncPeerConnectionState[] | undefined): void => {
       for (const peer of peers ?? []) {
@@ -7993,33 +8406,18 @@ app.whenReady().then(async () => {
         }
       }));
     }
-    return {
-      connectedPhones: Array.from(phonesById, ([deviceId, deviceName]) => ({
-        deviceId,
-        deviceName,
-      })),
-      interruptedChats: await collectInterruptedChats(),
-    };
+    return Array.from(phonesById, ([deviceId, deviceName]) => ({ deviceId, deviceName }));
   };
 
-  const EMPTY_UPDATE_INSTALL_IMPACT: UpdateInstallImpact = {
-    connectedPhones: [],
-    interruptedChats: [],
-  };
-
-  // Quit/update dialogs are synchronous, so cap how long the impact probe can
-  // delay them. On timeout the dialog falls back to generic copy.
-  const collectUpdateInstallImpactBounded = async (
-    timeoutMs = 1_500,
-  ): Promise<UpdateInstallImpact> => {
-    return await Promise.race([
-      collectUpdateInstallImpact().catch((): UpdateInstallImpact => EMPTY_UPDATE_INSTALL_IMPACT),
-      new Promise<UpdateInstallImpact>((resolve) => {
-        const timer = setTimeout(() => resolve(EMPTY_UPDATE_INSTALL_IMPACT), timeoutMs);
-        timer.unref?.();
-      }),
-    ]);
-  };
+  // What restarting ADE on this computer stops, for the update and quit
+  // dialogs. In-process project runtimes (tests) have no brain to ask.
+  const updateImpactProbe = createUpdateImpactProbe({
+    logger: updateLogger,
+    readMachineImpact: shouldUseInProcessProjectRuntime() ? null : () => localRuntimePool.updateImpact(),
+    readMachineActivity: shouldUseInProcessProjectRuntime() ? null : () => localRuntimePool.activitySummary(),
+    listOpenProjectChats,
+    listConnectedPhones: collectConnectedPhones,
+  });
 
   const confirmNoRunningLaneDeleteForQuit = async (ownerWindow?: BrowserWindow | null): Promise<boolean> => {
     const runningDeletes = await getRunningLaneDeleteLabels();
@@ -8054,56 +8452,71 @@ app.whenReady().then(async () => {
     return choice === 1;
   };
 
-  const describeConnectedPhones = (impact: UpdateInstallImpact | null): string | null => {
-    const phones = impact?.connectedPhones ?? [];
-    if (phones.length === 0) return null;
-    const names = phones.map((phone) => phone.deviceName).join(", ");
-    return phones.length === 1
-      ? `${names} is connected through ADE phone sync and will disconnect; it reconnects automatically once ADE is running again.`
-      : `These phones are connected through ADE phone sync and will disconnect: ${names}. They reconnect automatically once ADE is running again.`;
+  const quitPrompt = createQuitPrompt({
+    logger: localRuntimeLogger,
+    globalStatePath,
+    getRuntimeStatus: () => localRuntimePool.getStatus(),
+    collectImpact: () => updateImpactProbe.collect(1_500),
+    collectLiveChats: () => collectLiveChatsOrNull(),
+    restartService: () => restartBrainForRepair(machineRecoveryService, productAnalyticsService),
+    armResume: (chats) => armResumeForChats(chats),
+  });
+  registerBackgroundServiceControls({
+    logger: localRuntimeLogger,
+    analytics: productAnalyticsService,
+    manageService: shouldRepairRuntimeServiceOnFallback,
+    pool: localRuntimePool,
+    collectLiveChats: () => collectLiveChatsOrNull(),
+    getRunningLaneDeleteLabels,
+    isRepairing: () => quitPrompt.isRepairing() || machineRecoveryService.isRecovering(),
+    isShuttingDown: () => shutdownRequested,
+    shutdown: (reason) => requestAppShutdown({ reason, exitCode: 0 }),
+  });
+
+  const confirmQuitWarning = async (
+    ownerWindow: BrowserWindow | null | undefined,
+    relaunch: boolean,
+  ): Promise<boolean> => {
+    if (shutdownRequested || quitWarningAcknowledged) return true;
+    if (!(await quitPrompt.confirm(ownerWindow, relaunch))) return false;
+    quitWarningAcknowledged = true;
+    return true;
   };
 
-  const confirmQuitWarning = (
-    ownerWindow?: BrowserWindow | null,
-    impact: UpdateInstallImpact | null = null,
-  ): boolean => {
-    const phoneDetail = describeConnectedPhones(impact);
-    return showWindowCloseWarning(ownerWindow, {
-      buttons: ["Keep ADE open", "Quit ADE"],
-      title: "Quit ADE?",
-      message: "Save your work before closing ADE.",
-      detail: [
-        "Quitting ADE will end agents and background processes owned by this desktop session, including OpenCode servers, terminal sessions, and test runs.",
-        phoneDetail,
-        "Open ADE Code terminals attached to this machine's ADE service will disconnect too — you can reopen them afterwards.",
-        "The ADE service login item keeps running separately when it is installed.",
-      ].filter(Boolean).join(" "),
-      rememberQuitAcknowledgement: true,
-    });
-  };
-
-  const confirmCloseWindowWarning = (ownerWindow: BrowserWindow): boolean =>
-    showWindowCloseWarning(ownerWindow, {
+  const confirmCloseWindowWarning = (ownerWindow: BrowserWindow): boolean => {
+    if (shutdownRequested) return true;
+    const response = dialog.showMessageBoxSync(ownerWindow, {
+      type: "question",
       buttons: ["Keep window open", "Close window"],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
       title: "Close ADE window?",
       message: "Close this ADE window?",
-      detail:
-        "ADE will keep running in other windows. Active agents and background processes continue unless you quit ADE.",
-      rememberQuitAcknowledgement: false,
+      detail: "ADE keeps running in your other windows.",
     });
+    return response === 1;
+  };
 
   const requestQuitAfterWarnings = (
     ownerWindow: BrowserWindow | null | undefined,
-    reason: "before_quit" | "window_close",
-  ): void => {
-    if (shutdownRequested || quitConfirmationInFlight) return;
+    reason: "before_quit" | "window_close" | "relaunch",
+  ): Promise<boolean> => {
+    // A repair started from the prompt holds the quit: quitting mid-repair
+    // would stop the agents it is handing over.
+    if (shutdownRequested || quitConfirmationInFlight || quitPrompt.isRepairing()) return Promise.resolve(false);
     quitConfirmationInFlight = true;
-    void (async () => {
+    // Resolves whether the person agreed, so "Restart ADE" can tell a restart
+    // that is happening from one they cancelled.
+    return (async () => {
       try {
-        if (!(await confirmNoRunningLaneDeleteForQuit(ownerWindow))) return;
-        const impact = await collectUpdateInstallImpactBounded();
-        if (!confirmQuitWarning(ownerWindow, impact)) return;
+        if (!(await confirmNoRunningLaneDeleteForQuit(ownerWindow))) return false;
+        if (!(await confirmQuitWarning(ownerWindow, reason === "relaunch"))) return false;
+        // Registered only once the user has agreed, so a cancelled restart
+        // cannot turn a later plain quit into a relaunch. app.exit honors it.
+        if (reason === "relaunch") app.relaunch();
         requestAppShutdown({ reason, exitCode: 0 });
+        return true;
       } finally {
         quitConfirmationInFlight = false;
       }
@@ -8130,7 +8543,7 @@ app.whenReady().then(async () => {
       closeWindowWithoutPrompt(win);
       return;
     }
-    requestQuitAfterWarnings(win, "window_close");
+    void requestQuitAfterWarnings(win, "window_close");
   };
 
   const FILE_LIMIT_CODES = new Set(["EMFILE", "ENFILE"]);
@@ -8317,7 +8730,7 @@ app.whenReady().then(async () => {
     });
   };
 
-  const getWindowSession = (windowId: number | null): { windowId: number | null; project: ProjectInfo | null; binding: OpenProjectBinding | null; openProjectTabs: ProjectInfo[]; pendingLocalProjectRoots: string[]; knownLocalProjectRoots: string[] } => {
+  const getWindowSession = (windowId: number | null): { windowId: number | null; project: ProjectInfo | null; binding: OpenProjectBinding | null; openProjectTabs: ProjectInfo[]; openProjectTabRoots: string[]; pendingLocalProjectRoots: string[]; knownLocalProjectRoots: string[] } => {
     if (windowId == null) {
       const project = projectForRoot(activeProjectRoot);
       return {
@@ -8325,6 +8738,7 @@ app.whenReady().then(async () => {
         project,
         binding: bindingForLocalProject(project),
         openProjectTabs: project ? [project] : [],
+        openProjectTabRoots: project ? [project.rootPath] : [],
         pendingLocalProjectRoots: [],
         knownLocalProjectRoots: project ? [project.rootPath] : [],
       };
@@ -8332,12 +8746,17 @@ app.whenReady().then(async () => {
     const knownLocalProjectRoots = Array.from(
       windowKnownLocalProjectRoots.get(windowId) ?? [],
     );
+    // Every local tab the window shows, loaded or not. `openProjectTabs` lists
+    // only projects with a live context, and an idle project's context can be
+    // released while its tab stays open.
+    const openProjectTabRoots = Array.from(windowProjectTabRoots.get(windowId) ?? []);
     const remoteBinding = windowProjectBindings.get(windowId) ?? null;
     if (remoteBinding) return {
       windowId,
       project: null,
       binding: remoteBinding,
       openProjectTabs: projectsForWindowTabs(windowId),
+      openProjectTabRoots,
       pendingLocalProjectRoots: pendingProjectRootsForWindow(windowId),
       knownLocalProjectRoots,
     };
@@ -8347,6 +8766,7 @@ app.whenReady().then(async () => {
       project,
       binding: bindingForLocalProject(project),
       openProjectTabs: projectsForWindowTabs(windowId),
+      openProjectTabRoots,
       pendingLocalProjectRoots: pendingProjectRootsForWindow(windowId),
       knownLocalProjectRoots,
     };
@@ -8806,8 +9226,6 @@ app.whenReady().then(async () => {
 
   installApplicationMenu();
 
-  let latestAttentionNotchSnapshot: AttentionSnapshot | null = null;
-  const shouldForwardAttentionNotchToast = createAttentionNotchToastDeduper();
   let ipcBridge: ReturnType<typeof registerIpc> | null = null;
   const attentionAccountAuthService = getSharedAccountAuthService();
   accountAuthServiceForOwnerId = attentionAccountAuthService;
@@ -8823,36 +9241,6 @@ app.whenReady().then(async () => {
       return status.signedIn ? status.userId?.trim() || null : null;
     },
   });
-
-  const attentionWindow = async (): Promise<BrowserWindow | null> => {
-    const existing =
-      BrowserWindow.getFocusedWindow()
-      ?? BrowserWindow.getAllWindows().find((win) => !win.isDestroyed())
-      ?? null;
-    if (existing) return existing;
-    const opened = await openAdeWindow();
-    return opened.windowId == null ? null : BrowserWindow.fromId(opened.windowId);
-  };
-
-  const sendAttentionNotchAcknowledge = async (
-    request: AttentionNotchAcknowledgeRequest,
-    preferredWindow?: BrowserWindow | null,
-  ): Promise<void> => {
-    const target = preferredWindow && !preferredWindow.isDestroyed()
-      ? preferredWindow
-      : await attentionWindow();
-    if (!target || target.isDestroyed()) return;
-    target.webContents.send(IPC.attentionNotchAcknowledgeRequested, request);
-  };
-
-  const requestAttentionNotchRefresh = (force = false): void => {
-    const target =
-      BrowserWindow.getFocusedWindow()
-      ?? BrowserWindow.getAllWindows().find((win) => !win.isDestroyed())
-      ?? null;
-    if (!target || target.isDestroyed() || target.webContents.isDestroyed()) return;
-    target.webContents.send(IPC.attentionNotchRefreshRequested, { force });
-  };
 
   /**
    * The live window whose remote binding satisfies `predicate`.
@@ -8890,11 +9278,11 @@ app.whenReady().then(async () => {
   };
 
   /**
-   * The notch runs as a separate helper process, so clicking it never activates
-   * ADE. Without this the navigation lands correctly in a window the user is
-   * still not looking at, and every notch button reads as dead.
+   * Bring ADE itself in front of other apps. Window show/focus alone does not
+   * do this on macOS when the trigger came from outside ADE (a global capture
+   * chord), so the window would come forward behind the app the user is in.
    */
-  const activateAppForAttentionNotch = (): void => {
+  const activateAdeApp = (): void => {
     try {
       // `steal` is macOS-only; other platforms ignore it and rely on the
       // per-window show/focus that follows.
@@ -8941,15 +9329,8 @@ app.whenReady().then(async () => {
 
   const navigateFromAttentionItem = async (
     item: AttentionItem,
-    request: Extract<AttentionNotchResolvedOutput, { kind: "navigate" }>["request"],
-    options: {
-      acknowledge: boolean;
-      /** Notch-originated navigation must bring ADE itself forward. */
-      activateApp?: boolean;
-      fallbackAction?: Extract<AttentionNotchResolvedOutput, { kind: "navigate" }>["fallbackAction"];
-    },
+    request: AppNavigationRequest,
   ): Promise<void> => {
-    if (options.activateApp) activateAppForAttentionNotch();
     const accountMachineKey = item.machine.accountMachineKey?.trim() ?? "";
     const localMachineKey = ipcBridge?.getLocalMachineIdentity().machineKey ?? "";
     const targetId = accountMachineKey
@@ -8990,12 +9371,6 @@ app.whenReady().then(async () => {
     if (remoteWindow) {
       foregroundAttentionWindow(remoteWindow);
       remoteWindow.webContents.send(IPC.appNavigate, request);
-      if (options.acknowledge) {
-        await sendAttentionNotchAcknowledge(
-          { itemId: item.id, mode: "seen" },
-          remoteWindow,
-        );
-      }
       return;
     }
 
@@ -9011,152 +9386,11 @@ app.whenReady().then(async () => {
       if (!delivered.ok) {
         throw new Error(delivered.message);
       }
-      const win = BrowserWindow.fromId(delivered.windowId);
-      if (options.acknowledge) {
-        await sendAttentionNotchAcknowledge(
-          { itemId: item.id, mode: "seen" },
-          win,
-        );
-      }
-      if (options.fallbackAction) {
-        getActiveContext().logger.info("attention.notch_action_opened_destination", {
-          itemId: item.id,
-          actionKind: options.fallbackAction.kind,
-          reason: "inline_action_not_safe_for_account_scope",
-        });
-      }
       return;
     }
 
     dispatchOrQueueAppNavigationRequest(request);
-    if (options.acknowledge) {
-      await sendAttentionNotchAcknowledge({
-        itemId: item.id,
-        mode: "seen",
-      });
-    }
-    if (options.fallbackAction) {
-      getActiveContext().logger.info("attention.notch_action_opened_destination", {
-        itemId: item.id,
-        actionKind: options.fallbackAction.kind,
-        reason: "remote_destination_not_connected",
-      });
-    }
   };
-
-  const navigateFromAttentionNotch = async (
-    resolved: Extract<AttentionNotchResolvedOutput, { kind: "navigate" }>,
-  ): Promise<void> => {
-    await navigateFromAttentionItem(resolved.item, resolved.request, {
-      acknowledge: true,
-      activateApp: true,
-      fallbackAction: resolved.fallbackAction,
-    });
-  };
-
-  const handleAttentionNotchOutput = (output: AttentionNotchOutput): void => {
-    if (output.type === "surface") {
-      getActiveContext().logger.info("attention.notch_surface", {
-        displayId: output.displayId,
-        surface: output.surface,
-      });
-      return;
-    }
-    if (output.type === "protocol_error") {
-      getActiveContext().logger.warn("attention.notch_protocol_error", {
-        message: output.message,
-      });
-      return;
-    }
-    if (output.type === "refresh") {
-      requestAttentionNotchRefresh(true);
-      return;
-    }
-    const chromeNavigation = attentionNotchAppNavigation(output);
-    if (chromeNavigation) {
-      // Activate first, then dispatch: the dispatcher shows/focuses the target
-      // window, but only app activation gets ADE in front of the notch.
-      if (chromeNavigation.activatesApp) activateAppForAttentionNotch();
-      dispatchOrQueueAppNavigationRequest(chromeNavigation.request);
-      return;
-    }
-    if (output.type === "dismiss_item") {
-      void sendAttentionNotchAcknowledge({
-        itemId: output.itemId,
-        // "seen" stops the interrupting but leaves the row in Activity; only
-        // the panel's explicit dismiss files it away. Already narrowed to one
-        // of the two by the helper reader.
-        mode: output.mode,
-      }).catch((error: unknown) => {
-        getActiveContext().logger.warn("attention.notch_ack_route_failed", {
-          itemId: output.itemId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
-      return;
-    }
-    if (output.type === "settings") {
-      const settings: AttentionNotchSettings = output.settings;
-      attentionNotchHelper?.updateSettings(settings);
-      for (const win of BrowserWindow.getAllWindows()) {
-        if (win.isDestroyed() || win.webContents.isDestroyed()) continue;
-        win.webContents.send(IPC.attentionNotchSettingsChanged, settings);
-      }
-      return;
-    }
-    if (output.type !== "open" && output.type !== "action") return;
-    const resolved = resolveAttentionNotchOutput(output, latestAttentionNotchSnapshot);
-    if (resolved.kind === "ignore") {
-      getActiveContext().logger.warn("attention.notch_output_ignored", {
-        itemId: output.itemId,
-        reason: resolved.reason,
-      });
-      return;
-    }
-    if (resolved.kind === "acknowledge") {
-      void sendAttentionNotchAcknowledge({
-        itemId: resolved.item.id,
-        mode: resolved.mode,
-      }).catch((error: unknown) => {
-        getActiveContext().logger.warn("attention.notch_ack_route_failed", {
-          itemId: resolved.item.id,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
-      return;
-    }
-    void navigateFromAttentionNotch(resolved).catch((error: unknown) => {
-      getActiveContext().logger.warn("attention.notch_navigation_failed", {
-        itemId: resolved.item.id,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      // The notch already closed the card on click, so the acknowledgement
-      // cannot ride on navigation succeeding: a failed open would leave the
-      // card gone locally with nothing filed, and the next snapshot would toast
-      // the same row again. `seen` and not `dismiss` — the work is still
-      // unhandled, it just is not news any more.
-      void sendAttentionNotchAcknowledge({
-        itemId: resolved.item.id,
-        mode: "seen",
-      }).catch((ackError: unknown) => {
-        getActiveContext().logger.warn("attention.notch_ack_route_failed", {
-          itemId: resolved.item.id,
-          error: ackError instanceof Error ? ackError.message : String(ackError),
-        });
-      });
-    });
-  };
-
-  attentionNotchHelper = new AttentionNotchHelper({
-    executablePath: resolveAttentionNotchExecutablePath({
-      isPackaged: app.isPackaged,
-      resourcesPath: process.resourcesPath,
-      appPath: app.getAppPath(),
-    }),
-    logger: getActiveContext().logger,
-    onOutput: handleAttentionNotchOutput,
-    onRefreshRequested: requestAttentionNotchRefresh,
-  });
 
   /**
    * Where a capture lands. The order is `pickCaptureGestureWindow`; what main
@@ -9221,7 +9455,7 @@ app.whenReady().then(async () => {
       // Bring ADE forward BEFORE the event: the renderer's fly-in animation is
       // pointless behind another app's window, and the whole gesture means
       // "take me to the CTO with this".
-      activateAppForAttentionNotch();
+      activateAdeApp();
       foregroundAttentionWindow(target);
       target.webContents.send(IPC.captureGestureShot, fitted);
       reportCapture("delivered");
@@ -9237,30 +9471,6 @@ app.whenReady().then(async () => {
       reportCapture("failed");
     },
   });
-  // Sleep does not always lock the machine, so resume must clear suspension
-  // without overriding the independent lock state.
-  let notchScreenLocked = false;
-  let notchSystemSuspended = false;
-  const syncNotchScreenState = () => {
-    attentionNotchHelper?.setScreenAwake(!notchScreenLocked && !notchSystemSuspended);
-  };
-  powerMonitor?.on?.("lock-screen", () => {
-    notchScreenLocked = true;
-    syncNotchScreenState();
-  });
-  powerMonitor?.on?.("unlock-screen", () => {
-    notchScreenLocked = false;
-    syncNotchScreenState();
-  });
-  powerMonitor?.on?.("suspend", () => {
-    notchSystemSuspended = true;
-    syncNotchScreenState();
-  });
-  powerMonitor?.on?.("resume", () => {
-    notchSystemSuspended = false;
-    syncNotchScreenState();
-  });
-
   // The account bridge is available on the welcome screen, before any project
   // context has initialized the API-key service. Bind the machine credential
   // store once here so a sign-out from that screen still purges account keys.
@@ -9270,6 +9480,45 @@ app.whenReady().then(async () => {
       secretsDir: machineAdeLayout.secretsDir,
     }).getStatus().userId,
     analytics: productAnalyticsService,
+  });
+
+  // The home page's clipboard, machine-health and weather widgets.
+  registerHomeWidgetsIpc({
+    logger: getMachineMainLogger(),
+    // The brain: the ports widget never offers to stop it.
+    runtimePids: () => [localRuntimePool.getStatus().pid],
+  });
+  // Now Playing also hears the built-in browser's tabs.
+  connectBrowserToNowPlaying({
+    browserTabIdFor: (wc) => {
+      const found = builtInBrowserService.locateWebContents(wc);
+      return found?.collection === "personal" ? found.tabId : null;
+    },
+  });
+
+  // The Music tab: Apple Music through an on-demand player host, or Spotify as
+  // a Connect remote. Each sign-in stays in its own encrypted file in this
+  // app's user data (see musicTokenStore).
+  registerMusicIpc({
+    credentials: createMusicTokenStore({ dir: path.join(app.getPath("userData"), "music-player"), logger: getMachineMainLogger() }),
+    spotifyCredentials: createMusicTokenStore({
+      dir: path.join(app.getPath("userData"), "music-player"),
+      fileName: "spotify-session.enc",
+      serviceName: "Spotify",
+      logger: getMachineMainLogger(),
+    }),
+    directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({ secretsDir: machineAdeLayout.secretsDir }),
+    getAccountToken: () => getSignedInAccountAccessToken(getSharedAccountAuthService({
+      secretsDir: machineAdeLayout.secretsDir,
+    })),
+    logger: getMachineMainLogger(),
+    onConnectOutcome: (outcome, provider) => captureFeatureUsedAnalytics({
+      analytics: productAnalyticsService,
+      surface: "desktop",
+      feature: "home",
+      action: provider === "spotify" ? "spotify_connected" : "music_connected",
+      outcome,
+    }),
   });
 
   ipcBridge = registerIpc({
@@ -9285,7 +9534,9 @@ app.whenReady().then(async () => {
         ctx.agentToolsCacheService = agentToolsCacheService;
       }
       if (!ctx.updateInstallImpactProvider) {
-        ctx.updateInstallImpactProvider = () => collectUpdateInstallImpactBounded();
+        // The update dialog opens on a click, so it can wait a little longer
+        // for a real answer than a quit can.
+        ctx.updateInstallImpactProvider = () => updateImpactProbe.collect(3_000);
       }
       return ctx;
     },
@@ -9340,6 +9591,7 @@ app.whenReady().then(async () => {
       : localRuntimePool,
     projectRecoveryConnectionPool: localRuntimePool,
     injectedProjectRecoveryService: machineRecoveryService,
+    projectMoveController,
     onAccountRollupFetcherReady: (fetcher) => {
       machineAccountRollupFetcher = fetcher;
     },
@@ -9364,37 +9616,8 @@ app.whenReady().then(async () => {
     retryCaptureGesture: (): CaptureGestureHealth =>
       captureHelper?.retry() ?? UNAVAILABLE_CAPTURE_GESTURE_HEALTH,
     captureGestureNow: (): boolean => captureHelper?.captureNow() ?? false,
-    publishAttentionNotchSnapshot: (snapshot: AttentionSnapshot) => {
-      latestAttentionNotchSnapshot = snapshot;
-      attentionNotchHelper?.publishSnapshot(snapshot);
-    },
-    publishAttentionNotchToast: (toast) => {
-      if (!shouldForwardAttentionNotchToast(toast)) return;
-      attentionNotchHelper?.publishToast(toast);
-    },
-    updateAttentionNotchSettings: (settings: AttentionNotchSettings) => {
-      attentionNotchHelper?.updateSettings(settings);
-    },
-    getAttentionNotchHealth: () => attentionNotchHelper?.getHealth() ?? {
-      state: "unsupported",
-      title: "ADE Notch is unavailable",
-      message: "This ADE build does not include the native ambient surface.",
-      recovery: "reinstall_or_update",
-      surface: null,
-    },
-    retryAttentionNotch: () => attentionNotchHelper?.retry() ?? {
-      state: "unsupported",
-      title: "ADE Notch is unavailable",
-      message: "This ADE build does not include the native ambient surface.",
-      recovery: "reinstall_or_update",
-      surface: null,
-    },
     openAttentionItem: async (item: AttentionItem) => {
-      await navigateFromAttentionItem(
-        item,
-        attentionItemNavigationRequest(item),
-        { acknowledge: false },
-      );
+      await navigateFromAttentionItem(item, attentionItemNavigationRequest(item));
     },
     accountAttentionClient: attentionRelayClient,
     getCurrentAccountOwnerId: () => readAccountOwnerId(),
@@ -9406,17 +9629,7 @@ app.whenReady().then(async () => {
 
   registerPerfIpcHandlers();
 
-  // Restore the startup project before the renderer boots so packaged launches
-  // do not flash into the welcome state and lose the previous project context.
-  if (shouldOpenStartupProject && startupProject.rootPath) {
-    try {
-      await switchProjectFromDialog(startupProject.rootPath);
-    } catch {
-      setForegroundProject(null);
-      replaceDormantContext();
-    }
-  }
-
+  await projectMoveRecovery;
   const savedUpdateState = readGlobalState(globalStatePath);
   const updateWorkspaceRestore = selectUpdateWorkspaceRestore({
     restoreRequested: savedUpdateState.restoreUpdateWorkspaceOnLaunch === true,
@@ -9432,7 +9645,59 @@ app.whenReady().then(async () => {
       restoreUpdateWorkspaceOnLaunch: false,
     });
   }
-  if (updateWorkspaceRestore.localRoots.length > 0) {
+  // The launch that lands an install is the only one that arms a resume. The
+  // previous process persisted the chats it interrupted into the pending
+  // install, and reconcile has just moved them onto `recentlyInstalledUpdate`.
+  // Arming here rather than at quit is what keeps a failed install harmless:
+  // no landed install, no resumed chats, no rows.
+  const resumedAfterUpdate = savedUpdateState.recentlyInstalledUpdate?.resumedChats ?? [];
+  // The parts of this launch that reach a project. The wait below and the blocks
+  // it guards read the same names, so the two cannot drift apart.
+  const restoresUpdateWorkspace = updateWorkspaceRestore.localRoots.length > 0;
+  const armsResume = resumedAfterUpdate.length > 0;
+  // The post-update transaction refuses every project while its update window is
+  // open: opened during it, a project comes back as "ADE is applying an update"
+  // and does not open at all. That costs the tab it was restoring and leaves the
+  // resume with no project to ask — which is how a checked "resume chats" box
+  // disappears without a trace. Only a launch that reaches a project waits; the
+  // machine the transaction owns past the wait is one this launch cannot fix.
+  if (postUpdateTransactionDone && (shouldOpenStartupProject || restoresUpdateWorkspace || armsResume)) {
+    const transactionFinished = await settledWithin(
+      postUpdateTransactionDone.then(() => true),
+      POST_UPDATE_TRANSACTION_WAIT_MS,
+      false,
+    );
+    if (!transactionFinished) {
+      // An install slower than the wait. Everything below opens a project and
+      // will be refused by the pool's still-open window, so this launch falls
+      // back to what it did before the wait — the tabs the renderer restores
+      // itself, and a project to open by hand — rather than holding a window
+      // nobody has seen yet for as long as that install takes. The resume is
+      // not part of that fallback: it opens no project, so it is still armed
+      // below, the moment the transaction lets the pool go.
+      updateLogger.warn("autoUpdate.post_update_transaction_wait_timeout", {
+        waitMs: POST_UPDATE_TRANSACTION_WAIT_MS,
+      });
+    }
+  }
+
+  // Restore the startup project before the renderer boots so packaged launches
+  // do not flash into the welcome state and lose the previous project context.
+  if (shouldOpenStartupProject && startupProject.rootPath) {
+    try {
+      await switchProjectFromDialog(startupProject.rootPath);
+    } catch (error) {
+      // The window asks for this once it loads and shows the recovery
+      // screen, instead of a bare welcome screen with no word of why.
+      if (isCodedError(error, "project_data_missing")) {
+        machineRecoveryService.noteStartupProjectDataMissing(normalizeProjectRoot(startupProject.rootPath));
+      }
+      setForegroundProject(null);
+      replaceDormantContext();
+    }
+  }
+
+  if (restoresUpdateWorkspace) {
     const warmOrder = [
       ...updateWorkspaceRestore.localRoots.filter((root) => !pathsEqual(root, updateWorkspaceRestore.activeLocalRoot)),
       ...(updateWorkspaceRestore.activeLocalRoot ? [updateWorkspaceRestore.activeLocalRoot] : []),
@@ -9445,16 +9710,20 @@ app.whenReady().then(async () => {
       }
     }
   }
-  // The launch that lands an install is the only one that arms a resume. The
-  // previous process persisted the chats it interrupted into the pending
-  // install, and reconcile has just moved them onto `recentlyInstalledUpdate`.
-  // Arming here rather than at quit is what keeps a failed install harmless:
-  // no landed install, no resumed chats, no rows.
-  const resumedAfterUpdate = savedUpdateState.recentlyInstalledUpdate?.resumedChats ?? [];
-  if (resumedAfterUpdate.length > 0) {
-    void armUpdateResumeForSessions(resumedAfterUpdate.map((chat) => chat.sessionId))
-      .then((armed) => consumeArmedResumeChats(armed.map((chat) => chat.sessionId)))
-      .catch(() => undefined);
+  if (armsResume) {
+    // Armed once, when the pool can answer: with no update transaction running
+    // that is now, and otherwise it is the moment that transaction lets go —
+    // the same instant everything above needed, however long the install took.
+    void (postUpdateTransactionDone ?? Promise.resolve())
+      .then(() => armOwedResumes(resumedAfterUpdate))
+      .catch((error: unknown) => {
+        // The arm step logs its own failures, and the consume is best-effort
+        // by design; this guards a throw neither expects. A resume is the last
+        // thing that should go unsaid.
+        localRuntimeLogger.warn("update_resume.arm_chain_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
   }
 
   const restoredLocalRoots = updateWorkspaceRestore.localRoots.filter((root) => projectForRoot(root) != null);
@@ -9514,7 +9783,7 @@ app.whenReady().then(async () => {
     }
     event.preventDefault();
     if (shutdownRequested) return;
-    requestQuitAfterWarnings(null, "before_quit");
+    void requestQuitAfterWarnings(null, "before_quit");
   });
 });
 

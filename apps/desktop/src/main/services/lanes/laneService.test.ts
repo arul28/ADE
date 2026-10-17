@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { openKvDb } from "../state/kvDb";
 import { createLaneService, parseGitWorktreePorcelain } from "./laneService";
 import type { LaneLifecycleEvent } from "../../../shared/types";
+import type { LaneJiraIssue } from "../../../shared/types/jira";
 import { decodeActiveDayKeys, writeLaneUsageTombstone } from "./laneUsageTombstone";
 
 vi.mock("../git/git", () => ({
@@ -202,8 +203,8 @@ describe("laneService createFromUnstaged", () => {
         }
         // One spawn carries both the committed tree and the commit date.
         if (args[0] === "log") {
-          expect(args).toEqual(["log", "-1", "--format=%T%x00%cI"]);
-          return { exitCode: 0, stdout: `tree-child\0${commitAt}\n`, stderr: "" } as any;
+          expect(args).toEqual(["log", "-1", "--format=%H%x00%T%x00%cI"]);
+          return { exitCode: 0, stdout: `head-child\0tree-child\0${commitAt}\n`, stderr: "" } as any;
         }
         if (args[0] === "ls-files") return { exitCode: 0, stdout: "a\0b\0c\0", stderr: "" } as any;
         if (args[0] === "rev-list" && args[1] === "--left-right") {
@@ -292,7 +293,7 @@ describe("laneService createFromUnstaged", () => {
     }
   });
 
-  it("caches tracked-file totals by tree hash and refreshes them after the TTL", async () => {
+  it("caches tracked-file totals by HEAD and index, and invalidates when tracked files are added", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-09-09T16:00:00.000Z"));
 
@@ -301,7 +302,14 @@ describe("laneService createFromUnstaged", () => {
     try {
       await seedProjectAndStack(db, { projectId: "proj-tracked-file-cache", repoRoot });
       let treeHash = "tree-a";
+      let headOid = "head-a";
       let trackedFiles = "src/a.ts\0src/b.ts\0";
+      const parentPath = path.join(repoRoot, "parent");
+      const childPath = path.join(repoRoot, "child");
+      for (const worktreePath of [parentPath, childPath]) {
+        fs.mkdirSync(path.join(worktreePath, ".git"), { recursive: true });
+        fs.writeFileSync(path.join(worktreePath, ".git", "index"), "index-a");
+      }
 
       vi.mocked(runGit).mockImplementation(async (args: string[], opts?: { cwd?: string }) => {
         const cwd = opts?.cwd ?? repoRoot;
@@ -319,8 +327,8 @@ describe("laneService createFromUnstaged", () => {
           return { exitCode: 0, stdout: "# branch.head feature/child\0", stderr: "" } as any;
         }
         if (args[0] === "log") {
-          expect(args).toEqual(["log", "-1", "--format=%T%x00%cI"]);
-          return { exitCode: 0, stdout: `${treeHash}\x002026-09-09T15:00:00.000Z\n`, stderr: "" } as any;
+          expect(args).toEqual(["log", "-1", "--format=%H%x00%T%x00%cI"]);
+          return { exitCode: 0, stdout: `${headOid}\x00${treeHash}\x002026-09-09T15:00:00.000Z\n`, stderr: "" } as any;
         }
         if (args[0] === "ls-files") return { exitCode: 0, stdout: trackedFiles, stderr: "" } as any;
         if (args[0] === "rev-list" && args[1] === "--left-right") {
@@ -359,16 +367,20 @@ describe("laneService createFromUnstaged", () => {
       // Exactly one metadata spawn per lane in the refresh (parent + child).
       expect(secondRefreshCalls.filter(([args]) => args[0] === "log")).toHaveLength(2);
 
-      treeHash = "tree-b";
+      // Staging a new tracked file changes the index while HEAD stays put.
       trackedFiles = "src/a.ts\0src/b.ts\0src/c.ts\0";
-      const changedTree = await service.getSummary("lane-child", { includeStatus: true });
-      expect(changedTree?.trackedFileCount).toBe(3);
-      expect(vi.mocked(runGit).mock.calls.filter(([args]) => args[0] === "ls-files")).toHaveLength(2);
-
-      vi.advanceTimersByTime(10 * 60_000 + 1);
-      const expired = await service.getSummary("lane-child", { includeStatus: true });
-      expect(expired?.trackedFileCount).toBe(3);
+      fs.writeFileSync(path.join(childPath, ".git", "index"), "index-b-with-added-file");
+      const changedIndex = await service.getSummary("lane-child", { includeStatus: true });
+      expect(changedIndex?.trackedFileCount).toBe(3);
       expect(vi.mocked(runGit).mock.calls.filter(([args]) => args[0] === "ls-files")).toHaveLength(3);
+
+      // A commit/checkout changes HEAD even if the index metadata is unchanged.
+      headOid = "head-b";
+      treeHash = "tree-b";
+      trackedFiles = "src/a.ts\0src/b.ts\0src/c.ts\0src/d.ts\0";
+      const changedHead = await service.getSummary("lane-child", { includeStatus: true });
+      expect(changedHead?.trackedFileCount).toBe(4);
+      expect(vi.mocked(runGit).mock.calls.filter(([args]) => args[0] === "ls-files")).toHaveLength(5);
     } finally {
       db.close();
       fs.rmSync(repoRoot, { recursive: true, force: true });
@@ -390,7 +402,7 @@ describe("laneService createFromUnstaged", () => {
         }
         if (args[0] === "status") return { exitCode: 0, stdout: "# branch.head feature/child\0", stderr: "" } as any;
         if (args[0] === "log") {
-          return { exitCode: 0, stdout: "tree-truncated\x002026-09-09T15:00:00.000Z\n", stderr: "" } as any;
+          return { exitCode: 0, stdout: "head-truncated\x00tree-truncated\x002026-09-09T15:00:00.000Z\n", stderr: "" } as any;
         }
         if (args[0] === "ls-files") {
           return truncated
@@ -2718,6 +2730,22 @@ describe("laneService delete outside .ade/worktrees", () => {
       expect(db.get("select id from lanes where id = ?", ["lane-external"])).toBeNull();
       expect(events.at(-1).progress.overallStatus).toBe("completed");
       expect(events.at(-1).progress.leftoverWorktree.path).toBe(worktreePath);
+
+      // A removal that dies partway (a file Windows still holds, an `.asar`
+      // Electron's fs refuses) takes some files with it, the marker included.
+      // The retry must still be allowed, not refused as a replaced folder.
+      const partialRemove = vi.spyOn(fs.promises, "rm").mockImplementationOnce(async (target) => {
+        for (const name of fs.readdirSync(String(target))) {
+          if (name !== "work.txt") fs.rmSync(path.join(String(target), name), { force: true });
+        }
+        throw Object.assign(new Error("EIO: i/o error, rmdir"), { code: "EIO" });
+      });
+      try {
+        await expect(service.deleteLeftoverWorktree("lane-external")).rejects.toThrow(/EIO/);
+      } finally {
+        partialRemove.mockRestore();
+      }
+      expect(fs.existsSync(path.join(worktreePath, "work.txt"))).toBe(true);
 
       await service.deleteLeftoverWorktree("lane-external");
       expect(fs.existsSync(worktreePath)).toBe(false);
@@ -5205,6 +5233,7 @@ describe("laneService stale worktree status", () => {
       trackedFileCount: null,
       rebaseInProgress: false,
       headBranchRef: null,
+      branchDriftKind: null,
     });
     expect(vi.mocked(runGit).mock.calls.some(([args, opts]) =>
       args[0] === "status" && (opts as { cwd?: string } | undefined)?.cwd === childPath
@@ -5590,6 +5619,52 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     });
     // Sessions on the 12th and 13th, code movement on the 12th, git on the 14th.
     expect(decodeActiveDayKeys(tombstone.first_active_day, tombstone.active_day_bits)).toHaveLength(3);
+  });
+
+  it("drops the PR links held by a deleted lane's sessions, including cross-lane edges", async () => {
+    const events: any[] = [];
+    const fake = makeFakeServices();
+    const { db, service } = await setupWithLane({ teardown: fake, events });
+    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
+      return { exitCode: 0, stdout: "", stderr: "" } as any;
+    });
+    vi.mocked(runGitOrThrow).mockImplementation(async () => ({ exitCode: 0, stdout: "", stderr: "" }) as any);
+
+    seedLaneActivity(db, "lane-child");
+    const now = "2026-03-12T12:00:00.000Z";
+    db.run(
+      `insert into pull_requests(
+         id, project_id, lane_id, repo_owner, repo_name, github_pr_number, github_url,
+         state, base_branch, head_branch, created_at, updated_at
+       ) values ('pr-parent', 'proj-delete', 'lane-parent', 'arul28', 'ADE', 1630,
+                 'https://github.com/arul28/ADE/pull/1630', 'open', 'main', 'ade/parent-work', ?, ?)`,
+      [now, now],
+    );
+    // A stack-coordinator-style link: the session lives in the deleted lane,
+    // the PR belongs to another lane, so the lane's own `pr_id`-keyed detach
+    // cannot see it. A dangling edge would flip into a claim on `pr-parent`.
+    db.run(
+      `insert into pull_request_chat_sessions(id, project_id, pr_id, lane_id, session_id, created_at, updated_at)
+       values ('edge-cross', 'proj-delete', 'pr-parent', 'lane-parent', 'sess-chat', ?, ?)`,
+      [now, now],
+    );
+    db.run(
+      `insert into pull_request_chat_session_dismissals(id, project_id, pr_id, session_id, created_at, updated_at)
+       values ('dismissal-cross', 'proj-delete', 'pr-parent', 'sess-chat', ?, ?)`,
+      [now, now],
+    );
+
+    await service.delete({ laneId: "lane-child", deleteBranch: false });
+
+    expect(db.all("select id from pull_request_chat_sessions where session_id = 'sess-chat'")).toEqual([]);
+    expect(
+      db.all("select id from pull_request_chat_session_dismissals where session_id = 'sess-chat'"),
+    ).toEqual([]);
+    // The other lane's PR row is history and survives with its lane mapping.
+    expect(db.get<{ id: string; lane_id: string }>("select id, lane_id from pull_requests where id = 'pr-parent'"))
+      .toMatchObject({ id: "pr-parent", lane_id: "lane-parent" });
   });
 
   it("stores no free text a deleted lane could be reconstructed from", async () => {
@@ -6932,6 +7007,77 @@ describe("laneService - branchSwitch", () => {
   });
 });
 
+describe("laneService GitHub issue links", () => {
+  const issue = (number: number) => ({
+    id: `acme/ade#${number}`,
+    number,
+    owner: "acme",
+    repo: "ade",
+    title: `Issue ${number}`,
+    body: null,
+    url: `https://github.com/acme/ade/issues/${number}`,
+    state: "open" as const,
+    stateReason: null,
+    labels: [],
+    assignees: [],
+    authorLogin: "octo",
+    createdAt: "2026-10-01T00:00:00.000Z",
+    updatedAt: "2026-10-01T00:00:00.000Z",
+  });
+
+  it("lists a lane's GitHub links, and detaching the issue from its chat also unlinks the lane", async () => {
+    const repoRoot = makeTempRepoRoot("ade-lane-service-github-links-");
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    try {
+      await seedProjectAndStack(db, { projectId: "proj-gh-links", repoRoot });
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-gh-links",
+        defaultBaseRef: "main",
+        worktreesDir: path.join(repoRoot, "worktrees"),
+      });
+      // A lane made for #12 carries its own link, the way `create({ githubIssue })`
+      // stores it; #13 is linked to the lane the same way.
+      const now = "2026-10-01T00:00:00.000Z";
+      for (const number of [12, 13]) {
+        db.run(
+          `
+            insert into session_github_issues(
+              id, project_id, session_id, lane_id, issue_id, issue_json, role, source,
+              include_in_pr, close_on_merge, evidence_json, created_at, updated_at
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+          [`lane-link-${number}`, "proj-gh-links", "lane:lane-child", "lane-child", `acme/ade#${number}`, JSON.stringify(issue(number)), "primary", "lane_link", 1, 1, null, now, now],
+        );
+      }
+      db.run(
+        `
+          insert into claude_sessions(session_id, lane_id, chat_session_id, title, tags_json, created_at, updated_at)
+          values (?, ?, ?, ?, ?, ?, ?)
+        `,
+        ["chat-on-child", "lane-child", null, null, null, now, now],
+      );
+      service.attachGitHubIssueToSession({ chatSessionId: "chat-on-child", issues: [issue(12)] });
+
+      // "Linked in ADE" reads these off the lane summary.
+      const before = (await service.list({ includeStatus: false })).find((lane) => lane.id === "lane-child");
+      expect(before?.githubIssueLinks?.map((link) => link.issue.number).sort()).toEqual([12, 12, 13]);
+
+      expect(service.detachGitHubIssueFromSession({ chatSessionId: "chat-on-child", issueId: "acme/ade#12" })).toBe(true);
+
+      // #12 is gone from the chat and from the lane, so the lane's PR no
+      // longer closes it; #13, never detached, stays.
+      const after = (await service.list({ includeStatus: false })).find((lane) => lane.id === "lane-child");
+      expect(after?.githubIssueLinks?.map((link) => link.issue.number)).toEqual([13]);
+      expect(service.listGitHubIssuesForSession({ chatSessionId: "chat-on-child" })).toHaveLength(0);
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("laneService session-scoped Linear issue links", () => {
   function seedClaudeSession(db: any, args: { sessionId: string; laneId: string; title?: string | null }) {
     const now = "2026-05-20T10:00:00.000Z";
@@ -7618,6 +7764,8 @@ describe("laneService branch drift", () => {
     commitsOnlyOnOldBranch?: number | null;
     /** The old branch no longer exists locally (`show-ref --verify` fails). */
     missingBranches?: string[];
+    /** `git reflog show` bodies per worktree, for rename-vs-missing classification. */
+    reflogSubjectsByPath?: Record<string, string>;
   }) {
     const checkouts: Array<{ cwd: string; branch: string }> = [];
     vi.mocked(runGitOrThrow).mockImplementation(async (gitArgs: string[], opts?: { cwd?: string }) => {
@@ -7648,6 +7796,9 @@ describe("laneService branch drift", () => {
       if (gitArgs[0] === "show-ref") {
         const missing = (args.missingBranches ?? []).some((branch) => gitArgs.includes(`refs/heads/${branch}`));
         return { exitCode: missing ? 1 : 0, stdout: "", stderr: "" };
+      }
+      if (gitArgs[0] === "reflog") {
+        return { exitCode: 0, stdout: args.reflogSubjectsByPath?.[cwd] ?? "", stderr: "" };
       }
       if (gitArgs[0] === "rev-list" && gitArgs[1] === "--count") {
         if (args.commitsOnlyOnOldBranch === null) return { exitCode: 128, stdout: "", stderr: "fatal: bad revision" };
@@ -7747,6 +7898,65 @@ describe("laneService branch drift", () => {
       branch_ref: "feature/child",
     });
   });
+
+  it.each([
+    {
+      label: "a renamed branch",
+      reflog: "Branch: renamed refs/heads/feature/child to refs/heads/hotfix-auth",
+      kind: "renamed",
+      message: /was renamed to 'hotfix-auth'/i,
+    },
+    {
+      label: "a branch deleted with no rename evidence",
+      reflog: undefined,
+      kind: "missing",
+      message: /no longer exists/i,
+    },
+  ] as Array<{ label: string; reflog?: string; kind: "renamed" | "missing"; message: RegExp }>)(
+    "classifies $label and refuses switch-back without touching the worktree",
+    async ({ reflog, kind, message }) => {
+      const repoRoot = makeTempRepoRoot("ade-lane-drift-kind-");
+      const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+      await seedProjectAndStack(db, { projectId: "proj-drift-kind", repoRoot });
+      const childPath = path.join(repoRoot, "child");
+      const { checkouts } = stubDriftGit({
+        repoRoot,
+        headBranchByPath: { [childPath]: "hotfix-auth" },
+        // The recorded branch is gone; only the reflog can tell a rename from a delete.
+        missingBranches: ["feature/child"],
+        reflogSubjectsByPath: reflog ? { [childPath]: `${reflog}\n` } : undefined,
+      });
+
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-drift-kind",
+        defaultBaseRef: "main",
+        worktreesDir: path.join(repoRoot, "worktrees"),
+      });
+
+      const lanes = await service.list({ includeStatus: true });
+      expect(lanes.find((lane) => lane.id === "lane-child")?.branchDrift).toEqual({
+        expectedBranchRef: "feature/child",
+        headBranchRef: "hotfix-auth",
+        kind,
+      });
+      // The act-now read carries the same classification the list does.
+      expect(await service.getBranchDrift({ laneId: "lane-child" })).toEqual({
+        expectedBranchRef: "feature/child",
+        headBranchRef: "hotfix-auth",
+        kind,
+      });
+
+      await expect(
+        service.resolveBranchDrift({ laneId: "lane-child", resolution: "switch-back" }),
+      ).rejects.toThrow(message);
+      expect(checkouts).toHaveLength(0);
+      expect(db.get("select branch_ref from lanes where id = ?", ["lane-child"])).toMatchObject({
+        branch_ref: "feature/child",
+      });
+    },
+  );
 
   it.each([
     { label: "a name that restates the old branch", laneName: "feature/child" },
@@ -7939,6 +8149,57 @@ describe("laneService branch drift", () => {
   });
 });
 
+
+describe("laneService linked issue snapshot pages", () => {
+  it("caps snapshot reads at twelve and wraps a page from the end to the beginning", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-01T12:00:00.000Z"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-linked-issue-page-");
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    try {
+      await seedProjectAndStack(db, { projectId: "proj-linked-issue-page", repoRoot });
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-linked-issue-page",
+        defaultBaseRef: "main",
+        worktreesDir: path.join(repoRoot, "worktrees"),
+      });
+      const issues: LaneJiraIssue[] = Array.from({ length: 15 }, (_, index) => {
+        const suffix = String(index).padStart(2, "0");
+        return {
+          id: `jira-${suffix}`,
+          key: `KEY-${index + 1}`,
+          projectKey: "KEY",
+          siteUrl: "https://acme.atlassian.net",
+          title: `Issue ${index + 1}`,
+          url: `https://acme.atlassian.net/browse/KEY-${index + 1}`,
+          statusName: "To Do",
+          statusCategory: "new",
+          issueTypeName: "Task",
+          priorityName: null,
+          labels: [],
+          assigneeName: null,
+          createdAt: "2026-10-01T12:00:00.000Z",
+          updatedAt: "2026-10-01T12:00:00.000Z",
+        };
+      });
+      service.attachJiraIssueToSession({ chatSessionId: "chat-page", issues });
+
+      const page = service.listLinkedIssueSnapshotReferences({ chatSessionId: "chat-page", offset: 14, limit: 99 });
+
+      expect(page.totalCount).toBe(15);
+      expect(page.scanned).toBe(12);
+      expect(page.references).toHaveLength(12);
+      expect(page.references.map((reference) => reference.provider === "jira" ? reference.key : null))
+        .toEqual(["KEY-15", ...Array.from({ length: 11 }, (_, index) => `KEY-${index + 1}`)]);
+    } finally {
+      vi.useRealTimers();
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("parseGitWorktreePorcelain", () => {
   // The parser resolves each recorded path, so expectations are built the same

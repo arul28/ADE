@@ -4,6 +4,7 @@ import { ArrowLeft, GearSix } from "@phosphor-icons/react";
 import { cn } from "../../ui/cn";
 import { useAppStore } from "../../../state/appStore";
 import { isWebClientMode, WEB_CLIENT_TAB_PATHS } from "../../../lib/webClientMode";
+import { pressActivation } from "../../../lib/pressActivation";
 import { readStoredProjectSettingsRoute } from "../projectRouteStorage";
 import {
   commitProjectSidebarWidth,
@@ -12,6 +13,7 @@ import {
   useProjectSidebarPrefs,
 } from "./projectSidebarPrefs";
 import { useProjectSidebarSlotTarget } from "./ProjectSidebarSlot";
+import { StarRepoPill } from "./StarRepoPill";
 import { lastSettingsRoute, rememberProjectRoute, settingsReturnRoute } from "./settingsReturnRoute";
 import {
   PROJECT_SIDEBAR_FOOTER_TABS,
@@ -31,7 +33,7 @@ export { projectSidebarTabForPath };
  */
 export function ProjectSidebar({ route, heldRoute = null }: { route: string; heldRoute?: string | null }) {
   const navigate = useNavigate();
-  const { width, hidden } = useProjectSidebarPrefs();
+  const { width, hidden: hiddenByPreference } = useProjectSidebarPrefs();
   const setSlotTarget = useProjectSidebarSlotTarget();
   // Select scalars only: the sidebar sits beside every tab page, and a wide
   // selector here would re-render it on every unrelated store write.
@@ -45,8 +47,13 @@ export function ProjectSidebar({ route, heldRoute = null }: { route: string; hel
   const activeTab = projectSidebarTabForPath(pathname);
   const heldTab = heldRoute ? projectSidebarTabForPath(heldRoute.split(/[?#]/, 1)[0] || "/work") : null;
   const settingsActive = pathname === "/settings" || pathname.startsWith("/settings/");
+  // Settings keeps the sidebar open. The saved preference is left alone, so
+  // leaving Settings restores the sidebar the way the user had it.
+  const hidden = hiddenByPreference && !settingsActive;
   const settingsVisible = !isWebClientMode() || WEB_CLIENT_TAB_PATHS.has("/settings");
   const routeKey = bindingKey ?? (projectRoot ? `local:${projectRoot}` : null);
+  // The star pill is a desktop-only nudge, shown under the Work session list.
+  const starPillSlotActive = !isWebClientMode() && !heldRoute && activeTab === "/work";
 
   // The tab a click asked for, shown before the route commits. The tab strip
   // starts its animation on the click, and the new page mounts after it.
@@ -95,12 +102,11 @@ export function ProjectSidebar({ route, heldRoute = null }: { route: string; hel
     navigate(stored ?? "/settings");
   }, [navigate, projectRoot, routeKey, settingsActive]);
 
-  if (hidden) return null;
-
   return (
     <aside
       className="ade-project-sidebar relative flex h-full min-h-0 shrink-0 flex-col"
-      style={{ width }}
+      hidden={hidden}
+      style={{ width, display: hidden ? "none" : undefined }}
       data-tour="app.sidebar"
       data-testid="project-sidebar"
     >
@@ -127,7 +133,8 @@ export function ProjectSidebar({ route, heldRoute = null }: { route: string; hel
               aria-current={active ? "page" : undefined}
               aria-label={tab.label}
               title={`${tab.label}${attentionLabel}${shortcut ? `  ${shortcut}` : ""}`}
-              onClick={() => openTab(tab.to)}
+              // A tab opens on the press. The click it replaces fires on mouse-up.
+              {...pressActivation(() => openTab(tab.to))}
             >
               <span className="relative inline-flex shrink-0">
                 <tab.icon size={16} weight={active ? "fill" : "regular"} />
@@ -148,13 +155,18 @@ export function ProjectSidebar({ route, heldRoute = null }: { route: string; hel
 
       <div ref={setSlotTarget} className="ade-project-sidebar-body relative flex min-h-0 flex-1 flex-col" />
 
+      {starPillSlotActive ? <StarRepoPill /> : null}
+
       <div className="ade-project-sidebar-footer shrink-0">
         {heldRoute ? (
           // Over CTO or History the whole row is one way back to where you were.
           <button
             type="button"
             className="ade-project-sidebar-footer-back"
-            onClick={() => navigate(heldRoute)}
+            {...pressActivation(() => {
+              // `navigate` can return a promise, and a press action returns its undo.
+              void navigate(heldRoute);
+            })}
           >
             <ArrowLeft size={15} />
             <span>Back</span>
@@ -172,7 +184,7 @@ export function ProjectSidebar({ route, heldRoute = null }: { route: string; hel
                   data-active={active ? "true" : undefined}
                   aria-current={active ? "page" : undefined}
                   title={waiting ? "The CTO is waiting on you" : undefined}
-                  onClick={() => openTab(item.to)}
+                  {...pressActivation(() => openTab(item.to))}
                 >
                   <span className="relative inline-flex shrink-0">
                     <item.icon size={15} weight={active ? "fill" : "regular"} />
@@ -192,7 +204,7 @@ export function ProjectSidebar({ route, heldRoute = null }: { route: string; hel
                 aria-current={settingsActive ? "page" : undefined}
                 aria-label="Settings"
                 title={settingsActive ? "Back" : "Settings"}
-                onClick={openSettings}
+                {...pressActivation(openSettings)}
               >
                 <GearSix size={15} weight={settingsActive ? "fill" : "regular"} />
               </button>

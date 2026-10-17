@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type {
+  AgentChatSessionSummary,
   SessionAttentionSource,
   SessionBoardMoveResult,
   SessionBoardMoveUndoResult,
@@ -19,7 +20,9 @@ import {
   canonicalSessionState,
   isSessionFiledAsSnoozed,
 } from "../../../shared/sessionCanonicalState";
-import { isChatToolType } from "../sessions/chatSessionProjection";
+import { scheduledWakeState } from "../../../shared/sessionStatusPresentation";
+import { parentsWithBusySubagents } from "../../../shared/sessionSpawnNesting";
+import { isChatToolType, projectChatOntoSession } from "../sessions/chatSessionProjection";
 import type { createSessionService } from "../sessions/sessionService";
 import { getErrorMessage } from "../shared/utils";
 import { readObjectActionArg, requireNonEmptyString } from "./actionArgs";
@@ -108,10 +111,19 @@ export function boardMoveMessageText(
  * by a pending check derives as `working` here, and dragging it to Working is
  * a legitimate no-op — `moveOnBoard` returns the derived `from` so the caller
  * can say so instead of appearing to do nothing.
+ *
+ * A finished chat with a pending scheduled wake IS modelled: it is the row's
+ * own state, not its lane's, and the board files it in Waiting
+ * (`scheduledWakeState`). `nextWakeAt` is projected from the chat summary and
+ * is not a session column, so `moveOnBoard` reads it from the chat first.
+ * So is a finished parent whose subagent is still busy (`hasBusySubagent`,
+ * which `moveOnBoard` answers from the lane's chats): the board files it in
+ * Waiting, and a drag out of Waiting must start from there.
  */
 export function deriveWorkBoardColumn(
   session: TerminalSessionSummary,
   nowMs: number = Date.now(),
+  options: { hasBusySubagent?: boolean } = {},
 ): WorkBoardColumn {
   const phase = canonicalSessionState({
     status: session.status,
@@ -131,6 +143,12 @@ export function deriveWorkBoardColumn(
     isChatTool: isChatToolType,
   }).phase;
   if (isSessionFiledAsSnoozed(session, phase, nowMs)) return "waiting";
+  if (
+    (phase === "ready" || phase === "idle")
+    && (scheduledWakeState(session.nextWakeAt, nowMs) === "pending" || options.hasBusySubagent === true)
+  ) {
+    return "waiting";
+  }
   return canonicalBoardColumnForPhase(phase);
 }
 
@@ -348,7 +366,14 @@ export type BoardMoveSessionService = Pick<
   | "requestAttention"
   | "clearAttentionRequest"
   | "settleSession"
->;
+> & {
+  /**
+   * The lane's session rows, for tracked CLI subagents: their lineage lives on
+   * the row (resume metadata), not on a chat. Optional so a host without it
+   * still answers from the chats alone.
+   */
+  list?: (args?: { laneId?: string; limit?: number | null }) => TerminalSessionSummary[];
+};
 
 /**
  * Put the row where the column says it is.
@@ -546,29 +571,110 @@ export type BoardMoveChatService = {
    * Needs you — which is exactly how a move to Working could report success
    * over a live card. `awaitingInput` is the chat service's own
    * `hasLivePendingInput`, the same check `chat.sendMessage` refuses on.
+   * `nextWakeAt` is read for the same reason: it is projected, never a column.
    */
-  getSessionSummary?(sessionId: string): Promise<{ awaitingInput?: boolean } | null>;
+  getSessionSummary?(sessionId: string): Promise<BoardMoveChatSummary | null>;
+  /** The lane's chats, to find this row's subagents and their wakes. */
+  listSessions?(laneId?: string): Promise<BoardMoveChatLink[]>;
+};
+
+/** What a move reads from a chat summary. A full summary carries `status`. */
+type BoardMoveChatSummary = Partial<AgentChatSessionSummary> & {
+  awaitingInput?: boolean;
+  nextWakeAt?: string | null;
+};
+
+type BoardMoveChatLink = Omit<BoardMoveChatSummary, "orchestrationParentSessionId" | "spawnKind"> & {
+  sessionId: string;
+  orchestrationParentSessionId?: string | null;
+  spawnKind?: string | null;
 };
 
 /**
- * Whether the provider is still blocked on a structured card nobody answered.
+ * The row as the board files it. A chat's runtime state, wake and lineage live
+ * on its chat summary, and the stored row can still read `running` for a chat
+ * that is idle, so a full summary is projected exactly as the session list
+ * projects it (`projectChatOntoSession`). A partial summary (an older host)
+ * contributes only the fields it carries.
+ */
+function boardMoveRow(
+  session: TerminalSessionSummary,
+  summary: BoardMoveChatSummary | BoardMoveChatLink | null | undefined,
+): TerminalSessionSummary {
+  if (!summary) return session;
+  if (typeof summary.status === "string") {
+    return projectChatOntoSession(session, summary as AgentChatSessionSummary);
+  }
+  const link = summary as BoardMoveChatLink;
+  return {
+    ...session,
+    ...(link.nextWakeAt !== undefined ? { nextWakeAt: link.nextWakeAt } : {}),
+    ...(link.orchestrationParentSessionId ? { orchestrationParentSessionId: link.orchestrationParentSessionId } : {}),
+    ...(link.spawnKind === "subagent" || link.spawnKind === "peer" ? { spawnKind: link.spawnKind } : {}),
+  };
+}
+
+/**
+ * Whether a subagent nested under this chat still keeps it busy, by the same
+ * rule the board files with (`parentsWithBusySubagents`), so a drag starts from
+ * the column the board shows. The rule reads the lane's rows: a chat row's
+ * lineage and wake come from its chat link (they are projected, never
+ * columns), and a tracked CLI row carries its lineage itself. Best effort like
+ * the summary read: a missing lister or a throw reads as "no".
+ */
+async function hasBusySubagent(
+  chat: BoardMoveChatService | null | undefined,
+  sessionService: BoardMoveSessionService,
+  row: TerminalSessionSummary,
+  nowMs: number,
+): Promise<boolean> {
+  let chats: BoardMoveChatLink[] = [];
+  if (typeof chat?.listSessions === "function") {
+    try {
+      chats = await chat.listSessions(row.laneId);
+    } catch {
+      chats = [];
+    }
+  }
+  let laneRows: TerminalSessionSummary[] = [];
+  try {
+    // The whole lane, like the board: the default page would drop older rows.
+    laneRows = sessionService.list?.({ laneId: row.laneId, limit: null }) ?? [];
+  } catch {
+    laneRows = [];
+  }
+  const rowsById = new Map<string, TerminalSessionSummary>([[row.id, row]]);
+  for (const laneRow of laneRows) {
+    if (laneRow.laneId === row.laneId && !rowsById.has(laneRow.id)) rowsById.set(laneRow.id, laneRow);
+  }
+  for (const link of chats) {
+    const linked = rowsById.get(link.sessionId) ?? sessionService.get(link.sessionId);
+    if (!linked || linked.laneId !== row.laneId) continue;
+    rowsById.set(link.sessionId, boardMoveRow(linked, link));
+  }
+  if (rowsById.size < 2) return false;
+  return parentsWithBusySubagents([...rowsById.values()], nowMs).has(row.id);
+}
+
+/**
+ * The live chat's summary, for two questions: is the provider still blocked on
+ * a structured card nobody answered, and is a scheduled wake pending.
  *
  * Best effort by design: a host with no chat service, an older one with no
- * summary reader, or a summary read that throws all answer "no" and let the
- * move through. A board move must not fail because the question could not be
- * asked — the refusal it feeds exists to stop a move that would LIE, and a
- * thrown probe is not evidence of one.
+ * summary reader, or a summary read that throws all answer null, which reads
+ * as "no card, no wake" and lets the move through. A board move must not fail
+ * because the question could not be asked — the refusal it feeds exists to
+ * stop a move that would LIE, and a thrown probe is not evidence of one.
  */
-async function hasLiveStructuredCard(
+async function readBoardMoveChatSummary(
   chat: BoardMoveChatService | null | undefined,
   sessionId: string,
-): Promise<boolean> {
-  if (typeof chat?.getSessionSummary !== "function") return false;
+): Promise<BoardMoveChatSummary | null> {
+  if (typeof chat?.getSessionSummary !== "function") return null;
   try {
-    const summary = await chat.getSessionSummary(sessionId);
-    return summary?.awaitingInput === true;
+    return await chat.getSessionSummary(sessionId);
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -613,8 +719,15 @@ export function createSessionBoardMoveActions(deps: {
           `session.moveOnBoard 'to' must be one of ${WORK_BOARD_MOVE_TARGETS.join(", ")}.`,
         );
       }
-      const row = sessionService.get(sessionId);
-      if (!row) throw new Error(`Session '${sessionId}' was not found.`);
+      const rawRow = sessionService.get(sessionId);
+      if (!rawRow) throw new Error(`Session '${sessionId}' was not found.`);
+      const chatSummary = await readBoardMoveChatSummary(deps.agentChatService, sessionId);
+      const withWake = (session: TerminalSessionSummary): TerminalSessionSummary => boardMoveRow(session, chatSummary);
+      const row = withWake(rawRow);
+      // Only a row that would otherwise file as Done can be held in Waiting by
+      // a subagent, so the lane's chats are listed only then.
+      const busySubagent = deriveWorkBoardColumn(row) === "done"
+        && await hasBusySubagent(deps.agentChatService, sessionService, rawRow, Date.now());
       // A live structured card outranks the drag, and the drag cannot answer
       // it. `clearAttentionRequest` clears the attention columns but not the
       // provider's pending item, so a move to Working or Done over a live card
@@ -629,7 +742,7 @@ export function createSessionBoardMoveActions(deps: {
       //
       // With no chat service (or an older one with no summary reader) there is
       // nothing to ask, and the move proceeds as it did before.
-      if (to !== "needs_you" && (await hasLiveStructuredCard(deps.agentChatService, sessionId))) {
+      if (to !== "needs_you" && chatSummary?.awaitingInput === true) {
         return {
           ok: false,
           sessionId,
@@ -646,7 +759,7 @@ export function createSessionBoardMoveActions(deps: {
       // Checked BEFORE the flush below, so a duplicate drop event — which
       // arrives as a second call to the column the first one just reached —
       // stays a pure no-op instead of cutting the real move's undo short.
-      if (deriveWorkBoardColumn(row) === to) {
+      if (deriveWorkBoardColumn(row, Date.now(), { hasBusySubagent: busySubagent }) === to) {
         return { ok: true, sessionId, from: to, to, changed: false, moveId: null, undoExpiresAt: null };
       }
       // This session's previous move, if it still has one, goes out NOW. Its
@@ -658,8 +771,8 @@ export function createSessionBoardMoveActions(deps: {
       // Re-read and re-derive: a flushed move whose message could not be
       // delivered restores its own snapshot, so both the row and the column it
       // is in may have moved under us.
-      const rowAfterFlush = sessionService.get(sessionId) ?? row;
-      const from = deriveWorkBoardColumn(rowAfterFlush);
+      const rowAfterFlush = withWake(sessionService.get(sessionId) ?? rawRow);
+      const from = deriveWorkBoardColumn(rowAfterFlush, Date.now(), { hasBusySubagent: busySubagent });
       if (from === to) {
         return { ok: true, sessionId, from, to, changed: false, moveId: null, undoExpiresAt: null };
       }

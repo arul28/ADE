@@ -120,3 +120,24 @@ export async function switchToThisMachineProject(input: {
     return reason instanceof Error ? reason.message : String(reason);
   }
 }
+
+/**
+ * The project to bind on another machine when a machine picker selects it: the
+ * same repository there first, then a project of that machine already open in
+ * a tab. Only when this window's repository is unknown does any project of the
+ * machine do. Null means the machine has nothing to offer for this repository.
+ */
+export function projectOnOtherMachine(args: {
+  currentOrigin: string | null | undefined;
+  openTabProjectId: string | null | undefined;
+  machineProjects: readonly { projectId: string; gitOriginUrl?: string | null }[];
+}): string | null {
+  const origin = normalizeGitRemoteIdentity(args.currentOrigin ?? null);
+  const sameRepo = origin
+    ? args.machineProjects.find((entry) => normalizeGitRemoteIdentity(entry.gitOriginUrl ?? null) === origin)
+    : undefined;
+  return sameRepo?.projectId
+    ?? args.openTabProjectId
+    ?? (origin ? null : args.machineProjects[0]?.projectId)
+    ?? null;
+}

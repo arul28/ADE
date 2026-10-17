@@ -5,17 +5,17 @@ import SwiftUI
 @ViewBuilder
 func lanePriorityBadge(snapshot: LaneListSnapshot) -> some View {
   if snapshot.autoRebaseStatus?.state == "rebaseConflict" {
-    LaneTypeBadge(text: "Conflict", tint: ADEColor.danger)
+    ADEKitTag(text: "Conflict", color: ADEColor.danger)
   } else if snapshot.lane.status.dirty {
-    LaneTypeBadge(text: "Dirty", tint: ADEColor.warning)
+    ADEKitTag(text: "Dirty", color: ADEColor.warning)
   } else if snapshot.runtime.bucket == "running" {
-    LaneTypeBadge(text: "Running", tint: ADEColor.success)
+    ADEKitTag(text: "Running", color: ADEColor.success)
   } else if snapshot.runtime.bucket == "awaiting-input" {
-    LaneTypeBadge(text: "Activity", tint: ADEColor.warning)
+    ADEKitTag(text: "Activity", color: ADEColor.warning)
   } else if snapshot.lane.archivedAt != nil {
-    LaneTypeBadge(text: "Archived", tint: ADEColor.textMuted)
+    ADEKitTag(text: "Archived")
   } else if let rebaseSuggestion = snapshot.rebaseSuggestion {
-    LaneTypeBadge(text: "\(rebaseSuggestion.behindCount)\u{2193}", tint: ADEColor.warning)
+    ADEKitTag(text: "\(rebaseSuggestion.behindCount)\u{2193}", color: ADEColor.warning)
   } else {
     EmptyView()
   }
@@ -60,7 +60,6 @@ private func laneLinearIssueLinkRoleRank(_ role: String) -> Int {
 func laneListFilteredSnapshots(
   _ snapshots: [LaneListSnapshot],
   scope: LaneListScope,
-  runtimeFilter: LaneRuntimeFilter,
   searchText: String,
   pinnedLaneIds: Set<String>
 ) -> [LaneListSnapshot] {
@@ -74,9 +73,6 @@ func laneListFilteredSnapshots(
       case .all:
         return true
       }
-    }
-    .filter { snapshot in
-      runtimeFilter == .all || snapshot.runtime.bucket == runtimeFilter.rawValue
     }
     .filter { snapshot in
       laneMatchesSearch(snapshot: snapshot, isPinned: pinnedLaneIds.contains(snapshot.lane.id), query: searchText)
@@ -101,48 +97,6 @@ func laneListSortSnapshots(_ lhs: LaneListSnapshot, _ rhs: LaneListSnapshot) -> 
     return lhs.lane.name.localizedCaseInsensitiveCompare(rhs.lane.name) == .orderedAscending
   }
   return lhs.lane.id < rhs.lane.id
-}
-
-func laneScopeCount(_ snapshots: [LaneListSnapshot], scope: LaneListScope) -> Int {
-  snapshots.filter { snapshot in
-    switch scope {
-    case .active:
-      return snapshot.lane.archivedAt == nil
-    case .archived:
-      return snapshot.lane.archivedAt != nil
-    case .all:
-      return true
-    }
-  }.count
-}
-
-func laneRuntimeCount(_ snapshots: [LaneListSnapshot], filter: LaneRuntimeFilter) -> Int {
-  if filter == .all {
-    return snapshots.count
-  }
-  return snapshots.filter { $0.runtime.bucket == filter.rawValue }.count
-}
-
-func laneListEmptyStateTitle(scope: LaneListScope) -> String {
-  switch scope {
-  case .active: return "No active lanes"
-  case .archived: return "No archived lanes"
-  case .all: return "No lanes"
-  }
-}
-
-func laneListEmptyStateMessage(scope: LaneListScope, searchText: String, hasFilters: Bool) -> String {
-  if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-    return "Try a different search or clear the filter."
-  }
-  if hasFilters {
-    return "Try clearing the current filters."
-  }
-  switch scope {
-  case .active: return "Create a new lane or connect to a machine."
-  case .archived: return "Archived lanes will appear here."
-  case .all: return "No lanes yet. Create a lane or connect to a machine."
-  }
 }
 
 func laneMatchesSearch(snapshot: LaneListSnapshot, isPinned: Bool, query: String) -> Bool {
@@ -380,11 +334,20 @@ func lanePrMatchesCurrentBranch(lane: LaneSummary, pr: PullRequestListItem) -> B
   let laneBranch = normalizedPrBranchName(lane.branchRef)
   let prHeadBranch = normalizedPrBranchName(pr.headBranch)
   guard !laneBranch.isEmpty, !prHeadBranch.isEmpty, laneBranch == prHeadBranch else { return false }
-  if lane.laneType == "primary" {
-    let baseBranch = normalizedPrBranchName(lane.baseRef)
-    if !laneBranch.isEmpty, !baseBranch.isEmpty, laneBranch == baseBranch { return false }
-  }
+  if laneIsOnBaseBranch(lane: lane) { return false }
   return true
+}
+
+/// A primary lane parked on its base branch. The checkout is the project's own
+/// and cannot be deleted, so no PR may stay attached to it — the renderer and
+/// the host's `selectLanePrDisplayCandidate`/`getForLane` gate on the same
+/// state. iOS carries no `branchDrift`, so this reads the recorded branch,
+/// matching `lanePrMatchesCurrentBranch` above.
+func laneIsOnBaseBranch(lane: LaneSummary) -> Bool {
+  guard lane.laneType == "primary" else { return false }
+  let laneBranch = normalizedPrBranchName(lane.branchRef)
+  let baseBranch = normalizedPrBranchName(lane.baseRef)
+  return !laneBranch.isEmpty && !baseBranch.isEmpty && laneBranch == baseBranch
 }
 
 /// Branch-only match for raw GitHub PRs — does NOT require the PR to be linked to
@@ -412,10 +375,7 @@ func lanePrMatchesCurrentBranch(lane: LaneSummary, githubPr: GitHubPrListItem) -
   {
     return false
   }
-  if lane.laneType == "primary" {
-    let baseBranch = normalizedPrBranchName(lane.baseRef)
-    if !laneBranch.isEmpty, !baseBranch.isEmpty, laneBranch == baseBranch { return false }
-  }
+  if laneIsOnBaseBranch(lane: lane) { return false }
   return true
 }
 
@@ -542,6 +502,18 @@ private func lanePrChatSessionIds(_ pr: PullRequestListItem) -> [String] {
     .filter { !$0.isEmpty }
 }
 
+/// The linked chats that claim a PR away from the other chats on its lane:
+/// every linked chat except one on another lane (a stack coordinator), whose
+/// link is a reference. Mirrors desktop `claimingSessionIds`.
+func lanePrClaimingChatSessionIds(_ pr: PullRequestListItem) -> [String] {
+  let crossLane = Set(
+    (pr.crossLaneChatSessionIds ?? [])
+      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .filter { !$0.isEmpty }
+  )
+  return lanePrChatSessionIds(pr).filter { !crossLane.contains($0) }
+}
+
 /// Non-empty unlink tombstones for a PR, trimmed. A dismissed chat must not
 /// revive the PR through the branch fallback.
 private func lanePrDismissedChatSessionIds(_ pr: PullRequestListItem) -> [String] {
@@ -557,8 +529,13 @@ private func lanePrDismissedChatSessionIds(_ pr: PullRequestListItem) -> [String
 /// Only the BRANCH half is relaxed — a PR this lane owns and a chat deliberately
 /// linked stays visible even once the lane moves to another branch, which is
 /// what lifts a lane's cap of one visible PR.
+///
+/// A primary lane parked on its base branch is the exception: it shows no PR at
+/// all, chat link or not, because its row cannot be deleted and history would
+/// otherwise stay pinned to `main` forever.
 func selectLanePrs(lane: LaneSummary, pullRequests: [PullRequestListItem]) -> [PullRequestListItem] {
-  pullRequests
+  if laneIsOnBaseBranch(lane: lane) { return [] }
+  return pullRequests
     .filter { pr in
       if pr.detached != nil { return false }
       guard pr.laneId == lane.id else { return false }
@@ -569,7 +546,9 @@ func selectLanePrs(lane: LaneSummary, pullRequests: [PullRequestListItem]) -> [P
 }
 
 /// Every PR a CHAT should show: what the lane owns, plus any PR this chat
-/// explicitly linked even though another lane owns it. Mirrors desktop
+/// explicitly linked — whether another lane owns it, or the lane surface dropped
+/// it (a primary lane back on its base branch sheds its PR tags, but the chat
+/// that opened the PR still shows the thread that did the work). Mirrors desktop
 /// `selectChatPrs`.
 ///
 /// The two rules have to live apart. Lane surfaces stay strictly lane-owned;
@@ -583,25 +562,25 @@ func selectChatPrs(
   let owned = selectLanePrs(lane: lane, pullRequests: pullRequests)
   let seen = Set(owned.map(\.id))
   let trimmedSession = sessionId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-  let linkedElsewhere: [PullRequestListItem]
+  let linkedToSession: [PullRequestListItem]
   if trimmedSession.isEmpty {
-    linkedElsewhere = []
+    linkedToSession = []
   } else {
-    linkedElsewhere = pullRequests.filter { pr in
+    linkedToSession = pullRequests.filter { pr in
       pr.detached == nil
-        && pr.laneId != lane.id
         && !seen.contains(pr.id)
         && lanePrChatSessionIds(pr).contains(trimmedSession)
     }
   }
-  return (owned + linkedElsewhere).sorted(by: lanePrTagPrecedes)
+  return (owned + linkedToSession).sorted(by: lanePrTagPrecedes)
 }
 
 /// Scope a set of lane-owned PRs to one chat, lane-first. A row with no link at
 /// all is legacy data and may use the lane fallback; that fallback is decided
 /// PER PR, so one linked row does not hide every older row in the same lane.
 /// Unlike the desktop `selectPrsForChat` (edges-first), iOS scopes the lane list
-/// first via `selectChatPrs`, then drops rows another chat claimed or this chat
+/// first via `selectChatPrs`, then drops rows another chat on the PR's lane
+/// claimed (a cross-lane link is not a claim) or this chat
 /// unlinked. Named for its real semantics so it is not mistaken for the shared
 /// desktop function.
 func scopeLaneChatPrsByLinks(
@@ -612,8 +591,10 @@ func scopeLaneChatPrsByLinks(
   guard !trimmed.isEmpty else { return pullRequests }
   return pullRequests.filter { pr in
     if lanePrDismissedChatSessionIds(pr).contains(trimmed) { return false }
-    let linked = lanePrChatSessionIds(pr)
-    return linked.isEmpty || linked.contains(trimmed)
+    if lanePrChatSessionIds(pr).contains(trimmed) { return true }
+    // A link from a chat on another lane (a stack coordinator) is a reference,
+    // not a claim, so the chats on the PR's own lane keep it.
+    return lanePrClaimingChatSessionIds(pr).isEmpty
   }
 }
 
@@ -776,6 +757,7 @@ func conflictSummary(_ status: ConflictStatus) -> String {
   case "merge-ready":
     return "Conflict prediction clear. Merge-ready."
   default:
-    return "Conflict status available from machine."
+    // Nothing to report: say nothing rather than a status-less placeholder.
+    return ""
   }
 }

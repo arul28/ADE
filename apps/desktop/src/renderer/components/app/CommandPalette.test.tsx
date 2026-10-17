@@ -3,6 +3,7 @@
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -11,6 +12,7 @@ import {
 } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { CommandPalette } from "./CommandPalette";
+import { buildThreadIndex, threadStatusPresentation } from "./commandPaletteThreads";
 import {
   buildWorkToolCommands,
   commandsLeadPaletteResults,
@@ -996,17 +998,18 @@ describe("CommandPalette", () => {
       });
     });
 
-    it("does not leave a draft when switching to a new-chat target fails", async () => {
-      const switchRemoteProject = vi.fn(async () => {
-        throw new Error("remote target unavailable");
-      });
+    it.each([
+      { online: true, drafted: true },
+      { online: false, drafted: false },
+    ])("drafts a new chat on another machine's lane without moving the tab (online: $online)", async ({ online, drafted }) => {
+      const switchRemoteProject = vi.fn();
       const onOpenChange = vi.fn();
       seedStore({
         switchRemoteProject,
         sessionsCacheByProject: { [PROJECT_ROOT]: [] },
         workViewByProject: {},
         crossMachineLanesByMachineId: {
-          "target-studio": makeForeignMachine(),
+          "target-studio": makeForeignMachine({ online }),
         },
       });
 
@@ -1017,14 +1020,27 @@ describe("CommandPalette", () => {
         </MemoryRouter>,
       );
 
-      fireEvent.click(
-        await screen.findByRole("button", { name: "New chat in release" }),
-      );
+      const newChat = await screen.findByRole("button", { name: "New chat in release" });
+      fireEvent.click(newChat);
 
-      await waitFor(() => expect(switchRemoteProject).toHaveBeenCalled());
+      if (drafted) {
+        await waitFor(() => {
+          expect(screen.getByTestId("location").textContent).toBe("/work");
+        });
+        // The draft lives in this tab's project and names the lane's machine.
+        expect(useAppStore.getState().workViewByProject[PROJECT_ROOT]).toMatchObject({
+          draftKind: "chat",
+          draftLaneId: "lane-remote",
+          draftMachineId: "target-studio",
+        });
+        expect(onOpenChange).toHaveBeenCalledWith(false);
+      } else {
+        await act(async () => { await Promise.resolve(); });
+        expect(useAppStore.getState().workViewByProject[PROJECT_ROOT]).toBeUndefined();
+        expect(screen.getByTestId("location").textContent).toBe("/lanes");
+      }
+      expect(switchRemoteProject).not.toHaveBeenCalled();
       expect(useAppStore.getState().workViewByProject[REMOTE_BINDING.key]).toBeUndefined();
-      expect(screen.getByTestId("location").textContent).toBe("/lanes");
-      expect(onOpenChange).not.toHaveBeenCalledWith(false);
     });
 
     it("shows the status word for an active thread", async () => {
@@ -1511,8 +1527,8 @@ describe("CommandPalette", () => {
   });
 
   it("matches a setting by keyword when its label does not contain the query", async () => {
-    // Keywords widen matching without being rendered, so "telemetry" reaches
-    // "Product analytics".
+    // Keywords widen matching without being rendered, so "crash" reaches
+    // "Send a report to ADE".
     seedStore();
     render(
       <MemoryRouter>
@@ -1523,9 +1539,9 @@ describe("CommandPalette", () => {
     const input = await screen.findByPlaceholderText(
       "Search commands, projects, and threads…",
     );
-    fireEvent.change(input, { target: { value: "telemetry" } });
+    fireEvent.change(input, { target: { value: "crash" } });
 
-    expect(await screen.findByText("Product analytics")).toBeTruthy();
+    expect(await screen.findByText("Send a report to ADE")).toBeTruthy();
   });
 
   it("creates a project and opens Work without a success interstitial", async () => {
@@ -1807,5 +1823,63 @@ describe("CommandPalette", () => {
       expect(await rowIsThread("browser", 0)).toBe(true);
       await expectKeyboardOrderMatchesRenderOrder("browser");
     });
+
+    it("runs the row the arrow keys land on when its group is filed earlier than it was pushed", async () => {
+      // "Restart agent session" is pushed after Debug but filed under Actions,
+      // so it renders above "Select Next Lane", which this query also matches.
+      // Resolving the arrow index against the filtered list would land on that
+      // lane row instead and never reach Restart.
+      const restartSession = vi.fn(async () => ({ backgroundJobsStopped: 0 }));
+      (globalThis.window.ade as unknown as Record<string, unknown>).agentChat = { restartSession };
+      seedThreads(
+        [makeSession({ id: "chat-1", title: "a plan", toolType: "claude-chat" })],
+        { activeItemId: "chat-1" },
+      );
+
+      render(
+        <MemoryRouter>
+          <CommandPalette open onOpenChange={vi.fn()} />
+        </MemoryRouter>,
+      );
+      const input = screen.getByPlaceholderText(PALETTE_PLACEHOLDER);
+      fireEvent.change(input, { target: { value: "ne" } });
+      const restart = await screen.findByText("Restart agent session");
+      const rowIndex = paletteRows().findIndex((row) => row.contains(restart));
+
+      expect(rowIndex).toBeGreaterThan(0);
+      expect(restartSession).not.toHaveBeenCalled();
+      for (let step = 0; step < rowIndex; step += 1) {
+        fireEvent.keyDown(input, { key: "ArrowDown" });
+      }
+      fireEvent.keyDown(input, { key: "Enter" });
+      await waitFor(() => expect(restartSession).toHaveBeenCalledTimes(1));
+      expect(restartSession).toHaveBeenCalledWith({ sessionId: "chat-1" });
+    });
+  });
+});
+
+describe("thread index: a chat waiting on its subagent", () => {
+  it("reads Waiting while the subagent's wake is ahead, and Done once it is overdue", () => {
+    const wakeAt = Date.parse("2026-04-01T12:10:00.000Z");
+    const parent = makeSession({ id: "parent", toolType: "codex-chat", runtimeState: "idle" });
+    const helper = makeSession({
+      id: "helper",
+      toolType: "codex-chat",
+      runtimeState: "idle",
+      spawnKind: "subagent",
+      orchestrationParentSessionId: "parent",
+      nextWakeAt: new Date(wakeAt).toISOString(),
+    });
+    const parentLabel = (nowMs: number) => {
+      const entry = buildThreadIndex([parent, helper] as never, [], {}, null, nowMs)
+        .find((candidate) => candidate.session.id === "parent");
+      expect(entry, "parent is indexed").toBeTruthy();
+      return threadStatusPresentation(entry!.session, nowMs, entry!.subagentBusy)?.label;
+    };
+
+    expect(parentLabel(wakeAt - 60_000)).toBe("Waiting");
+    // The index is rebuilt at the overdue deadline with no new rows; the flag
+    // must follow the clock it was built with, not the moment of first build.
+    expect(parentLabel(wakeAt + 5 * 60_000)).toBe("Done");
   });
 });

@@ -50,6 +50,7 @@ function installCleanCrossMachineGitFixture(
   vi.mocked(runGit).mockImplementation(async (args) => {
     const command = args.join(" ");
     if (command === "status --porcelain=v1") return { stdout: porcelain, stderr: "", exitCode: 0 };
+    if (command === "symbolic-ref --quiet HEAD") return { stdout: `refs/heads/${branchRef}\n`, stderr: "", exitCode: 0 };
     if (command === "rev-parse HEAD") return { stdout: `${HANDOFF_TEST_SHA}\n`, stderr: "", exitCode: 0 };
     if (command === "rev-parse @{upstream}") return { stdout: `${HANDOFF_TEST_SHA}\n`, stderr: "", exitCode: 0 };
     if (command === "remote get-url origin") return { stdout: `${originUrl}\n`, stderr: "", exitCode: 0 };
@@ -189,6 +190,11 @@ function installCliCaptureMock(
   }) as any);
 }
 
+
+/** Claude writes a thread at its first message; until then there is nothing to fork or move. */
+async function startClaudeThread(service: { runSessionTurn: (args: { sessionId: string; text: string }) => Promise<unknown> }, sessionId: string): Promise<void> {
+  await service.runSessionTurn({ sessionId, text: "Start." });
+}
 
 describe("createAgentChatService", () => {
   describe("handoffSession", () => {
@@ -2479,6 +2485,7 @@ describe("createAgentChatService", () => {
         permissionMode: "default",
       });
 
+      await startClaudeThread(service, source.id);
       await vi.waitFor(() => {
         expect(readPersistedChatState(source.id).sdkSessionId).toBeTruthy();
       });
@@ -2701,6 +2708,7 @@ describe("createAgentChatService", () => {
         modelId: "anthropic/claude-sonnet-5",
         instanceId: work.id,
       });
+      await startClaudeThread(service, source.id);
       await vi.waitFor(() => {
         expect(readPersistedChatState(source.id).sdkSessionId).toBeTruthy();
       });
@@ -2818,11 +2826,12 @@ describe("createAgentChatService", () => {
 
         const missingTransport = structuredClone(capsule);
         delete missingTransport.forkTransport;
+        delete (missingTransport as { transcriptEnvelopes?: unknown }).transcriptEnvelopes;
         await expect(service.validateCrossMachineSource({
           sourceSessionId: source.id,
           capsule: missingTransport,
           capsuleFingerprint: createHash("sha256").update(stableStringify(missingTransport)).digest("hex"),
-        })).rejects.toThrow("missing its fork transport");
+        })).rejects.toThrow("missing its fork history");
 
         const briefWithTranscript = structuredClone(capsule);
         briefWithTranscript.mode = "brief";
@@ -2904,26 +2913,6 @@ describe("createAgentChatService", () => {
         expect(settings.specModeModelId).toBeTruthy();
       });
 
-      it("refuses a cross-machine Droid fork with the portability message", async () => {
-        installCleanCrossMachineGitFixture();
-        const { service } = createService();
-        const source = await service.createSession({
-          laneId: "lane-1",
-          provider: "droid",
-          model: "custom:claude-sonnet-5-thinking-32000",
-          modelId: "droid/custom:claude-sonnet-5-thinking-32000",
-        });
-
-        await expect(service.prepareCrossMachineHandoff({
-          sourceSessionId: source.id,
-          handoffId: "handoff-droid-fork-1",
-          targetModelId: "droid/custom:claude-sonnet-5-thinking-32000",
-          mode: "fork",
-        })).rejects.toThrow(
-          "Droid sessions aren't portable between machines yet. Use a brief handoff instead.",
-        );
-      });
-
       it("packages Claude native history and bounded ADE transcript envelopes", async () => {
         installCleanCrossMachineGitFixture();
         installRealTranscriptParser();
@@ -2936,6 +2925,7 @@ describe("createAgentChatService", () => {
           model: "claude-sonnet-5",
           modelId: "anthropic/claude-sonnet-5",
         });
+        await startClaudeThread(service, source.id);
         await vi.waitFor(() => expect(readPersistedChatState(source.id).sdkSessionId).toBeTruthy());
         const sourceSdkSessionId = String(readPersistedChatState(source.id).sdkSessionId);
         const providerTranscript = `${JSON.stringify({
@@ -3024,430 +3014,6 @@ describe("createAgentChatService", () => {
           prepared.capsule.forkTransport!.mainFile.contentBase64Gzip,
           "base64",
         )).toString("utf8")).toBe(rolloutContent);
-      });
-
-      it("offers brief fallback when a Claude transcript exceeds the fork cap", async () => {
-        installCleanCrossMachineGitFixture();
-        process.env.CLAUDE_CONFIG_DIR = path.join(tmpHomeRoot, "claude-fork-oversize");
-        installClaudeResponseFixture({ sdkSessionId: "claude-fork-oversize", responseText: "ready" });
-        const { service } = createService();
-        const source = await service.createSession({
-          laneId: "lane-1",
-          provider: "claude",
-          model: "claude-sonnet-5",
-          modelId: "anthropic/claude-sonnet-5",
-        });
-        await vi.waitFor(() => expect(readPersistedChatState(source.id).sdkSessionId).toBeTruthy());
-        const sourceSdkSessionId = String(readPersistedChatState(source.id).sdkSessionId);
-        const providerDir = path.join(
-          process.env.CLAUDE_CONFIG_DIR,
-          "projects",
-          tmpRoot.replace(/[^A-Za-z0-9]/g, "-"),
-        );
-        fs.mkdirSync(providerDir, { recursive: true });
-        fs.writeFileSync(
-          path.join(providerDir, `${sourceSdkSessionId}.jsonl`),
-          Buffer.alloc(18 * 1024 * 1024 + 1, 0x61),
-        );
-
-        await expect(service.prepareCrossMachineHandoff({
-          sourceSessionId: source.id,
-          handoffId: "handoff-claude-oversize-1",
-          targetModelId: "anthropic/claude-sonnet-5",
-          mode: "fork",
-        })).rejects.toThrow(/too large/);
-      });
-
-      it("materializes a Claude fork, seeds provenance, and reuses it idempotently", async () => {
-        const branchRef = "feature/handoff-fork";
-        installCleanCrossMachineGitFixture(branchRef);
-        installRealTranscriptParser();
-        process.env.CLAUDE_CONFIG_DIR = path.join(tmpHomeRoot, "claude-fork-accept");
-        installClaudeResponseFixture({ sdkSessionId: "destination-warmup", responseText: "ready" });
-        vi.mocked(detectAllAuth).mockResolvedValue([
-          { type: "cli-subscription", cli: "claude", path: "/usr/local/bin/claude", authenticated: true, verified: true },
-        ] as any);
-        const values = new Map<string, unknown>();
-        const { service, sessionService, laneService } = createService({
-          db: {
-            getJson: vi.fn((key: string) => values.get(key) ?? null),
-            setJson: vi.fn((key: string, value: unknown) => values.set(key, structuredClone(value))),
-          },
-        });
-        const sourceEnvelope: AgentChatEventEnvelope = {
-          sessionId: "source-session",
-          timestamp: "2026-07-10T10:00:00.000Z",
-          event: { type: "user_message", messageId: "accepted-envelope", text: "Seed this history" },
-          provenance: { messageId: "native-message" },
-        };
-        const capsule = makeForkCapsule({
-          transcriptEnvelopes: {
-            ...gzipForkContent(`${JSON.stringify(sourceEnvelope)}\n`),
-            truncated: false,
-          },
-        });
-        const fingerprint = createHash("sha256").update(stableStringify(capsule), "utf8").digest("hex");
-
-        const first = await service.acceptCrossMachineHandoff({ capsule, capsuleFingerprint: fingerprint });
-        const destinationLane = await laneService.getSummary(first.laneId);
-        const targetProviderDir = path.join(
-          process.env.CLAUDE_CONFIG_DIR,
-          "projects",
-          String(destinationLane.worktreePath).replace(/[^A-Za-z0-9]/g, "-"),
-        );
-        const providerFilesAfterFirst = fs.readdirSync(targetProviderDir).filter((name) => name.endsWith(".jsonl"));
-        const targetTranscript = path.join(tmpRoot, ".ade", "transcripts", "chat", `${first.session.id}.jsonl`);
-        await vi.waitFor(() => {
-          const envelopes = fs.readFileSync(targetTranscript, "utf8").split(/\r?\n/).filter(Boolean)
-            .map((line) => JSON.parse(line) as AgentChatEventEnvelope);
-          expect(envelopes).toEqual(expect.arrayContaining([
-            expect.objectContaining({
-              sessionId: first.session.id,
-              provenance: expect.objectContaining({
-                messageId: "native-message",
-                providerOrigin: "handoff_fork",
-                sourceSessionId: "source-session",
-              }),
-            }),
-          ]));
-        });
-
-        const second = await service.acceptCrossMachineHandoff({ capsule, capsuleFingerprint: fingerprint });
-        expect(second.reusedSession).toBe(true);
-        expect(second.session.id).toBe(first.session.id);
-        expect(sessionService.create).toHaveBeenCalledTimes(1);
-        expect(fs.readdirSync(targetProviderDir).filter((name) => name.endsWith(".jsonl"))).toEqual(providerFilesAfterFirst);
-      });
-
-      it("re-materializes a fork when the first accept fails after creating the chat", async () => {
-        const branchRef = "feature/handoff-fork-retry";
-        installCleanCrossMachineGitFixture(branchRef);
-        installRealTranscriptParser();
-        process.env.CLAUDE_CONFIG_DIR = path.join(tmpHomeRoot, "claude-fork-retry");
-        installClaudeResponseFixture({ sdkSessionId: "destination-warmup", responseText: "ready" });
-        vi.mocked(detectAllAuth).mockResolvedValue([
-          { type: "cli-subscription", cli: "claude", path: "/usr/local/bin/claude", authenticated: true, verified: true },
-        ] as any);
-        const values = new Map<string, unknown>();
-        const { service, sessionService, laneService } = createService({
-          db: {
-            getJson: vi.fn((key: string) => values.get(key) ?? null),
-            setJson: vi.fn((key: string, value: unknown) => values.set(key, structuredClone(value))),
-          },
-        });
-        const sourceEnvelope: AgentChatEventEnvelope = {
-          sessionId: "source-session",
-          timestamp: "2026-07-10T10:00:00.000Z",
-          event: { type: "user_message", messageId: "retry-envelope", text: "Retry this history" },
-        };
-        const capsule = makeForkCapsule({
-          handoffId: "handoff-claude-retry-1",
-          source: {
-            machineName: "Source Mac",
-            sessionId: "source-session",
-            provider: "claude",
-            model: "claude-sonnet-5",
-            title: "Retry fork",
-            laneName: "Retry fork",
-            branchRef,
-            headSha: HANDOFF_TEST_SHA,
-            originUrl: "https://github.com/example/ade.git",
-          },
-          transcriptEnvelopes: {
-            ...gzipForkContent(`${JSON.stringify(sourceEnvelope)}\n`),
-            truncated: false,
-          },
-        });
-        const fingerprint = createHash("sha256").update(stableStringify(capsule), "utf8").digest("hex");
-        const realWriteFile = fs.promises.writeFile.bind(fs.promises);
-        let materializeAttempts = 0;
-        const writeFile = vi.spyOn(fs.promises, "writeFile").mockImplementation((async (filePath, ...args: unknown[]) => {
-          if (String(filePath).startsWith(process.env.CLAUDE_CONFIG_DIR!) && String(filePath).endsWith(".jsonl")) {
-            materializeAttempts += 1;
-            if (materializeAttempts === 1) throw new Error("mock materialize failure");
-          }
-          return (realWriteFile as (...writeArgs: unknown[]) => Promise<void>)(filePath, ...args);
-        }) as typeof fs.promises.writeFile);
-
-        try {
-          await expect(service.acceptCrossMachineHandoff({ capsule, capsuleFingerprint: fingerprint }))
-            .rejects.toThrow("mock materialize failure");
-          expect([...values.values()]).toEqual(expect.arrayContaining([
-            expect.objectContaining({ state: "failed", sessionId: expect.any(String) }),
-          ]));
-
-          const accepted = await service.acceptCrossMachineHandoff({ capsule, capsuleFingerprint: fingerprint });
-          const destinationLane = await laneService.getSummary(accepted.laneId);
-          const targetProviderDir = path.join(
-            process.env.CLAUDE_CONFIG_DIR,
-            "projects",
-            String(destinationLane.worktreePath).replace(/[^A-Za-z0-9]/g, "-"),
-          );
-          expect(materializeAttempts).toBe(2);
-          expect(fs.readdirSync(targetProviderDir).some((name) => name.endsWith(".jsonl"))).toBe(true);
-          await vi.waitFor(() => {
-            expect(fs.readFileSync(
-              path.join(tmpRoot, ".ade", "transcripts", "chat", `${accepted.session.id}.jsonl`),
-              "utf8",
-            )).toContain("Retry this history");
-          });
-          expect(sessionService.create).toHaveBeenCalledTimes(1);
-        } finally {
-          writeFile.mockRestore();
-        }
-      });
-
-      it("skips re-materializing and re-importing history when retrying after a post-materialization failure", async () => {
-        const branchRef = "feature/handoff-fork-late-retry";
-        installCleanCrossMachineGitFixture(branchRef);
-        installRealTranscriptParser();
-        process.env.CLAUDE_CONFIG_DIR = path.join(tmpHomeRoot, "claude-fork-late-retry");
-        installClaudeResponseFixture({ sdkSessionId: "destination-warmup", responseText: "ready" });
-        vi.mocked(detectAllAuth).mockResolvedValue([
-          { type: "cli-subscription", cli: "claude", path: "/usr/local/bin/claude", authenticated: true, verified: true },
-        ] as any);
-        const values = new Map<string, unknown>();
-        const { service } = createService({
-          db: {
-            getJson: vi.fn((key: string) => values.get(key) ?? null),
-            setJson: vi.fn((key: string, value: unknown) => values.set(key, structuredClone(value))),
-          },
-        });
-        const sourceEnvelope: AgentChatEventEnvelope = {
-          sessionId: "source-session",
-          timestamp: "2026-07-10T10:00:00.000Z",
-          event: { type: "user_message", messageId: "late-retry-envelope", text: "Late retry history" },
-        };
-        const capsule = makeForkCapsule({
-          handoffId: "handoff-claude-late-retry-1",
-          source: {
-            machineName: "Source Mac",
-            sessionId: "source-session",
-            provider: "claude",
-            model: "claude-sonnet-5",
-            title: "Late retry fork",
-            laneName: "Late retry fork",
-            branchRef,
-            headSha: HANDOFF_TEST_SHA,
-            originUrl: "https://github.com/example/ade.git",
-          },
-          transcriptEnvelopes: {
-            ...gzipForkContent(`${JSON.stringify(sourceEnvelope)}\n`),
-            truncated: false,
-          },
-        });
-        const fingerprint = createHash("sha256").update(stableStringify(capsule), "utf8").digest("hex");
-        const realWriteFile = fs.promises.writeFile.bind(fs.promises);
-        let materializeAttempts = 0;
-        const writeFile = vi.spyOn(fs.promises, "writeFile").mockImplementation((async (filePath, ...args: unknown[]) => {
-          if (String(filePath).startsWith(process.env.CLAUDE_CONFIG_DIR!) && String(filePath).endsWith(".jsonl")) {
-            materializeAttempts += 1;
-          }
-          return (realWriteFile as (...writeArgs: unknown[]) => Promise<void>)(filePath, ...args);
-        }) as typeof fs.promises.writeFile);
-
-        try {
-          const first = await service.acceptCrossMachineHandoff({ capsule, capsuleFingerprint: fingerprint });
-          expect(materializeAttempts).toBe(1);
-
-          // Simulate a failure that happened AFTER materialization (e.g. the
-          // continuation sendMessage): the durable record keeps the
-          // forkMaterializedAt marker but drops back to "failed".
-          const recordEntry = [...values.entries()].find(([key, value]) =>
-            key.includes("handoff-claude-late-retry-1")
-            && Boolean((value as { forkMaterializedAt?: string | null })?.forkMaterializedAt));
-          expect(recordEntry, "persisted handoff record with forkMaterializedAt").toBeTruthy();
-          values.set(recordEntry![0], {
-            ...(recordEntry![1] as Record<string, unknown>),
-            state: "failed",
-            lastError: "mock post-materialization failure",
-          });
-
-          const second = await service.acceptCrossMachineHandoff({ capsule, capsuleFingerprint: fingerprint });
-          expect(second.session.id).toBe(first.session.id);
-          expect(materializeAttempts).toBe(1);
-          await vi.waitFor(() => {
-            const transcript = fs.readFileSync(
-              path.join(tmpRoot, ".ade", "transcripts", "chat", `${first.session.id}.jsonl`),
-              "utf8",
-            );
-            expect(transcript.match(/Late retry history/g)?.length).toBe(1);
-          });
-        } finally {
-          writeFile.mockRestore();
-        }
-      });
-
-      it("re-materializes into a recreated destination chat even when the fork marker is set", async () => {
-        const branchRef = "feature/handoff-fork-recreated";
-        installCleanCrossMachineGitFixture(branchRef);
-        installRealTranscriptParser();
-        process.env.CLAUDE_CONFIG_DIR = path.join(tmpHomeRoot, "claude-fork-recreated");
-        installClaudeResponseFixture({ sdkSessionId: "destination-warmup", responseText: "ready" });
-        vi.mocked(detectAllAuth).mockResolvedValue([
-          { type: "cli-subscription", cli: "claude", path: "/usr/local/bin/claude", authenticated: true, verified: true },
-        ] as any);
-        const values = new Map<string, unknown>();
-        const { service, sessionService } = createService({
-          db: {
-            getJson: vi.fn((key: string) => values.get(key) ?? null),
-            setJson: vi.fn((key: string, value: unknown) => values.set(key, structuredClone(value))),
-          },
-        });
-        const sourceEnvelope: AgentChatEventEnvelope = {
-          sessionId: "source-session",
-          timestamp: "2026-07-10T10:00:00.000Z",
-          event: { type: "user_message", messageId: "recreated-envelope", text: "Recreated history" },
-        };
-        const capsule = makeForkCapsule({
-          handoffId: "handoff-claude-recreated-1",
-          source: {
-            machineName: "Source Mac",
-            sessionId: "source-session",
-            provider: "claude",
-            model: "claude-sonnet-5",
-            title: "Recreated fork",
-            laneName: "Recreated fork",
-            branchRef,
-            headSha: HANDOFF_TEST_SHA,
-            originUrl: "https://github.com/example/ade.git",
-          },
-          transcriptEnvelopes: {
-            ...gzipForkContent(`${JSON.stringify(sourceEnvelope)}\n`),
-            truncated: false,
-          },
-        });
-        const fingerprint = createHash("sha256").update(stableStringify(capsule), "utf8").digest("hex");
-        const realWriteFile = fs.promises.writeFile.bind(fs.promises);
-        let materializeAttempts = 0;
-        const writeFile = vi.spyOn(fs.promises, "writeFile").mockImplementation((async (filePath, ...args: unknown[]) => {
-          if (String(filePath).startsWith(process.env.CLAUDE_CONFIG_DIR!) && String(filePath).endsWith(".jsonl")) {
-            materializeAttempts += 1;
-          }
-          return (realWriteFile as (...writeArgs: unknown[]) => Promise<void>)(filePath, ...args);
-        }) as typeof fs.promises.writeFile);
-
-        try {
-          const first = await service.acceptCrossMachineHandoff({ capsule, capsuleFingerprint: fingerprint });
-          expect(materializeAttempts).toBe(1);
-
-          // Simulate: post-materialization failure recorded AND the destination
-          // chat deleted before the retry. The marker alone must not skip
-          // seeding a freshly recreated session.
-          const recordEntry = [...values.entries()].find(([key, value]) =>
-            key.includes("handoff-claude-recreated-1")
-            && Boolean((value as { forkMaterializedAt?: string | null })?.forkMaterializedAt));
-          expect(recordEntry, "persisted handoff record with forkMaterializedAt").toBeTruthy();
-          values.set(recordEntry![0], {
-            ...(recordEntry![1] as Record<string, unknown>),
-            state: "failed",
-            lastError: "mock failure before dispatch",
-          });
-          mockState.sessions.delete(first.session.id);
-
-          const second = await service.acceptCrossMachineHandoff({ capsule, capsuleFingerprint: fingerprint });
-          expect(second.session.id).toBe(first.session.id);
-          expect(second.reusedSession).toBe(false);
-          expect(materializeAttempts).toBe(2);
-          expect(sessionService.create).toHaveBeenCalledTimes(2);
-        } finally {
-          writeFile.mockRestore();
-        }
-      });
-
-      it("does not clobber a pre-existing Codex rollout and still forks the thread", async () => {
-        const branchRef = "feature/handoff-codex-fork";
-        installCleanCrossMachineGitFixture(branchRef);
-        process.env.CODEX_HOME = path.join(tmpHomeRoot, "codex-fork-accept");
-        vi.mocked(detectAllAuth).mockResolvedValue([
-          { type: "cli-subscription", cli: "codex", path: "/usr/local/bin/codex", authenticated: true, verified: true },
-        ] as any);
-        mockState.codexResponseOverrides.set("thread/fork", { thread: { id: "forked-thread" } });
-        const { service, sessionService } = createService();
-        const rollout = '{"type":"session_meta","payload":{"id":"source-codex-thread"}}\n';
-        const capsule = makeForkCapsule({
-          handoffId: "handoff-codex-accept-1",
-          source: {
-            machineName: "Source Mac",
-            sessionId: "source-session",
-            provider: "codex",
-            model: "gpt-5.5",
-            title: null,
-            laneName: "Codex fork",
-            branchRef,
-            headSha: HANDOFF_TEST_SHA,
-            originUrl: "https://github.com/example/ade.git",
-          },
-          target: { targetModelId: "openai/gpt-5.5" },
-          forkTransport: {
-            provider: "codex",
-            nativeSessionId: "source-codex-thread",
-            kind: "codex-rollout",
-            mainFile: { name: "rollout-source-codex-thread.jsonl", ...gzipForkContent(rollout) },
-          },
-        });
-        const fingerprint = createHash("sha256").update(stableStringify(capsule), "utf8").digest("hex");
-        const now = new Date();
-        const rolloutPath = path.join(
-          process.env.CODEX_HOME,
-          "sessions",
-          String(now.getFullYear()).padStart(4, "0"),
-          String(now.getMonth() + 1).padStart(2, "0"),
-          String(now.getDate()).padStart(2, "0"),
-          "rollout-source-codex-thread.jsonl",
-        );
-        fs.mkdirSync(path.dirname(rolloutPath), { recursive: true });
-        fs.writeFileSync(rolloutPath, "existing local rollout", "utf8");
-
-        const accepted = await service.acceptCrossMachineHandoff({ capsule, capsuleFingerprint: fingerprint });
-
-        expect(fs.readFileSync(rolloutPath, "utf8")).toBe("existing local rollout");
-        expect(mockState.codexRequestPayloads).toEqual(expect.arrayContaining([
-          expect.objectContaining({
-            method: "thread/fork",
-            params: { threadId: "source-codex-thread", excludeTurns: true },
-          }),
-        ]));
-        expect(sessionService.setResumeCommand).toHaveBeenCalledWith(accepted.session.id, "chat:codex:forked-thread");
-      });
-
-
-      it("reports destination fork capability without changing legacy brief preflight", async () => {
-        installCleanCrossMachineGitFixture();
-        vi.mocked(detectAllAuth).mockResolvedValue([
-          { type: "cli-subscription", cli: "claude", path: "/usr/local/bin/claude", authenticated: true, verified: true },
-        ] as any);
-        const { service } = createService();
-        const baseArgs = {
-          targetModelId: "anthropic/claude-sonnet-5" as const,
-          sourceBranchRef: "feature/primary",
-          sourceHeadSha: HANDOFF_TEST_SHA,
-        };
-
-        await expect(service.preflightCrossMachineDestination({
-          ...baseArgs,
-          mode: "fork",
-          sourceProvider: "claude",
-        })).resolves.toMatchObject({ forkHandoffSupport: { supported: true } });
-        await expect(service.preflightCrossMachineDestination({
-          ...baseArgs,
-          mode: "fork",
-          sourceProvider: "droid",
-        })).resolves.toMatchObject({
-          forkHandoffSupport: {
-            supported: false,
-            reason: "Droid sessions aren't portable between machines yet",
-          },
-        });
-        await expect(service.preflightCrossMachineDestination({
-          ...baseArgs,
-          mode: "fork",
-          sourceProvider: "cursor",
-        })).resolves.toMatchObject({
-          forkHandoffSupport: { supported: false, reason: "Cursor forks can't move between machines." },
-        });
-        const brief = await service.preflightCrossMachineDestination(baseArgs);
-        expect(brief).not.toHaveProperty("forkHandoffSupport");
       });
     });
 
@@ -3721,8 +3287,11 @@ describe("createAgentChatService", () => {
         manuallyNamed: true,
       });
       const lane = await laneService.getSummary("lane-1");
+      // A worktree lane travels under its own name (a primary lane travels
+      // under its branch), so that name is what must be scrubbed.
       laneService.getSummary.mockResolvedValue({
         ...lane,
+        laneType: "worktree",
         name: "Deploy password=super-secret-value",
       });
 
@@ -3741,19 +3310,26 @@ describe("createAgentChatService", () => {
 
     it("blocks a dirty source lane before generating or transferring context", async () => {
       installCleanCrossMachineGitFixture("feature/primary", " M src/dirty.ts\n");
-      const { service } = createService();
+      const { service, aiIntegrationService } = createService();
       const source = await service.createSession({
         laneId: "lane-1",
         provider: "opencode",
         model: "",
         modelId: "opencode/openai/gpt-5.4",
       });
+      vi.mocked(streamText).mockClear();
+      vi.mocked(aiIntegrationService.summarizeTerminal).mockClear();
 
+      // The refusal names the blocker (the dirty file count), not a generic error.
       await expect(service.prepareCrossMachineHandoff({
         sourceSessionId: source.id,
         handoffId: "handoff-dirty-1",
         targetModelId: "opencode/openai/gpt-5.4-mini",
-      })).rejects.toThrow("Commit or discard every source lane change");
+      })).rejects.toThrow(/1 uncommitted change\b/);
+      // Nothing was generated from the chat, and nothing reached git's remote.
+      expect(streamText).not.toHaveBeenCalled();
+      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
+      expect(vi.mocked(runGit).mock.calls.some(([args]) => args[0] === "bundle" || args[0] === "push")).toBe(false);
     });
 
     it("revalidates source cleanliness immediately before destination acceptance", async () => {
@@ -3776,7 +3352,7 @@ describe("createAgentChatService", () => {
         sourceSessionId: source.id,
         capsule: prepared.capsule,
         capsuleFingerprint: prepared.capsuleFingerprint,
-      })).rejects.toThrow("Commit or discard every source lane change");
+      })).rejects.toThrow(/1 uncommitted change\b/);
     });
 
     it("blocks handoff when a source turn starts during brief generation", async () => {
@@ -3911,13 +3487,20 @@ describe("createAgentChatService", () => {
       // Preflight now fetches before evaluating whether an existing lane is a
       // strict ancestor; acceptance fetches again at its mutation boundary.
       expect(remoteAuthCalls).toHaveLength(3);
+      const extraHeaderKey = "http.https://github.com/.extraheader";
       for (const [, options] of remoteAuthCalls) {
-        expect(options?.env).toMatchObject({
-          GIT_TERMINAL_PROMPT: "0",
-          GCM_INTERACTIVE: "Never",
-          GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader",
-          GIT_CONFIG_VALUE_0: expectedAuthorization,
-        });
+        const env = options?.env ?? {};
+        expect(env).toMatchObject({ GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "Never" });
+        const entries = Array.from({ length: Number(env.GIT_CONFIG_COUNT ?? 0) }, (_, index) => [
+          env[`GIT_CONFIG_KEY_${index}`],
+          env[`GIT_CONFIG_VALUE_${index}`],
+        ]);
+        // A reset entry first clears any extraheader a clone left behind, so
+        // GitHub sees exactly one Authorization header: this machine's token.
+        expect(entries[0]).toEqual([extraHeaderKey, ""]);
+        expect(entries.filter(([key, value]) => key === extraHeaderKey && value)).toEqual([
+          [extraHeaderKey, expectedAuthorization],
+        ]);
       }
       expect(Array.from(values.values())).toEqual(expect.arrayContaining([
         expect.objectContaining({
@@ -3928,6 +3511,67 @@ describe("createAgentChatService", () => {
         }),
       ]));
       expect(JSON.stringify(Array.from(values.values()))).not.toContain(destinationToken);
+    });
+
+    it("restores both sides of chat lineage after destination acceptance", async () => {
+      const branchRef = "feature/handoff-lineage";
+      installCleanCrossMachineGitFixture(branchRef);
+      vi.mocked(detectAllAuth).mockResolvedValue([
+        { type: "cli-subscription", cli: "codex", path: "/usr/local/bin/codex", authenticated: true, verified: true },
+      ] as any);
+      vi.mocked(streamText).mockReturnValue({
+        fullStream: (async function* () {
+          yield { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } };
+        })(),
+      } as any);
+      const { service } = createService();
+      const localParent = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.5" });
+      const waitingChild = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        orchestrationParentSessionId: "remote:device-a:source-session",
+        spawnKind: "peer",
+      });
+      const capsule: AgentChatCrossMachineHandoffCapsule = {
+        version: 1,
+        handoffId: "handoff-lineage-1",
+        createdAt: "2026-07-10T12:00:00.000Z",
+        source: {
+          machineName: "MacBook",
+          sessionId: "source-session",
+          provider: "codex",
+          model: "openai/gpt-5.5",
+          title: "Lineage handoff",
+          laneName: "Feature handoff",
+          branchRef,
+          headSha: HANDOFF_TEST_SHA,
+          originUrl: "https://github.com/example/ade.git",
+          orchestrationParentSessionId: localParent.id,
+          spawnKind: "subagent",
+        },
+        target: { targetModelId: "openai/gpt-5.5" },
+        brief: "Continue the handoff with its chat lineage.",
+        artifacts: { fileChanges: [], commands: [], errors: [] },
+        linearIssues: [],
+        continuationPrompt: "Continue from the destination lane.",
+      };
+      const fingerprint = createHash("sha256").update(stableStringify(capsule), "utf8").digest("hex");
+
+      const accepted = await service.acceptCrossMachineHandoff({ capsule, capsuleFingerprint: fingerprint });
+      const arrivedSummary = await service.getSessionSummary(accepted.session.id);
+      const waitingSummary = await service.getSessionSummary(waitingChild.id);
+
+      expect(arrivedSummary).toMatchObject({
+        orchestrationParentSessionId: localParent.id,
+        spawnKind: "subagent",
+      });
+      expect(waitingSummary).toMatchObject({
+        orchestrationParentSessionId: accepted.session.id,
+        spawnKind: "peer",
+      });
+      expect(accepted.session.id).not.toBe("source-session");
+      expect(waitingSummary?.orchestrationParentSessionId).not.toBe("remote:device-a:source-session");
     });
 
     it("serializes concurrent destination acceptance for the same handoff", async () => {

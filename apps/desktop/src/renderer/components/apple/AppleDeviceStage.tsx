@@ -197,7 +197,7 @@ export function AppleDeviceStage({
             onDimensions={handleDimensions}
             onFrame={onFrame}
             onCanvas={setCanvas}
-            className={flat ? "ring-1 ring-inset ring-white/[0.06]" : undefined}
+            className={flat ? "ring-1 ring-inset ring-fg/[0.06]" : undefined}
           />
         ) : null}
       </div>

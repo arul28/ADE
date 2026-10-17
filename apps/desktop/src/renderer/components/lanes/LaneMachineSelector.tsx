@@ -3,8 +3,8 @@ import { cn } from "../ui/cn";
 import { formatBytes } from "../../lib/format";
 import { LABEL_CLASS_NAME, SECTION_CLASS_NAME, CARD_CLASS_NAME, CARD_ACTIVE_CLASS_NAME } from "./laneDialogTokens";
 import {
+  autoLaneMachine,
   canCreateLaneOnMachine,
-  chooseLaneMachineByLoad,
   isLowLaneMachineDisk,
   THIS_MACHINE_ID,
   type LaneMachineOption,
@@ -39,9 +39,7 @@ export function LaneMachineSelector({
    * to balance, so the card is absent.
    */
   const eligibleCount = machines.filter(canCreateLaneOnMachine).length;
-  const autoMachine = eligibleCount >= 2
-    ? machines.find((machine) => machine.id === chooseLaneMachineByLoad(machines)) ?? null
-    : null;
+  const autoMachine = autoLaneMachine(machines);
   return (
     <section className={SECTION_CLASS_NAME} data-tour="lanes.createDialog.machine">
       <span className={LABEL_CLASS_NAME}>Create on</span>
@@ -64,7 +62,7 @@ export function LaneMachineSelector({
           )}
         >
           <span
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-white/[0.06] text-muted-fg"
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-fg/[0.06] text-muted-fg"
             aria-hidden="true"
           >
             <Scales size={14} weight="duotone" />
@@ -133,7 +131,7 @@ function LaneMachineCard({
     >
       <div className="flex items-start gap-2">
         <span
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-white/[0.06] text-muted-fg"
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-fg/[0.06] text-muted-fg"
           aria-hidden="true"
         >
           <Icon size={14} weight="duotone" />

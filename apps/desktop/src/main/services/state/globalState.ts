@@ -126,6 +126,12 @@ export type GlobalState = {
    */
   claudeResumeReturnDismissed?: boolean;
   /**
+   * False once the person ticked "Don't ask again" on the quit confirmation.
+   * Absent means ask. Settings turns it back on. Never silences the warning
+   * shown when quitting would stop running agents.
+   */
+  askBeforeQuit?: boolean;
+  /**
    * "Agents can use the ADE browser" and the lanes and chats the user allowed.
    * Machine-wide because the browser's signed-in profile is one per install.
    * Absent: every agent may use it (the default).
@@ -139,12 +145,26 @@ export type GlobalState = {
 
 export function readGlobalState(filePath: string): GlobalState {
   try {
-    const raw = fs.readFileSync(filePath, "utf8");
-    const parsed = JSON.parse(raw) as GlobalState;
-    return parsed && typeof parsed === "object" ? parsed : {};
+    return readGlobalStateForUpdate(filePath);
   } catch {
     return {};
   }
+}
+
+/**
+ * `readGlobalState` for a read-modify-write: a missing file is `{}`, but an
+ * unreadable or corrupt one throws, so the write cannot wipe what it held.
+ */
+export function readGlobalStateForUpdate(filePath: string): GlobalState {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(filePath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw error;
+  }
+  const parsed = JSON.parse(raw) as GlobalState;
+  return parsed && typeof parsed === "object" ? parsed : {};
 }
 
 export function writeGlobalState(filePath: string, state: GlobalState): void {

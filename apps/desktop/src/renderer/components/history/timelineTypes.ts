@@ -1,5 +1,6 @@
 import type { OperationRecord } from "../../../shared/types";
 import type { LaneMachine } from "../../state/laneMachineRouting";
+import type { EventIconName } from "./eventIcons";
 import type { EventCategory, EventImportance, NodeShape } from "./eventTaxonomy";
 
 // ── History surface (activity timeline vs git commit graph) ───────
@@ -32,8 +33,8 @@ export type TimelineEvent = TimelineRecord & {
   label: string;
   /** Event category for grouping/filtering */
   category: EventCategory;
-  /** Icon name from Phosphor */
-  iconName: string;
+  /** Key of EVENT_ICONS (eventIcons.ts) */
+  iconName: EventIconName;
   /** Category color */
   color: string;
   /** Node shape for graph rendering */

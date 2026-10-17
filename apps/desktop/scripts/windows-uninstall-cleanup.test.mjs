@@ -408,6 +408,57 @@ test("Windows install setup compensates shim and startup state when service regi
   assert.equal(fs.existsSync(cleanupMarker), true);
 });
 
+// An update's installer must not abort: the update flow already removed the
+// service, and NSIS does not relaunch ADE after Abort, so an abort here left
+// the machine with no brain and no ADE window.
+test("Windows update setup restores the previous shim and lets the update finish when the shim step fails", {
+  skip: process.platform !== "win32",
+}, (t) => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade update setup "));
+  t.after(() => removeTempRoot(tempRoot));
+  const installDir = path.join(tempRoot, "ADE Beta");
+  const cliRoot = path.join(installDir, "resources", "ade-cli");
+  const cliBin = path.join(cliRoot, "bin");
+  const localAppData = path.join(tempRoot, "local app data");
+  const targetShim = path.join(localAppData, "ADE", "bin", "ade-beta.cmd");
+  const cliCalls = path.join(tempRoot, "cli-calls.txt");
+  const previousShim = "@echo off\r\necho previous healthy shim\r\n";
+  fs.mkdirSync(cliBin, { recursive: true });
+  fs.mkdirSync(path.dirname(targetShim), { recursive: true });
+  fs.copyFileSync(process.execPath, path.join(installDir, "ADE Beta.exe"));
+  fs.copyFileSync(cleanupScript, path.join(cliRoot, "windows-uninstall-cleanup.ps1"));
+  fs.writeFileSync(targetShim, previousShim);
+  fs.writeFileSync(path.join(cliBin, "ade-beta.cmd"), `@echo off\r\necho %*>> "${cliCalls}"\r\nexit /b 17\r\n`);
+  fs.writeFileSync(path.join(cliRoot, "cli.cjs"), "");
+  fs.writeFileSync(path.join(cliRoot, "install-path.cmd"), [
+    "@echo off",
+    '> "%~1" echo half-written shim',
+    "exit /b 3",
+  ].join("\r\n"));
+
+  const result = spawnSync("powershell.exe", [
+    "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+    "-File", installSetupScript,
+    "-InstallDir", installDir,
+    "-AppExecutableName", "ADE Beta.exe",
+    "-PackageChannel", "beta",
+    "-Updating",
+  ], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      LOCALAPPDATA: localAppData,
+      USERPROFILE: path.join(tempRoot, "user profile"),
+    },
+  });
+
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  assert.match(result.stdout + result.stderr, /exited with code 3/i);
+  assert.equal(fs.readFileSync(targetShim, "utf8"), previousShim);
+  // An update never touches the service from here; the relaunched app does.
+  assert.equal(fs.existsSync(cliCalls), false);
+});
+
 test("Windows failed repair restores the previous shim and startup service", {
   skip: process.platform !== "win32",
 }, (t) => {

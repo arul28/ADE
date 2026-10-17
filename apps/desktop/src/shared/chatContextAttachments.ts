@@ -1,5 +1,7 @@
 import type { AgentChatContextAttachment, LaneGitHubIssue, LaneLinearIssue } from "./types";
+import type { LaneJiraIssue } from "./types/jira";
 import { parseLaneGitHubIssueValue } from "./laneGitHubIssue";
+import { parseLaneJiraIssueValue } from "./laneJiraIssue";
 import { parseLaneLinearIssueValue } from "./laneLinearIssue";
 
 export function chatContextAttachmentKey(attachment: AgentChatContextAttachment): string {
@@ -8,6 +10,8 @@ export function chatContextAttachmentKey(attachment: AgentChatContextAttachment)
       return `linear:${attachment.issue.id}`;
     case "github_issue":
       return `github:${attachment.issue.id}`;
+    case "jira_issue":
+      return `jira:${attachment.issue.id}`;
     default: {
       const exhaustive: never = attachment;
       return exhaustive;
@@ -33,6 +37,18 @@ export function makeGitHubIssueContextAttachment(
 ): AgentChatContextAttachment {
   return {
     type: "github_issue",
+    issue,
+    source,
+    attachedAt: new Date().toISOString(),
+  };
+}
+
+export function makeJiraIssueContextAttachment(
+  issue: LaneJiraIssue,
+  source: "manual" | "lane_link" = "manual",
+): AgentChatContextAttachment {
+  return {
+    type: "jira_issue",
     issue,
     source,
     attachedAt: new Date().toISOString(),
@@ -93,6 +109,17 @@ export function normalizeChatContextAttachments(value: unknown): AgentChatContex
         source: record.source === "lane_link" ? "lane_link" : "manual",
         attachedAt: readNullableString(record.attachedAt) ?? undefined,
       });
+      continue;
+    }
+    if (record.type === "jira_issue") {
+      const issue = parseLaneJiraIssueValue(record.issue);
+      if (!issue) continue;
+      out.push({
+        type: "jira_issue",
+        issue,
+        source: record.source === "lane_link" ? "lane_link" : "manual",
+        attachedAt: readNullableString(record.attachedAt) ?? undefined,
+      });
     }
   }
   return mergeChatContextAttachments([], out);
@@ -124,6 +151,10 @@ function wrapUntrustedLinearText(value: string): string {
 
 function wrapUntrustedGitHubText(value: string): string {
   return `<untrusted-data source="github">${escapeUntrustedXml(value)}</untrusted-data>`;
+}
+
+function wrapUntrustedJiraText(value: string): string {
+  return `<untrusted-data source="jira">${escapeUntrustedXml(value)}</untrusted-data>`;
 }
 
 function formatLinearIssueContext(issue: LaneLinearIssue): string {
@@ -171,6 +202,26 @@ function formatGitHubIssueContext(issue: LaneGitHubIssue): string {
   ].filter((line): line is string => Boolean(line)).join("\n");
 }
 
+function formatJiraIssueContext(issue: LaneJiraIssue): string {
+  const labels = issue.labels.filter((label) => label.trim().length > 0).join(", ");
+  const description = issue.description?.trim();
+  return [
+    `- Provider: Jira`,
+    `- Identifier: ${wrapUntrustedJiraText(issue.key)}`,
+    `- Jira issue id: ${wrapUntrustedJiraText(issue.id)}`,
+    `- Site: ${wrapUntrustedJiraText(issue.siteUrl)}`,
+    `- Project: ${wrapUntrustedJiraText(issue.projectKey)}`,
+    `- Title: ${wrapUntrustedJiraText(issue.title)}`,
+    `- Type: ${wrapUntrustedJiraText(issue.issueTypeName)}`,
+    `- State: ${wrapUntrustedJiraText(issue.statusName)} (${issue.statusCategory})`,
+    issue.priorityName ? `- Priority: ${wrapUntrustedJiraText(issue.priorityName)}` : null,
+    issue.assigneeName ? `- Assignee: ${wrapUntrustedJiraText(issue.assigneeName)}` : `- Assignee: Unassigned`,
+    labels ? `- Labels: ${wrapUntrustedJiraText(labels)}` : null,
+    `- URL: ${wrapUntrustedJiraText(issue.url)}`,
+    description ? `- Description:\n${wrapUntrustedJiraText(description)}` : null,
+  ].filter((line): line is string => Boolean(line)).join("\n");
+}
+
 export function buildChatContextAttachmentPrompt(
   contextAttachments: AgentChatContextAttachment[],
 ): string {
@@ -182,6 +233,10 @@ export function buildChatContextAttachmentPrompt(
   const github = contextAttachments.filter(
     (entry): entry is Extract<AgentChatContextAttachment, { type: "github_issue" }> =>
       entry.type === "github_issue",
+  );
+  const jira = contextAttachments.filter(
+    (entry): entry is Extract<AgentChatContextAttachment, { type: "jira_issue" }> =>
+      entry.type === "jira_issue",
   );
   const sections: string[] = [];
   if (linear.length) {
@@ -201,6 +256,16 @@ export function buildChatContextAttachmentPrompt(
       ...github.map((attachment, index) => [
         `GitHub issue ${index + 1}:`,
         formatGitHubIssueContext(attachment.issue),
+      ].join("\n")),
+    ].join("\n\n"));
+  }
+  if (jira.length) {
+    sections.push([
+      "Attached Jira issue context:",
+      "ADE stores Jira credentials on the connected ADE host; do not ask the user for an API token. Use the identifiers below, and refresh through ADE Jira tools only if current state matters.",
+      ...jira.map((attachment, index) => [
+        `Jira issue ${index + 1}:`,
+        formatJiraIssueContext(attachment.issue),
       ].join("\n")),
     ].join("\n\n"));
   }

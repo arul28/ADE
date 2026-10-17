@@ -4,6 +4,7 @@ import {
   groupRecentProjects,
   groupProjectTabs,
   remoteBindingFromRecent,
+  localCheckoutForRemote,
   resolveProjectTabFallback,
   LOCAL_MACHINE_NAME,
 } from "./projectTabGrouping";
@@ -315,7 +316,7 @@ describe("groupRecentProjects", () => {
     expect(groups[0].locations[1].summary.remote?.projectId).toBe("ade");
   });
 
-  it("includes activity from a newly discovered connected checkout", () => {
+  it("counts a connected checkout's newer activity but still opens this computer's checkout", () => {
     const groups = groupRecentProjects({
       recentProjects: [{
         ...local("/Users/me/ADE", "git@github.com:arul28/ADE.git"),
@@ -340,7 +341,38 @@ describe("groupRecentProjects", () => {
     });
 
     expect(groups[0].lastOpenedAt).toBe("2026-07-28T12:00:00.000Z");
-    expect(groups[0].primary.machineName).toBe("Mac Studio");
+    expect(groups[0].locations.map((location) => location.machineName)).toContain("Mac Studio");
+    // Opening a project never lands on another machine's copy just because it
+    // was used last.
+    expect(groups[0].primary.machineName).toBe(LOCAL_MACHINE_NAME);
+    expect(groups[0].primary.summary.rootPath).toBe("/Users/me/ADE");
+  });
+});
+
+describe("localCheckoutForRemote", () => {
+  const ORIGIN = "https://github.com/arul28/ADE";
+  const SSH_ORIGIN = "git@github.com:arul28/ADE.git";
+  const worktree = { ...local("/Users/me/.ade/worktrees/x", SSH_ORIGIN), worktreeOf: { rootPath: "/Users/me/ADE" } } as RecentProjectSummary;
+  const missing = { ...local("/Users/me/Gone", SSH_ORIGIN), exists: false };
+
+  it.each([
+    { name: "finds a recent checkout of the same repo", open: [], known: [local("/Users/me/ADE", SSH_ORIGIN)], expected: "/Users/me/ADE" },
+    { name: "prefers an open tab over a recent", open: [local("/Users/me/Open", SSH_ORIGIN)], known: [local("/Users/me/ADE", SSH_ORIGIN)], expected: "/Users/me/Open" },
+    { name: "never uses a lane worktree", open: [worktree], known: [], expected: null },
+    { name: "skips a checkout missing on disk", open: [], known: [missing], expected: null },
+    { name: "ignores a different repo", open: [], known: [local("/Users/me/Other", "git@github.com:arul28/other.git")], expected: null },
+    { name: "ignores a recent with no origin", open: [], known: [local("/Users/me/ADE")], expected: null },
+    { name: "ignores another machine's recent", open: [], known: [remoteRecent("studio", "ade", "Mac Studio", SSH_ORIGIN, "")], expected: null },
+  ])("$name", ({ open, known, expected }) => {
+    expect(localCheckoutForRemote({ remoteOrigin: ORIGIN, openLocalTabs: open, knownLocalTabs: known })).toBe(expected);
+  });
+
+  it("returns nothing when the remote project's repo is unknown", () => {
+    expect(localCheckoutForRemote({
+      remoteOrigin: null,
+      openLocalTabs: [local("/Users/me/ADE", SSH_ORIGIN)],
+      knownLocalTabs: [],
+    })).toBeNull();
   });
 });
 

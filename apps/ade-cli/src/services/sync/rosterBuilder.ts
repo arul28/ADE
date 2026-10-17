@@ -1,13 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
-import { createRequire } from "node:module";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import { resolveAdeLayout } from "../../../../desktop/src/shared/adeLayout";
+import { fileIdentity } from "../projects/fileIdentity";
 import { normalizeGitRemoteIdentity } from "../../../../desktop/src/shared/crossMachineHandoff";
 import { pathsEqual } from "../../../../desktop/src/main/services/shared/pathCompare";
 import { normalizeSessionStatusNote } from "../../../../desktop/src/shared/sessionStatusNote";
 import { normalizeSessionActivityReport } from "../../../../desktop/src/shared/sessionActivity";
-import { isSessionSnoozed } from "../../../../desktop/src/shared/sessionCanonicalState";
+import { isSessionSnoozed, lanePrWaitingReason } from "../../../../desktop/src/shared/sessionCanonicalState";
 import type {
   AgentChatLogState,
   SyncRosterChat,
@@ -17,18 +17,15 @@ import type {
 } from "../../../../desktop/src/shared/types";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import { resolveReadableHistoryPath } from "../../../../desktop/src/main/services/storage/historyCompression";
+import {
+  hasTable,
+  openReadOnlyDatabase,
+} from "../../../../desktop/src/main/services/projects/readOnlySqlite";
 import type { SyncForeignChatTranscriptResolver } from "./syncHostService";
 
-// Anchor builtin resolution to the active runtime, mirroring kvDb / the cheap
-// cross-project read in recentProjectSummary.ts. The roster opens each
-// project's `.ade/ade.db` read-only with `node:sqlite` — NO cr-sqlite, NO
-// runtime boot — so an all-projects feed never has to activate every project.
-type DatabaseSyncConstructor = new (
-  dbPath: string,
-  options?: { allowExtension?: boolean; readOnly?: boolean },
-) => DatabaseSyncType;
-const require = createRequire(path.join(process.cwd(), "ade-runtime.cjs"));
-const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: DatabaseSyncConstructor };
+// The roster opens each project's `.ade/ade.db` read-only with `node:sqlite`
+// (`openReadOnlyDatabase`) — NO cr-sqlite, NO runtime boot — so an
+// all-projects feed never has to activate every project.
 
 const PREVIEW_MAX_CHARS = 120;
 
@@ -74,6 +71,8 @@ export type RosterLiveSession = {
    * so a chat whose subagents are still working is not reported as idle.
    */
   activeBackgroundTaskCount?: number | null;
+  /** The chat's next scheduled wake, if one is parked. */
+  nextWakeAt?: string | null;
   /**
    * Set on CTO/identity chats. Identity sessions are deliberately omitted from
    * the normal project roster, but this marker remains available as a
@@ -158,9 +157,18 @@ type TerminalSessionRow = {
   snoozed_at: string | null;
 };
 
+type PullRequestRow = {
+  lane_id: string;
+  state: string;
+  checks_status: string | null;
+  review_status: string | null;
+};
+
 type DiskProjectData = {
   lanes: LaneRow[];
   chats: TerminalSessionRow[];
+  /** Lane id → why a running session there waits on its PR. */
+  prWaitingReasonByLaneId: Map<string, "ci" | "review">;
 };
 
 // --- Helpers -----------------------------------------------------------------
@@ -170,9 +178,10 @@ function normalizePath(value: string | null | undefined): string | null {
   return trimmed ? path.resolve(trimmed) : null;
 }
 
-// A lane is renderable only if its worktree still exists on disk — mirrors
-// `laneExistsOnDisk` in recentProjectSummary.ts so the roster never advertises
-// lanes whose worktree was deleted out from under ADE.
+// A lane is renderable only if its worktree still exists on disk — mirrors the
+// desktop's recentProjectSummary.ts (its `countedLane` + `laneExistsOnDisk`
+// pair) so the roster never advertises lanes whose worktree was deleted out
+// from under ADE.
 function laneExistsOnDisk(row: LaneRow, projectRoot: string): boolean {
   if ((row.lane_type ?? "").trim() === "primary") {
     return fs.existsSync(projectRoot);
@@ -181,19 +190,35 @@ function laneExistsOnDisk(row: LaneRow, projectRoot: string): boolean {
   return candidate ? fs.existsSync(candidate) : false;
 }
 
-function hasTable(db: DatabaseSyncType, tableName: string): boolean {
-  return Boolean(
-    db
-      .prepare("select 1 as present from sqlite_master where type = 'table' and name = ? limit 1")
-      .get<{ present?: number }>(tableName)?.present,
-  );
-}
-
-function hasColumn(db: DatabaseSyncType, tableName: string, columnName: string): boolean {
-  return db
-    .prepare(`pragma table_info(${tableName})`)
-    .all<{ name?: string }>()
-    .some((row) => row.name === columnName);
+/**
+ * The tool type of one session, read from a project's database on disk, or
+ * null when the project has no such session (or no readable database).
+ *
+ * Answers "does this project own that chat" for a project whose runtime is not
+ * loaded, so an unknown chat id is checked against each project's database
+ * without booting a runtime per project.
+ */
+export function readSessionToolTypeFromDisk(projectRoot: string, sessionId: string): string | null {
+  const dbPath = resolveAdeLayout(projectRoot).dbPath;
+  if (!fs.existsSync(dbPath)) return null;
+  let db: DatabaseSyncType | null = null;
+  try {
+    db = openReadOnlyDatabase(dbPath);
+    db.exec("PRAGMA busy_timeout = 250");
+    if (!hasTable(db, "terminal_sessions")) return null;
+    const row = db
+      .prepare("select tool_type from terminal_sessions where id = ? limit 1")
+      .get<{ tool_type?: string | null }>(sessionId);
+    return typeof row?.tool_type === "string" ? row.tool_type : null;
+  } catch {
+    return null;
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      // ignore
+    }
+  }
 }
 
 function truncatePreview(text: string | null | undefined): string | null {
@@ -260,19 +285,57 @@ function desktopVisibleRosterRows(rows: TerminalSessionRow[], visibleLaneIds: Se
   });
 }
 
+/** A project with nothing to show; a fresh object each call. */
+const emptyDiskProject = (): DiskProjectData => ({ lanes: [], chats: [], prWaitingReasonByLaneId: new Map() });
+
+/**
+ * Last successful disk read per project database, keyed by the database and
+ * WAL file identities. Every SQLite write changes one of them (WAL append,
+ * checkpoint, or a rollback-journal write to the main file), so an unchanged
+ * signature means the rows are unchanged. The roster is rebuilt every few
+ * seconds while agents work; without this every recent project paid a fresh
+ * connection and a full schema parse (~450 tables) each time, blocking the
+ * brain's event loop, even when nothing in it had moved.
+ */
+const diskProjectCache = new Map<string, { signature: string; at: number; data: DiskProjectData }>();
+/**
+ * Bounds how long a signature alone is trusted. A WAL rewritten from offset 0
+ * at the same size inside one mtime tick (coarse timestamps) looks unchanged.
+ */
+const DISK_PROJECT_CACHE_MAX_AGE_MS = 30_000;
+
 /**
  * Read a project's lanes + chat sessions straight off disk (read-only). Never
  * throws: a missing, locked, or schema-shifted DB yields empty lanes/chats so
  * the project still appears in the roster (just without rows).
  */
 function readProjectFromDisk(projectRoot: string, logger?: Pick<Logger, "warn"> | null): DiskProjectData {
-  const empty: DiskProjectData = { lanes: [], chats: [] };
   const dbPath = resolveAdeLayout(projectRoot).dbPath;
-  if (!fs.existsSync(dbPath)) return empty;
+  const dbIdentity = fileIdentity(dbPath);
+  if (dbIdentity === null) {
+    diskProjectCache.delete(dbPath);
+    return emptyDiskProject();
+  }
+  const signature = `${dbIdentity}|${fileIdentity(`${dbPath}-wal`) ?? "-"}`;
+  const now = Date.now();
+  const cached = diskProjectCache.get(dbPath);
+  if (cached && cached.signature === signature && now - cached.at < DISK_PROJECT_CACHE_MAX_AGE_MS) return cached.data;
+  diskProjectCache.delete(dbPath);
+  const data = readProjectFromDiskUncached(dbPath, projectRoot, logger);
+  if (data) diskProjectCache.set(dbPath, { signature, at: now, data });
+  return data ?? emptyDiskProject();
+}
 
+/** Null when the read failed (locked, unreadable) so the caller retries next time. */
+function readProjectFromDiskUncached(
+  dbPath: string,
+  projectRoot: string,
+  logger?: Pick<Logger, "warn"> | null,
+): DiskProjectData | null {
+  const empty = emptyDiskProject();
   let db: DatabaseSyncType | null = null;
   try {
-    db = new DatabaseSync(dbPath, { readOnly: true });
+    db = openReadOnlyDatabase(dbPath);
     db.exec("PRAGMA busy_timeout = 2000");
     if (!hasTable(db, "lanes")) return empty;
 
@@ -291,34 +354,39 @@ function readProjectFromDisk(projectRoot: string, logger?: Pick<Logger, "warn"> 
     const chats = hasTable(db, "terminal_sessions")
       ? (() => {
           const activeDb = db!;
-          const chatSessionIdColumn = hasColumn(activeDb, "terminal_sessions", "chat_session_id")
+          // One PRAGMA for every column probe below: probing each column on its own
+          // re-ran table_info once per column for every project database.
+          const sessionColumns = new Set(
+            activeDb.prepare("pragma table_info(terminal_sessions)").all<{ name?: string }>().map((row) => row.name),
+          );
+          const chatSessionIdColumn = sessionColumns.has("chat_session_id")
             ? "chat_session_id"
             : "null as chat_session_id";
-          const settledAtColumn = hasColumn(activeDb, "terminal_sessions", "settled_at")
+          const settledAtColumn = sessionColumns.has("settled_at")
             ? "settled_at"
             : "null as settled_at";
-          const statusNoteColumn = hasColumn(activeDb, "terminal_sessions", "status_note")
+          const statusNoteColumn = sessionColumns.has("status_note")
             ? "status_note"
             : "null as status_note";
-          const activityStatusColumn = hasColumn(activeDb, "terminal_sessions", "activity_status_json")
+          const activityStatusColumn = sessionColumns.has("activity_status_json")
             ? "activity_status_json"
             : "null as activity_status_json";
-          const activityStatusChangedAtColumn = hasColumn(activeDb, "terminal_sessions", "activity_status_changed_at")
+          const activityStatusChangedAtColumn = sessionColumns.has("activity_status_changed_at")
             ? "activity_status_changed_at"
             : "null as activity_status_changed_at";
-          const attentionRequestedAtColumn = hasColumn(activeDb, "terminal_sessions", "attention_requested_at")
+          const attentionRequestedAtColumn = sessionColumns.has("attention_requested_at")
             ? "attention_requested_at"
             : "null as attention_requested_at";
-          const attentionMessageColumn = hasColumn(activeDb, "terminal_sessions", "attention_message")
+          const attentionMessageColumn = sessionColumns.has("attention_message")
             ? "attention_message"
             : "null as attention_message";
-          const lastTurnFailedAtColumn = hasColumn(activeDb, "terminal_sessions", "last_turn_failed_at")
+          const lastTurnFailedAtColumn = sessionColumns.has("last_turn_failed_at")
             ? "last_turn_failed_at"
             : "null as last_turn_failed_at";
-          const snoozedUntilColumn = hasColumn(activeDb, "terminal_sessions", "snoozed_until")
+          const snoozedUntilColumn = sessionColumns.has("snoozed_until")
             ? "snoozed_until"
             : "null as snoozed_until";
-          const snoozedAtColumn = hasColumn(activeDb, "terminal_sessions", "snoozed_at")
+          const snoozedAtColumn = sessionColumns.has("snoozed_at")
             ? "snoozed_at"
             : "null as snoozed_at";
           return activeDb
@@ -337,13 +405,44 @@ function readProjectFromDisk(projectRoot: string, logger?: Pick<Logger, "warn"> 
         })()
       : [];
 
-    return { lanes, chats };
+    const prWaitingReasonByLaneId = new Map<string, "ci" | "review">();
+    if (hasTable(db, "pull_requests")) {
+      const prsByLaneId = new Map<string, Array<{
+        state: string;
+        checksStatus: string | null;
+        reviewStatus: string | null;
+      }>>();
+      const rows = db
+        .prepare(
+          `
+            select lane_id, state, checks_status, review_status
+            from pull_requests
+            where state in ('open', 'draft')
+          `,
+        )
+        .all<PullRequestRow>();
+      for (const row of rows) {
+        const list = prsByLaneId.get(row.lane_id) ?? [];
+        list.push({
+          state: row.state,
+          checksStatus: row.checks_status,
+          reviewStatus: row.review_status,
+        });
+        prsByLaneId.set(row.lane_id, list);
+      }
+      for (const [laneId, prs] of prsByLaneId) {
+        const reason = lanePrWaitingReason(prs);
+        if (reason) prWaitingReasonByLaneId.set(laneId, reason);
+      }
+    }
+
+    return { lanes, chats, prWaitingReasonByLaneId };
   } catch (error) {
     logger?.warn?.("sync_host.roster_project_read_failed", {
       projectRoot,
       error: error instanceof Error ? error.message : String(error),
     });
-    return empty;
+    return null;
   } finally {
     db?.close();
   }
@@ -431,7 +530,10 @@ function rosterRepoOriginUrl(record: RosterProjectRecord): string | null {
   return normalizeGitRemoteIdentity(record.gitOriginUrl ?? null);
 }
 
-function mapLane(row: LaneRow): SyncRosterLane {
+function mapLane(
+  row: LaneRow,
+  prWaitingReasonByLaneId: ReadonlyMap<string, "ci" | "review">,
+): SyncRosterLane {
   return {
     id: row.id,
     name: row.name,
@@ -439,6 +541,7 @@ function mapLane(row: LaneRow): SyncRosterLane {
     icon: row.icon,
     laneType: row.lane_type,
     branchRef: row.branch_ref,
+    prWaitingReason: prWaitingReasonByLaneId.get(row.id) ?? null,
   };
 }
 
@@ -502,10 +605,16 @@ async function buildRosterProject(
   const visibleLaneIds = new Set(visibleLanes.map((lane) => lane.id));
 
   const visibleRows = desktopVisibleRosterRows(disk.chats, visibleLaneIds);
+  // Each sidecar is read once and shared by the identity pass and the row pass
+  // below; both run synchronously, so neither can see a different file.
+  const sidecarBySessionId = new Map<string, Sidecar | null>();
+  for (const row of visibleRows) {
+    sidecarBySessionId.set(row.id, readChatSidecar(chatSessionsDir, row.id));
+  }
   const identitySessionIds = new Set<string>();
   for (const row of visibleRows) {
     const liveIdentityKey = liveBySessionId.get(row.id)?.identityKey?.trim() || null;
-    const diskIdentityKey = readChatSidecar(chatSessionsDir, row.id)?.identityKey?.trim() || null;
+    const diskIdentityKey = sidecarBySessionId.get(row.id)?.identityKey?.trim() || null;
     if (liveIdentityKey || diskIdentityKey) identitySessionIds.add(row.id);
   }
   let identityDescendantAdded = true;
@@ -527,7 +636,7 @@ async function buildRosterProject(
   let attentionCount = 0;
   for (const row of visibleRows) {
     const live = liveBySessionId.get(row.id);
-    const sidecar = readChatSidecar(chatSessionsDir, row.id);
+    const sidecar = sidecarBySessionId.get(row.id) ?? null;
     const identityKey = (live?.identityKey ?? sidecar?.identityKey ?? null)
       ?.trim() || null;
     // CTO/identity sessions have their own surface and attention path. They
@@ -613,6 +722,7 @@ async function buildRosterProject(
       exitCode: row.exit_code,
       snoozedUntil: row.snoozed_until,
       snoozedAt: row.snoozed_at,
+      ...(live?.nextWakeAt ? { nextWakeAt: live.nextWakeAt } : {}),
       ...(chatLog
         ? { maxSequence: chatLog.maxSequence, historyGeneration: chatLog.historyGeneration }
         : {}),
@@ -630,7 +740,7 @@ async function buildRosterProject(
     booted,
     runningCount,
     attentionCount,
-    lanes: visibleLanes.map(mapLane),
+    lanes: visibleLanes.map((lane) => mapLane(lane, disk.prWaitingReasonByLaneId)),
     chats,
   };
 }

@@ -53,6 +53,8 @@ final class MachineFleet: ObservableObject {
     var isPinned: Bool
     /// Ran out of retries: "Offline · Tap to retry" until a retry trigger.
     var gaveUp: Bool = false
+    /// The route its live link actually took.
+    var routeKind: SyncConnectionRouteKind? = nil
     var id: String { machineKey }
   }
 
@@ -60,6 +62,12 @@ final class MachineFleet: ObservableObject {
   @Published private(set) var machines: [Machine] = []
   /// Paired machines in total, the focused one included.
   @Published private(set) var pairedMachineCount = 0
+
+  /// The machines with a live link, by key, sorted: a stable key for work
+  /// that reruns when a machine's link comes or goes.
+  var liveMachineKeys: [String] {
+    machines.filter { $0.state == .live }.map(\.machineKey).sorted()
+  }
 
   private weak var syncService: SyncService?
   private var connections: [String: MachineConnection] = [:]
@@ -122,6 +130,8 @@ final class MachineFleet: ObservableObject {
           })
           let cameOnline = online.subtracting(self.accountOnlineKeys)
           self.accountOnlineKeys = online
+          // Machine names come from the directory: a rename shows at once.
+          self.schedulePublish()
           self.machinesCameOnline(machineKeys: cameOnline)
           self.hiddenMachines.reconcile(
             // Both keys a row can be hidden under: the device identity, and
@@ -175,18 +185,16 @@ final class MachineFleet: ObservableObject {
   /// retries again.
   func machinesCameOnline(machineKeys: Set<String>) {
     guard !machineKeys.isEmpty else { return }
-    var resumed = false
     for key in machineKeys {
-      guard let connection = connections[key], connection.gaveUp else { continue }
-      connection.resumeAfterGivingUp()
-      resumed = true
+      connections[key]?.dialSoonerIfWaiting()
     }
-    if resumed { reconcile() }
+    reconcile()
   }
 
+  /// Every connection waiting out a backoff, or that gave up, dials again.
   private func resumeGivenUpConnections() {
     for connection in connections.values {
-      connection.resumeAfterGivingUp()
+      connection.dialSoonerIfWaiting()
     }
   }
 
@@ -278,7 +286,8 @@ final class MachineFleet: ObservableObject {
       if case .needsAttention = connection.phase {
         connection.stop(reason: "Retry.", clearAttention: true)
       }
-      connection.resumeAfterGivingUp()
+      // Tapping Connect means now, not after the rest of a backoff wait.
+      connection.dialSoonerIfWaiting()
     }
     needsUpdateSince.removeValue(forKey: machineKey)
     reconcile()
@@ -298,10 +307,14 @@ final class MachineFleet: ObservableObject {
   }
 
   /// True when connecting one more machine would go over the limit.
-  var isAtLiveLimit: Bool {
+  var isAtLiveLimit: Bool { isAtLiveLimit(pending: 0) }
+
+  /// True when `pending` more machines (pairings still in flight) plus one
+  /// more would go over the limit.
+  func isAtLiveLimit(pending: Int) -> Bool {
     let focused = syncService?.focusedMachineKey
     let connectedOthers = pinnedKeys.filter { $0 != focused }.count
-    return connectedOthers >= liveOtherMachineLimit
+    return connectedOthers + pending >= liveOtherMachineLimit
   }
 
   /// Adds `machineKey` to the connected set without dialing it, e.g. the
@@ -502,13 +515,19 @@ final class MachineFleet: ObservableObject {
       }
       return Machine(
         machineKey: key,
-        name: connection.hostName ?? nonEmptyTrimmed(connection.profile.hostName) ?? "Machine",
+        // The account's name for the machine, as Settings lists it.
+        name: accountMachinePresentationName(
+          hostIdentity: HiddenMachineStore.identity(fromFleetKey: key),
+          fallback: connection.hostName ?? nonEmptyTrimmed(connection.profile.hostName),
+          machines: AccountService.shared.machines
+        ) ?? "Machine",
         state: state,
         projects: connection.rosterProjects,
         rosterRevision: connection.rosterRevision,
         lastUpdateAt: connection.lastUpdateAt,
         isPinned: pinned.contains(key),
-        gaveUp: connection.gaveUp
+        gaveUp: connection.gaveUp,
+        routeKind: state == .live ? connection.liveRouteKind : nil
       )
     }
     if next != machines {
@@ -529,19 +548,19 @@ final class MachineFleet: ObservableObject {
 /// out of Settings > Machines, out of the Hub and Work merges, and out of the
 /// fleet's roster connections.
 ///
-/// A hidden machine comes back on its own only when it is on the account again
-/// AND online, after having been gone (off the account or offline) at some
-/// point since it was hidden -- or the moment the phone connects to it. So
-/// removing a machine that is online right now does not make it bounce straight
-/// back, and a stale offline machine reappears the next time it is really there.
+/// Only a machine that is gone (off the account, or offline) stays hidden. A
+/// machine the account shows online is always listed, as Available when this
+/// phone holds no pairing for it: hiding an online machine left it with no way
+/// back while it stayed on (a desktop that never sleeps), short of signing out.
+/// So hiding a machine that is online right now only drops it from lists until
+/// the next directory load, and a hidden offline machine reappears as soon as
+/// it is online again, or the moment the phone connects to it.
 @MainActor
 final class HiddenMachineStore: ObservableObject {
   static let shared = HiddenMachineStore()
 
   struct Record: Codable, Equatable {
     var hiddenAt: Date
-    /// Seen off the account, or offline, since it was hidden.
-    var sawGone: Bool
   }
 
   /// Keyed by `HiddenMachineStore.key(forIdentity:)`.
@@ -597,11 +616,9 @@ final class HiddenMachineStore: ObservableObject {
     records[Self.key(forIdentity: identity)] != nil
   }
 
-  /// `isAvailableNow`: on the account and online right now (or, for a saved
-  /// machine, reachable). A machine that is not can come back as soon as it is.
-  func hide(identity: String, isAvailableNow: Bool) {
+  func hide(identity: String) {
     var next = records
-    next[Self.key(forIdentity: identity)] = Record(hiddenAt: Date(), sawGone: !isAvailableNow)
+    next[Self.key(forIdentity: identity)] = Record(hiddenAt: Date())
     commit(next)
   }
 
@@ -611,9 +628,8 @@ final class HiddenMachineStore: ObservableObject {
     commit(next)
   }
 
-  /// Applies a freshly loaded account directory: a hidden machine that is off
-  /// the account or offline is marked gone; one that was gone and is now on the
-  /// account and online is shown again.
+  /// Applies a freshly loaded account directory: a hidden machine the account
+  /// shows online is listed again.
   func reconcile(accountMachines: [(identity: String, online: Bool)]) {
     guard !records.isEmpty else { return }
     var onlineByKey: [String: Bool] = [:]
@@ -622,13 +638,8 @@ final class HiddenMachineStore: ObservableObject {
       onlineByKey[key] = (onlineByKey[key] ?? false) || machine.online
     }
     var next = records
-    for (key, record) in records {
-      let online = onlineByKey[key] == true
-      if !online {
-        if !record.sawGone { next[key]?.sawGone = true }
-      } else if record.sawGone {
-        next.removeValue(forKey: key)
-      }
+    for key in records.keys where onlineByKey[key] == true {
+      next.removeValue(forKey: key)
     }
     commit(next)
   }

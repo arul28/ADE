@@ -50,7 +50,11 @@ public enum AXTimeouts {
     ///
     /// The driver's watchdog answers at 15 seconds and the service gives up at
     /// 20. `observe` also takes a screenshot and may draw an element map, so
-    /// the walk gets 5 seconds and the rest keeps a wide margin under both.
+    /// the walk gets 5 seconds and the rest keeps a wide margin under both —
+    /// which only holds while the capture half is bounded too
+    /// (`CaptureEngine.observeScreenshotBudget`, the same 5 seconds). The two are one
+    /// sum: a walk with an unbounded capture beside it is what the watchdog
+    /// used to answer for.
     public static let observeWalk: TimeInterval = 5
 
     /// The walk of one `wait` poll. A wait polls several times a second, and

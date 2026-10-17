@@ -1,0 +1,403 @@
+// ADE's MusicKit control script. The host forwards ADE's JSON commands here
+// (chrome.webview message events) and writes what we post back to its stdout.
+//
+// Wire format, one JSON object per message:
+//   command: {"rid":"r1","cmd":"<name>", ...args}
+//   reply:   {"reply":"r1","cmd":"<name>","ok":true,"result":...} or {"ok":false,"error":"..."}
+//   event:   {"event":"<name>", ...}
+//
+// Tokens arrive in `configure` and leave in `authorize`'s reply only. Nothing
+// here logs them. MusicKit saves the Music-User-Token in this profile's
+// localStorage; ADE keeps it in its own encrypted store and passes it in on
+// every start, so the page deletes MusicKit's copy whenever MusicKit writes it.
+(function () {
+  "use strict";
+  var post = function (o) {
+    try { window.chrome.webview.postMessage(JSON.stringify(o)); } catch (e) { /* host gone */ }
+  };
+  var statusEl = function (text) {
+    var el = document.getElementById("status");
+    if (el) el.textContent = text;
+  };
+  var loaded = false;
+  var mk = null;
+  var lastTimeEmit = 0;
+  // A queue restored paused (play:false) has no song loaded until its first
+  // play. Until then `awaitingFirstPlay` is true and `pendingSeek` is the second
+  // it continues from: MusicKit drops a seek made before the song has loaded,
+  // so it is applied right after that play instead.
+  var awaitingFirstPlay = false;
+  var pendingSeek = 0;
+  // The index a queue was set to start at. MusicKit's queue.position stays -1
+  // until the first play, so this names the song that will play until then.
+  var startIndex = 0;
+
+  // MusicKit's key is "<prefix>.<team id>.media-user-token".
+  var forgetSavedUserToken = function () {
+    try {
+      for (var i = localStorage.length - 1; i >= 0; i--) {
+        var key = localStorage.key(i);
+        if (key && /\.media-user-token$/.test(key)) localStorage.removeItem(key);
+      }
+    } catch (e) { /* storage unavailable: nothing saved */ }
+  };
+  // Before MusicKit loads: a token saved by an older build must not sign it in.
+  forgetSavedUserToken();
+
+  var stateNames = {};
+  var playbackStateName = function (n) {
+    if (!stateNames.ready && window.MusicKit && MusicKit.PlaybackStates) {
+      for (var k in MusicKit.PlaybackStates) {
+        if (typeof MusicKit.PlaybackStates[k] === "number") stateNames[MusicKit.PlaybackStates[k]] = k;
+      }
+      stateNames.ready = true;
+    }
+    return stateNames[n] || "none";
+  };
+
+  var artworkOf = function (item) {
+    var art = item && (item.artwork || (item.attributes && item.attributes.artwork));
+    return art && art.url ? { url: art.url, width: art.width || null, height: art.height || null, bgColor: art.bgColor || null } : null;
+  };
+
+  var slimItem = function (item) {
+    if (!item) return null;
+    var a = item.attributes || {};
+    var pp = item.playParams || a.playParams || {};
+    return {
+      id: String(item.id),
+      type: item.type || null,
+      title: item.title || a.name || "",
+      artist: item.artistName || a.artistName || "",
+      album: item.albumName || a.albumName || "",
+      artwork: artworkOf(item),
+      durationMs: item.playbackDuration || a.durationInMillis || null,
+      catalogId: pp.catalogId || (pp.isLibrary ? null : pp.id) || null,
+      isLibrary: Boolean(pp.isLibrary) || /^i\./.test(String(item.id)) || /^l\./.test(String(item.id)),
+    };
+  };
+
+  var round = function (n) { return Math.round((n || 0) * 10) / 10; };
+  var errorText = function (e) { return String((e && (e.errorCode || e.message)) || e); };
+
+  // A restored queue reports the second it will continue from, not MusicKit's 0.
+  var currentTime = function () { return pendingSeek > 0 ? pendingSeek : round(mk.currentPlaybackTime); };
+
+  // Before the first play of a restored queue MusicKit has no nowPlayingItem
+  // and no queue position; the song that will play is the start index's.
+  var queueIndex = function (q) { return q && q.position >= 0 ? q.position : startIndex; };
+  var currentItem = function (m) {
+    var q = m.queue;
+    return m.nowPlayingItem || (q && q.items && q.items[queueIndex(q)]) || null;
+  };
+
+  var snapshot = function () {
+    if (!mk) return { ready: false, loaded: loaded };
+    var q = mk.queue;
+    return {
+      ready: true,
+      authorized: mk.isAuthorized,
+      state: playbackStateName(mk.playbackState),
+      isPlaying: mk.isPlaying,
+      time: currentTime(),
+      duration: round(mk.currentPlaybackDuration),
+      queuePosition: q && q.items && q.items.length ? queueIndex(q) : -1,
+      queueLength: q ? q.length : 0,
+      shuffle: mk.shuffleMode,
+      repeat: mk.repeatMode,
+      volume: mk.volume,
+      nowPlaying: slimItem(currentItem(mk)),
+    };
+  };
+
+  // Moving the queue on after a song ends. MusicKit is meant to do it, but
+  // under WebKit (macOS) it goes ended -> stopped at the same queue position
+  // and stays there, with no song loaded. That "stopped where it ended" is the
+  // signal: the page then plays the next song (or the first, under repeat all)
+  // itself. Where MusicKit moves on by itself it never stops at that position,
+  // so this does nothing. While it runs, states are held back so ADE does not
+  // see a moment with no song.
+  var ADVANCE_TIMEOUT_MS = 15000;
+  var endedAt = -1;
+  var advancing = false;
+  // A pause that arrived while the next song was loading.
+  var pausedWhileAdvancing = false;
+
+  var emitState = function (reason) {
+    if (advancing) return;
+    post({ event: "state", reason: reason, state: snapshot() });
+  };
+
+  var continueAfterEnd = async function (index) {
+    advancing = true;
+    pausedWhileAdvancing = false;
+    pendingSeek = 0;
+    // If MusicKit never answers, stop holding states back.
+    var giveUp = setTimeout(function () {
+      advancing = false;
+      emitState("continueTimeout");
+    }, ADVANCE_TIMEOUT_MS);
+    try {
+      await mk.changeToMediaAtIndex(index);
+      if (pausedWhileAdvancing) mk.pause();
+      else if (!mk.isPlaying) await mk.play();
+    } catch (e) {
+      post({ event: "playbackError", error: errorText(e) });
+    } finally {
+      clearTimeout(giveUp);
+      advancing = false;
+      emitState("continue");
+    }
+  };
+
+  // The index to play after MusicKit stopped where a song ended, or -1.
+  var nextAfterEnd = function (q) {
+    if (mk.repeatMode === 1) return endedAt;
+    if (endedAt + 1 < q.length) return endedAt + 1;
+    return mk.repeatMode === 2 ? 0 : -1;
+  };
+
+  var onPlaybackState = function () {
+    var states = MusicKit.PlaybackStates;
+    var q = mk.queue;
+    var stoppedWhereEnded = mk.playbackState === states.stopped && q && endedAt >= 0 && q.position === endedAt;
+    var next = stoppedWhereEnded ? nextAfterEnd(q) : -1;
+    endedAt = mk.playbackState === states.ended && q ? q.position : -1;
+    if (next >= 0 && !advancing) {
+      void continueAfterEnd(next);
+      return;
+    }
+    emitState("playbackState");
+  };
+
+  var wire = function () {
+    var on = function (name, fn) { mk.addEventListener(name, fn); };
+    on("playbackStateDidChange", onPlaybackState);
+    on("nowPlayingItemDidChange", function () { emitState("nowPlaying"); });
+    on("queueItemsDidChange", function () { emitState("queueItems"); post({ event: "queueChanged" }); });
+    on("queuePositionDidChange", function () { emitState("queuePosition"); post({ event: "queueChanged" }); });
+    on("shuffleModeDidChange", function () { emitState("shuffle"); });
+    on("repeatModeDidChange", function () { emitState("repeat"); });
+    on("playbackVolumeDidChange", function () { emitState("volume"); });
+    on("playbackDurationDidChange", function () { emitState("duration"); });
+    on("authorizationStatusDidChange", function () {
+      post({ event: "authorization", authorized: mk.isAuthorized });
+      emitState("authorization");
+    });
+    on("playbackTimeDidChange", function () {
+      var now = Date.now();
+      if (now - lastTimeEmit < 1000) return;
+      lastTimeEmit = now;
+      post({ event: "time", time: currentTime(), duration: round(mk.currentPlaybackDuration), isPlaying: mk.isPlaying });
+    });
+    on("mediaPlaybackError", function (e) {
+      post({ event: "playbackError", error: errorText(e) });
+    });
+  };
+
+  var queueItems = function () {
+    var q = mk.queue;
+    if (!q) return { position: -1, items: [] };
+    var items = [];
+    for (var i = 0; i < q.items.length; i++) items.push(slimItem(q.items[i]));
+    return { position: items.length ? queueIndex(q) : -1, items: items };
+  };
+
+  var setQueueAndMaybePlay = async function (descriptor, c) {
+    var index = typeof c.index === "number" && c.index > 0 ? c.index : 0;
+    if (index > 0) descriptor.startWith = index;
+    startIndex = index;
+    descriptor.startPlaying = false;
+    awaitingFirstPlay = false;
+    pendingSeek = 0;
+    await mk.setQueue(descriptor);
+    if (typeof c.shuffle === "number") mk.shuffleMode = c.shuffle;
+    if (mk.queue && index > 0 && mk.queue.position !== index && index < mk.queue.length) {
+      await mk.changeToMediaAtIndex(index);
+    }
+    var position = typeof c.position === "number" && c.position > 0 ? c.position : 0;
+    if (c.play === false) {
+      awaitingFirstPlay = true;
+      pendingSeek = position;
+      return;
+    }
+    await mk.play();
+    if (position > 0) await mk.seekToTime(position);
+  };
+
+  // Play, then apply the second a restored queue continues from. A seek that
+  // arrives while play() is still loading the song moves `pendingSeek`, so it
+  // is read only after play() returns.
+  var playFromPending = async function (m) {
+    await m.play();
+    awaitingFirstPlay = false;
+    if (pendingSeek > 0) {
+      var at = pendingSeek;
+      pendingSeek = 0;
+      await m.seekToTime(at);
+      lastTimeEmit = 0;
+    }
+  };
+
+  var needMk = function () {
+    if (!mk) throw new Error("not_configured");
+    return mk;
+  };
+
+  var handlers = {
+    configure: async function (c) {
+      if (!loaded) throw new Error("musickit_not_loaded");
+      if (!mk) {
+        mk = await MusicKit.configure({
+          developerToken: c.developerToken,
+          // MusicKit starts at STANDARD (64 kbps AAC) and moves to HIGH (256)
+          // only after reading navigator.connection.downlink, which WebKit
+          // does not have, so the macOS host played every song at 64 kbps.
+          // Start at HIGH; on Chromium a slow measured link still lowers it.
+          bitrate: MusicKit.PlaybackBitrate ? MusicKit.PlaybackBitrate.HIGH : 256,
+          app: { name: "ADE", build: c.appBuild || "1.0.0", icon: location.origin + "/ade-icon.png" },
+        });
+        // In case a MusicKit release ignores the option: WebKit has no link
+        // measurement to defer to, so set it directly there.
+        if (!navigator.connection && MusicKit.PlaybackBitrate && mk.bitrate !== MusicKit.PlaybackBitrate.HIGH) {
+          mk.bitrate = MusicKit.PlaybackBitrate.HIGH;
+        }
+        wire();
+      }
+      if (c.userToken) mk.musicUserToken = c.userToken;
+      forgetSavedUserToken();
+      if (typeof c.volume === "number") mk.volume = c.volume;
+      statusEl("MusicKit " + MusicKit.version + " ready");
+      return snapshot();
+    },
+    authorize: async function () {
+      var token;
+      try {
+        token = await needMk().authorize();
+      } finally {
+        forgetSavedUserToken();
+      }
+      return { userToken: token || mk.musicUserToken || null, authorized: mk.isAuthorized };
+    },
+    unauthorize: async function () {
+      try {
+        await needMk().unauthorize();
+      } finally {
+        forgetSavedUserToken();
+      }
+      return snapshot();
+    },
+    queue: async function () { return queueItems(); },
+    playItems: async function (c) {
+      needMk();
+      var ids = (c.ids || []).map(String).filter(Boolean);
+      if (!ids.length) throw new Error("no_items");
+      await setQueueAndMaybePlay(ids.length === 1 ? { song: ids[0] } : { songs: ids }, c);
+      return snapshot();
+    },
+    playCollection: async function (c) {
+      needMk();
+      var kind = c.kind === "album" ? "album" : c.kind === "station" ? "station" : "playlist";
+      var d = {};
+      d[kind] = String(c.id);
+      await setQueueAndMaybePlay(d, c);
+      return snapshot();
+    },
+    pause: async function () {
+      if (advancing) pausedWhileAdvancing = true;
+      needMk().pause();
+      return snapshot();
+    },
+    resume: async function () { await playFromPending(needMk()); return snapshot(); },
+    toggle: async function () {
+      var m = needMk();
+      if (m.isPlaying) m.pause(); else await playFromPending(m);
+      return snapshot();
+    },
+    next: async function () {
+      awaitingFirstPlay = false;
+      pendingSeek = 0;
+      await needMk().skipToNextItem();
+      return snapshot();
+    },
+    prev: async function () {
+      var m = needMk();
+      var at = currentTime();
+      pendingSeek = 0;
+      // Like every player: a few seconds in, "previous" restarts the song. A
+      // restored queue that has not played yet just starts from 0.
+      if (at > 3) {
+        if (!awaitingFirstPlay) await m.seekToTime(0);
+      } else {
+        awaitingFirstPlay = false;
+        await m.skipToPreviousItem();
+      }
+      return snapshot();
+    },
+    seek: async function (c) {
+      var m = needMk();
+      var at = Math.max(0, Number(c.position) || 0);
+      // A restored queue that has not played yet has no song loaded, and
+      // MusicKit drops the seek: move the second it will start from instead.
+      if (awaitingFirstPlay) {
+        pendingSeek = at;
+        return snapshot();
+      }
+      pendingSeek = 0;
+      await m.seekToTime(at);
+      lastTimeEmit = 0;
+      return snapshot();
+    },
+    volume: async function (c) { needMk().volume = Math.max(0, Math.min(1, Number(c.value))); return snapshot(); },
+    shuffle: async function (c) { needMk().shuffleMode = c.mode ? 1 : 0; return snapshot(); },
+    repeat: async function (c) { var r = Number(c.mode); needMk().repeatMode = r === 1 || r === 2 ? r : 0; return snapshot(); },
+    playAt: async function (c) {
+      awaitingFirstPlay = false;
+      pendingSeek = 0;
+      await needMk().changeToMediaAtIndex(Number(c.index) || 0);
+      return snapshot();
+    },
+    playNext: async function (c) { await needMk().playNext({ songs: (c.ids || []).map(String) }); return queueItems(); },
+    playLater: async function (c) { await needMk().playLater({ songs: (c.ids || []).map(String) }); return queueItems(); },
+    // What ADE keeps when it unloads this host, so a relaunch continues the
+    // same song at the same second.
+    snapshot: async function () {
+      var m = needMk();
+      var q = queueItems();
+      return {
+        ids: q.items.map(function (i) { return i.id; }),
+        index: q.position,
+        position: currentTime(),
+        shuffle: m.shuffleMode,
+        repeat: m.repeatMode,
+        volume: m.volume,
+        nowPlaying: slimItem(currentItem(m)),
+      };
+    },
+  };
+
+  window.chrome.webview.addEventListener("message", async function (ev) {
+    var c;
+    try { c = JSON.parse(ev.data); } catch (e) { post({ reply: null, ok: false, error: "bad_json" }); return; }
+    var t0 = performance.now();
+    try {
+      var h = handlers[c.cmd];
+      if (!h) throw new Error("unknown_command:" + c.cmd);
+      var result = await h(c);
+      post({ reply: c.rid || null, cmd: c.cmd, ok: true, ms: Math.round(performance.now() - t0), result: result });
+    } catch (e) {
+      post({ reply: c.rid || null, cmd: c.cmd, ok: false, ms: Math.round(performance.now() - t0), error: errorText(e) });
+    }
+  });
+
+  document.addEventListener("musickitloaded", function () {
+    loaded = true;
+    statusEl("MusicKit " + MusicKit.version + " loaded");
+    post({ event: "loaded", version: MusicKit.version, origin: location.origin });
+  });
+
+  // The CDN script can fail (offline, blocked). Say so instead of hanging.
+  setTimeout(function () {
+    if (!loaded) post({ event: "loadFailed", error: window.MusicKit ? "musickit_no_event" : "musickit_script_unavailable" });
+  }, 20000);
+})();

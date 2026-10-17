@@ -4,7 +4,7 @@ import { isOpenCodeHouseProvider } from "../../../shared/opencodeProviders";
 import { urlOriginOnly } from "../../../shared/remoteLoopbackUrl";
 import type { AgentChatEvent, AgentChatUsageAccount } from "../../../shared/types/chat";
 import { resolveAdeOpenCodeStoreDir } from "../../../shared/opencodeDataHome";
-import { readOpenCodeCredentials, readOpenCodeDb } from "../opencode/openCodeCredentials";
+import { openCodeCredentialsGeneration, readOpenCodeCredentials, readOpenCodeDb } from "../opencode/openCodeCredentials";
 import { asRecord, evictOldestEntries, finiteNumberOrNull, positiveCountOrZero } from "../shared/utils";
 import { contextPercentage, liveContextUsageEvent } from "./liveContextUsageEvent";
 
@@ -145,6 +145,20 @@ export function buildOpenCodeDoneUsage(
 }
 
 /**
+ * A turn's cost: its own steps plus what its subagents spent since the last
+ * turn. Undefined when neither reported a cost, so a free or unpriced turn
+ * reads as unknown rather than $0.
+ */
+export function openCodeTurnCostUsd(
+  done: { costUsd?: number; costSource?: "provider" } | null,
+  childCostUsd: number,
+): number | undefined {
+  const own = done?.costSource ? done.costUsd ?? 0 : null;
+  if (own === null && !(childCostUsd > 0)) return undefined;
+  return (own ?? 0) + Math.max(0, childCostUsd);
+}
+
+/**
  * The composer meter's live sample after one step, in the same shape Claude's
  * automatic snapshots use. Null when the model's context window is unknown: a
  * percentage of nothing would read as an empty meter.
@@ -201,7 +215,7 @@ export function resolveOpenCodeServedModel(
 // ── Who paid for the turn ─────────────────────────────────────────────────
 
 /** Only the non-secret fields of one stored credential. */
-export type OpenCodeAuthEntry = { type: string | null; accountId: string | null };
+export type OpenCodeAuthEntry = { type: string | null; accountId: string | null; label?: string | null };
 
 /**
  * Maps OpenCode's credential for the upstream provider to an account. Local
@@ -239,11 +253,15 @@ export function resolveOpenCodeUsageAccount(args: {
   }
   const type = args.auth?.type?.toLowerCase() ?? null;
   const kind = type === "key" ? "api_key" : type === "oauth" ? "subscription" : "unknown";
+  const label = args.auth?.label?.trim();
   return {
     provider: "opencode",
     kind,
     upstream,
     ...(kind === "subscription" && args.auth?.accountId ? { accountId: args.auth.accountId } : {}),
+    ...(label ? { label } : {}),
+    // A cloud login (gcloud, an AWS profile) bills the cloud account.
+    ...(type === "external" ? { routedAway: "cloud" as const } : {}),
   };
 }
 
@@ -256,7 +274,11 @@ export function readOpenCodeAuthEntries(dbPath: string): Map<string, OpenCodeAut
   for (const credential of readOpenCodeCredentials(dbPath)) {
     // Rows arrive active-first, newest-first, so the first one wins.
     if (entries.has(credential.integrationId)) continue;
-    entries.set(credential.integrationId, { type: credential.type, accountId: credential.accountId });
+    entries.set(credential.integrationId, {
+      type: credential.type,
+      accountId: credential.accountId,
+      label: credential.label,
+    });
   }
   return entries;
 }
@@ -324,7 +346,7 @@ export function createOpenCodeUsageAccountResolver(options: {
   };
 
   const authEntries = (dirs: readonly string[]): Map<string, OpenCodeAuthEntry> =>
-    cached(authCache, dirs.join("\0"), OPENCODE_ACCOUNT_CACHE_TTL_MS, () => {
+    cached(authCache, `${openCodeCredentialsGeneration()}\0${dirs.join("\0")}`, OPENCODE_ACCOUNT_CACHE_TTL_MS, () => {
       for (const dir of dirs) {
         const entries = readAuthEntries(path.join(dir, "opencode.db"));
         if (entries.size) return entries;

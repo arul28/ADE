@@ -6,13 +6,16 @@ import {
   Navigate,
   Route,
   Routes,
+  UNSAFE_LocationContext as RouterLocationContext,
+  UNSAFE_RouteContext as RouterRouteContext,
   useLocation,
   useNavigate
 } from "react-router-dom";
+import { shallow } from "zustand/shallow";
 import { useShallow } from "zustand/react/shallow";
 
 import { AppShell } from "./AppShell";
-import { ACCOUNT_SETTINGS_ROUTE, resolveSettingsTab } from "../settings/settingsManifest";
+import { ACCOUNT_SETTINGS_ROUTE, isMachineScopedSettingsRoute, resolveSettingsTab } from "../settings/settingsManifest";
 import {
   InboundDeeplinkModal,
   type InboundDeeplinkDispatchOptions,
@@ -21,6 +24,7 @@ import {
 import { WindowsBetaNoticeHost } from "./WindowsBetaNoticeModal";
 import { DialogHost } from "../ui/dialog/confirm";
 import { BrowserAgentAccessPromptHost } from "./BrowserAgentAccessPrompt";
+import { QuitPromptHost } from "./QuitPromptHost";
 import { GitFolderTrustPromptHost } from "./GitFolderTrustPrompt";
 import { LeftoverWorktreeDialogHost } from "../lanes/LeftoverWorktreeDialogHost";
 import { ClipboardDeeplinkBanner } from "./ClipboardDeeplinkBanner";
@@ -34,16 +38,14 @@ import { ProjectWelcomePage } from "../projects/ProjectWelcomePage";
 import { OnboardingBootstrap } from "../onboarding/OnboardingBootstrap";
 import { LaunchGate } from "../onboarding/LaunchGate";
 import { readStoredProjectRoute, writeStoredProjectRoute } from "./projectRouteStorage";
-import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
-import { openLaneInLanesTabPath } from "../../lib/laneNavigation";
+import { linearIssueRef } from "../../../shared/issueRefs";
+import { openIssueRef } from "../../lib/issueNavigation";
+import { openLaneInLanesTabPath, openLaneOnMachinePath } from "../../lib/laneNavigation";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { cn } from "../ui/cn";
 import { parkedSurfaceProps, useParkedSurfaceFocus } from "../../lib/parkedSurface";
-import { syncWindowsTitleBarOverlay } from "../../lib/windowControlsOverlay";
-import { MotionConfig } from "motion/react";
-import { applyAdeTheme } from "../../theme/applyTheme";
-import { applyInterfacePreferences } from "../../theme/applyInterface";
-import { resolveTheme, resolveThemeById } from "../../../shared/theme";
+import { AppearanceRoot } from "./AppearanceRoot";
+import { fgTint } from "../lanes/laneDesignTokens";
 
 function createPreloadableRoute<TProps extends object>(
   loadModule: () => Promise<{ default: React.ComponentType<TProps> }>,
@@ -102,6 +104,12 @@ const SettingsPage = React.lazy(() =>
 const PersonalChatsPage = React.lazy(() =>
   import("../personalChats/PersonalChatsPage").then((m) => ({ default: m.PersonalChatsPage }))
 );
+const BrowserPage = React.lazy(() =>
+  import("../browser/BrowserPage").then((m) => ({ default: m.BrowserPage }))
+);
+const MusicPage = React.lazy(() =>
+  import("../music/MusicPage").then((m) => ({ default: m.MusicPage }))
+);
 const AccountPage = React.lazy(() =>
   import("../account/AccountPage").then((m) => ({ default: m.AccountPage }))
 );
@@ -117,7 +125,6 @@ import {
   releaseProjectAppStore,
   retainProjectAppStoreState,
   selectActiveProjectRoot,
-  selectEffectiveThemeId,
   useAppStore,
   type AppStoreApi,
 } from "../../state/appStore";
@@ -135,6 +142,8 @@ import {
   type NavigateTargetDetail,
   type OpenDeeplinkDetail,
 } from "../../lib/openExternal";
+import { isBrowserTabRoute } from "../browser/browserTab";
+import { isMusicTabRoute } from "../music/musicTab";
 import {
   githubRepoSlugsEqual,
   parseGithubRemoteUrl,
@@ -147,6 +156,7 @@ import {
 } from "../../../shared/deeplinks";
 import { buildPrsRouteSearch } from "../prs/prsRouteState";
 import { useCrossMachineLaneSync } from "../../state/crossMachineLanes";
+import { useHomeAppEffects } from "../home/useHomeAppEffects";
 import { findOnOtherMachines, readOtherMachines, type OtherMachines } from "../../lib/otherMachineNavigation";
 import type {
   AppNavigationRequest,
@@ -192,7 +202,7 @@ const RouteLoadingFallback = (
   >
     <div
       className="flex h-14 shrink-0 items-center gap-3 px-5"
-      style={{ borderBottom: "1px solid var(--color-border)", background: "color-mix(in srgb, var(--color-fg) 3%, transparent)" }}
+      style={{ borderBottom: "1px solid var(--color-border)", background: fgTint(3) }}
     >
       <div className="h-4 w-28 animate-pulse rounded bg-muted/40" />
       <div className="h-4 w-16 animate-pulse rounded bg-muted/30" />
@@ -204,7 +214,7 @@ const RouteLoadingFallback = (
           <div
             key={`route-fallback-list-${index}`}
             className="h-10 animate-pulse rounded-md"
-            style={{ background: "color-mix(in srgb, var(--color-fg) 5%, transparent)" }}
+            style={{ background: fgTint(5) }}
           />
         ))}
       </div>
@@ -213,7 +223,7 @@ const RouteLoadingFallback = (
           <div
             key={`route-fallback-panel-${index}`}
             className="animate-pulse rounded-lg border border-border"
-            style={{ background: "color-mix(in srgb, var(--color-fg) 4%, transparent)" }}
+            style={{ background: fgTint(4) }}
           />
         ))}
       </div>
@@ -292,7 +302,9 @@ function serializeProjectRoute(location: ReturnType<typeof useLocation>): string
 
 function serializeStoredProjectRoute(location: ReturnType<typeof useLocation>): string | null {
   const route = serializeProjectRoute(location);
-  if (!route || location.pathname !== "/files") return route;
+  // A machine page is never the project's remembered route; the last project route stays.
+  if (!route || isMachineScopedSettingsRoute(route)) return null;
+  if (location.pathname !== "/files") return route;
   const params = new URLSearchParams(location.search ?? "");
   if (!params.has("externalPath") && !params.has("externalOpen")) return route;
   params.delete("externalPath");
@@ -450,25 +462,32 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
   useParkedSurfaceFocus(lanesSurfaceRef, !isLanesRoute, shouldRenderLanes);
   useParkedSurfaceFocus(pageSurfaceRef, overlayOpen, pagePath);
 
-  const workSurface = shouldRenderWork ? (
-    <Routes location={visibleWorkRoute}>
-      <Route path="/work/*" element={
-        <div
-          ref={workSurfaceRef}
-          className="h-full min-h-0 w-full"
-          {...parkedSurfaceProps(!isWorkRoute)}
-        >
-          <PageErrorBoundary>
-            <React.Suspense fallback={LazyFallback}>
-              <ProjectSidebarHold held={heldWork}>
-                <TerminalsPage active={active && isWorkRoute} />
-              </ProjectSidebarHold>
-            </React.Suspense>
-          </PageErrorBoundary>
-        </div>
-      } />
-    </Routes>
-  ) : null;
+  // The Work surface stays mounted behind every other tab. While it is parked
+  // its element is the same object and the router values above it are held,
+  // so a switch between two other tabs renders nothing in it (not the session
+  // list, the open chat or its composer).
+  const workShown = active && isWorkRoute;
+  const workSurface = React.useMemo(() => (shouldRenderWork ? (
+    <ProjectSurfaceRouterScope active={workShown}>
+      <Routes location={visibleWorkRoute}>
+        <Route path="/work/*" element={
+          <div
+            ref={workSurfaceRef}
+            className="h-full min-h-0 w-full"
+            {...parkedSurfaceProps(!isWorkRoute)}
+          >
+            <PageErrorBoundary>
+              <React.Suspense fallback={LazyFallback}>
+                <ProjectSidebarHold held={heldWork}>
+                  <TerminalsPage active={workShown} />
+                </ProjectSidebarHold>
+              </React.Suspense>
+            </PageErrorBoundary>
+          </div>
+        } />
+      </Routes>
+    </ProjectSurfaceRouterScope>
+  ) : null), [heldWork, isWorkRoute, shouldRenderWork, visibleWorkRoute, workShown]);
 
   const lanesSurface = shouldRenderLanes ? (
     <Routes location={visibleLanesRoute}>
@@ -555,7 +574,31 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
   );
 }
 
-function ProjectSurface({
+/**
+ * Holds the router's location and route match still for a parked project
+ * surface. Every mounted project sits under the one router, and most of a Work
+ * surface reads them (`useLocation`, `useNavigate`, each nested `<Routes>`),
+ * so without this one switch between two projects renders the Work surface
+ * of every mounted project several times. A parked surface keeps what it last
+ * had while it was on screen (until then, what it mounted with), which is also its own
+ * location and not the visible project's. It gets the live values again in
+ * the render that shows it.
+ */
+function ProjectSurfaceRouterScope({ active, children }: { active: boolean; children: React.ReactNode }) {
+  const liveLocation = React.useContext(RouterLocationContext);
+  const liveRoute = React.useContext(RouterRouteContext);
+  const held = React.useRef({ location: liveLocation, route: liveRoute });
+  if (active) held.current = { location: liveLocation, route: liveRoute };
+  return (
+    <RouterLocationContext.Provider value={held.current.location}>
+      <RouterRouteContext.Provider value={held.current.route}>
+        {children}
+      </RouterRouteContext.Provider>
+    </RouterLocationContext.Provider>
+  );
+}
+
+const ProjectSurface = React.memo(function ProjectSurface({
   active,
   project,
   projectBinding,
@@ -622,11 +665,13 @@ function ProjectSurface({
         data-project-binding-key={projectBinding.key}
         data-project-root={project.rootPath}
       >
-        <ProjectRouteContent active={active} route={route} />
+        <ProjectSurfaceRouterScope active={active}>
+          <ProjectRouteContent active={active} route={route} />
+        </ProjectSurfaceRouterScope>
       </div>
     </AppStoreProvider>
   );
-}
+});
 
 function ProjectTabHost() {
   const location = useLocation();
@@ -644,6 +689,31 @@ function ProjectTabHost() {
   const setStandaloneSettingsOpen = useAppStore((s) => s.setStandaloneSettingsOpen);
   const projectTransition = useAppStore((s) => s.projectTransition);
   const projectTransitionError = useAppStore((s) => s.projectTransitionError);
+  // The project's .ade folder or database disappeared (or was swapped) while
+  // it was open: show the recovery screen instead of letting every panel fail.
+  // Asked once when the window loads (the project that could not reopen at
+  // launch) and whenever its project changes, so a reload or a second window
+  // learns what the main process already knows. A window that later goes
+  // back to the welcome screen does not bring the launch problem back.
+  const activeProjectRoot = useAppStore((s) => s.project?.rootPath ?? null);
+  React.useEffect(() => {
+    void window.ade?.recovery?.projectDataStatus?.().then((problem) => {
+      if (!problem || useAppStore.getState().project) return;
+      useAppStore.getState().reportProjectDataProblem(problem.projectRoot, problem.status);
+    }).catch(() => undefined);
+  }, []);
+  React.useEffect(() => {
+    if (!activeProjectRoot) return;
+    void window.ade?.recovery?.projectDataStatus?.(activeProjectRoot).then((problem) => {
+      // Dropped if the window moved to another project while this was asked.
+      if (!problem || useAppStore.getState().project?.rootPath !== activeProjectRoot) return;
+      useAppStore.getState().reportProjectDataProblem(problem.projectRoot, problem.status);
+    }).catch(() => undefined);
+  }, [activeProjectRoot]);
+  React.useEffect(() => window.ade?.recovery?.onProjectDataMissing?.(({ projectRoot, status }) => {
+    if (useAppStore.getState().project?.rootPath !== projectRoot) return;
+    useAppStore.getState().reportProjectDataProblem(projectRoot, status);
+  }), []);
   const openRemoteProjectTabs = useAppStore((s) => s.openRemoteProjectTabs);
   const openProjectTabRoots = useAppStore((s) => s.openProjectTabRoots ?? EMPTY_PROJECT_TAB_ROOTS);
   const projectInfoByRoot = useAppStore((s) => s.projectInfoByRoot ?? EMPTY_PROJECT_INFO_BY_ROOT);
@@ -667,9 +737,10 @@ function ProjectTabHost() {
     smartTooltipsEnabled: s.smartTooltipsEnabled,
     launchPromptClipboardEnabled: s.launchPromptClipboardEnabled,
     launchPromptClipboardNoticeEnabled: s.launchPromptClipboardNoticeEnabled,
-    promptStashButtonEnabled: s.promptStashButtonEnabled,
+    draftsButtonEnabled: s.draftsButtonEnabled,
     voiceInputEnabled: s.voiceInputEnabled,
     codexVoice: s.codexVoice,
+    appleDevice: s.appleDevice,
   })));
   const storesRef = React.useRef(new Map<string, AppStoreApi>());
   const bindingsRef = React.useRef(new Map<string, OpenProjectBinding>());
@@ -677,6 +748,11 @@ function ProjectTabHost() {
   const lruRef = React.useRef<string[]>([]);
   const [routesBySurfaceKey, setRoutesBySurfaceKey] = React.useState<Record<string, string>>({});
   const isPersonalChatsRoute = location.pathname === "/chats" || location.pathname.startsWith("/chats/");
+  // The Browser top tab is machine-level like Chats: no project surface under it.
+  const isBrowserRoute = !webMode && isBrowserTabRoute(location.pathname);
+  // Music is machine-level too: Apple Music has nothing to do with a project.
+  const isMusicRoute = !webMode && isMusicTabRoute(location.pathname);
+  const isMachineRoute = isPersonalChatsRoute || isBrowserRoute || isMusicRoute;
   const isAccountRoute = location.pathname === "/account" || location.pathname.startsWith("/account/");
   // Settings with no project open: the welcome screen's own Settings entry
   // sends you here, and the machine-scoped sections of the page are the only
@@ -734,10 +810,10 @@ function ProjectTabHost() {
   }, [isLegacyHubRoute, navigate]);
 
   React.useEffect(() => {
-    // Machine-level routes (personal chats, account) are not project surfaces;
-    // the route-restore below would otherwise clobber them with the active
-    // project's stored route on load.
-    if (isPersonalChatsRoute || isAccountRoute || isLegacyHubRoute) return;
+    // Machine-level routes (personal chats, browser, account) are not project
+    // surfaces; the route-restore below would otherwise clobber them with the
+    // active project's stored route on load.
+    if (isMachineRoute || isAccountRoute || isLegacyHubRoute) return;
     const previousSurfaceKey = previousActiveSurfaceKeyRef.current;
     if (previousSurfaceKey === activeSurfaceKey) return;
     const currentRoute = serializeStoredProjectRoute(location);
@@ -757,7 +833,7 @@ function ProjectTabHost() {
     if (currentRoute !== nextRoute) {
       navigate(nextRoute, { replace: true });
     }
-  }, [activeSurfaceKey, isAccountRoute, isLegacyHubRoute, isPersonalChatsRoute, location, navigate, routesBySurfaceKey]);
+  }, [activeSurfaceKey, isAccountRoute, isLegacyHubRoute, isMachineRoute, location, navigate, routesBySurfaceKey]);
 
   React.useEffect(() => {
     if (!activeSurfaceKey) return;
@@ -772,6 +848,7 @@ function ProjectTabHost() {
     setRoutesBySurfaceKey((prev) => (prev[activeSurfaceKey] === route ? prev : { ...prev, [activeSurfaceKey]: route }));
   }, [activeSurfaceKey, location]);
 
+  const localBindingsRef = React.useRef(new Map<string, OpenProjectBinding>());
   const projectEntries = React.useMemo<ProjectSurfaceEntry[]>(() => {
     const entries: ProjectSurfaceEntry[] = [];
     const activeRemoteRoot =
@@ -786,7 +863,13 @@ function ProjectTabHost() {
         activeProject?.rootPath === root && !activeRemoteRoot ? activeProject : null
       );
       if (!project) continue;
-      const binding = localProjectBindingForProject(project);
+      // Same fields, same object: this list is rebuilt on every project
+      // switch, and a new binding object for a project that did not change
+      // re-rendered everything in it that reads the binding.
+      const built = localProjectBindingForProject(project);
+      const known = localBindingsRef.current.get(built.key);
+      const binding = known && shallow(known, built) ? known : built;
+      localBindingsRef.current.set(binding.key, binding);
       entries.push({ surfaceKey: binding.key, project, binding });
     }
     for (const binding of openRemoteProjectTabs) {
@@ -929,7 +1012,7 @@ function ProjectTabHost() {
   }
 
   const standaloneSettingsRoute = isSettingsRoute && !activeProject?.rootPath && standaloneSettingsOpen;
-  if (!isPersonalChatsRoute && !isAccountRoute && !standaloneSettingsRoute && (!activeProject || showWelcome || mountedProjects.length === 0)) {
+  if (!isMachineRoute && !isAccountRoute && !standaloneSettingsRoute && (!activeProject || showWelcome || mountedProjects.length === 0)) {
     // A host conflict during first hydration lands here, not on a project
     // surface, so the starting banner and the recovery takeover have to ride
     // along with the welcome page — this is the one state where the machine
@@ -978,7 +1061,7 @@ function ProjectTabHost() {
         return (
           <ProjectSurface
             key={surfaceKey}
-            active={!isPersonalChatsRoute && !isAccountRoute && surfaceKey === activeSurfaceKey}
+            active={!isMachineRoute && !isAccountRoute && surfaceKey === activeSurfaceKey}
             project={project}
             projectBinding={projectBinding}
             route={route}
@@ -990,6 +1073,20 @@ function ProjectTabHost() {
         <PageErrorBoundary>
           <React.Suspense fallback={LazyFallback}>
             <PersonalChatsPage standalone={showWelcome || !activeProject} />
+          </React.Suspense>
+        </PageErrorBoundary>
+      ) : null}
+      {isBrowserRoute ? (
+        <PageErrorBoundary>
+          <React.Suspense fallback={LazyFallback}>
+            <BrowserPage />
+          </React.Suspense>
+        </PageErrorBoundary>
+      ) : null}
+      {isMusicRoute ? (
+        <PageErrorBoundary>
+          <React.Suspense fallback={LazyFallback}>
+            <MusicPage />
           </React.Suspense>
         </PageErrorBoundary>
       ) : null}
@@ -1018,7 +1115,7 @@ function ProjectTabHost() {
         </PageErrorBoundary>
       ) : null}
       {transitionLabel ? <ProjectTransitionVeil label={transitionLabel} /> : null}
-      {webMode && !isAccountRoute && !isPersonalChatsRoute ? <ProjectHostRecoveryScreen /> : null}
+      {webMode && !isAccountRoute && !isMachineRoute ? <ProjectHostRecoveryScreen /> : null}
     </div>
   );
 }
@@ -1245,8 +1342,8 @@ function AppNavigationBridge() {
     }
 
     if (target.kind === "settings") {
-      // Lets surfaces outside the router tree (the attention popover, the
-      // notch) open a settings tab — and land on a specific card — without
+      // Lets surfaces outside the router tree (the Activity popover) open a
+      // settings tab — and land on a specific card — without
       // taking a `useNavigate` dependency. Unknown tabs fall back to the
       // settings root rather than 404-ing to General.
       const tab = resolveSettingsTab(target.tab ?? null);
@@ -1264,7 +1361,7 @@ function AppNavigationBridge() {
       const laneMachineId = lane ? null : await otherMachineIdForLane(target.laneId, target.machineId);
       if (laneMachineId) {
         // Lanes selects a lane on another machine from `?laneId&machineId`.
-        navigate(`${openLaneInLanesTabPath(target.laneId, target.sessionId)}&machineId=${encodeURIComponent(laneMachineId)}`);
+        navigate(openLaneOnMachinePath(target.laneId, laneMachineId, target.sessionId));
         return true;
       }
       if (!lane && !options.forceLocal) {
@@ -1301,11 +1398,11 @@ function AppNavigationBridge() {
     }
 
     if (target.kind === "linear-issue") {
-      requestLinearIssueQuickView({
-        issueIdentifier: target.issueIdentifier,
-        branch: target.branch ?? null,
-        source: "deeplink",
-      });
+      // Where you are: in the Work tools pane when a chat is on screen (an
+      // `ade://linear-issue` chip in a transcript lands here too), otherwise
+      // the issue sheet over the current page.
+      const ref = linearIssueRef(target.issueIdentifier);
+      if (ref) openIssueRef({ ref, branch: target.branch ?? null, source: "deeplink" });
       return true;
     }
 
@@ -1436,20 +1533,14 @@ function BrowserHashRouteBridge() {
 }
 
 export function App() {
-  const themeId = useAppStore(selectEffectiveThemeId);
-  const customThemes = useAppStore((s) => s.customThemes);
-  const setSystemColorScheme = useAppStore((s) => s.setSystemColorScheme);
-  const interfacePreferences = useAppStore((s) => s.interfacePreferences);
-
-  React.useEffect(() => {
-    applyInterfacePreferences(interfacePreferences);
-  }, [interfacePreferences]);
   const projectRoot = useAppStore(selectActiveProjectRoot);
 
   // Account-scoped preferences follow the signed-in account between machines.
   // Mounted here, once, because it binds the ROOT store: a project-scoped mount
   // would hydrate one window and leave the next stale.
   useAccountSettingsSync();
+  // Home layouts across windows, and when main may watch the clipboard.
+  useHomeAppEffects();
 
   React.useEffect(() => {
     const w = window as Window & { __ADE_GET_DIRTY_FILE_TEXT__?: (p: string) => string | undefined };
@@ -1463,34 +1554,10 @@ export function App() {
     void getAiStatusCached({ projectRoot: projectRoot ?? null }).catch(() => undefined);
   }, [projectRoot]);
 
-  // Track the OS colour scheme on the root store. The painted theme follows it
-  // only when the user chose "System"; the listener itself is always cheap.
-  React.useEffect(() => {
-    if (typeof window.matchMedia !== "function") return;
-    const query = window.matchMedia("(prefers-color-scheme: light)");
-    const sync = () => setSystemColorScheme(query.matches ? "light" : "dark");
-    sync();
-    query.addEventListener("change", sync);
-    return () => query.removeEventListener("change", sync);
-  }, [setSystemColorScheme]);
-
-  React.useEffect(() => {
-    // One pass per theme change: inline custom properties on <html> for a
-    // custom/imported theme, plus `data-theme` for the structural block and
-    // `data-theme-id` for identity. Built-in dark/light emit no inline vars, so
-    // they render exactly as the stylesheet defines them.
-    const resolved = resolveTheme(resolveThemeById(themeId, customThemes));
-    applyAdeTheme(resolved);
-    // The Windows caption strip is painted by the OS from a colour ADE hands
-    // it, so it does not inherit `data-theme` the way the header does.
-    syncWindowsTitleBarOverlay({ theme: resolved.theme.baseMode });
-  }, [themeId, customThemes]);
-
   return (
-    // The interface "Reduce motion" preference is explicit, so it wins over the
-    // OS query; off, `"user"` is exactly the OS-honouring default. Wrapping the
-    // shell (not just the desktop entry) keeps the hosted web client in step.
-    <MotionConfig reducedMotion={interfacePreferences.reduceMotion ? "always" : "user"}>
+    // Interface, theme, reduce-motion and the OS colour scheme come from
+    // AppearanceRoot, which the hosted sign-in screen mounts too.
+    <AppearanceRoot>
     <LaunchGate>
       <Router>
         <div
@@ -1520,12 +1587,14 @@ export function App() {
           <DialogHost />
           {/* "May this agent use the ADE browser?" — only when the setting asks. */}
           <BrowserAgentAccessPromptHost />
+          {/* "Quit ADE?" — main asks the window it is quitting from. */}
+          <QuitPromptHost />
           {/* "Trust this folder?" — git refused a folder the user chose to open. */}
           <GitFolderTrustPromptHost />
           <LeftoverWorktreeDialogHost />
         </div>
       </Router>
     </LaunchGate>
-    </MotionConfig>
+    </AppearanceRoot>
   );
 }

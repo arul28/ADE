@@ -327,7 +327,7 @@ type AiConfig = {
 schema for older configs, but Settings no longer offers per-helper
 model pickers. Background naming, idle status lines, and commit
 suggestions pick a cheap model from the ADE provider that owns the
-session (Haiku 4.5 / GPT-5.6 Luna / Composer 2.5), then that session's
+session (Haiku 5.5 / GPT-5.6 Luna / Composer 2.5), then that session's
 model, then a deterministic slug. OpenCode, Droid, Pi, and ACP skip the
 cheap helper and use the session model. Manual Graph PR create is
 title plus optional markdown — ADE does not draft the description.
@@ -408,6 +408,13 @@ survive. Personal chats also skip them (no project worktree). Only the user's ow
 load — the worker pins Pi's `projectTrusted: false`, so a checked-out
 repository's `.pi/extensions` never executes. See
 [Chat › Pi UI bridge](../chat/README.md#pi-ui-bridge-ask_user-and-extensions).
+
+`AiChatConfig.claudePluginUiEnabled?: boolean` draws what Claude Code mods show
+in ADE chat: status lines, toasts, a band above the prompt and panes. It
+**defaults to false**; only an explicit `true` turns it on, because the channel
+is private to Claude Code. The mods' hooks
+run in the Claude process either way, so this controls the drawing only. See
+[Chat › Claude mod UI](../chat/README.md#claude-mod-ui).
 
 `sessionIntelligence` controls background session naming and
 end-of-session summaries:

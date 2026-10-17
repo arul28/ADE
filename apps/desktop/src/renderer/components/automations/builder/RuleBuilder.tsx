@@ -1,9 +1,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import type { ElementType, ReactNode } from "react";
 import {
-  CheckCircle,
   FloppyDisk,
-  Flask,
   GitBranch,
   ListChecks,
   Play,
@@ -19,6 +17,7 @@ import type {
   AutomationTrigger,
   TestSuiteDefinition,
 } from "../../../../shared/types";
+import { isPullRequestTriggerType } from "../../../../shared/types";
 import { Button } from "../../ui/Button";
 import { Chip } from "../../ui/Chip";
 import { cn } from "../../ui/cn";
@@ -29,8 +28,10 @@ import { sourceDef, sourceForTriggerType } from "../triggerCatalog";
 import { RuleSentence } from "../list/RuleSentence";
 import { TriggerCard } from "./TriggerCard";
 import { LaneTargeting } from "./LaneTargeting";
+import { ChatTargetField } from "./ChatTargetField";
 import { StepStack } from "./StepStack";
-import { applyStepsToDraft, draftToSteps, isRequireLaneMode, readLaneMode, type WorkflowStep } from "./draftBridge";
+import { TestRunButton, type TestKind } from "./TestRunControls";
+import { applyStepsToDraft, draftToSteps, laneComesFromEvent, readLaneMode, type WorkflowStep } from "./draftBridge";
 
 function Section({
   icon: Icon,
@@ -45,7 +46,7 @@ function Section({
 }) {
   return (
     <section className={cn(sectionCls, "overflow-hidden")}>
-      <div className="flex items-center gap-2 border-b border-white/[0.06] px-4 py-2.5">
+      <div className="flex items-center gap-2 border-b border-fg/[0.06] px-4 py-2.5">
         <span className="flex h-6 w-6 items-center justify-center rounded-md bg-accent/12 text-accent">
           <Icon size={13} weight="fill" />
         </span>
@@ -120,12 +121,11 @@ export function RuleBuilder({
   suites,
   ingressStatus,
   issues,
-  simulationNotes,
   requiredConfirmations,
   acceptedConfirmations,
   onToggleConfirmation,
   onSave,
-  onSimulate,
+  onTest,
   onRunNow,
   onIngressChanged,
   cursorCloudConnected = false,
@@ -133,7 +133,7 @@ export function RuleBuilder({
   machineField = null,
   saveBlockedReason = null,
   saving,
-  simulating = false,
+  testBlockedReason = null,
   running = false,
   dirty = false,
 }: {
@@ -143,12 +143,12 @@ export function RuleBuilder({
   suites: TestSuiteDefinition[];
   ingressStatus: AutomationIngressStatus | null;
   issues: AutomationDraftIssue[];
-  simulationNotes?: string[];
   requiredConfirmations: AutomationDraftConfirmationRequirement[];
   acceptedConfirmations: Set<string>;
   onToggleConfirmation: (key: string, checked: boolean) => void;
   onSave: () => void;
-  onSimulate?: () => void;
+  /** Opens the Test dialog in the picked kind. */
+  onTest?: (kind: TestKind) => void;
   onRunNow?: () => void;
   onIngressChanged?: () => void;
   /** The machine the rule runs on; null = the tab's machine. */
@@ -159,7 +159,8 @@ export function RuleBuilder({
   saveBlockedReason?: string | null;
   cursorCloudConnected?: boolean;
   saving: boolean;
-  simulating?: boolean;
+  /** Why Test is unavailable now (a new automation that is not saved yet). */
+  testBlockedReason?: string | null;
   running?: boolean;
   dirty?: boolean;
 }) {
@@ -193,9 +194,8 @@ export function RuleBuilder({
       else next.targetLaneId = patch.targetLaneId;
     }
     let nextDraft: AutomationRuleDraft = { ...draft, execution: next };
-    if (isRequireLaneMode((next as { laneMode?: string }).laneMode)) {
-      // Require-on-trigger resolves the lane from the event; per-step lane
-      // overrides would conflict, so strip them.
+    if (laneComesFromEvent((next as { laneMode?: string }).laneMode)) {
+      // The lane comes from the event; strip per-step lane overrides.
       nextDraft = applyStepsToDraft(nextDraft, draftToSteps(nextDraft));
     }
     setDraft(nextDraft);
@@ -207,12 +207,23 @@ export function RuleBuilder({
   useEffect(() => {
     if (lastTriggerType.current === primaryTrigger.type) return;
     lastTriggerType.current = primaryTrigger.type;
+    // "The PR's branch" needs a PR trigger, and config validation rejects it
+    // on any other. Drop it whatever else is set: a rule kept in one chat
+    // hides the lane picker, so the user could not undo it there.
+    if (laneMode === "pr-branch" && !isPullRequestTriggerType(primaryTrigger.type)) {
+      patchExecution({ laneMode: "reuse" });
+      return;
+    }
     if (laneDirtyRef.current) return;
+    // A rule kept in one chat runs in that chat's lane; a lane default would
+    // read as if it applied when it does not.
+    if (draft.execution?.session?.chatSessionId) return;
     const t = primaryTrigger.type as string;
     if (t === "github.issue_opened" || t === "linear.issue_created") {
       patchExecution({ laneMode: "create", laneNamePreset: "issue-title" });
     } else if (t === "github.pr_opened") {
-      patchExecution({ laneMode: "create", laneNamePreset: "pr-title-author" });
+      // An agent answering a PR works on that PR, so it runs on the PR's branch.
+      patchExecution({ laneMode: "pr-branch", laneNamePreset: "pr-title-author" });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [primaryTrigger.type]);
@@ -221,12 +232,11 @@ export function RuleBuilder({
 
   const errors = issues.filter((i) => i.level === "error");
   const warnings = issues.filter((i) => i.level === "warning");
-  const notes = simulationNotes ?? [];
 
   return (
     <div className="flex h-full min-h-0 flex-col">
       {/* Header */}
-      <div className="shrink-0 border-b border-white/[0.06] bg-white/[0.02] px-5 py-3">
+      <div className="shrink-0 border-b border-fg/[0.06] bg-fg/[0.02] px-5 py-3">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
@@ -248,11 +258,12 @@ export function RuleBuilder({
                 Run now
               </Button>
             ) : null}
-            {onSimulate ? (
-              <Button size="sm" variant="outline" disabled={simulating || saving} onClick={onSimulate}>
-                <Flask size={12} weight="regular" className={cn(simulating && "animate-spin")} />
-                Dry run
-              </Button>
+            {onTest ? (
+              <TestRunButton
+                disabled={saving || Boolean(testBlockedReason)}
+                title={testBlockedReason ?? undefined}
+                onOpen={onTest}
+              />
             ) : null}
             <Button
               size="sm"
@@ -273,19 +284,6 @@ export function RuleBuilder({
         <div className="mx-auto flex w-full max-w-3xl flex-col gap-3.5 px-5 py-5">
           {errors.length ? <IssueList title="Errors" issues={errors} tone="error" /> : null}
           {warnings.length ? <IssueList title="Notes" issues={warnings} tone="warning" /> : null}
-          {notes.length ? (
-            <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/10 px-3 py-2 text-[11px] text-emerald-100">
-              <div className="flex items-center gap-1.5 font-semibold">
-                <CheckCircle size={13} weight="fill" />
-                Dry run ready
-              </div>
-              <ul className="mt-1 space-y-0.5">
-                {notes.map((note, i) => (
-                  <li key={`${note}-${i}`}>{note}</li>
-                ))}
-              </ul>
-            </div>
-          ) : null}
           <ConfirmationsChecklist required={requiredConfirmations} accepted={acceptedConfirmations} onToggle={onToggleConfirmation} />
 
           <Section icon={Sliders} title="Details" hint="Name and describe this automation">
@@ -302,7 +300,7 @@ export function RuleBuilder({
                 onChange={(e) => setDraft({ ...draft, description: e.target.value })}
                 placeholder="What this automation is for (optional)"
               />
-              <label className="flex cursor-pointer items-center justify-between gap-3 rounded-md border border-white/[0.06] bg-white/[0.02] px-3 py-2">
+              <label className="flex cursor-pointer items-center justify-between gap-3 rounded-md border border-fg/[0.06] bg-fg/[0.02] px-3 py-2">
                 <span className="min-w-0">
                   <span className="block text-[11.5px] text-fg/90">Enabled</span>
                   <span className="mt-0.5 block text-[10px] text-muted-fg/60">
@@ -323,10 +321,35 @@ export function RuleBuilder({
               onIngressChanged={onIngressChanged}
               cursorCloudConnected={cursorCloudConnected}
               runtimePin={runtimePin}
+              agentPrompt={steps.find((step) => step.kind === "agent-session")?.prompt ?? null}
+              onUsePrompt={(prompt) => {
+                const index = steps.findIndex((step) => step.kind === "agent-session");
+                if (index < 0) return;
+                setSteps(steps.map((step, i) => (i === index ? { ...step, prompt } : step)));
+              }}
             />
           </Section>
 
-          <Section icon={GitBranch} title="Where it runs" hint="Which lane each run works in">
+          <Section icon={GitBranch} title="Where it runs" hint="Which chat and lane each run works in">
+            {(draft.execution?.kind ?? "agent-session") === "agent-session" ? (
+              <div className="mb-3">
+                <ChatTargetField
+                  chatSessionId={draft.execution?.session?.chatSessionId ?? null}
+                  suggestedChatId={draft.scope?.sessionId ?? null}
+                  runtimePin={runtimePin}
+                  onChange={(chatSessionId) => {
+                    const current = draft.execution ?? { kind: "agent-session" as const };
+                    const session = { ...(current.session ?? {}) };
+                    if (chatSessionId) session.chatSessionId = chatSessionId;
+                    else delete session.chatSessionId;
+                    setDraft({ ...draft, execution: { ...current, session } });
+                  }}
+                />
+              </div>
+            ) : null}
+            {draft.execution?.session?.chatSessionId ? (
+              <p className="text-[11px] text-muted-fg/65">Runs work in that chat's lane.</p>
+            ) : (
             <LaneTargeting
               value={{
                 laneMode,
@@ -341,6 +364,7 @@ export function RuleBuilder({
                 patchExecution(patch);
               }}
             />
+            )}
           </Section>
 
           <Section
@@ -348,7 +372,7 @@ export function RuleBuilder({
             title="Workflow"
             hint={`${steps.length} step${steps.length === 1 ? "" : "s"} — runs top to bottom`}
           >
-            <StepStack steps={steps} triggerType={primaryTrigger.type} suites={suites} onChange={setSteps} />
+            <StepStack steps={steps} triggerType={primaryTrigger.type} suites={suites} runtimePin={runtimePin} onChange={setSteps} />
           </Section>
         </div>
       </div>

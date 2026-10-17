@@ -19,7 +19,7 @@ import { cn } from "../../ui/cn";
 import { LaneIcon } from "../../ui/vcsIcons";
 import { LaneBranchSwitcher } from "../detail/LaneBranchSwitcher";
 import { LinearIssueBadge } from "../LinearIssueBadge";
-import { COLORS } from "../laneDesignTokens";
+import { COLORS, toneText } from "../laneDesignTokens";
 import { providerDisplayName } from "./laneHistoryModel";
 import { laneStatusItems, type LaneStatusItem, type LaneStatusTone } from "./laneOverviewModel";
 
@@ -128,7 +128,7 @@ export function LaneIdentity({
       <div className="flex min-w-0 flex-col gap-1">
         <div className="flex min-w-0 items-center gap-3">
           <div className="flex min-w-0 flex-1 items-center gap-2">
-            <span className="flex shrink-0" style={{ color: accent }}>
+            <span className="flex shrink-0" style={{ color: toneText(accent) }}>
               <LaneIcon size={16} />
             </span>
             <h1 className="m-0 truncate text-[16px] font-semibold leading-[24px] tracking-[-0.01em] text-fg" title={lane.name}>

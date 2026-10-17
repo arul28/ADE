@@ -19,9 +19,9 @@ export const MAC_DESKTOP_ELAPSED_AFTER_MS = 5_000;
 /** The secondary button beside `WORK_TOOL_PRIMARY_BUTTON`. */
 export const MAC_DESKTOP_SECONDARY_BUTTON = cn(
   "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-[8px] px-3",
-  "border border-white/[0.10] bg-white/[0.04]",
+  "border border-fg/[0.10] bg-fg/[0.04]",
   "font-sans text-[12px] font-medium text-fg/85 transition-colors duration-[120ms] ease-out",
-  "hover:bg-white/[0.08] hover:text-fg focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
+  "hover:bg-fg/[0.08] hover:text-fg focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
   "disabled:pointer-events-none disabled:opacity-40",
 );
 

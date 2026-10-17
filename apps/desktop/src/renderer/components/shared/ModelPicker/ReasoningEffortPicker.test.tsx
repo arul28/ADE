@@ -376,16 +376,15 @@ describe("ReasoningEffortPicker", () => {
     firePointer("pointermove", 236);
 
     expect(track!.getAttribute("data-dragging")).toBe("true");
-    expect(track!.style.getPropertyValue("--reasoning-slider-thumb-position")).toContain("68%");
     expect(onChange).not.toHaveBeenCalled();
 
     firePointer("pointerup", 236);
 
     expect(track!.hasAttribute("data-dragging")).toBe(false);
-    expect(track!.style.getPropertyValue("--reasoning-slider-thumb-position")).toContain("60%");
     expect(releasePointerCapture).toHaveBeenCalledWith(7);
     expect(onChange).toHaveBeenCalledTimes(1);
-    expect(onChange).toHaveBeenCalledWith("xhigh");
+    // Six equal segments over a 200px track: 136px in (68%) is the fifth, "max".
+    expect(onChange).toHaveBeenCalledWith("max");
     expect(trigger.getAttribute("aria-expanded")).toBe("true");
   });
 
@@ -439,33 +438,9 @@ describe("ReasoningEffortPicker", () => {
     fireEvent.click(currentTick);
 
     expect(onChange).toHaveBeenCalledTimes(1);
-    expect(onChange).toHaveBeenCalledWith("xhigh");
-    expect(track!.style.getPropertyValue("--reasoning-slider-thumb-position")).toContain("60%");
+    // Six equal segments over a 200px track: 136px in (68%) is the fifth, "max".
+    expect(onChange).toHaveBeenCalledWith("max");
     expect(trigger.getAttribute("aria-expanded")).toBe("true");
-  });
-
-  it("uses the complete tier palette as a progressive fill gradient", async () => {
-    const user = userEvent.setup();
-    const { container } = render(
-      <ReasoningEffortPicker
-        modelId="openai/gpt-5.6-sol"
-        reasoningEffort="ultra"
-        onChange={vi.fn()}
-      />,
-    );
-    await user.click(screen.getByRole("button", { name: /Reasoning effort/i }));
-
-    const track = container.ownerDocument.querySelector<HTMLElement>("[data-reasoning-slider-track]");
-    const fill = container.ownerDocument.querySelector<HTMLElement>("[data-reasoning-slider-fill]");
-    const gradient = track?.style.getPropertyValue("--reasoning-progressive-gradient") ?? "";
-    expect(gradient).toContain("linear-gradient");
-    expect(gradient).toContain("52 211 153");
-    expect(gradient).toContain("34 211 238");
-    expect(gradient).toContain("96 165 250");
-    expect(gradient).toContain("167 139 250");
-    expect(gradient).toContain("192 132 252");
-    expect(gradient).toContain("232 121 249");
-    expect(fill?.className).toContain("ade-reasoning-slider-fill-max");
   });
 
   it("keeps keyboard tier changes open", async () => {

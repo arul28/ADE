@@ -48,7 +48,7 @@ import {
   toOptionalString,
   writeTextAtomic,
 } from "../shared/utils";
-import { commandExists } from "../ai/utils";
+import { commandExistsCached } from "../ai/utils";
 import { readArtifactByteRange } from "./artifactByteRange";
 import { createComputerUseArtifactPath, getLocalComputerUseCapabilities, toProjectArtifactUri } from "./localComputerUse";
 import { isStreamableArtifactFile, knownArtifactMimeType } from "./artifactStreamProtocol";
@@ -1060,7 +1060,7 @@ export function createComputerUseArtifactBrokerService(args: {
     // Only backends ADE can actually ingest from are listed. A permanently
     // `available: false` entry is decoration, not status.
     const backends: ComputerUseExternalBackendStatus[] = [];
-    const agentBrowserInstalled = commandExists("agent-browser");
+    const agentBrowserInstalled = commandExistsCached("agent-browser");
     backends.push({
       name: "agent-browser",
       available: agentBrowserInstalled,

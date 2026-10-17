@@ -68,7 +68,9 @@ import {
 import { MacDesktopMiniPlayer } from "./MacDesktopMiniPlayer";
 import { AppControlMiniPlayer } from "./AppControlMiniPlayer";
 import { FloatingPlayerCapturePill, useFloatingPlayerCapture } from "../shared/FloatingPlayer";
+import { useAnyFloatingPlayerShown } from "../shared/floatingPlayerSlots";
 import { showToast } from "../app/toast/toastStore";
+import { fgTint } from "../lanes/laneDesignTokens";
 
 /**
  * The floating live-preview card.
@@ -124,23 +126,22 @@ const PREVIEW_FPS = 12;
  */
 const BLANK_FRAME = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
 
+type BrowserTab = BuiltInBrowserStatus["tabs"][number];
+type BrowserTabPicker = (status: BuiltInBrowserStatus | null, chatSessionId: string | null) => BrowserTab | null;
+
 /**
- * The tab the card pictures: this chat's own tab when it has one, else the
- * browser's active tab.
+ * The tab this chat owns: the active tab when the chat owns it, else the one
+ * it touched last (every claim renews `ownerClaimedAt`). Null when it owns none.
  *
- * It used to be the active tab only, so an agent working in a background tab
- * (`--tab <id>`, or a tab it opened without activating) floated nothing over
- * its chat while a person's tab sat in front. Among several tabs the chat
- * owns, the one it touched last wins — every claim renews `ownerClaimedAt`.
+ * Alone, this is the pick for a chat on another machine. The card shows what
+ * the chat's agent can use, and that agent reaches this browser only through
+ * the tabs it owns here.
  */
-function browserTabForChat(
-  status: BuiltInBrowserStatus | null,
-  chatSessionId: string | null,
-): BuiltInBrowserStatus["tabs"][number] | null {
-  if (!status || !Array.isArray(status.tabs)) return null;
-  const active = status.tabs.find((tab) => tab.id === status.activeTabId) ?? status.tabs[0] ?? null;
-  if (!chatSessionId || active?.ownerChatSessionId === chatSessionId) return active;
-  let owned: BuiltInBrowserStatus["tabs"][number] | null = null;
+const ownedBrowserTabForChat: BrowserTabPicker = (status, chatSessionId) => {
+  if (!status || !Array.isArray(status.tabs) || !chatSessionId) return null;
+  const active = status.tabs.find((tab) => tab.id === status.activeTabId) ?? null;
+  if (active?.ownerChatSessionId === chatSessionId) return active;
+  let owned: BrowserTab | null = null;
   let ownedAt = -1;
   for (const tab of status.tabs) {
     if (tab.ownerChatSessionId !== chatSessionId) continue;
@@ -150,7 +151,24 @@ function browserTabForChat(
       ownedAt = claimedAt;
     }
   }
-  return owned ?? active;
+  return owned;
+};
+
+/**
+ * The tab the card pictures for a chat on this machine: the chat's own tab
+ * when it has one, else the browser's active tab, so an agent working in a
+ * background tab (`--tab <id>`, or a tab it opened without activating) is
+ * pictured while a person's tab sits in front.
+ */
+const browserTabForChat: BrowserTabPicker = (status, chatSessionId) => {
+  if (!status || !Array.isArray(status.tabs)) return null;
+  const active = status.tabs.find((tab) => tab.id === status.activeTabId) ?? status.tabs[0] ?? null;
+  return ownedBrowserTabForChat(status, chatSessionId) ?? active;
+};
+
+/** A chat on another machine pictures only the tabs its agent owns here. */
+function browserTabPickerFor(runtimePin: OpenProjectBinding | null | undefined): BrowserTabPicker {
+  return runtimePin?.kind === "remote" ? ownedBrowserTabForChat : browserTabForChat;
 }
 
 /**
@@ -159,13 +177,11 @@ function browserTabForChat(
  * Status events are bookkeeping as much as activity — closing the card stops
  * its preview stream, which itself emits one. Diffing the parts a human would
  * call activity is what keeps the most-recent-tool clock honest. The parts come
- * from the tab the card pictures: reading the active tab only meant an agent
- * navigating its own background tab (agent opens never take focus) never
- * counted.
+ * from the tab the card pictures, so an agent navigating its own background
+ * tab (agent opens never take focus) counts.
  */
-function browserActivitySignature(status: BuiltInBrowserStatus | null, chatSessionId: string | null): string {
+function browserActivitySignature(status: BuiltInBrowserStatus | null, tab: BrowserTab | null): string {
   if (!status || !Array.isArray(status.tabs)) return "";
-  const tab = browserTabForChat(status, chatSessionId);
   if (!tab) return `${status.tabs.length}`;
   return [
     tab.id,
@@ -176,6 +192,15 @@ function browserActivitySignature(status: BuiltInBrowserStatus | null, chatSessi
     tab.recording?.startedAt ?? "",
     tab.handoff?.startedAt ?? "",
   ].join("|");
+}
+
+/** The activity signature of the tab a chat's card pictures. */
+function chatBrowserActivitySignature(
+  status: BuiltInBrowserStatus | null,
+  runtimePin: OpenProjectBinding | null | undefined,
+  chatSessionId: string | null,
+): string {
+  return browserActivitySignature(status, browserTabPickerFor(runtimePin)(status, chatSessionId));
 }
 
 export function WorkLiveCornerCard({
@@ -225,6 +250,7 @@ export function WorkLiveCornerCard({
 
   const runtimePinRef = useRef(runtimePin);
   runtimePinRef.current = runtimePin;
+  const pickBrowserTab = browserTabPickerFor(runtimePin);
 
   const [lastTrace, setLastTrace] = useState<BuiltInBrowserActionTraceEntry | null>(null);
   const [activityAt, setActivityAt] = useState<Record<WorkLiveScreenTool, number>>({
@@ -369,7 +395,7 @@ export function WorkLiveCornerCard({
 
   const onBrowserEvent = useCallback((event: BuiltInBrowserEventPayload) => {
     if (event.type === "status" || event.type === "open-request") {
-      const signature = browserActivitySignature(event.status, chatSessionIdRef.current);
+      const signature = chatBrowserActivitySignature(event.status, runtimePinRef.current, chatSessionIdRef.current);
       // An "open-request" is somebody asking for the browser, so it always
       // counts; a plain status only counts when something actually changed.
       if (event.type === "open-request" || signature !== browserSignatureRef.current) {
@@ -407,7 +433,7 @@ export function WorkLiveCornerCard({
    */
   const onBrowserStatusSettled = useCallback((status: BuiltInBrowserStatus | null) => {
     if (!status || !Array.isArray(status.tabs) || status.tabs.length === 0) return;
-    const signature = browserActivitySignature(status, chatSessionIdRef.current);
+    const signature = chatBrowserActivitySignature(status, runtimePinRef.current, chatSessionIdRef.current);
     if (signature === browserSignatureRef.current) return;
     browserSignatureRef.current = signature;
     bump("browser");
@@ -434,16 +460,23 @@ export function WorkLiveCornerCard({
   /* ── Which tool, and does it fit ───────────────────────────────────────── */
 
   const activeBrowserTab = useMemo(
-    () => browserTabForChat(browserStatus, chatSessionId),
-    [browserStatus, chatSessionId],
+    () => pickBrowserTab(browserStatus, chatSessionId),
+    [browserStatus, chatSessionId, pickBrowserTab],
   );
+  // A failed page load (the agent's dev server stopped, a bad URL) is painted
+  // by Chromium as plain white, and that white is all the frames would carry.
+  // The card steps aside until the tab loads again rather than float a blank.
+  const browserLoadFailed = Boolean(activeBrowserTab?.loadError);
   // The signature is per chat. Re-base it on a chat switch, or the next status
   // event compares the new chat's tab with the old chat's and counts as activity.
   const browserStatusRef = useRef(browserStatus);
   browserStatusRef.current = browserStatus;
   useEffect(() => {
-    browserSignatureRef.current = browserActivitySignature(browserStatusRef.current, chatSessionId);
-  }, [chatSessionId]);
+    browserSignatureRef.current = browserActivitySignature(
+      browserStatusRef.current,
+      pickBrowserTab(browserStatusRef.current, chatSessionId),
+    );
+  }, [chatSessionId, pickBrowserTab]);
 
   // Every per-tool question the card asks — live, owner, caption, handoff,
   // recording, session key — answered once, by the adapter map beside the tool
@@ -510,7 +543,7 @@ export function WorkLiveCornerCard({
     {
       tool: "browser",
       lastActivityAt: activityAt.browser,
-      available: canBrowser,
+      available: canBrowser && !browserLoadFailed,
       live: sources.browser.live,
       ownerChatSessionId: activeBrowserTab?.ownerChatSessionId ?? null,
       sessionKey: sources.browser.sessionKey,
@@ -531,6 +564,7 @@ export function WorkLiveCornerCard({
   ], [
     activeBrowserTab?.ownerChatSessionId,
     activityAt,
+    browserLoadFailed,
     canBrowser,
     seen,
     sources,
@@ -562,7 +596,14 @@ export function WorkLiveCornerCard({
   const objectFit = WORK_LIVE_CARD_OBJECT_FIT;
 
   const fits = workLiveCardFits(hostSize, bottomReserve, baseCardSize);
-  const visible = active && tool != null && fits;
+  // One preview at a time: while a floating player (Mac Desktop, App Control,
+  // an Apple device) is on screen, the card steps aside rather than sit on top
+  // of it — the "second live preview over the floating player" the owner
+  // reported on 2026-10-07. A tool the user floated by hand is an explicit ask
+  // and still shows.
+  const floatingPlayerShown = useAnyFloatingPlayerShown();
+  const yieldsToPlayer = floatingPlayerShown && !(tool != null && floating.includes(tool));
+  const visible = active && tool != null && fits && !yieldsToPlayer;
 
   /* ── Host geometry ─────────────────────────────────────────────────────── */
 
@@ -1113,7 +1154,7 @@ export function WorkLiveCornerCard({
                     style={{
                       background: index === timelineIndex
                         ? hue
-                        : "color-mix(in srgb, var(--color-fg) 24%, transparent)",
+                        : fgTint(24),
                     }}
                   />
                 ))}
@@ -1252,7 +1293,7 @@ export function WorkLiveCornerCard({
                 className={cn(
                   "-mr-1 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-[6px]",
                   "text-muted-fg/80 transition-colors duration-[120ms] motion-reduce:transition-none",
-                  "hover:bg-white/[0.08] hover:text-fg",
+                  "hover:bg-fg/[0.08] hover:text-fg",
                   "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
                 )}
               >

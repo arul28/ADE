@@ -9,11 +9,6 @@ import * as HeadlessXterm from "@xterm/headless";
 import type { IBufferCell } from "@xterm/headless";
 import * as XtermSerialize from "@xterm/addon-serialize";
 import type { Logger } from "../logging/logger";
-import {
-  localBrowserActorCapabilityIssuer,
-  type BrowserActorCapabilityIssuer,
-  type BuiltInBrowserActorCapability,
-} from "../builtInBrowser/builtInBrowserActorCapabilities";
 import type { createLaneService } from "../lanes/laneService";
 import { resolveLaneLaunchContext } from "../lanes/laneLaunchContext";
 import type { createSessionService } from "../sessions/sessionService";
@@ -113,6 +108,7 @@ import {
 } from "../../../shared/backgroundUtilityModel";
 import { isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
 import {
+  claudeAccountPromptCacheEnv,
   providerInstanceEnvPatch,
   resolveProviderInstanceForLaunch,
 } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
@@ -146,6 +142,8 @@ import {
   withClaudePluginInCommandLine,
   withClaudeSessionIdInCommandLine,
   withCodexNoAltScreen,
+  MUSE_CLI_COMMAND,
+  shellWordSpans,
   resolveWindowsShellLaunchFields,
   resolveWindowsShellKind,
 } from "../../../shared/cliLaunch";
@@ -171,6 +169,9 @@ import { summarizeTerminalSession } from "../../utils/sessionSummary";
 import { derivePreviewFromChunk, type PreviewCursorState } from "../../utils/terminalPreview";
 import { claudeConfigHome, codexConfigHome, factoryConfigHome, kimiCodeConfigHome } from "../shared/providerConfigHomes";
 import { checkKimiWindowsPrerequisites } from "../ai/acpExecutables";
+import { resolveMuseExecutable, startMuseBinaryFetch } from "../ai/museExecutable";
+import { museCredentialEnv } from "../ai/museAuth";
+import { findMuseSessionForCwd } from "../externalSessions/discoverMuse";
 import {
   buildTrackedCliResumeCommand,
   defaultResumeCommandForTool,
@@ -251,7 +252,7 @@ export type NodePtySpawnHelperExecutableResult =
   | { status: "failed"; path?: string; error: string };
 
 /** Interactive agent TUIs often hide useful text in an alt-screen, so titles come from the first submitted user prompt instead of startup output. */
-const CLI_USER_TITLE_TOOL_TYPES = new Set<TerminalToolType>(["claude", "codex", "cursor-cli", "droid", "opencode", "pi"]);
+const CLI_USER_TITLE_TOOL_TYPES = new Set<TerminalToolType>(["claude", "codex", "cursor-cli", "droid", "opencode", "pi", "muse"]);
 
 function shouldScheduleOutputSnippetTitle(tool: TerminalToolType | null): boolean {
   if (!tool || tool === "shell") return false;
@@ -594,42 +595,23 @@ function withInteractiveTerminalColorEnv(
   return next;
 }
 
-async function withAdeTerminalContextEnv(env: NodeJS.ProcessEnv, args: {
+function withAdeTerminalContextEnv(env: NodeJS.ProcessEnv, args: {
   projectRoot: string;
   laneId: string;
   chatSessionId: string | null;
   ownerSessionId?: string | null;
   spawnLineage?: PtyCreateArgs["spawnLineage"];
-  issueBrowserActorToken: (
-    capability: BuiltInBrowserActorCapability,
-  ) => Promise<string | null>;
-}): Promise<NodeJS.ProcessEnv> {
+}): NodeJS.ProcessEnv {
   const next: NodeJS.ProcessEnv = {
     ...env,
     ADE_PROJECT_ROOT: args.projectRoot,
     ADE_LANE_ID: args.laneId,
   };
   const terminalOwnerSessionId = args.chatSessionId ?? args.ownerSessionId ?? null;
-  const browserActorToken = terminalOwnerSessionId
-    ? await args.issueBrowserActorToken({
-      chatSessionId: terminalOwnerSessionId,
-      laneId: args.laneId,
-      projectRoot: args.projectRoot,
-      tabCollection: null,
-    })
-    : null;
   if (terminalOwnerSessionId) {
     next.ADE_CHAT_SESSION_ID = terminalOwnerSessionId;
   } else {
     delete next.ADE_CHAT_SESSION_ID;
-  }
-  // No owner, or no reachable issuer (headless machine / desktop closed): the
-  // terminal launches without a browser capability rather than inheriting the
-  // host process's, and `ade browser` reports the bridge is not running.
-  if (browserActorToken) {
-    next.ADE_BROWSER_ACTOR_TOKEN = browserActorToken;
-  } else {
-    delete next.ADE_BROWSER_ACTOR_TOKEN;
   }
   if (args.spawnLineage) {
     next.ADE_PARENT_CHAT_SESSION_ID = args.spawnLineage.parentChatSessionId;
@@ -961,8 +943,22 @@ function terminatePtyProcessTree(
           invocation.command,
           invocation.args,
           { timeout: 5_000, maxBuffer: 64 * 1024, windowsHide: true },
-          (error) => {
-            if (error || !force) return;
+          (error, _stdout, stderr) => {
+            if (error) {
+              // Kill behavior is unchanged (node-pty's own kill still runs);
+              // this only makes a failed tree kill visible.
+              logger.warn("pty.taskkill_failed", {
+                sessionId: entry.sessionId,
+                toolType: entry.toolTypeHint,
+                rootPid,
+                force,
+                code: (error as NodeJS.ErrnoException).code ?? null,
+                error: error.message.slice(0, 300),
+                stderr: String(stderr ?? "").trim().slice(0, 300),
+              });
+              return;
+            }
+            if (!force) return;
             logger.warn("pty.process_tree_force_killed", {
               sessionId: entry.sessionId,
               toolType: entry.toolTypeHint,
@@ -971,8 +967,14 @@ function terminatePtyProcessTree(
             });
           },
         );
-      } catch {
+      } catch (error) {
         // taskkill may be unavailable; node-pty's own kill path still runs.
+        logger.warn("pty.taskkill_failed", {
+          sessionId: entry.sessionId,
+          rootPid,
+          force,
+          error: (error instanceof Error ? error.message : String(error)).slice(0, 300),
+        });
       }
     };
 
@@ -1251,7 +1253,49 @@ const WINDOWS_DIRECT_PROVIDER_EXECUTABLES: ReadonlyArray<{
   { toolTypes: ["pi", "pi-chat"], launchCandidates: ["pi"] },
 ];
 
+/**
+ * ADE's pinned Muse binary, or a clear error. ADE never runs a user's own
+ * `muse`: its version drifts from the protocol ADE was built against and it can
+ * self-update under a running session. A missing build starts its fetch in the
+ * background so the next launch finds it.
+ */
+function pinnedMuseBinaryPathOrThrow(): string {
+  const resolution = resolveMuseExecutable();
+  if (resolution.path) return resolution.path;
+  if (resolution.source === "unsupported") {
+    throw new Error("Muse Code has no build for this computer, so ADE cannot start it here.");
+  }
+  // Settings > Providers reports fetch failures; the launch error below is enough here.
+  startMuseBinaryFetch();
+  throw new Error(resolution.fetchPending
+    ? "Muse Code is still downloading. Try again when it finishes (Settings > Providers > Muse Code)."
+    : "Muse Code is not installed yet. ADE started downloading it; try again when it finishes (Settings > Providers > Muse Code).");
+}
+
+/**
+ * Swap the `muse` word of a Muse terminal for the pinned binary. Any word that
+ * names Muse is replaced, a path included: a persisted line can carry an older
+ * pinned build's path, or a user's own install, and both must run the current
+ * pin. The result stays in ADE's canonical POSIX form, like OpenCode's.
+ */
+function withPinnedMuseCommandLine(commandLine: string, toolType: TerminalToolType | null): string {
+  if (toolType !== "muse") return commandLine;
+  const invocation = providerInvocationInCommandLine(commandLine, MUSE_CLI_COMMAND);
+  if (!invocation) return commandLine;
+  const span = shellWordSpans(commandLine)[invocation.binaryIndex];
+  if (!span) return commandLine;
+  const pinned = pinnedMuseBinaryPathOrThrow();
+  return `${commandLine.slice(0, span.start)}${quoteCanonicalShellArg(pinned)}${commandLine.slice(span.end)}`;
+}
+
+function withBundledProviderCommandLine(commandLine: string, toolType: TerminalToolType | null): string {
+  return withPinnedMuseCommandLine(withBundledOpenCodeCommandLine(commandLine, toolType), toolType);
+}
+
 function resolveDirectProviderCommand(command: string, toolType: TerminalToolType | null): string {
+  if (toolType === "muse" && isProviderBinaryCommand(command, MUSE_CLI_COMMAND)) {
+    return pinnedMuseBinaryPathOrThrow();
+  }
   const openCodeCommand = resolveDirectOpenCodeCommand(command, toolType);
   if (process.platform !== "win32" || openCodeCommand !== command) return openCodeCommand;
   const trimmedCommand = command.trim();
@@ -1379,8 +1423,8 @@ function normalizeToolType(raw: unknown): TerminalToolType | null {
   // Every member of `TerminalToolType`. The `satisfies` binding is the point:
   // a tool type added to the union but missed here silently normalises to
   // "other", which strips the session of every tracked-CLI behaviour — turn
-  // markers, resume capture, the disk-pressure gate, and the browser-actor
-  // capability revoke — with nothing to show for it.
+  // markers, resume capture and the disk-pressure gate — with nothing to show
+  // for it.
   const allowed = [
     "shell",
     "claude",
@@ -1396,6 +1440,8 @@ function normalizeToolType(raw: unknown): TerminalToolType | null {
     "claude-chat",
     "opencode-chat",
     "pi-chat",
+    "muse",
+    "muse-chat",
     "cursor",
     "droid-chat",
     "qwen",
@@ -1697,6 +1743,7 @@ function isPersistedChatToolType(toolType: TerminalToolType | null): boolean {
     || toolType === "opencode-chat"
     || toolType === "cursor"
     || toolType === "droid-chat"
+    || toolType === "muse-chat"
     || toolType === "qwen-chat"
     || toolType === "kimi-chat"
     || toolType === "grok-chat"
@@ -1808,6 +1855,11 @@ function hasProviderStorageBackfillEvidence(provider: TerminalResumeProvider, te
     return /\bpi\b.*(?:what do you want|message|thinking|model)/i.test(visible)
       || /\bpi\s*[›❯]/i.test(visible);
   }
+  if (provider === "muse") {
+    // Muse draws `Muse Code <version>` above its composer on every start and
+    // resume (1.4.7). A terminal that never got past that has no session.
+    return /\bMuse Code \d+\.\d+/u.test(visible);
+  }
   if (provider === "opencode") {
     if (
       normalized.includes("login required")
@@ -1840,6 +1892,7 @@ function resumeProviderDisplayName(provider: TerminalResumeProvider): string {
   if (provider === "droid") return "Droid";
   if (provider === "opencode") return "OpenCode";
   if (provider === "pi") return "Pi";
+  if (provider === "muse") return "Muse";
   return "Agent";
 }
 
@@ -1848,6 +1901,9 @@ const TRANSCRIPT_ROLLOVER_TARGET_BYTES = MAX_TRANSCRIPT_BYTES / 2;
 const TRANSCRIPT_ROLLOVER_STATE_VERSION = 1;
 const RESUME_TARGET_MISSING_COOLDOWN_MS = 10 * 60_000;
 const RESUME_SCAN_WINDOW_MS = 60_000;
+/** Muse writes its session folder at TUI start; the tail covers a slow first launch. */
+const MUSE_CAPTURE_POLL_DELAYS_MS = [1_500, 4_000, 10_000, 25_000, 60_000] as const;
+const MUSE_CAPTURE_MAX_START_DELTA_MS = 120_000;
 
 type TranscriptRolloverState = {
   version: typeof TRANSCRIPT_ROLLOVER_STATE_VERSION;
@@ -2411,7 +2467,7 @@ export function createPtyService({
   onSessionRuntimeSignal,
   onSessionUserInput,
   diskPressureMonitor,
-  browserActorCapabilityIssuer,
+  releaseChatBrowser,
   loadPty,
   disposePtyBackend
 }: {
@@ -2449,37 +2505,13 @@ export function createPtyService({
   onSessionUserInput?: (args: { laneId: string; sessionId: string }) => void;
   diskPressureMonitor?: DiskPressureMonitor | null;
   /**
-   * Who mints a terminal's `ADE_BROWSER_ACTOR_TOKEN`. Electron main owns the
-   * capability registry and is the only process that can validate against it,
-   * so the runtime daemon passes an issuer backed by the desktop bridge.
+   * A tracked agent CLI with no owning chat ended: let go of anything it held
+   * outside ADE (the brain detaches its `ade browser attach`).
    */
-  browserActorCapabilityIssuer?: BrowserActorCapabilityIssuer | null;
+  releaseChatBrowser?: ((chatSessionId: string) => void) | null;
   loadPty: () => typeof ptyNs;
   disposePtyBackend?: () => void;
 }) {
-  const browserActorCapabilities =
-    browserActorCapabilityIssuer ?? localBrowserActorCapabilityIssuer;
-  const issueBrowserActorToken = async (
-    capability: BuiltInBrowserActorCapability,
-  ): Promise<string | null> => {
-    try {
-      return (await browserActorCapabilities.issue(capability))?.trim() || null;
-    } catch (error) {
-      logger.warn("pty.browser_actor_capability_issue_failed", {
-        sessionId: capability.chatSessionId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      return null;
-    }
-  };
-  const revokeBrowserActorToken = (chatSessionId: string): void => {
-    void browserActorCapabilities.revoke(chatSessionId).catch((error: unknown) => {
-      logger.warn("pty.browser_actor_capability_revoke_failed", {
-        sessionId: chatSessionId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    });
-  };
   const ptys = new Map<string, PtyEntry>();
   const runtimeStates = new Map<string, RuntimeStateEntry>();
   const dataListeners = new Set<PtyDataListener>();
@@ -4114,6 +4146,27 @@ export function createPtyService({
       }
     }
 
+    if (effectiveToolType === "muse" && cwd && reason !== "resume-launch" && hasStorageBackfillEvidence) {
+      const museSession = findOwnedMuseSession(sessionId, cwd, session.startedAt);
+      if (museSession) {
+        missingResumeTargetBackfillFailures.delete(sessionId);
+        sessionService.setResumeCommand(sessionId, buildTrackedCliResumeCommand({
+          provider: "muse",
+          targetKind: "session",
+          targetId: museSession.id,
+          launch: {},
+        }));
+        logger.info("pty.resume_target_backfilled", {
+          sessionId,
+          toolType: effectiveToolType,
+          reason,
+          source: "muse-session-log",
+          museSessionId: museSession.id,
+        });
+        return true;
+      }
+    }
+
     if (reason === "session-list") {
       missingResumeTargetBackfillFailures.set(sessionId, {
         toolType: effectiveToolType,
@@ -4396,6 +4449,75 @@ export function createPtyService({
     }, CODEX_LIVE_CAPTURE_HARD_TIMEOUT_MS));
   };
 
+  /**
+   * The Muse session a tracked terminal started, proven by folder, TUI origin,
+   * launch window, and no other terminal owning it (see `findMuseSessionForCwd`).
+   */
+  const findOwnedMuseSession = (
+    sessionId: string,
+    cwd: string,
+    startedAt: string,
+  ): { id: string } | null => {
+    const excludedIds = new Set<string>();
+    for (const candidate of sessionService.list({ limit: null })) {
+      if (candidate.id === sessionId) continue;
+      const targetId = resumeTargetIdForProvider(candidate, "muse");
+      if (targetId) excludedIds.add(targetId.toLowerCase());
+    }
+    return findMuseSessionForCwd({
+      cwd,
+      startedAt,
+      maxStartDeltaMs: MUSE_CAPTURE_MAX_START_DELTA_MS,
+      excludedIds,
+    });
+  };
+
+  /**
+   * Muse takes no session id at launch, but its TUI creates the session folder
+   * the moment it starts, before any prompt. Poll for it so a terminal knows
+   * its resume target while it runs, on every platform: handle capture covers
+   * macOS and Linux, but Windows may have no handle tool, and the exit line
+   * ("To continue this session, run muse resume <id>") only arrives at exit.
+   */
+  const scheduleMuseSessionIdCaptureBestEffort = (sessionId: string, cwd: string, startedAt: string): void => {
+    let done = false;
+    const timers = new Set<NodeJS.Timeout>();
+    const finish = (): void => {
+      done = true;
+      for (const timer of timers) clearTimeout(timer);
+      timers.clear();
+    };
+    const attempt = (index: number): void => {
+      if (done) return;
+      const session = sessionService.get(sessionId);
+      if (!session || sanitizeResumeTargetId(session.resumeMetadata?.targetId ?? null)) {
+        finish();
+        return;
+      }
+      let found: { id: string } | null = null;
+      try {
+        found = findOwnedMuseSession(sessionId, cwd, startedAt);
+      } catch (err) {
+        logger.warn("pty.muse_session_id_capture_failed", { sessionId, attempt: index, err: String(err) });
+        return;
+      }
+      if (!found) return;
+      sessionService.setResumeCommand(sessionId, buildTrackedCliResumeCommand({
+        provider: "muse",
+        targetKind: "session",
+        targetId: found.id,
+        launch: {},
+      }));
+      logger.info("pty.muse_session_id_captured_live", { sessionId, museSessionId: found.id, attempt: index });
+      finish();
+    };
+    MUSE_CAPTURE_POLL_DELAYS_MS.forEach((delayMs, index) => {
+      const timer = setTimeout(() => attempt(index + 1), delayMs);
+      timer.unref?.();
+      timers.add(timer);
+    });
+  };
+
   const listOtherAdoptedKimiTargetIds = (sessionId: string): Set<string> => {
     const adoptedIds = new Set<string>();
     for (const candidate of sessionService.list({ limit: null })) {
@@ -4532,7 +4654,7 @@ export function createPtyService({
     devServerRegistry.forgetSession(entry.sessionId);
     sessionService.clearAttentionRequest(entry.sessionId);
     if (!entry.chatSessionId && isTrackedAgentCliToolType(entry.toolTypeHint)) {
-      revokeBrowserActorToken(entry.sessionId);
+      releaseChatBrowser?.(entry.sessionId);
     }
     if (entry.aiTitleTimer) {
       clearTimeout(entry.aiTitleTimer);
@@ -5268,6 +5390,28 @@ export function createPtyService({
       ]);
       return lastReadyIndex >= 0 && lastReadyIndex > lastBlockerIndex;
     }
+    if (provider === "muse") {
+      // Muse 1.4.7's composer is a `❯` line with a `────` rule under it (the
+      // transcript echoes user turns as `❯ …` too, but only the composer has
+      // the rule below it). Before it, a first run asks "Do you trust this
+      // workspace?" (its choices use `⟩`, not `❯`), and a resume shows
+      // progress lines; typing into either would answer the wrong thing.
+      const lastBlockerIndex = lastIndexOfAny(normalized, [
+        "do you trust this workspace",
+        "preparing resume",
+        "restoring conversation",
+        "initializing runtime",
+        "not logged in",
+        "log in to",
+        "please log in",
+        "sign in",
+        "authentication required",
+      ]);
+      const promptIndex = text.lastIndexOf("❯");
+      return promptIndex >= 0
+        && promptIndex > lastBlockerIndex
+        && text.indexOf("───", promptIndex) > promptIndex;
+    }
     if (provider === "droid") {
       const lastBlockerIndex = lastIndexOfAny(normalized, [
         "login required",
@@ -5367,7 +5511,9 @@ export function createPtyService({
     await delay(AGENT_CLI_INPUT_CLEAR_DELAY_MS);
     if (!write(AGENT_CLI_INPUT_CLEAR_TO_START_KEY)) return false;
     await delay(AGENT_CLI_INPUT_CLEAR_DELAY_MS);
-    if (provider === "codex") {
+    // Muse 1.4.7 takes a bracketed paste as one multi-line message; typed
+    // newlines would submit it line by line.
+    if (provider === "codex" || provider === "muse") {
       return write(`${AGENT_CLI_BRACKETED_PASTE_START}${inputText}${AGENT_CLI_BRACKETED_PASTE_END}`);
     }
     for (let index = 0; index < inputText.length; index += AGENT_CLI_INPUT_CHUNK_SIZE) {
@@ -6079,6 +6225,13 @@ export function createPtyService({
           toolType: toolTypeHint,
           startupCommand: requestedStartupCommand,
         });
+      // Passive lineage rides on whichever record the launch resolved, so the
+      // command-parsed launch fields (Codex sandbox, Claude permission mode)
+      // are kept rather than replaced by a launcher-only record.
+      const launchedBySessionId = args.launchedBySessionId?.trim();
+      if (launchedBySessionId && initialResumeMetadata && !existingSession && !initialResumeMetadata.launchedBySessionId) {
+        initialResumeMetadata = { ...initialResumeMetadata, launchedBySessionId };
+      }
       const runtimeLaunchModel = typeof runtimeCliLaunch?.model === "string" && runtimeCliLaunch.model.trim().length
         ? runtimeCliLaunch.model.trim()
         : "";
@@ -6139,7 +6292,7 @@ export function createPtyService({
       const transcriptPath = tracked
         ? (existingSession?.transcriptPath?.trim() || safeTranscriptPathFor(sessionId))
         : "";
-      let startupCommand = withBundledOpenCodeCommandLine(requestedStartupCommand.trim(), toolTypeHint);
+      let startupCommand = withBundledProviderCommandLine(requestedStartupCommand.trim(), toolTypeHint);
       const cleanupPaths: string[] = [];
       let piSessionLease: PiSessionLease | null = null;
       let openCodeLease: OpenCodeServerLease | null = null;
@@ -6323,13 +6476,12 @@ export function createPtyService({
               spawnKind: existingSession?.resumeMetadata?.spawnKind ?? null,
             }
           : null);
-      const contextLaunchEnv = await withAdeTerminalContextEnv(baseLaunchEnv, {
+      const contextLaunchEnv = withAdeTerminalContextEnv(baseLaunchEnv, {
         projectRoot,
         laneId,
         chatSessionId,
         ownerSessionId: isTrackedAgentCliToolType(toolTypeHint) ? sessionId : null,
         spawnLineage: effectiveSpawnLineage,
-        issueBrowserActorToken,
       });
       let launchEnv = withInteractiveTerminalColorEnv(
         getAdeCliAgentEnv?.(contextLaunchEnv) ?? contextLaunchEnv,
@@ -6348,6 +6500,30 @@ export function createPtyService({
       } else {
         delete launchEnv[SESSION_ACTIVITY_SESSION_ID_ENV];
       }
+      // A Muse API key saved in ADE reaches the terminal through env only
+      // (never argv). The user's own `META_API_KEY` wins, and a browser
+      // sign-in needs nothing here: Muse reads its own auth.json.
+      if (toolTypeHint === "muse") {
+        const museCredentialId = runtimeLaunchCredentialId
+          ?? trackedCliResumeCredentialId(initialResumeMetadata)
+          ?? undefined;
+        Object.assign(launchEnv, museCredentialEnv(launchEnv, museCredentialId));
+      }
+      // The account's own prompt cache choice, on the one path every fresh
+      // launch and resume takes. A preset or stored credential bills another
+      // endpoint, so it gets none.
+      if (
+        isClaudeTrackedCliToolType(toolTypeHint)
+        && !runtimeLaunchPresetId
+        && !runtimeLaunchCredentialId
+        && !trackedCliResumePresetId(initialResumeMetadata)
+        && !trackedCliResumeCredentialId(initialResumeMetadata)
+      ) {
+        Object.assign(launchEnv, claudeAccountPromptCacheEnv(
+          runtimeLaunchInstance?.id ?? trackedCliResumeInstanceId(initialResumeMetadata),
+          launchEnv,
+        ));
+      }
       launchEnv = withResolvedCliLaunchPath(launchEnv, {
         includeInteractiveShell: Boolean(directCommand || startupCommand),
       });
@@ -6361,7 +6537,7 @@ export function createPtyService({
         if (updatedSession?.resumeCommand?.trim()) {
           initialResumeCommand = updatedSession.resumeCommand.trim();
           initialResumeMetadata = updatedSession.resumeMetadata ?? initialResumeMetadata;
-          startupCommand = withBundledOpenCodeCommandLine(initialResumeCommand, toolTypeHint);
+          startupCommand = withBundledProviderCommandLine(initialResumeCommand, toolTypeHint);
         }
       }
       const claudePluginLaunch = withBundledClaudePlugin(
@@ -6472,7 +6648,7 @@ export function createPtyService({
             // shell, so hardcoding the binary dropped the model, thinking and
             // tool flags that the argv path keeps — the two renderings are
             // meant to be the same launch.
-            startupCommand = withBundledOpenCodeCommandLine(
+            startupCommand = withBundledProviderCommandLine(
               buildTrackedCliResumeLaunchCommand(
                 {
                   provider: "pi",
@@ -6532,7 +6708,7 @@ export function createPtyService({
               recordPiSessionOwner({ sessionFile: piSessionFile, owner: "cli", ownerSessionId: sessionId });
               const piResumeCommand = `pi --session ${latest.id}`;
               initialResumeCommand = piResumeCommand;
-              startupCommand = withBundledOpenCodeCommandLine(piResumeCommand, toolTypeHint);
+              startupCommand = withBundledProviderCommandLine(piResumeCommand, toolTypeHint);
               sessionService.setResumeCommand(sessionId, piResumeCommand);
               if (directCommand && isPiExecutableCommand(directCommand)) {
                 directArgs = directArgs.filter((arg) => !/^(?:--continue|-c|-r)$/iu.test(arg));
@@ -6695,7 +6871,11 @@ export function createPtyService({
           envShell: process.env.SHELL ?? "",
           envPath: process.env.PATH ?? "",
           resourcesPath: process.resourcesPath ?? "",
-          err: String(err),
+          // The Error itself, so `logBridge` lifts it into the Sentry event and
+          // the issue groups by the real failure; `errorText` keeps the
+          // sentence on disk, which `JSON.stringify` writes an Error without.
+          error: err,
+          errorText: String(err),
         });
         piSessionLease?.release();
         piSessionLease = null;
@@ -7310,6 +7490,9 @@ export function createPtyService({
           codexLaunchOwnershipNeedle({ initialInput: requestedInitialInput, args: directArgs }),
           codexLaunchOriginator,
         );
+      }
+      if (!existingSession && tracked && toolTypeHint === "muse" && cwd) {
+        scheduleMuseSessionIdCaptureBestEffort(sessionId, cwd, startedAt);
       }
       if (!existingSession && toolTypeHint === "kimi" && cwd) {
         // Kimi takes no session id at launch, so the id has to be adopted from
@@ -8498,7 +8681,7 @@ export function createPtyService({
         sessionService.clearAttentionRequest(sessionId);
         sessionService.end({ sessionId, endedAt, exitCode: null, status: "disposed" });
         if (!session.chatSessionId && isTrackedAgentCliToolType(session.toolType)) {
-          revokeBrowserActorToken(sessionId);
+          releaseChatBrowser?.(sessionId);
         }
         backfillResumeTargetFromTranscriptBestEffort(sessionId, session.toolType ?? null, "orphan-dispose");
         clearIdleTimer(sessionId);
@@ -8547,7 +8730,7 @@ export function createPtyService({
       devServerRegistry.forgetSession(entry.sessionId);
       sessionService.clearAttentionRequest(entry.sessionId);
       if (!entry.chatSessionId && isTrackedAgentCliToolType(entry.toolTypeHint)) {
-        revokeBrowserActorToken(entry.sessionId);
+        releaseChatBrowser?.(entry.sessionId);
       }
       if (entry.aiTitleTimer) {
         clearTimeout(entry.aiTitleTimer);

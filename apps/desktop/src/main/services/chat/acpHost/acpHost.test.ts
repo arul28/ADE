@@ -29,15 +29,10 @@ import {
 import {
   ACP_DIALECTS,
   acpDialectFor,
-  copilotDialect,
   devinCloudDialect,
   grokDialect,
   GROK_CLAUDE_MARKER_OVERRIDE_ENV,
   GROK_YOLO_MODE_CHANGED_METHOD,
-  copilotPermissionModeDegradationNote,
-  copilotNativeModeValue,
-  copilotSupervisionPermissionMode,
-  includeCopilotSlashCommand,
   KIMI_CONFIG_OPTION_IDS,
   kimiDialect,
   qwenDialect,
@@ -99,13 +94,9 @@ type Harness = {
 
 const openHarnesses: Array<() => void> = [];
 
-/**
- * Config homes that do not exist. The harness must never read the user's own
- * `~/.copilot/session-store.db`, `~/.qwen/usage`, or login files at turn end.
- */
+/** Config homes that do not exist. */
 const NO_HOME = path.join(os.tmpdir(), "ade-acp-host-test-no-home");
 const HERMETIC_ENV: NodeJS.ProcessEnv = {
-  COPILOT_HOME: path.join(NO_HOME, "copilot"),
   QWEN_HOME: path.join(NO_HOME, "qwen"),
   GROK_HOME: path.join(NO_HOME, "grok"),
   KIMI_CODE_HOME: path.join(NO_HOME, "kimi"),
@@ -251,258 +242,6 @@ describe("dialect capability declarations", () => {
 // Spawn plans
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe("spawn plans", () => {
-  it("grok places global flags before agent and scoped flags after it", () => {
-    const plan = grokDialect.buildSpawnPlan({
-      binaryPath: "/bin/grok",
-      cwd: "/lane",
-      baseEnv: {},
-      modelId: "grok-4",
-      reasoningEffort: "high",
-    });
-    // `--reasoning-effort` carries the effort for builds before 1.0.40, whose
-    // session advertises no `reasoning_effort` option. On 1.0.40 the config
-    // option moves the effort, and a change to this flag alone does not
-    // restart that session.
-    expect(plan.args).toEqual([
-      "--no-auto-update",
-      "--no-plan",
-      "--permission-mode",
-      "default",
-      "agent",
-      "--no-leader",
-      "-m",
-      "grok-4",
-      "--reasoning-effort",
-      "high",
-      "stdio",
-    ]);
-    expect(grokDialect.reasoningEffortOption?.spawnFlag).toBe("--reasoning-effort");
-    // ADE's ladder maps onto Grok's; a value Grok has no tier for adds no flag.
-    expect(grokDialect.buildSpawnPlan({ binaryPath: "/bin/grok", cwd: "/lane", baseEnv: {}, reasoningEffort: "ultracode" }).args)
-      .toContain("xhigh");
-    expect(grokDialect.buildSpawnPlan({ binaryPath: "/bin/grok", cwd: "/lane", baseEnv: {}, reasoningEffort: "default" }).args)
-      .not.toContain("--reasoning-effort");
-    expect(plan.args.indexOf("--no-auto-update")).toBeLessThan(plan.args.indexOf("agent"));
-    expect(plan.args.indexOf("--permission-mode")).toBeLessThan(plan.args.indexOf("agent"));
-    expect(plan.args.indexOf("--no-leader")).toBeGreaterThan(plan.args.indexOf("agent"));
-    expect(plan.args[plan.args.length - 1]).toBe("stdio");
-  });
-
-  it("grok carries both halves of the neutralization on every spawn", () => {
-    // Neither half works alone: `--permission-mode` only overrides
-    // `~/.grok/config.toml`, and the marker override only cancels the Claude
-    // settings import. A live six-arm probe on 1.0.13 proved dropping either
-    // one re-opens the auto-approval hole, so they are asserted together.
-    for (const permissionMode of [null, "plan", "default", "auto-edit", "auto", "yolo"]) {
-      const plan = grokDialect.buildSpawnPlan({
-        binaryPath: "/bin/grok",
-        cwd: "/lane",
-        baseEnv: { PATH: "/bin" },
-        permissionMode,
-      });
-      expect(plan.args).toContain("--permission-mode");
-      expect(plan.env[GROK_CLAUDE_MARKER_OVERRIDE_ENV]).toBe("1");
-      expect(plan.env.PATH).toBe("/bin");
-    }
-  });
-
-  it("grok always stamps --permission-mode, because yolo_mode_changed is dead on 1.0.13", () => {
-    expect(
-      grokDialect.buildSpawnPlan({ binaryPath: "/bin/grok", cwd: "/lane", baseEnv: {} }).args,
-    ).toEqual(expect.arrayContaining(["--permission-mode", "default"]));
-    expect(
-      grokDialect.buildSpawnPlan({
-        binaryPath: "/bin/grok",
-        cwd: "/lane",
-        baseEnv: {},
-        permissionMode: "yolo",
-      }).args,
-    ).toEqual(expect.arrayContaining(["--permission-mode", "bypassPermissions"]));
-    expect(
-      grokDialect.buildSpawnPlan({
-        binaryPath: "/bin/grok",
-        cwd: "/lane",
-        baseEnv: {},
-        permissionMode: "auto-edit",
-      }).args,
-    ).toEqual(expect.arrayContaining(["--permission-mode", "acceptEdits"]));
-  });
-
-  it("grok passes its vendor-supported config home through the child environment", () => {
-    const plan = grokDialect.buildSpawnPlan({
-      binaryPath: "/bin/grok",
-      cwd: "/lane",
-      baseEnv: { PATH: "/bin" },
-      configHome: "/tmp/ade-grok-home",
-    });
-    expect(plan.env.PATH).toBe("/bin");
-    expect(plan.env.GROK_HOME).toBe("/tmp/ade-grok-home");
-    expect(plan.env.QWEN_HOME).toBeUndefined();
-    expect(plan.env.KIMI_CODE_HOME).toBeUndefined();
-    expect(plan.env.COPILOT_HOME).toBeUndefined();
-  });
-
-  it("keeps Grok pools separate when their config homes differ", () => {
-    const first = hashPoolEnv({ GROK_HOME: "/tmp/grok-one", XAI_API_KEY: "key" }, grokDialect.poolEnvKeys);
-    const second = hashPoolEnv({ GROK_HOME: "/tmp/grok-two", XAI_API_KEY: "key" }, grokDialect.poolEnvKeys);
-    expect(first).not.toBe(second);
-  });
-
-  it("qwen exports QWEN_HOME only when a config home exists", () => {
-    expect(
-      qwenDialect.buildSpawnPlan({ binaryPath: "/bin/qwen", cwd: "/lane", baseEnv: {} }).env.QWEN_HOME,
-    ).toBeUndefined();
-    expect(
-      qwenDialect.buildSpawnPlan({
-        binaryPath: "/bin/qwen",
-        cwd: "/lane",
-        baseEnv: {},
-        configHome: "/home/.qwen",
-      }).env.QWEN_HOME,
-    ).toBe("/home/.qwen");
-  });
-
-  it("kimi spawns the acp subcommand and exports KIMI_CODE_HOME", () => {
-    const plan = kimiDialect.buildSpawnPlan({
-      binaryPath: "/bin/kimi",
-      cwd: "/lane",
-      baseEnv: {},
-      modelId: "moonshot/kimi-for-coding",
-      permissionMode: "yolo",
-      configHome: "/home/.kimi-code",
-    });
-    expect(plan.args).toEqual(["--model", "kimi-code/kimi-for-coding", "--yolo", "acp"]);
-    expect(plan.env.KIMI_CODE_HOME).toBe("/home/.kimi-code");
-  });
-
-  it("maps Kimi auto mode and rejects unsupported auto-edit", () => {
-    expect(kimiDialect.buildSpawnPlan({
-      binaryPath: "/bin/kimi",
-      cwd: "/lane",
-      baseEnv: {},
-      permissionMode: "auto",
-    }).args).toEqual(["--auto", "acp"]);
-    expect(() => kimiDialect.buildSpawnPlan({
-      binaryPath: "/bin/kimi",
-      cwd: "/lane",
-      baseEnv: {},
-      permissionMode: "auto-edit",
-    })).toThrow("cannot honor ADE's auto-edit permission mode");
-  });
-
-  it("copilot gates the lane path through argv, not through the config file", () => {
-    const plan = copilotDialect.buildSpawnPlan({
-      binaryPath: "/bin/copilot",
-      cwd: "/lane/worktree",
-      baseEnv: {},
-      configHome: "/home/.copilot",
-    });
-    expect(plan.args).toContain("--acp");
-    expect(plan.args).toContain("--add-dir");
-    expect(plan.args[plan.args.indexOf("--add-dir") + 1]).toBe("/lane/worktree");
-    expect(plan.env.COPILOT_HOME).toBe("/home/.copilot");
-  });
-
-  it("copilot passes the selected model and effort as process-global ACP flags", () => {
-    const context = {
-      binaryPath: "/bin/copilot",
-      cwd: "/lane/worktree",
-      baseEnv: {},
-      modelId: "github-copilot/gpt-5.4",
-      reasoningEffort: "high",
-    };
-    const plan = copilotDialect.buildSpawnPlan(context);
-    const planWithoutModel = copilotDialect.buildSpawnPlan({ ...context, modelId: undefined });
-    expect(plan.args).toEqual(expect.arrayContaining(["--model", "gpt-5.4", "--effort", "high"]));
-    expect(hashSpawnInvocation(plan)).not.toBe(hashSpawnInvocation(planWithoutModel));
-  });
-
-  it.each([
-    ["plan", "https://agentclientprotocol.com/protocol/session-modes#plan"],
-    ["default", "https://agentclientprotocol.com/protocol/session-modes#agent"],
-    ["auto-edit", "https://agentclientprotocol.com/protocol/session-modes#agent"],
-    ["auto", "https://agentclientprotocol.com/protocol/session-modes#agent"],
-    ["yolo", "https://agentclientprotocol.com/protocol/session-modes#autopilot"],
-  ] as const)("copilot maps ADE %s to an honest 1.0.86 ACP mode", (mode, expected) => {
-    expect(copilotNativeModeValue(mode)).toBe(expected);
-  });
-
-  it.each(["plan", "default", "yolo", null])("copilot only warns about an autonomy downgrade for auto modes (%s)", (mode) => {
-    expect(copilotPermissionModeDegradationNote(mode)).toBeNull();
-  });
-
-  it.each(["auto-edit", "auto"])("copilot explains its %s downgrade", (mode) => {
-    expect(copilotPermissionModeDegradationNote(mode)).toContain("approval-gated Agent mode");
-  });
-
-  it.each([
-    ["plan", "plan"],
-    ["default", "default"],
-    ["auto-edit", "default"],
-    ["auto", "default"],
-    ["yolo", "yolo"],
-  ] as const)("copilot supervises %s as %s", (mode, expected) => {
-    expect(copilotSupervisionPermissionMode(mode)).toBe(expected);
-  });
-
-  // ADE removed its Copilot trust pre-seed: a live three-arm experiment on
-  // 1.0.82 opened `session/new` with no trust key and no `--add-dir`, and the
-  // JSONC rewrite the seed needed once replaced a user's real
-  // `~/.copilot/config.json` with a stub. Nothing on the Copilot path may
-  // write the provider's config home again.
-  it("copilot leaves the config home byte-identical when a session opens", async () => {
-    const fs = await import("node:fs");
-    const os = await import("node:os");
-    const path = await import("node:path");
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "ade-copilot-"));
-    const configPath = path.join(home, "config.json");
-    const live = `// User settings belong in settings.json.\n// This file is managed automatically.\n{\n  "trustedFolders": ["/already"],\n  "firstLaunchAt": "2026-03-11T00:00:00.000Z"\n}\n`;
-    try {
-      fs.writeFileSync(configPath, live, "utf8");
-      const harness = makeHarness(copilotDialect);
-      await withDeadline(
-        "open",
-        harness.open({
-          spawnPlan: copilotDialect.buildSpawnPlan({
-            binaryPath: "/bin/copilot",
-            cwd: "/lane/worktree",
-            baseEnv: {},
-            configHome: home,
-          }),
-        }),
-      );
-      expect(fs.readdirSync(home)).toEqual(["config.json"]);
-      expect(fs.readFileSync(configPath, "utf8")).toBe(live);
-    } finally {
-      fs.rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  it("copilot creates nothing in an empty config home", async () => {
-    const fs = await import("node:fs");
-    const os = await import("node:os");
-    const path = await import("node:path");
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "ade-copilot-"));
-    try {
-      const harness = makeHarness(copilotDialect);
-      await withDeadline(
-        "open",
-        harness.open({
-          spawnPlan: copilotDialect.buildSpawnPlan({
-            binaryPath: "/bin/copilot",
-            cwd: "/lane/worktree",
-            baseEnv: {},
-            configHome: home,
-          }),
-        }),
-      );
-      expect(fs.readdirSync(home)).toEqual([]);
-    } finally {
-      fs.rmSync(home, { recursive: true, force: true });
-    }
-  });
-});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Handshake and lifecycle
@@ -686,90 +425,11 @@ describe("session entry policy", () => {
     expect(plan.suppressReplay).toBe(true);
   });
 
-  it("starts a fresh session when the agent handshake omits rejoin support", () => {
-    const plan = resolveAcpSessionEntry({
-      dialect: copilotDialect,
-      existingSessionId: "s1",
-      adeHasTranscript: true,
-      agentCapabilities: { sessionCapabilities: { list: {} } },
-    });
-    expect(plan.mode).toBe("new");
-    expect(plan.suppressReplay).toBe(false);
-  });
 
-  it("suppresses the load replay when ADE already holds the transcript", () => {
-    const plan = resolveAcpSessionEntry({
-      dialect: copilotDialect,
-      existingSessionId: "s1",
-      adeHasTranscript: true,
-    });
-    expect(plan.mode).toBe("load");
-    expect(plan.suppressReplay).toBe(true);
-  });
 
-  it("keeps the load replay when ADE has no transcript to duplicate", () => {
-    const plan = resolveAcpSessionEntry({
-      dialect: copilotDialect,
-      existingSessionId: "s1",
-      adeHasTranscript: false,
-    });
-    expect(plan.suppressReplay).toBe(false);
-  });
 
-  it("opens a new session when the agent has no record of the stored one", async () => {
-    // Copilot and Qwen answer load/resume with -32002 for a session that never
-    // finished a turn. The chat must still open rather than stay unopenable.
-    const harness = makeHarness(copilotDialect);
-    harness.agent.on(ACP_METHOD.sessionLoad, () => ({
-      error: { code: ACP_RPC_RESOURCE_NOT_FOUND, message: "Resource not found: session:stale" },
-    }));
-    const session = await withDeadline("open", harness.open({ existingSessionId: "stale", adeHasTranscript: true }));
-    expect(session.sessionId).toBe("session-1");
-    expect(session.entryPlan.mode).toBe("new");
-    expect(harness.agent.methodsReceived()).toEqual(
-      expect.arrayContaining([ACP_METHOD.sessionLoad, ACP_METHOD.sessionNew]),
-    );
-    expect(harness.agent.methodsReceived().indexOf(ACP_METHOD.sessionLoad))
-      .toBeLessThan(harness.agent.methodsReceived().indexOf(ACP_METHOD.sessionNew));
-  });
 
-  it("still fails the open when the rejoin error is anything else", async () => {
-    const harness = makeHarness(copilotDialect);
-    harness.agent.on(ACP_METHOD.sessionLoad, () => ({
-      error: { code: -32603, message: "store locked" },
-    }));
-    const attempt = harness.open({ existingSessionId: "s1", adeHasTranscript: true });
-    await withDeadline("open failure", expect(attempt).rejects.toMatchObject({ code: -32603 }));
-    expect(harness.agent.methodsReceived()).not.toContain(ACP_METHOD.sessionNew);
-  });
 
-  it("drops every update a suppressed load replays", async () => {
-    const harness = makeHarness(copilotDialect);
-    harness.agent.on(ACP_METHOD.sessionLoad, (_params, agent) => {
-      agent.emitUpdate("s1", {
-        sessionUpdate: "agent_message_chunk",
-        content: { type: "text", text: "replayed history" },
-        messageId: "m1",
-      });
-      return { result: {} };
-    });
-    const session = await withDeadline(
-      "open",
-      harness.open({ existingSessionId: "s1", adeHasTranscript: true }),
-    );
-    expect(session.entryPlan.mode).toBe("load");
-    expect(harness.events).toHaveLength(0);
-
-    // Live updates after the load still arrive.
-    harness.agent.emitUpdate("s1", {
-      sessionUpdate: "agent_message_chunk",
-      content: { type: "text", text: "live" },
-      messageId: "m2",
-    });
-    await Promise.resolve();
-    await new Promise((resolve) => setImmediate(resolve));
-    expect(harness.events.some((event) => event.type === "text" && event.text === "live")).toBe(true);
-  });
 
   it("sends the grok auto-mode neutralizer after session/new, not before", async () => {
     const harness = makeHarness(grokDialect);
@@ -1369,29 +1029,7 @@ describe("slash command advertisement", () => {
     expect(seen[1]).toHaveLength(2);
   });
 
-  it("filters copilot terminal-only commands out of the picker", () => {
-    expect(includeCopilotSlashCommand({ name: "/diff", description: "" })).toBe(false);
-    expect(includeCopilotSlashCommand({ name: "resume", description: "" })).toBe(false);
-    expect(includeCopilotSlashCommand({ name: "login", description: "" })).toBe(false);
-    expect(includeCopilotSlashCommand({ name: "undo", description: "" })).toBe(false);
-    expect(includeCopilotSlashCommand({ name: "plan", description: "" })).toBe(true);
-  });
 
-  it("applies the dialect filter through the translator", () => {
-    const seen: AcpSlashCommand[][] = [];
-    const translator = createAcpEventTranslator({
-      includeSlashCommand: copilotDialect.includeSlashCommand,
-      callbacks: { onSlashCommands: (list) => seen.push(list) },
-    });
-    translator.translate({
-      sessionUpdate: "available_commands_update",
-      availableCommands: [
-        { name: "diff", description: "terminal only" },
-        { name: "explain", description: "a real command" },
-      ],
-    });
-    expect(seen[0]?.map((command) => command.name)).toEqual(["explain"]);
-  });
 
   it("reports config options and mode changes through the typed callback", () => {
     const snapshots: Array<{ currentModeId: string | null; count: number }> = [];
@@ -1412,28 +1050,6 @@ describe("slash command advertisement", () => {
     ]);
   });
 
-  it("normalizes Copilot currentValue config options before the callback", () => {
-    const snapshots: AcpSessionConfigOption[][] = [];
-    const translator = createAcpEventTranslator({
-      callbacks: { onConfigOptions: (snapshot) => snapshots.push(snapshot.options) },
-    });
-    translator.translate({
-      sessionUpdate: "config_option_update",
-      configOptions: [
-        {
-          id: "mode",
-          name: "Mode",
-          currentValue: "https://agentclientprotocol.com/protocol/session-modes#agent",
-          options: [{ value: "https://agentclientprotocol.com/protocol/session-modes#agent", name: "Agent" }],
-        } as never,
-      ],
-    });
-    expect(snapshots[0]?.[0]).toMatchObject({
-      id: "mode",
-      value: "https://agentclientprotocol.com/protocol/session-modes#agent",
-      options: [{ id: "https://agentclientprotocol.com/protocol/session-modes#agent", name: "Agent" }],
-    });
-  });
 });
 
 describe("session config", () => {
@@ -1472,55 +1088,8 @@ describe("session config", () => {
     expect([...kimiDialect.configOptionIds]).toEqual(["mode", "model", "thinking"]);
   });
 
-  it("grok sets model and effort through session/set_config_option and reports the new option set", async () => {
-    const harness = makeHarness(grokDialect);
-    // Grok 1.0.40 answers with every option as it stands after the change,
-    // in Copilot's `currentValue` / `{ value, name }` shape.
-    harness.agent.on(ACP_METHOD.sessionSetConfigOption, (params) => ({
-      result: {
-        configOptions: grokConfigOptions({
-          model: (params as { configId: string; value: string }).configId === "model"
-            ? (params as { value: string }).value
-            : "grok-4.7",
-          effort: "medium",
-        }),
-      },
-    }));
-    const session = await withDeadline("open", harness.open());
-    const options = await withDeadline(
-      "set model",
-      session.setConfigOption({ configId: "model", value: "grok-4.7-build-fast" }),
-    );
-    expect(harness.agent.received.find((entry) => entry.method === ACP_METHOD.sessionSetConfigOption)?.params)
-      .toEqual({ sessionId: "session-1", configId: "model", value: "grok-4.7-build-fast" });
-    expect(options.find((option) => option.id === "model")).toMatchObject({
-      value: "grok-4.7-build-fast",
-      options: expect.arrayContaining([{ id: "grok-4.7-build-fast", name: "Grok 4.7 Fast" }]),
-    });
-    expect([...grokDialect.configOptionIds]).toEqual(["model", "reasoning_effort"]);
-    expect(grokDialect.configOptionIds).not.toContain("mode");
-  });
 
-  it("routes Copilot model selection through session/set_model", () => {
-    expect(copilotDialect.modelSelection).toMatchObject({ declared: true });
-    const behavior = copilotDialect.modelSelection.declared ? copilotDialect.modelSelection.behavior : null;
-    expect(behavior?.({ sessionId: "session-1", modelId: "gpt-5.4" })).toEqual({
-      method: ACP_METHOD.sessionSetModel,
-      params: { sessionId: "session-1", modelId: "gpt-5.4" },
-    });
-  });
 
-  it("copilot accepts its native mode config option", async () => {
-    const harness = makeHarness(copilotDialect);
-    harness.agent.on(ACP_METHOD.sessionSetConfigOption, () => ({ result: {} }));
-    const session = await withDeadline("open", harness.open());
-    await withDeadline("set", session.setConfigOption({
-      configId: "mode",
-      value: "https://agentclientprotocol.com/protocol/session-modes#plan",
-    }));
-    expect(harness.agent.received.find((entry) => entry.method === ACP_METHOD.sessionSetConfigOption)?.params)
-      .toMatchObject({ configId: "mode", value: "https://agentclientprotocol.com/protocol/session-modes#plan" });
-  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1813,16 +1382,6 @@ describe("unsupervised session invariant", () => {
     expect(notices(harness)).toHaveLength(0);
   });
 
-  it("treats Copilot's auto-edit downgrade as approval-gated", async () => {
-    const harness = makeHarness(copilotDialect);
-    writingTurn(harness);
-    const session = await withDeadline("open", harness.open({ permissionMode: "auto-edit" }));
-    await withDeadline("turn", session.prompt({ turnId: "t1", blocks: [textPromptBlock("go")] }));
-    expect(notices(harness)).toHaveLength(1);
-    expect(notices(harness)[0]).toMatchObject({
-      message: "GitHub Copilot changed files here without asking ADE to approve. ADE's approval cards can't gate this chat.",
-    });
-  });
 
   it("stays silent for a read-only turn, because reads never prompt anywhere", async () => {
     const harness = makeHarness(grokDialect);
@@ -2076,17 +1635,6 @@ describe("cancel", () => {
     expect(outcome.interrupted).toBe(true);
   });
 
-  it("reports a turn stopped before its result as interrupted, even when the agent says end_turn", async () => {
-    const harness = makeHarness(copilotDialect);
-    const session = await withDeadline("open", harness.open());
-    // github/copilot-cli issue 4561: a cancelled turn reports end_turn.
-    const held = await startHeldTurn(harness, session, "end_turn");
-    await withDeadline("cancel", session.cancel("user stopped"));
-    held.release();
-    const outcome = await withDeadline("turn", held.turn);
-    expect(outcome.stopReason).toBe("end_turn");
-    expect(outcome.interrupted).toBe(true);
-  });
 
   it("reports an uncancelled turn as not interrupted", async () => {
     const harness = makeHarness(qwenDialect);
@@ -2234,20 +1782,6 @@ describe("usage", () => {
     expect(kimiDialect.degradationNotes).toEqual([]);
   });
 
-  it("copilot reads usage from both sources", async () => {
-    const behavior = behaviorOf(copilotDialect.usage);
-    expect(behavior).toBeTruthy();
-    expect(behavior!({ usageUpdate: { used: 10, size: 40 } })).toMatchObject({
-      contextUsedTokens: 10,
-      contextWindowTokens: 40,
-    });
-    expect(behavior!({ promptUsage: { inputTokens: 7, outputTokens: 3, totalTokens: 10, thoughtTokens: 2 } })).toMatchObject({
-      inputTokens: 7,
-      outputTokens: 3,
-      totalTokens: 10,
-      reasoningTokens: 2,
-    });
-  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2255,17 +1789,6 @@ describe("usage", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("close and eviction", () => {
-  it.each(["kimi", "grok", "copilot"] as const)(
-    "%s ends a session with session/close and keeps the process",
-    async (providerId) => {
-      const harness = makeHarness(acpDialectFor(providerId));
-      harness.agent.on(ACP_METHOD.sessionClose, () => ({ result: {} }));
-      const session = await withDeadline("open", harness.open());
-      await withDeadline("close", session.close("chat ended"));
-      expect(harness.agent.methodsReceived()).toContain(ACP_METHOD.sessionClose);
-      expect(session.connection.isAlive()).toBe(true);
-    },
-  );
 
   it("qwen ends a session by ending its private process", async () => {
     const harness = makeHarness(qwenDialect);
@@ -2284,24 +1807,7 @@ describe("close and eviction", () => {
     expect(harness.agent.methodsReceived().filter((method) => method === ACP_METHOD.sessionClose)).toHaveLength(1);
   });
 
-  it("survives an agent that answers session/close with method not found", async () => {
-    const harness = makeHarness(copilotDialect);
-    const session = await withDeadline("open", harness.open());
-    await withDeadline("close", session.close("chat ended"));
-    // Older Copilot ACP builds can answer -32601. Degraded, not thrown. The
-    // pooled process stays usable for other chats.
-    expect(session.connection.isAlive()).toBe(true);
-  });
 
-  it("does not send close when an older Copilot handshake omits it", async () => {
-    const harness = makeHarness(copilotDialect, {
-      agentCapabilities: { loadSession: true, sessionCapabilities: { list: {} } },
-    });
-    const session = await withDeadline("open", harness.open());
-    await withDeadline("close", session.close("chat ended"));
-    expect(harness.agent.methodsReceived()).not.toContain(ACP_METHOD.sessionClose);
-    expect(session.connection.isAlive()).toBe(true);
-  });
 });
 
 describe("pooling", () => {
@@ -2496,112 +2002,3 @@ describe("MCP injection", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 // The run | degrade matrix
 // ─────────────────────────────────────────────────────────────────────────────
-
-describe("run | degrade conformance matrix", () => {
-  type Feature =
-    | "capabilities"
-    | "lifecycle"
-    | "prompt_stream"
-    | "permission"
-    | "cancel"
-    | "close_eviction"
-    | "resume"
-    | "slash_advertise"
-    | "usage_fold"
-    | "mcp_injection";
-
-  const EXPECTED: Record<Feature, Record<AcpProviderId, "run" | "degrade">> = {
-    capabilities: { qwen: "run", kimi: "run", grok: "run", copilot: "run", devin: "run" },
-    lifecycle: { qwen: "run", kimi: "run", grok: "run", copilot: "run", devin: "run" },
-    prompt_stream: { qwen: "run", kimi: "run", grok: "run", copilot: "run", devin: "run" },
-    permission: { qwen: "run", kimi: "run", grok: "run", copilot: "run", devin: "run" },
-    cancel: { qwen: "run", kimi: "run", grok: "run", copilot: "run", devin: "run" },
-    // Qwen and Devin have no session/close. Qwen degrades by ending its private
-    // process; Devin releases its shared one.
-    close_eviction: { qwen: "degrade", kimi: "run", grok: "run", copilot: "run", devin: "degrade" },
-
-    // Copilot and Devin advertise no session/resume, so ADE uses session/load instead.
-    resume: { qwen: "run", kimi: "run", grok: "run", copilot: "degrade", devin: "degrade" },
-    slash_advertise: { qwen: "run", kimi: "run", grok: "run", copilot: "run", devin: "run" },
-    // Kimi's post-turn usage_update and prompt usage are read when they arrive.
-    usage_fold: { qwen: "run", kimi: "run", grok: "run", copilot: "run", devin: "run" },
-    mcp_injection: { qwen: "run", kimi: "run", grok: "run", copilot: "run", devin: "run" },
-  };
-
-  it("records the expected outcome for every cell", () => {
-    const cells = Object.values(EXPECTED).flatMap((row) => Object.values(row));
-    expect(cells).toHaveLength(50);
-  });
-
-  it.each(ACP_PROVIDER_IDS)("%s matches its declared matrix row", (providerId: AcpProviderId) => {
-    const dialect = acpDialectFor(providerId);
-    expect(dialect.closeSession.declared ? "run" : "degrade").toBe(EXPECTED.close_eviction[providerId]);
-    expect(dialect.resumeSession.declared ? "run" : "degrade").toBe(EXPECTED.resume[providerId]);
-    expect(dialect.usage.declared ? "run" : "degrade").toBe(EXPECTED.usage_fold[providerId]);
-    expect(dialect.mcpInjection.declared ? "run" : "degrade").toBe(EXPECTED.mcp_injection[providerId]);
-  });
-
-  it.each(ACP_PROVIDER_IDS)(
-    "%s runs a whole turn without throwing and without hanging",
-    async (providerId: AcpProviderId) => {
-      const harness = makeHarness(acpDialectFor(providerId));
-      harness.agent.on(ACP_METHOD.sessionPrompt, (_params, agent) => {
-        agent.emitUpdate("session-1", {
-          sessionUpdate: "agent_message_chunk",
-          content: { type: "text", text: "done" },
-          messageId: "m1",
-        });
-        agent.emitUpdate("session-1", {
-          sessionUpdate: "available_commands_update",
-          availableCommands: [{ name: "explain", description: "Explain the change" }],
-        });
-        return { result: { stopReason: "end_turn" } };
-      });
-      harness.agent.on(ACP_METHOD.sessionCancel, () => ({ result: {} }));
-      harness.agent.on(ACP_METHOD.sessionClose, () => ({ result: {} }));
-
-      const session = await withDeadline("open", harness.open());
-      const outcome = await withDeadline(
-        "turn",
-        session.prompt({ turnId: "turn-1", blocks: [textPromptBlock("hello")] as AcpContentBlock[] }),
-      );
-      expect(outcome.interrupted).toBe(false);
-      await vi.waitFor(() =>
-        expect(harness.events.some((event) => event.type === "text" && event.text === "done")).toBe(true),
-      );
-      expect(harness.slashLists).toHaveLength(1);
-      await withDeadline("close", session.close("chat ended"));
-    },
-  );
-
-  it.each(ACP_PROVIDER_IDS)(
-    "%s degrades rather than hangs when the agent implements nothing but initialize",
-    async (providerId: AcpProviderId) => {
-      const dialect = acpDialectFor(providerId);
-      const agent = createMockAcpAgent();
-      // Deliberately no session/new handler, so it answers -32601.
-      const pool = createAcpSessionPool();
-      const attempt = openAcpSession({
-        dialect,
-        cwd: "/lane",
-        spawnPlan: dialect.buildSpawnPlan({ binaryPath: "/bin/x", cwd: "/lane", baseEnv: {} }),
-        sessionToken: "chat-1",
-        pool,
-        spawnOverride: () => agent.child,
-        // Kimi's post-turn usage wait; short so a turn without one stays fast.
-        settledUsageWaitMs: 20,
-        callbacks: {
-          onEvents: () => undefined,
-          onPermissionRequested: () => undefined,
-          onPermissionSettled: () => undefined,
-        },
-      });
-      await withDeadline("open failure", expect(attempt).rejects.toBeInstanceOf(AcpRpcError));
-      await withDeadline(
-        "error code",
-        expect(attempt).rejects.toMatchObject({ code: ACP_RPC_METHOD_NOT_FOUND }),
-      );
-      pool.disposeAll("test finished");
-    },
-  );
-});

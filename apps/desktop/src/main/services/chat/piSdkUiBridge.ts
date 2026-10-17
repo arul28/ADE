@@ -11,6 +11,7 @@
  * the worker, which loads the user's Pi installation only after init validation.
  */
 import { waitingOnYouDescription } from "../../../shared/types/chat";
+import { QUESTION_UNANSWERED_MODEL_MESSAGE, withTypedReplyNote } from "../../../shared/pendingInputAnswers";
 import { PI_APPROVAL_ALLOW, PI_APPROVAL_ALLOW_SESSION } from "./piSdkEventMapper";
 import {
   PI_SDK_PROTOCOL_VERSION,
@@ -495,7 +496,8 @@ export const PI_ASK_USER_DESCRIPTION = [
   "one you cannot resolve from the request, the code, or a sensible default.",
   "Provide `options` when the answer is a choice between known alternatives;",
   "omit them for free-text. The tool returns the user's answer, or a note that",
-  "they declined, in which case proceed with your best judgement.",
+  "they declined, in which case stop and ask them in plain text instead of",
+  "choosing for them.",
 ].join(" ");
 
 /** Normalize the model's `ask_user` arguments into an ADE card request. */
@@ -526,10 +528,11 @@ export function piAskUserRequestFromArgs(args: unknown): PiSdkUiRequestPayload {
 /** Map an ADE card answer back to the text the model receives. */
 export function piAskUserResultText(request: PiSdkUiRequestPayload, answer: string | null): string {
   if (answer === null) {
-    return "The user did not answer. Continue with your best judgement and state the assumption you made.";
+    return QUESTION_UNANSWERED_MODEL_MESSAGE;
   }
   const chosen = request.options?.find((option) => option.value === answer);
-  return `The user answered: ${chosen ? chosen.label : answer}`;
+  if (chosen) return `The user answered: ${chosen.label}`;
+  return `The user answered: ${withTypedReplyNote(request.options ?? [], [answer]).join(" ")}`;
 }
 
 /**

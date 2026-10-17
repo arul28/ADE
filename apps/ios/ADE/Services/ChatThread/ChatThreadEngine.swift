@@ -68,6 +68,7 @@ actor ChatThreadEngine {
   var boundaryPageRequested = false
   var loadFailure: String?
   var pendingHistoryReset = false
+  var ingestDiagnostics = ChatThreadIngestDiagnostics()
 
   // MARK: Fold state
 
@@ -622,6 +623,9 @@ actor ChatThreadEngine {
       || previous == nil
 
     frameRevision &+= 1
+    var frameIngestDiagnostics = ingestDiagnostics
+    frameIngestDiagnostics.hasDiskRows = hasDiskRows
+    frameIngestDiagnostics.awaitingBoundaryPage = awaitingBoundaryPage
     let didReset = pendingHistoryReset
     pendingHistoryReset = false
     return ChatThreadFrame(
@@ -655,7 +659,8 @@ actor ChatThreadEngine {
       cardExpansionSignature: overlays.cardExpansionSignature,
       viewportWidth: overlays.viewportWidth,
       usageRevision: usageRevision,
-      transcript: transcript
+      transcript: transcript,
+      ingestDiagnostics: frameIngestDiagnostics
     )
   }
 }

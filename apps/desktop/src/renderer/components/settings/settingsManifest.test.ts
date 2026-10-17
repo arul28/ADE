@@ -61,17 +61,13 @@ describe("settings manifest", () => {
     "appearance.chat-corners": "chat",
     "appearance.code-block-copy": "chat",
     "appearance.message-minimap": "chat",
-    "appearance.prompt-stash": "chat",
+    "appearance.drafts": "chat",
     "appearance.launch-prompt": "chat",
     "appearance.preview": "chat",
     "agents.dictation": "chat",
     "agents.scheduled-work": "notifications",
     // The Activity settings now sit on Notifications, but their ids keep the
     // `activity.` namespace and their anchors are still what old deeplinks use.
-    "activity.notch-enabled": "notifications",
-    "activity.notch-reveal": "notifications",
-    "activity.notch-expanded": "notifications",
-    "activity.celebrations": "notifications",
     "activity.sounds": "notifications",
     "activity.hide-details": "notifications",
     "activity.dock-badge": "notifications",
@@ -155,8 +151,6 @@ describe("settings manifest", () => {
     // landing them anywhere else would be an invisible dead end. Reset ADE
     // used to sit inside the About card, under `#about.reset`.
     for (const [hash, expectedTab] of [
-      ["attention-notch", "notifications"],
-      ["celebrations", "notifications"],
       ["attention-sounds", "notifications"],
       ["hide-previews", "notifications"],
       ["about.reset", "general"],
@@ -212,7 +206,6 @@ describe("settings manifest", () => {
   });
 
   it("finds settings by keyword when the label does not contain the query", () => {
-    expect(searchSettingsEntries("telemetry").map((e) => e.id)).toContain("general.analytics");
     expect(searchSettingsEntries("api key").map((e) => e.id)).toContain("secrets.secrets");
     expect(searchSettingsEntries("banner").map((e) => e.id)).toContain("lanes-git.rebase-suggestions");
     expect(searchSettingsEntries("do not disturb").map((e) => e.id)).toContain("notifications.focus-suppression");
@@ -220,7 +213,7 @@ describe("settings manifest", () => {
     expect(searchSettingsEntries("crash").map((e) => e.id)).toContain("general.diagnostics-sharing");
   });
 
-  it("registers the five Apple device keys on the account-scoped Apple devices tab", () => {
+  it("registers the five Apple device keys on the per-computer Apple devices tab", () => {
     const ids = [
       "appearance.apple-realistic-body",
       "appearance.apple-tap-rings",
@@ -232,7 +225,7 @@ describe("settings manifest", () => {
       const entry = SETTINGS_ENTRIES.find((candidate) => candidate.id === id);
       expect(entry, id).toBeDefined();
       expect(entry!.tab).toBe("apple");
-      expect(entry!.scope).toBe("account");
+      expect(entry!.scope).toBe("machine");
       expect(entry!.web).toBe("browser");
       expect(entry!.group).toBe("Apple Development");
     }
@@ -411,7 +404,6 @@ describe("settings command palette entries", () => {
 
   it("reaches settings whose label does not contain the query", () => {
     const cases: [string, string][] = [
-      ["telemetry", "setting-general.analytics"],
       ["font size", "setting-appearance.chat-font-size"],
       ["scrollback", "setting-appearance.terminal"],
       ["do not disturb", "setting-notifications.focus-suppression"],

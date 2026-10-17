@@ -65,6 +65,16 @@ and the tests/mocks. Any one left behind is a runtime break.
 Prefer fixing the underlying service or shared type over a renderer-only
 workaround. This is High unless proven harmless.
 
+## 4.5 Project-switch safety
+
+**Class:** A call or surface that breaks while a project tab is switching:
+a read refused as a write, or a failed load rendered as an empty state.
+
+**Check:** A new runtime action is declared `read` or `write` in
+`apps/desktop/src/shared/adeActionAccess.ts`, by what it does, not its name. A
+surface that loads on mount or polls says "couldn't load" with a retry when a
+read fails, never an empty state, and reads again once the switch ends.
+
 ## 5. Fast-mode / serviceTiers loading is per-provider
 
 **Class:** Model fast-mode / service-tier loading differs by provider, and a

@@ -35,6 +35,12 @@ export function chatWaitTargetMatches(summary: SummaryLike, waitFor: ChatWaitTar
     ? summary.cliSession as SummaryLike
     : null;
   const cliStatus = str(cliSession?.status);
+  // Another live brain runs this chat, and the answering brain cannot see its
+  // turn: its "idle" is a guess, and acting on it is how a caller sent into a
+  // running chat. Only the shared row's end is a fact here.
+  if (summary.runtimeOwnedElsewhere != null || summary.ownedElsewhere != null) {
+    return waitFor === "terminal" && summary.endedAt != null;
+  }
   if (waitFor === "idle") return status === "idle" || phase === "idle";
   if (waitFor === "active") return (status === "active" || phase === "running") && !awaitingInput;
   if (waitFor === "awaiting-input") return awaitingInput;

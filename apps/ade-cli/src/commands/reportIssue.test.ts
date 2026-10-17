@@ -1,7 +1,30 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+// The report's machine sections are live `launchctl`/`log` reads whose output
+// (`forks = N`, the disabled-job list) changes between two collections. Pin the
+// child-process boundary to one canned answer so the sync/async parity guard
+// measures the builders, not the machine.
+const childProcessCanned = vi.hoisted(() => ({ stdout: "canned diagnostic output\n" }));
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return {
+    ...actual,
+    spawnSync: () => ({ status: 0, stdout: childProcessCanned.stdout, stderr: "", pid: 1, output: [] }),
+    execFile: (
+      _file: string,
+      _args: readonly string[],
+      _options: unknown,
+      callback: (error: Error | null, stdout: string, stderr: string) => void,
+    ) => {
+      callback(null, childProcessCanned.stdout, "");
+      return {};
+    },
+  };
+});
+
 import { MAX_DIAGNOSTIC_UPLOAD_BYTES } from "../../../desktop/src/shared/diagnosticsUpload";
 import {
   buildCliDiagnosticReport,
@@ -30,6 +53,7 @@ function adeHome(analytics: Record<string, unknown> | null): string {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -42,6 +66,14 @@ describe("buildCliDiagnosticReportAsync", () => {
   it("produces the same report as the synchronous builder", async () => {
     const env = { ADE_HOME: adeHome({ identifiedUserHash: "hash-parity" }) };
     const at = () => new Date("2026-08-19T22:30:00.000Z");
+    // Free space moves between the two reads, so pin `statfs` at its process
+    // boundary: otherwise the disk-space section differs on unrelated I/O and
+    // this parity guard fails for a reason that is not the report.
+    vi.spyOn(fs, "statfsSync").mockReturnValue({
+      bavail: 1_000n,
+      bsize: 4_096n,
+      blocks: 5_000n,
+    } as unknown as ReturnType<typeof fs.statfsSync>);
 
     const sync = buildCliDiagnosticReport({ env, cliVersion: "1.2.62", now: at });
     const async_ = await buildCliDiagnosticReportAsync({ env, cliVersion: "1.2.62", now: at });

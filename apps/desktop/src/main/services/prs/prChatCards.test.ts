@@ -349,7 +349,8 @@ describe("PR chat cards", () => {
     expect(buildPrConflictCard({ pr: pr({ behindBaseBy: 4 }), kind: "behind" })).toMatchObject({
       cardId: "pr-conflict:pr-7:abc123:behind",
       variant: "pr_conflict",
-      title: "Branch behind main",
+      title: "PR #7 is 4 commits behind main",
+      fallbackText: "PR #7 is 4 commits behind main.",
       metrics: [
         { label: "branch", value: "feature", tone: "neutral" },
         { label: "commits behind", value: "4", tone: "warning" },
@@ -503,12 +504,31 @@ describe("PR chat cards", () => {
     expect(emitAdeCard.mock.calls.every(([call]) => call.sessionId === "newer")).toBe(true);
   });
 
-  it("fans a PR transition out to every linked Work chat", async () => {
+  it.each([
+    { name: "every linked Work chat", links: { chatSessionIds: ["newer", "older"] }, expected: ["newer", "older"] },
+    {
+      // A stack coordinator on another lane linked the PR. That link is a
+      // reference, so the PR's own lane still gets its newest chat.
+      name: "the linking chat on another lane plus the PR's own lane chat",
+      links: { chatSessionIds: ["coordinator"], crossLaneChatSessionIds: ["coordinator"] },
+      expected: ["coordinator", "newer"],
+    },
+    {
+      name: "only a same-lane linker, never the lane fallback",
+      links: { chatSessionIds: ["older"] },
+      expected: ["older"],
+    },
+  ])("fans a PR transition out to $name", async ({ links, expected }) => {
     const emitAdeCard = vi.fn().mockResolvedValue(undefined);
+    const sessions = [
+      session("older", "2026-07-27T10:00:00.000Z"),
+      session("newer", "2026-07-27T12:00:00.000Z"),
+      session("coordinator", "2026-07-27T13:00:00.000Z", { laneId: "lane-2" }),
+    ];
     const count = await emitPrCardsForChange({
       change: {
         pr: pr({
-          chatSessionIds: ["newer", "older"],
+          ...links,
           checksStatus: "failing",
         }),
         previousState: "open",
@@ -524,17 +544,14 @@ describe("PR chat cards", () => {
         getReviewThreads: vi.fn().mockResolvedValue([]),
       },
       chat: {
-        listSessions: vi.fn().mockResolvedValue([
-          session("older", "2026-07-27T10:00:00.000Z"),
-          session("newer", "2026-07-27T12:00:00.000Z"),
-          session("other-lane", "2026-07-27T13:00:00.000Z", { laneId: "lane-2" }),
-        ]),
+        listSessions: vi.fn(async (laneId: string) => sessions.filter((entry) => entry.laneId === laneId)),
+        getSessionSummary: vi.fn(async (sessionId: string) => sessions.find((entry) => entry.sessionId === sessionId) ?? null),
         emitAdeCard,
       },
     });
 
     expect(count).toBe(1);
-    expect(emitAdeCard.mock.calls.map(([call]) => call.sessionId).sort()).toEqual(["newer", "older"]);
+    expect(emitAdeCard.mock.calls.map(([call]) => call.sessionId).sort()).toEqual(expected);
   });
 
   it("emits a merge-ready episode once when the prior state was not ready", async () => {

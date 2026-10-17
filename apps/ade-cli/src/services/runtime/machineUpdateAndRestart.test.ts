@@ -44,6 +44,8 @@ describe("runMachineUpdateAndRestart", () => {
       ["restart", "pending"],
     ]);
     expect(result.message).toContain("1.2.55");
+    expect(result.route).toBe("standalone");
+    expect(result.pendingVersion).toBe("1.2.55");
   });
 
   it("leaves the restart to the updater when the helper owns it", async () => {
@@ -75,7 +77,7 @@ describe("runMachineUpdateAndRestart", () => {
     expect(result.message).toContain("1.2.55");
   });
 
-  it("restarts a machine that has no update pending", async () => {
+  it("does not restart a machine already on the requested version", async () => {
     const applyUpdate = vi.fn();
     const requestRestart = vi.fn(() => ({ ok: true, detail: "Restarting the background service." }));
 
@@ -87,12 +89,15 @@ describe("runMachineUpdateAndRestart", () => {
     expect(result.ok).toBe(true);
     expect(result.updateApplied).toBe(false);
     expect(applyUpdate).not.toHaveBeenCalled();
-    expect(requestRestart).toHaveBeenCalledTimes(1);
+    // A request for the version this machine already runs installs nothing and
+    // stops nothing — even though a check with no update pending still would.
+    expect(requestRestart).not.toHaveBeenCalled();
     expect(result.steps.map((step) => [step.id, step.status])).toEqual([
       ["check", "ok"],
       ["apply", "skipped"],
-      ["restart", "pending"],
+      ["restart", "skipped"],
     ]);
+    expect(result.message).toBe("Already on 1.2.55 — nothing to update, nothing restarted.");
   });
 
   it("names the failed step when the update cannot be installed", async () => {
@@ -153,6 +158,79 @@ describe("runMachineUpdateAndRestart", () => {
   });
 });
 
+describe("runMachineUpdateAndRestart with a desktop app open on the machine", () => {
+  const appAnswer = (outcome: string, version: string | null = "1.2.55") => ({
+    attached: true as const,
+    result: { outcome, currentVersion: "1.2.50", version, message: "" } as never,
+  });
+
+  function standaloneDeps() {
+    return {
+      checkForUpdate: vi.fn(async () => available),
+      applyUpdate: vi.fn(async () => ({ ok: true, version: "1.2.55", detail: "Installed 1.2.55." })),
+      requestRestart: vi.fn(() => ({ ok: true, detail: "Restarting the background service." })),
+    };
+  }
+
+  it.each([
+    // The app installs its own update; the standalone runtime is never touched,
+    // because the open app would put its own runtime straight back over it.
+    ["installing", true, "1.2.55", false],
+    ["downloading", true, "1.2.55", false],
+    ["no_update", false, null, false],
+    ["failed", false, null, false],
+  ])("an app that answers %s decides the result (ok %s, pending %s)", async (outcome, ok, pending, restarted) => {
+    const deps = standaloneDeps();
+    const result = await runMachineUpdateAndRestart(
+      { ...deps, requestDesktopAppUpdate: async () => appAnswer(outcome) },
+      "1.2.55",
+    );
+    expect(result.route).toBe("desktop_app");
+    expect(result.ok).toBe(ok);
+    expect(result.pendingVersion).toBe(pending);
+    expect(deps.checkForUpdate).not.toHaveBeenCalled();
+    expect(deps.applyUpdate).not.toHaveBeenCalled();
+    expect(deps.requestRestart).toHaveBeenCalledTimes(restarted ? 1 : 0);
+  });
+
+  it.each([
+    // The app is on the target; only a brain that lags it has anything to
+    // pick up from a restart. A brain already there (or past it) is left
+    // running, since a restart stops every agent on the machine.
+    ["a brain that cannot say its version", undefined, true],
+    ["a brain behind the app", "1.2.50", true],
+    ["a brain already on the target", "1.2.55", false],
+    ["a brain past the target", "1.3.0", false],
+  ])("when the app is already on the target, %s restarts: %s", async (_label, currentVersion, restarted) => {
+    const deps = standaloneDeps();
+    const result = await runMachineUpdateAndRestart(
+      { ...deps, currentVersion, requestDesktopAppUpdate: async () => appAnswer("already_current", "1.2.55") },
+      "1.2.55",
+    );
+    expect(result.ok).toBe(true);
+    expect(result.route).toBe("desktop_app");
+    if (!restarted) expect(result.pendingVersion).toBeNull();
+    expect(deps.applyUpdate).not.toHaveBeenCalled();
+    expect(deps.requestRestart).toHaveBeenCalledTimes(restarted ? 1 : 0);
+  });
+
+  it.each([
+    ["no app is attached", async () => ({ attached: false as const, detail: "No ADE desktop app is attached." })],
+    ["the app cannot update itself", async () => appAnswer("unsupported", null)],
+    ["asking the app throws", async () => { throw new Error("bridge exploded"); }],
+  ])("falls back to the standalone runtime when %s", async (_label, requestDesktopAppUpdate) => {
+    const deps = standaloneDeps();
+    const result = await runMachineUpdateAndRestart(
+      { ...deps, requestDesktopAppUpdate },
+      "1.2.55",
+    );
+    expect(result.route).toBe("standalone");
+    expect(result.ok).toBe(true);
+    expect(deps.applyUpdate).toHaveBeenCalledWith("1.2.55");
+    expect(result.pendingVersion).toBe("1.2.55");
+  });
+});
+
 describe("createMachineUpdateControls", () => {
   const controls = () =>
     createMachineUpdateControls({
@@ -165,8 +243,9 @@ describe("createMachineUpdateControls", () => {
     runBrainUpdateCommand.mockReset();
   });
 
-  it("refuses to update to the version it already runs, whatever the tag looks like", async () => {
-    for (const target of ["1.2.55", "v1.2.55", "V1.2.55"]) {
+  it("refuses to update to the version it already runs or an older one, whatever the tag looks like", async () => {
+    // An older target is a downgrade: the updater has no guard of its own.
+    for (const target of ["1.2.55", "v1.2.55", "V1.2.55", "1.2.40", "1.2.55-beta.3"]) {
       const check = await controls().checkForUpdate(target);
       expect(check.available).toBe(false);
       expect(check.detail).toBe("Already on the newest version.");
@@ -200,6 +279,9 @@ describe("createMachineUpdateControls", () => {
     expect(applyUpdate).not.toHaveBeenCalled();
     expect(result.updateApplied).toBe(false);
     expect(result.ok).toBe(true);
+    // No version was named, so this is the "unstick a machine" restart: it
+    // still restarts even though the check found nothing to install.
+    expect(requestRestart).toHaveBeenCalledTimes(1);
   });
 
   it("fails the check step when the update check comes back not ok", async () => {

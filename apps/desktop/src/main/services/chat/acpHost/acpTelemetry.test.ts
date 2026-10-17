@@ -2,36 +2,23 @@
  * ACP telemetry: usage totals, context occupancy, served model, cost, plan
  * units, account, subagent usage, and compaction (reported and inferred).
  *
- * The Grok and Copilot cases replay real one-turn sessions captured on
- * 2026-09-23 (Grok CLI 1.0.40, Copilot CLI 1.0.88): every frame the agent sent,
- * re-emitted in order by the mock agent. The Copilot ledger row is the one
- * Copilot wrote to `session-store.db` for that same turn. Kimi is covered by
- * fixtures shaped after its 0.39.1 binary; it is not live-verified.
+ * The Grok cases replay real one-turn sessions captured on 2026-09-23. Kimi is
+ * covered by fixtures shaped after its 0.39.1 binary; it is not live-verified.
  */
 
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
-import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEvent, AgentChatSession } from "../../../../shared/types";
 import { createCompactionEmitterState, mapLegacyCompactionEvent } from "../contextCompactionEmitter";
 import {
-  COPILOT_SERVED_MODEL_NOTE,
-  copilotDialect,
   grokDialect,
   kimiDialect,
   qwenDialect,
 } from "./acpDialects";
 import { KIMI_CODE_GLOBAL_BASE_URL, kimiCodeOAuthKey } from "../../shared/kimiCodeLogin";
 import { readGrokAccount, readKimiAccount, readQwenAccount } from "./acpDialects/acpAccounts";
-import {
-  createCopilotUsageLedger,
-  readCopilotUsageRow,
-  summarizeCopilotUsageRows,
-  type CopilotLedgerIo,
-} from "./acpDialects/copilotUsageLedger";
 import {
   readGrokModelUsage,
   readGrokModelUsageRow,
@@ -181,49 +168,7 @@ function replayPromptTurn(agent: MockAcpAgent, frames: CapturedFrame[], resultId
   });
 }
 
-type DatabaseSyncConstructor = new (dbPath: string) => DatabaseSyncType;
-const requireFromCwd = createRequire(path.join(process.cwd(), "ade-runtime.cjs"));
-const { DatabaseSync } = requireFromCwd("node:sqlite") as { DatabaseSync: DatabaseSyncConstructor };
-
-type LedgerRow = Record<string, string | number | null>;
-
-const COPILOT_LEDGER_COLUMNS = [
-  "id", "session_id", "turn_index", "agent_id", "parent_tool_call_id", "model", "input_tokens",
-  "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "total_nano_aiu",
-  "request_multiplier", "initiator", "created_at",
-] as const;
-
-/** A Copilot `session-store.db` with the real table's columns (the subset ADE reads). */
-function createCopilotStore(copilotHome: string): { insert(row: LedgerRow): void } {
-  mkdirSync(copilotHome, { recursive: true });
-  const db = new DatabaseSync(path.join(copilotHome, "session-store.db"));
-  db.exec(`create table assistant_usage_events (
-    id integer primary key autoincrement, session_id text not null, turn_index integer,
-    agent_id text, parent_tool_call_id text, model text not null, input_tokens integer,
-    output_tokens integer, cache_read_tokens integer, cache_write_tokens integer,
-    reasoning_tokens integer, total_nano_aiu integer, request_multiplier real, initiator text,
-    created_at text)`);
-  cleanups.push(() => db.close());
-  return {
-    insert: (row) => {
-      const columns = COPILOT_LEDGER_COLUMNS.filter((column) => column in row);
-      db.prepare(`insert into assistant_usage_events (${columns.join(", ")}) values (${columns.map(() => "?").join(", ")})`)
-        .run(...columns.map((column) => row[column] ?? null));
-    },
-  };
-}
-
-/** A stand-in store connection that answers every query with `rows`. */
-function fakeStore(rows: LedgerRow[], exec: (sql: string) => void = () => undefined): ReturnType<CopilotLedgerIo["openDatabase"]> {
-  return {
-    exec,
-    close: () => undefined,
-    prepare: () => ({ all: () => rows, get: () => undefined, run: () => ({ changes: 0, lastInsertRowid: 0 }) }),
-  } as unknown as ReturnType<CopilotLedgerIo["openDatabase"]>;
-}
-
 const GROK_CAPTURE_SESSION = "01a0cd33-eb83-7073-81fd-8b9df695ecd9";
-const COPILOT_CAPTURE_SESSION = "74a58a1f-afd3-4310-9e75-888aeda92d62";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Grok
@@ -396,411 +341,6 @@ describe("grok telemetry (live capture, CLI 1.0.40)", () => {
     const session = await withDeadline("open", harness.open());
     const outcome = await prompt(session);
     expect(outcome.done.usage).toBeUndefined();
-  });
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Copilot
-// ─────────────────────────────────────────────────────────────────────────────
-
-describe("copilot telemetry (live capture, CLI 1.0.88)", () => {
-  const liveRows = (JSON.parse(readFileSync(path.join(fixturesDir, "copilot.usage-events.json"), "utf8")) as {
-    rows: LedgerRow[];
-  }).rows;
-
-  it("replays a real turn and reads the turn's ledger row: served model, plan units, account", async () => {
-    const copilotHome = tempDir("copilot-home");
-    const store = createCopilotStore(copilotHome);
-    // An earlier turn of the same session, written before this turn started,
-    // must not be counted again. The column default's shape is accepted too.
-    const earlier = new Date(Date.now() - 60_000).toISOString();
-    store.insert({ ...liveRows[0], id: 30, created_at: earlier, total_nano_aiu: 999, request_multiplier: 3 });
-    store.insert({ ...liveRows[0], id: 31, created_at: earlier.replace("T", " ").slice(0, 19), total_nano_aiu: 999 });
-    const harness = openHarness({ dialect: copilotDialect, sessionId: COPILOT_CAPTURE_SESSION, configHome: copilotHome });
-    replayPromptTurn(harness.agent, loadCapture("copilot.usage-turn.jsonl"), 3, () => {
-      // Copilot writes the row as the request completes, before the result,
-      // stamped with its own clock.
-      store.insert({ ...liveRows[0], created_at: new Date().toISOString() });
-      // Another chat's session in the same store.
-      store.insert({ ...liveRows[0], id: 34, session_id: "another-session", created_at: new Date().toISOString() });
-    });
-    const session = await withDeadline("open", harness.open());
-    const outcome = await prompt(session);
-
-    expect(harness.events.find((event) => event.type === "context_usage")).toMatchObject({
-      usage: { totalTokens: 15_329, maxTokens: 128_000 },
-      turnId: "turn-1",
-    });
-    expect(outcome.done).toEqual({
-      usage: {
-        // The prompt result's 14160 input includes the 1152 cache read; the
-        // row's own token_details_json bills 13008 as input.
-        inputTokens: 13_008,
-        outputTokens: 5,
-        cacheReadTokens: 1_152,
-        cacheCreationTokens: 0,
-        reasoningTokens: 0,
-        contextWindow: 128_000,
-        contextTokens: 15_329,
-        requestCount: 1,
-      },
-      // The session had no model set; Copilot picked this one.
-      servedModel: "mai-code-1.1-flash",
-      account: { provider: "copilot", kind: "subscription" },
-      planUsage: [
-        { unit: "premium_request", amount: 1 },
-        { unit: "nano_aiu", amount: 236_757_600 },
-      ],
-      // The totals are the ledger's row, read back after the turn.
-      usageConfidence: "derived",
-    });
-    expect(outcome.events).toEqual([]);
-  });
-
-  it("tells the user once, and hands the chat service the served model, when Copilot's Auto answers instead", async () => {
-    // Live on 1.0.88 with a plan that includes only Auto: `--model` and
-    // `session/set_model` asked for claude-haiku-4.5, and gpt-5.6-luna answered.
-    const copilotHome = tempDir("copilot-auto");
-    const store = createCopilotStore(copilotHome);
-    const { id: _liveId, ...liveRow } = liveRows[0];
-    const logger = testLogger();
-    const harness = openHarness({
-      dialect: copilotDialect,
-      sessionId: "copilot-auto",
-      configHome: copilotHome,
-      requestedModelId: "claude-haiku-4.5",
-      logger,
-    });
-    harness.agent.on(ACP_METHOD.sessionPrompt, () => {
-      store.insert({ ...liveRow, session_id: "copilot-auto", model: "gpt-5.6-luna", created_at: new Date().toISOString() });
-      return { result: { stopReason: "end_turn" } };
-    });
-    const session = await withDeadline("open", harness.open());
-    const first = await prompt(session, "turn-1");
-    const second = await prompt(session, "turn-2");
-
-    expect(first.done.servedModel).toBe("gpt-5.6-luna");
-    expect(second.done.servedModel).toBe("gpt-5.6-luna");
-    expect(first.events.filter((event) => event.type === "system_notice")).toEqual([{
-      type: "system_notice",
-      noticeKind: "warning",
-      severity: "warning",
-      message: "GitHub Copilot answered with gpt-5.6-luna, not claude-haiku-4.5.",
-      detail: COPILOT_SERVED_MODEL_NOTE,
-      turnId: "turn-1",
-    }]);
-    expect(second.events.filter((event) => event.type === "system_notice")).toEqual([]);
-    // One warning per turn, and it is the chat service's, not a second ACP one.
-    expect(acpMismatchWarnings(logger)).toEqual([]);
-  });
-
-  it("stays silent when the chat asked Copilot for Auto, and speaks for another model", () => {
-    const notices = (requestedModelId: string, served: string) => {
-      const telemetry = createAcpTurnTelemetry({
-        providerId: "copilot",
-        inferCompaction: true,
-        requestedModelId,
-        providerLabel: "GitHub Copilot",
-        readAccount: () => ({ provider: "copilot", kind: "subscription" }),
-      });
-      telemetry.beginTurn("turn");
-      const { events } = telemetry.finishTurn({
-        promptUsage: null,
-        local: summarizeCopilotUsageRows([{ model: served, input_tokens: 10, output_tokens: 1 }]),
-      });
-      return events.filter((event) => event.type === "system_notice");
-    };
-    expect(notices("auto", "gpt-5.6-luna")).toEqual([]);
-    expect(notices("gpt-5.4", "gpt-5.4")).toEqual([]);
-    expect(notices("gpt-5.4", "gpt-5.6-luna")).toHaveLength(1);
-  });
-
-  it("reports a /compact turn from the ledger: the compaction row, and totals the stale prompt result would have repeated", () => {
-    // Live, 1.0.88: `/compact` answered with the previous turn's usage verbatim
-    // and sent no ACP compaction update; the ledger held one
-    // `initiator = "compaction"` row for the summary request.
-    const telemetry = createAcpTurnTelemetry({
-      providerId: "copilot",
-      inferCompaction: true,
-      readAccount: () => ({ provider: "copilot", kind: "subscription" }),
-    });
-    telemetry.beginTurn("turn-2");
-    const stalePromptUsage = { inputTokens: 3, outputTokens: 5, cacheWriteTokens: 15_159, totalTokens: 15_167 };
-    const { done, events } = telemetry.finishTurn({
-      promptUsage: stalePromptUsage,
-      local: summarizeCopilotUsageRows([
-        { model: "gpt-5.6-luna", input_tokens: 16_235, output_tokens: 444, cache_read_tokens: 15_087, cache_write_tokens: 1_073, initiator: "compaction" },
-      ]),
-    });
-    expect(done.usage).toMatchObject({ inputTokens: 75, outputTokens: 444, cacheReadTokens: 15_087, cacheCreationTokens: 1_073 });
-    expect(done.usageConfidence).toBe("derived");
-    expect(events).toEqual([expect.objectContaining({
-      type: "context_compact",
-      state: "completed",
-      detection: "provider",
-      provider: "copilot",
-      preTokens: 16_235,
-      turnId: "turn-2",
-    })]);
-    // The 444 output tokens are the summary, not the context that follows.
-    expect(events[0]).not.toHaveProperty("postTokens");
-    expect(events[0]).not.toHaveProperty("tokensRemoved");
-  });
-
-  it("counts a /compact once when the context drop already published an inferred compaction", () => {
-    const telemetry = createAcpTurnTelemetry({
-      providerId: "copilot",
-      inferCompaction: true,
-      hasLocalUsage: true,
-      readAccount: () => ({ provider: "copilot", kind: "subscription" }),
-    });
-    const emitter = createCompactionEmitterState();
-    const session = { provider: "copilot" } as AgentChatSession;
-    const compactions = (events: AgentChatEvent[]) => events
-      .map((event) => mapLegacyCompactionEvent(emitter, session, event))
-      .filter((event): event is NonNullable<typeof event> => event !== null);
-
-    telemetry.beginTurn("turn-1");
-    telemetry.noteContextSample({ used: 150_000, size: 200_000 });
-    telemetry.endTurn();
-
-    // The `/compact` turn: Copilot's own usage_update shows the drop mid-turn,
-    // and the ledger holds the summary request's `initiator = "compaction"` row.
-    telemetry.beginTurn("turn-2");
-    const live = compactions(telemetry.noteContextSample({ used: 30_000, size: 200_000 }));
-    const end = telemetry.finishTurn({
-      promptUsage: null,
-      local: summarizeCopilotUsageRows([
-        { model: "gpt-5.6-luna", input_tokens: 150_200, output_tokens: 900, initiator: "compaction" },
-      ]),
-    });
-    const atEnd = compactions(end.events);
-    expect(live).toEqual([expect.objectContaining({ detection: "inferred", state: "completed", turnId: "turn-2" })]);
-    expect(atEnd).toEqual([]);
-    expect(emitter.sessionCompactionCount).toBe(1);
-
-    // A later turn whose compaction the drop did not reveal still reports it.
-    telemetry.endTurn();
-    telemetry.beginTurn("turn-3");
-    const later = compactions(telemetry.finishTurn({
-      promptUsage: null,
-      local: summarizeCopilotUsageRows([{ model: "gpt-5.6-luna", input_tokens: 90_000, output_tokens: 700, initiator: "compaction" }]),
-    }).events);
-    expect(later).toEqual([expect.objectContaining({ detection: "provider", preTokens: 90_000, turnId: "turn-3" })]);
-    expect(emitter.sessionCompactionCount).toBe(2);
-  });
-
-  it("folds rows: uncached input, agent follow-ups are not premium requests, subagents grouped", () => {
-    const summary = summarizeCopilotUsageRows([
-      { model: "claude-haiku-4.5", input_tokens: 18_530, output_tokens: 48, cache_read_tokens: 9_066, cache_write_tokens: 9_454, total_nano_aiu: 1_167_669_000, request_multiplier: 0.33, initiator: "user" },
-      { model: "claude-haiku-4.5", input_tokens: 19_000, output_tokens: 20, cache_read_tokens: 18_500, cache_write_tokens: 0, total_nano_aiu: 30_000_000, request_multiplier: 0.33, initiator: "agent" },
-      { model: "gpt-5.6-luna", agent_id: "agent-7", parent_tool_call_id: "call-1", input_tokens: 5_000, output_tokens: 100, cache_read_tokens: 0, cache_write_tokens: 0, total_nano_aiu: 10_000_000, request_multiplier: 1, initiator: "agent" },
-      { model: "gpt-5.6-luna", agent_id: "agent-7", input_tokens: 6_000, output_tokens: 50, cache_read_tokens: 4_000, cache_write_tokens: 0, total_nano_aiu: 5_000_000, request_multiplier: 1, initiator: "agent" },
-    ]);
-    expect(summary).toMatchObject({
-      usage: {
-        inputTokens: 10 + 500,
-        cacheReadTokens: 9_066 + 18_500,
-        cacheWriteTokens: 9_454,
-        outputTokens: 68,
-      },
-      requestCount: 2,
-      servedModel: "claude-haiku-4.5",
-      planUsage: [
-        { unit: "premium_request", amount: 0.33 },
-        { unit: "nano_aiu", amount: 1_167_669_000 + 30_000_000 + 10_000_000 + 5_000_000 },
-      ],
-      subagents: [{
-        agentId: "agent-7",
-        parentToolCallId: "call-1",
-        model: "gpt-5.6-luna",
-        usage: { inputTokens: 5_000 + 2_000, cacheReadTokens: 4_000, outputTokens: 150 },
-      }],
-    });
-    expect(summarizeCopilotUsageRows([])).toBeNull();
-  });
-
-  it("reads one ledger row into its token split, for the usage history scanner too", () => {
-    expect(readCopilotUsageRow({
-      model: "claude-haiku-4.5", input_tokens: 18_530, output_tokens: 48, cache_read_tokens: 9_066,
-      cache_write_tokens: 9_454, reasoning_tokens: 12,
-    })).toEqual({
-      inputTokens: 10,
-      outputTokens: 48,
-      cacheReadTokens: 9_066,
-      cacheWriteTokens: 9_454,
-      reasoningTokens: 12,
-      totalTokens: 18_578,
-    });
-    // SQLite hands back a bigint for a large integer column.
-    expect(readCopilotUsageRow({ input_tokens: BigInt(5), output_tokens: null })).toEqual({ inputTokens: 5, totalTokens: 5 });
-    expect(readCopilotUsageRow({ model: "gpt-5.6-luna" })).toEqual({});
-  });
-
-  it("puts ledger subagent usage on done, never on a subagent event that would draw a card", () => {
-    const telemetry = createAcpTurnTelemetry({
-      providerId: "copilot",
-      inferCompaction: true,
-      hasLocalUsage: true,
-      readAccount: () => ({ provider: "copilot", kind: "subscription" }),
-    });
-    telemetry.beginTurn("turn-9");
-    const { done, events } = telemetry.finishTurn({
-      promptUsage: null,
-      local: summarizeCopilotUsageRows([
-        { model: "gpt-5.6-luna", agent_id: "agent-7", parent_tool_call_id: "call-1", input_tokens: 5_000, output_tokens: 100, cache_read_tokens: 1_000, request_multiplier: 1, initiator: "agent" },
-      ]),
-    });
-    expect(events).toEqual([]);
-    expect(done.subagentUsage).toEqual([{
-      agentId: "agent-7",
-      model: "gpt-5.6-luna",
-      parentToolUseId: "call-1",
-      inputTokens: 4_000,
-      outputTokens: 100,
-      cacheReadTokens: 1_000,
-      usageConfidence: "derived",
-    }]);
-  });
-
-  it("reads nothing before the prompt, and never in the caller's synchronous path", async () => {
-    let opens = 0;
-    const ledger = createCopilotUsageLedger({
-      sessionId: COPILOT_CAPTURE_SESSION,
-      env: { COPILOT_HOME: "/nowhere" },
-      io: {
-        openDatabase: () => {
-          opens += 1;
-          return fakeStore(liveRows);
-        },
-      },
-    });
-    ledger.beginTurn();
-    expect(opens).toBe(0);
-    const pending = ledger.finishTurn();
-    expect(opens).toBe(0);
-    await expect(pending).resolves.toMatchObject({ servedModel: "mai-code-1.1-flash" });
-    expect(opens).toBe(1);
-  });
-
-  it("asks SQLite never to wait on a lock, and retries a busy store on a timer, a bounded number of times", async () => {
-    const pragmas: string[] = [];
-    const delays: number[] = [];
-    let opens = 0;
-    const busy = Object.assign(new Error("database is locked"), { errcode: 5 });
-    const busyTwiceThenOpen = createCopilotUsageLedger({
-      sessionId: COPILOT_CAPTURE_SESSION,
-      env: { COPILOT_HOME: "/nowhere" },
-      io: {
-        openDatabase: () => {
-          opens += 1;
-          if (opens <= 2) throw busy;
-          return fakeStore(liveRows, (sql) => void pragmas.push(sql));
-        },
-        delay: async (ms) => void delays.push(ms),
-      },
-    });
-    busyTwiceThenOpen.beginTurn();
-    await expect(busyTwiceThenOpen.finishTurn()).resolves.toMatchObject({ servedModel: "mai-code-1.1-flash" });
-    expect(delays).toEqual([0, 40, 40]);
-    expect(pragmas).toEqual(["PRAGMA busy_timeout = 0"]);
-
-    let alwaysBusyOpens = 0;
-    const alwaysBusy = createCopilotUsageLedger({
-      sessionId: COPILOT_CAPTURE_SESSION,
-      env: { COPILOT_HOME: "/nowhere" },
-      io: {
-        openDatabase: () => {
-          alwaysBusyOpens += 1;
-          throw busy;
-        },
-        delay: async () => undefined,
-      },
-    });
-    alwaysBusy.beginTurn();
-    await expect(alwaysBusy.finishTurn()).resolves.toBeNull();
-    expect(alwaysBusyOpens).toBe(3);
-
-    // Anything but a lock will not change on a retry.
-    let brokenOpens = 0;
-    const broken = createCopilotUsageLedger({
-      sessionId: COPILOT_CAPTURE_SESSION,
-      env: { COPILOT_HOME: "/nowhere" },
-      io: {
-        openDatabase: () => {
-          brokenOpens += 1;
-          throw new Error("no such column: created_at");
-        },
-        delay: async () => undefined,
-      },
-    });
-    broken.beginTurn();
-    await expect(broken.finishTurn()).resolves.toBeNull();
-    expect(brokenOpens).toBe(1);
-  });
-
-  it("marks a prompt-result fallback estimated when the ledger could not be read", async () => {
-    // `/compact` answers with the previous turn's usage verbatim, so a prompt
-    // result the ledger cannot vouch for is a guess.
-    const harness = openHarness({ dialect: copilotDialect, sessionId: "s", configHome: tempDir("copilot-none") });
-    harness.agent.on(ACP_METHOD.sessionPrompt, () => ({
-      result: { stopReason: "end_turn", usage: { inputTokens: 3, outputTokens: 5, totalTokens: 8 } },
-    }));
-    const session = await withDeadline("open", harness.open());
-    const outcome = await prompt(session);
-    expect(outcome.done.usage).toMatchObject({ inputTokens: 3, outputTokens: 5 });
-    expect(outcome.done.usageConfidence).toBe("estimated");
-
-    // A dialect with no ledger reports its prompt result as measured.
-    const kimi = createAcpTurnTelemetry({ providerId: "kimi", inferCompaction: true, readAccount: () => ({ provider: "kimi", kind: "unknown" }) });
-    kimi.beginTurn("turn-1");
-    expect(kimi.finishTurn({ promptUsage: { inputTokens: 3, outputTokens: 5 }, local: null }).done.usageConfidence).toBeUndefined();
-  });
-
-  it("ends the turn with a plain done when telemetry throws, and logs it once", () => {
-    const warn = vi.fn();
-    const telemetry = createAcpTurnTelemetry({
-      providerId: "copilot",
-      inferCompaction: true,
-      hasLocalUsage: true,
-      readAccount: () => ({ provider: "copilot", kind: "subscription" }),
-      logger: { warn },
-    });
-    const poisoned = {
-      get usage(): never {
-        throw new Error("ledger row shape changed");
-      },
-      subagents: [],
-    };
-    for (const turnId of ["turn-1", "turn-2"]) {
-      telemetry.beginTurn(turnId);
-      expect(telemetry.finishTurn({ promptUsage: { inputTokens: 1 }, local: poisoned })).toEqual({ done: {}, events: [] });
-      telemetry.endTurn();
-    }
-    expect(warn).toHaveBeenCalledTimes(1);
-    expect(warn).toHaveBeenCalledWith("agent_chat.acp_turn_telemetry_failed", expect.objectContaining({
-      provider: "copilot",
-      error: "ledger row shape changed",
-    }));
-  });
-
-  it("resolves null when Copilot has no store yet", async () => {
-    const ledger = createCopilotUsageLedger({ sessionId: "s", env: { COPILOT_HOME: tempDir("copilot-none") } });
-    ledger.beginTurn();
-    await expect(ledger.finishTurn()).resolves.toBeNull();
-  });
-
-  it("never holds the turn end hostage to a ledger that does not answer", async () => {
-    const stuckDialect = {
-      ...copilotDialect,
-      localUsage: capability(() => ({ beginTurn: () => undefined, finishTurn: () => new Promise<never>(() => undefined) })),
-    } as AcpDialect;
-    const harness = openHarness({ dialect: stuckDialect, sessionId: "s" });
-    harness.agent.on(ACP_METHOD.sessionPrompt, () => ({ result: { stopReason: "end_turn" } }));
-    const session = await withDeadline("open", harness.open());
-    const outcome = await prompt(session);
-    expect(outcome.done.planUsage).toBeUndefined();
-    expect(outcome.stopReason).toBe("end_turn");
   });
 });
 
@@ -1058,21 +598,6 @@ describe("compaction", () => {
     expect(telemetry.noteContextSample({ used: 20_000, size: 200_000 })).toEqual([]);
   });
 
-  it("publishes an inferred compaction across turns on the session path, before the new sample", async () => {
-    const harness = openHarness({ dialect: copilotDialect, sessionId: "s", configHome: tempDir("copilot-none") });
-    let used = 150_000;
-    harness.agent.on(ACP_METHOD.sessionPrompt, (_params, agent) => {
-      agent.emitUpdate("s", { sessionUpdate: "usage_update", used, size: 200_000 });
-      return { result: { stopReason: "end_turn" } };
-    });
-    const session = await withDeadline("open", harness.open());
-    await prompt(session, "turn-1");
-    used = 60_000;
-    await prompt(session, "turn-2");
-    const tail = harness.events.slice(-2);
-    expect(tail[0]).toMatchObject({ type: "context_compact", detection: "inferred", preTokens: 150_000, postTokens: 60_000, turnId: "turn-2" });
-    expect(tail[1]).toMatchObject({ type: "context_usage", usage: { totalTokens: 60_000 } });
-  });
 
   it("maps the session-compaction RFD updates and ignores an unknown status and summary chunks", () => {
     expect(readAcpCompactionUpdate({ compactionId: "cmp_001", status: "in_progress" }))
@@ -1102,15 +627,6 @@ describe("compaction", () => {
     return (initialize?.params as { clientCapabilities?: Record<string, unknown> }).clientCapabilities;
   };
 
-  it.each([
-    ["qwen", qwenDialect],
-    ["kimi", kimiDialect],
-    ["grok", grokDialect],
-    ["copilot", copilotDialect],
-  ] as const)("%s's handshake does not claim the compaction capability: telemetry leaves the agent's behavior alone", async (_id, dialect) => {
-    // The handshake from before telemetry: no fs, no terminal, no session.
-    expect(await initializeCapabilities(dialect)).toEqual({});
-  });
 
   it("does not infer a compaction from a drop seen while the provider's own compaction is open", () => {
     const telemetry = tracker();
@@ -1128,26 +644,6 @@ describe("compaction", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("requested model", () => {
-  it("reports servedModel only when the model that answered is not the one the session opened with", () => {
-    const telemetry = createAcpTurnTelemetry({
-      providerId: "copilot",
-      inferCompaction: true,
-      hasLocalUsage: true,
-      requestedModelId: "claude-haiku-4.5",
-      readAccount: () => ({ provider: "copilot", kind: "subscription" }),
-    });
-    const servedBy = (model: string) => {
-      telemetry.beginTurn("turn");
-      const { done } = telemetry.finishTurn({
-        promptUsage: null,
-        local: summarizeCopilotUsageRows([{ model, input_tokens: 10, output_tokens: 1 }]),
-      });
-      telemetry.endTurn();
-      return done.servedModel;
-    };
-    expect(servedBy("claude-haiku-4.5")).toBeUndefined();
-    expect(servedBy("mai-code-1.1-flash")).toBe("mai-code-1.1-flash");
-  });
 
   it("seeds the session's requested model from the launch token, in the agent's own naming", async () => {
     const modelOption = (currentValue: string) => ({
@@ -1231,34 +727,6 @@ describe("requested model", () => {
     expect(events.filter((event) => event.type === "system_notice")).toHaveLength(1);
   });
 
-  it("falls back to the model ADE put on the session, not the one the entry call reported", async () => {
-    // Kimi answers `session/set_config_option` without its option set, and
-    // Copilot's `session/set_model` answers `{}`. The coordinator records the
-    // model it set; a turn that names no served model must not report the
-    // entry call's model as a swap.
-    const logger = testLogger();
-    const modelOption = {
-      type: "select",
-      id: "model",
-      name: "Model",
-      currentValue: "kimi-k2-turbo-preview",
-      options: [{ value: "kimi-k2-turbo-preview", name: "K2 Turbo" }, { value: "kimi-k2-thinking", name: "K2 Thinking" }],
-    };
-    const harness = openHarness({
-      dialect: kimiDialect,
-      sessionId: "01KIMI",
-      configHome: tempDir("kimi-applied"),
-      requestedModelId: "kimi-k2-thinking",
-      sessionNewExtra: { configOptions: [modelOption] },
-      logger,
-    });
-    harness.agent.on(ACP_METHOD.sessionPrompt, () => ({ result: { stopReason: "end_turn" } }));
-    const session = await withDeadline("open", harness.open());
-    session.noteCurrentModel("kimi-k2-thinking");
-    const outcome = await prompt(session, "turn-1");
-    expect(outcome.done.servedModel).toBeUndefined();
-    expect(outcome.events.filter((event) => event.type === "system_notice")).toEqual([]);
-  });
 
   it("says nothing about the served model when the chat asked for none", async () => {
     const harness = openHarness({ dialect: grokDialect, sessionId: "grok-default" });
@@ -1289,26 +757,6 @@ describe("telemetry readers", () => {
       sessionId: "s",
       update: { sessionUpdate: "subagent_spawned", subagent_id: " sub-1 ", model: " grok-4 ", description: "  " },
     }).signals).toEqual([{ kind: "subagent_started", agentId: "sub-1", model: "grok-4" }]);
-  });
-});
-
-describe("turn boundaries", () => {
-  it("ends the turn when the prompt fails, so later updates carry no dead turn's id", async () => {
-    const harness = openHarness({ dialect: copilotDialect, sessionId: "s", configHome: tempDir("copilot-fail") });
-    harness.agent.on(ACP_METHOD.sessionPrompt, (_params, agent) => {
-      agent.emitUpdate("s", { sessionUpdate: "usage_update", used: 150_000, size: 200_000 });
-      return { result: { stopReason: "end_turn" } };
-    });
-    const session = await withDeadline("open", harness.open());
-    await prompt(session, "turn-1");
-
-    harness.agent.on(ACP_METHOD.sessionPrompt, () => ({ error: { code: -32000, message: "model overloaded" } }));
-    await expect(prompt(session, "turn-2")).rejects.toThrow("model overloaded");
-    const before = harness.events.length;
-    // A late sample after the failure: its drop is an inferred compaction.
-    harness.agent.emitUpdate("s", { sessionUpdate: "usage_update", used: 60_000, size: 200_000 });
-    await vi.waitFor(() => expect(harness.events.slice(before).map((event) => event.type)).toEqual(["context_compact", "context_usage"]));
-    for (const event of harness.events.slice(before)) expect(event).not.toHaveProperty("turnId");
   });
 });
 

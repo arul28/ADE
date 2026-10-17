@@ -157,6 +157,9 @@ function stopServices(services: ServiceTarget[], deps: MachineResetDeps, receipt
       if ((!bootout || bootout.status !== 0) && service.plistPath) {
         deps.run("launchctl", ["unload", service.plistPath]);
       }
+      // launchd keeps its disabled list outside every folder the reset
+      // removes. Left there, the reinstall after the reset loads nothing.
+      if (domain) deps.run("launchctl", ["enable", `${domain}/${service.label}`]);
       if (service.plistPath) removePath(service.plistPath, deps, receipt);
       else receipt.removed.push(`launchd:${service.label}`);
     } else if (service.kind === "systemd") {

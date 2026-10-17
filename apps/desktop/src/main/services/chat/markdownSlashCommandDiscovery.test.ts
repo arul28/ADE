@@ -2,7 +2,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { discoverSkillCommands, frontmatterFlag, readFrontmatter, resolveSkillCommandFile } from "./markdownSlashCommandDiscovery";
+import {
+  discoverSkillCommands,
+  frontmatterFlag,
+  mergeSlashCommands,
+  readFrontmatter,
+  resolveSkillCommandFile,
+} from "./markdownSlashCommandDiscovery";
 
 describe("readFrontmatter", () => {
   it.each([
@@ -107,5 +113,18 @@ describe("discoverSkillCommands boolean frontmatter", () => {
 
     expect(resolveSkillCommandFile(skillsDir, "hidden")).toBeNull();
     expect(resolveSkillCommandFile(skillsDir, "shown")).toContain(path.join("shown", "SKILL.md"));
+  });
+});
+
+describe("mergeSlashCommands", () => {
+  it("keeps the later group's entry for a repeated name, and sorts by name, accents folded", () => {
+    const merged = mergeSlashCommands([
+      [{ name: "/beta", source: "first" }, { name: "/Gamma", source: "first" }],
+      [{ name: "/BETA", source: "second" }, { name: "/alpha", source: "second" }, { name: "/Äpfel", source: "second" }],
+    ]);
+
+    // Sorted as the shared collator orders them (base letters, case-insensitive): a code-point sort would put "/Äpfel" last.
+    expect(merged.map((command) => command.name)).toEqual(["/alpha", "/Äpfel", "/BETA", "/Gamma"]);
+    expect(merged.find((command) => command.name === "/BETA")?.source).toBe("second");
   });
 });

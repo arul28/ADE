@@ -21,6 +21,13 @@ import {
   githubRateLimitRetryAtMs,
 } from "../github/githubRateLimit";
 import { computeRelayReconnectBackoffMs, rawDataToText } from "./relayWakeSocket";
+import {
+  createCustomWebhookService,
+  type CustomWebhookService,
+  type CustomWebhookServiceDeps,
+} from "./customWebhookService";
+import { lowerCaseHeaders, queryRecord } from "./webhookRequest";
+import { WEBHOOK_MAX_BODY_BYTES } from "../../../shared/automationWebhooks";
 
 export type AutomationIngressCursorStore = {
   get(source: AutomationIngressSource): string | null;
@@ -54,6 +61,14 @@ type AutomationIngressServiceArgs = {
    * targeted reconciliation so freshness rides the webhook, not the next tick.
    */
   onPrStateIngested?: (prIds: string[]) => void;
+  /**
+   * Also hand each relay delivery to automations as its typed event
+   * (`github.pr_opened`, `github.issue_labeled`, ...), so `github.*` rules run.
+   * Set it only where no GitHub poller runs beside this ingress (the brain):
+   * the poller emits the same typed events, and ingress dedupes per source, so
+   * both together would start a rule twice for one PR.
+   */
+  relayDispatchesTypedGithubEvents?: boolean;
   secretService: AutomationSecretService;
   githubService?: {
     detectRepo: () => Promise<GitHubRepoRef | null> | GitHubRepoRef | null;
@@ -70,6 +85,16 @@ type AutomationIngressServiceArgs = {
   webSocketFactory?: (url: string, options: ClientOptions) => WebSocket;
   /** Test seam for reconnect jitter. */
   random?: () => number;
+  /**
+   * Custom webhook URLs need the project database (tokens and the delivery
+   * log) and the project's secrets (signing secrets). Without these the
+   * `/hooks/...` route answers 404 and the `webhooks` methods throw.
+   */
+  webhooks?: {
+    db: CustomWebhookServiceDeps["db"];
+    projectId: string;
+    readSecret: (name: string) => string | null;
+  } | null;
 };
 
 const GITHUB_WEBHOOK_SECRET_REF = "automations.githubWebhook.secret";
@@ -299,6 +324,36 @@ function buildPrContext(pr: Record<string, unknown> | null, repo: string | null)
   };
 }
 
+/**
+ * A comment webhook names the PR but not its branches, so a `github.pr_commented`
+ * rule with a branch filter could never match. Fill them from the PR row ADE
+ * already tracks (a local read, no network). A comment on an untracked PR stays
+ * branchless: a branch-filtered rule skips it rather than guessing.
+ */
+function withTrackedPrBranches(
+  mapped: ReturnType<typeof mapGithubWebhookToTrigger>,
+  prService: Pick<ReturnType<typeof createPrService>, "listAll"> | null | undefined,
+): ReturnType<typeof mapGithubWebhookToTrigger> {
+  if (!mapped?.pr || mapped.pr.headBranch || !prService) return mapped;
+  const [owner, name] = (mapped.pr.repo ?? "").toLowerCase().split("/");
+  let tracked: { headBranch: string; baseBranch: string } | undefined;
+  try {
+    tracked = prService.listAll().find((row) =>
+      row.githubPrNumber === mapped.pr!.number
+      && row.repoOwner.toLowerCase() === owner
+      && row.repoName.toLowerCase() === name);
+  } catch {
+    return mapped;
+  }
+  if (!tracked) return mapped;
+  return {
+    ...mapped,
+    branch: tracked.headBranch,
+    targetBranch: tracked.baseBranch,
+    pr: { ...mapped.pr, headBranch: tracked.headBranch, baseBranch: tracked.baseBranch },
+  };
+}
+
 function mapGithubWebhookToTrigger(githubEvent: string, payload: Record<string, unknown>): {
   triggerType: AutomationTriggerType;
   summary: string;
@@ -342,8 +397,12 @@ function mapGithubWebhookToTrigger(githubEvent: string, payload: Record<string, 
     const rawIssue = readNested(payload, "issue");
     const comment = readNested(payload, "comment");
     const issueIsPr = Boolean(readNested(rawIssue, "pull_request"));
-    const issue = buildIssueContext(rawIssue, repo);
-    if (!issue) return null;
+    const opened = buildIssueContext(rawIssue, repo);
+    if (!opened) return null;
+    // `bodyRegex` on a comment trigger reads the new comment, not the issue or
+    // PR description, the same as the GitHub poller's comment events.
+    const commentBody = readString(comment, "body");
+    const issue = { ...opened, body: commentBody ?? undefined };
     return {
       triggerType: issueIsPr ? "github.pr_commented" : "github.issue_commented",
       summary: `GitHub ${issueIsPr ? "PR" : "issue"} #${issue.number} commented: ${issue.title}`,
@@ -384,8 +443,11 @@ function mapGithubWebhookToTrigger(githubEvent: string, payload: Record<string, 
 
   if (githubEvent === "pull_request_review") {
     if (action && action !== "submitted") return null;
-    const pr = buildPrContext(readNested(payload, "pull_request"), repo);
-    if (!pr) return null;
+    const opened = buildPrContext(readNested(payload, "pull_request"), repo);
+    if (!opened) return null;
+    // `bodyRegex` reads the submitted review, not the PR description, the same
+    // as the GitHub poller's review events.
+    const pr = { ...opened, body: readString(readNested(payload, "review"), "body") ?? undefined };
     return {
       triggerType: "github.pr_review_submitted",
       summary: `GitHub PR #${pr.number} review submitted: ${pr.title}`,
@@ -439,6 +501,101 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
   const auditHostedRelayAuthTokenUse = createGitHubRelayAuthAuditLog(
     (event, metadata) => args.logger.info(event, metadata),
   );
+
+  const localListenerBaseUrl = (): string | null => {
+    const address = server?.address();
+    return typeof address === "object" && address ? `http://127.0.0.1:${address.port}` : null;
+  };
+  const automationServiceForWebhooks = args.automationService;
+  const webhooks: CustomWebhookService | null = args.webhooks && automationServiceForWebhooks
+    ? createCustomWebhookService({
+        db: args.webhooks.db,
+        projectId: args.webhooks.projectId,
+        logger: args.logger,
+        listRules: args.listRules,
+        readSecret: args.webhooks.readSecret,
+        getAccountAccessToken: args.getAccountAccessToken,
+        getLocalBaseUrl: localListenerBaseUrl,
+        getGatewayPublicUrl: () => {
+          const gateway = automationServiceForWebhooks.getIngressStatus().webhookGateway;
+          return gateway.ready ? gateway.publicUrl : null;
+        },
+        dispatch: (dispatch) => automationServiceForWebhooks.dispatchIngressTrigger({
+          source: dispatch.via === "relay" ? "webhook-relay" : "local-webhook",
+          eventKey: dispatch.eventKey,
+          triggerType: "webhook",
+          automationId: dispatch.automationId,
+          eventName: dispatch.eventName,
+          summary: dispatch.summary,
+          webhook: { hookId: dispatch.hookId, ...dispatch.webhook },
+        }),
+        onDeliveriesChanged: (hookId) => automationServiceForWebhooks.notifyWebhookDeliveries(hookId),
+      })
+    : null;
+  if (webhooks) automationServiceForWebhooks?.onRuleDeleted((rule) => {
+    void webhooks.retireForDeletedRule(rule).catch((error: unknown) => {
+      args.logger.warn("automations.webhook_retire_failed", {
+        automationId: rule.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  });
+  const requireWebhooks = (): CustomWebhookService => {
+    if (!webhooks) throw new Error("Webhook automations are not available in this runtime.");
+    return webhooks;
+  };
+
+  /** `/hooks/:hookId/:token` — the custom webhook doorbell, any common method. */
+  const handleCustomHookRequest = (
+    request: http.IncomingMessage,
+    response: http.ServerResponse,
+    route: { hookId: string; token: string },
+    url: URL,
+  ) => {
+    const service = webhooks;
+    const method = (request.method ?? "GET").toUpperCase();
+    if (!service || !["GET", "POST", "PUT", "PATCH"].includes(method)) {
+      response.writeHead(404, { "content-type": "application/json" }).end(JSON.stringify({ ok: false, error: "not_found" }));
+      return;
+    }
+    const chunks: Buffer[] = [];
+    let size = 0;
+    let tooLarge = false;
+    request.on("data", (chunk: Buffer | string) => {
+      if (tooLarge) return;
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      size += buffer.length;
+      // Stop buffering past the cap; a chunked request with no length is bounded too.
+      if (size > WEBHOOK_MAX_BODY_BYTES) {
+        tooLarge = true;
+        chunks.length = 0;
+        return;
+      }
+      chunks.push(buffer);
+    });
+    request.on("end", async () => {
+      try {
+        const result = await service.receive({
+          hookId: route.hookId,
+          token: route.token,
+          method,
+          headers: lowerCaseHeaders(request.headers),
+          query: queryRecord(url.searchParams),
+          rawBody: tooLarge ? Buffer.alloc(0) : Buffer.concat(chunks),
+          tooLarge,
+          via: "local",
+        });
+        response
+          .writeHead(result.status, { "content-type": "application/json", "x-ade-hook-outcome": result.outcome })
+          .end(JSON.stringify(result.status === 404
+            ? { ok: false, error: "not_found" }
+            : { ok: result.status < 300, outcome: result.outcome, deliveryId: result.deliveryId }));
+      } catch (error) {
+        args.logger.warn("automations.custom_webhook_failed", { error: error instanceof Error ? error.message : String(error) });
+        response.writeHead(500, { "content-type": "application/json" }).end(JSON.stringify({ ok: false, error: "internal_error" }));
+      }
+    });
+  };
 
   const updateGithubRelayStatus = (patch: Partial<AutomationIngressStatus["githubRelay"]>) => {
     if (typeof patch.healthy === "boolean") githubRelayHealthy = patch.healthy;
@@ -598,6 +755,19 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
   const handleWebhookRequest = async (request: http.IncomingMessage, response: http.ServerResponse) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
     const pathname = normalizeWebhookPath(url.pathname);
+    const hookMatch = /^\/hooks\/([^/]+)\/([^/]+)$/.exec(pathname);
+    if (hookMatch) {
+      let route: { hookId: string; token: string } | null = null;
+      try {
+        route = { hookId: decodeURIComponent(hookMatch[1]!), token: decodeURIComponent(hookMatch[2]!) };
+      } catch {
+        route = null;
+      }
+      if (route) {
+        handleCustomHookRequest(request, response, route, url);
+        return;
+      }
+    }
     const match = /^\/automation-webhooks\/([^/]+)$/.exec(pathname);
     const isGithubWebhook = pathname === "/github-webhooks";
     if (request.method !== "POST" || (!match?.[1] && !isGithubWebhook)) {
@@ -1154,6 +1324,14 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
           if (ingested?.processed && !ingested.duplicate && ingested.linkedPrIds.length > 0) {
             for (const prId of ingested.linkedPrIds) pageIngestedPrIds.add(prId);
           }
+          const logDispatchFailure = (error: unknown, triggerType: string) => {
+            args.logger.warn("automations.github_relay_dispatch_failed", {
+              githubEvent,
+              eventId,
+              triggerType,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          };
           try {
             await run.wait(Promise.resolve(args.automationService?.dispatchIngressTrigger({
               source: "github-relay",
@@ -1167,11 +1345,38 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
             })));
           } catch (error) {
             if (error instanceof GithubRelayPollSupersededError) throw error;
-            args.logger.warn("automations.github_relay_dispatch_failed", {
-              githubEvent,
-              eventId,
-              error: error instanceof Error ? error.message : String(error),
-            });
+            logDispatchFailure(error, "github-webhook");
+          }
+          // `github.pr_*` / `github.issue_*` rules match the typed event, not
+          // the raw one. Where no poller emits them, the relay must, or those
+          // rules never run. Same mapping as the local-webhook path. Its own
+          // try: a failed raw dispatch must not drop the typed one.
+          const mapped = args.relayDispatchesTypedGithubEvents && isRecord(rawPayload)
+            ? withTrackedPrBranches(mapGithubWebhookToTrigger(githubEvent, rawPayload), args.prService)
+            : null;
+          if (mapped) {
+            try {
+              await run.wait(Promise.resolve(args.automationService?.dispatchIngressTrigger({
+                source: "github-relay",
+                eventKey: `${eventId}:${mapped.triggerType}`,
+                triggerType: mapped.triggerType,
+                eventName: githubEvent,
+                summary: mapped.summary,
+                cursor: eventCursor ?? eventId,
+                author: mapped.author ?? readLogin(readNested(rawPayload, "sender")) ?? null,
+                labels: mapped.labels,
+                branch: mapped.branch,
+                targetBranch: mapped.targetBranch,
+                draftState: mapped.draftState,
+                rawPayload,
+                repo: mapped.issue?.repo ?? mapped.pr?.repo ?? readRepoName(rawPayload),
+                issue: mapped.issue,
+                pr: mapped.pr,
+              })));
+            } catch (error) {
+              if (error instanceof GithubRelayPollSupersededError) throw error;
+              logDispatchFailure(error, mapped.triggerType);
+            }
           }
           pageLastCursor = eventCursor ?? eventId;
         }
@@ -1307,8 +1512,22 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
           lastError: null,
         });
       }
+      webhooks?.start();
       rearmPollTimer();
       await pollGithubRelayOnce();
+    },
+
+    /** Custom webhook URLs, their delivery log, replay and test sends. */
+    webhooks: {
+      createEndpoint: (input?: { label?: string | null }) => requireWebhooks().createEndpoint(input ?? {}),
+      getEndpoint: (input: { hookId: string }) => requireWebhooks().getEndpoint(input.hookId),
+      rotateEndpoint: (input: { hookId: string }) => requireWebhooks().rotateEndpoint(input.hookId),
+      listDeliveries: (input: { hookId: string; limit?: number }) => requireWebhooks().listDeliveries(input),
+      getDelivery: (input: { id: string }) => requireWebhooks().getDelivery(input),
+      replayDelivery: (input: { id: string }) => requireWebhooks().replayDelivery(input),
+      sendTest: (input: Parameters<CustomWebhookService["sendTest"]>[0]) => requireWebhooks().sendTest(input),
+      pollNow: () => requireWebhooks().pollNow(),
+      retireEndpoint: (hookId: string) => requireWebhooks().retireEndpoint(hookId),
     },
 
     getStatus() {
@@ -1356,6 +1575,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       pollAbortController?.abort();
       pollAbortController = null;
       closeRelaySubscription(true);
+      webhooks?.stop();
       if (server) {
         server.close();
         server = null;

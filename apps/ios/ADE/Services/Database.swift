@@ -2077,6 +2077,7 @@ final class DatabaseService {
       chatSessionId: row.chatSessionId,
       pendingInputItemId: row.pendingInputItemId,
       orchestrationParentSessionId: row.resumeMetadata?.orchestrationParentSessionId,
+      launchedBySessionId: row.resumeMetadata?.launchedBySessionId,
       spawnKind: row.resumeMetadata?.spawnKind
     )
   }
@@ -2088,6 +2089,7 @@ final class DatabaseService {
     guard var metadata = session.resumeMetadata else { return nil }
     metadata.orchestrationParentSessionId =
       session.orchestrationParentSessionId ?? metadata.orchestrationParentSessionId
+    metadata.launchedBySessionId = session.launchedBySessionId ?? metadata.launchedBySessionId
     metadata.spawnKind = session.spawnKind ?? metadata.spawnKind
     return metadata
   }
@@ -2479,10 +2481,31 @@ final class DatabaseService {
              (select group_concat(pcs.session_id, char(10))
                 from pull_request_chat_session_dismissals pcs
                where pcs.project_id = pr.project_id
-                 and pcs.pr_id = pr.id)
+                 and pcs.pr_id = pr.id),
       """
       : """
-             null as dismissed_chat_session_ids
+             null as dismissed_chat_session_ids,
+      """
+
+    // Linked chats that live on another lane (a stack coordinator linking every
+    // layer). Mirrors `PrSummary.crossLaneChatSessionIds`: those links do not
+    // take the PR away from the chats on its own lane. The edge's `lane_id` is
+    // the PR's lane, so the chat's lane comes from its session row.
+    let crossLaneSessionSelect = hasChatSessionLinks
+      && hasTable(named: "terminal_sessions")
+      && tableHasColumn(tableName: "terminal_sessions", columnName: "id")
+      && tableHasColumn(tableName: "terminal_sessions", columnName: "lane_id")
+      ? """
+             (select group_concat(pcs.session_id, char(10))
+                from pull_request_chat_sessions pcs
+                join terminal_sessions ts on ts.id = pcs.session_id
+               where pcs.project_id = pr.project_id
+                 and pcs.pr_id = pr.id
+                 and ts.lane_id is not null
+                 and ts.lane_id <> pr.lane_id)
+      """
+      : """
+             null as cross_lane_chat_session_ids
       """
 
     let prGroupJoins = hasPrGroupContext
@@ -2532,6 +2555,7 @@ final class DatabaseService {
     \(prGroupSelect)
     \(integrationSelect)
     \(dismissedSessionSelect)
+    \(crossLaneSessionSelect)
         from pull_requests pr
         left join lanes l on l.id = pr.lane_id and l.project_id = pr.project_id
         left join pull_request_stack_snapshots stack_snapshot on stack_snapshot.pr_id = pr.id
@@ -2626,16 +2650,9 @@ final class DatabaseService {
         ),
         checksReason: stringValue(statement, index: 20),
         checksMissingRequired: decodeJson(stringValue(statement, index: 21), as: [String].self),
-        chatSessionIds: (stringValue(statement, index: 22)?
-          .split(separator: "\n")
-          .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-          .filter { !$0.isEmpty })
-          .flatMap { $0.isEmpty ? nil : $0 },
-        dismissedChatSessionIds: (stringValue(statement, index: 31)?
-          .split(separator: "\n")
-          .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-          .filter { !$0.isEmpty })
-          .flatMap { $0.isEmpty ? nil : $0 }
+        chatSessionIds: newlineSeparatedIds(statement, index: 22),
+        dismissedChatSessionIds: newlineSeparatedIds(statement, index: 31),
+        crossLaneChatSessionIds: newlineSeparatedIds(statement, index: 32)
       )
     }
   }
@@ -3510,6 +3527,9 @@ final class DatabaseService {
     if hasTable(named: "session_github_issues") {
       _ = try execute("delete from session_github_issues where session_id in (\(placeholders))", bind: bindSessionIds)
     }
+    if hasTable(named: "session_jira_issues") {
+      _ = try execute("delete from session_jira_issues where session_id in (\(placeholders))", bind: bindSessionIds)
+    }
     if hasTable(named: "session_deltas") {
       _ = try execute("delete from session_deltas where session_id in (\(placeholders))", bind: bindSessionIds)
     }
@@ -4176,6 +4196,15 @@ final class DatabaseService {
   private func stringValue(_ statement: OpaquePointer, index: Int32) -> String? {
     guard let raw = sqlite3_column_text(statement, index) else { return nil }
     return String(cString: raw)
+  }
+
+  /// A `group_concat(..., char(10))` column as trimmed ids; nil when empty.
+  private func newlineSeparatedIds(_ statement: OpaquePointer, index: Int32) -> [String]? {
+    let ids = (stringValue(statement, index: index) ?? "")
+      .split(separator: "\n")
+      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .filter { !$0.isEmpty }
+    return ids.isEmpty ? nil : ids
   }
 
   private func columnIsNull(_ statement: OpaquePointer, index: Int32) -> Bool {

@@ -15,15 +15,16 @@ import type {
 } from "../../../shared/types";
 import { formatSpend, formatTokens } from "../../lib/format";
 import { CostSplitBars, SPLIT_COLORS } from "../usage/UsageCostSplit";
-import { USAGE_EYEBROW_CLASS, USAGE_NUMERIC_CLASS, USAGE_TEXT } from "../usage/usageDesign";
+import { USAGE_NUMERIC_CLASS, USAGE_TEXT } from "../usage/usageDesign";
+import "../usage/usageSurfaces.css";
 import { cn } from "../ui/cn";
 import { Dialog } from "../ui/dialog";
 
 function Kpi({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex min-w-0 flex-col gap-0.5">
-      <span className={USAGE_EYEBROW_CLASS}>{label}</span>
-      <span className={cn(USAGE_TEXT.title, USAGE_NUMERIC_CLASS, "text-fg")}>{value}</span>
+    <div className="usage-fact">
+      <span className="kit-eyebrow">{label}</span>
+      <span className="usage-fact-value">{value}</span>
     </div>
   );
 }
@@ -65,8 +66,8 @@ function Trend({ daily, theme }: { daily: AdeUsageModelDetail["daily"]; theme: "
   return (
     <div className="flex flex-col gap-1">
       <div className="flex items-baseline justify-between">
-        <span className={cn(USAGE_TEXT.micro, "text-muted-fg")}>Daily cost</span>
-        <span className={cn(USAGE_TEXT.micro, USAGE_NUMERIC_CLASS, "text-muted-fg")}>
+        <span className="kit-eyebrow">Daily cost</span>
+        <span className="usage-stat-detail">
           {shown ? `${shown.date} · ${formatSpend(shown.costUsd)} · ${formatTokens(shown.totalTokens)} tokens` : `peak ${formatSpend(max)}`}
         </span>
       </div>
@@ -209,7 +210,7 @@ export function UsageModelDetailDialog({
         <p className={cn(USAGE_TEXT.detail, "text-muted-fg")}>Loading…</p>
       ) : (
         <div className="flex flex-col gap-5">
-          <div className="grid grid-cols-4 gap-4">
+          <div className="grid grid-cols-4 gap-4 border-b border-[color:var(--kit-rule)] pb-4">
             <Kpi label="Cost" value={formatSpend(detail.costUsd)} />
             <Kpi label="Tokens" value={formatTokens(detail.totalTokens)} />
             <Kpi label="Per 1M tokens" value={detail.costPerMillionUsd != null ? formatSpend(detail.costPerMillionUsd) : "—"} />
@@ -219,7 +220,7 @@ export function UsageModelDetailDialog({
           <CostSplitBars split={detail.costSplit} theme={theme} />
 
           <div className="flex flex-col gap-2">
-            <span className={USAGE_EYEBROW_CLASS}>Price</span>
+            <span className="kit-eyebrow">Price</span>
             {!editing ? (
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className={cn(USAGE_TEXT.detail, USAGE_NUMERIC_CLASS, "text-fg")}>
@@ -270,7 +271,7 @@ export function UsageModelDetailDialog({
 
           {canEditPrices ? (
             <div className="flex flex-col gap-2">
-              <span className={USAGE_EYEBROW_CLASS}>Map to</span>
+              <span className="kit-eyebrow">Map to</span>
               <span className={cn(USAGE_TEXT.micro, "text-muted-fg")}>
                 Count this model as another one, such as a preview id under its released name. Its tokens and cost move to that model, at that model&apos;s price.
               </span>

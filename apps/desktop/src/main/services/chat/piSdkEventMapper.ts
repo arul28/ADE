@@ -172,11 +172,13 @@ export function mapPiSdkEventToChatEvents(
     // The session's compaction count is the shared emitter's to keep.
     const completed = type === "compaction_end";
     const result = asRecord(record.result);
+    const failed = completed && (record.aborted === true || typeof record.errorMessage === "string" || !result);
     return [{
       type: "context_compact",
       trigger: record.reason === "manual" ? "manual" : "auto",
       provider: "pi",
-      state: completed ? "completed" : "started",
+      state: failed ? "failed" : completed ? "completed" : "started",
+      ...(failed ? { failReason: record.aborted === true ? "interrupted" as const : "provider_error" as const, failDetail: typeof record.errorMessage === "string" ? record.errorMessage : "Pi compaction ended without a summary." } : {}),
       ...(compactionId ? { compactionId } : {}),
       ...(turnId ? { turnId } : {}),
       ...(completed && finiteNumberOrNull(result?.tokensBefore) != null ? { preTokens: finiteNumberOrNull(result?.tokensBefore)! } : {}),

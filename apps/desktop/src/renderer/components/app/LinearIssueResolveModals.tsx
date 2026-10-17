@@ -15,7 +15,7 @@ export function LinearIssueOpenLink({
   return (
     <button
       type="button"
-      className="inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-white/[0.07] px-2.5 py-1.5 text-[11px] font-medium text-muted-fg/70 transition-colors hover:border-white/[0.12] hover:bg-white/[0.03] hover:text-fg/85"
+      className="inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-fg/[0.07] px-2.5 py-1.5 text-[11px] font-medium text-muted-fg/70 transition-colors hover:border-fg/[0.12] hover:bg-fg/[0.03] hover:text-fg/85"
       onClick={() => openLinearIssueExternalUrl(url)}
     >
       <ArrowSquareOut size={13} />

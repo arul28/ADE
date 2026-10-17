@@ -123,6 +123,7 @@ export async function launchAgentChatCli(
     ...((provider === "codex" || provider === "claude" || provider === "opencode") && (arg.fastMode ?? arg.codexFastMode) !== undefined
       ? { fastMode: arg.fastMode ?? arg.codexFastMode }
       : {}),
+    ...(provider === "codex" && arg.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
     initialPrompt: kickoffPrompt,
     laneWorktreePath: worktreePath,
     ...(provider === "codex" ? { codexComputerUse: await resolveCodexComputerUseMcpConfig() } : {}),
@@ -140,6 +141,13 @@ export async function launchAgentChatCli(
   // Keep the already-materialized command/env intact (notably Codex Computer
   // Use settings); the structured metadata is the durable identity seam that
   // resume and reattach re-resolve on the machine that owns the lane.
+  // Passive lineage: a bound agent that launched this CLI is recorded as its
+  // launcher. This launch takes no orchestration parent (the field is not on
+  // launchCli), so the launcher is always recorded here. The CTO and the user's
+  // clients are not agent launchers and record nothing.
+  const launchedBySessionId = arg.runtimeActor?.kind === "agent"
+    ? arg.runtimeActor.chatSessionId?.trim() || null
+    : null;
   const resumeMetadata = buildCliIdentityResumeMetadata({
     provider,
     targetId: provider === "claude" ? sessionId : null,
@@ -147,6 +155,7 @@ export async function launchAgentChatCli(
     model: trackedPreset?.model || arg.model || null,
     reasoningEffort: arg.reasoningEffort ?? null,
     fastMode: arg.fastMode ?? arg.codexFastMode ?? null,
+    ...(provider === "codex" && arg.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
     ...(instance ? { instanceId: instance.id } : {}),
     ...(arg.presetId ? { presetId: arg.presetId } : {}),
     ...(arg.credentialId ? { credentialId: arg.credentialId } : {}),
@@ -154,6 +163,7 @@ export async function launchAgentChatCli(
 
   const result = await deps.ptyService.create({
     sessionId,
+    ...(launchedBySessionId ? { launchedBySessionId } : {}),
     allowNewSessionId: true,
     chatSessionId: sessionId,
     laneId,

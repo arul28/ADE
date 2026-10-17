@@ -273,6 +273,105 @@ struct ChatThreadFrame: @unchecked Sendable {
   let usageRevision: Int
   /// Kept for existing consumers (steer reconcile, subagents). Read-only.
   let transcript: [WorkChatEnvelope]
+  /// What the host has delivered to this engine so far. Read by the empty-thread
+  /// probe, which reports a chat that is working but shows nothing.
+  var ingestDiagnostics = ChatThreadIngestDiagnostics()
+}
+
+/// Counts of what reached one engine from the host, for diagnostics only.
+struct ChatThreadIngestDiagnostics: Equatable, Sendable {
+  var snapshotCount = 0
+  var lastSnapshotEventCount = 0
+  var lastSnapshotResumed = false
+  var lastSnapshotResumeKind: String?
+  var lastSnapshotGap = false
+  var lastSnapshotTruncated = false
+  var lastSnapshotHostSupportsChatLogV2 = false
+  var liveEventCount = 0
+  var liveEventsSinceSnapshot = 0
+  var hasDiskRows = false
+  var awaitingBoundaryPage = false
+}
+
+/// What went over a socket for one chat: subscribes, history snapshots and
+/// live events, and what was dropped and why. Diagnostics only.
+struct ChatStreamTrace {
+  var subscribesSent = 0
+  var subscribesFailedToSend = 0
+  var lastSubscribeRequestedSnapshot = false
+  var lastSubscribeResume = "none"
+  var lastSubscribeAt: Date?
+  var snapshotsApplied = 0
+  var snapshotsDropped = 0
+  var lastSnapshotDropReason = "none"
+  var lastSnapshotRawEvents = -1
+  var lastSnapshotDecodedEvents = -1
+  var lastSnapshotResumed = false
+  var lastSnapshotGap = false
+  var lastSnapshotAt: Date?
+  var liveEventsApplied = 0
+  var liveEventsSinceSnapshot = 0
+  var liveEventsDropped = 0
+  var liveEventsDroppedAsOld = 0
+  var firstLiveEventAt: Date?
+  var unsubscribes = 0
+  var socketClosesWhileSubscribed = 0
+
+  mutating func noteSubscribe(sent: Bool, requestSnapshot: Bool, resume: String) {
+    if sent { subscribesSent += 1 } else { subscribesFailedToSend += 1 }
+    lastSubscribeRequestedSnapshot = requestSnapshot
+    lastSubscribeResume = resume
+    lastSubscribeAt = Date()
+  }
+
+  mutating func noteSnapshotApplied(rawEventCount: Int, decodedEventCount: Int, resumed: Bool, gap: Bool) {
+    snapshotsApplied += 1
+    lastSnapshotRawEvents = rawEventCount
+    lastSnapshotDecodedEvents = decodedEventCount
+    lastSnapshotResumed = resumed
+    lastSnapshotGap = gap
+    lastSnapshotAt = Date()
+    liveEventsSinceSnapshot = 0
+  }
+
+  mutating func noteSnapshotDropped(reason: String) {
+    snapshotsDropped += 1
+    lastSnapshotDropReason = reason
+  }
+
+  mutating func noteLiveEvent() {
+    liveEventsApplied += 1
+    liveEventsSinceSnapshot += 1
+    if firstLiveEventAt == nil { firstLiveEventAt = Date() }
+  }
+
+  var fields: [String: String] {
+    func age(_ date: Date?) -> String {
+      date.map { String(Int(Date().timeIntervalSince($0))) + "s" } ?? "never"
+    }
+    return [
+      "subscribesSent": String(subscribesSent),
+      "subscribesFailedToSend": String(subscribesFailedToSend),
+      "lastSubscribeRequestedSnapshot": String(lastSubscribeRequestedSnapshot),
+      "lastSubscribeResume": lastSubscribeResume,
+      "lastSubscribeAgo": age(lastSubscribeAt),
+      "snapshotsApplied": String(snapshotsApplied),
+      "snapshotsDropped": String(snapshotsDropped),
+      "lastSnapshotDropReason": lastSnapshotDropReason,
+      "lastSnapshotRawEvents": String(lastSnapshotRawEvents),
+      "lastSnapshotDecodedEvents": String(lastSnapshotDecodedEvents),
+      "lastSnapshotResumed": String(lastSnapshotResumed),
+      "lastSnapshotGap": String(lastSnapshotGap),
+      "lastSnapshotAgo": age(lastSnapshotAt),
+      "liveEventsApplied": String(liveEventsApplied),
+      "liveEventsSinceSnapshot": String(liveEventsSinceSnapshot),
+      "liveEventsDropped": String(liveEventsDropped),
+      "liveEventsDroppedAsOld": String(liveEventsDroppedAsOld),
+      "firstLiveEventAgo": age(firstLiveEventAt),
+      "unsubscribes": String(unsubscribes),
+      "socketClosesWhileSubscribed": String(socketClosesWhileSubscribed),
+    ]
+  }
 }
 
 // MARK: - Decoding (off the main actor)

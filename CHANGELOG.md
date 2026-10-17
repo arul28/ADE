@@ -7,6 +7,269 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.110] - 2026-10-17
+
+### Desktop and web
+
+- ADE and its background service start faster by reusing compiled code (#1743, #1744).
+- Copilot chats run on the GitHub Copilot SDK instead of ACP (#1714).
+- Stacked PR lanes are grouped in order in the Work page (#1722), with a compact new-lane composer (#1721).
+- Inspected browser elements give the agent their HTML, CSS and source file (#1719).
+- Finding slash commands no longer freezes the background service on large skill folders (#1737).
+- Multi-machine fixes: chats started elsewhere show as working (#1733), Tools pane stays closed (#1742), lane actions target the right machine (#1720, #1724), clearer connection and sync status (#1736, #1738, #1739), and sync-host claims are safer (#1730, #1735).
+- Renderer path checks no longer leak file existence through symlinks (#1727).
+
+## [1.2.109] - 2026-10-16
+
+### Desktop and web
+
+- Long chats open 12.5× faster, and a turn that touched thousands of files no longer stalls the chat (#1711).
+- Older chat history pages load about 2.3× faster (#1692), and the composer re-renders far less while streaming (#1691).
+- Opening a terminal or editor, or checking sign-in, no longer freezes the app for about a second (#1709).
+- Background relay traffic for account settings cut about 20×, with remote changes still applied on arrival (#1682, #1696).
+- Recent projects summarize 50× faster (#1661).
+- Closed dialogs stop re-rendering while a chat streams (#1715, #1717), and every `ade` command starts about 145 ms faster via Node's compile cache (#1718).
+- Sync to a dead host gives up in 5 s instead of about 75 s, and stale hosts are reclaimed (#1694).
+- Opening a project waits out a peer's database lock instead of failing (#1693).
+- Pairing names the machine and route when it stalls (#1703), and Repair appears beside the sync-host outcome that explains it (#1710).
+- Account settings and sync status can no longer hang the app for 30 s (#1666, #1671).
+- Search no longer wedges the background service; chats can be re-parented and keep links across a move (#1716).
+- Opening a project reports why it failed (#1678), and moving a project carries its logs, proof paths and closed lanes' history (#1677).
+- Branch import works from the web client (#1687).
+- A missing folder or file no longer trips the path allowlist (#1668, #1670, #1702).
+- ⌘-chords for the Work page, with a shortcut sheet on `?` (#1686).
+- Sign in to an MCP server once, for every agent (#1688).
+- Error log lines name the failure, and Sentry noise is filtered out (#1684, #1700, #1663, #1683).
+
+## [1.2.108] - 2026-10-16
+
+### Desktop and web
+
+- 3D scenes, KaTeX math, and a drawing box for scenes in progress.
+- Image handling in prompts: attachment chips, peek, paste rule (#1655).
+- Agents and shells read as runs, not walls of cards (#1658).
+- Ultrathink and ultracode controls (#1654).
+- Jira Cloud and one launcher for every tracker (#1653).
+- Custom providers say which models can run, and why (#1648).
+- Native spreadsheet and presentation previews (#1642).
+- A renamed branch updates the lane (#1659).
+- New default home widget stack (#1645).
+- Compact first for Codex, Pi and OpenCode after cache expiry (#1643).
+- Scheduled wakes deliver once across brains (#1646).
+- `ade chat` honors `--project-root` (#1644).
+
+### iOS
+
+- 3D scenes and math in chat.
+
+## [1.2.107] - 2026-10-15
+
+### Desktop and web
+
+- Fork a chat to another provider on another machine (#1641).
+- The primary lane stops showing old pull requests once back on main (#1639).
+- The Focus grid stays live with the sidebar collapsed (#1640).
+- Project move fixes: check agent model, banner scope, Codex trust (#1638).
+- Simulator cleanup stays on its original project (#1596).
+- Quiet provider checks and restored model controls (#1623).
+- OpenCode 2.0.29: accounts, cloud sign-ins, lane guard (#1617).
+
+### iOS
+
+- The primary lane stops showing old pull requests once back on main (#1639).
+
+## [1.2.106] - 2026-10-15
+
+### Desktop and web
+
+- The compaction timer counts once, and a cancelled compaction says so (#1637).
+
+### iOS
+
+- The compaction timer counts once, and a cancelled compaction says so (#1637).
+
+## [1.2.105] - 2026-10-15
+
+### Desktop and web
+
+- Voice narrates the work while it happens (#1631).
+- Model picker redesign, Codex Ultrafast, and @ menu recents (#1627).
+- Balance Claude five-hour capacity across accounts (#1629).
+- Spotify alongside Apple Music (#1624).
+- Move a project safely to a new drive (#1633).
+- Plan mode ends after approval, and Compact first queues your message (#1622, #1621).
+- Machine updates never restart a current machine (#1626).
+- PR reviews and attention states stay in sync (#1635).
+
+### iOS
+
+- Chats that work but show nothing are reported to Sentry (#1630).
+
+## [1.2.104] - 2026-10-14
+
+### Desktop and web
+
+- Meta Muse Code as a first-class provider, chat and CLI (#1614).
+- The resume after an install waits for the install to finish (#1618).
+- Windows: live model lists, browser timeouts and chat reopening; Sentry on every surface (#1612).
+- Apple Inspect selects the element you click (#1619).
+
+## [1.2.103] - 2026-10-13
+
+### Desktop and web
+
+- Scenes can ask for a reply; Settings > MCP servers and MCP Apps (#1609).
+- Apple Music plays on macOS, and playback resumes where it stopped (#1611).
+- The update dialog says what a restart stops, and other machines can update from here (#1613).
+- Claude chats follow the real prompt cache time; clearer compaction line (#1608).
+- Browser commands use the browser on your machine; a cross-project search no longer freezes ADE (#1615).
+- The Windows installer is built with NSIS 3.12 to stop a first-install crash (#1605).
+
+## [1.2.102] - 2026-10-13
+
+### Desktop and web
+
+- Send a message into a running turn without a loaded model, and keep a chat's model across pane remounts (#1606).
+- Sign a machine in from your phone with a QR code (#1603).
+- Videos play in PRs, and the phone shows a PR description's pictures (#1604).
+
+## [1.2.101] - 2026-10-12
+
+### Desktop and web
+
+- Find in a chat or any diff with ⌘F, plus "Find in this chat" in ⌘K (#1600).
+- Claude Code mod UI (status lines, toasts, band, panes) in ADE chat, opt-in (#1601).
+- Readable agent-written PRs, a "needs you" line, side-by-side proof, and Add to chat in the PRs tab (#1595).
+- Chat fixes: steered turns keep their tool list, photo paste, kept chat models, browser preview sizing (#1598, #1602).
+- Multi-machine chats: voice, terminal logs, sign-in and session diffs reach the owning machine (#1592).
+- Sign out of non-default accounts; remove signs out first (#1593, #1599).
+- Idle Claude accounts stay readable for smart balance; option to stop turns on extra usage (#1587, #1588).
+- Project switching keeps the right lane, protects moved project data, and no longer breaks the simulator pane (#1589, #1594).
+- Background git status no longer blocks your commits; PR Watch wakes on bot comment edits; chat-settled automation trigger (#1587).
+- ADE-styled quit prompt and a Background service stop; readable Focus grid with a chats-per-page setting (#1590, #1591).
+- Project tabs switch on press, 44–51 ms warm (#1585).
+
+## [1.2.100] - 2026-10-11
+
+### Desktop and web
+
+- Chats and page tabs switch on press, with less navigation rendering work (#1583).
+- Faster chat streaming, web startup, project switching, and file watching (#1576).
+- Per-account Claude subagent prompt-cache settings; one-hour caching is opt-in (#1582).
+
+## [1.2.99] - 2026-10-10
+
+### Desktop and web
+
+- Chat drafts, scheduled messages, and reusable prompts (#1572).
+- Automatic compaction settings and clearer context usage (#1570).
+- Account-aware chat naming that preserves names on failure (#1571).
+- Fixed Home add-widget crash on macOS 27 and grid alignment (#1569).
+
+### iOS
+
+- Drafts, scheduled sending, reusable prompts, and context compaction parity.
+
+## [1.2.98] - 2026-10-09
+
+### Desktop and web
+
+- Reliable Home and personal Browser flows (#1565).
+- Large screenshot, chat ownership, Focus helper, and account secret sync fixes (#1556, #1557, #1558, #1559).
+- Lower idle renders, brain stalls, and Lanes, Files, chat-switch, and web startup overhead (#1560, #1561).
+
+### iOS
+
+- Updated Work activity, transcript rendering, command redaction, and session grouping.
+
+## [1.2.97] - 2026-10-08
+
+### Desktop
+
+- Widget dev home with one chat system, Browser tab, Apple Music, and Now Playing (#1544).
+- Instant chat comments, pushed events for pinned views, half the remote event traffic (#1539).
+- Automation test runs, kept drafts, and older-machine warnings (#1546).
+- Chat, proof, question-decline, PR-settle, Linear agent, dictation, Focus, and watchdog fixes (#1540, #1542, #1543, #1545, #1550, #1551, #1552, #1553).
+
+### iOS
+
+- TestFlight build with the latest mobile changes.
+
+## [1.2.96] - 2026-10-08
+
+### Desktop
+
+- Activity overhaul: one four-state model, short pushes, one Live Activity, desktop Activity panel, `ade notify` (#1524, #1526).
+- Native Linear/GitHub issue viewer; move chats between machines from anywhere (#1528, #1509).
+- Turn fold, background-question, utility-model, pasted-file, and stacked-PR fixes (#1530, #1531, #1535).
+- `ade projects` uses the machine brain (#1532).
+- Windows updates survive a reopen; brain starts over Remote Desktop (#1516, #1534).
+
+### iOS
+
+- Four activity states, four-tile Live Activity, push taps that land (#1525).
+
+## [1.2.95] - 2026-10-07
+
+### Desktop
+
+- Computer-use action rows, `ade browser attach`, one floating preview; ADE browser without a token gate (#1514, #1523, #1527).
+- Claude Haiku 5.5, provider SDK bumps, ACP tested-version checks, PR-branch automations (#1513, #1521).
+- Parked subagents keep lanes Working; full-conversation session import (#1510, #1506).
+- Parakeet Ultra dictation on transcribe.cpp (#1522).
+- Update checks fall back to Node and report failures (#1507, #1508).
+- Cloudflare relay D1 reads and writes cut sharply (#1504, #1511).
+
+## [1.2.94] - 2026-10-07
+
+### Desktop
+
+- Project tabs stay on this computer's checkout; GitHub and Linear settings for every machine (#1500).
+- Updates, Repair and Reset actually bring ADE back (#1501).
+- iOS: stable fleet links, honest connect, remote chat models (#1502).
+
+## [1.2.93] - 2026-10-06
+
+### Desktop
+
+- Webhook automations: any service can start an agent; secrets from chat (#1498).
+- Work Focus, the Focus grid, and stall detection for every provider (#1494, #1496).
+- Visual refresh: home dashboard, picture backgrounds, redesigned Settings (#1497).
+- Account moves keep the real Claude thread (#1490).
+- Mac Desktop input without moving the user's pointer; unstaged-change moves on pinned lanes (#1493, #1492).
+
+## [1.2.92] - 2026-10-06
+
+### Desktop
+
+- Multi-machine connect, disconnect, switch, and send do what you tapped (#1484).
+- Remote viewers see agent-opened PRs; remote Update & restart reports whether it landed (#1489, #1487).
+- Interactive scenes: live in scrollback, agent self-check, live ADE data (#1485).
+- Imported chats resume on any provider account (#1482).
+- Lanes outside .ade/worktrees, and default-branch auto-pull in the brain (#1481, #1486, #1479).
+- The brain starts when launchd leaves it pending (#1488).
+- Windows performance round 2 and spawn freeze fixes (#1480, #1483).
+
+## [1.2.91] - 2026-10-05
+
+### Desktop
+
+- Private Windows screens with saved sign-in, and Windows Desktop follow-ups (#1415, #1467).
+- One Mac Desktop preview, Reset ADE in Settings, Settings without a project, and recordings that never wedge (#1470).
+- The brain no longer runs out of memory under load; lower idle and per-turn CPU (#1469).
+- ACP providers with any CLI version, harness-route composer sends, forked Codex chats, Cursor approvals (#1468, #1461, #1462, #1464).
+- Work and Lanes multi-select, and the chat thread scrolls behind the composer (#1465, #1466).
+- Windows brain freezes and the false driver crash loop fixed (#1473).
+- Isolated ADE browser tabs, remote proof tiles, and scene still fixes (#1474).
+- Every light theme is readable (#1475).
+- Merging a PR whose head moved shows what landed and merges again in one click (#1476).
+- Right-click a chat link to copy it or open it anywhere (#1477).
+- Upgrades: Claude Agent SDK 0.3.289, Codex 0.160.0, Cursor SDK 1.0.35, OpenCode 2.0.23 (#1460, #1462, #1464, #1463).
+
+### iOS
+
+- Mac Desktop viewer and Work tools updates (#1470), in TestFlight as 1.1.10 build 87.
+
 ## [1.2.90] - 2026-10-05
 
 ### Desktop
@@ -2320,7 +2583,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.90...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.110...HEAD
+[1.2.110]: https://github.com/arul28/ADE/compare/v1.2.109...v1.2.110
+[1.2.109]: https://github.com/arul28/ADE/compare/v1.2.108...v1.2.109
+[1.2.108]: https://github.com/arul28/ADE/compare/v1.2.107...v1.2.108
+[1.2.107]: https://github.com/arul28/ADE/compare/v1.2.106...v1.2.107
+[1.2.106]: https://github.com/arul28/ADE/compare/v1.2.105...v1.2.106
+[1.2.105]: https://github.com/arul28/ADE/compare/v1.2.104...v1.2.105
+[1.2.104]: https://github.com/arul28/ADE/compare/v1.2.103...v1.2.104
+[1.2.103]: https://github.com/arul28/ADE/compare/v1.2.102...v1.2.103
+[1.2.102]: https://github.com/arul28/ADE/compare/v1.2.101...v1.2.102
+[1.2.101]: https://github.com/arul28/ADE/compare/v1.2.100...v1.2.101
+[1.2.100]: https://github.com/arul28/ADE/compare/v1.2.99...v1.2.100
+[1.2.99]: https://github.com/arul28/ADE/compare/v1.2.98...v1.2.99
+[1.2.98]: https://github.com/arul28/ADE/compare/v1.2.97...v1.2.98
+[1.2.97]: https://github.com/arul28/ADE/compare/v1.2.96...v1.2.97
+[1.2.96]: https://github.com/arul28/ADE/compare/v1.2.95...v1.2.96
+[1.2.95]: https://github.com/arul28/ADE/compare/v1.2.94...v1.2.95
+[1.2.94]: https://github.com/arul28/ADE/compare/v1.2.93...v1.2.94
+[1.2.93]: https://github.com/arul28/ADE/compare/v1.2.92...v1.2.93
+[1.2.92]: https://github.com/arul28/ADE/compare/v1.2.91...v1.2.92
+[1.2.91]: https://github.com/arul28/ADE/compare/v1.2.90...v1.2.91
 [1.2.90]: https://github.com/arul28/ADE/compare/v1.2.89...v1.2.90
 [1.2.89]: https://github.com/arul28/ADE/compare/v1.2.88...v1.2.89
 [1.2.88]: https://github.com/arul28/ADE/compare/v1.2.87...v1.2.88

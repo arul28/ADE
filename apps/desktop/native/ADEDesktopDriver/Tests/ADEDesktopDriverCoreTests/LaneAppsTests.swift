@@ -79,12 +79,46 @@ final class LaneAppsTests: XCTestCase {
     }
 
     func testNotReadyRetriesAreCappedAndLoggedOnce() {
+        // A window of an app the user started gives up after the quick tries:
+        // a restored window that never publishes an element must not cost a
+        // readiness wait on every sweep.
+        let tracker = NewWindowTracker(maxNotReadyAttempts: 3)
+        tracker.watch(pid: 20, laneId: "lane", launched: false, existing: [])
+        XCTAssertEqual(tracker.noteNotReady(pid: 20, windowId: 7), .retry(isFirst: true))
+        XCTAssertEqual(tracker.noteNotReady(pid: 20, windowId: 7), .retry(isFirst: false))
+        XCTAssertEqual(tracker.noteNotReady(pid: 20, windowId: 7), .giveUp)
+        XCTAssertEqual(tracker.candidates(pid: 20, current: [7], unowned: [7]), [])
+    }
+
+    /// A window of an app the LANE launched keeps being retried, more and more
+    /// slowly, for minutes: giving up leaves it wherever macOS put it, which
+    /// for a launched app is the user's own screen (Ableton publishes its
+    /// window seconds before its accessibility element).
+    func testALaunchedAppsWindowIsRetriedOnABackedOffScheduleBeforeGivingUp() {
         let tracker = NewWindowTracker(maxNotReadyAttempts: 3)
         tracker.watch(pid: 10, laneId: "lane", launched: true, existing: [])
-        XCTAssertEqual(tracker.noteNotReady(pid: 10, windowId: 7), .retry(isFirst: true))
-        XCTAssertEqual(tracker.noteNotReady(pid: 10, windowId: 7), .retry(isFirst: false))
-        XCTAssertEqual(tracker.noteNotReady(pid: 10, windowId: 7), .giveUp)
-        XCTAssertEqual(tracker.candidates(pid: 10, current: [7], unowned: [7]), [])
+        var attemptSweeps: [Int] = []
+        var decisions: [NewWindowTracker.NotReadyDecision] = []
+        for sweep in 1...400 {
+            guard tracker.candidates(pid: 10, current: [7], unowned: [7]) == [7] else { continue }
+            attemptSweeps.append(sweep)
+            let decision = tracker.noteNotReady(pid: 10, windowId: 7)
+            decisions.append(decision)
+            if decision == .giveUp { break }
+        }
+        XCTAssertEqual(Array(decisions.prefix(3)), [.retry(isFirst: true), .retry(isFirst: false), .retryLater(isFirst: true)])
+        XCTAssertEqual(decisions.last, .giveUp)
+        // Two quick tries, then gaps that grow and hold at ten sweeps.
+        let gaps = zip(attemptSweeps.dropFirst(), attemptSweeps).map { $0 - $1 }
+        XCTAssertEqual(Array(gaps.prefix(7)), [1, 1, 2, 4, 8, 10, 10])
+        // About three minutes of one-second sweeps, never forever.
+        XCTAssertGreaterThan(attemptSweeps.last ?? 0, 150)
+        XCTAssertLessThan(attemptSweeps.last ?? 0, 400)
+        // A park ends the schedule at once.
+        tracker.watch(pid: 11, laneId: "lane", launched: true, existing: [])
+        for _ in 0..<4 { _ = tracker.noteNotReady(pid: 11, windowId: 8) }
+        tracker.noteParked(pid: 11, windowId: 8)
+        XCTAssertEqual(tracker.candidates(pid: 11, current: [8], unowned: [8]), [])
     }
 
     func testAClaimedAppKeepsItsExistingWindowsAndLendsOnlyNewOnesAsClaimed() {

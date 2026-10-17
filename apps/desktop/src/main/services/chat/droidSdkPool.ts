@@ -1,3 +1,4 @@
+import { captureWorkerFailure } from "../../sentry/workerFailures";
 import { fork, type ChildProcess, type ForkOptions } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
@@ -302,7 +303,11 @@ async function createDroidSdkConnection(args: Parameters<typeof acquireDroidSdkC
             : { selectedOption: "cancel", comment: "ADE is not ready to approve Droid tool calls." };
         } catch (error) {
           args.logger?.error("agent_chat.droid_sdk_permission_error", {
-            error: error instanceof Error ? error.message : String(error),
+            // The Error itself, so `logBridge` lifts it into the Sentry event
+            // and the issue groups by the real failure; `errorText` keeps the
+            // sentence on disk, which `JSON.stringify` writes an Error without.
+            error,
+            errorText: error instanceof Error ? error.message : String(error),
           });
           decision = { selectedOption: "cancel", comment: "Droid permission evaluation failed." };
         }
@@ -327,7 +332,11 @@ async function createDroidSdkConnection(args: Parameters<typeof acquireDroidSdkC
             : { cancelled: true, answers: [] };
         } catch (error) {
           args.logger?.error("agent_chat.droid_sdk_ask_user_error", {
-            error: error instanceof Error ? error.message : String(error),
+            // The Error itself, so `logBridge` lifts it into the Sentry event
+            // and the issue groups by the real failure; `errorText` keeps the
+            // sentence on disk, which `JSON.stringify` writes an Error without.
+            error,
+            errorText: error instanceof Error ? error.message : String(error),
           });
           response = { cancelled: true, answers: [] };
         }
@@ -349,6 +358,7 @@ async function createDroidSdkConnection(args: Parameters<typeof acquireDroidSdkC
         message: message.message,
         detail: message.detail,
       });
+      captureWorkerFailure("droid", message);
     }
   });
 

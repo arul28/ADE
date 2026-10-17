@@ -517,13 +517,13 @@ final class WorkUsageLimitResumeTests: XCTestCase {
       now: now
     )
     XCTAssertEqual(armedOverdue?.label, "Resuming")
-    // Nothing is scheduled in these two, so the row keeps its real phase.
-    XCTAssertNil(
-      workUsageLimitRowStatus(WorkUsageLimitResumeModel(state: .optedOut, provider: "claude"), now: now)
-    )
-    XCTAssertNil(
-      workUsageLimitRowStatus(WorkUsageLimitResumeModel(state: .noReset, provider: "claude"), now: now)
-    )
+    // Nothing will restart these two, but the chat is stopped on a limit, not
+    // broken: the row says so in amber instead of falling back to Failed.
+    for state in [AgentChatUsageLimitResumeState.optedOut, .noReset] {
+      let status = workUsageLimitRowStatus(WorkUsageLimitResumeModel(state: state, provider: "claude"), now: now)
+      XCTAssertEqual(status?.label, "Usage limit")
+      XCTAssertEqual(status?.tone, .amber)
+    }
     XCTAssertNil(workUsageLimitRowStatus(nil, now: now))
   }
 

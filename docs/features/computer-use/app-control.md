@@ -393,7 +393,14 @@ resolve it on another machine) and the `terminal` domain (`list`, `read`,
    `--disable-backgrounding-occluded-windows` and
    `--disable-renderer-backgrounding`, so a covered window keeps painting and
    a screenshot matches the DOM. ADE then:
-   - substitutes a literal `{ADE_APP_CONTROL_DEBUG_FLAGS}` in the command; or
+   - substitutes a literal `{ADE_APP_CONTROL_DEBUG_FLAGS}` in the command, and
+     outside Windows also a `$ADE_APP_CONTROL_DEBUG_FLAGS` or
+     `${ADE_APP_CONTROL_DEBUG_FLAGS}` reference, quoted or not (dropping a
+     quote pair only when it wraps the variable alone). The launch terminal is
+     the user's shell, and zsh does not word-split an unquoted parameter, so an
+     installed app launched as `…/MacOS/Slack $ADE_APP_CONTROL_DEBUG_FLAGS`
+     received one argument, bound a different debug port, and never attached;
+     or
    - for a package script (`npm`/`pnpm`/`yarn`/`bun run …`), resolves the
      script and adds the debug flags; or
    - for `electron` / `npx electron`, appends the flags; or

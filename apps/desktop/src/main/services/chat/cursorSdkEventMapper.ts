@@ -222,6 +222,8 @@ function extractTextContent(message: unknown): string[] {
 export type CursorSdkEventMapperState = {
   /** The turn whose text-signalled compaction is open, or null. */
   textCompactionTurnId: string | null;
+  lastContextTokens?: number;
+  contextWindow?: number;
 };
 
 export function createCursorSdkEventMapperState(): CursorSdkEventMapperState {
@@ -673,6 +675,10 @@ export function mapCursorSdkMessageToChatEvents(
         runtime,
         ...(readString(record.run_id) ? { itemId: readString(record.run_id) ?? undefined } : {}),
       });
+      if (tokens?.type === "tokens") {
+        const used = (tokens.inputTokens ?? 0) + (tokens.cacheReadTokens ?? 0) + (tokens.cacheWriteTokens ?? 0);
+        if (used > 0) meta.state.lastContextTokens = used;
+      }
       return tokens ? [tokens] : [];
     }
     // ADE emits its own `user_message` row on every send path, local and cloud,

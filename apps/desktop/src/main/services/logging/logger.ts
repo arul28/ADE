@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { forwardLogToSentry } from "../../../shared/sentry/logBridge";
 
 type LogLevel = "debug" | "info" | "warn" | "error";
 
@@ -15,6 +16,7 @@ const ROTATION_CHECK_WRITE_INTERVAL = 1000;
 const ROTATION_CHECK_INTERVAL_MS = 60_000;
 const FLUSH_INTERVAL_MS = 500;
 const FLUSH_BATCH_SIZE = 500;
+const IDLE_CLOSE_MS = 30_000;
 
 export type FileLoggerOptions = {
   maxFileBytes?: number;
@@ -22,6 +24,12 @@ export type FileLoggerOptions = {
   rotationCheckIntervalMs?: number;
   flushIntervalMs?: number;
   flushBatchSize?: number;
+  /**
+   * How long the file stays open after the last write. A logger whose project
+   * closed (or moved to another drive) would otherwise hold its file open
+   * until the process exits; the next write reopens it.
+   */
+  idleCloseMs?: number;
 };
 
 export type Logger = {
@@ -58,6 +66,30 @@ const CONSOLE_FN_BY_LEVEL: Record<LogLevel, typeof console.log> = {
   info: console.log,
 };
 
+/**
+ * `JSON.stringify` writes an `Error` as `{}`, which dropped the message and
+ * stack from every line that carried one. The replacer sees each value in the
+ * meta tree, nested `cause` included, so each Error is written as its name,
+ * message, stack and code. The seen-set stops a `cause` chain that loops.
+ * Sentry gets the Error itself from `forwardLogToSentry`, not this copy.
+ */
+function errorAwareReplacer(): (key: string, value: unknown) => unknown {
+  const seen = new WeakSet<object>();
+  return (_key, value) => {
+    if (!(value instanceof Error)) return value;
+    if (seen.has(value)) return "[Circular]";
+    seen.add(value);
+    const { code, cause } = value as { code?: unknown; cause?: unknown };
+    return {
+      name: value.name,
+      message: value.message,
+      stack: value.stack,
+      ...(code !== undefined ? { code } : {}),
+      ...(cause !== undefined ? { cause } : {}),
+    };
+  };
+}
+
 function createConsoleMirror(level: LogLevel, event: string, meta?: Record<string, unknown>) {
   if (!process.env.VITE_DEV_SERVER_URL) return;
   if (process.env.ADE_STDIO_TRANSPORT === "1") return;
@@ -79,6 +111,7 @@ export function createFileLogger(
     ?? ROTATION_CHECK_INTERVAL_MS;
   const flushIntervalMs = options.flushIntervalMs ?? FLUSH_INTERVAL_MS;
   const flushBatchSize = options.flushBatchSize ?? FLUSH_BATCH_SIZE;
+  const idleCloseMs = options.idleCloseMs ?? IDLE_CLOSE_MS;
 
   let writesSinceRotateCheck = 0;
   let lastRotateCheckAt = Date.now();
@@ -92,6 +125,7 @@ export function createFileLogger(
   let flushRequested = false;
   let logDirReady = false;
   let logStream: fs.WriteStream | null = null;
+  let idleCloseTimer: NodeJS.Timeout | null = null;
 
   const shouldCheckRotation = (): boolean => {
     if (writesSinceRotateCheck >= rotationCheckWriteInterval) return true;
@@ -219,8 +253,20 @@ export function createFileLogger(
       if (flushRequested || queuedLines.length > 0) {
         flushRequested = false;
         void flush();
+      } else {
+        armIdleClose();
       }
     }
+  };
+
+  const armIdleClose = () => {
+    if (idleCloseTimer) clearTimeout(idleCloseTimer);
+    idleCloseTimer = setTimeout(() => {
+      idleCloseTimer = null;
+      if (flushInProgress || queuedLines.length > 0) return;
+      void closeLogStream();
+    }, idleCloseMs);
+    idleCloseTimer.unref?.();
   };
 
   const scheduleFlush = () => {
@@ -262,6 +308,9 @@ export function createFileLogger(
   };
 
   const writeLine = (level: LogLevel, event: string, meta?: Record<string, unknown>) => {
+    // Ahead of the level filter: ADE_LOG_LEVEL=error must not hide warnings
+    // from error tracking. Info and debug never leave the machine.
+    forwardLogToSentry(level, event, meta);
     if (LOG_LEVELS[level] < minLevel) return;
 
     const line = JSON.stringify({
@@ -269,9 +318,13 @@ export function createFileLogger(
       level,
       event,
       ...(meta ? { meta } : {})
-    });
+    }, errorAwareReplacer());
 
     const payload = `${line}\n`;
+    if (idleCloseTimer) {
+      clearTimeout(idleCloseTimer);
+      idleCloseTimer = null;
+    }
     queuedLines.push(payload);
     writesSinceRotateCheck += 1;
     scheduleFlush();

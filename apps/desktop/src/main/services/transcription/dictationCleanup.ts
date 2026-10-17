@@ -9,8 +9,9 @@ import { resolveBundledResource } from "./bundledResources";
  *
  * Schema mirrors the iOS bundle copy at `apps/ios/ADE/Resources/VoiceGlossary.json`:
  *   - `contextualTerms`: recognizer biasing hints (unused by the desktop
- *     deterministic pass; Whisper has no contextual-strings API, so they only
- *     matter on iOS — kept here so both platforms read one schema).
+ *     deterministic pass; the desktop Parakeet model has no vocabulary-biasing
+ *     support, so they only matter on iOS — kept here so both platforms read
+ *     one schema).
  *   - `corrections`: misheard (lowercased) -> canonical replacement, applied
  *     case-insensitively on whole-phrase/word boundaries.
  *   - `fillers`: removed only as standalone tokens/phrases.
@@ -57,6 +58,28 @@ function wholePhraseRegExp(phrase: string): RegExp {
 }
 
 /**
+ * The run of fillers opening the transcript, each with the punctuation attached
+ * to it ("Um. Uh, rebase" -> "rebase"). Only punctuation directly after a
+ * filler goes, so a transcript that itself starts with ".env" keeps it.
+ * Longest filler first, so "you know" wins over a shorter prefix.
+ */
+function openingFillersRegExp(fillers: string[]): RegExp | null {
+  const alternatives = fillers
+    .map((filler) => filler.trim())
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length)
+    .map(escapeRegExp);
+  if (alternatives.length === 0) return null;
+  return new RegExp(`^(?:(?:${alternatives.join("|")})(?=[^\\p{L}\\p{N}]|$)[,.;:!?]*\\s*)+`, "iu");
+}
+
+/** Like {@link wholePhraseRegExp}, but also consumes a comma right after the filler. */
+function fillerRegExp(phrase: string): RegExp {
+  const escaped = escapeRegExp(phrase.trim());
+  return new RegExp(`(^|[^\\p{L}\\p{N}])(${escaped})(?:\\s*,)?(?=[^\\p{L}\\p{N}]|$)`, "giu");
+}
+
+/**
  * Prepare a raw glossary for repeated use: corrections sorted longest-first so
  * the longest matching phrase always wins.
  */
@@ -91,9 +114,12 @@ export function cleanTranscript(raw: string, glossary: PreparedGlossary): string
   let text = (raw ?? "").trim();
   if (!text) return "";
 
-  // (b) Remove fillers as standalone tokens/phrases.
+  // (b) Remove fillers as standalone tokens/phrases, together with the comma a
+  // punctuating model puts after them ("Um, rebase" -> "rebase").
+  const opening = openingFillersRegExp(glossary.fillers);
+  if (opening) text = text.replace(opening, "");
   for (const filler of glossary.fillers) {
-    const matcher = wholePhraseRegExp(filler);
+    const matcher = fillerRegExp(filler);
     // Replace the matched phrase but keep the leading boundary char so adjacent
     // words don't fuse (e.g. "um so" -> " so", later collapsed).
     text = text.replace(matcher, (_full, lead: string) => lead);

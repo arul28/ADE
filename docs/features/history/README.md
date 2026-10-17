@@ -388,7 +388,7 @@ Defined in `apps/desktop/src/shared/ipc.ts`, handled in
 
 | Channel | Args | Notes |
 |---|---|---|
-| `ade.git.listRecentCommits` | `{ laneId, limit?, skip?, scope? }` | Limit is clamped to `[1, 500]` per page; `skip` pages older history with no overall cap. `scope: "lanes"` walks HEAD, the base and every active lane branch in `--date-order`, and marks commits on no remote as unpushed. When `scope` or `skip` is given, rows also carry `authorEmail` and `coAuthors`. The Commits view pages 100 at a time. |
+| `ade.git.listRecentCommits` | `{ laneId, limit?, skip?, scope?, includeCoAuthors? }` | Limit is clamped to `[1, 500]` per page; `skip` pages older history with no overall cap. `scope: "lanes"` walks HEAD, the base and every active lane branch in `--date-order`, and marks commits on no remote as unpushed. When `scope` or `skip` is given, rows also carry `authorEmail` and `coAuthors`; `includeCoAuthors: true` adds them to the plain lane read without changing its `pushed` semantics (the lane overview uses it to attribute agent commits). The Commits view pages 100 at a time. |
 | `ade.git.listBranches` | `{ laneId }` | Used to overlay branch refs on commit rows. |
 | `ade.git.listCommitFiles` | `{ laneId, commitSha }` | Drives the detail panel file list and the "Copy patch" action (capped at 50 files). |
 | `ade.git.getCommitMessage` | `{ laneId, commitSha }` | Full commit message body (lazy). |

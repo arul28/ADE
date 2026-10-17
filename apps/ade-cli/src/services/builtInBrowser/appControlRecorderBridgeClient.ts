@@ -1,20 +1,18 @@
-import fs from "node:fs";
-import { JsonRpcClient, JsonRpcResponseError } from "../../tuiClient/jsonRpcClient";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { AppControlScreencastFrame } from "../../../../desktop/src/shared/types/appControl";
 import type {
   AppControlRecordingFinish,
   AppControlScreencastRecorderBackend,
 } from "../../../../desktop/src/main/services/appControl/appControlRecording";
-import { BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM } from "./desktopBridgeMethods";
+import { createDesktopBridgeConnection } from "./desktopBridgeConnection";
 
 /**
  * The App Control screencast recorder (Windows and Linux) as the runtime
  * daemon reaches it.
  *
  * The recorder writes the `.aderaw` capture that the desktop's Chromium demo
- * engine renders, so it lives in the desktop with that engine. The daemon talks to it over the same desktop bridge socket and with the same
- * bridge token as the built-in browser. Methods are
+ * engine renders, so it lives in the desktop with that engine. The daemon talks to it over the same desktop bridge socket as the built-in
+ * browser. Methods are
  * `app_control_recorder.<start|pushFrame|stop|cancel>`.
  *
  * Frames: at most one `pushFrame` is in flight per recording. A frame that
@@ -30,7 +28,6 @@ export function isAppControlRecorderBridgeMethod(name: string): name is AppContr
   return (APP_CONTROL_RECORDER_BRIDGE_METHODS as readonly string[]).includes(name);
 }
 
-const CONNECT_TIMEOUT_MS = 3_000;
 const CALL_TIMEOUT_MS = 30_000;
 /** Stop flushes the capture to disk. */
 const STOP_TIMEOUT_MS = 60_000;
@@ -39,52 +36,24 @@ const DISPOSE_DRAIN_MS = 2_000;
 
 export function createAppControlRecorderBridgeClient(args: {
   socketPath: string;
-  getAuthToken: () => string | null;
   logger: Logger;
 }): AppControlScreencastRecorderBackend & { dispose(): void } {
-  const { socketPath, logger } = args;
-  const isNamedPipe = socketPath.startsWith("\\\\");
-  let client: JsonRpcClient | null = null;
-  let connecting: Promise<JsonRpcClient> | null = null;
+  const { logger } = args;
+  const NO_DESKTOP = "App Control recording needs the ADE desktop app on this machine, and none is attached.";
+  const DISPOSED = "The App Control recorder bridge was disposed.";
+  const connection = createDesktopBridgeConnection({
+    socketPath: args.socketPath,
+    unavailableMessage: NO_DESKTOP,
+    closedMessage: DISPOSED,
+  });
   let disposed = false;
   const framesInFlight = new Set<string>();
   const pendingFrames = new Map<string, AppControlScreencastFrame>();
   /** Calls not yet answered, so dispose can let a shutdown's cancels land first. */
   const inFlight = new Set<Promise<unknown>>();
 
-  const ensureClient = async (): Promise<JsonRpcClient> => {
-    if (client) return client;
-    if (disposed) throw new Error("The App Control recorder bridge was disposed.");
-    if (!connecting) {
-      connecting = (async () => {
-        if (!isNamedPipe && !fs.existsSync(socketPath)) {
-          throw new Error("App Control recording needs the ADE desktop app on this machine, and none is attached.");
-        }
-        let timer: ReturnType<typeof setTimeout> | null = null;
-        try {
-          const next = await Promise.race([
-            JsonRpcClient.connect(socketPath),
-            new Promise<never>((_, reject) => {
-              timer = setTimeout(() => reject(new Error("Timed out connecting to the ADE desktop app.")), CONNECT_TIMEOUT_MS);
-            }),
-          ]);
-          next.onClose(() => {
-            if (client === next) client = null;
-          });
-          client = next;
-          return next;
-        } finally {
-          if (timer) clearTimeout(timer);
-        }
-      })().finally(() => {
-        connecting = null;
-      });
-    }
-    return await connecting;
-  };
-
   const call = <T,>(method: AppControlRecorderBridgeMethod, params: Record<string, unknown>, timeoutMs = CALL_TIMEOUT_MS): Promise<T> => {
-    if (disposed) return Promise.reject(new Error("The App Control recorder bridge was disposed."));
+    if (disposed) return Promise.reject(new Error(DISPOSED));
     const run = callNow<T>(method, params, timeoutMs);
     inFlight.add(run);
     const forget = (): void => {
@@ -94,27 +63,12 @@ export function createAppControlRecorderBridgeClient(args: {
     return run;
   };
 
-  const callNow = async <T,>(method: AppControlRecorderBridgeMethod, params: Record<string, unknown>, timeoutMs: number): Promise<T> => {
-    const token = args.getAuthToken()?.trim();
-    if (!token) throw new Error("App Control recording needs the ADE desktop app on this machine, and none is attached.");
-    const c = await ensureClient();
-    try {
-      return await c.request<T>(
-        `${APP_CONTROL_RECORDER_BRIDGE_PREFIX}${method}`,
-        { ...params, [BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM]: token },
-        { timeoutMs },
-      );
-    } catch (error) {
-      // The desktop cancels every recording a connection started when that
-      // connection closes, so an error answer (a stop that captured nothing)
-      // must not drop the socket other lanes' recordings run on.
-      if (client === c && !(error instanceof JsonRpcResponseError)) {
-        client = null;
-        try { c.close(); } catch { /* ignore */ }
-      }
-      throw error;
-    }
-  };
+  // The desktop cancels every recording a connection started when that
+  // connection closes, so an error answer (a stop that captured nothing) must
+  // not drop the socket other lanes' recordings run on: the shared connection
+  // drops it only on a transport failure.
+  const callNow = <T,>(method: AppControlRecorderBridgeMethod, params: Record<string, unknown>, timeoutMs: number): Promise<T> =>
+    connection.request<T>(`${APP_CONTROL_RECORDER_BRIDGE_PREFIX}${method}`, params, timeoutMs);
 
   const sendFrame = (key: string, frame: AppControlScreencastFrame): void => {
     framesInFlight.add(key);
@@ -161,13 +115,7 @@ export function createAppControlRecorderBridgeClient(args: {
       // Shutdown cancels the running recordings just before this runs; let
       // those calls reach the desktop, then close. The desktop also cancels a
       // closed connection's recordings, so a cut-short drain still cleans up.
-      const close = (): void => {
-        const c = client;
-        client = null;
-        if (c) {
-          try { c.close(); } catch { /* ignore */ }
-        }
-      };
+      const close = (): void => connection.close();
       if (!inFlight.size) {
         close();
         return;

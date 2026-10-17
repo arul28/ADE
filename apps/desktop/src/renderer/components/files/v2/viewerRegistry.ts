@@ -18,7 +18,16 @@ export type ViewerResolveContext = {
 const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "avif"]);
 const AUDIO_EXTS = new Set(["aac", "flac", "m4a", "mp3", "oga", "ogg", "opus", "wav"]);
 const VIDEO_EXTS = new Set(["avi", "m4v", "mkv", "mov", "mp4", "ogv", "webm"]);
-const DOCUMENT_EXTS = new Set(["doc", "docx", "ppt", "pptx", "xls", "xlsx"]);
+/**
+ * Office formats fall into two families, and only one of them is a zip of
+ * XML: `.xlsx`/`.pptx` get real previews, while the legacy OLE2 formats
+ * (`.doc`, `.xls`, `.ppt`) and `.docx` stay on the open-externally card —
+ * routing a legacy `.ppt` at the OOXML parser is how the reference
+ * implementation failed on every one of them.
+ */
+const SPREADSHEET_EXTS = new Set(["xlsx"]);
+const PRESENTATION_EXTS = new Set(["pptx"]);
+const DOCUMENT_EXTS = new Set(["doc", "docx", "ppt", "xls"]);
 
 export function extensionOf(path: string): string {
   const base = path.toLowerCase().split(/[\\/]/).pop() ?? "";
@@ -27,11 +36,13 @@ export function extensionOf(path: string): string {
 
 /**
  * Ordered first-match resolution:
- *   pdf → image → media → csv → documents → largeText(streamed) → html → markdown → binary → code(default).
+ *   pdf → image → media → csv → spreadsheet → presentation → documents →
+ *   largeText(streamed) → html → markdown → binary → code(default).
  *
- * Special file types (pdf/image/csv) win over the large-text streamer because
- * their viewers stream bytes themselves; an oversized plain/markdown/code file
- * falls through to the read-only virtualized largeText viewer.
+ * Special file types (pdf/image/csv/spreadsheet/presentation) win over the
+ * large-text streamer because their viewers stream bytes themselves; an
+ * oversized plain/markdown/code file falls through to the read-only
+ * virtualized largeText viewer.
  */
 export function resolveViewerKind(ctx: ViewerResolveContext): ViewerKind {
   const ext = extensionOf(ctx.path);
@@ -41,6 +52,8 @@ export function resolveViewerKind(ctx: ViewerResolveContext): ViewerKind {
   if (ctx.mimeType?.startsWith("audio/") || AUDIO_EXTS.has(ext)) return "audio";
   if (ctx.mimeType?.startsWith("video/") || VIDEO_EXTS.has(ext)) return "video";
   if (ext === "csv" || ext === "tsv") return "csv";
+  if (SPREADSHEET_EXTS.has(ext)) return "spreadsheet";
+  if (PRESENTATION_EXTS.has(ext)) return "presentation";
   if (DOCUMENT_EXTS.has(ext)) return "document";
   // previewKind === "image" already returned above, so only text/binary remain here.
   if (ctx.isPartial && !ctx.isBinary) return "largeText";

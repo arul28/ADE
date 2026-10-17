@@ -271,10 +271,9 @@ struct ADEUsageLimitsProviderSection: View {
   private var header: some View {
     HStack(spacing: 7) {
       if let assetName = providerAssetName(provider) {
-        Image(assetName)
-          .resizable()
-          .scaledToFit()
-          .frame(width: 16, height: 16)
+        // Tints the one-colour marks (Cursor, Grok, OpenCode…) so they read
+        // in light mode too.
+        ADEProviderMark(assetName: assetName, size: 16)
           .accessibilityHidden(true)
       }
       Text(providerLabel(provider))

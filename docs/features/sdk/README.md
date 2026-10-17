@@ -157,7 +157,7 @@ Added for SDK 0.3 (runtime 1.2.81):
 - `delete`, `archive`, `unarchive` — already in the runtime; the SDK now calls them. The SDK interrupts a running turn first, and `delete` also removes the thread-store record.
 - `updateSession` — `title`, `reasoningEffort`, `fastMode` (the SDK's `thread.update`), and `mcpServers` for personal sessions only. `mcpServers` replaces the caller servers wholesale with the same validation as create (`normalizeCallerMcpServers`, reserved names, 32 cap, provider shape), is refused mid-turn (`invalid_argument: … turn in flight`), recomputes `mcpCapability` / `permissionCapability`, and restarts the provider so the next turn uses the new url and headers. Advertised as `capabilities.personalChats.updateMcpServers: true`.
 - `getEventHistoryPage` — `{ sessionId, beforeSequence }` → `{ events, hasMore }`, behind `thread.historyPage`. Without it only the newest page is available.
-- `send` / `steer` attachments: `AgentChatFileRef` gains `type?: "file" | "image"` (the SDK infers it) and `hydrate?: boolean` (default true; `false` = the runtime never reads the bytes and sends a path hint on every provider). Path rule: relative → resolved in the chat's working directory (the host `cwd`, else the scratch workspace); absolute → inside `projectRoot` (`<home>/personal-chats/state` for a personal chat) or inside that working directory, else the send throws. Size limits: Claude inline image 10 MB and jpeg/png/gif/webp only, else a path hint; Droid, Pi, Cursor and ACP inline text 512 KB, else a hint; Codex copies the whole file to a staging directory with no cap unless `hydrate: false`; `saveTempAttachment` accepts images only, 10 MB.
+- `send` / `steer` attachments: `AgentChatFileRef` gains `type?: "file" | "image"` (the SDK infers it) and `hydrate?: boolean` (default true; `false` = the runtime never reads the bytes and sends a path hint on every provider). Path rule: relative → resolved in the chat's working directory (the host `cwd`, else the scratch workspace); absolute → inside `projectRoot` (`<home>/personal-chats/state` for a personal chat) or inside that working directory, else the send throws. Size limits: inline images (Claude, OpenCode, ACP, Cursor/Pi/Droid) over 3.5 MB or 2000 px are downscaled to 1568 px first (PNG/JPEG; GIF/WebP and anything unfittable become a path hint), and Claude takes jpeg/png/gif/webp only; Droid, Pi, Cursor and ACP inline text 512 KB, else a hint; Codex copies the whole file to a staging directory with no cap unless `hydrate: false`; `saveTempAttachment` accepts images only, 10 MB.
 - `tool_result.resourceLinks?: { uri, name?, title?, mimeType? }[]` — MCP `resource_link` items, on Codex (`mcpToolCall` result content) and Claude (`mcp__` tools only). No other provider sets it.
 
 SDK 0.4.0 supports runtime `>=1.2.82 <2.0.0`. It adds `thread.retry()` and
@@ -514,7 +514,7 @@ the engine never disagree about what a rule means.
 
 #### Codex MCP tool calls
 
-Measured on `@openai/codex` 0.156.1 and again on 0.160.0 with `approvalPolicy: on-request`: Codex
+Measured on `@openai/codex` 0.156.1 and again on 0.162.1 with `approvalPolicy: on-request`: Codex
 sends `mcpServer/elicitation/request` before EVERY MCP tool call, with
 `_meta.codex_approval_kind: "mcp_tool_call"`, an empty schema, and the message
 `Allow the <server> MCP server to run tool "<name>"?`. There is no tool-name
@@ -569,7 +569,7 @@ Two ways out. Answer it with the `approve` action
 `accept_for_session`, `decline`, `cancel`), or call `interrupt()`, which aborts
 the turn without answering. On a Codex MCP tool approval,
 `accept_for_session` sends `_meta.persist: "session"` when Codex offers it
-(0.156.1 through 0.160.0 offer `["session", "always"]`); before 1.2.81 it sent `"always"`,
+(0.156.1 through 0.162.1 offer `["session", "always"]`); before 1.2.81 it sent `"always"`,
 which Codex writes to the user's `config.toml` for every future chat. `"always"`
 is used only when it is the one scope offered (the Computer Use per-app
 prompt). On Claude, `accept_for_session` records the tool in the

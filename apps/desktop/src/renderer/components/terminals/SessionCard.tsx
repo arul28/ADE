@@ -53,8 +53,9 @@ import { GRID_SESSION_DND_MIME } from "../../lib/workGrid";
 import { selectActiveProjectRoot, useAppStore, useRootAppStore } from "../../state/appStore";
 import { useLaneNamePending, useSessionFieldGenerating } from "../../state/sessionMetadataGeneratingStore";
 import { useSessionDelta } from "./useSessionDelta";
+import { pressActivation, type PressUndo } from "../../lib/pressActivation";
 import { cn } from "../ui/cn";
-import { MONO_FONT } from "../lanes/laneDesignTokens";
+import { MONO_FONT, toneText } from "../lanes/laneDesignTokens";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import { LanePrBadge } from "./LanePrBadge";
 import { LaneAppleDeviceMarker } from "../apple/LaneAppleDeviceMarker";
@@ -71,6 +72,7 @@ import {
   type SessionHoverCardRow,
 } from "./SessionHoverCard";
 import { ToolLogo } from "./ToolLogos";
+import { useTurnStallClock } from "../../lib/useTurnStallClock";
 import { HarnessLogo } from "../shared/HarnessLogo";
 import { harnessBodyLabel } from "../../../shared/harnessPresets";
 import {
@@ -86,7 +88,8 @@ import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
 import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
 import { ChatSubagentGlyph, chatSubagentColor } from "../chat/chatSubagentIdentity";
 import { navigateToSpawnedChat } from "../chat/spawnNavigation";
-import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
+import { linearIssueRef } from "../../../shared/issueRefs";
+import { openIssueRef } from "../../lib/issueNavigation";
 import { isSessionSnoozed, sessionWokeMarker, snoozeWakeLabel } from "../../lib/sessionSnooze";
 import { SessionStatusSlot } from "./SessionStatusSlot";
 import { useChatLaunchQueuedState, useChatLaunchRowState, useChatLaunchStatusLine } from "../../state/chatLaunchStore";
@@ -166,6 +169,14 @@ import {
    18% alpha, so it reads as floating over the row. When the list is short
    enough that no scrollbar is reserved, the surplus is clipped by the scroll
    container's own `overflow-x: hidden`, so the row is flush either way. */
+
+/** See `SessionCard.focusMark`. */
+export type WorkFocusCardMark = {
+  page: number;
+  onScreen: boolean;
+  unseen: boolean;
+};
+
 /** Wrapper: declare the two bleeds, then spend them as margin + width. */
 export const SESSION_ROW_BLEED_CLASS = cn(
   "[--session-row-scrollbar:6px]",
@@ -266,10 +277,8 @@ function LinkifiedPreviewLine({
       if (prMatch) {
         onOpenPr(Number.parseInt(prMatch[1]!, 10));
       } else if (linearIssue) {
-        requestLinearIssueQuickView({
-          issueIdentifier: linearIssue,
-          source: "manual",
-        });
+        const ref = linearIssueRef(linearIssue);
+        if (ref) openIssueRef({ ref, source: "session-card" });
       }
     };
     return (
@@ -462,9 +471,11 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
   isSelected,
   isMultiSelected,
   onSelect,
+  selectOnPress = false,
   onContextMenu,
   compact = false,
   gridBadge = null,
+  focusMark = null,
   liveChildrenCount = 0,
   parentSessionTitle = null,
   disabledReason = null,
@@ -487,16 +498,30 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
   suppressMachineChip = false,
   suppressStatusLabel = false,
   nestedSubagent = false,
+  subagentBusy = false,
 }: {
   session: TerminalSessionSummary;
   lane: LaneSummary | null;
   isSelected: boolean;
   isMultiSelected?: boolean;
-  onSelect: (id: string, event: React.MouseEvent) => void;
+  /**
+   * May return how to go back to what was open before. A row opens on the
+   * press (`selectOnPress`), and the same press can start a drag of the row;
+   * the drag then puts the previous chat back.
+   */
+  onSelect: (id: string, event: React.MouseEvent) => void | PressUndo;
+  /** Open on the press, not on the release. Off where a press has more to undo. */
+  selectOnPress?: boolean;
   onContextMenu: (e: React.MouseEvent) => void;
   compact?: boolean;
   /** Grid membership indicator: "active" = in the currently-viewed grid, "inactive" = in another grid, null = not gridded. */
   gridBadge?: "active" | "inactive" | null;
+  /**
+   * Focus grid with the sidebar open: the sidebar is the grid's roster. A chat
+   * on screen is lit like the selected row; one on another page names that
+   * page; one that arrived while the user was elsewhere carries a dot.
+   */
+  focusMark?: WorkFocusCardMark | null;
   /** Count of this session's still-running spawned children (surfaced in the tooltip). */
   liveChildrenCount?: number;
   /** Title of the parent chat that spawned this session (drives the lineage glyph tooltip). */
@@ -592,6 +617,8 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
    * glyph (word only for Needs you / Failed). Distinct from a compact shell.
    */
   nestedSubagent?: boolean;
+  /** A nested subagent still keeps this chat busy, so a finished row reads Waiting. */
+  subagentBusy?: boolean;
 }) {
   const navigate = useNavigate();
   // Hover INTENT, not hover: a one-second rest on the row, cancelled by any
@@ -600,6 +627,11 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
   // The row id lets the hook re-find this row if React swaps the wrapper node
   // during the one-second wait — see `resolveTriggerElement`.
   const hoverCard = useSessionHoverCard({ rowId: session.id });
+  // A grid tile takes the keyboard focus when it becomes the active one. On a
+  // press that would happen before the browser moves the focus to this row,
+  // and the row would take it back. A grid member waits for the click, which
+  // comes after the focus has moved.
+  const opensOnPress = selectOnPress && gridBadge == null;
   const sessionAttentionInput = canonicalInputFromSummary(session);
   const canonicalUiState = sessionCanonicalUiState(sessionAttentionInput);
   const canonicalPhase = canonicalUiState.phase;
@@ -663,11 +695,16 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
   // where the row is filed and what it says can never disagree.
   const snoozed = isSessionSnoozed(session);
   const wokeMarker = sessionWokeMarker(session);
+  // A live turn can go quiet, and a scheduled wake can come due, with no new
+  // data at all, so the card re-renders exactly when this session crosses the
+  // stall bar or its wake turns overdue.
+  const statusClockSessions = React.useMemo(() => [session], [session]);
+  const statusClockMs = useTurnStallClock(statusClockSessions);
   const presentation = sessionStatusDisplay(sessionAttentionInput, {
     snoozed,
     woke: !snoozed && Boolean(wokeMarker),
     snoozeWakeLabel: snoozed ? snoozeWakeLabel(session.snoozedUntil) : null,
-  });
+  }, { subagentBusy });
 
   // Pulse once when an already-mounted row transitions into the loud Needs-you
   // state. First render stays calm, and motion-safe suppresses it for users who
@@ -731,6 +768,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
     provider: session.toolType === "claude-chat" ? "claude" : null,
     status: session.runtimeState === "idle" ? "idle" : "active",
     idleSinceAt: session.chatIdleSinceAt,
+    cache: session.chatPromptCache,
     awaitingInput: session.runtimeState === "waiting-input",
   });
   const hasDeltaChips = Boolean(delta && (delta.insertions > 0 || delta.deletions > 0));
@@ -849,7 +887,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
       data-machine-marker-mode="glyph"
       role="img"
       aria-label={`On ${machineMarker.machineName}, offline`}
-      className="inline-flex shrink-0 items-center rounded-full border border-white/[0.08] bg-white/[0.03] px-1 py-px leading-none"
+      className="inline-flex shrink-0 items-center rounded-full border border-fg/[0.08] bg-fg/[0.03] px-1 py-px leading-none"
     >
       <DesktopTower size={10} weight="duotone" className="shrink-0 text-muted-fg/45" aria-hidden />
     </span>
@@ -869,6 +907,21 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
   ) : null;
 
   const whereParts: React.ReactNode[] = [];
+  if (focusMark && !focusMark.onScreen) {
+    whereParts.push(
+      <span
+        key="focus-page"
+        className="relative inline-flex shrink-0 items-center rounded px-1 text-[9.5px] font-semibold leading-[14px] text-muted-fg/80 ring-1 ring-inset ring-fg/[0.12]"
+        title={`On page ${focusMark.page + 1} of the Focus grid`}
+        data-testid="session-card-focus-page"
+      >
+        Page {focusMark.page + 1}
+        {focusMark.unseen ? (
+          <span aria-hidden className="absolute -right-1 -top-1 h-1.5 w-1.5 rounded-full bg-[var(--color-accent)]" />
+        ) : null}
+      </span>,
+    );
+  }
   if (session.pinned) {
     whereParts.push(
       <PushPin
@@ -892,7 +945,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
         data-session-lane-identity={lane.name}
         className="inline-flex min-w-0 shrink items-center gap-1.5 text-[12px] font-semibold"
         // Inline style, not a class: the accent is per-lane user data.
-        style={{ color: laneAccent ?? undefined }}
+        style={{ color: laneAccent ? toneText(laneAccent) : undefined }}
       >
         <span
           aria-hidden
@@ -949,7 +1002,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
         title={ctoChipTitle}
         // Same neutral pill as the Subagent/Peer chip below — lineage is
         // identity, and identity never spends a status hue.
-        className="inline-flex min-w-0 shrink items-center gap-1 rounded-full border border-white/10 bg-white/[0.05] px-1.5 py-px text-[10px] font-medium leading-none text-muted-fg/70"
+        className="inline-flex min-w-0 shrink items-center gap-1 rounded-full border border-fg/10 bg-fg/[0.05] px-1.5 py-px text-[10px] font-medium leading-none text-muted-fg/70"
         onClick={(event) => {
           event.preventDefault();
           event.stopPropagation();
@@ -978,7 +1031,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
         /* One pill, not a loose glyph beside loose text — same chip idiom as the
            machine marker. Neutral, never amber: lineage is identity, and amber
            means "your move" (see `sessionStatusPresentation.ts`). */
-        className="inline-flex min-w-0 shrink items-center gap-1 rounded-full border border-white/10 bg-white/[0.05] px-1.5 py-px text-[10px] font-medium leading-none text-muted-fg/70"
+        className="inline-flex min-w-0 shrink items-center gap-1 rounded-full border border-fg/10 bg-fg/[0.05] px-1.5 py-px text-[10px] font-medium leading-none text-muted-fg/70"
         onClick={(event) => {
           event.preventDefault();
           event.stopPropagation();
@@ -1079,7 +1132,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
     id: "lane",
     icon: <LaneIcon size={13} style={laneAccent ? { color: laneAccent } : undefined} />,
     value: (
-      <span style={laneAccent ? { color: laneAccent } : undefined}>
+      <span style={laneAccent ? { color: toneText(laneAccent) } : undefined}>
         <LaneNamingLabel
           laneName={lane?.name ?? session.laneName}
           naming={namingLane}
@@ -1304,6 +1357,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
       compact={compact}
       runtimePin={runtimePin}
       hideLabelUnlessShout={nestedSubagent}
+      clockMs={statusClockMs}
     />
   );
   /* Live activity, not a property of the session: the agent is driving the
@@ -1478,6 +1532,11 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
       role="button"
       tabIndex={disabledReason ? -1 : 0}
       aria-disabled={disabledReason ? true : undefined}
+      /* The keyboard's stable anchor for "select this session". `data-session-row`
+         sits on the drag wrapper around this face; the face is the control that
+         actually selects, and a keyboard path that pressed the wrapper would do
+         nothing at all. */
+      data-session-row-action=""
       /* A native <button> cannot legally host the status slot's snooze/settle
          buttons, and the swap only works with those controls in flow. t3code's
          row makes the same trade. */
@@ -1493,19 +1552,19 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
         "group/v2-row relative w-full select-none overflow-hidden rounded-md text-left outline-none transition-[background-color,opacity] duration-100",
         launchRowJustAppeared && "ade-launch-row-enter",
         disabledReason ? "cursor-default" : "cursor-pointer",
-        isHighlighted ? "bg-white/[0.06]" : "hover:bg-white/[0.05]",
+        isHighlighted ? "bg-fg/[0.06]" : "hover:bg-fg/[0.05]",
         isMultiSelected && "ring-1 ring-accent/35",
       )}
       {...(disabledReason
         ? { "aria-label": `${primaryText}: ${disabledReason}` }
         : { "aria-label": primaryText })}
-      onClick={(event) => {
+      {...pressActivation((event) => {
         // Selecting loads this session into the very area the card floats over,
         // so the card gets out of the way the moment the row is acted on.
         hoverCard.close();
-        if (disabledReason) return;
-        onSelect(session.id, event);
-      }}
+        if (disabledReason) return undefined;
+        return onSelect(session.id, event);
+      }, opensOnPress)}
       onKeyDown={(event) => {
         // Only the row itself — a key pressed inside a nested control (settle,
         // snooze, a preview link) belongs to that control.
@@ -1609,7 +1668,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
             )}
 
             {showClaudeCacheTimer ? (
-              <ClaudeCacheTtlBadge idleSinceAt={session.chatIdleSinceAt} />
+              <ClaudeCacheTtlBadge idleSinceAt={session.chatIdleSinceAt} cache={session.chatPromptCache} />
             ) : null}
             {/* The diff chips used to sit here. They moved to line 1's floor:
                 on this line they were competing with the preview text for the

@@ -1,6 +1,6 @@
+import { resolveAdeCacheFile } from "../shared/adeCacheFile";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import type { OpenCodeClient } from "@opencode/client";
 import type { Logger } from "../logging/logger";
@@ -40,7 +40,8 @@ const TTL_MS = 6 * 60 * 60_000;
 const CATALOG_RETRY_DELAY_MS = 750;
 /** A failed probe is not retried sooner, so a broken binary is not relaunched per picker open. */
 const ERROR_TTL_MS = 60_000;
-const PERSISTED_INVENTORY_VERSION = 2;
+// 3: sign-in methods include cloud logins (OpenCode `external` methods).
+const PERSISTED_INVENTORY_VERSION = 3;
 
 /** Metadata for an OpenCode provider (integration) in settings. */
 export type OpenCodeProviderInfo = OpenCodeProviderSummary;
@@ -174,8 +175,6 @@ type PersistedInventoryFile = {
   entries: Record<string, PersistedInventoryEntry>;
 };
 
-type ElectronLikeApp = { app?: { getPath(name: string): string } };
-
 let persistPathOverride: string | null = null;
 let persistedInventoryMemo: PersistedInventoryFile | null = null;
 
@@ -183,18 +182,7 @@ function resolvePersistedInventoryPath(): string {
   if (persistPathOverride) return persistPathOverride;
   const envOverride = process.env.ADE_OPENCODE_INVENTORY_CACHE_FILE?.trim();
   if (envOverride) return path.resolve(envOverride);
-  try {
-    const electron = require("electron") as ElectronLikeApp;
-    const userDataPath = electron.app?.getPath?.("userData");
-    if (typeof userDataPath === "string" && userDataPath.trim().length > 0) {
-      return path.resolve(userDataPath, "opencode-inventory-cache.json");
-    }
-  } catch {
-    // Not running inside Electron (e.g. unit tests) — fall through.
-  }
-  const homeDir = os.homedir().trim();
-  const baseDir = homeDir.length > 0 ? path.resolve(homeDir, ".ade") : os.tmpdir();
-  return path.resolve(baseDir, "opencode-inventory-cache.json");
+  return resolveAdeCacheFile("opencode-inventory-cache.json");
 }
 
 function isStringArray(value: unknown): value is string[] {
@@ -680,7 +668,7 @@ function buildInventory(args: {
         openCodeModelId: normalizedModel.modelId,
         ...(normalizedModel.displayName ? { displayName: normalizedModel.displayName } : {}),
         ...(normalizedModel.contextWindow
-          ? { contextWindow: normalizedModel.contextWindow }
+          ? { contextWindow: typeof ctx === "number" && ctx > 0 ? Math.min(ctx, normalizedModel.contextWindow) : normalizedModel.contextWindow }
           : typeof ctx === "number" && ctx > 0 ? { contextWindow: ctx } : {}),
         ...(normalizedModel.maxOutputTokens
           ? { maxOutputTokens: normalizedModel.maxOutputTokens }

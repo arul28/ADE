@@ -36,6 +36,12 @@ export type SceneStill = {
   dataUrl: string | null;
   /** The bytes on disk, once main has stored them. Survives a reopen. */
   record: SceneStillRecord | null;
+  /**
+   * The theme the capture in this window was drawn in (`sceneThemeSignature`),
+   * so a later mount knows whether the picture is still current. Null for a
+   * still only known from disk: its theme was not recorded.
+   */
+  theme: string | null;
 };
 
 const stills = new Map<string, SceneStill>();
@@ -48,13 +54,14 @@ function notifyScenes(): void {
 /** Remember a still. The data URL is this window's; the record is durable. */
 export function rememberSceneStill(
   scopeKey: string,
-  still: { dataUrl?: string | null; record?: SceneStillRecord | null },
+  still: { dataUrl?: string | null; record?: SceneStillRecord | null; theme?: string | null },
 ): void {
   if (!scopeKey) return;
-  const previous = stills.get(scopeKey) ?? { dataUrl: null, record: null };
+  const previous = stills.get(scopeKey) ?? { dataUrl: null, record: null, theme: null };
   const next: SceneStill = {
     dataUrl: still.dataUrl ?? previous.dataUrl,
     record: still.record ?? previous.record,
+    theme: still.theme ?? previous.theme,
   };
   stills.set(scopeKey, next);
   notifyScenes();
@@ -142,7 +149,7 @@ async function loadSessionStills(
       const scopeKey = readStringField(artifact.metadata, "sceneScopeKey");
       // Never over a still this window took: that one has a data URL, which is
       // the only picture available with no round trip at all.
-      if (scopeKey && !stills.get(scopeKey)) stills.set(scopeKey, { dataUrl: null, record });
+      if (scopeKey && !stills.get(scopeKey)) stills.set(scopeKey, { dataUrl: null, record, theme: null });
     }
   })().finally(() => {
     settledSessions.add(owner);

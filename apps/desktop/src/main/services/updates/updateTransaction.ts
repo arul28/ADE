@@ -15,13 +15,15 @@ export type {
  * One plain line per step, naming what failed. Applying an update is one
  * transaction — app swap, background service reinstalled, service restarted,
  * service answering — so a failure has to say which of those four did not
- * happen instead of leaving a silently broken app.
+ * happen instead of leaving a silently broken app. Titles, not instructions:
+ * the renderer's notice offers the way out (Fix it, then Restart ADE, then
+ * Reset ADE) and can name a sharper cause from the live service status.
  */
 export const UPDATE_TRANSACTION_FAILURE_COPY: Record<UpdateTransactionStepId, string> = {
-  swap: "The update didn't finish installing — ADE is still on the old version.",
-  service: "ADE updated, but it couldn't start afterwards. Choose Repair.",
-  restart: "ADE updated, but it didn't start again. Choose Repair.",
-  health: "ADE updated, but it isn't responding. Choose Repair.",
+  swap: "The update didn't finish installing. ADE is still on the old version.",
+  service: "ADE's background service didn't start after the update",
+  restart: "ADE's background service didn't restart after the update",
+  health: "ADE's background service isn't responding after the update",
 };
 
 export type UpdateTransactionStepOutcome = {

@@ -11,6 +11,12 @@ const lobeIconsStub = path.resolve(
   "src/test/__mocks__/lobehub-icons.js",
 );
 
+// Tests never run a scene frame; the real module is a build-time asset URL.
+const sceneThreeStub = path.resolve(
+  __dirname,
+  "src/test/__mocks__/ade-scene-three.js",
+);
+
 const shared = {
   testTimeout: 20_000,
   hookTimeout: 20_000,
@@ -25,6 +31,7 @@ const shared = {
 const sharedResolveAlias = [
   { find: /^@emoji-mart\/data(?:\/.*)?$/, replacement: emojiDataStub },
   { find: "@lobehub/icons", replacement: lobeIconsStub },
+  { find: "virtual:ade-scene-three", replacement: sceneThreeStub },
 ];
 
 const unitExcludes = ["**/*.integration.test.{ts,tsx}"];

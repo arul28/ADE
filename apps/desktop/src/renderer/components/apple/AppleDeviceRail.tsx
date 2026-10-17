@@ -403,7 +403,7 @@ function RailDivider() {
  */
 const RAIL_BUTTON_CLASS = cn(
   "h-7 w-7 shrink-0 gap-0 rounded-full p-0",
-  "text-muted-fg hover:bg-white/[0.07] hover:text-fg",
+  "text-muted-fg hover:bg-fg/[0.07] hover:text-fg",
   "disabled:cursor-not-allowed disabled:opacity-40",
 );
 

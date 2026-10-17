@@ -33,7 +33,7 @@ export function BrowserProfilePanel({
 }: BrowserProfilePanelProps) {
   return (
     <div className="grid max-h-[190px] shrink-0 grid-cols-[minmax(220px,0.9fr)_minmax(280px,1.1fr)] overflow-hidden border-b border-emerald-300/12 bg-emerald-950/15 text-[10px]">
-      <section className="min-w-0 border-r border-white/[0.06] px-2.5 py-2">
+      <section className="min-w-0 border-r border-fg/[0.06] px-2.5 py-2">
         <div className="flex items-center gap-1.5 text-[11px] font-medium text-emerald-100/90">
           <ShieldCheck size={13} />
           Global authenticated profile
@@ -41,7 +41,7 @@ export function BrowserProfilePanel({
             type="button"
             onClick={onRefresh}
             disabled={busy}
-            className="ml-auto rounded border border-white/[0.08] px-1.5 py-0.5 text-[9px] text-fg/65 hover:bg-white/[0.06] disabled:opacity-40"
+            className="ml-auto rounded border border-fg/[0.08] px-1.5 py-0.5 text-[9px] text-fg/65 hover:bg-fg/[0.06] disabled:opacity-40"
           >
             Refresh
           </button>
@@ -91,7 +91,7 @@ export function BrowserProfilePanel({
             {permissionDecisions.map((decision) => (
               <div
                 key={`${decision.origin}:${decision.embeddingOrigin ?? ""}:${decision.permission}`}
-                className="flex min-w-0 items-center gap-2 rounded border border-white/[0.05] bg-black/15 px-1.5 py-1"
+                className="flex min-w-0 items-center gap-2 rounded border border-fg/[0.05] bg-black/15 px-1.5 py-1"
               >
                 <span className={cn(
                   "rounded px-1 py-0.5 text-[8px] font-semibold uppercase",
@@ -108,7 +108,7 @@ export function BrowserProfilePanel({
                   type="button"
                   onClick={() => onClearPermission(decision)}
                   disabled={busy}
-                  className="shrink-0 rounded px-1 py-0.5 text-[9px] text-muted-fg/60 hover:bg-white/[0.06] hover:text-fg/80 disabled:opacity-40"
+                  className="shrink-0 rounded px-1 py-0.5 text-[9px] text-muted-fg/60 hover:bg-fg/[0.06] hover:text-fg/80 disabled:opacity-40"
                 >
                   Remove
                 </button>

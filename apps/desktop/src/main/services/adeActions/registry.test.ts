@@ -5,6 +5,7 @@ import { afterAll, describe, expect, it, vi } from "vitest";
 import type { LaneListSnapshot, LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import {
   ADE_ACTION_ALLOWLIST,
+  buildSendNotificationAction,
   createAutomationAdeActionLookup,
   getAdeActionInputContract,
   getAdeActionDomainServices,
@@ -225,14 +226,14 @@ describe("runtime domain services behind the allowlist", () => {
       },
     } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
     const chat = getAdeActionDomainServices(runtime).chat as {
-      createPromptStash?: (args: unknown) => Promise<unknown> | unknown;
+      createDraft?: (args: unknown) => Promise<unknown> | unknown;
     };
     const attachment = {
       path: "/project/.ade/attachments/design.png",
       type: "image",
     };
 
-    await expect(Promise.resolve(chat.createPromptStash?.({
+    await expect(Promise.resolve(chat.createDraft?.({
       text: "",
       attachments: [attachment],
     }))).resolves.toMatchObject({
@@ -1634,7 +1635,8 @@ describe("runtime session actions", () => {
       sessionId: "session-1",
       message: "Which account should I use?",
     })).toEqual({ ok: true, sessionId: "session-1" });
-    expect(requestAttention).toHaveBeenCalledWith("session-1", "Which account should I use?");
+    // No source: sessionService defaults it to `agent_explicit`.
+    expect(requestAttention).toHaveBeenCalledWith("session-1", "Which account should I use?", undefined);
     expect(markSessionAttentionRequested).toHaveBeenCalledWith("session-1");
     expect(setSessionRuntimeState).toHaveBeenCalledWith("session-1", "waiting-input");
     expect(handleSessionAttentionRequested).toHaveBeenCalledWith("project-1", {
@@ -1776,8 +1778,20 @@ describe("runtime session actions", () => {
       headBranchRef: "hotfix-auth",
     }));
     const resolveBranchDrift = vi.fn(async () => ({ resolution: "switch-back" }));
+    const getChildren = vi.fn(async () => [{ id: "lane-child" }]);
+    const getStackChain = vi.fn(async () => [{ laneId: "lane-1" }]);
+    const getDeleteRisk = vi.fn(async () => ({ laneId: "lane-1", dirty: false }));
+    const cancelDelete = vi.fn(() => ({ cancelled: false }));
     const runtime = {
-      laneService: { getSummary, getBranchDrift, resolveBranchDrift },
+      laneService: {
+        getSummary,
+        getBranchDrift,
+        resolveBranchDrift,
+        getChildren,
+        getStackChain,
+        getDeleteRisk,
+        cancelDelete,
+      },
     } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
     const laneActions = getAdeActionDomainServices(runtime).lane as Record<
       string,
@@ -1817,6 +1831,25 @@ describe("runtime session actions", () => {
     await expect(laneActions.resolveBranchDrift({ laneId: "lane-1", resolution: "rebase" }))
       .rejects.toThrow(/'switch-back' or 'keep-head'/);
     expect(resolveBranchDrift).toHaveBeenCalledTimes(1);
+
+    // These four take a bare lane id and hand it straight to a `select * from
+    // lanes` lookup. An automation step and `run_ade_action`'s `args` send the
+    // object the action editor renders, `{ laneId }`; `ade lanes children` /
+    // `ade lanes stack` send it positionally. Both must reach the service as
+    // the scalar, or `node:sqlite` refuses the object as a bound parameter.
+    for (const [action, forward] of [
+      ["getChildren", getChildren],
+      ["getStackChain", getStackChain],
+      ["getDeleteRisk", getDeleteRisk],
+      ["cancelDelete", cancelDelete],
+    ] as const) {
+      await expect(laneActions[action]!({ laneId: "lane-1" })).resolves.toBeDefined();
+      expect(forward).toHaveBeenLastCalledWith("lane-1");
+      await expect(laneActions[action]!("lane-1")).resolves.toBeDefined();
+      expect(forward).toHaveBeenLastCalledWith("lane-1");
+      await expect(laneActions[action]!({})).rejects.toThrow(/laneId/);
+      await expect(laneActions[action]!(undefined)).rejects.toThrow(/laneId/);
+    }
   });
 
   it("dismisses pending chat input before settling through the session action", async () => {
@@ -2441,6 +2474,7 @@ describe("runtime AI actions", () => {
       "getOpenCodeRuntimeDiagnostics",
       "isOpenCodeInstalled",
       "cursorCloudStreamRun",
+      "getCursorAgentUsage",
       "storeApiKey",
       "deleteApiKey",
       "listApiKeys",
@@ -3218,5 +3252,30 @@ describe("getTurnFileDiffFromGit", () => {
     });
 
     expect(diff.modified.exists).toBe(false);
+  });
+});
+
+describe("attention.sendNotification links", () => {
+  // An automation's `{{run.chatSessionId}}` / `{{run.laneId}}` resolves to an
+  // empty id when the run never made that chat or lane. The phone still hears
+  // about the run; the link is left off and the reason is named.
+  it.each([
+    ["an unfilled run chat", "ade://session/", null, true],
+    ["an unfilled run lane", "ade://lane/", null, true],
+    ["a filled run chat", "ade://session/chat-1", "ade://session/chat-1", false],
+  ])("%s", async (_label, open, expectedLink, skipped) => {
+    const sent: Array<{ title: string; deepLink: string | null }> = [];
+    const notify = buildSendNotificationAction(
+      { accountAuthService: null, projectRoot: null, productAnalyticsService: null } as never,
+      (async (notification: { title: string; deepLink: string | null }) => {
+        sent.push(notification);
+        return { delivered: 1, devices: 1, failed: 0 };
+      }) as never,
+    );
+    const result = await notify({ title: "Run finished", open });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ title: "Run finished", deepLink: expectedLink });
+    expect(result).toMatchObject({ sent: true });
+    expect(Boolean((result as { linkSkipped?: string }).linkSkipped)).toBe(skipped);
   });
 });

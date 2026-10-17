@@ -11,7 +11,6 @@ describe("dropInheritedCallerIdentity", () => {
     const env: NodeJS.ProcessEnv = {
       ADE_CHAT_SESSION_ID: "43e71799-c4c1-4d55-aef5-2d14c8104cc9",
       ADE_RUN_ID: "run-1",
-      ADE_BROWSER_ACTOR_TOKEN: "token",
       ADE_DEFAULT_ROLE: "cto",
       ADE_HOME: "/Users/me/.ade-alpha",
       PATH: "/usr/bin",
@@ -19,7 +18,7 @@ describe("dropInheritedCallerIdentity", () => {
 
     const dropped = dropInheritedCallerIdentity(env);
 
-    expect(dropped).toEqual(["ADE_CHAT_SESSION_ID", "ADE_BROWSER_ACTOR_TOKEN", "ADE_RUN_ID"]);
+    expect(dropped).toEqual(["ADE_CHAT_SESSION_ID", "ADE_RUN_ID"]);
     for (const key of BRAIN_INHERITED_CALLER_ENV_KEYS) expect(env[key]).toBeUndefined();
     expect(env).toEqual({
       ADE_DEFAULT_ROLE: "cto",

@@ -18,6 +18,7 @@ import {
 import { inspectProjectPath } from "../../desktop/src/main/services/projects/projectPathInspector";
 import { createProjectScaffoldService } from "../../desktop/src/main/services/projects/projectScaffoldService";
 import { runGit } from "../../desktop/src/main/services/git/git";
+import { githubExtraHeaderGitEnv } from "../../desktop/src/main/services/chat/handoffGitBundle";
 import type { SyncHostRecoveryResult } from "../../desktop/src/shared/types/syncHostRecovery";
 import type { Logger } from "../../desktop/src/main/services/logging/logger";
 import { ADE_ACCOUNT_DELETE_MACHINE_CONFIRMATION, isSearchDocKind } from "../../desktop/src/shared/types";
@@ -32,6 +33,7 @@ import type {
   ProjectBrowseInput,
   RuntimeActivityCounts,
   RuntimeActivitySummary,
+  RuntimeUpdateImpact,
   SearchDocKind,
   SearchQueryResult,
   SearchResultItem,
@@ -65,10 +67,12 @@ import {
   type ProjectRegistrationSource,
 } from "./services/projects/projectRegistry";
 import { ProjectScopeRegistry } from "./services/projects/projectScope";
-import {
-  PersonalChatScope,
-  summarizeRuntimeActivity,
-} from "./services/personalChats/personalChatScope";
+import type { AdeRuntime } from "./bootstrap";
+import { PersonalChatScope } from "./services/personalChats/personalChatScope";
+import { summarizeRuntimeActivity, summarizeRuntimeUpdateImpact } from "./services/runtime/runtimeWorkSummary";
+import { readSessionToolTypeFromDisk } from "./services/sync/rosterBuilder";
+import { resolveAdeLayout } from "../../desktop/src/shared/adeLayout";
+import { querySearchIndexReadOnly } from "../../desktop/src/main/services/search/searchIndexQuery";
 import type { ProviderStatusReport } from "../../desktop/src/main/services/ai/providerStatusProbe";
 import { PROVIDER_STATUS_CACHE_TTL_MS } from "../../desktop/src/main/services/ai/providerStatusDetails";
 import { createHeadlessGitHubService } from "./headlessLinearServices";
@@ -77,6 +81,7 @@ import {
   isCtoOnlyAdeAction,
   scopeAccountStatusForRole,
 } from "../../desktop/src/main/services/adeActions/actionPolicy";
+import { buildSendNotificationAction } from "../../desktop/src/main/services/adeActions/registry";
 import { callerIdentityIsAgent, normalizeAdeRuntimeRole, resolveSessionBoundRole } from "./runtimeRoles";
 import {
   createSyncAccountDirectoryHealth,
@@ -101,6 +106,11 @@ import {
   reconcileAccountOwnedMachineTrust,
 } from "./services/account/accountMachineDirectoryService";
 import { buildDegradedProjectlessSyncSnapshot } from "./services/sync/projectlessSyncSnapshot";
+import { createSyncCloudRelayStore } from "./services/sync/syncCloudRelayStore";
+import { selectAccountMachine } from "../../desktop/src/shared/accountDirectory";
+import { buildAccountMachineSnapshot, findMachineByMentionId } from "../../desktop/src/shared/accountMachineSnapshot";
+import type { AdeAccountMachine } from "../../desktop/src/shared/types/account";
+import type { AttentionItem } from "../../desktop/src/shared/types/attention";
 import type { MachinePairingRepairResult } from "./services/account/machinePairingRepair";
 import { mapPlatform } from "./services/sync/syncProtocol";
 import { RUNTIME_COMPAT_LEVEL } from "../../desktop/src/shared/adeRuntimeProtocol";
@@ -299,7 +309,7 @@ export type MultiProjectRpcHandlerOptions = {
   personalChatScope?: Pick<
     PersonalChatScope,
     "capabilities" | "call" | "streamEvents" | "dispose"
-  > & Partial<Pick<PersonalChatScope, "activitySummary" | "subscribeEvents">>;
+  > & Partial<Pick<PersonalChatScope, "activitySummary" | "updateImpact" | "subscribeEvents">>;
   /**
    * Backs `providers.status`: what each CLI-backed provider actually is on this
    * machine (installed, where, which version, signed in). Injected like
@@ -375,35 +385,63 @@ export type MultiProjectRpcHandlerOptions = {
   reconcileAccountOwnership?: typeof reconcileAccountOwnedMachineTrust;
 };
 
-export async function readMachineRuntimeActivitySummary(args: {
+type BootedRuntimeSources = {
   projectRegistry: Pick<ProjectRegistry, "list">;
   scopeRegistry: Pick<ProjectScopeRegistry, "getIfBooted">;
-  personalChatScope: Partial<Pick<PersonalChatScope, "activitySummary">>;
-}): Promise<RuntimeActivitySummary> {
-  const projectActivity = await Promise.all(
-    args.projectRegistry.list().map(async (record) => {
-      const pendingScope = args.scopeRegistry.getIfBooted(record.projectId);
-      if (!pendingScope) return { activeAgentTurns: 0, activeWorkSessions: 0 };
-      const scope = await pendingScope.catch(() => null);
-      if (!scope) return { activeAgentTurns: 0, activeWorkSessions: 0 };
-      return summarizeRuntimeActivity(scope.runtime);
+};
+
+/**
+ * One answer per project this brain has already booted. A project that is not
+ * booted has nothing running, and asking must not boot it.
+ */
+async function mapBootedProjectRuntimes<T>(
+  sources: BootedRuntimeSources,
+  read: (runtime: AdeRuntime, record: ProjectRecord) => T | Promise<T>,
+): Promise<T[]> {
+  const answers = await Promise.all(
+    sources.projectRegistry.list().map(async (record) => {
+      const scope = await sources.scopeRegistry.getIfBooted(record.projectId)?.catch(() => null);
+      return scope ? [await read(scope.runtime, record)] : [];
     }),
   );
-  const personalActivity = typeof args.personalChatScope.activitySummary === "function"
-    ? await args.personalChatScope.activitySummary()
-    : { activeAgentTurns: 0, activeWorkSessions: 0 };
-  const activeAgentTurns = projectActivity.reduce<number>(
-    (total, activity) => total + activity.activeAgentTurns,
-    personalActivity.activeAgentTurns,
-  );
-  const activeWorkSessions = projectActivity.reduce<number>(
-    (total, activity) => total + activity.activeWorkSessions,
-    personalActivity.activeWorkSessions,
-  );
+  return answers.flat();
+}
+
+export async function readMachineRuntimeActivitySummary(args: BootedRuntimeSources & {
+  personalChatScope: Partial<Pick<PersonalChatScope, "activitySummary">>;
+}): Promise<RuntimeActivitySummary> {
+  const parts: RuntimeActivityCounts[] = [
+    ...await mapBootedProjectRuntimes(args, (runtime) => summarizeRuntimeActivity(runtime)),
+    typeof args.personalChatScope.activitySummary === "function"
+      ? await args.personalChatScope.activitySummary()
+      : { activeAgentTurns: 0, activeWorkSessions: 0 },
+  ];
+  const activeAgentTurns = parts.reduce((total, part) => total + part.activeAgentTurns, 0);
+  const activeWorkSessions = parts.reduce((total, part) => total + part.activeWorkSessions, 0);
   return {
     idle: activeAgentTurns === 0 && activeWorkSessions === 0,
     activeAgentTurns,
     activeWorkSessions,
+  };
+}
+
+/**
+ * What restarting this machine's ADE would stop, across every project the
+ * brain has booted and its personal chats.
+ */
+export async function readMachineUpdateImpact(args: BootedRuntimeSources & {
+  personalChatScope: Partial<Pick<PersonalChatScope, "updateImpact">>;
+}): Promise<RuntimeUpdateImpact> {
+  const parts: RuntimeUpdateImpact[] = [
+    ...await mapBootedProjectRuntimes(args, (runtime, record) => summarizeRuntimeUpdateImpact(runtime, record)),
+    typeof args.personalChatScope.updateImpact === "function"
+      ? await args.personalChatScope.updateImpact()
+      : { chats: [], cliSessions: 0, terminals: 0 },
+  ];
+  return {
+    chats: parts.flatMap((part) => part.chats),
+    cliSessions: parts.reduce((total, part) => total + part.cliSessions, 0),
+    terminals: parts.reduce((total, part) => total + part.terminals, 0),
   };
 }
 
@@ -419,8 +457,10 @@ const RUNTIME_METHODS = new Set([
   "exit",
   "runtime/info",
   "runtime.activitySummary",
+  "runtime.updateImpact",
   "account.call",
   "attention.call",
+  "notify.send",
   "providers.status",
   "personalChats.call",
   "personalChats.streamEvents",
@@ -493,6 +533,16 @@ function readOptionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0
     ? value.trim()
     : undefined;
+}
+
+/**
+ * Icon writes go through `.ade/local.yaml`, which would recreate a project
+ * folder that was moved, deleted or unplugged.
+ */
+function assertProjectFolderPresent(rootPath: string): void {
+  if (!fs.existsSync(rootPath)) {
+    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Project folder not found: ${rootPath}`);
+  }
 }
 
 function requireRegisteredProjectForIcon(
@@ -919,12 +969,10 @@ async function inspectHandoffStorage(params: Record<string, unknown>) {
       blockingErrors.push("Destination Git authentication preflight received invalid repository details.");
     } else if (fs.existsSync(normalizedParent) && fs.statSync(normalizedParent).isDirectory()) {
       const githubService = createHeadlessGitHubService(normalizedParent, machineProjectLogger);
-      let destinationAuthHeader = "";
+      let destinationToken = "";
       if (githubService.parseGitHubRepoFromRemoteUrl(originUrl) && /^https:\/\//i.test(originUrl)) {
         try {
-          const token = await githubService.getGitTransportTokenOrThrowAsync();
-          const basic = Buffer.from(`x-access-token:${token}`, "utf8").toString("base64");
-          destinationAuthHeader = `AUTHORIZATION: basic ${basic}`;
+          destinationToken = await githubService.getGitTransportTokenOrThrowAsync();
         } catch {
           // The destination may still have a system credential helper. Let
           // Git try it with terminal prompting disabled below.
@@ -941,19 +989,8 @@ async function inspectHandoffStorage(params: Record<string, unknown>) {
         {
           cwd: normalizedParent,
           timeoutMs: 30_000,
-          env: {
-            GIT_TERMINAL_PROMPT: "0",
-            GCM_INTERACTIVE: "Never",
-            ...(destinationAuthHeader
-              ? {
-                  // Keep destination-owned credentials out of command-line
-                  // arguments, which may be visible to other local processes.
-                  GIT_CONFIG_COUNT: "1",
-                  GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader",
-                  GIT_CONFIG_VALUE_0: destinationAuthHeader,
-                }
-              : {}),
-          },
+          // Destination-owned credentials stay out of command-line arguments.
+          env: githubExtraHeaderGitEnv(destinationToken),
           maxOutputBytes: 64_000,
         },
       );
@@ -962,7 +999,9 @@ async function inspectHandoffStorage(params: Record<string, unknown>) {
         blockingErrors.push(`The destination cannot read the published repository with its own Git credentials: ${detail}`);
       } else {
         const remoteHeadSha = remote.stdout.trim().split(/\s+/)[0] ?? "";
-        if (remoteHeadSha !== sourceHeadSha) {
+        // A move that carries its own commits (`hasGitBundle`) only needs the
+        // repository to be readable; the branch may be behind or unpublished.
+        if (params.hasGitBundle !== true && remoteHeadSha !== sourceHeadSha) {
           blockingErrors.push("The destination sees a different published branch commit than the source machine.");
         }
       }
@@ -1331,26 +1370,106 @@ export function createMultiProjectRpcRequestHandler(
     ];
   };
 
+  const isProjectBackedChatToolType = (value: unknown): boolean => {
+    const toolType = typeof value === "string" ? value.trim().toLowerCase() : "";
+    return toolType === "cursor" || toolType.endsWith("-chat");
+  };
+
+  /** Hand the event loop one turn, so a pass over every project cannot starve timers. */
+  const yieldToEventLoop = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
+  /**
+   * Which registered project owns this chat. Only the caller's own project and
+   * projects that are already loaded are asked through their runtime; every
+   * other project is asked from its database on disk, so the lookup never
+   * loads a project just to learn the chat is not there.
+   */
   const resolveProjectBackedChatOwner = async (
     sessionId: string,
     preferredProjectId: ProjectId,
   ): Promise<ProjectId | null> => {
     for (const record of orderedProjectRecords(preferredProjectId)) {
       try {
-        const scope = await scopeRegistry.get(record.projectId);
-        const session = scope.runtime.sessionService.get(sessionId);
-        const toolType = typeof session?.toolType === "string"
-          ? session.toolType.trim().toLowerCase()
-          : "";
-        if (toolType === "cursor" || toolType.endsWith("-chat")) {
+        const booted = record.projectId === preferredProjectId
+          ? scopeRegistry.get(record.projectId)
+          : scopeRegistry.getIfBooted(record.projectId);
+        if (booted) {
+          const scope = await booted;
+          if (isProjectBackedChatToolType(scope.runtime.sessionService.get(sessionId)?.toolType)) {
+            return record.projectId;
+          }
+          continue;
+        }
+        if (isProjectBackedChatToolType(readSessionToolTypeFromDisk(record.rootPath, sessionId))) {
           return record.projectId;
         }
+        await yieldToEventLoop();
       } catch {
         // A stale/unavailable registered project cannot own a readable chat in
         // this process. Continue through the remaining project-backed scopes.
       }
     }
     return null;
+  };
+
+  type ProjectRecordForSearch = ReturnType<typeof orderedProjectRecords>[number];
+  type UnloadedProjectSearch =
+    | {
+        status: "searched";
+        items: SearchResultItem[];
+        totalByKind: Partial<Record<SearchDocKind, number>>;
+        truncated: boolean;
+      }
+    /** `entry` is the text listed under projectsUnavailable. */
+    | { status: "unavailable"; entry: string };
+
+  /**
+   * Answers a chat search for one project whose runtime is not loaded, from its
+   * index file. A project with no index yet has no indexed chats, so it is
+   * searched with no hits. A project whose folder is gone, or whose index this
+   * build cannot read, is unavailable; the index is rebuilt when the project is
+   * opened in ADE, and nothing here creates, migrates or deletes it.
+   */
+  const searchUnloadedProjectIndex = (
+    record: ProjectRecordForSearch,
+    query: { query: string; laneId: string | null },
+  ): UnloadedProjectSearch => {
+    if (!fs.existsSync(record.rootPath)) {
+      return { status: "unavailable", entry: record.displayName };
+    }
+    const indexed = querySearchIndexReadOnly({
+      cacheDir: resolveAdeLayout(record.rootPath).cacheDir,
+      query: query.query,
+      kinds: ["chat"],
+      laneId: query.laneId,
+      limit: 200,
+    });
+    if (indexed.status === "unusable") {
+      return {
+        status: "unavailable",
+        entry: `${record.displayName} (its search index is from another ADE version or unreadable; open this project in ADE once to rebuild it)`,
+      };
+    }
+    if (indexed.status === "busy") {
+      return {
+        status: "unavailable",
+        entry: `${record.displayName} (its search index is busy; run the search again)`,
+      };
+    }
+    if (indexed.status === "missing") {
+      return { status: "searched", items: [], totalByKind: {}, truncated: false };
+    }
+    return {
+      status: "searched",
+      items: indexed.results.map((item) => ({
+        ...item,
+        projectId: record.projectId,
+        projectName: record.displayName,
+        projectRoot: record.rootPath,
+      })),
+      totalByKind: indexed.totalByKind,
+      truncated: indexed.truncated,
+    };
   };
 
   const aggregateProjectSearch = async (args: {
@@ -1394,11 +1513,33 @@ export function createMultiProjectRpcRequestHandler(
     let resultsTruncated = false;
 
     for (const record of records) {
+      const isPreferred = record.projectId === args.preferredProjectId;
       try {
+        // The caller's project and projects whose runtime is already loaded
+        // answer through their own search service. Every other project is
+        // answered from its index file, so a search never loads a runtime per
+        // registered project and the brain's event loop stays responsive.
+        if (!isPreferred && !scopeRegistry.getIfBooted(record.projectId)) {
+          await yieldToEventLoop();
+          const unloaded = searchUnloadedProjectIndex(record, {
+            query: typeof args.queryArgs.query === "string" ? args.queryArgs.query : "",
+            laneId: typeof args.queryArgs.laneId === "string" ? args.queryArgs.laneId : null,
+          });
+          if (unloaded.status === "unavailable") {
+            unavailableProjects.push(unloaded.entry);
+            continue;
+          }
+          resultsTruncated ||= unloaded.truncated;
+          buckets.push(unloaded.items);
+          for (const [kind, count] of Object.entries(unloaded.totalByKind)) {
+            totals[kind as SearchDocKind] = (totals[kind as SearchDocKind] ?? 0) + count;
+          }
+          continue;
+        }
         const entry = await getProjectHandler(record.projectId);
         const projectQueryArgs: Record<string, unknown> = {
           ...args.queryArgs,
-          ...(record.projectId === args.preferredProjectId
+          ...(isPreferred
             ? {}
             : { kinds: ["chat"] }),
           limit: 200,
@@ -1416,7 +1557,7 @@ export function createMultiProjectRpcRequestHandler(
           },
         });
         if (!isRecord(response) || !isRecord(response.result)) continue;
-        if (record.projectId === args.preferredProjectId) baseResponse = response;
+        if (isPreferred) baseResponse = response;
         const result = decodeSearchQueryResult(response.result);
         resultsTruncated ||= result.nextCursor != null;
         const projectResults = result.results.map((item) => ({
@@ -1675,6 +1816,28 @@ export function createMultiProjectRpcRequestHandler(
   const resolveSyncService = async () => {
     const scope = await scopeRegistry.resolveActiveSyncHost();
     return scope?.runtime.syncService ?? null;
+  };
+
+  // Status and disconnect are recovery controls: if a project scope is already
+  // alive, use it without re-entering host activation (which may be timed out
+  // or backed off). Preserve the ordinary resolver when nothing is booted.
+  const resolveRecoverySyncService = async (params: Record<string, unknown>) => {
+    const requestedProjectId = readProjectId(params)
+      ?? (typeof params.projectRoot === "string"
+        ? projectRegistry.findByRootPath(path.resolve(params.projectRoot.trim()))?.projectId ?? null
+        : null);
+    const targetProjectId = requestedProjectId
+      ?? scopeRegistry.getActiveSyncHostProjectId?.()
+      ?? scopeRegistry.getMostRecentFailingSyncHostProjectId?.();
+    const scope = targetProjectId
+      ? scopeRegistry.getIfReady?.(targetProjectId) ?? null
+      : null;
+    // Only consult the ordinary resolver when no precise recovery target is
+    // known. A missing target scope must never redirect a destructive action.
+    const resolvedScope = targetProjectId
+      ? scope
+      : await scopeRegistry.resolveActiveSyncHost();
+    return resolvedScope?.runtime.syncService ?? null;
   };
 
   const syncServiceUnavailable = (): JsonRpcError =>
@@ -1973,6 +2136,70 @@ export function createMultiProjectRpcRequestHandler(
         }
       }
       registerAccountProjects();
+      if (action === "showMachine") {
+        // Read-only and open to every role on purpose: `ade machines show` is
+        // how a chat agent reads a machine the user @-mentioned. It returns
+        // presence plus the machine's recent Activity, never credentials or
+        // routes, and it changes nothing (no trust reconciliation either —
+        // that is `listMachines`' housekeeping, and stays CTO-only).
+        const actionArgs = isRecord(params.args) ? params.args : {};
+        const selector = typeof actionArgs.machine === "string" ? actionArgs.machine.trim() : "";
+        if (!selector) {
+          throw new JsonRpcError(
+            JsonRpcErrorCode.invalidParams,
+            "account.showMachine requires a machine name, machine key, or device id.",
+          );
+        }
+        const machineDirectory = new AccountMachineDirectoryService(accountAuthService, {
+          appVersion: options.serverVersion,
+          directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({
+            projectRoots: () => projectRegistry.list().map((record) => record.rootPath),
+          }),
+        });
+        const listed = await machineDirectory.listMachines();
+        if (listed.state !== "ok") {
+          return {
+            domain: "account",
+            action,
+            result: { state: listed.state, message: listed.message, machine: null },
+            statusHints: {},
+          };
+        }
+        let machine: AdeAccountMachine;
+        try {
+          machine = findMachineByMentionId(listed.machines, selector)
+            ?? selectAccountMachine(listed.machines, selector);
+        } catch (error) {
+          throw new JsonRpcError(
+            JsonRpcErrorCode.invalidParams,
+            error instanceof Error ? error.message : String(error),
+          );
+        }
+        // Activity is the only cross-machine record of projects, lanes and
+        // chats. Unreadable Activity degrades to "unknown", never to "idle".
+        let activityItems: AttentionItem[] | null = null;
+        try {
+          const publisher = (await scopeRegistry.resolveActiveSyncHost())?.runtime.pushPublisherService;
+          if (publisher) activityItems = (await publisher.getAttentionSnapshot(0)).items ?? [];
+        } catch {
+          activityItems = null;
+        }
+        let localMachineKey: string | null = null;
+        try {
+          localMachineKey = createSyncCloudRelayStore({
+            filePath: path.join(resolveMachineAdeLayout().secretsDir, "sync-cloud-relay.json"),
+          }).getMachineIdentity().machineKey;
+        } catch {
+          localMachineKey = null;
+        }
+        const snapshot = buildAccountMachineSnapshot({ machine, activityItems, localMachineKey });
+        return {
+          domain: "account",
+          action,
+          result: { state: "ok", message: null, machine: snapshot },
+          statusHints: {},
+        };
+      }
       if (action === "startSyncHost") {
         if (!options.startSyncHost) {
           throw new JsonRpcError(
@@ -2171,6 +2398,52 @@ export function createMultiProjectRpcRequestHandler(
         return { accepted: false, reason: outcome.reason ?? "unsupported" };
       }
       return { accepted: true };
+    }
+
+    // `ade notify`: machine-wide, so it neither needs nor registers the
+    // caller's folder as a project. Open to agents, like the
+    // `attention.sendNotification` action it shares its rules with.
+    if (method === "notify.send") {
+      if (!callerHasRoleAtLeast(callerRole(), "agent")) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidRequest,
+          "notify.send requires the agent role.",
+        );
+      }
+      // A chat or PR link is stamped with the caller's project only when that
+      // folder is an ADE project; any other folder stamps none.
+      const callerRoot = typeof params.projectRoot === "string" ? params.projectRoot.trim() : "";
+      const callerProject = callerRoot ? projectRegistry.findByRootPath(callerRoot) : null;
+      const registeredRoot = callerProject?.rootPath ?? null;
+      // The push publisher is one per brain, shared by every project, so any
+      // project's runtime can send: the caller's, else the sync host's (null
+      // while sync is off), else the first registered one.
+      const fallbackProjectId = projectRegistry.list()[0]?.projectId ?? null;
+      const scope = callerProject
+        ? await scopeRegistry.get(callerProject.projectId)
+        : await scopeRegistry.resolveActiveSyncHost()
+          ?? (fallbackProjectId ? await scopeRegistry.get(fallbackProjectId) : null);
+      const runtime = scope?.runtime;
+      const publisher = runtime?.pushPublisherService;
+      if (!runtime || !publisher) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidRequest,
+          "Notifications are unavailable until the ADE brain has a project open.",
+        );
+      }
+      const send = buildSendNotificationAction(
+        runtime,
+        (notification) => publisher.sendCustomNotification(notification),
+        { projectRoot: registeredRoot },
+      );
+      try {
+        return await send(isRecord(params.args) ? params.args : {});
+      } catch (error) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidRequest,
+          error instanceof Error ? error.message : String(error),
+        );
+      }
     }
 
     if (method === "attention.call") {
@@ -2464,6 +2737,22 @@ export function createMultiProjectRpcRequestHandler(
       });
     }
 
+    // Names every chat mid-turn on this machine, so it is the user's to ask,
+    // not an agent's: the same gate as the update it informs.
+    if (method === "runtime.updateImpact") {
+      if (!callerHasRoleAtLeast(callerRole(), "cto")) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidRequest,
+          "runtime.updateImpact requires the cto role.",
+        );
+      }
+      return await readMachineUpdateImpact({
+        projectRegistry,
+        scopeRegistry,
+        personalChatScope,
+      });
+    }
+
     if (method === "projects.list") {
       return await decorateProjectListWithIcons(projectRegistry.list());
     }
@@ -2526,6 +2815,7 @@ export function createMultiProjectRpcRequestHandler(
 
     if (method === "projects.setIcon") {
       const project = requireRegisteredProjectForIcon(projectRegistry, params, "projects.setIcon");
+      assertProjectFolderPresent(project.rootPath);
       const upload = readProjectIconUpload(params);
       try {
         importProjectIconBytes(project.rootPath, upload.fileName, upload.data);
@@ -2546,6 +2836,7 @@ export function createMultiProjectRpcRequestHandler(
 
     if (method === "projects.removeIcon") {
       const project = requireRegisteredProjectForIcon(projectRegistry, params, "projects.removeIcon");
+      assertProjectFolderPresent(project.rootPath);
       removeProjectIconOverride(project.rootPath);
       return await resolveIconBeforeDeadline(
         resolveRemoteProjectIconInWorker,
@@ -2649,12 +2940,12 @@ export function createMultiProjectRpcRequestHandler(
     }
 
     if (method === "sync.getStatus") {
-      const scope = await scopeRegistry.resolveActiveSyncHost();
-      const syncService = scope?.runtime.syncService ?? null;
+      const syncService = await resolveRecoverySyncService(params);
       if (!syncService) return getMachineOnlySyncStatus();
       return await syncService.getStatus({
         includeTransferReadiness: params.includeTransferReadiness === true,
         forceTransferReadiness: params.forceTransferReadiness === true,
+        awaitTransferReadiness: params.awaitTransferReadiness === true,
       });
     }
 
@@ -2714,7 +3005,9 @@ export function createMultiProjectRpcRequestHandler(
     }
 
     if (method === "sync.disconnectFromBrain") {
-      return await (await getSyncService()).disconnectFromBrain();
+      const syncService = await resolveRecoverySyncService(params);
+      if (!syncService) throw syncServiceUnavailable();
+      return await syncService.disconnectFromBrain();
     }
 
     if (method === "sync.forgetDevice") {

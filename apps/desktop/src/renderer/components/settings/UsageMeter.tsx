@@ -52,17 +52,17 @@ export function UsageMeter({
   return (
     <div className={cn("space-y-1.5", className)}>
       <div className="flex items-baseline justify-between gap-2">
-        <span className="font-mono text-[10px] font-bold uppercase tracking-[1px] text-[#A1A1AA]">
+        <span className="font-mono text-[10px] font-bold uppercase tracking-[1px] text-secondary-fg">
           {label}
         </span>
-        <span className="font-mono text-[10px] font-bold text-[#FAFAFA]">
+        <span className="font-mono text-[10px] font-bold text-fg">
           {clamped.toFixed(1)}% {mode}
         </span>
       </div>
 
       <div
         className="relative h-2 w-full overflow-hidden rounded-sm"
-        style={{ background: "#1A1720", border: "1px solid #1E1B26" }}
+        style={{ background: "var(--color-surface-raised)", border: "1px solid var(--color-border)" }}
         role="progressbar"
         aria-label={`${label}: ${clamped.toFixed(1)}% ${mode}`}
         aria-valuemin={0}
@@ -96,7 +96,7 @@ export function UsageMeter({
       </div>
 
       {sublabel && (
-        <div className="font-mono text-[9px] text-[#71717A]">{sublabel}</div>
+        <div className="font-mono text-[9px] text-muted-fg">{sublabel}</div>
       )}
 
       {hasBreakdown && (
@@ -107,7 +107,7 @@ export function UsageMeter({
                 className="h-1.5 w-1.5"
                 style={{ background: modelColor(i) }}
               />
-              <span className="font-mono text-[9px] text-[#8B8B9A]">
+              <span className="font-mono text-[9px] text-muted-fg">
                 {model} {pct.toFixed(1)}% {mode}
               </span>
             </div>

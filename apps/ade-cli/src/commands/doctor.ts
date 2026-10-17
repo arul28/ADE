@@ -42,7 +42,7 @@ import {
 import type {
   SyncListenerPortDiagnosis,
 } from "../services/sync/sharedSyncListener";
-import { resolveRuntimeServiceName } from "../serviceManager/common";
+import { powerShellSingleQuotedLiteral, resolveRuntimeServiceName } from "../serviceManager/common";
 import { windowsPowerShellCommand } from "../serviceManager/windowsSupervisor";
 import {
   resolveWindowsServiceLauncherPath,
@@ -566,11 +566,6 @@ export type WindowsDesktopDoctorProbe = {
 /** `WTSGetActiveConsoleSessionId` reports this when no session is attached. */
 const WINDOWS_CONSOLE_SESSION_UNKNOWN = 0xffffffff;
 
-function powerShellSingleQuotedLiteral(value: string): string {
-  if (value.includes("\0")) throw new Error("PowerShell values cannot contain NUL bytes.");
-  return `'${value.replace(/'/g, "''")}'`;
-}
-
 /**
  * The doctor's Windows Desktop probes in ONE PowerShell invocation. A row per
  * probe would mean five powershell.exe cold starts on a check that must stay
@@ -767,7 +762,7 @@ function windowsDesktopRows(
       status: inConsole ? "ok" : "warn",
       detail: inConsole
         ? `console session ${probe.brainSessionId}`
-        : `session ${probe.brainSessionId}, console is ${probe.consoleSessionId} · Start ADE from your Windows desktop, not over SSH.`,
+        : `session ${probe.brainSessionId}, console is ${probe.consoleSessionId} · The brain stops if that session signs out, and private screens need the console. Sign in at this PC to bring the session to the console.`,
     });
   }
   const oneSupervisor = probe.supervisorCount === 1 && probe.runValueCount === 1;

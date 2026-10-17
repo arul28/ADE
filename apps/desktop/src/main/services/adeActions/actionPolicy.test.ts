@@ -11,6 +11,7 @@ import {
   isSecretBearingAdeAction,
 } from "./actionPolicy";
 import type { AdeActionDomain } from "./domains";
+import { ADE_ACTION_ACCESS, isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
 
 /**
  * The gate, tested over the tables alone.
@@ -227,8 +228,8 @@ describe("isAllowedAdeAction", () => {
     const CALLED_BY_STRING = [
       // src/preload/preload.ts
       "approveToolUse", "archiveSession", "cancelDispatchedSteer", "cancelScheduledWork",
-      "cancelSteer", "clearCodexGoal", "copyTempAttachment", "createPromptStash",
-      "createScheduledWork", "createSession", "deletePromptStash", "deleteSession",
+      "cancelSteer", "clearCodexGoal", "copyTempAttachment", "createDraft",
+      "createScheduledWork", "createSession", "deleteDraft", "deleteSession",
       "dispatchSteer", "editSteer", "ensureCtoSession", "fileSearch",
       "generateAutoLaneIdentity", "getAvailableModels", "getChatEventHistory",
       "getChatEventHistoryPage", "getClaudeSessionInfo", "getClaudeSessionMessages",
@@ -237,7 +238,7 @@ describe("isAllowedAdeAction", () => {
       "getSlashCommands", "getSubagentTranscript", "getTurnFileDiff", "handoffSession",
       "interrupt", "killDroidWorker", "launchCli", "launchHeadless",
       "listClaudeOutputStyles", "listClaudePlugins", "listCodexPlugins", "listClaudeSessions",
-      "listMentionSuggestions", "listPromptStashes", "listScheduledWork", "listSessions",
+      "listMentionSuggestions", "listDrafts", "listScheduledWork", "listSessions",
       "listSubagents", "markCrossMachineHandoff", "modelCatalog", "resumeUsageLimitNow",
       "continueUsageLimitOnAlternate",
       "prepareCrossMachineHandoff", "recoverCodexTurn", "recoverContinuity", "recoverTurn",
@@ -286,6 +287,52 @@ describe("isAllowedAdeAction", () => {
         expect(isAllowedAdeAction(domain, action)).toBe(true);
       }
     }
+  });
+});
+
+describe("ADE_ACTION_ACCESS", () => {
+  // The preload refuses writes during a project switch and lets reads through,
+  // reading the answer from this table. An allowlisted action missing from it
+  // is refused as a write, so a new read would fail on every switch.
+  it("declares every allowlisted action as exactly one of read or write", () => {
+    const problems: string[] = [];
+    const domains = new Set([...Object.keys(ADE_ACTION_ALLOWLIST), ...Object.keys(ADE_ACTION_ACCESS)]);
+    for (const domain of domains) {
+      const allowed = new Set(ADE_ACTION_ALLOWLIST[domain as AdeActionDomain] ?? []);
+      const reads = ADE_ACTION_ACCESS[domain]?.read ?? [];
+      const writes = ADE_ACTION_ACCESS[domain]?.write ?? [];
+      const declared = new Set<string>();
+      for (const action of [...reads, ...writes]) {
+        if (declared.has(action)) problems.push(`${domain}.${action} is declared twice`);
+        declared.add(action);
+        if (!allowed.has(action)) problems.push(`${domain}.${action} is declared but not allowlisted`);
+      }
+      for (const action of allowed) {
+        if (!declared.has(action)) {
+          problems.push(`${domain}.${action} is allowlisted but not declared read or write in shared/adeActionAccess.ts`);
+        }
+      }
+    }
+    expect(problems).toEqual([]);
+  });
+
+  // The runtime pools run a call again after a dropped connection only when
+  // this says so; a replayed write could run twice.
+  it.each([
+    ["lane", "list", true],
+    ["file", "readFile", true],
+    ["chat", "getChatEventHistory", true],
+    ["search", "query", true],
+    ["file", "refreshGitDecorations", true],
+    ["lane", "delete", false],
+    ["chat", "sendMessage", false],
+    ["file", "writeTextAtomic", false],
+    ["ai", "getCursorAgentUsage", false],
+    ["automations", "webhookList", false],
+    ["chat", "waitFor", false],
+    ["lane", "getaway", false],
+  ])("replays %s.%s after a dropped connection: %s", (domain, action, replayable) => {
+    expect(isReplaySafeAdeAction(domain, action)).toBe(replayable);
   });
 });
 
@@ -538,16 +585,25 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     expect(contract?.example).toContain("cto_memory.recordDiscovery");
   });
 
-  it("exposes prompt stashes through the project runtime for connected desktops", () => {
+  // Drafts stopped being CTO-only when they became the store behind scheduled
+  // send: an agent arming a send on the user's behalf is the point of the
+  // feature. The consequence is recorded in actionPolicy.ts — an agent can
+  // read unsent drafts — so this asserts the new boundary rather than the old.
+  it("exposes drafts to agents as well as connected desktops", () => {
     const actions = ADE_ACTION_ALLOWLIST.chat ?? [];
     expect(actions).toEqual(expect.arrayContaining([
-      "listPromptStashes",
-      "createPromptStash",
-      "deletePromptStash",
+      "listDrafts",
+      "createDraft",
+      "updateDraft",
+      "deleteDraft",
+      "claimDraft",
     ]));
-    expect(isCtoOnlyAdeAction("chat", "listPromptStashes")).toBe(true);
-    expect(isCtoOnlyAdeAction("chat", "createPromptStash")).toBe(true);
-    expect(isCtoOnlyAdeAction("chat", "deletePromptStash")).toBe(true);
+    expect(isCtoOnlyAdeAction("chat", "listDrafts")).toBe(false);
+    expect(isCtoOnlyAdeAction("chat", "createDraft")).toBe(false);
+    expect(isCtoOnlyAdeAction("chat", "deleteDraft")).toBe(false);
+    // The post-update resume arm is a different matter: it is machine-wide and
+    // spends a real turn on every chat the desktop names, so it stays CTO-only.
+    expect(isCtoOnlyAdeAction("chat", "armUpdateResume")).toBe(true);
   });
 });
 
@@ -636,6 +692,8 @@ describe("CTO domain coverage over the ADE action bus", () => {
       ["chat", "startCodexRealtime"],
       ["chat", "stopCodexRealtime"],
       ["chat", "getCodexRealtimeState"],
+      ["ai", "museSettings"],
+      ["ai", "museSettingsClose"],
     ] as Array<[AdeActionDomain, string]>) {
       expect(isCtoOnlyAdeAction(domain, action), `${domain}.${action}`).toBe(true);
     }

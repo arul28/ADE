@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { DevServerRecord, OpenProjectBinding } from "../../shared/types";
-import { pinKey } from "../state/projectMachines";
+import { pinKey } from "../state/pinKey";
 
 /**
  * The dev servers a lane is running, as seen from any machine.

@@ -184,11 +184,16 @@ describe("sessions namespace pin guard", () => {
 });
 
 describe("lanes namespace pin guard", () => {
-  it("sends no lanes.delete for a foreign pin", async () => {
+  it("sends no lane mutation for a foreign pin", async () => {
     const { infra, call } = namespaceFixture();
     const lanes = createLanesNamespace(infra);
-    await expect(lanes.delete!({ laneId: "lane-1" }, remotePin("env-2", "project-2")))
+    const foreignPin = remotePin("env-2", "project-2");
+    await expect(lanes.delete!({ laneId: "lane-1" }, foreignPin))
       .rejects.toThrow(/lanes\.delete.*remote:env-2:project-2/s);
+    await expect(lanes.importBranch!(
+      { branchRef: "origin/feature/import-me", name: "import-me" },
+      foreignPin,
+    )).rejects.toThrow(/lanes\.importBranch.*remote:env-2:project-2/s);
     expect(call).not.toHaveBeenCalled();
   });
 

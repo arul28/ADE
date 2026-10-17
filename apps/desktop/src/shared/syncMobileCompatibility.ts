@@ -37,6 +37,23 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   // keeps the read-only pane.
   "cto.getLinearIssue",
   "cto.updateLinearIssue",
+  // Issue viewer: Linear comments, and GitHub issues read and edited the way
+  // the desktop's Issues tab does. Optional: an older brain omits them.
+  "cto.createLinearIssueComment",
+  "github.getRepoIssueSummary",
+  "github.listRepoIssueList",
+  "github.listIssueComments",
+  "github.getIssueWriteAccess",
+  "github.listRepoMilestones",
+  "github.updateIssue",
+  "github.commentOnIssue",
+  "github.createIssue",
+  "github.listIssueTemplates",
+  "github.listIssueTypes",
+  "cto.createLinearIssue",
+  "cto.getLinearIssueCreateOptions",
+  "cto.listLinearProjectMilestones",
+  "cto.uploadLinearFile",
   "cto.countLinearIssues",
   "cto.getLinearCustomViews",
   // Whether the CTO thread is blocked on the user. The CTO chat is hidden from
@@ -73,6 +90,10 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   // Metadata regeneration is an explicit chat affordance. Optional so older
   // phones can keep their connection and simply omit the newer action.
   "chat.regenerateSessionMetadata",
+  // Composer @-mention suggestions (chats, lanes, terminals, PRs, machines).
+  // Optional: the phone shows file suggestions only when an older brain
+  // omits it.
+  "chat.listMentionSuggestions",
   // Usage-limit "Resume now". The phone hides the button unless the host
   // advertises this action, and a viewer-role tap is refused with the standard
   // policy message rather than silently doing nothing. Optional so an older
@@ -102,6 +123,11 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   "prs.getChatWatches",
   // Restart agent session. Optional: an older host simply lacks it.
   "chat.restartSession",
+  // Session menu "Hand off ▸ Auto handoff…". Optional: the phone hides the
+  // item unless all three are advertised, and an older host simply omits them.
+  "automations.list",
+  "automations.saveDraft",
+  "automations.deleteRule",
   // Cursor Cloud watch/open. iOS and the web client presence-gate inbound
   // sync on these; optional so an older phone against a newer host does not
   // go limited, and an older host simply omits the actions.
@@ -139,14 +165,20 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   "ai.launchCloudAgent",
   // Per-project prompt stash. iOS gates the overflow-menu items on these
   // descriptors so an older brain simply omits stash instead of going limited.
-  "chat.listPromptStashes",
-  "chat.createPromptStash",
-  "chat.deletePromptStash",
+  "chat.listDrafts",
+  "chat.createDraft",
+  "chat.deleteDraft",
+  "chat.updateDraft",
+  "chat.claimDraft",
   // Thread comments. An older brain omits them, and the phone hides the chip.
   ...THREAD_COMMENT_ACTION_NAMES.map((action) => `chat.${action}` as const),
   // Sources favicons improve the compact phone Sources list; older hosts keep
   // working with the domain-initial fallback.
   "chat.resolveSourceFavicons",
+  // MCP Apps. Optional: against an older host the phone shows the app card's
+  // fallback text instead of the app.
+  "chat.getMcpApp",
+  "chat.mcpAppRequest",
   // Read-only Work tools pane (active tool, browser tabs, App Control, latest
   // frame). Optional because the phone simply shows no lane tool chips when
   // the brain does not advertise it — an older brain must not be flipped to
@@ -213,6 +245,14 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   // The host's Claude and Codex logins. The phone shows "update ADE" on its
   // AI accounts page until the host advertises them.
   ...PROVIDER_ACCOUNT_REMOTE_COMMAND_ACTIONS,
+  // Custom webhook automations: the read-only list and delivery log. Optional
+  // so a phone on an older build simply shows no Webhooks pane against a newer
+  // host, and an older host — or a runtime with no webhook source wired —
+  // omits the actions instead of flipping a newer phone into "limited". A host
+  // whose automations are off lists no webhooks.
+  "automations.webhookList",
+  "automations.webhookListDeliveries",
+  "automations.webhookGetDelivery",
 ] as const satisfies readonly SyncRemoteCommandAction[];
 
 export const MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS = [

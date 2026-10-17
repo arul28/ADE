@@ -59,7 +59,7 @@ export const WINDOWS_DESKTOP_NEXT_STEP: Record<WindowsDesktopPrivateUnavailableR
   held:
     "Ask the user to take over the private screen (Take over in the Windows Desktop pane), or ask for their main desktop: ade screen start --shared --reason \"<what for>\" --text",
   not_console_session:
-    "The private screen needs ADE running on the PC's own desktop (not over SSH). Ask for the main desktop instead: ade screen start --shared --reason \"<what for>\" --text",
+    "The private screen needs ADE's brain in the PC's console session, and it is running in another one (Remote Desktop or SSH). Ask the user to sign in at the PC, or ask for the main desktop instead: ade screen start --shared --reason \"<what for>\" --text",
   unsupported_platform:
     "This Windows edition has no private screens. Ask for the main desktop instead: ade screen start --shared --reason \"<what for>\" --text",
   consent:
@@ -79,7 +79,7 @@ export function windowsDesktopPrivateUnavailableMessage(
     case "unsupported_platform":
       return "Private Windows screens need Windows Pro, Enterprise, or Education.";
     case "not_console_session":
-      return "ADE is not running on this PC's desktop, so it cannot start a private screen.";
+      return "ADE is running in a Remote Desktop or other session, not on this PC's console, so it cannot start a private screen.";
     case "setup_required":
       return "Private screens are not set up on this PC yet.";
     case "held":

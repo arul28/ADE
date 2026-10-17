@@ -33,6 +33,11 @@ struct LaneDetailScreen: View {
   @State var cachedCommitDiffFilesBySha: [String: [String]] = [:]
   @State var pendingGitConfirmation: LaneGitConfirmation?
   @State private var lastLaneDetailLocalReload = Date.distantPast
+  /// Field diagnostics: this screen's open-to-ready timings.
+  @State private var openTiming = ScreenOpenTiming()
+  /// The opening load (cache, then one host read) has finished. Until then the
+  /// keyed reload task stays out of its way.
+  @State private var openingLoadFinished = false
 
   var laneDetailProjectionReloadKey: String {
     // Per-lane revision keeps this screen from reloading when an unrelated lane's
@@ -85,7 +90,6 @@ struct LaneDetailScreen: View {
           gitActionsPane(detail: detail)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
-        .padding(.bottom, 8)
       } else {
         ScrollView {
           VStack(spacing: 12) {
@@ -110,12 +114,28 @@ struct LaneDetailScreen: View {
       laneDetailTopBar
     }
     .adeNavigationZoomTransition(id: transitionNamespace == nil ? nil : "lane-container-\(laneId)", in: transitionNamespace)
+    .onAppear {
+      ScrollDiagnostics.shared.enter(.laneDetail)
+      openTiming.opened()
+    }
+    .onChange(of: detail != nil) { _, loaded in
+      if loaded { openTiming.mark("laneDetail.content") }
+    }
     .task {
       syncService.announceLaneOpen(laneId: laneId)
+      let openingKey = laneDetailProjectionReloadKey
       await loadDetail(refreshRemote: canRunLiveActions)
+      openingLoadFinished = true
+      // A local bump landed during the host read: read the cache once more
+      // so the newest local state wins over an older host reply.
+      if laneDetailProjectionReloadKey != openingKey {
+        await loadDetail(refreshRemote: false)
+      }
     }
     .task(id: laneDetailProjectionReloadKey) {
-      guard busyAction == nil else { return }
+      // The opening load owns the first read, and reads again itself if
+      // this key moved while it ran.
+      guard busyAction == nil, openingLoadFinished else { return }
       if detail == nil, canRunLiveActions {
         await loadDetail(refreshRemote: true)
         return
@@ -194,6 +214,7 @@ struct LaneDetailScreen: View {
       rescueLaneSheet
     }
     .onDisappear {
+      ScrollDiagnostics.shared.leave(.laneDetail)
       syncService.releaseLaneOpen(laneId: laneId)
     }
   }
@@ -229,9 +250,43 @@ struct LaneDetailScreen: View {
       .buttonStyle(.plain)
       .accessibilityLabel("Back to lanes")
 
-      Spacer(minLength: 0)
+      // The lane's name sits in the bar row (it was a separate large-title
+      // row under an otherwise empty bar).
+      HStack(spacing: 7) {
+        WorkLaneLogoMark(
+          color: laneSurfaceTint(forHex: currentSnapshot.lane.color).text ?? ADEColor.accent,
+          laneIcon: currentSnapshot.lane.icon,
+          size: 14
+        )
+        Text(currentSnapshot.lane.name)
+          .font(.system(size: 17, weight: .semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(1)
+          .truncationMode(.tail)
+      }
+      .padding(.leading, 2)
+      .accessibilityElement(children: .combine)
+      .accessibilityAddTraits(.isHeader)
+
+      Spacer(minLength: 8)
 
       Menu {
+        // The lane's pull request, or making one: the step after the work.
+        if let pr = lanePullRequests.first(where: { $0.state == "open" || $0.state == "draft" }) ?? lanePullRequests.first {
+          Button {
+            openPullRequest(pr)
+          } label: {
+            Label("Open PR #\(pr.githubPrNumber)", systemImage: "arrow.triangle.pull")
+          }
+        } else if currentSnapshot.lane.laneType != "primary", currentSnapshot.lane.archivedAt == nil {
+          Button {
+            syncService.requestedPrNavigation = PrNavigationRequest(createLaneId: laneId)
+          } label: {
+            Label("Create pull request", systemImage: "plus.square.on.square")
+          }
+          .disabled(!canRunLiveActions)
+        }
+        Divider()
         Button {
           copyLaneLink()
         } label: {
@@ -505,39 +560,32 @@ struct LaneDetailScreen: View {
   @ViewBuilder
   private func busyBanner(_ label: String) -> some View {
     HStack(spacing: 10) {
-      ProgressView().tint(ADEColor.accent)
+      ProgressView().controlSize(.small)
       Text(label.capitalized)
-        .font(.subheadline)
+        .font(.system(size: 13.5))
         .foregroundStyle(ADEColor.textSecondary)
       Spacer()
     }
-    .adeGlassCard(cornerRadius: 12, padding: 12)
+    .adeKitCard(padding: 12)
   }
 
   @ViewBuilder
   private func errorBanner(_ message: String) -> some View {
-    HStack(spacing: 10) {
-      Image(systemName: "exclamationmark.triangle.fill")
-        .foregroundStyle(ADEColor.danger)
-      Text(message)
-        .font(.footnote)
-        .foregroundStyle(ADEColor.danger)
-      Spacer()
-    }
-    .adeGlassCard(cornerRadius: 12, padding: 12)
+    ADESettingsNotice(message: message, tone: .crit)
   }
 
   @ViewBuilder
   private func copiedBanner(_ message: String) -> some View {
     HStack(spacing: 10) {
-      Image(systemName: "doc.on.doc.fill")
+      Image(systemName: "checkmark.circle.fill")
+        .font(.system(size: 13, weight: .semibold))
         .foregroundStyle(ADEColor.success)
       Text(message)
-        .font(.footnote)
+        .font(.system(size: 13.5))
         .foregroundStyle(ADEColor.textSecondary)
       Spacer()
     }
-    .adeGlassCard(cornerRadius: 12, padding: 12)
+    .adeKitCard(padding: 12)
   }
 
   @MainActor
@@ -593,6 +641,7 @@ struct LaneDetailScreen: View {
         if detail != refreshedDetail {
           detail = refreshedDetail
         }
+        openTiming.mark("laneDetail.fresh")
         let refreshedPullRequests = try await syncService.fetchPullRequestListItems(laneId: laneId)
         if lanePullRequests != refreshedPullRequests {
           lanePullRequests = refreshedPullRequests
@@ -706,8 +755,7 @@ struct LaneDetailScreen: View {
         Button(actionTitle) {
           handleNoticeAction(action)
         }
-        .buttonStyle(.glassProminent)
-        .tint(ADEColor.accent)
+        .buttonStyle(ADEKitButtonStyle(prominent: true))
       }
     }
   }

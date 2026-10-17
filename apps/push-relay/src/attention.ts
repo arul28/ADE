@@ -11,8 +11,11 @@ import {
   verifyAttentionBearerToken,
 } from "./attentionAuth";
 import {
+  accountChangeMarks,
   apnsConfig,
   boundedText,
+  isActivityBoardColumn,
+  isActivityWaitingReason,
   isRecord,
   json,
   logAttentionDeliveryError,
@@ -29,6 +32,7 @@ import {
   type ParsedAttentionItem,
 } from "./attentionShared";
 import { deliverAccountLiveActivity } from "./liveActivity";
+import { ACCOUNT_NOTIFY_LIMIT_PER_HOUR, checkAccountNotifyQuota } from "./spendGuards";
 export {
   inspectAttentionAuthConfiguration,
   type AttentionAuthConfigurationStatus,
@@ -135,14 +139,47 @@ const ACTION_KINDS = new Set([
 
 const PR_TABS = new Set(["overview", "activity", "checks", "files"]);
 
+/**
+ * Only urgent events push by default: a question, a failure, and red CI. The
+ * rest show in Activity and the Live Activity. Mirrors the `defaultPolicy`
+ * column of `apps/desktop/src/shared/activityCatalog.ts`.
+ */
 const DEFAULT_NOTIFY_EVENTS = new Set([
   "agent_needs_you",
   "agent_failed",
   "pr_checks_failing",
+]);
+
+/**
+ * Events that notified by default before policy-defaults version 2. A saved
+ * "notify" for one of them, in preferences saved before version 2, was the old
+ * default rather than a choice, so it reads as the new default ("ambient").
+ * Mirrors `upgradeAttentionEventPolicies` in the desktop shared types.
+ */
+const EVENTS_DEMOTED_IN_POLICY_DEFAULTS_V2 = new Set([
   "pr_review_requested",
   "pr_changes_requested",
   "pr_merge_ready",
 ]);
+
+function effectiveEventPolicy(
+  eventKind: string,
+  eventPolicies: Record<string, unknown>,
+  scope: Record<string, unknown>,
+): string {
+  const saved = typeof eventPolicies[eventKind] === "string"
+    ? eventPolicies[eventKind] as string
+    : null;
+  const defaultsVersion = Number(scope.eventPolicyDefaultsVersion);
+  const savedUnderOldDefaults = !Number.isFinite(defaultsVersion) || defaultsVersion < 2;
+  if (
+    saved
+    && !(savedUnderOldDefaults && saved === "notify" && EVENTS_DEMOTED_IN_POLICY_DEFAULTS_V2.has(eventKind))
+  ) {
+    return saved;
+  }
+  return DEFAULT_NOTIFY_EVENTS.has(eventKind) ? "notify" : "ambient";
+}
 
 function deepLinkForItem(item: ParsedAttentionItem): string | null {
   const destination = item.destination;
@@ -852,26 +889,44 @@ async function enforceActivityAccountItemCap(
   return { itemsTruncated: true, revision };
 }
 
-function resolveActivityDeliveryPreferences(
+/**
+ * One device's effective delivery preferences: the registration defaults, then
+ * the account, then the project and machine scopes, then an explicit device
+ * override. A scope that is absent (a custom notification has no project)
+ * contributes nothing.
+ */
+function resolveScopedDeliveryPreferences(
   device: AttentionDeviceRow,
-  item: ParsedAttentionItem,
+  scope: { projectId?: string | null; machineKey?: string | null },
   preferences: Record<string, unknown>,
 ): Record<string, unknown> {
   const registered = readPreferences(device.preferences_json);
   const account = isRecord(preferences.account) ? preferences.account : {};
   const projects = isRecord(preferences.projects) ? preferences.projects : {};
-  const project = isRecord(projects[item.project.projectId])
-    ? projects[item.project.projectId] as Record<string, unknown>
+  const project = scope.projectId && isRecord(projects[scope.projectId])
+    ? projects[scope.projectId] as Record<string, unknown>
     : {};
   const machines = isRecord(preferences.machines) ? preferences.machines : {};
-  const machine = isRecord(machines[item.machine.machineKey])
-    ? machines[item.machine.machineKey] as Record<string, unknown>
+  const machine = scope.machineKey && isRecord(machines[scope.machineKey])
+    ? machines[scope.machineKey] as Record<string, unknown>
     : {};
   const devices = isRecord(preferences.devices) ? preferences.devices : {};
   const explicitDevice = isRecord(devices[device.device_id])
     ? devices[device.device_id] as Record<string, unknown>
     : {};
   return { ...registered, ...account, ...project, ...machine, ...explicitDevice };
+}
+
+function resolveActivityDeliveryPreferences(
+  device: AttentionDeviceRow,
+  item: ParsedAttentionItem,
+  preferences: Record<string, unknown>,
+): Record<string, unknown> {
+  return resolveScopedDeliveryPreferences(
+    device,
+    { projectId: item.project.projectId, machineKey: item.machine.machineKey },
+    preferences,
+  );
 }
 
 function resolvedMutedSessionIds(
@@ -1112,7 +1167,7 @@ async function deliverAttentionNotifications(
     }
     // Give a desktop surface that actually contains this item the first chance
     // to surface it. A merely foreground ADE window is not enough: the header,
-    // full center, or native notch must report the exact visible item.
+    // or the full center must report the exact visible item.
     // The machine heartbeat republishes the full snapshot every 30s; if the
     // item remains unseen, the next pass escalates it to the phone.
     if (
@@ -1135,11 +1190,7 @@ async function deliverAttentionNotifications(
       const eventPolicies = isRecord(override.eventPolicies)
         ? override.eventPolicies
         : {};
-      const policy = typeof eventPolicies[item.eventKind] === "string"
-        ? eventPolicies[item.eventKind]
-        : DEFAULT_NOTIFY_EVENTS.has(item.eventKind)
-          ? "notify"
-          : "ambient";
+      const policy = effectiveEventPolicy(item.eventKind, eventPolicies, override);
       if (policy !== "notify") continue;
       const notificationsEnabled = preferenceBoolean(
         override,
@@ -1189,9 +1240,11 @@ async function deliverAttentionNotifications(
 
       const hideDetails = preferenceBoolean(override, accountPreferences, "hideDetails", false);
       const soundsEnabled = preferenceBoolean(override, accountPreferences, "soundsEnabled", false);
-      const body = hideDetails
-        ? boundedText(item.privacyPreview, MAX_PREVIEW_LENGTH)
-        : boundedText(item.preview, MAX_PREVIEW_LENGTH);
+      const copy = attentionAlertCopy(item, hideDetails);
+      const approvalCategory = item.kind === "agent"
+        && Array.isArray(item.actions)
+        && item.actions.some((action) => isRecord(action) && action.kind === "approve")
+        && item.actions.some((action) => isRecord(action) && action.kind === "deny");
       let result: ApnsSendResult;
       try {
         result = await sendPush(config, {
@@ -1205,9 +1258,12 @@ async function deliverAttentionNotifications(
           payload: {
             aps: {
               alert: {
-                title: notificationTitle(item, hideDetails),
-                ...(body ? { body } : {}),
+                title: copy.title,
+                ...(copy.body ? { body: copy.body } : {}),
               },
+              // Approve and Deny on the banner. The payload's
+              // `accountMachineKey` tells the phone which machine to answer.
+              ...(approvalCategory ? { category: "ADE_APPROVAL" } : {}),
               ...(soundsEnabled ? { sound: "default" } : {}),
               // Wakes the app for a background snapshot refresh alongside the
               // visible alert; foreground polling remains the guaranteed path.
@@ -1296,9 +1352,67 @@ async function deliverAttentionNotifications(
   }
 }
 
-function notificationTitle(item: ParsedAttentionItem, hideDetails: boolean): string {
-  if (!hideDetails) return boundedText(item.title, MAX_TITLE_LENGTH) ?? "ADE needs you";
-  return item.kind === "pull_request" ? "ADE pull request update" : "ADE agent update";
+/** The longest title or body a push shows. Longer text is cut with "…". */
+const ALERT_LINE_MAX = 64;
+
+const ALERT_STATE_LABEL: Record<string, string> = {
+  agent_needs_you: "Needs you",
+  agent_failed: "Failed",
+  agent_completed: "Done",
+  agent_running: "Working",
+  pr_checks_failing: "Checks failing",
+  pr_review_requested: "Review requested",
+  pr_changes_requested: "Changes requested",
+  pr_merge_ready: "Ready to merge",
+  pr_merged: "Merged",
+  pr_opened: "Opened",
+  pr_closed: "Closed",
+};
+
+function alertLine(value: unknown): string | null {
+  const text = typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
+  if (!text) return null;
+  return text.length > ALERT_LINE_MAX ? `${text.slice(0, ALERT_LINE_MAX - 1).trimEnd()}…` : text;
+}
+
+/**
+ * A push is two short lines: what it is about, and its state and where.
+ *
+ *   Agent:  "Provider SDK inventory review"  /  "Needs you · ADE · Mac Studio"
+ *   PR:     "#1514 Keep Cloudflare under $10"  /  "Checks failing · ADE"
+ *
+ * Agent text (the preview) never goes in a push: it is a paragraph nobody reads
+ * on a lock screen, and the row it opens shows it in full. With hide-details on,
+ * the title is the state alone and nothing else is named.
+ */
+function attentionAlertCopy(
+  item: ParsedAttentionItem,
+  hideDetails: boolean,
+): { title: string; body: string | null } {
+  const state = ALERT_STATE_LABEL[item.eventKind] ?? "Update";
+  if (hideDetails) {
+    return {
+      title: item.kind === "pull_request" ? `Pull request: ${state}` : `Agent: ${state}`,
+      body: null,
+    };
+  }
+  const project = alertLine(item.project?.name);
+  const machine = alertLine(item.machine?.name);
+  if (item.kind === "pull_request") {
+    const number = isRecord(item.destination) ? Number(item.destination.number) : Number.NaN;
+    const prTitle = alertLine(item.preview);
+    const title = Number.isSafeInteger(number) && number > 0
+      ? alertLine(prTitle ? `#${number} ${prTitle}` : `Pull request #${number}`)
+      : alertLine(item.title);
+    return {
+      title: title ?? "Pull request",
+      body: alertLine([state, project].filter(Boolean).join(" · ")),
+    };
+  }
+  return {
+    title: alertLine(item.title) ?? "ADE agent",
+    body: alertLine([state, project, machine].filter(Boolean).join(" · ")),
+  };
 }
 
 /** Length-independent comparison so a wrong secret leaks no timing signal. */
@@ -1431,6 +1545,13 @@ function parseAttentionItem(value: unknown, machineKey: string): ParsedAttention
   // treated as absent, which degrades to the phase-derived group instead of
   // dropping the whole item.
   const chatActivityMode = value.chatActivityMode === "planning" ? "planning" : undefined;
+  // Same leniency: an unknown column degrades to the phase-derived one.
+  const boardColumn = value.kind === "agent" && isActivityBoardColumn(value.boardColumn)
+    ? value.boardColumn
+    : undefined;
+  const waitingReason = boardColumn === "waiting" && isActivityWaitingReason(value.waitingReason)
+    ? value.waitingReason
+    : undefined;
   const kind = value.kind;
   const eventKind = requiredString(value.eventKind, 64);
   const phase = requiredString(value.phase, 64);
@@ -1661,6 +1782,8 @@ function parseAttentionItem(value: unknown, machineKey: string): ParsedAttention
     alertFingerprint,
     ...(activityTier ? { activityTier } : {}),
     ...(chatActivityMode ? { chatActivityMode } : {}),
+    ...(boardColumn ? { boardColumn } : {}),
+    ...(waitingReason ? { waitingReason } : {}),
     kind,
     eventKind,
     phase,
@@ -2057,8 +2180,8 @@ async function linkMachineToAccount(
       last_seen_at = excluded.last_seen_at
   `).bind(machineKey, userId, machineName, now, now).run();
   await env.DB
-    .prepare("update machines set account_user_id = ? where machine_key = ?")
-    .bind(userId, machineKey)
+    .prepare("update machines set account_user_id = ? where machine_key = ? and account_user_id is not ?")
+    .bind(userId, machineKey, userId)
     .run();
   if (previous?.legacy_devices_imported_at) return;
 
@@ -2155,6 +2278,15 @@ async function refreshActivityMachinePresence(
     now: string;
   },
 ): Promise<void> {
+  // Presence runs every 30 s per machine. When the link already belongs to
+  // this user, touch only unindexed columns: one billed row instead of the
+  // upsert's two (setting `user_id`, even unchanged, rewrites its index).
+  const touched = await env.DB.prepare(`
+    update attention_machine_links
+       set machine_name = ?, last_seen_at = ?
+     where machine_key = ? and user_id = ?
+  `).bind(args.machineName, args.now, args.machineKey, args.userId).run();
+  if ((touched.meta?.changes ?? 0) > 0) return;
   await env.DB.prepare(`
     insert into attention_machine_links(
       machine_key, user_id, machine_name, last_seen_at, linked_at,
@@ -2275,6 +2407,14 @@ async function activityPublishAcknowledgments(
 export type VerifiedMachineIdentity = {
   machineKey: string;
 };
+
+/** Marks are advisory: a failed read leaves them out instead of failing the publish. */
+async function optionalAccountChangeMarks(
+  env: AttentionRelayEnv,
+  userId: string,
+): Promise<Awaited<ReturnType<typeof accountChangeMarks>> | undefined> {
+  return await accountChangeMarks(env, userId).catch(() => undefined);
+}
 
 export async function handleAttentionMachinePublish(
   request: Request,
@@ -2439,7 +2579,12 @@ export async function handleAttentionMachinePublish(
       now,
     );
     await deliverAttentionNotifications(env, account.userId, storedItems);
-    const [current, acks] = await Promise.all([
+    // The heartbeat is also the retry for Live Activity counts the 5-minute
+    // window held back: without it, a Working-to-Waiting change made just
+    // after a push would sit unsent until the next real change. When nothing
+    // is pending, this only reads.
+    await deliverAccountLiveActivity(env, account.userId);
+    const [current, acks, accountChanges] = await Promise.all([
       env.DB
         .prepare("select revision from attention_revisions where user_id = ? limit 1")
         .bind(account.userId)
@@ -2449,6 +2594,7 @@ export async function handleAttentionMachinePublish(
         machineKey,
         requestItems: [],
       }),
+      optionalAccountChangeMarks(env, account.userId),
     ]);
     return json({
       ok: true,
@@ -2458,6 +2604,7 @@ export async function handleAttentionMachinePublish(
       upserted: 0,
       removed: 0,
       unchanged: true,
+      accountChanges,
     });
   }
   await linkMachineToAccount(
@@ -2484,7 +2631,7 @@ export async function handleAttentionMachinePublish(
       items as ParsedAttentionItem[],
     );
     await deliverAccountLiveActivity(env, account.userId);
-    const [current, acks] = await Promise.all([
+    const [current, acks, accountChanges] = await Promise.all([
       env.DB
         .prepare("select revision from attention_revisions where user_id = ? limit 1")
         .bind(account.userId)
@@ -2494,6 +2641,7 @@ export async function handleAttentionMachinePublish(
         machineKey,
         requestItems: items as ParsedAttentionItem[],
       }),
+      optionalAccountChangeMarks(env, account.userId),
     ]);
     return json({
       ok: true,
@@ -2503,6 +2651,7 @@ export async function handleAttentionMachinePublish(
       upserted: 0,
       removed: 0,
       unchanged: true,
+      accountChanges,
     });
   }
   let accountRevision = await commitAttentionMachineChanges(env, {
@@ -2531,11 +2680,14 @@ export async function handleAttentionMachinePublish(
     items as ParsedAttentionItem[],
   );
   await deliverAccountLiveActivity(env, account.userId);
-  const acks = await activityPublishAcknowledgments(env, {
-    userId: account.userId,
-    machineKey,
-    requestItems: items as ParsedAttentionItem[],
-  });
+  const [acks, accountChanges] = await Promise.all([
+    activityPublishAcknowledgments(env, {
+      userId: account.userId,
+      machineKey,
+      requestItems: items as ParsedAttentionItem[],
+    }),
+    optionalAccountChangeMarks(env, account.userId),
+  ]);
 
   return json({
     ok: true,
@@ -2545,6 +2697,7 @@ export async function handleAttentionMachinePublish(
     upserted: items.length,
     removed: tombstones.length,
     ...(cap.itemsTruncated ? { itemsTruncated: true } : {}),
+    accountChanges,
   });
 }
 
@@ -2731,7 +2884,7 @@ async function handleAcknowledgment(
         return json({ ok: false, error: "invalid alert fingerprints" }, { status: 400 });
       }
       const normalized = value.trim();
-      // 1024 matches the notch snapshot parser's bound on the same field.
+      // 1024 matches the desktop Activity item parser's bound on the same field.
       if (!normalized || normalized.length > 1024) {
         return json({ ok: false, error: "invalid alert fingerprints" }, { status: 400 });
       }
@@ -3054,6 +3207,196 @@ async function handleDevicePreferences(
     ok: true,
     preferences: result.preferences,
     updatedAt: result.updatedAt,
+  });
+}
+
+/** A custom notification's limits. The relay sends the text exactly as written. */
+export const CUSTOM_NOTIFICATION_TITLE_MAX = 64;
+export const CUSTOM_NOTIFICATION_BODY_MAX = 160;
+const CUSTOM_NOTIFICATION_LINK_MAX = 1_024;
+
+type CustomNotificationRequest = {
+  title: string;
+  body: string | null;
+  deepLink: string | null;
+  machineKey: string | null;
+};
+
+function parseCustomNotification(
+  payload: unknown,
+): CustomNotificationRequest | { error: string } {
+  if (!isRecord(payload)) return { error: "invalid notification" };
+  const title = typeof payload.title === "string" ? payload.title.trim() : "";
+  if (!title) return { error: "title is required" };
+  if (title.length > CUSTOM_NOTIFICATION_TITLE_MAX) {
+    return { error: `title is longer than ${CUSTOM_NOTIFICATION_TITLE_MAX} characters` };
+  }
+  let body: string | null = null;
+  if (payload.body !== undefined && payload.body !== null) {
+    if (typeof payload.body !== "string") return { error: "body must be text" };
+    body = payload.body.trim() || null;
+    if (body && body.length > CUSTOM_NOTIFICATION_BODY_MAX) {
+      return { error: `body is longer than ${CUSTOM_NOTIFICATION_BODY_MAX} characters` };
+    }
+  }
+  let deepLink: string | null = null;
+  if (payload.deepLink !== undefined && payload.deepLink !== null) {
+    const raw = typeof payload.deepLink === "string" ? payload.deepLink.trim() : "";
+    // Only ADE's own scheme: a tap must land inside ADE, never on a web page
+    // or another app the caller chose.
+    let parsed: URL | null = null;
+    try {
+      parsed = raw ? new URL(raw) : null;
+    } catch {
+      parsed = null;
+    }
+    if (!parsed || parsed.protocol !== "ade:" || raw.length > CUSTOM_NOTIFICATION_LINK_MAX) {
+      return { error: "deepLink must be an ade:// link" };
+    }
+    deepLink = raw;
+  }
+  let machineKey: string | null = null;
+  if (payload.machineKey !== undefined && payload.machineKey !== null) {
+    machineKey = requiredString(payload.machineKey, 128);
+    if (!machineKey) return { error: "invalid machine key" };
+  }
+  return { title, body, deepLink, machineKey };
+}
+
+/**
+ * `POST /attention/account/notify` — a push the caller wrote: `ade notify`, an
+ * agent, or an automation's "Send notification" step.
+ *
+ * It goes to every phone on the account the way an urgent Activity alert does,
+ * and it respects the same switches: notifications off, quiet hours, a muted
+ * machine (when the caller names its machine), and Hide previews, which keeps
+ * only the title on the lock screen. The relay adds nothing to the text. At
+ * most `ACCOUNT_NOTIFY_LIMIT_PER_HOUR` are admitted per account per hour
+ * window; past that it answers 429 with `retryAfterSeconds`.
+ */
+async function handleCustomNotification(
+  request: Request,
+  env: AttentionRelayEnv,
+  userId: string,
+  sendPush: typeof sendApnsPush = sendApnsPush,
+): Promise<Response> {
+  let payload: unknown;
+  try {
+    payload = await request.json();
+  } catch {
+    return json({ ok: false, error: "invalid json" }, { status: 400 });
+  }
+  const parsed = parseCustomNotification(payload);
+  if ("error" in parsed) return json({ ok: false, error: parsed.error }, { status: 400 });
+  const config = apnsConfig(env);
+  if (!config) {
+    return json({ ok: false, error: "push notifications are not configured" }, { status: 503 });
+  }
+  // Counted before the fan-out, so a burst of parallel calls cannot all slip
+  // under the cap while the first one is still sending.
+  const quota = await checkAccountNotifyQuota(env, userId);
+  if (!quota.allowed) {
+    return json(
+      {
+        ok: false,
+        error: "rate limited",
+        limit: ACCOUNT_NOTIFY_LIMIT_PER_HOUR,
+        retryAfterSeconds: quota.retryAfterSeconds,
+      },
+      { status: 429, headers: { "retry-after": String(quota.retryAfterSeconds) } },
+    );
+  }
+
+  const nowMs = Date.now();
+  const nowIso = new Date(nowMs).toISOString();
+  const [devicesResult, preferencesRow] = await Promise.all([
+    env.DB.prepare(`
+      select device_id, apns_token, bundle_id, aps_environment, preferences_json
+      from attention_devices
+      where user_id = ? and apns_token is not null and lease_expires_at > ?
+      limit ?
+    `).bind(userId, nowIso, MAX_ATTENTION_DEVICES).all<AttentionDeviceRow>(),
+    env.DB
+      .prepare("select payload_json from attention_preferences where user_id = ? limit 1")
+      .bind(userId)
+      .first<{ payload_json: string }>(),
+  ]);
+  const preferences = readPreferences(preferencesRow?.payload_json);
+  const accountPreferences = isRecord(preferences.account) ? preferences.account : {};
+  const collapseId = `ade-notify-${crypto.randomUUID()}`;
+  let delivered = 0;
+  let skipped = 0;
+  let failed = 0;
+  for (const device of devicesResult.results) {
+    if (!device.apns_token) continue;
+    const override = resolveScopedDeliveryPreferences(
+      device,
+      { machineKey: parsed.machineKey },
+      preferences,
+    );
+    const notificationsEnabled = preferenceBoolean(
+      override,
+      {},
+      "notificationsEnabled",
+      typeof override.enabled === "boolean" ? override.enabled : true,
+    );
+    if (!notificationsEnabled || quietHoursActive(override, accountPreferences, nowMs)) {
+      skipped += 1;
+      continue;
+    }
+    const soundsEnabled = preferenceBoolean(override, accountPreferences, "soundsEnabled", false);
+    // With Hide previews on, the lock screen shows the title only, so an agent
+    // or automation cannot put private text on a locked phone.
+    const hideDetails = preferenceBoolean(override, accountPreferences, "hideDetails", false);
+    let result: ApnsSendResult;
+    try {
+      result = await sendPush(config, {
+        environment: device.aps_environment as ApnsEnvironment,
+        deviceToken: device.apns_token,
+        topic: device.bundle_id || env.APNS_DEFAULT_TOPIC?.trim() || "",
+        pushType: "alert",
+        priority: 10,
+        expiration: Math.floor(nowMs / 1_000) + 24 * 60 * 60,
+        collapseId,
+        payload: {
+          aps: {
+            alert: {
+              title: parsed.title,
+              ...(parsed.body && !hideDetails ? { body: parsed.body } : {}),
+            },
+            ...(soundsEnabled ? { sound: "default" } : {}),
+            "thread-id": "ade-notify",
+            "interruption-level": "active",
+          },
+          customNotification: true,
+          ...(parsed.deepLink ? { deepLink: parsed.deepLink } : {}),
+        },
+      });
+    } catch (error) {
+      failed += 1;
+      logAttentionDeliveryError("notification", device.device_id, error);
+      continue;
+    }
+    if (result.ok) {
+      delivered += 1;
+      continue;
+    }
+    failed += 1;
+    if (result.tokenInvalid) {
+      await env.DB.prepare(`
+        update attention_devices
+        set apns_token = null, updated_at = ?
+        where user_id = ? and device_id = ? and apns_token = ?
+      `).bind(nowIso, userId, device.device_id, device.apns_token).run();
+    }
+  }
+  return json({
+    ok: true,
+    devices: devicesResult.results.length,
+    delivered,
+    skipped,
+    failed,
+    remaining: quota.remaining,
   });
 }
 
@@ -3693,6 +4036,9 @@ async function handleAuthorizedAttentionAccountRequest(
   if (route.length === 1 && route[0] === "presence" && request.method === "POST") {
     return await handlePresence(request, env, userId);
   }
+  if (route.length === 1 && route[0] === "notify" && request.method === "POST") {
+    return await handleCustomNotification(request, env, userId);
+  }
   if (route.length === 1 && route[0] === "preferences" && (request.method === "GET" || request.method === "PUT")) {
     return await handlePreferences(request, env, userId);
   }
@@ -3955,7 +4301,7 @@ export const attentionTestInternals = Object.freeze({
   resolvedMutedSessionIds,
   implicitFullSnapshotTombstone,
   linkMachineToAccount,
-  notificationTitle,
+  attentionAlertCopy,
   normalizedSnapshotCursor,
   parseAttentionItem,
   purgeAccountMachineActivity,

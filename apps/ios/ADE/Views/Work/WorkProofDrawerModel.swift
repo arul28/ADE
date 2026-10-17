@@ -27,6 +27,23 @@ struct WorkProofDrawerGroup: Identifiable, Equatable {
   let other: [WorkProofDrawerItem]
 }
 
+/// The drawer narrowed to the records a thread link counted ("3 proof filed"),
+/// with the words its filter chip shows ("This turn"). Mirrors
+/// `ProofDrawerFocus` in proofDrawerModel.ts.
+struct WorkProofDrawerFocus: Equatable {
+  let label: String
+  let artifactIds: [String]
+
+  /// One turn's proof, for its "N proof filed" link.
+  static func turn(ids: [String]) -> WorkProofDrawerFocus {
+    WorkProofDrawerFocus(label: "This turn", artifactIds: ids)
+  }
+
+  static func turn(_ artifacts: [ComputerUseArtifactSummary]) -> WorkProofDrawerFocus {
+    .turn(ids: artifacts.map(\.id))
+  }
+}
+
 enum WorkProofMediaFilter: String, CaseIterable, Identifiable {
   case all = "All"
   case pictures = "Pictures"
@@ -133,8 +150,10 @@ func workProofDrawerGroups(
   transcript: [WorkChatEnvelope],
   query: String = "",
   media: WorkProofMediaFilter = .all,
-  inAnswerOnly: Bool = false
+  inAnswerOnly: Bool = false,
+  focus: WorkProofDrawerFocus? = nil
 ) -> [WorkProofDrawerGroup] {
+  let focusIds = focus.map { Set($0.artifactIds) }
   var turns: [WorkProofTurn] = []
   var turnIndex: [String: Int] = [:]
   var pendingPrompt: String?
@@ -159,6 +178,7 @@ func workProofDrawerGroups(
 
   let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
   func matches(_ artifact: ComputerUseArtifactSummary) -> Bool {
+    if let focusIds, !focusIds.contains(artifact.id) { return false }
     let video = workArtifactIsVideo(artifact)
     switch media {
     case .all: break

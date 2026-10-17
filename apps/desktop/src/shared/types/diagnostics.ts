@@ -48,7 +48,8 @@ export type DiagnosticsSharingStatus = {
 };
 
 /**
- * The answer to "Send a report" in Settings.
+ * The answer to "Send a report" in Settings, and to "Report issue" on an error
+ * screen (which passes that screen's context).
  *
  * A manual send is the one diagnostics path that must never fail silently: the
  * user asked for it and is watching. So every outcome is named, and the surface
@@ -67,6 +68,8 @@ export type DiagnosticsManualSendResult =
     reference: string;
     /** Saved report path; empty when the local copy could not be written. */
     reportPath: string;
+    /** The redacted report that was sent, so the surface can offer to copy it. */
+    report?: string;
   }
   | {
     ok: false;
@@ -80,6 +83,8 @@ export type DiagnosticsManualSendResult =
     limit?: number;
     /** Saved report path when the report was built but not sent. */
     reportPath?: string;
+    /** The redacted report, when it was built but not sent. */
+    report?: string;
   };
 
 /** Main → renderer, once per automatic send. Codes and handles only. */

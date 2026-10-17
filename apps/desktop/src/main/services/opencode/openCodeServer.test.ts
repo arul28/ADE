@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type { OpenCodeClient } from "@opencode/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveAdeOpenCodeIsolationPaths } from "../../../shared/opencodeDataHome";
 import {
@@ -12,6 +13,8 @@ import {
   recoverManagedOpenCodeOrphans,
   writeManagedServerRecord,
 } from "./openCodeServerOrphans";
+import { applyOpenCodeSessionMode } from "./openCodeSession";
+import { buildOpenCodeConfig, openCodeSessionRulesFor, type OpenCodePermissionRule } from "./openCodeConfig";
 
 const spawnSyncMock = vi.hoisted(() => vi.fn());
 vi.mock("node:child_process", () => ({
@@ -147,5 +150,74 @@ describe("OpenCode server diagnostics", () => {
     expect(spawnSyncMock.mock.calls.some(([command]) => String(command).toLowerCase().includes("taskkill"))).toBe(false);
     expect(fs.existsSync(configFile)).toBe(true);
     expect(fs.existsSync(path.join(paths.runtimeDir, "servers", "42424.json"))).toBe(true);
+  });
+});
+
+describe("OpenCode session mode", () => {
+  it("moves an ADE agent back to the configured default for config-toml", async () => {
+    const switchAgent = vi.fn();
+    const client = {
+      config: {
+        get: vi.fn().mockResolvedValue([
+          { type: "document", info: { default_agent: "project-default" } },
+        ]),
+      },
+      session: {
+        switchAgent,
+        switchModel: vi.fn(),
+        update: vi.fn(),
+      },
+    } as unknown as OpenCodeClient;
+
+    await applyOpenCodeSessionMode(
+      client,
+      {
+        id: "session-1",
+        agent: "ade-full-auto",
+        permissions: [{ action: "edit", resource: "*", effect: "deny" }],
+        location: { directory: "/workspace" },
+      },
+      { agent: null, rules: [] },
+    );
+
+    expect(switchAgent).toHaveBeenCalledWith({ sessionID: "session-1", agent: "project-default" });
+    expect(client.session.update).toHaveBeenCalledWith({ sessionID: "session-1", permissions: [] });
+  });
+});
+
+/**
+ * OpenCode's evaluation: the last rule whose action and resource match wins
+ * (`*` matches anything). Enough to read what a rule list decides.
+ */
+function decide(rules: readonly OpenCodePermissionRule[], action: string, resource: string): string | undefined {
+  const matches = (pattern: string, value: string) => pattern === "*" || pattern === value;
+  return [...rules].reverse().find((rule) => matches(rule.action, action) && matches(rule.resource, resource))?.effect;
+}
+
+describe("OpenCode lane guard", () => {
+  const agents = buildOpenCodeConfig({ projectConfig: {} as never }).agents as Record<string, { permissions: OpenCodePermissionRule[] }>;
+
+  it.each([
+    ["full-auto session", openCodeSessionRulesFor("full-auto")],
+    ["edit session", openCodeSessionRulesFor("edit")],
+    ["plan session", openCodeSessionRulesFor("plan")],
+    ["config-toml session", openCodeSessionRulesFor("config-toml")],
+    ["ade-full-auto agent", agents["ade-full-auto"]!.permissions],
+    ["ade-edit agent", agents["ade-edit"]!.permissions],
+    ["ade-helper agent", agents["ade-helper"]!.permissions],
+  ])("keeps a %s out of OpenCode's worktree tools and off its own lane", (_label, rules) => {
+    expect(decide(rules, "opencode_worktree_create", "*")).toBe("deny");
+    expect(decide(rules, "opencode_worktree_list", "*")).toBe("deny");
+    expect(decide(rules, "opencode_session_move", "*")).toBe("deny");
+    // `worktree_remove` asks for `edit` on the worktree, relative to the session directory.
+    expect(decide(rules, "edit", ".")).toBe("deny");
+  });
+
+  it("leaves file edits to the mode", () => {
+    expect(decide(openCodeSessionRulesFor("full-auto"), "edit", "src/index.ts")).toBe("allow");
+    expect(decide(openCodeSessionRulesFor("edit"), "edit", "src/index.ts")).toBe("ask");
+    expect(decide(openCodeSessionRulesFor("plan"), "edit", "src/index.ts")).toBe("deny");
+    // The user's own config decides everything else for config-toml.
+    expect(decide(openCodeSessionRulesFor("config-toml"), "edit", "src/index.ts")).toBeUndefined();
   });
 });

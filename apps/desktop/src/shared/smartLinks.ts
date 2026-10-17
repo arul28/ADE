@@ -2,7 +2,7 @@
 // glyphs belong to the shared chip model (`./chips`), which every surface
 // renders from; keeping a second set here is what let the composer and the
 // transcript draw the same url two different ways.
-export type SmartLinkProvider = "github" | "linear" | "ade" | "generic";
+export type SmartLinkProvider = "github" | "linear" | "jira" | "ade" | "generic";
 
 export type SmartLinkKind =
   | "github_pr"
@@ -11,6 +11,7 @@ export type SmartLinkKind =
   | "github_commit"
   | "github_actions_run"
   | "linear_issue"
+  | "jira_issue"
   | "ade_deeplink"
   | "web_page";
 
@@ -24,6 +25,12 @@ export type SmartLinkPreview = {
   title?: string | null;
   /** Sanitized, bounded image payload returned by the ADE runtime. */
   iconDataUrl?: string | null;
+  /**
+   * The page's `og:image` / `twitter:image`, as an absolute http(s) URL. Only
+   * the URL: the hover card fetches the bytes lazily via
+   * `chat.resolveSmartLinkImage`, which applies the public-host guard.
+   */
+  imageUrl?: string | null;
 };
 
 export type SmartLinkMatch = SmartLinkPreview & {
@@ -106,6 +113,16 @@ function parseLinearLink(url: URL, rawUrl: string): SmartLinkPreview | null {
   };
 }
 
+function parseJiraIssueLink(url: URL, rawUrl: string): SmartLinkPreview | null {
+  const parts = url.pathname.split("/").filter(Boolean);
+  if (parts.length !== 2 || parts[0]?.toLowerCase() !== "browse") return null;
+  const key = parts[1]?.toUpperCase();
+  if (!key || !/^[A-Z][A-Z0-9_]{0,9}-\d+$/.test(key)) return null;
+  // Jira can use an atlassian.net site or a custom domain. Its issue key and
+  // provider stay attached to the URL so chips can use the Jira mark.
+  return { url: rawUrl, provider: "jira", kind: "jira_issue", label: key, title: key };
+}
+
 export function deriveSmartLinkPreview(rawValue: string): SmartLinkPreview | null {
   const rawUrl = trimTrailingUrlPunctuation(rawValue.trim());
   if (!rawUrl) return null;
@@ -132,7 +149,8 @@ export function deriveSmartLinkPreview(rawValue: string): SmartLinkPreview | nul
   }
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
 
-  return parseGithubLink(parsed, rawUrl)
+  return parseJiraIssueLink(parsed, rawUrl)
+    ?? parseGithubLink(parsed, rawUrl)
     ?? parseLinearLink(parsed, rawUrl)
     ?? {
       url: rawUrl,

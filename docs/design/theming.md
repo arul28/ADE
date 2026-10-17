@@ -31,6 +31,34 @@ A theme does **not** replace that seam. It feeds it:
 `data-theme` carries the **base mode** (which structural block to use);
 `data-theme-id` carries **identity** (which theme is active).
 
+### Light mode readability
+
+Most component colours are written for a dark page. Light themes stay readable
+through the `[data-theme="light"]` seam rather than through per-component
+branches, so every light theme (built-in and shipped families alike) gets the
+same treatment:
+
+- **Status tints.** Light mode restates Tailwind's pale shades (50–400) as deep
+  ones, and 900/950 as pale ones in the colour families, so `text-amber-200` or
+  `text-red-300/75` reads on a light page. The grey families remap only 50–400.
+  A pale or deep colour that must not flip — text on the always-accent user
+  bubble or a fixed dark overlay — is written as a hex (`text-[#ecfeff]/85`).
+- **Overlays and hairlines.** Faint washes and borders are tints of
+  `--color-fg` (`bg-fg/[0.06]`, `border-fg/10`, `fgTint(6)` in
+  `laneDesignTokens.ts`), not of white, so they show on light pages and look
+  the same on dark ones.
+- **Surfaces.** Menus and popovers paint from tokens (`--work-popover-bg`,
+  `--color-popup-bg`, `POPOVER_SURFACE_CLASS` in `paneMenuTokens.ts`), never a
+  hard-coded dark hex.
+- **Lane and status colours as text.** Use `toneText(color)` in TS or
+  `text-tone-[#hex]` in a class. Both keep the colour whole on dark pages and
+  pull it toward `--color-fg` on light pages by `--ade-tone-text-strength`.
+- **Text on a solid tone fill** (an amber button, a violet checkbox) uses
+  `--ade-on-tone-ink`: near-black on dark pages, white on light ones.
+- **Chat ink.** The "No tint" chat palette and anything printed on the user's
+  accent bubble use `--chat-ink`; light pages set it to `--color-fg` and the
+  bubble pins it back to white.
+
 ## The format
 
 `apps/desktop/src/shared/theme/` owns the whole model — no React, no DOM, no
@@ -91,7 +119,8 @@ previous theme owned, write the new ones on `<html>`, set `data-theme` and
 `data-theme-id` on `<html>` and remove any stale copy from `<body>`, and set
 `color-scheme`. It does no
 layout reads, so it never forces reflow, and it is called from exactly one
-effect in `App.tsx` keyed on `themeId` + `customThemes`.
+effect, in `ThemeDocumentSync` (`components/app/App.tsx`), keyed on `themeId`,
+`customThemes` and the scene's palette when App colours follow the picture.
 
 Flair reaches the page two ways. Corners, shadows and the interface face are
 custom properties the engine writes (`--radius-*`, `--pane-radius`,
@@ -116,9 +145,20 @@ blob in this machine's localStorage and are **not** in
 `ACCOUNT_SYNCED_SETTINGS`. A laptop, a desktop and a browser each keep their own
 look; signing in on a new machine does not carry a theme over. The page is under
 Settings → Machines → This computer → Appearance, and has no copy under a remote
-machine. (The Apple device options that used to share the page stay on the
-account, on their own Account page, because the host reads the remote streaming
-cap from the account store.)
+machine. The Apple device options sit beside it, under This computer → Apple
+devices. They are per computer too, but they still go through the account
+store, because the brain on this computer reads the remote streaming cap and
+recording overlays from it: each computer files its own copy under the
+account-wide scope with the device in the key (`device.<syncDeviceId>.<key>`,
+`accountDeviceSettingKey` in `shared/accountSettingsScope.ts`). The brain reads
+that key first and falls back to the old account-wide key.
+
+Machine identity colors are per computer too, and separate from the app theme.
+Each computer's tile in the Machines list, the Account page, and the
+Connections **This computer** card takes a default color from the machine's
+stable key, so every device that can see that machine paints it the same color;
+a swatch picked by hand overrides it on this computer only
+(`ade.machineColors.v1` in localStorage).
 
 Rows an older build already wrote to the account are ignored, not deleted. Move
 a theme between machines with Export and Import.
@@ -127,6 +167,25 @@ a theme between machines with Export and Import.
 current custom list, so `data-theme`, `color-scheme` and the title-bar overlay
 never disagree with the painted palette. The legacy `theme` key is still
 written (the base mode) so older clients keep working.
+
+## Scenes and picture colours
+
+The backdrop behind the top bar, the home page and the new chat page is a
+**scene**: the theme's animated mesh, one picture, or a shuffled picture. Scene
+preferences live in `interfacePreferences.scene` in `ade.userPreferences.v1`
+(per computer, like the theme). `ThemeDocumentSync` in
+`components/app/App.tsx` applies theme and scene together, and
+`useSceneDocumentSync` sets `html[data-scene="image"]` while a picture shows.
+
+A picture feeds the theme rather than replacing it. `scene/scenePalette.ts`
+extracts a palette from the picture; the mesh paints from it. When **App
+colours** is set to **From picture** (`matchTheme`), `scene/sceneTheme.ts`
+(`themeTintedByScene`) derives a tinted copy of the active theme (the accent
+from the picture, a hint of its hue in the surfaces) and the engine applies
+that copy through the normal `applyTheme.ts` path. No second colour path exists;
+switching back to **From theme** reapplies the theme as shipped.
+
+How scenes look and behave is in `visual-language.md`.
 
 ## Adding a theme
 

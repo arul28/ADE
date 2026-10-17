@@ -139,12 +139,19 @@ function SessionActionsButton({
   );
 }
 
-function ClaudeLoginHeaderAction({ session }: { session: TerminalSessionSummary }) {
+function ClaudeLoginHeaderAction({
+  session,
+  runtimePin,
+}: {
+  session: TerminalSessionSummary;
+  runtimePin: OpenProjectBinding | null;
+}) {
   return (
     <ClaudeLoginPromptButton
       visible={shouldShowClaudeCliLoginPrompt(session)}
       storageKey={`cli:${session.id}`}
       laneId={session.laneId}
+      runtimePin={runtimePin}
     />
   );
 }
@@ -228,6 +235,7 @@ export function CliSessionWorkSurfaceHeader({
   onContextMenu,
   onStopRunningSession,
   onToggleToolsPane,
+  onOpenFullView,
   toolsPaneOpen,
   onTogglePrPane,
   prPaneOpen,
@@ -242,6 +250,8 @@ export function CliSessionWorkSurfaceHeader({
   onContextMenu?: SessionMouseHandler;
   onStopRunningSession?: (session: TerminalSessionSummary) => void;
   onToggleToolsPane?: () => void;
+  /** Focus grid: replaces the Tools toggle with "open in full view". */
+  onOpenFullView?: () => void;
   toolsPaneOpen?: boolean;
   /** When set, the PR pill opens the PR tools tab. */
   onTogglePrPane?: () => void;
@@ -263,6 +273,7 @@ export function CliSessionWorkSurfaceHeader({
         provider: cacheProvider,
         status: cacheGate.status,
         idleSinceAt: session.chatIdleSinceAt,
+        cache: session.chatPromptCache,
         awaitingInput: cacheGate.awaitingInput,
       })
     : false;
@@ -281,6 +292,7 @@ export function CliSessionWorkSurfaceHeader({
       }
       showCacheBadge={showCache}
       cacheIdleSinceAt={session.chatIdleSinceAt}
+      promptCache={session.chatPromptCache}
       showGitToolbar
       prSessionId={session.id}
       onTogglePrPane={onTogglePrPane}
@@ -296,10 +308,11 @@ export function CliSessionWorkSurfaceHeader({
           : undefined
       }
       onToggleToolsPane={onToggleToolsPane}
+      onOpenFullView={onOpenFullView}
       toolsPaneOpen={toolsPaneOpen}
       trailingActions={
         <>
-          <ClaudeLoginHeaderAction session={session} />
+          <ClaudeLoginHeaderAction session={session} runtimePin={runtimePin} />
           <SessionStatusDot session={session} />
           <CliSurfaceTrailingActions
             session={session}

@@ -5,6 +5,7 @@ import {
   GitBranch,
   GithubLogo,
   Globe,
+  Ticket,
   Monitor,
   Terminal,
   type Icon,
@@ -96,6 +97,14 @@ export const WORK_TOOL_DEFINITIONS: readonly WorkToolDefinition[] = [
     icon: GithubLogo,
     color: "#3fb950",
     hint: "Open or create a PR",
+  },
+  {
+    id: "issues",
+    label: "Issues",
+    tabTooltip: "Linear issues opened from this lane's chats",
+    icon: Ticket,
+    color: "#a5b4fc",
+    hint: "Read an issue beside the chat",
   },
   {
     id: "files",

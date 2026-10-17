@@ -11,6 +11,7 @@ import { selectPrsForChatInLane } from "../../../shared/prChatScope";
 import { selectChatPrs } from "../lanes/lanePageModel";
 import { useAppStore, type WorkSidebarTab } from "../../state/appStore";
 import { browserHostLabel } from "../../lib/browserUrl";
+import { machineNameForBinding } from "../../../shared/machineIdentity";
 import { useLaneDevServers } from "../../lib/laneDevServers";
 import { relativeWhen } from "../../lib/format";
 import {
@@ -32,6 +33,8 @@ import {
   useAppleLaneDeviceCard,
   type AppleLaneDeviceCard,
 } from "../apple/useAppleLaneDeviceCard";
+import { issueTabsScopeKey, useIssueTabs } from "../issues/issueTabsStore";
+import { useActiveProjectRoot } from "../../state/appStore";
 import { useNativeToolFeedHandlers, useNativeToolFeeds } from "./NativeToolFeedsContext";
 import {
   hostDesktopTool,
@@ -83,6 +86,12 @@ export type WorkToolStatus = {
 export type WorkToolStatusMap = Partial<Record<WorkSidebarTab, WorkToolStatus>>;
 
 const IDLE: WorkToolStatus = { line: null, live: false, errorCount: 0, errored: false };
+
+/** The Issues card line: how many issues this lane has open as tabs. Local, never fetched. */
+function issuesToolStatusLine(count: number): WorkToolStatus {
+  if (count <= 0) return IDLE;
+  return statusLine(count === 1 ? "1 issue open" : `${count} issues open`, false);
+}
 
 /** The PR card line: how many pull requests the PR tool shows as open. */
 function prToolStatusLine(count: number | null): WorkToolStatus {
@@ -266,6 +275,16 @@ export function browserStatusLine(
       ? " · other lane"
       : "";
   return statusLine(`${label}${suffix}`, true, { errorCount, attention: handedOff });
+}
+
+/**
+ * The Browser card for a chat that runs on another machine: the same line, and
+ * the one place that says so. The browser is this computer's and still opens;
+ * the chat's agent reaches it only while the person drives the chat from here.
+ */
+export function browserStatusLineForRemoteChat(status: WorkToolStatus, machineName: string): WorkToolStatus {
+  const where = `chat on ${machineName}`;
+  return { ...status, line: status.line ? `${status.line} · ${where}` : where };
 }
 
 export function gitStatusLine(lane: LaneSummary | null, statusStale = false): WorkToolStatus {
@@ -628,12 +647,19 @@ export function useWorkToolStatuses(args: {
       });
     };
     load();
-    const dispose = window.ade?.prs?.onEvent?.(() => load());
+    // An issue webhook says nothing about this lane's pull requests.
+    const dispose = window.ade?.prs?.onEvent?.((event) => {
+      if (event?.type === "github-issue-changed") return;
+      load();
+    });
     return () => {
       cancelled = true;
       dispose?.();
     };
   }, [enabled, lane, laneId, prSessionId, runtimePinKey]);
+
+  const issueTabsProjectRoot = useActiveProjectRoot();
+  const openIssueTabCount = useIssueTabs(issueTabsScopeKey(issueTabsProjectRoot, laneId)).refs.length;
 
   const { line: macDesktopLine, live: macDesktopLive } = macDesktopStatusLineText(macDesktop, desktopTool);
   const macDesktopStatus = useMemo(
@@ -641,27 +667,35 @@ export function useWorkToolStatuses(args: {
     [macDesktopLine, macDesktopLive],
   );
 
-  const statuses = useMemo<WorkToolStatusMap>(() => ({
-    terminal: terminalStatusLine(terminalTitles, panelShellCount),
-    browser: offline
+  // Keyed on the name, not the pin object: a pin can be rebuilt with the same key.
+  const remoteChatMachineName = runtimePin?.kind === "remote" ? machineNameForBinding(runtimePin) : null;
+  const statuses = useMemo<WorkToolStatusMap>(() => {
+    const browserLine = offline
       ? IDLE
       : browserStatusLine(
         browserStatus,
         laneId,
         workToolBrowserErrorCount(browserErrors, browserStatus),
         devServerPorts,
-      ),
-    git: gitStatusLine(lane, laneStatusStale),
-    files: filesStatusLine(lane),
-    ios: offline ? IDLE : iosStatusLine(appleDevice),
-    "app-control": offline ? IDLE : appControlStatusLine(appControlSession),
-    // No `offline ? IDLE` arm: an unreachable machine leaves the last known
-    // answer standing rather than claiming the lane has no screen, and the
-    // hook already stops reading.
-    "mac-desktop": macDesktopStatus,
-    "windows-desktop": macDesktopStatus,
-    pr: prToolStatusLine(prCount),
-  }), [
+      );
+    return {
+      terminal: terminalStatusLine(terminalTitles, panelShellCount),
+      browser: !offline && remoteChatMachineName
+        ? browserStatusLineForRemoteChat(browserLine, remoteChatMachineName)
+        : browserLine,
+      git: gitStatusLine(lane, laneStatusStale),
+      files: filesStatusLine(lane),
+      ios: offline ? IDLE : iosStatusLine(appleDevice),
+      "app-control": offline ? IDLE : appControlStatusLine(appControlSession),
+      // No `offline ? IDLE` arm: an unreachable machine leaves the last known
+      // answer standing rather than claiming the lane has no screen, and the
+      // hook already stops reading.
+      "mac-desktop": macDesktopStatus,
+      "windows-desktop": macDesktopStatus,
+      pr: prToolStatusLine(prCount),
+      issues: issuesToolStatusLine(openIssueTabCount),
+    };
+  }, [
     appControlSession,
     macDesktopStatus,
     appleDevice,
@@ -674,6 +708,8 @@ export function useWorkToolStatuses(args: {
     offline,
     panelShellCount,
     prCount,
+    openIssueTabCount,
+    remoteChatMachineName,
     terminalTitles,
   ]);
 

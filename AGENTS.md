@@ -21,6 +21,8 @@ Day-to-day work follows a five-stage loop, each stage an agent-folder skill unde
 - **/test** — test steward: prune/consolidate/add + docs/mobile/CLI/TUI parity + CI-mirrored shards. Adds a test for a fixed bug only when no existing test would catch it, and never a tautological or change-detector test. Harvests the PR again before it finishes.
 - **/ship** — autonomous PR→merge loop (poll → fix → rebase → merge). It adopts the early PR with one round already fixed, so it mostly closes the PR out. After any ship-loop mutation it reruns commit-bound `/quality` revalidation on the delta only. Wraps `docs/playbooks/ship-lane.md`.
 
+Anything new must survive a project switch: declare each new runtime action `read` or `write` in `apps/desktop/src/shared/adeActionAccess.ts`, and make a surface that loads data say "couldn't load" with a retry, never a false empty state (`/quality` checks this: ADE review rule 4.5).
+
 The PR opens at the start of `/quality`, not at `/ship`. CI and the bots then work in parallel with quality and test, and each phase harvests their results (playbook: **Early PR and harvests**). Do not push while a review bot is in flight on the remote head — a push restarts Greptile.
 
 ### Running the dev app
@@ -35,13 +37,95 @@ cat /tmp/ade-dev-<lane>.log
 ```
 
 Detach it, give the lane its own socket, read the isolation report (stop if
-sync is ON), and never hand-start `ade serve`. The full rules, and why each
-one exists: `docs/development/local-development.md` ("If you are an agent,
-start it detached").
+sync is ON), and never hand-start `ade serve`. The dev app does not connect to
+the user's other machines unless someone presses Connect in it; never press
+Connect or Disconnect for a paired machine in a dev app unless the task is
+remote machines, because that takes the machine from the user's installed ADE.
+When you finish, stop the app's process group and confirm its brain exited.
+Use Node 22 (`node -v`; an older `node` first on PATH fails the CLI build on
+`node:sqlite`). The full rules, and why each one exists:
+`docs/development/local-development.md` ("If you are an agent, start it
+detached").
 
 **"Run the dev loop"** — when the user says this (or "dev loop") after work is implemented, it names one task, not a suggestion: invoke `/quality`, then `/test`, then `/ship`, in that order. Actually invoke each skill — approximating one (running tests is not `/test`; green CI is not `/quality`) does not count. Print each skill's summary, then continue to the next without stopping; stop early only for a genuine blocker (a failing gate or a decision only the user can make) and name it.
 
 Utilities (run when relevant, not part of the core loop): **/audit** (targeted bug hunt), **/finalize** (optional pre-push local-CI gate), **/optimize** (perf profiling), **/release** (cut a release).
+
+### Performance budget
+
+Claude Code does not load this file, so `CLAUDE.md` has a copy of this
+section. Keep the two the same.
+
+`docs/perf/macos-baseline.md` holds ADE's measured performance numbers
+(macOS dev build) and a ceiling for each. They came out of a pass that took
+the app from unusable to smooth. Do not let them climb back.
+
+1. **Know when it applies.** Your change can move performance when it renders
+   lists or long content; adds an effect, timer, poll, subscription or
+   animation; adds or changes an IPC call or runtime action; spawns processes
+   (git, shells); reads files or databases on a hot path; builds caches or
+   large in-memory structures; or adds a surface that loads its own data. CPU,
+   GPU and memory all count. When in doubt, it applies.
+2. **Measure before and after, during the work,** with the scripts the doc
+   lists, on the same machine and under the same conditions. Follow the doc's
+   gotchas: no perf run for idle, GPU, typing or memory numbers; close extra
+   windows; keep the warm pass.
+3. **Compare with the table.** If a row gets more than 25% worse or crosses
+   its ceiling, or your new surface costs far more than comparable rows,
+   optimize before you call the work done: profile the hot path, fix it,
+   measure again. Do it carefully: keep every feature and the UI as they are,
+   and never trade them for a number. `/optimize` and the `ade-perf-*` skills
+   hold the methods and the patterns that worked.
+4. **Update the table** in the same branch: add a row for a new surface, and
+   record new baselines (with the commit) for rows you moved. Never raise a
+   ceiling to make a change pass; that needs the user's approval and a
+   recorded reason.
+5. **Report it.** The PR body lists the rows you measured, with before and
+   after numbers. If you could not measure (not on macOS, no display), say so
+   and give what you did measure; the service benches run anywhere.
+
+Numbers drift as ADE grows, and that is expected. A spike is not.
+
+## Built for remote machines
+
+Claude Code does not load this file, so `CLAUDE.md` has a copy of this
+section. Keep the two the same.
+
+ADE is built around remote connections. One window drives several machines: a
+laptop works on lanes that live on a desktop, a phone drives the brain at home,
+and the Work tab lists chats, CLIs and shells from every connected machine at
+once. A lane owns its machine, and its chats and terminals live there and only
+there.
+
+So every action that can be done for something on another machine (a chat, a
+session, a lane, a terminal, a sign-in) has to be sent to **that** machine:
+
+1. **Pass the scope.** Renderer calls take an optional `pin` (an
+   `OpenProjectBinding`). Leave it out and the call silently goes to the
+   machine the project tab is bound to. That works in local testing and fails
+   whenever the chat's machine is a different one, with errors like
+   "Chat session '…' was not found". In a chat subtree,
+   read `useChatRuntimeScope().pin`; on the Work page, the row's
+   `foreignRow.binding` or `useWorkSessions().resolveSessionRuntimePin`; in Settings,
+   `useSettingsMachineScope().pin`. These are null when the target is the
+   tab's own machine, which keeps the unpinned route; do not substitute the
+   tab binding. Keep the pin for the whole flow: a start, its stop, and its
+   status reads go to the same machine.
+2. **Make the contract carry it.** A new IPC/preload method that acts on a
+   chat, session, lane or terminal takes `pin?: OpenProjectBinding | null` and
+   routes a pin through `callPinnedRuntimeAction` (or
+   `callPinnedOrBoundRuntimeActionOr`, which does both), and its runtime
+   action is reachable remotely (action domain + `actionPolicy`). Inside a
+   component, prefer a required `pin` prop over an optional one that quietly
+   defaults to the tab's machine.
+3. **Key effects on `pin?.key`, not the pin object.** A pin can be rebuilt with
+   the same key; an effect keyed on the object restarts (a login shell, a voice
+   call) for nothing.
+4. **Check it remotely before calling it done.** Ask "what happens if this chat
+   is on another machine?" for every new action, and in `/quality` name which
+   new calls are scoped and how. When something can genuinely only run on this
+   computer, guard it with a clear message (as Cursor Cloud launch does), never
+   by letting the call misroute.
 
 ## Playbooks
 
@@ -57,7 +141,7 @@ The most common defect class in this repo is a change that works on the path you
 - **Providers.** Claude, Codex, Cursor, OpenCode, and Droid each have an adapter with different capabilities. A provider-shaped feature needs a decision per adapter, even when the decision is "not supported here" — record it in the capability gate, not by silence.
 - **Contracts.** Anything crossing a boundary is typed once: main-process handler, `src/shared` types, preload exposure, renderer caller, daemon action domain, tests/mocks. Change the contract and all of them move together.
 - **Reverse states.** If you add a way in, add the way out and the way to see it. Snooze needs unsnooze; settle needs unsettle; a link needs unlink. A one-way door is a bug.
-- **Connection modes.** Local runtime, remote runtime, and relay behave differently. Multi-device and offline cases are real; the phone can be newer than the host.
+- **Connection modes.** Local runtime, remote runtime, and relay behave differently. Multi-device and offline cases are real; the phone can be newer than the host. Anything that acts on a chat, session or lane must reach the machine that owns it; see **Built for remote machines**.
 - **Windows.** Parity is part of "done" for all new code, never a follow-up.
 - **Docs.** User-visible behavior changes update the matching `docs/features/` doc in present tense.
 
@@ -95,6 +179,8 @@ including agents started by a skill.
 
 The desktop renderer has exactly one of each notice and overlay. Read `docs/design/notices.md` before adding any banner, toast, dialog, or popover-like surface. Never invent a new style.
 
+For the look of everything else (cards, pages, settings, charts, backdrops), read `docs/design/visual-language.md` before building or restyling a surface. Reuse the surface kit (`styles/surfaceKit.css`) and the modern settings primitives (`settings/primitives/SettingsModern.tsx`); do not write a new panel style.
+
 - **Banners:** `Banner` / `useAppBanner` from `components/ui/notice`. App-wide states are docked, short prompts float, and a banner about one pane is `layout="inline"`. Never write a new `*Banner` component with its own styling.
 - **Toasts:** `showToast()` from `components/app/toast/toastStore`. No toast libraries and no hand-positioned corner cards.
 - **Confirm / prompt / modals:** `confirmDialog()` / `promptDialog()` / `<Dialog>` from `components/ui/dialog`. Never call `window.confirm`, `prompt`, or `alert`.
@@ -119,10 +205,13 @@ These are the operational hazards of developing ADE from inside ADE. Each one ha
 
 ## Pull requests
 
+- Open the PR with `ade prs create` (the **ade-pr-workflows** skill holds the full writing guide and the commands). `gh pr create` is the fallback.
 - Conventional commit titles in plain language: `fix(desktop): new chats no longer spike CPU`.
-- Body house style, in order: **Problem** (a sentence or two), **Cause** (when known), **Change and boundary** (what moved, what deliberately did not), **Verification** (the exact focused tests/typechecks run and their counts). End with the model and harness that did the work.
-- UI changes need before/after images. Motion or timing needs a short video. Upload evidence to GitHub; never commit screenshots or PR-only assets to the repo.
+- The text is a Brief, written for a person who has two minutes and did not see the work. Parts, in order: **Why** (the problem, a sentence or two), **What changed** (what is different for the person who uses it, and what was left alone on purpose), **Evidence** (how you checked it and what you saw: the focused tests and their counts, the checks in the running app), **Not checked** (what you could not check, or "Nothing"), and **Choices I made** only when you settled a trade-off alone. End with the model and harness that did the work.
+- Plain words. Explain a technical term in the sentence where it first appears. Keep code names out of Why and What changed.
+- Match the evidence to the change: a picture for a layout change, a short video for motion or timing, numbers for speed. Cite proof in the text (`![caption](ade-proof://<id>)`, or a `proof-compare` block for before and after); `ade prs create` uploads it. Never commit screenshots or PR-only assets to the repo.
 - One concern per PR. If the description says "also", consider splitting it.
+- Close out every review thread you handle, in the same turn: reply with what changed or why you did not change it, then resolve it (`ade prs reply`, `ade prs resolve-thread`). ADE lists each open thread as work that waits for a person, so a handled thread left open is a false alarm. Leave a thread open only when a person must decide.
 
 ## Validation
 
@@ -150,8 +239,9 @@ defect, even when it passes.
    `/test`, after that validation, and they pin the behavior you proved.
    - When the user asks for tests directly, write them; this rule covers tests
      that nobody asked for.
-   - Run existing tests during the work as often as you want. This rule stops
-     writing new tests, not running old ones.
+   - Run existing tests during the work when you need the signal, not after
+     every edit. See **Running checks**: the full check pass happens once, at
+     the end of `/quality`.
    - When an existing test breaks because you changed behavior on purpose,
      leave it for `/test`. Do not bend it during the work.
    - **The one exception:** the behavior can only be validated by a test (a
@@ -197,6 +287,13 @@ defect, even when it passes.
 12. **One contract, one owner.** A second test of the same contract needs a
     failure the owner cannot reach, such as a transport or lifecycle break.
     Otherwise extend the owner.
+13. **New tests are the exception.** The default outcome of `/test` is zero
+    new tests. A new test must guard a critical contract — data loss or
+    corruption, security or privacy, a race or process/lifecycle seam, a
+    cross-machine, IPC or sync contract a caller depends on — and no existing
+    test may already catch its failure. UI layout, copy, wiring, render-only
+    checks, and one past bug instance do not qualify. Most branches add none.
+    The suite already has about 1,300 test files; it should shrink, not grow.
 
 `/quality` records a coverage gap. It does not add the test. `/test` adds one
 only when it can name the behavior, the failure that turns the test red, and
@@ -204,6 +301,25 @@ why no existing test already catches that.
 
 Keep this list the same as the copy in `CLAUDE.md` and the **Test value rules**
 in `.agents/skills/test/SKILL.md`. Change all three together.
+
+## Running checks
+
+Typecheck, lint, and tests cost real agent time. One desktop typecheck is
+15–60 seconds, and agents have run typecheck about 5,800 times and tests
+about 12,000 times across ADE threads, mostly re-runs after tiny edits. These
+rules apply to every agent and every skill.
+
+1. **One check pass, at the end of `/quality`.** After every review fix is
+   in, run typecheck for each package the branch touched and the test files
+   that cover the touched code (colocated `*.test.ts(x)` and the tests that
+   import it). Not the full suite and not all shards.
+2. **Never check after every edit.** Batch the edits, then check once. After a
+   failure, re-run only the files that failed.
+3. **CI is the full gate.** Never run the full sharded suite locally unless
+   the user asks or you are running `/finalize`.
+4. **Later fixes re-check only their delta.** In `/test` and `/ship`, a fix
+   re-runs only the failing CI file, or the tests and typecheck of the package
+   that fix touched, once, before the push.
 
 ## Terminology
 

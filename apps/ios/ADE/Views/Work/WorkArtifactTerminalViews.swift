@@ -18,9 +18,8 @@ final class WorkArtifactVideoPlayerModel: ObservableObject {
 }
 
 /// The one AVKit player in the Work views. It carries no chrome of its own so
-/// that a caller wanting an inline card (fixed height, rounded) and a caller
-/// wanting a full-bleed proof page can both use it; the transcript adds its own
-/// via `.workArtifactInlineVideoChrome()`.
+/// that an answer's citation (sized, rounded) and a full-bleed proof page can
+/// both use it.
 struct WorkArtifactVideoPlayerView: View {
   let url: URL
   /// A chapter's start, in seconds: set it and the player seeks there, plays,
@@ -143,162 +142,6 @@ struct WorkArtifactPlayPlaceholder: View {
     .buttonStyle(.plain)
     .disabled(started)
     .accessibilityLabel(started ? "Downloading video" : "Play video, \(workArtifactSizeLabel(sizeBytes))")
-  }
-}
-
-extension View {
-  /// Inline-card chrome for a video in the chat transcript: the same fixed
-  /// height and corner radius the image branch beside it uses.
-  func workArtifactInlineVideoChrome() -> some View {
-    frame(height: 220)
-      .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-  }
-}
-
-struct WorkArtifactView: View {
-  let artifact: ComputerUseArtifactSummary
-  let content: WorkLoadedArtifactContent?
-  let isExpanded: Bool
-  let onToggle: () -> Void
-  let onAppear: () -> Void
-  let onPlay: () -> Void
-  let onOpenImage: (UIImage) -> Void
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      Button {
-        onToggle()
-      } label: {
-        HStack(spacing: 8) {
-          Image(systemName: workArtifactKindIcon(artifact))
-            .font(.system(size: 12, weight: .semibold))
-            .foregroundStyle(ADEColor.accent)
-            .frame(width: 16)
-          VStack(alignment: .leading, spacing: 3) {
-            Text(artifact.title)
-              .font(.caption.weight(.semibold))
-              .foregroundStyle(ADEColor.textPrimary)
-              .lineLimit(1)
-              .truncationMode(.tail)
-            Text([workArtifactKindLabel(artifact.artifactKind), relativeTimestamp(artifact.createdAt)].joined(separator: " · "))
-              .font(.caption2)
-              .foregroundStyle(ADEColor.textMuted)
-          }
-          Spacer(minLength: 0)
-          compactPreview
-          Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-            .font(.system(size: 9, weight: .semibold))
-            .foregroundStyle(ADEColor.textMuted)
-        }
-        .frame(minHeight: 44)
-        .contentShape(Rectangle())
-      }
-      .buttonStyle(.plain)
-      .accessibilityLabel("\(artifact.title), proof added")
-      .accessibilityHint(isExpanded ? "Collapses proof preview" : "Expands proof preview")
-
-      if isExpanded {
-        Group {
-          switch content {
-          case .image(let image):
-            Button {
-              onOpenImage(image)
-            } label: {
-              Image(uiImage: image)
-                .resizable()
-                .scaledToFit()
-                .frame(maxWidth: .infinity)
-                .frame(height: 180)
-                .background(Color.black.opacity(0.12), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Open artifact image \(artifact.title)")
-          case .video(let url):
-            WorkArtifactVideoPlayerView(url: url)
-              .workArtifactInlineVideoChrome()
-          case .videoOnDemand(let sizeBytes):
-            WorkArtifactPlayPlaceholder(sizeBytes: sizeBytes, tint: ADEColor.accent, onPlay: onPlay)
-              .frame(maxWidth: .infinity)
-              .frame(height: 120)
-              .background(Color.black.opacity(0.12), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-          case .remoteURL(let url):
-            if artifact.artifactKind == "video_recording" {
-              WorkArtifactVideoPlayerView(url: url)
-                .workArtifactInlineVideoChrome()
-            } else {
-              AsyncImage(url: url) { image in
-                image
-                  .resizable()
-                  .scaledToFit()
-              } placeholder: {
-                ProgressView()
-              }
-              .frame(height: 180)
-              .frame(maxWidth: .infinity)
-              .background(Color.black.opacity(0.12), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-              .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            }
-          case .text(let text):
-            WorkStructuredOutputBlock(title: "Artifact", text: text)
-          case .error(let message):
-            WorkArtifactInlineStatus(icon: "photo", message: message, tint: ADEColor.textMuted)
-          case .none:
-            HStack(spacing: 10) {
-              ProgressView()
-              Text("Loading artifact preview…")
-                .font(.caption)
-                .foregroundStyle(ADEColor.textSecondary)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(12)
-            .background(ADEColor.surfaceBackground.opacity(0.55), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-          }
-        }
-      }
-    }
-    .padding(.horizontal, 10)
-    .padding(.vertical, 5)
-    .background(ADEColor.surfaceBackground.opacity(0.5), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-    .task {
-      onAppear()
-    }
-  }
-
-  @ViewBuilder
-  private var compactPreview: some View {
-    switch content {
-    case .image(let image):
-      Image(uiImage: image)
-        .resizable()
-        .scaledToFill()
-        .frame(width: 40, height: 30)
-        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-    case .remoteURL(let url) where workArtifactIsImage(artifact):
-      AsyncImage(url: url) { image in
-        image.resizable().scaledToFill()
-      } placeholder: {
-        Color.clear
-      }
-      .frame(width: 40, height: 30)
-      .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-    case .video, .remoteURL, .videoOnDemand:
-      Image(systemName: "play.rectangle.fill")
-        .foregroundStyle(ADEColor.accent)
-        .frame(width: 40, height: 30)
-    case .text:
-      Image(systemName: "doc.text.fill")
-        .foregroundStyle(ADEColor.textSecondary)
-        .frame(width: 40, height: 30)
-    case .error:
-      Image(systemName: "exclamationmark.triangle.fill")
-        .foregroundStyle(ADEColor.warning)
-        .frame(width: 40, height: 30)
-    case .none:
-      ProgressView()
-        .controlSize(.mini)
-        .frame(width: 40, height: 30)
-    }
   }
 }
 
@@ -727,25 +570,6 @@ struct WorkFullscreenImageView: View {
   }
 }
 
-private struct WorkArtifactInlineStatus: View {
-  let icon: String
-  let message: String
-  let tint: Color
-
-  var body: some View {
-    HStack(spacing: 10) {
-      Image(systemName: icon)
-        .foregroundStyle(tint)
-      Text(message)
-        .font(.caption)
-        .foregroundStyle(tint)
-      Spacer(minLength: 0)
-    }
-    .padding(12)
-    .background(ADEColor.recessedBackground.opacity(0.72), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-  }
-}
-
 struct WorkArtifactShareItem: Identifiable {
   let id = UUID()
   let items: [Any]
@@ -767,23 +591,6 @@ func workArtifactIsImage(_ artifact: ComputerUseArtifactSummary) -> Bool {
 
 func workArtifactIsVideo(_ artifact: ComputerUseArtifactSummary) -> Bool {
   artifact.artifactKind == "video_recording" || artifact.mimeType?.lowercased().hasPrefix("video/") == true
-}
-
-func workArtifactKindIcon(_ artifact: ComputerUseArtifactSummary) -> String {
-  switch artifact.artifactKind {
-  case "screenshot":
-    return "photo.fill"
-  case "video_recording":
-    return "video.fill"
-  case "browser_trace":
-    return "waveform.path.ecg.rectangle"
-  case "browser_verification":
-    return "checkmark.rectangle.stack.fill"
-  case "console_logs":
-    return "terminal.fill"
-  default:
-    return artifact.mimeType?.lowercased().hasPrefix("video/") == true ? "video.fill" : "doc.fill"
-  }
 }
 
 func workArtifactKindLabel(_ kind: String) -> String {

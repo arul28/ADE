@@ -56,12 +56,12 @@ export function HistoryGitContextMenu({
       <ContextMenu.Trigger asChild>{children}</ContextMenu.Trigger>
       <ContextMenu.Portal>
         <ContextMenu.Content
-          className="min-w-[220px] rounded-md border border-white/10 bg-[var(--color-card)] p-1 shadow-xl"
+          className="min-w-[220px] rounded-md border border-fg/10 bg-[var(--color-card)] p-1 shadow-xl"
           style={{ zIndex: Z_LAYERS.contextMenu }}
         >
           {groups.map((group, groupIndex) => (
             <React.Fragment key={group.id}>
-              {groupIndex > 0 ? <ContextMenu.Separator className="my-1 h-px bg-white/[0.06]" /> : null}
+              {groupIndex > 0 ? <ContextMenu.Separator className="my-1 h-px bg-fg/[0.06]" /> : null}
               <ContextMenu.Label className="px-2 py-1 font-sans text-[10px] font-semibold text-muted-fg">
                 {group.label}
               </ContextMenu.Label>
@@ -73,7 +73,7 @@ export function HistoryGitContextMenu({
                   className={cn(
                     "flex cursor-pointer select-none items-center rounded px-2 py-1.5 font-sans text-[12px] outline-none",
                     action.destructive ? "text-red-200" : "text-fg",
-                    "data-[disabled]:cursor-not-allowed data-[disabled]:opacity-40 data-[highlighted]:bg-white/10",
+                    "data-[disabled]:cursor-not-allowed data-[disabled]:opacity-40 data-[highlighted]:bg-fg/10",
                   )}
                   onSelect={() => {
                     if (!action.disabled) run(action.id);

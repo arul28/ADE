@@ -69,7 +69,7 @@ export function MacDesktopMinimizedBadge() {
   return (
     <span
       data-testid="mac-desktop-minimized-badge"
-      className="shrink-0 rounded-full bg-white/[0.07] px-1.5 py-px text-[10px] text-muted-fg"
+      className="shrink-0 rounded-full bg-fg/[0.07] px-1.5 py-px text-[10px] text-muted-fg"
     >
       minimized
     </span>
@@ -109,7 +109,7 @@ export function MacDesktopRowAction({
         "inline-flex h-6 shrink-0 items-center gap-1 rounded-[6px] px-1.5",
         "text-[11.5px] font-medium text-muted-fg",
         "transition-colors duration-[120ms] ease-out",
-        "hover:bg-white/[0.07] hover:text-fg",
+        "hover:bg-fg/[0.07] hover:text-fg",
         "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
         "group-hover:text-fg/90",
         "disabled:pointer-events-none disabled:opacity-30",

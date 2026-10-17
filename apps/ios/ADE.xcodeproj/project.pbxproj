@@ -33,6 +33,7 @@
 		E2000000000000000000A610 /* SettingsProviderAccounts.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000A610 /* SettingsProviderAccounts.swift */; };
 		E2000000000000000000A600 /* ProviderAccountsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000A600 /* ProviderAccountsStore.swift */; };
 		E20000000000000000000F30 /* ADEFlat.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F30 /* ADEFlat.swift */; };
+		E20000000000000000000F3A /* ADEKit.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F3A /* ADEKit.swift */; };
 		E20000000000000000000092 /* LinearSVGPath.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000092 /* LinearSVGPath.swift */; };
 		E20000000000000000000093 /* LinearLaunchModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000093 /* LinearLaunchModel.swift */; };
 		E20000000000000000000094 /* LinearPaneStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000094 /* LinearPaneStore.swift */; };
@@ -44,9 +45,12 @@
 		E2A00000000000000000C1 /* CursorCloudModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A00000000000000000C1 /* CursorCloudModels.swift */; };
 		E2A00000000000000000C2 /* CursorCloudPaneStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A00000000000000000C2 /* CursorCloudPaneStore.swift */; };
 		E2A00000000000000000C3 /* CursorCloudPaneSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A00000000000000000C3 /* CursorCloudPaneSheet.swift */; };
+		E2A00000000000000000D3 /* GitHubIssuesPaneStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A00000000000000000D3 /* GitHubIssuesPaneStore.swift */; };
+		E2A00000000000000000D2 /* GitHubIssuesPaneSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A00000000000000000D2 /* GitHubIssuesPaneSheet.swift */; };
 		E2A00000000000000000C4 /* CursorCloudAgentListScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A00000000000000000C4 /* CursorCloudAgentListScreen.swift */; };
 		E2A00000000000000000C5 /* CursorCloudAgentDetailScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A00000000000000000C5 /* CursorCloudAgentDetailScreen.swift */; };
 		E2A00000000000000000D1 /* CursorCloudContractDecodingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A00000000000000000D1 /* CursorCloudContractDecodingTests.swift */; };
+		E2A00000000000000000D4 /* GitHubIssuesPaneContractTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A00000000000000000D4 /* GitHubIssuesPaneContractTests.swift */; };
 		E2000000000000000000009A /* LinearOAuthRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000009A /* LinearOAuthRunner.swift */; };
 		E2000000000000000000009B /* LinearConnectionScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000009B /* LinearConnectionScreen.swift */; };
 		AA1100000000000000000001 /* ADESharedContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000001 /* ADESharedContainer.swift */; };
@@ -165,7 +169,8 @@
 		E10000000000000000000053 /* LaneDetailGitActionsPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000053 /* LaneDetailGitActionsPane.swift */; };
 		E10000000000000000000047 /* ADEInspectable.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000047 /* ADEInspectable.swift */; };
 		E1000000000000000000002E /* WorkChatComposerAndInputViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000002E /* WorkChatComposerAndInputViews.swift */; };
-		E10000000000000000000F03 /* WorkPromptStash.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F03 /* WorkPromptStash.swift */; };
+		E10000000000000000000F03 /* WorkDrafts.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F03 /* WorkDrafts.swift */; };
+		E10000000000000000000F90 /* WorkDraftScheduleSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F90 /* WorkDraftScheduleSheet.swift */; };
 		7C0FFEE0000000000000A002 /* WorkThreadComments.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C0FFEE0000000000000A001 /* WorkThreadComments.swift */; };
 		E10000000000000000000F04 /* WorkContextUsageViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F04 /* WorkContextUsageViews.swift */; };
 		E1000000000000000000002F /* WorkArtifactTerminalViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000002F /* WorkArtifactTerminalViews.swift */; };
@@ -186,8 +191,19 @@
 		E10000000000000000000032 /* WorkTranscriptParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000032 /* WorkTranscriptParser.swift */; };
 		E10000000000000000000033 /* WorkNavigationAndTranscriptHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000033 /* WorkNavigationAndTranscriptHelpers.swift */; };
 		E10000000000000000000034 /* WorkMarkdownParsing.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000034 /* WorkMarkdownParsing.swift */; };
+		E20000000000000000005CE1 /* WorkSceneDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000005CE1 /* WorkSceneDocument.swift */; };
+		E20000000000000000005CE2 /* WorkSceneView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000005CE2 /* WorkSceneView.swift */; };
+		E20000000000000000005CE5 /* WorkMcpAppDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000005CE5 /* WorkMcpAppDocument.swift */; };
+		E20000000000000000005CE6 /* WorkMcpAppView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000005CE6 /* WorkMcpAppView.swift */; };
+		E20000000000000000005CE9 /* WorkSceneContainerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000005CE9 /* WorkSceneContainerView.swift */; };
+		E20000000000000000005CE8 /* WorkSandboxedWebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000005CE8 /* WorkSandboxedWebView.swift */; };
+		E20000000000000000005CE3 /* SceneShell.html in Resources */ = {isa = PBXBuildFile; fileRef = D20000000000000000005CE3 /* SceneShell.html */; };
+		E20000000000000000005CE4 /* SceneThree.js in Resources */ = {isa = PBXBuildFile; fileRef = D20000000000000000005CE4 /* SceneThree.js */; };
 		E10000000000000000000F0B /* WorkUsageLimitResume.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F0B /* WorkUsageLimitResume.swift */; };
 		E10000000000000000000F0C /* WorkUsageLimitResumeViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F0C /* WorkUsageLimitResumeViews.swift */; };
+		E10000000000000000000F82 /* SyncService+SessionHandoff.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F82 /* SyncService+SessionHandoff.swift */; };
+		E10000000000000000000F81 /* WorkSessionHandoffSheets.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F81 /* WorkSessionHandoffSheets.swift */; };
+		E10000000000000000000F80 /* WorkCrossMachineHandoffViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F80 /* WorkCrossMachineHandoffViews.swift */; };
 		E10000000000000000000035 /* WorkTimelineHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000035 /* WorkTimelineHelpers.swift */; };
 		E7C001000000000000000001 /* WorkChatTaskListHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7C001000000000000000001 /* WorkChatTaskListHelpers.swift */; };
 		E7C001000000000000000002 /* WorkChatSourceHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7C001000000000000000002 /* WorkChatSourceHelpers.swift */; };
@@ -200,6 +216,11 @@
 		FB000000000000000000CA01 /* WorkSessionActivityPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA000000000000000000CA01 /* WorkSessionActivityPresentation.swift */; };
 		E10000000000000000000039 /* WorkChatSessionView+Timeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000039 /* WorkChatSessionView+Timeline.swift */; };
 		E1000000000000000000003A /* WorkReasoningCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000003A /* WorkReasoningCard.swift */; };
+		E10000000000000000CC0001 /* WorkComputerUseActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000CC0001 /* WorkComputerUseActions.swift */; };
+		E10000000000000000CC0005 /* WorkCommandRedaction.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000CC0005 /* WorkCommandRedaction.swift */; };
+		E10000000000000000CC0002 /* WorkComputerUseSummary.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000CC0002 /* WorkComputerUseSummary.swift */; };
+		E10000000000000000CC00F1 /* WorkComputerUseOutput.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000CC00F1 /* WorkComputerUseOutput.swift */; };
+		E10000000000000000CC0003 /* WorkComputerUsePresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000CC0003 /* WorkComputerUsePresentation.swift */; };
 		E10000000000000000000F0A /* WorkCardExpansion.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F0A /* WorkCardExpansion.swift */; };
 		E1000000000000000000003B /* WorkActivityIndicator.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000003B /* WorkActivityIndicator.swift */; };
 		E1000000000000000000003C /* WorkSessionGrouping.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000003C /* WorkSessionGrouping.swift */; };
@@ -234,6 +255,7 @@
 		E20000000000000000000052 /* HubScreen+ChatNavigation.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000052 /* HubScreen+ChatNavigation.swift */; };
 		E20000000000000000000053 /* HubComposerDrawer.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000053 /* HubComposerDrawer.swift */; };
 		E200000000000000000000A1 /* HubQuickConnect.swift in Sources */ = {isa = PBXBuildFile; fileRef = D200000000000000000000A1 /* HubQuickConnect.swift */; };
+		E2000000000000000000C0F1 /* HubComposerFleetDestination.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000C0F1 /* HubComposerFleetDestination.swift */; };
 		F40000000000000000000001 /* PersonalChatsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = F40000000000000000000002 /* PersonalChatsScreen.swift */; };
 		60F4CDDB763C0A9F0E650B40 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 31EC445F22FD38F90C16343E /* Foundation.framework */; };
 		63A9C60B0E0F0E2707634B2E /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 8943C47805A871A4E4A4BF68 /* Assets.xcassets */; };
@@ -266,7 +288,7 @@
 		D30000000000000000000F71 /* ChatLogStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000F61 /* ChatLogStoreTests.swift */; };
 		D30000000000000000000019 /* WorkComposerTriggerDetectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000009 /* WorkComposerTriggerDetectorTests.swift */; };
 		D30000000000000000000F32 /* WorkChipDetectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000F31 /* WorkChipDetectorTests.swift */; };
-		D31000000000000000000019 /* WorkPromptStashTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3000000000000000000000A /* WorkPromptStashTests.swift */; };
+		D31000000000000000000019 /* WorkDraftsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3000000000000000000000A /* WorkDraftsTests.swift */; };
 		DCF01D0000000000000002 /* WorkComposerFoldStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCF01D0000000000000001 /* WorkComposerFoldStateTests.swift */; };
 		D31000000000000000000F0D /* WorkToolsContractTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000F0D /* WorkToolsContractTests.swift */; };
 		F10000000000000000000105 /* WorkChatToolResultCacheTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000106 /* WorkChatToolResultCacheTests.swift */; };
@@ -280,7 +302,6 @@
 		FB000000000000000000C2C4 /* WorkLiveRosterHydrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA000000000000000000C2C4 /* WorkLiveRosterHydrationTests.swift */; };
 		889573D8A5ED468D3BD12894 /* PRsTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EE4D463D21266B62B422D11 /* PRsTabView.swift */; };
 		B10000000000000000000003 /* LaneBatchManageSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000003 /* LaneBatchManageSheet.swift */; };
-		B10000000000000000000004 /* LaneChatLaunchSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000004 /* LaneChatLaunchSheet.swift */; };
 		B10000000000000000000006 /* LaneComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000006 /* LaneComponents.swift */; };
 		B10000000000000000000007 /* LaneCreateSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000007 /* LaneCreateSheet.swift */; };
 		B10000000000000000000009 /* LaneDetailGitSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000009 /* LaneDetailGitSection.swift */; };
@@ -290,12 +311,10 @@
 		B1000000000000000000000D /* LaneHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000000D /* LaneHelpers.swift */; };
 		B1000000000000000000000E /* LaneListViewParts.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000000E /* LaneListViewParts.swift */; };
 		B1000000000000000000000F /* LaneManageSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000000F /* LaneManageSheet.swift */; };
-		B10000000000000000000010 /* LaneSessionTranscriptView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000010 /* LaneSessionTranscriptView.swift */; };
 		B10000000000000000000011 /* LaneStackGraphSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000011 /* LaneStackGraphSheet.swift */; };
 		B10000000000000000000012 /* LaneTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000012 /* LaneTypes.swift */; };
 		B10000000000000000000014 /* ConnectionSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000014 /* ConnectionSettingsView.swift */; };
 		B10000000000000000000101 /* LaneDetailRebaseBanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000101 /* LaneDetailRebaseBanner.swift */; };
-		B10000000000000000000104 /* LaneSyncDetailScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000104 /* LaneSyncDetailScreen.swift */; };
 		B10000000000000000000107 /* LaneEnvInitProgressView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000107 /* LaneEnvInitProgressView.swift */; };
 		B10000000000000000000109 /* LaneBranchPickerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000109 /* LaneBranchPickerSheet.swift */; };
 		F10000000000000000000001 /* SettingsSupportTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000001 /* SettingsSupportTypes.swift */; };
@@ -303,6 +322,9 @@
 		F10000000000000000000003 /* SettingsPairingSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000003 /* SettingsPairingSection.swift */; };
 		AD0000000000000000000B01 /* AccountService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD0000000000000000000A01 /* AccountService.swift */; };
 		AD0000000000000000000B02 /* AccountDirectory.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD0000000000000000000A02 /* AccountDirectory.swift */; };
+		E2000000000000000000DE01 /* DeviceSignInApproval.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE01 /* DeviceSignInApproval.swift */; };
+		E2000000000000000000DE02 /* DeviceSignInApprovalSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE02 /* DeviceSignInApprovalSheet.swift */; };
+		E2000000000000000000DE03 /* WebAuthPresentationAnchor.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE03 /* WebAuthPresentationAnchor.swift */; };
 		AD0000000000000000000B03 /* AccountSignInView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD0000000000000000000A03 /* AccountSignInView.swift */; };
 		AD0000000000000000000B04 /* AccountConnectionsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD0000000000000000000A04 /* AccountConnectionsSection.swift */; };
 		AD0000000000000000000B05 /* AccountEmailAuthFlow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD0000000000000000000A05 /* AccountEmailAuthFlow.swift */; };
@@ -314,15 +336,16 @@
 		F10000000000000000000A01 /* ADEResetCreditRows.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000A01 /* ADEResetCreditRows.swift */; };
 		F10000000000000000000B51 /* ADEGlassComposer.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000B51 /* ADEGlassComposer.swift */; };
 		F10000000000000000000008 /* SettingsUsagePage.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000008 /* SettingsUsagePage.swift */; };
+		F1000000000000000000AB01 /* SettingsWebhooksPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2000000000000000000AB01 /* SettingsWebhooksPage.swift */; };
 		F10000000000000000000009 /* SettingsUsageChart.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000009 /* SettingsUsageChart.swift */; };
 		F10000000000000000000007 /* SettingsMachineRenameSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000007 /* SettingsMachineRenameSheet.swift */; };
 		G10000000000000000000001 /* PrModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000001 /* PrModels.swift */; };
 		G10000000000000000000002 /* PrHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000002 /* PrHelpers.swift */; };
 		G10000000000000000000034 /* PrDetailRedesign.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000034 /* PrDetailRedesign.swift */; };
 		G10000000000000000000032 /* PrGitHubDescriptionParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000032 /* PrGitHubDescriptionParser.swift */; };
-		G10000000000000000000003 /* PrListRowModifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000003 /* PrListRowModifier.swift */; };
 		G10000000000000000000005 /* PrRowCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000005 /* PrRowCard.swift */; };
 		G10000000000000000000006 /* PrsRootScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000006 /* PrsRootScreen.swift */; };
+		G10000000000000000000A06 /* PrsRootInputs.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000A06 /* PrsRootInputs.swift */; };
 		G10000000000000000000007 /* PrDetailScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000007 /* PrDetailScreen.swift */; };
 		G10000000000000000000008 /* PrDetailOverviewTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000008 /* PrDetailOverviewTab.swift */; };
 		G10000000000000000000033 /* PrDetailHeaderComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000033 /* PrDetailHeaderComponents.swift */; };
@@ -332,17 +355,14 @@
 		G1000000000000000000000D /* PrStackSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = G2000000000000000000000D /* PrStackSheet.swift */; };
 		G1000000000000000000000E /* CreatePrWizardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = G2000000000000000000000E /* CreatePrWizardView.swift */; };
 		G10000000000000000000027 /* PrTargetBranchPickerDropdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000027 /* PrTargetBranchPickerDropdown.swift */; };
-		G1000000000000000000000F /* PrGlassPalette.swift in Sources */ = {isa = PBXBuildFile; fileRef = G2000000000000000000000F /* PrGlassPalette.swift */; };
 		G10000000000000000000023 /* PrStackDiagramView.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000023 /* PrStackDiagramView.swift */; };
 		G10000000000000000000024 /* PrRebaseScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000024 /* PrRebaseScreen.swift */; };
 		E20000000000000000000F20 /* PrRemoteMachines.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F20 /* PrRemoteMachines.swift */; };
-		B10000000000000000000017 /* LaneTreeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000017 /* LaneTreeView.swift */; };
+		B10000000000000000000017 /* LaneTreeRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000017 /* LaneTreeRow.swift */; };
 		E20000000000000000000F11 /* LaneRemoteMachines.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F11 /* LaneRemoteMachines.swift */; };
 		E20000000000000000000F12 /* LaneMachinePreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F12 /* LaneMachinePreviews.swift */; };
 		B10000000000000000000018 /* AddLaneSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000018 /* AddLaneSheet.swift */; };
-		B10000000000000000000019 /* LanesOfflineEmptyState.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000019 /* LanesOfflineEmptyState.swift */; };
 		B1000000000000000000001A /* ADEHaptics.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000001A /* ADEHaptics.swift */; };
-		B1000000000000000000002B /* ADEBorderBeam.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000002B /* ADEBorderBeam.swift */; };
 		B1000000000000000000001B /* LaneConnectionPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000001B /* LaneConnectionPresentation.swift */; };
 		B1000000000000000000001C /* LaneRootStateViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000001C /* LaneRootStateViews.swift */; };
 		B1000000000000000000001D /* LaneDetailSectionChrome.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000001D /* LaneDetailSectionChrome.swift */; };
@@ -410,6 +430,8 @@
 		E20000000000000000000F02 /* MachineFleet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F02 /* MachineFleet.swift */; };
 		E20000000000000000000F03 /* HubMachineSections.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F03 /* HubMachineSections.swift */; };
 		E20000000000000000000F04 /* WorkRemoteMachineRows.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F04 /* WorkRemoteMachineRows.swift */; };
+		5E0000000000000000000B01 /* Sentry in Frameworks */ = {isa = PBXBuildFile; productRef = 5E0000000000000000000A02 /* Sentry */; };
+		5E0000000000000000000B02 /* CrashReporting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E0000000000000000000C01 /* CrashReporting.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -468,6 +490,7 @@
 		D2000000000000000000A610 /* SettingsProviderAccounts.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsProviderAccounts.swift; path = ADE/Views/Settings/SettingsProviderAccounts.swift; sourceTree = "<group>"; };
 		D2000000000000000000A600 /* ProviderAccountsStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ProviderAccountsStore.swift; path = ADE/Services/ProviderAccountsStore.swift; sourceTree = "<group>"; };
 		D20000000000000000000F30 /* ADEFlat.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEFlat.swift; path = ADE/Views/Components/ADEFlat.swift; sourceTree = "<group>"; };
+		D20000000000000000000F3A /* ADEKit.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEKit.swift; path = ADE/Views/Components/ADEKit.swift; sourceTree = "<group>"; };
 		D20000000000000000000092 /* LinearSVGPath.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearSVGPath.swift; path = ADE/Views/Linear/LinearSVGPath.swift; sourceTree = "<group>"; };
 		D20000000000000000000093 /* LinearLaunchModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearLaunchModel.swift; path = ADE/Views/Linear/LinearLaunchModel.swift; sourceTree = "<group>"; };
 		D20000000000000000000094 /* LinearPaneStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearPaneStore.swift; path = ADE/Views/Linear/LinearPaneStore.swift; sourceTree = "<group>"; };
@@ -479,9 +502,12 @@
 		D2A00000000000000000C1 /* CursorCloudModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CursorCloudModels.swift; path = ADE/Views/CursorCloud/CursorCloudModels.swift; sourceTree = "<group>"; };
 		D2A00000000000000000C2 /* CursorCloudPaneStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CursorCloudPaneStore.swift; path = ADE/Views/CursorCloud/CursorCloudPaneStore.swift; sourceTree = "<group>"; };
 		D2A00000000000000000C3 /* CursorCloudPaneSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CursorCloudPaneSheet.swift; path = ADE/Views/CursorCloud/CursorCloudPaneSheet.swift; sourceTree = "<group>"; };
+		D2A00000000000000000D3 /* GitHubIssuesPaneStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = GitHubIssuesPaneStore.swift; path = ADE/Views/GitHubIssues/GitHubIssuesPaneStore.swift; sourceTree = "<group>"; };
+		D2A00000000000000000D2 /* GitHubIssuesPaneSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = GitHubIssuesPaneSheet.swift; path = ADE/Views/GitHubIssues/GitHubIssuesPaneSheet.swift; sourceTree = "<group>"; };
 		D2A00000000000000000C4 /* CursorCloudAgentListScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CursorCloudAgentListScreen.swift; path = ADE/Views/CursorCloud/CursorCloudAgentListScreen.swift; sourceTree = "<group>"; };
 		D2A00000000000000000C5 /* CursorCloudAgentDetailScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CursorCloudAgentDetailScreen.swift; path = ADE/Views/CursorCloud/CursorCloudAgentDetailScreen.swift; sourceTree = "<group>"; };
 		D2A00000000000000000D1 /* CursorCloudContractDecodingTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CursorCloudContractDecodingTests.swift; path = ADETests/CursorCloudContractDecodingTests.swift; sourceTree = "<group>"; };
+		D2A00000000000000000D4 /* GitHubIssuesPaneContractTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = GitHubIssuesPaneContractTests.swift; path = ADETests/GitHubIssuesPaneContractTests.swift; sourceTree = "<group>"; };
 		D2000000000000000000009A /* LinearOAuthRunner.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearOAuthRunner.swift; path = ADE/Views/Linear/LinearOAuthRunner.swift; sourceTree = "<group>"; };
 		D2000000000000000000009B /* LinearConnectionScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearConnectionScreen.swift; path = ADE/Views/Linear/LinearConnectionScreen.swift; sourceTree = "<group>"; };
 		AA1000000000000000000001 /* ADESharedContainer.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADESharedContainer.swift; path = ADE/Shared/ADESharedContainer.swift; sourceTree = "<group>"; };
@@ -561,7 +587,8 @@
 		D10000000000000000000053 /* LaneDetailGitActionsPane.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneDetailGitActionsPane.swift; path = ADE/Views/Lanes/LaneDetailGitActionsPane.swift; sourceTree = "<group>"; };
 		D10000000000000000000047 /* ADEInspectable.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEInspectable.swift; path = ADE/Debug/ADEInspectorKit/ADEInspectable.swift; sourceTree = "<group>"; };
 		D1000000000000000000002E /* WorkChatComposerAndInputViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatComposerAndInputViews.swift; path = ADE/Views/Work/WorkChatComposerAndInputViews.swift; sourceTree = "<group>"; };
-		D10000000000000000000F03 /* WorkPromptStash.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkPromptStash.swift; path = ADE/Views/Work/WorkPromptStash.swift; sourceTree = "<group>"; };
+		D10000000000000000000F03 /* WorkDrafts.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkDrafts.swift; path = ADE/Views/Work/WorkDrafts.swift; sourceTree = "<group>"; };
+		D10000000000000000000F90 /* WorkDraftScheduleSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkDraftScheduleSheet.swift; path = ADE/Views/Work/WorkDraftScheduleSheet.swift; sourceTree = "<group>"; };
 		7C0FFEE0000000000000A001 /* WorkThreadComments.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkThreadComments.swift; path = ADE/Views/Work/WorkThreadComments.swift; sourceTree = "<group>"; };
 		D10000000000000000000F04 /* WorkContextUsageViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkContextUsageViews.swift; path = ADE/Views/Work/WorkContextUsageViews.swift; sourceTree = "<group>"; };
 		D1000000000000000000002F /* WorkArtifactTerminalViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkArtifactTerminalViews.swift; path = ADE/Views/Work/WorkArtifactTerminalViews.swift; sourceTree = "<group>"; };
@@ -582,8 +609,19 @@
 		D10000000000000000000032 /* WorkTranscriptParser.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkTranscriptParser.swift; path = ADE/Views/Work/WorkTranscriptParser.swift; sourceTree = "<group>"; };
 		D10000000000000000000033 /* WorkNavigationAndTranscriptHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkNavigationAndTranscriptHelpers.swift; path = ADE/Views/Work/WorkNavigationAndTranscriptHelpers.swift; sourceTree = "<group>"; };
 		D10000000000000000000034 /* WorkMarkdownParsing.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkMarkdownParsing.swift; path = ADE/Views/Work/WorkMarkdownParsing.swift; sourceTree = "<group>"; };
+		D20000000000000000005CE1 /* WorkSceneDocument.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSceneDocument.swift; path = ADE/Views/Work/WorkSceneDocument.swift; sourceTree = "<group>"; };
+		D20000000000000000005CE2 /* WorkSceneView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSceneView.swift; path = ADE/Views/Work/WorkSceneView.swift; sourceTree = "<group>"; };
+		D20000000000000000005CE5 /* WorkMcpAppDocument.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkMcpAppDocument.swift; path = ADE/Views/Work/WorkMcpAppDocument.swift; sourceTree = "<group>"; };
+		D20000000000000000005CE6 /* WorkMcpAppView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkMcpAppView.swift; path = ADE/Views/Work/WorkMcpAppView.swift; sourceTree = "<group>"; };
+		D20000000000000000005CE9 /* WorkSceneContainerView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSceneContainerView.swift; path = ADE/Views/Work/WorkSceneContainerView.swift; sourceTree = "<group>"; };
+		D20000000000000000005CE8 /* WorkSandboxedWebView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSandboxedWebView.swift; path = ADE/Views/Work/WorkSandboxedWebView.swift; sourceTree = "<group>"; };
+		D20000000000000000005CE3 /* SceneShell.html */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.html; name = SceneShell.html; path = ADE/Resources/SceneShell.html; sourceTree = "<group>"; };
+		D20000000000000000005CE4 /* SceneThree.js */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.javascript; name = SceneThree.js; path = ADE/Resources/SceneThree.js; sourceTree = "<group>"; };
 		D10000000000000000000F0B /* WorkUsageLimitResume.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkUsageLimitResume.swift; path = ADE/Views/Work/WorkUsageLimitResume.swift; sourceTree = "<group>"; };
 		D10000000000000000000F0C /* WorkUsageLimitResumeViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkUsageLimitResumeViews.swift; path = ADE/Views/Work/WorkUsageLimitResumeViews.swift; sourceTree = "<group>"; };
+		D10000000000000000000F82 /* SyncService+SessionHandoff.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "SyncService+SessionHandoff.swift"; path = "ADE/Services/SyncService+SessionHandoff.swift"; sourceTree = "<group>"; };
+		D10000000000000000000F81 /* WorkSessionHandoffSheets.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSessionHandoffSheets.swift; path = ADE/Views/Work/WorkSessionHandoffSheets.swift; sourceTree = "<group>"; };
+		D10000000000000000000F80 /* WorkCrossMachineHandoffViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkCrossMachineHandoffViews.swift; path = ADE/Views/Work/WorkCrossMachineHandoffViews.swift; sourceTree = "<group>"; };
 		D10000000000000000000035 /* WorkTimelineHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkTimelineHelpers.swift; path = ADE/Views/Work/WorkTimelineHelpers.swift; sourceTree = "<group>"; };
 		D7C001000000000000000001 /* WorkChatTaskListHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatTaskListHelpers.swift; path = ADE/Views/Work/WorkChatTaskListHelpers.swift; sourceTree = "<group>"; };
 		D7C001000000000000000002 /* WorkChatSourceHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatSourceHelpers.swift; path = ADE/Views/Work/WorkChatSourceHelpers.swift; sourceTree = "<group>"; };
@@ -596,6 +634,11 @@
 		FA000000000000000000CA01 /* WorkSessionActivityPresentation.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSessionActivityPresentation.swift; path = ADE/Views/Work/WorkSessionActivityPresentation.swift; sourceTree = "<group>"; };
 		D10000000000000000000039 /* WorkChatSessionView+Timeline.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkChatSessionView+Timeline.swift"; path = "ADE/Views/Work/WorkChatSessionView+Timeline.swift"; sourceTree = "<group>"; };
 		D1000000000000000000003A /* WorkReasoningCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkReasoningCard.swift"; path = "ADE/Views/Work/WorkReasoningCard.swift"; sourceTree = "<group>"; };
+		D10000000000000000CC0001 /* WorkComputerUseActions.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkComputerUseActions.swift"; path = "ADE/Views/Work/WorkComputerUseActions.swift"; sourceTree = "<group>"; };
+		D10000000000000000CC0005 /* WorkCommandRedaction.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkCommandRedaction.swift"; path = "ADE/Views/Work/WorkCommandRedaction.swift"; sourceTree = "<group>"; };
+		D10000000000000000CC0002 /* WorkComputerUseSummary.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkComputerUseSummary.swift"; path = "ADE/Views/Work/WorkComputerUseSummary.swift"; sourceTree = "<group>"; };
+		D10000000000000000CC00F1 /* WorkComputerUseOutput.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkComputerUseOutput.swift"; path = "ADE/Views/Work/WorkComputerUseOutput.swift"; sourceTree = "<group>"; };
+		D10000000000000000CC0003 /* WorkComputerUsePresentation.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkComputerUsePresentation.swift"; path = "ADE/Views/Work/WorkComputerUsePresentation.swift"; sourceTree = "<group>"; };
 		D10000000000000000000F0A /* WorkCardExpansion.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkCardExpansion.swift"; path = "ADE/Views/Work/WorkCardExpansion.swift"; sourceTree = "<group>"; };
 		D1000000000000000000003B /* WorkActivityIndicator.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkActivityIndicator.swift; path = ADE/Views/Work/WorkActivityIndicator.swift; sourceTree = "<group>"; };
 		D1000000000000000000003E /* WorkContextCompactDivider.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkContextCompactDivider.swift; path = ADE/Views/Work/WorkContextCompactDivider.swift; sourceTree = "<group>"; };
@@ -656,6 +699,7 @@
 		D20000000000000000000052 /* HubScreen+ChatNavigation.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "HubScreen+ChatNavigation.swift"; path = "ADE/Views/Hub/HubScreen+ChatNavigation.swift"; sourceTree = "<group>"; };
 		D20000000000000000000053 /* HubComposerDrawer.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubComposerDrawer.swift; path = ADE/Views/Hub/HubComposerDrawer.swift; sourceTree = "<group>"; };
 		D200000000000000000000A1 /* HubQuickConnect.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubQuickConnect.swift; path = ADE/Views/Hub/HubQuickConnect.swift; sourceTree = "<group>"; };
+		D2000000000000000000C0F1 /* HubComposerFleetDestination.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubComposerFleetDestination.swift; path = ADE/Views/Hub/HubComposerFleetDestination.swift; sourceTree = "<group>"; };
 		F40000000000000000000002 /* PersonalChatsScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PersonalChatsScreen.swift; path = ADE/Views/PersonalChats/PersonalChatsScreen.swift; sourceTree = "<group>"; };
 		14C0DF7FEB4C2EB854BAC888 /* ADETests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADETests.swift; path = ADETests/ADETests.swift; sourceTree = "<group>"; };
 		D30000000000000000000001 /* ActivityDrawerModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ActivityDrawerModel.swift; path = ADE/Views/Activity/ActivityDrawerModel.swift; sourceTree = "<group>"; };
@@ -676,7 +720,7 @@
 		D30000000000000000000F61 /* ChatLogStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ChatLogStoreTests.swift; path = ADETests/ChatLogStoreTests.swift; sourceTree = "<group>"; };
 		D30000000000000000000009 /* WorkComposerTriggerDetectorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkComposerTriggerDetectorTests.swift; path = ADETests/WorkComposerTriggerDetectorTests.swift; sourceTree = "<group>"; };
 		D30000000000000000000F31 /* WorkChipDetectorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChipDetectorTests.swift; path = ADETests/WorkChipDetectorTests.swift; sourceTree = "<group>"; };
-		D3000000000000000000000A /* WorkPromptStashTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkPromptStashTests.swift; path = ADETests/WorkPromptStashTests.swift; sourceTree = "<group>"; };
+		D3000000000000000000000A /* WorkDraftsTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkDraftsTests.swift; path = ADETests/WorkDraftsTests.swift; sourceTree = "<group>"; };
 		DCF01D0000000000000001 /* WorkComposerFoldStateTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkComposerFoldStateTests.swift; path = ADETests/WorkComposerFoldStateTests.swift; sourceTree = "<group>"; };
 		D30000000000000000000F0D /* WorkToolsContractTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkToolsContractTests.swift; path = ADETests/WorkToolsContractTests.swift; sourceTree = "<group>"; };
 		F10000000000000000000106 /* WorkChatToolResultCacheTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatToolResultCacheTests.swift; path = ADETests/WorkChatToolResultCacheTests.swift; sourceTree = "<group>"; };
@@ -730,7 +774,6 @@
 		8943C47805A871A4E4A4BF68 /* Assets.xcassets */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = folder.assetcatalog; name = Assets.xcassets; path = ADE/Assets.xcassets; sourceTree = "<group>"; };
 		9270CF8A67F3FA79089F39C1 /* LanesTabView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LanesTabView.swift; path = ADE/Views/LanesTabView.swift; sourceTree = "<group>"; };
 		A10000000000000000000003 /* LaneBatchManageSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneBatchManageSheet.swift; path = ADE/Views/Lanes/LaneBatchManageSheet.swift; sourceTree = "<group>"; };
-		A10000000000000000000004 /* LaneChatLaunchSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneChatLaunchSheet.swift; path = ADE/Views/Lanes/LaneChatLaunchSheet.swift; sourceTree = "<group>"; };
 		A10000000000000000000006 /* LaneComponents.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneComponents.swift; path = ADE/Views/Lanes/LaneComponents.swift; sourceTree = "<group>"; };
 		A10000000000000000000007 /* LaneCreateSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneCreateSheet.swift; path = ADE/Views/Lanes/LaneCreateSheet.swift; sourceTree = "<group>"; };
 		A10000000000000000000009 /* LaneDetailGitSection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneDetailGitSection.swift; path = ADE/Views/Lanes/LaneDetailGitSection.swift; sourceTree = "<group>"; };
@@ -740,12 +783,10 @@
 		A1000000000000000000000D /* LaneHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneHelpers.swift; path = ADE/Views/Lanes/LaneHelpers.swift; sourceTree = "<group>"; };
 		A1000000000000000000000E /* LaneListViewParts.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneListViewParts.swift; path = ADE/Views/Lanes/LaneListViewParts.swift; sourceTree = "<group>"; };
 		A1000000000000000000000F /* LaneManageSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneManageSheet.swift; path = ADE/Views/Lanes/LaneManageSheet.swift; sourceTree = "<group>"; };
-		A10000000000000000000010 /* LaneSessionTranscriptView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneSessionTranscriptView.swift; path = ADE/Views/Lanes/LaneSessionTranscriptView.swift; sourceTree = "<group>"; };
 		A10000000000000000000011 /* LaneStackGraphSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneStackGraphSheet.swift; path = ADE/Views/Lanes/LaneStackGraphSheet.swift; sourceTree = "<group>"; };
 		A10000000000000000000012 /* LaneTypes.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneTypes.swift; path = ADE/Views/Lanes/LaneTypes.swift; sourceTree = "<group>"; };
 		A10000000000000000000014 /* ConnectionSettingsView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ConnectionSettingsView.swift; path = ADE/Views/Settings/ConnectionSettingsView.swift; sourceTree = "<group>"; };
 		A10000000000000000000101 /* LaneDetailRebaseBanner.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneDetailRebaseBanner.swift; path = ADE/Views/Lanes/LaneDetailRebaseBanner.swift; sourceTree = "<group>"; };
-		A10000000000000000000104 /* LaneSyncDetailScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneSyncDetailScreen.swift; path = ADE/Views/Lanes/LaneSyncDetailScreen.swift; sourceTree = "<group>"; };
 		A10000000000000000000107 /* LaneEnvInitProgressView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneEnvInitProgressView.swift; path = ADE/Views/Lanes/LaneEnvInitProgressView.swift; sourceTree = "<group>"; };
 		A10000000000000000000109 /* LaneBranchPickerSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneBranchPickerSheet.swift; path = ADE/Views/Lanes/LaneBranchPickerSheet.swift; sourceTree = "<group>"; };
 		F20000000000000000000001 /* SettingsSupportTypes.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsSupportTypes.swift; path = ADE/Views/Settings/SettingsSupportTypes.swift; sourceTree = "<group>"; };
@@ -753,6 +794,9 @@
 		F20000000000000000000003 /* SettingsPairingSection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsPairingSection.swift; path = ADE/Views/Settings/SettingsPairingSection.swift; sourceTree = "<group>"; };
 		AD0000000000000000000A01 /* AccountService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AccountService.swift; path = ADE/Services/AccountService.swift; sourceTree = "<group>"; };
 		AD0000000000000000000A02 /* AccountDirectory.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AccountDirectory.swift; path = ADE/Services/AccountDirectory.swift; sourceTree = "<group>"; };
+		D2000000000000000000DE01 /* DeviceSignInApproval.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DeviceSignInApproval.swift; path = ADE/Services/DeviceSignInApproval.swift; sourceTree = "<group>"; };
+		D2000000000000000000DE02 /* DeviceSignInApprovalSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DeviceSignInApprovalSheet.swift; path = ADE/Views/Account/DeviceSignInApprovalSheet.swift; sourceTree = "<group>"; };
+		D2000000000000000000DE03 /* WebAuthPresentationAnchor.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WebAuthPresentationAnchor.swift; path = ADE/Views/Components/WebAuthPresentationAnchor.swift; sourceTree = "<group>"; };
 		AD0000000000000000000A03 /* AccountSignInView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AccountSignInView.swift; path = ADE/Views/Account/AccountSignInView.swift; sourceTree = "<group>"; };
 		AD0000000000000000000A04 /* AccountConnectionsSection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AccountConnectionsSection.swift; path = ADE/Views/Account/AccountConnectionsSection.swift; sourceTree = "<group>"; };
 		AD0000000000000000000A05 /* AccountEmailAuthFlow.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AccountEmailAuthFlow.swift; path = ADE/Services/AccountEmailAuthFlow.swift; sourceTree = "<group>"; };
@@ -764,15 +808,16 @@
 		F20000000000000000000A01 /* ADEResetCreditRows.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEResetCreditRows.swift; path = ADE/Views/Components/ADEResetCreditRows.swift; sourceTree = "<group>"; };
 		F20000000000000000000B51 /* ADEGlassComposer.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEGlassComposer.swift; path = ADE/Views/Components/ADEGlassComposer.swift; sourceTree = "<group>"; };
 		F20000000000000000000008 /* SettingsUsagePage.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsUsagePage.swift; path = ADE/Views/Settings/SettingsUsagePage.swift; sourceTree = "<group>"; };
+		F2000000000000000000AB01 /* SettingsWebhooksPage.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsWebhooksPage.swift; path = ADE/Views/Settings/SettingsWebhooksPage.swift; sourceTree = "<group>"; };
 		F20000000000000000000009 /* SettingsUsageChart.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsUsageChart.swift; path = ADE/Views/Settings/SettingsUsageChart.swift; sourceTree = "<group>"; };
 		F20000000000000000000007 /* SettingsMachineRenameSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsMachineRenameSheet.swift; path = ADE/Views/Settings/SettingsMachineRenameSheet.swift; sourceTree = "<group>"; };
 		G20000000000000000000001 /* PrModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrModels.swift; path = ADE/Views/PRs/PrModels.swift; sourceTree = "<group>"; };
 		G20000000000000000000002 /* PrHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrHelpers.swift; path = ADE/Views/PRs/PrHelpers.swift; sourceTree = "<group>"; };
 		G20000000000000000000034 /* PrDetailRedesign.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrDetailRedesign.swift; path = ADE/Views/PRs/PrDetailRedesign.swift; sourceTree = "<group>"; };
 		G20000000000000000000032 /* PrGitHubDescriptionParser.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrGitHubDescriptionParser.swift; path = ADE/Views/PRs/PrGitHubDescriptionParser.swift; sourceTree = "<group>"; };
-		G20000000000000000000003 /* PrListRowModifier.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrListRowModifier.swift; path = ADE/Views/PRs/PrListRowModifier.swift; sourceTree = "<group>"; };
 		G20000000000000000000005 /* PrRowCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrRowCard.swift; path = ADE/Views/PRs/PrRowCard.swift; sourceTree = "<group>"; };
 		G20000000000000000000006 /* PrsRootScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrsRootScreen.swift; path = ADE/Views/PRs/PrsRootScreen.swift; sourceTree = "<group>"; };
+		G20000000000000000000A06 /* PrsRootInputs.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrsRootInputs.swift; path = ADE/Views/PRs/PrsRootInputs.swift; sourceTree = "<group>"; };
 		G20000000000000000000007 /* PrDetailScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrDetailScreen.swift; path = ADE/Views/PRs/PrDetailScreen.swift; sourceTree = "<group>"; };
 		G20000000000000000000008 /* PrDetailOverviewTab.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrDetailOverviewTab.swift; path = ADE/Views/PRs/PrDetailOverviewTab.swift; sourceTree = "<group>"; };
 		G20000000000000000000033 /* PrDetailHeaderComponents.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrDetailHeaderComponents.swift; path = ADE/Views/PRs/PrDetailHeaderComponents.swift; sourceTree = "<group>"; };
@@ -782,17 +827,14 @@
 		G2000000000000000000000D /* PrStackSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrStackSheet.swift; path = ADE/Views/PRs/PrStackSheet.swift; sourceTree = "<group>"; };
 		G2000000000000000000000E /* CreatePrWizardView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CreatePrWizardView.swift; path = ADE/Views/PRs/CreatePrWizardView.swift; sourceTree = "<group>"; };
 		G20000000000000000000027 /* PrTargetBranchPickerDropdown.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrTargetBranchPickerDropdown.swift; path = ADE/Views/PRs/PrTargetBranchPickerDropdown.swift; sourceTree = "<group>"; };
-		G2000000000000000000000F /* PrGlassPalette.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrGlassPalette.swift; path = ADE/Views/PRs/PrGlassPalette.swift; sourceTree = "<group>"; };
 		G20000000000000000000023 /* PrStackDiagramView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrStackDiagramView.swift; path = ADE/Views/PRs/PrStackDiagramView.swift; sourceTree = "<group>"; };
 		G20000000000000000000024 /* PrRebaseScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrRebaseScreen.swift; path = ADE/Views/PRs/PrRebaseScreen.swift; sourceTree = "<group>"; };
 		D20000000000000000000F20 /* PrRemoteMachines.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrRemoteMachines.swift; path = ADE/Views/PRs/PrRemoteMachines.swift; sourceTree = "<group>"; };
-		A10000000000000000000017 /* LaneTreeView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneTreeView.swift; path = ADE/Views/Lanes/LaneTreeView.swift; sourceTree = "<group>"; };
+		A10000000000000000000017 /* LaneTreeRow.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneTreeRow.swift; path = ADE/Views/Lanes/LaneTreeRow.swift; sourceTree = "<group>"; };
 		D20000000000000000000F11 /* LaneRemoteMachines.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneRemoteMachines.swift; path = ADE/Views/Lanes/LaneRemoteMachines.swift; sourceTree = "<group>"; };
 		D20000000000000000000F12 /* LaneMachinePreviews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneMachinePreviews.swift; path = ADE/Views/Lanes/LaneMachinePreviews.swift; sourceTree = "<group>"; };
 		A10000000000000000000018 /* AddLaneSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AddLaneSheet.swift; path = ADE/Views/Lanes/AddLaneSheet.swift; sourceTree = "<group>"; };
-		A10000000000000000000019 /* LanesOfflineEmptyState.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LanesOfflineEmptyState.swift; path = ADE/Views/Lanes/LanesOfflineEmptyState.swift; sourceTree = "<group>"; };
 		A1000000000000000000001A /* ADEHaptics.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEHaptics.swift; path = ADE/Views/Components/ADEHaptics.swift; sourceTree = "<group>"; };
-		A1000000000000000000002B /* ADEBorderBeam.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEBorderBeam.swift; path = ADE/Views/Components/ADEBorderBeam.swift; sourceTree = "<group>"; };
 		A1000000000000000000001B /* LaneConnectionPresentation.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneConnectionPresentation.swift; path = ADE/Views/Lanes/LaneConnectionPresentation.swift; sourceTree = "<group>"; };
 		A1000000000000000000001C /* LaneRootStateViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneRootStateViews.swift; path = ADE/Views/Lanes/LaneRootStateViews.swift; sourceTree = "<group>"; };
 		A1000000000000000000001D /* LaneDetailSectionChrome.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneDetailSectionChrome.swift; path = ADE/Views/Lanes/LaneDetailSectionChrome.swift; sourceTree = "<group>"; };
@@ -843,6 +885,7 @@
 		D20000000000000000000F02 /* MachineFleet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MachineFleet.swift; path = ADE/Services/MachineFleet.swift; sourceTree = "<group>"; };
 		D20000000000000000000F03 /* HubMachineSections.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubMachineSections.swift; path = ADE/Views/Hub/HubMachineSections.swift; sourceTree = "<group>"; };
 		D20000000000000000000F04 /* WorkRemoteMachineRows.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkRemoteMachineRows.swift; path = ADE/Views/Work/WorkRemoteMachineRows.swift; sourceTree = "<group>"; };
+		5E0000000000000000000C01 /* CrashReporting.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CrashReporting.swift; path = ADE/Services/CrashReporting.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -859,6 +902,7 @@
 			files = (
 				60F4CDDB763C0A9F0E650B40 /* Foundation.framework in Frameworks */,
 				DD20000000000000000000B1 /* SwiftTerm in Frameworks */,
+				5E0000000000000000000B01 /* Sentry in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -899,6 +943,15 @@
 			name = CursorCloud;
 			sourceTree = "<group>";
 		};
+		D2A00000000000000000DA /* GitHubIssues */ = {
+			isa = PBXGroup;
+			children = (
+				D2A00000000000000000D3 /* GitHubIssuesPaneStore.swift */,
+				D2A00000000000000000D2 /* GitHubIssuesPaneSheet.swift */,
+			);
+			name = GitHubIssues;
+			sourceTree = "<group>";
+		};
 		D2000000000000000000009F /* Linear */ = {
 			isa = PBXGroup;
 			children = (
@@ -921,13 +974,14 @@
 			isa = PBXGroup;
 			children = (
 				C10000000000000000000012 /* ADECodeRenderingCache.swift */,
-				A1000000000000000000002B /* ADEBorderBeam.swift */,
 				4A9E6135ED52117E41DE95F7 /* ADEDesignSystem.swift */,
 				F2000000000000000000000A /* ADEUsageDesign.swift */,
 				F20000000000000000000A01 /* ADEResetCreditRows.swift */,
 				F20000000000000000000B51 /* ADEGlassComposer.swift */,
 				A1000000000000000000001A /* ADEHaptics.swift */,
 				D20000000000000000000F30 /* ADEFlat.swift */,
+				D20000000000000000000F3A /* ADEKit.swift */,
+				D2000000000000000000DE03 /* WebAuthPresentationAnchor.swift */,
 				C10000000000000000000011 /* ADEMobilePrimitives.swift */,
 				C1000000000000000000A001 /* MachineRowView.swift */,
 				50F12DAB52A9A64E2D3D4D03 /* DictationMicButton.swift */,
@@ -943,7 +997,6 @@
 			children = (
 				A10000000000000000000018 /* AddLaneSheet.swift */,
 				A10000000000000000000003 /* LaneBatchManageSheet.swift */,
-				A10000000000000000000004 /* LaneChatLaunchSheet.swift */,
 				A10000000000000000000006 /* LaneComponents.swift */,
 				A1000000000000000000001B /* LaneConnectionPresentation.swift */,
 				A1000000000000000000001E /* LaneColorPalette.swift */,
@@ -960,15 +1013,12 @@
 				A1000000000000000000000E /* LaneListViewParts.swift */,
 				A1000000000000000000000F /* LaneManageSheet.swift */,
 				A1000000000000000000001C /* LaneRootStateViews.swift */,
-				A10000000000000000000010 /* LaneSessionTranscriptView.swift */,
 				A10000000000000000000011 /* LaneStackGraphSheet.swift */,
-				A10000000000000000000017 /* LaneTreeView.swift */,
+				A10000000000000000000017 /* LaneTreeRow.swift */,
 				D20000000000000000000F11 /* LaneRemoteMachines.swift */,
 				D20000000000000000000F12 /* LaneMachinePreviews.swift */,
 				A10000000000000000000012 /* LaneTypes.swift */,
-				A10000000000000000000019 /* LanesOfflineEmptyState.swift */,
 				A10000000000000000000101 /* LaneDetailRebaseBanner.swift */,
-				A10000000000000000000104 /* LaneSyncDetailScreen.swift */,
 				A10000000000000000000107 /* LaneEnvInitProgressView.swift */,
 				A10000000000000000000109 /* LaneBranchPickerSheet.swift */,
 			);
@@ -987,6 +1037,7 @@
 				H10000000000000000000020 /* Cto */,
 				D2000000000000000000009F /* Linear */,
 				D2A00000000000000000CA /* CursorCloud */,
+				D2A00000000000000000DA /* GitHubIssues */,
 				G20000000000000000000000 /* PRs */,
 				A10000000000000000000015 /* Settings */,
 				AD0000000000000000000C01 /* Account */,
@@ -1010,6 +1061,7 @@
 				D20000000000000000000052 /* HubScreen+ChatNavigation.swift */,
 				D20000000000000000000053 /* HubComposerDrawer.swift */,
 				D200000000000000000000A1 /* HubQuickConnect.swift */,
+				D2000000000000000000C0F1 /* HubComposerFleetDestination.swift */,
 			);
 			name = Hub;
 			sourceTree = "<group>";
@@ -1048,11 +1100,11 @@
 				G20000000000000000000002 /* PrHelpers.swift */,
 				G20000000000000000000034 /* PrDetailRedesign.swift */,
 				G20000000000000000000032 /* PrGitHubDescriptionParser.swift */,
-				G20000000000000000000003 /* PrListRowModifier.swift */,
 				G20000000000000000000005 /* PrRowCard.swift */,
 				D20000000000000000000F41 /* PrFlatPreviews.swift */,
 				D20000000000000000000F40 /* PrConversationDigest.swift */,
 				G20000000000000000000006 /* PrsRootScreen.swift */,
+				G20000000000000000000A06 /* PrsRootInputs.swift */,
 				D20000000000000000000F34 /* PrLaneSheets.swift */,
 				G20000000000000000000007 /* PrDetailScreen.swift */,
 				G20000000000000000000008 /* PrDetailOverviewTab.swift */,
@@ -1063,7 +1115,6 @@
 				G2000000000000000000000D /* PrStackSheet.swift */,
 				G2000000000000000000000E /* CreatePrWizardView.swift */,
 				G20000000000000000000027 /* PrTargetBranchPickerDropdown.swift */,
-				G2000000000000000000000F /* PrGlassPalette.swift */,
 				D20000000000000000000F20 /* PrRemoteMachines.swift */,
 				G20000000000000000000023 /* PrStackDiagramView.swift */,
 				G20000000000000000000024 /* PrRebaseScreen.swift */,
@@ -1123,6 +1174,11 @@
 				D1000000000000000000002B /* WorkChatSessionView+Actions.swift */,
 				D10000000000000000000039 /* WorkChatSessionView+Timeline.swift */,
 				D1000000000000000000003A /* WorkReasoningCard.swift */,
+				D10000000000000000CC0001 /* WorkComputerUseActions.swift */,
+				D10000000000000000CC0005 /* WorkCommandRedaction.swift */,
+				D10000000000000000CC0002 /* WorkComputerUseSummary.swift */,
+				D10000000000000000CC00F1 /* WorkComputerUseOutput.swift */,
+				D10000000000000000CC0003 /* WorkComputerUsePresentation.swift */,
 				D10000000000000000000F0A /* WorkCardExpansion.swift */,
 				D1000000000000000000003B /* WorkActivityIndicator.swift */,
 				D1000000000000000000003E /* WorkContextCompactDivider.swift */,
@@ -1177,7 +1233,8 @@
 				D1000000000000000000AB02 /* AppleDeviceViewer.swift */,
 				D1000000000000000000AA03 /* WorkQueuedSteerDetailSheet.swift */,
 				D1000000000000000000002E /* WorkChatComposerAndInputViews.swift */,
-				D10000000000000000000F03 /* WorkPromptStash.swift */,
+				D10000000000000000000F03 /* WorkDrafts.swift */,
+				D10000000000000000000F90 /* WorkDraftScheduleSheet.swift */,
 				7C0FFEE0000000000000A001 /* WorkThreadComments.swift */,
 				D10000000000000000000F04 /* WorkContextUsageViews.swift */,
 				D1000000000000000000002F /* WorkArtifactTerminalViews.swift */,
@@ -1198,8 +1255,16 @@
 				D10000000000000000000032 /* WorkTranscriptParser.swift */,
 				D10000000000000000000033 /* WorkNavigationAndTranscriptHelpers.swift */,
 				D10000000000000000000034 /* WorkMarkdownParsing.swift */,
+				D20000000000000000005CE1 /* WorkSceneDocument.swift */,
+				D20000000000000000005CE2 /* WorkSceneView.swift */,
+				D20000000000000000005CE5 /* WorkMcpAppDocument.swift */,
+				D20000000000000000005CE6 /* WorkMcpAppView.swift */,
+				D20000000000000000005CE9 /* WorkSceneContainerView.swift */,
+				D20000000000000000005CE8 /* WorkSandboxedWebView.swift */,
 				D10000000000000000000F0B /* WorkUsageLimitResume.swift */,
 				D10000000000000000000F0C /* WorkUsageLimitResumeViews.swift */,
+				D10000000000000000000F81 /* WorkSessionHandoffSheets.swift */,
+				D10000000000000000000F80 /* WorkCrossMachineHandoffViews.swift */,
 				D10000000000000000000035 /* WorkTimelineHelpers.swift */,
 				D7C001000000000000000001 /* WorkChatTaskListHelpers.swift */,
 				D7C001000000000000000002 /* WorkChatSourceHelpers.swift */,
@@ -1221,6 +1286,7 @@
 				AD0000000000000000000A04 /* AccountConnectionsSection.swift */,
 				C5A000000000000000000009 /* MobileAccessGateView.swift */,
 				C5A00000000000000000000A /* MobileAccessGateSheet.swift */,
+				D2000000000000000000DE02 /* DeviceSignInApprovalSheet.swift */,
 			);
 			name = Account;
 			sourceTree = "<group>";
@@ -1243,6 +1309,7 @@
 				F20000000000000000000006 /* SettingsDiagnosticsSection.swift */,
 				F20000000000000000000007 /* SettingsMachineRenameSheet.swift */,
 				F20000000000000000000008 /* SettingsUsagePage.swift */,
+				F2000000000000000000AB01 /* SettingsWebhooksPage.swift */,
 				F20000000000000000000009 /* SettingsUsageChart.swift */,
 				AE00000000000000000000A4 /* SettingsPushDeliverySection.swift */,
 				AF00000000000000000000A3 /* SettingsPairingScannerSheet.swift */,
@@ -1262,7 +1329,9 @@
 				D20000000000000000000C2F /* ChatThread */,
 				B5D5B5B87564C73F2FF34B0D /* KeychainService.swift */,
 				A90000000000000000000011 /* ProductAnalytics.swift */,
+				5E0000000000000000000C01 /* CrashReporting.swift */,
 				66B5024B0A05F3D9754101F1 /* SyncService.swift */,
+				D10000000000000000000F82 /* SyncService+SessionHandoff.swift */,
 				D20000000000000000000F02 /* MachineFleet.swift */,
 				D20000000000000000000F01 /* MachineConnection.swift */,
 				D20000000000000000000F07 /* SyncService+Fleet.swift */,
@@ -1289,6 +1358,7 @@
 				AD0000000000000000000A01 /* AccountService.swift */,
 				AD0000000000000000000A05 /* AccountEmailAuthFlow.swift */,
 				AD0000000000000000000A02 /* AccountDirectory.swift */,
+				D2000000000000000000DE01 /* DeviceSignInApproval.swift */,
 				C5A000000000000000000001 /* MobileTrustResetPolicy.swift */,
 				C5A00000000000000000001F /* PairedHostCredentialState.swift */,
 				C5A000000000000000000002 /* SSHBootstrapModels.swift */,
@@ -1457,6 +1527,8 @@
 				A90100000000000000000011 /* PrivacyInfo.xcprivacy */,
 				2856F8D2F2D630DD985B870A /* DatabaseBootstrap.sql */,
 				781DE0B3C61717AE3057B82D /* VoiceGlossary.json */,
+				D20000000000000000005CE3 /* SceneShell.html */,
+				D20000000000000000005CE4 /* SceneThree.js */,
 			);
 			name = Resources;
 			sourceTree = "<group>";
@@ -1502,7 +1574,7 @@
 				D30000000000000000000F62 /* ChatThreadEngineTests.swift */,
 				D30000000000000000000009 /* WorkComposerTriggerDetectorTests.swift */,
 				D30000000000000000000F31 /* WorkChipDetectorTests.swift */,
-				D3000000000000000000000A /* WorkPromptStashTests.swift */,
+				D3000000000000000000000A /* WorkDraftsTests.swift */,
 				DCF01D0000000000000001 /* WorkComposerFoldStateTests.swift */,
 				D30000000000000000000F0D /* WorkToolsContractTests.swift */,
 				F10000000000000000000106 /* WorkChatToolResultCacheTests.swift */,
@@ -1519,6 +1591,7 @@
 				A90000000000000000000014 /* PrGitHubDescriptionParserTests.swift */,
 				C5A00000000000000000000E /* SSHBootstrapTests.swift */,
 				D2A00000000000000000D1 /* CursorCloudContractDecodingTests.swift */,
+				D2A00000000000000000D4 /* GitHubIssuesPaneContractTests.swift */,
 			);
 			name = ADETests;
 			sourceTree = "<group>";
@@ -1584,6 +1657,7 @@
 				DD10000000000000000000B1 /* SwiftTerm */,
 				DD10000000000000000000C2 /* ClerkKit */,
 				C5C000000000000000000002 /* Citadel */,
+				5E0000000000000000000A02 /* Sentry */,
 			);
 			productName = ADE;
 			productReference = 27A125DE2C17BA32F9291513 /* ADE.app */;
@@ -1716,6 +1790,7 @@
 				DD10000000000000000000A1 /* XCRemoteSwiftPackageReference "SwiftTerm" */,
 				DD10000000000000000000C1 /* XCRemoteSwiftPackageReference "clerk-ios" */,
 				C5C000000000000000000001 /* XCRemoteSwiftPackageReference "Citadel" */,
+				5E0000000000000000000A01 /* XCRemoteSwiftPackageReference "sentry-cocoa" */,
 			);
 			productRefGroup = 7FAD2BF35AA6A286BCF68D49 /* Products */;
 			projectDirPath = "";
@@ -1753,6 +1828,8 @@
 				63A9C60B0E0F0E2707634B2E /* Assets.xcassets in Resources */,
 				6E32ED1BF961DFEFCA12EF52 /* DatabaseBootstrap.sql in Resources */,
 				CF71F8756A9A432A433D5E33 /* VoiceGlossary.json in Resources */,
+				E20000000000000000005CE3 /* SceneShell.html in Resources */,
+				E20000000000000000005CE4 /* SceneThree.js in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1818,6 +1895,8 @@
 				E2A00000000000000000C1 /* CursorCloudModels.swift in Sources */,
 				E2A00000000000000000C2 /* CursorCloudPaneStore.swift in Sources */,
 				E2A00000000000000000C3 /* CursorCloudPaneSheet.swift in Sources */,
+				E2A00000000000000000D3 /* GitHubIssuesPaneStore.swift in Sources */,
+				E2A00000000000000000D2 /* GitHubIssuesPaneSheet.swift in Sources */,
 				E2A00000000000000000C4 /* CursorCloudAgentListScreen.swift in Sources */,
 				E2A00000000000000000C5 /* CursorCloudAgentDetailScreen.swift in Sources */,
 				E20000000000000000000092 /* LinearSVGPath.swift in Sources */,
@@ -1842,6 +1921,7 @@
 				8FCB968194DE9C66EC194223 /* VoiceGlossary.swift in Sources */,
 				D1C7A70000000000000001B1 /* DictationController.swift in Sources */,
 				A90000000000000000000001 /* ProductAnalytics.swift in Sources */,
+				5E0000000000000000000B02 /* CrashReporting.swift in Sources */,
 				91D46087242081A9F29BBFF5 /* DictationMicButton.swift in Sources */,
 				C85070CCC923CAB6FD61AF85 /* RecordingPill.swift in Sources */,
 				B1D40000000000000000A001 /* GlobalDictationPill.swift in Sources */,
@@ -1926,9 +2006,9 @@
 				E20000000000000000000052 /* HubScreen+ChatNavigation.swift in Sources */,
 				E20000000000000000000053 /* HubComposerDrawer.swift in Sources */,
 				E200000000000000000000A1 /* HubQuickConnect.swift in Sources */,
+				E2000000000000000000C0F1 /* HubComposerFleetDestination.swift in Sources */,
 				F40000000000000000000001 /* PersonalChatsScreen.swift in Sources */,
 				B10000000000000000000003 /* LaneBatchManageSheet.swift in Sources */,
-				B10000000000000000000004 /* LaneChatLaunchSheet.swift in Sources */,
 				B10000000000000000000006 /* LaneComponents.swift in Sources */,
 				B10000000000000000000007 /* LaneCreateSheet.swift in Sources */,
 				B1000000000000000000001D /* LaneDetailSectionChrome.swift in Sources */,
@@ -1945,12 +2025,10 @@
 				B1000000000000000000001C /* LaneRootStateViews.swift in Sources */,
 				B1000000000000000000001E /* LaneColorPalette.swift in Sources */,
 				B1000000000000000000001F /* LaneColorSwatchPicker.swift in Sources */,
-				B10000000000000000000010 /* LaneSessionTranscriptView.swift in Sources */,
 				B10000000000000000000011 /* LaneStackGraphSheet.swift in Sources */,
 				B10000000000000000000012 /* LaneTypes.swift in Sources */,
 				B10000000000000000000014 /* ConnectionSettingsView.swift in Sources */,
 				B10000000000000000000101 /* LaneDetailRebaseBanner.swift in Sources */,
-				B10000000000000000000104 /* LaneSyncDetailScreen.swift in Sources */,
 				B10000000000000000000107 /* LaneEnvInitProgressView.swift in Sources */,
 				B10000000000000000000109 /* LaneBranchPickerSheet.swift in Sources */,
 				F10000000000000000000001 /* SettingsSupportTypes.swift in Sources */,
@@ -1965,6 +2043,9 @@
 				AD0000000000000000000B01 /* AccountService.swift in Sources */,
 				AD0000000000000000000B05 /* AccountEmailAuthFlow.swift in Sources */,
 				AD0000000000000000000B02 /* AccountDirectory.swift in Sources */,
+				E2000000000000000000DE01 /* DeviceSignInApproval.swift in Sources */,
+				E2000000000000000000DE02 /* DeviceSignInApprovalSheet.swift in Sources */,
+				E2000000000000000000DE03 /* WebAuthPresentationAnchor.swift in Sources */,
 				AD0000000000000000000B03 /* AccountSignInView.swift in Sources */,
 				AD0000000000000000000B04 /* AccountConnectionsSection.swift in Sources */,
 				F10000000000000000000004 /* SettingsPinSheet.swift in Sources */,
@@ -1975,16 +2056,17 @@
 				F10000000000000000000A01 /* ADEResetCreditRows.swift in Sources */,
 				F10000000000000000000B51 /* ADEGlassComposer.swift in Sources */,
 				F10000000000000000000008 /* SettingsUsagePage.swift in Sources */,
+				F1000000000000000000AB01 /* SettingsWebhooksPage.swift in Sources */,
 				F10000000000000000000009 /* SettingsUsageChart.swift in Sources */,
 				G10000000000000000000001 /* PrModels.swift in Sources */,
 				G10000000000000000000002 /* PrHelpers.swift in Sources */,
 				G10000000000000000000034 /* PrDetailRedesign.swift in Sources */,
 				G10000000000000000000032 /* PrGitHubDescriptionParser.swift in Sources */,
-				G10000000000000000000003 /* PrListRowModifier.swift in Sources */,
 				G10000000000000000000005 /* PrRowCard.swift in Sources */,
 				E20000000000000000000F41 /* PrFlatPreviews.swift in Sources */,
 				E20000000000000000000F40 /* PrConversationDigest.swift in Sources */,
 				G10000000000000000000006 /* PrsRootScreen.swift in Sources */,
+				G10000000000000000000A06 /* PrsRootInputs.swift in Sources */,
 				E20000000000000000000F34 /* PrLaneSheets.swift in Sources */,
 				G10000000000000000000007 /* PrDetailScreen.swift in Sources */,
 				G10000000000000000000008 /* PrDetailOverviewTab.swift in Sources */,
@@ -1995,18 +2077,16 @@
 				G1000000000000000000000D /* PrStackSheet.swift in Sources */,
 				G1000000000000000000000E /* CreatePrWizardView.swift in Sources */,
 				G10000000000000000000027 /* PrTargetBranchPickerDropdown.swift in Sources */,
-				G1000000000000000000000F /* PrGlassPalette.swift in Sources */,
 				E20000000000000000000F20 /* PrRemoteMachines.swift in Sources */,
 				G10000000000000000000023 /* PrStackDiagramView.swift in Sources */,
 				G10000000000000000000024 /* PrRebaseScreen.swift in Sources */,
-				B10000000000000000000017 /* LaneTreeView.swift in Sources */,
+				B10000000000000000000017 /* LaneTreeRow.swift in Sources */,
 				E20000000000000000000F11 /* LaneRemoteMachines.swift in Sources */,
 				E20000000000000000000F12 /* LaneMachinePreviews.swift in Sources */,
 				B10000000000000000000018 /* AddLaneSheet.swift in Sources */,
-				B10000000000000000000019 /* LanesOfflineEmptyState.swift in Sources */,
 				B1000000000000000000001A /* ADEHaptics.swift in Sources */,
 				E20000000000000000000F30 /* ADEFlat.swift in Sources */,
-				B1000000000000000000002B /* ADEBorderBeam.swift in Sources */,
+				E20000000000000000000F3A /* ADEKit.swift in Sources */,
 				E689F42D41A500BB8CA233E4 /* LanesTabView.swift in Sources */,
 				889573D8A5ED468D3BD12894 /* PRsTabView.swift in Sources */,
 				56223CC3AF5A01B710CDC4CF /* WorkTabView.swift in Sources */,
@@ -2025,6 +2105,11 @@
 				E1000000000000000000002B /* WorkChatSessionView+Actions.swift in Sources */,
 				E10000000000000000000039 /* WorkChatSessionView+Timeline.swift in Sources */,
 				E1000000000000000000003A /* WorkReasoningCard.swift in Sources */,
+				E10000000000000000CC0001 /* WorkComputerUseActions.swift in Sources */,
+				E10000000000000000CC0005 /* WorkCommandRedaction.swift in Sources */,
+				E10000000000000000CC0002 /* WorkComputerUseSummary.swift in Sources */,
+				E10000000000000000CC00F1 /* WorkComputerUseOutput.swift in Sources */,
+				E10000000000000000CC0003 /* WorkComputerUsePresentation.swift in Sources */,
 				E10000000000000000000F0A /* WorkCardExpansion.swift in Sources */,
 				E1000000000000000000003B /* WorkActivityIndicator.swift in Sources */,
 				E1000000000000000000003E /* WorkContextCompactDivider.swift in Sources */,
@@ -2079,7 +2164,8 @@
 				E1000000000000000000AA03 /* WorkQueuedSteerDetailSheet.swift in Sources */,
 				E10000000000000000000047 /* ADEInspectable.swift in Sources */,
 				E1000000000000000000002E /* WorkChatComposerAndInputViews.swift in Sources */,
-				E10000000000000000000F03 /* WorkPromptStash.swift in Sources */,
+				E10000000000000000000F03 /* WorkDrafts.swift in Sources */,
+				E10000000000000000000F90 /* WorkDraftScheduleSheet.swift in Sources */,
 				7C0FFEE0000000000000A002 /* WorkThreadComments.swift in Sources */,
 				E10000000000000000000F04 /* WorkContextUsageViews.swift in Sources */,
 				E1000000000000000000002F /* WorkArtifactTerminalViews.swift in Sources */,
@@ -2100,8 +2186,17 @@
 				E10000000000000000000032 /* WorkTranscriptParser.swift in Sources */,
 				E10000000000000000000033 /* WorkNavigationAndTranscriptHelpers.swift in Sources */,
 				E10000000000000000000034 /* WorkMarkdownParsing.swift in Sources */,
+				E20000000000000000005CE1 /* WorkSceneDocument.swift in Sources */,
+				E20000000000000000005CE2 /* WorkSceneView.swift in Sources */,
+				E20000000000000000005CE5 /* WorkMcpAppDocument.swift in Sources */,
+				E20000000000000000005CE6 /* WorkMcpAppView.swift in Sources */,
+				E20000000000000000005CE9 /* WorkSceneContainerView.swift in Sources */,
+				E20000000000000000005CE8 /* WorkSandboxedWebView.swift in Sources */,
 				E10000000000000000000F0B /* WorkUsageLimitResume.swift in Sources */,
 				E10000000000000000000F0C /* WorkUsageLimitResumeViews.swift in Sources */,
+				E10000000000000000000F82 /* SyncService+SessionHandoff.swift in Sources */,
+				E10000000000000000000F81 /* WorkSessionHandoffSheets.swift in Sources */,
+				E10000000000000000000F80 /* WorkCrossMachineHandoffViews.swift in Sources */,
 				E10000000000000000000035 /* WorkTimelineHelpers.swift in Sources */,
 				E7C001000000000000000001 /* WorkChatTaskListHelpers.swift in Sources */,
 				E7C001000000000000000002 /* WorkChatSourceHelpers.swift in Sources */,
@@ -2173,7 +2268,7 @@
 				D30000000000000000000F72 /* ChatThreadEngineTests.swift in Sources */,
 				D30000000000000000000019 /* WorkComposerTriggerDetectorTests.swift in Sources */,
 				D30000000000000000000F32 /* WorkChipDetectorTests.swift in Sources */,
-				D31000000000000000000019 /* WorkPromptStashTests.swift in Sources */,
+				D31000000000000000000019 /* WorkDraftsTests.swift in Sources */,
 				DCF01D0000000000000002 /* WorkComposerFoldStateTests.swift in Sources */,
 				D31000000000000000000F0D /* WorkToolsContractTests.swift in Sources */,
 				F10000000000000000000105 /* WorkChatToolResultCacheTests.swift in Sources */,
@@ -2190,6 +2285,7 @@
 				A90000000000000000000004 /* PrGitHubDescriptionParserTests.swift in Sources */,
 				C5B00000000000000000000E /* SSHBootstrapTests.swift in Sources */,
 				E2A00000000000000000D1 /* CursorCloudContractDecodingTests.swift in Sources */,
+				E2A00000000000000000D4 /* GitHubIssuesPaneContractTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -2702,6 +2798,14 @@
 				version = 0.12.1;
 			};
 		};
+		5E0000000000000000000A01 /* XCRemoteSwiftPackageReference "sentry-cocoa" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/getsentry/sentry-cocoa";
+			requirement = {
+				kind = upToNextMinorVersion;
+				minimumVersion = 9.30.1;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -2719,6 +2823,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = C5C000000000000000000001 /* XCRemoteSwiftPackageReference "Citadel" */;
 			productName = Citadel;
+		};
+		5E0000000000000000000A02 /* Sentry */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5E0000000000000000000A01 /* XCRemoteSwiftPackageReference "sentry-cocoa" */;
+			productName = Sentry;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

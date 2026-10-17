@@ -51,6 +51,17 @@ const asReply = (value: unknown): DesktopSeatReply =>
   (value && typeof value === "object" && !Array.isArray(value) ? value as DesktopSeatReply : {});
 
 /** A driver field that should have been a window list, whatever it actually is. */
+
+/** Builds the lane-screen driver client for one service. */
+export type MacDesktopDriverClientFactory = (args: {
+  logger: Logger;
+  platform: NodeJS.Platform;
+  onHealthChanged: (health: MacDesktopDriverHealth) => void;
+  onDriverLost: (reason: string) => void;
+  /** This service's live lanes; a driver shared across projects reconciles against them all. */
+  liveLaneIds?: () => string[];
+}) => MacDesktopDriverClient;
+
 export const asWindows = (value: unknown): MacDesktopWindow[] =>
   (Array.isArray(value) ? value as MacDesktopWindow[] : []);
 
@@ -363,12 +374,7 @@ export type DesktopSeatAdapter = {
    * Windows only: builds the driver client with the host-mode launch args. The
    * Mac adapter leaves this null and the lifecycle builds its own default.
    */
-  createDriverClient?: ((args: {
-    logger: Logger;
-    platform: NodeJS.Platform;
-    onHealthChanged: (health: MacDesktopDriverHealth) => void;
-    onDriverLost: (reason: string) => void;
-  }) => MacDesktopDriverClient) | null;
+  createDriverClient?: MacDesktopDriverClientFactory | null;
   /** macOS needs Screen Recording + Accessibility; Windows has no grants. */
   readonly permissionsSupported: boolean;
   /** The display name for the pane/title. */

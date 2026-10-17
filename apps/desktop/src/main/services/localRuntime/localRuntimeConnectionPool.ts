@@ -35,7 +35,9 @@ import type {
   SyncRoleSnapshot,
 } from "../../../shared/types";
 import { isBackgroundItemBlocked } from "../../../shared/types/core";
+import { APP_FALLBACK_REFUSED_FAILURES, appFallbackReason, type AppFallbackReason } from "./appFallbackPolicy";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
+import { resolveMovedProjectRoot } from "../../../../../ade-cli/src/services/projects/projectMove/moveJournal";
 import {
   SYSTEM_PROJECT_REGISTRATION,
   type ProjectRegistrationIntent,
@@ -51,8 +53,12 @@ import { buildPackagedRuntimeNodePath, type PackagedRuntimeNodePathOptions } fro
 import { readLastFailure } from "../runtime/lastFailureStore";
 import { readProcessStartTimeMs } from "../processes/processStartTime";
 import type { AdeRecoveryErrorCode } from "../../../shared/types/recovery";
-import { LOCAL_RELEASE_BUILD_OUTPUT_RUNTIME_MESSAGE } from "../../../shared/runtimeErrors";
+import {
+  LOCAL_RELEASE_BUILD_OUTPUT_RUNTIME_MESSAGE,
+  LOCAL_RUNTIME_UPDATE_IN_PROGRESS_MESSAGE,
+} from "../../../shared/runtimeErrors";
 import type { RuntimeHealthSnapshot } from "../../../shared/types/storage";
+import { isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
 import {
   LOCAL_RUNTIME_ACTION_REGISTRY_TIMEOUT_MS,
   LOCAL_RUNTIME_ACTIVITY_SUMMARY_TIMEOUT_MS,
@@ -116,7 +122,6 @@ type ServiceManagerCommandResult =
 type LocalRuntimeConnectionPoolOptions = {
   disableSync?: boolean;
   preferServiceRepair?: boolean;
-  desktopBridgeAuthToken?: string | null;
   /**
    * Off-main-thread service-status probe. Defaults to
    * {@link defaultQueryServiceStatusAsync}. This is the only probe seam: the
@@ -156,6 +161,16 @@ const LOCAL_RUNTIME_SERVICE_INSTALL_TIMEOUT_MS = RUNTIME_SERVICE_START_WAIT_MS;
  * pending for up to about twice RUNTIME_SERVICE_START_WAIT_MS).
  */
 const LOCAL_RUNTIME_SERVICE_REPAIR_CONNECT_TIMEOUT_MS = RUNTIME_SERVICE_START_WAIT_MS;
+/**
+ * How long `drain()` waits for work already in flight before teardown.
+ *
+ * Bounded on purpose: the point is to let a call that is already inside a
+ * connect/repair settle instead of being killed by teardown, not to hold quit
+ * hostage to a brain that is never going to answer. Past this the shutdown
+ * sequence proceeds and `dispose()` tears the pool down under whatever is left,
+ * exactly as it did before — so a wedged runtime still costs a bounded delay.
+ */
+const LOCAL_RUNTIME_DRAIN_TIMEOUT_MS = 2_000;
 const LOCAL_RUNTIME_STATUS_REFRESH_TIMEOUT_MS = 2_000;
 // The Windows service probe itself costs ~2.1s (two PowerShell spawns), so the
 // off-thread child needs generous headroom before it is treated as unanswerable.
@@ -744,9 +759,50 @@ export function readLocalRuntimeInfo(value: unknown): {
  */
 export const LOCAL_RUNTIME_UPDATE_WINDOW_MAX_MS = 120_000;
 
+/**
+ * How long each `ade brain update` state counts as "an update owns the
+ * service". Bounded so a crashed updater that never writes its last state
+ * cannot keep this desktop from ever repairing the service again.
+ */
+const BRAIN_UPDATE_IN_FLIGHT_MS: Readonly<Record<string, number>> = {
+  staged: 2 * 60_000,
+  applying: 5 * 60_000,
+  restarting: 5 * 60_000,
+  // Written right after the restart is REQUESTED; the new brain may not have
+  // bound the socket yet.
+  succeeded: 60_000,
+};
+
+/**
+ * The state `ade brain update` (or a remote "Update & restart" that ran it)
+ * left in `<adeHome>/runtime/update-status.json`, when it is recent enough to
+ * still own the service. Null otherwise, and on any read or parse failure.
+ */
+function readInFlightBrainUpdate(
+  runtimeDir: string,
+  nowMs: number = Date.now(),
+): { state: string; version: string | null } | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(path.join(runtimeDir, "update-status.json"), "utf8"));
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+  const record = parsed as Record<string, unknown>;
+  const state = typeof record.state === "string" ? record.state : "";
+  const windowMs = BRAIN_UPDATE_IN_FLIGHT_MS[state];
+  if (!windowMs) return null;
+  const updatedAtMs = typeof record.updatedAt === "string" ? Date.parse(record.updatedAt) : Number.NaN;
+  if (!Number.isFinite(updatedAtMs)) return null;
+  const ageMs = nowMs - updatedAtMs;
+  // A timestamp from the future is a clock step, not a fresh update.
+  if (ageMs < 0 || ageMs > windowMs) return null;
+  return { state, version: typeof record.version === "string" ? record.version : null };
+}
+
 /** Told to callers whose connect attempt was refused while an update runs. */
-export const LOCAL_RUNTIME_UPDATE_IN_PROGRESS_MESSAGE =
-  "ADE is applying an update. The background service is restarting.";
+export { LOCAL_RUNTIME_UPDATE_IN_PROGRESS_MESSAGE };
 
 const SERVICE_REPAIR_BACKOFF_MS = [0, 5_000, 15_000, 30_000, 60_000] as const;
 
@@ -942,42 +998,6 @@ export function isLocalRuntimeConnectionDropped(error: Error): boolean {
   return LOCAL_RUNTIME_TRANSPORT_DROP_PATTERN.test(error.message);
 }
 
-// Conservative mirror of the preload's isReadOnlyRuntimeAction. Only these
-// actions are safe to transparently retry after a connection drop, because a
-// retry of a mutating action could re-run it against the reconnected daemon.
-const RETRYABLE_READ_ACTION_PREFIXES = [
-  "diagnosticsGet",
-  "get",
-  "list",
-  "oauthGet",
-  "oauthList",
-  "portList",
-  "proxyGet",
-  "read",
-  "search",
-] as const;
-
-const RETRYABLE_READ_ACTIONS = new Set<string>([
-  "chat.codexFuzzyFileSearch",
-  "chat.fileSearch",
-  "chat.modelCatalog",
-  "file.listTreeChildren",
-  "file.quickOpen",
-  "file.readFileRange",
-  "file.refreshGitDecorations",
-  "terminal.activeForChat",
-  "terminal.preview",
-]);
-
-export function isRetryableReadAction(domain: string, action: string): boolean {
-  if (RETRYABLE_READ_ACTIONS.has(`${domain}.${action}`)) return true;
-  return RETRYABLE_READ_ACTION_PREFIXES.some(
-    (prefix) =>
-      action === prefix ||
-      (action.startsWith(prefix) && /^[A-Z]/.test(action.slice(prefix.length))),
-  );
-}
-
 /**
  * Signal an owned `ade serve` daemon and everything it started.
  *
@@ -1101,6 +1121,10 @@ export class LocalRuntimeConnectionPool {
   private activeRuntimePublishHealth: LocalRuntimeStatus["publishHealth"] = null;
   private activeRuntimeLastWedge: LocalRuntimeStatus["lastWedge"] = null;
   private ownedRuntimeChild: ChildProcess | null = null;
+  private appFallback: LocalRuntimeStatus["appFallback"] = null;
+  private appFallbackHandoverPending: LocalRuntimeStatus["appFallback"] = null;
+  /** Set while an install runs in place of the fallback it stopped. */
+  private appFallbackStoppedForInstall: AppFallbackReason | null = null;
   private isolatedRecoveryTimer: NodeJS.Timeout | null = null;
   private isolatedModeActive = false;
   private lastIsolatedServiceRepairMs = 0;
@@ -1127,6 +1151,8 @@ export class LocalRuntimeConnectionPool {
   // Wall clock after which an update window stops suppressing repair. Zero
   // means no update is being applied.
   private updateWindowUntilMs = 0;
+  /** Logs a brain update's window once, not on every connect attempt inside it. */
+  private loggedBrainUpdateWindow = false;
   private readonly coalescedActionCalls = new Map<string, Promise<RemoteRuntimeActionResult>>();
   private readonly projectsByRoot = new Map<string, RemoteRuntimeProjectRecord>();
   private readonly projectRegistrationsByRoot = new Map<string, {
@@ -1212,7 +1238,8 @@ export class LocalRuntimeConnectionPool {
           }
         : null,
       lastWedge: this.activeRuntimeLastWedge ? { ...this.activeRuntimeLastWedge } : null,
-      runtimeMode: this.isolatedModeActive ? "isolated" : "primary",
+      runtimeMode: this.isolatedModeActive ? "isolated" : this.appFallback ? "app_fallback" : "primary",
+      appFallback: this.appFallback ? { ...this.appFallback } : null,
       versionSkew: { ...this.versionSkewStatus },
       serviceInstall: { ...this.serviceInstallStatus },
       serviceHealth: { ...this.serviceHealthStatus },
@@ -1411,11 +1438,20 @@ export class LocalRuntimeConnectionPool {
       // is that caller's to report, so failures do not skip the forced run.
       ? inFlight.catch(() => {}).then(() => this.runServiceInstallBestEffort(options))
       : this.runServiceInstallBestEffort(options)
-    ).finally(() => {
-      if (this.serviceInstallPromise === install) this.serviceInstallPromise = null;
-    });
+    )
+      // Awaited inside the install promise, so an install queued behind this
+      // one cannot start while the restored fallback is claiming the socket.
+      .finally(() => this.restoreAppFallbackAfterFailedInstall())
+      .finally(() => {
+        if (this.serviceInstallPromise === install) this.serviceInstallPromise = null;
+      });
     this.serviceInstallPromise = install;
     return install;
+  }
+
+  /** Settles once any service install already running has finished. */
+  async waitForServiceInstall(): Promise<void> {
+    await this.serviceInstallPromise?.catch(() => undefined);
   }
 
   /**
@@ -1599,6 +1635,19 @@ export class LocalRuntimeConnectionPool {
       });
       return;
     }
+    if (this.appFallback) this.appFallbackHandoverPending = this.appFallback;
+    // No installer reaps the fallback: systemd only reaps its supervised child,
+    // and the launchd and Windows sweeps skip `--no-sync` brains. Release the
+    // primary socket before the service brain needs it.
+    if (this.appFallback) {
+      const child = this.ownedRuntimeChild;
+      const reason = this.appFallback.reason;
+      if (child && !await this.stopAppFallbackForServiceInstall(child)) return;
+      this.appFallbackStoppedForInstall = reason;
+      // The child's exit usually clears this; a fallback whose child the pool
+      // no longer owns must not stay reported as running.
+      this.clearAppFallback("stopped");
+    }
     // The streak start, not this attempt's start: installs recur (connect
     // failures re-run them, isolated recovery re-runs them every 60s), and a
     // brain that has not answered since the FIRST of those attempts is what
@@ -1727,6 +1776,11 @@ export class LocalRuntimeConnectionPool {
         return cached;
       }
 
+      // A caller still holding a project's folder from before a move (a tab,
+      // a chat pane) reaches the project at its new folder.
+      const movedRoot = resolveMovedProjectRoot(normalizedRoot);
+      if (movedRoot !== normalizedRoot) return await this.ensureProject(movedRoot, registration);
+
       const registrationPromise = this.registerProject(normalizedRoot, registration);
       const nextPending = {
         acceptsMatchingWaiters: true,
@@ -1808,6 +1862,19 @@ export class LocalRuntimeConnectionPool {
     throw lastError ?? new Error("Local ADE service did not return a project record.");
   }
 
+  /**
+   * Removes the project from the brain and drops this pool's cached record of
+   * it, so the next `ensureProject` registers it again instead of handing out
+   * a project id the brain no longer knows.
+   */
+  async removeProject(rootPath: string, projectId: string): Promise<void> {
+    const normalizedRoot = path.resolve(rootPath);
+    this.projectsByRoot.delete(normalizedRoot);
+    const entry = await this.connect();
+    await entry.client.call("projects.remove", { projectId }, { timeoutMs: LOCAL_RUNTIME_PROJECT_TIMEOUT_MS });
+    this.projectsByRoot.delete(normalizedRoot);
+  }
+
   async setProjectCatalogVisibility(
     rootPath: string,
     catalogVisibility: "recent" | "system",
@@ -1840,6 +1907,20 @@ export class LocalRuntimeConnectionPool {
     // in-memory turns is not that — it is the keep-awake poll's clock.
     return await this.callSync<RuntimeActivitySummary>(
       "runtime.activitySummary",
+      {},
+      { timeoutMs: LOCAL_RUNTIME_ACTIVITY_SUMMARY_TIMEOUT_MS },
+    );
+  }
+
+  /**
+   * The brain's raw `runtime.updateImpact` reply: what restarting this
+   * machine's ADE would stop. Unparsed, because an older brain answers
+   * differently. Bounded like `activitySummary`: it reads live turns from
+   * memory, and the dialog asking must not wait on a wedged brain.
+   */
+  async updateImpact(): Promise<unknown> {
+    return await this.callSync<unknown>(
+      "runtime.updateImpact",
       {},
       { timeoutMs: LOCAL_RUNTIME_ACTIVITY_SUMMARY_TIMEOUT_MS },
     );
@@ -1950,9 +2031,9 @@ export class LocalRuntimeConnectionPool {
     request: RemoteRuntimeActionRequest,
   ): Promise<RemoteRuntimeActionResult> {
     // A dropped daemon connection (restart / build-hash recycle) is transient:
-    // the next connect() reconnects to the live daemon. Retry idempotent reads
+    // the next connect() reconnects to the live daemon. Retry a replay-safe call
     // once so the renderer never sees a raw "connection closed" for a refresh.
-    const maxAttempts = isRetryableReadAction(request.domain, request.action) ? 2 : 1;
+    const maxAttempts = isReplaySafeAdeAction(request.domain, request.action) ? 2 : 1;
     let lastError: Error | null = null;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -2215,11 +2296,58 @@ export class LocalRuntimeConnectionPool {
     }, { timeoutMs: LOCAL_RUNTIME_SYNC_TIMEOUT_MS }) as T;
   }
 
+  /**
+   * Settle the calls that are already in flight, so teardown does not land on
+   * top of them.
+   *
+   * `dispose()` is synchronous and terminal, so a call that was admitted while
+   * the pool was alive and is still parked in a connect or a service repair is
+   * answered with "the pool is disposed" the moment it resumes — an internal
+   * invariant, thrown at a caller that did nothing wrong. The caller cannot act
+   * on it, and in a packaged build it reaches Sentry as a defect. The honest
+   * teardown order is: stop the producers (the renderer's windows, whose polls
+   * are what keep arriving), let what is already in flight finish, and only then
+   * dispose.
+   *
+   * Bounded and never rejecting: a brain that never answers must not hold quit.
+   * Whatever is still running when the budget expires is torn down by the
+   * `dispose()` that follows, exactly as before.
+   */
+  async drain(options: { timeoutMs?: number } = {}): Promise<void> {
+    const inFlight: Array<Promise<unknown>> = [];
+    if (this.connection) inFlight.push(this.connection);
+    for (const registration of this.projectRegistrationsByRoot.values()) {
+      inFlight.push(registration.promise);
+    }
+    for (const call of this.coalescedActionCalls.values()) {
+      inFlight.push(call);
+    }
+    if (inFlight.length === 0) return;
+    const timeoutMs = Math.max(0, options.timeoutMs ?? LOCAL_RUNTIME_DRAIN_TIMEOUT_MS);
+    let timer: NodeJS.Timeout | null = null;
+    try {
+      await Promise.race([
+        // `allSettled` on purpose: a call that fails is still a call that has
+        // settled, and its failure belongs to its own caller.
+        Promise.allSettled(inFlight),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, timeoutMs);
+          timer.unref?.();
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
     this.clearIsolatedRecoveryTimer();
     this.markIsolatedMode(false, { notify: false });
+    this.clearAppFallback("stopped");
+    const ownedChild = this.ownedRuntimeChild;
+    const ownedSocket = this.activeConnection?.socketPath ?? resolveMachineAdeLayout().socketPath;
     const pending = this.connection;
     this.connection = null;
     this.activeConnection = null;
@@ -2229,22 +2357,25 @@ export class LocalRuntimeConnectionPool {
     this.activeRuntimePublishHealth = null;
     this.activeRuntimeLastWedge = null;
     this.ownedRuntimeChild = null;
+    disposeOwnedRuntimeChild(ownedChild, ownedSocket);
     this.projectsByRoot.clear();
     this.projectRegistrationsByRoot.clear();
     void pending?.then((entry) => {
       try { entry.client.close(); } catch {}
-      disposeOwnedRuntimeChild(entry.child, entry.socketPath);
+      if (entry.child !== ownedChild) disposeOwnedRuntimeChild(entry.child, entry.socketPath);
     }).catch(() => {});
   }
 
-  private async connect(): Promise<LocalRuntimeConnection> {
+  private async connect(
+    create: () => Promise<LocalRuntimeConnection> = () => this.createConnection(),
+  ): Promise<LocalRuntimeConnection> {
     this.assertNotDisposed();
     if (this.connection) {
       const entry = await this.connection;
       this.assertNotDisposed();
       return entry;
     }
-    const connection = this.createConnection().then((entry) => {
+    const connection = create().then((entry) => {
       if (this.connection === connection) {
         this.activeConnection = entry;
       }
@@ -2538,6 +2669,20 @@ export class LocalRuntimeConnectionPool {
   }
 
   private isUpdateWindowActive(): boolean {
+    // A brain update this app did not start -- `ade brain update`, or
+    // "Update & restart" pressed on another machine -- removes and restarts the
+    // service the same way. Repairing into that window re-registers this app's
+    // own runtime over the one just installed (2026-10-05: the Mac Studio's
+    // open app put 1.2.90 back 10 ms after the updater finished 1.2.91).
+    const brainUpdate = readInFlightBrainUpdate(resolveMachineAdeLayout().runtimeDir);
+    if (brainUpdate) {
+      if (!this.loggedBrainUpdateWindow) {
+        this.loggedBrainUpdateWindow = true;
+        this.logger.info("local_runtime.brain_update_in_flight", brainUpdate);
+      }
+      return true;
+    }
+    this.loggedBrainUpdateWindow = false;
     if (this.updateWindowUntilMs === 0) return false;
     if (Date.now() < this.updateWindowUntilMs) return true;
     this.updateWindowUntilMs = 0;
@@ -2578,11 +2723,115 @@ export class LocalRuntimeConnectionPool {
     closeRuntimeClient(entry.client);
   }
 
+  private clearAppFallback(event: "stopped" | "handed_over"): void {
+    const fallback = this.appFallback;
+    if (!fallback) return;
+    this.appFallback = null;
+    this.logger.info(`local_runtime.app_fallback_${event}`, {
+      reason: fallback.reason,
+      since: fallback.since,
+    });
+    this.emitRuntimeStatusChange();
+  }
+
+  private noteServiceHandover(): void {
+    const fallback = this.appFallbackHandoverPending ?? this.appFallback;
+    if (fallback) {
+      this.logger.info("local_runtime.app_fallback_handed_over", {
+        reason: fallback.reason,
+        since: fallback.since,
+        servicePid: this.activeRuntimePid,
+      });
+      this.appFallbackHandoverPending = null;
+    }
+    this.clearAppFallback("handed_over");
+  }
+
+  /**
+   * A Fix it that stopped the fallback and then failed must not leave the
+   * person with less than they had: start the fallback again, without a
+   * second install attempt.
+   */
+  private async restoreAppFallbackAfterFailedInstall(): Promise<void> {
+    const reason = this.appFallbackStoppedForInstall;
+    this.appFallbackStoppedForInstall = null;
+    // "installed" includes a service brain that is still starting: it holds
+    // the socket, so the fallback must not reclaim it. Should that brain die,
+    // the next connect starts the fallback by itself.
+    if (!reason || this.disposed || this.serviceInstallStatus.state === "installed" || this.connection) return;
+    const socketPath = process.env.ADE_RUNTIME_SOCKET_PATH?.trim() || resolveMachineAdeLayout().socketPath;
+    try {
+      await this.connect(() => this.startAppFallback(socketPath, reason));
+    } catch (error) {
+      this.logger.warn("local_runtime.app_fallback_restore_failed", {
+        reason,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private async stopAppFallbackForServiceInstall(child: ChildProcess): Promise<boolean> {
+    const socketPath = this.activeConnection?.socketPath ?? resolveMachineAdeLayout().socketPath;
+    const exited = new Promise<boolean>((resolve) => {
+      if (child.exitCode != null || child.signalCode != null) return resolve(true);
+      child.once("exit", () => resolve(true));
+      setTimeout(() => resolve(false), 3_000).unref?.();
+    });
+    disposeOwnedRuntimeChild(child, socketPath, { unlinkSocket: true });
+    if (await exited) return true;
+    this.serviceInstallStatus = {
+      state: "failed",
+      attempted: true,
+      path: null,
+      message: "ADE could not stop its temporary brain before starting the background service.",
+      exitCode: null,
+      updatedAt: new Date().toISOString(),
+      failureStep: "predecessor_exit",
+    };
+    return false;
+  }
+
+  /**
+   * Runs the brain as a desktop-owned child with sync off, on the primary
+   * socket the service could not take. Probes first: the installer may have
+   * lost a race with a late service start.
+   */
+  private async startAppFallback(socketPath: string, reason: AppFallbackReason): Promise<LocalRuntimeConnection> {
+    const lateService = await this.tryConnect(socketPath);
+    if (lateService) return lateService;
+    if (await probeSocketHasOwner(socketPath)) {
+      throw codedRecoveryError(
+        "ADE's background service still owns the runtime socket but is not responding.",
+        "socket_owned_by_other",
+      );
+    }
+    const child = this.spawnRuntime(socketPath, { ...this.options, disableSync: true });
+    try {
+      const client = await this.connectSpawnedRuntime(socketPath, child);
+      this.appFallbackHandoverPending = null;
+      this.appFallback = { reason, since: new Date().toISOString() };
+      this.logger.warn("local_runtime.app_fallback_started", {
+        socketPath, pid: child.pid ?? null, reason,
+      });
+      this.emitRuntimeStatusChange();
+      return { client, child, socketPath };
+    } catch (error) {
+      disposeOwnedRuntimeChild(child, socketPath, { unlinkSocket: true });
+      throw error;
+    }
+  }
+
   private async createConnection(): Promise<LocalRuntimeConnection> {
     const layout = resolveMachineAdeLayout();
     const socketPath = process.env.ADE_RUNTIME_SOCKET_PATH?.trim() || layout.socketPath;
     const existing = await this.tryConnect(socketPath);
     if (existing) return existing;
+    // The probe above can spend seconds on an unreachable endpoint, and a quit
+    // can land inside it. Everything past this point starts a runtime, an
+    // installer child, or both, and neither may outlive the pool: a torn-down
+    // pool that keeps going leaves an orphaned brain nobody will reap, and the
+    // caller learns about the shutdown only after the work was done.
+    this.assertNotDisposed();
 
     // An update deliberately removes the service before swapping the app, so
     // a missing endpoint during the window is the update working, not a
@@ -2611,6 +2860,21 @@ export class LocalRuntimeConnectionPool {
     }
 
     if (isPrimaryMachineRuntimeSocketPath(socketPath, layout.socketPath)) {
+      const lastFailure = readLastFailure({ kind: "machine" });
+      await this.refreshServiceHealth(0);
+      const fallbackReason = appFallbackReason({
+        serviceInstall: this.serviceInstallStatus,
+        serviceHealth: this.serviceHealthStatus,
+      });
+      if (
+        this.options.preferServiceRepair
+        && fallbackReason
+        && this.serviceHealthStatus.running !== true
+        && !this.isUpdateWindowActive()
+        && !(lastFailure && APP_FALLBACK_REFUSED_FAILURES.has(lastFailure.code))
+      ) {
+        return this.startAppFallback(socketPath, fallbackReason);
+      }
       const message = this.options.preferServiceRepair
         ? `ADE service repair did not restore the runtime endpoint at ${socketPath}; ` +
           "refusing to spawn an app-owned sync-enabled brain on the primary service socket."
@@ -2624,20 +2888,9 @@ export class LocalRuntimeConnectionPool {
         serviceMessage: this.serviceInstallStatus.message,
         preferServiceRepair: this.options.preferServiceRepair === true,
       });
-      const lastFailure = readLastFailure({ kind: "machine" });
-      // This one does need a fresh answer — it picks the recovery code the user
-      // is shown — but it is already on an async path, so await it instead of
-      // blocking the main thread for it.
-      await this.refreshServiceHealth(0);
-      const recordedDbCodes = new Set<AdeRecoveryErrorCode>([
-        "disk_full",
-        "insufficient_headroom",
-        "db_integrity",
-        "migration_incomplete",
-        "migration_unknown_state",
-      ]);
+      const crashLooping = lastFailure != null && lastFailure.count >= 3;
       let recoveryCode: AdeRecoveryErrorCode;
-      if (lastFailure && recordedDbCodes.has(lastFailure.code)) {
+      if (lastFailure && APP_FALLBACK_REFUSED_FAILURES.has(lastFailure.code)) {
         recoveryCode = lastFailure.code;
       } else if (isBackgroundItemBlocked({
         serviceInstall: this.serviceInstallStatus,
@@ -2652,12 +2905,13 @@ export class LocalRuntimeConnectionPool {
         || this.serviceHealthStatus.state === "not_installed"
       ) {
         recoveryCode = "brain_not_installed";
+      } else if (!await probeSocketHasOwner(socketPath)) {
+        recoveryCode = "socket_stale_no_owner";
       } else {
-        recoveryCode = await probeSocketHasOwner(socketPath)
-          ? "socket_owned_by_other"
-          : "socket_stale_no_owner";
+        // Service/supervisor state is not endpoint identity.
+        recoveryCode = "socket_owned_by_other";
       }
-      const crashLoopDetail = lastFailure && lastFailure.count >= 3
+      const crashLoopDetail = crashLooping && lastFailure
         ? ` Secondary recovery code: brain_crash_looping (${lastFailure.count} consecutive failures since ${lastFailure.firstAt}).`
         : "";
       const reportDetail = lastFailure?.detail
@@ -2682,8 +2936,10 @@ export class LocalRuntimeConnectionPool {
   private async tryConnect(socketPath: string): Promise<LocalRuntimeConnection | null> {
     try {
       const client = await this.connectClient(socketPath, { isMachineService: true });
-      this.ownedRuntimeChild = null;
-      return { client, child: null, socketPath };
+      const child = this.activeRuntimePid === this.ownedRuntimeChild?.pid ? this.ownedRuntimeChild : null;
+      if (!child) this.noteServiceHandover();
+      if (!child) this.ownedRuntimeChild = null;
+      return { client, child, socketPath };
     } catch (error) {
       if (error instanceof LocalRuntimeCompatibilityError) {
         this.noteCompatibilityError(error);
@@ -2762,6 +3018,12 @@ export class LocalRuntimeConnectionPool {
       });
       return null;
     }
+    // A repair is the longest thing this pool does: an install child plus a
+    // connect loop, together about twice RUNTIME_SERVICE_START_WAIT_MS. A quit
+    // that lands on one used to leave it running — reinstalling the login item
+    // and reconnecting a brain the app is no longer there to use. Stop it
+    // before the first side effect rather than after the last.
+    this.assertNotDisposed();
     this.serviceRepairAttempts += 1;
     this.lastServiceRepairAtMs = now;
     this.logger.info("local_runtime.service_repair_attempt", {
@@ -2803,11 +3065,17 @@ export class LocalRuntimeConnectionPool {
     const deadline = Date.now() + LOCAL_RUNTIME_SERVICE_REPAIR_CONNECT_TIMEOUT_MS;
     let lastError: unknown = null;
     for (;;) {
+      // Outside the `try` on purpose: the catch below exists to absorb connect
+      // failures and keep retrying, so a disposed pool would be retried until
+      // the deadline instead of stopping here.
+      this.assertNotDisposed();
       try {
         await waitForSocket(socketPath, 2_000);
         const client = await this.connectClient(socketPath, { isMachineService: true });
-        this.ownedRuntimeChild = null;
-        return { client, child: null, socketPath };
+        const child = this.activeRuntimePid === this.ownedRuntimeChild?.pid ? this.ownedRuntimeChild : null;
+        if (!child) this.noteServiceHandover();
+        if (!child) this.ownedRuntimeChild = null;
+        return { client, child, socketPath };
       } catch (error) {
         lastError = error;
         if (Date.now() >= deadline) break;
@@ -3057,7 +3325,6 @@ export class LocalRuntimeConnectionPool {
     let initializeResult: unknown;
     try {
       initializeResult = await client.initialize(DESKTOP_CLIENT_NAMES.local, this.appVersion, {
-        desktopBridgeAuthToken: this.options.desktopBridgeAuthToken,
         timeoutMs: options.initializeTimeoutMs,
       });
     } catch (error) {
@@ -3160,6 +3427,12 @@ export class LocalRuntimeConnectionPool {
     socketPath: string,
     options: { disableSync?: boolean } = this.options,
   ): ChildProcess {
+    // The one place a brain is started, and the one place a disposed pool must
+    // never reach. Every caller — the primary connect, the app fallback, and
+    // the isolated-recovery tick — can be in flight across a quit, and a child
+    // spawned after `dispose()` has already run is one this pool no longer owns
+    // (its `ownedRuntimeChild` slot was cleared) and will never reap.
+    this.assertNotDisposed();
     const cliPath = resolveCliScriptPath();
     const args = buildLocalRuntimeServeArgs(cliPath, socketPath, options);
     this.logger.info("local_runtime.spawn", { cliPath, socketPath, disableSync: options.disableSync === true });
@@ -3198,6 +3471,7 @@ export class LocalRuntimeConnectionPool {
       if (this.ownedRuntimeChild !== child) return;
       const client = this.activeClient;
       this.ownedRuntimeChild = null;
+      this.clearAppFallback("stopped");
       this.connection = null;
       this.activeConnection = null;
       this.activeClient = null;
@@ -3207,6 +3481,7 @@ export class LocalRuntimeConnectionPool {
       this.activeRuntimeLastWedge = null;
       this.projectsByRoot.clear();
       if (client) closeRuntimeClient(client);
+      this.emitRuntimeStatusChange();
     };
     child.once("exit", (code, signal) => {
       flushOutput();

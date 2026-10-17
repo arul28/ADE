@@ -8,9 +8,9 @@ import {
   isUsageLimitTurn,
   parseUsageLimitResume,
   usageLimitResumePill,
-  usageLimitResumePopover,
   usageLimitResumeProviderLabel,
   usageLimitResumeRowStatus,
+  usageLimitChip,
   usageLimitTurnFooterLabel,
 } from "./usageLimitResumePresentation";
 
@@ -97,40 +97,6 @@ describe("usageLimitResumePill", () => {
   });
 });
 
-describe("usageLimitResumePopover", () => {
-  it("names the provider and states the instant plus the countdown", () => {
-    const popover = usageLimitResumePopover(resume(), NOW);
-    expect(popover.title).toBe("Claude usage limit");
-    expect(popover.body).toContain('ADE sends "continue" at ');
-    expect(popover.body).toContain("(in 3 min)");
-    expect(popover.reassurance).toBe("Nothing is lost. Subagents restart with it.");
-    expect(popover.primary).toEqual({ action: "resume-now", label: "Resume now" });
-    expect(popover.showDontContinue).toBe(true);
-    expect(popover.providerDetail).toBe("Resets at 7:31 PM ET");
-  });
-
-  it("re-arms rather than resumes for a paused streak", () => {
-    const popover = usageLimitResumePopover(resume({ state: "paused", attempts: 2 }), NOW);
-    expect(popover.primary).toEqual({ action: "enable", label: "Try again" });
-    expect(popover.showDontContinue).toBe(true);
-  });
-
-  it("offers Turn on and drops Don't continue once auto-resume is already off", () => {
-    const popover = usageLimitResumePopover(resume({ state: "opted_out" }), NOW);
-    expect(popover.primary).toEqual({ action: "enable", label: "Turn on" });
-    expect(popover.showDontContinue).toBe(false);
-  });
-
-  it("says there is nothing to schedule when the provider published no reset", () => {
-    const popover = usageLimitResumePopover(
-      resume({ state: "no_reset", provider: "codex", fireAt: null, resetAt: null }),
-      NOW,
-    );
-    expect(popover.title).toBe("Codex usage limit");
-    expect(popover.body).toContain("didn't publish a reset time");
-  });
-});
-
 describe("usageLimitResumeProviderLabel", () => {
   it("uses the known display names and title-cases anything else", () => {
     expect(usageLimitResumeProviderLabel("opencode")).toBe("OpenCode");
@@ -179,13 +145,27 @@ describe("usageLimitResumeRowStatus", () => {
     });
   });
 
-  it("declines the row for states that are not waiting for anything", () => {
-    // The row falls back to its ordinary failed/idle presentation: a chat the
-    // user switched off, or one with no reset to wait for, is not "waiting".
-    expect(usageLimitResumeRowStatus(resume({ state: "opted_out" }), NOW)).toBeNull();
-    expect(usageLimitResumeRowStatus(resume({ state: "no_reset" }), NOW)).toBeNull();
+  it("keeps opted-out and no-reset limits visible as attention rows", () => {
+    const expected = { label: "Usage limit", tone: "attention", glyph: "waiting" };
+    expect(usageLimitResumeRowStatus(resume({ state: "opted_out" }), NOW)).toEqual(expected);
+    expect(usageLimitResumeRowStatus(resume({ state: "no_reset" }), NOW)).toEqual(expected);
     expect(usageLimitResumeRowStatus(null, NOW)).toBeNull();
     expect(usageLimitResumeRowStatus(undefined, NOW)).toBeNull();
+  });
+});
+
+describe("usageLimitChip", () => {
+  it.each([
+    ["armed", {}, "resumes in 3 min", "Cancel", false],
+    ["resuming", {}, "resuming…", null, null],
+    ["paused", { attempts: 2 }, "paused after 2 tries", "Try again", true],
+    ["opted_out", {}, "auto-resume off", "Resume in 3 min", true],
+    ["no_reset", { fireAt: null, resetAt: null }, "Claude", null, null],
+  ] as const)("models the %s state and its available toggle", (state, patch, detail, toggleLabel, enable) => {
+    const model = usageLimitChip(resume({ state, ...patch }), NOW);
+    expect(model.detail).toBe(detail);
+    expect(model.toggle?.label ?? null).toBe(toggleLabel);
+    expect(model.toggle?.enable ?? null).toBe(enable);
   });
 });
 
@@ -290,10 +270,6 @@ describe("parseUsageLimitResume", () => {
       alternateAccount: { instanceId: "1028", label: "  1028  " },
     });
     expect(withOffer?.alternateAccount).toEqual({ instanceId: "1028", label: "1028" });
-    expect(usageLimitResumePopover(withOffer!, NOW).continueOnAccount).toEqual({
-      instanceId: "1028",
-      label: "1028",
-    });
 
     const dropped = parseUsageLimitResume({
       ...resume(),
@@ -301,7 +277,6 @@ describe("parseUsageLimitResume", () => {
     });
     expect(dropped?.state).toBe("armed");
     expect(dropped?.alternateAccount).toBeUndefined();
-    expect(usageLimitResumePopover(dropped!, NOW).continueOnAccount).toBeNull();
   });
 
   it("floors attempts at a finite, non-negative integer", () => {

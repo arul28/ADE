@@ -161,6 +161,25 @@ export function logModelRegistryRequest(args: {
 }
 
 /**
+ * One line per `GET /music/developer-token`. Never the token: status, a fixed
+ * reason, and how long signing took.
+ */
+export function logMusicDeveloperTokenRequest(args: {
+  status: number;
+  reason?: string;
+  durationMs: number;
+}): void {
+  console.log(JSON.stringify({
+    ts: new Date().toISOString(),
+    svc: SERVICE,
+    kind: "music_developer_token_request",
+    status: args.status,
+    ...(args.reason ? { reason: args.reason } : {}),
+    durationMs: Math.max(0, Math.round(args.durationMs)),
+  }));
+}
+
+/**
  * One line per model registry refresh the cron actually ran (a tick that finds
  * the snapshot fresh logs nothing). A source error is how a site redesign that
  * broke the parser gets noticed: the snapshot keeps serving the previous data,

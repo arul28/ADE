@@ -653,27 +653,27 @@ describe("aiIntegrationService", () => {
     });
     mockState.getCachedCliAuthStatuses.mockReturnValue([
       {
-        cli: "copilot",
+        cli: "qwen",
         installed: true,
-        path: "/usr/local/bin/copilot",
+        path: "/usr/local/bin/qwen",
         authenticated: false,
         verified: false,
       },
     ]);
     mockState.detectAllAuth.mockResolvedValue([]);
     mockState.probeAllAcpProviderAuth.mockResolvedValue({
-      copilot: { state: "ready", message: null },
+      qwen: { state: "ready", message: null },
     });
     const base = makeProviderConnections({ claude: false, codex: false, cursor: false, droid: false });
     mockState.buildProviderConnections.mockResolvedValue({
       ...base,
-      copilot: {
-        provider: "copilot",
+      qwen: {
+        provider: "qwen",
         authAvailable: true,
         runtimeDetected: true,
         runtimeAvailable: true,
         usageAvailable: false,
-        path: "/usr/local/bin/copilot",
+        path: "/usr/local/bin/qwen",
         blocker: null,
         lastCheckedAt: "2025-01-01T00:00:00.000Z",
         sources: [],
@@ -683,19 +683,13 @@ describe("aiIntegrationService", () => {
     const status = await service.getStatus({ force: true });
 
     expect(mockState.probeAllAcpProviderAuth).toHaveBeenCalledWith(expect.objectContaining({
-      providers: ["copilot"],
+      providers: ["qwen"],
       cwd: "/tmp/project",
     }));
-    expect(status.availableProviders.copilot).toBe(true);
-    expect(status.models.copilot?.map((model) => model.id)).toEqual([
-      "github-copilot/claude-sonnet-4.6",
-      "github-copilot/claude-opus-4.6",
-      "github-copilot/gpt-5.4",
-      "github-copilot/gpt-5.3-codex",
-    ]);
+    expect(status.availableProviders.qwen).toBe(true);
     expect(status.detectedAuth).toContainEqual(expect.objectContaining({
       type: "cli-subscription",
-      cli: "copilot",
+      cli: "qwen",
       authenticated: true,
       verified: true,
     }));
@@ -814,6 +808,41 @@ describe("aiIntegrationService", () => {
       source: "store",
     });
     expect(JSON.stringify(result)).not.toContain("crsr_test");
+  });
+
+  it("asks Cursor for the repo list once per account and window, and again on refresh or a new key", async () => {
+    // Cursor allows five repository reads a minute per account; every draft
+    // composer in every window asks, so the host shares and keeps the answer.
+    const { service } = makeService({
+      availability: { claude: false, codex: false, cursor: true, droid: false },
+    });
+    const useKey = (key: string) => mockState.detectAllAuth.mockResolvedValue([
+      { type: "api-key", provider: "cursor", key, source: "store" },
+    ]);
+    useKey("crsr_one");
+    const list = vi.fn()
+      .mockRejectedValueOnce(new Error("rate limited"))
+      .mockResolvedValue([{ url: " https://github.com/acme/project " }, { url: "" }]);
+    cursorCloudMocks.loadCursorSdk.mockResolvedValue({ Cursor: { repositories: { list } } });
+
+    // A failure is not kept: the next read asks again.
+    await expect(service.listCursorCloudRepositories()).rejects.toThrow("rate limited");
+    const [first, second] = await Promise.all([
+      service.listCursorCloudRepositories(),
+      service.listCursorCloudRepositories(),
+    ]);
+    expect(first).toEqual([{ url: "https://github.com/acme/project" }]);
+    expect(second).toEqual(first);
+    await service.listCursorCloudRepositories();
+    expect(list).toHaveBeenCalledTimes(2);
+
+    await service.listCursorCloudRepositories({ refresh: true });
+    expect(list).toHaveBeenCalledTimes(3);
+
+    useKey("crsr_two");
+    await service.listCursorCloudRepositories();
+    expect(list).toHaveBeenCalledTimes(4);
+    expect(list).toHaveBeenLastCalledWith({ apiKey: "crsr_two" });
   });
 
   it("passes envVars on Cursor Cloud Agent.create and does not send metadata", async () => {

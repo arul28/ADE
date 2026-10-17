@@ -18,6 +18,7 @@ import { copilotRecordsToEvents } from "./copilot";
 import { cursorRecordsToEvents, loadCursorStorePage } from "./cursor";
 import { grokRecordsToEvents } from "./grok";
 import { kimiRecordsToEvents } from "./kimi";
+import { museRecordsToEvents } from "./muse";
 import { loadOpenCodeStoreEvents } from "./opencode";
 import { cutPage, decodeEventsCursor, readJsonlWindow, type EventsCursor } from "./paging";
 import { piRecordsToEvents } from "./pi";
@@ -84,6 +85,7 @@ const JSONL_CONVERTERS: Partial<Record<ExternalSessionProvider, JsonlConverter>>
   grok: grokRecordsToEvents,
   copilot: copilotRecordsToEvents,
   kimi: kimiRecordsToEvents,
+  muse: museRecordsToEvents,
 };
 
 /**

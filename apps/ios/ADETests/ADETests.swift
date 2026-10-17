@@ -507,11 +507,11 @@ final class ADETests: XCTestCase {
 
   func testImportProviderLabelsCoverEveryProvider() {
     XCTAssertEqual(
-      ["claude", "codex", "cursor", "droid", "opencode", "pi", "qwen", "kimi", "grok", "copilot", "factory"]
+      ["claude", "codex", "cursor", "droid", "opencode", "pi", "muse", "qwen", "kimi", "grok", "copilot", "factory"]
         .map(workExternalSessionProviderName),
-      ["Claude", "Codex", "Cursor", "Droid", "OpenCode", "Pi", "Qwen", "Kimi", "Grok", "Copilot", "Droid"]
+      ["Claude", "Codex", "Cursor", "Droid", "OpenCode", "Pi", "Muse", "Qwen", "Kimi", "Grok", "Copilot", "Droid"]
     )
-    XCTAssertEqual(Set(workProviderImportRules.keys).count, 10)
+    XCTAssertEqual(Set(workProviderImportRules.keys).count, 11)
   }
 
   /// Hardcoded copy of `PROVIDER_IMPORT_RULES` in
@@ -524,6 +524,7 @@ final class ADETests: XCTestCase {
       "droid": WorkProviderImportRules(chatContinue: .root, chatCopy: .any, cliContinue: .home, cliCopy: .any),
       "opencode": WorkProviderImportRules(chatContinue: .root, chatCopy: .any, cliContinue: .home, cliCopy: .home),
       "pi": WorkProviderImportRules(chatContinue: .root, chatCopy: .any, cliContinue: .home, cliCopy: .home),
+      "muse": WorkProviderImportRules(chatContinue: .root, chatCopy: .any, cliContinue: .home, cliCopy: .none),
       "qwen": WorkProviderImportRules(chatContinue: .none, chatCopy: .any, cliContinue: .home, cliCopy: .home),
       "kimi": WorkProviderImportRules(chatContinue: .none, chatCopy: .any, cliContinue: .home, cliCopy: .none),
       "grok": WorkProviderImportRules(chatContinue: .none, chatCopy: .any, cliContinue: .home, cliCopy: .home),
@@ -533,7 +534,7 @@ final class ADETests: XCTestCase {
     for (provider, rules) in expected {
       XCTAssertEqual(workProviderImportRules[provider], rules, provider)
     }
-    XCTAssertEqual(workImportSessionProviders, ["claude", "codex", "cursor", "droid", "opencode", "pi", "qwen", "kimi", "grok", "copilot"])
+    XCTAssertEqual(workImportSessionProviders, ["claude", "codex", "cursor", "droid", "opencode", "pi", "muse", "qwen", "kimi", "grok", "copilot"])
   }
 
   func testImportPlanContinuesNativeChatProvidersAtLaneRootOnly() {
@@ -581,10 +582,10 @@ final class ADETests: XCTestCase {
   }
 
   func testImportScanProvidersSkipAcpProvidersOnOlderHost() {
-    XCTAssertEqual(workImportScanProviders(hostKnowsAcpProviders: true).count, 10)
+    XCTAssertEqual(workImportScanProviders(hostKnowsAcpProviders: true).count, 11)
     XCTAssertEqual(
       workImportScanProviders(hostKnowsAcpProviders: false),
-      ["claude", "codex", "cursor", "droid", "opencode", "pi"]
+      ["claude", "codex", "cursor", "droid", "opencode", "pi", "muse"]
     )
   }
 
@@ -1013,6 +1014,24 @@ final class ADETests: XCTestCase {
     let cleaned = DictationCleanup.clean("hello. \"goodbye\"", glossary: .empty)
 
     XCTAssertEqual(cleaned, "Hello. \"Goodbye\"")
+  }
+
+  func testDictationCleanupRemovesPunctuatedFillers() {
+    let glossary = VoiceGlossary(version: 1, contextualTerms: [], corrections: [], fillers: ["um", "uh"])
+    let cases: [(String, String)] = [
+      ("Um, rebase onto main.", "Rebase onto main."),
+      ("So, uh, we should ship it.", "So, we should ship it."),
+      ("Um. Ship it.", "Ship it."),
+      ("We ship it. Um, then merge.", "We ship it. Then merge."),
+      ("Um, uh, ship it.", "Ship it."),
+      ("Um. Um. Ship it.", "Ship it."),
+      ("Uh. Um. Ship it.", "Ship it."),
+      ("Um! Ship it.", "Ship it."),
+      ("... so we ship.", "... So we ship."),
+    ]
+    for (raw, expected) in cases {
+      XCTAssertEqual(DictationCleanup.clean(raw, glossary: glossary), expected, raw)
+    }
   }
 
   func testDictationCleanupAllowsExpandedUppercaseCharacters() {
@@ -3757,6 +3776,145 @@ final class ADETests: XCTestCase {
       ),
       candidates
     )
+  }
+
+  /// Two machines can share a hint — a DHCP-reused address, the previous
+  /// machine's route still current while the next one is saved, a display
+  /// name — but different device identities mean two pairings, and both stay.
+  /// An older profile that never learned its identity may fold into the
+  /// identified one but never replaces it, even when it is newer.
+  @MainActor
+  func testSavedProfilesKeepEveryIdentifiedMachineThroughSharedHints() throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    service.clearSavedProfilesForTesting()
+    defer { service.clearSavedProfilesForTesting() }
+    func profile(identity: String?, name: String, address: String, updatedAt: String) -> HostConnectionProfile {
+      HostConnectionProfile(
+        hostIdentity: identity,
+        hostName: name,
+        port: 8787,
+        authKind: "paired",
+        pairedDeviceId: "phone",
+        lastRemoteDbVersion: 0,
+        lastHostDeviceId: identity,
+        lastSuccessfulAddress: address,
+        savedAddressCandidates: [address],
+        discoveredLanAddresses: [address],
+        tailscaleAddress: nil,
+        updatedAt: updatedAt
+      )
+    }
+    let studio = profile(identity: "studio-id", name: "Mac Studio", address: "192.168.1.113", updatedAt: "2026-10-06T06:00:00Z")
+    // Same last address as the studio: the stale-route case.
+    let windows = profile(identity: "windows-id", name: "windows", address: "192.168.1.113", updatedAt: "2026-10-06T06:01:00Z")
+    service.installSavedProfileForTesting(studio, token: "studio-secret")
+    service.installSavedProfileForTesting(windows, token: "windows-secret")
+    XCTAssertEqual(
+      Set(service.savedProfilesForTesting().compactMap(\.hostIdentity)),
+      ["studio-id", "windows-id"],
+      "A shared address must not merge two machines."
+    )
+
+    // A newer identity-less profile with the studio's name.
+    let legacy = profile(identity: nil, name: "Mac Studio", address: "10.0.0.9", updatedAt: "2026-10-06T07:00:00Z")
+    service.installSavedProfileForTesting(legacy, token: "legacy-secret")
+    let saved = service.savedProfilesForTesting()
+    XCTAssertEqual(Set(saved.compactMap(\.hostIdentity)), ["studio-id", "windows-id"])
+    XCTAssertFalse(saved.contains { $0.hostIdentity == nil }, "The identity-less profile must not replace the identified one.")
+    XCTAssertEqual(saved.count, 2)
+    XCTAssertTrue(service.hasCredentialForTesting(studio))
+    XCTAssertTrue(service.hasCredentialForTesting(windows))
+  }
+
+  /// Disconnecting the primary machine means it stays off until the user
+  /// connects it again: Settings lists it as available (with Connect), not as
+  /// a primary that cannot be reached, and a machine the user connects next
+  /// becomes primary instead of a fleet machine beside nothing.
+  /// Bonjour resolves the same machine with and without its IPv6 addresses
+  /// from one browse to the next. A resolution that only drops addresses the
+  /// profile holds keeps the fuller list (re-saving on every flip froze the
+  /// main thread); one that brings a new address replaces it.
+  @MainActor
+  func testDiscoveryKeepsFullerLanRoutesWhenAResolutionOnlyDropsAddresses() throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    service.clearSavedProfilesForTesting()
+    defer { service.clearSavedProfilesForTesting() }
+    let studio = HostConnectionProfile(
+      hostIdentity: "studio-id",
+      hostName: "Mac Studio",
+      port: 8787,
+      authKind: "paired",
+      pairedDeviceId: "phone",
+      lastRemoteDbVersion: 0,
+      lastHostDeviceId: "studio-id",
+      lastSuccessfulAddress: "192.168.1.113",
+      savedAddressCandidates: ["192.168.1.113"],
+      discoveredLanAddresses: ["192.168.1.113"],
+      tailscaleAddress: nil
+    )
+    service.installSavedProfileForTesting(studio, token: "studio-secret", makeActive: true)
+    func resolution(_ addresses: [String]) -> DiscoveredSyncHost {
+      DiscoveredSyncHost(
+        id: "studio-id",
+        serviceName: "ADE Sync studio 8787",
+        hostName: "Mac Studio",
+        hostIdentity: "studio-id",
+        port: 8787,
+        addresses: addresses,
+        tailscaleAddress: nil,
+        runtimeKind: "daemon",
+        runtimeVersion: "1.0.0",
+        projectIds: [],
+        projectNames: [],
+        projectCount: 0,
+        lastResolvedAt: "2026-05-10T10:00:00.000Z"
+      )
+    }
+    let full = ["192.168.1.113", "2605:a601::2"]
+
+    service.applyDiscoveredHostsForTesting([resolution(full)])
+    XCTAssertEqual(service.activeHostProfile?.discoveredLanAddresses, full)
+
+    service.applyDiscoveredHostsForTesting([resolution(["192.168.1.113"])])
+    XCTAssertEqual(service.activeHostProfile?.discoveredLanAddresses, full, "A dropped IPv6 address is resolver noise at first.")
+
+    service.applyDiscoveredHostsForTesting([resolution(["10.0.0.9"])])
+    XCTAssertEqual(service.activeHostProfile?.discoveredLanAddresses, ["10.0.0.9"], "A new address is a move, not noise.")
+  }
+
+  @MainActor
+  func testUserDisconnectedPrimaryListsAsAvailable() throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    service.clearSavedProfilesForTesting()
+    defer { service.clearSavedProfilesForTesting() }
+    let studio = HostConnectionProfile(
+      hostIdentity: "studio-id",
+      hostName: "Mac Studio",
+      port: 8787,
+      authKind: "paired",
+      pairedDeviceId: "phone",
+      lastRemoteDbVersion: 0,
+      lastHostDeviceId: "studio-id",
+      lastSuccessfulAddress: "192.168.1.113",
+      savedAddressCandidates: ["192.168.1.113"],
+      discoveredLanAddresses: ["192.168.1.113"],
+      tailscaleAddress: nil
+    )
+    service.installSavedProfileForTesting(studio, token: "studio-secret", makeActive: true)
+    let fleet = MachineFleet()
+
+    service.disconnectForUserConnectionChange()
+
+    let row = try XCTUnwrap(settingsMachines(
+      syncService: service,
+      account: AccountService.shared,
+      fleet: fleet,
+      hidden: HiddenMachineStore.shared
+    ).first { $0.machineKey == "machine:studio-id" })
+    XCTAssertEqual(row.link, .available)
+    XCTAssertFalse(row.isConnectedSet)
+    XCTAssertFalse(service.primaryIsAttached)
+    XCTAssertEqual(service.focusedMachineKey, "machine:studio-id", "The pairing is kept; only the connection is off.")
   }
 
   @MainActor
@@ -8823,6 +8981,58 @@ final class ADETests: XCTestCase {
     database.close()
   }
 
+  /// The machine's project id for a checkout the phone has cached under its
+  /// own id: once adopted, a plain catalog refresh (the one every changeset
+  /// runs) must keep it. Mapping it back re-keyed the project on every
+  /// connect, and each flip cancelled the hydration in flight.
+  @MainActor
+  func testSyncServiceKeepsAdoptedRemoteProjectIdAcrossCatalogRefreshes() throws {
+    let activeProjectIdKey = "ade.sync.activeProjectId"
+    let activeProjectRootPathKey = "ade.sync.activeProjectRootPath"
+    let activeProjectHostIdentityKey = "ade.sync.activeProjectHostIdentity"
+    UserDefaults.standard.set("cached-project", forKey: activeProjectIdKey)
+    UserDefaults.standard.set("/tmp/project-two", forKey: activeProjectRootPathKey)
+    UserDefaults.standard.set("host-1", forKey: activeProjectHostIdentityKey)
+    defer {
+      UserDefaults.standard.removeObject(forKey: activeProjectIdKey)
+      UserDefaults.standard.removeObject(forKey: activeProjectRootPathKey)
+      UserDefaults.standard.removeObject(forKey: activeProjectHostIdentityKey)
+    }
+
+    let database = makeControllerHydrationDatabase(baseURL: makeTemporaryDirectory())
+    try database.executeSqlForTesting("""
+      insert into projects (
+        id, root_path, display_name, default_base_ref, created_at, last_opened_at
+      ) values
+        ('cached-project', '/tmp/project-two', 'Project Two', 'main', '2026-04-22T00:00:00.000Z', '2026-04-22T01:00:00.000Z');
+    """)
+    let service = SyncService(database: database)
+    XCTAssertEqual(service.activeProjectId, "cached-project")
+
+    service.seedRemoteProjectCatalogForTesting([
+      MobileProjectSummary(
+        id: "runtime-project",
+        displayName: "Project Two",
+        rootPath: "/tmp/project-two",
+        defaultBaseRef: "main",
+        lastOpenedAt: "2026-04-22T02:00:00.000Z",
+        laneCount: 3,
+        isAvailable: true,
+        isCached: false
+      ),
+    ])
+    XCTAssertEqual(service.activeProjectId, "runtime-project")
+
+    service.refreshProjectCatalog()
+    service.refreshProjectCatalog()
+
+    XCTAssertEqual(service.activeProjectId, "runtime-project")
+    XCTAssertEqual(service.activeProjectRootPath, "/tmp/project-two")
+    XCTAssertEqual(service.projects.filter { $0.rootPath == "/tmp/project-two" }.map(\.id), ["runtime-project"])
+
+    database.close()
+  }
+
   @MainActor
   func testSyncServiceSeedsRuntimeProjectRowBeforeHydration() throws {
     let activeProjectIdKey = "ade.sync.activeProjectId"
@@ -9430,6 +9640,80 @@ final class ADETests: XCTestCase {
     )
     XCTAssertEqual(roundTripped.lastRemoteDbVersion, 4_120)
     XCTAssertEqual(roundTripped.remoteDbVersionBySite?["b00e9b92c864a27958669c1595fcb2c3"], 4_120)
+  }
+
+  /// A rebuilt profile (each hello, each project switch) keeps the machine's
+  /// per-project cursors, or every switch replays the project's whole history;
+  /// but never another machine's cursors.
+  func testRebuiltProfileCarriesOnlyTheSameMachinesProjectCursors() {
+    func profile(identity: String?, bySite: [String: Int]?) -> HostConnectionProfile {
+      var value = HostConnectionProfile(
+        hostIdentity: identity,
+        port: 8787,
+        authKind: "paired",
+        pairedDeviceId: "phone",
+        lastRemoteDbVersion: 0,
+        lastHostDeviceId: identity,
+        lastSuccessfulAddress: "192.168.1.2",
+        savedAddressCandidates: [],
+        discoveredLanAddresses: [],
+        tailscaleAddress: nil
+      )
+      value.remoteDbVersionBySite = bySite
+      return value
+    }
+    let cursors = ["site-a": 4_120, "site-b": 77]
+    let studio = profile(identity: "Studio-ID", bySite: cursors)
+
+    XCTAssertEqual(syncCarriedRemoteDbVersionBySite(from: studio, helloHostIdentity: "studio-id"), cursors)
+    XCTAssertNil(syncCarriedRemoteDbVersionBySite(from: studio, helloHostIdentity: "windows-id"))
+    XCTAssertNil(syncCarriedRemoteDbVersionBySite(from: studio, helloHostIdentity: nil))
+    XCTAssertNil(syncCarriedRemoteDbVersionBySite(from: profile(identity: nil, bySite: cursors), helloHostIdentity: "studio-id"))
+    XCTAssertNil(syncCarriedRemoteDbVersionBySite(from: nil, helloHostIdentity: "studio-id"))
+  }
+
+  /// A chat on another machine renders its composer from its roster row: the
+  /// provider and model are real, the access mode is unknown and not shown.
+  func testRosterChatSummaryNamesProviderAndModelButNoAccessMode() throws {
+    var chat = RemoteRosterChat(id: "chat-1", laneId: "lane-1", status: .running)
+    chat.provider = "claude"
+    chat.model = "claude-sonnet-5"
+    chat.title = "Fix the bug"
+    let summary = try XCTUnwrap(chat.rosterChatSummary)
+    XCTAssertEqual(summary.provider, "claude")
+    XCTAssertEqual(summary.model, "claude-sonnet-5")
+    XCTAssertEqual(summary.status, "active")
+    let context = WorkChatSummaryRenderContext(summary)
+    XCTAssertTrue(context.isAvailable)
+    XCTAssertFalse(context.accessModeKnown, "A stand-in summary must not claim an access mode.")
+
+    var toolOnly = RemoteRosterChat(id: "chat-2", laneId: "lane-1", status: .idle)
+    toolOnly.toolType = "codex-chat"
+    let fallback = try XCTUnwrap(toolOnly.rosterChatSummary)
+    XCTAssertEqual(fallback.provider, "codex")
+    XCTAssertEqual(fallback.model, "")
+
+    XCTAssertNil(RemoteRosterChat(id: "chat-3", laneId: "lane-1", status: .idle).rosterChatSummary)
+  }
+
+  /// Forgetting a machine hides it only while the account shows it offline: a
+  /// desktop that never sleeps used to stay hidden for good.
+  @MainActor
+  func testHiddenMachineReturnsWhenTheAccountShowsItOnline() {
+    let store = HiddenMachineStore.shared
+    store.setAccountScope("test-\(UUID().uuidString)")
+    defer { store.setAccountScope(nil) }
+
+    store.hide(identity: "windows-id")
+    store.hide(identity: "laptop-id")
+    XCTAssertTrue(store.isHidden(identity: "WINDOWS-ID"))
+
+    store.reconcile(accountMachines: [(identity: "windows-id", online: true), (identity: "laptop-id", online: false)])
+    XCTAssertFalse(store.isHidden(identity: "windows-id"))
+    XCTAssertTrue(store.isHidden(identity: "laptop-id"), "An offline machine stays hidden.")
+
+    store.reconcile(accountMachines: [(identity: "laptop-id", online: true)])
+    XCTAssertFalse(store.isHidden(identity: "laptop-id"))
   }
 
   func testDatabaseBootstrapAcceptsDesktopPromptStashChanges() throws {
@@ -12235,32 +12519,6 @@ final class ADETests: XCTestCase {
     XCTAssertNil(state.runs[1].accountMachineKey)
   }
 
-  func testAgentRunsContentStateDecodesPullRequestRows() throws {
-    let json = Data("""
-    {
-      "updatedAt": 1720000000,
-      "activeCount": 0,
-      "runs": [],
-      "prs": [
-        { "id": "pr-42", "prNumber": 42, "title": "Ship mobile PR view", "phase": "merge_ready", "lane": "Mobile PR lane", "repoOwner": "arul28", "repoName": "ADE", "accountMachineKey": "machine-studio", "updatedAt": 1720000000 }
-      ]
-    }
-    """.utf8)
-
-    let state = try JSONDecoder().decode(ADEAgentRunsAttributes.ContentState.self, from: json)
-    XCTAssertEqual(state.prs.count, 1)
-    XCTAssertEqual(state.prs[0].prNumber, 42)
-    XCTAssertEqual(state.prs[0].resolvedPhase, .mergeReady)
-    XCTAssertEqual(state.prs[0].subtitle, "Mobile PR lane")
-    XCTAssertEqual(state.prs[0].repoOwner, "arul28")
-    XCTAssertEqual(state.prs[0].repoName, "ADE")
-    XCTAssertEqual(state.prs[0].accountMachineKey, "machine-studio")
-    XCTAssertEqual(
-      state.prs[0].deepLinkURL?.absoluteString,
-      "ade://pr/arul28/ADE/42?accountMachineKey=machine-studio"
-    )
-  }
-
   func testAgentRunPhaseLabelsMatchTheDesktopVocabulary() {
     // The widgets mirror `sessionStatusPresentation.ts` word-for-word: the
     // in-flight phase reads "Working" (not "Running") and the terminal one
@@ -13127,15 +13385,22 @@ final class ADETests: XCTestCase {
       ),
     ]
 
-    XCTAssertEqual(laneScopeCount(snapshots, scope: .active), 3)
-    XCTAssertEqual(laneScopeCount(snapshots, scope: .archived), 1)
-    XCTAssertEqual(laneRuntimeCount(snapshots, filter: .running), 2)
-    XCTAssertEqual(laneRuntimeCount(snapshots, filter: .awaitingInput), 1)
+    // The Lanes chips: each filter's lanes. An archived lane with a running
+    // chat is Archived only, never Running.
+    let expectedByFilter: [(LaneQuickFilter, [String])] = [
+      (.active, ["lane-primary", "lane-attached-active", "lane-worktree"]),
+      (.running, ["lane-primary"]),
+      (.attention, ["lane-worktree"]),
+      (.dirty, ["lane-attached-active"]),
+      (.archived, ["lane-archived"]),
+    ]
+    for (filter, expectedIds) in expectedByFilter {
+      XCTAssertEqual(snapshots.filter(filter.matches).map(\.lane.id), expectedIds, "\(filter)")
+    }
 
     let activeFiltered = laneListFilteredSnapshots(
       snapshots,
       scope: .active,
-      runtimeFilter: .all,
       searchText: "",
       pinnedLaneIds: ["lane-worktree"]
     )
@@ -13155,11 +13420,6 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(laneMatchesSearch(snapshot: snapshots[0], isPinned: false, query: "is:unknown"))
     XCTAssertFalse(laneMatchesSearch(snapshot: snapshots[0], isPinned: false, query: "type:attached"))
 
-    XCTAssertEqual(laneListEmptyStateTitle(scope: .active), "No active lanes")
-    XCTAssertEqual(
-      laneListEmptyStateMessage(scope: .all, searchText: "auth", hasFilters: true),
-      "Try a different search or clear the filter."
-    )
   }
 
   func testLaneDeleteDependencyBatchesKeepAncestorsAfterSelectedDescendants() {
@@ -20520,6 +20780,40 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(workIsSceneFenceLanguage(""))
   }
 
+  /// Desktop `isReaderAuthoredMessage`: a message ADE wrote for the user (a
+  /// wake, a continuation) does not answer a scene. Only the reader's does.
+  @MainActor
+  func testSceneIsAnsweredOnlyByAMessageTheReaderWrote() throws {
+    let scene = #"{"sessionId":"chat-1","timestamp":"2026-03-25T00:00:01.000Z","sequence":1,"event":{"type":"text","text":"Pick one.","turnId":"turn-1","itemId":"item-1"}}"#
+    let wake = #"{"sessionId":"chat-1","timestamp":"2026-03-25T00:00:02.000Z","sequence":2,"event":{"type":"user_message","text":"Scheduled check.","turnId":"turn-2","metadata":{"scheduledWake":{"id":"w1"}}}}"#
+    let continuation = #"{"sessionId":"chat-1","timestamp":"2026-03-25T00:00:03.000Z","sequence":3,"event":{"type":"user_message","text":"Continue.","turnId":"turn-3","metadata":{"hostContinuation":true}}}"#
+    let reader = #"{"sessionId":"chat-1","timestamp":"2026-03-25T00:00:04.000Z","sequence":4,"event":{"type":"user_message","text":"Option A","turnId":"turn-4","metadata":{"usageLimitResume":null}}}"#
+
+    func answer(_ envelopes: [WorkChatEnvelope]) -> String? {
+      let messages = buildWorkChatMessages(from: envelopes)
+      let bridge = WorkSceneChatBridge()
+      bridge.timeline = {
+        messages.enumerated().map { index, message in
+          WorkTimelineEntry(id: message.id, timestamp: message.timestamp, rank: index, payload: .message(message))
+        }
+      }
+      guard let sceneMessage = messages.first(where: { $0.role != "user" }) else { return nil }
+      return bridge.answeredText(afterMessageId: sceneMessage.id)
+    }
+
+    // The stored transcript path.
+    XCTAssertNil(answer(parseWorkChatTranscript([scene, wake, continuation].joined(separator: "\n"))))
+    XCTAssertEqual(answer(parseWorkChatTranscript([scene, wake, continuation, reader].joined(separator: "\n"))), "Option A")
+
+    // The live sync path.
+    let decoder = JSONDecoder()
+    func synced(_ lines: [String]) throws -> [WorkChatEnvelope] {
+      try lines.map { makeWorkChatEnvelope(from: try decoder.decode(AgentChatEventEnvelope.self, from: Data($0.utf8))) }
+    }
+    XCTAssertNil(answer(try synced([scene, wake, continuation])))
+    XCTAssertEqual(answer(try synced([scene, wake, continuation, reader])), "Option A")
+  }
+
   func testParseWorkChatTranscriptUsesDeterministicFallbackItemIds() {
     let raw = """
     {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:01.000Z","sequence":1,"event":{"type":"tool_call","tool":"functions.Read","args":{"path":"README.md"},"turnId":"turn-1"}}
@@ -20570,7 +20864,7 @@ final class ADETests: XCTestCase {
   func testWorkModelCatalogUsesRequestedProviderOrder() {
     let groups = workModelCatalogGroups(currentModelId: "", currentProvider: "codex")
 
-    XCTAssertEqual(groups.map(\.key), ["claude", "codex", "cursor", "opencode", "droid"])
+    XCTAssertEqual(groups.map(\.key), ["claude", "codex", "muse", "cursor", "opencode", "droid"])
   }
 
   func testWorkModelCatalogIncludesFlagshipModelMetadata() {
@@ -20579,6 +20873,8 @@ final class ADETests: XCTestCase {
     let anthropicProvider = claudeGroup?.providers.first(where: { $0.key == "anthropic" })
     let fable = anthropicProvider?.models.first(where: { $0.id == "claude-fable-5-1" })
     let opus55 = anthropicProvider?.models.first(where: { $0.id == "claude-opus-5-5" })
+    let sonnet55 = anthropicProvider?.models.first(where: { $0.id == "claude-sonnet-5-5" })
+    let haiku55 = anthropicProvider?.models.first(where: { $0.id == "claude-haiku-5-5" })
     let opus5 = anthropicProvider?.models.first(where: { $0.id == "claude-opus-5" })
     let openCodeAnthropic = groups
       .first(where: { $0.key == "opencode" })?
@@ -20598,7 +20894,7 @@ final class ADETests: XCTestCase {
       "claude-fable-5-1",
       "claude-sonnet-5-5",
       "claude-sonnet-5",
-      "claude-haiku-4-5",
+      "claude-haiku-5-5",
       "claude-opus-5",
     ])
     XCTAssertEqual(openCodeAnthropic?.models.map(\.id), [
@@ -20626,13 +20922,17 @@ final class ADETests: XCTestCase {
     XCTAssertNotNil(ADEColor.modelBrand(for: "opencode/anthropic/claude-fable-5-1"))
     XCTAssertEqual(opus55?.displayName, "Claude Opus 5.5")
     XCTAssertEqual(opus55?.tagline, "Agentic coding · 1M context")
-    XCTAssertEqual(opus55?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "max"])
+    XCTAssertEqual(opus55?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "max", "ultracode"])
     XCTAssertEqual(opus55?.defaultReasoningEffort, "medium")
     XCTAssertTrue(opus55?.supportsCodexFastMode == true)
     XCTAssertNotNil(ADEColor.modelBrand(for: "claude-opus-5-5"))
+    XCTAssertEqual(sonnet55?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "max", "ultracode"])
+    XCTAssertEqual(sonnet55?.defaultReasoningEffort, "high")
+    XCTAssertEqual(haiku55?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "max", "ultracode"])
+    XCTAssertEqual(haiku55?.defaultReasoningEffort, "medium")
     XCTAssertEqual(opus5?.displayName, "Claude Opus 5")
     XCTAssertEqual(opus5?.tagline, "Previous Opus · 1M context")
-    XCTAssertEqual(opus5?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "max"])
+    XCTAssertEqual(opus5?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "max", "ultracode"])
     XCTAssertEqual(opus5?.defaultReasoningEffort, "high")
     XCTAssertTrue(opus5?.supportsCodexFastMode == true)
     XCTAssertNotNil(ADEColor.modelBrand(for: "claude-opus-5"))
@@ -20737,7 +21037,7 @@ final class ADETests: XCTestCase {
     let opus55 = groups.first(where: { $0.key == "claude" })?.providers.first?.models.first
     XCTAssertEqual(opus55?.id, "claude-opus-5-5")
     XCTAssertEqual(opus55?.displayName, "Claude Opus 5.5")
-    XCTAssertEqual(opus55?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "max"])
+    XCTAssertEqual(opus55?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "max", "ultracode"])
     XCTAssertEqual(opus55?.defaultReasoningEffort, "medium")
     XCTAssertTrue(opus55?.supportsCodexFastMode == true)
 
@@ -20774,7 +21074,9 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-sonnet-5"), ["low", "medium", "high", "max"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "sonnet-5"), ["low", "medium", "high", "max"])
     XCTAssertNotNil(ADEColor.modelBrand(for: "claude-sonnet-5-5"))
-    XCTAssertNil(ADEColor.reasoningTiers(for: "claude-haiku-4-5"))
+    // Retired Haiku 4.5 ids resolve to Haiku 5.5, which now carries reasoning tiers.
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "claude-haiku-4-5"), ["low", "medium", "high", "xhigh", "max"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-haiku-5-5"), ["low", "medium", "high", "xhigh", "max"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "astra"), ["low", "medium", "high", "xhigh", "max"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "sol"), ["low", "medium", "high", "xhigh", "max", "ultra"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "openai/gpt-5.6-terra"), ["low", "medium", "high", "xhigh", "max", "ultra"])
@@ -22170,6 +22472,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(workTerminalReasonLabel("budget_exhausted"), "budget limit reached")
     XCTAssertEqual(workTerminalReasonLabel("max_turns"), "max turns reached")
     XCTAssertEqual(workTerminalReasonLabel("prompt_too_long"), "context window overflow")
+    XCTAssertEqual(workTerminalReasonLabel("image_error"), "attached image rejected")
     XCTAssertEqual(workTerminalReasonLabel("api_error"), "API error after retries")
     XCTAssertEqual(workTerminalReasonLabel("malformed_tool_use_exhausted"), "tool-call retries exhausted")
     XCTAssertEqual(workTerminalReasonLabel("structured_output_retry_exhausted"), "output retries exhausted")
@@ -24308,7 +24611,7 @@ final class ADETests: XCTestCase {
   func testWorkContextCompactSummaryParsesAutoAndTokens() {
     let parsed = WorkContextCompactSummary.parse("auto compact freed ~12,400 tokens")
     XCTAssertEqual(parsed.triggerLabel, "AUTO")
-    XCTAssertEqual(parsed.tokensLabel, "~12k tokens freed")
+    XCTAssertEqual(parsed.tokensLabel, "~12.4k tokens freed")
   }
 
   func testWorkContextCompactSummaryParsesManualTriggerWithoutTokens() {
@@ -24346,6 +24649,32 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(cards.first?.title, "Context compacted")
     XCTAssertEqual(cards.first?.body, "Manual\nPre-compact tokens: 12000")
     XCTAssertEqual(cards.first?.isInProgress, false)
+  }
+
+  func testWorkContextCompactLifecycleKeepsFirstStartWhenTheHostRepeatsCompacting() {
+    let transcript: [WorkChatEnvelope] = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-06-15T00:00:01.000Z",
+        sequence: 1,
+        event: .contextCompact(summary: "Manual", isInProgress: true, postTokens: nil, turnId: "turn-compact", compactionId: "turn-compact")
+      ),
+      // A host that repeats Claude's `compacting` status every ~30s sends
+      // another "started" for the same compaction. The running divider counts
+      // its elapsed from the card's timestamp, so the repeat must not move it.
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-06-15T00:00:31.000Z",
+        sequence: 2,
+        event: .contextCompact(summary: "Manual", isInProgress: true, postTokens: nil, turnId: "turn-compact", compactionId: "turn-compact")
+      ),
+    ]
+
+    let cards = buildWorkEventCards(from: transcript).filter { $0.kind == "contextCompact" }
+
+    XCTAssertEqual(cards.count, 1)
+    XCTAssertEqual(cards.first?.timestamp, "2026-06-15T00:00:01.000Z")
+    XCTAssertEqual(cards.first?.isInProgress, true)
   }
 
   func testWorkContextCompactLifecycleMergesCrossTurnCompletionByCompactionId() {
@@ -25226,6 +25555,36 @@ final class ADETests: XCTestCase {
       workToolArgPreview(toolName: "computer_use", argsText: #"{"status":"ready"}"#),
       "· ready"
     )
+  }
+
+  /// The phone's copy of the desktop command parser
+  /// (`computerUseActionSummary.ts`): shell redirections belong to the shell,
+  /// not to the command's flags, and quoted text that only looks like one is
+  /// still an argument. Same rows as the desktop table.
+  func testComputerUseSummaryKeepsShellRedirectionsOutOfTheAction() {
+    let rows: [(command: String, output: String, text: String, outcome: WorkComputerUseOutcome)] = [
+      ("ade browser click --x 537 --y 411 --text 2>&1 | grep ok", "", "Clicked at 537, 411 using ADE browser", .notChecked),
+      ("ade browser click --text \"<Submit>\" 2>&1", "", "Clicked “<Submit>” using ADE browser", .notChecked),
+      ("ade screen type \">\" --app Notes", "", "Typed “>” in Notes", .notChecked),
+      ("ade screen type hello *>$null", "", "Typed “hello” on the lane screen", .notChecked),
+      ("ade proof capture --caption Login --text>proof.txt", "Attached", "Filed proof “Login”", .unconfirmed),
+      // A click never reads as a bare "Clicked": an element with no name is
+      // named by the role its output printed, and a click on no element by its
+      // point. Same rows as the desktop table.
+      ("ade browser click --handle e1", "hit: button (e1)\neffect: observed", "Clicked a button using ADE browser", .observed),
+      ("ade screen click --handle e5", "hit: AXPopUpButton (e5)\neffect: observed", "Clicked a pop-up button on the lane screen", .observed),
+      ("ade screen click --handle e9", "hit: div (e9)\neffect: observed", "Clicked an element on the lane screen", .observed),
+      ("ade screen click --handle e1", "hit: no element; acted on a point (412, 300)\neffect: observed", "Clicked at a point on the lane screen", .observed),
+      ("ade screen click 120 420", "", "Clicked at 120, 420 on the lane screen", .notChecked),
+    ]
+    for row in rows {
+      guard let action = workComputerUseSummary(command: row.command, output: row.output, status: "completed", exitCode: 0) else {
+        XCTFail("No computer-use summary for \(row.command)")
+        continue
+      }
+      XCTAssertEqual(workComputerUseText(action), row.text, row.command)
+      XCTAssertEqual(action.outcome, row.outcome, row.command)
+    }
   }
 
   func testLegacyAskUserApprovalLeavesSourceForProviderFallback() {

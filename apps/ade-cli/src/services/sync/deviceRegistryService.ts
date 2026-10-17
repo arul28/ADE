@@ -18,6 +18,7 @@ import { mapPlatform } from "./syncProtocol";
 import { resolveTailscaleCliPath } from "./resolveTailscaleCliPath";
 import type { AdeDb } from "../../../../desktop/src/main/services/state/kvDb";
 import { nowIso, safeJsonParse, toOptionalString, uniqueStrings } from "../../../../desktop/src/main/services/shared/utils";
+import { execFileOffThread, offThreadSpawnEnabled } from "../../../../desktop/src/main/services/shared/offThreadSpawn";
 
 type DeviceRegistryServiceArgs = {
   db: AdeDb;
@@ -53,6 +54,42 @@ type ClusterStateRow = {
 const DEVICE_ID_FILE = "sync-device-id";
 export const DEFAULT_SYNC_CLUSTER_ID = "default";
 const TAILSCALE_STATUS_CACHE_MS = 30_000;
+/**
+ * `os.networkInterfaces()` is a synchronous adapter enumeration — ~3.5 ms on a
+ * quiet Windows PC, more with VPN and Hyper-V adapters — and the brain asks for
+ * the local device several times a second (status reads, snapshots, every
+ * incoming sync message). A Windows brain profile spent ~6 s of every 10
+ * minutes here. Addresses change on a network switch, not between two
+ * messages, so a few seconds of reuse costs nothing anyone can see.
+ */
+const NETWORK_INTERFACES_CACHE_MS = 5_000;
+let networkInterfacesCache: { expiresAt: number; value: ReturnType<typeof os.networkInterfaces> } | null = null;
+
+/** One machine identity shared by every project registry and sync ingress. */
+export function readOrCreateLocalDeviceId(deviceIdPath: string, legacyPath?: string): string {
+  fs.mkdirSync(path.dirname(deviceIdPath), { recursive: true });
+  const shared = fs.existsSync(deviceIdPath) ? fs.readFileSync(deviceIdPath, "utf8").trim() : "";
+  if (shared) return shared;
+  const legacy = legacyPath && legacyPath !== deviceIdPath && fs.existsSync(legacyPath)
+    ? fs.readFileSync(legacyPath, "utf8").trim()
+    : "";
+  const candidate = legacy || randomUUID();
+  try {
+    fs.writeFileSync(deviceIdPath, `${candidate}\n`, { flag: "wx" });
+    return candidate;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    return fs.readFileSync(deviceIdPath, "utf8").trim();
+  }
+}
+
+function readNetworkInterfaces(): ReturnType<typeof os.networkInterfaces> {
+  const now = Date.now();
+  if (networkInterfacesCache && networkInterfacesCache.expiresAt > now) return networkInterfacesCache.value;
+  const value = os.networkInterfaces();
+  networkInterfacesCache = { expiresAt: now + NETWORK_INTERFACES_CACHE_MS, value };
+  return value;
+}
 
 let tailscaleStatusCache:
   | {
@@ -86,6 +123,11 @@ function execFileText(
   commandArgs: string[],
   timeoutMs: number,
 ): Promise<string | null> {
+  if (offThreadSpawnEnabled()) {
+    // A Windows spawn on the event loop blocked the brain ~100 ms per probe.
+    return execFileOffThread(command, commandArgs, { timeoutMs, maxBuffer: 1024 * 1024 })
+      .then(({ exitCode, stdout, error }) => (error || exitCode !== 0 ? null : stdout));
+  }
   return new Promise((resolve) => {
     execFile(command, commandArgs, {
       encoding: "utf8",
@@ -194,7 +236,7 @@ function isTailscaleAddress(ipAddress: string): boolean {
 const VIRTUAL_ADAPTER_PATTERN = /^vEthernet \((WSL|Default Switch)|docker|^br-|virbr|vmnet|vboxnet/i;
 
 function readLocalNetworkMetadata(): LocalNetworkMetadata {
-  const interfaces = os.networkInterfaces();
+  const interfaces = readNetworkInterfaces();
   const lan: string[] = [];
   const tailscale: string[] = [];
   for (const [interfaceName, entries] of Object.entries(interfaces)) {
@@ -293,33 +335,7 @@ export function createDeviceRegistryService(args: DeviceRegistryServiceArgs) {
   const layout = resolveAdeLayout(args.projectRoot);
   const deviceIdPath = args.localDeviceIdPath ?? path.join(layout.secretsDir, DEVICE_ID_FILE);
   const legacyProjectDeviceIdPath = path.join(layout.secretsDir, DEVICE_ID_FILE);
-  fs.mkdirSync(path.dirname(deviceIdPath), { recursive: true });
-
-  const readOrCreateLocalDeviceId = (): string => {
-    // One desktop, one device id: the shared file is authoritative across
-    // projects so each project's `sync_cluster_state.brain_device_id` agrees
-    // on the same local identity. If the shared file is empty, seed it from
-    // the first legacy per-project id we happen to see (one-time migration),
-    // otherwise mint a fresh id. `O_EXCL` on the seed write keeps two
-    // concurrent project contexts from racing to mint different ids.
-    const shared = fs.existsSync(deviceIdPath) ? fs.readFileSync(deviceIdPath, "utf8").trim() : "";
-    if (shared.length > 0) return shared;
-
-    const legacy = deviceIdPath !== legacyProjectDeviceIdPath && fs.existsSync(legacyProjectDeviceIdPath)
-      ? fs.readFileSync(legacyProjectDeviceIdPath, "utf8").trim()
-      : "";
-    const candidate = legacy.length > 0 ? legacy : randomUUID();
-    try {
-      fs.writeFileSync(deviceIdPath, `${candidate}\n`, { flag: "wx" });
-      return candidate;
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-      // Another context won the race; use whatever they wrote.
-      return fs.readFileSync(deviceIdPath, "utf8").trim();
-    }
-  };
-
-  const localDeviceId = readOrCreateLocalDeviceId();
+  const localDeviceId = readOrCreateLocalDeviceId(deviceIdPath, legacyProjectDeviceIdPath);
   const localSiteId = args.db.sync.getSiteId();
 
   const upsertDeviceRecord = (record: {
@@ -433,6 +449,13 @@ export function createDeviceRegistryService(args: DeviceRegistryServiceArgs) {
     brainEpoch: number;
     updatedByDeviceId?: string;
   }): SyncClusterState => {
+    if (!getDevice(argsIn.brainDeviceId)) {
+      args.logger.warn("sync.cluster_state_brain_device_missing", {
+        brainDeviceId: argsIn.brainDeviceId,
+        updatedByDeviceId: argsIn.updatedByDeviceId ?? localDeviceId,
+      });
+      throw new Error(`Cannot set sync brain to unregistered device '${argsIn.brainDeviceId}'.`);
+    }
     const now = nowIso();
     args.db.run(
       `

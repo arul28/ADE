@@ -22,22 +22,9 @@ struct PrStackSheet: View {
 
   var body: some View {
     NavigationStack(path: $detailPath) {
-      ZStack {
-        prLiquidGlassBackdrop()
-
-        // 4x5 grab handle at the top of the sheet — pure visual affordance,
-        // matching the frame `2pDr5` in the pencil.
-        VStack {
-          RoundedRectangle(cornerRadius: 2.5, style: .continuous)
-            .fill(Color.white.opacity(0.25))
-            .frame(width: 36, height: 5)
-            .padding(.top, 6)
-          Spacer(minLength: 0)
-        }
-        .allowsHitTesting(false)
-
-        contentView
-      }
+      contentView
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .adeScreenBackground()
       .navigationTitle(groupName ?? "PR stack")
       .navigationBarTitleDisplayMode(.inline)
       .navigationDestination(for: String.self) { prId in
@@ -118,7 +105,7 @@ struct PrStackSheet: View {
 
               stackHero
                 .padding(.horizontal, 16)
-                .padding(.top, 20) // clearance for grab handle
+                .padding(.top, 8)
 
               PrSectionHdr(title: "Stack")
 
@@ -126,7 +113,7 @@ struct PrStackSheet: View {
                 PrStackDiagramView(nodes: diagramNodes)
               }
               .padding(.vertical, 4)
-              .prGlassCard(cornerRadius: 18)
+              .adeKitCard(padding: nil)
               .padding(.horizontal, 16)
 
               Color.clear.frame(height: 90) // leave room for sticky bar
@@ -138,9 +125,7 @@ struct PrStackSheet: View {
               Button("Rebase stack") {
                 dispatchRebaseStack()
               }
-              .buttonStyle(.glassProminent)
-              .tint(PrGlassPalette.purpleBright)
-              .frame(maxWidth: .infinity)
+              .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
               .disabled(isDispatchingStackAction || rebaseTargetLaneId == nil)
             }
           }
@@ -156,28 +141,16 @@ struct PrStackSheet: View {
     let commitCount = stackInfo?.members.count ?? totalCount
     let baseBranch = stackRows.first?.baseBranch ?? "main"
     let headBranch = stackRows.last?.headBranch ?? (groupName ?? "stack")
-    let readyTint: Color = readyCount == totalCount ? PrGlassPalette.success : PrGlassPalette.warning
-    return VStack(alignment: .leading, spacing: 10) {
+    return VStack(alignment: .leading, spacing: 8) {
       HStack(spacing: 6) {
-        PrTagChip(label: "integration", color: PrGlassPalette.blue)
+        ADEKitTag(text: "integration")
         if totalCount > 0 {
-          HStack(spacing: 4) {
-            Circle()
-              .fill(readyTint)
-              .frame(width: 5, height: 5)
-            Text("\(readyCount) of \(totalCount) ready")
-              .font(.system(size: 10, weight: .bold))
-              .foregroundStyle(readyTint)
-          }
-          .padding(.horizontal, 9)
-          .padding(.vertical, 4)
-          .background(Capsule(style: .continuous).fill(readyTint.opacity(0.14)))
-          .overlay(Capsule(style: .continuous).strokeBorder(readyTint.opacity(0.4), lineWidth: 0.5))
+          ADEKitTag(text: "\(readyCount) of \(totalCount) ready", tone: readyCount == totalCount ? .ok : .warn)
         }
         Spacer(minLength: 0)
       }
       Text(groupName ?? "Stacked pull requests")
-        .font(.system(size: 24, weight: .bold))
+        .font(.system(size: 22, weight: .bold))
         .foregroundStyle(ADEColor.textPrimary)
         .multilineTextAlignment(.leading)
         .lineLimit(2)
@@ -206,17 +179,13 @@ struct PrStackSheet: View {
       else { diagramState = "open" }
 
       let adeKind: String?
-      let kindColor: Color
       switch row.role {
       case .base:
         adeKind = "integration"
-        kindColor = PrGlassPalette.warning
       case .body:
         adeKind = "lane"
-        kindColor = PrGlassPalette.blue
       case .head:
         adeKind = "lane"
-        kindColor = PrGlassPalette.purple
       }
 
       let sub: String?
@@ -236,7 +205,6 @@ struct PrStackSheet: View {
         branch: row.headBranch,
         state: diagramState,
         adeKind: adeKind,
-        kindColor: kindColor,
         subMetric: sub,
         indent: min(row.depth, 2),
         isRoot: row.role == .base,

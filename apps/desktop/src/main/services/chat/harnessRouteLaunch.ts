@@ -43,6 +43,7 @@ import {
   resolveHarnessRoute,
   stripTrailingV1,
   type HarnessRoute,
+  type HarnessSourceSignInKind,
   type RouteEndpoints,
   type RouteProtocol,
 } from "../../../shared/harnessRoutes";
@@ -160,6 +161,8 @@ export type ResolvedRouteSource = {
   expiresAt: number | null;
   /** OpenCode's house gateway, which needs the session header. */
   needsSessionHeader: boolean;
+  /** How the source is signed in, for the route decision. */
+  signInKind: HarnessSourceSignInKind | null;
 };
 
 /** Per-source identity for a key or OpenCode source, without reading a secret. */
@@ -192,6 +195,7 @@ export function resolveRouteSource(
       token,
       expiresAt: null,
       needsSessionHeader: isOpenCodeHouseSource(provider),
+      signInKind: "key",
     };
   }
   const providerId = source.providerId.trim();
@@ -218,6 +222,7 @@ export function resolveRouteSource(
     token: secret.token,
     expiresAt: secret.expiresAt,
     needsSessionHeader: isOpenCodeHouseSource(providerId),
+    signInKind: secret.methodType,
   };
 }
 
@@ -623,6 +628,7 @@ export function buildRouteLaunch(args: {
     modelId: model,
     endpoints: resolved.endpoints,
     probe: readRouteProbe(deps.adeHome, resolved.sourceKey, model),
+    ...(resolved.signInKind ? { sourceSignInKind: resolved.signInKind } : {}),
   });
   if (route.kind === "impossible") return { status: "unsupported", unsupported: route.reason };
   if (route.kind === "native") return { status: "unsupported", unsupported: "This source signs its own harness in." };

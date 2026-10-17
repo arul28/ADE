@@ -69,6 +69,19 @@ describe("scene stills", () => {
     expect(sceneStillSrc(still?.record, still?.dataUrl)).toBe("data:image/png;base64,AAA");
   });
 
+  /**
+   * The theme a still was drawn in is remembered across mounts, so a later
+   * mount knows whether its picture is still current. A record-only write (the
+   * durable half landing after the pixels) must not drop it.
+   */
+  it("remembers the theme a still was drawn in across writes", () => {
+    rememberSceneStill("row-theme", { dataUrl: "data:image/png;base64,T", theme: "dark|16" });
+    expect(readSceneStill("row-theme")?.theme).toBe("dark|16");
+    rememberSceneStill("row-theme", { record: record(".ade/artifacts/computer-use/t.png") });
+    expect(readSceneStill("row-theme")?.theme).toBe("dark|16");
+    expect(readSceneStill("row-theme")?.record?.uri).toBe(".ade/artifacts/computer-use/t.png");
+  });
+
   it("has nothing to say about a scene it has never seen", () => {
     expect(readSceneStill("row-missing")).toBeNull();
     expect(readSceneStill(null)).toBeNull();

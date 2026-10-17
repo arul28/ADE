@@ -13,6 +13,7 @@ import {
   createAgentChatService,
   createChatRuntimeBudget,
   createService,
+  flushAllQueuedTranscriptWrites,
   fs,
   getSessionInfo,
   getSessionMessages,
@@ -536,6 +537,57 @@ describe("createAgentChatService", () => {
       await expect(createService().service.getSessionSummary(child.id)).resolves.toMatchObject({ spawnKind: "subagent" });
     });
 
+    it.each<[string, (launcherId: string) => Record<string, unknown>, boolean]>([
+      ["an agent that starts a chat with no parent is recorded as its launcher",
+        (launcherId) => ({ runtimeActor: { kind: "agent", chatSessionId: launcherId } }), true],
+      ["an agent spawn with an orchestration parent keeps the parent and records no launcher",
+        (launcherId) => ({
+          runtimeActor: { kind: "agent", chatSessionId: launcherId },
+          orchestrationParentSessionId: launcherId,
+          spawnKind: "subagent",
+        }), false],
+    ])("%s", async (_label, extraArgs, expectsLauncher) => {
+      const { service } = createService();
+      const launcher = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      const child = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        ...extraArgs(launcher.id),
+      } as any);
+
+      const expected = expectsLauncher ? launcher.id : undefined;
+      expect(child.launchedBySessionId).toBe(expected);
+      expect((await service.getSessionSummary(child.id))?.launchedBySessionId).toBe(expected);
+      // A fresh service reads the same lineage back from disk.
+      expect((await createService().service.getSessionSummary(child.id))?.launchedBySessionId).toBe(expected);
+    });
+
+    it("records no launcher for the CTO, a person, or a launcher field the caller sent", async () => {
+      const { service } = createService();
+      const launcher = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      const sessions = [
+        await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.4",
+          runtimeActor: { kind: "cto" },
+        }),
+        await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" }),
+        await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.4",
+          launchedBySessionId: launcher.id,
+        } as any),
+      ];
+
+      for (const session of sessions) {
+        expect(session.launchedBySessionId).toBeUndefined();
+        expect((await service.getSessionSummary(session.id))?.launchedBySessionId).toBeUndefined();
+      }
+    });
+
     it("wakes the parent with durable turn metadata when a parent-dispatched subagent turn finishes", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const stream = vi.fn(() => (async function* () {
@@ -621,6 +673,18 @@ describe("createAgentChatService", () => {
             ? event.event.metadata?.spawnCompletion?.childTurnId
             : undefined
         )).size).toBe(2);
+      });
+
+      const childStarts = events.filter((event) =>
+        event.sessionId === parent.id
+        && event.event.type === "subagent_started"
+        && event.event.taskId === `chat:${child.id}`
+      );
+      expect(childStarts).toHaveLength(2);
+      expect((childStarts[0]!.event as any).resumed).not.toBe(true);
+      expect(childStarts[1]!.event).toMatchObject({
+        taskId: `chat:${child.id}`,
+        resumed: true,
       });
     });
 
@@ -1155,6 +1219,87 @@ describe("createAgentChatService", () => {
       expect((await service.getSessionSummary(child.id))?.spawnKind).toBe("peer");
     });
 
+    it("sets parent links for users while limiting agent adoption and release", async () => {
+      const { service } = createService();
+      const parentA = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const parentB = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const oldParent = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const relinked = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        orchestrationParentSessionId: oldParent.id,
+        spawnKind: "peer",
+      });
+      const orphanParent = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const orphan = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        orchestrationParentSessionId: orphanParent.id,
+        spawnKind: "peer",
+      });
+      const childOfA = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        orchestrationParentSessionId: parentA.id,
+        spawnKind: "subagent",
+      });
+      const childOfB = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        orchestrationParentSessionId: parentB.id,
+        spawnKind: "peer",
+      });
+      const freeChat = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const cycleRoot = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const cycleChild = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        orchestrationParentSessionId: cycleRoot.id,
+        spawnKind: "subagent",
+      });
+
+      const userRelink = service.setParent({ sessionId: relinked.id, parentSessionId: parentA.id });
+      const userSummary = await service.getSessionSummary(relinked.id);
+      expect(userRelink.orchestrationParentSessionId).toBe(parentA.id);
+      expect(userSummary).toMatchObject({ orchestrationParentSessionId: parentA.id, spawnKind: "peer" });
+
+      await service.deleteSession({ sessionId: orphanParent.id });
+      const orphanRelink = service.setParent({ sessionId: orphan.id, parentSessionId: parentB.id });
+      expect(orphanRelink.spawnKind).toBe("subagent");
+      expect((await service.getSessionSummary(orphan.id))?.orchestrationParentSessionId).toBe(parentB.id);
+
+      expect(() => service.setParent({
+        sessionId: childOfB.id,
+        parentSessionId: parentA.id,
+        actingAgentSessionId: parentA.id,
+      })).toThrow(/only release a chat|adopt a chat/i);
+      const adopted = service.setParent({
+        sessionId: freeChat.id,
+        parentSessionId: parentA.id,
+        actingAgentSessionId: parentA.id,
+      });
+      expect(adopted.orchestrationParentSessionId).toBe(parentA.id);
+      const released = service.setParent({
+        sessionId: childOfA.id,
+        parentSessionId: null,
+        actingAgentSessionId: parentA.id,
+      });
+      expect(released.orchestrationParentSessionId).toBeUndefined();
+      expect(() => service.setParent({
+        sessionId: childOfB.id,
+        parentSessionId: null,
+        actingAgentSessionId: parentA.id,
+      })).toThrow(/only release a chat|adopt a chat/i);
+
+      expect(() => service.setParent({ sessionId: cycleRoot.id, parentSessionId: cycleChild.id })).toThrow(/loop|reports to this chat/i);
+      expect(() => service.setParent({ sessionId: cycleRoot.id, parentSessionId: cycleRoot.id })).toThrow(/own parent/i);
+    });
+
     it("keeps a subagent whose parent lives in another project or on another machine", async () => {
       // The brain installs a router and records where such a parent lives; a
       // child of it is not an orphan, or it would stop waking its parent.
@@ -1282,12 +1427,13 @@ describe("createAgentChatService", () => {
       await vi.waitFor(() => {
         expect(events.some((event) => event.sessionId === parent.id && event.event.type === "done")).toBe(true);
       });
-      // Transcript appends are async; the restart below reads the child's done
-      // event from disk, so wait for it to land before disposing.
+      // Transcript appends are debounced and asynchronous; the restart below
+      // reads the child's done event from disk. Wait on the transcript write
+      // queue (its real completion signal) instead of polling the file, so a
+      // slow append under load cannot fail on a timing guess.
       const childTranscriptPath = String(sessionService.get(child.id)?.transcriptPath);
-      await vi.waitFor(() => {
-        expect(fs.existsSync(childTranscriptPath) ? fs.readFileSync(childTranscriptPath, "utf8") : "").toContain('"type":"done"');
-      });
+      await flushAllQueuedTranscriptWrites();
+      expect(fs.existsSync(childTranscriptPath) ? fs.readFileSync(childTranscriptPath, "utf8") : "").toContain('"type":"done"');
 
       // Restart, with the parent's copy of that report gone (compaction or the
       // transcript cap): the parent's history can no longer dedupe it.
@@ -2643,6 +2789,179 @@ describe("createAgentChatService", () => {
         && (e.event as any).status === "stopped");
       await vi.waitFor(() => expect(service.hasActiveWorkloads()).toBe(false));
       expect(close).toHaveBeenCalled();
+    });
+
+    it("keeps a background agent started with is_backgrounded through the turn end", async () => {
+      // The SDK reports a background agent with is_backgrounded and no level
+      // signal yet. Its turn ending is not its end: turn-end cleanup drops
+      // finished foreground work, and this agent is still running.
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let warmupComplete = false;
+      let turnDone: (() => void) | null = null;
+      const turnDonePromise = new Promise<void>((resolve) => { turnDone = resolve; });
+      let endQuery: (() => void) | null = null;
+      const queryEndPromise = new Promise<void>((resolve) => { endQuery = resolve; });
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-bg-agent-turn", slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield {
+          type: "system",
+          subtype: "task_started",
+          task_id: "task-bg-agent",
+          subagent_type: "Explore",
+          task_type: "local_agent",
+          description: "Review the diff",
+          is_backgrounded: true,
+        };
+        await turnDonePromise;
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+        await queryEndPromise;
+        throw new Error("idle query transport closed");
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send, stream, close: vi.fn(), sessionId: "sdk-bg-agent-turn", setPermissionMode,
+      } as any);
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
+      const sendPromise = service.sendMessage({ sessionId: session.id, text: "review" });
+
+      await waitForEvent(events, (e): e is AgentChatEventEnvelope =>
+        e.event.type === "subagent_started"
+        && (e.event as any).taskId === "task-bg-agent");
+
+      turnDone!();
+      await expect(sendPromise).resolves.toBeUndefined();
+      await vi.waitFor(() => {
+        expect(events.some((e) => e.event.type === "done" && (e.event as any).status === "completed")).toBe(true);
+      }, { timeout: 3_000 });
+
+      expect(events.some((e) =>
+        e.event.type === "subagent_result" && (e.event as any).taskId === "task-bg-agent")).toBe(false);
+      expect(service.hasActiveWorkloads()).toBe(true);
+
+      endQuery!();
+      await vi.waitFor(() => expect(service.hasActiveWorkloads()).toBe(false));
+    });
+
+    it("a late SubagentStop for a subagent that already finished does not hold the runtime busy", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let warmupComplete = false;
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-late-stop", slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield {
+          type: "system",
+          subtype: "task_started",
+          task_id: "agent-finished",
+          subagent_type: "reviewer",
+          task_type: "local_agent",
+          description: "Check the change",
+        };
+        yield {
+          type: "system",
+          subtype: "task_notification",
+          task_id: "agent-finished",
+          status: "completed",
+          summary: "No issues",
+        };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send, stream, close: vi.fn(), sessionId: "sdk-late-stop", setPermissionMode,
+      } as any);
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
+      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls.at(-1)?.[0] as {
+        hooks?: Record<string, Array<{ hooks: Array<(...args: unknown[]) => Promise<any>> }>>;
+      } | undefined;
+      const start = opts?.hooks?.SubagentStart?.[0]?.hooks[0];
+      const stop = opts?.hooks?.SubagentStop?.[0]?.hooks[0];
+      expect(start).toBeDefined();
+      expect(stop).toBeDefined();
+      const signal = { signal: new AbortController().signal } as any;
+
+      await start!({ hook_event_name: "SubagentStart", agent_id: "agent-finished", agent_type: "reviewer" } as any, undefined as any, signal);
+      await service.sendMessage({ sessionId: session.id, text: "check" });
+      await vi.waitFor(() => {
+        expect(events.some((e) => e.event.type === "done" && (e.event as any).status === "completed")).toBe(true);
+      }, { timeout: 3_000 });
+      expect(service.hasActiveWorkloads()).toBe(false);
+
+      // The side query's stop hook arrives after the subagent finished. It
+      // annotates what exists; it must not revive the finished subagent.
+      await stop!({ hook_event_name: "SubagentStop", agent_id: "agent-finished", agent_type: "reviewer", last_assistant_message: "late" } as any, undefined as any, signal);
+      expect(service.hasActiveWorkloads()).toBe(false);
+    });
+
+    it("interrupt stops a background agent whose start hook arrived before its task frame", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let warmupComplete = false;
+      let hangResolve: (() => void) | null = null;
+      const hangPromise = new Promise<void>((resolve) => { hangResolve = resolve; });
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const stopTask = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-hook-bg", slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        // The SDK's background level names the agent before its task_started.
+        yield {
+          type: "system",
+          subtype: "background_tasks_changed",
+          tasks: [{ task_id: "agent-bg-hook", task_type: "local_agent", description: "Explore the repo" }],
+        };
+        await hangPromise;
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send, stream, close: vi.fn(), sessionId: "sdk-hook-bg", setPermissionMode, stopTask,
+      } as any);
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
+      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls.at(-1)?.[0] as {
+        hooks?: Record<string, Array<{ hooks: Array<(...args: unknown[]) => Promise<any>> }>>;
+      } | undefined;
+      const start = opts?.hooks?.SubagentStart?.[0]?.hooks[0];
+      expect(start).toBeDefined();
+      await start!(
+        { hook_event_name: "SubagentStart", agent_id: "agent-bg-hook", agent_type: "Explore" } as any,
+        undefined as any,
+        { signal: new AbortController().signal } as any,
+      );
+
+      const sendPromise = service.sendMessage({ sessionId: session.id, text: "explore" });
+      await vi.waitFor(() => { expect(service.hasActiveWorkloads()).toBe(true); });
+
+      await service.interrupt({ sessionId: session.id, mode: "stop_and_clear_and_background" });
+      expect(stopTask).toHaveBeenCalledWith("agent-bg-hook");
+
+      hangResolve!();
+      await expect(sendPromise).resolves.toBeUndefined();
     });
 
     it("preserves lifecycle markers on scheduled wakes and clears them on user sends", async () => {

@@ -31,7 +31,7 @@ import {
   isCursorSdkFeatureUnavailableText,
   isCursorSdkTransportErrorText,
 } from "./cursorSdkProtocol";
-import { materializeWorkerImages } from "./workerAttachmentImages";
+import { materializeWorkerImages, withOmittedImageHints } from "./workerAttachmentImages";
 import {
   cursorSdkResultWithStreamFailure,
   readCursorSdkRunFailureDetail,
@@ -60,6 +60,7 @@ import {
   CURSOR_SDK_OWNER_POLL_MS,
   createCursorSdkWorkerExit,
   cursorSdkOwnerStillOwns,
+  ensureCursorSdkWorkerCommandsAreWindowless,
   ignoreCursorSdkWorkerPipeErrors,
   readCursorSdkOwnerPid,
   sendToCursorSdkParent,
@@ -68,6 +69,8 @@ import {
   processIsAlive,
   startParentDeathWatchdog,
 } from "../../../../../ade-cli/src/services/runtime/parentDeathWatchdog";
+
+ensureCursorSdkWorkerCommandsAreWindowless();
 
 type CursorSdkModule = typeof CursorSdkModuleTypes;
 type SdkAgent = Awaited<ReturnType<CursorSdkModule["Agent"]["create"]>>;
@@ -681,8 +684,11 @@ async function cursorSdkSendMessage(
   promptText: string,
   images: CursorSdkUserImage[] | undefined,
 ) {
-  const materialized = await materializeWorkerImages(images, { label: "Cursor SDK" });
-  return materialized.length ? { text: promptText, images: materialized } : promptText;
+  const { images: materialized, omittedHints } = await materializeWorkerImages(images, {
+    label: "Cursor SDK",
+  });
+  const text = withOmittedImageHints(promptText, omittedHints);
+  return materialized.length ? { text, images: materialized } : text;
 }
 
 async function sendPrompt(payload: CursorSdkSendPrompt): Promise<unknown> {

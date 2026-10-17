@@ -417,7 +417,9 @@ struct WorkChatMessageBubble: View, Equatable {
           markdown: preview.text,
           streamingCacheKey: isStreaming ? message.id : nil
         )
-          .accessibilityElement(children: .ignore)
+          .environment(\.workSceneMessageId, message.id)
+          // A scene's own controls must stay reachable; prose reads as one label.
+          .accessibilityElement(children: workTextMayContainScene(preview.text) ? .contain : .ignore)
           .accessibilityLabel(workAssistantMessageAccessibilityLabel(preview))
       }
     }
@@ -470,7 +472,7 @@ struct WorkChatMessageBubble: View, Equatable {
                   .environment(\.workMarkdownForeground, .white)
                   .foregroundStyle(.white)
               } else {
-                WorkChipMessageText(text: bubbleText)
+                WorkChipMessageText(text: bubbleText, attachments: attachments)
               }
             }
             if hasAttachments {
@@ -612,10 +614,16 @@ func workChipNavigationURL(_ chip: WorkChip) -> URL? {
   case .model, .permission, .skill:
     // A model, permission or skill chip names a setting, not a place.
     return nil
+  case .browserTab:
+    // The tab is a live host-side resource, not an iOS deeplink target.
+    return nil
   case .path:
     // Same reasoning as a terminal mention: the desktop routes a path chip to
     // its in-app Files view, and iOS has no counterpart to navigate to from a
     // chat bubble. A readable pointer beats a tap that silently does nothing.
+    return nil
+  case .attachment:
+    // The attachment's own tile sits in the same bubble and opens it.
     return nil
   case .mention(let mention):
     switch mention.kind {
@@ -623,7 +631,16 @@ func workChipNavigationURL(_ chip: WorkChip) -> URL? {
       return URL(string: LaneDeeplinkHelpers.laneLink(laneId: mention.id, form: .ade))
     case .chat:
       return URL(string: LaneDeeplinkHelpers.sessionLink(sessionId: mention.id, laneId: nil, form: .ade))
-    case .terminal:
+    case .pullRequest:
+      // `ade://pr/<prId>`: the router resolves a non-numeric single segment
+      // as the PR's internal id, which is exactly what the token carries.
+      guard let encoded = mention.id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else {
+        return nil
+      }
+      return URL(string: "ade://pr/\(encoded)")
+    case .terminal, .machine:
+      // No surface navigates to a terminal session or to another machine
+      // from a chat bubble; a readable pointer beats a dead tap.
       return nil
     }
   }
@@ -695,10 +712,11 @@ func workChipAttributedMessage(
   chipForeground: Color,
   chipBackground: Color,
   lookup: WorkThreadEntityLookup = .empty,
-  limit: Int = WorkChipDetector.defaultLimit
+  limit: Int = WorkChipDetector.defaultLimit,
+  attachments: [AgentChatFileRef]? = nil
 ) -> AttributedString {
   var out = AttributedString()
-  for part in WorkChipDetector.parts(in: text, limit: limit) {
+  for part in WorkChipDetector.parts(in: text, limit: limit, attachments: attachments) {
     switch part {
     case .text(let run):
       out.append(AttributedString(run))
@@ -812,6 +830,9 @@ func workUserTextLooksLikeMarkdown(_ text: String) -> Bool {
 
 struct WorkChipMessageText: View {
   let text: String
+  /// The message's attachments. `[Image #k]` / `[File #k: …]` tokens resolve
+  /// against these; with none, every such token stays text.
+  var attachments: [AgentChatFileRef] = []
   var foreground: Color = .white
   var chipBackground: Color = Color.white.opacity(0.22)
   /// Lane names, colours and chat titles for the chips. Republishes only when
@@ -822,18 +843,32 @@ struct WorkChipMessageText: View {
   /// messages contain no chip at all, and this view is rebuilt for every
   /// visible bubble on every transcript pass.
   private var mayContainChip: Bool {
-    text.contains("@") || text.contains("://")
+    text.contains("@") || text.contains("://") || (!attachments.isEmpty && text.contains("["))
+  }
+
+  /// Image tokens get a real thumbnail, which needs the composed-`Text` path.
+  private var hasImageTokens: Bool {
+    text.contains("[Image #") && attachments.contains(where: workChatAttachmentIsImage)
   }
 
   var body: some View {
     Group {
-      if mayContainChip {
+      if hasImageTokens {
+        WorkChipMessageThumbnailText(
+          text: text,
+          attachments: attachments,
+          foreground: foreground,
+          chipBackground: chipBackground
+        )
+        .environment(\.openURL, workChipOpenURLAction)
+      } else if mayContainChip {
         Text(
           workChipAttributedMessage(
             text,
             chipForeground: foreground,
             chipBackground: chipBackground,
-            lookup: entities.lookup
+            lookup: entities.lookup,
+            attachments: attachments.isEmpty ? nil : attachments
           )
         )
         .environment(\.openURL, OpenURLAction { url in workOpenChipURL(url) })
@@ -847,6 +882,57 @@ struct WorkChipMessageText: View {
     .multilineTextAlignment(.leading)
     .fixedSize(horizontal: false, vertical: true)
     .textSelection(.enabled)
+  }
+}
+
+@MainActor
+private var workChipOpenURLAction: OpenURLAction {
+  OpenURLAction { url in
+    guard url.scheme?.lowercased() == "ade" else { return .systemAction }
+    DeepLinkRouter.shared.handle(url)
+    return .handled
+  }
+}
+
+/// A sent message whose text names images: each `[Image #k]` chip leads with a
+/// 16pt thumbnail of that image, resolved from the message's own attachments.
+/// Observes the thumbnail store so a chip upgrades from the glyph to the
+/// picture once the bubble's tile has loaded it — only bubbles that name an
+/// image pay for that observation.
+private struct WorkChipMessageThumbnailText: View {
+  let text: String
+  let attachments: [AgentChatFileRef]
+  let foreground: Color
+  let chipBackground: Color
+  @ObservedObject private var thumbnails = WorkChatAttachmentThumbnailStore.shared
+
+  var body: some View {
+    var composed = Text(verbatim: "")
+    for part in WorkChipDetector.parts(in: text, attachments: attachments) {
+      switch part {
+      case .text(let run):
+        composed = Text("\(composed)\(Text(verbatim: run))")
+      case .chip(let chip):
+        if case .attachment(let token, let ref) = chip.origin, token.kind == .image,
+           let thumbnail = thumbnails.inlineThumbnail(forPath: ref.path) {
+          var label = AttributedString(" \(chip.label)")
+          label.foregroundColor = foreground
+          label.backgroundColor = chipBackground
+          label.font = .body.weight(.semibold)
+          composed = Text("\(composed)\(Text(Image(uiImage: thumbnail)).baselineOffset(-2))\(Text(label))")
+        } else {
+          var pill = AttributedString(workChipInlineLabel(chip))
+          pill.foregroundColor = foreground
+          pill.backgroundColor = chipBackground
+          pill.font = .body.weight(.semibold)
+          if let url = workChipNavigationURL(chip) {
+            pill.link = url
+          }
+          composed = Text("\(composed)\(Text(pill))")
+        }
+      }
+    }
+    return composed
   }
 }
 
@@ -1184,25 +1270,22 @@ func workDoneTurnTokenLine(_ usage: WorkUsageSummary?) -> String? {
 
 /// The turn-end line (desktop `DoneTurnDivider` + `ChatTurnWorkSummary`): one
 /// row that never wraps —
-/// `🕐 ran 4m 30s · 02:15 AM  [2 proof] [3 sources] · ↑IN 12k/↓OUT 3k/~40k   🔧 4 tools ›  ± 3 files ›`.
+/// `🕐 ran 4m 30s · 02:15 AM  2 proof filed › [3 sources] · ↑IN 12k/↓OUT 3k/~40k   🔧 4 tools ›  ± 3 files ›`.
 /// A failed or interrupted turn leads with the model and reads the status in
 /// place of the time. A turn that folded keeps only time, usage, proof and
 /// sources (its tools and files moved up to the fold row). A usage-limit turn
 /// collapses to one quiet `Paused · usage limit · 4m` line with its token
 /// usage behind a details toggle. The tools and files toggles open the turn's
-/// lists inline, and the proof chip opens the turn's filmstrip, as on desktop.
+/// lists inline, and "N proof filed ›" opens the proof drawer narrowed to the
+/// turn's proof, as on desktop.
 /// The context meter lives in the composer (desktop parity).
 struct WorkTurnEndMarkerView: View {
   let marker: WorkTurnEndMarker
   var work: WorkTurnWorkDisclosure = .none
   var onToggleWork: (WorkTurnWorkSection) -> Void = { _ in }
   var onToggleWorkItem: (String) -> Void = { _ in }
-  var proofOpen = false
-  var onToggleProof: (() -> Void)? = nil
-  /// Loaded previews by artifact id, for the filmstrip thumbnails.
-  var proofContent: [String: WorkLoadedArtifactContent] = [:]
-  var onLoadProof: (ComputerUseArtifactSummary) -> Void = { _ in }
-  var onOpenProofDrawer: (() -> Void)? = nil
+  /// Opens the proof drawer narrowed to this turn's proof.
+  var onOpenProof: (() -> Void)? = nil
 
   @State private var usageLimitDetailsExpanded = false
 
@@ -1238,7 +1321,7 @@ struct WorkTurnEndMarkerView: View {
     }
     if let ranFor { parts.append(ranFor) }
     if let tokenLine { parts.append(tokenLine) }
-    if marker.proofCount > 0 { parts.append("\(marker.proofCount) proof") }
+    if marker.proofCount > 0 { parts.append("\(marker.proofCount) proof filed") }
     if marker.sourceCount > 0 { parts.append(workPluralCount(marker.sourceCount, "source")) }
     if showsWorkToggles, let summary = workFormatTurnWorkSummaryLabel(toolCount: work.toolCount, fileCount: work.fileStat?.count ?? 0) {
       parts.append(summary)
@@ -1290,14 +1373,6 @@ struct WorkTurnEndMarkerView: View {
       }
       if showsWorkToggles, work.open != nil {
         WorkTurnWorkInlineDetails(disclosure: work, onToggleItem: onToggleWorkItem)
-      }
-      if proofOpen, !marker.proofArtifacts.isEmpty {
-        WorkTurnProofFilmstrip(
-          artifacts: marker.proofArtifacts,
-          content: proofContent,
-          onLoad: onLoadProof,
-          onOpen: onOpenProofDrawer
-        )
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -1358,18 +1433,7 @@ struct WorkTurnEndMarkerView: View {
 
   @ViewBuilder
   private var chips: some View {
-    if marker.proofCount > 0 {
-      Button {
-        onToggleProof?()
-      } label: {
-        chip(icon: "cube", text: "\(marker.proofCount) proof")
-          .frame(minHeight: 44)
-          .contentShape(Rectangle())
-      }
-      .buttonStyle(.plain)
-      .disabled(onToggleProof == nil)
-      .accessibilityLabel("\(proofOpen ? "Hide" : "Show") the proof captured in this turn")
-    }
+    WorkProofCountLink(count: marker.proofCount, onOpen: onOpenProof)
     if marker.sourceCount > 0 {
       chip(icon: "globe", text: workPluralCount(marker.sourceCount, "source"))
     }

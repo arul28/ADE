@@ -1,7 +1,11 @@
+import { isMachineScopedSettingsRoute } from "../../settings/settingsManifest";
+
 /**
  * Settings is a place you visit and leave. For each project this remembers
  * where you were before Settings (so the cog and the back button can return
  * you there) and the last Settings section you used (so the cog reopens it).
+ * A machine-scoped section (This computer) is not remembered: the cog opens
+ * Settings' default page instead.
  *
  * The project sidebar records every route it sees. Memory only: a restart
  * returns to Work, which is also where the app opens.
@@ -30,8 +34,11 @@ function isOverlayRoute(route: string): boolean {
 /** Records the route on screen for a project. */
 export function rememberProjectRoute(projectKey: string | null, route: string): void {
   if (!projectKey || !route || isOverlayRoute(route)) return;
-  if (isSettingsRoute(route)) settingsRouteByProject.set(projectKey, route);
-  else returnRouteByProject.set(projectKey, route);
+  if (isSettingsRoute(route)) {
+    if (!isMachineScopedSettingsRoute(route)) settingsRouteByProject.set(projectKey, route);
+  } else {
+    returnRouteByProject.set(projectKey, route);
+  }
 }
 
 /** Where to go when you leave Settings. */

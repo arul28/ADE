@@ -89,6 +89,10 @@ function makeEnv(
     CLERK_ISSUER: ISSUER,
     CLERK_OAUTH_CLIENT_ID: OAUTH_CLIENT_ID,
     DIAGNOSTICS: new FakeR2Bucket(),
+    // The cron handler also refreshes the model registry, which fetches public
+    // sites. Off here so these tests never touch the network; the registry has
+    // its own tests with a faked fetch.
+    MODEL_REGISTRY_REFRESH: "0",
     ...overrides,
   } as unknown as DiagnosticsEnv & { DIAGNOSTICS: FakeR2Bucket; DB: FakeD1Database };
 }
@@ -963,9 +967,9 @@ describe("diagnostics budget sweep", () => {
     seedDays(env, { "2020-01-01": 9, [today]: 2 });
     let cleanup: Promise<unknown> = Promise.resolve();
     await worker.scheduled(
-      {} as ScheduledEvent,
+      { scheduledTime: Date.now(), cron: "* * * * *" } as ScheduledEvent,
       env,
-      { waitUntil: (promise) => { cleanup = promise; } } as ExecutionContext,
+      { waitUntil: (promise) => { cleanup = Promise.all([cleanup, promise]); } } as ExecutionContext,
     );
     await cleanup;
 

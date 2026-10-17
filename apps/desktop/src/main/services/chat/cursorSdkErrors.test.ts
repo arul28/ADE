@@ -3,10 +3,12 @@ import { cursorSdkResultWithStreamFailure } from "./cursorSdkErrors";
 import {
   CURSOR_SDK_STALE_ACCESS_TOKEN_TEXT,
   classifyCursorSdkErrorText,
+  isCursorSdkBackoffErrorText,
   isCursorSdkStaleAccessTokenText,
   isCursorSdkTransportErrorText,
   readCursorSdkStaleTokenFailure,
 } from "./cursorSdkProtocol";
+import { isUsageLimitChatError } from "../../../shared/chatAutoResume";
 
 describe("readCursorSdkStaleTokenFailure", () => {
   it("reads the worker's terminal ERROR event into the failure the turn re-throws", () => {
@@ -43,6 +45,14 @@ describe("readCursorSdkStaleTokenFailure", () => {
 });
 
 describe("classifyCursorSdkErrorText", () => {
+  it.each([
+    "You're out of usage. Switch to Auto, or ask your admin to increase your limit.",
+  ])("classifies Cursor quota exhaustion as a usage limit without retry backoff", (text) => {
+    expect(classifyCursorSdkErrorText(text)).toBe("rate_limit");
+    expect(isCursorSdkBackoffErrorText(text)).toBe(false);
+    expect(isUsageLimitChatError({ message: text })).toBe(true);
+  });
+
   it("classifies write ECANCELED as a transport failure", () => {
     // The 2026-08-11 incident: this killed a run and poisoned the agent thread.
     expect(isCursorSdkTransportErrorText("[internal] write ECANCELED")).toBe(true);

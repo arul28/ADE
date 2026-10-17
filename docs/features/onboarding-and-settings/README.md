@@ -41,6 +41,21 @@ per project root on first project-scoped JSON-RPC call, and is the
 single runtime through which desktop, `ade code`, and SSH-attached
 desktops see live lanes, agent chats, and work sessions.
 
+Each local project this machine has opened gets an identity file at
+`~/.ade/project-data/<projectId>.json` holding its database file's device and
+inode. The desktop, the brain's project scope and the CLI record it when they
+open the database. It lives outside `projects.json` because an
+older ADE that rewrites that file drops fields it does not know. If a
+registered project's folder or its `.ade` folder disappears, or a database the
+identity file records is missing, registration and open stop with
+`project_data_missing` before creating replacement state, and the desktop shows
+the project recovery screen (`data_missing`): Restore from Trash (when the
+folder is there), steps to put it back by hand (the screen reopens the project
+when it returns), or Start fresh. When the project folder itself is gone it
+offers neither, and says to plug the drive in or move the folder back. Start
+fresh and removing a project from recents forget the identity. Fresh project
+registration still creates its first database normally.
+
 ## Source file map
 
 Main process:
@@ -130,6 +145,21 @@ Main process:
 - `apps/desktop/src/renderer/components/settings/KeepAwakeSection.tsx` — the
   radiogroup, the "This Mac can still sleep" recovery alert, and the
   system-sleep fix card.
+- `apps/desktop/src/renderer/components/settings/BackgroundServiceSection.tsx`
+  — General → ADE → Background service: whether the service or the desktop is
+  running agents, the working chats in open projects (and a "may also be
+  running" note when the service reports busy projects that are not open),
+  "Stop and quit ADE", and the "Ask before quitting" toggle that undoes the quit
+  prompt's "Don't ask again". Stop confirms with the chat list and fails
+  closed in `services/runtime/backgroundServiceControls.ts`: it refuses when
+  ADE cannot read what is running, when an agent started after the
+  confirmation, during a lane delete, and during any Repair. Packaged builds
+  only; a dev build shows the status without the button.
+- `apps/desktop/src/main/services/runtime/quitPrompt.ts` +
+  `apps/desktop/src/renderer/components/app/QuitPromptHost.tsx` +
+  `apps/desktop/src/shared/quitPromptModel.ts` — the quit and restart
+  confirmation, in ADE's own dialog with a native fallback built from the same
+  model. See `docs/ARCHITECTURE.md` (shutdown pipeline).
 - `apps/desktop/src/main/services/archive/archiveService.ts` — the archive:
   `list`/`summary` read archived lanes (from `laneService.list`) and archived
   chats/shells (from `terminal_sessions.archived_at`), and `restore`/`delete`
@@ -363,16 +393,47 @@ Preload bridge:
 Renderer — onboarding:
 
 - `apps/desktop/src/renderer/components/projects/ProjectWelcomePage.tsx`
-  — projectless welcome and project-picker surface. It lists recent local and
-  remote projects, opens or forgets entries, and launches project creation,
-  clone, or folder selection before a project-bound route is available. Each
-  row carries the same right-click project menu as a project tab — change icon,
-  clone to this machine, pin or unpin, and copy path — and a project with no
-  checkout on this machine offers **Clone locally**. `projectMenuEntries.ts`
-  holds the rows both surfaces share. A **Settings** button sits bottom-left:
-  it sets the app-store flag `standaloneSettingsOpen` and navigates to
+  — projectless home and project-picker surface. The page is a fixed dashboard
+  over the window backdrop: a hero line (`ProjectWelcomeHome.tsx`) with a
+  greeting, the date, a one-line headline (`home/homeHeadline.ts`) and running /
+  needs-you counts, over a row of actions (**Add project**, **Chat without a
+  project**, **Browser**, and the recents side panel), above the widget grid.
+  Recents list recent local and remote projects, open or forget entries, and
+  launch project creation, clone, or folder selection before a project-bound
+  route is available. Each row carries the same right-click project menu as a
+  project tab — change icon, clone to this machine, pin or unpin, and copy path
+  — and a project with no checkout on this machine offers **Clone locally**.
+  `projectMenuEntries.ts` holds the rows both surfaces share. A **Settings**
+  button sets the app-store flag `standaloneSettingsOpen` and navigates to
   `/settings`, so a person with no project can still reach the settings that
   need none (see "Settings with no project" below).
+- `apps/desktop/src/renderer/components/home/` — the widget home. The user
+  picks widgets (Projects, Working now, Activity, Limits, PRs, Clock & weather,
+  Focus timer, Clipboard, Machine, Contributions, Shipped, Feed, Now Playing),
+  a size class for each and an order; `homeGridPack.ts` fits them to the window
+  with no scrolling and no gaps (smaller classes before hiding), and
+  `homeLayout.ts` keeps named layouts per computer in localStorage (a second
+  window follows the first's saves). The shipped stack is Pull requests with
+  Contributions under it, then Projects with Working now under it, and Clock &
+  weather beside them; a build that changes it carries a new
+  `HOME_DEFAULT_STACK_VERSION`, and the next launch puts the new stack in as
+  the "Default" layout and shows it once, for every computer, keeping the
+  layouts the user saved themselves in the switcher (the version is written
+  down then, so it never happens twice). `HomeWidgetPicker.tsx` is the Add
+  widget gallery (live, inert previews that read nothing), `HomeEditTools.tsx`
+  the edit chrome, `homeFeed.ts` the feed and "while you were away", and
+  `widgets/` one file per widget. The main-process half is
+  `apps/desktop/src/main/services/home/` (clipboard history, machine health and
+  ports, weather, Now Playing, share images) behind `ade.home.*`. Design and
+  rules: `docs/plans/ade-dev-home.md` section 4.
+- `apps/desktop/src/renderer/components/projects/ProjectWelcomeHome.tsx` —
+  the home dashboard's hero, and the card bodies the default widgets render
+  (`RunningCard`, `ActivityUsageCard`, `LimitsMachinesCard`,
+  `PullRequestsCard`). Each answers one question at a glance and links to the
+  full surface instead of listing everything. The PR card reads the same GitHub
+  snapshot the PRs tab reads (through `prReadCache`) and joins it to ADE's
+  tracked PRs for checks and review state, reloading on PR events and window
+  focus, never on a timer of its own.
 - `apps/desktop/src/renderer/components/projects/CreateProjectForm.tsx`
   — name plus a first-class location row (default parent, Change folder,
   editable path). Create opens Work; it does not show a success interstitial
@@ -395,6 +456,24 @@ Renderer — onboarding:
   the gate. Directly paired machines stay saved across account sign-out;
   account-directory targets and their paired credentials are owner-tagged and
   removed with that account.
+- `apps/desktop/src/renderer/components/onboarding/GlassSignInCard.tsx` and
+  `components/account/useSignInFlow.ts` — the launch gate's sign-in. The card is
+  a frosted glass panel floating over the window backdrop (styled by
+  `onboarding/launchGateGlass.css`, which needs an `.ade-gate` ancestor for its
+  tokens), with the mark, one heading, the sign-in button, the **Sign in with
+  your phone or another device** link, the awaiting/cancel line, and the ADE
+  Relay help affordance. That link starts a device-authorization sign-in that
+  opens no browser on this computer: `AnotherDeviceSignInPanel` draws the
+  verification link as a QR code and shows the user code, so a phone or another
+  computer completes the sign-in and the password is never typed here (a VM, a
+  shared machine). It is absent in the hosted web client, which is a browser
+  already. `useSignInFlow` owns the shared sign-in state — the browser login,
+  the sign-in from another device (`useAccountDeviceLogin` in
+  `lib/accountLogin.ts`), the four
+  session-state words, and the brain repair offered when a stored session
+  cannot be read — and the Account page's
+  `SignInCard` draws that same state its own way, so the two surfaces cannot
+  drift on what "expired" or "unreadable" means.
 - `apps/desktop/src/renderer/components/account/AccountSignedOutBanner.tsx` —
   the permanent bar ADE shows while the account is not usable. It registers a
   model with `AppBannerHost`, which renders it through the shared `Banner`
@@ -457,9 +536,11 @@ Renderer — onboarding:
   to Repair the stored sign-in then Reconnect; active/signed_out names both
   causes and offers both actions. No machine-repair copy says "Sign in again":
   the person is signed in, and the browser step is called "Confirm it's you".
-  Rows show the install beside the name (`accountMachineRowLabel`, "MacBook Pro
-  · ADE Alpha", with the ADE home on hover), so two installs on one Mac do not
-  look like a duplicate. The Remove sheet starts with a warning for a machine
+  Rows show the name alone (`accountMachineRowName`) and name the install
+  separately beside it only when it is not the regular app
+  (`accountMachineInstallLabel`, "MacBook Pro" then "ADE Alpha"), with the ADE
+  home on hover, so two installs on one Mac do not look like a duplicate. The
+  Remove sheet starts with a warning for a machine
   seen in the last five minutes ("It was active 2 minutes ago. Removing it
   disconnects it from your account until someone confirms it on that
   computer.") from `accountMachineRemovalConfirmBody`, the same body the web
@@ -516,8 +597,8 @@ Renderer — settings:
   `settings/settingsManifest.ts`, which is also what generates the Cmd-K
   entries. The tabs are General, Appearance, Chat, Apple devices, Notifications,
   Agents & Models, Lanes, Integrations, Secrets, Storage, Diagnostics,
-  Archive, and Usage. Notifications and Activity are one page: the event policies, the
-  notch, per-machine mute, privacy, sounds, and scheduled work all read and
+  Archive, and Usage. Notifications and Activity are one page: the event policies,
+  per-machine mute, privacy, sounds, and scheduled work all read and
   write through one `useActivitySettings()` model, so a change on one control
   can no longer be overwritten by a save from another copy. The retired
   `activity` tab id and the `attention` alias resolve to `notifications`.
@@ -573,7 +654,10 @@ Renderer — settings:
   the current `systemColorScheme`. **Appearance is per computer**: the theme
   id, the custom theme list, `themeFollowsSystem`, `interfacePreferences` and
   `terminalPreferences` are not in `ACCOUNT_SYNCED_SETTINGS`, so they live in
-  this machine's localStorage and never reach the account. The families are
+  this machine's localStorage and never reach the account. That includes
+  `interfacePreferences.focusGridMaxChats`, the Focus grid's **Chats per
+  page** (null for Automatic), which `useWorkFocusGrid` reads: it follows the
+  screen. The families are
   built in `family.ts` and written in three files: `library.ts` (the ADE
   families), `libraryOriginals.ts` (themes with their own shape, type and
   backdrop) and `libraryClassics.ts` (editor colour schemes). A theme may also
@@ -589,13 +673,53 @@ Renderer — settings:
   `--font-sans` / `--font-mono` overrides plus `html[data-motion="reduced"]`,
   and `App` drives `MotionConfig` from the same flag so the preference reaches
   JS animations, not only CSS.
+- `apps/desktop/src/shared/accountSettingsScope.ts`,
+  `apps/desktop/src/renderer/lib/accountSettingsSync.ts`, and
+  `useAccountSettingsSync.ts` — the renderer's account-settings half. It turns
+  the four-value setting scope into the key the account store files a row under
+  (`accountSettingScopeKey`), and it makes the "Stored in your ADE account" chip
+  true for the preferences that claim it: a local-first write-through engine
+  hydrates newer remote rows and pushes local edits back, per key, with a
+  strictly-newer stamp so one machine's change cannot revert another's, and a
+  dirty queue that retries signed-out or offline edits. Only `account` and
+  `account-repo` scopes ever reach the store; machine-scoped values (paths,
+  ports, hardware facts) never leave this computer. A preference that is
+  account-scoped but one-value-per-computer — the Apple device options — keeps
+  the account-wide scope and carries the device in the key
+  (`accountDeviceSettingKey`, `device.<syncDeviceId>.<key>`) so another machine
+  skips it while this brain can read it. See
+  [Sync and multi-device](../sync-and-multi-device/README.md).
+- `apps/desktop/src/renderer/scene/` and `renderer/styles/scene.css` — the
+  window backdrop, configured under Settings → This computer → Appearance →
+  **Background**. Modes are `plain` (the theme's flat background, no picture
+  and no mesh; the web client's default), `gradient` (the theme's animated
+  mesh), `image` (one picture), and `shuffle` (a picture from the library,
+  changed on launch, wake, hourly, or daily). Pictures are bundled (`public/scenes/*.jpg` through
+  `sceneLibrary.ts`) or the user's own — re-encoded to at most 3840 px JPEG and
+  kept in IndexedDB by `userScenes.ts`, never on disk or in sync.
+  `scenePalette.ts` extracts the picture's palette, `sceneTheme.ts`
+  (`themeTintedByScene`) tints the theme from it when App colours is **From
+  picture**, and `SceneImageLayer` draws one window-aligned slice per surface so
+  the top bar, home page and new chat page read as one picture.
+  `BackgroundContextMenu.tsx` is the background right-click menu (**Next
+  picture**, light/dark, **Change background…**). Scene preferences live in
+  `interfacePreferences.scene` in `ade.userPreferences.v1` and are per computer,
+  like the theme; `SCENE_DEFAULTS_REVISION` in `scenePreferences.ts` is a
+  one-time shipped-default reset. Full behavior:
+  [`docs/design/visual-language.md`](../../design/visual-language.md).
 - `apps/desktop/src/renderer/components/settings/primitives/` — the
   control vocabulary (`SettingsCard`, `SettingsGroup`, `ScopeChip`,
   `SettingsToggle` / `Segmented` / `Number` / `Select` / `Slider`,
   `SettingsDisclosure`, `useSavedFlash`). `primitives/SettingsRows.tsx` adds
   the grouped-rows page vocabulary — `SettingsSection`, `SettingsPanel`,
   `SettingsRow` (with `icon`/`tone`), `SettingsColumn`, `SettingsSplit`, and
-  `SettingsSectionAction` — which most redesigned pages use. `SettingsDisclosure` is a
+  `SettingsSectionAction`. `primitives/SettingsModern.tsx` is the modern page
+  vocabulary every redesigned settings page now uses — `ModernPage` (the
+  section column), `ModernSection` (heading, one-line hint, optional actions,
+  carrying `data-settings-anchor` for search and deep links), and
+  `ModernRows` / `ModernRow` (a grouped panel with title, hint and control) —
+  and it is the settings counterpart of the surface kit in
+  `renderer/styles/surfaceKit.css`. `SettingsDisclosure` is a
   native `<details>` in a recessed card for rarely-needed fields —
   native markup keeps keyboard and find-in-page behaviour — and its
   `defaultOpen` is uncontrolled on purpose, so a caller passes `true`
@@ -622,29 +746,19 @@ Renderer — settings:
   reveals the default-on **Wait until active work finishes** safety option,
   which delays the restart countdown until no agent turn or work session is
   active.
-- `apps/desktop/src/renderer/components/settings/ProductAnalyticsSection.tsx`
-  — machine-wide desktop/runtime product-analytics status and durable opt-out.
-  It shows the configured/effective state and installation daily ceiling but
-  never exposes or accepts credentials. Native iOS is independently default-on
-  without an in-app preference; hosted web keeps its own affirmative browser
-  choice. See [logging and product analytics](../../logging.md).
+- Product analytics has no Settings section. It is on by default, and
+  `DO_NOT_TRACK=1` or an opt-out a previous build stored turns it off silently.
+  See [logging and product analytics](../../logging.md).
 - `apps/desktop/src/renderer/components/settings/DiagnosticsSharingSection.tsx`
-  — the second Privacy consent control (`general.diagnostics-sharing`, anchored
-  `#diagnostics-sharing`): **"Share diagnostics with ADE when something
-  breaks"**, default **on**, machine-scoped. It is the off switch for the
-  automatic redacted report ADE sends by itself when it hits a failure it has
-  already classified; the same switch appears on the toast that announces each
-  send. `web: "hidden"` in the manifest, because the consent lives in
-  `~/.ade/secrets/diagnostics-autosend.json` and a browser has no such file.
-  Analytics consent and diagnostics consent are deliberately separate flags, so
-  turning one off never silently turns off the other. The same card also carries
-  **Send a report to ADE** — the only report control that does not require
-  something to have already visibly broken, which is what makes this section's
-  own copy (*"the same report the Report issue button makes"*) true for a user
-  whose app merely feels wrong. It has its own daily cap (5 per install per 24h,
-  counted apart from the automatic 3), sends whether or not the toggle is on
-  because a deliberate click is not something ADE did by itself, and says so in
-  the card when the toggle is off. See
+  — the one report control in Settings (`general.diagnostics-sharing`, anchored
+  `#diagnostics-sharing`, titled **"Send a report to ADE"**). It has no toggle.
+  Automatic reports are on by default and stop under `DO_NOT_TRACK=1` or an
+  earlier stored opt-out. The card's **Send a report to ADE** button is the only
+  report control that does not require something to have already visibly broken,
+  which is what makes the report's copy true for a user whose app merely feels
+  wrong. It has its own daily cap (5 per install per 24h, counted apart from the
+  automatic 3). `web: "hidden"` in the manifest, because the report is built on
+  this machine by the desktop app. See
   [storage and recovery → Auto-send](../storage-and-recovery/README.md#auto-send).
 - `apps/desktop/src/renderer/components/settings/GitHubIntegrationSection.tsx`
   and `GitHubSection.tsx` — ADE GitHub App / environment / GitHub CLI / PAT
@@ -869,13 +983,10 @@ Renderer — settings:
   `EnvironmentSection.tsx` wrapper that used to pair them is gone.
 - `apps/desktop/src/renderer/components/settings/settingsSectionUi.tsx`
   — shared section headers (`SettingsSectionShell`), toggle styling, and
-  `ConsentToggleSection`: the one privacy consent control — labelled switch,
-  plain-words body, live footnote, persistent error line — that both
-  `ProductAnalyticsSection` and `DiagnosticsSharingSection` render. It always
-  reads the real persisted value rather than rendering optimism, and when the
-  preload bridge predates the setting it renders disabled instead of pretending
-  to work; a consent switch showing "off" for something that is on is the one
-  failure mode this component exists to prevent.
+  `SettingsToggle`: a labelled on/off switch that callers feed the persisted
+  value, which renders disabled rather than pretending to work when a preload
+  predates the setting. The product-analytics and diagnostics consent controls
+  that used it are gone; other settings still use it.
 - `apps/desktop/src/renderer/components/settings/AppearanceSection.tsx`
   — theme, interface faces, and terminal text, all per computer. (The chat
   appearance controls moved to `ChatSection.tsx`, which renders
@@ -922,7 +1033,7 @@ Renderer — settings:
   — Pause all scheduled work and the active durable-job list. Naming,
   commit suggestions, idle status lines, and similar background helpers
   pick a cheap model from the ADE provider that owns the session
-  (Haiku 4.5 for Claude, GPT-5.6 Luna for Codex, Composer 2.5 for
+  (Haiku 5.5 at `low` effort for Claude, GPT-5.6 Luna for Codex, Composer 2.5 for
   Cursor; other providers reuse the session model). There is no
   Settings picker for those helpers. The section owns **Pause all scheduled
   work**, persisted as `ai.chat.scheduledWorkPaused`. This pauses Claude
@@ -1053,13 +1164,21 @@ Renderer — settings:
   account scope or this device only; an account choice falls back to this
   device when the repository has no Git remote, when nobody is signed in, or
   when no account vault is wired, and the save message says which of those
-  happened. A "Pull from account" control in the section header takes every
-  account secret the repository has in the vault onto this machine without
-  touching a device-only row. The list shows the effective destination for
-  every secret. When the active project is remote, only the
+  happened. A "Pull from account" control in the section header asks the
+  account and takes every account secret the repository has in the vault onto
+  this machine without touching a device-only row. Opening the list and
+  revealing a value also check the account first (bounded to a few seconds), so
+  a secret added on another machine shows up without a manual pull. The list
+  shows the effective destination for every secret; an account secret this
+  machine has not finished uploading shows "Uploading" until it lands. When the active project is remote, only the
   Finder read happens on the controller Mac:
   the bounded file content is parsed/imported by the active runtime and export
   writes to Downloads on the remote project host.
+- Chats can also add project secrets without the value entering the
+  transcript: an agent's `ade secrets request NAME --reason "…"` raises the
+  private secret card, and the composer's "Add secret…" item opens the same
+  form. Both save through `projectSecretService`; see
+  [Private secret card](../chat/composer-and-ui.md#private-secret-card).
 - `apps/desktop/src/renderer/components/settings/SecretsImportEnvModal.tsx`
   — dotenv import review dialog. Displays extracted names and plaintext values,
   marks replacements, supports select all or individual selection, and saves
@@ -1173,25 +1292,47 @@ Renderer — settings:
   — Settings > Usage. One scrolling page, deliberately not split by where a
   number comes from: dividing live limits from history means "am I spending a
   lot, and am I about to be cut off" takes two screens held in your head.
-  Reading order is cost incurred, the
-  shape of how it was incurred, then the limits that decide whether you can
-  keep going: an estimated-cost hero with a per-provider split, the layered
-  daily chart (`UsageDailyChart`), the **Live limits** band
-  (`UsageLimitsBand`, the same component the header popover uses), a metric
-  strip, **Activity** (`ActivityModule`, `variant="full"`,
-  `showRangeControl={false}`), a **Breakdown** panel (per-provider and
-  per-model totals with estimation notes, plus GitHub and ADE-local activity as
-  separate labeled columns, never max-merged), and a **Machines** list for
-  account scope. The header carries a three-way **scope** control (All machines
-  / This machine / This project, persisted to `ade.stats.scope.v1`), a **range**
-  control (Today / 7d / 30d / year / all, `ade.stats.range.v1`), and Refresh.
-  A meta line reports freshness ("refreshing"), estimation caveats, and the
-  scope the provider totals were computed at. It reads
-  `window.ade.usage.getAdeStats({ preset, scope })` and calls
-  `window.ade.usage.refreshHistory()` for explicit refresh; the first render is
-  stale-while-revalidate (cached provider/GitHub data plus live project-DB
-  aggregates return immediately while expensive provider-ledger and `gh` scans
-  refresh in the background). Provider colors come from `providerColor`.
+  Reading order is the headline totals, then whether you can keep going, then
+  the shape of the spend: a totals card (Estimated cost, Tokens, Sessions,
+  Active days — each with a 14-day
+  sparkline and a change, plus a small strip of Cached input / Output / Lines
+  changed / Pull requests), a **Rate limits** card of
+  radial gauges (`UsageLimitGauges`) shown for the This machine and This project
+  scopes, the daily chart (`UsageDailyChart`), **Week over week**
+  (`UsageWeekCompare`), **By provider** and **Where the cost went**, the
+  Breakdown panel (per-provider and per-model totals with estimation notes, plus
+  GitHub and ADE-local activity as separate labeled columns, never max-merged),
+  a **Machines** list, `ActivityModule`, and — on the account scope only — a
+  pooled **Live limits** card (`UsagePooledLimits`). The toolbar carries a
+  three-way **scope** control (All machines / This machine / This project,
+  persisted to `ade.stats.scope.v1`), a **range** control (Today / 7d / 30d /
+  year / all, `ade.stats.range.v1`), and Refresh. A meta line reports freshness
+  ("refreshing"), estimation caveats, and the scope the provider totals were
+  computed at. It reads `window.ade.usage.getAdeStats({ preset, scope })` and
+  calls `window.ade.usage.refreshHistory()` for explicit refresh; the first
+  render is stale-while-revalidate (cached provider/GitHub data plus live
+  project-DB aggregates return immediately while expensive provider-ledger and
+  `gh` scans refresh in the background). Provider colors come from
+  `providerColor`.
+- `apps/desktop/src/renderer/components/usage/UsageLimitGauges.tsx` — the
+  This machine / This project **Rate limits**: one radial gauge per provider
+  window (5-hour, weekly, monthly…), pooled across that provider's accounts. A
+  gauge reads in **% left**, marks where a perfectly steady burn would be with a
+  tick on the arc, tags itself on track / watch / low, and draws a thin cycle
+  bar ("Day 3 of 7") under the dial. `usageLeftLevel` / `usageLeftLevelColor` in
+  `usageDesign.ts` give the neutral-meter rule — amber at 20 % left, red at 5 %
+  — shared by every kit meter, gauge and home ring.
+- `apps/desktop/src/renderer/components/usage/UsageSparks.tsx` and
+  `UsageWeekCompare.tsx` — the small trend marks and the week-over-week chart.
+  `UsageSparks` draws a 14-day sparkline (area, line, a dot on today), an on/off
+  day strip, and the `periodDelta` / `DeltaTag` change, all from the same daily
+  series as the big chart so a trend cannot disagree with its number.
+  `UsageWeekCompare` pairs each of the last seven days with the same weekday a
+  week earlier as grouped bars and states both totals; below a 30-day range it
+  says so instead of drawing a misleading pair.
+- `apps/desktop/src/renderer/components/usage/usageProviderNames.ts` — the one
+  provider-name table (`humanizeProvider`), so `lmstudio` reads "LM Studio" on
+  every usage surface.
 - `apps/desktop/src/renderer/components/usage/UsageDailyChart.tsx` — the
   layered daily chart, plotting one series per provider from
   `AdeUsageDailyPoint.byProvider` for either cost or tokens. Top-N providers by
@@ -1607,7 +1748,24 @@ banner):
   `lastInstallFailed` names the staged version, the ready label reads "Retry
   install vX.Y.Z" and the tooltip says whether the download is still on the
   machine. Clicking the
-  install affordance prompts the user, sets a local
+  install affordance prompts the user (`autoUpdateInstallAction.tsx`). The
+  prompt always says what the restart stops on this computer: "2 agent
+  chats running, 1 terminal open" with the chats by name, "Nothing is
+  running", or "Couldn't check what's running" when the brain did not
+  answer within 3 seconds. The answer is the brain's
+  `runtime.updateImpact` (read by `main/services/runtime/updateImpactProbe.ts`),
+  which covers every project it has open and personal chats, not only the
+  projects with a tab. A brain from before that method is asked for chats
+  project by project, plus `runtime.activitySummary`; when that says more
+  is running than the chats it found, the prompt says more work is
+  running rather than claim nothing else is. The quit prompt reads the
+  same probe and, when it could not check (or only knows that something
+  unnamed is running), says so instead of counting zero. Each probe logs
+  `autoUpdate.impact_probe` or `autoUpdate.impact_probe_unknown` to
+  `ade-update.jsonl`. "Resume this computer's chats" is offered when a listed chat
+  can be queued to continue (personal chats cannot). Connected machines on
+  an older ADE are listed too, and update first when their checkbox stays
+  on (see remote runtime, `machine.updateAndRestart`). The prompt then sets a local
   `installRequested` flag, and calls
   `window.ade.updateQuitAndInstall()`; if the IPC returns `false`
   (refresh check failed, no longer ready, etc.) the flag is cleared
@@ -1683,6 +1841,10 @@ banner):
   (the program ADE runs) and a model provider (the account, key, or
   subscription that answers for it), managed in Settings › Providers › Custom
   and selectable from the Custom tab of every model picker.
+- [mcp-servers.md](./mcp-servers.md) — Settings › MCP servers: servers
+  defined once in the account and handed to every agent, switched off per
+  computer or per project, with secret values in the account vault and an
+  import from the provider CLIs' own configs.
 
 ## Onboarding responsibilities
 
@@ -1843,9 +2005,9 @@ of repeated as a badge on every row:
 
 | Group | Saves to | Pages |
 |---|---|---|
-| **Account** | Your ADE account, everywhere | Account, Chat, Apple devices, Notifications, Activity, Usage |
+| **Account** | Your ADE account, everywhere | Account, Chat, Notifications, Activity, MCP servers, Usage |
 | **Project** | Your account, for this repository | Secrets |
-| **Machines** | The selected machine | General, Providers, Lanes, Integrations, Diagnostics |
+| **Machines** | The selected machine | General, Appearance (This computer), Apple devices (This computer), Providers, Lanes, Integrations, Diagnostics |
 
 The Machines group contains one set of pages per project machine. Calls from a
 machine page use that machine's binding; sections that only work on the current
@@ -1858,8 +2020,14 @@ when Settings is opened outside a project.
 machine snapshot. `SettingsMachineScope` carries either the current-machine
 target or an explicit `OpenProjectBinding`; `machineSectionAvailable()` keeps
 local-only and bound-runtime sections on the machine they can actually reach.
-GitHub and Linear integrations are still managed on the selected machine that
-owns those credentials.
+GitHub and Linear are `routed`: every call they make, including the per-machine
+GitHub App account status in `useGithubAppUserAuth`, carries the page's pin, so
+each machine's Integrations page shows and changes that machine's own
+credentials. Browser steps (the GitHub device code, Linear sign-in) open on
+This computer; Linear browser sign-in is not offered for another machine
+because its callback cannot reach it, and the API key path is shown instead.
+Their `linksToTabMachine` flag keeps a settings link with no `?machine=` (an
+integration banner, a PR's GitHub notice) landing on the tab's machine.
 
 Section pages are one column of a few named blocks, each with an icon, a
 title and one line: General is **ADE**, **This project**, **This computer**,
@@ -1884,23 +2052,38 @@ the new-project screen.
 `DEFAULT_SETTINGS_TAB` names where Settings opens. It used to be `tabs[0]`, so
 reordering the sidebar silently moved the landing page.
 
+### Settings holds the project sidebar open
+
+On any Settings page the project sidebar is shown: its toggle is disabled (the
+tooltip says why) and Mod+B does nothing. The saved show/hide preference is not
+changed, so leaving Settings restores the sidebar the way you had it. While the
+sidebar is collapsed, its toggle is drawn in the accent colour with a dot.
+
+A Machines page (General, Appearance, Apple devices, Providers, Lanes,
+Integrations, Diagnostics, Archive) describes one computer, so a project never
+remembers one as its start page. The project returns to its last page that is
+not a Machines page, and a stored Machines page from before this rule restores
+to Work. The cog reopens the project's last Account or Project section, or
+Settings' default page. `isMachineScopedSettingsRoute` in `settingsManifest.ts`
+decides which routes count.
+
 The pages themselves:
 
 | Tab | Section file | What lives here |
 |---|---|---|
-| General | `ProjectSection.tsx`, `AdeCliSection.tsx`, `AutoUpdatesSection.tsx`, `KeepAwakeSection.tsx`, `ProductAnalyticsSection.tsx`, `DiagnosticsSharingSection.tsx`, `AboutSection.tsx`, `ResetAdeSection.tsx` | The top ADE card shows running/installed/downloaded versions, the runtime service, and update controls; below it are project health, the `ade` command line (`#ade-cli`), **Sleep** (`#keep-awake`, hidden on hosted web — a browser holds no power lock), and the two Privacy consents — anonymous analytics and diagnostics sharing (`#diagnostics-sharing`, hidden on hosted web). **Reset ADE** (`#reset-ade`, local machine only) is its own section, last on the page; the old `#about.reset` hash still lands on it. Legacy `?tab=workspace`, `?tab=project`, `?tab=context`, `?tab=onboarding`, `?tab=help`, and `?tab=tours` land here. |
-| Appearance (Machines → This computer) | `AppearanceSection.tsx`, `ThemeGallery.tsx`, `ThemeCustomizer.tsx`, `ThemeImportExport.tsx` | Per computer, never synced. Theme families (dark + light each) with search, the Auto / Light / Dark mode choice, import and export, the interface and code faces, reduce motion, and terminal text. It has one page, under This computer: a remote machine has no copy of it to show. Everything chat-shaped is on the Chat page. |
-| Apple devices (Account) | `AppleDevicesSection.tsx` | Simulator display, recording overlays, and the remote streaming cap. These follow the account because the host reads the cap from the account store. They sat on the Appearance page until Appearance became per computer. |
-| Chat | `ChatSection.tsx`, `DictationSection.tsx`, `LaunchPromptSection.tsx` (renders `ChatAppearancePreview`) | Chat typography and density, chat surface (tint, corners), chat details (copy-button position, message minimap, prompt stash, launch-prompt clipboard, live preview), and voice input — which is chat dictation, so it lives here. The label maps stay exported from `AppearanceSection.tsx` and are imported, not copied, so the two pages cannot drift on what "Comfortable" means. |
-| Providers | `ProvidersSection.tsx`, `OAuthConnectModal.tsx` | Provider connections, model routing, spend cap, and voice input — merged because provider auth and per-task model routing are one mental model. **Coding Agents** cards (Claude Code, Codex CLI, Cursor, Droid, Pi — Pi's card also carries in-app provider sign-in) and **OpenCode — Universal Model Access**. Background helpers on this tab are scheduled-work pause/recovery only; naming and commit suggestions use the session's ADE provider. Legacy `?tab=ai`, `?tab=providers`, `?tab=background-jobs`, and `?tab=automations` land here. On the hosted web client every provider page is hidden (sign-in, keys and permissions run on the machine), so the tab instead renders the web-only **AI accounts** card (`agents.accounts`, `#ai-accounts`) with the connected machine's Claude and Codex `ProviderAccountsPanel`s. |
+| General | `ProjectSection.tsx`, `AdeCliSection.tsx`, `AutoUpdatesSection.tsx`, `KeepAwakeSection.tsx`, `DiagnosticsSharingSection.tsx`, `AboutSection.tsx`, `ResetAdeSection.tsx` | The top ADE card shows running/installed/downloaded versions, the runtime service, and update controls; below it are project health, the `ade` command line (`#ade-cli`), **Sleep** (`#keep-awake`, hidden on hosted web — a browser holds no power lock), and **Send a report to ADE** (`#diagnostics-sharing`, hidden on hosted web). There is no analytics or diagnostics consent switch. **Reset ADE** (`#reset-ade`, local machine only) is its own section, last on the page; the old `#about.reset` hash still lands on it. Legacy `?tab=workspace`, `?tab=project`, `?tab=context`, `?tab=onboarding`, `?tab=help`, and `?tab=tours` land here. |
+| Appearance (Machines → This computer) | `AppearanceSection.tsx`, `AppearanceTerminal.tsx`, `ThemeGallery.tsx`, `ThemeCustomizer.tsx`, `ThemeImportExport.tsx` | Per computer, never synced. Theme families (dark + light each) with search, the Auto / Light / Dark mode choice, import and export, the interface and code faces, reduce motion, the Focus grid's chats per page, terminal text, and the **Background** (`#background`) scene picker — plain, gradient, one picture, or a shuffled library, with the shuffle cadence and App colours from the picture. It has one page, under This computer: a remote machine has no copy of it to show. Everything chat-shaped is on the Chat page. |
+| Apple devices (Machines → This computer) | `AppleDevicesSection.tsx` | This computer's own simulator and preview choices — the 3D device body, recording overlays (tap rings, typed-text badges), the remote streaming bitrate cap, and the recordings storage warning — drawn in the Appearance language. Per computer, because every Mac has its own simulators, and it sits beside Appearance under This computer rather than on the Account group. It still files through the account store so the brain on this computer can read the remote streaming cap and the recording overlays: each computer's copy lives under the account-wide scope with the device in the key (`device.<syncDeviceId>.<key>`, `accountDeviceSettingKey`). |
+| Chat | `ChatSection.tsx`, `DictationSection.tsx`, `LaunchPromptSection.tsx` (renders `ChatAppearancePreview`) | Chat typography and density, chat surface (tint, corners), chat details (copy-button position, message minimap, drafts button, launch-prompt clipboard, live preview), and voice input — which is chat dictation, so it lives here. The label maps stay exported from `AppearanceSection.tsx` and are imported, not copied, so the two pages cannot drift on what "Comfortable" means. |
+| Providers | `ProvidersSection.tsx`, `OAuthConnectModal.tsx` | Provider connections, model routing, spend cap, and voice input — merged because provider auth and per-task model routing are one mental model. **Coding Agents** cards (Claude Code, Codex CLI, Muse Code, Cursor, Droid, Pi — Pi's card also carries in-app provider sign-in) and **OpenCode — Universal Model Access**. Background helpers on this tab are scheduled-work pause/recovery only; naming and commit suggestions use the session's ADE provider. Legacy `?tab=ai`, `?tab=providers`, `?tab=background-jobs`, and `?tab=automations` land here. On the hosted web client every provider page is hidden (sign-in, keys and permissions run on the machine), so the tab instead renders the web-only **AI accounts** card (`agents.accounts`, `#ai-accounts`) with the connected machine's Claude and Codex `ProviderAccountsPanel`s. |
 | Lanes | `LaneBehaviorSection.tsx`, `LaneTemplatesSection.tsx`, `PrChatTranscriptsSection.tsx` | How lanes start (`new lane base`), stay current (`auto-rebase`), and tell you they fell behind (`rebase suggestions` off/badge/banner + min-behind threshold), plus lane init recipes and PR transcript gists. Legacy `?tab=lane-templates` lands here. |
 | Integrations | `GitHubIntegrationSection.tsx`, `LinearIntegrationSection.tsx` | GitHub and Linear — reinstated as its own tab. Legacy `?tab=integrations`, `?tab=github`, and `?tab=linear` land here; `?integration=github|linear` too, while `?integration=cli` follows the `ade-cli` anchor to General. |
 | Notifications | `NotificationsSection.tsx`, `AgentCompletionSoundSection.tsx`, `ActivitySettingsControls.tsx`, `AiFeaturesSection.tsx` | Everything ADE tells you about running work. Delivery for `AttentionPreferences`: per-event policy (off / ambient / notify) for agent and PR events, quiet hours, focus suppression, phone delivery and escalation, and the agent completion sound — the per-event matrix and quiet hours were fully modelled with balanced defaults but had **no UI at all** before this page. Then the surfaces Activity paints: the ADE notch (enabled, reveal mode — `always` or `hover`, which render the identical strip and differ only in whether it is there before you point at it — expanded panel), celebrations, Activity sounds, hide-previews, and the per-machine notification mute. The retired `activity.notch-auto-reveal` and `activity.notch-ticker` entries are gone rather than hidden: the notch always flashes for work that needs you, and the strip is state-group counts with no ticker to cycle. All of it reads and writes through one `useActivitySettings()` model, so a change on one control can no longer be overwritten by a save from another copy; `ActivitySettingsControls` is mounted here **and** by the gear inside the Activity popover and pane, so the entry points cannot drift. Legacy `?tab=attention`, `?tab=activity`, and the `#attention-notch`, `#celebrations`, `#attention-sounds`, and `#hide-previews` hashes land here. |
 | Secrets | `SecretsSection.tsx` | Encrypted key/value pairs for agents, desktop, and the CLI, with `.env` import. Legacy `?tab=secret` lands here. |
 | Diagnostics | `StorageSection.tsx`, `storage/*`, `SessionLifecycleSection.tsx` | Disk-usage and lane-storage dashboard, lane storage rules, session lifecycle, and diagnostics. Rule fields now show the value actually in force with an explicit "Inherited" marker instead of an empty box whose real value hid in the placeholder. Legacy `?tab=disk` and `?tab=diagnostics` land here. See [Storage and recovery](../storage-and-recovery/README.md). |
-| Usage | `AdeUsageSection.tsx`, `BudgetCapEditor.tsx` (the spend cap lives where spend lives), `UsageDailyChart.tsx`, `UsageLimitsBand.tsx`, `UsageAccountRow.tsx`, `usageLimitModel.ts`, `UsagePaceBar.tsx`, `UsageSegmented.tsx`, `ActivityModule.tsx`, `usageDesign.ts`, `usageWindowFormat.ts`, `providerColors.ts` | One scrolling page: estimated-cost hero, per-provider split, layered daily chart, Live limits band, metric strip, Activity, breakdown, and contributing machines. Scope is a three-way `account` / `machine` / `project` control. Legacy `?tab=usage` and `?tab=ade-usage` land here. |
+| Usage | `AdeUsageSection.tsx`, `BudgetCapEditor.tsx` (the spend cap lives where spend lives), `UsageDailyChart.tsx`, `UsageLimitGauges.tsx`, `UsageSparks.tsx`, `UsageWeekCompare.tsx`, `UsagePooledLimits.tsx`, `UsageCostSplit.tsx`, `UsageLimitsBand.tsx`, `UsageAccountRow.tsx`, `usageLimitModel.ts`, `UsagePaceBar.tsx`, `UsageSegmented.tsx`, `ActivityModule.tsx`, `usageDesign.ts`, `usageProviderNames.ts`, `usageWindowFormat.ts`, `providerColors.ts` | One scrolling page: headline totals with trends, this machine's Rate limits as radial gauges, the layered daily chart, Week over week, per-provider split, breakdown, Activity, contributing machines, and (account scope) pooled Live limits. Scope is a three-way `account` / `machine` / `project` control. Legacy `?tab=usage` and `?tab=ade-usage` land here. |
 
-> Live provider quota windows render from one component, `UsageLimitsBand.tsx`, in two places: the top-bar Usage popup (`HeaderUsageControl.tsx`, which also hosts the collapsible `BudgetCapEditor` for automation guardrails) and the Live limits band on Settings > Usage. The rest of that page is the retrospective cross-client dashboard.
+> Live provider quota windows render in two shapes: the top-bar Usage popup (`HeaderUsageControl.tsx` → `UsageLimitsBand.tsx` → `UsageAccountRow.tsx`, which also hosts the collapsible `BudgetCapEditor` for automation guardrails) keeps one meter row per account, while Settings > Usage's This machine / This project scope draws the same snapshot as radial `UsageLimitGauges`. The rest of that page is the retrospective cross-client dashboard.
 
 
 Legacy deep links are forwarded by `LEGACY_TAB_ALIASES` /
@@ -1982,7 +2165,7 @@ screenshot chord — both ⌘ on macOS, both Ctrl on Windows — described in
 The switch is `scope: "machine"`, `showScopeChip: true`, `web: "hidden"`,
 and it is stored in this renderer's `localStorage` under
 `ade:capture-gesture:enabled` (defaulting **on**) rather than in synced
-settings — for the same reason the activity notch is: what a native
+settings, because what a native
 helper does on *this* computer is not a preference that should travel to
 another machine through the account. A second Mac has its own Screen
 Recording grant and its own opinion about whether a global key gesture is
@@ -2076,6 +2259,61 @@ file, so they have exactly one identity per machine.
   web, or iOS surface offers or shows a per-account colour any more.
 - **Per-provider settings** (`smartBalance`, `autoStartWindows`) live in the
   same file under `settings.<provider>` and default to off.
+- **Compaction.** Each provider page shows the compaction settings ADE can
+  apply for that harness (`CompactionSettings.tsx`): **Compact at** (Auto by
+  default) and, for Claude, **Subagents compact at** and **After the cache
+  expires**. There is no on/off switch: every chat compacts when it fills; the provider-level values
+  live in project config `ai.compaction.<provider>` in `.ade/local.yaml`. With
+  more than one account, the actions menu of each account card has an
+  **Auto-compact** page ("Same as provider default" or Custom), stored as
+  `compaction` on that account
+  record; it overrides the provider value field by field. See
+  [Compaction per provider](../chat/agent-routing.md#compaction-per-provider).
+- **Subagent prompt cache (Claude).** The actions menu of each Claude account
+  card has a **Subagent cache** page (`AccountCard.tsx`) that explains the two
+  choices: 5 minutes, the Claude Code default, or 1 hour. With 1 hour, the card
+  header shows a **1h cache** tag. Account settings live in the menu, never in
+  the card body, so the cards stay a quick view. ADE has no
+  default of its own here: 1-hour
+  cache writes cost more, and they pay off only when subagents often wait more
+  than 5 minutes between requests. "1 hour" is stored as
+  `subagentPromptCacheTtl` on the account record; the default stores nothing.
+  `claudeAccountPromptCacheEnv` (`providerInstanceStore.ts`) turns the choice
+  into `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL` for SDK chats and terminal
+  `claude` sessions on that account. It adds nothing when the environment
+  already states a TTL, and a launch on a preset or a stored credential never
+  gets it, because that endpoint bills separately.
+- **Main chat prompt cache (Claude).** The same menu has a **Main chat cache**
+  page: Automatic (the default, Claude Code decides: 1 hour on a subscription
+  within its limits, 5 minutes otherwise), 5 minutes, or 1 hour. A choice is
+  stored as `mainPromptCacheTtl` on the account record and travels the same
+  path as `CLAUDE_CODE_PROMPT_CACHE_TTL`; Automatic stores nothing. The chat's
+  cache countdown and the Compact first offer do not read this setting. They
+  read the lifetime Claude really wrote
+  ([composer and UI](../chat/composer-and-ui.md)), so they follow it on the next
+  turn.
+- **Extra usage (Claude).** The same menu has an **Extra usage** page with two
+  choices: **Continue**, which is what Claude Code does by itself, or **Stop
+  the turn**. Extra usage is usage that Claude bills after the plan limit, on
+  an account that allows it. "Stop the turn" is stored as `onExtraUsage: "stop"`
+  on the account record; the default stores nothing. When a `rate_limit_event`
+  says the request drew on extra usage (`isUsingOverage` or `overageInUse`),
+  the Claude chat runtime interrupts the turn, cancels its queued messages,
+  and ends it as a usage limit: the quota card shows, and the chat then does
+  what it does at a plan limit (it resumes at the reset when Claude sends a
+  reset time and the chat continues at limits, or it moves to another account
+  under Smart balance). Claude reports extra usage after the response, so one
+  request is billed before the stop. The setting lives in this machine's
+  account registry, so another machine with the same account does not apply
+  it, and iOS and the hosted web client show no control for it. It covers ADE
+  chats that run on the account's own login: a chat that runs on a preset or a
+  stored credential, and a terminal `claude` session, are not stopped. A chat
+  whose preset cannot be resolved runs on the account's own login, so the
+  setting applies to it.
+- **AI settings save to `.ade/local.yaml`.** `ai.updateConfig` (IPC, the `ai`
+  action domain, and the brain's remote command) merges its partial config into
+  the local layer through `projectConfigService.updateAiConfig`. The shared
+  `.ade/ade.yaml` layer is never written.
 - **Signing in is a command ADE returns, not a flow it drives.**
   `loginCommand` gives back the resolved provider binary, its argv, and the one
   env var pointing at that account's config home. `ade providers accounts add`
@@ -2095,12 +2333,17 @@ not carry the install command.
 - **Routing strip** above the cards, shown only when it has a switch: *Smart
   balance* (two or more accounts) and *Auto-start 5-hour windows* (while the
   provider reports a five-hour window), each a `SettingsToggle` with a (?) hint,
-  and one line saying where new chats go. Smart balance sends each new chat to
-  the account whose weekly room resets soonest, so room is used before it
-  resets. A running chat stays on its account; one that hits a usage limit
-  moves to another account with room (with the switch off, the limit offers
-  that move instead). Auto-start sends one tiny request on the cheapest model
-  when a window ends, each logged with its cost. Both read and write
+  and one line saying where new chats go. Smart balance normally sends new
+  chats to the account whose weekly room resets soonest, so room is used before
+  it resets. When another usable account has at least 30 percentage points
+  more five-hour headroom, Claude routes two consecutive new chats to the
+  weekly-first account, then one to the account with the most five-hour room.
+  This rotation ends when the gap reaches 15 points. **Next chat** previews
+  the next slot. Codex remains weekly-first. A
+  running chat stays on its account; one that hits a usage limit moves to
+  another account with room (with the switch off, the limit offers that move
+  instead). Auto-start sends one tiny request on the cheapest model when a
+  window ends, each logged with its cost. Both read and write
   `provider_instances` `getSettings`/`setSettings`.
 - **One card per account**, in a grid that fits as many 290px columns as the
   width allows, then evens them out over the rows (`balancedColumns`): two cards
@@ -2120,21 +2363,38 @@ not carry the install command.
   creation runs); clicking a card turns balance off and selects it.
 - **Signed out**: a `Signed out` pill (the usage row's own when the poller saw
   it, else a header badge), dimmed meters, and **Sign in**.
-- **Same login twice**: when two config homes hold one email the later card
+- **Same login twice**: when two config homes hold one email, one card owns it
+  (`sameLoginOwner`): the default account when it holds that email and its
+  login works, else the first working login in list order. Every other card
   (`ProviderInstance.sameLoginAs`, computed by the store) is badged `Copy` and
   says which account it copies, with **Sign in to another account**; it adds no
-  quota and smart balance skips it.
+  quota and smart balance skips it. The usage snapshot keeps only the owner's
+  reading by the same rule, so the account that balance counts is the one
+  with numbers.
+- **Machine scope**: the panel reads accounts and usage from the machine the
+  Settings page names (`useUsageSnapshot({ pin })`), never usage from the tab's
+  own machine under another machine's accounts.
 - **Replaced login**: when a config home's email changes to another email — a
   `claude /login` in a shell for the default account — the store records the old
   one as `replacedAccount`. The card says it was replaced outside ADE, with
   **Sign it back in** (into a `Copy` slot when there is one, so the accounts
-  shift instead of doubling; otherwise a new account named after the email) and
+  shift instead of doubling; otherwise, or when the only copy is the machine's
+  own login, a new account named after the email) and
   **Dismiss** (`provider_instances.dismissReplaced`). It disappears on its own
   once any account holds that email again.
-- **The card menu (⋯)** carries Rename, Sign in / Sign in again, and Remove.
-  Remove is not offered
-  on the default or the machine's own login, which the store refuses; it asks
-  for confirmation, and any other refusal shows the store's own sentence.
+- **The card menu (⋯)** carries Rename, Sign in / Sign in again, Sign out, and
+  Remove. Every card but the default offers **Sign out**
+  (`provider_instances.signOut` → `signOutProviderAccount`), which runs the
+  provider CLI's own `claude auth logout` / `codex logout` in that account's
+  config home and keeps the card; on the machine's own login the confirm says
+  the terminal's CLI is signed out too. **Remove** is not offered on the default
+  or the machine's own login, which the store refuses; it signs a signed-in
+  account out first (`removeProviderAccount`, shared by every surface), so
+  adding it again starts from a fresh sign-in. A sign-out that fails does not
+  block the removal; the card's error says the login was left in place. Both
+  ask for confirmation in Settings, and any refusal shows the store's own
+  sentence. Agents may call both too (account management is theirs by design);
+  the default account is refused either way.
 - **Panels fold.** `ProviderPanel` takes `autoCollapsed` and `summary`: a panel
   with nothing to show folds to its header (API keys with none saved reads
   `API keys · 0 None saved`), and a click on the title flips any panel. Sheets

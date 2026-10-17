@@ -1,5 +1,6 @@
 /* @vitest-environment jsdom */
 
+import { mergeAgentChatLiveEvents } from "../../../shared/chatHistoryMerge";
 import React from "react";
 import { encodeRoutePresetId } from "../../../shared/harnessRoutes";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -574,6 +575,8 @@ function installAdeMocks(options?: {
   parallelLaunchState?: AgentChatParallelLaunchState | null;
   linkedPr?: PrSummary | null;
   recoverTurnError?: Error;
+  /** What `session.list` answers — the chat's attached shells. */
+  shellSessions?: TerminalSessionSummary[];
 }) {
   const send = options?.sendError
     ? vi.fn().mockRejectedValue(options.sendError)
@@ -601,6 +604,7 @@ function installAdeMocks(options?: {
     status: "completed",
     replacementMessageId: "message-next",
   });
+  const listShells = vi.fn().mockResolvedValue(options?.shellSessions ?? []);
   const list = options?.listError
     ? vi.fn().mockRejectedValue(options.listError)
     : vi.fn().mockResolvedValue(options?.sessions ?? [buildSession("session-1")]);
@@ -798,7 +802,7 @@ function installAdeMocks(options?: {
       },
       fileSearch: vi.fn().mockResolvedValue([]),
       saveTempAttachment,
-      promptStashes: {
+      drafts: {
         list: vi.fn().mockResolvedValue([]),
         create: vi.fn().mockResolvedValue({
           id: "stash-1",
@@ -815,6 +819,7 @@ function installAdeMocks(options?: {
     },
     sessions: {
       get: vi.fn().mockResolvedValue({ toolType: "codex-chat" }),
+      list: listShells,
       readTranscriptTail: vi.fn().mockResolvedValue(options?.transcript ?? ""),
       getDelta: vi.fn().mockResolvedValue(null),
       onChanged: vi.fn().mockImplementation((listener: (event: TerminalSessionChangedEvent) => void) => {
@@ -909,6 +914,7 @@ function installAdeMocks(options?: {
     recoverCodexTurn,
     resolveUnprocessedMessage,
     list,
+    listShells,
     create,
     createLane,
     deleteChat,
@@ -1112,6 +1118,80 @@ function renderPane(session: AgentChatSessionSummary) {
       />
     </MemoryRouter>,
   );
+}
+
+/**
+ * Terminal session events with the runtime pump's replay: a new subscriber is
+ * handed everything it missed before live events, so re-subscribing (closing
+ * the Tools pane does) hands over old "created" events again.
+ */
+function installReplayingSessionEvents(history: TerminalSessionChangedEvent[]) {
+  const listeners = new Set<(event: TerminalSessionChangedEvent) => void>();
+  vi.mocked(window.ade.sessions.onChanged).mockImplementation((listener: (event: TerminalSessionChangedEvent) => void) => {
+    for (const event of history) listener(event);
+    listeners.add(listener);
+    return () => {
+      listeners.delete(listener);
+    };
+  });
+  return {
+    emit: (event: TerminalSessionChangedEvent) => {
+      history.push(event);
+      for (const listener of [...listeners]) listener(event);
+    },
+  };
+}
+
+/** Mounts the pane the way the Work tab does: the Tools pane is external and its open state is the parent's. */
+function renderToolsPane(
+  session: AgentChatSessionSummary,
+  options: { terminalPaneOpen: boolean; onOpenTerminalPane: () => void },
+) {
+  const onSessionCreated = vi.fn();
+  const tree = (terminalPaneOpen: boolean) => (
+    <MemoryRouter>
+      <AgentChatPane
+        laneId={session.laneId}
+        lockSessionId={session.sessionId}
+        hideSessionTabs
+        initialSessionSummary={session}
+        onSessionCreated={onSessionCreated}
+        terminalPaneOpen={terminalPaneOpen}
+        onOpenTerminalPane={options.onOpenTerminalPane}
+      />
+    </MemoryRouter>
+  );
+  const view = render(tree(options.terminalPaneOpen));
+  return { ...view, setTerminalPaneOpen: (open: boolean) => view.rerender(tree(open)) };
+}
+
+function buildChatTerminalSession(chatSessionId: string, id: string, ptyId: string, title: string): TerminalSessionDetail {
+  return {
+    id,
+    laneId: "lane-1",
+    laneName: "Lane 1",
+    ptyId,
+    tracked: true,
+    pinned: false,
+    manuallyNamed: false,
+    goal: null,
+    title,
+    startedAt: "2026-03-24T05:57:45.700Z",
+    endedAt: null,
+    exitCode: null,
+    transcriptPath: `/tmp/${id}.log`,
+    headShaStart: null,
+    headShaEnd: null,
+    status: "running",
+    lastOutputPreview: null,
+    summary: null,
+    toolType: "shell",
+    runtimeState: "running",
+    resumeCommand: null,
+    resumeMetadata: null,
+    archivedAt: null,
+    chatSessionId,
+  };
 }
 
 function renderResolverPane(session: AgentChatSessionSummary) {
@@ -2889,6 +2969,58 @@ describe("AgentChatPane companion drawers", () => {
   });
 });
 
+
+  it("re-reads a chat's shells only when a session change concerns that chat", async () => {
+    // A session-change event fires for every activity write in the project. The
+    // pane holds ONE chat's shells, so anything that is not this chat or one of
+    // its own shells is somebody else's news and must not cost a read.
+    const shell = {
+      id: "shell-1",
+      laneId: "lane-1",
+      laneName: "drawer lane",
+      ptyId: "pty-shell-1",
+      tracked: true,
+      pinned: false,
+      manuallyNamed: false,
+      goal: null,
+      toolType: "shell",
+      title: "npm run dev",
+      status: "running",
+      startedAt: "2026-05-12T00:00:00.000Z",
+      endedAt: null,
+      exitCode: null,
+      transcriptPath: ".null",
+      headShaStart: null,
+      headShaEnd: null,
+      lastOutputPreview: null,
+      lastActivityAt: null,
+      summary: null,
+      runtimeState: "running",
+      resumeCommand: null,
+      chatSessionId: "session-1",
+    } as unknown as TerminalSessionSummary;
+    const session = buildSession("session-1", { title: "Shell owner" });
+    const mocks = installAdeMocks({ sessions: [session], shellSessions: [shell] });
+    seedDrawerStore();
+
+    renderPane(session);
+    // The terminal-reveal subscription reads this chat's sessions once when it
+    // starts, so the mount reads are counted here rather than assumed to be one.
+    await waitFor(() => expect(mocks.listShells).toHaveBeenCalled());
+    const readsAtMount = mocks.listShells.mock.calls.length;
+
+    act(() => mocks.emitSessionChanged({ sessionId: "session-elsewhere", reason: "meta-updated" }));
+    expect(mocks.listShells).toHaveBeenCalledTimes(readsAtMount);
+
+    // A session that did not exist a moment ago can be this chat's shell, and
+    // the ids this pane holds cannot say either way — only a read can.
+    act(() => mocks.emitSessionChanged({ sessionId: "shell-new", reason: "created" }));
+    await waitFor(() => expect(mocks.listShells).toHaveBeenCalledTimes(readsAtMount + 1));
+
+    act(() => mocks.emitSessionChanged({ sessionId: "shell-1", reason: "meta-updated" }));
+    await waitFor(() => expect(mocks.listShells).toHaveBeenCalledTimes(readsAtMount + 2));
+  });
+
 describe("AgentChatPane durable recovery actions", () => {
   it("appends an unprocessed message for editing without replacing the current draft", async () => {
     const session = buildSession("session-1", { status: "idle" });
@@ -3789,6 +3921,59 @@ describe("AgentChatPane submit recovery", () => {
     }
   });
 
+  it("does not reveal a terminal that already existed when the pane subscribed", async () => {
+    // The shell started minutes ago. Its "created" still reaches a new
+    // subscription (the replay), and that must not reopen the Tools pane.
+    const session = buildSession("session-1", { status: "idle" });
+    const shell = buildChatTerminalSession(session.sessionId, "terminal-1", "pty-1", "Earlier run");
+    installAdeMocks({ sessions: [session], shellSessions: [shell] });
+    vi.mocked(window.ade.sessions.get).mockResolvedValue(shell);
+    installReplayingSessionEvents([{ sessionId: shell.id, reason: "created" }]);
+    const onOpenTerminalPane = vi.fn();
+
+    renderToolsPane(session, { terminalPaneOpen: false, onOpenTerminalPane });
+
+    await waitFor(() => expect(vi.mocked(window.ade.sessions.get)).toHaveBeenCalled());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(onOpenTerminalPane).not.toHaveBeenCalled();
+  });
+
+  it("reveals a terminal the agent starts once, and never again after the Tools pane closes", async () => {
+    const session = buildSession("session-1", { status: "idle" });
+    const earlier = buildChatTerminalSession(session.sessionId, "terminal-1", "pty-1", "Earlier run");
+    const started = buildChatTerminalSession(session.sessionId, "terminal-2", "pty-2", "Agent run");
+    const next = buildChatTerminalSession(session.sessionId, "terminal-3", "pty-3", "Next run");
+    const sessionsById = new Map([earlier, started, next].map((row) => [row.id, row] as const));
+    // The chat's list is read once, before `started` exists, so it never
+    // mentions it. Only the pane's own record can stop a replay of `started`.
+    installAdeMocks({ sessions: [session], shellSessions: [earlier] });
+    vi.mocked(window.ade.sessions.get).mockImplementation(async (id: string) => sessionsById.get(id) ?? null);
+    const events = installReplayingSessionEvents([{ sessionId: earlier.id, reason: "created" }]);
+    const onOpenTerminalPane = vi.fn();
+    const view = renderToolsPane(session, { terminalPaneOpen: true, onOpenTerminalPane });
+    const flush = () => act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    await screen.findByRole("textbox");
+    act(() => events.emit({ sessionId: started.id, reason: "created" }));
+    await waitFor(() => expect(onOpenTerminalPane).toHaveBeenCalledTimes(1));
+
+    // The user closes the Tools pane. That re-subscribes, and the replay hands
+    // over `started`'s "created" again, followed by a duplicate of it.
+    view.setTerminalPaneOpen(false);
+    await flush();
+    act(() => events.emit({ sessionId: started.id, reason: "created" }));
+    await flush();
+    expect(onOpenTerminalPane).toHaveBeenCalledTimes(1);
+
+    // A genuinely new terminal still reveals the pane after it was closed.
+    act(() => events.emit({ sessionId: next.id, reason: "created" }));
+    await waitFor(() => expect(onOpenTerminalPane).toHaveBeenCalledTimes(2));
+  });
+
   it("shows a green session indicator while the agent is working", async () => {
     const session = buildSession("session-1");
     installAdeMocks({
@@ -3979,6 +4164,49 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
+  it("recovers a locked chat's model once its summary can be read again", async () => {
+    // A Work chat is locked to one session and learns its title and model from
+    // its summary. While the brain cannot answer, the chat shows no model; a
+    // finished chat gets no events that would ask again, so only the pane's
+    // own retry brings the model back once the brain answers.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      // Its own id: the pane remembers summaries across mounts, and a chat it
+      // has read before would show its model from the start.
+      const session = buildSession("session-summary-recovery", { status: "idle", title: "Finished chat" });
+      installAdeMocks({ sessions: [session] });
+      let brainUp = false;
+      const getSummary = vi.mocked(window.ade.agentChat.getSummary);
+      getSummary.mockImplementation(async () => {
+        if (!brainUp) throw new Error("brain restarting");
+        return session;
+      });
+      const modelLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
+      const currentModel = new RegExp(`current: ${escapeRegExp(modelLabel)}`, "i");
+
+      render(
+        <MemoryRouter>
+          <AgentChatPane laneId={session.laneId} lockSessionId={session.sessionId} hideSessionTabs onSessionCreated={vi.fn()} />
+        </MemoryRouter>,
+      );
+      await waitFor(() => expect(getSummary).toHaveBeenCalled());
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(100);
+      });
+      expect(screen.queryByRole("button", { name: currentModel })).toBeNull();
+
+      brainUp = true;
+      const readsBeforeRecovery = getSummary.mock.calls.length;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_000);
+      });
+      expect(getSummary.mock.calls.length).toBeGreaterThan(readsBeforeRecovery);
+      expect(await screen.findByRole("button", { name: currentModel })).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("restores the idle summary and composer after send dispatch fails", async () => {
     const session = buildSession("session-1", { status: "idle" });
     const { send } = installAdeMocks({
@@ -3999,6 +4227,44 @@ describe("AgentChatPane submit recovery", () => {
       expect(getSummary).toHaveBeenCalledWith({ sessionId: session.sessionId }, null);
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("Retry this idle turn.");
     });
+  });
+
+  it.each([
+    { name: "never arrives", earlierCopy: false, arrives: false, restored: true },
+    { name: "arrives after the call timed out", earlierCopy: false, arrives: true, restored: false },
+    // An identical message sent a minute earlier proves nothing about this one.
+    { name: "never arrives, though an identical earlier message is in the chat", earlierCopy: true, arrives: false, restored: true },
+  ])("a send whose call times out goes back in the composer only if it $name", async ({ earlierCopy, arrives, restored }) => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const text = "Ship the queue fix.";
+      const session = buildSession("session-1", { status: "idle" });
+      const userMessage = (timestamp: string) => ({
+        sessionId: session.sessionId,
+        timestamp,
+        event: { type: "user_message", text, turnId: "turn-x" },
+      }) as AgentChatEventEnvelope;
+      const { send, emitChatEvent } = installAdeMocks({
+        sessions: [session],
+        sendError: new Error("Remote ADE service timed out waiting for method ade/actions/call chat.sendMessage (30000ms)"),
+        transcript: earlierCopy ? `${JSON.stringify(userMessage(new Date(Date.now() - 60_000).toISOString()))}\n` : "",
+      });
+
+      renderPane(session);
+      const textbox = await screen.findByRole("textbox");
+      fireEvent.change(textbox, { target: { value: text } });
+      fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+      await waitFor(() => expect(send).toHaveBeenCalled());
+      // The call gave up, not the send: the composer stays clear while it may still arrive.
+      await waitFor(() => expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe(""));
+
+      if (arrives) act(() => emitChatEvent(userMessage(new Date().toISOString())));
+      await act(async () => { await vi.advanceTimersByTimeAsync(121_000); });
+
+      await waitFor(() => expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe(restored ? text : ""));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("restores the backend summary and composer after steer dispatch fails", async () => {
@@ -4720,23 +4986,17 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    expect(await screen.findByText("Provider capacity")).toBeTruthy();
-    // The failed-turn card is host-authored now: it says what went wrong and
-    // what to do, and never titles the row "Error". The failure class still
-    // has a home in the identity footer asserted above.
+    expect(await screen.findByText("Model at capacity")).toBeTruthy();
+    // Capacity failures use the same retry/details line as other provider
+    // failures; model selection stays in the composer.
     expect(screen.queryByText("Error")).toBeNull();
-    expect(screen.getByText("This turn stopped")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Details" }));
     expect(screen.getByText("Selected model is at capacity. Please try a different model.")).toBeTruthy();
     expect(screen.queryByPlaceholderText("Steer the active turn...")).toBeNull();
     expect(screen.getByRole("button", { name: "Send" })).toBeTruthy();
 
-    const modelTrigger = screen.getByRole("button", { name: /^Select model/ });
-    fireEvent.click(screen.getByRole("button", { name: "Choose model" }));
-    await waitFor(() => expect(modelTrigger.getAttribute("aria-expanded")).toBe("true"));
-    fireEvent.click(modelTrigger);
-
-    const retryButton = screen.getByRole("button", { name: "Retry turn" }) as HTMLButtonElement;
-    const chooseModelButton = screen.getByRole("button", { name: "Choose model" }) as HTMLButtonElement;
+    const retryButton = screen.getByRole("button", { name: "Retry" }) as HTMLButtonElement;
     act(() => {
       emitChatEvent({
         sessionId: session.sessionId,
@@ -4747,7 +5007,6 @@ describe("AgentChatPane submit recovery", () => {
     });
     await waitFor(() => {
       expect(retryButton.disabled).toBe(true);
-      expect(chooseModelButton.disabled).toBe(true);
     });
     fireEvent.click(retryButton);
     expect(send).not.toHaveBeenCalled();
@@ -4768,7 +5027,6 @@ describe("AgentChatPane submit recovery", () => {
     });
     await waitFor(() => {
       expect(retryButton.disabled).toBe(false);
-      expect(chooseModelButton.disabled).toBe(false);
     });
 
     fireEvent.click(retryButton);
@@ -4804,20 +5062,15 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
-  it("floats the usage-limit pill above the composer and opts out through updateSession", async () => {
-    // The pill renders from the host's `usageLimitResume` ALONE. It used to be
-    // an amber block inside the transcript's failure card, anchored to a
-    // client-side walk for the newest usage-limit error — which meant the one
-    // control that says when this chat comes back scrolled away with the row
-    // that armed it.
+  it("shows the usage-limit composer chip and lets the user cancel auto-resume", async () => {
     const session = buildSession("session-1", {
       status: "idle",
       awaitingInput: false,
       usageLimitResume: {
         state: "armed",
         provider: "codex",
-        fireAt: "2026-07-10T20:30:00.000Z",
-        resetAt: "2026-07-10T20:28:30.000Z",
+        fireAt: "2099-07-10T20:30:00.000Z",
+        resetAt: "2099-07-10T20:28:30.000Z",
         scheduleId: "auto-resume:session-1",
         attempts: 1,
         providerDetail: "Resets at 4:30 PM ET",
@@ -4849,20 +5102,23 @@ describe("AgentChatPane submit recovery", () => {
               errorInfo: { category: "rate_limit" as const, provider: "Codex" },
             },
           },
+          {
+            sessionId: session.sessionId,
+            timestamp: "2026-07-10T18:18:53.066Z",
+            sequence: 3,
+            event: { type: "done" as const, status: "failed" as const, turnId: "turn-limit", model: "gpt-5.5" },
+          },
         ],
       },
     });
 
     renderPane(session);
 
-    const pill = await screen.findByTestId("usage-limit-resume-pill");
-    expect(pill.getAttribute("data-usage-limit-state")).toBe("armed");
-    // The old amber block is gone; the failure card keeps only its recovery
-    // affordances.
-    expect(screen.queryByTestId("auto-resume-scheduled")).toBeNull();
+    const chip = await screen.findByTestId("usage-limit-chip");
+    expect(chip.getAttribute("data-usage-limit-state")).toBe("armed");
+    expect(screen.queryByText("Rate limited by Codex.")).toBeNull();
 
-    fireEvent.click(pill);
-    fireEvent.click(await screen.findByTestId("usage-limit-resume-opt-out"));
+    fireEvent.click(await screen.findByTestId("usage-limit-auto-resume-toggle"));
     await waitFor(() => {
       expect(updateSession).toHaveBeenCalledWith({
         sessionId: session.sessionId,
@@ -4871,15 +5127,7 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
-  it("shows the pill on the first paint, before the session list has arrived", async () => {
-    // The mount flash, in the TABBED pane: the pane knows the chat is parked on
-    // a limit from `initialSessionSummary` long before `listSessions` answers
-    // (the locked single-session mode seeds its list from that summary, the
-    // tabbed one does not). Deriving the resume state from the SELECTED session
-    // — which only ever comes out of that list — left the pill missing, and the
-    // failed turn wearing a red FAILED line instead of its quiet footer, for
-    // the whole round trip. `renderedSession` carries the same fallback the
-    // transcript is already rendered from.
+  it("shows the usage-limit chip on first paint before the session list arrives", async () => {
     const session = buildSession("session-1", {
       status: "idle",
       awaitingInput: false,
@@ -4899,21 +5147,58 @@ describe("AgentChatPane submit recovery", () => {
 
     renderTabbedPane(session);
 
-    const pill = await screen.findByTestId("usage-limit-resume-pill");
-    expect(pill.getAttribute("data-usage-limit-state")).toBe("armed");
+    const chip = await screen.findByTestId("usage-limit-chip");
+    expect(chip.getAttribute("data-usage-limit-state")).toBe("armed");
   });
 
-  it("renders no pill at all when the host reports no live usage limit", async () => {
+  it("resumes an opted-out limit and offers the available alternate account", async () => {
+    const session = buildSession("session-1", {
+      status: "idle",
+      awaitingInput: false,
+      usageLimitResume: {
+        state: "opted_out",
+        provider: "codex",
+        fireAt: "2099-07-10T20:30:00.000Z",
+        resetAt: "2099-07-10T20:28:30.000Z",
+        scheduleId: null,
+        attempts: 0,
+        providerDetail: null,
+        turnId: "turn-limit",
+        updatedAt: "2026-07-10T18:19:00.000Z",
+        alternateAccount: { instanceId: "account-work", label: "Work account" },
+      },
+    });
+    const { updateSession } = installAdeMocks({ sessions: [session] });
+    const continueOnAlternate = vi.fn().mockResolvedValue({ ok: true });
+    window.ade.agentChat.continueUsageLimitOnAlternate = continueOnAlternate as any;
+
+    renderPane(session);
+
+    const chip = await screen.findByTestId("usage-limit-chip");
+    expect(chip.getAttribute("data-usage-limit-state")).toBe("opted_out");
+    const resumeButton = await screen.findByTestId("usage-limit-auto-resume-toggle");
+    expect(resumeButton.textContent).toMatch(/^Resume in /);
+    fireEvent.click(resumeButton);
+    await waitFor(() => expect(updateSession).toHaveBeenCalledWith({
+      sessionId: session.sessionId,
+      autoContinueAtUsageLimit: true,
+    }, null));
+
+    fireEvent.click(await screen.findByTestId("usage-limit-continue-on-account"));
+    await waitFor(() => expect(continueOnAlternate).toHaveBeenCalledWith({ sessionId: session.sessionId }, null));
+  });
+
+  it("renders no usage-limit chip when the host reports no live usage limit", async () => {
     const session = buildSession("session-1", { status: "idle", awaitingInput: false });
     installAdeMocks({ sessions: [session] });
 
     renderPane(session);
 
     await screen.findByTestId("work-chat-session-header");
-    expect(screen.queryByTestId("usage-limit-resume-pill")).toBeNull();
+    expect(screen.queryByTestId("usage-limit-chip")).toBeNull();
   });
 
-  it("renders the usage-limit failure card for Codex's raw `usageLimitReached` errorInfo", async () => {
+  it("suppresses Codex's raw usage-limit error row and shows the turn footer", async () => {
     // The exact shape Codex forwards: no structured `errorInfo.category`, just
     // the opaque provider string, and it spells the limit "usageLimitReached"
     // — not "usageLimitExceeded". The host computes `usageLimitResume` off
@@ -4951,13 +5236,15 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    expect(await screen.findByText("Usage limit")).toBeTruthy();
+    expect(await screen.findByText(/^Usage limit$/)).toBeTruthy();
+    expect(screen.queryByText("You've hit your usage limit.")).toBeNull();
   });
 
 
-  it("drops the scheduled-wake marker when the user retries an auto-resumed turn", async () => {
-    // Otherwise the replayed marker makes the host treat a user-initiated retry
-    // as the schedule's own turn and skip the cancel it promises.
+  it("drops the scheduled-wake marker when the user retries a resumed turn", async () => {
+    // A non-limit provider failure can make an auto-resumed prompt retryable;
+    // replaying its marker would make the host mistake the human retry for a
+    // scheduler send and skip its cleanup.
     const session = buildSession("session-1", { status: "idle", awaitingInput: false });
     const { send } = installAdeMocks({
       sessions: [session],
@@ -4990,9 +5277,9 @@ describe("AgentChatPane submit recovery", () => {
             sequence: 2,
             event: {
               type: "error" as const,
-              message: "Usage limit exceeded again.",
+              message: "The response stream disconnected.",
               turnId: "turn-resumed",
-              errorInfo: { category: "rate_limit" as const, provider: "Codex" },
+              errorInfo: "responseStreamDisconnected",
             },
           },
           {
@@ -5007,7 +5294,7 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Retry turn" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
     await waitFor(() => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
@@ -5017,12 +5304,10 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
-  it("drops the manual-resume marker when the user retries a Resume now turn", async () => {
-    // `usageLimitResume: "manual"` is the OTHER host-only exemption: the Resume
-    // now path cancels the durable row itself and awaits it, so its own send
-    // must skip the sweep. A user Retry of that same turn is not that path —
-    // replaying the marker leaves the armed row alive to fire an unattended
-    // prompt later. Neither host-only key may survive a replay.
+  it("drops the manual-resume marker when the user retries a resumed turn", async () => {
+    // `usageLimitResume: "manual"` is a host-only exemption for the original
+    // continue send. A later retry after a different provider failure is a
+    // user send and must not inherit that exemption.
     const session = buildSession("session-1", { status: "idle", awaitingInput: false });
     const { send } = installAdeMocks({
       sessions: [session],
@@ -5051,9 +5336,9 @@ describe("AgentChatPane submit recovery", () => {
             sequence: 2,
             event: {
               type: "error" as const,
-              message: "Usage limit exceeded again.",
+              message: "The response stream disconnected.",
               turnId: "turn-manual-resume",
-              errorInfo: { category: "rate_limit" as const, provider: "Codex" },
+              errorInfo: "responseStreamDisconnected",
             },
           },
           {
@@ -5068,7 +5353,7 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Retry turn" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
     await waitFor(() => expect(send).toHaveBeenCalled());
     const sent = send.mock.calls[0]![0] as { metadata?: Record<string, unknown> };
     expect(sent.metadata).toEqual({ hostContinuation: { reason: "provider_schedule_cleanup" } });
@@ -5104,9 +5389,9 @@ describe("AgentChatPane submit recovery", () => {
             sequence: 2,
             event: {
               type: "error" as const,
-              message: "Usage limit exceeded again.",
+              message: "The response stream disconnected.",
               turnId: "turn-manual-resume",
-              errorInfo: { category: "rate_limit" as const, provider: "Codex" },
+              errorInfo: "responseStreamDisconnected",
             },
           },
           {
@@ -5121,14 +5406,14 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Retry turn" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
     await waitFor(() => expect(send).toHaveBeenCalled());
     expect(send.mock.calls[0]![0]).not.toHaveProperty("metadata");
   });
 
   it("skips steer messages during provider-failure retry and surfaces a rejected resend", async () => {
     const session = buildSession("session-1", { status: "idle", awaitingInput: false });
-    const { send } = installAdeMocks({
+    const { send, steer } = installAdeMocks({
       sessions: [session],
       sendError: new Error("turn is already active"),
       eventHistory: {
@@ -5176,80 +5461,17 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Retry turn" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
     await waitFor(() => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
         text: "Retry the original prompt.",
       }), null);
     });
+    expect(steer).not.toHaveBeenCalled();
     expect((await screen.findByRole("alert")).textContent).toContain(
       "A turn is already active in this thread. Wait for it to finish before retrying.",
     );
-  });
-
-  it("does not carry a pending provider-failure model request into another session", async () => {
-    const failedSession = buildSession("session-failed", { status: "idle", awaitingInput: false });
-    const nextSession = buildSession("session-next", { status: "idle", awaitingInput: false });
-    installAdeMocks({
-      sessions: [failedSession, nextSession],
-      eventHistory: ({ sessionId }) => ({
-        sessionId,
-        truncated: false,
-        sessionFound: true,
-        events: sessionId === failedSession.sessionId
-          ? [
-            {
-              sessionId,
-              timestamp: "2026-07-10T18:18:53.000Z",
-              sequence: 1,
-              event: {
-                type: "error",
-                message: "Selected model is at capacity. Please try a different model.",
-                turnId: "turn-capacity",
-                errorInfo: "serverOverloaded",
-              },
-            },
-            {
-              sessionId,
-              timestamp: "2026-07-10T18:18:53.066Z",
-              sequence: 2,
-              event: { type: "done", status: "failed", turnId: "turn-capacity", model: "gpt-5.5" },
-            },
-          ]
-          : [],
-      }),
-    });
-
-    const view = render(
-      <MemoryRouter>
-        <AgentChatPane
-          laneId={failedSession.laneId}
-          lockSessionId={failedSession.sessionId}
-          hideSessionTabs
-          initialSessionSummary={failedSession}
-          modelSelectionLocked
-        />
-      </MemoryRouter>,
-    );
-
-    fireEvent.click(await screen.findByRole("button", { name: "Choose model" }));
-    expect(screen.getByRole("button", { name: /^Select model/ }).getAttribute("aria-expanded")).toBe("false");
-
-    view.rerender(
-      <MemoryRouter>
-        <AgentChatPane
-          laneId={nextSession.laneId}
-          lockSessionId={nextSession.sessionId}
-          hideSessionTabs
-          initialSessionSummary={nextSession}
-        />
-      </MemoryRouter>,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: /^Select model/ }).getAttribute("aria-expanded")).toBe("false");
-    });
   });
 
   it.each([
@@ -7060,11 +7282,10 @@ describe("AgentChatPane submit recovery", () => {
   });
 
   /**
-   * The reverse: the chat itself lives on another machine. It opens the same
-   * modal — every source step is pinned to that machine — but the chat's own
-   * machine is never a destination, so the machine list is empty and names it.
+   * The reverse: the chat itself lives on another machine. The brain's options
+   * response has no destination machines, so the setup shows its empty state.
    */
-  it("opens cross-machine handoff for a chat pinned to another machine and excludes that machine", async () => {
+  it("shows the empty destination list for a chat pinned to another machine", async () => {
     const studioBinding = {
       kind: "remote" as const,
       key: "remote:target-studio:project-studio",
@@ -7107,6 +7328,12 @@ describe("AgentChatPane submit recovery", () => {
 
     // The chat's own machine IS connected and handoff-capable. It must still be
     // left out of the destination list, which is what empties the machine list.
+    (window.ade as any).agentChat.getCrossMachineHandoffOptions = vi.fn().mockResolvedValue({
+      machines: [],
+      blockers: [],
+      changes: null,
+      current: null,
+    });
     (window.ade as any).remoteRuntime = {
       onConnectionSnapshotChanged: vi.fn().mockReturnValue(() => {}),
       getConnectionSnapshot: vi.fn().mockResolvedValue({
@@ -7137,7 +7364,8 @@ describe("AgentChatPane submit recovery", () => {
     openChatHandoff(session.sessionId, "remote");
 
     expect(await screen.findByRole("heading", { name: /Continue on another computer/i })).toBeTruthy();
-    expect(await screen.findByText(/This chat runs on Mac Studio\./i)).toBeTruthy();
+    expect(await screen.findByText("No other machines on this account")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Mac Studio/ })).toBeNull();
   });
 
   /**
@@ -7344,24 +7572,29 @@ describe("AgentChatPane submit recovery", () => {
       },
     });
     fireEvent(textbox, pasteEvent);
-    await screen.findByText("pasted-text.txt");
+    // The tray chip shows the staged basename; the same name must reach the
+    // agent as the token's `[File #1: <name>]`, or the label points nowhere.
+    const pastedName = (await screen.findByText(/^pasted-\d+\.txt$/)).textContent ?? "";
     fireEvent.click(await screen.findByRole("button", { name: "Send" }));
 
     await waitFor(() => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: "created-session",
-        text: "",
+        // The folded paste leaves a chip in the text, so the message is the
+        // token rather than the empty draft the old path sent.
+        text: `[File #1: ${pastedName}]`,
+        displayText: `[File #1: ${pastedName}]`,
         attachments: [{
-          path: "/tmp/project-under-test/.ade/attachments/pasted-text.txt",
+          path: `/tmp/project-under-test/.ade/attachments/${pastedName}`,
           type: "file",
           intent: "user_prompt",
         }],
       }), null);
     });
-    const promptLabel = await screen.findByText("Pasted text prompt");
-    const messageCard = promptLabel.closest("[data-chat-user-message-card]");
-    expect(messageCard).toBeInstanceOf(HTMLElement);
-    expect(within(messageCard as HTMLElement).queryByTestId("chat-file-attachment-chip")).toBeNull();
+    const messageCard = await screen.findByTestId("chat-file-attachment-chip");
+    const userMessage = messageCard.closest("[data-chat-user-message-card]");
+    expect(userMessage).toBeInstanceOf(HTMLElement);
+    expect(within(userMessage as HTMLElement).queryByText("Pasted text prompt")).toBeNull();
     await act(async () => resolveSend());
   });
 
@@ -8966,6 +9199,7 @@ describe("AgentChatPane submit recovery", () => {
           codexConfigSource: "flags",
           opencodePermissionMode: "edit",
           droidPermissionMode: "auto-low",
+          musePermissionMode: "onRequest",
           cursorModeId: "agent",
           cursorConfigValues: {},
         },
@@ -11373,7 +11607,7 @@ describe("AgentChatPane Work draft launches", () => {
     applyChatLaunchSnapshot(LOCAL_PROJECT_BINDING, launch);
     // The host answers a queued message with the launch holding its own copy.
     let hostSequence = 2;
-    api.queueMessage.mockImplementation((async (args: { text: string }) => {
+    api.queueMessage.mockImplementation((async (args: { text: string; displayText?: string }) => {
       const current = getChatLaunchEntry("launch-chat-1")!.snapshot;
       hostSequence += 1;
       return {
@@ -11381,7 +11615,7 @@ describe("AgentChatPane Work draft launches", () => {
         sequence: hostSequence,
         queuedMessages: [
           ...current.queuedMessages.filter((message) => !message.id.startsWith("local:")),
-          { id: `q-host-${hostSequence}`, text: args.text, createdAt: "2026-09-22T10:00:04.000Z" },
+          { id: `q-host-${hostSequence}`, text: args.displayText ?? args.text, createdAt: "2026-09-22T10:00:04.000Z" },
         ],
       };
     }) as any);
@@ -11392,7 +11626,13 @@ describe("AgentChatPane Work draft launches", () => {
 
     render(
       <MemoryRouter>
-        <AgentChatPane laneId="lane-new" lockSessionId="launch-chat-1" hideSessionTabs onSessionCreated={vi.fn()} />
+        <AgentChatPane
+          laneId="lane-new"
+          lockSessionId="launch-chat-1"
+          hideSessionTabs
+          onSessionCreated={vi.fn()}
+          ambientTurnContext={() => "Current Browser tab: Checkout"}
+        />
       </MemoryRouter>,
     );
 
@@ -11414,7 +11654,8 @@ describe("AgentChatPane Work draft launches", () => {
     await waitFor(() => {
       expect(api.queueMessage).toHaveBeenCalledWith(expect.objectContaining({
         launchId: "launch-chat-1",
-        text: "Also check the logout path",
+        text: "Current Browser tab: Checkout\n\nAlso check the logout path",
+        displayText: "Also check the logout path",
       }), LOCAL_PROJECT_BINDING);
     });
     expect(await screen.findByText("Also check the logout path")).toBeTruthy();
@@ -11463,7 +11704,7 @@ describe("AgentChatPane Work draft launches", () => {
     await waitFor(() => {
       expect(api.queueMessage).toHaveBeenCalledWith(expect.objectContaining({
         launchId: "launch-chat-1",
-        text: "And the signup path",
+        text: "Current Browser tab: Checkout\n\nAnd the signup path",
       }), LOCAL_PROJECT_BINDING);
     });
     expect(send).not.toHaveBeenCalled();
@@ -11572,6 +11813,38 @@ describe("shouldPromoteSessionForComputerUse", () => {
 });
 
 describe("deriveRuntimeState", () => {
+  it("follows a streamed turn batch by batch: text keeps the state, a steer and the end of the turn change it", () => {
+    const at = (second: number, event: AgentChatEventEnvelope["event"]): AgentChatEventEnvelope => ({
+      sessionId: "session-1",
+      timestamp: `2026-07-16T12:00:${String(second).padStart(2, "0")}.000Z`,
+      event,
+    });
+    const started = [at(0, { type: "status", turnStatus: "started", turnId: "turn-1" })];
+    expect(deriveRuntimeState(started)).toMatchObject({ turnActive: true, pendingSteers: [], pendingInputs: [] });
+
+    const streaming = mergeAgentChatLiveEvents(started, [
+      at(1, { type: "text", text: "one", messageId: "m-1", turnId: "turn-1" }),
+      at(2, { type: "tool_call", tool: "bash", args: {}, itemId: "call-1", turnId: "turn-1" }),
+    ]);
+    expect(deriveRuntimeState(streaming)).toMatchObject({ turnActive: true, pendingSteers: [] });
+
+    const steered = mergeAgentChatLiveEvents(streaming, [
+      at(3, { type: "user_message", text: "also this", steerId: "steer-1", deliveryState: "queued" }),
+    ]);
+    expect(deriveRuntimeState(steered).pendingSteers.map((steer) => steer.steerId)).toEqual(["steer-1"]);
+
+    // More text after the steer must not drop it.
+    const moreText = mergeAgentChatLiveEvents(steered, [at(4, { type: "text", text: "two", messageId: "m-1", turnId: "turn-1" })]);
+    expect(deriveRuntimeState(moreText)).toMatchObject({ turnActive: true });
+    expect(deriveRuntimeState(moreText).pendingSteers.map((steer) => steer.steerId)).toEqual(["steer-1"]);
+
+    const ended = mergeAgentChatLiveEvents(moreText, [
+      at(5, { type: "user_message", text: "also this", steerId: "steer-1", deliveryState: "delivered" }),
+      at(6, { type: "done", turnId: "turn-1", status: "completed" }),
+    ]);
+    expect(deriveRuntimeState(ended)).toMatchObject({ turnActive: false, pendingSteers: [] });
+  });
+
   it("clears a staged steer when Claude reports that its command started", () => {
     const events: AgentChatEventEnvelope[] = [
       {
@@ -11825,6 +12098,25 @@ describe("mergeChatHistorySnapshot", () => {
     expect(merged[3]).toBe(secondTail);
   });
 
+  // A stale cached view that then took live events: the stretch between the
+  // two was never on screen, so its rows (here, a subagent's result) must come
+  // from the snapshot or scrollback, not be pinned out by a glued-on prefix.
+  it("drops a stale prefix that ends before a snapshot head the view never saw", () => {
+    const staleCached = envelope("2026-10-06T05:28:00.000Z", 10, "stale cached");
+    const missedHead = envelope("2026-10-06T07:00:00.000Z", 20, "snapshot head");
+    const liveTail = envelope("2026-10-06T08:40:00.000Z", 30, "live tail");
+    const parsedLiveTail = envelope("2026-10-06T08:40:00.000Z", 30, "live tail");
+
+    const merged = mergeChatHistorySnapshot([missedHead, parsedLiveTail], [staleCached, liveTail]);
+
+    expect(merged.map((entry) => entry.event.type === "text" ? entry.event.text : "")).toEqual([
+      "snapshot head",
+      "live tail",
+    ]);
+    expect(merged).not.toContain(staleCached);
+    expect(merged[1]).toBe(liveTail);
+  });
+
   it("reuses existing snapshot entries while appending newly recovered events", () => {
     const first = envelope("2026-04-30T23:14:47.751Z", 1003, "first");
     const parsedFirst = envelope("2026-04-30T23:14:47.751Z", 1003, "first");
@@ -12045,25 +12337,29 @@ describe("selectDepartedChatSessionViewCacheSessions", () => {
 describe("selectAgentChatSessionViewEvictions", () => {
   const MB = 1024 * 1024;
 
-  it("keeps everything under both ceilings", () => {
+  it("keeps every view under the byte ceiling, however many chats there are", () => {
     expect(selectAgentChatSessionViewEvictions([
       { sessionId: "a", estimatedBytes: 10 * MB },
       { sessionId: "b", estimatedBytes: 10 * MB },
     ])).toEqual([]);
+    const manySmallChats = Array.from({ length: 200 }, (_, index) => ({
+      sessionId: `s${index}`,
+      estimatedBytes: 256 * 1_024,
+    }));
+    expect(selectAgentChatSessionViewEvictions(manySmallChats)).toEqual([]);
+    // 600 of them are 150MB: the oldest go until the rest fit in 128MB.
+    const tooMany = Array.from({ length: 600 }, (_, index) => ({
+      sessionId: `s${index}`,
+      estimatedBytes: 256 * 1_024,
+    }));
+    const evicted = selectAgentChatSessionViewEvictions(tooMany);
+    expect(evicted).toEqual(tooMany.slice(0, 88).map((entry) => entry.sessionId));
   });
 
   it("evicts oldest-first until the 128MB total is respected", () => {
     // 4 x 45MB = 180MB: dropping the two oldest brings the total to 90MB.
     const entries = ["a", "b", "c", "d"].map((sessionId) => ({ sessionId, estimatedBytes: 45 * MB }));
     expect(selectAgentChatSessionViewEvictions(entries)).toEqual(["a", "b"]);
-  });
-
-  it("evicts oldest-first until the entry ceiling is respected", () => {
-    const entries = Array.from({ length: 10 }, (_, index) => ({
-      sessionId: `s${index}`,
-      estimatedBytes: 1_024,
-    }));
-    expect(selectAgentChatSessionViewEvictions(entries)).toEqual(["s0", "s1"]);
   });
 });
 
@@ -12189,6 +12485,18 @@ describe("resolveMergedSnapshotHistoryCursor", () => {
       mergedEvents: existing,
       detached: false,
     })).toBe(0);
+  });
+
+  it("keeps a partly paged-back position when a refresh overlaps the resident transcript", () => {
+    const existing = [event(1, "oldest"), event(2, "middle"), event(3, "latest")];
+    expect(resolveMergedSnapshotHistoryCursor({
+      snapshotCursor: 8_192,
+      currentCursor: 4_096,
+      snapshotEvents: existing.slice(1),
+      existingEvents: existing,
+      mergedEvents: existing,
+      detached: false,
+    })).toBe(4_096);
   });
 
   it("re-arms paging for a detached or replaced transcript", () => {
@@ -13003,7 +13311,7 @@ describe("AgentChatPane per-chat runtime routing", () => {
 
     renderPane(session);
 
-    await waitFor(() => expect(window.ade.agentChat.promptStashes.list).toHaveBeenCalledWith(
+    await waitFor(() => expect(window.ade.agentChat.drafts.list).toHaveBeenCalledWith(
       machineB,
     ));
     expect(useAppStore.getState().projectBinding).toEqual(machineB);

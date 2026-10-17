@@ -21,21 +21,26 @@
 //   - **Hover cards.** A pointer chip (`#1237`, a lane id, a chat id, `ADE-431`)
 //     answers "what is this" on hover instead of sending you to another tab.
 
-import { useMemo, type CSSProperties } from "react";
+import { useMemo, useState, type CSSProperties } from "react";
 import {
   GitBranch,
   GitCommit,
   GitPullRequest,
+  Globe,
   Images,
   Lightning,
   type Icon,
 } from "@phosphor-icons/react";
 
+import { resolveAttachmentToken } from "../../../shared/attachmentLabels";
 import { buildDeeplink } from "../../../shared/deeplinks";
 import { getModelById } from "../../../shared/modelRegistry";
-import { chipDisplayLabel, chipGlyph, splitTextIntoChipParts, type Chip } from "../../../shared/chips";
+import { chipDisplayLabel, chipGlyph, splitTextIntoChipParts, type Chip, type ChipTextPart } from "../../../shared/chips";
+import type { AgentChatFileRef } from "../../../shared/types";
+import { basenameCrossPlatform } from "../../../shared/pathDisplay";
 import { deriveSmartLinkPreview, type SmartLinkProvider } from "../../../shared/smartLinks";
 import { navigateToAppTarget, openAdeDeeplink, openLinkFromUi } from "../../lib/openExternal";
+import { chatMachineId, openChatDeeplinkTarget } from "./chatDeeplinks";
 import { modelPermissionPresentation, permissionToneTextClass } from "../../lib/modelPermissionOptions";
 import { PermissionModeGlyph } from "../shared/PermissionModePicker";
 import { ModelRowLogo } from "../shared/ProviderLogos";
@@ -43,25 +48,12 @@ import { useChipHoverCard, useChipScopeSources, type ChipScopeSources } from "./
 import { chipPreviewUrl, useChipPreview } from "./chipPreviewStore";
 import { useChatRuntimeScope, type ChatRuntimeScope } from "./ChatRuntimeScope";
 import { useChatWorkspacePathOpener, type ChatWorkspacePathOpener } from "./chatWorkspacePaths";
-import { rootAppStoreApi } from "../../state/appStore";
-import { machineEntryForBinding } from "../../state/crossMachineLanes";
-import { THIS_MACHINE_ID } from "../../../shared/machineIdentity";
 import { mentionChipMarkSvg } from "./mentionChipMark";
 import { smartLinkChipMarkSvg } from "./smartLinkChipMark";
-
-/**
- * The machine that holds the chat's lane, or null when the chat runs on the
- * tab's own machine. Read on click, so a transcript of pills holds no extra
- * store subscription. Before the union has read that machine, the pin still
- * names it: a remote pin by its target id, a local pin as This computer (a
- * local pin only exists while the tab is bound to a remote machine).
- */
-function chatMachineId(scope: Pick<ChatRuntimeScope, "pin">): string | null {
-  const pin = scope.pin;
-  if (!pin) return null;
-  return machineEntryForBinding(rootAppStoreApi.getState(), pin)?.machineId
-    ?? (pin.kind === "remote" ? pin.targetId : THIS_MACHINE_ID);
-}
+import { AttachmentPeekCard, useAttachmentThumbnail } from "./AttachmentChipPeek";
+import { useAttachmentPreview } from "./ChatAttachmentTray";
+import { useMentionChipResolution } from "./mentionChipLabels";
+import { getFileIcon } from "../files/filePresentation";
 
 /** Where a click on this chip should land, or null when it is not actionable. */
 function openChip(
@@ -71,32 +63,15 @@ function openChip(
 ): void {
   const source = chip.source;
   if (source.origin === "deeplink") {
-    // A bare SHA in a reply names no lane. It is a commit of the lane this chat
-    // works in, on the machine this chat runs on. Without that, the click has
-    // nothing to open and shows the "lives on another machine" modal.
-    if (source.target.kind === "commit" && !source.target.laneId && scope.laneId) {
-      navigateToAppTarget({
-        kind: "commit",
-        sha: source.target.sha,
-        laneId: scope.laneId,
-        machineId: chatMachineId(scope),
-      });
-      return;
-    }
-    // `#1407` in an agent's reply names a PR with no repo. A deeplink must name
-    // the repo to parse, so that one opens through the in-app PR route, which
-    // resolves the number against this project's PRs.
-    if (source.target.kind === "pr" && !source.target.repoOwner) {
-      navigateToAppTarget({ kind: "pr", prNumber: source.target.prNumber });
-      return;
-    }
-    openAdeDeeplink(source.url);
+    openChatDeeplinkTarget(source.url, source.target, scope);
     return;
   }
   if (source.origin === "url") {
     openLinkFromUi(source.url);
     return;
   }
+  // An attachment chip opens its own preview; `AttachmentTranscriptChip` owns that.
+  if (source.origin === "attachment") return;
   if (source.origin === "path") {
     // A FOLDER is not openable: the navigation target is `kind: "file"`, and
     // handing it `src/shared/` asks the editor for a file that does not exist.
@@ -113,8 +88,14 @@ function openChip(
     navigateToAppTarget({ kind: "file", path: source.path, line: null, laneId: null });
     return;
   }
-  // A model, permission or skill chip names a setting, not a place.
-  if (source.origin === "model" || source.origin === "permission" || source.origin === "skill") return;
+  // A model, permission or skill chip names a setting, not a place; an
+  // attached browser tab is a handle for the agent.
+  if (
+    source.origin === "model"
+    || source.origin === "permission"
+    || source.origin === "skill"
+    || source.origin === "browser_tab"
+  ) return;
   if (source.mentionKind === "chat") {
     openAdeDeeplink(buildDeeplink({ kind: "session", sessionId: source.id }));
     return;
@@ -123,7 +104,15 @@ function openChip(
     // A lane mention resolves against the chat's machine, so it opens there.
     navigateToAppTarget({ kind: "lane", laneId: source.id, machineId: chatMachineId(scope) });
   }
-  // A terminal mention has no deeplink target; it stays a label.
+  // Terminal and machine mentions have no deeplink target; they stay labels.
+  // A PR mention becomes clickable in `TranscriptChip` once its row resolves
+  // (the token is an ADE row id, not a GitHub number).
+}
+
+/** The hover title: the token, or for an attached tab the tab itself (its token is the agent's instruction block). */
+function chipTokenTitle(chip: Chip, label: string): string {
+  if (chip.kind === "browser_tab") return [label, chip.detail].filter(Boolean).join(" — ");
+  return chip.detail ? `${chip.token} — ${chip.detail}` : chip.token;
 }
 
 function isActionable(chip: Chip): boolean {
@@ -131,8 +120,19 @@ function isActionable(chip: Chip): boolean {
   // destination to open, and a pill that looks clickable and does nothing is
   // worse than one that plainly is not. iOS reaches the same answer for the
   // same reason (`workChipNavigationURL` returns nil for a path).
-  if (chip.kind === "folder" || chip.kind === "model" || chip.kind === "permission" || chip.kind === "skill") return false;
-  return chip.source.origin !== "mention" || chip.source.mentionKind !== "terminal";
+  if (
+    chip.kind === "folder"
+    || chip.kind === "model"
+    || chip.kind === "permission"
+    || chip.kind === "skill"
+    || chip.kind === "browser_tab"
+  ) return false;
+  // Machine and terminal mentions have nowhere to go; chat and lane mentions do.
+  // A PR mention is not actionable here — `TranscriptChip` makes it clickable
+  // once its row resolves to a deeplink target.
+  return chip.source.origin !== "mention"
+    || chip.source.mentionKind === "chat"
+    || chip.source.mentionKind === "lane";
 }
 
 /**
@@ -166,6 +166,7 @@ const KIND_ICONS: Partial<Record<Chip["kind"], Icon>> = {
   branch: GitBranch,
   skill: Lightning,
   artifact: Images,
+  browser_tab: Globe,
 };
 
 const ICON_MARK_CLASS = "inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center opacity-80";
@@ -226,8 +227,8 @@ function ChipIcon({ chip, markSvg, iconDataUrl }: { chip: Chip; markSvg: string 
 // One weight and size wherever a chip sits: inside **bold** prose it must not
 // turn bold, inside a heading it must not grow.
 const CHIP_CLASS =
-  "mx-0.5 inline-flex max-w-[280px] translate-y-[1px] items-center gap-1 rounded-md border border-white/[0.14]"
-  + " bg-white/[0.08] px-1.5 py-px align-baseline font-sans text-[length:calc(var(--chat-font-size)*11.5/14)]"
+  "mx-0.5 inline-flex max-w-[280px] translate-y-[1px] items-center gap-1 rounded-md border border-fg/[0.14]"
+  + " bg-fg/[0.08] px-1.5 py-px align-baseline font-sans text-[length:calc(var(--chat-font-size)*11.5/14)]"
   + " font-medium not-italic leading-5 tracking-normal text-white/90";
 
 type ChipFacts = {
@@ -308,16 +309,24 @@ export function TranscriptChip({ chip }: { chip: Chip }) {
   const chatScope = useChatRuntimeScope();
   const openWorkspacePath = useChatWorkspacePathOpener();
   const facts = useChipFacts(chip, scoped);
-  const label = facts.label ?? chipDisplayLabel(preview?.title ? { ...chip, title: preview.title } : chip);
-  const actionable = isActionable(chip);
-  const hoverCard = useChipHoverCard(chip, preview?.title ?? null, scoped);
-  const tokenTitle = chip.detail ? `${chip.token} — ${chip.detail}` : chip.token;
+  // `@pr:` / `@mac:` chips carry only an id; resolve "#1319 title" / the
+  // machine name from data the renderer already reads (short id when unknown).
+  const mention = useMentionChipResolution(chip, chatScope);
+  const label = mention.label ?? facts.label ?? chipDisplayLabel(preview?.title ? { ...chip, title: preview.title } : chip);
+  const prTarget = mention.prTarget;
+  const actionable = isActionable(chip) || prTarget !== null;
+  const open = () => {
+    if (prTarget) openAdeDeeplink(buildDeeplink(prTarget));
+    else openChip(chip, chatScope, openWorkspacePath);
+  };
+  const hoverCard = useChipHoverCard(chip, preview?.title ?? null, scoped, preview?.imageUrl ?? null);
+  const tokenTitle = chipTokenTitle(chip, label);
 
   return (
     <>
       <span
         ref={hoverCard.triggerRef}
-        className={`${CHIP_CLASS}${actionable ? " cursor-pointer transition-[filter,background-color] hover:bg-white/[0.14] hover:brightness-125" : ""}`}
+        className={`${CHIP_CLASS}${actionable ? " cursor-pointer transition-[filter,background-color] hover:bg-fg/[0.14] hover:brightness-125" : ""}`}
         style={laneColorStyle(facts.color)}
         data-chip-kind={chip.kind}
         // The token is the truth behind the label; a hover always reveals it.
@@ -326,12 +335,12 @@ export function TranscriptChip({ chip }: { chip: Chip }) {
         title={hoverCard.visible ? undefined : tokenTitle}
         role={actionable ? "button" : undefined}
         tabIndex={actionable ? 0 : undefined}
-        onClick={actionable ? () => openChip(chip, chatScope, openWorkspacePath) : undefined}
+        onClick={actionable ? open : undefined}
         onKeyDown={actionable
           ? (event) => {
             if (event.key !== "Enter" && event.key !== " ") return;
             event.preventDefault();
-            openChip(chip, chatScope, openWorkspacePath);
+            open();
           }
           : undefined}
         {...hoverCard.triggerProps}
@@ -350,10 +359,125 @@ export function TranscriptChip({ chip }: { chip: Chip }) {
   );
 }
 
-export function ChipText({ text, className }: { text: string; className?: string }) {
+/**
+ * An `[Image #k]` / `[File #k: name]` pill, resolved against the message's own
+ * attachments: a 14px thumbnail for an image, the file-type glyph for a file.
+ * Hover peeks the image; a click opens the same preview the tray item opens.
+ */
+function AttachmentTranscriptChip({ chip, attachment }: { chip: Chip; attachment: AgentChatFileRef }) {
+  const pin = useChatRuntimeScope().pin;
+  const thumbnail = useAttachmentThumbnail(attachment, pin);
+  const name = attachment.type === "image-url"
+    ? basenameCrossPlatform(attachment.url) || attachment.url
+    : basenameCrossPlatform(attachment.path) || attachment.path;
+  const preview = useAttachmentPreview({
+    path: attachment.path,
+    title: name,
+    pin,
+    fallbackImageDataUrl: thumbnail,
+  });
+  const [peekAnchor, setPeekAnchor] = useState<HTMLElement | null>(null);
+  const isImage = attachment.type === "image" || attachment.type === "image-url";
+  const { icon: FileIcon, color } = getFileIcon(name);
+
+  return (
+    <>
+      <span
+        className={`${CHIP_CLASS} cursor-pointer transition-colors hover:bg-white/[0.14]`}
+        title={`${chip.token} — ${name}`}
+        role="button"
+        tabIndex={0}
+        data-chat-attachment-chip=""
+        onClick={preview.open}
+        onKeyDown={(event) => {
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          preview.open();
+        }}
+        onMouseEnter={(event) => setPeekAnchor(event.currentTarget)}
+        onMouseLeave={() => setPeekAnchor(null)}
+        // The chip is focusable, so the peek must open for keyboard users too.
+        onFocus={(event) => setPeekAnchor(event.currentTarget)}
+        onBlur={() => setPeekAnchor(null)}
+      >
+        {isImage && thumbnail ? (
+          <img
+            src={thumbnail}
+            alt=""
+            aria-hidden
+            draggable={false}
+            className="h-3.5 w-3.5 shrink-0 rounded-[3px] object-cover"
+          />
+        ) : isImage ? (
+          <span aria-hidden className="shrink-0 opacity-70">{chipGlyph(chip.kind)}</span>
+        ) : (
+          <FileIcon size={12} weight="bold" style={{ color }} className="shrink-0" aria-hidden />
+        )}
+        <span className="truncate">{chip.label}</span>
+      </span>
+      {isImage ? <AttachmentPeekCard anchor={peekAnchor} src={thumbnail} name={name} /> : null}
+      {preview.element}
+    </>
+  );
+}
+
+type ResolvedChipTextPart =
+  | ChipTextPart
+  | { type: "attachment"; chip: Chip; attachment: AgentChatFileRef };
+
+/**
+ * Resolve attachment chips against `attachments`. A token whose ordinal has no
+ * attachment is not a chip — it folds back into the surrounding text, so a
+ * literal "[Image #3]" in a message with two images reads as typed.
+ */
+function resolveAttachmentParts(
+  parts: ChipTextPart[],
+  attachments: readonly AgentChatFileRef[] | undefined,
+): ResolvedChipTextPart[] {
+  const out: ResolvedChipTextPart[] = [];
+  const pushText = (text: string) => {
+    const last = out[out.length - 1];
+    if (last?.type === "text") out[out.length - 1] = { type: "text", text: last.text + text };
+    else out.push({ type: "text", text });
+  };
+  for (const part of parts) {
+    if (part.type === "text") {
+      pushText(part.text);
+      continue;
+    }
+    const source = part.chip.source;
+    if (source.origin !== "attachment") {
+      out.push(part);
+      continue;
+    }
+    const attachment = attachments?.length
+      ? resolveAttachmentToken(attachments, { kind: source.attachmentKind, ordinal: source.ordinal })
+      : null;
+    if (attachment) out.push({ type: "attachment", chip: part.chip, attachment });
+    else pushText(part.chip.token);
+  }
+  return out;
+}
+
+export function ChipText({
+  text,
+  className,
+  attachments,
+}: {
+  text: string;
+  className?: string;
+  /**
+   * The message's attachments, in order. `[Image #k]` / `[File #k: …]` tokens
+   * resolve against this list; without it they stay plain text.
+   */
+  attachments?: readonly AgentChatFileRef[];
+}) {
   // Memoized on the text: this renders for every user message in the
   // transcript, and the parse runs two regex scans plus a URL parse per link.
-  const parts = useMemo(() => splitTextIntoChipParts(text), [text]);
+  const parts = useMemo(
+    () => resolveAttachmentParts(splitTextIntoChipParts(text), attachments),
+    [attachments, text],
+  );
 
   // No chips: keep the exact original node so nothing about plain messages
   // changes — spacing, selection, and copy stay byte-for-byte what they were.
@@ -363,11 +487,13 @@ export function ChipText({ text, className }: { text: string; className?: string
 
   return (
     <div className={className}>
-      {parts.map((part, index) => (
-        part.type === "text"
-          ? <span key={`t-${index}`}>{part.text}</span>
-          : <TranscriptChip key={`c-${index}`} chip={part.chip} />
-      ))}
+      {parts.map((part, index) => {
+        if (part.type === "text") return <span key={`t-${index}`}>{part.text}</span>;
+        if (part.type === "attachment") {
+          return <AttachmentTranscriptChip key={`a-${index}`} chip={part.chip} attachment={part.attachment} />;
+        }
+        return <TranscriptChip key={`c-${index}`} chip={part.chip} />;
+      })}
     </div>
   );
 }

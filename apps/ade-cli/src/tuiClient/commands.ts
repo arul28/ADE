@@ -150,12 +150,13 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   // an agent has handed a browser tab back for them to sign in — without it the
   // lane just looks quiet.
   { name: "/tools", description: "Show the desktop Work tools state for this lane", placement: "right", argumentHint: "[lane-id|name]", category: "Nav" },
-  { name: "/compact", description: "Compact the active chat context", placement: "chat", argumentHint: "[instructions]", providers: ["claude", "codex", "pi"], category: "Model" },
+  { name: "/compact", description: "Compact the active chat context", placement: "chat", argumentHint: "[instructions]", providers: ["claude", "codex", "muse", "pi"], category: "Model" },
   { name: "/init", description: "Generate AGENTS.md and Claude pointer files", placement: "right", providers: ["claude"], category: "Nav" },
   { name: "/usage", description: "Show Claude and Codex limits plus session usage", placement: "chat", category: "Model" },
   { name: "/insights", description: "Generate Claude session insights through the active SDK session", placement: "chat", providers: ["claude"], category: "Model" },
+  { name: "/compact-first", description: "Compact the chat before your next message once its cache has expired", placement: "inline", argumentHint: "[on|off]", providers: ["claude"], category: "Model" },
   { name: "/fast", description: "Toggle Claude fast mode through the active SDK session", placement: "chat", argumentHint: "[on|off]", providers: ["claude"], category: "Model" },
-  { name: "/goal", description: "Set, clear, or inspect the active chat goal", placement: "chat", argumentHint: "[<text>|clear|status active|paused|complete]", providers: ["claude", "codex"], category: "Model" },
+  { name: "/goal", description: "Set, clear, or inspect the active chat goal", placement: "chat", argumentHint: "[<text>|clear|status active|paused|complete]", providers: ["claude", "codex", "muse"], category: "Model" },
   // An orchestration parent can surface a stalled child turn, so recovery
   // availability is determined from that event's target session.
   { name: "/recover", description: "Recover the latest stalled turn", placement: "right", argumentHint: "<wait|nudge|retry|resume> [turn-id]", category: "Chats" },
@@ -200,10 +201,10 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/linear comments", description: "Show comments on a Linear ticket", placement: "right", argumentHint: "<id>", category: "Linear" },
   { name: "/linear status", description: "Show Linear status", placement: "right", category: "Linear" },
   { name: "/linear assign", description: "Assign a Linear ticket", placement: "right", argumentHint: "<id> <user>", category: "Linear" },
-  { name: "/issue", description: "Attach, list, or detach Linear and GitHub issues", placement: "right", argumentHint: "<attach|list|detach> [id]", category: "Issues" },
-  { name: "/issue attach", description: "Attach a Linear or GitHub issue to this chat", placement: "right", argumentHint: "<ADE-123|owner/repo#42|#42>", category: "Issues" },
+  { name: "/issue", description: "Attach, list, or detach Linear, GitHub, and Jira issues", placement: "right", argumentHint: "<attach|list|detach> [id]", category: "Issues" },
+  { name: "/issue attach", description: "Attach a Linear, GitHub, or Jira issue to this chat", placement: "right", argumentHint: "<PROJ-123|owner/repo#42|#42>", category: "Issues" },
   { name: "/issue list", description: "List issues attached to this chat", placement: "right", category: "Issues" },
-  { name: "/issue detach", description: "Detach a Linear or GitHub issue from this chat", placement: "right", argumentHint: "<ADE-123|owner/repo#42|#42>", category: "Issues" },
+  { name: "/issue detach", description: "Detach a Linear, GitHub, or Jira issue from this chat", placement: "right", argumentHint: "<PROJ-123|owner/repo#42|#42>", category: "Issues" },
   { name: "/feedback", description: "Submit ADE feedback to GitHub issues", placement: "right", category: "Nav" },
   { name: "/chats", description: "List chats in the active lane", placement: "right", argumentHint: "[filter]", category: "Chats" },
   { name: "/switch", description: "Switch lane or chat", placement: "right", argumentHint: "[lane|chat]", category: "Chats" },

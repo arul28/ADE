@@ -64,7 +64,7 @@ npm run dev
 
 That aliases to `npm run dev:desktop`: it rebuilds `apps/ade-cli`, refreshes the shared dev runtime at `/tmp/ade-runtime-dev.sock` when needed, launches the Electron desktop app, and points desktop at that runtime. This is the normal desktop-dev flow.
 
-**This is the only supported way to run a dev app on a machine that also runs the installed ADE.** The dev brain shares `~/.ade` (your account, projects, and sync identity are served by the installed brain) and is started with `--no-sync`, so it can never take the machine-wide sync host lease. It stamps and respects chat runtime ownership, so it never adopts a chat the installed brain is driving. An unpackaged app never installs or repairs the launchd brain service. The launcher prints a dev isolation report (state root, socket, sync, project, installed brain untouched) before the window opens; read it. Do not start `ade serve` by hand, do not set a fresh `ADE_HOME` (a never-signed-in home shows the account gate), and do not copy `~/.ade` secrets into another home. `ADE_DEV_RUNTIME_SYNC=1` opts a dev brain into sync on purpose and is almost never what you want.
+**This is the only supported way to run a dev app on a machine that also runs the installed ADE.** The dev brain shares `~/.ade` (your account, projects, and sync identity are served by the installed brain) and is started with `--no-sync`, so it can never take the machine-wide sync host lease. It stamps and respects chat runtime ownership, so it never adopts a chat the installed brain is driving, and an `ade chat send`/`steer`/`interrupt` that reaches it for such a chat is refused with the owner's socket instead of starting a second agent process. An unpackaged app never installs or repairs the launchd brain service. The launcher prints a dev isolation report (state root, socket, sync, project, installed brain untouched) before the window opens; read it. Do not start `ade serve` by hand, do not set a fresh `ADE_HOME` (a never-signed-in home shows the account gate), and do not copy `~/.ade` secrets into another home. `ADE_DEV_RUNTIME_SYNC=1` opts a dev brain into sync on purpose and is almost never what you want.
 
 ### If you are an agent, start it detached
 
@@ -99,6 +99,23 @@ The rules that go with it (`AGENTS.md` and the context skill link here):
 - **`--no-sync` protects the sync lease only.** It does not isolate the
   database: a dev brain still sees every chat and task in every lane, so do not
   restart one casually while other lanes are working.
+- **A dev desktop never connects to your other machines on its own.** A paired
+  machine (a Mac Studio, a Windows box) keeps one connection per device, and
+  every ADE on this computer shares the device pairing in `~/.ade`. A dev app
+  that reconnected saved machines took them from the installed ADE, which then
+  showed "Another ADE on this computer is using the connection" and waited.
+  An unpackaged desktop now connects only when someone presses Connect in it
+  (`explicitConnectOnly` in `RemoteConnectionService`), and the isolation
+  report says so on its `machines` line. Pressing Connect in a dev app still
+  takes that machine from the installed ADE: press Connect in the installed app
+  afterwards. Do not press Disconnect in a dev app either; it saves
+  "don't auto-connect" to the shared machine list, which the installed app
+  reads too. `ADE_DEV_REMOTE_AUTOCONNECT=1` restores auto-connect on purpose.
+- **Stop what you started, brain included.** Stop the dev app's process group
+  (the pid `dev-detached.mjs` printed) and then confirm its brain exited:
+  `pgrep -fl "<your socket>"`. A full desktop typecheck takes an 8 GB heap;
+  do not leave one running in the background, and do not start a second while
+  one is still going.
 
 When these commands are run from an ADE lane worktree under `.ade/worktrees/`,
 they still run code from that lane checkout, but they open the primary checkout's
@@ -154,7 +171,7 @@ The detached runtime also gets a **sanitized environment**. It inherits the rest
 of the shell env (`PATH`, `HOME`, `ADE_PERF_RUN_ID`, …), but variables that
 identify the *launching* agent shell rather than the shared daemon are stripped
 by name: `ADE_DEFAULT_ROLE`, `ADE_CHAT_SESSION_ID`,
-`ADE_PARENT_CHAT_SESSION_ID`, `ADE_SPAWN_KIND`, `ADE_BROWSER_ACTOR_TOKEN`, the
+`ADE_PARENT_CHAT_SESSION_ID`, `ADE_SPAWN_KIND`, the
 run identity (`ADE_RUN_ID`, `ADE_STEP_ID`, `ADE_ATTEMPT_ID`,
 `ADE_OWNER_ID`), and the location binding (`ADE_LANE_ID`, `ADE_PROJECT_ROOT`,
 `ADE_WORKSPACE_ROOT`). This matters when an ADE chat is what launched the
@@ -206,6 +223,118 @@ ADE_DESKTOP_BRIDGE_SOCKET_PATH=/tmp/my-bridge.sock npm run dev:desktop
 > Point at a fresh per-lane endpoint (below), or use
 > `npm run dev:desktop:attach -- --socket <path>` to connect to an already-running
 > runtime — attach mode refuses on a build-hash mismatch instead of restarting.
+
+### On Windows
+
+Everything above applies; these are the differences that have actually cost
+someone a day. Verified on Windows 11 with an installed Stable brain running.
+
+**Endpoints are named pipes, not socket files.** Pass a pipe name to `--socket`:
+
+```powershell
+node scripts/dev-detached.mjs "$wt\perf\dev.log" npm run dev:desktop -- `
+  --socket '\\.\pipe\ade-runtime-dev-<lane>' `
+  --project-root "C:\Users\<you>\Documents\Programming\ADE" `
+  --remote-debugging-port=9413
+```
+
+**Launch it from PowerShell, not Git Bash.** MSYS rewrites anything that looks
+like a POSIX path, so `\\.\pipe\ade-runtime-dev-x` reaches Node as
+`C:\pipe\ade-runtime-dev-x` and the runtime exits with "exited before opening
+C:\pipe\…". `MSYS_NO_PATHCONV=1` also works; PowerShell is less surprising.
+
+**Do not set `ADE_HOME`.** The rule above ("a never-signed-in home shows the
+account gate") is not a macOS detail — it is the whole ballgame. Your account
+lives in `~/.ade`, so a private home gives you a dev app sitting on a sign-in
+page with no projects and nothing to measure. The launcher refuses an alternate
+home outright and names the escape hatch (`ADE_DEV_ALLOW_ALT_HOME=1`); wanting
+that escape hatch almost always means the plan is wrong. Share `~/.ade`, isolate
+the **pipe**.
+
+Done right, a dev app on Windows is the macOS experience: your real account,
+your real projects, your real chats and transcripts, alongside the installed
+brain.
+
+#### The `ade` CLI resolves the project from the shell's cwd
+
+This is the one that bites, and no amount of `ADE_HOME`, `--socket` or
+`--no-sync` protects you from it. A command like `ade lanes create` run with the
+shell sitting in `.ade/worktrees/<lane>` operates on the **primary project**,
+because that is what the cwd resolves to — not on whatever project the dev app
+opened. That has created a real lane, branch, pushed remote branch and worktree
+in a live project, and taken the installed brain down with it.
+
+- Prefer driving the dev **window** (CDP / App Control) over the CLI.
+- If the CLI is unavoidable: `cd` into the target project first, set `ADE_HOME`
+  and `ADE_RUNTIME_SOCKET_PATH`, and run one read-only command to confirm what
+  you are pointed at **before** anything that writes. A dev brain reports
+  version `1.0.0-beta.1`; the installed one reports the release version.
+
+#### Verify, do not assume
+
+A dev launch has landed on the production pipe before (a stale `ade.exe` earlier
+on `PATH` spawned a brain on the Stable endpoint). After launching, check:
+
+```powershell
+# the installed brain still owns the stable pipe, and its heartbeat advances
+Get-Content "$env:USERPROFILE\.ade\brains\<installed-pid>.json"
+Get-Content "$env:USERPROFILE\.ade\runtime\heartbeat.json"   # seq must climb
+[System.IO.Directory]::GetFiles("\\.\pipe\") | Where-Object { $_ -match 'ade-runtime' }
+```
+
+Capture your own PIDs at launch and stop **only** those; never `Stop-Process` a
+brain you did not start. A dev brain also leaves `~/.ade/brains/<pid>.json`
+behind — remove your own record, nobody else's.
+
+**One brain per project database.** `--no-sync` protects the sync lease, not the
+database. A contended SQLite write costs the holder's hold time plus ~50-80 ms,
+and because `node:sqlite` is synchronous it blocks the brain's whole event loop
+for that long. Worse, when releasing the lock depends on the blocked process's
+own event loop nothing can release it: it waits the full `busy_timeout`
+(5,000 ms) and throws `database is locked`. Two brains on one project is fine
+for reproducing behaviour and wrong for clean before/after numbers.
+
+#### Measuring on Windows: what works, and what lies
+
+Use the instrumentation that already ships before writing any:
+
+- `ADE_TRACE_IPC=1` (or `verbose`) logs IPC invoke summaries; tracing is already
+  on in an unpackaged app.
+- `ADE_PERF_RUN_ID=<id>` appends every IPC invoke, main-loop delay, long task and
+  renderer-memory sample to `~/.ade/perf-runs/<id>/events.jsonl`. Aggregate it per
+  channel, then look at the **gaps between** events: that is what answers "slow
+  because of work, or slow because nothing is happening?".
+- To profile a brain you must not restart — including the installed one —
+  `node -e "process._debugProcess(<pid>)"` opens its inspector on
+  127.0.0.1:9229, and a short `Profiler.start`/`stop` over that socket is
+  read-only. The port stays open until that process exits, so treat it as
+  lingering state.
+
+Four traps that produce confident, wrong answers:
+
+- **`window.ade` cannot be monkey-patched.** `contextBridge` freezes it
+  (`writable: false, configurable: false, isFrozen: true`), so wrapping the
+  bridge to time IPC silently does nothing — it will report that it wrapped
+  hundreds of methods and then record zero calls. Time IPC in the main process or
+  the preload instead.
+- **"The DOM stopped mutating" is not "it finished loading."** A settle detector
+  conflates loading with later churn and will report tens of seconds for an
+  operation that rendered in 50 ms. Measure something content-shaped, such as the
+  transcript scroller's `scrollHeight` changing and then stabilising.
+- **State carries between trials.** Clicking an already-selected chat is a no-op,
+  and the app restores the last-selected chat on reload, so a "cold open"
+  measurement is usually warm. Vary the target or relaunch between trials.
+- **Process CPU cannot measure a renderer on a many-core box.** With other agents
+  building, the same animation strategy sampled 11.0% then 5.0% of a core and the
+  ordering inverted between runs; a CDP trace of the same thing repeats to within
+  2%. See `scripts/perf-animation-lab/README.md`.
+
+For calibration on this hardware: a healthy dev app switches between real chats
+in **53-111 ms** to first content and settles in **0.3-1.4 s**, while the brain
+sits ~98.6% idle and a 24-second window of UI work contains about **1 second** of
+IPC. So if you are chasing a multi-second stall and the brain is idle and the
+renderer has no long tasks, the cost is latency, not compute — look for polls,
+debounces and idle-callback starvation rather than slow functions.
 
 ## Run a specific lane worktree
 
@@ -310,8 +439,9 @@ A dev brain is spawned detached so it survives the Electron restarts a dev
 loop is made of, which also means it survives the app going away for good. One
 ran orphaned on the shared home for five hours. Launcher-spawned brains now
 exit after 20 idle minutes (`ADE_RUNTIME_IDLE_EXIT_MS`, set in
-`scripts/dev-shared.mjs`); raise or clear it when debugging a deliberately
-quiet brain. For work that only needs to read or drive a lane, give the brain
+`scripts/dev-shared.mjs`); set `ADE_DEV_RUNTIME_IDLE_EXIT_MS` (milliseconds,
+`0` disables it) on the launch command to raise or clear it, for example when
+testing in the dev app for longer than the budget. For work that only needs to read or drive a lane, give the brain
 its own home — `ADE_HOME=$HOME/.ade-<name>` on its own socket — instead of
 sharing `~/.ade`. Because the dev
 brain does not host sync it never publishes to the account, which is why the

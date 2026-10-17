@@ -91,6 +91,22 @@ export function isRendererFrameNavigationAllowed(
   }
 }
 
+/**
+ * Where a video attached to a pull request plays from. GitHub serves an
+ * attachment at `github.com/user-attachments/assets/<id>` and redirects to the
+ * file: its asset bucket for a public repository, a signed
+ * `private-user-images` URL for a private one. A redirect is checked against
+ * the host only, so each hop is named. Nothing else is allowed: no blanket
+ * `https:` and no `*.s3.amazonaws.com`, which would be every bucket there is.
+ * If GitHub moves the bucket, a video falls back to its "open on GitHub" link
+ * (`PrRemoteMedia`) until the new host is added here.
+ */
+export const GITHUB_ATTACHMENT_MEDIA_SOURCES = [
+  "https://github.com/user-attachments/",
+  "https://github-production-user-asset-6210df.s3.amazonaws.com",
+  "https://private-user-images.githubusercontent.com",
+] as const;
+
 export function buildRendererCspPolicy(isDevMode: boolean): string {
   const cspSources = isDevMode
     ? "'self' http://localhost:* http://127.0.0.1:*"
@@ -112,7 +128,10 @@ export function buildRendererCspPolicy(isDevMode: boolean): string {
   // `images.clerk.dev/` prefix on Google Cloud Storage).
   // We keep the allowlist scoped: no blanket `https:`, and Google Cloud Storage
   // is only ever allowed under specific path prefixes, never the bare host.
-  const cspImageSources = `${cspSources}${cspLocalSources} https://avatars.githubusercontent.com https://*.githubusercontent.com https://user-images.githubusercontent.com https://private-user-images.githubusercontent.com https://media.githubusercontent.com https://camo.githubusercontent.com https://objects.githubusercontent.com https://github.githubassets.com https://opengraph.githubassets.com https://github.com https://vercel.com https://*.vercel.com https://img.shields.io https://*.s3.amazonaws.com https://storage.googleapis.com/coderabbit_public_assets/ https://storage.googleapis.com/images.clerk.dev/ https://img.clerk.com https://images.clerk.dev https://dependabot-badges.githubapp.com/badges/ https://cursor.com/assets/images/ https://www.gravatar.com https://secure.gravatar.com https://ade-app.dev https://img.youtube.com`;
+  // Apple Music artwork (the Music tab) is served from `*.mzstatic.com`;
+  // Spotify's from `i.scdn.co`, `mosaic.scdn.co` (playlist collages) and
+  // `*.spotifycdn.com`.
+  const cspImageSources = `${cspSources}${cspLocalSources} https://avatars.githubusercontent.com https://*.githubusercontent.com https://user-images.githubusercontent.com https://private-user-images.githubusercontent.com https://media.githubusercontent.com https://camo.githubusercontent.com https://objects.githubusercontent.com https://github.githubassets.com https://opengraph.githubassets.com https://github.com https://vercel.com https://*.vercel.com https://img.shields.io https://*.s3.amazonaws.com https://storage.googleapis.com/coderabbit_public_assets/ https://storage.googleapis.com/images.clerk.dev/ https://img.clerk.com https://images.clerk.dev https://dependabot-badges.githubapp.com/badges/ https://cursor.com/assets/images/ https://www.gravatar.com https://secure.gravatar.com https://ade-app.dev https://img.youtube.com https://*.mzstatic.com https://i.scdn.co https://mosaic.scdn.co https://*.spotifycdn.com`;
   // The welcome video used to be a YouTube iframe embed, which required
   // frame-src exceptions for youtube(-nocookie).com. It's now a thumbnail
   // button that hands off to the system browser (WelcomeVideoGate.tsx), so
@@ -146,7 +165,7 @@ export function buildRendererCspPolicy(isDevMode: boolean): string {
     `script-src ${cspScriptSources}`,
     `style-src ${cspSources} 'unsafe-inline'`,
     `img-src ${cspImageSources} ade-artifact: data: blob:`,
-    `media-src ${cspSources}${cspLocalSources} ade-artifact: blob: data:`,
+    `media-src ${cspSources}${cspLocalSources} ${GITHUB_ATTACHMENT_MEDIA_SOURCES.join(" ")} ade-artifact: blob: data:`,
     `font-src ${cspSources} data:`,
     `connect-src ${cspSources}${cspConnectLocalSources}${cspWsSources}`,
     `worker-src 'self' blob:`,

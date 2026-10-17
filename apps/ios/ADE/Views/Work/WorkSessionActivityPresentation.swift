@@ -1,5 +1,3 @@
-private let workCopilotPlanModeId = "https://agentclientprotocol.com/protocol/session-modes#plan"
-
 private func workCursorPlanningModeId(_ snapshot: RemoteJSONValue?) -> String? {
   guard case .object(let object)? = snapshot,
         case .string(let currentModeId)? = object["currentModeId"]
@@ -46,7 +44,7 @@ func workSessionIsPlanning(summary: AgentChatSessionSummary?) -> Bool {
       return summary.cursorModeId == "plan"
     }
     return workCursorPlanningModeId(summary.cursorModeSnapshot) == "plan"
-  case "droid":
+  case "droid", "muse":
     return summary.interactionMode == "plan"
   case "opencode":
     return summary.opencodePermissionMode == "plan"
@@ -54,8 +52,9 @@ func workSessionIsPlanning(summary: AgentChatSessionSummary?) -> Bool {
     guard summary.acpConfigSnapshotWasCleared != true else { return false }
     return workAcpCurrentModeId(summary.acpConfigSnapshot) == "plan"
   case "copilot":
-    guard summary.acpConfigSnapshotWasCleared != true else { return false }
-    return workAcpCurrentModeId(summary.acpConfigSnapshot) == workCopilotPlanModeId
+    // Copilot is an SDK provider now: its Plan is the ladder level the host
+    // reports, not an ACP session-mode id.
+    return summary.copilotPermissionMode == "plan"
   default:
     return false
   }
@@ -65,7 +64,7 @@ func workSessionIsPlanning(summary: AgentChatSessionSummary?) -> Bool {
 /// `apps/desktop/src/shared/types/sessions.ts`.
 let workSessionActivityValues: Set<String> = [
   "planning", "exploring", "implementing", "testing", "debugging", "reviewing", "shipping", "monitoring",
-  "recording",
+  "recording", "compacting", "compaction_failed",
 ]
 
 /// The activity detail that refines a running Work row's one status slot:
@@ -80,11 +79,11 @@ func workSessionActivityDetailPresentation(
   phase: CanonicalSessionPhase,
   currentTurnStartedAt: String?
 ) -> WorkSessionStatusPresentation? {
-  guard phase == .running else { return nil }
+  guard phase == .running || session.activityStatus?.value == "compaction_failed" else { return nil }
 
   let hasLiveChatTurn = !isWorkChatToolType(session.toolType)
     || currentTurnStartedAt.flatMap(workParsedDate) != nil
-  guard hasLiveChatTurn,
+  guard (hasLiveChatTurn || session.activityStatus?.value == "compaction_failed"),
         let activityStatus = session.activityStatus,
         activityStatus.source == "agent" || activityStatus.source == "detected",
         workSessionActivityValues.contains(activityStatus.value),
@@ -97,13 +96,16 @@ func workSessionActivityDetailPresentation(
     .map { (workParsedDate(reportAt) ?? updatedAt) < $0 } ?? false)
   guard !isStaleForTurn else { return nil }
 
+  let failed = activityStatus.value == "compaction_failed"
+  let compacting = activityStatus.value == "compacting"
+  let tokens = activityStatus.contextTokens.map { " · \(workAbbreviateCount($0))" } ?? ""
   let isPlanning = activityStatus.value == "planning"
   let isRecording = activityStatus.value == "recording"
   return WorkSessionStatusPresentation(
-    label: activityStatus.value.capitalized,
-    tone: isRecording ? .red : isPlanning ? .violet : .blue,
-    glyph: ActivityGlyph(rawValue: activityStatus.value) ?? .working,
-    showsElapsed: true,
+    label: failed ? "Compaction failed" : compacting ? "Compacting…" + tokens : activityStatus.value.capitalized,
+    tone: failed ? .amber : isRecording ? .red : isPlanning ? .violet : .blue,
+    glyph: failed ? .failed : ActivityGlyph(rawValue: activityStatus.value) ?? .working,
+    showsElapsed: !failed,
     prominent: false,
     kind: nil,
     activityReportUpdatedAt: activityStatus.updatedAt

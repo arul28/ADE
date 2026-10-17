@@ -43,6 +43,32 @@ ade secrets delete STRIPE_API_KEY
 ade actions list --domain project_secret --text
 ```
 
+**Never ask the user to paste a secret into chat.** When you need a key,
+token, or webhook secret the project does not have yet, ask for it with the
+private secret card:
+
+```
+ade secrets request GITHUB_WEBHOOK_SECRET --reason "Signs GitHub deliveries to your triage webhook" --generate
+```
+
+The chat shows the user a password field (with a "Generate a strong one"
+button; `--generate` marks it as suggested). The command blocks until they
+answer and prints only the outcome — `{name, saved: true}`, `{name, saved:
+false, kept: true}` or `{name, saved: false, declined: true}` — never the
+value. Then use the secret by name without printing it, e.g.
+`gh secret set X --body "$(ade secrets get NAME --text)"`. If the user
+declines, carry on without it or explain what is blocked.
+
+## Webhook automations
+
+To run an agent whenever another service does something (GitHub, Stripe,
+Linear, Sentry, a deploy hook), read the **ade-webhooks** skill. The short
+version: `ade automations webhook create --preset github --filter
+body.action=opened --in-this-chat --text` makes the URL and the rule;
+`ade secrets request <NAME> --reason "…"` collects the signing secret without
+it ever entering chat; `ade automations webhook deliveries <wh-id> --text`
+shows what arrived and why it ran or was skipped.
+
 ## Socket mode
 
 Use `--socket` when the CLI and ADE desktop drawer must share live state. This matters for App Control, Apple devices / Preview Lab, browser tabs, terminal logs, context selection, and proof drawer updates. The **ade-app-control**, **ade-apple**, and **ade-browser** skills all assume it. `ade-ios-simulator` still resolves and points at **ade-apple**.
@@ -108,7 +134,12 @@ There is no silent `none` type.
 
 The type controls what happens to the parent when the child finishes: a
 `subagent` turn wakes or steers the parent, a `peer` turn only leaves a quiet
-completion note. `--no-parent` creates an unparented top-level session.
+completion note. `--no-parent` creates an unparented top-level session that
+neither nests under you nor wakes you. ADE still records it as launched by
+you: once it finishes, it stays out of Focus only while you are busy in the
+same lane, and only if it is not asking for anything. A helper that needs
+input, or one in another lane, stays visible, so `--no-parent` never hides
+work. Use `--type peer` for a fire-and-forget helper you want linked.
 
 For persistent Work chats, a subagent turn reports back with its child turn id
 and latest assistant summary whenever the parent still owns the child's
@@ -243,8 +274,8 @@ sessions. Running a removed command fails with that explanation.
 
 What to do instead when you finish: say so in your final message, and use
 `ade chat note "<one-line status>"` to leave a durable status line on the Work
-row. If you are blocked, `ade chat ask "<question>"` raises the row's hand.
-Update the note along the way as the state changes; do not wait until the end.
+row. If your reply asks the user anything, `ade chat ask "<question>"` raises
+the row's hand. Update the note along the way as the state changes; do not wait until the end.
 
 Lane and chat names are yours to keep accurate. When the work changes
 direction or moves to a new branch, rename the lane or the chat without asking.
@@ -271,11 +302,21 @@ They are two separate signals on the row the user is looking at:
   Bad: `Working`, `Still looking`, `Blocked`, or `Done`.
 - **`ade chat ask` raises the row's hand**, moving it to **Needs you**. Because
   a note alone never changes the phase, an idle row with only a note can read as
-  **Done** — when you are genuinely blocked on the user, call `note` for the
-  context and then `ask` for the exact question.
+  **Done** — whenever your reply asks the user a question or for a decision,
+  call `note` for the context and then `ask` for the exact question.
+- **Ask even while background work runs.** A chat whose subagents or monitors
+  are still running reads as **Working**, so a question at the end of your turn
+  is invisible unless you `ask`. "Ship this, or keep building?" and "Want me to
+  run the test now?" are asks; "Both agents are running, I'll report when they
+  land" is not, so do not `ask` for progress updates. If you forget, ADE may
+  raise the hand itself when it reads a question at the end of your turn.
 - **The next accepted user message clears the hand-raise** and the row returns
   to **Working** while the reply is handled. If the reply does not unblock you,
   leave an updated note and `ask` again.
+- **`ade notify --title "<t>" [--body "<b>"] [--open <ade link>]` pushes to the
+  user's phone**, only when they asked to be told (for example "tell me when the
+  deploy is done"). The account allows 60 an hour; the command exits non-zero
+  past that or when signed out.
 
 #### Activity detail on the card
 
@@ -312,8 +353,8 @@ them. The host derives the column; you never write it directly.
 Two rules follow from that:
 
 - **The column is derived, so keep the inputs true.** Call `ade chat note` when
-  the state changes, and call `ade chat ask` the moment you are actually blocked
-  on the user. A stale note makes a correct column read as the wrong work.
+  the state changes, and call `ade chat ask` whenever you need an answer or a
+  decision from the user, even while background work keeps running. A stale note makes a correct column read as the wrong work.
 - **Never claim a column.** There is no command that moves your own row. Do not
   say a row is Done; end the turn and leave a note.
 
@@ -465,6 +506,10 @@ ade shell start-cli codex --lane <lane> --model <m> --prompt "Fix"             #
 `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and `ultracode`; confirm
 model-specific support with `ade actions run chat.modelCatalog --json`.
 
+Composer drafts and their scheduled sends are a separate surface: `ade drafts
+list | create | schedule | update | delete | now | show` (actions `chat.*Draft`)
+saves unsent text, arms a send for a fire time, or manages an armed one.
+
 ## Other machines on the account
 
 Chats, lanes and devices on the user's other machines are reachable with
@@ -492,6 +537,36 @@ ade chat wait <id> --machine "Mac mini" --for idle --timeout-ms 900000
 - Build where the code runs: to build or test an iOS app from a Linux or
   Windows machine, start a subagent on the Mac rather than driving its
   simulator from here.
+
+### Moving this chat to another machine
+
+When the user says "continue this on the Mac mini" (or you need hardware
+another machine has), move the chat itself rather than starting a child:
+
+```bash
+ade chat handoff <session> --options --json        # where it can go, blockers and their fixes
+ade chat handoff <session> --machine "Mac mini" --model <model> \
+  --prompt "what to do first there" --when-turn-ends
+```
+
+- `--machine` here is the DESTINATION; the command runs on this machine.
+  Brief by default; `--fork` carries full history (same provider only).
+  Don't add `--machine` to `--cancel`/`--retry`/`--options`; it is refused.
+- You can only move your own chat, and it runs there at its own permission
+  level (mapped to the target model's provider, never broader): any
+  `--permissions`/`--sandbox` you pass is dropped.
+- If the last move is `unknown` (its answer was lost), a new move is refused.
+  Tell the user to check the other machine; `--retry` resends it, `--cancel`
+  dismisses it. A retry is refused when the chat changed since it was sent.
+- From inside your own turn you need `--when-turn-ends`: the move starts when
+  your turn ends, and any new message from the user cancels it.
+- `--include-changes` brings uncommitted and unpushed work; otherwise push
+  first (`ade git push --lane <lane>`). `--clone` sets a missing repo up there.
+- Unless the chat is full-auto, the user approves your request from the chat's
+  banner. Say that you asked, and stop; do not retry while it waits. If they
+  deny it, don't ask again (a new request is refused for two minutes).
+- Your `--prompt` is the first message the chat gets there, so write it as the
+  next instruction to yourself.
 
 ## Archived lanes, chats, and shells
 

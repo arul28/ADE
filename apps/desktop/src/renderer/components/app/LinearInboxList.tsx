@@ -93,14 +93,14 @@ export function LinearInboxList({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-linear-pane="inbox">
-      <div className="flex shrink-0 items-center gap-1 border-b border-white/[0.05] px-3 py-1.5">
+      <div className="flex shrink-0 items-center gap-1 border-b border-fg/[0.05] px-3 py-1.5">
         {(["unread", "all"] as const).map((mode) => (
           <button
             key={mode}
             type="button"
             className={cn(
               "rounded-md px-2 py-1 text-[11px] transition-colors",
-              (mode === "all") === includeRead ? "bg-white/[0.08] text-fg" : "text-muted-fg/60 hover:bg-white/[0.04] hover:text-fg/85",
+              (mode === "all") === includeRead ? "bg-fg/[0.08] text-fg" : "text-muted-fg/60 hover:bg-fg/[0.04] hover:text-fg/85",
             )}
             onClick={() => setIncludeRead(mode === "all")}
           >
@@ -129,7 +129,7 @@ export function LinearInboxList({
                 onClick={() => open(item)}
                 onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); open(item); } }}
                 className={cn(
-                  "group/inbox flex w-full items-start gap-2.5 border-b border-white/[0.04] px-3 py-2.5 text-left transition-colors hover:bg-white/[0.03]",
+                  "group/inbox flex w-full items-start gap-2.5 border-b border-fg/[0.04] px-3 py-2.5 text-left transition-colors hover:bg-fg/[0.03]",
                   !item.readAt && "bg-[color:var(--color-accent,#A78BFA)]/[0.03]",
                 )}
               >
@@ -158,7 +158,7 @@ export function LinearInboxList({
                       {item.issueIdentifier ? <span className="shrink-0 font-mono text-[11px] text-muted-fg/60">{item.issueIdentifier}</span> : null}
                       <span className="truncate">{item.issueTitle ?? item.title}</span>
                       {onLane ? (
-                        <span className="shrink-0 rounded-full border border-white/[0.1] px-1.5 py-[2px] text-[9.5px] leading-none text-muted-fg/70">Your lane</span>
+                        <span className="shrink-0 rounded-full border border-fg/[0.1] px-1.5 py-[2px] text-[9.5px] leading-none text-muted-fg/70">Your lane</span>
                       ) : null}
                     </span>
                   ) : null}
@@ -173,7 +173,7 @@ export function LinearInboxList({
                   type="button"
                   title="Archive"
                   aria-label="Archive"
-                  className="invisible mt-0.5 shrink-0 rounded p-1 text-muted-fg/50 transition-colors hover:bg-white/[0.06] hover:text-fg group-hover/inbox:visible"
+                  className="invisible mt-0.5 shrink-0 rounded p-1 text-muted-fg/50 transition-colors hover:bg-fg/[0.06] hover:text-fg group-hover/inbox:visible"
                   onClick={(event) => { event.stopPropagation(); void mark(item, "archive"); }}
                 >
                   <Archive size={13} />

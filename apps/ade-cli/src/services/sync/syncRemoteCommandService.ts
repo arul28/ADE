@@ -1,17 +1,32 @@
 import type { ChatLaunchService } from "../../../../desktop/src/main/services/chat/chatLaunchService";
+import { parseGitHubIssueCreateInput, parseGitHubIssueUpdate } from "../../../../desktop/src/shared/laneGitHubIssue";
+import { parseGitHubIssueListState } from "../../../../desktop/src/shared/githubIssueList";
+import type { JiraIssueListState, LaneJiraIssue } from "../../../../desktop/src/shared/types/jira";
+import type { LinearIssueCreateInput, SessionAttentionSource } from "../../../../desktop/src/shared/types";
 import { parsePrWatchMode, type GetPrChatWatchArgs, type SetPrChatWatchArgs } from "../../../../desktop/src/shared/prWatch";
 import { normalizeThreadCommentAnchor } from "../../../../desktop/src/shared/threadComments";
+import {
+  buildMcpAppContentSecurityPolicy,
+  MCP_APP_LIMITS,
+  MCP_APP_TOO_LARGE_FOR_REMOTE,
+  type McpAppRemoteDocument,
+} from "../../../../desktop/src/shared/mcpApp";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import {
   AGENT_CHAT_DROID_PERMISSION_MODE_VALUES,
+  AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES,
   droidPermissionModeFromLegacyPermissionMode,
   isAgentChatDroidPermissionMode,
   isAgentChatTurnRecoveryAction,
   normalizeAgentChatSessionMetadataFields,
 } from "../../../../desktop/src/shared/types/chat";
+import {
+  legacyPermissionModeFromMusePermissionMode,
+  musePermissionModeFromLegacyPermissionMode,
+} from "../../../../desktop/src/shared/modelPermissions";
 import { EXTERNAL_SESSION_PROVIDERS as EXTERNAL_SESSION_PROVIDER_LIST } from "../../../../desktop/src/shared/types/externalSessions";
 import { isAgentChatStopMode } from "../../../../desktop/src/shared/chatStopModes";
 import { accountRepoScopeKey } from "../../../../desktop/src/shared/accountSettingsScope";
@@ -68,6 +83,8 @@ import type {
   AgentChatParallelLaunchStateArgs,
   AgentChatPermissionMode,
   AgentChatPrepareCrossMachineHandoffArgs,
+  AgentChatStartCrossMachineHandoffArgs,
+  AgentChatPreviewCrossMachineHandoffArgs,
   AgentChatMarkCrossMachineHandoffArgs,
   AgentChatProvider,
   AgentChatRewindFilesArgs,
@@ -308,15 +325,16 @@ import type { createAiIntegrationService } from "../../../../desktop/src/main/se
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
 import type { createCursorCloudFleetService } from "../../../../desktop/src/main/services/chat/cursorCloudFleetService";
 import type { CloudAgentsService } from "../../../../desktop/src/main/services/chat/cloudAgentsService";
-import { resolveSmartLinkPreview } from "../../../../desktop/src/main/services/chat/smartLinkPreviewService";
+import { resolveSmartLinkImage, resolveSmartLinkPreview } from "../../../../desktop/src/main/services/chat/smartLinkPreviewService";
 import { getSourceFaviconService } from "../../../../desktop/src/main/services/chat/sourceFaviconService";
 import {
-  createPromptStash,
-  deletePromptStash,
-  listPromptStashes,
-} from "../../../../desktop/src/main/services/chat/promptStashService";
+  claimDraft,
+  createDraft,
+  deleteDraft,
+  listDrafts,
+  updateDraft,
+} from "../../../../desktop/src/main/services/chat/draftService";
 import { launchAgentChatCli } from "../../../../desktop/src/main/services/chat/agentChatCliLaunch";
-import { mergeAiConfig } from "../../../../desktop/src/main/services/config/projectConfigService";
 import { deleteApiKey } from "../../../../desktop/src/main/services/ai/apiKeyStore";
 import { resolveCodexComputerUseMcpConfig } from "../../../../desktop/src/main/utils/codexComputerUse";
 import type { createCtoStateService } from "../../../../desktop/src/main/services/cto/ctoStateService";
@@ -334,6 +352,7 @@ import type { createFileService } from "../../../../desktop/src/main/services/fi
 import { runGit } from "../../../../desktop/src/main/services/git/git";
 import type { createGitOperationsService } from "../../../../desktop/src/main/services/git/gitOperationsService";
 import type { createGithubService } from "../../../../desktop/src/main/services/github/githubService";
+import type { createJiraService } from "../../../../desktop/src/main/services/jira/jiraService";
 import type { createOperationService } from "../../../../desktop/src/main/services/history/operationService";
 import type { createAutoRebaseService } from "../../../../desktop/src/main/services/lanes/autoRebaseService";
 import type { createLaneEnvironmentService } from "../../../../desktop/src/main/services/lanes/laneEnvironmentService";
@@ -389,6 +408,8 @@ import type { SyncPinStore } from "./syncPinStore";
 import { compactChatEventForMobileWire } from "../../../../desktop/src/shared/chatMobileSlim";
 import type { ProxyService } from "../proxy/proxyService";
 import { noteSessionInputOrigin } from "../../../../desktop/src/main/services/chat/sessionInputOrigins";
+import { createWebhookRemoteCommandHandlers, type WebhookRemoteSource } from "./webhookRemoteCommands";
+import { createAutomationRuleRemoteCommandHandlers, type AutomationRuleRemoteSource } from "./automationRuleRemoteCommands";
 
 export type ExternalSessionsRemoteService = {
   list(args?: ExternalSessionListArgs): Promise<ExternalSessionSummary[]>;
@@ -538,6 +559,10 @@ export function measureSyncRemoteCommandResultBytes(result: unknown): number {
 }
 
 type SyncRemoteCommandServiceArgs = {
+  /** Webhook automations for phones and the web client (read-only); late-bound, null when absent. */
+  getWebhookAutomations?: () => WebhookRemoteSource | null;
+  /** Auto-handoff rules for the phone's session menu; late-bound, null when automations are off. */
+  getAutomationRules?: () => AutomationRuleRemoteSource | null;
   /** Overrides the result size limit. Tests only. */
   remoteCommandResultMaxBytes?: number;
   /**
@@ -564,6 +589,7 @@ type SyncRemoteCommandServiceArgs = {
   fileService: ReturnType<typeof createFileService>;
   gitService?: ReturnType<typeof createGitOperationsService>;
   githubService?: ReturnType<typeof createGithubService> | null;
+  getJiraService?: () => ReturnType<typeof createJiraService> | null;
   diffService?: ReturnType<typeof createDiffService>;
   conflictService?: ReturnType<typeof createConflictService>;
   operationService?: ReturnType<typeof createOperationService> | null;
@@ -995,6 +1021,13 @@ function parseGitHubGetIssueArgs(value: Record<string, unknown>): {
   };
 }
 
+function parseGitHubRepoArgs(value: Record<string, unknown>, command: string): { owner: string; name: string } {
+  return {
+    owner: requireString(value.owner, `${command} requires owner.`),
+    name: requireString(value.name, `${command} requires name.`),
+  };
+}
+
 function parseAttachGitHubIssueToSessionArgs(value: Record<string, unknown>): {
   chatSessionId: string;
   issues: LaneGitHubIssue[];
@@ -1020,6 +1053,36 @@ function parseDetachGitHubIssueFromSessionArgs(value: Record<string, unknown>): 
     chatSessionId: requireString(
       value.chatSessionId,
       "lanes.detachGitHubIssueFromSession requires chatSessionId.",
+    ),
+    ...(issueId ? { issueId } : {}),
+  };
+}
+
+function parseAttachJiraIssueToSessionArgs(value: Record<string, unknown>): {
+  chatSessionId: string;
+  issues: LaneJiraIssue[];
+} {
+  if (!Array.isArray(value.issues)) {
+    throw new Error("lanes.attachJiraIssueToSession requires an issues array.");
+  }
+  return {
+    chatSessionId: requireString(
+      value.chatSessionId,
+      "lanes.attachJiraIssueToSession requires chatSessionId.",
+    ),
+    issues: value.issues as LaneJiraIssue[],
+  };
+}
+
+function parseDetachJiraIssueFromSessionArgs(value: Record<string, unknown>): {
+  chatSessionId: string;
+  issueId?: string;
+} {
+  const issueId = asTrimmedString(value.issueId);
+  return {
+    chatSessionId: requireString(
+      value.chatSessionId,
+      "lanes.detachJiraIssueFromSession requires chatSessionId.",
     ),
     ...(issueId ? { issueId } : {}),
   };
@@ -1197,7 +1260,7 @@ function parseHandoffMode(value: unknown, action: string): "brief" | "fork" | un
 function parseAgentChatHandoffArgs(value: Record<string, unknown>): AgentChatHandoffArgs {
   const handoffNote = asTrimmedString(value.handoffNote);
   return {
-    ...(value as AgentChatHandoffArgs),
+    ...(withoutClientRuntimeActor(value) as AgentChatHandoffArgs),
     sourceSessionId: requireString(value.sourceSessionId, "chat.handoff requires sourceSessionId."),
     targetModelId: requireString(value.targetModelId, "chat.handoff requires targetModelId.") as AgentChatHandoffArgs["targetModelId"],
     ...(handoffNote ? { handoffNote } : {}),
@@ -1224,6 +1287,7 @@ function parseCrossMachineDestinationPreflightArgs(
     ),
     ...(mode !== undefined ? { mode } : {}),
     ...(sourceProvider ? { sourceProvider: sourceProvider as AgentChatProvider } : {}),
+    ...(value.hasGitBundle === true ? { hasGitBundle: true } : {}),
   };
 }
 
@@ -1242,21 +1306,32 @@ function parseFastForwardCrossMachineHandoffLaneArgs(
   };
 }
 
-function parsePrepareCrossMachineHandoffArgs(
+/**
+ * The fields a move and its prepare step share: the source chat, the target
+ * model and its settings, the mode and whether changes travel. `action`
+ * names the command in error messages.
+ */
+/** Copilot's round-3 chat fields, as the contract spells them. */
+const COPILOT_PERMISSION_MODE_VALUES = ["plan", "ask", "assisted", "auto-edit", "full-auto"] as const;
+const COPILOT_CONTEXT_TIER_VALUES = ["default", "long_context"] as const;
+const COPILOT_AUTO_TIER_VALUES = ["efficiency", "balance", "intelligence"] as const;
+
+function parseCrossMachineTargetArgs(
   value: Record<string, unknown>,
-): AgentChatPrepareCrossMachineHandoffArgs {
+  action: string,
+): Omit<AgentChatPrepareCrossMachineHandoffArgs, "handoffId"> {
   const parseNullableString = (key: string): string | null | undefined => {
     if (!(key in value)) return undefined;
     if (value[key] == null) return null;
     if (typeof value[key] !== "string") {
-      throw new Error(`chat.prepareCrossMachineHandoff ${key} must be a string or null.`);
+      throw new Error(`${action} ${key} must be a string or null.`);
     }
     return value[key].trim();
   };
   const parseBoolean = (key: string): boolean | undefined => {
     if (!(key in value)) return undefined;
     if (typeof value[key] !== "boolean") {
-      throw new Error(`chat.prepareCrossMachineHandoff ${key} must be a boolean.`);
+      throw new Error(`${action} ${key} must be a boolean.`);
     }
     return value[key];
   };
@@ -1264,7 +1339,7 @@ function parsePrepareCrossMachineHandoffArgs(
     if (!(key in value)) return undefined;
     const parsed = asTrimmedString(value[key]);
     if (!parsed || !allowed.includes(parsed as T)) {
-      throw new Error(`chat.prepareCrossMachineHandoff ${key} is invalid.`);
+      throw new Error(`${action} ${key} is invalid.`);
     }
     return parsed as T;
   };
@@ -1272,7 +1347,7 @@ function parsePrepareCrossMachineHandoffArgs(
     if (!("cursorConfigValues" in value)) return undefined;
     if (value.cursorConfigValues == null) return null;
     if (!isRecord(value.cursorConfigValues)) {
-      throw new Error("chat.prepareCrossMachineHandoff cursorConfigValues must be an object or null.");
+      throw new Error(`${action} cursorConfigValues must be an object or null.`);
     }
     const entries = Object.entries(value.cursorConfigValues).map(([rawKey, entryValue]) => {
       const key = rawKey.trim();
@@ -1284,7 +1359,7 @@ function parsePrepareCrossMachineHandoffArgs(
           || (typeof entryValue === "number" && Number.isFinite(entryValue))
         )
       ) {
-        throw new Error("chat.prepareCrossMachineHandoff cursorConfigValues contains an invalid entry.");
+        throw new Error(`${action} cursorConfigValues contains an invalid entry.`);
       }
       return [key, entryValue] as const;
     });
@@ -1294,42 +1369,97 @@ function parsePrepareCrossMachineHandoffArgs(
   const continuationPrompt = parseNullableString("continuationPrompt");
   const reasoningEffort = parseNullableString("reasoningEffort");
   const fastMode = parseBoolean("fastMode");
+  const fastTier = value.fastTier === "ultrafast" ? "ultrafast" as const : value.fastTier === null ? null : undefined;
   const claudePermissionMode = parseEnum("claudePermissionMode", ["default", "auto", "plan", "acceptEdits", "bypassPermissions"] as const);
   const codexApprovalPolicy = parseEnum("codexApprovalPolicy", ["untrusted", "on-request", "on-failure", "never"] as const);
   const codexSandbox = parseEnum("codexSandbox", ["read-only", "workspace-write", "danger-full-access"] as const);
   const codexConfigSource = parseEnum("codexConfigSource", ["flags", "config-toml"] as const);
   const opencodePermissionMode = parseEnum("opencodePermissionMode", ["plan", "edit", "full-auto", "config-toml"] as const);
   const droidPermissionMode = parseEnum("droidPermissionMode", AGENT_CHAT_DROID_PERMISSION_MODE_VALUES);
+  const musePermissionMode = parseEnum("musePermissionMode", AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES);
+  const copilotPermissionMode = parseEnum("copilotPermissionMode", COPILOT_PERMISSION_MODE_VALUES);
+  const copilotContextTier = parseEnum("copilotContextTier", COPILOT_CONTEXT_TIER_VALUES);
+  const copilotAutoTier = parseEnum("copilotAutoTier", COPILOT_AUTO_TIER_VALUES);
   const permissionMode = parseEnum("permissionMode", ["default", "auto", "plan", "edit", "full-auto", "config-toml"] as const);
   const cursorModeId = parseNullableString("cursorModeId");
   const cursorConfigValues = parseConfigValues();
-  const mode = parseHandoffMode(value.mode, "chat.prepareCrossMachineHandoff");
+  const mode = parseHandoffMode(value.mode, action);
+  const includeChanges = parseBoolean("includeChanges");
   return {
     sourceSessionId: requireString(
       value.sourceSessionId,
-      "chat.prepareCrossMachineHandoff requires sourceSessionId.",
+      `${action} requires sourceSessionId.`,
     ),
     ...(mode !== undefined ? { mode } : {}),
-    handoffId: requireString(
-      value.handoffId,
-      "chat.prepareCrossMachineHandoff requires handoffId.",
-    ),
     targetModelId: requireString(
       value.targetModelId,
-      "chat.prepareCrossMachineHandoff requires targetModelId.",
+      `${action} requires targetModelId.`,
     ) as AgentChatPrepareCrossMachineHandoffArgs["targetModelId"],
     ...(continuationPrompt !== undefined ? { continuationPrompt } : {}),
     ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
     ...(fastMode !== undefined ? { fastMode } : {}),
+    ...(fastTier !== undefined ? { fastTier } : {}),
     ...(claudePermissionMode !== undefined ? { claudePermissionMode } : {}),
     ...(codexApprovalPolicy !== undefined ? { codexApprovalPolicy } : {}),
     ...(codexSandbox !== undefined ? { codexSandbox } : {}),
     ...(codexConfigSource !== undefined ? { codexConfigSource } : {}),
     ...(opencodePermissionMode !== undefined ? { opencodePermissionMode } : {}),
     ...(droidPermissionMode !== undefined ? { droidPermissionMode } : {}),
+    ...(musePermissionMode !== undefined ? { musePermissionMode } : {}),
+    ...(copilotPermissionMode !== undefined ? { copilotPermissionMode } : {}),
+    ...(copilotContextTier !== undefined ? { copilotContextTier } : {}),
+    ...(copilotAutoTier !== undefined ? { copilotAutoTier } : {}),
     ...(permissionMode !== undefined ? { permissionMode } : {}),
     ...(cursorModeId !== undefined ? { cursorModeId } : {}),
     ...(cursorConfigValues !== undefined ? { cursorConfigValues } : {}),
+    ...(includeChanges !== undefined ? { includeChanges } : {}),
+  };
+}
+
+function parsePrepareCrossMachineHandoffArgs(
+  value: Record<string, unknown>,
+): AgentChatPrepareCrossMachineHandoffArgs {
+  return {
+    ...parseCrossMachineTargetArgs(value, "chat.prepareCrossMachineHandoff"),
+    handoffId: requireString(value.handoffId, "chat.prepareCrossMachineHandoff requires handoffId."),
+  };
+}
+
+/** The brain-owned move: the shared target fields plus where and when. */
+function parseStartCrossMachineHandoffArgs(
+  value: Record<string, unknown>,
+): AgentChatStartCrossMachineHandoffArgs {
+  const flag = (key: string): boolean | undefined => {
+    if (!(key in value)) return undefined;
+    if (typeof value[key] !== "boolean") throw new Error(`chat.startCrossMachineHandoff ${key} must be a boolean.`);
+    return value[key] as boolean;
+  };
+  const clone = flag("clone");
+  const whenTurnEnds = flag("whenTurnEnds");
+  return {
+    ...parseCrossMachineTargetArgs(value, "chat.startCrossMachineHandoff"),
+    machine: requireString(value.machine, "chat.startCrossMachineHandoff requires machine."),
+    ...(clone !== undefined ? { clone } : {}),
+    ...(whenTurnEnds !== undefined ? { whenTurnEnds } : {}),
+  };
+}
+
+function parsePreviewCrossMachineHandoffArgs(
+  value: Record<string, unknown>,
+): AgentChatPreviewCrossMachineHandoffArgs {
+  if ("includeChanges" in value && typeof value.includeChanges !== "boolean") {
+    throw new Error("chat.previewCrossMachineHandoff includeChanges must be a boolean.");
+  }
+  const mode = parseHandoffMode(value.mode, "chat.previewCrossMachineHandoff");
+  return {
+    sourceSessionId: requireString(value.sourceSessionId, "chat.previewCrossMachineHandoff requires sourceSessionId."),
+    machine: requireString(value.machine, "chat.previewCrossMachineHandoff requires machine."),
+    targetModelId: requireString(
+      value.targetModelId,
+      "chat.previewCrossMachineHandoff requires targetModelId.",
+    ) as AgentChatPreviewCrossMachineHandoffArgs["targetModelId"],
+    ...(mode !== undefined ? { mode } : {}),
+    ...(value.includeChanges === true ? { includeChanges: true } : {}),
   };
 }
 
@@ -1373,6 +1503,7 @@ function parseValidateCrossMachineSourceArgs(
       value.capsuleFingerprint,
       "chat.validateCrossMachineSource requires capsuleFingerprint.",
     ),
+    ...(typeof value.includeChanges === "boolean" ? { includeChanges: value.includeChanges } : {}),
   };
 }
 
@@ -1599,6 +1730,10 @@ async function summarizeChatSessionForRemote(
     ...(session.piSessionId ? { piSessionId: session.piSessionId } : {}),
     ...(session.piSessionFile ? { piSessionFile: session.piSessionFile } : {}),
     ...(session.droidPermissionMode ? { droidPermissionMode: session.droidPermissionMode } : {}),
+    ...(session.musePermissionMode ? { musePermissionMode: session.musePermissionMode } : {}),
+    ...(session.copilotPermissionMode ? { copilotPermissionMode: session.copilotPermissionMode } : {}),
+    ...(session.copilotContextTier ? { copilotContextTier: session.copilotContextTier } : {}),
+    ...(session.copilotAutoTier ? { copilotAutoTier: session.copilotAutoTier } : {}),
     ...(session.cursorModeSnapshot ? { cursorModeSnapshot: session.cursorModeSnapshot } : {}),
     ...(session.cursorModeId !== undefined ? { cursorModeId: session.cursorModeId } : {}),
     ...(session.cursorConfigValues ? { cursorConfigValues: session.cursorConfigValues } : {}),
@@ -1611,6 +1746,7 @@ async function summarizeChatSessionForRemote(
     status: session.status,
     currentTurnStartedAt: session.currentTurnStartedAt ?? null,
     idleSinceAt: session.idleSinceAt ?? null,
+    ...(session.promptCache ? { promptCache: session.promptCache } : {}),
     startedAt: session.createdAt,
     endedAt: null,
     lastActivityAt: session.lastActivityAt,
@@ -1686,6 +1822,9 @@ function parseListLanesArgs(value: Record<string, unknown>): ListLanesArgs {
   };
 }
 
+/** 10 MB of bytes as base64 (4 characters per 3 bytes). */
+const LINEAR_REMOTE_UPLOAD_MAX_BASE64 = Math.ceil((10 * 1024 * 1024) / 3) * 4;
+
 function parseCreateLaneArgs(value: Record<string, unknown>): CreateLaneArgs {
   return {
     name: requireString(value.name, "lanes.create requires name."),
@@ -1695,6 +1834,7 @@ function parseCreateLaneArgs(value: Record<string, unknown>): CreateLaneArgs {
     ...(asTrimmedString(value.branchName) ? { branchName: asTrimmedString(value.branchName)! } : {}),
     ...(asTrimmedString(value.startPoint) ? { startPoint: asTrimmedString(value.startPoint)! } : {}),
     ...(isRecord(value.linearIssue) ? { linearIssue: value.linearIssue as CreateLaneArgs["linearIssue"] } : {}),
+    ...(isRecord(value.githubIssue) ? { githubIssue: value.githubIssue as CreateLaneArgs["githubIssue"] } : {}),
   };
 }
 
@@ -1718,6 +1858,7 @@ function parseAgentChatLaunchCliArgs(value: Record<string, unknown>): AgentChatL
     ...(model ? { model } : {}),
     ...(reasoningEffort ? { reasoningEffort } : {}),
     ...(fastMode !== undefined ? { fastMode } : {}),
+    ...(value.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
     ...(permissionMode ? { permissionMode: permissionMode as AgentChatLaunchCliArgs["permissionMode"] } : {}),
     ...(asTrimmedString(value.instanceId) ? { instanceId: asTrimmedString(value.instanceId) } : {}),
     ...(asTrimmedString(value.presetId) ? { presetId: asTrimmedString(value.presetId) } : {}),
@@ -1971,6 +2112,7 @@ function parseStartCliSessionArgs(value: Record<string, unknown>): SyncStartCliS
     modelId: asTrimmedString(value.modelId),
     reasoningEffort: asTrimmedString(value.reasoningEffort),
     fastMode: asOptionalBoolean(value.fastMode) ?? asOptionalBoolean(value.codexFastMode),
+    ...(value.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
     instanceId: asTrimmedString(value.instanceId),
     presetId: asTrimmedString(value.presetId),
     credentialId: asTrimmedString(value.credentialId),
@@ -2115,15 +2257,35 @@ function sessionNeedsResumeTargetHydration(session: {
   );
 }
 
+/**
+ * Spawn lineage is a fact about the row, not its runtime state, so it applies
+ * to every chat row. Mirrors `projectChatOntoSession` on desktop: an absent
+ * field stays absent rather than becoming an explicit null.
+ */
+function projectChatLineage(
+  session: ReturnType<SyncRemoteCommandServiceArgs["ptyService"]["enrichSessions"]>[number],
+  chat: AgentChatSessionSummary,
+) {
+  return {
+    ...session,
+    ...(chat.orchestrationParentSessionId
+      ? { orchestrationParentSessionId: chat.orchestrationParentSessionId }
+      : {}),
+    ...(chat.launchedBySessionId ? { launchedBySessionId: chat.launchedBySessionId } : {}),
+    ...(chat.spawnKind ? { spawnKind: chat.spawnKind } : {}),
+  };
+}
+
 function projectChatOntoSession(
   session: ReturnType<SyncRemoteCommandServiceArgs["ptyService"]["enrichSessions"]>[number],
   chat: AgentChatSessionSummary,
 ) {
   const base = {
-    ...session,
+    ...projectChatLineage(session, chat),
     currentTurnStartedAt: chat.currentTurnStartedAt ?? null,
     ...(chat.steeringInput ? { steeringInput: true } : {}),
     ...(chat.asyncQuestion ? { asyncQuestion: true } : {}),
+    ...(chat.promptCache ? { chatPromptCache: chat.promptCache } : {}),
   };
   if (chat.awaitingInput) {
     return {
@@ -2286,7 +2448,7 @@ function mapPrAiPermissionMode(mode: PrAgentPermissionMode): AgentChatPermission
 function mapPrAiPermissionModeToNativeFields(
   mode: PrAgentPermissionMode,
   provider: string,
-): Partial<Pick<AgentChatCreateArgs, "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "cursorModeId">> {
+): Partial<Pick<AgentChatCreateArgs, "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "musePermissionMode" | "interactionMode" | "cursorModeId">> {
   const legacy = mapPrAiPermissionMode(mode);
   if (provider === "claude") {
     const map: Record<string, AgentChatClaudePermissionMode> = {
@@ -2315,6 +2477,11 @@ function mapPrAiPermissionModeToNativeFields(
     if (legacy === "default") return { droidPermissionMode: "read-only" };
     return { droidPermissionMode: droidPermissionModeFromLegacyPermissionMode(legacy) ?? "read-only" };
   }
+  if (provider === "muse") {
+    // Plan is Muse's read-only mode plus ADE's plan guidance.
+    if (legacy === "plan") return { musePermissionMode: "denyUnmatched", interactionMode: "plan" };
+    return { musePermissionMode: musePermissionModeFromLegacyPermissionMode(legacy) ?? "onRequest" };
+  }
   if (provider === "cursor") {
     if (legacy === "full-auto") return { cursorModeId: "full-auto" };
     if (legacy === "plan") return { cursorModeId: "plan" };
@@ -2330,7 +2497,7 @@ function mapPrAiPermissionModeToNativeFields(
 }
 
 function deriveAiPermissionModeFromSummary(
-  summary: Pick<AgentChatSessionSummary, "provider" | "permissionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "cursorModeId"> | null | undefined,
+  summary: Pick<AgentChatSessionSummary, "provider" | "permissionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "musePermissionMode" | "cursorModeId"> | null | undefined,
 ): PrAgentPermissionMode | null {
   if (!summary) return null;
   if (summary.permissionMode) return summary.permissionMode;
@@ -2353,6 +2520,9 @@ function deriveAiPermissionModeFromSummary(
     if (summary.droidPermissionMode === "auto-low" || summary.droidPermissionMode === "auto-medium") return "edit";
     if (summary.droidPermissionMode === "read-only") return "plan";
     return null;
+  }
+  if (summary.provider === "muse") {
+    return legacyPermissionModeFromMusePermissionMode(summary.musePermissionMode) ?? null;
   }
   if (summary.provider === "cursor") {
     if (summary.cursorModeId === "full-auto") return "full-auto";
@@ -2737,9 +2907,11 @@ async function listRemoteWorkSessions(
   if (chatSummaryBySessionId.size === 0) return visibleSessions;
 
   return visibleSessions.map((session) => {
-    if (!isChatToolType(session.toolType) || session.status !== "running") return session;
+    if (!isChatToolType(session.toolType)) return session;
     const chat = chatSummaryBySessionId.get(session.id);
     if (!chat) return session;
+    // Runtime fields are projected for running rows only; lineage for all chat rows.
+    if (session.status !== "running") return projectChatLineage(session, chat);
     return projectChatOntoSession(session, chat);
   });
 }
@@ -2782,10 +2954,25 @@ function parseAgentChatGetSummaryArgs(value: Record<string, unknown>): AgentChat
   };
 }
 
+/**
+ * A phone or web client is one of the user's own clients, and only the RPC
+ * server stamps `runtimeActor`. Any copy the payload carries, at the top level
+ * or under `chat.create` (a launch), is removed before the launch parsers see it.
+ */
+function withoutClientRuntimeActor(value: Record<string, unknown>): Record<string, unknown> {
+  const { runtimeActor: _topLevel, ...rest } = value;
+  const chat = isRecord(rest.chat) ? rest.chat : null;
+  const create = chat && isRecord(chat.create) ? chat.create : null;
+  if (!chat || !create) return rest;
+  const { runtimeActor: _nested, ...createRest } = create;
+  return { ...rest, chat: { ...chat, create: createRest } };
+}
+
 function parseAgentChatCreateArgs(value: Record<string, unknown>): AgentChatCreateArgs {
+  const clientValue = withoutClientRuntimeActor(value);
   return {
-    laneId: requireString(value.laneId, "chat.create requires laneId."),
-    ...parseAgentChatCreateFields(value),
+    laneId: requireString(clientValue.laneId, "chat.create requires laneId."),
+    ...parseAgentChatCreateFields(clientValue),
   };
 }
 
@@ -2980,6 +3167,7 @@ function parseAgentChatUpdateSessionArgs(value: Record<string, unknown>): AgentC
 
   if ("title" in value) parsed.title = value.title == null ? null : asTrimmedString(value.title) ?? null;
   if ("modelId" in value) parsed.modelId = value.modelId == null ? undefined : asTrimmedString(value.modelId) as AgentChatUpdateSessionArgs["modelId"];
+  if ("presetId" in value) parsed.presetId = value.presetId == null ? null : asTrimmedString(value.presetId) ?? null;
   if ("reasoningEffort" in value) parsed.reasoningEffort = value.reasoningEffort == null ? null : asTrimmedString(value.reasoningEffort) ?? null;
   if ("permissionMode" in value) parsed.permissionMode = value.permissionMode == null ? undefined : asTrimmedString(value.permissionMode) as AgentChatUpdateSessionArgs["permissionMode"];
   if ("interactionMode" in value) parsed.interactionMode = value.interactionMode == null ? null : asTrimmedString(value.interactionMode) as AgentChatUpdateSessionArgs["interactionMode"];
@@ -2990,13 +3178,25 @@ function parseAgentChatUpdateSessionArgs(value: Record<string, unknown>): AgentC
   if ("fastMode" in value || "codexFastMode" in value) {
     parsed.fastMode = asOptionalBoolean(value.fastMode) ?? asOptionalBoolean(value.codexFastMode);
   }
+  // Fast's tier: "ultrafast", or null for plain Fast. A value this host does
+  // not know (a newer client's tier) leaves the stored tier alone rather than
+  // downgrading it, as the cross-machine target parser does.
+  if (value.fastTier === "ultrafast") parsed.fastTier = "ultrafast";
+  else if ("fastTier" in value && value.fastTier === null) parsed.fastTier = null;
   if ("opencodePermissionMode" in value) parsed.opencodePermissionMode = value.opencodePermissionMode == null ? undefined : asTrimmedString(value.opencodePermissionMode) as AgentChatUpdateSessionArgs["opencodePermissionMode"];
   if ("droidPermissionMode" in value) parsed.droidPermissionMode = value.droidPermissionMode == null ? undefined : asTrimmedString(value.droidPermissionMode) as AgentChatUpdateSessionArgs["droidPermissionMode"];
+  if ("musePermissionMode" in value) parsed.musePermissionMode = value.musePermissionMode == null ? undefined : asTrimmedString(value.musePermissionMode) as AgentChatUpdateSessionArgs["musePermissionMode"];
+  if ("copilotPermissionMode" in value) parsed.copilotPermissionMode = value.copilotPermissionMode == null ? undefined : asTrimmedString(value.copilotPermissionMode) as AgentChatUpdateSessionArgs["copilotPermissionMode"];
+  if ("copilotContextTier" in value) parsed.copilotContextTier = value.copilotContextTier == null ? undefined : asTrimmedString(value.copilotContextTier) as AgentChatUpdateSessionArgs["copilotContextTier"];
+  // A cleared Auto profile is an explicit null: it returns the chat to SDK routing.
+  if ("copilotAutoTier" in value) parsed.copilotAutoTier = value.copilotAutoTier == null ? null : asTrimmedString(value.copilotAutoTier) as AgentChatUpdateSessionArgs["copilotAutoTier"];
   if ("cursorModeId" in value) parsed.cursorModeId = value.cursorModeId == null ? null : asTrimmedString(value.cursorModeId) ?? null;
   if ("cursorConfigValues" in value) {
     parsed.cursorConfigValues = parseCursorConfigValues(value.cursorConfigValues);
   }
   if ("manuallyNamed" in value) parsed.manuallyNamed = value.manuallyNamed === true;
+  // Claude session tag (desktop's "Set tag…"). Empty or null clears it.
+  if ("tag" in value) parsed.tag = value.tag == null ? null : asTrimmedString(value.tag) ?? null;
   if (value.spawnKind === "subagent" || value.spawnKind === "peer") {
     parsed.spawnKind = value.spawnKind;
   }
@@ -3219,6 +3419,7 @@ function parseGitListRecentCommitsArgs(value: Record<string, unknown>): GitListR
     limit: asOptionalNumber(value.limit),
     ...(skip != null ? { skip } : {}),
     ...(scope ? { scope } : {}),
+    ...(value.includeCoAuthors === true ? { includeCoAuthors: true } : {}),
   };
 }
 
@@ -3436,6 +3637,7 @@ function parseChatModelsArgs(value: Record<string, unknown>): {
 const MODEL_CATALOG_REFRESH_PROVIDERS = new Set<AgentChatModelCatalogRefreshProvider>([
   "opencode",
   "pi",
+  "muse",
   "cursor",
   "droid",
   "lmstudio",
@@ -4014,12 +4216,14 @@ async function resolveChatCreateArgs<T extends AgentChatCreateArgs>(
   if (payload.model.trim().length > 0) return payload;
   const available = await service.getAvailableModels({
     provider: payload.provider,
-    // ACP providers are here for the same reason as OpenCode/Pi: their model
-    // rows are gated on a CLI auth pass, and `activateRuntime` refreshes that
-    // pass. It does not spawn an agent for them.
+    // Qwen, Kimi and Grok are here for the same reason as OpenCode/Pi: their
+    // model rows are gated on a CLI auth pass, and `activateRuntime` refreshes
+    // that pass. It does not spawn an agent for them. Copilot reads its models
+    // from the SDK, so `activateRuntime` refreshes that read.
     ...(
       payload.provider === "opencode"
       || payload.provider === "pi"
+      || payload.provider === "muse"
       || payload.provider === "qwen"
       || payload.provider === "kimi"
       || payload.provider === "grok"
@@ -4047,7 +4251,7 @@ function sessionStatusBucket(argsIn: {
   settleOverride?: "settled" | "active" | null;
   attentionRequestedAt?: string | null;
   pendingInputItemId?: string | null;
-  attentionSource?: "agent_explicit" | "provider_structured" | "user" | null;
+  attentionSource?: SessionAttentionSource | null;
   lastTurnFailedAt?: string | null;
 }): "running" | "awaiting-input" | "ended" {
   // Mirrors the settled-tier precedence in shared/sessionCanonicalState.ts:
@@ -4444,6 +4648,21 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
     args.laneService.listGitHubIssuesForLaneSessions({
       laneId: requireString(payload.laneId, "lanes.listGitHubIssuesForLaneSessions requires laneId."),
     }));
+  register("lanes.attachJiraIssueToSession", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.laneService.attachJiraIssueToSession(parseAttachJiraIssueToSessionArgs(payload)));
+  register("lanes.detachJiraIssueFromSession", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.laneService.detachJiraIssueFromSession(parseDetachJiraIssueFromSessionArgs(payload)));
+  register("lanes.listJiraIssuesForSession", { viewerAllowed: true }, async (payload) =>
+    args.laneService.listJiraIssuesForSession({
+      chatSessionId: requireString(
+        payload.chatSessionId,
+        "lanes.listJiraIssuesForSession requires chatSessionId.",
+      ),
+    }));
+  register("lanes.listJiraIssuesForLaneSessions", { viewerAllowed: true }, async (payload) =>
+    args.laneService.listJiraIssuesForLaneSessions({
+      laneId: requireString(payload.laneId, "lanes.listJiraIssuesForLaneSessions requires laneId."),
+    }));
   register("lanes.rebaseStart", { viewerAllowed: true, queueable: true }, async (payload) => args.laneService.rebaseStart(parseRebaseStartArgs(payload)));
   register("lanes.rebasePush", { viewerAllowed: true, queueable: true }, async (payload) => args.laneService.rebasePush(parseRebasePushArgs(payload)));
   register("lanes.rebaseRollback", { viewerAllowed: true, queueable: true }, async (payload) => args.laneService.rebaseRollback(parseRunIdArgs(payload, "lanes.rebaseRollback")));
@@ -4509,7 +4728,7 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("lanes.getDeleteRisk", { viewerAllowed: true }, async (payload) =>
     args.laneService.getDeleteRisk(requireString(payload.laneId, "lanes.getDeleteRisk requires laneId.")));
   register("lanes.getReclaimRisk", { viewerAllowed: true }, async (payload) =>
-    args.laneService.getReclaimRisk(requireString(payload.laneId, "lanes.getReclaimRisk requires laneId.")));
+    args.laneService.getReclaimRisk({ laneId: requireString(payload.laneId, "lanes.getReclaimRisk requires laneId.") }));
   register("lanes.getEnvStatus", { viewerAllowed: true }, async (payload) => args.laneEnvironmentService?.getProgress(requireString(payload.laneId, "lanes.getEnvStatus requires laneId.")) ?? null);
   // Both route through the one shared setup path (template merged over the
   // project config). Active lanes only, as the sync host always resolved them.
@@ -4732,6 +4951,7 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
           model: resolvedModel,
           reasoningEffort: parsed.reasoningEffort ?? null,
           fastMode: parsed.fastMode ?? null,
+          ...(provider === "codex" && parsed.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
           ...(resolvedInstance ? { instanceId: resolvedInstance.id } : {}),
           ...(parsed.presetId ? { presetId: parsed.presetId } : {}),
           ...(parsed.credentialId ? { credentialId: parsed.credentialId } : {}),
@@ -4754,6 +4974,7 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
         model: parsed.modelId ?? parsed.model ?? undefined,
         reasoningEffort: parsed.reasoningEffort ?? undefined,
         fastMode: parsed.fastMode ?? undefined,
+        ...(provider === "codex" && parsed.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
         initialPrompt: parsed.initialInput,
         laneWorktreePath: resolveLaneWorktreePathForSync(args, parsed.laneId),
         ...(provider === "codex" ? { codexComputerUse } : {}),
@@ -4909,17 +5130,64 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
       linearIssueTracker,
     });
   });
+  // A link hover card's og:image. Machine-level and public-only (the resolver
+  // pins DNS to public hosts on every hop), so no project is needed.
+  register("chat.resolveSmartLinkImage", { viewerAllowed: true, observesAbort: true }, async (payload) =>
+    resolveSmartLinkImage({ url: requireString(payload.url, "chat.resolveSmartLinkImage requires url.") }), "runtime");
   // Sources favicons (hosted web, iOS). Machine-level: no project needed, so a
   // personal chat's Sources list gets icons too. The resolver only ever talks
   // to public HTTPS hosts; see chat/sourceFaviconService.ts.
   register("chat.resolveSourceFavicons", { viewerAllowed: true }, async (payload) =>
     getSourceFaviconService().resolve(payload), "runtime");
+  // MCP Apps (shared/mcpApp.ts). The page a phone gets is bounded, and it
+  // comes with the policy the phone must serve it with: the brain builds that
+  // string, from what the resource declared, and the phone builds none.
+  register("chat.getMcpApp", { viewerAllowed: true }, async (payload) => {
+    const result = await requireService(args.agentChatService, "Agent chat service not available.").getMcpApp({
+      sessionId: requireString(payload.sessionId, "chat.getMcpApp requires sessionId."),
+      itemId: requireString(payload.itemId, "chat.getMcpApp requires itemId."),
+    });
+    if (result.status !== "ready") return result;
+    if (Buffer.byteLength(result.app.html, "utf8") > MCP_APP_LIMITS.maxRemoteDocumentBytes) {
+      return { status: "unavailable" as const, reason: MCP_APP_TOO_LARGE_FOR_REMOTE };
+    }
+    const app: McpAppRemoteDocument = {
+      ...result.app,
+      contentSecurityPolicy: buildMcpAppContentSecurityPolicy(result.app.csp, { sandbox: true }),
+    };
+    return { status: "ready" as const, app };
+  });
+  // Not for a viewer: this is what runs a tool. `userActivated` is the
+  // controller's own word that the user just tapped inside the app's frame.
+  // `controllerAllowed` is what lets the owner's own phone through:
+  // `viewerAllowed: false` alone refuses every paired device.
+  register("chat.mcpAppRequest", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) => {
+    const method = payload.method === "tools/call" || payload.method === "resources/read" ? payload.method : null;
+    if (!method) throw new Error("chat.mcpAppRequest requires method tools/call or resources/read.");
+    return requireService(args.agentChatService, "Agent chat service not available.").mcpAppRequest({
+      sessionId: requireString(payload.sessionId, "chat.mcpAppRequest requires sessionId."),
+      itemId: requireString(payload.itemId, "chat.mcpAppRequest requires itemId."),
+      method,
+      params: payload.params,
+      userActivated: payload.userActivated === true,
+    });
+  });
   // Bound the registry sent to a phone: a project can discover hundreds of
   // skill/command files, and the composer only ever renders a prefix list.
   register("chat.getSlashCommands", { viewerAllowed: true }, async (payload) =>
-    requireService(args.agentChatService, "Agent chat service not available.").getSlashCommands(
+    (await requireService(args.agentChatService, "Agent chat service not available.").getSlashCommands(
       parseAgentChatSlashCommandsArgs(payload),
-    ).slice(0, 200));
+    )).slice(0, 200));
+  // Composer @-mention suggestions for iOS. Read-only and project-scoped, like
+  // the slash-command list; machine rows are read inside the brain, so a
+  // viewer never needs the CTO-only account actions.
+  register("chat.listMentionSuggestions", { viewerAllowed: true }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").listMentionSuggestions({
+      query: typeof payload.query === "string" ? payload.query : "",
+      ...(typeof payload.excludeSessionId === "string" && payload.excludeSessionId.trim()
+        ? { excludeSessionId: payload.excludeSessionId.trim() }
+        : {}),
+    }));
   register("chat.getParallelLaunchState", { viewerAllowed: true }, async (payload) => {
     const db = requireService(args.db, "Database not available.");
     const parsed = parseAgentChatParallelLaunchStateArgs(payload);
@@ -4960,6 +5228,42 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     requireService(args.agentChatService, "Agent chat service not available.").markCrossMachineHandoff(
       parseMarkCrossMachineHandoffArgs(payload),
     ));
+  // The brain-owned move (crossMachineHandoffOrchestrator). A phone or paired
+  // desktop is the person, so a start from here is never agent-requested.
+  register("chat.getCrossMachineHandoffOptions", { viewerAllowed: true }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").getCrossMachineHandoffOptions({
+      sourceSessionId: requireString(payload.sourceSessionId, "chat.getCrossMachineHandoffOptions requires sourceSessionId."),
+    }));
+  // Read-only: asks the destination through this brain's own transport.
+  register("chat.previewCrossMachineHandoff", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").previewCrossMachineHandoff(
+      parsePreviewCrossMachineHandoffArgs(payload),
+    ));
+  register("chat.startCrossMachineHandoff", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").startCrossMachineHandoff({
+      ...parseStartCrossMachineHandoffArgs(payload),
+      requestedBy: "user",
+    }));
+  register("chat.cancelCrossMachineHandoff", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").cancelCrossMachineHandoff({
+      sourceSessionId: requireString(payload.sourceSessionId, "chat.cancelCrossMachineHandoff requires sourceSessionId."),
+    }));
+  register("chat.retryCrossMachineHandoff", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").retryCrossMachineHandoff({
+      sourceSessionId: requireString(payload.sourceSessionId, "chat.retryCrossMachineHandoff requires sourceSessionId."),
+      ...(payload.asBrief === true ? { asBrief: true } : {}),
+    }));
+  register("chat.resolveCrossMachineHandoffApproval", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").resolveCrossMachineHandoffApproval({
+      sourceSessionId: requireString(payload.sourceSessionId, "chat.resolveCrossMachineHandoffApproval requires sourceSessionId."),
+      handoffId: requireString(payload.handoffId, "chat.resolveCrossMachineHandoffApproval requires handoffId."),
+      approve: payload.approve === true,
+    }));
+  register("chat.acknowledgeCrossMachineHandoff", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").acknowledgeCrossMachineHandoff({
+      sourceSessionId: requireString(payload.sourceSessionId, "chat.acknowledgeCrossMachineHandoff requires sourceSessionId."),
+      handoffId: requireString(payload.handoffId, "chat.acknowledgeCrossMachineHandoff requires handoffId."),
+    }));
   register("chat.getContextUsage", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").getContextUsage(
       parseAgentChatContextUsageArgs(payload),
@@ -5007,14 +5311,31 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     }
     return readAttachmentChunk(filePath, payload.offset, payload.length);
   });
-  register("chat.listPromptStashes", { viewerAllowed: true }, async () =>
-    listPromptStashes(requireService(args.db, "Database not available.")));
-  register("chat.createPromptStash", { viewerAllowed: true }, async (payload) =>
-    createPromptStash(requireService(args.db, "Database not available."), payload));
-  register("chat.deletePromptStash", { viewerAllowed: true }, async (payload) => {
+  register("chat.listDrafts", { viewerAllowed: true }, async () =>
+    listDrafts(requireService(args.db, "Database not available.")));
+  register("chat.createDraft", { viewerAllowed: true }, async (payload) =>
+    createDraft(requireService(args.db, "Database not available."), payload));
+  register("chat.deleteDraft", { viewerAllowed: true }, async (payload) => {
     const id = typeof payload.id === "string" ? payload.id.trim() : "";
-    if (!id) throw new Error("Missing prompt stash id.");
-    return deletePromptStash(requireService(args.db, "Database not available."), id);
+    if (!id) throw new Error("Missing draft id.");
+    return deleteDraft(requireService(args.db, "Database not available."), id);
+  });
+  register("chat.updateDraft", { viewerAllowed: true }, async (payload) =>
+    updateDraft(requireService(args.db, "Database not available."), payload));
+  // Claim-first restore: the host deletes the row and hands back the text, and
+  // a null result is the caller's signal that another machine got there first.
+  register("chat.claimDraft", { viewerAllowed: true }, async (payload) => {
+    const id = typeof payload.id === "string" ? payload.id.trim() : "";
+    if (!id) throw new Error("Missing draft id.");
+    return claimDraft(requireService(args.db, "Database not available."), id);
+  });
+  // Delivering takes the same exactly-once claim the scheduler does, so it
+  // belongs to the chat service rather than the draft store.
+  register("chat.sendDraftNow", { viewerAllowed: true }, async (payload) => {
+    const id = typeof payload.id === "string" ? payload.id.trim() : "";
+    if (!id) throw new Error("Missing draft id.");
+    return await requireService(args.agentChatService, "Agent chat service not available.")
+      .sendDraftNow(id);
   });
   // Thread comments: the user's pending notes on parts of an agent reply. The
   // host's chat service validates every field; these only route.
@@ -5289,7 +5610,7 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   // minutes later from an offline outbox would surprise everyone.
   const requireChatLaunchService = () => requireService(args.chatLaunchService, "New-lane launches are not available on this host.");
   register("chat.startLaunch", { viewerAllowed: true }, async (payload) =>
-    requireChatLaunchService().start(parseChatLaunchArgs(payload)));
+    requireChatLaunchService().start(parseChatLaunchArgs(withoutClientRuntimeActor(payload))));
   register("chat.getLaunch", { viewerAllowed: true }, async (payload) =>
     requireChatLaunchService().get(parseChatLaunchIdArgs(payload, "chat.getLaunch")));
   register("chat.listLaunches", { viewerAllowed: true }, async () => args.chatLaunchService?.list() ?? []);
@@ -6113,6 +6434,29 @@ function registerProviderAccountRemoteCommands({ args, register }: RemoteCommand
 }
 
 /**
+ * Auto-handoff rules (`automations.list` / `saveDraft` / `deleteRule`). Not
+ * advertised unless the runtime wires a source, so the phone hides
+ * "Auto handoff…" on a host without automations.
+ */
+function registerAutomationRuleRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
+  const getAutomationRules = args.getAutomationRules;
+  if (!getAutomationRules) return;
+  const resolve = (): AutomationRuleRemoteSource => {
+    const source = getAutomationRules();
+    if (!source) throw new Error("Automations are not available on this machine.");
+    return source;
+  };
+  const entries = createAutomationRuleRemoteCommandHandlers({
+    list: () => resolve().list(),
+    saveDraft: (req) => resolve().saveDraft(req),
+    deleteRule: (input) => resolve().deleteRule(input),
+  });
+  for (const entry of entries) {
+    register(entry.action, entry.policy, async (payload) => entry.handler(payload));
+  }
+}
+
+/**
  * Apple device environment for remote surfaces.
  *
  * Project-scoped like `workTools.*` — a lane only exists inside a project — and
@@ -6120,6 +6464,29 @@ function registerProviderAccountRemoteCommands({ args, register }: RemoteCommand
  * Windows brain or a chat-only runtime advertises no `apple.*` action at all
  * rather than a namespace whose every call throws.
  */
+function registerWebhookRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
+  // Not advertised unless the runtime wires a source, so a client's
+  // capability check hides the Webhooks pane on such a host.
+  const getWebhookAutomations = args.getWebhookAutomations;
+  if (!getWebhookAutomations) return;
+  // Late-bound: the ingress service that owns webhook URLs can start after
+  // this registry exists, and a runtime without automations has none.
+  const resolve = (): WebhookRemoteSource => {
+    const source = getWebhookAutomations();
+    if (!source) throw new Error("Webhook automations are not available on this machine.");
+    return source;
+  };
+  const entries = createWebhookRemoteCommandHandlers({
+    // No automations here yet (or at all) reads as no webhooks.
+    list: async () => (await getWebhookAutomations()?.list()) ?? [],
+    listDeliveries: (input) => resolve().listDeliveries(input),
+    getDelivery: (input) => resolve().getDelivery(input),
+  });
+  for (const entry of entries) {
+    register(entry.action, entry.policy, async (payload) => entry.handler(payload));
+  }
+}
+
 function registerAppleRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   const service = args.appleDeviceService;
   if (!service) return;
@@ -6424,7 +6791,48 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
       ...(priority !== undefined ? { priority } : {}),
       ...(addedLabelIds.length ? { addedLabelIds } : {}),
       ...(removedLabelIds.length ? { removedLabelIds } : {}),
+      ...(typeof payload.title === "string" && payload.title.trim() ? { title: payload.title } : {}),
+      ...(typeof payload.description === "string" ? { description: payload.description } : {}),
     });
+  });
+  register("cto.createLinearIssue", { viewerAllowed: true }, async (payload) => {
+    const linearIssueTracker = await getConnectedLinearIssueTracker(args);
+    if (!linearIssueTracker) throw new Error("Linear is not connected on this machine.");
+    // The tracker reads the request (`parseLinearIssueCreateInput`).
+    return linearIssueTracker.createIssue(payload as unknown as LinearIssueCreateInput);
+  });
+  register("cto.getLinearIssueCreateOptions", { viewerAllowed: true }, async (payload) => {
+    const linearIssueTracker = await getConnectedLinearIssueTracker(args);
+    if (!linearIssueTracker) throw new Error("Linear is not connected on this machine.");
+    return linearIssueTracker.getIssueCreateOptions(requireString(payload.teamKey, "cto.getLinearIssueCreateOptions requires teamKey."));
+  });
+  register("cto.listLinearProjectMilestones", { viewerAllowed: true }, async (payload) => {
+    const projectId = asTrimmedString(payload.projectId);
+    const linearIssueTracker = projectId ? await getConnectedLinearIssueTracker(args) : null;
+    return linearIssueTracker && projectId ? linearIssueTracker.listProjectMilestones(projectId) : [];
+  });
+  // A picture pasted into the create form on the web client or a phone. The
+  // bytes cross the sync channel, so they are capped well below Linear's own
+  // 50 MB limit.
+  register("cto.uploadLinearFile", { viewerAllowed: true }, async (payload) => {
+    const dataBase64 = requireString(payload.dataBase64, "cto.uploadLinearFile requires dataBase64.");
+    if (dataBase64.length > LINEAR_REMOTE_UPLOAD_MAX_BASE64) {
+      throw new Error("That file is over the 10 MB limit for uploads from another device.");
+    }
+    const linearIssueTracker = await getConnectedLinearIssueTracker(args);
+    if (!linearIssueTracker) throw new Error("Linear is not connected on this machine.");
+    return linearIssueTracker.uploadFile({
+      filename: asTrimmedString(payload.filename) ?? "upload",
+      contentType: asTrimmedString(payload.contentType) ?? "application/octet-stream",
+      dataBase64,
+    });
+  });
+  register("cto.createLinearIssueComment", { viewerAllowed: true }, async (payload) => {
+    const issueId = requireString(payload.issueId, "cto.createLinearIssueComment requires issueId.");
+    const body = requireString(payload.body, "cto.createLinearIssueComment requires body.");
+    const linearIssueTracker = await getConnectedLinearIssueTracker(args);
+    if (!linearIssueTracker) throw new Error("Linear is not connected on this machine.");
+    return linearIssueTracker.createComment(issueId, body);
   });
   register("cto.getLinearIssueComments", { viewerAllowed: true }, async (payload) => {
     const issueId = asTrimmedString(payload.issueId);
@@ -6645,6 +7053,76 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
       parsed.number,
     );
   });
+  // The issue viewer and the GitHub Issues pane (see docs/features/issues).
+  register("github.getRepoIssueSummary", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+    const { owner, name } = parseGitHubRepoArgs(payload, "github.getRepoIssueSummary");
+    return requireService(args.githubService, "GitHub service not available.").getRepoIssueSummary(owner, name);
+  });
+  register("github.listRepoIssueList", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+    const { owner, name } = parseGitHubRepoArgs(payload, "github.listRepoIssueList");
+    return requireService(args.githubService, "GitHub service not available.").listRepoIssueList(owner, name, parseGitHubIssueListState(payload.state));
+  });
+  register("github.listIssueComments", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+    const parsed = parseGitHubGetIssueArgs(payload);
+    return requireService(args.githubService, "GitHub service not available.").listIssueComments(
+      parsed.owner,
+      parsed.name,
+      parsed.number,
+    );
+  });
+  register("github.getIssueWriteAccess", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+    const { owner, name } = parseGitHubRepoArgs(payload, "github.getIssueWriteAccess");
+    return requireService(args.githubService, "GitHub service not available.").getIssueWriteAccess(owner, name, {
+      force: payload.force === true,
+    });
+  });
+  register("github.listRepoMilestones", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+    const { owner, name } = parseGitHubRepoArgs(payload, "github.listRepoMilestones");
+    return requireService(args.githubService, "GitHub service not available.").listRepoMilestones(owner, name);
+  });
+  register("github.listRepoLabels", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+    const { owner, name } = parseGitHubRepoArgs(payload, "github.listRepoLabels");
+    return requireService(args.githubService, "GitHub service not available.").listRepoLabels(owner, name);
+  });
+  register("github.listRepoCollaborators", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+    const { owner, name } = parseGitHubRepoArgs(payload, "github.listRepoCollaborators");
+    return requireService(args.githubService, "GitHub service not available.").listRepoCollaborators(owner, name);
+  });
+  register("github.createIssue", { viewerAllowed: true }, async (payload) => {
+    const { owner, name } = parseGitHubRepoArgs(payload, "github.createIssue");
+    return requireService(args.githubService, "GitHub service not available.").createIssue(
+      owner,
+      name,
+      parseGitHubIssueCreateInput(payload.input),
+    );
+  });
+  register("github.listIssueTemplates", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+    const { owner, name } = parseGitHubRepoArgs(payload, "github.listIssueTemplates");
+    return requireService(args.githubService, "GitHub service not available.").listIssueTemplates(owner, name);
+  });
+  register("github.listIssueTypes", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+    const { owner } = parseGitHubRepoArgs(payload, "github.listIssueTypes");
+    return requireService(args.githubService, "GitHub service not available.").listIssueTypes(owner);
+  });
+  register("github.updateIssue", { viewerAllowed: true }, async (payload) => {
+    const parsed = parseGitHubGetIssueArgs(payload);
+    return requireService(args.githubService, "GitHub service not available.").updateIssue(
+      parsed.owner,
+      parsed.name,
+      parsed.number,
+      parseGitHubIssueUpdate(payload.patch),
+    );
+  });
+  register("github.commentOnIssue", { viewerAllowed: true }, async (payload) => {
+    const parsed = parseGitHubGetIssueArgs(payload);
+    const body = requireString(payload.body, "github.commentOnIssue requires body.");
+    return requireService(args.githubService, "GitHub service not available.").commentOnIssue(
+      parsed.owner,
+      parsed.name,
+      parsed.number,
+      body,
+    );
+  });
   register("github.publishCurrentProject", { viewerAllowed: true }, async (payload): Promise<PublishProjectResult> => {
     const { owner, name, description, isPrivate } = parsePublishCurrentProjectArgs(payload);
     return await requireService(args.githubService, "GitHub service not available.").publishCurrentProject({
@@ -6654,6 +7132,83 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
       isPrivate,
     });
   }, "project");
+  const jira = () => requireService(args.getJiraService?.(), "Jira service not available on this machine.");
+  register("jira.getConnectionStatus", { viewerAllowed: true, observesAbort: true }, async () => jira().getConnectionStatus());
+  register("jira.connect", { viewerAllowed: false }, async (payload) => jira().connect({
+    siteUrl: requireString(payload.siteUrl, "jira.connect requires siteUrl."),
+    email: requireString(payload.email, "jira.connect requires email."),
+    apiToken: requireString(payload.apiToken, "jira.connect requires apiToken."),
+  }));
+  register("jira.disconnect", { viewerAllowed: false }, async () => jira().disconnect());
+  register("jira.listProjects", { viewerAllowed: true, observesAbort: true }, async (payload) =>
+    jira().listProjects({ ...(typeof payload.query === "string" ? { query: payload.query } : {}) }));
+  register("jira.listIssues", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+    const state: JiraIssueListState = payload.state === "done" || payload.state === "all" ? payload.state : "open";
+    const projectKeys = Array.isArray(payload.projectKeys)
+      ? payload.projectKeys.filter((value): value is string => typeof value === "string")
+      : undefined;
+    const limit = typeof payload.limit === "number" && Number.isFinite(payload.limit) ? payload.limit : undefined;
+    const args = {
+      ...(projectKeys ? { projectKeys } : {}),
+      state,
+      ...(payload.assignee === "me" ? { assignee: "me" as const } : {}),
+      ...(typeof payload.query === "string" ? { query: payload.query } : {}),
+      ...(typeof payload.jql === "string" ? { jql: payload.jql } : {}),
+      ...(limit !== undefined ? { limit } : {}),
+      ...(typeof payload.cursor === "string" ? { cursor: payload.cursor } : {}),
+    };
+    return jira().listIssues(args);
+  });
+  register("jira.getIssue", { viewerAllowed: true, observesAbort: true }, async (payload) =>
+    jira().getIssue({ key: requireString(payload.key, "jira.getIssue requires key.") }));
+  register("jira.listComments", { viewerAllowed: true, observesAbort: true }, async (payload) =>
+    jira().listComments({
+      key: requireString(payload.key, "jira.listComments requires key."),
+      cursor: typeof payload.cursor === "string" ? payload.cursor : null,
+    }));
+  register("jira.listTransitions", { viewerAllowed: true, observesAbort: true }, async (payload) =>
+    jira().listTransitions({ key: requireString(payload.key, "jira.listTransitions requires key.") }));
+  register("jira.listAssignableUsers", { viewerAllowed: true, observesAbort: true }, async (payload) => jira().listAssignableUsers({
+    ...(typeof payload.projectKey === "string" ? { projectKey: payload.projectKey } : {}),
+    ...(typeof payload.key === "string" ? { key: payload.key } : {}),
+    ...(typeof payload.query === "string" ? { query: payload.query } : {}),
+  }));
+  register("jira.listLabels", { viewerAllowed: true, observesAbort: true }, async (payload) =>
+    jira().listLabels({ ...(typeof payload.query === "string" ? { query: payload.query } : {}) }));
+  register("jira.getCreateMeta", { viewerAllowed: true, observesAbort: true }, async (payload) =>
+    jira().getCreateMeta({ projectKey: requireString(payload.projectKey, "jira.getCreateMeta requires projectKey.") }));
+  register("jira.addComment", { viewerAllowed: false }, async (payload) => jira().addComment({
+    key: requireString(payload.key, "jira.addComment requires key."),
+    body: requireString(payload.body, "jira.addComment requires body."),
+  }));
+  register("jira.updateIssue", { viewerAllowed: false }, async (payload) => jira().updateIssue({
+    key: requireString(payload.key, "jira.updateIssue requires key."),
+    ...(typeof payload.title === "string" ? { title: payload.title } : {}),
+    ...(typeof payload.description === "string" ? { description: payload.description } : {}),
+    ...(Array.isArray(payload.labels) ? { labels: payload.labels.filter((value): value is string => typeof value === "string") } : {}),
+    ...(Object.prototype.hasOwnProperty.call(payload, "assigneeAccountId")
+      ? { assigneeAccountId: typeof payload.assigneeAccountId === "string" ? payload.assigneeAccountId : null }
+      : {}),
+    ...(typeof payload.priorityId === "string" ? { priorityId: payload.priorityId } : {}),
+    ...(Object.prototype.hasOwnProperty.call(payload, "dueDate")
+      ? { dueDate: typeof payload.dueDate === "string" ? payload.dueDate : null }
+      : {}),
+  }));
+  register("jira.transitionIssue", { viewerAllowed: false }, async (payload) => jira().transitionIssue({
+    key: requireString(payload.key, "jira.transitionIssue requires key."),
+    transitionId: requireString(payload.transitionId, "jira.transitionIssue requires transitionId."),
+  }));
+  register("jira.createIssue", { viewerAllowed: false }, async (payload) => jira().createIssue({
+    projectKey: requireString(payload.projectKey, "jira.createIssue requires projectKey."),
+    issueTypeId: requireString(payload.issueTypeId, "jira.createIssue requires issueTypeId."),
+    title: requireString(payload.title, "jira.createIssue requires title."),
+    ...(typeof payload.description === "string" ? { description: payload.description } : {}),
+    ...(Array.isArray(payload.labels) ? { labels: payload.labels.filter((value): value is string => typeof value === "string") } : {}),
+    ...(typeof payload.assigneeAccountId === "string" ? { assigneeAccountId: payload.assigneeAccountId } : {}),
+    ...(typeof payload.priorityId === "string" ? { priorityId: payload.priorityId } : {}),
+    ...(typeof payload.parentKey === "string" ? { parentKey: payload.parentKey } : {}),
+    ...(typeof payload.dueDate === "string" ? { dueDate: payload.dueDate } : {}),
+  }));
   register("projectConfig.get", { viewerAllowed: true }, async () =>
     redactProjectConfigSnapshotForRemote(
       requireService(args.projectConfigService, "Project config service not available.").get(),
@@ -6690,12 +7245,7 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
   // stays a desktop-only operation, and the web control says so.
   register("ai.updateConfig", { viewerAllowed: true, queueable: true }, async (payload) => {
     const projectConfigService = requireService(args.projectConfigService, "Project config service not available.");
-    const snapshot = projectConfigService.get();
-    const merged = mergeAiConfig(snapshot.shared?.ai ?? {}, payload as Partial<AiConfig>) ?? {};
-    projectConfigService.save({
-      shared: { ...snapshot.shared, ai: merged },
-      local: snapshot.local ?? {},
-    });
+    projectConfigService.updateAiConfig(payload as Partial<AiConfig>);
     // Mirrors the desktop IPC handler: a changed AI config can retarget the
     // model scheduled work runs on.
     void args.agentChatService?.refreshScheduledWork();
@@ -6713,8 +7263,10 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
     }
     return { ok: true };
   });
-  register("ai.listCursorCloudRepositories", { viewerAllowed: true }, async () =>
-    requireService(args.aiIntegrationService, "AI integration service not available.").listCursorCloudRepositories());
+  register("ai.listCursorCloudRepositories", { viewerAllowed: true }, async (payload) =>
+    requireService(args.aiIntegrationService, "AI integration service not available.").listCursorCloudRepositories({
+      refresh: payload.refresh === true,
+    }));
   register("ai.listCursorCloudAgents", { viewerAllowed: true }, async (payload) =>
     requireService(args.aiIntegrationService, "AI integration service not available.").listCursorCloudAgents({
       includeArchived: payload.includeArchived !== false,
@@ -7570,6 +8122,8 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   registerMacDesktopRemoteCommands({ args, register, connectionLeases: macDesktopConnectionLeases });
   registerAppControlRemoteCommands({ args, register });
   registerAppleRemoteCommands({ args, register });
+  registerWebhookRemoteCommands({ args, register });
+  registerAutomationRuleRemoteCommands({ args, register });
   registerProviderAccountRemoteCommands({ args, register });
   registerPushRemoteCommands({ args, register });
   registerSyncRemoteCommands({ args, register });

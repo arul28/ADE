@@ -14,6 +14,7 @@ import { resolveModelDescriptor } from "../../../shared/modelRegistry";
 import { cronSentence } from "./cronDescribe";
 import { eventLabel } from "./triggerCatalog";
 import { DELETE_LANE_ACTION_TYPE, LANE_MERGED_TRIGGER_TYPE } from "./localAutomationConfig";
+import { describeWebhookFilter, webhookPresetDef } from "../../../shared/automationWebhooks";
 
 type RuleLike = Pick<AutomationRule, "triggers" | "trigger" | "execution" | "outputs" | "prompt">;
 
@@ -36,6 +37,7 @@ export function triggerClause(trigger: AutomationTrigger): string {
   if (type === "session.limit_reached") return `${sessionSubject(trigger)} hits its usage limit`;
   if (type === "session.failed") return `${sessionSubject(trigger)} fails`;
   if (type === "session.ended_without_pr") return `${sessionSubject(trigger)} ends with no PR`;
+  if (type === "session.settled") return `${sessionSubject(trigger)} is settled`;
   if (type === "file.change") {
     const paths = (trigger.paths ?? []).filter(Boolean);
     return paths.length ? `A file changes in ${paths.join(", ")}` : "A file changes";
@@ -46,6 +48,12 @@ export function triggerClause(trigger: AutomationTrigger): string {
   if (type === "lane.archived") return "A lane is archived";
   if (type === LANE_MERGED_TRIGGER_TYPE) {
     return trigger.namePattern ? `A lane matching ${trigger.namePattern} is merged` : "A lane is merged";
+  }
+  if (type === "webhook" && trigger.webhook) {
+    const preset = trigger.webhook.preset && trigger.webhook.preset !== "generic" ? webhookPresetDef(trigger.webhook.preset).label : null;
+    const filters = trigger.webhook.filters ?? [];
+    const base = preset ? `${preset} calls this automation's URL` : "Something calls this automation's URL";
+    return filters.length ? `${base} and ${filters.map(describeWebhookFilter).join(" and ")}` : base;
   }
   if (type === "github-webhook" || type === "webhook") {
     return trigger.event ? `A webhook fires for ${trigger.event}` : "A webhook fires";
@@ -130,6 +138,7 @@ const ADE_ACTION_PHRASES: Record<string, string> = {
   "issue.close": "close the issue",
   "issue.addComment": "comment on the issue",
   "linear_sync.runSyncNow": "sync Linear",
+  "attention.sendNotification": "notify your phone",
 };
 
 function adeActionPhrase(action: AutomationAction): string {
@@ -191,6 +200,7 @@ export function buildRuleSentence(rule: RuleLike): RuleSentence {
   const steps: string[] = [];
 
   if (rule.execution?.laneMode === "create") steps.push("create a lane");
+  if (rule.execution?.laneMode === "pr-branch") steps.push("open the PR's branch");
 
   if (rule.execution?.kind === "agent-session") {
     steps.push("run an agent");

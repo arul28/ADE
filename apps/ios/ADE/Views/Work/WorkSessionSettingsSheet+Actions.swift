@@ -72,6 +72,10 @@ extension WorkSessionSettingsSheet {
     var codexConfigSource: String?
     var opencodePermissionMode: String?
     var droidPermissionMode: String?
+    var musePermissionMode: String?
+    var copilotPermissionMode: String?
+    var copilotContextTier: String?
+    var copilotAutoTier: String?
     var cursorModeId: String?
     var runtimeChanged = false
 
@@ -106,6 +110,20 @@ extension WorkSessionSettingsSheet {
         let wire = workRuntimeWireFields(provider: "droid", mode: selectedRuntimeMode)
         droidPermissionMode = wire.droidPermissionMode
         permissionMode = wire.permissionMode
+      }
+    case "muse":
+      if selectedRuntimeMode != initialRuntimeMode {
+        runtimeChanged = true
+        let wire = workRuntimeWireFields(provider: summary.provider, mode: selectedRuntimeMode)
+        musePermissionMode = wire.musePermissionMode
+        interactionMode = wire.interactionMode
+        permissionMode = wire.permissionMode
+      }
+    case "copilot":
+      if selectedRuntimeMode != initialRuntimeMode {
+        runtimeChanged = true
+        let wire = workRuntimeWireFields(provider: summary.provider, mode: selectedRuntimeMode)
+        copilotPermissionMode = wire.copilotPermissionMode
       }
     case "cursor":
       if selectedRuntimeMode != initialRuntimeMode {
@@ -145,6 +163,10 @@ extension WorkSessionSettingsSheet {
         codexConfigSource: codexConfigSource,
         opencodePermissionMode: opencodePermissionMode,
         droidPermissionMode: droidPermissionMode,
+        musePermissionMode: musePermissionMode,
+        copilotPermissionMode: copilotPermissionMode,
+        copilotContextTier: copilotContextTier,
+        copilotAutoTier: copilotAutoTier,
         cursorModeId: cursorModeId,
         manuallyNamed: titleChanged ? true : nil
       )

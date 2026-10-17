@@ -38,6 +38,8 @@ import type {
   AgentChatCodexApprovalPolicy,
   AgentChatCodexSandbox,
   AgentChatDroidPermissionMode,
+  AgentChatCopilotPermissionMode,
+  AgentChatMusePermissionMode,
   AgentChatOpenCodePermissionMode,
 } from "./types/chat";
 import { ACP_PROVIDER_IDS } from "./acpProviderMetadata";
@@ -52,8 +54,10 @@ export type PermissionLadderFamily =
   | "codex"
   | "opencode"
   | "droid"
+  | "copilot"
   | "acp"
-  | "cursor";
+  | "cursor"
+  | "muse";
 
 export function permissionLevelRank(level: PermissionLevel): number {
   return PERMISSION_LEVELS.indexOf(level);
@@ -111,6 +115,17 @@ const CURSOR_BY_LEVEL: Record<PermissionLevel, string | null> = {
   "full-auto": "full-auto",
 };
 
+/**
+ * Muse's own approval modes. Plan has no Muse mode of its own: `denyUnmatched`
+ * (read-only) plus ADE's plan-mode guidance is the plan rung.
+ */
+const MUSE_BY_LEVEL: Record<PermissionLevel, AgentChatMusePermissionMode> = {
+  "plan": "denyUnmatched",
+  "ask": "promptUnmatched",
+  "auto-edit": "onRequest",
+  "full-auto": "allowAll",
+};
+
 /** The level a given family's concrete mode represents. */
 export function permissionLevelForClaude(mode: AgentChatClaudePermissionMode): PermissionLevel {
   switch (mode) {
@@ -164,6 +179,15 @@ export function permissionLevelForAcp(mode: AgentChatAcpPermissionMode): Permiss
   }
 }
 
+export function permissionLevelForMuse(mode: AgentChatMusePermissionMode): PermissionLevel {
+  switch (mode) {
+    case "denyUnmatched": return "plan";
+    case "promptUnmatched": return "ask";
+    case "onRequest": return "auto-edit";
+    case "allowAll": return "full-auto";
+  }
+}
+
 /** The level a Cursor mode id represents, for carrying a level away from Cursor. */
 export function permissionLevelForCursorMode(modeId: string | null | undefined): PermissionLevel {
   if (modeId === "ask") return "plan";
@@ -181,6 +205,9 @@ export type PermissionLadderControls = {
   opencodePermissionMode: AgentChatOpenCodePermissionMode;
   droidPermissionMode: AgentChatDroidPermissionMode;
   cursorModeId: string | null | undefined;
+  /** Optional so surfaces that never show Muse keep compiling; absent reads as Muse's default. */
+  musePermissionMode?: AgentChatMusePermissionMode | null;
+  copilotPermissionMode?: AgentChatCopilotPermissionMode | null;
 };
 
 /**
@@ -194,7 +221,11 @@ export function permissionLevelForFamily(family: PermissionLadderFamily, control
     case "opencode":
     case "acp": return permissionLevelForOpenCode(controls.opencodePermissionMode);
     case "droid": return permissionLevelForDroid(controls.droidPermissionMode);
+    case "copilot": return controls.copilotPermissionMode === "assisted"
+      ? "auto-edit"
+      : controls.copilotPermissionMode ?? "ask";
     case "cursor": return permissionLevelForCursorMode(controls.cursorModeId);
+    case "muse": return permissionLevelForMuse(controls.musePermissionMode ?? "onRequest");
   }
 }
 
@@ -226,6 +257,7 @@ export type ResolvedPermission = {
   droidPermissionMode: AgentChatDroidPermissionMode;
   acpPermissionMode: AgentChatAcpPermissionMode;
   cursorModeId: string;
+  musePermissionMode: AgentChatMusePermissionMode;
 };
 
 /** Map one level onto every provider, applying the nearest-lower rule. */
@@ -249,6 +281,7 @@ export function resolvePermissionLevel(level: PermissionLevel, family?: Permissi
     droidPermissionMode: DROID_BY_LEVEL[level],
     acpPermissionMode: ACP_BY_LEVEL[level],
     cursorModeId: cursor.value,
+    musePermissionMode: MUSE_BY_LEVEL[level],
   };
 }
 
@@ -274,8 +307,10 @@ export type SessionPermissionFields = {
   codexConfigSource?: string | null;
   opencodePermissionMode?: AgentChatOpenCodePermissionMode | null;
   droidPermissionMode?: AgentChatDroidPermissionMode | null;
+  copilotPermissionMode?: AgentChatCopilotPermissionMode | null;
   acpPermissionMode?: AgentChatAcpPermissionMode | null;
   cursorModeId?: string | null;
+  musePermissionMode?: AgentChatMusePermissionMode | null;
   interactionMode?: string | null;
 };
 
@@ -332,6 +367,9 @@ export function sessionPermissionLevel(
   if (provider === "droid") {
     return fields.droidPermissionMode ? permissionLevelForDroid(fields.droidPermissionMode) : unknown;
   }
+  if (provider === "copilot") {
+    return fields.copilotPermissionMode === "assisted" ? "auto-edit" : fields.copilotPermissionMode ?? "ask";
+  }
   if (provider === "opencode") {
     if (!fields.opencodePermissionMode || fields.opencodePermissionMode === "config-toml") {
       return levelForGenericMode(fields.permissionMode) ?? unknown;
@@ -342,6 +380,15 @@ export function sessionPermissionLevel(
     return fields.acpPermissionMode
       ? permissionLevelForAcp(fields.acpPermissionMode)
       : levelForGenericMode(fields.permissionMode) ?? unknown;
+  }
+  if (provider === "muse") {
+    const stored = fields.musePermissionMode
+      ? permissionLevelForMuse(fields.musePermissionMode)
+      : levelForGenericMode(fields.permissionMode) ?? unknown;
+    // Plan mode is `denyUnmatched` plus guidance; plan mode on a looser mode
+    // still restores that mode when the user leaves plan, so it reads as such.
+    if (fields.interactionMode === "plan" && permissionLevelRank(stored) <= permissionLevelRank("ask")) return "plan";
+    return stored;
   }
   if (provider === "pi") {
     // Pi reads `auto` like `default`: every workspace change is offered.
@@ -367,8 +414,10 @@ export type PermissionFieldsPatch = {
   codexConfigSource?: "flags";
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
   droidPermissionMode?: AgentChatDroidPermissionMode;
+  copilotPermissionMode?: AgentChatCopilotPermissionMode;
   acpPermissionMode?: AgentChatAcpPermissionMode;
   cursorModeId?: string;
+  musePermissionMode?: AgentChatMusePermissionMode;
   interactionMode?: "plan" | "default";
 };
 
@@ -399,8 +448,12 @@ export function permissionFieldsForLevel(
       return { cursorModeId: resolved.cursorModeId, permissionMode: GENERIC_BY_LEVEL[resolved.level] };
     case "droid":
       return { droidPermissionMode: resolved.droidPermissionMode, interactionMode: level === "plan" ? "plan" : "default" };
+    case "copilot":
+      return { copilotPermissionMode: level };
     case "opencode":
       return { opencodePermissionMode: resolved.opencodePermissionMode };
+    case "muse":
+      return { musePermissionMode: resolved.musePermissionMode, interactionMode: level === "plan" ? "plan" : "default" };
     case "pi":
       return { permissionMode: GENERIC_BY_LEVEL[level] };
     default:

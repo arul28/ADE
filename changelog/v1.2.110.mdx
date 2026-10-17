@@ -1,0 +1,40 @@
+---
+title: "v1.2.110"
+description: "Release notes for ADE v1.2.110 - October 17, 2026"
+---
+
+ADE 1.2.110 opens faster, moves Copilot chats onto the GitHub Copilot SDK, groups stacked PR lanes in the Work page, and fixes a run of multi-machine and sync rough edges.
+
+## Features
+
+- Copilot chats run on the GitHub Copilot SDK instead of ACP (#1714).
+- Stacked PR lanes are grouped in order in the Work page and joined with a rail (#1722).
+- A compact new-lane composer with inline branch pickers (#1721).
+- Elements you inspect in the browser tell the agent their HTML, CSS and source file (#1719).
+
+## Speed
+
+- ADE opens faster by reusing compiled code from the last launch (#1743).
+- The background service starts faster the same way (#1744).
+- Finding slash commands no longer freezes the background service on large skill folders (#1737).
+
+## Sync & multi-machine reliability
+
+- A chat you just started on another machine shows as working right away, not Done (#1733).
+- A closed Tools pane stays closed while a shell on another machine prints (#1742).
+- Lane "new chat" buttons open on that exact lane and machine (#1720).
+- Deleting a lane on another machine shows the same progress overlay as a local delete (#1724).
+- A machine that isn't reconnecting automatically says so instead of just "Not connected" (#1739).
+- Sync status right after the background service starts says ready when it is (#1736).
+- Serving a project that follows another machine no longer stops the project that hosts sync (#1735), and a runtime that isn't allowed to host never claims the sync cluster (#1730).
+- Start sync says what's happening instead of a raw 30-second timeout (#1738).
+
+## Fixes
+
+- A resumed subagent stays marked as running (#1713).
+- Settings always keeps the sidebar visible and never becomes a project's start page (#1725).
+- Renderer path checks no longer reveal, through symlinks, whether files exist outside allowed folders (#1727).
+
+## Diagnostics
+
+- Logged errors group in Sentry by the real error instead of by log event (#1726), and CLI runtime errors keep their stack in the log (#1728).

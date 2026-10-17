@@ -3,10 +3,7 @@
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import type {
-  DiagnosticsManualSendResult,
-  DiagnosticsSharingStatus,
-} from "../../../shared/types/diagnostics";
+import type { DiagnosticsManualSendResult } from "../../../shared/types/diagnostics";
 import { DiagnosticsSharingSection } from "./DiagnosticsSharingSection";
 
 /**
@@ -19,16 +16,7 @@ import { DiagnosticsSharingSection } from "./DiagnosticsSharingSection";
  * every refusal says something a person can act on.
  */
 
-const SHARING_ON: DiagnosticsSharingStatus = {
-  enabled: true,
-  sendsInWindow: 0,
-  limit: 3,
-  manualSendsInWindow: 0,
-  manualLimit: 5,
-};
-
 function mountSection(overrides: {
-  sharing?: DiagnosticsSharingStatus;
   sendManual?: () => Promise<DiagnosticsManualSendResult>;
   revealReport?: (reportPath: string) => Promise<void>;
   omitSendManual?: boolean;
@@ -38,8 +26,6 @@ function mountSection(overrides: {
   const revealReport = overrides.revealReport ?? (async () => undefined);
   (window as unknown as { ade?: unknown }).ade = {
     diagnostics: {
-      getSharing: async () => overrides.sharing ?? SHARING_ON,
-      setSharing: async () => overrides.sharing ?? SHARING_ON,
       revealReport,
       ...(overrides.omitSendManual ? {} : { sendManual }),
     },
@@ -141,26 +127,9 @@ describe("DiagnosticsSharingSection manual send", () => {
     expect(screen.queryByRole("button", { name: "View report" })).toBeNull();
   });
 
-  it("says out loud that a click does not turn automatic reports back on", async () => {
-    mountSection({ sharing: { ...SHARING_ON, enabled: false } });
-
-    // The send is still allowed — the toggle governs what ADE does BY ITSELF,
-    // and refusing here would leave this user unable to report anything — but
-    // it must never read as re-enabling background sharing.
-    expect(await screen.findByText(/Automatic reports are off/)).toBeTruthy();
-    expect(screen.getByText(/does not turn\s+automatic reports back on/)).toBeTruthy();
-
-    await pressSend();
-    await waitFor(() => {
-      expect(screen.getByRole("status").textContent).toContain("Report sent");
-    });
-  });
-
-  it("hides the control on a preload that predates it rather than offering a dead button", async () => {
+  it("hides the control on a preload that predates it rather than offering a dead button", () => {
     mountSection({ omitSendManual: true });
 
-    // The toggle still renders; only the action it cannot perform is absent.
-    await screen.findByRole("switch");
     expect(screen.queryByRole("button", { name: "Send a report to ADE" })).toBeNull();
   });
 });

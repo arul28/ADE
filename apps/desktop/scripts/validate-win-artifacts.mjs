@@ -253,6 +253,7 @@ function validatePreflight() {
   requireFile("scripts/windows-install-setup.ps1", "Windows install setup script");
   requireFile("scripts/windows-uninstall-cleanup.ps1", "Windows uninstall cleanup script");
   requireFile("scripts/windows-firewall-rules.ps1", "Windows firewall rule script");
+  requireFile("scripts/windows-update-progress.ps1", "Windows update progress window");
   requireFile("build/installer.nsh", "Windows NSIS customization");
   // The capture helper is compiled on the release box by
   // `scripts/build-capture-helper-win.mjs`, so preflight can only assert the
@@ -635,6 +636,8 @@ async function validatePackagedRuntime(appDir) {
   const crsqliteDllPath = path.join(unpackedPath, "vendor", "crsqlite", "win32-x64", "crsqlite.dll");
   const captureHelperExePath = path.join(resourcesPath, "native", "ade-capture-helper.exe");
   const desktopDriverExePath = path.join(resourcesPath, "native", "ade-desktop-driver.exe");
+  const nowPlayingExePath = path.join(resourcesPath, "native", "ade-now-playing.exe");
+  const musicHostExePath = path.join(resourcesPath, "native", "ade-music-host", "ade-music-host.exe");
   const bundledAdeCliFiles = resolveBundledAdeCliFiles();
   assertRequiredBundledAdeCliFiles(bundledAdeCliFiles);
 
@@ -664,6 +667,24 @@ async function validatePackagedRuntime(appDir) {
   } else {
     await assertPathExists(captureHelperExePath, "packaged Windows capture helper");
     await assertPathExists(desktopDriverExePath, "packaged Windows Desktop driver");
+  }
+  // The home page's Now Playing widget and the Music tab. Each build has its own
+  // skip switch, honored only by a local test build, like the helpers above.
+  if (isLocalWindowsTestBuild && process.env.ADE_SKIP_NOW_PLAYING_BUILD === "1") {
+    console.warn("[validate-win-artifacts] Local test build without the Now Playing helper (ADE_SKIP_NOW_PLAYING_BUILD=1).");
+  } else {
+    await assertPathExists(nowPlayingExePath, "packaged Windows Now Playing helper");
+  }
+  if (isLocalWindowsTestBuild && process.env.ADE_SKIP_MUSIC_HOST_BUILD === "1") {
+    console.warn("[validate-win-artifacts] Local test build without the music player host (ADE_SKIP_MUSIC_HOST_BUILD=1).");
+  } else {
+    await assertPathExists(musicHostExePath, "packaged Windows music player host");
+    // Apple Music's page and Spotify's, which the host loads with --page.
+    for (const page of ["page", "page-spotify"]) {
+      for (const pageFile of ["index.html", "player.js"]) {
+        await assertPathExists(path.join(path.dirname(musicHostExePath), page, pageFile), `packaged Windows music player ${page}/${pageFile}`);
+      }
+    }
   }
   assertPackagedTuiEsmShims(await fsp.readFile(adeCliTuiPath, "utf8"));
   if (isLocalWindowsTestBuild) {
@@ -977,6 +998,16 @@ async function validateReleaseArtifacts() {
   await validateAuthenticodeSignature(
     path.join(appDir, "resources", "native", "ade-desktop-driver.exe"),
     "Windows Desktop driver",
+    expectedIdentity,
+  );
+  await validateAuthenticodeSignature(
+    path.join(appDir, "resources", "native", "ade-now-playing.exe"),
+    "Windows Now Playing helper",
+    expectedIdentity,
+  );
+  await validateAuthenticodeSignature(
+    path.join(appDir, "resources", "native", "ade-music-host", "ade-music-host.exe"),
+    "Windows music player host",
     expectedIdentity,
   );
   // Both artifacts are pinned to the same Subject above, but a Subject match

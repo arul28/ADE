@@ -1,19 +1,31 @@
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
+import type { ProductAnalyticsService } from "../analytics/productAnalyticsService";
 import {
+  PROJECT_FOLDER_MISSING_COPY,
   RECOVERY_COPY,
   REPAIR_STEP_LABELS,
   REPAIR_STEP_ORDER,
   stateForCode,
   type AdeLastFailureReport,
   type AdeRecoveryErrorCode,
+  type ProjectDataProblem,
+  type ProjectDataRestoreResult,
+  type ProjectDataStatus,
   type ProjectRecoveryDiagnosis,
   type ProjectRepairReport,
   type RepairStepId,
   type RepairStepResult,
 } from "../../../shared/types/recovery";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
+import {
+  ProjectRegistry,
+  forgetLocalProjectDatabaseIdentity,
+  isLocalProjectDataMissing,
+  readLocalProjectDatabaseIdentity,
+} from "../../../../../ade-cli/src/services/projects/projectRegistry";
+import { normalizeProjectRootPath } from "../../../../../ade-cli/src/services/projects/projectRoots";
 import {
   RUNTIME_SERVICE_START_WAIT_MS,
   RUNTIME_SERVICE_YOUNG_BRAIN_MS,
@@ -30,6 +42,8 @@ import {
   runQuickCheck,
 } from "../state/kvDb";
 import { readVolumeSpace } from "../storage/volume";
+import { pathsEqual } from "../shared/pathCompare";
+import { findTrashedProjectData, forgetTrashLookup, restoreTrashedProjectData } from "./projectDataTrash";
 import { isLocalReleaseBuildOutputError } from "../../../shared/runtimeErrors";
 import { DESKTOP_CLIENT_NAMES } from "../../../shared/runtimeClientNames";
 import { clearLastFailure, readLastFailure } from "./lastFailureStore";
@@ -53,7 +67,8 @@ const STEP_LABELS = REPAIR_STEP_LABELS;
 const BACKGROUND_BLOCKED_NEXT_ACTION =
   "Your Mac is blocking ADE. Open System Settings, go to General, then Login Items, and turn on ADE under \"Allow in the Background\".";
 
-const RESTART_AND_RETRY = "Quit ADE and open it again, then choose Try again.";
+// The recovery screen offers Restart ADE as the next rung; this only says to take it.
+const RESTART_AND_RETRY = "Restart ADE next. It starts the background service fresh.";
 
 const STEP_ORDER = REPAIR_STEP_ORDER;
 
@@ -90,7 +105,7 @@ type BrainRestartOutcome =
 
 export type ProjectRecoveryConnectionPool = Pick<
   LocalRuntimeConnectionPool,
-  "getStatus" | "installServiceBestEffort" | "uninstallServiceBestEffort" | "callSync" | "ensureProject" | "callActionForRoot"
+  "getStatus" | "installServiceBestEffort" | "uninstallServiceBestEffort" | "callSync" | "ensureProject" | "callActionForRoot" | "removeProject"
 >;
 
 export type ProjectRecoveryServiceDeps = {
@@ -129,6 +144,14 @@ export type ProjectRecoveryServiceDeps = {
     projectRoot: string;
   }) => void;
   now?: () => number;
+  /**
+   * What happened to an open project's database file while ADE had it open:
+   * it disappeared, or another file took its place. Known even when the
+   * registry has lost its record that the database existed.
+   */
+  openProjectDataProblem?: (projectRoot: string) => ProjectDataProblem | null;
+  /** Closes this window's open copy of the project, so a fresh start reopens it clean. */
+  closeProject?: (projectRoot: string) => Promise<void>;
 };
 
 function errorMessage(error: unknown): string {
@@ -186,7 +209,7 @@ function humanGb(bytes: number): string {
  */
 function skippedRestartCopy(installerMessage: string): string {
   if (isLocalReleaseBuildOutputError(installerMessage)) return installerMessage;
-  return "A newer version of ADE is already running. Quit ADE and open it again.";
+  return "A newer version of ADE is already running. Restart ADE to switch to it.";
 }
 
 function socketConnectOptions(socketPath: string): net.NetConnectOpts {
@@ -373,6 +396,28 @@ export class ProjectRecoveryService {
   }
 
   /**
+   * Whether an endpoint a probe found a listener on belongs to this machine's
+   * own service child rather than to another copy of ADE.
+   *
+   * A service brain is the only thing that binds the primary channel socket
+   * while launchd (or the Windows supervisor) reports the service running, and
+   * the install's own `starting` flag marks that same child: it is set when the
+   * installer left a live replacement that had not answered yet. So "the
+   * endpoint is reachable and the service is running" identifies the owner
+   * without a second handshake.
+   *
+   * This is what keeps `socket_owned_by_other` honest. That state means a
+   * *different copy* of ADE holds the endpoint; it is the only state whose copy
+   * offers no repair and tells the person to quit the other copy, so reporting
+   * it for ADE's own brain strands exactly the failure repair exists for.
+   */
+  private serviceOwnsEndpoint(
+    status: ReturnType<ProjectRecoveryConnectionPool["getStatus"]>,
+  ): boolean {
+    return status.serviceHealth.running === true || status.serviceInstall.starting === true;
+  }
+
+  /**
    * Install the service, wait for the machine endpoint to come back, then ping
    * it — the one verified brain-restart sequence, shared by `repair()`'s
    * restart_service/verify_endpoint steps and by `restartBrain()`.
@@ -420,6 +465,11 @@ export class ProjectRecoveryService {
     return { ok: true };
   }
 
+  /** A repair or a brain restart is running; quitting or stopping now would cut it off. */
+  isRecovering(): boolean {
+    return this.repairInFlight || this.restartInFlight != null;
+  }
+
   /**
    * Machine-scoped brain restart for the "Repair" button. Only the main
    * process can observe when the replacement brain is actually answering, so
@@ -448,16 +498,179 @@ export class ProjectRecoveryService {
       case "install_skipped":
         throw new Error(skippedRestartCopy(outcome.detail));
       case "unreachable":
-        throw new Error("ADE didn't start again after the restart. Quit ADE and open it again.");
+        throw new Error("ADE's background service didn't start again after the restart.");
       case "background_blocked":
         throw new Error(BACKGROUND_BLOCKED_NEXT_ACTION);
       default:
-        throw new Error(outcome.detail.trim() || "ADE couldn't restart. Quit ADE and open it again.");
+        throw new Error(outcome.detail.trim() || "ADE's background service couldn't restart.");
     }
+  }
+
+  /**
+   * The project ADE could not reopen at launch because its data was missing.
+   * Kept until the data is back or a fresh start, so a window that loads
+   * late, or reloads, still learns about it.
+   */
+  private startupProjectDataMissingRoot: string | null = null;
+
+  noteStartupProjectDataMissing(projectRoot: string): void {
+    this.startupProjectDataMissingRoot = path.resolve(projectRoot);
+  }
+
+  /** Whether this project's ADE data is missing or was swapped while open. */
+  projectDataStatus(projectRoot: string): ProjectDataStatus | null {
+    const root = path.resolve(projectRoot);
+    const open = this.deps.openProjectDataProblem?.(root) ?? null;
+    if (open) return { projectRoot: root, status: open };
+    if (isLocalProjectDataMissing(root)) return { projectRoot: root, status: "missing" };
+    return null;
+  }
+
+  /** The project that could not reopen at launch, while its data is still missing. */
+  startupProjectDataStatus(): ProjectDataStatus | null {
+    const root = this.startupProjectDataMissingRoot;
+    if (!root) return null;
+    if (isLocalProjectDataMissing(root)) return { projectRoot: root, status: "missing" };
+    this.startupProjectDataMissingRoot = null;
+    return null;
+  }
+
+  /**
+   * Lets go of every open copy of the project: this window's context, and the
+   * background service's (removing the project disposes it; the reopen
+   * registers it again). Both may hold a paused handle on the old file.
+   */
+  private async releaseProject(
+    projectRoot: string,
+    events: { closeFailed: string; runtimeRemoveFailed: string },
+  ): Promise<void> {
+    try {
+      await this.deps.closeProject?.(projectRoot);
+    } catch (error) {
+      this.deps.logger.warn(events.closeFailed, { projectRoot, error: errorMessage(error) });
+    }
+    const record = new ProjectRegistry().findByRootPath(projectRoot);
+    if (!record) return;
+    try {
+      await this.deps.connectionPool.removeProject(projectRoot, record.projectId);
+    } catch (error) {
+      this.deps.logger.warn(events.runtimeRemoveFailed, { projectRoot, error: errorMessage(error) });
+    }
+  }
+
+  private clearStartupProblem(projectRoot: string): void {
+    if (this.startupProjectDataMissingRoot && pathsEqual(this.startupProjectDataMissingRoot, projectRoot)) {
+      this.startupProjectDataMissingRoot = null;
+    }
+  }
+
+  /**
+   * Puts a trashed `.ade` back, merging into any `.ade` that reappeared
+   * meanwhile (from git, or written by ADE while the data was gone).
+   */
+  async restoreProjectData(projectRoot: string): Promise<ProjectDataRestoreResult> {
+    const normalizedRoot = normalizeProjectRootPath(projectRoot);
+    if (!fs.existsSync(normalizedRoot)) {
+      return { restored: false, reason: PROJECT_FOLDER_MISSING_COPY.refusal };
+    }
+    const target = path.join(normalizedRoot, ".ade");
+    if (fs.existsSync(path.join(target, "ade.db"))) {
+      return { restored: false, reason: "This project already has ADE data, so nothing was moved." };
+    }
+    forgetTrashLookup(normalizedRoot);
+    const source = findTrashedProjectData(normalizedRoot, readLocalProjectDatabaseIdentity(normalizedRoot));
+    if (!source) {
+      return { restored: false, reason: "ADE couldn't find this project's data in the Trash anymore." };
+    }
+    try {
+      await restoreTrashedProjectData(source, target, this.deps.logger);
+    } catch (error) {
+      this.deps.logger.warn("project.data_restore_failed", { projectRoot: normalizedRoot, error: errorMessage(error) });
+      return { restored: false, reason: "ADE couldn't move the folder back. Put it back from the Trash yourself, then choose Try again." };
+    } finally {
+      forgetTrashLookup(normalizedRoot);
+    }
+    this.deps.logger.info("project.data_restored", { projectRoot: normalizedRoot });
+    // Only after the files are back: releasing drops the project's record,
+    // and a failed restore must keep it so the next open still refuses to
+    // create empty data. Closing the paused handles now is safe. For a copy
+    // from another volume's Trash the file at the path is not the one the
+    // handle opened, and SQLite's pager skips its closing checkpoint then
+    // (SQLITE_FCNTL_HAS_MOVED; checked by hand with a pending write-ahead log,
+    // which stayed untouched). A moved-back file is the very file the handle
+    // opened, so its closing checkpoint writes that file's own committed
+    // pages into it. If the background service fails to let go, its old
+    // handle stays paused by the identity guard and cannot write either.
+    await this.releaseProject(normalizedRoot, {
+      closeFailed: "project.data_restore_close_failed",
+      runtimeRemoveFailed: "project.data_restore_runtime_remove_failed",
+    });
+    this.clearStartupProblem(normalizedRoot);
+    return { restored: true };
+  }
+
+  /**
+   * Lets the project open with new ADE data. Nothing is deleted: the old data
+   * stays wherever it went, and only ADE's memory that it existed is cleared.
+   */
+  async startFresh(projectRoot: string): Promise<void> {
+    const normalizedRoot = normalizeProjectRootPath(projectRoot);
+    if (!fs.existsSync(normalizedRoot)) {
+      // Starting fresh here would recreate a folder the person moved or
+      // deleted, or that lives on a drive that is not plugged in.
+      throw new Error(PROJECT_FOLDER_MISSING_COPY.refusal);
+    }
+    await this.releaseProject(normalizedRoot, {
+      closeFailed: "project.start_fresh_close_failed",
+      runtimeRemoveFailed: "project.start_fresh_runtime_remove_failed",
+    });
+    forgetLocalProjectDatabaseIdentity(normalizedRoot);
+    // An empty `.ade` is what a first open expects. Without it a project whose
+    // `.ade` folder is gone still reads as missing data, whether or not the
+    // background service managed to drop its record above.
+    fs.mkdirSync(path.join(normalizedRoot, ".ade"), { recursive: true });
+    this.clearStartupProblem(normalizedRoot);
+    this.deps.logger.info("project.started_fresh", { projectRoot: normalizedRoot });
   }
 
   async diagnose(projectRoot: string): Promise<ProjectRecoveryDiagnosis> {
     const normalizedRoot = path.resolve(projectRoot);
+    // Ahead of everything else, and cheap: the screen polls this while the
+    // person puts the folder back, and nothing else here can help until then.
+    const openDataStatus = this.deps.openProjectDataProblem?.(normalizedRoot) ?? null;
+    // No automatic diagnostics report here: a folder the person moved or
+    // deleted is their action, not a fault in ADE.
+    if (openDataStatus === "missing" || isLocalProjectDataMissing(normalizedRoot)) {
+      const projectFolderMissing = !fs.existsSync(normalizedRoot);
+      const trashed = projectFolderMissing
+        ? null
+        : findTrashedProjectData(normalizedRoot, readLocalProjectDatabaseIdentity(normalizedRoot));
+      return {
+        state: "data_missing",
+        code: "project_data_missing",
+        ...diagnosisCopy("data_missing"),
+        ...(projectFolderMissing
+          ? {
+              headline: PROJECT_FOLDER_MISSING_COPY.headline,
+              body: PROJECT_FOLDER_MISSING_COPY.body,
+              projectFolderMissing: true,
+            }
+          : {}),
+        restoreAvailable: Boolean(trashed),
+        technicalDetail: [
+          `projectData=${path.join(normalizedRoot, ".ade")} missing`,
+          `trashCandidate=${trashed ?? "none"}`,
+        ].join("\n"),
+      };
+    }
+    if (openDataStatus === "replaced") {
+      return {
+        state: "data_replaced",
+        code: "db_path_changed",
+        ...diagnosisCopy("data_replaced"),
+        technicalDetail: `projectData=${path.join(normalizedRoot, ".ade", "ade.db")} replaced while open`,
+      };
+    }
     const dbPath = path.join(normalizedRoot, ".ade", "ade.db");
     const [{ free, dbSize }, failures] = await Promise.all([
       this.storage(normalizedRoot),
@@ -512,15 +725,36 @@ export class ProjectRecoveryService {
       ...(serviceStatus.serviceInstall.failureStep
         ? [`serviceInstallFailureStep=${serviceStatus.serviceInstall.failureStep}`]
         : []),
+      // launchctl's (or the Windows installer's) own words for a failed
+      // install. Only ever in the fold: the screen names the cause in plain words.
+      ...(serviceStatus.serviceInstall.state === "failed" && serviceStatus.serviceInstall.message?.trim()
+        ? [`serviceInstallMessage=${serviceStatus.serviceInstall.message.trim()}`]
+        : []),
       `database=${dbCheck.detail}`,
       ...(latestFailure ? [`lastFailure=${latestFailure.code}: ${latestFailure.message}${latestFailure.detail ? ` (${latestFailure.detail})` : ""}`] : []),
     ];
+
+    // Service state alone cannot identify a socket owner. In particular, the
+    // Windows supervisor can remain running while another process owns the
+    // per-user pipe. Only a successful ADE ping establishes endpoint identity.
+    const endpointOwnedByOwnService = socketReachable && endpointHealthy;
 
     let state: ProjectRecoveryDiagnosis["state"];
     let code: AdeRecoveryErrorCode;
     if (free < GIB) {
       state = "disk_full";
       code = "disk_full";
+    } else if (
+      actionableFailure
+      && actionableFailure.code === "socket_owned_by_other"
+      && endpointOwnedByOwnService
+    ) {
+      // A recorded "another copy of ADE owns the endpoint" cannot be true while
+      // this machine's own service is running. What it describes is a brain
+      // that is up and not answering, which is the crash loop its own count
+      // already tells us about.
+      state = "brain_crash_looping";
+      code = "brain_crash_looping";
     } else if (actionableFailure) {
       state = stateForCode(actionableFailure.code);
       code = actionableFailure.code;
@@ -538,6 +772,13 @@ export class ProjectRecoveryService {
       // bound but cannot answer on yet is this brain's, not a stranger's.
       state = "brain_starting";
       code = "unknown";
+    } else if (endpointOwnedByOwnService) {
+      // Reachable, own service running, and it did not answer `ping`: a brain
+      // that is up and not working. Saying "another copy of ADE is open" would
+      // send the person to quit a copy that is not there, on the one screen
+      // that offers no repair.
+      state = "brain_crash_looping";
+      code = "brain_crash_looping";
     } else if (socketReachable) {
       state = "socket_owned_by_other";
       code = "socket_owned_by_other";
@@ -619,23 +860,46 @@ export class ProjectRecoveryService {
     opts: { onStep?: (step: RepairStepResult) => void },
   ): Promise<ProjectRepairReport> {
     const normalizedRoot = path.resolve(projectRoot);
+    // Repair opens the database, which would create an empty replacement for
+    // data that is only missing (or recreate a folder that is gone). The
+    // recovery screen offers restore instead.
+    const projectFolderPresent = fs.existsSync(normalizedRoot);
+    if (!projectFolderPresent || isLocalProjectDataMissing(normalizedRoot)) {
+      return {
+        ok: false,
+        steps: [],
+        dbHealthy: null,
+        chatsTotal: null,
+        chatsNeedingAttention: null,
+        filesRemoved: 0,
+        failureCode: "project_data_missing",
+        nextAction: projectFolderPresent
+          ? "This project's ADE data is missing. Restore it from the Trash or start fresh instead."
+          : PROJECT_FOLDER_MISSING_COPY.refusal,
+      };
+    }
     const dbPath = path.join(normalizedRoot, ".ade", "ade.db");
     const steps: RepairStepResult[] = [];
     let dbHealthy: boolean | null = null;
     let chatsTotal: number | null = null;
     let chatsNeedingAttention: number | null = null;
+    let serviceMayBeUninstalled = false;
 
     const addStep = (id: RepairStepId, status: RepairStepResult["status"], detail?: string): void => {
       const step = { id, label: STEP_LABELS[id], status, ...(detail ? { detail } : {}) };
       steps.push(step);
       opts.onStep?.(step);
     };
-    const fail = (
+    const fail = async (
       id: RepairStepId,
       failureCode: AdeRecoveryErrorCode,
       nextAction: string,
       detail: string,
-    ): ProjectRepairReport => {
+    ): Promise<ProjectRepairReport> => {
+      if (serviceMayBeUninstalled) {
+        await this.deps.connectionPool.installServiceBestEffort();
+        serviceMayBeUninstalled = false;
+      }
       addStep(id, "failed", detail);
       for (const skippedId of STEP_ORDER.slice(STEP_ORDER.indexOf(id) + 1)) {
         addStep(skippedId, "skipped", "Not run because an earlier step needs attention.");
@@ -677,7 +941,17 @@ export class ProjectRecoveryService {
       } catch (error) {
         return fail("stop_service", "unknown", "Quit any other copy of ADE, then try again.", errorMessage(error));
       }
-      if (!isAdeEndpoint) {
+      // A failed identity check used to end repair here. But `ping` is also
+      // what a brain that is wedged or crash-looping cannot answer, and the
+      // only lever repair has over the endpoint is this machine's own service
+      // — so refusing to stop on a failed ping stranded exactly the brain
+      // repair exists to clear, behind a screen that offers no repair and
+      // says to quit a copy of ADE that is not there. When the machine's own
+      // service is the plausible owner, stop it and let the release check
+      // below decide: an endpoint that survives that is genuinely someone
+      // else's.
+      const serviceCouldOwnEndpoint = this.serviceOwnsEndpoint(this.deps.connectionPool.getStatus());
+      if (!isAdeEndpoint && !serviceCouldOwnEndpoint) {
         return fail(
           "stop_service",
           "socket_owned_by_other",
@@ -687,6 +961,7 @@ export class ProjectRecoveryService {
       }
       let stopped = false;
       try {
+        serviceMayBeUninstalled = true;
         await this.stopService();
         stopped = await this.waitForSocketState(this.socketPath, false, 10_000);
       } catch (error) {
@@ -697,10 +972,18 @@ export class ProjectRecoveryService {
           "stop_service",
           "socket_owned_by_other",
           "Quit any other copy of ADE, then try again.",
-          "ADE could not verify exclusive access to the project data.",
+          isAdeEndpoint
+            ? "ADE could not verify exclusive access to the project data."
+            : "The machine endpoint did not identify itself as ADE, and stopping ADE's background service did not release it.",
         );
       }
-      addStep("stop_service", "ok", "The previous background service stopped.");
+      addStep(
+        "stop_service",
+        "ok",
+        isAdeEndpoint
+          ? "The previous background service stopped."
+          : "ADE's background service stopped and released the endpoint.",
+      );
     } else {
       addStep("stop_service", "ok", "No running background service was found.");
     }
@@ -744,6 +1027,7 @@ export class ProjectRecoveryService {
     }
 
     const restart = await this.restartServiceAndWait(false);
+    serviceMayBeUninstalled = restart.ok;
     if (!restart.ok && restart.reason === "background_blocked") {
       return fail("restart_service", "background_item_blocked", BACKGROUND_BLOCKED_NEXT_ACTION, restart.detail);
     }
@@ -799,4 +1083,32 @@ export class ProjectRecoveryService {
 
 export function createProjectRecoveryService(deps: ProjectRecoveryServiceDeps): ProjectRecoveryService {
   return new ProjectRecoveryService(deps);
+}
+
+/**
+ * The Repair button's brain restart, with its one coarse analytics fact.
+ * Every Repair (the banner's and the quit prompt's) goes through here, so each
+ * is counted. The 1 h dedupe bounds a frustrated click-loop to ≤24 events/day.
+ */
+export async function restartBrainForRepair(
+  service: Pick<ProjectRecoveryService, "restartBrain">,
+  analytics: Pick<ProductAnalyticsService, "capture"> | null | undefined,
+): Promise<void> {
+  const capture = (outcome: "completed" | "failed") => {
+    analytics?.capture({
+      event: "ade_feature_used",
+      surface: "desktop",
+      properties: { feature: "connections", action: "brain_repair", outcome },
+      projectId: null,
+      dedupeKey: `brain_repair:${outcome}`,
+      minimumIntervalMs: 60 * 60 * 1_000,
+    });
+  };
+  try {
+    await service.restartBrain();
+  } catch (error) {
+    capture("failed");
+    throw error;
+  }
+  capture("completed");
 }

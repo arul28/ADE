@@ -36,7 +36,7 @@ const {
   resetAppleMiniPlayerForTests,
   takeAppleMiniPlayerPoster,
 } = await import("../apple/appleMiniPlayerStore");
-const { isWorkSurfaceMounted, resetWorkToolOnScreenForTests, workSurfaceKey } = await import("../../lib/workToolOnScreen");
+const { isWorkSurfaceElementMounted, resetWorkToolOnScreenForTests, workSurfaceKey } = await import("../../lib/workToolOnScreen");
 
 const LANE = "lane-1";
 const UDID = "UDID-1";
@@ -76,8 +76,10 @@ function props(): WorkToolPanelProps {
     onClearDiffSelection: vi.fn(),
     onAddAttachment: undefined,
     onAddBuiltInBrowserContext: undefined,
+    onAttachBrowserTab: undefined,
     onAddAppControlContext: undefined,
     onAddIosContext: undefined,
+    onAddContextAttachment: undefined,
     onInsertDraft: undefined,
     onResumeEndedSession: vi.fn(),
     onToolChange: vi.fn(),
@@ -129,12 +131,12 @@ describe("the Apple tool panel's handover", () => {
       family: "iphone",
       runtimePin: null,
     });
-    expect(isWorkSurfaceMounted(workSurfaceKey("ios", "bound", LANE))).toBe(false);
+    expect(isWorkSurfaceElementMounted(workSurfaceKey("ios", "bound", LANE))).toBe(false);
     const view = render(<WorkIosTool {...props()} />);
     expect(getAppleMiniPlayerTarget()).toBeNull();
-    expect(isWorkSurfaceMounted(workSurfaceKey("ios", "bound", LANE))).toBe(true);
+    expect(isWorkSurfaceElementMounted(workSurfaceKey("ios", "bound", LANE))).toBe(true);
     view.unmount();
-    expect(isWorkSurfaceMounted(workSurfaceKey("ios", "bound", LANE))).toBe(false);
+    expect(isWorkSurfaceElementMounted(workSurfaceKey("ios", "bound", LANE))).toBe(false);
   });
 
   it("caches the lane's device while it is open, so the unmount needs no question", async () => {
@@ -211,7 +213,7 @@ describe("the Mac Desktop tool panel on a read-only surface", () => {
     resetWorkToolOnScreenForTests();
     const WorkMacDesktopTool = WORK_TOOL_COMPONENTS["mac-desktop"];
     const key = workSurfaceKey("mac-desktop", "bound", LANE);
-    expect(isWorkSurfaceMounted(key)).toBe(false);
+    expect(isWorkSurfaceElementMounted(key)).toBe(false);
     const view = render(
       <WorkMacDesktopTool
         {...props()}
@@ -219,8 +221,8 @@ describe("the Mac Desktop tool panel on a read-only surface", () => {
       />,
     );
     expect(view.getByTestId("read-only-mac-desktop")).toBeTruthy();
-    expect(isWorkSurfaceMounted(key)).toBe(true);
+    expect(isWorkSurfaceElementMounted(key)).toBe(true);
     view.unmount();
-    expect(isWorkSurfaceMounted(key)).toBe(false);
+    expect(isWorkSurfaceElementMounted(key)).toBe(false);
   });
 });

@@ -22,6 +22,8 @@ export type OpenCodeSubagent = {
   model: string | null;
   settled: boolean;
   usage: OpenCodeTurnUsage;
+  /** Of the child's reported cost, what a parent turn's total already counts. */
+  billedCostUsd: number;
   /** Closing text of the child's latest text part: its result summary. */
   lastText: string | null;
 };
@@ -46,6 +48,25 @@ function usageFields(child: OpenCodeSubagent): { usage?: { totalTokens: number; 
   const { totalTokens, costUsd } = openCodeUsageTotals(child.usage);
   if (totalTokens <= 0) return {};
   return { usage: { totalTokens, ...(costUsd > 0 ? { costUsd } : {}) } };
+}
+
+/**
+ * The cost children reported since the last call, marked as counted. A
+ * parent turn's total adds it, so what subagents spend reaches the chat's
+ * cost, and each dollar lands on exactly one turn: a background child that
+ * keeps working after its turn ended bills the next one.
+ */
+export function takeUnbilledOpenCodeChildCost(state: Pick<OpenCodeChildSessions, "subagents">): number {
+  let total = 0;
+  for (const child of state.subagents.values()) {
+    const { costUsd } = openCodeUsageTotals(child.usage);
+    const unbilled = costUsd - child.billedCostUsd;
+    if (unbilled > 0) {
+      total += unbilled;
+      child.billedCostUsd = costUsd;
+    }
+  }
+  return total;
 }
 
 /** Remember a parent `subagent` call, so the child it launches carries its description. */
@@ -73,6 +94,7 @@ export function openCodeChildStarted(
     model,
     settled: false,
     usage: createOpenCodeTurnUsage(),
+    billedCostUsd: 0,
     lastText: null,
   });
   return {

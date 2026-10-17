@@ -5,6 +5,7 @@ import {
   type AgentChatCompactProvider,
   type AgentChatEvent,
   type AgentChatSession,
+  type ContextCompactFailReason,
 } from "../../../shared/types";
 import { contextCompactMergeKey, type ContextCompactEvent } from "../../../shared/contextCompaction";
 
@@ -27,7 +28,9 @@ const NATIVE_COMPACT_PROVIDERS: Record<Exclude<AgentChatCompactProvider, AcpChat
   opencode: true,
   cursor: true,
   droid: true,
+  copilot: true,
   pi: true,
+  muse: true,
 };
 
 export function isContextCompactProvider(provider: string | null | undefined): provider is AgentChatCompactProvider {
@@ -41,7 +44,10 @@ export function buildContextCompactEvent(
   input: {
     trigger: "manual" | "auto" | "ade_fallback";
     state?: "started" | "completed" | "failed";
-    failReason?: "interrupted" | "timed_out" | "teardown";
+    failReason?: ContextCompactFailReason;
+    failDetail?: string;
+    summary?: string;
+    accountLabel?: string;
     turnId?: string;
     compactionId?: string;
     preTokens?: number;
@@ -86,6 +92,9 @@ export function buildContextCompactEvent(
     trigger: input.trigger,
     state: lifecycle,
     ...(input.failReason ? { failReason: input.failReason } : {}),
+    ...(input.failDetail ? { failDetail: input.failDetail } : {}),
+    ...(input.summary ? { summary: input.summary } : {}),
+    ...(input.accountLabel ? { accountLabel: input.accountLabel } : {}),
     ...(input.turnId ? { turnId: input.turnId } : {}),
     ...(compactionId ? { compactionId } : {}),
     ...(input.preTokens != null ? { preTokens: input.preTokens } : {}),
@@ -112,6 +121,9 @@ export function mapLegacyCompactionEvent(
       trigger: event.trigger,
       state: event.state,
       failReason: event.failReason,
+      failDetail: event.failDetail,
+      summary: event.summary,
+      accountLabel: event.accountLabel,
       turnId: event.turnId,
       compactionId: event.compactionId ?? event.turnId,
       preTokens: event.preTokens,
@@ -126,6 +138,9 @@ export function mapLegacyCompactionEvent(
       trigger: event.trigger,
       state: event.state,
       failReason: event.failReason,
+      failDetail: event.failDetail,
+      summary: event.summary,
+      accountLabel: event.accountLabel,
       turnId: event.turnId,
       compactionId: event.compactionId ?? event.turnId,
     });

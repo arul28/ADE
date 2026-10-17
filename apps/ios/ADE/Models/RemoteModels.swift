@@ -217,6 +217,14 @@ struct HostConnectionProfile: Codable, Equatable {
   }
 }
 
+extension HostConnectionProfile {
+  /// The machine's device identity, lowercased: the one stable way to tell two
+  /// machines apart. Nil for an older pairing that never learned it.
+  var machineIdentity: String? {
+    (nonEmptyTrimmed(hostIdentity) ?? nonEmptyTrimmed(lastHostDeviceId))?.lowercased()
+  }
+}
+
 /// A new-chat creation queued while offline. Persisted (App Group defaults) so
 /// the Work list can render a "Pending sync" row that survives relaunch. `id`
 /// is the stable command id of the queued `chat.create`; when that command
@@ -1105,8 +1113,28 @@ struct AgentChatResumeUsageLimitNowResult: Decodable, Equatable {
   }
 }
 
+/// `ttl` is "5m" or "1h"; `since` is when Claude started that lifetime (the
+/// start of the turn's last request), absent when the host did not see one.
+struct AgentChatPromptCache: Codable, Equatable {
+  var ttl: String
+  var since: String?
+}
+
 struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
+  var compactionIdleMode: String? = nil
+  /// Claude only: the chat's prompt cache after its last turn.
+  var promptCache: AgentChatPromptCache? = nil
+  /// Sent only by a brain started with a lowered Compact first limit (testing).
+  var compactFirstMinTokens: Int? = nil
+  /// How long this chat's prompt cache lives, in ms. The brain resolves it per
+  /// provider (Claude measured 5m/1h, OpenAI 30m, an hour when unknown).
+  var compactFirstIdleMs: Int? = nil
+  var manualCompactAvailable: Bool? = nil
   var id: String { sessionId }
+  /// Built on the phone from a roster row (`RemoteRosterChat.rosterChatSummary`)
+  /// rather than read from the host: provider and model are real, the access
+  /// mode is unknown, so the composer must not show one.
+  var rosterDerived: Bool? = nil
   var sessionId: String
   var laneId: String
   var provider: String
@@ -1150,6 +1178,13 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var codexEffectiveCollaborationModeWasCleared: Bool? = nil
   var opencodePermissionMode: String?
   var droidPermissionMode: String?
+  var musePermissionMode: String?
+  var copilotPermissionMode: String?
+  var copilotContextTier: String?
+  var copilotAutoTier: String?
+  /// True while the runtime holds an Auto-profile change as pending (`pending` status).
+  /// Transient host metadata: cleared by `session.model_change` or a failure.
+  var copilotAutoTierPending: Bool? = nil
   var cursorModeSnapshot: RemoteJSONValue?
   var cursorModeId: String?
   /// True when the host explicitly sent `cursorModeId: null`. Optional keeps
@@ -1222,16 +1257,30 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var usageLimitResumeWasCleared: Bool? = nil
   /// Live background tasks still running after the foreground turn. Older hosts omit it.
   var activeBackgroundTaskCount: Int? = nil
+  /// Work the live turn still has open (commands, tools, foreground subagents,
+  /// pending approvals). Present, zero included, while a turn is live; an older
+  /// host omits it, which means unknown, never zero.
+  var turnOpenWorkCount: Int? = nil
   var threadId: String?
   var requestedCwd: String?
   // Spawn lineage
   var orchestrationParentSessionId: String? = nil
+  /// Agent chat that launched this chat when it has no orchestration parent. Passive attribution only.
+  var launchedBySessionId: String? = nil
   var spawnKind: AgentChatSpawnKind? = nil
   /// When the takeover banner was dismissed or Take over was chosen. Absent means not shown yet.
   var subagentTakeoverPromptShownAt: String? = nil
+  /// This chat's move to another machine, owned by the source brain. Absent on
+  /// older hosts and for a chat that never moved.
+  var crossMachineHandoff: AgentChatCrossMachineHandoffRecord? = nil
 
   static func == (lhs: AgentChatSessionSummary, rhs: AgentChatSessionSummary) -> Bool {
     lhs.sessionId == rhs.sessionId
+      && lhs.compactionIdleMode == rhs.compactionIdleMode
+      && lhs.promptCache == rhs.promptCache
+      && lhs.compactFirstMinTokens == rhs.compactFirstMinTokens
+      && lhs.compactFirstIdleMs == rhs.compactFirstIdleMs
+      && lhs.manualCompactAvailable == rhs.manualCompactAvailable
       && lhs.laneId == rhs.laneId
       && lhs.provider == rhs.provider
       && lhs.model == rhs.model
@@ -1259,6 +1308,11 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.codexEffectiveCollaborationModeWasCleared == rhs.codexEffectiveCollaborationModeWasCleared
       && lhs.opencodePermissionMode == rhs.opencodePermissionMode
       && lhs.droidPermissionMode == rhs.droidPermissionMode
+      && lhs.musePermissionMode == rhs.musePermissionMode
+      && lhs.copilotPermissionMode == rhs.copilotPermissionMode
+      && lhs.copilotContextTier == rhs.copilotContextTier
+      && lhs.copilotAutoTier == rhs.copilotAutoTier
+      && lhs.copilotAutoTierPending == rhs.copilotAutoTierPending
       && lhs.cursorModeId == rhs.cursorModeId
       && lhs.cursorModeIdWasCleared == rhs.cursorModeIdWasCleared
       && lhs.cursorModeSnapshot == rhs.cursorModeSnapshot
@@ -1296,11 +1350,14 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.usageLimitResume == rhs.usageLimitResume
       && lhs.usageLimitResumeWasCleared == rhs.usageLimitResumeWasCleared
       && lhs.activeBackgroundTaskCount == rhs.activeBackgroundTaskCount
+      && lhs.turnOpenWorkCount == rhs.turnOpenWorkCount
       && lhs.threadId == rhs.threadId
       && lhs.requestedCwd == rhs.requestedCwd
       && lhs.orchestrationParentSessionId == rhs.orchestrationParentSessionId
+      && lhs.launchedBySessionId == rhs.launchedBySessionId
       && lhs.spawnKind == rhs.spawnKind
       && lhs.subagentTakeoverPromptShownAt == rhs.subagentTakeoverPromptShownAt
+      && lhs.crossMachineHandoff == rhs.crossMachineHandoff
   }
 }
 
@@ -1323,6 +1380,10 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
   var codexEffectiveCollaborationModeWasCleared: Bool = false
   var opencodePermissionMode: String?
   var droidPermissionMode: String?
+  var musePermissionMode: String?
+  var copilotPermissionMode: String?
+  var copilotContextTier: String?
+  var copilotAutoTier: String?
   var cursorModeId: String?
   /// True when the event carried `cursorModeId: null` (an intentional clear the
   /// host emits to drop a cursor mode) rather than omitting the key. Absent-key
@@ -1361,6 +1422,10 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
     case codexEffectiveCollaborationMode
     case opencodePermissionMode
     case droidPermissionMode
+    case musePermissionMode
+    case copilotPermissionMode
+    case copilotContextTier
+    case copilotAutoTier
     case cursorModeId
     case cursorModeSnapshot
     case cursorConfigValues
@@ -1394,6 +1459,10 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
     }
     opencodePermissionMode = try c.decodeIfPresent(String.self, forKey: .opencodePermissionMode)
     droidPermissionMode = try c.decodeIfPresent(String.self, forKey: .droidPermissionMode)
+    musePermissionMode = try c.decodeIfPresent(String.self, forKey: .musePermissionMode)
+    copilotPermissionMode = try c.decodeIfPresent(String.self, forKey: .copilotPermissionMode)
+    copilotContextTier = try c.decodeIfPresent(String.self, forKey: .copilotContextTier)
+    copilotAutoTier = try c.decodeIfPresent(String.self, forKey: .copilotAutoTier)
     // Distinguish `cursorModeId: null` (an intentional clear) from an absent
     // key. decodeIfPresent collapses both to nil, so gate on `contains`: a
     // present-but-null key means the host cleared the cursor mode.
@@ -1452,6 +1521,10 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
       || codexEffectiveCollaborationModeWasCleared
       || opencodePermissionMode != nil
       || droidPermissionMode != nil
+      || musePermissionMode != nil
+      || copilotPermissionMode != nil
+      || copilotContextTier != nil
+      || copilotAutoTier != nil
       || cursorModeId != nil
       || cursorModeIdWasCleared
       || cursorModeSnapshot != nil
@@ -1487,6 +1560,10 @@ extension AgentChatSessionSummary {
     }
     if let v = update.opencodePermissionMode { opencodePermissionMode = v }
     if let v = update.droidPermissionMode { droidPermissionMode = v }
+    if let v = update.musePermissionMode { musePermissionMode = v }
+    if let v = update.copilotPermissionMode { copilotPermissionMode = v }
+    if let v = update.copilotContextTier { copilotContextTier = v }
+    if let v = update.copilotAutoTier { copilotAutoTier = v }
     if let v = update.cursorModeId {
       cursorModeId = v
       cursorModeIdWasCleared = false
@@ -1563,6 +1640,10 @@ extension AgentChatSessionSummary {
     }
     if let v = other.opencodePermissionMode { opencodePermissionMode = v }
     if let v = other.droidPermissionMode { droidPermissionMode = v }
+    if let v = other.musePermissionMode { musePermissionMode = v }
+    if let v = other.copilotPermissionMode { copilotPermissionMode = v }
+    if let v = other.copilotContextTier { copilotContextTier = v }
+    if let v = other.copilotAutoTier { copilotAutoTier = v }
     if other.cursorModeIdWasCleared == true {
       cursorModeId = nil
       cursorModeIdWasCleared = true
@@ -2029,6 +2110,11 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
   var codexConfigSource: String?
   var opencodePermissionMode: String?
   var droidPermissionMode: String?
+  var musePermissionMode: String?
+  var copilotPermissionMode: String?
+  var copilotContextTier: String?
+  var copilotAutoTier: String?
+  var copilotAutoTierPending: Bool? = nil
   var cursorModeSnapshot: RemoteJSONValue?
   var cursorModeId: String?
   var cursorConfigValues: [String: RemoteJSONValue]?
@@ -2072,6 +2158,11 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     case codexConfigSource
     case opencodePermissionMode
     case droidPermissionMode
+    case musePermissionMode
+    case copilotPermissionMode
+    case copilotContextTier
+    case copilotAutoTier
+    case copilotAutoTierPending
     case cursorModeSnapshot
     case cursorModeId
     case cursorConfigValues
@@ -2116,6 +2207,11 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     codexConfigSource = try container.decodeIfPresent(String.self, forKey: .codexConfigSource)
     opencodePermissionMode = try container.decodeIfPresent(String.self, forKey: .opencodePermissionMode)
     droidPermissionMode = try container.decodeIfPresent(String.self, forKey: .droidPermissionMode)
+    musePermissionMode = try container.decodeIfPresent(String.self, forKey: .musePermissionMode)
+    copilotPermissionMode = try container.decodeIfPresent(String.self, forKey: .copilotPermissionMode)
+    copilotContextTier = try container.decodeIfPresent(String.self, forKey: .copilotContextTier)
+    copilotAutoTier = try container.decodeIfPresent(String.self, forKey: .copilotAutoTier)
+    copilotAutoTierPending = try container.decodeIfPresent(Bool.self, forKey: .copilotAutoTierPending)
     cursorModeSnapshot = try container.decodeIfPresent(RemoteJSONValue.self, forKey: .cursorModeSnapshot)
     cursorModeId = try container.decodeIfPresent(String.self, forKey: .cursorModeId)
     cursorConfigValues = try container.decodeIfPresent([String: RemoteJSONValue].self, forKey: .cursorConfigValues)
@@ -2159,6 +2255,11 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     try container.encodeIfPresent(codexConfigSource, forKey: .codexConfigSource)
     try container.encodeIfPresent(opencodePermissionMode, forKey: .opencodePermissionMode)
     try container.encodeIfPresent(droidPermissionMode, forKey: .droidPermissionMode)
+    try container.encodeIfPresent(musePermissionMode, forKey: .musePermissionMode)
+    try container.encodeIfPresent(copilotPermissionMode, forKey: .copilotPermissionMode)
+    try container.encodeIfPresent(copilotContextTier, forKey: .copilotContextTier)
+    try container.encodeIfPresent(copilotAutoTier, forKey: .copilotAutoTier)
+    try container.encodeIfPresent(copilotAutoTierPending, forKey: .copilotAutoTierPending)
     try container.encodeIfPresent(cursorModeSnapshot, forKey: .cursorModeSnapshot)
     try container.encodeIfPresent(cursorModeId, forKey: .cursorModeId)
     try container.encodeIfPresent(cursorConfigValues, forKey: .cursorConfigValues)
@@ -2275,6 +2376,16 @@ enum AgentChatNoticeKind: String, Codable, Equatable {
   /// is what lets the timeline draw the "Use reset" control instead of a dead
   /// sentence. See `normalizedSystemNoticeKind(from:)`.
   case resetCreditAvailable = "reset_credit_available"
+  /// Live-only move-state carrier (`status: "cross_machine_handoff_state"`,
+  /// empty message, `detail.crossMachineHandoffState`). State, not
+  /// conversation: SyncService folds the record into the chat summary and the
+  /// timeline never draws it. Promoted from `status` — see
+  /// `normalizedSystemNoticeKind(from:)`.
+  case crossMachineHandoffState = "cross_machine_handoff_state"
+  /// The durable "arrived from <machine>" marker on a destination chat
+  /// (`status: "cross_machine_handoff_arrived"`). Desktop reads it for a
+  /// banner and never draws it as a row; neither does the phone.
+  case crossMachineHandoffArrived = "cross_machine_handoff_arrived"
 
   // The host's noticeKind union (see apps/desktop/src/shared/types/chat.ts) grows
   // over time. `system_notice.noticeKind` is a required, non-optional decode, so an
@@ -2316,8 +2427,18 @@ func normalizedSystemNoticeKind(from status: String?) -> AgentChatNoticeKind? {
   case AgentChatNoticeKind.hostAwake.rawValue: return .hostAwake
   case "authentication_failed": return .auth
   case AgentChatNoticeKind.resetCreditAvailable.rawValue: return .resetCreditAvailable
+  case AgentChatNoticeKind.crossMachineHandoffState.rawValue: return .crossMachineHandoffState
+  case AgentChatNoticeKind.crossMachineHandoffArrived.rawValue: return .crossMachineHandoffArrived
   default: return nil
   }
+}
+
+/// Whether a `system_notice` with this `status` keeps its `detail` out of the
+/// timeline. A move's "ended" notice (`cross_machine_handoff_ended`) says it
+/// all in its message; its detail is the move record, which SyncService folds
+/// into the chat summary from the raw payload, so the decoded notice drops it.
+func systemNoticeStatusHidesDetail(_ status: String?) -> Bool {
+  status?.trimmingCharacters(in: .whitespacesAndNewlines) == "cross_machine_handoff_ended"
 }
 
 enum AgentChatApprovalRequestKind: String, Codable, Equatable {
@@ -2541,6 +2662,7 @@ struct AgentChatClaudeGoal: Codable, Equatable {
 enum AgentChatContextCompactState: String, Codable, Equatable {
   case started
   case completed
+  case failed
   /// A value from a newer host. Decoding falls back here rather than
   /// failing the payload that carries it.
   case unknown
@@ -2636,6 +2758,8 @@ struct AgentChatCodexTokenUsageBreakdown: Codable, Equatable {
 }
 
 struct AgentChatCodexThreadTokenUsage: Codable, Equatable {
+  var compactAtTokens: Int? = nil
+  var compactAtSource: String? = nil
   var threadId: String?
   var turnId: String?
   var total: AgentChatCodexTokenUsageBreakdown?
@@ -2658,6 +2782,8 @@ struct AgentChatContextUsage: Codable, Equatable {
   var totalTokens: Int
   var maxTokens: Int
   var rawMaxTokens: Int?
+  var compactAtTokens: Int? = nil
+  var compactAtSource: String? = nil
   var percentage: Double
   var model: String?
 
@@ -2666,6 +2792,8 @@ struct AgentChatContextUsage: Codable, Equatable {
     case totalTokens
     case maxTokens
     case rawMaxTokens
+    case compactAtTokens
+    case compactAtSource
     case percentage
     case model
   }
@@ -2676,6 +2804,8 @@ struct AgentChatContextUsage: Codable, Equatable {
     maxTokens = try container.decode(Int.self, forKey: .maxTokens)
     categories = try container.decodeIfPresent([AgentChatContextUsageCategory].self, forKey: .categories) ?? []
     rawMaxTokens = try container.decodeIfPresent(Int.self, forKey: .rawMaxTokens)
+    compactAtTokens = try container.decodeIfPresent(Int.self, forKey: .compactAtTokens)
+    compactAtSource = try container.decodeIfPresent(String.self, forKey: .compactAtSource)
     percentage = try container.decodeIfPresent(Double.self, forKey: .percentage)
       ?? (maxTokens > 0 ? Double(totalTokens) / Double(maxTokens) * 100 : 0)
     model = try container.decodeIfPresent(String.self, forKey: .model)
@@ -2848,6 +2978,9 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
   /// unlimited, so a past usage-limit turn loses its quiet footer once the
   /// resume row clears.
   var apiErrorStatus: Int?
+  var compactionFailDetail: String? = nil
+  var compactionSummary: String? = nil
+  var compactionAccountLabel: String? = nil
   /// True when the wire type was the legacy `subagent.completed` twin rather
   /// than the canonical `subagent_result`.
   ///
@@ -2873,6 +3006,12 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
   /// `AgentChatEvent.toolResult` already carries seven associated values that
   /// every construction site in the app and the tests would have to restate.
   var toolResultFullBytes: Int?
+  /// True for a `user_message` that ADE wrote for the user (a board move, a
+  /// wake, a relay, a continuation, a resume): its `metadata` carries one of
+  /// the markers in `agentChatAdeAuthoredMetadataKeys`. Kept beside the event
+  /// so `AgentChatEvent.userMessage` does not grow. A scene reads it: only a
+  /// message the reader wrote answers a scene.
+  var userMessageWrittenByAde: Bool = false
   /// Byte offset of this row in the host's transcript, when it arrived on a
   /// `chat_history` page that reported one.
   ///
@@ -2943,8 +3082,21 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     var resultTruncatedForMobile: Bool?
     var resultOriginalBytes: Int?
     var resumed: Bool?
+    var accountLabel: String?
+    var failDetail: String?
+    var summary: String?
+    var metadataMarksAdeAuthor = false
+
+    private struct MetadataKey: CodingKey {
+      var stringValue: String
+      var intValue: Int? { nil }
+      init(_ name: String) { stringValue = name }
+      init?(stringValue: String) { self.stringValue = stringValue }
+      init?(intValue: Int) { return nil }
+    }
 
     private enum CodingKeys: String, CodingKey {
+      case metadata
       case type
       case apiErrorStatus
       case apiErrorStatusSnake = "api_error_status"
@@ -2953,6 +3105,9 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
       case resultTruncatedForMobile
       case resultOriginalBytes
       case resumed
+      case failDetail
+      case accountLabel
+      case summary
     }
 
     /// Each field is decoded on its own tolerant path, never a shared throwing
@@ -2972,6 +3127,15 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
       resultTruncatedForMobile = try? container.decodeIfPresent(Bool.self, forKey: .resultTruncatedForMobile)
       resultOriginalBytes = try? container.decodeIfPresent(Int.self, forKey: .resultOriginalBytes)
       resumed = try? container.decodeIfPresent(Bool.self, forKey: .resumed)
+      accountLabel = try? container.decodeIfPresent(String.self, forKey: .accountLabel)
+      failDetail = try? container.decodeIfPresent(String.self, forKey: .failDetail)
+      summary = try? container.decodeIfPresent(String.self, forKey: .summary)
+      if let metadata = try? container.nestedContainer(keyedBy: MetadataKey.self, forKey: .metadata) {
+        metadataMarksAdeAuthor = agentChatAdeAuthoredMetadataKeys.contains { name in
+          let key = MetadataKey(name)
+          return metadata.contains(key) && (try? metadata.decodeNil(forKey: key)) == false
+        }
+      }
     }
   }
 
@@ -3030,9 +3194,13 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     let rawEvent = try? container.decode(EventRawFields.self, forKey: .event)
     subagentResumed = rawEvent?.resumed
     apiErrorStatus = rawEvent?.apiErrorStatus
+    compactionAccountLabel = rawEvent?.accountLabel
+    compactionFailDetail = rawEvent?.failDetail
+    compactionSummary = rawEvent?.summary
     isLegacySubagentCompletedFrame = rawEvent?.type == "subagent.completed"
     stopSource = rawEvent?.stopSource
     stopReason = rawEvent?.stopReason
+    userMessageWrittenByAde = rawEvent?.type == "user_message" && rawEvent?.metadataMarksAdeAuthor == true
     // Only a host that honoured `mobileChatSlimV1` sets this. A host that did
     // not sends the whole result and no flag, and the row behaves exactly as
     // it does today.
@@ -3148,7 +3316,7 @@ struct AgentChatFileRef: Codable, Equatable, Hashable {
   var url: String? = nil
 }
 
-/// Wire form of chat attachments for `chat.send`, `chat.createPromptStash`,
+/// Wire form of chat attachments for `chat.send`, `chat.createDraft`,
 /// `chat.startLaunch` and `chat.queueLaunchMessage`: `path` + `type`, plus
 /// `url` only when it is non-empty.
 func chatAttachmentArgs(_ attachments: [AgentChatFileRef]) -> [[String: Any]] {
@@ -3157,6 +3325,21 @@ func chatAttachmentArgs(_ attachments: [AgentChatFileRef]) -> [[String: Any]] {
     if let url = ref.url, !url.isEmpty { entry["url"] = url }
     return entry
   }
+}
+
+/// One row of `chat.listMentionSuggestions` (`ChatMentionSuggestion` in
+/// apps/desktop/src/shared/types/chatMentions.ts). `kind` stays a string so a
+/// newer host's kind decodes and is skipped instead of failing the whole list.
+struct ChatMentionSuggestionRow: Codable, Equatable {
+  var kind: String
+  var id: String
+  var title: String
+  var subtitle: String?
+  var lastActivityAt: Double?
+}
+
+struct ChatMentionSuggestionResult: Codable, Equatable {
+  var suggestions: [ChatMentionSuggestionRow]
 }
 
 /// What a thread comment points at. Mirrors `ChatThreadCommentAnchor` in
@@ -3232,7 +3415,105 @@ struct ChatThreadComment: Decodable, Equatable, Identifiable {
   var updatedAt: String
 }
 
-struct PromptStashEntry: Codable, Equatable, Identifiable {
+/// How a draft is armed. A plain draft is just unsent composer state; a
+/// `scheduled` draft additionally carries a fire time and is delivered as a
+/// real user turn by whichever machine owns the target chat.
+enum DraftKind: String, Codable, Equatable {
+  case draft
+  case scheduled
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    // A kind from a newer host reads as a plain draft rather than dropping the
+    // whole list that carries it.
+    self = DraftKind(rawValue: raw) ?? .draft
+  }
+}
+
+enum DraftStatus: String, Codable, Equatable {
+  /// Plain draft; nothing is armed.
+  case draft
+  /// Armed and waiting for its fire time.
+  case scheduled
+  /// Claimed by the owning machine; the send is in flight.
+  case sending
+  /// Delivered.
+  case sent
+  /// The fire time passed and the policy refused to deliver late.
+  case missed
+  /// Delivery cannot proceed until the user acts.
+  case blocked
+  /// Cancelled by the user or an agent.
+  case cancelled
+  /// A value from a newer host. Decoding falls back here rather than
+  /// failing the payload that carries it.
+  case unknown
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = DraftStatus(rawValue: raw) ?? .unknown
+  }
+}
+
+/// What happens when a scheduled send's fire time arrives and it cannot go out.
+enum DraftDeliveryPolicy: String, Codable, Equatable, CaseIterable, Identifiable {
+  /// Deliver as soon as a machine can, however late.
+  case wait
+  /// Skip the send once its moment has passed.
+  case strict
+  /// Deliver late, but only inside the grace window.
+  case grace
+
+  var id: String { rawValue }
+
+  var title: String {
+    switch self {
+    case .wait: return "Wait for me"
+    case .strict: return "Strict"
+    case .grace: return "Grace window"
+    }
+  }
+
+  var detail: String {
+    switch self {
+    case .wait: return "Send as soon as a machine can, even if that is late."
+    case .strict: return "Skip the send if the moment has passed."
+    case .grace: return "Send late, but only within the grace window."
+    }
+  }
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = DraftDeliveryPolicy(rawValue: raw) ?? .wait
+  }
+}
+
+/// Where a scheduled send goes: a chat that already exists, or a new chat.
+enum DraftTargetKind: String, Codable, Equatable {
+  case existing
+  case new
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = DraftTargetKind(rawValue: raw) ?? .existing
+  }
+}
+
+/// Who armed the send. Agents are first-class here.
+enum DraftScheduledBy: String, Codable, Equatable {
+  case user
+  case agent
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = DraftScheduledBy(rawValue: raw) ?? .user
+  }
+}
+
+/// A draft: unsent composer state that survives across machines, optionally
+/// armed as a scheduled send. Mirrors `DraftEntry` in
+/// `apps/desktop/src/shared/types/chat.ts`.
+struct DraftEntry: Codable, Equatable, Identifiable {
   var id: String
   var text: String
   var attachments: [AgentChatFileRef]?
@@ -3240,7 +3521,33 @@ struct PromptStashEntry: Codable, Equatable, Identifiable {
   var attachmentsAvailable: Bool?
   var provider: String?
   var modelId: String?
+  /// The runtime-facing model string; a new chat cannot start without one.
+  var model: String?
   var createdAt: String
+  var updatedAt: String?
+  /// Absent on a pre-scheduling ADE runtime — treat as "draft".
+  var kind: DraftKind?
+  var status: DraftStatus?
+  /// ISO fire time, meaning the target machine's local time.
+  var scheduledAt: String?
+  var deliveryPolicy: DraftDeliveryPolicy?
+  /// Only meaningful with `deliveryPolicy: "grace"`.
+  var graceSeconds: Int?
+  var targetKind: DraftTargetKind?
+  var targetSessionId: String?
+  var targetLaneId: String?
+  /// The machine whose local time and chat the send belongs to.
+  var targetMachineKey: String?
+  /// The chat this draft was written in, used as a default target hint.
+  var originSessionId: String?
+  var permissionMode: String?
+  var thinking: String?
+  var scheduledBy: DraftScheduledBy?
+  /// Set only when `scheduledBy` is "agent".
+  var scheduledBySessionId: String?
+  var firedAt: String?
+  /// Why a scheduled draft is blocked or missed, for the Needs-you row.
+  var lastError: String?
 
   var resolvedAttachments: [AgentChatFileRef] {
     attachments ?? []
@@ -3252,6 +3559,60 @@ struct PromptStashEntry: Codable, Equatable, Identifiable {
 
   var imagesUnavailable: Bool {
     attachmentsAvailable == false && resolvedAttachmentCount > 0
+  }
+
+  var resolvedKind: DraftKind { kind ?? .draft }
+
+  var resolvedStatus: DraftStatus { status ?? .draft }
+
+  var isScheduled: Bool { resolvedKind == .scheduled }
+
+  /// A send that needs the user: blocked, or a window it missed.
+  var needsYou: Bool {
+    isScheduled && (resolvedStatus == .blocked || resolvedStatus == .missed)
+  }
+
+  var scheduledDate: Date? { scheduledAt.flatMap(workParsedDate) }
+}
+
+/// The schedule a draft is armed with, as sent to `chat.createDraft` /
+/// `chat.updateDraft`. Mirrors `DraftScheduleInput` in `shared/types/chat.ts`.
+struct DraftScheduleInput: Equatable {
+  /// ISO-8601 with an explicit offset or Z. Must be in the future.
+  var scheduledAt: String
+  var targetKind: DraftTargetKind
+  var targetSessionId: String?
+  var targetLaneId: String?
+  var targetMachineKey: String?
+  var deliveryPolicy: DraftDeliveryPolicy = .wait
+  var graceSeconds: Int?
+  var provider: String?
+  var modelId: String?
+  /// The runtime-facing model string; a new chat cannot start without one.
+  var model: String?
+  var permissionMode: String?
+  var thinking: String?
+  var scheduledBy: DraftScheduledBy?
+  var scheduledBySessionId: String?
+
+  var args: [String: Any] {
+    var out: [String: Any] = [
+      "scheduledAt": scheduledAt,
+      "targetKind": targetKind.rawValue,
+      "deliveryPolicy": deliveryPolicy.rawValue,
+    ]
+    if let targetSessionId { out["targetSessionId"] = targetSessionId }
+    if let targetLaneId { out["targetLaneId"] = targetLaneId }
+    if let targetMachineKey { out["targetMachineKey"] = targetMachineKey }
+    if let graceSeconds { out["graceSeconds"] = graceSeconds }
+    if let provider { out["provider"] = provider }
+    if let modelId { out["modelId"] = modelId }
+    if let model { out["model"] = model }
+    if let permissionMode { out["permissionMode"] = permissionMode }
+    if let thinking { out["thinking"] = thinking }
+    if let scheduledBy { out["scheduledBy"] = scheduledBy.rawValue }
+    if let scheduledBySessionId { out["scheduledBySessionId"] = scheduledBySessionId }
+    return out
   }
 }
 
@@ -3306,6 +3667,13 @@ private struct AgentChatSpawnCompletionPayload: Decodable {
     )
   }
 }
+
+/// The `metadata` markers of a `user_message` that ADE wrote for the user.
+/// The same list as desktop `isReaderAuthoredMessage`; keep the two the same.
+let agentChatAdeAuthoredMetadataKeys = [
+  "boardMove", "prWatchWake", "scheduledWake", "spawnCompletion",
+  "agentRelay", "hostContinuation", "usageLimitResume",
+]
 
 private struct AgentChatSpawnCompletionContainer: Decodable {
   var spawnCompletion: AgentChatSpawnCompletionPayload?
@@ -4274,7 +4642,9 @@ extension AgentChatEvent {
         self = .systemNotice(
           noticeKind: normalizedSystemNoticeKind(from: noticeStatus) ?? declaredKind,
           message: try container.decode(String.self, forKey: .message),
-          detail: try container.decodeIfPresent(RemoteJSONValue.self, forKey: .detail),
+          detail: try systemNoticeStatusHidesDetail(noticeStatus)
+            ? nil
+            : container.decodeIfPresent(RemoteJSONValue.self, forKey: .detail),
           turnId: eventTurnId,
           steerId: try container.decodeIfPresent(String.self, forKey: .steerId)
         )
@@ -4478,6 +4848,10 @@ struct AgentChatLaunchDefaults: Codable, Equatable {
   var codexConfigSource: String?
   var opencodePermissionMode: String?
   var droidPermissionMode: String?
+  var musePermissionMode: String?
+  var copilotPermissionMode: String?
+  var copilotContextTier: String?
+  var copilotAutoTier: String?
   var cursorModeId: String?
   var updatedAt: String
 }
@@ -4586,6 +4960,9 @@ struct AgentChatHandoffRequest: Codable, Equatable {
   var targetModelId: String
   var mode: String
   var handoffNote: String?
+  /// Omitted: the new chat inherits the source chat's value.
+  var reasoningEffort: String?
+  var fastMode: Bool?
 }
 
 struct AgentChatRestoreCancelledQueueRequest: Codable, Equatable {
@@ -4691,6 +5068,10 @@ struct AgentChatUpdateSessionRequest: Codable, Equatable {
   var codexConfigSource: String?
   var opencodePermissionMode: String?
   var droidPermissionMode: String?
+  var musePermissionMode: String?
+  var copilotPermissionMode: String?
+  var copilotContextTier: String?
+  var copilotAutoTier: String?
   var cursorModeId: String?
   var cursorConfigValues: [String: RemoteJSONValue]?
   var unifiedPermissionMode: String?
@@ -4748,6 +5129,11 @@ struct AgentChatModelInfo: Codable, Equatable, Identifiable {
   var supportsTools: Bool?
   var color: String?
   var cursorAvailability: CursorModelAvailability? = nil
+  /// Copilot model context tiers the catalog advertises (`default`, `long_context`).
+  /// Optional: absent for providers without tiers. Window sizes come with them.
+  var supportedContextTiers: [String]? = nil
+  var contextWindow: Int? = nil
+  var longContextWindow: Int? = nil
 }
 
 extension AgentChatModelInfo {
@@ -4792,6 +5178,11 @@ struct AgentChatModelCatalogModel: Codable, Equatable, Identifiable {
   var piProfileId: String? = nil
   var piProviderId: String? = nil
   var piModelId: String? = nil
+  /// Copilot model context tiers the catalog advertises (`default`, `long_context`).
+  /// Optional: absent for providers without tiers. Window sizes come with them.
+  var supportedContextTiers: [String]? = nil
+  var contextWindow: Int? = nil
+  var longContextWindow: Int? = nil
 }
 
 struct AgentChatModelCatalogSubsection: Codable, Equatable, Identifiable {
@@ -5109,6 +5500,7 @@ struct TerminalResumeMetadata: Codable, Equatable {
   /// phone caches omit them; decode-if-present so a JSON blob that already
   /// carries lineage survives a SQLite round trip.
   var orchestrationParentSessionId: String? = nil
+  var launchedBySessionId: String? = nil
   var spawnKind: AgentChatSpawnKind? = nil
 }
 
@@ -5136,6 +5528,8 @@ struct FilesSearchTextMatch: Codable, Identifiable, Equatable {
 /// newer host values forward-compatible; presentation only displays the values
 /// in `workSessionActivityValues` and the `detected` / `agent` sources.
 struct SessionActivityReport: Codable, Equatable {
+  var contextTokens: Int? = nil
+  var failDetail: String? = nil
   var value: String
   var source: String
   var updatedAt: String
@@ -5221,11 +5615,18 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
   /// Same-lane `spawnKind == .subagent` chats nest under this parent in the
   /// by-lane Work list. Older hosts omit both keys.
   var orchestrationParentSessionId: String? = nil
+  /// Agent chat that launched this session when it has no orchestration parent.
+  /// Passive attribution only: it does not nest the row under the launcher.
+  var launchedBySessionId: String? = nil
   var spawnKind: AgentChatSpawnKind? = nil
   /// The chat's live goal (Codex `thread/goal`, Claude `/goal`), projected by
   /// the host onto `work.listSessions` rows. Absent on older hosts and on rows
   /// read back from the database, which has no column for it.
   var activeGoal: SessionActiveGoal? = nil
+  /// Claude session tag (desktop "Set tag…"). Absent on older hosts.
+  var claudeTag: String? = nil
+  /// This chat's move to another machine; see `AgentChatCrossMachineHandoffRecord`.
+  var crossMachineHandoff: AgentChatCrossMachineHandoffRecord? = nil
   /// Client-only: the segmented setup rail of a chat launch that still owns
   /// this row (`workOverlayChatLaunches`). Never on the wire — not in
   /// `CodingKeys` — and nil for every ordinary session.
@@ -5289,8 +5690,11 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
       && lhs.cursorRuntime == rhs.cursorRuntime
       && lhs.parentIdentityKey == rhs.parentIdentityKey
       && lhs.orchestrationParentSessionId == rhs.orchestrationParentSessionId
+      && lhs.launchedBySessionId == rhs.launchedBySessionId
       && lhs.spawnKind == rhs.spawnKind
       && lhs.activeGoal == rhs.activeGoal
+      && lhs.claudeTag == rhs.claudeTag
+      && lhs.crossMachineHandoff == rhs.crossMachineHandoff
       && lhs.launchRail == rhs.launchRail
   }
 }
@@ -5343,8 +5747,11 @@ extension TerminalSessionSummary {
     case cursorRuntime
     case parentIdentityKey
     case orchestrationParentSessionId
+    case launchedBySessionId
     case spawnKind
     case activeGoal
+    case claudeTag
+    case crossMachineHandoff
   }
 
   init(from decoder: Decoder) throws {
@@ -5395,10 +5802,13 @@ extension TerminalSessionSummary {
     cursorRuntime = try container.decodeIfPresent(String.self, forKey: .cursorRuntime)
     parentIdentityKey = try container.decodeIfPresent(String.self, forKey: .parentIdentityKey)
     orchestrationParentSessionId = try container.decodeIfPresent(String.self, forKey: .orchestrationParentSessionId)
+    launchedBySessionId = try container.decodeIfPresent(String.self, forKey: .launchedBySessionId)
     spawnKind = try container.decodeIfPresent(AgentChatSpawnKind.self, forKey: .spawnKind)
     // Tolerant: a goal shape this build does not know drops the decoration,
     // never the row.
     activeGoal = try? container.decodeIfPresent(SessionActiveGoal.self, forKey: .activeGoal)
+    claudeTag = try? container.decodeIfPresent(String.self, forKey: .claudeTag)
+    crossMachineHandoff = try? container.decodeIfPresent(AgentChatCrossMachineHandoffRecord.self, forKey: .crossMachineHandoff)
   }
 }
 
@@ -5519,6 +5929,10 @@ struct PullRequestListItem: Codable, Identifiable, Equatable {
   var chatSessionIds: [String]? = nil
   /// Chats that unlinked this PR. Fallback display must not revive these.
   var dismissedChatSessionIds: [String]? = nil
+  /// The linked chats that live on another lane. Mirrors
+  /// `PrSummary.crossLaneChatSessionIds`: a stack coordinator's link does not
+  /// take the PR away from the chats on its own lane.
+  var crossLaneChatSessionIds: [String]? = nil
 }
 
 struct PrGroupMemberSummary: Codable, Identifiable, Equatable {
@@ -7907,5 +8321,400 @@ struct AppControlStreamEnded: Equatable {
     self.subscriptionId = subscriptionId
     self.reason = reason
     self.message = payload["message"] as? String
+  }
+}
+
+// MARK: - Cross-machine handoff (`chat.*CrossMachineHandoff*`)
+
+/// Where a chat's move to another machine stands. Mirrors
+/// `AgentChatCrossMachineHandoffState` in `apps/desktop/src/shared/types/chat.ts`.
+/// A state this build does not know decodes as `.other` and renders nothing,
+/// so a newer brain can add one without breaking the chat summary.
+enum AgentChatCrossMachineHandoffState: Equatable, Hashable {
+  case awaitingApproval
+  case pending
+  case sending
+  case continued
+  case failed
+  case cancelled
+  case unknown
+  case other(String)
+
+  init(wire: String) {
+    switch wire {
+    case "awaiting_approval": self = .awaitingApproval
+    case "pending": self = .pending
+    case "sending": self = .sending
+    case "continued": self = .continued
+    case "failed": self = .failed
+    case "cancelled": self = .cancelled
+    case "unknown": self = .unknown
+    default: self = .other(wire)
+    }
+  }
+
+  var wire: String {
+    switch self {
+    case .awaitingApproval: return "awaiting_approval"
+    case .pending: return "pending"
+    case .sending: return "sending"
+    case .continued: return "continued"
+    case .failed: return "failed"
+    case .cancelled: return "cancelled"
+    case .unknown: return "unknown"
+    case .other(let raw): return raw
+    }
+  }
+}
+
+/// Where a source chat continues after a move (`continuedOn`).
+struct AgentChatCrossMachineContinuation: Codable, Equatable, Hashable {
+  var handoffId: String
+  var targetMachineKey: String
+  var targetMachineName: String
+  var targetLaneId: String
+  var targetSessionId: String
+  var continuedAt: String
+
+  private enum CodingKeys: String, CodingKey {
+    case handoffId, targetMachineKey, targetMachineName, targetLaneId, targetSessionId, continuedAt
+  }
+
+  init(
+    handoffId: String,
+    targetMachineKey: String,
+    targetMachineName: String,
+    targetLaneId: String,
+    targetSessionId: String,
+    continuedAt: String
+  ) {
+    self.handoffId = handoffId
+    self.targetMachineKey = targetMachineKey
+    self.targetMachineName = targetMachineName
+    self.targetLaneId = targetLaneId
+    self.targetSessionId = targetSessionId
+    self.continuedAt = continuedAt
+  }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    func string(_ key: CodingKeys) -> String { ((try? c.decodeIfPresent(String.self, forKey: key)) ?? nil) ?? "" }
+    self.init(
+      handoffId: string(.handoffId),
+      targetMachineKey: string(.targetMachineKey),
+      targetMachineName: string(.targetMachineName),
+      targetLaneId: string(.targetLaneId),
+      targetSessionId: string(.targetSessionId),
+      continuedAt: string(.continuedAt)
+    )
+  }
+}
+
+/// A move of this chat to another machine, owned by the SOURCE brain and
+/// projected onto the chat's summary (`crossMachineHandoff`). Decoding never
+/// throws: a malformed record must not drop the summary it rides on, so a
+/// record without a `handoffId` is simply treated as absent by the UI.
+struct AgentChatCrossMachineHandoffRecord: Codable, Equatable, Hashable {
+  var handoffId: String
+  var state: AgentChatCrossMachineHandoffState
+  /// Last durable step passed: prepared, destination_ready, accepted, marked
+  /// (`workCrossMachineHandoffSteps`).
+  var checkpoint: String?
+  var targetMachineKey: String
+  var targetMachineName: String
+  /// "brief" or "fork".
+  var mode: String
+  var targetModelId: String
+  var includeChanges: Bool
+  /// "user" or "agent".
+  var requestedBy: String
+  var requestedAt: String
+  var updatedAt: String
+  var reason: String?
+  var targetLaneId: String?
+  var targetSessionId: String?
+  /// The permission level the chat runs with there (the source chat's own).
+  var targetPermissionLabel: String?
+  /// Where the chat last landed, kept across later move attempts.
+  var continuedOn: AgentChatCrossMachineContinuation?
+  var resumedHere: Bool
+
+  private enum CodingKeys: String, CodingKey {
+    case handoffId, state, checkpoint, targetMachineKey, targetMachineName, mode, targetModelId
+    case includeChanges, requestedBy, requestedAt, updatedAt, reason, targetLaneId, targetSessionId, targetPermissionLabel, continuedOn, resumedHere
+  }
+
+  init(
+    handoffId: String,
+    state: AgentChatCrossMachineHandoffState,
+    checkpoint: String? = nil,
+    targetMachineKey: String,
+    targetMachineName: String,
+    mode: String = "brief",
+    targetModelId: String = "",
+    includeChanges: Bool = false,
+    requestedBy: String = "user",
+    requestedAt: String = "",
+    updatedAt: String = "",
+    reason: String? = nil,
+    targetLaneId: String? = nil,
+    targetSessionId: String? = nil,
+    targetPermissionLabel: String? = nil,
+    continuedOn: AgentChatCrossMachineContinuation? = nil,
+    resumedHere: Bool = false
+  ) {
+    self.handoffId = handoffId
+    self.state = state
+    self.checkpoint = checkpoint
+    self.targetMachineKey = targetMachineKey
+    self.targetMachineName = targetMachineName
+    self.mode = mode
+    self.targetModelId = targetModelId
+    self.includeChanges = includeChanges
+    self.requestedBy = requestedBy
+    self.requestedAt = requestedAt
+    self.updatedAt = updatedAt
+    self.reason = reason
+    self.targetLaneId = targetLaneId
+    self.targetSessionId = targetSessionId
+    self.targetPermissionLabel = targetPermissionLabel
+    self.continuedOn = continuedOn
+    self.resumedHere = resumedHere
+  }
+
+  init(from decoder: Decoder) throws {
+    guard let c = try? decoder.container(keyedBy: CodingKeys.self) else {
+      self.init(handoffId: "", state: .other(""), targetMachineKey: "", targetMachineName: "")
+      return
+    }
+    func string(_ key: CodingKeys) -> String? {
+      (try? c.decodeIfPresent(String.self, forKey: key)) ?? nil
+    }
+    func bool(_ key: CodingKeys) -> Bool {
+      ((try? c.decodeIfPresent(Bool.self, forKey: key)) ?? nil) ?? false
+    }
+    self.init(
+      handoffId: string(.handoffId) ?? "",
+      state: AgentChatCrossMachineHandoffState(wire: string(.state) ?? ""),
+      checkpoint: string(.checkpoint),
+      targetMachineKey: string(.targetMachineKey) ?? "",
+      targetMachineName: string(.targetMachineName) ?? "",
+      mode: string(.mode) ?? "brief",
+      targetModelId: string(.targetModelId) ?? "",
+      includeChanges: bool(.includeChanges),
+      requestedBy: string(.requestedBy) ?? "user",
+      requestedAt: string(.requestedAt) ?? "",
+      updatedAt: string(.updatedAt) ?? "",
+      reason: string(.reason),
+      targetLaneId: string(.targetLaneId),
+      targetSessionId: string(.targetSessionId),
+      targetPermissionLabel: string(.targetPermissionLabel),
+      continuedOn: ((try? c.decodeIfPresent(AgentChatCrossMachineContinuation.self, forKey: .continuedOn)) ?? nil)
+        .flatMap { $0.targetSessionId.isEmpty ? nil : $0 },
+      resumedHere: bool(.resumedHere)
+    )
+  }
+
+  func encode(to encoder: Encoder) throws {
+    var c = encoder.container(keyedBy: CodingKeys.self)
+    try c.encode(handoffId, forKey: .handoffId)
+    try c.encode(state.wire, forKey: .state)
+    try c.encodeIfPresent(checkpoint, forKey: .checkpoint)
+    try c.encode(targetMachineKey, forKey: .targetMachineKey)
+    try c.encode(targetMachineName, forKey: .targetMachineName)
+    try c.encode(mode, forKey: .mode)
+    try c.encode(targetModelId, forKey: .targetModelId)
+    try c.encode(includeChanges, forKey: .includeChanges)
+    try c.encode(requestedBy, forKey: .requestedBy)
+    try c.encode(requestedAt, forKey: .requestedAt)
+    try c.encode(updatedAt, forKey: .updatedAt)
+    try c.encodeIfPresent(reason, forKey: .reason)
+    try c.encodeIfPresent(targetLaneId, forKey: .targetLaneId)
+    try c.encodeIfPresent(targetSessionId, forKey: .targetSessionId)
+    try c.encodeIfPresent(targetPermissionLabel, forKey: .targetPermissionLabel)
+    try c.encodeIfPresent(continuedOn, forKey: .continuedOn)
+    try c.encode(resumedHere, forKey: .resumedHere)
+  }
+
+  /// Where the chat continues, if anywhere. Records from before `continuedOn`
+  /// existed fall back to a `continued` record's own target (mirrors
+  /// `crossMachineContinuation` in shared/crossMachineHandoff.ts).
+  var continuation: AgentChatCrossMachineContinuation? {
+    if let continuedOn { return continuedOn }
+    guard state == .continued, let lane = targetLaneId, let session = targetSessionId,
+          !lane.isEmpty, !session.isEmpty else { return nil }
+    return AgentChatCrossMachineContinuation(
+      handoffId: handoffId,
+      targetMachineKey: targetMachineKey,
+      targetMachineName: targetMachineName,
+      targetLaneId: lane,
+      targetSessionId: session,
+      continuedAt: updatedAt
+    )
+  }
+
+  /// A move that is still asking, waiting or in flight. Mirrors
+  /// `isCrossMachineHandoffActive` in shared/crossMachineHandoff.ts.
+  var isActive: Bool {
+    switch state {
+    case .awaitingApproval, .pending, .sending: return true
+    case .continued, .failed, .cancelled, .unknown, .other: return false
+    }
+  }
+
+  /// New messages go to the destination: it continued there, no move is under
+  /// way, and the person hasn't chosen to work here instead.
+  var sendsElsewhere: AgentChatCrossMachineContinuation? {
+    if resumedHere || isActive { return nil }
+    return continuation
+  }
+
+  /// Which of two records about the same chat to keep. Records arrive from a
+  /// live notice, an action's answer and a summary refresh in any order; a
+  /// late older one must not replace a newer one. A different move (another
+  /// handoffId) wins when it was requested later; the same move by
+  /// `updatedAt`. Mirrors `pickNewerCrossMachineHandoffRecord`.
+  static func pickNewer(
+    current: AgentChatCrossMachineHandoffRecord?,
+    incoming: AgentChatCrossMachineHandoffRecord?
+  ) -> AgentChatCrossMachineHandoffRecord? {
+    guard let incoming else { return current }
+    guard let current else { return incoming }
+    // A missing or unparseable timestamp falls back to the record's other one.
+    func time(_ value: String, _ fallback: String) -> TimeInterval {
+      (workParsedDate(value) ?? workParsedDate(fallback))?.timeIntervalSince1970 ?? 0
+    }
+    if current.handoffId != incoming.handoffId {
+      return time(incoming.requestedAt, incoming.updatedAt) >= time(current.requestedAt, current.updatedAt) ? incoming : current
+    }
+    return time(incoming.updatedAt, incoming.requestedAt) >= time(current.updatedAt, current.requestedAt) ? incoming : current
+  }
+
+  /// The machine's display name, falling back to its key.
+  var machineLabel: String {
+    let name = targetMachineName.trimmingCharacters(in: .whitespacesAndNewlines)
+    return name.isEmpty ? targetMachineKey : name
+  }
+}
+
+/// One machine the chat may move to (`chat.getCrossMachineHandoffOptions`).
+struct AgentChatCrossMachineHandoffMachineOption: Decodable, Equatable, Identifiable {
+  var id: String { machineKey }
+  var machineKey: String
+  var name: String
+  var online: Bool
+  /// Nil when this machine can take the chat now.
+  var unavailableReason: String?
+  /// False offers a clone; nil means the brain could not tell.
+  var hasRepository: Bool?
+}
+
+/// Something on the source that blocks the move, with how to clear it.
+struct AgentChatCrossMachineHandoffBlocker: Decodable, Equatable, Identifiable {
+  var id: String
+  var title: String
+  var detail: String
+  var clearedByIncludeChanges: Bool
+  var fixHint: String?
+}
+
+struct AgentChatCrossMachineHandoffChanges: Decodable, Equatable {
+  var unpushedCommits: Int
+  var changedFiles: Int
+}
+
+struct AgentChatCrossMachineHandoffOptions: Decodable, Equatable {
+  var machines: [AgentChatCrossMachineHandoffMachineOption]
+  var blockers: [AgentChatCrossMachineHandoffBlocker]
+  var changes: AgentChatCrossMachineHandoffChanges?
+  var current: AgentChatCrossMachineHandoffRecord?
+
+  private enum CodingKeys: String, CodingKey { case machines, blockers, changes, current }
+
+  init(
+    machines: [AgentChatCrossMachineHandoffMachineOption],
+    blockers: [AgentChatCrossMachineHandoffBlocker],
+    changes: AgentChatCrossMachineHandoffChanges? = nil,
+    current: AgentChatCrossMachineHandoffRecord? = nil
+  ) {
+    self.machines = machines
+    self.blockers = blockers
+    self.changes = changes
+    self.current = current
+  }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    machines = (try? c.decodeIfPresent([AgentChatCrossMachineHandoffMachineOption].self, forKey: .machines)) ?? []
+    blockers = (try? c.decodeIfPresent([AgentChatCrossMachineHandoffBlocker].self, forKey: .blockers)) ?? []
+    changes = (try? c.decodeIfPresent(AgentChatCrossMachineHandoffChanges.self, forKey: .changes)) ?? nil
+    current = (try? c.decodeIfPresent(AgentChatCrossMachineHandoffRecord.self, forKey: .current)) ?? nil
+  }
+}
+
+/// Providers whose fork can travel to another machine. Copilot is not here: its SDK
+/// session pointer lives on the source machine, so its fork stays there. The desktop's
+/// `CROSS_MACHINE_HANDOFF_FORK_PROVIDERS` (shared/types/chat.ts) agrees. droid, cursor
+/// and muse are on the desktop list but not here yet, which is a separate change.
+func workProviderSupportsCrossMachineHandoffFork(_ provider: String?) -> Bool {
+  guard let provider = provider?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else { return false }
+  return ["claude", "codex", "opencode"].contains(provider)
+}
+
+// MARK: - Automation rules (auto handoff)
+
+/// The slice of `AutomationRuleSummary` the phone's Auto handoff editor reads.
+/// Everything else in the rule is left untouched by decoding — the editor
+/// rewrites its own rules wholesale through `automations.saveDraft`.
+struct WorkAutomationRuleSummary: Decodable, Equatable, Identifiable {
+  struct Trigger: Decodable, Equatable {
+    var type: String
+    var sessionId: String?
+  }
+  struct Scope: Decodable, Equatable {
+    var sessionId: String?
+  }
+  struct Action: Decodable, Equatable {
+    var type: String
+    var handoffMode: String?
+    var targetModelId: String?
+    var reasoningEffort: String?
+    var promptTemplate: String?
+    var targetLaneMode: String?
+    var targetLaneId: String?
+  }
+  struct Execution: Decodable, Equatable {
+    struct BuiltIn: Decodable, Equatable { var actions: [Action]? }
+    var kind: String?
+    var builtIn: BuiltIn?
+  }
+
+  var id: String
+  var name: String?
+  var scope: Scope?
+  var triggers: [Trigger]?
+  var maxRuns: Int?
+  var actions: [Action]?
+  var execution: Execution?
+
+  private enum CodingKeys: String, CodingKey { case id, name, scope, triggers, maxRuns, actions, execution }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    id = try c.decode(String.self, forKey: .id)
+    name = (try? c.decodeIfPresent(String.self, forKey: .name)) ?? nil
+    scope = (try? c.decodeIfPresent(Scope.self, forKey: .scope)) ?? nil
+    triggers = (try? c.decodeIfPresent([Trigger].self, forKey: .triggers)) ?? nil
+    maxRuns = (try? c.decodeIfPresent(Int.self, forKey: .maxRuns)) ?? nil
+    actions = (try? c.decodeIfPresent([Action].self, forKey: .actions)) ?? nil
+    execution = (try? c.decodeIfPresent(Execution.self, forKey: .execution)) ?? nil
+  }
+
+  /// The handoff action, read where desktop's `handoffActionOf` reads it:
+  /// built-in execution first, then the legacy top-level list.
+  var handoffAction: Action? {
+    let fromExecution = execution?.kind == "built-in" ? execution?.builtIn?.actions : nil
+    let list = (fromExecution?.isEmpty == false ? fromExecution : nil) ?? actions ?? []
+    return list.first { $0.type == "handoff" }
   }
 }

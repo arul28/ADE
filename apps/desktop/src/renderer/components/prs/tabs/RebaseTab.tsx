@@ -77,14 +77,14 @@ function rebaseRunKey(args: { machineId: string | null | undefined; laneId: stri
 /* ── inline style constants ── */
 const S = {
   mainBg: "var(--chat-canvas-bg)",
-  cardBg: "#13101A",
-  headerBg: "#0C0A10",
-  borderDefault: "#1E1B26",
-  borderSubtle: "#27272A",
-  textPrimary: "#FAFAFA",
-  textSecondary: "#A1A1AA",
-  textMuted: "#71717A",
-  textDisabled: "#52525B",
+  cardBg: "var(--color-surface)",
+  headerBg: "var(--color-bg)",
+  borderDefault: "var(--color-border)",
+  borderSubtle: "var(--color-border)",
+  textPrimary: "var(--color-fg)",
+  textSecondary: "var(--color-secondary-fg)",
+  textMuted: "var(--color-muted-fg)",
+  textDisabled: "color-mix(in srgb, var(--color-muted-fg) 75%, var(--color-bg))",
   accent: "#A78BFA",
   accentSubtleBg: "#A78BFA18",
   accentBorder: "#A78BFA30",
@@ -621,7 +621,7 @@ export function RebaseTab({
           backgroundColor: isSelected ? "#A78BFA12" : "transparent",
         }}
         onMouseEnter={(e) => {
-          if (!isSelected) e.currentTarget.style.backgroundColor = "#13101A66";
+          if (!isSelected) e.currentTarget.style.backgroundColor = "color-mix(in srgb, var(--color-surface) 40%, transparent)";
         }}
         onMouseLeave={(e) => {
           if (!isSelected) e.currentTarget.style.backgroundColor = "transparent";
@@ -708,7 +708,7 @@ export function RebaseTab({
           backgroundColor: isSelected ? `color-mix(in srgb, ${stateColor} 7%, transparent)` : "transparent",
         }}
         onMouseEnter={(e) => {
-          if (!isSelected) e.currentTarget.style.backgroundColor = "#13101A66";
+          if (!isSelected) e.currentTarget.style.backgroundColor = "color-mix(in srgb, var(--color-surface) 40%, transparent)";
         }}
         onMouseLeave={(e) => {
           if (!isSelected) e.currentTarget.style.backgroundColor = "transparent";
@@ -1181,7 +1181,7 @@ export function RebaseTab({
                                     borderBottom: `1px solid ${S.borderDefault}`,
                                     cursor: "pointer",
                                   }}
-                                  onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "#13101A66"; }}
+                                  onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "color-mix(in srgb, var(--color-surface) 40%, transparent)"; }}
                                   onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
                                 >
                                   <span

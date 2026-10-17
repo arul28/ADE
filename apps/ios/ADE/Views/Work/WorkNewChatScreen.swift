@@ -351,7 +351,8 @@ struct WorkSessionTypeSwitcher: View {
   var onUserSelect: ((WorkNewSessionMode) -> Void)? = nil
 
   var body: some View {
-    HStack(spacing: 4) {
+    // The kit segmented track (`.kit-seg`): quiet track, the selection raised.
+    HStack(spacing: 2) {
       ForEach(WorkNewSessionMode.allCases) { mode in
         let isSelected = selection == mode
         Button {
@@ -363,28 +364,19 @@ struct WorkSessionTypeSwitcher: View {
         } label: {
           HStack(spacing: 6) {
             Image(systemName: mode.systemImage)
-              .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
-              .foregroundStyle(isSelected ? ADEColor.textPrimary : ADEColor.textSecondary)
-              .opacity(0.85)
+              .font(.system(size: 11.5, weight: .medium))
             Text(mode.title)
-              .font(.caption.weight(.semibold))
-              .foregroundStyle(isSelected ? ADEColor.textPrimary : ADEColor.textSecondary)
+              .font(.system(size: 13, weight: isSelected ? .semibold : .medium))
           }
+          .foregroundStyle(isSelected ? ADEColor.textPrimary : ADEColor.textSecondary)
           .padding(.horizontal, 14)
-          .padding(.vertical, 8)
+          .frame(minHeight: 30)
           .background {
             if isSelected {
-              Capsule(style: .continuous)
-                .fill(ADEColor.surfaceBackground.opacity(0.85))
+              ADEKitSegmentThumb()
             }
           }
-          .overlay {
-            if isSelected {
-              Capsule(style: .continuous)
-                .stroke(ADEColor.glassBorder, lineWidth: 0.5)
-            }
-          }
-          .contentShape(Capsule())
+          .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(mode.title)
@@ -392,12 +384,7 @@ struct WorkSessionTypeSwitcher: View {
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
       }
     }
-    .padding(4)
-    .background(ADEColor.recessedBackground.opacity(0.72), in: Capsule(style: .continuous))
-    .overlay {
-      Capsule(style: .continuous)
-        .stroke(ADEColor.glassBorder, lineWidth: 0.5)
-    }
+    .adeKitSegmentTrack()
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Session type")
   }
@@ -519,7 +506,7 @@ private func workPriorityLaneNamingWords(cleanedPrompt: String) -> [String] {
     .replacingOccurrences(of: #"[^a-z0-9]+"#, with: " ", options: .regularExpression)
     .trimmingCharacters(in: .whitespacesAndNewlines)
   guard !normalized.isEmpty else { return [] }
-  let provider = ["claude", "codex", "cursor", "droid", "opencode", "pi"].first {
+  let provider = ["claude", "codex", "muse", "cursor", "droid", "opencode", "pi"].first {
     workRegexContains(normalized, pattern: #"\b\#($0)\b"#)
   } ?? (workRegexContains(normalized, pattern: #"\bopen code\b"#) ? "opencode" : nil)
   guard let provider else { return [] }
@@ -646,8 +633,7 @@ enum WorkNewChatHeaderTier: Int, Comparable {
   }
 }
 
-/// Full-screen "Start a new conversation" composer that replaces the modal
-/// WorkNewChatSheet. Mirrors the desktop welcome screen: big ADE word-mark,
+/// Full-screen "Start a new conversation" composer. Mirrors the desktop welcome screen: big ADE word-mark,
 /// one-line tagline, a minimal workspace pill users can change inline, and a
 /// prominent composer anchored at the bottom. Sending fires the host create
 /// call and immediately pushes the new session route on top of the current
@@ -690,6 +676,9 @@ struct WorkNewChatScreen: View {
   @State private var runtimeMode: String = "default"
   @State private var reasoningEffort: String = ""
   @State private var codexFastMode: Bool = false
+  /// Copilot's context tier and Auto profile for the chat about to be created.
+  @State private var copilotContextTier: String = "default"
+  @State private var copilotAutoTier: String? = nil
   /// The catalog option the picker handed us, kept so fast-tier support is read
   /// from the live host-advertised model (its `serviceTiers`) rather than
   /// re-derived from the curated iOS catalog — which can miss a freshly
@@ -809,6 +798,8 @@ struct WorkNewChatScreen: View {
     provider = workNormalizedChatProvider(defaults.provider)
     modelId = defaults.modelId
     reasoningEffort = defaults.reasoningEffort ?? ""
+    copilotContextTier = workCopilotContextTier(defaults.copilotContextTier)
+    copilotAutoTier = defaults.copilotAutoTier
     codexFastMode = defaults.fastMode ?? false
     let mode = workRuntimeMode(
       provider: defaults.provider,
@@ -820,7 +811,9 @@ struct WorkNewChatScreen: View {
       codexSandbox: defaults.codexSandbox,
       opencodePermissionMode: defaults.opencodePermissionMode,
       cursorModeId: defaults.cursorModeId,
-      droidPermissionMode: defaults.droidPermissionMode
+      droidPermissionMode: defaults.droidPermissionMode,
+      musePermissionMode: defaults.musePermissionMode,
+      copilotPermissionMode: defaults.copilotPermissionMode
     )
     runtimeMode = mode.isEmpty ? workDefaultRuntimeMode(provider: provider) : mode
     checkModelOnMachine()
@@ -960,7 +953,7 @@ struct WorkNewChatScreen: View {
           }
           .padding(.horizontal, 12)
           .padding(.vertical, 6)
-          .workChatGlass(in: Capsule(style: .continuous))
+          .adeKitPill()
           .transition(.opacity)
         }
 
@@ -971,7 +964,8 @@ struct WorkNewChatScreen: View {
             .multilineTextAlignment(.center)
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
-            .workChatGlass(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .background(ADEKit.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
             .padding(.horizontal, 20)
         }
 
@@ -1063,6 +1057,12 @@ struct WorkNewChatScreen: View {
           machineModelHint = nil
         },
         selectedPresetId: selectedPreset?.id,
+        currentCopilotContextTier: copilotContextTier,
+        currentCopilotAutoTier: copilotAutoTier,
+        onSelectCopilotTiers: { context, auto in
+          copilotContextTier = context
+          copilotAutoTier = auto
+        },
         onSelect: { option, pickedReasoning, runtimeProvider, pickedFastMode in
           selectedPreset = nil
           selectedModelOption = option
@@ -1307,43 +1307,42 @@ struct WorkNewChatScreen: View {
     if next != headerTier { headerTier = next }
   }
 
-  /// Shell and Import session, as the thread's glass capsules. Only offered for
-  /// a concrete lane — both act on an existing worktree.
+  /// Shell and Import session, as quiet neutral pills (desktop's launch-shelf
+  /// ghost buttons). Only offered for a concrete lane — both act on an
+  /// existing worktree.
   @ViewBuilder
   private var sessionActionChips: some View {
     if selectedMachineKey == nil, let lane = selectedConcreteLane {
       let chipsDisabled = busy || shellLaunchBusy
       let shellQueued = queuedShellLaneIds.contains(lane.id)
       let shellDisabled = chipsDisabled || shellQueued
-      GlassEffectContainer(spacing: 8) {
-        HStack(spacing: 8) {
-          Button {
-            Task { await launchShell(in: lane) }
-          } label: {
-            shellSessionAffordance(isBusy: shellLaunchBusy, isQueued: shellQueued, disabled: shellDisabled)
-          }
-          .buttonStyle(.plain)
-          .disabled(shellDisabled)
-
-          NavigationLink {
-            WorkImportSessionScreen(
-              lane: lane,
-              lanes: visibleLanes,
-              onCliImported: onCliStarted,
-              onChatImported: onChatImported
-            )
-            .environmentObject(syncService)
-          } label: {
-            importSessionAffordance(disabled: chipsDisabled)
-          }
-          .buttonStyle(.plain)
-          .disabled(chipsDisabled)
+      HStack(spacing: 8) {
+        Button {
+          Task { await launchShell(in: lane) }
+        } label: {
+          shellSessionAffordance(isBusy: shellLaunchBusy, isQueued: shellQueued, disabled: shellDisabled)
         }
+        .buttonStyle(.plain)
+        .disabled(shellDisabled)
+
+        NavigationLink {
+          WorkImportSessionScreen(
+            lane: lane,
+            lanes: visibleLanes,
+            onCliImported: onCliStarted,
+            onChatImported: onChatImported
+          )
+          .environmentObject(syncService)
+        } label: {
+          importSessionAffordance(disabled: chipsDisabled)
+        }
+        .buttonStyle(.plain)
+        .disabled(chipsDisabled)
       }
     }
   }
 
-  private func glassChip(
+  private func quietChip(
     systemImage: String?,
     title: String,
     disabled: Bool,
@@ -1353,30 +1352,24 @@ struct WorkNewChatScreen: View {
       if showsProgress {
         ProgressView()
           .controlSize(.mini)
-          .tint(ADEColor.accent)
       } else if let systemImage {
         Image(systemName: systemImage)
-          .font(.system(size: 12, weight: .semibold))
-          .foregroundStyle(disabled ? ADEColor.textMuted : ADEColor.accent)
+          .font(.system(size: 12, weight: .medium))
       }
       Text(title)
-        .font(.caption.weight(.semibold))
-        .foregroundStyle(disabled ? ADEColor.textMuted : ADEColor.textPrimary)
+        .font(.system(size: 13, weight: .medium))
     }
+    .foregroundStyle(ADEColor.textSecondary)
     .padding(.horizontal, 12)
-    .frame(minHeight: workChatComposerChipRowHeight)
-    .workChatGlass(in: Capsule(style: .continuous), interactive: !disabled)
-    .overlay(
-      Capsule(style: .continuous)
-        .stroke(ADEColor.accent.opacity(disabled ? 0.08 : 0.22), lineWidth: 0.75)
-    )
+    .frame(minHeight: 32)
+    .background(ADEKit.track, in: Capsule(style: .continuous))
     .contentShape(Capsule(style: .continuous))
-    .opacity(disabled && !showsProgress ? 0.6 : 1)
+    .opacity(disabled && !showsProgress ? 0.5 : 1)
     .frame(minHeight: 44)
   }
 
   private func shellSessionAffordance(isBusy: Bool, isQueued: Bool, disabled: Bool) -> some View {
-    glassChip(
+    quietChip(
       systemImage: isQueued ? "clock.badge.checkmark" : "terminal",
       title: isBusy ? "Starting shell" : (isQueued ? "Shell queued" : "Shell"),
       disabled: disabled,
@@ -1386,12 +1379,14 @@ struct WorkNewChatScreen: View {
   }
 
   private func importSessionAffordance(disabled: Bool) -> some View {
-    glassChip(systemImage: "square.and.arrow.down", title: "Import session", disabled: disabled)
+    quietChip(systemImage: "square.and.arrow.down", title: "Import session", disabled: disabled)
   }
 
   @ViewBuilder
   private var composerBar: some View {
     WorkNewChatComposerBar(
+      draftScopeProjectId: activeProjectId,
+      draftScopeProjectRootPath: activeProjectRootPath,
       sessionMode: sessionMode,
       provider: $provider,
       modelId: modelId,
@@ -1725,6 +1720,10 @@ struct WorkNewChatScreen: View {
         codexConfigSource: wire.codexConfigSource,
         opencodePermissionMode: wire.opencodePermissionMode,
         droidPermissionMode: wire.droidPermissionMode,
+        musePermissionMode: wire.musePermissionMode,
+        copilotPermissionMode: wire.copilotPermissionMode,
+        copilotContextTier: providerFamilyKey(provider) == "copilot" ? copilotContextTier : nil,
+        copilotAutoTier: providerFamilyKey(provider) == "copilot" ? copilotAutoTier : nil,
         cursorModeId: wire.cursorModeId,
         targetProjectId: targetScope.projectId,
         targetProjectRootPath: targetScope.projectRootPath,
@@ -1878,7 +1877,7 @@ struct WorkNewChatScreen: View {
 
 private func workCliSupportsReasoningSelection(provider: String) -> Bool {
   let family = providerFamilyKey(provider)
-  return family == "claude" || family == "codex" || family == "droid" || family == "pi"
+  return family == "claude" || family == "codex" || family == "muse" || family == "droid" || family == "pi"
 }
 
 private func workCliInitialSessionTitle(provider: String, opener: String) -> String {
@@ -1915,6 +1914,7 @@ private func workCliToolType(provider: String) -> String {
   case "cursor": return "cursor-cli"
   case "opencode": return "opencode"
   case "pi": return "pi"
+  case "muse": return "muse"
   case "droid": return "droid"
   case "qwen": return "qwen"
   case "kimi": return "kimi"
@@ -1926,6 +1926,10 @@ private func workCliToolType(provider: String) -> String {
 }
 
 private struct WorkNewChatComposerBar: View {
+  /// The project the drafts this composer opens belong to, so a draft listed
+  /// or scheduled here targets the project the user is looking at.
+  let draftScopeProjectId: String?
+  let draftScopeProjectRootPath: String?
   let sessionMode: WorkNewSessionMode
   @Binding var provider: String
   let modelId: String
@@ -1950,6 +1954,8 @@ private struct WorkNewChatComposerBar: View {
   @EnvironmentObject private var syncService: SyncService
   @State private var draft: String = ""
   @State private var attachments: [WorkChatInputAttachment] = []
+  /// Set by a tap on an image or file pill; the tray opens that preview.
+  @State private var attachmentPreviewRequest: UUID?
   @State private var presentedPicker: WorkComposerPicker?
   /// Live viewport width of the controls scroll area, so the access control
   /// collapses to the in-session composer's dot-Menu at the same threshold.
@@ -2017,10 +2023,15 @@ private struct WorkNewChatComposerBar: View {
           canCompose: !busy,
           attachmentsAvailable: attachmentsAvailable,
           onDictate: startDictation,
-          stashAvailable: syncService.canInvokeRemoteAction("chat.listPromptStashes"),
-          scope: WorkPromptStashScope(),
+          draftsAvailable: syncService.canInvokeRemoteAction("chat.listDrafts"),
+          scheduleAvailable: syncService.canInvokeRemoteAction("chat.createDraft"),
+          scope: WorkDraftScope(
+            projectId: draftScopeProjectId,
+            projectRootPath: draftScopeProjectRootPath
+          ),
           provider: provider,
           modelId: modelId,
+          runtimeMode: runtimeMode,
           extraMenuContent: AnyView(sessionSettingsMenu)
         )
       },

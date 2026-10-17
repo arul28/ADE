@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import type { ModelDescriptor } from "../../../shared/modelRegistry";
 import type { EffectiveProjectConfig, ProjectConfigFile } from "../../../shared/types";
 import type { DetectedAuth } from "./authDetector";
@@ -22,15 +23,22 @@ import { resolveCliSpawnInvocation, terminateProcessTree } from "../shared/proce
 import { userProcessEnv } from "../shared/hostRuntimeEnv";
 import { assertCursorSdkSupportedOnThisPlatform } from "./cursorSdkLoader";
 import { runCursorSdkLocalPrompt } from "../chat/cursorSdkPool";
+import { resolveCursorSdkModelSelectionParams } from "../chat/cursorModelSelection";
+import { claudeBackgroundUtilityFlags, codexStandardSpeedFlags } from "../../../shared/backgroundUtilityModel";
 import {
+  claudeRuntimeEffortFlags,
   codexReasoningEffortFlags,
   resolveGrokCliModelForLaunch,
   resolveKimiCliModelForLaunch,
   resolveCodexCliModelForLaunch,
-  resolveCopilotCliModelForLaunch,
   resolveQwenCliModelForLaunch,
 } from "../../../shared/cliLaunch";
 import { resolveCliProviderForModel } from "../../../shared/modelRegistry";
+import type { Item } from "@muse-code/sdk/dist/src/msp.js";
+import { isMuseKnownNotification, startPinnedMuseHost } from "../chat/museSdkHost";
+import { addUsage, museCompletionUsage, type MuseTurnUsage } from "../chat/museSdkEventMapper";
+import { acquireCopilotSdkConnection, releaseCopilotSdkConnection } from "../chat/copilotSdkPool";
+import { copilotConfigHome } from "../shared/providerConfigHomes";
 
 export type ProviderTaskRunnerArgs = {
   cwd: string;
@@ -46,6 +54,24 @@ export type ProviderTaskRunnerArgs = {
   projectConfig: ProjectConfigFile | EffectiveProjectConfig;
   imagePaths?: string[];
   reasoningEffort?: string | null;
+  /**
+   * A background text-in, text-out task (names, status lines, summaries) that
+   * needs no tools: everything it reads is in the prompt.
+   * - Claude: drops every tool and MCP server, runs outside plan mode (plan
+   *   mode loads a ~47k-token setup), and asks for JSON in the prompt rather
+   *   than through the structured-output tool, which costs extra model turns.
+   *   Measured on Haiku 5.5: ~1.7s and ~4k tokens instead of ~4.7s and ~96k.
+   * - Codex and Cursor: pinned to standard speed, so a user's global Fast
+   *   setting never bills a chat name at Fast rates.
+   */
+  backgroundUtility?: boolean;
+  /**
+   * The provider-account env patch (`CLAUDE_CONFIG_DIR` / `CODEX_HOME`) for the
+   * Claude and Codex CLIs. Without it the CLI reads whatever config home the
+   * process environment names, which is not necessarily the account the
+   * caller's chat runs on.
+   */
+  accountEnv?: Record<string, string>;
 };
 
 export type ProviderTaskRunnerResult = {
@@ -154,11 +180,11 @@ function buildClaudePermissionMode(mode: AgentPermissionMode | undefined): strin
 }
 
 /**
- * Codex rejects an effort a model does not advertise, so only forward a tier the
- * descriptor actually lists. An unknown tier falls back to the CLI default rather
- * than failing the whole task.
+ * Codex and Claude reject an effort a model does not advertise, so only forward
+ * a tier the descriptor actually lists. An unknown tier falls back to the CLI
+ * default rather than failing the whole task.
  */
-function resolveCodexTaskReasoningEffort(args: ProviderTaskRunnerArgs): string | null {
+function resolveTaskReasoningEffort(args: ProviderTaskRunnerArgs): string | null {
   const effort = String(args.reasoningEffort ?? "").trim();
   if (!effort) return null;
   const tiers = args.descriptor.reasoningTiers;
@@ -178,10 +204,12 @@ async function runCommand(args: {
   cwd: string;
   timeoutMs?: number;
   stdinText?: string;
+  env?: Record<string, string>;
 }): Promise<SpawnResult> {
   return await new Promise((resolve, reject) => {
     const env = {
       ...userProcessEnv(),
+      ...args.env,
       NO_COLOR: "1",
       TERM: "dumb",
     };
@@ -205,11 +233,15 @@ async function runCommand(args: {
       reject(new Error(`Provider task timed out after ${timeoutMs}ms.`));
     }, timeoutMs);
 
+    // A decoder per stream keeps a UTF-8 character split across two chunks
+    // (the "·" in Claude's usage-limit message) intact.
+    const stdoutDecoder = new StringDecoder("utf8");
+    const stderrDecoder = new StringDecoder("utf8");
     child.stdout?.on("data", (chunk) => {
-      stdout += Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
+      stdout += Buffer.isBuffer(chunk) ? stdoutDecoder.write(chunk) : String(chunk);
     });
     child.stderr?.on("data", (chunk) => {
-      stderr += Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
+      stderr += Buffer.isBuffer(chunk) ? stderrDecoder.write(chunk) : String(chunk);
     });
     child.stdin?.on("error", (error) => {
       if (settled || isBenignStdinCloseError(error)) return;
@@ -230,13 +262,41 @@ async function runCommand(args: {
       if (settled) return;
       settled = true;
       clearTimeout(timeoutHandle);
-      resolve({ stdout, stderr, exitCode });
+      resolve({ stdout: stdout + stdoutDecoder.end(), stderr: stderr + stderrDecoder.end(), exitCode });
     });
 
     if (args.stdinText != null && child.stdin) {
       child.stdin.end(args.stdinText);
     }
   });
+}
+
+/**
+ * The message Claude reports for a failed print-mode run. With
+ * `--output-format json` an API failure (a 429 usage limit, an auth error)
+ * arrives on stdout as `{"is_error":true,"result":"...","api_error_status":429}`
+ * with an empty stderr, so the exit code alone hides the cause.
+ */
+function extractClaudeError(stdout: string): string | null {
+  const trimmed = stdout.trim();
+  if (!trimmed.startsWith("{")) return null;
+  try {
+    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+    if (parsed.is_error !== true) return null;
+    const message = typeof parsed.result === "string" && parsed.result.trim()
+      ? parsed.result.trim()
+      : "Claude reported an error";
+    const status = typeof parsed.api_error_status === "number" ? parsed.api_error_status : null;
+    return status ? `${message} (HTTP ${status})` : message;
+  } catch {
+    return null;
+  }
+}
+
+/** Why a CLI exited non-zero: stderr, else the tail of stdout, else nothing. */
+function describeCliFailure(label: string, result: SpawnResult): string {
+  const detail = result.stderr.trim() || result.stdout.trim().slice(-2_000);
+  return `${label} exited with code ${result.exitCode ?? "unknown"}${detail ? `\n\n${detail}` : ""}`;
 }
 
 function extractClaudeText(stdout: string): string {
@@ -259,20 +319,26 @@ function extractClaudeText(stdout: string): string {
 async function runClaudeTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskRunnerResult> {
   const prompt = appendStructuredOutputInstruction(args.prompt, args.jsonSchema);
   const sessionId = args.sessionId?.trim() || null;
+  const backgroundUtility = args.backgroundUtility === true;
   const cliArgs = [
     "--model",
     resolveClaudeCliModel(args.descriptor.providerModelId),
     "--output-format",
     args.jsonSchema ? "json" : "text",
     "--permission-mode",
-    buildClaudePermissionMode(args.permissionMode),
+    // With no tools there is nothing to permit; plan mode would only swap models.
+    backgroundUtility ? "default" : buildClaudePermissionMode(args.permissionMode),
   ];
+  if (backgroundUtility) cliArgs.push(...claudeBackgroundUtilityFlags());
 
   if (args.system?.trim()) {
     cliArgs.push("--system-prompt", args.system.trim());
   }
-  if (args.jsonSchema) {
+  if (args.jsonSchema && !backgroundUtility) {
     cliArgs.push("--json-schema", JSON.stringify(args.jsonSchema));
+  }
+  if (args.descriptor.capabilities?.reasoning !== false) {
+    cliArgs.push(...claudeRuntimeEffortFlags(resolveTaskReasoningEffort(args)));
   }
   if (sessionId) {
     cliArgs.push("--session-id", sessionId);
@@ -288,9 +354,14 @@ async function runClaudeTask(args: ProviderTaskRunnerArgs): Promise<ProviderTask
     cwd: args.cwd,
     timeoutMs: args.timeoutMs,
     stdinText: prompt,
+    env: args.accountEnv,
   });
+  const reportedError = extractClaudeError(result.stdout);
+  if (reportedError) {
+    throw new Error(`Claude failed: ${reportedError}`);
+  }
   if (result.exitCode !== 0) {
-    throw new Error(`Claude exited with code ${result.exitCode ?? "unknown"}${result.stderr.trim() ? `\n\n${result.stderr.trim()}` : ""}`);
+    throw new Error(describeCliFailure("Claude", result));
   }
   const text = extractClaudeText(result.stdout);
   return {
@@ -324,7 +395,8 @@ async function runCodexTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskR
   if (codexModel) {
     cliArgs.push("--model", codexModel);
   }
-  cliArgs.push(...codexReasoningEffortFlags(resolveCodexTaskReasoningEffort(args)));
+  cliArgs.push(...codexReasoningEffortFlags(resolveTaskReasoningEffort(args)));
+  if (args.backgroundUtility) cliArgs.push(...codexStandardSpeedFlags());
 
   if (args.permissionMode === "full-auto") {
     cliArgs.push("--dangerously-bypass-approvals-and-sandbox");
@@ -354,10 +426,11 @@ async function runCodexTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskR
       cwd: args.cwd,
       timeoutMs: args.timeoutMs,
       stdinText: combinedPrompt,
+      env: args.accountEnv,
     });
     const output = fs.existsSync(outPath) ? fs.readFileSync(outPath, "utf8").trim() : result.stdout.trim();
     if (result.exitCode !== 0) {
-      throw new Error(`Codex exited with code ${result.exitCode ?? "unknown"}${result.stderr.trim() ? `\n\n${result.stderr.trim()}` : ""}`);
+      throw new Error(describeCliFailure("Codex", result));
     }
     return {
       text: output,
@@ -400,11 +473,21 @@ async function runCursorTask(args: ProviderTaskRunnerArgs): Promise<ProviderTask
   // The pool forks a worker before it can report an unsupported platform, so
   // keep the win32-arm64 blocker on the near side of the fork.
   assertCursorSdkSupportedOnThisPlatform();
+  // Standard speed for background tasks. The in-memory catalog maps it to the
+  // model's own speed parameter; a model without one (or no catalog loaded
+  // yet) sends nothing, and a chat name never waits on a catalog fetch.
+  const modelParams = args.backgroundUtility
+    ? resolveCursorSdkModelSelectionParams({
+      modelSdkId: args.descriptor.providerModelId,
+      serviceTier: "standard",
+    })
+    : undefined;
   const result = await runCursorSdkLocalPrompt({
     projectRoot: args.cwd,
     workspacePath: args.cwd,
     apiKey,
     modelSdkId: args.descriptor.providerModelId,
+    ...(modelParams?.length ? { modelParams } : {}),
     promptText: combinedPrompt,
     feature: args.feature,
     timeoutMs: args.timeoutMs ?? 120_000,
@@ -414,6 +497,93 @@ async function runCursorTask(args: ProviderTaskRunnerArgs): Promise<ProviderTask
     structuredOutput: args.jsonSchema ? parseStructuredOutput(result.text) : null,
     sessionId: result.agentId,
   };
+}
+
+/**
+ * One prompt through a short-lived `muse serve` host: start a session, run a
+ * single turn, collect the reply, close. Read-only tasks select Muse's
+ * `denyUnmatched` mode, so a title or summary can never touch the workspace.
+ */
+async function runMuseTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskRunnerResult> {
+  const prompt = appendStructuredOutputInstruction(args.prompt, args.jsonSchema);
+  const combinedPrompt = args.system?.trim() ? `${args.system.trim()}\n\n${prompt}` : prompt;
+  const host = await startPinnedMuseHost({
+    baseEnv: { ...userProcessEnv(), ...(args.accountEnv ?? {}) },
+    noSessionLog: true,
+    cwd: args.cwd,
+    clientVersion: "ade",
+    userInputDialogs: false,
+  });
+  try {
+    // Nobody watches a one-shot task, so it can never answer an approval or a
+    // question: Muse refuses anything its rules do not already allow, and the
+    // host says it has no question dialogs (`userInputDialogs: false`).
+    const started = await host.command<{ session: { sessionId: string } }>("session/start", {
+      workspaceRoot: args.cwd,
+      modelId: args.descriptor.providerModelId,
+      approvalMode: "denyUnmatched",
+    });
+    const sessionId = started.session.sessionId;
+    const texts = new Map<string, string>();
+    // Filled in by the subscription callback below.
+    const tally: { usage: MuseTurnUsage | null } = { usage: null };
+    const turnId = host.mintCommandId();
+    const completed = new Promise<{ terminal: string; message?: string }>((resolve) => {
+      host.subscribe(sessionId, (notification) => {
+        if (!isMuseKnownNotification(notification)) return;
+        switch (notification.method) {
+          case "item/completed": {
+            const item: Item | undefined = notification.params.item;
+            if (item?.kind === "agentMessage" && item.itemId && item.turnId === turnId) {
+              texts.set(item.itemId, item.text ?? "");
+            }
+            return;
+          }
+          case "session/tokenUsage": {
+            if (notification.params.turnId !== turnId) return;
+            // Uncached input from MSP's counted-once `promptTokens`.
+            tally.usage = addUsage(tally.usage, museCompletionUsage(notification.params));
+            return;
+          }
+          case "turn/completed": {
+            if (notification.params.turnId !== turnId) return;
+            const error = notification.params.error;
+            resolve({ terminal: String(notification.params.terminal ?? "completed"), ...(error?.message ? { message: error.message } : {}) });
+            return;
+          }
+          default:
+            return;
+        }
+      });
+      host.onExit(() => resolve({ terminal: "failed", message: host.stderrTail().slice(-4).join("\n") || "Muse stopped." }));
+    });
+    await host.command("turn/start", {
+      sessionId,
+      input: [{ type: "text", text: combinedPrompt }],
+      ...(args.reasoningEffort ? { reasoningEffort: args.reasoningEffort } : {}),
+    }, { commandId: turnId });
+    const timeoutMs = args.timeoutMs ?? 120_000;
+    let timer: NodeJS.Timeout | null = null;
+    const outcome = await Promise.race([
+      completed,
+      new Promise<{ terminal: string; message: string }>((resolve) => {
+        timer = setTimeout(() => resolve({ terminal: "failed", message: `Muse did not answer within ${timeoutMs} ms.` }), timeoutMs);
+      }),
+    ]);
+    if (timer) clearTimeout(timer);
+    if (outcome.terminal !== "completed") throw new Error(outcome.message ?? `Muse turn ${outcome.terminal}.`);
+    const text = [...texts.values()].join("\n").trim();
+    const counted = tally.usage;
+    return {
+      text,
+      structuredOutput: args.jsonSchema ? parseStructuredOutput(text) : null,
+      sessionId,
+      inputTokens: counted?.inputTokens ?? null,
+      outputTokens: counted?.outputTokens ?? null,
+    };
+  } finally {
+    await host.close();
+  }
 }
 
 /** Run an ADE-owned metadata prompt through a provider's native CLI. */
@@ -429,7 +599,7 @@ async function runAcpOneShotTask(
     stdinText: config.stdinText,
   });
   if (result.exitCode !== 0) {
-    throw new Error(`${config.providerLabel} exited with code ${result.exitCode ?? "unknown"}${result.stderr.trim() ? `\n\n${result.stderr.trim()}` : ""}`);
+    throw new Error(describeCliFailure(config.providerLabel, result));
   }
   const text = result.stdout.trim();
   return {
@@ -450,33 +620,37 @@ function rejectUnsupportedAcpTaskImages(args: ProviderTaskRunnerArgs, providerLa
 }
 
 async function runCopilotTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskRunnerResult> {
+  rejectUnsupportedAcpTaskImages(args, "Copilot");
   const prompt = appendStructuredOutputInstruction(args.prompt, args.jsonSchema);
   const combinedPrompt = args.system?.trim()
     ? `${args.system.trim()}\n\n${prompt}`
     : prompt;
-  const cliArgs = [
-    "--no-auto-update",
-    "--no-color",
-    "--no-ask-user",
-    "--disable-builtin-mcps",
-    "--deny-tool=*",
-    "--deny-url=*",
-    "--output-format",
-    "text",
-  ];
-  const model = resolveCopilotCliModelForLaunch(args.descriptor.providerModelId);
-  if (model) cliArgs.push("--model", model);
-  for (const imagePath of args.imagePaths ?? []) {
-    cliArgs.push("--attachment", imagePath);
-  }
-
   const resolved = resolveCopilotExecutable({ auth: args.auth });
-  return await runAcpOneShotTask(args, {
-    command: resolved.path,
-    argv: cliArgs,
-    providerLabel: "Copilot",
-    stdinText: combinedPrompt,
+  const baseEnv = userProcessEnv({ ...process.env, ...(args.accountEnv ?? {}) });
+  const baseDirectory = copilotConfigHome({ env: baseEnv });
+  const acquired = await acquireCopilotSdkConnection({
+    cliPath: resolved.path,
+    baseDirectory,
+    baseEnv,
   });
+  try {
+    const response = await acquired.pooled.utility({
+      cwd: args.cwd,
+      prompt: combinedPrompt,
+      model: args.descriptor.providerModelId === "auto" ? undefined : args.descriptor.providerModelId,
+      systemMessage: "Return only the requested metadata. Do not use tools or access external resources.",
+    });
+    const record = response && typeof response === "object" ? response as Record<string, unknown> : {};
+    const data = record.data && typeof record.data === "object" ? record.data as Record<string, unknown> : {};
+    const text = typeof data.content === "string"
+      ? data.content
+      : typeof record.content === "string"
+        ? record.content
+        : typeof record.message === "string" ? record.message : "";
+    return { text: text.trim(), structuredOutput: args.jsonSchema ? parseStructuredOutput(text) : null, sessionId: null };
+  } finally {
+    releaseCopilotSdkConnection(acquired.poolKey, acquired.generation);
+  }
 }
 
 async function runQwenTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskRunnerResult> {
@@ -588,6 +762,9 @@ export async function runProviderTask(args: ProviderTaskRunnerArgs): Promise<Pro
   }
   if (args.descriptor.family === "cursor") {
     return await runCursorTask(args);
+  }
+  if (args.descriptor.family === "muse") {
+    return await runMuseTask(args);
   }
   const cliProvider = resolveCliProviderForModel(args.descriptor);
   if (cliProvider === "qwen") {

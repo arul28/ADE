@@ -1,3 +1,4 @@
+import { normalizeCompactionSettings } from "../../../shared/compactionSettings";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
@@ -62,7 +63,7 @@ import type {
   TestSuiteDefinition,
   TestSuiteTag
 } from "../../../shared/types";
-import { AUTOMATION_TRIGGER_TYPES, NO_DEFAULT_LANE_TEMPLATE } from "../../../shared/types";
+import { AUTOMATION_TRIGGER_TYPES, NO_DEFAULT_LANE_TEMPLATE, isPullRequestTriggerType } from "../../../shared/types";
 import {
   DEFAULT_REBASE_SUGGESTIONS,
   DEFAULT_REBASE_SUGGESTION_MIN_BEHIND,
@@ -83,6 +84,7 @@ import {
 import { initializeOrRepairAdeProject } from "../projects/adeProjectService";
 import { writeFileAtomic as durableWriteFileAtomic } from "../state/durableFile";
 import { normalizeAutomationAgentLimits } from "../../../shared/automationLimits";
+import { normalizeWebhookTriggerConfig } from "../../../shared/automationWebhooks";
 
 const VERSION = 1;
 const AUTOMATION_TOOL_FAMILIES: AutomationToolFamily[] = [
@@ -346,6 +348,8 @@ function coerceAiChatConfig(value: unknown): AiConfig["chat"] {
   if (continueAfterRestart != null) chat.continueAfterRestart = continueAfterRestart;
   const piExtensionsEnabled = asBool(value.piExtensionsEnabled);
   if (piExtensionsEnabled != null) chat.piExtensionsEnabled = piExtensionsEnabled;
+  const claudePluginUiEnabled = asBool(value.claudePluginUiEnabled);
+  if (claudePluginUiEnabled != null) chat.claudePluginUiEnabled = claudePluginUiEnabled;
   const codexSandbox = asString(value.codexSandbox)?.trim();
   if (codexSandbox === "read-only" || codexSandbox === "workspace-write" || codexSandbox === "danger-full-access") {
     chat.codexSandbox = codexSandbox;
@@ -484,6 +488,8 @@ function coerceAutomationTrigger(value: unknown): AutomationTrigger | undefined 
   if (providers?.length) out.providers = providers;
   if (draftStateRaw === "draft" || draftStateRaw === "ready" || draftStateRaw === "any") out.draftState = draftStateRaw;
   if (activeHours) out.activeHours = activeHours;
+  const webhook = normalizeWebhookTriggerConfig(value.webhook);
+  if (webhook) out.webhook = webhook;
   return out;
 }
 
@@ -655,7 +661,7 @@ function coerceAutomationExecution(value: unknown): AutomationExecution | undefi
 
   const targetLaneId = asString(value.targetLaneId)?.trim() || undefined;
   const laneModeRaw = asString(value.laneMode)?.trim();
-  const laneMode: AutomationExecution["laneMode"] = laneModeRaw === "create" || laneModeRaw === "reuse" || laneModeRaw === "require-on-trigger"
+  const laneMode: AutomationExecution["laneMode"] = laneModeRaw === "create" || laneModeRaw === "reuse" || laneModeRaw === "require-on-trigger" || laneModeRaw === "pr-branch"
     ? laneModeRaw
     : laneModeRaw === "provided" || laneModeRaw === "prompt-at-run"
       ? "require-on-trigger"
@@ -682,11 +688,13 @@ function coerceAutomationExecution(value: unknown): AutomationExecution | undefi
       ? firstNonEmptyString(value.session.title, legacyTitle)
       : legacyTitle;
     const sessionReasoningEffort = isRecord(value.session) ? asString(value.session.reasoningEffort)?.trim() : undefined;
+    const sessionChatId = isRecord(value.session) ? asString(value.session.chatSessionId)?.trim() : undefined;
     const sessionFastMode = isRecord(value.session) ? asBool(value.session.fastMode ?? value.session.codexFastMode) : undefined;
     const sessionLimits = normalizeAutomationAgentLimits(value.session);
-    const session = sessionTitle || sessionReasoningEffort || sessionFastMode != null || Object.keys(sessionLimits).length
+    const session = sessionTitle || sessionChatId || sessionReasoningEffort || sessionFastMode != null || Object.keys(sessionLimits).length
       ? {
           ...(sessionTitle ? { title: sessionTitle } : {}),
+          ...(sessionChatId ? { chatSessionId: sessionChatId } : {}),
           ...(sessionReasoningEffort ? { reasoningEffort: sessionReasoningEffort } : {}),
           ...(sessionFastMode != null ? { fastMode: sessionFastMode } : {}),
           ...sessionLimits,
@@ -1464,7 +1472,7 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
     if (providersRaw) {
       const providers: NonNullable<NonNullable<AiConfig["permissions"]>["providers"]> = {};
       const providerMode = (
-        key: "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi" | "qwen" | "kimi" | "grok" | "copilot",
+        key: "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi" | "muse" | "qwen" | "kimi" | "grok" | "copilot",
       ) => {
         const mode = asString(providersRaw[key])?.trim();
         // "auto" belongs here: it is a member of `AgentChatPermissionMode` and
@@ -1483,6 +1491,7 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
       providerMode("droid");
       providerMode("opencode");
       providerMode("pi");
+      providerMode("muse");
       providerMode("qwen");
       providerMode("kimi");
       providerMode("grok");
@@ -1526,6 +1535,9 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
   }
 
   const chatRaw = isRecord(value.chat) ? value.chat : null;
+  if (isRecord(value.compaction)) {
+    out.compaction = Object.fromEntries(Object.entries(value.compaction).map(([id, settings]) => [id, normalizeCompactionSettings(settings)]));
+  }
   const chat = coerceAiChatConfig(value.chat);
   if (chat) out.chat = chat;
 
@@ -1600,7 +1612,19 @@ function coerceAiCustomProviders(value: unknown): AiConfig["customProviders"] {
         ? npmRaw
         : undefined;
     const name = asString(entry.name)?.trim();
-    return [{ id, name: name || id, baseURL, ...(npm ? { npm } : {}), models }];
+    const encoding: AiCustomProviderConfig["encoding"] =
+      entry.encoding === "gzip" || entry.encoding === "zstd" ? entry.encoding : undefined;
+    const cacheFormat: AiCustomProviderConfig["cacheFormat"] =
+      entry.cacheFormat === "anthropic" || entry.cacheFormat === "alibaba" ? entry.cacheFormat : undefined;
+    return [{
+      id,
+      name: name || id,
+      baseURL,
+      ...(npm ? { npm } : {}),
+      models,
+      ...(encoding ? { encoding } : {}),
+      ...(cacheFormat ? { cacheFormat } : {}),
+    }];
   });
   return out.length ? out : undefined;
 }
@@ -1938,6 +1962,7 @@ export function mergeAiConfig(sharedAi?: AiConfig, localAi?: Partial<AiConfig>):
   const out: AiConfig = {
     mode: localAi?.mode ?? sharedAi?.mode,
     defaultProvider: localAi?.defaultProvider ?? sharedAi?.defaultProvider,
+    ...((sharedAi?.compaction || localAi?.compaction) ? { compaction: { ...sharedAi?.compaction, ...localAi?.compaction } } : {}),
     ...(Object.keys(taskRouting).length ? { taskRouting } : {}),
     ...(Object.keys(features).length ? { features } : {}),
     ...(Object.keys(budgets).length ? { budgets } : {}),
@@ -2032,6 +2057,36 @@ function mergeGithubConfig(
   return Object.keys(github).length ? github : undefined;
 }
 
+function coerceJiraProjectKeys(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const keys: string[] = [];
+  for (const entry of value) {
+    const key = asString(entry)?.trim().toUpperCase();
+    if (!key || !/^[A-Z][A-Z0-9_]{0,9}$/.test(key) || seen.has(key)) continue;
+    seen.add(key);
+    keys.push(key);
+  }
+  return keys;
+}
+
+function coerceIssueTrackers(value: unknown): ProjectConfigFile["issueTrackers"] {
+  if (!isRecord(value) || !isRecord(value.jira)) return undefined;
+  const projectKeys = coerceJiraProjectKeys(value.jira.projectKeys);
+  return projectKeys.length ? { jira: { projectKeys } } : undefined;
+}
+
+function mergeIssueTrackers(
+  shared?: ProjectConfigFile["issueTrackers"],
+  local?: ProjectConfigFile["issueTrackers"],
+): EffectiveProjectConfig["issueTrackers"] {
+  const projectKeys = coerceJiraProjectKeys([
+    ...(shared?.jira?.projectKeys ?? []),
+    ...(local?.jira?.projectKeys ?? []),
+  ]);
+  return projectKeys.length ? { jira: { projectKeys } } : undefined;
+}
+
 function coerceConfigFile(value: unknown): ProjectConfigFile {
   if (!isRecord(value)) {
     return {
@@ -2064,6 +2119,7 @@ function coerceConfigFile(value: unknown): ProjectConfigFile {
   const laneCleanup = coerceLaneCleanupConfig(value.laneCleanup);
 
   const github = coerceGithubConfig(value.github);
+  const issueTrackers = coerceIssueTrackers(value.issueTrackers);
 
   const git = (() => {
     if (!isRecord(value.git)) return undefined;
@@ -2104,6 +2160,7 @@ function coerceConfigFile(value: unknown): ProjectConfigFile {
     ...(laneCleanup ? { laneCleanup } : {}),
     ...(environments.length ? { environments } : {}),
     ...(github ? { github } : {}),
+    ...(issueTrackers ? { issueTrackers } : {}),
     ...(git ? { git } : {}),
     ...(ai ? { ai } : {}),
     ...(providersRaw && Object.keys(providersRaw).length ? { providers: providersRaw } : {}),
@@ -2157,6 +2214,7 @@ function toCanonicalYaml(config: ProjectConfigFile): string {
     ...(config.laneCleanup ? { laneCleanup: config.laneCleanup } : {}),
     ...(config.environments ? { environments: config.environments } : {}),
     ...(config.github ? { github: config.github } : {}),
+    ...(config.issueTrackers ? { issueTrackers: config.issueTrackers } : {}),
     ...(config.git ? { git: config.git } : {}),
     ...(config.ai ? { ai: config.ai } : {}),
     ...(config.providers ? { providers: config.providers } : {}),
@@ -2356,6 +2414,7 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
         ...(trigger.sessionId ? { sessionId: trigger.sessionId.trim() } : {}),
         ...(trigger.providers?.length ? { providers: trigger.providers.map((value) => value.trim()).filter(Boolean) } : {}),
         ...(trigger.activeHours ? { activeHours: trigger.activeHours } : {}),
+        ...(trigger.webhook ? { webhook: trigger.webhook } : {}),
       })),
       trigger: legacyTrigger ?? triggers[0] ?? { type: "manual" },
       execution,
@@ -2440,6 +2499,7 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
     : undefined;
 
   const mergedGithub = mergeGithubConfig(shared.github, local.github);
+  const mergedIssueTrackers = mergeIssueTrackers(shared.issueTrackers, local.issueTrackers);
 
   const mergedGit = shared.git || local.git
     ? {
@@ -2510,6 +2570,7 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
     ...(environments.length ? { environments } : {}),
     providerMode,
     ...(mergedGithub ? { github: mergedGithub } : {}),
+    ...(mergedIssueTrackers ? { issueTrackers: mergedIssueTrackers } : {}),
     git: {
       autoRebaseOnHeadChange: mergedGit?.autoRebaseOnHeadChange ?? false,
       newLaneBaseSource: mergedGit?.newLaneBaseSource ?? "remote",
@@ -2833,8 +2894,13 @@ function validateEffectiveConfig(
           issues.push({ path: `${tp}.cron`, message: `Invalid cron expression '${expr}'` });
         }
       }
-      if ((trigger.type === "github-webhook" || trigger.type === "webhook") && !(trigger.secretRef ?? "").trim()) {
+      if (trigger.type === "github-webhook" && !(trigger.secretRef ?? "").trim()) {
         issues.push({ path: `${tp}.secretRef`, message: "Webhook triggers require secretRef" });
+      }
+      // A custom webhook is either the URL-based kind (webhook.hookId) or the
+      // legacy local-only kind that signs with an x-ade-signature secretRef.
+      if (trigger.type === "webhook" && !trigger.webhook?.hookId && !(trigger.secretRef ?? "").trim()) {
+        issues.push({ path: `${tp}.webhook`, message: "Webhook triggers need a webhook URL" });
       }
     }
 
@@ -2857,6 +2923,7 @@ function validateEffectiveConfig(
       && rule.execution.laneMode !== "create"
       && rule.execution.laneMode !== "reuse"
       && rule.execution.laneMode !== "require-on-trigger"
+      && rule.execution.laneMode !== "pr-branch"
     ) {
       issues.push({ path: `${p}.execution.laneMode`, message: `Unknown lane mode '${String(rule.execution.laneMode)}'` });
     }
@@ -2866,12 +2933,29 @@ function validateEffectiveConfig(
         message: "targetLaneId is not allowed when lane must be supplied at trigger time.",
       });
     }
-    if (rule.execution?.laneMode === "require-on-trigger" && rule.execution.kind === "built-in") {
+    if (rule.execution?.laneMode === "pr-branch") {
+      rule.triggers.forEach((trigger, triggerIdx) => {
+        if (isPullRequestTriggerType(trigger.type)) return;
+        issues.push({
+          path: `${p}.triggers[${triggerIdx}].type`,
+          message: "Running in the PR's branch needs a pull request trigger.",
+        });
+      });
+      if ((rule.execution.targetLaneId ?? "").trim()) {
+        issues.push({
+          path: `${p}.execution.targetLaneId`,
+          message: "targetLaneId is not allowed when the lane comes from the PR's branch.",
+        });
+      }
+    }
+    if ((rule.execution?.laneMode === "require-on-trigger" || rule.execution?.laneMode === "pr-branch") && rule.execution.kind === "built-in") {
       rule.execution.builtIn?.actions.forEach((action, actionIndex) => {
         if (!(action.targetLaneId ?? "").trim()) return;
         issues.push({
           path: `${p}.execution.builtIn.actions[${actionIndex}].targetLaneId`,
-          message: "Step lane overrides are not allowed when lane must be supplied at trigger time.",
+          message: rule.execution?.laneMode === "pr-branch"
+            ? "Step lane overrides are not allowed when the lane comes from the PR's branch."
+            : "Step lane overrides are not allowed when lane must be supplied at trigger time.",
         });
       });
     }
@@ -3294,6 +3378,19 @@ export function createProjectConfigService({
 
     save(candidate: ProjectConfigCandidate): ProjectConfigSnapshot {
       return saveCandidate(candidate);
+    },
+
+    /**
+     * Merge a partial AI config into `.ade/local.yaml`. The shared layer is no
+     * longer written (see `saveCandidate`), so a merge into it would drop the
+     * change without an error.
+     */
+    updateAiConfig(partial: Partial<AiConfig>): ProjectConfigSnapshot {
+      const snapshot = readSnapshotFromDisk();
+      return saveCandidate({
+        shared: snapshot.shared,
+        local: { ...snapshot.local, ai: mergeAiConfig(snapshot.local.ai ?? {}, partial) ?? {} },
+      });
     },
 
     setPrTranscriptGists(args: { enabled?: boolean }): ProjectConfigSnapshot {

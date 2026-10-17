@@ -7,6 +7,10 @@ import type {
   AgentChatCodexSandbox,
   AgentChatCursorConfigValue,
   AgentChatDroidPermissionMode,
+  AgentChatMusePermissionMode,
+  AgentChatCopilotAutoTier,
+  AgentChatCopilotContextTier,
+  AgentChatCopilotPermissionMode,
   AgentChatEventEnvelope,
   AgentChatEventHistorySnapshot,
   AgentChatContextUsage,
@@ -106,7 +110,7 @@ export type AdeCodeConnection = {
 export type AdeCodeProvider =
   | Extract<
     AgentChatProvider,
-    "codex" | "claude" | "opencode" | "cursor" | "droid" | "pi" | "qwen" | "kimi" | "grok" | "copilot"
+    "codex" | "claude" | "muse" | "opencode" | "cursor" | "droid" | "pi" | "qwen" | "kimi" | "grok" | "copilot"
   >
   | "devin"
   | "ollama"
@@ -137,6 +141,13 @@ export type AdeCodeModelState = Partial<LaunchIdentity> & {
   codexConfigSource: AgentChatCodexConfigSource;
   opencodePermissionMode: AgentChatOpenCodePermissionMode;
   droidPermissionMode: AgentChatDroidPermissionMode;
+  musePermissionMode: AgentChatMusePermissionMode;
+  /** Copilot's round-3 settings. Optional so state built before them still type-checks; readers default them. */
+  copilotPermissionMode?: AgentChatCopilotPermissionMode;
+  copilotContextTier?: AgentChatCopilotContextTier;
+  copilotAutoTier?: AgentChatCopilotAutoTier | null;
+  /** True while a Copilot Auto profile change waits for the next message. */
+  copilotAutoTierPending?: boolean;
   cursorModeId: string | null;
   cursorAvailableModeIds: string[];
   cursorConfigValues: Record<string, AgentChatCursorConfigValue>;
@@ -160,6 +171,7 @@ export type SetupPaneRowKind =
   | "reasoning"
   | "permission"
   | "codex-fast"
+  | "copilot-context"
   | "output-style"
   | "refresh-status"
   | "apply";

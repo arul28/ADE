@@ -88,9 +88,13 @@ import {
   providerInstanceHasAccount,
   type ProviderInstanceProvider,
 } from "../../../shared/types/providerInstances";
-import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
+import { getMachineProviderInstanceStore, sameLoginOwner } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import { machineProviderUsageHomes } from "./providerUsageHomes";
-import { pickInstanceForNewChat, type AccountBalanceResult } from "./accountBalance";
+import {
+  pickInstanceForNewChat,
+  type AccountBalanceResult,
+  type AccountBalanceRotationState,
+} from "./accountBalance";
 import { createWindowAutoStartScheduler } from "./windowAutoStart";
 import {
   invalidateCachedClaudeCredentials,
@@ -100,6 +104,7 @@ import {
   readCodexCredentials,
   type ClaudeLoginRead,
 } from "../ai/providerCredentialSources";
+import { listLinkedLaneWorktreeRoots } from "../projects/worktreeParent";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
 import { resolveCliSpawnInvocation, terminateProcessTree } from "../shared/processExecution";
@@ -193,6 +198,8 @@ import {
   pollKimiQuota,
   pollOpenCodeQuota,
 } from "./extraProviderQuota";
+import { createMuseQuotaStore, type MuseQuotaStore } from "./museLiveQuota";
+import { PROVIDER_DISPLAY_NAME } from "../../../shared/providers";
 import { localDayKey, localDayOffset, localDayStart } from "./localDay";
 import { buildTurnUsageLedgerSummary, repriceTurnForUserPrices, type TurnUsageLedger } from "./turnUsageLedger";
 import type { ModelRouterService, RouterPreviewArgs, RouterRoutesArgs } from "../router/modelRouterService";
@@ -848,10 +855,42 @@ function accountRateLimitNextAttemptAtMs(accountId: string, nowMs: number = Date
   return entry.nextAttemptAtMs;
 }
 
+const CLAUDE_BACKGROUND_REFRESH_INTERVAL_MS = 30 * 60_000;
+
+/**
+ * When each account last had its stale Claude login refreshed by a background
+ * poll, by usage account id.
+ *
+ * ADE never refreshes a Claude token itself (see `readClaudeLogin`), and smart
+ * balance does not send a chat to an account it has no reading for, so an
+ * idle account's login has no chat coming to refresh it. A background poll
+ * runs the Claude CLI for it instead, which refreshes and saves its own token,
+ * at most once per {@link CLAUDE_BACKGROUND_REFRESH_INTERVAL_MS} per account so
+ * a CLI that keeps failing is not spawned on every cadence tick.
+ */
+const claudeBackgroundRefreshAt = new Map<string, number>();
+
+/**
+ * The access token the usage API last rejected with a 401, by usage account id.
+ * Re-reading the login returns that same token until the CLI replaces it, so a
+ * background poll answers the 401 again without sending the token; the
+ * refresh allowance decides when the CLI tries again.
+ */
+const rejectedClaudeTokens = new Map<string, string>();
+
+function claimClaudeBackgroundRefresh(accountId: string, nowMs: number = Date.now()): boolean {
+  const last = claudeBackgroundRefreshAt.get(accountId);
+  if (last !== undefined && nowMs - last < CLAUDE_BACKGROUND_REFRESH_INTERVAL_MS) return false;
+  claudeBackgroundRefreshAt.set(accountId, nowMs);
+  return true;
+}
+
 /** Drops the per-account cooldowns so a test starts from a clean cadence. */
 function resetAccountRateLimitsForTest(): void {
   accountRateLimits.clear();
   accountLogins.clear();
+  claudeBackgroundRefreshAt.clear();
+  rejectedClaudeTokens.clear();
 }
 
 /**
@@ -1179,6 +1218,42 @@ async function pollQuotaInstances(
 }
 
 /**
+ * Has the Claude CLI refresh an account's stale login from a background poll,
+ * and returns its reading; `null` when the poll may not or the CLI did not
+ * produce one.
+ *
+ * The next background poll reads the refreshed login: a scoped account's own
+ * Keychain item, or the credentials file the CLI rewrites off macOS. The base
+ * account on macOS is left out: its background poll skips the Keychain, so a
+ * refresh there would respawn the CLI on every allowance without being read.
+ */
+async function refreshClaudeLoginInBackground(
+  logger: Logger,
+  context: UsageProviderPollContext,
+  instanceId: string,
+  accountId: string,
+  configHome: string | undefined,
+): Promise<FreshUsageProviderPollResult | null> {
+  if (context.reason === "user") return null;
+  if (configHome === undefined && process.platform === "darwin") return null;
+  if (!claimClaudeBackgroundRefresh(accountId)) return null;
+  const refreshed = await measureUsagePhase(
+    logger,
+    { provider: "claude", phase: "cli_fallback", reason: context.reason },
+    () => pollClaudeViaCli(logger, configHome),
+  );
+  if (refreshed.windows.length === 0) {
+    logger.warn("usage.poll.claude_background_refresh_failed", {
+      instanceId,
+      errorKind: refreshed.errorKind ?? null,
+    });
+    return null;
+  }
+  noteAccountLogin(accountId, instanceId, "ok");
+  return refreshed;
+}
+
+/**
  * Quota for ONE Claude account. `null` = this account's config home holds no
  * login, so it has nothing to report.
  */
@@ -1214,8 +1289,8 @@ async function pollClaudeInstance(
     noteAccountLogin(accountId, instance.id, login.state);
   }
   if (login.state === "expired") {
-    // The CLI refreshes and saves its own token. A user poll may run it;
-    // a background poll waits for the next chat on this account to do it.
+    // The CLI refreshes and saves its own token. A user poll runs it every
+    // time; a background poll on a per-account allowance.
     if (allowInteractiveSources) {
       return await measureUsagePhase(
         logger,
@@ -1223,6 +1298,8 @@ async function pollClaudeInstance(
         () => pollClaudeViaCli(logger, configHome),
       );
     }
+    const refreshed = await refreshClaudeLoginInBackground(logger, context, instance.id, accountId, configHome);
+    if (refreshed) return refreshed;
     if (!instance.isDefault) return null;
     return {
       disposition: "preserve_previous",
@@ -1250,6 +1327,19 @@ async function pollClaudeInstance(
     };
   }
   const creds = login.credentials;
+  const rejected = (): FreshUsageProviderPollResult => ({
+    windows: [],
+    source: "oauth",
+    extraUsage: null,
+    errors: ["claude: API returned 401"],
+    errorKind: errorKindForHttpStatus(401),
+  });
+  if (!allowInteractiveSources && rejectedClaudeTokens.get(accountId) === creds.accessToken) {
+    // Not cached either, so the next poll re-reads the login and sees the
+    // token the CLI writes when it replaces this one.
+    invalidateCachedClaudeCredentials(configHome);
+    return await refreshClaudeLoginInBackground(logger, context, instance.id, accountId, configHome) ?? rejected();
+  }
 
   try {
     const result = await measureUsagePhase(
@@ -1268,6 +1358,7 @@ async function pollClaudeInstance(
         // next chat on this account, refreshes it.
         invalidateCachedClaudeCredentials(configHome);
         noteAccountLogin(accountId, instance.id, "expired");
+        rejectedClaudeTokens.set(accountId, creds.accessToken);
       }
 
       // A throttled or forbidden endpoint is the one status the CLI cannot fix:
@@ -1283,6 +1374,11 @@ async function pollClaudeInstance(
           () => pollClaudeViaCli(logger, configHome),
         );
         if (fallback.windows.length > 0) return fallback;
+      } else if (result.status === 401) {
+        // Re-reading the login returns the same rejected token, so it never
+        // reaches the `expired` branch; the CLI has to refresh it.
+        const refreshed = await refreshClaudeLoginInBackground(logger, context, instance.id, accountId, configHome);
+        if (refreshed) return refreshed;
       }
       return {
         windows: [],
@@ -1315,6 +1411,7 @@ async function pollClaudeInstance(
         errorKind: "invalid_response",
       };
     }
+    rejectedClaudeTokens.delete(accountId);
     return { windows: parsed.windows, source: "oauth", extraUsage: parsed.extraUsage, errors: [] };
   } catch (error) {
     if (allowInteractiveSources) {
@@ -2414,20 +2511,41 @@ function collapsedProjectKey(value: string): string {
   return value.replace(/[^a-zA-Z0-9]+/gu, "-").replace(/^-+|-+$/gu, "").toLowerCase();
 }
 
-function tokenEntryMatchesProject(entry: TokenEntry, projectRoot: string | null | undefined): boolean {
-  if (!projectRoot) return false;
+type ProjectMatchRoot = {
+  root: string;
+  rootKey: string;
+  collapsedRoot: string;
+  /** The project root itself, whose `.ade/worktrees/` lanes match by key prefix. */
+  isProjectRoot: boolean;
+};
+
+/**
+ * The project root plus every git-linked worktree of it. A lane outside
+ * `.ade/worktrees/` (a sibling `repo-worktrees/feature` checkout) is part of
+ * the project, but neither its path nor its key sits under the project root.
+ */
+function projectMatchRoots(projectRoot: string | null | undefined): ProjectMatchRoot[] {
+  if (!projectRoot) return [];
   const root = canonicalProjectRoot(projectRoot);
-  // `root` is already resolved by canonicalProjectRoot; resolve the candidate
-  // to match, since pathCompare normalizes but deliberately does not resolve.
-  if (entry.projectPath && isPathInside(path.resolve(entry.projectPath), root)) return true;
-  if (entry.projectKey) {
-    const rootKey = pathComparisonKey(sanitizeClaudeProjectPath(root));
+  return [root, ...listLinkedLaneWorktreeRoots(root).map((worktree) => path.resolve(worktree))].map((candidate, index) => ({
+    root: candidate,
+    rootKey: pathComparisonKey(sanitizeClaudeProjectPath(candidate)),
+    collapsedRoot: collapsedProjectKey(candidate),
+    isProjectRoot: index === 0,
+  }));
+}
+
+function tokenEntryMatchesProject(entry: TokenEntry, roots: readonly ProjectMatchRoot[]): boolean {
+  for (const { root, rootKey, collapsedRoot, isProjectRoot } of roots) {
+    // `root` is already resolved; resolve the candidate to match, since
+    // pathCompare normalizes but deliberately does not resolve.
+    if (entry.projectPath && isPathInside(path.resolve(entry.projectPath), root)) return true;
+    if (!entry.projectKey) continue;
     const entryKey = pathComparisonKey(entry.projectKey);
-    if (entryKey === rootKey || entryKey.startsWith(`${rootKey}--ade-worktrees-`)) return true;
-    const collapsedRoot = collapsedProjectKey(root);
+    if (entryKey === rootKey || (isProjectRoot && entryKey.startsWith(`${rootKey}--ade-worktrees-`))) return true;
     const collapsedEntry = collapsedProjectKey(entry.projectKey);
     if (collapsedEntry === collapsedRoot) return true;
-    if (collapsedRoot && collapsedEntry.startsWith(`${collapsedRoot}-ade-worktrees-`)) return true;
+    if (isProjectRoot && collapsedRoot && collapsedEntry.startsWith(`${collapsedRoot}-ade-worktrees-`)) return true;
   }
   return false;
 }
@@ -2438,10 +2556,11 @@ export function buildCostSnapshots(
   projectRoot: string | null | undefined,
 ): CostSnapshot[] {
   const costs: CostSnapshot[] = [];
+  const matchRoots = scope === "project" ? projectMatchRoots(projectRoot) : [];
   for (const [provider, machineEntries] of entriesByProvider) {
     const scopeSupported = PROVIDER_SCOPE_SUPPORT[provider] === true;
     const entries = scope === "project"
-      ? scopeSupported ? machineEntries.filter((entry) => tokenEntryMatchesProject(entry, projectRoot)) : []
+      ? scopeSupported ? machineEntries.filter((entry) => tokenEntryMatchesProject(entry, matchRoots)) : []
       : machineEntries;
     if (entries.length === 0) {
       if (scope === "project" && !scopeSupported && machineEntries.length > 0) {
@@ -3313,7 +3432,7 @@ function calculatePacingByProvider(windows: UsageWindow[]): UsageSnapshot["pacin
   return out;
 }
 
-const PROVIDER_DISPLAY_NAME: Record<UsageProvider, string> = {
+const USAGE_PROVIDER_LABEL: Record<UsageProvider, string> = {
   claude: "Claude",
   codex: "Codex",
   cursor: "Cursor",
@@ -3321,6 +3440,7 @@ const PROVIDER_DISPLAY_NAME: Record<UsageProvider, string> = {
   grok: "Grok",
   opencode: "OpenCode",
   kimi: "Kimi",
+  muse: PROVIDER_DISPLAY_NAME.muse,
 };
 
 /**
@@ -3521,7 +3641,10 @@ async function stampProviderAccounts(
         ...(resetCredits ? { resetCredits } : {}),
       });
     }
-    for (const id of sameLoginDuplicates(accounts.filter((account) => account.provider === key))) {
+    for (const id of sameLoginDuplicates(
+      accounts.filter((account) => account.provider === key),
+      defaultAccountIdByProvider.get(key) ?? "",
+    )) {
       duplicateAccountIds.add(id);
     }
     if (registryStale) {
@@ -3540,21 +3663,25 @@ async function stampProviderAccounts(
 }
 
 /**
- * The accounts after the first that are signed in to the same email.
+ * The accounts that are copies of another account's login.
  *
  * Two config homes can hold one login: signing a second account in while the
  * browser is still on the first account's claude.ai session does exactly that.
  * They are one quota, so the snapshot shows the login once and balance never
- * counts it twice. Accounts arrive default first, so the default stays.
+ * counts it twice. The owner is the registry's (`sameLoginOwner`), read
+ * against the emails this pass actually read.
  */
-function sameLoginDuplicates(accounts: readonly UsageAccount[]): string[] {
-  const seen = new Set<string>();
-  const duplicates: string[] = [];
+function sameLoginDuplicates(accounts: readonly UsageAccount[], defaultAccountId: string): string[] {
+  const holdersByEmail = new Map<string, UsageAccount[]>();
   for (const account of accounts) {
     const email = account.email?.trim().toLowerCase();
     if (!email || !account.instanceId) continue;
-    if (seen.has(email)) duplicates.push(account.id);
-    else seen.add(email);
+    holdersByEmail.set(email, [...(holdersByEmail.get(email) ?? []), account]);
+  }
+  const duplicates: string[] = [];
+  for (const holders of holdersByEmail.values()) {
+    const owner = sameLoginOwner(holders, defaultAccountId, (id) => accountLogins.get(id) === "signed_out");
+    for (const holder of holders) if (holder !== owner) duplicates.push(holder.id);
   }
   return duplicates;
 }
@@ -3628,7 +3755,7 @@ function buildProviderWindows(
     };
   }
 
-  const name = PROVIDER_DISPLAY_NAME[provider] ?? provider;
+  const name = USAGE_PROVIDER_LABEL[provider] ?? provider;
   const unauthed = errorKind === "auth" || errors.some((entry) => /no .*credentials/i.test(entry));
   // A 401/403 means we reached the API but auth was rejected (expired token,
   // failed refresh) — that's "reconnect", not "couldn't reach".
@@ -3730,6 +3857,7 @@ type UsageTrackingDependencies = UsageLedgerScannerOverrides & {
   pollGrokUsage?: (context?: UsageProviderPollContext) => Promise<UsageProviderPollResult>;
   pollOpenCodeUsage?: (context?: UsageProviderPollContext) => Promise<UsageProviderPollResult>;
   pollKimiUsage?: (context?: UsageProviderPollContext) => Promise<UsageProviderPollResult>;
+  pollMuseUsage?: (context?: UsageProviderPollContext) => Promise<UsageProviderPollResult>;
   /**
    * The machine-local per-turn ledger. When present, every published snapshot
    * adds its changed quota readings to it, and `getTurnUsageSummary` reads it.
@@ -3987,6 +4115,7 @@ export function createUsageTrackingService({
   dependencies,
   projectRoot,
   db,
+  museQuota = createMuseQuotaStore(),
 }: {
   logger: Logger;
   pollIntervalMs?: number;
@@ -3994,6 +4123,8 @@ export function createUsageTrackingService({
   dependencies?: UsageTrackingDependencies;
   projectRoot?: string | null;
   db?: AdeDb | null;
+  /** The process's Muse quota store (the chat service records into it). Absent gets a private one. */
+  museQuota?: MuseQuotaStore;
 }) {
   const pollIntervalMs = Math.max(
     MIN_POLL_INTERVAL_MS,
@@ -4115,6 +4246,9 @@ export function createUsageTrackingService({
   const runGrokUsagePoll = dependencies?.pollGrokUsage ?? defaultExtraPoll(pollGrokQuota);
   const runOpenCodeUsagePoll = dependencies?.pollOpenCodeUsage ?? defaultExtraPoll(pollOpenCodeQuota);
   const runKimiUsagePoll = dependencies?.pollKimiUsage ?? defaultExtraPoll(pollKimiQuota);
+  // Muse's reading is pushed by its chat runtime (MSP `usage/read` and
+  // `usage/changed`); the poll only publishes the latest one, no I/O.
+  const runMuseUsagePoll = dependencies?.pollMuseUsage ?? (() => museQuota.poll());
   const providerStrategies: UsageProviderStrategy[] = [
     { provider: "claude", poll: (context) => runClaudeUsagePoll(context) },
     { provider: "codex", poll: (context) => runCodexUsagePoll(context) },
@@ -4123,6 +4257,7 @@ export function createUsageTrackingService({
     { provider: "grok", poll: (context) => runGrokUsagePoll(context) },
     { provider: "opencode", poll: (context) => runOpenCodeUsagePoll(context) },
     { provider: "kimi", poll: (context) => runKimiUsagePoll(context) },
+    { provider: "muse", poll: (context) => runMuseUsagePoll(context) },
   ];
   /**
    * A caller that injects any ledger scanner is a harness isolating the
@@ -4646,6 +4781,8 @@ export function createUsageTrackingService({
    * Cleared by the next decision that picks an account on the numbers.
    */
   const balancePickIssues = new Map<ProviderInstanceProvider, AccountBalanceIssue>();
+  /** Per-provider Claude rotation; previews read this but only chat creation advances it. */
+  const balanceRotationStates = new Map<ProviderInstanceProvider, AccountBalanceRotationState>();
 
   function providerTitle(provider: ProviderInstanceProvider): string {
     return provider === "claude" ? "Claude" : "Codex";
@@ -4708,6 +4845,19 @@ export function createUsageTrackingService({
    * it, so the account marked "Next chat" is the one a new chat gets.
    */
   function balancedPick(provider: ProviderInstanceProvider, snapshot: UsageSnapshot): AccountBalanceResult | null {
+    return balancedPickWithRotation(provider, snapshot, balanceRotationStates.get(provider));
+  }
+
+  /** Preview the next account without consuming a Claude rotation slot. */
+  function peekBalancedInstance(provider: ProviderInstanceProvider): AccountBalanceResult | null {
+    return balancedPick(provider, lastSnapshot);
+  }
+
+  function balancedPickWithRotation(
+    provider: ProviderInstanceProvider,
+    snapshot: UsageSnapshot,
+    rotationState?: AccountBalanceRotationState | null,
+  ): AccountBalanceResult | null {
     if (!providerInstanceStore.getProviderSettings(provider).smartBalance) return null;
     return pickInstanceForNewChat({
       provider,
@@ -4715,7 +4865,30 @@ export function createUsageTrackingService({
       accounts: snapshot.accounts ?? [],
       windowsByAccountId: windowsByAccount(snapshot.windows),
       nowMs: Date.now(),
+      rotationState,
     });
+  }
+
+  /** Drop a Claude rotation when its account pair or headroom gap is no longer eligible. */
+  function reconcileBalanceRotationStates(snapshot: UsageSnapshot): void {
+    for (const [provider, state] of balanceRotationStates) {
+      try {
+        const result = balancedPickWithRotation(provider, snapshot, state);
+        if (
+          !result?.rotationState
+          || result.rotationState.primaryInstanceId !== state.primaryInstanceId
+          || result.rotationState.reserveInstanceId !== state.reserveInstanceId
+        ) {
+          balanceRotationStates.delete(provider);
+        }
+      } catch (error) {
+        // A transient preview failure must not disturb the next real selection.
+        logger.warn("usage.account_balance_rotation_reconcile_failed", {
+          provider,
+          error: getErrorMessage(error),
+        });
+      }
+    }
   }
 
   /**
@@ -4749,7 +4922,14 @@ export function createUsageTrackingService({
     };
   }
 
+  // Cached `balanceNext` may contain a Claude rotation slot from the previous
+  // process. Rotation state is intentionally in-memory and restarts at the
+  // weekly-first account, so refresh the cached marker before this service can
+  // return its initial snapshot.
+  lastSnapshot = withBalanceIssues(lastSnapshot);
+
   function publishSnapshot(snapshot: UsageSnapshot): UsageSnapshot {
+    reconcileBalanceRotationStates(snapshot);
     const published = stampRevision(withBalanceIssues(snapshot));
     lastSnapshot = published;
     emitUpdate(published);
@@ -5229,7 +5409,7 @@ export function createUsageTrackingService({
                 updatedAt: previousStatus.updatedAt ?? previousStatus.lastSuccessAt,
                 ...(previousStatus.source ? { source: previousStatus.source } : {}),
                 ...(carriedWindows.length === 0
-                  ? { message: `${PROVIDER_DISPLAY_NAME[provider]} usage window expired` }
+                  ? { message: `${USAGE_PROVIDER_LABEL[provider]} usage window expired` }
                   : {}),
               };
             }
@@ -5375,7 +5555,10 @@ export function createUsageTrackingService({
         return published;
       } catch (err) {
         const msg = getErrorMessage(err);
-        logger.error("usage.poll.unexpected_error", { error: msg });
+        // The Error itself, so `logBridge` lifts it into the Sentry event and
+        // the issue groups by the real failure; `errorText` keeps the sentence
+        // on disk, which `JSON.stringify` writes an Error without.
+        logger.error("usage.poll.unexpected_error", { error: err, errorText: msg });
         errors.push(`unexpected: ${msg}`);
 
         // Published, not merely returned. This snapshot carries a fresher
@@ -5840,16 +6023,41 @@ export function createUsageTrackingService({
     return buildLocalRollup(Date.now());
   }
 
-  function setBalancePickIssue(provider: ProviderInstanceProvider, issue: AccountBalanceIssue | null): void {
+  function publishBalanceIndicators(): boolean {
+    const refreshed = withBalanceIssues(lastSnapshot);
+    const unchanged = JSON.stringify(refreshed.balanceIssues ?? []) === JSON.stringify(lastSnapshot.balanceIssues ?? [])
+      && JSON.stringify(refreshed.balanceNext ?? []) === JSON.stringify(lastSnapshot.balanceNext ?? []);
+    if (unchanged) return false;
+    lastSnapshot = stampRevision(refreshed);
+    emitUpdate(lastSnapshot);
+    return true;
+  }
+
+  function setBalancePickIssue(provider: ProviderInstanceProvider, issue: AccountBalanceIssue | null): boolean {
     const previous = balancePickIssues.get(provider);
-    if (!issue && !previous) return;
-    if (issue && previous?.kind === issue.kind) return;
+    if (!issue && !previous) return false;
+    if (issue && previous?.kind === issue.kind) return false;
     if (issue) balancePickIssues.set(provider, issue);
     else balancePickIssues.delete(provider);
-    // Only the issue list changed: no quota reading for the ledger or the
-    // auto-start scheduler, which `publishSnapshot` would feed again.
-    lastSnapshot = stampRevision(withBalanceIssues(lastSnapshot));
-    emitUpdate(lastSnapshot);
+    // Balance-only updates do not re-run quota polling, the ledger, or the
+    // auto-start scheduler. They also carry the next deterministic chat slot.
+    publishBalanceIndicators();
+    return true;
+  }
+
+  function setBalanceRotationState(
+    provider: ProviderInstanceProvider,
+    state: AccountBalanceRotationState | undefined,
+  ): boolean {
+    const previous = balanceRotationStates.get(provider);
+    if (
+      previous?.primaryInstanceId === state?.primaryInstanceId
+      && previous?.reserveInstanceId === state?.reserveInstanceId
+      && previous?.nextSlot === state?.nextSlot
+    ) return false;
+    if (state) balanceRotationStates.set(provider, state);
+    else balanceRotationStates.delete(provider);
+    return true;
   }
 
   /**
@@ -5864,36 +6072,49 @@ export function createUsageTrackingService({
   function resolveBalancedInstance(provider: ProviderInstanceProvider): AccountBalanceResult | null {
     try {
       const result = balancedPick(provider, lastSnapshot);
-      if (!result) return null;
+      if (!result) {
+        if (setBalanceRotationState(provider, undefined)) publishBalanceIndicators();
+        return null;
+      }
+      const { rotationState, ...pick } = result;
+      const rotationChanged = setBalanceRotationState(provider, rotationState);
       if (result.skip === "one_account") {
         // Nothing to balance; an issue from an earlier pick no longer applies.
-        setBalancePickIssue(provider, null);
+        const issueChanged = setBalancePickIssue(provider, null);
+        if (rotationChanged && !issueChanged) publishBalanceIndicators();
         return null;
       }
       if (result.skip === "no_usage_data") {
         logger.warn("usage.account_balance_skipped", { provider, ...result });
-        setBalancePickIssue(provider, {
+        const issueChanged = setBalancePickIssue(provider, {
           provider,
           kind: "no_usage_data",
           title: `${providerTitle(provider)} balance has no usage data`,
           detail: `The last new ${providerTitle(provider)} chat stayed on the default account because ADE has no quota readings for your accounts. Open the Usage panel and refresh it.`,
           at: nowIso(),
         });
+        if (rotationChanged && !issueChanged) publishBalanceIndicators();
       } else {
         if (result.skip) logger.info("usage.account_balance_skipped", { provider, ...result });
-        setBalancePickIssue(provider, null);
+        const issueChanged = setBalancePickIssue(provider, null);
+        if (rotationChanged && !issueChanged) publishBalanceIndicators();
       }
-      return result;
+      return pick;
     } catch (error) {
+      const rotationChanged = setBalanceRotationState(provider, undefined);
       const message = getErrorMessage(error);
-      logger.error("usage.account_balance_resolve_failed", { error: message, provider });
-      setBalancePickIssue(provider, {
+      // The Error itself, so `logBridge` lifts it into the Sentry event and the
+      // issue groups by the real failure; `errorText` keeps the sentence on
+      // disk, which `JSON.stringify` writes an Error without.
+      logger.error("usage.account_balance_resolve_failed", { error, errorText: message, provider });
+      const issueChanged = setBalancePickIssue(provider, {
         provider,
         kind: "error",
         title: `${providerTitle(provider)} balance failed`,
         detail: `Smart balance could not choose an account for the last new chat: ${message}`,
         at: nowIso(),
       });
+      if (rotationChanged && !issueChanged) publishBalanceIndicators();
       return null;
     }
   }
@@ -6024,6 +6245,7 @@ export function createUsageTrackingService({
       refreshModelRegistry,
       getUsageRollup,
       resolveBalancedInstance,
+      peekBalancedInstance,
       getAutoStartState: autoStartScheduler.getAutoStartState,
       setAccountRollupFetcher,
       applyAccountRollups,
@@ -6067,6 +6289,7 @@ export function createUsageTrackingService({
     refreshModelRegistry,
     getUsageRollup,
     resolveBalancedInstance,
+    peekBalancedInstance,
     getAutoStartState: autoStartScheduler.getAutoStartState,
     setAccountRollupFetcher,
     applyAccountRollups,

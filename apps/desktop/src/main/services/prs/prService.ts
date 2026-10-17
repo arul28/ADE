@@ -39,6 +39,7 @@ import type {
   IntegrationStepResolution,
   IntegrationCleanupState,
   IntegrationWorkflowDisplayState,
+  LandHeadChange,
   LandResult,
   LandPrArgs,
   MergeMethod,
@@ -69,6 +70,7 @@ import type {
   PrSummary,
   PrSnapshotHydration,
   SessionGitHubIssueLink,
+  SessionJiraIssueLink,
   SessionLinearIssueLink,
   PrWithConflicts,
   PrActionCapabilities,
@@ -146,6 +148,7 @@ import type {
 } from "../../../shared/types";
 import { GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY } from "../../../shared/types";
 import type { AdeDb } from "../state/kvDb";
+import { createRetentionPruneGate } from "../state/dbMaintenanceApi";
 import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
 import type { createAutoRebaseService } from "../lanes/autoRebaseService";
@@ -164,6 +167,7 @@ import { parseSyntheticGithubPrId, syntheticGithubPrId } from "../../../shared/t
 import { COMMIT_STATUS_APP_SLUG, rollupChecks, rollupPrChecks } from "../../../shared/prChecksRollup";
 import { describeAutoMergeFailure } from "../../../shared/prAutoMerge";
 import { classifyPrAuthor } from "../../../shared/prBotIdentity";
+import { PR_BRIEF_HEADINGS, PR_BRIEF_PLACEHOLDERS } from "../../../shared/prBrief";
 import { isChatToolType } from "../../../shared/sessionSpawnNesting";
 import { resolvePrNextStepFromStatus } from "../../../shared/prNextStep";
 import type { ChecksRollup, ChecksRollupCheckRun, ChecksRollupCommitStatus } from "../../../shared/prChecksRollup";
@@ -179,6 +183,7 @@ import { createMergeStateGraphqlBrake } from "./mergeStateGraphqlBrake";
 import { isGithubServiceUnavailable } from "../../../shared/githubServiceHealth";
 import { githubAuthFailureKindOf, isTransientGithubProbeFailure } from "../github/githubRateLimit";
 import { formatMergeError as formatMergeErrorMessage, shouldAttemptAdminMergeForRestError } from "./resolverUtils";
+import { createPrHeadChangeDetector, formatHeadChangeMessage } from "./prHeadChange";
 import { deletePullRequestRowsByIds } from "./pullRequestRowCleanup";
 import {
   deriveGithubSnapshotLaneLink,
@@ -204,11 +209,11 @@ import { buildIntegrationPreflight } from "./integrationPlanning";
 import { createWorkflowGraph, type WorkflowFileSource } from "./workflowGraph";
 import { parseCheckLog } from "./checkLogParser";
 import { pipelineStateOf } from "../../../shared/prPipelineState";
-import { selectStackSiblings } from "../../../shared/prChatScope";
+import { claimingSessionIds, selectStackSiblings } from "../../../shared/prChatScope";
 import { hasMergeConflictMarkers, parseGitStatusPorcelain } from "./integrationValidation";
 import { fetchRemoteTrackingBranch } from "../shared/remoteTrackingBranch";
 import { asNumber, asString, getErrorMessage, isRecord, normalizeBranchName, nowIso, resolvePathWithinRoot } from "../shared/utils";
-import { branchNameFromLaneRef, resolveStableLaneBaseBranch } from "../../../shared/laneBaseResolution";
+import { branchNameFromLaneRef, laneIsOnBaseBranch, resolveStableLaneBaseBranch } from "../../../shared/laneBaseResolution";
 import {
   buildLaneBranchHistoryIndex,
   pickLaneBranchHistoryPr,
@@ -877,6 +882,15 @@ function applyGitHubPrLinkage(body: string, refs: GitHubPrIssueReference[]): str
   if (!refs.length) return body;
   const withMagicWords = ensureGitHubPrReferences(body, refs, { preserveExisting: false });
   return ensureGitHubPrIssueLinkSection(withMagicWords, refs);
+}
+
+function applyJiraPrLinkage(body: string, keys: string[]): string {
+  const uniqueKeys = [...new Set(keys.map((key) => key.trim().toUpperCase()).filter(Boolean))];
+  if (!uniqueKeys.length) return body;
+  const generatedJiraLine = /^Jira:\s*[A-Z][A-Z0-9_]*-\d+(?:,\s*[A-Z][A-Z0-9_]*-\d+)*\s*$/gim;
+  const cleanBody = body.replace(generatedJiraLine, "").trimEnd();
+  const line = "Jira: " + uniqueKeys.join(", ");
+  return cleanBody ? cleanBody + "\n\n" + line : line;
 }
 
 function createEmptyIntegrationResolutionState(integrationLaneId: string, updatedAt = nowIso()): IntegrationResolutionState {
@@ -1577,6 +1591,7 @@ export function createPrService({
   getLinearLiveStatusService,
   openExternal,
   onHotRefreshChanged,
+  refreshDefaultBranchAfterMerge,
 }: {
   db: AdeDb;
   logger: Logger;
@@ -1595,6 +1610,12 @@ export function createPrService({
   getLinearLiveStatusService?: () => LinearLiveStatusService | null;
   openExternal: (url: string) => Promise<void>;
   onHotRefreshChanged?: () => void;
+  /**
+   * Fast-forwards the primary checkout after a PR merges into `baseBranch`,
+   * so a lane created right after the merge starts from the merged default
+   * branch instead of waiting for the background auto-pull. Never throws.
+   */
+  refreshDefaultBranchAfterMerge?: (baseBranch: string) => Promise<void>;
 }) {
   const PR_COLUMNS = `id, lane_id, project_id, repo_owner, repo_name, github_pr_number,
     github_url, github_node_id, title, state, base_branch, head_branch,
@@ -1711,13 +1732,33 @@ export function createPrService({
     );
   };
 
+  const collectJiraIssueKeysForLaneSessions = (laneId: string): string[] => {
+    let links: SessionJiraIssueLink[] = [];
+    try {
+      links = laneService.listJiraIssuesForLaneSessions?.({ laneId }) ?? [];
+    } catch (error) {
+      logger.warn("prs.jira_session_links_read_failed", {
+        laneId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return [];
+    }
+    return [...new Set(
+      links
+        .filter((link) => link.includeInPr)
+        .map((link) => link.issue.key.trim().toUpperCase())
+        .filter(Boolean),
+    )];
+  };
+
   const applyIssuePrLinkage = (
     body: string,
     lane: LaneSummary,
     closePrimaryOnMerge: boolean,
   ): string => {
     const withLinear = applyLinearPrLinkage(body, lane, closePrimaryOnMerge);
-    return applyGitHubPrLinkage(withLinear, collectGitHubPrIssueReferencesForLaneSessions(lane.id));
+    const withGitHub = applyGitHubPrLinkage(withLinear, collectGitHubPrIssueReferencesForLaneSessions(lane.id));
+    return applyJiraPrLinkage(withGitHub, collectJiraIssueKeysForLaneSessions(lane.id));
   };
 
   // Set by the runtime: runs after a PR's Linear cards are posted (proof upload).
@@ -2143,15 +2184,29 @@ export function createPrService({
       [laneId, projectId],
     );
 
+  /**
+   * A primary lane on its base branch shows no PR anywhere. The checkout is
+   * the project's own and cannot be deleted, so nothing may pin history to it:
+   * not the current-branch match, and not the single-value history fallback in
+   * `getForLane`. The rule itself lives in `shared/laneBaseResolution.ts` so
+   * the renderer's lane surfaces and the CLI's lane-link envelope answer it
+   * identically; this maps the lane row onto it. The host reads the RECORDED
+   * branch (no live checkout here); the lane list re-syncs the primary lane's
+   * record to its live HEAD, so a lane parked on a drifted HEAD converges.
+   */
+  const laneRowIsOnBaseBranch = (lane: LanePrLookupRow): boolean =>
+    laneIsOnBaseBranch({
+      laneType: lane.lane_type,
+      branchRef: lane.branch_ref,
+      baseRef: lane.base_ref,
+    });
+
   const rowMatchesLaneBranchForDisplay = (row: PullRequestRow, lane: LanePrLookupRow): boolean => {
     const laneBranch = normalizeBranchName(branchNameFromRef(lane.branch_ref ?? ""));
     const prHeadBranch = normalizeBranchName(row.head_branch);
     if (!laneBranch || !prHeadBranch || laneBranch !== prHeadBranch) return false;
 
-    if (lane.lane_type === "primary") {
-      const laneBaseBranch = normalizeBranchName(branchNameFromRef(lane.base_ref ?? ""));
-      if (laneBranch && laneBaseBranch && laneBranch === laneBaseBranch) return false;
-    }
+    if (laneRowIsOnBaseBranch(lane)) return false;
 
     return true;
   };
@@ -2275,11 +2330,7 @@ export function createPrService({
     if (args.lane.archived_at) return null;
     const laneBranch = normalizeBranchName(branchNameFromRef(args.lane.branch_ref ?? ""));
     if (!laneBranch) return null;
-
-    if (args.lane.lane_type === "primary") {
-      const laneBaseBranch = normalizeBranchName(branchNameFromRef(args.lane.base_ref ?? ""));
-      if (laneBaseBranch && laneBranch === laneBaseBranch) return null;
-    }
+    if (laneRowIsOnBaseBranch(args.lane)) return null;
 
     const mappedCandidates: LanePrDisplayCandidate[] = args.mappedRows
       .filter((row) => row.lane_id === args.laneId && rowMatchesLaneBranchForDisplay(row, args.lane))
@@ -3207,11 +3258,13 @@ export function createPrService({
   };
 
   /**
-   * Link a PR's row to the chats that were open in the lane when it was
-   * created. A history PR does not match the lane's recorded branch, so lane
-   * surfaces show it only through this edge. Plain shells (`shell`, `other`)
-   * are not agents, and a session that ended before the PR existed did not
-   * open it.
+   * Link an auto-mapped PR's row to the chats that were open in the lane when
+   * it was created. A PR opened outside ADE (`gh pr create` from a chat's
+   * terminal, the GitHub site) carries no chat of its own, and chats settle on
+   * merge only through this edge, so without it the chat that did the work
+   * stayed open after its PR merged. A history PR also needs it to show on lane
+   * surfaces at all. Plain shells (`shell`, `other`) are not agents, and a
+   * session that ended before the PR existed did not open it.
    */
   const attributeLanePrToChats = (args: { prId: string; laneId: string; createdAt: string | null }): void => {
     const createdMs = args.createdAt ? Date.parse(args.createdAt) : Number.NaN;
@@ -3370,6 +3423,7 @@ export function createPrService({
     // unmap — re-querying the row could race and yield an empty prId, leaving
     // the Undo action a silent no-op.
     const linked = await linkToLane({ laneId: lane.id, prUrlOrNumber: String(candidate.prNumber) });
+    attributeLanePrToChats({ prId: linked.id, laneId: lane.id, createdAt: linked.createdAt || candidate.createdAt });
 
     try {
       emitPrEvent?.({
@@ -4361,9 +4415,11 @@ export function createPrService({
       { cwd: lane.worktreePath, timeoutMs: 10_000 }
     );
 
-    if (upstreamCheck.exitCode === 0) {
-      const upstreamRef = upstreamCheck.stdout.trim();
-      const parsedUpstream = parseUpstreamRef(upstreamRef);
+    const upstreamRef = upstreamCheck.exitCode === 0 ? upstreamCheck.stdout.trim() : "";
+    const parsedUpstream = upstreamRef ? parseUpstreamRef(upstreamRef) : null;
+    // A branch made with `git checkout -b <new> origin/main` tracks main. The
+    // PR head is <new>, so compare with and push to origin/<new> instead.
+    if (upstreamRef && (!parsedUpstream || parsedUpstream.branch === headBranch)) {
       if (parsedUpstream) {
         await fetchRemoteBranchForPrCheck({
           cwd: lane.worktreePath,
@@ -5095,6 +5151,13 @@ export function createPrService({
         laneId: lane.id,
         prUrlOrNumber: preflight.githubUrl,
       });
+      // A lane imported from this PR carries one explicit, machine-local
+      // origin for its first agent chat. The chat service consumes it after a
+      // successful ordinary session create; later chats stay unlinked unless
+      // the user links them explicitly.
+      if (!chatLinks.rememberLanePrChatOrigin({ prId: pr.id, laneId: lane.id })) {
+        throw new Error(`Could not save PR #${preflight.githubPrNumber}'s chat origin for lane "${lane.name}".`);
+      }
       return { preflight, lane, pr };
     } catch (error) {
       if (!lane) throw error;
@@ -7354,6 +7417,14 @@ export function createPrService({
     };
   };
 
+  /** The parts of a drafted description: the Brief's, without the optional one. */
+  const PR_BRIEF_DRAFT_HEADINGS = [
+    PR_BRIEF_HEADINGS.why,
+    PR_BRIEF_HEADINGS.changed,
+    PR_BRIEF_HEADINGS.evidence,
+    PR_BRIEF_HEADINGS.not_checked,
+  ];
+
   const draftDescription = async (args: DraftPrDescriptionArgs): Promise<{ title: string; body: string }> => {
     const { laneId, reasoningEffort } = args;
     const lane = (await laneService.list({ includeArchived: true })).find((entry) => entry.id === laneId);
@@ -7408,7 +7479,8 @@ export function createPrService({
     const finalizeDraft = (draft: { title: string; body: string }): { title: string; body: string } => {
       const linearRefs = collectLinearPrIssueReferences(lane, closeLinearIssueOnMerge);
       const githubRefs = collectGitHubPrIssueReferencesForLaneSessions(lane.id);
-      if (!linearRefs.length && !githubRefs.length) return draft;
+      const jiraKeys = collectJiraIssueKeysForLaneSessions(lane.id);
+      if (!linearRefs.length && !githubRefs.length && !jiraKeys.length) return draft;
       const body = applyIssuePrLinkage(draft.body, lane, closeLinearIssueOnMerge);
       if (!lane.linearIssue) return { title: draft.title, body };
       const escapedIdentifier = lane.linearIssue.identifier.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -7439,7 +7511,9 @@ export function createPrService({
       const prompt = [
         "You are ADE's PR drafting assistant. Keep content factual and concise.",
         "Return JSON only with shape: {\"title\": string, \"body\": string}.",
-        "The body must be GitHub-flavored markdown with sections: Summary, What Changed, Validation, Risks.",
+        `The body must be GitHub-flavored markdown with these sections, in this order: ${PR_BRIEF_DRAFT_HEADINGS.join(", ")}.`,
+        "Write for a person who has two minutes and did not see the work. Use plain words. Explain a technical term in the sentence where it first appears. Keep file and function names out of Why and What changed.",
+        "Evidence says how the change was checked and what was seen; write only what the context shows, and never invent a test run. Not checked says what was not checked.",
         "If Linear issue context is present, include the primary Linear issue identifier in the title and include Linear references in the body.",
         "",
         "PR Context JSON:",
@@ -7483,21 +7557,21 @@ export function createPrService({
 
     // Guest/CLI fallback: deterministic content.
     const lines: string[] = [];
-    lines.push("## Summary");
+    lines.push(`## ${PR_BRIEF_HEADINGS.why}`);
     lines.push("");
-    lines.push("_Describe the change._");
+    lines.push(PR_BRIEF_PLACEHOLDERS.why);
     lines.push("");
-    lines.push("## What Changed");
+    lines.push(`## ${PR_BRIEF_HEADINGS.changed}`);
     lines.push("");
-    lines.push("_Key files and behaviors._");
+    lines.push(PR_BRIEF_PLACEHOLDERS.changed);
     lines.push("");
-    lines.push("## Validation");
+    lines.push(`## ${PR_BRIEF_HEADINGS.evidence}`);
     lines.push("");
-    lines.push("_How you tested._");
+    lines.push(PR_BRIEF_PLACEHOLDERS.evidence);
     lines.push("");
-    lines.push("## Risks");
+    lines.push(`## ${PR_BRIEF_HEADINGS.not_checked}`);
     lines.push("");
-    lines.push("_Anything to watch._");
+    lines.push(PR_BRIEF_PLACEHOLDERS.not_checked);
     if (template) {
       lines.push("");
       lines.push("---");
@@ -7510,27 +7584,37 @@ export function createPrService({
     });
   };
 
+  /**
+   * A plain `git switch` inside a lane's worktree leaves ADE's record on the
+   * old branch. Opening a PR from that record pushes the new branch (a bare
+   * `git push`) but asks GitHub for the old one. Adopt the branch the worktree
+   * is actually on before using the record.
+   */
+  const adoptWorktreeBranch = async (lane: LaneSummary): Promise<LaneSummary> => {
+    const head = await runGit(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: lane.worktreePath, timeoutMs: 8_000 });
+    const checkedOut = head.exitCode === 0 ? head.stdout.trim() : "";
+    if (!checkedOut || checkedOut === "HEAD" || checkedOut === branchNameFromRef(lane.branchRef)) return lane;
+    laneService.updateBranchRef(lane.id, checkedOut);
+    return { ...lane, branchRef: checkedOut };
+  };
+
   const createFromLane = async (args: CreatePrFromLaneInternalArgs): Promise<PrSummary> => {
     const allLanes = await laneService.list({ includeArchived: true });
-    const lane = allLanes.find((entry) => entry.id === args.laneId);
-    if (!lane) throw new Error(`Lane not found: ${args.laneId}`);
+    const recorded = allLanes.find((entry) => entry.id === args.laneId);
+    if (!recorded) throw new Error(`Lane not found: ${args.laneId}`);
     assertDirtyWorktreesAllowed({
       lanes: allLanes,
-      laneIds: [lane.id],
+      laneIds: [recorded.id],
       allowDirtyWorktree: args.allowDirtyWorktree
     });
 
-    const headBranch = branchNameFromRef(lane.branchRef);
-    if (!headBranch) {
-      throw new Error(`Lane "${lane.name}" has no branch checked out. Check out a branch before creating a PR.`);
-    }
-    const parentLane = lane.parentLaneId ? allLanes.find((entry) => entry.id === lane.parentLaneId) ?? null : null;
+    const parentLane = recorded.parentLaneId ? allLanes.find((entry) => entry.id === recorded.parentLaneId) ?? null : null;
     const primaryLane = allLanes.find((entry) => entry.laneType === "primary") ?? null;
     const parentPr = parentLane ? getRowForLane(parentLane.id) : null;
     const defaultBaseBranch = parentPr?.state === "merged" && parentPr.base_branch
       ? parentPr.base_branch
       : resolveStableLaneBaseBranch({
-          lane,
+          lane: recorded,
           parent: parentLane,
           primaryBranchRef: primaryLane?.branchRef ?? null,
         });
@@ -7538,7 +7622,12 @@ export function createPrService({
     if (!baseBranch) {
       throw new Error("Choose a target branch before creating the PR.");
     }
-    const title = args.title?.trim() || defaultPrTitleForLane(lane, baseBranch, allLanes);
+    const title = args.title?.trim() || defaultPrTitleForLane(recorded, baseBranch, allLanes);
+    const lane = await adoptWorktreeBranch(recorded);
+    const headBranch = branchNameFromRef(lane.branchRef);
+    if (!headBranch) {
+      throw new Error(`Lane "${lane.name}" has no branch checked out. Check out a branch before creating a PR.`);
+    }
     if (!args.skipBranchPush) {
       await pushLaneBranchForPr(lane, headBranch);
     }
@@ -8036,6 +8125,7 @@ export function createPrService({
    */
   const runPostMergeCleanup = async (args: {
     prId: string;
+    baseBranch?: string;
     mergeCommitSha: string | null;
     archiveLane: boolean;
     /**
@@ -8057,6 +8147,7 @@ export function createPrService({
       return { branchDeleted: false, laneArchived: false, childAutoRebaseBlockedCleanup: false };
     }
     const repo: GitHubRepoRef = { owner: row.repo_owner, name: row.repo_name };
+    const baseBranch = args.baseBranch ?? row.base_branch;
     const headBranch = row.head_branch;
     let branchDeleted = false;
     let laneArchived = false;
@@ -8071,14 +8162,23 @@ export function createPrService({
 
       await fetchRemoteTrackingBranch({
         projectRoot,
-        targetBranch: row.base_branch,
+        targetBranch: baseBranch,
       }).catch((error) => {
         logger.warn("prs.fetch_base_branch_failed", {
           prId: row.id,
-          baseBranch: row.base_branch,
+          baseBranch,
           error: getErrorMessage(error),
         });
       });
+      try {
+        await refreshDefaultBranchAfterMerge?.(baseBranch);
+      } catch (error) {
+        logger.warn("prs.default_branch_refresh_failed", {
+          prId: row.id,
+          baseBranch,
+          error: getErrorMessage(error),
+        });
+      }
       try {
         laneService.invalidateCache?.();
       } catch (cacheError) {
@@ -8183,7 +8283,11 @@ export function createPrService({
       logger.error("prs.post_merge_cleanup_failed", {
         prId: row.id,
         mergeCommitSha: args.mergeCommitSha,
-        error: cleanupMsg,
+        // The Error itself, so `logBridge` lifts it into the Sentry event and
+        // the issue groups by the real failure; `errorText` keeps the sentence
+        // on disk, which `JSON.stringify` writes an Error without.
+        error: cleanupError,
+        errorText: cleanupMsg,
       });
       if (args.operationId) {
         try {
@@ -8347,10 +8451,20 @@ export function createPrService({
     args: LandPrArgs,
     mergeCommitSha: string | null,
     operationId: string,
+    baseBranch: string,
   ): Promise<{ branchDeleted: boolean; laneArchived: boolean }> => {
     if (!target.row) {
       forgetActivityInputs(target.repo, target.prNumber);
       invalidateGithubSnapshotCache();
+      try {
+        await refreshDefaultBranchAfterMerge?.(baseBranch);
+      } catch (error) {
+        logger.warn("prs.default_branch_refresh_failed", {
+          prNumber: target.prNumber,
+          baseBranch,
+          error: getErrorMessage(error),
+        });
+      }
       // A PR with no local row has no lane to archive, but the head branch is
       // still deletable — and the CLI, TUI and mobile all offer it. Reporting
       // `branchDeleted: false` unconditionally made that opt-in a silent no-op
@@ -8378,6 +8492,7 @@ export function createPrService({
 
     const cleanup = await runPostMergeCleanup({
       prId: target.row.id,
+      baseBranch,
       mergeCommitSha,
       archiveLane: Boolean(args.archiveLane),
       deleteRemoteBranch: Boolean(args.deleteRemoteBranch),
@@ -8385,6 +8500,14 @@ export function createPrService({
     });
     return { branchDeleted: cleanup.branchDeleted, laneArchived: cleanup.laneArchived };
   };
+
+  const headChange = createPrHeadChangeDetector({
+    githubService,
+    logger,
+    fetchPr,
+    getRowForRepoPr,
+    refreshOne,
+  });
 
   const githubStackMerge = createGithubStackMerge({
     githubService,
@@ -8402,8 +8525,10 @@ export function createPrService({
     forgetActivityInputs,
     markHotRefresh: (prIds) => markHotRefresh(prIds),
     refreshOne,
+    refreshDefaultBranchAfterMerge,
     invalidateGithubSnapshotCache,
     delay,
+    headChange,
   });
 
   const land = async (args: LandPrArgs): Promise<LandResult> => {
@@ -8446,9 +8571,17 @@ export function createPrService({
     }
 
     const formatMergeError = (rawMsg: string): string => formatMergeErrorMessage(rawMsg, args.expectedHeadSha);
+    // The head moved past what the user looked at: nothing merges, and the
+    // result says what landed so the user can merge again against it.
+    const finishHeadChanged = (rawMsg: string, headChanged: LandHeadChange): LandResult => ({
+      ...finishFailure(rawMsg, formatHeadChangeMessage(headChanged)),
+      headChanged,
+    });
 
+    let mergeBaseBranch = String(row?.base_branch ?? "").trim();
     try {
       const latestPull = await fetchPr(repo, prNumber, { waitForKnownMergeability: true });
+      mergeBaseBranch = asString(latestPull?.base?.ref).trim() || mergeBaseBranch;
       const latestState = toPrState({
         state: asString(latestPull?.state) || row?.state || "open",
         draft: Boolean(latestPull?.draft),
@@ -8460,12 +8593,23 @@ export function createPrService({
       if (latestState !== "open") {
         return finishFailure(`PR is ${latestState}`, `PR is ${latestState}; only open PRs can be merged.`);
       }
+      const headChanged = await headChange.detect(repo, prNumber, args.expectedHeadSha, asString(latestPull?.head?.sha));
+      if (headChanged) {
+        return finishHeadChanged(`PR head is ${headChanged.currentHeadSha}, expected ${headChanged.expectedHeadSha}`, headChanged);
+      }
       if (mergeConflictsFromPull(latestPull) === true) {
         return finishFailure("PR has merge conflicts", "PR has merge conflicts. Rebase or resolve conflicts before merging.");
       }
     } catch (error) {
       return finishFailure(getErrorMessage(error), `Unable to verify mergeability before merging: ${getErrorMessage(error)}`);
     }
+
+    // The head can still move between the check above and the merge call;
+    // GitHub then refuses with "Head branch was modified".
+    const headMovedDuringMerge = async (rawMsg: string): Promise<LandResult | null> => {
+      const headChanged = await headChange.afterMergeRefusal(repo, prNumber, args.expectedHeadSha, rawMsg);
+      return headChanged ? finishHeadChanged(rawMsg, headChanged) : null;
+    };
 
     try {
       // `commit_title`/`commit_message` only apply to merge/squash commits, not
@@ -8489,7 +8633,7 @@ export function createPrService({
       });
 
       const mergeCommitSha = asString(merge.data?.sha) || null;
-      const cleanup = await finishSuccessfulMerge(target, args, mergeCommitSha, op.operationId);
+      const cleanup = await finishSuccessfulMerge(target, args, mergeCommitSha, op.operationId, mergeBaseBranch);
 
       return {
         prId: args.prId,
@@ -8502,6 +8646,8 @@ export function createPrService({
       };
     } catch (error) {
       const rawMsg = error instanceof Error ? error.message : String(error);
+      const headMoved = await headMovedDuringMerge(rawMsg);
+      if (headMoved) return headMoved;
       const userMsg = formatMergeError(rawMsg);
 
       if (args.bypassRules && shouldAttemptAdminMergeForRestError(rawMsg, { allowForceMerge: true })) {
@@ -8518,6 +8664,7 @@ export function createPrService({
             args,
             adminAttempt.mergeCommitSha,
             op.operationId,
+            mergeBaseBranch,
           );
           return {
             prId: args.prId,
@@ -8529,6 +8676,8 @@ export function createPrService({
             error: null,
           };
         }
+        const adminHeadMoved = await headMovedDuringMerge(adminAttempt.error);
+        if (adminHeadMoved) return adminHeadMoved;
         return finishFailure(adminAttempt.error, formatMergeError(adminAttempt.error));
       }
 
@@ -10012,6 +10161,8 @@ export function createPrService({
   const GITHUB_PROJECTION_CLOSED_RETAIN_LIMIT = 1_000;
   const GITHUB_WEBHOOK_DELIVERY_RETAIN_LIMIT = 1_000;
   const GITHUB_WEBHOOK_ERROR_DELIVERY_RETAIN_LIMIT = 100;
+  // Delivery writes are the hot path; the retain-limit DELETEs run at most once per interval or write budget.
+  const webhookDeliveryPruneGate = createRetentionPruneGate();
   let cachedGithubSnapshot: GitHubPrSnapshot | null = null;
   let cachedGithubSnapshotAt = 0;
   let cachedGithubSnapshotIncludesClosed = false;
@@ -10365,7 +10516,7 @@ export function createPrService({
         githubPrNumber: pr.githubPrNumber,
         title: pr.title,
         laneId: pr.laneId,
-        claimedByOtherChat: (pr.chatSessionIds ?? []).some((id) => id !== sessionId),
+        claimedByOtherChat: claimingSessionIds(pr).some((id) => id !== sessionId),
       })),
     };
   };
@@ -10963,6 +11114,8 @@ export function createPrService({
   };
 
   const pruneGithubWebhookDeliveries = (): void => {
+    // Housekeeping only: deferring it keeps extra rows a little longer, which can only add dedupe hits. No row is dropped early.
+    if (!webhookDeliveryPruneGate.isDue(projectId)) return;
     db.run(
       `
         delete from github_webhook_deliveries
@@ -11127,6 +11280,25 @@ export function createPrService({
 
     try {
       const fallbackRepo = githubWebhookRepoFromPayload(payload);
+      // An issue (not a pull request) changed: tell open issue views to re-read
+      // it. GitHub sends `issue_comment` for both, so a PR's comment is skipped.
+      if (
+        (eventName === "issues" || eventName === "issue_comment")
+        && isRecord(payload.issue)
+        && payload.issue.pull_request == null
+        && fallbackRepo
+      ) {
+        const issueNumber = Number(payload.issue.number);
+        if (Number.isInteger(issueNumber) && issueNumber > 0) {
+          emitPrEvent?.({
+            type: "github-issue-changed",
+            repoOwner: fallbackRepo.owner,
+            repoName: fallbackRepo.name,
+            issueNumber,
+            action: asString(payload.action).trim() || null,
+          });
+        }
+      }
       const rawPull = readWebhookPullPayload(eventName, payload);
       const projection = rawPull ? projectionFromRawPull(rawPull, eventName, deliveryId, fallbackRepo) : null;
       let linkedPrIds: string[] = [];
@@ -12105,29 +12277,31 @@ export function createPrService({
   const syncLanePr = async (laneId: string): Promise<PrSummary | null> => {
     const normalizedLaneId = String(laneId ?? "").trim();
     if (!normalizedLaneId) return null;
+    const readCurrent = (): PrSummary | null =>
+      withGithubStackMembership(getDisplayCandidateForCurrentLaneBranch(normalizedLaneId)?.summary ?? null);
     try {
-      const existing = withGithubStackMembership(
-        getDisplayCandidateForCurrentLaneBranch(normalizedLaneId)?.summary ?? null,
-      );
+      const existing = readCurrent();
       if (existing && !existing.unmapped) {
         // Mapped row: refresh by id (heals merged/closed via fetchPr), then
         // return the fresh row summary so the caller sees the new state.
         const refreshed = await refreshPrIds([existing.id]);
         return withGithubStackMembership(
-          refreshed.find((pr) => pr.id === existing.id)
-          ?? getDisplayCandidateForCurrentLaneBranch(normalizedLaneId)?.summary
-          ?? null
-        );
+          refreshed.find((pr) => pr.id === existing.id) ?? null
+        ) ?? readCurrent();
       }
-      // Not mapped (or an unmapped GitHub projection): pull state:"all" so a
-      // merged PR on the lane branch gets backfilled/mapped, then re-read.
+      // Not mapped: ask GitHub for an open PR on the lane's own branch first.
+      // That is one request, where the repo-wide sweep below pages through
+      // closed history and took about a minute on a busy repo.
+      await tryAutoMapLaneByBranch(normalizedLaneId);
+      const branchMapped = readCurrent();
+      if (branchMapped && !branchMapped.unmapped) return branchMapped;
+      // Still nothing (or an unmapped GitHub projection): pull state:"all" so
+      // a merged PR on the lane branch gets backfilled/mapped, then re-read.
       // force: true so this manual ⟳ does a live fetch (+ runs the backfill)
       // instead of returning possibly-stale local projections. It is a direct
       // user action, so it is also allowed past the GitHub failure ladder.
       await getGithubSnapshot({ force: true, includeExternalClosed: true });
-      return withGithubStackMembership(
-        getDisplayCandidateForCurrentLaneBranch(normalizedLaneId)?.summary ?? null,
-      );
+      return readCurrent();
     } catch (error) {
       logger.warn("prs.sync_lane_pr_failed", {
         laneId: normalizedLaneId,
@@ -12196,6 +12370,11 @@ export function createPrService({
       if (!lane || lane.archived_at || !normalizeBranchName(branchNameFromRef(lane.branch_ref ?? ""))) {
         return null;
       }
+      // ...but a primary lane back on its base branch has no PR to hand out —
+      // not even as history. It cannot be deleted, so returning "the newest
+      // retained row" here is what pinned an old merged PR to `main` on every
+      // consumer of this bridge (lane links, Linear cards, proof owners).
+      if (laneRowIsOnBaseBranch(lane)) return null;
       const previous = getRowForLane(laneId);
       const laneBranch = normalizeBranchName(branchNameFromRef(lane.branch_ref ?? ""));
       const previousBranch = normalizeBranchName(branchNameFromRef(previous?.head_branch ?? ""));
@@ -12524,6 +12703,17 @@ export function createPrService({
       });
       if (ok) emitPrsUpdated();
       return { ok };
+    },
+
+    /**
+     * Claim a lane's one-shot PR origin for a newly created chat. This is an
+     * internal service seam for agentChatService, not a renderer runtime action.
+     * `linked` means a new edge was inserted; only that case emits an update.
+     */
+    claimLanePrChatOrigin(args: { laneId: string; sessionId: string }) {
+      const linked = chatLinks.claimLanePrChatOrigin(args);
+      if (linked.status === "linked") emitPrsUpdated();
+      return linked;
     },
 
     unlinkChatSession(args: UnlinkPrChatSessionArgs): { ok: boolean } {

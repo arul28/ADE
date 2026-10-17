@@ -4,7 +4,7 @@
  * card's state and badge; the card only draws them and reports clicks.
  */
 import React, { useCallback, useRef, useState } from "react";
-import { DotsThree } from "@phosphor-icons/react";
+import { CaretLeft, CaretRight, Check, DotsThree } from "@phosphor-icons/react";
 import { COLORS, SANS_FONT, outlineButton } from "../../../lanes/laneDesignTokens";
 import { AnchoredMenu } from "../../../ui/AnchoredMenu";
 import { Banner } from "../../../ui/notice/Banner";
@@ -15,16 +15,22 @@ import {
   isBaseProviderInstance,
   providerInstanceHasAccount,
   type ProviderInstance,
+  type ProviderInstanceSettingsPatch,
 } from "../../../../../shared/types/providerInstances";
 import { accountIdentityLine } from "./accountPresentation";
 
-export type RowMenuAction = "rename" | "signIn" | "remove";
+export type RowMenuAction = "rename" | "signIn" | "signOut" | "remove";
 
 /** Why a card is shown the way it is; one state per card, decided by the panel. */
 export type CardState =
   | { kind: "ok" }
   | { kind: "signedOut" }
   | { kind: "copy"; ownerLabel: string };
+
+type MenuView = "main" | "compaction" | "mainCache" | "cache" | "onExtraUsage";
+const MENU_VIEW_WIDTH: Record<MenuView, number | undefined> = { main: undefined, compaction: 340, mainCache: 264, cache: 264, onExtraUsage: 264 };
+/** The account settings that only a Claude account has. */
+export type ClaudeAccountSettingPatch = Pick<ProviderInstanceSettingsPatch, "mainPromptCacheTtl" | "subagentPromptCacheTtl" | "onExtraUsage">;
 
 export function AccountCard({
   instance,
@@ -38,6 +44,8 @@ export function AccountCard({
   onAction,
   onSignIn,
   replacedNote,
+  compactionControl,
+  onSetClaudeSetting,
   renaming,
   onCommitRename,
   onCancelRename,
@@ -55,6 +63,10 @@ export function AccountCard({
   onAction: (action: RowMenuAction, instance: ProviderInstance) => void;
   onSignIn: (instance: ProviderInstance) => void;
   replacedNote: React.ReactNode;
+  /** This account's own compaction settings, shown as a page of the actions menu. */
+  compactionControl?: React.ReactNode;
+  /** Claude only: sets one of this account's Claude settings; null restores Claude Code's own behavior. */
+  onSetClaudeSetting?: (instance: ProviderInstance, patch: ClaudeAccountSettingPatch) => void;
   renaming: boolean;
   onCommitRename: (instance: ProviderInstance, label: string) => void;
   onCancelRename: () => void;
@@ -64,7 +76,11 @@ export function AccountCard({
   const [focusWithin, setFocusWithin] = useState(false);
   const [draftLabel, setDraftLabel] = useState(instance.label);
   const menuButtonRef = useRef<HTMLButtonElement | null>(null);
-  const closeMenu = useCallback(() => setMenuOpen(false), []);
+  const [menuView, setMenuView] = useState<MenuView>("main");
+  const closeMenu = useCallback(() => {
+    setMenuOpen(false);
+    setMenuView("main");
+  }, []);
   const signedOut = state.kind === "signedOut";
   const isCopy = state.kind === "copy";
   const inUse = badge !== null;
@@ -72,6 +88,21 @@ export function AccountCard({
   // The usage row carries its own "Signed out" pill when the poller saw the
   // broken login; the header says it only when the row cannot.
   const rowSaysSignedOut = limitRow?.account?.login === "signed_out";
+  const longPromptCache = instance.subagentPromptCacheTtl === "1h";
+  const mainPromptCache = instance.mainPromptCacheTtl ?? null;
+  const stopsOnExtraUsage = instance.onExtraUsage === "stop";
+  const menuItemStyle = (danger = false): React.CSSProperties => ({
+    display: "block",
+    width: "100%",
+    textAlign: "left",
+    padding: "7px 12px",
+    border: "none",
+    background: "transparent",
+    fontSize: 12,
+    fontFamily: SANS_FONT,
+    color: danger ? COLORS.danger : COLORS.textSecondary,
+    cursor: "pointer",
+  });
 
   const item = (action: RowMenuAction, text: string, danger = false) => (
     <button
@@ -82,21 +113,78 @@ export function AccountCard({
         closeMenu();
         onAction(action, instance);
       }}
-      style={{
-        display: "block",
-        width: "100%",
-        textAlign: "left",
-        padding: "7px 12px",
-        border: "none",
-        background: "transparent",
-        fontSize: 12,
-        fontFamily: SANS_FONT,
-        color: danger ? COLORS.danger : COLORS.textSecondary,
-        cursor: "pointer",
-      }}
+      style={menuItemStyle(danger)}
     >
       {text}
     </button>
+  );
+
+  const menuRuleStyle: React.CSSProperties = { height: 1, margin: "4px 0", background: COLORS.borderMuted };
+  const menuNoteStyle: React.CSSProperties = {
+    margin: 0,
+    padding: "4px 12px 6px",
+    fontSize: 11,
+    lineHeight: 1.45,
+    fontFamily: SANS_FONT,
+    color: COLORS.textMuted,
+  };
+  /** A main-menu row that opens one page of the menu and shows that page's current value. */
+  const subviewRow = (view: Exclude<MenuView, "main">, text: string, value: string) => (
+    <button
+      type="button"
+      role="menuitem"
+      aria-haspopup="menu"
+      onClick={() => setMenuView(view)}
+      style={{ ...menuItemStyle(), display: "flex", alignItems: "center", gap: 10 }}
+    >
+      <span style={{ flex: 1 }}>{text}</span>
+      <span style={{ fontSize: 11, color: COLORS.textDim }}>{value}</span>
+      <CaretRight size={10} weight="bold" color={COLORS.textDim} />
+    </button>
+  );
+  const subviewHead = (text: string) => (
+    <button
+      type="button"
+      role="menuitem"
+      aria-label={`Back from ${text}`}
+      onClick={() => setMenuView("main")}
+      style={{ ...menuItemStyle(), display: "flex", alignItems: "center", gap: 6, fontWeight: 500, color: COLORS.textPrimary }}
+    >
+      <CaretLeft size={10} weight="bold" color={COLORS.textDim} />
+      {text}
+    </button>
+  );
+  /** One page of the menu that picks between a few values of one Claude setting. */
+  const choicePage = (page: {
+    title: string;
+    lead: string;
+    footnote: string;
+    choices: Array<{ checked: boolean; patch: ClaudeAccountSettingPatch; text: string; note: string }>;
+  }) => (
+    <>
+      {subviewHead(page.title)}
+      <p style={menuNoteStyle}>{page.lead}</p>
+      {page.choices.map((choice) => (
+        <button
+          key={choice.text}
+          type="button"
+          role="menuitemradio"
+          aria-checked={choice.checked}
+          onClick={() => {
+            closeMenu();
+            if (!choice.checked) onSetClaudeSetting?.(instance, choice.patch);
+          }}
+          style={{ ...menuItemStyle(), display: "flex", alignItems: "flex-start", gap: 8 }}
+        >
+          <span style={{ flex: 1, minWidth: 0 }}>
+            <span style={{ display: "block", color: COLORS.textPrimary }}>{choice.text}</span>
+            <span style={{ display: "block", marginTop: 1, fontSize: 11, lineHeight: 1.4, color: COLORS.textMuted }}>{choice.note}</span>
+          </span>
+          {choice.checked ? <Check size={12} weight="bold" style={{ marginTop: 2, flex: "none" }} /> : null}
+        </button>
+      ))}
+      <p style={{ ...menuNoteStyle, color: COLORS.textDim }}>{page.footnote}</p>
+    </>
   );
 
   return (
@@ -178,6 +266,7 @@ export function AccountCard({
           {badge ? <NoticeBadge tone="accent">{badge}</NoticeBadge> : null}
           {signedOut && !rowSaysSignedOut && providerInstanceHasAccount(instance) ? <NoticeBadge tone="warning">Signed out</NoticeBadge> : null}
           {isCopy ? <NoticeBadge tone="neutral">Copy</NoticeBadge> : null}
+          {longPromptCache ? <NoticeBadge tone="neutral">1h cache</NoticeBadge> : null}
         </div>
         {signedOut ? (
           <button
@@ -231,8 +320,10 @@ export function AccountCard({
             placement="bottom-end"
             role="menu"
             aria-label={`${instance.label} account actions`}
+            remeasureKey={`${menuView}:${instance.compaction ? "custom" : "default"}`}
             style={{
               minWidth: 170,
+              width: MENU_VIEW_WIDTH[menuView],
               padding: "4px 0",
               background: COLORS.cardBgSolid,
               border: `1px solid ${COLORS.outlineBorder}`,
@@ -240,10 +331,55 @@ export function AccountCard({
               boxShadow: "0 14px 36px -20px rgba(0,0,0,0.85)",
             }}
           >
-            {item("rename", "Rename")}
-            {item("signIn", signedOut ? "Sign in" : "Sign in again")}
-            {/* The store refuses both: the default, and the machine's own login. */}
-            {instance.isDefault || isBaseProviderInstance(instance) ? null : item("remove", "Remove", true)}
+            {menuView === "main" ? (
+              <>
+                {item("rename", "Rename")}
+                {item("signIn", signedOut ? "Sign in" : "Sign in again")}
+                {compactionControl || onSetClaudeSetting ? <div style={menuRuleStyle} /> : null}
+                {compactionControl ? subviewRow("compaction", "Auto-compact", instance.compaction ? "Custom" : "Default") : null}
+                {onSetClaudeSetting ? subviewRow("mainCache", "Main chat cache", mainPromptCache === "1h" ? "1 hour" : mainPromptCache === "5m" ? "5 minutes" : "Automatic") : null}
+                {onSetClaudeSetting ? subviewRow("cache", "Subagent cache", longPromptCache ? "1 hour" : "5 minutes") : null}
+                {onSetClaudeSetting ? subviewRow("onExtraUsage", "Extra usage", stopsOnExtraUsage ? "Stop the turn" : "Continue") : null}
+                {/* The store refuses both on the default, and Remove on the machine's own login. */}
+                {instance.isDefault ? null : (
+                  <>
+                    <div style={menuRuleStyle} />
+                    {instance.signedIn || instance.loginBroken ? item("signOut", "Sign out", true) : null}
+                    {isBaseProviderInstance(instance) ? null : item("remove", "Remove", true)}
+                  </>
+                )}
+              </>
+            ) : menuView === "compaction" ? (
+              <>
+                {subviewHead("Auto-compact")}
+                <div style={{ padding: "2px 8px 6px" }}>{compactionControl}</div>
+              </>
+            ) : menuView === "onExtraUsage" ? choicePage({
+              title: "Extra usage",
+              lead: "What happens when a turn passes the plan limit and Claude starts to bill extra usage.",
+              footnote: "Applies to ADE chats on this account, on this machine.",
+              choices: [
+                { checked: !stopsOnExtraUsage, patch: { onExtraUsage: null }, text: "Continue", note: "Default. The turn keeps going and Claude bills the extra usage." },
+                { checked: stopsOnExtraUsage, patch: { onExtraUsage: "stop" }, text: "Stop the turn", note: "ADE stops the turn, as it does at a plan limit. One request can be billed before the stop." },
+              ],
+            }) : menuView === "mainCache" ? choicePage({
+              title: "Main chat cache",
+              lead: "How long Claude keeps a chat's context ready between your messages.",
+              footnote: "Applies to new sessions.",
+              choices: [
+                { checked: mainPromptCache === null, patch: { mainPromptCacheTtl: null }, text: "Automatic", note: "Default — 1 hour on a subscription, 5 minutes on an API key or extra usage." },
+                { checked: mainPromptCache === "5m", patch: { mainPromptCacheTtl: "5m" }, text: "5 minutes", note: "Each save costs less. A pause over 5 minutes re-sends the whole chat." },
+                { checked: mainPromptCache === "1h", patch: { mainPromptCacheTtl: "1h" }, text: "1 hour", note: "Each save costs more. The chat stays ready through breaks up to an hour." },
+              ],
+            }) : choicePage({
+              title: "Subagent cache",
+              lead: "How long Claude keeps a subagent's context ready between its requests.",
+              footnote: "Applies to new sessions.",
+              choices: [
+                { checked: !longPromptCache, patch: { subagentPromptCacheTtl: null }, text: "5 minutes", note: "Default — lowest cost per save." },
+                { checked: longPromptCache, patch: { subagentPromptCacheTtl: "1h" }, text: "1 hour", note: "Each save costs more — worth it only when subagents often wait over 5 minutes." },
+              ],
+            })}
           </AnchoredMenu>
         </span>
       </div>

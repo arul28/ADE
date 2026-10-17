@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { findInstanceHoldingThread, moveProviderThread } from "./providerThreadMove";
+import { findInstanceHoldingNewestClaudeThread, findInstanceHoldingThread, moveProviderThread } from "./providerThreadMove";
 
 /**
  * Every case uses its own temp config homes. `moveProviderThread` copies local
@@ -209,5 +209,23 @@ describe("findInstanceHoldingThread", () => {
     // A thread copied to several accounts (a usage-limit move) stays on the default.
     write(accounts[0]!.configHome, threadId);
     expect(findInstanceHoldingThread(provider, threadId, [...accounts].reverse())?.id).toBe("default");
+  });
+
+  // A move leaves its source copy behind, so the default can hold an older
+  // copy of a thread that went on running on another account.
+  it("picks the account holding the most recently written copy of a Claude thread", async () => {
+    const accounts = [
+      { id: "default", configHome: home("newest-default") },
+      { id: "work", configHome: home("newest-work") },
+      { id: "spare", configHome: home("newest-spare") },
+    ];
+    writeClaude(accounts[0]!.configHome, claudeThread);
+    writeClaude(accounts[1]!.configHome, claudeThread);
+    const older = new Date("2026-10-06T01:00:00.000Z");
+    fs.utimesSync(path.join(accounts[0]!.configHome, "projects", "-Users-me-repo", `${claudeThread}.jsonl`), older, older);
+
+    expect((await findInstanceHoldingNewestClaudeThread(claudeThread, accounts))?.id).toBe("work");
+    expect(await findInstanceHoldingNewestClaudeThread(claudeThread, [accounts[2]!])).toBeNull();
+    expect(await findInstanceHoldingNewestClaudeThread("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", accounts)).toBeNull();
   });
 });

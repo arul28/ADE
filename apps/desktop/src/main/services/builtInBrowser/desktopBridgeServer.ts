@@ -1,6 +1,5 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs";
-import { randomBytes, timingSafeEqual } from "node:crypto";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -12,13 +11,6 @@ import {
   type JsonRpcServerErrorContext,
   type JsonRpcTransport,
 } from "../../../../../ade-cli/src/jsonrpc";
-import {
-  BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM,
-  BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM,
-  BUILT_IN_BROWSER_ISSUE_ACTOR_CAPABILITY_METHOD,
-  BUILT_IN_BROWSER_REVOKE_ACTOR_CAPABILITY_METHOD,
-  isBuiltInBrowserDesktopBridgeMethod,
-} from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
 import {
   BUILT_IN_BROWSER_RUNTIME_STATUS_METHOD,
   type BuiltInBrowserRuntimeStatus,
@@ -36,17 +28,27 @@ import {
   isDemoEngineBridgeMethod,
 } from "../../../../../ade-cli/src/services/builtInBrowser/demoEngineBridgeClient";
 import {
+  DESKTOP_APP_UPDATE_BRIDGE_PREFIX,
+  DESKTOP_APP_UPDATE_INSTALL_METHOD,
+} from "../../../../../ade-cli/src/services/runtime/desktopAppUpdateBridge";
+import type { RemoteUpdateInstaller } from "../updates/remoteUpdateInstall";
+import {
+  SCENE_PREVIEW_BRIDGE_PREFIX,
+  isScenePreviewBridgeMethod,
+} from "../../../../../ade-cli/src/services/builtInBrowser/scenePreviewBridgeClient";
+import {
+  SCENE_PREVIEW_MAX_SOURCE_BYTES,
+  type ScenePreviewRequest,
+  type ScenePreviewResult,
+} from "../../../shared/scenePreview";
+import {
   type DemoEngine,
   type DemoPlan,
 } from "../../../shared/demoVideo/demoContract";
-import {
-  issueBuiltInBrowserActorCapability,
-  resolveBuiltInBrowserActorCapability,
-  revokeBuiltInBrowserActorCapability,
-} from "./builtInBrowserActorCapabilities";
 import { DEMO_ENGINE_INPUT_EXTENSIONS } from "../demoVideo/demoMp4Source";
 import { ELEVATED_DESKTOP_MESSAGE, ELEVATED_DESKTOP_TITLE } from "../../../shared/types/builtInBrowser";
 import { builtInBrowserAgentPresence } from "./builtInBrowserPresence";
+import { dispatchBuiltInBrowserAgentCall } from "./builtInBrowserAgentDispatch";
 import type { BuiltInBrowserService } from "./builtInBrowserService";
 import { localIpcListenOptions } from "../../../../../ade-cli/src/services/runtime/localIpcListenOptions";
 import { pathComparisonKey } from "../shared/pathCompare";
@@ -84,22 +86,56 @@ type BridgeConnectionState = {
  * - `startHandoff` → emits `handoff-started`, which the router turns into
  *   `clearForTab` plus `clearForChatSession` for the previous owner.
  *
- * The other two clear paths are deliberately absent: `noteWindowTabsClosed`
- * runs on window teardown, which no bridge method can request, and
- * `revokeActorCapability` clears presence itself and returns long before this
- * dispatch. `endSession` reads as turn-ending but is not — it closes a
+ * The other clear path is deliberately absent: `noteWindowTabsClosed` runs
+ * on window teardown, which no bridge method can request. `endSession` reads as turn-ending but is not — it closes a
  * recorded action session, touches no tab and clears no presence, so an agent
  * that ends a session and keeps browsing must keep its globe.
  */
-const TURN_ENDING_BRIDGE_METHODS = new Set<string>(["closeTab", "startHandoff"]);
+const BUILT_IN_BROWSER_METHOD_PREFIX = "built_in_browser.";
 
 export type BuiltInBrowserDesktopBridgeServer = {
   socketPath: string;
-  authToken: string;
   dispose: () => void;
 };
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * What a failed `listen` on the bridge socket means for this desktop.
+ *
+ * `EADDRINUSE` is the one bind failure with a benign reading: another desktop
+ * already answers on this bridge. Two desktops resolve the same bridge path
+ * whenever they share the ADE home (a dev build beside the installed app, or
+ * two copies of one channel), and the loser must leave the winner's bridge
+ * alone — a blind unlink once handed the live brain's browser calls to
+ * whichever desktop started last (2026-09-18).
+ *
+ * Unix keeps the socket as a file, so a loser cannot tell a live owner from a
+ * socket a crashed desktop left behind without probing, and it may replace only
+ * the second. The first `EADDRINUSE` is therefore retried after that probe, and
+ * an `EADDRINUSE` after the retry means an owner bound the path in the window
+ * between the unlink and the new `listen` — a live one, so the loser yields
+ * rather than replacing it.
+ *
+ * Windows' socket is a named pipe. Nothing is left on disk and Windows destroys
+ * the name with its owner, so a collision there is always a live desktop and
+ * there is never anything to replace. Reading it as a server error instead
+ * reported two coexisting desktops as a defect on every launch
+ * (ADE-DESKTOP-1S, a `listen EADDRINUSE` on `\\.\pipe\ade-desktop-bridge-…`
+ * that the `!isNamedPipe` guard sent straight to `logger.error`).
+ */
+export function bridgeListenFailureOutcome(input: {
+  /** `code` from the `listen` error, absent when the error carries none. */
+  code: string | undefined;
+  /** The socket path is a Windows named pipe (`\\.\pipe\…`). */
+  isNamedPipe: boolean;
+  /** A stale Unix socket has already been probed, unlinked and re-listened. */
+  retriedAfterStaleUnlink: boolean;
+}): "retry-stale-socket" | "already-served" | "server-error" {
+  if (input.code !== "EADDRINUSE") return "server-error";
+  if (input.isNamedPipe) return "already-served";
+  return input.retriedAfterStaleUnlink ? "already-served" : "retry-stale-socket";
+}
 
 /**
  * True when this Windows process runs elevated (High or System integrity).
@@ -134,6 +170,18 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
    */
   demoEngine?: DemoEngine | null;
   /**
+   * This app's updater, served to the runtime daemon as `app_update.install`
+   * so "Update & restart" pressed on another machine installs this app's
+   * update instead of a standalone runtime this app would then replace.
+   * Resolved per call: the updater is built after the bridge starts.
+   */
+  getAppUpdateInstaller?: (() => RemoteUpdateInstaller | null) | null;
+  /**
+   * `ade scene preview`: renders one scene in a hidden window, served to the
+   * runtime daemon as `scene_preview.render`. Absent: not found.
+   */
+  scenePreview?: ((request: ScenePreviewRequest) => Promise<ScenePreviewResult>) | null;
+  /**
    * Windows: this desktop is running elevated, so the background service
    * cannot open its bridge pipe. The caller tells the user.
    */
@@ -141,7 +189,6 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
 }): BuiltInBrowserDesktopBridgeServer {
   const { socketPath, service, logger } = args;
   const isNamedPipe = socketPath.startsWith("\\\\");
-  const bridgeAuthToken = randomBytes(32).toString("base64url");
 
   if (!isNamedPipe) {
     const socketDir = path.dirname(socketPath);
@@ -205,12 +252,27 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
     });
   });
 
-  // One retry after a stale-socket unlink; a second EADDRINUSE means a live
-  // owner appeared in between and this desktop yields to it.
+  const yieldToLiveOwner = (): void => {
+    logger.warn("built_in_browser_bridge.already_served", {
+      socketPath,
+      reason: "another desktop answers on this bridge socket; leaving it in place",
+    });
+    try {
+      server.close();
+    } catch {
+      // ignore close failures when yielding
+    }
+  };
+
   let retriedAfterStaleUnlink = false;
   server.on("error", (error) => {
     const code = (error as NodeJS.ErrnoException).code;
-    if (code === "EADDRINUSE" && !isNamedPipe && !retriedAfterStaleUnlink) {
+    const outcome = bridgeListenFailureOutcome({ code, isNamedPipe, retriedAfterStaleUnlink });
+    if (outcome === "already-served") {
+      yieldToLiveOwner();
+      return;
+    }
+    if (outcome === "retry-stale-socket") {
       retriedAfterStaleUnlink = true;
       // Probe: a live bridge accepts the connection; a stale file refuses it.
       const probe = net.connect(socketPath);
@@ -220,15 +282,7 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
         settled = true;
         probe.destroy();
         if (live) {
-          logger.warn("built_in_browser_bridge.already_served", {
-            socketPath,
-            reason: "another desktop answers on this bridge socket; leaving it in place",
-          });
-          try {
-            server.close();
-          } catch {
-            // ignore close failures when yielding
-          }
+          yieldToLiveOwner();
           return;
         }
         try {
@@ -307,88 +361,52 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
     logger.info("built_in_browser_bridge.recordings_released_on_close", { count: keys.length });
   }
 
+  // The engines served besides the built-in browser, each under its own method
+  // prefix. Everything else must be `built_in_browser.*`.
+  const engines: Array<{
+    prefix: string;
+    handle: (name: string, params: Record<string, unknown>, connection: BridgeConnectionState) => Promise<unknown>;
+  }> = [
+    { prefix: APP_CONTROL_RECORDER_BRIDGE_PREFIX, handle: (name, params, connection) => handleAppControlRecorder(name, params, connection) },
+    { prefix: DEMO_ENGINE_BRIDGE_PREFIX, handle: (name, params, connection) => handleDemoEngine(name, params, connection) },
+    { prefix: SCENE_PREVIEW_BRIDGE_PREFIX, handle: (name, params) => handleScenePreview(name, params) },
+  ];
+
   async function handleRequest(request: JsonRpcRequest, connection: BridgeConnectionState): Promise<unknown> {
     const method = request.method ?? "";
-    const isRecorderMethod = method.startsWith(APP_CONTROL_RECORDER_BRIDGE_PREFIX);
-    const isDemoEngineMethod = method.startsWith(DEMO_ENGINE_BRIDGE_PREFIX);
-    if (!method.startsWith("built_in_browser.") && !isRecorderMethod && !isDemoEngineMethod) {
+    const engine = engines.find((entry) => method.startsWith(entry.prefix)) ?? null;
+    const isAppUpdateMethod = method.startsWith(DESKTOP_APP_UPDATE_BRIDGE_PREFIX);
+    if (!engine && !isAppUpdateMethod && !method.startsWith(BUILT_IN_BROWSER_METHOD_PREFIX)) {
       throw new JsonRpcError(
         JsonRpcErrorCode.methodNotFound,
-        `Unsupported method '${method}'. Desktop bridge only handles built_in_browser.*, app_control_recorder.* and demo_engine.*`,
+        `Unsupported method '${method}'. Desktop bridge only handles ${[BUILT_IN_BROWSER_METHOD_PREFIX, DESKTOP_APP_UPDATE_BRIDGE_PREFIX, ...engines.map((entry) => entry.prefix)].map((prefix) => `${prefix}*`).join(", ")}`,
       );
     }
-    const name = method.slice(
-      isRecorderMethod
-        ? APP_CONTROL_RECORDER_BRIDGE_PREFIX.length
-        : isDemoEngineMethod ? DEMO_ENGINE_BRIDGE_PREFIX.length : "built_in_browser.".length,
-    );
+    const name = method.slice((engine?.prefix ?? BUILT_IN_BROWSER_METHOD_PREFIX).length);
+    // No secret on this socket: it is owner-only (0600 in a 0700 directory, a
+    // per-account named pipe on Windows), the same boundary the brain's own
+    // socket relies on. A process that can open it is already running as the
+    // user and could drive the browser profile on disk directly.
     const rawParams = isRecord(request.params) ? { ...request.params } : {};
-    const providedBridgeAuth = typeof rawParams[BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM] === "string"
-      ? rawParams[BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM].trim()
-      : "";
-    if (!safeTokenEquals(providedBridgeAuth, bridgeAuthToken)) {
-      throw new JsonRpcError(
-        JsonRpcErrorCode.policyDenied,
-        "Built-in browser bridge authentication failed.",
-      );
+    if (engine) return await engine.handle(name, rawParams, connection);
+    if (isAppUpdateMethod) {
+      const installer = args.getAppUpdateInstaller?.() ?? null;
+      if (method !== DESKTOP_APP_UPDATE_INSTALL_METHOD || !installer) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.methodNotFound,
+          `Action '${method}' is not exposed by the desktop bridge.`,
+        );
+      }
+      return await installer.install({ targetVersion: normalizedString(rawParams.targetVersion) });
     }
-    if (isRecorderMethod) {
-      return await handleAppControlRecorder(name, rawParams, connection);
-    }
-    if (isDemoEngineMethod) {
-      return await handleDemoEngine(name, rawParams, connection);
-    }
+    // The brain's attach probe (`probeDesktopBridge`). The name predates the
+    // bridge dropping its secret and is kept so older brains' probes answer.
     if (name === "authenticate") {
       return { authenticated: true };
     }
-    // Capability lifecycle. Electron owns the registry, so the runtime daemon
-    // asks for the per-chat token here rather than minting one in its own
-    // process (where nothing could ever validate it). Bridge auth is the only
-    // gate: the caller is the runtime that already decides which lane, project
-    // and chat an agent belongs to. No actor capability is required — this is
-    // where they come from.
-    if (name === BUILT_IN_BROWSER_ISSUE_ACTOR_CAPABILITY_METHOD) {
-      const requestedChatSessionId = normalizedString(rawParams.chatSessionId);
-      if (!requestedChatSessionId) {
-        throw new JsonRpcError(
-          JsonRpcErrorCode.invalidParams,
-          "Browser actor capabilities require a chat session id.",
-        );
-      }
-      const tabCollection = rawParams.tabCollection === "personal" ? "personal" : null;
-      const token = issueBuiltInBrowserActorCapability({
-        chatSessionId: requestedChatSessionId,
-        laneId: normalizedString(rawParams.laneId),
-        projectRoot: tabCollection === "personal"
-          ? null
-          : normalizedString(rawParams.projectRoot),
-        tabCollection,
-      });
-      return { token };
-    }
-    if (name === BUILT_IN_BROWSER_REVOKE_ACTOR_CAPABILITY_METHOD) {
-      const requestedChatSessionId = normalizedString(rawParams.chatSessionId);
-      if (!requestedChatSessionId) {
-        throw new JsonRpcError(
-          JsonRpcErrorCode.invalidParams,
-          "Browser actor capabilities require a chat session id.",
-        );
-      }
-      revokeBuiltInBrowserActorCapability(requestedChatSessionId);
-      // The chat is over (or its capability was rotated): it cannot issue
-      // another browser command, so leaving a globe pulsing beside it for the
-      // rest of the expiry window would outlive the only thing that could
-      // refresh it.
-      builtInBrowserAgentPresence.clearForChatSession(requestedChatSessionId);
-      return { revoked: true };
-    }
-    // Read-only Work-tools mirror. Bridge auth only, exactly like the two
-    // capability methods above and for the same reason: the caller is the
-    // runtime daemon itself, which has no chat and therefore can never hold an
-    // actor capability. It gets a deliberately narrow projection (see
-    // `BuiltInBrowserRuntimeStatus`) that carries no cookies, no observation
-    // bytes and no way to act on a tab, so serving it without a capability
-    // grants nothing the daemon could not already infer from its own events.
+    // Read-only Work-tools mirror for the runtime daemon. A deliberately narrow
+    // projection (see `BuiltInBrowserRuntimeStatus`): no cookies, no
+    // observation bytes and no way to act on a tab.
     if (name === BUILT_IN_BROWSER_RUNTIME_STATUS_METHOD) {
       // Project-scoped, not frontmost-window-scoped. The daemon asking is bound
       // to one project; answering out of whichever window is active would hide
@@ -455,113 +473,12 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
         `Action 'built_in_browser.${name}' is only available to the trusted ADE renderer.`,
       );
     }
-    if (!isBuiltInBrowserDesktopBridgeMethod(name)) {
-      throw new JsonRpcError(
-        JsonRpcErrorCode.methodNotFound,
-        `Action 'built_in_browser.${name}' is not exposed by the desktop bridge.`,
-      );
-    }
-    delete rawParams[BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM];
-    const chatSessionId = normalizedString(rawParams.chatSessionId);
-    const actorToken = normalizedString(rawParams[BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM]);
-    delete rawParams[BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM];
-    // Validate in the issuing Electron process so opaque capabilities remain
-    // revocable without sharing the in-memory registry or its authority with
-    // the runtime daemon (which runs in a separate process).
-    const actor = resolveBuiltInBrowserActorCapability(actorToken);
-    if (!actorToken || !chatSessionId) {
-      throw new JsonRpcError(
-        JsonRpcErrorCode.policyDenied,
-        "Built-in browser automation needs a chat capability, and this caller has none. `ade browser` only works from a chat or terminal that ADE launched — open ADE Desktop with this project and start the chat from there.",
-      );
-    }
-    if (!actor) {
-      throw new JsonRpcError(
-        JsonRpcErrorCode.policyDenied,
-        "This chat's browser capability is no longer valid — it was revoked when the chat ended, or ADE Desktop restarted after issuing it. Relaunch this chat from ADE Desktop.",
-      );
-    }
-    if (actor.chatSessionId !== chatSessionId) {
-      throw new JsonRpcError(
-        JsonRpcErrorCode.policyDenied,
-        "This browser capability belongs to a different chat session than the one making the call. Relaunch this chat from ADE Desktop.",
-      );
-    }
-    const params = {
-      ...rawParams,
-      chatSessionId: actor.chatSessionId,
-      laneId: actor.laneId ?? undefined,
-      ...(actor.projectRoot
-        ? { projectRoot: actor.projectRoot, tabCollection: undefined }
-        : { projectRoot: undefined, tabCollection: actor.tabCollection }),
-      force: false,
-    };
-    // A step caption touches no tab: it must not light the browser's presence.
-    if (name === "noteDemoStep") {
-      return service.noteDemoStep(params);
-    }
-    const callable = (service as unknown as Record<string, unknown>)[name];
-    if (typeof callable !== "function") {
-      throw new JsonRpcError(
-        JsonRpcErrorCode.methodNotFound,
-        `Desktop bridge cannot dispatch built_in_browser.${name}.`,
-      );
-    }
-    // Recorded on BOTH edges of the call.
-    //
-    // Before, because a `wait`, a slow navigation or a long `observe` is
-    // exactly the stretch a person is trying to explain, and a globe that lit
-    // only on completion stayed dark for the whole of it — indefinitely, for
-    // back-to-back long calls, since the twenty-second window would not even
-    // start until one returned. After, because that window should be measured
-    // from when the agent finished, not from when it began.
-    //
-    // Every method counts, reads included: `status` and `observe` are how an
-    // agent looks at the page, and a badge that lit only for writes would go
-    // dark while it read.
-    const presenceTouch = {
-      chatSessionId: actor.chatSessionId,
-      laneId: actor.laneId,
-      projectRoot: actor.projectRoot,
-      tabId: normalizedString(rawParams.tabId),
-    };
-    const opened = builtInBrowserAgentPresence.touch(presenceTouch);
-    try {
-      const result = await (callable as (input: unknown) => Promise<unknown>).call(service, params);
-      // …except after the two calls that END the agent's turn at the tab. Both
-      // clear presence from inside the dispatch, and a trailing touch would
-      // re-create the record they just removed — with the dead or handed-off
-      // tab id — leaving the badge saying "browsing" for a full expiry window
-      // after the agent closed its last tab, or pulsing beside the very banner
-      // asking a human to sign in.
-      if (!TURN_ENDING_BRIDGE_METHODS.has(name)) {
-        builtInBrowserAgentPresence.touch(presenceTouch);
-      }
-      return result;
-    } catch (error) {
-      // The call did nothing to the browser ("No ADE browser window is open for
-      // project…"), so the announcement is taken back — but only when this call
-      // is what made it. A failure inside a stream of commands leaves presence
-      // the earlier ones earned, and the `ifSequence` guard drops the undo if a
-      // concurrent command from the same chat moved the entry meanwhile (or if
-      // a recording took a hold on it while this call was in flight).
-      if (opened.created) {
-        builtInBrowserAgentPresence.clearForChatSession(actor.chatSessionId, {
-          ifSequence: opened.sequence,
-        });
-      }
-      if (error instanceof JsonRpcError) throw error;
-      throw new JsonRpcError(
-        JsonRpcErrorCode.internalError,
-        error instanceof Error ? error.message : String(error),
-      );
-    }
+    return await dispatchBuiltInBrowserAgentCall(service, name, rawParams);
   }
 
   /**
-   * The App Control screencast recorder, for the runtime daemon. Bridge auth
-   * is the only gate, as for the Work-tools mirror: the caller is the daemon,
-   * which decides which lane records. Recordings are keyed per lane.
+   * The App Control screencast recorder, for the runtime daemon, which decides
+   * which lane records. Recordings are keyed per lane.
    */
   async function handleAppControlRecorder(
     name: string,
@@ -616,8 +533,38 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
   }
 
   /**
-   * The Chromium demo engine, for the runtime daemon. Bridge auth is the only
-   * gate, as for the recorder. The engine reads one `.aderaw` capture and
+   * `ade scene preview`, for the runtime daemon.
+   * The scene source is the only input: no path is read or written here, and
+   * the screenshot comes back in the answer for the daemon to file.
+   */
+  async function handleScenePreview(name: string, params: Record<string, unknown>): Promise<unknown> {
+    const preview = args.scenePreview ?? null;
+    if (!preview || !isScenePreviewBridgeMethod(name)) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.methodNotFound,
+        `Action '${SCENE_PREVIEW_BRIDGE_PREFIX}${name}' is not exposed by the desktop bridge.`,
+      );
+    }
+    const request = isRecord(params.request) ? params.request : null;
+    const source = request && typeof request.source === "string" ? request.source : "";
+    if (!source.trim()) throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "A scene preview needs the scene's source.");
+    if (Buffer.byteLength(source, "utf8") > SCENE_PREVIEW_MAX_SOURCE_BYTES) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "That scene is too large to preview.");
+    }
+    try {
+      return await preview({
+        source,
+        ...(typeof request?.width === "number" ? { width: request.width } : {}),
+        ...(request?.theme === "light" || request?.theme === "dark" ? { theme: request.theme } : {}),
+        ...(request && "data" in request && request.data != null ? { data: request.data } : {}),
+      });
+    } catch (error) {
+      throw new JsonRpcError(JsonRpcErrorCode.internalError, error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  /**
+   * The Chromium demo engine, for the runtime daemon. The engine reads one `.aderaw` capture and
    * writes one `.mp4`; paths are checked here before it opens either.
    */
   async function handleDemoEngine(
@@ -672,7 +619,6 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
 
   return {
     socketPath,
-    authToken: bridgeAuthToken,
     dispose: () => {
       for (const stop of activeServerHandles) {
         try {
@@ -766,12 +712,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function normalizedString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
-}
-
-function safeTokenEquals(left: string, right: string): boolean {
-  const leftBuffer = Buffer.from(left);
-  const rightBuffer = Buffer.from(right);
-  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
 }
 
 function isSystemTempDir(dirPath: string): boolean {

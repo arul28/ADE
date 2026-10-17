@@ -1,10 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { MagnifyingGlass, Terminal, UploadSimple } from "@phosphor-icons/react";
+import { Terminal, UploadSimple } from "@phosphor-icons/react";
 import type { AiSettingsStatus } from "../../../../shared/types";
 import {
   DEFAULT_HARNESS_PRESET_ACCENT,
-  HARNESS_PRESET_AGENT_KEYS,
-  HARNESS_PRESET_AGENT_LABELS,
   HARNESS_PRESET_NAME_MAX_LENGTH,
   HARNESS_PRESET_SUBAGENT_INHERIT,
   harnessBodyLabel,
@@ -26,14 +24,16 @@ import {
   type HarnessPresetAgentKey,
 } from "../../../../shared/harnessPresets";
 import { HarnessLogo } from "../../shared/HarnessLogo";
+import { ProviderLogo } from "../../shared/ProviderLogos";
 import { ReasoningEffortPicker } from "../../shared/ModelPicker/ReasoningEffortPicker";
-import { HarnessChipRow, ReachableModelList } from "../../shared/ModelPicker/ReachableModelList";
+import { HarnessChipRow } from "../../shared/ModelPicker/ReachableModelList";
 import { Dialog } from "../../ui/dialog";
 import { Banner } from "../../ui/notice";
 import { showToast } from "../../app/toast/toastStore";
 import { copyTextToClipboard } from "../../../lib/launchPromptClipboard";
 import { SettingsDisclosure } from "../primitives/SettingsDisclosure";
 import { SettingsSelect, SettingsTextField } from "../primitives/SettingsControls";
+import { CustomProviderModelPane } from "./CustomProviderModelPane";
 import { harnessAvailability } from "./harnessAvailability";
 import { HarnessLogoCropper } from "./HarnessLogoCropper";
 import { buildTerminalLauncher } from "./harnessLauncher";
@@ -149,6 +149,8 @@ export function CustomProviderDialog({
 }) {
   const [draft, setDraft] = useState<HarnessPresetDraft>(initialDraft);
   const [query, setQuery] = useState("");
+  /** Which source the model pane browses; null follows the draft's own source. */
+  const [browsedSourceKey, setBrowsedSourceKey] = useState<string | null>(null);
   const [cropSrc, setCropSrc] = useState<string | null>(null);
   const [logoError, setLogoError] = useState<string | null>(null);
   const [accountError, setAccountError] = useState<string | null>(null);
@@ -171,6 +173,7 @@ export function CustomProviderDialog({
   useEffect(() => {
     setDraft(initialDraft);
     setQuery("");
+    setBrowsedSourceKey(null);
   }, [initialDraft]);
 
   useEffect(() => () => {
@@ -183,6 +186,15 @@ export function CustomProviderDialog({
     [draft.model, draft.source, groups],
   );
   const selected = useMemo(() => findReachable(groups, selectedKey), [groups, selectedKey]);
+  /**
+   * Which source the model pane shows. The draft's own source by default; a
+   * click on the rail browses another without touching the draft, so looking
+   * at another provider's models cannot change what would be saved.
+   */
+  const activeGroup = useMemo(() => {
+    const browsed = browsedSourceKey ? groups.find((group) => group.key === browsedSourceKey) : undefined;
+    return browsed ?? selected?.group ?? groups.find((group) => group.models.length > 0) ?? groups[0] ?? null;
+  }, [browsedSourceKey, groups, selected]);
   const availability = harnessAvailability(draft.harness, status);
   const chipOptions = useMemo(() => harnessChipOptions("chat"), []);
 
@@ -220,6 +232,10 @@ export function CustomProviderDialog({
   }, [reach]);
 
   const chooseModel = useCallback((group: ReachableGroup, model: ReachableModel) => {
+    // The pane follows the pick: when a cross-source search clears, the list
+    // must show the source the chosen model came from, or the selection looks
+    // like it vanished.
+    setBrowsedSourceKey(group.key);
     setDraft((prev) => {
       const sameGroup = selected?.group.key === group.key;
       return {
@@ -259,6 +275,13 @@ export function CustomProviderDialog({
     if (!group.routeSource) return;
     void reach.testRoute(draft.harness, group.routeSource.source, model.id);
   }, [draft.harness, reach]);
+
+  // Picking a source is a request to look at that source, so an active search
+  // (which spans every source) gives way to the rail's scope.
+  const selectSource = useCallback((key: string) => {
+    setBrowsedSourceKey(key);
+    setQuery("");
+  }, []);
 
   const testStateFor = useCallback(
     (group: ReachableGroup, model: ReachableModel) =>
@@ -312,7 +335,7 @@ export function CustomProviderDialog({
     })
     : null;
 
-  const subagentChoices = selected?.group.models ?? [];
+  const subagentChoices = useMemo(() => selected?.group.models ?? [], [selected]);
   const subagentSupport = harnessSubagentSupport(draft.harness);
   // The subagent's own model decides which levels exist, exactly as the main
   // model's does — a level the model does not advertise is refused at launch.
@@ -321,9 +344,12 @@ export function CustomProviderDialog({
     return listed?.reasoningTiers ?? getModelById(model)?.reasoningTiers ?? [];
   }, [subagentChoices]);
   // "Same as main" means the level menu belongs to the main model.
-  const subagentEffortTiers = draft.subagentModel === HARNESS_PRESET_SUBAGENT_INHERIT
-    ? (selected?.model.reasoningTiers ?? [])
-    : subagentTiersFor(draft.subagentModel);
+  const subagentEffortTiers = useMemo(
+    () => (draft.subagentModel === HARNESS_PRESET_SUBAGENT_INHERIT
+      ? (selected?.model.reasoningTiers ?? [])
+      : subagentTiersFor(draft.subagentModel)),
+    [draft.subagentModel, selected?.model.reasoningTiers, subagentTiersFor],
+  );
   const agentEffortTiers = useCallback(
     (value: string): readonly string[] => (
       value === ADVANCED_FOLLOWS ? subagentEffortTiers : subagentTiersFor(value)
@@ -473,79 +499,33 @@ export function CustomProviderDialog({
           </section>
 
           <section aria-label="Model" style={sectionStyle}>
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, minHeight: 20 }}>
               <SectionLabel>Model</SectionLabel>
-              <label
-                style={{
-                  marginLeft: "auto",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
-                  width: 240,
-                  height: 26,
-                  padding: "0 8px",
-                  borderRadius: 6,
-                  border: `1px solid ${COLORS.outlineBorder}`,
-                  background: COLORS.recessedBg,
-                }}
-              >
-                <MagnifyingGlass size={12} style={{ color: COLORS.textMuted, flexShrink: 0 }} />
-                <input
-                  value={query}
-                  onChange={(event) => setQuery(event.target.value)}
-                  placeholder={`Search what ${harnessBodyLabel(draft.harness)} can run`}
-                  aria-label="Search models"
-                  style={{
-                    flex: 1,
-                    minWidth: 0,
-                    border: "none",
-                    outline: "none",
-                    background: "transparent",
-                    color: COLORS.textPrimary,
-                    fontFamily: SANS_FONT,
-                    fontSize: 11.5,
-                  }}
-                />
-              </label>
+              {selected ? (
+                <span data-custom-selected-model="true" style={selectedSummaryStyle}>
+                  <ProviderLogo family={selected.group.logoProvider} size={12} />
+                  <strong style={{ color: COLORS.textPrimary, fontWeight: 600 }}>{selected.model.label}</strong>
+                  <span>{`· ${selected.group.label}`}</span>
+                  {selected.model.route.kind === "proxy" ? <span>· via ADE proxy</span> : null}
+                </span>
+              ) : null}
             </div>
-            <div
-              style={{
-                maxHeight: 280,
-                overflowY: "auto",
-                padding: "4px 2px",
-                borderRadius: 8,
-                border: `1px solid ${COLORS.borderMuted}`,
-                background: COLORS.recessedBg,
-              }}
-            >
-              <ReachableModelList
-                groups={groups}
-                query={query}
-                loading={reach.loading}
-                selectedKey={selectedKey}
-                onSelect={chooseModel}
-                onTest={handleTest}
-                testStateFor={testStateFor}
-                standalone
-                onProxySignIn={(provider) => void reach.proxySignIn(provider)}
-                proxySignInAvailable={reach.proxyAvailable}
-                proxySigningIn={reach.proxySigningIn}
-                emptyState={
-                  <>
-                    {harnessBodyLabel(draft.harness)} has nothing to run from your connections yet. Sign in to
-                    OpenCode Go or Zen, or store an API key, under Providers.
-                  </>
-                }
-              />
-            </div>
-            {selected ? (
-              <span data-custom-selected-model="true" style={{ fontSize: 11.5, color: COLORS.textSecondary }}>
-                Selected: <strong style={{ color: COLORS.textPrimary, fontWeight: 600 }}>{selected.model.label}</strong>
-                {" · "}
-                {selected.group.label}
-                {selected.model.route.kind === "proxy" ? " · via ADE proxy" : ""}
-              </span>
-            ) : null}
+            <CustomProviderModelPane
+              groups={groups}
+              activeGroup={activeGroup}
+              selectedKey={selectedKey}
+              query={query}
+              onQueryChange={setQuery}
+              onSelectSource={selectSource}
+              onSelectModel={chooseModel}
+              onTest={handleTest}
+              testStateFor={testStateFor}
+              loading={reach.loading}
+              proxyAvailable={reach.proxyAvailable}
+              proxySigningIn={reach.proxySigningIn}
+              proxySignIn={(provider) => void reach.proxySignIn(provider)}
+              harnessLabel={harnessBodyLabel(draft.harness)}
+            />
             {orphaned ? (
               <Banner
                 layout="inline"
@@ -818,6 +798,19 @@ const linkButtonStyle: React.CSSProperties = {
   fontFamily: SANS_FONT,
   fontSize: 11.5,
   cursor: "pointer",
+};
+/** The chosen model, stated once beside the section label. */
+const selectedSummaryStyle: React.CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 6,
+  marginLeft: "auto",
+  minWidth: 0,
+  fontSize: 11.5,
+  color: COLORS.textSecondary,
+  whiteSpace: "nowrap",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
 };
 
 

@@ -1,31 +1,21 @@
 /**
  * Where ADE's native helper binaries live.
  *
- * Both `ade-attention-notch` and `ade-desktop-driver` are produced by the same
- * build step into the same `resources/native` directory and copied by the same
- * `extraResources` entry, so where they are is one question with one answer,
- * and it is answered here rather than inside either helper's client.
+ * The native helpers are produced by the build into the same
+ * `resources/native` directory and copied by the same `extraResources` entry,
+ * so where they are is one question with one answer, and it is answered here
+ * rather than inside each helper's client.
  *
- * Kept out of `attentionNotchHelper.ts` because the Mac Desktop service runs in
- * the ADE runtime daemon as well as in Electron main, and importing the notch
- * helper — a spawner with its own process state — to ask where a file is was a
- * dependency neither side wanted.
+ * Kept out of the helper clients because the Mac Desktop service runs in the
+ * ADE runtime daemon as well as in Electron main, and importing a spawner with
+ * its own process state to ask where a file is was a dependency neither side
+ * wanted.
  */
 
 import fs from "node:fs";
 import path from "node:path";
 
-export function resolveAttentionNotchExecutablePath(input: {
-  isPackaged: boolean;
-  resourcesPath: string;
-  appPath: string;
-}): string {
-  return input.isPackaged
-    ? path.join(input.resourcesPath, "native", "ade-attention-notch")
-    : path.join(input.appPath, "resources", "native", "ade-attention-notch");
-}
-
-/** The name of the Mac Desktop helper, next to `ade-attention-notch`. */
+/** The name of the Mac Desktop helper in `resources/native`. */
 const MAC_DESKTOP_DRIVER_BINARY = "ade-desktop-driver";
 
 /** The Windows Desktop helper, beside the capture helper. */
@@ -72,11 +62,11 @@ export function resolveWindowsDesktopDriverBinary(input: {
 }
 
 /**
- * The Mac Desktop native helper, resolved beside the notch helper.
+ * The Mac Desktop native helper, resolved in `resources/native`.
  *
- * Both binaries are materialized by the same build step into the same
- * `resources/native` directory and copied by the same `extraResources` entry,
- * so one file means a packaging change is one edit. Every input is optional
+ * Every native binary is materialized into the same `resources/native`
+ * directory and copied by the same `extraResources` entry, so one file means a
+ * packaging change is one edit. Every input is optional
  * because this service runs in the ADE runtime daemon as well as in Electron
  * main, and the daemon has no `app.getAppPath()`.
  *
@@ -162,6 +152,49 @@ export function resolveAdeMediaBinary(input: {
     input.logger?.debug("demo_video.ade_media_path_override_ignored", { path: override });
   }
   return daemonNativeCandidates(ADE_MEDIA_BINARY).find(isExecutableFile) ?? null;
+}
+
+/**
+ * The Apple Music player host, which ships as a directory with its player
+ * page: `ade-music-host.exe` on Windows (`native/ADEMusicHostWin`, WebView2),
+ * `ade-music-host` on macOS (`native/ADEMusicHostMac`, WKWebView). `null`
+ * elsewhere, where Music has no host. `ADE_MUSIC_HOST_PATH` is the developer
+ * override, honored only when it names a real file.
+ */
+export function resolveMusicHostExecutable(input: {
+  platform?: NodeJS.Platform;
+  isPackaged: boolean;
+  resourcesPath: string;
+  appPath: string;
+  env?: NodeJS.ProcessEnv;
+}): string | null {
+  const platform = input.platform ?? process.platform;
+  if (platform !== "win32" && platform !== "darwin") return null;
+  const override = (input.env ?? process.env).ADE_MUSIC_HOST_PATH?.trim();
+  if (override && fs.existsSync(override)) return override;
+  const name = platform === "win32" ? "ade-music-host.exe" : "ade-music-host";
+  return input.isPackaged
+    ? path.join(input.resourcesPath, "native", "ade-music-host", name)
+    : path.join(input.appPath, "resources", "native", "ade-music-host", name);
+}
+
+/**
+ * The Windows Now Playing helper (`native/ADENowPlayingWin`), or `null` when
+ * this is not Windows or the helper is not on disk (an unbuilt dev tree), so
+ * the widget can say it is missing instead of failing to spawn.
+ */
+export function resolveNowPlayingHelperBinary(input: {
+  platform?: NodeJS.Platform;
+  isPackaged: boolean;
+  resourcesPath: string;
+  appPath: string;
+}): string | null {
+  if ((input.platform ?? process.platform) !== "win32") return null;
+  const name = "ade-now-playing.exe";
+  const candidates = input.isPackaged
+    ? [path.join(input.resourcesPath, "native", name)]
+    : [path.join(input.appPath, "resources", "native", name), path.join(input.appPath, "apps", "desktop", "resources", "native", name)];
+  return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
 }
 
 /**

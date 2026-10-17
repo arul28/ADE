@@ -26,6 +26,7 @@ import {
   replaceDynamicOpenCodeModelDescriptors,
 } from "../../../shared/modelRegistry";
 import { useAppStore } from "../../state/appStore";
+import { AgentChatApiProvider } from "./agentChatApi";
 import { formatChatOutputContextBlock } from "../../../shared/chatOutputContext";
 
 vi.mock("@tanstack/react-virtual", () => ({
@@ -115,7 +116,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
-  useAppStore.setState({ promptStashButtonEnabled: true });
+  useAppStore.setState({ draftsButtonEnabled: true });
   delete (window as any).ade;
 });
 
@@ -211,13 +212,13 @@ function typeIntoAnswer(text: string): void {
   fireEvent.input(editor);
 }
 
-function installPromptStashBridge(promptStashes: Record<string, unknown>) {
+function installDraftsBridge(drafts: Record<string, unknown>) {
   const previousAde = (window as any).ade ?? {};
   (window as any).ade = {
     ...previousAde,
     agentChat: {
       ...(previousAde.agentChat ?? {}),
-      promptStashes,
+      drafts,
     },
   };
 }
@@ -428,7 +429,7 @@ describe("AgentChatComposer", () => {
   });
 
   it("stashes the current prompt with Cmd+S even when its appearance button is hidden", async () => {
-    useAppStore.setState({ promptStashButtonEnabled: false });
+    useAppStore.setState({ draftsButtonEnabled: false });
     const created = {
       id: "stash-1",
       text: "Need a steer message",
@@ -437,14 +438,14 @@ describe("AgentChatComposer", () => {
       createdAt: "2026-07-28T12:00:00.000Z",
     };
     const create = vi.fn().mockResolvedValue(created);
-    installPromptStashBridge({
+    installDraftsBridge({
       list: vi.fn().mockResolvedValue([]),
       create,
       delete: vi.fn().mockResolvedValue(true),
     });
     const props = renderComposer();
 
-    expect(screen.queryByRole("button", { name: "Stash prompt" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Save draft" })).toBeNull();
     fireEvent.keyDown(screen.getByRole("textbox"), { key: "s", metaKey: true });
 
     await waitFor(() => expect(create).toHaveBeenCalledWith({
@@ -479,7 +480,7 @@ describe("AgentChatComposer", () => {
     const saveTempAttachment = vi.fn().mockResolvedValue({
       path: storedAttachment.path,
     });
-    const createPromptStash = vi.fn().mockResolvedValue({
+    const createDraft = vi.fn().mockResolvedValue({
       id: "stash-image",
       text: "Need a steer message",
       provider: "codex",
@@ -489,9 +490,9 @@ describe("AgentChatComposer", () => {
     });
     (window as any).ade = {
       agentChat: {
-        promptStashes: {
+        drafts: {
           list: vi.fn().mockResolvedValue([]),
-          create: createPromptStash,
+          create: createDraft,
           delete: vi.fn().mockResolvedValue(true),
         },
         getImageDataUrl,
@@ -503,13 +504,13 @@ describe("AgentChatComposer", () => {
       attachments: [sourceAttachment],
       composerMachineBinding,
     });
-    fireEvent.click(screen.getByRole("button", { name: "Stash prompt" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save draft" }));
 
     await waitFor(() => expect(getImageDataUrl).toHaveBeenCalledWith(
       sourceAttachment.path,
       composerMachineBinding,
     ));
-    await waitFor(() => expect(createPromptStash).toHaveBeenCalledWith({
+    await waitFor(() => expect(createDraft).toHaveBeenCalledWith({
       text: "Need a steer message",
       provider: "codex",
       modelId: "openai/gpt-5.4",
@@ -1718,7 +1719,7 @@ describe("AgentChatComposer", () => {
       modelId: "openai/gpt-5.4",
       createdAt: "2026-08-10T12:00:00.000Z",
     });
-    installPromptStashBridge({
+    installDraftsBridge({
       list: vi.fn().mockResolvedValue([]),
       create,
       delete: vi.fn().mockResolvedValue(true),
@@ -1757,7 +1758,7 @@ describe("AgentChatComposer", () => {
       resolveCreate = resolve;
     }));
     const remove = vi.fn().mockResolvedValue(true);
-    installPromptStashBridge({
+    installDraftsBridge({
       list: vi.fn().mockResolvedValue([]),
       create,
       delete: remove,
@@ -1802,7 +1803,7 @@ describe("AgentChatComposer", () => {
       resolveCreate = resolve;
     }));
     const remove = vi.fn().mockResolvedValue(true);
-    installPromptStashBridge({
+    installDraftsBridge({
       list: vi.fn().mockResolvedValue([]),
       create,
       delete: remove,
@@ -1844,7 +1845,7 @@ describe("AgentChatComposer", () => {
       createdAt: "2026-08-10T12:00:00.000Z",
     });
     const remove = vi.fn().mockResolvedValue(true);
-    installPromptStashBridge({
+    installDraftsBridge({
       list: vi.fn().mockResolvedValue([]),
       create,
       delete: remove,
@@ -1916,6 +1917,35 @@ describe("AgentChatComposer", () => {
         expect(option.textContent?.trim()).toBe(option.getAttribute("aria-label"));
         expect(option.getAttribute("title")?.length).toBeGreaterThan(0);
       }
+    },
+  );
+
+  // Droid's autonomy ladder has no planning rung to withhold.
+  it.each(CAPTION_FREE_PERMISSION_CASES.filter((testCase) => testCase.provider !== "Droid"))(
+    "offers $provider planning only in a project chat, not in a chat without a project",
+    ({ triggerName, overrides }) => {
+      const optionNames = () => {
+        fireEvent.click(screen.getByRole("button", { name: triggerName }));
+        const listbox = screen.getByRole("listbox", { name: triggerName });
+        return Array.from(listbox.querySelectorAll<HTMLElement>('[role="option"]'))
+          .map((option) => option.getAttribute("aria-label") ?? "");
+      };
+
+      renderComposer(overrides);
+      const project = optionNames();
+      expect(project.some((name) => /plan/i.test(name))).toBe(true);
+      cleanup();
+
+      const props = buildComposerProps(overrides);
+      render(
+        <AgentChatApiProvider scope={{ kind: "personal", agentChat: {} as never, modelCatalogScopeKey: "personal" }}>
+          <AgentChatComposer {...props} />
+        </AgentChatApiProvider>,
+      );
+      const personal = optionNames();
+      expect(personal.some((name) => /plan/i.test(name))).toBe(false);
+      // Only planning is withheld; every other mode stays.
+      expect(personal).toEqual(project.filter((name) => !/plan/i.test(name)));
     },
   );
 
@@ -2028,14 +2058,24 @@ describe("AgentChatComposer", () => {
     });
   });
 
-  it("renders the overflow entry directly when only one control survives gating", () => {
-    // A "⋯" that opens onto a single row is a menu pretending to be a button.
-    // Surfaces gate these entries independently, so on a CLI draft only one may
-    // survive — it should be reachable in one click, not two.
-    renderComposer({ turnActive: false, draft: "" });
+  it("Add secret saves the value to the project and puts only its name in the draft", async () => {
+    const set = vi.fn(async () => ({ name: "STRIPE_KEY" }));
+    const list = vi.fn(async () => ({ secrets: [] }));
+    (window as any).ade = { ...(window as any).ade, projectSecrets: { set, list } };
+    const view = renderControlledComposer({ turnActive: false, draft: "Wire up billing." });
 
-    expect(screen.queryByRole("button", { name: "More composer controls" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Issue context" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "More composer controls" }));
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /Add secret/ }));
+    fireEvent.change(screen.getByTestId("add-project-secret-name"), { target: { value: "STRIPE_KEY" } });
+    fireEvent.change(screen.getByTestId("project-secret-value"), { target: { value: "sk_live_not_for_chat" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(set).toHaveBeenCalledWith({ name: "STRIPE_KEY", value: "sk_live_not_for_chat" }));
+    await waitFor(() => expect(view.onDraftChange).toHaveBeenCalled());
+    const draft = (view.onDraftChange as ReturnType<typeof vi.fn>).mock.calls.at(-1)![0] as string;
+    expect(draft.startsWith("Wire up billing.")).toBe(true);
+    expect(draft).toContain("STRIPE_KEY");
+    expect(draft).not.toContain("sk_live_not_for_chat");
   });
 
   it("moves focus through the overflow menu and returns it after keyboard selection", async () => {
@@ -2050,10 +2090,12 @@ describe("AgentChatComposer", () => {
     const trigger = screen.getByRole("button", { name: "More composer controls" });
     fireEvent.click(trigger);
     const issue = screen.getByRole("menuitemcheckbox", { name: /Issue context/ });
+    const addSecret = screen.getByRole("menuitemcheckbox", { name: /Add secret/ });
     const appControl = screen.getByRole("menuitemcheckbox", { name: /App Control/i });
     expect((issue as HTMLButtonElement).disabled).toBe(true);
-    await waitFor(() => expect(document.activeElement).toBe(appControl));
-    fireEvent.keyDown(appControl, { key: "ArrowDown" });
+    // Focus starts on the first enabled row, skipping the disabled one.
+    await waitFor(() => expect(document.activeElement).toBe(addSecret));
+    fireEvent.keyDown(addSecret, { key: "ArrowDown" });
     expect(document.activeElement).toBe(appControl);
     fireEvent.keyDown(appControl, { key: "Enter" });
     expect(onToggleAppControl).toHaveBeenCalledTimes(1);
@@ -3142,6 +3184,69 @@ describe("AgentChatComposer", () => {
     }
   });
 
+  it.each([
+    {
+      name: "fits a photo pasted from another app through the clipboard reader",
+      droppedPath: "",
+      clipboardImage: { data: "fitted-jpeg", filename: "clipboard.jpg", mimeType: "image/jpeg" },
+      expectReader: true,
+      expected: { attachedPath: "/tmp/ade-clipboard.jpg", error: null },
+    },
+    {
+      name: "falls back to the pasted file when the clipboard holds no picture",
+      droppedPath: "",
+      clipboardImage: null,
+      expectReader: true,
+      expected: { attachedPath: null, error: /too large/i },
+    },
+    {
+      name: "streams a big image file copied in Finder from its path",
+      droppedPath: "/Users/me/Pictures/huge.png",
+      clipboardImage: null,
+      expectReader: false,
+      expected: { attachedPath: "/staged/huge.png", error: null },
+    },
+  ])("oversized image paste: $name", async ({ droppedPath, clipboardImage, expectReader, expected }) => {
+    // A photo copied out of Messages reaches the paste event as a PNG the
+    // browser re-encoded, often several times the 10 MB pasted-bytes ceiling.
+    const readClipboardImage = vi.fn().mockResolvedValue(clipboardImage);
+    const saveTempAttachment = vi.fn().mockResolvedValue({ path: "/tmp/ade-clipboard.jpg" });
+    const stageFileAttachment = vi.fn().mockResolvedValue({ path: "/staged/huge.png" });
+    (window as any).ade = {
+      app: { readClipboardImage },
+      project: { getDroppedPath: vi.fn(() => droppedPath) },
+      agentChat: {
+        saveTempAttachment,
+        stageFileAttachment,
+        getAttachmentStagingMode: vi.fn().mockResolvedValue({ mode: "copy", maxBytes: 50 * 1024 * 1024 }),
+      },
+    };
+    const props = renderComposer({ turnActive: false, draft: "" });
+    const file = new File([new Uint8Array([1, 2, 3])], "image.png", { type: "image/png" });
+    Object.defineProperty(file, "size", { configurable: true, value: 18 * 1024 * 1024 });
+    Object.defineProperty(file, "arrayBuffer", {
+      configurable: true,
+      value: vi.fn(async () => new Uint8Array([1, 2, 3]).buffer),
+    });
+
+    fireEvent.paste(screen.getByPlaceholderText("Type to vibecode..."), {
+      clipboardData: { files: [file], items: [], getData: vi.fn(() => "") },
+    });
+
+    if (expected.attachedPath) {
+      await waitFor(() => expect(props.onAddAttachment).toHaveBeenCalledWith(
+        expect.objectContaining({ path: expected.attachedPath, type: "image" }),
+      ));
+    } else {
+      expect(await screen.findByText(expected.error!)).toBeTruthy();
+      expect(props.onAddAttachment).not.toHaveBeenCalled();
+    }
+    expect(readClipboardImage).toHaveBeenCalledTimes(expectReader ? 1 : 0);
+    if (clipboardImage) {
+      expect(saveTempAttachment).toHaveBeenCalledWith({ data: "fitted-jpeg", filename: "clipboard.jpg" }, null);
+    }
+  });
+
   it("shows a pasted image preview while the temp attachment is still saving", async () => {
     const createObjectURL = vi.fn().mockReturnValue("blob:ade-paste-preview");
     const revokeObjectURL = vi.fn();
@@ -3243,7 +3348,8 @@ describe("AgentChatComposer", () => {
     }));
     expect(pasteEvent.defaultPrevented).toBe(true);
     expect(saveTempAttachment).toHaveBeenCalledWith(
-      expect.objectContaining({ filename: "pasted-text.txt" }),
+      // `pasted-<epoch ms>.<ext>`, the name iOS stages too.
+      expect.objectContaining({ filename: expect.stringMatching(/^pasted-\d+\.txt$/) }),
       null,
     );
     expect(props.onDraftChange).not.toHaveBeenCalledWith(pastedLog);
@@ -3861,6 +3967,8 @@ describe("AgentChatComposer", () => {
       });
 
       fireEvent.click(screen.getByRole("button", { name: "Context usage: 80% full. Compact context" }));
+      expect(onCompactContext).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole("button", { name: "Compact now" }));
       expect(onCompactContext).toHaveBeenCalledTimes(1);
       expect(view.onSubmit).not.toHaveBeenCalled();
       expect(view.onDraftChange).not.toHaveBeenCalled();
@@ -3875,9 +3983,10 @@ describe("AgentChatComposer", () => {
         onCompactContext,
       });
 
-      const button = screen.getByRole("button", {
+      fireEvent.click(screen.getByRole("button", {
         name: "Context usage: 80% full. Wait for this turn to finish before compacting.",
-      });
+      }));
+      const button = screen.getByRole("button", { name: "Compact now" });
       expect(button).toHaveProperty("disabled", true);
       fireEvent.click(button);
       expect(onCompactContext).not.toHaveBeenCalled();

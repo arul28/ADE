@@ -2,7 +2,7 @@ import React from "react";
 import { GitMerge, GitPullRequest, Info, Lightbulb, Warning, WarningOctagon, XCircle, Megaphone, type Icon } from "@phosphor-icons/react";
 import type { PrState } from "../../../../shared/types/prs";
 import { getFileIcon } from "../../files/filePresentation";
-import { COLORS } from "../../lanes/laneDesignTokens";
+import { COLORS, fgTint } from "../../lanes/laneDesignTokens";
 import { noticeTone, type NoticeTone } from "../../ui/notice";
 
 /**
@@ -18,9 +18,28 @@ export type PrMarkdownEnv = {
   /** State of other PRs in this repo, for `#123` pills. */
   prStateByNumber?: ReadonlyMap<number, PrState>;
   onOpenPr?: (number: number) => void;
+  /**
+   * Quote something from this PR in the chat that works on it. Absent when the
+   * PR has no lane to hold a chat; the "Add to chat" controls then stay hidden.
+   */
+  onAddToChat?: (quote: PrChatQuote) => void;
+};
+
+/** One thing a reader hands to the chat: its text, and where in the PR it is from. */
+export type PrChatQuote = {
+  /** Markdown. A picture is its `![caption](url)`. */
+  text: string;
+  /** "the description", "a review thread on prService.ts:40 by alice". */
+  from: string;
 };
 
 export const PrMarkdownEnvContext = React.createContext<PrMarkdownEnv | null>(null);
+
+/**
+ * Which part of the PR the markdown below belongs to, for a quote's `from`.
+ * Set by the row that renders the part; "the pull request" where none is set.
+ */
+export const PrQuoteSourceContext = React.createContext<string>("the pull request");
 
 const FILE_LIKE = /^[\w@~.\-/]+\.[A-Za-z0-9]{1,8}(?::\d+(?:-\d+)?)?$/;
 
@@ -59,7 +78,7 @@ export function PrFileChip({ path, line, inPr, onOpen }: { path: string; line: n
       data-in-pr={inPr || undefined}
       className="inline-flex max-w-full items-center gap-1 rounded-[5px] px-1.5 align-baseline font-mono text-[11.5px] leading-[1.6] transition-colors hover:brightness-125"
       style={{
-        background: "color-mix(in srgb, var(--color-fg) 7%, transparent)",
+        background: fgTint(7),
         color: "var(--color-fg)",
         border: "none",
         cursor: onOpen ? "pointer" : "default",

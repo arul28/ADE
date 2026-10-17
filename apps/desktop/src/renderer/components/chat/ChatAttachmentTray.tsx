@@ -1,15 +1,18 @@
 import { Suspense, forwardRef, lazy, useEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
-import { Copy, GithubLogo, Globe, Image, X } from "@phosphor-icons/react";
+import { Check, Copy, GithubLogo, Globe, Image, X } from "@phosphor-icons/react";
 import type { AgentChatContextAttachment, AgentChatFileRef, ChatSurfaceMode } from "../../../shared/types";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { chatContextAttachmentKey } from "../../../shared/chatContextAttachments";
 import { readAttachmentImageDataUrl } from "../../lib/attachmentImage";
+import { useChatPaneScope } from "./agentChatApi";
 import { formatAttachmentSize } from "../../../shared/chatAttachmentLimits";
 import { githubIssueIdentifier } from "../../../shared/laneGitHubIssue";
 import { cn } from "../ui/cn";
 import { getFileIcon } from "../files/filePresentation";
 import { GITHUB_BRAND } from "../lanes/githubBrand";
+import { JiraMark } from "../lanes/jiraBrand";
 import { LinearMark, LINEAR_BRAND } from "../lanes/linearBrand";
+import { fgTint } from "../lanes/laneDesignTokens";
 /**
  * The preview popup pulls in the whole Files viewer platform — Monaco, the PDF
  * and document renderers, the CSV grid. That is a large amount of code for a
@@ -28,7 +31,7 @@ const ChatAttachmentPreviewModal = lazy(() => import("./ChatAttachmentPreviewMod
  * attachment that lives outside every workspace, where the Files viewers
  * cannot reach it. A file chip has no such bytes and passes nothing.
  */
-function useAttachmentPreview(args: {
+export function useAttachmentPreview(args: {
   path: string;
   title: string;
   pin: OpenProjectBinding | null;
@@ -51,6 +54,34 @@ function useAttachmentPreview(args: {
   };
 }
 
+/**
+ * The same preview popup, for a caller that picks the attachment at click time
+ * — the composer's inline `[Image #k]` chips are DOM nodes, not components, so
+ * they cannot each own a `useAttachmentPreview`.
+ */
+export function ChatAttachmentPreviewDialog({
+  target,
+  pin,
+  onClose,
+}: {
+  target: { path: string; title: string; fallbackImageDataUrl?: string | null } | null;
+  pin: OpenProjectBinding | null;
+  onClose: () => void;
+}) {
+  if (!target) return null;
+  return (
+    <Suspense fallback={null}>
+      <ChatAttachmentPreviewModal
+        attachmentPath={target.path}
+        title={target.title}
+        pin={pin}
+        fallbackImageDataUrl={target.fallbackImageDataUrl}
+        onClose={onClose}
+      />
+    </Suspense>
+  );
+}
+
 function attachmentName(path: string): string {
   // Split on both POSIX and Windows separators so a Windows path
   // like "C:\\Users\\foo\\bar.png" yields "bar.png" instead of the
@@ -70,6 +101,28 @@ function middleTruncateFilename(name: string, maxLength = 32): string {
   const head = Math.ceil((maxLength - 1) / 2);
   const tail = Math.floor((maxLength - 1) / 2);
   return `${name.slice(0, head)}…${name.slice(name.length - tail)}`;
+}
+
+/**
+ * The linked-hover ring: a tray item lit while its inline `[Image #k]` chip in
+ * the composer is hovered, and the reverse. Accent-tinted like the tray tone.
+ */
+const LINKED_HOVER_CLASS =
+  "ring-1 ring-[color:color-mix(in_srgb,var(--chat-accent)_60%,transparent)] shadow-[0_0_0_3px_color-mix(in_srgb,var(--chat-accent)_18%,transparent)]";
+
+type LinkedHoverProps = {
+  /** True while this item's inline chip is hovered. */
+  highlighted?: boolean;
+  /** Reports pointer enter/leave so the matching inline chip can light up. */
+  onHoverChange?: (hovered: boolean) => void;
+};
+
+function linkedHoverHandlers(onHoverChange: LinkedHoverProps["onHoverChange"]) {
+  if (!onHoverChange) return {};
+  return {
+    onMouseEnter: () => onHoverChange(true),
+    onMouseLeave: () => onHoverChange(false),
+  };
 }
 
 export type ChatAttachmentPendingImage = {
@@ -134,6 +187,8 @@ function ContextAttachmentChip({
       return <LinearIssueContextChip attachment={attachment} onRemove={onRemove} onOpen={onOpen} />;
     case "github_issue":
       return <GitHubIssueContextChip attachment={attachment} onRemove={onRemove} onOpen={onOpen} />;
+    case "jira_issue":
+      return <JiraIssueContextChip attachment={attachment} onRemove={onRemove} onOpen={onOpen} />;
   }
 }
 
@@ -179,7 +234,7 @@ function LinearIssueContextChip({
       </span>
       <span
         className="shrink-0 rounded font-mono text-[10px] font-semibold"
-        style={{ background: "rgba(255,255,255,0.08)", color: LINEAR_BRAND.text, padding: "1px 4px" }}
+        style={{ background: fgTint(8), color: LINEAR_BRAND.text, padding: "1px 4px" }}
       >
         {attachment.issue.identifier}
       </span>
@@ -189,7 +244,7 @@ function LinearIssueContextChip({
       {projectLabel ? (
         <span
           className="hidden shrink-0 rounded font-mono text-[9px] sm:inline"
-          style={{ background: "rgba(255,255,255,0.05)", color: LINEAR_BRAND.textMuted, padding: "1px 4px" }}
+          style={{ background: fgTint(5), color: LINEAR_BRAND.textMuted, padding: "1px 4px" }}
         >
           {projectLabel}
         </span>
@@ -197,7 +252,7 @@ function LinearIssueContextChip({
       {onRemove ? (
         <button
           type="button"
-          className="rounded-full text-current/55 transition-colors hover:bg-white/[0.06] hover:text-current"
+          className="rounded-full text-current/55 transition-colors hover:bg-fg/[0.06] hover:text-current"
           title={`Remove ${attachment.issue.identifier}`}
           aria-label={`Remove ${attachment.issue.identifier}`}
           onClick={(event) => {
@@ -248,7 +303,7 @@ function GitHubIssueContextChip({
       </span>
       <span
         className="shrink-0 rounded font-mono text-[10px] font-semibold"
-        style={{ background: "rgba(255,255,255,0.08)", color: GITHUB_BRAND.text, padding: "1px 4px" }}
+        style={{ background: fgTint(8), color: GITHUB_BRAND.text, padding: "1px 4px" }}
       >
         {identifier}
       </span>
@@ -258,9 +313,58 @@ function GitHubIssueContextChip({
       {onRemove ? (
         <button
           type="button"
-          className="rounded-full text-current/55 transition-colors hover:bg-white/[0.06] hover:text-current"
+          className="rounded-full text-current/55 transition-colors hover:bg-fg/[0.06] hover:text-current"
           title={`Remove ${identifier}`}
           aria-label={`Remove ${identifier}`}
+          onClick={(event) => {
+            event.stopPropagation();
+            onRemove(chatContextAttachmentKey(attachment));
+          }}
+        >
+          <X size={10} weight="bold" />
+        </button>
+      ) : null}
+    </span>
+  );
+}
+
+function JiraIssueContextChip({
+  attachment,
+  onRemove,
+  onOpen,
+}: {
+  attachment: AgentChatContextAttachment;
+  onRemove?: (key: string) => void;
+  onOpen?: (attachment: AgentChatContextAttachment) => void;
+}) {
+  if (attachment.type !== "jira_issue") return null;
+  const issue = attachment.issue;
+  const title = [issue.key, issue.title, issue.statusName].filter(Boolean).join(" - ");
+  return (
+    <span
+      className={cn(
+        "ade-liquid-glass-pill group inline-flex max-w-full items-center gap-2 rounded-[var(--chat-radius-pill)] border px-2.5 py-1.5 text-[10px] transition-colors",
+        onOpen ? "cursor-pointer" : "",
+      )}
+      title={title}
+      data-testid="jira-issue-context-chip"
+      onClick={onOpen ? () => onOpen(attachment) : undefined}
+    >
+      <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded bg-white/[0.08]">
+        <JiraMark size={11} />
+      </span>
+      <span className="shrink-0 rounded bg-white/[0.08] px-1 font-mono text-[10px] font-semibold text-fg/85">
+        {issue.key}
+      </span>
+      <span className="min-w-0 max-w-[240px] truncate font-sans text-[11px] font-medium text-fg/90">
+        {issue.title}
+      </span>
+      {onRemove ? (
+        <button
+          type="button"
+          className="rounded-full text-current/55 transition-colors hover:bg-white/[0.06] hover:text-current"
+          title={`Remove ${issue.key}`}
+          aria-label={`Remove ${issue.key}`}
           onClick={(event) => {
             event.stopPropagation();
             onRemove(chatContextAttachmentKey(attachment));
@@ -278,16 +382,20 @@ function ImageAttachmentPreview({
   toneClassName,
   initialPreviewUrl,
   machinePin,
+  accepted = false,
   onRemove,
   onFocusPrompt,
+  highlighted,
+  onHoverChange,
 }: {
   attachment: AgentChatFileRef;
   toneClassName: string;
   initialPreviewUrl?: string | null;
   machinePin: OpenProjectBinding | null;
+  accepted?: boolean;
   onRemove?: (path: string) => void;
   onFocusPrompt?: () => void;
-}) {
+} & LinkedHoverProps) {
   const [dataUrl, setDataUrl] = useState<string | null>(initialPreviewUrl ?? null);
   const [previewFailed, setPreviewFailed] = useState(false);
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
@@ -303,6 +411,11 @@ function ImageAttachmentPreview({
   // pin for the same machine does not read the image again.
   const machinePinRef = useRef(machinePin);
   machinePinRef.current = machinePin;
+  // A personal chat's attachments live in its own store, which only its own
+  // API can read; a project runtime would refuse the path.
+  const personalReader = useChatPaneScope()?.agentChat.getImageDataUrl ?? null;
+  const personalReaderRef = useRef(personalReader);
+  personalReaderRef.current = personalReader;
   useEffect(() => {
     let cancelled = false;
     setDataUrl(initialPreviewUrl ?? null);
@@ -312,7 +425,10 @@ function ImageAttachmentPreview({
         cancelled = true;
       };
     }
-    readAttachmentImageDataUrl(attachment.path, machinePinRef.current)
+    const reader = personalReaderRef.current;
+    readAttachmentImageDataUrl(attachment.path, machinePinRef.current, {
+      reader: reader ? (path) => reader(path) : null,
+    })
       .then((result) => {
         if (!cancelled) setDataUrl(result.dataUrl);
       })
@@ -357,9 +473,12 @@ function ImageAttachmentPreview({
     <>
       <div
         className={cn(
-          "group/image relative h-14 w-14 shrink-0 overflow-hidden rounded-md border p-0 text-left transition-colors focus:outline-none focus:ring-1 focus:ring-white/25",
+          "group/image relative h-14 w-14 shrink-0 overflow-hidden rounded-md border p-0 text-left transition-[color,background-color,box-shadow] focus:outline-none focus:ring-1 focus:ring-white/25",
           toneClassName,
+          highlighted ? LINKED_HOVER_CLASS : null,
         )}
+        data-chat-attachment-path={attachment.path}
+        {...linkedHoverHandlers(onHoverChange)}
       >
         <button
           type="button"
@@ -386,10 +505,20 @@ function ImageAttachmentPreview({
             No preview
           </span>
         ) : null}
+        {accepted ? (
+          <span
+            className="pointer-events-none absolute bottom-0.5 right-0.5 inline-flex h-3.5 w-3.5 items-center justify-center rounded-full bg-emerald-500 text-white shadow-sm"
+            title="Sent to the agent"
+            aria-label="Sent to the agent"
+            data-testid="chat-image-attachment-accepted"
+          >
+            <Check size={8} weight="bold" />
+          </span>
+        ) : null}
         <span className="pointer-events-none absolute inset-0 flex items-start justify-end gap-1 bg-black/0 p-1 opacity-0 transition-opacity group-hover/image:bg-black/35 group-hover/image:opacity-100 group-focus-within/image:bg-black/35 group-focus-within/image:opacity-100">
           <button
             type="button"
-            className="pointer-events-auto inline-flex h-5 w-5 items-center justify-center rounded border border-white/10 bg-black/70 text-white/80 transition-colors hover:bg-black hover:text-white"
+            className="pointer-events-auto inline-flex h-5 w-5 items-center justify-center rounded border border-fg/10 bg-black/70 text-white/80 transition-colors hover:bg-black hover:text-white"
             title={copyTitle}
             aria-label={`Copy ${name}`}
             onClick={copyImage}
@@ -399,7 +528,7 @@ function ImageAttachmentPreview({
           {onRemove ? (
             <button
               type="button"
-              className="pointer-events-auto inline-flex h-5 w-5 items-center justify-center rounded border border-white/10 bg-black/70 text-white/80 transition-colors hover:bg-black hover:text-white"
+              className="pointer-events-auto inline-flex h-5 w-5 items-center justify-center rounded border border-fg/10 bg-black/70 text-white/80 transition-colors hover:bg-black hover:text-white"
               title={`Remove ${name}`}
               aria-label={`Remove ${name}`}
               onClick={(event) => {
@@ -462,7 +591,7 @@ function PendingImageAttachmentPreview({
       {onRemove ? (
         <button
           type="button"
-          className="absolute right-1 top-1 inline-flex h-5 w-5 items-center justify-center rounded border border-white/10 bg-black/70 text-white/80 transition-colors hover:bg-black hover:text-white"
+          className="absolute right-1 top-1 inline-flex h-5 w-5 items-center justify-center rounded border border-fg/10 bg-black/70 text-white/80 transition-colors hover:bg-black hover:text-white"
           title={`Cancel ${attachment.name}`}
           aria-label={`Cancel ${attachment.name}`}
           onClick={() => onRemove(attachment.id)}
@@ -492,6 +621,8 @@ function FileAttachmentChip({
   machinePin,
   onRemove,
   onFocusPrompt,
+  highlighted,
+  onHoverChange,
 }: {
   attachment: AgentChatFileRef;
   toneClassName: string;
@@ -499,7 +630,7 @@ function FileAttachmentChip({
   machinePin: OpenProjectBinding | null;
   onRemove?: (path: string) => void;
   onFocusPrompt?: () => void;
-}) {
+} & LinkedHoverProps) {
   const name = attachmentName(attachment.path);
   const preview = useAttachmentPreview({ path: attachment.path, title: name, pin: machinePin });
   const onOpen = preview.open;
@@ -511,9 +642,12 @@ function FileAttachmentChip({
     <>
     <span
       className={cn(
-        "ade-liquid-glass-pill group inline-flex max-w-full cursor-pointer items-center gap-2 rounded-[var(--chat-radius-pill)] border px-2.5 py-1.5 transition-colors focus:outline-none focus:ring-1 focus:ring-white/25",
+        "ade-liquid-glass-pill group inline-flex max-w-full cursor-pointer items-center gap-2 rounded-[var(--chat-radius-pill)] border px-2.5 py-1.5 transition-[color,background-color,box-shadow] focus:outline-none focus:ring-1 focus:ring-white/25",
         toneClassName,
+        highlighted ? LINKED_HOVER_CLASS : null,
       )}
+      data-chat-attachment-path={attachment.path}
+      {...linkedHoverHandlers(onHoverChange)}
       title={sizeLabel ? `${name} — ${sizeLabel}` : name}
       role="button"
       aria-label={`Open ${name}`}
@@ -544,7 +678,7 @@ function FileAttachmentChip({
       {onRemove ? (
         <button
           type="button"
-          className="shrink-0 rounded-full text-current/45 transition-colors hover:bg-white/[0.06] hover:text-current"
+          className="shrink-0 rounded-full text-current/45 transition-colors hover:bg-fg/[0.06] hover:text-current"
           title={`Remove ${name}`}
           aria-label={`Remove ${name}`}
           onClick={(event) => {
@@ -568,6 +702,8 @@ function ImageUrlAttachmentChip({
   toneClassName,
   onRemove,
   onFocusPrompt,
+  highlighted,
+  onHoverChange,
 }: {
   path: string;
   url: string;
@@ -575,14 +711,17 @@ function ImageUrlAttachmentChip({
   toneClassName: string;
   onRemove?: (path: string) => void;
   onFocusPrompt?: () => void;
-}) {
+} & LinkedHoverProps) {
   const [imageFailed, setImageFailed] = useState(false);
   return (
     <span
       className={cn(
-        "ade-liquid-glass-pill group inline-flex max-w-full items-center gap-2 rounded-[var(--chat-radius-pill)] px-2 py-1 transition-colors focus:outline-none focus:ring-1 focus:ring-white/25",
+        "ade-liquid-glass-pill group inline-flex max-w-full items-center gap-2 rounded-[var(--chat-radius-pill)] px-2 py-1 transition-[color,background-color,box-shadow] focus:outline-none focus:ring-1 focus:ring-white/25",
         toneClassName,
+        highlighted ? LINKED_HOVER_CLASS : null,
       )}
+      data-chat-attachment-path={path}
+      {...linkedHoverHandlers(onHoverChange)}
       title={url}
       tabIndex={0}
       data-chat-image-attachment-focus-target="true"
@@ -600,7 +739,7 @@ function ImageUrlAttachmentChip({
           loading="lazy"
           draggable={false}
           onError={() => setImageFailed(true)}
-          className="h-8 w-8 shrink-0 rounded-sm border border-white/10 bg-black/30 object-cover"
+          className="h-8 w-8 shrink-0 rounded-sm border border-fg/10 bg-black/30 object-cover"
         />
       )}
       <span className="flex min-w-0 flex-col leading-tight">
@@ -609,7 +748,7 @@ function ImageUrlAttachmentChip({
       {onRemove ? (
         <button
           type="button"
-          className="rounded-full text-current/45 transition-colors hover:bg-white/[0.06] hover:text-current"
+          className="rounded-full text-current/45 transition-colors hover:bg-fg/[0.06] hover:text-current"
           title={`Remove ${label}`}
           aria-label={`Remove ${label}`}
           onClick={() => onRemove(path)}
@@ -639,11 +778,17 @@ type ChatAttachmentTrayProps = {
    */
   machinePin?: OpenProjectBinding | null;
   mode: ChatSurfaceMode;
+  /** The message carrying these attachments reached the agent: image previews get a check. */
+  accepted?: boolean;
   onRemove?: (path: string) => void;
   onRemoveContext?: (key: string) => void;
   onOpenContext?: (attachment: AgentChatContextAttachment) => void;
   onRemovePendingImageAttachment?: (id: string) => void;
   onFocusPrompt?: () => void;
+  /** Path whose inline composer chip is hovered; that tray item lights up. */
+  highlightedPath?: string | null;
+  /** Hovering a tray item reports its path (null on leave), for the reverse glow. */
+  onHoverAttachment?: (path: string | null) => void;
   className?: string;
 };
 
@@ -655,11 +800,14 @@ export const ChatAttachmentTray = forwardRef<HTMLDivElement, ChatAttachmentTrayP
   attachmentSizes = {},
   machinePin = null,
   mode,
+  accepted = false,
   onRemove,
   onRemoveContext,
   onOpenContext,
   onRemovePendingImageAttachment,
   onFocusPrompt,
+  highlightedPath = null,
+  onHoverAttachment,
   className,
 }, ref) {
   if (!attachments.length && !contextAttachments.length && !pendingImageAttachments.length) return null;
@@ -698,6 +846,10 @@ export const ChatAttachmentTray = forwardRef<HTMLDivElement, ChatAttachmentTrayP
         />
       ))}
       {attachments.map((attachment) => {
+        const highlighted = highlightedPath === attachment.path;
+        const onHoverChange = onHoverAttachment
+          ? (hovered: boolean) => onHoverAttachment(hovered ? attachment.path : null)
+          : undefined;
         if (attachment.type === "image-url") {
           const label = (() => {
             try {
@@ -716,6 +868,8 @@ export const ChatAttachmentTray = forwardRef<HTMLDivElement, ChatAttachmentTrayP
               toneClassName={chipTone}
               onRemove={onRemove}
               onFocusPrompt={onFocusPrompt}
+              highlighted={highlighted}
+              onHoverChange={onHoverChange}
             />
           );
         }
@@ -727,8 +881,11 @@ export const ChatAttachmentTray = forwardRef<HTMLDivElement, ChatAttachmentTrayP
               toneClassName={chipTone}
               initialPreviewUrl={imagePreviewUrls[attachment.path]}
               machinePin={machinePin}
+              accepted={accepted}
               onRemove={onRemove}
               onFocusPrompt={onFocusPrompt}
+              highlighted={highlighted}
+              onHoverChange={onHoverChange}
             />
           );
         }
@@ -741,6 +898,8 @@ export const ChatAttachmentTray = forwardRef<HTMLDivElement, ChatAttachmentTrayP
             machinePin={machinePin}
             onRemove={onRemove}
             onFocusPrompt={onFocusPrompt}
+            highlighted={highlighted}
+            onHoverChange={onHoverChange}
           />
         );
       })}

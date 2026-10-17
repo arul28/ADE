@@ -191,7 +191,7 @@ function PanelContent({
       )}
 
       {/* ── Metadata grid ─────────────────────────────────────── */}
-      <div className="mx-3 border border-white/[0.06] bg-white/[0.03] backdrop-blur-xl rounded-xl p-3">
+      <div className="mx-3 border border-fg/[0.06] bg-fg/[0.03] backdrop-blur-xl rounded-xl p-3">
         <div className="grid grid-cols-2 gap-x-6 gap-y-3">
           <MetaCell label="Kind">
             <span className="font-mono text-[11px] text-fg">{event.kind}</span>
@@ -277,7 +277,7 @@ function PanelContent({
 
       {/* ── Lane section ──────────────────────────────────────── */}
       {event.laneId && (
-        <div className="mx-3 mt-3 border border-white/[0.06] bg-white/[0.03] backdrop-blur-xl rounded-xl p-3">
+        <div className="mx-3 mt-3 border border-fg/[0.06] bg-fg/[0.03] backdrop-blur-xl rounded-xl p-3">
           <span className="font-sans text-[10px] font-bold uppercase tracking-[1px] text-muted-fg">
             Lane
           </span>
@@ -310,7 +310,7 @@ function PanelContent({
 
       {/* ── SHA transition ────────────────────────────────────── */}
       {(event.preHeadSha || event.postHeadSha) && (
-        <div className="mx-3 mt-3 border border-white/[0.06] bg-white/[0.03] backdrop-blur-xl rounded-xl p-3">
+        <div className="mx-3 mt-3 border border-fg/[0.06] bg-fg/[0.03] backdrop-blur-xl rounded-xl p-3">
           <span className="font-sans text-[10px] font-bold uppercase tracking-[1px] text-muted-fg">
             HEAD Transition
           </span>
@@ -325,7 +325,7 @@ function PanelContent({
 
       {/* ── Raw metadata (collapsible) ────────────────────────── */}
       {event.metadata && Object.keys(event.metadata).length > 0 && (
-        <div className="mx-3 mt-3 border border-white/[0.06] bg-white/[0.03] backdrop-blur-xl rounded-xl p-3">
+        <div className="mx-3 mt-3 border border-fg/[0.06] bg-fg/[0.03] backdrop-blur-xl rounded-xl p-3">
           <button
             type="button"
             onClick={() => setMetadataExpanded(!metadataExpanded)}
@@ -350,7 +350,7 @@ function PanelContent({
                 transition={{ duration: 0.12, ease: "easeOut" }}
                 className="overflow-hidden"
               >
-                <pre className="mt-2 overflow-x-auto border border-white/[0.04] bg-white/[0.02] rounded-lg p-3 font-mono text-[10px] leading-relaxed text-muted-fg">
+                <pre className="mt-2 overflow-x-auto border border-fg/[0.04] bg-fg/[0.02] rounded-lg p-3 font-mono text-[10px] leading-relaxed text-muted-fg">
                   {JSON.stringify(event.metadata, null, 2)}
                 </pre>
               </motion.div>

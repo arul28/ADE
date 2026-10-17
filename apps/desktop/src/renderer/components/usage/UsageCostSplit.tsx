@@ -14,8 +14,7 @@ import React from "react";
 import type { AdeUsageCostSplit } from "../../../shared/types";
 import { formatSpend } from "../../lib/format";
 import { costSplitTotal } from "../../../shared/usageCostSplit";
-import { cn } from "../ui/cn";
-import { USAGE_NUMERIC_CLASS, USAGE_TEXT } from "./usageDesign";
+import "./usageSurfaces.css";
 
 type Theme = "dark" | "light";
 
@@ -57,8 +56,9 @@ function speedSegments(split: AdeUsageCostSplit, theme: Theme): SplitSegment[] {
 }
 
 /**
- * One labelled part-to-whole bar. Hovering a segment or its legend entry lifts
- * both and names the share, so the bar reads without a separate tooltip layer.
+ * One labelled part-to-whole bar: a thin segmented track, then a two-column
+ * legend whose dollar values line up on the right. Hovering a segment or its
+ * legend entry lifts both and shows the share.
  */
 function SplitBar({ label, segments, ariaLabel }: { label: string; segments: SplitSegment[]; ariaLabel: string }) {
   const [hovered, setHovered] = React.useState<string | null>(null);
@@ -66,19 +66,17 @@ function SplitBar({ label, segments, ariaLabel }: { label: string; segments: Spl
   if (total <= 0) return null;
   const visible = segments.filter((segment) => segment.value > 0);
   return (
-    <div className="flex flex-col gap-1.5" role="group" aria-label={ariaLabel}>
-      <span className={cn(USAGE_TEXT.micro, "text-muted-fg")}>{label}</span>
-      <div className="flex h-2 w-full gap-[2px] overflow-hidden rounded-full" role="img" aria-label={visible.map((segment) => `${segment.label} ${formatSpend(segment.value)}`).join(", ")}>
+    <div className="usage-split" role="group" aria-label={ariaLabel}>
+      <span className="kit-eyebrow">{label}</span>
+      <div className="usage-split-bar" role="img" aria-label={visible.map((segment) => `${segment.label} ${formatSpend(segment.value)}`).join(", ")}>
         {visible.map((segment) => (
-          <div
+          <span
             key={segment.key}
-            className="h-full transition-opacity duration-150 first:rounded-l-full last:rounded-r-full motion-reduce:transition-none"
             style={{
               flexGrow: segment.value,
               flexBasis: 0,
-              minWidth: 3,
               background: segment.color,
-              opacity: hovered && hovered !== segment.key ? 0.35 : 1,
+              opacity: hovered && hovered !== segment.key ? 0.3 : 1,
             }}
             title={`${segment.label} · ${formatSpend(segment.value)} · ${Math.round((segment.value / total) * 100)}%`}
             onMouseEnter={() => setHovered(segment.key)}
@@ -86,23 +84,19 @@ function SplitBar({ label, segments, ariaLabel }: { label: string; segments: Spl
           />
         ))}
       </div>
-      <div className="flex flex-wrap gap-x-3 gap-y-1">
+      <div className="usage-split-legend">
         {visible.map((segment) => (
           <span
             key={segment.key}
-            className={cn(
-              USAGE_TEXT.micro,
-              USAGE_NUMERIC_CLASS,
-              "inline-flex items-center gap-1.5 text-muted-fg",
-              hovered === segment.key && "text-fg",
-            )}
+            className="usage-split-legend-item"
+            style={hovered === segment.key ? { color: "var(--color-fg)" } : undefined}
             onMouseEnter={() => setHovered(segment.key)}
             onMouseLeave={() => setHovered(null)}
           >
-            <span aria-hidden className="h-2 w-2 shrink-0 rounded-[2px]" style={{ background: segment.color }} />
+            <i aria-hidden style={{ background: segment.color }} />
             {segment.label}
-            <span className="text-fg">{formatSpend(segment.value)}</span>
-            {hovered === segment.key ? <span>{`${Math.round((segment.value / total) * 100)}%`}</span> : null}
+            <b>{formatSpend(segment.value)}</b>
+            <em>{`${Math.round((segment.value / total) * 100)}%`}</em>
           </span>
         ))}
       </div>
@@ -115,12 +109,12 @@ export function CostSplitBars({ split, theme }: { split: AdeUsageCostSplit | nul
   if (!split || costSplitTotal(split) <= 0) return null;
   const hasPremium = split.fastPremium + split.ultrafastPremium > 0;
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex flex-col gap-4">
       <SplitBar label="By type" ariaLabel="Cost by token type" segments={typeSegments(split, theme)} />
       {hasPremium ? (
         <SplitBar label="By speed" ariaLabel="Cost by speed" segments={speedSegments(split, theme)} />
       ) : (
-        <span className={cn(USAGE_TEXT.micro, "text-muted-fg")}>By speed · all at standard rates</span>
+        <span className="usage-footnote">By speed · all at standard rates</span>
       )}
     </div>
   );

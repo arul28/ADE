@@ -135,6 +135,11 @@ export type AppControlAgentActionDeps<TClient extends AppControlAgentCdpClient =
    */
   getLastScreencastFrame: () => AppControlScreencastFrame | null;
   imageDimensions: (buffer: Buffer) => { width: number; height: number } | null;
+  /**
+   * Project-relative directory for scratch observations. Defaults to App
+   * Control's own; the user-browser attachment keeps its observations apart.
+   */
+  observationCacheDir?: string;
 };
 
 function delay(ms: number): Promise<void> {
@@ -169,7 +174,7 @@ export function createAppControlAgentActions<TClient extends AppControlAgentCdpC
 
   const observationRootFor = (session: AppControlSession): string => {
     const projectRoot = deps.resolveProjectRoot(session.projectRoot);
-    return path.join(projectRoot, APP_CONTROL_OBSERVATION_CACHE_DIR);
+    return path.join(projectRoot, deps.observationCacheDir ?? APP_CONTROL_OBSERVATION_CACHE_DIR);
   };
 
   const evaluateAgentDom = async (

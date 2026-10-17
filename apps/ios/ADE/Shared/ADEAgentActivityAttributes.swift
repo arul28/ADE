@@ -34,18 +34,19 @@ public func adeAccountWideActivityMatchesCurrentOwnership(
 ///   activityId:     "agent-runs"
 ///   contentState:   {
 ///                     updatedAt,
+///                     columns?: { needsYou, working, waiting, done },
 ///                     activeCount,
 ///                     runs: [Run],
-///                     prs: [PullRequest],
+///                     prs: [PullRequest],   // not decoded: unused now
 ///                     ownershipEpoch?: Int,
 ///                     groups?: [{ group, count }],
 ///                     moreCount?: Int
 ///                   }
 ///
-/// `groups` and `moreCount` are the island's account-wide tallies. They are
-/// optional because the relay does not send them yet; without them the compact
-/// leading counts only the three-row roster, which undercounts but never lies.
-/// `groups[].group` is one of `needs_you | failed | planning | working | done`.
+/// `columns` is what the four tiles show: account-wide agent counts in the
+/// Work board's four columns. The relay always sends it now. `runs`, `prs`,
+/// `groups` and `activeCount` are the older shape; they are decoded only so a
+/// frame from an older relay can still be counted (`resolvedColumns`).
 ///
 /// Decoding is deliberately lenient — a run row with an unrecognised `phase`
 /// still renders (as `.running`), and a missing optional collapses to `nil`
@@ -55,11 +56,12 @@ public struct ADEAgentRunsAttributes: ActivityAttributes {
         /// Host-stamped freshness marker (unix seconds). Rendered as a relative
         /// "updated Ns ago" so a stalled push is visible at a glance.
         public var updatedAt: Double
+        /// The four tile counts. Nil only on a frame from an older relay.
+        public var columns: Columns?
         /// Total number of active runs on the machine — may exceed `runs.count`
         /// because the roster is capped at three for the glance.
         public var activeCount: Int
         public var runs: [Run]
-        public var prs: [PullRequest]
         /// Repeated on every account-wide update so a delayed update from a
         /// prior owner cannot refresh an otherwise valid ActivityKit instance.
         public var ownershipEpoch: Int?
@@ -76,35 +78,34 @@ public struct ADEAgentRunsAttributes: ActivityAttributes {
 
         public init(
             updatedAt: Double,
+            columns: Columns? = nil,
             activeCount: Int,
             runs: [Run],
-            prs: [PullRequest] = [],
             ownershipEpoch: Int? = nil,
             groups: [StateGroupCount]? = nil,
             moreCount: Int? = nil
         ) {
             self.updatedAt = updatedAt
+            self.columns = columns
             self.activeCount = activeCount
             self.runs = runs
-            self.prs = prs
             self.ownershipEpoch = ownershipEpoch
             self.groups = groups
             self.moreCount = moreCount
         }
 
         private enum CodingKeys: String, CodingKey {
-            case updatedAt, activeCount, runs, prs, ownershipEpoch, groups, moreCount
+            case updatedAt, columns, activeCount, runs, ownershipEpoch, groups, moreCount
         }
 
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             // Accept both integer and fractional unix seconds.
             self.updatedAt = (try? c.decode(Double.self, forKey: .updatedAt)) ?? 0
+            self.columns = (try? c.decodeIfPresent(Columns.self, forKey: .columns)) ?? nil
             self.activeCount = (try? c.decode(Int.self, forKey: .activeCount)) ?? 0
             let decodedRuns = (try? c.decode([Run].self, forKey: .runs)) ?? []
             self.runs = Array(decodedRuns.prefix(3))
-            let decodedPrs = (try? c.decode([PullRequest].self, forKey: .prs)) ?? []
-            self.prs = Array(decodedPrs.prefix(2))
             self.ownershipEpoch = try? c.decodeIfPresent(Int.self, forKey: .ownershipEpoch)
             let decodedGroups = (try? c.decodeIfPresent([StateGroupCount].self, forKey: .groups))
                 ?? nil
@@ -130,6 +131,35 @@ public struct ADEAgentRunsAttributes: ActivityAttributes {
                 .map { (group: $0.0, count: $0.1) }
         }
 
+        /// The four tile counts: the published `columns` when present, else a
+        /// best effort from an older relay's `groups` (or, older still, the
+        /// three-row roster). The fallback never derives Waiting, because the
+        /// older shape cannot say why a row waits.
+        public var resolvedColumns: [ActivityBoardColumn: Int] {
+            if let columns { return columns.counts }
+            var counts = Dictionary(uniqueKeysWithValues: ActivityBoardColumn.allCases.map { ($0, 0) })
+            if let groups = resolvedGroups {
+                for entry in groups {
+                    counts[Self.column(for: entry.group), default: 0] += entry.count
+                }
+                return counts
+            }
+            for run in runs {
+                counts[Self.column(for: run.resolvedPhase.stateGroup), default: 0] += 1
+            }
+            // Runs the capped roster left off are in flight by construction.
+            counts[.working, default: 0] += max(0, activeCount - runs.count)
+            return counts
+        }
+
+        private static func column(for group: ActivityStateGroup) -> ActivityBoardColumn {
+            switch group {
+            case .needsYou, .failed: return .needsYou
+            case .planning, .working: return .working
+            case .idle, .done: return .done
+            }
+        }
+
         /// `Date` view over the unix-seconds marker for relative formatting.
         public var updatedAtDate: Date {
             Date(timeIntervalSince1970: updatedAt)
@@ -138,102 +168,78 @@ public struct ADEAgentRunsAttributes: ActivityAttributes {
         /// Build a content state on-device from the account feed the app
         /// already holds.
         ///
-        /// **Why this exists.** A Live Activity's content is normally mutable
-        /// only by an APNs push, and the relay deliberately spends pushes only
-        /// on transitions worth the ActivityKit budget — exact counts for
-        /// `needs_you` and `failed`, presence only for the rest. That is the
-        /// right rule for a suspended app, but it means work ticking 3 → 7
-        /// never reaches the island, and with nothing publishing at all the
-        /// island can sit on an hours-old frame indefinitely.
+        /// A Live Activity's content is normally mutable only by an APNs push,
+        /// and the relay rate-limits pushes for count changes outside Needs
+        /// you. A LOCAL `Activity.update(_:)` costs no push budget, so whenever
+        /// the app is alive it writes the four counts itself from the merged
+        /// account + live feed. The relay push stays the backstop for when the
+        /// app is not running.
         ///
-        /// A LOCAL `Activity.update(_:)` costs no push budget. So whenever the
-        /// app is alive and holds fresher truth than the last push delivered —
-        /// which is most of the time, since it polls every 20s and merges the
-        /// live paired-host socket on top — it can simply write the frame
-        /// itself. The relay push stays as the backstop for when the app is
-        /// not running.
-        ///
-        /// The projection rules deliberately reuse `ActivityWidgetPresentation`
-        /// (`ranked`, `groupCounts`, `agentItems`, `eventItems`) rather than
-        /// restating them, because those are the same rules the relay applies
-        /// and a second copy here is exactly how the four mirrors drifted
-        /// before. The caps match the wire's: 3 runs, 2 PRs.
+        /// Counts only: the tiles draw no rows, so nothing here can leak a
+        /// title, and `hideDetails` has nothing to redact.
         public static func local(
             items: [AccountAttentionItem],
             ownershipEpoch: Int?,
-            hideDetails: Bool,
             now: Date = Date()
         ) -> ContentState {
-            let visible = ActivityWidgetPresentation.visibleItems(items, now: now)
-            let agents = ActivityWidgetPresentation.ranked(
-                ActivityWidgetPresentation.agentItems(visible)
+            let agents = ActivityWidgetPresentation.agentItems(
+                ActivityWidgetPresentation.visibleItems(items, now: now)
             )
-            let events = ActivityWidgetPresentation.ranked(
-                ActivityWidgetPresentation.eventItems(visible)
-            )
-            let runs = agents.compactMap { item -> Run? in
-                guard case .session(let sessionId, let itemId, _) = item.destination else {
-                    return nil
-                }
-                return Run(
-                    id: sessionId,
-                    title: hideDetails ? item.privacyPreview : item.title,
-                    phase: Self.runPhaseSlug(for: item),
-                    model: hideDetails ? nil : item.model,
-                    lane: hideDetails ? nil : item.laneName,
-                    detail: hideDetails ? nil : item.preview,
-                    itemId: itemId,
-                    accountMachineKey: item.machine.accountMachineKey,
-                    statusSince: (item.statusSince ?? item.occurredAt).timeIntervalSince1970
-                )
-            }.prefix(3)
-            let groups = ActivityWidgetPresentation
-                .groupCounts(for: visible, now: now)
-                .map { StateGroupCount(group: $0.group.wireValue, count: $0.count) }
-            // Same rule the relay applies: an idle-tier row is never active,
-            // whatever phase it froze at.
-            let activeCount = agents.filter {
-                ActivityPhaseVocabulary.stateGroup(for: $0) != .idle
-                    && ActivityPhaseVocabulary.presentation(for: $0.phase).active
-            }.count
-            let prs = events.compactMap { item -> PullRequest? in
-                guard case .pullRequest(_, _, _, let number, _, _) = item.destination,
-                      number > 0 else { return nil }
-                return PullRequest(
-                    id: item.id,
-                    prNumber: number,
-                    title: hideDetails ? item.privacyPreview : item.title,
-                    phase: item.phase == .open ? "opened" : item.phase.rawValue,
-                    lane: hideDetails ? nil : item.laneName,
-                    accountMachineKey: item.machine.accountMachineKey,
-                    updatedAt: item.updatedAt.timeIntervalSince1970
-                )
-            }.prefix(2)
+            let columns = Columns(counts: countActivityBoardColumns(agents))
             return ContentState(
                 updatedAt: now.timeIntervalSince1970,
-                activeCount: activeCount,
-                runs: Array(runs),
-                prs: Array(prs),
-                ownershipEpoch: ownershipEpoch,
-                groups: groups.isEmpty ? nil : groups,
-                moreCount: max(0, agents.count - runs.count)
+                columns: columns,
+                activeCount: columns.needsYou + columns.working + columns.waiting,
+                runs: [],
+                ownershipEpoch: ownershipEpoch
+            )
+        }
+    }
+
+    /// `{ needsYou, working, waiting, done }` on the wire. Each count decodes
+    /// leniently: a missing or bad value reads as zero rather than dropping
+    /// the frame.
+    public struct Columns: Codable, Hashable, Sendable {
+        public var needsYou: Int
+        public var working: Int
+        public var waiting: Int
+        public var done: Int
+
+        public init(needsYou: Int, working: Int, waiting: Int, done: Int) {
+            self.needsYou = needsYou
+            self.working = working
+            self.waiting = waiting
+            self.done = done
+        }
+
+        public init(counts: [ActivityBoardColumn: Int]) {
+            self.init(
+                needsYou: counts[.needsYou, default: 0],
+                working: counts[.working, default: 0],
+                waiting: counts[.waiting, default: 0],
+                done: counts[.done, default: 0]
             )
         }
 
-        /// `AccountAttentionPhase` → the `AgentRunPhase` slug the Live Activity
-        /// wire speaks, mirroring the relay's own projection: a raised hand
-        /// splits into `waiting_for_approval` or `waiting_for_input` depending
-        /// on whether the item carries an approve action, because those two
-        /// render different inline buttons.
-        private static func runPhaseSlug(for item: AccountAttentionItem) -> String {
-            switch item.phase {
-            case .needsYou, .blocked:
-                return item.actions.contains { $0.kind == .approve }
-                    ? AgentRunPhase.waitingForApproval.rawValue
-                    : AgentRunPhase.waitingForInput.rawValue
-            default:
-                return item.phase.rawValue
+        private enum CodingKeys: String, CodingKey {
+            case needsYou, working, waiting, done
+        }
+
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            func count(_ key: CodingKeys) -> Int {
+                max(0, (try? c.decodeIfPresent(Int.self, forKey: key)) ?? 0)
             }
+            self.init(
+                needsYou: count(.needsYou),
+                working: count(.working),
+                waiting: count(.waiting),
+                done: count(.done)
+            )
+        }
+
+        public var counts: [ActivityBoardColumn: Int] {
+            [.needsYou: needsYou, .working: working, .waiting: waiting, .done: done]
         }
     }
 
@@ -267,100 +273,6 @@ public struct ADEAgentRunsAttributes: ActivityAttributes {
 
         public var resolvedGroup: ActivityStateGroup? {
             ActivityStateGroup(wireValue: group)
-        }
-    }
-
-    public struct PullRequest: Codable, Hashable, Identifiable {
-        public let id: String
-        public let prNumber: Int
-        public let title: String
-        public let phase: String
-        public let lane: String?
-        public let repoOwner: String?
-        public let repoName: String?
-        /// Canonical Relay machine identity for account-wide activities.
-        /// Taps use it to connect to the exact host before opening the PR.
-        public let accountMachineKey: String?
-        public let updatedAt: Double
-
-        public init(
-            id: String,
-            prNumber: Int,
-            title: String,
-            phase: String,
-            lane: String? = nil,
-            repoOwner: String? = nil,
-            repoName: String? = nil,
-            accountMachineKey: String? = nil,
-            updatedAt: Double = 0
-        ) {
-            self.id = id
-            self.prNumber = prNumber
-            self.title = title
-            self.phase = phase
-            self.lane = lane
-            self.repoOwner = repoOwner
-            self.repoName = repoName
-            self.accountMachineKey = accountMachineKey
-            self.updatedAt = updatedAt
-        }
-
-        private enum CodingKeys: String, CodingKey {
-            case id, prNumber, title, phase, lane, repoOwner, repoName, accountMachineKey, updatedAt
-        }
-
-        public init(from decoder: Decoder) throws {
-            let c = try decoder.container(keyedBy: CodingKeys.self)
-            self.id = (try? c.decode(String.self, forKey: .id)) ?? UUID().uuidString
-            self.prNumber = (try? c.decode(Int.self, forKey: .prNumber)) ?? 0
-            self.title = (try? c.decode(String.self, forKey: .title)) ?? "Pull request"
-            self.phase = (try? c.decode(String.self, forKey: .phase)) ?? PullRequestPhase.opened.rawValue
-            self.lane = try? c.decodeIfPresent(String.self, forKey: .lane)
-            self.repoOwner = try? c.decodeIfPresent(String.self, forKey: .repoOwner)
-            self.repoName = try? c.decodeIfPresent(String.self, forKey: .repoName)
-            self.accountMachineKey = try? c.decodeIfPresent(String.self, forKey: .accountMachineKey)
-            self.updatedAt = (try? c.decode(Double.self, forKey: .updatedAt)) ?? 0
-        }
-
-        public var resolvedPhase: PullRequestPhase {
-            PullRequestPhase(rawValue: phase.lowercased()) ?? .opened
-        }
-
-        public var subtitle: String? {
-            let lane = lane?.trimmingCharacters(in: .whitespacesAndNewlines)
-            return lane?.isEmpty == false ? lane : nil
-        }
-
-        public var deepLinkURL: URL? {
-            guard prNumber > 0 else { return nil }
-            let owner = repoOwner?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let repo = repoName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            if !owner.isEmpty,
-               !repo.isEmpty,
-               let encodedOwner = owner.addingPercentEncoding(withAllowedCharacters: Self.pathSegmentAllowed),
-               let encodedRepo = repo.addingPercentEncoding(withAllowedCharacters: Self.pathSegmentAllowed) {
-                var components = URLComponents(
-                    string: "ade://pr/\(encodedOwner)/\(encodedRepo)/\(prNumber)"
-                )
-                components?.queryItems = accountMachineQueryItems
-                return components?.url
-            }
-            var components = URLComponents(string: "ade://pr/\(prNumber)")
-            components?.queryItems = accountMachineQueryItems
-            return components?.url
-        }
-
-        private var accountMachineQueryItems: [URLQueryItem]? {
-            guard let key = accountMachineKey?
-                .trimmingCharacters(in: .whitespacesAndNewlines),
-                  !key.isEmpty else { return nil }
-            return [URLQueryItem(name: "accountMachineKey", value: key)]
-        }
-
-        private static var pathSegmentAllowed: CharacterSet {
-            var allowed = CharacterSet.alphanumerics
-            allowed.insert(charactersIn: "-._~")
-            return allowed
         }
     }
 

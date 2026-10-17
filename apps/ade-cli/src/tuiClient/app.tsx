@@ -7,6 +7,7 @@ import { resolveTrustedWindowsTool } from "../lib/trustedWindowsTools";
 import { Box, Text, useApp, useInput, type Key as InkKey } from "ink";
 import { isChatTaskListEvent } from "../../../desktop/src/shared/chatTaskList";
 import { isTurnInFlightError } from "../../../desktop/src/shared/codedError";
+import { deriveCompactFirstState, type CompactFirstChoice } from "./compactFirstState";
 import type { AgentChatEvent } from "../../../desktop/src/shared/types/chat";
 import {
   getModelById,
@@ -333,7 +334,11 @@ import {
 import {
   CODEX_PRESETS,
   CLAUDE_PERMISSION_OPTIONS,
+  COPILOT_AUTO_TIERS,
+  COPILOT_PERMISSION_OPTIONS,
   DROID_PERMISSION_OPTIONS,
+  MUSE_PERMISSION_OPTIONS,
+  isCopilotAutoModel,
   OPENCODE_PERMISSION_OPTIONS,
   applyProviderPermissionMode,
   buildSetupRows,
@@ -345,6 +350,8 @@ import {
   cursorSourceForInterfaceMode,
   defaultSetupSelectionIndex,
   droidPermissionToLegacy,
+  musePermissionOption,
+  musePermissionPatch,
   fallbackModelStatePatch,
   initialModelState,
   modeAccentColor,
@@ -510,11 +517,13 @@ import {
   accountSessionStateFromResult,
   acknowledgeActivityItem,
   activityItemDeepLink,
+  activityPaneChipForKey,
   buildActivityPaneModel,
   loadActivitySnapshot,
   reconnectOutcomeNotice,
 } from "./activityPane";
 import type { AttentionSnapshot } from "../../../desktop/src/shared/types/attention";
+import type { ActivityColumn } from "../../../desktop/src/renderer/components/activity/activityPresentation";
 import { deriveProjectId } from "../services/projects/projectRegistry";
 import {
   deletePromptSmartLinkBackward,
@@ -1236,6 +1245,10 @@ export function chatSessionToOptimisticSummary(
     ...(session.codexConfigSource ? { codexConfigSource: session.codexConfigSource } : {}),
     ...(session.opencodePermissionMode ? { opencodePermissionMode: session.opencodePermissionMode } : {}),
     ...(session.droidPermissionMode ? { droidPermissionMode: session.droidPermissionMode } : {}),
+    ...(session.musePermissionMode ? { musePermissionMode: session.musePermissionMode } : {}),
+    ...(session.copilotPermissionMode ? { copilotPermissionMode: session.copilotPermissionMode } : {}),
+    ...(session.copilotContextTier ? { copilotContextTier: session.copilotContextTier } : {}),
+    ...(session.copilotAutoTier ? { copilotAutoTier: session.copilotAutoTier } : {}),
     ...(session.cursorModeSnapshot ? { cursorModeSnapshot: session.cursorModeSnapshot } : {}),
     ...(session.cursorModeId !== undefined ? { cursorModeId: session.cursorModeId } : {}),
     ...(session.cursorConfigValues ? { cursorConfigValues: session.cursorConfigValues } : {}),
@@ -3859,6 +3872,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const [formValues, setFormValues] = useState<Record<string, string>>({});
   const [formFieldIndex, setFormFieldIndex] = useState(0);
   const [rightSelectionIndex, setRightSelectionIndex] = useState(0);
+  // The Activity chip survives a refresh, so R does not drop the filter.
+  const activityPaneColumnRef = useRef<ActivityColumn | null>(null);
   const [subagentPaneViewStateBySessionId, setSubagentPaneViewStateBySessionId] = useState<Record<string, SubagentPaneViewState>>({});
   const subagentPaneViewState = activeSessionId ? (subagentPaneViewStateBySessionId[activeSessionId] ?? {}) : {};
   const updateSubagentPaneViewState = useCallback((update: (current: SubagentPaneViewState) => SubagentPaneViewState) => {
@@ -5885,7 +5900,46 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   useEffect(() => {
     pendingQuestionStateRef.current = pendingQuestionState;
   }, [pendingQuestionState]);
+  // While the open question is a secret (the private secret card), the draft
+  // is drawn as dots: the value is never sent to the agent, and it must not
+  // sit readable on screen either.
+  const promptIsSecret = useMemo(() => {
+    const questions = pendingApproval?.request?.questions ?? [];
+    return questions[pendingQuestionState?.activeQuestionIndex ?? 0]?.isSecret === true;
+  }, [pendingApproval, pendingQuestionState]);
   const pendingSteers = useMemo(() => derivePendingSteers(events), [events]);
+  const [compactFirstNow, setCompactFirstNow] = useState(() => Date.now());
+  const [compactFirstChoices, setCompactFirstChoices] = useState<Record<string, CompactFirstChoice>>({});
+  const compactFirstState = useMemo(() => {
+    const session = sessions.find((entry) => entry.sessionId === activeSessionId) ?? null;
+    return deriveCompactFirstState({
+      session,
+      events,
+      blocked: Boolean(pendingApproval) || pendingSteers.length > 0,
+      choice: session ? compactFirstChoices[session.sessionId] : undefined,
+      now: compactFirstNow,
+    });
+  }, [activeSessionId, compactFirstChoices, compactFirstNow, events, pendingApproval, pendingSteers.length, sessions]);
+  // Re-render when the cache runs out, so the footer offer appears on time.
+  const compactFirstEligibleAt = compactFirstState?.offer ? null : compactFirstState?.eligibleAt ?? null;
+  useEffect(() => {
+    if (compactFirstEligibleAt == null) return;
+    const wait = compactFirstEligibleAt - Date.now();
+    if (wait <= 0) {
+      // Already past (a chat opened after its cache ran out): catch the clock up once.
+      if (compactFirstNow < compactFirstEligibleAt) setCompactFirstNow(Date.now());
+      return;
+    }
+    const timer = setTimeout(() => setCompactFirstNow(Date.now()), Math.min(wait + 1_000, 2_147_483_647));
+    return () => clearTimeout(timer);
+  }, [compactFirstEligibleAt, compactFirstNow]);
+  const compactFirstFooter = useMemo(() => compactFirstState?.offer ? {
+    enabled: compactFirstState.enabled,
+    contextTokens: compactFirstState.offer.contextTokens,
+    estimatedPostTokens: compactFirstState.offer.estimatedPostTokens,
+  } : null, [compactFirstState]);
+  const compactFirstSendRef = useRef<string | null>(null);
+  compactFirstSendRef.current = compactFirstState?.offer && compactFirstState.enabled ? compactFirstState.sessionId : null;
   const activeFormField = rightPane.kind === "form"
     ? rightPane.fields[formFieldIndex] ?? rightPane.fields[0] ?? null
     : null;
@@ -7918,7 +7972,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       const conn = connectionRef.current;
       if (conn) {
         try {
-          const risk = await conn.action<LaneDeleteRisk>("lane", "getDeleteRisk", { laneId });
+          const risk = await conn.actionList<LaneDeleteRisk>("lane", "getDeleteRisk", [laneId]);
           description = formatLaneDeleteRisk(risk);
         } catch {
           // Risk is advisory; fall back to the plain form if it can't be fetched.
@@ -8257,7 +8311,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       .filter(matchesMentionQuery);
     // Models show only when the query names one (same rule as desktop), so a
     // plain @ search is not flooded with the whole catalog.
-    const rankedModels = rankComposerModelSuggestions(modelMentionOptions, range.query);
+    // Recently picked models lead, as on desktop.
+    const rankedModels = rankComposerModelSuggestions(modelMentionOptions, range.query, undefined, {
+      recentModelIds: modelPickerRecents,
+    });
     const modelSuggestions: MentionSuggestion[] = rankedModels.rows.map((model) => ({
       kind: "model" as const,
       label: model.title,
@@ -8404,7 +8461,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [activeLaneId, activeMentionRange, connection, displaySessions, lanes, modelMentionOptions, selectedMentions]);
+  // Recents change on a pick or when they finish loading; an open @ list re-sorts.
+  }, [activeLaneId, activeMentionRange, connection, displaySessions, lanes, modelMentionOptions, modelPickerRecents, selectedMentions]);
 
   const refreshState = useCallback(async (options: RefreshStateOptions = {}) => {
     const conn = connectionRef.current;
@@ -8680,6 +8738,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           codexConfigSource: configSession.codexConfigSource ?? prev.codexConfigSource,
           opencodePermissionMode: configSession.opencodePermissionMode ?? prev.opencodePermissionMode,
           droidPermissionMode: configSession.droidPermissionMode ?? prev.droidPermissionMode,
+          musePermissionMode: configSession.musePermissionMode ?? prev.musePermissionMode,
+          copilotPermissionMode: configSession.copilotPermissionMode ?? prev.copilotPermissionMode,
+          copilotContextTier: configSession.copilotContextTier ?? prev.copilotContextTier,
+          copilotAutoTier: configSession.copilotAutoTier !== undefined ? configSession.copilotAutoTier : prev.copilotAutoTier,
+          copilotAutoTierPending: configSession.copilotAutoTierPending ?? false,
           ...resolveLaunchIdentity(configSession),
           // `null` is an intentional clear for the legacy permission-only
           // paths. Only an omitted field should fall back to the snapshot or
@@ -8848,13 +8911,17 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       reasoningEffort: normalized.reasoningEffort,
       fastMode: normalized.fastMode,
       permissionMode: normalized.permissionMode,
-      interactionMode: normalized.provider === "claude" ? normalized.interactionMode : undefined,
+      interactionMode: normalized.provider === "claude" || normalized.provider === "muse" ? normalized.interactionMode : undefined,
       claudePermissionMode: normalized.provider === "claude" ? normalized.claudePermissionMode : undefined,
       codexApprovalPolicy: normalized.provider === "codex" ? normalized.codexApprovalPolicy : undefined,
       codexSandbox: normalized.provider === "codex" ? normalized.codexSandbox : undefined,
       codexConfigSource: normalized.provider === "codex" ? normalized.codexConfigSource : undefined,
       opencodePermissionMode: runtimeProviderForUiProvider(normalized.provider) === "opencode" ? normalized.opencodePermissionMode : undefined,
       droidPermissionMode: normalized.provider === "droid" ? normalized.droidPermissionMode : undefined,
+      musePermissionMode: normalized.provider === "muse" ? normalized.musePermissionMode : undefined,
+      copilotPermissionMode: normalized.provider === "copilot" ? normalized.copilotPermissionMode : undefined,
+      copilotContextTier: normalized.provider === "copilot" ? normalized.copilotContextTier : undefined,
+      copilotAutoTier: normalized.provider === "copilot" ? normalized.copilotAutoTier : undefined,
       cursorModeId: normalized.provider === "cursor" ? normalized.cursorModeId : undefined,
       cursorConfigValues: normalized.provider === "cursor" ? normalized.cursorConfigValues : undefined,
     });
@@ -9522,6 +9589,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             ...(meta.codexConfigSource !== undefined ? { codexConfigSource: meta.codexConfigSource } : {}),
             ...(meta.opencodePermissionMode !== undefined ? { opencodePermissionMode: meta.opencodePermissionMode } : {}),
             ...(meta.droidPermissionMode !== undefined ? { droidPermissionMode: meta.droidPermissionMode } : {}),
+            ...(meta.musePermissionMode !== undefined ? { musePermissionMode: meta.musePermissionMode } : {}),
+            ...(meta.copilotPermissionMode !== undefined ? { copilotPermissionMode: meta.copilotPermissionMode } : {}),
+            ...(meta.copilotContextTier !== undefined ? { copilotContextTier: meta.copilotContextTier } : {}),
+            ...(meta.copilotAutoTier !== undefined ? { copilotAutoTier: meta.copilotAutoTier } : {}),
             ...("cursorModeId" in meta || meta.cursorModeSnapshot !== undefined
               ? {
                   // An explicit cursorModeId (present in the event) is
@@ -10004,6 +10075,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       codexConfigSource: normalized.codexConfigSource,
       opencodePermissionMode: normalized.opencodePermissionMode,
       droidPermissionMode: normalized.droidPermissionMode,
+      musePermissionMode: normalized.musePermissionMode,
+      copilotPermissionMode: normalized.copilotPermissionMode,
+      copilotContextTier: normalized.copilotContextTier,
+      copilotAutoTier: normalized.copilotAutoTier,
       cursorModeId: normalized.cursorModeId,
       cursorConfigValues: normalized.cursorConfigValues,
     });
@@ -10731,7 +10806,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     setRightPane({
       kind: "list",
       title: "Secrets",
-      rows: secrets.map((secret) => `${secret.name} · ${secret.storage === "account" ? "Account" : "This device"} · •••• · ${secret.valueLength} chars`),
+      rows: secrets.map((secret) => `${secret.name} · ${secret.storage !== "account" ? "This device" : secret.uploadPending ? "Uploading" : "Account"} · •••• · ${secret.valueLength} chars`),
       emptyText: "No secrets saved.",
       action: { kind: "copy-secret", ids: secrets.map((secret) => secret.name) },
     });
@@ -10948,7 +11023,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     };
     setRightPane({
       kind: "activity",
-      model: buildActivityPaneModel(updatedSnapshot),
+      model: buildActivityPaneModel(updatedSnapshot, { column: pane.model.column }),
     });
     const conn = connectionRef.current;
     if (!conn) return;
@@ -11022,6 +11097,21 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       }
     };
     setSessionStreaming(sessionId, true);
+    if (compactFirstSendRef.current === sessionId) {
+      // Only chat.sendMessage carries Compact first. The brain starts the
+      // compaction and queues the message behind it.
+      try {
+        await sendChatMessage(conn, sessionId, text, attachments, { compactFirst: true });
+      } catch (error) {
+        setSessionStreaming(sessionId, false);
+        throw error;
+      }
+      addNotice("Compacting first. Your message is queued and sends right after.", "info");
+      recordPromptHistoryForSession(sessionId, text);
+      // The message is queued: a failed refresh must not read as a failed send.
+      void refreshState().catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
+      return;
+    }
     try {
       const result = await messageChatSession(conn, sessionId, text, "auto", attachments);
       if (result.delivery === "queued") {
@@ -11082,7 +11172,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       hostName: project.remoteLabel,
     });
     setAttentionSnapshot(snapshot);
-    const model = buildActivityPaneModel(snapshot);
+    const model = buildActivityPaneModel(snapshot, { column: activityPaneColumnRef.current });
     setRightSelectionIndex((index) => Math.max(0, Math.min(index, Math.max(0, model.items.length - 1))));
     setRightPane({ kind: "activity", model });
     setRightOpen(true);
@@ -12981,6 +13071,20 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       addNotice("Local transcript view cleared. The durable chat remains in ADE.", "info");
       return;
     }
+    if (name === "/compact-first") {
+      const state = compactFirstState;
+      if (!state?.offer) {
+        addNotice("Compact first is offered once a Claude chat's prompt cache has expired and its context is large.", "info");
+        return;
+      }
+      const requested = args.trim().toLowerCase();
+      const value = requested === "on" ? true : requested === "off" ? false : !state.enabled;
+      setCompactFirstChoices((current) => ({ ...current, [state.sessionId]: { value, turnEndedAtMs: state.turnEndedAtMs } }));
+      addNotice(value
+        ? "Your next message compacts this chat first."
+        : "Your next message sends the full chat.", "info");
+      return;
+    }
     const conn = connectionRef.current;
     if (!conn) return;
     const laneId = activeLaneIdRef.current;
@@ -13406,7 +13510,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         addNotice(result.message ?? "Desktop route unavailable from this runtime.", "error");
       }
     }
-  }, [activeSession?.provider, addNotice, applyLocalModelArg, applySessionSnooze, chatLinkedPrs, clearOlderHistoryCursor, displaySessions, loadProviderModels, modelState.provider, openSnoozeDurationPalette, pendingSteers, preferServiceRepair, project, refreshAiSetupStatus, refreshActivityPane, refreshState, remoteLaunch, requestAppExit, scheduleModelStateCommit, sendClaudeModelCommandToTerminal, setChatScrollOffset, socketPath]);
+  }, [activeSession?.provider, addNotice, applyLocalModelArg, compactFirstState, applySessionSnooze, chatLinkedPrs, clearOlderHistoryCursor, displaySessions, loadProviderModels, modelState.provider, openSnoozeDurationPalette, pendingSteers, preferServiceRepair, project, refreshAiSetupStatus, refreshActivityPane, refreshState, remoteLaunch, requestAppExit, scheduleModelStateCommit, sendClaudeModelCommandToTerminal, setChatScrollOffset, socketPath]);
 
   const submitRightForm = useCallback(async (
     form: Extract<RightPaneContent, { kind: "form" }>,
@@ -14271,6 +14375,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           codexConfigSource: normalized.codexConfigSource,
           opencodePermissionMode: normalized.opencodePermissionMode,
           droidPermissionMode: normalized.droidPermissionMode,
+          musePermissionMode: normalized.musePermissionMode,
+          copilotPermissionMode: normalized.copilotPermissionMode,
+          copilotContextTier: normalized.copilotContextTier,
+          copilotAutoTier: normalized.copilotAutoTier,
           cursorModeId: normalized.cursorModeId,
           cursorConfigValues: normalized.cursorConfigValues,
         });
@@ -14315,6 +14423,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       // A model chip is pure text: the token carries the model, the thinking
       // level, and the permission mode. The follow-up steps rewrite it.
       const model = suggestion.model;
+      setModelPickerRecents((prev) => [model.modelId, ...prev.filter((entry) => entry !== model.modelId)].slice(0, 10));
+      const recentsConn = connectionRef.current;
+      if (recentsConn) {
+        void pushModelPickerRecent(recentsConn, model.modelId)
+          .then((recents) => setModelPickerRecents(recents))
+          .catch(() => undefined);
+      }
       const mention: ModelMention = {
         modelId: model.modelId,
         effort: model.defaultEffort,
@@ -14579,6 +14694,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   }, [applyModelState, modelState.modelId, modelState.provider, models]);
 
   const cycleReasoning = useCallback((delta: number) => {
+    if (modelState.provider === "copilot" && isCopilotAutoModel(modelState.modelId)) {
+      const index = Math.max(0, COPILOT_AUTO_TIERS.findIndex((entry) => entry === modelState.copilotAutoTier));
+      const next = COPILOT_AUTO_TIERS[(index + delta + COPILOT_AUTO_TIERS.length) % COPILOT_AUTO_TIERS.length] ?? "balance";
+      applyModelState((prev) => ({ ...prev, copilotAutoTier: next, copilotAutoTierPending: true }));
+      return;
+    }
     const efforts = modelReasoningEfforts(modelState, models);
     if (!efforts.length) return;
     const index = Math.max(0, efforts.findIndex((effort) => effort === modelState.reasoningEffort));
@@ -14634,6 +14755,18 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       applyModelState((prev) => ({ ...prev, droidPermissionMode: next, permissionMode: droidPermissionToLegacy(next) }));
       return;
     }
+    if (modelState.provider === "muse") {
+      const index = Math.max(0, MUSE_PERMISSION_OPTIONS.findIndex((entry) => entry === musePermissionOption(modelState)));
+      const next = MUSE_PERMISSION_OPTIONS[(index + delta + MUSE_PERMISSION_OPTIONS.length) % MUSE_PERMISSION_OPTIONS.length] ?? "onRequest";
+      applyModelState((prev) => ({ ...prev, ...musePermissionPatch(next) }));
+      return;
+    }
+    if (modelState.provider === "copilot") {
+      const index = Math.max(0, COPILOT_PERMISSION_OPTIONS.findIndex((entry) => entry === modelState.copilotPermissionMode));
+      const next = COPILOT_PERMISSION_OPTIONS[(index + delta + COPILOT_PERMISSION_OPTIONS.length) % COPILOT_PERMISSION_OPTIONS.length] ?? "ask";
+      applyModelState((prev) => ({ ...prev, copilotPermissionMode: next }));
+      return;
+    }
     const modeIds = cursorModeIdsForState(modelState);
     const index = Math.max(0, modeIds.findIndex((entry) => entry === modelState.cursorModeId));
     const next = modeIds[(index + delta + modeIds.length) % modeIds.length] ?? "agent";
@@ -14687,6 +14820,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     }
     if (row.kind === "permission") {
       cyclePermission(direction);
+      return;
+    }
+    if (row.kind === "copilot-context") {
+      applyModelState((prev) => ({ ...prev, copilotContextTier: prev.copilotContextTier === "long_context" ? "default" : "long_context" }));
       return;
     }
     if (row.kind === "codex-fast") {
@@ -17489,6 +17626,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         void refreshActivityPane({ announce: true });
         return;
       }
+      const chip = key.ctrl || key.meta ? undefined : activityPaneChipForKey(input);
+      if (chip !== undefined) {
+        activityPaneColumnRef.current = chip;
+        setRightPane({
+          kind: "activity",
+          model: buildActivityPaneModel(rightPane.model.snapshot, { column: chip }),
+        });
+        setRightSelectionIndex(0);
+        return;
+      }
     }
 
     if (pane === "details" && rightOpen && rightPane.kind === "list" && rightPane.action && key.upArrow) {
@@ -18957,12 +19104,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           flexDirection="column"
           width={promptPaneWidth}
         >
-          {promptSmartLinks.length > 0 || promptModelMentions.length > 0 ? (
+          {!promptIsSecret && (promptSmartLinks.length > 0 || promptModelMentions.length > 0) ? (
             <Text color={PURPLE} bold wrap="truncate-end">
               {formatPromptSmartLinkStrip(promptSmartLinks, promptModelMentions)}
             </Text>
           ) : null}
-          {promptRows.map((line, index) => {
+          {promptRows.map((rawLine, index) => {
+            const line = promptIsSecret ? { ...rawLine, text: Array.from(rawLine.text, () => "•").join("") } : rawLine;
             const cursorColumn = promptFocused ? line.cursorColumn : null;
             const hasCursor = cursorColumn != null;
             const cursorParts = hasCursor ? splitByDisplayCells(line.text, cursorColumn, cursorColumn + 1) : null;
@@ -19042,6 +19190,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           multiViewActive={Boolean(multiView)}
           multiViewMap={footerMultiViewMap}
           workPaneFocused={drawerOpen && (activePane === "drawer" || activePane === "addMode")}
+          compactFirst={compactFirstFooter}
         />
           </Box>
           {rightPaneVisible ? (

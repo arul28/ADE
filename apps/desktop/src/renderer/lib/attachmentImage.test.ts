@@ -61,6 +61,9 @@ describe("readAttachmentImageDataUrl", () => {
     await expect(readAttachmentImageDataUrl("/local.png", localPin))
       .resolves.toEqual({ dataUrl: "data:image/png;base64,LOCAL" });
     expect(localRead).toHaveBeenCalledWith("/local.png");
+
+    localRead.mockRejectedValueOnce(new Error("Path is outside allowed directories."));
+    await expect(readAttachmentImageDataUrl("/gone.png", localPin)).rejects.toThrow("Path does not exist.");
   });
 
   // Successful reads are cached per owner and path for the life of the

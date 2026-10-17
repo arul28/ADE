@@ -53,6 +53,7 @@ function installAdeMocks() {
       }),
       refresh: vi.fn().mockResolvedValue([]),
       syncLanePr: vi.fn().mockResolvedValue(null),
+      reconcileOnFocus: vi.fn().mockResolvedValue(undefined),
       getChecks: vi.fn().mockResolvedValue([]),
       openInGitHub: vi.fn().mockResolvedValue(undefined),
     },
@@ -552,6 +553,43 @@ describe("ChatGitToolbar", () => {
     await waitFor(() => {
       expect(vi.mocked(window.ade.prs.getForLane).mock.calls.length).toBeGreaterThan(readsBefore);
     });
+  });
+
+  // A PR an agent opened with `gh pr create` reaches the lane machine's
+  // database only through a reconcile, and this computer's focus hook runs one
+  // only for its own projects. The healing re-read after it finishes is pinned
+  // by "still heals the header PR pill when a backend reconcile finishes".
+  it.each([
+    {
+      name: "a chat pinned to another machine",
+      remoteStore: false,
+      runtimePin: {
+        kind: "remote",
+        key: "remote:target-b:project-b",
+        targetId: "target-b",
+        projectId: "project-b",
+        runtimeName: "Windows PC",
+        displayName: "Repo B",
+        rootPath: "C:\\repo-b",
+      },
+      expectedCalls: 1,
+    },
+    { name: "a project bound to a remote machine", remoteStore: true, runtimePin: null, expectedCalls: 1 },
+    { name: "a chat on this computer", remoteStore: false, runtimePin: null, expectedCalls: 0 },
+  ])("asks the lane's machine for a PR reconcile only for $name", async ({ remoteStore, runtimePin, expectedCalls }) => {
+    resetStore({ remote: remoteStore });
+
+    renderToolbar({ runtimePin });
+    await waitFor(() => expect(window.ade.prs.getForLane).toHaveBeenCalled());
+
+    // A refocus inside the cooldown does not pay another round trip.
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
+
+    const reconcile = vi.mocked(window.ade.prs.reconcileOnFocus);
+    expect(reconcile).toHaveBeenCalledTimes(expectedCalls);
+    if (expectedCalls > 0) expect(reconcile).toHaveBeenCalledWith(runtimePin);
   });
 
   it("ignores stale toolbar live refresh results after switching lanes", async () => {

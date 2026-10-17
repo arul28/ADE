@@ -2,7 +2,11 @@ import type {
   AgentChatEventEnvelope,
   AgentChatEventHistoryPage,
 } from "../../../shared/types";
-import { agentChatEventIdentityKey } from "../../../shared/chatHistoryMerge";
+import {
+  agentChatEventIdentityKey,
+  foldedOverAppends,
+  recordAgentChatLiveAppend,
+} from "../../../shared/chatHistoryMerge";
 import { retainUnresolvedApprovalRequests } from "../../../shared/chatPendingInputRetention";
 
 const chatEventResidentSizeCache = new WeakMap<AgentChatEventEnvelope, number>();
@@ -28,6 +32,58 @@ export function estimatedChatEventResidentBytes(event: AgentChatEventEnvelope): 
 }
 
 /**
+ * The share of a budget a window gives up in one trim.
+ *
+ * A trim hands on a NEW list, and a new list takes the full path everywhere it
+ * is read: the live merge rebuilds its identity index over the transcript, the
+ * display filter refilters it, and the row builder rebuilds every row. Dropping
+ * one event per flush — what a window that has reached its cap used to do — is
+ * therefore the whole transcript, three times, per streamed event.
+ *
+ * So a window that has filled its budget gives up a step of it instead. The
+ * list is new once per step; the flushes in between are appends, which all
+ * three of those paths carry forward. The window is only ever shorter than its
+ * cap by at most one step, and only in the region it was already dropping.
+ */
+const CHAT_RESIDENT_TRIM_STEP_DIVISOR = 16;
+
+function residentTrimStep(budget: number): number {
+  return Math.max(1, Math.floor(budget / CHAT_RESIDENT_TRIM_STEP_DIVISOR));
+}
+
+const residentChatEventBytesByEvents = new WeakMap<
+  readonly AgentChatEventEnvelope[],
+  { value: number }
+>();
+
+/**
+ * The resident size of a list, carried forward from the list the live merge
+ * appended to, so a streamed event costs that event and not a walk of the
+ * transcript. The merge can replace a repeated tool call in place, which
+ * changes the size of an entry the carry cannot see; a batch with replacements
+ * folds the list again (it is rare, and the answer stays exact either way).
+ */
+function residentChatEventBytes(events: AgentChatEventEnvelope[]): number {
+  return foldedOverAppends(
+    residentChatEventBytesByEvents,
+    events,
+    (before, append) => {
+      if (append.replacedIndexes.length) return null;
+      let total = before;
+      for (let index = append.appendedFrom; index < events.length; index += 1) {
+        total += estimatedChatEventResidentBytes(events[index]!);
+      }
+      return { value: total };
+    },
+    () => {
+      let total = 0;
+      for (const event of events) total += estimatedChatEventResidentBytes(event);
+      return total;
+    },
+  );
+}
+
+/**
  * Keep the newest `maxEvents` (and at most `maxBytes`) — plus every
  * `approval_request` that has no receipt yet, wherever it falls.
  *
@@ -36,25 +92,35 @@ export function estimatedChatEventResidentBytes(event: AgentChatEventEnvelope): 
  * is a card the user cannot answer while the backend still refuses their next
  * send. Every renderer path — desktop and the hosted web client, which share
  * this module — goes through here.
+ *
+ * A window inside its budgets comes back as the same list, which is what lets
+ * the live merge, the display filter and the row builder carry their work
+ * forward across a turn. A window over one gives up a step of it (see
+ * {@link CHAT_RESIDENT_TRIM_STEP_DIVISOR}), so that is a per-step cost and not
+ * a per-event one.
  */
 export function trimChatEventHistory(
   events: AgentChatEventEnvelope[],
   maxEvents: number,
   maxBytes = Number.POSITIVE_INFINITY,
 ): AgentChatEventEnvelope[] {
-  const countStart = Math.max(0, events.length - maxEvents);
-  if (!Number.isFinite(maxBytes)) {
-    return countStart > 0
-      ? retainUnresolvedApprovalRequests(events, events.slice(countStart))
-      : events;
-  }
-  let estimatedBytes = 0;
-  let byteStart = events.length;
-  for (let index = events.length - 1; index >= countStart; index -= 1) {
-    const eventBytes = estimatedChatEventResidentBytes(events[index]!);
-    if (byteStart < events.length && estimatedBytes + eventBytes > maxBytes) break;
-    estimatedBytes += eventBytes;
-    byteStart = index;
+  const overCount = events.length > maxEvents;
+  const overBytes = Number.isFinite(maxBytes) && residentChatEventBytes(events) > maxBytes;
+  if (!overCount && !overBytes) return events;
+  const countStart = overCount
+    ? Math.max(0, events.length - Math.max(1, maxEvents - residentTrimStep(maxEvents)))
+    : 0;
+  let byteStart = 0;
+  if (overBytes) {
+    const byteBudget = Math.max(1, maxBytes - residentTrimStep(maxBytes));
+    let estimatedBytes = 0;
+    byteStart = events.length;
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const eventBytes = estimatedChatEventResidentBytes(events[index]!);
+      if (byteStart < events.length && estimatedBytes + eventBytes > byteBudget) break;
+      estimatedBytes += eventBytes;
+      byteStart = index;
+    }
   }
   const start = Math.max(countStart, byteStart);
   return start > 0 ? retainUnresolvedApprovalRequests(events, events.slice(start)) : events;
@@ -220,9 +286,15 @@ export function resolveMergedSnapshotHistoryCursor(args: {
   mergedEvents: AgentChatEventEnvelope[];
   detached: boolean;
 }): number {
+  // A refresh that kept the resident history keeps its paging position too.
+  // Resetting a partly paged-back view to the snapshot's own start pointed the
+  // next "load earlier" at pages already on screen, and the page merge (which
+  // only dedupes at the seam) prepended them again: every refresh during a long
+  // live turn grew the transcript by another copy of its older rows.
   if (
     args.snapshotCursor <= 0
-    || args.currentCursor !== 0
+    || args.currentCursor == null
+    || args.currentCursor < 0
     || args.detached
     || !args.snapshotEvents.length
     || !args.existingEvents.length
@@ -235,6 +307,112 @@ export function resolveMergedSnapshotHistoryCursor(args: {
   const oldestExistingKey = chatEventDedupKey(args.existingEvents[0]!);
   const keptOldestExisting = args.mergedEvents.some((event) => chatEventDedupKey(event) === oldestExistingKey);
   return snapshotOverlaps && keptOldestExisting
-    ? 0
+    ? Math.min(args.currentCursor, args.snapshotCursor)
     : args.snapshotCursor;
+}
+
+type ChatDisplayFilter = {
+  display: AgentChatEventEnvelope[];
+  /** Positions in the source list of the events left out, ascending. */
+  droppedIndexes: readonly number[];
+};
+
+const chatDisplayFilterByEvents = new WeakMap<readonly AgentChatEventEnvelope[], { value: ChatDisplayFilter }>();
+
+/** How many of the sorted `indexes` are below `index`. */
+function countBelow(indexes: readonly number[], index: number): number {
+  let low = 0;
+  let high = indexes.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (indexes[middle]! < index) low = middle + 1;
+    else high = middle;
+  }
+  return low;
+}
+
+/** A dotted `subagent.*` event; the transcript shows its plain twin. */
+function isSubagentTwin(envelope: AgentChatEventEnvelope): boolean {
+  return envelope.event.type.startsWith("subagent.");
+}
+
+function touchesSteerState(envelope: AgentChatEventEnvelope): boolean {
+  const event = envelope.event;
+  return (event.type === "user_message" || event.type === "system_notice") && Boolean(event.steerId);
+}
+
+function filterChatDisplayEvents(events: AgentChatEventEnvelope[]): ChatDisplayFilter {
+  const settledSteerIds = new Set<string>();
+  for (const { event } of events) {
+    if (event.type === "user_message" && event.steerId && event.deliveryState !== "queued") {
+      settledSteerIds.add(event.steerId);
+    } else if (
+      event.type === "system_notice"
+      && event.steerId
+      && /\b(?:cancelled|delivering)\b/i.test(event.message)
+    ) {
+      settledSteerIds.add(event.steerId);
+    }
+  }
+  const droppedIndexes: number[] = [];
+  const display = events.filter((envelope, index) => {
+    const event = envelope.event;
+    const hidden = isSubagentTwin(envelope)
+      // Historical immediate sends were first persisted as queued and then
+      // resolved under the same steer id. Once resolved, hide the obsolete
+      // queue notice so the transcript cannot contradict the delivered bubble.
+      || (
+        event.type === "system_notice"
+        && Boolean(event.steerId)
+        && settledSteerIds.has(event.steerId!)
+        && /^Message queued\b/i.test(event.message)
+      );
+    if (hidden) droppedIndexes.push(index);
+    return !hidden;
+  });
+  return droppedIndexes.length ? { display, droppedIndexes } : { display: events, droppedIndexes };
+}
+
+/**
+ * The events a transcript shows: everything except the dotted `subagent.*`
+ * twins and queue notices a later delivery made obsolete.
+ *
+ * A list the live merge appended to extends the previous answer instead of
+ * filtering the whole transcript again, and the view keeps that relation, so
+ * what is folded from it carries forward as well. When nothing new is shown
+ * (a batch of `subagent.*` twins) the previous list itself comes back and the
+ * transcript does not render. A steer event can hide an older notice, so it
+ * takes the full filter.
+ */
+export function chatDisplayEvents(events: AgentChatEventEnvelope[]): AgentChatEventEnvelope[] {
+  return foldedOverAppends(
+    chatDisplayFilterByEvents,
+    events,
+    (before, append) => {
+      const shown: AgentChatEventEnvelope[] = [];
+      const dropped: number[] = [];
+      for (let index = append.appendedFrom; index < events.length; index += 1) {
+        const envelope = events[index]!;
+        if (touchesSteerState(envelope)) return null;
+        if (isSubagentTwin(envelope)) dropped.push(index);
+        else shown.push(envelope);
+      }
+      const droppedIndexes = dropped.length ? [...before.droppedIndexes, ...dropped] : before.droppedIndexes;
+      if (!droppedIndexes.length) return { value: { display: events, droppedIndexes } };
+      if (!shown.length && !append.replacedIndexes.length) return { value: { display: before.display, droppedIndexes } };
+      const display = before.display.slice();
+      const replacedIndexes = append.replacedIndexes.map((index) => index - countBelow(before.droppedIndexes, index));
+      append.replacedIndexes.forEach((index, at) => {
+        display[replacedIndexes[at]!] = events[index]!;
+      });
+      for (const envelope of shown) display.push(envelope);
+      recordAgentChatLiveAppend(display, {
+        base: before.display,
+        appendedFrom: before.display.length,
+        replacedIndexes,
+      });
+      return { value: { display, droppedIndexes } };
+    },
+    () => filterChatDisplayEvents(events),
+  ).display;
 }

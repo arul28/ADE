@@ -52,7 +52,7 @@ function badgeTitle(badge: CommitRefBadge): string {
 
 const MENU_ITEM = cn(
   "flex cursor-pointer select-none items-center gap-2 rounded-[6px] px-2 py-1.5 text-[12px] text-fg outline-none",
-  "data-[highlighted]:bg-white/[0.07] data-[disabled]:cursor-default data-[disabled]:opacity-40",
+  "data-[highlighted]:bg-fg/[0.07] data-[disabled]:cursor-default data-[disabled]:opacity-40",
 );
 
 function RefBadge({
@@ -82,7 +82,7 @@ function RefBadge({
           className={cn(
             "inline-flex h-[18px] min-w-[92px] max-w-[176px] shrink items-center gap-1 rounded-[5px] px-1.5 text-[11px] font-medium leading-none",
             "transition-[background-color,box-shadow] duration-100 outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
-            tinted ? null : "bg-white/[0.06] text-fg/75 hover:bg-white/[0.1]",
+            tinted ? null : "bg-fg/[0.06] text-fg/75 hover:bg-fg/[0.1]",
             badge.isCurrent && !tinted ? "shadow-[inset_0_0_0_1px_rgba(255,255,255,0.18)]" : null,
           )}
           style={tinted ? {
@@ -99,7 +99,7 @@ function RefBadge({
           align="start"
           sideOffset={4}
           collisionPadding={8}
-          className="min-w-[200px] rounded-[9px] border border-white/[0.08] bg-[var(--color-card)] p-1 shadow-xl"
+          className="min-w-[200px] rounded-[9px] border border-fg/[0.08] bg-[var(--color-card)] p-1 shadow-xl"
           style={{ zIndex: Z_LAYERS.popover }}
           onClick={(event) => event.stopPropagation()}
         >
@@ -172,7 +172,7 @@ export const CommitRefBadges = React.memo(function CommitRefBadges({
       ))}
       {hidden.length > 0 ? (
         <span
-          className="inline-flex h-[18px] shrink-0 items-center rounded-[5px] bg-white/[0.05] px-1.5 text-[11px] font-medium tabular-nums text-muted-fg"
+          className="inline-flex h-[18px] shrink-0 items-center rounded-[5px] bg-fg/[0.05] px-1.5 text-[11px] font-medium tabular-nums text-muted-fg"
           title={hidden.map((badge) => (badge.lane ? `${badge.lane.name} (${badge.branch})` : badge.branch)).join("\n")}
         >
           +{hidden.length}

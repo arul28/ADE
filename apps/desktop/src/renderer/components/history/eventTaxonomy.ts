@@ -1,3 +1,5 @@
+import type { EventIconName } from "./eventIcons";
+
 // ── Event Categories ─────────────────────────────────────────────
 export type EventCategory =
   | "git"
@@ -85,7 +87,7 @@ export const CATEGORY_META: Record<EventCategory, CategoryMeta> = {
 export type EventKindMeta = {
   label: string;           // Human-readable label
   category: EventCategory;
-  iconName: string;        // Phosphor icon name (for dynamic lookup)
+  iconName: EventIconName; // Key of EVENT_ICONS (eventIcons.ts)
   description: string;     // Tooltip description
   importance: EventImportance;  // Controls default visibility
 };
@@ -103,7 +105,7 @@ export const EVENT_KIND_META: Record<string, EventKindMeta> = {
   "git.sync":         { label: "Sync",          category: "git", iconName: "ArrowsClockwise",        description: "Sync (pull + push)",       importance: "high" },
   "git.checkout":     { label: "Checkout",      category: "git", iconName: "ArrowBendUpRight",       description: "Branch checkout",          importance: "high" },
   "git.stash":        { label: "Stash",         category: "git", iconName: "Archive",                description: "Changes stashed",          importance: "medium" },
-  "git.stash_pop":    { label: "Stash Pop",     category: "git", iconName: "ArchiveBox",             description: "Stash popped",             importance: "medium" },
+  "git.stash_pop":    { label: "Stash Pop",     category: "git", iconName: "Archive",             description: "Stash popped",             importance: "medium" },
   "git.cherry_pick":  { label: "Cherry Pick",   category: "git", iconName: "TreeStructure",          description: "Cherry-pick applied",      importance: "high" },
   "git.revert":       { label: "Revert",        category: "git", iconName: "ArrowCounterClockwise",  description: "Commit reverted",          importance: "high" },
   "git.amend":        { label: "Amend",         category: "git", iconName: "PencilLine",             description: "Commit amended",           importance: "high" },
@@ -124,8 +126,8 @@ export const EVENT_KIND_META: Record<string, EventKindMeta> = {
   "git_reset_mixed":           { label: "Mixed Reset",          category: "git", iconName: "ArrowCounterClockwise", description: "Lane mixed reset",              importance: "high" },
   "git_reset_hard":            { label: "Hard Reset",           category: "git", iconName: "Trash",                 description: "Lane hard reset",               importance: "high" },
   "git_stash_push":            { label: "Stash",                category: "git", iconName: "Archive",               description: "Changes stashed",              importance: "medium" },
-  "git_stash_apply":           { label: "Stash Apply",          category: "git", iconName: "ArchiveBox",            description: "Stash applied",                importance: "medium" },
-  "git_stash_pop":             { label: "Stash Pop",            category: "git", iconName: "ArchiveBox",            description: "Stash popped",                 importance: "medium" },
+  "git_stash_apply":           { label: "Stash Apply",          category: "git", iconName: "Archive",            description: "Stash applied",                importance: "medium" },
+  "git_stash_pop":             { label: "Stash Pop",            category: "git", iconName: "Archive",            description: "Stash popped",                 importance: "medium" },
   "git_stash_drop":            { label: "Stash Drop",           category: "git", iconName: "Trash",                 description: "Stash deleted",                importance: "medium" },
   "git_stash_clear":           { label: "Stashes Cleared",      category: "git", iconName: "Trash",                 description: "Branch stashes deleted",       importance: "medium" },
   "git_cherry_pick":           { label: "Cherry Pick",          category: "git", iconName: "TreeStructure",         description: "Cherry-pick applied",          importance: "high" },
@@ -137,7 +139,7 @@ export const EVENT_KIND_META: Record<string, EventKindMeta> = {
 
   // ── Lane Lifecycle ──────────────────────────────────────────
   "lane.created":           { label: "Lane Created",      category: "lane", iconName: "PlusCircle",      description: "New lane created",                  importance: "high" },
-  "lane.archived":          { label: "Lane Archived",     category: "lane", iconName: "ArchiveBox",      description: "Lane archived",                     importance: "high" },
+  "lane.archived":          { label: "Lane Archived",     category: "lane", iconName: "Archive",      description: "Lane archived",                     importance: "high" },
   "lane.deleted":           { label: "Lane Deleted",      category: "lane", iconName: "MinusCircle",     description: "Lane deleted",                      importance: "high" },
   "lane.renamed":           { label: "Lane Renamed",      category: "lane", iconName: "TextAa",          description: "Lane renamed",                      importance: "medium" },
   "lane.status_changed":    { label: "Status Changed",    category: "lane", iconName: "Pulse",           description: "Lane status changed",               importance: "low" },
@@ -187,7 +189,7 @@ export const EVENT_KIND_META: Record<string, EventKindMeta> = {
   "automation.completed":   { label: "Completed",       category: "automation", iconName: "CheckCircle",  description: "Automation completed",  importance: "high" },
   "automation.failed":      { label: "Failed",          category: "automation", iconName: "XCircle",      description: "Automation failed",     importance: "high" },
   "automation.run":         { label: "Automation Run", category: "automation", iconName: "Lightning",    description: "Automation run",        importance: "medium" },
-  "automation.webhook":     { label: "Webhook",         category: "automation", iconName: "Webhook",      description: "Webhook received",      importance: "medium" },
+  "automation.webhook":     { label: "Webhook",         category: "automation", iconName: "WebhooksLogo",      description: "Webhook received",      importance: "medium" },
 
   // ── Tests ───────────────────────────────────────────────────
   "test.run_started":   { label: "Tests Started",  category: "test", iconName: "TestTube",    description: "Test run started", importance: "medium" },

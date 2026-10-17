@@ -17,7 +17,19 @@ import type {
   AgentChatModelInfo,
   AgentChatPermissionMode,
 } from "../../../desktop/src/shared/types/chat";
-import { AGENT_CHAT_DROID_PERMISSION_MODE_VALUES } from "../../../desktop/src/shared/types/chat";
+import {
+  AGENT_CHAT_DROID_PERMISSION_MODE_VALUES,
+  AGENT_CHAT_MUSE_PERMISSION_MODE_DETAILS,
+  AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES,
+  DEFAULT_MUSE_PERMISSION_MODE,
+  type AgentChatCopilotAutoTier,
+  type AgentChatCopilotContextTier,
+  type AgentChatCopilotPermissionMode,
+  type AgentChatMusePermissionMode,
+} from "../../../desktop/src/shared/types/chat";
+import {
+  legacyPermissionModeFromMusePermissionMode,
+} from "../../../desktop/src/shared/modelPermissions";
 import { DEFAULT_CODEX_REASONING_EFFORT, type CliTerminalProvider } from "./adeApi";
 import { theme } from "./theme";
 import type { AdeCodeInterfaceMode, AdeCodeModelState, AdeCodeProvider, SetupPaneRow, SetupPaneRowKind } from "./types";
@@ -29,6 +41,30 @@ export const CODEX_PRESETS = ["default", "edit", "plan", "full-auto", "config-to
 export const CLAUDE_PERMISSION_OPTIONS = ["default", "auto", "plan", "acceptEdits", "bypassPermissions"] as const;
 export const OPENCODE_PERMISSION_OPTIONS = ["plan", "edit", "full-auto", "config-toml"] as const;
 export const DROID_PERMISSION_OPTIONS = AGENT_CHAT_DROID_PERMISSION_MODE_VALUES;
+/** Copilot's permission levels: the ladder plus `assisted` (Copilot's LLM-reviewed approvals). */
+export const COPILOT_PERMISSION_OPTIONS: readonly AgentChatCopilotPermissionMode[] = ["plan", "ask", "assisted", "auto-edit", "full-auto"];
+/** Copilot's Auto routing profiles, in the order the effort slot lists them. */
+export const COPILOT_AUTO_TIERS: readonly AgentChatCopilotAutoTier[] = ["efficiency", "balance", "intelligence"];
+export function isCopilotAutoModel(modelId: string | null | undefined): boolean {
+  const id = (modelId ?? "").trim().toLowerCase();
+  return id === "auto" || id.endsWith("/auto");
+}
+export function copilotAutoTierLabel(tier: AgentChatCopilotAutoTier | null | undefined): string {
+  if (tier === "efficiency") return "Efficiency";
+  if (tier === "balance") return "Balance";
+  if (tier === "intelligence") return "Intelligence";
+  return "default";
+}
+/** A catalog row's context tiers. Read through a cast until the catalog type carries the field. */
+export function catalogContextTiers(model: AgentChatModelInfo | undefined): readonly string[] {
+  return (model as { supportedContextTiers?: string[] } | undefined)?.supportedContextTiers ?? [];
+}
+/**
+ * Muse's picker: ADE's plan rung (an interaction mode over `denyUnmatched`)
+ * then Muse's own approval modes, most cautious first.
+ */
+export const MUSE_PERMISSION_OPTIONS = ["plan", ...AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES] as const;
+export type MusePermissionOption = (typeof MUSE_PERMISSION_OPTIONS)[number];
 
 export type CodexPreset = (typeof CODEX_PRESETS)[number];
 
@@ -53,6 +89,11 @@ export function initialModelState(draftKind: AdeCodeInterfaceMode = "chat"): Ade
     codexConfigSource: "flags",
     opencodePermissionMode: "edit",
     droidPermissionMode: "auto-low",
+    musePermissionMode: DEFAULT_MUSE_PERMISSION_MODE,
+    copilotPermissionMode: "ask",
+    copilotContextTier: "default",
+    copilotAutoTier: null,
+    copilotAutoTierPending: false,
     cursorModeId: "agent",
     cursorAvailableModeIds: [],
     cursorConfigValues: {},
@@ -89,6 +130,10 @@ export function providerSettingsMemoryFromState(state: AdeCodeModelState): AdeCo
     codexConfigSource: state.codexConfigSource,
     opencodePermissionMode: state.opencodePermissionMode,
     droidPermissionMode: state.droidPermissionMode,
+    musePermissionMode: state.musePermissionMode,
+    copilotPermissionMode: state.copilotPermissionMode,
+    copilotContextTier: state.copilotContextTier,
+    copilotAutoTier: state.copilotAutoTier,
     cursorModeId: state.cursorModeId,
   };
 }
@@ -111,6 +156,10 @@ export function providerSettingsPatchFromMemory(
     codexConfigSource: memory.codexConfigSource as AdeCodeModelState["codexConfigSource"],
     opencodePermissionMode: memory.opencodePermissionMode as AdeCodeModelState["opencodePermissionMode"],
     droidPermissionMode: memory.droidPermissionMode as AdeCodeModelState["droidPermissionMode"],
+    musePermissionMode: museModeFromMemory(memory.musePermissionMode),
+    copilotPermissionMode: copilotModeFromMemory(memory.copilotPermissionMode),
+    copilotContextTier: memory.copilotContextTier === "long_context" ? "long_context" : "default",
+    copilotAutoTier: copilotAutoTierFromMemory(memory.copilotAutoTier),
     cursorModeId: memory.cursorModeId,
   };
 }
@@ -164,8 +213,48 @@ export function modelMemoryFromLaunchDefaults(
     codexConfigSource: defaults.codexConfigSource ?? fallback.codexConfigSource,
     opencodePermissionMode: defaults.opencodePermissionMode ?? fallback.opencodePermissionMode,
     droidPermissionMode: defaults.droidPermissionMode ?? fallback.droidPermissionMode,
+    musePermissionMode: defaults.musePermissionMode ?? fallback.musePermissionMode,
     cursorModeId: defaults.cursorModeId ?? fallback.cursorModeId,
   };
+}
+
+function copilotModeFromMemory(value: string | undefined): AgentChatCopilotPermissionMode {
+  return (COPILOT_PERMISSION_OPTIONS as readonly string[]).includes(value ?? "") ? value as AgentChatCopilotPermissionMode : "ask";
+}
+
+function copilotAutoTierFromMemory(value: string | null | undefined): AgentChatCopilotAutoTier | null {
+  return (COPILOT_AUTO_TIERS as readonly string[]).includes(value ?? "") ? value as AgentChatCopilotAutoTier : null;
+}
+
+function museModeFromMemory(value: string | undefined): AgentChatMusePermissionMode {
+  return (AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES as readonly string[]).includes(value ?? "")
+    ? value as AgentChatMusePermissionMode
+    : DEFAULT_MUSE_PERMISSION_MODE;
+}
+
+/** The Muse picker's current option: plan when the chat is in plan mode. */
+export function musePermissionOption(
+  modelState: Pick<AdeCodeModelState, "interactionMode" | "musePermissionMode">,
+): MusePermissionOption {
+  return modelState.interactionMode === "plan" ? "plan" : modelState.musePermissionMode;
+}
+
+/** The state patch for one Muse picker option. */
+export function musePermissionPatch(
+  option: MusePermissionOption,
+): Pick<AdeCodeModelState, "interactionMode" | "musePermissionMode" | "permissionMode"> {
+  if (option === "plan") {
+    return { interactionMode: "plan", musePermissionMode: "denyUnmatched", permissionMode: "plan" };
+  }
+  return {
+    interactionMode: "default",
+    musePermissionMode: option,
+    permissionMode: legacyPermissionModeFromMusePermissionMode(option) ?? "default",
+  };
+}
+
+function musePermissionSummary(option: MusePermissionOption): string {
+  return option === "plan" ? "plan" : AGENT_CHAT_MUSE_PERMISSION_MODE_DETAILS[option].label.toLowerCase();
 }
 
 /** Apply a project's remembered model to a freshly built model state. */
@@ -447,6 +536,8 @@ export function permissionSummary(modelState: AdeCodeModelState): string {
   }
   if (usesToolPermissionModes(modelState.provider)) return modelState.opencodePermissionMode;
   if (modelState.provider === "droid") return modelState.droidPermissionMode;
+  if (modelState.provider === "copilot") return modelState.copilotPermissionMode ?? "ask";
+  if (modelState.provider === "muse") return musePermissionSummary(musePermissionOption(modelState));
   return cursorModeLabel(modelState.cursorModeId);
 }
 
@@ -466,6 +557,10 @@ const MODE_DESCRIPTIONS: Record<string, string> = {
   "auto-high": "high-autonomy ops",
   agi: "orchestrator mission",
   "config-toml": "config-defined mode",
+  assisted: "copilot reviews each call",
+  "auto-edit": "approve reads and writes in the lane",
+  // Muse's approval modes, as `permissionSummary` words them.
+  "full access": "no approvals required",
 };
 
 export function modeDescription(summary: string): string {
@@ -474,7 +569,7 @@ export function modeDescription(summary: string): string {
 
 export function modeAccentColor(summary: string): string {
   if (summary === "plan" || summary === "read-only" || summary === "agi") return theme.color.planMode;
-  if (summary === "bypass" || summary === "full-auto" || summary === "auto-high") return theme.color.warning;
+  if (summary === "bypass" || summary === "full-auto" || summary === "auto-high" || summary === "full access") return theme.color.warning;
   return theme.color.accent;
 }
 
@@ -483,6 +578,8 @@ function permissionOptionsDetail(modelState: AdeCodeModelState): string {
   if (modelState.provider === "claude") return "default · plan · auto · bypass";
   if (usesToolPermissionModes(modelState.provider)) return OPENCODE_PERMISSION_OPTIONS.join(" · ");
   if (modelState.provider === "droid") return DROID_PERMISSION_OPTIONS.join(" · ");
+  if (modelState.provider === "copilot") return COPILOT_PERMISSION_OPTIONS.join(" · ");
+  if (modelState.provider === "muse") return MUSE_PERMISSION_OPTIONS.map(musePermissionSummary).join(" · ");
   return cursorModeIdsForState(modelState).map((modeId) => cursorModeLabel(modeId)).join(" · ");
 }
 
@@ -502,6 +599,7 @@ export function applyProviderPermissionMode(modelState: AdeCodeModelState): Part
   }
   if (usesToolPermissionModes(modelState.provider)) return { permissionMode: modelState.opencodePermissionMode };
   if (modelState.provider === "droid") return { permissionMode: droidPermissionToLegacy(modelState.droidPermissionMode) };
+  if (modelState.provider === "muse") return musePermissionPatch(musePermissionOption(modelState));
   if (modelState.provider === "cursor") {
     if (modelState.cursorModeId === "plan") return { permissionMode: "plan" };
     if (modelState.cursorModeId === "ask") return { permissionMode: "edit" };
@@ -524,6 +622,9 @@ export function buildSetupRows(args: {
   interfaceEditable: boolean;
 }): SetupPaneRow[] {
   const efforts = modelReasoningEfforts(args.modelState, args.models);
+  const copilotAuto = args.modelState.provider === "copilot" && isCopilotAutoModel(args.modelState.modelId);
+  const copilotCatalogModel = args.models.find((entry) => entry.id === args.modelState.modelId || entry.modelId === args.modelState.modelId);
+  const copilotLongTier = args.modelState.provider === "copilot" && catalogContextTiers(copilotCatalogModel).includes("long_context");
   const descriptor = args.modelState.modelId ? getModelById(args.modelState.modelId) : undefined;
   const activeModel = args.models.find((entry) => entry.id === args.modelState.modelId || entry.modelId === args.modelState.modelId);
   const fastSupported =
@@ -555,18 +656,37 @@ export function buildSetupRows(args: {
       detail: args.models.length ? `${args.models.length} available` : "using registry default",
       cyclable: true,
     },
-    {
-      kind: "reasoning",
-      label: "Reasoning",
-      value: reasoningEffortDisplayLabel(args.modelState.reasoningEffort, args.modelState) ?? "none",
-      detail: args.modelState.reasoningEffort === "ultra"
-        ? "multi-agent · can use limits faster"
-        : efforts.length
-          ? efforts.map((effort) => reasoningEffortDisplayLabel(effort, args.modelState) ?? effort).join(", ")
-          : "not exposed by this model",
-      disabled: !efforts.length,
-      cyclable: true,
-    },
+    copilotAuto
+      ? {
+        kind: "reasoning",
+        label: "Auto profile",
+        value: copilotAutoTierLabel(args.modelState.copilotAutoTier),
+        detail: args.modelState.copilotAutoTierPending
+          ? "applies from the next message"
+          : COPILOT_AUTO_TIERS.map((tier) => copilotAutoTierLabel(tier)).join(" · "),
+        cyclable: true,
+      }
+      : {
+        kind: "reasoning",
+        label: "Reasoning",
+        value: reasoningEffortDisplayLabel(args.modelState.reasoningEffort, args.modelState) ?? "none",
+        detail: args.modelState.reasoningEffort === "ultra"
+          ? "multi-agent · can use limits faster"
+          : efforts.length
+            ? efforts.map((effort) => reasoningEffortDisplayLabel(effort, args.modelState) ?? effort).join(", ")
+            : "not exposed by this model",
+        disabled: !efforts.length,
+        cyclable: true,
+      },
+    ...(copilotLongTier
+      ? [{
+        kind: "copilot-context" as const,
+        label: "Context",
+        value: args.modelState.copilotContextTier === "long_context" ? "Long" : "Default",
+        detail: "default · long (higher price per token)",
+        cyclable: true,
+      }]
+      : []),
     {
       kind: "permission",
       label: "Permissions",

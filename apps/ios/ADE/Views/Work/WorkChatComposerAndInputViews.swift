@@ -405,10 +405,15 @@ struct WorkComposerControlsRow: View {
   let fastModeEnabled: Bool
   let onOpenModelPicker: (() -> Void)?
   let onSelectMode: ((String) -> Void)?
+  /// False when the access mode is not known yet (a chat on another machine
+  /// before its summary arrives): no dot beats a wrong one.
+  var showsAccessControl: Bool = true
 
   var body: some View {
     HStack(spacing: 8) {
-      accessControl
+      if showsAccessControl {
+        accessControl
+      }
       modelPill
     }
   }
@@ -650,7 +655,8 @@ struct WorkComposerChipStrip: View {
             isCollapsed: isCollapsed,
             fastModeEnabled: codexFastModeOverride ?? chatSummary.effectiveFastMode,
             onOpenModelPicker: onOpenModelPicker,
-            onSelectMode: onSelectRuntimeMode
+            onSelectMode: onSelectRuntimeMode,
+            showsAccessControl: chatSummary.accessModeKnown
           )
         }
       }
@@ -674,8 +680,8 @@ struct WorkComposerChipStrip: View {
 
 /// The strip only ever renders messages the user explicitly queued — an
 /// atomically dispatched send never produces a staged row — so it no longer
-/// hides behind an accordion. A single queued message is one compact card with
-/// its four actions visible; only a pile-up gets a slim count above the rows.
+/// hides behind an accordion. Each queued message is one glass row with a
+/// "Sends next" / "Queued" tag and its actions.
 struct WorkQueuedSteerStrip: View {
   let steers: [WorkPendingSteerModel]
   @Binding var drafts: [String: String]
@@ -700,11 +706,11 @@ struct WorkQueuedSteerStrip: View {
   @State private var cancelHapticToken: Int = 0
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      if steers.count > 1 { header }
-
+    // No frame or header around the rows: each queued message is its own glass
+    // row, the same quiet list desktop draws above its composer.
+    VStack(alignment: .leading, spacing: 4) {
       ForEach(Array(steers.enumerated()), id: \.element.id) { index, steer in
-        queuedRow(steer)
+        queuedRow(steer, statusLabel: index == 0 ? "Sends next" : "Queued")
           .modifier(WorkQueuedSteerReorderModifier(
             index: index,
             count: steers.count,
@@ -713,23 +719,34 @@ struct WorkQueuedSteerStrip: View {
             move: isLive && !busy ? onMove.map { move in { toIndex in await move(steer.id, toIndex) } } : nil
           ))
       }
+      // The one reason the tags cannot give, as on desktop: why a message waits.
+      if let queueLimitNote {
+        Text(queueLimitNote)
+          .font(.caption2)
+          .foregroundStyle(ADEColor.textMuted)
+          .padding(.horizontal, 4)
+      }
     }
-    .padding(6)
-    .background(ADEColor.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-    // Floats over the thread (no band behind the composer stack), so it
-    // carries its own glass to stay legible over prose.
-    .workChatGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .stroke(ADEColor.accent.opacity(0.22), lineWidth: 0.8)
-    )
+    .accessibilityLabel(steers.count == 1 ? "1 queued message" : "\(steers.count) queued messages")
+    .accessibilityIdentifier("Work.Chat.StagedStrip")
     .sensoryFeedback(.impact(weight: .light), trigger: cancelHapticToken)
     .accessibilityElement(children: .contain)
   }
 
-  private func queuedRow(_ steer: WorkPendingSteerModel) -> some View {
+  private var queueLimitNote: String? {
+    if capability.modes.allSatisfy({ $0 == .queue }) {
+      return "\(capability.agentLabel) cannot take a message mid-turn, so \(steers.count == 1 ? "it sends" : "they send") when the turn ends."
+    }
+    guard onDispatchInline != nil else { return nil }
+    return steers.lazy.compactMap { steer in
+      capability.inlineAttachmentBlockReason(attachmentTypes: (steer.attachments ?? []).map(\.type))
+    }.first
+  }
+
+  private func queuedRow(_ steer: WorkPendingSteerModel, statusLabel: String) -> some View {
         WorkQueuedSteerRow(
           steer: steer,
+          statusLabel: statusLabel,
           capability: capability,
           draft: Binding(
             get: { drafts[steer.id] ?? steer.text },
@@ -759,17 +776,6 @@ struct WorkQueuedSteerStrip: View {
         )
   }
 
-  /// Static label, not a disclosure control — the rows below it are always
-  /// visible. Kept only so a queue of several reads as a queue.
-  private var header: some View {
-    Text("\(steers.count) queued")
-      .font(.caption.weight(.semibold))
-      .foregroundStyle(ADEColor.textSecondary)
-      .padding(.horizontal, 4)
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .accessibilityLabel("\(steers.count) queued messages")
-      .accessibilityIdentifier("Work.Chat.StagedStrip.Header")
-  }
 }
 
 /// Reorder for one staged row: a long-press menu (Send first / Move up / Move
@@ -834,6 +840,8 @@ private struct WorkQueuedSteerWaitingGlyph: View {
 
 struct WorkQueuedSteerRow: View {
   let steer: WorkPendingSteerModel
+  /// Where the message stands in the queue ("Sends next", "Queued").
+  let statusLabel: String
   let capability: WorkActiveSendCapability
   @Binding var draft: String
   let isEditing: Bool
@@ -911,25 +919,27 @@ struct WorkQueuedSteerRow: View {
             HStack(spacing: 8) {
               WorkQueuedSteerWaitingGlyph(waiting: turnActive)
 
-              VStack(alignment: .leading, spacing: 1) {
-                Text(steer.text)
-                  .font(.system(size: 13.5))
-                  .foregroundStyle(ADEColor.textPrimary)
-                  .lineLimit(1)
-                  .truncationMode(.tail)
+              Text(steer.text)
+                .font(.system(size: 13.5))
+                .foregroundStyle(ADEColor.textPrimary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
-                Text(dispositionText)
-                  .font(.caption2)
-                  .foregroundStyle(ADEColor.textMuted)
-                  .lineLimit(1)
-              }
-              .frame(maxWidth: .infinity, alignment: .leading)
+              Text(statusLabel)
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(ADEColor.textMuted)
+                .lineLimit(1)
+                .fixedSize()
+                .padding(.horizontal, 7)
+                .padding(.vertical, 2)
+                .background(ADEColor.textPrimary.opacity(0.06), in: Capsule(style: .continuous))
             }
             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
             .contentShape(Rectangle())
           }
           .buttonStyle(.plain)
-          .accessibilityLabel("Queued message: \(steer.text)")
+          .accessibilityLabel("Queued message, \(statusLabel): \(steer.text). \(dispositionText)")
           .accessibilityHint("Opens the full message and its send options")
           .accessibilityIdentifier("Work.Chat.StagedStrip.Open")
 
@@ -983,11 +993,8 @@ struct WorkQueuedSteerRow: View {
     }
     .padding(.horizontal, 10)
     .padding(.vertical, isEditing ? 10 : 2)
-    .background(ADEColor.surfaceBackground.opacity(0.86), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .stroke(ADEColor.glassBorder, lineWidth: 0.5)
-    )
+    // Floats over the thread, so each row carries its own glass to stay legible.
+    .workChatGlass(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     .accessibilityElement(children: .contain)
     .sheet(isPresented: $showingDetail) {
       WorkQueuedSteerDetailSheet(

@@ -37,7 +37,7 @@ export function AppControlStatusRow({
   onToggleTrace: () => void;
 }) {
   return (
-    <div className="flex h-7 shrink-0 items-center gap-2 border-t border-white/[0.07] px-2 text-[11px]">
+    <div className="flex h-7 shrink-0 items-center gap-2 border-t border-fg/[0.07] px-2 text-[11px]">
       <span
         className={cn("min-w-0 flex-1 truncate", lastLine ? "text-fg/75" : "text-muted-fg/60")}
         title={lastLine ?? hint}
@@ -78,8 +78,8 @@ export function AppControlStatusRow({
         title={traceCount > 0 ? `${traceCount} recorded ${traceCount === 1 ? "action" : "actions"}` : "No recorded actions yet"}
         className={cn(
           "inline-flex h-5 shrink-0 items-center gap-1 rounded-md px-1.5 font-medium",
-          "hover:bg-white/[0.06] hover:text-fg",
-          traceOpen ? "bg-white/[0.06] text-fg/85" : "text-muted-fg/75",
+          "hover:bg-fg/[0.06] hover:text-fg",
+          traceOpen ? "bg-fg/[0.06] text-fg/85" : "text-muted-fg/75",
           WORK_TOOL_CHROME_MOTION,
           WORK_TOOL_CHROME_FOCUS,
         )}
@@ -118,7 +118,7 @@ export function AppControlTraceDrawer({
           animate={{ height: "auto", opacity: 1 }}
           exit={{ height: 0, opacity: 0 }}
           transition={reduceMotion ? { duration: 0 } : { duration: 0.18, ease: REVEAL }}
-          className="shrink-0 overflow-hidden border-t border-white/[0.07]"
+          className="shrink-0 overflow-hidden border-t border-fg/[0.07]"
           data-testid="app-control-trace-drawer"
         >
           <div className="flex items-center gap-2 px-2 py-1">
@@ -131,7 +131,7 @@ export function AppControlTraceDrawer({
               aria-label="Close action trace"
               className={cn(
                 "ml-auto inline-flex h-5 w-5 items-center justify-center rounded-md",
-                "text-muted-fg/65 hover:bg-white/[0.06] hover:text-fg",
+                "text-muted-fg/65 hover:bg-fg/[0.06] hover:text-fg",
                 WORK_TOOL_CHROME_MOTION,
                 WORK_TOOL_CHROME_FOCUS,
               )}

@@ -99,7 +99,7 @@ function CitationPlaceholder({ children, tone = "muted" }: { children: React.Rea
         "my-2 flex min-h-12 items-center gap-2 rounded-xl border px-3 py-2 font-sans text-[length:calc(var(--chat-font-size)*11/14)] not-italic",
         tone === "warning"
           ? "border-amber-300/[0.14] bg-amber-400/[0.05] text-amber-100/70"
-          : "border-white/[0.06] bg-white/[0.025] text-muted-fg/50",
+          : "border-fg/[0.06] bg-fg/[0.025] text-muted-fg/50",
       )}
     >
       {children}
@@ -116,10 +116,13 @@ function CitedProofMedia({
   artifact,
   caption,
   compact = false,
+  fallback,
 }: {
   artifact: ComputerUseArtifactView;
   caption: string | null;
   compact?: boolean;
+  /** Shown in place of the failure notice when this machine cannot load the file. */
+  fallback?: React.ReactNode;
 }) {
   const { allowLocalArtifactProtocol } = useContext(ProofCitationContext);
   const { containerRef, preview, loading, failed, explanation, onMediaError } = useArtifactPreview<HTMLSpanElement>(
@@ -136,6 +139,7 @@ function CitedProofMedia({
   const olderLine = proofRecordedBeforeRequestLine(readProofProvenance(artifact.metadata));
   const mediaHeight = compact ? "max-h-[300px]" : "max-h-[440px]";
 
+  if (failed && fallback != null) return <>{fallback}</>;
   return (
     <span
       ref={containerRef}
@@ -143,7 +147,7 @@ function CitedProofMedia({
       className="block min-w-0"
     >
       {loading ? (
-        <span className="flex min-h-40 items-center justify-center rounded-xl border border-white/[0.06] bg-black/20 text-muted-fg/35">
+        <span className="flex min-h-40 items-center justify-center rounded-xl border border-fg/[0.06] bg-black/20 text-muted-fg/35">
           <SpinnerGap size={18} className="animate-spin" aria-label="Loading proof" />
         </span>
       ) : failed ? (
@@ -151,7 +155,7 @@ function CitedProofMedia({
       ) : preview && image ? (
         <button
           type="button"
-          className="block max-w-full overflow-hidden rounded-xl border border-white/[0.07] bg-black/25 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-violet-300/45"
+          className="block max-w-full overflow-hidden rounded-xl border border-fg/[0.07] bg-black/25 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-violet-300/45"
           aria-label={`Enlarge ${text}`}
           onClick={() => setLightboxOpen(true)}
         >
@@ -171,7 +175,7 @@ function CitedProofMedia({
           preload="metadata"
           onError={onMediaError}
           aria-label={text}
-          className={cn("m-0 block h-auto max-w-full rounded-xl border border-white/[0.07] bg-black", mediaHeight)}
+          className={cn("m-0 block h-auto max-w-full rounded-xl border border-fg/[0.07] bg-black", mediaHeight)}
         />
       ) : !image && !video ? (
         <CitationPlaceholder>{`${text} (${artifact.kind.replace(/_/g, " ")}) cannot show inline. It is in the proof drawer.`}</CitationPlaceholder>
@@ -207,12 +211,20 @@ function CitedProofMedia({
   );
 }
 
-function CitedProofSlot({ artifactId, caption, compact }: {
+/**
+ * One cited artifact. `fallback` is another copy of the same proof (a pull
+ * request's uploaded picture): it shows while the record is read and when this
+ * machine does not hold the record or its file, instead of the spinner and
+ * the failure notes.
+ */
+export function CitedProofSlot({ artifactId, caption, compact, fallback }: {
   artifactId: string;
   caption: string | null;
   compact?: boolean;
+  fallback?: React.ReactNode;
 }) {
   const state = useCitedProofArtifact(artifactId);
+  if (fallback != null && state.status !== "ready") return <>{fallback}</>;
   if (state.status === "loading") {
     return (
       <CitationPlaceholder>
@@ -229,7 +241,7 @@ function CitedProofSlot({ artifactId, caption, compact }: {
       </CitationPlaceholder>
     );
   }
-  return <CitedProofMedia artifact={state.artifact} caption={caption} compact={compact} />;
+  return <CitedProofMedia artifact={state.artifact} caption={caption} compact={compact} fallback={fallback} />;
 }
 
 /** `![caption](ade-proof://<id>)` in an answer. */
@@ -264,5 +276,58 @@ export function ProofCompareFigure({ block }: { block: ProofCompareBlock }) {
         </p>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * The small picture under a "Filed proof" action row. A click opens it full
+ * size in place, as the proof drawer would, without going through the drawer.
+ * It draws nothing until the record loads, and nothing for a record that is
+ * gone or cannot show a picture: the row's words already say what was filed.
+ */
+export function ProofActionThumbnail({ artifactId, height }: { artifactId: string; height: number }) {
+  const state = useCitedProofArtifact(artifactId);
+  if (state.status !== "ready") return null;
+  return <ProofActionThumbnailMedia artifact={state.artifact} height={height} />;
+}
+
+function ProofActionThumbnailMedia({ artifact, height }: { artifact: ComputerUseArtifactView; height: number }) {
+  const { allowLocalArtifactProtocol } = useContext(ProofCitationContext);
+  const { containerRef, preview, failed, explanation, onMediaError } = useArtifactPreview<HTMLSpanElement>(
+    artifact,
+    allowLocalArtifactProtocol,
+  );
+  const [lightboxOpen, setLightboxOpen] = useState(false);
+  const image = isImageArtifact(artifact);
+  const video = isVideoArtifact(artifact);
+  const text = artifact.description?.trim() || artifact.title;
+  if (!image && !video) return null;
+  return (
+    <span ref={containerRef} data-proof-action-thumbnail={artifact.id} className="block" style={{ height }}>
+      {preview && !failed ? (
+        <button
+          type="button"
+          className="block h-full overflow-hidden rounded-md border border-fg/[0.08] bg-black/25 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-violet-300/45"
+          aria-label={`Enlarge ${text}`}
+          onClick={() => setLightboxOpen(true)}
+        >
+          {image ? (
+            <img src={preview} alt={text} onError={onMediaError} className="m-0 block h-full w-auto object-contain" />
+          ) : (
+            <video src={preview} muted playsInline preload="metadata" onError={onMediaError} aria-label={text} className="m-0 block h-full w-auto object-contain" />
+          )}
+        </button>
+      ) : null}
+      {lightboxOpen && preview ? (
+        <ArtifactLightbox
+          artifact={artifact}
+          preview={preview}
+          failed={failed}
+          failureText={externalArtifactUrl(artifact.uri) ? "This proof lives at its source." : explanation}
+          onMediaError={onMediaError}
+          onClose={() => setLightboxOpen(false)}
+        />
+      ) : null}
+    </span>
   );
 }

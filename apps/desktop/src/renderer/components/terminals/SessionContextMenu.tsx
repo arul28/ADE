@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, type ReactNode } from "react";
+import { Z_LAYERS } from "../ui/zLayers";
 import {
   Alarm,
   ArrowBendUpRight,
@@ -9,7 +10,6 @@ import {
   CheckCircle,
   ClockCountdown,
   Copy,
-  Desktop,
   GitBranch,
   GitFork,
   Globe,
@@ -73,6 +73,7 @@ import {
   loadAutoHandoffRulesForSession,
 } from "./AutoHandoffModal";
 import type { ChatHandoffIntent } from "../../lib/chatHandoffIntent";
+import { CrossMachineMoveSubmenu } from "./CrossMachineMoveSubmenu";
 
 const SESSION_METADATA_GENERATION_ACTIONS: ReadonlyArray<{
   label: string;
@@ -196,6 +197,8 @@ type SessionContextMenuProps = {
     session: TerminalSessionSummary,
     intent: ChatHandoffIntent,
     binding?: OpenProjectBinding | null,
+    /** "remote": the machine to preselect in the full setup. */
+    options?: { machine?: string | null },
   ) => void;
   pinnedSessionIds?: string[];
   /** Session ids currently in any work grid (drives the "Remove from grid" item). */
@@ -553,9 +556,10 @@ function SessionContextMenuPanel({
       {/* Menu */}
       <div
         ref={menuRef}
-        className="ade-liquid-glass-menu fixed z-50 min-w-[180px] py-1"
+        className="ade-liquid-glass-menu fixed min-w-[180px] py-1"
         style={{
           ...menuPosition,
+          zIndex: Z_LAYERS.contextMenu,
           visibility: clampedPosition ? "visible" : "hidden",
         }}
         onPointerDown={(e) => e.stopPropagation()}
@@ -606,7 +610,7 @@ function SessionContextMenuPanel({
             onClick={() => { onTogglePinned(session); onClose(); }}
           >
             <MenuRowIcon icon={(pinnedSessionIds ?? []).includes(session.id) ? PushPinSlash : PushPin} />
-            {(pinnedSessionIds ?? []).includes(session.id) ? "Unpin from front" : "Pin to front"}
+            {(pinnedSessionIds ?? []).includes(session.id) ? "Unpin" : "Pin"}
           </button>
         ) : null}
         {onRemoveFromGrid && (gridSessionIds ?? []).includes(session.id) ? (
@@ -707,18 +711,13 @@ function SessionContextMenuPanel({
               <MenuRowIcon icon={GitFork} />
               Local handoff
             </button>
-            <button
-              type="button"
-              data-testid="session-menu-handoff-remote"
-              className={MENU_ITEM_CLASS}
-              onClick={() => {
-                onOpenChatHandoff(session, "remote", binding);
-                onClose();
-              }}
-            >
-              <MenuRowIcon icon={Desktop} />
-              Another machine
-            </button>
+            <CrossMachineMoveSubmenu
+              session={session}
+              binding={binding}
+              busy={isActivelyRunning}
+              onClose={onClose}
+              onOpenFullSetup={(machine) => onOpenChatHandoff(session, "remote", binding, { machine })}
+            />
             <MenuSeparator />
             <button
               type="button"

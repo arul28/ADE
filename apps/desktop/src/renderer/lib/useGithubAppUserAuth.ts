@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import type { GitHubAppUserAuthStatus } from "../../shared/types";
+import type { GitHubAppUserAuthStatus, OpenProjectBinding } from "../../shared/types";
 
 /**
  * The ADE GitHub App account status, shared by every surface that renders it.
@@ -10,31 +10,70 @@ import type { GitHubAppUserAuthStatus } from "../../shared/types";
  * component, disconnecting in the panel left the ladder badge reporting an
  * authorization that had just been removed one card away.
  *
- * A module-level value rather than context: the two consumers are not siblings
+ * Module-level state rather than context: the two consumers are not siblings
  * under a common provider, and the panel is also mounted on its own during
  * onboarding.
  */
-let cachedStatus: GitHubAppUserAuthStatus | null = null;
-let hasLoaded = false;
-let inFlight: Promise<GitHubAppUserAuthStatus | null> | null = null;
-/**
- * Only the newest-started read may publish.
- *
- * A forced read runs BESIDE the older one it exists to replace, and completion
- * order is not guaranteed. Without this, the older read settles last and
- * publishes the state from before the action — the exact staleness `force` was
- * added to avoid.
- */
-let readSeq = 0;
-let publishedSeq = 0;
-const listeners = new Set<(status: GitHubAppUserAuthStatus | null) => void>();
+type MachineAuthState = {
+  cachedStatus: GitHubAppUserAuthStatus | null;
+  inFlight: Promise<GitHubAppUserAuthStatus | null> | null;
+  /**
+   * Only the newest-started read may publish.
+   *
+   * A forced read runs BESIDE the older one it exists to replace, and completion
+   * order is not guaranteed. Without this, the older read settles last and
+   * publishes the state from before the action — the exact staleness `force` was
+   * added to avoid.
+   */
+  readSeq: number;
+  /** Zero until the first status lands, which is not the same as "no token". */
+  publishedSeq: number;
+  listeners: Set<(status: GitHubAppUserAuthStatus | null) => void>;
+};
 
-function publish(status: GitHubAppUserAuthStatus | null, seq: number): void {
-  if (seq < publishedSeq) return;
-  publishedSeq = seq;
-  cachedStatus = status;
-  hasLoaded = true;
-  for (const listener of listeners) listener(status);
+/**
+ * One state per machine: each machine has its own credential, and Settings
+ * shows a page per machine, so one machine's status never shows on another's
+ * page. Unpinned callers (the tab's own machine, onboarding) share one key.
+ */
+const UNPINNED_KEY = "\u0000unpinned";
+const machines = new Map<string, MachineAuthState>();
+
+function machineKey(pin: OpenProjectBinding | null | undefined): string {
+  return pin ? pin.key : UNPINNED_KEY;
+}
+
+function machineState(key: string): MachineAuthState {
+  let state = machines.get(key);
+  if (!state) {
+    state = {
+      cachedStatus: null,
+      inFlight: null,
+      readSeq: 0,
+      publishedSeq: 0,
+      listeners: new Set(),
+    };
+    machines.set(key, state);
+  }
+  return state;
+}
+
+function publish(state: MachineAuthState, status: GitHubAppUserAuthStatus | null, seq: number): void {
+  if (seq < state.publishedSeq) return;
+  state.publishedSeq = seq;
+  state.cachedStatus = status;
+  for (const listener of state.listeners) listener(status);
+}
+
+/**
+ * A failed read is not kept. A machine that has never answered stays unread, so
+ * the pages on screen stop waiting but the next page that mounts asks again
+ * instead of showing a briefly unreachable machine as signed out. A machine
+ * that has answered keeps its last status.
+ */
+function publishFailedRead(state: MachineAuthState): void {
+  if (state.publishedSeq > 0) return;
+  for (const listener of state.listeners) listener(null);
 }
 
 export type RefreshGithubAppUserAuthOptions = {
@@ -48,44 +87,46 @@ export type RefreshGithubAppUserAuthOptions = {
    * kept showing the credential the check had just replaced.
    */
   force?: boolean;
+  /** The machine to read. Absent or null reads through the tab's own binding. */
+  pin?: OpenProjectBinding | null;
 };
 
-/** Re-reads the status from the host and tells every consumer. */
+/** Re-reads the status from the machine's host and tells every consumer of it. */
 export function refreshGithubAppUserAuth(
   options: RefreshGithubAppUserAuthOptions = {},
 ): Promise<GitHubAppUserAuthStatus | null> {
-  if (inFlight && !options.force) return inFlight;
-  const seq = ++readSeq;
+  const pin = options.pin ?? null;
+  const state = machineState(machineKey(pin));
+  if (state.inFlight && !options.force) return state.inFlight;
+  const seq = ++state.readSeq;
   const read = window.ade?.github?.getAppUserAuthStatus;
   if (!read) {
-    publish(null, seq);
+    publish(state, null, seq);
     return Promise.resolve(null);
   }
-  const pending: Promise<GitHubAppUserAuthStatus | null> = window.ade.github
-    .getAppUserAuthStatus!()
-    .then((status) => status ?? null)
-    .catch(() => null)
-    .then((status) => {
-      publish(status, seq);
-      return status;
-    })
+  const pending: Promise<GitHubAppUserAuthStatus | null> = read(pin)
+    .then(
+      (status) => {
+        publish(state, status ?? null, seq);
+        return status ?? null;
+      },
+      () => {
+        publishFailedRead(state);
+        return null;
+      },
+    )
     .finally(() => {
       // Only this read may clear the slot: a forced read runs beside an earlier
       // one, and whichever finishes first must not orphan the other.
-      if (inFlight === pending) inFlight = null;
+      if (state.inFlight === pending) state.inFlight = null;
     });
-  inFlight = pending;
+  state.inFlight = pending;
   return pending;
 }
 
-/** Drops the shared status so one test cannot leak into the next. */
+/** Drops every machine's status so one test cannot leak into the next. */
 export function resetGithubAppUserAuthForTests(): void {
-  cachedStatus = null;
-  hasLoaded = false;
-  inFlight = null;
-  readSeq = 0;
-  publishedSeq = 0;
-  listeners.clear();
+  machines.clear();
 }
 
 export type UseGithubAppUserAuthResult = {
@@ -99,28 +140,46 @@ export type UseGithubAppUserAuthResult = {
   set: (status: GitHubAppUserAuthStatus | null) => void;
 };
 
-export function useGithubAppUserAuth(): UseGithubAppUserAuthResult {
-  const [appAuth, setAppAuth] = useState<GitHubAppUserAuthStatus | null>(cachedStatus);
-  const [loaded, setLoaded] = useState<boolean>(hasLoaded);
+export function useGithubAppUserAuth(pin: OpenProjectBinding | null = null): UseGithubAppUserAuthResult {
+  const key = machineKey(pin);
+  const [appAuth, setAppAuth] = useState<GitHubAppUserAuthStatus | null>(() => machineState(key).cachedStatus);
+  const [loaded, setLoaded] = useState<boolean>(() => machineState(key).publishedSeq > 0);
 
   useEffect(() => {
+    const state = machineState(key);
     const listener = (status: GitHubAppUserAuthStatus | null): void => {
       setAppAuth(status);
       setLoaded(true);
     };
-    listeners.add(listener);
-    if (!hasLoaded) void refreshGithubAppUserAuth();
-    else listener(cachedStatus);
+    state.listeners.add(listener);
+    if (state.publishedSeq === 0) {
+      // Another machine's answer must not stay on screen while this one loads.
+      setAppAuth(null);
+      setLoaded(false);
+      void refreshGithubAppUserAuth({ pin });
+    } else {
+      listener(state.cachedStatus);
+    }
     return () => {
-      listeners.delete(listener);
+      state.listeners.delete(listener);
     };
-  }, []);
+  }, [key, pin]);
+
+  // A new identity when the machine changes, so a caller that loads on
+  // `refresh` reloads with the page's machine. Settings pins keep their
+  // identity while their key is unchanged.
+  const refresh = useCallback(
+    (options: RefreshGithubAppUserAuthOptions = {}) =>
+      refreshGithubAppUserAuth({ ...options, pin }),
+    [pin],
+  );
 
   const set = useCallback((status: GitHubAppUserAuthStatus | null) => {
     // Claims a sequence of its own: an action's result is newer than every read
     // that started before it, so a read still in flight must not overwrite it.
-    publish(status, ++readSeq);
-  }, []);
+    const state = machineState(key);
+    publish(state, status, ++state.readSeq);
+  }, [key]);
 
-  return { appAuth, loaded, refresh: refreshGithubAppUserAuth, set };
+  return { appAuth, loaded, refresh, set };
 }

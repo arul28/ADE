@@ -1,31 +1,11 @@
-import React, { useEffect, useState } from "react";
+import React, { useState } from "react";
 import { CaretDown, CaretRight, Check, Square, X } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
+import { useLiveDurationMs } from "../../lib/liveDuration";
 import { formatSubagentDurationMs } from "../../lib/format";
 import { pluralCount } from "../../../shared/formatting";
 import type { BackgroundJobGroupMember, BackgroundJobLineRenderEvent } from "./chatTranscriptRows";
 import { backgroundJobStatusWord, countBackgroundJobs } from "./chatBackgroundJobRuns";
-
-/**
- * Live elapsed since a start timestamp, ticking once a second while `running`.
- * Anchored to the real start timestamp, so a row scrolled out of the
- * virtualizer and back keeps the true elapsed. A state tick on a leaf that
- * renders one line, so the per-second commit never reaches the memoized rows
- * around it. Null for an absent or unparseable timestamp.
- */
-function useLiveDurationMs(startedAt: string | null, running: boolean): number | null {
-  const startMs = startedAt ? Date.parse(startedAt) : Number.NaN;
-  const anchored = Number.isFinite(startMs) ? startMs : null;
-  const [nowMs, setNowMs] = useState(() => Date.now());
-  useEffect(() => {
-    if (!running || anchored == null) return undefined;
-    setNowMs(Date.now());
-    const id = window.setInterval(() => setNowMs(Date.now()), 1_000);
-    return () => window.clearInterval(id);
-  }, [running, anchored]);
-  if (anchored == null) return null;
-  return Math.max(0, nowMs - anchored);
-}
 
 /**
  * A job's duration: live while it runs, the recorded one once it ends. A job
@@ -256,7 +236,7 @@ export function BackgroundJobRunRow({
           : <CaretRight size={10} weight="bold" className="shrink-0 text-fg/40" aria-hidden />}
       </button>
       {open ? (
-        <ul className="mt-1 min-w-0 max-w-[var(--chat-content-width,52rem)] border-l border-white/[0.08] pl-3">
+        <ul className="mt-1 min-w-0 max-w-[var(--chat-content-width,52rem)] border-l border-fg/[0.08] pl-3">
           {members.map((member) => (
             <BackgroundJobListItem
               key={member.key}

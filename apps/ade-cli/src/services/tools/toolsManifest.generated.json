@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedFrom": "apps/ade-cli/package-lock.json",
+  "generatedFrom": "apps/ade-cli/package-lock.json + apps/ade-cli/scripts/muse-release.json",
   "tools": [
     {
       "name": "codex",
@@ -13,33 +13,33 @@
       "targets": {
         "darwin-arm64": {
           "package": "@openai/codex-darwin-arm64",
-          "version": "0.160.0-darwin-arm64",
-          "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.160.0-darwin-arm64.tgz",
-          "integrity": "sha512-aefV6cqZA2REZgR//4McyXlp7zLcTti4CI2v3j9IVgNndPBv2kCeNEcz07qeelXcwOdSFPUKb6roA48vZmDgrQ=="
+          "version": "0.162.1-darwin-arm64",
+          "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.162.1-darwin-arm64.tgz",
+          "integrity": "sha512-YVXpg57itBuQxjofay3KDF5UbnZF4Y1ZmNFzUCz0ZQiQN+DndxOjN5V87rnXvPaC4qCPO2El74DzewoBP8JyPQ=="
         },
         "darwin-x64": {
           "package": "@openai/codex-darwin-x64",
-          "version": "0.160.0-darwin-x64",
-          "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.160.0-darwin-x64.tgz",
-          "integrity": "sha512-ir7cdsPrb9VkqNqpTECoTiomv04xws/FQ968mHQzuL+2J5Da0Dkh2Qlxp7sguDDZJab4YpYmNjQvBVMXbTeQaQ=="
+          "version": "0.162.1-darwin-x64",
+          "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.162.1-darwin-x64.tgz",
+          "integrity": "sha512-0/WHRhbUnM1wAjfyCO54Q8s4vQRxLVBbqW6XuQf7rZTEMTYPKRIQU9aPeRgjG653ZCSjtBrslWQ+G9urY9CksQ=="
         },
         "linux-arm64": {
           "package": "@openai/codex-linux-arm64",
-          "version": "0.160.0-linux-arm64",
-          "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.160.0-linux-arm64.tgz",
-          "integrity": "sha512-VnVdsS06YlDsL8OwaJjQ3xdqdJNG4i+eBJBV3LytddknzSaF/urijLzVg3ptkwvoj8C7Gn7iWpVE+y8WEaPiCg=="
+          "version": "0.162.1-linux-arm64",
+          "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.162.1-linux-arm64.tgz",
+          "integrity": "sha512-Ss7W/SrKtQFNaMtSojNoiykJgX+iDC8daM+YrcvgmJADtQPk0cd3w6Dna4CYH2CYvf9nQranj69fpcTzZ3sQIQ=="
         },
         "linux-x64": {
           "package": "@openai/codex-linux-x64",
-          "version": "0.160.0-linux-x64",
-          "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.160.0-linux-x64.tgz",
-          "integrity": "sha512-KI/73OqGrHmR18s7ya7E1NqV6rT0y3lxr0s8S1qR2m6zU6QRF/HlR529jALLh5vjdUnsRT4Ahoxt0axb4kY99g=="
+          "version": "0.162.1-linux-x64",
+          "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.162.1-linux-x64.tgz",
+          "integrity": "sha512-cjK2mdHIfEepZ1lQ1MX3aTQC+8ncIsvnacl/6vI2dIIcfP8/MrhTQ2+qRlkXFNDzJSj1d36quIszP+3/4CUJWQ=="
         },
         "win32-x64": {
           "package": "@openai/codex-win32-x64",
-          "version": "0.160.0-win32-x64",
-          "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.160.0-win32-x64.tgz",
-          "integrity": "sha512-/gCFcuOmGlQkgGivWCtY8BNEDixh70Pue0HZOk9S8bj2vUIE1GLD9zcNB/KqqDJmn0S+lIttauLpzQnw6HOCHA=="
+          "version": "0.162.1-win32-x64",
+          "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.162.1-win32-x64.tgz",
+          "integrity": "sha512-dfl4MhHuEi0ARKyNmrTxk+RQmsWNCQAoVLUtrYq+yrW1C8P2sg5ziwgHUUACHjYLKuACV7ARH5Nq5pnCz3GlaQ=="
         }
       }
     },
@@ -54,33 +54,33 @@
       "targets": {
         "darwin-arm64": {
           "package": "@anthropic-ai/claude-agent-sdk-darwin-arm64",
-          "version": "0.3.289",
-          "tarball": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk-darwin-arm64/-/claude-agent-sdk-darwin-arm64-0.3.289.tgz",
-          "integrity": "sha512-A1iK70JJgj6GhSkGnaVC02B1hX0aPvWTbn3a1Fp9iKhXt1a6eZwAhkqdP+F/rzAVUcQG24ehG/LBF2Ec8tBL0Q=="
+          "version": "0.3.300",
+          "tarball": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk-darwin-arm64/-/claude-agent-sdk-darwin-arm64-0.3.300.tgz",
+          "integrity": "sha512-+pFKo4x5S6j4v+UTVZZFiLoJO7PMLVPNhIUBalk/RvMhcaN33Ubgk4aRAZpJmkxCcGMN6rWCevYhgT0nXkqytg=="
         },
         "darwin-x64": {
           "package": "@anthropic-ai/claude-agent-sdk-darwin-x64",
-          "version": "0.3.289",
-          "tarball": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk-darwin-x64/-/claude-agent-sdk-darwin-x64-0.3.289.tgz",
-          "integrity": "sha512-8kCv04+eOm26zPta8hym7eNHT/nn44a94Y/XwiR9ExWGGDcBJpNOZkVUxt+ciiKNQN7ujuYqAjdRedIRyD1izw=="
+          "version": "0.3.300",
+          "tarball": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk-darwin-x64/-/claude-agent-sdk-darwin-x64-0.3.300.tgz",
+          "integrity": "sha512-5mJ0Fdl85HQvFJM6XdFJry68vjEt5XyJ5mVvVO3G6U9R4a8rMJDH7Ypik3jlCW2eaB/mjbJVSI2ffV8ClaYA6A=="
         },
         "linux-arm64": {
           "package": "@anthropic-ai/claude-agent-sdk-linux-arm64",
-          "version": "0.3.289",
-          "tarball": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk-linux-arm64/-/claude-agent-sdk-linux-arm64-0.3.289.tgz",
-          "integrity": "sha512-u5GKtkDU5ho9g8fveN4PgInHyWOBQ12wSlZAcssrQJx8WmoYTUYQTz5kH4e6VNYfIJv1K5DXOSxPGuqbcSMr6Q=="
+          "version": "0.3.300",
+          "tarball": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk-linux-arm64/-/claude-agent-sdk-linux-arm64-0.3.300.tgz",
+          "integrity": "sha512-zTl6mMnIDEaEEWebiwmZw+k3Sgi6zHlZcZDvrb3VlHaX1Ru5iikdWt+PS36tzJtrSnwX0XBV0EO8x1qqC2TmhA=="
         },
         "linux-x64": {
           "package": "@anthropic-ai/claude-agent-sdk-linux-x64",
-          "version": "0.3.289",
-          "tarball": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk-linux-x64/-/claude-agent-sdk-linux-x64-0.3.289.tgz",
-          "integrity": "sha512-d/2f7T/DpnEat78nun+mE26HZ0rO9BGEmoGja1i8iIW62IZX1K3T2IXd1h0Wjgtx1JSGDUK3pxMhQJxMyJdycQ=="
+          "version": "0.3.300",
+          "tarball": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk-linux-x64/-/claude-agent-sdk-linux-x64-0.3.300.tgz",
+          "integrity": "sha512-sd2IUPPTVYiN5YPoC2InyOJy0fEt9HBwBZbtVobhugO0KWACMPzrYefLD/yu1uJsf73+tBnVQRfgb/btXukd8Q=="
         },
         "win32-x64": {
           "package": "@anthropic-ai/claude-agent-sdk-win32-x64",
-          "version": "0.3.289",
-          "tarball": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk-win32-x64/-/claude-agent-sdk-win32-x64-0.3.289.tgz",
-          "integrity": "sha512-HBoziJqI6LkEkqZuumOXxXLMZEvnZOQirc3OyZTDJIa7UJcV/pn9EsBXLruMlNztrOWfEqBeYArXSl00H91rjA=="
+          "version": "0.3.300",
+          "tarball": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk-win32-x64/-/claude-agent-sdk-win32-x64-0.3.300.tgz",
+          "integrity": "sha512-VXY2/y9/3psK2Dd4H+s9m6J5HfkvC3g0fYH4KGeOdbko2LYWmBmIk8E9NsjUVsKL7oN//G2I82+yAZdie5JuDg=="
         }
       }
     },
@@ -95,33 +95,84 @@
       "targets": {
         "darwin-arm64": {
           "package": "@opencode/cli-darwin-arm64",
-          "version": "2.0.23",
-          "tarball": "https://registry.npmjs.org/@opencode/cli-darwin-arm64/-/cli-darwin-arm64-2.0.23.tgz",
-          "integrity": "sha512-5qZx8IqfCKdymb711qBxkjBtNJZ9H2JIkrqIUiLwsrxmIyDMKu8tPTxKKMH91sC5fElZbrBP9M8Jq6LckDnxUw=="
+          "version": "2.0.29",
+          "tarball": "https://registry.npmjs.org/@opencode/cli-darwin-arm64/-/cli-darwin-arm64-2.0.29.tgz",
+          "integrity": "sha512-2tJOM20RpOjNeWsYcV3VfRFPDTeu1yMMbEqAQm1sEKmHX9087Sx/TxhwBlvtiudOGq6Kr3zyKmW1t7aFF6qCsQ=="
         },
         "darwin-x64": {
           "package": "@opencode/cli-darwin-x64",
-          "version": "2.0.23",
-          "tarball": "https://registry.npmjs.org/@opencode/cli-darwin-x64/-/cli-darwin-x64-2.0.23.tgz",
-          "integrity": "sha512-gsNPdmJ8AbWBJTEB8Qtun00E0IOLw4zCK6dMyZi3N63Th33b33p3//AeZvrdDMY61WxCX1sl18foFfApU6rSCA=="
+          "version": "2.0.29",
+          "tarball": "https://registry.npmjs.org/@opencode/cli-darwin-x64/-/cli-darwin-x64-2.0.29.tgz",
+          "integrity": "sha512-3jPLK7Tv/qw+DOLSZTbJ97EOJDkM1VEioABnxPKaLS5K+iYJ+Y25sfZO/aKPtpeMWqfqxCtMql2R7wEpQRZ1HQ=="
         },
         "linux-arm64": {
           "package": "@opencode/cli-linux-arm64",
-          "version": "2.0.23",
-          "tarball": "https://registry.npmjs.org/@opencode/cli-linux-arm64/-/cli-linux-arm64-2.0.23.tgz",
-          "integrity": "sha512-kuLDSOpFFGCdCS/fdaHZ2yMqXsP4jwYfS0yV4ilYxaB7c0PJ84eY1b/bl2N9JXELXU13I2OFDI+NWzXhyXrxOQ=="
+          "version": "2.0.29",
+          "tarball": "https://registry.npmjs.org/@opencode/cli-linux-arm64/-/cli-linux-arm64-2.0.29.tgz",
+          "integrity": "sha512-EsCnvp5lMJNem0YoQJM9PkXY0KrkiugL55M9J2JlImQzKdQnZ4CKutrPAXOnsa889qHhY5tjRpAnD/ZYFzhkRA=="
         },
         "linux-x64": {
           "package": "@opencode/cli-linux-x64",
-          "version": "2.0.23",
-          "tarball": "https://registry.npmjs.org/@opencode/cli-linux-x64/-/cli-linux-x64-2.0.23.tgz",
-          "integrity": "sha512-5CQisdKXLDXVjUZYF1ROqIH/HS5YUwo4SjEBJ3DndATJL2vFgbvN0pqZQkKQqBjUrZ19jNXDHvp+LP/uGIECAQ=="
+          "version": "2.0.29",
+          "tarball": "https://registry.npmjs.org/@opencode/cli-linux-x64/-/cli-linux-x64-2.0.29.tgz",
+          "integrity": "sha512-pdG/T4uBxSC3hjUTOrTlx2pXlZl2VqABlb0AgDlZ8VO/q1pUUOYvooWmN5VeSi+EP8cKGVUsj0GUmMDeB2ympA=="
         },
         "win32-x64": {
           "package": "@opencode/cli-windows-x64-baseline",
-          "version": "2.0.23",
-          "tarball": "https://registry.npmjs.org/@opencode/cli-windows-x64-baseline/-/cli-windows-x64-baseline-2.0.23.tgz",
-          "integrity": "sha512-2bXl72/7sH8LdhSNMY68PNF5APlMiq+33QerXGB1qOYYmSVdv0ES3dtBF1JaojhMXm2F5toH+ZRK4igIZjjesw=="
+          "version": "2.0.29",
+          "tarball": "https://registry.npmjs.org/@opencode/cli-windows-x64-baseline/-/cli-windows-x64-baseline-2.0.29.tgz",
+          "integrity": "sha512-HL6OFN3+scqOpIGXTdnl+pADtLpNuEyMp08w3nnwo7Ob8P2aC5oMhNzlFAUH1tYy9BLPW8uiGTsMh1ucOl0knQ=="
+        }
+      }
+    },
+    {
+      "name": "muse",
+      "description": "Meta Muse Code CLI native binary, spawned as `muse serve` and in ADE terminals.",
+      "entry": {
+        "kind": "binary",
+        "path": "muse",
+        "windowsPath": "muse.exe"
+      },
+      "targets": {
+        "darwin-arm64": {
+          "format": "file",
+          "package": "muse-code-darwin-arm64",
+          "version": "1.4.7-R6101.1",
+          "url": "https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=1.4.7-R6101.1&file=muse-aarch64-macos",
+          "sha256": "87ff5a31b63e30b6ac04d3e8298285517e753c126fb6f3aee80accf28c4562f1",
+          "size": 358892272
+        },
+        "darwin-x64": {
+          "format": "file",
+          "package": "muse-code-darwin-x64",
+          "version": "1.4.7-R6101.1",
+          "url": "https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=1.4.7-R6101.1&file=muse-x86-macos",
+          "sha256": "6d766da6601a0aae8bd22294c0854970286e1b9ade3009f0d0289b7875a10c58",
+          "size": 380381680
+        },
+        "linux-arm64": {
+          "format": "file",
+          "package": "muse-code-linux-arm64",
+          "version": "1.4.7-R6101.1",
+          "url": "https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=1.4.7-R6101.1&file=muse-aarch64-linux",
+          "sha256": "48db3c7468cd4f401eff9b415fb7e0cdfe0351fb1730649ceae2a0f766e23b85",
+          "size": 325916776
+        },
+        "linux-x64": {
+          "format": "file",
+          "package": "muse-code-linux-x64",
+          "version": "1.4.7-R6101.1",
+          "url": "https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=1.4.7-R6101.1&file=muse-x86-linux",
+          "sha256": "36e3dac91f56c15572b95be55d70ee9fd9685cd9ab49f747bab4746c8d7c2518",
+          "size": 363518168
+        },
+        "win32-x64": {
+          "format": "file",
+          "package": "muse-code-win32-x64",
+          "version": "1.4.7-R6101.1",
+          "url": "https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=1.4.7-R6101.1&file=muse-x86-windows.exe",
+          "sha256": "2d1ac7af0a9ea77643cb8690eee70f52f0f8476c46b194f143c831f481aea59d",
+          "size": 467174136
         }
       }
     }

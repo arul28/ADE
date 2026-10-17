@@ -1,4 +1,5 @@
-import type { AgentChatEvent } from "./types";
+import { isDroppedSteerDeliveryState } from "./chatTranscript";
+import type { AgentChatEvent, AgentChatEventEnvelope } from "./types";
 
 /**
  * Update the set of work a turn still has open from one of its events. While
@@ -38,6 +39,11 @@ export function trackTurnInFlight(inFlight: Set<string>, event: AgentChatEvent):
     case "pending_input_resolved":
       inFlight.delete(`input:${event.itemId}`);
       break;
+    // Codex's sleep tool is a deliberate wait, the same as a long command.
+    case "codex_sleep":
+      if (event.status === "running") inFlight.add(`sleep:${event.itemId}`);
+      else inFlight.delete(`sleep:${event.itemId}`);
+      break;
     default:
       break;
   }
@@ -68,4 +74,58 @@ export function turnHasOpenWork(events: Iterable<AgentChatEvent>): boolean {
     trackTurnInFlight(inFlight, event);
   }
   return inFlight.size > 0;
+}
+
+/**
+ * Is this event evidence that the turn is moving?
+ *
+ * Every provider (Claude, Codex, Cursor, OpenCode, Droid) streams its progress
+ * as these same event types: reasoning, text, tool calls and results, commands,
+ * activity, token and context usage. What is NOT progress is what ADE itself
+ * writes while a turn is quiet: its own stall and recovery notices, queue and
+ * schedule bookkeeping, metadata patches, cards, and a steer the model never
+ * read. Counting those would let ADE's own "this turn looks stuck" notice reset
+ * the silence it reports. Unknown types count as progress, so a new provider
+ * event can never raise a false stall alarm.
+ */
+export function isTurnProgressEvent(event: AgentChatEvent): boolean {
+  switch (event.type) {
+    case "session_meta_updated":
+    case "scheduled_work_update":
+    case "prompt_suggestion":
+    case "queue_reordered":
+    case "queue_recovery":
+    case "turn_health":
+    case "turn_recovery":
+    case "codex_turn_recovery":
+    case "turn_diagnostics":
+    case "codex_turn_stalled":
+    case "interrupt_receipt":
+    case "system_notice":
+    case "ade_card":
+      return false;
+    case "user_message":
+      // A queued steer is staged, not delivered — the model has not read it,
+      // so counting it would reset the stall clock over a still-quiet turn.
+      return event.deliveryState !== "queued"
+        && !isDroppedSteerDeliveryState(event.deliveryState);
+    default:
+      return true;
+  }
+}
+
+/**
+ * Timestamp of the newest progress event in a transcript window, or null.
+ *
+ * The chat pane's session summary only refreshes on lifecycle edges, so its
+ * `lastActivityAt` freezes for a whole turn of tool calls and thinking; the
+ * transcript itself is the live clock. Walks from the end and stops at the
+ * first hit, so a streaming turn costs one step.
+ */
+export function latestTurnProgressAt(envelopes: readonly AgentChatEventEnvelope[]): string | null {
+  for (let index = envelopes.length - 1; index >= 0; index -= 1) {
+    const envelope = envelopes[index];
+    if (envelope && isTurnProgressEvent(envelope.event)) return envelope.timestamp;
+  }
+  return null;
 }

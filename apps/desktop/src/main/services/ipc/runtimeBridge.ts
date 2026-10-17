@@ -1,4 +1,5 @@
-import { BrowserWindow, dialog, ipcMain, powerMonitor, type WebContents } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, powerMonitor, type WebContents } from "electron";
+import { resolveMovedProjectRoot } from "../../../../../ade-cli/src/services/projects/projectMove/moveJournal";
 import path from "node:path";
 import { IPC } from "../../../shared/ipc";
 import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
@@ -45,11 +46,14 @@ import type {
   RemoteRuntimeTargetInput,
   RemoteRuntimeTrustSshHostKeyResult,
   RemoteRuntimeUpdateAndRestartResult,
+  RuntimeActivitySummary,
+  UpdateImpact,
   RuntimeEventsReleaseRequest,
   RuntimeEventsReleaseResult,
   SyncWebPairingInfo,
 } from "../../../shared/types";
 import { isRemoteRuntimeEventCategory } from "../../../shared/types/remoteRuntime";
+import { parseRuntimeUpdateImpact, UNKNOWN_UPDATE_IMPACT } from "../../../shared/updateImpact";
 import { PROJECT_ICON_DIALOG_EXTENSIONS } from "../../../shared/projectIcons";
 import { readProjectIconForUpload } from "../projects/projectIconResolver";
 import type { ChatAttachmentStagingMode } from "../../../shared/types/chat";
@@ -58,6 +62,7 @@ import {
   MAX_CHAT_ATTACHMENT_BYTES,
 } from "../../../shared/chatAttachmentLimits";
 import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeConnectionPool";
+import { createFileWatchLedger, type FileWatchLedger } from "../files/fileWatchLedger";
 import { matchRemoteProjectByRootPath } from "../attention/remoteProjectIdentity";
 import { RemoteConnectionPool } from "../remoteRuntime/remoteConnectionPool";
 import type { RemoteArtifactRangeReader } from "../computerUse/artifactStreamProtocol";
@@ -111,12 +116,133 @@ type RuntimeBridgeArgs = {
 };
 
 const RUNTIME_ACTION_CLIENT_ID_FIELD = "__adeRuntimeClientId";
+
+/**
+ * File watches each page still holds on each runtime, so the stops a page
+ * never sent can be sent for it (see `fileWatchLedger.ts`). Keyed by the
+ * page's sender id, then by runtime.
+ */
+type PageFileWatches = Map<string, {
+  ledger: FileWatchLedger;
+  /** Sends a file action to this runtime over its current connection. */
+  call: (request: RemoteRuntimeActionRequest) => Promise<unknown>;
+  /** The connection that carried these watches closed; the runtime let them go. */
+  connectionLost: boolean;
+}>;
+const fileWatchesBySender = new Map<number, PageFileWatches>();
+
+const localFileWatchRuntimeKey = (rootPath: string): string => `local:${localRuntimeRootKey(rootPath)}`;
+const remoteFileWatchRuntimeKey = (targetId: string, projectId: string): string => `remote:${targetId}:${projectId}`;
+
+/** The page's connection to a runtime closed. The runtime releases the watches that connection opened. */
+function notePageRuntimeDisconnected(senderId: number, runtimeKey: string): void {
+  const entry = fileWatchesBySender.get(senderId)?.get(runtimeKey);
+  if (entry && entry.ledger.size > 0) entry.connectionLost = true;
+}
+
+/**
+ * The page is connected to the runtime again. Open the watches it still holds
+ * once more, so a Files view that stayed mounted across the reconnect keeps
+ * its updates.
+ */
+function restorePageFileWatches(senderId: number, runtimeKey: string): void {
+  const entry = fileWatchesBySender.get(senderId)?.get(runtimeKey);
+  if (!entry?.connectionLost) return;
+  entry.connectionLost = false;
+  for (const ref of entry.ledger.refs()) {
+    void entry.call({
+      domain: "file",
+      action: "watchWorkspace",
+      args: { ...ref.args, [RUNTIME_ACTION_CLIENT_ID_FIELD]: senderId },
+    }).catch(() => {
+      // The connection closed again; its end marks the entry for the next reconnect.
+    });
+  }
+}
+
+function releasePageFileWatches(senderId: number): void {
+  const runtimes = fileWatchesBySender.get(senderId);
+  if (!runtimes) return;
+  for (const { ledger, call } of runtimes.values()) {
+    for (const ref of ledger.drain()) {
+      void call({
+        domain: "file",
+        action: "stopWatching",
+        args: { ...ref.args, [RUNTIME_ACTION_CLIENT_ID_FIELD]: senderId },
+      }).catch(() => {
+        // The runtime is gone or unreachable; its own connection cleanup covers it.
+      });
+    }
+  }
+  runtimes.clear();
+}
+
+/**
+ * Record a file watch or stop that a runtime accepted for `sender`. The first
+ * watch also ties the page's lifetime to its watches: a new document committed
+ * in the main frame (a reload), a dead renderer and a destroyed window all end the
+ * page without its cleanup running.
+ */
+function trackPageFileWatch(
+  sender: WebContents,
+  runtimeKey: string,
+  request: RemoteRuntimeActionRequest,
+  call: (request: RemoteRuntimeActionRequest) => Promise<unknown>,
+): void {
+  if (request.domain !== "file") return;
+  if (request.action !== "watchWorkspace" && request.action !== "stopWatching") return;
+  const { [RUNTIME_ACTION_CLIENT_ID_FIELD]: clientId, ...args } = isObjectRecord(request.args) ? request.args : {};
+  // The id the runtime counted this watch under. Read from the request: the
+  // page can be gone by now, and a destroyed sender has no id to read.
+  if (typeof clientId !== "number") return;
+  const senderId = clientId;
+  if (sender.isDestroyed()) {
+    // The page closed while the runtime answered, so its `destroyed` event is
+    // past. A watch the runtime just accepted has nobody left to stop it.
+    if (request.action === "watchWorkspace") {
+      void call({ ...request, action: "stopWatching" }).catch(() => {
+        // The runtime is gone or unreachable; its own connection cleanup covers it.
+      });
+    }
+    return;
+  }
+  let runtimes = fileWatchesBySender.get(senderId);
+  if (!runtimes) {
+    if (request.action === "stopWatching") return;
+    runtimes = new Map();
+    fileWatchesBySender.set(senderId, runtimes);
+    const release = () => releasePageFileWatches(senderId);
+    // `did-navigate` reports a main-frame document that committed. A
+    // navigation that only started can still end with the page alive (a
+    // download, a 204, an abort), and an in-page route change keeps the page.
+    sender.on("did-navigate", release);
+    sender.on("render-process-gone", release);
+    sender.once("destroyed", () => {
+      release();
+      fileWatchesBySender.delete(senderId);
+    });
+  }
+  let entry = runtimes.get(runtimeKey);
+  if (!entry) {
+    if (request.action === "stopWatching") return;
+    entry = { ledger: createFileWatchLedger(), call, connectionLost: false };
+    runtimes.set(runtimeKey, entry);
+  }
+  entry.call = call;
+  if (request.action === "watchWorkspace") entry.ledger.noteWatch(args, senderId);
+  else entry.ledger.noteStop(args, senderId);
+}
 /**
  * A machine update downloads a full build before it restarts, so the normal
  * call timeout is far too short. Fifteen minutes covers a slow link without
  * leaving the request open forever.
  */
 const REMOTE_MACHINE_UPDATE_TIMEOUT_MS = 15 * 60_000;
+/**
+ * A confirmation dialog waits on this, so it is a few seconds, not a work
+ * budget. One deadline covers the ask and its older-machine fallback.
+ */
+const REMOTE_MACHINE_UPDATE_IMPACT_TIMEOUT_MS = 3_000;
 const REMOTE_RUNTIME_SYNC_METHODS = new Set([
   "sync.getStatus",
   "sync.refreshDiscovery",
@@ -268,6 +394,13 @@ function resolveAuthorizedLocalRuntimeRootPath(
   if (requested) {
     const alreadyAuthorized = roots.get(localRuntimeRootKey(requested));
     if (alreadyAuthorized) return alreadyAuthorized;
+    // A window that still holds a project's folder from before a move reaches
+    // it at its new folder, when this window may use that one.
+    const moved = resolveMovedProjectRoot(requested);
+    if (moved !== requested) {
+      const movedAuthorized = roots.get(localRuntimeRootKey(moved));
+      if (movedAuthorized) return movedAuthorized;
+    }
     const additionallyAuthorized = authorizeLocalRuntimeRoot?.(session, requested);
     const normalizedAdditional = normalizeLocalRuntimeRootPath(additionallyAuthorized);
     return normalizedAdditional &&
@@ -430,7 +563,15 @@ export function registerRuntimeBridge({
   const remoteConnectionService = new RemoteConnectionService(
     remoteTargetRegistry,
     remoteConnectionPool,
-    { appVersion, getAccountRelayProof, getAuthorizedAccountOwnerId },
+    {
+      appVersion,
+      getAccountRelayProof,
+      getAuthorizedAccountOwnerId,
+      // A dev desktop shares this computer's machine pairing with the installed
+      // ADE; reconnecting saved machines on its own would take them away from it.
+      // ADE_DEV_REMOTE_AUTOCONNECT=1 opts a dev app in on purpose.
+      explicitConnectOnly: !app.isPackaged && process.env.ADE_DEV_REMOTE_AUTOCONNECT !== "1",
+    },
     pairedMachineStore,
   );
   // The media server's `/remote/...` route reads a proof video from a paired
@@ -690,6 +831,7 @@ export function registerRuntimeBridge({
     bindingKey: string,
     requestKey: string,
     subscribe: RuntimeEventSubscribe,
+    fileWatchRuntimeKey: string,
   ): Promise<RuntimeEventSubscriptionInit | null> => {
     // `requestKey` is prefixed with `bindingKey`, so an identical request key is
     // an identical binding: this pump already owns a live subscription and only
@@ -704,6 +846,7 @@ export function registerRuntimeBridge({
     });
     const onEnded = () => {
       removeRuntimeEventSubscription(sender.id, requestKey, subscription);
+      notePageRuntimeDisconnected(sender.id, fileWatchRuntimeKey);
     };
     let subscriptionInit: RuntimeEventSubscriptionInit | null = null;
     try {
@@ -725,6 +868,7 @@ export function registerRuntimeBridge({
         cleanup();
         return subscriptionInit;
       }
+      restorePageFileWatches(sender.id, fileWatchRuntimeKey);
       return subscriptionInit;
     } catch (error) {
       if (!subscription.cleanup) {
@@ -1235,6 +1379,8 @@ export function registerRuntimeBridge({
         projectId,
         actionRequest,
       );
+      trackPageFileWatch(event.sender, remoteFileWatchRuntimeKey(target.id, projectId), actionRequest, (fileRequest) =>
+        remoteConnectionService.callAction(target.id, projectId, fileRequest));
       return result;
     },
   );
@@ -1398,6 +1544,42 @@ export function registerRuntimeBridge({
   );
 
   ipcMain.handle(
+    IPC.remoteRuntimeGetUpdateImpact,
+    async (_event, arg: { id: string }): Promise<UpdateImpact> => {
+      // Never rejects: the caller is a confirmation dialog, and a machine that
+      // cannot answer (or is gone) is "unknown", not an error to show.
+      const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      const target = id ? remoteConnectionService.getTarget(id) : null;
+      if (!target) return UNKNOWN_UPDATE_IMPACT;
+      const deadlineMs = Date.now() + REMOTE_MACHINE_UPDATE_IMPACT_TIMEOUT_MS;
+      const ask = async (method: string): Promise<unknown> => {
+        const remainingMs = deadlineMs - Date.now();
+        if (remainingMs <= 0) throw new Error("The update-impact deadline passed.");
+        return await remoteConnectionService.callMachineMethod<unknown>(
+          target.id,
+          method,
+          {},
+          { timeoutMs: remainingMs, retryOnConnectionError: false },
+        );
+      };
+      try {
+        const impact = parseRuntimeUpdateImpact(await ask("runtime.updateImpact"));
+        return impact ? { ...impact, checked: true } : UNKNOWN_UPDATE_IMPACT;
+      } catch {
+        // A machine that needs this update usually predates the method. It can
+        // still say whether anything is running, just not what.
+        try {
+          const activity = await ask("runtime.activitySummary") as Partial<RuntimeActivitySummary> | null;
+          if (typeof activity?.idle !== "boolean") return UNKNOWN_UPDATE_IMPACT;
+          return { ...UNKNOWN_UPDATE_IMPACT, checked: true, busyWithoutDetail: !activity.idle };
+        } catch {
+          return UNKNOWN_UPDATE_IMPACT;
+        }
+      }
+    },
+  );
+
+  ipcMain.handle(
     IPC.localRuntimeListActionRegistry,
     async (
       event,
@@ -1464,6 +1646,9 @@ export function registerRuntimeBridge({
         rootPath,
         actionRequest,
       );
+      const pool = localRuntimeConnectionPool;
+      trackPageFileWatch(event.sender, localFileWatchRuntimeKey(rootPath), actionRequest, (fileRequest) =>
+        pool.callActionForRoot(rootPath, fileRequest));
       return result;
     },
   );
@@ -1552,6 +1737,7 @@ export function registerRuntimeBridge({
           bindingKey,
           requestKey,
           subscribe,
+          localFileWatchRuntimeKey(rootPath),
         );
         return {
           events: [],
@@ -1612,6 +1798,7 @@ export function registerRuntimeBridge({
           bindingKey,
           requestKey,
           subscribe,
+          remoteFileWatchRuntimeKey(target.id, projectId),
         );
         return {
           events: [],
@@ -1625,11 +1812,18 @@ export function registerRuntimeBridge({
       const result = withRendererVisibleEvents(
         await remoteConnectionService.streamEvents(target.id, projectId, request),
       );
+      // A pump that started live already has a push stream for this binding and
+      // category. A second, replaying one would send every event over the wire
+      // twice (and through the paid relay when that is the route), so a caught-up
+      // poll only keeps the live one alive.
+      const liveRequestKey = runtimeEventRequestKey(bindingKey, { ...request, replay: false });
+      if (refreshRuntimeEventSubscription(event.sender.id, liveRequestKey)) return result;
       void ensureRuntimeEventSubscription(
         event.sender,
         bindingKey,
         requestKey,
         subscribe,
+        remoteFileWatchRuntimeKey(target.id, projectId),
       ).catch(() => {});
       return result;
     },

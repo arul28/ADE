@@ -1,7 +1,8 @@
 # ACP Provider Expansion — Build Spec (locked 2026-08-30)
 
 Locked by /plan deliberation in ADE session `1504018b-e2c5-4fd4-a954-f86c9f9c67e7`.
-Four new Work providers over one shared ACP host: **qwen**, **kimi**, **grok**, **copilot**.
+Three ACP providers over one shared ACP host: **qwen**, **kimi**, **grok** (plus **devin**, its own section).
+Copilot left ACP for the SDK provider in `copilot-sdk-provider.md`.
 Full Settings → Models redesign for all providers. Research record lives in that chat.
 
 ## Version policy
@@ -19,14 +20,15 @@ a message naming the CLI and telling the user to update ADE or the CLI.
 
 | Provider | Latest verified | Older version checked | Scope | Date |
 |---|---|---|---|---|
-| copilot | 1.0.91 | 1.0.89 | Handshake, live turn, cancel, close; rejoin on 1.0.91 | 2026-10-05 |
 | grok | 1.0.46 | 1.0.41 | Handshake, live turn, cancel, permissions, close, resume | 2026-10-05 |
 | qwen | 0.25.0 | 0.22.3 | Handshake, config options, cancel, close; no live turn (no reachable model) | 2026-10-05 |
 | kimi | 2.1.1 | 0.39.1 | Handshake and unauthenticated methods only (no active login) | 2026-10-05 |
 | devin | 3000.11.3 | — | Handshake and unauthenticated methods only (no login; cloud relay unreachable) | 2026-10-05 |
 
-Copilot CLI updates itself, so a user on any Copilot release usually runs the
-newest one.
+> **Copilot is out of this spec.** It is an SDK provider now, documented in
+> `copilot-sdk-provider.md`. Copilot facts in sections 3.5 through 8 below are
+> history from the retired ACP build. They describe no live path, and the
+> picker rows and icons for Copilot follow the SDK provider.
 
 ## 1. Architecture
 
@@ -72,7 +74,6 @@ slash-command allowlist.
 | qwen | first-class | cleanest surface |
 | kimi | first-class | two holes, absorbed (below) |
 | grok | first-class | **Graduated 2026-09-18.** A real `session/request_permission` was observed in a host-driven ACP session on 1.0.13 once both halves of §3's neutralization were applied. The undocumented vendor hatch remains a compatibility risk, so the preflight and runtime supervision invariant stay load-bearing. |
-| copilot | preview (Settings-only label) | graduates when GitHub fixes cancel + drops preview |
 
 Preview labels appear ONLY in Settings (tile + detail page). Pickers render all
 providers identically.
@@ -454,132 +455,14 @@ Rust, Apache-2.0)
   symlinked cwd. ADE's setup and error copy install the latest
   `@xai-official/grok` release.
 
-### Copilot (`copilot --acp`, latest verified **1.0.91**, baseline **1.0.89**, PREVIEW)
-- The 1.0.89 and 1.0.91 handshakes are identical in capability terms
-  (verified 2026-10-05): `loadSession`, image prompts, HTTP/SSE MCP, and
-  session list/close. Neither advertises `session/resume`; both answer the
-  method with -32601. ADE checks the handshake before sending lifecycle
-  methods, and older 1.0.x binaries that omit close release a shared lease
-  without killing other chats. `agentInfo.version` is the ACP server's own
-  version: 1.0.91 reports `1.0.91`, while 1.0.89 still reports `1.0.86`.
-- ACP mode controls are live: `agent`, `plan`, and `autopilot`, plus the
-  `allow_all` option. ADE maps its abstract permission ladder to those native
-  mode ids and normalizes Copilot's `currentValue` / nested `value` shape.
-  Copilot has no intermediate auto-edit mode, so ADE deliberately maps
-  `auto-edit` and `auto` down to approval-gated Agent mode and tells the user
-  about that downgrade.
-- Slash commands arrive as ordinary prompts plus `available_commands_update`;
-  TUI-only commands (`/diff`, `/resume`, `/login`, `/undo`…) are filtered from
-  the picker or they hit the model.
-- KNOWN BUG: `session/cancel` as a REQUEST answers -32601 on every probed
-  path (1.0.82, 1.0.89, 1.0.91). Send it as a notification. Live 1.0.89
-  cancellation still returns `stopReason:"end_turn"` with partial text
-  (github/copilot-cli #4561), so client-side cancel accounting remains
-  mandatory on it. Live 1.0.91 returns `stopReason:"cancelled"`; ADE keeps the
-  same accounting for both because users may run either version.
-- `--model` and `--effort` are process-global ACP launch flags. ADE passes the
-  selected model and effort at launch and folds both into the pool identity.
-  `session/new` takes no model parameter; the `--model` value seeds the
-  session's model state.
-- Usage: `usage_update { used, size }` is the context meter and the prompt
-  result `usage { inputTokens, outputTokens, totalTokens, thoughtTokens,
-  cachedReadTokens, cachedWriteTokens }` is the turn's tokens, with an
-  `inputTokens` that counts the cache (14160 = 13008 uncached + 1152 read in
-  the capture). Everything else is only in Copilot's own
-  `$COPILOT_HOME/session-store.db`, table `assistant_usage_events`, written as
-  each request completes (`session_id` = the ACP session id, `agent_id`,
-  `parent_tool_call_id`, `model`, token columns, `total_nano_aiu`,
-  `request_multiplier`, `initiator`, `created_at`). The store is in WAL mode
-  (`PRAGMA journal_mode` = `wal`, read 2026-09-23 on 1.0.88), so a reader never
-  waits on Copilot's writer. ADE opens it read-only (`node:sqlite`) and keeps
-  every read off the prompt path: the turn start is a timestamp (no read in
-  front of `session/prompt`), and at turn end the turn's rows are the
-  session's rows whose `created_at` (Copilot writes ISO 8601 UTC with
-  milliseconds; the column default's `datetime('now')` shape is normalized
-  too) is at or after it. The read runs on a later tick than the call, with
-  `busy_timeout = 0`; a busy store is retried on a 40 ms timer, three reads at
-  most, inside the 250 ms turn-end deadline, and anything else resolves
-  `null`. That gives
-  `servedModel` (the model Copilot picked: `mai-code-1.1-flash` for a session
-  with no model set), `requestCount`, `planUsage` = premium requests (sum of
-  `request_multiplier` over rows the user initiated; `initiator = "agent"`
-  follow-ups are not billed as premium requests) and `nano_aiu` (sum of
-  `total_nano_aiu`), and one derived `done.subagentUsage` entry per
-  `agent_id`. Account: always the Copilot subscription.
-- Model selection. ADE passes `--model` at launch and calls
-  `session/set_model` after every entry. In 1.0.88, `session/set_model` and
-  `session/set_config_option { configId: "model" }` run the same code
-  (`validateSelection`, then `model.switchTo`). The `session/new` result lists
-  a `model` option only when Copilot's model state projects one. When it
-  does, ADE sends only a model from that list (see 3.6). Config options use
-  `currentValue` and nested `value`, which ADE canonicalizes onto `value` /
-  `options[].id`. New model families need no static catalog row: they reach the
-  picker only through that projected option. Neither 1.0.89 nor 1.0.91 projected
-  one on this machine's Auto-only plan (see below), so their added models stay
-  unreachable over ACP here.
-- **On a plan that includes only Auto, no ACP mechanism selects the model**
-  (verified 2026-09-23 on 1.0.88, this machine's account):
-  - The CAPI `/models` list (logged with `--log-level all`) marks all 53
-    models `model_picker_enabled: false`.
-  - `session/new` lists no `model` option.
-  - `session/set_model` answers `{}` and writes `session.model_change`. Then
-    `session.auto_mode_resolved` (`routingMethod: auto_v2`) picks the model
-    from a one-model pool. `claude-haiku-4.5` and `mai-code-1.1-flash` were
-    asked for; `gpt-5.6-luna` served both (`assistant_usage_events.model`).
-    Auto also replaced the effort (`low` asked, `medium` served).
-  - Every earlier session in `session-state/` shows the same Auto routing.
-    With no model, a stale `settings.json` model (`gpt-5.2`) became `auto`
-    at startup.
-  - The binary names the rule: "only Auto mode is available on your plan",
-    "The --model argument will be overridden", and "The COPILOT_MODEL
-    environment variable will be overridden".
-  - `session/new` reads no model from `_meta`. `--auto-tier` and
-    `COPILOT_AUTO_TIER` choose only the Auto routing profile.
-  ADE shows the truth instead. It reads the served model from
-  `session-store.db`, reports it as `done.servedModel` (the chat service logs
-  `agent_chat.served_model_mismatch`), and posts one notice per served model
-  (see 3.5). No new live turn was spent; the two probe turns above are
-  the live evidence.
-- Server-start flags (`--effort`, `--available-tools`, `--excluded-tools`) are
-  process-global; `session/new` cannot override.
-- **Trust pre-seed: REMOVED. ADE does not write Copilot's config.** There was
-  once an `ensureCopilotFolderIsTrusted` helper that added the lane worktree to
-  `$COPILOT_HOME/config.json` before `session/new`. The helper, its call site in
-  `agentChatService.ts`, and its tests are deleted, and nothing on the Copilot
-  path may write the provider's config home again.
-  - **It bought nothing.** A three-arm live experiment on 1.0.82 opened
-    headless `session/new` with no trust key and no `--add-dir`, in a throwaway
-    git cwd and in a nested independent git repo. No arm deadlocked on a "do you
-    trust this folder" gate. Cwd writes completed in every arm with
-    `allow_all: "off"`, no `permissions-config.json`, a `tool_call` of kind
-    `edit`, and **0** `session/request_permission` RPCs. The write did not
-    enable permission prompts — Copilot ACP cannot be interactively gated
-    headless on this version, seed or no seed.
-  - **It cost something real.** `config.json` is JSONC (leading `//` comment
-    header). `JSON.parse` throws on that header, and the recover path rewrote a
-    user's live `~/.copilot/config.json` as a stub, dropping the comment header
-    and sibling keys; every later `session/prompt` answered "No model
-    available" until the file was restored. A no-overwrite guard was added
-    afterwards, but the correct fix is to not write user state at all.
-  - **Key name, for the record** (moot now that ADE writes neither, recorded so
-    nobody re-adds the wrong one): live 1.0.82 persists `trustedFolders`
-    (camelCase). Earlier research notes and older GitHub docs claimed
-    `trusted_folders` (snake_case); that spelling is wrong. Which key the binary
-    **reads** was never isolated, because ACP `session/new` opened with neither.
-  - `--add-dir` **stays** on the spawn plan. It is argv, not a rewrite of user
-    state, and it does not touch `config.json`. The experiment showed it is not
-    load-bearing for opening a session or for writes either, but it is the
-    cheapest available session path gate, so removing it needs its own decision.
-- Auth: `copilot login` (browser local / device remote); free plan includes
-  the CLI. `authenticate` succeeds only after login.
-- Config home: `COPILOT_HOME` only. Copilot 1.0.91 warns that the
-  `--config-dir` flag is deprecated, so ADE does not pass it. Sessions at
-  `~/.copilot/session-state/<uuid>/`.
-- Tracked CLI: `copilot -i "<prompt>" --model <enum> --reasoning-effort
-  <low|medium|high|xhigh>`; `--resume=<new-uuid>` doubles as assign-at-launch;
-  `--continue`. `--model` is a FIXED enum — map or reject. No plan mode → map
-  ADE plan to `--deny-tool write,shell` or reject the mode. `--no-alt-screen`.
-- Windows: npm `.cmd` shim → prompt rides PTY.
+### Copilot (removed from ACP)
+
+Copilot is no longer an ACP provider. It runs as an SDK provider on
+`@github/copilot-sdk` against the installed Copilot CLI. Its dialect, probes,
+usage ledger wiring and tests were removed with the move. The current design
+is in `copilot-sdk-provider.md`. The Copilot CLI facts that still matter for
+the terminal CLI and for usage history stay in `terminals-and-sessions/` and
+`onboarding-and-settings/usage-tracking.md`.
 
 ### Devin (`devin acp`, latest verified **3000.11.3**, PREVIEW)
 - Spawn: `devin acp [--model <name>]`. `--model` is a global default for every
@@ -716,6 +599,31 @@ Rust, Apache-2.0)
 `acpRuntimeCoordinator.ts` owns these rules. The chat service only passes the
 chat's model token and effort.
 
+- **The picker shows the provider's live list.** `acpHost/acpModelDiscovery.ts`
+  warms each installed, signed-in provider in the background (`initialize`,
+  `session/new`, `session/close`, never a prompt; `devin models list` for
+  Devin), one provider at a time, and saves the last good list per provider in
+  `userData/acp-model-catalog-cache.json` for 6 hours. A stale list is served
+  while it refreshes, and a failed warm is not retried for 5 minutes. An open
+  chat session's own report refreshes the same cache. Once a provider has a
+  live list, `modelRegistry.ts` serves exactly that list: curated rows the
+  list names keep their researched name, color and context window, and curated
+  rows it does not name are hidden. The curated rows are the fallback for a
+  provider that has never reported (offline, never probed). Copilot background
+  model and auth probes first list MCP definitions without connecting, then
+  disable every listed server and all built-ins for the temporary process.
+  If that metadata cannot be read, ADE skips opening the probe session and
+  reports the failure. Real chat sessions continue to load configured MCPs.
+- **Copilot effort.** Copilot accepts `none`, `minimal`, `low`, `medium`,
+  `high`, `xhigh` and `max` (`--effort` is its alias for
+  `--reasoning-effort`), and exits at startup on any other value, so only
+  those seven are passed. A live Copilot model gets the levels the session
+  lists for it, else the levels ADE already learned, else all seven, except
+  `Auto`, `gpt-3*`/`gpt-4*` and models the curated table marks as
+  non-reasoning. Cached Copilot models from older ADE builds receive the same
+  fallback when loaded, so thinking controls are available immediately after
+  an upgrade.
+
 - **Order after every entry** (`session/new`, `session/resume`,
   `session/load`): mode, then model, then effort. A resumed session comes
   back on the model and effort that it last ran with (Grok 1.0.40), so a
@@ -786,14 +694,14 @@ chat's model token and effort.
 ## 4. ADE contract extensions (all move together, one PR-layer)
 
 From the internal audit (all file:line refs verified 2026-08-30):
-- `shared/types/chat.ts`: `AgentChatProvider` + `"qwen"|"kimi"|"grok"|"copilot"`,
+- `shared/types/chat.ts`: `AgentChatProvider` + `"qwen"|"kimi"|"grok"`,
   `AgentChatModelCatalogRefreshProvider`, `PendingInputSource` + `"acp"`,
   session fields → ONE generic `acpConfigSnapshot`/`acpPermissionMode` shape
   (mirroring `cursorModeSnapshot`/`cursorConfigValues`), NOT four bespoke
   field families. `ACTIVE_TURN_DISPATCH_MODES`: all four queue-only.
   `HANDOFF_FORK_PROVIDERS`: exclude all four (brief-only handoff).
 - `shared/modelRegistry.ts`: `ProviderFamily` + `"qwen"|"moonshot"|"xai"|
-  "github"` (or equivalent), `ModelProviderGroup` + four, curated descriptors
+  "github"` (or equivalent), `ModelProviderGroup` + the ACP providers, curated descriptors
   per provider (small set: the models users actually pick), helpers.
 - `shared/modelCatalog.ts`: `ProviderGroupKey`, `PROVIDER_ORDER`,
   `PROVIDER_GROUP_ORDER/COLORS`, `classifyProviderGroup` — replace silent
@@ -844,7 +752,7 @@ From the internal audit (all file:line refs verified 2026-08-30):
   `providerSectionPrimitives.tsx` (`ProviderGrid`/`ProviderTile`).
 - Tile (labeled): logo · name · status dot + word (Connected / Sign in /
   Needs attention / Not installed / Checking / Disabled) · model count ·
-  version · Preview chip (grok/copilot) · one-line error when unhealthy.
+  version · Preview chip (grok) · one-line error when unhealthy.
   "Checking" is a first-class state distinct from "Not detected".
 - Detail page: two-column. Left rail: identity, status, version, auth actions
   (sign in/out), diagnostics entry, disable toggle. Grok adds one update
@@ -876,33 +784,47 @@ From the internal audit (all file:line refs verified 2026-08-30):
    stopped.").
 
 Rejected: env-var provenance surfacing, authenticating pulse animation,
-update-available UI for providers other than Grok (only `@xai-official/grok`
-publishes a npm `latest` an ADE monitor reads, and Grok is the one ADE launches
-with `--no-auto-update`), picker overhaul beyond greying.
+picker overhaul beyond greying.
 
-## Grok version monitor and update
+## Provider versions and update
 
-Grok is launched with `--no-auto-update`, so without a monitor an outdated CLI
-shows nothing anywhere. When a Grok detail page opens, `grokUpdate.ts` resolves
-the binary's installer from the same resolution diagnostics uses (a native
-binary, or an npm `.cmd`/Node-shebang install), reads
-`https://registry.npmjs.org/@xai-official/grok/latest` (cached 30 minutes), and
-compares it to the `--version` line. `AcpProviderUpdateInfo` carries the verdict
-on `AcpProviderDiagnostics.update`. The registry round-trip is started before the
-`--version` spawn (`fetchGrokUpdateBaseline`) so a slow or offline registry
-overlaps the version probe instead of delaying it.
+Users install the ACP CLIs themselves, so ADE checks each one against a
+**tested range**: the oldest and newest versions someone checked ADE against.
+`ai/acpProviderUpdate.ts` holds one row per provider in
+`ACP_PROVIDER_VERSION_POLICY` (label, npm package or none, tested range, and
+whether the vendor's updater can install an exact version). The evidence for
+each range is in the dialect file. Raise a range only after a live check of
+the new version.
 
-One-click **Update now** appears only when the installer resolved
-(`canUpdate`). It runs `<resolved binary> update` with the instance
-environment, including `GROK_HOME`, so a custom home updates that home, then
-re-reads `--version` to confirm and refreshes the diagnostics. An unresolvable
-binary skips the registry read entirely and shows a manual note with no button —
-ADE never runs a guessed command. The updater spawns through
-`resolveCliSpawnInvocation`, so a Windows npm `.cmd` shim works. Its POSIX child
-is detached (its own process group) and the timeout kills the whole group on
-POSIX and the tree via `terminateProcessTree` on Windows, so installer
-grandchildren do not survive. There is no network call in the unit tests; the
-registry fetch and install-kind probes are injected.
+- **Below the range.** When an ACP chat is ready, the runtime reads the
+  binary's `--version` (`readAcpProviderLaunchStanding`, cached per binary for
+  30 minutes so an update made outside ADE is seen without a restart) and, if
+  it is below the range, adds a `system_notice` with status
+  `acp_provider_outdated` and `detail.providerUpdate`, at most once per chat.
+  The chat row (`ProviderOutdatedNoticeRow`) shows an **Update to <max>**
+  button when the install is resolvable, and runs it on the chat's machine. The check runs
+  after the chat is ready and never delays it; a spawn override (a cloud
+  runtime) is skipped.
+- **Inside the range, not at the top.** The provider's Settings page offers
+  the update. **Above the range:** Settings says the version is newer than ADE
+  has tested. Users are never told to update past the range.
+- **The update installs `tested.max`, never npm `latest`.** A vendor-native
+  Grok runs `<binary> update --version <max>` with `GROK_HOME`. An npm install
+  runs `npm install -g --prefix <prefix> <pkg>@<max>`, where the prefix comes
+  from the binary's real path (`<prefix>/lib/node_modules/<pkg>` on POSIX,
+  the `.cmd` shim beside `<prefix>\node_modules\<pkg>` on Windows) and npm is
+  the one in that prefix when present. A project-local install
+  (`<repo>/node_modules/<pkg>`) has neither layout and stays manual. After the
+  installer exits 0, the binary must report `tested.max`; otherwise the
+  update fails with the version it still reports. One update per provider
+  binary runs at a time; a second request (another chat warning, or Settings)
+  joins the one in flight. An install ADE cannot place (or Kimi
+  and Devin, which have no npm package or exact-version updater) shows a
+  manual note and no button.
+- The updater spawns through `resolveCliSpawnInvocation`, so a Windows `.cmd`
+  shim works. Its POSIX child is detached and the timeout kills the whole
+  process group; on Windows `terminateProcessTree` kills the tree. A successful
+  update clears the cached launch version.
 
 ## 7. Test contract
 

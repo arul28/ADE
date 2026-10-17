@@ -5,7 +5,10 @@ import path from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { createMacDesktopDriverClient } from "./macDesktopDriverClient";
+import {
+  createMacDesktopDriverClient,
+  isMacDesktopDriverStillRunning,
+} from "./macDesktopDriverClient";
 
 const logger = {
   debug: () => {},
@@ -226,6 +229,148 @@ describe("macDesktopDriverClient when the helper stops answering", () => {
     expect(client.getHealth().state).toBe("running");
     // The service decides whether a retirement took a screen with it.
     expect(lost).toEqual(["retired", "retired", "retired", "retired", "retired"]);
+    client.dispose();
+  });
+
+  /**
+   * A helper that dies on sight, over and over.
+   *
+   * The budget has to span the 30 s window stability is measured against: a
+   * budget that ran out inside it could not tell a burst of transient failures
+   * (an update replacing the binary, a window-server hiccup) from a helper that
+   * will never come up. Past the budget, the retries slow down while a request
+   * is recent enough to want the driver; once nothing has asked for it, they
+   * stop until the next request.
+   */
+  const crashLoopClient = (spawnProcess: ReturnType<typeof vi.fn>, recorded: ReturnType<typeof recordingLogger>) => {
+    const client = createMacDesktopDriverClient({
+      logger: recorded.logger,
+      platform: "darwin",
+      resolveExecutablePath: binaryPath,
+      spawnProcess: spawnProcess as unknown as typeof import("node:child_process").spawn,
+    });
+    return client;
+  };
+
+  /** Advances fake time until `expected` spawns have happened, or `withinMs` has passed. */
+  const spawnWithin = async (spawnProcess: { mock: { calls: unknown[] } }, expected: number, withinMs: number): Promise<boolean> => {
+    for (let elapsed = 0; elapsed < withinMs; elapsed += 250) {
+      await vi.advanceTimersByTimeAsync(250);
+      if (spawnProcess.mock.calls.length >= expected) return true;
+    }
+    return false;
+  };
+
+  it("keeps retrying a crash-looping helper while it is wanted, and only slows down", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const children: Array<ReturnType<typeof createChild>> = [];
+    const spawnedAt: number[] = [];
+    const spawnProcess = vi.fn(() => {
+      const next = createChild(600 + children.length);
+      children.push(next);
+      spawnedAt.push(Date.now());
+      return next;
+    });
+    const recorded = recordingLogger();
+    const client = crashLoopClient(spawnProcess, recorded);
+    await client.ensureStarted();
+
+    // The fast budget: seven restarts, each within ten seconds.
+    for (let round = 0; round < 7; round += 1) {
+      children.at(-1)!.exit(1);
+      expect(await spawnWithin(spawnProcess, round + 2, 20_000)).toBe(true);
+    }
+    // Past it, each retry waits minutes rather than ten seconds, and the
+    // driver is still wanted: the request that started this is minutes old.
+    for (let round = 0; round < 2; round += 1) {
+      children.at(-1)!.exit(1);
+      expect(await spawnWithin(spawnProcess, 9 + round, 130_000)).toBe(true);
+    }
+    expect(spawnedAt.at(-1)! - spawnedAt.at(-2)!).toBeGreaterThanOrEqual(60_000);
+    expect(recorded.lines.filter((line) => line.event === "mac_desktop.driver_crash_loop")).toHaveLength(1);
+    expect(recorded.lines.some((line) => line.event === "mac_desktop.driver_restart_parked")).toBe(false);
+    client.dispose();
+  });
+
+  it("parks a crash-looping helper once nothing has asked for it, and the next request spawns at once", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const children: Array<ReturnType<typeof createChild>> = [];
+    const spawnProcess = vi.fn(() => {
+      const next = createChild(600 + children.length);
+      children.push(next);
+      return next;
+    });
+    const recorded = recordingLogger();
+    const client = crashLoopClient(spawnProcess, recorded);
+    await client.ensureStarted();
+
+    // Keep it dying until a death lands with no request in the window before
+    // it: then no restart is armed, and no spawn follows the death.
+    let parked = false;
+    for (let round = 0; round < 30 && !parked; round += 1) {
+      children.at(-1)!.exit(1);
+      parked = !(await spawnWithin(spawnProcess, round + 2, 130_000));
+    }
+    expect(parked).toBe(true);
+    const spawnsWhenParked = spawnProcess.mock.calls.length;
+    expect(recorded.lines.some((line) => line.event === "mac_desktop.driver_restart_parked")).toBe(true);
+
+    // Ten minutes with nothing asking for it: no helper is spawned.
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(spawnProcess).toHaveBeenCalledTimes(spawnsWhenParked);
+
+    // The next real request spawns at once, without waiting for any timer.
+    await client.ensureStarted();
+    expect(spawnProcess).toHaveBeenCalledTimes(spawnsWhenParked + 1);
+    expect(client.isRunning()).toBe(true);
+    client.dispose();
+  });
+
+  it("tells the driver's give-up answer apart from a refusal and from a dead driver", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const child = createChild(303);
+    const client = createMacDesktopDriverClient({
+      logger,
+      platform: "darwin",
+      resolveExecutablePath: binaryPath,
+      spawnProcess: (() => child) as unknown as typeof import("node:child_process").spawn,
+    });
+    await client.ensureStarted();
+    const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+    const answer = async (error: Record<string, unknown>): Promise<unknown> => {
+      const request = client.request("observe", { laneId: "lane-1" });
+      await settle();
+      const id = JSON.parse(child.stdin.read()!.toString()).id;
+      child.stdout.write(`${JSON.stringify({ id, ok: false, error })}\n`);
+      return await request.catch((failure: unknown) => failure);
+    };
+
+    // The watchdog answering for a handler that is still running: alive, and
+    // the work may yet land.
+    expect(isMacDesktopDriverStillRunning(await answer({
+      code: "internal_error",
+      message: "observe did not complete within 15s. "
+        + "The driver gave up waiting and answered on its behalf; the operation may still be running.",
+    }))).toBe(true);
+    // The same code with a real internal failure behind it is not a give-up.
+    expect(isMacDesktopDriverStillRunning(await answer({
+      code: "internal_error",
+      message: "The element map could not be written.",
+    }))).toBe(false);
+    // Nor is a refusal.
+    expect(isMacDesktopDriverStillRunning(await answer({
+      code: "no_display",
+      message: "Lane lane-1 has no display. Start one before observing it.",
+    }))).toBe(false);
+
+    // And a driver that is simply gone is the other failure, not this one.
+    // The rejection is handled where it is made, not after the exit lands.
+    const gone = client.request("observe", { laneId: "lane-1" }).catch((failure: unknown) => failure);
+    await settle();
+    child.exit(1);
+    await settle();
+    expect(isMacDesktopDriverStillRunning(await gone)).toBe(false);
     client.dispose();
   });
 

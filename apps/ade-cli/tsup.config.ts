@@ -24,6 +24,9 @@ const tuiNoExternal = [
   "ws",
   "yaml",
   /^highlight\.js(?:\/.*)?$/,
+  // Reached through the shared logger's Sentry bridge; a no-op in the TUI,
+  // which never starts a Sentry client.
+  /^@sentry\//,
 ];
 const packageRoot = path.dirname(fileURLToPath(import.meta.url));
 const cliNodeModules = path.join(packageRoot, "node_modules");
@@ -43,6 +46,7 @@ export default defineConfig([
       ptyHostWorker: "../desktop/src/main/services/pty/ptyHostWorker.ts",
       cursorSdkWorker: "../desktop/src/main/services/chat/cursorSdkWorker.ts",
       droidSdkWorker: "../desktop/src/main/services/chat/droidSdkWorker.ts",
+      copilotSdkWorker: "../desktop/src/main/services/chat/copilotSdkWorker.ts",
       usageLedgerWorker: "../desktop/src/main/services/usage/usageLedgerWorkerEntry.ts"
     },
     format: ["cjs"],
@@ -53,13 +57,24 @@ export default defineConfig([
     clean: true,
     // @opencode/client is ESM-only (no "require" export); force-inline it so
     // the CJS runtime bundle does not emit a bare require() that packaged
-    // Electron-as-node cannot resolve.
+    // Electron-as-node cannot resolve. @muse-code/sdk is ESM-only (zero deps)
+    // and inlined for the same reason.
     // string-width: cli.ts reaches it at module scope through
     // tuiClient/displayWidth (table formatters); the packaged CLI resolves
     // externals through NODE_PATH into apps/desktop's production tree, which
     // does not ship it (v1.2.75 release smoke). verify-built-cli.mjs guards
     // this class.
-    noExternal: ["@factory/droid-sdk", /^@opencode\/client(?:\/.*)?$/, "yaml", "string-width"],
+    // @sentry/*: inlined so the brain loads one file instead of a few hundred
+    // small ones, which costs most of a second on Windows (Defender scans each).
+    noExternal: [
+      "@factory/droid-sdk",
+      "@github/copilot-sdk",
+      /^@opencode\/client(?:\/.*)?$/,
+      /^@muse-code\/sdk(?:\/.*)?$/,
+      "yaml",
+      "string-width",
+      /^@sentry\//,
+    ],
     outExtension: () => ({
       js: ".cjs"
     }),

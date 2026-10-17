@@ -672,8 +672,9 @@ final class WorkSessionGroupingTests: XCTestCase {
 
   // MARK: - Ordering tiers
 
-  func testPrimaryLaneLeadsEveryTier() {
+  func testPinnedLanesLeadThenPrimaryLeadsEveryTier() {
     // The primary lane is the oldest and quiet — every other key would sink it.
+    // A pin is the user's own "keep this on top", so it still comes first.
     let primary = makeLane(id: "lane-primary", name: "Primary", laneType: "primary", createdAt: "2026-01-01T00:00:00.000Z")
     let pinned = makeLane(id: "lane-pinned", name: "Pinned", createdAt: "2026-06-01T00:00:00.000Z")
     let active = makeLane(id: "lane-active", name: "Active", createdAt: "2026-05-01T00:00:00.000Z")
@@ -687,7 +688,7 @@ final class WorkSessionGroupingTests: XCTestCase {
       ]
     )
 
-    XCTAssertEqual(ordered.map(\.id), ["lane-primary", "lane-pinned", "lane-active"])
+    XCTAssertEqual(ordered.map(\.id), ["lane-pinned", "lane-primary", "lane-active"])
   }
 
   func testTierOrderIsPinnedThenActiveThenQuiet() {
@@ -954,36 +955,40 @@ final class WorkSessionGroupingTests: XCTestCase {
   /// few hours later, so the two clocks file it under different headers — which
   /// is exactly what a single threaded clock has to prevent.
   func testByStatusFilesAgainstTheInjectedClock() {
+    // A snooze that ends a minute from now: the injected clock alone decides
+    // whether the chat is still filed as snoozed or back among the done ones.
     let lane = makeLane(id: "lane-a", name: "feature/one")
-    let calm = makeSession(
+    let snoozed = makeSession(
       id: "s-1",
       laneId: lane.id,
       runtimeState: "idle",
+      snoozedUntil: iso(now.addingTimeInterval(60)),
+      snoozedAt: iso(now.addingTimeInterval(-60)),
       chatIdleSinceAt: iso(now.addingTimeInterval(-60))
     )
 
     XCTAssertEqual(
       workSessionGroups(
         organization: .byStatus,
-        sessions: [calm],
+        sessions: [snoozed],
         chatSummaries: [:],
         archivedSessionIds: [],
         orderedLanes: [lane],
         now: now
       ).map(\.id),
-      ["status:done"]
+      [workSnoozedSectionId]
     )
 
     XCTAssertEqual(
       workSessionGroups(
         organization: .byStatus,
-        sessions: [calm],
+        sessions: [snoozed],
         chatSummaries: [:],
         archivedSessionIds: [],
         orderedLanes: [lane],
-        now: now.addingTimeInterval(sessionStaleAfterSeconds + 60)
+        now: now.addingTimeInterval(120)
       ).map(\.id),
-      ["status:running"]
+      ["status:done"]
     )
   }
 
@@ -1278,6 +1283,150 @@ final class WorkSessionGroupingTests: XCTestCase {
     )
   }
 
+  func testScheduledWakeAndBusySubagentWaitingReasons() {
+    struct Case {
+      let name: String
+      let parent: TerminalSessionSummary
+      let children: [TerminalSessionSummary]
+      let nextWakeAt: String?
+      let expected: WorkBoardWaitingReason?
+    }
+
+    var archivedChild = makeSession(
+      id: "child-archived",
+      laneId: "lane-a",
+      spawnKind: .subagent,
+      orchestrationParentSessionId: "parent"
+    )
+    archivedChild.archivedAt = iso(now.addingTimeInterval(-30))
+    let idleChild = makeSession(
+      id: "child-idle",
+      laneId: "lane-a",
+      status: "completed",
+      runtimeState: "idle",
+      spawnKind: .subagent,
+      orchestrationParentSessionId: "parent"
+    )
+    let runningGrandchild = makeSession(
+      id: "grandchild-running",
+      laneId: "lane-a",
+      spawnKind: .subagent,
+      orchestrationParentSessionId: idleChild.id
+    )
+
+    let cases = [
+      Case(
+        name: "wake inside grace is scheduled",
+        parent: makeSession(id: "parent", laneId: "lane-a", status: "completed", runtimeState: "idle"),
+        children: [],
+        nextWakeAt: iso(now.addingTimeInterval(-60)),
+        expected: .scheduled
+      ),
+      Case(
+        name: "wake beyond grace is no longer waiting",
+        parent: makeSession(id: "parent", laneId: "lane-a", status: "completed", runtimeState: "idle"),
+        children: [],
+        nextWakeAt: iso(now.addingTimeInterval(-121)),
+        expected: nil
+      ),
+      Case(
+        name: "running nested subagent keeps idle parent waiting",
+        parent: makeSession(id: "parent", laneId: "lane-a", status: "completed", runtimeState: "idle"),
+        children: [makeSession(
+          id: "child-running",
+          laneId: "lane-a",
+          spawnKind: .subagent,
+          orchestrationParentSessionId: "parent"
+        )],
+        nextWakeAt: nil,
+        expected: .subagent
+      ),
+      Case(
+        name: "running grandchild keeps root parent waiting through idle child",
+        parent: makeSession(id: "parent", laneId: "lane-a", status: "completed", runtimeState: "idle"),
+        children: [idleChild, runningGrandchild],
+        nextWakeAt: nil,
+        expected: .subagent
+      ),
+      Case(
+        name: "finished nested child does not keep parent waiting",
+        parent: makeSession(id: "parent", laneId: "lane-a", status: "completed", runtimeState: "idle"),
+        children: [makeSession(
+          id: "child-finished",
+          laneId: "lane-a",
+          status: "ended",
+          runtimeState: "exited",
+          spawnKind: .subagent,
+          orchestrationParentSessionId: "parent"
+        )],
+        nextWakeAt: nil,
+        expected: nil
+      ),
+      Case(
+        name: "archived nested child does not keep parent waiting",
+        parent: makeSession(id: "parent", laneId: "lane-a", status: "completed", runtimeState: "idle"),
+        children: [archivedChild],
+        nextWakeAt: nil,
+        expected: nil
+      ),
+      Case(
+        name: "snoozed nested child does not keep parent waiting",
+        parent: makeSession(id: "parent", laneId: "lane-a", status: "completed", runtimeState: "idle"),
+        children: [makeSession(
+          id: "child-snoozed",
+          laneId: "lane-a",
+          snoozedUntil: iso(now.addingTimeInterval(3600)),
+          snoozedAt: iso(now.addingTimeInterval(-60)),
+          spawnKind: .subagent,
+          orchestrationParentSessionId: "parent"
+        )],
+        nextWakeAt: nil,
+        expected: nil
+      ),
+      Case(
+        name: "snoozed parent keeps snooze reason",
+        parent: makeSession(
+          id: "parent",
+          laneId: "lane-a",
+          status: "completed",
+          runtimeState: "idle",
+          snoozedUntil: iso(now.addingTimeInterval(3600)),
+          snoozedAt: iso(now.addingTimeInterval(-60))
+        ),
+        children: [makeSession(
+          id: "child-running",
+          laneId: "lane-a",
+          spawnKind: .subagent,
+          orchestrationParentSessionId: "parent"
+        )],
+        nextWakeAt: iso(now.addingTimeInterval(60)),
+        expected: .snoozed
+      ),
+    ]
+
+    for testCase in cases {
+      let sessions = [testCase.parent] + testCase.children
+      let busyParents = workBusySubagentParentIds(
+        sessions: sessions,
+        chatSummaries: [:],
+        now: now
+      )
+      let phase = workCanonicalSessionState(session: testCase.parent, summary: nil, now: now).phase
+      XCTAssertEqual(
+        workSessionWaitingReason(
+          session: testCase.parent,
+          phase: phase,
+          laneWaitingReasonByLaneId: [:],
+          nextWakeAt: testCase.nextWakeAt,
+          busySubagentParentIds: busyParents,
+          now: now
+        ),
+        testCase.expected,
+        testCase.name
+      )
+    }
+  }
+
   /// The chip raw values are persisted per project+host, so they are wire
   /// values, and the case names are not. `needsYou`/`working`/`done` are board
   /// vocabulary on cases whose raw values must still be byte-identical to the
@@ -1320,9 +1469,11 @@ final class WorkSessionGroupingTests: XCTestCase {
       workSessionEmptyStateTitle(status: .waiting, searchText: "", hasFilters: true),
       "Nothing is waiting"
     )
-    XCTAssertEqual(
+    // Waiting is the one chip whose contents are not obvious from its name, so
+    // its empty state explains itself instead of repeating the filter hint.
+    XCTAssertNotEqual(
       workSessionEmptyStateMessage(status: .waiting, searchText: "", hasFilters: true, isLive: true),
-      "Nothing is snoozed, and no lane PR is sitting on CI or waiting for a review."
+      workSessionEmptyStateMessage(status: .working, searchText: "", hasFilters: true, isLive: true)
     )
     XCTAssertEqual(
       workSessionEmptyStateTitle(status: .working, searchText: "", hasFilters: true),
@@ -1429,23 +1580,25 @@ final class WorkSessionGroupingTests: XCTestCase {
 
   /// Every canonical phase answers to exactly one of the three phase-derived
   /// chips — the totality the two old switches each had to maintain separately.
+  /// The desktop board's column for each phase: a failure is the user's move
+  /// (Needs you), a quiet run is still Working, and every resting phase is
+  /// Done. Waiting is never phase-derived.
   func testEveryPhaseFilesUnderExactlyOnePhaseDerivedChip() {
-    let phases: [CanonicalSessionPhase] = [
-      .starting, .running, .needsYou, .failed, .stale, .ready, .idle, .stopped, .ended, .settled,
+    let expected: [(CanonicalSessionPhase, WorkSessionStatusFilter)] = [
+      (.needsYou, .needsYou),
+      (.failed, .needsYou),
+      (.starting, .working),
+      (.running, .working),
+      (.stale, .working),
+      (.ready, .done),
+      (.idle, .done),
+      (.stopped, .done),
+      (.ended, .done),
+      (.settled, .done),
     ]
-    let phaseDerivedChips: [WorkSessionStatusFilter] = [.needsYou, .working, .done]
-    for phase in phases {
-      let chip = workStatusFilterPartition(phase: phase)
-      XCTAssertTrue(
-        phaseDerivedChips.contains(chip),
-        "\(phase) filed under \(chip.title), which is not a phase-derived chip"
-      )
+    for (phase, chip) in expected {
+      XCTAssertEqual(workStatusFilterPartition(phase: phase), chip, "\(phase)")
     }
-    XCTAssertEqual(workStatusFilterPartition(phase: .needsYou), .needsYou)
-    XCTAssertEqual(workStatusFilterPartition(phase: .stale), .working)
-    XCTAssertEqual(workStatusFilterPartition(phase: .ready), .done)
-    XCTAssertEqual(workStatusFilterPartition(phase: .idle), .done)
-    XCTAssertEqual(workStatusFilterPartition(phase: .failed), .done)
   }
 
   // MARK: - Machine filter

@@ -7,7 +7,7 @@ import { ToolLogo } from "../../terminals/ToolLogos";
 import { BranchIcon, LaneIcon } from "../../ui/vcsIcons";
 import { LinearMark, LinearStateIcon } from "../linearBrand";
 import { getLaneAccent } from "../laneColorPalette";
-import { COLORS } from "../laneDesignTokens";
+import { COLORS, toneText, fgTint } from "../laneDesignTokens";
 import { useAppStore } from "../../../state/appStore";
 import type { LaneAgent } from "../laneAgents";
 import type { LaneTabPrTag } from "../lanePageModel";
@@ -83,7 +83,7 @@ function IndentGuides({ indentLevel }: { indentLevel: number }) {
           className="pointer-events-none absolute inset-y-0 w-px"
           style={{
             left: ROW_PAD_X + 5 + index * LANE_SIDEBAR_INDENT_PX,
-            background: "color-mix(in srgb, var(--color-fg) 10%, transparent)",
+            background: fgTint(10),
           }}
         />
       ))}
@@ -309,7 +309,7 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
       <div className="flex h-4 min-w-0 items-center gap-1.5">
         <span
           className="flex min-w-0 flex-1 items-center gap-1.5 text-[12px] font-semibold leading-4"
-          style={{ color: accent }}
+          style={{ color: toneText(accent) }}
           title={depth > indentLevel ? `${lane.name} (stack level ${depth + 1})` : lane.name}
         >
           <LaneIcon size={12} />

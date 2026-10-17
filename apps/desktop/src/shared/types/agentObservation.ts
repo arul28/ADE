@@ -82,12 +82,15 @@ export type ComputerUseActionEffect = {
  *
  * - `observe`: look again (or `wait` for a label); do not change method. The
  *   action probably applied, or something else must happen first.
+ * - `background_input`: retry as a pointer event delivered to the app alone
+ *   (a Mac Desktop point click with no `--real`). It moves no pointer and
+ *   needs no approval.
  * - `real_input`: retry with real pointer/keyboard events (`--real`).
  * - `lease`: real input is the fix, but this chat must ask the user for it.
  * - `browser`: the target is a web page; drive it in the ADE browser.
  */
 export type ComputerUseActionNextStep = {
-  method: "observe" | "real_input" | "lease" | "browser";
+  method: "observe" | "background_input" | "real_input" | "lease" | "browser";
   /** One short sentence: why this method. */
   reason: string;
   /** A command the agent can run as is, when ADE can build one. */

@@ -1,5 +1,6 @@
 import type { AgentChatTurnSettledEvent, ChatHandoffReplayOutcome } from "../chat/agentChatService";
 import type { ChatAutoResumeAnalyticsProperties } from "../chat/chatAutoResumeCoordinator";
+import type { CrossMachineMoveOutcome } from "../chat/crossMachineHandoffOrchestrator";
 import type { MacDesktopAnalyticsProperties } from "../macDesktop/macDesktopService";
 import type { ProductAnalyticsService } from "./productAnalyticsService";
 
@@ -90,6 +91,77 @@ export function captureChatHandoffReplayAnalytics(args: {
 }
 
 /**
+ * One coarse fact per ended context compaction.
+ *
+ * The product questions are whether compaction works and how often people ask
+ * for it: `outcome` is `completed` or `failed`, `mode` is `manual` (the user
+ * asked) or `automatic` (the provider or ADE's fallback did it). `compact_first`
+ * marks a compaction the user turned on with the "Compact first" pill. Nothing
+ * finer crosses the boundary: no token counts, summary, failure text, account,
+ * or model. Deduped per chat, action, outcome and mode with a ten-minute
+ * minimum interval, so a chat that compacts repeatedly reports once per window.
+ */
+export function captureChatCompactionAnalytics(args: {
+  analytics: AgentTurnAnalytics;
+  projectId: string;
+  event: {
+    sessionId: string;
+    action: "compaction" | "compact_first";
+    outcome: "completed" | "failed";
+    mode: "manual" | "automatic";
+    provider: string;
+  };
+}): void {
+  const { sessionId, action, outcome, mode, provider } = args.event;
+  args.analytics.captureInternal({
+    event: "ade_feature_used",
+    surface: "api",
+    projectId: args.projectId,
+    sessionId,
+    dedupeKey: `chat_${action}:${sessionId}:${outcome}:${mode}`,
+    minimumIntervalMs: 10 * 60_000,
+    properties: {
+      feature: "chat",
+      action,
+      outcome,
+      mode,
+      provider,
+      source: "runtime",
+    },
+  });
+}
+
+/**
+ * One coarse fact per terminal state of a move to another machine.
+ *
+ * The product question is whether moving a chat to another machine works:
+ * it continued there, failed, was cancelled (kept here, denied, or dismissed),
+ * or ended unknown (the answer was lost). Nothing finer crosses the boundary:
+ * no session or handoff id, no machine name, no reason, branch, or capsule
+ * content. The handoff id only keys the local dedupe (hashed, never sent), so
+ * each move reports each outcome at most once an hour.
+ */
+export function captureCrossMachineMoveAnalytics(args: {
+  analytics: AgentTurnAnalytics;
+  projectId: string;
+  event: { handoffId: string; outcome: CrossMachineMoveOutcome };
+}): void {
+  args.analytics.captureInternal({
+    event: "ade_feature_used",
+    surface: "api",
+    projectId: args.projectId,
+    dedupeKey: `cross_machine_move:${args.event.handoffId}:${args.event.outcome}`,
+    minimumIntervalMs: 60 * 60_000,
+    properties: {
+      feature: "chat",
+      action: "cross_machine_move",
+      outcome: args.event.outcome,
+      source: "runtime",
+    },
+  });
+}
+
+/**
  * One coarse fact per auto-resume transition, so the product question — does
  * auto-resume actually rescue a chat a usage limit stopped? — can be answered
  * from `armed` versus `resumed` versus `paused`.
@@ -135,6 +207,33 @@ export function captureMacDesktopAnalytics(args: {
     dedupeKey: `work_mac_desktop:${outcome}`,
     minimumIntervalMs: MAC_DESKTOP_ANALYTICS_MIN_INTERVAL_MS,
     properties: { feature: "work", action: "mac_desktop", outcome },
+  });
+}
+
+/**
+ * Whether an installation lets agents use the user's own browser at all: one
+ * coarse fact, a successful `ade browser attach`. Never the browser, the
+ * machine, the tab, its URL or title, or the chat.
+ */
+export type UserBrowserAnalyticsProperties = {
+  action: "user_browser";
+  outcome: "started";
+};
+
+/**
+ * The attach fact, deduplicated per UTC day like the Mac Desktop facts, so
+ * the worst case is one accepted event per installation per day.
+ */
+export function captureUserBrowserAnalytics(args: {
+  analytics: AgentTurnAnalytics;
+  properties: UserBrowserAnalyticsProperties;
+}): void {
+  args.analytics.captureInternal({
+    event: "ade_feature_used",
+    surface: "api",
+    dedupeKey: "work_user_browser:started",
+    minimumIntervalMs: MAC_DESKTOP_ANALYTICS_MIN_INTERVAL_MS,
+    properties: { feature: "work", action: "user_browser", outcome: "started" },
   });
 }
 

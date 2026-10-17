@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Coffee, WarningCircle } from "@phosphor-icons/react";
+import { Check, Coffee, Laptop, MoonStars, WarningCircle, type Icon } from "@phosphor-icons/react";
 import type {
   KeepAwakeLevel,
   KeepAwakeSnapshot,
@@ -8,9 +8,9 @@ import {
   INERT_KEEP_AWAKE_SNAPSHOT,
   systemSleepStopsAgents,
 } from "../../../shared/types/keepAwake";
-import { COLORS, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import { isMacRuntimeTarget } from "../../lib/platform";
-import { SettingsCard, SettingsGroup } from "./primitives";
+import { ModernSection } from "./primitives";
+import "./machineSettings.css";
 
 /**
  * Whether ADE may hold this machine awake while agents work.
@@ -42,6 +42,13 @@ const LEVEL_COPY: Record<KeepAwakeLevel, { label: string; limit: string }> = {
     label: "Even with the lid closed",
     limit: "Needs your password. Stays on after you quit.",
   },
+};
+
+/** The picture on each level's card. */
+const LEVEL_ART: Record<KeepAwakeLevel, Icon> = {
+  never: MoonStars,
+  "while-away": Coffee,
+  "lid-closed": Laptop,
 };
 
 /** The same three lines, said about a machine that is not a Mac. */
@@ -151,71 +158,45 @@ export function KeepAwakeControls() {
   const warn = systemSleepStopsAgents(systemSleep);
 
   return (
-    <div
-      role="radiogroup"
-      aria-label={mac
-        ? "Keep this Mac awake while agents work"
-        : "Keep this PC awake while agents work"}
-      style={{ display: "flex", flexDirection: "column", gap: 2 }}
-    >
-      {levels.map((level) => {
-        const selected = current.preferences.level === level;
-        const copy = LEVEL_COPY[level];
-        const limit = level === "never" && !mac ? WINDOWS_NEVER_LIMIT : copy.limit;
-        return (
-          <button
-            key={level}
-            type="button"
-            role="radio"
-            aria-checked={selected}
-            disabled={busy || !snapshot}
-            onClick={() => void choose(level)}
-            style={{
-              display: "flex",
-              alignItems: "flex-start",
-              gap: 10,
-              padding: "9px 8px",
-              border: "none",
-              borderRadius: 8,
-              background: selected
-                ? "color-mix(in srgb, var(--color-accent) 10%, transparent)"
-                : "transparent",
-              cursor: busy || !snapshot ? "not-allowed" : "pointer",
-              textAlign: "left",
-              width: "100%",
-            }}
-          >
-            <span
-              aria-hidden
-              style={{
-                marginTop: 2,
-                width: 13,
-                height: 13,
-                flexShrink: 0,
-                borderRadius: "50%",
-                border: `1px solid ${selected ? COLORS.accent : COLORS.outlineBorder}`,
-                background: selected ? COLORS.accent : "transparent",
-                boxShadow: selected ? "inset 0 0 0 2.5px var(--color-bg)" : undefined,
-              }}
-            />
-            <span style={{ display: "grid", gap: 2, minWidth: 0 }}>
-              <span
-                style={{
-                  fontFamily: SANS_FONT,
-                  fontSize: 13,
-                  fontWeight: selected ? 600 : 500,
-                  color: COLORS.textPrimary,
-                }}
-              >
-                {copy.label}
+    <div className="ade-modern-stack">
+      <div
+        role="radiogroup"
+        aria-label={mac
+          ? "Keep this Mac awake while agents work"
+          : "Keep this PC awake while agents work"}
+        className="ade-ap-grid3"
+        style={levels.length === 2 ? { gridTemplateColumns: "repeat(2, minmax(0, 1fr))" } : undefined}
+      >
+        {levels.map((level) => {
+          const selected = current.preferences.level === level;
+          const copy = LEVEL_COPY[level];
+          const limit = level === "never" && !mac ? WINDOWS_NEVER_LIMIT : copy.limit;
+          const Art = LEVEL_ART[level];
+          return (
+            <button
+              key={level}
+              type="button"
+              role="radio"
+              aria-checked={selected}
+              disabled={busy || !snapshot}
+              onClick={() => void choose(level)}
+              className="ade-ap-choice"
+              data-active={selected}
+            >
+              <span className="ade-ms-art" aria-hidden>
+                <Art size={26} weight={selected ? "duotone" : "light"} />
               </span>
-              <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>
-                {limit}
+              <span className="ade-modern-choice-body">
+                <span className="ade-modern-choice-title">
+                  {copy.label}
+                  {selected ? <Check size={12} weight="bold" className="ade-ap-check" /> : null}
+                </span>
+                <span className="ade-modern-choice-hint">{limit}</span>
               </span>
-            </span>
-          </button>
-        );
-      })}
+            </button>
+          );
+        })}
+      </div>
 
       {/*
         Rendered from what the machine reports, not from what ADE stored. The
@@ -223,37 +204,21 @@ export function KeepAwakeControls() {
         back (and asks for the password again).
       */}
       {lidClosedOutOfForce(current) ? (
-        <div
-          style={{
-            marginTop: 6,
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            flexWrap: "wrap",
-          }}
-        >
+        <div className="ade-modern-note" data-tone="warn" style={{ alignItems: "center" }}>
+          <WarningCircle size={14} weight="fill" style={{ marginTop: 0 }} />
           {/*
             The live region is the SENTENCE, not the row. `role="alert"` around
             the button too would put a focusable control inside a live region,
             which screen readers re-announce on every re-render of the row and
             announce out of order with the focus itself.
           */}
-          <span
-            role="alert"
-            style={{
-              fontFamily: SANS_FONT,
-              fontSize: 11,
-              lineHeight: 1.5,
-              color: COLORS.warning,
-            }}
-          >
-            This Mac can still sleep.
-          </span>
+          <span role="alert" style={{ flex: 1 }}>This Mac can still sleep.</span>
           <button
             type="button"
             disabled={busy}
             onClick={() => void choose("lid-closed")}
-            style={outlineButton({ height: 24, padding: "0 9px", fontSize: 12 })}
+            className="ade-modern-btn"
+            data-size="sm"
           >
             Turn on again
           </button>
@@ -261,84 +226,41 @@ export function KeepAwakeControls() {
       ) : null}
 
       {current.levelError ? (
-        <div
-          role="alert"
-          style={{
-            marginTop: 6,
-            fontFamily: SANS_FONT,
-            fontSize: 11,
-            lineHeight: 1.5,
-            color: COLORS.warning,
-          }}
-        >
-          {current.levelError}
-        </div>
+        <p role="alert" className="ade-modern-warn">{current.levelError}</p>
       ) : null}
 
       {loadError ? (
-        <div
-          role="alert"
-          style={{ marginTop: 6, fontFamily: SANS_FONT, fontSize: 11, color: COLORS.danger }}
-        >
-          {loadError}
-        </div>
+        <p role="alert" className="ade-modern-error">{loadError}</p>
       ) : null}
 
       {warn && systemSleep ? (
-        <div
-          style={{
-            marginTop: 10,
-            padding: "10px 11px",
-            borderRadius: 8,
-            border: `1px solid ${COLORS.warning}44`,
-            background: `${COLORS.warning}10`,
-            display: "grid",
-            gap: 8,
-          }}
-        >
-          <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
-            <WarningCircle
-              size={14}
-              weight="fill"
-              color={COLORS.warning}
-              style={{ flexShrink: 0, marginTop: 1 }}
-            />
-            <span
-              style={{
-                fontFamily: SANS_FONT,
-                fontSize: 11.5,
-                lineHeight: 1.5,
-                color: COLORS.textSecondary,
-              }}
-            >
-              {mac
-                ? "macOS sleeps this Mac on power when the display is off. Agents will stop anyway."
-                : "Windows sleeps this PC on power when it's idle. Agents will stop anyway."}
-            </span>
-          </div>
-          {systemSleep.fixable ? (
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => void fix()}
-              style={{
-                ...outlineButton({ height: 26, padding: "0 10px", fontSize: 12 }),
-                justifySelf: "end",
-              }}
-            >
-              {/* The password cost is stated on the button, not discovered
-                  after the click. */}
-              {systemSleep.fixNeedsPassword ? "Fix — needs your password" : "Fix"}
-            </button>
-          ) : null}
-          {fixError ? (
-            <div
-              role="alert"
-              style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.danger }}
-            >
-              {fixError}
+        <div className="ade-modern-note" data-tone="warn">
+          <WarningCircle size={14} weight="fill" />
+          <div className="ade-modern-note-body">
+            <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+              <span style={{ flex: "1 1 220px" }}>
+                {mac
+                  ? "macOS sleeps this Mac on power when the display is off. Agents will stop anyway."
+                  : "Windows sleeps this PC on power when it's idle. Agents will stop anyway."}
+              </span>
+              {systemSleep.fixable ? (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void fix()}
+                  className="ade-modern-btn"
+                  data-size="sm"
+                >
+                  {/* The password cost is stated on the button, not discovered
+                      after the click. */}
+                  {systemSleep.fixNeedsPassword ? "Fix — needs your password" : "Fix"}
+                </button>
+              ) : null}
             </div>
-          ) : null}
+            {fixError ? (
+              <span role="alert" className="ade-modern-error">{fixError}</span>
+            ) : null}
+          </div>
         </div>
       ) : null}
     </div>
@@ -348,18 +270,15 @@ export function KeepAwakeControls() {
 export function KeepAwakeSection() {
   const mac = isMacRuntimeTarget();
   return (
-    <SettingsGroup title="Sleep">
-      <SettingsCard
-        anchor="keep-awake"
-        icon={<Coffee size={15} weight="duotone" />}
-        tone="amber"
-        title={mac
-          ? "Keep this Mac awake while agents work"
-          : "Keep this PC awake while agents work"}
-        stacked
-      >
-        <KeepAwakeControls />
-      </SettingsCard>
-    </SettingsGroup>
+    <ModernSection
+      group="Sleep"
+      anchor="keep-awake"
+      title={mac
+        ? "Keep this Mac awake while agents work"
+        : "Keep this PC awake while agents work"}
+      hint="A sleeping computer pauses every agent turn. Pick how far ADE may go to keep it awake."
+    >
+      <KeepAwakeControls />
+    </ModernSection>
   );
 }

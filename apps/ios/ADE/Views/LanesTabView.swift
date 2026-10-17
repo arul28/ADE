@@ -1,20 +1,87 @@
 import SwiftUI
 
-struct LanesTabView: View {
+/// What the Lanes screen draws from `SyncService` and the machine fleet,
+/// narrowed so a publish that changes none of it does not re-render the tab.
+/// While the tab is hidden only navigation requests and the project are
+/// tracked: a hidden tab used to re-render on every sync publish (~190 body
+/// passes in a minute on the PRs tab).
+struct LanesRootInputs: Equatable {
+  var isActive = false
+  var activeProjectId: String?
+  var requestedLaneNavigationId: String?
+  // Tracked only while the tab is visible.
+  var connectionState: RemoteConnectionState = .disconnected
+  var laneStatus = SyncDomainStatus.disconnected
+  var suppressHydrationNotices = false
+  var activeLaneDeletionError: String?
+  var lanesProjectionRevision = 0
+  var laneGithubPrItems: [GitHubPrListItem] = []
+  var pendingLaneDeletionIds: Set<String> = []
+  var focusedMachineKey: String?
+  var focusedMachineName = ""
+  var hasHostProfile = false
+  var liveMachineKeys: [String] = []
+
+  @MainActor
+  init(_ sync: SyncService, fleet: MachineFleet, isActive: Bool) {
+    self.isActive = isActive
+    activeProjectId = sync.activeProjectId
+    requestedLaneNavigationId = sync.requestedLaneNavigation?.id
+    guard isActive else { return }
+    connectionState = sync.connectionState
+    laneStatus = sync.status(for: .lanes)
+    suppressHydrationNotices = sync.shouldSuppressDomainHydrationNotices
+    activeLaneDeletionError = sync.activeLaneDeletionError
+    lanesProjectionRevision = sync.lanesProjectionRevision
+    laneGithubPrItems = sync.laneGithubPrItems
+    pendingLaneDeletionIds = sync.pendingLaneDeletionIds
+    focusedMachineKey = sync.focusedMachineKey
+    focusedMachineName = sync.focusedMachineDisplayName
+    hasHostProfile = sync.activeHostProfile != nil
+    liveMachineKeys = fleet.liveMachineKeys
+  }
+}
+
+/// The Lanes tab: a thin shell that turns `SyncService`'s publishes into
+/// `LanesRootInputs`; the screen behind it is `.equatable()` on them (the
+/// Work tab's pattern).
+struct LanesTabShell: View {
+  @EnvironmentObject private var syncService: SyncService
+  @EnvironmentObject private var machineFleet: MachineFleet
+  var isActive = true
+
+  var body: some View {
+    LanesTabView(
+      syncService: syncService,
+      machineFleet: machineFleet,
+      isActive: isActive,
+      inputs: LanesRootInputs(syncService, fleet: machineFleet, isActive: isActive)
+    )
+    .equatable()
+  }
+}
+
+struct LanesTabView: View, Equatable {
   @Environment(\.accessibilityReduceMotion) var reduceMotion
-  @EnvironmentObject var syncService: SyncService
-  @EnvironmentObject var machineFleet: MachineFleet
+  /// Deliberately not observed: what the body draws arrives in `inputs`.
+  let syncService: SyncService
+  let machineFleet: MachineFleet
   @StateObject var remoteLanes = LaneRemoteMachinesModel()
   @Namespace private var laneTransitionNamespace
-  var isActive = true
+  let isActive: Bool
+  let inputs: LanesRootInputs
+
+  nonisolated static func == (lhs: LanesTabView, rhs: LanesTabView) -> Bool {
+    lhs.isActive == rhs.isActive && lhs.inputs == rhs.inputs
+  }
 
   @State var laneSnapshots: [LaneListSnapshot] = []
   @State var pullRequests: [PullRequestListItem] = []
   @State var laneListPresentation = LaneListPresentation.empty
   @State var errorMessage: String?
   @State var searchText = ""
-  @State var scope: LaneListScope = .active
-  @State var runtimeFilter: LaneRuntimeFilter = .all
+  @State var quickFilter: LaneQuickFilter = .active
+  @State var lanePath = NavigationPath()
   @State var addLaneSheetPresented = false
   @State var openLaneIds: [String] = []
   @AppStorage("ade.lanes.pinnedIds") private var pinnedLaneIdsStorage: String = ""
@@ -30,6 +97,8 @@ struct LanesTabView: View {
   @State private var lastHandledLanesProjectionRevision: Int?
   /// Which machines' lanes the list shows (the filter chips).
   @State var machineFilter: LaneMachineFilter = .all
+
+  var scope: LaneListScope { quickFilter.scope }
 
   var pinnedLaneIds: Set<String> {
     get {
@@ -64,9 +133,8 @@ struct LanesTabView: View {
   /// Re-read the other machines while the tab is visible, for the focused
   /// project, and again when a machine's live link comes or goes.
   var remoteLanesPollKey: String? {
-    guard isActive, let projectId = syncService.activeProjectId else { return nil }
-    let live = machineFleet.machines.filter { $0.state == .live }.map(\.machineKey).sorted()
-    return "\(projectId)|\(live.joined(separator: ","))"
+    guard isActive, let projectId = inputs.activeProjectId else { return nil }
+    return "\(projectId)|\(inputs.liveMachineKeys.joined(separator: ","))"
   }
 
   var laneNavigationRequestKey: String? {
@@ -75,91 +143,43 @@ struct LanesTabView: View {
   }
 
   var body: some View {
-    NavigationStack {
-      ScrollView {
-        LazyVStack(spacing: 14) {
-          if !syncService.connectionState.isHostUnreachable,
-            !syncService.shouldSuppressDomainHydrationNotices,
-            let hydrationNotice = laneStatus.inlineHydrationFailureNotice(for: .lanes)
-          {
-            ADEInstructionErrorCard(
-              notice: hydrationNotice,
-              retry: { Task { await reload(refreshRemote: true) } }
-            )
-            .transition(.opacity)
-          }
-          if let errorMessage,
-            laneStatus.phase == .ready,
-            !syncService.connectionState.isHostUnreachable
-          {
-            ADENoticeCard(
-              title: "Lane view error",
-              message: errorMessage,
-              icon: "exclamationmark.triangle.fill",
-              tint: ADEColor.danger,
-              actionTitle: "Retry",
-              action: { Task { await reload(refreshRemote: true) } }
-            )
-            .transition(.opacity)
-          }
-          if let laneDeletionError = syncService.activeLaneDeletionError {
-            ADENoticeCard(
-              title: "Lane deletion failed",
-              message: laneDeletionError,
-              icon: "exclamationmark.triangle.fill",
-              tint: ADEColor.danger,
-              actionTitle: "Dismiss",
-              action: { syncService.clearLaneDeletionFailure() }
-            )
-            .transition(.opacity)
-          }
-          if let primaryBranchError,
-            laneStatus.phase == .ready,
-            !syncService.connectionState.isHostUnreachable
-          {
-            ADENoticeCard(
-              title: "Primary branch error",
-              message: primaryBranchError,
-              icon: "exclamationmark.triangle.fill",
-              tint: ADEColor.danger,
-              actionTitle: "Retry",
-              action: { Task { await refreshPrimaryBranches(force: true) } }
-            )
-            .transition(.opacity)
-          }
-          if !syncService.connectionState.isHostUnreachable,
-            let liveActionNoticePresentation
-          {
-            ADENoticeCard(
-              title: liveActionNoticePresentation.title,
-              message: liveActionNoticePresentation.message,
-              icon: liveActionNoticePresentation.symbol,
-              tint: ADEColor.warning,
-              actionTitle: liveActionNoticePresentation.actionTitle,
-              action: liveActionNoticePresentation.action.map { action in
-                { handleNoticeAction(action) }
-              }
-            )
-            .transition(.opacity)
-          }
-          if showsLaneLoadingSkeletons {
-            ADECardSkeleton(rows: 4)
-            ADECardSkeleton(rows: 3)
+    let _ = ScrollDiagnostics.shared.count(.lanesBody)
+    NavigationStack(path: $lanePath) {
+      List {
+        Section {
+          laneSearchField
+            .adeFlatRow(insets: EdgeInsets(top: 4, leading: 16, bottom: 6, trailing: 16), separator: .hidden)
+          if !laneSnapshots.isEmpty {
+            laneQuickFilterChips
+              .adeFlatRow(insets: EdgeInsets(top: 2, leading: 0, bottom: 8, trailing: 0), separator: .hidden)
           }
           if !remoteLanes.machines.isEmpty {
             laneMachineFilterChips
+              .adeFlatRow(insets: EdgeInsets(top: 0, leading: 16, bottom: 8, trailing: 16), separator: .hidden)
+          }
+          laneNoticeRows
+          if showsLaneLoadingSkeletons {
+            ForEach(0..<5, id: \.self) { _ in
+              LaneRowSkeleton()
+                .adeFlatRow(insets: laneRowInsets)
+            }
           }
           if !openLaneSnapshots.isEmpty {
             openLanesTray
-              .transition(.move(edge: .top).combined(with: .opacity))
+              .adeFlatRow(insets: EdgeInsets(top: 4, leading: 16, bottom: 10, trailing: 16), separator: .hidden)
           }
-          laneList
         }
-        .padding(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+        laneListSections
       }
-      .scrollBounceBehavior(.basedOnSize)
-      .searchable(text: $searchText, prompt: "Filter by lane, branch, is:dirty...")
+      .adeFlatList()
+      .listSectionSpacing(.compact)
+      .contentMargins(.bottom, 24, for: .scrollContent)
+      .environment(\.defaultMinListRowHeight, 0)
+      .adeScrollDiagnosticsSurface(.lanes, key: "lanes")
       .refreshable { await refreshFromPullGesture() }
+      .navigationDestination(for: LaneRoute.self) { route in
+        laneDestination(route)
+      }
       .adeScreenBackground()
       .adeNavigationGlass()
       .navigationTitle("")
@@ -199,20 +219,28 @@ struct LanesTabView: View {
         }
       }
       .onChange(of: syncService.activeProjectId) { _, _ in
+        // The tab stays mounted across a project switch: drop the previous
+        // project's lanes so they never show while the new project loads.
         remoteLanes.reset()
         machineFilter = .all
+        laneSnapshots = []
+        pullRequests = []
+        laneListPresentation = .empty
+        openLaneIds = []
+        primaryBranches = []
+        primaryBranchLaneId = nil
+        selectedLaneTransitionId = nil
+        errorMessage = nil
+        lanePath = NavigationPath()
       }
+      // Keyed on the tab being active and the request id, so it runs on
+      // appear, when the tab comes forward, and for each new request.
       .task(id: laneNavigationRequestKey) {
         guard laneNavigationRequestKey != nil else { return }
         await handleRequestedLaneNavigation()
       }
-      .onAppear {
-        guard isActive, syncService.requestedLaneNavigation != nil else { return }
-        Task { await handleRequestedLaneNavigation() }
-      }
       .onChange(of: searchText) { _, _ in refreshLaneListPresentation() }
-      .onChange(of: scope) { _, _ in refreshLaneListPresentation() }
-      .onChange(of: runtimeFilter) { _, _ in refreshLaneListPresentation() }
+      .onChange(of: quickFilter) { _, _ in refreshLaneListPresentation() }
       .onChange(of: pinnedLaneIdsStorage) { _, _ in refreshLaneListPresentation() }
       .onChange(of: syncService.laneGithubPrItems) { _, _ in refreshLaneListPresentation() }
       .onChange(of: syncService.pendingLaneDeletionIds) { _, _ in
@@ -222,14 +250,6 @@ struct LanesTabView: View {
         if let selectedLaneTransitionId, pendingIds.contains(selectedLaneTransitionId) {
           self.selectedLaneTransitionId = nil
         }
-      }
-      .onChange(of: isActive) { _, active in
-        guard active, syncService.requestedLaneNavigation != nil else { return }
-        Task { await handleRequestedLaneNavigation() }
-      }
-      .onChange(of: syncService.requestedLaneNavigation?.id) { _, requestId in
-        guard isActive, requestId != nil else { return }
-        Task { await handleRequestedLaneNavigation() }
       }
       .onChange(of: syncService.connectionState) { oldValue, newValue in
         guard isActive else { return }
@@ -317,61 +337,17 @@ struct LanesTabView: View {
       }
     }
   }
-
-  @ViewBuilder
-  func primaryBranchPickerMenu<Label: View>(@ViewBuilder label: () -> Label) -> some View {
-    if let primaryLane, !primaryBranches.isEmpty {
-      Menu {
-        ForEach(primaryBranches) { branch in
-          Button(branch.name) {
-            Task {
-              do {
-                try await syncService.checkoutPrimaryBranch(
-                  laneId: primaryLane.id,
-                  branchName: branch.name,
-                  mode: "existing",
-                  startPoint: nil,
-                  baseRef: nil,
-                  acknowledgeActiveWork: false
-                )
-                await reload(refreshRemote: true)
-                await refreshPrimaryBranches(force: true)
-              } catch {
-                ADEHaptics.error()
-                primaryBranchError = error.localizedDescription
-              }
-            }
-          }
-          .disabled(!canRunLiveActions)
-        }
-      } label: {
-        label()
-      }
-      .accessibilityLabel("Primary branch")
-    }
-  }
 }
 
-/// The Lanes tab's "+ Lane" button, in the root top bar.
+/// The Lanes tab's add-lane button, in the root top bar: the Hub's quiet
+/// round add button.
 struct LaneAddButton: View {
   let enabled: Bool
   let action: () -> Void
 
   var body: some View {
     Button(action: action) {
-      HStack(spacing: 5) {
-        Image(systemName: "plus")
-          .font(.system(size: 13, weight: .bold))
-        Text("Lane")
-          .font(.subheadline.weight(.semibold))
-      }
-      .foregroundStyle(.white)
-      .padding(.horizontal, 12)
-      .frame(height: 36)
-      .background(ADEColor.accent, in: Capsule(style: .continuous))
-      .glassEffect(in: .capsule)
-      .overlay(Capsule(style: .continuous).stroke(.white.opacity(0.18), lineWidth: 0.6))
-      .shadow(color: ADEColor.accent.opacity(0.35), radius: 8, x: 0, y: 3)
+      ADEKitCircleIcon(systemImage: "plus")
     }
     .buttonStyle(.plain)
     .opacity(enabled ? 1 : 0.55)

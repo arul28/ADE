@@ -43,6 +43,7 @@ export const WORK_TOOL_IDS = [
   "mac-desktop",
   "windows-desktop",
   "pr",
+  "issues",
 ] as const;
 
 export type WorkToolId = (typeof WORK_TOOL_IDS)[number];

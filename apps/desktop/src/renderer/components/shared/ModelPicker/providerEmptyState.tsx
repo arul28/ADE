@@ -1,3 +1,5 @@
+import { MUSE_LOGIN_COMMAND, PROVIDER_DISPLAY_NAME } from "../../../../shared/providers";
+
 import type { AuthType, ProviderFamily } from "../../../../shared/modelRegistry";
 import { PROVIDER_REMEDIATION } from "../../../../shared/providerRemediation";
 import { openExternalUrl } from "../../../lib/openExternal";
@@ -39,6 +41,15 @@ const PROVIDER_COPY: Partial<Record<ProviderFamily, ProviderCopy>> = {
     secondary: {
       label: "Codex CLI install",
       action: { kind: "open-external", url: PROVIDER_REMEDIATION.codex.docsUrl },
+    },
+  },
+  muse: {
+    title: "Sign in to Muse Code",
+    body: "Sign in with your Meta account (`" + MUSE_LOGIN_COMMAND + "`) or set META_API_KEY to use Muse models. ADE runs its own pinned copy of Muse.",
+    primary: { label: "Open Settings", action: { kind: "open-settings" } },
+    secondary: {
+      label: "Muse Code docs",
+      action: { kind: "open-external", url: PROVIDER_REMEDIATION.muse.docsUrl },
     },
   },
   cursor: {
@@ -156,6 +167,7 @@ export type ProviderEmptyStateProps =
 const PROVIDER_DISPLAY_LABELS: Partial<Record<ProviderFamily, string>> = {
   anthropic: "Claude",
   openai: "OpenAI Codex",
+  muse: PROVIDER_DISPLAY_NAME.muse,
   cursor: "Cursor",
   factory: "Droid",
   pi: "Pi",
@@ -293,9 +305,9 @@ export function ProviderEmptyState(props: ProviderEmptyStateProps) {
             type="button"
             onClick={() => dispatchAction(copy.secondary!.action, onOpenSignIn)}
             className={cn(
-              "inline-flex h-6 items-center rounded-md border border-white/[0.08] bg-white/[0.03] px-2.5",
+              "inline-flex h-6 items-center rounded-md border border-fg/[0.08] bg-fg/[0.03] px-2.5",
               "text-[10px] font-semibold uppercase tracking-wide text-fg/75",
-              "transition-colors hover:border-white/[0.14] hover:bg-white/[0.06] hover:text-fg/90",
+              "transition-colors hover:border-fg/[0.14] hover:bg-fg/[0.06] hover:text-fg/90",
             )}
           >
             {copy.secondary.label}

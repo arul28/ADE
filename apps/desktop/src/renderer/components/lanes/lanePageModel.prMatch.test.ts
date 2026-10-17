@@ -69,4 +69,29 @@ describe("selectLanePrs branch drift", () => {
 
     expect(selectLanePrs(lane, [live]).map((pr) => pr.id)).toEqual(["pr-live"]);
   });
+
+  it("hides every PR for a primary lane back on its base branch, chat link included", () => {
+    const primary = makeLane({
+      id: "lane-1",
+      laneType: "primary",
+      branchRef: "main",
+      baseRef: "main",
+    });
+    const linkedMerged = makePr({
+      id: "pr-linked",
+      laneId: "lane-1",
+      headBranch: "fix/update-recovery",
+      chatSessionIds: ["chat-1"],
+    });
+    const branchMatched = makePr({ id: "pr-branch", laneId: "lane-1", headBranch: "main", state: "open" });
+
+    // The lane cannot be deleted, so a chat-linked merged PR would otherwise
+    // stay pinned to `main` forever.
+    expect(selectLanePrs(primary, [linkedMerged, branchMatched])).toEqual([]);
+
+    // The same lane on the PR's own branch still shows it — the gate is the
+    // checkout, not the chat link.
+    const working = makeLane({ ...primary, branchRef: "fix/update-recovery" });
+    expect(selectLanePrs(working, [linkedMerged]).map((pr) => pr.id)).toEqual(["pr-linked"]);
+  });
 });

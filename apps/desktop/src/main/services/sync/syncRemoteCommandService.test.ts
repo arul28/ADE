@@ -1256,14 +1256,25 @@ describe("createSyncRemoteCommandService", () => {
       });
     });
 
-    it("git.listRecentCommits passes laneId and optional limit", async () => {
+    it("git.listRecentCommits passes laneId, optional limit and the co-author opt-in", async () => {
       await service.execute(makePayload("git.listRecentCommits", {
         laneId: "lane-1",
         limit: 5,
       }));
-      expect(gitService.listRecentCommits).toHaveBeenCalledWith({
+      expect(gitService.listRecentCommits).toHaveBeenLastCalledWith({
         laneId: "lane-1",
         limit: 5,
+      });
+
+      await service.execute(makePayload("git.listRecentCommits", {
+        laneId: "lane-1",
+        limit: 5,
+        includeCoAuthors: true,
+      }));
+      expect(gitService.listRecentCommits).toHaveBeenLastCalledWith({
+        laneId: "lane-1",
+        limit: 5,
+        includeCoAuthors: true,
       });
     });
 

@@ -12,3 +12,12 @@ export function openLaneInLanesTabPath(laneId: string, sessionId?: string | null
   if (sessionId) params.set("sessionId", sessionId);
   return `/lanes?${params.toString()}`;
 }
+
+/** `openLaneInLanesTabPath` plus the lane's machine, which the Lanes tab resolves. */
+export function openLaneOnMachinePath(
+  laneId: string,
+  machineId: string,
+  sessionId?: string | null,
+): string {
+  return `${openLaneInLanesTabPath(laneId, sessionId)}&machineId=${encodeURIComponent(machineId)}`;
+}

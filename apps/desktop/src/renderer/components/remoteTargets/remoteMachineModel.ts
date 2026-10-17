@@ -3,6 +3,7 @@ import type {
   AdeAccountMachine,
   RemoteRuntimeConnectErrorInfo,
   RemoteRuntimeConnectionAttemptFailure,
+  RemoteRuntimeConnectionSnapshot,
   RemoteRuntimeConnectionStatus,
   RemoteRuntimeDiscoveredMachine,
   RemoteRuntimeTarget,
@@ -414,24 +415,6 @@ export function formatLastSeen(value: number | null): string {
   return phrase ? `Last connected ${phrase}` : "Last connection unknown";
 }
 
-/** Quiet version-skew note. Yellow warnings are reserved for real breakage. */
-export function formatVersionSkewNote(args: {
-  localVersion: string | null | undefined;
-  remoteVersion: string | null | undefined;
-  remoteName: string;
-}): string | null {
-  const local = args.localVersion?.trim();
-  const remote = args.remoteVersion?.trim();
-  if (!local || !remote || local === remote) return null;
-  let advice = "nothing to do";
-  if (isMachineVersionOutdated(remote, local)) {
-    advice = `update ${args.remoteName} when you can`;
-  } else if (isMachineVersionOutdated(local, remote)) {
-    advice = "update this machine when you can";
-  }
-  return `This machine is on ADE ${local}. ${args.remoteName} is on ${remote}. They can still connect — ${advice}.`;
-}
-
 export function isVersionSkewWarning(warning: string): boolean {
   return /Remote ADE service reported|RPC capabilities (?:are compatible|match)|versions differ but their RPC|They can still connect — update the other machine/i.test(
     warning,
@@ -472,6 +455,28 @@ export function connectionStateLabel(
   return "Not connected";
 }
 
+/**
+ * Why a saved machine that is not connected will not come back on its own, in
+ * words for its row. Null when it will reconnect, or when it never connected
+ * (a first Connect turns auto-connect on, so there is nothing to explain yet).
+ * A manual disconnect is the stronger reason and wins over the preference.
+ */
+export function autoConnectOffReason(
+  target: Pick<RemoteRuntimeTarget, "autoConnect" | "lastConnectedAt" | "manuallyDisconnectedAt">,
+): string | null {
+  if (target.manuallyDisconnectedAt != null) {
+    const day = new Date(target.manuallyDisconnectedAt).toLocaleDateString(undefined, {
+      month: "short",
+      day: "numeric",
+    });
+    return `you disconnected it on ${day}`;
+  }
+  if (target.autoConnect === false && target.lastConnectedAt != null) {
+    return "Reconnect automatically is off";
+  }
+  return null;
+}
+
 /** True when a discovered machine is a raw SSH peer with no ADE runtime. */
 export function isSshOnlyDiscovered(
   machine: RemoteRuntimeDiscoveredMachine,
@@ -490,6 +495,12 @@ export function formatRemoteTargetError(error: unknown): string {
     .trim();
   // No word-boundary: camelCase IPC names embed `Ssh` without `\b` edges.
   const sshHint = /ssh|sshd|remote login/i.test(raw);
+
+  // The main process answers with a named, timed message well inside the IPC
+  // ceiling, so this only shows when that answer was lost to the ceiling itself.
+  if (/IPC handler for 'ade\.account\.pairMachine' timed out/i.test(message)) {
+    return "ADE stopped waiting for that computer before it finished connecting. Make sure ADE is open on it, then try again.";
+  }
 
   if (/ECONNRESET/i.test(message)) {
     return sshHint
@@ -622,6 +633,170 @@ export function isMachineVersionOutdated(
   const right = comparableVersionCore(newestVersion);
   if (!left || !right) return false;
   return compareUpdateVersions(left, right) < 0;
+}
+
+/**
+ * True when `version` is parseable and already `targetVersion` or newer.
+ * Not the negation of `isMachineVersionOutdated`: an odd version string is
+ * neither behind nor current, so a guard that skips "current" machines does
+ * not skip it.
+ */
+export function isMachineVersionCurrent(
+  version: string | null | undefined,
+  targetVersion: string | null | undefined,
+): boolean {
+  const left = comparableVersionCore(version);
+  const right = comparableVersionCore(targetVersion);
+  if (!left || !right) return false;
+  return compareUpdateVersions(left, right) >= 0;
+}
+
+/**
+ * What "Update & restart" left behind for one machine. The host's reply is not
+ * the outcome: an update that is still in flight (`pendingVersion`) is only
+ * done when the machine comes back reporting that version.
+ */
+export type MachineUpdateAttempt = {
+  ok: boolean;
+  message: string;
+  /** The version the machine should come back on; null when nothing is in flight. */
+  pendingVersion: string | null;
+  /** True while the far app is still downloading, which takes longer to land. */
+  downloading: boolean;
+  startedAtMs: number;
+};
+
+/** Long enough for an app swap plus the brain restart behind it. */
+export const MACHINE_UPDATE_INSTALL_GRACE_MS = 5 * 60_000;
+/** A download first, then the same install. */
+export const MACHINE_UPDATE_DOWNLOAD_GRACE_MS = 35 * 60_000;
+
+export function machineUpdateGraceMs(attempt: MachineUpdateAttempt): number {
+  return attempt.downloading ? MACHINE_UPDATE_DOWNLOAD_GRACE_MS : MACHINE_UPDATE_INSTALL_GRACE_MS;
+}
+
+/** Turn the host's reply into an attempt the card can check against the machine. */
+export function machineUpdateAttemptFromResult(
+  result: {
+    ok: boolean;
+    message?: string | null;
+    updateApplied?: boolean;
+    targetVersion?: string | null;
+    route?: string;
+    pendingVersion?: string | null;
+  },
+  fallbackMessage: string,
+  nowMs: number,
+): MachineUpdateAttempt {
+  // Hosts from before `pendingVersion` only had the standalone route, where an
+  // applied update means the target is what should come back.
+  const pendingVersion = !result.ok
+    ? null
+    : result.pendingVersion !== undefined
+      ? result.pendingVersion?.trim() || null
+      : result.updateApplied
+        ? result.targetVersion?.trim() || null
+        : null;
+  return {
+    ok: result.ok,
+    message: result.message?.trim() || fallbackMessage,
+    pendingVersion,
+    downloading: result.ok && result.route === "desktop_app" && result.updateApplied === false && pendingVersion != null,
+    startedAtMs: nowMs,
+  };
+}
+
+export type MachineUpdateStatus = {
+  ok: boolean;
+  message: string;
+  /** Still waiting on the machine; the card keeps "Update & restart" busy. */
+  inFlight: boolean;
+};
+
+/**
+ * Check an attempt against the machine as it is now. Landed: the machine
+ * reports the version (or newer). Not landed in time: say so plainly, with
+ * the version it is actually on, instead of leaving "reconnecting…" up.
+ */
+export function describeMachineUpdateAttempt(
+  attempt: MachineUpdateAttempt,
+  machine: { connected: boolean; version: string | null },
+  nowMs: number,
+): MachineUpdateStatus {
+  const pending = attempt.pendingVersion;
+  if (!pending) return { ok: attempt.ok, message: attempt.message, inFlight: false };
+  if (machine.connected && machine.version && !isMachineVersionOutdated(machine.version, pending)) {
+    return { ok: true, message: `Updated to ${machine.version}.`, inFlight: false };
+  }
+  if (nowMs - attempt.startedAtMs < machineUpdateGraceMs(attempt)) {
+    return { ok: true, message: attempt.message, inFlight: true };
+  }
+  if (machine.connected) {
+    return {
+      ok: false,
+      message:
+        `Still on ${machine.version ?? "an older version"} — the update to ${pending} didn't apply. `
+        + "Try again, or quit and reopen ADE on that machine to install it.",
+      inFlight: false,
+    };
+  }
+  return {
+    ok: false,
+    message: `Not back yet after the update to ${pending}. Check that ADE is running on that machine.`,
+    inFlight: false,
+  };
+}
+
+/**
+ * The key a machine's color is picked from. The account's machine key when the
+ * machine has one, so every device that can see it lands on the same color;
+ * the saved target's id otherwise.
+ */
+export function machineColorKey(target: Pick<RemoteRuntimeTarget, "id" | "pairedMachine">): string {
+  return target.pairedMachine?.machineKey?.trim() || target.id;
+}
+
+/**
+ * Where an update to one machine is, for the row: being asked about, being
+ * sent, or waiting on the machine to come back on the new version.
+ */
+export function machineUpdatePhase(args: {
+  checking: boolean;
+  sending: boolean;
+  status: MachineUpdateStatus | null;
+}): "checking" | "sending" | "restarting" | null {
+  if (args.sending) return "sending";
+  if (args.status?.inFlight) return "restarting";
+  if (args.checking) return "checking";
+  return null;
+}
+
+/** A connected machine and the ADE version it runs, as an update needs it. */
+export type ConnectedMachine = {
+  id: string;
+  name: string;
+  version: string | null;
+};
+
+/** The machines a connection snapshot says are connected right now. */
+export function connectedMachinesFromSnapshot(
+  snapshot: RemoteRuntimeConnectionSnapshot | null | undefined,
+): ConnectedMachine[] {
+  return (snapshot?.connections ?? [])
+    .filter((connection) => connection.state === "connected")
+    .map((connection) => ({
+      id: connection.target.id,
+      name: connection.target.name,
+      version: connection.version ?? connection.target.runtimeBinaryVersion ?? null,
+    }));
+}
+
+/** The machines running an ADE older than `newestVersion`. */
+export function outdatedMachines<T extends Pick<ConnectedMachine, "version">>(
+  machines: readonly T[],
+  newestVersion: string | null | undefined,
+): T[] {
+  return machines.filter((machine) => isMachineVersionOutdated(machine.version, newestVersion));
 }
 
 /** The newest ADE version this computer knows about — running or staged. */

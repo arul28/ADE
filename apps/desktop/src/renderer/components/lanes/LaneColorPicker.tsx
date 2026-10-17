@@ -1,5 +1,6 @@
 import React from "react";
 import { LANE_CLASSIC_COLORS, LANE_RAINBOW_COLORS, type LaneColor } from "./laneColorPalette";
+import { fgTint } from "./laneDesignTokens";
 
 type Props = {
   value: string | null | undefined;
@@ -74,7 +75,7 @@ function SwatchGroup({
           fontWeight: 700,
           letterSpacing: "0.12em",
           textTransform: "uppercase",
-          color: "color-mix(in srgb, var(--color-fg) 55%, transparent)",
+          color: fgTint(55),
         }}
       >
         {label}
@@ -140,7 +141,7 @@ function Swatch({
         cursor: isTaken ? "not-allowed" : "pointer",
         outline: isSelected ? "2px solid var(--color-accent, #fff)" : "none",
         outlineOffset: 2,
-        boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.18)",
+        boxShadow: `inset 0 0 0 1px ${fgTint(18)}`,
         border: "none",
         padding: 0,
         transition: "transform 80ms",

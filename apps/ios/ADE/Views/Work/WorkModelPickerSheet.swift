@@ -43,6 +43,14 @@ struct WorkModelPickerSheet: View {
   /// The preset the surface currently runs on, so the Custom list marks the
   /// chosen setup by its id rather than by "some row shares its model".
   let selectedPresetId: String?
+  /// Copilot's context tier and Auto profile the chat runs on. Empty for
+  /// every other provider. `copilotAutoTierPending` is true while the runtime
+  /// holds a profile change until the next message.
+  let currentCopilotContextTier: String
+  let currentCopilotAutoTier: String?
+  let copilotAutoTierPending: Bool
+  /// Reports the Copilot tiers with each selection, before `onSelect` fires.
+  let onSelectCopilotTiers: ((String, String?) -> Void)?
   let onSelect: (WorkModelOption, String?, String, Bool) -> Void
 
   init(
@@ -59,6 +67,10 @@ struct WorkModelPickerSheet: View {
     modelFilter: ((WorkModelOption) -> Bool)? = nil,
     onSelectPreset: ((SyncMachineInventoryPreset) -> Void)? = nil,
     selectedPresetId: String? = nil,
+    currentCopilotContextTier: String = "default",
+    currentCopilotAutoTier: String? = nil,
+    copilotAutoTierPending: Bool = false,
+    onSelectCopilotTiers: ((String, String?) -> Void)? = nil,
     onSelect: @escaping (WorkModelOption, String?, String, Bool) -> Void
   ) {
     self.currentModelId = currentModelId
@@ -74,11 +86,17 @@ struct WorkModelPickerSheet: View {
     self.harnessPresets = harnessPresets
     self.onSelectPreset = onSelectPreset
     self.selectedPresetId = selectedPresetId
+    self.currentCopilotContextTier = workCopilotContextTier(currentCopilotContextTier)
+    self.currentCopilotAutoTier = currentCopilotAutoTier
+    self.copilotAutoTierPending = copilotAutoTierPending
+    self.onSelectCopilotTiers = onSelectCopilotTiers
     self.onSelect = onSelect
     _selectedModelId = State(initialValue: currentModelId)
     _selectedRuntimeProvider = State(initialValue: currentProvider)
     _selectedReasoningEffort = State(initialValue: currentReasoningEffort)
     _selectedCodexFastMode = State(initialValue: currentCodexFastMode)
+    _selectedCopilotContextTier = State(initialValue: workCopilotContextTier(currentCopilotContextTier))
+    _selectedCopilotAutoTier = State(initialValue: currentCopilotAutoTier)
   }
 
   @StateObject private var picker = ModelPickerStore()
@@ -101,6 +119,8 @@ struct WorkModelPickerSheet: View {
   @State private var selectedRuntimeProvider: String
   @State private var selectedReasoningEffort: String
   @State private var selectedCodexFastMode: Bool
+  @State private var selectedCopilotContextTier: String
+  @State private var selectedCopilotAutoTier: String?
   @State private var fallbackLoginLanes: [LaneSummary] = []
   @State private var claudeLoginBusy = false
   @State private var claudeLoginError: String?
@@ -216,7 +236,7 @@ struct WorkModelPickerSheet: View {
         } else if catalog.isEmpty && !customHarnessesAvailable {
           catalogEmptyState
         } else {
-          Divider().overlay(ADEColor.glassBorder)
+          Divider().overlay(ADEKit.rule)
           HStack(spacing: 0) {
             ModelPickerRail(
               entries: railEntries,
@@ -231,7 +251,7 @@ struct WorkModelPickerSheet: View {
                 }
               }
             )
-            Divider().overlay(ADEColor.glassBorder)
+            Divider().overlay(ADEKit.rule)
             if effectiveSelection == .custom {
               customHarnessPane
             } else {
@@ -251,6 +271,11 @@ struct WorkModelPickerSheet: View {
                 onSelect: { model in select(model: model) },
                 onSelectReasoning: { model, effort in select(reasoningEffort: effort, for: model) },
                 onToggleFastMode: { model, enabled in select(fastMode: enabled, for: model) },
+                selectedCopilotContextTier: selectedCopilotContextTier,
+                selectedCopilotAutoTier: selectedCopilotAutoTier,
+                copilotAutoTierPending: copilotAutoTierPending,
+                onToggleCopilotContext: { model, tier in select(copilotContextTier: tier, for: model) },
+                onSelectCopilotAutoTier: { model, tier in select(copilotAutoTier: tier, for: model) },
                 onSelectProviderTab: { selectedProviderTabKey = $0 },
                 onToggleFavorite: { modelId in
                   guard commandScope == .project else { return }
@@ -265,7 +290,7 @@ struct WorkModelPickerSheet: View {
               )
             }
           }
-          Divider().overlay(ADEColor.glassBorder)
+          Divider().overlay(ADEKit.rule)
           currentModelBar
         }
       }
@@ -496,22 +521,13 @@ struct WorkModelPickerSheet: View {
         }
       }
       .padding(.horizontal, 12)
-      .padding(.vertical, 8)
-      .background(ADEColor.recessedBackground.opacity(0.55), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-      .overlay(
-        RoundedRectangle(cornerRadius: 10, style: .continuous)
-          .stroke(ADEColor.glassBorder, lineWidth: 0.5)
-      )
+      .frame(height: 36)
+      .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
 
       Button {
         dismiss()
       } label: {
-        Image(systemName: "xmark")
-          .font(.subheadline.weight(.bold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .frame(width: 38, height: 38)
-          .background(ADEColor.surfaceBackground.opacity(0.62), in: Circle())
-          .overlay(Circle().stroke(ADEColor.glassBorder, lineWidth: 0.75))
+        ADEKitCircleIcon(systemImage: "xmark")
       }
       .buttonStyle(.plain)
       .accessibilityLabel("Close")
@@ -530,8 +546,7 @@ struct WorkModelPickerSheet: View {
       fastModeEnabled: selectedCodexFastMode
     )
     .padding(.horizontal, 14)
-    .padding(.vertical, 9)
-    .background(ADEColor.recessedBackground.opacity(0.32))
+    .padding(.vertical, 10)
   }
 
   @ViewBuilder
@@ -596,8 +611,10 @@ struct WorkModelPickerSheet: View {
           .padding(.top, 28)
           .padding(.horizontal, 24)
         } else {
-          ForEach(presets) { preset in
-            customHarnessRow(preset)
+          ADESettingsRows {
+            ForEach(presets) { preset in
+              customHarnessRow(preset)
+            }
           }
         }
       }
@@ -645,16 +662,13 @@ struct WorkModelPickerSheet: View {
             .foregroundStyle(ADEColor.textMuted)
         }
       }
-      .padding(.horizontal, 10)
+      .padding(.horizontal, 12)
       .padding(.vertical, 10)
       .frame(maxWidth: .infinity, alignment: .leading)
-      .background(
-        isSelected ? ADEColor.accent.opacity(0.12) : Color.clear,
-        in: RoundedRectangle(cornerRadius: 10, style: .continuous)
-      )
+      .background(isSelected ? ADEColor.accent.opacity(0.08) : Color.clear)
       .contentShape(Rectangle())
     }
-    .buttonStyle(.plain)
+    .buttonStyle(ADEKitRowButtonStyle(dimsWhenDisabled: false))
     .disabled(!preset.bound)
     .accessibilityLabel(
       "\(preset.name), \(harnessLabel), \(modelLabel)"
@@ -691,7 +705,7 @@ struct WorkModelPickerSheet: View {
   private func refreshCatalog(for groupKey: String) async {
     let refreshProvider: String?
     switch groupKey {
-    case "opencode", "cursor", "droid", "pi", "lmstudio", "ollama",
+    case "opencode", "cursor", "droid", "pi", "muse", "lmstudio", "ollama",
          "qwen", "kimi", "grok", "copilot":
       refreshProvider = groupKey
     default:
@@ -823,11 +837,35 @@ struct WorkModelPickerSheet: View {
     emitSelection(model)
   }
 
+  private func select(copilotContextTier tier: String, for model: WorkModelOption) {
+    guard model.isAvailable else { return }
+    if !workModelIdsEquivalent(model.id, selectedModelId) {
+      selectedModelId = model.id
+      selectedRuntimeProvider = runtimeProvider(for: model)
+    }
+    selectedCopilotContextTier = workCopilotContextTier(tier)
+    emitSelection(model)
+  }
+
+  private func select(copilotAutoTier tier: String, for model: WorkModelOption) {
+    guard model.isAvailable else { return }
+    if !workModelIdsEquivalent(model.id, selectedModelId) {
+      selectedModelId = model.id
+      selectedRuntimeProvider = runtimeProvider(for: model)
+    }
+    selectedCopilotAutoTier = tier
+    emitSelection(model)
+  }
+
   private func emitSelection(_ model: WorkModelOption) {
     let normalizedEffort = selectedReasoningEffort
       .trimmingCharacters(in: .whitespacesAndNewlines)
       .lowercased()
     let effortPayload = normalizedEffort.isEmpty ? nil : normalizedEffort
+    // The tiers go out first, so a parent that dismisses on `onSelect` already holds them.
+    if providerFamilyKey(runtimeProvider(for: model)) == "copilot" {
+      onSelectCopilotTiers?(selectedCopilotContextTier, selectedCopilotAutoTier)
+    }
     onSelect(
       model,
       effortPayload,
@@ -907,7 +945,6 @@ struct ModelPickerRail: View {
       .padding(.horizontal, 5)
     }
     .frame(width: 60)
-    .background(ADEColor.recessedBackground.opacity(0.35))
   }
 
   @ViewBuilder
@@ -919,29 +956,19 @@ struct ModelPickerRail: View {
       ZStack(alignment: .topTrailing) {
         railIcon(for: entry, isActive: isActive)
           .frame(maxWidth: .infinity, minHeight: 44)
-          .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-              .fill(isActive ? Color.white.opacity(0.07) : Color.clear)
-          )
-          .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-              .stroke(isActive ? Color.white.opacity(0.06) : Color.clear, lineWidth: 0.8)
-          )
+          .background {
+            if isActive {
+              RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(ADEKit.surface)
+                .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
+            }
+          }
         if let badge = badgeCount(for: entry), badge > 0 {
           Text("\(badge)")
-            .font(.system(size: 8, weight: .bold))
-            .foregroundStyle(ADEColor.textPrimary)
-            .padding(.horizontal, 3)
-            .padding(.vertical, 1)
-            .background(
-              Capsule(style: .continuous)
-                .fill(ADEColor.surfaceBackground)
-            )
-            .overlay(
-              Capsule(style: .continuous)
-                .stroke(ADEColor.glassBorder, lineWidth: 0.5)
-            )
-            .offset(x: 4, y: -3)
+            .font(.adeMono(9, weight: .medium))
+            .foregroundStyle(ADEColor.textMuted)
+            .padding(.top, 3)
+            .padding(.trailing, 4)
         }
       }
     }
@@ -963,11 +990,11 @@ struct ModelPickerRail: View {
     switch entry {
     case .favorites:
       Image(systemName: isActive ? "star.fill" : "star")
-        .font(.system(size: 16, weight: .semibold))
-        .foregroundStyle(ADEColor.warning)
+        .font(.system(size: 16, weight: .medium))
+        .foregroundStyle(isActive ? ADEColor.warning : ADEColor.textSecondary)
     case .recents:
       Image(systemName: isActive ? "clock.fill" : "clock")
-        .font(.system(size: 16, weight: .semibold))
+        .font(.system(size: 16, weight: .medium))
         .foregroundStyle(isActive ? ADEColor.textPrimary : ADEColor.textSecondary)
     case .providerGroup(let key, _):
       WorkProviderBareLogo(
@@ -1017,6 +1044,11 @@ struct ModelPickerContentPane: View {
   let onSelect: (WorkModelOption) -> Void
   let onSelectReasoning: (WorkModelOption, String) -> Void
   let onToggleFastMode: (WorkModelOption, Bool) -> Void
+  let selectedCopilotContextTier: String
+  let selectedCopilotAutoTier: String?
+  let copilotAutoTierPending: Bool
+  let onToggleCopilotContext: (WorkModelOption, String) -> Void
+  let onSelectCopilotAutoTier: (WorkModelOption, String) -> Void
   let onSelectProviderTab: (String) -> Void
   let onToggleFavorite: (String) -> Void
   let onClaudeLogin: (() -> Void)?
@@ -1080,22 +1112,20 @@ struct ModelPickerContentPane: View {
       if showsPiLoginAction {
         piLoginBanner
       }
-      Divider().overlay(ADEColor.glassBorder)
+      Divider().overlay(ADEKit.rule)
       if groupedRows.allSatisfy({ $0.models.isEmpty }) {
         emptyState
       } else {
         ScrollView {
-          LazyVStack(alignment: .leading, spacing: rowStyle == .compact ? 4 : 5) {
+          LazyVStack(alignment: .leading, spacing: 14) {
             ForEach(groupedRows) { group in
-              VStack(alignment: .leading, spacing: rowStyle == .compact ? 4 : 5) {
+              VStack(alignment: .leading, spacing: 7) {
                 if let title = group.title {
-                  Text(title.uppercased())
-                    .font(.caption2.weight(.bold))
-                    .tracking(0.4)
-                    .foregroundStyle(ADEColor.textMuted)
+                  ADEEyebrow(title)
                     .padding(.horizontal, 4)
-                    .padding(.top, 2)
                 }
+                // One kit panel per group: rows with hairlines, not a card each.
+                ADESettingsRows {
                 ForEach(group.models) { model in
                   ModelPickerListRow(
                     model: model,
@@ -1109,6 +1139,11 @@ struct ModelPickerContentPane: View {
                     onSelect: { onSelect(model) },
                     onSelectReasoning: { effort in onSelectReasoning(model, effort) },
                     onToggleFastMode: { enabled in onToggleFastMode(model, enabled) },
+                    selectedCopilotContextTier: selectedCopilotContextTier,
+                    selectedCopilotAutoTier: selectedCopilotAutoTier,
+                    copilotAutoTierPending: copilotAutoTierPending,
+                    onToggleCopilotContext: { tier in onToggleCopilotContext(model, tier) },
+                    onSelectCopilotAutoTier: { tier in onSelectCopilotAutoTier(model, tier) },
                     onToggleFavorite: { onToggleFavorite(model.id) },
                     onClaudeLogin: onClaudeLogin,
                     isClaudeLoginBusy: isClaudeLoginBusy,
@@ -1116,11 +1151,12 @@ struct ModelPickerContentPane: View {
                     isPiLoginBusy: isPiLoginBusy
                   )
                 }
+                }
               }
             }
           }
           .padding(.horizontal, 10)
-          .padding(.vertical, 8)
+          .padding(.vertical, 10)
         }
       }
     }
@@ -1131,25 +1167,31 @@ struct ModelPickerContentPane: View {
   private var providerTabStrip: some View {
     if providerTabs.count > 1 {
       ScrollView(.horizontal, showsIndicators: false) {
-        HStack(spacing: 6) {
+        HStack(spacing: 2) {
           ForEach(providerTabs) { provider in
             let selected = provider.key == activeProviderTabKey
             Button {
               onSelectProviderTab(provider.key)
             } label: {
               Text(provider.displayName)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(selected ? Color.white : ADEColor.textSecondary)
+                .font(.system(size: 12.5, weight: selected ? .semibold : .medium))
+                .foregroundStyle(selected ? ADEColor.textPrimary : ADEColor.textSecondary)
                 .lineLimit(1)
                 .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(selected ? ADEColor.accent : ADEColor.surfaceBackground.opacity(0.55), in: Capsule())
+                .frame(minHeight: 28)
+                .background {
+                  if selected {
+                    ADEKitSegmentThumb()
+                  }
+                }
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityAddTraits(selected ? .isSelected : [])
           }
         }
-        .padding(.horizontal, 14)
+        .adeKitSegmentTrack()
+        .padding(.horizontal, 12)
         .padding(.bottom, 8)
       }
     }
@@ -1170,16 +1212,17 @@ struct ModelPickerContentPane: View {
   private var claudeLoginBanner: some View {
     VStack(alignment: .leading, spacing: 8) {
       HStack(alignment: .center, spacing: 10) {
-        Image(systemName: "terminal.fill")
-          .font(.subheadline.weight(.semibold))
-          .foregroundStyle(providerTint("claude"))
-          .frame(width: 24, height: 24)
-          .background(providerTint("claude").opacity(0.14), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        WorkProviderBareLogo(
+          provider: "claude",
+          fallbackSymbol: providerIcon("claude"),
+          tint: providerTint("claude"),
+          size: 18
+        )
         VStack(alignment: .leading, spacing: 2) {
           Text("Claude is signed out")
             .font(.footnote.weight(.semibold))
             .foregroundStyle(ADEColor.textPrimary)
-          Text("Open a primary-lane terminal to finish Claude Code login.")
+          Text("Finish sign-in in a terminal.")
             .font(.caption)
             .foregroundStyle(ADEColor.textSecondary)
             .fixedSize(horizontal: false, vertical: true)
@@ -1201,16 +1244,8 @@ struct ModelPickerContentPane: View {
               .font(.caption.weight(.bold))
               .lineLimit(1)
           }
-          .foregroundStyle(ADEColor.textPrimary)
-          .padding(.horizontal, 10)
-          .padding(.vertical, 7)
-          .background(ADEColor.accent.opacity(0.22), in: Capsule())
-          .overlay(
-            Capsule(style: .continuous)
-              .stroke(ADEColor.accent.opacity(0.28), lineWidth: 0.6)
-          )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(ADEKitButtonStyle(prominent: true))
         .disabled(isClaudeLoginBusy)
         .accessibilityLabel("Login to Claude")
       }
@@ -1221,12 +1256,7 @@ struct ModelPickerContentPane: View {
           .fixedSize(horizontal: false, vertical: true)
       }
     }
-    .padding(10)
-    .background(ADEColor.surfaceBackground.opacity(0.5), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .stroke(ADEColor.glassBorder.opacity(0.75), lineWidth: 0.6)
-    )
+    .adeKitCard(padding: 12)
     .padding(.horizontal, 12)
     .padding(.bottom, 8)
   }
@@ -1235,16 +1265,17 @@ struct ModelPickerContentPane: View {
   private var piLoginBanner: some View {
     VStack(alignment: .leading, spacing: 8) {
       HStack(alignment: .center, spacing: 10) {
-        Image(systemName: "terminal.fill")
-          .font(.subheadline.weight(.semibold))
-          .foregroundStyle(providerTint("pi"))
-          .frame(width: 24, height: 24)
-          .background(providerTint("pi").opacity(0.14), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        WorkProviderBareLogo(
+          provider: "pi",
+          fallbackSymbol: providerIcon("pi"),
+          tint: providerTint("pi"),
+          size: 18
+        )
         VStack(alignment: .leading, spacing: 2) {
           Text("Pi is signed out")
             .font(.footnote.weight(.semibold))
             .foregroundStyle(ADEColor.textPrimary)
-          Text("Open Pi’s native login flow on the paired machine. ADE never stores Pi credentials.")
+          Text("Finish sign-in on the machine.")
             .font(.caption)
             .foregroundStyle(ADEColor.textSecondary)
             .fixedSize(horizontal: false, vertical: true)
@@ -1266,16 +1297,8 @@ struct ModelPickerContentPane: View {
               .font(.caption.weight(.bold))
               .lineLimit(1)
           }
-          .foregroundStyle(ADEColor.textPrimary)
-          .padding(.horizontal, 10)
-          .padding(.vertical, 7)
-          .background(providerTint("pi").opacity(0.22), in: Capsule())
-          .overlay(
-            Capsule(style: .continuous)
-              .stroke(providerTint("pi").opacity(0.28), lineWidth: 0.6)
-          )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(ADEKitButtonStyle(prominent: true))
         .disabled(isPiLoginBusy)
         .accessibilityLabel("Open Pi native login")
       }
@@ -1286,12 +1309,7 @@ struct ModelPickerContentPane: View {
           .fixedSize(horizontal: false, vertical: true)
       }
     }
-    .padding(10)
-    .background(ADEColor.surfaceBackground.opacity(0.5), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .stroke(providerTint("pi").opacity(0.32), lineWidth: 0.7)
-    )
+    .adeKitCard(padding: 12)
     .padding(.horizontal, 12)
     .padding(.bottom, 8)
   }
@@ -1311,14 +1329,8 @@ struct ModelPickerContentPane: View {
         HStack {
           Spacer()
           Text("\(models.count)")
-            .font(.caption.weight(.bold))
+            .font(.adeMono(11))
             .foregroundStyle(ADEColor.textMuted)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(
-              Capsule(style: .continuous)
-                .fill(ADEColor.recessedBackground.opacity(0.5))
-            )
         }
       }
     }
@@ -1342,7 +1354,7 @@ struct ModelPickerContentPane: View {
       case .recents:
         Image(systemName: "clock.fill")
           .font(.subheadline.weight(.semibold))
-          .foregroundStyle(ADEColor.accent)
+          .foregroundStyle(ADEColor.textSecondary)
       case .providerGroup(let key, _):
         WorkProviderBareLogo(
           provider: workRailLogoProvider(for: key),
@@ -1458,6 +1470,11 @@ struct ModelPickerListRow: View {
   let onSelect: () -> Void
   let onSelectReasoning: (String) -> Void
   let onToggleFastMode: (Bool) -> Void
+  var selectedCopilotContextTier: String = "default"
+  var selectedCopilotAutoTier: String? = nil
+  var copilotAutoTierPending: Bool = false
+  var onToggleCopilotContext: (String) -> Void = { _ in }
+  var onSelectCopilotAutoTier: (String) -> Void = { _ in }
   let onToggleFavorite: () -> Void
   let onClaudeLogin: (() -> Void)?
   let isClaudeLoginBusy: Bool
@@ -1516,11 +1533,16 @@ struct ModelPickerListRow: View {
 
       if isHighlighted && shouldShowSelectedControls {
         VStack(alignment: .leading, spacing: 8) {
-          if !supportedTiers.isEmpty {
+          if isCopilotAutoRow {
+            copilotAutoProfilePills
+          } else if !supportedTiers.isEmpty {
             reasoningPills(tiers: supportedTiers)
             if selectedReasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "ultra" {
               ultraReasoningWarning
             }
+          }
+          if supportsCopilotContextToggle {
+            copilotContextToggle
           }
           if model.supportsCodexFastMode {
             fastModeToggle
@@ -1538,21 +1560,25 @@ struct ModelPickerListRow: View {
           .padding(.top, style == .detailed ? 7 : 5)
       }
     }
-    .padding(.horizontal, style == .compact ? 10 : 11)
-    .padding(.vertical, style == .compact ? 7 : 8)
-    .background(
-      RoundedRectangle(cornerRadius: style == .compact ? 10 : 11, style: .continuous)
-        .fill(isHighlighted ? ADEColor.accent.opacity(0.10) : ADEColor.surfaceBackground.opacity(model.isAvailable ? 0.45 : 0.28))
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: style == .compact ? 10 : 11, style: .continuous)
-        .stroke(isHighlighted ? ADEColor.accent.opacity(0.42) : ADEColor.glassBorder.opacity(0.7), lineWidth: isHighlighted ? 1 : 0.5)
-    )
+    .padding(.leading, style == .compact ? 6 : 12)
+    .padding(.trailing, style == .compact ? 12 : 6)
+    .padding(.vertical, 8)
+    // A row in the group's panel; the accent tints only the selected one.
+    .background(isHighlighted ? ADEColor.accent.opacity(0.08) : Color.clear)
     .contentShape(Rectangle())
   }
 
   private var shouldShowSelectedControls: Bool {
-    !supportedTiers.isEmpty || model.supportsCodexFastMode
+    !supportedTiers.isEmpty || model.supportsCodexFastMode || isCopilotAutoRow || supportsCopilotContextToggle
+  }
+
+  private var isCopilotAutoRow: Bool {
+    workCopilotIsAutoModel(modelId: model.id, provider: model.provider)
+  }
+
+  /// A Copilot model whose catalog lists the long tier gets the context toggle.
+  private var supportsCopilotContextToggle: Bool {
+    providerFamilyKey(model.provider) == "copilot" && model.contextTiers.contains("long_context")
   }
 
   @ViewBuilder
@@ -1567,7 +1593,7 @@ struct ModelPickerListRow: View {
       )
       VStack(alignment: .leading, spacing: 1) {
         Text(model.displayName)
-          .font(.subheadline.weight(.semibold))
+          .font(.system(size: 14.5, weight: isSelected ? .semibold : .medium))
           .foregroundStyle(model.isAvailable ? ADEColor.textPrimary : ADEColor.textMuted)
           .lineLimit(1)
         if let piContextLabel {
@@ -1593,7 +1619,7 @@ struct ModelPickerListRow: View {
       )
       VStack(alignment: .leading, spacing: 1) {
         Text(model.displayName)
-          .font(.subheadline.weight(.semibold))
+          .font(.system(size: 14.5, weight: isSelected ? .semibold : .medium))
           .foregroundStyle(model.isAvailable ? ADEColor.textPrimary : ADEColor.textMuted)
           .lineLimit(1)
         if let piContextLabel {
@@ -1638,16 +1664,8 @@ struct ModelPickerListRow: View {
           .font(.caption.weight(.bold))
           .lineLimit(1)
       }
-      .foregroundStyle(ADEColor.textPrimary)
-      .padding(.horizontal, 9)
-      .padding(.vertical, 6)
-      .background(ADEColor.accent.opacity(0.18), in: Capsule())
-      .overlay(
-        Capsule(style: .continuous)
-          .stroke(ADEColor.accent.opacity(0.24), lineWidth: 0.6)
-      )
     }
-    .buttonStyle(.plain)
+    .buttonStyle(ADEKitButtonStyle())
     .disabled(isClaudeLoginBusy)
     .accessibilityLabel("Login to Claude")
   }
@@ -1670,16 +1688,8 @@ struct ModelPickerListRow: View {
           .font(.caption.weight(.bold))
           .lineLimit(1)
       }
-      .foregroundStyle(ADEColor.textPrimary)
-      .padding(.horizontal, 9)
-      .padding(.vertical, 6)
-      .background(providerTint("pi").opacity(0.18), in: Capsule())
-      .overlay(
-        Capsule(style: .continuous)
-          .stroke(providerTint("pi").opacity(0.28), lineWidth: 0.6)
-      )
     }
-    .buttonStyle(.plain)
+    .buttonStyle(ADEKitButtonStyle())
     .disabled(isPiLoginBusy)
     .accessibilityLabel("Open Pi native login")
   }
@@ -1690,8 +1700,8 @@ struct ModelPickerListRow: View {
       onToggleFavorite()
     } label: {
       Image(systemName: isFavorite ? "star.fill" : "star")
-        .font(.subheadline.weight(.semibold))
-        .foregroundStyle(isFavorite ? ADEColor.warning : ADEColor.textMuted)
+        .font(.system(size: 13, weight: .medium))
+        .foregroundStyle(isFavorite ? ADEColor.warning : ADEColor.textMuted.opacity(0.7))
         .frame(width: 30, height: 30)
         .contentShape(Rectangle())
     }
@@ -1705,7 +1715,7 @@ struct ModelPickerListRow: View {
       .trimmingCharacters(in: .whitespacesAndNewlines)
       .lowercased()
     ScrollView(.horizontal, showsIndicators: false) {
-      HStack(spacing: 6) {
+      HStack(spacing: 2) {
         ForEach(tiers, id: \.self) { tier in
           let normalized = tier.lowercased()
           let isActiveTier = normalized == normalizedCurrent
@@ -1713,19 +1723,17 @@ struct ModelPickerListRow: View {
             onSelectReasoning(normalized)
           } label: {
             Text(reasoningLabel(for: tier))
-              .font(.caption.weight(.semibold))
-              .foregroundStyle(isActiveTier ? Color.white : ADEColor.textSecondary)
+              .font(.system(size: 12.5, weight: isActiveTier ? .semibold : .medium))
+              .foregroundStyle(isActiveTier ? ADEColor.textPrimary : ADEColor.textSecondary)
               .lineLimit(1)
-              .padding(.horizontal, 12)
-              .padding(.vertical, 7)
-              .background(
-                Capsule(style: .continuous)
-                  .fill(isActiveTier ? ADEColor.accent : ADEColor.surfaceBackground.opacity(0.55))
-              )
-              .overlay(
-                Capsule(style: .continuous)
-                  .stroke(isActiveTier ? ADEColor.accent : ADEColor.glassBorder, lineWidth: 0.6)
-              )
+              .padding(.horizontal, 11)
+              .frame(minHeight: 28)
+              .background {
+                if isActiveTier {
+                  ADEKitSegmentThumb()
+                }
+              }
+              .contentShape(Rectangle())
           }
           .buttonStyle(.plain)
           .disabled(isBusy || !model.isAvailable)
@@ -1733,10 +1741,69 @@ struct ModelPickerListRow: View {
           .accessibilityAddTraits(isActiveTier ? .isSelected : [])
         }
       }
+      .adeKitSegmentTrack()
     }
   }
 
   @ViewBuilder
+  /// Copilot's Auto profiles, in place of the effort pills. Only one profile is
+  /// active; a change the runtime has not confirmed yet says so under it.
+  private var copilotAutoProfilePills: some View {
+    VStack(alignment: .leading, spacing: 4) {
+      HStack(spacing: 8) {
+        ForEach(workCopilotAutoTiers, id: \.self) { tier in
+          let isActiveTier = selectedCopilotAutoTier == tier
+          Button {
+            onSelectCopilotAutoTier(tier)
+          } label: {
+            Text(workCopilotAutoTierLabel(tier))
+              .font(.system(size: 12.5, weight: isActiveTier ? .semibold : .medium))
+              .foregroundStyle(isActiveTier ? ADEColor.textPrimary : ADEColor.textSecondary)
+              .padding(.horizontal, 10)
+              .padding(.vertical, 4)
+              .background(isActiveTier ? ADEColor.accent.opacity(0.14) : Color.clear, in: Capsule())
+          }
+          .buttonStyle(.plain)
+          .accessibilityLabel("\(model.displayName) · Auto profile \(workCopilotAutoTierLabel(tier))")
+          .accessibilityAddTraits(isActiveTier ? .isSelected : [])
+        }
+      }
+      if copilotAutoTierPending, selectedCopilotAutoTier != nil {
+        Text("applies from the next message")
+          .font(.system(size: 11.5))
+          .foregroundStyle(ADEColor.textMuted)
+      }
+    }
+  }
+
+  /// The long-context toggle: the default window on one side, the long window on
+  /// the other. Long context costs more per token, so the hint says so.
+  private var copilotContextToggle: some View {
+    HStack(spacing: 8) {
+      ForEach(["default", "long_context"], id: \.self) { tier in
+        let isActiveTier = selectedCopilotContextTier == tier
+        Button {
+          onToggleCopilotContext(tier)
+        } label: {
+          Text(workCopilotContextTierLabel(
+            tier,
+            contextWindow: model.contextWindow,
+            longContextWindow: model.longContextWindow
+          ))
+            .font(.system(size: 12.5, weight: isActiveTier ? .semibold : .medium))
+            .foregroundStyle(isActiveTier ? ADEColor.textPrimary : ADEColor.textSecondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .background(isActiveTier ? ADEColor.accent.opacity(0.14) : Color.clear, in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(model.displayName) · context \(workCopilotContextTierLabel(tier, contextWindow: model.contextWindow, longContextWindow: model.longContextWindow))")
+        .accessibilityHint(tier == "long_context" ? "Long context costs more per token." : "Default context window.")
+        .accessibilityAddTraits(isActiveTier ? .isSelected : [])
+      }
+    }
+  }
+
   private var fastModeToggle: some View {
     Toggle(isOn: Binding(
       get: { selectedCodexFastMode },
@@ -1747,15 +1814,13 @@ struct ModelPickerListRow: View {
           .font(.caption.weight(.bold))
           .foregroundStyle(selectedCodexFastMode ? ADEColor.warning : ADEColor.textMuted)
         Text("Fast mode")
-          .font(.caption.weight(.semibold))
+          .font(.system(size: 13, weight: .medium))
           .foregroundStyle(ADEColor.textPrimary)
-        Text(selectedCodexFastMode ? "On" : "Off")
-          .font(.caption2.weight(.semibold))
-          .foregroundStyle(ADEColor.textMuted)
       }
     }
     .toggleStyle(.switch)
-    .tint(ADEColor.warning)
+    .controlSize(.mini)
+    .tint(ADEColor.accent)
     .disabled(isBusy || !model.isAvailable)
     .accessibilityLabel("Fast mode \(selectedCodexFastMode ? "on" : "off")")
   }
@@ -1789,7 +1854,8 @@ struct ModelPickerCurrentModelBar: View {
   }
 
   private var reasoningLabel: String {
-    workReasoningChipLabel(reasoningEffort) ?? "Default"
+    let effort = reasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines)
+    return effort.isEmpty ? "Default" : workReasoningEffortDisplayName(effort)
   }
 
   var body: some View {
@@ -1802,12 +1868,9 @@ struct ModelPickerCurrentModelBar: View {
       )
 
       VStack(alignment: .leading, spacing: 2) {
-        Text("Current model")
-          .font(.caption2.weight(.bold))
-          .tracking(0.4)
-          .foregroundStyle(ADEColor.textMuted)
+        ADEEyebrow("Current model")
         Text(model?.displayName ?? "Pick a model")
-          .font(.caption.weight(.semibold))
+          .font(.system(size: 14, weight: .semibold))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
         if let model, let piContextLabel = workPiModelContextLabel(for: model) {
@@ -1835,13 +1898,6 @@ struct ModelPickerCurrentModelBar: View {
             .foregroundStyle(fastModeEnabled ? ADEColor.warning : ADEColor.textMuted)
         }
       }
-      .padding(.horizontal, 8)
-      .padding(.vertical, 5)
-      .background(ADEColor.surfaceBackground.opacity(0.46), in: Capsule(style: .continuous))
-      .overlay(
-        Capsule(style: .continuous)
-          .stroke(ADEColor.border.opacity(0.22), lineWidth: 0.5)
-      )
     }
     .accessibilityElement(children: .combine)
     .accessibilityLabel(
@@ -1893,12 +1949,18 @@ final class ModelPickerStore: ObservableObject {
   }
 
   func refresh(syncService: SyncService) async {
+    let directoryRevision = WorkModelMentionDirectory.shared.recentsRevisionSnapshot
     async let favTask = try? await syncService.getModelFavorites()
     async let recTask = try? await syncService.getModelRecents()
     let fav = await favTask
     let rec = await recTask
     if let fav { favorites = fav }
-    if let rec { recents = rec }
+    if let rec {
+      recents = rec
+      // The `@` menu ranks by the same recents; only the host's answer is
+      // mirrored, so a stale local list never overwrites a newer `@` pick.
+      WorkModelMentionDirectory.shared.record(recents: rec, ifRevision: directoryRevision)
+    }
     isLoading = false
   }
 
@@ -1934,6 +1996,7 @@ final class ModelPickerStore: ObservableObject {
       do {
         let updated = try await syncService.pushModelRecent(trimmed)
         self?.recents = updated
+        WorkModelMentionDirectory.shared.record(recents: updated)
       } catch {
         self?.recents = previous
       }

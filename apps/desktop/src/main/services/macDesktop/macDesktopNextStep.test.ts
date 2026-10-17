@@ -201,6 +201,30 @@ describe("macDesktopNextStep follows the caller's lease", () => {
   });
 });
 
+describe("macDesktopNextStep on a seat that delivers background input", () => {
+  it.each([
+    ["a left click", { action: "click" }, "ade mac-desktop click --x 30 --y 40 --text"],
+    ["a right click", { action: "click", button: "right" }, "ade mac-desktop click --x 30 --y 40 --right --text"],
+    ["a double click", { action: "click", count: 2 }, "ade mac-desktop click --x 30 --y 40 --double --text"],
+    ["a scroll, with its amount", { action: "scroll", direction: "down", amount: 15 }, "ade mac-desktop scroll down --x 30 --y 40 --amount 15 --text"],
+  ])("repeats %s at the element's centre before any lease, with no --real", (_label, shape, command) => {
+    const next = nextFor({ ...shape, resolved: element({ actions: [] }), lease: noLease, backgroundAvailable: true });
+    expect(next?.method).toBe("background_input");
+    expect(next?.command).toBe(command);
+    expect(next?.reason).toContain("needs no approval");
+  });
+
+  it("falls back to the lease for what background input cannot repeat, and only observes after background input", () => {
+    // A triple click has no flag; a key has no background form.
+    expect(nextFor({ resolved: element({ actions: [] }), count: 3, lease: noLease, backgroundAvailable: true })?.method).toBe("lease");
+    expect(nextFor({ action: "press", lease: noLease, backgroundAvailable: true })?.method).toBe("lease");
+    // Input the app already received is not retried with the user's pointer.
+    const after = nextFor({ mode: "background", resolved: element({ actions: [] }), lease: noLease, backgroundAvailable: true });
+    expect(after?.method).toBe("observe");
+    expect(after?.command).toBeNull();
+  });
+});
+
 describe("macDesktopNextStep spots web content in a real browser", () => {
   const webArea = element({ index: 2, role: "AXWebArea", actions: [], parentIndex: null, windowId: 5 });
   const webText = element({ index: 1, role: "AXStaticText", title: null, value: "Read more", actions: [], parentIndex: 2 });

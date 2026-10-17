@@ -77,8 +77,9 @@ export const CONSERVATIVE_ATTACHMENT_STAGING_MODE: ChatAttachmentStagingMode = {
  */
 export async function readAttachmentStagingMode(
   pin: OpenProjectBinding | null | undefined,
+  api: Pick<Window["ade"]["agentChat"], "getAttachmentStagingMode"> | null | undefined = window.ade?.agentChat,
 ): Promise<ChatAttachmentStagingMode> {
-  const read = window.ade?.agentChat?.getAttachmentStagingMode;
+  const read = api?.getAttachmentStagingMode;
   if (typeof read !== "function") return CONSERVATIVE_ATTACHMENT_STAGING_MODE;
   try {
     const mode = await read(pin);
@@ -125,6 +126,8 @@ export async function stageAttachmentBytesFromFile(args: {
   filename: string;
   requiresHeicConversion: boolean;
   pin: OpenProjectBinding | null | undefined;
+  /** The pane's chat API; the project chat domain when omitted. */
+  api?: Pick<Window["ade"]["agentChat"], "saveTempAttachment">;
 }): Promise<StagedAttachment> {
   const buffer = await args.file.arrayBuffer();
   let filename = args.filename;
@@ -151,6 +154,6 @@ export async function stageAttachmentBytesFromFile(args: {
     mimeType = converted.mimeType;
     previewDataUrl = `data:${converted.mimeType};base64,${converted.data}`;
   }
-  const { path } = await window.ade.agentChat.saveTempAttachment({ data, filename }, args.pin);
+  const { path } = await (args.api ?? window.ade.agentChat).saveTempAttachment({ data, filename }, args.pin);
   return { path, mimeType, previewDataUrl };
 }

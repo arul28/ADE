@@ -423,6 +423,19 @@ export type AdeUsageDailyPoint = {
   githubDeletions?: number;
 };
 
+/**
+ * The signed-in GitHub user's contribution calendar (the green squares on
+ * their profile): every day of the last year, across every repository, as
+ * GitHub counts it. Machine-level: read with this machine's `gh` login.
+ */
+export type GithubContributionCalendar = {
+  /** GitHub's own total for the year. */
+  total: number;
+  /** One entry per day, oldest first; `date` is YYYY-MM-DD. */
+  days: Array<{ date: string; count: number }>;
+  fetchedAt: string;
+};
+
 /** GitHub-scoped activity, reported separately from local activity (never max-merged). */
 export type AdeUsageGithubActivity = {
   commits: number;
@@ -689,7 +702,7 @@ export type AdeUsageRollup = {
 // Live quota tracking types (Claude/Codex API windows plus local runtime cost scans)
 // ---------------------------------------------------------------------------
 
-export type UsageProvider = "claude" | "codex" | "cursor" | "copilot" | "grok" | "opencode" | "kimi";
+export type UsageProvider = "claude" | "codex" | "cursor" | "copilot" | "grok" | "opencode" | "kimi" | "muse";
 
 /** Providers the live-quota poller can publish. History-only providers stay off this list. */
 export const LIVE_QUOTA_PROVIDERS = [
@@ -700,6 +713,7 @@ export const LIVE_QUOTA_PROVIDERS = [
   "grok",
   "opencode",
   "kimi",
+  "muse",
 ] as const satisfies readonly UsageProvider[];
 
 export type UsageWindowType = "five_hour" | "weekly" | "monthly" | "weekly_oauth_apps" | "weekly_cowork";
@@ -714,6 +728,10 @@ export type UsageWindow = {
    */
   accountId?: string;
   modelBreakdown?: Record<string, number>;
+  /** Exact request meter when the provider exposes counts (e.g. Copilot premium requests). */
+  usedCount?: number;
+  entitlementCount?: number;
+  unlimited?: boolean;
   percentUsed: number;
   resetsAt: string;
   resetsInMs: number;

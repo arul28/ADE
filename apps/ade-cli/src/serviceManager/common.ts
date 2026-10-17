@@ -1,9 +1,10 @@
 import fs from "node:fs";
+import os from "node:os";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { spawnSync, type SpawnSyncOptions } from "node:child_process";
 import { resolveTrustedWindowsTool } from "../lib/trustedWindowsTools";
-import { resolveMachineAdeLayout } from "../services/projects/machineLayout";
+import { resolveMachineAdeDir, resolveMachineAdeLayout } from "../services/projects/machineLayout";
 import { requestAdeRuntimeShutdown } from "./runtimeShutdownRequest";
 import { buildPackagedRuntimeNodeModulePaths } from "../../../desktop/src/main/services/runtime/packagedNodePath";
 
@@ -33,8 +34,10 @@ export type ServiceManagerResult = {
    * `background_item_blocked` is macOS refusing to start the agent because
    * ADE is switched off under Login Items → "Allow in the Background"; no
    * restart can fix that, only the person at the keyboard can.
+   * `launchd_register` is launchd refusing to register the job at all; the
+   * message carries launchctl's own error.
    */
-  failureStep?: "predecessor_exit" | "replacement_pid" | "replacement_responsive" | "background_item_blocked";
+  failureStep?: "predecessor_exit" | "replacement_pid" | "replacement_responsive" | "background_item_blocked" | "launchd_register";
   /**
    * The service is registered and its brain process is alive, but it had not
    * answered on the socket when the install's wait budget ran out. That is a
@@ -136,6 +139,11 @@ export type AdeServiceCommand = {
   args: string[];
   env?: Record<string, string>;
 };
+
+/** The uid launchd domains are keyed by (`gui/<uid>`, `user/<uid>`). */
+export function currentUid(): number {
+  return typeof process.getuid === "function" ? process.getuid() : os.userInfo().uid;
+}
 
 export function resolveRuntimeServiceName(env: NodeJS.ProcessEnv = process.env): string {
   const explicit = env.ADE_RUNTIME_SERVICE_NAME?.trim();
@@ -371,6 +379,23 @@ export function packagedCliNodeModulePaths(
   return paths.some((candidate) => exists(path.dirname(candidate))) ? paths : [];
 }
 
+/**
+ * Node's compile cache for the brain. The brain is one ~19 MB bundle that Node
+ * would otherwise parse on every start. The `ade` wrappers already set the same
+ * cache for the CLI, but the service manager starts the brain directly, so it
+ * needs its own setting. The setting goes in the environment because Node
+ * compiles the bundle before any of its code runs, so nothing inside it can
+ * reach the entry file. Node writes the cache when the brain exits gracefully,
+ * not when it is killed, and it ignores a directory it cannot use.
+ */
+function runtimeCompileCacheEnv(env: Record<string, string>): Record<string, string> {
+  // Node disables the cache when this variable is set at all, even to an empty value.
+  if (process.env.NODE_DISABLE_COMPILE_CACHE !== undefined) return {};
+  const explicit = process.env.NODE_COMPILE_CACHE?.trim();
+  if (explicit) return { NODE_COMPILE_CACHE: explicit };
+  return { NODE_COMPILE_CACHE: path.join(resolveMachineAdeDir(env), "cache", "node-compile") };
+}
+
 function runtimeEnvironment(entry?: string): Record<string, string> | undefined {
   const env: Record<string, string> = {};
   if (process.versions.electron) {
@@ -382,6 +407,7 @@ function runtimeEnvironment(entry?: string): Record<string, string> | undefined 
       env[key] = value;
     }
   }
+  Object.assign(env, runtimeCompileCacheEnv(env));
   // A service started from a process without NODE_PATH (the desktop, a
   // Windows task) still has to load the packaged CLI's externals.
   const packagedPaths = entry ? packagedCliNodeModulePaths(entry) : [];
@@ -584,7 +610,7 @@ export function isPidAlive(pid: number): boolean {
   }
 }
 
-function sleepSync(ms: number): void {
+export function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
@@ -886,6 +912,12 @@ export function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
+/** A PowerShell single-quoted literal: a `'` doubles, nothing else is special. */
+export function powerShellSingleQuotedLiteral(value: string): string {
+  if (value.includes("\0")) throw new Error("PowerShell values cannot contain NUL bytes.");
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
 export function cmdQuote(value: string): string {
   let quoted = "\"";
   let backslashes = 0;
@@ -952,6 +984,63 @@ function streamToText(value: string | Buffer | null | undefined): string {
 
 export function serviceManagerResultText(result: ServiceManagerProcessResult): string {
   return streamToText(result.stderr) || streamToText(result.stdout);
+}
+
+/** Whether launchd has the job registered in the gui or user domain. */
+export function isLaunchAgentRegistered(label: string, run: ServiceManagerSpawnSync = spawnSync): boolean {
+  const uid = currentUid();
+  return [`gui/${uid}`, `user/${uid}`].some(
+    (domain) => run("launchctl", ["print", `${domain}/${label}`], { stdio: "ignore" }).status === 0,
+  );
+}
+
+/** Whether the job is on launchd's disabled list for the gui domain. */
+export function isLaunchAgentDisabled(label: string, run: ServiceManagerSpawnSync = spawnSync): boolean {
+  const answer = run("launchctl", ["print-disabled", `gui/${currentUid()}`], { encoding: "utf8" });
+  if (answer.status !== 0) return false;
+  const line = (typeof answer.stdout === "string" ? answer.stdout : answer.stdout?.toString("utf8") ?? "")
+    .split("\n")
+    .find((entry) => entry.includes(`"${label}"`));
+  // Older macOS prints `=> true` for a disabled job; newer prints `=> disabled`.
+  return line != null && /=>\s*(disabled|true)\b/.test(line);
+}
+
+export type LaunchAgentLoadResult = { ok: true } | { ok: false; detail: string };
+
+/**
+ * Registers a LaunchAgent with launchd and confirms that it is registered.
+ *
+ * Never trust `launchctl load`'s exit code. For a job on launchd's disabled
+ * list (the "Allow in the Background" switch turned off once, or an old
+ * `unload -w`), `load` prints `Load failed: 5: Input/output error`, exits 0
+ * and registers nothing. The kickstart that follows then fails with "Could not
+ * find service". Two real Macs ended up there after an update, and Repair and
+ * Reset both reinstalled through this same load, so neither could fix it.
+ *
+ * So: clear the disabled override, `bootstrap` into the gui domain (which
+ * reports its errors), fall back to `load -w` where there is no gui domain
+ * (an ssh session), and then ask launchd whether the job exists.
+ */
+export function loadLaunchAgent(
+  servicePath: string,
+  label: string,
+  run: ServiceManagerSpawnSync = spawnSync,
+): LaunchAgentLoadResult {
+  const uid = currentUid();
+  for (const domain of [`gui/${uid}`, `user/${uid}`]) {
+    run("launchctl", ["enable", `${domain}/${label}`], { stdio: "ignore" });
+  }
+  const bootstrap = run("launchctl", ["bootstrap", `gui/${uid}`, servicePath], { encoding: "utf8" });
+  if (isLaunchAgentRegistered(label, run)) return { ok: true };
+  const bootstrapText = serviceManagerResultText(bootstrap)
+    || `launchctl bootstrap exited with status ${bootstrap.status ?? "unknown"}.`;
+  const load = run("launchctl", ["load", "-w", servicePath], { encoding: "utf8" });
+  if (isLaunchAgentRegistered(label, run)) return { ok: true };
+  const loadText = serviceManagerResultText(load);
+  return {
+    ok: false,
+    detail: loadText ? `${bootstrapText} launchctl load: ${loadText}` : bootstrapText,
+  };
 }
 
 /**

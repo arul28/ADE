@@ -455,6 +455,64 @@ describe("sessionService resume metadata", () => {
     activeDisposers.push(async () => db.close());
   });
 
+  it("drops the PR links that pointed at a deleted session", async () => {
+    const projectRoot = makeProjectRoot("ade-session-service-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    insertProjectGraph(db);
+    const service = createSessionService({ db });
+    const now = "2026-03-17T00:10:00.000Z";
+
+    for (const sessionId of ["session-with-links", "session-survivor"]) {
+      service.create({
+        sessionId,
+        laneId: "lane-1",
+        ptyId: null,
+        tracked: true,
+        title: "Chat",
+        startedAt: now,
+        transcriptPath: `/tmp/${sessionId}.log`,
+        toolType: "claude-chat",
+      });
+    }
+    db.run(
+      `insert into pull_requests(
+         id, project_id, lane_id, repo_owner, repo_name, github_pr_number, github_url,
+         state, base_branch, head_branch, created_at, updated_at
+       ) values ('pr-linked', 'project-1', 'lane-1', 'arul28', 'ADE', 1501,
+                 'https://github.com/arul28/ADE/pull/1501', 'merged', 'main', 'fix/update-recovery', ?, ?)`,
+      [now, now],
+    );
+    for (const sessionId of ["session-with-links", "session-survivor"]) {
+      db.run(
+        `insert into pull_request_chat_sessions(id, project_id, pr_id, lane_id, session_id, created_at, updated_at)
+         values (?, 'project-1', 'pr-linked', 'lane-1', ?, ?, ?)`,
+        [`edge-${sessionId}`, sessionId, now, now],
+      );
+    }
+    db.run(
+      `insert into pull_request_chat_session_dismissals(id, project_id, pr_id, session_id, created_at, updated_at)
+       values ('dismissal-1', 'project-1', 'pr-linked', 'session-with-links', ?, ?)`,
+      [now, now],
+    );
+
+    expect(service.deleteSession("session-with-links")).toBe(true);
+
+    // The dead session's edge and tombstone go; the surviving chat keeps its
+    // claim on the PR, and the PR row itself is history that must survive.
+    expect(
+      db.all<{ session_id: string }>(
+        "select session_id from pull_request_chat_sessions where pr_id = 'pr-linked'",
+      ).map((row) => row.session_id),
+    ).toEqual(["session-survivor"]);
+    expect(
+      db.all("select id from pull_request_chat_session_dismissals where session_id = 'session-with-links'"),
+    ).toEqual([]);
+    expect(db.get<{ id: string }>("select id from pull_requests where id = 'pr-linked'")?.id).toBe("pr-linked");
+
+    activeDisposers.push(async () => db.close());
+  });
+
   it("reattaches an existing tracked session to a new PTY without changing its identity", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
@@ -1590,6 +1648,107 @@ describe("sessionService resume metadata", () => {
     }));
   });
 
+  it("reports a settled chat one time, and not a shell, a subagent that follows its parent, or a second settle", async () => {
+    const projectRoot = makeProjectRoot("ade-session-service-chat-settled-");
+    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
+    activeDisposers.push(async () => db.close());
+    insertProjectGraph(db);
+    const reported: Array<{ sessionId: string; laneId: string; provider: string | null }> = [];
+    const service = createSessionService({
+      db,
+      listSubagentLinks: async (parentIds) =>
+        parentIds.includes("chat") ? [{ sessionId: "subagent", parentSessionId: "chat" }] : [],
+      onChatSettled: (chat) => {
+        reported.push(chat);
+        // A listener that fails must not undo or fail the settle.
+        throw new Error("listener failed");
+      },
+    });
+    const toolTypes = { chat: "claude-chat", subagent: "claude-chat", "cursor-chat": "cursor", shell: "shell", "shell-turned-legacy": "shell" } as const;
+    for (const [sessionId, toolType] of Object.entries(toolTypes)) {
+      service.create({
+        sessionId,
+        laneId: "lane-1",
+        ptyId: null,
+        tracked: true,
+        title: sessionId,
+        startedAt: "2026-03-17T00:10:00.000Z",
+        transcriptPath: `/tmp/${sessionId}.log`,
+        toolType,
+      });
+    }
+
+    // An old chat row: tool type "other", provider named only by its resume command.
+    db.run(
+      "update terminal_sessions set tool_type = 'other', resume_command = 'chat:claude:legacy-1' where id = 'shell-turned-legacy'",
+    );
+    expect(await service.settleSessions(["chat", "cursor-chat", "shell"])).toEqual(["chat", "cursor-chat", "shell", "subagent"]);
+    expect(reported).toEqual([
+      { sessionId: "chat", laneId: "lane-1", provider: "claude" },
+      { sessionId: "cursor-chat", laneId: "lane-1", provider: "cursor" },
+    ]);
+    expect(await service.settleSessions(["shell-turned-legacy"])).toEqual(["shell-turned-legacy"]);
+    expect(reported.at(-1)).toEqual({ sessionId: "shell-turned-legacy", laneId: "lane-1", provider: "claude" });
+
+    // Already settled: nothing new landed, so nothing is reported again.
+    expect(await service.settleSessions(["chat"])).toEqual([]);
+    expect(reported).toHaveLength(3);
+  });
+
+  it("settles a parent's subagents with it, reaches them through an already-settled parent, and brings them back on unsettle", async () => {
+    const projectRoot = makeProjectRoot("ade-session-service-subagent-cascade-");
+    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
+    activeDisposers.push(async () => db.close());
+    insertProjectGraph(db);
+    // The lineage the chat service reports: parent → its subagents.
+    const children = new Map<string, string[]>([["parent", ["sub-a", "sub-early"]]]);
+    const service = createSessionService({
+      db,
+      listSubagentLinks: async (parentIds) => parentIds.flatMap((parentSessionId) =>
+        (children.get(parentSessionId) ?? []).map((sessionId) => ({ sessionId, parentSessionId }))),
+    });
+    for (const sessionId of ["parent", "sub-a", "sub-early", "sub-late", "unrelated"]) {
+      service.create({
+        sessionId,
+        laneId: "lane-1",
+        ptyId: null,
+        tracked: true,
+        title: sessionId,
+        startedAt: "2026-03-17T00:10:00.000Z",
+        transcriptPath: `/tmp/${sessionId}.log`,
+        toolType: "shell",
+      });
+    }
+    // The user filed this subagent away on its own, before its parent.
+    await service.settleSession("sub-early", { settledAt: "2026-03-17T00:30:00.000Z" });
+
+    expect(await service.settleSessions(["parent"])).toEqual(["parent", "sub-a"]);
+    expect(service.get("sub-a")?.settledAt).not.toBeNull();
+    expect(service.get("sub-early")?.settledAt).toBe("2026-03-17T00:30:00.000Z");
+    expect(service.get("unrelated")?.settledAt).toBeNull();
+
+    // A subagent that appears (or refused) after the parent settled is reached
+    // when the parent is settled again, without re-reporting the parent.
+    children.set("parent", ["sub-a", "sub-early", "sub-late"]);
+    expect(await service.settleSessions(["parent"])).toEqual(["sub-late"]);
+    expect(service.get("sub-late")?.settledAt).not.toBeNull();
+
+    // Unsettling the parent brings back what was settled with it or later; the
+    // one settled on its own before the parent stays filed.
+    const subagentsBack = new Promise<void>((resolve) => {
+      const stop = service.onChanged(() => {
+        if (service.get("sub-a")?.settledAt == null && service.get("sub-late")?.settledAt == null) {
+          stop();
+          resolve();
+        }
+      });
+    });
+    expect(service.unsettleSession("parent")).toBe(true);
+    await subagentsBack;
+    expect(service.get("parent")?.settledAt).toBeNull();
+    expect(service.get("sub-early")?.settledAt).toBe("2026-03-17T00:30:00.000Z");
+  });
+
   it("normalizes status and attention text and clears turn-start markers separately from agent activity", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-markers-");
     const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
@@ -1812,6 +1971,56 @@ describe("sessionService resume metadata", () => {
     service.markLastTurnFailed("session-output", "2026-03-17T03:05:00.000Z");
     expect(service.get("session-output")?.settledAt).toBeNull();
     expect(service.get("session-output")?.lastTurnFailedAt).toBe("2026-03-17T03:05:00.000Z");
+  });
+});
+
+describe("sessionService attention ownership", () => {
+  it("clears inferred attention only when its source and timestamp predate turn start", async () => {
+    const projectRoot = makeProjectRoot("ade-session-attention-owner-");
+    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
+    activeDisposers.push(async () => db.close());
+    insertProjectGraph(db);
+    const service = createSessionService({ db });
+    service.create({
+      sessionId: "session-attention-owner",
+      laneId: "lane-1",
+      ptyId: null,
+      tracked: true,
+      title: "Chat",
+      startedAt: "2026-03-17T00:10:00.000Z",
+      transcriptPath: "/tmp/session-attention-owner.log",
+      toolType: "claude-chat",
+    });
+    const sessionId = "session-attention-owner";
+    const startedAt = "2026-10-14T12:00:00.000Z";
+
+    db.run(
+      "update terminal_sessions set attention_requested_at = ?, attention_source = ? where id = ?",
+      ["2026-10-14T11:59:00.000Z", "agent_explicit", sessionId],
+    );
+    service.clearAttentionRequest(sessionId, "turn_end_question", startedAt);
+    expect(service.get(sessionId)?.attentionSource).toBe("agent_explicit");
+
+    db.run(
+      "update terminal_sessions set attention_requested_at = ?, attention_source = ? where id = ?",
+      ["2026-10-14T11:59:00.000Z", "provider_structured", sessionId],
+    );
+    service.clearAttentionRequest(sessionId, "turn_end_question", startedAt);
+    expect(service.get(sessionId)?.attentionSource).toBe("provider_structured");
+
+    db.run(
+      "update terminal_sessions set attention_requested_at = ?, attention_source = ? where id = ?",
+      ["2026-10-14T12:01:00.000Z", "turn_end_question", sessionId],
+    );
+    service.clearAttentionRequest(sessionId, "turn_end_question", startedAt);
+    expect(service.get(sessionId)?.attentionRequestedAt).toBe("2026-10-14T12:01:00.000Z");
+
+    db.run(
+      "update terminal_sessions set attention_requested_at = ?, attention_source = ? where id = ?",
+      ["2026-10-14T11:59:00.000Z", "turn_end_question", sessionId],
+    );
+    service.clearAttentionRequest(sessionId, "turn_end_question", startedAt);
+    expect(service.get(sessionId)?.attentionRequestedAt).toBeNull();
   });
 });
 
@@ -2249,5 +2458,45 @@ describe("sessionService settle override", () => {
     // Fully settled with no pin is still a no-op, so the return value keeps
     // meaning "rows this call actually changed".
     expect(await service.settleSessions(["session-override"])).toEqual([]);
+  });
+});
+
+
+describe("sessionService attached shell archiving", () => {
+  it("archives exactly the live shells a chat owns, and never a chat-kind row", async () => {
+    const projectRoot = makeProjectRoot("ade-attached-shells-");
+    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as never);
+    try {
+      insertProjectGraph(db);
+      const now = "2026-03-17T00:00:00.000Z";
+      const insert = (id: string, toolType: string, chatSessionId: string | null, archivedAt: string | null) => {
+        db.run(
+          `insert into terminal_sessions(
+             id, lane_id, title, started_at, transcript_path, status, tool_type, chat_session_id, archived_at
+           ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [id, "lane-1", id, now, `/tmp/${id}.log`, "completed", toolType, chatSessionId, archivedAt],
+        );
+      };
+      insert("chat-1", "codex-chat", null, null);
+      insert("shell-live", "shell", "chat-1", null);
+      insert("shell-archived", "shell", "chat-1", now);
+      // A tracked CLI child attached to its parent: chat-kind tool type, so the
+      // shell rule must leave it alone.
+      insert("cli-child", "codex-chat", "chat-1", null);
+      insert("other-chat-shell", "shell", "chat-2", null);
+
+      const service = createSessionService({ db });
+      expect(service.listAttachedShellIds("chat-1")).toEqual(["shell-live"]);
+      expect(service.archiveAttachedShellsForChat("chat-1")).toEqual(["shell-live"]);
+      const archived = (id: string) =>
+        db.get<{ archivedAt: string | null }>("select archived_at as archivedAt from terminal_sessions where id = ?", [id])?.archivedAt ?? null;
+      expect(archived("shell-live")).not.toBeNull();
+      expect(archived("cli-child")).toBeNull();
+      expect(archived("other-chat-shell")).toBeNull();
+      // Idempotent: a second pass has nothing left to archive.
+      expect(service.archiveAttachedShellsForChat("chat-1")).toEqual([]);
+    } finally {
+      await db.close();
+    }
   });
 });

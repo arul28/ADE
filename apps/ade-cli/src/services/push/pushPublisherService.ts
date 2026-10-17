@@ -14,7 +14,6 @@ import {
   type AttentionSnapshot,
   type AttentionTombstone,
 } from "../../../../desktop/src/shared/types/attention";
-import type { SyncRosterChatStatus } from "../../../../desktop/src/shared/types/sync";
 import type { PtyExitEvent, TerminalSessionStatus } from "../../../../desktop/src/shared/types/sessions";
 import { canonicalSessionState } from "../../../../desktop/src/shared/sessionCanonicalState";
 import type { PrNotificationKind } from "../../../../desktop/src/shared/types/prs";
@@ -27,11 +26,12 @@ import type {
 } from "../../../../desktop/src/shared/types/push";
 import type { PushRegistrationStore } from "./pushRegistrationStore";
 import type {
+  AccountNotificationResult,
   ActivityPublishResult,
   PushRelayAlertItem,
   PushRelayClient,
-  PushRelayLiveActivityItem,
 } from "./pushRelayClient";
+import { stampCustomNotificationLinkOwner } from "../../../../desktop/src/shared/customNotificationLink";
 import { PushRelayMachineRevokedError, PushRelayRequestError } from "./pushRelayClient";
 import {
   activityPublishFingerprint,
@@ -56,6 +56,7 @@ import type {
   AgentRunState,
   PrLiveActivityState,
   PushPrNotification,
+  RosterPhaseAnchor,
 } from "./attentionItemBuilder";
 import { deriveProjectId } from "../projects/projectRegistry";
 
@@ -68,26 +69,16 @@ import { deriveProjectId } from "../projects/projectRegistry";
  */
 export type { PushPrNotification } from "./attentionItemBuilder";
 
-export const AGENT_RUNS_ACTIVITY_ID = "agent-runs";
-export const AGENT_RUNS_ATTRIBUTES_TYPE = "ADEAgentRunsAttributes";
-export const AGENT_RUNS_DEDUPE_KEY = "la:agent-runs";
 /**
  * Machine-level push identity/registration file. Also the key of the shared
  * publisher singleton — bootstrap (create) and the daemon shutdown path (peek)
- * must resolve the identical path or the shutdown Live-Activity end silently
- * misses the instance.
+ * must resolve the identical path or shutdown silently misses the instance.
  */
 export function resolvePushRelayStateFile(secretsDir: string): string {
   return path.join(secretsDir, "push-relay.json");
 }
 /** UNNotificationCategory id iOS binds Approve/Deny actions to. */
 export const APPROVAL_NOTIFICATION_CATEGORY = "ADE_APPROVAL";
-const SHUTDOWN_PUBLISH_TIMEOUT_MS = 2_500;
-const AGENT_RUNS_MAX = 3;
-const PR_LIVE_ACTIVITY_MAX = 2;
-const DETAIL_MAX_CHARS = 160;
-/** Fixed lock-screen copy for failed runs — never leak error text to the widget. */
-const FAILED_DETAIL = "Run failed";
 
 /**
  * Does a tracked CLI exit code describe a user-chosen stop rather than a
@@ -213,6 +204,11 @@ type PendingAlert = {
   itemId?: string | null;
   /** UNNotificationCategory identifier binding actionable buttons on iOS. */
   category?: string | null;
+  /**
+   * No account Activity item carries this alert (it changes no run state), so
+   * it is delivered even when the same flush published Activity.
+   */
+  standalone?: boolean;
 };
 
 type PushAgentChatService = {
@@ -364,79 +360,6 @@ export function shouldDeliverAlertForPrefs(
   return true;
 }
 
-export function shouldDeliverLiveActivityForPrefs(prefs: PushNotificationPrefs): boolean {
-  return prefs.liveActivitiesEnabled !== false;
-}
-
-function capDetail(detail: string | null | undefined): string | null {
-  if (!detail) return null;
-  const trimmed = detail.trim();
-  if (!trimmed) return null;
-  return trimmed.length > DETAIL_MAX_CHARS ? trimmed.slice(0, DETAIL_MAX_CHARS) : trimmed;
-}
-
-/**
- * Build the aggregate `ADEAgentRunsAttributes` contentState. Runs are capped at
- * 3, most-recently-active first; `detail` is capped and redacted to "Run failed"
- * for failed runs so no error text reaches the lock screen.
- */
-export function buildAgentRunsContentState(
-  runs: AgentRunState[],
-  nowMs: number,
-  prs: PrLiveActivityState[] = [],
-): {
-  updatedAt: number;
-  activeCount: number;
-  runs: Array<{
-    id: string;
-    title: string;
-    phase: AgentRunPhase;
-    model: string | null;
-    lane: string | null;
-    detail: string | null;
-    itemId?: string;
-  }>;
-  prs: Array<{
-    id: string;
-    prNumber: number;
-    title: string;
-    phase: PrNotificationKind;
-    lane: string | null;
-    repoOwner: string | null;
-    repoName: string | null;
-    updatedAt: number;
-  }>;
-} {
-  const activeCount = runs.filter((run) => isActivePhase(run.phase)).length;
-  const ordered = [...runs].sort((left, right) => right.lastActiveAt - left.lastActiveAt).slice(0, AGENT_RUNS_MAX);
-  const orderedPrs = [...prs].sort((left, right) => right.updatedAt - left.updatedAt).slice(0, PR_LIVE_ACTIVITY_MAX);
-  return {
-    updatedAt: Math.floor(nowMs / 1000),
-    activeCount,
-    runs: ordered.map((run) => ({
-      id: run.sessionId,
-      title: run.title?.trim() || "Agent run",
-      phase: run.phase,
-      model: run.model ?? null,
-      lane: run.lane ?? null,
-      detail: run.phase === "failed" ? FAILED_DETAIL : capDetail(run.detail),
-      // Additive optional field (older widgets ignore it): lets the lock
-      // screen render Approve/Deny intents against the pending item.
-      ...(run.phase === "waiting_for_approval" && run.itemId ? { itemId: run.itemId } : {}),
-    })),
-    prs: orderedPrs.map((pr) => ({
-      id: pr.id,
-      prNumber: pr.prNumber,
-      title: pr.title,
-      phase: pr.phase,
-      lane: pr.lane,
-      repoOwner: pr.repoOwner,
-      repoName: pr.repoName,
-      updatedAt: Math.floor(pr.updatedAt / 1000),
-    })),
-  };
-}
-
 /**
  * Waiting runs are what the app icon badge counts — agents blocked on the
  * user. CLI runs are excluded: a CLI at its prompt reports waiting_for_input
@@ -455,13 +378,6 @@ function readOutcomeCount(result: Record<string, unknown> | null | undefined, ke
   const value = Number(result?.[key]);
   return Number.isFinite(value) ? value : 0;
 }
-
-type RelayLiveActivityOutcome = {
-  deviceId: string;
-  delivered: boolean;
-  suppressed: boolean;
-  skipped: boolean;
-};
 
 type RelayAlertOutcome = { deviceId: string; delivered: boolean; suppressed: boolean };
 
@@ -489,23 +405,6 @@ function readAlertOutcomes(result: Record<string, unknown> | null | undefined): 
     }));
 }
 
-/** The relay's per-target `outcomes[]` entries filtered to the Live Activity item. */
-function readLiveActivityOutcomes(result: Record<string, unknown> | null | undefined): RelayLiveActivityOutcome[] | null {
-  const raw = result?.outcomes;
-  // No outcomes array at all = legacy/mock relay response shape; callers treat
-  // that as "no per-item verdicts available" rather than "nothing landed".
-  if (!Array.isArray(raw)) return null;
-  return raw
-    .filter((entry): entry is Record<string, unknown> => Boolean(entry && typeof entry === "object"))
-    .filter((entry) => entry.kind === "liveactivity" && typeof entry.deviceId === "string")
-    .map((entry) => ({
-      deviceId: entry.deviceId as string,
-      delivered: entry.delivered === true,
-      suppressed: entry.suppressed === true,
-      skipped: typeof entry.skipped === "string" && entry.skipped.length > 0,
-    }));
-}
-
 function deviceScopedAlertDedupeKey(dedupeKey: string, deviceId: string): string {
   return `alert-device:${deviceId.length}:${deviceId}:${dedupeKey}`;
 }
@@ -526,10 +425,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
   const runs = new Map<string, AgentRunState>();
   const recentRuns = new Map<string, AgentRunState>();
   const prActivities = new Map<string, PrLiveActivityState>();
-  const rosterPhaseAnchors = new Map<string, {
-    status: SyncRosterChatStatus;
-    statusSinceAt: number;
-  }>();
+  const rosterPhaseAnchors = new Map<string, RosterPhaseAnchor>();
   const lastMachineSnapshotItems = new Map<string, AttentionItem>();
   let lastMachineSnapshotAccountOwnerId: string | null | undefined;
   let pendingAlerts: PendingAlert[] = [];
@@ -574,14 +470,6 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
   let activityRosterCap = ACTIVITY_ROSTER_MAX_ITEMS_PER_MACHINE;
   let lastLegacyAttentionFingerprint: string | null = null;
   let lastAttentionPublishedAt = 0;
-  /** Last Live Activity content confirmed per phone. Absence means start. */
-  const liveActivityFingerprintByDevice = new Map<string, string>();
-  /**
-   * Invalidates in-flight commits after an explicit token clear/unregister.
-   * Keep the epoch even after deleting state so a stale publish cannot
-   * resurrect the cleared phone when its relay response arrives.
-   */
-  const liveActivityEpochByDevice = new Map<string, number>();
   /**
    * Last app-icon badge count delivered per device (absent = never sent).
    * Per-device because a flush can legitimately exclude some devices (quiet
@@ -1046,14 +934,6 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     }
   };
 
-  const dropTerminalRuns = (): void => {
-    for (const [sessionId, run] of runs) {
-      if (!isTerminalPhase(run.phase)) continue;
-      recentRuns.set(sessionId, snapshotRun(run));
-      runs.delete(sessionId);
-    }
-  };
-
   const schedulePrActivityExpiry = (nowMs: number): void => {
     if (prExpiryTimer) {
       clearTimeout(prExpiryTimer);
@@ -1183,133 +1063,6 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         // or flip the glyph.
       }
     }
-  };
-
-  const planLiveActivity = (
-    deviceIds: string[],
-    nowMs: number,
-  ): {
-    items: PushRelayLiveActivityItem[];
-    commit: (landedDeviceIds?: ReadonlySet<string>) => void;
-  } | null => {
-    if (deviceIds.length === 0) return null;
-    prunePrActivities(nowMs);
-    schedulePrActivityExpiry(nowMs);
-    const recentPrActivities = [...prActivities.values()]
-      .filter((pr) => nowMs - pr.updatedAt <= PR_LIVE_ACTIVITY_TTL_MS);
-    if (recentPrActivities.length > 0) dropTerminalRuns();
-    const allRuns = [...runs.values()];
-    const allPrActivities = recentPrActivities;
-    const contentState = buildAgentRunsContentState(allRuns, nowMs, allPrActivities);
-    const activeCount = contentState.activeCount;
-    const prActivityCount = allPrActivities.length;
-    // Stale rows (quiet CLIs) don't count as active but must not END the
-    // activity either — a 12s-quiet CLI that resumes output would otherwise
-    // churn end→push-to-start cycles. Only an all-completed/failed (or empty)
-    // roster ends the aggregate.
-    const dormantCount = allRuns.filter((run) => run.phase === "stale").length;
-
-    const fingerprint = JSON.stringify({ ...contentState, updatedAt: 0 });
-    const hasLiveContent = activeCount > 0 || prActivityCount > 0;
-    const shouldEnd = !hasLiveContent && dormantCount === 0;
-    const deviceIdsByEvent: Record<"start" | "update" | "end", string[]> = {
-      start: [],
-      update: [],
-      end: [],
-    };
-    for (const deviceId of deviceIds) {
-      const deliveredFingerprint = liveActivityFingerprintByDevice.get(deviceId);
-      if (hasLiveContent) {
-        if (deliveredFingerprint == null) deviceIdsByEvent.start.push(deviceId);
-        else if (deliveredFingerprint !== fingerprint) deviceIdsByEvent.update.push(deviceId);
-      } else if (shouldEnd) {
-        if (deliveredFingerprint != null) deviceIdsByEvent.end.push(deviceId);
-      } else if (deliveredFingerprint != null && deliveredFingerprint !== fingerprint) {
-        // A quiet CLI is stale, not terminal. Existing activities receive the
-        // stale row, but a newly registered phone must not start stale-only UI.
-        deviceIdsByEvent.update.push(deviceId);
-      }
-    }
-    if (
-      deviceIdsByEvent.start.length === 0
-      && deviceIdsByEvent.update.length === 0
-      && deviceIdsByEvent.end.length === 0
-    ) return null;
-
-    const anyWaiting = allRuns.some(
-      (run) => run.phase === "waiting_for_approval" || run.phase === "waiting_for_input",
-    ) || allPrActivities.some((pr) =>
-      pr.phase === "checks_failing"
-      || pr.phase === "changes_requested"
-      || pr.phase === "review_requested"
-      || pr.phase === "merge_ready");
-    const phase: "running" | "waiting" | "terminal" = anyWaiting
-      ? "waiting"
-      : (activeCount > 0 || prActivityCount > 0)
-        ? "running"
-        : "terminal";
-
-    const mostRecent = allRuns.sort((left, right) => right.lastActiveAt - left.lastActiveAt)[0];
-    const mostRecentPr = allPrActivities.sort((left, right) => right.updatedAt - left.updatedAt)[0];
-    const startAlert = {
-      title: activeCount > 0
-        // "is working" matches the attention-item title built above and the
-        // shared `running` label in sessionStatusPresentation.ts.
-        ? (activeCount === 1 && mostRecent ? `${runSubject(mostRecent)} is working` : `${activeCount} agent runs active`)
-        : (prActivityCount === 1 && mostRecentPr ? `PR #${mostRecentPr.prNumber} updated` : `${prActivityCount} pull requests updated`),
-      body: activeCount > 0 ? (mostRecent ? laneTitleLine(mostRecent) : null) : mostRecentPr?.title ?? null,
-    };
-    const items = (["start", "update", "end"] as const)
-      .filter((event) => deviceIdsByEvent[event].length > 0)
-      .map((event): PushRelayLiveActivityItem => ({
-        deviceIds: deviceIdsByEvent[event],
-        event,
-        activityId: AGENT_RUNS_ACTIVITY_ID,
-        contentState,
-        dedupeKey: AGENT_RUNS_DEDUPE_KEY,
-        phase,
-        ...(event === "start"
-          ? {
-            attributesType: AGENT_RUNS_ATTRIBUTES_TYPE,
-            attributes: { machineName: machineName() },
-            alert: startAlert,
-          }
-          : {}),
-        ...(event === "end"
-          ? { dismissalDate: Math.floor(nowMs / 1000) + 300 }
-          : {}),
-      }));
-    const plannedEpochByDevice = new Map(
-      deviceIds.map((deviceId) => [
-        deviceId,
-        liveActivityEpochByDevice.get(deviceId) ?? 0,
-      ]),
-    );
-    const commit = (landedDeviceIds?: ReadonlySet<string>): void => {
-      const landed = landedDeviceIds ?? new Set(
-        items.flatMap((item) => item.deviceIds ?? []),
-      );
-      for (const item of items) {
-        for (const deviceId of item.deviceIds ?? []) {
-          if (
-            !landed.has(deviceId)
-            || (liveActivityEpochByDevice.get(deviceId) ?? 0) !== plannedEpochByDevice.get(deviceId)
-          ) {
-            continue;
-          }
-          if (item.event === "end") {
-            liveActivityFingerprintByDevice.delete(deviceId);
-          } else {
-            liveActivityFingerprintByDevice.set(deviceId, fingerprint);
-          }
-        }
-      }
-      if (shouldEnd && liveActivityFingerprintByDevice.size === 0) {
-        dropTerminalRuns();
-      }
-    };
-
-    return { items, commit };
   };
 
   type ActivityPublishResponse = {
@@ -1738,7 +1491,6 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     await refreshChatRunMeta(nowMs);
     const attentionPublishResult = await publishActivity(nowMs, presenceOnly);
     const accountAttentionPublished = attentionPublishResult === "published";
-    const accountAttentionAvailable = attentionPublishResult !== "unavailable";
     if (isGated()) {
       pendingAlerts = [];
       return;
@@ -1752,7 +1504,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
 
     const alertItems: PushRelayAlertItem[] = [];
     const alertAttempts: AlertDeliveryAttempt[] = [];
-    for (const alert of accountAttentionPublished ? [] : consumedAlerts) {
+    for (const alert of accountAttentionPublished ? consumedAlerts.filter((pending) => pending.standalone) : consumedAlerts) {
       const retryTargets = alert.targetDeviceIds ? new Set(alert.targetDeviceIds) : null;
       const eligibleDevices = devices.filter(
         (device) =>
@@ -1807,6 +1559,15 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     // suppression absorbs unchanged resends. Quiet hours block it too — the
     // setting promises "no pushes on a schedule", and a stale badge self-heals
     // on the next foreground (which clears it) or the first post-window flush.
+    // A failed publish requeues only what it carried. Alerts the account
+    // Activity already published, or that had no phone to reach, were not
+    // sent here; requeueing them would publish them again next flush.
+    const requeueAttemptedAlerts = (): void => {
+      const attemptedAlerts = new Set<PendingAlert>();
+      for (const attempt of alertAttempts) if (attempt.alert) attemptedAlerts.add(attempt.alert);
+      pendingAlerts = [...attemptedAlerts, ...pendingAlerts];
+    };
+
     const alertCoveredDeviceIds = new Set(alertItems.flatMap((item) => item.deviceIds ?? []));
     const badgeSyncDeviceIds = devices
       .filter((device) =>
@@ -1833,22 +1594,12 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       }
     }
 
-    const liveActivityDeviceIds = devices
-      .filter((device) => Boolean(device.pushToStartToken) && shouldDeliverLiveActivityForPrefs(device.prefs))
-      .map((device) => device.deviceId);
-    // Once account Attention has accepted this machine's snapshot, it owns the
-    // Live Activity even when this flush is unchanged or relay-suppressed.
-    // Queued alerts still fall back above unless the account publish actually
-    // emitted the changed snapshot.
-    const laPlan = accountAttentionAvailable
-      ? null
-      : planLiveActivity(liveActivityDeviceIds, nowMs);
+    // The Live Activity is account-wide and the relay owns it. This machine
+    // never starts one of its own: a second, per-machine activity is how a
+    // phone came to show two.
+    if (alertItems.length === 0) return;
 
-    if (alertItems.length === 0 && !laPlan) return;
-
-    const payload: { notifications?: PushRelayAlertItem[]; liveActivity?: PushRelayLiveActivityItem[] } = {};
-    if (alertItems.length > 0) payload.notifications = alertItems;
-    if (laPlan) payload.liveActivity = laPlan.items;
+    const payload: { notifications?: PushRelayAlertItem[] } = { notifications: alertItems };
 
     try {
       const result = await deps.relayClient.publish(payload);
@@ -1862,7 +1613,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       const failed = readOutcomeCount(result, "failed");
       const alertOutcomes = readAlertOutcomes(result);
       if (alertOutcomes == null && delivered === 0 && suppressed === 0 && failed > 0) {
-        pendingAlerts = [...consumedAlerts, ...pendingAlerts];
+        requeueAttemptedAlerts();
         deps.store.recordPublishResult({ at: new Date().toISOString(), error: `relay delivered 0 of ${failed} targets` });
         logWarn("push.publish_undelivered", new Error(`0 of ${failed} targets delivered`));
         scheduleRetry();
@@ -1927,52 +1678,9 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
           lastSentBadgeByDevice.set(attempt.deviceId, badgeCount);
         }
       }
-      let hardLiveActivityFailureCount = 0;
-      if (laPlan) {
-        // Commit each phone only if its own Live Activity target landed. A
-        // mixed publish can report delivered>0 from alerts or other phones;
-        // those successes must not advance a failed target's fingerprint.
-        const laOutcomes = readLiveActivityOutcomes(result);
-        // ZERO liveactivity outcomes in a real outcomes array means the relay
-        // had no APNs target (e.g. an update/end before the phone reported its
-        // per-activity token) — nothing landed, so committing would dedupe the
-        // new state and strand the Lock Screen on stale content. A missing
-        // outcomes array (legacy relay / tests) keeps the commit.
-        const landedDeviceIds = laOutcomes == null
-          ? null
-          : new Set(
-            laOutcomes
-              .filter((outcome) => outcome.delivered || outcome.suppressed)
-              .map((outcome) => outcome.deviceId),
-          );
-        const landed = landedDeviceIds == null || landedDeviceIds.size > 0;
-        hardLiveActivityFailureCount = laOutcomes?.filter(
-          (outcome) => !outcome.delivered && !outcome.suppressed && !outcome.skipped,
-        ).length ?? 0;
-        if (landed) {
-          laPlan.commit(landedDeviceIds ?? undefined);
-        }
-        if (hardLiveActivityFailureCount > 0) {
-          // Hard failure (not merely a missing push-to-start token) — retry the
-          // affected devices. Per-device fingerprints keep successful phones
-          // committed while failed start/update/end targets remain eligible.
-          // An all-skipped or target-less LA is left for the next event-driven
-          // flush (token arrival pokes one).
-          scheduleRetry();
-          logWarn(
-            "push.publish_undelivered",
-            new Error(
-              `${hardLiveActivityFailureCount} Live Activity target${hardLiveActivityFailureCount === 1 ? "" : "s"} failed`,
-            ),
-          );
-        }
-      }
       const failureMessages = [
         ...(failedAlertCount > 0
           ? [`relay failed ${failedAlertCount} alert target${failedAlertCount === 1 ? "" : "s"}`]
-          : []),
-        ...(hardLiveActivityFailureCount > 0
-          ? [`relay failed ${hardLiveActivityFailureCount} Live Activity target${hardLiveActivityFailureCount === 1 ? "" : "s"}`]
           : []),
       ];
       if (failureMessages.length === 0) {
@@ -1994,7 +1702,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       }
       // Re-queue the alerts we attempted so a transient relay failure retries;
       // the relay's dedupeKey suppression makes a resend idempotent.
-      pendingAlerts = [...consumedAlerts, ...pendingAlerts];
+      requeueAttemptedAlerts();
       deps.store.recordPublishResult({ at: new Date().toISOString(), error: error instanceof Error ? error.message : String(error) });
       logWarn("push.publish_failed", error);
       scheduleRetry();
@@ -2069,7 +1777,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       case "approval_request": {
         // An approval and a question both arrive on this event, and only the
         // request kind tells them apart. Without it every AskUserQuestion was
-        // published as `waiting_for_approval`, so the notch and the phone
+        // published as `waiting_for_approval`, so the desktop and the phone
         // offered Approve/Deny for something that wants prose — and the answer
         // branch in the item builder was dead code.
         //
@@ -2689,6 +2397,32 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       scheduleFlush(true);
     },
 
+    /**
+     * A one-off alert about a chat that is not "needs you": a move to another
+     * machine landed or failed while the person wasn't watching. Plain
+     * title/body/deep link through the same alert queue; no run state changes.
+     */
+    handleSessionNotice(notice: {
+      sessionId: string;
+      dedupeKey: string;
+      title: string;
+      body: string | null;
+      deepLink?: string | null;
+    }): void {
+      if (disposed || !notice.sessionId) return;
+      enqueueAlert({
+        sessionId: notice.sessionId,
+        dedupeKey: `alert:${notice.sessionId}:${notice.dedupeKey}`,
+        render: () => ({ title: notice.title, body: notice.body }),
+        deepLink: notice.deepLink ?? `ade://session/${notice.sessionId}`,
+        threadId: notice.sessionId,
+        phase: "terminal",
+        interruptionLevel: "active",
+        standalone: true,
+      });
+      scheduleFlush(true, false);
+    },
+
     handleSessionAttentionResolved(scopeKey: string | null, sessionId: string): void {
       if (disposed || !sessionId) return;
       const run = runs.get(sessionId);
@@ -2735,13 +2469,6 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       await latchRevocation(() => deps.relayClient.claim());
       await latchRevocation(() => deps.relayClient.registerDevice(registration));
       deps.store.upsertDevice(registration);
-      if (registration.clearPushToStartToken) {
-        liveActivityEpochByDevice.set(
-          registration.deviceId,
-          (liveActivityEpochByDevice.get(registration.deviceId) ?? 0) + 1,
-        );
-        liveActivityFingerprintByDevice.delete(registration.deviceId);
-      }
       deps.store.recordRelayContact(new Date().toISOString());
       // A freshly registered device should pick up any live run immediately.
       this.poke();
@@ -2768,11 +2495,6 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         logWarn("push.unregister_failed", error);
       }
       deps.store.removeDevice(deviceId);
-      liveActivityEpochByDevice.set(
-        deviceId,
-        (liveActivityEpochByDevice.get(deviceId) ?? 0) + 1,
-      );
-      liveActivityFingerprintByDevice.delete(deviceId);
       lastSentBadgeByDevice.delete(deviceId);
     },
 
@@ -2940,6 +2662,30 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       await deps.relayClient.reportAttentionPresence?.(presence);
     },
 
+    /**
+     * A push the caller wrote (`ade notify`, an agent, an automation step),
+     * sent as this machine so a phone that muted this machine stays quiet.
+     */
+    async sendCustomNotification(notification: {
+      title: string;
+      body?: string | null;
+      deepLink?: string | null;
+      /** The canonical project a chat or PR link belongs to. */
+      projectId?: string | null;
+    }): Promise<AccountNotificationResult> {
+      const { projectId, ...rest } = notification;
+      return await deps.relayClient.sendAccountNotification({
+        ...rest,
+        deepLink: rest.deepLink
+          ? stampCustomNotificationLinkOwner(rest.deepLink, {
+            accountMachineKey: deps.getAccountMachineIdentity?.()?.machineKey,
+            projectId,
+          })
+          : null,
+        machineKey: deps.store.getOrCreateIdentity().machineKey,
+      });
+    },
+
     async getAttentionPreferences(accountOwnerId: string): Promise<AttentionPreferences> {
       return await deps.relayClient.getAttentionPreferences?.(accountOwnerId)
         ?? DEFAULT_ATTENTION_PREFERENCES;
@@ -2967,60 +2713,14 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     dispose,
 
     /**
-     * Daemon-exit path: best-effort `end` for the aggregate Live Activity so
-     * dead agents don't linger on the lock screen until the stale-date dim.
-     * Bounded by a short timeout — shutdown must never hang on the relay —
-     * and only sent when a start was actually committed. Ends with dispose().
+     * Daemon-exit path: stop scheduled flushes, then dispose. The account-wide
+     * Live Activity belongs to the relay, which ends it when no agent is
+     * active, so this machine has nothing to end.
      */
     async shutdown(): Promise<void> {
-      // Stop any scheduled flush first so a timer-driven publish can't race
-      // the shutdown `end`.
       if (flushTimer) clearTimeout(flushTimer);
       flushTimer = null;
       flushFireAt = 0;
-      if (!disposed && liveActivityFingerprintByDevice.size > 0 && !isGated()) {
-        try {
-          const nowMs = now();
-          const deviceIds = deps.store.listDevices()
-            .filter((device) =>
-              liveActivityFingerprintByDevice.has(device.deviceId)
-              && Boolean(device.pushToStartToken)
-              && shouldDeliverLiveActivityForPrefs(device.prefs))
-            .map((device) => device.deviceId);
-          if (deviceIds.length > 0) {
-            // Mark still-active runs stale — the machine is gone, not the agent done.
-            const finalRuns = [...runs.values()].map((run) =>
-              isActivePhase(run.phase) ? { ...run, phase: "stale" as const } : run,
-            );
-            const item: PushRelayLiveActivityItem = {
-              deviceIds,
-              event: "end",
-              activityId: AGENT_RUNS_ACTIVITY_ID,
-              contentState: buildAgentRunsContentState(finalRuns, nowMs),
-              dedupeKey: AGENT_RUNS_DEDUPE_KEY,
-              phase: "terminal",
-              dismissalDate: Math.floor(nowMs / 1000) + 60,
-            };
-            let timeout: NodeJS.Timeout | null = null;
-            // Keep a handle so a publish that loses the race can't surface as
-            // an unhandled rejection after shutdown returns.
-            const publishPromise = deps.relayClient.publish({ liveActivity: [item] });
-            publishPromise.catch(() => {});
-            try {
-              await Promise.race([
-                publishPromise,
-                new Promise<never>((_, reject) => {
-                  timeout = setTimeout(() => reject(new Error("shutdown publish timed out")), SHUTDOWN_PUBLISH_TIMEOUT_MS);
-                }),
-              ]);
-            } finally {
-              if (timeout) clearTimeout(timeout);
-            }
-          }
-        } catch (error) {
-          logWarn("push.shutdown_end_failed", error);
-        }
-      }
       dispose();
     },
 

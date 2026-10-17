@@ -4,8 +4,9 @@ import { Buffer } from "node:buffer";
 import { randomBytes } from "node:crypto";
 import { createRequire } from "node:module";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
-import { codedError } from "../../../shared/codedError";
+import { codedError, isCodedError } from "../../../shared/codedError";
 import type { Logger } from "../logging/logger";
+import { isSqliteBusyOrLockedError } from "./sqliteErrors";
 import { safeJsonParse } from "../shared/utils";
 import { isNoSpaceError, readVolumeSpace } from "../storage/volume";
 import { classifyStorageFault } from "../storage/storageErrnoClassifier";
@@ -257,14 +258,231 @@ function ensureParentDir(filePath: string) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
 }
 
+// SQLite's final close (including GC) can checkpoint a relocated WAL. Keep
+// such connections reachable until the original file returns or the process
+// exits, when the OS releases their handles without a SQLite checkpoint.
+const deferredDatabaseClosures = new Set<DatabaseSyncType>();
+const databasePathGuards = new WeakMap<DatabaseSyncType, () => void>();
+
+function reapRestoredDatabaseClosures(): void {
+  for (const db of deferredDatabaseClosures) {
+    try {
+      databasePathGuards.get(db)?.();
+    } catch {
+      continue;
+    }
+    closeDatabase(db);
+  }
+}
+
+// Guard the native boundary, including migrations, sync, maintenance and
+// direct prepared statements. Checking each operation avoids a polling
+// window in which SQLite could keep writing through a relocated handle.
+// Retaining the connection lets restoring the same file resume safely.
+function guardDatabasePath(db: DatabaseSyncType, dbPath: string): void {
+  const identity = fs.statSync(dbPath, { bigint: true });
+  const assertDatabasePath = () => {
+    let current: fs.BigIntStats;
+    try {
+      current = fs.statSync(dbPath, { bigint: true });
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException)?.code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
+      throw codedError(
+        "The project database is no longer available at its original location. Restore the project's .ade folder to resume; ADE has paused database operations to protect your data.",
+        "db_path_changed",
+      );
+    }
+    if (current.dev !== identity.dev || current.ino !== identity.ino) {
+      throw codedError(
+        "The project database was moved or replaced. Restore the original .ade folder to resume; ADE will not write to the moved database or use its replacement.",
+        "db_path_changed",
+      );
+    }
+  };
+  databasePathGuards.set(db, assertDatabasePath);
+  const prepare = db.prepare.bind(db);
+  const exec = db.exec.bind(db);
+  db.prepare = (...args) => {
+    assertDatabasePath();
+    return prepare(...args);
+  };
+  db.exec = (...args) => {
+    assertDatabasePath();
+    return exec(...args);
+  };
+}
+
+/** The write-lock wait a connection keeps for the rest of its life. */
+const DEFAULT_BUSY_TIMEOUT_MS = 5000;
+
+/**
+ * The journal-mode conversion's wait, per attempt, and the wall-clock budget it
+ * may spread those attempts over.
+ *
+ * `PRAGMA journal_mode = WAL` is the ONE statement in the open path that needs
+ * an EXCLUSIVE lock; an ordinary write only needs the write lock. A sibling ADE
+ * process holding the same project database — the brain and the desktop main
+ * process both open `<project>/.ade/ade.db` (`initRuntimeBackedProjectContext`
+ * runs `ensureProject`, then `openKvDb`), and `apps/ade-cli` imports this very
+ * module — can refuse that lock for longer than the 5,000 ms write timeout.
+ * The conversion then threw `database is locked` and failed the project open
+ * (ADE-DESKTOP-2D/2B: `at db.exec` → `openRawDatabase` → `openKvDb` →
+ * `initRuntimeBackedProjectContext`).
+ *
+ * The wait cannot simply be lengthened: `node:sqlite` is synchronous, so one
+ * long wait stops this process's event loop for all of it — which is also what
+ * sustains the stall, because the peer needs its own turns to finish and release.
+ * So the wait is cut into short attempts with a macrotask between them: this
+ * process never blocks for more than `WAL_CONVERSION_ATTEMPT_BUSY_TIMEOUT_MS`,
+ * the peer gets the room to finish, and the conversion still wins.
+ *
+ * Measured (two `DatabaseSync` connections, the peer holding one open read
+ * transaction on a database not yet in WAL): the conversion waited 3,125 ms of a
+ * 3,000 ms timeout and threw `ERR_SQLITE_ERROR: database is locked`, while the
+ * same conversion with no peer transaction returned in 0 ms.
+ */
+const WAL_CONVERSION_ATTEMPT_BUSY_TIMEOUT_MS = 150;
+const WAL_CONVERSION_RETRY_DELAY_MS = 150;
+const WAL_CONVERSION_BUDGET_MS = 8000;
+
+function currentJournalMode(db: DatabaseSyncType): string {
+  const row = getRow<{ journal_mode?: unknown }>(db, "pragma journal_mode");
+  return String(row?.journal_mode ?? "").trim().toLowerCase();
+}
+
+/**
+ * `PRAGMA synchronous` is per connection and reads the schema, so a peer's
+ * exclusive lock refuses it like any read. A refused set leaves this connection
+ * at FULL, which is slower but never less safe, so it must not fail the open.
+ */
+function trySetSynchronousNormal(db: DatabaseSyncType): void {
+  try {
+    withAttemptBusyTimeout(db, () => runStatement(db, "PRAGMA synchronous = NORMAL"));
+  } catch (error) {
+    if (!isSqliteBusyOrLockedError(error)) throw error;
+  }
+}
+
+/**
+ * Whether the database predates cr-sqlite, read on the attempt timeout. A read a
+ * peer's lock refuses is treated as "no metadata", so the migration backup is
+ * still taken: that backup is idempotent and is the safety net for the migration.
+ */
+function hasCrsqlMetadataBeforeOpen(db: DatabaseSyncType): boolean {
+  try {
+    return withAttemptBusyTimeout(db, () => hasCrsqlMetadata(db));
+  } catch (error) {
+    if (!isSqliteBusyOrLockedError(error)) throw error;
+    return false;
+  }
+}
+
+/**
+ * The journal mode for a log line only. The deferral is logged on the attempt
+ * timeout, so this read can be refused by the same peer that caused it; the
+ * deferral must not turn into a failed open because of its own log field.
+ */
+function currentJournalModeForLog(db: DatabaseSyncType): string {
+  try {
+    return withAttemptBusyTimeout(db, () => currentJournalMode(db));
+  } catch {
+    return "unknown";
+  }
+}
+
+/**
+ * Runs one read on the short attempt timeout, so a peer's commit can hold this
+ * thread for at most one attempt before the read gives up. The connection keeps
+ * its 5,000 ms default timeout for everything after the open.
+ */
+function withAttemptBusyTimeout<T>(db: DatabaseSyncType, read: () => T): T {
+  runStatement(db, `pragma busy_timeout = ${WAL_CONVERSION_ATTEMPT_BUSY_TIMEOUT_MS}`);
+  try {
+    return read();
+  } finally {
+    runStatement(db, `pragma busy_timeout = ${DEFAULT_BUSY_TIMEOUT_MS}`);
+  }
+}
+
+/** A macrotask turn, so the peer can make progress while this process waits. */
+const waitForWalConversionRetry = (): Promise<void> =>
+  new Promise((resolve) => { setTimeout(resolve, WAL_CONVERSION_RETRY_DELAY_MS); });
+
+/**
+ * Put the database in WAL mode without ever holding the event loop for long.
+ *
+ * A database already in WAL — every project after its first successful open,
+ * since the mode is a property of the file — is left alone, so the steady-state
+ * open never asks for the exclusive lock at all. Only a conversion into WAL
+ * takes it, and only a lock failure is retried; any other error is the platform
+ * refusing the write outright and still fails the open.
+ *
+ * Giving up after the budget leaves the database in its current journal mode
+ * rather than failing the open. That is a deliberate last resort, not a
+ * preference: without WAL a peer's read transaction blocks this process's
+ * writes, so the conversion is worth waiting for.
+ */
+async function ensureWalJournalMode(db: DatabaseSyncType, logger?: Logger): Promise<void> {
+  // A peer holding its lock can refuse even this read. That is not a reason to
+  // fail the open: an unknown mode goes through the same retry loop below.
+  let journalMode: string | null = null;
+  try {
+    journalMode = withAttemptBusyTimeout(db, () => currentJournalMode(db));
+  } catch (error) {
+    if (!isSqliteBusyOrLockedError(error)) throw error;
+  }
+  if (journalMode === "wal") return;
+
+  const deadline = Date.now() + WAL_CONVERSION_BUDGET_MS;
+  runStatement(db, `pragma busy_timeout = ${WAL_CONVERSION_ATTEMPT_BUSY_TIMEOUT_MS}`);
+  try {
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        db.exec("PRAGMA journal_mode = WAL");
+        if (attempt > 1) {
+          logger?.info("db.wal_conversion_settled", { attempt });
+        }
+        return;
+      } catch (error) {
+        if (!isSqliteBusyOrLockedError(error)) throw error;
+        if (Date.now() >= deadline) {
+          logger?.warn("db.wal_conversion_deferred", {
+            attempts: attempt,
+            journalMode: currentJournalModeForLog(db),
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return;
+        }
+      }
+      await waitForWalConversionRetry();
+    }
+  } finally {
+    runStatement(db, `pragma busy_timeout = ${DEFAULT_BUSY_TIMEOUT_MS}`);
+  }
+}
+
 function openRawDatabase(dbPath: string): DatabaseSyncType {
+  reapRestoredDatabaseClosures();
   ensureParentDir(dbPath);
   const db = new DatabaseSync(dbPath, { allowExtension: true });
+  try {
+    guardDatabasePath(db, dbPath);
+  } catch (error) {
+    closeDatabase(db);
+    throw error;
+  }
   // Allow concurrent access from multiple ADE processes (e.g. dogfooding).
   // Without this, a second instance gets SQLITE_BUSY immediately on writes.
-  db.exec("PRAGMA busy_timeout = 5000");
-  db.exec("PRAGMA journal_mode = WAL");
-  db.exec("PRAGMA synchronous = NORMAL");
+  // The journal mode is settled separately, after the open, so its exclusive
+  // lock is never waited for on this thread.
+  try {
+    db.exec(`PRAGMA busy_timeout = ${DEFAULT_BUSY_TIMEOUT_MS}`);
+    trySetSynchronousNormal(db);
+  } catch (error) {
+    closeDatabase(db);
+    throw error;
+  }
   return db;
 }
 
@@ -283,11 +501,20 @@ function openRawDatabase(dbPath: string): DatabaseSyncType {
  */
 function closeDatabase(db: DatabaseSyncType): void {
   try {
+    databasePathGuards.get(db)?.();
+  } catch {
+    // Finalization and native close are unsafe when identity cannot be
+    // verified. Retain the handle so GC cannot close it behind this guard.
+    deferredDatabaseClosures.add(db);
+    return;
+  }
+  try {
     db.exec("select crsql_finalize()");
   } catch {
     // Extension not loaded (or already finalized) — nothing to tear down.
   }
   db.close();
+  deferredDatabaseClosures.delete(db);
 }
 
 export function openReadonlyDatabase(dbPath: string): DatabaseSyncType {
@@ -332,6 +559,7 @@ function runStatement(db: DatabaseSyncType, sql: string, params: Array<SqlValue 
   try {
     return db.prepare(sql).run(...params.map((param, index) => toDbValue(param, index))) as { changes: number };
   } catch (error) {
+    if (isCodedError(error, "db_path_changed")) throw error;
     const statement = sql.replace(/\s+/g, " ").trim();
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`${message} [sql=${statement}]`);
@@ -342,6 +570,7 @@ function getRow<T>(db: DatabaseSyncType, sql: string, params: Array<SqlValue | S
   try {
     return (db.prepare(sql).get(...params.map((param, index) => toDbValue(param, index))) as T | undefined) ?? null;
   } catch (error) {
+    if (isCodedError(error, "db_path_changed")) throw error;
     const statement = sql.replace(/\s+/g, " ").trim();
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`${message} [sql=${statement}]`);
@@ -352,6 +581,7 @@ function allRows<T>(db: DatabaseSyncType, sql: string, params: Array<SqlValue | 
   try {
     return db.prepare(sql).all(...params.map((param, index) => toDbValue(param, index))) as T[];
   } catch (error) {
+    if (isCodedError(error, "db_path_changed")) throw error;
     const statement = sql.replace(/\s+/g, " ").trim();
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`${message} [sql=${statement}]`);
@@ -892,6 +1122,8 @@ function writeMigrationBackupIfNeeded(dbPath: string): void {
 }
 
 const LOCAL_CRR_CHANGE_SUPPRESSIONS_TABLE = "local_crr_change_suppressions";
+/** Incoming changes for a column this build lacks, kept until it has it. */
+const SYNC_DEFERRED_COLUMN_CHANGES_TABLE = "sync_deferred_column_changes";
 
 /**
  * Append-only event logs that had no retention at all, with the column each one
@@ -943,6 +1175,10 @@ const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
   // excluding it keeps the unique index and lets removeExcludedCrrMetadata
   // un-CRR any DB where it was already (incorrectly) converted.
   "automation_ingress_events",
+  // Webhook URL tokens and the raw requests that rang them are this machine's:
+  // a token is a capability, and a delivery body can hold anything.
+  "automation_webhook_hooks",
+  "automation_webhook_deliveries",
   // Cross-process cron idempotency claims are machine-local. The primary key
   // must stay unique so sibling runtimes can atomically elect one executor.
   "automation_schedule_occurrences",
@@ -954,6 +1190,10 @@ const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
   // rows to phones whose schema may not have the table — a changeset that an
   // older client hard-rejects, freezing its sync cursor entirely.
   LOCAL_CRR_CHANGE_SUPPRESSIONS_TABLE,
+  // A newer peer's changes for columns this build does not have yet, kept for
+  // replay. It describes this device's own schema gap, so a peer must never
+  // receive it.
+  SYNC_DEFERRED_COLUMN_CHANGES_TABLE,
   "github_pr_projections",
   "github_pr_stacks",
   "github_pr_stack_entries",
@@ -965,6 +1205,9 @@ const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
   "lane_detail_snapshots",
   "lane_list_snapshots",
   "pr_auto_link_ignores",
+  // A PR-origin chat handoff is consumed by one machine's first new chat on
+  // the imported lane; replicating the pending claim could attach twice.
+  "pull_request_lane_chat_origins",
   // A PR watch wakes a chat on THIS machine. A replicated row would let a
   // second machine's brain wake its own copy of the chat too, so the watch and
   // the ids of comments ADE posted (which never wake it) stay local.
@@ -1512,6 +1755,9 @@ function purgeRetiredTerminalSessions(db: DatabaseSyncType): number {
   if (rawHasTable(db, "session_github_issues")) {
     runStatement(db, `delete from session_github_issues where session_id in (${placeholders})`, retiredSessionIds);
   }
+  if (rawHasTable(db, "session_jira_issues")) {
+    runStatement(db, `delete from session_jira_issues where session_id in (${placeholders})`, retiredSessionIds);
+  }
   if (rawHasTable(db, "pull_request_chat_sessions")) {
     runStatement(db, `delete from pull_request_chat_sessions where session_id in (${placeholders})`, retiredSessionIds);
   }
@@ -1978,6 +2224,130 @@ function packedCrsqlPrimaryKey(value: SyncScalar): SyncScalar | null {
   return null;
 }
 
+/**
+ * Keep a change for a column this build lacks, for `replayDeferredColumnChanges`.
+ * One row per cell per peer: a later write from the same peer replaces the
+ * kept one (cr-sqlite's order, causal length then column version), so the
+ * table cannot grow with every write while this device waits for an update.
+ * Peers are kept apart because cr-sqlite breaks an exact tie by value and site,
+ * not by arrival; the replay hands every peer's change to cr-sqlite to decide.
+ */
+function deferColumnChange(db: DatabaseSyncType, change: CrsqlChangeRow): void {
+  const changeKey = JSON.stringify([change.table, change.pk, change.cid, change.site_id]);
+  runStatement(
+    db,
+    `insert into ${SYNC_DEFERRED_COLUMN_CHANGES_TABLE}(change_key, table_name, cid, cl, col_version, change_json, deferred_at)
+     values (?, ?, ?, ?, ?, ?, ?)
+     on conflict(change_key) do update set
+       cl = excluded.cl,
+       col_version = excluded.col_version,
+       change_json = excluded.change_json,
+       deferred_at = excluded.deferred_at
+     where excluded.cl > ${SYNC_DEFERRED_COLUMN_CHANGES_TABLE}.cl
+        or (excluded.cl = ${SYNC_DEFERRED_COLUMN_CHANGES_TABLE}.cl
+            and excluded.col_version >= ${SYNC_DEFERRED_COLUMN_CHANGES_TABLE}.col_version)`,
+    [changeKey, change.table, change.cid, change.cl, change.col_version, JSON.stringify(change), new Date().toISOString()],
+  );
+}
+
+/** A lock, busy timeout or read-only database: the write may work later. */
+function isTransientSqliteError(error: unknown): boolean {
+  return isSqliteBusyOrLockedError(error) || isReadonlyDatabaseError(error);
+}
+
+/** Whether `table` has column `cid`, with one `pragma table_info` per table. */
+function createTableColumnLookup(db: DatabaseSyncType): (tableName: string, columnName: string) => boolean {
+  const columnsByTable = new Map<string, Set<string>>();
+  return (tableName, columnName) => {
+    let columns = columnsByTable.get(tableName);
+    if (!columns) {
+      columns = new Set(
+        allRows<{ name: string }>(db, `pragma table_info('${tableName.replace(/'/g, "''")}')`).map((column) => column.name),
+      );
+      columnsByTable.set(tableName, columns);
+    }
+    return columns.has(columnName);
+  };
+}
+
+/**
+ * Apply one peer change through cr-sqlite. `insert or ignore` because a change
+ * that loses to the local clock (a re-delivered batch) is dropped, not an error.
+ * Returns how many rows SQLite reported changed.
+ */
+function applyCrsqlChange(db: DatabaseSyncType, rawChange: CrsqlChangeRow): number {
+  const change = normalizeIncomingCrsqlChange(db, rawChange);
+  return runStatement(
+    db,
+    `insert or ignore into crsql_changes ([table], pk, cid, val, col_version, db_version, site_id, cl, seq)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      change.table,
+      change.pk,
+      change.cid,
+      change.val,
+      change.col_version,
+      change.db_version,
+      Buffer.from(change.site_id, "hex"),
+      change.cl,
+      change.seq,
+    ],
+  ).changes;
+}
+
+/**
+ * Apply the changes kept by `deferColumnChange` whose column now exists (this
+ * build added it). Same insert as a live batch, so cr-sqlite's clocks decide:
+ * a value written here since then wins over the older deferred one. A change
+ * for a column still missing stays kept. Each row runs in its own savepoint: a
+ * row that cannot be read or applied is dropped (logged), so one bad row never
+ * blocks the rest. Never throws.
+ */
+function replayDeferredColumnChanges(db: DatabaseSyncType, logger: Logger): void {
+  if (!rawHasTable(db, SYNC_DEFERRED_COLUMN_CHANGES_TABLE)) return;
+  const rows = allRows<{ changeKey: string; tableName: string; cid: string; changeJson: string }>(
+    db,
+    `select change_key as changeKey, table_name as tableName, cid, change_json as changeJson
+     from ${SYNC_DEFERRED_COLUMN_CHANGES_TABLE}`,
+  );
+  if (!rows.length) return;
+  const hasColumn = createTableColumnLookup(db);
+  const ready = rows.filter((row) => rawHasTable(db, row.tableName) && hasColumn(row.tableName, row.cid));
+  if (!ready.length) return;
+  let replayed = 0;
+  let dropped = 0;
+  try {
+    for (const row of ready) {
+      runStatement(db, "savepoint ade_replay_deferred_column");
+      try {
+        applyCrsqlChange(db, JSON.parse(row.changeJson) as CrsqlChangeRow);
+        replayed += 1;
+      } catch (error) {
+        // A busy or read-only database is not this row's fault: stop, and
+        // keep it and the rest for the next open.
+        if (isTransientSqliteError(error)) throw error;
+        runStatement(db, "rollback to ade_replay_deferred_column");
+        dropped += 1;
+        logger.warn("sync.deferred_column_replay_dropped", { table: row.tableName, column: row.cid, err: String(error) });
+      }
+      runStatement(db, `delete from ${SYNC_DEFERRED_COLUMN_CHANGES_TABLE} where change_key = ?`, [row.changeKey]);
+      runStatement(db, "release ade_replay_deferred_column");
+    }
+  } catch (error) {
+    // The bookkeeping itself failed (a locked or read-only database). What was
+    // released is applied; the rest stays kept for the next open.
+    try {
+      runStatement(db, "rollback to ade_replay_deferred_column");
+      runStatement(db, "release ade_replay_deferred_column");
+    } catch {
+      // No open savepoint left to unwind.
+    }
+    logger.warn("sync.deferred_columns_replay_failed", { replayed, err: String(error) });
+    return;
+  }
+  logger.info("sync.deferred_columns_replayed", { replayed, dropped });
+}
+
 function normalizeIncomingCrsqlChange(db: DatabaseSyncType, change: CrsqlChangeRow): CrsqlChangeRow {
   const tableInfo = allRows<{ pk: number }>(
     db,
@@ -2110,6 +2480,22 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
       through_db_version integer not null,
       created_at text not null,
       primary key(table_name, site_id)
+    )
+  `);
+
+  // Changes a newer peer sent for a column this build lacks. Kept, not dropped:
+  // cr-sqlite syncs per column, so a value written once (at row creation)
+  // would otherwise never arrive after this device gains the column.
+  // `replayDeferredColumnChanges` applies them on open once the column exists.
+  db.run(`
+    create table if not exists ${SYNC_DEFERRED_COLUMN_CHANGES_TABLE} (
+      change_key text primary key,
+      table_name text not null,
+      cid text not null,
+      cl integer not null,
+      col_version integer not null,
+      change_json text not null,
+      deferred_at text not null
     )
   `);
 
@@ -2366,6 +2752,28 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   db.run("create index if not exists idx_session_github_issues_session on session_github_issues(project_id, session_id)");
   db.run("create index if not exists idx_session_github_issues_lane on session_github_issues(project_id, lane_id)");
   db.run("create index if not exists idx_session_github_issues_issue on session_github_issues(project_id, issue_id)");
+
+  db.run(`
+    create table if not exists session_jira_issues (
+      id text primary key,
+      project_id text not null,
+      session_id text not null,
+      lane_id text,
+      issue_id text not null,
+      issue_json text not null,
+      role text not null,
+      source text not null,
+      include_in_pr integer not null default 1,
+      close_on_merge integer not null default 1,
+      evidence_json text,
+      created_at text not null,
+      updated_at text not null,
+      foreign key(project_id) references projects(id) on delete cascade
+    )
+  `);
+  db.run("create index if not exists idx_session_jira_issues_session on session_jira_issues(project_id, session_id)");
+  db.run("create index if not exists idx_session_jira_issues_lane on session_jira_issues(project_id, lane_id)");
+  db.run("create index if not exists idx_session_jira_issues_issue on session_jira_issues(project_id, issue_id)");
 
   db.run(`
     create table if not exists lane_branch_profiles (
@@ -2959,6 +3367,28 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   db.run("create index if not exists idx_pull_request_chat_session_dismissals_pr on pull_request_chat_session_dismissals(project_id, pr_id)");
   db.run("create index if not exists idx_pull_request_chat_session_dismissals_session on pull_request_chat_session_dismissals(project_id, session_id)");
 
+  // A lane created from a PR may have exactly one review chat explicitly
+  // associated with that PR. This pending origin is consumed by the first
+  // agent chat created on that lane; it is machine-local so two runtimes cannot
+  // race to attach different chats from replicated copies of the same marker.
+  db.run(`
+    create table if not exists pull_request_lane_chat_origins (
+      project_id text not null,
+      lane_id text not null,
+      pr_id text not null,
+      created_at text not null,
+      claimed_session_id text,
+      claimed_at text,
+      merge_followup_pending integer not null default 0,
+      primary key (project_id, lane_id),
+      foreign key(project_id) references projects(id) on delete cascade,
+      foreign key(lane_id) references lanes(id) on delete cascade
+    )
+  `);
+  db.run("create index if not exists idx_pull_request_lane_chat_origins_pr on pull_request_lane_chat_origins(project_id, pr_id)");
+  db.run("create index if not exists idx_pull_request_lane_chat_origins_pending_page on pull_request_lane_chat_origins(project_id, merge_followup_pending, created_at, lane_id)");
+  db.run("create index if not exists idx_pull_request_lane_chat_origins_pending_session on pull_request_lane_chat_origins(project_id, claimed_session_id, merge_followup_pending)");
+
   // PR Watch / Ship (`prChatWatchStore.ts`). Machine-local: see
   // LOCAL_ONLY_CRR_EXCLUDED_TABLES.
   db.run(`
@@ -3522,9 +3952,14 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   db.run("create index if not exists idx_computer_use_artifact_links_owner on computer_use_artifact_links(project_id, owner_kind, owner_id, created_at)");
   db.run("create index if not exists idx_computer_use_artifact_links_artifact on computer_use_artifact_links(artifact_id)");
 
-  // Deliberate composer saves shared by every desktop connected to this
-  // project's runtime. The table is PK-only so cr-sqlite can replicate it
-  // across independent synced machines as well.
+  // Deliberate composer drafts shared by every desktop connected to this
+  // project's runtime, plus the scheduled sends armed from them. The table is
+  // PK-only so cr-sqlite can replicate it across independent synced machines.
+  //
+  // The name stays `prompt_stashes` even though the feature is "Drafts":
+  // cr-sqlite will not rename a CRR wholesale (the migration path only wraps
+  // added columns in crsql_begin_alter), and every paired machine holds this
+  // table, so a rename would strand peers on the old schema.
   db.run(`
     create table if not exists prompt_stashes (
       id text primary key,
@@ -3538,7 +3973,32 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   `);
   safeAddColumn(db, "alter table prompt_stashes add column attachments_json text not null default '[]'");
   safeAddColumn(db, "alter table prompt_stashes add column attachment_origin_site_id text");
+  // Scheduled-send columns. All nullable so an older peer's rows stay valid and
+  // a newer peer's values still sync into this build.
+  safeAddColumn(db, "alter table prompt_stashes add column updated_at text");
+  safeAddColumn(db, "alter table prompt_stashes add column kind text");
+  safeAddColumn(db, "alter table prompt_stashes add column status text");
+  safeAddColumn(db, "alter table prompt_stashes add column scheduled_at text");
+  safeAddColumn(db, "alter table prompt_stashes add column delivery_policy text");
+  safeAddColumn(db, "alter table prompt_stashes add column grace_seconds integer");
+  safeAddColumn(db, "alter table prompt_stashes add column target_kind text");
+  safeAddColumn(db, "alter table prompt_stashes add column target_session_id text");
+  safeAddColumn(db, "alter table prompt_stashes add column target_lane_id text");
+  safeAddColumn(db, "alter table prompt_stashes add column target_machine_key text");
+  safeAddColumn(db, "alter table prompt_stashes add column origin_session_id text");
+  safeAddColumn(db, "alter table prompt_stashes add column model text");
+  safeAddColumn(db, "alter table prompt_stashes add column permission_mode text");
+  safeAddColumn(db, "alter table prompt_stashes add column thinking text");
+  safeAddColumn(db, "alter table prompt_stashes add column scheduled_by text");
+  safeAddColumn(db, "alter table prompt_stashes add column scheduled_by_session_id text");
+  safeAddColumn(db, "alter table prompt_stashes add column fired_at text");
+  safeAddColumn(db, "alter table prompt_stashes add column last_error text");
+  // The CRR site id of the runtime that armed a send. Only that runtime
+  // delivers a send that names no machine, so two synced machines holding the
+  // same row cannot both fire it.
+  safeAddColumn(db, "alter table prompt_stashes add column armed_by_site_id text");
   db.run("create index if not exists idx_prompt_stashes_created on prompt_stashes(created_at)");
+  db.run("create index if not exists idx_prompt_stashes_scheduled on prompt_stashes(scheduled_at)");
 
 
   // CTO persistent identity/core-continuity/session-log state.
@@ -3710,6 +4170,50 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   `);
   db.run("create index if not exists idx_cursor_cloud_ingress_events_project_created on cursor_cloud_ingress_events(project_id, created_at desc)");
   db.run("create index if not exists idx_cursor_cloud_ingress_events_project_event on cursor_cloud_ingress_events(project_id, event_id)");
+
+  // Custom webhook URLs. The token is what makes a URL secret, so it stays on
+  // the machine that made it (local-only; see LOCAL_ONLY_CRR_EXCLUDED_TABLES).
+  db.run(`
+    create table if not exists automation_webhook_hooks (
+      hook_id text primary key,
+      project_id text not null,
+      token text not null,
+      created_at text not null,
+      rotated_at text,
+      relay_registered_at text,
+      relay_error text
+    )
+  `);
+  db.run("create index if not exists idx_automation_webhook_hooks_project on automation_webhook_hooks(project_id, created_at)");
+
+  // The last 50 requests per webhook URL, with headers and body, so the user
+  // can see what arrived and why it ran or not. Local-only: bodies can hold
+  // anything the sender put in them.
+  db.run(`
+    create table if not exists automation_webhook_deliveries (
+      id text primary key,
+      project_id text not null,
+      hook_id text not null,
+      rule_id text,
+      via text not null,
+      method text not null,
+      received_at text not null,
+      outcome text not null,
+      detail text,
+      signature text not null,
+      event_label text,
+      dedupe_key text,
+      event_key text,
+      ingress_event_id text,
+      headers_json text,
+      query_json text,
+      content_type text,
+      body_text text,
+      body_truncated integer not null default 0,
+      prompt_text text
+    )
+  `);
+  db.run("create index if not exists idx_automation_webhook_deliveries_hook on automation_webhook_deliveries(project_id, hook_id, received_at desc)");
 
   // Phase 4 W2: Worker agent config revisions (audit trail)
   db.run(`
@@ -4284,9 +4788,13 @@ export async function openKvDb(
     getDb: () => db,
     isCrsqliteLoaded: () => crsqliteLoaded,
   });
-  const hadCrsqlMetadataBeforeOpen = hasCrsqlMetadata(db);
+  const hadCrsqlMetadataBeforeOpen = hasCrsqlMetadataBeforeOpen(db);
 
   try {
+    // Inside the try so a conversion error that is not a lock still closes the
+    // handle and logs `db.init_failed`, exactly as it did from the open.
+    await ensureWalJournalMode(db, logger);
+
     if (existedBeforeOpen && !hadCrsqlMetadataBeforeOpen) {
       writeMigrationBackupIfNeeded(dbPath);
     }
@@ -4344,6 +4852,7 @@ export async function openKvDb(
     if (retrofittedLegacyPrimaryKeySchema) {
       closeDatabase(db);
       db = openRawDatabase(dbPath);
+      await ensureWalJournalMode(db, logger);
       crsqliteLoaded = false;
       loadCrsqliteIfAvailable();
       if (hasCrsqlMetadata(db) && !crsqliteLoaded) {
@@ -4362,6 +4871,7 @@ export async function openKvDb(
     if (retrofittedForeignKeySchema) {
       closeDatabase(db);
       db = openRawDatabase(dbPath);
+      await ensureWalJournalMode(db, logger);
       crsqliteLoaded = false;
       loadCrsqliteIfAvailable();
       if (hasCrsqlMetadata(db) && !crsqliteLoaded) {
@@ -4377,10 +4887,12 @@ export async function openKvDb(
       loadCrsqliteIfAvailable();
       ensureCrrTables(db, logger);
       forceSiteId(db, desiredSiteId);
+      replayDeferredColumnChanges(db, logger);
 
       if (readCurrentSiteId(db) !== desiredSiteId) {
         closeDatabase(db);
         db = openRawDatabase(dbPath);
+        await ensureWalJournalMode(db, logger);
         crsqliteLoaded = false;
         loadCrsqliteIfAvailable();
         if (hasCrsqlMetadata(db) && !crsqliteLoaded) {
@@ -4402,7 +4914,10 @@ export async function openKvDb(
     } catch {
       // best effort cleanup
     }
-    logger.error("db.init_failed", { dbPath, err: String(err) });
+    // The Error itself, so `logBridge` lifts it into the Sentry event and the
+    // issue groups by the real failure; `errorText` keeps the sentence on disk,
+    // which `JSON.stringify` writes an Error without.
+    logger.error("db.init_failed", { dbPath, error: err, errorText: String(err) });
     throw err;
   }
 
@@ -4433,6 +4948,7 @@ export async function openKvDb(
     try {
       return operation();
     } catch (error) {
+      if (isCodedError(error, "db_path_changed")) throw error;
       logger.warn("db.maintenance_failed", {
         action,
         error: error instanceof Error ? error.message : String(error),
@@ -4463,6 +4979,7 @@ export async function openKvDb(
     try {
       return await operation();
     } catch (error) {
+      if (isCodedError(error, "db_path_changed")) throw error;
       logger.warn("db.maintenance_failed", {
         action,
         error: error instanceof Error ? error.message : String(error),
@@ -4649,6 +5166,8 @@ export async function openKvDb(
 
   // Registered by the session layer once the settle chokepoint exists.
   let remoteSettleTupleHandler: ((changes: RemoteSettleTupleChange[]) => void) | null = null;
+  /** Columns a newer peer sent that this build lacks; each is logged once per process. */
+  const deferredUnknownSyncColumns = new Set<string>();
   const sync: AdeDbSyncApi = {
     isAvailable: () => crsqliteLoaded,
     getSiteId: () => desiredSiteId,
@@ -4843,6 +5362,8 @@ export async function openKvDb(
       // settle notice and abort.
       const candidateSettleTuple: RemoteSettleTupleChange[] = [];
       const settleTupleBefore = new Map<string, string | null>();
+      // One `pragma table_info` per table per batch, not per change.
+      const hasIncomingColumn = createTableColumnLookup(db);
       runStatement(db, "BEGIN IMMEDIATE");
       try {
         for (const rawChange of changes) {
@@ -4862,6 +5383,26 @@ export async function openKvDb(
           // Reachable whenever a table is moved local-only while a paired peer
           // is still on a build that replicates it — i.e. during every rollout.
           if (LOCAL_ONLY_CRR_EXCLUDED_TABLES.has(rawChange.table)) continue;
+          // A column this build does not have (a newer peer added it) is
+          // kept aside, not applied. cr-sqlite rejects the insert with "SQL
+          // logic error", which rolls back the whole batch; the peer's outbound
+          // cursor only advances on an ok ack, so every later batch replays
+          // the same poison and ALL sync with that peer stops until this
+          // machine updates. Deferring keeps every other change flowing, and
+          // the kept change is applied on the first open of a build that has
+          // the column (`replayDeferredColumnChanges`). cr-sqlite syncs per
+          // column, so without that a value written once (at creation) would
+          // never arrive. `-1` is cr-sqlite's row sentinel (create/delete),
+          // never a real column.
+          if (rawChange.cid !== "-1" && !hasIncomingColumn(rawChange.table, rawChange.cid)) {
+            deferColumnChange(db, rawChange);
+            const key = `${rawChange.table}.${rawChange.cid}`;
+            if (!deferredUnknownSyncColumns.has(key)) {
+              deferredUnknownSyncColumns.add(key);
+              logger.warn("sync.unknown_column_deferred", { table: rawChange.table, column: rawChange.cid });
+            }
+            continue;
+          }
           // Decoded before the apply, reported only after it: an undecodable
           // key still applies, it is simply not reconciled.
           let settleTupleChange: RemoteSettleTupleChange | null = null;
@@ -4875,25 +5416,8 @@ export async function openKvDb(
               }
             }
           }
-          const change = normalizeIncomingCrsqlChange(db, rawChange);
-          const result = runStatement(
-            db,
-            `insert or ignore into crsql_changes ([table], pk, cid, val, col_version, db_version, site_id, cl, seq)
-             values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-              change.table,
-              change.pk,
-              change.cid,
-              change.val,
-              change.col_version,
-              change.db_version,
-              Buffer.from(change.site_id, "hex"),
-              change.cl,
-              change.seq,
-            ]
-          );
-          appliedCount += result.changes;
-          touchedTables.add(change.table);
+          appliedCount += applyCrsqlChange(db, rawChange);
+          touchedTables.add(rawChange.table);
           // `insert or ignore` silently drops a change whose col_version does
           // not beat the local clock, which is exactly what a re-delivered
           // batch looks like. Reporting one of those would bump the revision

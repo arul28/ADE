@@ -10,6 +10,7 @@ import {
   codexSkillsForCwd,
   codexSkillsListParams,
   existingAgentSkillRoots,
+  withoutAgentSkills,
 } from "./agentSkillRuntimeService";
 
 const temporaryRoots: string[] = [];
@@ -133,37 +134,74 @@ describe("prompt-facing skill roots", () => {
       fs.rmSync(real, { recursive: true, force: true });
     }
   });
+});
 
-  it("keeps every Node-side prompt caller on the disk-filtered helper", () => {
-    // The shared helper cannot stat, so a main-process or CLI file that imports
-    // it directly advertises roots that may not exist. Three callers did; this
-    // is the guard that stops a fourth.
-    // `src/main` and the ADE CLI only. `src/shared` is bundled into the
-    // renderer, which has no filesystem, so its default-argument fallbacks to
-    // the unfiltered helper are correct and deliberate.
-    const repoRoot = path.resolve(__dirname, "..", "..", "..", "..", "..", "..");
-    const searchRoots = [
-      path.join(repoRoot, "apps", "desktop", "src", "main"),
-      path.join(repoRoot, "apps", "ade-cli", "src"),
-    ].filter((root) => fs.existsSync(root));
-    const offenders: string[] = [];
-    const walk = (dir: string): void => {
-      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-        const full = path.join(dir, entry.name);
-        if (entry.isDirectory()) {
-          if (entry.name === "node_modules" || entry.name === "dist") continue;
-          walk(full);
-          continue;
-        }
-        if (!entry.name.endsWith(".ts") || entry.name.endsWith(".test.ts")) continue;
-        if (full.endsWith(path.join("skills", "agentSkillRuntimeService.ts"))) continue;
-        if (fs.readFileSync(full, "utf8").includes("getAdeAgentSkillRootsForPrompt")) {
-          offenders.push(path.relative(repoRoot, full));
-        }
-      }
-    };
-    for (const root of searchRoots) walk(root);
+describe("withholding skills from a root", () => {
+  function skillRoot(): string {
+    const root = temporaryRoot();
+    fs.mkdirSync(path.join(root, ".claude-plugin"), { recursive: true });
+    fs.writeFileSync(path.join(root, ".claude-plugin", "plugin.json"), "{}");
+    for (const name of ["ade-browser", "ade-lanes-git", "ade-pr-workflows"]) {
+      fs.mkdirSync(path.join(root, name), { recursive: true });
+      fs.writeFileSync(path.join(root, name, "SKILL.md"), `# ${name}`);
+    }
+    return root;
+  }
 
-    expect(offenders).toEqual([]);
+  it("serves a private mirror under the ADE home without the withheld skills, and leaves clean roots alone", () => {
+    const adeHome = temporaryRoot();
+    const previousHome = process.env.ADE_HOME;
+    process.env.ADE_HOME = adeHome;
+    try {
+      const root = skillRoot();
+      const clean = temporaryRoot();
+      fs.mkdirSync(path.join(clean, "ade-browser"));
+
+      const [mirror, untouched] = withoutAgentSkills([root, clean], ["ade-lanes-git", "ade-pr-workflows"]);
+
+      // Never the shared temp dir: a mirror is loaded as a Claude plugin.
+      expect(path.dirname(mirror!)).toBe(path.join(adeHome, "agent-skill-shims", "filtered"));
+      expect(fs.readdirSync(mirror!).sort()).toEqual([".claude-plugin", "ade-browser"]);
+      expect(fs.existsSync(path.join(mirror!, ".claude-plugin", "plugin.json"))).toBe(true);
+      expect(untouched).toBe(clean);
+      // The source root is never edited.
+      expect(fs.existsSync(path.join(root, "ade-lanes-git", "SKILL.md"))).toBe(true);
+    } finally {
+      if (previousHome === undefined) delete process.env.ADE_HOME;
+      else process.env.ADE_HOME = previousHome;
+    }
+  });
+
+  it("refuses a mirror parent that is a link to somewhere else, and serves the root unfiltered", () => {
+    const root = skillRoot();
+    const elsewhere = temporaryRoot();
+    const holder = temporaryRoot();
+    const parent = path.join(holder, "filtered");
+    // A junction on Windows (no privilege needed), a directory symlink elsewhere.
+    fs.symlinkSync(elsewhere, parent, "junction");
+
+    expect(withoutAgentSkills([root], ["ade-lanes-git"], parent)).toEqual([root]);
+    expect(fs.readdirSync(elsewhere)).toEqual([]);
+  });
+
+  it("refuses a mirror parent another user owns", () => {
+    const root = skillRoot();
+    const parent = path.join(temporaryRoot(), "filtered");
+    fs.mkdirSync(parent);
+    // The owner check is POSIX's (Windows has no owner uid here), so run it as
+    // POSIX would, with the directory owned by someone other than us.
+    const ownerUid = fs.statSync(parent).uid;
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    const getuid = Object.getOwnPropertyDescriptor(process, "getuid");
+    Object.defineProperty(process, "platform", { ...platform, value: "linux" });
+    Object.defineProperty(process, "getuid", { configurable: true, writable: true, value: () => ownerUid + 1 });
+    try {
+      expect(withoutAgentSkills([root], ["ade-pr-workflows"], parent)).toEqual([root]);
+      expect(fs.readdirSync(parent)).toEqual([]);
+    } finally {
+      Object.defineProperty(process, "platform", platform);
+      if (getuid) Object.defineProperty(process, "getuid", getuid);
+      else delete (process as { getuid?: unknown }).getuid;
+    }
   });
 });

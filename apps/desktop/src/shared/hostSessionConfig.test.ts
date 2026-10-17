@@ -157,6 +157,7 @@ describe("resolveInstructionsCapability", () => {
     pi: "applied",
     cursor: "best-effort",
     droid: "best-effort",
+    muse: "best-effort",
   };
 
   it.each(PROVIDERS)("reports %s at its table level", (provider) => {
@@ -198,6 +199,7 @@ describe("resolveSettingSourcesCapability", () => {
     droid: { none: "ignored", project: "ignored", user: "ignored", all: "ignored" },
     opencode: { none: "ignored", project: "ignored", user: "ignored", all: "ignored" },
     pi: { none: "ignored", project: "ignored", user: "ignored", all: "ignored" },
+    muse: { none: "ignored", project: "best-effort", user: "ignored", all: "best-effort" },
   };
 
   it.each(PROVIDERS)("reports %s at the level for the requested value", (provider) => {
@@ -270,6 +272,7 @@ describe("resolvePermissionCapability", () => {
     droid: "unsupported",
     opencode: "unsupported",
     pi: "unsupported",
+    muse: "unsupported",
   };
 
   it.each(TABLE_LEVEL_PROVIDERS)(

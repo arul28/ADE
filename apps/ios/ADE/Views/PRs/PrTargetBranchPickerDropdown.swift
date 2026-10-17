@@ -90,11 +90,7 @@ struct PrTargetBranchPickerDropdown: View {
     .padding(.leading, 12)
     .padding(.trailing, 4)
     .padding(.vertical, subtitle?.isEmpty == false ? 5 : 6)
-    .background(Color.white.opacity(0.04), in: Capsule(style: .continuous))
-    .overlay(
-      Capsule(style: .continuous)
-        .stroke(Color.white.opacity(0.08), lineWidth: 1)
-    )
+    .adeKitPill()
     .frame(maxWidth: .infinity)
   }
 
@@ -104,8 +100,8 @@ struct PrTargetBranchPickerDropdown: View {
         .font(.system(size: 10, weight: .semibold))
         .foregroundStyle(ADEColor.textSecondary)
       Text(title)
-        .font(.system(size: 11, weight: .medium))
-        .foregroundStyle(Color.white.opacity(0.85))
+        .font(.system(size: 13, weight: .medium))
+        .foregroundStyle(ADEColor.textPrimary)
         .lineLimit(1)
     }
   }
@@ -165,13 +161,7 @@ private struct PrTargetBranchPickerMenu: View {
       }
       .frame(maxHeight: 260)
     }
-    .background(ADEColor.cardBackground.opacity(0.96))
-    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
-        .stroke(ADEColor.glassBorder, lineWidth: 0.8)
-    )
-    .shadow(color: Color.black.opacity(0.45), radius: 16, y: 8)
+    .background(ADEKit.surface)
     .onAppear {
       searchFocused = true
     }

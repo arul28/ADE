@@ -214,6 +214,12 @@ describe("buildAttentionItems", () => {
     ]);
   });
 
+  /**
+   * A running chat whose lane's PR waits on CI files under Waiting, and the
+   * live run keeps that wait. Its time in Waiting starts when the wait did
+   * (the roster's anchor for the waiting column), not when the run started
+   * working: "Waiting for 1h" must not count the hour it worked.
+   */
   it("does not let a stuck live run bury a roster failure", async () => {
     const items = await buildAttentionItems(context({
       includeRoster: true,
@@ -258,5 +264,84 @@ describe("buildAttentionItems", () => {
     expect(items[0]?.phase).toBe("stale");
     expect(items[0]?.activityTier).toBe("idle");
     expect(items[0]?.title).toBe("ADE-121 Prototype");
+    expect(items[0]).toMatchObject({ boardColumn: "waiting", waitingReason: "snoozed" });
+  });
+});
+
+describe("Work-board columns on Activity items", () => {
+  const NOW = Date.parse("2026-08-01T12:00:00.000Z");
+  const rosterWith = (
+    chat: Partial<ActivityRosterProject["chats"][number]>,
+    prWaitingReason: "ci" | "review" | null = null,
+  ): ActivityRosterProject => {
+    const project = rosterProject(chat);
+    project.lanes = [{ id: "lane-roster", name: "Roster lane", prWaitingReason }];
+    return project;
+  };
+
+  it.each([
+    { name: "a question is Needs you", status: "awaiting", pr: null, wake: null, column: "needs_you", reason: null },
+    { name: "a failure is Needs you", status: "failed", pr: null, wake: null, column: "needs_you", reason: null },
+    { name: "a failure ignores its lane's CI", status: "failed", pr: "ci", wake: null, column: "needs_you", reason: null },
+    { name: "a running chat is Working", status: "running", pr: null, wake: null, column: "working", reason: null },
+    { name: "a running chat waits on its lane's CI", status: "running", pr: "ci", wake: null, column: "waiting", reason: "ci" },
+    { name: "a running chat waits on a requested review", status: "running", pr: "review", wake: null, column: "waiting", reason: "review" },
+    { name: "a resting chat is Done", status: "idle", pr: null, wake: null, column: "done", reason: null },
+    { name: "a resting chat waits on a pending wake", status: "idle", pr: null, wake: "2026-08-01T13:00:00.000Z", column: "waiting", reason: "scheduled" },
+    { name: "a wake long past is not a wait", status: "idle", pr: null, wake: "2026-08-01T10:00:00.000Z", column: "done", reason: null },
+    { name: "an ended chat is Done", status: "ended", pr: "ci", wake: null, column: "done", reason: null },
+  ] as const)("$name", async ({ status, pr, wake, column, reason }) => {
+    const items = await buildAttentionItems(context({
+      includeRoster: true,
+      nowMs: NOW,
+      loadRoster: async () => [rosterWith({ status, nextWakeAt: wake }, pr)],
+    }));
+
+    expect(items).toHaveLength(1);
+    expect(items[0]?.boardColumn).toBe(column);
+    expect(items[0]?.waitingReason).toBe(reason);
+  });
+
+  it.each([
+    { name: "a running run keeps its lane's CI wait", pr: "ci", wake: null, rosterStatus: "running", runPhase: "running", column: "waiting", reason: "ci" },
+    { name: "a finished run keeps a pending wake", pr: null, wake: "2026-08-01T13:00:00.000Z", rosterStatus: "idle", runPhase: "completed", column: "waiting", reason: "scheduled" },
+    { name: "a question never inherits a wait", pr: "ci", wake: null, rosterStatus: "running", runPhase: "waiting_for_input", column: "needs_you", reason: null },
+  ] as const)("$name when a live run replaces the roster row", async ({ pr, wake, rosterStatus, runPhase, column, reason }) => {
+    const items = await buildAttentionItems(context({
+      includeRoster: true,
+      nowMs: NOW,
+      runs: new Map([["disk-session-1", run({ sessionId: "disk-session-1", phase: runPhase })]]),
+      loadRoster: async () => [rosterWith({ status: rosterStatus, nextWakeAt: wake }, pr)],
+    }));
+
+    expect(items).toHaveLength(1);
+    expect(items[0]?.boardColumn).toBe(column);
+    expect(items[0]?.waitingReason).toBe(reason);
+  });
+
+  it("keeps a row's alert identity when only its column changes", async () => {
+    // statusSince is part of the alert identity, and the relay clears a
+    // dismissal when that identity changes. A lane starting CI must not bring
+    // back a running row the user dismissed.
+    const rosterPhaseAnchors = new Map();
+    const [working] = await buildAttentionItems(context({
+      includeRoster: true,
+      nowMs: NOW,
+      rosterPhaseAnchors,
+      loadRoster: async () => [rosterWith({ status: "running" })],
+    }));
+    const [waiting] = await buildAttentionItems(context({
+      includeRoster: true,
+      nowMs: NOW + 60_000,
+      rosterPhaseAnchors,
+      loadRoster: async () => [rosterWith({ status: "running" }, "ci")],
+    }));
+
+    expect(working?.boardColumn).toBe("working");
+    expect(waiting?.boardColumn).toBe("waiting");
+    expect(waiting?.statusSince).toBe(working?.statusSince);
+    expect(waiting?.alertFingerprint).toBe(working?.alertFingerprint);
+    // The row's look did change, so it still republishes.
+    expect(waiting?.contentFingerprint).not.toBe(working?.contentFingerprint);
   });
 });

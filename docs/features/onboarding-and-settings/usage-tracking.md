@@ -49,16 +49,30 @@ brain scope is running, which is also the only time that tracker polls.
 Smart balance applies to Claude and Codex when it is enabled for that provider.
 New chats consider only signed-in instances, and an account whose stored login
 is gone is skipped — old windows stay on screen after a login breaks, and they
-are not room. Weekly room left at the reset is lost, so the account whose
-weekly window resets soonest wins: it is spent first, and accounts that reset
-later keep their room for after it. An account with less than 25% of its
-five-hour window left, and more than an hour until that window resets, ranks
-after every account without that limit. An account with a weekly reading and no
-five-hour window is idle, so it counts as full five-hour room; an account with
-no weekly reading counts as a week from its reset. An account at or below its
+are not room. Weekly room left at the reset is lost, so the usable account whose
+weekly window resets soonest is the default choice: it is spent first, and
+accounts that reset later keep their room for after it. Claude adds a limited
+five-hour reserve rotation when another usable account has at least 30
+percentage points more five-hour headroom than that weekly-first choice: two
+consecutive new chats go to the weekly-first account, then the third goes to
+the account with the most five-hour room. The rotation stays active while the
+gap is above 15 points and ends at or below 15; after it ends, that pair must
+reach 30 points again to
+restart. A changed pair starts fresh at the 30-point threshold. The slot count
+resets to the weekly-first account when ADE's usage service restarts. The
+Settings **Next chat** mark previews the next slot without consuming it. Codex
+keeps weekly-first routing.
+
+An account with less than 25% of its five-hour window left, and more than an
+hour until that window resets, ranks after every account without that limit.
+An account with a weekly reading and no five-hour window is idle, so it counts
+as full five-hour room; an account with no weekly reading counts as a week from
+its reset in the weekly-first order, but can take a Claude reserve slot when its
+five-hour reading shows substantially more room. An account at or below its
 minimum five-hour or weekly headroom is out. A tie prefers the higher five-hour
-headroom, then the default. The usage-limit move to another account uses the
-same order. No usable readings fall back to the default, and
+headroom, then the default. The usage-limit move to another account keeps the
+weekly-first order and does not use the new-chat rotation. No usable readings
+fall back to the default, and
 `UsageSnapshot.balanceIssues` drives the amber top-bar pill that says balance
 could not run. An explicit account selection always wins over balancing.
 
@@ -79,7 +93,8 @@ that handoff does not hop again on its own.
 Auto-start windows are off by default. When enabled, the usage service arms one
 unref'd timer per Claude or Codex instance that has a future five-hour reset.
 Five seconds after that reset, ADE sends one small provider request through the
-instance's own config home, using Claude Haiku 4.5 or Codex GPT-5.6 Luna, then
+instance's own config home, using Claude Haiku 5.5 (no tools) or Codex GPT-6 Luna at low effort and
+standard speed, then
 refreshes quota data. The timer is replaced when a newer reset arrives and is
 reconstructed from the next snapshot; no timer state is persisted. Accounts
 without a five-hour window, including API-key-only accounts, never run the
@@ -524,12 +539,22 @@ that gets the whole client rate-limited (429) by Anthropic:
   background polls reuse the live login instead of the file.
 - An expired token is reported as `expired` rather than returned or refreshed:
   the CLI renews it the next time a chat runs on that account, and a user
-  refresh may run the CLI fallback. A token with no refresh token at all is
+  refresh may run the CLI fallback. A background poll also runs the CLI
+  fallback, at most once every 30 minutes per account
+  (`refreshClaudeLoginInBackground`): smart balance does not send a chat to an
+  account it has no reading for, so an idle account's token (about eight
+  hours) would otherwise expire and leave the account unread. The base
+  account (no scoped config home) on macOS is left out: its background poll
+  skips the Keychain and could not see the refreshed token, so it keeps
+  waiting for a chat or a user refresh. Off macOS the CLI rewrites the
+  credentials file the next poll reads, so the base account is refreshed too. A token with no refresh token at all is
   `signed_out`, because the CLI cannot renew it either. A failed Keychain read
   is `unreadable`, because a miss after it proves nothing about the login.
 - A 401 from the usage API drops only the cached access token
   (`invalidateCachedClaudeCredentials`) and marks the account `expired`; the
-  next chat on the account, or an explicit refresh, lets the CLI refresh it.
+  next chat on the account, or an explicit refresh, lets the CLI refresh it. A
+  background poll runs the CLI on the same 30-minute allowance (not for the
+  base account on macOS), because re-reading the login returns the same token.
 
 ## Reproducible baseline
 
@@ -610,9 +635,10 @@ is no second account and no "continue on another account".
 | Provider | Credential ADE reads | Quota request | What the bar shows |
 |---|---|---|---|
 | Cursor | `cursorAuth/accessToken` in the local Cursor `state.vscdb` (macOS `~/Library/Application Support/Cursor/User/globalStorage`, Linux `$XDG_CONFIG_HOME/Cursor/...` or `~/.config/Cursor/...`, Windows `%APPDATA%\Cursor\...`). A token whose JWT expiry is inside 60 seconds is skipped. ADE does not refresh it. | `GET https://cursor.com/api/usage-summary`. The `WorkosCursorSessionToken` cookie is `userId::accessToken`, with the user id taken from the JWT `sub` after the last `\|`. A bare access token is rejected as signed out. No browser-cookie import, and not the team Admin API. | Plan percent for the billing cycle, labeled monthly. |
-| Copilot | `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN`, else `oauth_token` in `github-copilot/hosts.json`. If those are empty and a Copilot config or `gh` hosts file exists, `gh auth token` runs at most once every 15 minutes (immediately on a user refresh). | `GET https://api.github.com/copilot_internal/user`. Premium interactions remaining becomes used percent. ADE reads account email from `GET https://api.github.com/user` with the same token. If that call fails, ADE keeps the last email it read with the same token; a different token gets no remembered email. | Monthly premium quota, including the top-level `quota_reset_date`/`quota_reset_date_utc` when present. |
+| Copilot | `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN`, else `oauth_token` in `github-copilot/hosts.json`. If those are empty and a Copilot config or `gh` hosts file exists, `gh auth token` runs at most once every 15 minutes (immediately on a user refresh). | `GET https://api.github.com/copilot_internal/user`. Premium interactions remaining becomes used percent. When that response has no counts or no plan, the Copilot SDK's account quota (`client.rpc.account.getQuota`) is read instead, at most once every 15 minutes unless the user refreshes. Its windows replace these when it has any. ADE reads account email from `GET https://api.github.com/user` with the same token. If that call fails, ADE keeps the last email it read with the same token; a different token gets no remembered email. | Monthly premium quota, including the top-level `quota_reset_date`/`quota_reset_date_utc` when present. |
 | Grok | Non-expired bearer in `~/.grok/auth.json` (`GROK_HOME` overrides the directory), else `GROK_OAUTH_TOKEN`. Management keys (`xai-…`) and cookie-shaped values are ignored. | `GET https://cli-chat-proxy.grok.com/v1/billing?format=credits`. No grok.com cookie import. | `creditUsagePercent` for the current period, labeled weekly or monthly from the period length. |
 | OpenCode | `OPENCODE_API_KEY`, else an OpenCode or Zen key in the local OpenCode `auth.json`. Other providers' keys in that file are not sent. When neither exists, the Go plan's own console login is read from `opencode.db` (`account.access_token` plus `account_state.active_org_id`; skipped when past `token_expiry`). ADE refreshes neither credential. | `GET https://opencode.ai/zen/go/v1/usage` for an API key. For the console login, `GET https://opencode.ai/console/api/go/status` with the `x-org-id` header (the header the console requires). | Rolling 5-hour, weekly, and monthly percents. The API-key path reads the reported percents (a value of 1 is 1%, not 100%); the console path computes `100 × usedMicroCents / limitMicroCents` from the string meters and uses the subscription's `access.endsAt` for the month reset, which carries none of its own. An account without a Go plan answers `access: null` and shows no OpenCode row. Both paths are fixture-verified; the console path is live-verified against a Go account on the development machine. |
+| Muse | None read by ADE. The reading arrives over MSP from a running Muse chat's host — `usage/read` when the host starts, `usage/changed` after that. | No request of ADE's own. An older observation never replaces a newer one (two chats' hosts can report out of order), and a window whose reset has passed is dropped until Muse reports the next. | The rolling 5-hour window and the weekly percent Muse reports, with a window length when Muse sends one. In-process only, so a fresh app start shows no Muse row until a Muse chat runs again. |
 | Kimi | Non-expired `access_token` in the token file Kimi Code itself reads (`$KIMI_CODE_HOME`, `~/.kimi-code` by default). `shared/kimiCodeLogin.ts` finds it the way Kimi does. First it reads `[providers."managed:kimi-code"]` in `config.toml`, which holds the API base (`base_url`) and the credential slot (`oauth.key`). The mainland-China default slot is `credentials/kimi-code.json`. Any other host and base, including `kimi login --region global`, has its own `credentials/kimi-code-env-<hash>.json`. `KIMI_CODE_BASE_URL` and `KIMI_CODE_OAUTH_HOST`/`KIMI_OAUTH_HOST` override that entry, as they do for Kimi. With no entry, ADE reads `kimi-code.json`, and the `region` marker picks the mainland-China or global base. A login kept in the OS keyring is not read. ADE never refreshes the token. | `GET {base}/usages`, plus `GET {base}/me` with the same bearer token for email and nickname. The top-level `usage` block (`used`, `limit`, `resetTime`) is the weekly quota. Each `limits[]` row reads `used`, `limit`, and `resetTime` from its `detail`, and its length from `window.duration` times `window.timeUnit` (`TIME_UNIT_MINUTE`, `_HOUR`, `_DAY`, or `_WEEK`). Counts may arrive as numeric strings, and an omitted `used` is 0. If `/me` fails, ADE keeps the last email it read with the same token, so the account id does not fall back to `kimi:local`. A different token gets no remembered email, because it may belong to a different account. Kimi rotates its token when it refreshes, so a refresh that lands on a failed `/me` shows `kimi:local` for that one poll. | The weekly quota plus each limit, typed by length: 8 hours or less is the 5-hour window, 10 days or less is weekly, longer is monthly. The first window of each type is kept. The response shape matches Kimi Code's own client (`packages/oauth/src/managed-usage.ts`). ADE's parsing is fixture-verified. Kimi has not been live-verified on the development machine. |
 
 Gemini, Droid, Pi, and Qwen have no remaining-quota source, so ADE adds no
@@ -916,9 +942,10 @@ for each provider, mainly Claude and Codex. The wire contract is in
   (`<provider>:local`) has no ref. The upload is anonymous: it sends no
   account token.
 - **Consent.** The report goes only while product analytics is on
-  (`productAnalyticsService.getStatus().effective`). The analytics setting in
-  Settings says so in plain words. Turns and quota readings from before the
-  user last turned analytics on are not read. To stop the report on a
+  (`productAnalyticsService.getStatus().effective`). Analytics is on by default
+  and has no Settings switch; `DO_NOT_TRACK=1` or an opt-out a previous build
+  stored stops the report. Turns and quota readings from before analytics was
+  last enabled are not read. To stop the report on a
   machine, set `ADE_USAGE_RESEARCH` to `0`, `false`, `off`, or `no`. Both are
   checked again before every request, so turning analytics off mid-run stops
   the run, and stopping the uploader aborts the request in flight.
@@ -964,16 +991,26 @@ for each provider, mainly Claude and Codex. The wire contract is in
 
 ## Desktop, CLI, remote, and mobile parity
 
-- Desktop Settings > Usage is one scrolling page. The Live limits band reads
-  cached live quota without starting a ledger scan; the rest of the page owns
-  the expensive history refresh explicitly.
+- Desktop Settings > Usage is one scrolling page: headline totals with 14-day
+  trends, this machine's live rate limits as radial gauges (`UsageLimitGauges`,
+  shown for the This machine and This project scopes), the layered daily chart,
+  **Week over week** (`UsageWeekCompare`), per-provider and breakdown splits,
+  Activity, and — on the account scope only — pooled Live limits
+  (`UsagePooledLimits`). The gauges read cached live quota without starting a
+  ledger scan; the rest of the page owns the expensive history refresh
+  explicitly. The top-bar popover keeps the per-account meter rows
+  (`UsageLimitsBand` → `UsageAccountRow`), so one snapshot has a compact and a
+  gauge presentation.
 - `ade usage refresh` refreshes quota only; `ade usage refresh --history` runs
   the separate history path. `ade usage stats --text` prints the spend
   summary with the type and speed split and the top models;
   `--by chat|lane|account` prints the ledger breakdown, and
   `--provider P --model M` one model's detail.
-- Settings > Usage: the hero carries the billed / plan-value line and the type
-  and speed bars; Breakdown switches between Models (every session on the
+- Settings > Usage: the totals card carries Estimated cost with the billed /
+  plan-value line, Tokens, Sessions and Active days, each with a 14-day
+  sparkline (cost, tokens, sessions) or an on/off day strip (active days) and
+  the change against the previous window; the type and speed bars sit under the
+  cost figure. Breakdown switches between Models (every session on the
   machine), Chats, Lanes (a lane opens its chats) and Accounts (ADE chats).
   Clicking a model opens its detail dialog with Set price and Map to. `C` / `T`
   switch the Cost/Tokens metric, and ⌘⇧E (Ctrl+Shift+E) exports the visible
@@ -991,9 +1028,11 @@ for each provider, mainly Claude and Codex. The wire contract is in
   receives provider credentials. Older hosts that do not advertise the two
   quota actions remain connected in limited mode and show update guidance.
 - Paired iOS also has a full Usage page in Settings (`SettingsUsagePage.swift`),
-  composed in the same reading order as the desktop page: cost hero and
+  composed in its own reading order: cost hero and
   per-provider split (with the type and speed bars and the billed / plan-value
-  line), daily chart, Live limits, metric strip, breakdown. Breakdown offers
+  line), daily chart, Live limits, metric strip, breakdown. (The desktop page
+  has since added 14-day trends, radial rate-limit gauges and a week-over-week
+  card; iOS keeps the older shape.) Breakdown offers
   Models, Chats, Lanes and Accounts when the host advertises
   `usage.getCostBreakdown`; a model opens its detail screen, with Set price
   and Map to when the host advertises `usage.setModelPriceOverride`. It
@@ -1022,9 +1061,10 @@ for each provider, mainly Claude and Codex. The wire contract is in
   row**. Every signed-in Claude or Codex account is a row, including one that
   has not reported a window yet: that row names the account and says `No usage
   yet` instead of omitting it. **One login is one row**: two local config homes
-  that report the same account email are collapsed to the first (the default),
-  and the later account's windows are dropped with it, so one quota is never
-  counted twice. Logins on different emails stay two rows. Each row
+  that report the same account email are collapsed to the owner the account
+  registry names (`sameLoginOwner`: the default when its login works, else the
+  first working login), and the other account's windows are dropped with it,
+  so one quota is never counted twice. Logins on different emails stay two rows. Each row
   names itself — provider mark, provider, `email · plan` — and
   carries that account's windows side by side underneath as meters: a short
   label (`5h` / `wk` / `mo`), a bar filled to the HEADROOM with the spent
@@ -1050,7 +1090,11 @@ for each provider, mainly Claude and Codex. The wire contract is in
   providers. Bars are coloured by headroom (`usageHeadroomColor`: green from
   50% left, yellow from 25%, red below), the same rule as the top-bar rings —
   accounts get no colour of their own, because hashing an account id into a
-  palette drew a Claude window in Gemini's blue. On iOS the same rows are the
+  palette drew a Claude window in Gemini's blue. The neutral meters, the
+  Settings rate-limit gauges and the home rings use the separate
+  `usageLeftLevel` rule instead — amber at 20% left, red at 5% — so a window
+  that is nearly spent reads the same on the gauges as on the home card. On iOS
+  the same rows are the
   Limits tab of the Work usage module (`WorkUsageLimitsModule.swift`, split out
   of `WorkUsageActivityCarousel.swift`) as well as the Settings Usage page.
 - A row offers **Use reset** only while its account carries a banked reset

@@ -19,6 +19,8 @@ import { pipelineStateOf } from "../../../shared/prPipelineState";
 import { isCiProducerCheck } from "../../../shared/prChecksRollup";
 import { latestRunsByWorkflow } from "./workflowGraph";
 import {
+  claimingSessionIds,
+  dismissedSessionIds,
   isGithubStackFullyLanded,
   selectStackSiblings,
 } from "../../../shared/prChatScope";
@@ -476,13 +478,16 @@ export function buildPrConflictCard(args: {
 }): AdeCardPayload {
   const { pr, kind } = args;
   const behind = Math.max(0, pr.behindBaseBy ?? 0);
-  const title = kind === "conflict" ? "Merge conflicts appeared" : `Branch behind ${pr.baseBranch}`;
+  // The title is the whole sentence: renderers show this card as one quiet
+  // transcript line, often mid-turn, so it carries no separate subtitle.
+  const title = kind === "conflict"
+    ? `PR #${pr.githubPrNumber} has merge conflicts with ${pr.baseBranch}`
+    : `PR #${pr.githubPrNumber} is ${behind} commit${behind === 1 ? "" : "s"} behind ${pr.baseBranch}`;
   return {
     cardId: `pr-conflict:${pr.id}:${pr.headSha?.trim() || "head"}:${kind}`,
     variant: "pr_conflict",
     state: "terminal",
     title,
-    subtitle: `PR #${pr.githubPrNumber} · ${pr.baseBranch}`,
     metrics: kind === "behind"
       ? [
           { label: "branch", value: pr.headBranch, tone: "neutral" },
@@ -490,9 +495,7 @@ export function buildPrConflictCard(args: {
         ]
       : [{ label: "merge state", value: "conflicted", tone: "warning" }],
     navTarget: prNavTarget(pr, "overview"),
-    fallbackText: kind === "behind"
-      ? `PR #${pr.githubPrNumber} is ${behind} commit${behind === 1 ? "" : "s"} behind ${pr.baseBranch}.`
-      : `PR #${pr.githubPrNumber} now has merge conflicts.`,
+    fallbackText: `${title}.`,
   };
 }
 
@@ -599,9 +602,19 @@ export async function emitPrCardsForChange(args: {
   }
   // Ordinary cards stay on this PR's lane (plus explicit edges). Listing every
   // stack lane first would let an unlinked member fall back into a sibling chat.
-  remember(await chat.listSessions(pr.laneId, { includeArchived: false }));
+  const laneSessions = await chat.listSessions(pr.laneId, { includeArchived: false });
+  remember(laneSessions);
   await resolveById(linkedIds);
   const ordinarySessions = selectPrCardSessions([...listedById.values()], [...linkedIds]);
+  // Links only from chats on other lanes (a stack coordinator) are references,
+  // so the PR's own lane still gets its cards, as an unlinked PR's would.
+  if (linkedIds.size > 0 && claimingSessionIds(pr).length === 0) {
+    const dismissed = new Set(dismissedSessionIds(pr));
+    const laneChat = selectPrCardSessions(
+      laneSessions.filter((session) => !linkedIds.has(session.sessionId) && !dismissed.has(session.sessionId)),
+    )[0];
+    if (laneChat) ordinarySessions.push(laneChat);
+  }
   if (stackLanded || stackLinkedIds.size > 0) {
     remember((await Promise.all([...laneIds].map((laneId) => chat.listSessions(laneId, { includeArchived: false })))).flat());
   }
@@ -609,13 +622,7 @@ export async function emitPrCardsForChange(args: {
   // When no chat has an explicit stack edge, `selectPrCardSessions` falls back
   // to the most recent eligible lane chat — but a chat that explicitly unlinked
   // every member must not receive the stack-land card either.
-  const stackDismissedIds = new Set<string>();
-  for (const layer of stackLayers) {
-    for (const dismissed of layer.dismissedChatSessionIds ?? []) {
-      const trimmed = String(dismissed ?? "").trim();
-      if (trimmed) stackDismissedIds.add(trimmed);
-    }
-  }
+  const stackDismissedIds = new Set(stackLayers.flatMap((layer) => dismissedSessionIds(layer)));
   const stackSessions = selectPrCardSessions([...listedById.values()], [...stackLinkedIds])
     .filter((session) => stackLinkedIds.has(session.sessionId) || !stackDismissedIds.has(session.sessionId));
   if (ordinarySessions.length === 0 && !(stackLanded && stackSessions.length > 0)) return 0;

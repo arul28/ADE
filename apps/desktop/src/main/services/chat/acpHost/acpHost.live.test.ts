@@ -12,8 +12,8 @@ import type { AgentChatEvent } from "../../../../shared/types";
 import { resolveAcpExecutable } from "../../ai/acpExecutables";
 import { isAcpAuthError } from "../../ai/acpAuthProbe";
 import { loadQwenUserSettings } from "../../ai/qwenUserSettings";
-import { copilotConfigHome, qwenConfigHome } from "../../shared/providerConfigHomes";
-import { copilotDialect, grokDialect, kimiDialect, qwenDialect } from "./acpDialects";
+import { qwenConfigHome } from "../../shared/providerConfigHomes";
+import { grokDialect, kimiDialect, qwenDialect } from "./acpDialects";
 import { createAcpConnection, initializeAcpConnection } from "./acpConnection";
 import { ACP_METHOD } from "./acpProtocolTypes";
 import { openAcpSession, textPromptBlock, type AcpSession } from "./acpSession";
@@ -48,38 +48,6 @@ async function withDeadline<T>(label: string, promise: Promise<T>, ms = LIVE_DEA
 }
 
 describe.skipIf(!LIVE)("ACP host live handshake", () => {
-  it("opens a Copilot session through ADE's host without deadlocking on trust", async () => {
-    const executable = resolveAcpExecutable("copilot");
-    expect(executable.source).not.toBe("fallback-command");
-    const pool = createAcpSessionPool();
-    pools.push(pool);
-    const dialect = copilotDialect;
-    const spawnPlan = dialect.buildSpawnPlan({
-      binaryPath: executable.path,
-      cwd,
-      baseEnv: process.env,
-      configHome: copilotConfigHome(),
-    });
-    const session = await withDeadline(
-      "copilot open",
-      openAcpSession({
-        dialect,
-        cwd,
-        spawnPlan,
-        sessionToken: "live-copilot",
-        pool,
-        callbacks: {
-          onEvents: () => undefined,
-          onPermissionRequested: (pending) => pending.cancel(),
-          onPermissionSettled: () => undefined,
-        },
-      }),
-    );
-    sessions.push(session);
-    expect(session.sessionId.length).toBeGreaterThan(0);
-    expect(session.connection.initializeResult?.agentCapabilities?.loadSession).toBe(true);
-    expect(session.connection.isAlive()).toBe(true);
-  });
 
   it("opens a Grok session through ADE's host and stamps permission-mode on spawn", async () => {
     const executable = resolveAcpExecutable("grok");
@@ -117,51 +85,6 @@ describe.skipIf(!LIVE)("ACP host live handshake", () => {
     });
   });
 
-  it("runs a Copilot ping through ADE's host from a tiny cwd", async () => {
-    const tmp = mkdtempSync(path.join(os.tmpdir(), "ade-acp-live-copilot-"));
-    writeFileSync(path.join(tmp, "README.md"), "probe\n");
-    try {
-      const executable = resolveAcpExecutable("copilot");
-      const pool = createAcpSessionPool();
-      pools.push(pool);
-      const events: AgentChatEvent[] = [];
-      const spawnPlan = copilotDialect.buildSpawnPlan({
-        binaryPath: executable.path,
-        cwd: tmp,
-        baseEnv: process.env,
-        configHome: copilotConfigHome(),
-      });
-      const session = await withDeadline(
-        "copilot open tiny",
-        openAcpSession({
-          dialect: copilotDialect,
-          cwd: tmp,
-          spawnPlan,
-          sessionToken: "live-copilot-ping",
-          pool,
-          callbacks: {
-            onEvents: (batch) => events.push(...batch),
-            onPermissionRequested: (pending) => pending.cancel(),
-            onPermissionSettled: () => undefined,
-          },
-        }),
-      );
-      sessions.push(session);
-      const outcome = await withDeadline(
-        "copilot ping",
-        session.prompt({
-          turnId: "live-ping",
-          blocks: [textPromptBlock("Reply with exactly the word ping and nothing else. Do not use tools.")],
-        }),
-        60_000,
-      );
-      expect(outcome.stopReason).toBe("end_turn");
-      expect(events.some((event) => event.type === "text" && event.text.toLowerCase().includes("ping"))).toBe(true);
-      expect(outcome.usage?.inputTokens).toBeGreaterThan(0);
-    } finally {
-      rmSync(tmp, { recursive: true, force: true });
-    }
-  });
 
   it("qwen initialize works without auth; session/new is the re-login card", async () => {
     const executable = resolveAcpExecutable("qwen");

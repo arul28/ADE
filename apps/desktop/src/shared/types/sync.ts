@@ -232,7 +232,12 @@ export type SyncPeerConnectionState = SyncPeerMetadata & {
 };
 
 // Legacy internal/wire role names kept for sync protocol compatibility.
-export type SyncConnectionState = "disconnected" | "connecting" | "connected" | "error";
+/**
+ * `unknown` is only for a snapshot the desktop synthesized because the runtime
+ * could not be read (see buildMachineOnlySyncSnapshot). It says nothing about
+ * whether the client is connected, so it must not read as "disconnected".
+ */
+export type SyncConnectionState = "disconnected" | "connecting" | "connected" | "error" | "unknown";
 
 export type SyncRole = "brain" | "viewer";
 
@@ -321,6 +326,14 @@ export type SyncGetStatusArgs = {
    */
   includeTransferReadiness?: boolean;
   forceTransferReadiness?: boolean;
+  /**
+   * Only with `includeTransferReadiness` off. With nothing cached yet, the read
+   * computes the readiness and waits for it (bounded) instead of returning the
+   * skipped placeholder. Set by a caller that acts on `ready`, such as
+   * `ade sync status`. Left off, the read gets the placeholder without starting
+   * the computation.
+   */
+  awaitTransferReadiness?: boolean;
 };
 
 export type SyncDeviceRuntimeState = SyncDeviceRecord & {
@@ -578,7 +591,7 @@ export function describeUnpublishedAccountDirectory(
       // its sync host is failing and retrying, and telling someone sync is off
       // sends them looking for a switch that is already on.
       return {
-        summary: "sync hasn't started on this computer yet",
+        summary: "other devices can't reach this computer yet",
         nextAction: "Start sync",
       };
     case "missing_pairing_connect_info":
@@ -876,6 +889,12 @@ export type SyncFeatureFlags = {
    */
   openCodeInboxSteer?: true;
   /**
+   * A bypass merge from above the bottom of a GitHub stack merges layer by
+   * layer. Older hosts send one bypass merge GitHub refuses, so a client offers
+   * the override above the bottom only when this is present.
+   */
+  prsStackLayeredBypass?: true;
+  /**
    * The host serves `macDesktop.takeControl` and its siblings, so the hosted
    * web client may take the lane's input lease over the sync socket. Advertised
    * only when the control commands are registered, exactly like
@@ -1138,6 +1157,12 @@ export type SyncRosterChat = {
   snoozedUntil?: string | null;
   snoozedAt?: string | null;
   /**
+   * The chat's next scheduled wake, when its project is booted and a wake is
+   * parked. A finished chat with a pending wake waits rather than being Done.
+   * Optional: older hosts omit it.
+   */
+  nextWakeAt?: string | null;
+  /**
    * Agent chats only (`chatLogV2` hosts): the chat's durable envelope
    * `sequence` high-water and `historyGeneration`, so a client can tell which
    * cached chat logs are current without subscribing to each one.
@@ -1153,6 +1178,12 @@ export type SyncRosterLane = {
   icon?: string | null;
   laneType?: string | null;
   branchRef?: string | null;
+  /**
+   * Why a running session in this lane waits rather than works: the lane's
+   * open PR has CI in flight, or a review requested (`lanePrWaitingReason`).
+   * Optional: older hosts omit it, and a client then shows no Waiting reason.
+   */
+  prWaitingReason?: "ci" | "review" | null;
 };
 
 export type SyncRosterProject = {
@@ -2293,6 +2324,7 @@ export type SyncCliLaunchProvider =
   | "droid"
   | "opencode"
   | "pi"
+  | "muse"
   | "qwen"
   | "kimi"
   | "grok"
@@ -2313,6 +2345,8 @@ export type SyncStartCliSessionArgs = {
   modelId?: string | null;
   reasoningEffort?: string | null;
   fastMode?: boolean | null;
+  /** Codex only: "ultrafast" asks for Ultrafast when Fast is on. */
+  fastTier?: "ultrafast";
   /** @deprecated Use fastMode. Accepted for older callers. */
   codexFastMode?: boolean | null;
   /**
@@ -2406,6 +2440,7 @@ export const PROVIDER_ACCOUNT_REMOTE_COMMANDS = {
   loginStatus: "controller",
   create: "controller",
   remove: "controller",
+  signOut: "controller",
   rename: "controller",
   setDefault: "controller",
   dismissReplaced: "controller",
@@ -2477,6 +2512,10 @@ export type SyncRemoteCommandAction =
   | "lanes.detachGitHubIssueFromSession"
   | "lanes.listGitHubIssuesForSession"
   | "lanes.listGitHubIssuesForLaneSessions"
+  | "lanes.attachJiraIssueToSession"
+  | "lanes.detachJiraIssueFromSession"
+  | "lanes.listJiraIssuesForSession"
+  | "lanes.listJiraIssuesForLaneSessions"
   | "lanes.rebaseStart"
   | "lanes.rebasePush"
   | "lanes.rebaseRollback"
@@ -2525,8 +2564,12 @@ export type SyncRemoteCommandAction =
   | "work.sendToSession"
   | "work.stopRuntime"
   | "chat.getSlashCommands"
+  | "chat.listMentionSuggestions"
   | "chat.resolveSmartLinkPreview"
+  | "chat.resolveSmartLinkImage"
   | "chat.resolveSourceFavicons"
+  | "chat.getMcpApp"
+  | "chat.mcpAppRequest"
   | "chat.getParallelLaunchState"
   | "chat.setParallelLaunchState"
   | "chat.handoff"
@@ -2536,6 +2579,13 @@ export type SyncRemoteCommandAction =
   | "chat.fastForwardCrossMachineHandoffLane"
   | "chat.acceptCrossMachineHandoff"
   | "chat.markCrossMachineHandoff"
+  | "chat.getCrossMachineHandoffOptions"
+  | "chat.previewCrossMachineHandoff"
+  | "chat.startCrossMachineHandoff"
+  | "chat.cancelCrossMachineHandoff"
+  | "chat.retryCrossMachineHandoff"
+  | "chat.resolveCrossMachineHandoffApproval"
+  | "chat.acknowledgeCrossMachineHandoff"
   | "chat.getContextUsage"
   | "chat.rewindFiles"
   | "chat.getTurnFileDiff"
@@ -2546,9 +2596,12 @@ export type SyncRemoteCommandAction =
   | "chat.finishTempFileAttachment"
   | "chat.abortTempFileAttachment"
   | "chat.getAttachmentChunk"
-  | "chat.listPromptStashes"
-  | "chat.createPromptStash"
-  | "chat.deletePromptStash"
+  | "chat.listDrafts"
+  | "chat.createDraft"
+  | "chat.deleteDraft"
+  | "chat.updateDraft"
+  | "chat.claimDraft"
+  | "chat.sendDraftNow"
   | "chat.listThreadComments"
   | "chat.createThreadComment"
   | "chat.updateThreadComment"
@@ -2633,6 +2686,11 @@ export type SyncRemoteCommandAction =
   | "cto.getLinearIssueComments"
   | "cto.getLinearIssue"
   | "cto.updateLinearIssue"
+  | "cto.createLinearIssueComment"
+  | "cto.createLinearIssue"
+  | "cto.getLinearIssueCreateOptions"
+  | "cto.listLinearProjectMilestones"
+  | "cto.uploadLinearFile"
   | "cto.countLinearIssues"
   | "cto.getLinearCustomViews"
   | "cto.updateIdentity"
@@ -2697,7 +2755,34 @@ export type SyncRemoteCommandAction =
   | "github.detectRepo"
   | "github.listRepoIssues"
   | "github.getIssue"
+  | "github.getRepoIssueSummary"
+  | "github.listRepoIssueList"
+  | "github.listIssueComments"
+  | "github.getIssueWriteAccess"
+  | "github.listRepoMilestones"
+  | "github.listRepoLabels"
+  | "github.listRepoCollaborators"
+  | "github.updateIssue"
+  | "github.createIssue"
+  | "github.listIssueTemplates"
+  | "github.listIssueTypes"
+  | "github.commentOnIssue"
   | "github.publishCurrentProject"
+  | "jira.getConnectionStatus"
+  | "jira.connect"
+  | "jira.disconnect"
+  | "jira.listProjects"
+  | "jira.listIssues"
+  | "jira.getIssue"
+  | "jira.listComments"
+  | "jira.listTransitions"
+  | "jira.listAssignableUsers"
+  | "jira.listLabels"
+  | "jira.getCreateMeta"
+  | "jira.addComment"
+  | "jira.updateIssue"
+  | "jira.transitionIssue"
+  | "jira.createIssue"
   | "projectConfig.get"
   | "projectConfig.save"
   | "ai.getStatus"
@@ -2865,6 +2950,15 @@ export type SyncRemoteCommandAction =
   // viewer-allowed (the phone is view-only); everything that drives or
   // provisions a device is controller-only, so a viewer role cannot tap.
   | "apple.status"
+  | "automations.webhookList"
+  | "automations.webhookListDeliveries"
+  | "automations.webhookGetDelivery"
+  // Auto-handoff rules from the phone's chat menu: the same automations
+  // surface the desktop menu writes through (`automations.list`,
+  // `automation_planner.saveDraft`, `automations.deleteRule`).
+  | "automations.list"
+  | "automations.saveDraft"
+  | "automations.deleteRule"
   | "apple.streamTicket"
   | "apple.input"
   | "apple.invoke"

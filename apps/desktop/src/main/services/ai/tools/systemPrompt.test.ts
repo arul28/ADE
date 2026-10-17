@@ -104,7 +104,6 @@ describe("buildCodingAgentSystemPrompt", () => {
   it("omits tool list sentence when no tool names provided", () => {
     const result = buildCodingAgentSystemPrompt({ cwd: "/x" });
     expect(result).not.toContain("Available tools:");
-    expect(result).toContain("Use the available tools deliberately");
   });
 
   describe("runtime environment banner", () => {
@@ -300,7 +299,6 @@ describe("buildCodingAgentSystemPrompt", () => {
 
   it("always includes operating loop, editing rules, and verification rules", () => {
     const result = buildCodingAgentSystemPrompt({ cwd: "/x" });
-    expect(result).toContain("## Operating Loop");
     expect(result).toContain("status checks, interruptions, and tool/subagent timeouts as checkpoints");
     expect(result).toContain("unless the user explicitly says stop, pause, or only report status");
     expect(result).toContain("## ADE");
@@ -310,9 +308,7 @@ describe("buildCodingAgentSystemPrompt", () => {
     expect(result).toContain("ade-ios-simulator");
     expect(result).toContain("ade-cli-control-plane");
     expect(result).not.toContain("ade-orchestrator");
-    expect(result).toContain("## Editing Rules");
-    expect(result).toContain("## Verification Rules");
-    expect(result).toContain("## User-Facing Progress");
+    expect(result).toContain("## Tool Use Rules");
     expect(result).toContain("## Task");
   });
 

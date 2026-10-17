@@ -4,7 +4,6 @@ import {
   isMacRuntimeTarget,
   rendererPlatformAttribute,
   supportsIosSimulatorPlatform,
-  supportsNativeNotchPlatform,
 } from "./platform";
 
 describe("renderer platform helpers", () => {
@@ -19,12 +18,6 @@ describe("renderer platform helpers", () => {
     expect(rendererPlatformAttribute("Win32")).toBe("win32");
     expect(rendererPlatformAttribute("Linux x86_64")).toBe("linux");
     expect(rendererPlatformAttribute("browser")).toBe("unknown");
-  });
-
-  it("only enables the native Notch surface on macOS", () => {
-    expect(supportsNativeNotchPlatform("MacIntel")).toBe(true);
-    expect(supportsNativeNotchPlatform("Win32")).toBe(false);
-    expect(supportsNativeNotchPlatform("Linux x86_64")).toBe(false);
   });
 
   it("limits the iOS simulator capability to macOS", () => {

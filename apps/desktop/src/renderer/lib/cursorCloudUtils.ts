@@ -13,9 +13,9 @@ export function cursorCloudStatusToneClass(status: string | undefined | null): s
   if (s === "creating") return "border-sky-300/25 bg-sky-500/10 text-sky-100/80";
   if (s === "finished" || s === "completed") return "border-emerald-400/22 bg-emerald-500/8 text-emerald-100/80";
   if (s === "error" || s === "failed" || s === "expired") return "border-red-400/22 bg-red-500/8 text-red-200/85";
-  if (s === "cancelled") return "border-white/[0.10] bg-white/[0.03] text-fg/45";
-  if (s === "archived") return "border-white/[0.08] bg-transparent text-fg/40";
-  return "border-white/[0.08] bg-white/[0.025] text-fg/55";
+  if (s === "cancelled") return "border-fg/[0.10] bg-fg/[0.03] text-fg/45";
+  if (s === "archived") return "border-fg/[0.08] bg-transparent text-fg/40";
+  return "border-fg/[0.08] bg-fg/[0.025] text-fg/55";
 }
 
 export function formatCursorCloudAge(value: number | string | null | undefined): string | null {

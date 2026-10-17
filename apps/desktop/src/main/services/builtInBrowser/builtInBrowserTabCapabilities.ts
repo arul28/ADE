@@ -40,6 +40,8 @@ import type {
   BuiltInBrowserExportHarResult,
   BuiltInBrowserFindInPageArgs,
   BuiltInBrowserFindInPageResult,
+  BuiltInBrowserReadTextArgs,
+  BuiltInBrowserReadTextResult,
   BuiltInBrowserHoverArgs,
   BuiltInBrowserNetworkLogArgs,
   BuiltInBrowserNetworkLogEntry,
@@ -74,6 +76,7 @@ import {
 } from "../../../shared/agentObservationNormalizers";
 import { sanitizeObservationPathSegment } from "../../../shared/agentObservation";
 import type { Logger } from "../logging/logger";
+import { normalizeRelative } from "../shared/utils";
 import {
   emptyToNull,
   errorMessage,
@@ -121,6 +124,32 @@ import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
 
 const DEFAULT_FIND_IN_PAGE_TIMEOUT_MS = 5_000;
 const MAX_FIND_IN_PAGE_TIMEOUT_MS = 30_000;
+const DEFAULT_READ_TEXT_CHARS = 20_000;
+const MAX_READ_TEXT_CHARS = 100_000;
+/** Its own isolated world, so a page's scripts can neither see nor patch the read. */
+const READ_TEXT_ISOLATED_WORLD_ID = 1_071_131;
+
+/**
+ * Runs in the page. A region counts as the main content only when it holds a
+ * real share of the text; a stub `<main>` around a cookie banner does not.
+ */
+const readTextSource = (selector: string | null): string => `(() => {
+  const selector = ${JSON.stringify(selector)};
+  const clean = (value) => String(value || "").replace(/[ \\t]+\\n/g, "\\n").replace(/\\n{3,}/g, "\\n\\n").trim();
+  if (selector) {
+    const node = document.querySelector(selector);
+    if (!node) return { error: "No element matches " + selector + "." };
+    return { source: "selector", text: clean(node.innerText ?? node.textContent) };
+  }
+  const body = document.body || document.documentElement;
+  const bodyText = clean(body && (body.innerText ?? body.textContent));
+  const main = document.querySelector("main, [role=main], article");
+  const mainText = main ? clean(main.innerText ?? main.textContent) : "";
+  if (mainText.length >= 500 || (mainText && mainText.length >= bodyText.length * 0.5)) {
+    return { source: "main", text: mainText };
+  }
+  return { source: "body", text: bodyText };
+})()`;
 const MAX_DRAG_STEPS = 50;
 const DEFAULT_DRAG_STEPS = 8;
 const MAX_UPLOAD_FILE_COUNT = 20;
@@ -277,6 +306,8 @@ export type BuiltInBrowserTabCapabilityDeps = {
    * attach pass rather than this module reaching into the view.
    */
   onPreviewWatchersChanged?: (tabId: string) => void;
+  /** A device preset changed the size this tab is drawn at, so a parked view must be re-placed. */
+  onTabEmulationChanged?: (tabId: string) => void;
   /**
    * Whether this tab's view currently holds a compositor surface.
    *
@@ -292,6 +323,12 @@ export type BuiltInBrowserTabCapabilityDeps = {
    * produces frames. Resolves once the view is ready to be captured.
    */
   holdCaptureSurface?: (tabId: string) => Promise<() => void>;
+  /**
+   * Move the tab onto the fixed recording viewport and settle the layout before
+   * the first frame is captured, so a recording's opening frame is 1280×800
+   * rather than the pane's size (see `builtInBrowserRecordingViewport.ts`).
+   */
+  prepareRecordingViewport?: (tab: BrowserTabState) => Promise<void>;
   /** The desktop's Chromium demo engine, which makes a recording's video. */
   demoEngine: DemoEngine | null;
   tabById: (tabId: string | null | undefined) => BrowserTabState | null;
@@ -327,6 +364,11 @@ export type BuiltInBrowserTabCapabilityDeps = {
     params?: Record<string, unknown>,
   ) => Promise<T>;
   withTemporaryDebugger: <T>(wc: WebContents, fn: () => Promise<T>) => Promise<T>;
+  /** A synthesized mouse event at a CSS viewport point, mapped to the page's drawn scale. */
+  dispatchPageMouseEvent: (
+    tab: BrowserTabState,
+    params: { type: string; x: number; y: number } & Record<string, unknown>,
+  ) => Promise<void>;
   resolveClickTarget: (
     tab: BrowserTabState,
     input: BuiltInBrowserClickArgs,
@@ -356,6 +398,7 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
   const {
     acquireDebuggerHold,
     actionResult,
+    dispatchPageMouseEvent,
     emit,
     emitStatus,
     focusElementTarget,
@@ -395,6 +438,14 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
   /* ── Device emulation ──────────────────────────────────────────────────── */
 
   /**
+   * The view scale each emulating tab's override was last applied at. The pane
+   * changes `emulationViewScale()` at once and re-sends the override after, so
+   * until that lands Chromium still draws the page at the old scale, and mouse
+   * input must be mapped with the scale Chromium is drawing at.
+   */
+  const appliedEmulationScales = new WeakMap<BrowserTabState, number>();
+
+  /**
    * Sends the CDP commands that make a device preset visible.
    *
    * `setDeviceMetricsOverride` alone is not enough: without `screenWidth` /
@@ -404,9 +455,10 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
    * what "iPhone 17" means.
    */
   const sendEmulationCommands = async (
-    wc: WebContents,
+    tab: BrowserTabState,
     next: BuiltInBrowserEmulationState | null,
   ): Promise<void> => {
+    const wc = tab.webContents;
     const hasTouch = next?.hasTouch ?? false;
     await sendDebuggerCommand(wc, "Emulation.setTouchEmulationEnabled", {
       enabled: hasTouch,
@@ -420,11 +472,13 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
     }).catch(() => {});
     if (!next) {
       await sendDebuggerCommand(wc, "Emulation.clearDeviceMetricsOverride");
+      appliedEmulationScales.delete(tab);
       // CDP has no "clear UA override"; an empty string is Chromium's reset.
       await sendDebuggerCommand(wc, "Emulation.setUserAgentOverride", { userAgent: "" }).catch(() => {});
       return;
     }
     const metrics = builtInBrowserEmulationMetrics(next);
+    const scale = clampBuiltInBrowserEmulationViewScale(emulationViewScale());
     await sendDebuggerCommand(wc, "Emulation.setDeviceMetricsOverride", {
       width: metrics.width,
       height: metrics.height,
@@ -434,7 +488,7 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
       // width and is CROPPED by the narrower native view. With it the page
       // still reports the device's width and Chromium draws it smaller, which
       // is what the pane's letterbox already assumed.
-      scale: clampBuiltInBrowserEmulationViewScale(emulationViewScale()),
+      scale,
       screenWidth: metrics.width,
       screenHeight: metrics.height,
       positionX: 0,
@@ -443,6 +497,7 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
         ? { type: "landscapePrimary", angle: 90 }
         : { type: "portraitPrimary", angle: 0 },
     });
+    appliedEmulationScales.set(tab, scale);
     if (next.userAgent) {
       const userAgentMetadata = builtInBrowserEmulationUserAgentMetadata(next);
       await sendDebuggerCommand(wc, "Emulation.setUserAgentOverride", {
@@ -463,13 +518,23 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
     if (!tab.emulation) return;
     const wc = tab.webContents;
     if (wc.isDestroyed() || !wc.debugger.isAttached()) return;
-    void sendEmulationCommands(wc, tab.emulation).catch((error) => {
-      logger()?.debug("built_in_browser.emulation_reapply_failed", {
-        tabId: tab.id,
-        err: errorMessage(error),
-      });
-    });
+    // The applied scale is only known once the override lands, and a parked
+    // view is boxed at that scale, so the view is re-placed after it.
+    void sendEmulationCommands(tab, tab.emulation).then(
+      () => deps.onTabEmulationChanged?.(tab.id),
+      (error) => {
+        logger()?.debug("built_in_browser.emulation_reapply_failed", {
+          tabId: tab.id,
+          err: errorMessage(error),
+        });
+      },
+    );
   };
+
+  /** The scale Chromium draws an emulating tab at: what its override last applied. */
+  const emulationInputScale = (tab: BrowserTabState): number => (
+    appliedEmulationScales.get(tab) ?? clampBuiltInBrowserEmulationViewScale(emulationViewScale())
+  );
 
   async function setEmulation(
     input: BuiltInBrowserSetEmulationArgs,
@@ -488,22 +553,23 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
         // the toolbar without ever re-laying-out the page.
         await acquireDebuggerHold(tab, "emulation");
         try {
-          await sendEmulationCommands(wc, next);
+          await sendEmulationCommands(tab, next);
         } catch (error) {
           releaseDebuggerHold(tab, "emulation");
           throw error;
         }
       } else if (tab.debuggerHolds.has("emulation")) {
         try {
-          await sendEmulationCommands(wc, null);
+          await sendEmulationCommands(tab, null);
         } finally {
           releaseDebuggerHold(tab, "emulation");
         }
       } else {
-        await withTemporaryDebugger(wc, () => sendEmulationCommands(wc, null));
+        await withTemporaryDebugger(wc, () => sendEmulationCommands(tab, null));
       }
       tab.emulation = next;
     });
+    deps.onTabEmulationChanged?.(tab.id);
     emitStatus();
     return {
       tabId: tab.id,
@@ -585,6 +651,45 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
     });
   }
 
+  async function readText(
+    input: BuiltInBrowserReadTextArgs = {},
+  ): Promise<BuiltInBrowserReadTextResult> {
+    const tab = await prepareTabCapability(input, {
+      emptyMessage: "No active browser tab. Open a tab before reading its text.",
+      consentReason: "The agent asked to read this tab's text.",
+    });
+    const selector = stringOrNull(input.selector);
+    const offset = Math.max(0, Math.floor(optionalFiniteNumber(input.offset) ?? 0));
+    const maxChars = Math.min(
+      MAX_READ_TEXT_CHARS,
+      Math.max(1, Math.floor(optionalFiniteNumber(input.maxChars) ?? DEFAULT_READ_TEXT_CHARS)),
+    );
+    return runTracedTabCapability(tab, "readText", input, async () => {
+      const wc = tab.webContents;
+      if (wc.isDestroyed()) throw new Error(`Browser tab ${tab.id} is closed.`);
+      const raw = await wc.executeJavaScriptInIsolatedWorld(
+        READ_TEXT_ISOLATED_WORLD_ID,
+        [{ code: readTextSource(selector) }],
+      ) as { error?: string; source?: string; text?: string } | null;
+      if (raw?.error) throw new Error(raw.error);
+      const full = typeof raw?.text === "string" ? raw.text : "";
+      const source = raw?.source === "selector" || raw?.source === "main" ? raw.source : "body";
+      const start = Math.min(offset, full.length);
+      const text = full.slice(start, start + maxChars);
+      const end = start + text.length;
+      return {
+        tabId: tab.id,
+        url: emptyToNull(wc.getURL()),
+        title: emptyToNull(wc.getTitle()),
+        source,
+        text,
+        offset: start,
+        totalChars: full.length,
+        nextOffset: end < full.length ? end : null,
+      };
+    });
+  }
+
   async function stopFindInPage(
     input: BuiltInBrowserStopFindInPageArgs = {},
   ): Promise<BuiltInBrowserStopFindInPageResult> {
@@ -628,11 +733,11 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
         // DevTools and the CDP debugger cannot own the same target, so opening
         // DevTools would silently kill an in-flight network log. Recording is
         // unaffected: it captures through getDisplayMedia, not the debugger.
-        // The agent viewport is ADE's own layout pin, not something the
+        // The recording viewport is ADE's own layout pin, not something the
         // person asked for, so it steps aside rather than refusing: the page
         // lays out at its box while DevTools is open, and the service re-pins
-        // it when DevTools closes (`tabUsesAgentViewport`).
-        if (tab.debuggerHolds.has("agent-viewport")) releaseDebuggerHold(tab, "agent-viewport");
+        // it when DevTools closes (`tabUsesRecordingViewport`).
+        if (tab.debuggerHolds.has("recording-viewport")) releaseDebuggerHold(tab, "recording-viewport");
         if (tab.debuggerHolds.size > 0) {
           const owner = tab.debuggerHolds.has("network") ? "network" : "emulation";
           const fix = owner === "network"
@@ -863,7 +968,7 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
       return {
         tabId: tab.id,
         filePath,
-        relativePath: path.relative(scratchRoot, filePath),
+        relativePath: normalizeRelative(path.relative(scratchRoot, filePath)),
         entryCount: entries.length,
         exportedAt,
       };
@@ -878,7 +983,7 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
       const wc = tab.webContents;
       const { x, y } = await resolveClickTarget(tab, input as BuiltInBrowserClickArgs);
       await withTemporaryDebugger(wc, async () => {
-        await sendDebuggerCommand(wc, "Input.dispatchMouseEvent", {
+        await dispatchPageMouseEvent(tab, {
           type: "mouseMoved",
           x,
           y,
@@ -901,13 +1006,13 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
         Math.max(1, Math.floor(optionalFiniteNumber(input.steps) ?? DEFAULT_DRAG_STEPS)),
       );
       await withTemporaryDebugger(wc, async () => {
-        await sendDebuggerCommand(wc, "Input.dispatchMouseEvent", {
+        await dispatchPageMouseEvent(tab, {
           type: "mouseMoved",
           x: from.x,
           y: from.y,
           button: "none",
         });
-        await sendDebuggerCommand(wc, "Input.dispatchMouseEvent", {
+        await dispatchPageMouseEvent(tab, {
           type: "mousePressed",
           x: from.x,
           y: from.y,
@@ -916,7 +1021,7 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
         });
         for (let step = 1; step <= steps; step += 1) {
           const ratio = step / steps;
-          await sendDebuggerCommand(wc, "Input.dispatchMouseEvent", {
+          await dispatchPageMouseEvent(tab, {
             type: "mouseMoved",
             x: Math.round(from.x + (to.x - from.x) * ratio),
             y: Math.round(from.y + (to.y - from.y) * ratio),
@@ -924,7 +1029,7 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
             buttons: 1,
           });
         }
-        await sendDebuggerCommand(wc, "Input.dispatchMouseEvent", {
+        await dispatchPageMouseEvent(tab, {
           type: "mouseReleased",
           x: to.x,
           y: to.y,
@@ -1230,9 +1335,20 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
       : () => {};
     // The hold can wait out a warm; a second start that raced us is refused
     // here rather than opening a second recorder on the same tab.
-    if (tab.recording) {
+    if (tab.recording || tab.recordingStarting === true) {
       releaseCaptureHold();
       throw new Error(`Browser tab ${tab.id} is already recording. Stop the current recording first.`);
+    }
+    // The layout has to be fixed before the first frame, or the video opens at
+    // the pane's size and jumps to 1280×800 part-way through.
+    tab.recordingStarting = true;
+    try {
+      await deps.prepareRecordingViewport?.(tab);
+    } catch (error) {
+      tab.recordingStarting = false;
+      releaseCaptureHold();
+      emitStatus();
+      throw error;
     }
     let session: BuiltInBrowserRecordingSession;
     // Begun before the stream is negotiated: an action while it starts is
@@ -1298,11 +1414,14 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
       };
       recordingPlain.set(session, plain);
     } catch (error) {
+      tab.recordingStarting = false;
       demoTrackRegistry.discard(trackKey);
       releaseCaptureHold();
+      emitStatus();
       throw error;
     }
     tab.recording = session;
+    tab.recordingStarting = false;
     const status: { startedAt: string; fps: number } = { startedAt: session.startedAt, fps };
     emit({
       type: "recording",
@@ -1383,7 +1502,7 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
       tabId: tab.id,
       path: video.path,
       relativePath: observationRelativeBasePath
-        ? path.relative(observationRelativeBasePath, video.path)
+        ? normalizeRelative(path.relative(observationRelativeBasePath, video.path))
         : null,
       durationMs: result.durationMs,
       fps: session.fps,
@@ -1529,10 +1648,12 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
   return {
     setEmulation,
     reapplyTabEmulation,
+    emulationInputScale,
     setZoom,
     applyTabZoom,
     findInPage,
     stopFindInPage,
+    readText,
     setDevTools,
     setNetworkLogging,
     getNetworkLog,

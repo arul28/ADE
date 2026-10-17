@@ -45,3 +45,5 @@ export {
   settingsSectionTitleStyle,
   settingsSectionDescriptionStyle,
 } from "../settingsSectionUi";
+
+export { ModernPage, ModernRow, ModernRows, ModernSection } from "./SettingsModern";

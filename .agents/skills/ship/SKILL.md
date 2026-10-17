@@ -134,8 +134,8 @@ is not achievable. All three need the author.
   stop with `blocked`. Do not merge and mention them afterwards.
 - If `/quality` was never run on this lane, or its final gate result is not
   available in the lane handoff, stop with `blocked`; unknown is not empty.
-- Any base movement, rebase, conflict resolution, Phase 3b edit, or
-  force-finalize edit clears all three quality binding fields. In stack mode,
+- A rebase, conflict resolution, Phase 3b edit, or force-finalize edit clears
+  all three quality binding fields. Base movement without a conflict does not. In stack mode,
   this lane's own Phase 3b edit clears them and is rebound by revalidation on
   the head it then pushes; external movement of the parent, base, or head
   instead clears the complete stack binding and returns
@@ -271,14 +271,17 @@ terminal-neutral, and continue. Record it under `inactiveReviewBots`, never
 If branch protection requires an absent check, Phase 3c will surface that as a
 merge-policy block.
 
-**Rebase only on real conflicts or a stale quality base.** `behindBase` alone
-does not normally trigger a rebase. The one safety exception is base movement
-after quality validation: the final tree is no longer the reviewed head tree,
-so ordinary merge mode rebases and reruns the canonical quality procedure even
-when GitHub reports a clean merge. Stack mode instead invalidates the current
+**Rebase or merge the base only to resolve a conflict.** PRs land on `main`
+all the time, so being behind it is normal and is not a reason to rebase, merge
+`main` in, or rerun quality. Act only when the poll reports `conflicting`
+(GitHub's `DIRTY`). GitHub may still call the PR behind and refuse a plain
+merge, because the "Protect main" ruleset requires branches to be up to date; we
+do not need that, so merge with `--admin` as Phase 3c.3 describes. The `ci-pass`
+run on `main` after the merge catches the rare change that merges cleanly but
+breaks another; fix those forward. Stack mode instead invalidates the current
 and upstack bindings and returns `stack-coordinator-sync-required`; it never
 rebases and never pushes another layer, though it does push its own layer branch
-in Phase 0 and Phase 3b. Otherwise, skip needless rebases.
+in Phase 0 and Phase 3b.
 
 **Bot pings by iteration.** Never ping GitHub Copilot and never ping `@codex` —
 neither is an expected review signal here, and Copilot quota exhaustion

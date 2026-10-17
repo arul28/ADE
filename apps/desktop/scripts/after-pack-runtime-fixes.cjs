@@ -401,6 +401,28 @@ function assertNoRuntimeFetchedToolPackages(
   );
 }
 
+// Platform packages whose file names carry their arch in a form the Mach-O
+// twin check cannot map (copilot-sdk's libmsalruntime_arm64.dylib, koffi's
+// darwin_arm64/koffi.node). A per-arch macOS bundle never loads the other
+// arch's copy, so it is dropped instead of shipped.
+const DARWIN_PER_ARCH_PACKAGES = [
+  ["@github", "copilot-sdk-darwin-"],
+  ["@koromix", "koffi-darwin-"],
+];
+
+function pruneForeignDarwinArchPackages(runtimeRoot, context, platform) {
+  if (platform !== "darwin") return;
+  const targets = packagedRuntimeTargetsForContext(context, platform);
+  if (targets.length !== 1) return;
+  const foreignArch = targets[0] === "darwin-arm64" ? "x64" : "arm64";
+  for (const [scope, prefix] of DARWIN_PER_ARCH_PACKAGES) {
+    const relativePath = path.join("node_modules", scope, `${prefix}${foreignArch}`);
+    if (removeIfPresent(runtimeRoot, relativePath)) {
+      console.log(`[afterPack] Pruned foreign-arch package: ${relativePath}`);
+    }
+  }
+}
+
 module.exports = async function afterPack(context) {
   const platform = context?.electronPlatformName;
   const packageChannel = resolvePackageChannel(context);
@@ -463,6 +485,7 @@ module.exports = async function afterPack(context) {
   }
 
   pruneUnneededRuntimePayload(runtimeRoot, platform, runtimeFetchedToolPackageNames);
+  pruneForeignDarwinArchPackages(runtimeRoot, context, platform);
   assertPackagedRuntimeTargets(resourcesRoot, context, platform);
   if (platform === "darwin") {
     replaceCpuFeaturesNativeAddon(runtimeRoot, context);

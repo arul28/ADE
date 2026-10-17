@@ -166,7 +166,11 @@ describe("automationIngressService", () => {
     }));
   });
 
-  it("polls GitHub relay events with the stored cursor and fans PR payloads into the PR cache", async () => {
+  it.each([
+    ["only the raw event where a GitHub poller runs beside it", false, false],
+    ["the typed event too where no poller runs (the brain)", true, false],
+    ["the typed event even when the raw dispatch fails", true, true],
+  ] as const)("polls GitHub relay events with the stored cursor, fills the PR cache, and dispatches %s", async (_label, typed, rawFails) => {
     const updates: Array<Record<string, unknown>> = [];
     const cursors = new Map<string, string | null>([["github-relay", "delivery-1"]]);
     const ingestGithubWebhook = vi.fn(async () => ({
@@ -178,7 +182,10 @@ describe("automationIngressService", () => {
       linkedPrIds: [],
       reason: null,
     }));
-    const dispatchIngressTrigger = vi.fn(async (args: Record<string, unknown>): Promise<AutomationIngressEventRecord> => ({
+    const dispatchIngressTrigger = vi.fn(async (args: Record<string, unknown>): Promise<AutomationIngressEventRecord> => {
+      // A failed raw dispatch must not drop the typed one, nor stall the drain.
+      if (rawFails && args.triggerType === "github-webhook") throw new Error("raw dispatch failed");
+      return {
       id: "ingress-event-2",
       source: "github-relay",
       eventKey: String(args.eventKey),
@@ -190,7 +197,8 @@ describe("automationIngressService", () => {
       errorMessage: null,
       cursor: typeof args.cursor === "string" ? args.cursor : null,
       receivedAt,
-    }));
+      };
+    });
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
       events: [
         {
@@ -205,6 +213,46 @@ describe("automationIngressService", () => {
             pull_request: {
               number: 42,
               title: "Wire webhook relay",
+              html_url: "https://github.com/arul28/ADE/pull/42",
+              head: { ref: "feature/webhooks" },
+              base: { ref: "main" },
+            },
+          },
+        },
+        {
+          cursor: "seq:2",
+          eventId: "delivery-2c",
+          githubEvent: "issue_comment",
+          summary: "GitHub issue_comment · created · arul28/ADE · #42",
+          createdAt: receivedAt,
+          payload: {
+            action: "created",
+            repository: { full_name: "arul28/ADE" },
+            sender: { login: "dependabot[bot]" },
+            issue: {
+              number: 42,
+              title: "Wire webhook relay",
+              body: "The PR description",
+              pull_request: { url: "https://api.github.com/repos/arul28/ADE/pulls/42" },
+            },
+            comment: { body: "@dependabot rebase", user: { login: "dependabot[bot]" } },
+          },
+        },
+        {
+          cursor: "seq:2",
+          eventId: "delivery-2r",
+          githubEvent: "pull_request_review",
+          summary: "GitHub pull_request_review · submitted · arul28/ADE · #42",
+          createdAt: receivedAt,
+          payload: {
+            action: "submitted",
+            repository: { full_name: "arul28/ADE" },
+            sender: { login: "octocat" },
+            review: { body: "Looks good, ship it", user: { login: "octocat" } },
+            pull_request: {
+              number: 42,
+              title: "Wire webhook relay",
+              body: "The PR description",
               html_url: "https://github.com/arul28/ADE/pull/42",
               head: { ref: "feature/webhooks" },
               base: { ref: "main" },
@@ -226,7 +274,11 @@ describe("automationIngressService", () => {
         },
         getIngressStatus: () => ({}),
       } as never,
-      prService: { ingestGithubWebhook } as never,
+      // The comment's PR is tracked, so its branches come from the local row.
+      prService: {
+        ingestGithubWebhook,
+        listAll: () => [{ githubPrNumber: 42, repoOwner: "arul28", repoName: "ADE", headBranch: "feature/webhooks", baseBranch: "main" }],
+      } as never,
       secretService: {
         getSecret: (ref: string) => {
           if (ref === "automations.githubRelay.apiBaseUrl") return "https://relay.example.com/";
@@ -237,9 +289,41 @@ describe("automationIngressService", () => {
       } as never,
       getAccountAccessToken: vi.fn(async () => "clerk-account-token"),
       listRules: () => [],
+      ...(typed ? { relayDispatchesTypedGithubEvents: true } : {}),
     });
 
     await service.pollNow();
+
+    // `github.pr_*` rules match only the typed event. Sending it where a poller
+    // also does would start one rule twice for one PR.
+    const typedCalls = dispatchIngressTrigger.mock.calls.filter(([args]) => args.triggerType !== "github-webhook");
+    if (typed) {
+      expect(typedCalls).toHaveLength(3);
+      // A review rule's bodyRegex reads the review, not the PR description.
+      expect(typedCalls.find(([args]) => args.triggerType === "github.pr_review_submitted")?.[0]).toMatchObject({
+        pr: expect.objectContaining({ number: 42, body: "Looks good, ship it" }),
+      });
+      // A comment rule's bodyRegex reads the new comment, not the PR description.
+      expect(typedCalls.find(([args]) => args.triggerType === "github.pr_commented")?.[0]).toMatchObject({
+        author: "dependabot[bot]",
+        // A comment webhook names no branch; a branch-filtered comment rule
+        // needs the tracked PR's branches to match at all.
+        branch: "feature/webhooks",
+        targetBranch: "main",
+        pr: expect.objectContaining({ number: 42, body: "@dependabot rebase", headBranch: "feature/webhooks" }),
+      });
+      expect(typedCalls.find(([args]) => args.triggerType === "github.pr_updated")?.[0]).toMatchObject({
+        source: "github-relay",
+        eventKey: "delivery-2:github.pr_updated",
+        triggerType: "github.pr_updated",
+        cursor: "seq:2",
+        repo: "arul28/ADE",
+        draftState: "ready",
+        pr: expect.objectContaining({ number: 42, headBranch: "feature/webhooks", baseBranch: "main" }),
+      });
+    } else {
+      expect(typedCalls).toHaveLength(0);
+    }
 
     expect(fetchSpy).toHaveBeenCalledWith(
       "https://relay.example.com/projects/project%201/github/events?after=delivery-1",
@@ -261,6 +345,7 @@ describe("automationIngressService", () => {
     expect(dispatchIngressTrigger).toHaveBeenCalledWith(expect.objectContaining({
       source: "github-relay",
       eventKey: "delivery-2",
+      triggerType: "github-webhook",
       cursor: "seq:2",
       rawPayload: expect.objectContaining({
         pull_request: expect.objectContaining({ number: 42 }),

@@ -76,7 +76,7 @@ struct WorkSessionSettingsSheet: View {
     NavigationStack {
       ScrollView {
         VStack(spacing: 14) {
-          GlassSection(title: "Session") {
+          ADEKitCard(title: "Session") {
             VStack(alignment: .leading, spacing: 12) {
               HStack(spacing: 12) {
                 Image(systemName: providerIcon(summary.provider))
@@ -108,7 +108,7 @@ struct WorkSessionSettingsSheet: View {
             }
           }
 
-          GlassSection(title: "Title") {
+          ADEKitCard(title: "Title") {
             if CursorCloudNaming.ownsName(summary.cursorCloudAgentId) {
               VStack(alignment: .leading, spacing: 6) {
                 Text(summary.title ?? defaultWorkChatTitle(provider: summary.provider))
@@ -126,7 +126,7 @@ struct WorkSessionSettingsSheet: View {
             }
           }
 
-          GlassSection(title: "Model") {
+          ADEKitCard(title: "Model") {
             VStack(alignment: .leading, spacing: 12) {
               if models.isEmpty && errorMessage == nil {
                 HStack(spacing: 10) {
@@ -169,16 +169,16 @@ struct WorkSessionSettingsSheet: View {
 
                       HStack(spacing: 6) {
                         if let family = model.family, !family.isEmpty {
-                          LaneMicroChip(icon: "circle.grid.2x2.fill", text: family, tint: ADEColor.textSecondary)
+                          ADEKitChip(symbol: "circle.grid.2x2.fill", text: family)
                         }
                         if model.supportsReasoning == true {
-                          LaneMicroChip(icon: "brain", text: "Reasoning", tint: ADEColor.accent)
+                          ADEKitChip(symbol: "brain", text: "Reasoning")
                         }
                         if model.supportsTools == true {
-                          LaneMicroChip(icon: "hammer.fill", text: "Tools", tint: ADEColor.success)
+                          ADEKitChip(symbol: "hammer.fill", text: "Tools")
                         }
                         if model.isDefault {
-                          LaneMicroChip(icon: "star.fill", text: "Default", tint: ADEColor.warning)
+                          ADEKitChip(symbol: "star.fill", text: "Default")
                         }
                         Spacer(minLength: 0)
                       }
@@ -203,7 +203,7 @@ struct WorkSessionSettingsSheet: View {
 
           let reasoningEfforts = workVisibleReasoningEfforts(for: selectedModel)
           if !reasoningEfforts.isEmpty {
-            GlassSection(title: "Reasoning") {
+            ADEKitCard(title: "Reasoning") {
               VStack(alignment: .leading, spacing: 12) {
                 ADEOptionButton(
                   title: "Default",
@@ -229,7 +229,7 @@ struct WorkSessionSettingsSheet: View {
           }
 
           if supportsCodexFastModeToggle {
-            GlassSection(title: "Speed") {
+            ADEKitCard(title: "Speed") {
               VStack(alignment: .leading, spacing: 8) {
                 Toggle(isOn: $selectedCodexFastMode) {
                   VStack(alignment: .leading, spacing: 2) {
@@ -247,7 +247,7 @@ struct WorkSessionSettingsSheet: View {
           }
 
           if !runtimeOptions.isEmpty {
-            GlassSection(title: "Access mode") {
+            ADEKitCard(title: "Access mode") {
               VStack(alignment: .leading, spacing: 12) {
                 ForEach(runtimeOptions) { option in
                   Button {
@@ -352,6 +352,15 @@ private func workRuntimeModeSubtitle(provider: String, mode: String) -> String {
     case "auto-high", "full-auto": return "Droid with auto high."
     case "agi": return "Droid orchestrator mode."
     default: return "Switch this session to \(mode.capitalized)."
+    }
+  // Copy mirrors AGENT_CHAT_MUSE_PERMISSION_MODE_DETAILS in shared/types/chat.ts.
+  case "muse":
+    switch mode {
+    case "plan": return "Read-only Muse turns for planning, with ADE's plan guidance."
+    case "denyUnmatched": return "Muse refuses any tool call its rules do not already allow."
+    case "promptUnmatched": return "Muse asks before any tool call its rules do not already allow."
+    case "allowAll": return "Muse runs every tool call without asking."
+    default: return "Muse's default: sandboxed work runs, and Muse asks when it needs more."
     }
   case "pi":
     switch mode {

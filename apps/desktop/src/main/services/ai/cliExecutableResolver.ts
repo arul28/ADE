@@ -1,7 +1,10 @@
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { resolveTrustedWindowsTool } from "../../../../../ade-cli/src/lib/trustedWindowsTools";
+import { execFileOffThread, offThreadSpawnEnabled } from "../shared/offThreadSpawn";
 
 type ResolutionSource = "path" | "known-dir";
 const PATH_MARKER_START = "__ADE_PATH_START__";
@@ -32,6 +35,14 @@ function* executableCandidatesFromKnownLocations(
   }
   for (const dir of getKnownBinDirs(command, env)) {
     const candidate = nextCandidate(resolveFromDirs(command, [dir], env), "known-dir");
+    if (candidate) yield candidate;
+  }
+  // Windows: directories an installer added to the persisted PATH after this
+  // process started (see refreshWindowsPersistedPathDirs). Last, so every
+  // resolution that worked before is unchanged; this only finds what the
+  // inherited PATH and the known install dirs miss.
+  for (const dir of cachedWindowsPersistedPathDirs()) {
+    const candidate = nextCandidate(resolveFromDirs(command, [dir], env), "path");
     if (candidate) yield candidate;
   }
 }
@@ -122,21 +133,18 @@ function parseNpmPrefix(line: string, homeDir: string): string | null {
 const ENVIRONMENT_PROBE_TTL_MS = 60_000;
 const ENVIRONMENT_PROBE_CACHE_MAX = 32;
 const npmPrefixBinDirsCache = new Map<string, { at: number; value: string[] }>();
-const shellPathCache = new Map<string, { at: number; value: string | null }>();
+const shellPathCache = new Map<string, { at: number; value: string }>();
 
-/** `keep`: whether a result is worth reusing. A failed probe is retried next time. */
-function memoizeProbe<T>(
-  cache: Map<string, { at: number; value: T }>,
-  key: string,
-  read: () => T,
-  keep: (value: T) => boolean = () => true,
-): T {
+function rememberProbe<T>(cache: Map<string, { at: number; value: T }>, key: string, value: T): void {
+  if (cache.size >= ENVIRONMENT_PROBE_CACHE_MAX && !cache.has(key)) cache.clear();
+  cache.set(key, { at: Date.now(), value });
+}
+
+function memoizeProbe<T>(cache: Map<string, { at: number; value: T }>, key: string, read: () => T): T {
   const cached = cache.get(key);
   if (cached && Date.now() - cached.at < ENVIRONMENT_PROBE_TTL_MS) return cached.value;
   const value = read();
-  if (!keep(value)) return value;
-  if (cache.size >= ENVIRONMENT_PROBE_CACHE_MAX && !cache.has(key)) cache.clear();
-  cache.set(key, { at: Date.now(), value });
+  rememberProbe(cache, key, value);
   return value;
 }
 
@@ -252,7 +260,153 @@ function getWindowsKnownBinDirs(env: NodeJS.ProcessEnv, command: string): string
     command === "kimi" && env.KIMI_CODE_HOME?.trim()
       ? path.join(env.KIMI_CODE_HOME.trim(), "bin")
       : "",
+    // Cursor's Windows installer (cursor.com/install, PowerShell) writes
+    // `agent.cmd`/`cursor-agent.cmd` (+ `.ps1`) into %LOCALAPPDATA%\cursor-agent
+    // and adds that directory to the persisted user PATH only.
+    (command === "agent" || command === "cursor-agent") && localAppData
+      ? path.join(localAppData, "cursor-agent")
+      : "",
   ]);
+}
+
+/**
+ * The PATH a new Windows process would get today, from the registry.
+ *
+ * A process inherits PATH once, at launch. An installer that adds its bin dir
+ * to the persisted user or machine PATH (Cursor's `agent`, Copilot via WinGet,
+ * Codex's standalone installer) therefore stays invisible to an ADE — desktop
+ * main or the long-lived brain — that was already running, and every such CLI
+ * reads as "not installed" until ADE restarts. Explorer and new terminals pick
+ * the change up from `HKCU\Environment` and the machine-wide `Session Manager\
+ * Environment`; so does this.
+ *
+ * Read with `reg.exe` (two processes, in parallel, off the event loop where the
+ * off-thread spawner is on) and reused for {@link WINDOWS_PERSISTED_PATH_TTL_MS}.
+ * The synchronous readers never spawn: they take the cached answer and start a
+ * background refresh when it is missing or stale, so a cold first call sees
+ * only the inherited PATH. Detection paths that can wait call
+ * {@link refreshWindowsPersistedPathDirs} first. macOS/Linux: always empty.
+ */
+const WINDOWS_PERSISTED_PATH_TTL_MS = 30_000;
+const WINDOWS_PERSISTED_PATH_TIMEOUT_MS = 5_000;
+const WINDOWS_PERSISTED_PATH_KEYS = [
+  "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment",
+  "HKCU\\Environment",
+] as const;
+let windowsPersistedPath: { at: number; dirs: string[] } | null = null;
+let windowsPersistedPathRead: Promise<string[]> | null = null;
+
+/**
+ * The raw (unexpanded) `Path` value from a `reg export` file: UTF-16, values
+ * wrapped with `\` continuations, `REG_SZ` as a quoted string and
+ * `REG_EXPAND_SZ` as `hex(2):` UTF-16 bytes.
+ */
+function parseRegExportPathValue(text: string): string | null {
+  const joined = text.replace(/^\uFEFF/, "").replace(/\\\r?\n\s*/g, "");
+  const line = joined.split(/\r?\n/).find((entry) => /^"path"=/i.test(entry));
+  if (!line) return null;
+  const raw = line.slice(line.indexOf("=") + 1).trim();
+  if (raw.startsWith('"') && raw.endsWith('"')) return raw.slice(1, -1).replace(/\\(["\\])/g, "$1");
+  const hex = /^hex\(2\):(.*)$/i.exec(raw);
+  if (!hex) return null;
+  const bytes = Buffer.from(hex[1]!.split(",").filter(Boolean).map((byte) => Number.parseInt(byte, 16)));
+  return bytes.toString("utf16le").replace(/\0+$/, "");
+}
+
+/** Expand `%VAR%` references the way Explorer does, case-insensitively; unknown ones stay literal. */
+function expandWindowsEnvReferences(value: string, env: NodeJS.ProcessEnv): string {
+  const lookup = new Map<string, string>();
+  for (const [key, entry] of Object.entries(env)) {
+    if (typeof entry === "string") lookup.set(key.toLowerCase(), entry);
+  }
+  return value.replace(/%([^%;]+)%/g, (whole, name: string) => lookup.get(name.toLowerCase()) ?? whole);
+}
+
+/**
+ * Reads `Path` under `key` through `reg export`, which writes UTF-16 to a
+ * file. `reg query` writes to a pipe in the console's OEM code page and
+ * mangles a folder such as `C:\\Users\\José` or one in Japanese; changing the
+ * code page first would change it for the console of a terminal the brain
+ * was started from, too.
+ */
+async function queryRegistryPathValue(key: string): Promise<string | null> {
+  let regExe = "reg.exe";
+  try {
+    regExe = resolveTrustedWindowsTool("reg");
+  } catch {
+    // Non-standard install: fall back to the PATH spelling.
+  }
+  const file = path.join(os.tmpdir(), `ade-path-${process.pid}-${randomUUID()}.reg`);
+  const args = ["export", key, file, "/y"];
+  try {
+    const exitCode = offThreadSpawnEnabled()
+      ? (await execFileOffThread(regExe, args, { timeoutMs: WINDOWS_PERSISTED_PATH_TIMEOUT_MS })).exitCode
+      : await new Promise<number | null>((resolve) => {
+        try {
+          execFile(regExe, args, { timeout: WINDOWS_PERSISTED_PATH_TIMEOUT_MS, windowsHide: true }, (error) => {
+            resolve(error ? null : 0);
+          });
+        } catch {
+          resolve(null);
+        }
+      });
+    if (exitCode !== 0) return null;
+    return parseRegExportPathValue((await fs.promises.readFile(file)).toString("utf16le"));
+  } catch {
+    return null;
+  } finally {
+    await fs.promises.rm(file, { force: true }).catch(() => undefined);
+  }
+}
+
+/**
+ * The persisted machine + user PATH directories (machine first, as Windows
+ * builds a new process's PATH), refreshed when older than the TTL. Never
+ * rejects; a failed read keeps the previous answer.
+ */
+export function refreshWindowsPersistedPathDirs(options: { force?: boolean } = {}): Promise<string[]> {
+  if (process.platform !== "win32") return Promise.resolve([]);
+  if (
+    !options.force
+    && windowsPersistedPath
+    && Date.now() - windowsPersistedPath.at < WINDOWS_PERSISTED_PATH_TTL_MS
+  ) {
+    return Promise.resolve(windowsPersistedPath.dirs);
+  }
+  if (windowsPersistedPathRead) return windowsPersistedPathRead;
+  const read = (async () => {
+    try {
+      const values = await Promise.all(WINDOWS_PERSISTED_PATH_KEYS.map((key) => queryRegistryPathValue(key)));
+      if (values.every((value) => value === null)) {
+        // Keep the last answer; retry after another TTL rather than on every call.
+        if (windowsPersistedPath) windowsPersistedPath.at = Date.now();
+        else windowsPersistedPath = { at: Date.now(), dirs: [] };
+        return windowsPersistedPath.dirs;
+      }
+      const dirs = uniqueNonEmpty(
+        values.flatMap((value) => splitPathEntries(value ? expandWindowsEnvReferences(value, process.env) : undefined)),
+      );
+      windowsPersistedPath = { at: Date.now(), dirs };
+      return dirs;
+    } catch {
+      if (!windowsPersistedPath) windowsPersistedPath = { at: Date.now(), dirs: [] };
+      return windowsPersistedPath.dirs;
+    } finally {
+      windowsPersistedPathRead = null;
+    }
+  })();
+  windowsPersistedPathRead = read;
+  return read;
+}
+
+/** Cached persisted PATH dirs; starts a background refresh when missing or stale. Never spawns synchronously. */
+function cachedWindowsPersistedPathDirs(): string[] {
+  if (process.platform !== "win32") return [];
+  const current = windowsPersistedPath;
+  if (!current || Date.now() - current.at >= WINDOWS_PERSISTED_PATH_TTL_MS) {
+    void refreshWindowsPersistedPathDirs();
+  }
+  return current?.dirs ?? [];
 }
 
 function getUnixLikeKnownBinDirs(env: NodeJS.ProcessEnv, command: string): string[] {
@@ -330,21 +484,57 @@ export function windowsExecutableExtensions(env: NodeJS.ProcessEnv = process.env
 }
 
 /**
- * NTFS lookups ignore case, so a probe for `codex.cmd` succeeds against a file
- * actually named `codex.CMD` and vice versa. The resolved path is surfaced in
- * Settings and handed to other tools, so report the name as it is spelled on
- * disk instead of however PATHEXT happened to be cased.
+ * Windows directory listings, reused for a few seconds.
+ *
+ * Matching against a listing also reports the name as it is spelled on disk:
+ * NTFS lookups ignore case, so `codex.cmd` resolves against `codex.CMD`, and the
+ * resolved path is surfaced in Settings and handed to other tools.
+ *
+ * Probing `<dir>\<command><ext>` for every PATHEXT extension in both casings
+ * is 26 `stat` calls per directory, and a miss walks every PATH entry plus the
+ * known install dirs. Measured on a Windows PC with an 80-entry PATH: resolving
+ * the 14 CLIs ADE looks for took 29,536 `stat` calls and ~450 ms, on the
+ * brain's event loop, on every provider detection pass. One `readdir` per
+ * directory answers every candidate name for every command, in the casing on
+ * disk. Ten seconds covers a detection pass; a CLI installed since is found on
+ * the next pass, or at once after {@link invalidateExecutableLookupCache}.
  */
-function withOnDiskCasing(candidatePath: string): string {
-  if (process.platform !== "win32") return candidatePath;
-  const dir = path.dirname(candidatePath);
-  const base = path.basename(candidatePath);
+const WINDOWS_DIR_LISTING_TTL_MS = 10_000;
+const windowsDirListings = new Map<string, { expiresAt: number; names: Map<string, string> }>();
+
+function windowsDirEntries(dir: string): Map<string, string> {
+  const now = Date.now();
+  const cached = windowsDirListings.get(dir);
+  if (cached && cached.expiresAt > now) return cached.names;
+  const names = new Map<string, string>();
   try {
-    const actual = fs.readdirSync(dir).find((entry) => entry.toLowerCase() === base.toLowerCase());
-    return actual ? path.join(dir, actual) : candidatePath;
+    for (const entry of fs.readdirSync(dir)) {
+      const key = entry.toLowerCase();
+      if (!names.has(key)) names.set(key, entry);
+    }
   } catch {
-    return candidatePath;
+    // Missing or unreadable: nothing resolves here.
   }
+  windowsDirListings.set(dir, { expiresAt: now + WINDOWS_DIR_LISTING_TTL_MS, names });
+  return names;
+}
+
+/** Forget cached directory listings, e.g. before a forced provider re-detection. */
+export function invalidateExecutableLookupCache(): void {
+  windowsDirListings.clear();
+}
+
+function resolveFromWindowsDir(command: string, dir: string, extensions: readonly string[]): string | null {
+  const entries = windowsDirEntries(dir);
+  if (entries.size === 0) return null;
+  const candidateNames = extensions.length > 0 ? extensions.map((ext) => `${command}${ext}`) : [command];
+  for (const name of candidateNames) {
+    const actual = entries.get(name.toLowerCase());
+    if (!actual) continue;
+    const candidatePath = path.join(dir, actual);
+    if (isExecutableFile(candidatePath)) return candidatePath;
+  }
+  return null;
 }
 
 function resolveFromDirs(
@@ -352,12 +542,7 @@ function resolveFromDirs(
   dirs: Iterable<string>,
   env: NodeJS.ProcessEnv = process.env,
 ): string | null {
-  const commandHasExtension = path.extname(command).length > 0;
-  const extensions = process.platform === "win32" && !commandHasExtension
-    ? windowsExecutableExtensions(env)
-    : [];
-
-  for (const dir of dirs) {
+  if (process.platform === "win32") {
     // Windows cannot execute an extension-less file. `npm i -g` drops three
     // shims side by side — `codex` (a `#!/bin/sh` script for Git Bash),
     // `codex.cmd` and `codex.ps1` — and only the latter two are launchable
@@ -366,19 +551,21 @@ function resolveFromDirs(
     // wraps extension-less commands in `cmd.exe`, which re-applies PATHEXT, but
     // every consumer that spawns the resolved path directly (the Claude Agent
     // SDK via `pathToClaudeCodeExecutable`, node-pty, provider SDKs) gets ENOENT.
-    // Resolve the way Windows does: PATHEXT only. On other platforms the bare
-    // name is the executable.
-    const candidatePaths = extensions.length > 0
-      // Uppercase second, for the rare case-sensitive Windows directory.
-      ? extensions.flatMap((ext) => [
-          path.join(dir, `${command}${ext}`),
-          path.join(dir, `${command}${ext.toUpperCase()}`),
-        ])
-      : [path.join(dir, command)];
-
-    for (const candidatePath of candidatePaths) {
-      if (isExecutableFile(candidatePath)) return withOnDiskCasing(candidatePath);
+    // Resolve the way Windows does: PATHEXT only, in PATHEXT order, reported
+    // in the casing on disk (case-insensitive match, so a case-sensitive
+    // directory resolves too).
+    const extensions = path.extname(command).length > 0 ? [] : windowsExecutableExtensions(env);
+    for (const dir of dirs) {
+      const resolved = resolveFromWindowsDir(command, dir, extensions);
+      if (resolved) return resolved;
     }
+    return null;
+  }
+
+  // On other platforms the bare name is the executable.
+  for (const dir of dirs) {
+    const candidatePath = path.join(dir, command);
+    if (isExecutableFile(candidatePath)) return candidatePath;
   }
   return null;
 }
@@ -410,15 +597,75 @@ function readShellPath(
   env?: NodeJS.ProcessEnv,
 ): string | null {
   const source = env ?? process.env;
-  const key = [shellPath, shellFlag, source.PATH ?? "", source.HOME ?? ""].join("\u0000");
+  // Keyed on the shell and HOME (where its rc files live), not on PATH: callers
+  // pass the augmented PATH back in, so a PATH key missed on every such call and
+  // spawned a login shell synchronously. The inherited PATH is still merged in
+  // fresh by augmentProcessPathWithShellAndKnownCliDirs, so a PATH change shows
+  // up at once; only what the shell itself adds waits for the TTL.
+  const key = [shellPath, shellFlag, source.HOME ?? ""].join("\u0000");
+  // Once a shell has answered, never wait on it again: an expired answer is
+  // returned as is while one background probe replaces it. Re-probing
+  // synchronously at expiry spawned a login (and interactive) shell on the
+  // brain's event loop exactly when agents were busy, with up to a second of
+  // timeout each.
+  const cached = shellPathCache.get(key);
+  if (cached) {
+    if (Date.now() - cached.at >= ENVIRONMENT_PROBE_TTL_MS) {
+      refreshShellPathInBackground(key, shellPath, shellFlag, timeoutMs, env);
+    }
+    return cached.value;
+  }
   // A null is a timeout or a broken rc file -- most likely under exactly the
   // load this cache is for -- so it is not kept: the next agent env retries.
-  return memoizeProbe(
-    shellPathCache,
-    key,
-    () => readShellPathUncached(shellPath, shellFlag, timeoutMs, env),
-    (resolved) => resolved !== null,
-  );
+  const resolved = readShellPathUncached(shellPath, shellFlag, timeoutMs, env);
+  if (resolved !== null) rememberProbe(shellPathCache, key, resolved);
+  return resolved;
+}
+
+const shellPathRefreshesInFlight = new Set<string>();
+
+function refreshShellPathInBackground(
+  key: string,
+  shellPath: string,
+  shellFlag: "-lc" | "-ic",
+  timeoutMs: number,
+  env?: NodeJS.ProcessEnv,
+): void {
+  if (shellPathRefreshesInFlight.has(key)) return;
+  shellPathRefreshesInFlight.add(key);
+  try {
+    const child = execFile(
+      shellPath,
+      shellPathProbeArgs(shellFlag),
+      { encoding: "utf-8", env, timeout: timeoutMs, windowsHide: true },
+      (error, stdout) => {
+        shellPathRefreshesInFlight.delete(key);
+        const resolved = error ? null : parseShellPathProbeOutput(stdout);
+        const entry = shellPathCache.get(key);
+        // A failed refresh keeps the last answer; it is tried again after
+        // another TTL rather than on every call.
+        if (resolved !== null) rememberProbe(shellPathCache, key, resolved);
+        else if (entry) entry.at = Date.now();
+      },
+    );
+    // execFile cannot take `stdio`; an rc file that reads stdin must see EOF,
+    // as it does from the synchronous probe, not wait out the timeout.
+    child.stdin?.end();
+  } catch {
+    shellPathRefreshesInFlight.delete(key);
+  }
+}
+
+function shellPathProbeArgs(shellFlag: "-lc" | "-ic"): string[] {
+  return [shellFlag, `printf '${PATH_MARKER_START}%s${PATH_MARKER_END}' "$PATH"`];
+}
+
+function parseShellPathProbeOutput(raw: string): string | null {
+  const startIdx = raw.indexOf(PATH_MARKER_START);
+  const endIdx = raw.indexOf(PATH_MARKER_END, startIdx + PATH_MARKER_START.length);
+  if (startIdx === -1 || endIdx === -1) return null;
+  const resolved = raw.slice(startIdx + PATH_MARKER_START.length, endIdx).trim();
+  return resolved.length > 0 ? resolved : null;
 }
 
 function readShellPathUncached(
@@ -430,7 +677,7 @@ function readShellPathUncached(
   try {
     const raw = execFileSync(
       shellPath,
-      [shellFlag, `printf '${PATH_MARKER_START}%s${PATH_MARKER_END}' "$PATH"`],
+      shellPathProbeArgs(shellFlag),
       {
         encoding: "utf-8",
         env,
@@ -439,11 +686,7 @@ function readShellPathUncached(
         windowsHide: true,
       },
     );
-    const startIdx = raw.indexOf(PATH_MARKER_START);
-    const endIdx = raw.indexOf(PATH_MARKER_END, startIdx + PATH_MARKER_START.length);
-    if (startIdx === -1 || endIdx === -1) return null;
-    const resolved = raw.slice(startIdx + PATH_MARKER_START.length, endIdx).trim();
-    return resolved.length > 0 ? resolved : null;
+    return parseShellPathProbeOutput(raw);
   } catch {
     return null;
   }
@@ -458,8 +701,15 @@ export function augmentProcessPathWithShellAndKnownCliDirs(args?: {
 
   if (process.platform === "win32") {
     // Windows has no direct `sh -ic` equivalent here; includeInteractiveShell
-    // and timeoutMs are intentionally ignored in favor of env PATH + known CLI dirs.
-    return augmentPathWithKnownCliDirs(getPathEnvValue(env), env);
+    // and timeoutMs are intentionally ignored in favor of env PATH, the
+    // known CLI dirs, and the persisted (registry) PATH. The persisted entries
+    // go last so existing precedence is unchanged; they are what lets a CLI
+    // installed while ADE runs, and its own child processes, resolve without
+    // restarting ADE.
+    return mergePathEntries(
+      augmentPathWithKnownCliDirs(getPathEnvValue(env), env),
+      cachedWindowsPersistedPathDirs().join(pathListDelimiter()),
+    );
   }
 
   if (process.platform !== "darwin" && process.platform !== "linux") {

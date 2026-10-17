@@ -11,6 +11,7 @@ import {
   canonicalInputFromSummary,
   sessionCanonicalUiState,
   sessionIsMidFlight,
+  sessionStalledPresentation,
 } from "../../lib/terminalAttention";
 import { cn } from "../ui/cn";
 import { SessionSnoozeControl } from "./SessionSnoozeControl";
@@ -47,7 +48,7 @@ import {
  * fill for keyboard users, who never see hover at all.
  */
 export const SESSION_ACTION_BUTTON_CLASS =
-  "inline-flex cursor-pointer items-center gap-1 rounded-md bg-transparent px-1.5 text-muted-fg/70 transition-colors hover:bg-white/[0.06] hover:text-fg focus-visible:bg-white/[0.06] focus-visible:text-fg";
+  "inline-flex cursor-pointer items-center gap-1 rounded-md bg-transparent px-1.5 text-muted-fg/70 transition-colors hover:bg-fg/[0.06] hover:text-fg focus-visible:bg-fg/[0.06] focus-visible:text-fg";
 
 export function SessionStatusSlot({
   session,
@@ -59,6 +60,7 @@ export function SessionStatusSlot({
   compact = false,
   runtimePin = null,
   hideLabelUnlessShout = false,
+  clockMs,
 }: {
   session: TerminalSessionSummary;
   /** Resolved status, or null for a settled row (which shows its timestamp). */
@@ -74,6 +76,12 @@ export function SessionStatusSlot({
   /** Runtime that owns this session when it differs from the active project. */
   runtimePin?: OpenProjectBinding | null;
   hideLabelUnlessShout?: boolean;
+  /**
+   * The owning card's clock (`useTurnStallClock`). The card owns it because
+   * the card computes `presentation`: a stall or an overdue wake has to
+   * re-render the card, not just this slot, or the label keeps a stale word.
+   */
+  clockMs: number;
 }) {
   // While the snooze popover is open the pointer has left the row, so the
   // hover-driven actions would fade out from under the open menu. Pin the slot
@@ -95,7 +103,10 @@ export function SessionStatusSlot({
   const canonicalInput = canonicalInputFromSummary(session);
   const canonicalState = sessionCanonicalUiState(canonicalInput);
   const canonicalPhase = canonicalState.phase;
-  const elapsedSince = sessionElapsedAnchor(session, canonicalPhase, canonicalState.liveness);
+  const stalled = presentation ? sessionStalledPresentation(canonicalInput, Math.max(clockMs, Date.now())) : null;
+  const shownPresentation = stalled ?? presentation;
+  const elapsedSince = stalled?.activityUpdatedAt
+    ?? sessionElapsedAnchor(session, canonicalPhase, canonicalState.liveness);
   const isActivelyRunning = sessionIsMidFlight(canonicalInput);
   const canDismissNeedsYou =
     canonicalPhase !== "needs_you"
@@ -126,7 +137,7 @@ export function SessionStatusSlot({
         )}
       >
         <SessionStatusLabel
-          presentation={presentation}
+          presentation={shownPresentation}
           elapsedSince={elapsedSince}
           futureAt={session.nextWakeAt}
           timestampLabel={timestampLabel}

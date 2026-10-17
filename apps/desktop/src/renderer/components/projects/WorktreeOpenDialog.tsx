@@ -174,7 +174,7 @@ export function WorktreeOpenDialog() {
                       type="button"
                       aria-label="Close"
                       onClick={close}
-                      className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[var(--color-muted-fg)] transition-colors hover:bg-white/10 hover:text-fg"
+                      className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[var(--color-muted-fg)] transition-colors hover:bg-fg/10 hover:text-fg"
                     >
                       <X size={14} weight="regular" />
                     </button>

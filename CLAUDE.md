@@ -4,6 +4,47 @@ If you are Fable 5.1, you are always the PM/coordinator. You research, decide, a
 
 If you are any other Claude model, do the work yourself, and use Opus 5 subagents when you need parallelism or an independent second opinion.
 
+## Built for remote machines
+
+Claude Code does not load `AGENTS.md`, so this is a copy of its **Built for
+remote machines** section. Keep the two the same.
+
+ADE is built around remote connections. One window drives several machines: a
+laptop works on lanes that live on a desktop, a phone drives the brain at home,
+and the Work tab lists chats, CLIs and shells from every connected machine at
+once. A lane owns its machine, and its chats and terminals live there and only
+there.
+
+So every action that can be done for something on another machine (a chat, a
+session, a lane, a terminal, a sign-in) has to be sent to **that** machine:
+
+1. **Pass the scope.** Renderer calls take an optional `pin` (an
+   `OpenProjectBinding`). Leave it out and the call silently goes to the
+   machine the project tab is bound to. That works in local testing and fails
+   whenever the chat's machine is a different one, with errors like
+   "Chat session '…' was not found". In a chat subtree,
+   read `useChatRuntimeScope().pin`; on the Work page, the row's
+   `foreignRow.binding` or `useWorkSessions().resolveSessionRuntimePin`; in Settings,
+   `useSettingsMachineScope().pin`. These are null when the target is the
+   tab's own machine, which keeps the unpinned route; do not substitute the
+   tab binding. Keep the pin for the whole flow: a start, its stop, and its
+   status reads go to the same machine.
+2. **Make the contract carry it.** A new IPC/preload method that acts on a
+   chat, session, lane or terminal takes `pin?: OpenProjectBinding | null` and
+   routes a pin through `callPinnedRuntimeAction` (or
+   `callPinnedOrBoundRuntimeActionOr`, which does both), and its runtime
+   action is reachable remotely (action domain + `actionPolicy`). Inside a
+   component, prefer a required `pin` prop over an optional one that quietly
+   defaults to the tab's machine.
+3. **Key effects on `pin?.key`, not the pin object.** A pin can be rebuilt with
+   the same key; an effect keyed on the object restarts (a login shell, a voice
+   call) for nothing.
+4. **Check it remotely before calling it done.** Ask "what happens if this chat
+   is on another machine?" for every new action, and in `/quality` name which
+   new calls are scoped and how. When something can genuinely only run on this
+   computer, guard it with a clear message (as Cursor Cloud launch does), never
+   by letting the call misroute.
+
 ## Subagents
 
 Claude Code does not load `AGENTS.md`, so this is a copy of its **Subagents**
@@ -28,6 +69,41 @@ including agents started by a skill.
 5. **Pick the cheapest model that can do the job.** Leave the most capable
    model for work that needs it.
 
+## Performance budget
+
+Claude Code does not load `AGENTS.md`, so this is a copy of its **Performance
+budget** section. Keep the two the same.
+
+`docs/perf/macos-baseline.md` holds ADE's measured performance numbers
+(macOS dev build) and a ceiling for each. They came out of a pass that took
+the app from unusable to smooth. Do not let them climb back.
+
+1. **Know when it applies.** Your change can move performance when it renders
+   lists or long content; adds an effect, timer, poll, subscription or
+   animation; adds or changes an IPC call or runtime action; spawns processes
+   (git, shells); reads files or databases on a hot path; builds caches or
+   large in-memory structures; or adds a surface that loads its own data. CPU,
+   GPU and memory all count. When in doubt, it applies.
+2. **Measure before and after, during the work,** with the scripts the doc
+   lists, on the same machine and under the same conditions. Follow the doc's
+   gotchas: no perf run for idle, GPU, typing or memory numbers; close extra
+   windows; keep the warm pass.
+3. **Compare with the table.** If a row gets more than 25% worse or crosses
+   its ceiling, or your new surface costs far more than comparable rows,
+   optimize before you call the work done: profile the hot path, fix it,
+   measure again. Do it carefully: keep every feature and the UI as they are,
+   and never trade them for a number. `/optimize` and the `ade-perf-*` skills
+   hold the methods and the patterns that worked.
+4. **Update the table** in the same branch: add a row for a new surface, and
+   record new baselines (with the commit) for rows you moved. Never raise a
+   ceiling to make a change pass; that needs the user's approval and a
+   recorded reason.
+5. **Report it.** The PR body lists the rows you measured, with before and
+   after numbers. If you could not measure (not on macOS, no display), say so
+   and give what you did measure; the service benches run anywhere.
+
+Numbers drift as ADE grows, and that is expected. A spike is not.
+
 ## Writing tests
 
 Claude Code does not load `AGENTS.md`, so this is a copy of its **Writing tests**
@@ -42,8 +118,9 @@ defect, even when it passes.
    `/test`, after that validation, and they pin the behavior you proved.
    - When the user asks for tests directly, write them; this rule covers tests
      that nobody asked for.
-   - Run existing tests during the work as often as you want. This rule stops
-     writing new tests, not running old ones.
+   - Run existing tests during the work when you need the signal, not after
+     every edit. See **Running checks**: the full check pass happens once, at
+     the end of `/quality`.
    - When an existing test breaks because you changed behavior on purpose,
      leave it for `/test`. Do not bend it during the work.
    - **The one exception:** the behavior can only be validated by a test (a
@@ -89,7 +166,36 @@ defect, even when it passes.
 12. **One contract, one owner.** A second test of the same contract needs a
     failure the owner cannot reach, such as a transport or lifecycle break.
     Otherwise extend the owner.
+13. **New tests are the exception.** The default outcome of `/test` is zero
+    new tests. A new test must guard a critical contract — data loss or
+    corruption, security or privacy, a race or process/lifecycle seam, a
+    cross-machine, IPC or sync contract a caller depends on — and no existing
+    test may already catch its failure. UI layout, copy, wiring, render-only
+    checks, and one past bug instance do not qualify. Most branches add none.
+    The suite already has about 1,300 test files; it should shrink, not grow.
 
 `/quality` records a coverage gap. It does not add the test. `/test` adds one
 only when it can name the behavior, the failure that turns the test red, and
 why no existing test already catches that.
+
+## Running checks
+
+Claude Code does not load `AGENTS.md`, so this is a copy of its **Running
+checks** section. Keep the two the same.
+
+Typecheck, lint, and tests cost real agent time. One desktop typecheck is
+15–60 seconds, and agents have run typecheck about 5,800 times and tests
+about 12,000 times across ADE threads, mostly re-runs after tiny edits. These
+rules apply to every agent and every skill.
+
+1. **One check pass, at the end of `/quality`.** After every review fix is
+   in, run typecheck for each package the branch touched and the test files
+   that cover the touched code (colocated `*.test.ts(x)` and the tests that
+   import it). Not the full suite and not all shards.
+2. **Never check after every edit.** Batch the edits, then check once. After a
+   failure, re-run only the files that failed.
+3. **CI is the full gate.** Never run the full sharded suite locally unless
+   the user asks or you are running `/finalize`.
+4. **Later fixes re-check only their delta.** In `/test` and `/ship`, a fix
+   re-runs only the failing CI file, or the tests and typecheck of the package
+   that fix touched, once, before the push.

@@ -3,16 +3,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DiagnosticReportPayload } from "../../../shared/types/diagnostics";
-import type { DiagnosticUploadResult } from "../../../shared/diagnosticsUpload";
 import { ReportIssueButton } from "./ReportIssueButton";
-
-const uploadDiagnosticReport = vi.hoisted(() => vi.fn());
-vi.mock("../../../shared/diagnosticsUpload", async () => {
-  const actual = await vi.importActual<typeof import("../../../shared/diagnosticsUpload")>(
-    "../../../shared/diagnosticsUpload",
-  );
-  return { ...actual, uploadDiagnosticReport };
-});
 
 const CONTEXT = {
   surface: "project_recovery",
@@ -34,15 +25,14 @@ function payload(over: Partial<DiagnosticReportPayload> = {}): DiagnosticReportP
   };
 }
 
-function installBridge(openIssue: ReturnType<typeof vi.fn>) {
+function installBridge(openIssue: ReturnType<typeof vi.fn>, sendManual?: ReturnType<typeof vi.fn>) {
   (window as unknown as { ade?: unknown }).ade = {
-    diagnostics: { openIssue },
+    diagnostics: { openIssue, ...(sendManual ? { sendManual } : {}) },
   };
 }
 
 afterEach(() => {
   cleanup();
-  uploadDiagnosticReport.mockReset();
   delete (window as unknown as { ade?: unknown }).ade;
 });
 
@@ -80,38 +70,35 @@ describe("ReportIssueButton", () => {
     expect(screen.queryByText(/ENOSPC/)).toBeNull();
   });
 
-  it("ignores an upload result that belongs to a report the user already replaced", async () => {
-    // "Report issue" stays enabled while a send is in flight, so the first
-    // upload's reply can land after a second report exists. Showing its
-    // reference then would point a maintainer at the wrong report.
-    const openIssue = vi
-      .fn()
-      .mockResolvedValueOnce(payload({ report: "first report" }))
-      .mockResolvedValueOnce(payload({ report: "second report" }));
-    installBridge(openIssue);
-    let settleFirstUpload: (result: DiagnosticUploadResult) => void = () => {};
-    uploadDiagnosticReport.mockImplementationOnce(
-      () => new Promise<DiagnosticUploadResult>((resolve) => { settleFirstUpload = resolve; }),
+  it("ignores a GitHub issue reply that belongs to a report the user already replaced", async () => {
+    // "Open GitHub issue" can still be in flight when the user reports again,
+    // so its reply can land after a second report was sent. Showing it then
+    // would describe the wrong report.
+    let settleFirstIssue: (result: DiagnosticReportPayload) => void = () => {};
+    const openIssue = vi.fn().mockImplementationOnce(
+      () => new Promise<DiagnosticReportPayload>((resolve) => { settleFirstIssue = resolve; }),
     );
+    const sendManual = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, reference: "first123", reportPath: "", report: "first report" })
+      .mockResolvedValueOnce({ ok: true, reference: "second45", reportPath: "", report: "second report" });
+    installBridge(openIssue, sendManual);
 
     render(<ReportIssueButton context={CONTEXT} />);
     fireEvent.click(screen.getByRole("button", { name: "Report issue" }));
-    await screen.findByRole("button", { name: "Send to ADE" });
-    fireEvent.click(screen.getByRole("button", { name: "Send to ADE" }));
-    await screen.findByRole("button", { name: "Sending…" });
+    await screen.findByText(/reference first123/);
+    fireEvent.click(screen.getByRole("button", { name: "Open GitHub issue" }));
+    await screen.findByRole("button", { name: "Opening…" });
 
-    // A second report, generated while the first upload is still open.
+    // A second report, sent while the first issue is still opening.
     fireEvent.click(screen.getByRole("button", { name: "Report issue" }));
-    await waitFor(() => {
-      expect(openIssue).toHaveBeenCalledTimes(2);
-    });
+    await screen.findByText(/reference second45/);
 
-    settleFirstUpload({ ok: true, id: "abc", reference: "ADE-STALE-REF" });
+    settleFirstIssue(payload({ report: "first report" }));
 
-    // The stale reply frees the Send button again but never claims the newer
-    // report was sent.
-    await screen.findByRole("button", { name: "Send to ADE" });
-    expect(screen.queryByText(/ADE-STALE-REF/)).toBeNull();
+    // The stale reply frees the link again but never lands under the newer report.
+    await screen.findByRole("button", { name: "Open GitHub issue" });
+    expect(screen.queryByText(/Report copied/)).toBeNull();
   });
 
   it("drops the disclosure inside one-line banners, and keeps it when asked", () => {

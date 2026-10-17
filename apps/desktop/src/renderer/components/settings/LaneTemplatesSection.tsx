@@ -1,20 +1,20 @@
 import { useState, useEffect, useCallback } from "react";
-import { Stack } from "@phosphor-icons/react";
+import { CaretDown, Plus, Stack } from "@phosphor-icons/react";
 import {
   COLORS,
   MONO_FONT,
   SANS_FONT,
-  LABEL_STYLE,
-  outlineButton,
-  primaryButton,
 } from "../lanes/laneDesignTokens";
-import { SettingsDisclosure, SettingsSelect, SettingsTextField, SettingsToggle } from "./primitives";
 import {
-  SettingsManagerEmpty,
-  SettingsManagerPage,
-  SettingsManagerRow,
-  SettingsManagerTable,
-} from "./primitives/SettingsManagerPage";
+  ModernRow,
+  ModernRows,
+  ModernSection,
+  SettingsDisclosure,
+  SettingsSelect,
+  SettingsTextField,
+  SettingsToggle,
+} from "./primitives";
+import "./machineSettings.css";
 import { laneSetupScriptHasWork } from "../../../shared/types";
 import { confirmDialog } from "../ui/dialog/confirm";
 import { showToast } from "../app/toast/toastStore";
@@ -100,40 +100,11 @@ const removeBtn: React.CSSProperties = {
   transition: "color 150ms ease",
 };
 
-const pillBadge = (color: string): React.CSSProperties => ({
-  display: "inline-flex",
-  alignItems: "center",
-  gap: 4,
-  fontSize: 9,
-  fontWeight: 700,
-  fontFamily: SANS_FONT,
-  color,
-  textTransform: "uppercase" as const,
-  letterSpacing: "0.5px",
-  background: `${color}15`,
-  padding: "2px 8px",
-  borderRadius: 4,
-});
-
-const featureChip: React.CSSProperties = {
-  display: "inline-flex",
-  alignItems: "center",
-  gap: 4,
-  fontSize: 10,
-  fontWeight: 500,
-  fontFamily: SANS_FONT,
-  color: COLORS.textMuted,
-  background: "color-mix(in srgb, var(--color-accent) 8%, transparent)",
-  border: "1px solid color-mix(in srgb, var(--color-accent) 15%, transparent)",
-  padding: "2px 8px",
-  borderRadius: 12,
-};
-
 const codeStyle: React.CSSProperties = {
   fontFamily: MONO_FONT,
-  fontSize: 10,
-  color: COLORS.accent,
-  background: "color-mix(in srgb, var(--color-accent) 12%, transparent)",
+  fontSize: 10.5,
+  color: COLORS.textPrimary,
+  background: "color-mix(in srgb, var(--color-fg) 7%, transparent)",
   padding: "1px 4px",
   borderRadius: 3,
 };
@@ -250,14 +221,6 @@ const ANCHOR = "lane-templates";
 const TITLE = "Lane templates";
 const DESCRIPTION = "Set up every new lane the same way: copy files in, install packages, run a script.";
 
-/** Template, what it configures, the default marker, actions. */
-const TEMPLATE_COLUMNS = [
-  { label: "Template", width: "minmax(200px, 1.4fr)" },
-  { label: "Configures", width: "minmax(180px, 1.2fr)" },
-  { label: "Default", width: "minmax(80px, 0.5fr)" },
-  { label: "Actions", width: "170px", align: "right" as const },
-];
-
 export function LaneTemplatesSection() {
   // Templates live in each machine's `.ade/local.yaml`, so they are read and
   // written on the machine the Settings page shows.
@@ -314,88 +277,88 @@ export function LaneTemplatesSection() {
     }
   }, [pin, refresh]);
 
+  const newTemplateButton = (
+    <button type="button" className="ade-modern-btn" onClick={() => setEditing(emptyTemplate())}>
+      <Plus size={12} weight="bold" />
+      New template
+    </button>
+  );
+
   if (loading) {
     return (
-      <SettingsManagerPage icon={<Stack size={15} weight="duotone" />} tone="violet" anchor={ANCHOR} title={TITLE} description={DESCRIPTION}>
-        <div style={{ fontSize: 12, color: COLORS.textMuted }}>Loading templates...</div>
-      </SettingsManagerPage>
+      <ModernSection group={TITLE} anchor={ANCHOR} title={TITLE} hint={DESCRIPTION}>
+        <p className="ade-modern-muted">Loading templates...</p>
+      </ModernSection>
     );
   }
 
   if (editing) {
     return (
-      <SettingsManagerPage icon={<Stack size={15} weight="duotone" />} tone="violet" anchor={ANCHOR} title={TITLE} description={DESCRIPTION}>
-        <TemplateEditor
-          template={editing}
-          onSave={handleSave}
-          onCancel={() => setEditing(null)}
-        />
-      </SettingsManagerPage>
+      <ModernSection group={TITLE} anchor={ANCHOR} title={TITLE} hint={DESCRIPTION}>
+        <div className="ade-lt-editor">
+          <TemplateEditor
+            template={editing}
+            onSave={handleSave}
+            onCancel={() => setEditing(null)}
+          />
+        </div>
+      </ModernSection>
     );
   }
 
   return (
-    <SettingsManagerPage
-      icon={<Stack size={15} weight="duotone" />}
-      tone="violet"
+    <ModernSection
+      group={TITLE}
       anchor={ANCHOR}
       title={TITLE}
-      description={DESCRIPTION}
-      toolbar={
-        <button
-          style={outlineButton({ height: 28, fontSize: 12 })}
-          onClick={() => setEditing(emptyTemplate())}
-        >
-          + New template
-        </button>
-      }
+      hint={DESCRIPTION}
+      actions={templates.length > 0 ? newTemplateButton : undefined}
     >
-      {templates.length > 0 && (
-        <div>
-          <div style={subLabelStyle}>Use for new lanes</div>
-          <SettingsSelect
-            value={defaultId ?? ""}
-            onChange={handleSetDefault}
-            ariaLabel="Default lane template"
-            options={[
-              { value: "", label: "None" },
-              ...templates.map((template) => ({ value: template.id, label: template.name })),
-            ]}
-            style={{ ...inputStyle, maxWidth: 400 }}
-          />
-          <div style={hintStyle}>
-            Picked for you when you create a lane. You can still choose a different one there.
-          </div>
+      {templates.length === 0 ? (
+        <div className="ade-lt-empty">
+          <Stack size={22} weight="light" />
+          <div className="ade-ap-rowtitle">No templates yet</div>
+          <p className="ade-modern-muted" style={{ maxWidth: 420, textAlign: "center" }}>
+            A template says what happens when a lane is created: which files get copied in, what gets installed, and what script runs.
+          </p>
+          <button type="button" className="ade-modern-btn" data-tone="primary" onClick={() => setEditing(emptyTemplate())}>
+            Create your first template
+          </button>
         </div>
-      )}
-
-      <SettingsManagerTable columns={TEMPLATE_COLUMNS} minWidth={720}>
-        {templates.length === 0 ? (
-          <SettingsManagerEmpty
-            title="No templates yet"
-            description="A template says what happens when a lane is created: which files get copied in, what gets installed, and what script runs."
-            action={
-              <button
-                style={primaryButton({ fontSize: 12 })}
-                onClick={() => setEditing(emptyTemplate())}
-              >
-                Create your first template
-              </button>
-            }
-          />
-        ) : (
-          templates.map((t) => (
-            <TemplateRow
-              key={t.id}
-              template={t}
-              isDefault={t.id === defaultId}
-              onEdit={() => setEditing({ ...t })}
-              onDelete={() => handleDelete(t.id)}
+      ) : (
+        <>
+          <ModernRows>
+            <ModernRow
+              title="Use for new lanes"
+              hint="Picked for you when you create a lane. You can still choose a different one there."
+              control={(
+                <SettingsSelect
+                  value={defaultId ?? ""}
+                  onChange={handleSetDefault}
+                  ariaLabel="Default lane template"
+                  options={[
+                    { value: "", label: "None" },
+                    ...templates.map((template) => ({ value: template.id, label: template.name })),
+                  ]}
+                  style={{ minWidth: 200 }}
+                />
+              )}
             />
-          ))
-        )}
-      </SettingsManagerTable>
-    </SettingsManagerPage>
+          </ModernRows>
+          <div className="ade-modern-rows" role="table" aria-label="Lane templates">
+            {templates.map((t) => (
+              <TemplateRow
+                key={t.id}
+                template={t}
+                isDefault={t.id === defaultId}
+                onEdit={() => setEditing({ ...t })}
+                onDelete={() => handleDelete(t.id)}
+              />
+            ))}
+          </div>
+        </>
+      )}
+    </ModernSection>
   );
 }
 
@@ -435,58 +398,58 @@ function TemplateRow({
   const name = template.name || "Untitled";
 
   return (
-    <>
-      <SettingsManagerRow
-        actions={
-          <>
-            <button
-              style={outlineButton({ height: 26, fontSize: 12, padding: "0 10px", borderRadius: 6 })}
-              onClick={onEdit}
-            >
-              Edit
-            </button>
-            <button
-              style={outlineButton({ height: 26, fontSize: 10, padding: "0 10px", borderRadius: 6, color: COLORS.danger, borderColor: "color-mix(in srgb, var(--color-error) 30%, transparent)" })}
-              onClick={() => {
-                void confirmDialog({ title: `Delete template "${template.name}"?`, confirmLabel: "Delete", destructive: true })
-                  .then((ok) => { if (ok) onDelete(); });
-              }}
-            >
-              Delete
-            </button>
-            <button
-              type="button"
-              aria-expanded={expanded}
-              aria-label={expanded ? `Hide ${name} details` : `Show ${name} details`}
-              onClick={() => setExpanded(!expanded)}
-              style={{ ...removeBtn, fontSize: 10, color: COLORS.textDim, width: 16, textAlign: "center", transition: "transform 150ms ease", transform: expanded ? "rotate(180deg)" : "rotate(0)" }}
-            >
-              {"▾"}
-            </button>
-          </>
-        }
-      >
-        <div style={{ minWidth: 0 }}>
-          <span style={{ fontSize: 13, fontWeight: 600, color: COLORS.textPrimary }}>{name}</span>
-          {template.description && (
-            <div style={{ fontSize: 11, color: COLORS.textMuted, marginTop: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+    <div className="ade-lt-item">
+      <div role="row" className="ade-lt-row">
+        <div style={{ minWidth: 0, flex: "1 1 200px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+            <span className="ade-ap-rowtitle" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</span>
+            {isDefault ? <span className="kit-tag">DEFAULT</span> : null}
+          </div>
+          {template.description ? (
+            <div className="ade-ap-rowhint" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               {template.description}
             </div>
-          )}
+          ) : null}
         </div>
-        <div style={{ minWidth: 0 }}>
+        <div className="ade-lt-features">
           {features.length > 0 ? (
-            <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-              {features.map((f) => <span key={f} style={featureChip}>{f}</span>)}
-            </div>
+            features.map((f) => <span key={f} className="kit-tag">{f}</span>)
           ) : (
-            <span style={{ fontSize: 11, color: COLORS.textDim }}>Nothing yet</span>
+            <span className="ade-modern-muted">Nothing yet</span>
           )}
         </div>
-        <div>{isDefault ? <span style={pillBadge(COLORS.info)}>DEFAULT</span> : null}</div>
-      </SettingsManagerRow>
+        <div style={{ display: "flex", alignItems: "center", gap: 4, flex: "none" }}>
+          <button type="button" className="ade-modern-btn" data-size="sm" onClick={onEdit}>
+            Edit
+          </button>
+          <button
+            type="button"
+            className="ade-modern-btn"
+            data-size="sm"
+            data-variant="ghost"
+            onClick={() => {
+              void confirmDialog({ title: `Delete template "${template.name}"?`, confirmLabel: "Delete", destructive: true })
+                .then((ok) => { if (ok) onDelete(); });
+            }}
+          >
+            Delete
+          </button>
+          <button
+            type="button"
+            className="ade-modern-btn"
+            data-size="sm"
+            data-variant="ghost"
+            aria-expanded={expanded}
+            aria-label={expanded ? `Hide ${name} details` : `Show ${name} details`}
+            onClick={() => setExpanded(!expanded)}
+            style={{ width: 24, padding: 0 }}
+          >
+            <CaretDown size={12} style={{ transition: "transform 150ms ease", transform: expanded ? "rotate(180deg)" : "rotate(0)" }} />
+          </button>
+        </div>
+      </div>
       {expanded && (
-        <div style={{ padding: "12px 12px 14px", borderTop: `1px solid ${COLORS.borderMuted}`, fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textSecondary, display: "flex", flexDirection: "column", gap: 6 }}>
+        <dl className="ade-lt-details ade-modern-facts">
           {template.copyPaths && template.copyPaths.length > 0 && (
             <ConfigRow label="Files to copy" items={template.copyPaths.map((p) => p.dest ? `${p.source} → ${p.dest}` : p.source)} />
           )}
@@ -508,25 +471,18 @@ function TemplateRow({
           {template.envVars && Object.keys(template.envVars).length > 0 && (
             <ConfigRow label="Env vars" items={Object.entries(template.envVars).map(([k, v]) => `${k}=${v}`)} />
           )}
-        </div>
+        </dl>
       )}
-    </>
+    </div>
   );
 }
 
-
-
 function ConfigRow({ label, items }: { label: string; items: string[] }) {
   return (
-    <div>
-      <span style={{ color: COLORS.textDim, fontSize: 11 }}>{label}: </span>
-      {items.map((item, i) => (
-        <span key={i}>
-          {i > 0 && <span style={{ color: COLORS.textDim }}>, </span>}
-          <span style={{ color: COLORS.textSecondary, fontFamily: MONO_FONT, fontSize: 10 }}>{item}</span>
-        </span>
-      ))}
-    </div>
+    <>
+      <dt>{label}</dt>
+      <dd className="ade-modern-path">{items.join(", ")}</dd>
+    </>
   );
 }
 
@@ -539,15 +495,10 @@ function SetupScriptPreview({ script }: { script: LaneSetupScriptConfig }) {
   if (script.unixScriptPath) lines.push(`macOS/Linux: ${script.unixScriptPath}`);
   if (script.windowsScriptPath) lines.push(`Windows: ${script.windowsScriptPath}`);
   return (
-    <div>
-      <span style={{ color: COLORS.textDim, fontSize: 11 }}>Setup script: </span>
-      {lines.map((line, i) => (
-        <span key={i}>
-          {i > 0 && <span style={{ color: COLORS.textDim }}> | </span>}
-          <span style={{ color: COLORS.accent, fontFamily: MONO_FONT, fontSize: 10 }}>{line}</span>
-        </span>
-      ))}
-    </div>
+    <>
+      <dt>Setup script</dt>
+      <dd className="ade-modern-path">{lines.join(" | ")}</dd>
+    </>
   );
 }
 
@@ -642,24 +593,19 @@ function TemplateEditor({
   return (
     <div>
       {/* Header with save/cancel */}
-      <div style={{
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        marginBottom: 20,
-        paddingBottom: 16,
-        borderBottom: `1px solid ${COLORS.borderMuted}`,
-      }}>
-        <div>
-          <div style={{ ...LABEL_STYLE, fontSize: 11, margin: 0 }}>{isNew ? "NEW TEMPLATE" : "EDIT TEMPLATE"}</div>
-          <div style={{ fontSize: 11, color: COLORS.textDim, marginTop: 4 }}>
+      <div className="ade-lt-editor-head">
+        <div style={{ minWidth: 0 }}>
+          <div className="kit-eyebrow">{isNew ? "New template" : "Edit template"}</div>
+          <div className="ade-ap-rowhint" style={{ marginTop: 4 }}>
             {isNew ? "Everything here runs when a lane is created with this template." : `Editing "${initial.name}"`}
           </div>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
-          <button style={outlineButton({ height: 30, fontSize: 12 })} onClick={onCancel}>Cancel</button>
+          <button type="button" className="ade-modern-btn" data-variant="ghost" onClick={onCancel}>Cancel</button>
           <button
-            style={primaryButton({ height: 30, fontSize: 11, opacity: name.trim() ? 1 : 0.4 })}
+            type="button"
+            className="ade-modern-btn"
+            data-tone="primary"
             disabled={!name.trim()}
             onClick={handleSubmit}
           >
@@ -716,7 +662,7 @@ function TemplateEditor({
             </div>
           ))}
           <button
-            style={outlineButton({ height: 28, fontSize: 12 })}
+            type="button" className="ade-modern-btn" data-size="sm"
             onClick={() => setCopyPaths([...copyPaths, { source: "" }])}
           >
             + Add file or folder
@@ -754,7 +700,7 @@ function TemplateEditor({
             </div>
           ))}
           <button
-            style={outlineButton({ height: 28, fontSize: 12 })}
+            type="button" className="ade-modern-btn" data-size="sm"
             onClick={() => setEnvFiles([...envFiles, { source: "", dest: "" }])}
           >
             + Add env file
@@ -786,7 +732,7 @@ function TemplateEditor({
             </div>
           ))}
           <button
-            style={outlineButton({ height: 28, fontSize: 12 })}
+            type="button" className="ade-modern-btn" data-size="sm"
             onClick={() => setDependencies([...dependencies, { command: [] }])}
           >
             + Add command
@@ -1008,7 +954,7 @@ function AdvancedFields({
           </div>
         ))}
         <button
-          style={outlineButton({ height: 28, fontSize: 12 })}
+          type="button" className="ade-modern-btn" data-size="sm"
           onClick={() => onChange({ mountPoints: [...mountPoints, { source: "", dest: "" }] })}
         >
           + Add file
@@ -1045,7 +991,7 @@ function AdvancedFields({
           </div>
         ))}
         <button
-          style={outlineButton({ height: 28, fontSize: 12 })}
+          type="button" className="ade-modern-btn" data-size="sm"
           onClick={() => onChange({ envVars: [...envVars, { key: "", value: "" }] })}
         >
           + Add variable

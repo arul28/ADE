@@ -1,18 +1,15 @@
 import React from "react";
-import { GithubLogo } from "@phosphor-icons/react";
 import { GitHubSection } from "./GitHubSection";
-import { SettingsSectionShell } from "./settingsSectionUi";
+import { useSettingsMachineScope } from "./SettingsMachineScope";
 
+/**
+ * Settings › Integrations › GitHub. The tab's block already names the group,
+ * so the section's own headings (Connection, Access order, …) carry the page.
+ *
+ * Keyed on the machine's pin: a new pin starts a fresh section, so nothing
+ * the last machine was doing (a device code, a pending save) lands here.
+ */
 export function GitHubIntegrationSection() {
-  return (
-    <SettingsSectionShell
-      title="GitHub integration"
-      description="Sign in with the GitHub CLI or a token, and add ADE for GitHub for live PR updates."
-      icon={GithubLogo}
-      brandColor="#3FB950"
-      iconWeight="fill"
-    >
-      <GitHubSection embedded />
-    </SettingsSectionShell>
-  );
+  const { pin } = useSettingsMachineScope();
+  return <GitHubSection key={pin?.key ?? "unpinned"} embedded />;
 }

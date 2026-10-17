@@ -855,18 +855,25 @@ describe("createAgentChatService", () => {
     it("dispatches a Cursor steer with dispatchMode interrupt by cancelling the run and resending on the same agent", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const { service, session } = await startBusyCursorSession(events);
+      const pastedPath = path.join(tmpRoot, "cursor-pasted-steer.txt");
+      const pastedBody = "Cursor should receive this pasted request once.";
+      fs.writeFileSync(pastedPath, pastedBody);
 
       await service.steer({
         sessionId: session.id,
-        text: "Actually, do the migration first.",
+        text: "Please handle the attached request.",
+        attachments: [{ path: pastedPath, type: "file", intent: "user_prompt" }],
         dispatchMode: "interrupt",
       });
 
       await vi.waitFor(() => {
         expect(mockState.cursorSdkSendCalls.length).toBeGreaterThanOrEqual(2);
       });
-      expect(String(mockState.cursorSdkSendCalls[1]?.promptText ?? ""))
-        .toContain("Actually, do the migration first.");
+      const redirectedPrompt = String(mockState.cursorSdkSendCalls[1]?.promptText ?? "");
+      expect(redirectedPrompt).toContain("Please handle the attached request.");
+      expect(redirectedPrompt).toContain(path.basename(pastedPath));
+      expect(redirectedPrompt.match(/copy and paste/gi)).toHaveLength(1);
+      expect(redirectedPrompt.split(pastedBody)).toHaveLength(2);
       // The previous turn is reported as interrupted, not failed.
       expect(events.some((event) =>
         event.event.type === "status" && event.event.turnStatus === "interrupted")).toBe(true);
@@ -908,19 +915,26 @@ describe("createAgentChatService", () => {
     it("routes messageSession kind interrupt-replace on Cursor through interrupt-and-continue", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const { service, session } = await startBusyCursorSession(events);
+      const pastedPath = path.join(tmpRoot, "cursor-message-session-replacement.txt");
+      const pastedBody = "Replacement file contents reach the provider once.";
+      fs.writeFileSync(pastedPath, pastedBody);
 
       const result = await service.messageSession({
         sessionId: session.id,
         text: "Stop and take this instead.",
         kind: "interrupt-replace",
+        attachments: [{ path: pastedPath, type: "file", intent: "user_prompt" }],
       });
 
       expect(result.routedAction).toBe("interrupt-replace");
       await vi.waitFor(() => {
         expect(mockState.cursorSdkSendCalls.length).toBeGreaterThanOrEqual(2);
       });
-      expect(String(mockState.cursorSdkSendCalls[1]?.promptText ?? ""))
-        .toContain("Stop and take this instead.");
+      const replacementPrompt = String(mockState.cursorSdkSendCalls[1]?.promptText ?? "");
+      expect(replacementPrompt).toContain("Stop and take this instead.");
+      expect(replacementPrompt).toContain(path.basename(pastedPath));
+      expect(replacementPrompt.split(pastedBody)).toHaveLength(2);
+      expect(replacementPrompt.match(/copy and paste/gi)).toHaveLength(1);
       expect(events.some((event) =>
         event.event.type === "status" && event.event.turnStatus === "interrupted")).toBe(true);
       expect(readPersistedChatState(session.id).cursorSdkAgentId).toBe("cursor-sdk-agent-1");

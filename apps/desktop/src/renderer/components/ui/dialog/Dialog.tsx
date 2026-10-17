@@ -21,6 +21,12 @@ import "./dialog.css";
 
 export type DialogSize = "sm" | "md" | "lg";
 export type DialogLayer = "dialog" | "nestedDialog";
+/**
+ * `center` is the modal. `right` is a side sheet: full height, docked to the
+ * window's right edge, floating over the page rather than pushing it aside, for
+ * "peek at this thing" content (an issue) that you read beside the page.
+ */
+export type DialogPlacement = "center" | "right";
 
 const SIZE_WIDTH: Record<DialogSize, number> = { sm: 400, md: 520, lg: 720 };
 
@@ -32,6 +38,16 @@ const DIALOG_SCRIM_STYLE: CSSProperties = {
   backdropFilter: "blur(6px)",
   WebkitBackdropFilter: "blur(6px)",
 };
+
+/** A side sheet keeps the page readable behind it: a lighter tint, no blur. */
+const SHEET_SCRIM_STYLE: CSSProperties = {
+  position: "fixed",
+  inset: 0,
+  background: "rgba(6, 5, 10, 0.32)",
+};
+
+/** Gap between a side sheet and the window edges. */
+const SHEET_EDGE_GAP = 8;
 
 /** The panel material (the notice card, lifted). */
 const DIALOG_PANEL_SURFACE: CSSProperties = {
@@ -64,6 +80,8 @@ export type DialogProps = {
   /** Icon tile: `true` for the tone default, a node for a custom glyph. Omitted: no tile. */
   icon?: ReactNode | boolean;
   size?: DialogSize;
+  /** Where the panel sits. Default `center`. */
+  placement?: DialogPlacement;
   /** Exact width (px number or CSS length); overrides `size`. */
   width?: number | string;
   /** Exact height (CSS length) for dialogs whose body fills the panel. */
@@ -143,6 +161,7 @@ export function Dialog({
   tone = "neutral",
   icon,
   size = "md",
+  placement = "center",
   width,
   height,
   maxHeight,
@@ -236,7 +255,10 @@ export function Dialog({
   return (
     <RadixDialog.Root open={open} onOpenChange={onOpenChange}>
       <RadixDialog.Portal>
-        <RadixDialog.Overlay className="ade-dialog-scrim" style={{ ...DIALOG_SCRIM_STYLE, zIndex }} />
+        <RadixDialog.Overlay
+          className="ade-dialog-scrim"
+          style={{ ...(placement === "right" ? SHEET_SCRIM_STYLE : DIALOG_SCRIM_STYLE), zIndex }}
+        />
         <RadixDialog.Content
           ref={setPanel}
           role={role}
@@ -244,19 +266,31 @@ export function Dialog({
           {...(description ? {} : { "aria-describedby": undefined })}
           data-testid={testId}
           className={panelClassName ? `ade-dialog-panel ${panelClassName}` : "ade-dialog-panel"}
+          data-placement={placement}
           tabIndex={-1}
           style={{
             ...DIALOG_PANEL_SURFACE,
             // Centered the way a UA <dialog> is — inset 0 + auto margins — not
             // with a transform: a transformed panel would become the containing
-            // block for the `position: fixed` popovers that portal into it.
+            // block for the `position: fixed` popovers that portal into it. The
+            // side sheet is placed with insets for the same reason.
             position: "fixed",
-            inset: 0,
-            margin: "auto",
+            ...(placement === "right"
+              ? {
+                // Fully opaque: a sheet sits over live page content, and the
+                // modal's 98% material lets that content ghost through.
+                background: "var(--color-card)",
+                top: SHEET_EDGE_GAP,
+                right: SHEET_EDGE_GAP,
+                bottom: SHEET_EDGE_GAP,
+                left: "auto",
+                margin: 0,
+              }
+              : { inset: 0, margin: "auto" }),
             zIndex,
-            width: `min(${resolvedWidth}, calc(100vw - 32px))`,
-            height: cssLength(height) ?? "fit-content",
-            maxHeight: cssLength(maxHeight) ?? "calc(100vh - 48px)",
+            width: `min(${resolvedWidth}, calc(100vw - ${placement === "right" ? SHEET_EDGE_GAP * 2 : 32}px))`,
+            height: placement === "right" ? "auto" : cssLength(height) ?? "fit-content",
+            maxHeight: placement === "right" ? "none" : cssLength(maxHeight) ?? "calc(100vh - 48px)",
             display: "flex",
             flexDirection: "column",
             overflow: "hidden",

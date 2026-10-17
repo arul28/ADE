@@ -6,8 +6,10 @@ work, and how subagents, permissions, and questions reach ADE. Read this before
 changing `apps/desktop/src/main/services/opencode/**`, the OpenCode branch of
 `agentChatService.ts`, or `openCodeEventMapper.ts`.
 
-ADE pins OpenCode **2.0.18** exactly (`@opencode/cli`, `@opencode/client`).
-There is no 1.x code path.
+ADE pins OpenCode **2.0.29** exactly (`@opencode/cli`, `@opencode/client`;
+the tools manifest in `apps/ade-cli` follows it). There is no 1.x code path.
+Behavior noted below as verified against 2.0.18 was checked again on 2.0.29
+where this doc says so.
 
 ## Source file map
 
@@ -20,6 +22,8 @@ There is no 1.x code path.
 | `apps/desktop/src/main/services/chat/agentChatService.ts` (OpenCode 2.0 runtime block, `startOpenCodeSessionRuntime`) | The chat runtime: the persistent session listener, turn start and finish, inbox rows (steer/queue), permission asks, question forms, child sessions, reconnect reconciliation, server exit. |
 | `apps/desktop/src/main/services/chat/openCodeTurnUsage.ts` | Turn usage and cost from step tokens, and the account that paid. |
 | `apps/desktop/src/main/services/opencode/openCodeAuthService.ts`, `openCodeInventory.ts` | Provider login through 2.0 integrations/credentials; the model list with a long-lived disk cache. |
+| `apps/desktop/src/main/services/opencode/openCodeAccounts.ts`, `openCodeCloudLoginSync.ts`, `openCodeCloudReadiness.ts` | Several logins per provider (list, switch, rename, sign out), cloud logins and their account-wide sync, and whether a machine has the gcloud/AWS login a cloud login points at. |
+| `apps/desktop/src/renderer/components/settings/providers/opencode/OpenCodeAccounts.tsx` | The Accounts list and Add account dialog inside a provider's Settings dialog. |
 
 ## Servers and profiles
 
@@ -91,6 +95,58 @@ Settings pins both above the provider catalog. Zen serves free models with no
 sign-in, so the inventory's `connected` is true for it before any login;
 `signedIn` (the integration has a connection) is what "Connected" means for a
 provider that offers a sign-in.
+
+## Accounts and cloud logins
+
+- OpenCode keeps every login it is given in its `credential` table and uses
+  one per provider for every chat on the machine. A new login becomes the one
+  in use; `credential.activate` switches, and the next request of every
+  running chat uses it. With no login marked active (logins from before 2.0),
+  the newest is used, and Settings shows that one as in use. While a provider
+  has any OpenCode login, ADE's own API key for it is not used; it applies
+  again once every login is signed out (all verified against 2.0.29).
+- Settings → a provider → **Accounts** lists them for the machine the page
+  shows (`ai.opencodeAccounts`, `opencodeAccountActivate`, `…Rename`,
+  `…Remove`, all pinned). A machine whose ADE predates these actions keeps the
+  plain sign-in. No secret leaves SQLite: only type, label, method and a cloud
+  login's answers are read.
+- **Cloud logins** are OpenCode's `external` methods: `google-adc` (Vertex
+  through gcloud application-default credentials) and `aws-profile` (Bedrock
+  through an AWS profile); Azure's appears when the Azure CLI is installed.
+  They store which machine login to use, never a token, and OpenCode checks
+  nothing when one is added. `ai.opencodeCloudConnect` adds one and saves it to
+  the ADE account setting `opencodeCloudLogins` (scope `all`). Every machine
+  signed in to the account brings its store in line when its accounts are
+  listed: missing logins are added without taking over the login in use, and
+  logins removed elsewhere are removed (`cloud-logins-applied.json` in the
+  runtime root records which ones came from the account). Disconnecting a
+  provider removes its cloud logins from the account too. Each row shows
+  whether that machine has the login behind it (the ADC file, or the AWS
+  profile in `~/.aws`) and the command that fixes it.
+- `integration.connect.*` sent to a server that just started reports a real
+  provider as missing; ADE lists integrations first, which waits for the
+  catalog.
+
+## Lane guard
+
+OpenCode 2.0.27 added Code Mode tools that create, list and remove git
+worktrees and move a session to another directory. ADE owns worktrees (lanes),
+so `OPENCODE_LANE_GUARD_RULES` go last on every ADE agent and on every session,
+including `config-toml` sessions: denying `opencode_worktree_create`,
+`opencode_worktree_list` and `opencode_session_move` removes them from the Code
+Mode catalog (a tool whose permission name is denied outright is not offered),
+and denying `edit` on `.` stops `worktree_remove` from removing the chat's own
+lane without touching file edits. `worktree_remove` itself stays listed, since
+it asks for `edit`; another lane's worktree is as reachable as it is through
+`git worktree remove` in the shell.
+
+## Custom providers
+
+A custom provider can turn on request compression (`settings.encoding`:
+gzip or zstd) and the prompt-cache marker style its endpoint accepts
+(`compatibility.cacheFormat`: anthropic or alibaba). Both are off by default:
+an endpoint that cannot read them rejects every request. ChatGPT sign-ins use
+zstd on their own.
 
 ## Turns
 
@@ -169,7 +225,10 @@ provider that offers a sign-in.
   `parentID` (nested children are tracked too). The child card links to the
   tool call that started it and carries the call's description.
 - Children report usage from their steps and settle on their own execution
-  events. A background child keeps running after the parent's turn ends; its
+  events. A parent turn's cost includes what its children spent since the
+  last turn (`takeUnbilledOpenCodeChildCost`), so a background child that
+  finishes later bills the turn it wakes; failed and stopped turns report what
+  they spent too. A background child keeps running after the parent's turn ends; its
   completion starts a new parent turn.
 - Drill-in reads the child's stored messages (`message.list`) and maps each
   part to a formed chat event.

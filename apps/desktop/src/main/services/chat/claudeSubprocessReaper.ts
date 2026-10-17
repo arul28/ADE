@@ -207,6 +207,12 @@ export function createClaudeSubprocessReaper(args: {
   const processKill = args.processKill ?? ((pid: number, signal?: NodeJS.Signals | 0) => process.kill(pid, signal as NodeJS.Signals | undefined));
   const readProcessInfo = args.readProcessInfo ?? readPosixProcessInfoSync;
   const live = new Map<number, LiveClaudeSubprocess>();
+  /**
+   * When ADE last signalled one of a chat's processes. A Claude process that
+   * dies of SIGTERM/SIGKILL with no ADE stop behind it was stopped from
+   * outside, and the failure card says so instead of the bare exit code.
+   */
+  const adeTerminatedAt = new Map<string, number>();
 
   /**
    * The POSIX half of "kill the tree, not the leaf" — the counterpart to the
@@ -584,6 +590,7 @@ export function createClaudeSubprocessReaper(args: {
     // gate on exit/signal codes so a hung child still gets the SIGKILL escalation.
     const exited = () => child.exitCode !== null || (child as { signalCode?: string | null }).signalCode != null;
     if (exited() || entry.killTimer) return;
+    adeTerminatedAt.set(entry.record.sessionId, Date.now());
     logger.warn("agent_chat.claude_subprocess_terminate", {
       pid,
       sessionId: entry.record.sessionId,
@@ -648,6 +655,9 @@ export function createClaudeSubprocessReaper(args: {
     reapForSession,
     reapAll,
     reapStaleRegistry,
+    /** Whether ADE itself signalled one of this chat's processes at or after `sinceMs`. */
+    terminatedByAdeSince: (sessionId: string, sinceMs: number): boolean =>
+      (adeTerminatedAt.get(sessionId) ?? Number.NEGATIVE_INFINITY) >= sinceMs,
     liveRecords: (): ClaudeSubprocessRecord[] => [...live.values()].map((entry) => ({ ...entry.record })),
     /**
      * Live SDK processes owned by one chat, for the surfaces that report what a

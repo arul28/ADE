@@ -130,11 +130,6 @@ struct WorkSessionRoute: Hashable {
   var openingAttachments: [AgentChatFileRef] = []
 }
 
-struct WorkDraftChatSession {
-  let summary: AgentChatSessionSummary
-  let initialMessage: String?
-}
-
 /// What re-runs the presentation rebuild. Scalars only: the list's own rows
 /// are represented by `projectionDataRevision`, which bumps whenever any of the
 /// five row sources changes, so no body evaluation compares whole arrays.
@@ -195,6 +190,7 @@ struct WorkRootSyncInputs: Equatable {
   var projectIconDataUrl: String?
   var showsLinear = false
   var showsCursorCloud = false
+  var showsGitHubIssues = false
   var laneColorAvailable = false
   var laneManageAvailable = false
   var lifecycleAvailable = false
@@ -202,6 +198,15 @@ struct WorkRootSyncInputs: Equatable {
   var spawnKindUpdateAvailable = false
   var deleteSessionAvailable = false
   var generateNamesAvailable = false
+  /// Session-menu parity with desktop: Set tag, Restart agent, Hand off ▸.
+  /// The focused host's answer only — it re-renders the list when its
+  /// capabilities change. Each row asks the brain that owns its chat
+  /// (`sessionListRow`), since a chat on another machine or project may differ.
+  var chatTagAvailable = false
+  var restartAgentAvailable = false
+  var localHandoffAvailable = false
+  var crossMachineHandoffAvailable = false
+  var autoHandoffAvailable = false
   /// Other machines' checkouts of the focused repository (their chats join
   /// the list). Tracked only while the list is visible.
   var remoteMachineRepos: [WorkRemoteMachineRepo] = []
@@ -240,6 +245,7 @@ struct WorkRootSyncInputs: Equatable {
     showsCursorCloud = sync.activeProjectId != nil
       && sync.cursorCloudConnected
       && sync.supportsRemoteAction("ai.cursorCloudFleet")
+    showsGitHubIssues = sync.activeProjectId.map { sync.githubIssuesMenuProjectIds.contains($0) } ?? false
     laneColorAvailable = sync.canInvokeRemoteAction("lanes.updateAppearance")
     laneManageAvailable = sync.canInvokeRemoteAction("lanes.rename")
     lifecycleAvailable = sync.supportsSessionLifecycleActions
@@ -247,11 +253,18 @@ struct WorkRootSyncInputs: Equatable {
     spawnKindUpdateAvailable = sync.supportsSpawnKindUpdate
     deleteSessionAvailable = sync.supportsWorkSessionDeletion
     generateNamesAvailable = sync.canInvokeRemoteAction("chat.regenerateSessionMetadata")
-    if let fleet, !fleet.machines.isEmpty, let activeProject {
+    chatTagAvailable = sync.canInvokeRemoteAction("chat.updateSession")
+    restartAgentAvailable = sync.canInvokeRemoteAction("chat.restartSession")
+    localHandoffAvailable = sync.canInvokeRemoteAction("chat.handoff")
+    crossMachineHandoffAvailable = sync.canInvokeRemoteAction("chat.getCrossMachineHandoffOptions")
+      && sync.canInvokeRemoteAction("chat.startCrossMachineHandoff")
+    autoHandoffAvailable = sync.autoHandoffRulesAvailable && sync.canInvokeRemoteAction("automations.saveDraft")
+    // Only machines the user keeps connected; a disconnected one stays off.
+    if let fleet, case let connected = fleet.machines.filter(\.isPinned), !connected.isEmpty, let activeProject {
       let identity = workRepoIdentity(owner: activeProject.repoOwner, name: activeProject.repoName)
         ?? workRepoIdentity(originUrl: sync.rosterProject(for: activeProject)?.repoOriginUrl)
       remoteMachineRepos = workRemoteMachineRepos(
-        machines: fleet.machines,
+        machines: connected,
         identity: identity,
         folderKey: hubProjectFolderKey(activeProject.rootPath, displayName: activeProject.displayName)
       )
@@ -381,6 +394,17 @@ struct WorkRootListScreen: View, Equatable {
   @State var renameTarget: TerminalSessionSummary?
   @State var renameText = ""
   @State var stopRuntimeTarget: TerminalSessionSummary?
+  /// Session-menu sheets and prompts added for desktop parity.
+  @State var tagTarget: TerminalSessionSummary?
+  @State var tagText = ""
+  @State var restartStopTurnTarget: TerminalSessionSummary?
+  @State var localHandoffSubject: WorkSessionHandoffSubject?
+  @State var autoHandoffSubject: WorkSessionHandoffSubject?
+  @State var crossMachineHandoffTarget: WorkCrossMachineHandoffTarget?
+  /// Auto-handoff rule ids scoped to each chat, read once per list load so the
+  /// menu can say "Edit auto handoff…" / "Remove auto handoff" without
+  /// waiting on the host when it opens. Absent key = unknown.
+  @State var autoHandoffRuleIdsBySession: [String: [String]] = [:]
   @State var optimisticSessions: [String: TerminalSessionSummary] = [:] {
     didSet { projectionDataRevision &+= 1 }
   }
@@ -728,6 +752,22 @@ struct WorkRootListScreen: View, Equatable {
     sessionPresentation.sessionGroups
   }
 
+  var workFiltersSection: some View {
+    WorkFiltersSection(
+      searchText: searchTextBinding,
+      selectedLaneId: selectedLaneBinding,
+      selectedStatus: selectedStatusBinding,
+      organization: sessionOrganizationBinding,
+      foldBusyLanes: foldBusyLanesBinding,
+      filterOpen: filterPanelOpen,
+      activeFilterCount: workActiveFilterCount,
+      machineFilter: machineFilterBinding,
+      machineOptions: inputs.machineFilterOptions,
+      lanes: workOrderedLanes,
+      onClear: clearWorkFilters
+    )
+  }
+
   /// The groups on screen: lanes filed under the Working shelf render only
   /// while that shelf is expanded.
   var visibleSessionGroups: [WorkSessionGroup] {
@@ -737,9 +777,10 @@ struct WorkRootListScreen: View, Equatable {
     return groups.filter { !$0.inWorkingShelf }
   }
 
-  /// The first Snoozed/Settled shelf, which draws the quiet zone's rule.
+  /// The first shelf (Working, else Snoozed or Settled) draws the quiet zone's
+  /// one rule, so all three sit together below it, as on desktop.
   var quietZoneStartGroupId: String? {
-    sessionGroups.first(where: { $0.isShelf && $0.id != workWorkingSectionId })?.id
+    sessionGroups.first(where: \.isShelf)?.id
   }
 
   /// Lanes the user has pinned, read from the Lanes tab's store.
@@ -821,7 +862,7 @@ struct WorkRootListScreen: View, Equatable {
   }
 
   private func workList(proxy: ScrollViewProxy) -> some View {
-    List {
+    let list = List {
         if isLoadingSkeleton && sessions.isEmpty && optimisticSessions.isEmpty {
           ForEach(0..<3, id: \.self) { _ in
             ADECardSkeleton(rows: 3)
@@ -846,24 +887,14 @@ struct WorkRootListScreen: View, Equatable {
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
           }
-          // Search and the filter chip live in the header now; only the
-          // expanded filter panel (and the Clear affordance) sit in the list.
-          if filterPanelOpen || hasActiveFilters {
-            WorkFiltersSection(
-              searchText: searchTextBinding,
-              selectedLaneId: selectedLaneBinding,
-              selectedStatus: selectedStatusBinding,
-              organization: sessionOrganizationBinding,
-              foldBusyLanes: foldBusyLanesBinding,
-              filterOpen: $filterPanelOpen,
-              machineFilter: machineFilterBinding,
-              machineOptions: inputs.machineFilterOptions,
-              lanes: workOrderedLanes,
-              onClear: clearWorkFilters
-            )
-            .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
-            .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
+          // Search and the filter button live in the header; the open panel
+          // floats over the list (below), so it opens wherever the list is
+          // scrolled. Only the Clear affordance for active filters sits here.
+          if hasActiveFilters && !filterPanelOpen {
+            workFiltersSection
+              .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
+              .listRowBackground(Color.clear)
+              .listRowSeparator(.hidden)
           }
 
           if let errorMessage,
@@ -933,6 +964,23 @@ struct WorkRootListScreen: View, Equatable {
       .navigationTitle("")
       .navigationBarTitleDisplayMode(.inline)
       .toolbar(.hidden, for: .navigationBar)
+      .overlay(alignment: .top) {
+        if filterPanelOpen {
+          ZStack(alignment: .top) {
+            // Tapping outside the panel closes it, like a desktop dropdown.
+            Color.black.opacity(0.001)
+              .ignoresSafeArea()
+              .onTapGesture {
+                withAnimation(.snappy(duration: 0.18)) { filterPanelOpen = false }
+              }
+            workFiltersSection
+              .padding(.horizontal, 12)
+              .padding(.top, 4)
+          }
+          .transition(.opacity.combined(with: .move(edge: .top)))
+        }
+      }
+      .animation(.snappy(duration: 0.18), value: filterPanelOpen)
       .safeAreaInset(edge: .top, spacing: 0) {
         // One row: project / back, title, search with the filter chip inside it,
         // then new chat and the overflow menu. No attention rollup lives here —
@@ -946,6 +994,7 @@ struct WorkRootListScreen: View, Equatable {
           isLive: inputs.isLive,
           showsLinear: inputs.showsLinear,
           showsCursorCloud: inputs.showsCursorCloud,
+          showsGitHubIssues: inputs.showsGitHubIssues,
           selectionCount: isSelecting ? selectedSessionIds.count : nil,
           actions: workHeaderActions
         )
@@ -1048,6 +1097,7 @@ struct WorkRootListScreen: View, Equatable {
       .task(id: "\(inputs.activeProjectId ?? ""):\(inputs.activeProjectHostIdentity ?? ""):\(inputs.isAttached)") {
         await syncService.refreshLinearConnection()
         await syncService.refreshCursorCloudConnection()
+        GitHubIssuesMenuAvailability.shared.refresh(sync: syncService, projectId: inputs.activeProjectId)
       }
       .task(id: workProjectionReloadKey) {
         guard let revision = workProjectionReloadKey else { return }
@@ -1126,7 +1176,8 @@ struct WorkRootListScreen: View, Equatable {
           initialOpeningDeliveryState: route.openingDeliveryState,
           initialOpeningAttachments: route.openingAttachments,
           initialSession: initialSession,
-          initialChatSummary: chatSummaries[route.sessionId],
+          initialChatSummary: chatSummaries[route.sessionId]
+            ?? workRemoteMachineRosterChat(sessionId: route.sessionId, in: inputs.remoteMachineRepos)?.rosterChatSummary,
           transitionNamespace: routeTransitionNamespace,
           isLive: inputs.isLive,
           navigationChrome: .pushedDetail,
@@ -1229,6 +1280,7 @@ struct WorkRootListScreen: View, Equatable {
       } message: {
         Text("Give this session a clearer title for search, pinning, and activity tracking.")
       }
+    return sessionMenuPresentations(list)
       .alert("Stop runtime?", isPresented: stopRuntimePresentedBinding, presenting: stopRuntimeTarget) { session in
         Button("Cancel", role: .cancel) {
           stopRuntimeTarget = nil
@@ -1238,6 +1290,62 @@ struct WorkRootListScreen: View, Equatable {
         }
       } message: { session in
         Text("ADE will stop the running process. The saved session stays available unless you delete it.")
+      }
+  }
+
+  /// The session menu's own alerts and sheets (tag, restart, the three
+  /// handoff sheets and the auto-handoff rule refresh). Kept out of
+  /// `workList`'s modifier chain: with them inline, Swift could not
+  /// type-check that expression in reasonable time (CI test-ios).
+  private func sessionMenuPresentations<Content: View>(_ content: Content) -> some View {
+    content
+      .alert("Set tag", isPresented: Binding(
+        get: { tagTarget != nil },
+        set: { if !$0 { tagTarget = nil } }
+      )) {
+        TextField("Tag (empty clears)", text: $tagText)
+        Button("Cancel", role: .cancel) { tagTarget = nil }
+        Button("Save") {
+          let target = tagTarget
+          let tag = tagText
+          tagTarget = nil
+          if let target { submitTag(target, tag: tag) }
+        }
+      } message: {
+        Text("Tags the Claude session so you can find it in Claude's own session list.")
+      }
+      .alert("Stop the turn and restart?", isPresented: Binding(
+        get: { restartStopTurnTarget != nil },
+        set: { if !$0 { restartStopTurnTarget = nil } }
+      ), presenting: restartStopTurnTarget) { session in
+        Button("Cancel", role: .cancel) { restartStopTurnTarget = nil }
+        Button("Stop and restart", role: .destructive) {
+          restartStopTurnTarget = nil
+          restartAgentSession(session, stopFirst: true)
+        }
+      } message: { _ in
+        Text("The agent is mid-turn. Restarting stops this turn and any background jobs it started. The conversation is kept.")
+      }
+      .sheet(item: $localHandoffSubject) { subject in
+        WorkLocalHandoffSheet(subject: subject)
+          .environmentObject(syncService)
+      }
+      .sheet(item: $autoHandoffSubject) { subject in
+        WorkAutoHandoffSheet(
+          subject: subject,
+          lanes: lanes,
+          onChanged: { rules in autoHandoffRuleIdsBySession[subject.sessionId] = rules.map(\.id) }
+        )
+        .environmentObject(syncService)
+      }
+      .sheet(item: $crossMachineHandoffTarget) { target in
+        WorkCrossMachineHandoffSheet(target: target)
+          .environmentObject(syncService)
+      }
+      // Once per project (and when the host starts advertising the rules): the
+      // menu only needs "does this chat have rules", and the editor re-reads.
+      .task(id: "\(inputs.autoHandoffAvailable)|\(inputs.activeProjectId ?? "")|\(sessions.count)") {
+        await refreshAutoHandoffRuleIds()
       }
   }
 
@@ -1542,6 +1650,7 @@ struct WorkRootListScreen: View, Equatable {
       compact: compact,
       nestedSubagent: nestedSubagent,
       showsLaneIdentity: showsLaneIdentity,
+      waitingOnSubagent: sessionPresentation.busySubagentParentIds.contains(session.id),
       isLaneDeleting: inputs.pendingLaneDeletionIds.contains(session.laneId),
       selectedSessionId: $selectedSessionTransitionId,
       isSelecting: isSelecting,
@@ -1570,10 +1679,28 @@ struct WorkRootListScreen: View, Equatable {
       spawnKindUpdateAvailable: inputs.spawnKindUpdateAvailable,
       deleteSessionAvailable: inputs.deleteSessionAvailable,
       onDeleteSession: deleteWorkSession,
-      onOpenInWeb: openSessionInWeb,
       laneMenu: workLaneMenuActions,
       generateNamesAvailable: inputs.generateNamesAvailable,
-      onGenerateNames: generateSessionNames
+      onGenerateNames: generateSessionNames,
+      // Per chat: a chat on another machine (or in another project) is served
+      // by that brain, so each item asks the host that owns THIS chat.
+      tagAvailable: syncService.canInvokeChatRemoteAction("chat.updateSession", sessionId: session.id),
+      onSetTag: beginSetTag,
+      restartAvailable: syncService.canInvokeChatRemoteAction("chat.restartSession", sessionId: session.id),
+      onRestartAgent: { session in restartAgentSession(session, stopFirst: false) },
+      localHandoffAvailable: syncService.canInvokeChatRemoteAction("chat.handoff", sessionId: session.id),
+      crossMachineHandoffAvailable: syncService.crossMachineHandoffAvailable(sessionId: session.id),
+      crossMachineCancelAvailable: syncService.crossMachineHandoffActionAvailable(
+        "chat.cancelCrossMachineHandoff",
+        sessionId: session.id
+      ),
+      crossMachineRetryAvailable: syncService.crossMachineHandoffActionAvailable(
+        "chat.retryCrossMachineHandoff",
+        sessionId: session.id
+      ),
+      autoHandoffAvailable: syncService.autoHandoffRulesAvailable(sessionId: session.id),
+      autoHandoffRuleCount: autoHandoffRuleIdsBySession[session.id]?.count,
+      onHandoff: handleSessionHandoff
     )
   }
 
@@ -1619,6 +1746,7 @@ struct WorkRootListScreen: View, Equatable {
         syncService.linearPanePresented = true
       },
       onOpenCursorCloud: { syncService.cursorCloudPanePresented = true },
+      onOpenGitHubIssues: { syncService.githubIssuesPanePresented = true },
       onOpenSettings: { syncService.settingsPresented = true }
     )
   }

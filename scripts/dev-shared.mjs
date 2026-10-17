@@ -639,6 +639,9 @@ export function printDevIsolationReport(socketPath, projectRoot, { ownsRuntime =
   const sync = ownsRuntime
     ? requested
     : `${requested} requested; this launch left the process already on the socket alone`;
+  const remoteMachines = process.env.ADE_DEV_REMOTE_AUTOCONNECT === "1"
+    ? "AUTO-CONNECT (ADE_DEV_REMOTE_AUTOCONNECT=1): this app will take paired machines from the installed ADE"
+    : "only on Connect (the installed ADE keeps its machine connections)";
   const homeNote = isDefault
     ? "(shared with the installed brain)"
     : "(ADE_HOME override — NOT the installed brain's machine state: different account, runtime dir and heartbeat)";
@@ -648,6 +651,7 @@ export function printDevIsolationReport(socketPath, projectRoot, { ownsRuntime =
     `[ade]   dev socket : ${socketPath}`,
     `[ade]   sync       : ${sync}`,
     `[ade]   project    : ${projectRoot ?? "(launcher default)"}`,
+    `[ade]   machines   : ${remoteMachines}`,
     "[ade]   installed brain: untouched (its own socket, its own sync lease, service never repaired by a dev app)",
     "",
   ].join("\n"));
@@ -941,9 +945,12 @@ export function detachedDevRuntimeEnv(
     // the agent shell we just stripped.
     ...devRuntimeEnv(socketPath, projectRoot, inherited),
     // An explicit value wins: a developer debugging a quiet brain can raise or
-    // disable the budget without editing this file.
+    // disable the budget (`0`) without editing this file. It is read from its
+    // own name, because `ADE_RUNTIME_IDLE_EXIT_MS` is stripped above (an ADE
+    // shell can carry another runtime's timer), so reading it from the
+    // sanitized env could never see the developer's value.
     ADE_RUNTIME_IDLE_EXIT_MS:
-      inherited.ADE_RUNTIME_IDLE_EXIT_MS?.trim()
+      parentEnv.ADE_DEV_RUNTIME_IDLE_EXIT_MS?.trim()
       || String(DEV_RUNTIME_IDLE_EXIT_MS),
   };
 }

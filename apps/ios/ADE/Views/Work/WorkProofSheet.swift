@@ -154,6 +154,9 @@ struct WorkProofSheet: View {
   let refreshError: String?
   let onRefresh: @MainActor () async -> Void
   let onLoadArtifact: WorkArtifactLoader
+  /// Narrowed to the records a thread link counted; its chip clears it.
+  var focus: WorkProofDrawerFocus? = nil
+  var onClearFocus: () -> Void = {}
 
   @Environment(\.dismiss) private var dismiss
   @State private var viewerRequest: WorkProofViewerRequest?
@@ -166,7 +169,8 @@ struct WorkProofSheet: View {
       transcript: transcript,
       query: query,
       media: tab.media,
-      inAnswerOnly: tab == .inAnswers
+      inAnswerOnly: tab == .inAnswers,
+      focus: focus
     )
   }
 
@@ -182,7 +186,7 @@ struct WorkProofSheet: View {
     }
   }
 
-  private var filtered: Bool { !query.isEmpty || tab != .all }
+  private var filtered: Bool { !query.isEmpty || tab != .all || focus != nil }
 
   var body: some View {
     let groups = self.groups
@@ -190,6 +194,9 @@ struct WorkProofSheet: View {
     NavigationStack {
       ScrollView {
         VStack(alignment: .leading, spacing: 18) {
+          if let focus {
+            focusChip(focus)
+          }
           Picker("Show", selection: $tab) {
             ForEach(WorkProofSheetTab.allCases) { option in
               Text(option.rawValue).tag(option)
@@ -249,6 +256,31 @@ struct WorkProofSheet: View {
         )
       }
     }
+  }
+
+  /// "[funnel] This turn · 6 [x]": the sheet shows only what a thread link
+  /// counted. A tap shows all proof again.
+  private func focusChip(_ focus: WorkProofDrawerFocus) -> some View {
+    Button(action: onClearFocus) {
+      HStack(spacing: 5) {
+        Image(systemName: "line.3.horizontal.decrease")
+          .font(.system(size: 10, weight: .semibold))
+        Text("\(focus.label) · \(focus.artifactIds.count)")
+          .font(.caption.monospacedDigit())
+          .lineLimit(1)
+        Image(systemName: "xmark")
+          .font(.system(size: 8, weight: .bold))
+          .opacity(0.7)
+      }
+      .foregroundStyle(ADEColor.purpleAccent)
+      .padding(.horizontal, 9)
+      .padding(.vertical, 5)
+      .background(ADEColor.purpleAccent.opacity(0.14), in: Capsule())
+      .frame(minHeight: 44)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel("Filtered to \(focus.label.lowercased()). Show all proof")
   }
 
   /// One quiet line: the request that produced this proof, and when.

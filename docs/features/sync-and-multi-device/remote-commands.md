@@ -237,7 +237,7 @@ over the wire. A controller only invokes an action the host advertises in
 **Provider accounts** (`providerAccounts.*`)
 - `list`, `getSettings`, `refresh` — viewer-allowed reads of the host's Claude
   and Codex logins.
-- `loginStatus`, `create`, `remove`, `rename`, `setDefault`, `dismissReplaced`,
+- `loginStatus`, `create`, `remove`, `signOut`, `rename`, `setDefault`, `dismissReplaced`,
   `setSettings`, `loginStart`, `loginSubmitCode`, `loginCancel` — controller-only
   (`viewerAllowed: false`, `controllerAllowed: true`). A viewer may read;
   anything that changes a login, or reads a running sign-in (its link and device
@@ -398,7 +398,7 @@ that cannot encode a JSON null (iOS) must still be able to express "clear".
   `rewindFiles`, `getTurnFileDiff`, `saveTempAttachment`, `createAttachmentUpload`,
   `beginTempFileAttachment`, `appendTempFileAttachmentChunk`,
   `finishTempFileAttachment`, `abortTempFileAttachment`, `getAttachmentChunk`,
-  `listPromptStashes`, `createPromptStash`, `deletePromptStash`, `getImageDataUrl`
+  `listDrafts`, `getDraft`, `createDraft`, `updateDraft`, `deleteDraft`, `claimDraft`, `getImageDataUrl`
 - New-lane launches: `startLaunch`, `getLaunch`, `listLaunches`,
   `cancelLaunch`, `retryLaunch`, `startLaunchNow`, `queueLaunchMessage`,
   `completeLaunchClient` — see [New-lane launch commands](#new-lane-launch-commands)
@@ -465,6 +465,19 @@ needed) read for the Sources list. `{ domains: string[] }` returns
 `{ icons: { [domain]: dataUrl | null } }`, fetched first-party from each site by
 the host's SSRF-guarded favicon resolver and cached on its disk. See
 [Favicons](../chat/transcript-and-turns.md#favicons).
+
+`chat.getMcpApp` and `chat.mcpAppRequest` carry MCP Apps to a controller (the
+iPhone app). `chat.getMcpApp` (`{ sessionId, itemId }`, viewer-allowed) returns
+the stored app with `contentSecurityPolicy`, the page's policy as the brain
+built it, including `sandbox allow-scripts`; the controller serves the page
+with that string and builds none. A page over 1 MB is answered
+`{ status: "unavailable", reason }` instead of being sent.
+`chat.mcpAppRequest` (`{ sessionId, itemId, method, params, userActivated }`)
+is not viewer-allowed and not queueable: it runs a tool for the app, on the
+app's own server, through the chat's live session. `userActivated` is the
+controller's word that the user tapped inside the app just before; a tool that
+may change data runs only when it is true. Both are optional in
+`syncMobileCompatibility.ts`. See [MCP Apps](../chat/README.md#mcp-apps).
 
 `chat.createScheduledWork` takes `{ sessionId, cron, prompt, recurring?,
 reason? }` and creates an ADE-owned durable schedule for any provider-backed
@@ -854,9 +867,9 @@ A handful have more logic:
   value throws `"work.startCliSession requires provider."`), clamps
   `cols` to `[20, 240]` and `rows` to `[4, 120]`, and truncates
   `initialInput` at 20 KB. `model` / `modelId`, `reasoningEffort`,
-  and `fastMode` flow into the same launch builder as desktop; the
-  older `codexFastMode` wire name is accepted only as a compatibility
-  alias. Provider-specific argv, env, and shell
+  `fastMode`, and (for Codex) `fastTier` flow into the same launch builder as
+  desktop; the older `codexFastMode` wire name is accepted only as a
+  compatibility alias. Provider-specific argv, env, and shell
   preambles come from `buildTrackedCliLaunchCommand` in
   `apps/desktop/src/shared/cliLaunch.ts`
   — the same module the desktop Work tab uses — so the runtime owns the
@@ -1204,9 +1217,10 @@ without fetching them separately.
 `parseChatModelsArgs` accepts `{ provider, activateRuntime?, cursorSource? }`
 (`cursorSource` is `"sdk" | "cli" | "all"`, mirroring `chat.modelCatalog`).
 When `chat.create` is missing an explicit model, `resolveChatCreateModel`
-forwards `activateRuntime: true` only for `opencode`, `pi`, and the ACP
-providers (`qwen`, `kimi`, `grok`, `copilot`), whose model rows are gated on
-a CLI auth pass that activation refreshes (for OpenCode it launches the
+forwards `activateRuntime: true` only for `opencode`, `pi`, the ACP
+providers (`qwen`, `kimi`, `grok`), and `copilot`. The ACP rows are gated on
+a CLI auth pass, and Copilot's rows come from an SDK model read; activation
+refreshes both (for OpenCode it launches the
 probe server). All other providers use passive (cache-only) resolution;
 see the chat README for the passive/active contract. The iOS companion's
 `chat.models` request sets `activateRuntime: true` for cursor/droid and
