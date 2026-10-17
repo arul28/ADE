@@ -828,25 +828,77 @@ async function stopWindowsBrainGracefully(
     socketPath: string;
     runtimePid: number;
     /**
-     * Force with `taskkill /T`, so the brain's ConPTY hosts and agent CLIs go
-     * with it. A bare `/F` ends only the brain and leaves that subtree orphaned.
+     * The brain's creation time (`FILETIME` ticks) when the caller has it. The
+     * force then goes through `runWindowsIdentityCheckedTreeKill`, which checks
+     * the process is still this brain and holds its handle across the kill. A
+     * bare pid cannot be trusted once the cooperative wait has passed.
      */
-    forceTree?: boolean;
+    identity?: { startFileTime: string };
     terminateDeps?: WindowsServiceManagerDeps["terminateDeps"];
   },
-): Promise<void> {
+): Promise<WindowsForcedStop | null> {
+  let forced: WindowsForcedStop | null = null;
   await terminatePidGracefullyAsync(args.runtimePid, {
     ...args.terminateDeps,
     platform: "win32",
     runtimeSocketPath: args.socketPath,
     forceKill: (pid) => {
-      const tree = args.forceTree ? ["/T"] : [];
-      run(windowsTaskkillCommand(), ["/PID", String(pid), ...tree, "/F"], {
+      if (args.identity) {
+        forced = runWindowsIdentityCheckedTreeKill(run, pid, args.identity.startFileTime);
+        return;
+      }
+      run(windowsTaskkillCommand(), ["/PID", String(pid), "/F"], {
         encoding: "utf8",
         windowsHide: true,
       });
     },
   });
+  return forced;
+}
+
+type WindowsForcedStop =
+  | { outcome: "exited" | "absent" | "survived" }
+  | { outcome: "failed"; message: string };
+
+/**
+ * Force-stops one brain as a tree, but only if the pid still names that brain.
+ *
+ * The PowerShell process opens the brain's handle before it checks identity,
+ * and keeps the handle until the kill and the exit wait are done. A pid cannot
+ * be reused while a handle to it is open, so the `taskkill /T /F` cannot land
+ * on an unrelated process. A brain that has already exited, or whose pid now
+ * belongs to something else, reports `absent` and is left alone.
+ *
+ * `taskkill /T` takes the brain's ConPTY hosts and agent CLIs with it, the same
+ * as the supervisor's wedge path.
+ */
+function runWindowsIdentityCheckedTreeKill(
+  run: ServiceManagerSpawnSync,
+  pid: number,
+  startFileTime: string,
+): WindowsForcedStop {
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    "$process = $null",
+    "try {",
+    `  try { $process = [System.Diagnostics.Process]::GetProcessById(${pid}); $handle = $process.Handle } catch [ArgumentException] { [Console]::Out.Write('absent'); exit 0 }`,
+    "  if ($process.HasExited) { [Console]::Out.Write('absent'); exit 0 }",
+    `  if ([Math]::Abs(($process.StartTime.ToUniversalTime() - [DateTime]::FromFileTimeUtc(${startFileTime}).ToUniversalTime()).TotalMilliseconds) -gt 1000) { [Console]::Out.Write('absent'); exit 0 }`,
+    `  & ${powerShellSingleQuotedLiteral(windowsTaskkillCommand())} '/PID' '${pid}' '/T' '/F' | Out-Null`,
+    "  if ($process.WaitForExit(5000)) { [Console]::Out.Write('exited') } else { [Console]::Out.Write('survived') }",
+    "} finally { if ($null -ne $process) { $process.Dispose() } }",
+  ].join("\n");
+  const result = run(windowsPowerShellCommand(), ["-NoProfile", "-NonInteractive", "-Command", script], {
+    encoding: "utf8", timeout: 30_000, windowsHide: true,
+  });
+  const outcome = String(result.stdout ?? "").trim();
+  if (result.status === 0 && (outcome === "exited" || outcome === "absent" || outcome === "survived")) {
+    return { outcome };
+  }
+  return {
+    outcome: "failed",
+    message: `Unable to stop an ADE brain: ${serviceManagerResultText(result) || "the identity check failed."}`,
+  };
 }
 
 async function removeWindowsRunEntryIfPresent(
@@ -980,9 +1032,6 @@ function pruneWindowsRunValues(
   return { ok: true, removed };
 }
 
-/** How long a predecessor brain may take to exit after its forced tree kill. */
-const WINDOWS_PREDECESSOR_BRAIN_EXIT_MS = 5_000;
-
 /**
  * PIDs of powershell processes whose command line names this launcher, in any
  * session of this user.
@@ -994,10 +1043,10 @@ const WINDOWS_PREDECESSOR_BRAIN_EXIT_MS = 5_000;
  * starts a replacement.
  *
  * Each predecessor supervisor is stopped here, and then the brain it was
- * guarding is stopped from Node with `stopWindowsBrainGracefully`: cooperative
- * shutdown first, then `taskkill /T /F`. PowerShell's own `Process.Kill()` on the
- * brain would end only that process, leaving its ConPTY hosts and agent CLIs
- * running with nothing left to reap them.
+ * guarding is stopped with `stopWindowsBrainGracefully`: cooperative shutdown
+ * first, then an identity-checked `taskkill /T /F` if the brain does not leave.
+ * PowerShell's own `Process.Kill()` on the brain would end only that process,
+ * leaving its ConPTY hosts and agent CLIs running with nothing left to reap them.
  */
 async function stopWindowsSupervisorsByCommandLine(
   run: ServiceManagerSpawnSync,
@@ -1036,7 +1085,7 @@ async function stopWindowsSupervisorsByCommandLine(
     "      $process.Kill()",
     "      if (-not $process.WaitForExit(5000)) { throw 'Existing ADE supervisor did not stop.' }",
     "      [Console]::Out.WriteLine('supervisor')",
-    "      foreach ($child in $children) { if (-not $child.HasExited) { [Console]::Out.WriteLine($child.Id) } }",
+    "      foreach ($child in $children) { if (-not $child.HasExited) { [Console]::Out.WriteLine('brain ' + $child.Id + ' ' + $child.StartTime.ToFileTimeUtc()) } }",
     "    } finally { foreach ($child in $children) { $child.Dispose() } }",
     "  } finally { if ($null -ne $process) { $process.Dispose() } }",
     "}",
@@ -1045,42 +1094,35 @@ async function stopWindowsSupervisorsByCommandLine(
     encoding: "utf8", timeout: 30_000, windowsHide: true,
   });
   // Brains are reported as their supervisor goes, so the ones already reported
-  // are stopped even when a later supervisor fails the sweep below.
+  // are stopped even when a later supervisor fails the sweep below. One brain
+  // failing does not skip the rest: every failure is collected and reported.
   const lines = String(result.stdout ?? "").split(/\r?\n/).map((line) => line.trim());
   const removed = lines.includes("supervisor");
   const alive = brain.terminateDeps?.pidAlive ?? isPidAlive;
+  const failures: string[] = [];
   for (const line of lines) {
-    if (!/^[1-9]\d*$/.test(line)) continue;
-    const brainPid = Number(line);
+    const report = /^brain (\d+) (\d+)$/.exec(line);
+    if (!report) continue;
+    const brainPid = Number(report[1]);
     if (!alive(brainPid)) continue;
-    await stopWindowsBrainGracefully(run, {
-      socketPath: brain.socketPath,
-      runtimePid: brainPid,
-      forceTree: true,
-      terminateDeps: brain.terminateDeps,
-    });
-    if (!(await waitForWindowsPidExit(brainPid, alive, WINDOWS_PREDECESSOR_BRAIN_EXIT_MS))) {
-      return { ok: false, message: "Existing ADE brain did not stop." };
+    try {
+      const forced = await stopWindowsBrainGracefully(run, {
+        socketPath: brain.socketPath,
+        runtimePid: brainPid,
+        identity: { startFileTime: report[2] },
+        terminateDeps: brain.terminateDeps,
+      });
+      if (forced?.outcome === "survived") failures.push("Existing ADE brain did not stop.");
+      if (forced?.outcome === "failed") failures.push(forced.message);
+    } catch (error) {
+      failures.push(`Unable to stop an ADE brain: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
   if (result.status !== 0) {
-    return { ok: false, message: `Unable to stop ADE supervisors: ${serviceManagerResultText(result) || "the identity check failed."}` };
+    failures.push(`Unable to stop ADE supervisors: ${serviceManagerResultText(result) || "the identity check failed."}`);
   }
+  if (failures.length > 0) return { ok: false, message: failures.join(" ") };
   return { ok: true, removed };
-}
-
-/** True once `pid` is gone; false if it is still alive after `timeoutMs`. */
-async function waitForWindowsPidExit(
-  pid: number,
-  alive: (pid: number) => boolean,
-  timeoutMs: number,
-): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (alive(pid)) {
-    if (Date.now() >= deadline) return false;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  return true;
 }
 
 export async function installWindowsService(

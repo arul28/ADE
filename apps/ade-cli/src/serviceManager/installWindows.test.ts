@@ -1433,26 +1433,30 @@ describe("Windows background service helpers", () => {
 
 // The predecessor sweep's PowerShell script is the only one that carries this text.
 const PREDECESSOR_SWEEP_MARKER = "Existing ADE supervisor did not stop.";
+// The identity-checked forced kill is the only PowerShell script that converts a
+// FILETIME back into a DateTime.
+const IDENTITY_KILL_MARKER = "FromFileTimeUtc";
 
 /**
- * Answers the predecessor sweep with `sweepStdout` and records every spawn. Each
- * other query finds nothing, so an uninstall reaches the sweep and nothing else
- * that would need a real Windows host.
+ * Answers the predecessor sweep with `sweepStdout` and records every spawn. The
+ * identity-checked forced kill is answered by `forcedKill`, which defaults to a
+ * clean exit. Every other query finds nothing, so an uninstall reaches the sweep
+ * and nothing else that would need a real Windows host.
  */
 function predecessorSweepSpawn(options: {
   calls: Array<{ command: string; args: string[] }>;
   sweepStdout: string;
   sweepStatus?: number;
-  onTaskkill?: (args: string[]) => void;
+  forcedKill?: (script: string) => ServiceManagerProcessResult;
 }): ServiceManagerSpawnSync {
   return (command, args) => {
     options.calls.push({ command, args });
-    if (command === windowsPowerShellCommand() && args.at(-1)?.includes(PREDECESSOR_SWEEP_MARKER)) {
+    const script = args.at(-1) ?? "";
+    if (command === windowsPowerShellCommand() && script.includes(PREDECESSOR_SWEEP_MARKER)) {
       return { status: options.sweepStatus ?? 0, stdout: options.sweepStdout, stderr: "" };
     }
-    if (command === windowsTaskkillCommand()) {
-      options.onTaskkill?.(args);
-      return { status: 0, stdout: "SUCCESS", stderr: "" };
+    if (command === windowsPowerShellCommand() && script.includes(IDENTITY_KILL_MARKER)) {
+      return options.forcedKill?.(script) ?? { status: 0, stdout: "exited", stderr: "" };
     }
     if (command === windowsPowerShellCommand()) return { status: 3, stdout: "", stderr: "" };
     if (command === windowsRegCommand() && JSON.stringify(args) === JSON.stringify(buildWindowsRunKeyListArgs())) {
@@ -1478,6 +1482,8 @@ describe("Windows predecessor supervisor sweep", () => {
     env: { ADE_HOME: "C:\\Users\\arul\\.ade-beta", ADE_PACKAGE_CHANNEL: "beta" },
   };
   const brainPid = 4242;
+  const brainStartFileTime = "133000000000000000";
+  const brainLine = `brain ${brainPid} ${brainStartFileTime}`;
 
   function launcherForSweep(): string {
     const launcherPath = path.join(makeTempHome("ade-windows-sweep-"), "brain-service.ps1");
@@ -1485,7 +1491,7 @@ describe("Windows predecessor supervisor sweep", () => {
     return launcherPath;
   }
 
-  it("never kills the predecessor brain from PowerShell; the sweep only reports its pid", async () => {
+  it("never kills the predecessor brain from PowerShell; the sweep only reports its pid and start time", async () => {
     const calls: Array<{ command: string; args: string[] }> = [];
     await uninstallWindowsService({
       command: serviceCommand,
@@ -1500,7 +1506,7 @@ describe("Windows predecessor supervisor sweep", () => {
     // The supervisor is still stopped in PowerShell: a brain stopped while its
     // supervisor lives is relaunched at once.
     expect(script).toContain("$process.Kill()");
-    expect(script).toContain("[Console]::Out.WriteLine($child.Id)");
+    expect(script).toContain("StartTime.ToFileTimeUtc()");
   });
 
   it("asks a predecessor brain to shut down over RPC before any tree kill", async () => {
@@ -1512,8 +1518,11 @@ describe("Windows predecessor supervisor sweep", () => {
       serviceName,
       spawnSync: predecessorSweepSpawn({
         calls: [],
-        sweepStdout: `supervisor\n${brainPid}\n`,
-        onTaskkill: (args) => events.push(`taskkill ${args.join(" ")}`),
+        sweepStdout: `supervisor\n${brainLine}\n`,
+        forcedKill: () => {
+          events.push("forced");
+          return { status: 0, stdout: "exited", stderr: "" };
+        },
       }),
       userName: taskUser,
       terminateDeps: {
@@ -1530,24 +1539,25 @@ describe("Windows predecessor supervisor sweep", () => {
     expect(events).toEqual([`rpc ${brainPid}`]);
   });
 
-  it("tree-kills a predecessor brain only after its RPC shutdown is refused", async () => {
+  it("force-kills a predecessor brain as a tree, identity-checked, only after its RPC shutdown is refused", async () => {
     const events: string[] = [];
-    let brainAlive = true;
+    const forcedScripts: string[] = [];
     const result = await uninstallWindowsService({
       command: serviceCommand,
       launcherPath: launcherForSweep(),
       serviceName,
       spawnSync: predecessorSweepSpawn({
         calls: [],
-        sweepStdout: `supervisor\n${brainPid}\n`,
-        onTaskkill: (args) => {
-          events.push(`taskkill ${args.join(" ")}`);
-          brainAlive = false;
+        sweepStdout: `supervisor\n${brainLine}\n`,
+        forcedKill: (script) => {
+          events.push("forced");
+          forcedScripts.push(script);
+          return { status: 0, stdout: "exited", stderr: "" };
         },
       }),
       userName: taskUser,
       terminateDeps: {
-        pidAlive: () => brainAlive,
+        pidAlive: () => true,
         requestRuntimeShutdown: async ({ pid }) => {
           events.push(`rpc ${pid}`);
           return { requested: false, reason: "wedged" };
@@ -1556,7 +1566,45 @@ describe("Windows predecessor supervisor sweep", () => {
     });
 
     expect(result.ok).toBe(true);
-    expect(events).toEqual([`rpc ${brainPid}`, `taskkill /PID ${brainPid} /T /F`]);
+    expect(events).toEqual([`rpc ${brainPid}`, "forced"]);
+    expect(forcedScripts).toHaveLength(1);
+    expect(forcedScripts[0]).toContain(`GetProcessById(${brainPid})`);
+    expect(forcedScripts[0]).toContain(`FromFileTimeUtc(${brainStartFileTime})`);
+    expect(forcedScripts[0]).toContain(`'/PID' '${brainPid}' '/T' '/F'`);
+  });
+
+  it("holds the brain's process open across the identity check, the tree kill and the exit wait", async () => {
+    const forcedScripts: string[] = [];
+    await uninstallWindowsService({
+      command: serviceCommand,
+      launcherPath: launcherForSweep(),
+      serviceName,
+      spawnSync: predecessorSweepSpawn({
+        calls: [],
+        sweepStdout: `supervisor\n${brainLine}\n`,
+        forcedKill: (script) => {
+          forcedScripts.push(script);
+          return { status: 0, stdout: "exited", stderr: "" };
+        },
+      }),
+      userName: taskUser,
+      terminateDeps: {
+        pidAlive: () => true,
+        requestRuntimeShutdown: async () => ({ requested: false, reason: "wedged" }),
+      },
+    });
+
+    // A pid is not reused while a handle to its process is open, so the check
+    // and the kill must both run inside the process that holds the handle.
+    const script = forcedScripts[0] ?? "";
+    const opened = script.indexOf("GetProcessById");
+    const identity = script.indexOf("FromFileTimeUtc");
+    const kill = script.indexOf("'/T' '/F'");
+    const waited = script.indexOf("WaitForExit(5000)");
+    expect(opened).toBeGreaterThanOrEqual(0);
+    expect(identity).toBeGreaterThan(opened);
+    expect(kill).toBeGreaterThan(identity);
+    expect(waited).toBeGreaterThan(kill);
   });
 
   it("still stops a brain already reported when a later supervisor fails the sweep", async () => {
@@ -1568,7 +1616,7 @@ describe("Windows predecessor supervisor sweep", () => {
       serviceName,
       spawnSync: predecessorSweepSpawn({
         calls: [],
-        sweepStdout: `supervisor\n${brainPid}\n`,
+        sweepStdout: `supervisor\n${brainLine}\n`,
         sweepStatus: 1,
       }),
       userName: taskUser,
@@ -1587,28 +1635,59 @@ describe("Windows predecessor supervisor sweep", () => {
     expect(result.ok ? "" : result.message).toContain("Unable to stop ADE supervisors");
   });
 
-  it("fails the sweep, as the old direct kill did, when a predecessor brain survives its tree kill", async () => {
-    vi.useFakeTimers();
-    try {
-      const pending = uninstallWindowsService({
-        command: serviceCommand,
-        launcherPath: launcherForSweep(),
-        serviceName,
-        spawnSync: predecessorSweepSpawn({ calls: [], sweepStdout: `supervisor\n${brainPid}\n` }),
-        userName: taskUser,
-        terminateDeps: {
-          pidAlive: () => true,
-          requestRuntimeShutdown: async () => ({ requested: false, reason: "wedged" }),
+  it("reports a brain that survives its identity-checked kill, and still tries every other brain", async () => {
+    const forcedScripts: string[] = [];
+    const outcomes = ["survived", "exited"];
+    const result = await uninstallWindowsService({
+      command: serviceCommand,
+      launcherPath: launcherForSweep(),
+      serviceName,
+      spawnSync: predecessorSweepSpawn({
+        calls: [],
+        sweepStdout: `supervisor\n${brainLine}\nbrain 4243 133000000000000001\n`,
+        forcedKill: (script) => {
+          forcedScripts.push(script);
+          return { status: 0, stdout: outcomes.shift() ?? "exited", stderr: "" };
         },
-      });
-      await vi.advanceTimersByTimeAsync(10_000);
-      const result = await pending;
+      }),
+      userName: taskUser,
+      terminateDeps: {
+        pidAlive: () => true,
+        requestRuntimeShutdown: async () => ({ requested: false, reason: "wedged" }),
+      },
+    });
 
-      expect(result.ok).toBe(false);
-      expect(result.ok ? "" : result.message).toContain("Existing ADE brain did not stop.");
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(forcedScripts).toHaveLength(2);
+    expect(forcedScripts[1]).toContain("GetProcessById(4243)");
+    expect(result.ok).toBe(false);
+    expect(result.ok ? "" : result.message).toContain("Existing ADE brain did not stop.");
+  });
+
+  it("keeps stopping the other brains when one brain's stop throws", async () => {
+    const forcedScripts: string[] = [];
+    const result = await uninstallWindowsService({
+      command: serviceCommand,
+      launcherPath: launcherForSweep(),
+      serviceName,
+      spawnSync: predecessorSweepSpawn({
+        calls: [],
+        sweepStdout: `supervisor\n${brainLine}\nbrain 4243 133000000000000001\n`,
+        forcedKill: (script) => {
+          forcedScripts.push(script);
+          if (script.includes(`GetProcessById(${brainPid})`)) throw new Error("trusted tool unavailable");
+          return { status: 0, stdout: "exited", stderr: "" };
+        },
+      }),
+      userName: taskUser,
+      terminateDeps: {
+        pidAlive: () => true,
+        requestRuntimeShutdown: async () => ({ requested: false, reason: "wedged" }),
+      },
+    });
+
+    expect(forcedScripts).toHaveLength(2);
+    expect(result.ok).toBe(false);
+    expect(result.ok ? "" : result.message).toContain("trusted tool unavailable");
   });
 });
 
@@ -2248,6 +2327,35 @@ describe("generated PowerShell parses", () => {
 
     const parsed = parsePowerShellFile(
       writeScript(makeTempHome("ade-windows-parse-sweep-"), "predecessor-sweep.ps1", predecessorSweepScript(calls)),
+    );
+    expect(parsed.output).toBe("");
+    expect(parsed.status).toBe(0);
+  });
+
+  itWithPowerShell("the identity-checked brain kill script is syntactically valid", async () => {
+    const forcedScripts: string[] = [];
+    await uninstallWindowsService({
+      command,
+      launcherPath: writeScript(makeTempHome("ade-windows-parse-forced-launcher-"), "brain-service.ps1", "old launcher"),
+      serviceName: "com.ade.runtime.beta",
+      spawnSync: predecessorSweepSpawn({
+        calls: [],
+        sweepStdout: "supervisor\nbrain 4242 133000000000000000\n",
+        forcedKill: (script) => {
+          forcedScripts.push(script);
+          return { status: 0, stdout: "exited", stderr: "" };
+        },
+      }),
+      userName: "ADEBOX\\arul",
+      terminateDeps: {
+        pidAlive: () => true,
+        requestRuntimeShutdown: async () => ({ requested: false, reason: "wedged" }),
+      },
+    });
+
+    expect(forcedScripts).toHaveLength(1);
+    const parsed = parsePowerShellFile(
+      writeScript(makeTempHome("ade-windows-parse-forced-"), "brain-kill.ps1", forcedScripts[0] ?? ""),
     );
     expect(parsed.output).toBe("");
     expect(parsed.status).toBe(0);
