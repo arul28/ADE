@@ -11,7 +11,7 @@ import {
 } from "@phosphor-icons/react";
 import { accountDirectorySummary } from "./accountDirectorySummary";
 import { MachineAvatar, VersionChip, machineFormFactor, machinePlatform } from "../remoteTargets/MachineIdentity";
-import { Dialog } from "../ui/dialog";
+import { Dialog, confirmDialog } from "../ui/dialog";
 import { Banner } from "../ui/notice/Banner";
 import {
   isBrainAccountSessionFailure,
@@ -38,6 +38,7 @@ import { readThisMachineRefusal } from "../../../shared/accountMachineRefusal";
 import { describeThisComputerRefusal } from "../../lib/thisComputerRefusal";
 import { BrainRepairButton } from "./BrainRepairButton";
 import { showToast } from "../app/toast/toastStore";
+import { useAppStore } from "../../state/appStore";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import {
   COLORS,
@@ -287,6 +288,33 @@ export function ThisMacCard({
     })();
   }, [saveRuntimeName, accountSignedIn]);
 
+  // "Stop following" is the way out of a viewer that cannot host here. A failed
+  // stop stays on the card as text, not a toast, so the reason is still there
+  // when the reader looks back.
+  const projectName = useAppStore((s) => s.project?.displayName ?? null);
+  const [stoppingFollowing, setStoppingFollowing] = useState(false);
+  const [stopFollowingFailure, setStopFollowingFailure] = useState<string | null>(null);
+  const { refresh: refreshSync } = sync;
+  const stopFollowing = useCallback(async (machine: string) => {
+    const confirmed = await confirmDialog({
+      title: `Stop following ${machine}?`,
+      message: `This computer stops following ${machine} for ${projectName ?? "this project"}. ADE forgets the saved connection, the record of which machine hosts sync here, and the other machines it had listed; this computer can then host or join again. No chats, lanes, or files are deleted.`,
+      confirmLabel: "Stop following",
+    });
+    if (!confirmed) return;
+    setStoppingFollowing(true);
+    setStopFollowingFailure(null);
+    try {
+      await window.ade.sync.disconnectFromBrain();
+      showToast({ tone: "success", title: `This computer stopped following ${machine}.` });
+    } catch (err) {
+      setStopFollowingFailure(err instanceof Error ? err.message : String(err));
+    } finally {
+      setStoppingFollowing(false);
+      void refreshSync({ force: true });
+    }
+  }, [projectName, refreshSync]);
+
   if (sync.loading) {
     return <div style={helperTextStyle}>Getting connection details…</div>;
   }
@@ -345,6 +373,11 @@ export function ThisMacCard({
   const reconnectAction = refusal && reconnect.available
     ? reconnect.view({ label: describeThisComputerRefusal(refusal).action })
     : null;
+  // Only a viewer offers it, and only for this computer: a remote-bound window
+  // would send the disconnect to the machine it is bound to, and the hosted web
+  // client's disconnect does nothing.
+  const followedName = !host && status.role === "viewer" ? followedMachineName(status) : null;
+  const canStopFollowing = followedName !== null && sync.canManageDevices && !isWebClientMode();
 
     return (
     <div style={{ ...detailBlockStyle, display: "grid", gap: 12 }}>
@@ -505,6 +538,33 @@ export function ThisMacCard({
                 {repair.available ? <BrainRepairButton repair={repair} height={24} /> : null}
               </div>
             ) : null}
+            {canStopFollowing && followedName ? (
+              // Its own row, not under the problem line: that line is hidden
+              // in the popover when the brain says sync has not started, and
+              // that is exactly when a viewer needs a way out.
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <button
+                  type="button"
+                  disabled={stoppingFollowing}
+                  onClick={() => void stopFollowing(followedName)}
+                  style={outlineButton({
+                    height: 24,
+                    padding: "0 9px",
+                    fontSize: 12,
+                    flexShrink: 0,
+                    opacity: stoppingFollowing ? 0.6 : 1,
+                    cursor: stoppingFollowing ? "not-allowed" : "pointer",
+                  })}
+                >
+                  {stoppingFollowing ? "Stopping…" : `Stop following ${followedName}`}
+                </button>
+                {stopFollowingFailure ? (
+                  <span role="status" style={{ ...helperTextStyle, lineHeight: 1.4, color: COLORS.danger }}>
+                    {stopFollowingFailure}
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         </div>
       </div>
@@ -546,6 +606,21 @@ export function ThisMacCard({
       ) : null}
     </div>
   );
+}
+
+/**
+ * The machine a viewer follows, for its button and its confirmation. The name
+ * the runtime learned while connected wins; a project record that names another
+ * machine is next, then that machine's address.
+ */
+function followedMachineName(status: SyncRoleSnapshot): string {
+  const followed = [status.currentRuntime, status.currentBrain].find(
+    (device) => device && device.deviceId !== status.localDevice.deviceId,
+  );
+  return status.client.hostName?.trim()
+    || followed?.name?.trim()
+    || status.client.host?.trim()
+    || "another ADE machine";
 }
 
 /**

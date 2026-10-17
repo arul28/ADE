@@ -1518,6 +1518,14 @@ Desktop connection UI:
   lone **Cancel**) or, when the handoff failed, the URL with **Copy link**.
   `ConnectionsPanel` passes `hideDirectorySummary` to `ThisMacCard` so the
   popover's top identity card cannot repeat the same sentence.
+  A computer that follows another machine's sync host shows a "Stop following"
+  button that names that machine, on its own row of the card, whether or not the
+  status line is showing. It asks first, then calls `sync.disconnectFromBrain` on
+  this computer.
+  The confirmation says what goes: the saved connection, the record of which
+  machine hosts sync here, and the other machines it had listed. Chats, lanes
+  and files stay. The button is hidden when the window is bound to another
+  machine (the disconnect would reach that machine) and in the hosted web client.
 - `apps/desktop/src/renderer/components/settings/SyncDevicesSection.tsx` —
   Connections uses the focused `"phone"` and `"web"` variants beneath a
   shared **This computer** card. The card draws the computer as its

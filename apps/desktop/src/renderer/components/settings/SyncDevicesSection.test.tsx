@@ -31,6 +31,7 @@ import {
 } from "./SyncDevicesSection";
 import { accountDirectorySummary } from "./accountDirectorySummary";
 import { resetReconnectFlowForTests } from "../../lib/reconnectThisComputer";
+import { __resetDialogRequestsForTests } from "../ui/dialog/confirm";
 
 vi.mock("qrcode.react", () => ({
   QRCodeSVG: ({ value, title }: { value: string; title?: string }) => (
@@ -175,6 +176,7 @@ afterEach(() => {
 
 describe("ThisMacCard", () => {
   afterEach(() => {
+    __resetDialogRequestsForTests();
     cleanup();
     vi.restoreAllMocks();
     if (originalAde === undefined) delete (globalThis.window as any).ade;
@@ -521,6 +523,76 @@ describe("ThisMacCard", () => {
     expect(screen.queryByRole("button", { name: "Change" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Generate" })).toBeNull();
     expect(generatePin).not.toHaveBeenCalled();
+  });
+
+  describe("Stop following", () => {
+    const followerButton = { name: "Stop following Mac Studio" };
+
+    function followerStatus(): SyncRoleSnapshot {
+      return makeStatus({
+        mode: "viewer",
+        role: "viewer",
+        runtimeRole: "viewer",
+        viewerReason: "saved_connection",
+        runtimeMode: "viewer",
+        client: { state: "error", host: "192.168.1.89", port: 8788, hostName: "Mac Studio" } as SyncRoleSnapshot["client"],
+      });
+    }
+
+    it.each([
+      { case: "a host", status: makeStatus(), isRemoteBound: false, shown: false },
+      { case: "a viewer bound to another machine", status: followerStatus(), isRemoteBound: true, shown: false },
+      { case: "a viewer on this computer", status: followerStatus(), isRemoteBound: false, shown: true },
+    ])("offers the button for $case only when it applies", ({ status, isRemoteBound, shown }) => {
+      // canManageDevices is derived from the bound state exactly as the hook derives it.
+      render(
+        <ThisMacCard
+          sync={makeSync({ status, isRemoteBound, canManageDevices: !isRemoteBound })}
+          sessionState="active"
+        />,
+      );
+      expect(screen.queryByRole("button", followerButton) !== null).toBe(shown);
+    });
+
+    it("disconnects once after confirmation and refreshes the card", async () => {
+      const disconnectFromBrain = vi.fn(async () => makeStatus());
+      const refresh = vi.fn(async () => {});
+      (globalThis.window as any).ade = { sync: { disconnectFromBrain } };
+      render(<ThisMacCard sync={makeSync({ status: followerStatus(), refresh })} sessionState="active" />);
+
+      fireEvent.click(screen.getByRole("button", followerButton));
+      expect(screen.getByText(/This computer stops following Mac Studio for this project/)).toBeTruthy();
+      expect(disconnectFromBrain).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole("button", { name: "Stop following" }));
+      await waitFor(() => expect(disconnectFromBrain).toHaveBeenCalledOnce());
+      await waitFor(() => expect(refresh).toHaveBeenCalledWith({ force: true }));
+    });
+
+    it("does not disconnect when the confirmation is cancelled", async () => {
+      const disconnectFromBrain = vi.fn(async () => makeStatus());
+      (globalThis.window as any).ade = { sync: { disconnectFromBrain } };
+      render(<ThisMacCard sync={makeSync({ status: followerStatus() })} sessionState="active" />);
+
+      fireEvent.click(screen.getByRole("button", followerButton));
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+      await waitFor(() => expect(screen.queryByText(/This computer stops following/)).toBeNull());
+      expect(disconnectFromBrain).not.toHaveBeenCalled();
+    });
+
+    it("shows the reason when the disconnect fails and keeps the button for another try", async () => {
+      const disconnectFromBrain = vi.fn(async () => {
+        throw new Error("Project is switching. Wait for the current project to finish loading before stopping sync.");
+      });
+      (globalThis.window as any).ade = { sync: { disconnectFromBrain } };
+      render(<ThisMacCard sync={makeSync({ status: followerStatus() })} sessionState="active" />);
+
+      fireEvent.click(screen.getByRole("button", followerButton));
+      fireEvent.click(screen.getByRole("button", { name: "Stop following" }));
+
+      expect(await screen.findByText(/Project is switching/)).toBeTruthy();
+      expect(screen.getByRole("button", followerButton)).toBeTruthy();
+    });
   });
 });
 
