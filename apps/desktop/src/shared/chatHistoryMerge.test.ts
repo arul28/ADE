@@ -390,26 +390,31 @@ describe("warm switch onto a resident transcript with a resent tool call", () =>
 
   it("keeps the resident prefix when the resend was already collapsed into the first send's row", () => {
     // What the merge actually holds: one row for the call, at the first send's
-    // position. The row before the first overlap is then the card, not the call.
+    // position. The row before the first overlap is then the card, not the call,
+    // and it is the snapshot head's immediate predecessor in the stream.
+    const seq = (entry: AgentChatEventEnvelope, sequence: number) => ({ ...entry, sequence });
     const older = [
-      envelope("2026-10-17T07:00:00.000Z", "older one"),
-      envelope("2026-10-17T07:03:00.000Z", "older two"),
+      seq(envelope("2026-10-17T07:00:00.000Z", "older one"), 1),
+      seq(envelope("2026-10-17T07:03:00.000Z", "older two"), 2),
     ];
-    const collapsed = toolCall("2026-10-17T07:03:36.821Z", { command: "rg foo --hidden" });
+    const collapsed = seq(toolCall("2026-10-17T07:03:36.821Z", { command: "rg foo --hidden" }), 1238);
+    const result = seq(toolResult("2026-10-17T07:04:40.581Z"), 1242);
+    const activityTwo = seq(envelope("2026-10-17T07:04:41.000Z", "activity two"), 1243);
+    const text = seq(envelope("2026-10-17T07:04:42.000Z", "text"), 1244);
     const resident = [
       ...older,
       collapsed,
-      envelope("2026-10-17T07:03:37.100Z", "activity"),
-      envelope("2026-10-17T07:03:37.500Z", "ade card"),
-      toolResult("2026-10-17T07:04:40.581Z"),
-      envelope("2026-10-17T07:04:41.000Z", "activity two"),
-      envelope("2026-10-17T07:04:42.000Z", "text"),
+      seq(envelope("2026-10-17T07:03:37.100Z", "activity"), 1239),
+      seq(envelope("2026-10-17T07:03:37.500Z", "ade card"), 1240),
+      result,
+      activityTwo,
+      text,
     ];
     const snapshot = [
-      toolCall("2026-10-17T07:03:38.765Z", { command: "rg foo --hidden" }),
-      toolResult("2026-10-17T07:04:40.581Z"),
-      envelope("2026-10-17T07:04:41.000Z", "activity two"),
-      envelope("2026-10-17T07:04:42.000Z", "text"),
+      seq(toolCall("2026-10-17T07:03:38.765Z", { command: "rg foo --hidden" }), 1241),
+      result,
+      activityTwo,
+      text,
     ];
 
     const merged = mergeAgentChatHistorySnapshot(structuredClone(snapshot), resident);
@@ -417,6 +422,23 @@ describe("warm switch onto a resident transcript with a resent tool call", () =>
     expect(merged).toHaveLength(resident.length);
     expect(merged.map((entry) => entry.event.type)).toEqual(resident.map((entry) => entry.event.type));
     expect(merged[2]).toMatchObject({ timestamp: "2026-10-17T07:03:36.821Z" });
+  });
+
+  it("still drops a prefix that holds the resent call's first send but ends at a hole before the head", () => {
+    // The prefix holds the first send, then stops: events between its last row
+    // and the snapshot head (sequence 1236..1240) are on neither side. Keeping it
+    // would pin that hole, so only a contiguous seam joins.
+    const seq = (entry: AgentChatEventEnvelope, sequence: number) => ({ ...entry, sequence });
+    const stale = [
+      seq(toolCall("2026-10-17T07:03:36.821Z", { command: "rg foo" }), 1234),
+      seq(envelope("2026-10-17T07:03:37.000Z", "stale activity"), 1235),
+    ];
+    const head = seq(toolCall("2026-10-17T07:03:38.765Z", { command: "rg foo --hidden" }), 1241);
+    const result = seq(toolResult("2026-10-17T07:04:40.581Z"), 1242);
+
+    const merged = mergeAgentChatHistorySnapshot([head, result], [...stale, result]);
+
+    expect(merged.map((entry) => entry.sequence)).toEqual([1241, 1242]);
   });
 
   it("still drops a stale prefix that ends at a hole before the snapshot head", () => {
