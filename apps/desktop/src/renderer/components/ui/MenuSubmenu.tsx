@@ -9,6 +9,7 @@ import React, {
 } from "react";
 import type { Icon } from "@phosphor-icons/react";
 
+import { cssZoomOf } from "../../lib/webZoom";
 import { Z_LAYERS } from "./zLayers";
 
 /**
@@ -169,17 +170,20 @@ export function MenuSubmenu({
     const trigger = triggerRef.current;
     const panel = panelRef.current;
     if (!trigger || !panel) return;
+    // Rects are zoomed under the hosted web client's body zoom, but a `left`/`top`
+    // written into a style is zoomed again, so place in layout pixels (see `cssZoomOf`).
+    const zoom = cssZoomOf();
     const rect = trigger.getBoundingClientRect();
     const width = panel.offsetWidth || panelMinWidth;
     const height = panel.offsetHeight;
-    const viewportWidth = window.innerWidth || 0;
-    const viewportHeight = window.innerHeight || 0;
+    const viewportWidth = (window.innerWidth || 0) / zoom;
+    const viewportHeight = (window.innerHeight || 0) / zoom;
 
-    let left = rect.right - PANEL_OVERLAP;
+    let left = rect.right / zoom - PANEL_OVERLAP;
     if (left + width > viewportWidth - VIEWPORT_MARGIN) {
-      left = Math.max(VIEWPORT_MARGIN, rect.left - width + PANEL_OVERLAP);
+      left = Math.max(VIEWPORT_MARGIN, rect.left / zoom - width + PANEL_OVERLAP);
     }
-    let top = rect.top - 4;
+    let top = rect.top / zoom - 4;
     if (top + height > viewportHeight - VIEWPORT_MARGIN) {
       top = Math.max(VIEWPORT_MARGIN, viewportHeight - VIEWPORT_MARGIN - height);
     }

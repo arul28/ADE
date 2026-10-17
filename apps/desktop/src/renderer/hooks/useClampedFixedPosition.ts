@@ -1,5 +1,7 @@
 import { useLayoutEffect, useRef, useState, type MutableRefObject } from "react";
 
+import { cssZoomOf } from "../lib/webZoom";
+
 export type FixedAnchor = { x: number; y: number };
 
 export type ClampedFixedPosition = {
@@ -42,8 +44,17 @@ export function useClampedFixedPosition(
       setPosition(null);
       return;
     }
+    // Pointer coordinates and rects are zoomed under the hosted web client's body
+    // zoom, but a `left`/`top` written into a style is zoomed again, so clamp in
+    // layout pixels (see `cssZoomOf`). At zoom 1, as in Electron, this is identity.
+    const zoom = cssZoomOf();
     const rect = ref.current.getBoundingClientRect();
-    setPosition(clampFixedPosition(anchor, { width: rect.width, height: rect.height }));
+    setPosition(clampFixedPosition(
+      { x: anchor.x / zoom, y: anchor.y / zoom },
+      { width: rect.width / zoom, height: rect.height / zoom },
+      8,
+      { width: window.innerWidth / zoom, height: window.innerHeight / zoom },
+    ));
   }, [anchor?.x, anchor?.y, remeasureKey]);
 
   return { ref, position };

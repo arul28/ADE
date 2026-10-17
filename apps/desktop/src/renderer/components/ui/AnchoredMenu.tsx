@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { clampFixedPosition } from "../../hooks/useClampedFixedPosition";
+import { cssZoomOf } from "../../lib/webZoom";
 import { usePortalContainer } from "./portalContainer";
 
 export type AnchoredMenuPlacement = "bottom-start" | "bottom-end" | "top-start" | "top-end";
@@ -59,7 +60,11 @@ export function AnchoredMenu({
     const anchor = anchorRef.current;
     const menu = menuRef.current;
     if (!anchor || !menu) return;
-    const rect = anchor.getBoundingClientRect();
+    // Rects are zoomed under the hosted web client's body zoom, but a `left`/`top`
+    // written into a style is zoomed again, so place in layout pixels (see `cssZoomOf`).
+    const zoom = cssZoomOf();
+    const viewBox = anchor.getBoundingClientRect();
+    const rect = { left: viewBox.left / zoom, top: viewBox.top / zoom, right: viewBox.right / zoom, bottom: viewBox.bottom / zoom, width: viewBox.width / zoom };
     // Size the menu to the trigger before measuring, so its height is the final one.
     if (matchAnchorWidth) menu.style.width = `${rect.width}px`;
     const size = { width: menu.offsetWidth, height: menu.offsetHeight };
@@ -67,7 +72,7 @@ export function AnchoredMenu({
     const alignEnd = placement.endsWith("end");
     let above = placement.startsWith("top");
     // Flip to the other side when the preferred side has no room and the other does.
-    const roomBelow = window.innerHeight - rect.bottom - offset;
+    const roomBelow = window.innerHeight / zoom - rect.bottom - offset;
     const roomAbove = rect.top - offset;
     if (!above && size.height > roomBelow && roomAbove > roomBelow) above = true;
     else if (above && size.height > roomAbove && roomBelow > roomAbove) above = false;
@@ -77,6 +82,8 @@ export function AnchoredMenu({
         y: above ? rect.top - offset - size.height : rect.bottom + offset,
       },
       { width, height: size.height },
+      8,
+      { width: window.innerWidth / zoom, height: window.innerHeight / zoom },
     );
     // A transformed container (a centred dialog) becomes the origin for fixed
     // children, so convert window coordinates into its space.
@@ -84,8 +91,8 @@ export function AnchoredMenu({
     let originTop = 0;
     if (portalContainer && getComputedStyle(portalContainer).transform !== "none") {
       const box = portalContainer.getBoundingClientRect();
-      originLeft = box.left;
-      originTop = box.top;
+      originLeft = box.left / zoom;
+      originTop = box.top / zoom;
     }
     anchorAtOpenRef.current = { left: rect.left, top: rect.top };
     setPosition({
