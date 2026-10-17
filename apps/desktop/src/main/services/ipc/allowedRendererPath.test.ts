@@ -26,12 +26,28 @@ afterAll(() => {
 
 const allowedDirs = [allowedDir, secondAllowedDir];
 
-// The refusal a candidate gets, and the paths `fs.lstatSync` was asked about
-// while producing it. Every walk stats each component in order, so two walks
-// over the same components ask about the same paths. The target's own name is
-// masked, because a present and a missing target cannot share one.
-function refusalOf(candidate: string): { message: string; walk: string[] } {
-  const lstat = vi.spyOn(fs, "lstatSync");
+// The refusal a candidate gets, and every filesystem call made while producing
+// it, in order. The target's own name is masked, because the present, missing
+// and dangling cases each use a different name; nothing else may differ.
+// `denyRealpathOf` makes `realpath` fail with EACCES for matching paths.
+function refusalOf(candidate: string, opts: { denyRealpathOf?: string } = {}): { message: string; calls: string[] } {
+  const leaf = path.basename(candidate);
+  const realpathNative = fs.realpathSync.native;
+  const spies = {
+    lstat: vi.spyOn(fs, "lstatSync"),
+    stat: vi.spyOn(fs, "statSync"),
+    readlink: vi.spyOn(fs, "readlinkSync"),
+    realpath: vi.spyOn(fs.realpathSync, "native"),
+  };
+  if (opts.denyRealpathOf !== undefined) {
+    const denied = opts.denyRealpathOf;
+    spies.realpath.mockImplementation(((filePath: fs.PathLike) => {
+      if (String(filePath).includes(denied)) {
+        throw Object.assign(new Error(`EACCES: permission denied, realpath '${String(filePath)}'`), { code: "EACCES" });
+      }
+      return realpathNative(filePath);
+    }) as typeof realpathNative);
+  }
   try {
     let message = "";
     try {
@@ -39,11 +55,19 @@ function refusalOf(candidate: string): { message: string; walk: string[] } {
     } catch (error) {
       message = (error as Error).message;
     }
-    const leaf = path.basename(candidate);
-    const walk = lstat.mock.calls.map(([target]) => String(target).split(leaf).join("<leaf>"));
-    return { message, walk };
+    const seen: Array<{ order: number; text: string }> = [];
+    for (const [name, spy] of Object.entries(spies)) {
+      spy.mock.calls.forEach((args, index) => {
+        seen.push({
+          order: spy.mock.invocationCallOrder[index],
+          text: `${name}(${String((args as unknown[])[0]).split(leaf).join("<leaf>")})`,
+        });
+      });
+    }
+    seen.sort((a, b) => a.order - b.order);
+    return { message, calls: seen.map((call) => call.text) };
   } finally {
-    lstat.mockRestore();
+    for (const spy of Object.values(spies)) spy.mockRestore();
   }
 }
 
@@ -183,23 +207,74 @@ describe("resolveWithinAllowedDirs", () => {
       .toBe(fs.realpathSync.native(linked));
   });
 
-  // The timing half of the same oracle: refusing a missing name must not take a
-  // longer walk than refusing a present one. Both refusals answer with the
-  // allowlist message and walk the same path components.
-  it("refuses a present and a missing name behind a symlink that leaves the allowlist the same way", (ctx) => {
+  // Outside targets must look the same from outside. A present, a missing and a
+  // dangling name behind a link that leaves the allowlist get the same filesystem
+  // calls, in the same order, and the same message, so neither can show which
+  // one exists. This is a call-sequence check, not a timing one.
+  it("refuses a present, a missing and a dangling name behind a symlink that leaves the allowlist the same way", (ctx) => {
     const walkEscapeDir = path.join(allowedDir, "walk-escape-dir");
+    // The dangling link's target is spelled canonically, the way the walk sees the
+    // outside folder. A different spelling of the same folder would change only the
+    // path text passed to realpath, which is fixed on disk, not an existence signal.
+    const outsideCanonical = fs.realpathSync.native(outsideDir);
+    const viaTmpSpelling = path.join(allowedDir, "dangling-via-tmp-spelling.png");
     try {
       fs.symlinkSync(outsideDir, walkEscapeDir, "dir");
+      fs.symlinkSync(path.join(outsideCanonical, "no-such.png"), path.join(outsideDir, "dangling.png"), "file");
+      fs.symlinkSync(path.join(outsideDir, "no-such.png"), viaTmpSpelling, "file");
     } catch {
       ctx.skip();
       return;
     }
     const present = refusalOf(path.join(walkEscapeDir, "secret.txt"));
     const missing = refusalOf(path.join(walkEscapeDir, "not-there.png"));
+    const dangling = refusalOf(path.join(walkEscapeDir, "dangling.png"));
     expect(present.message).toBe(PATH_OUTSIDE_ALLOWED_DIRS_MESSAGE);
     expect(missing.message).toBe(PATH_OUTSIDE_ALLOWED_DIRS_MESSAGE);
-    expect(present.walk.length, "the spy saw the walk").toBeGreaterThan(0);
-    expect(missing.walk).toEqual(present.walk);
+    expect(dangling.message).toBe(PATH_OUTSIDE_ALLOWED_DIRS_MESSAGE);
+    expect(refusalOf(viaTmpSpelling).message).toBe(PATH_OUTSIDE_ALLOWED_DIRS_MESSAGE);
+    expect(present.calls.length, "the spies saw the walk").toBeGreaterThan(0);
+    expect(missing.calls).toEqual(present.calls);
+    expect(dangling.calls).toEqual(present.calls);
+  });
+
+  // An in-root link is the other way an outside target is reached. Whether its
+  // target exists or dangles, the link is walked the same way and refused with
+  // the same message, so the link cannot be used to tell the two apart.
+  it("refuses an in-root link to an outside target the same way whether the target exists or not", (ctx) => {
+    const toPresent = path.join(allowedDir, "to-present.txt");
+    const toMissing = path.join(allowedDir, "to-missing.txt");
+    try {
+      fs.symlinkSync(outsideFile, toPresent, "file");
+      fs.symlinkSync(path.join(outsideDir, "not-there.txt"), toMissing, "file");
+    } catch {
+      ctx.skip();
+      return;
+    }
+    const present = refusalOf(toPresent);
+    const missing = refusalOf(toMissing);
+    expect(present.message).toBe(PATH_OUTSIDE_ALLOWED_DIRS_MESSAGE);
+    expect(missing.message).toBe(PATH_OUTSIDE_ALLOWED_DIRS_MESSAGE);
+    expect(missing.calls).toEqual(present.calls);
+  });
+
+  // A name that cannot be read (here a realpath EACCES) behind an outside link is
+  // the same refusal as one that exists, with the same calls and no path in the
+  // message.
+  it("refuses an unreadable name behind a symlink that leaves the allowlist the same way", (ctx) => {
+    const escapeDir = path.join(allowedDir, "locked-escape-dir");
+    try {
+      fs.symlinkSync(outsideDir, escapeDir, "dir");
+    } catch {
+      ctx.skip();
+      return;
+    }
+    fs.writeFileSync(path.join(outsideDir, "locked.png"), "locked");
+    const present = refusalOf(path.join(escapeDir, "secret.txt"));
+    const denied = refusalOf(path.join(escapeDir, "locked.png"), { denyRealpathOf: "locked.png" });
+    expect(denied.message).toBe(PATH_OUTSIDE_ALLOWED_DIRS_MESSAGE);
+    expect(denied.message).not.toContain(outsideDir);
+    expect(denied.calls).toEqual(present.calls);
   });
 
   // A root that is itself missing fails for a reason that has nothing to do

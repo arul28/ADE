@@ -512,36 +512,132 @@ export function resolvePathWithinRoot(
   return candidateReal;
 }
 
-/**
- * Whether `candidate`, resolved from `root` with names it does not find allowed,
- * lands outside every root in `roots`.
- *
- * A missing name under an in-root symlink that points outside fails on that
- * name before containment is checked, so the plain resolve reports "does not
- * exist" for a path that is really outside the root. Resolving again with
- * missing names allowed shows where the path really lands. That spot still
- * counts as allowed when another root contains it: a link under `A` that points
- * into `B` leaves `A`, but a missing name under it is a missing file in `B`.
- */
-export function escapesAllRootsWhenMissingAllowed(
-  roots: readonly string[],
-  root: string,
-  candidate: string,
-): boolean {
-  let landed: string;
+function realpathOrNull(filePath: string): string | null {
   try {
-    landed = resolveCandidatePath(root, candidate, { allowMissing: true });
+    return realpathExisting(filePath);
   } catch {
-    return false;
+    return null;
   }
-  return !roots.some((other) => {
-    try {
-      resolvePathWithinRoot(other, landed, { allowMissing: true });
-      return true;
-    } catch {
-      return false;
+}
+
+function readLinkOrNull(filePath: string): string | null {
+  try {
+    return fs.readlinkSync(filePath);
+  } catch {
+    return null;
+  }
+}
+
+function isMissingEntryError(error: unknown): boolean {
+  const code = error && typeof error === "object"
+    ? ("code" in error ? (error as NodeJS.ErrnoException).code : undefined)
+    : undefined;
+  return code === "ENOENT" || code === "ENOTDIR";
+}
+
+interface RootWalk {
+  /**
+   * Where the walk ended. Past the first segment that did not resolve, this is
+   * that segment's target location with the rest of the candidate appended.
+   */
+  landed: string;
+  failure: { error: unknown; missing: boolean } | null;
+}
+
+/**
+ * Walk `candidate` from `root` one segment at a time, following symbolic links.
+ *
+ * Every segment makes the same three calls whether its name exists, is missing
+ * or is a dangling link: `realpath` of the entry, `readlink` of the entry, and
+ * `realpath` of the directory its target lives in. Nothing is skipped after a
+ * failure, so the work done does not depend on what sits at the target. The
+ * caller reads the outcome afterwards and decides the message. Nothing throws.
+ */
+function walkWithinRoot(root: string, candidate: string): RootWalk {
+  const { root: start, segments } = splitPathSegments(candidateExpressionFromRoot(root, candidate));
+  let cursor = start;
+  let failure: RootWalk["failure"] = null;
+  for (const segment of segments) {
+    if (segment === "." || segment === "") continue;
+    if (segment === "..") {
+      cursor = path.dirname(cursor);
+      continue;
     }
-  });
+    const entry = path.join(cursor, segment);
+    let resolved: string | null = null;
+    let resolveError: unknown = null;
+    try {
+      resolved = realpathExisting(entry);
+    } catch (error) {
+      resolveError = error;
+    }
+    const linkTarget = readLinkOrNull(entry);
+    const target = linkTarget === null ? entry : path.resolve(cursor, linkTarget);
+    const targetParent = realpathOrNull(path.dirname(target));
+    if (resolved !== null) {
+      cursor = resolved;
+      continue;
+    }
+    if (failure === null) {
+      failure = { error: resolveError, missing: isMissingEntryError(resolveError) };
+    }
+    cursor = targetParent === null ? target : path.join(targetParent, path.basename(target));
+  }
+  return { landed: cursor, failure };
+}
+
+/**
+ * Resolve `candidate` against a list of allowed roots. The first root that
+ * contains where the candidate really lands accepts it, with the canonical path.
+ * Otherwise the candidate is refused in one of two ways, kept apart so that an
+ * outside target reveals nothing:
+ *
+ * - The candidate lands outside every root: directly, through a link, or as a
+ *   missing or dangling name under one. The caller gets `refusalMessage`, the
+ *   same text for all of these, with no path in it. Whether the outside target
+ *   exists, is a link, or cannot be read changes neither the message nor the
+ *   filesystem calls.
+ * - The candidate is spelled inside a root and does not resolve there: the
+ *   resolver's own `Path does not exist: <candidate>`, or the underlying error
+ *   for an unreadable entry. That path is inside the root, so nothing outside
+ *   is named.
+ *
+ * A failure from a root the candidate is not spelled inside says nothing about
+ * the candidate, so it is ignored. Reporting it would tell the renderer whether
+ * a name outside that root exists.
+ */
+export function resolveWithinAllowedRoots(
+  roots: readonly string[],
+  candidate: string,
+  refusalMessage: string,
+): string {
+  const rootReals = roots.map((root) => realpathOrNull(path.resolve(root)));
+  const landsInsideAnyRoot = (filePath: string): boolean =>
+    rootReals.some((real) => real !== null && isWithinDir(real, filePath));
+  let sawEscape = false;
+  let ownRootFailure: unknown = null;
+  for (const [index, root] of roots.entries()) {
+    const real = rootReals[index];
+    const walk = walkWithinRoot(root, candidate);
+    if (walk.failure === null) {
+      if (real !== null && isWithinDir(real, walk.landed)) return walk.landed;
+      // Resolved in full, but not inside this root. A root that is not on disk contains nothing.
+      if (real !== null) sawEscape = true;
+      continue;
+    }
+    if (!isLexicallyWithinRoot(root, candidate)) continue;
+    if (!landsInsideAnyRoot(walk.landed)) {
+      sawEscape = true;
+    } else if (ownRootFailure === null) {
+      ownRootFailure = walk.failure.missing
+        ? new Error(`Path does not exist: ${candidate}`)
+        : walk.failure.error;
+    }
+  }
+  if (sawEscape || ownRootFailure === null) {
+    throw new Error(refusalMessage);
+  }
+  throw ownRootFailure;
 }
 
 function openReadOnlyNoFollow(filePath: string): number {
