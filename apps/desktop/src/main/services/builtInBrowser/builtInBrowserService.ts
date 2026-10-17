@@ -7455,7 +7455,8 @@ const ELEMENT_CONTEXT_SNIPPET = String.raw`
     }
     return false;
   };
-  const elementHtmlFor = (element) => {
+  // A scrubbed copy of the element; past the subtree limit it has no children.
+  const scrubbedCloneFor = (element) => {
     try {
       const deep = !hasMoreDescendantsThan(element, HTML_SUBTREE_LIMIT);
       const clone = element.cloneNode(deep);
@@ -7463,13 +7464,26 @@ const ELEMENT_CONTEXT_SNIPPET = String.raw`
       if (deep) {
         for (const node of Array.from(clone.querySelectorAll ? clone.querySelectorAll("*") : [])) scrubForPrompt(node);
       }
-      const markup = deep
-        ? clone.outerHTML
-        : clone.outerHTML.replace(/<\/[^>]+>$/, "") + "<!-- children omitted -->";
-      return markup.length > 2000 ? markup.slice(0, 2000) + "<!-- truncated -->" : markup;
+      return { clone, deep };
     } catch {
       return null;
     }
+  };
+  const elementHtmlFor = (scrubbed) => {
+    if (!scrubbed) return null;
+    const markup = scrubbed.deep
+      ? scrubbed.clone.outerHTML
+      : scrubbed.clone.outerHTML.replace(/<\/[^>]+>$/, "") + "<!-- children omitted -->";
+    return markup.length > 2000 ? markup.slice(0, 2000) + "<!-- truncated -->" : markup;
+  };
+  // innerText skips script and field contents only for a rendered element; for
+  // an unrendered one (hidden, a script) it is raw textContent, so use the
+  // scrubbed copy's text there instead.
+  const elementTextFor = (element, scrubbed) => {
+    const isRendered = typeof element.getClientRects === "function" && element.getClientRects().length > 0;
+    const rendered = isRendered && typeof element.innerText === "string" ? element.innerText.trim() : "";
+    const raw = rendered || (scrubbed && scrubbed.deep ? scrubbed.clone.textContent || "" : "");
+    return raw.replace(/\s+/g, " ").trim().slice(0, 500);
   };
   // The computed values that decide how the element looks, minus defaults.
   const computedStyleFor = (element) => {
@@ -7759,7 +7773,8 @@ ${ZOOM_HIT_PROBES_SNIPPET}${ELEMENT_CONTEXT_SNIPPET}  const rectContainsPoint = 
         .replace(/\s+/g, " ")
         .trim()
     : "";
-  const text = (element.innerText || element.textContent || "").replace(/\s+/g, " ").trim().slice(0, 500);
+  const scrubbed = scrubbedCloneFor(element);
+  const text = elementTextFor(element, scrubbed);
   const ariaLabel = element.getAttribute("aria-label") || labelledByText || "";
   const title = element.getAttribute("title") || "";
   const label = (ariaLabel || title || text || element.getAttribute("alt") || element.getAttribute("name") || "").slice(0, 300) || null;
@@ -7774,7 +7789,7 @@ ${ZOOM_HIT_PROBES_SNIPPET}${ELEMENT_CONTEXT_SNIPPET}  const rectContainsPoint = 
   const value = isSecretInput
     ? null
     : "value" in element ? String(element.value).slice(0, 300) : null;
-  const html = elementHtmlFor(element);
+  const html = elementHtmlFor(scrubbed);
   const computedStyle = computedStyleFor(element);
   const frameworkSource = frameworkSourceFor(element);
   return {
