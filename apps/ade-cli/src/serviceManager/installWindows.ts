@@ -1104,49 +1104,21 @@ function buildWindowsProcessIdentityFunctions(): string {
 }
 
 /**
- * PIDs of powershell processes whose command line names this launcher, in any
- * session of this user.
+ * The predecessor sweep as one PowerShell script, in two modes that run the same
+ * identity pass.
  *
- * The PID record is last-writer-wins, so a live supervisor the record does not
- * name is invisible to `queryWindowsSupervisor`. The command line is the
- * durable identity, so install/repair uses this to find and stop every
- * predecessor — including one started by another logon session — before it
- * starts a replacement.
- *
- * The sweep has two passes. The first identifies every candidate and kills
- * nothing. A candidate whose owner cannot be read while it still runs is
- * reported as `unresolved`, and then the second pass does not run: the sweep
- * stops nothing and fails closed. Otherwise the second pass stops each
- * predecessor supervisor and reports its brain, which is stopped with
- * `stopWindowsBrainGracefully`: cooperative shutdown first, then an
- * identity-checked `taskkill /T /F` if the brain does not leave. PowerShell's
- * own `Process.Kill()` on the brain would end only that process, leaving its
- * ConPTY hosts and agent CLIs running with nothing left to reap them.
+ * `identify` names every candidate, kills nothing, and pins each orphaned brain
+ * by its start time. The install runs it before it stops, unregisters or writes
+ * anything. `kill` runs the identity pass again while holding each handle, and
+ * kills only the candidates that still pass it. So a pid that `identify` named
+ * is never killed on that earlier answer alone.
  */
-async function stopWindowsSupervisorsByCommandLine(
-  run: ServiceManagerSpawnSync,
+export function buildWindowsPredecessorScript(
   launcherPath: string,
-  brain: { socketPath: string; terminateDeps?: WindowsServiceManagerDeps["terminateDeps"] },
-): Promise<WindowsTaskRemovalResult> {
-  // Every candidate is identity-checked while its process handle is held, and
-  // only then reported or killed. The enumeration is a claim from an earlier
-  // CIM query, and a PID named in it can have been reused since. Every handle
-  // stays open until the end, so a checked pid cannot be reused before its kill.
-  const script = [
-    "$ErrorActionPreference = 'Stop'",
-    buildWindowsBrainReportFunction(),
-    buildWindowsProcessIdentityFunctions(),
-    `$launcher = ${powerShellSingleQuotedLiteral(launcherPath)}`,
-    "$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value",
-    "$escaped = [Regex]::Escape($launcher)",
-    `$pattern = '(?i)(?:^|\\s)-File\\s+(?:"' + $escaped + '"|' + $escaped + ')(?=\\s|$)'`,
-    // A brain is the supervisor's child, started with `serve` as its last argument.
-    "$brainPattern = '(?i)(?:^|\\s)serve\\s*$'",
-    "$opened = [System.Collections.Generic.List[System.Diagnostics.Process]]::new()",
-    "$targets = [System.Collections.Generic.List[object]]::new()",
-    "$unresolved = $false",
-    "try {",
-    // Pass one: identify every candidate, and kill nothing.
+  mode: "identify" | "kill",
+  orphans: Array<{ pid: number; commandLine: string }> = [],
+): string {
+  const passOne = [
     "  foreach ($row in @(Get-CimInstance Win32_Process -Filter \"Name = 'powershell.exe'\")) {",
     "    if (-not $row.CommandLine -or $row.CommandLine -notmatch $pattern) { continue }",
     // An owner that is another user's is not ours to touch. An owner that cannot be
@@ -1180,8 +1152,28 @@ async function stopWindowsSupervisorsByCommandLine(
     "    }",
     "    $targets.Add([pscustomobject]@{ Process = $process; Children = $children })",
     "  }",
-    // Pass two: runs only when every candidate was identified. One unresolved
-    // owner stops the whole sweep before its first kill.
+  ];
+  // Identify mode pins each orphan the scan named. It is checked the same way as a
+  // predecessor: start time, the exact command line the scan read, owner, and a
+  // fresh read while the handle is held. The pinned start time is what the kill checks.
+  const identifyTail = [
+    "  foreach ($orphan in $orphans) {",
+    "    $process = $null",
+    "    try { $process = [System.Diagnostics.Process]::GetProcessById([int]$orphan.ProcessId); $opened.Add($process); $handle = $process.Handle } catch [ArgumentException] { continue }",
+    "    if ($process.HasExited) { continue }",
+    "    $rows = @(Get-CimInstance Win32_Process -Filter ('ProcessId = ' + $orphan.ProcessId))",
+    "    if ($rows.Count -ne 1) { if (-not $process.HasExited) { $unresolved = $true; [Console]::Out.WriteLine('unresolved ' + $orphan.ProcessId) }; continue }",
+    "    $verdict = Test-AdeProcessIdentity $process $rows[0] ('^' + [Regex]::Escape($orphan.CommandLine) + '\\s*$') $sid $null",
+    "    if ($verdict -eq 'unresolved') { $unresolved = $true; [Console]::Out.WriteLine('unresolved ' + $orphan.ProcessId); continue }",
+    "    if ($verdict -ne 'match') { continue }",
+    "    try { $started = $process.StartTime.ToFileTimeUtc() } catch { if ($process.HasExited) { continue }; throw }",
+    "    [Console]::Out.WriteLine('orphan ' + $orphan.ProcessId + ' ' + $started)",
+    "  }",
+    "  if (-not $unresolved) { [Console]::Out.WriteLine('identified') }",
+  ];
+  // Kill mode runs only when every candidate was identified. One unresolved owner
+  // stops the whole sweep before its first kill.
+  const killTail = [
     "  if (-not $unresolved) {",
     "    foreach ($target in $targets) {",
     "      $target.Process.Kill()",
@@ -1190,29 +1182,154 @@ async function stopWindowsSupervisorsByCommandLine(
     "      foreach ($child in $target.Children) { Write-BrainReport $child }",
     "    }",
     "  }",
+  ];
+  return [
+    "$ErrorActionPreference = 'Stop'",
+    buildWindowsBrainReportFunction(),
+    buildWindowsProcessIdentityFunctions(),
+    `$launcher = ${powerShellSingleQuotedLiteral(launcherPath)}`,
+    "$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value",
+    "$escaped = [Regex]::Escape($launcher)",
+    `$pattern = '(?i)(?:^|\\s)-File\\s+(?:"' + $escaped + '"|' + $escaped + ')(?=\\s|$)'`,
+    // A brain is the supervisor's child, started with `serve` as its last argument.
+    "$brainPattern = '(?i)(?:^|\\s)serve\\s*$'",
+    ...(mode === "identify"
+      ? [`$orphans = @(${orphans.map((orphan) => `[pscustomobject]@{ ProcessId = ${orphan.pid}; CommandLine = ${powerShellSingleQuotedLiteral(orphan.commandLine)} }`).join(", ")})`]
+      : []),
+    "$opened = [System.Collections.Generic.List[System.Diagnostics.Process]]::new()",
+    "$targets = [System.Collections.Generic.List[object]]::new()",
+    "$unresolved = $false",
+    "try {",
+    // Pass one: identify every candidate, and kill nothing.
+    ...passOne,
+    ...(mode === "identify" ? identifyTail : killTail),
     "} finally { foreach ($process in $opened) { $process.Dispose() } }",
   ].join("\n");
-  const result = run(windowsPowerShellCommand(), ["-NoProfile", "-NonInteractive", "-Command", script], {
-    encoding: "utf8", timeout: 30_000, windowsHide: true,
-  });
+}
+
+/**
+ * One failure per candidate whose owner cannot be read while it still runs. The
+ * scripts report these before they kill anything, so the caller fails with
+ * nothing stopped.
+ */
+function windowsUnresolvedOwnerFailures(lines: string[]): string[] {
+  const failures: string[] = [];
+  for (const line of lines) {
+    const unresolved = /^unresolved (\d+)$/.exec(line);
+    if (!unresolved) continue;
+    // The process is still running and its owner cannot be read, so it cannot be
+    // shown to be safe to leave alone or to kill.
+    try {
+      process.stderr.write(`ADE could not read the owner of pid ${unresolved[1]} during the Windows sweep, so it stopped nothing.\n`);
+    } catch { /* logging is best effort */ }
+    failures.push(`Unable to read the owner of ADE process ${unresolved[1]}, so the Windows sweep stopped nothing. Run the command again once that process can be inspected.`);
+  }
+  return failures;
+}
+
+type WindowsPredecessorPlan =
+  | { ok: true; orphans: Array<{ pid: number; startFileTime: string }> }
+  | { ok: false; message: string };
+
+/**
+ * Identifies the orphaned brains and the predecessor candidates the install
+ * would stop. It runs before the install stops, unregisters or writes anything,
+ * and it kills nothing.
+ *
+ * It fails closed when the orphan scan cannot answer, or when a candidate still
+ * runs and its owner cannot be read. The caller then returns the error with the
+ * running service untouched. On success each orphan is returned with the start
+ * time it was pinned with, and the kill checks that start time again.
+ */
+function identifyWindowsPredecessors(
+  run: ServiceManagerSpawnSync,
+  args: { launcherPath: string; cliScriptPath: string; socketPath: string },
+): WindowsPredecessorPlan {
+  // launchd parity: the macOS install reaps stale same-channel serve processes
+  // before loading the replacement, because a brain that outlived its
+  // registration keeps the channel socket and the sync-host lock hostage. On
+  // Windows this scan used to shell out to `ps -axo`, which does not exist
+  // there, so it silently found nothing and the reap never happened.
+  const scan = listStaleChannelServePids(run, {
+    cliScriptPath: args.cliScriptPath,
+    primarySocketPath: args.socketPath,
+  }, "win32");
+  // A scan that cannot answer is not an empty answer. An orphaned brain it did
+  // not see could outlive its supervisor next to the replacement.
+  if (!scan.ok) {
+    return {
+      ok: false,
+      message: `Unable to check for orphaned ADE brains before starting the replacement, so the install stopped: ${scan.reason}`,
+    };
+  }
+  const orphans: Array<{ pid: number; commandLine: string }> = [];
+  for (const pid of scan.pids) {
+    const commandLine = scan.commandLines?.get(pid);
+    if (commandLine === undefined) {
+      return {
+        ok: false,
+        message: `Unable to check for orphaned ADE brains before starting the replacement, so the install stopped: the scan did not report the command line of pid ${pid}.`,
+      };
+    }
+    orphans.push({ pid, commandLine });
+  }
+  const result = run(
+    windowsPowerShellCommand(),
+    ["-NoProfile", "-NonInteractive", "-Command", buildWindowsPredecessorScript(args.launcherPath, "identify", orphans)],
+    { encoding: "utf8", timeout: 30_000, windowsHide: true },
+  );
+  const lines = String(result.stdout ?? "").split(/\r?\n/).map((line) => line.trim());
+  const unresolved = windowsUnresolvedOwnerFailures(lines);
+  if (unresolved.length > 0) return { ok: false, message: unresolved.join(" ") };
+  if (result.status !== 0 || !lines.includes("identified")) {
+    return {
+      ok: false,
+      message: `Unable to identify the running ADE processes, so the install stopped and nothing was stopped: ${serviceManagerResultText(result) || "the identity check failed."}`,
+    };
+  }
+  const pinned: Array<{ pid: number; startFileTime: string }> = [];
+  for (const line of lines) {
+    const orphan = /^orphan (\d+) (\d+)$/.exec(line);
+    if (orphan) pinned.push({ pid: Number(orphan[1]), startFileTime: orphan[2]! });
+  }
+  return { ok: true, orphans: pinned };
+}
+
+/**
+ * Stops every predecessor supervisor the sweep identifies, and each of its brains.
+ *
+ * The sweep has two passes. The first identifies every candidate and kills
+ * nothing. A candidate whose owner cannot be read while it still runs is
+ * reported as `unresolved`, and then the second pass does not run: the sweep
+ * stops nothing and fails closed. Otherwise the second pass stops each
+ * predecessor supervisor and reports its brain, which is stopped with
+ * `stopWindowsBrainGracefully`: cooperative shutdown first, then an
+ * identity-checked `taskkill /T /F` if the brain does not leave. PowerShell's
+ * own `Process.Kill()` on the brain would end only that process, leaving its
+ * ConPTY hosts and agent CLIs running with nothing left to reap them.
+ */
+async function stopWindowsSupervisorsByCommandLine(
+  run: ServiceManagerSpawnSync,
+  launcherPath: string,
+  brain: { socketPath: string; terminateDeps?: WindowsServiceManagerDeps["terminateDeps"] },
+): Promise<WindowsTaskRemovalResult> {
+  // Every candidate is identity-checked while its process handle is held, and
+  // only then reported or killed. The enumeration is a claim from an earlier
+  // CIM query, and a PID named in it can have been reused since. Every handle
+  // stays open until the end, so a checked pid cannot be reused before its kill.
+  const result = run(
+    windowsPowerShellCommand(),
+    ["-NoProfile", "-NonInteractive", "-Command", buildWindowsPredecessorScript(launcherPath, "kill")],
+    { encoding: "utf8", timeout: 30_000, windowsHide: true },
+  );
   // Brains are reported as their supervisor goes, so the ones already reported
   // are stopped even when a later supervisor fails the sweep below. One brain
   // failing does not skip the rest: every failure is collected and reported.
   const lines = String(result.stdout ?? "").split(/\r?\n/).map((line) => line.trim());
   const removed = lines.includes("supervisor");
   const alive = brain.terminateDeps?.pidAlive ?? isPidAlive;
-  const failures: string[] = [];
+  const failures: string[] = windowsUnresolvedOwnerFailures(lines);
   for (const line of lines) {
-    const unresolved = /^unresolved (\d+)$/.exec(line);
-    if (unresolved) {
-      // The sweep stopped nothing. The process is still running and its owner
-      // cannot be read, so it cannot be shown to be safe to leave alone or to kill.
-      try {
-        process.stderr.write(`ADE could not read the owner of pid ${unresolved[1]} during the Windows sweep, so it stopped nothing.\n`);
-      } catch { /* logging is best effort */ }
-      failures.push(`Unable to read the owner of ADE process ${unresolved[1]}, so the Windows sweep stopped nothing. Run the command again once that process can be inspected.`);
-      continue;
-    }
     const skipped = /^skipped (\d+)$/.exec(line);
     if (skipped) {
       // The pid no longer holds the process the sweep found, so nothing under it is touched.
@@ -1286,6 +1403,23 @@ async function installWindowsServiceImpl(
   const logPath = `${launcherPath}.log`;
   const machineLayout = resolveMachineAdeLayout(runtimeEnv, "win32");
   const socketPath = machineLayout.socketPath;
+  // Identify everything this install would stop before it stops, unregisters or
+  // writes anything. A candidate that cannot be identified fails the install here,
+  // so the running service and its startup entry are left exactly as they were.
+  const predecessorPlan = identifyWindowsPredecessors(run, {
+    launcherPath,
+    cliScriptPath: resolveAdeServeCliScriptPath(serviceCommand),
+    socketPath,
+  });
+  if (!predecessorPlan.ok) {
+    return {
+      ok: false,
+      serviceName,
+      action: "install",
+      path: taskName,
+      message: predecessorPlan.message,
+    };
+  }
   // The supervisor loop doubles as this platform's wedge watchdog: it reads the
   // brain's heartbeat between wait slices and stops a brain that hangs while
   // staying alive. macOS gets the same protection from a separate
@@ -1465,29 +1599,18 @@ async function installWindowsServiceImpl(
       message: predecessorStop.message,
     };
   }
-  // launchd parity: the macOS install reaps stale same-channel serve processes
-  // before loading the replacement, because a brain that outlived its
-  // registration keeps the channel socket and the sync-host lock hostage. On
-  // Windows this scan used to shell out to `ps -axo`, which does not exist
-  // there, so it silently found nothing and the reap never happened.
-  const staleScan = listStaleChannelServePids(run, {
-    cliScriptPath: resolveAdeServeCliScriptPath(serviceCommand),
-    primarySocketPath: socketPath,
-  }, "win32");
-  // A scan that cannot answer is not an empty answer. An orphaned brain it did
-  // not see could outlive its supervisor next to the replacement, so the install
-  // stops here rather than starting the replacement beside it.
-  if (!staleScan.ok) {
-    return {
-      ok: false,
-      serviceName,
-      action: "install",
-      path: taskName,
-      message: `Unable to check for orphaned ADE brains before starting the replacement, so the install stopped: ${staleScan.reason}`,
-    };
-  }
-  for (const stalePid of staleScan.pids) {
-    await stopWindowsBrainGracefully(run, { socketPath, runtimePid: stalePid });
+  // The orphaned brains were identified before anything was stopped (launchd
+  // parity: the macOS install reaps stale same-channel serve processes before
+  // loading the replacement). Each is stopped only if it still has the start
+  // time it was pinned with, so a pid reused since then is never killed.
+  for (const orphan of predecessorPlan.orphans) {
+    if (!isAlive(orphan.pid)) continue;
+    await stopWindowsBrainGracefully(run, {
+      socketPath,
+      runtimePid: orphan.pid,
+      identity: { startFileTime: orphan.startFileTime },
+      terminateDeps: deps.terminateDeps,
+    });
   }
   const command = windowsLauncherCommand(launcherPath);
   const registration = run(

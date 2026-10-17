@@ -50,6 +50,7 @@ import {
   renderWindowsServiceLauncher,
   resolveWindowsBrainOutputLogPath,
   buildWindowsBrainReportFunction,
+  buildWindowsPredecessorScript,
 } from "./installWindows";
 import {
   BRAIN_HEARTBEAT_INTERVAL_MS,
@@ -107,6 +108,11 @@ function spawnSequence(
     // supervisors. Model the new maintenance boundaries independently of
     // their lifecycle result sequence; the repair test below owns them.
     if (command === windowsRegCommand() && JSON.stringify(args) === JSON.stringify(buildWindowsRunKeyListArgs())) return { status: 0, stdout: "", stderr: "" };
+    // The identify step and the orphan scan run before anything is stopped, so
+    // they answer from here and take no result from the queue: nothing running,
+    // no unresolved owner.
+    if (command === windowsPowerShellCommand() && args.at(-1)?.includes(IDENTIFY_DONE_MARKER)) return { status: 0, stdout: "identified\n", stderr: "" };
+    if (command === windowsPowerShellCommand() && JSON.stringify(args) === JSON.stringify(buildWindowsProcessCommandLineQueryArgs())) return { status: 0, stdout: "", stderr: "" };
     if (command === windowsPowerShellCommand() && args.at(-1)?.includes("GetOwnerSid")) return { status: 0, stdout: "0", stderr: "" };
     calls.push({ command, args });
     return results.shift() ?? { status: 0, stdout: "", stderr: "" };
@@ -153,14 +159,6 @@ describe("Windows background service helpers", () => {
     "C:\\Program Files\\ADE\\ade.exe",
     "\"C:\\Program Files\\ADE\\resources\\ade-cli\\cli.cjs\" \"serve\"",
   );
-  // A legacy `ADE Runtime` task owned by a side-by-side Stable install.
-  // The install scans for stale same-channel `serve` brains before it registers
-  // the startup entry, the same way the launchd install does. On Windows that
-  // scan is a Win32_Process command-line enumeration, not `ps -axo`.
-  const staleServeScanCall = {
-    command: windowsPowerShellCommand(),
-    args: buildWindowsProcessCommandLineQueryArgs(),
-  };
   // A legacy `ADE Runtime` task owned by a side-by-side Stable install.
   const stableLegacyAction = taskActionOutput(
     "C:\\Program Files\\ADE Stable\\ADE.exe",
@@ -260,6 +258,7 @@ describe("Windows background service helpers", () => {
         return { status: 0, stdout: "", stderr: "" };
       }
       if ([taskName, "ADE Runtime"].some((name) => JSON.stringify(args) === JSON.stringify(buildWindowsQueryTaskArgs(name)))) return { status: 3, stdout: "", stderr: "" };
+      if (command === windowsPowerShellCommand() && args.at(-1)?.includes(IDENTIFY_DONE_MARKER)) return { status: 0, stdout: "identified\n", stderr: "" };
       return { status: 0, stdout: "0", stderr: "" };
     };
     const deps = { ...immediateReadiness, command: serviceCommand, launcherPath, serviceName, userName: taskUser, spawnSync: run };
@@ -511,9 +510,6 @@ describe("Windows background service helpers", () => {
       { status: 3, stdout: "", stderr: "" },
       { status: 3, stdout: "", stderr: "" },
       { status: 1, stdout: "", stderr: "ERROR: value not found" },
-      // launchd parity: the install now scans for stale same-channel serve
-      // brains before registering. Nothing running.
-      { status: 0, stdout: "", stderr: "" },
       { status: 0, stdout: "The operation completed successfully.", stderr: "" },
       { status: 0, stdout: "1234", stderr: "" },
     ]);
@@ -565,7 +561,6 @@ describe("Windows background service helpers", () => {
       { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs("ADE Runtime") },
       { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs(taskName) },
       { command: windowsRegCommand(), args: buildWindowsRunKeyQueryArgs(taskName) },
-      staleServeScanCall,
       { command: windowsRegCommand(), args: buildWindowsRunKeyAddArgs(taskName, scheduledCommand) },
       {
         command: windowsPowerShellCommand(),
@@ -596,7 +591,6 @@ describe("Windows background service helpers", () => {
       { status: 0, stdout: "", stderr: "" },                     // supervisor probe: running
       { status: 0, stdout: "SUCCESS", stderr: "" },              // taskkill supervisor
       { status: 0, stdout: "SUCCESS: deleted", stderr: "" },     // reg delete
-      { status: 0, stdout: "", stderr: "" },                     // stale same-channel serve scan: none
       { status: 0, stdout: "SUCCESS: created", stderr: "" },     // reg add
       { status: 0, stdout: "1234", stderr: "" },                 // start task
     ]);
@@ -792,9 +786,6 @@ describe("Windows background service helpers", () => {
       { status: 0, stdout: "SUCCESS: ended", stderr: "" },
       { status: 0, stdout: "SUCCESS: deleted", stderr: "" },
       { status: 1, stdout: "", stderr: "" },
-      // launchd parity: the install now scans for stale same-channel serve
-      // brains before registering. Nothing running.
-      { status: 0, stdout: "", stderr: "" },
       { status: 0, stdout: "SUCCESS: created", stderr: "" },
       { status: 0, stdout: "1234", stderr: "" },
     ]);
@@ -831,9 +822,6 @@ describe("Windows background service helpers", () => {
       { status: 0, stdout: "SUCCESS: deleted", stderr: "" },
       { status: 3, stdout: "", stderr: "" },
       { status: 1, stdout: "", stderr: "" },
-      // launchd parity: the install now scans for stale same-channel serve
-      // brains before registering. Nothing running.
-      { status: 0, stdout: "", stderr: "" },
       { status: 0, stdout: "SUCCESS: created", stderr: "" },
       { status: 0, stdout: "1234", stderr: "" },
     ]);
@@ -865,9 +853,6 @@ describe("Windows background service helpers", () => {
       { status: 0, stdout: stableLegacyAction, stderr: "" },
       { status: 3, stdout: "", stderr: "" },
       { status: 1, stdout: "", stderr: "ERROR: value not found" },
-      // launchd parity: the install now scans for stale same-channel serve
-      // brains before registering. Nothing running.
-      { status: 0, stdout: "", stderr: "" },
       { status: 0, stdout: "The operation completed successfully.", stderr: "" },
       { status: 0, stdout: "1234", stderr: "" },
     ]);
@@ -906,7 +891,6 @@ describe("Windows background service helpers", () => {
       { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskActionArgs("ADE Runtime") },
       { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs(taskName) },
       { command: windowsRegCommand(), args: buildWindowsRunKeyQueryArgs(taskName) },
-      staleServeScanCall,
       { command: windowsRegCommand(), args: buildWindowsRunKeyAddArgs(taskName, scheduledCommand) },
       {
         command: windowsPowerShellCommand(),
@@ -1038,9 +1022,6 @@ describe("Windows background service helpers", () => {
       { status: 3, stdout: "", stderr: "" },
       { status: 3, stdout: "", stderr: "" },
       { status: 1, stdout: "", stderr: "" },
-      // launchd parity: the install now scans for stale same-channel serve
-      // brains before registering. Nothing running.
-      { status: 0, stdout: "", stderr: "" },
       { status: 0, stdout: "SUCCESS: created", stderr: "" },
       // Both job-escaping handovers are unavailable, so the launch falls all the
       // way back to the in-session PowerShell start, which also fails.
@@ -1078,7 +1059,6 @@ describe("Windows background service helpers", () => {
       buildWindowsQueryTaskArgs("ADE Runtime"),
       buildWindowsQueryTaskArgs(taskName),
       buildWindowsRunKeyQueryArgs(taskName),
-      buildWindowsProcessCommandLineQueryArgs(),
       buildWindowsRunKeyAddArgs(taskName, scheduledCommand),
       buildWindowsStartTaskArgs(launcherPath, resolveWindowsStartTaskName(taskName)),
       buildWindowsWmiStartArgs(launcherPath),
@@ -1093,9 +1073,6 @@ describe("Windows background service helpers", () => {
       { status: 3, stdout: "", stderr: "" },
       { status: 3, stdout: "", stderr: "" },
       { status: 1, stdout: "", stderr: "" },
-      // launchd parity: the install now scans for stale same-channel serve
-      // brains before registering. Nothing running.
-      { status: 0, stdout: "", stderr: "" },
       { status: 1, stdout: "", stderr: "ERROR: registration failed" },
     ]);
     const launcherPath = path.join(makeTempHome("ade-windows-service-create-fail-"), "brain-service.ps1");
@@ -1114,7 +1091,6 @@ describe("Windows background service helpers", () => {
       { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs("ADE Runtime") },
       { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs(taskName) },
       { command: windowsRegCommand(), args: buildWindowsRunKeyQueryArgs(taskName) },
-      staleServeScanCall,
       expect.objectContaining({ command: windowsRegCommand(), args: expect.arrayContaining(["ADD"]) }),
     ]);
   });
@@ -1247,10 +1223,17 @@ describe("Windows background service helpers", () => {
       { status: 0, stdout: "", stderr: "" },
       { status: 3, stdout: "", stderr: "" },
       { status: 1, stdout: "", stderr: "" },
-      { status: 0, stdout: "", stderr: "" },
       { status: 0, stdout: "1234", stderr: "" },
     ];
     const spawnSync: ServiceManagerSpawnSync = (command, args, options) => {
+      if (command === windowsPowerShellCommand() && args.at(-1)?.includes(IDENTIFY_DONE_MARKER)) {
+        calls.push({ command, args, options });
+        return { status: 0, stdout: "identified\n", stderr: "" };
+      }
+      if (command === windowsPowerShellCommand() && JSON.stringify(args) === JSON.stringify(buildWindowsProcessCommandLineQueryArgs())) {
+        calls.push({ command, args, options });
+        return { status: 0, stdout: "", stderr: "" };
+      }
       calls.push({ command, args, options });
       return results.shift() ?? { status: 0, stdout: "", stderr: "" };
     };
@@ -1434,6 +1417,8 @@ describe("Windows background service helpers", () => {
 
 // The predecessor sweep's PowerShell script is the only one that carries this text.
 const PREDECESSOR_SWEEP_MARKER = "Existing ADE supervisor did not stop.";
+// Only the identify script ends by reporting that it finished.
+const IDENTIFY_DONE_MARKER = "WriteLine('identified')";
 // The identity-checked forced kill is the only PowerShell script that runs a
 // tree kill against a single literal pid.
 const IDENTITY_KILL_MARKER = "'/T' '/F' | Out-Null";
@@ -1448,6 +1433,10 @@ function predecessorSweepSpawn(options: {
   calls: Array<{ command: string; args: string[] }>;
   sweepStdout: string;
   sweepStatus?: number;
+  /** What the orphan scan prints. Nothing stale by default. */
+  scanStdout?: string;
+  /** What the identify step prints when no owner is unresolved. */
+  identifyStdout?: string;
   forcedKill?: (script: string) => ServiceManagerProcessResult;
 }): ServiceManagerSpawnSync {
   return (command, args) => {
@@ -1455,6 +1444,17 @@ function predecessorSweepSpawn(options: {
     const script = args.at(-1) ?? "";
     if (command === windowsPowerShellCommand() && script.includes(PREDECESSOR_SWEEP_MARKER)) {
       return { status: options.sweepStatus ?? 0, stdout: options.sweepStdout, stderr: "" };
+    }
+    // The identify step names the same candidates the sweep would. It answers
+    // with the test's unresolved owners, and otherwise reports that it finished.
+    if (command === windowsPowerShellCommand() && script.includes(IDENTIFY_DONE_MARKER)) {
+      const unresolved = options.sweepStdout.split(/\r?\n/).filter((line) => /^unresolved \d+$/.test(line.trim()));
+      return unresolved.length > 0
+        ? { status: 0, stdout: `${unresolved.join("\n")}\n`, stderr: "" }
+        : { status: 0, stdout: options.identifyStdout ?? "identified\n", stderr: "" };
+    }
+    if (command === windowsPowerShellCommand() && JSON.stringify(args) === JSON.stringify(buildWindowsProcessCommandLineQueryArgs())) {
+      return { status: 0, stdout: options.scanStdout ?? "", stderr: "" };
     }
     if (command === windowsPowerShellCommand() && script.includes(IDENTITY_KILL_MARKER)) {
       return options.forcedKill?.(script) ?? { status: 0, stdout: "exited", stderr: "" };
@@ -1856,6 +1856,138 @@ describe("Windows predecessor supervisor sweep", () => {
     expect(result.ok ? "" : result.message).toContain("orphaned ADE brains");
     expect(result.ok ? "" : result.message).toContain("Access is denied.");
     expect(calls.some((call) => call.command === windowsRegCommand() && call.args[0] === "ADD")).toBe(false);
+  });
+
+  /** Every spawn that would stop, kill or unregister something. A read-only query is not one. */
+  function stopsOrUnregisters(calls: Array<{ command: string; args: string[] }>): string[] {
+    return calls
+      .filter((call) => {
+        const script = call.args.at(-1) ?? "";
+        if (script.includes(PREDECESSOR_SWEEP_MARKER) || script.includes(IDENTITY_KILL_MARKER)) return true;
+        if (call.command === windowsRegCommand()) return call.args[0] !== "QUERY";
+        return call.args.includes("/End") || call.args.includes("/Delete") || call.args.includes("/F");
+      })
+      .map((call) => `${call.command} ${call.args.join(" ")}`);
+  }
+
+  it("stops nothing, unregisters nothing, and leaves the launcher alone when the orphaned-brain scan cannot answer", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const events: string[] = [];
+    const launcherPath = launcherForSweep();
+    const sweepAndAnswer = predecessorSweepSpawn({ calls, sweepStdout: `supervisor\n${brainLine}\n` });
+    const result = await installWindowsService({
+      command: serviceCommand,
+      launcherPath,
+      serviceName,
+      spawnSync: (command, args) => {
+        if (command === windowsPowerShellCommand() && JSON.stringify(args) === JSON.stringify(buildWindowsProcessCommandLineQueryArgs())) {
+          calls.push({ command, args });
+          return { status: 1, stdout: "", stderr: "Access is denied." };
+        }
+        return sweepAndAnswer(command, args);
+      },
+      userName: taskUser,
+      terminateDeps: {
+        pidAlive: () => true,
+        requestRuntimeShutdown: async ({ pid }) => {
+          events.push(`rpc ${pid}`);
+          return { requested: true };
+        },
+      },
+    });
+
+    expect(result).toMatchObject({ ok: false, action: "install" });
+    expect(result.ok ? "" : result.message).toContain("orphaned ADE brains");
+    // The service is untouched: no predecessor stop, no kill, no unregister, no write.
+    expect(stopsOrUnregisters(calls)).toEqual([]);
+    expect(events).toEqual([]);
+    expect(fs.readFileSync(launcherPath, "utf8")).toBe("old launcher");
+  });
+
+  it("stops nothing, unregisters nothing, and leaves the launcher alone when a candidate's owner cannot be read", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const events: string[] = [];
+    const launcherPath = launcherForSweep();
+    const result = await installWindowsService({
+      command: serviceCommand,
+      launcherPath,
+      serviceName,
+      spawnSync: predecessorSweepSpawn({
+        calls,
+        sweepStdout: `unresolved ${brainPid}\nsupervisor\n${brainLine}\n`,
+      }),
+      userName: taskUser,
+      terminateDeps: {
+        pidAlive: () => true,
+        requestRuntimeShutdown: async ({ pid }) => {
+          events.push(`rpc ${pid}`);
+          return { requested: true };
+        },
+      },
+    });
+
+    expect(result).toMatchObject({ ok: false, action: "install" });
+    expect(result.ok ? "" : result.message).toContain(`Unable to read the owner of ADE process ${brainPid}`);
+    expect(result.ok ? "" : result.message).toContain("stopped nothing");
+    expect(stopsOrUnregisters(calls)).toEqual([]);
+    expect(events).toEqual([]);
+    expect(fs.readFileSync(launcherPath, "utf8")).toBe("old launcher");
+  });
+
+  it("identifies first, then stops the predecessor, then kills the pinned orphan, then registers", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const orphanPid = 5555;
+    const orphanStartFileTime = "133000000000000002";
+    const cliScriptPath = serviceCommand.args[0]!;
+    const forcedScripts: string[] = [];
+    const sweepAndAnswer = predecessorSweepSpawn({
+      calls,
+      sweepStdout: "supervisor\n",
+      scanStdout: `${orphanPid}\t"C:\\Program Files\\ADE\\ade.exe" "${cliScriptPath}" "serve"\n`,
+      identifyStdout: `orphan ${orphanPid} ${orphanStartFileTime}\nidentified\n`,
+      forcedKill: (script) => {
+        forcedScripts.push(script);
+        return { status: 0, stdout: "exited", stderr: "" };
+      },
+    });
+    await installWindowsService({
+      command: serviceCommand,
+      launcherPath: launcherForSweep(),
+      serviceName,
+      spawnSync: (command, args) => {
+        // The registration is the step under test; it succeeds here. The start
+        // after it is not modelled, so the install ends there.
+        if (command === windowsRegCommand() && args[0] === "ADD") {
+          calls.push({ command, args });
+          return { status: 0, stdout: "SUCCESS: created", stderr: "" };
+        }
+        return sweepAndAnswer(command, args);
+      },
+      userName: taskUser,
+      // The orphan pid is not a real process, so it is reported alive for the
+      // install's own check and for the cooperative wait. The orphan then reaches
+      // the identity-checked kill.
+      pidAlive: () => true,
+      terminateDeps: {
+        pidAlive: () => true,
+        graceTimeoutMs: 0,
+        requestRuntimeShutdown: async () => ({ requested: true }),
+      },
+    });
+
+    const order = calls.flatMap((call) => {
+      const script = call.args.at(-1) ?? "";
+      if (script.includes(IDENTIFY_DONE_MARKER)) return ["identify"];
+      if (script.includes(PREDECESSOR_SWEEP_MARKER)) return ["stop predecessor"];
+      if (script.includes(IDENTITY_KILL_MARKER)) return ["kill orphan"];
+      if (call.command === windowsRegCommand() && call.args[0] === "ADD") return ["register"];
+      return [];
+    });
+    expect(order).toEqual(["identify", "stop predecessor", "kill orphan", "register"]);
+    // The orphan is killed only while it still has the start time it was pinned with.
+    expect(forcedScripts).toHaveLength(1);
+    expect(forcedScripts[0]).toContain(`GetProcessById(${orphanPid})`);
+    expect(forcedScripts[0]).toContain(`-ne ${orphanStartFileTime}`);
   });
 });
 
@@ -3140,6 +3272,40 @@ describe("Windows predecessor sweep identity, run in PowerShell", () => {
     }));
     for (const c of cases) {
       expect(verdicts.get(c.name), c.name).toBe(c.expect);
+    }
+  }, 120_000);
+
+  itWithPowerShell("identify pins an orphan only while its scanned command line and owner still match, and reports an unreadable owner", async () => {
+    const orphan = startThrowawayProcess();
+    try {
+      const launcherPath = writeScript(makeTempHome("ade-windows-sweep-orphan-"), "brain-service.ps1", "old launcher");
+      const orphanCommandLine = "node.exe -e x serve --socket orphan";
+      const ticks = fileTimeOf(orphan.pid);
+      const identify = (stub: Partial<StubCim>, scanned: string) => runSweepWithStubCim(
+        buildWindowsPredecessorScript(launcherPath, "identify", [{ pid: orphan.pid, commandLine: scanned }]),
+        { supervisors: [], brains: [], fresh: [], ...stub } as StubCim,
+      );
+
+      // The same process, the same command line, an owner that is ours: pinned.
+      const matched = identify({ fresh: [stubRow(orphan.pid, 1, ticks, orphanCommandLine)] }, orphanCommandLine);
+      expect(matched.status, matched.stderr).toBe(0);
+      expect(matched.lines).toEqual([`orphan ${orphan.pid} ${ticks}`, "identified"]);
+
+      // A pid whose command line changed since the scan is not the orphan any more: not pinned, not an error.
+      const reused = identify({ fresh: [stubRow(orphan.pid, 1, ticks, "node.exe -e x unrelated")] }, orphanCommandLine);
+      expect(reused.status, reused.stderr).toBe(0);
+      expect(reused.lines).toEqual(["identified"]);
+
+      // An owner that cannot be read while the orphan still runs fails the identify closed.
+      const unreadable = identify({
+        fresh: [stubRow(orphan.pid, 1, ticks, orphanCommandLine)],
+        owners: [{ ProcessId: orphan.pid, ReturnValue: 9, Sid: null }],
+      }, orphanCommandLine);
+      expect(unreadable.status, unreadable.stderr).toBe(0);
+      expect(unreadable.lines).toEqual([`unresolved ${orphan.pid}`]);
+      expect(isAlive(orphan.pid)).toBe(true);
+    } finally {
+      orphan.child.kill();
     }
   }, 120_000);
 });

@@ -160,7 +160,7 @@ as soon as the child connects or the start is torn down.
 Install and repair treat the PID record as advisory. They also enumerate live
 supervisors by command line — PowerShell processes whose command line names this
 launcher, in any session of the user — and stop every one of them before
-starting the replacement. And when the brain exits having failed with
+starting the replacement. Install identifies every such supervisor, and every orphaned brain on the channel socket, before it stops, unregisters or writes anything. If a candidate's owner cannot be read, or the orphan scan cannot answer, the install fails and the running service is left as it was. And when the brain exits having failed with
 `socket_owned_by_other` (another brain already owns the pipe), the supervisor
 logs that and exits instead of restarting on a backoff forever.
 

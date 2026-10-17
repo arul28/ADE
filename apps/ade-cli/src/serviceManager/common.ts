@@ -825,7 +825,15 @@ export function isStaleChannelServeCommandLine(
  * list indistinguishable from a real answer.
  */
 export type StaleChannelServeScan =
-  | { ok: true; pids: number[] }
+  | {
+    ok: true;
+    pids: number[];
+    /**
+     * win32 only: the command line each pid was read with. The orphan identity
+     * check compares a process against this exact line before it pins the process.
+     */
+    commandLines?: Map<number, string>;
+  }
   | { ok: false; reason: string };
 
 /**
@@ -848,21 +856,23 @@ export function buildWindowsProcessCommandLineQueryArgs(): string[] {
   return ["-NoProfile", "-NonInteractive", "-Command", query];
 }
 
-function parseStaleChannelServePids(
+function parseStaleChannelServeProcesses(
   output: string,
   separator: RegExp,
   opts: { cliScriptPath: string; primarySocketPath: string; excludePids?: number[] },
-): number[] {
+): Array<{ pid: number; commandLine: string }> {
   const exclude = new Set([process.pid, ...(opts.excludePids ?? [])]);
-  const pids: number[] = [];
+  const processes: Array<{ pid: number; commandLine: string }> = [];
   for (const line of output.split(/\r?\n/)) {
     const match = line.trim().match(separator);
     if (!match) continue;
     const pid = Number(match[1]);
     if (!Number.isFinite(pid) || pid <= 0 || exclude.has(pid)) continue;
-    if (isStaleChannelServeCommandLine(match[2]!, opts)) pids.push(pid);
+    if (isStaleChannelServeCommandLine(match[2]!, opts)) {
+      processes.push({ pid, commandLine: match[2]! });
+    }
   }
-  return pids;
+  return processes;
 }
 
 export function listStaleChannelServePids(
@@ -894,9 +904,11 @@ export function listStaleChannelServePids(
           || `the Windows process query exited with status ${String(result.status)}`,
       };
     }
+    const processes = parseStaleChannelServeProcesses(processOutputRaw(result), /^(\d+)\t(.+)$/, opts);
     return {
       ok: true,
-      pids: parseStaleChannelServePids(processOutputRaw(result), /^(\d+)\t(.+)$/, opts),
+      pids: processes.map((entry) => entry.pid),
+      commandLines: new Map(processes.map((entry) => [entry.pid, entry.commandLine])),
     };
   }
   const result = run("ps", ["-axo", "pid=,command="], { encoding: "utf8" });
@@ -909,7 +921,8 @@ export function listStaleChannelServePids(
   }
   return {
     ok: true,
-    pids: parseStaleChannelServePids(processOutputRaw(result), /^(\d+)\s+(.+)$/, opts),
+    pids: parseStaleChannelServeProcesses(processOutputRaw(result), /^(\d+)\s+(.+)$/, opts)
+      .map((entry) => entry.pid),
   };
 }
 
