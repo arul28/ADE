@@ -62,10 +62,10 @@ export async function pruneStaleCompileCacheTags(activeDir: string): Promise<str
 
 /**
  * The newest modification time of a build's directory and of the files directly in it, or
- * undefined when either cannot be read. Node writes each entry to a temporary file in the same
- * directory and renames it into place, so its writes already move the directory's own time. The
- * files are checked as well, so a file changed in place still counts. A build that only reads its
- * cache keeps its old time, and the keep-recent rule in `pruneStaleCompileCacheTags` covers that.
+ * undefined when either cannot be read. Node writes each entry to a temporary file and renames it
+ * into place, so an entry's own time is when it was last written. The directory's time moves too
+ * on most file systems, but this does not depend on that. A build that only reads its cache keeps
+ * its old time, and the keep-recent rule in `pruneStaleCompileCacheTags` covers that.
  */
 async function lastWriteMs(dir: string): Promise<number | undefined> {
   try {
