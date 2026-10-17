@@ -252,6 +252,7 @@ describe("useDraftMachineRouting", () => {
     crossMachineLanesByMachineId: Record<string, CrossMachineMachineLanes>;
     crossMachineLaneIntendedMachineIds?: readonly string[] | null;
     laneId: string | null;
+    initialDraftMachineId?: string | null;
   };
 
   function renderRemoteBoundRouting(
@@ -268,7 +269,7 @@ describe("useDraftMachineRouting", () => {
         lanes: [],
         availableLanes: studioLanes,
         laneId: props.laneId,
-        initialDraftMachineId: null,
+        initialDraftMachineId: props.initialDraftMachineId ?? null,
         draftLaunchTargetIsAutoCreate: false,
         onDraftMachineChange: vi.fn(),
         onLaneChange: handlers.onLaneChange,
@@ -335,6 +336,80 @@ describe("useDraftMachineRouting", () => {
     });
 
     await waitFor(() => expect(onLaneChange).toHaveBeenCalledWith("mac-feature"));
+  });
+
+  it.each([
+    ["the machine and lane arrive together", ["mac-feature"]],
+    ["the lane arrives a render after the machine", ["studio-primary", "mac-feature"]],
+  ])("keeps a lane handed in with its machine when %s", async (_label, laneSequence) => {
+    // "New chat in this lane" and "Start chat in lane" write the machine and
+    // the lane in one patch. The hook must open on exactly that lane, never
+    // re-derive one from the lane the draft held before.
+    installRemoteBoundAde();
+    const onLaneChange = vi.fn();
+    const crossMachineLanesByMachineId = thisMacSlice(thisMacLanes);
+    const { result, rerender } = renderRemoteBoundRouting(
+      { crossMachineLanesByMachineId, laneId: "studio-primary" },
+      { onLaneChange },
+    );
+    await waitFor(() => expect(result.current.machineOptions).toHaveLength(2));
+
+    for (const laneId of laneSequence) {
+      rerender({ crossMachineLanesByMachineId, laneId, initialDraftMachineId: "this-mac" });
+    }
+
+    await waitFor(() => expect(result.current.selectedMachineId).toBe("this-mac"));
+    expect(result.current.selectorValue).toBe("mac-feature");
+    expect(onLaneChange).not.toHaveBeenCalled();
+  });
+
+  it("remaps from the lane picked after returning to the source machine", async () => {
+    installRemoteBoundAde();
+    const onLaneChange = vi.fn();
+    const { result, rerender } = renderRemoteBoundRouting(
+      { crossMachineLanesByMachineId: {}, laneId: "studio-primary" },
+      { onLaneChange },
+    );
+    await waitFor(() => expect(result.current.machineOptions).toHaveLength(2));
+
+    // Away and back before the foreign catalog lands, then a different lane.
+    act(() => result.current.handleMachineChange("this-mac"));
+    act(() => result.current.handleMachineChange("studio"));
+    act(() => result.current.handleLaneSelectionChange("studio-feature"));
+    expect(onLaneChange).toHaveBeenLastCalledWith("studio-feature");
+    rerender({ crossMachineLanesByMachineId: {}, laneId: "studio-feature" });
+
+    act(() => result.current.handleMachineChange("this-mac"));
+    rerender({ crossMachineLanesByMachineId: thisMacSlice(thisMacLanes), laneId: "studio-feature" });
+
+    // The same-named lane for the CURRENT pick, not the Primary of the first.
+    await waitFor(() => expect(onLaneChange).toHaveBeenLastCalledWith("mac-feature"));
+    expect(onLaneChange).not.toHaveBeenCalledWith("mac-primary");
+  });
+
+  it("keeps a lane handed in for the picked machine while its catalog is still loading", async () => {
+    installRemoteBoundAde();
+    const onLaneChange = vi.fn();
+    const { result, rerender } = renderRemoteBoundRouting(
+      { crossMachineLanesByMachineId: {}, laneId: "studio-primary" },
+      { onLaneChange },
+    );
+    await waitFor(() => expect(result.current.machineOptions).toHaveLength(2));
+
+    act(() => {
+      result.current.handleMachineChange("this-mac");
+    });
+    // "New chat in this lane" for a lane on the machine already picked: the
+    // machine id does not change, only the lane does.
+    rerender({ crossMachineLanesByMachineId: {}, laneId: "mac-feature", initialDraftMachineId: "this-mac" });
+    rerender({
+      crossMachineLanesByMachineId: thisMacSlice(thisMacLanes),
+      laneId: "mac-feature",
+      initialDraftMachineId: "this-mac",
+    });
+
+    await waitFor(() => expect(result.current.selectorValue).toBe("mac-feature"));
+    expect(onLaneChange).not.toHaveBeenCalled();
   });
 
   it("holds the lane selection unresolved until the picked machine's catalog lands", async () => {
