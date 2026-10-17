@@ -226,6 +226,7 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
   const activePointerGestureRef = useRef<ActivePointerGesture | null>(null);
   const suppressTierClickRef = useRef(false);
   const suppressTierClickTimerRef = useRef<number | null>(null);
+  const copilotOptionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const { rememberReasoning, getReasoningForFamily } = useReasoningByFamily();
   useEffect(() => {
     if (open) return;
@@ -450,6 +451,23 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
     const options = [["efficiency", "Efficiency"], ["balance", "Balance"], ["intelligence", "Intelligence"]] as const;
     const selected = copilotAutoTier ?? "balance";
     const selectedLabel = options.find(([value]) => value === selected)?.[1] ?? "Balance";
+    const handleOptionKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
+      let nextIndex: number | null = null;
+      if (event.key === "ArrowDown" || event.key === "ArrowRight") {
+        nextIndex = (index + 1) % options.length;
+      } else if (event.key === "ArrowUp" || event.key === "ArrowLeft") {
+        nextIndex = (index - 1 + options.length) % options.length;
+      } else if (event.key === "Home") {
+        nextIndex = 0;
+      } else if (event.key === "End") {
+        nextIndex = options.length - 1;
+      }
+      if (nextIndex == null) return;
+      event.preventDefault();
+      copilotOptionRefs.current[nextIndex]?.focus();
+      const next = options[nextIndex];
+      if (next) onCopilotAutoTierChange(next[0]);
+    };
     return (
       <Popover.Root open={open} onOpenChange={(next) => setOpen(disabled ? false : next)}>
         <Popover.Trigger asChild>
@@ -502,7 +520,7 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
                 <span className="shrink-0 font-sans text-[10px] leading-none text-muted-fg/50">Profile</span>
               </div>
               <div className="flex flex-col gap-0.5">
-                {options.map(([value, label]) => {
+                {options.map(([value, label], index) => {
                   const isActive = selected === value;
                   return (
                     <button
@@ -510,6 +528,9 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
                       type="button"
                       role="radio"
                       aria-checked={isActive}
+                      ref={(el) => { copilotOptionRefs.current[index] = el; }}
+                      tabIndex={isActive ? 0 : -1}
+                      onKeyDown={(event) => handleOptionKeyDown(event, index)}
                       onClick={() => { onCopilotAutoTierChange(value); setOpen(false); }}
                       className={cn(
                         "flex w-full items-center justify-between gap-3 rounded-lg px-2.5 py-2 text-left font-sans text-[12px] leading-none outline-none transition-colors duration-150",
