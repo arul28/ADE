@@ -9085,6 +9085,24 @@ const VALID_CODEX_SANDBOXES = new Set(["read-only", "workspace-write", "danger-f
 const VALID_CODEX_CONFIG_SOURCES = new Set(["flags", "config-toml"]);
 const VALID_OPENCODE_PERMISSION_MODES = new Set(["plan", "edit", "full-auto", "config-toml"]);
 const VALID_DROID_PERMISSION_MODES = new Set<string>(AGENT_CHAT_DROID_PERMISSION_MODE_VALUES);
+/** The approval card's question: say what Copilot wants to do, not just that it wants something. */
+function copilotPermissionQuestion(kind: string, request: Record<string, unknown>, commandText: string | null): string {
+  const text = (value: unknown): string | null => (typeof value === "string" && value.trim() ? value.trim() : null);
+  const target = text(request.fileName) ?? text(request.path);
+  switch (kind) {
+    case "shell": return commandText ? `Allow Copilot to run:\n${commandText}` : "Allow Copilot to run a shell command?";
+    case "write": return target ? `Allow Copilot to edit ${target}?` : "Allow Copilot to edit a file?";
+    case "read": return target ? `Allow Copilot to read ${target}?` : "Allow Copilot to read a file?";
+    case "url": return text(request.url) ? `Allow Copilot to fetch ${text(request.url)}?` : "Allow Copilot to fetch a URL?";
+    case "mcp": {
+      const tool = text(request.toolTitle) ?? text(request.toolName);
+      const server = text(request.serverName);
+      return tool ? `Allow Copilot to call ${server ? `${server} → ` : ""}${tool}?` : "Allow Copilot to call an MCP tool?";
+    }
+    default: return "Allow this Copilot action?";
+  }
+}
+
 const VALID_COPILOT_PERMISSION_MODES = new Set(["plan", "ask", "assisted", "auto-edit", "full-auto"]);
 
 function normalizePersistedEnum<T extends string>(value: unknown, validSet: Set<string>): T | undefined {
@@ -54788,7 +54806,7 @@ export function createAgentChatService(args: {
           eventDetail: { copilotSdk: true, request },
           questions: [{
             id: "copilot-permission",
-            question: kind === "exit_plan_mode" ? "Approve this plan and let Copilot continue?" : "Allow this Copilot action?",
+            question: kind === "exit_plan_mode" ? "Approve this plan and let Copilot continue?" : copilotPermissionQuestion(kind, request, commandText),
             options: [
               { label: "Allow once", value: "approve-once" },
               { label: "Allow for this session", value: "approve-for-session" },
@@ -54932,6 +54950,8 @@ export function createAgentChatService(args: {
     emitPreparedUserMessage(managed, {
       text: userText, displayText, attachments: args.attachments,
       contextAttachments: args.contextAttachments, metadata: args.metadata, turnId,
+      // Rewind finds a turn by this id (rewindFiles maps it to Copilot's rewind point).
+      messageId: randomUUID(),
       laneDirectiveKey: args.laneDirectiveKey, onDispatched: args.onDispatched,
     });
     emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });

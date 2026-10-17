@@ -15402,7 +15402,7 @@ export function AgentChatPane({
   const listInsertDraft = useLatestCallback(insertComposerDraft);
   const listEditUnprocessedMessage = useLatestCallback(handleEditUnprocessedMessage);
   const listRewindFiles = useLatestCallback(
-    selectedSession?.provider === "claude" || selectedSession?.provider === "codex" ? rewindFilesFromMessage : undefined,
+    selectedSession?.provider === "claude" || selectedSession?.provider === "codex" || selectedSession?.provider === "copilot" ? rewindFilesFromMessage : undefined,
   );
   const listStopSubagent = useLatestCallback(
     !subagentView
