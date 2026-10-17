@@ -3558,7 +3558,9 @@ A spawn emits an inline `subagent_started` / `subagent_result` card pair
 anchored in the transcript, so the `subagent_spawned` notice sets
 `hasInlineCard: true` and the renderer suppresses the redundant deep-link pill
 (the card is the surface). The completion report is chosen by `spawnKind`,
-independent of whether an inline card was emitted.
+independent of whether an inline card was emitted. When a spawned chat starts a
+later turn, its parent card reopens as running and the new turn gets its own
+summary.
 
 Stopped subagent cards preserve the host-provided stop source and plain-language
 cause: only a user stop says **Stopped — interrupted**; a system, foreign-brain,

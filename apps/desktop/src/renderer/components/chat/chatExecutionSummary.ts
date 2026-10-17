@@ -34,6 +34,8 @@ export type ChatSubagentSnapshot = {
   status: "running" | "completed" | "failed" | "stopped";
   turnId?: string;
   startedAt: string;
+  /** Current run's clock for elapsed labels; null when a legacy row resumed without a start event. */
+  elapsedStartAt?: string | null;
   updatedAt: string;
   summary: string | null;
   finalSummary?: string | null;
@@ -229,7 +231,9 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
       const taskId = mergeSubagentTaskId(existing?.taskId, event.taskId, true);
       const agentId = event.agentId ?? existing?.agentId;
       const spawnKind = event.spawnKind ?? existing?.spawnKind;
-      const workflowProgress = workflowProgressForSnapshot(event, existing);
+      // A settled spawned child that starts again is a new run of the same row.
+      const resumed = event.resumed === true;
+      const workflowProgress = workflowProgressForSnapshot(event, resumed ? undefined : existing);
       snapshots.set(key, {
         taskId,
         childSessionId: mergeSubagentChildSessionId({ existing, taskId, agentId, spawnKind }),
@@ -243,21 +247,24 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
         description: event.description.trim() || existing?.description || "Subagent task",
         status: "running",
         turnId: event.turnId ?? existing?.turnId,
-        startedAt: existing?.startedAt ?? envelope.timestamp,
+        startedAt: resumed ? envelope.timestamp : existing?.startedAt ?? envelope.timestamp,
+        elapsedStartAt: resumed
+          ? envelope.timestamp
+          : existing?.elapsedStartAt ?? existing?.startedAt ?? envelope.timestamp,
         updatedAt: envelope.timestamp,
-        summary: existing?.summary ?? null,
-        finalSummary: existing?.finalSummary ?? null,
-        lastToolName: existing?.lastToolName,
+        summary: resumed ? null : existing?.summary ?? null,
+        finalSummary: resumed ? null : existing?.finalSummary ?? null,
+        lastToolName: resumed ? undefined : existing?.lastToolName,
         background: event.background ?? existing?.background ?? false,
         taskType: event.taskType ?? existing?.taskType,
         // Only the underscore event carries spawnKind; the dot twin does not, so
         // fall back to the existing snapshot to survive the twin's overwrite.
         spawnKind,
-        workflowName: event.workflowName ?? existing?.workflowName,
+        workflowName: resumed ? event.workflowName : event.workflowName ?? existing?.workflowName,
         ...(workflowProgress ? { workflowProgress } : {}),
         spawnDepth: event.spawnDepth ?? existing?.spawnDepth,
-        resourceLinks: event.resourceLinks?.length ? event.resourceLinks : existing?.resourceLinks,
-        usage: existing?.usage,
+        resourceLinks: event.resourceLinks?.length ? event.resourceLinks : resumed ? undefined : existing?.resourceLinks,
+        usage: resumed ? undefined : existing?.usage,
       });
       continue;
     }
@@ -287,6 +294,7 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
         status: "running",
         turnId: event.turnId ?? existing?.turnId,
         startedAt: existing?.startedAt ?? envelope.timestamp,
+        elapsedStartAt: existing?.elapsedStartAt ?? existing?.startedAt ?? envelope.timestamp,
         updatedAt: envelope.timestamp,
         summary: event.summary?.trim() || existing?.summary || null,
         finalSummary: existing?.finalSummary ?? null,
@@ -323,6 +331,7 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
         status: event.status,
         turnId: event.turnId ?? existing?.turnId,
         startedAt: existing?.startedAt ?? envelope.timestamp,
+        elapsedStartAt: existing?.elapsedStartAt ?? existing?.startedAt ?? envelope.timestamp,
         updatedAt: envelope.timestamp,
         summary: event.summary?.trim() || existing?.summary || null,
         finalSummary: event.finalSummary?.trim() || event.summary?.trim() || existing?.finalSummary || null,

@@ -5,7 +5,12 @@ import type * as React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEventEnvelope, OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
 import { SUBAGENT_CAPABILITIES } from "../../../shared/subagentCapabilities";
-import type { ChatScheduledWorkSnapshot, ChatSubagentSnapshot } from "./chatExecutionSummary";
+import {
+  deriveChatSubagentSnapshots,
+  type ChatScheduledWorkSnapshot,
+  type ChatSubagentSnapshot,
+} from "./chatExecutionSummary";
+import { selfHealSubagentSnapshots } from "./chatPaneSelfHeal";
 import { ChatSubagentsPanel, type SubagentSelection } from "./ChatSubagentsPanel";
 import { deriveChatWorkflowRuns } from "./ChatWorkflowActiveCard";
 
@@ -1144,15 +1149,65 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     const sessionId = "pane-persistence";
     window.localStorage.removeItem(`ade.chat.paneUi.v1:${sessionId}`);
     window.localStorage.removeItem(`ade.chat.paneCleared.v1:${sessionId}`);
-    const completed = ["done-1", "done-2"].map((taskId): ChatSubagentSnapshot => ({
-      ...baseSnapshot,
-      taskId,
-      description: taskId,
+    const oldWorkflowProgress = {
+      phases: [],
+      agents: [],
+      queuedCount: 0,
+      runningCount: 1,
+      doneCount: 0,
+      failedCount: 0,
+    };
+    const childEvents: AgentChatEventEnvelope[] = [
+      {
+        sessionId,
+        timestamp: "2026-10-01T12:00:10.000Z",
+        event: {
+          type: "subagent_progress",
+          taskId: "chat:child-1",
+          agentId: "child-1",
+          description: "Spawned chat",
+          summary: "Working on the first turn",
+          lastToolName: "rg",
+          workflowName: "CodeReview",
+          workflowProgress: oldWorkflowProgress,
+          resourceLinks: [{ path: "src/old-turn.ts" }],
+        },
+      },
+      {
+        sessionId,
+        timestamp: "2026-10-01T12:00:30.000Z",
+        event: {
+          type: "subagent_result",
+          taskId: "chat:child-1",
+          agentId: "child-1",
+          status: "completed",
+          summary: "Finished the first turn",
+          finalSummary: "Finished the first turn",
+          usage: { durationMs: 30_000, totalTokens: 1_200 },
+        },
+      },
+    ];
+    const [completedChild] = deriveChatSubagentSnapshots(childEvents);
+    expect(completedChild).toMatchObject({
       status: "completed",
-      background: false,
-    }));
+      summary: "Finished the first turn",
+      lastToolName: "rg",
+      resourceLinks: [{ path: "src/old-turn.ts" }],
+      workflowProgress: oldWorkflowProgress,
+      usage: { durationMs: 30_000, totalTokens: 1_200 },
+    });
+    const completed: ChatSubagentSnapshot[] = [
+      completedChild!,
+      {
+        ...baseSnapshot,
+        taskId: "done-2",
+        description: "done-2",
+        status: "completed",
+        background: false,
+      },
+    ];
 
-    render(
+    const { rerender } = render(
       <ChatSubagentsPanel
         sessionId={sessionId}
         snapshots={completed}
@@ -1168,12 +1223,68 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Clear" }));
     expect(screen.getByText("Subagents · all clear")).toBeTruthy();
     expect(JSON.parse(window.localStorage.getItem(`ade.chat.paneCleared.v1:${sessionId}`) ?? "null")).toEqual({
-      subagents: ["done-1", "done-2"],
+      subagents: ["chat:child-1", "done-2"],
       background: [],
       schedule: [],
     });
-    fireEvent.click(screen.getAllByRole("button", { name: "Restore (2)" })[0]);
-    expect(screen.getByRole("button", { name: "Completed (2)" })).toBeTruthy();
+
+    const [legacyChild] = selfHealSubagentSnapshots([completedChild!], {
+      childChatStatuses: new Map([["child-1", "active" as const]]),
+    });
+    expect(legacyChild).toMatchObject({
+      status: "running",
+      elapsedStartAt: null,
+      summary: null,
+      finalSummary: null,
+    });
+    expect(legacyChild?.usage).toBeUndefined();
+    expect(legacyChild?.lastToolName).toBeUndefined();
+    expect(legacyChild?.workflowName).toBeUndefined();
+    expect(legacyChild?.resourceLinks).toBeUndefined();
+    expect(legacyChild?.workflowProgress).toBeUndefined();
+
+    rerender(
+      <ChatSubagentsPanel
+        sessionId={sessionId}
+        snapshots={[legacyChild!, completed[1]!]}
+        events={[]}
+        variant="pane"
+        runtimeAlive={false}
+        childChatStatuses={new Map([["child-1", "active" as const]])}
+      />,
+    );
+    expect(screen.getByText("running")).toBeTruthy();
+    expect(screen.queryByText("Subagents · all clear")).toBeNull();
+
+    const resumedEvents: AgentChatEventEnvelope[] = [
+      ...childEvents,
+      {
+        sessionId,
+        timestamp: "2026-10-01T12:01:00.000Z",
+        event: {
+          type: "subagent_started",
+          taskId: "chat:child-1",
+          agentId: "child-1",
+          description: "Spawned chat",
+          spawnKind: "subagent",
+          resumed: true,
+        },
+      },
+    ];
+    const [resumedChild] = deriveChatSubagentSnapshots(resumedEvents);
+    expect(resumedChild).toMatchObject({
+      status: "running",
+      startedAt: "2026-10-01T12:01:00.000Z",
+      summary: null,
+      finalSummary: null,
+    });
+    expect(resumedChild?.usage).toBeUndefined();
+    expect(resumedChild?.lastToolName).toBeUndefined();
+    expect(resumedChild?.workflowName).toBeUndefined();
+    expect(resumedChild?.resourceLinks).toBeUndefined();
+    expect(resumedChild?.workflowProgress).toBeUndefined();
+    fireEvent.click(screen.getByRole("button", { name: "Restore (1)" }));
+    expect(screen.getByRole("button", { name: "Completed (1)" })).toBeTruthy();
   });
 
   // A spawned ADE child chat row navigates to that chat instead of taking over

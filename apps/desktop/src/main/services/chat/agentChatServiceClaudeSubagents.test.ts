@@ -674,6 +674,18 @@ describe("createAgentChatService", () => {
             : undefined
         )).size).toBe(2);
       });
+
+      const childStarts = events.filter((event) =>
+        event.sessionId === parent.id
+        && event.event.type === "subagent_started"
+        && event.event.taskId === `chat:${child.id}`
+      );
+      expect(childStarts).toHaveLength(2);
+      expect((childStarts[0]!.event as any).resumed).not.toBe(true);
+      expect(childStarts[1]!.event).toMatchObject({
+        taskId: `chat:${child.id}`,
+        resumed: true,
+      });
     });
 
     it("reports a child completion into the CTO thread as one line, never a transcript dump", async () => {

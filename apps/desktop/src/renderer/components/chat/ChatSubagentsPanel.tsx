@@ -480,7 +480,11 @@ const STATUS_LABEL: Record<ChatSubagentSnapshot["status"], string> = {
 // Elapsed-time chip for the right rail — duration only (no tool/token noise),
 // so the compact row stays scannable.
 function elapsedText(snapshot: ChatSubagentSnapshot, nowMs?: number): string | null {
-  const startedAt = Date.parse(snapshot.startedAt);
+  const elapsedStartAt = snapshot.elapsedStartAt === null
+    ? null
+    : snapshot.elapsedStartAt ?? snapshot.startedAt;
+  if (snapshot.status === "running" && !elapsedStartAt) return null;
+  const startedAt = Date.parse(elapsedStartAt ?? "");
   const updatedAt = Date.parse(snapshot.updatedAt);
   const liveElapsedMs = snapshot.status === "running" && Number.isFinite(startedAt) && typeof nowMs === "number"
     ? Math.max(0, nowMs - startedAt)
@@ -1420,7 +1424,8 @@ export function ChatSubagentsPanel({
   const subagentGroups = useMemo(() => {
     const grouped = groupPaneSectionItems(subagents, {
       isEarlier: isEarlierSubagentSnapshot,
-      isCleared: (snapshot) => clearedSubagentIds.has(snapshot.taskId),
+      // Clear hides finished rows; a row that is running again comes back.
+      isCleared: (snapshot) => snapshot.status !== "running" && clearedSubagentIds.has(snapshot.taskId),
       isPinned: (snapshot) =>
         pinnedSubagentIds.has(snapshot.taskId) || pinnedSubagentIds.has(subagentIdentity(snapshot)),
     });

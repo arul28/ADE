@@ -21757,7 +21757,23 @@ export function createAgentChatService(args: {
       const since = event.usage?.lastRequestStartedAt;
       if (ttl) managed.session.promptCache = { ttl, ...(since ? { since } : {}) };
     }
-    if (event.type === "status" && event.turnStatus === "started") warmIdleCompaction.clear(managed.session.id);
+    if (event.type === "status" && event.turnStatus === "started") {
+      warmIdleCompaction.clear(managed.session.id);
+      try {
+        notifyParentOfChildTurnStart(managed);
+      } catch (error) {
+        // Parent-side card chrome; never fail the child's turn over it.
+        logger.warn("agent_chat.child_turn_start_notify_failed", {
+          sessionId: managed.session.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    } else if (event.type === "done") {
+      freshSpawnCards.delete(managed.session.id);
+      startedSpawnedChildTurns.delete(managed.session.id);
+    } else if (event.type === "status") {
+      startedSpawnedChildTurns.delete(managed.session.id);
+    }
     const normalizedEvent = (() => {
       switch (event.type) {
         case "text":
@@ -44174,6 +44190,52 @@ export function createAgentChatService(args: {
       provider: child.session.provider,
       model: child.session.model,
       reasoningEffort: child.session.reasoningEffort,
+    });
+    freshSpawnCards.add(child.session.id);
+  };
+
+  /**
+   * Children whose parent card was just opened by the spawn itself, so their
+   * first turn start must not reopen it again. In memory on purpose: after a
+   * restart the card is settled (or a reopen of a running one is harmless).
+   */
+  const freshSpawnCards = new Set<string>();
+  const startedSpawnedChildTurns = new Set<string>();
+
+  /**
+   * A spawned chat that starts another turn after its card settled (the parent
+   * sent it more work, or the user typed into it) reopens that card, the same
+   * way a resumed CLI child does. Without this the parent's Subagents section
+   * shows the child as done for every turn after its first.
+   */
+  const notifyParentOfChildTurnStart = (child: ManagedChatSession): void => {
+    const childSessionId = child.session.id;
+    if (freshSpawnCards.delete(childSessionId)) {
+      startedSpawnedChildTurns.add(childSessionId);
+      return;
+    }
+    const parentSessionId = child.session.orchestrationParentSessionId?.trim();
+    if (!parentSessionId || parentSessionId === childSessionId) return;
+    const spawnKind = child.session.spawnKind;
+    if (spawnKind !== "subagent" && spawnKind !== "peer") return;
+    // Provider start events can be repeated or omit the turn id, so use the
+    // child's start/end lifecycle to emit exactly once for each run.
+    if (startedSpawnedChildTurns.has(childSessionId)) return;
+    startedSpawnedChildTurns.add(childSessionId);
+    // A parent on another machine or project has no card here to reopen.
+    const parent = resolveLiveOrPersistedParent(parentSessionId);
+    // The CTO thread gets no result cards (one report line per child turn),
+    // so a reopened card there would never settle.
+    if (!parent || parent.session.identityKey === "cto") return;
+    emitSpawnIntoParent(parent, {
+      sessionId: childSessionId,
+      laneId: child.session.laneId ?? null,
+      label: sessionService.get(childSessionId)?.title?.trim() || defaultChatSessionTitle(child.session.provider),
+      spawnKind,
+      provider: child.session.provider,
+      model: child.session.model,
+      reasoningEffort: child.session.reasoningEffort,
+      resumed: true,
     });
   };
 
