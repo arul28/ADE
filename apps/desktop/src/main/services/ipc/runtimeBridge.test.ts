@@ -1327,6 +1327,139 @@ describe("registerRuntimeBridge", () => {
       expect(pool.streamEventsForRoot).not.toHaveBeenCalled();
     });
 
+    // The runtime can replace its event buffer while the connection stays up. It
+    // drops the old subscription without telling the client, so an anchor must not
+    // answer that subscription's head: the pump would read the new buffer from a
+    // position that belongs to the old one.
+    it("re-anchors on the new buffer's head after the runtime replaces its buffer on a live connection", async () => {
+      remoteRegistryGetMock.mockReturnValue(target);
+      const subscriptions: Array<{
+        onEvent: (event: unknown, eventEpoch?: string | null) => void;
+        cleanup: ReturnType<typeof vi.fn>;
+      }> = [];
+      remoteSubscribeEventsForTargetMock.mockImplementation(
+        async (
+          _target: unknown,
+          _projectId: string,
+          _request: unknown,
+          onEvent: (event: unknown, eventEpoch?: string | null) => void,
+          _onEnded: unknown,
+          onSubscribed?: (result: Record<string, unknown>) => void,
+        ) => {
+          const restarted = subscriptions.length > 0;
+          const cleanup = vi.fn();
+          subscriptions.push({ onEvent, cleanup });
+          onSubscribed?.({
+            events: [],
+            nextCursor: restarted ? 2 : 7,
+            hasMore: false,
+            eventEpoch: restarted ? "epoch-remote-2" : "epoch-remote-1",
+          });
+          return cleanup;
+        },
+      );
+      remoteStreamEventsForTargetMock.mockResolvedValue({
+        events: [],
+        nextCursor: 2,
+        hasMore: false,
+        eventEpoch: "epoch-remote-2",
+      });
+      const { pool } = recordingLocalRuntimePool();
+      registerWithPool(pool);
+      const streamRemote = ipcHandlers.get(IPC.remoteRuntimeStreamEvents)!;
+      const active = destroyableSender(221);
+      const call = (request: Record<string, unknown>) =>
+        streamRemote(eventForSender(active.webContents), {
+          id: target.id,
+          projectId: "project-1",
+          request,
+        });
+
+      await expect(call({ cursor: 0, limit: 200, replay: false })).resolves.toEqual({
+        events: [],
+        nextCursor: 7,
+        hasMore: false,
+        eventEpoch: "epoch-remote-1",
+      });
+      // The pump's next poll reads the restarted buffer, and its batch names the new epoch.
+      await expect(call({ cursor: 7, limit: 200 })).resolves.toMatchObject({
+        eventEpoch: "epoch-remote-2",
+      });
+      expect(subscriptions[0].cleanup).toHaveBeenCalledTimes(1);
+      expect(remoteSubscribeEventsForTargetMock).toHaveBeenCalledTimes(1);
+
+      // The re-anchor opens against the new buffer and answers that buffer's head.
+      await expect(call({ cursor: 0, limit: 200, replay: false })).resolves.toEqual({
+        events: [],
+        nextCursor: 2,
+        hasMore: false,
+        eventEpoch: "epoch-remote-2",
+      });
+      expect(remoteSubscribeEventsForTargetMock).toHaveBeenCalledTimes(2);
+
+      // What the restarted runtime emits reaches the renderer; the replaced
+      // subscription is silent.
+      subscriptions[1].onEvent(runtimeEventNamed(3), "epoch-remote-2");
+      subscriptions[0].onEvent(runtimeEventNamed(8), "epoch-remote-1");
+      expect(active.webContents.send).toHaveBeenCalledTimes(1);
+      expect(active.webContents.send.mock.calls[0][1]).toMatchObject({
+        event: { id: 3 },
+        eventEpoch: "epoch-remote-2",
+      });
+    });
+
+    it("opens a poll's replay at the position its batch reached, never at a cursor from the replaced buffer", async () => {
+      remoteRegistryGetMock.mockReturnValue(target);
+      const subscribeRequests: Array<Record<string, unknown>> = [];
+      const cleanup = vi.fn();
+      remoteSubscribeEventsForTargetMock.mockImplementation(
+        async (
+          _target: unknown,
+          _projectId: string,
+          request: Record<string, unknown>,
+          _onEvent: unknown,
+          _onEnded: unknown,
+          onSubscribed?: (result: Record<string, unknown>) => void,
+        ) => {
+          subscribeRequests.push(request);
+          onSubscribed?.({ events: [], nextCursor: 7, hasMore: false, eventEpoch: "epoch-remote-1" });
+          return cleanup;
+        },
+      );
+      remoteStreamEventsForTargetMock.mockResolvedValue({
+        events: [],
+        nextCursor: 2,
+        hasMore: false,
+        eventEpoch: "epoch-remote-2",
+      });
+      const { pool } = recordingLocalRuntimePool();
+      registerWithPool(pool);
+      const streamRemote = ipcHandlers.get(IPC.remoteRuntimeStreamEvents)!;
+      const active = destroyableSender(222);
+      const call = (request: Record<string, unknown>) =>
+        streamRemote(eventForSender(active.webContents), {
+          id: target.id,
+          projectId: "project-1",
+          request,
+        });
+      const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+      await call({ cursor: 0, limit: 200, replay: false });
+      // The active pump's poll finds the buffer replaced: it ends the old
+      // subscription and opens nothing, because the pump is about to re-anchor.
+      await call({ cursor: 7, limit: 200 });
+      await settle();
+      expect(cleanup).toHaveBeenCalledTimes(1);
+      expect(subscribeRequests).toHaveLength(1);
+
+      // A pinned pump on the same binding polls with its own cursor from the old
+      // buffer. Its replay starts where the new buffer's batch ended, not at 7.
+      await call({ cursor: 7, limit: 200, category: "pty" });
+      await settle();
+      expect(subscribeRequests).toHaveLength(2);
+      expect(subscribeRequests[1]).toMatchObject({ cursor: 2, category: "pty" });
+    });
+
     it("stops the idle sweeper when an ended subscription empties the registry", async () => {
       const previous = process.env.ADE_DISABLE_REMOTE_AUTOCONNECT;
       process.env.ADE_DISABLE_REMOTE_AUTOCONNECT = "1";

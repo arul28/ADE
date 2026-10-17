@@ -851,6 +851,28 @@ export function registerRuntimeBridge({
     return { nextCursor: head.nextCursor, hasMore: false, eventEpoch: head.eventEpoch };
   };
 
+  // A runtime that answers with another epoch has replaced the buffer its
+  // subscriptions read. It drops those subscriptions with the old buffer and does
+  // not tell the client, so they would never deliver again, and an anchor would
+  // keep answering their stale head. End them the way an ended stream ends, which
+  // also releases the page's file watches, so the next anchor opens against the
+  // buffer that is current. Returns how many were ended.
+  const retireStaleRuntimeEventSubscriptions = (
+    sender: WebContents,
+    bindingKey: string,
+    fileWatchRuntimeKey: string,
+    eventEpoch: string | null,
+  ): number => {
+    if (!eventEpoch) return 0;
+    const retired = cleanupRuntimeEventSubscriptions(sender.id, (subscription) => {
+      if (subscription.bindingKey !== bindingKey) return false;
+      const headEpoch = runtimeEventHeads.get(subscription)?.eventEpoch;
+      return headEpoch != null && headEpoch !== eventEpoch;
+    });
+    if (retired > 0) notePageRuntimeDisconnected(sender.id, fileWatchRuntimeKey);
+    return retired;
+  };
+
   const ensureRuntimeEventSubscription = async (
     sender: WebContents,
     bindingKey: string,
@@ -1812,24 +1834,22 @@ export function registerRuntimeBridge({
       const request = normalizeRuntimeStreamEventsRequest(arg?.request);
       const bindingKey = remoteProjectBindingKey(target.id, projectId);
       const requestKey = runtimeEventRequestKey(bindingKey, request);
-      const subscribe = (
-        onEvent: (event: RemoteRuntimeBufferedEvent, eventEpoch?: string | null) => void,
-        onEnded: () => void,
-        onSubscribed?: (result: RuntimeEventSubscriptionInit) => void,
-      ) =>
-        remoteConnectionService.subscribeEvents(
-          target.id,
-          projectId,
-          {
-            cursor: request.cursor,
-            limit: request.limit,
-            category: request.category,
-            replay: request.replay,
-          },
-          onEvent,
-          onEnded,
-          onSubscribed,
-        );
+      const subscribeFrom = (from: RemoteRuntimeStreamEventsRequest): RuntimeEventSubscribe =>
+        (onEvent, onEnded, onSubscribed) =>
+          remoteConnectionService.subscribeEvents(
+            target.id,
+            projectId,
+            {
+              cursor: from.cursor,
+              limit: from.limit,
+              category: from.category,
+              replay: from.replay,
+            },
+            onEvent,
+            onEnded,
+            onSubscribed,
+          );
+      const subscribe = subscribeFrom(request);
       if (request.replay === false) {
         const subscriptionInit = await ensureRuntimeEventSubscription(
           event.sender,
@@ -1851,18 +1871,35 @@ export function registerRuntimeBridge({
       const result = withRendererVisibleEvents(
         await remoteConnectionService.streamEvents(target.id, projectId, request),
       );
+      const fileWatchRuntimeKey = remoteFileWatchRuntimeKey(target.id, projectId);
+      // A poll that finds the buffer replaced ends the stale subscriptions and
+      // opens nothing. The pump sees the new epoch and anchors on the new buffer.
+      const retired = retireStaleRuntimeEventSubscriptions(
+        event.sender,
+        bindingKey,
+        fileWatchRuntimeKey,
+        result.eventEpoch ?? null,
+      );
       // A pump that started live already has a push stream for this binding and
       // category. A second, replaying one would send every event over the wire
       // twice (and through the paid relay when that is the route), so a caught-up
       // poll only keeps the live one alive.
       const liveRequestKey = runtimeEventRequestKey(bindingKey, { ...request, replay: false });
-      if (refreshRuntimeEventSubscription(event.sender.id, liveRequestKey)) return result;
+      const live = refreshRuntimeEventSubscription(event.sender.id, liveRequestKey);
+      if (live || retired > 0 || result.hasMore) return result;
+      // A replay opens from where this batch ended, in the epoch the batch came
+      // from: the request's cursor may name a position in an older buffer. A reply
+      // with no epoch cannot place its position, so it keeps the request's cursor.
+      // A capped batch waits for the next poll, which opens it once caught up.
       void ensureRuntimeEventSubscription(
         event.sender,
         bindingKey,
         requestKey,
-        subscribe,
-        remoteFileWatchRuntimeKey(target.id, projectId),
+        subscribeFrom({
+          ...request,
+          cursor: result.eventEpoch ? result.nextCursor : request.cursor,
+        }),
+        fileWatchRuntimeKey,
         false,
       ).catch(() => {});
       return result;
