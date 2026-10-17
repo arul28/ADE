@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { spawnSync, type SpawnSyncOptions } from "node:child_process";
 import { resolveTrustedWindowsTool } from "../lib/trustedWindowsTools";
-import { resolveMachineAdeLayout } from "../services/projects/machineLayout";
+import { resolveMachineAdeDir, resolveMachineAdeLayout } from "../services/projects/machineLayout";
 import { requestAdeRuntimeShutdown } from "./runtimeShutdownRequest";
 import { buildPackagedRuntimeNodeModulePaths } from "../../../desktop/src/main/services/runtime/packagedNodePath";
 
@@ -379,6 +379,23 @@ export function packagedCliNodeModulePaths(
   return paths.some((candidate) => exists(path.dirname(candidate))) ? paths : [];
 }
 
+/**
+ * Node's compile cache for the brain. The brain is one ~19 MB bundle that Node
+ * would otherwise parse on every start. The `ade` wrappers already set the same
+ * cache for the CLI, but the service manager starts the brain directly, so it
+ * needs its own setting. The setting goes in the environment because Node
+ * compiles the bundle before any of its code runs, so nothing inside it can
+ * reach the entry file. Node writes the cache when the brain exits gracefully,
+ * not when it is killed, and it ignores a directory it cannot use.
+ */
+function runtimeCompileCacheEnv(env: Record<string, string>): Record<string, string> {
+  // Node disables the cache when this variable is set at all, even to an empty value.
+  if (process.env.NODE_DISABLE_COMPILE_CACHE !== undefined) return {};
+  const explicit = process.env.NODE_COMPILE_CACHE?.trim();
+  if (explicit) return { NODE_COMPILE_CACHE: explicit };
+  return { NODE_COMPILE_CACHE: path.join(resolveMachineAdeDir(env), "cache", "node-compile") };
+}
+
 function runtimeEnvironment(entry?: string): Record<string, string> | undefined {
   const env: Record<string, string> = {};
   if (process.versions.electron) {
@@ -390,6 +407,7 @@ function runtimeEnvironment(entry?: string): Record<string, string> | undefined 
       env[key] = value;
     }
   }
+  Object.assign(env, runtimeCompileCacheEnv(env));
   // A service started from a process without NODE_PATH (the desktop, a
   // Windows task) still has to load the packaged CLI's externals.
   const packagedPaths = entry ? packagedCliNodeModulePaths(entry) : [];

@@ -76,12 +76,21 @@ const originalAdeRuntimeRoot = process.env.ADE_RUNTIME_ROOT;
 const originalAdeRuntimeNodeModules = process.env.ADE_RUNTIME_NODE_MODULES;
 const originalAdeDefaultRole = process.env.ADE_DEFAULT_ROLE;
 const originalAllowSelfMutation = process.env.ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION;
+const originalAdeHome = process.env.ADE_HOME;
+const originalNodeCompileCache = process.env.NODE_COMPILE_CACHE;
+const originalNodeDisableCompileCache = process.env.NODE_DISABLE_COMPILE_CACHE;
 const tempDirs: string[] = [];
 
 afterEach(() => {
   process.argv.splice(0, process.argv.length, ...originalArgv);
   if (originalNodePath === undefined) delete process.env.NODE_PATH;
   else process.env.NODE_PATH = originalNodePath;
+  if (originalAdeHome === undefined) delete process.env.ADE_HOME;
+  else process.env.ADE_HOME = originalAdeHome;
+  if (originalNodeCompileCache === undefined) delete process.env.NODE_COMPILE_CACHE;
+  else process.env.NODE_COMPILE_CACHE = originalNodeCompileCache;
+  if (originalNodeDisableCompileCache === undefined) delete process.env.NODE_DISABLE_COMPILE_CACHE;
+  else process.env.NODE_DISABLE_COMPILE_CACHE = originalNodeDisableCompileCache;
   if (originalAdeRuntimeRoot === undefined) delete process.env.ADE_RUNTIME_ROOT;
   else process.env.ADE_RUNTIME_ROOT = originalAdeRuntimeRoot;
   if (originalAdeRuntimeNodeModules === undefined) delete process.env.ADE_RUNTIME_NODE_MODULES;
@@ -185,6 +194,21 @@ describe("resolveAdeServeCommand", () => {
         ADE_RUNTIME_NODE_MODULES: "/opt/ade/runtime/node_modules",
       },
     });
+  });
+
+  it("gives the brain the compile cache under its ADE home, unless the caller disabled it", () => {
+    const adeHome = makeTempHome("ade-service-compile-cache-");
+    process.argv[1] = path.resolve("definitely-not-real-cli.cjs");
+    process.env.ADE_HOME = adeHome;
+    delete process.env.NODE_COMPILE_CACHE;
+    delete process.env.NODE_DISABLE_COMPILE_CACHE;
+
+    expect(resolveAdeServeCommand().env).toMatchObject({
+      NODE_COMPILE_CACHE: path.join(adeHome, "cache", "node-compile"),
+    });
+
+    process.env.NODE_DISABLE_COMPILE_CACHE = "";
+    expect(resolveAdeServeCommand().env?.NODE_COMPILE_CACHE).toBeUndefined();
   });
 
   it("preserves ADE_DEFAULT_ROLE for launch-managed runtime services", () => {
