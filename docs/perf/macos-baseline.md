@@ -200,8 +200,9 @@ node scripts/dev-detached.mjs /tmp/ade-dev-<lane>.log \
 ```
 
 The UI scripts talk to the renderer over CDP port 9222 and pick the first
-`//localhost:` page. Set `CDP_TARGET_URL=localhost:<port>` to the port on
-the log's `dev launcher using` line when more than one window is open.
+`//localhost:` page, or the packaged app's `index.html` page when no dev page
+is open. Set `CDP_TARGET_URL=localhost:<port>` to the port on the log's
+`dev launcher using` line when more than one window is open.
 
 ### Gotchas that wreck numbers
 
@@ -221,7 +222,7 @@ the log's `dev launcher using` line when more than one window is open.
 
 ### Scripts
 
-UI, against a running dev app (`scripts/perf/ui/`):
+UI, against a running dev app (`scripts/perf/ui/`). The packaged app works too: the scripts that navigate use hash routes (`#/work`) automatically on its `file:` page, or with `--hash` / `CDP_HASH_ROUTES=1`, and `CDP_HASH_ROUTES=0` forces path routes:
 
 | Script | Measures |
 |---|---|

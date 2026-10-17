@@ -10,11 +10,15 @@
 //   pickers   the composer's model, effort and permission pickers: open each,
 //             and switch the model picker's provider rail (Work, a chat composer
 //             on screen). Each target closes its popover before the next.
+// --hash (or CDP_HASH_ROUTES=1) navigates the packaged app's hash routes; it is
+// automatic on a file: page. See target.mjs.
 // Round 1 is the cold visit; the summary reports it apart from the warm rounds.
-const [mode = "tabs", roundsArg] = process.argv.slice(2);
+import { findPage, navigateStatement, positionalArgs, useHashRoutes } from "./target.mjs";
+const [mode = "tabs", roundsArg] = positionalArgs();
 const rounds = Number(roundsArg ?? 4);
 const list = await (await fetch(`http://127.0.0.1:${process.env.CDP_PORT ?? 9222}/json/list`)).json();
-const page = list.find((x) => x.type === "page" && x.url.includes(process.env.CDP_TARGET_URL ?? "//localhost:"));
+const page = findPage(list);
+const hash = useHashRoutes(page);
 const ws = new WebSocket(page.webSocketDebuggerUrl); let id = 1; const pend = new Map();
 await new Promise((r) => (ws.onopen = r));
 ws.onmessage = (e) => {
@@ -85,7 +89,7 @@ await ev(`(() => {
 })()`);
 
 const measure = (actionSource) => ev(`window.__adeInteraction(() => { ${actionSource} })`);
-const navigate = (route) => `history.pushState({}, "", ${JSON.stringify(route)}); dispatchEvent(new PopStateEvent("popstate"));`;
+const navigate = (route) => navigateStatement(route, hash);
 
 let targets;
 if (mode === "tabs") {

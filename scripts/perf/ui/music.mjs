@@ -7,14 +7,14 @@
 // Plays the first five chart songs (30 s previews when signed out), or for
 // Spotify the first five songs of a search. Pair with
 // music-host.sh (host CPU and memory) and process-cpu.sh (main, GPU, renderer).
-// Env: CDP_PORT (default 9222), CDP_TARGET_URL substring (default "//localhost:").
+// Env: CDP_PORT (default 9222), CDP_TARGET_URL substring (default: the dev page "//localhost:", else the packaged index.html; see target.mjs).
+import { findPage } from "./target.mjs";
 const port = Number(process.env.CDP_PORT ?? 9222);
 const [cmd, arg] = process.argv.slice(2);
 
 const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
-const want = process.env.CDP_TARGET_URL ?? "//localhost:";
-const target = list.find((t) => t.type === "page" && t.url.includes(want));
-if (!target) throw new Error(`no renderer page matching ${want} on port ${port}`);
+const target = findPage(list);
+if (!target) throw new Error(`no renderer page on port ${port}`);
 const ws = new WebSocket(target.webSocketDebuggerUrl);
 await new Promise((resolve, reject) => { ws.onopen = resolve; ws.onerror = reject; });
 let id = 0;

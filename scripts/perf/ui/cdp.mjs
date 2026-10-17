@@ -7,8 +7,9 @@
 //   node cdp.mjs shot <out.png>
 //   node cdp.mjs gc                       -> JS heap before and after a forced GC
 //   node cdp.mjs anim
-// Env: CDP_PORT (default 9222), CDP_TARGET_URL substring (default "//localhost:", the dev renderer page), CDP_WS (direct ws url, e.g. node inspector)
+// Env: CDP_PORT (default 9222), CDP_TARGET_URL substring (default: the dev renderer page "//localhost:", else the packaged index.html; see target.mjs), CDP_WS (direct ws url, e.g. node inspector)
 import { writeFileSync } from "node:fs";
+import { findPage } from "./target.mjs";
 
 const port = Number(process.env.CDP_PORT ?? 9222);
 const [cmd, ...rest] = process.argv.slice(2);
@@ -16,8 +17,7 @@ const [cmd, ...rest] = process.argv.slice(2);
 async function targetWs() {
   if (process.env.CDP_WS) return process.env.CDP_WS;
   const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
-  const want = process.env.CDP_TARGET_URL ?? "//localhost:";
-  const t = list.find((x) => x.type === "page" && x.url.includes(want)) ?? list.find((x) => x.type === "node") ?? list[0];
+  const t = findPage(list) ?? list.find((x) => x.type === "node") ?? list[0];
   return t.webSocketDebuggerUrl;
 }
 

@@ -2,20 +2,23 @@
 // IPC timings need the dev app started with ADE_PERF_RUN_ID=<runId> (read from
 // ~/.ade/perf-runs/<runId>/events.jsonl); idle numbers should be taken without
 // it. See docs/perf/macos-baseline.md.
-// For each route: navigate via history API, then
+// For each route: navigate via history API (hash routes with --hash, or on the
+// packaged app's file: page; see target.mjs), then
 //   nav phase (0-4s): long tasks, IPC calls/time (from perf events.jsonl)
 //   idle phase (6s..6+idle): renderer metrics, IPC/min, animations, compositor draws
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-const [runId, routesArg, idleArg] = process.argv.slice(2);
+import { findPage, navigateStatement, positionalArgs, useHashRoutes } from "./target.mjs";
+const [runId, routesArg, idleArg] = positionalArgs();
 const routes = routesArg.split(",");
 const idleSecs = Number(idleArg ?? 12);
 const eventsPath = join(homedir(), ".ade", "perf-runs", runId, "events.jsonl");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const list = await (await fetch("http://127.0.0.1:9222/json/list")).json();
-const page = list.find((x) => x.type === "page" && x.url.includes(process.env.CDP_TARGET_URL ?? "//localhost:"));
+const page = findPage(list);
+const hash = useHashRoutes(page);
 const ws = new WebSocket(page.webSocketDebuggerUrl); let id = 1; const pend = new Map();
 await new Promise((r) => (ws.onopen = r));
 ws.onmessage = (e) => { const m = JSON.parse(String(e.data)); if (m.id && pend.has(m.id)) { pend.get(m.id)(m.result ?? {}); pend.delete(m.id); } };
@@ -41,7 +44,7 @@ const results = [];
 for (const route of routes) {
   const nav0 = Date.now();
   const perf0 = await ev("performance.now()");
-  await ev(`(() => { history.pushState({}, "", ${JSON.stringify(route)}); dispatchEvent(new PopStateEvent("popstate")); return 1 })()`);
+  await ev(`(() => { ${navigateStatement(route, hash)} return 1 })()`);
   await sleep(4000);
   const lt = await ev(`JSON.stringify(window.__lt.filter((e) => e.s >= ${perf0}))`);
   const longTasks = JSON.parse(lt);
