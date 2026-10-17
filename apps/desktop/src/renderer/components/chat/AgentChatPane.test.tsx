@@ -4009,6 +4009,69 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => expect(onOpenTerminalPane).toHaveBeenCalledTimes(3));
   });
 
+  it("does not reopen the pane when a later chat read omits a terminal that is still running", async () => {
+    const session = buildSession("session-1", { status: "idle" });
+    const running = buildChatTerminalSession(session.sessionId, "terminal-1", "pty-1", "Agent run");
+    const next = buildChatTerminalSession(session.sessionId, "terminal-2", "pty-2", "Next run");
+    const sessionsById = new Map([running, next].map((row) => [row.id, row] as const));
+    installAdeMocks({ sessions: [session], shellSessions: [] });
+    vi.mocked(window.ade.sessions.get).mockImplementation(async (id: string) => sessionsById.get(id) ?? null);
+    const events = installReplayingSessionEvents([]);
+    const onOpenTerminalPane = vi.fn();
+    const view = renderToolsPane(session, { terminalPaneOpen: true, onOpenTerminalPane });
+    const flush = () => act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    await screen.findByRole("textbox");
+    act(() => events.emit({ sessionId: running.id, reason: "created" }));
+    await waitFor(() => expect(onOpenTerminalPane).toHaveBeenCalledTimes(1));
+
+    // The chat lists the running terminal when the user closes the Tools pane.
+    vi.mocked(window.ade.sessions.list).mockResolvedValue([running]);
+    view.setTerminalPaneOpen(false);
+    await flush();
+    await flush();
+
+    // A later read is stale and omits it. The user reopens the pane, and the
+    // replay hands over the terminal's "created" again.
+    vi.mocked(window.ade.sessions.list).mockResolvedValue([]);
+    view.setTerminalPaneOpen(true);
+    await flush();
+    await flush();
+    act(() => events.emit({ sessionId: running.id, reason: "created" }));
+    await flush();
+    expect(onOpenTerminalPane).toHaveBeenCalledTimes(1);
+
+    // A genuinely new terminal still reveals the pane.
+    act(() => events.emit({ sessionId: next.id, reason: "created" }));
+    await waitFor(() => expect(onOpenTerminalPane).toHaveBeenCalledTimes(2));
+  });
+
+  it("does not reveal a chat terminal that already ended when its replayed created arrives", async () => {
+    // The build finished before the pane subscribed, and the chat's list does
+    // not show it. A replayed "created" must not reveal a finished terminal.
+    const session = buildSession("session-1", { status: "idle" });
+    const finished = {
+      ...buildChatTerminalSession(session.sessionId, "terminal-1", "pty-1", "Build"),
+      endedAt: "2026-03-24T06:10:00.000Z",
+      status: "completed" as const,
+      exitCode: 0,
+    };
+    installAdeMocks({ sessions: [session], shellSessions: [] });
+    vi.mocked(window.ade.sessions.get).mockResolvedValue(finished);
+    installReplayingSessionEvents([{ sessionId: finished.id, reason: "created" }]);
+    const onOpenTerminalPane = vi.fn();
+
+    renderToolsPane(session, { terminalPaneOpen: false, onOpenTerminalPane });
+
+    await waitFor(() => expect(vi.mocked(window.ade.sessions.get)).toHaveBeenCalled());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(onOpenTerminalPane).not.toHaveBeenCalled();
+  });
+
   it("shows a green session indicator while the agent is working", async () => {
     const session = buildSession("session-1");
     installAdeMocks({
