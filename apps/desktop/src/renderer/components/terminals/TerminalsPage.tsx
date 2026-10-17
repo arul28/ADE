@@ -113,6 +113,7 @@ import {
 } from "./workSidebarSplitter";
 import { useWorkLaneDeleteProgress } from "./useWorkLaneDeleteProgress";
 import { effectiveRuntimeBinding } from "../../lib/chatMachineRouting";
+import { foreignLaneKey } from "../../state/laneMachineRouting";
 import { buildPtyContinuationLaunchFields } from "./cliLaunch";
 import { canonicalInputFromSummary, sessionNeedsYou } from "../../lib/terminalAttention";
 import {
@@ -1174,8 +1175,12 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     if (selectedLaneId && sortedLanes.some((lane) => lane.id === selectedLaneId)) return selectedLaneId;
     return sortedLanes.find((lane) => lane.laneType === "primary")?.id ?? sortedLanes[0]?.id ?? null;
   }, [activeWorkSession?.laneId, selectedLaneId, sortedLanes, work.draftLaneId]);
+  // A chat on another machine is keyed by its machine, as its lane's delete was (see SessionListPane).
+  const activeLaneDeleteKey = activeLaneId && activeWorkSessionRuntimePin
+    ? foreignLaneKey(machineIdForBinding(activeWorkSessionRuntimePin), activeLaneId)
+    : activeLaneId;
   const activeLaneDeleteProgress = useAppStore((state) => (
-    activeLaneId ? state.laneDeleteProgressByLaneId[activeLaneId] ?? null : null
+    activeLaneDeleteKey ? state.laneDeleteProgressByLaneId[activeLaneDeleteKey] ?? null : null
   ));
 
   const draftContextTargetId = useMemo(() => (

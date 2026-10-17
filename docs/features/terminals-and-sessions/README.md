@@ -1428,8 +1428,13 @@ Renderer surfaces:
   appearance/stack refreshes, archive, the attached-lane adoption confirmation,
   and delete while preserving the Work route. Delete closes the dialog
   immediately and seeds optimistic shared delete progress before dispatching
-  the background lane teardown; an immediate dispatch failure clears only the
-  matching optimistic record and surfaces a sticky toast.
+  the background lane teardown. A lane on another machine is keyed
+  `machineId:laneId`, the key its session card and open chat read. It has no
+  progress feed on this tab, so its entry stays until the delete promise
+  resolves and that machine's re-read no longer lists the lane
+  (`waitForForeignLaneToLeave` in `state/crossMachineLanes.ts`), or until 15
+  seconds pass. A failed dispatch clears only the matching optimistic record,
+  surfaces a sticky toast, and re-reads that machine.
 - `apps/desktop/src/renderer/components/terminals/useWorkLaneDeleteProgress.ts`
   — Work-owned lane deletion synchronizer. It consumes `lanes.delete.event`,
   uses `lanes.onLifecycleEvent` as a completion/invalidation fallback, and
