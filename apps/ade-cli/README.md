@@ -688,6 +688,8 @@ ade chat recover session-id --turn turn-id --action nudge        # provider-neut
 ade chat resolve-unprocessed session-id --steer steer-id --action run-next  # durable/idempotent; action is run-next | dismiss
 ade chat demote [session-id]                                     # take over a subagent: it becomes a peer and reports stop; defaults to $ADE_CHAT_SESSION_ID
 ade chat promote [session-id]                                    # restore a peer as a subagent so it reports to its parent again
+ade chat set-parent <session-id> --parent <chat> [--type subagent|peer]  # relink a chat to a new parent (reports go there next turn)
+ade chat set-parent <session-id> --no-parent                     # detach a chat from its parent
 ade chat keep-reporting [session-id]                             # dismiss the takeover prompt without changing the report channel
 ade chat handoff session-id --model openai/gpt-5.6-sol --note "focus on tests"   # brief handoff; add --target-lane <lane-id> to hand off into another lane
 ade chat handoff session-id --machine "Mac mini" --model <model> --prompt "next step"   # move the chat to another machine; --fork, --include-changes, --clone, --when-turn-ends

@@ -148,6 +148,7 @@ import type {
 } from "../../../shared/types";
 import { GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY } from "../../../shared/types";
 import type { AdeDb } from "../state/kvDb";
+import { createRetentionPruneGate } from "../state/dbMaintenanceApi";
 import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
 import type { createAutoRebaseService } from "../lanes/autoRebaseService";
@@ -8282,7 +8283,11 @@ export function createPrService({
       logger.error("prs.post_merge_cleanup_failed", {
         prId: row.id,
         mergeCommitSha: args.mergeCommitSha,
-        error: cleanupMsg,
+        // The Error itself, so `logBridge` lifts it into the Sentry event and
+        // the issue groups by the real failure; `errorText` keeps the sentence
+        // on disk, which `JSON.stringify` writes an Error without.
+        error: cleanupError,
+        errorText: cleanupMsg,
       });
       if (args.operationId) {
         try {
@@ -10156,6 +10161,8 @@ export function createPrService({
   const GITHUB_PROJECTION_CLOSED_RETAIN_LIMIT = 1_000;
   const GITHUB_WEBHOOK_DELIVERY_RETAIN_LIMIT = 1_000;
   const GITHUB_WEBHOOK_ERROR_DELIVERY_RETAIN_LIMIT = 100;
+  // Delivery writes are the hot path; the retain-limit DELETEs run at most once per interval or write budget.
+  const webhookDeliveryPruneGate = createRetentionPruneGate();
   let cachedGithubSnapshot: GitHubPrSnapshot | null = null;
   let cachedGithubSnapshotAt = 0;
   let cachedGithubSnapshotIncludesClosed = false;
@@ -11107,6 +11114,8 @@ export function createPrService({
   };
 
   const pruneGithubWebhookDeliveries = (): void => {
+    // Housekeeping only: deferring it keeps extra rows a little longer, which can only add dedupe hits. No row is dropped early.
+    if (!webhookDeliveryPruneGate.isDue(projectId)) return;
     db.run(
       `
         delete from github_webhook_deliveries

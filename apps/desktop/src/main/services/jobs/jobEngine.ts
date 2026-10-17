@@ -61,7 +61,11 @@ export function createJobEngine({
       } catch (error) {
         logger.error("jobs.refresh_lane.failed", {
           ...payload,
-          error: error instanceof Error ? error.message : String(error)
+          // The Error itself, so `logBridge` lifts it into the Sentry event and
+          // the issue groups by the real failure; `errorText` keeps the
+          // sentence on disk, which `JSON.stringify` writes an Error without.
+          error,
+          errorText: error instanceof Error ? error.message : String(error),
         });
       }
     }

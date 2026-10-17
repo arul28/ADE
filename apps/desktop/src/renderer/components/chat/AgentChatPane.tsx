@@ -4646,6 +4646,7 @@ export function AgentChatPane({
   /** Machine the session menu's "Choose in full setup…" picked, if any. */
   const [crossMachinePreselectedMachine, setCrossMachinePreselectedMachine] = useState<string | null>(null);
   const [localHandoffOpen, setLocalHandoffOpen] = useState(false);
+  const closeLocalHandoff = useCallback(() => setLocalHandoffOpen(false), []);
   // The form covers the pane's error line, so a failed local handoff also
   // shows its error in the form.
   const [localHandoffError, setLocalHandoffError] = useState<string | null>(null);
@@ -5573,8 +5574,9 @@ export function AgentChatPane({
   // AGI run that has surfaced mission events — non-AGI chats stay null
   // and the Missions tab never appears.
   const selectedMission = useMemo(() => deriveMissionSnapshot(selectedEvents), [selectedEvents]);
-  // Derived only while the drawer is open: a closed drawer never shows it, and
-  // the walk over every event is not free on a streaming transcript.
+  // Derived on every event; the drawer's open state only gates whether the
+  // sources show (`selectedChatHasSources`). The walk over every event is not
+  // free on a streaming transcript.
   const selectedChatSources = useMemo(
     () => deriveChatSources(selectedEventsForDisplay, { provider: selectedSession?.provider ?? null }),
     [selectedEventsForDisplay, selectedSession?.provider],
@@ -9562,6 +9564,9 @@ export function AgentChatPane({
         if (meta.cursorModeSnapshot !== undefined) summaryPatch.cursorModeSnapshot = meta.cursorModeSnapshot;
         if (meta.cursorConfigValues !== undefined) summaryPatch.cursorConfigValues = meta.cursorConfigValues;
         if (meta.spawnKind !== undefined) summaryPatch.spawnKind = meta.spawnKind;
+        if (meta.orchestrationParentSessionId !== undefined) {
+          summaryPatch.orchestrationParentSessionId = meta.orchestrationParentSessionId ?? undefined;
+        }
         if (typeof meta.instanceId === "string" && meta.instanceId) summaryPatch.instanceId = meta.instanceId;
         // The host republishes the whole usage-limit resume state on every
         // transition (armed -> resuming -> paused, or cleared), so the pill
@@ -9589,6 +9594,7 @@ export function AgentChatPane({
         const modeChanged = Object.keys(summaryPatch).some((key) =>
           key !== "title"
           && key !== "spawnKind"
+          && key !== "orchestrationParentSessionId"
           && key !== "subagentTakeoverPromptShownAt"
           && key !== "usageLimitResume"
         );
@@ -18125,8 +18131,8 @@ export function AgentChatPane({
       />
       <ChatHandoffDialogs
         localOpen={localHandoffOpen}
-        localContent={canShowHandoff ? handoffLocalView : null}
-        onCloseLocal={() => setLocalHandoffOpen(false)}
+        localContent={localHandoffOpen && canShowHandoff ? handoffLocalView : null}
+        onCloseLocal={closeLocalHandoff}
       />
       {selectedSessionId && !personalScope && (selectedSession?.laneId ?? laneId) ? (
         <CrossMachineHandoffModal

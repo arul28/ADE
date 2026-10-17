@@ -838,6 +838,50 @@ describe("chatTranscriptRows", () => {
     expect(rows[1]!.event.entry.changedFiles?.[0]?.diff).toContain("+ const second = true;");
   });
 
+  it("folds a turn that touches thousands of files into one row, in order, and matches a full pass", () => {
+    // One turn's file changes share a logical item id, so they all merge into
+    // one work-log row. Each change merges into that row's file list: a streamed
+    // update to an earlier file still lands on its own line, and the incremental
+    // path must agree with a full pass over the same events.
+    const fileCount = 3000;
+    const at = (index: number) => new Date(Date.UTC(2026, 5, 1, 10, 0, 0, index)).toISOString();
+    const fileChange = (index: number, diff: string) =>
+      env(at(index), {
+        type: "file_change",
+        path: `packages/generated/file-${index}.json`,
+        diff,
+        kind: "modify",
+        itemId: `msg-1:file-${index}`,
+        logicalItemId: "msg-1",
+        turnId: "turn-1",
+        status: "completed",
+      });
+    const stream: AgentChatEventEnvelope[] = [];
+    for (let index = 0; index < fileCount; index += 1) {
+      stream.push(fileChange(index, `+ ${index}\n`));
+    }
+    stream.push(fileChange(5, "+ 5 again\n"));
+
+    const full = collapseChatTranscriptEvents(stream);
+    expect(full).toHaveLength(1);
+    const entry = full[0]!.event.type === "work_log_entry" ? full[0]!.event.entry : null;
+    expect(entry?.changedFiles).toHaveLength(fileCount);
+    expect(entry?.changedFiles?.map((change) => change.path)).toEqual(
+      Array.from({ length: fileCount }, (_, index) => `packages/generated/file-${index}.json`),
+    );
+    expect(entry?.changedFiles?.[5]?.diff).toBe("+ 5\n+ 5 again\n");
+    expect(entry?.changedFiles?.[5]?.additions).toBe(2);
+
+    const head = collapseChatTranscriptEventsWithContext(stream.slice(0, 2000));
+    const incremental = collapseChatTranscriptEventsIncrementalWithContext(
+      stream,
+      stream.slice(0, 2000),
+      head.rows,
+      head.context,
+    );
+    expect(incremental.rows).toEqual(full);
+  });
+
   it("carries detected localhost URLs through merged command output deltas", () => {
     const rows = collapseChatTranscriptEvents([
       {

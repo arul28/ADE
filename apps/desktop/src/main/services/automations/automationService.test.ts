@@ -22,6 +22,8 @@ import type { LinearIngressEventRecord } from "../../../shared/types/linearSync"
 import {
   INGRESS_EVENT_HARD_MAX_ROWS_PER_PROJECT,
   INGRESS_EVENT_MAX_ROWS_PER_PROJECT,
+  RETENTION_PRUNE_INTERVAL_MS,
+  RETENTION_PRUNE_WRITE_BUDGET,
 } from "../state/dbMaintenanceApi";
 
 type SqlValue = string | number | null | Uint8Array;
@@ -3406,7 +3408,10 @@ describe("automation ingress storage bounds", () => {
       const count = Number(mapExecRows(raw.exec(
         "select count(*) as count from automation_ingress_events where project_id = 'proj'",
       ))[0]?.count ?? 0);
-      expect(count).toBe(2_000);
+      // The overflow sweep is throttled, so the count may sit above the active
+      // cap by up to one write budget, never more.
+      expect(count).toBeGreaterThanOrEqual(INGRESS_EVENT_MAX_ROWS_PER_PROJECT);
+      expect(count).toBeLessThanOrEqual(INGRESS_EVENT_MAX_ROWS_PER_PROJECT + RETENTION_PRUNE_WRITE_BUDGET);
       expect(mapExecRows(raw.exec(
         "select count(*) as count from automation_ingress_events where raw_payload_json is not null",
       ))[0]?.count).toBe(0);
@@ -3458,12 +3463,19 @@ describe("automation ingress storage bounds", () => {
          values ('drop-ignored', 'proj', 'github-relay', 'drop-ignored', '[]', 'github.issue_opened', 'ignored', null, ?)`,
         [fiveDaysAgo],
       );
-      // A fresh dispatch runs prune-on-insert.
-      await service.dispatchIngressTrigger({
-        source: "github-relay",
-        eventKey: "count-cap-trigger",
-        triggerType: "github.issue_opened",
-      });
+      // Move the clock past the prune interval so this dispatch is the one
+      // that runs prune-on-insert.
+      const realNow = Date.now();
+      const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => realNow + RETENTION_PRUNE_INTERVAL_MS + 1_000);
+      try {
+        await service.dispatchIngressTrigger({
+          source: "github-relay",
+          eventKey: "count-cap-trigger",
+          triggerType: "github.issue_opened",
+        });
+      } finally {
+        nowSpy.mockRestore();
+      }
       expect(mapExecRows(raw.exec(
         "select count(*) as count from automation_ingress_events where event_key = 'keep-dispatched'",
       ))[0]?.count).toBe(1);
@@ -3610,6 +3622,50 @@ describe("automation ingress storage bounds", () => {
       expect(total).toBe(INGRESS_EVENT_HARD_MAX_ROWS_PER_PROJECT);
       // Every OLD active row survived — none were sacrificed to the hard cap.
       expect(oldActiveRemaining).toBe(activeCount);
+    } finally {
+      service.dispose();
+    }
+  }, 120_000);
+
+  it("runs the ingress prune at most once across a relay poll burst", async () => {
+    const { db, raw } = createInMemoryAdeDb();
+    const service = createIngressService(db);
+
+    try {
+      // Steady-state table: at the active cap plus dispatched history, all in the window.
+      const seeded = 3_000;
+      const baseMs = Date.now() - 60 * 60 * 1_000;
+      const insert = raw.prepare(
+        `insert into automation_ingress_events(
+          id, project_id, source, event_key, automation_ids_json, trigger_type,
+          status, raw_payload_json, received_at
+        ) values (?, 'proj', 'github-relay', ?, '[]', 'github.issue_opened', ?, null, ?)`,
+      );
+      raw.run("begin");
+      for (let i = 0; i < seeded; i += 1) {
+        insert.run([`seed-${i}`, `seed-${i}`, i < 2_000 ? "ignored" : "dispatched", new Date(baseMs + i * 1_000).toISOString()]);
+      }
+      raw.run("commit");
+      insert.free();
+
+      // Count only the prune statements (age sweep + the two overflow DELETEs).
+      const pruneSql = /delete from automation_ingress_events\s+where (project_id = \? and received_at|rowid in)/;
+      let pruneStatements = 0;
+      const run = db.run.bind(db);
+      db.run = ((sql: string, params?: unknown[]) => {
+        if (pruneSql.test(sql)) pruneStatements += 1;
+        return run(sql, params as any);
+      }) as typeof db.run;
+
+      const polls = 50;
+      for (let index = 0; index < polls; index += 1) {
+        await service.dispatchIngressTrigger({
+          source: "github-relay",
+          eventKey: `burst-${index}`,
+          triggerType: "github.issue_opened",
+        });
+      }
+      expect(pruneStatements).toBeLessThanOrEqual(3);
     } finally {
       service.dispose();
     }

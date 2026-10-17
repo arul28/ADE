@@ -9,7 +9,16 @@ import { ADE_ACCOUNT_PAIRING_AUTHENTICATION_REQUIRED_CODE } from "./types/accoun
  */
 
 /** What the user is told after a reconnect attempt, and how it is styled. */
-export type ReconnectOutcome = { tone: "success" | "warning" | "danger"; message: string };
+export type ReconnectOutcome = {
+  tone: "success" | "warning" | "danger";
+  message: string;
+  /**
+   * The message names Repair (restart ADE's background service), so the surface
+   * showing it must render that control beside it. Only the sync-host outcome
+   * sets this.
+   */
+  offerRepair?: boolean;
+};
 
 /** Join the brain's reason onto our sentence without doubling its punctuation. */
 function sentence(reason: string): string {
@@ -54,7 +63,7 @@ export function describeReconnectOutcome(
   // and the attempt did something (it tried to start sync), so say exactly that
   // rather than the generic "try again in a moment".
   if (result.state === "sync_host_not_running" && result.reason) {
-    return { tone: "warning", message: sentence(result.reason) };
+    return { tone: "warning", message: sentence(result.reason), offerRepair: true };
   }
   // Nothing was gated and the brain skipped the publish — no work to report.
   if (result.state === "not_revoked") {

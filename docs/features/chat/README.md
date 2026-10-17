@@ -3448,6 +3448,27 @@ failure: ADE demotes the child to a peer (if it was still a subagent), skips
 further parent notices and wakes, and emits at most one child
 `system_notice` with `status: "spawn_parent_gone"`:
 `This chat used to report back to another chat that was deleted. It will keep working here on its own.`
+
+The parent itself is mutable too. `chat.setParent` (`ade chat set-parent
+<session> --parent <chat> [--type subagent|peer]`, `--no-parent` to detach)
+points a chat at another chat this machine can reach, refusing a self-parent
+or a loop. Reports go to the new parent from the next turn. Without `--type`
+a chat keeps its kind, except that one whose old parent is gone (and so was
+demoted to a peer) becomes a subagent again. A chat-bound agent may move its
+own chat, adopt a chat that has no live parent, or release a chat that
+reports to it; the runtime stamps the acting agent (`actingAgentSessionId`)
+and the service enforces this, so an agent cannot take another coordinator's
+child. `chat.updateSession` refuses a parent field rather than dropping it.
+
+A cross-machine move keeps the tree. The capsule carries the moved chat's
+parent and spawn kind (`source.orchestrationParentSessionId`,
+`source.spawnKind`). On arrival the destination restores that parent when it
+can reach it (`remote:<this machine>:<chat>` reads as the local chat), and
+relinks every local chat whose parent was `remote:<source>:<moved chat>` to
+the new copy, keeping each one's kind. A retried accept relinks too. Children
+that stay on the source machine are not relinked, because their new parent
+would need a wake token from the destination; `ade chat set-parent` fixes
+them by hand.
 That line is logged as `agent_chat.spawn_completion_parent_gone`. A true
 delivery failure against a still-reachable parent is logged as
 `agent_chat.spawn_completion_delivery_failed` and emits one child warning

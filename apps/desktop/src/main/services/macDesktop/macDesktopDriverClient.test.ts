@@ -235,15 +235,64 @@ describe("macDesktopDriverClient when the helper stops answering", () => {
   /**
    * A helper that dies on sight, over and over.
    *
-   * The point is what the client does with the *ninth* one. A restart budget
-   * that runs out inside the window the client measures stability against
-   * cannot tell a burst of transient failures — an update replacing the binary,
-   * a window-server hiccup — from a helper that will never come up, and the
-   * state it then reports ("restart ADE") is the one state nothing here can
-   * leave. So the budget has to span that window, and reaching the end of it
-   * has to slow the retries down rather than stop them.
+   * The budget has to span the 30 s window stability is measured against: a
+   * budget that ran out inside it could not tell a burst of transient failures
+   * (an update replacing the binary, a window-server hiccup) from a helper that
+   * will never come up. Past the budget, the retries slow down while a request
+   * is recent enough to want the driver; once nothing has asked for it, they
+   * stop until the next request.
    */
-  it("keeps retrying a helper that exits again and again, and only slows down", async () => {
+  const crashLoopClient = (spawnProcess: ReturnType<typeof vi.fn>, recorded: ReturnType<typeof recordingLogger>) => {
+    const client = createMacDesktopDriverClient({
+      logger: recorded.logger,
+      platform: "darwin",
+      resolveExecutablePath: binaryPath,
+      spawnProcess: spawnProcess as unknown as typeof import("node:child_process").spawn,
+    });
+    return client;
+  };
+
+  /** Advances fake time until `expected` spawns have happened, or `withinMs` has passed. */
+  const spawnWithin = async (spawnProcess: { mock: { calls: unknown[] } }, expected: number, withinMs: number): Promise<boolean> => {
+    for (let elapsed = 0; elapsed < withinMs; elapsed += 250) {
+      await vi.advanceTimersByTimeAsync(250);
+      if (spawnProcess.mock.calls.length >= expected) return true;
+    }
+    return false;
+  };
+
+  it("keeps retrying a crash-looping helper while it is wanted, and only slows down", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const children: Array<ReturnType<typeof createChild>> = [];
+    const spawnedAt: number[] = [];
+    const spawnProcess = vi.fn(() => {
+      const next = createChild(600 + children.length);
+      children.push(next);
+      spawnedAt.push(Date.now());
+      return next;
+    });
+    const recorded = recordingLogger();
+    const client = crashLoopClient(spawnProcess, recorded);
+    await client.ensureStarted();
+
+    // The fast budget: seven restarts, each within ten seconds.
+    for (let round = 0; round < 7; round += 1) {
+      children.at(-1)!.exit(1);
+      expect(await spawnWithin(spawnProcess, round + 2, 20_000)).toBe(true);
+    }
+    // Past it, each retry waits minutes rather than ten seconds, and the
+    // driver is still wanted: the request that started this is minutes old.
+    for (let round = 0; round < 2; round += 1) {
+      children.at(-1)!.exit(1);
+      expect(await spawnWithin(spawnProcess, 9 + round, 130_000)).toBe(true);
+    }
+    expect(spawnedAt.at(-1)! - spawnedAt.at(-2)!).toBeGreaterThanOrEqual(60_000);
+    expect(recorded.lines.filter((line) => line.event === "mac_desktop.driver_crash_loop")).toHaveLength(1);
+    expect(recorded.lines.some((line) => line.event === "mac_desktop.driver_restart_parked")).toBe(false);
+    client.dispose();
+  });
+
+  it("parks a crash-looping helper once nothing has asked for it, and the next request spawns at once", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     const children: Array<ReturnType<typeof createChild>> = [];
     const spawnProcess = vi.fn(() => {
@@ -251,54 +300,29 @@ describe("macDesktopDriverClient when the helper stops answering", () => {
       children.push(next);
       return next;
     });
-    const { lines, logger: recorded } = recordingLogger();
-    let crashLoopAt: number | null = null;
-    const clocked = {
-      ...recorded,
-      error: (event: string, meta?: Record<string, unknown>) => {
-        recorded.error(event, meta);
-        if (event === "mac_desktop.driver_crash_loop" && crashLoopAt === null) crashLoopAt = Date.now();
-      },
-    };
-    const client = createMacDesktopDriverClient({
-      logger: clocked,
-      platform: "darwin",
-      resolveExecutablePath: binaryPath,
-      spawnProcess: spawnProcess as unknown as typeof import("node:child_process").spawn,
-    });
+    const recorded = recordingLogger();
+    const client = crashLoopClient(spawnProcess, recorded);
     await client.ensureStarted();
-    const startedAt = Date.now();
 
-    // Advance in small steps until the expected restart lands, so the test
-    // states "a restart happens" rather than pinning the backoff schedule.
-    const nextRestart = async (expected: number): Promise<void> => {
-      for (let elapsed = 0; elapsed < 20_000; elapsed += 100) {
-        await vi.advanceTimersByTimeAsync(100);
-        if (spawnProcess.mock.calls.length >= expected) return;
-      }
-      throw new Error(`no restart within 20s (wanted spawn ${expected})`);
-    };
-
-    // Eleven deaths in a row: past the four attempts this used to allow, and
-    // far enough that the last rounds can only be the slowed-down retry.
-    for (let round = 0; round < 11; round += 1) {
+    // Keep it dying until a death lands with no request in the window before
+    // it: then no restart is armed, and no spawn follows the death.
+    let parked = false;
+    for (let round = 0; round < 30 && !parked; round += 1) {
       children.at(-1)!.exit(1);
-      await nextRestart(round + 2);
+      parked = !(await spawnWithin(spawnProcess, round + 2, 130_000));
     }
+    expect(parked).toBe(true);
+    const spawnsWhenParked = spawnProcess.mock.calls.length;
+    expect(recorded.lines.some((line) => line.event === "mac_desktop.driver_restart_parked")).toBe(true);
 
-    expect(spawnProcess).toHaveBeenCalledTimes(12);
-    // With the retry pending, the state says what is true — the helper is not
-    // up — rather than "starting".
-    children.at(-1)!.exit(1);
-    expect(client.getHealth().state).toBe("crash_loop");
-    // And it is still trying: the death after the budget buys one more start.
-    await nextRestart(13);
-    expect(spawnProcess).toHaveBeenCalledTimes(13);
-    expect(lines.filter((line) => line.event === "mac_desktop.driver_crash_loop")).toHaveLength(1);
-    // And the budget spanned the 30 s window it is measured against before it
-    // called this a loop: the whole point is that the cause had time to clear.
-    expect(crashLoopAt).not.toBeNull();
-    expect(crashLoopAt! - startedAt).toBeGreaterThanOrEqual(30_000);
+    // Ten minutes with nothing asking for it: no helper is spawned.
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(spawnProcess).toHaveBeenCalledTimes(spawnsWhenParked);
+
+    // The next real request spawns at once, without waiting for any timer.
+    await client.ensureStarted();
+    expect(spawnProcess).toHaveBeenCalledTimes(spawnsWhenParked + 1);
+    expect(client.isRunning()).toBe(true);
     client.dispose();
   });
 

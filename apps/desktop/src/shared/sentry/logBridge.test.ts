@@ -44,4 +44,22 @@ describe("forwardLogToSentry", () => {
     expect((captured[1]!.error as Error).name).toBe("AdeProblem");
     expect((captured[1]!.error as Error).message).toBe("project.open.failed");
   });
+
+  it("reads the message only beside the error: `errorText` alone makes no exception", () => {
+    const captured = fakeSentry();
+    const failure = new Error("unable to open database file");
+
+    // Moving the sentence to a key beside the error fixes nothing on its own: a
+    // line that carries only the text still has no exception, so it would keep
+    // collapsing into one issue named by the event. This is the failure mode a
+    // half-fix reintroduces.
+    forwardLogToSentry("error", "db.init_failed", { errorText: failure.message });
+    // The shape the sweep emits: the Error under `error`, the sentence kept
+    // beside it for the line on disk. The sibling key never shadows the error.
+    forwardLogToSentry("error", "db.init_failed", { error: failure, errorText: failure.message });
+
+    expect(captured).toHaveLength(2);
+    expect((captured[0]!.error as Error).name).toBe("AdeProblem");
+    expect(captured[1]!.error).toBe(failure);
+  });
 });

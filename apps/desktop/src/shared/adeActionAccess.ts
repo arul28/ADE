@@ -194,7 +194,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "copyTempAttachment", "createAttachmentUpload", "sendMessage", "setClaudeOutputStyle",
       "setParallelLaunchState", "cancelScheduledWork", "resumeUsageLimitNow",
       "continueUsageLimitOnAlternate", "switchAccount", "setScheduledWorkPaused", "steer",
-      "unarchiveSession", "updateSession", "regenerateSessionMetadata", "setSpawnKind",
+      "unarchiveSession", "updateSession", "regenerateSessionMetadata", "setSpawnKind", "setParent",
       "dismissSubagentTakeoverPrompt", "warmupModel", "mcpAppRequest", "revokeMcpAppGrant",
     ],
   },

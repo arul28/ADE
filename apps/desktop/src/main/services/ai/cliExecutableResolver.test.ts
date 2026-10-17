@@ -225,6 +225,26 @@ describe("cliExecutableResolver", () => {
     expect(probe()).toContain("/fake/login/bin");
   });
 
+  it.skipIf(process.platform === "win32")("reuses a login-shell PATH answer when the caller passes the augmented PATH back in", () => {
+    tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-shell-feedback-"));
+    const spawnLog = path.join(tempRoot, "spawns.log");
+    const fakeShell = path.join(tempRoot, "fake-login-shell");
+    fs.writeFileSync(
+      fakeShell,
+      `#!/bin/sh\necho spawn >> "${spawnLog}"\nexport PATH="/fake/login/bin:$PATH"\nexec /bin/sh "$@"\n`,
+      "utf8",
+    );
+    fs.chmodSync(fakeShell, 0o755);
+    const spawns = () => (fs.existsSync(spawnLog) ? fs.readFileSync(spawnLog, "utf8").split("\n").filter(Boolean).length : 0);
+    const env: NodeJS.ProcessEnv = { SHELL: fakeShell, HOME: tempRoot, PATH: `/usr/bin${currentPathDelimiter()}/bin` };
+
+    const first = augmentProcessPathWithShellAndKnownCliDirs({ env });
+    const spawnsAfterFirst = spawns();
+    // The next call's env carries the PATH the last one produced; it must not re-probe the shell.
+    augmentProcessPathWithShellAndKnownCliDirs({ env: { ...env, PATH: first } });
+    expect(spawns()).toBe(spawnsAfterFirst);
+  });
+
   it("augments PATH with known CLI dirs on Windows", () => {
     setPlatform("win32");
     tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-path-"));

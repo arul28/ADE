@@ -258,6 +258,12 @@ export function ThisComputerStatus({
           {shownOutcome.message}
         </div>
       ) : null}
+
+      {reconnectOutcome?.offerRepair && repair.available ? (
+        <div>
+          <BrainRepairButton repair={repair} height={24} />
+        </div>
+      ) : null}
     </div>
   );
 }

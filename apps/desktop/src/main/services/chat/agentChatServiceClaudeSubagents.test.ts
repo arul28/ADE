@@ -1219,6 +1219,87 @@ describe("createAgentChatService", () => {
       expect((await service.getSessionSummary(child.id))?.spawnKind).toBe("peer");
     });
 
+    it("sets parent links for users while limiting agent adoption and release", async () => {
+      const { service } = createService();
+      const parentA = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const parentB = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const oldParent = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const relinked = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        orchestrationParentSessionId: oldParent.id,
+        spawnKind: "peer",
+      });
+      const orphanParent = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const orphan = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        orchestrationParentSessionId: orphanParent.id,
+        spawnKind: "peer",
+      });
+      const childOfA = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        orchestrationParentSessionId: parentA.id,
+        spawnKind: "subagent",
+      });
+      const childOfB = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        orchestrationParentSessionId: parentB.id,
+        spawnKind: "peer",
+      });
+      const freeChat = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const cycleRoot = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const cycleChild = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        orchestrationParentSessionId: cycleRoot.id,
+        spawnKind: "subagent",
+      });
+
+      const userRelink = service.setParent({ sessionId: relinked.id, parentSessionId: parentA.id });
+      const userSummary = await service.getSessionSummary(relinked.id);
+      expect(userRelink.orchestrationParentSessionId).toBe(parentA.id);
+      expect(userSummary).toMatchObject({ orchestrationParentSessionId: parentA.id, spawnKind: "peer" });
+
+      await service.deleteSession({ sessionId: orphanParent.id });
+      const orphanRelink = service.setParent({ sessionId: orphan.id, parentSessionId: parentB.id });
+      expect(orphanRelink.spawnKind).toBe("subagent");
+      expect((await service.getSessionSummary(orphan.id))?.orchestrationParentSessionId).toBe(parentB.id);
+
+      expect(() => service.setParent({
+        sessionId: childOfB.id,
+        parentSessionId: parentA.id,
+        actingAgentSessionId: parentA.id,
+      })).toThrow(/only release a chat|adopt a chat/i);
+      const adopted = service.setParent({
+        sessionId: freeChat.id,
+        parentSessionId: parentA.id,
+        actingAgentSessionId: parentA.id,
+      });
+      expect(adopted.orchestrationParentSessionId).toBe(parentA.id);
+      const released = service.setParent({
+        sessionId: childOfA.id,
+        parentSessionId: null,
+        actingAgentSessionId: parentA.id,
+      });
+      expect(released.orchestrationParentSessionId).toBeUndefined();
+      expect(() => service.setParent({
+        sessionId: childOfB.id,
+        parentSessionId: null,
+        actingAgentSessionId: parentA.id,
+      })).toThrow(/only release a chat|adopt a chat/i);
+
+      expect(() => service.setParent({ sessionId: cycleRoot.id, parentSessionId: cycleChild.id })).toThrow(/loop|reports to this chat/i);
+      expect(() => service.setParent({ sessionId: cycleRoot.id, parentSessionId: cycleRoot.id })).toThrow(/own parent/i);
+    });
+
     it("keeps a subagent whose parent lives in another project or on another machine", async () => {
       // The brain installs a router and records where such a parent lives; a
       // child of it is not an orphan, or it would stop waking its parent.
