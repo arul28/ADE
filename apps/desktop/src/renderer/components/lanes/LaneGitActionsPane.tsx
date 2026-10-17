@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { useStableBinding } from "../../state/laneMachineRouting";
 import type { LaneDiffMode } from "../../../shared/types";
 import { ArrowDown, ArrowLeft, ArrowsClockwise, ArrowUp, ArrowUUpLeft, CaretDown, CaretRight, Check, DotsThree, Folder, GitBranch, GitCommit, Stack, Trash } from "@phosphor-icons/react";
@@ -74,6 +75,11 @@ const AUTO_GENERATE_COMMIT_ACTION = "generate commit message";
  * another machine. Fail loudly rather than silently acting on the wrong one.
  */
 const MAX_RENDERED_CHANGE_ROWS_PER_SECTION = 300;
+/** Files list rows are virtualized; the estimate stands in until each row is measured. */
+const CHANGE_LIST_ROW_ESTIMATE_PX = 28;
+/** The gaps the flex column put between rows and between the Staged and Unstaged sections. */
+const CHANGE_LIST_ROW_GAP_PX = 2;
+const CHANGE_LIST_SECTION_GAP_PX = 8;
 
 export function formatLaneGitError(err: unknown, pin?: OpenProjectBinding | null): string {
   const raw = err instanceof Error ? err.message : String(err ?? "");
@@ -387,6 +393,41 @@ function buildChangeTreeStatsByPath(files: FileChange[]): Map<string, ChangeTree
   const statsByPath = new Map<string, ChangeTreeStats>();
   getChangeTreeStats(buildChangeTree(files), statsByPath);
   return statsByPath;
+}
+
+/**
+ * One row of the Files list in display order. The tree is folded into rows so
+ * the list can be virtualized: a collapsed folder's children never enter the
+ * list, and only the rows in view mount.
+ */
+type ChangeListRow =
+  | { key: string; kind: "section"; label: string; count: number; gapAbove: boolean }
+  | { key: string; kind: "folder"; mode: LaneDiffMode; name: string; depth: number; collapsed: boolean; stats: ChangeTreeStats }
+  | { key: string; kind: "file"; mode: LaneDiffMode; file: FileChange; depth: number }
+  | { key: string; kind: "notice"; section: ChangeSection; total: number; noun: string };
+
+function flattenChangeTreeRows(
+  node: ChangeTreeNode,
+  mode: LaneDiffMode,
+  depth: number,
+  collapsedFolders: ReadonlySet<string>,
+  statsByPath: Map<string, ChangeTreeStats>,
+  rows: ChangeListRow[],
+): void {
+  const dirs = [...node.dirs.values()].sort((a, b) => a.name.localeCompare(b.name));
+  const files = [...node.files].sort((a, b) => a.path.localeCompare(b.path));
+
+  for (const dir of dirs) {
+    const key = `${mode}:${dir.path}`;
+    const collapsed = collapsedFolders.has(key);
+    const stats = statsByPath.get(dir.path) ?? getChangeTreeStats(dir);
+    rows.push({ key, kind: "folder", mode, name: dir.name, depth, collapsed, stats });
+    if (!collapsed) flattenChangeTreeRows(dir, mode, depth + 1, collapsedFolders, statsByPath, rows);
+  }
+
+  for (const file of files) {
+    rows.push({ key: `${mode}:wrap:${file.path}`, kind: "file", mode, file, depth });
+  }
 }
 
 function getAutoRebaseBannerConfig(state: AutoRebaseLaneStatus["state"]): {
@@ -956,6 +997,60 @@ export function LaneGitActionsPane({
   const gitScope: "branch" | "uncommitted" = !branchSupported
     ? "uncommitted"
     : scopeChoice ?? (hasUncommittedChanges ? "uncommitted" : "branch");
+  // One virtualized list holds the section labels, folders, files and notices of
+  // the scope on screen, so the gap between Staged and Unstaged is padding on
+  // the Unstaged label rather than a second scroller.
+  const changeListRows = useMemo(() => {
+    const rows: ChangeListRow[] = [];
+    if (gitScope === "branch") {
+      if (branchChanges && branchChanges.files.length > 0) {
+        flattenChangeTreeRows(buildChangeTree(visibleBranchChanges), "branch", 0, collapsedChangeFolders, branchChangeTreeStatsByPath, rows);
+        if (hiddenBranchChangeCount > 0) {
+          rows.push({ key: "branch:notice", kind: "notice", section: "branch", total: branchChanges.files.length, noun: "changed" });
+        }
+      }
+      return rows;
+    }
+    if (changes.staged.length > 0) {
+      rows.push({ key: "staged:label", kind: "section", label: "Staged", count: changes.staged.length, gapAbove: false });
+      flattenChangeTreeRows(buildChangeTree(visibleStagedChanges), "staged", 0, collapsedChangeFolders, stagedChangeTreeStatsByPath, rows);
+      if (hiddenStagedChangeCount > 0) {
+        rows.push({ key: "staged:notice", kind: "notice", section: "staged", total: changes.staged.length, noun: "staged" });
+      }
+    }
+    if (changes.unstaged.length > 0) {
+      rows.push({ key: "unstaged:label", kind: "section", label: "Unstaged", count: changes.unstaged.length, gapAbove: changes.staged.length > 0 });
+      flattenChangeTreeRows(buildChangeTree(visibleUnstagedChanges), "unstaged", 0, collapsedChangeFolders, unstagedChangeTreeStatsByPath, rows);
+      if (hiddenUnstagedChangeCount > 0) {
+        rows.push({ key: "unstaged:notice", kind: "notice", section: "unstaged", total: changes.unstaged.length, noun: "unstaged" });
+      }
+    }
+    return rows;
+  }, [
+    gitScope,
+    branchChanges,
+    visibleBranchChanges,
+    branchChangeTreeStatsByPath,
+    hiddenBranchChangeCount,
+    changes.staged,
+    changes.unstaged,
+    visibleStagedChanges,
+    stagedChangeTreeStatsByPath,
+    hiddenStagedChangeCount,
+    visibleUnstagedChanges,
+    unstagedChangeTreeStatsByPath,
+    hiddenUnstagedChangeCount,
+    collapsedChangeFolders,
+  ]);
+  const changesScrollRef = useRef<HTMLDivElement>(null);
+  const changeListVirtualizer = useVirtualizer({
+    count: changeListRows.length,
+    getScrollElement: () => changesScrollRef.current,
+    getItemKey: (index) => changeListRows[index]?.key ?? index,
+    estimateSize: () => CHANGE_LIST_ROW_ESTIMATE_PX,
+    overscan: 4,
+    gap: CHANGE_LIST_ROW_GAP_PX,
+  });
 
   useEffect(() => {
     setScopeChoice(null);
@@ -1961,72 +2056,88 @@ export function LaneGitActionsPane({
     );
   };
 
-  const renderChangeTreeNode = (
-    node: ChangeTreeNode,
-    mode: LaneDiffMode,
-    depth: number,
-    statsByPath: Map<string, ChangeTreeStats>,
-  ): React.ReactNode[] => {
-    const rows: React.ReactNode[] = [];
-    const dirs = [...node.dirs.values()].sort((a, b) => a.name.localeCompare(b.name));
-    const files = [...node.files].sort((a, b) => a.path.localeCompare(b.path));
-
-    for (const dir of dirs) {
-      const key = `${mode}:${dir.path}`;
-      const collapsed = collapsedChangeFolders.has(key);
-      const stats = statsByPath.get(dir.path) ?? getChangeTreeStats(dir);
-      rows.push(
-        <button
-          key={key}
-          type="button"
-          className="flex w-full items-center gap-2 text-left"
-          style={{
-            padding: "5px 8px",
-            paddingLeft: 8 + depth * 14,
-            color: COLORS.textMuted,
-            background: "transparent",
-            border: "none",
-            cursor: "pointer",
-            fontFamily: MONO_FONT,
-            fontSize: 11,
-          }}
-          onClick={() => {
-            setCollapsedChangeFolders((prev) => {
-              const next = new Set(prev);
-              if (next.has(key)) next.delete(key);
-              else next.add(key);
-              return next;
-            });
-          }}
-          onMouseEnter={(event) => { event.currentTarget.style.background = COLORS.hoverBg; }}
-          onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; }}
+  const renderChangeListRow = (row: ChangeListRow): React.ReactNode => {
+    if (row.kind === "section") {
+      return (
+        <div
+          className={SKIN.sectionLabelClass}
+          style={SKIN.sectionLabelStyle}
         >
-          {collapsed ? <CaretRight size={12} /> : <CaretDown size={12} />}
-          <Folder size={13} weight="duotone" />
-          <span className="truncate" style={{ flex: 1 }}>{dir.name}</span>
-          <span style={{ color: COLORS.textDim }}>{stats.files}</span>
-          {stats.additions > 0 ? <span style={{ color: COLORS.success }}>+{stats.additions}</span> : null}
-          {stats.deletions > 0 ? <span style={{ color: COLORS.danger }}>-{stats.deletions}</span> : null}
-        </button>
-      );
-      if (!collapsed) rows.push(...renderChangeTreeNode(dir, mode, depth + 1, statsByPath));
-    }
-
-    for (const file of files) {
-      rows.push(
-        <div key={`${mode}:wrap:${file.path}`} style={{ paddingLeft: depth * 14 }}>
-          {renderFileRow(file, mode)}
+          {SKIN.sectionLabel(row.label, row.count)}
         </div>
       );
     }
-
-    return rows;
+    if (row.kind === "notice") {
+      return <TruncatedChangesNotice total={row.total} noun={row.noun} onShowAll={() => showAllSection(row.section)} />;
+    }
+    if (row.kind === "file") {
+      return (
+        <div style={{ paddingLeft: row.depth * 14 }}>
+          {renderFileRow(row.file, row.mode)}
+        </div>
+      );
+    }
+    const { key, collapsed, stats } = row;
+    return (
+      <button
+        type="button"
+        className="flex w-full items-center gap-2 text-left"
+        style={{
+          padding: "5px 8px",
+          paddingLeft: 8 + row.depth * 14,
+          color: COLORS.textMuted,
+          background: "transparent",
+          border: "none",
+          cursor: "pointer",
+          fontFamily: MONO_FONT,
+          fontSize: 11,
+        }}
+        onClick={() => {
+          setCollapsedChangeFolders((prev) => {
+            const next = new Set(prev);
+            if (next.has(key)) next.delete(key);
+            else next.add(key);
+            return next;
+          });
+        }}
+        onMouseEnter={(event) => { event.currentTarget.style.background = COLORS.hoverBg; }}
+        onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; }}
+      >
+        {collapsed ? <CaretRight size={12} /> : <CaretDown size={12} />}
+        <Folder size={13} weight="duotone" />
+        <span className="truncate" style={{ flex: 1 }}>{row.name}</span>
+        <span style={{ color: COLORS.textDim }}>{stats.files}</span>
+        {stats.additions > 0 ? <span style={{ color: COLORS.success }}>+{stats.additions}</span> : null}
+        {stats.deletions > 0 ? <span style={{ color: COLORS.danger }}>-{stats.deletions}</span> : null}
+      </button>
+    );
   };
 
-  const renderChangeTree = (files: FileChange[], mode: LaneDiffMode, statsByPath: Map<string, ChangeTreeStats>) => {
-    const tree = buildChangeTree(files);
-    return renderChangeTreeNode(tree, mode, 0, statsByPath);
-  };
+  const renderChangeList = () => (
+    <div style={{ height: changeListVirtualizer.getTotalSize(), position: "relative", flexShrink: 0 }}>
+      {changeListVirtualizer.getVirtualItems().map((virtualRow) => {
+        const row = changeListRows[virtualRow.index];
+        if (!row) return null;
+        return (
+          <div
+            key={row.key}
+            data-index={virtualRow.index}
+            ref={changeListVirtualizer.measureElement}
+            style={{
+              position: "absolute",
+              top: 0,
+              left: 0,
+              width: "100%",
+              transform: `translateY(${virtualRow.start}px)`,
+              paddingTop: row.kind === "section" && row.gapAbove ? CHANGE_LIST_SECTION_GAP_PX - CHANGE_LIST_ROW_GAP_PX : undefined,
+            }}
+          >
+            {renderChangeListRow(row)}
+          </div>
+        );
+      })}
+    </div>
+  );
 
   const diffViewActive = Boolean(
     (selectedPath && selectedMode) || selectedCommit,
@@ -2929,7 +3040,7 @@ export function LaneGitActionsPane({
             ) : null}
 
             {gitScope === "branch" ? (
-              <div style={{ display: "flex", flexDirection: "column", gap: 2, flex: 1, minHeight: 0, overflow: "auto" }} data-testid="git-pane-branch">
+              <div ref={changesScrollRef} style={{ display: "flex", flexDirection: "column", gap: 2, flex: 1, minHeight: 0, overflow: "auto" }} data-testid="git-pane-branch">
                 {branchError ? (
                   <div className="px-1 py-3 text-[12px] text-muted-fg">{branchError}</div>
                 ) : !branchChanges ? (
@@ -2937,49 +3048,18 @@ export function LaneGitActionsPane({
                 ) : branchChanges.files.length === 0 ? (
                   <div className="px-1 py-3 text-[12px] text-muted-fg">No changes since {branchChanges.baseRef}.</div>
                 ) : (
-                  <>
-                    {renderChangeTree(visibleBranchChanges, "branch", branchChangeTreeStatsByPath)}
-                    {hiddenBranchChangeCount > 0 ? (
-                      <TruncatedChangesNotice total={branchChanges.files.length} noun="changed" onShowAll={() => showAllSection("branch")} />
-                    ) : null}
-                  </>
+                  renderChangeList()
                 )}
               </div>
             ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 8, flex: 1, minHeight: 0, overflow: "auto" }}>
-              {changes.staged.length > 0 ? (
-                <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                  <div
-                    className={SKIN.sectionLabelClass}
-                    style={SKIN.sectionLabelStyle}
-                  >
-                    {SKIN.sectionLabel("Staged", changes.staged.length)}
-                  </div>
-                  {renderChangeTree(visibleStagedChanges, "staged", stagedChangeTreeStatsByPath)}
-                  {hiddenStagedChangeCount > 0 ? (
-                    <TruncatedChangesNotice total={changes.staged.length} noun="staged" onShowAll={() => showAllSection("staged")} />
-                  ) : null}
-                </div>
-              ) : null}
-              {changes.unstaged.length > 0 ? (
-                <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                  <div
-                    className={SKIN.sectionLabelClass}
-                    style={SKIN.sectionLabelStyle}
-                  >
-                    {SKIN.sectionLabel("Unstaged", changes.unstaged.length)}
-                  </div>
-                  {renderChangeTree(visibleUnstagedChanges, "unstaged", unstagedChangeTreeStatsByPath)}
-                  {hiddenUnstagedChangeCount > 0 ? (
-                    <TruncatedChangesNotice total={changes.unstaged.length} noun="unstaged" onShowAll={() => showAllSection("unstaged")} />
-                  ) : null}
-                </div>
-              ) : null}
+            <div ref={changesScrollRef} style={{ display: "flex", flexDirection: "column", gap: 8, flex: 1, minHeight: 0, overflow: "auto" }} data-testid="git-pane-uncommitted">
               {changes.staged.length === 0 && changes.unstaged.length === 0 ? (
                   <div className="px-1 py-3 text-[12px] text-muted-fg" data-testid="git-pane-clean">
                     Clean · nothing to commit
                   </div>
-              ) : null}
+              ) : (
+                renderChangeList()
+              )}
             </div>
             )}
             </>
