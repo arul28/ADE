@@ -3282,6 +3282,13 @@ export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
   status: AgentChatSessionStatus;
   /** Start of the currently active provider turn; null when no turn is running. */
   currentTurnStartedAt?: string | null;
+  /**
+   * The brain accepted a turn that has not started yet: the provider runtime is
+   * still coming up, so `status` stays "idle" for a moment after the send. Set
+   * from acceptance until the turn starts, ends, or fails, or until the start
+   * has gone on for too long to be a slow start. Absent otherwise.
+   */
+  turnAcceptedAt?: string | null;
   idleSinceAt?: string | null;
   /** Claude only. The chat's prompt cache after its last turn; absent until a turn writes one. */
   promptCache?: ClaudePromptCache | null;

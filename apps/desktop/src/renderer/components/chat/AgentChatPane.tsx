@@ -11792,7 +11792,15 @@ export function AgentChatPane({
       // session down rather than leaving a started-but-orphaned chat.
       assertActive?.();
       if (canRefreshPinnedProject(pin)) {
-        notifySessionCreated(createdSession, {
+        // The brain accepted the first turn. The create response still says idle,
+        // so report the chat in flight: the new row reads "Working", not "Done",
+        // until the list refresh carries the brain's own status.
+        const acceptedSession: AgentChatSession = {
+          ...createdSession,
+          status: "active",
+          currentTurnStartedAt: new Date().toISOString(),
+        };
+        notifySessionCreated(acceptedSession, {
           activate: false,
           source: "draft-launch",
           ...(pin ? { runtimePin: pin, laneName: targetLane.laneName } : {}),
