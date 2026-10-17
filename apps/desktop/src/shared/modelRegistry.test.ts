@@ -237,10 +237,10 @@ describe("modelRegistry", () => {
   });
 
   it("marks only the preview-tier ACP providers and leaves first-class ones unmarked", () => {
-    for (const provider of ["copilot"] as const) {
+    for (const provider of ["devin"] as const) {
       expect(listModelDescriptorsForProvider(provider).every((m) => m.previewTier === true)).toBe(true);
     }
-    for (const provider of ["qwen", "kimi", "grok"] as const) {
+    for (const provider of ["qwen", "kimi", "grok", "copilot"] as const) {
       expect(listModelDescriptorsForProvider(provider).some((m) => m.previewTier === true)).toBe(false);
     }
   });

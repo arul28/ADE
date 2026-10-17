@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Logger } from "../logging/logger";
+import { captureWorkerFailure } from "../../sentry/workerFailures";
 import { resolveCopilotExecutable } from "../ai/acpExecutables";
 import { terminateChildProcessTree } from "../shared/utils";
 import { cursorSdkOwnerPidArg } from "./cursorSdkWorkerGuards";
@@ -140,7 +141,12 @@ async function create(init: CopilotSdkWorkerInit, logger?: Logger): Promise<Copi
       return;
     }
     if (message.type === "event") { bridge.onEvent?.(message.chatId, message.event); return; }
-    if (message.type === "log") { logger?.[message.level === "error" ? "warn" : message.level]?.(`agent_chat.copilot_sdk_worker_${message.level}`, { message: message.message, detail: message.detail }); return; }
+    if (message.type === "log") {
+      logger?.[message.level === "error" ? "warn" : message.level]?.(`agent_chat.copilot_sdk_worker_${message.level}`, { message: message.message, detail: message.detail });
+      // The worker has no Sentry SDK; its unhandled failures become issues here.
+      captureWorkerFailure("copilot", message);
+      return;
+    }
     const waiter = COPILOT_SDK_WAITERS[message.type];
     const callback = bridge[WAITER_HANDLERS[message.type]];
     const respond = (answer: unknown) => {

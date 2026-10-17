@@ -31,6 +31,13 @@ const resolveGrokExecutableMock = vi.fn(() => ({
   source: "path",
 }));
 const cursorLocalPromptMock = vi.fn();
+const copilotUtilityMock = vi.fn();
+const releaseCopilotConnectionMock = vi.fn();
+const acquireCopilotConnectionMock = vi.fn(async (_args: unknown) => ({
+  pooled: { utility: (...args: unknown[]) => copilotUtilityMock(...args) },
+  poolKey: "copilot-pool",
+  generation: 7,
+}));
 const assertCursorSdkSupportedMock = vi.fn();
 const getApiKeyMock = vi.fn((_provider: string): string | null => null);
 
@@ -69,6 +76,12 @@ vi.mock("./cursorSdkLoader", () => ({
 
 vi.mock("../chat/cursorSdkPool", () => ({
   runCursorSdkLocalPrompt: (...args: unknown[]) => cursorLocalPromptMock(...args),
+}));
+
+// The Copilot SDK worker is a forked process; the pool is its boundary.
+vi.mock("../chat/copilotSdkPool", () => ({
+  acquireCopilotSdkConnection: (args: unknown) => acquireCopilotConnectionMock(args),
+  releaseCopilotSdkConnection: (...args: unknown[]) => releaseCopilotConnectionMock(...args),
 }));
 
 import { makeCodexCompatibleJsonSchema, runProviderTask } from "./providerTaskRunner";
@@ -480,19 +493,18 @@ describe("runProviderTask", () => {
     expect(launchArgvContainsRun(argv, ["-c", "service_tier=default"])).toBe(backgroundUtility);
   });
 
-  it("runs Copilot metadata prompts with the selected model and no tools", async () => {
-    spawnMock.mockReturnValueOnce(createMockProcess({
-      stdout: '{"chatTitle":"Copilot title"}',
-    }));
+  it("runs Copilot metadata prompts on a tool-less SDK utility session and releases the worker", async () => {
+    copilotUtilityMock.mockResolvedValueOnce({ data: { content: '{"chatTitle":"Copilot title"}' } });
+    const descriptor = {
+      family: "github-copilot",
+      providerRoute: "copilot-sdk",
+      isCliWrapped: false,
+      providerModelId: "gpt-5.4",
+    } as any;
 
     const result = await runProviderTask({
       cwd: "/tmp/lane",
-      descriptor: {
-        family: "github-copilot",
-        providerRoute: "copilot-acp",
-        isCliWrapped: true,
-        providerModelId: "github-copilot/gpt-5.4",
-      } as any,
+      descriptor,
       prompt: "Name this chat.",
       system: "Be concise.",
       jsonSchema: { type: "object", properties: { chatTitle: { type: "string" } } },
@@ -500,23 +512,41 @@ describe("runProviderTask", () => {
       projectConfig: {} as any,
     });
 
-    expect(result.text).toBe('{"chatTitle":"Copilot title"}');
     expect(result.structuredOutput).toEqual({ chatTitle: "Copilot title" });
-    expect(spawnMock).toHaveBeenCalledTimes(1);
-    const [command, argv, options] = spawnMock.mock.calls[0]!;
-    expect(command).toBe(expectedLaunchCommand("C:\\Users\\me\\AppData\\Roaming\\npm\\copilot.cmd"));
-    expect(launchArgvContains(argv, "--model")).toBe(true);
-    expect(launchArgvValueAfter(argv, "--model")).toBe("gpt-5.4");
-    expect(launchArgvContains(argv, "--deny-tool=*")).toBe(true);
-    expect(launchArgvContains(argv, "--deny-url=*")).toBe(true);
-    expect(launchArgvContains(argv, "--prompt")).toBe(false);
-    expect(options).toMatchObject({
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    const child = spawnMock.mock.results[0]!.value as MockSpawnProcess;
-    expect(child.stdin.end).toHaveBeenCalledWith(
-      'Be concise.\n\nName this chat.\n\nReturn only valid JSON matching this schema:\n{\n  "type": "object",\n  "properties": {\n    "chatTitle": {\n      "type": "string"\n    }\n  }\n}',
-    );
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(acquireCopilotConnectionMock).toHaveBeenCalledWith(expect.objectContaining({
+      cliPath: "C:\\Users\\me\\AppData\\Roaming\\npm\\copilot.cmd",
+    }));
+    expect(copilotUtilityMock).toHaveBeenCalledWith(expect.objectContaining({
+      cwd: "/tmp/lane",
+      model: "gpt-5.4",
+      prompt: expect.stringMatching(/^Be concise\.\n\nName this chat\.[\s\S]*Return only valid JSON/),
+    }));
+    expect(releaseCopilotConnectionMock).toHaveBeenCalledWith("copilot-pool", 7);
+
+    // Auto is Copilot's default, not a model id; an image task is refused
+    // before any worker starts, and a failed task still releases the worker.
+    copilotUtilityMock.mockRejectedValueOnce(new Error("utility session failed"));
+    await expect(runProviderTask({
+      cwd: "/tmp/lane",
+      descriptor: { ...descriptor, providerModelId: "auto" },
+      prompt: "Name this chat.",
+      feature: "session-metadata",
+      projectConfig: {} as any,
+    })).rejects.toThrow("utility session failed");
+    expect(copilotUtilityMock.mock.calls.at(-1)?.[0]).toMatchObject({ model: undefined });
+    expect(releaseCopilotConnectionMock).toHaveBeenCalledTimes(2);
+
+    acquireCopilotConnectionMock.mockClear();
+    await expect(runProviderTask({
+      cwd: "/tmp/lane",
+      descriptor,
+      prompt: "Describe this screenshot.",
+      imagePaths: ["/tmp/shot.png"],
+      feature: "session-metadata",
+      projectConfig: {} as any,
+    })).rejects.toThrow(/Image input is not supported with Copilot/);
+    expect(acquireCopilotConnectionMock).not.toHaveBeenCalled();
   });
 
   it("runs Qwen, Kimi, and Grok metadata prompts through their ACP CLIs", async () => {

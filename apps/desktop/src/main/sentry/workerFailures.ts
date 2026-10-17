@@ -1,5 +1,5 @@
 /**
- * Failures inside the forked SDK workers (Cursor, Droid, Pi), reported from
+ * Failures inside the forked SDK workers (Cursor, Droid, Pi, Copilot), reported from
  * the parent.
  *
  * The workers carry no Sentry SDK of their own: loading one costs hundreds of
@@ -15,7 +15,7 @@ type WorkerLogMessage = { level?: string; message?: unknown; detail?: unknown };
 
 const UNHANDLED_ORIGINS = new Set(["uncaughtException", "unhandledRejection"]);
 
-export function captureWorkerFailure(worker: "cursor" | "droid" | "pi", message: WorkerLogMessage): void {
+export function captureWorkerFailure(worker: "cursor" | "droid" | "pi" | "copilot", message: WorkerLogMessage): void {
   const rawOrigin = (message.detail as { origin?: unknown } | null | undefined)?.origin;
   const origin = typeof rawOrigin === "string" && UNHANDLED_ORIGINS.has(rawOrigin) ? rawOrigin : null;
   if (message.level !== "error" && !origin) return;

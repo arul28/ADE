@@ -315,7 +315,9 @@ process.on("message", (raw: unknown) => {
     (result) => post({ type: "response", requestId: req.requestId, ok: true, result }),
     (error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
-      postLog("error", "Copilot SDK worker request failed", { type: req.type, error: message });
+      // The parent gets the failure in the response and shows or handles it; only
+      // crashes are errors here (they become Sentry issues in the pool).
+      postLog("warn", "Copilot SDK worker request failed", { type: req.type, error: message });
       post({ type: "response", requestId: req.requestId, ok: false, error: message });
     },
   );

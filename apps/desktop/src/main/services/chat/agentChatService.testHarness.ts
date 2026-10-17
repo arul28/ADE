@@ -231,6 +231,8 @@ const mockState = vi.hoisted(() => ({
   droidPromptCalls: [] as Array<Record<string, unknown>>,
   droidSettingsUpdates: [] as Array<Record<string, unknown>>,
   droidPooled: null as any,
+  /** The fake Copilot SDK worker of the last opened Copilot chat. */
+  copilotPooled: null as any,
   droidPromptGate: null as Promise<void> | null,
   droidPromptError: null as unknown,
   emitCodexPayload(payload: Record<string, unknown>) {
@@ -1013,6 +1015,49 @@ vi.mock("./droidSdkPool", () => ({
   }),
   releaseDroidSdkConnection: vi.fn(),
 }));
+
+// The Copilot SDK worker is a forked process: the pool is its boundary. The fake
+// opens sessions at the requested level and finishes each turn with `session.idle`.
+vi.mock("./copilotSdkPool", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./copilotSdkPool")>();
+  return {
+    ...actual,
+    acquireCopilotSdkConnection: vi.fn(async () => {
+      const pooled: any = {
+        process: { exitCode: null, signalCode: null, killed: false, connected: true },
+        bridge: {
+          onEvent: null,
+          onWorkerExit: null,
+          onPermissionRequest: null,
+          onExitPlanRequest: null,
+          onUserInputRequest: null,
+          onMcpAuthRequest: null,
+        },
+        openSession: vi.fn(async (config: Record<string, unknown>) => ({
+          sessionId: typeof config.sessionId === "string" ? config.sessionId : "copilot-sdk-session-1",
+          events: [],
+          permissionMode: config.permissionMode === "full-auto" ? "allow-all" : config.permissionMode === "assisted" ? "assisted" : "manual",
+          permissionError: null,
+        })),
+        send: vi.fn(async (chatId: string) => {
+          queueMicrotask(() => pooled.bridge.onEvent?.(chatId, { type: "session.idle", data: {} }));
+          return "copilot-message-1";
+        }),
+        request: vi.fn(async () => null),
+        setModel: vi.fn(async () => {}),
+        setAutoTier: vi.fn(async () => ({ status: "unchanged" })),
+        setPermissionMode: vi.fn(async () => ({ mode: "manual", error: null })),
+        forkSession: vi.fn(async () => "copilot-forked-1"),
+        abort: vi.fn(async () => {}),
+        disconnect: vi.fn(async () => {}),
+        dispose: vi.fn(),
+      };
+      mockState.copilotPooled = pooled;
+      return { pooled, generation: 1, poolKey: "copilot-pool" };
+    }),
+    releaseCopilotSdkConnection: vi.fn(),
+  };
+});
 
 // Pass-through: records which provider handles a settled turn's follow-ups were given.
 vi.mock("../usage/turnUsageReconcilers", async (importOriginal) => {
@@ -2215,6 +2260,7 @@ beforeEach(() => {
   mockState.droidPromptCalls = [];
   mockState.droidSettingsUpdates = [];
   mockState.droidPooled = null;
+  mockState.copilotPooled = null;
   mockState.droidPromptGate = null;
   mockState.droidPromptError = null;
   cursorModelsListMock.mockReset();
