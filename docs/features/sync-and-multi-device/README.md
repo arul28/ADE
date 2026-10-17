@@ -3202,25 +3202,25 @@ phone flow:
    reason. `switchSyncHost` asks the same question, and what it does with the
    answer depends on what its caller asked for (`purpose`):
 
-   - `"host"` (the default — this phone handoff, and the brain's startup loop
-     when it was told which project to host) **refuses**, before the previous
-     host is touched and before either phase runs. Without this check the old
-     host released the machine-wide lease, the target never took it, and every
-     connected client dropped until the switch timed out. Refusing before the
-     phases is also what keeps the refusal honest: both of them await the one
-     shared role-refresh drain, `activation` is
-     `setHostStartupEnabled(true)`, and for a viewer project that drain dials
-     the other machine. The dial has no connect timeout of its own, so an
-     unanswered connect runs to the macOS SYN timeout (75s) and the attempt is
-     reported as the 10-second activation budget instead of the reason.
-   - `"serve"` (status, roster and document reads, via
-     `resolveActiveSyncHost`) **adopts the scope as-is**. A laptop following a
-     desktop is a supported, working configuration and a viewer already owns
-     sync here, so refusing it would break reads that work. Nothing is
-     activated for it — there is no host here to start — and this explicit
-     switch skips the initialization phase. A cold runtime still initializes
-     sync in the background, however, so its saved peer can still incur the
-     operating system's 75-second connect timeout.
+   - `"host"` (the default — this phone project handoff) **refuses**, before
+     the previous host is touched and before either phase runs. Without this
+     check the old host released the machine-wide lease, the target never took
+     it, and every connected client dropped until the switch timed out. Both
+     phases await the one shared role-refresh drain, and for a viewer project
+     that drain dials the other machine (`activation` is
+     `setHostStartupEnabled(true)`). That dial is bounded to 5s
+     (`VIEWER_CONNECT_TIMEOUT_MS`), so checking the blocker first means a
+     refused switch never dials.
+   - `"serve"` (status, roster and document reads, via `resolveActiveSyncHost`,
+     and the brain's startup loop) **adopts the scope as-is**. A laptop
+     following a desktop is a supported, working configuration and a viewer
+     already owns sync here, so refusing it would break reads that work.
+     Nothing is activated for it — there is no host here to start — and this
+     explicit switch skips the initialization phase. A cold runtime still
+     initializes sync in the background, however, and its saved peer dial is
+     bounded the same way. When another project already hosts, the current host
+     keeps its lease, its discovery and its place as the sync host; the
+     followed project is only read.
 
 The saved viewer connection (`sync-peer-draft.json`) is in the machine-wide
 pairing directory, but joining another brain is a choice about one project

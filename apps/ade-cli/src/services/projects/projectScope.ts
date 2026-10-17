@@ -592,15 +592,15 @@ export class ProjectScopeRegistry {
 
     // Read once, here: the scope is in hand and nothing has dialed yet, because
     // host initialization and activation below await the same role-refresh
-    // drain. For a project that
-    // follows another machine that drain DIALS the other machine, and the dial
-    // has no connect timeout of its own, so an unanswered connect runs to the
-    // macOS SYN timeout (75s) and lands inside whichever budget runs first —
-    // which is why a brain retried one project 670 times over 18 hours and
-    // every attempt was reported as "Sync host activation ... timed out after
-    // 10000ms": the drain's budget, never the reason. `getHostBlocker()` mirrors
-    // the decision the drain would make without dialing anything, so the answer
-    // costs nothing and arrives before the wait.
+    // drain. For a project that follows another machine that drain DIALS the
+    // other machine. That dial is bounded to 5s (`VIEWER_CONNECT_TIMEOUT_MS` in
+    // syncPeerService.ts), but it was not always: an unanswered connect ran to
+    // the macOS SYN timeout (75s), which is why a brain retried one project 670
+    // times over 18 hours and every attempt was reported as "Sync host
+    // activation ... timed out after 10000ms": the drain's budget, never the
+    // reason. `getHostBlocker()` mirrors the decision the drain would make
+    // without dialing anything, so the answer costs nothing and arrives before
+    // the wait.
     //
     // Checked before the previous host is touched: deactivating it releases the
     // machine-wide sync lease, so refusing here leaves the current host, its
@@ -687,6 +687,15 @@ export class ProjectScopeRegistry {
     // themselves.
     const heldActivation = this.heldSyncHostPhase(projectId, "activation");
     if (heldActivation) throw heldActivation.error;
+
+    // A `serve` switch to a project that follows another machine must not
+    // displace a live host: it is adopted read-only (see `purpose` on
+    // SwitchSyncHostOptions), so return before the previous host is deactivated.
+    // The previous host keeps its lease and discovery, and `syncHostProjectId`
+    // is unchanged. With no previous host there is nothing to displace, so the
+    // reader is published as before, and `resolveActiveSyncHost` answers from
+    // `syncHostProjectId` without switching again.
+    if (blocker && options.purpose === "serve" && previousHostId) return scope;
 
     let previousDeactivationAttempted = false;
     let targetActivationAttempted = false;
