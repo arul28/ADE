@@ -512,6 +512,24 @@ export function resolvePathWithinRoot(
   return candidateReal;
 }
 
+/**
+ * Whether `candidate` would fail the containment rule if names it does not find
+ * were allowed.
+ *
+ * A missing name under an in-root symlink that points outside fails on that
+ * name before containment is checked, so the plain resolve reports "does not
+ * exist" for a path that is really outside the root. Resolving again with
+ * missing names allowed reaches the containment rule.
+ */
+export function escapesRootWhenMissingAllowed(root: string, candidate: string): boolean {
+  try {
+    resolvePathWithinRoot(root, candidate, { allowMissing: true });
+    return false;
+  } catch (error) {
+    return isPathEscapeError(error);
+  }
+}
+
 function openReadOnlyNoFollow(filePath: string): number {
   const noFollowFlag = typeof fs.constants.O_NOFOLLOW === "number"
     ? fs.constants.O_NOFOLLOW

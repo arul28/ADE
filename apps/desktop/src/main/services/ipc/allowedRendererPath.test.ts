@@ -117,6 +117,31 @@ describe("resolveWithinAllowedDirs", () => {
       .toThrow(PATH_OUTSIDE_ALLOWED_DIRS_MESSAGE);
   });
 
+  // The existence oracle through a symlink: an in-root link that points outside
+  // the allowlist. A name that really exists under it is refused as outside the
+  // allowlist, but a name that does not exist fails on the missing component
+  // before containment is checked, so it said "Path does not exist" and told the
+  // renderer what was on disk outside the allowlist. Both must read the same.
+  // A missing name under an in-root link to an in-root folder keeps its reason.
+  it("gives a missing name under a symlink that leaves the allowlist the allowlist message", (ctx) => {
+    const escapeDir = path.join(allowedDir, "escape-dir");
+    const innerDir = path.join(allowedDir, "inner-dir");
+    try {
+      fs.symlinkSync(outsideDir, escapeDir, "dir");
+      fs.symlinkSync(allowedDir, innerDir, "dir");
+    } catch {
+      ctx.skip();
+      return;
+    }
+    expect(fs.lstatSync(escapeDir).isSymbolicLink(), "symlink setup").toBe(true);
+    expect(() => resolveWithinAllowedDirs(allowedDirs, path.join(escapeDir, "not-there.png")))
+      .toThrow(PATH_OUTSIDE_ALLOWED_DIRS_MESSAGE);
+    expect(() => resolveWithinAllowedDirs(allowedDirs, path.join(escapeDir, "secret.txt")))
+      .toThrow(PATH_OUTSIDE_ALLOWED_DIRS_MESSAGE);
+    expect(() => resolveWithinAllowedDirs(allowedDirs, path.join(innerDir, "not-there.png")))
+      .toThrow(`Path does not exist: ${path.join(innerDir, "not-there.png")}`);
+  });
+
   // A root that is itself missing fails for a reason that has nothing to do
   // with the candidate; it must not downgrade a real containment rejection
   // into that root's error.

@@ -121,6 +121,31 @@ describe("resolveWithinAllowedProjectRoots", () => {
       .toThrow(ROOT_OUTSIDE_ALLOWED_PROJECT_ROOTS_MESSAGE);
   });
 
+  // The existence oracle through a symlink: an in-root link that points outside
+  // the allowed roots. A folder that really exists under it is refused as outside
+  // the roots, but a folder that does not exist fails on the missing component
+  // before containment is checked, so it said "does not exist" and told the
+  // renderer what was on disk outside the roots. Both must read the same.
+  // A missing folder under an in-root link to an in-root folder keeps its reason.
+  it("gives a missing folder under a symlink that leaves the allowed roots the allowlist message", (ctx) => {
+    const escapeDir = path.join(allowedRoot, "escape-dir");
+    const innerDir = path.join(allowedRoot, "inner-dir");
+    try {
+      fs.symlinkSync(outsideRoot, escapeDir, "dir");
+      fs.symlinkSync(insideFirst, innerDir, "dir");
+    } catch {
+      ctx.skip();
+      return;
+    }
+    expect(fs.lstatSync(escapeDir).isSymbolicLink(), "symlink setup").toBe(true);
+    expect(() => resolveWithinAllowedProjectRoots(allowedRoots, path.join(escapeDir, "not-there")))
+      .toThrow(ROOT_OUTSIDE_ALLOWED_PROJECT_ROOTS_MESSAGE);
+    expect(() => resolveWithinAllowedProjectRoots(allowedRoots, path.join(escapeDir, "secret.txt")))
+      .toThrow(ROOT_OUTSIDE_ALLOWED_PROJECT_ROOTS_MESSAGE);
+    expect(() => resolveWithinAllowedProjectRoots(allowedRoots, path.join(innerDir, "not-there")))
+      .toThrow(`Path does not exist: ${path.join(innerDir, "not-there")}`);
+  });
+
   // A root that is itself missing fails for a reason that has nothing to do
   // with the candidate; it must not downgrade a real containment rejection
   // into that root's error.
