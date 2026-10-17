@@ -84,6 +84,36 @@ describe("CommitTimeline cached history", () => {
     expect(listRecentCommits).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps the revisit's mount commit as cheap as a cold mount, and paints the cached rows in a later commit", async () => {
+    const first = renderTimeline();
+    await screen.findByText("feat: first");
+    first.unmount();
+
+    listRecentCommits.mockImplementation(() => new Promise(() => undefined));
+    // What each commit shows: the React Profiler runs after its commit is in the DOM.
+    const rowsInCommit: boolean[] = [];
+    render(
+      <React.Profiler
+        id="timeline"
+        onRender={() => rowsInCommit.push(document.body.textContent?.includes("feat: first") ?? false)}
+      >
+        <CommitTimeline
+          laneId="lane-1"
+          selectedSha={null}
+          onSelectCommit={() => undefined}
+          cacheScope={laneGitListScope("/repo", "lane-1")}
+          cacheBranchRef="feature/a"
+          hideHeader
+        />
+      </React.Profiler>,
+    );
+
+    expect(rowsInCommit[0]).toBe(false);
+    expect(rowsInCommit.at(-1)).toBe(true);
+    expect(screen.getByText("feat: first")).toBeTruthy();
+    expect(listRecentCommits).toHaveBeenCalledTimes(2);
+  });
+
   it("replaces the cached rows once the fresh read lands", async () => {
     const first = renderTimeline();
     await screen.findByText("feat: first");

@@ -557,6 +557,48 @@ describe("LaneGitActionsPane rescue action", () => {
     expect(screen.queryByText("src/file.ts")).toBeNull();
   });
 
+  it("keeps a revisit's first commit free of the cached Branch rows, and paints them in a later commit", async () => {
+    mockBranchChanges(() => ["src/alpha.ts"]);
+    const first = renderPane({ laneId: "lane-2" });
+    expect(await screen.findByTitle("src/alpha.ts")).toBeTruthy();
+    first.unmount();
+
+    (window.ade.diff as any).getBranchChanges = vi.fn(() => new Promise(() => undefined));
+    // What each commit shows: the React Profiler runs after its commit is in the DOM.
+    const commits: Array<{ loading: boolean; rows: boolean }> = [];
+    render(
+      <React.Profiler
+        id="pane"
+        onRender={() =>
+          commits.push({
+            loading: document.body.textContent?.includes("Reading branch changes") ?? false,
+            rows: document.querySelector('[title="src/alpha.ts"]') !== null,
+          })
+        }
+      >
+        <MemoryRouter>
+          <LaneGitActionsPane
+            laneId="lane-2"
+            autoRebaseEnabled={false}
+            onOpenSettings={vi.fn()}
+            onSelectFile={vi.fn()}
+            onSelectCommit={vi.fn()}
+            selectedPath={null}
+            selectedMode={null}
+            selectedCommit={null}
+            selectedCommitSha={null}
+          />
+        </MemoryRouter>
+      </React.Profiler>,
+    );
+
+    // The mount commit is the cold shell (the read's placeholder, no rows), as on main.
+    expect(commits[0]).toEqual({ loading: true, rows: false });
+    expect(commits.at(-1)).toEqual({ loading: false, rows: true });
+    expect(screen.getByTitle("src/alpha.ts")).toBeTruthy();
+    expect((window.ade.diff as any).getBranchChanges).toHaveBeenCalledTimes(1);
+  });
+
   it("paints the last Branch diff on a revisit before the fresh read lands", async () => {
     mockBranchChanges(() => ["src/alpha.ts"]);
     const first = renderPane({ laneId: "lane-2" });

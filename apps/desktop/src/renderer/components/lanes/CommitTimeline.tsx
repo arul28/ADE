@@ -1,4 +1,4 @@
-import React from "react";
+import React, { startTransition } from "react";
 import type { GitCommitSummary, OpenProjectBinding } from "../../../shared/types";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { COLORS, LABEL_STYLE, MONO_FONT, inlineBadge } from "./laneDesignTokens";
@@ -95,9 +95,7 @@ export function CommitTimeline({
   hideHeader?: boolean;
 }) {
   const pin = runtimePin ?? null;
-  const [commits, setCommits] = React.useState<GitCommitSummary[]>(
-    () => readLaneGitListCache(cacheScope, cacheBranchRef)?.commits ?? [],
-  );
+  const [commits, setCommits] = React.useState<GitCommitSummary[]>([]);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [limit, setLimit] = React.useState(40);
@@ -135,6 +133,13 @@ export function CommitTimeline({
     setLimit(40);
     didInitialScrollRef.current = false;
   }, [laneId, pin]);
+
+  // Declared before the read's effect, so the cached rows are queued before its
+  // result. A transition keeps them out of the mount's first commit.
+  React.useEffect(() => {
+    const cached = readLaneGitListCache(cacheScope, cacheBranchRef)?.commits;
+    if (cached) startTransition(() => setCommits(cached));
+  }, [cacheBranchRef, cacheScope]);
 
   React.useEffect(() => {
     void load();

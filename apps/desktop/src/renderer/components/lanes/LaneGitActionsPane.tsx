@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import React, { startTransition, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
 import { useStableBinding } from "../../state/laneMachineRouting";
 import type { LaneDiffMode } from "../../../shared/types";
@@ -829,7 +829,6 @@ export function LaneGitActionsPane({
   const initialCachedGitState = readLaneGitActionsCachedState(projectStateKey, laneId);
   const listScope = laneGitListScope(projectStateKey, laneId);
   const listBranchRef = lane?.branchRef ?? null;
-  const initialListCache = readLaneGitListCache(listScope, listBranchRef);
 
   const [loading, setLoading] = useState(false);
   const [changes, setChanges] = useState<DiffChanges>(initialCachedGitState?.changes ?? EMPTY_CHANGES);
@@ -854,7 +853,7 @@ export function LaneGitActionsPane({
   // tree is clean, which is exactly when Uncommitted would read "+0 -0" for a
   // lane full of committed work.
   const [scopeChoice, setScopeChoice] = useState<"branch" | "uncommitted" | null>(null);
-  const [branchChanges, setBranchChanges] = useState<BranchDiffChanges | null>(initialListCache?.branchChanges ?? null);
+  const [branchChanges, setBranchChanges] = useState<BranchDiffChanges | null>(null);
   // The branch read effect writes its result under the lane and branch the read
   // was started for. Kept in a ref, not deps: a branch change already re-runs
   // that effect through `branchReadNonce`, so it must not add a second trigger.
@@ -1130,6 +1129,7 @@ export function LaneGitActionsPane({
 
   useEffect(() => {
     setScopeChoice(null);
+    setBranchChanges(null);
     setBranchError(null);
   }, [laneId]);
 
@@ -1394,7 +1394,10 @@ export function LaneGitActionsPane({
     setLoading(false);
     setChanges(cached?.changes ?? EMPTY_CHANGES);
     setChangesReadyForLane(cached?.changes ? laneId : null);
-    setBranchChanges(cachedList?.branchChanges ?? null);
+    // The cached Branch diff paints in a transition, so the first commit of a
+    // revisit is the same cheap shell a cold mount paints. Fresh data is queued
+    // later by the read's own `.then`, so it still lands last.
+    startTransition(() => setBranchChanges(cachedList?.branchChanges ?? null));
     setStashes(cached?.stashes ?? []);
     setSyncStatus(cached?.syncStatus ?? null);
     setForcePushSuggested(cached?.forcePushSuggested ?? false);
