@@ -321,6 +321,48 @@ describe("createSyncService", () => {
     }
   });
 
+  it("never dials this machine for a fresh remote brain that has no address", async () => {
+    const projectRoot = makeTempRoot("ade-sync-service-addressless-brain-");
+    cleanupRoots.push(projectRoot);
+    const db = await openKvDb(path.join(projectRoot, ".ade", "kv.sqlite"), createLogger() as any);
+    // A fake standing in for this machine's own listener on a random port: a
+    // viewer that dials 127.0.0.1 for the remote brain lands here.
+    let selfDials = 0;
+    const selfListener = net.createServer((socket) => {
+      selfDials += 1;
+      socket.destroy();
+    });
+    await new Promise<void>((resolve) => selfListener.listen(0, "127.0.0.1", resolve));
+    const selfPort = (selfListener.address() as net.AddressInfo).port;
+    const logger = createLogger();
+    const service = createService(db, projectRoot, { hostStartupEnabled: false, logger: logger as any });
+    const registry = service.getDeviceRegistryService();
+    registry.upsertPeerMetadata({
+      deviceId: "addressless-brain",
+      deviceName: "Addressless brain",
+      platform: "macOS",
+      deviceType: "desktop",
+      siteId: "addressless-site",
+      dbVersion: 1,
+    } as any, { lastSeenAt: new Date().toISOString(), lastPort: selfPort });
+    registry.setClusterState({ brainDeviceId: "addressless-brain", brainEpoch: 1 });
+    fs.mkdirSync(path.join(projectRoot, ".ade", "secrets", "sync"), { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, ".ade", "secrets", "sync", "sync-bootstrap-token"), "token\n");
+    try {
+      await service.reevaluateHostRole();
+      expect(selfDials).toBe(0);
+      expect(logger.warn).toHaveBeenCalledWith("sync.role.viewer_no_reachable_address", {
+        brainDeviceId: "addressless-brain",
+        brainRecordKnown: true,
+      });
+      expect(registry.getClusterState()?.brainDeviceId).toBe("addressless-brain");
+    } finally {
+      await service.dispose();
+      await new Promise<void>((resolve) => selfListener.close(() => resolve()));
+      db.close();
+    }
+  });
+
   const seedDeadBrainRecord = (registry: ReturnType<SyncService["getDeviceRegistryService"]>) => {
     registry.upsertPeerMetadata({
       deviceId: "dead-brain",

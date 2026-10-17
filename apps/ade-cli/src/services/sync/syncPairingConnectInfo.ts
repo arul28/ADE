@@ -11,6 +11,13 @@ function normalizeHost(host: string | null | undefined): string | null {
   return normalized.length > 0 ? normalized : null;
 }
 
+function isLoopbackHost(normalized: string): boolean {
+  return normalized === "localhost"
+    || normalized === "::1"
+    || normalized.startsWith("127.")
+    || normalized.startsWith("::ffff:127.");
+}
+
 export function tailscaleDnsNameFromDevice(
   localDevice: SyncDeviceRecord,
 ): string | null {
@@ -21,7 +28,8 @@ export function tailscaleDnsNameFromDevice(
 }
 
 export function buildAddressCandidates(
-  localDevice: SyncDeviceRecord,
+  device: SyncDeviceRecord,
+  options: { isLocalDevice: boolean },
 ): SyncAddressCandidate[] {
   const candidates: SyncAddressCandidate[] = [];
   const seen = new Set<string>();
@@ -31,30 +39,36 @@ export function buildAddressCandidates(
   ) => {
     const normalized = normalizeHost(host);
     if (!normalized || seen.has(normalized)) return;
+    // A remote device's loopback address still means this machine, whichever
+    // source recorded it: a relay-bridged peer is seen from 127.0.0.1.
+    if (!options.isLocalDevice && isLoopbackHost(normalized)) return;
     seen.add(normalized);
     candidates.push({ host: normalized, kind });
   };
-  const preferredSavedHost = normalizeHost(localDevice.lastHost);
+  const preferredSavedHost = normalizeHost(device.lastHost);
   const preferredSavedHostKind: SyncAddressCandidate["kind"] | null = preferredSavedHost == null
     ? null
-    : localDevice.ipAddresses.some((host) => normalizeHost(host) === preferredSavedHost)
+    : device.ipAddresses.some((host) => normalizeHost(host) === preferredSavedHost)
       ? "lan"
-      : normalizeHost(localDevice.tailscaleIp) === preferredSavedHost
-        || tailscaleDnsNameFromDevice(localDevice) === preferredSavedHost
+      : normalizeHost(device.tailscaleIp) === preferredSavedHost
+        || tailscaleDnsNameFromDevice(device) === preferredSavedHost
         ? "tailscale"
         : "saved";
   if (preferredSavedHostKind && preferredSavedHostKind !== "saved") {
-    append(localDevice.lastHost, preferredSavedHostKind);
+    append(device.lastHost, preferredSavedHostKind);
   }
-  for (const lanAddress of localDevice.ipAddresses) {
+  for (const lanAddress of device.ipAddresses) {
     append(lanAddress, "lan");
   }
   if (preferredSavedHostKind === "saved") {
-    append(localDevice.lastHost, "saved");
+    append(device.lastHost, "saved");
   }
-  append(tailscaleDnsNameFromDevice(localDevice), "tailscale");
-  append(localDevice.tailscaleIp, "tailscale");
-  append("127.0.0.1", "loopback");
+  append(tailscaleDnsNameFromDevice(device), "tailscale");
+  append(device.tailscaleIp, "tailscale");
+  // Loopback is this machine only for the local device; for any other device
+  // the append guard above drops it, so the candidate list stays empty rather
+  // than pointing at this machine's own listener.
+  if (options.isLocalDevice) append("127.0.0.1", "loopback");
   return candidates;
 }
 
@@ -72,7 +86,7 @@ export function buildPairingConnectInfo(argsIn: {
   relayWssUrl?: string | null;
 }): SyncPairingConnectInfo {
   const port = normalizeSyncHostPort(argsIn.localDevice.lastPort);
-  const addressCandidates = buildAddressCandidates(argsIn.localDevice);
+  const addressCandidates = buildAddressCandidates(argsIn.localDevice, { isLocalDevice: true });
   // The cloud relay is the lowest-priority path: phones try every direct
   // candidate first and fall back to the tunnel only when nothing answers.
   if (argsIn.relayWssUrl) {

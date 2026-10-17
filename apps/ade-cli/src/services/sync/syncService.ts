@@ -8,6 +8,7 @@ import {
   type SyncCloudRelayStatus,
   type SyncAccountDirectoryHealth,
   type SyncDesktopConnectionDraft,
+  type SyncDeviceRecord,
   type SyncDeviceRuntimeState,
   type SyncGetStatusArgs,
   type SyncPairingConnectInfo,
@@ -767,7 +768,8 @@ export function createSyncService(args: SyncServiceArgs) {
     if (!cluster || cluster.brainDeviceId === deviceRegistryService.getLocalDeviceId()) return false;
     const brain = deviceRegistryService.getDevice(cluster.brainDeviceId);
     if (!brain || Math.floor(port) !== (brain.lastPort ?? DEFAULT_SYNC_HOST_PORT)) return false;
-    return buildAddressCandidates(brain).some(
+    // The brain is remote here: the local device returned above.
+    return buildAddressCandidates(brain, { isLocalDevice: false }).some(
       (candidate) => candidate.kind !== "loopback" && normalizeHostKey(candidate.host) === host,
     );
   };
@@ -1347,6 +1349,14 @@ export function createSyncService(args: SyncServiceArgs) {
     }
   };
 
+  // The host a viewer dials for a brain: its best address candidate. Loopback is
+  // offered only when the brain is this device, so a remote brain with no
+  // address yields null instead of this machine's own listener.
+  const brainDialHost = (brain: SyncDeviceRecord): string | null =>
+    buildAddressCandidates(brain, {
+      isLocalDevice: brain.deviceId === deviceRegistryService.getLocalDeviceId(),
+    })[0]?.host ?? null;
+
   const resolveViewerDraftFromRegistry =
     (): SyncDesktopConnectionDraft | null => {
       if (forceHostRole) return null;
@@ -1354,10 +1364,15 @@ export function createSyncService(args: SyncServiceArgs) {
       const token = readToken();
       if (!cluster || !token) return null;
       const brain = deviceRegistryService.getDevice(cluster.brainDeviceId);
-      const host =
-        brain != null ? buildAddressCandidates(brain)[0]?.host ?? null : null;
+      const host = brain != null ? brainDialHost(brain) : null;
       const port = brain?.lastPort ?? DEFAULT_SYNC_HOST_PORT;
-      if (!host) return null;
+      if (!host) {
+        args.logger.warn("sync.role.viewer_no_reachable_address", {
+          brainDeviceId: cluster.brainDeviceId,
+          brainRecordKnown: brain != null,
+        });
+        return null;
+      }
       return {
         host,
         port,
@@ -1438,7 +1453,7 @@ export function createSyncService(args: SyncServiceArgs) {
     const brain = deviceRegistryService.getDevice(cluster.brainDeviceId);
     return {
       reason: "cluster_record",
-      host: brain ? buildAddressCandidates(brain)[0]?.host ?? null : null,
+      host: brain ? brainDialHost(brain) : null,
       port: brain?.lastPort ?? null,
     };
   };
