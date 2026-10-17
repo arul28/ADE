@@ -26,6 +26,7 @@ import { HostKeyTrustCard } from "./HostKeyTrustCard";
 import { MachineAvatar, PresenceDot, VersionChip, machineFormFactor, machinePlatform } from "./MachineIdentity";
 import { UpdateSteps, type MachineUpdatePhase } from "./UpdateSteps";
 import {
+  autoConnectOffReason,
   connectionStateLabel,
   formatLastSeen,
   isVersionSkewWarning,
@@ -174,6 +175,8 @@ export function SavedMachineRow({
         status ?? null,
         connected?.target.id === target.id,
       );
+  // Says why a machine that is not connected will not come back on its own.
+  const autoConnectOff = statusLabel === "Not connected" ? autoConnectOffReason(target) : null;
   const [hovered, setHovered] = useState(false);
   const compatibilityWarnings = selected
     ? (status?.compatibilityWarnings ??
@@ -225,7 +228,11 @@ export function SavedMachineRow({
             : targetConnecting && !connectingStale
               ? "Connecting…"
               : target.lastConnectedAt || statusLabel !== "Not connected"
-                ? `${statusLabel} · ${formatLastSeen(target.lastConnectedAt).replace(/^Last connected /, "last seen ")}`
+                ? [
+                    statusLabel,
+                    autoConnectOff,
+                    formatLastSeen(target.lastConnectedAt).replace(/^Last connected /, "last seen "),
+                  ].filter(Boolean).join(" · ")
                 : formatLastSeen(null);
   // A machine restarting for an update drops its connection on purpose. That
   // is a step of the update, not a failure, so its error card stays hidden.

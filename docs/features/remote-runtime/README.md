@@ -1568,6 +1568,8 @@ diagnostics with `ADE_ENABLE_DESKTOP_SYNC_HOST=1`.
 
 - `Remote target was not found` — the saved target was removed or the UI has a stale selection. Refresh the target list.
 - `Remote machine was manually disconnected. Connect again to use this remote project.` — the user explicitly disconnected the target; ADE will not implicitly reconnect or restore it until Connect is pressed.
+- `Not connected · you disconnected it on <date>` — the row's line for a manual disconnect. The same rule applies: ADE waits for Connect.
+- `Not connected · Reconnect automatically is off` — the machine has connected before, but its **Reconnect automatically** checkbox (Edit) is off, so ADE does not reconnect it when the app opens. Connect makes a one-off connection and leaves the checkbox as it is. A machine that has never connected shows `Never connected` instead.
 - `Remote ADE service connection failed.` — the target is currently unreachable or its route failed. Automatic reconnects continue with bounded backoff; press Connect to bypass the current backoff when you want an immediate retry.
 - `SSH server at <host:port> closed the connection before ADE could finish the SSH handshake` — the TCP route opened but the server reset or closed the SSH handshake. Check Remote Login/sshd, firewall rules, and Tailscale SSH policy.
 - `ADE service is not installed ... no bundled ADE service is available` — install or build `ade` on the remote, or use a release build that includes runtime resources for the remote architecture.
