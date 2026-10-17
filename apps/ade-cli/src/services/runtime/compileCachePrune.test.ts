@@ -19,6 +19,7 @@ afterEach(() => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+/** Creates a cache-tag directory under the test root with one compiled file inside. */
 function makeTag(name: string): void {
   fs.mkdirSync(path.join(root, name));
   fs.writeFileSync(path.join(root, name, "blob.bin"), "compiled");

@@ -628,6 +628,16 @@ saved path and expected branch to be registered as this project's Git
 worktree, rechecks symlink and directory identity immediately before removal,
 and holds the same database-backed worktree lease used by PR workflows.
 
+Node compile caches sit outside the project ledger and prune themselves. The
+desktop prunes its own root (`~/Library/Caches/ADE/compile-cache`, or
+`%LOCALAPPDATA%\ADE\compile-cache`, or the XDG cache path on Linux) after the
+first window opens. The brain prunes `<ADE home>/cache/node-compile` after it
+starts listening. Each removes only sibling directories named like a Node build
+tag (`v<semver>-…`), and never follows links. The active build's directory is
+never touched. An explicit `NODE_COMPILE_CACHE` or `ADE_COMPILE_CACHE_DIR` is the
+caller's directory, so nothing is pruned there. A directory Windows keeps locked
+is skipped and retried on the next launch. The `ade` CLI itself does not prune.
+
 ### Lane lifecycle rules
 
 Settings > Storage owns the four project cleanup rules:
