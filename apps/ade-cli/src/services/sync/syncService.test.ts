@@ -172,6 +172,128 @@ describe("createSyncService", () => {
     })).toBe(false);
   });
 
+  describe("a project's legacy sync draft and the shared pairing directory", () => {
+    const sharedDraftFile = "sync-peer-draft.json";
+    const draftJson = (host: string, port: number) => JSON.stringify({
+      host,
+      port,
+      authKind: "bootstrap",
+      pairedDeviceId: null,
+      lastRemoteDbVersion: 0,
+    });
+    // One machine-wide pairing directory, shared by every project in a test.
+    const makeMachineDir = () => {
+      const machineDir = makeTempRoot("ade-sync-machine-");
+      cleanupRoots.push(machineDir);
+      fs.writeFileSync(path.join(machineDir, "sync-bootstrap-token"), "token\n");
+      return machineDir;
+    };
+    const openProject = async (machineDir: string) => {
+      const projectRoot = makeTempRoot("ade-sync-project-");
+      cleanupRoots.push(projectRoot);
+      const db = await openKvDb(path.join(projectRoot, ".ade", "kv.sqlite"), createLogger() as any);
+      const service = createService(db, projectRoot, { phonePairingStateDir: machineDir });
+      return { projectRoot, db, service, registry: service.getDeviceRegistryService() };
+    };
+    const followBrain = (registry: ReturnType<SyncService["getDeviceRegistryService"]>, deviceId: string, host: string, port: number) => {
+      registry.upsertPeerMetadata({
+        deviceId,
+        deviceName: deviceId,
+        platform: "macOS",
+        deviceType: "desktop",
+        siteId: `${deviceId}-site`,
+        dbVersion: 1,
+      } as any, { lastSeenAt: new Date(Date.now() - 2 * 60_000).toISOString(), lastHost: host, lastPort: port });
+      registry.setClusterState({ brainDeviceId: deviceId, brainEpoch: 1 });
+    };
+
+    it("adopts the project's own legacy draft when its cluster record names that brain, tagged for that project", async () => {
+      const machineDir = makeMachineDir();
+      const project = await openProject(machineDir);
+      try {
+        followBrain(project.registry, "brain-a", "192.0.2.20", 45872);
+        fs.mkdirSync(path.join(project.projectRoot, ".ade", "secrets"), { recursive: true });
+        fs.writeFileSync(path.join(project.projectRoot, ".ade", "secrets", sharedDraftFile), draftJson("192.0.2.20", 45872));
+        expect(project.service.getHostBlocker()).toEqual({ reason: "saved_connection", host: "192.0.2.20", port: 45872 });
+        const adopted = JSON.parse(fs.readFileSync(path.join(machineDir, sharedDraftFile), "utf8"));
+        expect(adopted.projectSiteId).toBe(project.registry.getLocalSiteId());
+      } finally {
+        await project.service.dispose();
+        project.db.close();
+      }
+    });
+
+    it("does not adopt a legacy draft that dials a brain this project does not follow", async () => {
+      const machineDir = makeMachineDir();
+      const project = await openProject(machineDir);
+      try {
+        followBrain(project.registry, "brain-a", "192.0.2.20", 45872);
+        fs.mkdirSync(path.join(project.projectRoot, ".ade", "secrets"), { recursive: true });
+        // The ghost from the 2026-10-16 incident, saved by a project that followed it.
+        fs.writeFileSync(path.join(project.projectRoot, ".ade", "secrets", sharedDraftFile), draftJson("192.168.1.89", 45872));
+        expect(project.service.getHostBlocker()).toEqual({ reason: "cluster_record", host: "192.0.2.20", port: 45872 });
+        expect(fs.existsSync(path.join(machineDir, sharedDraftFile))).toBe(false);
+      } finally {
+        await project.service.dispose();
+        project.db.close();
+      }
+    });
+
+    it("does not let an untagged draft in the shared file redirect another project", async () => {
+      const machineDir = makeMachineDir();
+      fs.writeFileSync(path.join(machineDir, sharedDraftFile), draftJson("192.168.1.89", 45872));
+      const following = await openProject(machineDir);
+      const unjoined = await openProject(machineDir);
+      try {
+        followBrain(following.registry, "brain-b", "192.0.2.30", 45872);
+        expect(following.service.getHostBlocker()).toEqual({ reason: "cluster_record", host: "192.0.2.30", port: 45872 });
+        expect(unjoined.service.getHostBlocker()).toBeNull();
+      } finally {
+        await following.service.dispose();
+        following.db.close();
+        await unjoined.service.dispose();
+        unjoined.db.close();
+      }
+    });
+
+    it("refuses disconnectFromBrain on the brain and keeps its devices and cluster record", async () => {
+      const machineDir = makeMachineDir();
+      const project = await openProject(machineDir);
+      try {
+        const registry = project.registry;
+        registry.setClusterState({ brainDeviceId: registry.getLocalDeviceId(), brainEpoch: 1 });
+        registry.upsertPeerMetadata({
+          deviceId: "phone-1",
+          deviceName: "Phone",
+          platform: "iOS",
+          deviceType: "phone",
+          siteId: "phone-1-site",
+          dbVersion: 1,
+        } as any, { lastSeenAt: new Date().toISOString() });
+        await expect(project.service.disconnectFromBrain()).rejects.toThrow("This project is the sync brain");
+        expect(registry.getClusterState()?.brainDeviceId).toBe(registry.getLocalDeviceId());
+        expect(registry.listDevices().map((device) => device.deviceId)).toContain("phone-1");
+      } finally {
+        await project.service.dispose();
+        project.db.close();
+      }
+    });
+
+    it("still lets a viewer disconnect from its brain", async () => {
+      const machineDir = makeMachineDir();
+      const project = await openProject(machineDir);
+      try {
+        followBrain(project.registry, "brain-a", "192.0.2.20", 45872);
+        expect((await project.service.getStatus()).role).toBe("viewer");
+        await project.service.disconnectFromBrain();
+        expect(project.registry.getClusterState()).toBeNull();
+      } finally {
+        await project.service.dispose();
+        project.db.close();
+      }
+    });
+  });
+
   it("leaves a dead brain's cluster record alone when this runtime may not host", async () => {
     const projectRoot = makeTempRoot("ade-sync-service-no-draft-failover-");
     cleanupRoots.push(projectRoot);
