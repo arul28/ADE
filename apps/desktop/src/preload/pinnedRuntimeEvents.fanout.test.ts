@@ -230,12 +230,14 @@ function hash(value: unknown): string {
 type Outcome = {
   rpcs: number;
   releases: number;
-  /** Per-listener delivered ids and payloads in delivery order, and resync counts. */
+  /** Per-listener delivered ids and payloads in delivery order. */
   sequence: string;
   /** Per-listener set of delivered events, ignoring order and repeats. */
   members: string;
-  /** Per-listener delivery and resync times as well, so a later delivery changes the digest. */
-  timing: string;
+  /** Per-listener [time, id, payload] of each delivery, in delivery order. */
+  deliveries: Array<Array<[number, number, unknown]>>;
+  /** Per-listener time of each resync. */
+  resyncs: number[][];
   /** Append-to-delivery latency over events appended after the listener attached. */
   maxLatencyMs: number;
   meanLatencyMs: number;
@@ -260,22 +262,17 @@ function finish(rig: Rig, listeners: Listener[]): Outcome {
     rpcs: rig.runtime.rpcCount,
     releases: rig.runtime.releaseCount,
     sequence: hash(
-      listeners.map((listener) => ({
-        delivered: listener.deliveries.map(([, id, payload]) => [id, payload]),
-        resyncs: listener.resyncs.length,
-      })),
-    ),
-    timing: hash(
-      listeners.map((listener) => ({
-        delivered: listener.deliveries,
-        resyncs: listener.resyncs,
-      })),
+      listeners.map((listener) =>
+        listener.deliveries.map(([, id, payload]) => [id, payload]),
+      ),
     ),
     members: hash(
       listeners.map((listener) => [
         ...new Set(listener.deliveries.map(([, , payload]) => (payload as { seq: number }).seq)),
       ].sort((a, b) => a - b)),
     ),
+    deliveries: listeners.map((listener) => listener.deliveries),
+    resyncs: listeners.map((listener) => listener.resyncs),
     maxLatencyMs: max,
     meanLatencyMs: count ? Math.round((total / count) * 100) / 100 : 0,
   };
@@ -400,102 +397,128 @@ async function runSilentEnd(): Promise<Outcome> {
   return finish(rig, listeners);
 }
 
-// Recorded from the unmodified preload (origin/main) with this harness.
+// One shared poll fails and main's subscription ends with it, in the same instant.
+// Main's other listeners poll outside the failure and re-subscribe at once; the
+// joined listeners wait out their 2 s backoff. Known later-delivery case.
+async function runRejectionLoss(): Promise<Outcome> {
+  const rig = createRig();
+  const listeners = await attachStaggered(rig, 3, true);
+  await drive(rig, 9_000, 20, new Map([[3_000, () => { rig.runtime.failNext = 1; rig.silentEnd(); }]]));
+  return finish(rig, listeners);
+}
+
+// Recorded from origin/main at the PR base (cb0f333) with this harness. Each
+// deliveries digest covers every listener's [time, id, payload] in delivery order.
 type ParityRecord = {
   sequence: string;
-  timing: string;
+  deliveries: string;
   members: string;
-  maxLatencyMs: number;
-  meanLatencyMs: number;
+  resyncs: number[][];
 };
 const MAIN_PARITY: Record<string, ParityRecord> = {
-  "idle": {
-    "sequence": "4a950e1fe93a3b79090a6bf42ba674f8eed5dd35bb712421b899466317dfa17a",
-    "timing": "e978beceab23425ff4f6cf8b55a0ec7d2933c923710f7c1100b76c77daa34e5a",
-    "members": "4d417efac51835eb0795550275c95bc7001c6e50f0c37e7ff381af198cfb7a8a",
-    "maxLatencyMs": 0,
-    "meanLatencyMs": 0
+  idle: {
+    sequence: "4d417efac51835eb0795550275c95bc7001c6e50f0c37e7ff381af198cfb7a8a",
+    deliveries: "4d417efac51835eb0795550275c95bc7001c6e50f0c37e7ff381af198cfb7a8a",
+    members: "4d417efac51835eb0795550275c95bc7001c6e50f0c37e7ff381af198cfb7a8a",
+    resyncs: [[],[],[],[],[],[],[],[],[],[]],
   },
-  "streaming": {
-    "sequence": "79b96bcc74ff5b27ef6b1de2768e3f49ce93c7128e010232903e2daa81f46b42",
-    "timing": "360f26efef5f5b967bf25c8b746057dfd07f8b7af9869cbe74014efae730ed67",
-    "members": "4580fca421dca4ab32b6948ffe9e811059e81a2dcab3c0a7691612e9a8d4c4d7",
-    "maxLatencyMs": 0,
-    "meanLatencyMs": 0
+  streaming: {
+    sequence: "9daad62837b706bfab9c8026817d304be8148962a90bd1e3c9cdb872072c9fc7",
+    deliveries: "7df76a7391e2fe37792b81742f61f8dda80dfd8b63e0d4749964e6fa910dc7cf",
+    members: "4580fca421dca4ab32b6948ffe9e811059e81a2dcab3c0a7691612e9a8d4c4d7",
+    resyncs: [[],[],[],[],[],[],[],[],[],[]],
   },
-  "history": {
-    "sequence": "993a580ddd09741bf6bec718399d143b69a7ec6eb6f856587874face4ef15861",
-    "timing": "70da9660f73a447d8de087d3e7f71df36c5e944abc43b316a4f303af3391e447",
-    "members": "a03ece960726213f07e8c15895c8e48ff0f8c5a471ce1f761a1c25a673c7c784",
-    "maxLatencyMs": 5483,
-    "meanLatencyMs": 988.91
+  history: {
+    sequence: "f680cedfe7060e6f76192fc83c5d561faed2b75fb5d50b3d9a7aef954be78712",
+    deliveries: "5aa3dbb1062cdb1674610248c81c25076ff709290fc5b84cf20763662b10b878",
+    members: "a03ece960726213f07e8c15895c8e48ff0f8c5a471ce1f761a1c25a673c7c784",
+    resyncs: [[],[],[],[],[],[],[],[],[],[]],
   },
-  "mixed": {
-    "sequence": "59ec0e10ef64e013dd81f8952148d33072e7f1bf2aa7bdee1c8cbb99ab0357ec",
-    "timing": "932aedfd3c15706ab6e5c8a73260456134423626a9ca7a9261e3f9cff750892d",
-    "members": "2d65caa09500c49e8c0e97042cf041982130b7ee94fc43c2f4e938ae7a98ee09",
-    "maxLatencyMs": 3006,
-    "meanLatencyMs": 264.45
+  mixed: {
+    sequence: "32f45f05a2ef02d47111c4e358b7f8d33c0970b970a86e3f64f38fbbb399dc91",
+    deliveries: "48ae0d1d4990338840408ca1bd72ee94e6af57e1689eff9ab88a1c014d5b79c0",
+    members: "2d65caa09500c49e8c0e97042cf041982130b7ee94fc43c2f4e938ae7a98ee09",
+    resyncs: [[5006],[]],
   },
-  "burst": {
-    "sequence": "f6475e13264b76e331124b5e3c39a3cffed719fee57e15682e2cc6e5bc0007a9",
-    "timing": "64980237af0a4cfa5d15d75f9362adc99080a5a3444ccdf226f730d7f4d3862d",
-    "members": "445091d504bd537800e98bc60d6799308757bf93567ec5568d1c8338629f96aa",
-    "maxLatencyMs": 0,
-    "meanLatencyMs": 0
+  burst: {
+    sequence: "379177ac2ed90b20beec1292b7b11e820deee7cde5295b5205c3668f1ae59c86",
+    deliveries: "61052e71b45bb24317a1f7b599f4d072bd958b56e5525c04fe5e0af2fe0f22b6",
+    members: "445091d504bd537800e98bc60d6799308757bf93567ec5568d1c8338629f96aa",
+    resyncs: [[],[],[],[],[]],
   },
-  "between": {
-    "sequence": "1f204fb64bb15e6b687d37d716ec13494950470b8a96681520e6cc3454bc2268",
-    "timing": "4f14eb2b78c1095a906b16a6461751a32d7e030f92cb781cf4a051453835dec8",
-    "members": "e1f5cfdc350a5e120091c951c76c393624acdc331163d045dd025c77c8a64c7b",
-    "maxLatencyMs": 0,
-    "meanLatencyMs": 0
+  between: {
+    sequence: "dc558edc89321a256b0cee0e996d80b74e04856111a6d68ea91165c35a7bfb42",
+    deliveries: "f705828631b5e1a1afeb5c4c601b2acc729b05eb4308ed10a2a4ed71c806a66e",
+    members: "e1f5cfdc350a5e120091c951c76c393624acdc331163d045dd025c77c8a64c7b",
+    resyncs: [[],[],[],[]],
   },
-  "rejection": {
-    "sequence": "87ff8cee76f4230267352f12d0cb6b7baefe9f06a130e6069cdc87576db343f8",
-    "timing": "8a25d8f1779873e01b5c61c2749a008949dcdec8845ecf1de92b32e2dc3bf114",
-    "members": "874776a663adfb5bd0abe43d6fb95e2d73a950faaf3f058b1fb48399ca45b422",
-    "maxLatencyMs": 0,
-    "meanLatencyMs": 0
+  rejection: {
+    sequence: "c3f40acf5d410298a3540ab869960c3dae10d556820a63cec24f922faf12df67",
+    deliveries: "91b0b366363782a5631561ad760b3bbdbb8dacd33b11d164b466d79e7c05ef62",
+    members: "874776a663adfb5bd0abe43d6fb95e2d73a950faaf3f058b1fb48399ca45b422",
+    resyncs: [[7009],[],[]],
   },
-  "reconnect": {
-    "sequence": "022e8baacc105a81ebd0595439e4f29fdc7fc7f65ea59450db38fc778a5bc1a1",
-    "timing": "72fa3018d6e59713c8ea3956b0641a8620b043c0e2f7894ea68dbdb38c1204f6",
-    "members": "c362d9f415339801dd8fc151097742369110351ba7d72e5b7911afad1bd46b04",
-    "maxLatencyMs": 2060,
-    "meanLatencyMs": 178.27
+  reconnect: {
+    sequence: "08619d0ec32bbbac75a34d417e084d1b0e446cba6c42c9e5f6e0225b1d84cf2e",
+    deliveries: "7abd71a22896178af3a781d6db8d0b012296558cceaf918bf5df8b4b4c6f49b0",
+    members: "c362d9f415339801dd8fc151097742369110351ba7d72e5b7911afad1bd46b04",
+    resyncs: [[7009],[7010],[7011]],
   },
-  "silentEnd": {
-    "sequence": "9eaf43dc3d1d7c36604b6b2793f3965b63cf71fcd58af92d21c1f588f1be6eb4",
-    "timing": "a1e59fe7f16cd78030028c8f76d604e6e3325c130396a6df85dcd5212f5cc25d",
-    "members": "874776a663adfb5bd0abe43d6fb95e2d73a950faaf3f058b1fb48399ca45b422",
-    "maxLatencyMs": 2006,
-    "meanLatencyMs": 231.57
+  silentEnd: {
+    sequence: "8b36dab92f5ca5bd2851c93566bd4868979491e36ebcb4f7a0eca05c4b044064",
+    deliveries: "fcb4f610ef522eb26b69f9509e514eb5ec03d9ab7464f971dd2cade2387042d5",
+    members: "874776a663adfb5bd0abe43d6fb95e2d73a950faaf3f058b1fb48399ca45b422",
+    resyncs: [[],[],[]],
   },
-  "restart": {
-    "sequence": "df4e2b365dcff279641635a128214384d6a63e3a2bb0599173ecdf30d87e896d",
-    "timing": "9a1a36c85d45384ccec337d476240b2ccf3779e4e625772a963c4883555f6134",
-    "members": "e0eb16c060f648f36a8080a9a6e6906535dccf21d75bfdfa17386eb7eeddeb23",
-    "maxLatencyMs": 2010,
-    "meanLatencyMs": 206.87
-  }
+  restart: {
+    sequence: "33199d9573c77aff751030011faf08e99745cb40be62bf93378d166e10ec708b",
+    deliveries: "876f090721c9114776445f9d3450820ac8f78b9a5357b9c5ae9497a0ff97920f",
+    members: "e0eb16c060f648f36a8080a9a6e6906535dccf21d75bfdfa17386eb7eeddeb23",
+    resyncs: [[5006],[5008],[5009],[5010]],
+  },
+  rejectionLoss: {
+    sequence: "d4eb471888d732f561e56c0952f91c9de94d57d4ab17bd1811efec2ce6fe9ba4",
+    deliveries: "93a71c103c78ee9ccd10d56497819b29c05ada365a1a54c6e088a92d43a00b1f",
+    members: "874776a663adfb5bd0abe43d6fb95e2d73a950faaf3f058b1fb48399ca45b422",
+    resyncs: [[7009],[],[]],
+  },
 };
-// Recorded from this preload. Reconnect and silent end are the two scenarios
-// where delivery differs from main's, so they are pinned here and bounded
-// against main in the test below.
-const SHARED_PINNED: Record<string, Pick<ParityRecord, "sequence" | "timing">> = {
-  "reconnect": {
-    "sequence": "de83a182b85d9e1e7aaec2a91901a884652f9551e8bfc09891a95d9db75f0083",
-    "timing": "05b03bc4db20e27cc7b51330bd263dcb857ee6ed1a9cab2adf1122b9a9821578"
-  },
-  "silentEnd": {
-    "sequence": "9eaf43dc3d1d7c36604b6b2793f3965b63cf71fcd58af92d21c1f588f1be6eb4",
-    "timing": "0400d3fa551e501a7ea572c63fa912235289f05a58cb25a92e0f3796fb2164fa"
-  },
-  "restart": {
-    "sequence": "df4e2b365dcff279641635a128214384d6a63e3a2bb0599173ecdf30d87e896d",
-    "timing": "81cda383af0d2aea322d81ab100debb0ca4b31730077673502b27c9ae01a4a81"
-  }
+
+// Where main delivers an event later than this preload, the difference is main's
+// time minus this preload's, one digit per delivery and one line per listener.
+// Every digit is 0-9, so no delivery here is later than main's. Adding the digits
+// to this run's times must rebuild main's deliveries digest exactly.
+const EARLIER_THAN_MAIN_MS: Record<string, string[]> = {
+  reconnect: [
+    "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+    "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111110000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+    "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222220000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+  ],
+  silentEnd: [
+    "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+    "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000111111111111111111111111111111111111111111111111110011111111111111111111111111111111111111111111111111100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+    "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000222222222222222222222222222222222222222222222222220022222222222222222222222222222222222222222222222222200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+  ],
+  restart: [
+    "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+    "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222220000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+    "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333330000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+    "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444440000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+  ],
+};
+
+// Known deviations, pinned so any change to them shows up.
+// Rejection: the joined listeners inherit the failed shared poll and each resyncs
+// once. Main's listeners do not resync, since their own polls succeeded.
+const REJECTION_RESYNCS = [[7009], [7009], [7009]];
+// Rejection with a subscription loss: the joined listeners wait out their 2 s backoff
+// while main's other listeners re-subscribe at once. Measured by event id against
+// main: 502 deliveries later (100, 201 and 201 on the three listeners), max 2040 ms.
+// No delivery is missing, and the delivery order differs on some positions.
+const REJECTION_LOSS = {
+  sequence: "0820ffcaf5560a24fd41635262b47bee2a64b1e292e15cfc884593835bfa4043",
+  deliveries: "380f56ce0391af5d1446d0e568e72814201c94ebb41201fd7776a388c4d4c373",
+  resyncs: [[7009],[7009],[7009]],
 };
 
 describe("pinned runtime event fan-out", () => {
@@ -526,20 +549,21 @@ describe("pinned runtime event fan-out", () => {
     expect(streaming10).toBeLessThanOrEqual(40);
   });
 
-  it("re-polls at once when a shared poll fails, so joined listeners are not stalled", async () => {
+  it("backs off from a failed shared poll on the schedule its own poll would have", async () => {
     const rig = createRig();
     const listeners = await attachStaggered(rig, 3, true);
     await drive(rig, 9_000, 20, new Map([[3_000, () => { rig.runtime.failNext = 1; }]]));
     const failedAt = rig.runtime.requestAt.find((t) => t >= 3_000);
     expect(failedAt).toBeDefined();
-    // The failing poll is answered REPLY_MS after it was sent. A joined listener
-    // retries then, rather than waiting out its 2 s failure backoff.
-    const retriedAt = rig.runtime.requestAt.filter((t) => t === (failedAt as number) + REPLY_MS);
-    expect(retriedAt.length).toBeGreaterThan(0);
+    // The failing poll is answered REPLY_MS after it was sent. The listeners that
+    // joined it inherit the failure, so none retries at once: the next request
+    // comes 2 s after the failure, as it would for a listener polling alone.
+    const next = rig.runtime.requestAt.find((t) => t > (failedAt as number));
+    expect(next).toBe((failedAt as number) + REPLY_MS + 2_000);
     finish(rig, listeners);
   });
 
-  it("delivers the same sequence and timing to every listener as the unshared loops", async () => {
+  it("delivers the same sequence to every listener, and never later than main", async () => {
     const scenarios: Record<string, () => Promise<Outcome>> = {
       idle: () => runIdle(10),
       streaming: () => runStreaming(10),
@@ -551,35 +575,58 @@ describe("pinned runtime event fan-out", () => {
       reconnect: runReconnect,
       silentEnd: runSilentEnd,
       restart: runRestart,
+      rejectionLoss: runRejectionLoss,
     };
-    const digests: Record<string, Outcome> = {};
-    for (const [name, run] of Object.entries(scenarios)) digests[name] = await run();
+    const outcomes: Record<string, Outcome> = {};
+    for (const [name, run] of Object.entries(scenarios)) outcomes[name] = await run();
     console.log(
       `PUMP_PARITY ${JSON.stringify(
         Object.fromEntries(
-          Object.entries(digests).map(([name, o]) => [
+          Object.entries(outcomes).map(([name, o]) => [
             name,
-            { sequence: o.sequence, timing: o.timing, members: o.members, rpcs: o.rpcs, maxLatencyMs: o.maxLatencyMs, meanLatencyMs: o.meanLatencyMs },
+            { sequence: o.sequence, deliveries: hash(o.deliveries), members: o.members, rpcs: o.rpcs },
           ]),
         ),
       )}`,
     );
-    if (Object.keys(MAIN_PARITY).length === 0) return;
     for (const name of Object.keys(scenarios)) {
       const main = MAIN_PARITY[name];
-      const shared = digests[name];
-      if (!(name in SHARED_PINNED)) {
-        expect(shared.sequence, `${name} sequence`).toBe(main.sequence);
-        expect(shared.timing, `${name} timing`).toBe(main.timing);
+      const o = outcomes[name];
+      expect(o.members, `${name} delivered events`).toBe(main.members);
+      if (name === "rejectionLoss") {
+        expect(o.sequence, `${name} sequence (pinned)`).toBe(REJECTION_LOSS.sequence);
+        expect(hash(o.deliveries), `${name} deliveries (pinned)`).toBe(REJECTION_LOSS.deliveries);
+        expect(o.resyncs, `${name} resyncs (pinned)`).toEqual(REJECTION_LOSS.resyncs);
         continue;
       }
-      // Known deviation: the sequence or timing differs from main, so pin what
-      // this preload does and bound it against main.
-      expect(shared.sequence, `${name} sequence (pinned)`).toBe(SHARED_PINNED[name].sequence);
-      expect(shared.timing, `${name} timing (pinned)`).toBe(SHARED_PINNED[name].timing);
-      expect(shared.members, `${name} delivered events`).toBe(main.members);
-      expect(shared.maxLatencyMs, `${name} max latency`).toBeLessThanOrEqual(main.maxLatencyMs + REPLY_MS);
-      expect(shared.meanLatencyMs, `${name} mean latency`).toBeLessThanOrEqual(main.meanLatencyMs + REPLY_MS);
+      expect(o.sequence, `${name} sequence`).toBe(main.sequence);
+      if (name === "rejection") {
+        expect(hash(o.deliveries), `${name} deliveries`).toBe(main.deliveries);
+        expect(o.resyncs, `${name} resyncs (pinned)`).toEqual(REJECTION_RESYNCS);
+      } else if (name in EARLIER_THAN_MAIN_MS) {
+        expectNoLaterThanMain(name, o, main);
+      } else {
+        expect(hash(o.deliveries), `${name} deliveries`).toBe(main.deliveries);
+        expect(o.resyncs, `${name} resyncs`).toEqual(main.resyncs);
+      }
     }
   });
 });
+
+function expectNoLaterThanMain(name: string, o: Outcome, main: ParityRecord): void {
+  expect(o.resyncs.map((l) => l.length), `${name} resync counts`).toEqual(
+    main.resyncs.map((l) => l.length),
+  );
+  o.resyncs.forEach((times, i) =>
+    times.forEach((time, j) =>
+      expect(time, `${name} resync ${i}.${j}`).toBeLessThanOrEqual(main.resyncs[i][j]),
+    ),
+  );
+  const digits = EARLIER_THAN_MAIN_MS[name];
+  expect(o.deliveries.length, `${name} listeners`).toBe(digits.length);
+  const onMainClock = o.deliveries.map((listener, i) => {
+    expect(listener.length, `${name} listener ${i} deliveries`).toBe(digits[i].length);
+    return listener.map(([time, id, payload], j) => [time + Number(digits[i][j]), id, payload]);
+  });
+  expect(hash(onMainClock), `${name} deliveries against main`).toBe(main.deliveries);
+}

@@ -311,15 +311,9 @@ export function createPinnedRuntimeEvents(deps: PinnedRuntimeEventsDeps) {
     }
     const key = [sharing.generation, cursor, request.limit ?? ""].join("\u0000");
     const inFlight = inFlightPinnedRuntimeStreamEvents.get(key);
-    if (inFlight) {
-      // The shared poll may have failed for the listener that sent it, not for
-      // this one. A rejected join retries once on its own rather than inheriting
-      // the failure, so the backoff only starts if this poll fails too.
-      return inFlight.then(
-        (batch) => batch,
-        () => sendObservedPinnedRuntimeStreamEvents(pin, sharing, request),
-      );
-    }
+    // A joined poll that fails fails for every joiner too. Each listener then
+    // backs off from its own failure, as it would have on its own poll.
+    if (inFlight) return inFlight;
     const call = sendObservedPinnedRuntimeStreamEvents(pin, sharing, request);
     inFlightPinnedRuntimeStreamEvents.set(key, call);
     const settle = (): void => {
