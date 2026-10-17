@@ -229,9 +229,13 @@ export function createMachineUpdateControls(
       setTimeout(() => {
         void args.requestRestart().then((restart) => {
           if (restart.status !== 0) {
+            // Same shape as the rejection branch below, so one event name has one
+            // error type in the log and in Sentry.
+            const failure = new Error(restart.stderr || restart.stdout || "service restart failed");
             args.logger.error("brain.remote_restart_failed", {
               status: restart.status,
-              error: restart.stderr || restart.stdout || "service restart failed",
+              error: failure,
+              errorText: failure.message,
             });
           }
         }, (error: unknown) => {
