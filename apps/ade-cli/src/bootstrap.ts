@@ -376,6 +376,7 @@ export type AdeRuntimePaths = {
 export type AdeRuntimeSyncOptions = {
   enabled?: boolean;
   hostStartupEnabled?: boolean;
+  mayClaimCluster?: boolean;
   hostDiscoveryEnabled?: boolean;
   initializeInBackground?: boolean;
   forceHostRole?: boolean;
@@ -3414,6 +3415,7 @@ export async function createAdeRuntime(args: {
         getAppleRemoteBitrateKbpsCap: appleRemoteBitrateKbpsCap,
         sharedSyncListener: syncRuntimeOptions.sharedSyncListener ?? null,
         hostStartupEnabled: syncRuntimeOptions.hostStartupEnabled ?? true,
+        mayClaimCluster: syncRuntimeOptions.mayClaimCluster ?? false,
         hostDiscoveryEnabled: syncRuntimeOptions.hostDiscoveryEnabled ?? true,
         forceHostRole: syncRuntimeOptions.forceHostRole ?? false,
         projectCatalogProvider: syncRuntimeOptions.projectCatalogProvider,

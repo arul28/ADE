@@ -199,6 +199,78 @@ describe("createSyncService", () => {
     }
   });
 
+  const seedDeadBrainRecord = (registry: ReturnType<SyncService["getDeviceRegistryService"]>) => {
+    registry.upsertPeerMetadata({
+      deviceId: "dead-brain",
+      deviceName: "Dead brain",
+      platform: "macOS",
+      deviceType: "desktop",
+      siteId: "dead-site",
+      dbVersion: 1,
+    } as any, { lastSeenAt: new Date(Date.now() - 6 * 60_000).toISOString() });
+    registry.setClusterState({ brainDeviceId: "dead-brain", brainEpoch: 3 });
+  };
+
+  it.each([
+    { label: "no cluster record", seedDeadBrain: false, expectedEpoch: 1 },
+    { label: "a dead remote brain's record", seedDeadBrain: true, expectedEpoch: 4 },
+  ])("the machine brain's cold serve scope claims the cluster record at startup ($label)", async ({
+    seedDeadBrain,
+    expectedEpoch,
+  }) => {
+    const projectRoot = makeTempRoot("ade-sync-service-machine-brain-claim-");
+    cleanupRoots.push(projectRoot);
+    const db = await openKvDb(path.join(projectRoot, ".ade", "kv.sqlite"), createLogger() as any);
+    // The serve scope of the machine's ADE home, before its project is selected
+    // as the host: host startup is off, but the machine brain may still claim.
+    const service = createService(db, projectRoot, { hostStartupEnabled: false, mayClaimCluster: true });
+    const registry = service.getDeviceRegistryService();
+    if (seedDeadBrain) seedDeadBrainRecord(registry);
+    try {
+      await service.initialize();
+      expect(registry.getClusterState()?.brainDeviceId).toBe(registry.getLocalDeviceId());
+      expect(registry.getClusterState()?.brainEpoch).toBe(expectedEpoch);
+    } finally {
+      await service.dispose();
+      db.close();
+    }
+  }, 30_000);
+
+  it("refuses an explicit host transfer from a runtime that may not host, leaving the record alone", async () => {
+    const projectRoot = makeTempRoot("ade-sync-service-non-host-transfer-");
+    cleanupRoots.push(projectRoot);
+    const db = await openKvDb(path.join(projectRoot, ".ade", "kv.sqlite"), createLogger() as any);
+    const service = createService(db, projectRoot, { hostStartupEnabled: false });
+    const registry = service.getDeviceRegistryService();
+    seedDeadBrainRecord(registry);
+    try {
+      await expect(service.transferBrainToLocal()).rejects.toThrow();
+      expect(registry.getClusterState()?.brainDeviceId).toBe("dead-brain");
+      expect(registry.getClusterState()?.brainEpoch).toBe(3);
+    } finally {
+      await service.dispose();
+      db.close();
+    }
+  });
+
+  it("lets the machine brain take the host role by explicit transfer", async () => {
+    const projectRoot = makeTempRoot("ade-sync-service-machine-brain-transfer-");
+    cleanupRoots.push(projectRoot);
+    const db = await openKvDb(path.join(projectRoot, ".ade", "kv.sqlite"), createLogger() as any);
+    const service = createService(db, projectRoot, { hostStartupEnabled: false, mayClaimCluster: true });
+    const registry = service.getDeviceRegistryService();
+    seedDeadBrainRecord(registry);
+    try {
+      const transferred = await service.transferBrainToLocal();
+      expect(transferred.role).toBe("brain");
+      expect(transferred.clusterState?.brainDeviceId).toBe(registry.getLocalDeviceId());
+      expect(transferred.clusterState?.brainEpoch).toBe(4);
+    } finally {
+      await service.dispose();
+      db.close();
+    }
+  }, 30_000);
+
   it("keeps the local device registry when connectToBrain fails before handshake", async () => {
     const projectRoot = makeTempRoot("ade-sync-service-connect-fail-");
     cleanupRoots.push(projectRoot);

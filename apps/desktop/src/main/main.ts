@@ -5544,6 +5544,9 @@ app.whenReady().then(async () => {
       macDesktopService,
       usageTrackingService,
       hostStartupEnabled: syncHostAutoStart,
+      // Never the machine brain. It claims the cluster record only while its
+      // own host startup is on (the ADE_ENABLE_DESKTOP_SYNC_HOST debug host).
+      mayClaimCluster: false,
       phonePairingStateDir: machineAdeLayout.secretsDir,
       hostDiscoveryEnabled: isMobileSyncHostContext,
       forceHostRole: false,
