@@ -793,32 +793,19 @@ export class RemoteConnectionService {
     // Taken before the first await so a cancel (disconnect or remove) that
     // lands during the ownership check still stops this attempt.
     const disconnectGeneration = this.getDisconnectGeneration(target.id);
+    await this.assertAccountOwnershipAuthorized(target);
+    if (!this.isDisconnectGenerationCurrent(target.id, disconnectGeneration)) {
+      throw new Error(
+        "Remote target was disconnected before ADE finished connecting.",
+      );
+    }
+    this.pairedFallbackSshTrustByTargetId.delete(target.id);
     const explicit = options.explicit === true;
-    try {
-      await this.assertAccountOwnershipAuthorized(target);
-      if (!this.isDisconnectGenerationCurrent(target.id, disconnectGeneration)) {
-        throw new Error(
-          "Remote target was disconnected before ADE finished connecting.",
-        );
-      }
-      this.pairedFallbackSshTrustByTargetId.delete(target.id);
-      if (explicit) {
-        this.manuallyDisconnectedTargetIds.delete(target.id);
-        this.clearAutomaticReconnectState(target.id);
-      } else {
-        this.assertImplicitReconnectAllowed(target.id);
-      }
-    } catch (error) {
-      // A background connect refused before it starts would otherwise return
-      // silently, leaving the row to say only "Not connected". A cancel that
-      // landed meanwhile is not a refusal, so it is not recorded.
-      if (!explicit && this.isDisconnectGenerationCurrent(target.id, disconnectGeneration)) {
-        this.mergeStatus(target.id, {
-          state: "error",
-          ...errorStatusPatch(error),
-        });
-      }
-      throw error;
+    if (explicit) {
+      this.manuallyDisconnectedTargetIds.delete(target.id);
+      this.clearAutomaticReconnectState(target.id);
+    } else {
+      this.assertImplicitReconnectAllowed(target.id);
     }
     this.mergeStatus(target.id, {
       state: "connecting",

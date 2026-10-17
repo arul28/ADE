@@ -957,38 +957,6 @@ describe("RemoteConnectionService", () => {
     expect(pool.connect).not.toHaveBeenCalled();
   });
 
-  it("records a background reconnect refused before it starts instead of dropping it", async () => {
-    const previouslyConnected = target("previously-connected", 1_700_000_000);
-    const registry = {
-      list: vi.fn(() => [previouslyConnected]),
-      get: vi.fn((id: string) =>
-        id === previouslyConnected.id ? previouslyConnected : null,
-      ),
-    } as unknown as RemoteTargetRegistry;
-    const pool = {
-      connect: vi.fn(async (target: RemoteRuntimeTarget) =>
-        connectResult(target),
-      ),
-      disconnect: vi.fn(),
-      onEntryConnected: vi.fn(() => () => {}),
-      onEntryEvicted: vi.fn(() => () => {}),
-    } as unknown as RemoteConnectionPool;
-
-    // A development ADE only connects when the person presses Connect.
-    const service = new RemoteConnectionService(registry, pool, {
-      explicitConnectOnly: true,
-    });
-    service.probeSavedConnections();
-    await vi.waitFor(() => {
-      expect(service.snapshot().connections[0]?.state).toBe("error");
-    });
-
-    expect(pool.connect).not.toHaveBeenCalled();
-    expect(service.snapshot().connections[0]?.lastError).toMatch(
-      /only when you press Connect/,
-    );
-  });
-
   it("persists the auto-connect preference without disconnecting an active target", () => {
     let persisted = { ...target("saved", 1_700_000_000), autoConnect: true };
     const registry = {
