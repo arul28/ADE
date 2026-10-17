@@ -26014,6 +26014,11 @@ export function createAgentChatService(args: {
         ...(persisted?.codexSandbox ? { codexSandbox: persisted.codexSandbox } : {}),
         ...(persisted?.codexConfigSource ? { codexConfigSource: persisted.codexConfigSource } : {}),
         ...(persisted?.opencodePermissionMode ? { opencodePermissionMode: persisted.opencodePermissionMode } : {}),
+        // Copilot's own level and model options live only in the persisted
+        // state; without them a reopened chat fell back to Ask.
+        ...(persisted?.copilotPermissionMode ? { copilotPermissionMode: persisted.copilotPermissionMode } : {}),
+        ...(persisted?.copilotContextTier ? { copilotContextTier: persisted.copilotContextTier } : {}),
+        ...(persisted?.copilotAutoTier ? { copilotAutoTier: persisted.copilotAutoTier } : {}),
         ...(persisted?.instanceId ? { instanceId: persisted.instanceId } : {}),
         ...(persisted?.presetId ? { presetId: persisted.presetId } : {}),
         ...(persisted?.credentialId ? { credentialId: persisted.credentialId } : {}),
