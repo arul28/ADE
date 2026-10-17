@@ -35,7 +35,9 @@ function servedModelNotice(state: CopilotSdkEventMapperState, served: string | n
   state.servedModel = served;
   if (state.askedAuto || !state.requestedModel || state.requestedModel === served || state.mismatchModels.has(served)) return [];
   state.mismatchModels.add(served);
-  return [{ type: "system_notice", noticeKind: "warning", severity: "warning", message: `Copilot used ${served} instead of ${state.requestedModel}; your Copilot plan may not include it.`, turnId }];
+  // `model_switched` stays visible outside the turn fold: the composer names a
+  // model that did not write this reply.
+  return [{ type: "system_notice", noticeKind: "info", status: "model_switched", message: `Copilot used ${served}, not ${state.requestedModel} (your plan may not include it)`, turnId }];
 }
 
 export function mapCopilotSdkEvent(event: unknown, args: { turnId: string; state: CopilotSdkEventMapperState }): AgentChatEvent[] {

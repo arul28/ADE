@@ -28,6 +28,12 @@ export type ReasoningEffortPickerProps = {
    */
   catalogScopeKey?: string;
   /**
+   * Bumped by the owner when that catalog arrives. The picker is memoized and
+   * resolves its model once, so without this a model the catalog alone
+   * describes (a Copilot SDK model) kept the static row's empty levels.
+   */
+  catalogRevision?: number;
+  /**
    * Claude's per-message "ultrathink" switch, shown under the levels. It is
    * separate from the level because Claude Code reads it as a one-turn nudge
    * that stacks on any level. Omitted for providers that do not read it.
@@ -209,6 +215,7 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
   className,
   triggerClassName,
   catalogScopeKey,
+  catalogRevision = 0,
   ultrathink,
   copilotAutoTier,
   onCopilotAutoTierChange,
@@ -237,7 +244,8 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
 
   const descriptor = useMemo<ModelDescriptor | undefined>(
     () => resolveModelDescriptorWithRuntimeCatalog(modelId, catalogScopeKey),
-    [catalogScopeKey, modelId],
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the revision is the catalog's arrival
+    [catalogScopeKey, catalogRevision, modelId],
   );
 
   const tiers = useMemo(

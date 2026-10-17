@@ -8198,6 +8198,7 @@ function AgentChatComposerImpl({
                   compact
                   triggerClassName={COMPOSER_TOOLBAR_PICKER_TRIGGER}
                   catalogScopeKey={modelCatalogScopeKey}
+                  catalogRevision={runtimeCatalogTick}
                 />
               </>
             ) : null}
@@ -8250,6 +8251,7 @@ function AgentChatComposerImpl({
                   compact
                   triggerClassName={COMPOSER_TOOLBAR_PICKER_TRIGGER}
                   catalogScopeKey={modelCatalogScopeKey}
+                  catalogRevision={runtimeCatalogTick}
                   ultrathink={ultrathinkControl}
                   copilotAutoTier={copilotAutoTier}
                   copilotAutoTierPending={copilotAutoTierPending}
