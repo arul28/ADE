@@ -129,6 +129,7 @@ function device(overrides: Partial<SyncDeviceRuntimeState> = {}): SyncDeviceRunt
 function makeSync(overrides: Partial<SyncConnections> = {}): SyncConnections {
   return {
     status: makeStatus(),
+    projectStatus: makeStatus(),
     devices: [],
     loading: false,
     busy: false,
@@ -560,29 +561,71 @@ describe("ThisMacCard", () => {
       });
     }
 
+    // The machine's status and the project's status are separate reads, and the
+    // button follows the project's. Both directions of a mismatch are here: a
+    // machine that hosts while its project follows a ghost (the button must
+    // show, or the reader has no way out), and a machine that follows while its
+    // project hosts (the button must not show, or it would disconnect a project
+    // that does not follow anything).
     it.each([
-      { case: "a host", status: makeStatus(), isRemoteBound: false, shown: false },
-      { case: "a viewer bound to another machine", status: followerStatus(), isRemoteBound: true, shown: false },
-      { case: "a viewer on this computer", status: followerStatus(), isRemoteBound: false, shown: true },
-    ])("offers the button for $case only when it applies", ({ status, isRemoteBound, shown }) => {
+      { case: "a host with no project read yet", status: makeStatus(), projectStatus: null, isRemoteBound: false, shown: false },
+      { case: "a host whose project follows another machine", status: makeStatus(), projectStatus: followerStatus(), isRemoteBound: false, shown: true },
+      { case: "a viewer whose project hosts", status: followerStatus(), projectStatus: makeStatus(), isRemoteBound: false, shown: false },
+      { case: "a viewer whose project follows another machine", status: followerStatus(), projectStatus: followerStatus(), isRemoteBound: false, shown: true },
+      { case: "a project that follows, bound to another machine", status: makeStatus(), projectStatus: followerStatus(), isRemoteBound: true, shown: false },
+    ])("offers the button for $case only when it applies", ({ status, projectStatus, isRemoteBound, shown }) => {
       // canManageDevices is derived from the bound state exactly as the hook derives it.
       render(
         <ThisMacCard
-          sync={makeSync({ status, isRemoteBound, canManageDevices: !isRemoteBound })}
+          sync={makeSync({ status, projectStatus, isRemoteBound, canManageDevices: !isRemoteBound })}
           sessionState="active"
         />,
       );
       expect(screen.queryByRole("button", followerButton) !== null).toBe(shown);
     });
 
+    it("names the machine from the project's status, not the machine's", () => {
+      render(
+        <ThisMacCard
+          sync={makeSync({ status: makeStatus(), projectStatus: followerStatus({ hostName: "Office Mini" }) })}
+          sessionState="active"
+        />,
+      );
+      expect(screen.getByRole("button", { name: "Stop following Office Mini" })).toBeTruthy();
+      expect(screen.queryByRole("button", followerButton)).toBeNull();
+    });
+
+    it("stops the project's follow even though the machine reports that it hosts", async () => {
+      const disconnectFromBrain = vi.fn(async () => makeStatus());
+      (globalThis.window as any).ade = { sync: { disconnectFromBrain, getStatus: async () => followerStatus() } };
+      render(<ThisMacCard sync={makeSync({ status: makeStatus(), projectStatus: followerStatus() })} sessionState="active" />);
+
+      fireEvent.click(screen.getByRole("button", followerButton));
+      fireEvent.click(screen.getByRole("checkbox", acknowledgement));
+      fireEvent.click(screen.getByRole("button", { name: "Stop following" }));
+
+      await waitFor(() => expect(disconnectFromBrain).toHaveBeenCalledOnce());
+    });
+
+    it("shows the followed machine's standing from the project's status", () => {
+      render(
+        <ThisMacCard
+          sync={makeSync({ status: makeStatus(), projectStatus: followerStatus({ state: "connected" }) })}
+          sessionState="active"
+        />,
+      );
+      fireEvent.click(screen.getByRole("button", followerButton));
+      expect(screen.getByText("Mac Studio is reachable from this computer now.")).toBeTruthy();
+    });
+
     it("is hidden when no project is open in this window", () => {
       useAppStore.setState({ project: null });
-      render(<ThisMacCard sync={makeSync({ status: followerStatus() })} sessionState="active" />);
+      render(<ThisMacCard sync={makeSync({ status: followerStatus(), projectStatus: followerStatus() })} sessionState="active" />);
       expect(screen.queryByRole("button", followerButton)).toBeNull();
     });
 
     it("says that this computer will host sync, and what is forgotten and kept", () => {
-      render(<ThisMacCard sync={makeSync({ status: followerStatus() })} sessionState="active" />);
+      render(<ThisMacCard sync={makeSync({ status: followerStatus(), projectStatus: followerStatus() })} sessionState="active" />);
 
       fireEvent.click(screen.getByRole("button", followerButton));
       expect(screen.getByText(/This computer will start hosting sync for Repo\./)).toBeTruthy();
@@ -597,7 +640,7 @@ describe("ThisMacCard", () => {
       { case: "it was last seen three days ago", client: { lastSeenAt: daysAgo(3) }, line: "Mac Studio isn't reachable from this computer right now. Last seen 3d ago." },
       { case: "nothing has seen it", client: {}, line: "Mac Studio isn't reachable from this computer right now, and ADE has no record of it being seen." },
     ])("shows how the followed machine stands when $case", ({ client, line }) => {
-      render(<ThisMacCard sync={makeSync({ status: followerStatus(client) })} sessionState="active" />);
+      render(<ThisMacCard sync={makeSync({ status: followerStatus(), projectStatus: followerStatus(client) })} sessionState="active" />);
 
       fireEvent.click(screen.getByRole("button", followerButton));
       expect(screen.getByText(line)).toBeTruthy();
@@ -605,8 +648,8 @@ describe("ThisMacCard", () => {
 
     it("keeps the confirmation disabled until the reader acknowledges what stopping does", async () => {
       const disconnectFromBrain = vi.fn(async () => makeStatus());
-      (globalThis.window as any).ade = { sync: { disconnectFromBrain } };
-      render(<ThisMacCard sync={makeSync({ status: followerStatus() })} sessionState="active" />);
+      (globalThis.window as any).ade = { sync: { disconnectFromBrain, getStatus: async () => followerStatus() } };
+      render(<ThisMacCard sync={makeSync({ status: followerStatus(), projectStatus: followerStatus() })} sessionState="active" />);
 
       fireEvent.click(screen.getByRole("button", followerButton));
       expect((screen.getByRole("button", { name: "Stop following" }) as HTMLButtonElement).disabled).toBe(true);
@@ -622,8 +665,8 @@ describe("ThisMacCard", () => {
     it("disconnects once after confirmation and refreshes the card", async () => {
       const disconnectFromBrain = vi.fn(async () => makeStatus());
       const refresh = vi.fn(async () => {});
-      (globalThis.window as any).ade = { sync: { disconnectFromBrain } };
-      render(<ThisMacCard sync={makeSync({ status: followerStatus(), refresh })} sessionState="active" />);
+      (globalThis.window as any).ade = { sync: { disconnectFromBrain, getStatus: async () => followerStatus() } };
+      render(<ThisMacCard sync={makeSync({ status: followerStatus(), projectStatus: followerStatus(), refresh })} sessionState="active" />);
 
       fireEvent.click(screen.getByRole("button", followerButton));
       expect(disconnectFromBrain).not.toHaveBeenCalled();
@@ -639,10 +682,10 @@ describe("ThisMacCard", () => {
       // the stop must not depend on it.
       const startSyncHost = vi.fn(() => new Promise<never>(() => {}));
       const disconnectFromBrain = vi.fn(async () => makeStatus());
-      (globalThis.window as any).ade = { account: { startSyncHost }, sync: { disconnectFromBrain } };
+      (globalThis.window as any).ade = { account: { startSyncHost }, sync: { disconnectFromBrain, getStatus: async () => followerStatus() } };
       const status = followerStatus();
       status.routeHealth.accountDirectory = { ...status.routeHealth.accountDirectory, state: "sync_not_started" };
-      render(<ThisMacCard sync={makeSync({ status })} sessionState="active" />);
+      render(<ThisMacCard sync={makeSync({ status, projectStatus: status })} sessionState="active" />);
 
       fireEvent.click(screen.getByRole("button", followerButton));
       fireEvent.click(screen.getByRole("checkbox", acknowledgement));
@@ -654,8 +697,8 @@ describe("ThisMacCard", () => {
 
     it("opens one confirmation and disconnects once when the button is clicked twice", async () => {
       const disconnectFromBrain = vi.fn(async () => makeStatus());
-      (globalThis.window as any).ade = { sync: { disconnectFromBrain } };
-      render(<ThisMacCard sync={makeSync({ status: followerStatus() })} sessionState="active" />);
+      (globalThis.window as any).ade = { sync: { disconnectFromBrain, getStatus: async () => followerStatus() } };
+      render(<ThisMacCard sync={makeSync({ status: followerStatus(), projectStatus: followerStatus() })} sessionState="active" />);
 
       const button = screen.getByRole("button", followerButton);
       fireEvent.click(button);
@@ -671,8 +714,8 @@ describe("ThisMacCard", () => {
 
     it("does not disconnect when the confirmation is cancelled, and asks again on the next click", async () => {
       const disconnectFromBrain = vi.fn(async () => makeStatus());
-      (globalThis.window as any).ade = { sync: { disconnectFromBrain } };
-      render(<ThisMacCard sync={makeSync({ status: followerStatus() })} sessionState="active" />);
+      (globalThis.window as any).ade = { sync: { disconnectFromBrain, getStatus: async () => followerStatus() } };
+      render(<ThisMacCard sync={makeSync({ status: followerStatus(), projectStatus: followerStatus() })} sessionState="active" />);
 
       fireEvent.click(screen.getByRole("button", followerButton));
       fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
@@ -685,8 +728,8 @@ describe("ThisMacCard", () => {
 
     it("stops nothing when the window changed projects while the question was open", async () => {
       const disconnectFromBrain = vi.fn(async () => makeStatus());
-      (globalThis.window as any).ade = { sync: { disconnectFromBrain } };
-      render(<ThisMacCard sync={makeSync({ status: followerStatus() })} sessionState="active" />);
+      (globalThis.window as any).ade = { sync: { disconnectFromBrain, getStatus: async () => followerStatus() } };
+      render(<ThisMacCard sync={makeSync({ status: followerStatus(), projectStatus: followerStatus() })} sessionState="active" />);
 
       fireEvent.click(screen.getByRole("button", followerButton));
       act(() => {
@@ -699,12 +742,31 @@ describe("ThisMacCard", () => {
       expect(disconnectFromBrain).not.toHaveBeenCalled();
     });
 
+    it.each([
+      { case: "the project now hosts", read: async () => makeStatus() },
+      { case: "the project's status cannot be read", read: async () => { throw new Error("The background service did not answer."); } },
+    ])("sends nothing when $case while the question was open", async ({ read }) => {
+      // The ghost can be reclaimed while the reader is still deciding. A disconnect
+      // on a host would clear the devices it pairs, so it must not go out.
+      const disconnectFromBrain = vi.fn(async () => makeStatus());
+      const refresh = vi.fn(async () => {});
+      (globalThis.window as any).ade = { sync: { disconnectFromBrain, getStatus: read } };
+      render(<ThisMacCard sync={makeSync({ status: followerStatus(), projectStatus: followerStatus(), refresh })} sessionState="active" />);
+
+      fireEvent.click(screen.getByRole("button", followerButton));
+      fireEvent.click(screen.getByRole("checkbox", acknowledgement));
+      fireEvent.click(screen.getByRole("button", { name: "Stop following" }));
+
+      await waitFor(() => expect(refresh).toHaveBeenCalledWith({ force: true }));
+      expect(disconnectFromBrain).not.toHaveBeenCalled();
+    });
+
     it("shows the reason when the disconnect fails and keeps the button for another try", async () => {
       const disconnectFromBrain = vi.fn(async () => {
         throw new Error("Project is switching. Wait for the current project to finish loading before stopping sync.");
       });
-      (globalThis.window as any).ade = { sync: { disconnectFromBrain } };
-      render(<ThisMacCard sync={makeSync({ status: followerStatus() })} sessionState="active" />);
+      (globalThis.window as any).ade = { sync: { disconnectFromBrain, getStatus: async () => followerStatus() } };
+      render(<ThisMacCard sync={makeSync({ status: followerStatus(), projectStatus: followerStatus() })} sessionState="active" />);
 
       fireEvent.click(screen.getByRole("button", followerButton));
       fireEvent.click(screen.getByRole("checkbox", acknowledgement));
@@ -718,8 +780,8 @@ describe("ThisMacCard", () => {
       const disconnectFromBrain = vi.fn(async () => {
         throw new Error("Error invoking remote method 'ade.sync.disconnectFromBrain': Error: This project isn't loaded yet. Open it and try again.");
       });
-      (globalThis.window as any).ade = { sync: { disconnectFromBrain } };
-      render(<ThisMacCard sync={makeSync({ status: followerStatus() })} sessionState="active" />);
+      (globalThis.window as any).ade = { sync: { disconnectFromBrain, getStatus: async () => followerStatus() } };
+      render(<ThisMacCard sync={makeSync({ status: followerStatus(), projectStatus: followerStatus() })} sessionState="active" />);
 
       fireEvent.click(screen.getByRole("button", followerButton));
       fireEvent.click(screen.getByRole("checkbox", acknowledgement));
@@ -941,6 +1003,23 @@ describe("useSyncConnections local scoping", () => {
     expect(result.current.canManageDevices).toBe(true);
     // Unbound: the routed device list is used as-is.
     expect(result.current.devices.map((d) => d.deviceId)).toEqual(["phone-1"]);
+  });
+
+  it("keeps the project's routed status apart from the machine's", async () => {
+    // The machine hosts, while the window's project follows another machine.
+    const machine = makeStatus();
+    const project = makeStatus({ mode: "viewer", role: "viewer", runtimeRole: "viewer", viewerReason: "saved_connection" });
+    installSyncMock({
+      getStatus: async () => project,
+      getLocalStatus: async () => machine,
+      listDevices: async () => [device()],
+    });
+
+    const { result } = renderHook(() => useSyncConnections());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.status?.role).toBe("brain");
+    expect(result.current.projectStatus?.role).toBe("viewer");
   });
 
   it("forces the initial load through an existing backoff window", async () => {

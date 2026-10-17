@@ -230,7 +230,7 @@ export function ThisMacCard({
 }) {
   const hideDirectorySummary = statusSlot != null;
   const accountSignedIn = sessionState === "active";
-  const { status, busy, error, notice, isRemoteBound, boundMachineName } = sync;
+  const { status, projectStatus, busy, error, notice, isRemoteBound, boundMachineName } = sync;
   const appInfo = useAppInfoLine();
   // The version the brain runs (what actually answers other machines), else
   // the app package's. The chip shows the number alone; a prerelease already
@@ -330,11 +330,22 @@ export function ThisMacCard({
         destructive: true,
       });
       if (!answer.confirmed) return;
+      // The question can stay open a while, and the project can stop following
+      // in that time (its ghost is reclaimed). The disconnect clears this
+      // project's device records, which on a host drops the devices it pairs, so
+      // it is sent only while the project still follows another machine. A read
+      // that fails counts as not following.
+      const current = await window.ade.sync.getStatus().catch(() => null);
       // The disconnect acts on the project this window has open now. If the
       // window moved to another project while the question was open, the reader
       // agreed to stop the one they were shown, so nothing is sent.
       if (useAppStore.getState().project?.rootPath !== projectRoot) {
         showToast({ tone: "warning", title: "Nothing was stopped. This window changed projects while you were asked. Try again." });
+        return;
+      }
+      if (!current || isSyncHost(current) || current.role !== "viewer") {
+        showToast({ tone: "warning", title: "Nothing was stopped. This project no longer follows another machine." });
+        void refreshSync({ force: true });
         return;
       }
       setStoppingFollowing(true);
@@ -411,12 +422,23 @@ export function ThisMacCard({
   const reconnectAction = refusal && reconnect.available
     ? reconnect.view({ label: describeThisComputerRefusal(refusal).action })
     : null;
-  // Only a viewer offers it, and only for this computer: a remote-bound window
-  // would send the disconnect to the machine it is bound to, and the hosted web
-  // client's disconnect does nothing. It also needs a project open in this
-  // window: the disconnect acts on that project, and refuses without one.
-  const followedName = !host && status.role === "viewer" ? followedMachineName(status) : null;
-  const canStopFollowing = followedName !== null && projectName !== null && sync.canManageDevices && !isWebClientMode();
+  // Whether THIS PROJECT follows another machine is read from the project's own
+  // status, never from `status`: that one describes the machine. A machine that
+  // hosts can have a project following a machine that is gone, and a machine
+  // that follows can have a project it hosts. Only a viewer offers the button,
+  // and only for this computer: a remote-bound window would send the disconnect
+  // to the machine it is bound to, and the hosted web client's disconnect does
+  // nothing. It also needs a project open in this window, since the disconnect
+  // acts on that project and refuses without one.
+  const followingProject = projectStatus !== null
+    && !isSyncHost(projectStatus)
+    && projectStatus.role === "viewer"
+    && projectName !== null
+    && sync.canManageDevices
+    && !isWebClientMode()
+    ? projectStatus
+    : null;
+  const followedName = followingProject ? followedMachineName(followingProject) : null;
 
     return (
     <div style={{ ...detailBlockStyle, display: "grid", gap: 12 }}>
@@ -577,7 +599,7 @@ export function ThisMacCard({
                 {repair.available ? <BrainRepairButton repair={repair} height={24} /> : null}
               </div>
             ) : null}
-            {canStopFollowing && followedName ? (
+            {followingProject && followedName ? (
               // Its own row, not under the problem line: that line is hidden
               // in the popover when the brain says sync has not started, and
               // that is exactly when a viewer needs a way out.
@@ -585,7 +607,7 @@ export function ThisMacCard({
                 <button
                   type="button"
                   disabled={stoppingFollowing}
-                  onClick={() => void stopFollowing(followedName, followedHostStanding(status, followedName))}
+                  onClick={() => void stopFollowing(followedName, followedHostStanding(followingProject, followedName))}
                   style={outlineButton({
                     height: 24,
                     padding: "0 9px",
@@ -648,9 +670,10 @@ export function ThisMacCard({
 }
 
 /**
- * The machine a viewer follows, for its button and its confirmation. The name
- * the runtime learned while connected wins; a project record that names another
- * machine is next, then that machine's address.
+ * The machine a project follows, for its button and its confirmation. `status`
+ * is the project's own status. The name the runtime learned while connected
+ * wins; a project record that names another machine is next, then that
+ * machine's address.
  */
 function followedMachineName(status: SyncRoleSnapshot): string {
   return status.client.hostName?.trim()
@@ -668,8 +691,8 @@ function followedDevice(status: SyncRoleSnapshot): SyncDeviceRecord | null {
 
 /**
  * Whether the followed machine answers from this computer, and when it was last
- * seen. That tells a ghost (a host that is gone) from a live one, and it reads
- * only the snapshot this card already has.
+ * seen. That tells a ghost (a host that is gone) from a live one. It reads only
+ * the project's status, which the card already has.
  */
 function followedHostStanding(status: SyncRoleSnapshot, machine: string): string {
   if (status.client.state === "connected") return `${machine} is reachable from this computer now.`;
