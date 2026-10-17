@@ -134,6 +134,19 @@ Run without the app (`scripts/perf/service/`).
 | MCP App: tool result to transcript card (list lookup, `resources/read` through the live session, file, emit), 6 KB page | timestamps of the `tool_result` and `ade_card` events in a dev-brain transcript, Claude ×4 and Codex ×2 | — | 2–10 ms (Claude, first call of a session reads the tool list); 2 ms (Codex) | 100 ms |
 | Chat search across 37 registered projects (2,000 chat docs each, every doc a hit) | `search-fanout.bench.mts` | not from #1560: until 2026-10-13 the search loaded every project and blocked the brain past its 30 s watchdog | 325–341 ms, longest event-loop block 10 ms | 800 ms, block 50 ms |
 
+### Desktop start-up (main process)
+
+Unpackaged build (`apps/desktop/electron.cjs` → `dist/main/main.cjs`), Electron
+41.5.0 on Node 24.15.0, medians of 18 launches (two blocks of 9). Spread is the
+standard deviation of the 18 values. Command: `scripts/perf/desktop-main-start.mjs`.
+
+| Metric | Bench | Before | Baseline | Ceiling |
+|---|---|---|---|---|
+| Process start to bundle evaluated, no compile cache (`--mode off`; sd 14 ms) | `desktop-main-start.mjs --mode off` | — | 734 ms | not set, needs your OK |
+| Process start to first window, no compile cache (sd 17–33 ms) | `desktop-main-start.mjs --mode off` | — | 1023 ms | not set, needs your OK |
+| Process start to first window, warm compile cache (sd 40 ms) | `desktop-main-start.mjs --mode warm` | 1027 ms | 881 ms | not set, needs your OK |
+| Process start to first window, first launch after an update (`--mode cold`) | `desktop-main-start.mjs --mode cold` | — | 1114 ms | not set, needs your OK |
+
 ### Open items (measured, over budget or unbudgeted)
 
 - **Files tab switch:** 0–295 ms. The profile shows the kept-alive Work tab
