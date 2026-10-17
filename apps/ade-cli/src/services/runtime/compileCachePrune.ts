@@ -7,6 +7,11 @@ import path from "node:path";
 // the builds it replaced stay on disk. Only directories that match this are ever removed.
 const CACHE_TAG_PATTERN = /^v\d+\.\d+\.\d+-/;
 const PRUNE_DELAY_MS = 10_000;
+// A build's directory is removed only after nothing in it has been written for this long.
+const STALE_AFTER_MS = 14 * 24 * 60 * 60 * 1000;
+// The most recently written other builds are kept whatever their age. Two builds that take
+// turns (a brain and a CLI on different Node versions) therefore keep their caches.
+const KEEP_RECENT_BUILDS = 2;
 
 /** The directory Node writes this process's compile cache to, or undefined when the cache is off. */
 export function activeCompileCacheDir(): string | undefined {
@@ -17,9 +22,11 @@ export function activeCompileCacheDir(): string | undefined {
 
 /**
  * Removes the cache directories of other Node builds that sit next to `activeDir` under the
- * same root. Files, symlinks, and directories that are not named like a cache tag are left
- * alone, and so is `activeDir`. A directory that cannot be removed (on Windows a file in it
- * stays locked while another process reads it) is skipped and tried again on the next launch.
+ * same root. A build is removed only when it is stale (nothing written in it for 14 days) and is
+ * not one of the two most recently written other builds, so a build that another process is
+ * still writing to is kept. Files, symlinks, and directories that are not named like a cache tag
+ * are left alone, and so is `activeDir`. A directory that cannot be removed (on Windows a file in
+ * it stays locked while another process reads it) is skipped and tried again on the next launch.
  * Never throws: the cache is only a speed-up. Returns the names it removed.
  */
 export async function pruneStaleCompileCacheTags(activeDir: string): Promise<string[]> {
@@ -32,16 +39,44 @@ export async function pruneStaleCompileCacheTags(activeDir: string): Promise<str
   const root = path.dirname(resolved);
   const entries = await fs.promises.readdir(root, { withFileTypes: true }).catch(() => null);
   if (!entries) return removed;
+  const siblings: { name: string; lastWrite: number }[] = [];
   for (const entry of entries) {
     if (entry.name === current || !entry.isDirectory() || !CACHE_TAG_PATTERN.test(entry.name)) continue;
+    const lastWrite = await lastWriteMs(path.join(root, entry.name));
+    // A build whose time cannot be read is left alone rather than guessed at.
+    if (lastWrite !== undefined) siblings.push({ name: entry.name, lastWrite });
+  }
+  siblings.sort((a, b) => b.lastWrite - a.lastWrite);
+  const staleBefore = Date.now() - STALE_AFTER_MS;
+  for (const [index, sibling] of siblings.entries()) {
+    if (index < KEEP_RECENT_BUILDS || sibling.lastWrite > staleBefore) continue;
     try {
-      await fs.promises.rm(path.join(root, entry.name), { recursive: true, force: true });
-      removed.push(entry.name);
+      await fs.promises.rm(path.join(root, sibling.name), { recursive: true, force: true });
+      removed.push(sibling.name);
     } catch {
       // Locked or in use. The next launch tries again.
     }
   }
   return removed;
+}
+
+/**
+ * The newest modification time of a build's directory and of the files directly in it, or
+ * undefined when either cannot be read. Node writes each entry to a temporary file in the same
+ * directory and renames it into place, so its writes already move the directory's own time. The
+ * files are checked as well, so a file changed in place still counts. A build that only reads its
+ * cache keeps its old time, and the keep-recent rule in `pruneStaleCompileCacheTags` covers that.
+ */
+async function lastWriteMs(dir: string): Promise<number | undefined> {
+  try {
+    const names = await fs.promises.readdir(dir);
+    const stats = await Promise.all(
+      [dir, ...names.map((name) => path.join(dir, name))].map((target) => fs.promises.lstat(target)),
+    );
+    return stats.reduce((newest, stat) => Math.max(newest, stat.mtimeMs), 0);
+  } catch {
+    return undefined;
+  }
 }
 
 /**

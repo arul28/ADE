@@ -632,11 +632,16 @@ Node compile caches sit outside the project ledger and prune themselves. The
 desktop prunes its own root (`~/Library/Caches/ADE/compile-cache`, or
 `%LOCALAPPDATA%\ADE\compile-cache`, or the XDG cache path on Linux) after the
 first window opens. The brain prunes `<ADE home>/cache/node-compile` after it
-starts listening. Each removes only sibling directories named like a Node build
-tag (`v<semver>-…`), and never follows links. The active build's directory is
-never touched. An explicit `NODE_COMPILE_CACHE` or `ADE_COMPILE_CACHE_DIR` is the
-caller's directory, so nothing is pruned there. A directory Windows keeps locked
-is skipped and retried on the next launch. The `ade` CLI itself does not prune.
+starts listening. A sibling build directory is removed only when it is named
+like a Node build tag (`v<semver>-…`), nothing in it has been written for 14
+days, and it is not one of the two most recently written other builds. So two
+builds that run at once, or take turns, keep their caches, and a build written
+to in the last 14 days is kept. Links are never followed. The active build's
+directory is never touched. An explicit `NODE_COMPILE_CACHE` or
+`ADE_COMPILE_CACHE_DIR` is the caller's directory, so nothing is pruned there. A
+directory Windows keeps locked is skipped and retried on the next launch. A
+process whose cache directory is removed under it compiles without a cache and
+prints nothing. The `ade` CLI itself does not prune.
 
 ### Lane lifecycle rules
 
