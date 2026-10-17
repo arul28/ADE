@@ -5,12 +5,16 @@ import { getAgentSkillRootCandidates } from "../../../shared/agentSkillRoots";
 import {
   ancestorConfigRoots,
   discoverMarkdownAgentFiles,
+  discoverMarkdownAgentFilesAsync,
   discoverMarkdownCommandFiles,
+  discoverMarkdownCommandFilesAsync,
   discoverSkillCommands,
+  discoverSkillCommandsAsync,
   parseSlashCommandInput,
   resolveMarkdownCommandFile,
   resolveMarkdownSlashCommandFromFile,
   slashCommandKey,
+  slashCommandNameOrder,
 } from "./markdownSlashCommandDiscovery";
 
 export type DiscoveredCursorSlashCommand = {
@@ -86,33 +90,62 @@ function sourceRank(source: DiscoveredCursorSlashCommand["source"]): number {
   }
 }
 
-export function discoverCursorSlashCommands(cwd: string): DiscoveredCursorSlashCommand[] {
+/**
+ * Keeps the first entry per name, in the order the walk found them, then sorts.
+ * The order of `found` decides which source wins a name, so both walks must
+ * push in the same sequence.
+ */
+function finishCursorSlashCommands(found: readonly DiscoveredCursorSlashCommand[]): DiscoveredCursorSlashCommand[] {
   const byName = new Map<string, DiscoveredCursorSlashCommand>();
-  function add(command: DiscoveredCursorSlashCommand): void {
+  for (const command of found) {
     const key = slashCommandKey(command.name);
     if (!byName.has(key)) byName.set(key, command);
-  }
-
-  for (const root of cursorRootsByPrecedence(cwd)) {
-    for (const command of discoverMarkdownCommandFiles(path.join(root, "commands"))) {
-      add({ ...command, source: "command" });
-    }
-    for (const command of discoverMarkdownAgentFiles(path.join(root, "agents"))) {
-      add({ ...command, source: "subagent" });
-    }
-  }
-  for (const command of CURSOR_BUILT_IN_SUBAGENT_COMMANDS) add(command);
-  for (const root of cursorSkillRootsByPrecedence(cwd)) {
-    for (const command of discoverSkillCommands(root)) {
-      add({ ...command, source: "skill" });
-    }
   }
 
   return [...byName.values()].sort((a, b) => {
     const rankDiff = sourceRank(a.source) - sourceRank(b.source);
     if (rankDiff !== 0) return rankDiff;
-    return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+    return slashCommandNameOrder.compare(a.name, b.name);
   });
+}
+
+export function discoverCursorSlashCommands(cwd: string): DiscoveredCursorSlashCommand[] {
+  const found: DiscoveredCursorSlashCommand[] = [];
+  for (const root of cursorRootsByPrecedence(cwd)) {
+    for (const command of discoverMarkdownCommandFiles(path.join(root, "commands"))) {
+      found.push({ ...command, source: "command" });
+    }
+    for (const command of discoverMarkdownAgentFiles(path.join(root, "agents"))) {
+      found.push({ ...command, source: "subagent" });
+    }
+  }
+  found.push(...CURSOR_BUILT_IN_SUBAGENT_COMMANDS);
+  for (const root of cursorSkillRootsByPrecedence(cwd)) {
+    for (const command of discoverSkillCommands(root)) {
+      found.push({ ...command, source: "skill" });
+    }
+  }
+  return finishCursorSlashCommands(found);
+}
+
+/** The async twin of `discoverCursorSlashCommands`, for the chat-switch RPC: same list, yielding between files. */
+export async function discoverCursorSlashCommandsAsync(cwd: string): Promise<DiscoveredCursorSlashCommand[]> {
+  const found: DiscoveredCursorSlashCommand[] = [];
+  for (const root of cursorRootsByPrecedence(cwd)) {
+    for (const command of await discoverMarkdownCommandFilesAsync(path.join(root, "commands"))) {
+      found.push({ ...command, source: "command" });
+    }
+    for (const command of await discoverMarkdownAgentFilesAsync(path.join(root, "agents"))) {
+      found.push({ ...command, source: "subagent" });
+    }
+  }
+  found.push(...CURSOR_BUILT_IN_SUBAGENT_COMMANDS);
+  for (const root of cursorSkillRootsByPrecedence(cwd)) {
+    for (const command of await discoverSkillCommandsAsync(root)) {
+      found.push({ ...command, source: "skill" });
+    }
+  }
+  return finishCursorSlashCommands(found);
 }
 
 export function resolveCursorSlashCommandInvocation(

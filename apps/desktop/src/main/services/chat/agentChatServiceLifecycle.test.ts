@@ -262,7 +262,7 @@ describe("createAgentChatService", () => {
         modelId: "opencode/anthropic/claude-sonnet-5",
       });
 
-      expect(service.getSlashCommands({ sessionId: session.id })).toEqual(
+      expect(await service.getSlashCommands({ sessionId: session.id })).toEqual(
         expect.arrayContaining([
           expect.objectContaining({ name: "/clear" }),
         ]),
@@ -270,7 +270,7 @@ describe("createAgentChatService", () => {
 
       await service.dispose({ sessionId: session.id });
 
-      expect(service.getSlashCommands({ sessionId: session.id })).toEqual([]);
+      expect(await service.getSlashCommands({ sessionId: session.id })).toEqual([]);
     });
 
     it("terminates the Codex runtime process tree when disposing a live Codex chat", async () => {

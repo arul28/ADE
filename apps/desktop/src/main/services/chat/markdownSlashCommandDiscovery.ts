@@ -154,6 +154,13 @@ export function normalizeSlashCommandName(
   return name.length ? `/${name}` : null;
 }
 
+/**
+ * The order slash-command lists are sorted in. `localeCompare` with these options
+ * builds a collator on every comparison, which took ~80 ms to sort a few thousand
+ * names; one shared collator orders them the same way.
+ */
+export const slashCommandNameOrder = new Intl.Collator(undefined, { sensitivity: "base" });
+
 export function slashCommandKey(value: string): string {
   return value.trim().toLowerCase();
 }
@@ -261,11 +268,111 @@ export function visitMarkdownFiles(
   walk(root, 0);
 }
 
+/**
+ * The async twin of `visitMarkdownFiles`: the same files in the same order, but
+ * the directories are listed with `fs.promises`, so the walk yields to the event
+ * loop between them. Returns the list rather than visiting, so the caller can
+ * read the files in batches (`eachReadFile`).
+ */
+async function listMarkdownFilesAsync(
+  root: string,
+  maxDepth: number,
+): Promise<{ entryPath: string; relativeNoExt: string }[]> {
+  const files: { entryPath: string; relativeNoExt: string }[] = [];
+  const walk = async (dir: string, depth: number): Promise<void> => {
+    if (depth > maxDepth) return;
+    let entries: fs.Dirent[];
+    try {
+      entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const entryPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(entryPath, depth + 1);
+        continue;
+      }
+      if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
+      const relativeNoExt = path.relative(root, entryPath).replace(/\.md$/i, "");
+      files.push({ entryPath, relativeNoExt });
+    }
+  };
+  await walk(root, 0);
+  return files;
+}
+
+/**
+ * Files the async walk reads at once. One read at a time costs a threadpool round
+ * trip per file, which made the walk several times slower than the synchronous
+ * one; reading in batches overlaps those trips. Files are handled in order, a
+ * batch at a time, so the work between two yields stays short.
+ */
+const ASYNC_READ_BATCH = 32;
+
+/** Reads each file in batches and hands its text to `handle` in input order. A file that cannot be read is skipped. */
+async function eachReadFile<T extends { entryPath: string }>(
+  files: readonly T[],
+  handle: (file: T, content: string) => void,
+): Promise<void> {
+  for (let start = 0; start < files.length; start += ASYNC_READ_BATCH) {
+    const batch = files.slice(start, start + ASYNC_READ_BATCH);
+    const texts = await Promise.all(
+      batch.map((file) => fs.promises.readFile(file.entryPath, "utf8").catch(() => null)),
+    );
+    batch.forEach((file, index) => {
+      const content = texts[index];
+      if (content != null) handle(file, content);
+    });
+  }
+}
+
 function commandNameFromRelative(relativeNoExt: string, lowercaseNames: boolean): string | null {
   return normalizeSlashCommandName(
     relativeNoExt.split(path.sep).filter(Boolean).join(":"),
     { lowercase: lowercaseNames },
   );
+}
+
+// The record for one file is built here from its text, so the sync and async walks cannot drift apart.
+function markdownCommandFromContent(
+  name: string,
+  entryPath: string,
+  content: string,
+  useFrontmatterDescription: boolean,
+): DiscoveredMarkdownSlashCommand {
+  const frontmatter = readFrontmatter(content) as CommandFrontmatter;
+  const description = useFrontmatterDescription
+    ? maybeString(frontmatter.description) ?? firstMarkdownParagraph(content)
+    : firstMarkdownParagraph(content);
+  return {
+    name,
+    description,
+    argumentHint: maybeArgumentHint(frontmatter["argument-hint"]) ?? maybeArgumentHint(frontmatter.argumentHint),
+    filePath: entryPath,
+    modelInvocable: true,
+  };
+}
+
+function markdownAgentFromContent(
+  relativeNoExt: string,
+  entryPath: string,
+  content: string,
+  lowercaseNames: boolean,
+): DiscoveredMarkdownSlashCommand | null {
+  const frontmatter = readFrontmatter(content) as AgentFrontmatter;
+  const name = normalizeSlashCommandName(
+    maybeString(frontmatter.name) ?? path.basename(relativeNoExt),
+    { lowercase: lowercaseNames },
+  );
+  if (!name) return null;
+  return {
+    name,
+    description: maybeString(frontmatter.description) ?? firstMarkdownParagraph(content),
+    argumentHint: maybeArgumentHint(frontmatter["argument-hint"]) ?? maybeArgumentHint(frontmatter.argumentHint),
+    filePath: entryPath,
+    modelInvocable: true,
+  };
 }
 
 export function discoverMarkdownCommandFiles(
@@ -291,18 +398,33 @@ export function discoverMarkdownCommandFiles(
     } catch {
       return;
     }
-    const frontmatter = readFrontmatter(content) as CommandFrontmatter;
-    const description = useFrontmatterDescription
-      ? maybeString(frontmatter.description) ?? firstMarkdownParagraph(content)
-      : firstMarkdownParagraph(content);
-    commands.push({
-      name,
-      description,
-      argumentHint: maybeArgumentHint(frontmatter["argument-hint"]) ?? maybeArgumentHint(frontmatter.argumentHint),
-      filePath: entryPath,
-      modelInvocable: true,
-    });
+    commands.push(markdownCommandFromContent(name, entryPath, content, useFrontmatterDescription));
   }, maxDepth);
+  return commands;
+}
+
+/** The async twin of `discoverMarkdownCommandFiles`: same files, records and order. */
+export async function discoverMarkdownCommandFilesAsync(
+  commandsDir: string,
+  options: {
+    maxDepth?: number;
+    lowercaseNames?: boolean;
+    useFrontmatterDescription?: boolean;
+  } = {},
+): Promise<DiscoveredMarkdownSlashCommand[]> {
+  const {
+    maxDepth = DEFAULT_MARKDOWN_COMMAND_DEPTH,
+    lowercaseNames = false,
+    useFrontmatterDescription = true,
+  } = options;
+  const commands: DiscoveredMarkdownSlashCommand[] = [];
+  const named = (await listMarkdownFilesAsync(commandsDir, maxDepth)).flatMap((file) => {
+    const name = commandNameFromRelative(file.relativeNoExt, lowercaseNames);
+    return name ? [{ ...file, name }] : [];
+  });
+  await eachReadFile(named, (file, content) => {
+    commands.push(markdownCommandFromContent(file.name, file.entryPath, content, useFrontmatterDescription));
+  });
   return commands;
 }
 
@@ -319,20 +441,23 @@ export function discoverMarkdownAgentFiles(
     } catch {
       return;
     }
-    const frontmatter = readFrontmatter(content) as AgentFrontmatter;
-    const name = normalizeSlashCommandName(
-      maybeString(frontmatter.name) ?? path.basename(relativeNoExt),
-      { lowercase: lowercaseNames },
-    );
-    if (!name) return;
-    commands.push({
-      name,
-      description: maybeString(frontmatter.description) ?? firstMarkdownParagraph(content),
-      argumentHint: maybeArgumentHint(frontmatter["argument-hint"]) ?? maybeArgumentHint(frontmatter.argumentHint),
-      filePath: entryPath,
-      modelInvocable: true,
-    });
+    const command = markdownAgentFromContent(relativeNoExt, entryPath, content, lowercaseNames);
+    if (command) commands.push(command);
   }, maxDepth);
+  return commands;
+}
+
+/** The async twin of `discoverMarkdownAgentFiles`: same files, records and order. */
+export async function discoverMarkdownAgentFilesAsync(
+  agentsDir: string,
+  options: { maxDepth?: number; lowercaseNames?: boolean } = {},
+): Promise<DiscoveredMarkdownSlashCommand[]> {
+  const { maxDepth = DEFAULT_MARKDOWN_COMMAND_DEPTH, lowercaseNames = false } = options;
+  const commands: DiscoveredMarkdownSlashCommand[] = [];
+  await eachReadFile(await listMarkdownFilesAsync(agentsDir, maxDepth), (file, content) => {
+    const command = markdownAgentFromContent(file.relativeNoExt, file.entryPath, content, lowercaseNames);
+    if (command) commands.push(command);
+  });
   return commands;
 }
 
@@ -385,6 +510,34 @@ export function resolveMarkdownCommandFile(
   return null;
 }
 
+// The record for one skill folder's SKILL.md, or null when the skill is filtered out or has no usable name.
+function skillCommandFromContent(
+  dirName: string,
+  skillPath: string,
+  content: string,
+  options: { respectUserInvocable: boolean; lowercaseNames: boolean },
+): DiscoveredMarkdownSlashCommand | null {
+  const frontmatter = readFrontmatter(content) as SkillFrontmatter;
+  if (
+    options.respectUserInvocable
+    && (frontmatterFlag(frontmatter["user-invocable"]) === false
+      || frontmatterFlag(frontmatter.userInvocable) === false)
+  ) {
+    return null;
+  }
+  const name = normalizeSlashCommandName(maybeString(frontmatter.name) ?? dirName, { lowercase: options.lowercaseNames });
+  if (!name) return null;
+  const disableModelInvocation = frontmatterFlag(frontmatter["disable-model-invocation"]) === true
+    || frontmatterFlag(frontmatter.disableModelInvocation) === true;
+  return {
+    name,
+    description: maybeString(frontmatter.description) ?? firstMarkdownParagraph(content),
+    argumentHint: maybeArgumentHint(frontmatter["argument-hint"]) ?? maybeArgumentHint(frontmatter.argumentHint),
+    filePath: skillPath,
+    modelInvocable: !disableModelInvocation,
+  };
+}
+
 export function discoverSkillCommands(
   skillsDir: string,
   options: { respectUserInvocable?: boolean; lowercaseNames?: boolean } = {},
@@ -410,26 +563,42 @@ export function discoverSkillCommands(
     } catch {
       continue;
     }
-    const frontmatter = readFrontmatter(content) as SkillFrontmatter;
-    if (
-      respectUserInvocable
-      && (frontmatterFlag(frontmatter["user-invocable"]) === false
-        || frontmatterFlag(frontmatter.userInvocable) === false)
-    ) {
-      continue;
-    }
-    const name = normalizeSlashCommandName(maybeString(frontmatter.name) ?? entry.name, { lowercase: lowercaseNames });
-    if (!name) continue;
-    const disableModelInvocation = frontmatterFlag(frontmatter["disable-model-invocation"]) === true
-      || frontmatterFlag(frontmatter.disableModelInvocation) === true;
-    commands.push({
-      name,
-      description: maybeString(frontmatter.description) ?? firstMarkdownParagraph(content),
-      argumentHint: maybeArgumentHint(frontmatter["argument-hint"]) ?? maybeArgumentHint(frontmatter.argumentHint),
-      filePath: skillPath,
-      modelInvocable: !disableModelInvocation,
-    });
+    const command = skillCommandFromContent(entry.name, skillPath, content, { respectUserInvocable, lowercaseNames });
+    if (command) commands.push(command);
   }
+
+  return commands;
+}
+
+/**
+ * The async twin of `discoverSkillCommands`: same folders, records and order.
+ * A missing SKILL.md is the same outcome as an unreadable one, so the read's
+ * error is the only check.
+ */
+export async function discoverSkillCommandsAsync(
+  skillsDir: string,
+  options: { respectUserInvocable?: boolean; lowercaseNames?: boolean } = {},
+): Promise<DiscoveredMarkdownSlashCommand[]> {
+  const { respectUserInvocable = true, lowercaseNames = false } = options;
+  const commands: DiscoveredMarkdownSlashCommand[] = [];
+
+  let entries: fs.Dirent[];
+  try {
+    entries = await fs.promises.readdir(skillsDir, { withFileTypes: true });
+  } catch {
+    return commands;
+  }
+
+  const skills = entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => {
+      const skillPath = path.join(skillsDir, entry.name, "SKILL.md");
+      return { dirName: entry.name, skillPath, entryPath: skillPath };
+    });
+  await eachReadFile(skills, (skill, content) => {
+    const command = skillCommandFromContent(skill.dirName, skill.skillPath, content, { respectUserInvocable, lowercaseNames });
+    if (command) commands.push(command);
+  });
 
   return commands;
 }

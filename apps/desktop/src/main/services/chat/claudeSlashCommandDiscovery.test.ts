@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   CLAUDE_SKILL_LISTING_MAX_DESC_CHARS,
   discoverClaudeSlashCommands,
+  discoverClaudeSlashCommandsAsync,
   formatClaudeSlashCommandEntry,
   invalidateClaudeSlashCommandCache,
   planClaudeSlashCommandInjection,
@@ -80,6 +81,37 @@ describe("discovery cache", () => {
     } finally {
       fs.rmSync(other, { recursive: true, force: true });
     }
+  });
+});
+
+describe("discoverClaudeSlashCommandsAsync", () => {
+  // The asynchronous walk is a second implementation of the same walk. It must
+  // return what the synchronous one returns, in the same order.
+  it("returns the same list, in the same order, as the synchronous walk", async () => {
+    const writeFile = (root: string, rel: string, body: string) => {
+      const file = path.join(root, rel);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, body);
+    };
+    writeFile(tmpRoot, ".claude/commands/alpha.md", "Alpha body.");
+    writeFile(tmpRoot, ".claude/commands/ops/deploy.md", "---\ndescription: Deploy the stack\n---\nDeploy.");
+    writeFile(tmpRoot, ".claude/skills/fix-issue/SKILL.md", "---\nname: fix-issue\ndescription: Project version\n---\nFix.");
+    writeFile(tmpRoot, ".claude/skills/background/SKILL.md", "---\nuser-invocable: false\n---\nHidden.");
+    writeFile(tmpRoot, ".claude/skills/manual-only/SKILL.md", "---\ndisable-model-invocation: true\n---\nManual.");
+    writeFile(homeRoot, ".claude/commands/alpha.md", "Personal alpha.");
+    writeFile(homeRoot, ".claude/skills/fix-issue/SKILL.md", "---\nname: fix-issue\ndescription: Home version\n---\nFix.");
+
+    invalidateClaudeSlashCommandCache();
+    const expected = discoverClaudeSlashCommands(tmpRoot);
+    invalidateClaudeSlashCommandCache();
+    const actual = await discoverClaudeSlashCommandsAsync(tmpRoot);
+
+    expect(actual).toEqual(expected);
+    // The bundled ADE skills are listed too, so the names are checked as a subset.
+    const names = actual.map((command) => command.name);
+    expect(names).toEqual(expect.arrayContaining(["/alpha", "/ops:deploy", "/fix-issue", "/manual-only"]));
+    expect(names).not.toContain("/background");
+    expect(actual.find((command) => command.name === "/fix-issue")?.description).toBe("Project version");
   });
 });
 

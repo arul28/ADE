@@ -324,7 +324,7 @@ export class PersonalChatScope {
           result = cached.commands;
           break;
         }
-        const commands = service.getSlashCommands({
+        const commands = await service.getSlashCommands({
           ...(sessionId ? { sessionId } : {}),
           ...(provider ? { provider } : {}),
           laneId: await this.getInternalLaneId(runtime),
