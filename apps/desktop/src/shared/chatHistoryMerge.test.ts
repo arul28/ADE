@@ -388,6 +388,37 @@ describe("warm switch onto a resident transcript with a resent tool call", () =>
     expect(merged.slice(3)).toEqual(resident.slice(3).filter((entry) => entry !== heldResend));
   });
 
+  it("keeps the resident prefix when the resend was already collapsed into the first send's row", () => {
+    // What the merge actually holds: one row for the call, at the first send's
+    // position. The row before the first overlap is then the card, not the call.
+    const older = [
+      envelope("2026-10-17T07:00:00.000Z", "older one"),
+      envelope("2026-10-17T07:03:00.000Z", "older two"),
+    ];
+    const collapsed = toolCall("2026-10-17T07:03:36.821Z", { command: "rg foo --hidden" });
+    const resident = [
+      ...older,
+      collapsed,
+      envelope("2026-10-17T07:03:37.100Z", "activity"),
+      envelope("2026-10-17T07:03:37.500Z", "ade card"),
+      toolResult("2026-10-17T07:04:40.581Z"),
+      envelope("2026-10-17T07:04:41.000Z", "activity two"),
+      envelope("2026-10-17T07:04:42.000Z", "text"),
+    ];
+    const snapshot = [
+      toolCall("2026-10-17T07:03:38.765Z", { command: "rg foo --hidden" }),
+      toolResult("2026-10-17T07:04:40.581Z"),
+      envelope("2026-10-17T07:04:41.000Z", "activity two"),
+      envelope("2026-10-17T07:04:42.000Z", "text"),
+    ];
+
+    const merged = mergeAgentChatHistorySnapshot(structuredClone(snapshot), resident);
+
+    expect(merged).toHaveLength(resident.length);
+    expect(merged.map((entry) => entry.event.type)).toEqual(resident.map((entry) => entry.event.type));
+    expect(merged[2]).toMatchObject({ timestamp: "2026-10-17T07:03:36.821Z" });
+  });
+
   it("still drops a stale prefix that ends at a hole before the snapshot head", () => {
     const stalePrefix = [
       envelope("2026-10-17T07:00:00.000Z", "stale one"),

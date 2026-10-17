@@ -392,18 +392,23 @@ export function mergeAgentChatLiveEvents(
 }
 
 /**
- * A held tool call that the snapshot head re-sends. A resent call keeps its
- * first send's time in the held list (see {@link upsertRepeatedToolCalls}), so
- * the head's own timestamp sorts after it and the time check misses the join.
- * Same logical item is the same call.
+ * The snapshot head re-sends a tool call the prefix already holds. A resent
+ * call keeps its first send's time in the held list (see
+ * {@link upsertRepeatedToolCalls}), so the head's own timestamp sorts after it
+ * and the time check misses the join. The held call can sit anywhere in the
+ * prefix: the merge collapses the resend into the first send's row, so the row
+ * before the first overlap is not necessarily the call. Same logical item is
+ * the same call; a call's resend always follows its first send in one stream.
  */
-function isResendOfHeldToolCall(
-  held: AgentChatEventEnvelope,
+function prefixHoldsResentToolCall(
+  prefix: readonly AgentChatEventEnvelope[],
   head: AgentChatEventEnvelope,
 ): boolean {
-  if (held.event.type !== "tool_call" || head.event.type !== "tool_call") return false;
-  const key = logicalToolItemKey(held);
-  return key !== null && key === logicalToolItemKey(head);
+  if (head.event.type !== "tool_call") return false;
+  const key = logicalToolItemKey(head);
+  return key !== null && prefix.some((entry) => (
+    entry.event.type === "tool_call" && logicalToolItemKey(entry) === key
+  ));
 }
 
 /**
@@ -487,7 +492,7 @@ export function mergeAgentChatHistorySnapshot(
   const prefixJoinsSnapshot = firstOverlapIndex > 0 && (
     existingIndexByKey.has(identityKey(snapshotHead))
     || isAtOrAfter(existing[firstOverlapIndex - 1]!, snapshotHead)
-    || isResendOfHeldToolCall(existing[firstOverlapIndex - 1]!, snapshotHead)
+    || prefixHoldsResentToolCall(existing.slice(0, firstOverlapIndex), snapshotHead)
   );
   const olderPrefix = prefixJoinsSnapshot
     ? existing
