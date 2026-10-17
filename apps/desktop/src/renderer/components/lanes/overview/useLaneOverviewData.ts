@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useEffect, useMemo, useRef, useState } from "react";
 import type {
   AgentChatSessionSummary,
   GitCommitSummary,
@@ -16,8 +16,16 @@ import type {
 } from "../../../../shared/types";
 import { getGitHubSnapshotCoalesced, listPrsCoalesced } from "../../../lib/prReadCache";
 import { listSessionsCached } from "../../../lib/sessionListCache";
-import { selectActiveProjectRoot, useAppStore } from "../../../state/appStore";
+import { selectActiveProjectRoot, selectActiveProjectStateKey, useAppStore } from "../../../state/appStore";
 import { buildLanePrsByLaneId } from "../../terminals/useLanePrs";
+import {
+  LANE_OVERVIEW_ANY_BRANCH,
+  laneGitListEpoch,
+  readLaneOverviewField,
+  readLaneOverviewPrs,
+  writeLaneOverviewField,
+  writeLaneOverviewPrs,
+} from "../laneGitListCache";
 import {
   normalizeProvider,
   parseCoAuthorProvider,
@@ -79,6 +87,7 @@ function githubOnlyHistoryPr(item: GitHubPrListItem): LaneHistoryPr {
 }
 
 const NO_GITHUB_PRS: GitHubPrListItem[] = [];
+const NO_PRS: PrSummary[] = [];
 
 /**
  * The lane's PRs from the same coalesced reads the lane badges use.
@@ -95,36 +104,54 @@ export function useLaneOverviewPrs(
   foreignPrs: PrSummary[] | null = null,
 ): { current: LaneHistoryPr[]; all: LaneHistoryPr[] } {
   const projectRoot = useAppStore(selectActiveProjectRoot);
-  const [boundPrs, setPrs] = useState<PrSummary[]>([]);
-  const [boundGithubPrs, setGithubPrs] = useState<GitHubPrListItem[]>([]);
+  const projectStateKey = useAppStore(selectActiveProjectStateKey);
+  const [boundPrs, setPrs] = useState<PrSummary[]>(NO_PRS);
+  const [boundGithubPrs, setGithubPrs] = useState<GitHubPrListItem[]>(NO_GITHUB_PRS);
   const isForeign = foreignPrs != null;
   const prs = foreignPrs ?? boundPrs;
   const githubPrs = isForeign ? NO_GITHUB_PRS : boundGithubPrs;
+
+  // The project's last PR reads paint in a transition after the first commit,
+  // so a revisit's rows already carry their PR badges and chips.
+  useEffect(() => {
+    if (isForeign) return;
+    const cached = readLaneOverviewPrs(projectStateKey);
+    startTransition(() => {
+      setPrs(cached?.prs ?? NO_PRS);
+      setGithubPrs(cached?.githubPrs ?? NO_GITHUB_PRS);
+    });
+  }, [isForeign, projectStateKey]);
 
   useEffect(() => {
     if (isForeign || !window.ade?.prs) return;
     let cancelled = false;
     const readSnapshot = () => getGitHubSnapshotCoalesced({}, { projectRoot })
       .then((snapshot) => {
-        if (!cancelled) setGithubPrs(snapshot?.repoPullRequests ?? []);
+        if (cancelled) return;
+        const githubPrs = snapshot?.repoPullRequests ?? [];
+        setGithubPrs(githubPrs);
+        writeLaneOverviewPrs(projectStateKey, { githubPrs });
       })
       .catch(() => {});
     void listPrsCoalesced({ projectRoot })
       .then((list) => {
-        if (!cancelled) setPrs(list);
+        if (cancelled) return;
+        setPrs(list);
+        writeLaneOverviewPrs(projectStateKey, { prs: list });
       })
       .catch(() => {});
     void readSnapshot();
     const unsubscribe = window.ade.prs.onEvent((event) => {
       if (event.type !== "prs-updated") return;
       setPrs(event.prs);
+      writeLaneOverviewPrs(projectStateKey, { prs: event.prs });
       void readSnapshot();
     });
     return () => {
       cancelled = true;
       unsubscribe?.();
     };
-  }, [isForeign, projectRoot]);
+  }, [isForeign, projectRoot, projectStateKey]);
 
   return useMemo(() => {
     if (!lane) return { current: [], all: [] };
@@ -183,6 +210,8 @@ export function useLaneCommits(
   const limit = isPrimary
     ? Math.min(MAX_LANE_COMMITS, Math.max(PRIMARY_COMMIT_PAGE, primaryLimit))
     : Math.min(MAX_LANE_COMMITS, ahead);
+  // The branch a cached result was read for; a rename or a moved head never paints the old rows.
+  const cacheBranchKey = `${lane?.branchRef ?? ""}|${lane?.status?.headBranchRef ?? ""}`;
   const branchKey = [
     pin?.key ?? "",
     laneId,
@@ -200,14 +229,25 @@ export function useLaneCommits(
     setCommits([]);
   }, [laneId, pinKey]);
 
+  // The last commits of this lane paint in a transition after the mount commit.
+  useEffect(() => {
+    if (!laneId) return;
+    const cached = readLaneOverviewField<GitCommitSummary[]>(pinKey, laneId, "commits", cacheBranchKey);
+    if (cached) startTransition(() => { setCommits(cached); setLoaded(true); });
+    // Keyed by the lane and its pin; the branch is checked by the cache read.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [laneId, pinKey]);
+
   useEffect(() => {
     if (!laneId) return;
     if (limit <= 0) {
       setCommits([]);
       setLoaded(true);
+      writeLaneOverviewField(pinKey, laneId, laneGitListEpoch(), "commits", cacheBranchKey, []);
       return;
     }
     let cancelled = false;
+    const epochAtStart = laneGitListEpoch();
     // Unpinned calls keep their exact pre-pin shape (the tab's machine).
     // The rows carry each commit's Co-authored-by trailers from the same
     // `git log`, so the trailer pass below reads no message for a commit whose
@@ -224,11 +264,13 @@ export function useLaneCommits(
           const provider = row.coAuthors ? providerFromCoAuthors(row.coAuthors) : null;
           if (provider && !trailerProviderCache.has(row.sha)) trailerProviderCache.set(row.sha, provider);
         }
+        writeLaneOverviewField(pinKey, laneId, epochAtStart, "commits", cacheBranchKey, rows);
         setCommits(rows);
         setLoaded(true);
       })
       .catch(() => {
         if (cancelled) return;
+        writeLaneOverviewField(pinKey, laneId, epochAtStart, "commits", cacheBranchKey, []);
         setCommits([]);
         setLoaded(true);
       });
@@ -350,9 +392,24 @@ export function useLaneSessions(
   const requestRef = useRef(0);
   const pinKey = pin?.key ?? null;
 
+  // The last chats and CLI rows of this lane paint in a transition after the mount commit.
+  useEffect(() => {
+    if (!laneId) return;
+    const cached = readLaneOverviewField<{ chats: AgentChatSessionSummary[]; terminals: TerminalSessionSummary[] }>(
+      pinKey,
+      laneId,
+      "sessions",
+      LANE_OVERVIEW_ANY_BRANCH,
+    );
+    if (cached) startTransition(() => setState({ laneId, pinKey, ...cached }));
+    // `pinKey` carries the pin's identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [laneId, pinKey]);
+
   useEffect(() => {
     if (!laneId) return;
     const requestId = ++requestRef.current;
+    const epochAtStart = laneGitListEpoch();
     void Promise.all([
       (pin
         ? window.ade.agentChat.list({ laneId, includeArchived: true }, pin)
@@ -365,6 +422,7 @@ export function useLaneSessions(
       ).catch(() => []),
     ]).then(([chats, terminals]) => {
       if (requestId !== requestRef.current) return;
+      writeLaneOverviewField(pinKey, laneId, epochAtStart, "sessions", LANE_OVERVIEW_ANY_BRANCH, { chats, terminals });
       setState({ laneId, pinKey, chats, terminals });
     });
     // `pinKey` carries the pin's identity.
@@ -397,12 +455,36 @@ export function useLaneUpstream(
     ? `${lane.id}:${lane.branchRef}:${lane.status.ahead}:${lane.status.behind}:${lane.status.remoteBehind}:${lane.status.dirty}:${lane.status.lastCommitAt ?? ""}`
     : "";
 
+  // The last sync status of this lane paints in a transition after the mount commit.
+  useEffect(() => {
+    if (!laneId) return;
+    const cached = readLaneOverviewField<GitUpstreamSyncStatus | null>(
+      pinKey,
+      laneId,
+      "upstream",
+      lane?.branchRef ?? "",
+    );
+    if (cached !== undefined) startTransition(() => setState({ laneKey, status: cached }));
+    // `laneKey` carries the lane and the pin; the branch is checked by the cache read.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [laneKey]);
+
   useEffect(() => {
     if (!active || !laneId) return;
     let cancelled = false;
+    const branchRef = lane?.branchRef ?? "";
+    const epochAtStart = laneGitListEpoch();
     (pin ? window.ade.git.getSyncStatus({ laneId }, pin) : window.ade.git.getSyncStatus({ laneId }))
-      .then((next) => { if (!cancelled) setState({ laneKey, status: next }); })
-      .catch(() => { if (!cancelled) setState({ laneKey, status: null }); });
+      .then((next) => {
+        if (cancelled) return;
+        writeLaneOverviewField(pinKey, laneId, epochAtStart, "upstream", branchRef, next);
+        setState({ laneKey, status: next });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        writeLaneOverviewField(pinKey, laneId, epochAtStart, "upstream", branchRef, null);
+        setState({ laneKey, status: null });
+      });
     return () => { cancelled = true; };
     // `statusKey` re-reads after a commit, pull or push changed the lane;
     // `laneKey` carries the pin's identity.
@@ -541,20 +623,33 @@ export function useLaneOperations(
 ): OperationRecord[] {
   const [operations, setOperations] = useState<OperationRecord[]>([]);
   const pinKey = pin?.key ?? null;
+  // The last records of this lane paint in a transition after the mount commit.
+  useEffect(() => {
+    if (!laneId) return;
+    const cached = readLaneOverviewField<OperationRecord[]>(pinKey, laneId, "operations", LANE_OVERVIEW_ANY_BRANCH);
+    if (cached) startTransition(() => setOperations(cached));
+    // `pinKey` carries the pin's identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [laneId, pinKey]);
   useEffect(() => {
     if (!laneId || !window.ade?.history?.listOperations) {
       setOperations([]);
       return;
     }
     let cancelled = false;
+    const epochAtStart = laneGitListEpoch();
     void (pin
       ? window.ade.history.listOperations({ laneId, limit: OPERATION_LIMIT }, pin)
       : window.ade.history.listOperations({ laneId, limit: OPERATION_LIMIT }))
       .then((rows) => {
-        if (!cancelled) setOperations(rows);
+        if (cancelled) return;
+        writeLaneOverviewField(pinKey, laneId, epochAtStart, "operations", LANE_OVERVIEW_ANY_BRANCH, rows);
+        setOperations(rows);
       })
       .catch(() => {
-        if (!cancelled) setOperations([]);
+        if (cancelled) return;
+        writeLaneOverviewField(pinKey, laneId, epochAtStart, "operations", LANE_OVERVIEW_ANY_BRANCH, []);
+        setOperations([]);
       });
     return () => {
       cancelled = true;
