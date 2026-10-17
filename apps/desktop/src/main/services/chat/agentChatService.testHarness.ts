@@ -171,6 +171,10 @@ const mockState = vi.hoisted(() => ({
   openCodeV2SteerError: null as Error | null,
   /** When set, the mocked v2 steer waits on this before answering. */
   openCodeV2SteerBarrier: null as Promise<void> | null,
+  /** When set, the mocked `session.create` waits on this: a session-setup RPC that never answers. */
+  openCodeSessionCreateBarrier: null as Promise<void> | null,
+  /** Launches of the mocked `opencode serve` process. */
+  openCodeServeLaunches: 0,
   openCodeTitleForNextPrompt: null as string | null,
   openCodeQuestionForNextPrompt: null as null | {
     id: string;
@@ -302,6 +306,7 @@ vi.mock("node:child_process", () => ({
   spawnSync: vi.fn(() => ({ error: new Error("process listing unavailable in test"), status: 1, stdout: "" })),
   spawn: vi.fn((command: string, args: string[] = []) => {
     if (args.includes("serve")) {
+      mockState.openCodeServeLaunches += 1;
       const proc = new EventEmitter() as EventEmitter & Record<string, any>;
       const stdout = new EventEmitter() as EventEmitter & { resume: ReturnType<typeof vi.fn> };
       const stderr = new EventEmitter() as EventEmitter & { resume: ReturnType<typeof vi.fn> };
@@ -518,7 +523,10 @@ vi.mock("@opencode/client", () => ({
         permission: { reply: vi.fn(async () => ({ data: {} })) },
         question: { reply: vi.fn(async () => ({ data: {} })), reject: vi.fn(async () => ({ data: {} })) },
         session: {
-          create: vi.fn(async (args: any) => createSession(args)),
+          create: vi.fn(async (args: any) => {
+            if (mockState.openCodeSessionCreateBarrier) await mockState.openCodeSessionCreateBarrier;
+            return createSession(args);
+          }),
           get: vi.fn(async ({ sessionID }: { sessionID: string }) => findSession(sessionID)),
           update: vi.fn(async ({ sessionID, ...args }: any) => Object.assign(findSession(sessionID), args)),
           switchAgent: vi.fn(async ({ sessionID, agent }: any) => { findSession(sessionID).agent = agent; return {}; }),
@@ -2219,6 +2227,8 @@ beforeEach(() => {
   mockState.openCodePromptError = null;
   mockState.openCodeV2SteerError = null;
   mockState.openCodeV2SteerBarrier = null;
+  mockState.openCodeSessionCreateBarrier = null;
+  mockState.openCodeServeLaunches = 0;
   mockState.openCodeTitleForNextPrompt = null;
   mockState.openCodeQuestionForNextPrompt = null;
   mockState.droidSessionCounter = 0;

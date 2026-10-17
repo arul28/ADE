@@ -4800,9 +4800,9 @@ type ManagedChatSession = {
   deleted: boolean;
   /**
    * When the last fresh send was accepted, until its turn starts, ends, or
-   * fails. A lazily-started provider runtime can hold the chat "idle" for
-   * seconds after the send; the list reports it as in flight meanwhile. In
-   * memory only.
+   * fails, or `TURN_ACCEPTED_START_TIMEOUT_MS` passes with no turn. A
+   * lazily-started provider runtime can hold the chat "idle" for seconds after
+   * the send; the list reports it as in flight meanwhile. In memory only.
    */
   turnAcceptedAt?: string | null;
   /**
@@ -5418,6 +5418,14 @@ const CODEX_GOAL_OBJECTIVE_REQUIRED_MESSAGE = "Goal text is required.";
 const CODEX_GOAL_OBJECTIVE_TOO_LONG_MESSAGE = "Goal is too long. Keep it under 4,000 characters.";
 const HANDOFF_NOTE_MAX_CHARS = 4_000;
 const HANDOFF_NOTE_TOO_LONG_MESSAGE = "Handoff note is too long. Keep it under 4,000 characters.";
+/**
+ * How long an accepted send may read as in flight before its turn starts (see
+ * `turnAcceptedAt`). Past it the start is hung, not slow, and the chat reads as
+ * resting again. Twice the longest start a provider waits on itself (OpenCode's
+ * server start 20 s, Claude's warm-up 20 s, Codex's request 30 s), so a start
+ * still in progress is never cut short.
+ */
+export const TURN_ACCEPTED_START_TIMEOUT_MS = 60_000;
 // Idle stream watchdog removed — time-based idle detection produced false
 // positives during long-running tool calls (Agent, Bash, etc.) where no
 // stream events are emitted while the SDK waits for tool results. The user
@@ -19794,6 +19802,8 @@ export function createAgentChatService(args: {
     }
     managed.session.status = "active";
     managed.session.idleSinceAt = null;
+    // The accepted turn has started, so it no longer waits on a provider start.
+    managed.turnAcceptedAt = null;
   };
 
   const setSessionIdle = (
@@ -56945,9 +56955,25 @@ export function createAgentChatService(args: {
 
     // Accepted here, but the provider may still be starting its runtime before
     // the turn flips the chat active. Report it in flight until the turn starts,
-    // ends, or fails (see `turnAcceptedAt`).
+    // ends, or fails (see `turnAcceptedAt`). A start that never completes stops
+    // counting after TURN_ACCEPTED_START_TIMEOUT_MS; the send itself is left
+    // alone, so a start error that lands later still surfaces.
     const turnAcceptedAt = nowIso();
     prepared.managed.turnAcceptedAt = turnAcceptedAt;
+    const acceptedStartWatch = setTimeout(() => {
+      const { managed } = prepared;
+      if (managed.turnAcceptedAt !== turnAcceptedAt) return;
+      managed.turnAcceptedAt = null;
+      // Only an idle chat's summary reads the marker, so only then does the row need a refresh.
+      if (managed.session.status !== "idle" || managed.deleted) return;
+      logger.warn("agent_chat.turn_accepted_start_timed_out", {
+        sessionId: prepared.sessionId,
+        provider: managed.session.provider,
+        timeoutMs: TURN_ACCEPTED_START_TIMEOUT_MS,
+      });
+      emitTransientChatEnvelope(prepared.sessionId, { type: "session_meta_updated" });
+    }, TURN_ACCEPTED_START_TIMEOUT_MS);
+    acceptedStartWatch.unref?.();
     void executePreparedSendMessage(prepared).catch((error) => {
       logger.warn("agent_chat.turn_dispatch_failed", {
         sessionId: prepared.sessionId,
@@ -56957,6 +56983,7 @@ export function createAgentChatService(args: {
       rejectDispatch?.(error instanceof Error ? error : new Error(String(error)));
       emitDispatchedSendFailure(prepared, error);
     }).finally(() => {
+      clearTimeout(acceptedStartWatch);
       if (prepared.managed.turnAcceptedAt === turnAcceptedAt) prepared.managed.turnAcceptedAt = null;
     });
 
