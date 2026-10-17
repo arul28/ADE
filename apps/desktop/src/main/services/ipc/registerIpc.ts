@@ -6474,12 +6474,26 @@ export function registerIpc({
   );
 
   ipcMain.handle(IPC.syncDisconnectFromBrain, async (event): Promise<SyncRoleSnapshot> => {
-    const runtimeStatus = await tryRuntimeSync<SyncRoleSnapshot>(
-      event,
-      "sync.disconnectFromBrain",
-      {},
-      (pool, rootPath) => pool.callSyncForRoot<SyncRoleSnapshot>(rootPath, "sync.disconnectFromBrain"),
-    );
+    // Disconnect acts on the project this window shows, and on no other, and it
+    // never boots one. Neither retry is taken once that project is known: the
+    // one in tryRuntimeSync sends the call again with no project id, so the brain
+    // answers for whichever project it has at hand, and the in-process fallback
+    // below boots the mobile sync host. A project that is not ready is refused.
+    const rootPath = localRuntimeConnectionPool ? getLocalRuntimeRootForEvent(event) : null;
+    if (localRuntimeConnectionPool && rootPath) {
+      try {
+        return await localRuntimeConnectionPool.callSyncForRoot<SyncRoleSnapshot>(
+          rootPath,
+          "sync.disconnectFromBrain",
+        );
+      } catch (error) {
+        if (isSyncServiceUnavailableError(error)) {
+          throw new Error("This project isn't loaded yet. Open it and try again.");
+        }
+        throw error;
+      }
+    }
+    const runtimeStatus = await tryRuntimeSync<SyncRoleSnapshot>(event, "sync.disconnectFromBrain", {});
     if (runtimeStatus.handled) return runtimeStatus.result;
     return await (await requireSyncService()).disconnectFromBrain();
   });

@@ -528,14 +528,26 @@ describe("ThisMacCard", () => {
   describe("Stop following", () => {
     const followerButton = { name: "Stop following Mac Studio" };
 
-    function followerStatus(): SyncRoleSnapshot {
+    const acknowledgement = { name: /I understand this computer will host sync for this project/ };
+
+    function daysAgo(days: number): string {
+      return new Date(Date.now() - days * 86_400_000).toISOString();
+    }
+
+    function followerStatus(client: Partial<SyncRoleSnapshot["client"]> = {}): SyncRoleSnapshot {
       return makeStatus({
         mode: "viewer",
         role: "viewer",
         runtimeRole: "viewer",
         viewerReason: "saved_connection",
         runtimeMode: "viewer",
-        client: { state: "error", host: "192.168.1.89", port: 8788, hostName: "Mac Studio" } as SyncRoleSnapshot["client"],
+        client: {
+          state: "error",
+          host: "192.168.1.89",
+          port: 8788,
+          hostName: "Mac Studio",
+          ...client,
+        } as SyncRoleSnapshot["client"],
       });
     }
 
@@ -554,6 +566,44 @@ describe("ThisMacCard", () => {
       expect(screen.queryByRole("button", followerButton) !== null).toBe(shown);
     });
 
+    it("says that this computer will host sync, and what is forgotten and kept", () => {
+      render(<ThisMacCard sync={makeSync({ status: followerStatus() })} sessionState="active" />);
+
+      fireEvent.click(screen.getByRole("button", followerButton));
+      expect(screen.getByText(/This computer will start hosting sync for this project\./)).toBeTruthy();
+      expect(screen.getByText(/ADE forgets the saved connection to Mac Studio/)).toBeTruthy();
+      expect(screen.getByText(/No chats, lanes, or files are deleted\./)).toBeTruthy();
+      expect(screen.getByText(/If Mac Studio is still running, the two will stay separate/)).toBeTruthy();
+      expect(screen.getByRole("checkbox", acknowledgement)).toBeTruthy();
+    });
+
+    it.each<{ case: string; client: Partial<SyncRoleSnapshot["client"]>; line: string }>([
+      { case: "it answers now", client: { state: "connected" }, line: "Mac Studio is reachable from this computer now." },
+      { case: "it was last seen three days ago", client: { lastSeenAt: daysAgo(3) }, line: "Mac Studio isn't reachable from this computer right now. Last seen 3d ago." },
+      { case: "nothing has seen it", client: {}, line: "Mac Studio isn't reachable from this computer right now, and ADE has no record of it being seen." },
+    ])("shows how the followed machine stands when $case", ({ client, line }) => {
+      render(<ThisMacCard sync={makeSync({ status: followerStatus(client) })} sessionState="active" />);
+
+      fireEvent.click(screen.getByRole("button", followerButton));
+      expect(screen.getByText(line)).toBeTruthy();
+    });
+
+    it("keeps the confirmation disabled until the reader acknowledges what stopping does", async () => {
+      const disconnectFromBrain = vi.fn(async () => makeStatus());
+      (globalThis.window as any).ade = { sync: { disconnectFromBrain } };
+      render(<ThisMacCard sync={makeSync({ status: followerStatus() })} sessionState="active" />);
+
+      fireEvent.click(screen.getByRole("button", followerButton));
+      expect((screen.getByRole("button", { name: "Stop following" }) as HTMLButtonElement).disabled).toBe(true);
+      fireEvent.click(screen.getByRole("button", { name: "Stop following" }));
+      expect(disconnectFromBrain).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole("checkbox", acknowledgement));
+      expect((screen.getByRole("button", { name: "Stop following" }) as HTMLButtonElement).disabled).toBe(false);
+      fireEvent.click(screen.getByRole("button", { name: "Stop following" }));
+      await waitFor(() => expect(disconnectFromBrain).toHaveBeenCalledOnce());
+    });
+
     it("disconnects once after confirmation and refreshes the card", async () => {
       const disconnectFromBrain = vi.fn(async () => makeStatus());
       const refresh = vi.fn(async () => {});
@@ -561,23 +611,43 @@ describe("ThisMacCard", () => {
       render(<ThisMacCard sync={makeSync({ status: followerStatus(), refresh })} sessionState="active" />);
 
       fireEvent.click(screen.getByRole("button", followerButton));
-      expect(screen.getByText(/This computer stops following Mac Studio for this project/)).toBeTruthy();
       expect(disconnectFromBrain).not.toHaveBeenCalled();
 
+      fireEvent.click(screen.getByRole("checkbox", acknowledgement));
       fireEvent.click(screen.getByRole("button", { name: "Stop following" }));
       await waitFor(() => expect(disconnectFromBrain).toHaveBeenCalledOnce());
       await waitFor(() => expect(refresh).toHaveBeenCalledWith({ force: true }));
     });
 
-    it("does not disconnect when the confirmation is cancelled", async () => {
+    it("opens one confirmation and disconnects once when the button is clicked twice", async () => {
+      const disconnectFromBrain = vi.fn(async () => makeStatus());
+      (globalThis.window as any).ade = { sync: { disconnectFromBrain } };
+      render(<ThisMacCard sync={makeSync({ status: followerStatus() })} sessionState="active" />);
+
+      const button = screen.getByRole("button", followerButton);
+      fireEvent.click(button);
+      fireEvent.click(button);
+      expect(screen.getAllByText("Stop following Mac Studio?")).toHaveLength(1);
+
+      fireEvent.click(screen.getByRole("checkbox", acknowledgement));
+      fireEvent.click(screen.getByRole("button", { name: "Stop following" }));
+      await waitFor(() => expect(disconnectFromBrain).toHaveBeenCalledOnce());
+      await waitFor(() => expect(screen.queryByText("Stop following Mac Studio?")).toBeNull());
+      expect(disconnectFromBrain).toHaveBeenCalledOnce();
+    });
+
+    it("does not disconnect when the confirmation is cancelled, and asks again on the next click", async () => {
       const disconnectFromBrain = vi.fn(async () => makeStatus());
       (globalThis.window as any).ade = { sync: { disconnectFromBrain } };
       render(<ThisMacCard sync={makeSync({ status: followerStatus() })} sessionState="active" />);
 
       fireEvent.click(screen.getByRole("button", followerButton));
       fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-      await waitFor(() => expect(screen.queryByText(/This computer stops following/)).toBeNull());
+      await waitFor(() => expect(screen.queryByText("Stop following Mac Studio?")).toBeNull());
       expect(disconnectFromBrain).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole("button", followerButton));
+      expect(await screen.findByText("Stop following Mac Studio?")).toBeTruthy();
     });
 
     it("shows the reason when the disconnect fails and keeps the button for another try", async () => {
@@ -588,10 +658,26 @@ describe("ThisMacCard", () => {
       render(<ThisMacCard sync={makeSync({ status: followerStatus() })} sessionState="active" />);
 
       fireEvent.click(screen.getByRole("button", followerButton));
+      fireEvent.click(screen.getByRole("checkbox", acknowledgement));
       fireEvent.click(screen.getByRole("button", { name: "Stop following" }));
 
       expect(await screen.findByText(/Project is switching/)).toBeTruthy();
       expect(screen.getByRole("button", followerButton)).toBeTruthy();
+    });
+
+    it("shows the project's own message, not the IPC wrapper around it", async () => {
+      const disconnectFromBrain = vi.fn(async () => {
+        throw new Error("Error invoking remote method 'ade.sync.disconnectFromBrain': Error: This project isn't loaded yet. Open it and try again.");
+      });
+      (globalThis.window as any).ade = { sync: { disconnectFromBrain } };
+      render(<ThisMacCard sync={makeSync({ status: followerStatus() })} sessionState="active" />);
+
+      fireEvent.click(screen.getByRole("button", followerButton));
+      fireEvent.click(screen.getByRole("checkbox", acknowledgement));
+      fireEvent.click(screen.getByRole("button", { name: "Stop following" }));
+
+      expect(await screen.findByText("This project isn't loaded yet. Open it and try again.")).toBeTruthy();
+      expect(screen.queryByText(/Error invoking remote method/)).toBeNull();
     });
   });
 });

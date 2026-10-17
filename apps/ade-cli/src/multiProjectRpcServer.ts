@@ -1818,14 +1818,19 @@ export function createMultiProjectRpcRequestHandler(
     return scope?.runtime.syncService ?? null;
   };
 
-  // Status and disconnect are recovery controls: if a project scope is already
-  // alive, use it without re-entering host activation (which may be timed out
-  // or backed off). Preserve the ordinary resolver when nothing is booted.
+  // The project a sync call names: its projectId, or the registered project at
+  // its projectRoot.
+  const requestedSyncProjectId = (params: Record<string, unknown>): ProjectId | null =>
+    readProjectId(params)
+    ?? (typeof params.projectRoot === "string"
+      ? projectRegistry.findByRootPath(path.resolve(params.projectRoot.trim()))?.projectId ?? null
+      : null);
+
+  // Status is a recovery control: if a project scope is already alive, use it
+  // without re-entering host activation (which may be timed out or backed off).
+  // Preserve the ordinary resolver when nothing is booted.
   const resolveRecoverySyncService = async (params: Record<string, unknown>) => {
-    const requestedProjectId = readProjectId(params)
-      ?? (typeof params.projectRoot === "string"
-        ? projectRegistry.findByRootPath(path.resolve(params.projectRoot.trim()))?.projectId ?? null
-        : null);
+    const requestedProjectId = requestedSyncProjectId(params);
     const targetProjectId = requestedProjectId
       ?? scopeRegistry.getActiveSyncHostProjectId?.()
       ?? scopeRegistry.getMostRecentFailingSyncHostProjectId?.();
@@ -1838,6 +1843,28 @@ export function createMultiProjectRpcRequestHandler(
       ? scope
       : await scopeRegistry.resolveActiveSyncHost();
     return resolvedScope?.runtime.syncService ?? null;
+  };
+
+  // Disconnect rewrites the saved connection and clears the device records, so
+  // it only acts on a scope that is already ready. It never boots or activates a
+  // project to find one, and a project it names that is still loading is refused
+  // rather than answered by another project's scope.
+  const resolveDisconnectSyncService = (params: Record<string, unknown>) => {
+    const targetProjectId = requestedSyncProjectId(params)
+      ?? scopeRegistry.getActiveSyncHostProjectId?.()
+      ?? scopeRegistry.getMostRecentFailingSyncHostProjectId?.()
+      ?? null;
+    const scope = targetProjectId
+      ? scopeRegistry.getIfReady?.(targetProjectId) ?? null
+      : null;
+    const syncService = scope?.runtime.syncService ?? null;
+    if (!syncService) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidRequest,
+        "This project isn't loaded yet. Open it and try again.",
+      );
+    }
+    return syncService;
   };
 
   const syncServiceUnavailable = (): JsonRpcError =>
@@ -3004,9 +3031,7 @@ export function createMultiProjectRpcRequestHandler(
     }
 
     if (method === "sync.disconnectFromBrain") {
-      const syncService = await resolveRecoverySyncService(params);
-      if (!syncService) throw syncServiceUnavailable();
-      return await syncService.disconnectFromBrain();
+      return await resolveDisconnectSyncService(params).disconnectFromBrain();
     }
 
     if (method === "sync.forgetDevice") {

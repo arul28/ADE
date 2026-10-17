@@ -1522,10 +1522,19 @@ Desktop connection UI:
   button that names that machine, on its own row of the card, whether or not the
   status line is showing. It asks first, then calls `sync.disconnectFromBrain` on
   this computer.
-  The confirmation says what goes: the saved connection, the record of which
-  machine hosts sync here, and the other machines it had listed. Chats, lanes
-  and files stay. The button is hidden when the window is bound to another
-  machine (the disconnect would reach that machine) and in the hosted web client.
+  The confirmation is destructive. It says that this computer will start hosting
+  sync for the project, and what ADE forgets: the saved connection, the record of
+  which machine hosts sync here, and the other machines it had listed. It states
+  whether the followed machine answers from this computer now or when it was last
+  seen, and that if that machine is still running the two stay separate until
+  this computer reconnects to it. Chats, lanes and files stay. The confirm stays
+  disabled until the reader ticks "I understand this computer will host sync for
+  <project>". A second click while the confirmation is open does nothing.
+  The button is hidden when the window is bound to another machine (the
+  disconnect would reach that machine) and in the hosted web client.
+  The brain acts on the project the window names and never boots another one for
+  this: a named project that is still loading answers "This project isn't loaded
+  yet. Open it and try again.", and the card shows that message.
 - `apps/desktop/src/renderer/components/settings/SyncDevicesSection.tsx` —
   Connections uses the focused `"phone"` and `"web"` variants beneath a
   shared **This computer** card. The card draws the computer as its

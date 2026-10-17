@@ -48,6 +48,11 @@ export type ConfirmDialogCheckbox = {
   label: ReactNode;
   /** Defaults on: the caller is offering to do something helpful. */
   defaultChecked?: boolean;
+  /**
+   * The confirm stays disabled until this box is ticked. For an acknowledgement
+   * the reader has to make before the action can be confirmed at all.
+   */
+  required?: boolean;
 };
 
 /** A confirm that carries checkboxes: the yes/no, and each box by its key. */
@@ -293,6 +298,7 @@ function ConfirmDialogView({
   const [checked, setChecked] = useState(() => defaultChecked(options));
   const settle = (confirmed: boolean) => onResult({ confirmed, checked });
   const checkboxes = options.checkboxes ?? [];
+  const awaitingRequired = checkboxes.some((box) => box.required && !checked[box.key]);
   const body = options.children != null || checkboxes.length > 0 ? (
     <>
       {options.children != null ? (
@@ -326,7 +332,13 @@ function ConfirmDialogView({
       hideClose
       actions={[
         { label: options.cancelLabel ?? "Cancel", variant: "secondary", onClick: () => settle(false) },
-        { label: options.confirmLabel ?? "OK", variant: "solid", autoFocus: true, onClick: () => settle(true) },
+        {
+          label: options.confirmLabel ?? "OK",
+          variant: "solid",
+          autoFocus: true,
+          disabled: awaitingRequired,
+          onClick: () => settle(true),
+        },
       ]}
     >
       {body}
