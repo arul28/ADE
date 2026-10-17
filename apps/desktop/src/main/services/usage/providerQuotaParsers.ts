@@ -321,8 +321,12 @@ export function parseCopilotQuota(payload: unknown, nowMs: number, email?: strin
   const premium = asRecord(snapshots?.premiumInteractions) ?? asRecord(snapshots?.premium_interactions);
   const remaining = wholePercent(premium?.percentRemaining) ?? wholePercent(premium?.percent_remaining)
     ?? wholePercent(premium?.remainingPercentage) ?? wholePercent(premium?.remaining_percentage);
-  const usedCount = finiteNumberOrNull(premium?.usedRequests ?? premium?.used_requests);
-  const entitlementCount = finiteNumberOrNull(premium?.entitlementRequests ?? premium?.entitlement_requests);
+  // The SDK names counts `entitlementRequests`/`usedRequests`; GitHub's
+  // copilot_internal endpoint names them `entitlement`/`remaining`.
+  const entitlementCount = finiteNumberOrNull(premium?.entitlementRequests ?? premium?.entitlement_requests ?? premium?.entitlement);
+  const remainingCount = finiteNumberOrNull(premium?.remaining);
+  const usedCount = finiteNumberOrNull(premium?.usedRequests ?? premium?.used_requests)
+    ?? (entitlementCount != null && entitlementCount > 0 && remainingCount != null ? Math.max(0, entitlementCount - remainingCount) : null);
   const unlimited = premium?.unlimited === true || premium?.isUnlimitedEntitlement === true || premium?.is_unlimited_entitlement === true || entitlementCount === -1;
   const percent = remaining == null
     ? entitlementCount != null && entitlementCount > 0 && usedCount != null

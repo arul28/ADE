@@ -17,6 +17,8 @@ let client: Client | null = null;
 const sessions = new Map<string, Session>();
 const waiters = new Map<string, { chatId: string; type: "permission_request" | "user_input_request" | "mcp_auth_request" | "exit_plan_request"; resolve: (value: unknown) => void }>();
 let disposed = false;
+/** A title or summary call; the SDK default (60 s) is too tight for a cold runtime. */
+const UTILITY_TIMEOUT_MS = 120_000;
 
 function post(message: CopilotSdkWorkerResponse): void {
   if (process.send) process.send(message);
@@ -62,6 +64,8 @@ function sessionConfig(config: CopilotSdkSessionConfig): CopilotSdk.SessionConfi
     // Interactive chats inherit workspace `.mcp.json` like the Copilot CLI.
     // Utility sessions must remain isolated from user/workspace/plugin MCP.
     enableConfigDiscovery: !config.utility,
+    // Rewind needs Copilot to snapshot file changes per turn.
+    enableFileChangeTracking: !config.utility,
     infiniteSessions: { enabled: !config.utility },
     availableTools: config.utility ? [] : undefined,
     skipCustomInstructions: config.utility,
@@ -179,13 +183,7 @@ async function dispatch(req: CopilotSdkWorkerRequest): Promise<unknown> {
   if (req.type === "send") {
     const session = sessions.get(req.payload.chatId);
     if (!session) throw new Error("Copilot session is not open.");
-    if (req.payload.agentMode === "autopilot") postLog("info", "Copilot turn dispatched in autopilot", { chatId: req.payload.chatId });
-    const before = (await session.rpc.permissions.getMode()).mode;
-    postLog("info", "Copilot permission mode at turn dispatch", { chatId: req.payload.chatId, permissionMode: before });
-    const result = await session.send({ prompt: req.payload.prompt, attachments: req.payload.attachments, mode: req.payload.mode, ...(req.payload.agentMode ? { agentMode: req.payload.agentMode } : {}) });
-    const after = (await session.rpc.permissions.getMode()).mode;
-    postLog("info", "Copilot permission mode after turn starts", { chatId: req.payload.chatId, permissionMode: after });
-    return { result, permissionMode: after };
+    return { result: await session.send({ prompt: req.payload.prompt, attachments: req.payload.attachments, mode: req.payload.mode, ...(req.payload.agentMode ? { agentMode: req.payload.agentMode } : {}) }) };
   }
   if (req.type === "set_model") {
     const session = sessions.get(req.payload.chatId);
@@ -217,6 +215,9 @@ async function dispatch(req: CopilotSdkWorkerRequest): Promise<unknown> {
       await session.rpc.mode.set({ mode: "plan" });
       return { mode: (await session.rpc.permissions.getMode()).mode, error: null };
     }
+    // Plan is a session mode, not a permission mode: leaving it must restore
+    // the interactive session or Copilot keeps planning under the new level.
+    await session.rpc.mode.set({ mode: "interactive" });
     const mode = req.payload.permissionMode === "assisted" ? "assisted"
       : req.payload.permissionMode === "full-auto" ? "allow-all" : "manual";
     try {
@@ -296,7 +297,7 @@ async function dispatch(req: CopilotSdkWorkerRequest): Promise<unknown> {
         configuredNames,
         serverStates: (materialized.servers ?? []).map((server) => ({ name: server.name, status: server.status })),
       });
-      return await session.sendAndWait(req.payload.prompt);
+      return await session.sendAndWait(req.payload.prompt, UTILITY_TIMEOUT_MS);
     } finally {
       await client.deleteSession(session.sessionId).catch(() => undefined);
     }
