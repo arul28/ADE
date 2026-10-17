@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { LaneDiffMode } from "../../../shared/types";
 import { useLocation, useNavigate } from "react-router-dom";
 import { X } from "@phosphor-icons/react";
@@ -85,6 +85,7 @@ import {
   type RebaseSuggestionDisplay,
 } from "../../../shared/types/config";
 import { getGitHubSnapshotCoalesced, listPrsCoalesced, refreshPrsCoalesced } from "../../lib/prReadCache";
+import { readLanePrReadsCache, writeLanePrReadsCache } from "./laneSidebarPrCache";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
 import { useLaneListInvalidation } from "../../hooks/useLaneListInvalidation";
@@ -291,6 +292,9 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
 
   const getActiveProjectRoot = useCallback(() => {
     return selectActiveProjectRoot(appStore.getState());
+  }, [appStore]);
+  const getActiveProjectStateKey = useCallback(() => {
+    return selectActiveProjectStateKey(appStore.getState());
   }, [appStore]);
   const [pulsingLaneId, setPulsingLaneId] = useState<string | null>(null);
   // Lanes freshly launched from the Linear batch flow that have not yet shown a
@@ -652,6 +656,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const refreshLanePrTags = useCallback(async (options?: { refreshMapped?: boolean }) => {
     const requestId = ++lanePrTagsRequestRef.current;
     const startedRoot = getActiveProjectRoot();
+    const startedKey = getActiveProjectStateKey();
     const stillCurrent = () =>
       requestId === lanePrTagsRequestRef.current
       && getActiveProjectRoot() === startedRoot;
@@ -659,6 +664,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       const prs = await listPrsCoalesced({ projectRoot: startedRoot });
       if (!stillCurrent()) return;
       setLanePrTags(prs);
+      writeLanePrReadsCache(startedKey, { prs });
       if (options?.refreshMapped !== true) return;
 
       // Refresh only rows that can render in a lane's PR chip. PR history
@@ -674,7 +680,9 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         const refreshed = await refreshPrsCoalesced({ prIds: matchedPrIds }, { projectRoot: startedRoot });
         if (!stillCurrent()) return;
         const refreshedById = new Map(refreshed.map((pr) => [pr.id, pr] as const));
-        setLanePrTags(prs.map((pr) => refreshedById.get(pr.id) ?? pr));
+        const merged = prs.map((pr) => refreshedById.get(pr.id) ?? pr);
+        setLanePrTags(merged);
+        writeLanePrReadsCache(startedKey, { prs: merged });
       } catch {
         // Keep the immediate local rows visible; the GitHub snapshot below
         // still has a chance to provide terminal state for branch-matched PRs.
@@ -682,14 +690,17 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     } catch {
       if (!stillCurrent()) return;
       setLanePrTags([]);
+      // A failed read clears its rows here, so a revisit does not paint them.
+      writeLanePrReadsCache(startedKey, { prs: [] });
     }
-  }, [getActiveProjectRoot]);
+  }, [getActiveProjectRoot, getActiveProjectStateKey]);
 
   const refreshLaneGithubPrTags = useCallback(async (
     options?: { force?: boolean; automaticRefresh?: boolean },
   ): Promise<boolean> => {
     const requestId = ++laneGithubPrTagsRequestRef.current;
     const startedRoot = getActiveProjectRoot();
+    const startedKey = getActiveProjectStateKey();
     try {
       const snapshot = await getGitHubSnapshotCoalesced(
         {
@@ -701,6 +712,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       if (requestId !== laneGithubPrTagsRequestRef.current) return false;
       if (getActiveProjectRoot() !== startedRoot) return false;
       setLaneGithubPrTags(snapshot.repoPullRequests);
+      writeLanePrReadsCache(startedKey, { githubPrs: snapshot.repoPullRequests });
       return true;
     } catch {
       if (requestId !== laneGithubPrTagsRequestRef.current) return false;
@@ -708,7 +720,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       // Keep the last usable GitHub snapshot visible on transient refresh failures.
       return false;
     }
-  }, [getActiveProjectRoot]);
+  }, [getActiveProjectRoot, getActiveProjectStateKey]);
 
   const scheduleLaneDeleteRefresh = useCallback(() => {
     if (laneDeleteRefreshTimerRef.current != null) return;
@@ -842,6 +854,16 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     if (!active || !activeProjectRoot) {
       return;
     }
+    // The last PR reads of this project paint in a transition, so the first
+    // lane rows of a revisit already carry their PR badges. The reads below
+    // still run now and their results replace these rows.
+    const cachedPrReads = readLanePrReadsCache(getActiveProjectStateKey());
+    if (cachedPrReads) {
+      startTransition(() => {
+        setLanePrTags(cachedPrReads.prs);
+        setLaneGithubPrTags(cachedPrReads.githubPrs);
+      });
+    }
     // Keep the lane surface local-first. The selected lane's stale rows are
     // refreshed by the debounced pass below; a forced snapshot here made
     // opening the next PR surface compete with GitHub work.
@@ -851,7 +873,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       lanePrTagsRequestRef.current += 1;
       laneGithubPrTagsRequestRef.current += 1;
     };
-  }, [active, refreshLanePrTags, refreshLaneGithubPrTags, activeProjectRoot, lanePrBranchSignature]);
+  }, [active, getActiveProjectStateKey, refreshLanePrTags, refreshLaneGithubPrTags, activeProjectRoot, lanePrBranchSignature]);
 
   useEffect(() => {
     if (!active || !activeProjectRoot || document.visibilityState !== "visible") return;
