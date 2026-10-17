@@ -22202,6 +22202,9 @@ Usage:
             forceTransferReadiness: readFlag(args, [
               "--force-transfer-readiness",
             ]),
+            // Without the full read this is the light read. Wait for a cold
+            // cache, or "not ready" is printed while the brain is up.
+            awaitTransferReadiness: true,
           },
         },
       ],

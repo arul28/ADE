@@ -459,6 +459,118 @@ describe("createSyncService", () => {
     }
   });
 
+  it("gives an awaiting lightweight status read the real readiness before any drain has started a computation", async () => {
+    const projectRoot = makeTempRoot("ade-sync-service-readiness-cold-");
+    cleanupRoots.push(projectRoot);
+    const db = await openKvDb(path.join(projectRoot, ".ade", "kv.sqlite"), createLogger() as any);
+    (db.sync as { isAvailable?: () => boolean }).isAvailable = () => false;
+    const listSessions = vi.fn(async () => []);
+    const service = createService(db, projectRoot, {
+      agentChatService: { listSessions } as any,
+    });
+
+    try {
+      // Nothing is in flight and nothing is cached: this is the brain's startup window. The read must
+      // compute the answer rather than report the skipped placeholder as "not ready".
+      const snapshot = await service.getStatus({ includeTransferReadiness: false, awaitTransferReadiness: true });
+      expect(snapshot.transferReadiness.ready).toBe(true);
+      expect(listSessions).toHaveBeenCalledTimes(1);
+
+      // Once computed, later light reads take the cache and do not enumerate again.
+      await service.getStatus({ includeTransferReadiness: false });
+      expect(listSessions).toHaveBeenCalledTimes(1);
+    } finally {
+      await service.dispose();
+      db.close();
+    }
+  });
+
+  it("returns at once from a plain lightweight status read on a cold cache, without starting the computation", async () => {
+    const projectRoot = makeTempRoot("ade-sync-service-readiness-plain-cold-");
+    cleanupRoots.push(projectRoot);
+    const db = await openKvDb(path.join(projectRoot, ".ade", "kv.sqlite"), createLogger() as any);
+    (db.sync as { isAvailable?: () => boolean }).isAvailable = () => false;
+    // The enumeration never finishes, so a read that waited for it would never return.
+    const listSessions = vi.fn(() => new Promise<unknown[]>(() => undefined));
+    const service = createService(db, projectRoot, {
+      agentChatService: { listSessions } as any,
+    });
+
+    try {
+      // The desktop top bar reads this way on every focus. It gets the placeholder now and never starts
+      // the enumeration, so it cannot wait on it.
+      const snapshot = await service.getStatus({ includeTransferReadiness: false });
+      expect(snapshot.transferReadiness.ready).toBe(false);
+      expect(snapshot.transferReadiness.blockers).toEqual([]);
+      expect(listSessions).not.toHaveBeenCalled();
+    } finally {
+      await service.dispose();
+      db.close();
+    }
+  });
+
+  it("does not hold an awaiting lightweight status read indefinitely when the first computation never finishes", async () => {
+    const projectRoot = makeTempRoot("ade-sync-service-readiness-bounded-");
+    cleanupRoots.push(projectRoot);
+    const db = await openKvDb(path.join(projectRoot, ".ade", "kv.sqlite"), createLogger() as any);
+    (db.sync as { isAvailable?: () => boolean }).isAvailable = () => false;
+    const listSessions = vi.fn(() => new Promise<unknown[]>(() => undefined));
+    const service = createService(db, projectRoot, {
+      agentChatService: { listSessions } as any,
+    });
+
+    try {
+      const snapshot = await service.getStatus({ includeTransferReadiness: false, awaitTransferReadiness: true });
+      expect(snapshot.transferReadiness.ready).toBe(false);
+      expect(snapshot.transferReadiness.blockers).toEqual([]);
+    } finally {
+      await service.dispose();
+      db.close();
+    }
+  });
+
+  it("does not restart a failed readiness computation for an awaiting light read until the retry cooldown passes", async () => {
+    const projectRoot = makeTempRoot("ade-sync-service-readiness-cooldown-");
+    cleanupRoots.push(projectRoot);
+    const db = await openKvDb(path.join(projectRoot, ".ade", "kv.sqlite"), createLogger() as any);
+    (db.sync as { isAvailable?: () => boolean }).isAvailable = () => false;
+    const listSessions = vi.fn(async () => {
+      throw new Error("chat index unavailable");
+    });
+    const service = createService(db, projectRoot, {
+      agentChatService: { listSessions } as any,
+    });
+    const clock = vi.spyOn(Date, "now");
+    const start = Date.now();
+
+    try {
+      clock.mockReturnValue(start);
+      const first = await service.getStatus({ includeTransferReadiness: false, awaitTransferReadiness: true });
+      expect(first.transferReadiness.ready).toBe(false);
+      expect(listSessions).toHaveBeenCalledTimes(1);
+
+      // Inside the cooldown a polling read gets the placeholder without a second enumeration.
+      clock.mockReturnValue(start + 1_000);
+      const polled = await service.getStatus({ includeTransferReadiness: false, awaitTransferReadiness: true });
+      expect(polled.transferReadiness.ready).toBe(false);
+      expect(listSessions).toHaveBeenCalledTimes(1);
+
+      // The full read is unchanged by the cooldown: it still computes, and it still reports the failure.
+      clock.mockReturnValue(start + 1_500);
+      await expect(service.getStatus({ includeTransferReadiness: true })).rejects.toThrow("chat index unavailable");
+      expect(listSessions).toHaveBeenCalledTimes(2);
+
+      // Once the cooldown has passed since the last failure, an awaiting light read tries again.
+      clock.mockReturnValue(start + 1_500 + 6_000);
+      await service.getStatus({ includeTransferReadiness: false, awaitTransferReadiness: true });
+      expect(listSessions).toHaveBeenCalledTimes(3);
+    } finally {
+      clock.mockRestore();
+      await service.dispose();
+      db.close();
+    }
+  });
+
 });
 
 describe("buildProjectlessSyncSnapshot", () => {
