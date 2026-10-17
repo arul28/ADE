@@ -97,3 +97,47 @@ export function consecutiveSharedBranchRuns<T extends { clusterKey: string | nul
   }
   return runs;
 }
+
+/**
+ * GitHub-stack adjacency for the Work by-lane list.
+ *
+ * Lanes whose primary PR sits in the same GitHub stack are pulled together at
+ * the slot of the first one, top layer first (3/3, 2/3, 1/3), so the stack
+ * reads as one chain instead of being torn apart by recency. A stack needs two
+ * visible members to count; the rest of the list keeps its order.
+ */
+export type LaneStackPlacement = { key: string; position: number };
+
+export function applyStackAdjacency<T>(
+  items: readonly T[],
+  getStack: (item: T) => LaneStackPlacement | null,
+): { item: T; stackKey: string | null }[] {
+  const placements = items.map((item) => getStack(item));
+  const members = new Map<string, number[]>();
+  placements.forEach((placement, index) => {
+    if (!placement) return;
+    const list = members.get(placement.key) ?? [];
+    list.push(index);
+    members.set(placement.key, list);
+  });
+  const result: { item: T; stackKey: string | null }[] = [];
+  const emitted = new Set<string>();
+  items.forEach((item, index) => {
+    const placement = placements[index] ?? null;
+    const group = placement ? members.get(placement.key) : undefined;
+    if (!placement || !group || group.length < 2) {
+      result.push({ item, stackKey: null });
+      return;
+    }
+    if (emitted.has(placement.key)) return;
+    emitted.add(placement.key);
+    const ordered = [...group].sort(
+      (a, b) => (placements[b]?.position ?? 0) - (placements[a]?.position ?? 0) || a - b,
+    );
+    for (const memberIndex of ordered) {
+      const member = items[memberIndex];
+      if (member !== undefined) result.push({ item: member, stackKey: placement.key });
+    }
+  });
+  return result;
+}
