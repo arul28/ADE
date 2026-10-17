@@ -64,13 +64,13 @@ import {
   LOCAL_RUNTIME_ACTIVITY_SUMMARY_TIMEOUT_MS,
   LOCAL_RUNTIME_EVENT_POLL_TIMEOUT_MS,
   LOCAL_RUNTIME_PROJECT_TIMEOUT_MS,
+  LOCAL_RUNTIME_STARTUP_CONNECT_MAX_MS,
   LOCAL_RUNTIME_SYNC_TIMEOUT_MS,
   localRuntimeActionTimeoutMs,
 } from "./localRuntimeTimeoutPolicy";
 
 const SLOW_ACTION_THRESHOLD_MS = 500;
 const RUNTIME_HEALTH_WINDOW_MS = 24 * 60 * 60_000;
-const LOCAL_RUNTIME_STARTUP_TIMEOUT_MS = process.platform === "win32" ? 30_000 : 10_000;
 const LOCAL_RUNTIME_STARTUP_PROBE_TIMEOUT_MS = 2_000;
 const LOCAL_RUNTIME_STARTUP_RETRY_MS = 250;
 // Ring-cap the in-memory slow-action window so a sustained slow-call storm can
@@ -3378,7 +3378,7 @@ export class LocalRuntimeConnectionPool {
     child: ChildProcess,
     options: { preserveVersionSkew?: boolean } = {},
   ): Promise<RuntimeRpcClient> {
-    const deadline = Date.now() + LOCAL_RUNTIME_STARTUP_TIMEOUT_MS;
+    const deadline = Date.now() + LOCAL_RUNTIME_STARTUP_CONNECT_MAX_MS;
     let lastError: Error | null = null;
     while (Date.now() < deadline) {
       if (child.exitCode != null || child.signalCode != null) {

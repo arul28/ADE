@@ -90,6 +90,18 @@ export const LOCAL_RUNTIME_FILE_ACTION_TIMEOUT_MS = 8_000;
 export const LOCAL_RUNTIME_SYNC_TIMEOUT_MS = 30_000;
 
 /**
+ * How long the desktop lets a runtime it spawns take to start answering: the
+ * cold-start allowance `connectSpawnedRuntime` polls within. Windows is longer
+ * because its spawn (process start, tsx transform, SQLite init) is slower.
+ * Every machine-scope connect budget below is derived from this, so a
+ * platform's connect allowance and its read budgets cannot drift apart.
+ */
+export function localRuntimeStartupConnectMaxMs(platform: NodeJS.Platform): number {
+  return platform === "win32" ? 30_000 : 10_000;
+}
+export const LOCAL_RUNTIME_STARTUP_CONNECT_MAX_MS = localRuntimeStartupConnectMaxMs(process.platform);
+
+/**
  * The longest a machine-scope sync STATUS READ waits for the local runtime
  * before the desktop answers for itself.
  *
@@ -105,10 +117,11 @@ export const LOCAL_RUNTIME_SYNC_TIMEOUT_MS = 30_000;
  * machine-only snapshot the handler already builds for an unreachable runtime
  * never got the chance to answer. Bounding the read here restores the chain's
  * invariant —
- * every budget expires monotonically outward, inner before outer — with 3.75x
- * of headroom under that IPC timer for building the fallback snapshot and
- * delivering it. 8s matches LOCAL_RUNTIME_FILE_ACTION_TIMEOUT_MS, the existing
- * budget for "a local runtime read that must not hold its caller".
+ * every budget expires monotonically outward, inner before outer. The overall
+ * cap below, not this read, is what leaves room under the IPC timer to build
+ * and deliver the fallback snapshot.
+ * 8s matches LOCAL_RUNTIME_FILE_ACTION_TIMEOUT_MS, the existing budget for
+ * "a local runtime read that must not hold its caller".
  *
  * This budget is the RPC transport's clock, and it starts only once the
  * connection is up: `callSync` awaits `connect()` before it sends, so a cold
@@ -125,17 +138,51 @@ export const LOCAL_RUNTIME_SYNC_TIMEOUT_MS = 30_000;
 export const LOCAL_RUNTIME_SYNC_STATUS_READ_TIMEOUT_MS = 8_000;
 
 /**
- * The firm cap on one machine-scope sync status read, connect included.
- *
- * It must stay under the 30s IPC timer for `sync.getLocalStatus`, so the
- * handler's own fallback answer, not the opaque IPC timeout, is what the
- * renderer sees. 25s leaves 5s for building that fallback and delivering it.
- * On macOS it sits well clear of a cold connect (10s) plus a read (8s). On
- * Windows a cold connect may legitimately take up to 30s, which this cap cuts
- * short; that case still returns the honest degraded snapshot rather than the
- * IPC timeout. Raising it would need the IPC timer raised too.
+ * Slack the overall cap keeps above connect + read. It covers the service
+ * probe that runs before a spawn (about 2.1s on Windows) and the bookkeeping
+ * around it. 7s is exactly what the macOS cap already carried above its 10s
+ * connect and 8s read, so macOS keeps its 25s value.
  */
-export const LOCAL_RUNTIME_SYNC_STATUS_OVERALL_TIMEOUT_MS = 25_000;
+export const LOCAL_RUNTIME_SYNC_STATUS_CAP_SLACK_MS = 7_000;
+
+/**
+ * Headroom the renderer's IPC timer for `sync.getLocalStatus` keeps above the
+ * overall cap, for building the fallback snapshot and delivering it.
+ */
+export const LOCAL_RUNTIME_SYNC_STATUS_FALLBACK_HEADROOM_MS = 5_000;
+
+/**
+ * The firm cap on one machine-scope sync status read, connect included: the
+ * platform's cold-start allowance, plus the read budget, plus slack.
+ *
+ * The handler's own fallback answer, not the opaque IPC timeout, must be what
+ * the renderer sees, so the IPC timer sits above this (see below). The cap used
+ * to be a fixed 25s, which cut off a Windows cold start (up to 30s to connect,
+ * then the read) that would have succeeded. macOS is unchanged. On Windows a
+ * runtime that never answers now reads as degraded after 45s instead of 25s.
+ * That is the cost of letting a slow but healthy start finish.
+ *
+ * This derives from the spawn path's allowance. A runtime reached through the
+ * service repair path (`tryRepairServiceConnection`) can take longer to come
+ * up, and a read that loses that race gets the same degraded snapshot. Its
+ * `degradedReason` makes the renderer back off and retry, and the next read
+ * awaits the same pending connect, so the card recovers when the runtime does.
+ */
+export function localRuntimeSyncStatusOverallTimeoutMs(platform: NodeJS.Platform): number {
+  return localRuntimeStartupConnectMaxMs(platform)
+    + LOCAL_RUNTIME_SYNC_STATUS_READ_TIMEOUT_MS
+    + LOCAL_RUNTIME_SYNC_STATUS_CAP_SLACK_MS;
+}
+export const LOCAL_RUNTIME_SYNC_STATUS_OVERALL_TIMEOUT_MS =
+  localRuntimeSyncStatusOverallTimeoutMs(process.platform);
+
+/** The renderer's IPC timer for `sync.getLocalStatus`, above the overall cap. */
+export function localRuntimeSyncStatusIpcTimeoutMs(platform: NodeJS.Platform): number {
+  return localRuntimeSyncStatusOverallTimeoutMs(platform)
+    + LOCAL_RUNTIME_SYNC_STATUS_FALLBACK_HEADROOM_MS;
+}
+export const LOCAL_RUNTIME_SYNC_STATUS_IPC_TIMEOUT_MS =
+  localRuntimeSyncStatusIpcTimeoutMs(process.platform);
 export const LOCAL_RUNTIME_ACTION_REGISTRY_TIMEOUT_MS = 30_000;
 export const LOCAL_RUNTIME_EVENT_POLL_TIMEOUT_MS = 2_000;
 /**
