@@ -24344,6 +24344,11 @@ async function launchWindowsDesktopApp(
   // the child would launch another CLI process instead of the desktop UI.
   // The other host-only keys (the brain's compile cache included) stay behind too.
   const env = stripHostRuntimeEnv({ ...process.env });
+  // Electron reads this to decide whether to attach to the caller's console;
+  // the launched app keeps the caller's choice, as it did before the strip.
+  if (process.env.ELECTRON_NO_ATTACH_CONSOLE !== undefined) {
+    env.ELECTRON_NO_ATTACH_CONSOLE = process.env.ELECTRON_NO_ATTACH_CONSOLE;
+  }
   return await new Promise((resolve) => {
     let child: ReturnType<typeof spawn>;
     try {
@@ -34069,6 +34074,11 @@ async function runResetCommand(
       // setting would start the relaunched app as Node too, not as ADE.
       // The other host-only keys (the brain's compile cache included) stay behind too.
       const appEnv: NodeJS.ProcessEnv = stripHostRuntimeEnv({ ...process.env });
+      // Electron reads this to decide whether to attach to the caller's console;
+      // the relaunched app keeps the caller's choice, as it did before the strip.
+      if (process.env.ELECTRON_NO_ATTACH_CONSOLE !== undefined) {
+        appEnv.ELECTRON_NO_ATTACH_CONSOLE = process.env.ELECTRON_NO_ATTACH_CONSOLE;
+      }
       for (const key of Object.keys(appEnv)) {
         if (key === "NODE_PATH" || key.startsWith("ADE_")) delete appEnv[key];
       }
