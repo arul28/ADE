@@ -4,6 +4,11 @@
 // that shows a change, the time until the page stops changing, and how long the
 // main thread was busy in between. Finer than long tasks alone, which miss
 // every frame under 50 ms. See docs/perf/macos-baseline.md.
+// Three clocks, all from the click:
+//   settled          the last DOM change of any kind (the number this script always reported)
+//   content settled  the last DOM change that is not decoration or a ticker (settle.mjs)
+//   content ready    the first frame where the page's <main> has text that was not there
+//                    when the click began; chats reads the Work page's <main>, so it is early
 //   tabs   round-robin over the app's tabs (history navigation)
 //   chats  round-robin over the visible Work chat cards
 //   projects  round-robin over the open project tabs in the top bar
@@ -14,6 +19,7 @@
 // automatic on a file: page. See target.mjs.
 // Round 1 is the cold visit; the summary reports it apart from the warm rounds.
 import { findPage, navigateStatement, positionalArgs, useHashRoutes } from "./target.mjs";
+import { contentLandmark, isDecorativeRecord } from "./settle.mjs";
 const [mode = "tabs", roundsArg] = positionalArgs();
 const rounds = Number(roundsArg ?? 4);
 const list = await (await fetch(`http://127.0.0.1:${process.env.CDP_PORT ?? 9222}/json/list`)).json();
@@ -43,16 +49,24 @@ const ev = async (expression) => {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Runs `action` in the page and watches until the DOM has been quiet for
-// `quietMs` (a background cross-fade that ends 350 ms later is not content). A frame counts once the rAF after a mutation batch has run and a
-// task posted from it has started, which is when that frame's work is done.
+// `quietMs`. A frame counts once the rAF after a mutation batch has run and a
+// task posted from it has started, which is when that frame's work is done. The
+// watch ends the same way for every number (all DOM changes), so settledMs and
+// contentSettledMs come from one run, and older runs stay comparable.
 await ev(`(() => {
+  const isDecorative = (${isDecorativeRecord.toString()});
+  const landmarkOf = (${contentLandmark.toString()});
   window.__adeInteraction = (action, quietMs = 150, capMs = 6000) => new Promise((resolve) => {
+    const scope = document.querySelector("main") ?? document.body;
+    const landmarkText = () => (landmarkOf(${JSON.stringify(mode)}, document)?.textContent ?? "").trim();
     const busy = [];
     let po = null;
     try { po = new PerformanceObserver((l) => { for (const e of l.getEntries()) busy.push([e.startTime, e.duration]); }); po.observe({ type: "long-animation-frame" }); } catch {}
     let firstFrameAt = null, lastChangeAt = null, pendingFrame = false, mutations = 0;
+    let contentPending = false, lastContentChangeAt = null, contentReadyAt = null, before = "";
     const mo = new MutationObserver((records) => {
       mutations += records.length;
+      if (!contentPending && records.some((r) => !isDecorative(r, scope))) contentPending = true;
       if (pendingFrame) return;
       pendingFrame = true;
       requestAnimationFrame(() => {
@@ -62,12 +76,21 @@ await ev(`(() => {
           const now = performance.now();
           if (firstFrameAt === null) firstFrameAt = now;
           lastChangeAt = now;
+          if (!contentPending) return;
+          contentPending = false;
+          lastContentChangeAt = now;
+          // Ready: the landmark has text that was not there when the click began.
+          if (contentReadyAt === null) {
+            const text = landmarkText();
+            if (text !== "" && text !== before) contentReadyAt = now;
+          }
         };
         ch.port2.postMessage(0);
       });
     });
     mo.observe(document.body, { subtree: true, childList: true, attributes: true, characterData: true });
     const t0 = performance.now();
+    before = landmarkText();
     const ok = action();
     const syncMs = performance.now() - t0;
     const poll = () => {
@@ -78,7 +101,13 @@ await ev(`(() => {
         try { po?.disconnect(); } catch {}
         const end = lastChangeAt ?? now;
         const busyMs = busy.filter(([s]) => s >= t0 - 1 && s <= end).reduce((a, [, d]) => a + d, 0);
-        resolve({ ok: ok !== false, syncMs, firstFrameMs: firstFrameAt === null ? null : firstFrameAt - t0, settledMs: end - t0, longFrameMs: busyMs, mutations, nodes: document.querySelectorAll("*").length });
+        resolve({
+          ok: ok !== false, syncMs,
+          firstFrameMs: firstFrameAt === null ? null : firstFrameAt - t0, settledMs: end - t0,
+          contentSettledMs: lastContentChangeAt === null ? null : lastContentChangeAt - t0,
+          contentReadyMs: contentReadyAt === null ? null : contentReadyAt - t0,
+          longFrameMs: busyMs, mutations, nodes: document.querySelectorAll("*").length,
+        });
         return;
       }
       setTimeout(poll, 25);
@@ -148,12 +177,15 @@ for (const target of targets) {
     name: target.name,
     coldFirstFrameMs: cold?.firstFrameMs ?? null, coldSettledMs: cold?.settledMs ?? null, coldLongFrameMs: cold?.longFrameMs ?? null,
     warmFirstFrameMs: med(warm.map((r) => r.firstFrameMs)), warmSettledMs: med(warm.map((r) => r.settledMs)),
-    warmLongFrameMs: med(warm.map((r) => r.longFrameMs)), warmSyncMs: med(warm.map((r) => r.syncMs)), nodes: mine.at(-1)?.nodes ?? null,
+    warmLongFrameMs: med(warm.map((r) => r.longFrameMs)), warmSyncMs: med(warm.map((r) => r.syncMs)),
+    coldContentSettledMs: cold?.contentSettledMs ?? null, coldContentReadyMs: cold?.contentReadyMs ?? null,
+    warmContentSettledMs: med(warm.map((r) => r.contentSettledMs)), warmContentReadyMs: med(warm.map((r) => r.contentReadyMs)),
+    nodes: mine.at(-1)?.nodes ?? null,
   };
   summary.push(row);
-  console.log(`${row.name.padEnd(13)} cold first ${fmt(row.coldFirstFrameMs).padStart(5)} settled ${fmt(row.coldSettledMs).padStart(5)} long ${fmt(row.coldLongFrameMs).padStart(5)} | warm first ${fmt(row.warmFirstFrameMs).padStart(4)} settled ${fmt(row.warmSettledMs).padStart(5)} long ${fmt(row.warmLongFrameMs).padStart(4)} sync ${fmt(row.warmSyncMs).padStart(3)} | nodes ${row.nodes}`);
+  console.log(`${row.name.padEnd(13)} cold first ${fmt(row.coldFirstFrameMs).padStart(5)} settled ${fmt(row.coldSettledMs).padStart(5)} long ${fmt(row.coldLongFrameMs).padStart(5)} | warm first ${fmt(row.warmFirstFrameMs).padStart(4)} settled ${fmt(row.warmSettledMs).padStart(5)} long ${fmt(row.warmLongFrameMs).padStart(4)} sync ${fmt(row.warmSyncMs).padStart(3)} | content settled ${fmt(row.warmContentSettledMs).padStart(5)} ready ${fmt(row.warmContentReadyMs).padStart(5)} | nodes ${row.nodes}`);
 }
 const all = (k) => med(summary.map((r) => r[k]));
-console.log(JSON.stringify({ mode, rounds, medianWarmFirstFrameMs: all("warmFirstFrameMs"), medianWarmSettledMs: all("warmSettledMs"), worstWarmSettledMs: Math.max(...summary.map((r) => r.warmSettledMs ?? 0)), worstWarmLongFrameMs: Math.max(...summary.map((r) => r.warmLongFrameMs ?? 0)), rows: summary }));
+console.log(JSON.stringify({ mode, rounds, medianWarmFirstFrameMs: all("warmFirstFrameMs"), medianWarmSettledMs: all("warmSettledMs"), medianWarmContentSettledMs: all("warmContentSettledMs"), medianWarmContentReadyMs: all("warmContentReadyMs"), worstWarmSettledMs: Math.max(...summary.map((r) => r.warmSettledMs ?? 0)), worstWarmLongFrameMs: Math.max(...summary.map((r) => r.warmLongFrameMs ?? 0)), rows: summary }));
 ws.close();
 process.exit(0);
