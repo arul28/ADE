@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SyncDeviceRecord } from "../../../../desktop/src/shared/types";
-import { buildAddressCandidates, buildPairingConnectInfo } from "./syncPairingConnectInfo";
+import { buildAddressCandidates, buildPairingConnectInfo, isLoopbackHost } from "./syncPairingConnectInfo";
 
 function localDevice(overrides: Partial<SyncDeviceRecord> = {}): SyncDeviceRecord {
   return {
@@ -98,6 +98,18 @@ describe("buildAddressCandidates", () => {
     }), { isLocalDevice: false })).toEqual([]);
   });
 
+  it("drops loopback recorded in a spelling the dialer resolves to 127.0.0.1", () => {
+    expect(buildAddressCandidates(remoteDevice({
+      lastHost: "2130706433",
+    }), { isLocalDevice: false })).toEqual([]);
+    expect(buildAddressCandidates(remoteDevice({
+      lastHost: "0x7f000001",
+      ipAddresses: ["192.168.1.250"],
+    }), { isLocalDevice: false })).toEqual([
+      { host: "192.168.1.250", kind: "lan" },
+    ]);
+  });
+
   it("keeps a remote device's address order with no loopback entry", () => {
     expect(buildAddressCandidates(remoteDevice({
       lastHost: "Brain.Tailnet.ts.net",
@@ -109,6 +121,36 @@ describe("buildAddressCandidates", () => {
       { host: "192.168.1.250", kind: "lan" },
       { host: "100.70.80.91", kind: "tailscale" },
     ]);
+  });
+});
+
+describe("isLoopbackHost", () => {
+  it.each([
+    "127.0.0.1",
+    "127.1",
+    "2130706433",
+    "0x7f000001",
+    "0177.0.0.1",
+    "127.0.0.1.",
+    "localhost",
+    "localhost.",
+    "::1",
+    "[::1]",
+    "::ffff:127.0.0.1",
+    "::ffff:7f00:1",
+  ])("treats %s as this machine, because the dialer resolves it to loopback", (host) => {
+    expect(isLoopbackHost(host)).toBe(true);
+  });
+
+  it.each([
+    "192.0.2.20",
+    "3232235521",
+    "::ffff:192.0.2.20",
+    "127.example.com",
+    "my-mac.local",
+    "2001:db8::1",
+  ])("does not treat %s as this machine", (host) => {
+    expect(isLoopbackHost(host)).toBe(false);
   });
 });
 

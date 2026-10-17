@@ -11,11 +11,22 @@ function normalizeHost(host: string | null | undefined): string | null {
   return normalized.length > 0 ? normalized : null;
 }
 
-export function isLoopbackHost(normalized: string): boolean {
-  return normalized === "localhost"
-    || normalized === "::1"
-    || normalized.startsWith("127.")
-    || normalized.startsWith("::ffff:127.");
+// The dialer parses each host with the WHATWG URL parser, which also reads
+// 2130706433, 0x7f000001, 0177.0.0.1 and ::ffff:7f00:1 as this machine. So the
+// check runs on the canonical form, not on the spelling a peer recorded.
+export function isLoopbackHost(host: string): boolean {
+  let canonical: string;
+  try {
+    const authority = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+    canonical = new URL(`ws://${authority}/`).hostname;
+  } catch {
+    return false;
+  }
+  const bare = canonical.replace(/^\[|\]$/g, "").replace(/\.$/, "");
+  return bare === "localhost"
+    || bare === "::1"
+    || /^127(\.\d{1,3}){3}$/.test(bare)
+    || /^::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}$/.test(bare);
 }
 
 export function tailscaleDnsNameFromDevice(

@@ -457,7 +457,7 @@ describe("createSyncService", () => {
       }
     });
 
-    it.each(["127.0.0.1", "::1", "::ffff:127.0.0.1"])(
+    it.each(["127.0.0.1", "::1", "::ffff:127.0.0.1", "2130706433", "0x7f000001"])(
       "ignores a saved %s draft for a remote brain with no reachable address, and dials nothing",
       async (draftHost) => {
         const self = await countingListener("127.0.0.1", 0);
