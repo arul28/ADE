@@ -1240,6 +1240,32 @@ describe("createAgentChatService", () => {
       expect(readPersistedChatState(orphan.id).spawnKind).toBe("peer");
     });
 
+    it("still lists when one window row's metadata cannot be stat'd", async () => {
+      const { service } = createService();
+      const parent = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const orphan = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        orchestrationParentSessionId: parent.id,
+        spawnKind: "subagent",
+      });
+      const shown = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await service.deleteSession({ sessionId: parent.id });
+      const { service: restarted } = createService();
+      const realStat = fs.statSync;
+      const spy = vi.spyOn(fs, "statSync").mockImplementation(((target: fs.PathLike, options?: unknown) => {
+        if (String(target).includes(orphan.id)) throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+        return (realStat as (p: fs.PathLike, o?: unknown) => fs.Stats | undefined)(target, options);
+      }) as typeof fs.statSync);
+      try {
+        const page = await restarted.listSessions(undefined, { sessionIds: [shown.id] });
+        expect(page.map((row) => row.sessionId)).toEqual([shown.id]);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
     it("repairs a listed orphan before returning it", async () => {
       const { service } = createService();
       const parent = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });

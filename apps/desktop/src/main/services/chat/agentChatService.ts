@@ -61283,8 +61283,15 @@ export function createAgentChatService(args: {
     spawnKind: AgentChatSession["spawnKind"] | null;
   }>();
   const persistedSpawnLineage = (sessionId: string) => {
-    const stat = fs.statSync(metadataPathFor(sessionId), { throwIfNoEntry: false });
-    const stamp = stat ? `${stat.ino}:${stat.size}:${stat.mtimeMs}` : "";
+    // A stat that fails, or a filesystem without a usable inode (Node documents
+    // `ino` as filesystem-specific), just means no memo: the file is read.
+    let stamp = "";
+    try {
+      const stat = fs.statSync(metadataPathFor(sessionId), { throwIfNoEntry: false });
+      if (stat && stat.ino) stamp = `${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+    } catch {
+      stamp = "";
+    }
     const memo = persistedSpawnLineageMemo.get(sessionId);
     if (stamp && memo?.stamp === stamp) return memo;
     const persisted = readPersistedState(sessionId);
@@ -61304,13 +61311,25 @@ export function createAgentChatService(args: {
    * `reconcileOrphanedSubagent`, which re-checks the parent itself.
    */
   const repairOrphanedChildren = (rows: readonly { id: string }[]): void => {
+    // The memo only ever holds the window's rows: an id that left it is dropped.
+    const windowIds = new Set(rows.map((row) => row.id));
+    for (const id of persistedSpawnLineageMemo.keys()) {
+      if (!windowIds.has(id)) persistedSpawnLineageMemo.delete(id);
+    }
     for (const row of rows) {
       const live = managedSessions.get(row.id);
       if (live) {
         reconcileOrphanedSubagent(live);
         continue;
       }
-      const { parentId, spawnKind } = persistedSpawnLineage(row.id);
+      let lineage: ReturnType<typeof persistedSpawnLineage>;
+      try {
+        lineage = persistedSpawnLineage(row.id);
+      } catch {
+        // One unreadable metadata file must not fail the list; that row just skips repair.
+        continue;
+      }
+      const { parentId, spawnKind } = lineage;
       if (spawnKind !== "subagent" || !parentId || parentId === row.id || parentChatStillExists(parentId)) continue;
       try {
         reconcileOrphanedSubagent(ensureManagedSession(row.id));
