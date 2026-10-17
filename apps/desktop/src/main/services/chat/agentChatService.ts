@@ -67664,7 +67664,12 @@ export function createAgentChatService(args: {
       const selectedText = messages[selectedIndex]!.text.trim();
       const sameTextOrdinal = messages.slice(0, selectedIndex + 1).filter((message) => message.text.trim() === selectedText).length - 1;
       const listing = await runtime.sdk.request<{ fileChangeTrackingEnabled: boolean; unavailableReason?: string; points: Array<{ eventId: string; userMessage: string; canRestoreFiles: boolean; linesAdded: number; linesRemoved: number }> }>("rewind", { chatId: sessionId, action: "list" });
-      const candidates = listing.points.filter((point) => point.userMessage.trim() === selectedText);
+      // Copilot records the prompt ADE sent, which can carry ADE's context
+      // prefix ahead of what the user typed.
+      const candidates = listing.points.filter((point) => {
+        const recorded = point.userMessage.trim();
+        return recorded === selectedText || recorded.endsWith(selectedText);
+      });
       const point = candidates[sameTextOrdinal];
       if (!point) return { canRewind: false, error: "Copilot has no rewind point matching that user message. The SDK exposes only its captured root user turns.", filesChanged: [], insertions: 0, deletions: 0, dryRun, conversationRollback: true };
       if (!listing.fileChangeTrackingEnabled || !point.canRestoreFiles) {
