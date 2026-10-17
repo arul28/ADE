@@ -1,5 +1,5 @@
 import type { MutableRefObject } from "react";
-import type { OpenProjectBinding } from "../../../../shared/types";
+import type { AgentChatSession, OpenProjectBinding } from "../../../../shared/types";
 import { invalidateAgentChatSessionListCache } from "../../../lib/agentChatSessionListCache";
 import {
   DRAFT_LAUNCH_JOB_STALE_AFTER_MS,
@@ -155,6 +155,35 @@ export function discardRendererLaunchHandoff(jobId: string | null | undefined): 
 }
 
 /**
+ * A chat that opened while its first message was still sending. The pane that
+ * opens it is not the draft that launched it, so a failed send is handed over
+ * here: the opened pane shows the error and takes the draft back.
+ */
+export type OpenedChatSendFailure = { message: string; snapshot: DraftLaunchSnapshot };
+
+const openedChatSendFailures = new Map<string, OpenedChatSendFailure>();
+const openedChatSendFailureListeners = new Set<(sessionId: string) => void>();
+
+export function reportOpenedChatSendFailure(sessionId: string, failure: OpenedChatSendFailure): void {
+  openedChatSendFailures.set(sessionId, failure);
+  for (const listener of openedChatSendFailureListeners) listener(sessionId);
+}
+
+/** Each failure is taken once, by the pane showing that chat. */
+export function takeOpenedChatSendFailure(sessionId: string): OpenedChatSendFailure | null {
+  const failure = openedChatSendFailures.get(sessionId) ?? null;
+  openedChatSendFailures.delete(sessionId);
+  return failure;
+}
+
+export function subscribeOpenedChatSendFailures(listener: (sessionId: string) => void): () => void {
+  openedChatSendFailureListeners.add(listener);
+  return () => {
+    openedChatSendFailureListeners.delete(listener);
+  };
+}
+
+/**
  * The renderer-owned launch chain: resolve (or create) the lane, start the
  * chat or CLI session in it, and track it as a draft launch job. Used for
  * launches into an existing lane, and as the fallback for a new-lane launch
@@ -210,11 +239,17 @@ export type RendererOwnedLaunchDeps = {
       pin: OpenProjectBinding;
     },
   ) => Promise<DraftLaunchLaneTarget>;
+  /**
+   * `openCreated` runs as soon as the chat exists, before its first message is
+   * sent. It returns true when it opened the chat (the chat then stays even if
+   * the send fails) and false when the chat is left to open after the send.
+   */
   startChat: (
     prepared: PreparedDraftLaunch,
     targetLane: DraftLaunchLaneTarget,
     pin: OpenProjectBinding,
     assertActive: () => void,
+    openCreated: (session: AgentChatSession) => boolean,
   ) => Promise<StartedDraftLaunch>;
   startCli: (
     prepared: PreparedDraftLaunch,
@@ -298,6 +333,8 @@ export async function runRendererOwnedLaunch(deps: RendererOwnedLaunchDeps): Pro
   if (!holdsComposerUntilOpen) deps.clearDraftLaunchComposer(snapshot);
 
   let targetLane: DraftLaunchLaneTarget | null = null;
+  // Set when the chat opened at create, so the send's outcome belongs to that pane.
+  const opened: { sessionId: string | null } = { sessionId: null };
 
   try {
     if (holdsComposerUntilOpen) {
@@ -328,17 +365,44 @@ export async function runRendererOwnedLaunch(deps: RendererOwnedLaunchDeps): Pro
     // Re-check before starting the session. The start functions also re-assert
     // immediately before each of their own mutating calls.
     assertLaunchActive();
+    const lane = targetLane;
+    // A foreground chat on an existing lane opens the moment its create returns,
+    // with its first message and row, while the send is still in flight. The
+    // composer clears here, once. Auto-create lanes keep the open after the send.
+    const openCreated = (created: AgentChatSession): boolean => {
+      if (!holdsComposerUntilOpen || deps.autoCreate || !deps.paneMountedRef.current) return false;
+      if (deps.latestForegroundJobIdRef.current !== jobId || !deps.canRefreshPinnedProject(launchBinding)) return false;
+      if (!deps.draftLaunchJobExists(jobId)) return false;
+      opened.sessionId = created.id;
+      // The job stays until the send settles: it is what holds a second foreground launch.
+      deps.openLaunchedDraftSession({
+        laneId: lane.laneId,
+        laneName: lane.laneName,
+        sessionId: created.id,
+        draftKind: "chat",
+        firstMessage: prepared,
+        composerHandoff,
+      });
+      deps.clearDraftLaunchComposer(snapshot);
+      return true;
+    };
     const launched = await withDraftLaunchTimeout(
       kind === "chat"
-        ? deps.startChat(prepared, targetLane, launchBinding, assertLaunchActive)
-        : deps.startCli(prepared, targetLane, mode, assertLaunchActive, launchBinding),
+        ? deps.startChat(prepared, lane, launchBinding, assertLaunchActive, openCreated)
+        : deps.startCli(prepared, lane, mode, assertLaunchActive, launchBinding),
       "Session start",
       markLaunchTimedOut,
     );
     invalidateSessionListCache();
-    invalidateAgentChatSessionListCache({ laneId: targetLane.laneId });
-    if (launched.draftKind === "chat" && targetLane.laneId === deps.paneLaneId && deps.canRefreshPinnedProject(launchBinding)) {
+    invalidateAgentChatSessionListCache({ laneId: lane.laneId });
+    if (launched.draftKind === "chat" && lane.laneId === deps.paneLaneId && deps.canRefreshPinnedProject(launchBinding)) {
       void deps.refreshSessions({ force: true }).catch(() => {});
+    }
+    if (opened.sessionId) {
+      // Already open with the composer cleared. The send has settled, so the job that held the launch goes.
+      deps.setDraftLaunchJobs((current) => current.filter((entry) => entry.id !== jobId));
+      discardRendererLaunchHandoff(jobId);
+      return;
     }
     const launch = {
       laneId: targetLane.laneId,
@@ -381,6 +445,13 @@ export async function runRendererOwnedLaunch(deps: RendererOwnedLaunchDeps): Pro
     }
   } catch (launchError) {
     discardRendererLaunchHandoff(jobId);
+    const message = extractError(launchError);
+    if (opened.sessionId) {
+      // The chat exists and is open. Its pane shows the failure and takes the draft back.
+      deps.setDraftLaunchJobs((current) => current.filter((entry) => entry.id !== jobId));
+      reportOpenedChatSendFailure(opened.sessionId, { message, snapshot });
+      return;
+    }
     if (targetLane?.autoCreated) {
       // Pin the rollback to the originating project so it deletes the lane we
       // created, even if the active project has since changed.
@@ -391,7 +462,6 @@ export async function runRendererOwnedLaunch(deps: RendererOwnedLaunchDeps): Pro
         await deps.refreshLanes().catch(() => undefined);
       }
     }
-    const message = extractError(launchError);
     const jobStillVisible = deps.draftLaunchJobExists(jobId);
     deps.patchDraftLaunchJob(jobId, {
       status: "failed",

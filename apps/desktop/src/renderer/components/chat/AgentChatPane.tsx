@@ -467,6 +467,8 @@ import {
   runRendererOwnedLaunch as runRendererOwnedDraftLaunch,
   sameStoredDraftItem,
   discardRendererLaunchHandoff,
+  subscribeOpenedChatSendFailures,
+  takeOpenedChatSendFailure,
   takeRendererLaunchHandoff,
   type DraftLaunchLaneTarget,
   type OpenLaunchedDraftSessionInput,
@@ -11245,6 +11247,24 @@ export function AgentChatPane({
     if (options?.clearError) setError(null);
   }, [dismissDraftLaunchJob, restoreDraftLaunchSnapshot]);
 
+  // A chat launched from a draft opened before its first message settled. If
+  // that send failed, this pane (the one showing the chat) shows the error and
+  // puts the draft back in its own composer.
+  useEffect(() => {
+    if (!lockSessionId) return;
+    const settleSendFailure = () => {
+      const failure = takeOpenedChatSendFailure(lockSessionId);
+      if (!failure) return;
+      setOptimisticOutgoingMessageSynced(null);
+      restoreDraftLaunchSnapshot(failure.snapshot);
+      setError(failure.message);
+    };
+    settleSendFailure();
+    return subscribeOpenedChatSendFailures((sessionId) => {
+      if (sessionId === lockSessionId) settleSendFailure();
+    });
+  }, [lockSessionId, restoreDraftLaunchSnapshot, setOptimisticOutgoingMessageSynced]);
+
   const openLaunchedDraftSession = useCallback((launch: OpenLaunchedDraftSessionInput) => {
     if (launch.jobId) {
       dismissDraftLaunchJob(launch.jobId);
@@ -11845,8 +11865,25 @@ export function AgentChatPane({
     targetLane: DraftLaunchLaneTarget,
     pin?: OpenProjectBinding | null,
     assertActive?: () => void,
+    openCreated?: (session: AgentChatSession) => boolean,
   ): Promise<StartedDraftLaunch> => {
     let createdSession: AgentChatSession | null = null;
+    // Once the chat is open it stays, even if its first message fails.
+    let opened = false;
+    // The brain accepted the first turn (or is taking it): report the chat in
+    // flight, so the row reads "Working", not "Done", until the list refresh
+    // carries the brain's own status.
+    const notifyInFlight = (session: AgentChatSession) => {
+      notifySessionCreated({
+        ...session,
+        status: "active",
+        currentTurnStartedAt: new Date().toISOString(),
+      }, {
+        activate: false,
+        source: "draft-launch",
+        ...(pin ? { runtimePin: pin, laneName: targetLane.laneName } : {}),
+      });
+    };
     try {
       // Re-assert immediately before each mutating call (not just once up the
       // stack): a timed-out launch can keep its IPC work alive, so each step
@@ -11858,6 +11895,11 @@ export function AgentChatPane({
       // than sending into a stale launch.
       assertActive?.();
       touchSession(createdSession.id);
+      // The chat opens now, while the send below is still in flight.
+      if (openCreated?.(createdSession)) {
+        opened = true;
+        notifyInFlight(createdSession);
+      }
       const sendArgs = {
         sessionId: createdSession.id,
         ...buildDraftChatMessageArgs(
@@ -11874,27 +11916,25 @@ export function AgentChatPane({
       // If the launch timed out while the prompt was in flight, tear the
       // session down rather than leaving a started-but-orphaned chat.
       assertActive?.();
-      if (canRefreshPinnedProject(pin)) {
-        // The brain accepted the first turn. The create response still says idle,
-        // so report the chat in flight: the new row reads "Working", not "Done",
-        // until the list refresh carries the brain's own status.
-        const acceptedSession: AgentChatSession = {
-          ...createdSession,
-          status: "active",
-          currentTurnStartedAt: new Date().toISOString(),
-        };
-        notifySessionCreated(acceptedSession, {
-          activate: false,
-          source: "draft-launch",
-          ...(pin ? { runtimePin: pin, laneName: targetLane.laneName } : {}),
-        });
+      // An opened chat already reported itself in flight at create.
+      if (!opened && canRefreshPinnedProject(pin)) {
+        notifyInFlight(createdSession);
       }
       return {
         sessionId: createdSession.id,
         draftKind: "chat",
       };
     } catch (launchError) {
-      if (createdSession) {
+      if (createdSession && opened) {
+        // The chat stays open and shows this failure. Its row goes back to the
+        // brain's state (the create response, idle), and the refresh that follows
+        // corrects it.
+        notifySessionCreated(createdSession, {
+          activate: false,
+          source: "draft-launch",
+          ...(pin ? { runtimePin: pin, laneName: targetLane.laneName } : {}),
+        });
+      } else if (createdSession) {
         await cleanupDraftChatSession(createdSession, targetLane, pin);
       }
       throw launchError;

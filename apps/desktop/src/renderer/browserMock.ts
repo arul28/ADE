@@ -248,6 +248,16 @@ const resolvedArg =
   <T>(v: T) =>
   async (_a: any) =>
     v;
+/**
+ * Perf runs set `globalThis.__adeMockChatLatency` to add a fixed delay to a new
+ * chat's create and to its send. Unset, the mock answers at once, as before.
+ */
+type MockChatLatency = { createMs?: number; sendMs?: number };
+const mockChatLatency = (): MockChatLatency | null =>
+  (globalThis as { __adeMockChatLatency?: MockChatLatency }).__adeMockChatLatency ?? null;
+const mockChatDelay = (ms: number | undefined): Promise<void> =>
+  ms ? new Promise((resolve) => setTimeout(resolve, ms)) : Promise.resolve();
+let mockLatencyChatSeq = 0;
 /** Mirrors `createLoginImportUnavailableStub` in the hosted web adapter. */
 const LOGIN_IMPORT_UNAVAILABLE = {
   ok: false as const,
@@ -6667,7 +6677,25 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         const session = MOCK_SESSIONS.find((row) => row.id === sessionId);
         return mockAgentChatSummaryFromSession(session) ?? null;
       },
-      create: resolvedArg({ id: "mock" }),
+      create: async (args: any = {}) => {
+        const latency = mockChatLatency();
+        if (!latency) return { id: "mock" };
+        await mockChatDelay(latency.createMs);
+        mockLatencyChatSeq += 1;
+        const now = new Date().toISOString();
+        return {
+          ...(MOCK_SESSIONS[0] ?? {}),
+          id: `mock-latency-${mockLatencyChatSeq}`,
+          laneId: String(args.laneId ?? MOCK_SESSIONS[0]?.laneId ?? ""),
+          provider: args.provider ?? "claude",
+          model: args.model ?? "",
+          modelId: args.modelId ?? null,
+          title: "Latency chat",
+          status: "idle",
+          createdAt: now,
+          updatedAt: now,
+        };
+      },
       launchCli: resolvedArg({ sessionId: "mock-cli", ptyId: "mock-pty", pid: null, attachedLinearIssueIds: [] } as any),
       suggestLaneName: resolvedArg("browser-mock-chat"),
       generateAutoLaneIdentity: async (args: any = {}) => ({
@@ -6937,6 +6965,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         return next;
       },
       send: async (args: AgentChatSendArgs) => {
+        await mockChatDelay(mockChatLatency()?.sendMs);
         let text = args.text;
         if (args.includeThreadComments) {
           const current = browserMockThreadComments.get(args.sessionId) ?? [];

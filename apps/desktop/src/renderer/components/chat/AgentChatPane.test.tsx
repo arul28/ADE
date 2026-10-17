@@ -981,6 +981,23 @@ function LocationProbe() {
   return <div data-testid="location">{`${location.pathname}${location.search}`}</div>;
 }
 
+/** The pane Work mounts for a launched chat: locked to the session in the URL. */
+function OpenedSessionPane() {
+  const location = useLocation();
+  const sessionId = new URLSearchParams(location.search).get("sessionId");
+  if (!sessionId) return null;
+  return (
+    <AgentChatPane
+      key={sessionId}
+      laneId="lane-1"
+      lockSessionId={sessionId}
+      hideSessionTabs
+      hideLaneToolDrawers
+      embeddedWorkLayout
+    />
+  );
+}
+
 const originalAde = globalThis.window.ade;
 const originalNavigatorPlatform = window.navigator.platform;
 const originalMatchMedia = window.matchMedia;
@@ -1359,6 +1376,9 @@ function renderParallelDraftPane(args?: {
   availableModelIdsOverride?: string[];
   initialEntry?: string;
   suppressDraftLaunchNavigation?: boolean;
+  onSessionCreated?: (...args: any[]) => any;
+  /** Mount the pane Work opens for a launched chat, next to the draft pane. */
+  mountOpenedSession?: boolean;
 }) {
   const laneId = args?.laneId ?? "lane-1";
   useAppStore.setState({
@@ -1387,7 +1407,9 @@ function renderParallelDraftPane(args?: {
                 embeddedWorkLayout
                 suppressDraftLaunchNavigation={args?.suppressDraftLaunchNavigation}
                 availableModelIdsOverride={args?.availableModelIdsOverride}
+                onSessionCreated={args?.onSessionCreated}
               />
+              {args?.mountOpenedSession ? <OpenedSessionPane /> : null}
               <LocationProbe />
             </>
           )}
@@ -9122,7 +9144,7 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
-  it("preserves a replacement draft and same-path reattachment through a delayed remounted send", async () => {
+  it("does not bring the submitted draft back when the pane remounts during a delayed send", async () => {
     const { send } = installAdeMocks({ sessions: [] });
     let resolveSend!: () => void;
     send.mockImplementation(() => new Promise<void>((resolve) => {
@@ -9132,7 +9154,6 @@ describe("AgentChatPane submit recovery", () => {
     const submittedPrompt = "Fix bug";
     const replacementPrompt = "Fix bug in tests";
     const submittedAttachment = "/tmp/project-under-test/submitted.png";
-    const laterAttachment = "/tmp/project-under-test/later.txt";
     const draftStorageKey = composerDraftStorageKeyForTest({
       projectRoot: "/tmp/project-under-test",
       companionStateKey: "draft:work-start",
@@ -9161,50 +9182,13 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => expect(send).toHaveBeenCalled());
 
     firstPane.unmount();
-    const savedBeforeRemount = JSON.parse(window.localStorage.getItem(draftStorageKey) ?? "null");
-    savedBeforeRemount.mentionLabels = {
-      "@chat:chat-1": "Submitted chat",
-      "@chat:chat-2": "Follow-up chat",
-    };
-    const submittedAttachmentDraftId = savedBeforeRemount.attachmentDraftIds[0];
-    window.localStorage.setItem(draftStorageKey, JSON.stringify(savedBeforeRemount));
     const remountedPane = renderAutoCreateDraftPane({ draftContextTargetId });
-    const remountedTextbox = await screen.findByDisplayValue(submittedPrompt) as HTMLTextAreaElement;
-    remountedTextbox.setSelectionRange(0, submittedPrompt.length);
-    fireEvent(remountedTextbox, new InputEvent("beforeinput", {
-      bubbles: true,
-      inputType: "deleteContentBackward",
-    }));
-    fireEvent.change(remountedTextbox, { target: { value: "" } });
-    remountedTextbox.setSelectionRange(0, 0);
-    fireEvent(remountedTextbox, new InputEvent("beforeinput", {
-      bubbles: true,
-      inputType: "insertText",
-      data: replacementPrompt,
-    }));
+    const remountedTextbox = await screen.findByRole("textbox") as HTMLTextAreaElement;
+    // The submitted prompt and its attachment left the draft with the send; neither comes back.
+    expect(remountedTextbox.value).toBe("");
+    expect(screen.queryByText("submitted.png")).toBeNull();
     fireEvent.change(remountedTextbox, { target: { value: replacementPrompt } });
     expect(remountedTextbox.value).toBe(replacementPrompt);
-
-    expect(await screen.findByText("submitted.png")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Remove submitted.png" }));
-    act(() => {
-      window.dispatchEvent(new CustomEvent("ade:agent-chat:add-attachment", {
-        detail: {
-          draftTargetId: draftContextTargetId,
-          attachment: { path: submittedAttachment, type: "file" },
-        },
-      }));
-    });
-    expect(await screen.findByText("submitted.png")).toBeTruthy();
-    act(() => {
-      window.dispatchEvent(new CustomEvent("ade:agent-chat:add-attachment", {
-        detail: {
-          draftTargetId: draftContextTargetId,
-          attachment: { path: laterAttachment, type: "file" },
-        },
-      }));
-    });
-    expect(await screen.findByText("later.txt")).toBeTruthy();
 
     remountedPane.unmount();
     await act(async () => {
@@ -9213,13 +9197,10 @@ describe("AgentChatPane submit recovery", () => {
 
     const saved = JSON.parse(window.localStorage.getItem(draftStorageKey) ?? "null");
     expect(saved.text).toBe(replacementPrompt);
-    expect(saved.mentionLabels).toEqual({});
-    expect(saved.attachments.map((attachment: { path: string }) => attachment.path)).toEqual([submittedAttachment, laterAttachment]);
-    expect(saved.attachmentDraftIds).toHaveLength(2);
-    expect(saved.attachmentDraftIds[0]).not.toBe(submittedAttachmentDraftId);
+    expect(saved.attachments).toEqual([]);
   });
 
-  it("clears an unchanged submitted prefix and keeps appended text after a delayed send", async () => {
+  it("keeps text typed after the submitted prompt left the composer during a delayed send", async () => {
     const { create, send } = installAdeMocks({ sessions: [] });
     let resolveSend!: () => void;
     send.mockImplementation(() => new Promise<void>((resolve) => {
@@ -9244,13 +9225,9 @@ describe("AgentChatPane submit recovery", () => {
       expect(send).toHaveBeenCalledTimes(1);
     });
 
-    textbox.setSelectionRange(submittedPrompt.length, submittedPrompt.length);
-    fireEvent(textbox, new InputEvent("beforeinput", {
-      bubbles: true,
-      inputType: "insertText",
-      data: appendedText,
-    }));
-    fireEvent.change(textbox, { target: { value: `${submittedPrompt}${appendedText}` } });
+    // The submitted prompt left the composer when the chat opened; the user types on from empty.
+    await waitFor(() => expect(textbox.value).toBe(""));
+    fireEvent.change(textbox, { target: { value: appendedText } });
     await act(async () => {
       resolveSend();
     });
@@ -9258,16 +9235,19 @@ describe("AgentChatPane submit recovery", () => {
       expect(screen.getByTestId("location").textContent).toContain("created-session");
     });
 
-    const stored = JSON.parse(window.localStorage.getItem(composerDraftStorageKeyForTest({
-      projectRoot: "/tmp/project-under-test",
-      companionStateKey: "draft:work-start",
-    })) ?? "null");
-    expect(stored.text).toBe(appendedText);
+    // The draft persists on a short debounce, after the send settles.
+    await waitFor(() => {
+      const stored = JSON.parse(window.localStorage.getItem(composerDraftStorageKeyForTest({
+        projectRoot: "/tmp/project-under-test",
+        companionStateKey: "draft:work-start",
+      })) ?? "null");
+      expect(stored.text).toBe(appendedText);
+    });
     expect(create).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledTimes(1);
   });
 
-  it("clears the submitted prompt before sidebar-inserted text after a delayed send", async () => {
+  it("keeps sidebar-inserted text after a delayed send whose prompt has left the composer", async () => {
     const { create, send } = installAdeMocks({ sessions: [] });
     let resolveSend!: () => void;
     send.mockImplementation(() => new Promise<void>((resolve) => {
@@ -9292,10 +9272,12 @@ describe("AgentChatPane submit recovery", () => {
       expect(send).toHaveBeenCalledTimes(1);
     });
 
+    // The submitted prompt left the composer when the chat opened, so only the inserted text lands here.
+    await waitFor(() => expect(textbox.value).toBe(""));
     window.dispatchEvent(new CustomEvent("ade:agent-chat:insert-draft", {
       detail: { draftTargetId: "work:draft:lane-1:chat", text: insertedText },
     }));
-    await waitFor(() => expect(textbox.value).toBe(`${submittedPrompt}\n\n${insertedText}`));
+    await waitFor(() => expect(textbox.value).toBe(insertedText));
     await act(async () => {
       resolveSend();
     });
@@ -9303,11 +9285,14 @@ describe("AgentChatPane submit recovery", () => {
       expect(screen.getByTestId("location").textContent).toContain("created-session");
     });
 
-    const stored = JSON.parse(window.localStorage.getItem(composerDraftStorageKeyForTest({
-      projectRoot: "/tmp/project-under-test",
-      companionStateKey: "draft:work-start",
-    })) ?? "null");
-    expect(stored.text).toBe(`\n\n${insertedText}`);
+    // The draft persists on a short debounce, after the send settles.
+    await waitFor(() => {
+      const stored = JSON.parse(window.localStorage.getItem(composerDraftStorageKeyForTest({
+        projectRoot: "/tmp/project-under-test",
+        companionStateKey: "draft:work-start",
+      })) ?? "null");
+      expect(stored.text).toBe(insertedText);
+    });
     expect(create).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledTimes(1);
   });
@@ -15037,5 +15022,118 @@ describe("Cursor config values the pane sends", () => {
         { id: "thinking", name: "Thinking", category: "model", type: "boolean", currentValue: false },
       ],
     })).toEqual({ thinking: false });
+  });
+});
+
+describe("AgentChatPane existing-lane foreground chat opens at create", () => {
+  const TEXT = "Stay in the lane work pane.";
+  const OPENED_LOCATION = "/work?laneId=lane-1&sessionId=created-session";
+
+  beforeEach(() => {
+    const launchConfigKey = [
+      "ade.chat.lastLaunchConfig.v1",
+      "/tmp/project-under-test",
+      "lane-1",
+      "standard",
+      "chat",
+    ].map(encodeURIComponent).join(":");
+    window.localStorage.setItem(launchConfigKey, JSON.stringify({
+      version: 1,
+      modelId: "openai/gpt-5.5",
+      updatedAt: "2026-05-28T12:00:00.000Z",
+      controls: {
+        interactionMode: "default",
+        claudePermissionMode: "default",
+        codexApprovalPolicy: "on-request",
+        codexSandbox: "workspace-write",
+        codexConfigSource: "flags",
+        opencodePermissionMode: "edit",
+        droidPermissionMode: "auto-low",
+        cursorModeId: "agent",
+        cursorConfigValues: {},
+      },
+    }));
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function textboxes() {
+    return screen.getAllByRole("textbox") as HTMLTextAreaElement[];
+  }
+
+  async function sendFromDraft(text: string) {
+    const textbox = await screen.findByRole("textbox") as HTMLTextAreaElement;
+    fireEvent.change(textbox, { target: { value: text } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+    return textbox;
+  }
+
+  it("opens the new chat and surfaces its row as soon as create resolves, while the first message is still sending", async () => {
+    // The draft composer has to be measurable for its first message to carry into the opened chat.
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+      left: 40, top: 500, width: 600, height: 80, right: 640, bottom: 580, x: 40, y: 500, toJSON: () => ({}),
+    } as DOMRect);
+    const { create, send } = installAdeMocks({ sessions: [] });
+    let settleSend!: () => void;
+    send.mockImplementation(() => new Promise<void>((resolve) => {
+      settleSend = resolve;
+    }));
+    const onSessionCreated = vi.fn();
+    renderParallelDraftPane({
+      availableModelIdsOverride: ["openai/gpt-5.5"],
+      mountOpenedSession: true,
+      onSessionCreated,
+    });
+
+    const draftBox = await sendFromDraft(TEXT);
+
+    await waitFor(() => expect(screen.getByTestId("location").textContent).toBe(OPENED_LOCATION));
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(onSessionCreated).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "created-session" }),
+      expect.objectContaining({ activate: false, source: "draft-launch" }),
+    );
+    // The user's message is in the opened chat while the send is still pending.
+    const bubble = await screen.findByText(TEXT);
+    expect(draftBox.value).toBe("");
+
+    // Settling the send reuses the same bubble and row: nothing duplicates or remounts.
+    await act(async () => {
+      settleSend();
+    });
+    expect(onSessionCreated).toHaveBeenCalledTimes(1);
+    expect(screen.getByText(TEXT)).toBe(bubble);
+    expect(screen.getAllByText(TEXT)).toHaveLength(1);
+    expect(screen.getByTestId("location").textContent).toBe(OPENED_LOCATION);
+  });
+
+  it("keeps the opened chat when the first message fails, and restores the draft there exactly once", async () => {
+    const { create, send, deleteChat } = installAdeMocks({ sessions: [] });
+    send.mockRejectedValue(new Error("The runtime refused the message."));
+    renderParallelDraftPane({ availableModelIdsOverride: ["openai/gpt-5.5"], mountOpenedSession: true });
+
+    await sendFromDraft(TEXT);
+
+    await waitFor(() => expect(screen.getByTestId("location").textContent).toBe(OPENED_LOCATION));
+    await waitFor(() => expect(screen.getAllByText("The runtime refused the message.")).toHaveLength(1));
+    await waitFor(() => expect(textboxes().filter((box) => box.value === TEXT)).toHaveLength(1));
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(deleteChat).not.toHaveBeenCalled();
+  });
+
+  it("keeps the draft in place and shows the error when create fails", async () => {
+    const { send } = installAdeMocks({ sessions: [], createError: new Error("The lane refused the chat.") });
+    renderParallelDraftPane({ availableModelIdsOverride: ["openai/gpt-5.5"], mountOpenedSession: true });
+
+    const draftBox = await sendFromDraft(TEXT);
+
+    expect(await screen.findByText("The lane refused the chat.")).toBeTruthy();
+    expect(draftBox.value).toBe(TEXT);
+    expect(screen.getByTestId("location").textContent).toBe("/work");
+    expect(send).not.toHaveBeenCalled();
   });
 });
