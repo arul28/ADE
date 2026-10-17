@@ -137,6 +137,7 @@ import {
 } from "../../desktop/src/shared/machinePresence";
 import { SEARCH_DOC_KINDS } from "../../desktop/src/shared/types/search";
 import { pathsEqual } from "../../desktop/src/main/services/shared/pathCompare";
+import { stripHostRuntimeEnv } from "../../desktop/src/main/services/shared/hostRuntimeEnv";
 import { withTimeout } from "../../desktop/src/main/services/ai/utils";
 import type { SyncHostStartupLoopDeps } from "./services/sync/syncHostStartupLoop";
 import type { ProjectSecretStorage } from "../../desktop/src/shared/types/projectSecrets";
@@ -24339,10 +24340,10 @@ async function launchWindowsDesktopApp(
   executablePath: string,
   appName: string,
 ): Promise<Record<string, unknown>> {
-  const env = { ...process.env };
   // The installed CLI wrapper runs ADE.exe as Node. Carrying this flag into
   // the child would launch another CLI process instead of the desktop UI.
-  delete env.ELECTRON_RUN_AS_NODE;
+  // The other host-only keys (the brain's compile cache included) stay behind too.
+  const env = stripHostRuntimeEnv({ ...process.env });
   return await new Promise((resolve) => {
     let child: ReturnType<typeof spawn>;
     try {
@@ -34066,9 +34067,10 @@ async function runResetCommand(
     try {
       // This process runs the app binary as plain Node. Handed down, that
       // setting would start the relaunched app as Node too, not as ADE.
-      const appEnv: NodeJS.ProcessEnv = { ...process.env };
+      // The other host-only keys (the brain's compile cache included) stay behind too.
+      const appEnv: NodeJS.ProcessEnv = stripHostRuntimeEnv({ ...process.env });
       for (const key of Object.keys(appEnv)) {
-        if (key === "ELECTRON_RUN_AS_NODE" || key === "NODE_PATH" || key.startsWith("ADE_")) delete appEnv[key];
+        if (key === "NODE_PATH" || key.startsWith("ADE_")) delete appEnv[key];
       }
       const child = process.platform === "darwin"
         ? spawn("open", ["-n", plan.relaunch], { detached: true, stdio: "ignore", env: appEnv })
