@@ -7497,6 +7497,36 @@ describe("AgentChatMessageList — stable row keys, list anchoring, and scroll r
     });
   });
 
+  describe.each([
+    { path: "virtualized", tailRows: 80 },
+    { path: "plain", tailRows: 12 },
+  ])("a bottom-following reader on the $path path", ({ tailRows }) => {
+    it("is at the tail in the same commit an older page is prepended", async () => {
+      const TAIL_ROW = 120;
+      const tail = userEvents("tail", tailRows, 30);
+      const older = userEvents("older", 40, 10);
+      const olderKeys = new Set(buildTranscriptEventRowKeys(older));
+      const restoreLayout = installFakeLayout(600, (key) => (olderKeys.has(key) ? OLDER_ROW : TAIL_ROW));
+      try {
+        const view = render(listElement(tail, { hasOlderHistory: true }));
+        // Mount pins to the tail; let that land, then check the premise.
+        await nextFrame();
+        await nextFrame();
+        const pane = timelinePane();
+        const tailTop = () => pane.scrollHeight - pane.clientHeight;
+        expect(pane.scrollTop).toBe(tailTop());
+
+        // Synchronous on purpose: no rAF or timeout may run before the check.
+        view.rerender(listElement([...older, ...tail], { hasOlderHistory: true }));
+
+        expect(pane.scrollTop).toBe(tailTop());
+        expect(pane.scrollTop).toBeGreaterThan(0);
+      } finally {
+        restoreLayout();
+      }
+    });
+  });
+
   it("keeps the reader's rows in place when the task list moves from above them to a new turn", async () => {
     const TASK_ROW = 40;
     const ROW = 120;

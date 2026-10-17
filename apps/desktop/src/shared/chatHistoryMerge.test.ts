@@ -336,3 +336,85 @@ describe("chat history ordering", () => {
     expect(merged).toEqual([prompt, delayedLive, done]);
   });
 });
+
+describe("warm switch onto a resident transcript with a resent tool call", () => {
+  // Shape from the live warm switch to Versic chat 37d8571e: the resident
+  // window holds a tool call that the provider sent twice. The resend's row
+  // sits where the resend arrived, with the first send's time. The next
+  // snapshot page starts on that resend, so its head's own identity is not
+  // held and only the logical tool item joins the two.
+  const toolCall = (timestamp: string, args: Record<string, unknown>) => toolEnvelope(timestamp, {
+    type: "tool_call", tool: "bash", args, itemId: "toolu_01Qxnn1QzZnFoDSHq6SNmHDP",
+    logicalItemId: "toolu_01Qxnn1QzZnFoDSHq6SNmHDP", turnId: "turn-37",
+  });
+  const toolResult = (timestamp: string) => toolEnvelope(timestamp, {
+    type: "tool_result", tool: "bash", result: { ok: true }, itemId: "toolu_01Qxnn1QzZnFoDSHq6SNmHDP",
+    logicalItemId: "toolu_01Qxnn1QzZnFoDSHq6SNmHDP", turnId: "turn-37",
+  } as AgentChatEventEnvelope["event"]);
+
+  it("keeps the resident prefix when the snapshot head is a resend of a held tool call", () => {
+    const older = [
+      envelope("2026-10-17T07:00:00.000Z", "older one"),
+      envelope("2026-10-17T07:03:00.000Z", "older two"),
+    ];
+    const firstSend = toolCall("2026-10-17T07:03:36.821Z", { command: "rg foo" });
+    const activity = envelope("2026-10-17T07:03:37.100Z", "activity");
+    const card = envelope("2026-10-17T07:03:37.500Z", "ade card");
+    // The resend, as the pane holds it: first send's time, resend's payload.
+    const heldResend = toolCall("2026-10-17T07:03:36.821Z", { command: "rg foo --hidden" });
+    const result = toolResult("2026-10-17T07:04:40.581Z");
+    const resident = [...older, firstSend, activity, card, heldResend, result,
+      envelope("2026-10-17T07:04:41.000Z", "activity two"),
+      envelope("2026-10-17T07:04:42.000Z", "text")];
+
+    // The snapshot page: head is the resend with its own (later) timestamp.
+    const snapshot = [
+      toolCall("2026-10-17T07:03:38.765Z", { command: "rg foo --hidden" }),
+      result,
+      envelope("2026-10-17T07:04:41.000Z", "activity two"),
+      envelope("2026-10-17T07:04:42.000Z", "text"),
+    ];
+
+    const merged = mergeAgentChatHistorySnapshot(structuredClone(snapshot), resident);
+
+    // The resend and the first send are one call: the merge keeps one row, at
+    // the first send's place and time, and shows the resend's payload. Every
+    // other resident row survives, so nothing is paged back in.
+    expect(merged.map((entry) => entry.event.type)).toEqual([
+      "text", "text", "tool_call", "text", "text", "tool_result", "text", "text",
+    ]);
+    expect(merged[0]).toBe(resident[0]);
+    expect(merged[2]).toMatchObject({ timestamp: "2026-10-17T07:03:36.821Z", event: { args: { command: "rg foo --hidden" } } });
+    expect(merged.slice(3)).toEqual(resident.slice(3).filter((entry) => entry !== heldResend));
+  });
+
+  it("still drops a stale prefix that ends at a hole before the snapshot head", () => {
+    const stalePrefix = [
+      envelope("2026-10-17T07:00:00.000Z", "stale one"),
+      envelope("2026-10-17T07:00:01.000Z", "stale two"),
+    ];
+    const snapshotHead = envelope("2026-10-17T07:00:04.000Z", "snapshot head");
+    const shared = envelope("2026-10-17T07:00:05.000Z", "shared");
+
+    expect(mergeAgentChatHistorySnapshot(
+      [snapshotHead, shared],
+      [...stalePrefix, shared],
+    )).toEqual([snapshotHead, shared]);
+  });
+
+  it("still drops a stale prefix whose last tool call is not the snapshot head's call", () => {
+    const stalePrefix = [
+      toolCall("2026-10-17T07:00:00.000Z", { command: "unrelated" }),
+    ];
+    const head = toolEnvelope("2026-10-17T07:00:04.000Z", {
+      type: "tool_call", tool: "bash", args: { command: "later" }, itemId: "toolu_other",
+      logicalItemId: "toolu_other", turnId: "turn-37",
+    });
+    const shared = envelope("2026-10-17T07:00:05.000Z", "shared");
+
+    expect(mergeAgentChatHistorySnapshot(
+      [head, shared],
+      [...stalePrefix, shared],
+    )).toEqual([head, shared]);
+  });
+});
