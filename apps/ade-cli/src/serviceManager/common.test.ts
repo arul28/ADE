@@ -628,7 +628,11 @@ describe("listStaleChannelServePids", () => {
     );
     expect(calls.some((command) => /powershell\.exe$/i.test(command))).toBe(true);
     expect(calls).not.toContain("ps");
-    expect(scan).toEqual({ ok: true, pids: [4242] });
+    expect(scan).toEqual({
+      ok: true,
+      pids: [4242],
+      commandLines: new Map([[4242, `"C:\\ADE\\ade.exe" "${opts.cliScriptPath}" "serve"`]]),
+    });
   });
 
   it("keeps using `ps -axo` off win32", () => {

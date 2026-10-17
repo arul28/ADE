@@ -49,6 +49,8 @@ import {
   buildWindowsRuntimeQueryArgs,
   renderWindowsServiceLauncher,
   resolveWindowsBrainOutputLogPath,
+  buildWindowsBrainReportFunction,
+  buildWindowsPredecessorScript,
 } from "./installWindows";
 import {
   BRAIN_HEARTBEAT_INTERVAL_MS,
@@ -106,6 +108,11 @@ function spawnSequence(
     // supervisors. Model the new maintenance boundaries independently of
     // their lifecycle result sequence; the repair test below owns them.
     if (command === windowsRegCommand() && JSON.stringify(args) === JSON.stringify(buildWindowsRunKeyListArgs())) return { status: 0, stdout: "", stderr: "" };
+    // The identify step and the orphan scan run before anything is stopped, so
+    // they answer from here and take no result from the queue: nothing running,
+    // no unresolved owner.
+    if (command === windowsPowerShellCommand() && args.at(-1)?.includes(IDENTIFY_DONE_MARKER)) return { status: 0, stdout: "identified\n", stderr: "" };
+    if (command === windowsPowerShellCommand() && JSON.stringify(args) === JSON.stringify(buildWindowsProcessCommandLineQueryArgs())) return { status: 0, stdout: "", stderr: "" };
     if (command === windowsPowerShellCommand() && args.at(-1)?.includes("GetOwnerSid")) return { status: 0, stdout: "0", stderr: "" };
     calls.push({ command, args });
     return results.shift() ?? { status: 0, stdout: "", stderr: "" };
@@ -152,14 +159,6 @@ describe("Windows background service helpers", () => {
     "C:\\Program Files\\ADE\\ade.exe",
     "\"C:\\Program Files\\ADE\\resources\\ade-cli\\cli.cjs\" \"serve\"",
   );
-  // A legacy `ADE Runtime` task owned by a side-by-side Stable install.
-  // The install scans for stale same-channel `serve` brains before it registers
-  // the startup entry, the same way the launchd install does. On Windows that
-  // scan is a Win32_Process command-line enumeration, not `ps -axo`.
-  const staleServeScanCall = {
-    command: windowsPowerShellCommand(),
-    args: buildWindowsProcessCommandLineQueryArgs(),
-  };
   // A legacy `ADE Runtime` task owned by a side-by-side Stable install.
   const stableLegacyAction = taskActionOutput(
     "C:\\Program Files\\ADE Stable\\ADE.exe",
@@ -259,6 +258,7 @@ describe("Windows background service helpers", () => {
         return { status: 0, stdout: "", stderr: "" };
       }
       if ([taskName, "ADE Runtime"].some((name) => JSON.stringify(args) === JSON.stringify(buildWindowsQueryTaskArgs(name)))) return { status: 3, stdout: "", stderr: "" };
+      if (command === windowsPowerShellCommand() && args.at(-1)?.includes(IDENTIFY_DONE_MARKER)) return { status: 0, stdout: "identified\n", stderr: "" };
       return { status: 0, stdout: "0", stderr: "" };
     };
     const deps = { ...immediateReadiness, command: serviceCommand, launcherPath, serviceName, userName: taskUser, spawnSync: run };
@@ -510,9 +510,6 @@ describe("Windows background service helpers", () => {
       { status: 3, stdout: "", stderr: "" },
       { status: 3, stdout: "", stderr: "" },
       { status: 1, stdout: "", stderr: "ERROR: value not found" },
-      // launchd parity: the install now scans for stale same-channel serve
-      // brains before registering. Nothing running.
-      { status: 0, stdout: "", stderr: "" },
       { status: 0, stdout: "The operation completed successfully.", stderr: "" },
       { status: 0, stdout: "1234", stderr: "" },
     ]);
@@ -564,7 +561,6 @@ describe("Windows background service helpers", () => {
       { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs("ADE Runtime") },
       { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs(taskName) },
       { command: windowsRegCommand(), args: buildWindowsRunKeyQueryArgs(taskName) },
-      staleServeScanCall,
       { command: windowsRegCommand(), args: buildWindowsRunKeyAddArgs(taskName, scheduledCommand) },
       {
         command: windowsPowerShellCommand(),
@@ -595,7 +591,6 @@ describe("Windows background service helpers", () => {
       { status: 0, stdout: "", stderr: "" },                     // supervisor probe: running
       { status: 0, stdout: "SUCCESS", stderr: "" },              // taskkill supervisor
       { status: 0, stdout: "SUCCESS: deleted", stderr: "" },     // reg delete
-      { status: 0, stdout: "", stderr: "" },                     // stale same-channel serve scan: none
       { status: 0, stdout: "SUCCESS: created", stderr: "" },     // reg add
       { status: 0, stdout: "1234", stderr: "" },                 // start task
     ]);
@@ -791,9 +786,6 @@ describe("Windows background service helpers", () => {
       { status: 0, stdout: "SUCCESS: ended", stderr: "" },
       { status: 0, stdout: "SUCCESS: deleted", stderr: "" },
       { status: 1, stdout: "", stderr: "" },
-      // launchd parity: the install now scans for stale same-channel serve
-      // brains before registering. Nothing running.
-      { status: 0, stdout: "", stderr: "" },
       { status: 0, stdout: "SUCCESS: created", stderr: "" },
       { status: 0, stdout: "1234", stderr: "" },
     ]);
@@ -830,9 +822,6 @@ describe("Windows background service helpers", () => {
       { status: 0, stdout: "SUCCESS: deleted", stderr: "" },
       { status: 3, stdout: "", stderr: "" },
       { status: 1, stdout: "", stderr: "" },
-      // launchd parity: the install now scans for stale same-channel serve
-      // brains before registering. Nothing running.
-      { status: 0, stdout: "", stderr: "" },
       { status: 0, stdout: "SUCCESS: created", stderr: "" },
       { status: 0, stdout: "1234", stderr: "" },
     ]);
@@ -864,9 +853,6 @@ describe("Windows background service helpers", () => {
       { status: 0, stdout: stableLegacyAction, stderr: "" },
       { status: 3, stdout: "", stderr: "" },
       { status: 1, stdout: "", stderr: "ERROR: value not found" },
-      // launchd parity: the install now scans for stale same-channel serve
-      // brains before registering. Nothing running.
-      { status: 0, stdout: "", stderr: "" },
       { status: 0, stdout: "The operation completed successfully.", stderr: "" },
       { status: 0, stdout: "1234", stderr: "" },
     ]);
@@ -905,7 +891,6 @@ describe("Windows background service helpers", () => {
       { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskActionArgs("ADE Runtime") },
       { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs(taskName) },
       { command: windowsRegCommand(), args: buildWindowsRunKeyQueryArgs(taskName) },
-      staleServeScanCall,
       { command: windowsRegCommand(), args: buildWindowsRunKeyAddArgs(taskName, scheduledCommand) },
       {
         command: windowsPowerShellCommand(),
@@ -1037,9 +1022,6 @@ describe("Windows background service helpers", () => {
       { status: 3, stdout: "", stderr: "" },
       { status: 3, stdout: "", stderr: "" },
       { status: 1, stdout: "", stderr: "" },
-      // launchd parity: the install now scans for stale same-channel serve
-      // brains before registering. Nothing running.
-      { status: 0, stdout: "", stderr: "" },
       { status: 0, stdout: "SUCCESS: created", stderr: "" },
       // Both job-escaping handovers are unavailable, so the launch falls all the
       // way back to the in-session PowerShell start, which also fails.
@@ -1077,7 +1059,6 @@ describe("Windows background service helpers", () => {
       buildWindowsQueryTaskArgs("ADE Runtime"),
       buildWindowsQueryTaskArgs(taskName),
       buildWindowsRunKeyQueryArgs(taskName),
-      buildWindowsProcessCommandLineQueryArgs(),
       buildWindowsRunKeyAddArgs(taskName, scheduledCommand),
       buildWindowsStartTaskArgs(launcherPath, resolveWindowsStartTaskName(taskName)),
       buildWindowsWmiStartArgs(launcherPath),
@@ -1092,9 +1073,6 @@ describe("Windows background service helpers", () => {
       { status: 3, stdout: "", stderr: "" },
       { status: 3, stdout: "", stderr: "" },
       { status: 1, stdout: "", stderr: "" },
-      // launchd parity: the install now scans for stale same-channel serve
-      // brains before registering. Nothing running.
-      { status: 0, stdout: "", stderr: "" },
       { status: 1, stdout: "", stderr: "ERROR: registration failed" },
     ]);
     const launcherPath = path.join(makeTempHome("ade-windows-service-create-fail-"), "brain-service.ps1");
@@ -1113,7 +1091,6 @@ describe("Windows background service helpers", () => {
       { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs("ADE Runtime") },
       { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs(taskName) },
       { command: windowsRegCommand(), args: buildWindowsRunKeyQueryArgs(taskName) },
-      staleServeScanCall,
       expect.objectContaining({ command: windowsRegCommand(), args: expect.arrayContaining(["ADD"]) }),
     ]);
   });
@@ -1246,10 +1223,17 @@ describe("Windows background service helpers", () => {
       { status: 0, stdout: "", stderr: "" },
       { status: 3, stdout: "", stderr: "" },
       { status: 1, stdout: "", stderr: "" },
-      { status: 0, stdout: "", stderr: "" },
       { status: 0, stdout: "1234", stderr: "" },
     ];
     const spawnSync: ServiceManagerSpawnSync = (command, args, options) => {
+      if (command === windowsPowerShellCommand() && args.at(-1)?.includes(IDENTIFY_DONE_MARKER)) {
+        calls.push({ command, args, options });
+        return { status: 0, stdout: "identified\n", stderr: "" };
+      }
+      if (command === windowsPowerShellCommand() && JSON.stringify(args) === JSON.stringify(buildWindowsProcessCommandLineQueryArgs())) {
+        calls.push({ command, args, options });
+        return { status: 0, stdout: "", stderr: "" };
+      }
       calls.push({ command, args, options });
       return results.shift() ?? { status: 0, stdout: "", stderr: "" };
     };
@@ -1428,6 +1412,582 @@ describe("Windows background service helpers", () => {
       env: { ADE_HOME: "C:\\Users\\arul\\.ade-beta" },
       serviceName,
     })).toMatch(/^C:\\Users\\arul\\\.ade-beta\\runtime\\brain-service-[a-f0-9]{12}\.ps1$/i);
+  });
+});
+
+// The predecessor sweep's PowerShell script is the only one that carries this text.
+const PREDECESSOR_SWEEP_MARKER = "Existing ADE supervisor did not stop.";
+// Only the identify script ends by reporting that it finished.
+const IDENTIFY_DONE_MARKER = "WriteLine('identified')";
+// The identity-checked forced kill is the only PowerShell script that runs a
+// tree kill against a single literal pid.
+const IDENTITY_KILL_MARKER = "'/T' '/F' | Out-Null";
+
+/**
+ * Answers the predecessor sweep with `sweepStdout` and records every spawn. The
+ * identity-checked forced kill is answered by `forcedKill`, which defaults to a
+ * clean exit. Every other query finds nothing, so an uninstall reaches the sweep
+ * and nothing else that would need a real Windows host.
+ */
+function predecessorSweepSpawn(options: {
+  calls: Array<{ command: string; args: string[] }>;
+  sweepStdout: string;
+  sweepStatus?: number;
+  /** What the orphan scan prints. Nothing stale by default. */
+  scanStdout?: string;
+  /** What the identify step prints when no owner is unresolved. */
+  identifyStdout?: string;
+  forcedKill?: (script: string) => ServiceManagerProcessResult;
+}): ServiceManagerSpawnSync {
+  return (command, args) => {
+    options.calls.push({ command, args });
+    const script = args.at(-1) ?? "";
+    if (command === windowsPowerShellCommand() && script.includes(PREDECESSOR_SWEEP_MARKER)) {
+      return { status: options.sweepStatus ?? 0, stdout: options.sweepStdout, stderr: "" };
+    }
+    // The identify step names the same candidates the sweep would. It answers
+    // with the test's unresolved owners, and otherwise reports that it finished.
+    if (command === windowsPowerShellCommand() && script.includes(IDENTIFY_DONE_MARKER)) {
+      const unresolved = options.sweepStdout.split(/\r?\n/).filter((line) => /^unresolved \d+$/.test(line.trim()));
+      return unresolved.length > 0
+        ? { status: 0, stdout: `${unresolved.join("\n")}\n`, stderr: "" }
+        : { status: 0, stdout: options.identifyStdout ?? "identified\n", stderr: "" };
+    }
+    if (command === windowsPowerShellCommand() && JSON.stringify(args) === JSON.stringify(buildWindowsProcessCommandLineQueryArgs())) {
+      return { status: 0, stdout: options.scanStdout ?? "", stderr: "" };
+    }
+    if (command === windowsPowerShellCommand() && script.includes(IDENTITY_KILL_MARKER)) {
+      return options.forcedKill?.(script) ?? { status: 0, stdout: "exited", stderr: "" };
+    }
+    if (command === windowsPowerShellCommand()) return { status: 3, stdout: "", stderr: "" };
+    if (command === windowsRegCommand() && JSON.stringify(args) === JSON.stringify(buildWindowsRunKeyListArgs())) {
+      return { status: 0, stdout: "", stderr: "" };
+    }
+    if (command === windowsRegCommand()) return { status: 1, stdout: "", stderr: "" };
+    return { status: 0, stdout: "", stderr: "" };
+  };
+}
+
+function predecessorSweepScript(calls: Array<{ command: string; args: string[] }>): string {
+  const sweep = calls.find((call) => call.command === windowsPowerShellCommand() && call.args.at(-1)?.includes(PREDECESSOR_SWEEP_MARKER));
+  if (!sweep) throw new Error("the uninstall never ran the predecessor sweep");
+  return sweep.args.at(-1) ?? "";
+}
+
+describe("Windows predecessor supervisor sweep", () => {
+  const serviceName = "com.ade.runtime.beta";
+  const taskUser = "ADEBOX\\arul";
+  const serviceCommand: AdeServiceCommand = {
+    command: "C:\\Program Files\\ADE\\ade.exe",
+    args: ["C:\\Program Files\\ADE\\resources\\ade-cli\\cli.cjs", "serve"],
+    env: { ADE_HOME: "C:\\Users\\arul\\.ade-beta", ADE_PACKAGE_CHANNEL: "beta" },
+  };
+  const brainPid = 4242;
+  const brainStartFileTime = "133000000000000000";
+  const brainLine = `brain ${brainPid} ${brainStartFileTime}`;
+
+  function launcherForSweep(): string {
+    const launcherPath = path.join(makeTempHome("ade-windows-sweep-"), "brain-service.ps1");
+    fs.writeFileSync(launcherPath, "old launcher", "utf8");
+    return launcherPath;
+  }
+
+  it("never kills the predecessor brain from PowerShell; the sweep only reports its pid and start time", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    await uninstallWindowsService({
+      command: serviceCommand,
+      launcherPath: launcherForSweep(),
+      serviceName,
+      spawnSync: predecessorSweepSpawn({ calls, sweepStdout: "" }),
+      userName: taskUser,
+    });
+
+    const script = predecessorSweepScript(calls);
+    expect(script).not.toMatch(/\$child\.Kill\(\)/);
+    // The supervisor is still stopped in PowerShell: a brain stopped while its
+    // supervisor lives is relaunched at once.
+    expect(script).toContain("$target.Process.Kill()");
+    expect(script).toContain("StartTime.ToFileTimeUtc()");
+    expect(script).toContain("foreach ($child in $target.Children) { Write-BrainReport $child }");
+  });
+
+  it("asks a predecessor brain to shut down over RPC before any tree kill", async () => {
+    const events: string[] = [];
+    let brainAlive = true;
+    const result = await uninstallWindowsService({
+      command: serviceCommand,
+      launcherPath: launcherForSweep(),
+      serviceName,
+      spawnSync: predecessorSweepSpawn({
+        calls: [],
+        sweepStdout: `supervisor\n${brainLine}\n`,
+        forcedKill: () => {
+          events.push("forced");
+          return { status: 0, stdout: "exited", stderr: "" };
+        },
+      }),
+      userName: taskUser,
+      terminateDeps: {
+        pidAlive: () => brainAlive,
+        requestRuntimeShutdown: async ({ pid }) => {
+          events.push(`rpc ${pid}`);
+          brainAlive = false;
+          return { requested: true };
+        },
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(events).toEqual([`rpc ${brainPid}`]);
+  });
+
+  it("force-kills a predecessor brain as a tree, identity-checked, only after its RPC shutdown is refused", async () => {
+    const events: string[] = [];
+    const forcedScripts: string[] = [];
+    const result = await uninstallWindowsService({
+      command: serviceCommand,
+      launcherPath: launcherForSweep(),
+      serviceName,
+      spawnSync: predecessorSweepSpawn({
+        calls: [],
+        sweepStdout: `supervisor\n${brainLine}\n`,
+        forcedKill: (script) => {
+          events.push("forced");
+          forcedScripts.push(script);
+          return { status: 0, stdout: "exited", stderr: "" };
+        },
+      }),
+      userName: taskUser,
+      terminateDeps: {
+        pidAlive: () => true,
+        requestRuntimeShutdown: async ({ pid }) => {
+          events.push(`rpc ${pid}`);
+          return { requested: false, reason: "wedged" };
+        },
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(events).toEqual([`rpc ${brainPid}`, "forced"]);
+    expect(forcedScripts).toHaveLength(1);
+    expect(forcedScripts[0]).toContain(`GetProcessById(${brainPid})`);
+    expect(forcedScripts[0]).toContain(`$started -ne ${brainStartFileTime}`);
+    expect(forcedScripts[0]).toContain(`'/PID' '${brainPid}' '/T' '/F'`);
+  });
+
+  it("compares the brain's start time exactly, with no tolerance window", async () => {
+    const forcedScripts: string[] = [];
+    await uninstallWindowsService({
+      command: serviceCommand,
+      launcherPath: launcherForSweep(),
+      serviceName,
+      spawnSync: predecessorSweepSpawn({
+        calls: [],
+        sweepStdout: `supervisor\n${brainLine}\n`,
+        forcedKill: (script) => {
+          forcedScripts.push(script);
+          return { status: 0, stdout: "exited", stderr: "" };
+        },
+      }),
+      userName: taskUser,
+      terminateDeps: {
+        pidAlive: () => true,
+        requestRuntimeShutdown: async () => ({ requested: false, reason: "wedged" }),
+      },
+    });
+
+    // Both sides read Process.StartTime, so a live brain matches its own ticks
+    // exactly. A window of even one millisecond let a reused pid be tree-killed.
+    const script = forcedScripts[0] ?? "";
+    expect(script).not.toMatch(/TotalMilliseconds|-gt 1000/);
+    expect(script).toContain(`$started -ne ${brainStartFileTime}`);
+  });
+
+  it("holds the brain's process open across the identity check, the tree kill and the exit wait", async () => {
+    const forcedScripts: string[] = [];
+    await uninstallWindowsService({
+      command: serviceCommand,
+      launcherPath: launcherForSweep(),
+      serviceName,
+      spawnSync: predecessorSweepSpawn({
+        calls: [],
+        sweepStdout: `supervisor\n${brainLine}\n`,
+        forcedKill: (script) => {
+          forcedScripts.push(script);
+          return { status: 0, stdout: "exited", stderr: "" };
+        },
+      }),
+      userName: taskUser,
+      terminateDeps: {
+        pidAlive: () => true,
+        requestRuntimeShutdown: async () => ({ requested: false, reason: "wedged" }),
+      },
+    });
+
+    // A pid is not reused while a handle to its process is open, so the check
+    // and the kill must both run inside the process that holds the handle.
+    const script = forcedScripts[0] ?? "";
+    const opened = script.indexOf("GetProcessById");
+    const identity = script.indexOf("$started -ne");
+    const kill = script.indexOf("'/T' '/F'");
+    const waited = script.indexOf("WaitForExit(5000)");
+    expect(opened).toBeGreaterThanOrEqual(0);
+    expect(identity).toBeGreaterThan(opened);
+    expect(kill).toBeGreaterThan(identity);
+    expect(waited).toBeGreaterThan(kill);
+  });
+
+  it("still stops a brain already reported when a later supervisor fails the sweep", async () => {
+    const events: string[] = [];
+    let brainAlive = true;
+    const result = await uninstallWindowsService({
+      command: serviceCommand,
+      launcherPath: launcherForSweep(),
+      serviceName,
+      spawnSync: predecessorSweepSpawn({
+        calls: [],
+        sweepStdout: `supervisor\n${brainLine}\n`,
+        sweepStatus: 1,
+      }),
+      userName: taskUser,
+      terminateDeps: {
+        pidAlive: () => brainAlive,
+        requestRuntimeShutdown: async ({ pid }) => {
+          events.push(`rpc ${pid}`);
+          brainAlive = false;
+          return { requested: true };
+        },
+      },
+    });
+
+    expect(events).toEqual([`rpc ${brainPid}`]);
+    expect(result).toMatchObject({ ok: false, action: "uninstall" });
+    expect(result.ok ? "" : result.message).toContain("Unable to stop ADE supervisors");
+  });
+
+  it("reports a brain that survives its identity-checked kill, and still tries every other brain", async () => {
+    const forcedScripts: string[] = [];
+    const outcomes = ["survived", "exited"];
+    const result = await uninstallWindowsService({
+      command: serviceCommand,
+      launcherPath: launcherForSweep(),
+      serviceName,
+      spawnSync: predecessorSweepSpawn({
+        calls: [],
+        sweepStdout: `supervisor\n${brainLine}\nbrain 4243 133000000000000001\n`,
+        forcedKill: (script) => {
+          forcedScripts.push(script);
+          return { status: 0, stdout: outcomes.shift() ?? "exited", stderr: "" };
+        },
+      }),
+      userName: taskUser,
+      terminateDeps: {
+        pidAlive: () => true,
+        requestRuntimeShutdown: async () => ({ requested: false, reason: "wedged" }),
+      },
+    });
+
+    expect(forcedScripts).toHaveLength(2);
+    expect(forcedScripts[1]).toContain("GetProcessById(4243)");
+    expect(result.ok).toBe(false);
+    expect(result.ok ? "" : result.message).toContain("Existing ADE brain did not stop.");
+  });
+
+  it("keeps stopping the other brains when one brain's stop throws", async () => {
+    const forcedScripts: string[] = [];
+    const result = await uninstallWindowsService({
+      command: serviceCommand,
+      launcherPath: launcherForSweep(),
+      serviceName,
+      spawnSync: predecessorSweepSpawn({
+        calls: [],
+        sweepStdout: `supervisor\n${brainLine}\nbrain 4243 133000000000000001\n`,
+        forcedKill: (script) => {
+          forcedScripts.push(script);
+          if (script.includes(`GetProcessById(${brainPid})`)) throw new Error("trusted tool unavailable");
+          return { status: 0, stdout: "exited", stderr: "" };
+        },
+      }),
+      userName: taskUser,
+      terminateDeps: {
+        pidAlive: () => true,
+        requestRuntimeShutdown: async () => ({ requested: false, reason: "wedged" }),
+      },
+    });
+
+    expect(forcedScripts).toHaveLength(2);
+    expect(result.ok).toBe(false);
+    expect(result.ok ? "" : result.message).toContain("trusted tool unavailable");
+  });
+
+  it("identity-checks every candidate before any kill or report, with no time window", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    await uninstallWindowsService({
+      command: serviceCommand,
+      launcherPath: launcherForSweep(),
+      serviceName,
+      spawnSync: predecessorSweepSpawn({ calls, sweepStdout: "" }),
+      userName: taskUser,
+    });
+
+    // A candidate is named by an earlier CIM query, and its pid can be reused
+    // before it is opened. The check has to run first, and it has to be exact.
+    const script = predecessorSweepScript(calls);
+    expect(script).not.toMatch(/TotalMilliseconds|-gt 1000/);
+    const supervisorCheck = script.indexOf("Test-AdeProcessIdentity $process");
+    const brainCheck = script.indexOf("Test-AdeProcessIdentity $child");
+    expect(supervisorCheck).toBeGreaterThan(0);
+    expect(brainCheck).toBeGreaterThan(supervisorCheck);
+    // Every candidate is identified first. Only then may anything be killed or reported.
+    const gate = script.indexOf("if (-not $unresolved)");
+    expect(gate).toBeGreaterThan(brainCheck);
+    expect(script.indexOf("$target.Process.Kill()")).toBeGreaterThan(gate);
+    expect(script.indexOf("foreach ($child in $target.Children) { Write-BrainReport $child }")).toBeGreaterThan(brainCheck);
+    // A brain that exits while its start time is read is gone, not a failed sweep.
+    expect(script).toContain("catch { if ($child.HasExited) { continue }; throw }");
+  });
+
+  it("leaves a pid whose identity no longer matches alone, logs it, and still succeeds", async () => {
+    const forcedScripts: string[] = [];
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      const result = await uninstallWindowsService({
+        command: serviceCommand,
+        launcherPath: launcherForSweep(),
+        serviceName,
+        spawnSync: predecessorSweepSpawn({
+          calls: [],
+          sweepStdout: "skipped 4242\nskipped 4243\n",
+          forcedKill: (script) => {
+            forcedScripts.push(script);
+            return { status: 0, stdout: "exited", stderr: "" };
+          },
+        }),
+        userName: taskUser,
+        terminateDeps: {
+          pidAlive: () => true,
+          requestRuntimeShutdown: async () => ({ requested: false, reason: "wedged" }),
+        },
+      });
+
+      expect(result.ok).toBe(true);
+      expect(forcedScripts).toHaveLength(0);
+      const logged = stderr.mock.calls.map(([text]) => String(text)).join("");
+      expect(logged).toContain("ADE left pid 4242 alone");
+      expect(logged).toContain("ADE left pid 4243 alone");
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+
+  it("fails the uninstall closed and stops nothing when a live candidate's owner cannot be read", async () => {
+    const events: string[] = [];
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      const result = await uninstallWindowsService({
+        command: serviceCommand,
+        launcherPath: launcherForSweep(),
+        serviceName,
+        spawnSync: predecessorSweepSpawn({
+          calls: [],
+          sweepStdout: `unresolved ${brainPid}\n`,
+          forcedKill: () => {
+            events.push("forced");
+            return { status: 0, stdout: "exited", stderr: "" };
+          },
+        }),
+        userName: taskUser,
+        terminateDeps: {
+          pidAlive: () => true,
+          requestRuntimeShutdown: async ({ pid }) => {
+            events.push(`rpc ${pid}`);
+            return { requested: true };
+          },
+        },
+      });
+
+      expect(result).toMatchObject({ ok: false, action: "uninstall" });
+      expect(result.ok ? "" : result.message).toContain(`Unable to read the owner of ADE process ${brainPid}`);
+      expect(result.ok ? "" : result.message).toContain("stopped nothing");
+      // The owner check failed, so nothing is asked to shut down and nothing is killed.
+      expect(events).toEqual([]);
+      const logged = stderr.mock.calls.map(([text]) => String(text)).join("");
+      expect(logged).toContain(`could not read the owner of pid ${brainPid}`);
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+
+  it("does not register or start the replacement when a predecessor's owner cannot be read", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const result = await installWindowsService({
+      command: serviceCommand,
+      launcherPath: launcherForSweep(),
+      serviceName,
+      spawnSync: predecessorSweepSpawn({ calls, sweepStdout: `unresolved ${brainPid}\n` }),
+      userName: taskUser,
+    });
+
+    expect(result).toMatchObject({ ok: false, action: "install" });
+    expect(result.ok ? "" : result.message).toContain("stopped nothing");
+    expect(calls.some((call) => call.command === windowsRegCommand() && call.args[0] === "ADD")).toBe(false);
+  });
+
+  it("stops the install before starting the replacement when the orphaned-brain scan cannot answer", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const sweepAndAnswer = predecessorSweepSpawn({ calls, sweepStdout: "" });
+    const result = await installWindowsService({
+      command: serviceCommand,
+      launcherPath: launcherForSweep(),
+      serviceName,
+      spawnSync: (command, args) => {
+        // A scan that fails is not an empty scan: an orphan it could not see would
+        // survive next to the replacement.
+        if (command === windowsPowerShellCommand() && JSON.stringify(args) === JSON.stringify(buildWindowsProcessCommandLineQueryArgs())) {
+          calls.push({ command, args });
+          return { status: 1, stdout: "", stderr: "Access is denied." };
+        }
+        return sweepAndAnswer(command, args);
+      },
+      userName: taskUser,
+    });
+
+    expect(result).toMatchObject({ ok: false, action: "install" });
+    expect(result.ok ? "" : result.message).toContain("orphaned ADE brains");
+    expect(result.ok ? "" : result.message).toContain("Access is denied.");
+    expect(calls.some((call) => call.command === windowsRegCommand() && call.args[0] === "ADD")).toBe(false);
+  });
+
+  /** Every spawn that would stop, kill or unregister something. A read-only query is not one. */
+  function stopsOrUnregisters(calls: Array<{ command: string; args: string[] }>): string[] {
+    return calls
+      .filter((call) => {
+        const script = call.args.at(-1) ?? "";
+        if (script.includes(PREDECESSOR_SWEEP_MARKER) || script.includes(IDENTITY_KILL_MARKER)) return true;
+        if (call.command === windowsRegCommand()) return call.args[0] !== "QUERY";
+        return call.args.includes("/End") || call.args.includes("/Delete") || call.args.includes("/F");
+      })
+      .map((call) => `${call.command} ${call.args.join(" ")}`);
+  }
+
+  it("stops nothing, unregisters nothing, and leaves the launcher alone when the orphaned-brain scan cannot answer", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const events: string[] = [];
+    const launcherPath = launcherForSweep();
+    const sweepAndAnswer = predecessorSweepSpawn({ calls, sweepStdout: `supervisor\n${brainLine}\n` });
+    const result = await installWindowsService({
+      command: serviceCommand,
+      launcherPath,
+      serviceName,
+      spawnSync: (command, args) => {
+        if (command === windowsPowerShellCommand() && JSON.stringify(args) === JSON.stringify(buildWindowsProcessCommandLineQueryArgs())) {
+          calls.push({ command, args });
+          return { status: 1, stdout: "", stderr: "Access is denied." };
+        }
+        return sweepAndAnswer(command, args);
+      },
+      userName: taskUser,
+      terminateDeps: {
+        pidAlive: () => true,
+        requestRuntimeShutdown: async ({ pid }) => {
+          events.push(`rpc ${pid}`);
+          return { requested: true };
+        },
+      },
+    });
+
+    expect(result).toMatchObject({ ok: false, action: "install" });
+    expect(result.ok ? "" : result.message).toContain("orphaned ADE brains");
+    // The service is untouched: no predecessor stop, no kill, no unregister, no write.
+    expect(stopsOrUnregisters(calls)).toEqual([]);
+    expect(events).toEqual([]);
+    expect(fs.readFileSync(launcherPath, "utf8")).toBe("old launcher");
+  });
+
+  it("stops nothing, unregisters nothing, and leaves the launcher alone when a candidate's owner cannot be read", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const events: string[] = [];
+    const launcherPath = launcherForSweep();
+    const result = await installWindowsService({
+      command: serviceCommand,
+      launcherPath,
+      serviceName,
+      spawnSync: predecessorSweepSpawn({
+        calls,
+        sweepStdout: `unresolved ${brainPid}\nsupervisor\n${brainLine}\n`,
+      }),
+      userName: taskUser,
+      terminateDeps: {
+        pidAlive: () => true,
+        requestRuntimeShutdown: async ({ pid }) => {
+          events.push(`rpc ${pid}`);
+          return { requested: true };
+        },
+      },
+    });
+
+    expect(result).toMatchObject({ ok: false, action: "install" });
+    expect(result.ok ? "" : result.message).toContain(`Unable to read the owner of ADE process ${brainPid}`);
+    expect(result.ok ? "" : result.message).toContain("stopped nothing");
+    expect(stopsOrUnregisters(calls)).toEqual([]);
+    expect(events).toEqual([]);
+    expect(fs.readFileSync(launcherPath, "utf8")).toBe("old launcher");
+  });
+
+  it("identifies first, then stops the predecessor, then kills the pinned orphan, then registers", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const orphanPid = 5555;
+    const orphanStartFileTime = "133000000000000002";
+    const cliScriptPath = serviceCommand.args[0]!;
+    const forcedScripts: string[] = [];
+    const sweepAndAnswer = predecessorSweepSpawn({
+      calls,
+      sweepStdout: "supervisor\n",
+      scanStdout: `${orphanPid}\t"C:\\Program Files\\ADE\\ade.exe" "${cliScriptPath}" "serve"\n`,
+      identifyStdout: `orphan ${orphanPid} ${orphanStartFileTime}\nidentified\n`,
+      forcedKill: (script) => {
+        forcedScripts.push(script);
+        return { status: 0, stdout: "exited", stderr: "" };
+      },
+    });
+    await installWindowsService({
+      command: serviceCommand,
+      launcherPath: launcherForSweep(),
+      serviceName,
+      spawnSync: (command, args) => {
+        // The registration is the step under test; it succeeds here. The start
+        // after it is not modelled, so the install ends there.
+        if (command === windowsRegCommand() && args[0] === "ADD") {
+          calls.push({ command, args });
+          return { status: 0, stdout: "SUCCESS: created", stderr: "" };
+        }
+        return sweepAndAnswer(command, args);
+      },
+      userName: taskUser,
+      // The orphan pid is not a real process, so it is reported alive for the
+      // install's own check and for the cooperative wait. The orphan then reaches
+      // the identity-checked kill.
+      pidAlive: () => true,
+      terminateDeps: {
+        pidAlive: () => true,
+        graceTimeoutMs: 0,
+        requestRuntimeShutdown: async () => ({ requested: true }),
+      },
+    });
+
+    const order = calls.flatMap((call) => {
+      const script = call.args.at(-1) ?? "";
+      if (script.includes(IDENTIFY_DONE_MARKER)) return ["identify"];
+      if (script.includes(PREDECESSOR_SWEEP_MARKER)) return ["stop predecessor"];
+      if (script.includes(IDENTITY_KILL_MARKER)) return ["kill orphan"];
+      if (call.command === windowsRegCommand() && call.args[0] === "ADD") return ["register"];
+      return [];
+    });
+    expect(order).toEqual(["identify", "stop predecessor", "kill orphan", "register"]);
+    // The orphan is killed only while it still has the start time it was pinned with.
+    expect(forcedScripts).toHaveLength(1);
+    expect(forcedScripts[0]).toContain(`GetProcessById(${orphanPid})`);
+    expect(forcedScripts[0]).toContain(`-ne ${orphanStartFileTime}`);
   });
 });
 
@@ -2055,6 +2615,52 @@ describe("generated PowerShell parses", () => {
     expect(parsed.status).toBe(0);
   });
 
+  itWithPowerShell("the predecessor sweep script is syntactically valid", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    await uninstallWindowsService({
+      command,
+      launcherPath: writeScript(makeTempHome("ade-windows-parse-sweep-launcher-"), "brain-service.ps1", "old launcher"),
+      serviceName: "com.ade.runtime.beta",
+      spawnSync: predecessorSweepSpawn({ calls, sweepStdout: "" }),
+      userName: "ADEBOX\\arul",
+    });
+
+    const parsed = parsePowerShellFile(
+      writeScript(makeTempHome("ade-windows-parse-sweep-"), "predecessor-sweep.ps1", predecessorSweepScript(calls)),
+    );
+    expect(parsed.output).toBe("");
+    expect(parsed.status).toBe(0);
+  });
+
+  itWithPowerShell("the identity-checked brain kill script is syntactically valid", async () => {
+    const forcedScripts: string[] = [];
+    await uninstallWindowsService({
+      command,
+      launcherPath: writeScript(makeTempHome("ade-windows-parse-forced-launcher-"), "brain-service.ps1", "old launcher"),
+      serviceName: "com.ade.runtime.beta",
+      spawnSync: predecessorSweepSpawn({
+        calls: [],
+        sweepStdout: "supervisor\nbrain 4242 133000000000000000\n",
+        forcedKill: (script) => {
+          forcedScripts.push(script);
+          return { status: 0, stdout: "exited", stderr: "" };
+        },
+      }),
+      userName: "ADEBOX\\arul",
+      terminateDeps: {
+        pidAlive: () => true,
+        requestRuntimeShutdown: async () => ({ requested: false, reason: "wedged" }),
+      },
+    });
+
+    expect(forcedScripts).toHaveLength(1);
+    const parsed = parsePowerShellFile(
+      writeScript(makeTempHome("ade-windows-parse-forced-"), "brain-kill.ps1", forcedScripts[0] ?? ""),
+    );
+    expect(parsed.output).toBe("");
+    expect(parsed.status).toBe(0);
+  });
+
   itWithPowerShell("the one-line -Command query builders are syntactically valid", () => {
     const dir = makeTempHome("ade-windows-parse-queries-");
     // These are joined with "; " into a single line and passed to `-Command`,
@@ -2074,4 +2680,632 @@ describe("generated PowerShell parses", () => {
       expect(parsed.status, name).toBe(0);
     }
   });
+});
+
+// These run the generated PowerShell for real, against throwaway processes this
+// test starts itself. They execute on the `windows-foundation` job, where PowerShell
+// and taskkill are real; elsewhere they skip, as the parse checks above do.
+describe("Windows brain identity check and report, run in PowerShell", () => {
+  const serviceCommand: AdeServiceCommand = {
+    command: "C:\\Program Files\\ADE\\ade.exe",
+    args: ["C:\\Program Files\\ADE\\resources\\ade-cli\\cli.cjs", "serve"],
+    env: { ADE_HOME: "C:\\Users\\arul\\.ade-beta", ADE_PACKAGE_CHANNEL: "beta" },
+  };
+
+  function runPowerShell(program: string): { status: number | null; stdout: string; stderr: string } {
+    const result = spawnChildSync(windowsPowerShellCommand(), ["-NoProfile", "-NonInteractive", "-Command", program], {
+      encoding: "utf8",
+      windowsHide: true,
+    });
+    return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
+  }
+
+  function startThrowawayProcess(): { pid: number; child: ReturnType<typeof spawn> } {
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore", windowsHide: true });
+    if (child.pid === undefined) throw new Error("the throwaway process did not start");
+    return { pid: child.pid, child };
+  }
+
+  function startFileTimeOf(pid: number): string {
+    const result = runPowerShell(`[System.Diagnostics.Process]::GetProcessById(${pid}).StartTime.ToFileTimeUtc()`);
+    const ticks = result.stdout.trim();
+    if (!/^\d+$/.test(ticks)) throw new Error(`no start time for pid ${pid}: ${result.stderr}`);
+    return ticks;
+  }
+
+  function isAlive(pid: number): boolean {
+    const result = runPowerShell(
+      `try { $p = [System.Diagnostics.Process]::GetProcessById(${pid}); if ($p.HasExited) { 'gone' } else { 'alive' } } catch [ArgumentException] { 'gone' }`,
+    );
+    return result.stdout.trim() === "alive";
+  }
+
+  /**
+   * The identity-checked kill the sweep would run for `brainLine`, captured
+   * rather than run: the stub answers `absent`, so nothing is killed while
+   * capturing, and the test then runs the captured script itself.
+   */
+  async function identityKillScriptFor(brainLine: string): Promise<string> {
+    const forcedScripts: string[] = [];
+    await uninstallWindowsService({
+      command: serviceCommand,
+      launcherPath: writeScript(makeTempHome("ade-windows-identity-launcher-"), "brain-service.ps1", "old launcher"),
+      serviceName: "com.ade.runtime.beta",
+      spawnSync: predecessorSweepSpawn({
+        calls: [],
+        sweepStdout: `supervisor\n${brainLine}\n`,
+        forcedKill: (script) => {
+          forcedScripts.push(script);
+          return { status: 0, stdout: "absent", stderr: "" };
+        },
+      }),
+      userName: "ADEBOX\\arul",
+      terminateDeps: {
+        pidAlive: () => true,
+        requestRuntimeShutdown: async () => ({ requested: false, reason: "wedged" }),
+      },
+    });
+    expect(forcedScripts).toHaveLength(1);
+    return forcedScripts[0] ?? "";
+  }
+
+  itWithPowerShell("leaves a reused pid alone when its start time differs by one tick or one millisecond", async () => {
+    const { pid, child } = startThrowawayProcess();
+    try {
+      const exact = BigInt(startFileTimeOf(pid));
+      for (const drift of [-10_000n, -1n, 1n, 10_000n]) {
+        const script = await identityKillScriptFor(`brain ${pid} ${exact + drift}`);
+        const result = runPowerShell(script);
+        expect(result.stdout.trim(), `drift ${drift} ticks`).toBe("absent");
+        expect(isAlive(pid), `drift ${drift} ticks`).toBe(true);
+      }
+    } finally {
+      child.kill();
+    }
+  }, 120_000);
+
+  itWithPowerShell("tree-kills the brain when its start time matches exactly", async () => {
+    const { pid, child } = startThrowawayProcess();
+    try {
+      const script = await identityKillScriptFor(`brain ${pid} ${startFileTimeOf(pid)}`);
+      const result = runPowerShell(script);
+      expect(result.stdout.trim()).toBe("exited");
+      expect(isAlive(pid)).toBe(false);
+    } finally {
+      child.kill();
+    }
+  }, 120_000);
+
+  /**
+   * The identity script with its process swapped for a stand-in whose `StartTime`
+   * read either exits the process first (the race) or fails while it still runs.
+   * Nothing is killed: both outcomes return before the tree kill.
+   */
+  async function identityScriptWithRacingProcess(exitsDuringRead: boolean): Promise<string> {
+    const script = await identityKillScriptFor("brain 4242 133000000000000000");
+    const standIn = [
+      "$script:exited = $false",
+      "function Get-RacingProcess([int]$Id) {",
+      "  $p = [pscustomobject]@{ Id = $Id }",
+      "  $p | Add-Member -MemberType ScriptProperty -Name Handle -Value { 1 }",
+      "  $p | Add-Member -MemberType ScriptProperty -Name HasExited -Value { $script:exited }",
+      `  $p | Add-Member -MemberType ScriptProperty -Name StartTime -Value { ${exitsDuringRead ? "$script:exited = $true; " : ""}throw 'Process has exited, so the requested information is not available.' }`,
+      "  $p | Add-Member -MemberType ScriptMethod -Name WaitForExit -Value { param($ms) $true }",
+      "  $p | Add-Member -MemberType ScriptMethod -Name Dispose -Value { }",
+      "  return $p",
+      "}",
+    ].join("\n");
+    const raced = script.replace("[System.Diagnostics.Process]::GetProcessById(4242)", "Get-RacingProcess 4242");
+    expect(raced).not.toBe(script);
+    return `${standIn}\n${raced}`;
+  }
+
+  itWithPowerShell("treats a brain that exits between its running check and its start-time read as gone", async () => {
+    const result = runPowerShell(await identityScriptWithRacingProcess(true));
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe("absent");
+  });
+
+  itWithPowerShell("fails the identity check when its start-time read fails while the brain still runs", async () => {
+    const result = runPowerShell(await identityScriptWithRacingProcess(false));
+    expect(result.status).not.toBe(0);
+    expect(result.stdout.trim()).toBe("");
+  });
+
+  function brainReportScript(mode: "running" | "exits-during-read" | "read-fails" | "already-exited"): string {
+    const startTime = {
+      running: "[DateTime]::FromFileTimeUtc(133000000000000000)",
+      "exits-during-read": "$script:exited = $true; throw 'Process has exited, so the requested information is not available.'",
+      "read-fails": "throw 'Access is denied.'",
+      "already-exited": "throw 'StartTime was read for a process that had already exited.'",
+    }[mode];
+    return [
+      "$ErrorActionPreference = 'Stop'",
+      buildWindowsBrainReportFunction(),
+      `$script:exited = ${mode === "already-exited" ? "$true" : "$false"}`,
+      "$child = [pscustomobject]@{ Id = 4242 }",
+      "$child | Add-Member -MemberType ScriptProperty -Name HasExited -Value { $script:exited }",
+      `$child | Add-Member -MemberType ScriptProperty -Name StartTime -Value { ${startTime} }`,
+      "Write-BrainReport $child",
+    ].join("\n");
+  }
+
+  itWithPowerShell("reports a running brain as one start-time line", () => {
+    const result = runPowerShell(brainReportScript("running"));
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe("brain 4242 133000000000000000");
+  });
+
+  itWithPowerShell("treats a brain that exits during its start-time read as gone, not as a failed sweep", () => {
+    const result = runPowerShell(brainReportScript("exits-during-read"));
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe("");
+  });
+
+  itWithPowerShell("does not read the start time of a brain that has already exited", () => {
+    const result = runPowerShell(brainReportScript("already-exited"));
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe("");
+  });
+
+  itWithPowerShell("rethrows a start-time read that fails while the brain is still running", () => {
+    const result = runPowerShell(brainReportScript("read-fails"));
+    expect(result.status).not.toBe(0);
+    expect(result.stdout.trim()).toBe("");
+  });
+});
+
+// The sweep's candidate identity check, run for real. The live test lets WMI answer
+// every read, so it proves the whole-microsecond comparison against real CIM rows.
+// The reuse cases answer only the CIM reads from a stub: the open handle, the start
+// time comparison and the kill are the product's own code. Windows only.
+describe("Windows predecessor sweep identity, run in PowerShell", () => {
+  const serviceCommand: AdeServiceCommand = {
+    command: "C:\\Program Files\\ADE\\ade.exe",
+    args: ["C:\\Program Files\\ADE\\resources\\ade-cli\\cli.cjs", "serve"],
+    env: { ADE_HOME: "C:\\Users\\arul\\.ade-beta", ADE_PACKAGE_CHANNEL: "beta" },
+  };
+  // The sweep's Win32_Process reads. `supervisors` and `brains` are the enumerated
+  // candidates; `fresh` is the one-pid read made while the candidate's handle is held.
+  type StubRow = { ProcessId: number; ParentProcessId: number; CreatedFt: string; CommandLine: string };
+  // `owners` answers GetOwnerSid for the listed pids: `ReturnValue` 0 with a SID is
+  // an owner, anything else is a lookup that failed. Unlisted pids are this user's.
+  type StubOwner = { ProcessId: number; ReturnValue: number; Sid: string | null };
+  type StubCim = { supervisors: StubRow[]; brains: StubRow[]; fresh: StubRow[]; owners?: StubOwner[] };
+  const CIM_STUB = [
+    "$global:CimStub = Get-Content -Raw -LiteralPath $env:ADE_SWEEP_STUB | ConvertFrom-Json",
+    "function ConvertTo-StubCimRow($row) {",
+    "  [pscustomobject]@{ ProcessId = [uint32]$row.ProcessId; ParentProcessId = [uint32]$row.ParentProcessId; CreationDate = [DateTime]::FromFileTimeUtc([long]$row.CreatedFt).ToLocalTime(); CommandLine = [string]$row.CommandLine }",
+    "}",
+    "function Get-CimInstance {",
+    "  param([string]$ClassName, [string]$Filter)",
+    "  if ($Filter -eq \"Name = 'powershell.exe'\") { return @($global:CimStub.supervisors | ForEach-Object { ConvertTo-StubCimRow $_ }) }",
+    "  if ($Filter -match '^ParentProcessId = (\\d+)$') { return @($global:CimStub.brains | Where-Object { [int]$_.ParentProcessId -eq [int]$Matches[1] } | ForEach-Object { ConvertTo-StubCimRow $_ }) }",
+    "  if ($Filter -match '^ProcessId = (\\d+)$') { return @($global:CimStub.fresh | Where-Object { [int]$_.ProcessId -eq [int]$Matches[1] } | ForEach-Object { ConvertTo-StubCimRow $_ }) }",
+    "  throw \"unstubbed CIM filter: $Filter\"",
+    "}",
+    "function Invoke-CimMethod {",
+    "  param($InputObject, $MethodName)",
+    "  $listed = @($global:CimStub.owners | Where-Object { [int]$_.ProcessId -eq [int]$InputObject.ProcessId })",
+    "  if ($listed.Count -gt 0) { return [pscustomobject]@{ ReturnValue = [int]$listed[0].ReturnValue; Sid = $listed[0].Sid } }",
+    "  [pscustomobject]@{ ReturnValue = 0; Sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value }",
+    "}",
+  ].join("\n");
+  const REUSE_OFFSETS: Array<[string, bigint]> = [
+    ["1 us early", -10n],
+    ["1 us late", 10n],
+    ["1 ms early", -10_000n],
+    ["1 ms late", 10_000n],
+    ["900 ms early", -9_000_000n],
+    ["900 ms late", 9_000_000n],
+  ];
+  const brainCommandLine = "node.exe -e setInterval(()=>{},1000) serve";
+  const supervisorCommandLine = (launcherPath: string) => `powershell.exe -NoProfile -File "${launcherPath}"`;
+
+  function runPs(script: string, env: NodeJS.ProcessEnv = {}): { status: number | null; stdout: string; stderr: string } {
+    const result = spawnChildSync(windowsPowerShellCommand(), ["-NoProfile", "-NonInteractive", "-Command", script], {
+      encoding: "utf8", timeout: 60_000, windowsHide: true, env: { ...process.env, ...env },
+    });
+    return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
+  }
+
+  function fileTimeOf(pid: number): string {
+    const result = runPs(`[System.Diagnostics.Process]::GetProcessById(${pid}).StartTime.ToFileTimeUtc()`);
+    const ticks = result.stdout.trim();
+    if (!/^\d+$/.test(ticks)) throw new Error(`no start time for pid ${pid}: ${result.stderr}`);
+    return ticks;
+  }
+
+  function isAlive(pid: number): boolean {
+    const result = runPs(
+      `try { $p = [System.Diagnostics.Process]::GetProcessById(${pid}); if ($p.HasExited) { 'gone' } else { 'alive' } } catch [ArgumentException] { 'gone' }`,
+    );
+    return result.stdout.trim() === "alive";
+  }
+
+  function startThrowawayProcess(): { pid: number; child: ReturnType<typeof spawn> } {
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore", windowsHide: true });
+    if (child.pid === undefined) throw new Error("the throwaway process did not start");
+    return { pid: child.pid, child };
+  }
+
+  function stubRow(processId: number, parentProcessId: number, createdFt: string, commandLine: string): StubRow {
+    return { ProcessId: processId, ParentProcessId: parentProcessId, CreatedFt: createdFt, CommandLine: commandLine };
+  }
+
+  function shiftedFileTime(ticks: string, offset: bigint): string {
+    return (BigInt(ticks) + offset).toString();
+  }
+
+  async function sweepScriptFor(launcherPath: string): Promise<string> {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    await uninstallWindowsService({
+      command: serviceCommand,
+      launcherPath,
+      serviceName: "com.ade.runtime.beta",
+      spawnSync: predecessorSweepSpawn({ calls, sweepStdout: "" }),
+      userName: "ADEBOX\\arul",
+    });
+    return predecessorSweepScript(calls);
+  }
+
+  function sweepLines(stdout: string): string[] {
+    return stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  }
+
+  function runSweepWithStubCim(script: string, stub: StubCim): { status: number | null; lines: string[]; stderr: string } {
+    const stubFile = path.join(makeTempHome("ade-windows-sweep-cim-"), "cim.json");
+    fs.writeFileSync(stubFile, JSON.stringify({ owners: [], ...stub }), "utf8");
+    const result = runPs(`${CIM_STUB}\n${script}`, { ADE_SWEEP_STUB: stubFile });
+    return { status: result.status, lines: sweepLines(result.stdout), stderr: result.stderr };
+  }
+
+  async function waitForPidFile(file: string): Promise<number> {
+    const deadline = Date.now() + 30_000;
+    while (Date.now() < deadline) {
+      if (fs.existsSync(file)) {
+        const text = fs.readFileSync(file, "utf8").trim();
+        if (/^\d+$/.test(text)) return Number(text);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    throw new Error(`the launcher never reported its brain pid (${file})`);
+  }
+
+  itWithPowerShell("reports a live predecessor and its brain from real CIM rows, at their exact start times", async () => {
+    const dir = makeTempHome("ade-windows-sweep-live-");
+    const brainPidFile = path.join(dir, "brain.pid");
+    // A stand-in for the supervisor: a real powershell.exe running the launcher path,
+    // with a real child whose command line ends in `serve`, the way the brain runs.
+    const launcherPath = writeScript(dir, "brain-service.ps1", [
+      `$brain = Start-Process -FilePath '${process.execPath}' -ArgumentList '-e','setInterval(()=>{},1000)','serve' -WindowStyle Hidden -PassThru`,
+      `Set-Content -LiteralPath '${brainPidFile}' -Value $brain.Id`,
+      "Start-Sleep -Seconds 600",
+    ].join("\n"));
+    const supervisor = spawn(windowsPowerShellCommand(), ["-NoProfile", "-NonInteractive", "-File", launcherPath], {
+      stdio: "ignore", windowsHide: true,
+    });
+    let brainPid: number | undefined;
+    try {
+      brainPid = await waitForPidFile(brainPidFile);
+      const brainTicks = fileTimeOf(brainPid);
+      const result = runPs(await sweepScriptFor(launcherPath));
+      expect(result.status, result.stderr).toBe(0);
+      const lines = sweepLines(result.stdout);
+      // CIM's CreationDate has whole microseconds and Process.StartTime has 100 ns ticks.
+      // Both are cut to whole microseconds before they are compared, so a live process
+      // matches its own CIM row. A process that did not match would be left alone here.
+      expect(lines).toContain("supervisor");
+      expect(lines).toContain(`brain ${brainPid} ${brainTicks}`);
+      expect(isAlive(supervisor.pid ?? 0)).toBe(false);
+      expect(isAlive(brainPid)).toBe(true);
+    } finally {
+      if (brainPid !== undefined) {
+        try { process.kill(brainPid); } catch { /* already gone */ }
+      }
+      supervisor.kill();
+    }
+  }, 120_000);
+
+  itWithPowerShell("leaves a supervisor pid alone when its enumerated start time is 1 us, 1 ms or 900 ms off", async () => {
+    for (const [label, offset] of REUSE_OFFSETS) {
+      const { pid, child } = startThrowawayProcess();
+      try {
+        const launcherPath = writeScript(makeTempHome("ade-windows-sweep-reuse-"), "brain-service.ps1", "old launcher");
+        const script = await sweepScriptFor(launcherPath);
+        const ticks = fileTimeOf(pid);
+        const result = runSweepWithStubCim(script, {
+          supervisors: [stubRow(pid, 1, shiftedFileTime(ticks, offset), supervisorCommandLine(launcherPath))],
+          brains: [],
+          fresh: [stubRow(pid, 1, ticks, supervisorCommandLine(launcherPath))],
+        });
+        expect(result.lines, label).toEqual([`skipped ${pid}`]);
+        expect(isAlive(pid), label).toBe(true);
+      } finally {
+        child.kill();
+      }
+    }
+  }, 240_000);
+
+  itWithPowerShell("leaves a brain pid alone when its enumerated start time is 1 us, 1 ms or 900 ms off", async () => {
+    for (const [label, offset] of REUSE_OFFSETS) {
+      const supervisor = startThrowawayProcess();
+      const brain = startThrowawayProcess();
+      try {
+        const launcherPath = writeScript(makeTempHome("ade-windows-sweep-brain-"), "brain-service.ps1", "old launcher");
+        const script = await sweepScriptFor(launcherPath);
+        const supervisorTicks = fileTimeOf(supervisor.pid);
+        const brainTicks = fileTimeOf(brain.pid);
+        const result = runSweepWithStubCim(script, {
+          supervisors: [stubRow(supervisor.pid, 1, supervisorTicks, supervisorCommandLine(launcherPath))],
+          brains: [stubRow(brain.pid, supervisor.pid, shiftedFileTime(brainTicks, offset), brainCommandLine)],
+          fresh: [
+            stubRow(supervisor.pid, 1, supervisorTicks, supervisorCommandLine(launcherPath)),
+            stubRow(brain.pid, supervisor.pid, brainTicks, brainCommandLine),
+          ],
+        });
+        expect(result.lines, label).toContain(`skipped ${brain.pid}`);
+        expect(result.lines.some((line) => line.startsWith("brain ")), label).toBe(false);
+        expect(isAlive(brain.pid), label).toBe(true);
+      } finally {
+        brain.child.kill();
+        supervisor.child.kill();
+      }
+    }
+  }, 240_000);
+
+  itWithPowerShell("leaves a brain alone when its command line or its parent changed since it was enumerated", async () => {
+    const variants: Array<[string, (pid: number, parent: number, ticks: string) => StubRow]> = [
+      ["command line", (pid, parent, ticks) => stubRow(pid, parent, ticks, "node.exe -e x unrelated")],
+      ["parent", (pid, _parent, ticks) => stubRow(pid, 1, ticks, brainCommandLine)],
+    ];
+    for (const [label, freshRow] of variants) {
+      const supervisor = startThrowawayProcess();
+      const brain = startThrowawayProcess();
+      try {
+        const launcherPath = writeScript(makeTempHome("ade-windows-sweep-changed-"), "brain-service.ps1", "old launcher");
+        const script = await sweepScriptFor(launcherPath);
+        const supervisorTicks = fileTimeOf(supervisor.pid);
+        const brainTicks = fileTimeOf(brain.pid);
+        const result = runSweepWithStubCim(script, {
+          supervisors: [stubRow(supervisor.pid, 1, supervisorTicks, supervisorCommandLine(launcherPath))],
+          brains: [stubRow(brain.pid, supervisor.pid, brainTicks, brainCommandLine)],
+          fresh: [
+            stubRow(supervisor.pid, 1, supervisorTicks, supervisorCommandLine(launcherPath)),
+            freshRow(brain.pid, supervisor.pid, brainTicks),
+          ],
+        });
+        expect(result.lines, label).toContain(`skipped ${brain.pid}`);
+        expect(result.lines.some((line) => line.startsWith("brain ")), label).toBe(false);
+        expect(isAlive(brain.pid), label).toBe(true);
+      } finally {
+        brain.child.kill();
+        supervisor.child.kill();
+      }
+    }
+  }, 240_000);
+
+  itWithPowerShell("leaves a supervisor alone when its command line changed while its handle was held", async () => {
+    const { pid, child } = startThrowawayProcess();
+    try {
+      const launcherPath = writeScript(makeTempHome("ade-windows-sweep-cmdline-"), "brain-service.ps1", "old launcher");
+      const script = await sweepScriptFor(launcherPath);
+      const ticks = fileTimeOf(pid);
+      const result = runSweepWithStubCim(script, {
+        supervisors: [stubRow(pid, 1, ticks, supervisorCommandLine(launcherPath))],
+        brains: [],
+        fresh: [stubRow(pid, 1, ticks, "powershell.exe -NoProfile -Command Start-Sleep")],
+      });
+      expect(result.lines).toEqual([`skipped ${pid}`]);
+      expect(isAlive(pid)).toBe(true);
+    } finally {
+      child.kill();
+    }
+  }, 120_000);
+
+  async function waitUntilExited(pid: number): Promise<void> {
+    const deadline = Date.now() + 15_000;
+    while (isAlive(pid) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+
+  itWithPowerShell("stops nothing when a live brain's owner cannot be read, even though its supervisor checks out", async () => {
+    const supervisor = startThrowawayProcess();
+    const brain = startThrowawayProcess();
+    try {
+      const launcherPath = writeScript(makeTempHome("ade-windows-sweep-unresolved-"), "brain-service.ps1", "old launcher");
+      const script = await sweepScriptFor(launcherPath);
+      const supervisorTicks = fileTimeOf(supervisor.pid);
+      const brainTicks = fileTimeOf(brain.pid);
+      const result = runSweepWithStubCim(script, {
+        supervisors: [stubRow(supervisor.pid, 1, supervisorTicks, supervisorCommandLine(launcherPath))],
+        brains: [stubRow(brain.pid, supervisor.pid, brainTicks, brainCommandLine)],
+        fresh: [
+          stubRow(supervisor.pid, 1, supervisorTicks, supervisorCommandLine(launcherPath)),
+          stubRow(brain.pid, supervisor.pid, brainTicks, brainCommandLine),
+        ],
+        owners: [{ ProcessId: brain.pid, ReturnValue: 9, Sid: null }],
+      });
+      expect(result.status, result.stderr).toBe(0);
+      // The supervisor checks out, but one unresolved candidate means no kill and no brain report.
+      expect(result.lines).toEqual([`unresolved ${brain.pid}`]);
+      expect(isAlive(supervisor.pid)).toBe(true);
+      expect(isAlive(brain.pid)).toBe(true);
+    } finally {
+      brain.child.kill();
+      supervisor.child.kill();
+    }
+  }, 120_000);
+
+  itWithPowerShell("stops nothing when a live supervisor's owner cannot be read, and does not kill the one that checks out", async () => {
+    const unreadable = startThrowawayProcess();
+    const verified = startThrowawayProcess();
+    try {
+      const launcherPath = writeScript(makeTempHome("ade-windows-sweep-unreadable-"), "brain-service.ps1", "old launcher");
+      const script = await sweepScriptFor(launcherPath);
+      const unreadableTicks = fileTimeOf(unreadable.pid);
+      const verifiedTicks = fileTimeOf(verified.pid);
+      const result = runSweepWithStubCim(script, {
+        supervisors: [
+          stubRow(unreadable.pid, 1, unreadableTicks, supervisorCommandLine(launcherPath)),
+          stubRow(verified.pid, 1, verifiedTicks, supervisorCommandLine(launcherPath)),
+        ],
+        brains: [],
+        fresh: [stubRow(verified.pid, 1, verifiedTicks, supervisorCommandLine(launcherPath))],
+        owners: [{ ProcessId: unreadable.pid, ReturnValue: 2, Sid: null }],
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.lines).toEqual([`unresolved ${unreadable.pid}`]);
+      expect(isAlive(unreadable.pid)).toBe(true);
+      expect(isAlive(verified.pid)).toBe(true);
+    } finally {
+      unreadable.child.kill();
+      verified.child.kill();
+    }
+  }, 120_000);
+
+  itWithPowerShell("treats a candidate whose owner lookup fails after it exited as gone, not as unresolved", async () => {
+    const { pid, child } = startThrowawayProcess();
+    try {
+      const launcherPath = writeScript(makeTempHome("ade-windows-sweep-exited-"), "brain-service.ps1", "old launcher");
+      const script = await sweepScriptFor(launcherPath);
+      const ticks = fileTimeOf(pid);
+      child.kill();
+      await waitUntilExited(pid);
+      const result = runSweepWithStubCim(script, {
+        supervisors: [stubRow(pid, 1, ticks, supervisorCommandLine(launcherPath))],
+        brains: [],
+        fresh: [],
+        owners: [{ ProcessId: pid, ReturnValue: 9, Sid: null }],
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.lines).toEqual([]);
+    } finally {
+      child.kill();
+    }
+  }, 120_000);
+
+  itWithPowerShell("skips a candidate owned by another user without reporting it or touching it", async () => {
+    const { pid, child } = startThrowawayProcess();
+    try {
+      const launcherPath = writeScript(makeTempHome("ade-windows-sweep-owner-"), "brain-service.ps1", "old launcher");
+      const script = await sweepScriptFor(launcherPath);
+      const ticks = fileTimeOf(pid);
+      const result = runSweepWithStubCim(script, {
+        supervisors: [stubRow(pid, 1, ticks, supervisorCommandLine(launcherPath))],
+        brains: [],
+        fresh: [stubRow(pid, 1, ticks, supervisorCommandLine(launcherPath))],
+        owners: [{ ProcessId: pid, ReturnValue: 0, Sid: "S-1-5-21-OTHER" }],
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.lines).toEqual([]);
+      expect(isAlive(pid)).toBe(true);
+    } finally {
+      child.kill();
+    }
+  }, 120_000);
+
+  itWithPowerShell("gives each candidate one verdict, and reads an owner that cannot be read as unresolved, not skipped", async () => {
+    const launcherPath = writeScript(makeTempHome("ade-windows-sweep-fn-"), "brain-service.ps1", "old launcher");
+    const script = await sweepScriptFor(launcherPath);
+    // The identity functions as the sweep ships them, run against fake process objects
+    // and a CIM stub, so each mismatch is named and the expected verdict is explicit.
+    const start = script.indexOf("function Get-AdeWholeMicroseconds");
+    const end = script.indexOf("$launcher = ");
+    expect(start).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+
+    type Verdict = "match" | "skipped" | "unresolved";
+    type Case = { name: string; proc: string; candidate: string; fresh: string; owner?: string; pattern?: string; parent?: string; expect: Verdict };
+    const cases: Case[] = [
+      { name: "exact start cim equal", proc: "Proc $T", candidate: "Row 1 $T $cmdOk", fresh: "@(Row 1 $T $cmdOk)", expect: "match" },
+      { name: "sub microsecond only", proc: "Proc $X", candidate: "Row 1 $T $cmdOk", fresh: "@(Row 1 $T $cmdOk)", expect: "match" },
+      { name: "brain sub microsecond only parent matches", proc: "Proc $X", candidate: "Row 77 $T $serveCmd", fresh: "@(Row 77 $T $serveCmd)", pattern: "$brainPattern", parent: "77", expect: "match" },
+      { name: "reused 1 us later", proc: "Proc $T", candidate: "Row 1 ($T + 10) $cmdOk", fresh: "@(Row 1 $T $cmdOk)", expect: "skipped" },
+      { name: "reused 1 us earlier", proc: "Proc $T", candidate: "Row 1 ($T - 10) $cmdOk", fresh: "@(Row 1 $T $cmdOk)", expect: "skipped" },
+      { name: "reused 1 ms late", proc: "Proc $T", candidate: "Row 1 ($T + 10000) $cmdOk", fresh: "@(Row 1 $T $cmdOk)", expect: "skipped" },
+      { name: "reused 1 ms early", proc: "Proc $T", candidate: "Row 1 ($T - 10000) $cmdOk", fresh: "@(Row 1 $T $cmdOk)", expect: "skipped" },
+      { name: "reused 900 ms late", proc: "Proc $T", candidate: "Row 1 ($T + 9000000) $cmdOk", fresh: "@(Row 1 $T $cmdOk)", expect: "skipped" },
+      { name: "reused 900 ms early", proc: "Proc $T", candidate: "Row 1 ($T - 9000000) $cmdOk", fresh: "@(Row 1 $T $cmdOk)", expect: "skipped" },
+      { name: "fresh read 1 us off", proc: "Proc $T", candidate: "Row 1 $T $cmdOk", fresh: "@(Row 1 ($T + 10) $cmdOk)", expect: "skipped" },
+      { name: "fresh command line changed", proc: "Proc $T", candidate: "Row 1 $T $cmdOk", fresh: "@(Row 1 $T 'powershell.exe -NoProfile -Command Start-Sleep')", expect: "skipped" },
+      { name: "brain command line not a serve", proc: "Proc $T", candidate: "Row 77 $T 'node.exe -e x serve'", fresh: "@(Row 77 $T 'node.exe -e x unrelated')", pattern: "$brainPattern", parent: "77", expect: "skipped" },
+      { name: "brain parent differs", proc: "Proc $T", candidate: "Row 77 $T 'node.exe -e x serve'", fresh: "@(Row 1 $T 'node.exe -e x serve')", pattern: "$brainPattern", parent: "77", expect: "skipped" },
+      { name: "fresh row missing", proc: "Proc $T", candidate: "Row 1 $T $cmdOk", fresh: "@()", expect: "skipped" },
+      { name: "owner is another user", proc: "Proc $T", candidate: "Row 1 $T $cmdOk", fresh: "@(Row 1 $T $cmdOk)", owner: "[pscustomobject]@{ ReturnValue = 0; Sid = 'S-1-5-21-OTHER' }", expect: "skipped" },
+      // An owner that cannot be read while the process still runs is not another owner.
+      { name: "owner unreadable while running", proc: "Proc $T", candidate: "Row 1 $T $cmdOk", fresh: "@(Row 1 $T $cmdOk)", owner: "[pscustomobject]@{ ReturnValue = 9; Sid = $null }", expect: "unresolved" },
+      { name: "owner unreadable after exit", proc: "ExitedAfterStart $T", candidate: "Row 1 $T $cmdOk", fresh: "@(Row 1 $T $cmdOk)", owner: "[pscustomobject]@{ ReturnValue = 9; Sid = $null }", expect: "skipped" },
+      { name: "start time read throws after exit", proc: "ExitedProc", candidate: "Row 1 $T $cmdOk", fresh: "@(Row 1 $T $cmdOk)", expect: "skipped" },
+    ];
+    const program = [
+      "$ErrorActionPreference = 'Stop'",
+      script.slice(start, end),
+      "$sid = 'S-1-5-21-TEST'",
+      "$pattern = '(?i)(?:^|\\s)-File\\s+(?:\"D:/ade/brain-service\\.ps1\"|D:/ade/brain-service\\.ps1)(?=\\s|$)'",
+      "$brainPattern = '(?i)(?:^|\\s)serve\\s*$'",
+      "$X = 133000000000000007",
+      "$T = $X - 7",
+      "$cmdOk = 'powershell.exe -NoProfile -File \"D:/ade/brain-service.ps1\"'",
+      "$serveCmd = 'node.exe -e x serve'",
+      "$global:Fresh = @()",
+      "$global:Owner = $null",
+      "function Get-CimInstance { param($ClassName, $Filter) return @($global:Fresh) }",
+      "function Invoke-CimMethod { param($InputObject, $MethodName) return $global:Owner }",
+      "function Row($ppid, $ft, $cmd) { [pscustomobject]@{ ProcessId = 4242; ParentProcessId = $ppid; CreationDate = [DateTime]::FromFileTimeUtc([long]$ft).ToLocalTime(); CommandLine = $cmd } }",
+      "function Proc($ft) { [pscustomobject]@{ Id = 4242; HasExited = $false; StartTime = [DateTime]::FromFileTimeUtc([long]$ft).ToLocalTime() } }",
+      "function ExitedAfterStart($ft) { [pscustomobject]@{ Id = 4242; HasExited = $true; StartTime = [DateTime]::FromFileTimeUtc([long]$ft).ToLocalTime() } }",
+      "function ExitedProc { $q = [pscustomobject]@{ Id = 4242; HasExited = $true }; $q | Add-Member ScriptProperty StartTime { throw 'Process has exited' }; return $q }",
+      ...cases.map((c, i) => [
+        `$global:Fresh = ${c.fresh}`,
+        `$global:Owner = ${c.owner ?? "[pscustomobject]@{ ReturnValue = 0; Sid = $sid }"}`,
+        `$r${i} = try { Test-AdeProcessIdentity (${c.proc}) (${c.candidate}) ${c.pattern ?? "$pattern"} $sid ${c.parent ?? "$null"} } catch { 'threw' }`,
+        `Write-Output ('${c.name}|' + $r${i})`,
+      ].join("\n")),
+    ].join("\n");
+    const result = runPs(program);
+    expect(result.status, result.stderr).toBe(0);
+    const verdicts = new Map(sweepLines(result.stdout).map((line) => {
+      const bar = line.lastIndexOf("|");
+      return [line.slice(0, bar), line.slice(bar + 1)];
+    }));
+    for (const c of cases) {
+      expect(verdicts.get(c.name), c.name).toBe(c.expect);
+    }
+  }, 120_000);
+
+  itWithPowerShell("identify pins an orphan only while its scanned command line and owner still match, and reports an unreadable owner", async () => {
+    const orphan = startThrowawayProcess();
+    try {
+      const launcherPath = writeScript(makeTempHome("ade-windows-sweep-orphan-"), "brain-service.ps1", "old launcher");
+      const orphanCommandLine = "node.exe -e x serve --socket orphan";
+      const ticks = fileTimeOf(orphan.pid);
+      const identify = (stub: Partial<StubCim>, scanned: string) => runSweepWithStubCim(
+        buildWindowsPredecessorScript(launcherPath, "identify", [{ pid: orphan.pid, commandLine: scanned }]),
+        { supervisors: [], brains: [], fresh: [], ...stub } as StubCim,
+      );
+
+      // The same process, the same command line, an owner that is ours: pinned.
+      const matched = identify({ fresh: [stubRow(orphan.pid, 1, ticks, orphanCommandLine)] }, orphanCommandLine);
+      expect(matched.status, matched.stderr).toBe(0);
+      expect(matched.lines).toEqual([`orphan ${orphan.pid} ${ticks}`, "identified"]);
+
+      // A pid whose command line changed since the scan is not the orphan any more: not pinned, not an error.
+      const reused = identify({ fresh: [stubRow(orphan.pid, 1, ticks, "node.exe -e x unrelated")] }, orphanCommandLine);
+      expect(reused.status, reused.stderr).toBe(0);
+      expect(reused.lines).toEqual(["identified"]);
+
+      // An owner that cannot be read while the orphan still runs fails the identify closed.
+      const unreadable = identify({
+        fresh: [stubRow(orphan.pid, 1, ticks, orphanCommandLine)],
+        owners: [{ ProcessId: orphan.pid, ReturnValue: 9, Sid: null }],
+      }, orphanCommandLine);
+      expect(unreadable.status, unreadable.stderr).toBe(0);
+      expect(unreadable.lines).toEqual([`unresolved ${orphan.pid}`]);
+      expect(isAlive(orphan.pid)).toBe(true);
+    } finally {
+      orphan.child.kill();
+    }
+  }, 120_000);
 });
