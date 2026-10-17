@@ -296,17 +296,38 @@ export function useDraftMachineRouting({
   ]);
 
   const [machineId, setMachineId] = useState(() => desiredMachineId);
+  const machineIdRef = useRef(machineId);
+  machineIdRef.current = machineId;
+  const laneIdRef = useRef(laneId);
+  laneIdRef.current = laneId;
+  /**
+   * The machine and lane a machine switch came FROM, set only when this hook
+   * switches the machine itself (the user's pick, or the fallback off an
+   * unavailable machine). Those switches carry no lane, so the lane has to be
+   * re-derived on the new machine. A machine handed in through
+   * `initialDraftMachineId` ("New chat in this lane", a PR's chat action)
+   * arrives with its own lane, which is already right and must never be remapped:
+   * the lane prop lands a render after the machine, so remapping there read the
+   * PREVIOUS lane and replaced the requested one with the new machine's Primary.
+   */
+  const pendingLaneRemapRef = useRef<{ machineId: string; laneId: string | null } | null>(null);
   // Reconciliation tracks whether the latest project/persisted input was
   // applied. A user's machine choice inside that scope must remain ready even
   // before the parent echoes the persisted value back through props.
   const [reconciledRoutingInputKey, setReconciledRoutingInputKey] =
     useState(() => routingInputKey);
   const chooseMachine = useCallback((nextMachineId: string) => {
+    if (nextMachineId !== machineIdRef.current) {
+      pendingLaneRemapRef.current ??= { machineId: machineIdRef.current, laneId: laneIdRef.current };
+    }
     setMachineId(nextMachineId);
     onDraftMachineChange?.(nextMachineId === boundMachineId ? null : nextMachineId);
   }, [boundMachineId, onDraftMachineChange]);
 
   useEffect(() => {
+    // An outside machine change (not the echo of `chooseMachine`) brings its
+    // own lane, so it supersedes any remap still waiting on a catalog.
+    if (desiredMachineId !== machineIdRef.current) pendingLaneRemapRef.current = null;
     setMachineId((currentMachineId) =>
       currentMachineId === desiredMachineId ? currentMachineId : desiredMachineId,
     );
@@ -457,22 +478,20 @@ export function useDraftMachineRouting({
   /**
    * Re-resolve the selected lane against the machine that will run the launch.
    *
-   * Only a machine CHANGE remaps. An unknown lane id on a machine that never
-   * changed is a genuinely unavailable selection (a deleted lane, a deeplink
-   * into another checkout) and must keep failing loudly rather than silently
-   * retargeting the user's prompt at some other lane.
+   * Only a machine change this hook made remaps (see `pendingLaneRemapRef`).
+   * An unknown lane id on a machine that never changed is a genuinely
+   * unavailable selection (a deleted lane, a deeplink into another checkout)
+   * and must keep failing loudly rather than silently retargeting the user's
+   * prompt at some other lane.
    */
-  const laneRoutingRef = useRef<{ machineId: string; laneId: string | null }>({
-    machineId,
-    laneId,
-  });
   useEffect(() => {
     if (!enabled) return;
-    const previous = laneRoutingRef.current;
-    if (previous.machineId === machineId) {
-      laneRoutingRef.current = { machineId, laneId };
-      return;
-    }
+    const previous = pendingLaneRemapRef.current;
+    if (!previous) return;
+    // The switch has not rendered yet, or the user switched back before it
+    // resolved: the lane still belongs to this machine. Keep the entry; it is
+    // dropped once it remaps or an outside machine change supersedes it.
+    if (previous.machineId === machineId) return;
     // Hold the selection unresolved until the new machine's catalog lands;
     // remapping against an empty list would pick nothing and then look like the
     // dropdown had rejected the user's machine.
@@ -494,9 +513,9 @@ export function useDraftMachineRouting({
     const nextLane = remapDraftLaneToMachine(previousLane, executionLanes);
     // Nothing resolved (the catalog decoded to zero lanes): stay unresolved so
     // the remap runs again when that machine's real lane list lands. Committing
-    // `machineId` here would short-circuit this effect forever.
+    // the remap would short-circuit this effect forever.
     if (!nextLane) return;
-    laneRoutingRef.current = { machineId, laneId: nextLane.id };
+    pendingLaneRemapRef.current = null;
     if (nextLane.id !== laneId) onLaneChange?.(nextLane.id);
   }, [
     enabled,
