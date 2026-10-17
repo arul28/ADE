@@ -1,3 +1,4 @@
+import net from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocketServer, type RawData, type WebSocket as ServerWebSocket } from "ws";
 import type { CrsqlChangeRow, SyncChangesetAckPayload, SyncChangesetBatchPayload, SyncPeerMetadata } from "../../../../desktop/src/shared/types";
@@ -77,6 +78,41 @@ describe("createSyncPeerService", () => {
     await expect(peerService.connect({ host: "192.0.2.1", port: 8788, token: "token" })).rejects.toThrow();
     expect(Date.now() - startedAt).toBeLessThan(6_000);
   }, 8_000);
+
+  it("tags a stalled viewer dial ETIMEDOUT so the stale-brain reclaim sees a transport failure", async () => {
+    // Accepts TCP and never answers the WebSocket upgrade, so only the connect timeout can end the dial.
+    const sockets = new Set<net.Socket>();
+    const silent = net.createServer((socket) => {
+      sockets.add(socket);
+      socket.on("close", () => sockets.delete(socket));
+    });
+    await new Promise<void>((resolve) => silent.listen(0, "127.0.0.1", resolve));
+    disposers.push(async () => {
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve) => silent.close(() => resolve()));
+    });
+    const port = (silent.address() as net.AddressInfo).port;
+    const peerService = createSyncPeerService({
+      db: { sync: { getDbVersion: () => 0, exportChangesSince: () => [], applyChanges: vi.fn() } } as unknown as AdeDb,
+      logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } as any,
+      deviceRegistryService: {
+        getLocalSiteId: () => "local-site",
+        getLocalDeviceId: () => "local-device",
+        ensureLocalDevice: () => ({
+          deviceId: "local-device", name: "Local", platform: "macOS", deviceType: "desktop",
+          siteId: "local-site", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
+          lastSeenAt: "2026-01-01T00:00:00.000Z", lastHost: null, lastPort: null,
+          tailscaleIp: null, ipAddresses: [], metadata: {},
+        }),
+      } as any,
+    });
+    disposers.push(async () => peerService.dispose());
+    const error = await peerService.connect({ host: "127.0.0.1", port, token: "token" }).then(
+      () => null,
+      (caught: unknown) => caught,
+    );
+    expect(error).toMatchObject({ code: "ETIMEDOUT" });
+  }, 10_000);
 
   it("uses a two-interval heartbeat only as the peer fallback", () => {
     expect(peerHeartbeatFallbackDelayMs(30_000)).toBe(60_000);

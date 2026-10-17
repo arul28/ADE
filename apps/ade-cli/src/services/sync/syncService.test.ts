@@ -172,6 +172,53 @@ describe("createSyncService", () => {
     })).toBe(false);
   });
 
+  describe("a failed dial to a remote brain that has gone quiet", () => {
+    const timedOutDial = Object.assign(
+      new Error("Connection to 192.0.2.20:45872 timed out after 5000ms."),
+      { code: "ETIMEDOUT" },
+    );
+    const reclaimAfterDial = (error: unknown, lastSeenAgoMs: number, now: number) =>
+      shouldReclaimStaleViewerDraftAfterTransportFailure({
+        hostStartupEnabled: true,
+        crdtSyncAvailable: true,
+        cluster: { brainDeviceId: "quiet-remote" },
+        localDevice: rolePolicyLocalDevice(),
+        brain: {
+          lastSeenAt: new Date(now - lastSeenAgoMs).toISOString(),
+          updatedAt: new Date(now).toISOString(),
+          metadata: { hostname: "different-machine.local" },
+        },
+        draft: testDraft,
+        error,
+        now,
+      });
+
+    it("keeps a viewer whose dial timed out while the brain was seen minutes ago", () => {
+      const now = Date.now();
+      expect(reclaimAfterDial(timedOutDial, 10 * 60_000, now)).toBe(false);
+    });
+
+    it("reclaims after a timed-out dial only once the brain has been unseen for days", () => {
+      const now = Date.now();
+      expect(reclaimAfterDial(timedOutDial, 4 * 24 * 60 * 60_000, now)).toBe(true);
+    });
+
+    it("classifies a timed-out dial the same as a refused one", () => {
+      const now = Date.now();
+      const sevenDays = 7 * 24 * 60 * 60_000;
+      expect(reclaimAfterDial(timedOutDial, sevenDays, now))
+        .toBe(reclaimAfterDial(failedDial, sevenDays, now));
+      expect(reclaimAfterDial(timedOutDial, 10 * 60_000, now))
+        .toBe(reclaimAfterDial(failedDial, 10 * 60_000, now));
+    });
+
+    it("does not treat a timeout message with no transport code as a transport failure", () => {
+      const now = Date.now();
+      const codeless = new Error("Connection to 192.0.2.20:45872 timed out after 5000ms.");
+      expect(reclaimAfterDial(codeless, 7 * 24 * 60 * 60_000, now)).toBe(false);
+    });
+  });
+
   it("leaves a dead brain's cluster record alone when this runtime may not host", async () => {
     const projectRoot = makeTempRoot("ade-sync-service-no-draft-failover-");
     cleanupRoots.push(projectRoot);

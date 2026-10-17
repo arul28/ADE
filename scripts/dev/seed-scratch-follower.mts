@@ -6,8 +6,10 @@
 // The script writes only under a new directory that mkdtemp creates atomically in the OS temp dir; it takes
 // no path from the caller, and it re-checks that the result is not under ~/ADE or ~/.ade. It never starts a runtime,
 // never reads or writes the machine's secrets, and never touches a socket.
-// The runtime treats a cluster record whose brain was last seen more than 5 minutes ago as stale and reclaims
-// it on refresh (syncService.ts STALE_BRAIN_LAST_SEEN_MS). So check within that window, or seed a new root.
+// A stale brain is reclaimed on refresh only while the project has no saved viewer draft: a brain last seen more
+// than 5 minutes ago (syncService.ts STALE_BRAIN_LAST_SEEN_MS). The first viewer dial saves a draft, and from then
+// on a failed dial reclaims a remote brain only once it has been unseen for 3 days (STALE_VIEWER_DRAFT_BRAIN_LAST_SEEN_MS;
+// 1 hour when its hostname matches this machine). So seed a new root for each check; a seeded root that has been dialed stays a viewer.
 import { execFileSync } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import fs from "node:fs";
