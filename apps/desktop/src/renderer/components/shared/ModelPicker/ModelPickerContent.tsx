@@ -146,6 +146,8 @@ export type ModelPickerSelection = {
    * Never set together with `presetId`: a preset already names its own brain.
    */
   credentialId?: string;
+  /** Set when the selection came from a Copilot row's context chip. */
+  copilotContextTier?: "default" | "long_context";
 };
 
 export type ModelPickerContentProps = {
@@ -825,6 +827,28 @@ export const ModelPickerContent = memo(function ModelPickerContent({
     [expandedModels, isAvailableForUse, onFastModeChange, onOpenSignIn, onSelect, recordUsage, value],
   );
 
+  /**
+   * Same rule as the fast chip: on the selected row the context chip toggles
+   * the tier; on any other row it picks that model with the tier it shows next.
+   */
+  const handleCopilotContextTierChange = useCallback(
+    (modelId: string, next: "default" | "long_context") => {
+      const model = expandedModels.find((m) => m.id === modelId);
+      if (!model) return;
+      if (modelId === value) {
+        onCopilotContextTierChange?.(modelId, next);
+        return;
+      }
+      if (!isAvailableForUse(model)) {
+        onOpenSignIn?.(pickerFamilyForModel(model), model.authTypes);
+        return;
+      }
+      recordUsage(modelId);
+      onSelect(modelId, { fastMode: false, copilotContextTier: next });
+    },
+    [expandedModels, isAvailableForUse, onCopilotContextTierChange, onOpenSignIn, onSelect, recordUsage, value],
+  );
+
   const handleServiceTierChange = useCallback(
     (modelId: string, next: CursorCloudServiceTier | null) => {
       const model = expandedModels.find((entry) => entry.id === modelId);
@@ -1187,7 +1211,10 @@ export const ModelPickerContent = memo(function ModelPickerContent({
                           serviceTier: isActive ? serviceTier : null,
                           onServiceTierChange: handleServiceTierChange,
                         } : {})}
-                        {...(onCopilotContextTierChange ? { copilotContextTier, onCopilotContextTierChange } : {})}
+                        {...(onCopilotContextTierChange ? {
+                          copilotContextTier: isActive ? copilotContextTier : "default",
+                          onCopilotContextTierChange: handleCopilotContextTierChange,
+                        } : {})}
                         omitProviderInDetail={providerScopedList && m.family === activeProviderFamily}
                         {...(onOpenSignIn ? { onSignIn: () => onOpenSignIn(pickerFamilyForModel(m), m.authTypes) } : {})}
                       />

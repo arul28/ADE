@@ -3143,6 +3143,13 @@ function constructDynamicModelDescriptor(normalized: string): ModelDescriptor | 
       return createDynamicMuseModelDescriptor(providerModelId);
     }
   }
+  // A Copilot SDK model this process has no live list for: the renderer (the
+  // catalog crosses IPC as rows, not descriptors), a restart, a remote host.
+  // Without this the id became an unknown placeholder and the chat ran as OpenCode.
+  if (normalized.toLowerCase().startsWith("github-copilot/")) {
+    const providerModelId = normalized.slice("github-copilot/".length).trim();
+    if (providerModelId) return createDynamicAcpModelDescriptor("copilot", providerModelId);
+  }
   return undefined;
 }
 

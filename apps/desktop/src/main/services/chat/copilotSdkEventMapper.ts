@@ -29,6 +29,15 @@ export function createCopilotSdkEventMapperState(): CopilotSdkEventMapperState {
   return { toolNames: new Map(), inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, reasoningTokens: 0, contextTokens: null, contextWindow: null, servedModel: null, costUsd: null, premiumRequestCost: 0, streamedMessages: new Set(), compactionTokens: null, requestedModel: null, askedAuto: false, mismatchModels: new Set() };
 }
 
+/** One notice per served model that is not the one the chat picked (never for Auto). */
+function servedModelNotice(state: CopilotSdkEventMapperState, served: string | null, turnId: string): AgentChatEvent[] {
+  if (!served) return [];
+  state.servedModel = served;
+  if (state.askedAuto || !state.requestedModel || state.requestedModel === served || state.mismatchModels.has(served)) return [];
+  state.mismatchModels.add(served);
+  return [{ type: "system_notice", noticeKind: "warning", severity: "warning", message: `Copilot used ${served} instead of ${state.requestedModel}; your Copilot plan may not include it.`, turnId }];
+}
+
 export function mapCopilotSdkEvent(event: unknown, args: { turnId: string; state: CopilotSdkEventMapperState }): AgentChatEvent[] {
   const root = record(event);
   const data = record(root?.data) ?? {};
@@ -46,8 +55,11 @@ export function mapCopilotSdkEvent(event: unknown, args: { turnId: string; state
     case "assistant.message": {
       const content = text(data.content);
       const id = text(data.messageId);
-      if (id && state.streamedMessages.has(id)) return [];
-      return content ? [{ type: "text", text: content, turnId, itemId: id ?? undefined }] : [];
+      // Each reply names the model that wrote it. Auto's own resolution event
+      // can arrive while the session reopens, before any turn is listening.
+      const notice = servedModelNotice(state, text(data.model), turnId);
+      if (id && state.streamedMessages.has(id)) return notice;
+      return content ? [...notice, { type: "text", text: content, turnId, itemId: id ?? undefined }] : notice;
     }
     case "assistant.reasoning_delta": {
       const chunk = text(data.deltaContent);
@@ -130,14 +142,7 @@ export function mapCopilotSdkEvent(event: unknown, args: { turnId: string; state
     }
     case "session.model_change":
     case "session.auto_mode_resolved": {
-      const served = type === "session.model_change" ? text(data.newModel) : text(data.chosenModel);
-      if (!served) return [];
-      state.servedModel = served;
-      if (!state.askedAuto && state.requestedModel && state.requestedModel !== served && !state.mismatchModels.has(served)) {
-        state.mismatchModels.add(served);
-        return [{ type: "system_notice", noticeKind: "warning", severity: "warning", message: `Copilot answered with ${served}, not ${state.requestedModel}.`, turnId }];
-      }
-      return [];
+      return servedModelNotice(state, type === "session.model_change" ? text(data.newModel) : text(data.chosenModel), turnId);
     }
     case "ade.todos": {
       const rows = record(data)?.rows;

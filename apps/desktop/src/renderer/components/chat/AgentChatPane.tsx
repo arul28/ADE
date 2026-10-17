@@ -16788,11 +16788,9 @@ export function AgentChatPane({
             copilotAutoTier={copilotAutoTier}
             copilotAutoTierPending={selectedSession?.copilotAutoTierPending === true}
             onCopilotAutoTierChange={(tier) => { void updateNativeControls({ copilotAutoTier: tier }); }}
-            onCopilotContextTierChange={(modelId, tier) => {
-              if (!selectedSessionId || modelId === selectedSession?.modelId || modelId === selectedSession?.model) {
-                void updateNativeControls({ copilotContextTier: tier });
-              }
-            }}
+            // The picker only calls this for the selected row; a pick that has
+            // not been sent yet is deferred inside updateNativeControls.
+            onCopilotContextTierChange={(_modelId, tier) => { void updateNativeControls({ copilotContextTier: tier }); }}
             musePermissionMode={musePermissionMode}
             cursorModeSnapshot={effectiveCursorModeSnapshot}
             executionMode={selectedExecutionMode?.value ?? "focused"}
@@ -16869,6 +16867,9 @@ export function AgentChatPane({
               // back to the model's own provider in the trigger — naming a
               // provider the preset does not even run on.
               setDraftHarnessPresetId(options?.presetId ?? null);
+              // A new model starts on its default context tier unless the pick
+              // came from its context chip.
+              setCopilotContextTier(options?.copilotContextTier ?? "default");
               setSessionRoutePick(selectedSessionId ? { sessionId: selectedSessionId, presetId: options?.presetId ?? null } : null);
               const snapshot = buildModelSelectionSnapshot(nextModelId);
               // Ordinary model selection clears the previous cloud service

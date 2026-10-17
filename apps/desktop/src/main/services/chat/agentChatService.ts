@@ -9336,6 +9336,22 @@ function syncLegacyPermissionMode(session: Pick<
 
   if (session.provider === "pi") return session.permissionMode;
 
+  if (session.provider === "copilot") {
+    switch (session.copilotPermissionMode) {
+      case "plan":
+        return "plan";
+      case "full-auto":
+        return "full-auto";
+      case "auto-edit":
+      case "assisted":
+        return "edit";
+      case "ask":
+        return "default";
+      default:
+        return session.permissionMode;
+    }
+  }
+
   switch (session.opencodePermissionMode) {
     case "plan":
     case "edit":
@@ -54688,6 +54704,7 @@ export function createAgentChatService(args: {
       }, Boolean(legacySessionId));
       if (managed.session.copilotPermissionMode === "assisted" && opened.permissionMode !== "assisted") {
         managed.session.copilotPermissionMode = "ask";
+        managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
         persistChatState(managed);
         emitSessionModeMeta(managed);
         emitChatEvent(managed, {
@@ -54958,9 +54975,14 @@ export function createAgentChatService(args: {
     runtime.interrupted = false;
     runtime.busy = true;
     runtime.activeTurnId = turnId;
+    const previousMapperState = runtime.eventMapperState;
     runtime.eventMapperState = createCopilotSdkEventMapperState();
     runtime.eventMapperState.requestedModel = runtime.modelId;
     runtime.eventMapperState.askedAuto = runtime.modelId === "auto";
+    // The served-model notice is once per model the chat picked, not once per turn.
+    if (previousMapperState?.requestedModel === runtime.modelId) {
+      runtime.eventMapperState.mismatchModels = previousMapperState.mismatchModels;
+    }
     setSessionActive(managed);
     const displayText = args.displayText.trim();
     const userText = args.userText?.trim() || displayText;
@@ -65632,6 +65654,8 @@ export function createAgentChatService(args: {
           });
         }
       }
+      // The shared level follows Copilot's own, including the Ask fallback.
+      managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
     }
     if (copilotContextTier !== undefined && managed.session.provider === "copilot") {
       const descriptor = resolveSessionModelDescriptor(managed.session);
