@@ -163,7 +163,7 @@ function makeRuntime(label: string) {
 }
 
 describe("multi-project RPC server", () => {
-  it("targets the failing project's booted scope for sync recovery", async () => {
+  it("refuses an unscoped disconnect, even with a failing project, and disconnects nothing", async () => {
     const { root, registry, projectRoot } = createRegistry();
     const projectA = registry.add(projectRoot);
     const projectBRoot = path.join(root, "project-b");
@@ -174,7 +174,7 @@ describe("multi-project RPC server", () => {
     const scopeA = { registryProjectId: projectA.projectId, record: projectA, runtime: runtimeA, dispose: vi.fn() };
     const scopeB = { registryProjectId: projectB.projectId, record: projectB, runtime: runtimeB, dispose: vi.fn() };
     const scopeRegistry = {
-      getActiveSyncHostProjectId: vi.fn(() => null),
+      getActiveSyncHostProjectId: vi.fn(() => projectA.projectId),
       getMostRecentFailingSyncHostProjectId: vi.fn(() => projectB.projectId),
       getIfReady: vi.fn((id: string) => id === projectA.projectId ? scopeA : scopeB),
       resolveActiveSyncHost: vi.fn(async () => {
@@ -191,9 +191,97 @@ describe("multi-project RPC server", () => {
     await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: {} });
 
     await expect(handler({ jsonrpc: "2.0", id: 3, method: "sync.disconnectFromBrain", params: {} }))
+      .rejects.toThrow("sync.disconnectFromBrain needs a projectId");
+    expect(runtimeA.syncService.disconnectFromBrain).not.toHaveBeenCalled();
+    expect(runtimeB.syncService.disconnectFromBrain).not.toHaveBeenCalled();
+    expect(scopeRegistry.resolveActiveSyncHost).not.toHaveBeenCalled();
+    handler.dispose();
+  });
+
+  it("disconnects the project a disconnect names, and only that one", async () => {
+    const { root, registry, projectRoot } = createRegistry();
+    const projectA = registry.add(projectRoot);
+    const projectBRoot = path.join(root, "project-b");
+    fs.mkdirSync(projectBRoot, { recursive: true });
+    const projectB = registry.add(projectBRoot);
+    const runtimeA = makeRuntime("active-a");
+    const runtimeB = makeRuntime("named-b");
+    const scopes = new Map([
+      [projectA.projectId, { registryProjectId: projectA.projectId, record: projectA, runtime: runtimeA, dispose: vi.fn() }],
+      [projectB.projectId, { registryProjectId: projectB.projectId, record: projectB, runtime: runtimeB, dispose: vi.fn() }],
+    ]);
+    const scopeRegistry = {
+      getActiveSyncHostProjectId: vi.fn(() => projectA.projectId),
+      getMostRecentFailingSyncHostProjectId: vi.fn(() => null),
+      getIfReady: vi.fn((id: string) => scopes.get(id) ?? null),
+      resolveActiveSyncHost: vi.fn(async () => scopes.get(projectA.projectId)),
+      dispose: vi.fn(),
+      disposeAll: vi.fn(),
+    } as unknown as ProjectScopeRegistry;
+    const handler = createMultiProjectRpcRequestHandler({ serverVersion: "test", projectRegistry: registry, scopeRegistry });
+    await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: {} });
+
+    await expect(handler({ jsonrpc: "2.0", id: 2, method: "sync.disconnectFromBrain", params: { projectId: projectB.projectId } }))
       .resolves.toEqual({ disconnected: true });
     expect(runtimeA.syncService.disconnectFromBrain).not.toHaveBeenCalled();
     expect(runtimeB.syncService.disconnectFromBrain).toHaveBeenCalledOnce();
+    handler.dispose();
+  });
+
+  it("disconnects the project at a projectRoot the disconnect names, as the CLI sends it", async () => {
+    const { root, registry, projectRoot } = createRegistry();
+    const projectA = registry.add(projectRoot);
+    const projectBRoot = path.join(root, "project-b");
+    fs.mkdirSync(projectBRoot, { recursive: true });
+    const projectB = registry.add(projectBRoot);
+    const runtimeA = makeRuntime("active-a");
+    const runtimeB = makeRuntime("named-b");
+    const scopes = new Map([
+      [projectA.projectId, { registryProjectId: projectA.projectId, record: projectA, runtime: runtimeA, dispose: vi.fn() }],
+      [projectB.projectId, { registryProjectId: projectB.projectId, record: projectB, runtime: runtimeB, dispose: vi.fn() }],
+    ]);
+    const scopeRegistry = {
+      getActiveSyncHostProjectId: vi.fn(() => projectA.projectId),
+      getMostRecentFailingSyncHostProjectId: vi.fn(() => null),
+      getIfReady: vi.fn((id: string) => scopes.get(id) ?? null),
+      resolveActiveSyncHost: vi.fn(async () => scopes.get(projectA.projectId)),
+      dispose: vi.fn(),
+      disposeAll: vi.fn(),
+    } as unknown as ProjectScopeRegistry;
+    const handler = createMultiProjectRpcRequestHandler({ serverVersion: "test", projectRegistry: registry, scopeRegistry });
+    await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: {} });
+
+    await expect(handler({ jsonrpc: "2.0", id: 2, method: "sync.disconnectFromBrain", params: { projectRoot: projectBRoot } }))
+      .resolves.toEqual({ disconnected: true });
+    expect(runtimeA.syncService.disconnectFromBrain).not.toHaveBeenCalled();
+    expect(runtimeB.syncService.disconnectFromBrain).toHaveBeenCalledOnce();
+    handler.dispose();
+  });
+
+  it("refuses a disconnect for a named project that is still loading, and does not use another project", async () => {
+    const { root, registry, projectRoot } = createRegistry();
+    const projectA = registry.add(projectRoot);
+    const projectBRoot = path.join(root, "project-b");
+    fs.mkdirSync(projectBRoot, { recursive: true });
+    const projectB = registry.add(projectBRoot);
+    const runtimeA = makeRuntime("active-a");
+    const runtimeB = makeRuntime("loading-b");
+    const scopeA = { registryProjectId: projectA.projectId, record: projectA, runtime: runtimeA, dispose: vi.fn() };
+    const scopeRegistry = {
+      getActiveSyncHostProjectId: vi.fn(() => projectA.projectId),
+      getMostRecentFailingSyncHostProjectId: vi.fn(() => null),
+      getIfReady: vi.fn((id: string) => (id === projectA.projectId ? scopeA : null)),
+      resolveActiveSyncHost: vi.fn(async () => scopeA),
+      dispose: vi.fn(),
+      disposeAll: vi.fn(),
+    } as unknown as ProjectScopeRegistry;
+    const handler = createMultiProjectRpcRequestHandler({ serverVersion: "test", projectRegistry: registry, scopeRegistry });
+    await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: {} });
+
+    await expect(handler({ jsonrpc: "2.0", id: 2, method: "sync.disconnectFromBrain", params: { projectId: projectB.projectId } }))
+      .rejects.toThrow("This project isn't loaded yet. Open it and try again.");
+    expect(runtimeA.syncService.disconnectFromBrain).not.toHaveBeenCalled();
+    expect(runtimeB.syncService.disconnectFromBrain).not.toHaveBeenCalled();
     expect(scopeRegistry.resolveActiveSyncHost).not.toHaveBeenCalled();
     handler.dispose();
   });
