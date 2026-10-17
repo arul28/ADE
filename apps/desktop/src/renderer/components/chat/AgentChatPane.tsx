@@ -8755,21 +8755,24 @@ export function AgentChatPane({
           { chatSessionId: baselineChatSessionId, limit: null },
           pin,
           { authoritative: true },
-        ).then(
-          (rows) => {
+        )
+          .then((rows) => {
+            // Anything but a list is a failed read, not an empty chat.
+            if (!Array.isArray(rows)) throw new Error("the chat's terminal list did not come back as a list");
             // Nothing is released here. A later read can be stale or partial, so
             // an id this read omits may still be a live terminal.
             for (const row of rows) rememberKnownTerminalId(knownTerminalIds, row.id);
             baselineLoaded = true;
-            baselineRead = null;
             return true;
-          },
-          (error: unknown) => {
-            baselineRead = null;
+          })
+          .catch((error: unknown) => {
             console.error("[AgentChatPane] terminal baseline read failed", { sessionId: baselineChatSessionId, error });
             return false;
-          },
-        );
+          })
+          .finally(() => {
+            // Cleared on every outcome, so a failed read is retried by the next event.
+            baselineRead = null;
+          });
       }
       return baselineRead;
     };

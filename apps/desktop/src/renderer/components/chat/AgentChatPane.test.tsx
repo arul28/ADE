@@ -4101,7 +4101,10 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => expect(onOpenTerminalPane).toHaveBeenCalledTimes(2));
   });
 
-  it("reveals nothing until the chat's baseline loads, and an event retries the read", async () => {
+  it.each([
+    ["rejects", () => Promise.reject(new Error("host unavailable"))],
+    ["answers without a list", () => Promise.resolve(undefined)],
+  ])("reveals nothing until the chat's baseline loads, when the baseline read %s", async (_failure, failedRead) => {
     // The chat's list is the only way to tell an old terminal from a new one. While
     // it cannot be read, a replayed "created" for an old terminal must not reveal it.
     const session = buildSession("session-1", { status: "idle" });
@@ -4112,13 +4115,13 @@ describe("AgentChatPane submit recovery", () => {
     vi.mocked(window.ade.sessions.get).mockImplementation(async (id: string) => sessionsById.get(id) ?? null);
     let hostAnswers = false;
     let baselineReads = 0;
-    vi.mocked(window.ade.sessions.list).mockImplementation(async (_args, _pin, options) => {
+    vi.mocked(window.ade.sessions.list).mockImplementation((async (_args, _pin, options) => {
       // Only the pane's authoritative baseline read is in question here.
       if (!options?.authoritative) return [];
       baselineReads += 1;
-      if (!hostAnswers) throw new Error("host unavailable");
+      if (!hostAnswers) return failedRead();
       return [old];
-    });
+    }) as never);
     const events = installReplayingSessionEvents([{ sessionId: old.id, reason: "created" }]);
     const onOpenTerminalPane = vi.fn();
     // The failed read is expected here, so its log is not noise for this test.
