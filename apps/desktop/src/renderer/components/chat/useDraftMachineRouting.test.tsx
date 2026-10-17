@@ -363,6 +363,31 @@ describe("useDraftMachineRouting", () => {
     expect(onLaneChange).not.toHaveBeenCalled();
   });
 
+  it("keeps a lane handed in for the picked machine while its catalog is still loading", async () => {
+    installRemoteBoundAde();
+    const onLaneChange = vi.fn();
+    const { result, rerender } = renderRemoteBoundRouting(
+      { crossMachineLanesByMachineId: {}, laneId: "studio-primary" },
+      { onLaneChange },
+    );
+    await waitFor(() => expect(result.current.machineOptions).toHaveLength(2));
+
+    act(() => {
+      result.current.handleMachineChange("this-mac");
+    });
+    // "New chat in this lane" for a lane on the machine already picked: the
+    // machine id does not change, only the lane does.
+    rerender({ crossMachineLanesByMachineId: {}, laneId: "mac-feature", initialDraftMachineId: "this-mac" });
+    rerender({
+      crossMachineLanesByMachineId: thisMacSlice(thisMacLanes),
+      laneId: "mac-feature",
+      initialDraftMachineId: "this-mac",
+    });
+
+    await waitFor(() => expect(result.current.selectorValue).toBe("mac-feature"));
+    expect(onLaneChange).not.toHaveBeenCalled();
+  });
+
   it("holds the lane selection unresolved until the picked machine's catalog lands", async () => {
     installRemoteBoundAde();
     const onLaneChange = vi.fn();

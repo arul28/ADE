@@ -494,6 +494,14 @@ export function useDraftMachineRouting({
     if (!previous) return;
     // The fallback's switch has not rendered yet: wait for it.
     if (previous.machineId === machineId) return;
+    // While a foreign machine's lanes load, nothing in the composer can move
+    // the lane (its list is empty, and `WorkStartSurface` leaves foreign drafts
+    // alone), so a new lane here is an outside request naming this machine's
+    // lane. It is already right; remapping would overwrite it.
+    if (machineId !== boundMachineId && laneId !== previous.laneId) {
+      pendingLaneRemapRef.current = null;
+      return;
+    }
     // Hold the selection unresolved until the new machine's catalog lands;
     // remapping against an empty list would pick nothing and then look like the
     // dropdown had rejected the user's machine.
@@ -520,6 +528,7 @@ export function useDraftMachineRouting({
     pendingLaneRemapRef.current = null;
     if (nextLane.id !== laneId) onLaneChange?.(nextLane.id);
   }, [
+    boundMachineId,
     enabled,
     executionLaneCatalogLoaded,
     executionLanes,
