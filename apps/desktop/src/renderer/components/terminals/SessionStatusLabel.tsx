@@ -153,7 +153,7 @@ export function SessionStatusLabel({
 
   if (!presentation) {
     return (
-      <span className={cn("text-muted-fg/45", compact ? "text-[10px]" : "text-[11px]")}>
+      <span data-perf-ignore className={cn("text-muted-fg/45", compact ? "text-[10px]" : "text-[11px]")}>
         {timestampLabel}
       </span>
     );
@@ -192,8 +192,8 @@ export function SessionStatusLabel({
       {steeringInput && presentation.glyph === "working" ? (
         <span data-testid="session-steering-pip" aria-label="has a question">?</span>
       ) : null}
-      {elapsed ? <span aria-hidden className="tabular-nums">{elapsed}</span> : null}
-      {future ? <span aria-hidden className="tabular-nums">{future}</span> : null}
+      {elapsed ? <span aria-hidden data-perf-ignore className="tabular-nums">{elapsed}</span> : null}
+      {future ? <span aria-hidden data-perf-ignore className="tabular-nums">{future}</span> : null}
     </span>
   );
 }

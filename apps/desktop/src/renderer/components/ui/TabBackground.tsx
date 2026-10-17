@@ -52,18 +52,19 @@ export function TabBackground() {
 
   return (
     <>
-      {/* Previous background fading out */}
+      {/* Previous background fading out (data-perf-ignore: decoration, see scripts/perf/ui/settle.mjs) */}
       {transitioning && prev && (
         <div
           className={cn(
             "ade-tab-bg pointer-events-none absolute inset-0 z-0 overflow-hidden",
             prev
           )}
+          data-perf-ignore
           style={{ opacity: 0, transition: "opacity 200ms ease-out" }}
           aria-hidden="true"
         />
       )}
-      {/* Current background */}
+      {/* Current background (data-perf-ignore: decoration, see scripts/perf/ui/settle.mjs) */}
       {bgClass && (
         <div
           className={cn(
@@ -72,6 +73,7 @@ export function TabBackground() {
             tintClass,
             transitioning && "animate-in fade-in duration-300"
           )}
+          data-perf-ignore
           style={transitioning ? { animation: "ade-bg-fade-in 300ms ease-in forwards" } : undefined}
           aria-hidden="true"
         />
