@@ -392,6 +392,38 @@ export function mergeAgentChatLiveEvents(
 }
 
 /**
+ * The snapshot head re-sends a tool call the prefix already holds. A resent
+ * call keeps its first send's time in the held list (see
+ * {@link upsertRepeatedToolCalls}), so the head's own timestamp sorts after it
+ * and the time check misses the join. Two held shapes join:
+ * - the resend kept at its own position, right before the first overlap;
+ * - the resend collapsed into the first send's row, when the row before the
+ *   first overlap is the head's immediate predecessor in the same stream
+ *   (sequence + 1). Without that contiguity a prefix that merely contains the
+ *   first send could still end at a hole, which is what the time check guards.
+ */
+function prefixJoinsAtResentToolCall(
+  existing: readonly AgentChatEventEnvelope[],
+  firstOverlapIndex: number,
+  head: AgentChatEventEnvelope,
+): boolean {
+  if (head.event.type !== "tool_call") return false;
+  const key = logicalToolItemKey(head);
+  if (key === null) return false;
+  const seam = existing[firstOverlapIndex - 1]!;
+  if (seam.event.type === "tool_call" && logicalToolItemKey(seam) === key) return true;
+  const headStart = head.sequenceStart ?? head.sequence;
+  if (typeof seam.sequence !== "number" || typeof headStart !== "number" || seam.sequence + 1 !== headStart) {
+    return false;
+  }
+  for (let index = 0; index < firstOverlapIndex; index += 1) {
+    const entry = existing[index]!;
+    if (entry.event.type === "tool_call" && logicalToolItemKey(entry) === key) return true;
+  }
+  return false;
+}
+
+/**
  * Reconcile an authoritative ordered history snapshot with an already-rendered
  * window without disturbing either side's physical row order.
  *
@@ -472,6 +504,7 @@ export function mergeAgentChatHistorySnapshot(
   const prefixJoinsSnapshot = firstOverlapIndex > 0 && (
     existingIndexByKey.has(identityKey(snapshotHead))
     || isAtOrAfter(existing[firstOverlapIndex - 1]!, snapshotHead)
+    || prefixJoinsAtResentToolCall(existing, firstOverlapIndex, snapshotHead)
   );
   const olderPrefix = prefixJoinsSnapshot
     ? existing
