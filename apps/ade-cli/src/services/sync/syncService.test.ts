@@ -459,6 +459,52 @@ describe("createSyncService", () => {
     }
   });
 
+  it("gives a lightweight status read the real readiness before any drain has started a computation", async () => {
+    const projectRoot = makeTempRoot("ade-sync-service-readiness-cold-");
+    cleanupRoots.push(projectRoot);
+    const db = await openKvDb(path.join(projectRoot, ".ade", "kv.sqlite"), createLogger() as any);
+    (db.sync as { isAvailable?: () => boolean }).isAvailable = () => false;
+    const listSessions = vi.fn(async () => []);
+    const service = createService(db, projectRoot, {
+      agentChatService: { listSessions } as any,
+    });
+
+    try {
+      // Nothing is in flight and nothing is cached: this is the brain's startup window. The read must
+      // compute the answer rather than report the skipped placeholder as "not ready".
+      const snapshot = await service.getStatus({ includeTransferReadiness: false });
+      expect(snapshot.transferReadiness.ready).toBe(true);
+      expect(listSessions).toHaveBeenCalledTimes(1);
+
+      // Once computed, later light reads take the cache and do not enumerate again.
+      await service.getStatus({ includeTransferReadiness: false });
+      expect(listSessions).toHaveBeenCalledTimes(1);
+    } finally {
+      await service.dispose();
+      db.close();
+    }
+  });
+
+  it("does not hold a lightweight status read indefinitely when the first computation never finishes", async () => {
+    const projectRoot = makeTempRoot("ade-sync-service-readiness-bounded-");
+    cleanupRoots.push(projectRoot);
+    const db = await openKvDb(path.join(projectRoot, ".ade", "kv.sqlite"), createLogger() as any);
+    (db.sync as { isAvailable?: () => boolean }).isAvailable = () => false;
+    const listSessions = vi.fn(() => new Promise<unknown[]>(() => undefined));
+    const service = createService(db, projectRoot, {
+      agentChatService: { listSessions } as any,
+    });
+
+    try {
+      const snapshot = await service.getStatus({ includeTransferReadiness: false });
+      expect(snapshot.transferReadiness.ready).toBe(false);
+      expect(snapshot.transferReadiness.blockers).toEqual([]);
+    } finally {
+      await service.dispose();
+      db.close();
+    }
+  });
+
 });
 
 describe("buildProjectlessSyncSnapshot", () => {

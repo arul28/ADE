@@ -431,6 +431,7 @@ const LOCAL_LANE_PRESENCE_HEARTBEAT_MS = 30_000;
 const CANONICAL_SYNC_PORT_MIGRATE_FIRST_MS = 2_000;
 const CANONICAL_SYNC_PORT_MIGRATE_MS = 15_000;
 const TRANSFER_READINESS_CACHE_MS = 15_000;
+const LIGHTWEIGHT_TRANSFER_READINESS_WAIT_MS = 2_000;
 const STALE_BRAIN_LAST_SEEN_MS = 5 * 60_000;
 const STALE_VIEWER_DRAFT_BRAIN_LAST_SEEN_MS = 3 * 24 * 60 * 60_000;
 const GHOST_BRAIN_LAST_SEEN_MS = 60 * 60_000;
@@ -1619,16 +1620,30 @@ export function createSyncService(args: SyncServiceArgs) {
   /**
    * Lightweight status reads take the cached value. Before the first computation
    * lands there is no cache, and a caller that acts on `ready` (the CLI and SSH
-   * pairing do) must not read the skipped placeholder as "not ready" while the
-   * real answer is already being computed, so wait for that computation. With
-   * nothing in flight there is nothing to wait for and the read returns at once.
+   * pairing do) must not read the skipped placeholder as "not ready" just
+   * because the brain is still starting. So a read with no cache joins the
+   * running computation, or starts one, and waits for it. The wait is bounded:
+   * the computation waits on the chat scheduler and summarizes every chat, and a
+   * status read must not hang on that. Past the bound the read returns the
+   * placeholder, and the computation still fills the cache for the next read.
    */
   const getLightweightTransferReadiness = async (): Promise<SyncTransferReadiness> => {
     if (transferReadinessCache) return transferReadinessCache.value;
-    if (transferReadinessInFlight) {
-      return transferReadinessInFlight.catch(() => buildSkippedTransferReadiness());
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    const bound = new Promise<SyncTransferReadiness>((resolve) => {
+      timeoutId = setTimeout(
+        () => resolve(buildSkippedTransferReadiness()),
+        LIGHTWEIGHT_TRANSFER_READINESS_WAIT_MS,
+      );
+    });
+    try {
+      return await Promise.race([
+        getTransferReadiness().catch(() => buildSkippedTransferReadiness()),
+        bound,
+      ]);
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
     }
-    return buildSkippedTransferReadiness();
   };
 
   const service = {
