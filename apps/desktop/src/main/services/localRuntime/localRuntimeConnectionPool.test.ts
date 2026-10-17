@@ -184,7 +184,7 @@ function withTsxNodeOptions(value: string | undefined, loaderPath: string): stri
   return existing ? `${existing} --import ${loaderUrl}` : `--import ${loaderUrl}`;
 }
 
-// Mirrors LOCAL_RUNTIME_STARTUP_TIMEOUT_MS in the pool itself: a cold Windows
+// Mirrors LOCAL_RUNTIME_STARTUP_CONNECT_MAX_MS in the timeout policy: a cold Windows
 // runtime start (process spawn + tsx transform + SQLite init) is genuinely
 // slower than on macOS/Linux, so production already waits 30s there against 10s
 // elsewhere. The readiness budget below is a ceiling, not a sleep — a healthy
