@@ -171,7 +171,11 @@ delivery failure. A final delivery failure against a still-reachable parent
 keeps `agent_chat.spawn_completion_delivery_failed`. Explicit take over / promote
 writes `agent_chat.spawn_kind_changed` with `sessionId`, `parentSessionId`,
 `previousSpawnKind`, `spawnKind`, and `source` (`takeover`, `promote`, or
-`parent_dispatch`). None of these spawn-coordination lines is a PostHog event.
+`parent_dispatch`). `chat.setParent` writes `agent_chat.parent_changed` with
+`sessionId`, `previousParentSessionId`, `parentSessionId`,
+`previousSpawnKind`, and `spawnKind`; a relink a cross-machine arrival could
+not make writes `agent_chat.cross_machine_handoff_relink_failed`. None of
+these spawn-coordination lines is a PostHog event.
 
 When the idle sweep or budget eviction reclaims a chat runtime that still
 *claims* live background work — the exemption expired after

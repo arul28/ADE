@@ -3513,6 +3513,67 @@ describe("createAgentChatService", () => {
       expect(JSON.stringify(Array.from(values.values()))).not.toContain(destinationToken);
     });
 
+    it("restores both sides of chat lineage after destination acceptance", async () => {
+      const branchRef = "feature/handoff-lineage";
+      installCleanCrossMachineGitFixture(branchRef);
+      vi.mocked(detectAllAuth).mockResolvedValue([
+        { type: "cli-subscription", cli: "codex", path: "/usr/local/bin/codex", authenticated: true, verified: true },
+      ] as any);
+      vi.mocked(streamText).mockReturnValue({
+        fullStream: (async function* () {
+          yield { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } };
+        })(),
+      } as any);
+      const { service } = createService();
+      const localParent = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.5" });
+      const waitingChild = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        orchestrationParentSessionId: "remote:device-a:source-session",
+        spawnKind: "peer",
+      });
+      const capsule: AgentChatCrossMachineHandoffCapsule = {
+        version: 1,
+        handoffId: "handoff-lineage-1",
+        createdAt: "2026-07-10T12:00:00.000Z",
+        source: {
+          machineName: "MacBook",
+          sessionId: "source-session",
+          provider: "codex",
+          model: "openai/gpt-5.5",
+          title: "Lineage handoff",
+          laneName: "Feature handoff",
+          branchRef,
+          headSha: HANDOFF_TEST_SHA,
+          originUrl: "https://github.com/example/ade.git",
+          orchestrationParentSessionId: localParent.id,
+          spawnKind: "subagent",
+        },
+        target: { targetModelId: "openai/gpt-5.5" },
+        brief: "Continue the handoff with its chat lineage.",
+        artifacts: { fileChanges: [], commands: [], errors: [] },
+        linearIssues: [],
+        continuationPrompt: "Continue from the destination lane.",
+      };
+      const fingerprint = createHash("sha256").update(stableStringify(capsule), "utf8").digest("hex");
+
+      const accepted = await service.acceptCrossMachineHandoff({ capsule, capsuleFingerprint: fingerprint });
+      const arrivedSummary = await service.getSessionSummary(accepted.session.id);
+      const waitingSummary = await service.getSessionSummary(waitingChild.id);
+
+      expect(arrivedSummary).toMatchObject({
+        orchestrationParentSessionId: localParent.id,
+        spawnKind: "subagent",
+      });
+      expect(waitingSummary).toMatchObject({
+        orchestrationParentSessionId: accepted.session.id,
+        spawnKind: "peer",
+      });
+      expect(accepted.session.id).not.toBe("source-session");
+      expect(waitingSummary?.orchestrationParentSessionId).not.toBe("remote:device-a:source-session");
+    });
+
     it("serializes concurrent destination acceptance for the same handoff", async () => {
       const branchRef = "feature/handoff-concurrent";
       installCleanCrossMachineGitFixture(branchRef);

@@ -2424,6 +2424,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat restart <session> [--stop]           Restart the agent session: fresh process, same conversation (picks up new skills/plugins/MCP)
     $ ade chat demote <session>                     Take over a subagent: it becomes a peer and reports stop
     $ ade chat promote <session>                    Restore a peer as a subagent so it reports to its parent again
+    $ ade chat set-parent <session> --parent <chat> Make <chat> this chat's parent; reports go there from the next turn
+                                                    [--type subagent|peer]; a chat whose old parent is gone becomes a subagent
+    $ ade chat set-parent <session> --no-parent     Detach the chat from its parent
     $ ade chat keep-reporting <session>             Dismiss the takeover prompt without changing the report channel
     $ ade chat restore-queue <session> <recovery>   Restore a recently cleared queue during its undo window
     $ ade chat slash <session> --text               List slash commands for a session
@@ -10985,6 +10988,35 @@ function buildChatPlan(args: string[]): CliPlan {
               "sessionId",
             ),
             spawnKind: "peer",
+          }),
+        ),
+      ],
+    };
+  }
+  if (sub === "set-parent" || sub === "reparent") {
+    const target = requireValue(sessionId ?? asString(process.env.ADE_CHAT_SESSION_ID), "sessionId");
+    const detach = readFlag(args, ["--no-parent", "--detach"]);
+    const parent = readValue(args, [...DEFAULT_PARENT_FLAGS]);
+    if (detach === Boolean(parent)) {
+      throw new Error("Pass --parent <session> to set the parent, or --no-parent to detach the chat.");
+    }
+    const spawnKind = readValue(args, [...SPAWN_TYPE_FLAGS]);
+    if (spawnKind && spawnKind !== "subagent" && spawnKind !== "peer") {
+      throw new Error("--type must be subagent or peer.");
+    }
+    if (detach && spawnKind) throw new Error("--type needs a parent; drop it with --no-parent.");
+    return {
+      kind: "execute",
+      label: "chat set-parent",
+      steps: [
+        actionStep(
+          "result",
+          "chat",
+          "setParent",
+          withSession({
+            sessionId: target,
+            parentSessionId: detach ? null : parent,
+            ...(spawnKind ? { spawnKind } : {}),
           }),
         ),
       ],

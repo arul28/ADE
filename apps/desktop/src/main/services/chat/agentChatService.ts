@@ -6,6 +6,7 @@ import { withClaudeSubagentCompactWindow } from "../../../shared/claudeBuiltinAg
 import { claudeToolProfileOrNull, noteClaudeCodeInit } from "../ai/claudeCodeInit";
 import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
 import { withImportedTurnBoundaries } from "../../../shared/importedTurnBoundaries";
+import { parseForeignCallerSessionId } from "../../../shared/runtimeClientNames";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 // Static import so bundlers (tsup → apps/ade-cli brain) include the module; a
@@ -516,6 +517,7 @@ import type {
   AgentChatSpawnCompletion,
   AgentChatSpawnKind,
   AgentChatSetSpawnKindArgs,
+  AgentChatSetParentArgs,
   AgentChatDismissSubagentTakeoverPromptArgs,
   AgentChatEventHistoryPage,
   AgentChatEventHistorySnapshot,
@@ -44342,6 +44344,90 @@ export function createAgentChatService(args: {
     });
   };
 
+  /** The local parent of a chat, read from its live or persisted state. */
+  /**
+   * Point a chat at a new parent, or detach it. The repair for a link that a
+   * move, a deleted parent, or a launch left wrong: reports follow the new
+   * parent from the next turn on.
+   */
+  const setParent = ({
+    sessionId,
+    parentSessionId,
+    spawnKind,
+    actingAgentSessionId,
+  }: AgentChatSetParentArgs): AgentChatSession => {
+    if (spawnKind !== undefined && spawnKind !== "subagent" && spawnKind !== "peer") {
+      throw new Error("Spawn type must be subagent or peer.");
+    }
+    const managed = ensureManagedSession(sessionId);
+    const childId = managed.session.id;
+    const previousParent = managed.session.orchestrationParentSessionId?.trim() || null;
+    const previousSpawnKind = managed.session.spawnKind ?? null;
+    if (parentSessionId === undefined) throw new Error("parentSessionId is required (null detaches the chat).");
+    const nextParent = typeof parentSessionId === "string" ? parentSessionId.trim() : "";
+    const previousParentLive = previousParent !== null
+      && (parentChatStillExists(previousParent) || externalParentReachable(previousParent));
+    // An agent acting on another chat may only release a chat that reports to
+    // it, or adopt one that has no live parent (never take another
+    // coordinator's child).
+    const actor = actingAgentSessionId?.trim();
+    if (actor && actor !== childId) {
+      const releasesOwnChild = !nextParent && previousParent === actor;
+      const adoptsFreeChat = nextParent === actor && (!previousParentLive || previousParent === actor);
+      if (!releasesOwnChild && !adoptsFreeChat) {
+        throw new Error(
+          "An agent can only release a chat that reports to it, or adopt a chat whose parent is gone.",
+        );
+      }
+    }
+    if (!nextParent) {
+      if (spawnKind !== undefined) throw new Error("A spawn type needs a parent chat.");
+      delete managed.session.orchestrationParentSessionId;
+      delete managed.session.spawnKind;
+      delete managed.session.subagentTakeoverPromptShownAt;
+    } else {
+      if (nextParent === childId) throw new Error("A chat cannot be its own parent.");
+      if (!parentChatStillExists(nextParent) && !externalParentReachable(nextParent)) {
+        throw new Error(
+          `Chat '${nextParent}' was not found here. A parent must be a chat in this project, or one this machine already reports to.`,
+        );
+      }
+      // Walk up from the new parent: reaching this chat would make a loop.
+      const seen = new Set<string>([nextParent]);
+      const parentOf = (id: string): string | null =>
+        (managedSessions.get(id)?.session ?? readPersistedState(id))?.orchestrationParentSessionId?.trim() || null;
+      for (let cursor = parentOf(nextParent); cursor; cursor = parentOf(cursor)) {
+        if (cursor === childId) {
+          throw new Error(`Chat '${nextParent}' already reports to this chat, so it cannot be its parent.`);
+        }
+        if (seen.has(cursor)) break;
+        seen.add(cursor);
+      }
+      managed.session.orchestrationParentSessionId = nextParent;
+      // A chat whose old parent is gone was demoted to a peer when it was
+      // orphaned, so relinking it makes it a subagent again unless asked
+      // otherwise. A live link keeps the kind the person chose.
+      managed.session.spawnKind = spawnKind ?? (previousParentLive ? previousSpawnKind : null) ?? "subagent";
+      // Only an unparented chat records who launched it.
+      delete managed.session.launchedBySessionId;
+    }
+    persistChatState(managed);
+    emitTransientChatEnvelope(childId, {
+      type: "session_meta_updated",
+      orchestrationParentSessionId: managed.session.orchestrationParentSessionId ?? null,
+      ...(managed.session.spawnKind ? { spawnKind: managed.session.spawnKind } : {}),
+      subagentTakeoverPromptShownAt: managed.session.subagentTakeoverPromptShownAt ?? null,
+    });
+    logger.info("agent_chat.parent_changed", {
+      sessionId: childId,
+      previousParentSessionId: previousParent,
+      parentSessionId: managed.session.orchestrationParentSessionId ?? null,
+      previousSpawnKind,
+      spawnKind: managed.session.spawnKind ?? null,
+    });
+    return managed.session;
+  };
+
   const dismissSubagentTakeoverPrompt = (
     { sessionId }: AgentChatDismissSubagentTakeoverPromptArgs,
   ): AgentChatSession => {
@@ -46480,6 +46566,12 @@ export function createAgentChatService(args: {
     if (capsule.source.title != null) {
       assertPortableText(capsule.source.title, 300, "source title", { allowEmpty: true });
     }
+    if (capsule.source.orchestrationParentSessionId != null) {
+      assertPortableText(capsule.source.orchestrationParentSessionId, 300, "source parent chat");
+    }
+    if (capsule.source.spawnKind != null && capsule.source.spawnKind !== "subagent" && capsule.source.spawnKind !== "peer") {
+      throw new Error("The handoff capsule has an invalid source spawn type.");
+    }
     if (!/^[0-9a-f]{40,64}$/i.test(capsule.source.headSha)) {
       throw new Error("The handoff capsule has an invalid source commit.");
     }
@@ -47050,6 +47142,12 @@ export function createAgentChatService(args: {
         branchRef,
         headSha,
         originUrl,
+        ...(managed.session.orchestrationParentSessionId?.trim()
+          ? {
+            orchestrationParentSessionId: managed.session.orchestrationParentSessionId.trim(),
+            ...(managed.session.spawnKind ? { spawnKind: managed.session.spawnKind } : {}),
+          }
+          : {}),
       },
       target: {
         targetModelId: targetDescriptor.id,
@@ -47757,6 +47855,52 @@ export function createAgentChatService(args: {
     throw new Error("The handoff capsule fork transport does not match its provider.");
   };
 
+  /**
+   * A moved chat keeps its place in the chat tree. The chat itself gets its
+   * parent back when that parent is reachable here (often it lives here: a
+   * child moved to its coordinator's machine). Chats here that reported to the
+   * moved chat on the source machine (`remote:<source>:<id>`) now report to
+   * the new copy. Best effort: a link that cannot be made is logged, never
+   * allowed to fail the move.
+   */
+  const relinkAfterCrossMachineArrival = (
+    capsule: AgentChatCrossMachineHandoffCapsule,
+    arrivedSessionId: string,
+  ): void => {
+    const sourceSessionId = capsule.source.sessionId.trim();
+    const relink = (args: AgentChatSetParentArgs): void => {
+      try {
+        setParent(args);
+      } catch (error) {
+        logger.warn("agent_chat.cross_machine_handoff_relink_failed", {
+          sessionId: args.sessionId,
+          parentSessionId: args.parentSessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    };
+    const sourceParent = capsule.source.orchestrationParentSessionId?.trim();
+    if (sourceParent && !ensureManagedSession(arrivedSessionId).session.orchestrationParentSessionId) {
+      // `remote:<this machine>:<chat>` on the source is a plain chat id here.
+      const localParent = parseForeignCallerSessionId(sourceParent)?.chatSessionId ?? sourceParent;
+      const parent = parentChatStillExists(localParent)
+        ? localParent
+        : externalParentReachable(sourceParent) ? sourceParent : null;
+      if (parent && parent !== arrivedSessionId) {
+        relink({ sessionId: arrivedSessionId, parentSessionId: parent, spawnKind: capsule.source.spawnKind ?? "subagent" });
+      }
+    }
+    for (const row of sessionService.list({ limit: null, toolTypes: CHAT_SESSION_TOOL_TYPES })) {
+      if (row.id === arrivedSessionId || !isChatToolType(row.toolType)) continue;
+      const lineage = managedSessions.get(row.id)?.session ?? readPersistedState(row.id);
+      const parentId = lineage?.orchestrationParentSessionId?.trim();
+      if (!parentId || parseForeignCallerSessionId(parentId)?.chatSessionId !== sourceSessionId) continue;
+      // The old parent is still alive on the source, so the child keeps the
+      // kind it has now (a peer the person took over stays a peer).
+      relink({ sessionId: row.id, parentSessionId: arrivedSessionId, spawnKind: lineage?.spawnKind ?? "subagent" });
+    }
+  };
+
   const acceptCrossMachineHandoffCore = async (
     args: AgentChatAcceptCrossMachineHandoffArgs,
   ): Promise<AgentChatAcceptCrossMachineHandoffResult> => {
@@ -47778,6 +47922,9 @@ export function createAgentChatService(args: {
       && priorRecord.sessionId
     ) {
       const completedSession = ensureManagedSession(priorRecord.sessionId).session;
+      // A retry after a crash between dispatch and the relink still relinks;
+      // the relink only touches links that still point at the old chat.
+      relinkAfterCrossMachineArrival(capsule, priorRecord.sessionId);
       if (priorRecord.state === "dispatched") {
         persistCrossMachineHandoffRecord({
           ...priorRecord,
@@ -48061,6 +48208,7 @@ export function createAgentChatService(args: {
         });
         persistChatState(destinationManaged);
       }
+      relinkAfterCrossMachineArrival(capsule, session.id);
       record = { ...record, state: "complete", updatedAt: nowIso(), lastError: null };
       persistCrossMachineHandoffRecord(record);
       return {
@@ -65135,6 +65283,12 @@ export function createAgentChatService(args: {
 
   /** The public update: a person changing a chat's settings also moves the machine defaults. */
   const updateSessionAndRememberDefaults = async (args: AgentChatUpdateSessionArgs): Promise<AgentChatSession> => {
+    // A parent sent here used to be dropped without a word, so the caller
+    // believed the chat was relinked.
+    const loose = args as Record<string, unknown>;
+    if (loose.orchestrationParentSessionId !== undefined || loose.parentSessionId !== undefined) {
+      throw new Error("updateSession does not change a chat's parent. Use chat.setParent (`ade chat set-parent`).");
+    }
     const session = await updateSession(args);
     const touchesDefaults = LAUNCH_DEFAULT_UPDATE_FIELDS.some((field) => args[field] !== undefined);
     if (touchesDefaults && !args.runtimeActor) rememberLaunchDefaults(session);
@@ -68495,6 +68649,7 @@ export function createAgentChatService(args: {
     getPermissionCeiling: resolvePermissionCeiling,
     regenerateSessionMetadata,
     setSpawnKind,
+    setParent,
     dismissSubagentTakeoverPrompt,
     reconcileThreadPointerFromRedundantSources,
     isTranscriptPathActive,
