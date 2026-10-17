@@ -419,4 +419,32 @@ describe("registerAdeProtocolHandler single-instance lock", () => {
     registerAdeProtocolHandler({ dispatch: vi.fn(), onLockLostWithoutForward });
     expect(onLockLostWithoutForward).not.toHaveBeenCalled();
   });
+
+  // A packaged copy that loses the lock must not boot, so the caller needs to
+  // know it did not acquire the lock.
+  it("reports whether this process holds the lock", () => {
+    electronMock.lockAcquired = true;
+    expect(registerAdeProtocolHandler({ dispatch: vi.fn() })).toBe(true);
+    expect(electronMock.quit).not.toHaveBeenCalled();
+
+    electronMock.lockAcquired = false;
+    expect(registerAdeProtocolHandler({ dispatch: vi.fn(), onLockLostWithoutForward: vi.fn() })).toBe(false);
+  });
+
+  it("quits a packaged lock loser that has nothing to forward", () => {
+    electronMock.lockAcquired = false;
+    process.argv = ["/path/electron", "/path/app"];
+    const flushLog = vi.fn();
+    expect(registerAdeProtocolHandler({ dispatch: vi.fn(), flushLog })).toBe(false);
+    expect(flushLog).toHaveBeenCalledTimes(1);
+    expect(electronMock.quit).toHaveBeenCalledTimes(1);
+    expect(electronMock.whenReady).not.toHaveBeenCalled();
+  });
+
+  it("quits a lock loser that claims the scheme, even with no deeplink", () => {
+    electronMock.lockAcquired = false;
+    process.argv = ["/path/electron", "/path/app"];
+    expect(registerAdeProtocolHandler({ dispatch: vi.fn(), claimAsDefault: true })).toBe(false);
+    expect(electronMock.quit).toHaveBeenCalledTimes(1);
+  });
 });

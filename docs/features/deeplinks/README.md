@@ -127,7 +127,9 @@ Desktop main process — protocol handler:
   to the machine logger (`~/.ade/runtime/desktop-main.jsonl`), not a project
   one — all of this happens before a project can be open — and the branch that
   loses the single-instance lock and quits calls `flushLog` first, so
-  `deeplink.single_instance.lock_lost` survives the exit.
+  `deeplink.single_instance.lock_lost` survives the exit. A packaged copy that
+  loses the lock never boots: `main.ts` stops at the top of `whenReady`. The dev
+  app keeps its own lock-lost message.
 - `apps/desktop/src/main/services/deeplinks/projectNavigationWindowSelection.ts`
   — pure selection helper for project-scoped navigation. It first prefers a
   window whose active project already matches the target root, then a window

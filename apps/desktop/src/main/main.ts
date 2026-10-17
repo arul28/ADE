@@ -1436,7 +1436,7 @@ function exitDevAppSharingUserData(): void {
   app.exit(1);
 }
 
-registerAdeProtocolHandler({
+const isPrimaryInstance = registerAdeProtocolHandler({
   claimAsDefault: deeplinkClaimAsDefault,
   dispatch: dispatchOrQueueAppNavigationRequest,
   // Which scheme this build claimed, and which process won the single-instance
@@ -1512,6 +1512,11 @@ if (process.platform !== "darwin") {
 const museQuota = createMuseQuotaStore();
 
 app.whenReady().then(async () => {
+  // A packaged copy that lost the single-instance lock has handed its URL, if it
+  // had one, to the running app and is quitting. Booting here would open a second
+  // set of windows and bind a bridge the running app owns. Dev keeps its own path.
+  if (!isPrimaryInstance && app.isPackaged) return;
+
   // Perf run init — must come first so subsequent IPC + sampler hooks can see the active run.
   const perfRun = initPerfRunFromEnv();
   if (perfRun) {

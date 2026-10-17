@@ -41,6 +41,9 @@ export function isAdeDeeplinkArg(arg: unknown): arg is string {
  *
  * Must be called BEFORE `app.whenReady()` so the OS routes the cold-start URL
  * through this process.
+ *
+ * Returns whether this process holds the single-instance lock. When it does
+ * not, the process is quitting and must not boot.
  */
 export function registerAdeProtocolHandler(options: {
   /** Called for every successfully parsed inbound deeplink. */
@@ -66,10 +69,10 @@ export function registerAdeProtocolHandler(options: {
   /**
    * Called when this process lost the single-instance lock and has no deeplink
    * to forward. The dev app passes one that explains and exits: Electron never
-   * fires `ready` for such a process.
+   * fires `ready` for such a process. Without one, the process quits.
    */
   onLockLostWithoutForward?: () => void;
-}): void {
+}): boolean {
   const { dispatch } = options;
   const log = options.log ?? (() => {});
   const claimAsDefault = options.claimAsDefault === true;
@@ -115,9 +118,9 @@ export function registerAdeProtocolHandler(options: {
   const coldStartDeeplinkArgs = process.argv.slice(1).filter(isAdeDeeplinkArg);
 
   // Single-instance lock: a second invocation routes through `second-instance`
-  // instead of starting a fresh Electron process. Without a deeplink to
-  // forward, `onLockLostWithoutForward` decides what happens; with none given,
-  // the process carries on.
+  // instead of starting a fresh Electron process. A process that loses the lock
+  // does not boot. It quits, or, with no deeplink to forward, runs
+  // `onLockLostWithoutForward` (dev: explains and exits) when one is given.
   const acquired = app.requestSingleInstanceLock();
   if (!acquired) {
     const shouldForwardToLockHolder = claimAsDefault || coldStartDeeplinkArgs.length > 0;
@@ -126,12 +129,12 @@ export function registerAdeProtocolHandler(options: {
       deeplinkArgCount: coldStartDeeplinkArgs.length,
       shouldForwardToLockHolder,
     });
-    if (shouldForwardToLockHolder) {
+    if (shouldForwardToLockHolder || !options.onLockLostWithoutForward) {
       options.flushLog?.();
       app.quit();
-      return;
+      return false;
     }
-    options.onLockLostWithoutForward?.();
+    options.onLockLostWithoutForward();
   }
 
   // Buffer URLs received before whenReady so they aren't dropped.
@@ -184,6 +187,8 @@ export function registerAdeProtocolHandler(options: {
       handleDeeplinkUrl(url, "buffered", dispatch, log);
     }
   });
+
+  return acquired;
 }
 
 /**
