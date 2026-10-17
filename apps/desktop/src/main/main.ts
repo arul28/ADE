@@ -225,6 +225,7 @@ import {
 import { pathKey, pathsEqual } from "./services/shared/pathCompare";
 import { assertLocalProjectDataAvailable, deriveProjectId, ProjectRegistry, recordLocalProjectDatabaseIdentity } from "../../../ade-cli/src/services/projects/projectRegistry";
 import { buildRosterSnapshot } from "../../../ade-cli/src/services/sync/rosterBuilder";
+import { activeCompileCacheDir, scheduleStaleCompileCachePrune } from "../../../ade-cli/src/services/runtime/compileCachePrune";
 import {
   detectDefaultBaseRef,
   resolveRepoRoot,
@@ -9755,6 +9756,13 @@ app.whenReady().then(async () => {
   builtInBrowserService.attachToWindow(initialWindow);
   initialWindowNavigationReady = true;
   drainPendingAppNavigationRequests();
+  // Compile caches of earlier builds go once the first window is up. An explicit
+  // ADE_COMPILE_CACHE_DIR or NODE_COMPILE_CACHE is the caller's directory, so it is left alone.
+  if (!process.env.ADE_COMPILE_CACHE_DIR?.trim() && !process.env.NODE_COMPILE_CACHE?.trim()) {
+    scheduleStaleCompileCachePrune(activeCompileCacheDir(), {
+      onPruned: (removed) => logMachineEvent("info", "compile_cache.pruned", { removed }),
+    });
+  }
   if (shouldShowRuntimeMigrationNotice && process.env.NODE_ENV !== "test") {
     void dialog.showMessageBox(initialWindow, {
       type: "info",
