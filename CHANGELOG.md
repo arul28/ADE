@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.109] - 2026-10-16
+
+### Desktop and web
+
+- Long chats open 12.5× faster, and a turn that touched thousands of files no longer stalls the chat (#1711).
+- Older chat history pages load about 2.3× faster (#1692), and the composer re-renders far less while streaming (#1691).
+- Opening a terminal or editor, or checking sign-in, no longer freezes the app for about a second (#1709).
+- Background relay traffic for account settings cut about 20×, with remote changes still applied on arrival (#1682, #1696).
+- Recent projects summarize 50× faster (#1661).
+- Closed dialogs stop re-rendering while a chat streams (#1715, #1717), and every `ade` command starts about 145 ms faster via Node's compile cache (#1718).
+- Sync to a dead host gives up in 5 s instead of about 75 s, and stale hosts are reclaimed (#1694).
+- Opening a project waits out a peer's database lock instead of failing (#1693).
+- Pairing names the machine and route when it stalls (#1703), and Repair appears beside the sync-host outcome that explains it (#1710).
+- Account settings and sync status can no longer hang the app for 30 s (#1666, #1671).
+- Search no longer wedges the background service; chats can be re-parented and keep links across a move (#1716).
+- Opening a project reports why it failed (#1678), and moving a project carries its logs, proof paths and closed lanes' history (#1677).
+- Branch import works from the web client (#1687).
+- A missing folder or file no longer trips the path allowlist (#1668, #1670, #1702).
+- ⌘-chords for the Work page, with a shortcut sheet on `?` (#1686).
+- Sign in to an MCP server once, for every agent (#1688).
+- Error log lines name the failure, and Sentry noise is filtered out (#1684, #1700, #1663, #1683).
+
 ## [1.2.108] - 2026-10-16
 
 ### Desktop and web
@@ -2549,7 +2571,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.108...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.109...HEAD
+[1.2.109]: https://github.com/arul28/ADE/compare/v1.2.108...v1.2.109
 [1.2.108]: https://github.com/arul28/ADE/compare/v1.2.107...v1.2.108
 [1.2.107]: https://github.com/arul28/ADE/compare/v1.2.106...v1.2.107
 [1.2.106]: https://github.com/arul28/ADE/compare/v1.2.105...v1.2.106
