@@ -616,6 +616,86 @@ describe("LaneGitActionsPane rescue action", () => {
     expect(screen.queryByTitle("src/alpha.ts")).toBeNull();
   });
 
+  it("paints a revisit's cached Branch diff through the Files list window, not every row", async () => {
+    mockBranchChanges(() => Array.from({ length: 188 }, (_, index) => `src/generated/file-${index}.ts`));
+    const first = renderPane({ laneId: "lane-2" });
+    expect(await screen.findByTitle("src/generated/file-0.ts")).toBeTruthy();
+    first.unmount();
+
+    (window.ade.diff as any).getBranchChanges = vi.fn(() => new Promise(() => undefined));
+    renderPane({ laneId: "lane-2" });
+
+    // The cached rows paint on mount, and only the window of them mounts.
+    expect(screen.getByTitle("src/generated/file-0.ts")).toBeTruthy();
+    const mounted = document.querySelectorAll("[data-testid='git-pane-branch'] [data-index]").length;
+    expect(mounted).toBeGreaterThan(0);
+    expect(mounted).toBeLessThan(60);
+  });
+
+  it("paints a revisit's cached uncommitted list through the Files list window, not every row", async () => {
+    mockChangesByLaneId["lane-1"] = {
+      staged: [],
+      unstaged: Array.from({ length: 188 }, (_, index) => ({ path: `src/generated/file-${index}.ts`, kind: "modified" as const })),
+    };
+    const first = renderPane();
+    expect(await screen.findByText("Unstaged (188)")).toBeTruthy();
+    first.unmount();
+
+    hangDiffRefresh = true;
+    renderPane();
+
+    expect(screen.getByText("src/generated/file-0.ts")).toBeTruthy();
+    const mounted = document.querySelectorAll("[data-testid='git-pane-uncommitted'] [data-index]").length;
+    expect(mounted).toBeGreaterThan(0);
+    expect(mounted).toBeLessThan(60);
+  });
+
+  it("never caches a read that lands while a stage is still running", async () => {
+    const user = userEvent.setup();
+    const pane = (active: boolean) => (
+      <MemoryRouter>
+        <LaneGitActionsPane
+          laneId="lane-1"
+          active={active}
+          autoRebaseEnabled={false}
+          onOpenSettings={vi.fn()}
+          onSelectFile={vi.fn()}
+          onSelectCommit={vi.fn()}
+          selectedPath={null}
+          selectedMode={null}
+          selectedCommit={null}
+          selectedCommitSha={null}
+        />
+      </MemoryRouter>
+    );
+    const first = render(pane(true));
+    expect(await screen.findByText("src/file.ts")).toBeTruthy();
+
+    let finishStage: () => void = () => undefined;
+    (window.ade.git as any).stageFile = vi.fn(() => new Promise((resolve) => {
+      finishStage = () => resolve({ operationId: "stage-file", preHeadSha: "abc", postHeadSha: "abc" });
+    }));
+    void user.click(screen.getByRole("button", { name: "Stage src/file.ts" }));
+    await waitFor(() => expect(window.ade.git.stageFile).toHaveBeenCalled());
+
+    // A read that starts while the stage runs still sees the file unstaged, and lands.
+    const readsBefore = (window.ade.diff.getChanges as any).mock.calls.length;
+    first.rerender(pane(false));
+    first.rerender(pane(true));
+    await waitFor(() => expect((window.ade.diff.getChanges as any).mock.calls.length).toBeGreaterThan(readsBefore));
+    await act(async () => undefined);
+
+    hangDiffRefresh = true;
+    await act(async () => {
+      finishStage();
+    });
+    first.unmount();
+
+    renderPane();
+
+    expect(screen.queryByText("src/file.ts")).toBeNull();
+  });
+
   it("keys the History list by the lane's cache scope and branch", async () => {
     renderPane({ laneId: "lane-2" });
     await screen.findByTestId("git-pane-rebase");

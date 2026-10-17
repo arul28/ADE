@@ -1239,7 +1239,8 @@ export function LaneGitActionsPane({
       error: null,
     });
     try {
-      await fn();
+      // A read that started while the mutation ran may have seen the pre-mutation repo: drop what it cached before the refresh.
+      await fn().finally(() => invalidateLaneGitCaches(projectStateKey, actionLaneId));
       const isRemoteAction =
         actionName === "pull" ||
         actionName === "fetch" ||
@@ -1358,7 +1359,8 @@ export function LaneGitActionsPane({
         setCommitMessage(generatedMessage);
       }
       invalidateLaneGitCaches(projectStateKey, actionLaneId);
-      await window.ade.git.commit({ laneId: actionLaneId, message: generatedMessage, amend: amendCommit }, pin);
+      await window.ade.git.commit({ laneId: actionLaneId, message: generatedMessage, amend: amendCommit }, pin)
+        .finally(() => invalidateLaneGitCaches(projectStateKey, actionLaneId));
       await completeCommitRefresh(actionLaneId);
       patchLaneGitActionRuntimeStateIfCurrent(actionScopeKey, actionVersion, {
         busyAction: null,
@@ -1511,12 +1513,16 @@ export function LaneGitActionsPane({
 
   const toggleStageFile = async (path: string, isStaged: boolean) => {
     if (!laneId) return;
-    if (isStaged) {
+    invalidateLaneGitCaches(projectStateKey, laneId);
+    try {
+      if (isStaged) {
+        await window.ade.git.unstageFile({ laneId, path }, pin);
+      } else {
+        await window.ade.git.stageFile({ laneId, path }, pin);
+      }
+    } finally {
+      // A read that started while the mutation ran may have seen the pre-mutation index.
       invalidateLaneGitCaches(projectStateKey, laneId);
-      await window.ade.git.unstageFile({ laneId, path }, pin);
-    } else {
-      invalidateLaneGitCaches(projectStateKey, laneId);
-      await window.ade.git.stageFile({ laneId, path }, pin);
     }
     await refreshChanges();
   };
@@ -1640,7 +1646,8 @@ export function LaneGitActionsPane({
     });
     try {
       invalidateLaneGitCaches(projectStateKey, actionLaneId);
-      const created = await window.ade.lanes.createFromUnstaged({ sourceLaneId: actionLaneId, name }, pin);
+      const created = await window.ade.lanes.createFromUnstaged({ sourceLaneId: actionLaneId, name }, pin)
+        .finally(() => invalidateLaneGitCaches(projectStateKey, actionLaneId));
       if (pin) {
         // The new lane lives on the lane's machine, not in this tab's lane
         // list or Lanes page, so stay here: the source lane's changes moved
