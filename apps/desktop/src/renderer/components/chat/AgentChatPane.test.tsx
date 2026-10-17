@@ -4048,28 +4048,103 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => expect(onOpenTerminalPane).toHaveBeenCalledTimes(2));
   });
 
-  it("does not reveal a chat terminal that already ended when its replayed created arrives", async () => {
-    // The build finished before the pane subscribed, and the chat's list does
-    // not show it. A replayed "created" must not reveal a finished terminal.
+  it("reveals a new terminal that already ended by the time its get resolves, once", async () => {
+    // A quick agent command can finish before get() answers. It is still news,
+    // so it reveals once, and a replay of its "created" does not reveal it again.
     const session = buildSession("session-1", { status: "idle" });
-    const finished = {
-      ...buildChatTerminalSession(session.sessionId, "terminal-1", "pty-1", "Build"),
+    const quick = {
+      ...buildChatTerminalSession(session.sessionId, "terminal-1", "pty-1", "Quick run"),
       endedAt: "2026-03-24T06:10:00.000Z",
       status: "completed" as const,
       exitCode: 0,
     };
     installAdeMocks({ sessions: [session], shellSessions: [] });
-    vi.mocked(window.ade.sessions.get).mockResolvedValue(finished);
-    installReplayingSessionEvents([{ sessionId: finished.id, reason: "created" }]);
+    vi.mocked(window.ade.sessions.get).mockResolvedValue(quick);
+    const events = installReplayingSessionEvents([]);
     const onOpenTerminalPane = vi.fn();
-
     renderToolsPane(session, { terminalPaneOpen: false, onOpenTerminalPane });
-
-    await waitFor(() => expect(vi.mocked(window.ade.sessions.get)).toHaveBeenCalled());
-    await act(async () => {
+    const flush = () => act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
-    expect(onOpenTerminalPane).not.toHaveBeenCalled();
+
+    await screen.findByRole("textbox");
+    act(() => events.emit({ sessionId: quick.id, reason: "created" }));
+    await waitFor(() => expect(onOpenTerminalPane).toHaveBeenCalledTimes(1));
+
+    act(() => events.emit({ sessionId: quick.id, reason: "created" }));
+    await flush();
+    expect(onOpenTerminalPane).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases a deleted terminal's id from the pane's record", async () => {
+    // A deleted terminal's id is no longer remembered, so the record does not
+    // grow with terminals that no longer exist. If the host hands the same id
+    // back as a live row, that row is news again.
+    const session = buildSession("session-1", { status: "idle" });
+    const shell = buildChatTerminalSession(session.sessionId, "terminal-1", "pty-1", "Agent run");
+    installAdeMocks({ sessions: [session], shellSessions: [] });
+    vi.mocked(window.ade.sessions.get).mockResolvedValue(shell);
+    const events = installReplayingSessionEvents([]);
+    const onOpenTerminalPane = vi.fn();
+    renderToolsPane(session, { terminalPaneOpen: false, onOpenTerminalPane });
+    const flush = () => act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    await screen.findByRole("textbox");
+    act(() => events.emit({ sessionId: shell.id, reason: "created" }));
+    await waitFor(() => expect(onOpenTerminalPane).toHaveBeenCalledTimes(1));
+
+    act(() => events.emit({ sessionId: shell.id, reason: "deleted" }));
+    await flush();
+    act(() => events.emit({ sessionId: shell.id, reason: "created" }));
+    await waitFor(() => expect(onOpenTerminalPane).toHaveBeenCalledTimes(2));
+  });
+
+  it("reveals nothing until the chat's baseline loads, and an event retries the read", async () => {
+    // The chat's list is the only way to tell an old terminal from a new one. While
+    // it cannot be read, a replayed "created" for an old terminal must not reveal it.
+    const session = buildSession("session-1", { status: "idle" });
+    const old = buildChatTerminalSession(session.sessionId, "terminal-1", "pty-1", "Earlier run");
+    const next = buildChatTerminalSession(session.sessionId, "terminal-2", "pty-2", "Next run");
+    const sessionsById = new Map([old, next].map((row) => [row.id, row] as const));
+    installAdeMocks({ sessions: [session], shellSessions: [] });
+    vi.mocked(window.ade.sessions.get).mockImplementation(async (id: string) => sessionsById.get(id) ?? null);
+    let hostAnswers = false;
+    let baselineReads = 0;
+    vi.mocked(window.ade.sessions.list).mockImplementation(async (_args, _pin, options) => {
+      // Only the pane's authoritative baseline read is in question here.
+      if (!options?.authoritative) return [];
+      baselineReads += 1;
+      if (!hostAnswers) throw new Error("host unavailable");
+      return [old];
+    });
+    const events = installReplayingSessionEvents([{ sessionId: old.id, reason: "created" }]);
+    const onOpenTerminalPane = vi.fn();
+    // The failed read is expected here, so its log is not noise for this test.
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      renderToolsPane(session, { terminalPaneOpen: false, onOpenTerminalPane });
+      const flush = () => act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      await waitFor(() => expect(vi.mocked(window.ade.sessions.get)).toHaveBeenCalled());
+      await flush();
+      await flush();
+      expect(baselineReads).toBeGreaterThan(0);
+      expect(onOpenTerminalPane).not.toHaveBeenCalled();
+
+      // The read recovers. A new terminal reveals, and the old one, now listed, never does.
+      hostAnswers = true;
+      act(() => events.emit({ sessionId: next.id, reason: "created" }));
+      await waitFor(() => expect(onOpenTerminalPane).toHaveBeenCalledTimes(1));
+      act(() => events.emit({ sessionId: old.id, reason: "created" }));
+      await flush();
+      expect(onOpenTerminalPane).toHaveBeenCalledTimes(1);
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 
   it("shows a green session indicator while the agent is working", async () => {

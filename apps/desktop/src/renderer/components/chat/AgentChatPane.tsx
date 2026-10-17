@@ -8739,22 +8739,41 @@ export function AgentChatPane({
     // terminal the chat has when this subscription starts is therefore known,
     // not news. Ids are compared, not `startedAt`: a remote machine's clock is
     // not ours, and a shell it just started must still reveal.
-    const baseline = selectedSessionId
-      ? sessionsApi.list({ chatSessionId: selectedSessionId, limit: null }, pin).then(
-        (rows) => {
-          // Nothing is released here. A later read can be stale or partial, so
-          // an id this read omits may still be a live terminal.
-          for (const row of rows) rememberKnownTerminalId(knownTerminalIds, row.id);
-          return true;
-        },
-        (error: unknown) => {
-          // Without the baseline an old terminal cannot be told from a new one,
-          // so this subscription reveals nothing rather than reopen a closed pane.
-          console.error("[AgentChatPane] terminal baseline read failed", { sessionId: selectedSessionId, error });
-          return false;
-        },
-      )
-      : Promise.resolve(true);
+    //
+    // Until a read has loaded, nothing is news, because an unloaded baseline cannot
+    // tell an old terminal from a new one. A failed read leaves it unloaded and the
+    // next event retries it. The read is authoritative, so an unanswered list cannot
+    // pass for "the chat has no terminals".
+    const baselineChatSessionId = selectedSessionId;
+    let baselineLoaded = !baselineChatSessionId;
+    let baselineRead: Promise<boolean> | null = null;
+    const loadBaseline = (): Promise<boolean> => {
+      if (baselineLoaded || !baselineChatSessionId) return Promise.resolve(true);
+      // Events that arrive while a read is in flight share it.
+      if (!baselineRead) {
+        baselineRead = sessionsApi.list(
+          { chatSessionId: baselineChatSessionId, limit: null },
+          pin,
+          { authoritative: true },
+        ).then(
+          (rows) => {
+            // Nothing is released here. A later read can be stale or partial, so
+            // an id this read omits may still be a live terminal.
+            for (const row of rows) rememberKnownTerminalId(knownTerminalIds, row.id);
+            baselineLoaded = true;
+            baselineRead = null;
+            return true;
+          },
+          (error: unknown) => {
+            baselineRead = null;
+            console.error("[AgentChatPane] terminal baseline read failed", { sessionId: baselineChatSessionId, error });
+            return false;
+          },
+        );
+      }
+      return baselineRead;
+    };
+    void loadBaseline();
     const revealCreatedTerminal = async (sessionId: string) => {
       if (knownTerminalIds.has(sessionId)) return;
       let session: TerminalSessionDetail | null = null;
@@ -8764,12 +8783,9 @@ export function AgentChatPane({
         return;
       }
       // A replay can land before the baseline read does, so judge it after.
-      const baselineLoaded = await baseline;
-      if (disposed || !baselineLoaded || !session) return;
+      const baselineOk = await loadBaseline();
+      if (disposed || !baselineOk || !session) return;
       if (knownTerminalIds.has(sessionId)) return;
-      // Only a running terminal is news. A replay can hand over the "created" of
-      // one that has since ended, and a stale list may not show it, so its status decides.
-      if (session.status !== "running") return;
       const selectedChatSessionId = selectedSessionIdRef.current;
       if (!selectedChatSessionId || session.chatSessionId !== selectedChatSessionId) return;
       if (session.laneId !== laneId) return;

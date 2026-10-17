@@ -1,6 +1,7 @@
 import type {
   ChatTerminalPreviewResult,
   ChatTerminalReadResult,
+  ListSessionsOptions,
   PtyCreateResult,
   PtyDisposeResult,
   PtySendToSessionResult,
@@ -138,36 +139,49 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
     }
   }
 
-  async function fetchSessions(key: string, args: Record<string, unknown>): Promise<TerminalSessionSummary[]> {
-    const existing = sessionRefreshInFlight.get(key);
+  async function fetchSessions(
+    key: string,
+    args: Record<string, unknown>,
+    authoritative: boolean,
+  ): Promise<TerminalSessionSummary[]> {
+    // A plain read can settle to an empty fallback, so an authoritative read must not join it.
+    const flightKey = authoritative ? `${key}\u0000authoritative` : key;
+    const existing = sessionRefreshInFlight.get(flightKey);
     if (existing) return await existing;
     const request = (async () => {
       const sessions = await commands.call<TerminalSessionSummary[]>("work.listSessions", args, {
         fallback: [],
         idempotent: true,
+        authoritative,
       });
       terminalRegistry.registerSummaries(sessions);
       rememberSessionRows(key, sessions);
       return sessions;
     })();
-    sessionRefreshInFlight.set(key, request);
+    sessionRefreshInFlight.set(flightKey, request);
     try {
       return await request;
     } finally {
-      if (sessionRefreshInFlight.get(key) === request) sessionRefreshInFlight.delete(key);
+      if (sessionRefreshInFlight.get(flightKey) === request) sessionRefreshInFlight.delete(flightKey);
     }
   }
 
-  async function listSessions(args?: unknown, pin?: RuntimePinArg): Promise<TerminalSessionSummary[]> {
+  async function listSessions(
+    args?: unknown,
+    pin?: RuntimePinArg,
+    options?: ListSessionsOptions,
+  ): Promise<TerminalSessionSummary[]> {
     assertWebRuntimePinRoutable("sessions.list", pin, infra);
     const record = asRecord(args);
     const key = stableCacheKey(record);
+    const authoritative = options?.authoritative === true;
     const mirrored = sessionMirror.get(key);
-    if (lifecycle.size > 0 && mirrored) {
+    // The mirror holds the last rows this client saw, not the host's answer, so an authoritative read skips it.
+    if (!authoritative && lifecycle.size > 0 && mirrored) {
       // A lifecycle write is in flight. Answer from the mirror so the change is
       // on screen at once, and reconcile against the authoritative read in the
       // background — the row only moves again if the machine disagrees.
-      void fetchSessions(key, record)
+      void fetchSessions(key, record, false)
         .then((fresh) => {
           const report = lifecycle.reconcile(fresh);
           // Agreement needs no repaint — the row already shows what the machine
@@ -185,7 +199,7 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
         });
       return lifecycle.decorateAll(mirrored);
     }
-    const sessions = await fetchSessions(key, record);
+    const sessions = await fetchSessions(key, record, authoritative);
     lifecycle.reconcile(sessions);
     return lifecycle.decorateAll(sessions);
   }

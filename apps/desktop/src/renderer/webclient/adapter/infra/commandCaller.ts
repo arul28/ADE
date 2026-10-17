@@ -11,6 +11,12 @@ export type CommandCallOptions<T> = {
   fallback: Fallback<T>;
   /** Mutation guard: false prevents this call from ever entering the read cache. */
   idempotent?: boolean;
+  /**
+   * The caller needs the host's own answer. When the host cannot give one, the
+   * call rejects instead of resolving `fallback` or the last successful read,
+   * so an empty or stale result is never taken for the real one.
+   */
+  authoritative?: boolean;
   requireProject?: boolean;
   timeoutMs?: number;
   cacheTtlMs?: number;
@@ -115,7 +121,8 @@ export class CommandCaller {
       // so resolving the fallback reports a mutation that never happened.
       // (The `idempotent: false` guard below only covers failures AFTER
       // dispatch; this is the case where nothing is dispatched at all.)
-      if (options.idempotent === false) {
+      // An authoritative read does not degrade either: its fallback is not the host's answer.
+      if (options.idempotent === false || options.authoritative) {
         throw new UnsupportedRemoteCommandError(action);
       }
       return await resolveFallback(options.fallback);
@@ -124,6 +131,9 @@ export class CommandCaller {
     const requireProject = options.requireProject ?? descriptor.scope === "project";
     const projectId = descriptor.scope === "project" ? this.projectState.getProjectId() : null;
     if (requireProject && descriptor.scope === "project" && !projectId) {
+      if (options.authoritative) {
+        throw new Error(`Action '${action}' needs a project open on the connected ADE host.`);
+      }
       return await resolveFallback(options.fallback);
     }
 
@@ -150,6 +160,8 @@ export class CommandCaller {
         // Never fabricate success from its UI fallback: callers such as the
         // chat composer rely on rejection to preserve the user's draft.
         if (options.idempotent === false) throw error;
+        // An authoritative read rejects too: neither the last read nor the fallback is the host's answer.
+        if (options.authoritative) throw error;
         if (isTransportFailure(error)) {
           if (readKey && this.lastSuccessfulReads.has(readKey)) {
             return {

@@ -723,6 +723,7 @@ import type {
   ListLanesArgs,
   ListOperationsArgs,
   ListSessionsArgs,
+  ListSessionsOptions,
   DeleteSessionArgs,
   ListTestRunsArgs,
   OperationRecord,
@@ -2272,6 +2273,7 @@ declare global {
         list: (
           args?: ListSessionsArgs,
           pin?: OpenProjectBinding | null,
+          options?: ListSessionsOptions,
         ) => Promise<TerminalSessionSummary[]>;
         get: (
           sessionId: string,

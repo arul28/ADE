@@ -1,10 +1,11 @@
 /**
- * The most terminal ids a chat pane remembers. Far above what one pane sees in
- * practice: the chat's own list plus the terminals agents start while the pane
- * is open. An id only leaves the set after this many newer ids were remembered,
- * so a live terminal is not evicted in practice.
+ * The most terminal ids a chat pane remembers. Each is a short string, so the
+ * full set is about 5,000 strings (estimated well under a megabyte, not measured).
+ * An id is evicted only after this many newer ids were remembered within one
+ * pane's life, far more than the chat's own list plus the terminals agents start
+ * while the pane is open.
  */
-export const KNOWN_TERMINAL_IDS_LIMIT = 1000;
+export const KNOWN_TERMINAL_IDS_LIMIT = 5000;
 
 /**
  * Remembers a terminal id the pane must not reveal again, so a replayed
