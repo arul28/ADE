@@ -1,10 +1,10 @@
 /* @vitest-environment jsdom */
 
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LaneSummary, OpenProjectBinding } from "../../../shared/types";
-import { useAppStore } from "../../state/appStore";
+import { useAppStore, type CrossMachineMachineLanes } from "../../state/appStore";
 import { foreignLaneKey } from "../../state/laneMachineRouting";
 import type * as ManageLaneDialogModule from "../lanes/ManageLaneDialog";
 import { WorkManageLaneDialogHost } from "./WorkManageLaneDialogHost";
@@ -57,42 +57,110 @@ const studioLane: LaneSummary = {
   createdAt: "2026-04-22T10:00:00.000Z",
 };
 
+function studioEntry(lanes: LaneSummary[]): CrossMachineMachineLanes {
+  return {
+    machineId: STUDIO_TARGET_ID,
+    machineName: "Mac Studio",
+    targetId: STUDIO_TARGET_ID,
+    projectId: "project-1",
+    binding: studioPin,
+    online: true,
+    lanes,
+    sessions: [],
+    prs: [],
+    lastSyncedAtMs: null,
+    lanesSyncedAtMs: null,
+    error: null,
+  };
+}
+
+/** What the Work sidebar's union holds for the Studio: its lane list as last read. */
+function setStudioLaneList(lanes: LaneSummary[]) {
+  useAppStore.setState({ crossMachineLanesByMachineId: { [STUDIO_TARGET_ID]: studioEntry(lanes) } });
+}
+
+function startDeleteOnStudio(deleteLane: () => Promise<void>) {
+  const deleteMock = vi.fn(deleteLane);
+  Object.defineProperty(window, "ade", {
+    configurable: true,
+    value: { lanes: { list: vi.fn(async () => [studioLane]), delete: deleteMock } },
+  });
+  render(
+    <WorkManageLaneDialogHost laneId={studioLane.id} lane={studioLane} runtimePin={studioPin} onClose={vi.fn()} />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Select worktree" }));
+  fireEvent.click(screen.getByRole("button", { name: "Delete lane" }));
+  return deleteMock;
+}
+
+// Keyed the way the Work sidebar names a lane on another machine. The bare lane id
+// belongs to this machine's lane, so nothing may land there.
+const studioDeleteState = () =>
+  useAppStore.getState().laneDeleteProgressByLaneId[foreignLaneKey(STUDIO_TARGET_ID, studioLane.id)]?.overallStatus;
+
 describe("WorkManageLaneDialogHost delete on another machine", () => {
   afterEach(() => {
     cleanup();
-    useAppStore.setState({ laneDeleteProgressByLaneId: {} });
+    vi.useRealTimers();
+    useAppStore.setState({ laneDeleteProgressByLaneId: {}, crossMachineLanesByMachineId: {} });
     Reflect.deleteProperty(window, "ade");
   });
 
-  it.each([
-    ["finishes", false],
-    ["fails", true],
-  ])("shows the lane deleting on its machine until the delete %s", async (_outcome, fails) => {
-    let settle: () => void = () => {};
-    const deleteLane = vi.fn(() => new Promise<void>((resolve, reject) => {
-      settle = fails ? () => reject(new Error("worktree is locked")) : () => resolve();
+  it("keeps the lane deleting after its delete returns until the Studio's re-read no longer lists it", async () => {
+    setStudioLaneList([studioLane]);
+    let finishDelete: () => void = () => {};
+    const deleteLane = startDeleteOnStudio(() => new Promise<void>((resolve) => {
+      finishDelete = resolve;
     }));
-    Object.defineProperty(window, "ade", {
-      configurable: true,
-      value: { lanes: { list: vi.fn(async () => [studioLane]), delete: deleteLane } },
-    });
-    const key = foreignLaneKey(STUDIO_TARGET_ID, studioLane.id);
-
-    render(
-      <WorkManageLaneDialogHost laneId={studioLane.id} lane={studioLane} runtimePin={studioPin} onClose={vi.fn()} />,
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Select worktree" }));
-    fireEvent.click(screen.getByRole("button", { name: "Delete lane" }));
 
     expect(deleteLane).toHaveBeenCalledWith(expect.objectContaining({ laneId: studioLane.id }), studioPin);
-    // Keyed the way the Work sidebar names a lane on another machine. The bare
-    // lane id belongs to this machine's lane, so nothing may land there.
-    expect(Object.keys(useAppStore.getState().laneDeleteProgressByLaneId)).toEqual([key]);
-    expect(useAppStore.getState().laneDeleteProgressByLaneId[key]?.overallStatus).toBe("running");
+    expect(studioDeleteState()).toBe("running");
 
     await act(async () => {
-      settle();
+      finishDelete();
     });
-    await waitFor(() => expect(useAppStore.getState().laneDeleteProgressByLaneId).toEqual({}));
+    // The delete has returned, but the Studio's list still has the lane, so the card
+    // and the open chat must keep saying "Deleting" rather than flashing back to normal.
+    expect(studioDeleteState()).toBe("running");
+
+    await act(async () => {
+      setStudioLaneList([studioLane]);
+    });
+    expect(studioDeleteState()).toBe("running");
+
+    await act(async () => {
+      setStudioLaneList([]);
+    });
+    expect(studioDeleteState()).toBeUndefined();
+  });
+
+  it("clears the deleting state as soon as the delete fails", async () => {
+    setStudioLaneList([studioLane]);
+    let failDelete: () => void = () => {};
+    startDeleteOnStudio(() => new Promise<void>((_resolve, reject) => {
+      failDelete = () => reject(new Error("worktree is locked"));
+    }));
+    expect(studioDeleteState()).toBe("running");
+
+    await act(async () => {
+      failDelete();
+    });
+    expect(studioDeleteState()).toBeUndefined();
+  });
+
+  it("stops waiting on the Studio's re-read after 15 seconds even if the lane is still listed", async () => {
+    vi.useFakeTimers();
+    setStudioLaneList([studioLane]);
+    startDeleteOnStudio(async () => undefined);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(14_999);
+    });
+    expect(studioDeleteState()).toBe("running");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(studioDeleteState()).toBeUndefined();
   });
 });

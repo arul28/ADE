@@ -9,7 +9,7 @@ import { stripElectronErrorWrapper } from "../../../shared/codedError";
 import { machineIdForBinding } from "../../../shared/machineIdentity";
 import { createPendingLaneDeleteProgress } from "../../lib/laneDeleteProgress";
 import { useAppStore } from "../../state/appStore";
-import { requestCrossMachineLanesForMachine } from "../../state/crossMachineLanes";
+import { requestCrossMachineLanesForMachine, waitForForeignLaneToLeave } from "../../state/crossMachineLanes";
 import { foreignLaneKey } from "../../state/laneMachineRouting";
 import { showToast } from "../app/toast/toastStore";
 import {
@@ -17,6 +17,13 @@ import {
   ManageLaneDialog,
   type LaneDeleteSelection,
 } from "../lanes/ManageLaneDialog";
+
+/**
+ * How long a deleted lane on another machine keeps its deleting state while that
+ * machine is re-read. The lane normally leaves the list within about a second;
+ * this bound keeps a stalled or failed re-read from holding the state forever.
+ */
+const FOREIGN_LANE_DELETE_SETTLE_MS = 15_000;
 
 export type WorkManageLaneDialogHostProps = {
   laneId: string | null;
@@ -140,7 +147,8 @@ export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
     };
     // A lane on another machine is keyed the way the Work sidebar names it, so its
     // card and open chat find the entry. A bare id would belong to this machine's lane.
-    const progressKey = runtimePin ? foreignLaneKey(machineIdForBinding(runtimePin), lane.id) : lane.id;
+    const machineId = runtimePin ? machineIdForBinding(runtimePin) : null;
+    const progressKey = machineId ? foreignLaneKey(machineId, lane.id) : lane.id;
     const pending = createPendingLaneDeleteProgress(progressKey);
     setDeleteProgressByLaneId((current) => ({ ...current, [progressKey]: pending }));
     setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
@@ -157,8 +165,18 @@ export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
     const deletion = runtimePin
       ? window.ade.lanes.delete(args, runtimePin)
       : window.ade.lanes.delete(args);
-    void deletion
-      .catch((error) => {
+    void deletion.then(
+      () => {
+        // A local delete ends on `lanes.delete.event`, which useWorkLaneDeleteProgress
+        // reads and clears once its own refresh settles. Another machine has no such
+        // feed on this tab, so its entry stays until a re-read of that machine no
+        // longer lists the lane, or until the bound runs out.
+        if (!machineId) return;
+        requestCrossMachineLanesForMachine(machineId);
+        return waitForForeignLaneToLeave(machineId, lane.id, FOREIGN_LANE_DELETE_SETTLE_MS)
+          .then(clearPending);
+      },
+      (error: unknown) => {
         clearPending();
         showToast({
           title: `Could not delete ${lane.name}`,
@@ -166,16 +184,10 @@ export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
           tone: "error",
           durationMs: 0,
         });
-      })
-      .finally(() => {
-        // A local delete ends on `lanes.delete.event`, which useWorkLaneDeleteProgress
-        // reads. Another machine has no such feed on this tab, so its entry ends with
-        // the promise. Re-reading that machine now lets the lane leave the sidebar
-        // without waiting for the next foreign poll.
-        if (!runtimePin) return;
-        clearPending();
-        requestCrossMachineLanesForMachine(machineIdForBinding(runtimePin));
-      });
+        // Re-read the machine so the sidebar shows what a failed delete left behind.
+        if (machineId) requestCrossMachineLanesForMachine(machineId);
+      },
+    );
   }, [deleteForce, deleteSelection, lane, onClose, runtimePin, setDeleteProgressByLaneId]);
 
   if (!laneId || !lane) return null;
