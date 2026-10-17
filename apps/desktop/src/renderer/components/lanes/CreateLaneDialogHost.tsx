@@ -210,7 +210,6 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
   const [createBranches, setCreateBranches] = useState<LaneBranchOption[]>([]);
   const [createBranchesLoading, setCreateBranchesLoading] = useState(false);
   const [createBranchPullRequests, setCreateBranchPullRequests] = useState<BranchPullRequest[]>([]);
-  const [createBranchPullRequestsLoading, setCreateBranchPullRequestsLoading] = useState(false);
   const [createGitUserName, setCreateGitUserName] = useState<string>("");
   const [createBusy, setCreateBusy] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
@@ -365,7 +364,6 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     setCreateGitUserName("");
     const loadSeq = ++createBaseBranchesLoadSeqRef.current;
     setCreateBranchesLoading(false);
-    setCreateBranchPullRequestsLoading(false);
     if (primary) {
       setCreateBranchesLoading(true);
       // The default base source is a per-checkout setting, so read it from
@@ -413,11 +411,9 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
 
       // Lazily attach open-PR metadata. Repo-wide (GitHub), so the tab's
       // machine answers it for every target. Fail-soft.
-      setCreateBranchPullRequestsLoading(true);
       window.ade.prs.listOpenForRepo()
         .then(setCreateBranchPullRequests)
-        .catch(() => setCreateBranchPullRequests([]))
-        .finally(() => setCreateBranchPullRequestsLoading(false));
+        .catch(() => setCreateBranchPullRequests([]));
     }
     Promise.all([
       window.ade.lanes.listTemplates(...pinArg(pin)).catch(() => [] as LaneTemplate[]),
@@ -941,7 +937,6 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
       branchPullRequests={createBranchPullRequests}
       currentGitUserName={createGitUserName}
       loadingBranches={createBranchesLoading}
-      loadingBranchPullRequests={createBranchPullRequestsLoading}
       onOpenLinearSettings={onOpenLinearSettings}
       onNavigateToTemplates={onNavigateToTemplates}
       importBranchWarning={importBranchWarning}

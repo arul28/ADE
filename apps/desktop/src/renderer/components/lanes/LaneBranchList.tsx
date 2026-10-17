@@ -2,8 +2,14 @@ import React from "react";
 import { Check, GitBranch, MagnifyingGlass } from "@phosphor-icons/react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { BranchPullRequest } from "../../../shared/types";
-import type { LaneBranchOption } from "./laneUtils";
-import { formatRelativeTime, matchesQuery, parseSearchQuery } from "./branchPickerSearch";
+import { refOnlyBranch, type LaneBranchOption } from "./laneUtils";
+import {
+  findBranchPullRequest,
+  formatRelativeTime,
+  indexPullRequestsByBranch,
+  matchesQuery,
+  parseSearchQuery,
+} from "./branchPickerSearch";
 
 /**
  * The one picker list in the new-lane dialog: a search field, then a
@@ -15,7 +21,7 @@ import { formatRelativeTime, matchesQuery, parseSearchQuery } from "./branchPick
 export type LaneBranchListItem = {
   /** The ref the caller stores, e.g. `origin/main`. */
   ref: string;
-  /** The git branch behind the ref, when known; carries the commit details. */
+  /** The git branch behind the ref; carries the commit details and names the PR. */
   branch: LaneBranchOption | null;
   /** A short tag after the name ("default"). */
   tag?: string;
@@ -23,8 +29,6 @@ export type LaneBranchListItem = {
   pinned?: boolean;
   /** Shown instead of the ref (a lane's name). Searched as well. */
   label?: string;
-  /** Replaces the commit line (a lane's branch). */
-  sub?: string;
   /** A lane colour, shown in place of the branch icon. */
   swatch?: string | null;
 };
@@ -32,8 +36,9 @@ export type LaneBranchListItem = {
 const ROW_HEIGHT = 50;
 const SEARCH_HINT = "Search · pr:open · mine · stale:30d · #812";
 
-function stripRemotePrefix(name: string): string {
-  return name.replace(/^[^/]+\//, "");
+/** A ref-only row (no known git branch) is searched and matched by its ref. */
+function branchOf(item: LaneBranchListItem): LaneBranchOption {
+  return item.branch ?? refOnlyBranch(item.ref);
 }
 
 export function LaneBranchList({
@@ -63,13 +68,9 @@ export function LaneBranchList({
   // Ages are read once per open; the list lives only while its popover does.
   const [now] = React.useState(() => Date.now());
 
-  const prByBranch = React.useMemo(() => {
-    const map = new Map<string, BranchPullRequest>();
-    for (const pr of pullRequests ?? []) map.set(pr.branch, pr);
-    return map;
-  }, [pullRequests]);
+  const prByBranch = React.useMemo(() => indexPullRequestsByBranch(pullRequests), [pullRequests]);
   const prFor = React.useCallback(
-    (item: LaneBranchListItem) => prByBranch.get(item.ref) ?? prByBranch.get(stripRemotePrefix(item.ref)) ?? null,
+    (item: LaneBranchListItem) => findBranchPullRequest(prByBranch, branchOf(item)),
     [prByBranch],
   );
 
@@ -79,8 +80,7 @@ export function LaneBranchList({
     const matches = searching
       ? items.filter((item) => {
         if (item.label && parsed.tokens.length === 0 && item.label.toLowerCase().includes(parsed.freeText.toLowerCase())) return true;
-        const branch: LaneBranchOption = item.branch ?? { name: item.ref, isCurrent: false, isRemote: false, upstream: null };
-        return matchesQuery({ branch, pr: prFor(item), currentUserName: currentUserName ?? "", now }, parsed);
+        return matchesQuery({ branch: branchOf(item), pr: prFor(item), currentUserName: currentUserName ?? "", now }, parsed);
       })
       : items;
     return [...matches.filter((item) => item.pinned), ...matches.filter((item) => !item.pinned)];
@@ -107,7 +107,10 @@ export function LaneBranchList({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(event) => {
-              if (event.key === "Enter" && visible[0]) {
+              // Only a plain Enter picks the top row: not one that confirms an
+              // IME candidate, and not ⌘/Ctrl+Enter.
+              if (event.key !== "Enter" || event.metaKey || event.ctrlKey || event.nativeEvent.isComposing) return;
+              if (visible[0]) {
                 event.preventDefault();
                 onSelect(visible[0].ref);
               }
@@ -123,7 +126,7 @@ export function LaneBranchList({
       {visible.length === 0 ? (
         <div className="cl-pop-empty">{empty}</div>
       ) : (
-        <div ref={listRef} className="cl-pop-list" data-size="tall" role="menu" aria-label={ariaLabel}>
+        <div ref={listRef} className="cl-pop-list" data-size="tall" role="group" aria-label={ariaLabel}>
           <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
             {virtualizer.getVirtualItems().map((row) => {
               const item = visible[row.index]!;
@@ -166,12 +169,11 @@ function BranchRow({
 }) {
   const { branch } = item;
   const age = formatRelativeTime(branch?.lastCommitDate, now);
-  const detail = item.sub ?? [branch?.lastCommitMessage, branch?.lastCommitAuthor].filter(Boolean).join(" · ");
+  const detail = [branch?.lastCommitMessage, branch?.lastCommitAuthor].filter(Boolean).join(" · ");
   return (
     <button
       type="button"
-      role="menuitemradio"
-      aria-checked={selected}
+      aria-pressed={selected}
       className="cl-item cl-branch-row"
       title={[item.label ?? item.ref, branch?.lastCommitMessage].filter(Boolean).join("\n")}
       onClick={onSelect}
