@@ -361,6 +361,14 @@ describe("ipcInvokeTimeoutMs", () => {
     expect(timeoutMs).toBe(ipcInvokeTimeoutMs(IPC.localRuntimeCallSync));
   });
 
+  it("outlives the brain call it forwards when starting sync", () => {
+    // On the 30s default the renderer rejected with the raw IPC timeout while
+    // the brain was still starting sync, and the card showed it in red.
+    const timeoutMs = ipcInvokeTimeoutMs(IPC.accountStartSyncHost);
+    expect(timeoutMs).toBeGreaterThan(LOCAL_RUNTIME_SYNC_TIMEOUT_MS);
+    expect(timeoutMs).toBe(ipcInvokeTimeoutMs(IPC.localRuntimeCallSync));
+  });
+
   // The Usage page's Refresh runs the isolated ledger worker, whose own ceiling
   // is 600s. On the 30s default every budget in front of it expired first: the
   // renderer rejected with a raw IPC timeout and blanked the page while the

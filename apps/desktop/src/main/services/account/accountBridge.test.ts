@@ -367,6 +367,43 @@ describe("accountBridge.repairMachinePairing", () => {
   });
 });
 
+describe("accountBridge.startSyncHost", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // The renderer's IPC timer used to be the only answer a stuck start got, so
+  // the card showed the raw "IPC handler ... timed out" text in red. The bridge
+  // now answers first with a sentence the card shows as a warning.
+  it.each([
+    ["never answers", () => new Promise<never>(() => {})],
+    [
+      "gives up at its own sync budget",
+      async () => {
+        throw new Error("Remote ADE service timed out waiting for method account.call (30000ms).");
+      },
+    ],
+  ])("answers with a human message when the brain %s", async (_label, callBrainAccountAction) => {
+    vi.useFakeTimers();
+    const logger = { info: vi.fn(), warn: vi.fn() };
+    const bridge = createAccountBridge({
+      getProjectRoot: () => null,
+      callBrainAccountAction,
+      logger,
+    });
+
+    const started = bridge.startSyncHost();
+    await vi.runAllTimersAsync();
+
+    await expect(started).resolves.toEqual({
+      ok: false,
+      state: "starting",
+      message: expect.stringMatching(/taking longer than expected.*check again/i),
+    });
+    expect(logger.warn).toHaveBeenCalledWith("account.sync_host_start.timed_out", expect.any(Object));
+  });
+});
+
 describe("createBrainAccountActionCaller", () => {
   it("calls the brain's account.call with a bounded budget", async () => {
     const callSync = vi.fn(async () => BRAIN_SUCCESS);

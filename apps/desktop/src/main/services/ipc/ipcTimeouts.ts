@@ -139,6 +139,11 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
   // opaque IPC timeout instead of the brain's legible reason — so this channel
   // gets the same headroom every other brain-forwarding channel has.
   if (channel === IPC.accountRepairMachinePairing) return LOCAL_RUNTIME_IPC_SYNC_TIMEOUT_MS;
+  // Starting sync forwards to the brain on the same 30s sync budget. The bridge
+  // answers in words at its own deadline (START_SYNC_HOST_DEADLINE_MS in
+  // accountBridge.ts), which sits under this ceiling. On the 30s default the
+  // renderer showed the opaque IPC timeout instead.
+  if (channel === IPC.accountStartSyncHost) return LOCAL_RUNTIME_IPC_SYNC_TIMEOUT_MS;
   if (channel === IPC.localRuntimeListActionRegistry) return LOCAL_RUNTIME_IPC_ACTION_REGISTRY_TIMEOUT_MS;
   if (channel === IPC.localRuntimeStreamEvents) return LOCAL_RUNTIME_IPC_EVENT_POLL_TIMEOUT_MS;
   // A command from an agent on another machine: a `wait` or a sign-in handoff

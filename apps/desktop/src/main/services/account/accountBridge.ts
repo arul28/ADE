@@ -28,6 +28,7 @@ import {
   type AccountMachineAdoptionRoute,
 } from "../../../shared/accountDirectory";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
+import { isRuntimeTransportTimeoutError } from "../../../shared/runtimeErrors";
 import { createFileLogger, type Logger } from "../logging/logger";
 import { logMachineEvent } from "../logging/machineLogger";
 import os from "node:os";
@@ -501,6 +502,23 @@ function pairTimeoutMessage(
     ? `Couldn't reach ${name} over ${pairRouteLabel(stalledRoute)} (timed out after ${seconds}s). Make sure ADE is open on that computer, then try again.`
     : `Couldn't reach ${name} (timed out after ${seconds}s before connecting). Check your internet connection, then try again.`;
 }
+
+/**
+ * The whole "Start sync" budget, measured from the click.
+ *
+ * The brain call's own budget is LOCAL_RUNTIME_SYNC_TIMEOUT_MS (30 s), and it
+ * starts only once the connection is up, so a cold connect can outlast it. This
+ * deadline bounds the whole click, connect included. It sits 5 s past the brain's
+ * budget and far under the IPC ceiling for this channel (ipcTimeouts.ts), so each
+ * budget expires outward: brain, then this one, then IPC.
+ *
+ * Giving up here cancels nothing. The brain keeps starting sync, and the next
+ * status read shows whether it came up.
+ */
+const START_SYNC_HOST_DEADLINE_MS = 35_000;
+const SYNC_HOST_START_DEADLINE = Symbol("syncHostStartDeadline");
+const START_SYNC_HOST_TIMEOUT_MESSAGE =
+  "Starting sync is taking longer than expected on this computer. It may still finish, so check again in a minute, or use Repair.";
 
 export function createAccountBridge(options: AccountBridgeOptions): AccountBridge {
   const secretsDir = resolveMachineAdeLayout().secretsDir;
@@ -990,7 +1008,28 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
           "ADE's background service isn't running on this computer, so sync can't start. Reopen ADE, then try again.",
         );
       }
-      const raw = await options.callBrainAccountAction("startSyncHost");
+      const startedAt = Date.now();
+      let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+      const deadline = new Promise<typeof SYNC_HOST_START_DEADLINE>((resolve) => {
+        deadlineTimer = setTimeout(() => resolve(SYNC_HOST_START_DEADLINE), START_SYNC_HOST_DEADLINE_MS);
+      });
+      let raw: unknown;
+      try {
+        raw = await Promise.race([options.callBrainAccountAction("startSyncHost"), deadline]);
+      } catch (error) {
+        // The brain's own budget expires first on a warm connection, and its
+        // RPC timeout is the same "still starting" answer as the deadline.
+        if (!isRuntimeTransportTimeoutError(error)) throw error;
+        raw = SYNC_HOST_START_DEADLINE;
+      } finally {
+        clearTimeout(deadlineTimer);
+      }
+      if (raw === SYNC_HOST_START_DEADLINE) {
+        options.logger?.warn("account.sync_host_start.timed_out", {
+          durationMs: Date.now() - startedAt,
+        });
+        return { ok: false, state: "starting", message: START_SYNC_HOST_TIMEOUT_MESSAGE };
+      }
       const envelope = unwrapAccountActionResult(raw);
       if (!isRecord(envelope) || typeof envelope.ok !== "boolean") {
         throw new Error("ADE couldn't read the result of starting sync. Check Connections to see whether it came up.");
