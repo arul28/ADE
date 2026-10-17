@@ -1,12 +1,13 @@
 /* @vitest-environment jsdom */
 
 import React from "react";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DiffChanges, GitConflictState, GitStashSummary, GitUpstreamSyncStatus, LaneSummary } from "../../../shared/types";
 import { __resetLaneGitActionRuntimeForTests, formatLaneGitError, LaneGitActionsPane } from "./LaneGitActionsPane";
+import { laneGitListScope } from "./laneGitListCache";
 
 const commitTimelineMock = vi.hoisted(() => vi.fn((props: Record<string, unknown>) => null));
 
@@ -203,6 +204,7 @@ describe("LaneGitActionsPane rescue action", () => {
   let mockConflictState: GitConflictState;
   let mockSyncStatus: GitUpstreamSyncStatus;
   let failDiffRefresh: boolean;
+  let hangDiffRefresh: boolean;
   let restoreChangeListLayout: () => void = () => undefined;
 
   beforeEach(() => {
@@ -268,6 +270,7 @@ describe("LaneGitActionsPane rescue action", () => {
     };
     mockAutoRebaseStatuses = [];
     failDiffRefresh = false;
+    hangDiffRefresh = false;
     commitTimelineMock.mockClear();
 
     globalThis.window.ade = {
@@ -275,6 +278,9 @@ describe("LaneGitActionsPane rescue action", () => {
         getChanges: vi.fn(async ({ laneId }: { laneId: string }) => {
           if (failDiffRefresh) {
             throw new Error("diff refresh noisy");
+          }
+          if (hangDiffRefresh) {
+            return new Promise<DiffChanges>(() => undefined);
           }
           return mockChangesByLaneId[laneId] ?? { staged: [], unstaged: [] };
         }),
@@ -521,6 +527,103 @@ describe("LaneGitActionsPane rescue action", () => {
     renderPane({ active: false });
     expect(screen.getByText("src/studio-a.ts")).toBeTruthy();
     expect(screen.queryByText("src/studio-b.ts")).toBeNull();
+  });
+
+  it("paints the last uncommitted changes on a revisit before the read lands", async () => {
+    const first = renderPane();
+    expect(await screen.findByText("src/file.ts")).toBeTruthy();
+    first.unmount();
+
+    hangDiffRefresh = true;
+    renderPane();
+
+    expect(screen.getByText("src/file.ts")).toBeTruthy();
+  });
+
+  it("never paints the pre-stage changes on a remount after a stage", async () => {
+    const user = userEvent.setup();
+    const first = renderPane();
+    expect(await screen.findByText("src/file.ts")).toBeTruthy();
+
+    hangDiffRefresh = true;
+    await user.click(screen.getByRole("button", { name: "Stage src/file.ts" }));
+    await waitFor(() => {
+      expect(window.ade.git.stageFile).toHaveBeenCalled();
+    });
+    first.unmount();
+
+    renderPane();
+
+    expect(screen.queryByText("src/file.ts")).toBeNull();
+  });
+
+  it("paints the last Branch diff on a revisit before the fresh read lands", async () => {
+    mockBranchChanges(() => ["src/alpha.ts"]);
+    const first = renderPane({ laneId: "lane-2" });
+    expect(await screen.findByTitle("src/alpha.ts")).toBeTruthy();
+    first.unmount();
+
+    (window.ade.diff as any).getBranchChanges = vi.fn(() => new Promise(() => undefined));
+    renderPane({ laneId: "lane-2" });
+
+    expect(screen.getByTitle("src/alpha.ts")).toBeTruthy();
+    expect((window.ade.diff as any).getBranchChanges).toHaveBeenCalledWith({ laneId: "lane-2" }, null);
+  });
+
+  it("ends a revisit with the same Branch rows as a cold read of the same fixture", async () => {
+    mockBranchChanges(() => ["src/alpha.ts", "src/beta.ts"]);
+    const cold = renderPane({ laneId: "lane-2" });
+    expect(await screen.findByTitle("src/beta.ts")).toBeTruthy();
+    const coldHtml = cold.container.innerHTML;
+    cold.unmount();
+
+    const warm = renderPane({ laneId: "lane-2" });
+    expect(warm.container.innerHTML).not.toContain("Reading branch changes");
+    const freshRead = (window.ade.diff as any).getBranchChanges.mock.results[1].value;
+    await act(async () => {
+      await freshRead;
+    });
+
+    expect(warm.container.innerHTML).toBe(coldHtml);
+  });
+
+  it("never paints the old branch's Branch rows after the lane's branch changes", async () => {
+    mockBranchChanges(() => ["src/alpha.ts"]);
+    const view = renderPane({ laneId: "lane-2" });
+    expect(await screen.findByTitle("src/alpha.ts")).toBeTruthy();
+
+    (window.ade.diff as any).getBranchChanges = vi.fn(() => new Promise(() => undefined));
+    mockStoreState.lanes = mockStoreState.lanes.map((lane) =>
+      lane.id === "lane-2" ? { ...lane, branchRef: "feature/renamed" } : lane,
+    );
+    view.rerender(
+      <MemoryRouter>
+        <LaneGitActionsPane
+          laneId="lane-2"
+          autoRebaseEnabled={false}
+          onOpenSettings={vi.fn()}
+          onSelectFile={vi.fn()}
+          onSelectCommit={vi.fn()}
+          selectedPath={null}
+          selectedMode={null}
+          selectedCommit={null}
+          selectedCommitSha={null}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText("Reading branch changes…")).toBeTruthy();
+    expect(screen.queryByTitle("src/alpha.ts")).toBeNull();
+  });
+
+  it("keys the History list by the lane's cache scope and branch", async () => {
+    renderPane({ laneId: "lane-2" });
+    await screen.findByTestId("git-pane-rebase");
+
+    expect(commitTimelineMock).toHaveBeenLastCalledWith(expect.objectContaining({
+      cacheScope: laneGitListScope("/tmp/ade", "lane-2"),
+      cacheBranchRef: "feature/second",
+    }));
   });
 
   it("does not refresh the global lane store on initial mount", async () => {
