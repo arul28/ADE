@@ -343,18 +343,27 @@ describe("chatSessionProjection — model", () => {
 });
 
 describe("listSessionsWithChatProjection — summarizes only what the page shows", () => {
-  /** A chat service that, like the real one, summarizes only the ids it is asked for. */
+  /**
+   * A chat service that, like the real one, filters lists by lane and summarizes
+   * only the ids it is asked for. `getSessionSummary` reads by id from every chat.
+   */
   function chatService(allChats: AgentChatSessionSummary[]) {
     const calls: Array<readonly string[] | undefined> = [];
+    const parentReads: string[] = [];
     return {
       calls,
+      parentReads,
       service: {
-        listSessions: async (_laneId?: string, options?: { sessionIds?: readonly string[] }) => {
+        listSessions: async (laneId?: string, options?: { sessionIds?: readonly string[] }) => {
           calls.push(options?.sessionIds);
           const named = options?.sessionIds ? new Set(options.sessionIds) : null;
-          return allChats.filter((summary) => !named || named.has(summary.sessionId));
+          return allChats.filter((summary) =>
+            (!laneId || summary.laneId === laneId) && (!named || named.has(summary.sessionId)));
         },
-        getSessionSummary: async () => null,
+        getSessionSummary: async (sessionId: string) => {
+          parentReads.push(sessionId);
+          return allChats.find((summary) => summary.sessionId === sessionId) ?? null;
+        },
       },
     };
   }
@@ -370,7 +379,7 @@ describe("listSessionsWithChatProjection — summarizes only what the page shows
       },
       { limit: 500 },
     );
-    return { calls: chats.calls, rows };
+    return { calls: chats.calls, parentReads: chats.parentReads, rows };
   }
 
   it("summarizes the chats on the page and nothing else", async () => {
@@ -382,21 +391,22 @@ describe("listSessionsWithChatProjection — summarizes only what the page shows
     expect(calls).toEqual([["chat-a", "chat-b"]]);
   });
 
-  it("summarizes a listed child's spawn parent when the parent sits outside the page", async () => {
-    const { calls, rows } = await run(
+  it("reads a listed child's spawn parent by id when the parent sits outside the page", async () => {
+    const { calls, parentReads, rows } = await run(
       [{ ...session(), id: "child", title: "Child" }],
       [
         chat({ sessionId: "cto-session", identityKey: "cto" }),
         chat({ sessionId: "child", orchestrationParentSessionId: "cto-session", spawnKind: "subagent" }),
       ],
     );
-    expect(calls).toEqual([["child"], ["cto-session"]]);
+    expect(calls).toEqual([["child"]]);
+    expect(parentReads).toEqual(["cto-session"]);
     expect(rows.map((row) => row.id)).toEqual(["child"]);
     expect(rows[0]?.parentIdentityKey).toBe("cto");
   });
 
   it("reads no parent when every parent is already on the page", async () => {
-    const { calls } = await run(
+    const { calls, parentReads } = await run(
       [{ ...session(), id: "cto-session", title: "CTO" }, { ...session(), id: "child", title: "Child" }],
       [
         chat({ sessionId: "cto-session", identityKey: "cto" }),
@@ -404,5 +414,35 @@ describe("listSessionsWithChatProjection — summarizes only what the page shows
       ],
     );
     expect(calls).toEqual([["cto-session", "child"]]);
+    expect(parentReads).toEqual([]);
+  });
+
+  it("keeps the CTO marker on a child listed on a lane page whose CTO sits in another lane", async () => {
+    // The page lists its chats by lane. The parent is read by id, so the lane
+    // filter does not drop a CTO that lives in another lane.
+    const chats = chatService([
+      chat({ sessionId: "cto-session", laneId: "lane-1", identityKey: "cto" }),
+      chat({
+        sessionId: "child",
+        laneId: "lane-2",
+        orchestrationParentSessionId: "cto-session",
+        spawnKind: "subagent",
+      }),
+    ]);
+    const rows = await listSessionsWithChatProjection(
+      {
+        sessionService: {
+          list: () => [{ ...session(), id: "child", laneId: "lane-2", title: "Child" }],
+          get: () => null,
+        },
+        ptyService: null,
+        agentChatService: chats.service,
+        logger: { warn: () => {} },
+      },
+      { laneId: "lane-2", limit: 200 },
+    );
+    expect(rows.map((row) => row.id)).toEqual(["child"]);
+    expect(rows[0]?.parentIdentityKey).toBe("cto");
+    expect(chats.parentReads).toEqual(["cto-session"]);
   });
 });

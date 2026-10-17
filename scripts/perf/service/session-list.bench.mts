@@ -21,8 +21,9 @@
 //   configReads    projectConfigService.get() calls made while summarizing
 //
 // `--parity-out <file>` writes the projected rows of the timed scenarios plus a
-// few extra shapes (small page, lane page that cuts off the CTO, a chat that
-// names itself) as JSON, so two checkouts can be diffed byte for byte.
+// few extra shapes (small page, lane page that cuts off the CTO, lane pages whose
+// child's parent sits in another lane, a chat that names itself) as JSON, so two
+// checkouts can be diffed byte for byte.
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import fs from "node:fs";
 import { tmpdir } from "node:os";
@@ -124,6 +125,13 @@ for (const child of [2, 9, 16]) {
 chatByIndex(3).laneId = "lane-1";
 chatByIndex(3).parentIndex = 300;
 chatByIndex(300).laneId = "lane-1";
+// Cross-lane parents: a CTO child in lane-2 (its CTO sits in lane-1), and an
+// ordinary-chat child in lane-3 whose parent sits in lane-4.
+chatByIndex(4).laneId = "lane-2";
+chatByIndex(4).parentIndex = CTO_INDEX;
+chatByIndex(8).laneId = "lane-3";
+chatByIndex(8).parentIndex = 301;
+chatByIndex(301).laneId = "lane-4";
 chatByIndex(20).surface = "automation";
 chatByIndex(30).archived = true;
 chatByIndex(31).archived = true;
@@ -279,6 +287,8 @@ if (parityOut) {
   const extra = {
     smallPage: { limit: 25 },
     laneCutsOffCto: { laneId: "lane-1", limit: 20 },
+    crossLaneChildOfCto: { laneId: "lane-2", limit: 200 },
+    crossLaneChildOfChat: { laneId: "lane-3", limit: 200 },
     chatNamesItself: { chatSessionId: chatByIndex(2).id, limit: null },
     chatWithNoShells: { chatSessionId: chatByIndex(6).id, limit: null },
   };
