@@ -3,7 +3,21 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import type { ComputerUseArtifactView } from "../../../shared/types";
+import type * as ChatRuntimeScopeModule from "./ChatRuntimeScope";
 import { CitedProofSlot } from "./ChatProofCitation";
+
+const scopeState = vi.hoisted(() => ({ online: true }));
+
+vi.mock("./ChatRuntimeScope", async (importOriginal) => ({
+  ...(await importOriginal<typeof ChatRuntimeScopeModule>()),
+  useChatRuntimeScope: () => ({
+    pin: null,
+    rootPath: null,
+    isRemote: false,
+    machineName: "This computer",
+    online: scopeState.online,
+  }),
+}));
 
 /**
  * A cited proof has three answers, and the citation must not blur them: the
@@ -36,6 +50,7 @@ function stubAde(listArtifacts: (args: { artifactId: string }) => Promise<unknow
 afterEach(() => {
   cleanup();
   delete (window as unknown as { ade?: unknown }).ade;
+  scopeState.online = true;
 });
 
 describe("CitedProofSlot", () => {
@@ -81,5 +96,25 @@ describe("CitedProofSlot", () => {
     answer = "ready";
     render(<CitedProofSlot artifactId="art-retry" caption="Retry" />);
     expect(await screen.findByRole("img", { name: "Retry" })).toBeTruthy();
+  });
+
+  it("asks again when the pinned machine comes back online after a failed read", async () => {
+    let answer: "fail" | "ready" = "fail";
+    const computerUse = stubAde(async () => {
+      if (answer === "fail") throw new Error("host_unavailable");
+      return [{ ...READY, id: "art-back" }];
+    });
+    scopeState.online = false;
+
+    const view = render(<CitedProofSlot artifactId="art-back" caption="Back" />);
+    expect(await screen.findByText(/Couldn't load this proof/)).toBeTruthy();
+    expect(computerUse.listArtifacts).toHaveBeenCalledTimes(1);
+
+    answer = "ready";
+    scopeState.online = true;
+    view.rerender(<CitedProofSlot artifactId="art-back" caption="Back" />);
+
+    expect(await screen.findByRole("img", { name: "Back" })).toBeTruthy();
+    expect(computerUse.listArtifacts).toHaveBeenCalledTimes(2);
   });
 });

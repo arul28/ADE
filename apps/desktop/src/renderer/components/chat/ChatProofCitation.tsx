@@ -76,6 +76,9 @@ function useCitedProofArtifact(artifactId: string): CitedArtifactState {
   const [fetched, setFetched] = useState<{ key: string; lookup: CitedArtifactLookup } | null>(null);
   const machineKey = `${JSON.stringify(scope.pin ?? null)}:${scope.rootPath ?? ""}`;
   const key = `${machineKey}|${artifactId}`;
+  // A failed lookup is not kept, so the pinned machine coming back asks again
+  // instead of leaving the card on "couldn't load" until a remount.
+  const online = scope.online;
 
   useEffect(() => {
     if (known) return;
@@ -95,7 +98,7 @@ function useCitedProofArtifact(artifactId: string): CitedArtifactState {
     return () => {
       cancelled = true;
     };
-  }, [artifactId, key, known, scope.pin]);
+  }, [artifactId, key, known, online, scope.pin]);
 
   if (known) return { status: "ready", artifact: known };
   if (!fetched || fetched.key !== key) return { status: "loading" };
