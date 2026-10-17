@@ -113,6 +113,50 @@ describe("discoverClaudeSlashCommandsAsync", () => {
     expect(names).not.toContain("/background");
     expect(actual.find((command) => command.name === "/fix-issue")?.description).toBe("Project version");
   });
+
+  it("does not let a walk that started earlier replace a listing stored for the folder since", async () => {
+    const commandsDir = path.join(tmpRoot, ".claude", "commands");
+    fs.mkdirSync(commandsDir, { recursive: true });
+    fs.writeFileSync(path.join(commandsDir, "alpha.md"), "Alpha body.");
+    invalidateClaudeSlashCommandCache();
+
+    // Hold the walk right after it lists the folder, so it has seen only `alpha`.
+    const originalReaddir = fs.promises.readdir.bind(fs.promises);
+    let holdNextListing = true;
+    let listed!: () => void;
+    const listedFolder = new Promise<void>((resolve) => { listed = resolve; });
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    const readdirSpy = vi.spyOn(fs.promises, "readdir").mockImplementation((async (
+      dir: fs.PathLike,
+      options?: fs.ObjectEncodingOptions & { withFileTypes?: true },
+    ) => {
+      const entries = await originalReaddir(dir, options as never);
+      if (holdNextListing && String(dir) === commandsDir) {
+        holdNextListing = false;
+        listed();
+        await released;
+      }
+      return entries;
+    }) as typeof fs.promises.readdir);
+
+    try {
+      const walk = discoverClaudeSlashCommandsAsync(tmpRoot);
+      await listedFolder;
+
+      // A newer listing of the same folder is stored while the older walk is still running.
+      fs.writeFileSync(path.join(commandsDir, "beta.md"), "Beta body.");
+      expect(discoverClaudeSlashCommands(tmpRoot).map((c) => c.name)).toContain("/beta");
+
+      release();
+      await walk;
+      // The older walk finishes last. The memo must still serve the newer listing.
+      expect(discoverClaudeSlashCommands(tmpRoot).map((c) => c.name)).toEqual(expect.arrayContaining(["/alpha", "/beta"]));
+    } finally {
+      release();
+      readdirSpy.mockRestore();
+    }
+  });
 });
 
 describe("discoverClaudeSlashCommands", () => {

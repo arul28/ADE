@@ -76,11 +76,21 @@ function skillRootsByPrecedence(cwd: string): string[] {
  * file someone just edited shows up on the next turn.
  */
 const DISCOVERY_TTL_MS = 5_000;
-const discoveryCache = new Map<string, { at: number; value: DiscoveredClaudeSlashCommand[] }>();
+const discoveryCache = new Map<string, { at: number; stamp: number; value: DiscoveredClaudeSlashCommand[] }>();
 /** Asynchronous walks still running, by key, so concurrent asks share one walk. */
 const discoveryInFlight = new Map<string, Promise<DiscoveredClaudeSlashCommand[]>>();
 /** Bumped on invalidation, so a walk that started before it does not refill the cache. */
 let discoveryGeneration = 0;
+/**
+ * Counts every memo write. An entry's `stamp` is the count at its write, so a walk
+ * can tell whether its folder was written after the walk began.
+ */
+let discoveryWrites = 0;
+
+function storeDiscovery(key: string, value: DiscoveredClaudeSlashCommand[]): void {
+  discoveryWrites += 1;
+  discoveryCache.set(key, { at: Date.now(), stamp: discoveryWrites, value });
+}
 
 /**
  * Drop the memo. Only the tests use this — nothing in the app writes a command
@@ -138,7 +148,7 @@ export function discoverClaudeSlashCommands(cwd: string): DiscoveredClaudeSlashC
   // process lifetime.
   sweepExpiredDiscovery(now);
   const value = discoverClaudeSlashCommandsUncached(cwd);
-  discoveryCache.set(key, { at: Date.now(), value });
+  storeDiscovery(key, value);
   // Callers mutate the array (filter/map chains are fine, but nothing stops a
   // sort in place), so never hand out the cached instance itself.
   return value.slice();
@@ -158,10 +168,15 @@ export async function discoverClaudeSlashCommandsAsync(cwd: string): Promise<Dis
   let walk = discoveryInFlight.get(key);
   if (!walk) {
     const generation = discoveryGeneration;
+    const startedStamp = discoveryWrites;
     sweepExpiredDiscovery(Date.now());
     const started: Promise<DiscoveredClaudeSlashCommand[]> = discoverClaudeSlashCommandsUncachedAsync(cwd)
       .then((value) => {
-        if (generation === discoveryGeneration) discoveryCache.set(key, { at: Date.now(), value });
+        // A walk can finish after a newer listing for this folder was stored (a
+        // sync walk, say), and its own listing may be the older one. Keep the newer entry.
+        const stored = discoveryCache.get(key);
+        const storedSinceStart = stored !== undefined && stored.stamp > startedStamp;
+        if (generation === discoveryGeneration && !storedSinceStart) storeDiscovery(key, value);
         return value;
       })
       .finally(() => {

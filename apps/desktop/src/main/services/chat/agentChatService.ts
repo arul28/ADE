@@ -155,6 +155,7 @@ import {
 } from "./claudeSlashCommandDiscovery";
 import { buildDroidSkillListing } from "./droidSkillListing";
 import { discoverCodexSlashCommandsAsync } from "./codexSlashCommandDiscovery";
+import { mergeSlashCommands } from "./markdownSlashCommandDiscovery";
 import { forkCodexThreadInEphemeralAppServer } from "./codexEphemeralFork";
 import { createClaudePluginUiService } from "./claudePluginUiService";
 import type { ClaudePluginUiGetArgs, ClaudePluginUiSnapshot } from "../../../shared/claudePluginUi";
@@ -66425,16 +66426,6 @@ export function createAgentChatService(args: {
           { name: "/clear", description: "Clear chat history", source: "local" },
           ...(provider === "pi" ? [{ name: "/compact", description: "Summarize older context to free tokens.", source: "local" as const, argumentHint: "[instructions]" }] : []),
         ];
-
-    const mergeSlashCommands = (groups: AgentChatSlashCommand[][]): AgentChatSlashCommand[] => {
-      const merged = new Map<string, AgentChatSlashCommand>();
-      for (const group of groups) {
-        for (const command of group) {
-          merged.set(slashCommandKey(command.name), command);
-        }
-      }
-      return [...merged.values()].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
-    };
 
     // Claude command/skill files carry their kind and where they came from, so
     // the `/` menu can group them (project skills before user/plugin skills).

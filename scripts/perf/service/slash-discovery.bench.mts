@@ -6,6 +6,10 @@
 // longest time any other RPC on the brain had to wait. One warm-up run is excluded.
 // Parity: where the tree has an asynchronous discovery next to the synchronous one, both run
 // on the same tree and their lists are compared entry by entry (mismatches must be 0).
+// Full path: the same timing for the Claude listing the RPC returns, i.e. discovery, one row per
+// command, then the merge that sorts by name. Run once with the pre-fix sort (`localeCompare` with
+// options, copied from the old getSlashCommands closure) and once with `mergeSlashCommands`, back to
+// back, alternating order. Parity: both sorts must give the same list (mismatches must be 0).
 // Env: RUNS (default 12), CWD.
 import path from "node:path";
 import { performance } from "node:perf_hooks";
@@ -13,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import * as claude from "../../../apps/desktop/src/main/services/chat/claudeSlashCommandDiscovery";
 import * as codex from "../../../apps/desktop/src/main/services/chat/codexSlashCommandDiscovery";
 import * as cursor from "../../../apps/desktop/src/main/services/chat/cursorSlashCommandDiscovery";
+import { mergeSlashCommands } from "../../../apps/desktop/src/main/services/chat/markdownSlashCommandDiscovery";
 
 type AnyFn = (...args: never[]) => unknown;
 const exported = (mod: object, name: string): AnyFn | undefined =>
@@ -112,6 +117,81 @@ const parity = [
 const runs: { maxBlockMs: number; wallMs: number; count: number }[] = [];
 for (let i = 0; i < RUNS; i += 1) runs.push(await timeUncached(() => discoverClaude(cwd)));
 
+// Full path. The row shape mirrors the Claude branch of getSlashCommands; the built-in list and the
+// GUI filter are left out (small and linear, not sorts).
+type ListingRow = { name: string; description: string; argumentHint?: string; source: "sdk"; kind: "command" | "skill" };
+type MergeFn = <T extends { name: string }>(groups: readonly (readonly T[])[]) => T[];
+
+/** The merge as the pre-fix getSlashCommands closure had it (65ee42e25): the same Map, sorted with localeCompare and its options. */
+function legacyMerge<T extends { name: string }>(groups: readonly (readonly T[])[]): T[] {
+  const merged = new Map<string, T>();
+  for (const group of groups) {
+    for (const command of group) merged.set(command.name.trim().toLowerCase(), command);
+  }
+  return [...merged.values()].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+}
+
+const variants: [label: string, merge: MergeFn][] = [
+  ["legacySort", legacyMerge],
+  ["sharedCollator", mergeSlashCommands],
+];
+
+const toListingRow = (cmd: claude.DiscoveredClaudeSlashCommand): ListingRow => ({
+  name: cmd.name,
+  description: cmd.description,
+  argumentHint: cmd.argumentHint,
+  source: "sdk",
+  kind: cmd.source === "skill" ? "skill" : "command",
+});
+
+/** Discovery, then the Claude listing merge: what chat.getSlashCommands does for a Claude chat on a cache miss. */
+async function claudeListing(merge: MergeFn): Promise<ListingRow[]> {
+  const discovered = (await discoverClaude(cwd)) as claude.DiscoveredClaudeSlashCommand[];
+  return merge([discovered.map(toListingRow)]);
+}
+
+const fullPathParity = await (async () => {
+  claude.invalidateClaudeSlashCommandCache();
+  const expected = await claudeListing(legacyMerge);
+  claude.invalidateClaudeSlashCommandCache();
+  const actual = await claudeListing(mergeSlashCommands);
+  return { entries: expected.length, mismatches: mismatchesBetween(expected, actual) };
+})();
+
+const fullPathRuns: Record<string, { maxBlockMs: number; wallMs: number; count: number }[]> = {};
+for (const [label] of variants) fullPathRuns[label] = [];
+for (const [, merge] of variants) await timeUncached(() => claudeListing(merge));
+for (let i = 0; i < RUNS; i += 1) {
+  for (const [label, merge] of i % 2 ? [...variants].reverse() : variants) {
+    fullPathRuns[label]!.push(await timeUncached(() => claudeListing(merge)));
+  }
+}
+
+// The merge alone, without any discovery time, on the rows the RPC would merge (discovery order),
+// and on the same rows shuffled with a fixed seed (a worst-case input for the sort).
+const sampleRows = ((await discoverClaude(cwd)) as claude.DiscoveredClaudeSlashCommand[]).map(toListingRow);
+const shuffledRows = [...sampleRows];
+for (let i = shuffledRows.length - 1, seed = 1; i > 0; i -= 1) {
+  seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+  const j = seed % (i + 1);
+  [shuffledRows[i], shuffledRows[j]] = [shuffledRows[j]!, shuffledRows[i]!];
+}
+const orders: [label: string, rows: ListingRow[]][] = [["rpcOrder", sampleRows], ["shuffled", shuffledRows]];
+const mergeMs: Record<string, number[]> = {};
+for (const [order] of orders) for (const [label] of variants) mergeMs[`${label}.${order}`] = [];
+for (let i = 0; i < RUNS; i += 1) {
+  for (const [order, rows] of orders) {
+    for (const [label, merge] of i % 2 ? [...variants].reverse() : variants) {
+      const start = performance.now();
+      merge([rows]);
+      mergeMs[`${label}.${order}`]!.push(performance.now() - start);
+    }
+  }
+}
+
+const perVariant = (pick: (run: { maxBlockMs: number; wallMs: number }) => number) =>
+  Object.fromEntries(variants.map(([label]) => [label, summary(fullPathRuns[label]!.map(pick))]));
+
 console.log(JSON.stringify({
   mode,
   cwd,
@@ -120,4 +200,11 @@ console.log(JSON.stringify({
   maxBlockMs: summary(runs.map((r) => r.maxBlockMs)),
   wallMs: summary(runs.map((r) => r.wallMs)),
   parity,
+  fullPath: {
+    entries: fullPathParity.entries,
+    parityMismatches: fullPathParity.mismatches,
+    maxBlockMs: perVariant((r) => r.maxBlockMs),
+    wallMs: perVariant((r) => r.wallMs),
+    mergeMs: Object.fromEntries(Object.entries(mergeMs).map(([key, xs]) => [key, summary(xs)])),
+  },
 }));

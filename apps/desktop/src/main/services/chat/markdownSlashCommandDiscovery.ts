@@ -156,13 +156,29 @@ export function normalizeSlashCommandName(
 
 /**
  * The order slash-command lists are sorted in. `localeCompare` with these options
- * builds a collator on every comparison, which took ~80 ms to sort a few thousand
- * names; one shared collator orders them the same way.
+ * builds a collator on every comparison. Measured on a 2,816-command tree: ~9 ms for
+ * the merge in the order discovery returns it, ~91 ms for the same names shuffled.
+ * One shared collator orders them the same way: under 0.5 ms and ~2 ms.
  */
 export const slashCommandNameOrder = new Intl.Collator(undefined, { sensitivity: "base" });
 
 export function slashCommandKey(value: string): string {
   return value.trim().toLowerCase();
+}
+
+/**
+ * Merges command lists for `chat.getSlashCommands`: a later group's entry replaces
+ * an earlier one with the same key, and the result is sorted by name. The sort runs
+ * on the brain's event loop, so it uses the shared collator, not `localeCompare`.
+ */
+export function mergeSlashCommands<T extends { name: string }>(groups: readonly (readonly T[])[]): T[] {
+  const merged = new Map<string, T>();
+  for (const group of groups) {
+    for (const command of group) {
+      merged.set(slashCommandKey(command.name), command);
+    }
+  }
+  return [...merged.values()].sort((a, b) => slashCommandNameOrder.compare(a.name, b.name));
 }
 
 export function maybeString(value: unknown): string | undefined {
