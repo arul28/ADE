@@ -1,0 +1,63 @@
+---
+title: "v1.2.109"
+description: "Release notes for ADE v1.2.109 - October 16, 2026"
+---
+
+ADE 1.2.109 makes long chats, project opening and background sync noticeably lighter, and makes sync to unreachable machines give up sooner.
+
+## Speed
+
+- Opening a very long chat drops from 1,174 ms to 94 ms (12.5× faster). Across five real chats the average open falls from 259 ms to 36 ms (−86%).
+- A turn that touched thousands of files no longer stalls the chat (#1711).
+- New chats appear without waiting on git (#1701).
+- Older chat history pages load about 2.3× faster (#1692: 2,551 → 1,107 ms over a 54,000-event backfill).
+- The chat composer stops re-rendering on every streamed event: renders per event 249 → 181, script time per event −12% (#1691).
+- Chat windows trim old events in steps instead of one per update (#1690).
+- Closed dialogs stop re-rendering while a chat streams: dialog renders over 300 streamed events drop 502 → 185 for the handoff dialog and 158 → 102 for the remaining dialogs (#1715, #1717).
+- Every `ade` command starts about 145 ms faster (657 → 511 ms) by reusing Node's compile cache for the CLI bundle (#1718).
+- Opening a terminal or editor, or checking sign-in, no longer freezes the app for about a second while the login shell re-runs (#1709: ~1,050 ms → 1 ms).
+- Credential lock waits no longer freeze the background service (#1706: 183 ms blocked → 0).
+- Recent projects summarize 50× faster (#1661: 25.3 → 0.5 ms per pass).
+- Account settings sync stops asking the relay when nothing changed: background relay requests drop about 20× (2,880 → ~144 per day per machine) (#1682), and remote changes still apply as they arrive (#1696).
+- Background cleanup of automation history drops from 150 statements / 241 ms to 3 statements / 6.3 ms per 50 relay events (#1708).
+- The sync poll wakes about 5× less when idle (#1674), and the roster's warm build is 38% faster (#1712).
+- The Your Macs card stops polling while nothing can see it (#1667).
+- Lane file counts are cached by HEAD and index state (#1707), and live durations share one timer (#1660).
+
+## Sync & multi-machine reliability
+
+- A sync to a dead or unreachable host gives up in 5 s instead of about 75 s, and stale hosts are reclaimed (#1694).
+- Opening a project waits out a peer's database lock instead of failing on it (#1693).
+- Account sync and sync status finish on slow links (#1705).
+- A project that follows another machine is reported as such, instead of timing out (#1685).
+- Recovery controls stay available when sync activation fails (#1695), and a failed sync-host activation stops re-running for every caller (#1664).
+- Sync-host activation no longer waits on the status snapshot (#1680).
+- Sync status reads wait for the first readiness check (#1697).
+- Shared project brains check their identity before use (#1698).
+- A loopback probe timeout no longer reads as a shadowed port (#1672).
+- When pairing stalls, the machine and route are named (#1703), and Repair appears beside the sync-host outcome that explains it (#1710).
+
+## Fixes
+
+- Search no longer wedges the background service, and chats can be re-parented and keep their links across a project move (#1716).
+- Account settings and local sync status can no longer hang the app for 30 s (#1666, #1671).
+- Opening a project reports why it failed and groups errors by the real cause (#1678).
+- Moving a project releases old log files, moves proof paths, and carries closed lanes' Claude history (#1677).
+- Progress notes no longer raise false "Needs you" hands in chat (#1679).
+- Branch import works from the web client (#1687).
+- Lane actions accept the lane-id argument they document (#1673).
+- A turn that settles after shutdown no longer reads the move store once it has closed (#1669).
+- A missing folder or file no longer counts as an allowlist violation, and a missing path outside the allowlist no longer reveals that it is missing (#1668, #1670, #1702).
+- The Mac desktop driver keeps retrying after a transient crash instead of giving up, and stops retrying once nothing wants it; explicit screenshots get a longer capture budget (#1681, #1704).
+- Runtime endpoint ownership is verified before repair, and a service-owned endpoint is no longer mistaken for another copy of ADE (#1699, #1676).
+- Teardown stops the producers before it disposes the pool (#1675).
+
+## Features
+
+- ⌘-chords for the Work page, with a shortcut sheet on `?` (#1686).
+- Sign in to an MCP server once, for every agent (#1688).
+
+## Diagnostics
+
+- Error log lines name the failure rather than the event (#1684), and Error values in log details include their message and stack (#1700).
+- Expected shutdown states no longer open Sentry issues (#1683), and Sentry noise is filtered out with `run_ade_action` errors in their own bucket (#1663).

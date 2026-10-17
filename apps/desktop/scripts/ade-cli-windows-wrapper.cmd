@@ -29,6 +29,11 @@ if /I "%ADE_BUNDLED_CHANNEL%"=="alpha" (
   rem `brain stop` could not reach the running alpha brain.
   if not defined ADE_HOME set "ADE_HOME=%USERPROFILE%\.ade-alpha"
 )
+rem Node's compile cache stops the ~19 MB cli.cjs bundle from being re-parsed on every
+rem launch. Node ignores a cache directory it cannot use. An explicit
+rem NODE_COMPILE_CACHE or NODE_DISABLE_COMPILE_CACHE from the caller wins.
+if not defined NODE_COMPILE_CACHE if not defined NODE_DISABLE_COMPILE_CACHE if defined ADE_HOME set "NODE_COMPILE_CACHE=%ADE_HOME%\cache\node-compile"
+if not defined NODE_COMPILE_CACHE if not defined NODE_DISABLE_COMPILE_CACHE set "NODE_COMPILE_CACHE=%USERPROFILE%\.ade\cache\node-compile"
 set "APP_EXE=%RESOURCES_DIR%\..\%APP_EXE_NAME%"
 if not defined ADE_AGENT_SKILLS_DIRS if exist "%RESOURCES_DIR%\agent-skills" set "ADE_AGENT_SKILLS_DIRS=%RESOURCES_DIR%\agent-skills"
 set "NODE_PATH_VALUE=%RESOURCES_DIR%\app.asar.unpacked\node_modules;%RESOURCES_DIR%\app.asar\node_modules"
