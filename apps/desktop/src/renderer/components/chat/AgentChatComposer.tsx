@@ -3624,11 +3624,22 @@ function AgentChatComposerImpl({
     }
   }, [sessionId]);
 
-  // A `/` typed without a focus event (focus kept across a chat switch) still
-  // needs the provider's slash commands. Focus covers the usual path first.
+  // Focus that stays in the composer across a chat switch fires no focus event,
+  // so the warm-up and the slash-command request are re-issued here when the
+  // session or runtime binding changes. Unfocused switches stay deferred.
+  const chatRuntimePinKey = chatRuntimePin?.key ?? null;
+  const composerFocusedRef = useRef(false);
   useEffect(() => {
-    if (draft.trimStart().startsWith("/")) onSlashCommandsRequested?.();
-  }, [draft, onSlashCommandsRequested]);
+    if (!composerFocusedRef.current) return;
+    warmFileSearchIndex();
+    onSlashCommandsRequested?.();
+  }, [chatRuntimePinKey, onSlashCommandsRequested, sessionId, warmFileSearchIndex]);
+
+  // A "/" typed at the caret opens the command menu through the same trigger
+  // logic, so that is the moment to request the commands when focus did not.
+  useEffect(() => {
+    if (commandMenuTrigger?.type === "slash") onSlashCommandsRequested?.();
+  }, [commandMenuTrigger?.type, onSlashCommandsRequested]);
 
   const revokePreviewUrl = useCallback((url: string | null | undefined) => {
     if (!url || !objectPreviewUrlsRef.current.has(url)) return;
@@ -8664,9 +8675,15 @@ function AgentChatComposerImpl({
             onFocusCapture={() => {
               // Focusing this composer makes it the dictation insertion target so
               // a transcript lands in whichever composer the user is typing into.
+              composerFocusedRef.current = true;
               registerAsDictationTarget();
               warmFileSearchIndex();
               onSlashCommandsRequested?.();
+            }}
+            onBlurCapture={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                composerFocusedRef.current = false;
+              }
             }}
           >
             {modelChipEdit ? (() => {
