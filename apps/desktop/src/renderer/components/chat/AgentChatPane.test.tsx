@@ -3974,6 +3974,41 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => expect(onOpenTerminalPane).toHaveBeenCalledTimes(2));
   });
 
+  it("never re-reveals a chat terminal the chat lists, running or ended, after the pane closes", async () => {
+    const session = buildSession("session-1", { status: "idle" });
+    const running = buildChatTerminalSession(session.sessionId, "terminal-1", "pty-1", "Agent run");
+    const finished = buildChatTerminalSession(session.sessionId, "terminal-2", "pty-2", "Build");
+    const next = buildChatTerminalSession(session.sessionId, "terminal-3", "pty-3", "Next run");
+    const sessionsById = new Map([running, finished, next].map((row) => [row.id, row] as const));
+    installAdeMocks({ sessions: [session], shellSessions: [] });
+    vi.mocked(window.ade.sessions.get).mockImplementation(async (id: string) => sessionsById.get(id) ?? null);
+    const events = installReplayingSessionEvents([]);
+    const onOpenTerminalPane = vi.fn();
+    const view = renderToolsPane(session, { terminalPaneOpen: true, onOpenTerminalPane });
+    const flush = () => act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    await screen.findByRole("textbox");
+    act(() => events.emit({ sessionId: running.id, reason: "created" }));
+    act(() => events.emit({ sessionId: finished.id, reason: "created" }));
+    await waitFor(() => expect(onOpenTerminalPane).toHaveBeenCalledTimes(2));
+
+    // The build finishes, and the chat now lists both terminals. Closing the
+    // Tools pane re-subscribes: the chat is read again and the history replays.
+    const endedFinished = { ...finished, endedAt: "2026-03-24T06:10:00.000Z", status: "completed" as const, exitCode: 0 };
+    sessionsById.set(finished.id, endedFinished);
+    vi.mocked(window.ade.sessions.list).mockResolvedValue([running, endedFinished]);
+    view.setTerminalPaneOpen(false);
+    await flush();
+    await flush();
+    expect(onOpenTerminalPane).toHaveBeenCalledTimes(2);
+
+    // A terminal the chat has never listed still reveals after the close.
+    act(() => events.emit({ sessionId: next.id, reason: "created" }));
+    await waitFor(() => expect(onOpenTerminalPane).toHaveBeenCalledTimes(3));
+  });
+
   it("shows a green session indicator while the agent is working", async () => {
     const session = buildSession("session-1");
     installAdeMocks({

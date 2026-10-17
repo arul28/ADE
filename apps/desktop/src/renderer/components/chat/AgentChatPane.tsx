@@ -4489,8 +4489,9 @@ export function AgentChatPane({
     nonce: number;
   } | null>(null);
   const terminalRevealNonceRef = useRef(0);
-  // Terminals this pane has revealed or already knows exist. Survives the reveal
-  // effect's re-subscriptions, so a replayed "created" cannot reopen the pane.
+  // Terminals this pane revealed that the chat's list does not show yet. Survives
+  // the reveal effect's re-subscriptions, so a replayed "created" cannot reopen
+  // the pane. A read of the chat releases what it lists; a deleted one is released.
   const knownTerminalIdsRef = useRef(new Set<string>());
   const hasExternalTerminalPane = Boolean(onToggleTerminalPane || onOpenTerminalPane);
   const openTerminalPanel = useCallback(() => {
@@ -8732,13 +8733,21 @@ export function AgentChatPane({
     const knownTerminalIds = knownTerminalIdsRef.current;
     // Re-subscribing replays events the new subscriber missed, so a terminal
     // that already existed (its "created" from minutes ago) arrives again. Every
-    // terminal the chat has when this subscription starts is therefore known,
-    // not news. Ids are compared, not `startedAt`: a remote machine's clock is
-    // not ours, and a shell it just started must still reveal.
+    // terminal the chat has when this subscription starts, ended ones included,
+    // is therefore known to this subscription, not news. Ids are compared, not
+    // `startedAt`: a remote machine's clock is not ours, and a shell it just
+    // started must still reveal.
+    const chatTerminalIds = new Set<string>();
+    const isKnown = (sessionId: string) => knownTerminalIds.has(sessionId) || chatTerminalIds.has(sessionId);
     const baseline = selectedSessionId
       ? sessionsApi.list({ chatSessionId: selectedSessionId, limit: null }, pin).then(
         (rows) => {
-          for (const row of rows) knownTerminalIds.add(row.id);
+          for (const row of rows) {
+            chatTerminalIds.add(row.id);
+            // The chat lists it, so this pane need not remember it. That keeps
+            // the set to terminals revealed since the chat was last read.
+            knownTerminalIds.delete(row.id);
+          }
           return true;
         },
         (error: unknown) => {
@@ -8750,7 +8759,7 @@ export function AgentChatPane({
       )
       : Promise.resolve(true);
     const revealCreatedTerminal = async (sessionId: string) => {
-      if (knownTerminalIds.has(sessionId)) return;
+      if (isKnown(sessionId)) return;
       let session: TerminalSessionDetail | null = null;
       try {
         session = await sessionsApi.get(sessionId, pin);
@@ -8760,7 +8769,7 @@ export function AgentChatPane({
       // A replay can land before the baseline read does, so judge it after.
       const baselineLoaded = await baseline;
       if (disposed || !baselineLoaded || !session) return;
-      if (knownTerminalIds.has(sessionId)) return;
+      if (isKnown(sessionId)) return;
       const selectedChatSessionId = selectedSessionIdRef.current;
       if (!selectedChatSessionId || session.chatSessionId !== selectedChatSessionId) return;
       if (session.laneId !== laneId) return;
@@ -8782,6 +8791,11 @@ export function AgentChatPane({
     };
 
     const unsubscribe = sessionsApi.onChanged((event) => {
+      // A deleted terminal leaves the chat's list, so no read would release it.
+      if (event.reason === "deleted") {
+        knownTerminalIds.delete(event.sessionId);
+        return;
+      }
       if (event.reason !== "created") return;
       void revealCreatedTerminal(event.sessionId);
     }, pin);
