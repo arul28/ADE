@@ -29,6 +29,7 @@ import type {
   OpenCodeProviderSummary,
 } from "../../../shared/types";
 import {
+  replaceDynamicCopilotModelDescriptors,
   decodeOpenCodeRegistryId,
   replaceDynamicPiModelDescriptors,
   getModelById,
@@ -119,7 +120,7 @@ import { loadCursorSdk } from "./cursorSdkLoader";
 import { resolveCopilotExecutable } from "./acpExecutables";
 import { copilotConfigHome } from "../shared/providerConfigHomes";
 import { acquireCopilotSdkConnection, releaseCopilotSdkConnection } from "../chat/copilotSdkPool";
-import { copilotSdkModelDescriptors } from "../chat/copilotModelsDiscovery";
+import { copilotSdkModelDescriptors, COPILOT_MODELS_TTL_MS, readCopilotModelCatalogCache, writeCopilotModelCatalogCache, type CopilotModelCatalogCache } from "../chat/copilotModelsDiscovery";
 import { resolveAdeCacheFile } from "../shared/adeCacheFile";
 import { writeTextAtomic } from "../shared/utils";
 import {
@@ -960,23 +961,7 @@ function extractDiscoveredLocalModels(connections: AiRuntimeConnections): Discov
 }
 
 const AI_STATUS_SLOW_PHASE_MS = 120;
-const COPILOT_MODELS_TTL_MS = 6 * 60 * 60_000;
-const COPILOT_MODELS_CACHE_VERSION = 1;
-const COPILOT_MODELS_CACHE_FILE = "copilot-model-catalog-cache.json";
-function readCopilotModelsCache(): { savedAt: number; descriptors: ModelDescriptor[] } | null {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(resolveAdeCacheFile(COPILOT_MODELS_CACHE_FILE), "utf8")) as Record<string, unknown>;
-    if (parsed.version !== COPILOT_MODELS_CACHE_VERSION || typeof parsed.savedAt !== "number" || !Array.isArray(parsed.descriptors)) return null;
-    const descriptors = parsed.descriptors.filter((entry): entry is ModelDescriptor => Boolean(
-      entry && typeof entry === "object" && (entry as ModelDescriptor).family === "github-copilot"
-      && typeof (entry as ModelDescriptor).id === "string" && typeof (entry as ModelDescriptor).providerModelId === "string",
-    ));
-    return descriptors.length ? { savedAt: parsed.savedAt, descriptors } : null;
-  } catch {
-    return null;
-  }
-}
-let copilotModelsCache: { savedAt: number; descriptors: ModelDescriptor[] } | null = readCopilotModelsCache();
+let copilotModelsCache: CopilotModelCatalogCache | null = readCopilotModelCatalogCache();
 let copilotModelsRequest: Promise<ModelDescriptor[]> | null = null;
 
 type AiStatusPhaseTiming = {
@@ -1171,14 +1156,10 @@ export function createAiIntegrationService(args: {
             });
             try {
               const descriptors = copilotSdkModelDescriptors(await connection.pooled.request<unknown[]>("models"));
-              const next = { savedAt: Date.now(), descriptors };
-              copilotModelsCache = next;
               try {
-                writeTextAtomic(resolveAdeCacheFile(COPILOT_MODELS_CACHE_FILE), JSON.stringify({
-                  version: COPILOT_MODELS_CACHE_VERSION,
-                  ...next,
-                }));
+                copilotModelsCache = writeCopilotModelCatalogCache(descriptors);
               } catch (error) {
+                copilotModelsCache = { savedAt: Date.now(), descriptors };
                 logger.warn("ai.copilot_sdk_model_cache_write_failed", { error: error instanceof Error ? error.message : String(error) });
               }
               return descriptors;
@@ -1192,6 +1173,7 @@ export function createAiIntegrationService(args: {
         }
       }
       if (copilotModelsCache) {
+        replaceDynamicCopilotModelDescriptors(copilotModelsCache.descriptors);
         available = available.filter((descriptor) => descriptor.family !== "github-copilot");
         available.push(...copilotModelsCache.descriptors);
       }

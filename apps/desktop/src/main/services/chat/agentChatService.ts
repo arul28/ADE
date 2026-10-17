@@ -850,6 +850,7 @@ import {
   readTailLines,
 } from "./externalChatHistoryImport";
 import {
+  replaceDynamicCopilotModelDescriptors,
   getActiveModelManifest,
   onModelManifestApplied,
   getAppDefaultModelDescriptor,
@@ -1258,7 +1259,7 @@ import {
 } from "./droidSdkPool";
 import { acquireCopilotSdkConnection, releaseCopilotSdkConnection, type CopilotSdkPooled } from "./copilotSdkPool";
 import { createCopilotSdkEventMapperState, mapCopilotSdkEvent, copilotSdkDoneUsage, type CopilotSdkEventMapperState } from "./copilotSdkEventMapper";
-import { copilotSdkModelDescriptors } from "./copilotModelsDiscovery";
+import { copilotSdkModelDescriptors, readCopilotModelCatalogCache, writeCopilotModelCatalogCache } from "./copilotModelsDiscovery";
 import { resolveCopilotExecutable } from "../ai/acpExecutables";
 import {
   acquirePiSdkConnection,
@@ -63315,10 +63316,20 @@ export function createAgentChatService(args: {
                 cliPath: resolveCopilotExecutable({ auth, env: baseEnv }).path,
                 baseDirectory: copilotConfigHome({ env: baseEnv }), baseEnv, logger,
               });
-              try { return copilotSdkModelDescriptors(await connection.pooled.request<unknown[]>("models")); }
+              try {
+                const live = copilotSdkModelDescriptors(await connection.pooled.request<unknown[]>("models"));
+                try { writeCopilotModelCatalogCache(live); } catch (error) {
+                  logger.warn("agent_chat.copilot_model_cache_write_failed", { error: error instanceof Error ? error.message : String(error) });
+                }
+                return live;
+              }
               finally { releaseCopilotSdkConnection(connection.poolKey, connection.generation); }
             })()
-          : copilotSdkModelDescriptors([]);
+          // Without a probe, serve the account's last real list: a paid plan's
+          // models (and their context tiers) must not collapse to Auto.
+          : readCopilotModelCatalogCache()?.descriptors ?? copilotSdkModelDescriptors([]);
+        // The catalog builds rows from the registry, so the live list must be in it.
+        replaceDynamicCopilotModelDescriptors(descriptors);
         return descriptors.map((d, index) => ({
           id: d.id, displayName: d.displayName, description: `${d.displayName} (GitHub Copilot SDK)`,
           isDefault: index === 0, reasoningEfforts: d.reasoningTiers?.map((effort) => ({ effort, description: `${effort} reasoning` })) ?? [],

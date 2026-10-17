@@ -2274,11 +2274,11 @@ const ACP_MODEL_PROVIDER_GROUPS = ["qwen", "kimi", "grok", "devin"] as const;
  * live list is capped. Muse is not an ACP provider; only the catalog rules are
  * shared, so it is kept out of {@link AcpModelProviderGroup}.
  */
-export type LiveModelProviderGroup = AcpModelProviderGroup | "muse";
+export type LiveModelProviderGroup = AcpModelProviderGroup | "muse" | "copilot";
 
 /** True for a provider group whose live list the runtime reports (see {@link LiveModelProviderGroup}). */
 export function isLiveModelProviderGroup(value: string | null | undefined): value is LiveModelProviderGroup {
-  return value === "muse" || isAcpModelProviderGroup(value);
+  return value === "muse" || value === "copilot" || isAcpModelProviderGroup(value);
 }
 
 /** Family, route prefix, and brand color for each live-catalog provider group. */
@@ -2287,6 +2287,7 @@ const ACP_GROUP_METADATA: Record<
   { family: ProviderFamily; providerRoute: string; cliCommand: string; color: string; previewTier: boolean }
 > = {
   muse: { family: "muse", providerRoute: "muse-cli", cliCommand: "muse", color: DYNAMIC_MODEL_COLORS.muse, previewTier: false },
+  copilot: { family: "github-copilot", providerRoute: "copilot-sdk", cliCommand: "copilot", color: "#8250df", previewTier: false },
   qwen: { family: "qwen", providerRoute: "qwen-acp", cliCommand: "qwen", color: ACP_PROVIDER_MODEL_COLORS.qwen, previewTier: false },
   kimi: { family: "moonshot", providerRoute: "kimi-acp", cliCommand: "kimi", color: ACP_PROVIDER_MODEL_COLORS.kimi, previewTier: false },
   grok: { family: "xai", providerRoute: "grok-acp", cliCommand: "grok", color: ACP_PROVIDER_MODEL_COLORS.grok, previewTier: false },
@@ -2578,6 +2579,11 @@ export function createDynamicMuseModelDescriptor(
  * replacer: a curated model keeps its curated row, the list is capped, and a
  * contributor variant is dropped.
  */
+/** Copilot's live SDK model list (`listModels`), as `copilotSdkModelDescriptors` builds it. */
+export function replaceDynamicCopilotModelDescriptors(descriptors: ModelDescriptor[]): void {
+  replaceLiveModelDescriptors("copilot", descriptors);
+}
+
 export function replaceDynamicMuseModelDescriptors(descriptors: ModelDescriptor[]): void {
   replaceLiveModelDescriptors(
     "muse",
@@ -3340,6 +3346,7 @@ export function resolveCliProviderForModel(
   descriptor: ModelDescriptor,
 ): "claude" | "codex" | "muse" | "cursor" | "droid" | "pi" | "qwen" | "kimi" | "grok" | "copilot" | "devin" | null {
   if (descriptor.providerRoute === "pi-sdk") return "pi";
+  if (descriptor.providerRoute === "copilot-sdk") return "copilot";
   if (!descriptor.isCliWrapped) return null;
   if (descriptor.family === "muse") return "muse";
   if (descriptor.family === "cursor") return "cursor";

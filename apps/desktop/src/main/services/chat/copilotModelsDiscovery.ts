@@ -1,4 +1,7 @@
+import fs from "node:fs";
 import type { ModelDescriptor } from "../../../shared/modelRegistry";
+import { resolveAdeCacheFile } from "../shared/adeCacheFile";
+import { writeTextAtomic } from "../shared/utils";
 import type { CopilotSdkPooled } from "./copilotSdkPool";
 
 type CopilotModel = {
@@ -72,3 +75,32 @@ export async function discoverCopilotSdkModelDescriptors(sdk: CopilotSdkPooled):
   return copilotSdkModelDescriptors(await sdk.request<unknown[]>("models"));
 }
 
+
+/** A saved list younger than this is served without asking Copilot again. */
+export const COPILOT_MODELS_TTL_MS = 6 * 60 * 60_000;
+const COPILOT_MODELS_CACHE_VERSION = 1;
+const COPILOT_MODELS_CACHE_FILE = "copilot-model-catalog-cache.json";
+
+export type CopilotModelCatalogCache = { savedAt: number; descriptors: ModelDescriptor[] };
+
+/** The last model list Copilot gave this machine, or null when there is none. */
+export function readCopilotModelCatalogCache(): CopilotModelCatalogCache | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(resolveAdeCacheFile(COPILOT_MODELS_CACHE_FILE), "utf8")) as Record<string, unknown>;
+    if (parsed.version !== COPILOT_MODELS_CACHE_VERSION || typeof parsed.savedAt !== "number" || !Array.isArray(parsed.descriptors)) return null;
+    const descriptors = parsed.descriptors.filter((entry): entry is ModelDescriptor => Boolean(
+      entry && typeof entry === "object" && (entry as ModelDescriptor).family === "github-copilot"
+      && typeof (entry as ModelDescriptor).id === "string" && typeof (entry as ModelDescriptor).providerModelId === "string",
+    ));
+    return descriptors.length ? { savedAt: parsed.savedAt, descriptors } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Save a live model list so the next read (and the next launch) serves it without a Copilot runtime. */
+export function writeCopilotModelCatalogCache(descriptors: ModelDescriptor[]): CopilotModelCatalogCache {
+  const next = { savedAt: Date.now(), descriptors };
+  writeTextAtomic(resolveAdeCacheFile(COPILOT_MODELS_CACHE_FILE), JSON.stringify({ version: COPILOT_MODELS_CACHE_VERSION, ...next }));
+  return next;
+}
