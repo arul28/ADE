@@ -378,6 +378,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const laneGithubPrTagsRequestRef = useRef(0);
   const laneVisiblePrRefreshRequestedAtRef = useRef<Map<string, number>>(new Map());
   const laneVisiblePrRefreshProjectRootRef = useRef<string | null>(null);
+  const lanePrTagsProjectRootRef = useRef<string | null>(null);
   const laneGithubSnapshotForceRefreshProjectRootRef = useRef<string | null>(null);
   const [laneVisiblePrRefreshVisibilityToken, setLaneVisiblePrRefreshVisibilityToken] = useState(0);
   const hasActiveLaneRuntimeRef = useRef(false);
@@ -837,8 +838,14 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     lanePrTagsRequestRef.current += 1;
     laneGithubPrTagsRequestRef.current += 1;
     laneGithubSnapshotForceRefreshProjectRootRef.current = null;
-    setLanePrTags([]);
-    setLaneGithubPrTags([]);
+    // The tags belong to one project. Coming back to Lanes in the same project
+    // keeps the last read on screen while the refresh below replaces it; the
+    // lane list regroups from these, so blanking them here redrew the whole list.
+    if (lanePrTagsProjectRootRef.current !== activeProjectRoot) {
+      lanePrTagsProjectRootRef.current = activeProjectRoot;
+      setLanePrTags([]);
+      setLaneGithubPrTags([]);
+    }
     if (!active || !activeProjectRoot) {
       return;
     }
@@ -932,12 +939,15 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     });
     if (prIds.length === 0) return;
 
-    for (const prId of prIds) {
-      laneVisiblePrRefreshRequestedAtRef.current.set(prId, nowMs);
-    }
-
     const startedRoot = projectRoot;
     const timer = window.setTimeout(() => {
+      // Marked when the request goes out, not when it is queued: a tag change
+      // inside the debounce cancels this timer and re-selects, and a PR marked
+      // while queued would then never be sent.
+      const sentAt = Date.now();
+      for (const prId of prIds) {
+        laneVisiblePrRefreshRequestedAtRef.current.set(prId, sentAt);
+      }
       void window.ade.prs.refresh({ prIds })
         .then((refreshed) => {
           if (getActiveProjectRoot() !== startedRoot) return;
