@@ -11,6 +11,24 @@ function normalizeHost(host: string | null | undefined): string | null {
   return normalized.length > 0 ? normalized : null;
 }
 
+// The dialer parses each host with the WHATWG URL parser, which also reads
+// 2130706433, 0x7f000001, 0177.0.0.1 and ::ffff:7f00:1 as this machine. So the
+// check runs on the canonical form, not on the spelling a peer recorded.
+export function isLoopbackHost(host: string): boolean {
+  let canonical: string;
+  try {
+    const authority = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+    canonical = new URL(`ws://${authority}/`).hostname;
+  } catch {
+    return false;
+  }
+  const bare = canonical.replace(/^\[|\]$/g, "").replace(/\.$/, "");
+  return bare === "localhost"
+    || bare === "::1"
+    || /^127(\.\d{1,3}){3}$/.test(bare)
+    || /^::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}$/.test(bare);
+}
+
 export function tailscaleDnsNameFromDevice(
   localDevice: SyncDeviceRecord,
 ): string | null {
@@ -21,7 +39,8 @@ export function tailscaleDnsNameFromDevice(
 }
 
 export function buildAddressCandidates(
-  localDevice: SyncDeviceRecord,
+  device: SyncDeviceRecord,
+  options: { isLocalDevice: boolean },
 ): SyncAddressCandidate[] {
   const candidates: SyncAddressCandidate[] = [];
   const seen = new Set<string>();
@@ -31,30 +50,36 @@ export function buildAddressCandidates(
   ) => {
     const normalized = normalizeHost(host);
     if (!normalized || seen.has(normalized)) return;
+    // A remote device's loopback address still means this machine, whichever
+    // source recorded it: a relay-bridged peer is seen from 127.0.0.1.
+    if (!options.isLocalDevice && isLoopbackHost(normalized)) return;
     seen.add(normalized);
     candidates.push({ host: normalized, kind });
   };
-  const preferredSavedHost = normalizeHost(localDevice.lastHost);
+  const preferredSavedHost = normalizeHost(device.lastHost);
   const preferredSavedHostKind: SyncAddressCandidate["kind"] | null = preferredSavedHost == null
     ? null
-    : localDevice.ipAddresses.some((host) => normalizeHost(host) === preferredSavedHost)
+    : device.ipAddresses.some((host) => normalizeHost(host) === preferredSavedHost)
       ? "lan"
-      : normalizeHost(localDevice.tailscaleIp) === preferredSavedHost
-        || tailscaleDnsNameFromDevice(localDevice) === preferredSavedHost
+      : normalizeHost(device.tailscaleIp) === preferredSavedHost
+        || tailscaleDnsNameFromDevice(device) === preferredSavedHost
         ? "tailscale"
         : "saved";
   if (preferredSavedHostKind && preferredSavedHostKind !== "saved") {
-    append(localDevice.lastHost, preferredSavedHostKind);
+    append(device.lastHost, preferredSavedHostKind);
   }
-  for (const lanAddress of localDevice.ipAddresses) {
+  for (const lanAddress of device.ipAddresses) {
     append(lanAddress, "lan");
   }
   if (preferredSavedHostKind === "saved") {
-    append(localDevice.lastHost, "saved");
+    append(device.lastHost, "saved");
   }
-  append(tailscaleDnsNameFromDevice(localDevice), "tailscale");
-  append(localDevice.tailscaleIp, "tailscale");
-  append("127.0.0.1", "loopback");
+  append(tailscaleDnsNameFromDevice(device), "tailscale");
+  append(device.tailscaleIp, "tailscale");
+  // Loopback is this machine only for the local device; for any other device
+  // the append guard above drops it, so the candidate list stays empty rather
+  // than pointing at this machine's own listener.
+  if (options.isLocalDevice) append("127.0.0.1", "loopback");
   return candidates;
 }
 
@@ -72,7 +97,7 @@ export function buildPairingConnectInfo(argsIn: {
   relayWssUrl?: string | null;
 }): SyncPairingConnectInfo {
   const port = normalizeSyncHostPort(argsIn.localDevice.lastPort);
-  const addressCandidates = buildAddressCandidates(argsIn.localDevice);
+  const addressCandidates = buildAddressCandidates(argsIn.localDevice, { isLocalDevice: true });
   // The cloud relay is the lowest-priority path: phones try every direct
   // candidate first and fall back to the tunnel only when nothing answers.
   if (argsIn.relayWssUrl) {
