@@ -61273,7 +61273,7 @@ export function createAgentChatService(args: {
 
   const listSessions = async (
     laneId?: string,
-    options?: { includeIdentity?: boolean; includeAutomation?: boolean; includeArchived?: boolean },
+    options?: { includeIdentity?: boolean; includeAutomation?: boolean; includeArchived?: boolean; sessionIds?: readonly string[] },
   ): Promise<AgentChatSessionSummary[]> => {
     await scheduledWorkReady;
     const rows = sessionService.list({
@@ -61282,11 +61282,16 @@ export function createAgentChatService(args: {
       toolTypes: CHAT_SESSION_TOOL_TYPES,
     });
     const chatRows = rows.filter((row) => isChatToolType(row.toolType));
+    // A summary costs a metadata read and a config read per row, so a caller
+    // that shows a few chats names them and only those are summarized. The
+    // 500-row window is unchanged: a named chat outside it is still not listed.
+    const namedIds = options?.sessionIds ? new Set(options.sessionIds) : null;
+    const summarizedRows = namedIds ? chatRows.filter((row) => namedIds.has(row.id)) : chatRows;
     const includeIdentity = options?.includeIdentity === true;
     const includeAutomation = options?.includeAutomation === true;
     const includeArchived = options?.includeArchived !== false;
 
-    return (await Promise.all(chatRows.map((row) => summarizeSessionRow(row))))
+    return (await Promise.all(summarizedRows.map((row) => summarizeSessionRow(row))))
       .filter((summary) => includeIdentity || !summary.identityKey)
       .filter((summary) => includeAutomation || (summary.surface ?? "work") !== "automation")
       .filter((summary) => includeArchived || summary.archivedAt == null);

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AgentChatSessionSummary, TerminalSessionSummary } from "../../../shared/types";
 import {
+  listSessionsWithChatProjection,
   projectChatOntoSession,
   projectChatSummariesOntoSessions,
 } from "./chatSessionProjection";
@@ -338,5 +339,70 @@ describe("chatSessionProjection — model", () => {
   it("trims a padded model ref rather than passing the padding on", () => {
     const projected = projectChatOntoSession(session(), chat({ model: "  claude-opus-5  " }));
     expect(projected.model).toBe("claude-opus-5");
+  });
+});
+
+describe("listSessionsWithChatProjection — summarizes only what the page shows", () => {
+  /** A chat service that, like the real one, summarizes only the ids it is asked for. */
+  function chatService(allChats: AgentChatSessionSummary[]) {
+    const calls: Array<readonly string[] | undefined> = [];
+    return {
+      calls,
+      service: {
+        listSessions: async (_laneId?: string, options?: { sessionIds?: readonly string[] }) => {
+          calls.push(options?.sessionIds);
+          const named = options?.sessionIds ? new Set(options.sessionIds) : null;
+          return allChats.filter((summary) => !named || named.has(summary.sessionId));
+        },
+        getSessionSummary: async () => null,
+      },
+    };
+  }
+
+  async function run(sessions: TerminalSessionSummary[], allChats: AgentChatSessionSummary[]) {
+    const chats = chatService(allChats);
+    const rows = await listSessionsWithChatProjection(
+      {
+        sessionService: { list: () => sessions, get: () => null },
+        ptyService: null,
+        agentChatService: chats.service,
+        logger: { warn: () => {} },
+      },
+      { limit: 500 },
+    );
+    return { calls: chats.calls, rows };
+  }
+
+  it("summarizes the chats on the page and nothing else", async () => {
+    const shell: TerminalSessionSummary = { ...session(), id: "shell-1", toolType: "shell" };
+    const { calls } = await run(
+      [{ ...session(), id: "chat-a", title: "A" }, shell, { ...session(), id: "chat-b", title: "B" }],
+      [chat({ sessionId: "chat-a" }), chat({ sessionId: "chat-b" }), chat({ sessionId: "chat-off-page" })],
+    );
+    expect(calls).toEqual([["chat-a", "chat-b"]]);
+  });
+
+  it("summarizes a listed child's spawn parent when the parent sits outside the page", async () => {
+    const { calls, rows } = await run(
+      [{ ...session(), id: "child", title: "Child" }],
+      [
+        chat({ sessionId: "cto-session", identityKey: "cto" }),
+        chat({ sessionId: "child", orchestrationParentSessionId: "cto-session", spawnKind: "subagent" }),
+      ],
+    );
+    expect(calls).toEqual([["child"], ["cto-session"]]);
+    expect(rows.map((row) => row.id)).toEqual(["child"]);
+    expect(rows[0]?.parentIdentityKey).toBe("cto");
+  });
+
+  it("reads no parent when every parent is already on the page", async () => {
+    const { calls } = await run(
+      [{ ...session(), id: "cto-session", title: "CTO" }, { ...session(), id: "child", title: "Child" }],
+      [
+        chat({ sessionId: "cto-session", identityKey: "cto" }),
+        chat({ sessionId: "child", orchestrationParentSessionId: "cto-session", spawnKind: "subagent" }),
+      ],
+    );
+    expect(calls).toEqual([["cto-session", "child"]]);
   });
 });

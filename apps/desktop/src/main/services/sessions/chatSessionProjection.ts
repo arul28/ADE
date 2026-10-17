@@ -20,7 +20,7 @@ type ChatProjectionServices = {
   agentChatService?: {
     listSessions(
       laneId?: string,
-      options?: { includeIdentity?: boolean; includeAutomation?: boolean },
+      options?: { includeIdentity?: boolean; includeAutomation?: boolean; sessionIds?: readonly string[] },
     ): Promise<AgentChatSessionSummary[]>;
     getSessionSummary(sessionId: string): Promise<AgentChatSessionSummary | null>;
   } | null;
@@ -326,10 +326,32 @@ export async function listSessionsWithChatProjection(
   let allChats: AgentChatSessionSummary[] = [];
   if (services.agentChatService) {
     try {
+      // Only the chats this page lists are summarized. A listed child also needs
+      // its spawn parent's identity key, and the parent may sit outside the page,
+      // so the parents it names are summarized in a second read.
+      const listOptions = { includeIdentity: true, includeAutomation: true };
+      const shownChatIds = sessions
+        .filter((session) => isChatToolType(session.toolType))
+        .map((session) => session.id);
       allChats = await services.agentChatService.listSessions(laneId || undefined, {
-        includeIdentity: true,
-        includeAutomation: true,
+        ...listOptions,
+        sessionIds: shownChatIds,
       });
+      const shown = new Set(shownChatIds);
+      const parentIds = new Set<string>();
+      for (const chat of allChats) {
+        const parentId = chat.orchestrationParentSessionId;
+        if (parentId && !shown.has(parentId)) parentIds.add(parentId);
+      }
+      if (parentIds.size > 0) {
+        allChats = [
+          ...allChats,
+          ...(await services.agentChatService.listSessions(laneId || undefined, {
+            ...listOptions,
+            sessionIds: [...parentIds],
+          })),
+        ];
+      }
     } catch (error) {
       services.logger.warn("sessions.chat_projection_failed", {
         laneId: laneId || null,
