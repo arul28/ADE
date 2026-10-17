@@ -1062,6 +1062,11 @@ export function buildWindowsBrainReportFunction(): string {
  * 100 ns ticks. Both sides are cut to whole microseconds in UTC and must be
  * equal, with no window. A sub-microsecond digit CIM cannot carry is not a
  * different process. A reused pid starts at another microsecond, and it fails.
+ *
+ * The check returns one verdict: `match`, `skipped` (the pid no longer holds the
+ * process the sweep found), or `unresolved` (the process is still running but its
+ * owner cannot be read). `unresolved` is not a skip. The live process may be ours,
+ * so the sweep fails closed on it.
  */
 function buildWindowsProcessIdentityFunctions(): string {
   return [
@@ -1069,16 +1074,31 @@ function buildWindowsProcessIdentityFunctions(): string {
     "  $fileTime = ([DateTime]$time).ToUniversalTime().ToFileTimeUtc()",
     "  return $fileTime - ($fileTime % 10)",
     "}",
+    // The owner SID, or $null when it cannot be read. A failed lookup is not
+    // another owner, so the caller must not read it as a skip.
+    "function Get-AdeOwnerSid($candidate) {",
+    "  try { $owner = Invoke-CimMethod -InputObject $candidate -MethodName GetOwnerSid } catch { return $null }",
+    "  if ($owner.ReturnValue -ne 0 -or [string]::IsNullOrEmpty($owner.Sid)) { return $null }",
+    "  return [string]$owner.Sid",
+    "}",
+    // Whether the pid still names a running process. A lookup that fails because
+    // the process has already exited is a process that is gone, not unresolved.
+    "function Test-AdeProcessRunning($processId) {",
+    "  try { $probe = [System.Diagnostics.Process]::GetProcessById([int]$processId) } catch [ArgumentException] { return $false }",
+    "  try { return (-not $probe.HasExited) } finally { $probe.Dispose() }",
+    "}",
     "function Test-AdeProcessIdentity($process, $candidate, $commandLinePattern, $sid, $parentPid) {",
-    "  try { $started = Get-AdeWholeMicroseconds $process.StartTime } catch { if ($process.HasExited) { return $false }; throw }",
-    "  if ($started -ne (Get-AdeWholeMicroseconds $candidate.CreationDate)) { return $false }",
+    "  try { $started = Get-AdeWholeMicroseconds $process.StartTime } catch { if ($process.HasExited) { return 'skipped' }; throw }",
+    "  if ($started -ne (Get-AdeWholeMicroseconds $candidate.CreationDate)) { return 'skipped' }",
     "  $fresh = @(Get-CimInstance Win32_Process -Filter ('ProcessId = ' + $process.Id))",
-    "  if ($fresh.Count -ne 1) { return $false }",
-    "  if ($started -ne (Get-AdeWholeMicroseconds $fresh[0].CreationDate)) { return $false }",
-    "  if (-not $fresh[0].CommandLine -or $fresh[0].CommandLine -notmatch $commandLinePattern) { return $false }",
-    "  if ($null -ne $parentPid -and [int]$fresh[0].ParentProcessId -ne [int]$parentPid) { return $false }",
-    "  $owner = Invoke-CimMethod -InputObject $fresh[0] -MethodName GetOwnerSid",
-    "  return ($owner.ReturnValue -eq 0 -and $owner.Sid -eq $sid)",
+    "  if ($fresh.Count -ne 1) { return 'skipped' }",
+    "  if ($started -ne (Get-AdeWholeMicroseconds $fresh[0].CreationDate)) { return 'skipped' }",
+    "  if (-not $fresh[0].CommandLine -or $fresh[0].CommandLine -notmatch $commandLinePattern) { return 'skipped' }",
+    "  if ($null -ne $parentPid -and [int]$fresh[0].ParentProcessId -ne [int]$parentPid) { return 'skipped' }",
+    "  $ownerSid = Get-AdeOwnerSid $fresh[0]",
+    "  if ($null -eq $ownerSid) { if ($process.HasExited) { return 'skipped' }; return 'unresolved' }",
+    "  if ($ownerSid -ne $sid) { return 'skipped' }",
+    "  return 'match'",
     "}",
   ].join("\n");
 }
@@ -1093,11 +1113,15 @@ function buildWindowsProcessIdentityFunctions(): string {
  * predecessor — including one started by another logon session — before it
  * starts a replacement.
  *
- * Each predecessor supervisor is stopped here, and then the brain it was
- * guarding is stopped with `stopWindowsBrainGracefully`: cooperative shutdown
- * first, then an identity-checked `taskkill /T /F` if the brain does not leave.
- * PowerShell's own `Process.Kill()` on the brain would end only that process,
- * leaving its ConPTY hosts and agent CLIs running with nothing left to reap them.
+ * The sweep has two passes. The first identifies every candidate and kills
+ * nothing. A candidate whose owner cannot be read while it still runs is
+ * reported as `unresolved`, and then the second pass does not run: the sweep
+ * stops nothing and fails closed. Otherwise the second pass stops each
+ * predecessor supervisor and reports its brain, which is stopped with
+ * `stopWindowsBrainGracefully`: cooperative shutdown first, then an
+ * identity-checked `taskkill /T /F` if the brain does not leave. PowerShell's
+ * own `Process.Kill()` on the brain would end only that process, leaving its
+ * ConPTY hosts and agent CLIs running with nothing left to reap them.
  */
 async function stopWindowsSupervisorsByCommandLine(
   run: ServiceManagerSpawnSync,
@@ -1106,7 +1130,8 @@ async function stopWindowsSupervisorsByCommandLine(
 ): Promise<WindowsTaskRemovalResult> {
   // Every candidate is identity-checked while its process handle is held, and
   // only then reported or killed. The enumeration is a claim from an earlier
-  // CIM query, and a PID named in it can have been reused since.
+  // CIM query, and a PID named in it can have been reused since. Every handle
+  // stays open until the end, so a checked pid cannot be reused before its kill.
   const script = [
     "$ErrorActionPreference = 'Stop'",
     buildWindowsBrainReportFunction(),
@@ -1117,38 +1142,55 @@ async function stopWindowsSupervisorsByCommandLine(
     `$pattern = '(?i)(?:^|\\s)-File\\s+(?:"' + $escaped + '"|' + $escaped + ')(?=\\s|$)'`,
     // A brain is the supervisor's child, started with `serve` as its last argument.
     "$brainPattern = '(?i)(?:^|\\s)serve\\s*$'",
-    "foreach ($row in @(Get-CimInstance Win32_Process -Filter \"Name = 'powershell.exe'\")) {",
-    "  if (-not $row.CommandLine -or $row.CommandLine -notmatch $pattern) { continue }",
-    "  $owner = Invoke-CimMethod -InputObject $row -MethodName GetOwnerSid",
-    "  if ($owner.ReturnValue -ne 0 -or $owner.Sid -ne $sid) { continue }",
-    "  $process = $null",
-    "  try {",
-    "    try { $process = [System.Diagnostics.Process]::GetProcessById([int]$row.ProcessId); $handle = $process.Handle } catch [ArgumentException] { continue }",
+    "$opened = [System.Collections.Generic.List[System.Diagnostics.Process]]::new()",
+    "$targets = [System.Collections.Generic.List[object]]::new()",
+    "$unresolved = $false",
+    "try {",
+    // Pass one: identify every candidate, and kill nothing.
+    "  foreach ($row in @(Get-CimInstance Win32_Process -Filter \"Name = 'powershell.exe'\")) {",
+    "    if (-not $row.CommandLine -or $row.CommandLine -notmatch $pattern) { continue }",
+    // An owner that is another user's is not ours to touch. An owner that cannot be
+    // read is not known to be another user's, so the sweep fails closed on it.
+    "    $ownerSid = Get-AdeOwnerSid $row",
+    "    if ($null -eq $ownerSid) { if (Test-AdeProcessRunning $row.ProcessId) { $unresolved = $true; [Console]::Out.WriteLine('unresolved ' + $row.ProcessId) }; continue }",
+    "    if ($ownerSid -ne $sid) { continue }",
+    "    $process = $null",
+    "    try { $process = [System.Diagnostics.Process]::GetProcessById([int]$row.ProcessId); $opened.Add($process); $handle = $process.Handle } catch [ArgumentException] { continue }",
     "    if ($process.HasExited) { continue }",
-    "    if (-not (Test-AdeProcessIdentity $process $row $pattern $sid $null)) { [Console]::Out.WriteLine('skipped ' + $row.ProcessId); continue }",
+    "    $verdict = Test-AdeProcessIdentity $process $row $pattern $sid $null",
+    "    if ($verdict -ne 'match') { if ($verdict -eq 'unresolved') { $unresolved = $true }; [Console]::Out.WriteLine($verdict + ' ' + $row.ProcessId); continue }",
     "    $children = [System.Collections.Generic.List[System.Diagnostics.Process]]::new()",
-    "    try {",
-    "      foreach ($childRow in @(Get-CimInstance Win32_Process -Filter ('ParentProcessId = ' + $row.ProcessId))) {",
-    "        $childOwner = Invoke-CimMethod -InputObject $childRow -MethodName GetOwnerSid",
-    "        if ($childOwner.ReturnValue -ne 0 -or $childOwner.Sid -ne $sid) { continue }",
-    "        $child = $null",
-    "        try {",
-    "          $child = [System.Diagnostics.Process]::GetProcessById([int]$childRow.ProcessId); $childHandle = $child.Handle",
-    "          if ($child.HasExited) { continue }",
+    "    foreach ($childRow in @(Get-CimInstance Win32_Process -Filter ('ParentProcessId = ' + $row.ProcessId))) {",
+    // Only a `serve` child is a brain candidate. Any other child is not ours to judge.
+    "      if (-not $childRow.CommandLine -or $childRow.CommandLine -notmatch $brainPattern) { continue }",
+    "      $childOwnerSid = Get-AdeOwnerSid $childRow",
+    "      if ($null -eq $childOwnerSid) { if (Test-AdeProcessRunning $childRow.ProcessId) { $unresolved = $true; [Console]::Out.WriteLine('unresolved ' + $childRow.ProcessId) }; continue }",
+    "      if ($childOwnerSid -ne $sid) { continue }",
+    "      $child = $null",
+    "      try { $child = [System.Diagnostics.Process]::GetProcessById([int]$childRow.ProcessId); $opened.Add($child); $childHandle = $child.Handle } catch [ArgumentException] { continue }",
+    "      if ($child.HasExited) { continue }",
+    // A brain that exits during this read is gone, not a failed sweep.
+    "      try { $childStarted = $child.StartTime.ToUniversalTime() } catch { if ($child.HasExited) { continue }; throw }",
     // A brain is only ever a child of the supervisor it was started under, and
     // starts after it. A pid whose parent was reused can name an orphan instead.
-    "          if ($child.StartTime.ToUniversalTime() -lt $process.StartTime.ToUniversalTime()) { continue }",
-    "          if (-not (Test-AdeProcessIdentity $child $childRow $brainPattern $sid $row.ProcessId)) { [Console]::Out.WriteLine('skipped ' + $childRow.ProcessId); continue }",
-    "          $children.Add($child); $child = $null",
-    "        } catch [ArgumentException], [System.InvalidOperationException] { } finally { if ($null -ne $child) { $child.Dispose() } }",
-    "      }",
-    "      $process.Kill()",
-    "      if (-not $process.WaitForExit(5000)) { throw 'Existing ADE supervisor did not stop.' }",
+    "      if ($childStarted -lt $process.StartTime.ToUniversalTime()) { continue }",
+    "      $childVerdict = Test-AdeProcessIdentity $child $childRow $brainPattern $sid $row.ProcessId",
+    "      if ($childVerdict -ne 'match') { if ($childVerdict -eq 'unresolved') { $unresolved = $true }; [Console]::Out.WriteLine($childVerdict + ' ' + $childRow.ProcessId); continue }",
+    "      $children.Add($child)",
+    "    }",
+    "    $targets.Add([pscustomobject]@{ Process = $process; Children = $children })",
+    "  }",
+    // Pass two: runs only when every candidate was identified. One unresolved
+    // owner stops the whole sweep before its first kill.
+    "  if (-not $unresolved) {",
+    "    foreach ($target in $targets) {",
+    "      $target.Process.Kill()",
+    "      if (-not $target.Process.WaitForExit(5000)) { throw 'Existing ADE supervisor did not stop.' }",
     "      [Console]::Out.WriteLine('supervisor')",
-    "      foreach ($child in $children) { Write-BrainReport $child }",
-    "    } finally { foreach ($child in $children) { $child.Dispose() } }",
-    "  } finally { if ($null -ne $process) { $process.Dispose() } }",
-    "}",
+    "      foreach ($child in $target.Children) { Write-BrainReport $child }",
+    "    }",
+    "  }",
+    "} finally { foreach ($process in $opened) { $process.Dispose() } }",
   ].join("\n");
   const result = run(windowsPowerShellCommand(), ["-NoProfile", "-NonInteractive", "-Command", script], {
     encoding: "utf8", timeout: 30_000, windowsHide: true,
@@ -1161,6 +1203,16 @@ async function stopWindowsSupervisorsByCommandLine(
   const alive = brain.terminateDeps?.pidAlive ?? isPidAlive;
   const failures: string[] = [];
   for (const line of lines) {
+    const unresolved = /^unresolved (\d+)$/.exec(line);
+    if (unresolved) {
+      // The sweep stopped nothing. The process is still running and its owner
+      // cannot be read, so it cannot be shown to be safe to leave alone or to kill.
+      try {
+        process.stderr.write(`ADE could not read the owner of pid ${unresolved[1]} during the Windows sweep, so it stopped nothing.\n`);
+      } catch { /* logging is best effort */ }
+      failures.push(`Unable to read the owner of ADE process ${unresolved[1]}, so the Windows sweep stopped nothing. Run the command again once that process can be inspected.`);
+      continue;
+    }
     const skipped = /^skipped (\d+)$/.exec(line);
     if (skipped) {
       // The pid no longer holds the process the sweep found, so nothing under it is touched.
@@ -1422,7 +1474,19 @@ async function installWindowsServiceImpl(
     cliScriptPath: resolveAdeServeCliScriptPath(serviceCommand),
     primarySocketPath: socketPath,
   }, "win32");
-  for (const stalePid of staleScan.ok ? staleScan.pids : []) {
+  // A scan that cannot answer is not an empty answer. An orphaned brain it did
+  // not see could outlive its supervisor next to the replacement, so the install
+  // stops here rather than starting the replacement beside it.
+  if (!staleScan.ok) {
+    return {
+      ok: false,
+      serviceName,
+      action: "install",
+      path: taskName,
+      message: `Unable to check for orphaned ADE brains before starting the replacement, so the install stopped: ${staleScan.reason}`,
+    };
+  }
+  for (const stalePid of staleScan.pids) {
     await stopWindowsBrainGracefully(run, { socketPath, runtimePid: stalePid });
   }
   const command = windowsLauncherCommand(launcherPath);
