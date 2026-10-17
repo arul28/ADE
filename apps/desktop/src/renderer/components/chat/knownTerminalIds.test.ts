@@ -1,35 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { KNOWN_TERMINAL_IDS_LIMIT, rememberKnownTerminalId } from "./knownTerminalIds";
+import { rememberKnownTerminalId } from "./knownTerminalIds";
 
 describe("rememberKnownTerminalId", () => {
-  it("keeps every id while the set is within the limit", () => {
+  it("never forgets an id on its own, however many newer ids arrive", () => {
     const known = new Set<string>();
-    for (let i = 0; i < KNOWN_TERMINAL_IDS_LIMIT; i += 1) rememberKnownTerminalId(known, `terminal-${i}`);
+    rememberKnownTerminalId(known, "terminal-live");
+    for (let i = 0; i < 20_000; i += 1) rememberKnownTerminalId(known, `terminal-${i}`);
 
-    expect(known.size).toBe(KNOWN_TERMINAL_IDS_LIMIT);
-    expect(known.has("terminal-0")).toBe(true);
+    expect(known.has("terminal-live")).toBe(true);
+    expect(known.size).toBe(20_001);
   });
 
-  it("stays bounded and evicts the oldest ids first", () => {
+  it("keeps one entry for an id remembered twice", () => {
     const known = new Set<string>();
-    const total = KNOWN_TERMINAL_IDS_LIMIT + 50;
-    for (let i = 0; i < total; i += 1) rememberKnownTerminalId(known, `terminal-${i}`);
+    rememberKnownTerminalId(known, "terminal-a");
+    rememberKnownTerminalId(known, "terminal-a");
 
-    expect(known.size).toBe(KNOWN_TERMINAL_IDS_LIMIT);
-    expect(known.has("terminal-49")).toBe(false);
-    expect(known.has("terminal-50")).toBe(true);
-    expect(known.has(`terminal-${total - 1}`)).toBe(true);
-  });
-
-  it("counts a re-remembered id as recent, so it outlives older ids", () => {
-    const known = new Set<string>();
-    rememberKnownTerminalId(known, "terminal-old");
-    for (let i = 0; i < KNOWN_TERMINAL_IDS_LIMIT - 1; i += 1) rememberKnownTerminalId(known, `terminal-${i}`);
-    rememberKnownTerminalId(known, "terminal-old");
-    rememberKnownTerminalId(known, "terminal-newest");
-
-    expect(known.size).toBe(KNOWN_TERMINAL_IDS_LIMIT);
-    expect(known.has("terminal-old")).toBe(true);
-    expect(known.has("terminal-0")).toBe(false);
+    expect(known.size).toBe(1);
   });
 });
