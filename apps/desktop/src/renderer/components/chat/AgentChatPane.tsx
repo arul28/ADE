@@ -17634,7 +17634,9 @@ export function AgentChatPane({
               </div>
             </div>
           ) : (
-            <AnimatePresence mode="sync">
+            // Framer gives every child a new presence context on each render
+            // unless this is off, which re-rendered each motion row per keystroke.
+            <AnimatePresence mode="sync" presenceAffectsLayout={false}>
               {selectedSessionId ? (
                 <motion.div
                   key="chat-view"
