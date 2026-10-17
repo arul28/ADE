@@ -1431,6 +1431,187 @@ describe("Windows background service helpers", () => {
   });
 });
 
+// The predecessor sweep's PowerShell script is the only one that carries this text.
+const PREDECESSOR_SWEEP_MARKER = "Existing ADE supervisor did not stop.";
+
+/**
+ * Answers the predecessor sweep with `sweepStdout` and records every spawn. Each
+ * other query finds nothing, so an uninstall reaches the sweep and nothing else
+ * that would need a real Windows host.
+ */
+function predecessorSweepSpawn(options: {
+  calls: Array<{ command: string; args: string[] }>;
+  sweepStdout: string;
+  sweepStatus?: number;
+  onTaskkill?: (args: string[]) => void;
+}): ServiceManagerSpawnSync {
+  return (command, args) => {
+    options.calls.push({ command, args });
+    if (command === windowsPowerShellCommand() && args.at(-1)?.includes(PREDECESSOR_SWEEP_MARKER)) {
+      return { status: options.sweepStatus ?? 0, stdout: options.sweepStdout, stderr: "" };
+    }
+    if (command === windowsTaskkillCommand()) {
+      options.onTaskkill?.(args);
+      return { status: 0, stdout: "SUCCESS", stderr: "" };
+    }
+    if (command === windowsPowerShellCommand()) return { status: 3, stdout: "", stderr: "" };
+    if (command === windowsRegCommand() && JSON.stringify(args) === JSON.stringify(buildWindowsRunKeyListArgs())) {
+      return { status: 0, stdout: "", stderr: "" };
+    }
+    if (command === windowsRegCommand()) return { status: 1, stdout: "", stderr: "" };
+    return { status: 0, stdout: "", stderr: "" };
+  };
+}
+
+function predecessorSweepScript(calls: Array<{ command: string; args: string[] }>): string {
+  const sweep = calls.find((call) => call.command === windowsPowerShellCommand() && call.args.at(-1)?.includes(PREDECESSOR_SWEEP_MARKER));
+  if (!sweep) throw new Error("the uninstall never ran the predecessor sweep");
+  return sweep.args.at(-1) ?? "";
+}
+
+describe("Windows predecessor supervisor sweep", () => {
+  const serviceName = "com.ade.runtime.beta";
+  const taskUser = "ADEBOX\\arul";
+  const serviceCommand: AdeServiceCommand = {
+    command: "C:\\Program Files\\ADE\\ade.exe",
+    args: ["C:\\Program Files\\ADE\\resources\\ade-cli\\cli.cjs", "serve"],
+    env: { ADE_HOME: "C:\\Users\\arul\\.ade-beta", ADE_PACKAGE_CHANNEL: "beta" },
+  };
+  const brainPid = 4242;
+
+  function launcherForSweep(): string {
+    const launcherPath = path.join(makeTempHome("ade-windows-sweep-"), "brain-service.ps1");
+    fs.writeFileSync(launcherPath, "old launcher", "utf8");
+    return launcherPath;
+  }
+
+  it("never kills the predecessor brain from PowerShell; the sweep only reports its pid", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    await uninstallWindowsService({
+      command: serviceCommand,
+      launcherPath: launcherForSweep(),
+      serviceName,
+      spawnSync: predecessorSweepSpawn({ calls, sweepStdout: "" }),
+      userName: taskUser,
+    });
+
+    const script = predecessorSweepScript(calls);
+    expect(script).not.toMatch(/\$child\.Kill\(\)/);
+    // The supervisor is still stopped in PowerShell: a brain stopped while its
+    // supervisor lives is relaunched at once.
+    expect(script).toContain("$process.Kill()");
+    expect(script).toContain("[Console]::Out.WriteLine($child.Id)");
+  });
+
+  it("asks a predecessor brain to shut down over RPC before any tree kill", async () => {
+    const events: string[] = [];
+    let brainAlive = true;
+    const result = await uninstallWindowsService({
+      command: serviceCommand,
+      launcherPath: launcherForSweep(),
+      serviceName,
+      spawnSync: predecessorSweepSpawn({
+        calls: [],
+        sweepStdout: `supervisor\n${brainPid}\n`,
+        onTaskkill: (args) => events.push(`taskkill ${args.join(" ")}`),
+      }),
+      userName: taskUser,
+      terminateDeps: {
+        pidAlive: () => brainAlive,
+        requestRuntimeShutdown: async ({ pid }) => {
+          events.push(`rpc ${pid}`);
+          brainAlive = false;
+          return { requested: true };
+        },
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(events).toEqual([`rpc ${brainPid}`]);
+  });
+
+  it("tree-kills a predecessor brain only after its RPC shutdown is refused", async () => {
+    const events: string[] = [];
+    let brainAlive = true;
+    const result = await uninstallWindowsService({
+      command: serviceCommand,
+      launcherPath: launcherForSweep(),
+      serviceName,
+      spawnSync: predecessorSweepSpawn({
+        calls: [],
+        sweepStdout: `supervisor\n${brainPid}\n`,
+        onTaskkill: (args) => {
+          events.push(`taskkill ${args.join(" ")}`);
+          brainAlive = false;
+        },
+      }),
+      userName: taskUser,
+      terminateDeps: {
+        pidAlive: () => brainAlive,
+        requestRuntimeShutdown: async ({ pid }) => {
+          events.push(`rpc ${pid}`);
+          return { requested: false, reason: "wedged" };
+        },
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(events).toEqual([`rpc ${brainPid}`, `taskkill /PID ${brainPid} /T /F`]);
+  });
+
+  it("still stops a brain already reported when a later supervisor fails the sweep", async () => {
+    const events: string[] = [];
+    let brainAlive = true;
+    const result = await uninstallWindowsService({
+      command: serviceCommand,
+      launcherPath: launcherForSweep(),
+      serviceName,
+      spawnSync: predecessorSweepSpawn({
+        calls: [],
+        sweepStdout: `supervisor\n${brainPid}\n`,
+        sweepStatus: 1,
+      }),
+      userName: taskUser,
+      terminateDeps: {
+        pidAlive: () => brainAlive,
+        requestRuntimeShutdown: async ({ pid }) => {
+          events.push(`rpc ${pid}`);
+          brainAlive = false;
+          return { requested: true };
+        },
+      },
+    });
+
+    expect(events).toEqual([`rpc ${brainPid}`]);
+    expect(result).toMatchObject({ ok: false, action: "uninstall" });
+    expect(result.ok ? "" : result.message).toContain("Unable to stop ADE supervisors");
+  });
+
+  it("fails the sweep, as the old direct kill did, when a predecessor brain survives its tree kill", async () => {
+    vi.useFakeTimers();
+    try {
+      const pending = uninstallWindowsService({
+        command: serviceCommand,
+        launcherPath: launcherForSweep(),
+        serviceName,
+        spawnSync: predecessorSweepSpawn({ calls: [], sweepStdout: `supervisor\n${brainPid}\n` }),
+        userName: taskUser,
+        terminateDeps: {
+          pidAlive: () => true,
+          requestRuntimeShutdown: async () => ({ requested: false, reason: "wedged" }),
+        },
+      });
+      await vi.advanceTimersByTimeAsync(10_000);
+      const result = await pending;
+
+      expect(result.ok).toBe(false);
+      expect(result.ok ? "" : result.message).toContain("Existing ADE brain did not stop.");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("Windows runtime supervisor", () => {
   it("renders bounded restart state for both child exits and launch failures", () => {
     const script = renderWindowsServiceLauncher({
@@ -2051,6 +2232,23 @@ describe("generated PowerShell parses", () => {
     );
 
     const parsed = parsePowerShellFile(scriptPath);
+    expect(parsed.output).toBe("");
+    expect(parsed.status).toBe(0);
+  });
+
+  itWithPowerShell("the predecessor sweep script is syntactically valid", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    await uninstallWindowsService({
+      command,
+      launcherPath: writeScript(makeTempHome("ade-windows-parse-sweep-launcher-"), "brain-service.ps1", "old launcher"),
+      serviceName: "com.ade.runtime.beta",
+      spawnSync: predecessorSweepSpawn({ calls, sweepStdout: "" }),
+      userName: "ADEBOX\\arul",
+    });
+
+    const parsed = parsePowerShellFile(
+      writeScript(makeTempHome("ade-windows-parse-sweep-"), "predecessor-sweep.ps1", predecessorSweepScript(calls)),
+    );
     expect(parsed.output).toBe("");
     expect(parsed.status).toBe(0);
   });

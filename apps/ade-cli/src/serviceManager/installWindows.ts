@@ -25,6 +25,7 @@ import {
   type ServiceManagerResult,
   type ServiceManagerSpawnSync,
   type ServiceManagerStatusResult,
+  type TerminatePidDeps,
 } from "./common";
 import { resolveMachineAdeDir, resolveMachineAdeLayout } from "../services/projects/machineLayout";
 import { BRAIN_HEARTBEAT_FILE } from "../services/runtime/brainHeartbeat";
@@ -127,6 +128,12 @@ type WindowsServiceManagerDeps = {
    * decides whether the install may report `starting`.
    */
   pidAlive?: (pid: number) => boolean;
+  /**
+   * Cooperative-shutdown seams for the predecessor brains the install and
+   * uninstall sweeps stop (see `common.terminatePidGracefullyAsync`). Tests
+   * inject them; production leaves them unset.
+   */
+  terminateDeps?: Omit<TerminatePidDeps, "platform" | "forceKill" | "runtimeSocketPath">;
 };
 
 function resolvedServiceName(
@@ -817,13 +824,24 @@ function windowsLauncherCommand(launcherPath: string): string {
  */
 async function stopWindowsBrainGracefully(
   run: ServiceManagerSpawnSync,
-  args: { socketPath: string; runtimePid: number },
+  args: {
+    socketPath: string;
+    runtimePid: number;
+    /**
+     * Force with `taskkill /T`, so the brain's ConPTY hosts and agent CLIs go
+     * with it. A bare `/F` ends only the brain and leaves that subtree orphaned.
+     */
+    forceTree?: boolean;
+    terminateDeps?: WindowsServiceManagerDeps["terminateDeps"];
+  },
 ): Promise<void> {
   await terminatePidGracefullyAsync(args.runtimePid, {
+    ...args.terminateDeps,
     platform: "win32",
     runtimeSocketPath: args.socketPath,
     forceKill: (pid) => {
-      run(windowsTaskkillCommand(), ["/PID", String(pid), "/F"], {
+      const tree = args.forceTree ? ["/T"] : [];
+      run(windowsTaskkillCommand(), ["/PID", String(pid), ...tree, "/F"], {
         encoding: "utf8",
         windowsHide: true,
       });
@@ -962,6 +980,9 @@ function pruneWindowsRunValues(
   return { ok: true, removed };
 }
 
+/** How long a predecessor brain may take to exit after its forced tree kill. */
+const WINDOWS_PREDECESSOR_BRAIN_EXIT_MS = 5_000;
+
 /**
  * PIDs of powershell processes whose command line names this launcher, in any
  * session of this user.
@@ -971,11 +992,18 @@ function pruneWindowsRunValues(
  * durable identity, so install/repair uses this to find and stop every
  * predecessor — including one started by another logon session — before it
  * starts a replacement.
+ *
+ * Each predecessor supervisor is stopped here, and then the brain it was
+ * guarding is stopped from Node with `stopWindowsBrainGracefully`: cooperative
+ * shutdown first, then `taskkill /T /F`. PowerShell's own `Process.Kill()` on the
+ * brain would end only that process, leaving its ConPTY hosts and agent CLIs
+ * running with nothing left to reap them.
  */
-function stopWindowsSupervisorsByCommandLine(
+async function stopWindowsSupervisorsByCommandLine(
   run: ServiceManagerSpawnSync,
   launcherPath: string,
-): WindowsTaskRemovalResult {
+  brain: { socketPath: string; terminateDeps?: WindowsServiceManagerDeps["terminateDeps"] },
+): Promise<WindowsTaskRemovalResult> {
   // Hold the process handle before checking its identity. A PID collected in
   // one command and taskkilled in a second can target an unrelated reused PID.
   const script = [
@@ -984,7 +1012,6 @@ function stopWindowsSupervisorsByCommandLine(
     "$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value",
     "$escaped = [Regex]::Escape($launcher)",
     `$pattern = '(?i)(?:^|\\s)-File\\s+(?:"' + $escaped + '"|' + $escaped + ')(?=\\s|$)'`,
-    "$removed = 0",
     "foreach ($row in @(Get-CimInstance Win32_Process -Filter \"Name = 'powershell.exe'\")) {",
     "  if (-not $row.CommandLine -or $row.CommandLine -notmatch $pattern) { continue }",
     "  $owner = Invoke-CimMethod -InputObject $row -MethodName GetOwnerSid",
@@ -1008,20 +1035,52 @@ function stopWindowsSupervisorsByCommandLine(
     "      }",
     "      $process.Kill()",
     "      if (-not $process.WaitForExit(5000)) { throw 'Existing ADE supervisor did not stop.' }",
-    "      foreach ($child in $children) { if (-not $child.HasExited) { $child.Kill(); if (-not $child.WaitForExit(5000)) { throw 'Existing ADE brain did not stop.' } } }",
+    "      [Console]::Out.WriteLine('supervisor')",
+    "      foreach ($child in $children) { if (-not $child.HasExited) { [Console]::Out.WriteLine($child.Id) } }",
     "    } finally { foreach ($child in $children) { $child.Dispose() } }",
-    "    $removed++",
     "  } finally { if ($null -ne $process) { $process.Dispose() } }",
     "}",
-    "[Console]::Out.Write($removed)",
   ].join("\n");
   const result = run(windowsPowerShellCommand(), ["-NoProfile", "-NonInteractive", "-Command", script], {
     encoding: "utf8", timeout: 30_000, windowsHide: true,
   });
+  // Brains are reported as their supervisor goes, so the ones already reported
+  // are stopped even when a later supervisor fails the sweep below.
+  const lines = String(result.stdout ?? "").split(/\r?\n/).map((line) => line.trim());
+  const removed = lines.includes("supervisor");
+  const alive = brain.terminateDeps?.pidAlive ?? isPidAlive;
+  for (const line of lines) {
+    if (!/^[1-9]\d*$/.test(line)) continue;
+    const brainPid = Number(line);
+    if (!alive(brainPid)) continue;
+    await stopWindowsBrainGracefully(run, {
+      socketPath: brain.socketPath,
+      runtimePid: brainPid,
+      forceTree: true,
+      terminateDeps: brain.terminateDeps,
+    });
+    if (!(await waitForWindowsPidExit(brainPid, alive, WINDOWS_PREDECESSOR_BRAIN_EXIT_MS))) {
+      return { ok: false, message: "Existing ADE brain did not stop." };
+    }
+  }
   if (result.status !== 0) {
     return { ok: false, message: `Unable to stop ADE supervisors: ${serviceManagerResultText(result) || "the identity check failed."}` };
   }
-  return { ok: true, removed: Number(String(result.stdout ?? "").trim()) > 0 };
+  return { ok: true, removed };
+}
+
+/** True once `pid` is gone; false if it is still alive after `timeoutMs`. */
+async function waitForWindowsPidExit(
+  pid: number,
+  alive: (pid: number) => boolean,
+  timeoutMs: number,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (alive(pid)) {
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return true;
 }
 
 export async function installWindowsService(
@@ -1231,7 +1290,10 @@ async function installWindowsServiceImpl(
   // started by another logon session is invisible to it. Find and stop every
   // supervisor whose command line names this launcher before starting another
   // one, or the new brain would fight the old supervisor's over the pipe.
-  const predecessorStop = stopWindowsSupervisorsByCommandLine(run, launcherPath);
+  const predecessorStop = await stopWindowsSupervisorsByCommandLine(run, launcherPath, {
+    socketPath,
+    terminateDeps: deps.terminateDeps,
+  });
   if (!predecessorStop.ok) {
     return {
       ok: false,
@@ -1415,7 +1477,10 @@ async function uninstallWindowsServiceImpl(
   // A supervisor whose command line names this launcher can outlive the value
   // that started it (last-writer-wins PID record, another logon session). Stop
   // every one so the removed startup entry cannot come straight back.
-  const predecessorStop = stopWindowsSupervisorsByCommandLine(run, launcherPath);
+  const predecessorStop = await stopWindowsSupervisorsByCommandLine(run, launcherPath, {
+    socketPath: resolveMachineAdeLayout({ ...env, ...(serviceCommand.env ?? {}) }, "win32").socketPath,
+    terminateDeps: deps.terminateDeps,
+  });
   const removalErrors = [currentRemoval, legacyRemoval, startupRemoval]
     .filter((result): result is Extract<WindowsTaskRemovalResult, { ok: false }> => !result.ok)
     .map((result) => result.message);
