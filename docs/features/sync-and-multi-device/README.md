@@ -1552,6 +1552,23 @@ Desktop connection UI:
   `window.ade.sync.getLocalStatus(...)` accessor is available for the card to
   consume so a window bound to another machine can still show the physical
   computer's identity, pairing code, and Phone/Web device lists.
+  A computer that follows another machine's sync host shows **Stop following
+  \<machine\>** on its own row of the card, whether or not the status line is
+  showing. It asks first: the confirmation says that this computer will start
+  hosting sync for the project, what ADE forgets (the saved connection, the
+  record of which machine hosts sync here, and the other machines it had listed),
+  and whether the followed machine answers from this computer now or when it was
+  last seen. If that machine is still running, the two stay separate until this
+  computer reconnects to it. Chats, lanes and files stay. The confirm stays
+  disabled until the reader ticks "I understand this computer will host sync for
+  \<project\>". The stop calls `sync.disconnectFromBrain` for the project this
+  window has open, and it does not wait on **Start sync**. If the window moves to
+  another project while the confirmation is open, nothing is stopped. A failure
+  shows its reason on the card. The brain never boots another project to answer
+  it, so a project that is still loading gets "This project isn't loaded yet. Open
+  it and try again." The button is hidden when the window is bound to another
+  machine (the disconnect would reach that machine), when no project is open in
+  the window, and in the hosted web client, whose disconnect does nothing.
 - `apps/desktop/src/renderer/lib/localSyncStatusReader.ts` — the single shared
   reader for `ade.sync.getLocalStatus`. Coalesces concurrent readers onto one
   in-flight invoke, backs off exponentially (1s → 30s) while the local runtime

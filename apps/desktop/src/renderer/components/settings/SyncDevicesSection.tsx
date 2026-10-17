@@ -11,11 +11,14 @@ import {
 } from "@phosphor-icons/react";
 import { accountDirectorySummary } from "./accountDirectorySummary";
 import { MachineAvatar, VersionChip, machineFormFactor, machinePlatform } from "../remoteTargets/MachineIdentity";
+import { relativeLastSeenPhrase } from "../remoteTargets/remoteMachineModel";
 import { Dialog } from "../ui/dialog";
+import { checkboxConfirmDialog } from "../ui/dialog/confirm";
 import { Banner } from "../ui/notice/Banner";
 import {
   isBrainAccountSessionFailure,
   type AdeAccountSessionState,
+  type SyncDeviceRecord,
   type SyncDeviceRuntimeState,
   type SyncPeerDeviceType,
   type SyncPairingConnectInfo,
@@ -35,9 +38,11 @@ import { useBrainRepair } from "../../hooks/useBrainRepair";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { useReconnectThisComputer } from "../../hooks/useReconnectThisComputer";
 import { readThisMachineRefusal } from "../../../shared/accountMachineRefusal";
+import { stripElectronErrorWrapper } from "../../../shared/codedError";
 import { describeThisComputerRefusal } from "../../lib/thisComputerRefusal";
 import { BrainRepairButton } from "./BrainRepairButton";
 import { showToast } from "../app/toast/toastStore";
+import { useAppStore } from "../../state/appStore";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import {
   COLORS,
@@ -287,6 +292,67 @@ export function ThisMacCard({
     })();
   }, [saveRuntimeName, accountSignedIn]);
 
+  // "Stop following" is the way out of a viewer that cannot host here. It goes
+  // straight to the disconnect, without waiting on Start sync: that activation is
+  // what got stuck. A failed stop stays on the card as text, not a toast, so the
+  // reason is still there when the reader looks back.
+  const projectName = useAppStore((s) => s.project?.displayName ?? null);
+  const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
+  const [stoppingFollowing, setStoppingFollowing] = useState(false);
+  const [stopFollowingFailure, setStopFollowingFailure] = useState<string | null>(null);
+  // A ref, not the state above: a second click before the first re-renders must
+  // not open a second confirmation or send a second disconnect.
+  const stopFollowingInFlight = useRef(false);
+  const { refresh: refreshSync } = sync;
+  const stopFollowing = useCallback(async (machine: string, standing: string) => {
+    if (stopFollowingInFlight.current) return;
+    stopFollowingInFlight.current = true;
+    try {
+      const project = projectName ?? "this project";
+      // Stopping makes this computer the host of the project's sync, so the
+      // reader acknowledges that before the confirm can be pressed.
+      const answer = await checkboxConfirmDialog({
+        title: `Stop following ${machine}?`,
+        message: `This computer will start hosting sync for ${project}. ADE forgets the saved connection to ${machine}, the record of which machine hosts sync here, and the other machines it had listed. No chats, lanes, or files are deleted.`,
+        children: (
+          <div style={{ display: "grid", gap: 8 }}>
+            <div>{standing}</div>
+            <div>If {machine} is still running, the two will stay separate, and changes won't flow between them, until you reconnect this computer to it.</div>
+          </div>
+        ),
+        checkboxes: [{
+          key: "understand",
+          label: `I understand this computer will host sync for ${project}`,
+          defaultChecked: false,
+          required: true,
+        }],
+        confirmLabel: "Stop following",
+        destructive: true,
+      });
+      if (!answer.confirmed) return;
+      // The disconnect acts on the project this window has open now. If the
+      // window moved to another project while the question was open, the reader
+      // agreed to stop the one they were shown, so nothing is sent.
+      if (useAppStore.getState().project?.rootPath !== projectRoot) {
+        showToast({ tone: "warning", title: "Nothing was stopped. This window changed projects while you were asked. Try again." });
+        return;
+      }
+      setStoppingFollowing(true);
+      setStopFollowingFailure(null);
+      try {
+        await window.ade.sync.disconnectFromBrain();
+        showToast({ tone: "success", title: `This computer stopped following ${machine}.` });
+      } catch (err) {
+        setStopFollowingFailure(stripElectronErrorWrapper(err instanceof Error ? err.message : String(err)));
+      } finally {
+        setStoppingFollowing(false);
+        void refreshSync({ force: true });
+      }
+    } finally {
+      stopFollowingInFlight.current = false;
+    }
+  }, [projectName, projectRoot, refreshSync]);
+
   if (sync.loading) {
     return <div style={helperTextStyle}>Getting connection details…</div>;
   }
@@ -345,6 +411,12 @@ export function ThisMacCard({
   const reconnectAction = refusal && reconnect.available
     ? reconnect.view({ label: describeThisComputerRefusal(refusal).action })
     : null;
+  // Only a viewer offers it, and only for this computer: a remote-bound window
+  // would send the disconnect to the machine it is bound to, and the hosted web
+  // client's disconnect does nothing. It also needs a project open in this
+  // window: the disconnect acts on that project, and refuses without one.
+  const followedName = !host && status.role === "viewer" ? followedMachineName(status) : null;
+  const canStopFollowing = followedName !== null && projectName !== null && sync.canManageDevices && !isWebClientMode();
 
     return (
     <div style={{ ...detailBlockStyle, display: "grid", gap: 12 }}>
@@ -505,6 +577,33 @@ export function ThisMacCard({
                 {repair.available ? <BrainRepairButton repair={repair} height={24} /> : null}
               </div>
             ) : null}
+            {canStopFollowing && followedName ? (
+              // Its own row, not under the problem line: that line is hidden
+              // in the popover when the brain says sync has not started, and
+              // that is exactly when a viewer needs a way out.
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <button
+                  type="button"
+                  disabled={stoppingFollowing}
+                  onClick={() => void stopFollowing(followedName, followedHostStanding(status, followedName))}
+                  style={outlineButton({
+                    height: 24,
+                    padding: "0 9px",
+                    fontSize: 12,
+                    flexShrink: 0,
+                    opacity: stoppingFollowing ? 0.6 : 1,
+                    cursor: stoppingFollowing ? "not-allowed" : "pointer",
+                  })}
+                >
+                  {stoppingFollowing ? "Stopping…" : `Stop following ${followedName}`}
+                </button>
+                {stopFollowingFailure ? (
+                  <span role="status" style={{ ...helperTextStyle, lineHeight: 1.4, color: COLORS.danger }}>
+                    {stopFollowingFailure}
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         </div>
       </div>
@@ -546,6 +645,41 @@ export function ThisMacCard({
       ) : null}
     </div>
   );
+}
+
+/**
+ * The machine a viewer follows, for its button and its confirmation. The name
+ * the runtime learned while connected wins; a project record that names another
+ * machine is next, then that machine's address.
+ */
+function followedMachineName(status: SyncRoleSnapshot): string {
+  return status.client.hostName?.trim()
+    || followedDevice(status)?.name?.trim()
+    || status.client.host?.trim()
+    || "another ADE machine";
+}
+
+/** The record of the machine a viewer follows: the host the snapshot names, not this computer. */
+function followedDevice(status: SyncRoleSnapshot): SyncDeviceRecord | null {
+  return [status.currentRuntime, status.currentBrain].find(
+    (device) => device && device.deviceId !== status.localDevice.deviceId,
+  ) ?? null;
+}
+
+/**
+ * Whether the followed machine answers from this computer, and when it was last
+ * seen. That tells a ghost (a host that is gone) from a live one, and it reads
+ * only the snapshot this card already has.
+ */
+function followedHostStanding(status: SyncRoleSnapshot, machine: string): string {
+  if (status.client.state === "connected") return `${machine} is reachable from this computer now.`;
+  const seen = [status.client.lastSeenAt, followedDevice(status)?.lastSeenAt]
+    .map((value) => (value ? Date.parse(value) : Number.NaN))
+    .filter((value) => Number.isFinite(value));
+  const phrase = relativeLastSeenPhrase(seen.length > 0 ? Math.max(...seen) : null);
+  return phrase
+    ? `${machine} isn't reachable from this computer right now. Last seen ${phrase}.`
+    : `${machine} isn't reachable from this computer right now, and ADE has no record of it being seen.`;
 }
 
 /**
