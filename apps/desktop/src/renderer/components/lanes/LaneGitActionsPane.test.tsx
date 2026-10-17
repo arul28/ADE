@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import React from "react";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -122,6 +122,80 @@ function buildStash(
   };
 }
 
+const CHANGE_LIST_VIEWPORT_PX = 600;
+const CHANGE_LIST_ROW_PX = 28;
+const GENERATED_FILE_ROW = /^src\/generated\/file-\d+\.ts$/;
+
+/**
+ * jsdom has no layout, and the Files list virtualizes against its viewport
+ * height and each row's height (both read from offsetHeight). Give the list a
+ * fixed viewport and fixed rows so the window mounts the way it does in the app.
+ */
+function stubChangeListLayout(): () => void {
+  const original = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
+  const inChangeList = (element: HTMLElement) =>
+    element.closest("[data-testid='git-pane-branch'], [data-testid='git-pane-uncommitted']");
+  Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
+    configurable: true,
+    get(this: HTMLElement) {
+      const testId = this.getAttribute("data-testid");
+      if (testId === "git-pane-branch" || testId === "git-pane-uncommitted") return CHANGE_LIST_VIEWPORT_PX;
+      if (this.hasAttribute("data-index") && inChangeList(this)) return CHANGE_LIST_ROW_PX;
+      return original?.get?.call(this) ?? 0;
+    },
+  });
+  return () => {
+    if (original) Object.defineProperty(HTMLElement.prototype, "offsetHeight", original);
+  };
+}
+
+function changeListScroller(): HTMLElement {
+  const scroller = document.querySelector<HTMLElement>("[data-testid='git-pane-branch'], [data-testid='git-pane-uncommitted']");
+  if (!scroller) throw new Error("Files list is not mounted");
+  return scroller;
+}
+
+/**
+ * jsdom has no layout or scrolling, and a browser scrolls the list to bring a
+ * focused row into view. The virtualizer clamps that scroll to
+ * scrollHeight - clientHeight, so give the list its viewport and content heights,
+ * and make scrollTo scroll and fire the scroll event a browser would. With
+ * `deliverScrollEvents: false` the list still scrolls, but the virtualizer never
+ * hears it.
+ */
+function stubListScrollTo(scroller: HTMLElement, { deliverScrollEvents = true }: { deliverScrollEvents?: boolean } = {}): void {
+  Object.defineProperty(scroller, "clientHeight", { configurable: true, get: () => CHANGE_LIST_VIEWPORT_PX });
+  Object.defineProperty(scroller, "scrollHeight", {
+    configurable: true,
+    get: () => parseFloat((scroller.firstElementChild as HTMLElement | null)?.style.height ?? "") || 0,
+  });
+  Object.defineProperty(scroller, "scrollTo", {
+    configurable: true,
+    value: ({ top }: ScrollToOptions) => {
+      scroller.scrollTop = top ?? 0;
+      // The browser fires the scroll event after the keyboard handler has returned.
+      if (deliverScrollEvents) setTimeout(() => fireEvent.scroll(scroller), 0);
+    },
+  });
+}
+
+/** The aria-label of the focused control, or its tag when it has none. */
+function focusedControlLabel(): string | null {
+  return document.activeElement?.getAttribute("aria-label") ?? document.activeElement?.tagName ?? null;
+}
+
+/** Scrolls the Files list from the top, half a viewport at a time, until a row's text is mounted. */
+async function scrollChangeListTo(text: string): Promise<HTMLElement> {
+  const scroller = changeListScroller();
+  fireEvent.scroll(scroller, { target: { scrollTop: 0 } });
+  for (let step = 1; step <= 400; step += 1) {
+    const match = screen.queryByText(text);
+    if (match) return match;
+    fireEvent.scroll(scroller, { target: { scrollTop: step * (CHANGE_LIST_VIEWPORT_PX / 2) } });
+  }
+  throw new Error(`"${text}" never scrolled into the Files list`);
+}
+
 describe("LaneGitActionsPane rescue action", () => {
   const originalAde = globalThis.window.ade;
   let mockChangesByLaneId: Record<string, DiffChanges>;
@@ -129,6 +203,7 @@ describe("LaneGitActionsPane rescue action", () => {
   let mockConflictState: GitConflictState;
   let mockSyncStatus: GitUpstreamSyncStatus;
   let failDiffRefresh: boolean;
+  let restoreChangeListLayout: () => void = () => undefined;
 
   beforeEach(() => {
     mockStoreState = {
@@ -229,10 +304,12 @@ describe("LaneGitActionsPane rescue action", () => {
         createFromUnstaged: vi.fn(async () => buildLane({ id: "lane-2", name: "Rescue lane", status: { dirty: true, ahead: 0, behind: 0, remoteBehind: -1, rebaseInProgress: false } })),
       },
     } as any;
+    restoreChangeListLayout = stubChangeListLayout();
   });
 
   afterEach(() => {
     cleanup();
+    restoreChangeListLayout();
     __resetLaneGitActionRuntimeForTests();
     if (originalAde === undefined) {
       delete (globalThis.window as any).ade;
@@ -654,11 +731,13 @@ describe("LaneGitActionsPane rescue action", () => {
 
     expect(await screen.findByText("Unstaged (305)")).toBeTruthy();
     expect(screen.getByText("src/generated/file-0.ts")).toBeTruthy();
-    expect(screen.getByText("Showing first 300 of 305 unstaged files.")).toBeTruthy();
+    // The notice closes the list, so reaching it means scrolling there.
+    await scrollChangeListTo("Showing first 300 of 305 unstaged files.");
     expect(screen.queryByText("src/generated/file-300.ts")).toBeNull();
 
     await user.click(screen.getByRole("button", { name: "Show all" }));
 
+    await scrollChangeListTo("src/generated/file-300.ts");
     expect(screen.getByText("src/generated/file-300.ts")).toBeTruthy();
   });
 
@@ -676,12 +755,201 @@ describe("LaneGitActionsPane rescue action", () => {
 
     expect(await screen.findByText("Staged (305)")).toBeTruthy();
     expect(screen.getByText("src/staged/file-0.ts")).toBeTruthy();
-    expect(screen.getByText("Showing first 300 of 305 staged files.")).toBeTruthy();
+    await scrollChangeListTo("Showing first 300 of 305 staged files.");
     expect(screen.queryByText("src/staged/file-300.ts")).toBeNull();
 
     await user.click(screen.getByRole("button", { name: "Show all" }));
 
+    await scrollChangeListTo("src/staged/file-300.ts");
     expect(screen.getByText("src/staged/file-300.ts")).toBeTruthy();
+  });
+
+  it("reads every row of a long Files list in order as it scrolls", async () => {
+    const paths = Array.from({ length: 300 }, (_, index) => `src/generated/file-${index}.ts`);
+    mockChangesByLaneId["lane-1"] = {
+      staged: [],
+      unstaged: paths.map((path) => ({ path, kind: "modified" as const })),
+    };
+
+    renderPane();
+
+    const firstRow = await screen.findByText("src/generated/file-0.ts");
+    const scroller = firstRow.closest<HTMLElement>("[style*='overflow: auto']");
+    if (!scroller) throw new Error("Files list is not scrollable");
+    // Only the rows near the viewport are mounted, not all 300 files.
+    expect(screen.queryAllByText(GENERATED_FILE_ROW).length).toBeLessThan(60);
+
+    const seen: string[] = [];
+    for (let step = 0; step < 40; step += 1) {
+      fireEvent.scroll(scroller, { target: { scrollTop: step * (CHANGE_LIST_VIEWPORT_PX / 2) } });
+      for (const row of screen.queryAllByText(GENERATED_FILE_ROW)) {
+        const label = row.textContent ?? "";
+        if (!seen.includes(label)) seen.push(label);
+      }
+    }
+
+    expect(seen).toEqual([...paths].sort((a, b) => a.localeCompare(b)));
+  });
+
+  it("collapses and expands a folder in the Files list", async () => {
+    const user = userEvent.setup();
+    mockChangesByLaneId["lane-1"] = {
+      staged: [],
+      unstaged: [
+        { path: "src/alpha/one.ts", kind: "modified" },
+        { path: "src/alpha/two.ts", kind: "modified" },
+        { path: "README.md", kind: "modified" },
+      ],
+    };
+
+    renderPane();
+
+    expect(await screen.findByText("src/alpha/one.ts")).toBeTruthy();
+    const folder = screen.getByText("alpha").closest("button");
+    if (!folder) throw new Error("folder row is not a button");
+
+    await user.click(folder);
+    expect(screen.queryByText("src/alpha/one.ts")).toBeNull();
+    expect(screen.getByText("README.md")).toBeTruthy();
+
+    await user.click(folder);
+    expect(screen.getByText("src/alpha/one.ts")).toBeTruthy();
+  });
+
+  it("Tab walks every Files row's controls in order, past the mounted window", async () => {
+    const user = userEvent.setup();
+    const paths = Array.from({ length: 80 }, (_, index) => `src/generated/file-${index}.ts`).sort((a, b) => a.localeCompare(b));
+    mockChangesByLaneId["lane-1"] = {
+      staged: [],
+      unstaged: paths.map((path) => ({ path, kind: "modified" as const })),
+    };
+
+    renderPane();
+
+    await screen.findByText(paths[0]!);
+    const scroller = changeListScroller();
+    stubListScrollTo(scroller);
+    const controls = paths.flatMap((path) => [`Stage ${path}`, `Discard changes to ${path}`]);
+
+    screen.getByRole("button", { name: controls[0] }).focus();
+    const reached: Array<string | null> = [];
+    for (let step = 1; step < controls.length; step += 1) {
+      await user.tab();
+      reached.push(focusedControlLabel());
+    }
+
+    expect(reached).toEqual(controls.slice(1));
+    await user.tab();
+    expect(scroller.contains(document.activeElement)).toBe(false);
+  });
+
+  it("Shift+Tab walks the same controls back, from the last row", async () => {
+    const user = userEvent.setup();
+    const paths = Array.from({ length: 80 }, (_, index) => `src/generated/file-${index}.ts`).sort((a, b) => a.localeCompare(b));
+    mockChangesByLaneId["lane-1"] = {
+      staged: [],
+      unstaged: paths.map((path) => ({ path, kind: "modified" as const })),
+    };
+
+    renderPane();
+
+    await screen.findByText(paths[0]!);
+    await scrollChangeListTo(paths[paths.length - 1]!);
+    const scroller = changeListScroller();
+    stubListScrollTo(scroller);
+    const controls = paths.flatMap((path) => [`Stage ${path}`, `Discard changes to ${path}`]);
+
+    screen.getByRole("button", { name: controls[controls.length - 1]! }).focus();
+    const reached: Array<string | null> = [];
+    for (let step = 0; step < controls.length - 1; step += 1) {
+      await user.tab({ shift: true });
+      reached.push(focusedControlLabel());
+    }
+
+    expect(reached).toEqual(controls.slice(0, -1).reverse());
+    // The two folders above the first file come next, then focus leaves the list.
+    for (const folder of ["generated", "src"]) {
+      await user.tab({ shift: true });
+      expect(document.activeElement).toBe(screen.getByText(folder).closest("button"));
+    }
+    await user.tab({ shift: true });
+    expect(scroller.contains(document.activeElement)).toBe(false);
+  });
+
+  it("keeps keyboard focus on a row that scrolls out of the mounted window", async () => {
+    const user = userEvent.setup();
+    const paths = Array.from({ length: 80 }, (_, index) => `src/generated/file-${index}.ts`).sort((a, b) => a.localeCompare(b));
+    mockChangesByLaneId["lane-1"] = {
+      staged: [],
+      unstaged: paths.map((path) => ({ path, kind: "modified" as const })),
+    };
+
+    renderPane();
+
+    await screen.findByText(paths[0]!);
+    const scroller = changeListScroller();
+    stubListScrollTo(scroller);
+    const discard = screen.getByRole("button", { name: `Discard changes to ${paths[0]}` });
+    discard.focus();
+
+    // Far enough down that the focused row is no longer in the window.
+    fireEvent.scroll(scroller, { target: { scrollTop: 2000 } });
+    expect(discard.isConnected).toBe(true);
+    expect(document.activeElement).toBe(discard);
+
+    await user.tab();
+    expect(focusedControlLabel()).toBe(`Stage ${paths[1]}`);
+  });
+
+  it("Tab still walks past the window when the list never hears its own scroll", async () => {
+    const user = userEvent.setup();
+    const paths = Array.from({ length: 80 }, (_, index) => `src/generated/file-${index}.ts`).sort((a, b) => a.localeCompare(b));
+    mockChangesByLaneId["lane-1"] = {
+      staged: [],
+      unstaged: paths.map((path) => ({ path, kind: "modified" as const })),
+    };
+
+    renderPane();
+
+    await screen.findByText(paths[0]!);
+    const scroller = changeListScroller();
+    // The list scrolls for Tab, but the scroll event never reaches the window, so the window keeps the rows it had.
+    stubListScrollTo(scroller, { deliverScrollEvents: false });
+    const controls = paths.flatMap((path) => [`Stage ${path}`, `Discard changes to ${path}`]);
+
+    screen.getByRole("button", { name: controls[0]! }).focus();
+    const reached: Array<string | null> = [];
+    for (let step = 1; step < controls.length; step += 1) {
+      await user.tab();
+      reached.push(focusedControlLabel());
+    }
+
+    expect(reached).toEqual(controls.slice(1));
+    await user.tab();
+    expect(scroller.contains(document.activeElement)).toBe(false);
+  });
+
+  it("Branch mode: Tab reaches every folder, past the mounted window", async () => {
+    const user = userEvent.setup();
+    const folders = ["alpha", "beta", "gamma"];
+    const paths = folders.flatMap((folder) => Array.from({ length: 40 }, (_, index) => `${folder}/file-${index}.ts`));
+    mockBranchChanges(() => paths);
+
+    // A clean lane opens on the Branch scope.
+    renderPane({ laneId: "lane-2" });
+
+    await screen.findByText("alpha/file-0.ts");
+    const scroller = changeListScroller();
+    stubListScrollTo(scroller);
+    const folderButton = (name: string) => screen.getByText(name).closest("button");
+
+    folderButton("alpha")!.focus();
+    for (const folder of ["beta", "gamma"]) {
+      await user.tab();
+      expect(document.activeElement).toBe(folderButton(folder));
+    }
+    await user.tab();
+    expect(scroller.contains(document.activeElement)).toBe(false);
   });
 
   it("disables the rescue button during an in-progress merge or rebase", async () => {
