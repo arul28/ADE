@@ -48,10 +48,10 @@ export function registerAdeProtocolHandler(options: {
   /** Optional structured log hook. */
   log?: (event: string, fields: Record<string, unknown>) => void;
   /**
-   * Drains {@link log} to disk. Called only on the branch that quits this
-   * process immediately, where a batched write would die with it — and that
-   * branch's line (`deeplink.single_instance.lock_lost`) is the one that says
-   * which process ADE actually booted.
+   * Drains {@link log} to disk. Called only on the lock-lost branch, which exits
+   * this process at once, where a batched write would die with it. That
+   * branch's line (`deeplink.single_instance.lock_lost`) is the record of the
+   * launch.
    */
   flushLog?: () => void;
   /**
@@ -65,10 +65,17 @@ export function registerAdeProtocolHandler(options: {
   claimAsDefault?: boolean;
   /**
    * Called when this process lost the single-instance lock and has no deeplink
-   * to forward. The dev app passes one that explains and exits: Electron never
-   * fires `ready` for such a process.
+   * to forward, just before it exits. The dev app passes one that explains why:
+   * a dev app that shares a user-data folder with another dev app would
+   * otherwise exit without a word.
    */
   onLockLostWithoutForward?: () => void;
+  /**
+   * True while an update install is pending (`pendingInstallUpdate` in the
+   * global state, written just before the install quits the app). Read only
+   * for the lock-lost log line; it does not change what a lock loser does.
+   */
+  hasPendingInstallUpdate?: () => boolean;
 }): void {
   const { dispatch } = options;
   const log = options.log ?? (() => {});
@@ -115,9 +122,13 @@ export function registerAdeProtocolHandler(options: {
   const coldStartDeeplinkArgs = process.argv.slice(1).filter(isAdeDeeplinkArg);
 
   // Single-instance lock: a second invocation routes through `second-instance`
-  // instead of starting a fresh Electron process. Without a deeplink to
-  // forward, `onLockLostWithoutForward` decides what happens; with none given,
-  // the process carries on.
+  // instead of starting a fresh Electron process. requestSingleInstanceLock()
+  // hands this launch's argv (and so any deeplink) to the holder before it
+  // returns false, so a loser has nothing left to do: it exits here, before any
+  // boot work. That includes an update relaunch. On Windows the installer can
+  // start that relaunch before the old copy has released the lock; the lock
+  // loser then exits like any other. A retry that lets it boot instead is a
+  // separate change that needs a real Windows update test.
   const acquired = app.requestSingleInstanceLock();
   if (!acquired) {
     const shouldForwardToLockHolder = claimAsDefault || coldStartDeeplinkArgs.length > 0;
@@ -125,13 +136,16 @@ export function registerAdeProtocolHandler(options: {
       claimAsDefault,
       deeplinkArgCount: coldStartDeeplinkArgs.length,
       shouldForwardToLockHolder,
+      pendingInstallUpdate: options.hasPendingInstallUpdate?.() === true,
     });
-    if (shouldForwardToLockHolder) {
-      options.flushLog?.();
-      app.quit();
-      return;
-    }
-    options.onLockLostWithoutForward?.();
+    if (!shouldForwardToLockHolder) options.onLockLostWithoutForward?.();
+    // app.quit() is a request, not a stop: ADE's trace has the boot's window
+    // load running in a lock loser that had called it (ADE-DESKTOP-1T).
+    // app.exit() is synchronous, so nothing after this line runs and no
+    // window, service or bridge starts.
+    options.flushLog?.();
+    app.exit(0);
+    return;
   }
 
   // Buffer URLs received before whenReady so they aren't dropped.

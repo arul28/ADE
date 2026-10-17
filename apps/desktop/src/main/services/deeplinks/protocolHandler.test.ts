@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AppNavigationRequest } from "../../../shared/types";
 import { deeplinkToNavigationTarget, handleDeeplinkUrl, registerAdeProtocolHandler } from "./protocolHandler";
@@ -10,7 +10,9 @@ import { deeplinkToNavigationTarget, handleDeeplinkUrl, registerAdeProtocolHandl
  */
 const electronMock = vi.hoisted(() => ({
   lockAcquired: true,
+  requestSingleInstanceLock: vi.fn(),
   quit: vi.fn(),
+  exit: vi.fn(),
   on: vi.fn(),
   whenReady: vi.fn(async () => {}),
   setAsDefaultProtocolClient: vi.fn(),
@@ -20,10 +22,11 @@ const electronMock = vi.hoisted(() => ({
 vi.mock("electron", () => ({
   app: {
     setAsDefaultProtocolClient: electronMock.setAsDefaultProtocolClient,
-    requestSingleInstanceLock: () => electronMock.lockAcquired,
+    requestSingleInstanceLock: electronMock.requestSingleInstanceLock,
     on: electronMock.on,
     whenReady: electronMock.whenReady,
     quit: electronMock.quit,
+    exit: electronMock.exit,
   },
   BrowserWindow: { getAllWindows: electronMock.getAllWindows },
 }));
@@ -370,53 +373,138 @@ describe("project-scoped deeplink dispatch contract", () => {
 });
 
 /**
- * A dev app that loses the single-instance lock never reaches `ready`; the
- * lock-lost callback is how it explains and exits. It must fire only when the
- * process has no deeplink to forward.
+ * A launch that loses the single-instance lock is a second copy. Its argv (and
+ * any deeplink) has already gone to the lock holder by the time the lock is
+ * refused, so it exits before the boot (`whenReady` and everything after it).
+ * That holds for an update relaunch too; the log says whether an update install
+ * was pending. A dev app that loses the lock with nothing to forward gets the
+ * lock-lost callback first, which explains why it is exiting.
  */
 describe("registerAdeProtocolHandler single-instance lock", () => {
   const originalArgv = process.argv;
+  const plainArgv = ["/path/electron", "/path/app"];
+  const deeplinkArgv = [...plainArgv, "ade://lane/550e8400-e29b-41d4-a716-446655440000"];
+
+  beforeEach(() => {
+    electronMock.requestSingleInstanceLock.mockImplementation(() => electronMock.lockAcquired);
+  });
 
   afterEach(() => {
     process.argv = originalArgv;
     electronMock.lockAcquired = true;
+    electronMock.requestSingleInstanceLock.mockClear();
     electronMock.quit.mockClear();
+    electronMock.exit.mockClear();
     electronMock.on.mockClear();
     electronMock.whenReady.mockClear();
     electronMock.setAsDefaultProtocolClient.mockClear();
   });
 
-  it("runs the lock-lost callback when there is no deeplink to forward", () => {
-    electronMock.lockAcquired = false;
-    process.argv = ["/path/electron", "/path/app"];
-    const onLockLostWithoutForward = vi.fn();
-    registerAdeProtocolHandler({ dispatch: vi.fn(), onLockLostWithoutForward });
-    expect(onLockLostWithoutForward).toHaveBeenCalledTimes(1);
-    expect(electronMock.quit).not.toHaveBeenCalled();
-  });
-
-  it("forwards a cold-start deeplink to the lock holder instead of running the callback", () => {
-    electronMock.lockAcquired = false;
-    process.argv = [
-      "/path/electron",
-      "/path/app",
-      "ade://lane/550e8400-e29b-41d4-a716-446655440000",
-    ];
-    const onLockLostWithoutForward = vi.fn();
-    registerAdeProtocolHandler({
-      dispatch: vi.fn(),
-      flushLog: vi.fn(),
-      onLockLostWithoutForward,
-    });
-    expect(electronMock.quit).toHaveBeenCalledTimes(1);
-    expect(onLockLostWithoutForward).not.toHaveBeenCalled();
-  });
-
-  it("does not run the callback when this process acquired the lock", () => {
+  it("does not run the lock-lost path when this process acquired the lock", () => {
     electronMock.lockAcquired = true;
-    process.argv = ["/path/electron", "/path/app"];
+    process.argv = plainArgv;
+    const hasPendingInstallUpdate = vi.fn(() => true);
+    const log = vi.fn();
     const onLockLostWithoutForward = vi.fn();
-    registerAdeProtocolHandler({ dispatch: vi.fn(), onLockLostWithoutForward });
+    registerAdeProtocolHandler({ dispatch: vi.fn(), log, onLockLostWithoutForward, hasPendingInstallUpdate });
+    expect(hasPendingInstallUpdate).not.toHaveBeenCalled();
+    expect(log).not.toHaveBeenCalledWith("deeplink.single_instance.lock_lost", expect.anything());
     expect(onLockLostWithoutForward).not.toHaveBeenCalled();
+    expect(electronMock.exit).not.toHaveBeenCalled();
+    expect(electronMock.whenReady).toHaveBeenCalledTimes(1);
+  });
+
+  // Every branch of a lost lock: claimAsDefault (stable/beta/alpha), a deeplink
+  // to forward, and an update install still pending.
+  it.each([
+    [false, false, false],
+    [false, false, true],
+    [false, true, false],
+    [false, true, true],
+    [true, false, false],
+    [true, false, true],
+    [true, true, false],
+    [true, true, true],
+  ])(
+    "exits before boot when the lock is lost (claimAsDefault %s, deeplink %s, update pending %s)",
+    (claimAsDefault, withDeeplink, pendingInstallUpdate) => {
+      electronMock.lockAcquired = false;
+      process.argv = withDeeplink ? deeplinkArgv : plainArgv;
+      const dispatch = vi.fn();
+      const flushLog = vi.fn();
+      const log = vi.fn();
+      const onLockLostWithoutForward = vi.fn();
+      registerAdeProtocolHandler({
+        dispatch,
+        log,
+        flushLog,
+        claimAsDefault,
+        onLockLostWithoutForward,
+        hasPendingInstallUpdate: () => pendingInstallUpdate,
+      });
+      const shouldForwardToLockHolder = claimAsDefault || withDeeplink;
+      expect(log).toHaveBeenCalledWith("deeplink.single_instance.lock_lost", {
+        claimAsDefault,
+        deeplinkArgCount: withDeeplink ? 1 : 0,
+        shouldForwardToLockHolder,
+        pendingInstallUpdate,
+      });
+      // The dev callback explains only when nothing is forwarded to the holder.
+      expect(onLockLostWithoutForward).toHaveBeenCalledTimes(shouldForwardToLockHolder ? 0 : 1);
+      expect(flushLog).toHaveBeenCalledTimes(1);
+      expect(electronMock.exit).toHaveBeenCalledWith(0);
+      expect(electronMock.quit).not.toHaveBeenCalled();
+      // Nothing after the exit runs: no `ready` wait, no open-url or
+      // second-instance wiring, and nothing is dispatched.
+      expect(electronMock.whenReady).not.toHaveBeenCalled();
+      expect(electronMock.on).not.toHaveBeenCalled();
+      expect(dispatch).not.toHaveBeenCalled();
+      // The lock is asked for first (that request hands the argv to the holder),
+      // and the log is flushed before the process exits.
+      const exitOrder = electronMock.exit.mock.invocationCallOrder[0];
+      expect(electronMock.requestSingleInstanceLock.mock.invocationCallOrder[0]).toBeLessThan(exitOrder);
+      expect(flushLog.mock.invocationCallOrder[0]).toBeLessThan(exitOrder);
+    },
+  );
+
+  it("exits a packaged second copy that has no deeplink and no lock-lost callback", () => {
+    electronMock.lockAcquired = false;
+    process.argv = plainArgv;
+    registerAdeProtocolHandler({ dispatch: vi.fn() });
+    expect(electronMock.exit).toHaveBeenCalledWith(0);
+    expect(electronMock.quit).not.toHaveBeenCalled();
+    expect(electronMock.whenReady).not.toHaveBeenCalled();
+  });
+
+  it("asks for the lock before exiting a deeplink forward, so the holder still gets the URL", () => {
+    electronMock.lockAcquired = false;
+    process.argv = deeplinkArgv;
+    const dispatch = vi.fn();
+    registerAdeProtocolHandler({ dispatch, flushLog: vi.fn() });
+    expect(electronMock.requestSingleInstanceLock).toHaveBeenCalledTimes(1);
+    expect(electronMock.requestSingleInstanceLock.mock.invocationCallOrder[0])
+      .toBeLessThan(electronMock.exit.mock.invocationCallOrder[0]);
+    expect(electronMock.exit).toHaveBeenCalledWith(0);
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it("exits an update relaunch that loses the lock while the update install is still pending", () => {
+    electronMock.lockAcquired = false;
+    process.argv = plainArgv;
+    const flushLog = vi.fn();
+    registerAdeProtocolHandler({ dispatch: vi.fn(), flushLog, hasPendingInstallUpdate: () => true });
+    expect(flushLog).toHaveBeenCalledTimes(1);
+    expect(electronMock.exit).toHaveBeenCalledWith(0);
+    expect(electronMock.whenReady).not.toHaveBeenCalled();
+  });
+
+  it("does not read the update state when this process acquired the lock", () => {
+    electronMock.lockAcquired = true;
+    process.argv = plainArgv;
+    const hasPendingInstallUpdate = vi.fn(() => true);
+    registerAdeProtocolHandler({ dispatch: vi.fn(), hasPendingInstallUpdate });
+    expect(hasPendingInstallUpdate).not.toHaveBeenCalled();
+    expect(electronMock.exit).not.toHaveBeenCalled();
+    expect(electronMock.whenReady).toHaveBeenCalledTimes(1);
   });
 });
