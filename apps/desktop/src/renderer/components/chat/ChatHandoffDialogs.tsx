@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { memo, useState, type ReactNode } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { PortalContainerContext } from "../ui/portalContainer";
 
@@ -52,8 +52,12 @@ function HandoffDialog({
  * The two handoff dialogs the chat pane owns: the local handoff form, and the
  * notice for a chat that runs on another machine. The cross-machine form itself
  * is `CrossMachineHandoffModal`.
+ *
+ * Memoized: the pane re-renders on every streamed event, and a closed dialog
+ * must not re-render with it. The pane passes `localContent` only while the
+ * local form is open, and a stable `onCloseLocal`, so props hold still.
  */
-export function ChatHandoffDialogs({
+export const ChatHandoffDialogs = memo(function ChatHandoffDialogs({
   localOpen,
   localContent,
   onCloseLocal,
@@ -82,4 +86,4 @@ export function ChatHandoffDialogs({
       </HandoffDialog>
     </>
   );
-}
+});
