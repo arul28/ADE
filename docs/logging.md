@@ -41,7 +41,7 @@ Sentry is part of ADE on every surface, with no setting and no notice. The organ
 - every uncaught exception and unhandled rejection (all processes), renderer and page error-boundary crashes, native crashes;
 - every failed `ipcMain.handle` call, once, grouped per channel or brain action and error code (`main/sentry/ipcCapture.ts`);
 - every failed brain action (`reportFailedAction` in `adeRpcServer.ts`), grouped per action (`run_ade_action` calls per `domain.action`) and error code, and internal JSON-RPC error;
-- every `logger.error` line, grouped by event name (`shared/sentry/logBridge.ts`), except `window.console` (renderer console output, kept as logs only: the renderer SDK reports the real errors itself). `logger.warn` lines become Sentry Logs and breadcrumbs, not issues. Info and debug never leave the machine;
+- every `logger.error` line, grouped by the error it carries and by event name when it carries only a message (`shared/sentry/logBridge.ts`), except `window.console` (renderer console output, kept as logs only: the renderer SDK reports the real errors itself). `logger.warn` lines become Sentry Logs and breadcrumbs, not issues. Info and debug never leave the machine;
 - every provider health transition into `runtime-failed` (`providerRuntimeHealth.ts`).
 - on iOS, a chat that is working but draws no messages (`chat.empty_thread.<kind>`, `runEmptyThreadProbe` in `WorkSessionDestinationView.swift`), at most once per time the chat is opened. It carries the chat stream trace from `ChatStreamTrace` (subscribes, history replies applied or dropped and why, live events, socket closes) and the `chat.stream` breadcrumbs, names and counts only.
 

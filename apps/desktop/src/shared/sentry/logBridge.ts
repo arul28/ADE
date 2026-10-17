@@ -63,7 +63,9 @@ export function forwardLogToSentry(level: Level, event: string, meta?: Record<st
   addSentryBreadcrumb("log", event, attributes, level === "warn" ? "warning" : "error");
   if (level !== "error" || LOG_ONLY_EVENTS.has(event)) return;
   const error = errorFromMeta(meta);
-  const context = { tags: { "log.event": event }, extra: attributes, fingerprint: ["log", event] };
+  const context = { tags: { "log.event": event }, extra: attributes };
+  // An Error groups by its own stack and type. A message has no stack of its
+  // own (the stack would be this bridge's), so it groups by the event name.
   if (error) captureError(error, context);
-  else captureProblem(event, context);
+  else captureProblem(event, { ...context, fingerprint: ["log", event] });
 }
