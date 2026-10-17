@@ -5,17 +5,24 @@ import type {
   CopilotSdkWorkerInit,
   CopilotSdkWorkerRequest,
   CopilotSdkWorkerResponse,
+  CopilotSdkWaiterType,
 } from "./copilotSdkProtocol";
+import { COPILOT_SDK_WAITERS } from "./copilotSdkProtocol";
 import { loadCopilotSdk } from "../ai/copilotSdkLoader";
 
 type Client = InstanceType<typeof CopilotSdk.CopilotClient>;
 type Session = Awaited<ReturnType<Client["createSession"]>>;
-type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max";
+type ReasoningEffort = NonNullable<CopilotSdk.SessionConfig["reasoningEffort"]>;
+const REASONING_EFFORTS: ReadonlySet<string> = new Set<ReasoningEffort>(["low", "medium", "high", "xhigh", "max"]);
+
+function reasoningEffort(value: string | null | undefined): ReasoningEffort | undefined {
+  return value && REASONING_EFFORTS.has(value) ? value as ReasoningEffort : undefined;
+}
 type UserInputResponse = { answer: string; wasFreeform: boolean };
 type McpAuthResult = { kind: "cancelled" } | { kind: "token"; accessToken: string; expiresIn: number };
 let client: Client | null = null;
 const sessions = new Map<string, Session>();
-const waiters = new Map<string, { chatId: string; type: "permission_request" | "user_input_request" | "mcp_auth_request" | "exit_plan_request"; resolve: (value: unknown) => void }>();
+const waiters = new Map<string, { chatId: string; type: CopilotSdkWaiterType; resolve: (value: unknown) => void }>();
 let disposed = false;
 /** A title or summary call; the SDK default (60 s) is too tight for a cold runtime. */
 const UTILITY_TIMEOUT_MS = 120_000;
@@ -31,16 +38,12 @@ function postLog(level: "debug" | "info" | "warn" | "error", message: string, de
 function settleWaiters(chatId?: string): void {
   for (const [waiterId, waiter] of waiters) {
     if (chatId && waiter.chatId !== chatId) continue;
-    const fallback = waiter.type === "exit_plan_request" ? { approved: false, feedback: "The Copilot chat was interrupted." }
-      : waiter.type === "permission_request" ? { kind: "reject" }
-      : waiter.type === "mcp_auth_request" ? { kind: "cancelled" }
-        : { answer: "", wasFreeform: true };
-    waiter.resolve(fallback);
+    waiter.resolve(COPILOT_SDK_WAITERS[waiter.type].fallback);
     waiters.delete(waiterId);
   }
 }
 
-function waitFor<T>(type: "permission_request" | "user_input_request" | "mcp_auth_request" | "exit_plan_request", chatId: string, request: unknown): Promise<T> {
+function waitFor<T>(type: CopilotSdkWaiterType, chatId: string, request: unknown): Promise<T> {
   const waiterId = randomUUID();
   return new Promise<T>((resolve) => {
     waiters.set(waiterId, { chatId, type, resolve: resolve as (value: unknown) => void });
@@ -48,16 +51,75 @@ function waitFor<T>(type: "permission_request" | "user_input_request" | "mcp_aut
   });
 }
 
+type ForkTarget = { throughEventId?: string; throughMessageText?: string; throughMessageOrdinal?: number };
+
+/**
+ * The fork boundary that keeps one user turn and everything it produced:
+ * the next top-level `user.message` (the fork excludes the boundary event).
+ * Undefined keeps the whole history, when the selected turn is the last one.
+ * The turn is found by Copilot's event id, or for older chats by its text: the
+ * prompt Copilot recorded can carry ADE's context ahead of what the user typed,
+ * so it is matched by suffix, and the ordinal counts the same way.
+ */
+function forkBoundaryAfterTurn(events: readonly unknown[], target: ForkTarget): string | undefined {
+  const roots = events.flatMap((raw, index) => {
+    const event = raw as { id?: unknown; type?: unknown; agentId?: unknown; ephemeral?: unknown; data?: { content?: unknown; isAutopilotContinuation?: unknown; source?: unknown } };
+    // Only prompts start a turn. Autopilot continuations, hidden injections
+    // (`source`, e.g. a loaded skill) and ephemeral messages belong to the turn
+    // before them; the same rule picks the turn's id in agentChatService.
+    return event.type === "user.message" && !event.agentId && typeof event.id === "string"
+      && event.data?.isAutopilotContinuation !== true && !event.data?.source && event.ephemeral !== true
+      ? [{ index, id: event.id, text: typeof event.data?.content === "string" ? event.data.content.trim() : "" }]
+      : [];
+  });
+  const wanted = target.throughMessageText?.trim();
+  const selected = target.throughEventId
+    ? roots.find((root) => root.id === target.throughEventId)
+    : wanted ? roots.filter((root) => root.text.endsWith(wanted))[target.throughMessageOrdinal ?? 0] : undefined;
+  if (!selected) throw new Error("Could not map the selected ADE turn to a Copilot user event; fork the full chat instead.");
+  return roots.find((root) => root.index > selected.index)?.id;
+}
+
+function requireSession(chatId: string): Session {
+  const session = sessions.get(chatId);
+  if (!session) throw new Error("Copilot session is not open.");
+  return session;
+}
+
+/**
+ * Put a session at one of ADE's Copilot levels and report the permission mode
+ * Copilot actually holds. Plan is a session mode, not a permission mode: it
+ * also drops approvals to manual (a chat that was at Full-auto would otherwise
+ * plan under allow-all and never ask), and leaving it restores the
+ * interactive session. Assisted that the plan refuses falls back to manual.
+ */
+async function applyPermissionMode(session: Session, chatId: string, level: string | undefined): Promise<{ mode: string; error: string | null }> {
+  const plan = level === "plan";
+  await session.rpc.mode.set({ mode: plan ? "plan" : "interactive" });
+  const requested = plan ? "manual" : level === "assisted" ? "assisted" : level === "full-auto" ? "allow-all" : "manual";
+  let error: string | null = null;
+  try {
+    await session.rpc.permissions.setMode({ mode: requested });
+  } catch (cause) {
+    if (requested !== "assisted") throw cause;
+    error = cause instanceof Error ? cause.message : String(cause);
+    await session.rpc.permissions.setMode({ mode: "manual" });
+  }
+  const mode = (await session.rpc.permissions.getMode()).mode;
+  postLog(error ? "warn" : "info", error ? "Copilot Assisted mode rejected; using Ask" : "Copilot permission mode applied", { chatId, requested, mode, ...(error ? { sdkError: error } : {}) });
+  return { mode, error };
+}
+
 function sessionConfig(config: CopilotSdkSessionConfig): CopilotSdk.SessionConfig {
   return {
     sessionId: config.sessionId,
     workingDirectory: config.cwd,
     model: config.model && config.model !== "auto" ? config.model : undefined,
-    reasoningEffort: config.reasoningEffort as ReasoningEffort | undefined,
+    reasoningEffort: reasoningEffort(config.reasoningEffort),
     streaming: true,
     systemMessage: config.systemMessage ? { mode: "append", content: config.systemMessage } : undefined,
     skillDirectories: config.skillDirectories,
-    mcpServers: config.mcpServers as CopilotSdk.SessionConfig["mcpServers"],
+    mcpServers: config.mcpServers,
     disabledMcpServers: config.disabledMcpServers,
     contextTier: config.contextTier,
     capi: config.autoTier ? { autoTier: config.autoTier } : undefined,
@@ -80,7 +142,7 @@ function sessionConfig(config: CopilotSdkSessionConfig): CopilotSdk.SessionConfi
       : (request) => waitFor<McpAuthResult>("mcp_auth_request", config.chatId, request),
     onExitPlanModeRequest: config.utility ? undefined : (request) => waitFor("exit_plan_request", config.chatId, request),
     // Plan mode is applied after open through the experimental session mode RPC.
-  } as CopilotSdk.SessionConfig;
+  };
 }
 
 function watchSession(chatId: string, session: Session): void {
@@ -148,26 +210,7 @@ async function dispatch(req: CopilotSdkWorkerRequest): Promise<unknown> {
     const session = req.type === "resume" && req.payload.sessionId
       ? await client.resumeSession(req.payload.sessionId, { ...config, continuePendingWork: false })
       : await client.createSession(config);
-    let permissionMode: string | null = null;
-    let permissionError: string | null = null;
-    if (req.payload.permissionMode === "plan") await session.rpc.mode.set({ mode: "plan" });
-    else {
-      const requestedMode = req.payload.permissionMode === "assisted" ? "assisted"
-        : req.payload.permissionMode === "full-auto" ? "allow-all" : "manual";
-      try {
-        const applied = await session.rpc.permissions.setMode({ mode: requestedMode });
-        postLog("info", "Copilot permission mode set result", { chatId: req.payload.chatId, requested: requestedMode, applied: applied.mode });
-      } catch (error) {
-        if (requestedMode !== "assisted") throw error;
-        permissionError = error instanceof Error ? error.message : String(error);
-        const fallback = await session.rpc.permissions.setMode({ mode: "manual" });
-        postLog("warn", "Copilot Assisted mode rejected; using Ask", {
-          chatId: req.payload.chatId,
-          sdkError: permissionError,
-          fallback: fallback.mode,
-        });
-      }
-    }
+    const { mode: permissionMode, error: permissionError } = await applyPermissionMode(session, req.payload.chatId, req.payload.permissionMode);
     sessions.set(req.payload.chatId, session);
     watchSession(req.payload.chatId, session);
     postLog("debug", "Copilot session options applied", {
@@ -176,20 +219,17 @@ async function dispatch(req: CopilotSdkWorkerRequest): Promise<unknown> {
       autoTier: req.payload.autoTier ?? null,
       resumed: req.type === "resume",
     });
-    permissionMode = (await session.rpc.permissions.getMode()).mode;
-    postLog("info", "Copilot permission mode verified after open", { chatId: req.payload.chatId, permissionMode });
     return { sessionId: session.sessionId, events: await session.getEvents(), permissionMode, permissionError };
   }
   if (req.type === "send") {
-    const session = sessions.get(req.payload.chatId);
-    if (!session) throw new Error("Copilot session is not open.");
+    const session = requireSession(req.payload.chatId);
     return { result: await session.send({ prompt: req.payload.prompt, attachments: req.payload.attachments, mode: req.payload.mode, ...(req.payload.agentMode ? { agentMode: req.payload.agentMode } : {}) }) };
   }
   if (req.type === "set_model") {
-    const session = sessions.get(req.payload.chatId);
-    if (!session) throw new Error("Copilot session is not open.");
+    const session = requireSession(req.payload.chatId);
+    const effort = reasoningEffort(req.payload.reasoningEffort);
     await session.setModel(req.payload.model, {
-      ...(req.payload.reasoningEffort ? { reasoningEffort: req.payload.reasoningEffort as ReasoningEffort } : {}),
+      ...(effort ? { reasoningEffort: effort } : {}),
       ...(req.payload.contextTier ? { contextTier: req.payload.contextTier } : {}),
       ...(req.payload.autoTier !== undefined ? { autoTier: req.payload.autoTier } : {}),
     });
@@ -202,70 +242,33 @@ async function dispatch(req: CopilotSdkWorkerRequest): Promise<unknown> {
     return {};
   }
   if (req.type === "set_auto_tier") {
-    const session = sessions.get(req.payload.chatId);
-    if (!session) throw new Error("Copilot session is not open.");
+    const session = requireSession(req.payload.chatId);
     const result = await session.setAutoTier(req.payload.autoTier);
     postLog("debug", "Copilot Auto tier selection", { chatId: req.payload.chatId, requested: req.payload.autoTier, status: result.status });
     return result;
   }
   if (req.type === "set_permission_mode") {
-    const session = sessions.get(req.payload.chatId);
-    if (!session) throw new Error("Copilot session is not open.");
-    if (req.payload.permissionMode === "plan") {
-      await session.rpc.mode.set({ mode: "plan" });
-      return { mode: (await session.rpc.permissions.getMode()).mode, error: null };
-    }
-    // Plan is a session mode, not a permission mode: leaving it must restore
-    // the interactive session or Copilot keeps planning under the new level.
-    await session.rpc.mode.set({ mode: "interactive" });
-    const mode = req.payload.permissionMode === "assisted" ? "assisted"
-      : req.payload.permissionMode === "full-auto" ? "allow-all" : "manual";
-    try {
-      const result = await session.rpc.permissions.setMode({ mode });
-      const current = (await session.rpc.permissions.getMode()).mode;
-      postLog("info", "Copilot permission mode updated", { chatId: req.payload.chatId, requested: mode, applied: result.mode, current });
-      return { mode: current, error: null };
-    } catch (error) {
-      if (mode !== "assisted") throw error;
-      const sdkError = error instanceof Error ? error.message : String(error);
-      const fallback = await session.rpc.permissions.setMode({ mode: "manual" });
-      const current = (await session.rpc.permissions.getMode()).mode;
-      postLog("warn", "Copilot Assisted mode rejected; using Ask", { chatId: req.payload.chatId, sdkError, fallback: current });
-      return { mode: current, error: sdkError };
-    }
+    const session = requireSession(req.payload.chatId);
+    return applyPermissionMode(session, req.payload.chatId, req.payload.permissionMode);
   }
   if (req.type === "fork_session") {
-    const session = sessions.get(req.payload.chatId);
-    if (!session) throw new Error("Copilot session is not open.");
-    let toEventId: string | undefined;
-    if (req.payload.throughMessageText !== undefined) {
-      const events = await session.getEvents() as Array<{ id?: string; type?: string; agentId?: string; data?: { content?: string } }>;
-      const roots = events.flatMap((event, index) => event.type === "user.message" && !event.agentId && typeof event.data?.content === "string"
-        ? [{ index, id: event.id, text: event.data.content }]
-        : []);
-      const matches = roots.filter((event) => event.text.trim() === req.payload.throughMessageText?.trim());
-      const selected = matches[req.payload.throughMessageOrdinal ?? 0];
-      if (!selected?.id) throw new Error("Could not map the selected ADE turn to a Copilot user event; fork the full chat instead.");
-      const nextRoot = roots.find((event) => event.index > selected.index);
-      toEventId = events[(nextRoot?.index ?? events.length) - 1]?.id;
-      if (!toEventId) throw new Error("Copilot history did not expose an event boundary for the selected turn.");
-    }
-    const result = await (client.rpc as unknown as { sessions: { fork: (args: { sessionId: string; toEventId?: string }) => Promise<{ sessionId?: string }> } }).sessions.fork({ sessionId: req.payload.sessionId, ...(toEventId ? { toEventId } : {}) });
+    const session = requireSession(req.payload.chatId);
+    const throughTurn = req.payload.throughEventId || req.payload.throughMessageText !== undefined;
+    const toEventId = throughTurn ? forkBoundaryAfterTurn(await session.getEvents(), req.payload) : undefined;
+    const result = await client.rpc.sessions.fork({ sessionId: req.payload.sessionId, ...(toEventId ? { toEventId } : {}) });
     const forkedId = result.sessionId?.trim();
     if (!forkedId) throw new Error("Copilot fork did not return a new session id.");
     return forkedId;
   }
   if (req.type === "rewind") {
-    const session = sessions.get(req.payload.chatId);
-    if (!session) throw new Error("Copilot session is not open.");
+    const session = requireSession(req.payload.chatId);
     if (req.payload.action === "list") return session.rpc.history.listRewindPoints();
     if (!req.payload.eventId) throw new Error("Copilot rewind requires an event id.");
     if (req.payload.action === "preview") return session.rpc.history.previewRewind({ eventId: req.payload.eventId });
     return session.rpc.history.rewind({ eventId: req.payload.eventId, mode: "conversation-and-files" });
   }
   if (req.type === "usage_metrics") {
-    const session = sessions.get(req.payload.chatId);
-    if (!session) throw new Error("Copilot session is not open.");
+    const session = requireSession(req.payload.chatId);
     return session.rpc.usage.getMetrics();
   }
   if (req.type === "abort") { settleWaiters(req.payload.chatId); await sessions.get(req.payload.chatId)?.abort().catch(() => undefined); return {}; }

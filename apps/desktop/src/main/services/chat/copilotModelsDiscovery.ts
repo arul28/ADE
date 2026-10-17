@@ -2,7 +2,8 @@ import fs from "node:fs";
 import type { ModelDescriptor } from "../../../shared/modelRegistry";
 import { resolveAdeCacheFile } from "../shared/adeCacheFile";
 import { writeTextAtomic } from "../shared/utils";
-import type { CopilotSdkPooled } from "./copilotSdkPool";
+import type { Logger } from "../logging/logger";
+import { acquireCopilotSdkConnection, releaseCopilotSdkConnection } from "./copilotSdkPool";
 
 type CopilotModel = {
   id?: unknown;
@@ -15,6 +16,42 @@ type CopilotModel = {
   supportedContextTiers?: unknown;
 };
 
+/** What an account with no model list (the Auto-only plan) is offered. */
+const COPILOT_AUTO_ONLY: readonly CopilotModel[] = [
+  { id: "auto", name: "Auto", capabilities: { limits: { max_context_window_tokens: 128_000, max_output_tokens: 32_000 } } },
+];
+
+function copilotModelDescriptor(model: CopilotModel, id: string): ModelDescriptor {
+  const context = model.capabilities?.limits?.max_context_window_tokens;
+  const output = model.capabilities?.limits?.max_output_tokens;
+  const longContextWindow = model.billing?.tokenPrices?.longContext?.contextMax;
+  const efforts = Array.isArray(model.supportedReasoningEfforts)
+    ? model.supportedReasoningEfforts.filter((effort): effort is string => typeof effort === "string")
+    : [];
+  return {
+    id: `github-copilot/${id}`,
+    shortId: id,
+    displayName: typeof model.name === "string" && model.name.trim() ? model.name.trim() : id,
+    family: "github-copilot",
+    authTypes: ["cli-subscription"],
+    contextWindow: typeof context === "number" && context > 0 ? context : 128_000,
+    maxOutputTokens: typeof output === "number" && output > 0 ? output : 32_000,
+    capabilities: { tools: true, vision: model.capabilities?.supports?.vision === true, reasoning: efforts.length > 0, streaming: true },
+    ...(efforts.length ? { reasoningTiers: efforts } : {}),
+    ...(typeof model.defaultReasoningEffort === "string" ? { defaultReasoningEffort: model.defaultReasoningEffort } : {}),
+    ...(Array.isArray(model.supportedContextTiers)
+      ? { supportedContextTiers: model.supportedContextTiers.filter((tier): tier is string => typeof tier === "string") }
+      : {}),
+    ...(typeof longContextWindow === "number" && Number.isFinite(longContextWindow) && longContextWindow > 0 ? { longContextWindow } : {}),
+    ...(typeof model.billing?.multiplier === "number" ? { billingMultiplier: model.billing.multiplier } : {}),
+    color: "#8250df",
+    providerRoute: "copilot-sdk",
+    providerModelId: id,
+    cliCommand: "copilot",
+    isCliWrapped: false,
+  };
+}
+
 export function copilotSdkModelDescriptors(models: readonly unknown[]): ModelDescriptor[] {
   const rows: ModelDescriptor[] = [];
   const seen = new Set<string>();
@@ -24,57 +61,34 @@ export function copilotSdkModelDescriptors(models: readonly unknown[]): ModelDes
     const id = typeof model.id === "string" ? model.id.trim() : "";
     if (!id || seen.has(id) || model.policy?.state === "disabled") continue;
     seen.add(id);
-    const context = model.capabilities?.limits?.max_context_window_tokens;
-    const output = model.capabilities?.limits?.max_output_tokens;
-    const longContextWindow = model.billing?.tokenPrices?.longContext?.contextMax;
-    const efforts = Array.isArray(model.supportedReasoningEfforts)
-      ? model.supportedReasoningEfforts.filter((effort): effort is string => typeof effort === "string")
-      : [];
-    rows.push({
-      id: `github-copilot/${id}`,
-      shortId: id,
-      displayName: typeof model.name === "string" && model.name.trim() ? model.name.trim() : id,
-      family: "github-copilot",
-      authTypes: ["cli-subscription"],
-      contextWindow: typeof context === "number" && context > 0 ? context : 128_000,
-      maxOutputTokens: typeof output === "number" && output > 0 ? output : 32_000,
-      capabilities: { tools: true, vision: model.capabilities?.supports?.vision === true, reasoning: efforts.length > 0, streaming: true },
-      ...(efforts.length ? { reasoningTiers: efforts } : {}),
-      ...(typeof model.defaultReasoningEffort === "string" ? { defaultReasoningEffort: model.defaultReasoningEffort } : {}),
-      ...(Array.isArray(model.supportedContextTiers) ? { supportedContextTiers: model.supportedContextTiers.filter((tier): tier is string => typeof tier === "string") } : {}),
-      ...(typeof longContextWindow === "number" && Number.isFinite(longContextWindow) && longContextWindow > 0 ? { longContextWindow } : {}),
-      ...(typeof model.billing?.multiplier === "number" ? { billingMultiplier: model.billing.multiplier } : {}),
-      color: "#8250df",
-      providerRoute: "copilot-sdk",
-      providerModelId: id,
-      cliCommand: "copilot",
-      isCliWrapped: false,
-    } as ModelDescriptor);
+    rows.push(copilotModelDescriptor(model, id));
   }
-  if (rows.length === 0) {
-    rows.push({
-      id: "github-copilot/auto",
-      shortId: "auto",
-      displayName: "Auto",
-      family: "github-copilot",
-      authTypes: ["cli-subscription"],
-      contextWindow: 128_000,
-      maxOutputTokens: 32_000,
-      capabilities: { tools: true, vision: false, reasoning: false, streaming: true },
-      color: "#8250df",
-      providerRoute: "copilot-sdk",
-      providerModelId: "auto",
-      cliCommand: "copilot",
-      isCliWrapped: false,
-    } as ModelDescriptor);
-  }
-  return rows;
+  return rows.length ? rows : COPILOT_AUTO_ONLY.map((model) => copilotModelDescriptor(model, "auto"));
 }
 
-export async function discoverCopilotSdkModelDescriptors(sdk: CopilotSdkPooled): Promise<ModelDescriptor[]> {
-  return copilotSdkModelDescriptors(await sdk.request<unknown[]>("models"));
+/**
+ * Ask Copilot for this account's models and save them. Both the AI status poll
+ * and the chat model catalog refresh through here, so the cache is written one way.
+ */
+export async function refreshCopilotModelCatalog(args: {
+  cliPath: string;
+  baseDirectory: string;
+  baseEnv: NodeJS.ProcessEnv;
+  logger?: Logger;
+}): Promise<CopilotModelCatalogCache> {
+  const connection = await acquireCopilotSdkConnection(args);
+  try {
+    const descriptors = copilotSdkModelDescriptors(await connection.pooled.request<unknown[]>("models"));
+    try {
+      return writeCopilotModelCatalogCache(descriptors);
+    } catch (error) {
+      args.logger?.warn("agent_chat.copilot_model_cache_write_failed", { error: error instanceof Error ? error.message : String(error) });
+      return { savedAt: Date.now(), descriptors };
+    }
+  } finally {
+    releaseCopilotSdkConnection(connection.poolKey, connection.generation);
+  }
 }
-
 
 /** A saved list younger than this is served without asking Copilot again. */
 export const COPILOT_MODELS_TTL_MS = 6 * 60 * 60_000;

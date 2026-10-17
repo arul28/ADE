@@ -166,8 +166,8 @@ function grokOptions(model: string, effort: string): AcpSessionConfigOption[] {
 }
 
 /**
- * A session whose agent answers `session/set_config_option` the way Grok,
- * Qwen, and Copilot do: with the whole option set after the change.
+ * A session whose agent answers `session/set_config_option` the way Grok and
+ * Qwen do: with the whole option set after the change.
  */
 function fakeSession(
   dialect: AcpDialect,

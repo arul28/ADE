@@ -32,7 +32,7 @@
  *    the dialect has it, and it ends the private process where it does not.
  *
  * The host never writes a provider's config directory. Spawn plans carry argv
- * and environment only; nothing under `$COPILOT_HOME`, `$QWEN_HOME`,
+ * and environment only; nothing under `$QWEN_HOME`,
  * `$KIMI_CODE_HOME`, `$GROK_HOME`, or `~/.grok` is modified by ADE.
  *
  * The permission callbacks are not optional. `onPermissionRequested` receives a

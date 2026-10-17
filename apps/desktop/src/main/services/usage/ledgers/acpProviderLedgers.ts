@@ -369,8 +369,8 @@ export function parseCopilotUsageEventRows(
   for (const row of rows) {
     const sessionId = textFromSqliteValue(row.session_id);
     const rowId = toNonNegativeInt(row.id);
-    // SDK turns use live usage events; history scanning keeps this legacy CLI
-    // store reader independent from the ACP adapter.
+    // The one source of Copilot usage totals. A chat's live SDK usage events
+    // only fill that turn's own usage line; they are never added to totals.
     const read = readCopilotUsageRow(row);
     const inputTokens = read.inputTokens ?? 0;
     const cachedTokens = read.cacheReadTokens ?? 0;

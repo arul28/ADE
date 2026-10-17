@@ -2574,16 +2574,16 @@ export function createDynamicMuseModelDescriptor(
   });
 }
 
-/**
- * Replace the live Muse model list (MSP `model/list`). Same rules as the ACP
- * replacer: a curated model keeps its curated row, the list is capped, and a
- * contributor variant is dropped.
- */
 /** Copilot's live SDK model list (`listModels`), as `copilotSdkModelDescriptors` builds it. */
 export function replaceDynamicCopilotModelDescriptors(descriptors: ModelDescriptor[]): void {
   replaceLiveModelDescriptors("copilot", descriptors);
 }
 
+/**
+ * Replace the live Muse model list (MSP `model/list`). Same rules as the ACP
+ * replacer: a curated model keeps its curated row, the list is capped, and a
+ * contributor variant is dropped.
+ */
 export function replaceDynamicMuseModelDescriptors(descriptors: ModelDescriptor[]): void {
   replaceLiveModelDescriptors(
     "muse",

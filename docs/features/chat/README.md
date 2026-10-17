@@ -2583,7 +2583,8 @@ The importer takes one of four paths:
 - **Native continue** (Droid, OpenCode, Pi, Copilot, `mode: "resume"`). The
   chat seeds the provider pointer that it already restores from after a restart
   (`droidSdkSessionId`, the OpenCode `providerSessionId`, `piSessionId`,
-  Copilot's SDK session id, saved as `acpSessionId` for older chats), so the
+  Copilot's SDK session id, saved as `copilotSdkSessionId`, or `acpSessionId`
+  for chats from before the SDK provider), so the
   first turn opens the CLI's own session. The
   session folder must be the lane root, and the model must be of the provider's
   family. When the chosen model is the session's recorded model, the chat keeps

@@ -1257,9 +1257,10 @@ import {
   releaseDroidSdkConnection,
   type DroidSdkPooled,
 } from "./droidSdkPool";
-import { acquireCopilotSdkConnection, releaseCopilotSdkConnection, type CopilotSdkPooled } from "./copilotSdkPool";
+import { acquireCopilotSdkConnection, isCopilotSdkWorkerLive, releaseCopilotSdkConnection, type CopilotSdkPooled } from "./copilotSdkPool";
+import type { CopilotRewindListing, CopilotRewindPreview, CopilotRewindResult } from "./copilotSdkProtocol";
 import { createCopilotSdkEventMapperState, mapCopilotSdkEvent, copilotSdkDoneUsage, type CopilotSdkEventMapperState } from "./copilotSdkEventMapper";
-import { copilotSdkModelDescriptors, readCopilotModelCatalogCache, writeCopilotModelCatalogCache } from "./copilotModelsDiscovery";
+import { copilotSdkModelDescriptors, readCopilotModelCatalogCache, refreshCopilotModelCatalog } from "./copilotModelsDiscovery";
 import { resolveCopilotExecutable } from "../ai/acpExecutables";
 import {
   acquirePiSdkConnection,
@@ -2005,6 +2006,18 @@ type PersistedCursorCloudPendingRequest = {
   fingerprint: string;
 };
 
+/**
+ * The Copilot session to resume. A chat from before the SDK move stored its
+ * session as `acpSessionId`; Copilot's SDK and its ACP mode share one session
+ * store, so that id still resumes.
+ */
+function persistedCopilotSessionId(
+  provider: AgentChatProvider,
+  persisted: Pick<PersistedChatState, "copilotSdkSessionId" | "acpSessionId"> | null | undefined,
+): string | undefined {
+  return persisted?.copilotSdkSessionId ?? (provider === "copilot" ? persisted?.acpSessionId : undefined) ?? undefined;
+}
+
 type PersistedChatState = {
   version: 1 | 2;
   sessionId: string;
@@ -2084,6 +2097,11 @@ type PersistedChatState = {
   droidSdkSessionId?: string;
   /** Copilot SDK conversation id. Legacy Copilot ACP ids are adopted on resume. */
   copilotSdkSessionId?: string;
+  /**
+   * ADE user-message id -> the id of the `user.message` event Copilot recorded
+   * for it. Copilot's rewind points are keyed by that event id.
+   */
+  copilotRewindEventIds?: Record<string, string>;
   /**
    * Agent-minted ACP session id. It is the only handle a restarted ADE has on
    * an existing ACP conversation, so it is persisted for all four providers.
@@ -3427,6 +3445,10 @@ type CopilotRuntime = {
   eventMapperState: CopilotSdkEventMapperState;
   pendingSteers: QueuedSteer[];
   turnSettled?: (aborted: boolean) => void;
+  /** ADE's id for this turn's user message, until Copilot's `user.message` names its own. */
+  pendingRewindMessageId?: string;
+  /** A setting change failed mid-turn; reopen with the saved settings once the turn ends. */
+  reopenAfterTurn?: boolean;
 };
 
 type PiRuntime = {
@@ -5073,6 +5095,8 @@ type ManagedChatSession = {
    */
   seededProviderSessionId?: string;
   seededDroidSdkSessionId?: string;
+  /** In-memory copy of the persisted `copilotRewindEventIds`, once this process adds to it. */
+  copilotRewindEventIds?: Record<string, string>;
   seededPiSessionId?: string;
   seededPiSessionFile?: string;
   seededAcpSessionId?: string;
@@ -9155,6 +9179,15 @@ function normalizePersistedDroidPermissionMode(value: unknown): AgentChatDroidPe
 function normalizePersistedCopilotPermissionMode(value: unknown): AgentChatCopilotPermissionMode | undefined {
   return normalizePersistedEnum(value, VALID_COPILOT_PERMISSION_MODES);
 }
+
+/** Copilot levels from strictest to loosest. */
+const COPILOT_PERMISSION_RANK: Record<AgentChatCopilotPermissionMode, number> = {
+  plan: 0,
+  ask: 1,
+  assisted: 2,
+  "auto-edit": 3,
+  "full-auto": 4,
+};
 
 function normalizeCopilotContextTier(value: unknown): AgentChatCopilotContextTier {
   return value === "long_context" ? "long_context" : "default";
@@ -18276,6 +18309,8 @@ export function createAgentChatService(args: {
     const survivingPreviousPendingSteers = prevPersisted?.pendingSteers?.length
       ? survivingPersistedSteers(managed, prevPersisted.pendingSteers)
       : [];
+    const previousCopilotSessionId = persistedCopilotSessionId(managed.session.provider, prevPersisted);
+    const copilotRewindEventIds = managed.copilotRewindEventIds ?? prevPersisted?.copilotRewindEventIds;
     const payload: PersistedChatState = {
       version: 2,
       sessionId: managed.session.id,
@@ -18381,9 +18416,10 @@ export function createAgentChatService(args: {
           : {}),
       ...(managed.runtime?.kind === "copilot"
         ? { copilotSdkSessionId: managed.runtime.sdkSessionId }
-        : !managed.runtimeInvalidated && (prevPersisted?.copilotSdkSessionId || (managed.session.provider === "copilot" && prevPersisted?.acpSessionId))
-          ? { copilotSdkSessionId: prevPersisted?.copilotSdkSessionId ?? prevPersisted?.acpSessionId }
+        : !managed.runtimeInvalidated && previousCopilotSessionId
+          ? { copilotSdkSessionId: previousCopilotSessionId }
           : {}),
+      ...(copilotRewindEventIds ? { copilotRewindEventIds } : {}),
       // ACP pointer. Same three-tier shape as Droid: the live runtime's id
       // first, then the fork seed or the previous write, and nothing at all
       // once the runtime has been invalidated.
@@ -18696,6 +18732,10 @@ export function createAgentChatService(args: {
       );
     }
   };
+
+  /** ADE user-message id -> Copilot `user.message` event id, for rewind and fork. */
+  const copilotRewindEventIdsOf = (managed: ManagedChatSession): Record<string, string> | undefined =>
+    managed.copilotRewindEventIds ?? readPersistedState(managed.session.id)?.copilotRewindEventIds;
 
   const readPersistedState = (sessionId: string): PersistedChatState | null => {
     const filePath = metadataPathFor(sessionId);
@@ -25699,6 +25739,9 @@ export function createAgentChatService(args: {
       void rt.sdk.disconnect(managed.session.id).catch(() => undefined);
       releaseCopilotSdkConnection(rt.poolKey, rt.poolGeneration);
       managed.runtime = null;
+      // The idle event that would end a running turn is dropped once the runtime
+      // is gone, so end it here as interrupted.
+      rt.turnSettled?.(true);
     }
     if (managed.runtime?.kind === "pi") {
       const rt = managed.runtime;
@@ -46279,14 +46322,24 @@ export function createAgentChatService(args: {
     if (nativeFork && sourceProvider === "copilot") {
       const runtime = await ensureCopilotRuntime(managed);
       if (runtime.busy) throw new Error("Wait for the current Copilot turn to finish before forking this chat.");
-      let forkOptions: { throughMessageText?: string; throughMessageOrdinal?: number } = {};
+      let forkOptions: { throughEventId?: string; throughMessageText?: string; throughMessageOrdinal?: number } = {};
       if (forkFromEarlierTurn) {
         const targetMessage = forkPoint?.envelopes.find((envelope) => envelope.event.type === "user_message" && envelope.event.turnId === requestedThroughTurnId)?.event;
         if (!targetMessage || targetMessage.type !== "user_message") throw new Error("Could not find the selected Copilot user turn; fork the full chat instead.");
-        const beforeTarget = readTranscriptEnvelopes(managed, { includeBuffered: true })
-          .filter((envelope) => envelope.event.type === "user_message" && envelope.event.text.trim() === targetMessage.text.trim());
-        const targetOrdinal = beforeTarget.findIndex((envelope) => envelope.event.type === "user_message" && envelope.event.messageId === targetMessage.messageId);
-        forkOptions = { throughMessageText: targetMessage.text, throughMessageOrdinal: targetOrdinal < 0 ? 0 : targetOrdinal };
+        const recordedEventId = targetMessage.messageId
+          ? copilotRewindEventIdsOf(managed)?.[targetMessage.messageId]
+          : undefined;
+        if (recordedEventId) {
+          forkOptions = { throughEventId: recordedEventId };
+        } else {
+          // Older chats: the worker matches by suffix (Copilot's recorded prompt
+          // can carry ADE's context first), so count earlier turns the same way.
+          const selectedText = targetMessage.text.trim();
+          const sameSuffix = readTranscriptEnvelopes(managed, { includeBuffered: true })
+            .filter((envelope) => envelope.event.type === "user_message" && envelope.event.text.trim().endsWith(selectedText));
+          const targetOrdinal = sameSuffix.findIndex((envelope) => envelope.event.type === "user_message" && envelope.event.messageId === targetMessage.messageId);
+          forkOptions = { throughMessageText: selectedText, throughMessageOrdinal: targetOrdinal < 0 ? 0 : targetOrdinal };
+        }
       }
       sourceCopilotForkSessionId = await runtime.sdk.forkSession(managed.session.id, runtime.sdkSessionId, forkOptions);
     }
@@ -54665,8 +54718,28 @@ export function createAgentChatService(args: {
     managed.laneWorktreePath,
   ].join(":");
 
+  /**
+   * A live setting change Copilot refused. ADE already saved the new value, so
+   * close the runtime (keeping the conversation) and let the next message
+   * reopen it with that value instead of running under the old one silently.
+   * A busy turn keeps going; its runtime closes when the turn ends.
+   */
+  const reopenCopilotForSettings = (managed: ManagedChatSession, what: string, error: unknown, options?: { now?: boolean }): void => {
+    const runtime = managed.runtime;
+    if (runtime?.kind !== "copilot") return;
+    const reason = error instanceof Error ? error.message : error ? String(error) : null;
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: "warning",
+      severity: "warning",
+      message: `Copilot could not switch to ${what}${reason ? ` (${reason})` : ""}. It will apply from your next message.`,
+    });
+    if (runtime.busy && !options?.now) runtime.reopenAfterTurn = true;
+    else teardownRuntime(managed, "restart");
+  };
+
   const ensureCopilotRuntime = async (managed: ManagedChatSession): Promise<CopilotRuntime> => {
-    if (managed.runtime?.kind === "copilot" && managed.runtime.sdk.process.exitCode == null && !managed.runtime.sdk.process.killed) {
+    if (managed.runtime?.kind === "copilot" && isCopilotSdkWorkerLive(managed.runtime.sdk.process)) {
       return managed.runtime;
     }
     if (managed.runtime) teardownRuntime(managed, managed.runtime.kind === "copilot" ? "restart" : "handle_close");
@@ -54678,11 +54751,8 @@ export function createAgentChatService(args: {
     const persisted = readPersistedState(managed.session.id);
     const modelId = resolveSessionModelDescriptor(managed.session)?.providerModelId ?? "auto";
     try {
-      const legacySessionId = persisted?.copilotSdkSessionId
-        ?? (managed.session.provider === "copilot" ? persisted?.acpSessionId : undefined);
-      const opened = await acquired.pooled.openSession({
-        chatId: managed.session.id,
-        ...(legacySessionId ? { sessionId: legacySessionId } : {}),
+      const persistedSessionId = persistedCopilotSessionId(managed.session.provider, persisted);
+      const sessionOptions = {
         cwd: managed.laneWorktreePath,
         model: modelId === "auto" ? undefined : modelId,
         reasoningEffort: managed.session.reasoningEffort,
@@ -54701,7 +54771,27 @@ export function createAgentChatService(args: {
               runtime: "copilot-sdk",
               adeSkillRoots: adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }),
             }),
-      }, Boolean(legacySessionId));
+      };
+      const openFresh = () => acquired.pooled.openSession({ chatId: managed.session.id, ...sessionOptions }, false);
+      const opened = persistedSessionId
+        ? await acquired.pooled.openSession({ chatId: managed.session.id, sessionId: persistedSessionId, ...sessionOptions }, true)
+          .catch(async (error: unknown) => {
+            // Copilot no longer has this conversation (its session store was
+            // cleared, or the chat moved from a machine that held it). Start a
+            // new one rather than failing every message.
+            // Only the resume call's own "no such session" answer: the same text
+            // from a later step of opening must not replace a live conversation.
+            if (!/session\.resume failed.*session not found/i.test(error instanceof Error ? error.message : String(error))) throw error;
+            logger.warn("agent_chat.copilot_session_missing", { sessionId: managed.session.id, copilotSessionId: persistedSessionId });
+            emitChatEvent(managed, {
+              type: "system_notice",
+              noticeKind: "warning",
+              severity: "warning",
+              message: "Copilot no longer has this conversation, so it started a new one. Earlier messages stay here but Copilot cannot see them.",
+            });
+            return openFresh();
+          })
+        : await openFresh();
       if (managed.session.copilotPermissionMode === "assisted" && opened.permissionMode !== "assisted") {
         managed.session.copilotPermissionMode = "ask";
         managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
@@ -54732,6 +54822,20 @@ export function createAgentChatService(args: {
         if (!target || current?.kind !== "copilot" || !current.activeTurnId) return;
         const eventRecord = event && typeof event === "object" ? event as Record<string, unknown> : {};
         const eventData = eventRecord.data && typeof eventRecord.data === "object" ? eventRecord.data as Record<string, unknown> : {};
+        // The prompt ADE sent is the turn's first `user.message` that is not an
+        // Autopilot continuation, a hidden injection (`source` set) or ephemeral.
+        const userMessageData = eventRecord.type === "user.message" ? eventData : null;
+        if (
+          userMessageData && current.pendingRewindMessageId && typeof eventRecord.id === "string"
+          && eventRecord.ephemeral !== true && userMessageData.isAutopilotContinuation !== true && !userMessageData.source
+        ) {
+          target.copilotRewindEventIds = {
+            ...copilotRewindEventIdsOf(target),
+            [current.pendingRewindMessageId]: eventRecord.id,
+          };
+          current.pendingRewindMessageId = undefined;
+          persistChatState(target);
+        }
         if (eventRecord.type === "session.model_change" && typeof eventData.autoTier === "string") {
           current.autoTier = normalizeCopilotAutoTier(eventData.autoTier);
           current.pendingAutoTier = null;
@@ -54772,7 +54876,8 @@ export function createAgentChatService(args: {
       acquired.pooled.bridge.onWorkerExit = (chatId, error) => {
         const target = managedSessions.get(chatId);
         const current = target?.runtime;
-        if (!target || current?.kind !== "copilot" || current.sdk.process.exitCode == null) return;
+        // Matched by worker, not exit code: a worker killed by a signal has none.
+        if (!target || current?.kind !== "copilot" || current.sdk !== acquired.pooled) return;
         cancelPendingInputsFrom(target, "ade");
         current.interrupted = true;
         current.turnSettled?.(true);
@@ -54782,20 +54887,39 @@ export function createAgentChatService(args: {
         const target = managedSessions.get(chatId);
         if (!target) return { approved: false, feedback: "This Copilot chat is no longer active." };
         const request = rawRequest && typeof rawRequest === "object" ? rawRequest as Record<string, unknown> : {};
-        const recommendation = typeof request.recommendedAction === "string" ? request.recommendedAction : "exit_only";
-        const safeAction = recommendation.toLowerCase().includes("autopilot") ? "exit_only" : recommendation;
+        // Never Autopilot: that would approve every later tool call too.
+        const actions = Array.isArray(request.actions)
+          ? request.actions.filter((action): action is string => typeof action === "string" && !/autopilot/i.test(action))
+          : [];
+        const recommended = typeof request.recommendedAction === "string" ? request.recommendedAction : "";
+        // `exit_only` leaves plan mode without implementing, so when Copilot's
+        // own pick was Autopilot, continue interactively instead.
+        const safeAction = actions.includes(recommended) ? recommended
+          : actions.includes("interactive") ? "interactive"
+            : actions[0] ?? "exit_only";
+        const planText = typeof request.planContent === "string" && request.planContent.trim()
+          ? request.planContent
+          : typeof request.summary === "string" ? request.summary : "Review the proposed plan before Copilot continues.";
         const response = await requestChatInput({
           chatSessionId: target.session.id, title: "Copilot is ready to leave plan mode",
-          body: typeof request.summary === "string" ? request.summary : "Review the proposed plan before Copilot continues.",
+          body: planText,
           source: "ade", kind: "plan_approval", eventDescription: "Copilot is requesting approval to leave plan mode.",
           questions: [{ id: "copilot-exit-plan", question: "Approve this plan and let Copilot continue?", options: [
             { label: "Approve and continue", value: safeAction }, { label: "Reject", value: "reject" },
           ] }],
         });
         const choice = response.answers["copilot-exit-plan"]?.[0];
-        return (response.decision === "accept" || response.decision === "accept_for_session") && choice !== "reject"
-          ? { approved: true, selectedAction: choice || safeAction }
-          : { approved: false, feedback: response.responseText || "Plan not approved in ADE." };
+        const approved = (response.decision === "accept" || response.decision === "accept_for_session") && choice !== "reject";
+        if (!approved) return { approved: false, feedback: response.responseText || "Plan not approved in ADE." };
+        // Copilot leaves plan mode with manual approvals (see the worker's
+        // applyPermissionMode), which is ADE's Ask.
+        if (target.session.copilotPermissionMode === "plan") {
+          target.session.copilotPermissionMode = "ask";
+          target.session.permissionMode = syncLegacyPermissionMode(target.session) ?? target.session.permissionMode;
+          persistChatState(target);
+          emitSessionModeMeta(target);
+        }
+        return { approved: true, selectedAction: choice && actions.includes(choice) ? choice : safeAction };
       };
       acquired.pooled.bridge.onPermissionRequest = async (chatId, _waiterId, rawRequest) => {
         const target = managedSessions.get(chatId);
@@ -54806,14 +54930,27 @@ export function createAgentChatService(args: {
         if (request.managedApprovalRequired !== true && mode === "full-auto") {
           return { kind: "approve-once", approvedInteractively: false };
         }
+        // Assisted: Copilot's safety judge attaches a recommendation and leaves
+        // the decision to ADE. Only an explicit "approve" skips the prompt;
+        // "requireApproval", "excluded" and judge errors still ask.
+        const assisted = request.assistedApproval && typeof request.assistedApproval === "object"
+          ? request.assistedApproval as Record<string, unknown>
+          : null;
+        if (request.managedApprovalRequired !== true && mode === "assisted" && assisted?.recommendation === "approve") {
+          return { kind: "approve-once", approvedInteractively: false };
+        }
         if (request.managedApprovalRequired !== true && mode === "auto-edit" && (kind === "read" || kind === "write")) {
           const requestedPath = typeof request.fileName === "string" ? request.fileName : typeof request.path === "string" ? request.path : "";
           if (requestedPath) {
-            const resolvedPath = path.resolve(target.laneWorktreePath, requestedPath);
-            const relativePath = path.relative(target.laneWorktreePath, resolvedPath);
-            if (relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath))) {
-              return { kind: "approve-once", approvedInteractively: false };
+            // Real paths, so a symlink in the lane that points outside it still asks.
+            let insideLane = false;
+            try {
+              resolvePathWithinRoot(target.laneWorktreePath, requestedPath, { allowMissing: true });
+              insideLane = true;
+            } catch {
+              // Outside the lane (or unresolvable): fall through to asking the user.
             }
+            if (insideLane) return { kind: "approve-once", approvedInteractively: false };
           }
         }
         const title = typeof request.title === "string" ? request.title : `Copilot ${kind} permission`;
@@ -54942,6 +55079,9 @@ export function createAgentChatService(args: {
     const goalCommand = rawGoalCommand?.trim().match(/^\/goal(?:\s+(.*))?$/is);
     if (goalCommand) {
       const goalArg = goalCommand[1]?.trim() ?? "";
+      // Opening the runtime settles the level first: an Assisted chat on a plan
+      // without Assisted falls back to Ask there, and Ask cannot run a goal.
+      if (goalArg && !/^clear$/i.test(goalArg)) await ensureCopilotRuntime(managed);
       const copilotMode = managed.session.copilotPermissionMode ?? "ask";
       if (!goalArg) {
         controlReply = managed.session.claudeGoal ? `Goal: ${managed.session.claudeGoal.condition}` : "No goal set.";
@@ -54986,11 +55126,14 @@ export function createAgentChatService(args: {
     setSessionActive(managed);
     const displayText = args.displayText.trim();
     const userText = args.userText?.trim() || displayText;
+    // Rewind finds a turn by this id; the turn's `user.message` maps it to
+    // Copilot's rewind point.
+    const userMessageId = randomUUID();
+    runtime.pendingRewindMessageId = userMessageId;
     emitPreparedUserMessage(managed, {
       text: userText, displayText, attachments: args.attachments,
       contextAttachments: args.contextAttachments, metadata: args.metadata, turnId,
-      // Rewind finds a turn by this id (rewindFiles maps it to Copilot's rewind point).
-      messageId: randomUUID(),
+      messageId: userMessageId,
       laneDirectiveKey: args.laneDirectiveKey, onDispatched: args.onDispatched,
     });
     emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
@@ -55020,13 +55163,20 @@ export function createAgentChatService(args: {
       let settleTurn!: (aborted: boolean) => void;
       const turnIdle = new Promise<boolean>((resolve) => { settleTurn = resolve; });
       runtime.turnSettled = settleTurn;
-      const metricsBefore = await runtime.sdk.request<{ totalPremiumRequestCost?: number }>("usage_metrics", { chatId: managed.session.id }).catch(() => null);
-      await runtime.sdk.send(managed.session.id, promptText, attachments, undefined, agentMode);
-      runtime.interrupted = runtime.interrupted || await turnIdle;
-      const metricsAfter = await runtime.sdk.request<{ totalPremiumRequestCost?: number }>("usage_metrics", { chatId: managed.session.id }).catch(() => null);
-      const premiumDelta = (metricsAfter?.totalPremiumRequestCost ?? 0) - (metricsBefore?.totalPremiumRequestCost ?? 0);
-      if (Number.isFinite(premiumDelta) && premiumDelta > runtime.eventMapperState.premiumRequestCost) {
-        runtime.eventMapperState.premiumRequestCost = premiumDelta;
+      if (managed.runtime !== runtime) {
+        // A teardown while attachments were read (a stricter level Copilot
+        // refused) already ended this turn: nothing is sent, and the turn
+        // closes as interrupted rather than failing on a closed runtime.
+        runtime.interrupted = true;
+      } else {
+        const metricsBefore = await runtime.sdk.request<{ totalPremiumRequestCost?: number }>("usage_metrics", { chatId: managed.session.id }).catch(() => null);
+        await runtime.sdk.send(managed.session.id, promptText, attachments, undefined, agentMode);
+        runtime.interrupted = runtime.interrupted || await turnIdle;
+        const metricsAfter = await runtime.sdk.request<{ totalPremiumRequestCost?: number }>("usage_metrics", { chatId: managed.session.id }).catch(() => null);
+        const premiumDelta = (metricsAfter?.totalPremiumRequestCost ?? 0) - (metricsBefore?.totalPremiumRequestCost ?? 0);
+        if (Number.isFinite(premiumDelta) && premiumDelta > runtime.eventMapperState.premiumRequestCost) {
+          runtime.eventMapperState.premiumRequestCost = premiumDelta;
+        }
       }
       runtime.busy = false;
       runtime.activeTurnId = null;
@@ -55057,6 +55207,9 @@ export function createAgentChatService(args: {
         servedModel: runtime.eventMapperState.servedModel ?? undefined,
       });
       persistChatState(managed);
+    } finally {
+      // A setting change Copilot refused mid-turn applies on reopen.
+      if (runtime.reopenAfterTurn && managed.runtime === runtime) teardownRuntime(managed, "restart");
     }
   };
 
@@ -63334,18 +63487,10 @@ export function createAgentChatService(args: {
           ? await (async () => {
               const auth = await detectAuth();
               const baseEnv = userProcessEnv();
-              const connection = await acquireCopilotSdkConnection({
+              return (await refreshCopilotModelCatalog({
                 cliPath: resolveCopilotExecutable({ auth, env: baseEnv }).path,
                 baseDirectory: copilotConfigHome({ env: baseEnv }), baseEnv, logger,
-              });
-              try {
-                const live = copilotSdkModelDescriptors(await connection.pooled.request<unknown[]>("models"));
-                try { writeCopilotModelCatalogCache(live); } catch (error) {
-                  logger.warn("agent_chat.copilot_model_cache_write_failed", { error: error instanceof Error ? error.message : String(error) });
-                }
-                return live;
-              }
-              finally { releaseCopilotSdkConnection(connection.poolKey, connection.generation); }
+              })).descriptors;
             })()
           // Without a probe, serve the account's last real list: a paid plan's
           // models (and their context tiers) must not collapse to Auto.
@@ -63361,7 +63506,8 @@ export function createAgentChatService(args: {
           contextWindow: d.contextWindow,
           ...(d.longContextWindow ? { longContextWindow: d.longContextWindow } : {}),
         }));
-      } catch {
+      } catch (error) {
+        logger.warn("agent_chat.copilot_model_catalog_failed", { error: error instanceof Error ? error.message : String(error) });
         return [];
       }
     }
@@ -65331,6 +65477,7 @@ export function createAgentChatService(args: {
             model: copilotModelId,
             error: error instanceof Error ? error.message : String(error),
           });
+          reopenCopilotForSettings(managed, "the new model", error);
         }
       }
 
@@ -65637,14 +65784,21 @@ export function createAgentChatService(args: {
     }
 
     if (copilotPermissionMode !== undefined && !permissionsPinned) {
+      const previousCopilotMode = managed.session.copilotPermissionMode ?? "ask";
       managed.session.copilotPermissionMode = normalizePersistedCopilotPermissionMode(copilotPermissionMode);
       if (managed.runtime?.kind === "copilot" && managed.session.copilotPermissionMode) {
         const requestedMode = managed.session.copilotPermissionMode;
-        const modeResult = await managed.runtime.sdk.setPermissionMode(managed.session.id, requestedMode).catch((error) => {
+        const runtime = managed.runtime;
+        const modeResult = await runtime.sdk.setPermissionMode(managed.session.id, requestedMode).catch((error) => {
           logger.warn("agent_chat.copilot_permission_mode_failed", { sessionId, error: error instanceof Error ? error.message : String(error) });
-          return { mode: "manual", error: error instanceof Error ? error.message : String(error) };
+          return null;
         });
-        if (requestedMode === "assisted" && modeResult.mode !== "assisted") {
+        if (!modeResult) {
+          // A stricter level cannot wait for the turn to end: Copilot would keep
+          // running tools under the looser one.
+          const stricter = COPILOT_PERMISSION_RANK[requestedMode] < COPILOT_PERMISSION_RANK[previousCopilotMode];
+          reopenCopilotForSettings(managed, "the new permission level", null, { now: stricter });
+        } else if (requestedMode === "assisted" && modeResult.mode !== "assisted") {
           managed.session.copilotPermissionMode = "ask";
           emitChatEvent(managed, {
             type: "system_notice",
@@ -66156,9 +66310,9 @@ export function createAgentChatService(args: {
     if (isAcpChatProvider(provider)) {
       // The agent advertises its own list through `available_commands_update`,
       // and the dialect has already filtered out the commands only its terminal
-      // UI can run — Copilot's `/diff`, `/resume`, `/login` and friends would
-      // otherwise reach the model as prose and waste a turn. Grok re-sends its
-      // list on almost every turn, so `mergeSlashCommands` dedupes by name.
+      // UI can run, which would otherwise reach the model as prose and waste a
+      // turn. Grok re-sends its list on almost every turn, so
+      // `mergeSlashCommands` dedupes by name.
       const runtimeCommands: AgentChatSlashCommand[] =
         managed?.runtime?.kind === "acp"
           ? managed.runtime.slashCommands.map((command) => ({
@@ -67702,23 +67856,24 @@ export function createAgentChatService(args: {
       const selectedIndex = messages.findIndex((message) => message.id === messageId);
       if (selectedIndex < 0) return { canRewind: false, error: "Could not find that user message in the Copilot transcript.", filesChanged: [], insertions: 0, deletions: 0, dryRun, conversationRollback: true };
       const selectedText = messages[selectedIndex]!.text.trim();
-      const sameTextOrdinal = messages.slice(0, selectedIndex + 1).filter((message) => message.text.trim() === selectedText).length - 1;
-      const listing = await runtime.sdk.request<{ fileChangeTrackingEnabled: boolean; unavailableReason?: string; points: Array<{ eventId: string; userMessage: string; canRestoreFiles: boolean; linesAdded: number; linesRemoved: number }> }>("rewind", { chatId: sessionId, action: "list" });
-      // Copilot records the prompt ADE sent, which can carry ADE's context
-      // prefix ahead of what the user typed.
-      const candidates = listing.points.filter((point) => {
-        const recorded = point.userMessage.trim();
-        return recorded === selectedText || recorded.endsWith(selectedText);
-      });
-      const point = candidates[sameTextOrdinal];
+      const listing = await runtime.sdk.request<CopilotRewindListing>("rewind", { chatId: sessionId, action: "list" });
+      const recordedEventId = copilotRewindEventIdsOf(managed)?.[messageId];
+      // Chats from before the id map match on text. Copilot records the prompt
+      // ADE sent, which can carry ADE's context prefix ahead of what the user
+      // typed, so both sides use the same suffix rule and count the same way.
+      const endsWithSelected = (value: string) => value.trim().endsWith(selectedText);
+      const sameTextOrdinal = messages.slice(0, selectedIndex + 1).filter((message) => endsWithSelected(message.text)).length - 1;
+      const point = recordedEventId
+        ? listing.points.find((entry) => entry.eventId === recordedEventId)
+        : listing.points.filter((entry) => !entry.isAutopilotContinuation && endsWithSelected(entry.userMessage))[sameTextOrdinal];
       if (!point) return { canRewind: false, error: "Copilot has no rewind point matching that user message. The SDK exposes only its captured root user turns.", filesChanged: [], insertions: 0, deletions: 0, dryRun, conversationRollback: true };
       if (!listing.fileChangeTrackingEnabled || !point.canRestoreFiles) {
         return { canRewind: false, error: listing.unavailableReason ?? "Copilot did not capture file changes for this turn.", filesChanged: [], insertions: point.linesAdded, deletions: point.linesRemoved, dryRun, conversationRollback: true };
       }
-      const preview = await runtime.sdk.request<{ available: boolean; reason?: string; files: Array<{ path: string; linesAdded: number; linesRemoved: number }> }>("rewind", { chatId: sessionId, action: "preview", eventId: point.eventId });
+      const preview = await runtime.sdk.request<CopilotRewindPreview>("rewind", { chatId: sessionId, action: "preview", eventId: point.eventId });
       if (!preview.available) return { canRewind: false, error: preview.reason ?? "Copilot cannot restore files from this rewind point.", filesChanged: [], insertions: point.linesAdded, deletions: point.linesRemoved, dryRun, conversationRollback: true };
       if (dryRun) return { canRewind: true, filesChanged: preview.files.map((file) => file.path), insertions: preview.files.reduce((sum, file) => sum + file.linesAdded, 0), deletions: preview.files.reduce((sum, file) => sum + file.linesRemoved, 0), dryRun, conversationRollback: true };
-      const result = await runtime.sdk.request<{ outcome: string; restoredFiles: string[]; skippedFiles: Array<{ path: string; reason: string }>; error?: string }>("rewind", { chatId: sessionId, action: "apply", eventId: point.eventId });
+      const result = await runtime.sdk.request<CopilotRewindResult>("rewind", { chatId: sessionId, action: "apply", eventId: point.eventId });
       const canRewind = result.outcome === "success" || result.outcome === "checkpoint-cleanup-failed" || result.outcome === "snapshot-prune-failed";
       if (!canRewind) return { canRewind: false, error: result.error ?? `Copilot rewind ended with ${result.outcome}.`, filesChanged: result.restoredFiles ?? [], insertions: 0, deletions: 0, dryRun, conversationRollback: true };
       emitChatEvent(managed, { type: "system_notice", noticeKind: "file_persist", message: result.restoredFiles.length ? `Copilot context rolled back and ${result.restoredFiles.length} file${result.restoredFiles.length === 1 ? "" : "s"} restored.` : "Copilot context rolled back.", detail: result.restoredFiles.join("\n") || undefined });

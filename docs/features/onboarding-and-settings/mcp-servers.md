@@ -211,7 +211,7 @@ Decided at launch by `resolveMcpRegistryForLaunch`
 | Claude, Cursor, Droid, OpenCode | Every server that is on. |
 | Codex | Every server that is on, except SSE ones. Codex has no SSE client. |
 | Pi | None. The Pi SDK has no MCP configuration. |
-| Copilot | ADE's own servers and the registry's, through the SDK's `mcpServers`. Servers the user configured in their Copilot config still run in chats. |
+| Copilot | ADE's own servers and the registry's, through the SDK's `mcpServers`. Servers the user configured in their Copilot config still run in interactive chats. ADE hands a registry sign-in to Copilot, so Copilot does not open a browser for it. See [Copilot SDK provider › MCP servers](../chat/copilot-sdk-provider.md#mcp-servers). |
 | Grok, Kimi, Qwen, Devin | None yet. |
 | Personal chats, side jobs, SDK chats | None. The light session profile and strict MCP chats decide their own servers. |
 

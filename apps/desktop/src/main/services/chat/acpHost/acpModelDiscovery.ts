@@ -235,8 +235,8 @@ function recordProbedCatalog(provider: AcpModelProviderGroup, descriptors: Model
 /** Spawn one ACP agent, open a session, read its model list, close. No prompt. */
 async function probeAcpModels(provider: Exclude<AcpModelProviderGroup, "devin">, env: NodeJS.ProcessEnv): Promise<ModelDescriptor[]> {
   const dialect = acpDialectFor(provider);
-  // A throwaway cwd: agents that keep a session record per cwd (Copilot's
-  // session-state) file the probe away from every project.
+  // A throwaway cwd: agents that keep a session record per cwd file the probe
+  // away from every project.
   const cwd = path.join(os.tmpdir(), "ade-acp-model-probe");
   fs.mkdirSync(cwd, { recursive: true });
   const executable = resolveAcpExecutable(provider, { env });

@@ -120,7 +120,7 @@ import { loadCursorSdk } from "./cursorSdkLoader";
 import { resolveCopilotExecutable } from "./acpExecutables";
 import { copilotConfigHome } from "../shared/providerConfigHomes";
 import { acquireCopilotSdkConnection, releaseCopilotSdkConnection } from "../chat/copilotSdkPool";
-import { copilotSdkModelDescriptors, COPILOT_MODELS_TTL_MS, readCopilotModelCatalogCache, writeCopilotModelCatalogCache, type CopilotModelCatalogCache } from "../chat/copilotModelsDiscovery";
+import { COPILOT_MODELS_TTL_MS, readCopilotModelCatalogCache, refreshCopilotModelCatalog, type CopilotModelCatalogCache } from "../chat/copilotModelsDiscovery";
 import { resolveAdeCacheFile } from "../shared/adeCacheFile";
 import { writeTextAtomic } from "../shared/utils";
 import {
@@ -963,6 +963,9 @@ function extractDiscoveredLocalModels(connections: AiRuntimeConnections): Discov
 const AI_STATUS_SLOW_PHASE_MS = 120;
 let copilotModelsCache: CopilotModelCatalogCache | null = readCopilotModelCatalogCache();
 let copilotModelsRequest: Promise<ModelDescriptor[]> | null = null;
+/** When the last model refresh failed. A signed-out or outdated Copilot would otherwise start a runtime on every status poll. */
+let copilotModelsFailedAt = 0;
+const COPILOT_MODELS_FAILURE_BACKOFF_MS = 15 * 60_000;
 
 type AiStatusPhaseTiming = {
   name: string;
@@ -1145,29 +1148,19 @@ export function createAiIntegrationService(args: {
     if (copilotExecutable.source !== "fallback-command") {
       const cached = copilotModelsCache;
       if (!cached || Date.now() - cached.savedAt >= COPILOT_MODELS_TTL_MS) {
-        if (!copilotModelsRequest) {
+        if (!copilotModelsRequest && Date.now() - copilotModelsFailedAt >= COPILOT_MODELS_FAILURE_BACKOFF_MS) {
           copilotModelsRequest = (async () => {
             const baseEnv = { ...process.env };
-            const connection = await acquireCopilotSdkConnection({
+            copilotModelsCache = await refreshCopilotModelCatalog({
               cliPath: copilotExecutable.path,
               baseDirectory: copilotConfigHome({ env: baseEnv }),
               baseEnv,
               logger,
             });
-            try {
-              const descriptors = copilotSdkModelDescriptors(await connection.pooled.request<unknown[]>("models"));
-              try {
-                copilotModelsCache = writeCopilotModelCatalogCache(descriptors);
-              } catch (error) {
-                copilotModelsCache = { savedAt: Date.now(), descriptors };
-                logger.warn("ai.copilot_sdk_model_cache_write_failed", { error: error instanceof Error ? error.message : String(error) });
-              }
-              return descriptors;
-            } finally {
-              releaseCopilotSdkConnection(connection.poolKey, connection.generation);
-            }
+            return copilotModelsCache.descriptors;
           })().finally(() => { copilotModelsRequest = null; });
           void copilotModelsRequest.catch((error) => {
+            copilotModelsFailedAt = Date.now();
             logger.warn("ai.copilot_sdk_model_discovery_failed", { error: error instanceof Error ? error.message : String(error) });
           });
         }

@@ -27,7 +27,7 @@
  * `fixtures/devin.initialize.json` holds the captured handshake.
  *
  * 1. `session/cancel` as a REQUEST answers -32601. The notification form is
- *    the only one accepted, exactly like Copilot, Grok, Qwen, and Kimi.
+ *    the only one accepted, exactly like Grok, Qwen, and Kimi.
  * 2. There is no `session/close`: the method answers -32601, and the handshake
  *    advertises only `list`, `delete`, and `additionalDirectories` under
  *    `sessionCapabilities`. A pooled process is released, not evicted.

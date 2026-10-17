@@ -620,6 +620,7 @@ function rejectUnsupportedAcpTaskImages(args: ProviderTaskRunnerArgs, providerLa
 }
 
 async function runCopilotTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskRunnerResult> {
+  rejectUnsupportedAcpTaskImages(args, "Copilot");
   const prompt = appendStructuredOutputInstruction(args.prompt, args.jsonSchema);
   const combinedPrompt = args.system?.trim()
     ? `${args.system.trim()}\n\n${prompt}`

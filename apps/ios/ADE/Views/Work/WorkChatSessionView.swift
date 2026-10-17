@@ -2332,12 +2332,12 @@ struct WorkChatSessionView: View {
             currentProvider: chatSummaryContext.provider,
             currentReasoningEffort: chatSummaryContext.reasoningEffort,
             currentCodexFastMode: chatSummaryContext.effectiveFastMode,
-            currentCopilotContextTier: chatSummaryContext.copilotContextTier,
-            currentCopilotAutoTier: chatSummaryContext.copilotAutoTier,
-            copilotAutoTierPending: chatSummaryContext.copilotAutoTierPending,
             lanes: lanes,
             commandScope: isPersonalChat ? .personal : .project,
             isBusy: modelUpdateInFlight,
+            currentCopilotContextTier: chatSummaryContext.copilotContextTier,
+            currentCopilotAutoTier: chatSummaryContext.copilotAutoTier,
+            copilotAutoTierPending: chatSummaryContext.copilotAutoTierPending,
             onSelectCopilotTiers: { context, auto in pickedCopilotTiers = (context, auto) },
             onSelect: { option, pickedReasoning, _, pickedFastMode in
               Task { @MainActor in

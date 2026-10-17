@@ -1,11 +1,9 @@
 import type { AgentChatContextUsage, AgentChatEvent } from "../../../shared/types";
+import { asRecord as record, finiteNumberOrNull as number } from "../shared/utils";
 
-type RecordValue = Record<string, unknown>;
-function record(value: unknown): RecordValue | null {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as RecordValue : null;
+function text(value: unknown): string | null {
+  return typeof value === "string" && value.length ? value : null;
 }
-function text(value: unknown): string | null { return typeof value === "string" && value.length ? value : null; }
-function number(value: unknown): number | null { return typeof value === "number" && Number.isFinite(value) ? value : null; }
 
 export type CopilotSdkEventMapperState = {
   toolNames: Map<string, { name: string; args: unknown; mcp?: { server: string; tool: string } }>;
@@ -26,7 +24,33 @@ export type CopilotSdkEventMapperState = {
   mismatchModels: Set<string>;
 };
 export function createCopilotSdkEventMapperState(): CopilotSdkEventMapperState {
-  return { toolNames: new Map(), inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, reasoningTokens: 0, contextTokens: null, contextWindow: null, servedModel: null, costUsd: null, premiumRequestCost: 0, streamedMessages: new Set(), compactionTokens: null, requestedModel: null, askedAuto: false, mismatchModels: new Set() };
+  return {
+    toolNames: new Map(),
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    reasoningTokens: 0,
+    contextTokens: null,
+    contextWindow: null,
+    servedModel: null,
+    costUsd: null,
+    premiumRequestCost: 0,
+    streamedMessages: new Set(),
+    compactionTokens: null,
+    requestedModel: null,
+    askedAuto: false,
+    mismatchModels: new Set(),
+  };
+}
+
+type CopilotErrorCategory = "auth" | "rate_limit" | "network" | "unknown";
+
+function classifyCopilotError(message: string): CopilotErrorCategory {
+  if (/auth|login|token/i.test(message)) return "auth";
+  if (/limit|quota|premium/i.test(message)) return "rate_limit";
+  if (/network|connect/i.test(message)) return "network";
+  return "unknown";
 }
 
 /** One notice per served model that is not the one the chat picked (never for Auto). */
@@ -140,7 +164,7 @@ export function mapCopilotSdkEvent(event: unknown, args: { turnId: string; state
     case "session.error":
     case "model.call_failure": {
       const message = text(data.message) ?? text(data.error) ?? text(data.reason) ?? "Copilot reported a runtime error.";
-      return [{ type: "error", message, errorInfo: { category: /auth|login|token/i.test(message) ? "auth" : /limit|quota|premium/i.test(message) ? "rate_limit" : /network|connect/i.test(message) ? "network" : "unknown", provider: "copilot", model: state.servedModel ?? undefined }, turnId }];
+      return [{ type: "error", message, errorInfo: { category: classifyCopilotError(message), provider: "copilot", model: state.servedModel ?? undefined }, turnId }];
     }
     case "session.model_change":
     case "session.auto_mode_resolved": {

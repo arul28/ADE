@@ -5456,6 +5456,8 @@ export function AgentChatPane({
     }
     return sawGoalEvent ? goalFromEvents : (selectedSession?.codexGoal ?? null);
   }, [selectedEventsForDisplay, selectedSession?.codexGoal]);
+  // Claude's goal state also carries Copilot's /goal (Autopilot).
+  const sessionHasGoals = selectedSession?.provider === "claude" || selectedSession?.provider === "copilot";
   // Claude goal is owned by the CLI's /goal loop — read-only here. Mirror the
   // Codex derivation: latest claude_goal_updated/cleared wins, else the snapshot.
   const selectedClaudeGoal = useMemo<ClaudeActiveGoal | null>(() => {
@@ -15672,18 +15674,18 @@ export function AgentChatPane({
       selectedTaskId={subagentView?.taskId ?? null}
       sessionModelLabel={selectedModelDesc?.displayName ?? selectedSession?.model ?? null}
       goal={selectedSession?.provider === "codex" ? selectedCodexGoal : null}
-      claudeGoal={selectedSession?.provider === "claude" || selectedSession?.provider === "copilot" ? selectedClaudeGoal : null}
+      claudeGoal={sessionHasGoals ? selectedClaudeGoal : null}
       onEditClaudeGoal={
-        (selectedSession?.provider === "claude" || selectedSession?.provider === "copilot") && selectedSessionId
+        sessionHasGoals && selectedSessionId
           ? (condition) => { void sendClaudeGoalCommand(selectedSessionId, condition); }
           : undefined
       }
       onClearClaudeGoal={
-        (selectedSession?.provider === "claude" || selectedSession?.provider === "copilot") && selectedSessionId
+        sessionHasGoals && selectedSessionId
           ? () => { void sendClaudeGoalCommand(selectedSessionId, "clear"); }
           : undefined
       }
-      claudeGoalLocked={(selectedSession?.provider === "claude" || selectedSession?.provider === "copilot") && turnActive}
+      claudeGoalLocked={sessionHasGoals && turnActive}
       goalPending={selectedCodexGoalPending}
       onEditGoal={
         selectedSession?.provider === "codex" && selectedSessionId

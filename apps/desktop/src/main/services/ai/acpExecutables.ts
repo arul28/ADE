@@ -7,15 +7,18 @@
  *
  * Two provider-specific notes:
  *
- * - `qwen` and `copilot` are npm bins, so on Windows they resolve to a `.cmd`
- *   shim. `resolveCliSpawnInvocation` in the ACP connection rewrites that into
- *   the form Node will spawn, so a shim is a usable answer here.
+ * - `qwen` is an npm bin, so on Windows it resolves to a `.cmd` shim.
+ *   `resolveCliSpawnInvocation` in the ACP connection rewrites that into the
+ *   form Node will spawn, so a shim is a usable answer here. `copilot` is an
+ *   npm bin too, but the Copilot SDK spawns it with no shell, so its resolver
+ *   follows the shim to the native `copilot.exe` (see below).
  * - `kimi` is a native binary and `grok` is a Rust binary, so
  *   `preferNativeExecutablePath` picks the real executable when a shim sits
  *   beside it.
  */
 
 import fs from "node:fs";
+import path from "node:path";
 import type { DetectedAuth } from "./authDetector";
 import { resolveExecutableCandidatesFromKnownLocations } from "./cliExecutableResolver";
 import { preferNativeExecutablePath } from "../shared/processExecution";
@@ -110,8 +113,40 @@ export function resolveGrokExecutable(args?: {
 export function resolveCopilotExecutable(args?: {
   auth?: DetectedAuth[];
   env?: NodeJS.ProcessEnv;
+  platform?: NodeJS.Platform;
+  arch?: string;
 }): AcpExecutableResolution {
-  return resolveAcpExecutable("copilot", args);
+  const resolved = resolveAcpExecutable("copilot", args);
+  const native = copilotNativeExecutableForShim(resolved.path, args?.platform ?? process.platform, args?.arch ?? process.arch);
+  return native ? { ...resolved, path: native } : resolved;
+}
+
+/**
+ * The real `copilot.exe` behind an npm shim on Windows.
+ *
+ * `npm i -g @github/copilot` writes `copilot.cmd`/`copilot.ps1` beside a
+ * `node_modules` tree whose platform package (`@github/copilot-win32-<arch>`)
+ * carries a native `copilot.exe`. The Copilot SDK spawns the CLI path with no
+ * shell, and Node refuses to spawn a `.cmd` that way (CVE-2024-27980), so chats
+ * need the `.exe`. npm may nest the platform package or hoist it.
+ */
+function copilotNativeExecutableForShim(shimPath: string, platform: NodeJS.Platform, arch: string): string | null {
+  if (platform !== "win32") return null;
+  const ext = path.win32.extname(shimPath).toLowerCase();
+  if (ext !== ".cmd" && ext !== ".bat" && ext !== ".ps1" && ext !== "") return null;
+  const shimDir = path.win32.dirname(shimPath);
+  const platformPackage = path.win32.join("@github", `copilot-win32-${arch}`, "copilot.exe");
+  const candidates = [
+    path.win32.join(shimDir, "node_modules", "@github", "copilot", "node_modules", platformPackage),
+    path.win32.join(shimDir, "node_modules", platformPackage),
+  ];
+  return candidates.find((candidate) => {
+    try {
+      return fs.existsSync(candidate);
+    } catch {
+      return false;
+    }
+  }) ?? null;
 }
 
 /**

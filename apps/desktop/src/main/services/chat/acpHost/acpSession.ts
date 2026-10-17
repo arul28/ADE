@@ -15,8 +15,8 @@
  * ## Cancel accounting
  *
  * ADE records that it cancelled and reports the turn as interrupted, whatever
- * `stopReason` the agent returns. Copilot has a known bug that reports a
- * cancelled turn as `end_turn`, and Grok only accepts cancel as a notification,
+ * `stopReason` the agent returns. Some agents report a cancelled turn as
+ * `end_turn`, and Grok only accepts cancel as a notification,
  * so there is no reply to read. The client-side flag is the only honest source.
  *
  * The verdict is taken once, when the `session/prompt` result arrives. The
@@ -233,8 +233,8 @@ export type AcpSession = {
   setConfigOption(args: { configId: string; value: string | boolean }): Promise<AcpSessionConfigOption[]>;
   /**
    * Record the model that ADE put on the session, for an agent that accepted
-   * the change without reporting its option set (Copilot's `session/set_model`,
-   * Kimi's `session/set_config_option`). A turn whose provider names no served
+   * the change without reporting its option set (Kimi's `session/set_config_option`).
+   * A turn whose provider names no served
    * model then falls back to this model, not to the one the entry call
    * reported.
    */
@@ -609,7 +609,7 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
           );
           turnPhase = "answered";
           // The verdict, taken once, the moment the agent answered. Client-side
-          // accounting: Copilot can report `end_turn` for a turn ADE cancelled,
+          // accounting: an agent can report `end_turn` for a turn ADE cancelled,
           // so the agent's word is not the deciding one. A Stop pressed during
           // the telemetry reads below found a finished turn and changes nothing.
           interrupted = cancelRequested || response?.stopReason === "cancelled" || isInterrupted?.() === true;
@@ -692,7 +692,7 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
       }
       const call = behavior({ sessionId, configId, value });
       const response = await connection.request<{ configOptions?: unknown } | null>(call.method, call.params);
-      // Grok, Qwen, Copilot, and Kimi answer with the whole option set as it
+      // Grok, Qwen, and Kimi answer with the whole option set as it
       // stands after the change.
       const options = normalizeAcpConfigOptions(response?.configOptions ?? []);
       noteAgentConfigOptions(options);

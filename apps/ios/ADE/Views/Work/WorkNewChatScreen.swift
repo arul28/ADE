@@ -1039,12 +1039,6 @@ struct WorkNewChatScreen: View {
         currentProvider: provider,
         currentReasoningEffort: reasoningEffort,
         currentCodexFastMode: codexFastMode,
-        currentCopilotContextTier: copilotContextTier,
-        currentCopilotAutoTier: copilotAutoTier,
-        onSelectCopilotTiers: { context, auto in
-          copilotContextTier = context
-          copilotAutoTier = auto
-        },
         cursorAvailabilityMode: sessionMode == .cli ? .cli : .chat,
         lanes: visibleLanes,
         // Custom harnesses are the connected host's own; another machine's list
@@ -1063,6 +1057,12 @@ struct WorkNewChatScreen: View {
           machineModelHint = nil
         },
         selectedPresetId: selectedPreset?.id,
+        currentCopilotContextTier: copilotContextTier,
+        currentCopilotAutoTier: copilotAutoTier,
+        onSelectCopilotTiers: { context, auto in
+          copilotContextTier = context
+          copilotAutoTier = auto
+        },
         onSelect: { option, pickedReasoning, runtimeProvider, pickedFastMode in
           selectedPreset = nil
           selectedModelOption = option
