@@ -175,8 +175,13 @@ export function summarizeNativeControls(
     };
   }
   if (provider === "copilot") {
+    const copilotMode = controls.copilotPermissionMode ?? "ask";
     return {
-      copilotPermissionMode: controls.copilotPermissionMode ?? "ask",
+      copilotPermissionMode: copilotMode,
+      permissionMode: copilotMode === "plan" ? "plan"
+        : copilotMode === "full-auto" ? "full-auto"
+          : copilotMode === "auto-edit" || copilotMode === "assisted" ? "edit"
+            : "default",
       copilotContextTier: controls.copilotContextTier ?? "default",
       copilotAutoTier: controls.copilotAutoTier ?? null,
     };
@@ -279,6 +284,12 @@ export function applyUnifiedPermissionToNativeControls(
   if (provider === "droid") {
     const droidPermissionMode = droidPermissionModeFromLegacyPermissionMode(mode) ?? "auto-high";
     return { ...next, droidPermissionMode };
+  }
+
+  if (provider === "copilot") {
+    const copilotPermissionMode: NonNullable<NativeControlState["copilotPermissionMode"]> =
+      mode === "plan" ? "plan" : mode === "edit" ? "auto-edit" : mode === "full-auto" ? "full-auto" : "ask";
+    return { ...next, copilotPermissionMode };
   }
 
   if (provider === "muse") {

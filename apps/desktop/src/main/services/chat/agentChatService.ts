@@ -45581,7 +45581,13 @@ export function createAgentChatService(args: {
       }
       if (effectiveProvider === "copilot") {
         return {
-          copilotPermissionMode: requestedCopilotPermissionMode ?? "ask",
+          // A launch that names only the generic level (the composer's
+          // pre-chat picker) keeps it rather than silently dropping to Ask.
+          copilotPermissionMode: requestedCopilotPermissionMode
+            ?? (effectivePermissionMode === "plan" ? "plan"
+              : effectivePermissionMode === "edit" ? "auto-edit"
+                : effectivePermissionMode === "full-auto" ? "full-auto"
+                  : "ask"),
         };
       }
       if (effectiveProvider === "pi") {
@@ -54764,8 +54770,8 @@ export function createAgentChatService(args: {
           ] }],
         });
         const choice = response.answers["copilot-exit-plan"]?.[0];
-        return response.decision === "accept" && choice && choice !== "reject"
-          ? { approved: true, selectedAction: choice }
+        return (response.decision === "accept" || response.decision === "accept_for_session") && choice !== "reject"
+          ? { approved: true, selectedAction: choice || safeAction }
           : { approved: false, feedback: response.responseText || "Plan not approved in ADE." };
       };
       acquired.pooled.bridge.onPermissionRequest = async (chatId, _waiterId, rawRequest) => {
@@ -54815,8 +54821,13 @@ export function createAgentChatService(args: {
           }],
         });
         const choice = response.answers["copilot-permission"]?.[0];
-        if (response.decision === "accept" && choice === "approve-for-session") return { kind: "approve-for-session" };
-        if (response.decision === "accept" && choice === "approve-once") return { kind: "approve-once", approvedInteractively: true };
+        // The approval card answers with a decision (ACCEPT / ACCEPT ALL) and no
+        // option; the question form answers with an option. Both must approve.
+        if (choice === "reject" || response.decision === "decline" || response.decision === "cancel") {
+          return { kind: "reject", feedback: response.responseText || "Denied in ADE." };
+        }
+        if (response.decision === "accept_for_session" || choice === "approve-for-session") return { kind: "approve-for-session" };
+        if (response.decision === "accept") return { kind: "approve-once", approvedInteractively: true };
         return { kind: "reject", feedback: response.responseText || "Denied in ADE." };
       };
       acquired.pooled.bridge.onUserInputRequest = async (chatId, _waiterId, rawRequest) => {
