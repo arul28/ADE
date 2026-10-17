@@ -2365,6 +2365,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     ctoStateService: args.ctoStateService,
     ctoMemoryService: args.ctoMemoryService,
     workToolsStateService: args.workToolsStateService,
+    computerUseArtifactBrokerService: args.computerUseArtifactBrokerService,
     macDesktopService,
     macDesktopSyncStream,
     appControlSyncStream: args.appControlSyncStream ?? null,

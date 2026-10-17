@@ -40,6 +40,7 @@ import { chatSessionFromRemoteSummary } from "./infra/chatSessionShape";
 import { createBackoffPoller } from "./infra/backoffPoller";
 import { isPageHidden, observePageVisibility } from "./infra/pageVisibility";
 import { appleEndpointReader, createAppleDeviceNamespace } from "./appleDevice";
+import { createComputerUseNamespace } from "./computerUse";
 import { createGithubNamespace, githubDisconnectedStatus } from "./githubStub";
 import { createProviderAccountsNamespace } from "./providerAccounts";
 import type { AdapterInfra, AdeNamespace, MiscCall } from "./types";
@@ -931,7 +932,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     localhost: { probePort: async () => false } as AdeNamespace<"localhost">,
     tests: createTestStubs() as AdeNamespace<"tests">,
     feedback: createFeedbackStubs() as AdeNamespace<"feedback">,
-    computerUse: createNativeUnavailableNamespace() as AdeNamespace<"computerUse">,
+    computerUse: createComputerUseNamespace(infra),
     iosSimulator: createAppleDeviceNamespace(call, appleEndpointReader(client)),
     builtInBrowser: {
       ...createNativeUnavailableNamespace(),
@@ -1259,7 +1260,6 @@ export function unsupportedBuiltInBrowserStatus(): BuiltInBrowserStatus & {
 function createNativeUnavailableNamespace(): Record<string, unknown> {
   return {
     getStatus: async () => ({ supported: false, available: false, state: "unsupported" }),
-    listArtifacts: async () => [],
     listDevices: async () => [],
     onEvent: () => () => {},
   };

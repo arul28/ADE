@@ -47,23 +47,33 @@ export function ProofCitationProvider({
 }
 
 /**
+ * What one lookup by id answered. `ok: false` means the machine could not say
+ * (offline, too old, refused): that is not the same as the machine saying the
+ * proof is not there, and the citation must not claim it is.
+ */
+type CitedArtifactLookup =
+  | { ok: true; artifact: ComputerUseArtifactView | null }
+  | { ok: false };
+
+/**
  * Records fetched by id, per machine. A cited artifact the chat's list does not
  * hold (another chat's proof in the same lane, or a list that has not caught
- * up) is read once through the chat's runtime and kept. A miss is not kept, so
- * the next render after the list changes asks again.
+ * up) is read once through the chat's runtime and kept. A miss or a failed read
+ * is not kept, so the next render after the list changes asks again.
  */
-const fetchedArtifacts = new Map<string, Promise<ComputerUseArtifactView | null>>();
+const fetchedArtifacts = new Map<string, Promise<CitedArtifactLookup>>();
 
 type CitedArtifactState =
   | { status: "loading" }
   | { status: "missing" }
+  | { status: "unreadable" }
   | { status: "ready"; artifact: ComputerUseArtifactView };
 
 function useCitedProofArtifact(artifactId: string): CitedArtifactState {
   const { artifactsById } = useContext(ProofCitationContext);
   const scope = useChatRuntimeScope();
   const known = artifactsById.get(artifactId) ?? null;
-  const [fetched, setFetched] = useState<{ key: string; artifact: ComputerUseArtifactView | null } | null>(null);
+  const [fetched, setFetched] = useState<{ key: string; lookup: CitedArtifactLookup } | null>(null);
   const machineKey = `${JSON.stringify(scope.pin ?? null)}:${scope.rootPath ?? ""}`;
   const key = `${machineKey}|${artifactId}`;
 
@@ -74,13 +84,13 @@ function useCitedProofArtifact(artifactId: string): CitedArtifactState {
     if (!pending) {
       pending = window.ade.computerUse
         .listArtifacts({ artifactId, limit: 1 }, scope.pin)
-        .then((rows) => rows.find((row) => row.id === artifactId) ?? null)
-        .catch(() => null);
+        .then((rows): CitedArtifactLookup => ({ ok: true, artifact: rows.find((row) => row.id === artifactId) ?? null }))
+        .catch((): CitedArtifactLookup => ({ ok: false }));
       fetchedArtifacts.set(key, pending);
     }
-    void pending.then((artifact) => {
-      if (!artifact) fetchedArtifacts.delete(key);
-      if (!cancelled) setFetched({ key, artifact });
+    void pending.then((lookup) => {
+      if (!lookup.ok || !lookup.artifact) fetchedArtifacts.delete(key);
+      if (!cancelled) setFetched({ key, lookup });
     });
     return () => {
       cancelled = true;
@@ -89,7 +99,8 @@ function useCitedProofArtifact(artifactId: string): CitedArtifactState {
 
   if (known) return { status: "ready", artifact: known };
   if (!fetched || fetched.key !== key) return { status: "loading" };
-  return fetched.artifact ? { status: "ready", artifact: fetched.artifact } : { status: "missing" };
+  if (!fetched.lookup.ok) return { status: "unreadable" };
+  return fetched.lookup.artifact ? { status: "ready", artifact: fetched.lookup.artifact } : { status: "missing" };
 }
 
 function CitationPlaceholder({ children, tone = "muted" }: { children: React.ReactNode; tone?: "muted" | "warning" }) {
@@ -224,6 +235,7 @@ export function CitedProofSlot({ artifactId, caption, compact, fallback }: {
   fallback?: React.ReactNode;
 }) {
   const state = useCitedProofArtifact(artifactId);
+  const scope = useChatRuntimeScope();
   if (fallback != null && state.status !== "ready") return <>{fallback}</>;
   if (state.status === "loading") {
     return (
@@ -238,6 +250,14 @@ export function CitedProofSlot({ artifactId, caption, compact, fallback }: {
       <CitationPlaceholder tone="warning">
         <WarningCircle size={14} aria-hidden />
         {`ADE has no proof with the id ${artifactId}.${caption?.trim() ? ` It was cited as "${caption.trim()}".` : ""}`}
+      </CitationPlaceholder>
+    );
+  }
+  if (state.status === "unreadable") {
+    return (
+      <CitationPlaceholder tone="warning">
+        <WarningCircle size={14} aria-hidden />
+        {`Couldn't load this proof from ${scope.isRemote ? scope.machineName : "this computer"}.${caption?.trim() ? ` It was cited as "${caption.trim()}".` : ""}`}
       </CitationPlaceholder>
     );
   }
