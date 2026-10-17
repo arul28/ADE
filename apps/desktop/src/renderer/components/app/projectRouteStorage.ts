@@ -1,7 +1,11 @@
+import { isMachineScopedSettingsRoute } from "../settings/settingsManifest";
+
 /// Per-surface route memory: each open project tab remembers its last route
 /// under `ade:project-route:<bindingKey>` so tab switches replay where the
 /// user left off. Shared by ProjectTabHost (read/write on tab swaps) and
 /// TopBar (read when routing back to a project from the Chats machine tab).
+/// Machine-scoped settings pages (This computer) are never remembered: they
+/// describe one computer, not the project, so they are not a start page.
 const PROJECT_ROUTE_STORAGE_PREFIX = "ade:project-route:";
 const STORED_PROJECT_ROUTE_ROOTS = [
   "/lanes",
@@ -26,6 +30,11 @@ export function readStoredProjectRoute(bindingKey: string): string | null {
       writeStoredProjectRoute(bindingKey, "/work");
       return "/work";
     }
+    // Stored before machine pages were excluded: restore the default instead.
+    if (isMachineScopedSettingsRoute(value)) {
+      writeStoredProjectRoute(bindingKey, "/work");
+      return "/work";
+    }
     const pathname = value.split(/[?#]/, 1)[0] ?? "";
     const isSupported = STORED_PROJECT_ROUTE_ROOTS.some(
       (root) => pathname === root || pathname.startsWith(`${root}/`),
@@ -47,6 +56,8 @@ export function readStoredProjectSettingsRoute(bindingKey: string): string | nul
 }
 
 export function writeStoredProjectRoute(bindingKey: string, route: string): void {
+  // A machine page is not the project's start page, so the project keeps the one it had.
+  if (isMachineScopedSettingsRoute(route)) return;
   try {
     window.localStorage.setItem(projectRouteStorageKey(bindingKey), route);
   } catch {

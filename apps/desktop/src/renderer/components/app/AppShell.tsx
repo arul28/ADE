@@ -10,6 +10,8 @@ import { isCssZoomedBrowserSurface } from "../../lib/webClientMode";
 import { TopBar } from "./TopBar";
 import { memoWithLatestHandlers } from "../../lib/stableIdentity";
 import { useProjectSidebarShortcuts } from "./projectSidebar/useProjectSidebarShortcuts";
+import { isSettingsRoute } from "./projectSidebar/settingsReturnRoute";
+import { isMachineScopedSettingsRoute } from "../settings/settingsManifest";
 import { useProjectTabShortcuts } from "./useProjectTabShortcuts";
 import { ProjectTransitionErrorAlert } from "./ProjectTransitionErrorAlert";
 import { TabBackground } from "../ui/TabBackground";
@@ -226,6 +228,7 @@ function serializeLocationRoute(location: ReturnType<typeof useLocation>): strin
   if (!allowedRoots.some((root) => pathname === root || pathname.startsWith(`${root}/`))) {
     return null;
   }
+  if (isMachineScopedSettingsRoute(route)) return null;
   return route;
 }
 
@@ -998,6 +1001,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     projectRoot: currentProjectRoot,
     keybindings,
     navigate,
+    sidebarLocked: isSettingsRoute(location.pathname),
   });
 
   /** `⌃Tab` with nothing to cycle: open the palette on its project picker. */
@@ -1089,6 +1093,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           musicRouteActive={isMusicRoute}
           accountRouteActive={isAccountRoute}
           settingsRouteActive={location.pathname === "/settings"}
+          projectSidebarLocked={isSettingsRoute(location.pathname)}
           onNavigate={(path, opts) => navigate(path, opts)}
           onOpenActivityPane={() => setActivityPaneOpen(true)}
         />

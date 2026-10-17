@@ -2052,6 +2052,21 @@ the new-project screen.
 `DEFAULT_SETTINGS_TAB` names where Settings opens. It used to be `tabs[0]`, so
 reordering the sidebar silently moved the landing page.
 
+### Settings holds the project sidebar open
+
+On any Settings page the project sidebar is shown: its toggle is disabled (the
+tooltip says why) and Mod+B does nothing. The saved show/hide preference is not
+changed, so leaving Settings restores the sidebar the way you had it. While the
+sidebar is collapsed, its toggle is drawn in the accent colour with a dot.
+
+A Machines page (General, Appearance, Apple devices, Providers, Lanes,
+Integrations, Diagnostics, Archive) describes one computer, so a project never
+remembers one as its start page. The project returns to its last page that is
+not a Machines page, and a stored Machines page from before this rule restores
+to Work. The cog reopens the project's last Account or Project section, or
+Settings' default page. `isMachineScopedSettingsRoute` in `settingsManifest.ts`
+decides which routes count.
+
 The pages themselves:
 
 | Tab | Section file | What lives here |
