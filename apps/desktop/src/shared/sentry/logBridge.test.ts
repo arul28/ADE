@@ -7,18 +7,23 @@ import { forwardLogToSentry } from "./logBridge";
  *
  * The boundary is the SDK: `connectSentry` is how every process hands its
  * Sentry to this code, so a fake one stands in for the process boundary and
- * this module runs for real.
+ * this module runs for real. The fake keeps the fingerprint each capture was
+ * sent with, because that is what decides which issue an event joins.
  */
-function fakeSentry(): Array<{ error: unknown }> {
-  const captured: Array<{ error: unknown }> = [];
+function fakeSentry(): Array<{ error: unknown; fingerprint: string[] | undefined }> {
+  const captured: Array<{ error: unknown; fingerprint: string[] | undefined }> = [];
+  let fingerprint: string[] | undefined;
   connectSentry({
-    withScope: (callback) => callback({
-      setTag: () => undefined,
-      setExtras: () => undefined,
-      setFingerprint: () => undefined,
-      setLevel: () => undefined,
-    }),
-    captureException: (error) => { captured.push({ error }); },
+    withScope: (callback) => {
+      fingerprint = undefined;
+      callback({
+        setTag: () => undefined,
+        setExtras: () => undefined,
+        setFingerprint: (value) => { fingerprint = value; },
+        setLevel: () => undefined,
+      });
+    },
+    captureException: (error) => { captured.push({ error, fingerprint }); },
     addBreadcrumb: () => undefined,
     logger: { warn: () => undefined, error: () => undefined },
   });
@@ -40,9 +45,13 @@ describe("forwardLogToSentry", () => {
 
     expect(captured).toHaveLength(2);
     expect(captured[0]!.error).toBe(failure);
+    // The error groups by its own stack. A fingerprint on the event name would
+    // merge every different failure logged under it into one issue.
+    expect(captured[0]!.fingerprint).toBeUndefined();
     expect(captured[1]!.error).not.toBe(failure);
     expect((captured[1]!.error as Error).name).toBe("AdeProblem");
     expect((captured[1]!.error as Error).message).toBe("project.open.failed");
+    expect(captured[1]!.fingerprint).toEqual(["log", "project.open.failed"]);
   });
 
   it("reads the message only beside the error: `errorText` alone makes no exception", () => {
@@ -60,6 +69,8 @@ describe("forwardLogToSentry", () => {
 
     expect(captured).toHaveLength(2);
     expect((captured[0]!.error as Error).name).toBe("AdeProblem");
+    expect(captured[0]!.fingerprint).toEqual(["log", "db.init_failed"]);
     expect(captured[1]!.error).toBe(failure);
+    expect(captured[1]!.fingerprint).toBeUndefined();
   });
 });
