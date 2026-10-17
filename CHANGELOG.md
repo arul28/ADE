@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.110] - 2026-10-17
+
+### Desktop and web
+
+- ADE and its background service start faster by reusing compiled code (#1743, #1744).
+- Copilot chats run on the GitHub Copilot SDK instead of ACP (#1714).
+- Stacked PR lanes are grouped in order in the Work page (#1722), with a compact new-lane composer (#1721).
+- Inspected browser elements give the agent their HTML, CSS and source file (#1719).
+- Finding slash commands no longer freezes the background service on large skill folders (#1737).
+- Multi-machine fixes: chats started elsewhere show as working (#1733), Tools pane stays closed (#1742), lane actions target the right machine (#1720, #1724), clearer connection and sync status (#1736, #1738, #1739), and sync-host claims are safer (#1730, #1735).
+- Renderer path checks no longer leak file existence through symlinks (#1727).
+
 ## [1.2.109] - 2026-10-16
 
 ### Desktop and web
@@ -2571,7 +2583,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.109...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.110...HEAD
+[1.2.110]: https://github.com/arul28/ADE/compare/v1.2.109...v1.2.110
 [1.2.109]: https://github.com/arul28/ADE/compare/v1.2.108...v1.2.109
 [1.2.108]: https://github.com/arul28/ADE/compare/v1.2.107...v1.2.108
 [1.2.107]: https://github.com/arul28/ADE/compare/v1.2.106...v1.2.107
