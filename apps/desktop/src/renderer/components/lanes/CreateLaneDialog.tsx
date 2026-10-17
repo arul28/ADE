@@ -1,7 +1,25 @@
 import React from "react";
-import { CaretDown, CaretRight, CheckCircle, Circle, GitBranch, GitFork, Plus, SpinnerGap, StackSimple, Tag, X } from "@phosphor-icons/react";
-import { Button } from "../ui/Button";
+import * as Popover from "@radix-ui/react-popover";
+import {
+  ArrowSquareIn,
+  Info,
+  CaretUpDown,
+  Check,
+  CheckCircle,
+  Circle,
+  Desktop,
+  DesktopTower,
+  GitBranch,
+  Plus,
+  Scales,
+  SpinnerGap,
+  StackSimple,
+  Stack,
+  X,
+} from "@phosphor-icons/react";
 import { Banner } from "../ui/notice/Banner";
+import { usePortalContainer } from "../ui/portalContainer";
+import { Z_LAYERS } from "../ui/zLayers";
 import type {
   BranchPullRequest,
   LaneLinearIssue,
@@ -14,27 +32,24 @@ import type { LaneBranchOption } from "./laneUtils";
 import { LaneEnvInitProgressPanel } from "./LaneEnvInitProgress";
 import { LaneDialogShell } from "./LaneDialogShell";
 import { LaneColorPicker } from "./LaneColorPicker";
-import { colorsInUse, nextAvailableColor } from "./laneColorPalette";
-import { BranchPickerView } from "./BranchPickerView";
+import { colorsInUse, laneColorName, nextAvailableColor } from "./laneColorPalette";
+import { LaneBranchList, type LaneBranchListItem } from "./LaneBranchList";
+import { SmartTooltip } from "../ui/SmartTooltip";
 import { formatRelativeTime } from "./branchPickerSearch";
 import { linearIssueLaneName, resolveLinearIssueBranchName } from "../../../shared/linearIssueBranch";
-import { branchExistsForLinearIssue, issueProjectLabel } from "./linearIssueDisplay";
-import { LinearMark, LinearPriorityIcon, LinearStateIcon, LINEAR_BRAND } from "./linearBrand";
+import { branchExistsForLinearIssue } from "./linearIssueDisplay";
+import { LinearMark } from "./linearBrand";
 import { LinearIssueSelectModal } from "../app/LinearIssueSelectModal";
-import { listNewLaneBaseOptions } from "./newLaneBaseSource";
-import { LaneMachineSelector } from "./LaneMachineSelector";
-import type { LaneMachineOption } from "./laneMachines";
+import { listNewLaneBaseOptions, selectDefaultNewLaneBaseRef } from "./newLaneBaseSource";
+import { formatBytes } from "../../lib/format";
 import {
-  SECTION_CLASS_NAME,
-  LABEL_CLASS_NAME,
-  INPUT_CLASS_NAME,
-  SELECT_CLASS_NAME,
-  CARD_CLASS_NAME,
-  CARD_ACTIVE_CLASS_NAME,
-  CHIP_PRIMARY,
-  CHIP_BRANCH,
-  CHIP_CHILD,
-} from "./laneDialogTokens";
+  canCreateLaneOnMachine,
+  chooseLaneMachineByLoad,
+  isLowLaneMachineDisk,
+  THIS_MACHINE_ID,
+  type LaneMachineOption,
+} from "./laneMachines";
+import "./createLaneComposer.css";
 
 export type CreateLaneMode = "primary" | "existing" | "child";
 export type CreateLaneSetupStep = {
@@ -43,32 +58,28 @@ export type CreateLaneSetupStep = {
   state: "pending" | "active" | "done";
 };
 
-type ModeMeta = {
-  icon: typeof GitBranch;
-  label: string;
-  description: string;
-  chip: string;
+const MODE_LABEL: Record<CreateLaneMode, string> = {
+  primary: "As new branch",
+  existing: "As existing branch",
+  child: "As child lane",
 };
 
-const MODE_META: Record<CreateLaneMode, ModeMeta> = {
-  primary: {
-    icon: GitBranch,
-    label: "Primary",
-    description: "Brand new lane based off main on the primary lane",
-    chip: CHIP_PRIMARY,
-  },
-  existing: {
-    icon: GitFork,
-    label: "Branch",
-    description: "New lane based off a branch on local or remote",
-    chip: CHIP_BRANCH,
-  },
-  child: {
-    icon: StackSimple,
-    label: "Child",
-    description: "Create a child lane based on another existing lane",
-    chip: CHIP_CHILD,
-  },
+const MODE_HELP: Record<CreateLaneMode, string> = {
+  primary: "Creates a fresh branch for this lane, starting from any remote or local branch you pick.",
+  existing: "Opens a branch that already exists as a lane. The lane works on that branch directly; no new branch is made.",
+  child: "Creates a new branch stacked on another lane. The child rebases when its parent moves.",
+};
+
+const MODE_ICON: Record<CreateLaneMode, typeof GitBranch> = {
+  primary: GitBranch,
+  existing: ArrowSquareIn,
+  child: StackSimple,
+};
+
+const MODE_TOUR: Record<CreateLaneMode, string> = {
+  primary: "lanes.createDialog.primaryTab",
+  existing: "lanes.createDialog.branchTab",
+  child: "lanes.createDialog.childTab",
 };
 
 const MODE_ORDER: readonly CreateLaneMode[] = ["primary", "existing", "child"];
@@ -82,14 +93,124 @@ function defaultLaneNameForImportBranch(branchName: string, branches: LaneBranch
 function submitLabel(
   busy: boolean | undefined,
   mode: CreateLaneMode,
-  baseBranch: string,
   laneCreated: boolean | undefined,
 ): string {
-  if (busy) return "Setting up lane…";
+  if (busy) return "Setting up…";
   if (laneCreated) return "Retry setup";
+  if (mode === "existing") return "Import branch";
   if (mode === "child") return "Create child lane";
-  if (mode === "existing") return "Import as lane";
-  return `Create from ${baseBranch || "primary"}`;
+  return "Create lane";
+}
+
+/** One popover look for every chip in the composer. */
+function ComposerPopover({
+  open,
+  onOpenChange,
+  trigger,
+  children,
+  fit,
+  mode,
+  align = "start",
+}: {
+  /** The dialog's mode, so the portaled popover keeps the mode colour. */
+  mode?: CreateLaneMode;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  trigger: React.ReactNode;
+  children: React.ReactNode;
+  /** "content" sizes the popover to its content instead of the trigger's width. */
+  fit?: "content";
+  align?: "start" | "center" | "end";
+}) {
+  // Inside the dialog, portal into it: a modal dialog blocks pointer events
+  // and focus everywhere outside its own content.
+  const portalContainer = usePortalContainer();
+  return (
+    <Popover.Root open={open} onOpenChange={onOpenChange}>
+      <Popover.Trigger asChild>{trigger}</Popover.Trigger>
+      <Popover.Portal container={portalContainer ?? undefined}>
+        <Popover.Content
+          side="bottom"
+          align={align}
+          sideOffset={6}
+          collisionPadding={10}
+          // Stay below the field; long lists shrink to the room there instead
+          // of flipping above the dialog and off the window.
+          avoidCollisions={false}
+          className="cl-pop"
+          data-fit={fit}
+          data-mode={mode}
+          style={{ zIndex: Z_LAYERS.dialogPopover }}
+          onCloseAutoFocus={(event) => event.preventDefault()}
+        >
+          {children}
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
+  );
+}
+
+function PopItem({
+  icon,
+  title,
+  sub,
+  subTone,
+  selected,
+  disabled,
+  muted,
+  hint,
+  tag,
+  onSelect,
+}: {
+  icon?: React.ReactNode;
+  tag?: string;
+  title: React.ReactNode;
+  sub?: React.ReactNode;
+  subTone?: "warn";
+  selected?: boolean;
+  disabled?: boolean;
+  muted?: boolean;
+  hint?: string;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="cl-item"
+      role="menuitemradio"
+      aria-checked={Boolean(selected)}
+      disabled={disabled}
+      title={hint}
+      data-muted={muted ? "true" : undefined}
+      onClick={onSelect}
+    >
+      {icon}
+      <span className="cl-item-text">
+        <span className="cl-item-title">{title}</span>
+        {sub ? <span className="cl-item-sub" data-tone={subTone}>{sub}</span> : null}
+      </span>
+      {tag ? <span className="cl-tag" data-tone={tag === "default" ? "mode" : undefined}>{tag}</span> : null}
+      {selected ? <Check size={13} weight="bold" className="cl-item-check" /> : null}
+    </button>
+  );
+}
+
+function machineDetail(machine: LaneMachineOption): { text: string; short: string; path: string | null; warn: boolean } {
+  const path = machine.project?.rootPath ?? machine.hostname ?? null;
+  if (!canCreateLaneOnMachine(machine)) return { text: "This repo isn't here yet", short: "No repo", path, warn: false };
+  const free = machine.freeBytes !== null ? `${formatBytes(machine.freeBytes)} free` : null;
+  return {
+    text: [free, path].filter(Boolean).join(" · ") || "Connected",
+    short: free ?? "Connected",
+    path,
+    warn: isLowLaneMachineDisk(machine.freeBytes),
+  };
+}
+
+function MachineIcon({ machineId, size = 13 }: { machineId: string; size?: number }) {
+  return machineId === THIS_MACHINE_ID
+    ? <Desktop size={size} weight="duotone" />
+    : <DesktopTower size={size} weight="duotone" />;
 }
 
 export function CreateLaneDialog({
@@ -134,7 +255,6 @@ export function CreateLaneDialog({
   branchPullRequests,
   currentGitUserName,
   loadingBranches,
-  loadingBranchPullRequests,
   machines,
   selectedMachineId,
   onSelectMachine,
@@ -228,21 +348,15 @@ export function CreateLaneDialog({
   const machineOptions = machines ?? [];
   const showMachineSelector = machineOptions.length > 1 && !!onSelectMachine;
 
-  const [pickerOpen, setPickerOpen] = React.useState(false);
   const [issuePickerOpen, setIssuePickerOpen] = React.useState(false);
   const importBranchAutoNameRef = React.useRef<string | null>(null);
 
   React.useEffect(() => {
     if (!open) {
-      setPickerOpen(false);
       setIssuePickerOpen(false);
       importBranchAutoNameRef.current = null;
     }
   }, [open]);
-
-  React.useEffect(() => {
-    if (createMode !== "existing") setPickerOpen(false);
-  }, [createMode]);
 
   React.useEffect(() => {
     if (selectedLinearIssue && createMode === "existing") {
@@ -329,22 +443,95 @@ export function CreateLaneDialog({
       || (createMode === "existing" && !createImportBranch)
       || selectedLinearBranchConflict);
 
+  const locked = Boolean(busy || laneCreated);
+  const [openChip, setOpenChip] = React.useState<null | "color" | "machine" | "source" | "childBase" | "template">(null);
+  const chipProps = (chip: NonNullable<typeof openChip>) => ({
+    open: openChip === chip,
+    mode: createMode,
+    onOpenChange: (next: boolean) => setOpenChip(next && !locked ? chip : null),
+  });
+  React.useEffect(() => {
+    if (!open) setOpenChip(null);
+  }, [open]);
+
+  const submit = React.useCallback(() => {
+    if (!isSubmitDisabled) onSubmit();
+  }, [isSubmitDisabled, onSubmit]);
+
+  const chooseMode = (mode: CreateLaneMode) => {
+    setCreateMode(mode);
+    if (mode !== "child") {
+      setCreateParentLaneId("");
+      setCreateChildBaseBranch("");
+    }
+  };
+
+  // ── Base branch list: the project's default base pinned first, then search ─
+  const primaryLane = React.useMemo(() => lanes.find((lane) => lane.laneType === "primary") ?? null, [lanes]);
+  const defaultBaseRef = React.useMemo(
+    () => selectDefaultNewLaneBaseRef({ branches: createBranches, source: createBaseSource, primaryBaseRef: primaryLane?.baseRef }),
+    [createBaseSource, createBranches, primaryLane?.baseRef],
+  );
+  const branchByName = React.useMemo(() => new Map(createBranches.map((branch) => [branch.name, branch])), [createBranches]);
+  const baseListItems = React.useMemo<LaneBranchListItem[]>(
+    () => baseBranchOptions.map((option) => ({
+      ref: option.ref,
+      branch: branchByName.get(option.ref) ?? null,
+      pinned: option.ref === defaultBaseRef,
+      tag: option.ref === defaultBaseRef ? "default" : undefined,
+    })),
+    [baseBranchOptions, branchByName, defaultBaseRef],
+  );
+  // A child lane's parent: every lane, with its branch's last commit.
+  const parentListItems = React.useMemo<LaneBranchListItem[]>(
+    () => lanes.map((lane) => ({
+      ref: lane.id,
+      label: lane.name,
+      branch: branchByName.get(lane.branchRef) ?? null,
+      swatch: lane.color ?? null,
+    })),
+    [branchByName, lanes],
+  );
+  // A child lane's base: the parent's branch by default, or any branch.
+  const childBaseListItems = React.useMemo<LaneBranchListItem[]>(() => {
+    const parent = lanes.find((lane) => lane.id === createParentLaneId) ?? null;
+    const items: LaneBranchListItem[] = parent
+      ? [{
+        ref: "",
+        label: parent.branchRef,
+        branch: branchByName.get(parent.branchRef) ?? null,
+        pinned: true,
+        tag: "parent",
+      }]
+      : [];
+    for (const branch of createBranches) items.push({ ref: branch.name, branch });
+    return items;
+  }, [branchByName, createBranches, createParentLaneId, lanes]);
+  // Existing branches: the checked-out one first, then most recently touched.
+  const importListItems = React.useMemo<LaneBranchListItem[]>(() => {
+    const time = (branch: LaneBranchOption) => (branch.lastCommitDate ? Date.parse(branch.lastCommitDate) || 0 : 0);
+    return [...createBranches]
+      .sort((a, b) => Number(b.isCurrent) - Number(a.isCurrent) || time(b) - time(a))
+      .map((branch) => ({ ref: branch.name, branch }));
+  }, [createBranches]);
+
+  // ── Machine ───────────────────────────────────────────────────────────────
+  const eligibleMachineCount = machineOptions.filter(canCreateLaneOnMachine).length;
+  const autoMachine = eligibleMachineCount >= 2
+    ? machineOptions.find((machine) => machine.id === chooseLaneMachineByLoad(machineOptions)) ?? null
+    : null;
+  const selectedMachine = machineOptions.find((machine) => machine.id === selectedMachineId) ?? null;
+
+  const parentLane = lanes.find((lane) => lane.id === createParentLaneId) ?? null;
+  const ModeIcon = MODE_ICON[createMode];
+
   return (
     <>
     <LaneDialogShell
       open={open && !issuePickerOpen}
       onOpenChange={onOpenChange}
-      title={pickerOpen ? "Pick branch" : "Create lane"}
-      description={pickerOpen
-          ? "Search by name, PR, author, or staleness."
-          : "Create a lane from Primary, an existing branch, or another lane."}
-      icon={Plus}
-      width="min(560px, calc(100vw - 24px))"
-      // The picker's list is virtualized and must be its own scrollport: give
-      // the panel a definite height so the list scrolls and "Use this branch"
-      // stays on screen instead of sitting below every row.
-      height={pickerOpen ? "min(640px, 92dvh, calc(100vh - 1rem))" : undefined}
-      scrollBody={!pickerOpen}
+      title="New lane"
+      width="min(580px, calc(100vw - 24px))"
       busy={busy}
       onCloseAutoFocus={(event) => {
         event.preventDefault();
@@ -353,539 +540,569 @@ export function CreateLaneDialog({
         );
         target?.focus?.();
       }}
-      footer={pickerOpen ? undefined : (
-        <div className="space-y-3">
+      footer={(
+        <div className="flex w-full flex-col gap-3">
           {error ? (
             <Banner model={{ id: "create-lane-error", tone: "error", title: error }} layout="inline" />
           ) : null}
-          {machineHint && !error ? (
-            <div className="text-right text-[11px] text-muted-fg/70" data-testid="create-lane-machine-hint">
-              {machineHint}
+          <div className="cl-foot">
+            {machineHint ? (
+              <span className="cl-foot-hint" data-tone="warn" data-testid="create-lane-machine-hint" title={machineHint}>
+                {showMachineSelector ? "Pick a machine first" : "No machine has this repo open"}
+              </span>
+            ) : (
+              <span className="cl-foot-hint"><kbd>⌘</kbd><kbd>↵</kbd>&nbsp;to create</span>
+            )}
+            <div className="cl-foot-actions">
+              <button type="button" className="kit-btn kit-btn-ghost" disabled={busy} onClick={() => onOpenChange(false)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="cl-create"
+                data-tour="lanes.createDialog.create"
+                disabled={isSubmitDisabled}
+                onClick={submit}
+              >
+                {submitLabelOverride ?? submitLabel(busy, createMode, laneCreated)}
+              </button>
             </div>
-          ) : null}
-          <div className="flex items-center justify-end gap-2">
-            <Button
-              variant="outline"
-              disabled={busy}
-              onClick={() => onOpenChange(false)}
-            >
-              Cancel
-            </Button>
-            <Button variant="primary" data-tour="lanes.createDialog.create" disabled={isSubmitDisabled} onClick={onSubmit}>
-              {submitLabelOverride ?? submitLabel(busy, createMode, createBaseBranch, laneCreated)}
-            </Button>
           </div>
         </div>
       )}
     >
-      {pickerOpen ? (
-        <BranchPickerView
-          branches={createBranches}
-          pullRequests={branchPullRequests ?? []}
-          currentUserName={currentGitUserName ?? ""}
-          selectedBranch={createImportBranch}
-          onSelect={handleSelectImportBranch}
-          onConfirm={() => setPickerOpen(false)}
-          onBack={() => setPickerOpen(false)}
-          busy={busy || laneCreated}
-          loadingBranches={loadingBranches}
-          loadingPullRequests={loadingBranchPullRequests}
-        />
-      ) : (
-      <div className="min-h-full space-y-3" data-tour="lanes.createDialog">
-        {/* Lane name */}
-        <section className={SECTION_CLASS_NAME}>
-          <label className="block">
-            <span className={LABEL_CLASS_NAME}>Lane name</span>
-            <input
-              value={createLaneName}
-              onChange={(e) => handleSetCreateLaneName(e.target.value)}
-              placeholder="e.g. feature/auth-refresh"
-              className={INPUT_CLASS_NAME}
-              autoFocus
-              disabled={busy || laneCreated}
-              data-tour="lanes.createDialog.name"
-            />
-          </label>
-          <div className="mt-3">
-            <span className={LABEL_CLASS_NAME}>Color</span>
-            <div className="mt-2">
+      <div
+        className="cl-composer"
+        data-mode={createMode}
+        data-tour="lanes.createDialog"
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+            event.preventDefault();
+            submit();
+          }
+        }}
+      >
+        {/* Name, with the lane colour as a dot inside the field */}
+        <div
+          className="cl-name"
+          data-colored={selectedColor ? "true" : undefined}
+          style={selectedColor ? ({ "--cl-lane": selectedColor } as React.CSSProperties) : undefined}
+        >
+          <ComposerPopover
+            {...chipProps("color")}
+            fit="content"
+            trigger={(
+              <button
+                type="button"
+                className="cl-dot"
+                disabled={locked}
+                aria-label={selectedColor ? `Lane colour: ${laneColorName(selectedColor) ?? selectedColor}` : "Lane colour: none"}
+                title="Lane colour"
+              >
+                <i
+                  data-empty={selectedColor ? undefined : "true"}
+                  style={selectedColor ? { background: selectedColor } : undefined}
+                />
+              </button>
+            )}
+          >
+            <div className="cl-colors">
               <LaneColorPicker
                 value={selectedColor}
-                onChange={setSelectedColor}
+                onChange={(color) => {
+                  setSelectedColor(color);
+                  setOpenChip(null);
+                }}
                 usedColors={usedColors}
                 usedColorOwners={usedColorOwners}
-                swatchSize={20}
+                swatchSize={18}
               />
             </div>
-          </div>
-        </section>
-
-        {/* Create on — the machine this lane (and its chats) will live on */}
-        {showMachineSelector && onSelectMachine ? (
-          <LaneMachineSelector
-            machines={machineOptions}
-            selectedMachineId={selectedMachineId ?? ""}
-            onSelectMachine={onSelectMachine}
-            onConnectMachine={onConnectMachine}
-            disabled={busy || laneCreated}
-          />
-        ) : null}
-
-        {/* Start from — three-up source cards + contextual field */}
-        <section className={SECTION_CLASS_NAME}>
-          <span className={LABEL_CLASS_NAME}>Start from</span>
-
-          <div className="mt-2 grid grid-cols-3 gap-2" data-tour="lanes.createDialog.tabs">
-            {MODE_ORDER.map((mode) => {
-              const meta = MODE_META[mode];
-              const Icon = meta.icon;
-              const active = createMode === mode;
-              const disabledByLinearIssue = Boolean(selectedLinearIssue && mode === "existing");
-              const disabled = Boolean(busy || laneCreated || disabledByLinearIssue);
-              const cardClass = active
-                ? `${CARD_CLASS_NAME} ${CARD_ACTIVE_CLASS_NAME}`
-                : CARD_CLASS_NAME;
-              let disabledTitle: string | undefined;
-              let disabledDescription: string | null = null;
-              if (disabledByLinearIssue) {
-                disabledTitle = "Detach the Linear issue before importing an existing branch.";
-                disabledDescription = "Unavailable while a Linear issue is connected";
+          </ComposerPopover>
+          <input
+            value={createLaneName}
+            onChange={(e) => handleSetCreateLaneName(e.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.metaKey && !event.ctrlKey && !event.nativeEvent.isComposing) {
+                event.preventDefault();
+                submit();
               }
-              const dataTourByMode: Record<CreateLaneMode, string> = {
-                primary: "lanes.createDialog.primaryTab",
-                existing: "lanes.createDialog.branchTab",
-                child: "lanes.createDialog.childTab",
-              };
-              return (
-                <button
-                  key={mode}
-                  type="button"
-                  aria-pressed={active}
-                  disabled={disabled}
-                  title={disabledTitle}
-                  data-tour={dataTourByMode[mode]}
-                  onClick={() => {
-                    setCreateMode(mode);
-                    if (mode !== "child") {
-                      setCreateParentLaneId("");
-                      setCreateChildBaseBranch("");
-                    }
-                  }}
-                  className={cardClass}
-                >
-                  <div className="flex items-start gap-2">
-                    <span className={meta.chip} aria-hidden="true">
-                      <Icon size={16} weight="duotone" />
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <div className="text-sm font-semibold text-fg">{meta.label}</div>
-                    </div>
-                  </div>
-                  <div className="mt-1.5 line-clamp-2 text-[11px] leading-snug text-muted-fg/70">
-                    {disabledDescription ?? meta.description}
-                  </div>
-                </button>
-              );
-            })}
-          </div>
+            }}
+            placeholder="Name this lane"
+            aria-label="Lane name"
+            spellCheck={false}
+            autoFocus
+            disabled={locked}
+            data-tour="lanes.createDialog.name"
+          />
+        </div>
 
-          {/* Contextual field for selected mode */}
-          <div className="mt-3">
-            {createMode === "primary" ? (
-              <>
-                <div className="mb-2 grid grid-cols-2 gap-2">
-                  {(["remote", "local"] as const).map((source) => {
-                    const active = createBaseSource === source;
-                    return (
-                      <button
-                        key={source}
-                        type="button"
-                        className={`${CARD_CLASS_NAME} ${active ? CARD_ACTIVE_CLASS_NAME : ""} !p-2 text-left`}
-                        disabled={busy || laneCreated}
-                        onClick={() => setCreateBaseSource(source)}
-                      >
-                        <div className="text-xs font-semibold text-fg">{source === "remote" ? "Remote" : "Local"}</div>
-                        <div className="mt-0.5 text-[10px] text-muted-fg/70">
-                          {source === "remote" ? "Use fetched upstream" : "Use your local branch tip"}
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-                {baseBranchOptions.length > 0 ? (
-                  <>
-                    <select
-                      value={createBaseBranch}
-                      onChange={(e) => setCreateBaseBranch(e.target.value)}
-                      className={SELECT_CLASS_NAME + " !mt-0"}
-                      disabled={busy || laneCreated}
+        {/* How the lane starts */}
+        <div className="cl-modes" role="radiogroup" aria-label="Start from" data-tour="lanes.createDialog.tabs">
+          {MODE_ORDER.map((mode) => {
+            const Icon = MODE_ICON[mode];
+            const blockedByIssue = Boolean(selectedLinearIssue && mode === "existing");
+            return (
+              <button
+                key={mode}
+                type="button"
+                role="radio"
+                className="cl-mode"
+                data-mode={mode}
+                aria-checked={createMode === mode}
+                disabled={locked || blockedByIssue}
+                title={blockedByIssue ? "Detach the Linear issue before using an existing branch." : undefined}
+                data-tour={MODE_TOUR[mode]}
+                onClick={() => chooseMode(mode)}
+              >
+                <Icon size={14} weight="bold" />
+                {MODE_LABEL[mode]}
+                <SmartTooltip content={{ label: MODE_LABEL[mode], description: MODE_HELP[mode] }} forceEnabled side="bottom">
+                  <span className="cl-mode-info" aria-label={MODE_HELP[mode]}>
+                    <Info size={12} weight="bold" />
+                  </span>
+                </SmartTooltip>
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="cl-rows">
+          {/* New branch: the base it branches off */}
+          {createMode === "primary" ? (
+            <>
+              <span className="cl-label">Based on</span>
+              <div className="cl-cell">
+                <ComposerPopover
+                  {...chipProps("source")}
+                  trigger={(
+                    <button
+                      type="button"
+                      className="cl-field"
+                      disabled={locked}
+                      data-empty={selectedBaseBranchValid ? undefined : "true"}
                       aria-label="Base branch"
                       data-tour="lanes.createDialog.branchBase"
                     >
-                      {baseBranchOptions.map((option) => (
-                        <option key={option.ref} value={option.ref}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                    {createBaseBranch ? (
-                      <div className="mt-1.5 text-[11px] text-muted-fg/60">
-                        Base: {createBaseBranch} — rebase suggestions will track this ref
+                      <span className="cl-tile" data-tone="mode"><ModeIcon size={13} weight="bold" /></span>
+                      <span className="cl-field-text">
+                        {selectedBaseBranchValid ? createBaseBranch : loadingBranches ? "Loading branches…" : "Pick a base branch…"}
+                      </span>
+                      {selectedBaseBranchValid && createBaseBranch === defaultBaseRef ? <span className="cl-tag" data-tone="mode">default</span> : null}
+                      <span className="cl-field-meta">{createBaseSource === "remote" ? "Remote" : "Local"}</span>
+                      <CaretUpDown size={12} className="cl-field-caret" />
+                    </button>
+                  )}
+                >
+                  <LaneBranchList
+                    items={baseListItems}
+                    pullRequests={branchPullRequests}
+                    currentUserName={currentGitUserName}
+                    selectedRef={createBaseBranch}
+                    loading={loadingBranches}
+                    emptyLabel={`No ${createBaseSource === "remote" ? "remote-tracking refs" : "local branches"} found.`}
+                    ariaLabel="Base branch"
+                    onSelect={(ref) => {
+                      setCreateBaseBranch(ref);
+                      setOpenChip(null);
+                    }}
+                    headerExtra={(
+                      <div className="kit-seg" data-case="sentence" role="radiogroup" aria-label="Base source">
+                        {(["remote", "local"] as const).map((source) => (
+                          <button
+                            key={source}
+                            type="button"
+                            role="radio"
+                            aria-checked={createBaseSource === source}
+                            title={source === "remote" ? "Branch off the fetched upstream" : "Branch off your local branch tip"}
+                            onClick={() => setCreateBaseSource(source)}
+                          >
+                            {source === "remote" ? "Remote" : "Local"}
+                          </button>
+                        ))}
                       </div>
-                    ) : null}
-                  </>
-                ) : loadingBranches ? (
-                  <div className="rounded-lg border border-dashed border-fg/[0.08] bg-black/10 px-3 py-2 text-xs text-muted-fg">
-                    Loading branches...
-                  </div>
-                ) : (
-                  <div className="rounded-lg border border-dashed border-fg/[0.08] bg-black/10 px-3 py-2 text-xs text-muted-fg">
-                    No {createBaseSource === "remote" ? "remote-tracking refs" : "local branches"} found.
-                  </div>
-                )}
-              </>
-            ) : null}
-
-            {createMode === "existing" ? (
-              <>
-                <button
-                  type="button"
-                  onClick={() => setPickerOpen(true)}
-                  disabled={busy || laneCreated || (loadingBranches && allBranches.length === 0)}
-                  className="flex w-full items-center gap-3 rounded-lg border border-fg/[0.06] bg-fg/[0.03] px-3 py-2.5 text-left transition-colors hover:border-accent/40 disabled:cursor-not-allowed disabled:opacity-60"
-                  aria-label="Choose import branch"
-                  aria-describedby={importBranchWarning ? "import-branch-warning" : undefined}
-                  data-tour="lanes.createDialog.branchPickerOpen"
-                >
-                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-sky-400/15 text-sky-300">
-                    <GitBranch size={14} weight="duotone" />
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    {selectedBranchMeta.branch ? (
-                      <>
-                        <span className="flex items-center gap-2">
-                          <span className="truncate text-sm font-medium text-fg">
-                            {selectedBranchMeta.branch.name}
-                          </span>
-                          {selectedBranchMeta.branch.isRemote ? (
-                            <span className="rounded-full bg-fg/[0.06] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-muted-fg">
-                              remote
-                            </span>
-                          ) : null}
-                          {selectedBranchMeta.pr ? (
-                            <span className="inline-flex items-center gap-1 rounded-md bg-emerald-400/15 px-1.5 py-0.5 text-[10px] font-medium text-emerald-300">
-                              <Tag size={10} weight="fill" />
-                              #{selectedBranchMeta.pr.prNumber}
-                            </span>
-                          ) : null}
-                        </span>
-                        <span className="mt-0.5 block truncate text-[11px] text-muted-fg/70">
-                          {[
-                            selectedBranchMeta.branch.lastCommitAuthor,
-                            formatRelativeTime(selectedBranchMeta.branch.lastCommitDate),
-                          ]
-                            .filter(Boolean)
-                            .join(" · ") || "Imported as a root lane"}
-                        </span>
-                      </>
-                    ) : (
-                      <>
-                        <span className="text-sm text-muted-fg">{branchPickerPlaceholder}</span>
-                        <span className="mt-0.5 block text-[11px] text-muted-fg/60">
-                          Search by name, PR, author, or staleness
-                        </span>
-                      </>
                     )}
-                  </span>
-                  <CaretRight size={14} className="shrink-0 text-muted-fg/50" />
-                </button>
-                {importBranchWarning ? (
-                  <Banner
-                    model={{ id: "import-branch-warning", tone: "warning", title: importBranchWarning }}
-                    layout="inline"
-                    style={{ marginTop: 8 }}
                   />
-                ) : null}
-              </>
-            ) : null}
+                </ComposerPopover>
+              </div>
+            </>
+          ) : null}
 
-            {createMode === "child" ? (
-              <>
-                <select
-                  value={createParentLaneId}
-                  onChange={(e) => setCreateParentLaneId(e.target.value)}
-                  className={SELECT_CLASS_NAME + " !mt-0"}
-                  disabled={busy || laneCreated}
-                  aria-label="Parent lane"
-                >
-                  <option value="">Select parent lane…</option>
-                  {lanes.map((lane) => (
-                    <option key={lane.id} value={lane.id}>
-                      {lane.name} ({lane.branchRef})
-                    </option>
-                  ))}
-                </select>
-                {createParentLaneId ? (
-                  <div className="mt-1.5 text-[11px] text-muted-fg/60">
-                    Base: {lanes.find((l) => l.id === createParentLaneId)?.branchRef ?? "unknown"} — rebase suggestions will track parent lane
-                  </div>
-                ) : null}
-
-                {allBranches.length > 0 ? (
-                  <div className="mt-3">
-                    <span className={LABEL_CLASS_NAME}>Base branch (optional)</span>
-                    <select
-                      value={createChildBaseBranch}
-                      onChange={(e) => setCreateChildBaseBranch(e.target.value)}
-                      className={SELECT_CLASS_NAME}
-                      disabled={busy || laneCreated}
-                      aria-label="Child base branch override"
-                    >
-                      <option value="">Parent lane's branch (default)</option>
-                      {allBranches.map((b) => (
-                        <option key={b.name} value={b.name}>
-                          {b.name}{b.isRemote ? " (remote)" : ""}
-                        </option>
-                      ))}
-                    </select>
-                    <div className="mt-1.5 text-[11px] text-muted-fg/60">
-                      Override to base this child on any branch, including origin/* remote refs.
-                    </div>
-                  </div>
-                ) : null}
-              </>
-            ) : null}
-          </div>
-        </section>
-
-        {/* Advanced — Linear issue + template */}
-        <details open className="group rounded-xl border border-fg/[0.06] bg-fg/[0.02] open:bg-fg/[0.03]">
-          <summary className="flex cursor-pointer select-none items-center justify-between gap-3 rounded-xl px-4 py-2.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-fg/70 transition-colors hover:text-fg [&::-webkit-details-marker]:hidden">
-            <span className="flex items-center gap-2">
-              <CaretDown size={10} weight="bold" className="transition-transform group-open:rotate-0 -rotate-90" />
-              Advanced
-            </span>
-            {onNavigateToTemplates ? (
-              <button
-                type="button"
-                className="text-[10px] font-medium normal-case tracking-normal text-muted-fg/60 transition-colors hover:text-accent"
-                disabled={busy || laneCreated}
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  onOpenChange(false);
-                  onNavigateToTemplates();
-                }}
-              >
-                {templates.length > 0 ? "Manage templates" : "Create template"}
-              </button>
-            ) : null}
-          </summary>
-          <div className="space-y-3 px-4 pb-4 pt-1">
-            <div>
-              <span className={LABEL_CLASS_NAME}>Linear issue</span>
-              {selectedLinearIssue ? (
-                <>
-                  <SelectedLinearIssueCard
-                    issue={selectedLinearIssue}
-                    branchName={selectedLinearBranchName}
-                    branchConflict={selectedLinearBranchConflict}
-                    onClear={() => setSelectedLinearIssue(null)}
-                  />
-                  <div className="mt-2 flex justify-end">
+          {/* Import branch: the lane works on that branch itself */}
+          {createMode === "existing" ? (
+            <>
+              <span className="cl-label">Branch</span>
+              <div className="cl-cell">
+                <ComposerPopover
+                  {...chipProps("source")}
+                  trigger={(
                     <button
                       type="button"
-                      disabled={busy || laneCreated}
-                      onClick={() => setIssuePickerOpen(true)}
-                      className="inline-flex h-7 items-center gap-1.5 rounded-md border px-2.5 text-[11px] font-medium transition-colors disabled:opacity-50"
-                      style={{
-                        borderColor: LINEAR_BRAND.borderSubtle,
-                        background: LINEAR_BRAND.surface,
-                        color: LINEAR_BRAND.text,
-                      }}
+                      className="cl-field"
+                      disabled={locked || (loadingBranches && allBranches.length === 0)}
+                      data-empty={selectedBranchMeta.branch ? undefined : "true"}
+                      aria-label="Choose import branch"
+                      aria-describedby={importBranchWarning ? "import-branch-warning" : undefined}
+                      data-tour="lanes.createDialog.branchPickerOpen"
                     >
-                      <LinearMark size={11} />
-                      Change issue
+                      <span className="cl-tile" data-tone="mode"><ModeIcon size={13} weight="bold" /></span>
+                      <span className="cl-field-text">{selectedBranchMeta.branch?.name ?? branchPickerPlaceholder}</span>
+                      {selectedBranchMeta.pr ? <span className="cl-tag" data-tone="ok">#{selectedBranchMeta.pr.prNumber}</span> : null}
+                      {selectedBranchMeta.branch ? (
+                        <span className="cl-field-meta">
+                          {[selectedBranchMeta.branch.isRemote ? "Remote" : "Local", formatRelativeTime(selectedBranchMeta.branch.lastCommitDate)]
+                            .filter(Boolean)
+                            .join(" · ")}
+                        </span>
+                      ) : null}
+                      <CaretUpDown size={12} className="cl-field-caret" />
                     </button>
+                  )}
+                >
+                  <LaneBranchList
+                    items={importListItems}
+                    pullRequests={branchPullRequests}
+                    currentUserName={currentGitUserName}
+                    selectedRef={createImportBranch}
+                    loading={loadingBranches}
+                    emptyLabel="No branches found in this repo."
+                    ariaLabel="Existing branch"
+                    onSelect={(ref) => {
+                      handleSelectImportBranch(ref);
+                      setOpenChip(null);
+                    }}
+                  />
+                </ComposerPopover>
+              </div>
+            </>
+          ) : null}
+
+          {/* Child lane: stacked on another lane */}
+          {createMode === "child" ? (
+            <>
+              <span className="cl-label">Parent</span>
+              <div className="cl-cell">
+                <ComposerPopover
+                  {...chipProps("source")}
+                  trigger={(
+                    <button
+                      type="button"
+                      className="cl-field"
+                      disabled={locked}
+                      data-empty={parentLane ? undefined : "true"}
+                      aria-label="Parent lane"
+                    >
+                      <span className="cl-tile" data-tone={parentLane ? "muted" : "mode"}>
+                        {parentLane
+                          ? <span className="cl-swatch" style={{ margin: 0, background: parentLane.color ?? "var(--cl-child)" }} />
+                          : <ModeIcon size={13} weight="bold" />}
+                      </span>
+                      <span className="cl-field-text">{parentLane?.name ?? "Pick a parent lane…"}</span>
+                      {parentLane ? <span className="cl-field-meta">{parentLane.branchRef}</span> : null}
+                      <CaretUpDown size={12} className="cl-field-caret" />
+                    </button>
+                  )}
+                >
+                  <LaneBranchList
+                    items={parentListItems}
+                    pullRequests={branchPullRequests}
+                    currentUserName={currentGitUserName}
+                    selectedRef={createParentLaneId}
+                    emptyLabel="No lanes yet."
+                    ariaLabel="Parent lane"
+                    onSelect={(laneId) => {
+                      setCreateParentLaneId(laneId);
+                      setOpenChip(null);
+                    }}
+                  />
+                </ComposerPopover>
+              </div>
+
+              <span className="cl-label">Based on</span>
+              <div className="cl-cell">
+                <ComposerPopover
+                  {...chipProps("childBase")}
+                  trigger={(
+                    <button
+                      type="button"
+                      className="cl-field"
+                      disabled={locked || !parentLane}
+                      data-empty={parentLane ? undefined : "true"}
+                      aria-label="Child base branch override"
+                    >
+                      <span className="cl-tile" data-tone="mode"><GitBranch size={13} weight="bold" /></span>
+                      <span className="cl-field-text">
+                        {parentLane ? (createChildBaseBranch || parentLane.branchRef) : "Pick a parent first"}
+                      </span>
+                      {parentLane && !createChildBaseBranch ? <span className="cl-tag" data-tone="mode">parent</span> : null}
+                      <CaretUpDown size={12} className="cl-field-caret" />
+                    </button>
+                  )}
+                >
+                  <LaneBranchList
+                    items={childBaseListItems}
+                    pullRequests={branchPullRequests}
+                    currentUserName={currentGitUserName}
+                    selectedRef={createChildBaseBranch}
+                    loading={loadingBranches}
+                    emptyLabel="No branches found in this repo."
+                    ariaLabel="Child base branch"
+                    onSelect={(ref) => {
+                      setCreateChildBaseBranch(ref);
+                      setOpenChip(null);
+                    }}
+                  />
+                </ComposerPopover>
+                {parentLane ? <span className="cl-hint">Rebases follow <b>{parentLane.name}</b>.</span> : null}
+              </div>
+            </>
+          ) : null}
+
+          {/* Machine — only when there is more than one to choose from */}
+          {showMachineSelector && onSelectMachine ? (
+            <>
+              <span className="cl-label">Machine</span>
+              <div className="cl-cell">
+                <ComposerPopover
+                  {...chipProps("machine")}
+                  trigger={(
+                    <button
+                      type="button"
+                      className="cl-field"
+                      disabled={locked}
+                      data-tone={selectedMachine ? undefined : "warn"}
+                      data-empty={selectedMachine ? undefined : "true"}
+                      data-tour="lanes.createDialog.machine"
+                      data-testid={selectedMachine ? undefined : "lane-machine-selector-required"}
+                      aria-label="Machine for this lane"
+                    >
+                      <span className="cl-tile" data-tone={selectedMachine ? "machine" : "warn"}>
+                        <MachineIcon machineId={selectedMachine?.id ?? THIS_MACHINE_ID} />
+                      </span>
+                      <span className="cl-field-text">{selectedMachine?.name ?? "Choose a machine…"}</span>
+                      {selectedMachine ? <span className="cl-field-meta">{machineDetail(selectedMachine).short}</span> : null}
+                      <CaretUpDown size={12} className="cl-field-caret" />
+                    </button>
+                  )}
+                >
+                  <div role="menu" aria-label="Machine for this lane">
+                    {autoMachine ? (
+                      <>
+                        <PopItem
+                          icon={<span className="cl-tile" data-tone="machine"><Scales size={13} weight="duotone" /></span>}
+                          title="Least loaded"
+                          sub={`Picks ${autoMachine.name} right now`}
+                          hint={`Balance across ${eligibleMachineCount} connected machines`}
+                          onSelect={() => {
+                            onSelectMachine(autoMachine.id);
+                            setOpenChip(null);
+                          }}
+                        />
+                        <div className="cl-pop-rule" />
+                      </>
+                    ) : null}
+                    {machineOptions.map((machine) => {
+                      const detail = machineDetail(machine);
+                      const available = canCreateLaneOnMachine(machine);
+                      return (
+                        <PopItem
+                          key={machine.id}
+                          icon={<span className="cl-tile" data-tone="muted"><MachineIcon machineId={machine.id} /></span>}
+                          title={machine.name}
+                          sub={detail.text}
+                          subTone={detail.warn ? "warn" : undefined}
+                          selected={machine.id === selectedMachineId}
+                          disabled={!available}
+                          hint={available ? detail.path ?? undefined : `${machine.name} doesn't have this repo yet.`}
+                          onSelect={() => {
+                            onSelectMachine(machine.id);
+                            setOpenChip(null);
+                          }}
+                        />
+                      );
+                    })}
+                    {onConnectMachine ? (
+                      <>
+                        <div className="cl-pop-rule" />
+                        <PopItem
+                          icon={<span className="cl-tile" data-tone="muted"><Plus size={12} weight="bold" /></span>}
+                          title="Connect another machine…"
+                          muted
+                          onSelect={() => {
+                            setOpenChip(null);
+                            onConnectMachine();
+                          }}
+                        />
+                      </>
+                    ) : null}
                   </div>
-                </>
-              ) : (
+                </ComposerPopover>
+              </div>
+            </>
+          ) : null}
+        </div>
+
+        {createMode === "existing" && importBranchWarning ? (
+          <Banner
+            model={{ id: "import-branch-warning", tone: "warning", title: importBranchWarning }}
+            layout="inline"
+          />
+        ) : null}
+
+        {/* Extras: attach a Linear issue, use a template */}
+        <div className="cl-extras">
+          {selectedLinearIssue ? (
+            <div className="cl-extra" data-set="true" data-wide="true" title={selectedLinearIssue.title}>
+              <span className="cl-tile" data-tone="linear"><LinearMark size={12} /></span>
+              <button
+                type="button"
+                className="cl-extra-text"
+                disabled={locked}
+                onClick={() => setIssuePickerOpen(true)}
+                aria-label="Change Linear issue"
+              >
+                <span className="cl-extra-title">
+                  <span className="cl-extra-id">{selectedLinearIssue.identifier}</span>&nbsp; {selectedLinearIssue.title}
+                </span>
+                <span className="cl-extra-sub" style={selectedLinearBranchConflict ? { color: "var(--kit-warn)" } : undefined}>
+                  {selectedLinearBranchConflict
+                    ? `Branch ${selectedLinearBranchName} already exists`
+                    : `Branch ${selectedLinearBranchName}`}
+                </span>
+              </button>
+              <button
+                type="button"
+                className="cl-x"
+                disabled={locked}
+                onClick={() => setSelectedLinearIssue(null)}
+                aria-label="Detach Linear issue"
+                title="Detach Linear issue"
+              >
+                <X size={11} weight="bold" />
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              className="cl-extra"
+              disabled={locked}
+              onClick={() => setIssuePickerOpen(true)}
+              title="Names the branch after the issue and links the lane to it"
+            >
+              <span className="cl-tile" data-tone="linear"><LinearMark size={12} /></span>
+              <span className="cl-extra-text">
+                <span className="cl-extra-title">Attach Linear issue</span>
+              </span>
+            </button>
+          )}
+
+          {templates.length > 0 || onNavigateToTemplates ? (
+            <ComposerPopover
+              {...chipProps("template")}
+              trigger={(
                 <button
                   type="button"
-                  onClick={() => setIssuePickerOpen(true)}
-                  disabled={busy || laneCreated}
-                  className="mt-2 flex w-full items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60"
-                  style={{
-                    borderColor: LINEAR_BRAND.borderSubtle,
-                    background: LINEAR_BRAND.surface,
-                  }}
+                  className="cl-extra"
+                  data-set={selectedTemplate ? "true" : undefined}
+                  disabled={locked}
+                  aria-label="Template"
+                  title={selectedTemplate?.description ?? "Set up env files, installs and services in the new lane"}
                 >
-                  <span
-                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md"
-                    style={{ background: LINEAR_BRAND.surfaceHover, color: LINEAR_BRAND.primaryBright }}
-                  >
-                    <LinearMark size={15} />
+                  <span className="cl-tile" data-tone={selectedTemplate ? "machine" : "muted"}><Stack size={13} weight="duotone" /></span>
+                  <span className="cl-extra-text">
+                    <span className="cl-extra-title">{selectedTemplate ? selectedTemplate.name : "Use a template"}</span>
+                    {selectedTemplate ? <span className="cl-extra-sub">Template</span> : null}
                   </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block text-sm font-semibold text-fg">Connect a Linear issue</span>
-                    <span className="mt-0.5 block text-[11px] text-muted-fg/65">
-                      Auto-names the branch and links the lane to your ticket.
-                    </span>
-                  </span>
-                  <CaretRight size={14} className="shrink-0" style={{ color: LINEAR_BRAND.textMuted }} />
+                  {selectedTemplate ? <CaretUpDown size={12} className="cl-field-caret" /> : null}
                 </button>
               )}
-            </div>
-            <div>
-              <span className={LABEL_CLASS_NAME}>Template</span>
-              {templates.length > 0 ? (
-                <>
-                  <select
-                    value={selectedTemplateId}
-                    onChange={(e) => setSelectedTemplateId(e.target.value)}
-                    className={SELECT_CLASS_NAME}
-                    disabled={busy || laneCreated}
-                    aria-label="Template"
-                  >
-                    <option value="">None</option>
-                    {templates.map((t) => (
-                      <option key={t.id} value={t.id}>
-                        {t.name}{t.description ? ` — ${t.description}` : ""}
-                      </option>
+            >
+              <div role="menu" aria-label="Template">
+                {templates.length > 0 ? (
+                  <>
+                    <PopItem
+                      title="No template"
+                      muted
+                      selected={!selectedTemplateId}
+                      onSelect={() => {
+                        setSelectedTemplateId("");
+                        setOpenChip(null);
+                      }}
+                    />
+                    {templates.map((template) => (
+                      <PopItem
+                        key={template.id}
+                        icon={<span className="cl-tile" data-tone="muted"><Stack size={12} weight="duotone" /></span>}
+                        title={template.name}
+                        sub={template.description}
+                        selected={template.id === selectedTemplateId}
+                        onSelect={() => {
+                          setSelectedTemplateId(template.id);
+                          setOpenChip(null);
+                        }}
+                      />
                     ))}
-                  </select>
-                  {selectedTemplate?.description ? (
-                    <div className="mt-1.5 text-[11px] text-muted-fg/60">{selectedTemplate.description}</div>
-                  ) : null}
-                </>
-              ) : (
-                <div className="mt-2 text-xs text-muted-fg/50">
-                  No templates yet.
-                </div>
-              )}
-            </div>
-          </div>
-        </details>
+                  </>
+                ) : (
+                  <div className="cl-pop-empty">No templates yet. A template sets up env files, installs and services in every new lane.</div>
+                )}
+                {onNavigateToTemplates ? (
+                  <>
+                    <div className="cl-pop-rule" />
+                    <PopItem
+                      icon={<span className="cl-tile" data-tone="muted"><Plus size={12} weight="bold" /></span>}
+                      title={templates.length > 0 ? "Manage templates…" : "Create a template…"}
+                      muted
+                      onSelect={() => {
+                        setOpenChip(null);
+                        onOpenChange(false);
+                        onNavigateToTemplates();
+                      }}
+                    />
+                  </>
+                ) : null}
+              </div>
+            </ComposerPopover>
+          ) : null}
+        </div>
 
         {setupStatus || setupSteps.length > 0 ? (
-          <section
-            className="rounded-xl border px-3 py-3"
-            style={{
-              background: "rgba(124, 92, 255, 0.08)",
-              borderColor: "rgba(167, 139, 250, 0.22)",
-            }}
-          >
-            {setupStatus ? (
-              <div className="text-sm font-medium text-zinc-100">{setupStatus}</div>
-            ) : null}
-            {setupSteps.length > 0 ? (
-              <div className="mt-2 space-y-2">
-                {setupSteps.map((step) => {
-                  const icon = step.state === "done"
-                    ? <CheckCircle size={15} weight="fill" className="text-emerald-300" />
-                    : step.state === "active"
-                      ? <SpinnerGap size={15} className="animate-spin text-violet-200" />
-                      : <Circle size={15} className="text-zinc-500" />;
-                  return (
-                    <div key={step.label} className="flex items-start gap-2 text-xs">
-                      <span className="mt-0.5 shrink-0">{icon}</span>
-                      <div className="min-w-0">
-                        <div className={step.state === "pending" ? "text-zinc-400" : "text-zinc-100"}>{step.label}</div>
-                        <div className="mt-0.5 text-[11px] text-zinc-500">{step.detail}</div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            ) : null}
+          <section className="cl-setup">
+            {setupStatus ? <div className="cl-setup-title">{setupStatus}</div> : null}
+            {setupSteps.map((step) => {
+              const icon = step.state === "done"
+                ? <CheckCircle size={14} weight="fill" style={{ color: "var(--kit-ok)" }} />
+                : step.state === "active"
+                  ? <SpinnerGap size={14} className="animate-spin" style={{ color: "var(--color-accent)" }} />
+                  : <Circle size={14} />;
+              return (
+                <div key={step.label} className="cl-step" data-state={step.state}>
+                  {icon}
+                  <div className="min-w-0">
+                    <div>{step.label}</div>
+                    <div className="cl-step-detail">{step.detail}</div>
+                  </div>
+                </div>
+              );
+            })}
           </section>
         ) : null}
 
         {envInitProgress ? <LaneEnvInitProgressPanel progress={envInitProgress} /> : null}
       </div>
-      )}
     </LaneDialogShell>
     <LinearIssueSelectModal
       open={issuePickerOpen}
-      ariaLabel="Connect Linear issue"
+      ariaLabel="Attach Linear issue"
       projectRoot={projectRoot}
       selectedIssue={selectedLinearIssue}
-      actionLabel="Connect issue"
-      actionBusyLabel="Connecting issue"
+      actionLabel="Attach issue"
+      actionBusyLabel="Attaching issue"
       actionDisabled={busy || laneCreated}
       onOpenChange={setIssuePickerOpen}
       onSelectIssue={setSelectedLinearIssue}
       onOpenLinearSettings={onOpenLinearSettings}
     />
     </>
-  );
-}
-
-function SelectedLinearIssueCard({
-  issue,
-  branchName,
-  branchConflict,
-  onClear,
-}: {
-  issue: LaneLinearIssue;
-  branchName: string;
-  branchConflict: boolean;
-  onClear: () => void;
-}) {
-  return (
-    <div
-      className="mt-2 rounded-lg border p-3"
-      style={{ borderColor: LINEAR_BRAND.borderSubtle, background: LINEAR_BRAND.surface }}
-    >
-      <div className="flex items-start gap-3">
-        <span
-          className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md"
-          style={{ background: LINEAR_BRAND.surfaceHover, color: LINEAR_BRAND.primaryBright }}
-        >
-          <LinearMark size={13} />
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <LinearPriorityIcon priority={issue.priority} size={12} />
-            <LinearStateIcon stateType={issue.stateType} size={12} />
-            <span
-              className="shrink-0 rounded font-mono text-[10.5px] font-semibold"
-              style={{ color: LINEAR_BRAND.text, background: LINEAR_BRAND.surfaceHover, padding: "1.5px 5px" }}
-            >
-              {issue.identifier}
-            </span>
-            <span className="truncate text-sm font-semibold text-fg">{issue.title}</span>
-          </div>
-          <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-fg/65">
-            <span>{issueProjectLabel(issue)}</span>
-            <span className="opacity-40">·</span>
-            <span>{issue.stateName}</span>
-            {issue.assigneeName ? (
-              <>
-                <span className="opacity-40">·</span>
-                <span>{issue.assigneeName}</span>
-              </>
-            ) : null}
-          </div>
-          <div
-            className="mt-2 flex min-w-0 items-center gap-1.5 font-mono text-[10.5px]"
-            style={{ color: branchConflict ? "#FBBF24" : "rgba(148, 163, 184, 0.85)" }}
-          >
-            <span className="shrink-0 opacity-60">branch</span>
-            <span className="truncate text-fg/85">{branchName}</span>
-            {branchConflict ? <span className="shrink-0 opacity-80">already exists</span> : null}
-          </div>
-        </div>
-        <button
-          type="button"
-          className="rounded-md p-1 text-muted-fg/60 transition-colors hover:bg-fg/[0.06] hover:text-fg"
-          onClick={onClear}
-          aria-label="Disconnect Linear issue"
-        >
-          <X size={14} />
-        </button>
-      </div>
-    </div>
   );
 }
