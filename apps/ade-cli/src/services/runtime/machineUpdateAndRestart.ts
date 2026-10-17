@@ -235,8 +235,12 @@ export function createMachineUpdateControls(
             });
           }
         }, (error: unknown) => {
+          // The Error itself keeps its stack in the log file; `errorText` keeps the
+          // sentence for the stderr mirror, which writes an Error as `{}`.
+          const failure = error instanceof Error ? error : new Error(String(error));
           args.logger.error("brain.remote_restart_failed", {
-            error: error instanceof Error ? error.message : String(error),
+            error: failure,
+            errorText: failure.message,
           });
         });
         // Referenced on purpose: this timer IS the requested action.

@@ -26140,7 +26140,12 @@ async function runServe(
         });
       } else {
         process.stderr.write(`ADE brain sync host startup loop failed: ${message}\n`);
-        headlessProjectLogger.error("sync.host_startup_loop_failed", { error: message });
+        // The Error itself keeps its stack in the log file; `errorText` keeps the
+        // sentence for the stderr mirror, which writes an Error as `{}`.
+        headlessProjectLogger.error("sync.host_startup_loop_failed", {
+          error: error instanceof Error ? error : new Error(message),
+          errorText: message,
+        });
         syncHostStartupFailure = error;
       }
       finish();
@@ -26353,9 +26358,13 @@ async function runServe(
         return accountMachinePublisher != null;
       } catch (error) {
         accountMachinePublisher = null;
+        // The Error itself keeps its stack in the log file; `errorText` keeps the
+        // sentence for the stderr mirror, which writes an Error as `{}`.
+        const failure = error instanceof Error ? error : new Error(String(error));
         headlessProjectLogger.error("account_publisher.start_failed", {
           reason,
-          error: error instanceof Error ? error.message : String(error),
+          error: failure,
+          errorText: failure.message,
         });
         return false;
       }
