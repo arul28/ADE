@@ -363,6 +363,30 @@ describe("useDraftMachineRouting", () => {
     expect(onLaneChange).not.toHaveBeenCalled();
   });
 
+  it("remaps from the lane picked after returning to the source machine", async () => {
+    installRemoteBoundAde();
+    const onLaneChange = vi.fn();
+    const { result, rerender } = renderRemoteBoundRouting(
+      { crossMachineLanesByMachineId: {}, laneId: "studio-primary" },
+      { onLaneChange },
+    );
+    await waitFor(() => expect(result.current.machineOptions).toHaveLength(2));
+
+    // Away and back before the foreign catalog lands, then a different lane.
+    act(() => result.current.handleMachineChange("this-mac"));
+    act(() => result.current.handleMachineChange("studio"));
+    act(() => result.current.handleLaneSelectionChange("studio-feature"));
+    expect(onLaneChange).toHaveBeenLastCalledWith("studio-feature");
+    rerender({ crossMachineLanesByMachineId: {}, laneId: "studio-feature" });
+
+    act(() => result.current.handleMachineChange("this-mac"));
+    rerender({ crossMachineLanesByMachineId: thisMacSlice(thisMacLanes), laneId: "studio-feature" });
+
+    // The same-named lane for the CURRENT pick, not the Primary of the first.
+    await waitFor(() => expect(onLaneChange).toHaveBeenLastCalledWith("mac-feature"));
+    expect(onLaneChange).not.toHaveBeenCalledWith("mac-primary");
+  });
+
   it("keeps a lane handed in for the picked machine while its catalog is still loading", async () => {
     installRemoteBoundAde();
     const onLaneChange = vi.fn();

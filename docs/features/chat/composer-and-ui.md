@@ -232,8 +232,16 @@ It does not touch `draftLaunchTargetId`, so a draft sitting on "Auto-create
 lane" keeps that target and only its underlying machine moves — auto-create and
 primary are the two targets ADE guarantees on every machine running it.
 
-The lane itself is re-resolved by **identity**, in an effect that fires only on
-a machine *change*. `remapDraftLaneToMachine` answers "what does the old
+The lane itself is re-resolved by **identity**, but only after a machine change
+the hook makes itself: the user's pick in the machine picker, or the fallback off
+a machine that went away (`pendingLaneRemapRef` records the machine and lane it
+came from). A machine handed in through `initialDraftMachineId` — **New chat in
+this lane**, **Start chat in lane**, a PR's chat action — arrives with its own
+lane and is never remapped; the lane prop lands a render after the machine, so
+remapping there would read the previous lane and replace the requested one. The
+same holds for an outside lane request that names the already-picked machine
+while its catalog loads, and switching back to the source machine drops the
+pending remap. `remapDraftLaneToMachine` answers "what does the old
 selection mean here": the same lane if that id happens to exist on the new
 machine, else the new machine's own primary when the old lane was a primary,
 else a lane of the same name, else that machine's primary.
@@ -242,7 +250,7 @@ wins over a lane merely *named* Primary, matching the auto-create rule. The
 previous lane is looked up in the list of the machine it came from — flattening
 every machine would match a same-id lane somewhere else — and only when that
 machine was never read at all does the target machine get to answer for the raw
-id directly. A machine change is the only trigger: an unknown lane id on a
+id directly. A user machine change is the only trigger: an unknown lane id on a
 machine that did not change is a genuinely unavailable selection (a deleted
 lane, a deeplink into another checkout) and keeps failing loudly rather than
 silently retargeting the prompt. If the new machine's catalog decodes to zero
