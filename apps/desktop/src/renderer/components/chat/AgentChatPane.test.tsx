@@ -6351,17 +6351,40 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
-  it("reads slash commands and warms file search on composer focus, not on bind", async () => {
+  it("asks for slash commands the moment the transcript read resolves, not before", async () => {
+    const session = buildSession("session-1", { status: "idle" });
+    let finishHistory: (snapshot: AgentChatEventHistorySnapshot) => void = () => {};
+    installAdeMocks({
+      sessions: [session],
+      eventHistory: () => new Promise<AgentChatEventHistorySnapshot>((resolve) => { finishHistory = resolve; }),
+    });
+
+    renderPane(session);
+
+    await waitFor(() => expect(window.ade.agentChat.getEventHistory).toHaveBeenCalled());
+    await act(async () => {});
+    expect(window.ade.agentChat.slashCommands).not.toHaveBeenCalled();
+
+    // No idle wait: the request goes out in the same act that delivers the transcript.
+    await act(async () => {
+      finishHistory({ sessionId: "session-1", events: [], truncated: false, sessionFound: true });
+    });
+    expect(vi.mocked(window.ade.agentChat.slashCommands).mock.calls.map(([args]) => args?.sessionId))
+      .toContain("session-1");
+  });
+
+  it("asks for slash commands and warms file search on composer focus while the transcript is still loading", async () => {
     const session = buildSession("session-1", { status: "idle" });
     installAdeMocks({
       sessions: [session],
-      eventHistory: { sessionId: "session-1", events: [], truncated: false, sessionFound: true },
+      eventHistory: () => new Promise<AgentChatEventHistorySnapshot>(() => {}),
     });
 
     renderPane(session);
 
     const composer = await screen.findByRole("textbox");
     await waitFor(() => expect(window.ade.agentChat.getEventHistory).toHaveBeenCalled());
+    await act(async () => {});
     expect(window.ade.agentChat.slashCommands).not.toHaveBeenCalled();
     expect(window.ade.agentChat.fileSearch).not.toHaveBeenCalled();
 
@@ -6373,6 +6396,48 @@ describe("AgentChatPane submit recovery", () => {
     });
     const searchArgs = vi.mocked(window.ade.agentChat.fileSearch).mock.calls.map(([args]) => args);
     expect(searchArgs).toContainEqual(expect.objectContaining({ sessionId: "session-1", query: "" }));
+  });
+
+  it("never asks for slash commands for a chat the user left before its transcript read resolved", async () => {
+    const first = buildSession("session-1", { title: "First chat" });
+    const second = buildSession("session-2", { title: "Second chat" });
+    const finishHistory = new Map<string, (snapshot: AgentChatEventHistorySnapshot) => void>();
+    installAdeMocks({
+      sessions: [first, second],
+      eventHistory: (args) => new Promise<AgentChatEventHistorySnapshot>((resolve) => {
+        finishHistory.set(args.sessionId, resolve);
+      }),
+    });
+    const paneFor = (session: AgentChatSessionSummary) => (
+      <MemoryRouter>
+        <AgentChatPane
+          laneId={session.laneId}
+          lockSessionId={session.sessionId}
+          hideSessionTabs
+          initialSessionSummary={session}
+          onSessionCreated={vi.fn()}
+        />
+      </MemoryRouter>
+    );
+    const requestedSessionIds = () => vi.mocked(window.ade.agentChat.slashCommands).mock.calls.map(([args]) => args?.sessionId);
+    const view = render(paneFor(first));
+    await waitFor(() => expect(finishHistory.has("session-1")).toBe(true));
+
+    view.rerender(paneFor(second));
+    await waitFor(() => expect(finishHistory.has("session-2")).toBe(true));
+
+    // The first chat's read lands after the user has moved on: nothing is asked for.
+    await act(async () => {
+      finishHistory.get("session-1")!({ sessionId: "session-1", events: [], truncated: false, sessionFound: true });
+    });
+    expect(requestedSessionIds()).not.toContain("session-1");
+    expect(requestedSessionIds()).not.toContain("session-2");
+
+    await act(async () => {
+      finishHistory.get("session-2")!({ sessionId: "session-2", events: [], truncated: false, sessionFound: true });
+    });
+    expect(requestedSessionIds()).toContain("session-2");
+    expect(requestedSessionIds()).not.toContain("session-1");
   });
 
   it("keeps the pending model's permission mode local until Send", async () => {
@@ -13103,9 +13168,6 @@ describe("AgentChatPane per-chat runtime routing", () => {
       expect.any(Function),
       machineB,
     );
-    // Commands load when the composer takes focus.
-    const composer = await screen.findByRole("textbox");
-    act(() => composer.focus());
     await waitFor(() => expect(window.ade.agentChat.slashCommands).toHaveBeenCalledWith(
       expect.objectContaining({ sessionId: "chat-on-b" }),
       machineB,

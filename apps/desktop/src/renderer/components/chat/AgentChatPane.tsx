@@ -1019,9 +1019,6 @@ const MAX_AGENT_CHAT_VIEW_CACHE_BYTES_TOTAL = 128 * 1024 * 1024;
  * event landed inside the last interval.
  */
 const ACTIVE_TURN_RECOVERY_INTERVAL_MS = 10_000;
-// Longest wait for an idle slot before the slash-command load runs anyway, so a
-// busy renderer (a streaming turn) still gets its skill chips.
-const SLASH_COMMANDS_IDLE_TIMEOUT_MS = 500;
 const NO_SLASH_COMMANDS: AgentChatSlashCommand[] = [];
 const EMPTY_DRAFT_LAUNCH_JOBS: DraftLaunchJob[] = [];
 // Stable fallbacks: surfaces that seed only part of the app store must not make
@@ -8065,6 +8062,11 @@ export function AgentChatPane({
     return true;
   }, [applyOlderHistoryCursor, initialSessionSummary]);
 
+  // Asks for the provider's slash commands. Set by the slash-command block below,
+  // which owns the scope they are asked for; read here so the transcript paths
+  // need no dependency on it.
+  const requestSlashCommandsRef = useRef<() => void>(() => {});
+
   const loadHistory = useCallback(async (
     sessionId: string,
     options?: { force?: boolean; pin?: OpenProjectBinding | null },
@@ -8178,6 +8180,10 @@ export function AgentChatPane({
         }, historyPin);
         parsed = parseAgentChatTranscript(raw).filter((entry) => entry.sessionId === sessionId);
       }
+      // The transcript is in hand. Ask for the slash commands now, so their scan
+      // starts after the transcript read rather than beside it. Only the chat on
+      // screen asks: a read that finishes after the user left never does.
+      if (sessionId === renderSelectedSessionIdRef.current) requestSlashCommandsRef.current();
 
       // If real-time events have already been received for this session
       // (via flushQueuedEvents), the snapshot may be stale by a few events.
@@ -9094,6 +9100,9 @@ export function AgentChatPane({
     // than the primary catch-up — fire it immediately and only once.
     const adopted = adoptRetainedSession(readableSessionId);
     const restoredFromCache = applyCachedSessionView(readableSessionId);
+    // A warm cache puts the transcript on screen with no read to wait for, so the
+    // slash commands are asked for now.
+    if (restoredFromCache) requestSlashCommandsRef.current();
     const refreshOptions = { force: !restoredFromCache };
     // `mergeChatHistorySnapshot` dedupes, so this can never blank the view.
     const reconcileDelayMs = adopted ? 0 : 650;
@@ -9269,34 +9278,17 @@ export function AgentChatPane({
   }, [eventsBySession, setOptimisticOutgoingMessageSynced]);
 
   // Provider slash commands feed the composer's `/` menu and the transcript's
-  // `/skill` chips. A chat switch does not read them. They load when the
-  // composer takes focus (or a `/` is typed), or once this chat's transcript is
-  // on screen and the renderer is idle, so the read queues behind the transcript
-  // instead of alongside it. A chat switched away from before then never loads them.
+  // `/skill` chips. A chat switch does not ask for them up front. They are asked
+  // for once this chat's transcript read resolves (or its warm cache is shown),
+  // when the composer takes focus, or when a `/` is typed. A chat left before
+  // then never asks: the request is only for the chat on screen, and the fetch
+  // below is cancelled when the scope changes.
   const slashCommandsScope = `${isPersonalPane ? "personal" : "lane"}|${selectedSessionId ?? ""}|${laneId ?? ""}|${sessionProvider}|${projectRoot ?? ""}`;
   const [slashCommandsWantedScope, setSlashCommandsWantedScope] = useState<string | null>(null);
   const requestSlashCommands = useCallback(() => {
     setSlashCommandsWantedScope(slashCommandsScope);
   }, [slashCommandsScope]);
-  const transcriptOnScreen = selectedEvents.length > 0;
-  useEffect(() => {
-    if (!isTileActive || !transcriptOnScreen) return undefined;
-    const request = () => setSlashCommandsWantedScope(slashCommandsScope);
-    // jsdom has no idle callbacks.
-    if (typeof window.requestIdleCallback !== "function") {
-      const timer = window.setTimeout(request, 0);
-      return () => window.clearTimeout(timer);
-    }
-    // Cancel only a request that has not fired yet, as the backfill in
-    // AgentChatMessageList does.
-    let pending: number | null = window.requestIdleCallback(() => {
-      pending = null;
-      request();
-    }, { timeout: SLASH_COMMANDS_IDLE_TIMEOUT_MS });
-    return () => {
-      if (pending !== null) window.cancelIdleCallback(pending);
-    };
-  }, [isTileActive, slashCommandsScope, transcriptOnScreen]);
+  requestSlashCommandsRef.current = requestSlashCommands;
 
   // Fetch provider slash commands for this chat, once it has asked for them.
   useEffect(() => {
