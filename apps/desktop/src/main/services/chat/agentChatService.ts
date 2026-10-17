@@ -44345,9 +44345,6 @@ export function createAgentChatService(args: {
   };
 
   /** The local parent of a chat, read from its live or persisted state. */
-  const localParentOf = (sessionId: string): string | null =>
-    (managedSessions.get(sessionId)?.session ?? readPersistedState(sessionId))?.orchestrationParentSessionId?.trim() || null;
-
   /**
    * Point a chat at a new parent, or detach it. The repair for a link that a
    * move, a deleted parent, or a launch left wrong: reports follow the new
@@ -44357,7 +44354,7 @@ export function createAgentChatService(args: {
     sessionId,
     parentSessionId,
     spawnKind,
-    requireCurrentParentSessionId,
+    actingAgentSessionId,
   }: AgentChatSetParentArgs): AgentChatSession => {
     if (spawnKind !== undefined && spawnKind !== "subagent" && spawnKind !== "peer") {
       throw new Error("Spawn type must be subagent or peer.");
@@ -44366,11 +44363,23 @@ export function createAgentChatService(args: {
     const childId = managed.session.id;
     const previousParent = managed.session.orchestrationParentSessionId?.trim() || null;
     const previousSpawnKind = managed.session.spawnKind ?? null;
-    if (requireCurrentParentSessionId !== undefined && previousParent !== requireCurrentParentSessionId.trim()) {
-      throw new Error("An agent can only release a chat that reports to it.");
-    }
     if (parentSessionId === undefined) throw new Error("parentSessionId is required (null detaches the chat).");
     const nextParent = typeof parentSessionId === "string" ? parentSessionId.trim() : "";
+    const previousParentLive = previousParent !== null
+      && (parentChatStillExists(previousParent) || externalParentReachable(previousParent));
+    // An agent acting on another chat may only release a chat that reports to
+    // it, or adopt one that has no live parent (never take another
+    // coordinator's child).
+    const actor = actingAgentSessionId?.trim();
+    if (actor && actor !== childId) {
+      const releasesOwnChild = !nextParent && previousParent === actor;
+      const adoptsFreeChat = nextParent === actor && (!previousParentLive || previousParent === actor);
+      if (!releasesOwnChild && !adoptsFreeChat) {
+        throw new Error(
+          "An agent can only release a chat that reports to it, or adopt a chat whose parent is gone.",
+        );
+      }
+    }
     if (!nextParent) {
       if (spawnKind !== undefined) throw new Error("A spawn type needs a parent chat.");
       delete managed.session.orchestrationParentSessionId;
@@ -44385,7 +44394,9 @@ export function createAgentChatService(args: {
       }
       // Walk up from the new parent: reaching this chat would make a loop.
       const seen = new Set<string>([nextParent]);
-      for (let cursor = localParentOf(nextParent); cursor; cursor = localParentOf(cursor)) {
+      const parentOf = (id: string): string | null =>
+        (managedSessions.get(id)?.session ?? readPersistedState(id))?.orchestrationParentSessionId?.trim() || null;
+      for (let cursor = parentOf(nextParent); cursor; cursor = parentOf(cursor)) {
         if (cursor === childId) {
           throw new Error(`Chat '${nextParent}' already reports to this chat, so it cannot be its parent.`);
         }
@@ -44396,8 +44407,6 @@ export function createAgentChatService(args: {
       // A chat whose old parent is gone was demoted to a peer when it was
       // orphaned, so relinking it makes it a subagent again unless asked
       // otherwise. A live link keeps the kind the person chose.
-      const previousParentLive = previousParent !== null
-        && (parentChatStillExists(previousParent) || externalParentReachable(previousParent));
       managed.session.spawnKind = spawnKind ?? (previousParentLive ? previousSpawnKind : null) ?? "subagent";
       // Only an unparented chat records who launched it.
       delete managed.session.launchedBySessionId;
@@ -47913,6 +47922,9 @@ export function createAgentChatService(args: {
       && priorRecord.sessionId
     ) {
       const completedSession = ensureManagedSession(priorRecord.sessionId).session;
+      // A retry after a crash between dispatch and the relink still relinks;
+      // the relink only touches links that still point at the old chat.
+      relinkAfterCrossMachineArrival(capsule, priorRecord.sessionId);
       if (priorRecord.state === "dispatched") {
         persistCrossMachineHandoffRecord({
           ...priorRecord,

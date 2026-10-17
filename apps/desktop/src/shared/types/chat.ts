@@ -5772,10 +5772,11 @@ export type AgentChatSetParentArgs = {
   parentSessionId: string | null;
   spawnKind?: AgentChatSpawnKind;
   /**
-   * Stamped by the runtime when a chat-bound agent releases another chat: the
-   * release applies only while the chat still reports to this agent.
+   * Stamped by the runtime when a chat-bound agent acts on another chat. That
+   * agent may only release a chat that reports to it, or adopt one whose
+   * parent is gone. Never taken from the caller.
    */
-  requireCurrentParentSessionId?: string;
+  actingAgentSessionId?: string;
 };
 
 export type AgentChatDismissSubagentTakeoverPromptArgs = {

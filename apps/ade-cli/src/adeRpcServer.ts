@@ -3497,21 +3497,19 @@ function scopeChatAdeActionArgs(
   }
   if (action === "setParent") {
     if (isUnboundAdeCliCaller(session)) return chatArgs;
-    // A bound agent may move its own chat, adopt a chat as its child, or
-    // release a chat that reports to it. Never relink two other chats.
+    // A bound agent may move its own chat. On another chat it may only adopt
+    // it or release it, and the service decides which chats qualify from the
+    // actor stamped here.
     const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
     const requestedSessionId = asOptionalTrimmedString(chatArgs.sessionId) ?? callerChatSessionId;
     const requestedParentId = asOptionalTrimmedString(chatArgs.parentSessionId);
-    const { requireCurrentParentSessionId: _callerSent, ...parentArgs } = chatArgs;
+    const { actingAgentSessionId: _callerSent, ...parentArgs } = chatArgs;
     if (!callerChatSessionId || !requestedSessionId) chatAccessDenied(method, { callerChatSessionId, requestedSessionId });
-    if (requestedSessionId === callerChatSessionId || requestedParentId === callerChatSessionId) {
-      return { ...parentArgs, sessionId: requestedSessionId };
+    if (requestedSessionId === callerChatSessionId) return { ...parentArgs, sessionId: requestedSessionId };
+    if (requestedParentId != null && requestedParentId !== callerChatSessionId) {
+      chatAccessDenied(method, { callerChatSessionId, requestedSessionId });
     }
-    // Releasing another chat: the service checks it still reports here.
-    if (requestedParentId == null) {
-      return { ...parentArgs, sessionId: requestedSessionId, requireCurrentParentSessionId: callerChatSessionId };
-    }
-    chatAccessDenied(method, { callerChatSessionId, requestedSessionId });
+    return { ...parentArgs, sessionId: requestedSessionId, actingAgentSessionId: callerChatSessionId };
   }
   const spawnKindUpdate = action === "updateSession" && chatUpdateSessionMutatesSpawnKind(chatArgs);
   if (!SCOPED_CHAT_ACTIONS.has(action) && !spawnKindUpdate) return chatArgs;

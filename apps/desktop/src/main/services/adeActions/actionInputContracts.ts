@@ -589,7 +589,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
         "Point a chat at a new parent chat, or detach it with parentSessionId null. Use it when a move, a deleted parent, "
         + "or a launch left the link wrong; reports go to the new parent from the next turn. spawnKind defaults to the "
         + "chat's current kind, or subagent when its old parent is gone. A chat-bound agent may change its own chat's "
-        + "parent, adopt a chat as its own child, or release a chat that reports to it.",
+        + "parent, adopt a chat whose parent is gone (or that has none), or release a chat that reports to it.",
       input: "object { sessionId: string, parentSessionId: string | null, spawnKind?: \"subagent\" | \"peer\" }",
       example: "ade actions run chat.setParent --input-json '{\"sessionId\":\"chat-123\",\"parentSessionId\":\"chat-456\"}' --text",
     },
