@@ -62,7 +62,7 @@ function parseOptions(argv: string[]): Options {
 
 /**
  * The real path a scratch root would have, checked before anything is created.
- * It must be a new directory strictly inside the OS temp dir, and it must not
+ * It must not exist yet, must sit strictly inside the OS temp dir, and it must not
  * be under the user's ADE projects folder or ADE home. `tmp` and `home` are
  * injectable so the check can be exercised without touching the real ones.
  */
@@ -91,8 +91,10 @@ export function checkedScratchRoot(
   if (!real.startsWith(realTmp + path.sep)) {
     throw new Error(`Refusing ${requested}: a scratch root must be inside ${realTmp}.`);
   }
-  if (fs.existsSync(real) && fs.readdirSync(real).length > 0) {
-    throw new Error(`Refusing ${requested}: the directory is not empty. Pick a new root.`);
+  // Only a path that does not exist yet: an existing entry could be a symlink
+  // into a real project or ADE home that the checks above never resolve.
+  if (fs.lstatSync(real, { throwIfNoEntry: false })) {
+    throw new Error(`Refusing ${requested}: it already exists. Pick a new root.`);
   }
   return real;
 }
@@ -110,7 +112,9 @@ async function main(): Promise<void> {
   const root = checkedScratchRoot(
     options.root ?? path.join(os.tmpdir(), `ade-scratch-follower-${randomUUID().slice(0, 8)}`),
   );
-  fs.mkdirSync(root, { recursive: true });
+  // Not recursive: the parent was checked to exist, and this fails if anything
+  // appeared at the root since the check.
+  fs.mkdirSync(root);
   // The dev app's private ADE home, named in the summary below. The script never writes to it.
   fs.mkdirSync(path.join(root, "ade-home"), { recursive: true });
 
