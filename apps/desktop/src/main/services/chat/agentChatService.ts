@@ -61271,9 +61271,77 @@ export function createAgentChatService(args: {
     } satisfies AgentChatSessionSummary;
   };
 
+  /**
+   * A chat's spawn parent and kind as its metadata file records them, for a
+   * chat that is not live. Memoized per file: the stat (inode, size, mtime)
+   * says whether the cached read still holds, so a list parses only the files
+   * that changed since the last one.
+   */
+  const persistedSpawnLineageMemo = new Map<string, {
+    stamp: string;
+    parentId: string;
+    spawnKind: AgentChatSession["spawnKind"] | null;
+  }>();
+  const persistedSpawnLineage = (sessionId: string) => {
+    // A stat that fails, or a filesystem without a usable inode (Node documents
+    // `ino` as filesystem-specific), just means no memo: the file is read.
+    let stamp = "";
+    try {
+      const stat = fs.statSync(metadataPathFor(sessionId), { throwIfNoEntry: false });
+      if (stat && stat.ino) stamp = `${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+    } catch {
+      stamp = "";
+    }
+    const memo = persistedSpawnLineageMemo.get(sessionId);
+    if (stamp && memo?.stamp === stamp) return memo;
+    const persisted = readPersistedState(sessionId);
+    const lineage = {
+      stamp,
+      parentId: persisted?.orchestrationParentSessionId?.trim() || "",
+      spawnKind: persisted?.spawnKind ?? null,
+    };
+    if (stamp) persistedSpawnLineageMemo.set(sessionId, lineage);
+    return lineage;
+  };
+
+  /**
+   * The orphan repair a summary does, for the window rows a named list does
+   * not summarize. Summarizing every window row used to run it for each one on
+   * every list. Only a subagent whose parent chat is gone is handed to
+   * `reconcileOrphanedSubagent`, which re-checks the parent itself.
+   */
+  const repairOrphanedChildren = (rows: readonly { id: string }[]): void => {
+    // The memo only ever holds the window's rows: an id that left it is dropped.
+    const windowIds = new Set(rows.map((row) => row.id));
+    for (const id of persistedSpawnLineageMemo.keys()) {
+      if (!windowIds.has(id)) persistedSpawnLineageMemo.delete(id);
+    }
+    for (const row of rows) {
+      const live = managedSessions.get(row.id);
+      if (live) {
+        reconcileOrphanedSubagent(live);
+        continue;
+      }
+      let lineage: ReturnType<typeof persistedSpawnLineage>;
+      try {
+        lineage = persistedSpawnLineage(row.id);
+      } catch {
+        // One unreadable metadata file must not fail the list; that row just skips repair.
+        continue;
+      }
+      const { parentId, spawnKind } = lineage;
+      if (spawnKind !== "subagent" || !parentId || parentId === row.id || parentChatStillExists(parentId)) continue;
+      try {
+        reconcileOrphanedSubagent(ensureManagedSession(row.id));
+      } catch {
+        // Listing must not fail because an orphaned child cannot be loaded.
+      }
+    }
+  };
+
   const listSessions = async (
     laneId?: string,
-    options?: { includeIdentity?: boolean; includeAutomation?: boolean; includeArchived?: boolean },
+    options?: { includeIdentity?: boolean; includeAutomation?: boolean; includeArchived?: boolean; sessionIds?: readonly string[] },
   ): Promise<AgentChatSessionSummary[]> => {
     await scheduledWorkReady;
     const rows = sessionService.list({
@@ -61282,11 +61350,19 @@ export function createAgentChatService(args: {
       toolTypes: CHAT_SESSION_TOOL_TYPES,
     });
     const chatRows = rows.filter((row) => isChatToolType(row.toolType));
+    // A summary costs a metadata read and a config read per row, so a caller
+    // that shows a few chats names them and only those are summarized. The
+    // 500-row window is unchanged: a named chat outside it is still not listed.
+    const namedIds = options?.sessionIds ? new Set(options.sessionIds) : null;
+    // Summarizing a row also repairs its orphan, so the rows left unsummarized
+    // are repaired here. An unnamed list summarizes every row and needs nothing.
+    if (namedIds) repairOrphanedChildren(chatRows);
+    const summarizedRows = namedIds ? chatRows.filter((row) => namedIds.has(row.id)) : chatRows;
     const includeIdentity = options?.includeIdentity === true;
     const includeAutomation = options?.includeAutomation === true;
     const includeArchived = options?.includeArchived !== false;
 
-    return (await Promise.all(chatRows.map((row) => summarizeSessionRow(row))))
+    return (await Promise.all(summarizedRows.map((row) => summarizeSessionRow(row))))
       .filter((summary) => includeIdentity || !summary.identityKey)
       .filter((summary) => includeAutomation || (summary.surface ?? "work") !== "automation")
       .filter((summary) => includeArchived || summary.archivedAt == null);
