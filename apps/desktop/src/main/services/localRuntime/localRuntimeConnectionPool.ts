@@ -3577,6 +3577,7 @@ async function subscribeToRuntimeEvents(
   onSubscribed?: (result: RemoteRuntimeStreamEventsResult) => void,
 ): Promise<() => void> {
   const pendingNotifications: RuntimeEventNotification[] = [];
+  const pendingEndedIds: string[] = [];
   let closed = false;
   let subscriptionId: string | null = null;
 
@@ -3592,12 +3593,33 @@ async function subscribeToRuntimeEvents(
       onEvent(notification.event, notification.eventEpoch);
     }
   });
+  // The runtime ends a subscription it drops (its project scope was replaced)
+  // and says so. The connection stays up, so nothing else would tell us: the
+  // subscription would look live and never deliver again.
+  const removeEndedListener = client.onNotification("runtime/events_ended", (params) => {
+    if (closed) return;
+    const ended = normalizeRuntimeEventsEnded(params);
+    if (!ended || ended.projectId !== projectId) return;
+    if (subscriptionId == null) {
+      pendingEndedIds.push(ended.subscriptionId);
+      return;
+    }
+    if (ended.subscriptionId === subscriptionId) endNow();
+  });
   const removeDisconnectListener = client.onDisconnect(() => {
     if (closed) return;
     closed = true;
     removeNotificationListener();
+    removeEndedListener();
     onEnded?.();
   });
+  const endNow = (): void => {
+    closed = true;
+    removeNotificationListener();
+    removeEndedListener();
+    removeDisconnectListener();
+    onEnded?.();
+  };
 
   try {
     const value = await client.call("runtimeEvents.subscribe", {
@@ -3620,9 +3642,11 @@ async function subscribeToRuntimeEvents(
         onEvent(notification.event, notification.eventEpoch);
       }
     }
+    if (!closed && pendingEndedIds.includes(subscriptionId)) endNow();
   } catch (error) {
     closed = true;
     removeNotificationListener();
+    removeEndedListener();
     removeDisconnectListener();
     throw error;
   }
@@ -3677,6 +3701,16 @@ function readSubscriptionId(value: unknown): string {
     throw new Error("ADE service event subscription did not return a subscription id.");
   }
   return id.trim();
+}
+
+function normalizeRuntimeEventsEnded(
+  value: unknown,
+): { subscriptionId: string; projectId: string } | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const subscriptionId = typeof record.subscriptionId === "string" ? record.subscriptionId.trim() : "";
+  const projectId = typeof record.projectId === "string" ? record.projectId : "";
+  return subscriptionId && projectId ? { subscriptionId, projectId } : null;
 }
 
 function normalizeRuntimeEventNotification(value: unknown): RuntimeEventNotification | null {

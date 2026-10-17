@@ -851,12 +851,21 @@ export function registerRuntimeBridge({
     return { nextCursor: head.nextCursor, hasMore: false, eventEpoch: head.eventEpoch };
   };
 
+  // The epoch an open subscription is on. A poll that finds one open reads no
+  // position from it, but the epoch still tells the pump which buffer it is on.
+  const runtimeEventSubscriptionEpoch = (senderId: number, requestKey: string): string | null => {
+    const subscription = getRuntimeEventSubscription(senderId, requestKey);
+    const head = subscription ? runtimeEventHeads.get(subscription) : undefined;
+    return head?.eventEpoch ?? null;
+  };
+
   // A runtime that answers with another epoch has replaced the buffer its
-  // subscriptions read. It drops those subscriptions with the old buffer and does
-  // not tell the client, so they would never deliver again, and an anchor would
-  // keep answering their stale head. End them the way an ended stream ends, which
-  // also releases the page's file watches, so the next anchor opens against the
-  // buffer that is current. Returns how many were ended.
+  // subscriptions read. Its subscriptions on the old buffer would never deliver
+  // again, and an anchor would keep answering their stale head. The runtime
+  // ends them on disposal (`runtime/events_ended`); this catches the rest, and
+  // covers a remote runtime, which does not. End them the way an ended stream
+  // ends, which also releases the page's file watches, so the next anchor opens
+  // against the buffer that is current. Returns how many were ended.
   const retireStaleRuntimeEventSubscriptions = (
     sender: WebContents,
     bindingKey: string,
@@ -1791,19 +1800,34 @@ export function registerRuntimeBridge({
             onSubscribed,
           );
         const requestKey = runtimeEventRequestKey(bindingKey, request);
+        const fileWatchRuntimeKey = localFileWatchRuntimeKey(rootPath);
         const subscriptionInit = await ensureRuntimeEventSubscription(
           event.sender,
           bindingKey,
           requestKey,
           subscribe,
-          localFileWatchRuntimeKey(rootPath),
+          fileWatchRuntimeKey,
           request.replay === false,
         );
+        // Every local poll names the epoch it is on, so a pump learns a replaced
+        // buffer from the poll itself. Subscriptions on another epoch belong to the
+        // replaced buffer and are retired, as the remote poll retires them.
+        const eventEpoch = subscriptionInit?.eventEpoch ??
+          runtimeEventSubscriptionEpoch(event.sender.id, requestKey);
+        const retired = retireStaleRuntimeEventSubscriptions(
+          event.sender,
+          bindingKey,
+          fileWatchRuntimeKey,
+          eventEpoch,
+        );
+        // The retirement marked the page's watches for restore. This poll's own
+        // subscription is open on the current buffer, so they can be opened now.
+        if (retired > 0) restorePageFileWatches(event.sender.id, fileWatchRuntimeKey);
         return {
           events: [],
           nextCursor: subscriptionInit?.nextCursor ?? request.cursor ?? 0,
           hasMore: subscriptionInit?.hasMore === true,
-          ...(subscriptionInit?.eventEpoch ? { eventEpoch: subscriptionInit.eventEpoch } : {}),
+          ...(eventEpoch ? { eventEpoch } : {}),
           ...(subscriptionInit?.gap === true ? { gap: true } : {}),
           ...(typeof subscriptionInit?.oldestCursor === "number" ? { oldestCursor: subscriptionInit.oldestCursor } : {}),
         };

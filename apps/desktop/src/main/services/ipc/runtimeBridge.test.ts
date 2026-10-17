@@ -971,6 +971,105 @@ describe("registerRuntimeBridge", () => {
       expect(other.webContents.send).toHaveBeenCalledTimes(1);
     });
 
+    // The runtime replaces a project's event buffer while this window stays open,
+    // and drops the subscription on the old buffer silently. A sibling pump's poll
+    // opens on the new buffer and names its epoch. The old subscription must be
+    // retired then, or the re-anchor answers its stale head and the pump loops.
+    it("retires a local subscription on the replaced epoch when a poll reports the new one", async () => {
+      const subscriptions: RecordedSubscription[] = [];
+      const pool = {
+        subscribeEventsForRoot: vi.fn(
+          async (
+            rootPath: string,
+            request: Record<string, unknown>,
+            onEvent: (event: unknown, eventEpoch?: string | null) => void,
+            onEnded: () => void,
+            onSubscribed?: (result: Record<string, unknown>) => void,
+          ) => {
+            const restarted = subscriptions.length > 0;
+            const cleanup = vi.fn();
+            onSubscribed?.({
+              nextCursor: restarted ? 2 : 7,
+              hasMore: false,
+              eventEpoch: restarted ? "epoch-local-2" : "epoch-local-1",
+            });
+            subscriptions.push({ rootPath, request, emit: onEvent, end: onEnded, cleanup });
+            return cleanup;
+          },
+        ),
+        streamEventsForRoot: vi.fn(),
+      };
+      const stream = registerWithPool(pool);
+      const active = destroyableSender(214);
+      const poll = (request: Record<string, unknown>) =>
+        stream(eventForSender(active.webContents), { rootPath: "/repo", request });
+
+      await expect(poll({ cursor: 0, limit: 200, replay: false })).resolves.toEqual({
+        events: [],
+        nextCursor: 7,
+        hasMore: false,
+        eventEpoch: "epoch-local-1",
+      });
+      // A sibling pump opens its own subscription on the new buffer, and its reply names the new epoch.
+      await expect(poll(pinnedPtyPumpRequest)).resolves.toMatchObject({
+        eventEpoch: "epoch-local-2",
+      });
+      expect(subscriptions[0].cleanup).toHaveBeenCalledTimes(1);
+
+      // The re-anchor opens against the new buffer and answers that buffer's head.
+      await expect(poll({ cursor: 0, limit: 200, replay: false })).resolves.toEqual({
+        events: [],
+        nextCursor: 2,
+        hasMore: false,
+        eventEpoch: "epoch-local-2",
+      });
+      expect(pool.subscribeEventsForRoot).toHaveBeenCalledTimes(3);
+
+      // The new buffer's events reach the window; the replaced subscription is silent.
+      subscriptions[2].emit(ptyEvent(3), "epoch-local-2");
+      subscriptions[0].emit(ptyEvent(8), "epoch-local-1");
+      expect(active.webContents.send).toHaveBeenCalledTimes(1);
+      expect(active.webContents.send.mock.calls[0][1]).toMatchObject({
+        event: { id: 3 },
+        eventEpoch: "epoch-local-2",
+      });
+    });
+
+    // A pump that shares an open local subscription reads no position from it,
+    // but its reply still names the buffer. Otherwise a sibling that missed the
+    // epoch change never resets, and its pushes on the new epoch are dropped.
+    it("names the epoch an open local subscription is on for a pump that shares it", async () => {
+      const pool = {
+        subscribeEventsForRoot: vi.fn(
+          async (
+            _rootPath: string,
+            _request: Record<string, unknown>,
+            _onEvent: (event: unknown, eventEpoch?: string | null) => void,
+            _onEnded: () => void,
+            onSubscribed?: (result: Record<string, unknown>) => void,
+          ) => {
+            const cleanup = vi.fn();
+            onSubscribed?.({ nextCursor: 7, hasMore: false, eventEpoch: "epoch-local-2" });
+            return cleanup;
+          },
+        ),
+        streamEventsForRoot: vi.fn(),
+      };
+      const stream = registerWithPool(pool);
+      const active = destroyableSender(215);
+      const poll = (request: Record<string, unknown>) =>
+        stream(eventForSender(active.webContents), { rootPath: "/repo", request });
+
+      await poll(activePumpRequest);
+      await expect(poll({ cursor: 5, limit: 100 })).resolves.toEqual({
+        events: [],
+        nextCursor: 5,
+        hasMore: false,
+        eventEpoch: "epoch-local-2",
+      });
+      expect(pool.subscribeEventsForRoot).toHaveBeenCalledTimes(1);
+    });
+
     it("expires subscriptions whose pump stopped polling so they cannot accumulate", async () => {
       const previous = process.env.ADE_DISABLE_REMOTE_AUTOCONNECT;
       process.env.ADE_DISABLE_REMOTE_AUTOCONNECT = "1";

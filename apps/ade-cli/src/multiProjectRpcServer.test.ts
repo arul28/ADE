@@ -3265,6 +3265,64 @@ describe("multi-project RPC server", () => {
     handler.dispose();
   });
 
+  it("tells the connection when a project scope it subscribed to is disposed, and emits nothing from the replaced buffer", async () => {
+    // Disposing a scope takes its event buffer with it, and the connection stays
+    // up. Without this notice the client keeps a subscription that never emits
+    // again, and a pump anchors on the head of the dead buffer.
+    const { projectRoot, registry } = createRegistry();
+    const added = registry.add(projectRoot);
+    const eventBuffer = createEventBuffer();
+    let disposeListener: ((projectId: string) => void) | null = null;
+    const scopeRegistry = {
+      get: vi.fn(async () => ({
+        registryProjectId: added.projectId,
+        record: added,
+        runtime: { eventBuffer, dispose: vi.fn() },
+        dispose: vi.fn(),
+      })),
+      ensureSyncHost: vi.fn(),
+      dispose: vi.fn(),
+      disposeAll: vi.fn(),
+      onDispose: vi.fn((listener: (projectId: string) => void) => {
+        disposeListener = listener;
+        return () => {
+          disposeListener = null;
+        };
+      }),
+    } as unknown as ProjectScopeRegistry;
+    const handler = createMultiProjectRpcRequestHandler({
+      serverVersion: "test",
+      projectRegistry: registry,
+      scopeRegistry,
+    });
+    const notify = vi.fn();
+    handler.setNotifier(notify);
+    await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: {} });
+
+    const subscribed = await handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "runtimeEvents.subscribe",
+      params: { projectId: added.projectId, category: "runtime" },
+    }) as { subscriptionId: string };
+
+    (disposeListener as ((projectId: string) => void) | null)?.(added.projectId);
+
+    expect(notify).toHaveBeenCalledWith("runtime/events_ended", {
+      subscriptionId: subscribed.subscriptionId,
+      projectId: added.projectId,
+    });
+    notify.mockClear();
+    eventBuffer.push({
+      timestamp: "2026-05-10T00:00:02.000Z",
+      category: "runtime",
+      payload: { type: "file_change", event: { path: "stale.md" } },
+    });
+    expect(notify).not.toHaveBeenCalled();
+
+    handler.dispose();
+  });
+
   it("skips screencast frames for a subscriber that did not ask for them", async () => {
     // App Control pushes a base64 JPEG per paint. Over a paired sync transport
     // runtime RPC is a *required* send, so those frames were buffered rather

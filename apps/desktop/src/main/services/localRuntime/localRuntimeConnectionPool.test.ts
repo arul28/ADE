@@ -4491,6 +4491,113 @@ describe("local runtime connection pool", () => {
     pool.setAppControlFrameLanes(["lane-2"]);
     expect(call.mock.calls.length).toBe(callsAfterCleanup);
   });
+
+  // The runtime drops a subscription when it replaces the project's buffer, and
+  // says so: the connection stays up, so nothing else would end the subscription.
+  describe("runtime event subscriptions the runtime ends", () => {
+    function endableClient(subscribeReply: (listeners: Map<string, Set<(params: unknown) => void>>) => unknown) {
+      const notificationListeners = new Map<string, Set<(params: unknown) => void>>();
+      const call = vi.fn(async (method: string) => {
+        if (method === "runtimeEvents.subscribe") return subscribeReply(notificationListeners);
+        if (method === "runtimeEvents.unsubscribe") return { removed: true };
+        return null;
+      });
+      const client = {
+        call,
+        onDisconnect: vi.fn(() => () => {}),
+        onNotification: vi.fn((method: string, callback: (params: unknown) => void) => {
+          const existing = notificationListeners.get(method) ?? new Set<(params: unknown) => void>();
+          existing.add(callback);
+          notificationListeners.set(method, existing);
+          return () => {
+            existing.delete(callback);
+            if (existing.size === 0) notificationListeners.delete(method);
+          };
+        }),
+      };
+      const emit = (method: string, params: unknown) => {
+        for (const listener of [...(notificationListeners.get(method) ?? [])]) listener(params);
+      };
+      return { call, client, emit };
+    }
+
+    function poolOn(client: unknown, rootPath: string) {
+      const pool = new LocalRuntimeConnectionPool("1.2.3", {
+        debug: vi.fn(),
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      } as never);
+      (pool as unknown as { projectsByRoot: Map<string, unknown> }).projectsByRoot.set(rootPath, {
+        projectId: "project-1",
+        rootPath,
+        displayName: "repo",
+        addedAt: 1,
+        lastOpenedAt: 1,
+        gitOriginUrl: null,
+      });
+      (pool as unknown as { connection: Promise<unknown> }).connection = Promise.resolve({
+        client,
+        child: null,
+        socketPath: "/tmp/ade.sock",
+      });
+      return pool;
+    }
+
+    it("ends the subscription the runtime drops, and delivers nothing more on it", async () => {
+      const rootPath = path.resolve("/repo");
+      const { call, client, emit } = endableClient(() => ({
+        subscriptionId: "runtime-events-7",
+        nextCursor: 4,
+        hasMore: false,
+        eventEpoch: "epoch-local-1",
+      }));
+      const pool = poolOn(client, rootPath);
+      const onEvent = vi.fn();
+      const onEnded = vi.fn();
+      const cleanup = await pool.subscribeEventsForRoot(rootPath, { cursor: 4 }, onEvent, onEnded);
+
+      // Another subscription, or another project's, ends nothing here.
+      emit("runtime/events_ended", { subscriptionId: "runtime-events-6", projectId: "project-1" });
+      emit("runtime/events_ended", { subscriptionId: "runtime-events-7", projectId: "project-2" });
+      expect(onEnded).not.toHaveBeenCalled();
+
+      emit("runtime/events_ended", { subscriptionId: "runtime-events-7", projectId: "project-1" });
+      expect(onEnded).toHaveBeenCalledTimes(1);
+
+      // The runtime already dropped it, so there is nothing to unsubscribe, and a
+      // late event from it is not delivered.
+      cleanup();
+      expect(call).not.toHaveBeenCalledWith("runtimeEvents.unsubscribe", expect.anything());
+      emit("runtime/event", {
+        subscriptionId: "runtime-events-7",
+        projectId: "project-1",
+        event: { id: 5, timestamp: "2026-05-10T12:00:00.000Z", category: "runtime", payload: { type: "late" } },
+        eventEpoch: "epoch-local-1",
+      });
+      expect(onEvent).not.toHaveBeenCalled();
+      expect(onEnded).toHaveBeenCalledTimes(1);
+    });
+
+    it("ends a subscription the runtime drops before its subscribe reply arrives", async () => {
+      const rootPath = path.resolve("/repo");
+      const { client, emit } = endableClient((listeners) => {
+        for (const listener of [...(listeners.get("runtime/events_ended") ?? [])]) {
+          listener({ subscriptionId: "runtime-events-8", projectId: "project-1" });
+        }
+        return { subscriptionId: "runtime-events-8", nextCursor: 4, hasMore: false, eventEpoch: "epoch-local-1" };
+      });
+      const pool = poolOn(client, rootPath);
+      const onEnded = vi.fn();
+
+      const cleanup = await pool.subscribeEventsForRoot(rootPath, { cursor: 4 }, vi.fn(), onEnded);
+
+      expect(onEnded).toHaveBeenCalledTimes(1);
+      cleanup();
+      emit("runtime/events_ended", { subscriptionId: "runtime-events-8", projectId: "project-1" });
+      expect(onEnded).toHaveBeenCalledTimes(1);
+    });
+  });
 });
 
 describe("local runtime action retry classification", () => {

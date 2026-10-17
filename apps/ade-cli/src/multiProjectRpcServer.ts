@@ -1170,6 +1170,10 @@ export function createMultiProjectRpcRequestHandler(
       if (subscription.projectId !== projectId) continue;
       subscription.unsubscribe();
       eventSubscriptions.delete(subscription.id);
+      // The buffer behind this subscription is gone and will never emit again.
+      // Say so: a client that is not told keeps the subscription, and anchors
+      // on its stale head.
+      notifier?.("runtime/events_ended", { subscriptionId: subscription.id, projectId });
     }
   };
   const scopeRegistry =
