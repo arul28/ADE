@@ -25439,6 +25439,9 @@ async function runServe(
       enabled: syncEnabled,
       sharedSyncListener,
       hostStartupEnabled: isMachineSecretsHome,
+      // The machine's own brain may claim the cluster record for any project it
+      // serves, including before that project is selected as the host.
+      mayClaimCluster: syncEnabled,
       hostDiscoveryEnabled: true,
       forceHostRole: false,
       runtimeKind: "headless",

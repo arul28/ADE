@@ -1656,6 +1656,84 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
       expect(status.clusterState?.brainDeviceId).not.toBe("remote-brain");
       expect(status.clusterState?.brainEpoch).toBe(6);
     }, 30_000);
+
+    it.each([
+      {
+        label: "no cluster record",
+        seedStaleRemoteBrain: false,
+        expectedBrainDeviceId: null,
+        expectedBrainEpoch: null,
+      },
+      {
+        label: "a stale remote brain record",
+        seedStaleRemoteBrain: true,
+        expectedBrainDeviceId: "remote-brain",
+        expectedBrainEpoch: 5,
+      },
+    ])("a runtime that is not allowed to host never writes the cluster record ($label)", async ({
+      seedStaleRemoteBrain,
+      expectedBrainDeviceId,
+      expectedBrainEpoch,
+    }) => {
+      const projectRoot = makeProjectRoot("ade-sync-service-non-host-cluster-");
+      const db = await openKvDb(
+        path.join(projectRoot, ".ade", "ade.db"),
+        createLogger() as any,
+      );
+      if (seedStaleRemoteBrain) {
+        const now = "2026-04-01T00:00:00.000Z";
+        db.run(
+          `insert into devices(
+            device_id, site_id, name, platform, device_type, created_at, updated_at, last_seen_at, last_host, last_port, tailscale_ip, ip_addresses_json, metadata_json
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            "remote-brain",
+            "remote-site",
+            "Remote host",
+            "macOS",
+            "desktop",
+            now,
+            now,
+            now,
+            "10.0.0.9",
+            8787,
+            null,
+            JSON.stringify(["10.0.0.9"]),
+            JSON.stringify({}),
+          ],
+        );
+        db.run(
+          `insert into sync_cluster_state(cluster_id, brain_device_id, brain_epoch, updated_at, updated_by_device_id)
+           values (?, ?, ?, ?, ?)`,
+          ["default", "remote-brain", 5, now, "remote-brain"],
+        );
+      }
+
+      const service = createSyncService({
+        db,
+        logger: createLogger() as any,
+        projectRoot,
+        fileService: { dispose: () => {} } as any,
+        laneService: { list: async () => [] } as any,
+        prService: {} as any,
+        sessionService: { list: () => [] } as any,
+        ptyService: {} as any,
+        computerUseArtifactBrokerService: {} as any,
+        agentChatService: { listSessions: async () => [] } as any,
+        hostStartupEnabled: false,
+      } as any);
+
+      activeDisposers.push(async () => {
+        await service.dispose();
+        db.close();
+      });
+
+      await service.initialize();
+      const status = await service.getStatus();
+      expect(createSyncHostServiceMock).not.toHaveBeenCalled();
+      expect(status.clusterState?.brainDeviceId ?? null).toBe(expectedBrainDeviceId);
+      expect(status.clusterState?.brainEpoch ?? null).toBe(expectedBrainEpoch);
+    }, 30_000);
   });
 
   describe("setHostDiscoveryEnabled / setHostStartupEnabled", () => {

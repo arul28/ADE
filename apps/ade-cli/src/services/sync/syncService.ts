@@ -210,6 +210,15 @@ type SyncServiceArgs = {
    */
   sharedSyncListener?: SharedSyncListener | null;
   hostStartupEnabled?: boolean;
+  /**
+   * Whether this runtime may write the cluster record as its brain while it is
+   * not the selected host. Fixed at construction; only the machine's own ADE
+   * home sets it. Its project scopes boot with host startup off until one is
+   * selected, and must still claim a missing or dead record at startup. Every
+   * other runtime claims only while its host startup is on, so a runtime that
+   * cannot host (the desktop in-process runtime) never writes the record.
+   */
+  mayClaimCluster?: boolean;
   hostDiscoveryEnabled?: boolean;
   /**
    * Phone sync is hosted by the local ADE service. When enabled, legacy
@@ -698,6 +707,11 @@ export function createSyncService(args: SyncServiceArgs) {
   let initializingPromise: Promise<void> | null = null;
   let initialized = false;
   let hostStartupEnabled = args.hostStartupEnabled !== false;
+  // Writing the cluster record as this device is allowed only for the machine
+  // brain (`mayClaimCluster`) or while this runtime is starting its own host.
+  // Read at each claim, never cached: `hostStartupEnabled` changes at runtime.
+  const mayClaimCluster = args.mayClaimCluster === true;
+  const canClaimCluster = (): boolean => mayClaimCluster || hostStartupEnabled;
   let hostDiscoveryEnabled = args.hostDiscoveryEnabled !== false;
   let transferReadinessCache: { value: SyncTransferReadiness; expiresAtMs: number } | null = null;
   let transferReadinessInFlight: Promise<SyncTransferReadiness> | null = null;
@@ -1416,7 +1430,10 @@ export function createSyncService(args: SyncServiceArgs) {
                 updatedByDeviceId: localDevice.deviceId,
               });
             }
-          } else if (!savedDraft) {
+          } else if (!savedDraft && canClaimCluster()) {
+            // Only a runtime that may claim writes the cluster record. A runtime
+            // that cannot host and still claimed would make peers follow a brain
+            // that never serves sync.
             if (!cluster) {
               cluster = deviceRegistryService.bootstrapLocalBrainIfNeeded();
             } else if (isStaleNonLocalBrainCluster(cluster, localDevice.deviceId)) {
@@ -1459,7 +1476,7 @@ export function createSyncService(args: SyncServiceArgs) {
                 args.logger.warn("sync.role.viewer_connect_failed", {
                   error: error instanceof Error ? error.message : String(error),
                 });
-                if (shouldReclaimStaleViewerDraft({ cluster, localDevice, draft, error })) {
+                if (canClaimCluster() && shouldReclaimStaleViewerDraft({ cluster, localDevice, draft, error })) {
                   args.logger.warn("sync.role.viewer_stale_draft_reclaimed", {
                     host: draft.host,
                     port: draft.port,
@@ -2052,6 +2069,13 @@ export function createSyncService(args: SyncServiceArgs) {
     async transferBrainToLocal(): Promise<SyncRoleSnapshot> {
       const current = await this.getStatus({ forceTransferReadiness: true });
       if (current.role === "brain") return current;
+      // Refused before any write: a runtime that cannot host would claim the
+      // record here, peers would follow it, and it would never serve sync.
+      if (!canClaimCluster()) {
+        throw new Error(
+          "This ADE runtime cannot host sync, so it cannot take the host role. Make this project the host from the machine's ADE runtime.",
+        );
+      }
       if (!current.transferReadiness.ready) {
         throw new Error(
           "Stop live chats and terminals before transferring the host role.",
