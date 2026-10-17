@@ -392,6 +392,21 @@ export function mergeAgentChatLiveEvents(
 }
 
 /**
+ * A held tool call that the snapshot head re-sends. A resent call keeps its
+ * first send's time in the held list (see {@link upsertRepeatedToolCalls}), so
+ * the head's own timestamp sorts after it and the time check misses the join.
+ * Same logical item is the same call.
+ */
+function isResendOfHeldToolCall(
+  held: AgentChatEventEnvelope,
+  head: AgentChatEventEnvelope,
+): boolean {
+  if (held.event.type !== "tool_call" || head.event.type !== "tool_call") return false;
+  const key = logicalToolItemKey(held);
+  return key !== null && key === logicalToolItemKey(head);
+}
+
+/**
  * Reconcile an authoritative ordered history snapshot with an already-rendered
  * window without disturbing either side's physical row order.
  *
@@ -472,6 +487,7 @@ export function mergeAgentChatHistorySnapshot(
   const prefixJoinsSnapshot = firstOverlapIndex > 0 && (
     existingIndexByKey.has(identityKey(snapshotHead))
     || isAtOrAfter(existing[firstOverlapIndex - 1]!, snapshotHead)
+    || isResendOfHeldToolCall(existing[firstOverlapIndex - 1]!, snapshotHead)
   );
   const olderPrefix = prefixJoinsSnapshot
     ? existing
