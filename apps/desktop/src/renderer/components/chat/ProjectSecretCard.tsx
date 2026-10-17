@@ -470,6 +470,11 @@ export function AddProjectSecretDialog({
     }
   };
 
+  // The composer re-renders on every streamed event and `onSaved` is an inline
+  // closure, so a closed dialog would re-render its whole Radix tree each time.
+  // Closed: render nothing. The effect above still resets the form on close.
+  if (!open) return null;
+
   return (
     <Dialog
       open={open}
