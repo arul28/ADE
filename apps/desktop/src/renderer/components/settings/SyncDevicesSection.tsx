@@ -295,11 +295,17 @@ export function ThisMacCard({
   // "Stop following" is the way out of a viewer that cannot host here. It goes
   // straight to the disconnect, without waiting on Start sync: that activation is
   // what got stuck. A failed stop stays on the card as text, not a toast, so the
-  // reason is still there when the reader looks back.
+  // reason is still there when the reader looks back. The text outlives the
+  // button: a stop refused because the project now hosts leaves no button to
+  // hang it on, and the refresh that follows removes the button.
   const projectName = useAppStore((s) => s.project?.displayName ?? null);
   const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
   const [stoppingFollowing, setStoppingFollowing] = useState(false);
   const [stopFollowingFailure, setStopFollowingFailure] = useState<string | null>(null);
+  // The notice is about one project. Another project in this window starts clean.
+  useEffect(() => {
+    setStopFollowingFailure(null);
+  }, [projectRoot]);
   // A ref, not the state above: a second click before the first re-renders must
   // not open a second confirmation or send a second disconnect.
   const stopFollowingInFlight = useRef(false);
@@ -343,7 +349,12 @@ export function ThisMacCard({
         showToast({ tone: "warning", title: "Nothing was stopped. This window changed projects while you were asked. Try again." });
         return;
       }
-      if (!current || isSyncHost(current) || current.role !== "viewer") {
+      if (current && isSyncHost(current)) {
+        setStopFollowingFailure(alreadyHostingNotice(project));
+        void refreshSync({ force: true });
+        return;
+      }
+      if (!current || current.role !== "viewer") {
         showToast({ tone: "warning", title: "Nothing was stopped. This project no longer follows another machine." });
         void refreshSync({ force: true });
         return;
@@ -354,7 +365,11 @@ export function ThisMacCard({
         await window.ade.sync.disconnectFromBrain();
         showToast({ tone: "success", title: `This computer stopped following ${machine}.` });
       } catch (err) {
-        setStopFollowingFailure(stripElectronErrorWrapper(err instanceof Error ? err.message : String(err)));
+        // The brain refuses a disconnect on a project that hosts. The project can
+        // start hosting between the read above and this call, so the refusal reads
+        // as the state it found, not as the brain's wording.
+        const message = stripElectronErrorWrapper(err instanceof Error ? err.message : String(err));
+        setStopFollowingFailure(message.includes(BRAIN_DISCONNECT_REFUSAL) ? alreadyHostingNotice(project) : message);
       } finally {
         setStoppingFollowing(false);
         void refreshSync({ force: true });
@@ -619,11 +634,13 @@ export function ThisMacCard({
                 >
                   {stoppingFollowing ? "Stopping…" : `Stop following ${followedName}`}
                 </button>
-                {stopFollowingFailure ? (
-                  <span role="status" style={{ ...helperTextStyle, lineHeight: 1.4, color: COLORS.danger }}>
-                    {stopFollowingFailure}
-                  </span>
-                ) : null}
+              </div>
+            ) : null}
+            {stopFollowingFailure ? (
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <span role="status" style={{ ...helperTextStyle, lineHeight: 1.4, color: COLORS.danger }}>
+                  {stopFollowingFailure}
+                </span>
               </div>
             ) : null}
           </div>
@@ -703,6 +720,18 @@ function followedHostStanding(status: SyncRoleSnapshot, machine: string): string
   return phrase
     ? `${machine} isn't reachable from this computer right now. Last seen ${phrase}.`
     : `${machine} isn't reachable from this computer right now, and ADE has no record of it being seen.`;
+}
+
+/**
+ * The opening of the brain's refusal to disconnect a project that hosts
+ * (`syncService.disconnectFromBrain` in ade-cli). It crosses IPC as text, so the
+ * card matches the wording; the test pins the brain's exact message.
+ */
+const BRAIN_DISCONNECT_REFUSAL = "This project is the sync brain";
+
+/** What the card says when the project hosts, so nothing was stopped. */
+function alreadyHostingNotice(project: string): string {
+  return `This computer is already hosting sync for ${project}. Nothing was stopped.`;
 }
 
 /**

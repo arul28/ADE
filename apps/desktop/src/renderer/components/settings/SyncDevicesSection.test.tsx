@@ -742,15 +742,13 @@ describe("ThisMacCard", () => {
       expect(disconnectFromBrain).not.toHaveBeenCalled();
     });
 
-    it.each([
-      { case: "the project now hosts", read: async () => makeStatus() },
-      { case: "the project's status cannot be read", read: async () => { throw new Error("The background service did not answer."); } },
-    ])("sends nothing when $case while the question was open", async ({ read }) => {
+    it("sends nothing when the project's status cannot be read while the question was open", async () => {
       // The ghost can be reclaimed while the reader is still deciding. A disconnect
       // on a host would clear the devices it pairs, so it must not go out.
       const disconnectFromBrain = vi.fn(async () => makeStatus());
       const refresh = vi.fn(async () => {});
-      (globalThis.window as any).ade = { sync: { disconnectFromBrain, getStatus: read } };
+      const getStatus = async () => { throw new Error("The background service did not answer."); };
+      (globalThis.window as any).ade = { sync: { disconnectFromBrain, getStatus } };
       render(<ThisMacCard sync={makeSync({ status: followerStatus(), projectStatus: followerStatus(), refresh })} sessionState="active" />);
 
       fireEvent.click(screen.getByRole("button", followerButton));
@@ -759,6 +757,71 @@ describe("ThisMacCard", () => {
 
       await waitFor(() => expect(refresh).toHaveBeenCalledWith({ force: true }));
       expect(disconnectFromBrain).not.toHaveBeenCalled();
+    });
+
+    it("says the computer already hosts when the project started hosting while the question was open", async () => {
+      // The project can start hosting in the same window. Nothing is sent, and
+      // the card says so rather than saying the project stopped following.
+      const disconnectFromBrain = vi.fn(async () => makeStatus());
+      const refresh = vi.fn(async () => {});
+      (globalThis.window as any).ade = { sync: { disconnectFromBrain, getStatus: async () => makeStatus() } };
+      render(<ThisMacCard sync={makeSync({ status: followerStatus(), projectStatus: followerStatus(), refresh })} sessionState="active" />);
+
+      fireEvent.click(screen.getByRole("button", followerButton));
+      fireEvent.click(screen.getByRole("checkbox", acknowledgement));
+      fireEvent.click(screen.getByRole("button", { name: "Stop following" }));
+
+      expect(await screen.findByText("This computer is already hosting sync for Repo. Nothing was stopped.")).toBeTruthy();
+      expect(disconnectFromBrain).not.toHaveBeenCalled();
+      expect(refresh).toHaveBeenCalledWith({ force: true });
+    });
+
+    it("shows that the computer already hosts when the brain refuses the disconnect, and keeps it after the refresh", async () => {
+      // The project's status is read as a viewer, then starts hosting before the
+      // disconnect reaches the brain. The brain refuses it with its own message
+      // (ade-cli syncService.disconnectFromBrain), wrapped the way Electron wraps
+      // an IPC error. The card names the state instead of showing that wording.
+      const brainRefusal = "This project is the sync brain, so it has no brain to disconnect from. Its devices and cluster record are kept.";
+      const disconnectFromBrain = vi.fn(async () => {
+        throw new Error(`Error invoking remote method 'ade.sync.disconnectFromBrain': Error: ${brainRefusal}`);
+      });
+      const refresh = vi.fn(async () => {});
+      (globalThis.window as any).ade = { sync: { disconnectFromBrain, getStatus: async () => followerStatus() } };
+      const { rerender } = render(<ThisMacCard sync={makeSync({ status: followerStatus(), projectStatus: followerStatus(), refresh })} sessionState="active" />);
+
+      fireEvent.click(screen.getByRole("button", followerButton));
+      fireEvent.click(screen.getByRole("checkbox", acknowledgement));
+      fireEvent.click(screen.getByRole("button", { name: "Stop following" }));
+
+      expect(await screen.findByText("This computer is already hosting sync for Repo. Nothing was stopped.")).toBeTruthy();
+      expect(screen.queryByText(/This project is the sync brain/)).toBeNull();
+      expect(screen.queryByText(/Error invoking remote method/)).toBeNull();
+      await waitFor(() => expect(refresh).toHaveBeenCalledWith({ force: true }));
+      expect(disconnectFromBrain).toHaveBeenCalledOnce();
+
+      // The refresh reads the project as hosting, so the stop button goes. The
+      // notice is the only thing left to say why nothing was stopped.
+      rerender(<ThisMacCard sync={makeSync({ status: makeStatus(), projectStatus: makeStatus(), refresh })} sessionState="active" />);
+      expect(screen.queryByRole("button", followerButton)).toBeNull();
+      expect(screen.getByText("This computer is already hosting sync for Repo. Nothing was stopped.")).toBeTruthy();
+    });
+
+    it("drops the notice when the window opens another project", async () => {
+      const disconnectFromBrain = vi.fn(async () => {
+        throw new Error("Error invoking remote method 'ade.sync.disconnectFromBrain': Error: This project is the sync brain, so it has no brain to disconnect from. Its devices and cluster record are kept.");
+      });
+      (globalThis.window as any).ade = { sync: { disconnectFromBrain, getStatus: async () => followerStatus() } };
+      render(<ThisMacCard sync={makeSync({ status: followerStatus(), projectStatus: followerStatus() })} sessionState="active" />);
+
+      fireEvent.click(screen.getByRole("button", followerButton));
+      fireEvent.click(screen.getByRole("checkbox", acknowledgement));
+      fireEvent.click(screen.getByRole("button", { name: "Stop following" }));
+      expect(await screen.findByText("This computer is already hosting sync for Repo. Nothing was stopped.")).toBeTruthy();
+
+      act(() => {
+        useAppStore.setState({ project: { rootPath: "/other", displayName: "Other", baseRef: "main" } as any });
+      });
+      await waitFor(() => expect(screen.queryByText(/This computer is already hosting sync/)).toBeNull());
     });
 
     it("shows the reason when the disconnect fails and keeps the button for another try", async () => {

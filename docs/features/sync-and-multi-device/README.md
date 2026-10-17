@@ -1570,7 +1570,11 @@ Desktop connection UI:
   status is read again after the confirm, and the disconnect is sent only if the
   project still follows another machine. The disconnect clears this project's device
   records, which on a host would drop the devices it pairs. A failure
-  shows its reason on the card. The brain never boots another project to answer
+  shows its reason on the card. If the project started hosting while the
+  confirmation was open, the brain refuses the disconnect, and the card says
+  "This computer is already hosting sync for \<project\>. Nothing was stopped."
+  That notice stays until the window opens another project or the next stop. The
+  brain never boots another project to answer
   it, so a project that is still loading gets "This project isn't loaded yet. Open
   it and try again." The button is hidden when the window is bound to another
   machine (the disconnect would reach that machine), when no project is open in
