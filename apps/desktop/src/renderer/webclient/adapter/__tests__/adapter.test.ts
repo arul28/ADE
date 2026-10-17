@@ -1588,7 +1588,7 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
-  it("bounds web transcript page reads before sending them to the host", async () => {
+  it("sends web transcript page reads at the web page size, whatever the caller asks", async () => {
     fake.descriptors = descriptors(["chat.getChatEventHistoryPage"]);
     fake.commandResults.set("chat.getChatEventHistoryPage", {
       sessionId: "chat-long-running",
@@ -1611,7 +1611,7 @@ describe("createAdeWebAdapter", () => {
       args: {
         sessionId: "chat-long-running",
         beforeOffset: 4096,
-        maxBytes: 256 * 1024,
+        maxBytes: 512 * 1024,
       },
     });
 
@@ -1640,7 +1640,7 @@ describe("createAdeWebAdapter", () => {
     expect(call?.args).toMatchObject({
       sessionId: "chat-long-running",
       beforeOffset: 4096,
-      maxBytes: 256 * 1024,
+      maxBytes: 512 * 1024,
     });
     expect(fake.commandCalls).toContainEqual(expect.objectContaining({
       action: "agentChat.getEventHistoryPage",
