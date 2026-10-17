@@ -15,7 +15,7 @@ import { shallow } from "zustand/shallow";
 import { useShallow } from "zustand/react/shallow";
 
 import { AppShell } from "./AppShell";
-import { ACCOUNT_SETTINGS_ROUTE, resolveSettingsTab } from "../settings/settingsManifest";
+import { ACCOUNT_SETTINGS_ROUTE, isMachineScopedSettingsRoute, resolveSettingsTab } from "../settings/settingsManifest";
 import {
   InboundDeeplinkModal,
   type InboundDeeplinkDispatchOptions,
@@ -302,7 +302,9 @@ function serializeProjectRoute(location: ReturnType<typeof useLocation>): string
 
 function serializeStoredProjectRoute(location: ReturnType<typeof useLocation>): string | null {
   const route = serializeProjectRoute(location);
-  if (!route || location.pathname !== "/files") return route;
+  // A machine page is never the project's remembered route; the last project route stays.
+  if (!route || isMachineScopedSettingsRoute(route)) return null;
+  if (location.pathname !== "/files") return route;
   const params = new URLSearchParams(location.search ?? "");
   if (!params.has("externalPath") && !params.has("externalOpen")) return route;
   params.delete("externalPath");

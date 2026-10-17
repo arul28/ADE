@@ -282,6 +282,12 @@ h6 {
   box-shadow: inset 0 0 0 1px var(--shell-control-focus-ring);
 }
 
+/* A collapsed project sidebar: its toggle takes the accent, and the dot the
+   toggle renders marks it (see ProjectSidebarToggle). */
+.ade-shell-control[data-collapsed="true"] {
+  color: var(--color-accent);
+}
+
 .ade-shell-control-kbd {
   color: var(--shell-control-kbd-fg);
   background: var(--shell-control-kbd-bg);

@@ -33,7 +33,7 @@ export { projectSidebarTabForPath };
  */
 export function ProjectSidebar({ route, heldRoute = null }: { route: string; heldRoute?: string | null }) {
   const navigate = useNavigate();
-  const { width, hidden } = useProjectSidebarPrefs();
+  const { width, hidden: hiddenByPreference } = useProjectSidebarPrefs();
   const setSlotTarget = useProjectSidebarSlotTarget();
   // Select scalars only: the sidebar sits beside every tab page, and a wide
   // selector here would re-render it on every unrelated store write.
@@ -47,6 +47,9 @@ export function ProjectSidebar({ route, heldRoute = null }: { route: string; hel
   const activeTab = projectSidebarTabForPath(pathname);
   const heldTab = heldRoute ? projectSidebarTabForPath(heldRoute.split(/[?#]/, 1)[0] || "/work") : null;
   const settingsActive = pathname === "/settings" || pathname.startsWith("/settings/");
+  // Settings keeps the sidebar open. The saved preference is left alone, so
+  // leaving Settings restores the sidebar the way the user had it.
+  const hidden = hiddenByPreference && !settingsActive;
   const settingsVisible = !isWebClientMode() || WEB_CLIENT_TAB_PATHS.has("/settings");
   const routeKey = bindingKey ?? (projectRoot ? `local:${projectRoot}` : null);
   // The star pill is a desktop-only nudge, shown under the Work session list.

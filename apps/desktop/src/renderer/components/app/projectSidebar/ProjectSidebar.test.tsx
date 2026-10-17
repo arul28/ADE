@@ -73,10 +73,10 @@ describe("ProjectSidebar footer", () => {
   });
 
   it("reopens the project's stored settings page", () => {
-    window.localStorage.setItem(`ade:project-route:local:${ROOT}`, "/settings?tab=appearance#theme");
+    window.localStorage.setItem(`ade:project-route:local:${ROOT}`, "/settings?tab=chat");
     renderSidebar("/work");
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
-    expect(screen.getByTestId("location").textContent).toBe("/settings?tab=appearance#theme");
+    expect(screen.getByTestId("location").textContent).toBe("/settings?tab=chat");
   });
 
   it("returns to where you were when the cog is clicked again", () => {
@@ -89,12 +89,12 @@ describe("ProjectSidebar footer", () => {
   });
 
   it("reopens the last settings section used in this session before the stored one", () => {
-    window.localStorage.setItem(`ade:project-route:local:${ROOT}`, "/settings?tab=appearance#theme");
-    renderSidebar("/settings?tab=providers");
+    window.localStorage.setItem(`ade:project-route:local:${ROOT}`, "/settings?tab=secrets");
+    renderSidebar("/settings?tab=chat");
     cleanup();
     renderSidebar("/lanes");
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
-    expect(screen.getByTestId("location").textContent).toBe("/settings?tab=providers");
+    expect(screen.getByTestId("location").textContent).toBe("/settings?tab=chat");
   });
 
   it("keeps the page under CTO selected and turns the footer into one Back button", () => {

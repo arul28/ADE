@@ -708,6 +708,7 @@ export function TopBar({
   accountRouteActive = false,
   hubRouteActive = false,
   settingsRouteActive = false,
+  projectSidebarLocked = false,
   onOpenActivityPane,
   onNavigate,
 }: {
@@ -720,6 +721,8 @@ export function TopBar({
   hubRouteActive?: boolean;
   /** The `#/settings` route is in front. Drives the standalone Settings tab. */
   settingsRouteActive?: boolean;
+  /** Settings is in front and holds the project sidebar open, so its toggle is disabled. */
+  projectSidebarLocked?: boolean;
   onNavigate?: (path: string, opts?: { replace?: boolean }) => void;
   /** Raises the shell's Activity pane over whatever tab is in front. */
   onOpenActivityPane?: () => void;
@@ -2051,7 +2054,9 @@ export function TopBar({
       <div aria-hidden className="pointer-events-none absolute inset-0 -z-10 overflow-hidden">
         <WorkToolPickerBackdrop theme={theme} field="window" />
       </div>
-      {projectSurfaceVisible ? <ProjectSidebarToggle shortcut={sidebarToggleShortcut} /> : null}
+      {projectSurfaceVisible ? (
+        <ProjectSidebarToggle shortcut={sidebarToggleShortcut} locked={projectSidebarLocked} />
+      ) : null}
 
       {/* Branding */}
       <img

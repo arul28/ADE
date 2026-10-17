@@ -30,14 +30,17 @@ function keystrokeIsClaimed(target: EventTarget | null): boolean {
  * shows or hides it. They follow the command palette's rule and work while a
  * text field has focus, but a handler that already used the chord (bold in the
  * PR markdown editor) wins because it calls `preventDefault` first.
+ * `sidebarLocked` is set on Settings, which keeps the sidebar open, so Mod+B
+ * is left alone there.
  */
 export function useProjectSidebarShortcuts(args: {
   enabled: boolean;
   projectRoot: string | null;
   keybindings: KeybindingsSnapshot | null;
   navigate: (path: string) => void;
+  sidebarLocked?: boolean;
 }): void {
-  const { enabled, projectRoot, keybindings, navigate } = args;
+  const { enabled, projectRoot, keybindings, navigate, sidebarLocked = false } = args;
 
   const bindings = useMemo(() => {
     const tabs = visibleProjectSidebarTabs(PROJECT_SIDEBAR_TABS).flatMap((tab) =>
@@ -59,6 +62,7 @@ export function useProjectSidebarShortcuts(args: {
       if (event.defaultPrevented || event.isComposing) return;
       if (keystrokeIsClaimed(event.target)) return;
       if (eventMatchesBinding(event, bindings.toggle)) {
+        if (sidebarLocked) return;
         event.preventDefault();
         if (!event.repeat) toggleProjectSidebarHidden();
         return;
@@ -71,5 +75,5 @@ export function useProjectSidebarShortcuts(args: {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [bindings, enabled, navigate, projectRoot]);
+  }, [bindings, enabled, navigate, projectRoot, sidebarLocked]);
 }

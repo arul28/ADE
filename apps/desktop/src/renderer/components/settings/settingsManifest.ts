@@ -1431,6 +1431,35 @@ export function resolveSettingsHash(hash: string | null | undefined): SettingEnt
   return aliased ? (ENTRIES_BY_ID.get(aliased) ?? null) : null;
 }
 
+/**
+ * The tab a `/settings` route opens on, resolved the way `SettingsPage`
+ * resolves it: a `#hash` names one card and wins over `?tab=`, and a missing or
+ * unknown tab opens on `DEFAULT_SETTINGS_TAB`.
+ */
+export function settingsTabForRoute(route: string): SettingsTabId {
+  const url = new URL(route, "http://settings.invalid");
+  let hash = url.hash;
+  try {
+    hash = decodeURIComponent(hash);
+  } catch {
+    // A malformed escape is literal text, as it is on the settings page.
+  }
+  const linked = resolveSettingsHash(hash);
+  if (linked) return linked.tab;
+  return resolveSettingsTab(url.searchParams.get("tab")) ?? DEFAULT_SETTINGS_TAB;
+}
+
+/**
+ * Whether a route is a machine-scoped settings page: one of the This computer
+ * pages (General, Diagnostics, Providers and the rest). Those describe one
+ * computer, so a project must never remember one as its place to return to.
+ */
+export function isMachineScopedSettingsRoute(route: string): boolean {
+  const pathname = route.split(/[?#]/, 1)[0] ?? "";
+  if (pathname !== "/settings" && !pathname.startsWith("/settings/")) return false;
+  return isMachineSettingsTab(settingsTabForRoute(route));
+}
+
 /** The route a palette entry or deeplink should navigate to. */
 /**
  * The scope for one card's anchor, or null when the anchor is not a manifest
