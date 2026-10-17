@@ -3,6 +3,7 @@ import {
   SyncHostSingletonConflictError,
 } from "./syncHostSingleton";
 import { createFailureLogDeduper } from "../runtime/failureLogDeduper";
+import { terminatePidGracefullyAsync, type TerminatePidDeps } from "../../serviceManager/common";
 import {
   classifyStorageFault,
   type StorageFault,
@@ -20,6 +21,18 @@ export type SyncHostStartupLoopDeps = {
   kill?: (pid: number, signal: NodeJS.Signals | number) => void;
   pidAlive?: (pid: number) => boolean;
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * Platform the same-channel takeover runs on; defaults to `process.platform`.
+   * Windows has no SIGTERM a brain can handle, so a takeover there asks the
+   * stale brain to shut down over its RPC endpoint first and force-kills only
+   * what does not leave (see `common.terminatePidGracefullyAsync`).
+   */
+  platform?: NodeJS.Platform;
+  /**
+   * win32 takeover only: the cooperative-shutdown and last-resort-kill seams of
+   * `common.terminatePidGracefullyAsync`. Production leaves them unset.
+   */
+  terminatePidDeps?: Omit<TerminatePidDeps, "kill" | "platform" | "pidAlive">;
   /**
    * Where a classified storage fault is recorded so the desktop can show it.
    * Wired at the call site to the machine-scoped last-failure report, which is
@@ -204,9 +217,22 @@ function defaultSleep(ms: number): Promise<void> {
 
 async function terminatePidAsync(
   pid: number,
-  deps: Required<Pick<SyncHostStartupLoopDeps, "kill" | "pidAlive" | "sleep">>,
+  deps: Required<Pick<SyncHostStartupLoopDeps, "kill" | "pidAlive" | "sleep">> & {
+    platform: NodeJS.Platform;
+    terminatePidDeps: NonNullable<SyncHostStartupLoopDeps["terminatePidDeps"]>;
+  },
 ): Promise<void> {
   if (!Number.isFinite(pid) || pid <= 0 || pid === process.pid) return;
+  if (deps.platform === "win32") {
+    // A bare SIGTERM here would be TerminateProcess, which skips the stale
+    // brain's flush. The RPC shutdown is the only orderly exit Windows offers.
+    await terminatePidGracefullyAsync(pid, {
+      ...deps.terminatePidDeps,
+      platform: "win32",
+      pidAlive: deps.pidAlive,
+    });
+    return;
+  }
   try {
     deps.kill(pid, "SIGTERM");
   } catch {
@@ -247,6 +273,7 @@ export async function runSyncHostStartupLoop(deps: SyncHostStartupLoopDeps): Pro
   const fastRetryCount = deps.fastRetryCount ?? 5;
   const attemptTimeoutMs = Math.max(1, deps.attemptTimeoutMs ?? 120_000);
   const sustainedStorageFaultAttempts = deps.sustainedStorageFaultAttempts ?? 3;
+  const platform = deps.platform ?? process.platform;
   let attempt = 0;
   let lastFailureSignature = "";
   let consecutiveStorageFaults = 0;
@@ -459,7 +486,13 @@ export async function runSyncHostStartupLoop(deps: SyncHostStartupLoopDeps): Pro
             ownerApp: owner.appName ?? null,
             ownerPid: owner.pid,
           });
-          await terminatePidAsync(owner.pid, { kill, pidAlive, sleep });
+          await terminatePidAsync(owner.pid, {
+            kill,
+            pidAlive,
+            sleep,
+            platform,
+            terminatePidDeps: deps.terminatePidDeps ?? {},
+          });
           continue;
         }
       }
