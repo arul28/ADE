@@ -55,11 +55,13 @@ import {
 } from "./workLaneOrder";
 import {
   applySharedBranchAdjacency,
+  applyStackAdjacency,
   consecutiveSharedBranchRuns,
   inboxIdsKeptForSharedBranch,
   sharedBranchClusterKey,
 } from "./workLaneBranchClusters";
 import { useWorkLaneReorder } from "./useWorkLaneReorder";
+import { WorkStackRail } from "./WorkStackRail";
 import { LaneFocusStatusDot } from "./LaneFocusStatusDot";
 import {
   EMPTY_WORK_SEEN_AT,
@@ -304,10 +306,10 @@ function clusterKeyForLaneItem(item: ClusterableLaneItem): string | null {
 }
 
 function renderSharedBranchClusters(
-  items: { id: string; clusterKey: string | null; node: React.ReactNode }[],
+  items: { id: string; clusterKey: string | null; stackKey?: string | null; node: React.ReactNode }[],
   innerStackClass: string,
 ): React.ReactNode[] {
-  const nodes: React.ReactNode[] = [];
+  const runNodes: { id: string; stackKey: string | null; node: React.ReactNode }[] = [];
   // Some callers can provide a node that intentionally renders nothing. Exclude
   // those records before deciding whether a run has multiple members; otherwise
   // an empty sibling can leave a dashed wrapper around the one visible lane.
@@ -317,22 +319,49 @@ function renderSharedBranchClusters(
   for (const run of consecutiveSharedBranchRuns(visibleItems)) {
     const first = run[0];
     if (!first) continue;
+    const stackKey = first.stackKey ?? null;
     if (run.length === 1 || !first.clusterKey) {
-      nodes.push(<React.Fragment key={first.id}>{first.node}</React.Fragment>);
+      runNodes.push({ id: first.id, stackKey, node: first.node });
       continue;
     }
-    nodes.push(
-      <div
-        key={`shared-branch:${first.clusterKey}:${run.map((item) => item.id).join("|")}`}
-        className={cn(innerStackClass, SHARED_BRANCH_CLUSTER_CLASS)}
-        data-testid="shared-branch-cluster"
-        data-branch-cluster={first.clusterKey}
-      >
-        {run.map((item) => (
-          <React.Fragment key={item.id}>{item.node}</React.Fragment>
-        ))}
-      </div>,
-    );
+    const id = `shared-branch:${first.clusterKey}:${run.map((item) => item.id).join("|")}`;
+    runNodes.push({
+      id,
+      stackKey,
+      node: (
+        <div
+          className={cn(innerStackClass, SHARED_BRANCH_CLUSTER_CLASS)}
+          data-testid="shared-branch-cluster"
+          data-branch-cluster={first.clusterKey}
+        >
+          {run.map((item) => (
+            <React.Fragment key={item.id}>{item.node}</React.Fragment>
+          ))}
+        </div>
+      ),
+    });
+  }
+  // Consecutive lanes of one GitHub stack share a rail on the left.
+  const nodes: React.ReactNode[] = [];
+  for (let index = 0; index < runNodes.length; ) {
+    const head = runNodes[index];
+    if (!head) break;
+    let end = index + 1;
+    while (head.stackKey && runNodes[end]?.stackKey === head.stackKey) end += 1;
+    const group = runNodes.slice(index, end);
+    if (head.stackKey && group.length > 1) {
+      nodes.push(
+        <WorkStackRail
+          key={`github-stack:${head.stackKey}:${group.map((item) => item.id).join("|")}`}
+          stackKey={head.stackKey}
+          className={innerStackClass}
+          members={group}
+        />,
+      );
+    } else {
+      for (const item of group) nodes.push(<React.Fragment key={item.id}>{item.node}</React.Fragment>);
+    }
+    index = end;
   }
   return nodes;
 }
@@ -3535,29 +3564,46 @@ export const SessionListPane = React.memo(function SessionListPane({
     })),
   ];
 
-  const renderClusterItems = (items: ClusterableLaneItem[]) => applySharedBranchAdjacency(
-    items,
-    clusterKeyForLaneItem,
-  ).map((entry) => {
-    switch (entry.item.kind) {
-      case "local":
-        return {
-          id: entry.item.id,
-          clusterKey: entry.clusterKey,
-          node: renderLaneGroup(entry.item.lane),
-        };
-      case "foreign":
-        return {
-          id: entry.item.id,
-          clusterKey: entry.clusterKey,
-          node: renderForeignLaneGroup(entry.item.entry),
-        };
-      default: {
-        const _exhaustive: never = entry.item;
-        return _exhaustive;
+  const stackPlacementForLaneItem = (item: ClusterableLaneItem) => {
+    const lane = item.kind === "local" ? item.lane : item.entry.row.lane;
+    const lanePrs = item.kind === "local"
+      ? boundMachineLanePrs(prsByLaneId, lane.id)
+      : lanePrsForMachine(prsByLaneId, item.entry.row.machineId, lane.id);
+    const stack = selectPrimaryLanePr(lane, lanePrs)?.stack ?? null;
+    return stack && stack.size > 1 ? { key: stack.id, position: stack.position } : null;
+  };
+
+  // A GitHub stack is pulled together top layer first, except in Manual, where
+  // the user's own order wins and only stack lanes they placed together share
+  // a rail.
+  const renderClusterItems = (items: ClusterableLaneItem[]) => {
+    const stacked = applyStackAdjacency(items, stackPlacementForLaneItem);
+    const stackKeyById = new Map(stacked.map((entry) => [entry.item.id, entry.stackKey]));
+    const ordered = workLaneSortMode === "manual" ? items : stacked.map((entry) => entry.item);
+    return applySharedBranchAdjacency(ordered, clusterKeyForLaneItem).map((entry) => {
+      const stackKey = stackKeyById.get(entry.item.id) ?? null;
+      switch (entry.item.kind) {
+        case "local":
+          return {
+            id: entry.item.id,
+            clusterKey: entry.clusterKey,
+            stackKey,
+            node: renderLaneGroup(entry.item.lane),
+          };
+        case "foreign":
+          return {
+            id: entry.item.id,
+            clusterKey: entry.clusterKey,
+            stackKey,
+            node: renderForeignLaneGroup(entry.item.entry),
+          };
+        default: {
+          const _exhaustive: never = entry.item;
+          return _exhaustive;
+        }
       }
-    }
-  });
+    });
+  };
 
   const clusterLaneItems = (
     localLanes: LaneSummary[],

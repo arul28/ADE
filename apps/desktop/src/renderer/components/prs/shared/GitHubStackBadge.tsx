@@ -20,6 +20,7 @@ export function GitHubStackBadge({
     : `Stack ${stack.position}/${stack.size}`;
   return (
     <span
+      data-github-stack-badge=""
       className={cn(
         "inline-flex shrink-0 items-center gap-1 font-mono text-[10px] font-semibold leading-none text-violet-200/85",
         bare
