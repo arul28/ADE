@@ -9562,6 +9562,9 @@ export function AgentChatPane({
         if (meta.cursorModeSnapshot !== undefined) summaryPatch.cursorModeSnapshot = meta.cursorModeSnapshot;
         if (meta.cursorConfigValues !== undefined) summaryPatch.cursorConfigValues = meta.cursorConfigValues;
         if (meta.spawnKind !== undefined) summaryPatch.spawnKind = meta.spawnKind;
+        if (meta.orchestrationParentSessionId !== undefined) {
+          summaryPatch.orchestrationParentSessionId = meta.orchestrationParentSessionId ?? undefined;
+        }
         if (typeof meta.instanceId === "string" && meta.instanceId) summaryPatch.instanceId = meta.instanceId;
         // The host republishes the whole usage-limit resume state on every
         // transition (armed -> resuming -> paused, or cleared), so the pill
@@ -9589,6 +9592,7 @@ export function AgentChatPane({
         const modeChanged = Object.keys(summaryPatch).some((key) =>
           key !== "title"
           && key !== "spawnKind"
+          && key !== "orchestrationParentSessionId"
           && key !== "subagentTakeoverPromptShownAt"
           && key !== "usageLimitResume"
         );

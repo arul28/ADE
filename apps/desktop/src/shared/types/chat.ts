@@ -2400,6 +2400,8 @@ export type AgentChatEvent =
       instanceId?: string;
       spawnKind?: AgentChatSpawnKind;
       subagentTakeoverPromptShownAt?: string | null;
+      /** The chat's parent changed; null means it no longer has one. */
+      orchestrationParentSessionId?: string | null;
       /**
        * The chat's full list of pending thread comments, sent after every
        * change. Absent means this patch is about something else.
@@ -4444,6 +4446,13 @@ export type AgentChatCrossMachineHandoffCapsule = {
     branchRef: string;
     headSha: string;
     originUrl: string;
+    /**
+     * The moved chat's parent and spawn kind on the source machine. Absent on
+     * older sources and for a chat with no parent. The destination keeps the
+     * link only when that parent is a chat it can reach.
+     */
+    orchestrationParentSessionId?: string;
+    spawnKind?: AgentChatSpawnKind;
   };
   target: AgentChatCrossMachineTargetConfig;
   brief: string;
@@ -5751,6 +5760,22 @@ export type AgentChatArchiveArgs = {
 export type AgentChatSetSpawnKindArgs = {
   sessionId: string;
   spawnKind: AgentChatSpawnKind;
+};
+
+/**
+ * Point a chat at a new parent, or detach it (`parentSessionId: null`). The
+ * parent must be a chat this machine can reach. `spawnKind` defaults to the
+ * chat's current kind, or `subagent` when it had no parent.
+ */
+export type AgentChatSetParentArgs = {
+  sessionId: string;
+  parentSessionId: string | null;
+  spawnKind?: AgentChatSpawnKind;
+  /**
+   * Stamped by the runtime when a chat-bound agent releases another chat: the
+   * release applies only while the chat still reports to this agent.
+   */
+  requireCurrentParentSessionId?: string;
 };
 
 export type AgentChatDismissSubagentTakeoverPromptArgs = {

@@ -3495,6 +3495,24 @@ function scopeChatAdeActionArgs(
     }
     return { ...waitArgs, callerSessionId: callerChatSessionId };
   }
+  if (action === "setParent") {
+    if (isUnboundAdeCliCaller(session)) return chatArgs;
+    // A bound agent may move its own chat, adopt a chat as its child, or
+    // release a chat that reports to it. Never relink two other chats.
+    const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+    const requestedSessionId = asOptionalTrimmedString(chatArgs.sessionId) ?? callerChatSessionId;
+    const requestedParentId = asOptionalTrimmedString(chatArgs.parentSessionId);
+    const { requireCurrentParentSessionId: _callerSent, ...parentArgs } = chatArgs;
+    if (!callerChatSessionId || !requestedSessionId) chatAccessDenied(method, { callerChatSessionId, requestedSessionId });
+    if (requestedSessionId === callerChatSessionId || requestedParentId === callerChatSessionId) {
+      return { ...parentArgs, sessionId: requestedSessionId };
+    }
+    // Releasing another chat: the service checks it still reports here.
+    if (requestedParentId == null) {
+      return { ...parentArgs, sessionId: requestedSessionId, requireCurrentParentSessionId: callerChatSessionId };
+    }
+    chatAccessDenied(method, { callerChatSessionId, requestedSessionId });
+  }
   const spawnKindUpdate = action === "updateSession" && chatUpdateSessionMutatesSpawnKind(chatArgs);
   if (!SCOPED_CHAT_ACTIONS.has(action) && !spawnKindUpdate) return chatArgs;
   if (isUnboundAdeCliCaller(session)) {
@@ -5887,6 +5905,7 @@ async function runTool(args: {
       && (
         SCOPED_CHAT_ACTIONS.has(action)
         || action === "armWait"
+        || action === "setParent"
         || (action === "updateSession" && chatUpdateSessionMutatesSpawnKind(rawObjectArgs))
       )
     ) {

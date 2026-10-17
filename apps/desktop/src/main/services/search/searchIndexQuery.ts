@@ -171,12 +171,16 @@ export const queryFtsCandidates = (
     return { candidates: rows.map((row) => docRowToCandidate(row, 0, null)), totals };
   }
 
+  // CROSS JOIN pins docs_fts as the outer loop. With a plain JOIN, SQLite
+  // 3.51 (the build ADE ships) drives the loop from docs_kind_idx and re-runs
+  // the MATCH once per doc row; a one-letter prefix on a 16k-doc index then
+  // ran for minutes on the brain's main thread and the watchdog killed it.
   const candidateSql = `SELECT d.doc_id, d.kind, d.lane_id, d.lane_name, d.session_id, d.title, d.rank_title,
             d.snippet_source, d.deep_link, d.updated_at,
             bm25(docs_fts) AS score,
             snippet(docs_fts, 1, '${SNIPPET_MARK_START}', '${SNIPPET_MARK_END}', '…', 14) AS marked
      FROM docs_fts
-     JOIN docs d ON d.id = docs_fts.rowid
+     CROSS JOIN docs d ON d.id = docs_fts.rowid
      WHERE docs_fts MATCH ? AND ${filters.join(" AND ")}
      ORDER BY score ASC, d.updated_at DESC, d.doc_id ASC
      LIMIT ${FTS_CANDIDATE_LIMIT}`;
@@ -205,7 +209,7 @@ export const queryFtsCandidates = (
   const totalRows = all<{ kind: string; n: number }>(
     `SELECT d.kind, COUNT(*) AS n
      FROM docs_fts
-     JOIN docs d ON d.id = docs_fts.rowid
+     CROSS JOIN docs d ON d.id = docs_fts.rowid
      WHERE docs_fts MATCH ? AND ${filters.join(" AND ")}
      GROUP BY d.kind`,
     [matchExpr, ...filterParams]
