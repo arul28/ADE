@@ -18,6 +18,7 @@ import {
 } from "../../lib/terminalAttention";
 import { nextSnoozeDeadlineMs } from "../../lib/sessionSnooze";
 import { useAppStore, useRootAppStore } from "../../state/appStore";
+import { foreignLaneKey } from "../../state/laneMachineRouting";
 import { machineIdForBinding, machineNameForBinding } from "../../../shared/machineIdentity";
 import { useLaneNamePending } from "../../state/sessionMetadataGeneratingStore";
 import {
@@ -2456,15 +2457,17 @@ export const SessionListPane = React.memo(function SessionListPane({
     const sessionPr = sessionLane ? selectPrimaryLanePr(sessionLane, sessionLanePrs) : null;
     // A card on an unreachable machine is shown as last reported and every
     // action on it would fail, so it is inert and says which machine is gone.
-    const disabledReason = foreignRow
-      ? !foreignRow.online
-        ? `${foreignRow.machineName} is offline`
-        : !foreignRow.binding
-          ? `${foreignRow.machineName} is unavailable`
-          : null
-      : deleteProgressByLaneId[session.laneId]
-        ? `${getLaneDeleteStatusLabel(deleteProgressByLaneId[session.laneId])} lane`
-        : null;
+    // A foreign card reads the entry its machine's delete wrote (`machineId:laneId`).
+    const laneDeleteProgress = deleteProgressByLaneId[
+      foreignRow ? foreignLaneKey(foreignRow.machineId, session.laneId) : session.laneId
+    ] ?? null;
+    const disabledReason = foreignRow && !foreignRow.online
+      ? `${foreignRow.machineName} is offline`
+      : foreignRow && !foreignRow.binding
+        ? `${foreignRow.machineName} is unavailable`
+        : laneDeleteProgress
+          ? `${getLaneDeleteStatusLabel(laneDeleteProgress)} lane`
+          : null;
     const card = (
       <SessionCard
         key={session.id}
@@ -3311,11 +3314,15 @@ export const SessionListPane = React.memo(function SessionListPane({
     // not: at most one Primary on screen is unbadged, and it is the one on the
     // Mac you're sitting at.
     const headerMarker = markersByLaneId.get(compositeLaneId) ?? null;
+    // Keyed the same way the delete was started (`machineId:laneId`), never by the
+    // bare lane id, which can name a lane on this machine.
+    const deleteProgress = deleteProgressByLaneId[compositeLaneId] ?? null;
     // A one-chat foreign lane collapses into its card exactly like a local one.
     // This used to be unreachable for foreign lanes at all, which is why half
     // the sidebar drew dividers the other half didn't — and why which half
-    // flipped when you switched the tab's machine.
-    const headerless = headerlessLaneIds.has(compositeLaneId);
+    // flipped when you switched the tab's machine. A lane being torn down keeps
+    // its divider, as `renderLaneGroup` does, because the busy label lives on it.
+    const headerless = headerlessLaneIds.has(compositeLaneId) && !deleteProgress;
     // An offline machine's group folds shut like a quiet one: retained and
     // inspectable, not presented as live work. Note this is NOT the shelving
     // test (see `foreignLaneShelving`) — an offline machine's last-reported
@@ -3365,6 +3372,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         count={row.sessions.length}
         collapsed={collapsed}
         headerless={headerless}
+        busyLabel={deleteProgress ? getLaneDeleteStatusLabel(deleteProgress) : null}
         accentColor={row.lane.color ?? null}
         prBadge={primaryPr ? (
           <LanePrBadge
