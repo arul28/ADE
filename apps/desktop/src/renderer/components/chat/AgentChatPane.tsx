@@ -4489,6 +4489,9 @@ export function AgentChatPane({
     nonce: number;
   } | null>(null);
   const terminalRevealNonceRef = useRef(0);
+  // Terminals this pane has revealed or already knows exist. Survives the reveal
+  // effect's re-subscriptions, so a replayed "created" cannot reopen the pane.
+  const knownTerminalIdsRef = useRef(new Set<string>());
   const hasExternalTerminalPane = Boolean(onToggleTerminalPane || onOpenTerminalPane);
   const openTerminalPanel = useCallback(() => {
     if (onOpenTerminalPane) {
@@ -8720,26 +8723,53 @@ export function AgentChatPane({
 
   useEffect(() => {
     const sessionsApi = window.ade?.sessions;
-    if (!sessionsApi?.onChanged || !sessionsApi.get || !chatTerminalVisible) return undefined;
+    if (!sessionsApi?.onChanged || !sessionsApi.get || !sessionsApi.list || !chatTerminalVisible) return undefined;
 
     let disposed = false;
     // The chat's agent opens its terminals on the chat's machine, so that is
     // the machine to hear them from and read them on.
     const pin = chatRuntimePinRef.current;
+    const knownTerminalIds = knownTerminalIdsRef.current;
+    // Re-subscribing replays events the new subscriber missed, so a terminal
+    // that already existed (its "created" from minutes ago) arrives again. Every
+    // terminal the chat has when this subscription starts is therefore known,
+    // not news. Ids are compared, not `startedAt`: a remote machine's clock is
+    // not ours, and a shell it just started must still reveal.
+    const baseline = selectedSessionId
+      ? sessionsApi.list({ chatSessionId: selectedSessionId, limit: null }, pin).then(
+        (rows) => {
+          for (const row of rows) knownTerminalIds.add(row.id);
+          return true;
+        },
+        (error: unknown) => {
+          // Without the baseline an old terminal cannot be told from a new one,
+          // so this subscription reveals nothing rather than reopen a closed pane.
+          console.error("[AgentChatPane] terminal baseline read failed", { sessionId: selectedSessionId, error });
+          return false;
+        },
+      )
+      : Promise.resolve(true);
     const revealCreatedTerminal = async (sessionId: string) => {
+      if (knownTerminalIds.has(sessionId)) return;
       let session: TerminalSessionDetail | null = null;
       try {
         session = await sessionsApi.get(sessionId, pin);
       } catch {
         return;
       }
-      if (disposed || !session) return;
+      // A replay can land before the baseline read does, so judge it after.
+      const baselineLoaded = await baseline;
+      if (disposed || !baselineLoaded || !session) return;
+      if (knownTerminalIds.has(sessionId)) return;
       const selectedChatSessionId = selectedSessionIdRef.current;
       if (!selectedChatSessionId || session.chatSessionId !== selectedChatSessionId) return;
       if (session.laneId !== laneId) return;
       const ptyId = typeof session.ptyId === "string" ? session.ptyId.trim() : "";
       if (!ptyId) return;
 
+      // Each terminal reveals once per pane: a duplicate or replayed "created"
+      // for it never reopens the pane the user closed.
+      knownTerminalIds.add(sessionId);
       openTerminalPanel();
       if (!hasExternalTerminalPane) {
         setTerminalRevealRequest({
@@ -8759,7 +8789,7 @@ export function AgentChatPane({
       disposed = true;
       unsubscribe();
     };
-  }, [chatRuntimePinKey, chatTerminalVisible, hasExternalTerminalPane, laneId, openTerminalPanel]);
+  }, [chatRuntimePinKey, chatTerminalVisible, hasExternalTerminalPane, laneId, openTerminalPanel, selectedSessionId]);
 
   // Is this simulator session about the chat this pane is showing? Unscoped
   // events only apply to the active tile. Hoisted out of the subscription below

@@ -1120,6 +1120,80 @@ function renderPane(session: AgentChatSessionSummary) {
   );
 }
 
+/**
+ * Terminal session events with the runtime pump's replay: a new subscriber is
+ * handed everything it missed before live events, so re-subscribing (closing
+ * the Tools pane does) hands over old "created" events again.
+ */
+function installReplayingSessionEvents(history: TerminalSessionChangedEvent[]) {
+  const listeners = new Set<(event: TerminalSessionChangedEvent) => void>();
+  vi.mocked(window.ade.sessions.onChanged).mockImplementation((listener: (event: TerminalSessionChangedEvent) => void) => {
+    for (const event of history) listener(event);
+    listeners.add(listener);
+    return () => {
+      listeners.delete(listener);
+    };
+  });
+  return {
+    emit: (event: TerminalSessionChangedEvent) => {
+      history.push(event);
+      for (const listener of [...listeners]) listener(event);
+    },
+  };
+}
+
+/** Mounts the pane the way the Work tab does: the Tools pane is external and its open state is the parent's. */
+function renderToolsPane(
+  session: AgentChatSessionSummary,
+  options: { terminalPaneOpen: boolean; onOpenTerminalPane: () => void },
+) {
+  const onSessionCreated = vi.fn();
+  const tree = (terminalPaneOpen: boolean) => (
+    <MemoryRouter>
+      <AgentChatPane
+        laneId={session.laneId}
+        lockSessionId={session.sessionId}
+        hideSessionTabs
+        initialSessionSummary={session}
+        onSessionCreated={onSessionCreated}
+        terminalPaneOpen={terminalPaneOpen}
+        onOpenTerminalPane={options.onOpenTerminalPane}
+      />
+    </MemoryRouter>
+  );
+  const view = render(tree(options.terminalPaneOpen));
+  return { ...view, setTerminalPaneOpen: (open: boolean) => view.rerender(tree(open)) };
+}
+
+function buildChatTerminalSession(chatSessionId: string, id: string, ptyId: string, title: string): TerminalSessionDetail {
+  return {
+    id,
+    laneId: "lane-1",
+    laneName: "Lane 1",
+    ptyId,
+    tracked: true,
+    pinned: false,
+    manuallyNamed: false,
+    goal: null,
+    title,
+    startedAt: "2026-03-24T05:57:45.700Z",
+    endedAt: null,
+    exitCode: null,
+    transcriptPath: `/tmp/${id}.log`,
+    headShaStart: null,
+    headShaEnd: null,
+    status: "running",
+    lastOutputPreview: null,
+    summary: null,
+    toolType: "shell",
+    runtimeState: "running",
+    resumeCommand: null,
+    resumeMetadata: null,
+    archivedAt: null,
+    chatSessionId,
+  };
+}
+
 function renderResolverPane(session: AgentChatSessionSummary) {
   return render(
     <MemoryRouter>
@@ -2930,18 +3004,21 @@ describe("AgentChatPane companion drawers", () => {
     seedDrawerStore();
 
     renderPane(session);
-    await waitFor(() => expect(mocks.listShells).toHaveBeenCalledTimes(1));
+    // The terminal-reveal subscription reads this chat's sessions once when it
+    // starts, so the mount reads are counted here rather than assumed to be one.
+    await waitFor(() => expect(mocks.listShells).toHaveBeenCalled());
+    const readsAtMount = mocks.listShells.mock.calls.length;
 
     act(() => mocks.emitSessionChanged({ sessionId: "session-elsewhere", reason: "meta-updated" }));
-    expect(mocks.listShells).toHaveBeenCalledTimes(1);
+    expect(mocks.listShells).toHaveBeenCalledTimes(readsAtMount);
 
     // A session that did not exist a moment ago can be this chat's shell, and
     // the ids this pane holds cannot say either way — only a read can.
     act(() => mocks.emitSessionChanged({ sessionId: "shell-new", reason: "created" }));
-    await waitFor(() => expect(mocks.listShells).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(mocks.listShells).toHaveBeenCalledTimes(readsAtMount + 1));
 
     act(() => mocks.emitSessionChanged({ sessionId: "shell-1", reason: "meta-updated" }));
-    await waitFor(() => expect(mocks.listShells).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(mocks.listShells).toHaveBeenCalledTimes(readsAtMount + 2));
   });
 
 describe("AgentChatPane durable recovery actions", () => {
@@ -3842,6 +3919,59 @@ describe("AgentChatPane submit recovery", () => {
     } finally {
       dateNowSpy.mockRestore();
     }
+  });
+
+  it("does not reveal a terminal that already existed when the pane subscribed", async () => {
+    // The shell started minutes ago. Its "created" still reaches a new
+    // subscription (the replay), and that must not reopen the Tools pane.
+    const session = buildSession("session-1", { status: "idle" });
+    const shell = buildChatTerminalSession(session.sessionId, "terminal-1", "pty-1", "Earlier run");
+    installAdeMocks({ sessions: [session], shellSessions: [shell] });
+    vi.mocked(window.ade.sessions.get).mockResolvedValue(shell);
+    installReplayingSessionEvents([{ sessionId: shell.id, reason: "created" }]);
+    const onOpenTerminalPane = vi.fn();
+
+    renderToolsPane(session, { terminalPaneOpen: false, onOpenTerminalPane });
+
+    await waitFor(() => expect(vi.mocked(window.ade.sessions.get)).toHaveBeenCalled());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(onOpenTerminalPane).not.toHaveBeenCalled();
+  });
+
+  it("reveals a terminal the agent starts once, and never again after the Tools pane closes", async () => {
+    const session = buildSession("session-1", { status: "idle" });
+    const earlier = buildChatTerminalSession(session.sessionId, "terminal-1", "pty-1", "Earlier run");
+    const started = buildChatTerminalSession(session.sessionId, "terminal-2", "pty-2", "Agent run");
+    const next = buildChatTerminalSession(session.sessionId, "terminal-3", "pty-3", "Next run");
+    const sessionsById = new Map([earlier, started, next].map((row) => [row.id, row] as const));
+    // The chat's list is read once, before `started` exists, so it never
+    // mentions it. Only the pane's own record can stop a replay of `started`.
+    installAdeMocks({ sessions: [session], shellSessions: [earlier] });
+    vi.mocked(window.ade.sessions.get).mockImplementation(async (id: string) => sessionsById.get(id) ?? null);
+    const events = installReplayingSessionEvents([{ sessionId: earlier.id, reason: "created" }]);
+    const onOpenTerminalPane = vi.fn();
+    const view = renderToolsPane(session, { terminalPaneOpen: true, onOpenTerminalPane });
+    const flush = () => act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    await screen.findByRole("textbox");
+    act(() => events.emit({ sessionId: started.id, reason: "created" }));
+    await waitFor(() => expect(onOpenTerminalPane).toHaveBeenCalledTimes(1));
+
+    // The user closes the Tools pane. That re-subscribes, and the replay hands
+    // over `started`'s "created" again, followed by a duplicate of it.
+    view.setTerminalPaneOpen(false);
+    await flush();
+    act(() => events.emit({ sessionId: started.id, reason: "created" }));
+    await flush();
+    expect(onOpenTerminalPane).toHaveBeenCalledTimes(1);
+
+    // A genuinely new terminal still reveals the pane after it was closed.
+    act(() => events.emit({ sessionId: next.id, reason: "created" }));
+    await waitFor(() => expect(onOpenTerminalPane).toHaveBeenCalledTimes(2));
   });
 
   it("shows a green session indicator while the agent is working", async () => {
