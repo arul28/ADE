@@ -283,6 +283,7 @@ import { gitOwnershipMessage, parseGitOwnershipError } from "./services/projects
 import { createHeadlessGitHubService } from "./headlessLinearServices";
 import type { SyncProjectCatalogProvider } from "./services/sync/syncHostService";
 import { createBrainHomeRegistry, describeOtherBrains } from "./services/runtime/brainHomeRegistry";
+import { installStartupSignalExit } from "./services/runtime/brainStartupSignals";
 import {
   describeBrainRoleCeiling,
   describeDroppedCallerIdentity,
@@ -26481,6 +26482,10 @@ async function runServe(
   if (roleCeilingNote !== null) {
     headlessProjectLogger.warn("brain.role_ceiling_below_cto", { role: options.role });
   }
+  // Hoisted out of the try below: the handler that finishes startup reads them.
+  // Until the registry is up they do nothing.
+  let leaveBrainRegistry: () => void = () => {};
+  let stopStartupSignalExit: () => void = () => {};
   /*
    * Who else is on this ADE home.
    *
@@ -26517,10 +26522,11 @@ async function runServe(
         })),
       });
     }
-    const leaveBrainRegistry = () => brainRegistry.leave(process.pid);
+    leaveBrainRegistry = () => brainRegistry.leave(process.pid);
     process.once("exit", leaveBrainRegistry);
-    process.once("SIGINT", leaveBrainRegistry);
-    process.once("SIGTERM", leaveBrainRegistry);
+    // Until the graceful handler below is installed, a signal ends the brain
+    // here. A bare listener would swallow the first one (see brainStartupSignals.ts).
+    stopStartupSignalExit = installStartupSignalExit(leaveBrainRegistry);
   } catch {
     // Diagnostics must never stop a brain from serving.
   }
@@ -26678,22 +26684,26 @@ async function runServe(
   const stopIdleMonitor = monitorRuntimeIdleExit(states, finish);
   try {
     await new Promise<void>((resolve) => {
-      if (done) {
-        resolve();
-        return;
-      }
-      resolveDone = resolve;
       // A signal means launchd/systemd or an installer wants this brain gone.
       // Graceful disposal can wedge on live agent/PTY children; a wedged brain
       // outlives its service registration and squats on the channel socket and
       // sync singleton, so force the exit if disposal does not finish in time.
       const finishFromSignal = () => {
+        leaveBrainRegistry();
         finish();
         const timer = setTimeout(() => process.exit(0), 10_000);
         timer.unref();
       };
+      // Installed before the `done` check, so a signal during teardown after an
+      // early finish() still gets the forced-exit bound and not the startup exit.
+      stopStartupSignalExit();
       process.once("SIGINT", finishFromSignal);
       process.once("SIGTERM", finishFromSignal);
+      if (done) {
+        resolve();
+        return;
+      }
+      resolveDone = resolve;
     });
   } finally {
     stopParentMonitor();
