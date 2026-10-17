@@ -1,10 +1,10 @@
-// cd apps/ade-cli && npx tsx ../../scripts/dev/seed-scratch-follower.mts [scratch-root] [--host 192.0.2.1] [--port 8788] [--machine "Scratch Mac Studio"] [--last-seen-minutes 2]
+// cd apps/ade-cli && npx tsx ../../scripts/dev/seed-scratch-follower.mts [--host 192.0.2.1] [--port 8788] [--machine "Scratch Mac Studio"] [--last-seen-minutes 2]
 // Seeds a SCRATCH project that follows a machine which is not there, so the Stop following flow can be
 // checked in a dev app on a private socket. The project gets its own .ade/ade.db under a fresh directory
 // inside the OS temp dir. Its sync cluster row names a device whose address is a fake host. The default
 // 192.0.2.1 is TEST-NET-1 (RFC 5737), a documentation range that is never routed.
-// The script writes only under the scratch root. It refuses any root that is not under the OS temp dir,
-// or that is under ~/ADE or ~/.ade, and it checks that before it creates anything. It never starts a runtime,
+// The script writes only under a new directory that mkdtemp creates atomically in the OS temp dir; it takes
+// no path from the caller, and it re-checks that the result is not under ~/ADE or ~/.ade. It never starts a runtime,
 // never reads or writes the machine's secrets, and never touches a socket.
 // The runtime treats a cluster record whose brain was last seen more than 5 minutes ago as stale and reclaims
 // it on refresh (syncService.ts STALE_BRAIN_LAST_SEEN_MS). So check within that window, or seed a new root.
@@ -20,7 +20,6 @@ import { openKvDb } from "../../apps/desktop/src/main/services/state/kvDb";
 const DEFAULT_CLUSTER_ID = "default";
 
 type Options = {
-  root: string | null;
   host: string;
   port: number;
   machine: string;
@@ -29,7 +28,6 @@ type Options = {
 
 function parseOptions(argv: string[]): Options {
   const options: Options = {
-    root: null,
     host: "192.0.2.1",
     port: 8788,
     machine: "Scratch Mac Studio",
@@ -48,8 +46,7 @@ function parseOptions(argv: string[]): Options {
     else if (arg === "--machine") options.machine = next();
     else if (arg === "--last-seen-minutes") options.lastSeenMinutes = Number(next());
     else if (arg.startsWith("--")) throw new Error(`Unknown option ${arg}.`);
-    else if (options.root === null) options.root = arg;
-    else throw new Error(`Only one scratch root is allowed, got ${arg} as well.`);
+    else throw new Error(`Unexpected argument ${arg}: the scratch root is always a new temp directory.`);
   }
   if (!Number.isInteger(options.port) || options.port < 1 || options.port > 65535) {
     throw new Error(`--port must be a port number, got ${options.port}.`);
@@ -61,42 +58,25 @@ function parseOptions(argv: string[]): Options {
 }
 
 /**
- * The real path a scratch root would have, checked before anything is created.
- * It must not exist yet, must sit strictly inside the OS temp dir, and it must not
- * be under the user's ADE projects folder or ADE home. `tmp` and `home` are
- * injectable so the check can be exercised without touching the real ones.
+ * Creates the scratch root. mkdtemp makes a new, uniquely named directory in one
+ * atomic step, so no caller path, symlink or swapped parent can redirect it. The
+ * result is still checked against the user's ADE projects folder and ADE home
+ * before anything is written into it. `tmp` and `home` are injectable for tests.
  */
-export function checkedScratchRoot(
-  requested: string,
+export function createScratchRoot(
   { home = os.homedir(), tmp = os.tmpdir() }: { home?: string; tmp?: string } = {},
 ): string {
-  const target = path.resolve(requested);
-  // The parent must exist, so a refused root never creates a directory on the way.
-  const real = path.join(fs.realpathSync(path.dirname(target)), path.basename(target));
-  const realTmp = fs.realpathSync(tmp);
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(tmp, "ade-scratch-follower-")));
   const realHome = fs.realpathSync(home);
-  const forbidden = [
-    path.join(home, "ADE"),
-    path.join(home, ".ade"),
-    path.join(realHome, "ADE"),
-    path.join(realHome, ".ade"),
-  ];
-  for (const candidate of [target, real]) {
-    for (const dir of forbidden) {
-      if (candidate === dir || candidate.startsWith(dir + path.sep)) {
-        throw new Error(`Refusing ${requested}: it is under ${dir}, the user's ADE projects or ADE home.`);
-      }
+  const forbidden = [path.join(home, "ADE"), path.join(home, ".ade"), path.join(realHome, "ADE"), path.join(realHome, ".ade")];
+  const lower = (value: string) => value.toLowerCase();
+  for (const dir of forbidden) {
+    if (lower(root) === lower(dir) || lower(root).startsWith(lower(dir) + path.sep)) {
+      fs.rmdirSync(root);
+      throw new Error(`Refusing ${root}: it is under ${dir}, the user's ADE projects or ADE home.`);
     }
   }
-  if (!real.startsWith(realTmp + path.sep)) {
-    throw new Error(`Refusing ${requested}: a scratch root must be inside ${realTmp}.`);
-  }
-  // Only a path that does not exist yet: an existing entry could be a symlink
-  // into a real project or ADE home that the checks above never resolve.
-  if (fs.lstatSync(real, { throwIfNoEntry: false })) {
-    throw new Error(`Refusing ${requested}: it already exists. Pick a new root.`);
-  }
-  return real;
+  return root;
 }
 
 function git(cwd: string, args: string[]): void {
@@ -108,13 +88,7 @@ function git(cwd: string, args: string[]): void {
 
 async function main(): Promise<void> {
   const options = parseOptions(process.argv.slice(2));
-  // Checked before anything is created, so a refused root leaves no directory behind.
-  const root = checkedScratchRoot(
-    options.root ?? path.join(os.tmpdir(), `ade-scratch-follower-${randomUUID().slice(0, 8)}`),
-  );
-  // Not recursive: the parent was checked to exist, and this fails if anything
-  // appeared at the root since the check.
-  fs.mkdirSync(root);
+  const root = createScratchRoot();
   // The dev app's private ADE home, named in the summary below. The script never writes to it.
   fs.mkdirSync(path.join(root, "ade-home"), { recursive: true });
 
