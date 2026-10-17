@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -17,6 +18,12 @@ import {
 } from "./builtInBrowserService";
 import { createDevServerRegistry } from "../devServers/devServerRegistry";
 import { builtInBrowserAgentPresence } from "./builtInBrowserPresence";
+
+// jsdom ships no type declarations; this is the slice the inspect-script test uses.
+type PageDom = { window: { document: Document; eval: (code: string) => unknown } };
+const { JSDOM } = createRequire(import.meta.url)("jsdom") as {
+  JSDOM: new (html: string, options: { runScripts: "outside-only"; url: string }) => PageDom;
+};
 import { narrowPageHint } from "./builtInBrowserRecordingViewport";
 import type { BuiltInBrowserTabRecorder } from "./builtInBrowserRecording";
 
@@ -5218,6 +5225,60 @@ describe("createBuiltInBrowserService — switchTab and navigate inspect/selecti
       originalTagName: "section",
       selectedTagName: "button",
     });
+  });
+
+  it("runs the inspect page script so field values and secret attributes never reach the agent, and React dev source fills the item", async () => {
+    const dom = new JSDOM(`<!doctype html><body>
+      <form id="login" data-auth-token="tok-123" class="card">
+        <input type="hidden" name="csrf" value="csrf-secret">
+        <input id="email" type="email" value="me@example.com">
+        <input type="submit" value="Sign in">
+        <textarea>private note</textarea>
+        <script>window.__SECRET = "s3";</script>
+      </form></body>`, { runScripts: "outside-only", url: "https://example.test/login" });
+    const form = dom.window.document.getElementById("login");
+    expect(form, "fixture form").toBeTruthy();
+    // React dev builds hang the fiber on the DOM node; _debugSource is where the JSX was written.
+    Object.assign(form as object, {
+      __reactFiber$test: {
+        type: "form",
+        _debugSource: { fileName: "/repo/src/auth/LoginForm.tsx", lineNumber: 42, columnNumber: 7 },
+        return: { type: function LoginForm() {}, return: null },
+      },
+    });
+    fakes.setSendCommand(async (method, params) => {
+      switch (method) {
+        case "DOM.getNodeForLocation":
+          return { backendNodeId: 7 };
+        case "DOM.resolveNode":
+          return { object: { objectId: "login-form" } };
+        case "Runtime.callFunctionOn": {
+          // Run the exact script the service sends over CDP, in a real DOM.
+          const pageFunction = dom.window.eval(`(${String(params?.functionDeclaration)})`) as (this: Element) => unknown;
+          return { result: { value: pageFunction.call(form as Element) } };
+        }
+        default:
+          return {};
+      }
+    });
+
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    await service.navigate({ url: "https://example.test/login", newTab: true });
+    const result = await service.selectPoint({ x: 10, y: 10, includeScreenshot: false });
+    const item = result.item;
+    expect(item, "selection item").toBeTruthy();
+    const metadata = item?.metadata as Record<string, unknown>;
+    const html = String(metadata.html);
+    const prompt = JSON.stringify(item);
+
+    for (const secret of ["tok-123", "csrf-secret", "me@example.com", "private note", "__SECRET"]) {
+      expect(prompt).not.toContain(secret);
+    }
+    expect(html).toContain("<form");
+    expect(html).toContain('value="Sign in"');
+    expect(metadata.attributes).toMatchObject({ "data-auth-token": "[redacted]", class: "card" });
+    expect(item).toMatchObject({ sourceFile: "/repo/src/auth/LoginForm.tsx", sourceLine: 42 });
+    expect(metadata.frameworkSource).toMatchObject({ framework: "react", confidence: "exact", componentStack: ["LoginForm"] });
   });
 
   it("navigate to a URL on the active tab stops inspect mode (CDP overlay desync fix)", async () => {
