@@ -658,6 +658,46 @@ describe("LaneGitActionsPane rescue action", () => {
     expect(screen.queryByTitle("src/alpha.ts")).toBeNull();
   });
 
+  it("never paints the old branch's rows when a read started before a branch rename lands", async () => {
+    let resolveOldBranchRead: ((value: unknown) => void) | null = null;
+    (window.ade.diff as any).getBranchChanges = vi.fn()
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveOldBranchRead = resolve; }))
+      .mockImplementation(() => new Promise(() => undefined));
+    const view = renderPane({ laneId: "lane-2" });
+    await waitFor(() => expect(resolveOldBranchRead).not.toBeNull());
+
+    mockStoreState.lanes = mockStoreState.lanes.map((lane) =>
+      lane.id === "lane-2" ? { ...lane, branchRef: "feature/renamed" } : lane,
+    );
+    view.rerender(
+      <MemoryRouter>
+        <LaneGitActionsPane
+          laneId="lane-2"
+          autoRebaseEnabled={false}
+          onOpenSettings={vi.fn()}
+          onSelectFile={vi.fn()}
+          onSelectCommit={vi.fn()}
+          selectedPath={null}
+          selectedMode={null}
+          selectedCommit={null}
+          selectedCommitSha={null}
+        />
+      </MemoryRouter>,
+    );
+
+    await act(async () => {
+      resolveOldBranchRead!({
+        baseRef: "main",
+        mergeBase: "0123456789abcdef",
+        files: [{ path: "src/alpha.ts", kind: "modified", additions: 1, deletions: 0 }],
+        additions: 1,
+        deletions: 0,
+      });
+    });
+
+    expect(screen.queryByTitle("src/alpha.ts")).toBeNull();
+  });
+
   it("paints a revisit's cached Branch diff through the Files list window, not every row", async () => {
     mockBranchChanges(() => Array.from({ length: 188 }, (_, index) => `src/generated/file-${index}.ts`));
     const first = renderPane({ laneId: "lane-2" });
