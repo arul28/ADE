@@ -321,7 +321,9 @@ describe("createSyncService", () => {
     }
   });
 
-  it("never dials this machine for a fresh remote brain that has no address", async () => {
+  // The viewer branch dials only when the CRDT extension is available, and the
+  // win32 mock above turns it off, so this test cannot see the dial or the warn there.
+  it.skipIf(process.platform === "win32")("never dials this machine for a fresh remote brain that has no address", async () => {
     const projectRoot = makeTempRoot("ade-sync-service-addressless-brain-");
     cleanupRoots.push(projectRoot);
     const db = await openKvDb(path.join(projectRoot, ".ade", "kv.sqlite"), createLogger() as any);
@@ -433,7 +435,9 @@ describe("createSyncService", () => {
       return { service, logger, db, draftFile };
     };
 
-    it.skipIf(lanAddress == null)("dials the remote brain's real address, never this machine's loopback", async () => {
+    // Dialing needs the CRDT extension, which the win32 mock turns off; the
+    // draft-selection assertions below still run there.
+    it.skipIf(lanAddress == null || process.platform === "win32")("dials the remote brain's real address, never this machine's loopback", async () => {
       const self = await countingListener("127.0.0.1", 0);
       // The brain has one port for all its addresses, so the real address listens on the same one.
       const remote = await countingListener(lanAddress!, self.port);
@@ -454,7 +458,7 @@ describe("createSyncService", () => {
     });
 
     it.each(["127.0.0.1", "::1", "::ffff:127.0.0.1"])(
-      "dials nothing for a saved %s draft when the remote brain has no reachable address",
+      "ignores a saved %s draft for a remote brain with no reachable address, and dials nothing",
       async (draftHost) => {
         const self = await countingListener("127.0.0.1", 0);
         const project = await openProject({ brain: "remote", lastHost: null, lastPort: self.port, draftHost });
@@ -465,10 +469,6 @@ describe("createSyncService", () => {
             host: draftHost,
             port: self.port,
           });
-          expect(project.logger.warn).toHaveBeenCalledWith("sync.role.viewer_no_reachable_address", {
-            brainDeviceId: "remote-brain",
-            brainRecordKnown: true,
-          });
           expect((await project.service.getStatus()).client.savedDraft).toBeNull();
           expect(fs.existsSync(project.draftFile)).toBe(true);
         } finally {
@@ -478,6 +478,23 @@ describe("createSyncService", () => {
         }
       },
     );
+
+    it.skipIf(process.platform === "win32")("logs viewer_no_reachable_address for a saved loopback draft with no reachable address", async () => {
+      const self = await countingListener("127.0.0.1", 0);
+      const project = await openProject({ brain: "remote", lastHost: null, lastPort: self.port, draftHost: "127.0.0.1" });
+      try {
+        await project.service.reevaluateHostRole();
+        expect(self.connections()).toBe(0);
+        expect(project.logger.warn).toHaveBeenCalledWith("sync.role.viewer_no_reachable_address", {
+          brainDeviceId: "remote-brain",
+          brainRecordKnown: true,
+        });
+      } finally {
+        await project.service.dispose();
+        project.db.close();
+        await self.close();
+      }
+    });
 
     it("keeps a saved loopback draft while this machine is the brain", async () => {
       const self = await countingListener("127.0.0.1", 0);
