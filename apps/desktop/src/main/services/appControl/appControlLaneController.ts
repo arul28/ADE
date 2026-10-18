@@ -607,7 +607,7 @@ function() {
     let current = node;
     while (current && current.nodeType === Node.ELEMENT_NODE && current !== document.body && parts.length < 6) {
       let part = current.tagName.toLowerCase();
-      const classes = Array.from(current.classList || []).filter((value) => !/[:\\[\\]\\/]/.test(value)).slice(0, 2);
+      const classes = Array.from(current.classList || []).filter((value) => !/[:\[\]\/]/.test(value)).slice(0, 2);
       if (classes.length) part += "." + classes.map((value) => escapeIdent(value)).join(".");
       const parent = current.parentElement;
       if (parent) {
@@ -2398,17 +2398,64 @@ export function createAppControlLaneController(context: AppControlLaneController
     return evaluated.result?.value ?? null;
   };
 
+  /**
+   * A node inside an iframe is measured in that frame's viewport. Shift its
+   * boxes by the iframe's content origin so callers get top-level viewport
+   * pixels, like every other snapshot.
+   */
+  const moveIframeSnapshotToViewport = async (
+    client: CdpClient,
+    frameId: string | undefined,
+    payload: DomSnapshotPayload,
+    metrics: { cssLayoutViewport?: { clientWidth?: number; clientHeight?: number } } | null,
+  ): Promise<DomSnapshotPayload> => {
+    if (!frameId) return payload;
+    const tree = await client.send<{ frameTree?: { frame?: { id?: string } } }>("Page.getFrameTree").catch(() => null);
+    const mainFrameId = tree?.frameTree?.frame?.id;
+    if (!mainFrameId || frameId === mainFrameId) return payload;
+    const owner = await client.send<{ backendNodeId?: number }>("DOM.getFrameOwner", { frameId });
+    if (typeof owner.backendNodeId !== "number") return payload;
+    const box = await client.send<{ model?: { content?: number[] } }>("DOM.getBoxModel", { backendNodeId: owner.backendNodeId });
+    const content = box.model?.content;
+    const originX = Number.isFinite(content?.[0]) ? Number(content?.[0]) : 0;
+    const originY = Number.isFinite(content?.[1]) ? Number(content?.[1]) : 0;
+    const width = metrics?.cssLayoutViewport?.clientWidth;
+    const height = metrics?.cssLayoutViewport?.clientHeight;
+    return {
+      ...payload,
+      viewport: {
+        ...payload.viewport,
+        ...(Number.isFinite(width) && Number(width) > 0 ? { width: Number(width) } : {}),
+        ...(Number.isFinite(height) && Number(height) > 0 ? { height: Number(height) } : {}),
+      },
+      elements: payload.elements.map((element) => ({
+        ...element,
+        rect: { ...element.rect, x: element.rect.x + originX, y: element.rect.y + originY },
+        metadata: { ...element.metadata, iframe: { frameId, url: payload.url, origin: { x: originX, y: originY } } },
+      })),
+    };
+  };
+
   const readPointSnapshotWithClient = async (
     client: CdpClient,
     point: PointViewport,
   ): Promise<DomSnapshotPayload | null> => {
     try {
       await client.send("DOM.enable").catch(() => {});
+      // The point is in viewport pixels; DOM.getNodeForLocation hit-tests in
+      // document pixels, so a scrolled document needs its scroll offset added.
+      const metrics = await client.send<{
+        cssLayoutViewport?: { pageX?: number; pageY?: number; clientWidth?: number; clientHeight?: number };
+      }>("Page.getLayoutMetrics")
+        .catch(() => null);
+      const scrollX = Number.isFinite(metrics?.cssLayoutViewport?.pageX) ? Number(metrics?.cssLayoutViewport?.pageX) : 0;
+      const scrollY = Number.isFinite(metrics?.cssLayoutViewport?.pageY) ? Number(metrics?.cssLayoutViewport?.pageY) : 0;
       const located = await client.send<CdpDomGetNodeForLocationResponse>("DOM.getNodeForLocation", {
-        x: Math.max(0, Math.round(point.x)),
-        y: Math.max(0, Math.round(point.y)),
+        x: Math.max(0, Math.round(point.x + scrollX)),
+        y: Math.max(0, Math.round(point.y + scrollY)),
         includeUserAgentShadowDOM: true,
-        ignorePointerEventsNone: true,
+        // Match what the pointer sees: pointer-events:none layers do not win.
+        ignorePointerEventsNone: false,
       });
       const backendNodeId = located.backendNodeId;
       if (typeof backendNodeId === "number") {
@@ -2421,7 +2468,8 @@ export function createAppControlLaneController(context: AppControlLaneController
             returnByValue: true,
             awaitPromise: true,
           });
-          if (called.result?.value) return called.result.value;
+          const payload = called.result?.value;
+          if (payload) return await moveIframeSnapshotToViewport(client, located.frameId, payload, metrics);
         }
       }
     } catch {
