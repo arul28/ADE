@@ -3,7 +3,7 @@ import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
-const WINDOWS_DPAPI_KEY_FILE = ".credential-key.dpapi";
+export const WINDOWS_DPAPI_KEY_FILE = ".credential-key.dpapi";
 const WINDOWS_DPAPI_KEY_MAGIC = "ADE_WINDOWS_DPAPI_KEY_V1";
 /**
  * DPAPI itself is a local, sub-millisecond call; essentially the whole budget
