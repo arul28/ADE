@@ -145,6 +145,8 @@ Run without the app (`scripts/perf/service/`).
 | Files quick-open index build (this worktree) | `file-index.bench.mts` | 195 / 195 ms | 500 ms |
 | Quick-open lookup | `file-index.bench.mts` | 1.3-8.2 / 1.3-8.4 ms | 50 ms |
 | Project registry: one read per project (6) | `registry-read.bench.mts` | 0.1 / 0.1 ms | 5 ms |
+| Project icon detection, cold: one fresh-process resolve for each registered project (ADE 45 ms, Versic 38 ms; the other four 1-10 ms). Before (origin/main `c4ad80e1d`): 1,378 / 1,320 / 1,311 ms, median 1,320; ADE 593, Versic 635 | one-off `tsx` loop over `~/.ade/projects.json`, `resolveProjectIconPath` once per root (no bench file yet); median of 3 runs, interleaved with origin/main | 89 / 88 / 87 ms, median 88 | *new* 110 ms |
+| Project icon detection, warm: the same six roots again in that process. Before: 83.7 / 85.0 / 82.8 ms. A "no icon" result is not cached by design, so the four projects without an icon scan again | same | 3.7 / 3.8 / 3.6 ms, median 3.7 | *new* 5 ms |
 | Machine roster, warm (4 projects, 7 chats) | `roster.bench.mts` | 2.2-3.0 / 2.0-2.8 ms | 10 ms |
 | Machine roster, cold | `roster.bench.mts` | 59 / 51 ms | 150 ms |
 | Reading a 10 MB request, Content-Length framed | `rpc-read.bench.mts` | 6.9 / 7.0 ms | 30 ms |
