@@ -30547,7 +30547,7 @@ function formatBrowserStatus(value: unknown): string {
   }
   const tabs = Array.isArray(status.tabs) ? status.tabs.filter(isRecord) : [];
   const activeTabId = asString(status.activeTabId);
-  // `claimable` marks a tab the human opened that no chat owns. It is visible
+  // `claimable` marks a tab with no owner or an expired lease. It is visible
   // so an agent can discover it instead of starting a duplicate tab, but every
   // action on it still fails until the caller claims it — so the owner column
   // says exactly that, with the command that fixes it.

@@ -8084,8 +8084,8 @@ function AgentChatMessageListMain({
     return minimapIndex >= 0 ? minimapIndex : null;
   }, [presentedRows, minimapSourceEntries, scrollToPromptHistoryRequest]);
 
-  // Ticks are 1:1 with entries, so the ordinal IS the rail index — no
-  // display-index translation step exists any more.
+  // Keep the active user ordinal independent of queued annotations and the
+  // visible 50-entry rail window; ChatUserMinimap maps it to the current entry.
   // Same position the virtual window drew from, so the rail and the rows agree.
   const activeFullUserOrdinal = useMemo(
     () => computeActiveFullUserOrdinal(windowScrollTop, minimapSourceEntries, rowStartOffsets),

@@ -316,11 +316,9 @@ export function resolveRowAnchorAtScrollTop(
 /**
  * Which user message (ordinal in the full user list) is closest to the top of the viewport.
  *
- * Ticks are positioned by percentage, so they compress instead of overflowing and
- * the rail never needs a marker cap or subsampling. Sampling would also break the
- * strict 1:1 index↔entry correspondence that pointer→index mapping depends on
- * (the lens and preview would select the wrong message), so this ordinal doubles
- * as the active tick index — no display-index translation step exists.
+ * The rail pages a contiguous window of entries rather than thinning the list.
+ * Keeping the full-list ordinal here lets the minimap resolve that message to
+ * its current entry after queued Codex annotations or older history backfill.
  */
 export function computeActiveFullUserOrdinal(
   scrollTop: number,
