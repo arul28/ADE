@@ -8,6 +8,7 @@ import {
   chatLaunchStore,
   hydrateChatLaunches,
   refreshChatLaunch,
+  retireChatLaunchBridgesForSession,
   useChatLaunchSelector,
 } from "./chatLaunchStore";
 
@@ -178,6 +179,14 @@ export function useChatLaunchSync(): void {
       }
     };
   }, [projectBinding, extraSignature]);
+
+  // A deleted chat stops bridging in every window that hears the delete, even a
+  // window whose roster never listed it. Window-wide (not Work-only) because the
+  // roster that would synthesize the row may mount later. Archive emits no delete,
+  // so an archived chat ends on the reads instead.
+  useEffect(() => window.ade?.sessions?.onChanged?.((event) => {
+    if (event.reason === "deleted") retireChatLaunchBridgesForSession(event.sessionId);
+  }), []);
 
   // A chat whose launch still reads as live but is already exchanging
   // messages (or has written its finished setup card) means a launch update
