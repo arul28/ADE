@@ -3,6 +3,7 @@ import { execFile, spawnSync } from "node:child_process";
 import {
   invalidateWindowsDpapiMaterial,
   readExistingWindowsDpapiMaterial,
+  readExistingWindowsDpapiMaterialAsync,
   readOrCreateWindowsDpapiMaterial,
   readOrCreateWindowsDpapiMaterialAsync,
 } from "./windowsDpapiMaterial";
@@ -461,6 +462,19 @@ export async function readDefaultOsBoundKeyMaterialAsync(
  * was asked to report on, and would block for the platform's create budget
  * (up to 30 s of PowerShell cold start on Windows) to do it.
  */
+/** Async, read-only: warms the cache for an existing key and never creates one. */
+export async function readExistingOsBoundKeyMaterialAsync(keyBindingDir: string): Promise<Buffer | null> {
+  switch (resolveOsBoundKeyMaterialBinding()) {
+    case "env_passphrase":
+      return readCredentialPassphraseFromEnv();
+    case "windows_dpapi":
+      return await readExistingWindowsDpapiMaterialAsync(keyBindingDir);
+    default:
+      // Only DPAPI needs warming; the macOS keychain reader is not touched here.
+      return null;
+  }
+}
+
 export function readExistingOsBoundKeyMaterial(keyBindingDir: string): Buffer | null {
   switch (resolveOsBoundKeyMaterialBinding()) {
     case "env_passphrase":
