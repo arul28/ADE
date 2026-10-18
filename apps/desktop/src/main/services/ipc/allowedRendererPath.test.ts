@@ -23,7 +23,9 @@ fs.writeFileSync(outsideFile, "secret");
 afterAll(() => {
   fs.rmSync(tempRoot, { recursive: true, force: true });
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 const allowedDirs = [allowedDir, secondAllowedDir];
 
