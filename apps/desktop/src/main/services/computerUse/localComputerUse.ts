@@ -30,7 +30,7 @@ export type LocalComputerUseCapabilities = {
 
 // Linux has neither route. Windows has one, so its detail names the route.
 const NATIVE_COMPUTER_USE_BLOCKED_DETAIL =
-  "Native screenshot, video, and OS GUI control are currently implemented for macOS and Windows only. App Control and proof-file ingestion remain available on supported desktop platforms.";
+  "Native screenshot, video, and OS GUI control are currently implemented for macOS only. App Control and proof-file ingestion remain available on supported desktop platforms.";
 const WINDOWS_NATIVE_COMPUTER_USE_BLOCKED_DETAIL =
   "On Windows, use the lane's Windows screen instead: `ade screen start`, then `ade screen screenshot`, `ade screen record start`, `ade screen open`, and `ade screen observe`, `ade screen click` or `ade screen type` (see `ade screen --help`). App Control and proof-file ingestion remain available on supported desktop platforms.";
 
