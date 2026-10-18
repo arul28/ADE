@@ -13,6 +13,7 @@ import type { AgentChatFileRef } from "../../../shared/types";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { readAttachmentImageDataUrl } from "../../lib/attachmentImage";
 import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
+import { fixedFrameOf, fixedRect, fixedViewport } from "../../lib/webZoom";
 
 /** Edge of the hover peek. Large enough to recognize, small enough to stay out of the way. */
 const PEEK_SIZE_PX = 160;
@@ -76,8 +77,10 @@ export function AttachmentPeekCard({
       setPosition(null);
       return;
     }
-    const rect = anchor.getBoundingClientRect();
-    const viewportWidth = window.innerWidth || PEEK_SIZE_PX;
+    // Screen rect and window, converted into the viewport frame the card is written in.
+    const frame = fixedFrameOf(null);
+    const rect = fixedRect(frame, anchor.getBoundingClientRect());
+    const viewportWidth = fixedViewport(frame).width || PEEK_SIZE_PX;
     const left = Math.min(Math.max(8, rect.left), Math.max(8, viewportWidth - PEEK_SIZE_PX - 8));
     // Prefer above the chip; drop below when the chip sits near the top.
     const above = rect.top - PEEK_SIZE_PX - PEEK_GAP_PX;

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { cssZoomOf } from "../../lib/webZoom";
 
 /**
  * The captured thumbnail flying into the composer.
@@ -22,14 +23,16 @@ const FLIGHT_MS = 420;
  * can land before the CTO tab has finished mounting its composer.
  */
 function composerTarget(): { x: number; y: number } {
+  // Layout px: the rect is screen px under the hosted web zoom, and the fly-in is a CSS translate.
+  const zoom = cssZoomOf();
   const composer = document.querySelector<HTMLElement>("[data-chat-composer-mode]");
   if (composer) {
     const rect = composer.getBoundingClientRect();
     if (rect.width > 0 && rect.height > 0) {
-      return { x: rect.left + 32, y: rect.top + rect.height / 2 };
+      return { x: (rect.left + 32) / zoom, y: (rect.top + rect.height / 2) / zoom };
     }
   }
-  return { x: window.innerWidth / 2, y: window.innerHeight - 80 };
+  return { x: window.innerWidth / zoom / 2, y: window.innerHeight / zoom - 80 };
 }
 
 export function CaptureFlyIn({
@@ -59,7 +62,11 @@ export function CaptureFlyIn({
   }, [onDone]);
 
   const target = targetRef.current;
-  const startWidth = Math.min(360, window.innerWidth * 0.4);
+  // Layout px, as the fixed image is styled and translated.
+  const zoom = cssZoomOf();
+  const viewportWidth = window.innerWidth / zoom;
+  const viewportHeight = window.innerHeight / zoom;
+  const startWidth = Math.min(360, viewportWidth * 0.4);
 
   return (
     <img
@@ -81,7 +88,7 @@ export function CaptureFlyIn({
         transformOrigin: "top left",
         transform: landed
           ? `translate(${target.x - 18}px, ${target.y - 18}px) scale(0.08)`
-          : `translate(${window.innerWidth / 2 - startWidth / 2}px, ${window.innerHeight / 2 - startWidth / 3}px) scale(1)`,
+          : `translate(${viewportWidth / 2 - startWidth / 2}px, ${viewportHeight / 2 - startWidth / 3}px) scale(1)`,
         opacity: landed ? 0 : 1,
         transition: `transform ${FLIGHT_MS}ms cubic-bezier(0.4, 0, 0.2, 1), opacity ${FLIGHT_MS}ms ease-in`,
       }}

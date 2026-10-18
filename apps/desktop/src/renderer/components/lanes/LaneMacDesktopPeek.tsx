@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 
 import { useMacDesktopFrame } from "../chat/macDesktopFrameStore";
 import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
+import { fixedFrameOf, fixedRect } from "../../lib/webZoom";
 
 /**
  * The lane row's hover peek at that lane's macOS screen.
@@ -33,7 +34,8 @@ export function LaneMacDesktopPeek({ laneId }: { laneId: string }) {
     const host = anchorRef.current?.parentElement;
     if (!host) return;
     const show = () => {
-      const rect = host.getBoundingClientRect();
+      // Screen rect, converted into the viewport frame the peek is written in.
+      const rect = fixedRect(fixedFrameOf(null), host.getBoundingClientRect());
       setAt({ left: rect.right + 8, top: rect.top + rect.height / 2 });
     };
     const hide = () => setAt(null);

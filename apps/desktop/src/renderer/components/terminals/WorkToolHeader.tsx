@@ -21,6 +21,7 @@ import {
   type WorkToolDotState,
   type WorkToolStatusMap,
 } from "./useWorkToolStatuses";
+import { toLayoutPx } from "../../lib/webZoom";
 
 const CONTROL_CLASS = cn(
   "ade-shell-control inline-flex h-6 shrink-0 items-center justify-center gap-1.5 rounded-[6px] px-1.5",
@@ -158,7 +159,7 @@ function useMeasuredWidth(): { ref: (node: HTMLDivElement | null) => void; width
     observer.current?.disconnect();
     observer.current = null;
     if (!node) return;
-    setWidth(node.getBoundingClientRect().width);
+    setWidth(toLayoutPx(node.getBoundingClientRect().width));
     // Guarded because jsdom and the hosted web client's older engines may not
     // have it; without a live measurement the strip simply shows every tab.
     if (typeof ResizeObserver === "undefined") return;

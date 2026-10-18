@@ -313,6 +313,7 @@ import {
   THIS_MACHINE_ID as THIS_MACHINE_GUARD_ID,
   machineNameForBinding,
 } from "../../../shared/machineIdentity";
+import { toLayoutPx } from "../../lib/webZoom";
 
 export {
   beginLaneGitActionRuntime,
@@ -939,7 +940,7 @@ export function LaneGitActionsPane({
       if (width > 0) setPaneWidth(width);
     });
     observer.observe(node);
-    setPaneWidth(node.clientWidth || window.innerWidth);
+    setPaneWidth(node.clientWidth || toLayoutPx(window.innerWidth));
     return () => observer.disconnect();
   }, []);
 

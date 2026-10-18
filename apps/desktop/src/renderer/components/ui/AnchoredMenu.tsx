@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { clampFixedPosition } from "../../hooks/useClampedFixedPosition";
+import { fixedFrameOf, fixedRect, fixedViewport } from "../../lib/webZoom";
 import { usePortalContainer } from "./portalContainer";
 
 export type AnchoredMenuPlacement = "bottom-start" | "bottom-end" | "top-start" | "top-end";
@@ -59,7 +60,12 @@ export function AnchoredMenu({
     const anchor = anchorRef.current;
     const menu = menuRef.current;
     if (!anchor || !menu) return;
-    const rect = anchor.getBoundingClientRect();
+    // The menu is placed in the frame of the node it is portalled into: the body,
+    // or a transformed dialog panel whose scale and origin the menu inherits.
+    const frame = fixedFrameOf(menu.parentElement);
+    const viewport = fixedViewport(frame);
+    const screen = anchor.getBoundingClientRect();
+    const rect = fixedRect(frame, screen);
     // Size the menu to the trigger before measuring, so its height is the final one.
     if (matchAnchorWidth) menu.style.width = `${rect.width}px`;
     const size = { width: menu.offsetWidth, height: menu.offsetHeight };
@@ -67,8 +73,8 @@ export function AnchoredMenu({
     const alignEnd = placement.endsWith("end");
     let above = placement.startsWith("top");
     // Flip to the other side when the preferred side has no room and the other does.
-    const roomBelow = window.innerHeight - rect.bottom - offset;
-    const roomAbove = rect.top - offset;
+    const roomBelow = viewport.bottom - rect.bottom - offset;
+    const roomAbove = rect.top - viewport.top - offset;
     if (!above && size.height > roomBelow && roomAbove > roomBelow) above = true;
     else if (above && size.height > roomAbove && roomBelow > roomAbove) above = false;
     const clamped = clampFixedPosition(
@@ -77,23 +83,17 @@ export function AnchoredMenu({
         y: above ? rect.top - offset - size.height : rect.bottom + offset,
       },
       { width, height: size.height },
+      8,
+      viewport,
     );
-    // A transformed container (a centred dialog) becomes the origin for fixed
-    // children, so convert window coordinates into its space.
-    let originLeft = 0;
-    let originTop = 0;
-    if (portalContainer && getComputedStyle(portalContainer).transform !== "none") {
-      const box = portalContainer.getBoundingClientRect();
-      originLeft = box.left;
-      originTop = box.top;
-    }
-    anchorAtOpenRef.current = { left: rect.left, top: rect.top };
+    // Scroll compares screen rects, so the trigger's position is kept unconverted.
+    anchorAtOpenRef.current = { left: screen.left, top: screen.top };
     setPosition({
-      left: clamped.left - originLeft,
-      top: clamped.top - originTop,
+      left: clamped.left,
+      top: clamped.top,
       ...(matchAnchorWidth ? { width: rect.width } : null),
     });
-  }, [anchorRef, matchAnchorWidth, offset, placement, portalContainer]);
+  }, [anchorRef, matchAnchorWidth, offset, placement]);
 
   useLayoutEffect(() => {
     if (!open) {

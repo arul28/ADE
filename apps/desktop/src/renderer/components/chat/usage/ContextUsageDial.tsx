@@ -11,6 +11,7 @@ import {
 import { SmartTooltip, type SmartTooltipContent } from "../../ui/SmartTooltip";
 import { cn } from "../../ui/cn";
 import { formatContextTokens, type ContextUsageViewModel } from "./contextUsageModel";
+import { fixedFrameOf, fixedRect, fixedViewport } from "../../../lib/webZoom";
 
 /**
  * Circular context-window dial for the composer footer. The ring fills as the
@@ -261,11 +262,14 @@ export function ContextUsageDial({
   return <>
     <SmartTooltip forceEnabled side="top" content={content}>
       <button ref={triggerRef} type="button" className={triggerClassName} aria-label={ariaLabel} aria-haspopup="dialog" aria-expanded={open} onClick={(event) => {
-        const rect = event.currentTarget.getBoundingClientRect();
+        // Screen rect and window, converted into the viewport frame the sheet is written in.
+        const frame = fixedFrameOf(null);
+        const rect = fixedRect(frame, event.currentTarget.getBoundingClientRect());
+        const viewport = fixedViewport(frame);
         // Right-align the sheet to the dial, above it, kept 8px inside the window.
         setPosition({
-          left: Math.max(SHEET_MARGIN_PX, Math.min(rect.right - SHEET_WIDTH_PX, window.innerWidth - SHEET_WIDTH_PX - SHEET_MARGIN_PX)),
-          bottom: window.innerHeight - rect.top + SHEET_MARGIN_PX,
+          left: Math.max(SHEET_MARGIN_PX, Math.min(rect.right - SHEET_WIDTH_PX, viewport.width - SHEET_WIDTH_PX - SHEET_MARGIN_PX)),
+          bottom: viewport.height - rect.top + SHEET_MARGIN_PX,
         });
         setOpen(true);
       }}>{inner}</button>

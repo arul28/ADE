@@ -9,6 +9,7 @@ import React, {
 } from "react";
 import type { Icon } from "@phosphor-icons/react";
 
+import { fixedFrameOf, fixedRect, fixedViewport } from "../../lib/webZoom";
 import { Z_LAYERS } from "./zLayers";
 
 /**
@@ -169,19 +170,20 @@ export function MenuSubmenu({
     const trigger = triggerRef.current;
     const panel = panelRef.current;
     if (!trigger || !panel) return;
-    const rect = trigger.getBoundingClientRect();
+    // The panel is placed in the frame of the node it renders into (see `fixedFrameOf`).
+    const frame = fixedFrameOf(panel.parentElement);
+    const viewport = fixedViewport(frame);
+    const rect = fixedRect(frame, trigger.getBoundingClientRect());
     const width = panel.offsetWidth || panelMinWidth;
     const height = panel.offsetHeight;
-    const viewportWidth = window.innerWidth || 0;
-    const viewportHeight = window.innerHeight || 0;
 
     let left = rect.right - PANEL_OVERLAP;
-    if (left + width > viewportWidth - VIEWPORT_MARGIN) {
-      left = Math.max(VIEWPORT_MARGIN, rect.left - width + PANEL_OVERLAP);
+    if (left + width > viewport.right - VIEWPORT_MARGIN) {
+      left = Math.max(viewport.left + VIEWPORT_MARGIN, rect.left - width + PANEL_OVERLAP);
     }
     let top = rect.top - 4;
-    if (top + height > viewportHeight - VIEWPORT_MARGIN) {
-      top = Math.max(VIEWPORT_MARGIN, viewportHeight - VIEWPORT_MARGIN - height);
+    if (top + height > viewport.bottom - VIEWPORT_MARGIN) {
+      top = Math.max(viewport.top + VIEWPORT_MARGIN, viewport.bottom - VIEWPORT_MARGIN - height);
     }
     setPosition({ left, top });
   }, [open, panelMinWidth]);

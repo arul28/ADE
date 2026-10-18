@@ -3,6 +3,7 @@ import type { GitCommitSummary, OpenProjectBinding } from "../../../shared/types
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { COLORS, LABEL_STYLE, MONO_FONT, inlineBadge } from "./laneDesignTokens";
 import { isSameListResult, laneGitListEpoch, readLaneGitListCache, writeLaneGitListCache } from "./laneGitListCache";
+import { cssZoomOf } from "../../lib/webZoom";
 
 function formatTs(ts: string): string {
   const date = new Date(ts);
@@ -271,10 +272,12 @@ export function CommitTimeline({
                     void ensureMeta(commit.sha);
                     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
                     const containerRect = containerRef.current?.getBoundingClientRect();
-                    if (containerRect) {
+                    if (containerRect && containerRef.current) {
+                      // Screen rect differences, written as layout px in the relative container.
+                      const zoom = cssZoomOf(containerRef.current);
                       setTooltipPos({
-                        x: rect.left - containerRect.left + rect.width / 2,
-                        y: rect.top - containerRect.top
+                        x: (rect.left - containerRect.left + rect.width / 2) / zoom,
+                        y: (rect.top - containerRect.top) / zoom
                       });
                     }
                     if (!isSelected) e.currentTarget.style.background = COLORS.hoverBg;
