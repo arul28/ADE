@@ -55,11 +55,18 @@ type ChatLaunchState = {
   entries: Record<string, ChatLaunchEntry>;
   /** Launches this window's slide-out was told to stop showing. */
   dismissed: Record<string, true>;
+  /**
+   * Launches whose real chat the Work roster has listed. Their stand-in never
+   * bridges again (`shouldBridgeChatLaunchRow`), so a chat deleted or archived
+   * before the bridge lapses cannot come back as a running row.
+   */
+  bridgeRetired: Record<string, true>;
 };
 
 export const chatLaunchStore = createStore<ChatLaunchState>(() => ({
   entries: {},
   dismissed: {},
+  bridgeRetired: {},
 }));
 
 export function chatLaunchBindingKey(binding: OpenProjectBinding | null | undefined): string {
@@ -530,6 +537,25 @@ export function dismissChatLaunches(launchIds: readonly string[]): void {
   });
 }
 
+/**
+ * The Work roster has listed these launches' real chats: their stand-ins never
+ * bridge again. Store-held so every Work surface in this window agrees, and so
+ * a remounted surface does not restart a bridge the first one retired.
+ */
+export function retireChatLaunchBridges(launchIds: readonly string[]): void {
+  if (launchIds.length === 0) return;
+  chatLaunchStore.setState((state) => {
+    const next = { ...state.bridgeRetired };
+    let changed = false;
+    for (const id of launchIds) {
+      if (next[id]) continue;
+      next[id] = true;
+      changed = true;
+    }
+    return changed ? { bridgeRetired: next } : state;
+  });
+}
+
 export function getChatLaunchEntry(launchId: string | null | undefined): ChatLaunchEntry | null {
   if (!launchId) return null;
   return chatLaunchStore.getState().entries[launchId] ?? null;
@@ -551,7 +577,7 @@ export function isChatLaunchLane(laneId: string | null | undefined): boolean {
 }
 
 export function resetChatLaunchStoreForTests(): void {
-  chatLaunchStore.setState({ entries: {}, dismissed: {} });
+  chatLaunchStore.setState({ entries: {}, dismissed: {}, bridgeRetired: {} });
   localRecords.clear();
   unsentQueuedMessages.clear();
   refreshingLaunchIds.clear();
@@ -639,6 +665,7 @@ export type ChatLaunchRowSource = {
   binding: OpenProjectBinding | null;
   bindingKey: string;
   pendingEndedAtMs?: number | null;
+  bridgeRetired?: boolean;
 };
 
 function rowSignature(source: ChatLaunchRowSource): string {
@@ -659,6 +686,7 @@ function rowSignature(source: ChatLaunchRowSource): string {
     isChatLaunchPending(s) ? "pending" : "started",
     isChatLaunchSucceeded(s) ? "succeeded" : "unsucceeded",
     source.pendingEndedAtMs ?? "",
+    source.bridgeRetired ? "retired" : "",
     source.bindingKey,
   ].join("\u0001");
 }
@@ -680,6 +708,7 @@ export function useChatLaunchRowSources(): ChatLaunchRowSource[] {
         binding: entry.binding,
         bindingKey: entry.bindingKey,
         pendingEndedAtMs: entry.pendingEndedAtMs,
+        bridgeRetired: Boolean(state.bridgeRetired[entry.launchId]),
       }))
       .sort((a, b) => a.snapshot.launchId.localeCompare(b.snapshot.launchId)),
     sameRowSources,

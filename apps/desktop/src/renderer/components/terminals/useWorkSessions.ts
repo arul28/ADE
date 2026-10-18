@@ -69,7 +69,7 @@ import { requestCrossMachineLanesForMachine, seedCrossMachineOptimisticSession, 
 import { cachedGitRemoteIdentity, originUrlForBinding } from "../lanes/laneMachines";
 import { useWorkMachineRouter } from "./useWorkMachineRouter";
 import { clearChatCompanionUiState } from "../chat/chatCompanionUiState";
-import { chatLaunchBindingKey, useChatLaunchRowSources } from "../../state/chatLaunchStore";
+import { chatLaunchBindingKey, retireChatLaunchBridges, useChatLaunchRowSources } from "../../state/chatLaunchStore";
 import {
   mergeChatLaunchRows,
   nextChatLaunchBridgeExpiryMs,
@@ -794,31 +794,35 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     );
     return () => window.clearTimeout(timer);
   }, [bridgeEpoch, bridgeExpiryMs]);
+  // The real chat rows this roster has listed: the host's own, and a machine
+  // slice's whose machine also lists its lane (`buildCrossMachineLaneRows`
+  // renders nothing without one). A launch row yields to these wherever they
+  // appear — this roster or the slice that owns a launch pinned to another
+  // machine — and seeing one retires that launch's bridge for good.
+  const listedChatSessionIds = useMemo(() => {
+    const ids = new Set<string>(hostSessions.map((session) => session.id));
+    for (const machine of retainedCrossMachineSlices) {
+      const laneIds = new Set(machine.lanes.map((lane) => lane.id));
+      for (const session of machine.sessions) {
+        if (laneIds.has(session.laneId)) ids.add(session.id);
+      }
+    }
+    return ids;
+  }, [hostSessions, retainedCrossMachineSlices]);
   const sessions = useMemo(() => {
     // Re-selected on every roster read, so a bridged row is re-checked against
     // its deadline whenever the roster moves, and on the timer when it does not.
     void bridgeEpoch;
     const launches = selectRosterChatLaunches(chatLaunchRowSources, activeChatLaunchBindingKey, crossMachineBindingKeys);
     if (launches.length === 0) return hostSessions;
-    // A launch row yields to the real row wherever it appears — this roster or
-    // the machine slice that owns a launch pinned to another machine. A slice
-    // session only appears once its machine also lists its lane
-    // (`buildCrossMachineLaneRows` renders nothing without one).
-    const knownIds = new Set<string>();
-    for (const machine of retainedCrossMachineSlices) {
-      const laneIds = new Set(machine.lanes.map((lane) => lane.id));
-      for (const session of machine.sessions) {
-        if (laneIds.has(session.laneId)) knownIds.add(session.id);
-      }
-    }
-    return mergeChatLaunchRows(hostSessions, launches, knownIds);
+    return mergeChatLaunchRows(hostSessions, launches, listedChatSessionIds);
   }, [
     activeChatLaunchBindingKey,
     bridgeEpoch,
     chatLaunchRowSources,
     crossMachineBindingKeys,
     hostSessions,
-    retainedCrossMachineSlices,
+    listedChatSessionIds,
   ]);
 
   // A launch pinned to another machine lands its chat in that machine's slice,
@@ -835,6 +839,18 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       requestCrossMachineLanesForMachine(machineIdForBinding(binding));
     }
   }, [activeChatLaunchBindingKey, chatLaunchRowSources, crossMachineBindingKeys]);
+  // Once the roster has listed a launch's real chat, its stand-in never bridges
+  // again: a chat deleted or archived before the bridge lapses must not come back
+  // as a running row (`shouldBridgeChatLaunchRow`). An empty batch writes nothing.
+  useEffect(() => {
+    const listed: string[] = [];
+    for (const { snapshot, bridgeRetired } of chatLaunchRowSources) {
+      if (!bridgeRetired && snapshot.sessionId && listedChatSessionIds.has(snapshot.sessionId)) {
+        listed.push(snapshot.launchId);
+      }
+    }
+    retireChatLaunchBridges(listed);
+  }, [chatLaunchRowSources, listedChatSessionIds]);
   const [loading, setLoading] = useState(false);
   /** Bumped when the soonest snooze deadline lapses so the partition re-derives. */
   const [snoozeEpoch, setSnoozeEpoch] = useState(0);

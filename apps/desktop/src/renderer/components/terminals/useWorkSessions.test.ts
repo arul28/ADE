@@ -395,6 +395,16 @@ describe("useWorkSessions — pending new-lane chat launches", () => {
       }));
     });
     expect(result.current.sessionsById.has("launch-2")).toBe(true);
+    // The host lists the chat, then it is deleted inside the bridge window: it must not come back.
+    listSessionsCachedMock.mockResolvedValue([makeSession("launch-2", "lane-new")]);
+    await act(async () => {
+      await result.current.refresh({ showLoading: false, force: true });
+    });
+    listSessionsCachedMock.mockResolvedValue([]);
+    await act(async () => {
+      await result.current.refresh({ showLoading: false, force: true });
+    });
+    expect(result.current.sessionsById.has("launch-2")).toBe(false);
     act(() => {
       vi.advanceTimersByTime(CHAT_LAUNCH_BRIDGE_TTL_MS);
     });

@@ -53,11 +53,14 @@ export const CHAT_LAUNCH_BRIDGE_TTL_MS = 2 * 60 * 1000;
  * active roster refresh and a pinned machine's next slice read both lag the
  * start. Dropping the stand-in in that gap hands the open tab to the first old
  * chat (`WorkViewArea` falls back to `visibleSessions[0]`). The bridge lapses
- * `CHAT_LAUNCH_BRIDGE_TTL_MS` after the launch stopped being pending.
+ * `CHAT_LAUNCH_BRIDGE_TTL_MS` after the launch stopped being pending, and never
+ * resumes once the roster has listed the real chat (`bridgeRetired`): a chat
+ * deleted or archived after that must not reappear as a running row.
  */
 export function shouldBridgeChatLaunchRow(source: ChatLaunchRowSource, nowMs: number): boolean {
-  const { snapshot, pendingEndedAtMs } = source;
+  const { snapshot, pendingEndedAtMs, bridgeRetired } = source;
   return snapshot.kind === "chat"
+    && !bridgeRetired
     && Boolean(snapshot.sessionId)
     && snapshot.sessionCreated
     && isChatLaunchSucceeded(snapshot)
