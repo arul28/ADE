@@ -3529,14 +3529,12 @@ function createBuiltInBrowserWindowService(args: {
     tabs = [...tabs, tab];
     const shouldActivate = options.activate || !activeTab();
     if (shouldActivate) {
+      // Clicks in flight and any inspect start still waiting on this tab are
+      // dropped now; the teardown itself waits its turn behind them.
+      inspectGeneration += 1;
       if (inspecting) {
         inspecting = false;
-        inspectGeneration += 1;
-        void teardownInspectWebContents(inspectListenerWebContents).catch((error) => {
-          logger()?.debug("built_in_browser.popup_stop_inspect_failed", {
-            err: error instanceof Error ? error.message : String(error),
-          });
-        });
+        void stopInspectQuietly("built_in_browser.popup_stop_inspect_failed");
       }
       activeTabId = tab.id;
       clearSelectionInternal();
@@ -5239,10 +5237,13 @@ function createBuiltInBrowserWindowService(args: {
   }
 
   async function startInspectNow(input: BuiltInBrowserTabTargetArgs): Promise<BuiltInBrowserStatus> {
+    const requestedGeneration = inspectGeneration;
     const tab = await prepareTabCapability(input, {
       emptyMessage: "No active browser tab. Open a tab before starting inspect.",
       consentReason: "The agent requested DOM inspection for this browser tab.",
     });
+    // Another tab took focus (a popup) while access was being prepared.
+    if (requestedGeneration !== inspectGeneration) return scopeStatusForInput(getStatus(), input);
     inspectGeneration += 1;
     const wc = tab.webContents;
     attachViewsToCurrentWindow();
