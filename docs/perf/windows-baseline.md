@@ -183,6 +183,7 @@ from the poller in 228 steps (four seeds). The root was the primary checkout
 | A `.cmd` shim through `cmd.exe` (`npx --version` via `resolveCliSpawnInvocation`), median of 5 | 274 / 242 ms | *new* 340 ms |
 | Resolving 14 CLIs (`resolveExecutableFromKnownLocations`), listing cache dropped | 12.6 / 12.4 ms | *new* 16 ms |
 | The same, warm | 4.6 / 4.8 ms | *new* 6 ms |
+| OpenCode orphan recovery: longest main-thread block during the Windows process listing (`wmic`, then PowerShell `Get-CimInstance`; 478 processes). One-off script, no bench file yet: 5 interleaved warm runs of `listProcesses` (before, origin/main `56709aebc`) and `listProcessesAsync` (after) | after: median 20.5 ms, worst 24.7 ms, 43 event-loop ticks per call. Before: median 728 ms, worst 3,452 ms, 0 ticks. Wall time 727 → 672 ms median | *new* 30 ms |
 
 `copilot`, `agent`, `cursor-agent`, `gemini` and `bun` are not installed on
 this PC, so their lookups are misses (a miss walks every `PATH` entry).
