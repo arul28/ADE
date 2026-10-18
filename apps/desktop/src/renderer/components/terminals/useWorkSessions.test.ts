@@ -190,7 +190,7 @@ import {
   resetChatLaunchStoreForTests,
 } from "../../state/chatLaunchStore";
 import { announceChatLaunchClosed, resetChatLaunchDraftRestoreForTests } from "../chat/launch/chatLaunchDraftRestore";
-import { CHAT_LAUNCH_BRIDGE_TTL_MS } from "../chat/launch/chatLaunchSynthetic";
+import { CHAT_LAUNCH_BRIDGE_TTL_MS, syncChatLaunchBridgeClock } from "../chat/launch/chatLaunchSynthetic";
 
 // ---------------------------------------------------------------------------
 // window.ade stubs
@@ -393,6 +393,18 @@ describe("useWorkSessions — pending new-lane chat launches", () => {
         agentStarted: true,
         sequence: 3,
       }));
+    });
+    expect(result.current.sessionsById.has("launch-2")).toBe(true);
+    // The window is hidden past the TTL: reads cannot run, so the bridge is kept, not lapsed.
+    // On return it gets a full TTL, since the host's read can take nearly that long to land.
+    syncChatLaunchBridgeClock(true);
+    act(() => {
+      vi.advanceTimersByTime(CHAT_LAUNCH_BRIDGE_TTL_MS * 2);
+    });
+    expect(result.current.sessionsById.has("launch-2")).toBe(true);
+    syncChatLaunchBridgeClock(false);
+    act(() => {
+      vi.advanceTimersByTime(CHAT_LAUNCH_BRIDGE_TTL_MS - 1_000);
     });
     expect(result.current.sessionsById.has("launch-2")).toBe(true);
     // The host lists the chat, then it is deleted inside the bridge window: it must not come back.

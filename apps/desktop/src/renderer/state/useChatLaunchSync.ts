@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import type { ChatLaunchEvent, OpenProjectBinding } from "../../shared/types";
 import { isChatLaunchTerminal, laneSetupLaunchIdFromCardId } from "../../shared/chatLaunch";
 import { useAppStore } from "./appStore";
+import { syncChatLaunchBridgeClock } from "../components/chat/launch/chatLaunchSynthetic";
 import {
   applyChatLaunchEvent,
   chatLaunchBindingKey,
@@ -188,6 +189,22 @@ export function useChatLaunchSync(): void {
   useEffect(() => window.ade?.sessions?.onChanged?.((event) => {
     if (event.reason === "deleted") retireChatLaunchBridgesForSession(event.sessionId);
   }), []);
+
+  // A launch bridge runs its TTL only on time this window can read: frozen while
+  // hidden, restarted on return (`syncChatLaunchBridgeClock`). Window-wide for the
+  // same reason as the delete above. Focus also syncs: macOS does not reliably
+  // fire `visibilitychange` on the way back, and the window is focused when the
+  // user returns to it.
+  useEffect(() => {
+    const sync = () => syncChatLaunchBridgeClock(document.visibilityState === "hidden");
+    sync();
+    document.addEventListener("visibilitychange", sync);
+    window.addEventListener("focus", sync);
+    return () => {
+      document.removeEventListener("visibilitychange", sync);
+      window.removeEventListener("focus", sync);
+    };
+  }, []);
 
   // A chat whose launch still reads as live but is already exchanging
   // messages (or has written its finished setup card) means a launch update

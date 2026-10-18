@@ -49,12 +49,25 @@ export type ChatLaunchEntry = {
    * `shouldBridgeChatLaunchRow`. Local clock, so a host's skew cannot move it.
    */
   pendingEndedAtMs: number | null;
+  /**
+   * Local time this window last resumed reading while this launch's bridge was
+   * still running (`resumeChatLaunchBridges`). The bridge's TTL counts from the
+   * later of this and `pendingEndedAtMs`: reads cannot run while the window is
+   * hidden, so the first read after it returns gets a full budget.
+   */
+  bridgeResumedAtMs: number | null;
 };
 
 type ChatLaunchState = {
   entries: Record<string, ChatLaunchEntry>;
   /** Launches this window's slide-out was told to stop showing. */
   dismissed: Record<string, true>;
+  /**
+   * When this window stopped reading (its document was hidden), or null while it
+   * can read. The Work roster freezes its bridge clock here and arms no expiry
+   * timer while this is set (see `syncChatLaunchBridgeClock`).
+   */
+  hiddenSinceMs: number | null;
   /**
    * Launches whose real chat the Work roster has listed, or that were deleted
    * (`retireChatLaunchBridgesForSession`). Their stand-in never bridges again
@@ -69,6 +82,7 @@ export const chatLaunchStore = createStore<ChatLaunchState>(() => ({
   entries: {},
   dismissed: {},
   bridgeRetired: {},
+  hiddenSinceMs: null,
 }));
 
 export function chatLaunchBindingKey(binding: OpenProjectBinding | null | undefined): string {
@@ -268,6 +282,7 @@ export function insertOptimisticChatLaunch(binding: OpenProjectBinding | null, s
         hostSeen: false,
         startError: null,
         pendingEndedAtMs: null,
+        bridgeResumedAtMs: null,
       },
     };
   });
@@ -301,6 +316,7 @@ export function applyChatLaunchSnapshot(binding: OpenProjectBinding | null, snap
         hostSeen: true,
         startError: null,
         pendingEndedAtMs: pendingEndedAtFor(current, merged),
+        bridgeResumedAtMs: current?.bridgeResumedAtMs ?? null,
       },
     };
   });
@@ -342,6 +358,7 @@ export function hydrateChatLaunches(binding: OpenProjectBinding | null, snapshot
         hostSeen: true,
         startError: null,
         pendingEndedAtMs: pendingEndedAtFor(current, merged),
+        bridgeResumedAtMs: current?.bridgeResumedAtMs ?? null,
       };
     }
     return next;
@@ -588,6 +605,26 @@ export function retireChatLaunchBridgesForSession(sessionId: string): void {
   retireChatLaunchBridges(launchIds);
 }
 
+/** The window stopped reading at `nowMs`. The first hide of a hidden stretch is kept. */
+export function pauseChatLaunchBridges(nowMs: number): void {
+  chatLaunchStore.setState((state) => (state.hiddenSinceMs == null ? { hiddenSinceMs: nowMs } : state));
+}
+
+/**
+ * The window can read again. Each bridge still running at `hiddenSinceMs` restarts
+ * its TTL at `nowMs`; the rest (lapsed before the window hid) stay lapsed.
+ */
+export function resumeChatLaunchBridges(launchIds: readonly string[], nowMs: number): void {
+  chatLaunchStore.setState((state) => {
+    const entries = { ...state.entries };
+    for (const launchId of launchIds) {
+      const entry = entries[launchId];
+      if (entry) entries[launchId] = { ...entry, bridgeResumedAtMs: nowMs };
+    }
+    return { entries, hiddenSinceMs: null };
+  });
+}
+
 export function getChatLaunchEntry(launchId: string | null | undefined): ChatLaunchEntry | null {
   if (!launchId) return null;
   return chatLaunchStore.getState().entries[launchId] ?? null;
@@ -609,7 +646,7 @@ export function isChatLaunchLane(laneId: string | null | undefined): boolean {
 }
 
 export function resetChatLaunchStoreForTests(): void {
-  chatLaunchStore.setState({ entries: {}, dismissed: {}, bridgeRetired: {} });
+  chatLaunchStore.setState({ entries: {}, dismissed: {}, bridgeRetired: {}, hiddenSinceMs: null });
   localRecords.clear();
   unsentQueuedMessages.clear();
   refreshingLaunchIds.clear();
@@ -697,8 +734,23 @@ export type ChatLaunchRowSource = {
   binding: OpenProjectBinding | null;
   bindingKey: string;
   pendingEndedAtMs?: number | null;
+  bridgeResumedAtMs?: number | null;
   bridgeRetired?: boolean;
 };
+
+/** Every launch in this window as row sources, in launch-id order. */
+export function chatLaunchRowSourcesNow(state: ChatLaunchState = chatLaunchStore.getState()): ChatLaunchRowSource[] {
+  return Object.values(state.entries)
+    .map((entry) => ({
+      snapshot: entry.snapshot,
+      binding: entry.binding,
+      bindingKey: entry.bindingKey,
+      pendingEndedAtMs: entry.pendingEndedAtMs,
+      bridgeResumedAtMs: entry.bridgeResumedAtMs,
+      bridgeRetired: Boolean(state.bridgeRetired[entry.launchId]),
+    }))
+    .sort((a, b) => a.snapshot.launchId.localeCompare(b.snapshot.launchId));
+}
 
 function rowSignature(source: ChatLaunchRowSource): string {
   const s = source.snapshot;
@@ -718,6 +770,7 @@ function rowSignature(source: ChatLaunchRowSource): string {
     isChatLaunchPending(s) ? "pending" : "started",
     isChatLaunchSucceeded(s) ? "succeeded" : "unsucceeded",
     source.pendingEndedAtMs ?? "",
+    source.bridgeResumedAtMs ?? "",
     source.bridgeRetired ? "retired" : "",
     source.bindingKey,
   ].join("\u0001");
@@ -733,18 +786,7 @@ function sameRowSources(a: ChatLaunchRowSource[], b: ChatLaunchRowSource[]): boo
 
 /** Launches as the Work roster needs them: identity, lane, title — not stage ticks. */
 export function useChatLaunchRowSources(): ChatLaunchRowSource[] {
-  return useChatLaunchSelector(
-    (state) => Object.values(state.entries)
-      .map((entry) => ({
-        snapshot: entry.snapshot,
-        binding: entry.binding,
-        bindingKey: entry.bindingKey,
-        pendingEndedAtMs: entry.pendingEndedAtMs,
-        bridgeRetired: Boolean(state.bridgeRetired[entry.launchId]),
-      }))
-      .sort((a, b) => a.snapshot.launchId.localeCompare(b.snapshot.launchId)),
-    sameRowSources,
-  );
+  return useChatLaunchSelector((state) => chatLaunchRowSourcesNow(state), sameRowSources);
 }
 
 function samePaneSnapshot(a: ChatLaunchSnapshot | null, b: ChatLaunchSnapshot | null): boolean {

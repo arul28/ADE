@@ -8,7 +8,14 @@ import type { AdeCardPayload } from "../../../../shared/adeCard";
 import { getModelById, resolveProviderGroupForModel } from "../../../../shared/modelRegistry";
 import { buildLaneSetupCard, isChatLaunchPending, isChatLaunchSucceeded, laneSetupCardId } from "../../../../shared/chatLaunch";
 import { chatToolTypeForProvider } from "../../../lib/sessions";
-import { getChatLaunchLocalRecord, type ChatLaunchRowSource } from "../../../state/chatLaunchStore";
+import {
+  chatLaunchRowSourcesNow,
+  chatLaunchStore,
+  getChatLaunchLocalRecord,
+  pauseChatLaunchBridges,
+  resumeChatLaunchBridges,
+  type ChatLaunchRowSource,
+} from "../../../state/chatLaunchStore";
 
 /**
  * Stand-ins a pending chat launch renders before the host has created the
@@ -40,7 +47,10 @@ export function shouldListChatLaunchRow(snapshot: ChatLaunchSnapshot): boolean {
 
 /**
  * How long a started chat's row stays listed while the host's own row is still
- * missing, counted from when this window saw the launch start.
+ * missing, counted from when this window saw the launch start, on time this
+ * window can read: a hidden window's clock is frozen, and on return it restarts
+ * (`syncChatLaunchBridgeClock`). Reads cannot run while hidden, so the first read
+ * after return must not race a clock that kept running.
  *
  * Sized to the slowest realistic landing on a pinned machine (`crossMachineLanes`):
  * the forced read the launch asks for runs on the next coalesced tick (0.4 s, or
@@ -48,8 +58,8 @@ export function shouldListChatLaunchRow(snapshot: ChatLaunchSnapshot): boolean {
  * read times out (`MACHINE_READ_TIMEOUT_MS`, 8 s) it stamps no clock, so the
  * next poll (10 s later) carries the chat: about 28 s, plus a round trip. 40 s
  * covers that with headroom. It also caps how long a window that never listed
- * the chat can show a deleted or archived one, counted from when that window saw
- * the launch start, for a delete no event reached (archive emits none; see
+ * the chat can show a deleted or archived one, counted from when that window last
+ * could read, for a delete no event reached (archive emits none; see
  * `retireChatLaunchBridgesForSession`).
  */
 export const CHAT_LAUNCH_BRIDGE_TTL_MS = 40 * 1000;
@@ -61,30 +71,67 @@ export const CHAT_LAUNCH_BRIDGE_TTL_MS = 40 * 1000;
  * active roster refresh and a pinned machine's next slice read both lag the
  * start. Dropping the stand-in in that gap hands the open tab to the first old
  * chat (`WorkViewArea` falls back to `visibleSessions[0]`). The bridge lapses
- * `CHAT_LAUNCH_BRIDGE_TTL_MS` after the launch stopped being pending, and never
- * resumes once the roster has listed the real chat (`bridgeRetired`): a chat
+ * `CHAT_LAUNCH_BRIDGE_TTL_MS` after its clock (`chatLaunchBridgeClockMs`), and
+ * never resumes once the roster has listed the real chat (`bridgeRetired`): a chat
  * deleted or archived after that must not reappear as a running row.
  */
 export function shouldBridgeChatLaunchRow(source: ChatLaunchRowSource, nowMs: number): boolean {
-  const { snapshot, pendingEndedAtMs, bridgeRetired } = source;
+  const { snapshot, bridgeRetired } = source;
+  const clockMs = chatLaunchBridgeClockMs(source);
   return snapshot.kind === "chat"
     && !bridgeRetired
     && Boolean(snapshot.sessionId)
     && snapshot.sessionCreated
     && isChatLaunchSucceeded(snapshot)
-    && pendingEndedAtMs != null
-    && nowMs - pendingEndedAtMs < CHAT_LAUNCH_BRIDGE_TTL_MS;
+    && clockMs != null
+    && nowMs - clockMs < CHAT_LAUNCH_BRIDGE_TTL_MS;
+}
+
+/**
+ * The local time a bridge's TTL counts from: when this window saw the launch
+ * start, or when it last resumed reading while the bridge was running, whichever
+ * is later. Null when the launch never stopped pending here.
+ */
+function chatLaunchBridgeClockMs(source: ChatLaunchRowSource): number | null {
+  const { pendingEndedAtMs, bridgeResumedAtMs } = source;
+  if (pendingEndedAtMs == null) return null;
+  return Math.max(pendingEndedAtMs, bridgeResumedAtMs ?? pendingEndedAtMs);
 }
 
 /** When the next bridged row lapses, or null when none is bridging. Drives the roster's expiry timer. */
 export function nextChatLaunchBridgeExpiryMs(sources: readonly ChatLaunchRowSource[], nowMs: number): number | null {
   let next: number | null = null;
   for (const source of sources) {
-    if (source.pendingEndedAtMs == null || !shouldBridgeChatLaunchRow(source, nowMs)) continue;
-    const expiresAtMs = source.pendingEndedAtMs + CHAT_LAUNCH_BRIDGE_TTL_MS;
+    const clockMs = chatLaunchBridgeClockMs(source);
+    if (clockMs == null || !shouldBridgeChatLaunchRow(source, nowMs)) continue;
+    const expiresAtMs = clockMs + CHAT_LAUNCH_BRIDGE_TTL_MS;
     if (next == null || expiresAtMs < next) next = expiresAtMs;
   }
   return next;
+}
+
+/**
+ * Runs each started launch's bridge clock on the time this window can read.
+ *
+ * Reads stop while the window is hidden, and nothing can tell it whether the host
+ * has listed the chat yet. So a bridge still running when the window hid keeps
+ * running: the roster freezes its clock at the hide (`hiddenSinceMs`) and arms no
+ * expiry timer. On return each such bridge restarts for a full
+ * `CHAT_LAUNCH_BRIDGE_TTL_MS`, since the first read after return can take nearly
+ * that long. A bridge that had lapsed before the window hid stays lapsed.
+ * Idempotent: called on every visibility change and focus.
+ */
+export function syncChatLaunchBridgeClock(hidden: boolean, nowMs: number = Date.now()): void {
+  if (hidden) {
+    pauseChatLaunchBridges(nowMs);
+    return;
+  }
+  const hiddenSinceMs = chatLaunchStore.getState().hiddenSinceMs;
+  if (hiddenSinceMs == null) return;
+  const running = chatLaunchRowSourcesNow()
+    .filter((source) => shouldBridgeChatLaunchRow(source, hiddenSinceMs))
+    .map((source) => source.snapshot.launchId);
+  resumeChatLaunchBridges(running, nowMs);
 }
 
 /**

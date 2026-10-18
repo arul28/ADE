@@ -69,7 +69,7 @@ import { requestCrossMachineLanesForMachine, seedCrossMachineOptimisticSession, 
 import { cachedGitRemoteIdentity, originUrlForBinding } from "../lanes/laneMachines";
 import { useWorkMachineRouter } from "./useWorkMachineRouter";
 import { clearChatCompanionUiState } from "../chat/chatCompanionUiState";
-import { chatLaunchBindingKey, retireChatLaunchBridges, useChatLaunchRowSources } from "../../state/chatLaunchStore";
+import { chatLaunchBindingKey, retireChatLaunchBridges, useChatLaunchRowSources, useChatLaunchSelector } from "../../state/chatLaunchStore";
 import {
   mergeChatLaunchRows,
   nextChatLaunchBridgeExpiryMs,
@@ -780,12 +780,16 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   // A started chat's row bridges until the host lists it (`shouldBridgeChatLaunchRow`).
   // It lapses on its own clock: the roster's poll only runs while the host has a
   // running chat, so a bridged row for a chat that never appears would not be
-  // re-read otherwise.
+  // re-read otherwise. While this window is hidden the clock is frozen at the hide
+  // (`hiddenSinceMs`): a bridge still running then is kept, and no timer runs until
+  // the window can read again (`syncChatLaunchBridgeClock` restarts the bridges).
+  const hiddenSinceMs = useChatLaunchSelector((state) => state.hiddenSinceMs, Object.is);
   const [bridgeEpoch, setBridgeEpoch] = useState(0);
   const bridgeExpiryMs = useMemo(() => {
     void bridgeEpoch;
+    if (hiddenSinceMs != null) return null;
     return nextChatLaunchBridgeExpiryMs(chatLaunchRowSources, Date.now());
-  }, [bridgeEpoch, chatLaunchRowSources]);
+  }, [bridgeEpoch, chatLaunchRowSources, hiddenSinceMs]);
   useEffect(() => {
     if (bridgeExpiryMs == null) return;
     const timer = window.setTimeout(
@@ -813,7 +817,12 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     // Re-selected on every roster read, so a bridged row is re-checked against
     // its deadline whenever the roster moves, and on the timer when it does not.
     void bridgeEpoch;
-    const launches = selectRosterChatLaunches(chatLaunchRowSources, activeChatLaunchBindingKey, crossMachineBindingKeys);
+    const launches = selectRosterChatLaunches(
+      chatLaunchRowSources,
+      activeChatLaunchBindingKey,
+      crossMachineBindingKeys,
+      hiddenSinceMs ?? Date.now(),
+    );
     if (launches.length === 0) return hostSessions;
     return mergeChatLaunchRows(hostSessions, launches, listedChatSessionIds);
   }, [
@@ -821,6 +830,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     bridgeEpoch,
     chatLaunchRowSources,
     crossMachineBindingKeys,
+    hiddenSinceMs,
     hostSessions,
     listedChatSessionIds,
   ]);
