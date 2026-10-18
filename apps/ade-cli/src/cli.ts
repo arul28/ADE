@@ -34581,22 +34581,23 @@ async function main(): Promise<void> {
   console.log = writeDiagnostic;
   console.info = writeDiagnostic;
   console.warn = writeDiagnostic;
-  // Cursor's hook wrapper runs ADE's hook scripts through this on the
-  // standalone runtime (cursorSdkHooks.ts), before any argument parsing: the
-  // hook's own `--socket <path>` is not an `ade` flag.
-  if (process.argv[2] === CURSOR_HOOK_RUNNER_COMMAND) {
-    await runCursorHookScript(process.argv[3]);
-    return;
-  }
-  // The proxy supervisor's synchronous health probe on the standalone runtime.
-  if (process.argv[2] === PROXY_HEALTH_PROBE_COMMAND) {
-    const port = Number(process.argv[3]);
-    const healthy = Number.isInteger(port) && port > 0 && port < 65_536
-      && await probeProxyHealthOnce(port, Number(process.argv[4]) || 1_500);
-    process.exitCode = healthy ? 0 : 1;
-    return;
-  }
   try {
+    // Cursor's hook wrapper runs ADE's hook scripts through this on the
+    // standalone runtime (cursorSdkHooks.ts), before any argument parsing: the
+    // hook's own `--socket <path>` is not an `ade` flag.
+    if (process.argv[2] === CURSOR_HOOK_RUNNER_COMMAND) {
+      await runCursorHookScript(process.argv[3]);
+      return;
+    }
+    // The proxy supervisor's synchronous health probe on the standalone runtime.
+    if (process.argv[2] === PROXY_HEALTH_PROBE_COMMAND) {
+      const port = Number(process.argv[3]);
+      const timeoutMs = Number(process.argv[4]);
+      const healthy = Number.isInteger(port) && port > 0 && port < 65_536
+        && await probeProxyHealthOnce(port, Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 1_500);
+      process.exitCode = healthy ? 0 : 1;
+      return;
+    }
     const result = await runCli(process.argv.slice(2));
     await writeProcessOutput(process.stdout, result.output);
     process.exitCode = result.exitCode;

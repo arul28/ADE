@@ -66,7 +66,8 @@ function buildCopilotConnection(
   const runtimeDetected = probe ? probe.runtime.source !== "fallback-command" : Boolean(cli?.installed);
   // The SDK's live answer beats the disk heuristic, which misses keychain and
   // `gh` logins and keeps stale ones.
-  const authAvailable = probe?.auth ? probe.auth.isAuthenticated : Boolean(cli?.installed && cli.authenticated);
+  // Copilot runs on ADE's runtime, so the disk check counts with no CLI installed.
+  const authAvailable = probe?.auth ? probe.auth.isAuthenticated : Boolean(cli?.authenticated);
   const verified = Boolean(probe?.auth);
   return {
     ...createUnavailableStatus("copilot", checkedAt),
@@ -79,7 +80,9 @@ function buildCopilotConnection(
     blocker: !runtimeDetected
       ? pinnedToolFetchInFlight("copilot")
         ? "ADE is downloading the Copilot runtime for this machine. Refresh when it finishes."
-        : "ADE has not downloaded the Copilot runtime on this machine yet. Sign in with `copilot login` or `gh auth login` and refresh, and ADE downloads it."
+        : authAvailable
+          ? "ADE has not downloaded the Copilot runtime on this machine yet. Refresh to download it."
+          : "ADE has not downloaded the Copilot runtime on this machine yet. Sign in with `copilot login` or `gh auth login` and refresh, and ADE downloads it."
       : !authAvailable ? copilotSignedOutBlocker(probe?.auth ?? null, env) : null,
   };
 }

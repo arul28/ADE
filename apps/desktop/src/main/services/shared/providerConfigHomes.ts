@@ -81,6 +81,26 @@ export function qwenConfigHome(args: HomeArg = {}): string {
 /** The Copilot CLI's token variables, in the order it reads them; each beats `copilot login`. */
 export const COPILOT_TOKEN_ENV_KEYS = ["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"] as const;
 
+/**
+ * gh's `hosts.yml`, where `gh auth login` keeps the account the Copilot
+ * runtime falls back to: `GH_CONFIG_DIR`, else the XDG config dir, else
+ * `~/.config/gh`, plus `%APPDATA%\GitHub CLI` on Windows.
+ */
+export function ghHostsFiles(args: HomeArg & { platform?: NodeJS.Platform } = {}): string[] {
+  const env = args.env ?? process.env;
+  const home = baseHome(args);
+  const configured = trimmed(env.GH_CONFIG_DIR);
+  if (configured) return [path.join(path.resolve(configured), "hosts.yml")];
+  const files: string[] = [];
+  const xdg = trimmed(env.XDG_CONFIG_HOME);
+  if (xdg) files.push(path.join(path.resolve(xdg), "gh", "hosts.yml"));
+  files.push(path.join(home, ".config", "gh", "hosts.yml"));
+  if ((args.platform ?? process.platform) === "win32") {
+    files.push(path.join(trimmed(env.APPDATA) ?? path.join(home, "AppData", "Roaming"), "GitHub CLI", "hosts.yml"));
+  }
+  return files;
+}
+
 /** `COPILOT_HOME` names the config directory itself (the `--config-dir` flag is deprecated). */
 export function copilotConfigHome(args: HomeArg = {}): string {
   const configured = trimmed((args.env ?? process.env).COPILOT_HOME);

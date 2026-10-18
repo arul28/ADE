@@ -11,6 +11,7 @@ import {
   codexConfigHome,
   COPILOT_TOKEN_ENV_KEYS,
   copilotConfigHome,
+  ghHostsFiles,
   openCodeDataDirs,
 } from "../shared/providerConfigHomes";
 
@@ -60,20 +61,6 @@ function onPath(command: string, env: NodeJS.ProcessEnv): boolean {
   }
 }
 
-/** gh's `hosts.yml`, where `gh auth login` stores the account Copilot reuses. */
-function ghHostsFiles(env: NodeJS.ProcessEnv, home: string, platform: NodeJS.Platform): string[] {
-  const configured = env.GH_CONFIG_DIR?.trim();
-  if (configured) return [path.join(configured, "hosts.yml")];
-  const files: string[] = [];
-  const xdg = env.XDG_CONFIG_HOME?.trim();
-  if (xdg) files.push(path.join(xdg, "gh", "hosts.yml"));
-  files.push(path.join(home, ".config", "gh", "hosts.yml"));
-  if (platform === "win32") {
-    files.push(path.join(env.APPDATA?.trim() || path.join(home, "AppData", "Roaming"), "GitHub CLI", "hosts.yml"));
-  }
-  return files;
-}
-
 /** Signs that this machine uses the provider behind a pinned tool, or null for a tool with no rule. */
 function providerSignals(tool: string, env: NodeJS.ProcessEnv, home: string, platform: NodeJS.Platform): boolean | null {
   const homeArgs = { env, homeDir: home };
@@ -89,7 +76,7 @@ function providerSignals(tool: string, env: NodeJS.ProcessEnv, home: string, pla
       return onPath("copilot", env)
         || hasEnv(env, COPILOT_TOKEN_ENV_KEYS)
         || exists(path.join(copilotConfigHome(homeArgs), "config.json"))
-        || ghHostsFiles(env, home, platform).some(exists);
+        || ghHostsFiles({ env, homeDir: home, platform }).some(exists);
     case "opencode":
       // OpenCode is also the engine for API-key, OpenRouter and local models.
       // Keys saved in ADE's own store are caught by the status refresh instead.

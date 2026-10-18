@@ -347,6 +347,9 @@ export async function runOpenCodeTextPrompt(args: {
   logger?: Logger | null;
 }): Promise<{ text: string; inputTokens: number | null; outputTokens: number | null }> {
   await ensureOpenCodeAvailable();
+  // A first-use download can take minutes; a caller that gave up meanwhile
+  // gets no session and no prompt.
+  if (args.signal?.aborted) throw new Error("OpenCode prompt aborted.");
   const lease = await acquireOpenCodeServer({
     profile: sharedOpenCodeProfileFor(args.config.projectConfig),
     config: buildOpenCodeConfig(args.config),
