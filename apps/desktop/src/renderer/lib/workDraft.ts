@@ -70,11 +70,10 @@ export function startChatDraftPatch(
  * request is made before Work (and its composer) has mounted.
  */
 export const WORK_DRAFT_LANE_REQUESTED_EVENT = "ade:work:draft-lane-requested";
-const LANE_REQUEST_MAX_AGE_MS = 30_000;
-const laneRequestedAtByProject = new Map<string, number>();
+const laneRequestedProjects = new Set<string>();
 
 export function noteWorkDraftLaneRequested(projectStateKey: string): void {
-  laneRequestedAtByProject.set(projectStateKey, Date.now());
+  laneRequestedProjects.add(projectStateKey);
   if (typeof window !== "undefined") {
     window.dispatchEvent(new CustomEvent(WORK_DRAFT_LANE_REQUESTED_EVENT));
   }
@@ -82,8 +81,12 @@ export function noteWorkDraftLaneRequested(projectStateKey: string): void {
 
 export function takeWorkDraftLaneRequest(projectStateKey: string | null): boolean {
   if (!projectStateKey) return false;
-  const requestedAt = laneRequestedAtByProject.get(projectStateKey);
-  if (requestedAt == null) return false;
-  laneRequestedAtByProject.delete(projectStateKey);
-  return Date.now() - requestedAt <= LANE_REQUEST_MAX_AGE_MS;
+  if (!laneRequestedProjects.has(projectStateKey)) return false;
+  laneRequestedProjects.delete(projectStateKey);
+  return true;
+}
+
+/** A user's newer destination choice supersedes a pending lane request. */
+export function cancelWorkDraftLaneRequest(projectStateKey: string | null): void {
+  if (projectStateKey) laneRequestedProjects.delete(projectStateKey);
 }

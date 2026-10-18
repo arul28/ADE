@@ -336,6 +336,7 @@ import { ComposerClaudeSignIn, type ComposerClaudeSignInTarget } from "./Compose
 import { CHAT_AUTH_RECOVERED_EVENT, CHAT_AUTH_RETRY_REJECTED_EVENT, CHAT_RETRY_AUTH_TURN_EVENT } from "./AgentCliAuthCard";
 import { rootAppStoreApi, selectActiveProjectRoot, selectActiveProjectStateKey, useAppStore, useRootAppStore } from "../../state/appStore";
 import { useWorkDraftLaneRequest } from "./useWorkDraftLaneRequest";
+import { cancelWorkDraftLaneRequest } from "../../lib/workDraft";
 import { resolveHarnessLaunchTarget } from "../settings/harnesses/harnessLaunchTarget";
 import type { HarnessPreset } from "../../../shared/harnessPresets";
 import { setLaneNaming } from "../../state/laneNamingStore";
@@ -7475,15 +7476,27 @@ export function AgentChatPane({
 
   // The picker greys Claude out from the composer machine's status, so its
   // "Login to Claude" signs in that same machine, with Settings' own flow.
-  const openProviderSignIn = useCallback((family?: ProviderFamily) => {
+  const openProviderSignIn = useCallback((
+    family?: ProviderFamily,
+    signInTarget?: readonly unknown[] | OpenProjectBinding | null,
+  ) => {
     if (family !== "anthropic") {
       openAiProvidersSettings();
       return;
     }
+    const hasExplicitTarget = signInTarget === null
+      || (typeof signInTarget === "object" && !Array.isArray(signInTarget));
+    const explicitBinding = hasExplicitTarget
+      ? signInTarget as OpenProjectBinding | null
+      : undefined;
     // A personal pane has no project machine; it signs in the tab's machine.
-    const scope = resolveAiStatusRuntimeScope();
+    const scope = hasExplicitTarget
+      ? explicitBinding ? { runtimePin: explicitBinding } : null
+      : resolveAiStatusRuntimeScope();
     if (!scope && !isPersonalPane) {
-      setError("Pick a machine for this chat before signing in to Claude.");
+      setError(hasExplicitTarget
+        ? "The selected handoff machine is not available for sign-in. Open a project on that machine first."
+        : "Pick a machine for this chat before signing in to Claude.");
       return;
     }
     // A null pin means the tab's own machine; Settings pins that one too when
@@ -15177,12 +15190,13 @@ export function AgentChatPane({
     : (laneId ?? "");
 
   const handleShelfLaneChange = useCallback((nextLaneId: string) => {
+    cancelWorkDraftLaneRequest(workDraftProjectStateKey);
     // Picking "Auto-create lane" keeps a configured recipe (it is the same
     // pending-lane target); picking any real lane drops it — the user chose a
     // concrete destination instead.
     if (!isAutoCreateLaneOptionId(nextLaneId)) clearNewLaneConfig();
     handleDraftLaneSelectionChange(nextLaneId);
-  }, [clearNewLaneConfig, handleDraftLaneSelectionChange]);
+  }, [clearNewLaneConfig, handleDraftLaneSelectionChange, workDraftProjectStateKey]);
   // Switching machines keeps the lane only when it lives there; otherwise the
   // draft falls back to a new lane on the chosen machine.
   const keepLaneOnMachine = useCallback((cloud: CloudLaneProvider | null) => {
@@ -15266,6 +15280,7 @@ export function AgentChatPane({
       ? DEVIN_CLOUD_MACHINE_ID
       : selectedDraftMachineId;
   const handleDraftShelfMachineChange = useCallback((nextMachineId: string) => {
+    cancelWorkDraftLaneRequest(workDraftProjectStateKey);
     if (nextMachineId === CURSOR_CLOUD_MACHINE_ID) {
       setError(null);
       setDevinCloudMode(false);
@@ -15284,7 +15299,7 @@ export function AgentChatPane({
     setDevinCloudMode(false);
     keepLaneOnMachine(null);
     handleDraftMachineChange(nextMachineId);
-  }, [handleDraftMachineChange, keepLaneOnMachine, setCursorCloudMode]);
+  }, [handleDraftMachineChange, keepLaneOnMachine, setCursorCloudMode, workDraftProjectStateKey]);
   // A draft opened in a cloud lane (from the sidebar, a deeplink) is on that
   // cloud: the lane has no other machine.
   useEffect(() => {
@@ -18329,6 +18344,7 @@ export function AgentChatPane({
           nativeControls={handoffNativeControlState}
           onNativeControlsChange={applyHandoffNativeControls}
           onOpenSignIn={openProviderSignIn}
+          machineBindings={openProjectBindings}
           turnActive={turnActive}
           awaitingInput={selectedSessionAwaitingInput}
           onStopTurn={interrupt}

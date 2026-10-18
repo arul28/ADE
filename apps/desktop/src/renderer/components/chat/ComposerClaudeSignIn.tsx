@@ -39,14 +39,17 @@ function ClaudeSignInOnMachine({
   // undefined while the account list is read; null when there is no default
   // account or no bridge to read it with.
   const [instance, setInstance] = useState<ProviderInstance | null | undefined>(undefined);
+  const [hasAccountBridge, setHasAccountBridge] = useState(false);
   useEffect(() => {
     let alive = true;
     setInstance(undefined);
+    setHasAccountBridge(false);
     const api = pinnedProviderInstances(pin);
     if (!api) {
       setInstance(null);
       return;
     }
+    setHasAccountBridge(true);
     api.list({ provider: "claude" })
       .then((list) => {
         if (alive) setInstance(list.find((entry) => entry.isDefault) ?? null);
@@ -54,7 +57,10 @@ function ClaudeSignInOnMachine({
       .catch((error) => {
         // The login terminal below still signs that machine in.
         captureError(error, { fingerprint: ["composer-claude-sign-in", "account-list"] });
-        if (alive) setInstance(null);
+        if (alive) {
+          setHasAccountBridge(false);
+          setInstance(null);
+        }
       });
     return () => {
       alive = false;
@@ -65,7 +71,7 @@ function ClaudeSignInOnMachine({
   }, [pin?.key]);
 
   if (instance === undefined) return null;
-  if (instance) {
+  if (hasAccountBridge) {
     return (
       <AddProviderAccountSheet
         provider="claude"
