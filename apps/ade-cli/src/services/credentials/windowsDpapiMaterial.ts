@@ -331,6 +331,28 @@ export function readExistingWindowsDpapiMaterial(keyBindingDir: string): Buffer 
   return material;
 }
 
+/**
+ * Async counterpart of `readExistingWindowsDpapiMaterial`: decrypts an existing
+ * key off the event loop and caches it like the other readers, and never
+ * creates the protected key file. For warming the cache before synchronous
+ * readers, where minting a key would change credential state.
+ */
+export async function readExistingWindowsDpapiMaterialAsync(keyBindingDir: string): Promise<Buffer | null> {
+  const keyPath = protectedKeyPath(keyBindingDir);
+  const cached = cachedKeyMaterial.get(keyPath);
+  if (cached) return cached;
+  const readEpoch = dpapiEpoch;
+  let material: Buffer;
+  try {
+    material = await unprotectKeyAsync(keyPath);
+  } catch (error) {
+    if (isNodeErrorCode(error, "ENOENT")) return null;
+    throw error;
+  }
+  if (readEpoch === dpapiEpoch) cachedKeyMaterial.set(keyPath, material);
+  return material;
+}
+
 /** Async counterpart used by brain-facing credential reads. */
 export async function readOrCreateWindowsDpapiMaterialAsync(
   keyBindingDir: string,
