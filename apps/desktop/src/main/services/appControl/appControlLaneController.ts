@@ -61,6 +61,7 @@ import { subscribeCdpPageDiagnostics, type CdpPendingRequest } from "../shared/c
 import type { Logger } from "../logging/logger";
 import type { createPtyService } from "../pty/ptyService";
 import { base64ImageDimensions, imageDimensions } from "../shared/imageDimensions";
+import { frameToParentRect, frameTransformFromBox, type CdpBoxModelResponse } from "../shared/cdpFrameTransform";
 import {
   commandForwardsAppControlDebug,
   commandLooksLikeDirectElectronLaunch,
@@ -2415,10 +2416,8 @@ export function createAppControlLaneController(context: AppControlLaneController
     if (!mainFrameId || frameId === mainFrameId) return payload;
     const owner = await client.send<{ backendNodeId?: number }>("DOM.getFrameOwner", { frameId });
     if (typeof owner.backendNodeId !== "number") return payload;
-    const box = await client.send<{ model?: { content?: number[] } }>("DOM.getBoxModel", { backendNodeId: owner.backendNodeId });
-    const content = box.model?.content;
-    const originX = Number.isFinite(content?.[0]) ? Number(content?.[0]) : 0;
-    const originY = Number.isFinite(content?.[1]) ? Number(content?.[1]) : 0;
+    const box = await client.send<CdpBoxModelResponse>("DOM.getBoxModel", { backendNodeId: owner.backendNodeId });
+    const transform = frameTransformFromBox(box);
     const width = metrics?.cssLayoutViewport?.clientWidth;
     const height = metrics?.cssLayoutViewport?.clientHeight;
     return {
@@ -2430,8 +2429,11 @@ export function createAppControlLaneController(context: AppControlLaneController
       },
       elements: payload.elements.map((element) => ({
         ...element,
-        rect: { ...element.rect, x: element.rect.x + originX, y: element.rect.y + originY },
-        metadata: { ...element.metadata, iframe: { frameId, url: payload.url, origin: { x: originX, y: originY } } },
+        rect: frameToParentRect(element.rect, transform),
+        metadata: {
+          ...element.metadata,
+          iframe: { frameId, url: payload.url, origin: { x: transform.originX, y: transform.originY } },
+        },
       })),
     };
   };

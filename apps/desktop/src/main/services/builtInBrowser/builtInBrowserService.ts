@@ -178,6 +178,11 @@ import {
   createBuiltInBrowserTabCapabilities,
 } from "./builtInBrowserTabCapabilities";
 import { evaluateInTab } from "./builtInBrowserCdp";
+import {
+  createBrowserFrameInspector,
+  createBrowserHitTester,
+  INSPECT_FRAME_BINDING_NAME,
+} from "./builtInBrowserHitTest";
 import type { DemoEngine, DemoTrackEventKind } from "../../../shared/demoVideo/demoContract";
 import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
 import {
@@ -262,11 +267,6 @@ const MAX_TAB_LEASE_TTL_MS = 60 * 60_000;
 const DEFAULT_OBSERVATION_MAX_AGE_MS = 30 * 60_000;
 const OBSERVATION_CACHE_DIR = path.join(".ade", "cache", "browser-observations");
 const INSPECT_BINDING_NAME = "__adeBuiltInBrowserInspectSelect";
-// Iframes get the inspect overlay in an isolated world of their own, so the
-// page's scripts never see it; their binding is exposed only to that world.
-const INSPECT_FRAME_BINDING_NAME = "__adeBuiltInBrowserInspectFrameSelect";
-const INSPECT_FRAME_WORLD_NAME = "__adeBuiltInBrowserInspect";
-const MAX_INSPECT_FRAME_DEPTH = 4;
 const DOWNLOAD_FILENAME_UNSAFE_RE = /[<>:"/\\|?*\x00-\x1F]/g;
 const RESERVED_BROWSER_DOWNLOAD_PATH_KEYS = new Set<string>();
 
@@ -326,69 +326,6 @@ type CdpCallFunctionResponse = {
 
 type CdpScreenshotResponse = {
   data?: string;
-};
-
-type CdpGetNodeForLocationResponse = {
-  backendNodeId?: number;
-  frameId?: string;
-};
-
-type CdpFrameTreeNode = {
-  frame?: { id?: string; url?: string };
-  childFrames?: CdpFrameTreeNode[];
-};
-
-type CdpFrameTreeResponse = {
-  frameTree?: CdpFrameTreeNode;
-};
-
-type CdpCreateIsolatedWorldResponse = {
-  executionContextId?: number;
-};
-
-type CdpGetFrameOwnerResponse = {
-  backendNodeId?: number;
-};
-
-type CdpBoxModelResponse = {
-  model?: { content?: number[] };
-};
-
-type CdpDescribeNodeResponse = {
-  node?: { frameId?: string; contentDocument?: unknown; localName?: string };
-};
-
-type CdpAttachToTargetResponse = {
-  sessionId?: string;
-};
-
-type CdpGetTargetsResponse = {
-  targetInfos?: Array<{ targetId?: string; type?: string; parentFrameId?: string }>;
-};
-
-type InspectFrameContext = {
-  contextId: number;
-  frameId: string;
-  /** Null for frames in the tab's own renderer. */
-  sessionId: string | null;
-  /** The cross-site frame the session was attached to. */
-  sessionRootFrameId: string | null;
-};
-
-type CdpLayoutMetricsResponse = {
-  cssLayoutViewport?: {
-    pageX?: number;
-    pageY?: number;
-    clientWidth?: number;
-    clientHeight?: number;
-  };
-};
-
-type CdpEvaluateObjectResponse = {
-  result?: {
-    objectId?: string;
-  };
-  exceptionDetails?: unknown;
 };
 
 type CdpRuntimeBindingCalledParams = {
@@ -2235,10 +2172,8 @@ function createBuiltInBrowserWindowService(args: {
   let lastSelectedItem: BuiltInBrowserContextItem | null = null;
   let lastSelectedTabId: string | null = null;
   let handlingInspectNode = false;
-  /** Iframe overlay contexts installed for the current inspect session (see inspectFrameContextKey). */
-  let inspectFrameContexts = new Map<string, InspectFrameContext>();
-  /** Child sessions inspect attached to reach cross-site iframes. */
-  let inspectFrameSessions: string[] = [];
+  /** Bumped by every inspect start and stop, so late async work from an earlier run is dropped. */
+  let inspectGeneration = 0;
   let browserSessionConfigured = false;
   let lastEmittedStatusKey: string | null = null;
   let restoringTabs = false;
@@ -5279,10 +5214,13 @@ function createBuiltInBrowserWindowService(args: {
   }
 
   async function startInspect(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserStatus> {
+    // Taken before any wait, so a stop that lands during tab preparation wins.
+    const generation = ++inspectGeneration;
     const tab = await prepareTabCapability(input, {
       emptyMessage: "No active browser tab. Open a tab before starting inspect.",
       consentReason: "The agent requested DOM inspection for this browser tab.",
     });
+    if (generation !== inspectGeneration) return scopeStatusForInput(getStatus(), input);
     const wc = tab.webContents;
     attachViewsToCurrentWindow();
     attachDebuggerListeners(wc);
@@ -5297,7 +5235,17 @@ function createBuiltInBrowserWindowService(args: {
         awaitPromise: false,
         silent: true,
       });
-      await installInspectOverlayInFrames(wc);
+      // Iframes are a bonus: the top document's picker works without them.
+      await frameInspector.start(wc).catch((error) => {
+        logger()?.warn("built_in_browser.inspect_frames_unavailable", {
+          err: error instanceof Error ? error.message : String(error),
+        });
+      });
+      if (generation !== inspectGeneration) {
+        // Inspect was stopped while it was starting; undo what this run added.
+        await teardownInspectWebContents(wc);
+        return scopeStatusForInput(getStatus(), input);
+      }
       inspecting = true;
       emitStatus();
       return scopeStatusForInput(getStatus(), input);
@@ -5321,6 +5269,7 @@ function createBuiltInBrowserWindowService(args: {
     const tab = wc ? tabForWebContents(wc) : null;
     if (tab) await prepareAgentReadTabAsync(tab, input, "The agent requested access to stop DOM inspection.");
     inspecting = false;
+    inspectGeneration += 1;
     await teardownInspectWebContents(wc);
     emitStatus();
     return scopeStatusForInput(getStatus(), input);
@@ -5339,20 +5288,20 @@ function createBuiltInBrowserWindowService(args: {
       }
     }
     if (wc?.debugger.isAttached()) {
-      try {
-        await sendDebuggerCommand(wc, "Runtime.evaluate", {
-          expression: inspectOverlayCleanupScript(),
-          returnByValue: true,
-          awaitPromise: false,
-          silent: true,
-        });
-        await sendDebuggerCommand(wc, "Runtime.removeBinding", { name: INSPECT_BINDING_NAME }).catch(() => {});
-        await removeInspectOverlayFromFrames(wc);
-      } catch (error) {
+      // Each step runs on its own: a page mid-navigation can refuse the first
+      // and must still give back its iframe sessions.
+      await sendDebuggerCommand(wc, "Runtime.evaluate", {
+        expression: inspectOverlayCleanupScript(),
+        returnByValue: true,
+        awaitPromise: false,
+        silent: true,
+      }).catch((error) => {
         logger()?.debug("built_in_browser.stop_inspect_cleanup_failed", {
           err: error instanceof Error ? error.message : String(error),
         });
-      }
+      });
+      await sendDebuggerCommand(wc, "Runtime.removeBinding", { name: INSPECT_BINDING_NAME }).catch(() => {});
+      await frameInspector.stop(wc);
       if (ownsInspectDebugger) {
         try {
           if (wc.debugger.isAttached()) wc.debugger.detach();
@@ -5720,6 +5669,14 @@ function createBuiltInBrowserWindowService(args: {
   };
 
   async function selectPoint(input: BuiltInBrowserSelectPointArgs): Promise<BuiltInBrowserSelectResult> {
+    return selectPointUnless(input, () => false);
+  }
+
+  /** `superseded` is asked right before publishing; a picker click whose inspect run ended publishes nothing. */
+  async function selectPointUnless(
+    input: BuiltInBrowserSelectPointArgs,
+    superseded: () => boolean,
+  ): Promise<BuiltInBrowserSelectResult> {
     const tab = await prepareTabCapability(input, {
       emptyMessage: "No active browser tab. Open a tab before selecting a point.",
       consentReason: "The agent requested element inspection in this browser tab.",
@@ -5731,7 +5688,7 @@ function createBuiltInBrowserWindowService(args: {
     try {
       await sendDebuggerCommand(wc, "DOM.enable");
       await sendDebuggerCommand(wc, "Runtime.enable");
-      const metadata = await readNodeMetadataAtViewportPoint(wc, { x, y });
+      const metadata = await hitTester.readNodeMetadataAtViewportPoint(wc, { x, y });
       if (!metadata) {
         return { item: null };
       }
@@ -5743,6 +5700,7 @@ function createBuiltInBrowserWindowService(args: {
             });
             return null;
           });
+      if (superseded()) return { item: null };
       const item = createContextItem(wc, metadata, screenshotDataUrl);
       lastSelectedItem = item;
       lastSelectedTabId = tab.id;
@@ -5839,11 +5797,17 @@ function createBuiltInBrowserWindowService(args: {
     }
     if (debuggerMessageListener || debuggerDetachListener) return;
     debuggerMessageListener = (_event, method, params, sessionId) => {
+      frameInspector.handleDebuggerMessage(wc, method, params, sessionId || undefined);
       if (method === "Runtime.bindingCalled") {
         const call = parseInspectBindingPoint(params);
         if (!call) return;
-        void inspectBindingViewportPoint(wc, call, sessionId || undefined)
-          .then((point) => (point ? handleInspectPointRequested(wc, point) : undefined))
+        const generation = inspectGeneration;
+        if (call.executionContextId === null) {
+          if (!sessionId) void handleInspectPointRequested(wc, call, generation).catch(emitError);
+          return;
+        }
+        void frameInspector.viewportPointForBinding(wc, { ...call, executionContextId: call.executionContextId }, sessionId || undefined)
+          .then((point) => (point ? handleInspectPointRequested(wc, point, generation) : undefined))
           .catch(emitError);
         return;
       }
@@ -5930,165 +5894,40 @@ function createBuiltInBrowserWindowService(args: {
     await sendDebuggerCommand(wc, "Runtime.addBinding", { name: INSPECT_BINDING_NAME });
   };
 
-  /**
-   * The page overlay only sees the top document's pointer events. Give every
-   * iframe its own overlay, in an isolated world the page cannot see: frames
-   * in this renderer directly, cross-site frames through a flattened child
-   * session.
-   */
-  const installInspectOverlayInFrames = async (wc: WebContents): Promise<void> => {
-    inspectFrameContexts = new Map();
-    inspectFrameSessions = [];
-    const tree = await sendDebuggerCommand<CdpFrameTreeResponse>(wc, "Page.getFrameTree").catch(() => null);
-    const mainFrameId = tree?.frameTree?.frame?.id ?? null;
-    const localFrameIds = childFrameIds(tree?.frameTree);
-    await installInspectOverlayInSessionFrames(wc, localFrameIds, undefined, null);
+  const hitTester = createBrowserHitTester<NodeMetadata>({
+    sendDebuggerCommand,
+    readNodeMetadata: (wc, backendNodeId, point, sessionId) => readNodeMetadata(wc, backendNodeId, point, sessionId),
+    readObjectMetadata: (wc, objectId, point) => readObjectMetadata(wc, objectId, point),
+    logger,
+  });
 
-    // Page.getFrameTree lists only frames in this renderer. Cross-site frames
-    // are their own targets; take the ones whose parent is one of ours.
-    const ownFrameIds = new Set([...(mainFrameId ? [mainFrameId] : []), ...localFrameIds]);
-    const targets = await sendDebuggerCommand<CdpGetTargetsResponse>(wc, "Target.getTargets").catch(() => null);
-    for (const target of targets?.targetInfos ?? []) {
-      if (target.type !== "iframe" || !target.targetId || !target.parentFrameId) continue;
-      if (!ownFrameIds.has(target.parentFrameId)) continue;
-      try {
-        const attached = await sendDebuggerCommand<CdpAttachToTargetResponse>(wc, "Target.attachToTarget", {
-          targetId: target.targetId,
-          flatten: true,
-        });
-        const sessionId = attached.sessionId;
-        if (!sessionId) continue;
-        inspectFrameSessions.push(sessionId);
-        const childTree = await sendDebuggerCommand<CdpFrameTreeResponse>(wc, "Page.getFrameTree", {}, sessionId)
-          .catch(() => null);
-        await installInspectOverlayInSessionFrames(
-          wc,
-          [target.targetId, ...childFrameIds(childTree?.frameTree)],
-          sessionId,
-          target.targetId,
-        );
-      } catch (error) {
-        logger()?.debug("built_in_browser.inspect_cross_process_frame_failed", {
-          err: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-  };
+  const frameInspector = createBrowserFrameInspector({
+    sendDebuggerCommand,
+    installScript: inspectOverlayInstallScript,
+    cleanupScript: inspectOverlayCleanupScript,
+    logger,
+  });
 
-  const installInspectOverlayInSessionFrames = async (
-    wc: WebContents,
-    frameIds: string[],
-    sessionId: string | undefined,
-    sessionRootFrameId: string | null,
-  ): Promise<void> => {
-    if (!frameIds.length) return;
-    // Runtime.bindingCalled is only reported from a session with Runtime on.
-    if (sessionId) await sendDebuggerCommand(wc, "Runtime.enable", {}, sessionId);
-    await sendDebuggerCommand(wc, "Runtime.removeBinding", { name: INSPECT_FRAME_BINDING_NAME }, sessionId).catch(() => {});
-    await sendDebuggerCommand(wc, "Runtime.addBinding", {
-      name: INSPECT_FRAME_BINDING_NAME,
-      executionContextName: INSPECT_FRAME_WORLD_NAME,
-    }, sessionId);
-    for (const frameId of frameIds) {
-      try {
-        const world = await sendDebuggerCommand<CdpCreateIsolatedWorldResponse>(wc, "Page.createIsolatedWorld", {
-          frameId,
-          worldName: INSPECT_FRAME_WORLD_NAME,
-        }, sessionId);
-        const contextId = world.executionContextId;
-        if (typeof contextId !== "number") continue;
-        await sendDebuggerCommand(wc, "Runtime.evaluate", {
-          expression: inspectOverlayInstallScript(INSPECT_FRAME_BINDING_NAME),
-          contextId,
-          returnByValue: true,
-          awaitPromise: false,
-          silent: true,
-        }, sessionId);
-        inspectFrameContexts.set(inspectFrameContextKey(sessionId, contextId), {
-          contextId,
-          frameId,
-          sessionId: sessionId ?? null,
-          sessionRootFrameId,
-        });
-      } catch (error) {
-        logger()?.debug("built_in_browser.inspect_frame_install_failed", {
-          err: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-  };
-
-  const removeInspectOverlayFromFrames = async (wc: WebContents): Promise<void> => {
-    const contexts = [...inspectFrameContexts.values()];
-    const sessions = inspectFrameSessions;
-    inspectFrameContexts = new Map();
-    inspectFrameSessions = [];
-    for (const context of contexts) {
-      await sendDebuggerCommand(wc, "Runtime.evaluate", {
-        expression: inspectOverlayCleanupScript(),
-        contextId: context.contextId,
-        returnByValue: true,
-        awaitPromise: false,
-        silent: true,
-      }, context.sessionId ?? undefined).catch(() => {});
-    }
-    await sendDebuggerCommand(wc, "Runtime.removeBinding", { name: INSPECT_FRAME_BINDING_NAME }).catch(() => {});
-    for (const sessionId of sessions) {
-      await sendDebuggerCommand(wc, "Target.detachFromTarget", { sessionId }).catch(() => {});
-    }
-  };
-
-  /** Where an iframe's top-left content corner sits in its session's viewport. */
-  const frameViewportOrigin = async (
-    wc: WebContents,
-    frameId: string,
-    sessionId?: string,
-  ): Promise<BrowserInspectPoint> => {
-    const owner = await sendDebuggerCommand<CdpGetFrameOwnerResponse>(wc, "DOM.getFrameOwner", { frameId }, sessionId);
-    if (typeof owner.backendNodeId !== "number") throw new Error("Unable to find the selected iframe.");
-    const box = await sendDebuggerCommand<CdpBoxModelResponse>(wc, "DOM.getBoxModel", {
-      backendNodeId: owner.backendNodeId,
-    }, sessionId);
-    return boxContentOrigin(box);
-  };
-
-  /** A click from an iframe overlay arrives in that frame's viewport; move it into the tab's. */
-  const inspectBindingViewportPoint = async (
-    wc: WebContents,
-    call: BrowserInspectBindingCall,
-    sessionId: string | undefined,
-  ): Promise<BrowserInspectPoint | null> => {
-    if (call.executionContextId === null) return sessionId ? null : { x: call.x, y: call.y };
-    const context = inspectFrameContexts.get(inspectFrameContextKey(sessionId, call.executionContextId));
-    if (!context) return null;
-    let origin = { x: 0, y: 0 };
-    if (context.sessionId && context.sessionRootFrameId) {
-      // A cross-site frame: its <iframe> lives in the tab's own document.
-      origin = await frameViewportOrigin(wc, context.sessionRootFrameId);
-    }
-    if (context.frameId !== context.sessionRootFrameId) {
-      const inner = await frameViewportOrigin(wc, context.frameId, context.sessionId ?? undefined);
-      origin = { x: origin.x + inner.x, y: origin.y + inner.y };
-    }
-    return { x: Math.round(call.x + origin.x), y: Math.round(call.y + origin.y) };
-  };
-
+  /** A picker click from the inspect run `generation`; stale once that run has stopped. */
   const handleInspectPointRequested = async (
     wc: WebContents,
     point: BrowserInspectPoint,
+    generation: number,
   ): Promise<void> => {
-    if (handlingInspectNode) return;
+    const superseded = () => generation !== inspectGeneration || !inspecting;
+    if (handlingInspectNode || superseded()) return;
     handlingInspectNode = true;
     try {
       const ownerTab = tabForWebContents(wc);
-      await selectPoint({
+      await selectPointUnless({
         ...(ownerTab ? { tabId: ownerTab.id } : {}),
         x: point.x,
         y: point.y,
         includeScreenshot: true,
-      });
+      }, superseded);
     } finally {
-      if (inspecting) {
+      // Only end the run this click came from, never a newer one.
+      if (!superseded()) {
         await stopInspect().catch((error) => {
           logger()?.debug("built_in_browser.inspect_cleanup_failed", {
             err: error instanceof Error ? error.message : String(error),
@@ -6175,139 +6014,6 @@ function createBuiltInBrowserWindowService(args: {
       throw new Error("Unable to resolve selected browser node.");
     }
     return readObjectMetadata(wc, objectId, point, sessionId);
-  };
-
-  /**
-   * Every caller (the picker, drag-capture, `ade browser select`) hands over a
-   * viewport point, but DOM.getNodeForLocation hit-tests in document
-   * coordinates. Add the layout viewport's scroll offset, or a scrolled page
-   * resolves the element above the click — or nothing at all. When the CDP hit
-   * test still finds nothing, ask the page itself, which works in viewport
-   * pixels natively.
-   */
-  const readNodeMetadataAtViewportPoint = async (
-    wc: WebContents,
-    point: BrowserInspectPoint,
-  ): Promise<NodeMetadata | null> => {
-    const metrics = await sendDebuggerCommand<CdpLayoutMetricsResponse>(wc, "Page.getLayoutMetrics").catch(() => null);
-    if (metrics?.cssLayoutViewport?.clientWidth === 0 && metrics.cssLayoutViewport.clientHeight === 0) {
-      // A hidden tab restored without bounds has no viewport: no point can hit anything.
-      throw new Error(
-        "This browser tab has no visible viewport yet. Show the tab, or give it a size with `ade browser emulate --width <w> --height <h>`, then select again.",
-      );
-    }
-    try {
-      const located = await locateNodeAtViewportPoint(wc, point, undefined, null, 0);
-      if (located) return located;
-    } catch (error) {
-      logger()?.debug("built_in_browser.point_hit_test_fell_back", {
-        err: error instanceof Error ? error.message : String(error),
-      });
-    }
-    const evaluated = await sendDebuggerCommand<CdpEvaluateObjectResponse>(wc, "Runtime.evaluate", {
-      expression: `document.elementFromPoint(${point.x}, ${point.y})`,
-      returnByValue: false,
-      silent: true,
-    });
-    const objectId = evaluated.exceptionDetails ? null : evaluated.result?.objectId;
-    if (!objectId) return null;
-    return readObjectMetadata(wc, objectId, point);
-  };
-
-  /**
-   * Hit-test one session's viewport. Same-process iframes are hit-tested
-   * through; a cross-process (cross-site) iframe answers as its <iframe>
-   * element, so attach to it and look inside. Results come back in the tab's
-   * viewport pixels.
-   */
-  const locateNodeAtViewportPoint = async (
-    wc: WebContents,
-    point: BrowserInspectPoint,
-    sessionId: string | undefined,
-    tabViewport: BuiltInBrowserFrame | null,
-    depth: number,
-  ): Promise<NodeMetadata | null> => {
-    if (sessionId) await sendDebuggerCommand(wc, "DOM.enable", {}, sessionId);
-    const metrics = await sendDebuggerCommand<CdpLayoutMetricsResponse>(wc, "Page.getLayoutMetrics", {}, sessionId);
-    const viewport = tabViewport ?? {
-      x: 0,
-      y: 0,
-      width: finiteOrZero(metrics.cssLayoutViewport?.clientWidth),
-      height: finiteOrZero(metrics.cssLayoutViewport?.clientHeight),
-    };
-    const result = await sendDebuggerCommand<CdpGetNodeForLocationResponse>(wc, "DOM.getNodeForLocation", {
-      x: Math.round(point.x + finiteOrZero(metrics.cssLayoutViewport?.pageX)),
-      y: Math.round(point.y + finiteOrZero(metrics.cssLayoutViewport?.pageY)),
-      includeUserAgentShadowDOM: true,
-      // Match what the pointer sees: the picker outline (and any other
-      // pointer-events:none layer) must not win the hit test.
-      ignorePointerEventsNone: false,
-    }, sessionId);
-    const backendNodeId = result.backendNodeId;
-    if (!backendNodeId) return null;
-
-    if (depth < MAX_INSPECT_FRAME_DEPTH) {
-      const described = await sendDebuggerCommand<CdpDescribeNodeResponse>(wc, "DOM.describeNode", { backendNodeId }, sessionId)
-        .catch(() => null);
-      const owner = described?.node;
-      if (owner?.frameId && !owner.contentDocument) {
-        const inner = await locateInCrossProcessFrame(wc, point, sessionId, backendNodeId, owner.frameId, viewport, depth)
-          .catch((error) => {
-            logger()?.debug("built_in_browser.cross_process_frame_hit_test_failed", {
-              err: error instanceof Error ? error.message : String(error),
-            });
-            return null;
-          });
-        if (inner) return inner;
-      }
-    }
-
-    const rootFrameId = result.frameId
-      ? (await sendDebuggerCommand<CdpFrameTreeResponse>(wc, "Page.getFrameTree", {}, sessionId)).frameTree?.frame?.id ?? null
-      : null;
-    if (!result.frameId || result.frameId === rootFrameId) {
-      const metadata = await readNodeMetadata(wc, backendNodeId, point, sessionId);
-      return tabViewport ? { ...metadata, viewport } : metadata;
-    }
-    // The node lives in a same-process iframe: its metadata script measures
-    // in that frame's viewport, so hand it a frame-local point and move the
-    // box back out.
-    const origin = await frameViewportOrigin(wc, result.frameId, sessionId);
-    const local = await readNodeMetadata(wc, backendNodeId, {
-      x: Math.round(point.x - origin.x),
-      y: Math.round(point.y - origin.y),
-    }, sessionId);
-    return moveFrameMetadataOut(local, origin, result.frameId, viewport);
-  };
-
-  const locateInCrossProcessFrame = async (
-    wc: WebContents,
-    point: BrowserInspectPoint,
-    sessionId: string | undefined,
-    ownerBackendNodeId: number,
-    frameId: string,
-    viewport: BuiltInBrowserFrame,
-    depth: number,
-  ): Promise<NodeMetadata | null> => {
-    const box = await sendDebuggerCommand<CdpBoxModelResponse>(wc, "DOM.getBoxModel", {
-      backendNodeId: ownerBackendNodeId,
-    }, sessionId);
-    const origin = boxContentOrigin(box);
-    const attached = await sendDebuggerCommand<CdpAttachToTargetResponse>(wc, "Target.attachToTarget", {
-      targetId: frameId,
-      flatten: true,
-    });
-    const childSessionId = attached.sessionId;
-    if (!childSessionId) return null;
-    try {
-      const inner = await locateNodeAtViewportPoint(wc, {
-        x: Math.round(point.x - origin.x),
-        y: Math.round(point.y - origin.y),
-      }, childSessionId, viewport, depth + 1);
-      return inner ? moveFrameMetadataOut(inner, origin, frameId, viewport) : null;
-    } finally {
-      await sendDebuggerCommand(wc, "Target.detachFromTarget", { sessionId: childSessionId }).catch(() => {});
-    }
   };
 
   const readObjectMetadata = async (
@@ -7456,64 +7162,6 @@ function buildComponentId(metadata: NodeMetadata): string {
   if (metadata.selector) return metadata.selector;
   if (metadata.tagName) return metadata.tagName;
   return "browser-element";
-}
-
-function finiteOrZero(value: unknown): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : 0;
-}
-
-function inspectFrameContextKey(sessionId: string | null | undefined, contextId: number): string {
-  return `${sessionId ?? ""}:${contextId}`;
-}
-
-function childFrameIds(node: CdpFrameTreeNode | undefined, depth = 0): string[] {
-  if (!node || depth > MAX_INSPECT_FRAME_DEPTH * 2) return [];
-  const ids: string[] = [];
-  for (const child of node.childFrames ?? []) {
-    if (child.frame?.id) ids.push(child.frame.id);
-    ids.push(...childFrameIds(child, depth + 1));
-  }
-  return ids;
-}
-
-function boxContentOrigin(box: CdpBoxModelResponse): BrowserInspectPoint {
-  const content = box.model?.content;
-  if (!Array.isArray(content) || content.length < 2) throw new Error("Unable to measure the selected iframe.");
-  return { x: finiteOrZero(content[0]), y: finiteOrZero(content[1]) };
-}
-
-/**
- * Move metadata measured inside an iframe out into its parent's viewport. The
- * item belongs to the tab's page; the innermost frame's own address rides
- * along under `metadata.iframe`.
- */
-function moveFrameMetadataOut(
-  metadata: NodeMetadata,
-  origin: BrowserInspectPoint,
-  frameId: string,
-  viewport: BuiltInBrowserFrame,
-): NodeMetadata {
-  const existing = isRecord(metadata.metadata.iframe) ? metadata.metadata.iframe : null;
-  const previousOrigin = existing && isRecord(existing.origin) ? existing.origin : null;
-  return {
-    ...metadata,
-    frame: { ...metadata.frame, x: metadata.frame.x + origin.x, y: metadata.frame.y + origin.y },
-    viewport,
-    url: null,
-    title: null,
-    metadata: {
-      ...metadata.metadata,
-      iframe: {
-        frameId: existing?.frameId ?? frameId,
-        url: existing ? existing.url ?? null : metadata.url,
-        title: existing ? existing.title ?? null : metadata.title,
-        origin: {
-          x: finiteOrZero(previousOrigin?.x) + origin.x,
-          y: finiteOrZero(previousOrigin?.y) + origin.y,
-        },
-      },
-    },
-  };
 }
 
 function parseInspectBindingPoint(params: unknown): BrowserInspectBindingCall | null {
