@@ -1285,6 +1285,33 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
+  it("an authoritative session list reads the host, not the mirror, while a lifecycle write is pending", async () => {
+    fake.descriptors = descriptors(LIFECYCLE_DESCRIPTORS);
+    fake.commandResults.set("work.listSessions", [{ id: "terminal-1", ptyId: "pty-1" }]);
+    // The snooze is never answered, so its optimistic patch stays pending.
+    const sendCommand = fake.sendCommand.bind(fake);
+    fake.sendCommand = (action, args, opts) => (
+      action === "session.snoozeSession" ? new Promise<never>(() => {}) : sendCommand(action, args, opts)
+    );
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+    await adapter.ade.sessions.list();
+    void adapter.ade.sessions.snoozeSession("terminal-1", new Date(Date.now() + 60 * 60 * 1000).toISOString());
+    await flushMicrotasks();
+
+    // The plain read answers from the mirror, and the patch is still on it.
+    const pending = await adapter.ade.sessions.list();
+    expect(pending[0]!.snoozedUntil).toBeTruthy();
+
+    // The host now lists a different terminal. Only the authoritative read sees it.
+    fake.commandResults.set("work.listSessions", [{ id: "terminal-2", ptyId: "pty-2" }]);
+    await expect(adapter.ade.sessions.list(undefined, undefined, { authoritative: true })).resolves.toEqual([
+      expect.objectContaining({ id: "terminal-2" }),
+    ]);
+
+    adapter.dispose();
+  });
+
   it("batches lane sync-status reads through git.getSyncStatuses on a capable host", async () => {
     const statuses = {
       "lane-1": {

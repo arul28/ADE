@@ -9,18 +9,20 @@ import { assertWebRuntimePinRoutable } from "../runtimePinGuard";
 import { createGitNamespaces } from "../git";
 import { createLanesNamespace } from "../lanes";
 import { createSessionsPtyNamespaces } from "../sessionsPty";
+import { createComputerUseNamespace } from "../computerUse";
 
 const OWN_ENV = "env-1";
 const OWN_PROJECT = "project-1";
 
 function scopeFixture(envId: string | null = OWN_ENV, projectId: string | null = OWN_PROJECT) {
   const call = vi.fn(async (_action: string, ..._rest: unknown[]) => null);
+  const requestFile = vi.fn(async (_action: string, ..._rest: unknown[]) => null);
   const infra = {
-    client: { getStatus: () => ({ selectedEnvId: envId }) } as unknown as AdeSyncClient,
+    client: { getStatus: () => ({ selectedEnvId: envId }), requestFile } as unknown as AdeSyncClient,
     state: { getProjectId: () => projectId },
     commands: { call } as unknown as CommandCaller,
   } as unknown as AdapterInfra;
-  return { infra, call };
+  return { infra, call, requestFile };
 }
 
 /**
@@ -236,5 +238,19 @@ describe("lanes namespace pin guard", () => {
       "lanes.delete",
       "lanes.getDeleteRisk",
     ]);
+  });
+});
+
+describe("computerUse namespace pin guard", () => {
+  it("sends no artifact list and no file read for a foreign pin", async () => {
+    const { infra, call, requestFile } = scopeFixture();
+    const computerUse = createComputerUseNamespace(infra);
+    const foreignPin = remotePin("env-2", "project-2");
+    await expect(computerUse.listArtifacts!({ artifactId: "art-1" }, foreignPin))
+      .rejects.toThrow(/computerUse\.listArtifacts/);
+    await expect(computerUse.readArtifactPreview!({ uri: "x.png" }, foreignPin))
+      .rejects.toThrow(/computerUse\.readArtifactPreview/);
+    expect(call).not.toHaveBeenCalled();
+    expect(requestFile).not.toHaveBeenCalled();
   });
 });

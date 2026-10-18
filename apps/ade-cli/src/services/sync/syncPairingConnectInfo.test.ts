@@ -21,8 +21,8 @@ function localDevice(overrides: Partial<SyncDeviceRecord> = {}): SyncDeviceRecor
   };
 }
 
-function remoteDevice(): SyncDeviceRecord {
-  return localDevice({ deviceId: "device-brain", siteId: "site-brain", name: "Brain" });
+function remoteDevice(overrides: Partial<SyncDeviceRecord> = {}): SyncDeviceRecord {
+  return localDevice({ deviceId: "device-brain", siteId: "site-brain", name: "Brain", ...overrides });
 }
 
 describe("buildAddressCandidates", () => {
@@ -61,8 +61,14 @@ describe("buildAddressCandidates", () => {
     ]);
   });
 
-  it("offers a remote device with no address no candidate, not this machine's loopback", () => {
-    // A viewer that dialed the first candidate would reach its own listener here.
-    expect(buildAddressCandidates(remoteDevice(), { isLocalDevice: false })).toEqual([]);
+  it.each([
+    { case: "with no address", device: {}, offered: [] },
+    { case: "last seen at 127.0.0.1", device: { lastHost: "127.0.0.1" }, offered: [] },
+    { case: "last seen at ::ffff:127.0.0.1", device: { lastHost: "::ffff:127.0.0.1" }, offered: [] },
+    { case: "last seen at 2130706433", device: { lastHost: "2130706433" }, offered: [] },
+    { case: "last seen at 0x7f000001 beside a LAN address", device: { lastHost: "0x7f000001", ipAddresses: ["192.168.1.250"] }, offered: [{ host: "192.168.1.250", kind: "lan" }] },
+  ])("never offers loopback to a remote device, $case", ({ device, offered }) => {
+    // A viewer that dialed loopback would reach its own listener here.
+    expect(buildAddressCandidates(remoteDevice(device), { isLocalDevice: false })).toEqual(offered);
   });
 });

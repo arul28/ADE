@@ -198,7 +198,10 @@ describe("multi-project RPC server", () => {
     handler.dispose();
   });
 
-  it("disconnects the project a disconnect names, and only that one", async () => {
+  it.each<[string, (project: { projectId: string; rootPath: string }) => Record<string, string>]>([
+    ["by projectId", ({ projectId }) => ({ projectId })],
+    ["by projectRoot, as the CLI sends it", ({ rootPath }) => ({ projectRoot: rootPath })],
+  ])("disconnects the project a disconnect names %s, and only that one", async (_how, named) => {
     const { root, registry, projectRoot } = createRegistry();
     const projectA = registry.add(projectRoot);
     const projectBRoot = path.join(root, "project-b");
@@ -221,7 +224,7 @@ describe("multi-project RPC server", () => {
     const handler = createMultiProjectRpcRequestHandler({ serverVersion: "test", projectRegistry: registry, scopeRegistry });
     await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: {} });
 
-    await expect(handler({ jsonrpc: "2.0", id: 2, method: "sync.disconnectFromBrain", params: { projectId: projectB.projectId } }))
+    await expect(handler({ jsonrpc: "2.0", id: 2, method: "sync.disconnectFromBrain", params: named(projectB) }))
       .resolves.toEqual({ disconnected: true });
     expect(runtimeA.syncService.disconnectFromBrain).not.toHaveBeenCalled();
     expect(runtimeB.syncService.disconnectFromBrain).toHaveBeenCalledOnce();
