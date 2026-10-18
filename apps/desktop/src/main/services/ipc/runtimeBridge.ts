@@ -3,6 +3,7 @@ import { resolveMovedProjectRoot } from "../../../../../ade-cli/src/services/pro
 import path from "node:path";
 import { IPC } from "../../../shared/ipc";
 import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
+import { THIS_MACHINE_ID } from "../../../shared/machineIdentity";
 import type {
   CloneProjectInput,
   CreateProjectInput,
@@ -12,6 +13,7 @@ import type {
   ListMyGitHubReposResult,
   OpenProjectBinding,
   PersonalChatCallArgs,
+  PersonalChatMachineTarget,
   PersonalChatCallResponse,
   PersonalChatStreamEventsArgs,
   PersonalChatStreamEventsResult,
@@ -884,16 +886,35 @@ export function registerRuntimeBridge({
     return getWindowSession?.(windowId)?.binding ?? null;
   };
 
+  /**
+   * The remote target a personal-chat call goes to, or null for this
+   * computer. A call that names its machine goes there; one that does not
+   * goes to the machine the window is bound to.
+   */
+  const personalChatRemoteTargetId = (
+    sender: WebContents,
+    target: PersonalChatMachineTarget | null | undefined,
+  ): string | null => {
+    const named = typeof target?.machineId === "string" ? target.machineId.trim() : "";
+    if (named) return named === THIS_MACHINE_ID ? null : named;
+    const binding = personalChatBindingForSender(sender);
+    return binding?.kind === "remote" ? binding.targetId : null;
+  };
+
   ipcMain.handle(
     IPC.personalChatsCall,
-    async (event, request: PersonalChatCallArgs): Promise<PersonalChatCallResponse> => {
+    async (
+      event,
+      request: PersonalChatCallArgs,
+      target?: PersonalChatMachineTarget | null,
+    ): Promise<PersonalChatCallResponse> => {
       if (!request || typeof request !== "object" || typeof request.action !== "string") {
         throw new Error("A personal chat action is required.");
       }
-      const binding = personalChatBindingForSender(event.sender);
-      if (binding?.kind === "remote") {
+      const remoteTargetId = personalChatRemoteTargetId(event.sender, target);
+      if (remoteTargetId) {
         return await remoteConnectionService.callMachineMethod<PersonalChatCallResponse>(
-          binding.targetId,
+          remoteTargetId,
           "personalChats.call",
           request as unknown as Record<string, unknown>,
         );
@@ -913,6 +934,7 @@ export function registerRuntimeBridge({
     async (
       event,
       request: PersonalChatStreamEventsArgs = {},
+      target?: PersonalChatMachineTarget | null,
     ): Promise<PersonalChatStreamEventsResult> => {
       const normalized: PersonalChatStreamEventsArgs = {
         ...(typeof request?.cursor === "number" && Number.isFinite(request.cursor)
@@ -922,10 +944,10 @@ export function registerRuntimeBridge({
           ? { limit: Math.max(1, Math.min(500, Math.floor(request.limit))) }
           : {}),
       };
-      const binding = personalChatBindingForSender(event.sender);
-      if (binding?.kind === "remote") {
+      const remoteTargetId = personalChatRemoteTargetId(event.sender, target);
+      if (remoteTargetId) {
         return await remoteConnectionService.callMachineMethod<PersonalChatStreamEventsResult>(
-          binding.targetId,
+          remoteTargetId,
           "personalChats.streamEvents",
           normalized as Record<string, unknown>,
         );

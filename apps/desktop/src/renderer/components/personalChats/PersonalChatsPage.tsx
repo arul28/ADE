@@ -17,12 +17,7 @@ import {
   X,
 } from "@phosphor-icons/react";
 import { useLocation, useNavigate } from "react-router-dom";
-import type {
-  AgentChatFileRef,
-  AgentChatSession,
-  AgentChatSessionSummary,
-  OpenProjectBinding,
-} from "../../../shared/types";
+import type { AgentChatFileRef, AgentChatSession } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { Banner } from "../ui/notice";
 import { ContextMenu, type ContextMenuEntry } from "../ui/ContextMenu";
@@ -36,14 +31,16 @@ import { PersonalTerminalPanel } from "./PersonalTerminalPanel";
 import { ProjectlessSidebar } from "./ProjectlessSidebar";
 import { CHAT_HEADER_BUTTON, sessionPreview, sessionTitle } from "./sessionHelpers";
 import { SuggestionChips } from "./SuggestionChips";
+import { resolvePersonalChatsCatalogTargetKey, usePersonalChatPaneScope } from "./usePersonalChatPaneScope";
 import {
-  callPersonal,
-  resolvePersonalChatsCatalogTargetKey,
-  usePersonalChatPaneScope,
-} from "./usePersonalChatPaneScope";
-import { projectOnOtherMachine, switchToThisMachineProject } from "../chat/thisMachineProjectRoot";
+  callPersonalOn,
+  personalChatsBridgeFor,
+  personalChatsMachineTargetKey,
+  usePersonalChatMachines,
+  usePersonalChatsAcrossMachines,
+  type PersonalChatRow,
+} from "./personalChatMachines";
 import { isWebClientMode } from "../../lib/webClientMode";
-import { useWebChatsMachines } from "../../webclient/workspace/useWebChatsMachines";
 import {
   ADE_OPEN_BUILT_IN_BROWSER_EVENT,
   navigateUrlInAdeBrowser,
@@ -54,13 +51,8 @@ import { readLastOpenChat, rememberLastOpenChat } from "../../state/lastOpenChat
 import { openChatInBrowserTab, openUrlInBrowserTab } from "../browser/browserTab";
 import { useAgentBrowserPresenceSince } from "../terminals/agentBrowserPresence";
 import { ChatSceneBackdrop } from "./ChatSceneBackdrop";
-import { useRemoteConnectionSnapshot } from "../../state/projectMachines";
-import { rememberExplicitRemotePick } from "../app/usePreferLocalCheckout";
-import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
-import {
-  THIS_MACHINE_ID as LOCAL_MACHINE_ID,
-  THIS_MACHINE_NAME as LOCAL_MACHINE_NAME,
-} from "../../../shared/machineIdentity";
+import { machineScopedId, parseMachineScopedId } from "../../state/foreignMachineReads";
+import { THIS_MACHINE_ID } from "../../../shared/machineIdentity";
 
 type ToolPanel = "browser" | "terminal" | null;
 
@@ -72,14 +64,6 @@ const CHAT_SUGGESTIONS: ReadonlyArray<{ label: string; prefill: string }> = [
   { label: "Plan from my notes", prefill: "Turn these notes into an action plan:\n" },
 ];
 
-export type PersonalChatsMachineOption = { id: string; name: string };
-
-// Stable empty fallbacks: hosts that seed only part of the app store (tests,
-// the projectless standalone shell) must not crash the machine picker.
-const EMPTY_REMOTE_TABS: Extract<OpenProjectBinding, { kind: "remote" }>[] = [];
-const EMPTY_TAB_ROOTS: string[] = [];
-/** Rail refreshes coalesce: a streaming turn emits many events a second. */
-const SESSIONS_REFRESH_DEBOUNCE_MS = 400;
 const EMPTY_SELECTION: ReadonlySet<string> = new Set();
 /** Same look as the Work sidebar's selection toolbar. */
 const BULK_ACTION_BUTTON_CLASS =
@@ -114,34 +98,43 @@ function groupLabel(value: string | null | undefined): string {
 // Kept importable from here: the Chats page is where this key is read.
 export { resolvePersonalChatsCatalogTargetKey };
 
+/** The chat last open, across every machine, kept as its row id. */
+const LAST_OPEN_SCOPE = "all-machines";
+
 export function PersonalChatsPage({ standalone = false }: { standalone?: boolean }) {
   const navigate = useNavigate();
   const location = useLocation();
-  const projectBinding = useAppStore((state) => state.projectBinding);
-  const openRemoteProjectTabs = useAppStore((state) => state.openRemoteProjectTabs) ?? EMPTY_REMOTE_TABS;
-  const openProjectTabRoots = useAppStore((state) => state.openProjectTabRoots) ?? EMPTY_TAB_ROOTS;
-  const localProjectRootPath = useAppStore((state) => state.project?.rootPath ?? null);
-  const switchProjectToPath = useAppStore((state) => state.switchProjectToPath);
-  const switchRemoteProject = useAppStore((state) => state.switchRemoteProject);
   const browserTabOpen = useAppStore((state) => state.browserTabOpen) ?? false;
-  const webMachines = useWebChatsMachines();
-  const targetKey = useMemo(
-    () => resolvePersonalChatsCatalogTargetKey(projectBinding, webMachines),
-    [projectBinding, webMachines, webMachines?.machineId],
-  );
-  const [sessions, setSessions] = useState<AgentChatSessionSummary[]>([]);
-  // The chat open in the pane. Leaving the page (or the window) and coming
-  // back reopens the one you were in; only New chat starts a draft.
-  const [selectedId, setSelectedId] = useState<string | null>(() => readLastOpenChat(targetKey));
+  const {
+    machines,
+    settled: machinesSettled,
+    draftOptions,
+    draftOptionId,
+    draftMachineId,
+    selectDraft,
+    boundMachineId,
+  } = usePersonalChatMachines();
+  // The Browser tab's docked chat names its machine this way.
+  const projectBinding = useAppStore((state) => state.projectBinding);
+  const browserDockTargetKey = resolvePersonalChatsCatalogTargetKey(projectBinding);
+  // The rail lists archived chats instead of live ones, so they can come back.
+  const [showArchived, setShowArchived] = useState(false);
+  const {
+    rows: sessions,
+    loadByMachine,
+    readMachineIds,
+    refreshMachine,
+  } = usePersonalChatsAcrossMachines(machines, showArchived);
+  // The chat open in the pane, as its row id (machine and session). Leaving
+  // the page (or the window) and coming back reopens the one you were in; only
+  // New chat starts a draft.
+  const [selectedId, setSelectedId] = useState<string | null>(() => readLastOpenChat(LAST_OPEN_SCOPE));
   const selectedIdRef = useRef(selectedId);
   selectedIdRef.current = selectedId;
-  const targetKeyRef = useRef(targetKey);
-  targetKeyRef.current = targetKey;
   // Bumped only when the user navigates (picks a chat, starts a new one), so a
   // chat created by the pane's own first send keeps the same pane mounted.
   const [paneGeneration, setPaneGeneration] = useState(0);
   const [query, setQuery] = useState("");
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [rowMenu, setRowMenu] = useState<RowMenuState>(null);
   // Rows picked with shift / cmd / ctrl-click. Separate from `selectedId`
@@ -149,13 +142,8 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
   const [multiSelectedIds, setMultiSelectedIds] = useState<ReadonlySet<string>>(EMPTY_SELECTION);
   const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
-  // The rail lists archived chats instead of live ones, so they can come back.
-  const [showArchived, setShowArchived] = useState(false);
-  const showArchivedRef = useRef(showArchived);
-  showArchivedRef.current = showArchived;
   const [toolPanel, setToolPanel] = useState<ToolPanel>(null);
   const [mobileListOpen, setMobileListOpen] = useState(true);
-  const targetGenerationRef = useRef(0);
   // The pane owns the draft; chips and the browser panel write to it through
   // the pane's composer handle.
   const composerRef = useRef<AgentChatPaneComposerHandle | null>(null);
@@ -170,97 +158,60 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
     [],
   );
 
-  // The pane's personal API scope and model catalog for this machine; both
-  // reset when the window moves to another machine.
-  const { chatScope, catalog, availableModelIds, providerUnavailable } = usePersonalChatPaneScope(targetKey, {
+  // The pane runs on the open chat's machine, or for a draft on the machine
+  // picked beside the composer.
+  const selectedTarget = selectedId ? parseMachineScopedId(selectedId) : null;
+  const selectedSessionId = selectedTarget?.id ?? null;
+  const paneMachineId = selectedTarget?.machineId ?? draftMachineId;
+  const paneMachineIdRef = useRef(paneMachineId);
+  paneMachineIdRef.current = paneMachineId;
+  const paneTargetKey = paneMachineId ? personalChatsMachineTargetKey(paneMachineId) : "web:pending";
+  const { chatScope, catalog, availableModelIds, providerUnavailable } = usePersonalChatPaneScope(paneTargetKey, {
+    machineId: paneMachineId,
+    machineName: machines.find((machine) => machine.id === paneMachineId)?.name ?? null,
     onError: setError,
   });
+  const terminalBridge = useMemo(
+    () => (paneMachineId ? personalChatsBridgeFor(paneMachineId) : window.ade.personalChats),
+    [paneMachineId],
+  );
 
-  const refreshSessions = useCallback(async (generation = targetGenerationRef.current) => {
-    const archived = showArchivedRef.current;
-    const rows = await callPersonal<AgentChatSessionSummary[]>("list", { includeArchived: archived });
-    // A reply for the other view (the toggle moved mid-flight) is dropped too.
-    if (generation !== targetGenerationRef.current || archived !== showArchivedRef.current) return null;
-    // Not a list (a peer on another version, a malformed reply) is not "no
-    // chats": keep what is shown, and keep the remembered chat.
-    if (!Array.isArray(rows)) throw new Error("The chat list could not be read. Try again.");
-    // `includeArchived` returns live chats as well; the archived view shows only the archived ones.
-    const inView = rows.filter((session) => Boolean(session.archivedAt) === archived);
-    const ordered = [...inView].sort(
-      (left, right) => Date.parse(right.lastActivityAt) - Date.parse(left.lastActivityAt),
-    );
-    setSessions(ordered);
-    return ordered;
-  }, []);
+  const loading = sessions.length === 0
+    && machines.some((machine) => loadByMachine[machine.id]?.status === "loading");
 
+  // The chat to reopen was deleted or archived since, or its machine is gone:
+  // open the most recent chat instead, or a draft when there is none. Decided
+  // once, when the remembered chat's machine has answered.
+  const restorePendingRef = useRef(selectedId != null);
   useEffect(() => {
-    const generation = ++targetGenerationRef.current;
-    const restoredId = readLastOpenChat(targetKey);
-    setSessions([]);
-    setSelectedId(restoredId);
-    setMultiSelectedIds(EMPTY_SELECTION);
-    setSelectionAnchorId(null);
-    setRowMenu(null);
-    setRenamingId(null);
+    if (!restorePendingRef.current) return;
+    const restoredId = selectedIdRef.current;
+    const target = restoredId ? parseMachineScopedId(restoredId) : null;
+    const machineListed = target != null && machines.some((machine) => machine.id === target.machineId);
+    if (target && machineListed && !readMachineIds.has(target.machineId)) return;
+    if (target && !machineListed && !machinesSettled) return;
+    restorePendingRef.current = false;
+    if (!target || (machineListed && sessions.some((session) => session.rowId === restoredId))) return;
+    // A machine that failed its read cannot say the chat is gone.
+    if (machineListed && loadByMachine[target.machineId]?.status === "error") return;
+    const fallbackId = sessions[0]?.rowId ?? null;
+    rememberLastOpenChat(LAST_OPEN_SCOPE, fallbackId);
+    setSelectedId(fallbackId);
     setPaneGeneration((value) => value + 1);
-    setToolPanel(null);
-    setLoading(true);
-    setError(null);
-    void refreshSessions(generation).then((rows) => {
-      // The chat to reopen was deleted or archived since: open the most
-      // recent one instead, or a draft when there is none.
-      if (!rows || !restoredId || selectedIdRef.current !== restoredId) return;
-      if (rows.some((session) => session.sessionId === restoredId)) return;
-      const fallbackId = rows[0]?.sessionId ?? null;
-      rememberLastOpenChat(targetKey, fallbackId);
-      setSelectedId(fallbackId);
-      setPaneGeneration((value) => value + 1);
-    }, (reason) => {
-      if (generation === targetGenerationRef.current) {
-        setError(reason instanceof Error ? reason.message : String(reason));
-      }
-    }).finally(() => {
-      if (generation === targetGenerationRef.current) setLoading(false);
-    });
-  }, [refreshSessions, targetKey]);
+  }, [loadByMachine, machines, machinesSettled, readMachineIds, sessions]);
 
-  // Switching between live and archived chats reloads the rail; the open chat stays open.
+  // Switching between live and archived chats clears the rail's selection; the open chat stays open.
   const archivedViewInitializedRef = useRef(false);
   useEffect(() => {
     if (!archivedViewInitializedRef.current) {
       archivedViewInitializedRef.current = true;
       return;
     }
-    const generation = targetGenerationRef.current;
-    setSessions([]);
     setMultiSelectedIds(EMPTY_SELECTION);
     setSelectionAnchorId(null);
     setRowMenu(null);
     setRenamingId(null);
-    setLoading(true);
-    void refreshSessions(generation).catch((reason) => {
-      if (generation === targetGenerationRef.current) setError(errorDetail(reason));
-    }).finally(() => {
-      if (generation === targetGenerationRef.current) setLoading(false);
-    });
-  }, [refreshSessions, showArchived]);
-
-  // The rail follows the same event stream the pane reads: titles, activity
-  // and new chats appear without a manual refresh.
-  useEffect(() => {
-    let timer: number | null = null;
-    const unsubscribe = chatScope.agentChat.onEvent(() => {
-      if (timer != null) return;
-      timer = window.setTimeout(() => {
-        timer = null;
-        void refreshSessions().catch(() => undefined);
-      }, SESSIONS_REFRESH_DEBOUNCE_MS);
-    });
-    return () => {
-      unsubscribe();
-      if (timer != null) window.clearTimeout(timer);
-    };
-  }, [chatScope, refreshSessions]);
+  }, [showArchived]);
 
   // A link opens beside the chat when the Browser panel is already showing
   // there. Otherwise, with the Browser tab open, it opens in that tab: the
@@ -293,27 +244,27 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
 
   // The open chat keeps its summary while the rail shows the other view
   // (archived chats), where its row is not listed.
-  const lastSelectedSessionRef = useRef<AgentChatSessionSummary | null>(null);
-  const listedSelectedSession = sessions.find((session) => session.sessionId === selectedId) ?? null;
+  const lastSelectedSessionRef = useRef<PersonalChatRow | null>(null);
+  const listedSelectedSession = sessions.find((session) => session.rowId === selectedId) ?? null;
   if (listedSelectedSession) lastSelectedSessionRef.current = listedSelectedSession;
   const selectedSession = listedSelectedSession
-    ?? (lastSelectedSessionRef.current?.sessionId === selectedId ? lastSelectedSessionRef.current : null);
+    ?? (lastSelectedSessionRef.current?.rowId === selectedId ? lastSelectedSessionRef.current : null);
 
-
-  const selectSession = useCallback((sessionId: string | null) => {
-    rememberLastOpenChat(targetKeyRef.current, sessionId);
-    setSelectedId(sessionId);
+  const selectSession = useCallback((rowId: string | null) => {
+    restorePendingRef.current = false;
+    rememberLastOpenChat(LAST_OPEN_SCOPE, rowId);
+    setSelectedId(rowId);
     setPaneGeneration((value) => value + 1);
     setRowMenu(null);
     setMobileListOpen(false);
   }, []);
 
   // `/chats?chat=<id>` opens that chat: the Browser tab's dock sends its chat
-  // here to be read full size.
+  // here to be read full size. The dock's chat lives on the window's machine.
   const requestedChatId = new URLSearchParams(location.search).get("chat");
   useEffect(() => {
     if (!requestedChatId) return;
-    selectSession(requestedChatId);
+    selectSession(machineScopedId(boundMachineId ?? THIS_MACHINE_ID, requestedChatId));
     navigate("/chats", { replace: true });
     // selectSession is stable; only a new request should re-run this.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -321,19 +272,23 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
 
   const handleSessionCreated = useCallback((session: AgentChatSession) => {
     // Same pane, now locked to the chat its first message created.
-    rememberLastOpenChat(targetKeyRef.current, session.id);
-    setSelectedId(session.id);
-    void refreshSessions().catch(() => undefined);
-  }, [refreshSessions]);
+    const machineId = paneMachineIdRef.current;
+    if (!machineId) return;
+    const rowId = machineScopedId(machineId, session.id);
+    restorePendingRef.current = false;
+    rememberLastOpenChat(LAST_OPEN_SCOPE, rowId);
+    setSelectedId(rowId);
+    void refreshMachine(machineId);
+  }, [refreshMachine]);
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
     return needle
-      ? sessions.filter((session) => `${sessionTitle(session)} ${sessionPreview(session)}`.toLowerCase().includes(needle))
+      ? sessions.filter((session) => `${sessionTitle(session)} ${sessionPreview(session)} ${session.machineName ?? ""}`.toLowerCase().includes(needle))
       : sessions;
   }, [query, sessions]);
   const grouped = useMemo(() => {
-    const groups = new Map<string, AgentChatSessionSummary[]>();
+    const groups = new Map<string, PersonalChatRow[]>();
     for (const session of filtered) {
       const label = session.pinned ? "Pinned" : groupLabel(session.lastActivityAt);
       groups.set(label, [...(groups.get(label) ?? []), session]);
@@ -345,11 +300,11 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
   // The rail's rows in the order they are drawn: what a shift-click range and
   // the arrow keys walk.
   const orderedIds = useMemo(
-    () => grouped.flatMap(([, rows]) => rows.map((session) => session.sessionId)),
+    () => grouped.flatMap(([, rows]) => rows.map((session) => session.rowId)),
     [grouped],
   );
   const sessionsById = useMemo(
-    () => new Map(sessions.map((session) => [session.sessionId, session] as const)),
+    () => new Map(sessions.map((session) => [session.rowId, session] as const)),
     [sessions],
   );
 
@@ -370,35 +325,40 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
   }, []);
 
   /**
-   * Runs one action over every chat it names, each on its own: one chat that
-   * refuses does not stop the rest. Failures are reported with a count.
+   * Runs one action over every chat it names, each on its own machine: one
+   * chat that refuses does not stop the rest. Failures are reported with a
+   * count. Every machine an action ran on is re-read.
    */
   const runChatAction = useCallback(async (
     verb: string,
-    ids: string[],
-    action: (sessionId: string) => Promise<unknown>,
+    rowIds: string[],
+    action: (target: { machineId: string; sessionId: string }) => Promise<unknown>,
   ): Promise<string[]> => {
     setRowMenu(null);
     setError(null);
     const succeeded: string[] = [];
+    const touchedMachines = new Set<string>();
     let firstFailure: unknown = null;
-    for (const sessionId of ids) {
+    for (const rowId of rowIds) {
+      const target = parseMachineScopedId(rowId);
+      if (!target) continue;
+      touchedMachines.add(target.machineId);
       try {
-        await action(sessionId);
-        succeeded.push(sessionId);
+        await action({ machineId: target.machineId, sessionId: target.id });
+        succeeded.push(rowId);
       } catch (reason) {
         firstFailure ??= reason;
       }
     }
     if (firstFailure != null) {
       const detail = errorDetail(firstFailure);
-      setError(ids.length === 1
+      setError(rowIds.length === 1
         ? `Could not ${verb} this chat${detail ? `: ${detail}` : "."}`
-        : `Could not ${verb} ${ids.length - succeeded.length} of ${ids.length} chats${detail ? `: ${detail}` : "."}`);
+        : `Could not ${verb} ${rowIds.length - succeeded.length} of ${rowIds.length} chats${detail ? `: ${detail}` : "."}`);
     }
-    await refreshSessions().catch(() => undefined);
+    await Promise.all([...touchedMachines].map((machineId) => refreshMachine(machineId)));
     return succeeded;
-  }, [refreshSessions]);
+  }, [refreshMachine]);
 
   const removeChats = useCallback(async (ids: string[], action: "archive" | "unarchive" | "delete") => {
     if (ids.length === 0) return;
@@ -416,7 +376,8 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
       });
       if (!confirmed) return;
     }
-    const done = await runChatAction(action, ids, (sessionId) => callPersonal<void>(action, { sessionId }));
+    const done = await runChatAction(action, ids, ({ machineId, sessionId }) =>
+      callPersonalOn<void>(machineId, action, { sessionId }));
     // An archived or deleted chat leaves the pane; an unarchived one stays open.
     if (selectedId && done.includes(selectedId) && action !== "unarchive") selectSession(null);
     setMultiSelectedIds((current) => {
@@ -425,32 +386,33 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
     });
   }, [runChatAction, selectSession, selectedId, sessionsById]);
 
-  const renameSession = useCallback((sessionId: string, title: string) => {
+  const renameSession = useCallback((rowId: string, title: string) => {
     setRenamingId(null);
-    void runChatAction("rename", [sessionId], () => callPersonal("updateSession", { sessionId, title, manuallyNamed: true }));
+    void runChatAction("rename", [rowId], ({ machineId, sessionId }) =>
+      callPersonalOn(machineId, "updateSession", { sessionId, title, manuallyNamed: true }));
   }, [runChatAction]);
 
   // An older host has no `setPinned` (personal-chat capabilities are not
-  // exposed to this page): its refusal hides Pin for that machine instead of
-  // surfacing as an error.
-  const [pinUnsupportedTarget, setPinUnsupportedTarget] = useState<string | null>(null);
-  const pinSupported = pinUnsupportedTarget !== targetKey;
+  // exposed to this page): its refusal hides Pin for that machine's chats
+  // instead of surfacing as an error.
+  const [pinUnsupportedMachines, setPinUnsupportedMachines] = useState<ReadonlySet<string>>(() => new Set());
+  const pinSupportedFor = useCallback(
+    (rows: readonly PersonalChatRow[]) => rows.every((row) => !pinUnsupportedMachines.has(row.machineId)),
+    [pinUnsupportedMachines],
+  );
   const setPinned = useCallback((ids: string[], pinned: boolean) => {
-    let unsupported = false;
-    void runChatAction(pinned ? "pin" : "unpin", ids, async (sessionId) => {
-      if (unsupported) return;
+    void runChatAction(pinned ? "pin" : "unpin", ids, async ({ machineId, sessionId }) => {
       try {
-        await callPersonal("setPinned", { sessionId, pinned });
+        await callPersonalOn(machineId, "setPinned", { sessionId, pinned });
       } catch (reason) {
         if (!errorDetail(reason).includes("Unsupported personal chat action")) throw reason;
-        unsupported = true;
-        setPinUnsupportedTarget(targetKey);
+        setPinUnsupportedMachines((current) => (current.has(machineId) ? current : new Set([...current, machineId])));
       }
     });
-  }, [runChatAction, targetKey]);
+  }, [runChatAction]);
 
   const stopChats = useCallback((ids: string[]) => {
-    void runChatAction("stop", ids, (sessionId) => callPersonal("interrupt", { sessionId }));
+    void runChatAction("stop", ids, ({ machineId, sessionId }) => callPersonalOn(machineId, "interrupt", { sessionId }));
   }, [runChatAction]);
 
   /** Selected rows, in rail order. */
@@ -509,15 +471,15 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
     if (!rowMenu) return [];
     const targets = rowMenu.targetIds
       .map((id) => sessionsById.get(id))
-      .filter((session): session is AgentChatSessionSummary => session != null);
+      .filter((session): session is PersonalChatRow => session != null);
     if (targets.length === 0) return [];
-    const ids = targets.map((session) => session.sessionId);
+    const ids = targets.map((session) => session.rowId);
     const total = targets.length;
     const hint = (count: number) => (total > 1 && count < total ? `${count} of ${total}` : undefined);
-    const unpinned = targets.filter((session) => !session.pinned).map((session) => session.sessionId);
-    const running = targets.filter((session) => session.status === "active").map((session) => session.sessionId);
-    const archived = targets.filter((session) => session.archivedAt).map((session) => session.sessionId);
-    const live = targets.filter((session) => !session.archivedAt).map((session) => session.sessionId);
+    const unpinned = targets.filter((session) => !session.pinned).map((session) => session.rowId);
+    const running = targets.filter((session) => session.status === "active").map((session) => session.rowId);
+    const archived = targets.filter((session) => session.archivedAt).map((session) => session.rowId);
+    const live = targets.filter((session) => !session.archivedAt).map((session) => session.rowId);
     const plural = total > 1 ? ` ${total}` : "";
     const single = total === 1 ? targets[0]! : null;
 
@@ -529,10 +491,10 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
             key: "rename",
             label: "Rename",
             icon: PencilSimple,
-            onSelect: () => setRenamingId(single.sessionId),
+            onSelect: () => setRenamingId(single.rowId),
           }]
         : []),
-      ...(pinSupported
+      ...(pinSupportedFor(targets)
         ? [unpinned.length
             ? {
                 kind: "item" as const,
@@ -561,14 +523,15 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
             onSelect: () => stopChats(running),
           }]
         : []),
-      ...(single && browserAvailable
+      // The Browser tab's dock runs on the window's machine, so only its chats go there.
+      ...(single && browserAvailable && single.machineId === boundMachineId
         ? [{
             kind: "item" as const,
             key: "browser-tab",
             label: "Open in the Browser tab",
             icon: AppWindow,
             onSelect: () => {
-              void openChatInBrowserTab(single.sessionId, targetKey, navigate)
+              void openChatInBrowserTab(single.sessionId, browserDockTargetKey, navigate)
                 .catch((reason) => setError(errorDetail(reason)));
             },
           }]
@@ -579,7 +542,7 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
         key: "copy-id",
         label: total > 1 ? "Copy chat IDs" : "Copy chat ID",
         icon: Copy,
-        onSelect: () => copyToClipboard(ids.join("\n"), total > 1 ? "chat IDs" : "chat ID"),
+        onSelect: () => copyToClipboard(targets.map((session) => session.sessionId).join("\n"), total > 1 ? "chat IDs" : "chat ID"),
       },
       ...(total > 1
         ? [{ kind: "item" as const, key: "clear", label: "Clear selection", icon: X, onSelect: clearSelection }]
@@ -618,13 +581,14 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
     browserAvailable,
     clearSelection,
     navigate,
-    pinSupported,
+    pinSupportedFor,
     removeChats,
     rowMenu,
     sessionsById,
     setPinned,
     stopChats,
-    targetKey,
+    boundMachineId,
+    browserDockTargetKey,
   ]);
 
   const focusRow = useCallback((id: string) => {
@@ -697,7 +661,7 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
 
   const selectedRows = selectedRowIds
     .map((id) => sessionsById.get(id))
-    .filter((session): session is AgentChatSessionSummary => session != null);
+    .filter((session): session is PersonalChatRow => session != null);
   const selectionToolbar = selectedRows.length > 0 ? (
     <div
       className="mx-3 mb-2 flex min-h-8 flex-wrap items-center gap-0.5 border-t border-fg/[0.06] px-1 pt-1"
@@ -706,11 +670,11 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
       <span className="min-w-0 flex-1 truncate px-1 font-sans text-[10px] font-medium tabular-nums text-muted-fg/70">
         {selectedRows.length} selected
       </span>
-      {pinSupported && selectedRows.some((session) => !session.pinned) ? (
+      {pinSupportedFor(selectedRows) && selectedRows.some((session) => !session.pinned) ? (
         <button
           type="button"
           className={BULK_ACTION_BUTTON_CLASS}
-          onClick={() => setPinned(selectedRows.filter((session) => !session.pinned).map((session) => session.sessionId), true)}
+          onClick={() => setPinned(selectedRows.filter((session) => !session.pinned).map((session) => session.rowId), true)}
         >
           <PushPin size={10} /> Pin
         </button>
@@ -740,103 +704,31 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
   ) : null;
 
   // A chat that is browsing, or the one docked in the Browser tab, is one
-  // click from its page there.
-  const selectedBrowsingSince = useAgentBrowserPresenceSince(selectedId);
+  // click from its page there. The dock runs on the window's machine.
+  const selectedBrowsingSince = useAgentBrowserPresenceSince(selectedSessionId);
   const browserDockChatId = useAppStore((state) => state.browserDock?.chat?.sessionId ?? null);
-  const showInBrowserTab = browserAvailable && selectedId != null
-    && (selectedBrowsingSince != null || browserDockChatId === selectedId);
-  const isRemote = projectBinding?.kind === "remote";
-  // Machines are named absolutely — the Chats tab runs on whichever machine this
-  // window is bound to, so the name is the fact and the picker is the control.
-  // In the browser the same picker rebinds the same page, but there is no
-  // "This computer" to offer: every option is one of the account's machines, and picking
-  // one points the federated adapter's chats surface at it.
-  const machineLabel = webMachines
-    ? webMachines.machineLabel ?? "No machine connected"
-    : isRemote ? projectBinding.runtimeName : LOCAL_MACHINE_NAME;
-  const machineId = webMachines
-    ? webMachines.machineId ?? ""
-    : isRemote ? projectBinding.targetId : LOCAL_MACHINE_ID;
-  // Every connected machine with a project the picker can bind to, whether or
-  // not it has an open project tab.
-  const { snapshot: remoteSnapshot } = useRemoteConnectionSnapshot(!webMachines);
-  const remoteProjectFor = useCallback(
-    (targetId: string) =>
-      projectOnOtherMachine({
-        currentOrigin: projectBinding?.gitOriginUrl,
-        openTabProjectId: openRemoteProjectTabs.find((entry) => entry.targetId === targetId)?.projectId,
-        machineProjects: remoteSnapshot?.connections
-          .find((connection) => connection.target.id === targetId)?.projects ?? [],
-      }),
-    [openRemoteProjectTabs, projectBinding?.gitOriginUrl, remoteSnapshot],
+  const selectedOnBoundMachine = selectedTarget != null && selectedTarget.machineId === boundMachineId;
+  const showInBrowserTab = browserAvailable && selectedOnBoundMachine
+    && (selectedBrowsingSince != null || browserDockChatId === selectedSessionId);
+  const showReconnecting = Boolean(error) && !isWebClientMode() && paneMachineId != null && paneMachineId !== THIS_MACHINE_ID;
+  // The rail's footer: every machine whose chats are listed, and how its read went.
+  const machineStatuses = useMemo(
+    () => machines.map((machine) => ({
+      id: machine.id,
+      name: machine.name,
+      status: loadByMachine[machine.id]?.status ?? ("ok" as const),
+      message: loadByMachine[machine.id]?.message ?? null,
+    })),
+    [loadByMachine, machines],
   );
-  const desktopMachineOptions = useMemo<PersonalChatsMachineOption[]>(() => {
-    const options: PersonalChatsMachineOption[] = [
-      { id: LOCAL_MACHINE_ID, name: LOCAL_MACHINE_NAME },
-    ];
-    const add = (id: string, name: string) => {
-      if (!options.some((option) => option.id === id)) options.push({ id, name });
-    };
-    for (const tab of openRemoteProjectTabs) add(tab.targetId, tab.runtimeName);
-    for (const connection of remoteSnapshot?.connections ?? []) {
-      if (connection.state !== "connected" || !remoteProjectFor(connection.target.id)) continue;
-      add(connection.target.id, connection.target.name || connection.target.hostname);
-    }
-    return options;
-  }, [openRemoteProjectTabs, remoteProjectFor, remoteSnapshot]);
-  const machineOptions = webMachines ? webMachines.options : desktopMachineOptions;
-  const selectMachine = useCallback(
-    (nextMachineId: string) => {
-      if (nextMachineId === machineId) return;
-      setError(null);
-      if (webMachines) {
-        void webMachines.select(nextMachineId).then(setError);
-        return;
-      }
-      if (nextMachineId === LOCAL_MACHINE_ID) {
-        // The machine is a dimension of THIS repo's tab, so "This computer" must
-        // resolve to this repo's local checkout — never to whichever local tab
-        // happens to be first.
-        void switchToThisMachineProject({
-          projectBinding,
-          openProjectTabRoots,
-          localProjectRootPath,
-          switchProjectToPath,
-        }).then(setError);
-        return;
-      }
-      const projectId = remoteProjectFor(nextMachineId);
-      if (!projectId) return;
-      // A machine picked here is a choice, so the tab keeps it rather than
-      // moving back to this computer's checkout.
-      rememberExplicitRemotePick(remoteProjectBindingKey(nextMachineId, projectId));
-      void switchRemoteProject(nextMachineId, projectId).catch((reason) => {
-        setError(reason instanceof Error ? reason.message : String(reason));
-      });
-    },
-    [
-      localProjectRootPath,
-      machineId,
-      openProjectTabRoots,
-      projectBinding,
-      remoteProjectFor,
-      switchProjectToPath,
-      switchRemoteProject,
-      webMachines,
-    ],
-  );
-  const showReconnecting = Boolean(error) && isRemote;
   const title = selectedSession ? sessionTitle(selectedSession) : "New chat";
 
   return (
-    <div className="ade-chat-scene relative flex h-full min-h-0 text-fg" data-testid="personal-chats-page" data-target={targetKey}>
+    <div className="ade-chat-scene relative flex h-full min-h-0 text-fg" data-testid="personal-chats-page" data-target={paneTargetKey}>
       <ChatSceneBackdrop />
       <ProjectlessSidebar
         standalone={standalone}
-        machineLabel={machineLabel}
-        machineId={machineId}
-        machineOptions={machineOptions}
-        onSelectMachine={selectMachine}
+        machines={machineStatuses}
         grouped={grouped}
         loading={loading}
         query={query}
@@ -877,8 +769,8 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
               <SpinnerGap size={11} className="animate-spin" /> Reconnecting…
             </span>
           ) : null}
-          {showInBrowserTab && selectedId ? (
-            <button type="button" onClick={() => void openChatInBrowserTab(selectedId, targetKey, navigate).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)))} className={CHAT_HEADER_BUTTON} title="Show beside its page in the Browser tab" aria-label="Show in the Browser tab"><AppWindow size={14} /></button>
+          {showInBrowserTab && selectedSessionId ? (
+            <button type="button" onClick={() => void openChatInBrowserTab(selectedSessionId!, browserDockTargetKey, navigate).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)))} className={CHAT_HEADER_BUTTON} title="Show beside its page in the Browser tab" aria-label="Show in the Browser tab"><AppWindow size={14} /></button>
           ) : null}
           {browserAvailable ? (
             <button type="button" onClick={() => setToolPanel((current) => current === "browser" ? null : "browser")} className={cn("flex h-7 w-7 items-center justify-center rounded-md border transition-colors", toolPanel === "browser" ? "border-sky-300/25 bg-sky-500/10 text-sky-200" : "border-fg/[0.06] bg-fg/[0.025] text-muted-fg/45 hover:text-fg")} title="Browser" aria-label="Toggle browser"><Globe size={14} /></button>
@@ -911,10 +803,10 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
               <div className="flex h-full items-center justify-center"><SpinnerGap size={22} className="animate-spin text-muted-fg/35" /></div>
             ) : (
               <AgentChatPane
-                key={`${targetKey}:${paneGeneration}`}
+                key={`${paneTargetKey}:${paneGeneration}`}
                 laneId={null}
                 chatScope={chatScope}
-                lockSessionId={selectedId}
+                lockSessionId={selectedSessionId}
                 lockSessionProvider={selectedSession?.provider ?? null}
                 initialSessionSummary={selectedSession}
                 availableModelIdsOverride={availableModelIds}
@@ -927,9 +819,13 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
                         here: another machine may have one. Renders nothing with
                         a single machine. */}
                     <DraftMachinePicker
-                      machines={machineOptions}
-                      selectedMachineId={machineId}
-                      onChange={selectMachine}
+                      machines={draftOptions}
+                      selectedMachineId={draftOptionId}
+                      onChange={(optionId) => {
+                        if (optionId === draftOptionId) return;
+                        setError(null);
+                        void selectDraft(optionId).then(setError);
+                      }}
                       tooltipLabel="Where it runs"
                       showWhenSingle
                     />
@@ -958,7 +854,7 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
             {toolPanel === "browser" ? (
               <div className="w-[min(44%,560px)] min-w-[340px] border-l border-fg/[0.07] bg-bg max-lg:absolute max-lg:inset-y-0 max-lg:right-0 max-lg:z-30 max-lg:w-[min(92%,560px)] max-lg:shadow-2xl">
                 <ChatBuiltInBrowserPanel
-                  sessionId={selectedId}
+                  sessionId={selectedSessionId}
                   projectRootOverride={null}
                   onInsertDraft={insertIntoComposer}
                   onAddContext={addBrowserContextToComposer}
@@ -969,7 +865,7 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
             ) : null}
             {toolPanel === "terminal" ? (
               <div className="w-[min(44%,560px)] min-w-[340px] border-l border-fg/[0.07] bg-bg max-lg:absolute max-lg:inset-y-0 max-lg:right-0 max-lg:z-30 max-lg:w-[min(92%,560px)] max-lg:shadow-2xl">
-                <PersonalTerminalPanel chatSessionId={selectedId} onClose={() => setToolPanel(null)} />
+                <PersonalTerminalPanel chatSessionId={selectedSessionId} bridge={terminalBridge} onClose={() => setToolPanel(null)} />
               </div>
             ) : null}
           </AgentChatApiProvider>

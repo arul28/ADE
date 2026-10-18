@@ -10,8 +10,8 @@ import {
   descriptorsFromAgentChatModelCatalog,
   personalChatCatalogScopeKey,
 } from "../shared/ModelPicker/modelCatalog";
-import type { WebChatsMachinePicker } from "../../webclient/workspace/useWebChatsMachines";
 import { createPersonalAgentChatApi, personalCallResult, type PersonalChatsBridge } from "./personalAgentChatApi";
+import { callPersonalOn, personalAgentChatApiFor } from "./personalChatMachines";
 
 /**
  * The machine's personal-chat bridge. Resolved per call, so a runtime without
@@ -28,15 +28,14 @@ export async function callPersonal<T>(action: PersonalChatAction, args?: Record<
   return personalCallResult<T>(await personalChatsBridge().call(request));
 }
 
-/** Machine identity for personal Chats catalog scope and target-scoped reload effects. */
+/**
+ * The window's bound machine as a personal Chats catalog scope: the Browser
+ * tab's docked chat, and the Chats page's handle on that dock. The Chats page
+ * itself names each machine with `personalChatsMachineTargetKey`.
+ */
 export function resolvePersonalChatsCatalogTargetKey(
   projectBinding: OpenProjectBinding | null | undefined,
-  webMachines: WebChatsMachinePicker | null,
 ): string {
-  if (webMachines) {
-    const webKey = webMachines.machineId?.trim();
-    return webKey ? `web:${webKey}` : "web:pending";
-  }
   return projectBinding?.kind === "remote" ? projectBinding.key : "local-machine";
 }
 
@@ -56,14 +55,27 @@ export type PersonalChatPaneScope = {
  * names. Shared by the Chats page and the Browser tab's docked chat, so the two
  * surfaces route and pick models the same way.
  *
+ * `machineId` sends every call to that machine (the Chats page, which lists
+ * every machine's chats); left out, calls go to the window's bound machine
+ * (the Browser tab's dock). `targetKey` must change with it.
+ *
  * The scope is rebuilt per machine so a switched window never keeps polling the
  * previous machine's stream; the catalog resets and reloads with it.
  */
 export function usePersonalChatPaneScope(
   targetKey: string,
-  options: { enabled?: boolean; onError?: (message: string) => void } = {},
+  options: {
+    enabled?: boolean;
+    machineId?: string | null;
+    machineName?: string | null;
+    onError?: (message: string) => void;
+  } = {},
 ): PersonalChatPaneScope {
   const enabled = options.enabled ?? true;
+  const machineId = options.machineId ?? null;
+  const machineName = options.machineName ?? null;
+  const machineIdRef = useRef(machineId);
+  machineIdRef.current = machineId;
   const onErrorRef = useRef(options.onError);
   onErrorRef.current = options.onError;
   const personalCatalogScopeKey = personalChatCatalogScopeKey(targetKey);
@@ -75,12 +87,15 @@ export function usePersonalChatPaneScope(
 
   const chatScope = useMemo<ChatPaneScope>(() => ({
     kind: "personal",
-    agentChat: createPersonalAgentChatApi({
-      call: (request) => personalChatsBridge().call(request),
-      streamEvents: (request) => personalChatsBridge().streamEvents(request),
-    }),
+    agentChat: machineId
+      ? personalAgentChatApiFor(machineId)
+      : createPersonalAgentChatApi({
+          call: (request) => personalChatsBridge().call(request),
+          streamEvents: (request) => personalChatsBridge().streamEvents(request),
+        }),
     modelCatalogScopeKey: personalCatalogScopeKey,
-  }), [personalCatalogScopeKey]);
+    machineName,
+  }), [machineId, machineName, personalCatalogScopeKey]);
 
   const loadModelCatalog = useCallback(async (generation: number) => {
     const requestId = ++requestSeqRef.current;
@@ -90,11 +105,15 @@ export function usePersonalChatPaneScope(
       && requestId === requestSeqRef.current
       && scopeKey === personalCatalogScopeKeyRef.current
     );
-    let next = await callPersonal<AgentChatModelCatalog>("modelCatalog", { mode: "refresh-stale" });
+    const targetMachineId = machineIdRef.current;
+    const readCatalog = (mode: "refresh-stale" | "force") => (targetMachineId
+      ? callPersonalOn<AgentChatModelCatalog>(targetMachineId, "modelCatalog", { mode })
+      : callPersonal<AgentChatModelCatalog>("modelCatalog", { mode }));
+    let next = await readCatalog("refresh-stale");
     if (!current()) return;
     setCatalog(next);
     if (next.stale === true || !agentChatModelCatalogHasAvailableModels(next)) {
-      next = await callPersonal<AgentChatModelCatalog>("modelCatalog", { mode: "force" });
+      next = await readCatalog("force");
       if (current()) setCatalog(next);
     }
   }, []);

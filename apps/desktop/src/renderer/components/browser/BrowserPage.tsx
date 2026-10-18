@@ -127,7 +127,7 @@ export function BrowserPage() {
   const navigate = useNavigate();
   const projectBinding = useAppStore((state) => state.projectBinding);
   // The same machine the Chats tab uses, so the docked chat is in that list.
-  const targetKey = resolvePersonalChatsCatalogTargetKey(projectBinding, null);
+  const targetKey = resolvePersonalChatsCatalogTargetKey(projectBinding);
   const dock = useAppStore((state) => state.browserDock);
   const setBrowserDock = useAppStore((state) => state.setBrowserDock);
   const dockChatId = dock.chat?.targetKey === targetKey ? dock.chat.sessionId : null;

@@ -5,6 +5,8 @@ import type {
   PersonalChatAction,
   PersonalChatCallArgs,
   PersonalChatCallResponse,
+  PersonalChatStreamEventsArgs,
+  PersonalChatStreamEventsResult,
 } from "../../../shared/types";
 import type { AgentChatApi } from "../chat/agentChatApi";
 import { CONSERVATIVE_ATTACHMENT_STAGING_MODE } from "../chat/chatAttachmentStaging";
@@ -23,11 +25,7 @@ import { CONSERVATIVE_ATTACHMENT_STAGING_MODE } from "../chat/chatAttachmentStag
 
 export type PersonalChatsBridge = {
   call(request: PersonalChatCallArgs): Promise<PersonalChatCallResponse>;
-  streamEvents(request?: { cursor?: number; limit?: number }): Promise<{
-    events: Array<{ id: number; payload: Record<string, unknown> }>;
-    nextCursor: number;
-    hasMore: boolean;
-  }>;
+  streamEvents(request?: PersonalChatStreamEventsArgs): Promise<PersonalChatStreamEventsResult>;
 };
 
 const EVENT_POLL_MS = 700;

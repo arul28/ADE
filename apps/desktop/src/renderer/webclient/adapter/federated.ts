@@ -1,5 +1,8 @@
 import type {
   OpenProjectBinding,
+  PersonalChatCallArgs,
+  PersonalChatMachineTarget,
+  PersonalChatStreamEventsArgs,
   ProjectInfo,
   RecentProjectSummary,
   RemoteRuntimeConnectionSnapshot,
@@ -588,8 +591,25 @@ export function createFederatedWebAdapter({
    * non-overridden call (`project.openRepo`, which switches a project, among
    * them) executed against that machine no matter which tab was in front.
    */
+  // A personal-chat call that names its machine goes to that machine's chats
+  // adapter, so the Chats rail lists and acts on every connected machine at
+  // once. One that does not follows the displayed surface.
+  const personalChatsFor = (target: PersonalChatMachineTarget | null | undefined): Window["ade"]["personalChats"] => {
+    const machineId = typeof target?.machineId === "string" ? target.machineId.trim() : "";
+    return (machineId ? adapterForChats(machineId) : currentAdapter).ade.personalChats;
+  };
+  const personalChatsOverrides = {
+    async call(request: PersonalChatCallArgs, target?: PersonalChatMachineTarget | null) {
+      return await personalChatsFor(target).call(request);
+    },
+    async streamEvents(request?: PersonalChatStreamEventsArgs, target?: PersonalChatMachineTarget | null) {
+      return await personalChatsFor(target).streamEvents(request);
+    },
+  };
+
   const OVERRIDES: Readonly<Record<string, Readonly<Record<string, unknown>>>> = {
     app: appOverrides,
+    personalChats: personalChatsOverrides,
     project: projectOverrides,
     remoteRuntime: remoteRuntimeOverrides,
   };

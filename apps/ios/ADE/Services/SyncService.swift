@@ -11057,6 +11057,22 @@ final class SyncService: ObservableObject {
   }
 
   func setSessionPinned(sessionId: String, pinned: Bool) async throws {
+    if isPersonalChatScope(sessionId: sessionId) {
+      // `personalChats.setPinned` writes the same synced pin column a Work
+      // chat's pin lives in; `updateSession` ignores `pinned`.
+      guard canInvokeChatRemoteAction("chat.setPinned", sessionId: sessionId) else {
+        throw NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: "This machine cannot pin personal chats."])
+      }
+      let scope = chatCommandScope(for: sessionId)
+      _ = try await sendCommand(
+        action: chatActionName("chat.setPinned", sessionId: sessionId),
+        args: ["sessionId": sessionId, "pinned": pinned],
+        targetProjectId: scope.projectId,
+        targetProjectRootPath: scope.rootPath,
+        fallbackToActiveProjectScope: false
+      )
+      return
+    }
     // Local DB write no-ops for a cross-project quick look (no mirrored row);
     // the meta command routes to the session's project via its scope.
     try database.setSessionPinned(sessionId: sessionId, pinned: pinned)
@@ -12890,10 +12906,20 @@ final class SyncService: ObservableObject {
   /// Marks a machine-scoped conversation. All subsequent chat reads and
   /// mutations use `personalChats.*`, and the live stream is explicitly tagged
   /// so it can never bind to an active project's coincidentally named session.
-  func setPersonalChatScope(sessionId: String) {
+  func setPersonalChatScope(sessionId: String, machineKey: String? = nil) {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedSessionId.isEmpty else { return }
     chatCommandScopeBySession[trimmedSessionId] = .personal
+    if let machineKey {
+      viewOwnedRemoteChatIds.insert(trimmedSessionId)
+      remoteMachineChatsBySession[trimmedSessionId] = SyncRemoteMachineChat(
+        machineKey: machineKey,
+        projectId: "",
+        rootPath: ""
+      )
+    } else {
+      remoteMachineChatsBySession.removeValue(forKey: trimmedSessionId)
+    }
   }
 
   func clearCrossProjectChatScope(sessionId: String) {
@@ -12952,17 +12978,19 @@ final class SyncService: ObservableObject {
   }
 
   func supportsChatRemoteAction(_ projectAction: String, sessionId: String) -> Bool {
+    let action = chatActionName(projectAction, sessionId: sessionId)
     if let connection = remoteChatConnection(for: sessionId) {
-      return connection.supportsAction(projectAction)
+      return connection.supportsAction(action)
     }
-    return supportsRemoteAction(chatActionName(projectAction, sessionId: sessionId))
+    return supportsRemoteAction(action)
   }
 
   func canInvokeChatRemoteAction(_ projectAction: String, sessionId: String) -> Bool {
+    let action = chatActionName(projectAction, sessionId: sessionId)
     if let connection = remoteChatConnection(for: sessionId) {
-      return connection.isLive && connection.supportsAction(projectAction)
+      return connection.isLive && connection.supportsAction(action)
     }
-    return canInvokeRemoteAction(chatActionName(projectAction, sessionId: sessionId))
+    return canInvokeRemoteAction(action)
   }
 
   func isChatRemoteActionQueueable(_ projectAction: String, sessionId: String) -> Bool {
@@ -25244,11 +25272,33 @@ extension SyncService {
   }
 
   @discardableResult
-  func refreshPersonalChats(includeArchived: Bool = false) async throws -> [AgentChatSessionSummary] {
+  func refreshPersonalChats(
+    includeArchived: Bool = false,
+    timeoutNanoseconds: UInt64? = nil,
+    sessionId: String? = nil
+  ) async throws -> [AgentChatSessionSummary] {
+    if let sessionId,
+       let remote = routedRemoteMachineChat(sessionId.trimmingCharacters(in: .whitespacesAndNewlines)) {
+      guard let connection = machineFleet?.connection(for: remote.machineKey),
+            connection.isLive,
+            connection.supportsAction("personalChats.list") else {
+        throw NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: "That machine is not connected or cannot list personal chats."])
+      }
+      let response = try await connection.sendCommand(
+        action: "personalChats.list",
+        args: ["includeArchived": includeArchived],
+        projectId: nil,
+        projectRootPath: nil,
+        timeoutNanoseconds: timeoutNanoseconds ?? 5_000_000_000
+      )
+      return sortPersonalChats(try decode(response, as: [AgentChatSessionSummary].self))
+    }
     try requireInvokableRemoteAction("personalChats.list")
     let sessions = try await sendDecodableCommand(
       action: "personalChats.list",
       args: ["includeArchived": includeArchived],
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: timeoutNanoseconds,
       fallbackToActiveProjectScope: false,
       as: [AgentChatSessionSummary].self
     )
@@ -25293,9 +25343,9 @@ extension SyncService {
     copilotPermissionMode: String? = nil,
     copilotContextTier: String? = nil,
     copilotAutoTier: String? = nil,
-    cursorModeId: String? = nil
+    cursorModeId: String? = nil,
+    machineKey: String? = nil
   ) async throws -> AgentChatSessionSummary {
-    try requireInvokableRemoteAction("personalChats.create")
     var args: [String: Any] = [
       "provider": provider,
       "model": model,
@@ -25326,31 +25376,62 @@ extension SyncService {
     if let copilotAutoTier, !copilotAutoTier.isEmpty { args["copilotAutoTier"] = copilotAutoTier }
     if let cursorModeId, !cursorModeId.isEmpty { args["cursorModeId"] = cursorModeId }
 
-    let summary = try await sendDecodableCommand(
-      action: "personalChats.create",
-      args: args,
-      fallbackToActiveProjectScope: false,
-      as: AgentChatSessionSummary.self
-    )
-    setPersonalChatScope(sessionId: summary.sessionId)
+    let summary: AgentChatSessionSummary
+    if let machineKey, machineKey != focusedMachineKey {
+      guard let connection = machineFleet?.connection(for: machineKey), connection.isLive,
+            connection.supportsAction("personalChats.create") else {
+        throw NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: "That machine is not connected or cannot start personal chats."])
+      }
+      summary = try decode(
+        await connection.sendCommand(
+          action: "personalChats.create",
+          args: args,
+          projectId: nil,
+          projectRootPath: nil
+        ),
+        as: AgentChatSessionSummary.self
+      )
+    } else {
+      try requireInvokableRemoteAction("personalChats.create")
+      summary = try await sendDecodableCommand(
+        action: "personalChats.create",
+        args: args,
+        fallbackToActiveProjectScope: false,
+        as: AgentChatSessionSummary.self
+      )
+    }
+    setPersonalChatScope(sessionId: summary.sessionId, machineKey: machineKey)
     cacheChatSummary(summary)
-    personalChatSessions.removeAll { $0.sessionId == summary.sessionId }
-    personalChatSessions.insert(summary, at: 0)
-    personalChatSessions = sortPersonalChats(personalChatSessions)
-    personalChatsRevision &+= 1
-    persistPersonalChats()
+    if machineKey == nil || machineKey == focusedMachineKey {
+      personalChatSessions.removeAll { $0.sessionId == summary.sessionId }
+      personalChatSessions.insert(summary, at: 0)
+      personalChatSessions = sortPersonalChats(personalChatSessions)
+      personalChatsRevision &+= 1
+      persistPersonalChats()
+    }
     return summary
   }
 
   func getPersonalChatModelCatalog(
     mode: String = "cached",
     refreshProvider: String? = nil,
-    cursorSource: String? = "sdk"
+    cursorSource: String? = "sdk",
+    machineKey: String? = nil
   ) async throws -> AgentChatModelCatalog {
-    try requireInvokableRemoteAction("personalChats.modelCatalog")
     var args: [String: Any] = ["mode": mode]
     if let refreshProvider, !refreshProvider.isEmpty { args["refreshProvider"] = refreshProvider }
     if let cursorSource, !cursorSource.isEmpty { args["cursorSource"] = cursorSource }
+    if let machineKey, machineKey != focusedMachineKey {
+      guard let connection = machineFleet?.connection(for: machineKey), connection.isLive,
+            connection.supportsAction("personalChats.modelCatalog") else {
+        throw NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: "That machine is not connected or cannot list chat models."])
+      }
+      return try decode(
+        await connection.sendCommand(action: "personalChats.modelCatalog", args: args, projectId: nil, projectRootPath: nil),
+        as: AgentChatModelCatalog.self
+      )
+    }
+    try requireInvokableRemoteAction("personalChats.modelCatalog")
     return try await sendDecodableCommand(
       action: "personalChats.modelCatalog",
       args: args,
@@ -25369,8 +25450,22 @@ extension SyncService {
 
   func performPersonalChatAction(
     _ action: PersonalChatLifecycleAction,
-    sessionId: String
+    sessionId: String,
+    machineKey: String? = nil
   ) async throws {
+    if let machineKey, machineKey != focusedMachineKey {
+      guard let connection = machineFleet?.connection(for: machineKey), connection.isLive,
+            connection.supportsAction("personalChats.\(action.rawValue)") else {
+        throw NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: "That machine is not connected or cannot perform this chat action."])
+      }
+      _ = try await connection.sendCommand(
+        action: "personalChats.\(action.rawValue)",
+        args: ["sessionId": sessionId],
+        projectId: nil,
+        projectRootPath: nil
+      )
+      return
+    }
     try requireInvokableRemoteAction("personalChats.\(action.rawValue)")
     _ = try await sendCommand(
       action: "personalChats.\(action.rawValue)",
@@ -25414,7 +25509,10 @@ extension SyncService: ChatThreadTransport {
       return ChatThreadKey(
         machineKey: remote.machineKey,
         sessionId: trimmedSessionId,
-        scope: .crossProject(projectId: remote.projectId, rootPath: remote.rootPath)
+        // A personal chat of a machine has no project (see `setPersonalChatScope`).
+        scope: remote.projectId.isEmpty
+          ? .personal
+          : .crossProject(projectId: remote.projectId, rootPath: remote.rootPath)
       )
     }
     guard !trimmedSessionId.isEmpty,
@@ -25970,7 +26068,7 @@ extension SyncService {
     try fleetRoute(machineKey: remote.machineKey, projectId: remote.projectId, rootPath: remote.rootPath)
   }
 
-  private func fleetRoute(machineKey: String, projectId: String, rootPath: String?) throws -> SyncFleetCommandRoute? {
+  private func fleetRoute(machineKey: String, projectId: String?, rootPath: String?) throws -> SyncFleetCommandRoute? {
     // The chat's machine became the focused one: the focused path serves it.
     guard machineKey != focusedMachineKey else { return nil }
     guard let connection = machineFleet?.connection(for: machineKey) else {
@@ -25981,7 +26079,11 @@ extension SyncService {
       throw NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: "Can’t reach \(name) right now."])
     }
     let root = rootPath.flatMap { $0.isEmpty ? nil : $0 }
-    return SyncFleetCommandRoute(connection: connection, projectId: projectId, rootPath: root)
+    return SyncFleetCommandRoute(
+      connection: connection,
+      projectId: projectId.flatMap { $0.isEmpty ? nil : $0 },
+      rootPath: root
+    )
   }
 
   /// Sends a command that belongs to another machine to that machine now, or

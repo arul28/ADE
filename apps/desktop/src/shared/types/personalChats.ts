@@ -250,6 +250,15 @@ export type PersonalChatCapabilities = {
   updateMcpServers?: boolean;
 };
 
+/**
+ * The machine a personal-chat call goes to: `THIS_MACHINE_ID` for this
+ * computer, or a remote runtime target id. Personal chats belong to a machine,
+ * not to a project, so the Chats page lists every machine's chats at once and
+ * names each call's machine. Left out, a call goes to the machine the window
+ * is bound to.
+ */
+export type PersonalChatMachineTarget = { machineId: string };
+
 export type PersonalChatStreamEventsArgs = {
   cursor?: number;
   limit?: number;

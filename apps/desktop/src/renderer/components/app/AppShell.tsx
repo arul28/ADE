@@ -388,6 +388,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     if (isMusicRoute) setMusicTabOpen(true);
   }, [isMusicRoute, setMusicTabOpen]);
 
+  // Opening Chats, Browser or Music from a pending New Tab fills it, the way
+  // opening a project does. Without this the blank "New Tab" pill stayed
+  // beside the tab it had just become.
+  const isMachineTabRoute = isPersonalChatsRoute || isBrowserRoute || isMusicRoute;
+  useEffect(() => {
+    if (isMachineTabRoute && useAppStore.getState().isNewTabOpen) cancelNewTab();
+  }, [cancelNewTab, isMachineTabRoute]);
+
   useEffect(() => {
     logRendererDebugEvent("renderer.route_change", {
       pathname: location.pathname,

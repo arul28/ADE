@@ -1159,6 +1159,8 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var piProviderId: String? = nil
   var piModelId: String? = nil
   var title: String?
+  /// Personal chat pin state. Older hosts omit it.
+  var pinned: Bool? = nil
   var goal: String?
   var reasoningEffort: String?
   var codexFastMode: Bool?
@@ -1293,6 +1295,7 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.piProviderId == rhs.piProviderId
       && lhs.piModelId == rhs.piModelId
       && lhs.title == rhs.title
+      && lhs.pinned == rhs.pinned
       && lhs.goal == rhs.goal
       && lhs.reasoningEffort == rhs.reasoningEffort
       && lhs.codexFastMode == rhs.codexFastMode

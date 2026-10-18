@@ -2783,7 +2783,8 @@ function AgentChatComposerImpl({
   agentChatApiRef.current = agentChatApi;
   // A chat with no project runs in ask mode or with full permission; planning
   // modes are a project-work affordance and are not offered there.
-  const projectChatPane = useChatPaneScope() == null;
+  const chatPaneScope = useChatPaneScope();
+  const projectChatPane = chatPaneScope == null;
   const planningAllowed = projectChatPane;
   // Prompt stashes and Codex voice live in the project runtime; a scoped
   // (personal) pane has neither, so their controls and shortcuts are hidden.
@@ -5814,9 +5815,10 @@ function AgentChatComposerImpl({
   const composerMachineName = sessionId
     ? cursorRuntime === "cloud"
       ? cloudTargetLabel
-      : composerMachineBinding?.kind === "remote"
-        ? composerMachineBinding.runtimeName
-        : THIS_MACHINE_NAME
+      : chatPaneScope?.machineName
+        ?? (composerMachineBinding?.kind === "remote"
+          ? composerMachineBinding.runtimeName
+          : THIS_MACHINE_NAME)
     : null;
 
   const claudeSelectionMode = cpmUse === "plan" || im === "plan"
