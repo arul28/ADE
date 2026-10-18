@@ -162,6 +162,32 @@ describe("fixed placement frame under the hosted zoom", () => {
     expect(point.top).toBeCloseTo(20, 6);
   });
 
+  it.each([
+    ["translate only", "matrix(1, 0, 0, 1, 24, -12)"],
+    ["the dialog entrance scale", "matrix(0.96, 0, 0, 0.96, 0, 8)"],
+    ["identity", "matrix(1, 0, 0, 1, 0, 0)"],
+  ])("keeps the transformed frame (no fallback) for %s", (_label, matrix) => {
+    stubZoomedBody(1.1);
+    const panel = document.createElement("div");
+    document.body.appendChild(panel);
+    Object.defineProperty(panel, "offsetWidth", { configurable: true, value: 200 });
+    Object.defineProperty(panel, "offsetHeight", { configurable: true, value: 100 });
+    panel.getBoundingClientRect = () => rectOf(300, 100, 200 * 1.1, 100 * 1.1);
+    const realGetComputedStyle = globalThis.getComputedStyle;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(globalThis, "getComputedStyle").mockImplementation((el: Element, pseudo?: string | null) =>
+      el === panel ? ({ transform: matrix } as CSSStyleDeclaration) : realGetComputedStyle(el, pseudo),
+    );
+    try {
+      const frame = fixedFrameOf(panel);
+      expect(frame.originX).toBe(300);
+      expect(frame.originY).toBe(100);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
   it("falls back to the viewport frame under a rotated containing block", () => {
     stubZoomedBody(1.1);
     const panel = document.createElement("div");
