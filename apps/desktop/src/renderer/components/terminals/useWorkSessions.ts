@@ -782,7 +782,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   // running chat, so a bridged row for a chat that never appears would not be
   // re-read otherwise. While this window is hidden the clock is frozen at the hide
   // (`hiddenSinceMs`): a bridge still running then is kept, and no timer runs until
-  // the window can read again (`syncChatLaunchBridgeClock` restarts the bridges).
+  // the window can read again (`syncChatLaunchBridgeClock` resumes the bridges).
   const hiddenSinceMs = useChatLaunchSelector((state) => state.hiddenSinceMs, Object.is);
   const [bridgeEpoch, setBridgeEpoch] = useState(0);
   const bridgeExpiryMs = useMemo(() => {

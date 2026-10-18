@@ -191,10 +191,10 @@ export function useChatLaunchSync(): void {
   }), []);
 
   // A launch bridge runs its TTL only on time this window can read: frozen while
-  // hidden, restarted on return (`syncChatLaunchBridgeClock`). Window-wide for the
-  // same reason as the delete above. Focus also syncs: macOS does not reliably
-  // fire `visibilitychange` on the way back, and the window is focused when the
-  // user returns to it.
+  // hidden, resumed on return with the visible time it had used
+  // (`syncChatLaunchBridgeClock`). Window-wide for the same reason as the delete
+  // above. Focus also syncs: macOS does not reliably fire `visibilitychange` on the
+  // way back, and the window is focused when the user returns to it.
   useEffect(() => {
     const sync = () => syncChatLaunchBridgeClock(document.visibilityState === "hidden");
     sync();

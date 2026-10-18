@@ -50,12 +50,17 @@ export type ChatLaunchEntry = {
    */
   pendingEndedAtMs: number | null;
   /**
-   * Local time this window last resumed reading while this launch's bridge was
-   * still running (`resumeChatLaunchBridges`). The bridge's TTL counts from the
-   * later of this and `pendingEndedAtMs`: reads cannot run while the window is
-   * hidden, so the first read after it returns gets a full budget.
+   * The bridge's clock once this window has resumed reading with the bridge still
+   * running (`resumeChatLaunchBridges`), or null before then. Its TTL counts from
+   * the later of this base and `pendingEndedAtMs` (`syncChatLaunchBridgeClock`).
    */
-  bridgeResumedAtMs: number | null;
+  bridgeClock: ChatLaunchBridgeClock | null;
+};
+
+/** A bridge's clock after a hidden stretch: where its TTL counts from, and whether its one return grace is spent. */
+export type ChatLaunchBridgeClock = {
+  baseMs: number;
+  graceUsed: boolean;
 };
 
 type ChatLaunchState = {
@@ -282,7 +287,7 @@ export function insertOptimisticChatLaunch(binding: OpenProjectBinding | null, s
         hostSeen: false,
         startError: null,
         pendingEndedAtMs: null,
-        bridgeResumedAtMs: null,
+        bridgeClock: null,
       },
     };
   });
@@ -316,7 +321,7 @@ export function applyChatLaunchSnapshot(binding: OpenProjectBinding | null, snap
         hostSeen: true,
         startError: null,
         pendingEndedAtMs: pendingEndedAtFor(current, merged),
-        bridgeResumedAtMs: current?.bridgeResumedAtMs ?? null,
+        bridgeClock: current?.bridgeClock ?? null,
       },
     };
   });
@@ -358,7 +363,7 @@ export function hydrateChatLaunches(binding: OpenProjectBinding | null, snapshot
         hostSeen: true,
         startError: null,
         pendingEndedAtMs: pendingEndedAtFor(current, merged),
-        bridgeResumedAtMs: current?.bridgeResumedAtMs ?? null,
+        bridgeClock: current?.bridgeClock ?? null,
       };
     }
     return next;
@@ -611,15 +616,19 @@ export function pauseChatLaunchBridges(nowMs: number): void {
 }
 
 /**
- * The window can read again. Each bridge still running at `hiddenSinceMs` restarts
- * its TTL at `nowMs`; the rest (lapsed before the window hid) stay lapsed.
+ * The window can read again. Each bridge still running when it hid takes the clock
+ * `syncChatLaunchBridgeClock` worked out for it; a bridge that lapsed before the
+ * hide has no entry in `clocks` and stays lapsed. Writes entries only when there
+ * is a bridge to resume.
  */
-export function resumeChatLaunchBridges(launchIds: readonly string[], nowMs: number): void {
+export function resumeChatLaunchBridges(clocks: Readonly<Record<string, ChatLaunchBridgeClock>>): void {
   chatLaunchStore.setState((state) => {
+    const launchIds = Object.keys(clocks);
+    if (launchIds.length === 0) return { hiddenSinceMs: null };
     const entries = { ...state.entries };
     for (const launchId of launchIds) {
       const entry = entries[launchId];
-      if (entry) entries[launchId] = { ...entry, bridgeResumedAtMs: nowMs };
+      if (entry) entries[launchId] = { ...entry, bridgeClock: clocks[launchId] };
     }
     return { entries, hiddenSinceMs: null };
   });
@@ -734,7 +743,7 @@ export type ChatLaunchRowSource = {
   binding: OpenProjectBinding | null;
   bindingKey: string;
   pendingEndedAtMs?: number | null;
-  bridgeResumedAtMs?: number | null;
+  bridgeClock?: ChatLaunchBridgeClock | null;
   bridgeRetired?: boolean;
 };
 
@@ -746,7 +755,7 @@ export function chatLaunchRowSourcesNow(state: ChatLaunchState = chatLaunchStore
       binding: entry.binding,
       bindingKey: entry.bindingKey,
       pendingEndedAtMs: entry.pendingEndedAtMs,
-      bridgeResumedAtMs: entry.bridgeResumedAtMs,
+      bridgeClock: entry.bridgeClock,
       bridgeRetired: Boolean(state.bridgeRetired[entry.launchId]),
     }))
     .sort((a, b) => a.snapshot.launchId.localeCompare(b.snapshot.launchId));
@@ -770,7 +779,7 @@ function rowSignature(source: ChatLaunchRowSource): string {
     isChatLaunchPending(s) ? "pending" : "started",
     isChatLaunchSucceeded(s) ? "succeeded" : "unsucceeded",
     source.pendingEndedAtMs ?? "",
-    source.bridgeResumedAtMs ?? "",
+    source.bridgeClock ? `${source.bridgeClock.baseMs}/${source.bridgeClock.graceUsed}` : "",
     source.bridgeRetired ? "retired" : "",
     source.bindingKey,
   ].join("\u0001");

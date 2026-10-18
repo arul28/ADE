@@ -14,6 +14,7 @@ import {
   getChatLaunchLocalRecord,
   pauseChatLaunchBridges,
   resumeChatLaunchBridges,
+  type ChatLaunchBridgeClock,
   type ChatLaunchRowSource,
 } from "../../../state/chatLaunchStore";
 
@@ -47,10 +48,9 @@ export function shouldListChatLaunchRow(snapshot: ChatLaunchSnapshot): boolean {
 
 /**
  * How long a started chat's row stays listed while the host's own row is still
- * missing, counted from when this window saw the launch start, on time this
- * window can read: a hidden window's clock is frozen, and on return it restarts
- * (`syncChatLaunchBridgeClock`). Reads cannot run while hidden, so the first read
- * after return must not race a clock that kept running.
+ * missing, counted from when this window saw the launch start, in visible time:
+ * reads cannot run while the window is hidden, so a hidden stretch does not count
+ * (`syncChatLaunchBridgeClock`).
  *
  * Sized to the slowest realistic landing on a pinned machine (`crossMachineLanes`):
  * the forced read the launch asks for runs on the next coalesced tick (0.4 s, or
@@ -58,11 +58,23 @@ export function shouldListChatLaunchRow(snapshot: ChatLaunchSnapshot): boolean {
  * read times out (`MACHINE_READ_TIMEOUT_MS`, 8 s) it stamps no clock, so the
  * next poll (10 s later) carries the chat: about 28 s, plus a round trip. 40 s
  * covers that with headroom. It also caps how long a window that never listed
- * the chat can show a deleted or archived one, counted from when that window last
- * could read, for a delete no event reached (archive emits none; see
+ * the chat can show a deleted or archived one, counted in visible time, for a
+ * delete no event reached (archive emits none; see
  * `retireChatLaunchBridgesForSession`).
  */
 export const CHAT_LAUNCH_BRIDGE_TTL_MS = 40 * 1000;
+
+/**
+ * Visible time a bridge is topped up to, once, on the return that finds less than
+ * this left (`syncChatLaunchBridgeClock`), so the first read after the window is
+ * back can land. That read is forced on return and normally runs on the 0.4 s
+ * coalesced tick (`REFRESH_COALESCE_MS`). If it times out (`MACHINE_READ_TIMEOUT_MS`,
+ * 8 s) it stamps no clock, and the retry is the next poll, `FOREIGN_MACHINE_REFRESH_MS`
+ * (10 s) after that: 0.4 + 8 + 10 = 18.4 s, plus a round trip, so 20 s. Once granted,
+ * later returns keep only the visible time left, so a bridge is listed for at most
+ * `CHAT_LAUNCH_BRIDGE_TTL_MS` plus this, however many hide/show cycles.
+ */
+export const CHAT_LAUNCH_BRIDGE_RETURN_GRACE_MS = 20 * 1000;
 
 /**
  * A started chat whose row stays listed until the host's own row for it lands.
@@ -89,13 +101,13 @@ export function shouldBridgeChatLaunchRow(source: ChatLaunchRowSource, nowMs: nu
 
 /**
  * The local time a bridge's TTL counts from: when this window saw the launch
- * start, or when it last resumed reading while the bridge was running, whichever
- * is later. Null when the launch never stopped pending here.
+ * start, or the bridge's clock base after a hidden stretch, whichever is later.
+ * Null when the launch never stopped pending here.
  */
 function chatLaunchBridgeClockMs(source: ChatLaunchRowSource): number | null {
-  const { pendingEndedAtMs, bridgeResumedAtMs } = source;
+  const { pendingEndedAtMs, bridgeClock } = source;
   if (pendingEndedAtMs == null) return null;
-  return Math.max(pendingEndedAtMs, bridgeResumedAtMs ?? pendingEndedAtMs);
+  return Math.max(pendingEndedAtMs, bridgeClock?.baseMs ?? pendingEndedAtMs);
 }
 
 /** When the next bridged row lapses, or null when none is bridging. Drives the roster's expiry timer. */
@@ -111,14 +123,16 @@ export function nextChatLaunchBridgeExpiryMs(sources: readonly ChatLaunchRowSour
 }
 
 /**
- * Runs each started launch's bridge clock on the time this window can read.
+ * Runs each started launch's bridge clock on the visible time this window can read.
  *
  * Reads stop while the window is hidden, and nothing can tell it whether the host
- * has listed the chat yet. So a bridge still running when the window hid keeps
- * running: the roster freezes its clock at the hide (`hiddenSinceMs`) and arms no
- * expiry timer. On return each such bridge restarts for a full
- * `CHAT_LAUNCH_BRIDGE_TTL_MS`, since the first read after return can take nearly
- * that long. A bridge that had lapsed before the window hid stays lapsed.
+ * has listed the chat yet. So while hidden the roster freezes the clock at the hide
+ * (`hiddenSinceMs`) and arms no expiry timer. On return, a bridge still running at
+ * the hide keeps the visible time it had already used, so hide/show cycles cannot
+ * stretch its budget. The first return that leaves less than
+ * `CHAT_LAUNCH_BRIDGE_RETURN_GRACE_MS` tops it up to that, once per bridge. A bridge
+ * that lapsed before the hide stays lapsed. One that started while hidden has used
+ * nothing, so it gets its full TTL from first visibility.
  * Idempotent: called on every visibility change and focus.
  */
 export function syncChatLaunchBridgeClock(hidden: boolean, nowMs: number = Date.now()): void {
@@ -128,10 +142,18 @@ export function syncChatLaunchBridgeClock(hidden: boolean, nowMs: number = Date.
   }
   const hiddenSinceMs = chatLaunchStore.getState().hiddenSinceMs;
   if (hiddenSinceMs == null) return;
-  const running = chatLaunchRowSourcesNow()
-    .filter((source) => shouldBridgeChatLaunchRow(source, hiddenSinceMs))
-    .map((source) => source.snapshot.launchId);
-  resumeChatLaunchBridges(running, nowMs);
+  const clocks: Record<string, ChatLaunchBridgeClock> = {};
+  for (const source of chatLaunchRowSourcesNow()) {
+    const clockMs = chatLaunchBridgeClockMs(source);
+    if (clockMs == null || !shouldBridgeChatLaunchRow(source, hiddenSinceMs)) continue;
+    // Visible time the bridge had used at the hide; none if the launch started while hidden.
+    const usedMs = Math.max(0, hiddenSinceMs - clockMs);
+    const graceUsed = source.bridgeClock?.graceUsed ?? false;
+    const grant = !graceUsed && CHAT_LAUNCH_BRIDGE_TTL_MS - usedMs < CHAT_LAUNCH_BRIDGE_RETURN_GRACE_MS;
+    const countedMs = grant ? CHAT_LAUNCH_BRIDGE_TTL_MS - CHAT_LAUNCH_BRIDGE_RETURN_GRACE_MS : usedMs;
+    clocks[source.snapshot.launchId] = { baseMs: nowMs - countedMs, graceUsed: graceUsed || grant };
+  }
+  resumeChatLaunchBridges(clocks);
 }
 
 /**

@@ -395,8 +395,8 @@ describe("useWorkSessions — pending new-lane chat launches", () => {
       }));
     });
     expect(result.current.sessionsById.has("launch-2")).toBe(true);
-    // The window is hidden past the TTL: reads cannot run, so the bridge is kept, not lapsed.
-    // On return it gets a full TTL, since the host's read can take nearly that long to land.
+    // The window is hidden past the TTL: reads cannot run, so the hidden time does not count.
+    // It had used no visible time, so on return it has its full TTL.
     syncChatLaunchBridgeClock(true);
     act(() => {
       vi.advanceTimersByTime(CHAT_LAUNCH_BRIDGE_TTL_MS * 2);
@@ -421,6 +421,35 @@ describe("useWorkSessions — pending new-lane chat launches", () => {
       vi.advanceTimersByTime(CHAT_LAUNCH_BRIDGE_TTL_MS);
     });
     expect(result.current.sessionsById.has("launch-2")).toBe(false);
+    // Repeated hide/show cycles on a fresh launch, 10 s hidden and 19 s visible each. The visible
+    // time used carries over, and the one grace is spent on the return that leaves it short, so
+    // the bridge stays up through the third cycle and lapses for good in the fourth.
+    act(() => {
+      applyChatLaunchSnapshot(null, launch({ launchId: "launch-3", sessionId: "launch-3", sequence: 4 }));
+      applyChatLaunchSnapshot(null, launch({
+        launchId: "launch-3",
+        sessionId: "launch-3",
+        phase: "completed",
+        sessionCreated: true,
+        agentStarted: true,
+        sequence: 5,
+      }));
+    });
+    for (let cycle = 0; cycle < 10; cycle += 1) {
+      act(() => {
+        syncChatLaunchBridgeClock(true);
+      });
+      act(() => {
+        vi.advanceTimersByTime(10_000);
+      });
+      act(() => {
+        syncChatLaunchBridgeClock(false);
+      });
+      act(() => {
+        vi.advanceTimersByTime(19_000);
+      });
+      expect(result.current.sessionsById.has("launch-3")).toBe(cycle <= 2);
+    }
     vi.useRealTimers();
   });
 });
