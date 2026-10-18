@@ -1133,12 +1133,55 @@ async function installWindowsServiceImpl(
       message: legacyRemoval.message,
     };
   }
+  const readPidRecord = deps.readPidRecord
+    ?? ((target: string) => readWindowsServicePidRecord({ pidPath: target }));
+  // launchd/systemd parity: an unchanged launcher whose supervisor and brain
+  // are verifiably ours and already answer on the channel pipe is installed.
+  // The desktop runs this install on every launch, and replacing that brain
+  // ended every chat, agent and terminal running on this machine each time
+  // ADE was opened. Re-register the Run value (idempotent) and leave it be.
+  // Only a brain known to be always-on is kept. A session-bound one (Windows
+  // ends it with the session that started it) or one whose record cannot say
+  // (`sessionBound: null`) is replaced, retrying the always-on handover.
+  const forceRestart = env.ADE_FORCE_RUNTIME_SERVICE_RESTART === "1";
+  if (!forceRestart && launcherUnchanged && readPidRecord(pidPath)?.sessionBound === false) {
+    const running = await waitForWindowsRuntimeReadiness({
+      command: serviceCommand,
+      launcherPath,
+      pidPath,
+      socketPath,
+      spawnSync: run,
+      readPidRecord,
+      readinessProbe: deps.readinessProbe ?? defaultWindowsRuntimeReadiness,
+      timeoutMs: 0,
+      pollMs: 100,
+      sleep: deps.sleep,
+    });
+    if (running.ready) {
+      const registration = run(
+        windowsRegCommand(),
+        buildWindowsRunKeyAddArgs(taskName, windowsLauncherCommand(launcherPath)),
+        { encoding: "utf8", windowsHide: true },
+      );
+      const prune = registration.status === 0
+        ? pruneWindowsRunValues(run, { serviceName, launcherPath, keepValueName: taskName })
+        : null;
+      if (prune?.ok) {
+        return {
+          ok: true,
+          serviceName,
+          action: "install",
+          path: taskName,
+          message: "ADE per-user startup entry is already installed and the channel brain is running.",
+        };
+      }
+      // A registry failure falls through to the full install, which reports it.
+    }
+  }
   // launchd parity for the young-brain wait: an unchanged launcher whose
   // supervisor and brain are alive, started less than RUNTIME_SERVICE_YOUNG_BRAIN_MS
   // ago and never restarted, is a brain still coming up. Wait for it instead of
   // ending and replacing it — every Repair used to kill exactly that brain.
-  const readPidRecord = deps.readPidRecord
-    ?? ((target: string) => readWindowsServicePidRecord({ pidPath: target }));
   const isAlive = deps.pidAlive ?? isPidAlive;
   const youngRecord = launcherUnchanged ? readPidRecord(pidPath) : null;
   if (

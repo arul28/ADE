@@ -577,13 +577,11 @@ describe("Windows background service helpers", () => {
     { label: "an ordinary install", forceEnv: {} },
     { label: "a Repair-forced install", forceEnv: { ADE_FORCE_RUNTIME_SERVICE_RESTART: "1" } },
   ])("restarts the running supervisor on $label", async ({ forceEnv }) => {
-    // The desktop Repair button sets ADE_FORCE_RUNTIME_SERVICE_RESTART, and
-    // ONLY installLaunchd reads it — it exists to defeat launchd's "unchanged
-    // plist + loaded + responsive => skip" fast path. Windows honours the flag
-    // by construction rather than by reading it: this install has no skip path,
-    // so it always taskkills the supervisor tree and starts a fresh one. Assert
-    // that for BOTH env shapes, so a future "already installed, leave it alone"
-    // optimisation here cannot silently turn Repair into a no-op on Windows.
+    // The desktop Repair button sets ADE_FORCE_RUNTIME_SERVICE_RESTART to defeat
+    // the "unchanged definition + running + responsive => skip" fast path that
+    // launchd, systemd and this install share. Here the launcher is new (no
+    // file on disk), so even the ordinary install replaces the running
+    // supervisor; the forced install must replace it too.
     const home = makeTempHome("ade-windows-service-force-restart-");
     const launcherPath = path.join(home, "brain-service.ps1");
     fs.writeFileSync(`${launcherPath}.pid.json`, JSON.stringify(readyPidRecord), "utf8");
@@ -752,6 +750,58 @@ describe("Windows background service helpers", () => {
     expect(result.restarted).toBeUndefined();
     // No run-key rewrite, no supervisor start: the brain was left alone.
     expect(calls.some((call) => call.args.some((arg) => /Add|\/Run|Start-Process/i.test(arg)))).toBe(false);
+  });
+
+  // The desktop installs on every launch. Replacing a healthy brain there ended
+  // every chat, agent and terminal on the machine each time ADE was opened.
+  it.each([
+    { label: "keeps a healthy always-on brain", sessionBound: false as boolean | null, env: {}, replaced: false },
+    { label: "replaces a session-bound brain", sessionBound: true, env: {}, replaced: true },
+    { label: "replaces a brain whose record cannot say if it is session-bound", sessionBound: null, env: {}, replaced: true },
+    { label: "replaces a healthy brain when forced", sessionBound: false, env: { ADE_FORCE_RUNTIME_SERVICE_RESTART: "1" }, replaced: true },
+  ])("on an unchanged launcher with an old brain, $label", async ({ sessionBound, env, replaced }) => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    // Legacy task absent; every later Windows tool call succeeds.
+    const spawnSync = spawnSequence(calls, [{ status: 3, stdout: "", stderr: "" }]);
+    const launcherPath = path.join(makeTempHome("ade-windows-service-keep-"), "brain-service.ps1");
+    const pidPath = `${launcherPath}.pid.json`;
+    const runtimeEnv = { ...process.env, ...env, ...(serviceCommand.env ?? {}) };
+    const machineLayout = resolveMachineAdeLayout(runtimeEnv, "win32");
+    fs.mkdirSync(path.dirname(launcherPath), { recursive: true });
+    fs.writeFileSync(launcherPath, `﻿${renderWindowsServiceLauncher(serviceCommand, {
+      pidPath,
+      logPath: `${launcherPath}.log`,
+      brainOutputLogPath: resolveWindowsBrainOutputLogPath({ launcherPath }),
+      heartbeatPath: path.win32.join(machineLayout.runtimeDir, "heartbeat.json"),
+      wedgeBreadcrumbPath: path.win32.join(machineLayout.runtimeDir, "event-loop-wedge.json"),
+      adeDir: resolveWindowsAdeDir(runtimeEnv),
+      mutexName: `Global\\ade-supervisor-${createHash("sha256").update(launcherPath).digest("hex").slice(0, 12)}-${createHash("sha256").update(taskUser).digest("hex").slice(0, 12)}`,
+      socketPath: machineLayout.socketPath,
+      lastFailurePath: path.win32.join(machineLayout.runtimeDir, "last-failure.json"),
+    })}`, "utf8");
+    const oldRecord = { ...readyPidRecord, runtimeStartedAtMs: Date.now() - 10 * 60_000, sessionBound };
+    fs.writeFileSync(pidPath, JSON.stringify(oldRecord), "utf8");
+
+    const result = await installWindowsService({
+      command: serviceCommand,
+      env: { ...process.env, ...env },
+      launcherPath,
+      pidPath,
+      readPidRecord: () => oldRecord,
+      readinessProbe: () => ({ ready: true, diagnostic: "ready" }),
+      handoverTimeoutMs: 0,
+      serviceName,
+      spawnSync,
+      userName: taskUser,
+    });
+
+    expect(result.ok).toBe(true);
+    const supervisorKilled = calls.some((call) =>
+      call.command === windowsTaskkillCommand() && call.args.includes(String(oldRecord.supervisorPid)));
+    expect(supervisorKilled).toBe(replaced);
+    expect(result.restarted === true).toBe(replaced);
+    // Kept or not, the Run value is (re)registered.
+    expect(calls.some((call) => call.args.some((arg) => /^ADD$/i.test(arg)))).toBe(true);
   });
 
   it("still fails the install when the supervisor never publishes a brain at all", async () => {
