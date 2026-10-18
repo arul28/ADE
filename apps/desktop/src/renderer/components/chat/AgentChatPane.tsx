@@ -331,9 +331,11 @@ import {
   retainChatSession,
 } from "./chatSessionRetention";
 import { settingsRouteFor } from "../settings/settingsManifest";
-import { ClaudeLoginPromptButton, createClaudeLoginTerminalInWork } from "../work/ClaudeLoginPromptButton";
+import { ClaudeLoginPromptButton } from "../work/ClaudeLoginPromptButton";
+import { ComposerClaudeSignIn, type ComposerClaudeSignInTarget } from "./ComposerClaudeSignIn";
 import { CHAT_AUTH_RECOVERED_EVENT, CHAT_AUTH_RETRY_REJECTED_EVENT, CHAT_RETRY_AUTH_TURN_EVENT } from "./AgentCliAuthCard";
-import { rootAppStoreApi, selectActiveProjectRoot, useAppStore, useRootAppStore } from "../../state/appStore";
+import { rootAppStoreApi, selectActiveProjectRoot, selectActiveProjectStateKey, useAppStore, useRootAppStore } from "../../state/appStore";
+import { takeWorkDraftLaneRequest, WORK_DRAFT_LANE_REQUESTED_EVENT } from "../../lib/workDraft";
 import { resolveHarnessLaunchTarget } from "../settings/harnesses/harnessLaunchTarget";
 import type { HarnessPreset } from "../../../shared/harnessPresets";
 import { setLaneNaming } from "../../state/laneNamingStore";
@@ -4381,20 +4383,7 @@ export function AgentChatPane({
   const handoffErrorClearTimerRef = useRef<number | null>(null);
   const [deletingChatSessionId, setDeletingChatSessionId] = useState<string | null>(null);
   const [computerUseSnapshot, setComputerUseSnapshot] = useState<ComputerUseOwnerSnapshot | null>(null);
-  const openClaudeLoginInPrimaryLane = useCallback(async () => {
-    try {
-      await createClaudeLoginTerminalInWork({ navigate });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }, [navigate]);
-  const openProviderSignIn = useCallback((family?: ProviderFamily) => {
-    if (family === "anthropic") {
-      void openClaudeLoginInPrimaryLane();
-      return;
-    }
-    openAiProvidersSettings();
-  }, [openAiProvidersSettings, openClaudeLoginInPrimaryLane]);
+  const [claudeSignInTarget, setClaudeSignInTarget] = useState<ComposerClaudeSignInTarget | null>(null);
   const [chatActionsOpen, setChatActionsOpen] = useState(
     () => readChatCompanionUiState(initialCompanionStateKey).chatActionsOpen,
   );
@@ -7477,6 +7466,28 @@ export function AgentChatPane({
     };
   }, [isPersonalPane, projectBinding, projectRoot]);
 
+  // The picker greys Claude out from the composer machine's status, so its
+  // "Login to Claude" signs in that same machine, with Settings' own flow.
+  const openProviderSignIn = useCallback((family?: ProviderFamily) => {
+    if (family !== "anthropic") {
+      openAiProvidersSettings();
+      return;
+    }
+    const scope = resolveAiStatusRuntimeScope();
+    if (!scope) {
+      setError("Pick a machine for this chat before signing in to Claude.");
+      return;
+    }
+    // A null pin means the tab's own machine; Settings pins that one too when
+    // it is another computer.
+    const pin = scope.runtimePin ?? (projectBinding?.kind === "remote" ? projectBinding : null);
+    setClaudeSignInTarget({
+      pin,
+      isThisMachine: pin == null,
+      machineName: pin?.kind === "remote" ? pin.runtimeName : THIS_MACHINE_NAME,
+    });
+  }, [openAiProvidersSettings, projectBinding, resolveAiStatusRuntimeScope]);
+
   const shouldRefreshOpenCodeInventoryForStatus = useCallback(() => {
     const selectedModelProvider = modelId.trim()
       ? resolveChatRuntimeProvider(resolveScopedModelDescriptor(modelId, modelCatalogScopeKey))
@@ -7588,6 +7599,10 @@ export function AgentChatPane({
     shouldRefreshOpenCodeInventoryForStatus,
     modelCatalogScopeKey,
   ]);
+  const closeClaudeSignIn = useCallback((changed: boolean) => {
+    setClaudeSignInTarget(null);
+    if (changed) void refreshAvailableModels({ force: true });
+  }, [refreshAvailableModels]);
 
   useEffect(() => {
     let active = true;
@@ -10725,6 +10740,32 @@ export function AgentChatPane({
     selectedSessionId,
     setAttachmentsWithIds,
     updateSubmittedDraftTextEdit,
+  ]);
+
+  // A "New chat in this lane" request names its lane; the draft restored above
+  // may still target "Auto-create lane", which would hide that lane and create
+  // a new one on send. Drop the saved target once the draft has settled.
+  const workDraftProjectStateKey = useAppStore(selectActiveProjectStateKey);
+  const [workDraftLaneRequestTick, setWorkDraftLaneRequestTick] = useState(0);
+  useEffect(() => {
+    if (!isWorkDraftComposer) return;
+    const onLaneRequested = () => setWorkDraftLaneRequestTick((tick) => tick + 1);
+    window.addEventListener(WORK_DRAFT_LANE_REQUESTED_EVENT, onLaneRequested);
+    return () => window.removeEventListener(WORK_DRAFT_LANE_REQUESTED_EVENT, onLaneRequested);
+  }, [isWorkDraftComposer]);
+  useEffect(() => {
+    if (!isWorkDraftComposer) return;
+    if (hydratedComposerDraftStorageKey !== composerDraftStorageKeyValue) return;
+    if (!takeWorkDraftLaneRequest(workDraftProjectStateKey)) return;
+    setDraftLaunchTargetId(null);
+    clearNewLaneConfig();
+  }, [
+    clearNewLaneConfig,
+    composerDraftStorageKeyValue,
+    hydratedComposerDraftStorageKey,
+    isWorkDraftComposer,
+    workDraftLaneRequestTick,
+    workDraftProjectStateKey,
   ]);
 
   const currentComposerDraftSnapshot = useMemo<ComposerDraftStorageSnapshot>(() => ({
@@ -18256,6 +18297,9 @@ export function AgentChatPane({
             applyCrossMachineHandoffRecord(selectedSessionId, record);
           }}
         />
+      ) : null}
+      {claudeSignInTarget ? (
+        <ComposerClaudeSignIn target={claudeSignInTarget} onClose={closeClaudeSignIn} />
       ) : null}
       {onImportedSession && importTargetLane ? (
         <ImportSessionBrowser

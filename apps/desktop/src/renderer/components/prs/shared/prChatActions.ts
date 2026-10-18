@@ -7,7 +7,7 @@ import { navigateToAppTarget } from "../../../lib/openExternal";
 import { useCallback } from "react";
 import { selectActiveProjectStateKey, useAppStore } from "../../../state/appStore";
 import { machineIdForBinding } from "../../../../shared/machineIdentity";
-import { chatDraftMachineId, startChatDraftPatch } from "../../../lib/workDraft";
+import { chatDraftMachineId, noteWorkDraftLaneRequested, startChatDraftPatch } from "../../../lib/workDraft";
 import { usePrRuntimePin } from "../state/prMachines";
 
 /**
@@ -220,6 +220,7 @@ export function usePrChatHandoff(
         ...prev,
         ...startChatDraftPatch(args.laneId, draftMachineId),
       }));
+      noteWorkDraftLaneRequested(projectStateKey);
     }
     navigateToAppTarget({ kind: "work" });
   }, [pin, projectBinding, projectStateKey, setWorkViewState]);

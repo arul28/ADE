@@ -8,7 +8,7 @@ import {
   selectActiveProjectStateKey,
 } from "../../state/appStore";
 import { useStartChatInLane } from "../../hooks/useStartChatInLane";
-import { chatDraftMachineId, startChatDraftPatch } from "../../lib/workDraft";
+import { chatDraftMachineId, noteWorkDraftLaneRequested, startChatDraftPatch } from "../../lib/workDraft";
 import { machineIdForBinding } from "../../../shared/machineIdentity";
 import { LaneContextMenu } from "../lanes/LaneContextMenu";
 import { historyCommitsPath } from "../history/historyUrlHydration";
@@ -211,6 +211,7 @@ export function useWorkLaneContextMenu(options?: {
         chatDraftMachineId(foreignMenuState.machineId, boundMachineId),
       ),
     }));
+    noteWorkDraftLaneRequested(projectStateKey);
     close();
     void navigate("/work");
   }, [

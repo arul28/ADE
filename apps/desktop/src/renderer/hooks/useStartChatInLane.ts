@@ -1,6 +1,6 @@
 import { useCallback } from "react";
 import type { WorkProjectViewState } from "../state/appStore";
-import { chatDraftMachineId, startChatDraftPatch } from "../lib/workDraft";
+import { chatDraftMachineId, noteWorkDraftLaneRequested, startChatDraftPatch } from "../lib/workDraft";
 
 type WorkViewStateUpdater = (
   projectRoot: string,
@@ -33,6 +33,7 @@ export function useStartChatInLane({
         ...prev,
         ...startChatDraftPatch(laneId, draftMachineId),
       }));
+      noteWorkDraftLaneRequested(projectStateKey);
       // A foreign lane id is not in this tab's lane list; selecting it would
       // steal the local selection without making the draft find that lane.
       if (!draftMachineId) selectLane(laneId);

@@ -29,7 +29,7 @@ import {
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
 import { isSessionSnoozed } from "../../lib/sessionSnooze";
 import { promptDialog } from "../ui/dialog/confirm";
-import { chatDraftMachineId, startChatDraftPatch } from "../../lib/workDraft";
+import { chatDraftMachineId, noteWorkDraftLaneRequested, startChatDraftPatch } from "../../lib/workDraft";
 import { machineIdForBinding } from "../../../shared/machineIdentity";
 import {
   canonicalInputFromSummary,
@@ -408,6 +408,7 @@ export function useWorkSessionActions({
           ),
           draftLaneId: session.laneId || null,
         }));
+        if (session.laneId) noteWorkDraftLaneRequested(currentProjectKey);
         navigate("/work");
         onOpenChange(false);
         return;
