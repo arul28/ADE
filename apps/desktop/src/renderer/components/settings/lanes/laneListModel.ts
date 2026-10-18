@@ -1,4 +1,5 @@
 import type { ProjectLaneHealth } from "../../../../shared/types/projectHealth";
+import type { LaneReclaimRisk } from "../../../../shared/types/lanes";
 
 /**
  * The rules behind Project → Lanes: which bucket a lane counts in, what its
@@ -72,6 +73,25 @@ export function laneNotSelectableReason(lane: ProjectLaneHealth): string | null 
   if (lane.dirty) return "It has uncommitted changes";
   if ((lane.unpushedCommits ?? 0) > 0) return "It has commits that aren't pushed";
   if (!lane.safeToArchive) return "ADE couldn't confirm nothing would be lost";
+  return null;
+}
+
+/**
+ * Why the bulk archive skips a lane it is about to take, from ADE's fresh
+ * reclaim check, or null to go ahead. It holds the lane to the same rule as
+ * the list: nothing uncommitted, nothing running, nothing only on this
+ * computer. A branch that is pushed but not merged into the base is fine; the
+ * archive keeps the branch. So is a squash-merged PR's branch whose remote
+ * copy is gone, when the lane holds nothing past the PR's head.
+ */
+export function laneBulkArchiveSkipReason(lane: ProjectLaneHealth, risk: LaneReclaimRisk): string | null {
+  const blocked = risk.blockedReasons.find((reason) => reason.disposition === "blocked");
+  if (blocked) return blocked.message;
+  for (const reason of risk.blockedReasons) {
+    if (reason.code === "dirty_worktree" || reason.code === "active_work") return reason.message;
+  }
+  const savedByMergedPr = lane.pr?.state === "merged" && lane.unpushedCommits === 0;
+  if (risk.hasUnpushedCommits && !savedByMergedPr) return "It has commits that aren't pushed.";
   return null;
 }
 

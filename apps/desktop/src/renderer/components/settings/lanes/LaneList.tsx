@@ -10,6 +10,7 @@ import { formatBytes, formatMeasuredBytes } from "../storage/storageView";
 import { CountBar } from "../health/healthCharts";
 import { useLaneReclaim } from "./useLaneReclaim";
 import {
+  laneBulkArchiveSkipReason,
   LANE_FILTERS,
   laneBucket,
   laneFilterMatches,
@@ -133,8 +134,9 @@ export function LaneList({
       for (const lane of selectedLanes) {
         try {
           const risk = await window.ade.lanes.getReclaimRisk({ laneId: lane.laneId }, pin);
-          if (risk.blockedReasons.length > 0) {
-            skipped.push(`${lane.name}: ${risk.blockedReasons[0]!.message}`);
+          const skipReason = laneBulkArchiveSkipReason(lane, risk);
+          if (skipReason) {
+            skipped.push(`${lane.name}: ${skipReason}`);
             continue;
           }
           const result = await window.ade.lanes.archiveAndReclaim({ laneId: lane.laneId, confirmation: "RECLAIM" }, pin);

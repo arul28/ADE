@@ -26,7 +26,9 @@ import { categorySeries, formatBytes, formatMeasuredBytes, freeSpaceLevel } from
 import { CountBar, FreeSpaceMeter, seriesColor, useChartTheme } from "../health/healthCharts";
 import { useProjectFix } from "../health/ProjectIssues";
 import { laneBucket } from "../lanes/laneListModel";
-import { settingsRouteFor } from "../settingsManifest";
+import { settingsRouteFor, type SettingsTabId } from "../settingsManifest";
+// Read only while rendering, so the import cycle with the tab table is safe.
+import { STANDALONE_TAB_IDS } from "../settingsTabContent";
 import { attentionAgentPrompt, useNeedsAttention, type AttentionItem } from "./useNeedsAttention";
 import "../health/health.css";
 import "./overview.css";
@@ -62,6 +64,14 @@ export function SettingsOverview() {
   const hidden = items.length - shown.length;
   const problems = items.filter((item) => item.severity !== "note").length;
   const projectRoot = sources.report?.projectRoot ?? project?.rootPath ?? null;
+  // With no project open, Settings shows only the pages it can reach (not
+  // Providers, which needs a project to route through); a link to any other
+  // page would go nowhere, so those rows keep their text but lose the link.
+  const canOpen = (route: string): boolean => {
+    if (hasProject) return true;
+    const tab = new URL(route, "ade://settings").searchParams.get("tab");
+    return tab == null || STANDALONE_TAB_IDS.has(tab as SettingsTabId);
+  };
 
   const runFix = async (item: AttentionItem) => {
     if (item.projectIssue?.fix) {
@@ -173,15 +183,17 @@ export function SettingsOverview() {
                         {fixLabel}
                       </button>
                     ) : null}
-                    <button
-                      type="button"
-                      className="kit-icon-btn ade-attn-open"
-                      aria-label={`Open ${item.where} settings for: ${item.title}`}
-                      title="Open its page"
-                      onClick={() => navigate(item.route)}
-                    >
-                      <ArrowRight size={13} />
-                    </button>
+                    {canOpen(item.route) ? (
+                      <button
+                        type="button"
+                        className="kit-icon-btn ade-attn-open"
+                        aria-label={`Open ${item.where} settings for: ${item.title}`}
+                        title="Open its page"
+                        onClick={() => navigate(item.route)}
+                      >
+                        <ArrowRight size={13} />
+                      </button>
+                    ) : null}
                   </li>
                 );
               })}
@@ -200,7 +212,7 @@ export function SettingsOverview() {
         <div className="ade-glance-grid">
           <ComputerCard sources={sources} onOpen={() => navigate(settingsRouteFor("storage.diagnostics").split("#")[0]!)} />
           {hasProject ? <ProjectCard sources={sources} onOpen={(route) => navigate(route)} /> : null}
-          <AccountCard sources={sources} onOpen={(route) => navigate(route)} />
+          <AccountCard sources={sources} canOpen={canOpen} onOpen={(route) => navigate(route)} />
         </div>
       </ModernSection>
     </div>
@@ -349,7 +361,15 @@ function ProjectCard({ sources, onOpen }: { sources: Sources; onOpen: (route: st
   );
 }
 
-function AccountCard({ sources, onOpen }: { sources: Sources; onOpen: (route: string) => void }) {
+function AccountCard({
+  sources,
+  canOpen,
+  onOpen,
+}: {
+  sources: Sources;
+  canOpen: (route: string) => boolean;
+  onOpen: (route: string) => void;
+}) {
   const daily = sources.usage?.dailyUsage7d ?? null;
   const week = React.useMemo(() => {
     if (!daily) return null;
@@ -362,6 +382,19 @@ function AccountCard({ sources, onOpen }: { sources: Sources; onOpen: (route: st
   const detected = sources.providers.filter((provider) => provider.runtimeDetected);
   const signedIn = detected.filter((provider) => provider.runtimeAvailable).length;
   const needSignIn = detected.length - signedIn;
+  const providersRoute = settingsRouteFor("agents.providers");
+  const providersLine = (
+    <>
+      <span className="kit-dot" data-state={needSignIn > 0 ? "warn" : detected.length > 0 ? "ok" : undefined} aria-hidden />
+      <span>
+        {detected.length === 0
+          ? "No AI provider found here"
+          : needSignIn > 0
+            ? `${signedIn} signed in · ${needSignIn} need${needSignIn === 1 ? "s" : ""} sign-in`
+            : `${signedIn} ${signedIn === 1 ? "provider" : "providers"} signed in`}
+      </span>
+    </>
+  );
   return (
     <GlanceCard icon={<UserCircle size={14} />} title="You" onOpen={() => onOpen(settingsRouteFor("stats.usage"))}>
       <div className="ade-glance-meter">
@@ -373,16 +406,13 @@ function AccountCard({ sources, onOpen }: { sources: Sources; onOpen: (route: st
           <UsageSparkline values={week.totals} height={26} label={`Tokens per day this week, ${formatTokens(week.sum)} in all`} />
         ) : null}
       </div>
-      <button type="button" className="ade-glance-line ade-glance-link" onClick={() => onOpen(settingsRouteFor("agents.providers"))}>
-        <span className="kit-dot" data-state={needSignIn > 0 ? "warn" : detected.length > 0 ? "ok" : undefined} aria-hidden />
-        <span>
-          {detected.length === 0
-            ? "No AI provider found here"
-            : needSignIn > 0
-              ? `${signedIn} signed in · ${needSignIn} need${needSignIn === 1 ? "s" : ""} sign-in`
-              : `${signedIn} ${signedIn === 1 ? "provider" : "providers"} signed in`}
-        </span>
-      </button>
+      {canOpen(providersRoute) ? (
+        <button type="button" className="ade-glance-line ade-glance-link" onClick={() => onOpen(providersRoute)}>
+          {providersLine}
+        </button>
+      ) : (
+        <div className="ade-glance-line">{providersLine}</div>
+      )}
     </GlanceCard>
   );
 }

@@ -157,6 +157,16 @@ export function LanesSettingsPage() {
     });
   };
 
+  // Picking a closed block in the rail opens it and scrolls to it once it is
+  // drawn; scrolling before that stops short near the end of the page.
+  const openFromRail = React.useCallback((id: string): boolean => {
+    const block = BLOCKS.find((entry) => blockId(entry.id) === id);
+    if (!block?.collapsible || open.has(block.id)) return false;
+    pendingScroll.current = id;
+    setOpen((current) => new Set([...current, block.id]));
+    return true;
+  }, [open]);
+
   const { report, loading: reportLoading, checking, error: reportError, available } = data.report;
   const laneIssues = issuesForPage(report, "lanes").filter((issue) => issue.id !== "stale-lanes");
   const laneCategory = data.storage.snapshot?.categories.find((category) => category.id === "lanes_worktrees") ?? null;
@@ -249,7 +259,10 @@ export function LanesSettingsPage() {
 
   return (
     <div className="ade-settings-layout">
-      <SettingsSectionRail entries={blocks.map((block) => ({ id: blockId(block.id), title: block.title, icon: block.icon }))} />
+      <SettingsSectionRail
+        entries={blocks.map((block) => ({ id: blockId(block.id), title: block.title, icon: block.icon }))}
+        onSelect={openFromRail}
+      />
       <div className="ade-settings-flow">
         {blocks.map((block) => {
           const collapsed = block.collapsible && !open.has(block.id);

@@ -191,7 +191,9 @@ function pressureItems(pressure: DiskPressureSnapshot | null): AttentionItem[] {
 function providerItems(providers: readonly AiProviderConnectionStatus[]): AttentionItem[] {
   return providers.flatMap((provider): AttentionItem[] => {
     const name = humanizeProvider(provider.provider);
-    const route = settingsRouteFor(`agents.provider.${provider.provider}`);
+    // A provider without its own page (Devin, for one) opens the Providers grid.
+    const ownRoute = settingsRouteFor(`agents.provider.${provider.provider}`);
+    const route = ownRoute === "/settings" ? settingsRouteFor("agents.providers") : ownRoute;
     if (provider.blocker) {
       return [{ id: `provider-${provider.provider}`, severity: "warning", title: `${name} can't run`, detail: provider.blocker, where: "Providers", route }];
     }
