@@ -46,7 +46,7 @@ export type ChatLaunchEntry = {
   /**
    * Local time this window first saw the launch stop being pending (its agent
    * started). The Work roster bridges a started chat's row from then — see
-   * `shouldBridgeChatLaunchRow`. Local clock, so a host's skew cannot move it.
+   * `chatLaunchAwaitsHostRow`. Local clock, so a host's skew cannot move it.
    */
   pendingEndedAtMs: number | null;
   /**
@@ -64,7 +64,7 @@ type ChatLaunchState = {
    * Launches whose stand-in no longer bridges: the Work roster has listed their real
    * chat, the chat was deleted (`retireChatLaunchBridgesForSession`), or reads ended
    * the bridge (`noteChatLaunchSourceRead`). Never bridges again
-   * (`shouldBridgeChatLaunchRow`), so a chat deleted or archived later cannot come
+   * (`chatLaunchAwaitsHostRow`), so a chat deleted or archived later cannot come
    * back as a running row. Only kept while the launch's entry is (see `retiredWithin`).
    */
   bridgeRetired: Record<string, true>;
@@ -601,8 +601,9 @@ export const CHAT_LAUNCH_BRIDGE_UNLISTED_READS = 2;
 
 /**
  * Whether a launch's stand-in still waits for the host's own row: its agent started,
- * its chat exists, and its bridge has not ended. Time-free; the roster adds its
- * safety cap on top (`shouldBridgeChatLaunchRow`).
+ * its chat exists, and its bridge has not ended. Nothing here reads the clock: only
+ * the reads (`noteChatLaunchSourceRead`), the roster listing the chat, or its deletion
+ * end a bridge.
  */
 export function chatLaunchAwaitsHostRow(
   source: Pick<ChatLaunchRowSource, "snapshot" | "pendingEndedAtMs" | "bridgeRetired">,
@@ -645,6 +646,12 @@ export function noteChatLaunchSourceRead(
       if (pendingEndedAtMs == null || pendingEndedAtMs >= startedAtMs) continue;
       if (!chatLaunchAwaitsHostRow({ snapshot, pendingEndedAtMs, bridgeRetired: state.bridgeRetired[entry.launchId] })) continue;
       entries ??= { ...state.entries };
+      // A miss counts as absence only because the host lists newest-first
+      // (`order by s.started_at desc`, sessions/sessionService.ts:897, via
+      // adeActions/registry.ts:1656), so a started chat is inside any bounded read unless
+      // `limit` sessions started after it (60 foreign reads, crossMachineLanes.ts:134). The
+      // host writes the chat row before it publishes agentStarted (chat/chatLaunchService.ts:742,
+      // :760), so a read that began after the start can see it. Revisit if either changes.
       const unlistedReads = entry.unlistedReads + 1;
       entries[entry.launchId] = { ...entry, unlistedReads };
       if (unlistedReads >= CHAT_LAUNCH_BRIDGE_UNLISTED_READS) {
@@ -794,7 +801,7 @@ function rowSignature(source: ChatLaunchRowSource): string {
     s.modelId ?? "",
     s.startedAt,
     // What decides whether the roster lists a stand-in row (`shouldListChatLaunchRow`,
-    // `shouldBridgeChatLaunchRow`).
+    // `chatLaunchAwaitsHostRow`).
     s.phase === "cancelled" ? "cancelled" : "live",
     s.sessionCreated ? "created" : "reserved",
     isChatLaunchPending(s) ? "pending" : "started",

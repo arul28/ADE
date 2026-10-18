@@ -43,67 +43,34 @@ export function shouldListChatLaunchRow(snapshot: ChatLaunchSnapshot): boolean {
 }
 
 /**
- * Backstop for a started chat's stand-in: the longest it stays listed without the
- * host's own row, counted from when this window saw the launch start. The normal end
- * is the reads (`CHAT_LAUNCH_BRIDGE_UNLISTED_READS`, `noteChatLaunchSourceRead`), or
- * the roster listing the real chat, or its deletion. This cap covers only what never
- * completes a read: a machine that went offline, or a window that stays hidden. It
- * runs on wall-clock time, so a window hidden past it drops the stand-in and the
- * host's row takes over on its first read after return.
- */
-export const CHAT_LAUNCH_BRIDGE_SAFETY_CAP_MS = 5 * 60 * 1000;
-
-/**
- * A started chat whose row stays listed until the host's own row for it lands.
- *
- * The agent is up, but the chat's machine has not listed the chat yet: the
- * active roster refresh and a pinned machine's next slice read both lag the
- * start. Dropping the stand-in in that gap hands the open tab to the first old
- * chat (`WorkViewArea` falls back to `visibleSessions[0]`). The bridge ends on
- * the reads (`chatLaunchAwaitsHostRow`) or the safety cap, and never resumes once
- * it has ended: a chat deleted or archived after that must not reappear as a
- * running row.
- */
-export function shouldBridgeChatLaunchRow(source: ChatLaunchRowSource, nowMs: number): boolean {
-  const { pendingEndedAtMs } = source;
-  return chatLaunchAwaitsHostRow(source)
-    && pendingEndedAtMs != null
-    && nowMs - pendingEndedAtMs < CHAT_LAUNCH_BRIDGE_SAFETY_CAP_MS;
-}
-
-/** When the next bridged row reaches the safety cap, or null when none is bridging. Drives the roster's expiry timer. */
-export function nextChatLaunchBridgeExpiryMs(sources: readonly ChatLaunchRowSource[], nowMs: number): number | null {
-  let next: number | null = null;
-  for (const source of sources) {
-    if (source.pendingEndedAtMs == null || !shouldBridgeChatLaunchRow(source, nowMs)) continue;
-    const expiresAtMs = source.pendingEndedAtMs + CHAT_LAUNCH_BRIDGE_SAFETY_CAP_MS;
-    if (next == null || expiresAtMs < next) next = expiresAtMs;
-  }
-  return next;
-}
-
-/**
  * The launches the Work roster lists: the active binding's, plus those pinned
  * to the same project on another machine (`sameProjectBindingKeys`). Another
- * project's launch never shows here. A started chat stays listed while it is
- * bridging (see `shouldBridgeChatLaunchRow`).
+ * project's launch never shows here.
+ *
+ * A started chat stays listed while its bridge is open (`chatLaunchAwaitsHostRow`).
+ * The agent is up, but the chat's machine has not listed the chat yet: the active
+ * roster refresh and a pinned machine's next slice read both lag the start.
+ * Dropping the stand-in in that gap hands the open tab to the first old chat
+ * (`WorkViewArea` falls back to `visibleSessions[0]`). The bridge ends on the reads
+ * (`noteChatLaunchSourceRead`), on the roster listing the chat, or on its deletion,
+ * and never resumes once ended: a chat deleted or archived after that must not
+ * reappear as a running row. No clock ends it.
  */
 export function selectRosterChatLaunches(
   sources: readonly ChatLaunchRowSource[],
   activeBindingKey: string,
   sameProjectBindingKeys: ReadonlySet<string>,
-  nowMs: number = Date.now(),
 ): ChatLaunchSnapshot[] {
   return sources
     .filter((source) => source.bindingKey === activeBindingKey || sameProjectBindingKeys.has(source.bindingKey))
-    .filter((source) => shouldListChatLaunchRow(source.snapshot) || shouldBridgeChatLaunchRow(source, nowMs))
+    .filter((source) => shouldListChatLaunchRow(source.snapshot) || chatLaunchAwaitsHostRow(source))
     .map((source) => source.snapshot);
 }
 
 /**
  * Session ids owned by a live launch on this project — listed or not.
  *
- * A launch row can outlive its listing (see `shouldBridgeChatLaunchRow`) while
+ * A launch row can outlive its listing (see `chatLaunchAwaitsHostRow`) while
  * the host's own row for it lands only on the next roster read. Work keeps these
  * ids valid across that gap so an open tab is not dropped (and the active chat
  * moved) in the hand-off.

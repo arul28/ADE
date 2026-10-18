@@ -190,7 +190,6 @@ import {
   resetChatLaunchStoreForTests,
 } from "../../state/chatLaunchStore";
 import { announceChatLaunchClosed, resetChatLaunchDraftRestoreForTests } from "../chat/launch/chatLaunchDraftRestore";
-import { CHAT_LAUNCH_BRIDGE_SAFETY_CAP_MS } from "../chat/launch/chatLaunchSynthetic";
 
 // ---------------------------------------------------------------------------
 // window.ade stubs
@@ -384,7 +383,7 @@ describe("useWorkSessions — pending new-lane chat launches", () => {
 
     // Once the chat exists and the agent runs, the stand-in bridges until the host lists the chat.
     // Two reads that began after the start and did not list it end the bridge, so a chat deleted
-    // or archived then cannot come back as a ghost (see shouldBridgeChatLaunchRow).
+    // or archived then cannot come back as a ghost (see chatLaunchAwaitsHostRow).
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     act(() => {
       applyChatLaunchSnapshot(null, launch({
@@ -400,7 +399,7 @@ describe("useWorkSessions — pending new-lane chat launches", () => {
     // A hidden window reads nothing, so the bridge waits however long it stays hidden.
     setDocumentVisibility("hidden");
     act(() => {
-      vi.advanceTimersByTime(60_000);
+      vi.advanceTimersByTime(10 * 60_000);
     });
     expect(result.current.sessionsById.has("launch-2")).toBe(true);
     setDocumentVisibility("visible");
@@ -420,15 +419,6 @@ describe("useWorkSessions — pending new-lane chat launches", () => {
       await result.current.refresh({ showLoading: false });
     });
     expect(result.current.sessionsById.has("launch-2")).toBe(false);
-    // A launch no read ever ends lapses at the safety cap.
-    act(() => {
-      applyChatLaunchSnapshot(null, launch({ launchId: "launch-3", sessionId: "launch-3", sequence: 4 }));
-      applyChatLaunchSnapshot(null, launch({ launchId: "launch-3", sessionId: "launch-3", phase: "completed", sessionCreated: true, agentStarted: true, sequence: 5 }));
-    });
-    act(() => { vi.advanceTimersByTime(CHAT_LAUNCH_BRIDGE_SAFETY_CAP_MS - 1_000); });
-    expect(result.current.sessionsById.has("launch-3")).toBe(true);
-    act(() => { vi.advanceTimersByTime(1_000); });
-    expect(result.current.sessionsById.has("launch-3")).toBe(false);
   });
 });
 

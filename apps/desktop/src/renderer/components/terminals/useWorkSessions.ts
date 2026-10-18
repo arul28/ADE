@@ -78,7 +78,6 @@ import {
 } from "../../state/chatLaunchStore";
 import {
   mergeChatLaunchRows,
-  nextChatLaunchBridgeExpiryMs,
   selectKnownLaunchSessionIds,
   selectRosterChatLaunches,
 } from "../chat/launch/chatLaunchSynthetic";
@@ -787,23 +786,8 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     () => selectKnownLaunchSessionIds(chatLaunchRowSources, activeChatLaunchBindingKey, crossMachineBindingKeys),
     [activeChatLaunchBindingKey, chatLaunchRowSources, crossMachineBindingKeys],
   );
-  // A started chat's row bridges until the host lists it (`shouldBridgeChatLaunchRow`).
-  // The reads end the bridge (`noteChatLaunchSourceRead`); the safety cap is the
-  // backstop for a source that never completes one, and the roster's poll may not run
-  // to re-check it, so a timer fires at the cap. Nothing is armed without a bridge.
-  const [bridgeEpoch, setBridgeEpoch] = useState(0);
-  const bridgeExpiryMs = useMemo(() => {
-    void bridgeEpoch;
-    return nextChatLaunchBridgeExpiryMs(chatLaunchRowSources, Date.now());
-  }, [bridgeEpoch, chatLaunchRowSources]);
-  useEffect(() => {
-    if (bridgeExpiryMs == null) return;
-    const timer = window.setTimeout(
-      () => setBridgeEpoch((value) => value + 1),
-      Math.max(0, bridgeExpiryMs - Date.now()),
-    );
-    return () => window.clearTimeout(timer);
-  }, [bridgeEpoch, bridgeExpiryMs]);
+  // A started chat's row bridges until the reads or the roster end it (`selectRosterChatLaunches`,
+  // `noteChatLaunchSourceRead`). No timer runs for it: nothing re-checks a bridge on a clock.
   // The real chat rows this roster has listed: the host's own, and a machine
   // slice's whose machine also lists its lane (`buildCrossMachineLaneRows`
   // renders nothing without one). A launch row yields to these wherever they
@@ -820,9 +804,6 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     return ids;
   }, [hostSessions, retainedCrossMachineSlices]);
   const sessions = useMemo(() => {
-    // Re-selected on every roster read, so a bridged row is re-checked against
-    // its safety cap whenever the roster moves, and on the timer when it does not.
-    void bridgeEpoch;
     const launches = selectRosterChatLaunches(
       chatLaunchRowSources,
       activeChatLaunchBindingKey,
@@ -832,7 +813,6 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     return mergeChatLaunchRows(hostSessions, launches, listedChatSessionIds);
   }, [
     activeChatLaunchBindingKey,
-    bridgeEpoch,
     chatLaunchRowSources,
     crossMachineBindingKeys,
     hostSessions,
@@ -855,7 +835,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   }, [activeChatLaunchBindingKey, chatLaunchRowSources, crossMachineBindingKeys]);
   // Once the roster has listed a launch's real chat, its stand-in never bridges
   // again: a chat deleted or archived after that must not come back as a running
-  // row (`shouldBridgeChatLaunchRow`). An empty batch writes nothing.
+  // row (`chatLaunchAwaitsHostRow`). An empty batch writes nothing.
   useEffect(() => {
     const listed: string[] = [];
     for (const { snapshot, bridgeRetired } of chatLaunchRowSources) {

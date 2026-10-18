@@ -183,7 +183,7 @@ export function useChatLaunchSync(): void {
   // A deleted chat stops bridging in every window that hears the delete, even a
   // window whose roster never listed it. Window-wide (not Work-only) because the
   // roster that would synthesize the row may mount later. Archive emits no delete,
-  // so an archived chat ends on the reads or on the safety cap instead.
+  // so an archived chat ends on the reads instead.
   useEffect(() => window.ade?.sessions?.onChanged?.((event) => {
     if (event.reason === "deleted") retireChatLaunchBridgesForSession(event.sessionId);
   }), []);
