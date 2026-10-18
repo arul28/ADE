@@ -6657,11 +6657,40 @@ function AgentChatComposerImpl({
     return true;
   };
 
+  /**
+   * Text pasted into the rich editor goes in as plain text, so it
+   * takes the prompt box's own font and colour. Left to the browser, a
+   * contenteditable keeps the source's HTML: a copy from a web page or a chat
+   * transcript would carry its size, weight and white background along.
+   */
+  const insertPlainTextIntoRichEditor = (text: string) => {
+    if (!text) return;
+    document.execCommand("insertText", false, text);
+    syncRichDraft();
+    if (findSmartLinks(text).length > 0) {
+      window.requestAnimationFrame(() => tokenizeSmartLinksInEditor());
+    }
+  };
+
+  const pasteAsPlainTextIntoRichEditor = (event: React.ClipboardEvent<HTMLElement>) => {
+    if (event.currentTarget instanceof HTMLTextAreaElement) return;
+    const text = event.clipboardData.getData("text/plain");
+    // An HTML-only clipboard carries no text/plain. Leave the browser's own
+    // paste alone rather than cancelling it and inserting nothing.
+    if (!text) return;
+    event.preventDefault();
+    if (composerInputLocked) return;
+    insertPlainTextIntoRichEditor(text);
+  };
+
   const handlePaste = (event: React.ClipboardEvent<HTMLElement>) => {
     // Runs before the attachment gate: pasting a chip is text, not an upload,
     // so a composer that cannot accept files can still accept chips.
     if (!composerInputLocked && pasteComposerChipPayload(event)) return;
-    if (!canAttach) return;
+    if (!canAttach) {
+      pasteAsPlainTextIntoRichEditor(event);
+      return;
+    }
     // If the keydown fallback already attached the clipboard image (timeout
     // fired before this paste event landed), bail out so we don't double-attach.
     const fallbackAlreadyAttached = clipboardImagePasteFallbackAttachedRef.current;
@@ -6712,21 +6741,21 @@ function AgentChatComposerImpl({
         void addFileAttachments([file], { chipPlacement });
         return;
       }
+      if (!(event.currentTarget instanceof HTMLTextAreaElement)) {
+        pasteAsPlainTextIntoRichEditor(event);
+        return;
+      }
       if (pastedText && findSmartLinks(pastedText).length > 0) {
-        if (event.currentTarget instanceof HTMLTextAreaElement) {
-          const node = event.currentTarget;
-          // Let the browser perform the canonical textarea paste so clipboard
-          // text keeps native selection, undo, and input-event semantics. Once
-          // that default action has updated the controlled draft, promote the
-          // composer to the rich editor and tokenize the pasted URL.
-          window.requestAnimationFrame(() => {
-            onDraftChange(node.value);
-            lastPlainSelectionRef.current = node.selectionStart ?? node.value.length;
-            promoteToRichEditor();
-          });
-        } else {
-          window.requestAnimationFrame(() => tokenizeSmartLinksInEditor());
-        }
+        const node = event.currentTarget;
+        // Let the browser perform the canonical textarea paste so clipboard
+        // text keeps native selection, undo, and input-event semantics. Once
+        // that default action has updated the controlled draft, promote the
+        // composer to the rich editor and tokenize the pasted URL.
+        window.requestAnimationFrame(() => {
+          onDraftChange(node.value);
+          lastPlainSelectionRef.current = node.selectionStart ?? node.value.length;
+          promoteToRichEditor();
+        });
       }
       return;
     }
