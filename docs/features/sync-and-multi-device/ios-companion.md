@@ -2602,13 +2602,20 @@ sent to the focused machine as a fallback.
 
 The Hub also owns the only mobile entry to projectless Chats.
 `HubPersonalChatsCard` shows the active-session count and attention count when
-the host advertises personal-chat support, then pushes `PersonalChatsScreen`
-without selecting a project. That screen searches active/archived summaries,
-refreshes on a five-second live cadence, and uses a per-host App Group cache for
-offline list display. `PersonalChatNewScreen` reuses the Work
-model/access/reasoning controls but sends `personalChats.create`; creation
-requires a live host because it is not queueable. Existing chats reuse
-`WorkSessionDestinationView` with `personalChat: true`, no lane list/actions,
+the focused host advertises personal-chat support, then pushes
+`PersonalChatsScreen` without selecting a project. The screen merges the
+focused machine's summaries with summaries from each live fleet machine that
+advertises `personalChats.list`; each machine is queried independently with a
+five-second timeout. It searches active/archived summaries and caches them per
+machine in the App Group for offline list display. Rows identify their owning
+machine when chats come from multiple machines. A failed machine keeps its
+cached rows and exposes the machine name with Retry. Opening a row, subscribing
+to its transcript, and issuing chat or model-catalog actions route to that
+machine without changing the focused machine. `PersonalChatNewScreen` reuses
+the Work model/access/reasoning controls, adds a machine picker, and sends
+`personalChats.create` to the selected machine; creation requires a live host
+because it is not queueable. Existing chats reuse `WorkSessionDestinationView`
+with `personalChat: true`, the owning machine key, no lane list/actions,
 runtime-scoped attachment reads, and personal action names for sends, steers,
 approvals, metadata, archive, and delete.
 
@@ -4154,7 +4161,7 @@ the stats and shows update guidance.
 | Device-bound pairing (DPoP, Secure Enclave P-256) | Implemented (`DpopKeyService`; signed proof on every paired hello) |
 | Cloud relay (same-account `relay` transport, raced alongside LAN and Tailscale direct routes and ranked behind them) | Implemented; fresh in-memory account proof on every Relay connection, fetched concurrently with the socket upgrade and guarded by a per-machine single-flight dial registry |
 | Project hub + machine project switching | Implemented, including Add project actions for browsing/opening existing Git repos, creating local projects, cloning GitHub repos on the paired machine, and removing projects from the list |
-| Hub personal chats | Implemented; runtime-scoped list/create/read/send/interactive actions, owner-only scheduled-work creation capability, controller Cancel/Pause actions, per-host offline summary cache, explicit personal transcript subscriptions, native new-chat/model flow, Chat Info Cancel/Pause controls, and project/lane actions suppressed |
+| Hub personal chats | Implemented; per-machine list/create/read/send/interactive routing across the live fleet, owner-only scheduled-work creation capability, controller Cancel/Pause actions, per-machine offline summary cache, explicit personal transcript subscriptions, native new-chat machine/model flow, named retry for failed machine reads, Chat Info Cancel/Pause controls, and project/lane actions suppressed |
 | Lanes tab | Implemented to live machine parity (with `devicesOpen`, stack canvas, stack-position/base-branch editing in Manage Lane, and template environment progress) |
 | Files tab | Implemented with freely-editable workspaces (mobile read-only file gate removed) and a unified full-screen name + content search page (`FilesSearchScreen`) |
 | Work tab | Implemented; live chat-event push from runtime, subscribed terminal input/resize control with `terminal_unsubscribe` on view disappear, in-app CLI session launcher (`work.startCliSession`) with camera-roll and pasted-image prompts, external provider-session browse/preview/import (`work.listExternalSessions` / `work.getExternalSessionDetail` / `work.importExternalSession`), message-to-continue on ended agent CLI rows, cross-client activity carousel in the new-chat screen's collapsible header (kept mounted, collapsed rather than unmounted, when the header tier hides it) |

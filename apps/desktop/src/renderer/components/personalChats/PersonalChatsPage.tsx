@@ -95,9 +95,6 @@ function groupLabel(value: string | null | undefined): string {
   return "Older";
 }
 
-// Kept importable from here: the Chats page is where this key is read.
-export { resolvePersonalChatsCatalogTargetKey };
-
 /** The chat last open, across every machine, kept as its row id. */
 const LAST_OPEN_SCOPE = "all-machines";
 
