@@ -1281,11 +1281,14 @@ function ensureBootstrapToken(filePath: string): string {
 }
 
 function createBlobFromBuffer(filePath: string, buf: Buffer): SyncFileBlob {
-  const isBinary = hasNullByte(buf);
+  const mimeType = inferMimeType(filePath);
+  // An image is bytes even when its first 8 KiB has no NUL (a JPEG can). Read as
+  // UTF-8 it would have no data URL, so the picture would never show.
+  const isBinary = hasNullByte(buf) || mimeType?.startsWith("image/") === true;
   return {
     path: filePath,
     size: buf.length,
-    mimeType: inferMimeType(filePath),
+    mimeType,
     encoding: isBinary ? "base64" : "utf-8",
     isBinary,
     content: isBinary ? buf.toString("base64") : buf.toString("utf8"),

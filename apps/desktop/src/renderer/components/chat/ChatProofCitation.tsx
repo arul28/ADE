@@ -61,7 +61,13 @@ type CitedArtifactLookup =
  * up) is read once through the chat's runtime and kept. A miss or a failed read
  * is not kept, so the next render after the list changes asks again.
  */
-const fetchedArtifacts = new Map<string, Promise<CitedArtifactLookup>>();
+type FetchedArtifactRequest = {
+  promise: Promise<CitedArtifactLookup>;
+  startedOnline: boolean;
+  settled: boolean;
+};
+
+const fetchedArtifacts = new Map<string, FetchedArtifactRequest>();
 
 type CitedArtifactState =
   | { status: "loading" }
@@ -83,16 +89,25 @@ function useCitedProofArtifact(artifactId: string): CitedArtifactState {
   useEffect(() => {
     if (known) return;
     let cancelled = false;
-    let pending = fetchedArtifacts.get(key);
+    const cached = fetchedArtifacts.get(key);
+    // A lookup begun while the machine was offline may still be pending when it
+    // comes back. Its failure would stick, so ask again rather than wait on it.
+    const reusable = cached && !(online && !cached.startedOnline && !cached.settled);
+    let pending = reusable ? cached.promise : null;
     if (!pending) {
       pending = window.ade.computerUse
         .listArtifacts({ artifactId, limit: 1 }, scope.pin)
         .then((rows): CitedArtifactLookup => ({ ok: true, artifact: rows.find((row) => row.id === artifactId) ?? null }))
         .catch((): CitedArtifactLookup => ({ ok: false }));
-      fetchedArtifacts.set(key, pending);
+      fetchedArtifacts.set(key, { promise: pending, startedOnline: online, settled: false });
     }
-    void pending.then((lookup) => {
-      if (!lookup.ok || !lookup.artifact) fetchedArtifacts.delete(key);
+    const request = pending;
+    void request.then((lookup) => {
+      const current = fetchedArtifacts.get(key);
+      if (current?.promise === request) {
+        current.settled = true;
+        if (!lookup.ok || !lookup.artifact) fetchedArtifacts.delete(key);
+      }
       if (!cancelled) setFetched({ key, lookup });
     });
     return () => {

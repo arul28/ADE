@@ -98,6 +98,27 @@ describe("CitedProofSlot", () => {
     expect(await screen.findByRole("img", { name: "Retry" })).toBeTruthy();
   });
 
+  it("does not wait on a lookup begun offline that is still pending when the machine comes back", async () => {
+    let failFirst: (error: Error) => void = () => {};
+    let calls = 0;
+    const computerUse = stubAde(() => {
+      calls += 1;
+      if (calls === 1) return new Promise<unknown[]>((_, reject) => { failFirst = reject; });
+      return Promise.resolve([{ ...READY, id: "art-pending" }]);
+    });
+    scopeState.online = false;
+
+    const view = render(<CitedProofSlot artifactId="art-pending" caption="Pending" />);
+    scopeState.online = true;
+    view.rerender(<CitedProofSlot artifactId="art-pending" caption="Pending" />);
+
+    expect(await screen.findByRole("img", { name: "Pending" })).toBeTruthy();
+    failFirst(new Error("host_unavailable"));
+    await Promise.resolve();
+    expect(screen.queryByText(/Couldn't load this proof/)).toBeNull();
+    expect(computerUse.listArtifacts).toHaveBeenCalledTimes(2);
+  });
+
   it("asks again when the pinned machine comes back online after a failed read", async () => {
     let answer: "fail" | "ready" = "fail";
     const computerUse = stubAde(async () => {

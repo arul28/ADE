@@ -10882,6 +10882,44 @@ describe("sync host reliability guards", () => {
     }
   });
 
+  it("sends an image artifact as base64 even when its first bytes hold no NUL", async () => {
+    // A JPEG's leading bytes can hold no NUL. Read as text it had no data URL,
+    // so a proof screenshot saved as .jpg never showed on the web client.
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const artifactPath = path.join(projectRoot, ".ade", "artifacts", "computer-use", "shot.jpg");
+    fs.mkdirSync(path.dirname(artifactPath), { recursive: true });
+    fs.writeFileSync(artifactPath, Buffer.from([0xff, 0xd8, 0xff, 0xe1, 0x01, 0x01, 0x02, 0x03]));
+    const host = createReliabilityHost(projectRoot);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "web-jpeg-artifact");
+      peer.ws.send(encodeSyncEnvelope({
+        type: "file_request",
+        requestId: "jpeg-artifact",
+        payload: {
+          action: "readArtifact",
+          args: { uri: ".ade/artifacts/computer-use/shot.jpg" },
+        },
+      }));
+
+      const response = await waitForEnvelope(peer.envelopes, "file_response", "jpeg-artifact");
+      expect(response.payload).toMatchObject({
+        ok: true,
+        action: "readArtifact",
+        result: { encoding: "base64", isBinary: true, mimeType: "image/jpeg" },
+      });
+    } finally {
+      try {
+        peer?.ws.close();
+      } catch {
+        // ignore
+      }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
   it("rejects oversized artifact reads with a clear file response", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const artifactPath = path.join(projectRoot, ".ade", "artifacts", "large.bin");
