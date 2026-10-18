@@ -1,9 +1,12 @@
 import { app, clipboard, dialog } from "electron";
 import {
-  detectSyncHostSingletonConflict,
+  detectSyncHostSingletonConflictAsync,
   isSameChannelSyncHostOwner,
+  type SyncHostProbeRunner,
   type SyncHostSingletonConflict,
+  type SyncHostSingletonOwner,
 } from "../../../../../ade-cli/src/services/sync/syncHostSingleton";
+import { execFileOffThread, offThreadSpawnEnabled } from "../shared/offThreadSpawn";
 
 export type PackagedSyncHostConflictDialogContent = {
   title: string;
@@ -32,6 +35,13 @@ export function resolveCrossChannelSyncHostConflict(
   return conflict;
 }
 
+/** The owner-identity probe as a PowerShell child spawned off the main thread. */
+const runWindowsProbeOffThread: SyncHostProbeRunner = (command, args, timeoutMs, maxBuffer) =>
+  execFileOffThread(command, args, { timeoutMs, maxBuffer }).then((result) => ({
+    stdout: result.stdout,
+    failed: result.error !== null || result.exitCode !== 0,
+  }));
+
 /**
  * This gate runs at the top of `app.whenReady()`, before any window exists, so
  * everything it does is charged directly against time-to-first-paint.
@@ -43,20 +53,31 @@ export function resolveCrossChannelSyncHostConflict(
  * lock-file check short-circuits only when it already found a conflict. That is
  * the same class of pre-paint main-thread block this branch set out to remove.
  *
- * So on Windows the gate answers from the lock file alone. The downgrade: a
- * cross-channel brain that was hard-killed and left a stale lock is not detected
- * at launch, so two channels can briefly both hold phone sync. Every current
- * build writes the lock, making that the legacy/crash case only -- and `ade
- * serve` still runs the full scan when it starts a brain, where the cost is
- * bounded and nothing is waiting to paint. Documented in
+ * So on Windows the gate skips the listener scan and answers from the lock file.
+ * The downgrade: a cross-channel brain that was hard-killed and left a stale lock
+ * is not detected at launch, so two channels can briefly both hold phone sync.
+ * Every current build writes the lock, making that the legacy/crash case only --
+ * and `ade serve` still runs the full scan when it starts a brain, where the cost
+ * is bounded and nothing is waiting to paint. Documented in
  * docs/development/windows-support.md.
+ *
+ * The one process probe left is the owner-identity check that rejects a reused
+ * PID. It runs only for a live owner on ANOTHER channel (a same-channel owner is
+ * never blocked, so it is never probed), and it is awaited off the main thread,
+ * so the check costs the launch its wait but never freezes the event loop.
  */
-export function detectCrossChannelSyncHostConflict(
+export async function detectCrossChannelSyncHostConflict(
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
-): SyncHostSingletonConflict | null {
+): Promise<SyncHostSingletonConflict | null> {
   return resolveCrossChannelSyncHostConflict(
-    detectSyncHostSingletonConflict({ skipListenerScan: platform === "win32" }),
+    await detectSyncHostSingletonConflictAsync(
+      { skipListenerScan: platform === "win32" },
+      {
+        ignoreOwner: (owner: SyncHostSingletonOwner) => isSameChannelSyncHostOwner(owner, env),
+        ...(offThreadSpawnEnabled(env) ? { runProbe: runWindowsProbeOffThread } : {}),
+      },
+    ),
     env,
   );
 }
@@ -100,22 +121,19 @@ export type PackagedSyncHostLaunchGateDeps = {
   quit?: () => void;
 };
 
-export function blockPackagedLaunchForCrossChannelSyncConflict(
+export async function blockPackagedLaunchForCrossChannelSyncConflict(
   deps: PackagedSyncHostLaunchGateDeps,
-): boolean {
+): Promise<boolean> {
   const env = deps.env ?? process.env;
   if (!deps.isPackaged) return false;
   if (env.NODE_ENV === "test") return false;
   if (env.ADE_DISABLE_SYNC_HOST_LAUNCH_GATE === "1") return false;
 
-  const rawConflict = deps.detectConflict
-    ? deps.detectConflict(env) ?? null
-    : detectSyncHostSingletonConflict({
-      // See `detectCrossChannelSyncHostConflict` for why Windows answers from
-      // the lock file alone on this path.
-      skipListenerScan: (deps.platform ?? process.platform) === "win32",
-    });
-  const conflict = resolveCrossChannelSyncHostConflict(rawConflict, env);
+  // See `detectCrossChannelSyncHostConflict` for why Windows answers from the
+  // lock file on this path and awaits its identity probe off the main thread.
+  const conflict = deps.detectConflict
+    ? resolveCrossChannelSyncHostConflict(deps.detectConflict(env) ?? null, env)
+    : await detectCrossChannelSyncHostConflict(env, deps.platform);
   if (!conflict) return false;
 
   const content = buildPackagedSyncHostConflictDialogContent({
