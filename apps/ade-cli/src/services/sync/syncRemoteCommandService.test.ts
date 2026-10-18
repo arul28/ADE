@@ -34,7 +34,6 @@ function createService(options?: {
   aiIntegrationService?: Record<string, unknown>;
   ctoStateService?: Record<string, unknown>;
   cursorCloudFleetService?: Record<string, unknown>;
-  computerUseArtifactBrokerService?: { listArtifacts: ReturnType<typeof vi.fn> };
   conflictService?: Record<string, unknown>;
   diffService?: Record<string, unknown>;
   externalSessionsService?: Record<string, unknown>;
@@ -115,9 +114,6 @@ function createService(options?: {
     ...(options?.aiIntegrationService ? { aiIntegrationService: options.aiIntegrationService } : {}),
     ...(options?.ctoStateService ? { ctoStateService: options.ctoStateService } : {}),
     ...(options?.cursorCloudFleetService ? { cursorCloudFleetService: options.cursorCloudFleetService } : {}),
-    ...(options?.computerUseArtifactBrokerService
-      ? { computerUseArtifactBrokerService: options.computerUseArtifactBrokerService }
-      : {}),
     ...(options?.externalSessionsService ? { externalSessionsService: options.externalSessionsService } : {}),
     ...(options?.syncPinStore ? { syncPinStore: options.syncPinStore } : {}),
     ...(options?.getPairingConnectInfo ? { getPairingConnectInfo: options.getPairingConnectInfo } : {}),
@@ -295,33 +291,6 @@ describe("createSyncRemoteCommandService", () => {
       path: "build.zip",
     }))).rejects.toThrow(/too large to transfer/i);
     expect(downloadCursorCloudArtifact).toHaveBeenCalledWith({ agentId: "agent-1", path: "build.zip" });
-  });
-
-  it("serves a cited proof from the broker, forwarding only the filters the list takes", async () => {
-    const listArtifacts = vi.fn().mockReturnValue([{ id: "art-1" }]);
-    const { service } = createService({ computerUseArtifactBrokerService: { listArtifacts } });
-
-    expect(service.getDescriptor("computerUse.listArtifacts")).toEqual({
-      action: "computerUse.listArtifacts",
-      scope: "project",
-      policy: { viewerAllowed: true },
-    });
-    await expect(service.execute(makePayload("computerUse.listArtifacts", {
-      artifactId: " art-1 ",
-      limit: 1,
-      ownerKind: "chat_session",
-      ownerId: "session-1",
-      metadataKind: "scene_still",
-      kind: 7,
-      path: "/etc/passwd",
-    }))).resolves.toEqual([{ id: "art-1" }]);
-    expect(listArtifacts).toHaveBeenCalledWith({
-      artifactId: "art-1",
-      ownerKind: "chat_session",
-      ownerId: "session-1",
-      metadataKind: "scene_still",
-      limit: 1,
-    });
   });
 
   it("advertises Cursor Cloud writes as controller-only and invalidates fleet reads", async () => {

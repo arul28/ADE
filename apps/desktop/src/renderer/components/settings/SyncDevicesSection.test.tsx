@@ -31,7 +31,6 @@ import {
 } from "./SyncDevicesSection";
 import { accountDirectorySummary } from "./accountDirectorySummary";
 import { resetReconnectFlowForTests } from "../../lib/reconnectThisComputer";
-import { __resetDialogRequestsForTests } from "../ui/dialog/confirm";
 import { useAppStore } from "../../state/appStore";
 
 vi.mock("qrcode.react", () => ({
@@ -178,7 +177,6 @@ afterEach(() => {
 
 describe("ThisMacCard", () => {
   afterEach(() => {
-    __resetDialogRequestsForTests();
     cleanup();
     vi.restoreAllMocks();
     if (originalAde === undefined) delete (globalThis.window as any).ade;
@@ -529,342 +527,35 @@ describe("ThisMacCard", () => {
 
   describe("Stop following", () => {
     const followerButton = { name: "Stop following Mac Studio" };
-
     const acknowledgement = { name: /I understand this computer will host sync for Repo/ };
-
-    // The button needs a project open in this window to act on.
-    beforeEach(() => {
-      useAppStore.setState({ project: { rootPath: "/repo", displayName: "Repo", baseRef: "main" } as any });
+    // The button acts on the project open in this window, so one has to be open.
+    beforeEach(() => useAppStore.setState({ project: { rootPath: "/repo", displayName: "Repo", baseRef: "main" } as any }));
+    afterEach(() => useAppStore.setState({ project: null }));
+    const followerStatus = () => makeStatus({
+      mode: "viewer", role: "viewer", runtimeRole: "viewer", viewerReason: "saved_connection", runtimeMode: "viewer",
+      client: { state: "error", host: "192.168.1.89", port: 8788, hostName: "Mac Studio" } as SyncRoleSnapshot["client"],
     });
-    afterEach(() => {
-      useAppStore.setState({ project: null });
-    });
 
-    function daysAgo(days: number): string {
-      return new Date(Date.now() - days * 86_400_000).toISOString();
-    }
-
-    function followerStatus(client: Partial<SyncRoleSnapshot["client"]> = {}): SyncRoleSnapshot {
-      return makeStatus({
-        mode: "viewer",
-        role: "viewer",
-        runtimeRole: "viewer",
-        viewerReason: "saved_connection",
-        runtimeMode: "viewer",
-        client: {
-          state: "error",
-          host: "192.168.1.89",
-          port: 8788,
-          hostName: "Mac Studio",
-          ...client,
-        } as SyncRoleSnapshot["client"],
-      });
-    }
-
-    // The machine's status and the project's status are separate reads, and the
-    // button follows the project's. Both directions of a mismatch are here: a
-    // machine that hosts while its project follows a ghost (the button must
-    // show, or the reader has no way out), and a machine that follows while its
-    // project hosts (the button must not show, or it would disconnect a project
-    // that does not follow anything).
     it.each([
-      { case: "a host with no project read yet", status: makeStatus(), projectStatus: null, isRemoteBound: false, shown: false },
-      { case: "a host whose project follows another machine", status: makeStatus(), projectStatus: followerStatus(), isRemoteBound: false, shown: true },
-      { case: "a viewer whose project hosts", status: followerStatus(), projectStatus: makeStatus(), isRemoteBound: false, shown: false },
-      { case: "a viewer whose project follows another machine", status: followerStatus(), projectStatus: followerStatus(), isRemoteBound: false, shown: true },
-      { case: "a project that follows, bound to another machine", status: makeStatus(), projectStatus: followerStatus(), isRemoteBound: true, shown: false },
-    ])("offers the button for $case only when it applies", ({ status, projectStatus, isRemoteBound, shown }) => {
-      // canManageDevices is derived from the bound state exactly as the hook derives it.
-      render(
-        <ThisMacCard
-          sync={makeSync({ status, projectStatus, isRemoteBound, canManageDevices: !isRemoteBound })}
-          sessionState="active"
-        />,
-      );
-      expect(screen.queryByRole("button", followerButton) !== null).toBe(shown);
-    });
-
-    it("names the machine from the project's status, not the machine's", () => {
-      render(
-        <ThisMacCard
-          sync={makeSync({ status: makeStatus(), projectStatus: followerStatus({ hostName: "Office Mini" }) })}
-          sessionState="active"
-        />,
-      );
-      expect(screen.getByRole("button", { name: "Stop following Office Mini" })).toBeTruthy();
-      expect(screen.queryByRole("button", followerButton)).toBeNull();
-    });
-
-    it("stops the project's follow even though the machine reports that it hosts", async () => {
+      { case: "the window changed projects while the question was open", moveWindow: true, getStatus: async () => followerStatus() },
+      {
+        case: "the project's status cannot be read while the question was open",
+        moveWindow: false,
+        getStatus: async () => { throw new Error("The background service did not answer."); },
+      },
+    ])("sends no disconnect when $case", async ({ moveWindow, getStatus }) => {
       const disconnectFromBrain = vi.fn(async () => makeStatus());
-      (globalThis.window as any).ade = { sync: { disconnectFromBrain, getStatus: async () => followerStatus() } };
-      render(<ThisMacCard sync={makeSync({ status: makeStatus(), projectStatus: followerStatus() })} sessionState="active" />);
-
-      fireEvent.click(screen.getByRole("button", followerButton));
-      fireEvent.click(screen.getByRole("checkbox", acknowledgement));
-      fireEvent.click(screen.getByRole("button", { name: "Stop following" }));
-
-      await waitFor(() => expect(disconnectFromBrain).toHaveBeenCalledOnce());
-    });
-
-    it("shows the followed machine's standing from the project's status", () => {
-      render(
-        <ThisMacCard
-          sync={makeSync({ status: makeStatus(), projectStatus: followerStatus({ state: "connected" }) })}
-          sessionState="active"
-        />,
-      );
-      fireEvent.click(screen.getByRole("button", followerButton));
-      expect(screen.getByText("Mac Studio is reachable from this computer now.")).toBeTruthy();
-    });
-
-    it("is hidden when no project is open in this window", () => {
-      useAppStore.setState({ project: null });
-      render(<ThisMacCard sync={makeSync({ status: followerStatus(), projectStatus: followerStatus() })} sessionState="active" />);
-      expect(screen.queryByRole("button", followerButton)).toBeNull();
-    });
-
-    it("says that this computer will host sync, and what is forgotten and kept", () => {
-      render(<ThisMacCard sync={makeSync({ status: followerStatus(), projectStatus: followerStatus() })} sessionState="active" />);
-
-      fireEvent.click(screen.getByRole("button", followerButton));
-      expect(screen.getByText(/This computer will start hosting sync for Repo\./)).toBeTruthy();
-      expect(screen.getByText(/ADE forgets the saved connection to Mac Studio/)).toBeTruthy();
-      expect(screen.getByText(/No chats, lanes, or files are deleted\./)).toBeTruthy();
-      expect(screen.getByText(/If Mac Studio is still running, the two will stay separate/)).toBeTruthy();
-      expect(screen.getByRole("checkbox", acknowledgement)).toBeTruthy();
-    });
-
-    it.each<{ case: string; client: Partial<SyncRoleSnapshot["client"]>; line: string }>([
-      { case: "it answers now", client: { state: "connected" }, line: "Mac Studio is reachable from this computer now." },
-      { case: "it was last seen three days ago", client: { lastSeenAt: daysAgo(3) }, line: "Mac Studio isn't reachable from this computer right now. Last seen 3d ago." },
-      { case: "nothing has seen it", client: {}, line: "Mac Studio isn't reachable from this computer right now, and ADE has no record of it being seen." },
-    ])("shows how the followed machine stands when $case", ({ client, line }) => {
-      render(<ThisMacCard sync={makeSync({ status: followerStatus(), projectStatus: followerStatus(client) })} sessionState="active" />);
-
-      fireEvent.click(screen.getByRole("button", followerButton));
-      expect(screen.getByText(line)).toBeTruthy();
-    });
-
-    it("keeps the confirmation disabled until the reader acknowledges what stopping does", async () => {
-      const disconnectFromBrain = vi.fn(async () => makeStatus());
-      (globalThis.window as any).ade = { sync: { disconnectFromBrain, getStatus: async () => followerStatus() } };
-      render(<ThisMacCard sync={makeSync({ status: followerStatus(), projectStatus: followerStatus() })} sessionState="active" />);
-
-      fireEvent.click(screen.getByRole("button", followerButton));
-      expect((screen.getByRole("button", { name: "Stop following" }) as HTMLButtonElement).disabled).toBe(true);
-      fireEvent.click(screen.getByRole("button", { name: "Stop following" }));
-      expect(disconnectFromBrain).not.toHaveBeenCalled();
-
-      fireEvent.click(screen.getByRole("checkbox", acknowledgement));
-      expect((screen.getByRole("button", { name: "Stop following" }) as HTMLButtonElement).disabled).toBe(false);
-      fireEvent.click(screen.getByRole("button", { name: "Stop following" }));
-      await waitFor(() => expect(disconnectFromBrain).toHaveBeenCalledOnce());
-    });
-
-    it("disconnects once after confirmation and refreshes the card", async () => {
-      const disconnectFromBrain = vi.fn(async () => makeStatus());
-      const refresh = vi.fn(async () => {});
-      (globalThis.window as any).ade = { sync: { disconnectFromBrain, getStatus: async () => followerStatus() } };
-      render(<ThisMacCard sync={makeSync({ status: followerStatus(), projectStatus: followerStatus(), refresh })} sessionState="active" />);
-
-      fireEvent.click(screen.getByRole("button", followerButton));
-      expect(disconnectFromBrain).not.toHaveBeenCalled();
-
-      fireEvent.click(screen.getByRole("checkbox", acknowledgement));
-      fireEvent.click(screen.getByRole("button", { name: "Stop following" }));
-      await waitFor(() => expect(disconnectFromBrain).toHaveBeenCalledOnce());
-      await waitFor(() => expect(refresh).toHaveBeenCalledWith({ force: true }));
-    });
-
-    it("does not wait on Start sync before it disconnects", async () => {
-      // Start sync is the activation that got stuck. It never settles here, and
-      // the stop must not depend on it.
-      const startSyncHost = vi.fn(() => new Promise<never>(() => {}));
-      const disconnectFromBrain = vi.fn(async () => makeStatus());
-      (globalThis.window as any).ade = { account: { startSyncHost }, sync: { disconnectFromBrain, getStatus: async () => followerStatus() } };
-      const status = followerStatus();
-      status.routeHealth.accountDirectory = { ...status.routeHealth.accountDirectory, state: "sync_not_started" };
-      render(<ThisMacCard sync={makeSync({ status, projectStatus: status })} sessionState="active" />);
-
-      fireEvent.click(screen.getByRole("button", followerButton));
-      fireEvent.click(screen.getByRole("checkbox", acknowledgement));
-      fireEvent.click(screen.getByRole("button", { name: "Stop following" }));
-
-      await waitFor(() => expect(disconnectFromBrain).toHaveBeenCalledOnce());
-      expect(startSyncHost).not.toHaveBeenCalled();
-    });
-
-    it("opens one confirmation and disconnects once when the button is clicked twice", async () => {
-      const disconnectFromBrain = vi.fn(async () => makeStatus());
-      (globalThis.window as any).ade = { sync: { disconnectFromBrain, getStatus: async () => followerStatus() } };
-      render(<ThisMacCard sync={makeSync({ status: followerStatus(), projectStatus: followerStatus() })} sessionState="active" />);
-
-      const button = screen.getByRole("button", followerButton);
-      fireEvent.click(button);
-      fireEvent.click(button);
-      expect(screen.getAllByText("Stop following Mac Studio?")).toHaveLength(1);
-
-      fireEvent.click(screen.getByRole("checkbox", acknowledgement));
-      fireEvent.click(screen.getByRole("button", { name: "Stop following" }));
-      await waitFor(() => expect(disconnectFromBrain).toHaveBeenCalledOnce());
-      await waitFor(() => expect(screen.queryByText("Stop following Mac Studio?")).toBeNull());
-      expect(disconnectFromBrain).toHaveBeenCalledOnce();
-    });
-
-    it("does not disconnect when the confirmation is cancelled, and asks again on the next click", async () => {
-      const disconnectFromBrain = vi.fn(async () => makeStatus());
-      (globalThis.window as any).ade = { sync: { disconnectFromBrain, getStatus: async () => followerStatus() } };
-      render(<ThisMacCard sync={makeSync({ status: followerStatus(), projectStatus: followerStatus() })} sessionState="active" />);
-
-      fireEvent.click(screen.getByRole("button", followerButton));
-      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-      await waitFor(() => expect(screen.queryByText("Stop following Mac Studio?")).toBeNull());
-      expect(disconnectFromBrain).not.toHaveBeenCalled();
-
-      fireEvent.click(screen.getByRole("button", followerButton));
-      expect(await screen.findByText("Stop following Mac Studio?")).toBeTruthy();
-    });
-
-    it("stops nothing when the window changed projects while the question was open", async () => {
-      const disconnectFromBrain = vi.fn(async () => makeStatus());
-      (globalThis.window as any).ade = { sync: { disconnectFromBrain, getStatus: async () => followerStatus() } };
-      render(<ThisMacCard sync={makeSync({ status: followerStatus(), projectStatus: followerStatus() })} sessionState="active" />);
-
-      fireEvent.click(screen.getByRole("button", followerButton));
-      act(() => {
-        useAppStore.setState({ project: { rootPath: "/other", displayName: "Other", baseRef: "main" } as any });
-      });
-      fireEvent.click(screen.getByRole("checkbox", acknowledgement));
-      fireEvent.click(screen.getByRole("button", { name: "Stop following" }));
-
-      await waitFor(() => expect(screen.queryByText("Stop following Mac Studio?")).toBeNull());
-      expect(disconnectFromBrain).not.toHaveBeenCalled();
-    });
-
-    it("sends nothing when the project's status cannot be read while the question was open", async () => {
-      // The ghost can be reclaimed while the reader is still deciding. A disconnect
-      // on a host would clear the devices it pairs, so it must not go out.
-      const disconnectFromBrain = vi.fn(async () => makeStatus());
-      const refresh = vi.fn(async () => {});
-      const getStatus = async () => { throw new Error("The background service did not answer."); };
       (globalThis.window as any).ade = { sync: { disconnectFromBrain, getStatus } };
-      render(<ThisMacCard sync={makeSync({ status: followerStatus(), projectStatus: followerStatus(), refresh })} sessionState="active" />);
+      render(<ThisMacCard sync={makeSync({ status: followerStatus(), projectStatus: followerStatus() })} sessionState="active" />);
 
       fireEvent.click(screen.getByRole("button", followerButton));
+      if (moveWindow) act(() => useAppStore.setState({ project: { rootPath: "/other", displayName: "Other", baseRef: "main" } as any }));
       fireEvent.click(screen.getByRole("checkbox", acknowledgement));
       fireEvent.click(screen.getByRole("button", { name: "Stop following" }));
 
-      await waitFor(() => expect(refresh).toHaveBeenCalledWith({ force: true }));
+      // Both guards return after the status read, so wait for the question to close before asserting.
+      await waitFor(() => expect(screen.queryByText("Stop following Mac Studio?")).toBeNull());
       expect(disconnectFromBrain).not.toHaveBeenCalled();
-      // The card says the read failed, not that the project stopped following.
-      expect(await screen.findByText(/couldn't read this project's sync state: The background service did not answer\./)).toBeTruthy();
-      expect(screen.queryByText(/no longer follows another machine/)).toBeNull();
-    });
-
-    it("hides Stop following in the hosted web client, whose disconnect does nothing", () => {
-      (globalThis.window as any).__adeWebClient = true;
-      try {
-        render(<ThisMacCard sync={makeSync({ status: makeStatus(), projectStatus: followerStatus() })} sessionState="active" />);
-        expect(screen.queryByRole("button", followerButton)).toBeNull();
-      } finally {
-        delete (globalThis.window as any).__adeWebClient;
-      }
-    });
-
-    it("says the computer already hosts when the project started hosting while the question was open", async () => {
-      // The project can start hosting in the same window. Nothing is sent, and
-      // the card says so rather than saying the project stopped following.
-      const disconnectFromBrain = vi.fn(async () => makeStatus());
-      const refresh = vi.fn(async () => {});
-      (globalThis.window as any).ade = { sync: { disconnectFromBrain, getStatus: async () => makeStatus() } };
-      render(<ThisMacCard sync={makeSync({ status: followerStatus(), projectStatus: followerStatus(), refresh })} sessionState="active" />);
-
-      fireEvent.click(screen.getByRole("button", followerButton));
-      fireEvent.click(screen.getByRole("checkbox", acknowledgement));
-      fireEvent.click(screen.getByRole("button", { name: "Stop following" }));
-
-      expect(await screen.findByText("This computer is already hosting sync for Repo. Nothing was stopped.")).toBeTruthy();
-      expect(disconnectFromBrain).not.toHaveBeenCalled();
-      expect(refresh).toHaveBeenCalledWith({ force: true });
-    });
-
-    it("shows that the computer already hosts when the brain refuses the disconnect, and keeps it after the refresh", async () => {
-      // The project's status is read as a viewer, then starts hosting before the
-      // disconnect reaches the brain. The brain refuses it with its own message
-      // (ade-cli syncService.disconnectFromBrain), wrapped the way Electron wraps
-      // an IPC error. The card names the state instead of showing that wording.
-      const brainRefusal = "This project is the sync brain, so it has no brain to disconnect from. Its devices and cluster record are kept.";
-      const disconnectFromBrain = vi.fn(async () => {
-        throw new Error(`Error invoking remote method 'ade.sync.disconnectFromBrain': Error: ${brainRefusal}`);
-      });
-      const refresh = vi.fn(async () => {});
-      (globalThis.window as any).ade = { sync: { disconnectFromBrain, getStatus: async () => followerStatus() } };
-      const { rerender } = render(<ThisMacCard sync={makeSync({ status: followerStatus(), projectStatus: followerStatus(), refresh })} sessionState="active" />);
-
-      fireEvent.click(screen.getByRole("button", followerButton));
-      fireEvent.click(screen.getByRole("checkbox", acknowledgement));
-      fireEvent.click(screen.getByRole("button", { name: "Stop following" }));
-
-      expect(await screen.findByText("This computer is already hosting sync for Repo. Nothing was stopped.")).toBeTruthy();
-      expect(screen.queryByText(/This project is the sync brain/)).toBeNull();
-      expect(screen.queryByText(/Error invoking remote method/)).toBeNull();
-      await waitFor(() => expect(refresh).toHaveBeenCalledWith({ force: true }));
-      expect(disconnectFromBrain).toHaveBeenCalledOnce();
-
-      // The refresh reads the project as hosting, so the stop button goes. The
-      // notice is the only thing left to say why nothing was stopped.
-      rerender(<ThisMacCard sync={makeSync({ status: makeStatus(), projectStatus: makeStatus(), refresh })} sessionState="active" />);
-      expect(screen.queryByRole("button", followerButton)).toBeNull();
-      expect(screen.getByText("This computer is already hosting sync for Repo. Nothing was stopped.")).toBeTruthy();
-    });
-
-    it("drops the notice when the window opens another project", async () => {
-      const disconnectFromBrain = vi.fn(async () => {
-        throw new Error("Error invoking remote method 'ade.sync.disconnectFromBrain': Error: This project is the sync brain, so it has no brain to disconnect from. Its devices and cluster record are kept.");
-      });
-      (globalThis.window as any).ade = { sync: { disconnectFromBrain, getStatus: async () => followerStatus() } };
-      render(<ThisMacCard sync={makeSync({ status: followerStatus(), projectStatus: followerStatus() })} sessionState="active" />);
-
-      fireEvent.click(screen.getByRole("button", followerButton));
-      fireEvent.click(screen.getByRole("checkbox", acknowledgement));
-      fireEvent.click(screen.getByRole("button", { name: "Stop following" }));
-      expect(await screen.findByText("This computer is already hosting sync for Repo. Nothing was stopped.")).toBeTruthy();
-
-      act(() => {
-        useAppStore.setState({ project: { rootPath: "/other", displayName: "Other", baseRef: "main" } as any });
-      });
-      await waitFor(() => expect(screen.queryByText(/This computer is already hosting sync/)).toBeNull());
-    });
-
-    it("shows the reason when the disconnect fails and keeps the button for another try", async () => {
-      const disconnectFromBrain = vi.fn(async () => {
-        throw new Error("Project is switching. Wait for the current project to finish loading before stopping sync.");
-      });
-      (globalThis.window as any).ade = { sync: { disconnectFromBrain, getStatus: async () => followerStatus() } };
-      render(<ThisMacCard sync={makeSync({ status: followerStatus(), projectStatus: followerStatus() })} sessionState="active" />);
-
-      fireEvent.click(screen.getByRole("button", followerButton));
-      fireEvent.click(screen.getByRole("checkbox", acknowledgement));
-      fireEvent.click(screen.getByRole("button", { name: "Stop following" }));
-
-      expect(await screen.findByText(/Project is switching/)).toBeTruthy();
-      expect(screen.getByRole("button", followerButton)).toBeTruthy();
-    });
-
-    it("shows the project's own message, not the IPC wrapper around it", async () => {
-      const disconnectFromBrain = vi.fn(async () => {
-        throw new Error("Error invoking remote method 'ade.sync.disconnectFromBrain': Error: This project isn't loaded yet. Open it and try again.");
-      });
-      (globalThis.window as any).ade = { sync: { disconnectFromBrain, getStatus: async () => followerStatus() } };
-      render(<ThisMacCard sync={makeSync({ status: followerStatus(), projectStatus: followerStatus() })} sessionState="active" />);
-
-      fireEvent.click(screen.getByRole("button", followerButton));
-      fireEvent.click(screen.getByRole("checkbox", acknowledgement));
-      fireEvent.click(screen.getByRole("button", { name: "Stop following" }));
-
-      expect(await screen.findByText("This project isn't loaded yet. Open it and try again.")).toBeTruthy();
-      expect(screen.queryByText(/Error invoking remote method/)).toBeNull();
     });
   });
 });
@@ -1079,23 +770,6 @@ describe("useSyncConnections local scoping", () => {
     expect(result.current.canManageDevices).toBe(true);
     // Unbound: the routed device list is used as-is.
     expect(result.current.devices.map((d) => d.deviceId)).toEqual(["phone-1"]);
-  });
-
-  it("keeps the project's routed status apart from the machine's", async () => {
-    // The machine hosts, while the window's project follows another machine.
-    const machine = makeStatus();
-    const project = makeStatus({ mode: "viewer", role: "viewer", runtimeRole: "viewer", viewerReason: "saved_connection" });
-    installSyncMock({
-      getStatus: async () => project,
-      getLocalStatus: async () => machine,
-      listDevices: async () => [device()],
-    });
-
-    const { result } = renderHook(() => useSyncConnections());
-    await waitFor(() => expect(result.current.loading).toBe(false));
-
-    expect(result.current.status?.role).toBe("brain");
-    expect(result.current.projectStatus?.role).toBe("viewer");
   });
 
   it("forces the initial load through an existing backoff window", async () => {

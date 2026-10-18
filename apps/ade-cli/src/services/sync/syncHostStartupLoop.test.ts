@@ -117,29 +117,26 @@ describe("runSyncHostStartupLoop", () => {
     expect(logs.some((line) => line.includes("taking over mobile sync"))).toBe(true);
   });
 
-  // On Windows `kill(pid, "SIGTERM")` is TerminateProcess: the stale brain never
-  // gets to flush. The takeover must ask it to leave over RPC first, and force
-  // it only when that request is refused or the brain does not go.
-  it("asks a stale same-channel owner to shut down over RPC on win32 before any force kill", async () => {
+  // On Windows `kill(pid, "SIGTERM")` is TerminateProcess, so the stale brain never flushes. The
+  // takeover asks it to leave over RPC first and force-kills only when that request is refused.
+  it.each([
+    ["accepted", true, ["rpc 4242"]],
+    ["refused", false, ["rpc 4242", "force 4242"]],
+  ])("takes over a win32 stale owner over RPC and force-kills only when refused (%s)", async (_, accepted, expected) => {
     const events: string[] = [];
     let ownerAlive = true;
     let attempts = 0;
     await runSyncHostStartupLoop({
       startSyncHost: () => {
         attempts += 1;
-        return ownerAlive
-          ? Promise.reject(conflictError(makeOwner()))
-          : Promise.resolve();
+        return ownerAlive ? Promise.reject(conflictError(makeOwner())) : Promise.resolve();
       },
       isDone: () => false,
       log: () => {},
       getServiceMainPid: () => process.pid,
       platform: "win32",
-      kill: (pid, signal) => {
-        // A real SIGTERM would end the stale brain: keeps a regression from looping.
-        events.push(`kill ${pid} ${String(signal)}`);
-        ownerAlive = false;
-      },
+      // A real SIGTERM would end the stale brain: keeps a regression from looping.
+      kill: (pid, signal) => { events.push(`kill ${pid} ${String(signal)}`); ownerAlive = false; },
       pidAlive: () => ownerAlive,
       sleep: instantSleep,
       env: betaEnv,
@@ -147,53 +144,14 @@ describe("runSyncHostStartupLoop", () => {
         runtimeSocketPath: "\\\\.\\pipe\\ade-runtime-beta-0123456789abcdef",
         requestRuntimeShutdown: async ({ pid }) => {
           events.push(`rpc ${pid}`);
-          ownerAlive = false;
-          return { requested: true };
+          if (accepted) ownerAlive = false;
+          return accepted ? { requested: true } : { requested: false, reason: "wedged" };
         },
-        forceKill: (pid) => { events.push(`force ${pid}`); },
+        forceKill: (pid) => { events.push(`force ${pid}`); ownerAlive = false; },
       },
     });
     expect(attempts).toBe(2);
-    expect(events).toEqual(["rpc 4242"]);
-  });
-
-  it("force-kills a win32 stale owner only after its RPC shutdown is refused", async () => {
-    const events: string[] = [];
-    let ownerAlive = true;
-    let attempts = 0;
-    await runSyncHostStartupLoop({
-      startSyncHost: () => {
-        attempts += 1;
-        return ownerAlive
-          ? Promise.reject(conflictError(makeOwner()))
-          : Promise.resolve();
-      },
-      isDone: () => false,
-      log: () => {},
-      getServiceMainPid: () => process.pid,
-      platform: "win32",
-      kill: (pid, signal) => {
-        // A real SIGTERM would end the stale brain: keeps a regression from looping.
-        events.push(`kill ${pid} ${String(signal)}`);
-        ownerAlive = false;
-      },
-      pidAlive: () => ownerAlive,
-      sleep: instantSleep,
-      env: betaEnv,
-      terminatePidDeps: {
-        runtimeSocketPath: "\\\\.\\pipe\\ade-runtime-beta-0123456789abcdef",
-        requestRuntimeShutdown: async ({ pid }) => {
-          events.push(`rpc ${pid}`);
-          return { requested: false, reason: "wedged" };
-        },
-        forceKill: (pid) => {
-          events.push(`force ${pid}`);
-          ownerAlive = false;
-        },
-      },
-    });
-    expect(attempts).toBe(2);
-    expect(events).toEqual(["rpc 4242", "force 4242"]);
+    expect(events).toEqual(expected);
   });
 
   it("never takes over when it is not the service child", async () => {

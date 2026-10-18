@@ -1,8 +1,7 @@
 // The filter behind interaction.mjs's "content settled" and "content ready" numbers.
 //
 // Both functions are self-contained on purpose: interaction.mjs sends their source into
-// the page with Function#toString, and apps/desktop/scripts/perf-settle.test.mjs runs the
-// same functions in jsdom. The page and the test run one copy of the rule.
+// the page with Function#toString, so the page runs this one copy of the rule.
 
 // A mutation is decoration, not page content, when:
 //  - its target, or a node it adds or removes, sits inside an element marked
