@@ -148,6 +148,7 @@ standard deviation of the 18 values. Command: `scripts/perf/desktop-main-start.m
 | Process start to first window, no compile cache (sd 17–33 ms) | `desktop-main-start.mjs --mode off` | — | 1023 ms | not set, needs your OK |
 | Process start to first window, warm compile cache (sd 40 ms) | `desktop-main-start.mjs --mode warm` | 1027 ms | 881 ms | not set, needs your OK |
 | Process start to first window, first launch after an update (`--mode cold`) | `desktop-main-start.mjs --mode cold` | — | 1114 ms | not set, needs your OK |
+| Cursor sign-in snapshot on the launch status path (`buildProviderConnections` → `getCursorSdkAuthSnapshot`): reads `~/.cursor/sdk/auth.json` instead of importing `@cursor/sdk` on the main thread. Windows 11 bench, not the macOS machine above; Electron main not measured | one-off `node` loop, 3 cold processes, Node 22.13.1 (`import()` of the SDK, then the file read) | 411–815 ms (cold SDK import) | 0.2–0.3 ms (file read) | not set, needs your OK |
 
 ### Open items (measured, over budget or unbudgeted)
 

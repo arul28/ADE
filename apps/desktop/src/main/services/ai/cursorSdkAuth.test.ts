@@ -17,7 +17,6 @@ type StoredCreds = { apiKey?: string; email?: string; apiKeyExpiresAtMs?: number
 function createFakeSdk(options?: {
   login?: () => Promise<{ apiKey: string; email?: string; apiKeyExpiresAtMs: number }>;
   logout?: () => Promise<void>;
-  status?: () => Promise<{ status: "logged-in"; email?: string; backendUrl: string; apiKeyExpiresAtMs?: number } | { status: "logged-out" }>;
   stored?: StoredCreds | undefined;
 }): CursorSdkModule {
   const login = options?.login ?? (async () => ({
@@ -26,11 +25,10 @@ function createFakeSdk(options?: {
     apiKeyExpiresAtMs: 1_700_000_000_000,
   }));
   const logout = options?.logout ?? (async () => undefined);
-  const status = options?.status ?? (async () => ({ status: "logged-out" as const }));
   const stored = options?.stored;
   return {
     Cursor: {
-      auth: { login, logout, status },
+      auth: { login, logout },
     },
     FileCredentialStore: class {
       async load() {
@@ -142,18 +140,13 @@ describe("cursorSdkAuth", () => {
 
   it("treats an ADE-stored OAuth key as connected even when CURSOR_API_KEY is unset", async () => {
     __setCursorSdkAuthHooksForTests({
-      loadSdk: async () => createFakeSdk({
-        status: async () => ({
-          status: "logged-in",
-          backendUrl: "https://api2.cursor.sh",
-          email: "ada@cursor.com",
-          apiKeyExpiresAtMs: 1_700_000_000_000,
-        }),
-        stored: { apiKey: "crsr_minted" },
+      readStoredCredentials: async () => ({
+        apiKey: "crsr_minted",
+        email: "ada@cursor.com",
+        apiKeyExpiresAtMs: 4_102_444_800_000,
       }),
       getKey: () => "crsr_minted",
       getOrigin: () => "oauth",
-      loadSdkStoredCredentials: async () => ({ apiKey: "crsr_minted" }),
     });
 
     const snapshot = await getCursorSdkAuthSnapshot();
@@ -172,9 +165,7 @@ describe("cursorSdkAuth", () => {
   it("prefers ADE store over env when labeling the credential source", async () => {
     process.env.CURSOR_API_KEY = "crsr_env";
     __setCursorSdkAuthHooksForTests({
-      loadSdk: async () => createFakeSdk({
-        status: async () => ({ status: "logged-out" }),
-      }),
+      readStoredCredentials: async () => undefined,
       getKey: () => "crsr_pasted",
       getOrigin: () => "pasted",
     });
