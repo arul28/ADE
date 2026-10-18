@@ -248,6 +248,7 @@ import {
 } from "../../desktop/src/shared/types/builtInBrowser";
 import { WORK_TOOLS_STATE_CHANGED_EVENT } from "../../desktop/src/shared/types/workTools";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
+import { readDefaultOsBoundKeyMaterialAsync } from "./services/credentials/osBoundKeyMaterial";
 import { createBrainLogger } from "./services/runtime/brainLogger";
 import { createPushRegistrationStore } from "./services/push/pushRegistrationStore";
 import { createPushRelayClient } from "./services/push/pushRelayClient";
@@ -878,7 +879,19 @@ export async function createAdeRuntime(args: {
 
   assertLocalProjectDataAvailable(projectRoot);
   const hadAdeDb = fs.existsSync(path.join(projectRoot, ".ade", "ade.db"));
-  const baseRef = await detectDefaultBaseRef(projectRoot);
+  // On Windows each project's credential store is sealed with its own DPAPI
+  // key, decrypted in a PowerShell child on first read. Linear's status checks
+  // below read it synchronously, blocking the brain's event loop 440-690 ms
+  // for every project runtime it starts. Decrypt it off the loop here, beside
+  // the base-ref lookup; the key is cached, so those reads find it ready. Only
+  // an existing key is read: a project without one is left as before.
+  const projectKeyDir = path.join(projectRoot, ".ade", "secrets");
+  const [baseRef] = await Promise.all([
+    detectDefaultBaseRef(projectRoot),
+    process.platform === "win32" && fs.existsSync(path.join(projectKeyDir, ".credential-key.dpapi"))
+      ? readDefaultOsBoundKeyMaterialAsync(projectKeyDir).catch(() => null)
+      : null,
+  ]);
   const paths = ensureAdePaths(projectRoot);
   const runtimeSocketPath = typeof resolvedArgs.runtimeSocketPath === "string"
     ? resolvedArgs.runtimeSocketPath.trim() || paths.socketPath
