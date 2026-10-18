@@ -1025,6 +1025,7 @@ import type {
   BuiltInBrowserTabArgs,
   BuiltInBrowserTabTargetArgs,
   PersonalChatCallArgs,
+  PersonalChatMachineTarget,
   PersonalChatCallResponse,
   PersonalChatStreamEventsArgs,
   PersonalChatStreamEventsResult,
@@ -1571,11 +1572,14 @@ declare global {
         ) => Promise<{ disconnected: boolean }>;
       };
       personalChats: {
+        /** `target` names the machine; left out, the window's bound machine. */
         call: (
           request: PersonalChatCallArgs,
+          target?: PersonalChatMachineTarget | null,
         ) => Promise<PersonalChatCallResponse>;
         streamEvents: (
           request?: PersonalChatStreamEventsArgs,
+          target?: PersonalChatMachineTarget | null,
         ) => Promise<PersonalChatStreamEventsResult>;
       };
       keybindings: {

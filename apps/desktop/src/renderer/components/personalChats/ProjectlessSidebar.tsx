@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
-import { Archive, CaretUpDown, Check, Desktop, DotsThree, House, MagnifyingGlass, Plus, PushPin, SpinnerGap } from "@phosphor-icons/react";
-import type { AgentChatSessionSummary } from "../../../shared/types";
+import { useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { Archive, Desktop, DotsThree, House, MagnifyingGlass, Plus, PushPin, SpinnerGap } from "@phosphor-icons/react";
+import type { PersonalChatRow } from "./personalChatMachines";
 import { cn } from "../ui/cn";
 import { ToolLogo } from "../terminals/ToolLogos";
 import { providerChatAccent } from "../chat/chatSurfaceTheme";
@@ -18,6 +18,14 @@ const STATUS_TONE_CLASS: Record<SessionStatusTone, string> = {
 };
 
 const EMPTY_IDS: ReadonlySet<string> = new Set();
+
+/** A machine whose chats the rail lists, and how its last read went. */
+export type ProjectlessSidebarMachine = {
+  id: string;
+  name: string;
+  status: "ok" | "loading" | "error";
+  message: string | null;
+};
 
 /** The in-place rename field: Enter or blur saves, Escape cancels. */
 function RenameField({ initial, onCommit, onCancel }: {
@@ -54,10 +62,7 @@ function RenameField({ initial, onCommit, onCancel }: {
 
 export function ProjectlessSidebar({
   standalone,
-  machineLabel,
-  machineId,
-  machineOptions,
-  onSelectMachine,
+  machines,
   grouped,
   loading,
   query,
@@ -79,15 +84,13 @@ export function ProjectlessSidebar({
   mobileListOpen,
 }: {
   standalone: boolean;
-  machineLabel: string;
-  machineId: string;
-  machineOptions: Array<{ id: string; name: string }>;
-  onSelectMachine: (machineId: string) => void;
-  grouped: Array<[string, AgentChatSessionSummary[]]>;
+  /** Every machine whose chats are listed. */
+  machines: ProjectlessSidebarMachine[];
+  grouped: Array<[string, PersonalChatRow[]]>;
   loading: boolean;
   query: string;
   onQueryChange: (value: string) => void;
-  /** The chat open in the pane. */
+  /** The row open in the pane. */
   selectedId: string | null;
   /** Rows picked with shift / cmd / ctrl-click, for the bulk actions. */
   multiSelectedIds?: ReadonlySet<string>;
@@ -113,22 +116,6 @@ export function ProjectlessSidebar({
   onBack: () => void;
   mobileListOpen: boolean;
 }) {
-  const [machineMenuOpen, setMachineMenuOpen] = useState(false);
-
-  useEffect(() => {
-    if (!machineMenuOpen) return;
-    const close = () => setMachineMenuOpen(false);
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setMachineMenuOpen(false);
-    };
-    document.addEventListener("mousedown", close);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", close);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [machineMenuOpen]);
-
   return (
     <aside className={cn(
       "ade-chat-scene-plane relative w-[286px] shrink-0 border-r border-fg/[0.06] bg-black/[0.12]",
@@ -190,17 +177,17 @@ export function ProjectlessSidebar({
               <div className="px-2 pb-1 pt-2 font-sans text-[10px] font-medium uppercase tracking-[0.08em] text-muted-fg/40">{label}</div>
               <div className="space-y-0.5">
                 {rows.map((session) => {
-                  const active = session.sessionId === selectedId;
-                  const picked = multiSelectedIds.has(session.sessionId);
+                  const active = session.rowId === selectedId;
+                  const picked = multiSelectedIds.has(session.rowId);
                   const streaming = session.status === "active";
                   const dotColor = providerChatAccent(session.provider) ?? "var(--color-accent)";
                   const status = sessionRowStatus(session);
-                  if (renamingId === session.sessionId) {
+                  if (renamingId === session.rowId) {
                     return (
-                      <div key={session.sessionId} className="px-1 py-1">
+                      <div key={session.rowId} className="px-1 py-1">
                         <RenameField
                           initial={sessionTitle(session)}
-                          onCommit={(title) => onRenameCommit?.(session.sessionId, title)}
+                          onCommit={(title) => onRenameCommit?.(session.rowId, title)}
                           onCancel={() => onRenameCancel?.()}
                         />
                       </div>
@@ -208,14 +195,14 @@ export function ProjectlessSidebar({
                   }
                   return (
                     <div
-                      key={session.sessionId}
+                      key={session.rowId}
                       className="group relative"
-                      data-chat-row-id={session.sessionId}
+                      data-chat-row-id={session.rowId}
                       data-selected={picked ? "true" : undefined}
                       onContextMenu={onRowContextMenu
                         ? (event) => {
                             event.preventDefault();
-                            onRowContextMenu(session.sessionId, { x: event.clientX, y: event.clientY });
+                            onRowContextMenu(session.rowId, { x: event.clientX, y: event.clientY });
                           }
                         : undefined}
                     >
@@ -225,7 +212,7 @@ export function ProjectlessSidebar({
                         // A shift-click extends the selection; without this it
                         // also drags a text selection across the rows.
                         onMouseDown={(event) => { if (event.shiftKey) event.preventDefault(); }}
-                        onClick={(event) => onRowClick(session.sessionId, event)}
+                        onClick={(event) => onRowClick(session.rowId, event)}
                         className={cn(
                           "flex w-full items-start gap-2.5 rounded-xl px-2.5 py-2.5 text-left transition-colors",
                           picked
@@ -248,6 +235,12 @@ export function ProjectlessSidebar({
                             {status ? (
                               <span className={cn("shrink-0 font-medium", STATUS_TONE_CLASS[status.tone])}>{status.label}</span>
                             ) : null}
+                            {session.machineName ? (
+                              <span className="flex shrink-0 items-center gap-0.5 text-muted-fg/55" title={`On ${session.machineName}`}>
+                                <Desktop size={9} aria-hidden />
+                                <span className="max-w-[88px] truncate">{session.machineName}</span>
+                              </span>
+                            ) : null}
                             <span className="min-w-0 truncate">{sessionRowDetail(session)}</span>
                           </span>
                         </span>
@@ -259,15 +252,15 @@ export function ProjectlessSidebar({
                           onClick={(event) => {
                             event.stopPropagation();
                             const rect = event.currentTarget.getBoundingClientRect();
-                            onRowContextMenu(session.sessionId, { x: rect.left, y: rect.bottom + 4 });
+                            onRowContextMenu(session.rowId, { x: rect.left, y: rect.bottom + 4 });
                           }}
                           className={cn(
                             "absolute right-2 top-2 h-6 w-6 items-center justify-center rounded-md text-muted-fg/45 hover:bg-fg/[0.08] hover:text-fg group-hover:flex",
-                            menuOpenId === session.sessionId ? "flex" : "hidden",
+                            menuOpenId === session.rowId ? "flex" : "hidden",
                           )}
                           aria-label={`More actions for ${sessionTitle(session)}`}
                           aria-haspopup="menu"
-                          aria-expanded={menuOpenId === session.sessionId}
+                          aria-expanded={menuOpenId === session.rowId}
                         >
                           <DotsThree size={15} weight="bold" />
                         </button>
@@ -279,48 +272,32 @@ export function ProjectlessSidebar({
             </div>
           ))}
         </div>
-        {/* The machine is an explicit choice, not a footnote: chats live on the
-            machine named here, so it gets a real control instead of a label. */}
-        <div className="relative border-t border-fg/[0.05] px-2 py-2">
-          <button
-            type="button"
-            aria-haspopup="menu"
-            aria-expanded={machineMenuOpen}
-            aria-label={`Chats run on ${machineLabel}. Choose a machine.`}
-            onMouseDown={(event) => event.stopPropagation()}
-            onClick={() => setMachineMenuOpen((current) => !current)}
-            className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-fg/[0.05]"
-          >
-            <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-400/70" />
-            <Desktop size={12} aria-hidden className="shrink-0 text-muted-fg/45" />
-            <span className="min-w-0 flex-1 truncate font-sans text-[10px] text-muted-fg/60">{machineLabel}</span>
-            <CaretUpDown size={11} aria-hidden className="shrink-0 text-muted-fg/40" />
-          </button>
-          {machineMenuOpen ? (
-            <div
-              role="menu"
-              aria-label="Choose a machine"
-              onMouseDown={(event) => event.stopPropagation()}
-              className="absolute bottom-[calc(100%-0.25rem)] left-2 right-2 z-30 rounded-lg border border-fg/[0.08] bg-[var(--color-popup-bg)] p-1 shadow-2xl"
-            >
-              {machineOptions.map((option) => (
-                <button
-                  key={option.id}
-                  type="button"
-                  role="menuitem"
-                  onClick={() => { setMachineMenuOpen(false); onSelectMachine(option.id); }}
+        {/* Chats from every machine listed here are in the rail. A machine that
+            did not answer is named, so a short list is never a silent one. */}
+        <div className="border-t border-fg/[0.05] px-3 py-2" aria-label="Machines listed">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            {machines.map((machine) => (
+              <span
+                key={machine.id}
+                className="flex min-w-0 max-w-full items-center gap-1.5"
+                title={machine.status === "error"
+                  ? `${machine.name}: ${machine.message ?? "its chats could not be read"}`
+                  : machine.status === "loading" ? `Reading chats on ${machine.name}` : `Chats on ${machine.name}`}
+              >
+                <span
+                  aria-hidden
                   className={cn(
-                    "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left font-sans text-[10px] transition-colors",
-                    option.id === machineId ? "text-fg" : "text-fg/65 hover:bg-fg/[0.06]",
+                    "h-1.5 w-1.5 shrink-0 rounded-full",
+                    machine.status === "error" ? "bg-amber-400/80" : machine.status === "loading" ? "bg-fg/25" : "bg-emerald-400/70",
                   )}
-                >
-                  <Desktop size={12} aria-hidden />
-                  <span className="min-w-0 flex-1 truncate">{option.name}</span>
-                  {option.id === machineId ? <Check size={11} weight="bold" aria-hidden /> : null}
-                </button>
-              ))}
-            </div>
-          ) : null}
+                />
+                <Desktop size={12} aria-hidden className="shrink-0 text-muted-fg/45" />
+                <span className={cn("min-w-0 truncate font-sans text-[10px]", machine.status === "error" ? "text-amber-200/70" : "text-muted-fg/60")}>
+                  {machine.name}
+                </span>
+              </span>
+            ))}
+          </div>
         </div>
       </div>
     </aside>

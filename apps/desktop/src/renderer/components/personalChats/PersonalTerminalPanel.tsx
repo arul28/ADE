@@ -10,6 +10,7 @@ import {
   useAppStore,
 } from "../../state/appStore";
 import { attachCursorBlinkClock } from "../../lib/xtermCursorBlink";
+import type { PersonalChatsBridge } from "./personalAgentChatApi";
 import { Banner } from "../ui/notice";
 
 type TerminalCreateResult = {
@@ -28,7 +29,7 @@ function terminalResult<T>(response: PersonalChatCallResponse): T {
   return response.result as T;
 }
 
-type PersonalChatsApi = Window["ade"]["personalChats"];
+type PersonalChatsApi = PersonalChatsBridge;
 
 async function callTerminal<T>(api: PersonalChatsApi, request: PersonalChatCallArgs): Promise<T> {
   return terminalResult<T>(await api.call(request));
@@ -42,13 +43,16 @@ function eventRecord(value: unknown): Record<string, unknown> | null {
 
 export function PersonalTerminalPanel({
   chatSessionId,
+  bridge,
   onClose,
 }: {
   chatSessionId: string | null;
+  /** The chat's machine. Must be stable per machine: a new one restarts the terminal. */
+  bridge: PersonalChatsApi;
   onClose: () => void;
 }) {
   const terminalPreferences = useAppStore((state) => state.terminalPreferences);
-  const personalChatsApi = window.ade.personalChats;
+  const personalChatsApi = bridge;
   const hostRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);

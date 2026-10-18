@@ -2180,6 +2180,49 @@ describe("registerRuntimeBridge", () => {
     expect(remoteRegistryGetMock).toHaveBeenCalledWith("target-1");
   });
 
+  // The Chats page lists every machine's chats in one window, so a call that
+  // names its machine goes there whatever machine the window is bound to.
+  it.each([
+    {
+      name: "this computer from a window bound to another machine",
+      binding: {
+        kind: "remote" as const,
+        key: "remote:target-1:project-1",
+        targetId: "target-1",
+        projectId: "project-1",
+        rootPath: "/remote",
+        displayName: "Remote",
+        runtimeName: "Remote",
+      },
+      machineId: "this-mac",
+      expectsRemote: false,
+    },
+    { name: "another machine from a local window", binding: null, machineId: "target-1", expectsRemote: true },
+  ])("routes a personal chat call that names its machine to $name", async ({ binding, machineId, expectsRemote }) => {
+    remoteRegistryGetMock.mockReturnValue(target);
+    remoteCallMachineForTargetMock.mockResolvedValue({ action: "list", result: ["remote"] });
+    const callSync = vi.fn().mockResolvedValue({ action: "list", result: ["local"] });
+    registerRuntimeBridge({
+      appVersion: "1.0.0",
+      globalStatePath: "/tmp/ade-state.json",
+      localRuntimeConnectionPool: { callSync } as any,
+      getWindowSession: () => ({ windowId: 7, project: null, binding }),
+    });
+
+    const request = { action: "list", args: { includeArchived: false } };
+    await expect(
+      ipcHandlers.get(IPC.personalChatsCall)?.(eventForSender(), request, { machineId }),
+    ).resolves.toEqual({ action: "list", result: [expectsRemote ? "remote" : "local"] });
+    if (expectsRemote) {
+      expect(remoteCallMachineForTargetMock).toHaveBeenCalledWith(target, "personalChats.call", request, {});
+      expect(remoteRegistryGetMock).toHaveBeenCalledWith(machineId);
+      expect(callSync).not.toHaveBeenCalled();
+    } else {
+      expect(callSync).toHaveBeenCalledWith("personalChats.call", request);
+      expect(remoteCallMachineForTargetMock).not.toHaveBeenCalled();
+    }
+  });
+
   it("routes personal chat event polling through the local machine runtime", async () => {
     const callSync = vi.fn().mockResolvedValue({ events: [], nextCursor: 0, hasMore: false });
     registerRuntimeBridge({

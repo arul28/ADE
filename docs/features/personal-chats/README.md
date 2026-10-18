@@ -19,12 +19,13 @@ desktop, the hosted web client, mobile, and the ADE CLI.
 | `apps/ade-cli/src/cli.ts` | Typed `ade chat ... --personal` commands; they require the machine brain and never fall back to a project/headless runtime. |
 | `apps/ade-cli/src/services/sync/` | Runtime-scoped personal-chat commands, feature advertisement, policy descriptors, and personal transcript subscriptions for controllers. Primary files: `syncService.ts`, `syncHostService.ts`, and `syncRemoteCommandService.ts`. |
 | `apps/desktop/src/shared/types/personalChats.ts` | Cross-process action, result, capability, queue-policy, scope, and event contracts, including the scheduled-work create/cancel/pause actions shared with project chat. |
-| `apps/desktop/src/main/services/ipc/runtimeBridge.ts` | Routes a local/no-project window to the local brain and a remotely bound project window to that remote machine's personal-chat scope. |
+| `apps/desktop/src/main/services/ipc/runtimeBridge.ts` | Routes personal-chat calls to an explicitly named local or remote machine; when no target is supplied, retains the window's bound-machine behavior. |
 | `apps/desktop/src/main/services/chat/agentChatService.ts` | Durable `personal` chat surface, persisted-surface reconstruction/repair support, and neutral provider guidance/environment. |
-| `apps/desktop/src/renderer/components/personalChats/PersonalChatsPage.tsx` | Desktop projectless surface: conversation rail, model catalog, personal-scoped link routing, compact Browser/Terminal tool panels, and the real `AgentChatPane` (full composer, transcript, approvals, steer and queue) routed to this machine's personal scope. |
+| `apps/desktop/src/renderer/components/personalChats/PersonalChatsPage.tsx` | Desktop Chats surface: conversation rail, model catalog, personal-scoped link routing, compact Browser/Terminal tool panels, and the real `AgentChatPane` (full composer, transcript, approvals, steer and queue) scoped to the selected personal chat's machine. |
+| `apps/desktop/src/renderer/components/personalChats/personalChatMachines.ts` | Lists chats across connected machines, routes each machine's calls and event stream, and supplies the new-chat machine picker. |
 | `apps/desktop/src/renderer/components/personalChats/personalAgentChatApi.ts` | The one adapter that re-points `window.ade.agentChat` at `personalChats.*`: every pane call becomes a personal action, the event stream is one shared poller, and actions personal chats lack refuse clearly instead of reaching a project runtime. |
 | `apps/desktop/src/renderer/components/chat/agentChatApi.tsx` | `ChatPaneScope` and the context the pane, composer and panels read their chat API from (`useAgentChatApi`). Absent scope means the project chat domain, unchanged. |
-| `apps/desktop/src/renderer/components/personalChats/ProjectlessSidebar.tsx` | Stateful conversation rail: pinned-then-recency-grouped, searchable session list with new-chat, per-session selection, inline rename, pin/unpin, archive and delete. |
+| `apps/desktop/src/renderer/components/personalChats/ProjectlessSidebar.tsx` | Stateful conversation rail: pinned-then-recency-grouped, searchable cross-machine session list with machine badges, new-chat, per-session selection, inline rename, pin/unpin, archive and delete. |
 | `apps/desktop/src/main/services/chat/personalSession.ts` | Personal-surface rules: `isAssistantPersonalSession` / `isEmbeddedPersonalSession`, the lane-only skill list, and both system prompts (the neutral SDK one and the assistant one). |
 | `apps/desktop/src/renderer/components/personalChats/sessionHelpers.ts` | Pure helpers for session title/preview, relative timestamps, and provider→tool-logo mapping shared by the page and sidebar. |
 | `apps/desktop/src/renderer/components/chat/chatSurfaceTheme.ts` | Provider-accent theming for the surface, including `effectiveChatAccent` (accounts for the neutral chrome tint) and `chatAccentContrast` (readable glyph on the `--chat-accent` fill). |
@@ -204,20 +205,31 @@ navigates to `/chats`, and it can sit alongside project tabs and the New Tab as
 an inactive tab. While it is the foreground surface, the bound project tab
 stays rendered but drops its active styling. Opening it as a global sidebar
 surface while a project remains selected keeps the window's existing project
-binding, so a remote-bound window still addresses the remote machine's personal
-chats. Returning to a project route does not require reopening the project.
+binding. Returning to a project route does not require reopening the project.
 
-The page's machine picker rebinds that window, so its **This computer** option
-resolves through `renderer/components/chat/thisMachineProjectRoot.ts`: it finds
-*this repository's* local checkout by repo identity rather than taking whichever
-local tab happens to be first, and reports "Open this repository on This computer
-first, then switch back here." when there is none instead of silently switching
-the window to an unrelated repo. Machine ids and the "This computer" name come
-from `shared/machineIdentity.ts`. Another machine is offered when it is
-connected and has this repository (or a project already open in a tab);
-`projectOnOtherMachine` picks that machine's checkout of the same repository and
-never an unrelated one. A machine picked here is a deliberate choice, so the
-project tab stays on it instead of moving back to this computer's checkout.
+The rail lists the personal chats of **every connected machine at once**, the
+way the Work tab lists every machine's sessions: This computer plus each
+connected remote runtime on the desktop, each live machine in the browser.
+`renderer/components/personalChats/personalChatMachines.ts` owns this. Each
+machine is read on its own and timed out, so one slow machine never holds the
+list, and each machine's event stream re-reads only that machine. A row's id is
+its machine plus its session id, and every action on a row (open, send,
+archive, delete, rename, pin, stop, the terminal panel) names the row's machine
+in `PersonalChatMachineTarget`; the main process sends it to that machine
+(`THIS_MACHINE_ID` is this computer, anything else a remote target id) and the
+hosted client sends it to that machine's chats adapter. A row from another
+machine shows the machine's name when more than one machine has chats, and the
+rail's footer names every machine it read, with a machine that did not answer
+marked. Nothing on the page moves the window's project tab: the machine picker
+beside the composer only chooses where a **new** chat runs (kept in
+localStorage on the desktop; in the browser it is the machine the Chats surface
+addresses). The Browser tab's docked chat still runs on the window's machine,
+so "Open in the Browser tab" is offered only for that machine's chats. Machine
+ids and the "This computer" name come from `shared/machineIdentity.ts`.
+
+Opening Chats (or Browser, or Music) from a pending New Tab fills that New Tab,
+as opening a project does; it no longer leaves a blank "New Tab" pill beside
+the Chats tab.
 
 The ADE CLI uses the same machine endpoint through explicit `--personal`
 commands, for example:
@@ -342,7 +354,7 @@ themselves are not trimmed.
 | Desktop | **Chats** works with no project selected. The welcome screen has a **Start a chat** action. Visiting `/chats` from the projectless shell opens a real machine-level **Chats** top tab (backed by `personalChatsTabOpen`) that stays present as a clickable tab across project open/switch/close. The "+" on `/chats` opens and activates Home/New Tab while the Chats tab stays as an inactive tab; closing New Tab returns to `/chats` when projectless; closing an inactive Chats tab does not navigate. The surface is the real chat pane (`AgentChatPane` with a personal `ChatPaneScope`): the full composer (attachments, paste, slash commands, steer and queue, model/reasoning/permission controls without planning modes), transcript and approval cards, with lane, git, PR and worktree chrome hidden; beside it a searchable conversation rail (pinned first, inline rename, pin, archive, delete, and the agent's status word and note) and compact Browser and Terminal buttons. A new chat shows suggestion chips under the composer that fill the draft (the pane's `emptyStateAccessory` and `composerHandleRef`); the Browser panel's **Inspect an element** (context chip with its screenshot) and **Insert into the message** (the element as text) reach the composer through the same handle. Attachment thumbnails read through the personal API, since a project runtime would refuse the personal store's paths. Fork, rewind, handoff, import, Codex goals and transcript recovery are hidden: personal chats have no backend action for them yet. |
 | ADE Browser | Personal chat uses the global authenticated browser profile and an explicit personal tab collection (`tabCollection: "personal"`). HTTP(S) links in the transcript are intercepted by the active personal-chat surface, open its Browser panel, and navigate with projectless scope so they cannot land invisibly in a retained project's collection. Navigation failures stay in ADE as a visible error instead of surprise-opening the system browser later. Cookies and site storage are shared across ADE, while personal visible tabs remain separate from project/window tabs. The machine-level **Browser** top tab (`/browser`, `BrowserPage.tsx`) shows the same personal collection full size; its **Ask agent** button docks a normal personal chat (assistant profile, listed in Chats) with the tab in front attached as one `<ade-browser-tab>` token (`formatBrowserTabMentionToken`, as **Attach to chat** does) and handed to the chat (`handTabToChat`, `ownerChatSessionId`). Links in a Chats page chat open in the Browser tab when it is open and the page's own Browser panel is not; a browsing chat offers **Show in the Browser tab**, and the dock offers **Open in Chats** (`/chats?chat=<id>`). See "The Browser top tab" in `docs/features/chat/README.md`. |
 | Hosted web | The project picker and shell can enter `/chats` without selecting a project. The adapter uses runtime-scoped commands and personal chat subscriptions; browser-native ADE Browser is absent, while terminal IO runs on the paired machine. |
-| iOS | The Hub card is the only entry. It shows live count/attention state and pushes a native searchable list, new-chat model sheet, and reused Work transcript destination with project/lane actions suppressed. Chat Info uses the personal action descriptors for durable-schedule Cancel and per-chat Pause/Resume; schedule creation remains an API capability rather than a native control. Personal summaries are cached per paired host for offline list display; create and schedule mutations require a live host, while sends may queue. |
+| iOS | The Hub card is the only entry. It shows live count/attention state and pushes a native searchable list, new-chat model sheet, and reused Work transcript destination with project/lane actions suppressed. Chat Info uses the personal action descriptors for durable-schedule Cancel and per-chat Pause/Resume; schedule creation remains an API capability rather than a native control. The list merges the focused machine's chats with every live fleet machine that advertises `personalChats.list`, requests each machine independently with a timeout, and badges a row with its machine when chats come from multiple machines. Chat actions, transcript subscriptions, and model-catalog requests follow the owning machine without changing focus. A failed machine keeps its cached rows and shows its name with Retry; the new-chat screen has a machine picker. Personal summaries are cached per machine for offline list display; create and schedule mutations require a live host, while sends may queue. |
 | ADE CLI | `ade chat ... --personal` reaches the machine RPC directly. `--personal` is mutually exclusive with lane/Linear project context and requires a running brain. |
 | ADE Code TUI | Deliberately out of scope for the initial release. No personal-chat drawer or slash command is added. |
 

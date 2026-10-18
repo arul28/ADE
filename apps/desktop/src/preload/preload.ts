@@ -1166,6 +1166,7 @@ import type {
   BuiltInBrowserTabArgs,
   BuiltInBrowserTabTargetArgs,
   PersonalChatCallArgs,
+  PersonalChatMachineTarget,
   PersonalChatCallResponse,
   PersonalChatStreamEventsArgs,
   PersonalChatStreamEventsResult,
@@ -5360,12 +5361,14 @@ const adeBridge = {
   personalChats: {
     call: async (
       request: PersonalChatCallArgs,
+      target?: PersonalChatMachineTarget | null,
     ): Promise<PersonalChatCallResponse> =>
-      ipcRenderer.invoke(IPC.personalChatsCall, request),
+      ipcRenderer.invoke(IPC.personalChatsCall, request, target ?? null),
     streamEvents: async (
       request: PersonalChatStreamEventsArgs = {},
+      target?: PersonalChatMachineTarget | null,
     ): Promise<PersonalChatStreamEventsResult> =>
-      ipcRenderer.invoke(IPC.personalChatsStreamEvents, request),
+      ipcRenderer.invoke(IPC.personalChatsStreamEvents, request, target ?? null),
   },
   keybindings: {
     get: async (): Promise<KeybindingsSnapshot> =>

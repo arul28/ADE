@@ -287,6 +287,7 @@ struct WorkSessionDestinationView: View {
   /// composer as Work while routing every chat operation through
   /// `personalChats.*` and hiding project-only chrome.
   var personalChat = false
+  var personalChatMachineKey: String?
   /// CTO uses the Work transcript pipeline with a single-line voice/send
   /// composer. Model, reasoning, fast mode, and identity live in CTO settings.
   var compactComposer = false
@@ -313,6 +314,7 @@ struct WorkSessionDestinationView: View {
     lanes: [LaneSummary] = [],
     crossProjectContext: WorkChatCrossProjectContext? = nil,
     personalChat: Bool = false,
+    personalChatMachineKey: String? = nil,
     compactComposer: Bool = false,
     liveRedirectOnlySends: Bool = false
   ) {
@@ -334,6 +336,7 @@ struct WorkSessionDestinationView: View {
     self.lanesRenderSignature = workLaneListRenderSignature(lanes)
     self.crossProjectContext = crossProjectContext
     self.personalChat = personalChat
+    self.personalChatMachineKey = personalChatMachineKey
     self.compactComposer = compactComposer
     self.liveRedirectOnlySends = liveRedirectOnlySends
 
@@ -350,6 +353,7 @@ struct WorkSessionDestinationView: View {
         sync,
         sessionId: sessionId,
         personalChat: personalChat,
+        personalChatMachineKey: personalChatMachineKey,
         crossProjectContext: crossProjectContext
       )
       if let key = sync.chatThreadKey(for: sessionId) {
@@ -377,7 +381,7 @@ struct WorkSessionDestinationView: View {
   var isRemoteOnlyChat: Bool { isCrossProject || personalChat }
   /// The chat lives on another paired machine (see `WorkChatCrossProjectContext.machineKey`).
   var isRemoteMachineChat: Bool {
-    guard let machineKey = crossProjectContext?.machineKey else { return false }
+    guard let machineKey = personalChat ? personalChatMachineKey : crossProjectContext?.machineKey else { return false }
     return machineKey != syncService.focusedMachineKey
   }
   /// Single gate for lane→PR work in this destination. See `WorkChatLanePrPolicy`.
@@ -746,7 +750,8 @@ struct WorkSessionDestinationView: View {
       sessionId: session.id,
       sessionMuted: pushNotificationService.prefs.mutedSessionIds.contains(session.id),
       showsProof: !personalChat,
-      showsPinAction: !personalChat,
+      showsPinAction: !personalChat
+        || syncService.canInvokeChatRemoteAction("chat.setPinned", sessionId: session.id),
       showsSessionLink: !personalChat,
       canAttachIssue: syncService.canInvokeRemoteAction("lane.attachLinearIssueToSession"),
       showsRename: !CursorCloudNaming.ownsName(
@@ -1303,6 +1308,7 @@ struct WorkSessionDestinationView: View {
       syncService,
       sessionId: sessionId,
       personalChat: personalChat,
+      personalChatMachineKey: personalChatMachineKey,
       crossProjectContext: crossProjectContext
     )
   }
@@ -1688,9 +1694,10 @@ struct WorkSessionDestinationView: View {
         ? syncService.supportsViewerRemoteAction("personalChats.saveTempAttachment")
         : syncService.supportsViewerRemoteAction("chat.saveTempAttachment"),
       personalModelCatalogAvailable: !personalChat
-        || syncService.canInvokeRemoteAction("personalChats.modelCatalog"),
+        || syncService.canInvokeChatRemoteAction("chat.modelCatalog", sessionId: sessionId),
       personalSessionUpdatesAvailable: !personalChat
-        || syncService.canInvokeRemoteAction("personalChats.updateSession"),
+        || syncService.canInvokeChatRemoteAction("chat.updateSession", sessionId: sessionId),
+      personalMachineKey: personalChatMachineKey,
       onRecoverCodexTurn: workChatCodexRecoveryAvailable(hostSupportsRecovery: supportsRecovery)
         ? recoverCodexTurn
         : nil,
@@ -2437,10 +2444,11 @@ func workRegisterChatCommandScope(
   _ syncService: SyncService,
   sessionId: String,
   personalChat: Bool,
+  personalChatMachineKey: String? = nil,
   crossProjectContext: WorkChatCrossProjectContext?
 ) {
   if personalChat {
-    syncService.setPersonalChatScope(sessionId: sessionId)
+    syncService.setPersonalChatScope(sessionId: sessionId, machineKey: personalChatMachineKey)
     return
   }
   if let crossProjectContext,
@@ -2655,6 +2663,7 @@ extension WorkSessionDestinationView: Equatable {
       && lhs.lanesRenderSignature == rhs.lanesRenderSignature
       && lhs.crossProjectContext == rhs.crossProjectContext
       && lhs.personalChat == rhs.personalChat
+      && lhs.personalChatMachineKey == rhs.personalChatMachineKey
       && lhs.liveRedirectOnlySends == rhs.liveRedirectOnlySends
   }
 }

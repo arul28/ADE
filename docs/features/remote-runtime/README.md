@@ -647,12 +647,6 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   when no other machine holds the branch, the entry is this machine (ids
   compared, never names), the other machine is on a different branch, or the
   other machine has nothing unpushed.
-- `apps/desktop/src/renderer/components/chat/thisMachineProjectRoot.ts` —
-  resolves the machine picker's "This computer" option back to *this repository's*
-  local checkout by repo identity (reusing `deriveLaneMachineOptions`' rule)
-  rather than to the first local tab in insertion order, and refuses to switch
-  when there is no local counterpart. Used by the chat composer's machine picker
-  and the Chats tab.
 - `apps/desktop/src/renderer/state/appStore.ts`,
   `apps/desktop/src/renderer/components/app/App.tsx`,
   `TopBar.tsx`, and `projectRouteStorage.ts` — represent every open remote
@@ -1484,7 +1478,7 @@ The update command stages the next release under `$ADE_HOME/runtime/updates/`, v
 
 ## What works remotely
 
-Remote project bindings route lanes, agent chat, PTYs, terminal IO, file operations, file-watch notifications, git actions, PR actions, native GitHub stack actions, PR AI conflict-resolution sessions, PR issue-resolution launch flows, AI PR summaries, issue inventory, cross-machine handoff destination checks/acceptance, and event streaming through the remote runtime. The global Chats route deliberately retains the window binding: when opened from a remote-bound project tab, `personalChats.call` / `streamEvents` go to that remote machine's hidden personal-chat scope; from a local or no-project window they go to the local brain. Remote lane preview URLs are opened through a local TCP forward created by the desktop, so a dev server bound to `127.0.0.1` on the remote can be inspected from the local window. A connected remote project's tab shows the real project logo and a yellow connected accent: the host brain resolves the icon and inlines it on `projects.list`, the desktop threads it through `RemoteRuntimeProjectRecord.iconDataUrl` → `OpenProjectBinding.iconDataUrl` to the tab, and persists it so the logo is restored on a cold start before the remote reconnects. Agent CLI failures (Claude / Codex / Cursor / Droid not installed or not authenticated) surface as inline `AgentCliAuthCard` cards in chat; the install / login buttons open a tracked terminal in the active runtime, so a remote project runs the install or login command on the remote machine.
+Remote project bindings route lanes, agent chat, PTYs, terminal IO, file operations, file-watch notifications, git actions, PR actions, native GitHub stack actions, PR AI conflict-resolution sessions, PR issue-resolution launch flows, AI PR summaries, issue inventory, cross-machine handoff destination checks/acceptance, and event streaming through the remote runtime. The global Chats route lists personal chats from every connected machine. Each call names its machine, so row actions and event reads reach the owner; the new-chat picker chooses where a new chat runs without changing the project tab. Calls without a target still use the window's bound machine, which is also where the Browser tab's docked chat runs. Remote lane preview URLs are opened through a local TCP forward created by the desktop, so a dev server bound to `127.0.0.1` on the remote can be inspected from the local window. A connected remote project's tab shows the real project logo and a yellow connected accent: the host brain resolves the icon and inlines it on `projects.list`, the desktop threads it through `RemoteRuntimeProjectRecord.iconDataUrl` → `OpenProjectBinding.iconDataUrl` to the tab, and persists it so the logo is restored on a cold start before the remote reconnects. Agent CLI failures (Claude / Codex / Cursor / Droid not installed or not authenticated) surface as inline `AgentCliAuthCard` cards in chat; the install / login buttons open a tracked terminal in the active runtime, so a remote project runs the install or login command on the remote machine.
 
 ### Which desktop shows it
 

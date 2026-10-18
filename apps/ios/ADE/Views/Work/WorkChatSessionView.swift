@@ -683,6 +683,8 @@ struct WorkChatSessionView: View {
   var attachmentsAvailable: Bool = true
   var personalModelCatalogAvailable: Bool = true
   var personalSessionUpdatesAvailable: Bool = true
+  /// The machine that owns a personal chat; nil for the focused machine.
+  var personalMachineKey: String? = nil
   /// Present only when the paired host advertises provider-neutral
   /// `chat.recoverTurn` or the legacy Codex-specific recovery action.
   /// Keeping this optional prevents a new phone build from offering controls
@@ -2334,6 +2336,7 @@ struct WorkChatSessionView: View {
             currentCodexFastMode: chatSummaryContext.effectiveFastMode,
             lanes: lanes,
             commandScope: isPersonalChat ? .personal : .project,
+            personalMachineKey: personalMachineKey,
             isBusy: modelUpdateInFlight,
             currentCopilotContextTier: chatSummaryContext.copilotContextTier,
             currentCopilotAutoTier: chatSummaryContext.copilotAutoTier,
