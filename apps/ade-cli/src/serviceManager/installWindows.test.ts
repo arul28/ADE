@@ -577,13 +577,11 @@ describe("Windows background service helpers", () => {
     { label: "an ordinary install", forceEnv: {} },
     { label: "a Repair-forced install", forceEnv: { ADE_FORCE_RUNTIME_SERVICE_RESTART: "1" } },
   ])("restarts the running supervisor on $label", async ({ forceEnv }) => {
-    // The desktop Repair button sets ADE_FORCE_RUNTIME_SERVICE_RESTART, and
-    // ONLY installLaunchd reads it — it exists to defeat launchd's "unchanged
-    // plist + loaded + responsive => skip" fast path. Windows honours the flag
-    // by construction rather than by reading it: this install has no skip path,
-    // so it always taskkills the supervisor tree and starts a fresh one. Assert
-    // that for BOTH env shapes, so a future "already installed, leave it alone"
-    // optimisation here cannot silently turn Repair into a no-op on Windows.
+    // The desktop Repair button sets ADE_FORCE_RUNTIME_SERVICE_RESTART to defeat
+    // the "unchanged definition + running + responsive => skip" fast path that
+    // launchd, systemd and this install share. Here the launcher is new (no
+    // file on disk), so even the ordinary install replaces the running
+    // supervisor; the forced install must replace it too.
     const home = makeTempHome("ade-windows-service-force-restart-");
     const launcherPath = path.join(home, "brain-service.ps1");
     fs.writeFileSync(`${launcherPath}.pid.json`, JSON.stringify(readyPidRecord), "utf8");
