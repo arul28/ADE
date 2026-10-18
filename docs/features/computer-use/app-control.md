@@ -219,6 +219,9 @@ ids are always null.
   - screencast frames go out on `onEvent` (`type: "frame"`); `setFrameDemand`
     records which lanes a source (a window, the sync stream, a legacy
     subscription) shows, so only those lanes' screencasts stream.
+- `appControlLaneController.ts` — lane-scoped App Control operations. Its
+  point inspector converts viewport points to CDP document coordinates and
+  maps same-renderer iframe rectangles into the top-level viewport.
 - `appControlAgentActions.ts` — the agent observe/act loop.
 - `appControlRecording.ts` — the per-lane recorder: start, stop, status, the
   cap, and filing a captioned video as proof. A recording demands its lane and
@@ -253,6 +256,12 @@ ids are always null.
   disk sweeps (keep the newest N per live owner; drop aged-out directories)
   for `.ade/cache/browser-observations` and
   `.ade/cache/app-control-observations`.
+
+### Shared CDP frame geometry
+
+- `apps/desktop/src/main/services/shared/cdpFrameTransform.ts` — recovers the
+  2D transform from an iframe's CDP content quad and maps points or rectangles
+  between that frame's viewport and its parent.
 
 ### Shared types (`apps/desktop/src/shared/types/appControl.ts`)
 
@@ -440,11 +449,19 @@ raise or move the app window. The panel's Show and Minimize buttons call
    label or selector tokens. Each match is `exact` or `candidate`.
 
 `inspectPoint` hit-tests with CDP `DOM.getNodeForLocation`, `DOM.resolveNode`
-and `Runtime.callFunctionOn`, so the outline snaps to the real control. An
-in-page script is the fallback. It commits nothing. `selectPoint` makes the
-final `AppControlContextItem` for the chat. Both fall back to a
-`coordinate-fallback` provider when the hit-test misses (for example, inside an
-iframe ADE cannot reach).
+and `Runtime.callFunctionOn`, so the outline snaps to the real control. Points
+arrive in viewport pixels, while `DOM.getNodeForLocation` expects document
+pixels, so App Control adds `pageX` / `pageY` from the layout viewport. It sets
+`ignorePointerEventsNone: false`, keeping `pointer-events:none` layers from
+winning the hit test. The CDP metadata function reads the resolved node and
+supplies its details to the outline; when CDP cannot resolve a node, the
+in-page script is the fallback.
+For a node inside a same-renderer iframe, App Control maps its rectangle into
+the top-level viewport. A cross-site iframe still resolves to its `<iframe>`
+element because App Control does not open a child debugger session for it. It
+commits nothing. `selectPoint` makes the final `AppControlContextItem` for the
+chat. Both fall back to a `coordinate-fallback` provider when no element can be
+resolved.
 
 ## Input (renderer live-frame path)
 
