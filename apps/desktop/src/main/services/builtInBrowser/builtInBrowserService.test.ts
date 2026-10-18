@@ -5098,12 +5098,19 @@ describe("createBuiltInBrowserService — switchTab and navigate inspect/selecti
     expect(popupWc.debugger.isAttached()).toBe(false);
   });
 
-  it("selects inspect clicks from the ADE overlay binding", async () => {
+  it("selects inspect clicks from the ADE overlay binding on a scrolled page", async () => {
     const commands: Array<{ method: string; params?: Record<string, unknown> }> = [];
+    // Chromium's hit test takes document pixels: on a page scrolled 1500px, the
+    // viewport point (84, 61) is the document point (84, 1561), and a point
+    // above the scrolled-off top finds nothing.
+    const scrollY = 1500;
     fakes.setSendCommand(async (method, params) => {
       commands.push({ method, params });
       switch (method) {
+        case "Page.getLayoutMetrics":
+          return { cssLayoutViewport: { pageX: 0, pageY: scrollY, clientWidth: 400, clientHeight: 300 } };
         case "DOM.getNodeForLocation":
+          if (Number(params?.y) < scrollY) throw new Error("No node found at given location");
           return { backendNodeId: 42 };
         case "DOM.resolveNode":
           return { object: { objectId: "parent-object" } };
@@ -5146,16 +5153,17 @@ describe("createBuiltInBrowserService — switchTab and navigate inspect/selecti
       name: "__adeBuiltInBrowserInspectSelect",
       payload: JSON.stringify({ type: "select", x: 84, y: 61 }),
     }, "");
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    expect(service.getStatus()).toMatchObject({
+    await vi.waitFor(() => expect(service.getStatus()).toMatchObject({
       hasSelection: true,
       isInspecting: false,
-    });
+    }));
+
+    const selection = collector.events.find((event) => event.type === "selection");
+    expect(selection?.item).toMatchObject({ frame: { x: 40, y: 50, width: 90, height: 28 } });
     expect(commands).toEqual(expect.arrayContaining([
       expect.objectContaining({
         method: "DOM.getNodeForLocation",
-        params: expect.objectContaining({ x: 84, y: 61 }),
+        params: expect.objectContaining({ x: 84, y: 61 + scrollY }),
       }),
       expect.objectContaining({
         method: "Runtime.callFunctionOn",
@@ -5170,6 +5178,52 @@ describe("createBuiltInBrowserService — switchTab and navigate inspect/selecti
         }),
       }),
     ]));
+  });
+
+  it("drops an iframe picker click whose inspect run stopped while the click was being placed", async () => {
+    const commands: string[] = [];
+    let releaseFrameOwner: (value: unknown) => void = () => {};
+    const frameOwner = new Promise((resolve) => { releaseFrameOwner = resolve; });
+    let ownerRequested = false;
+    fakes.setSendCommand(async (method) => {
+      commands.push(method);
+      switch (method) {
+        case "Page.getFrameTree":
+          return { frameTree: { frame: { id: "main-frame" }, childFrames: [{ frame: { id: "child-frame" } }] } };
+        case "Page.createIsolatedWorld":
+          return { executionContextId: 7 };
+        case "DOM.getFrameOwner":
+          ownerRequested = true;
+          return frameOwner;
+        case "DOM.getBoxModel":
+          return { model: { content: [10, 20, 110, 20, 110, 70, 10, 70], width: 100, height: 50 } };
+        default:
+          return {};
+      }
+    });
+
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    await service.navigate({ url: "https://example.test", newTab: true });
+    await service.startInspect();
+    expect(commands).toContain("Page.createIsolatedWorld");
+
+    const wc = fakes.webContentsInstances[0];
+    if (!wc) throw new Error("missing web contents");
+    wc.debugger.emit("message", {}, "Runtime.bindingCalled", {
+      name: "__adeBuiltInBrowserInspectFrameSelect",
+      payload: JSON.stringify({ type: "select", x: 5, y: 5 }),
+      executionContextId: 7,
+    }, "");
+    await vi.waitFor(() => expect(ownerRequested).toBe(true));
+
+    await service.stopInspect();
+    releaseFrameOwner({ backendNodeId: 99 });
+    await vi.waitFor(() => expect(commands).toContain("DOM.getBoxModel"));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(commands).not.toContain("DOM.getNodeForLocation");
+    expect(collector.events.some((event) => event.type === "selection")).toBe(false);
+    expect(service.getStatus()).toMatchObject({ hasSelection: false, isInspecting: false });
   });
 
   it("passes inspect coordinates into page metadata resolution so smaller descendants can win", async () => {
