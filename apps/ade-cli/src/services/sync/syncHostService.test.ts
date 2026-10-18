@@ -10883,8 +10883,9 @@ describe("sync host reliability guards", () => {
   });
 
   it("sends an image artifact as base64 even when its first bytes hold no NUL", async () => {
-    // A JPEG's leading bytes can hold no NUL. Read as text it had no data URL,
-    // so a proof screenshot saved as .jpg never showed on the web client.
+    // These bytes hold no NUL, so only the image type makes the file binary. A real
+    // JPEG has NULs in its segment lengths and was already binary; this pins the
+    // type rule for any image whose bytes are NUL-free.
     const { projectRoot, cleanup } = createTempProjectRoot();
     const artifactPath = path.join(projectRoot, ".ade", "artifacts", "computer-use", "shot.jpg");
     fs.mkdirSync(path.dirname(artifactPath), { recursive: true });
@@ -10908,6 +10909,45 @@ describe("sync host reliability guards", () => {
         ok: true,
         action: "readArtifact",
         result: { encoding: "base64", isBinary: true, mimeType: "image/jpeg" },
+      });
+    } finally {
+      try {
+        peer?.ws.close();
+      } catch {
+        // ignore
+      }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("keeps a text artifact as utf-8 text, svg included, when its bytes hold no NUL", async () => {
+    // svg has no MIME type on the host, so the image rule does not reach it. It
+    // stays readable text, as before, and the web client shows no picture for it.
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const svg = "<svg xmlns=\"http://www.w3.org/2000/svg\"><rect width=\"1\" height=\"1\"/></svg>\n";
+    const artifactPath = path.join(projectRoot, ".ade", "artifacts", "computer-use", "diagram.svg");
+    fs.mkdirSync(path.dirname(artifactPath), { recursive: true });
+    fs.writeFileSync(artifactPath, svg);
+    const host = createReliabilityHost(projectRoot);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "web-svg-artifact");
+      peer.ws.send(encodeSyncEnvelope({
+        type: "file_request",
+        requestId: "svg-artifact",
+        payload: {
+          action: "readArtifact",
+          args: { uri: ".ade/artifacts/computer-use/diagram.svg" },
+        },
+      }));
+
+      const response = await waitForEnvelope(peer.envelopes, "file_response", "svg-artifact");
+      expect(response.payload).toMatchObject({
+        ok: true,
+        action: "readArtifact",
+        result: { encoding: "utf-8", isBinary: false, content: svg },
       });
     } finally {
       try {
