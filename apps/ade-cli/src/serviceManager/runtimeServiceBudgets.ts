@@ -48,6 +48,15 @@ export const WINDOWS_HANDOVER_TIMEOUT_MS = 15_000;
 export const RUNTIME_SERVICE_START_WAIT_MS = 90_000;
 
 /**
+ * How long a Windows service install or uninstall waits for another one already
+ * running on this ADE home before it fails. Half the desktop's install budget:
+ * a running install is bounded by its own handover waits (WINDOWS_HANDOVER_TIMEOUT_MS
+ * each), so a waiter outlasts one in progress and still has the other half of
+ * RUNTIME_SERVICE_START_WAIT_MS for its own install.
+ */
+export const RUNTIME_SERVICE_INSTALL_LOCK_WAIT_MS = RUNTIME_SERVICE_START_WAIT_MS / 2;
+
+/**
  * How long a caller keeps dialing a brain the installer reported as `starting`
  * before it gives up. Twice the handover budget: the installer stopped waiting,
  * the supervisor did not, and the socket appears the moment the brain is up.

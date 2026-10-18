@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { ExclusiveFileLockTimeoutError, withExclusiveFileLock } from "../lib/exclusiveFileLock";
 import {
   resolveTrustedWindowsTool,
   TrustedWindowsToolError,
@@ -39,6 +40,7 @@ import {
   type WindowsRuntimeReadinessProbe,
   type WindowsServicePidRecord,
 } from "./windowsSupervisor";
+import { RUNTIME_SERVICE_INSTALL_LOCK_WAIT_MS } from "./runtimeServiceBudgets";
 
 export {
   buildWindowsRuntimeQueryArgs,
@@ -1028,7 +1030,7 @@ export async function installWindowsService(
   deps: WindowsServiceManagerDeps = {},
 ): Promise<ServiceManagerResult> {
   try {
-    return await installWindowsServiceImpl(deps);
+    return await withWindowsServiceInstallLock(deps, "install", () => installWindowsServiceImpl(deps));
   } catch (error) {
     if (!isTrustedWindowsToolError(error)) throw error;
     return windowsToolFailureResult<ServiceManagerResult & { ok: false; message: string }>(error, {
@@ -1036,6 +1038,44 @@ export async function installWindowsService(
       action: "install",
       path: null,
     });
+  }
+}
+
+/**
+ * One install or uninstall at a time per ADE home. Two of them racing is how a
+ * brain one of them just started gets replaced by the other: the second finds
+ * the new brain not ready yet, falls through to replacement and stops it. Queued
+ * behind the first, the second takes the keep or young-brain path instead.
+ *
+ * The lock sits beside the launcher, which is `<ADE home>\runtime` in production
+ * (the directory resolveMachineAdeLayout().runtimeDir names). A test that points
+ * launcherPath at a temp dir therefore never takes a real ADE home's lock.
+ */
+async function withWindowsServiceInstallLock(
+  deps: WindowsServiceManagerDeps,
+  action: "install" | "uninstall",
+  task: () => Promise<ServiceManagerResult>,
+): Promise<ServiceManagerResult> {
+  const serviceCommand = deps.command ?? resolveAdeServeCommand();
+  const runtimeEnv = { ...(deps.env ?? process.env), ...(serviceCommand.env ?? {}) };
+  const serviceName = resolvedServiceName(deps, serviceCommand);
+  const launcherPath = deps.launcherPath
+    ?? resolveWindowsServiceLauncherPath({ env: runtimeEnv, serviceName });
+  try {
+    return await withExclusiveFileLock(
+      path.join(path.dirname(launcherPath), "service-install.lock"),
+      task,
+      { waitMs: RUNTIME_SERVICE_INSTALL_LOCK_WAIT_MS, label: "ADE service install lock" },
+    );
+  } catch (error) {
+    if (!(error instanceof ExclusiveFileLockTimeoutError)) throw error;
+    return {
+      ok: false,
+      serviceName,
+      action,
+      path: null,
+      message: `${error.message} Another ADE service install or uninstall is still running; retry once it finishes.`,
+    };
   }
 }
 
@@ -1396,7 +1436,7 @@ export async function uninstallWindowsService(
   deps: WindowsServiceManagerDeps = {},
 ): Promise<ServiceManagerResult> {
   try {
-    return await uninstallWindowsServiceImpl(deps);
+    return await withWindowsServiceInstallLock(deps, "uninstall", () => uninstallWindowsServiceImpl(deps));
   } catch (error) {
     if (!isTrustedWindowsToolError(error)) throw error;
     return windowsToolFailureResult<ServiceManagerResult & { ok: false; message: string }>(error, {

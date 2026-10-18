@@ -1220,7 +1220,12 @@ describe("Windows background service helpers", () => {
       { status: 1, stdout: "", stderr: "" },
     ]);
 
-    const result = await uninstallWindowsService({ serviceName, spawnSync, userName: taskUser });
+    const result = await uninstallWindowsService({
+      serviceName,
+      spawnSync,
+      userName: taskUser,
+      launcherPath: path.join(makeTempHome("ade-windows-uninstall-lock-"), "brain-service.ps1"),
+    });
 
     expect(result.ok).toBe(false);
     expect(result.message).toContain("ERROR: The system cannot find the file specified.");
