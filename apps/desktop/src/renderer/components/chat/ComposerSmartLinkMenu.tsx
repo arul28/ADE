@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Copy, Trash } from "@phosphor-icons/react";
+import { fixedFrameOf, fixedRect, fixedViewport } from "../../lib/webZoom";
 
 export function ComposerSmartLinkMenu({
   anchor,
@@ -27,10 +28,13 @@ export function ComposerSmartLinkMenu({
 
   useLayoutEffect(() => {
     const update = () => {
-      const rect = anchor.getBoundingClientRect();
+      // Screen rect and window, converted into the viewport frame the menu is written in.
+      const frame = fixedFrameOf(null);
+      const rect = fixedRect(frame, anchor.getBoundingClientRect());
+      const viewport = fixedViewport(frame);
       const width = 224;
       setPosition({
-        left: Math.min(Math.max(8, rect.left), Math.max(8, window.innerWidth - width - 8)),
+        left: Math.min(Math.max(8, rect.left), Math.max(8, viewport.width - width - 8)),
         top: Math.max(8, rect.top - 8),
       });
     };

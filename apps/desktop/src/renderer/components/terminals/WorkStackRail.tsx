@@ -1,5 +1,6 @@
 import React, { useLayoutEffect, useRef, useState } from "react";
 import { cn } from "../ui/cn";
+import { cssZoomOf } from "../../lib/webZoom";
 
 type RailGeometry = { ys: number[]; xs: number[] };
 
@@ -33,15 +34,17 @@ export function WorkStackRail({
     if (!element) return;
     const measure = () => {
       const box = element.getBoundingClientRect();
+      // Screen rect differences, written as layout px in this relative box.
+      const zoom = cssZoomOf(element);
       const next: RailGeometry = { ys: [], xs: [] };
       for (const member of element.querySelectorAll<HTMLElement>(":scope > [data-stack-rail-member]")) {
         const badge = member.querySelector<HTMLElement>("[data-github-stack-badge]");
         if (badge) {
           const rect = badge.getBoundingClientRect();
-          next.ys.push(rect.top + rect.height / 2 - box.top);
-          next.xs.push(rect.left - box.left);
+          next.ys.push((rect.top + rect.height / 2 - box.top) / zoom);
+          next.xs.push((rect.left - box.left) / zoom);
         } else {
-          next.ys.push(member.getBoundingClientRect().top - box.top + 14);
+          next.ys.push((member.getBoundingClientRect().top - box.top) / zoom + 14);
           next.xs.push(8);
         }
       }

@@ -5,6 +5,7 @@ import { copyPictureToClipboard, saveMediaAs } from "../../../ui/MediaLightbox";
 import { COLORS } from "../../../lanes/laneDesignTokens";
 import { streamFileBytes } from "../streamBytes";
 import type { ViewerProps } from "./types";
+import { cssZoomOf } from "../../../../lib/webZoom";
 
 const MIN_SCALE = 0.1;
 const MAX_SCALE = 12;
@@ -87,7 +88,9 @@ export function ImageViewer({ files, workspaceId, content, tab }: ViewerProps) {
   const onPointerMove = (e: React.PointerEvent) => {
     const drag = dragRef.current;
     if (!drag) return;
-    setOffset({ x: drag.ox + (e.clientX - drag.x), y: drag.oy + (e.clientY - drag.y) });
+    // Pointer deltas are screen px; the offset is a layout translate.
+    const zoom = cssZoomOf();
+    setOffset({ x: drag.ox + (e.clientX - drag.x) / zoom, y: drag.oy + (e.clientY - drag.y) / zoom });
   };
   const onPointerUp = () => {
     dragRef.current = null;

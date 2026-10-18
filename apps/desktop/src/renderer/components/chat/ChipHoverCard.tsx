@@ -54,6 +54,7 @@ import { computeTooltipPosition, type TooltipPlacement } from "../ui/tooltipPosi
 import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { useChipPreviewImage } from "./chipPreviewStore";
+import { fixedFrameOf, fixedRect, fixedViewport } from "../../lib/webZoom";
 
 /** Everything a card may read, all of it belonging to the CHAT's machine. */
 export type ChipCardSources = {
@@ -383,8 +384,11 @@ function ChipCardBody({ data }: { data: ChipCardData }) {
 }
 
 function cardPlacement(trigger: HTMLElement, card: HTMLElement): TooltipPlacement {
-  const triggerBox = trigger.getBoundingClientRect();
-  const cardBox = card.getBoundingClientRect();
+  // Screen rects and the window are converted into the frame the card is written in.
+  const frame = fixedFrameOf(card.parentElement);
+  const triggerBox = fixedRect(frame, trigger.getBoundingClientRect());
+  const cardBox = fixedRect(frame, card.getBoundingClientRect());
+  const viewport = fixedViewport(frame);
   return computeTooltipPosition({
     preferredSide: "top",
     trigger: {
@@ -396,7 +400,7 @@ function cardPlacement(trigger: HTMLElement, card: HTMLElement): TooltipPlacemen
       height: triggerBox.height,
     },
     tooltip: { width: cardBox.width, height: cardBox.height },
-    viewport: { width: window.innerWidth, height: window.innerHeight },
+    viewport: { width: viewport.width, height: viewport.height },
     gap: GAP,
     pad: VIEWPORT_PAD,
   });

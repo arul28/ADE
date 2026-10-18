@@ -71,6 +71,7 @@ import { FloatingPlayerCapturePill, useFloatingPlayerCapture } from "../shared/F
 import { useAnyFloatingPlayerShown } from "../shared/floatingPlayerSlots";
 import { showToast } from "../app/toast/toastStore";
 import { fgTint } from "../lanes/laneDesignTokens";
+import { cssZoomOf } from "../../lib/webZoom";
 
 /**
  * The floating live-preview card.
@@ -643,12 +644,14 @@ export function WorkLiveCornerCard({
     const observed = new Set<Element>();
     const measure = () => {
       frame = null;
+      // Screen rects, converted to layout px so the reserve is in the chat column's units.
+      const zoom = cssZoomOf(host);
       const hostRect = host.getBoundingClientRect();
       const obstructions: { top: number; bottom: number; height: number }[] = [];
       const present = new Set<Element>();
       for (const element of root.querySelectorAll<HTMLElement>(WORK_LIVE_CARD_AVOID_SELECTOR)) {
         const rect = element.getBoundingClientRect();
-        obstructions.push({ top: rect.top, bottom: rect.bottom, height: rect.height });
+        obstructions.push({ top: rect.top / zoom, bottom: rect.bottom / zoom, height: rect.height / zoom });
         present.add(element);
         // Observed lazily: a composer that grows with a draft has to re-measure,
         // and one that has not been rendered yet cannot be observed up front.
@@ -664,7 +667,7 @@ export function WorkLiveCornerCard({
         observed.delete(element);
       }
       setBottomReserve(workLiveBottomReserve({
-        host: { top: hostRect.top, bottom: hostRect.bottom, height: hostRect.height },
+        host: { top: hostRect.top / zoom, bottom: hostRect.bottom / zoom, height: hostRect.height / zoom },
         obstructions,
       }));
     };
@@ -810,7 +813,8 @@ export function WorkLiveCornerCard({
     event.preventDefault();
     event.stopPropagation();
     const bounds = workLiveCardWidthBounds(hostSize.width);
-    const next = Math.max(bounds.min, Math.min(bounds.max, Math.round(start.width + (event.clientX - start.x))));
+    // The pointer delta is screen px; the card width is layout px.
+    const next = Math.max(bounds.min, Math.min(bounds.max, Math.round(start.width + (event.clientX - start.x) / cssZoomOf())));
     setResizeWidth(next);
   }, [hostSize.width]);
 
