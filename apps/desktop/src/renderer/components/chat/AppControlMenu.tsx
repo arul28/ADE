@@ -19,6 +19,7 @@ import {
   MENU_SURFACE_CLASS,
   MENU_WIDTH_CLASS,
 } from "../ui/paneMenuTokens";
+import { toLayoutPx } from "../../lib/webZoom";
 
 /** The house overshoot curve — same one `ade-popover-in` uses in index.css. */
 const OVERSHOOT = [0.34, 1.56, 0.64, 1] as const;
@@ -128,8 +129,9 @@ export function AppControlMenu({
     const measure = () => {
       const trigger = triggerRef.current;
       if (!trigger) return;
-      const top = trigger.getBoundingClientRect().bottom + MENU_TRIGGER_OFFSET_PX;
-      const available = clipBottomFor(wrapperRef.current) - top - MENU_EDGE_GUTTER_PX;
+      // The clip edge and the trigger are screen px; the gaps are layout px.
+      const room = toLayoutPx(clipBottomFor(wrapperRef.current) - trigger.getBoundingClientRect().bottom);
+      const available = room - MENU_TRIGGER_OFFSET_PX - MENU_EDGE_GUTTER_PX;
       // Clamped both ways: the measurement is a safety valve for a SHORT pane,
       // not a licence to outgrow the design ceiling on a tall one.
       const clamped = Math.min(Math.max(available, MENU_MIN_HEIGHT_PX), MENU_MAX_HEIGHT_PX);

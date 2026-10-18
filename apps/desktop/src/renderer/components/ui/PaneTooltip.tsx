@@ -8,6 +8,7 @@ import React, {
   type FocusEvent as ReactFocusEvent,
 } from "react";
 import { createPortal } from "react-dom";
+import { fixedFrameOf, fixedRect, fixedViewport } from "../../lib/webZoom";
 import { computeTooltipPosition, type TooltipPlacement, type TooltipSide } from "./tooltipPosition";
 
 /**
@@ -174,8 +175,12 @@ export function PaneTooltip({
     const wrapper = wrapperRef.current;
     const tooltip = tooltipRef.current;
     if (!wrapper || !tooltip) return;
-    const triggerBox = wrapper.getBoundingClientRect();
-    const tooltipBox = tooltip.getBoundingClientRect();
+    // Measured rects are screen px; the tooltip is written as `left`/`top` in the
+    // viewport frame, so the trigger, tooltip and window are converted into it first.
+    const frame = fixedFrameOf(tooltip.parentElement);
+    const triggerBox = fixedRect(frame, wrapper.getBoundingClientRect());
+    const tooltipBox = fixedRect(frame, tooltip.getBoundingClientRect());
+    const viewport = fixedViewport(frame);
     const next = computeTooltipPosition({
       preferredSide: side,
       trigger: {
@@ -187,7 +192,7 @@ export function PaneTooltip({
         height: triggerBox.height,
       },
       tooltip: { width: tooltipBox.width, height: tooltipBox.height },
-      viewport: { width: window.innerWidth, height: window.innerHeight },
+      viewport: { width: viewport.width, height: viewport.height },
     });
     setPlacement((previous) => (
       previous && previous.x === next.x && previous.y === next.y && previous.side === next.side

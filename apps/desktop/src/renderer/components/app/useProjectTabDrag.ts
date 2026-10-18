@@ -7,6 +7,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type RefObject,
 } from "react";
+import { cssZoomOf } from "../../lib/webZoom";
 
 /** Movement before a press becomes a drag, so a plain click still clicks. */
 const DRAG_START_PX = 5;
@@ -270,7 +271,8 @@ export function useProjectTabDrag(args: {
         return drag.torn
           ? { opacity: 0 }
           : {
-              transform: `translateX(${drag.dx}px)`,
+              // `dx` is a screen delta; the translate is written in layout px.
+              transform: `translateX(${drag.dx / cssZoomOf()}px)`,
               transition: "none",
               zIndex: 10,
               position: "relative",

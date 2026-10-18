@@ -151,3 +151,67 @@ export function cssZoomOf(el: HTMLElement | null = typeof document === "undefine
   const zoom = el.getBoundingClientRect().width / el.offsetWidth;
   return Number.isFinite(zoom) && zoom > 0 ? zoom : 1;
 }
+
+/**
+ * The frame a `position: fixed` element's `left`/`top` are written in, and how
+ * it maps a rect measured on screen into that frame. The containing block is the
+ * viewport unless an ancestor creates one (a transform, filter, perspective,
+ * backdrop-filter, `contain`, or `will-change` for those). Then it is that
+ * ancestor's box, and its own scale (its transform, times the body zoom) is the
+ * screen-pixels-per-style-pixel ratio. `scale` is 1 in Electron.
+ */
+export type FixedFrame = { originX: number; originY: number; scale: number };
+
+function isSet(value: string | null | undefined): boolean {
+  return Boolean(value) && value !== "none";
+}
+
+function createsContainingBlock(el: HTMLElement): boolean {
+  const style = getComputedStyle(el);
+  if (isSet(style.transform) || isSet(style.perspective) || isSet(style.filter)) return true;
+  if (isSet(style.backdropFilter)) return true;
+  if (/paint|layout|strict|content/.test(style.contain ?? "")) return true;
+  return /transform|perspective|filter/.test(style.willChange ?? "");
+}
+
+/**
+ * The frame for a fixed child rendered inside `parent`. Pass null for the viewport
+ * frame (a child of `body`), which is the common case.
+ */
+export function fixedFrameOf(parent: Element | null): FixedFrame {
+  if (typeof document !== "undefined" && typeof getComputedStyle === "function") {
+    for (let el = parent; el && el !== document.body && el !== document.documentElement; el = el.parentElement) {
+      if (el instanceof HTMLElement && createsContainingBlock(el)) {
+        const box = el.getBoundingClientRect();
+        return { originX: box.left, originY: box.top, scale: cssZoomOf(el) };
+      }
+    }
+  }
+  return { originX: 0, originY: 0, scale: cssZoomOf() };
+}
+
+type RectLike = { left: number; top: number; width: number; height: number };
+
+/** A screen rect as the `left`/`top`/`width`/… of a fixed child in `frame`. */
+export function fixedRect(frame: FixedFrame, rect: RectLike) {
+  const left = (rect.left - frame.originX) / frame.scale;
+  const top = (rect.top - frame.originY) / frame.scale;
+  const width = rect.width / frame.scale;
+  const height = rect.height / frame.scale;
+  return { left, top, right: left + width, bottom: top + height, width, height };
+}
+
+/**
+ * A screen point (a pointer's `clientX`/`clientY`, or a rect edge) as the
+ * `left`/`top` of a fixed child in `frame`. Pointer coordinates are viewport
+ * pixels, the same space as rects, so they convert the same way.
+ */
+export function fixedPoint(frame: FixedFrame, x: number, y: number): { left: number; top: number } {
+  const point = fixedRect(frame, { left: x, top: y, width: 0, height: 0 });
+  return { left: point.left, top: point.top };
+}
+
+/** The viewport (the window's inner size) in the style space of `frame`. */
+export function fixedViewport(frame: FixedFrame) {
+  return fixedRect(frame, { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight });
+}

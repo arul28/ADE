@@ -23,6 +23,7 @@ import {
   projectSidebarTabTarget,
   visibleProjectSidebarTabs,
 } from "./projectSidebarTabs";
+import { cssZoomOf } from "../../../lib/webZoom";
 
 export { projectSidebarTabForPath };
 
@@ -232,7 +233,8 @@ function ProjectSidebarResizeHandle() {
   const onPointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     const drag = dragRef.current;
     if (!drag) return;
-    setProjectSidebarWidth(drag.startWidth + event.clientX - drag.startX);
+    // The pointer delta is screen px; the sidebar width is layout px.
+    setProjectSidebarWidth(drag.startWidth + (event.clientX - drag.startX) / cssZoomOf());
   }, []);
 
   const endDrag = useCallback((event: React.PointerEvent<HTMLDivElement>) => {

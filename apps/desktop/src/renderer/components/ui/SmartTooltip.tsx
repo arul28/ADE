@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useId, useLayoutEffect, useRef, useState
 import { createPortal } from "react-dom";
 import { useAppearanceStore } from "../../state/appearanceStore";
 import { openExternalUrl } from "../../lib/openExternal";
+import { fixedFrameOf, fixedRect, fixedViewport } from "../../lib/webZoom";
 import { computeTooltipPosition, type TooltipPlacement, type TooltipSide } from "./tooltipPosition";
 
 export type SmartTooltipContent = {
@@ -134,8 +135,12 @@ export function SmartTooltip({
     const trigger = triggerRef.current;
     const tooltip = tooltipRef.current;
     if (!trigger || !tooltip) return;
-    const triggerBox = trigger.getBoundingClientRect();
-    const tooltipBox = tooltip.getBoundingClientRect();
+    // Measured rects are screen px; the tooltip is written as `left`/`top` in the
+    // viewport frame, so the trigger, tooltip and window are converted into it first.
+    const frame = fixedFrameOf(tooltip.parentElement);
+    const triggerBox = fixedRect(frame, trigger.getBoundingClientRect());
+    const tooltipBox = fixedRect(frame, tooltip.getBoundingClientRect());
+    const viewport = fixedViewport(frame);
     const next = computeTooltipPosition({
       preferredSide,
       trigger: {
@@ -147,7 +152,7 @@ export function SmartTooltip({
         height: triggerBox.height,
       },
       tooltip: { width: tooltipBox.width, height: tooltipBox.height },
-      viewport: { width: window.innerWidth, height: window.innerHeight },
+      viewport: { width: viewport.width, height: viewport.height },
       gap: GAP,
       pad: VIEWPORT_PAD,
     });

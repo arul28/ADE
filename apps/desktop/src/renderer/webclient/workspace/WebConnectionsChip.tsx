@@ -25,6 +25,7 @@ import {
   webMachineRowStatusLine,
   type WebMachineEntry,
 } from "./webWorkspaceModel";
+import { fixedFrameOf, fixedRect, fixedViewport } from "../../lib/webZoom";
 
 // ---------------------------------------------------------------------------
 // The hosted client's connections list.
@@ -107,11 +108,14 @@ export function WebConnectionsChip() {
    */
   const [anchor, setAnchor] = useState<{ top: number; right: number } | null>(null);
   const measureAnchor = useCallback(() => {
-    const rect = rootRef.current?.getBoundingClientRect();
-    if (!rect) return;
+    if (!rootRef.current) return;
+    // Screen rect and window, converted into the viewport frame the popover is written in.
+    const frame = fixedFrameOf(null);
+    const rect = fixedRect(frame, rootRef.current.getBoundingClientRect());
+    const viewport = fixedViewport(frame);
     setAnchor({
       top: rect.bottom + 8,
-      right: Math.max(8, window.innerWidth - rect.right),
+      right: Math.max(8, viewport.width - rect.right),
     });
   }, []);
 

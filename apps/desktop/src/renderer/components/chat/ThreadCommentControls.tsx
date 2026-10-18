@@ -5,7 +5,6 @@ import { ArrowSquareOut, ChatTeardropText, PencilSimple, Trash } from "@phosphor
 import type { OpenProjectBinding } from "../../../shared/types";
 import { threadCommentQuoteText, threadReviewCountLabel, type ChatThreadComment } from "../../../shared/threadComments";
 import { fixedMenuAboveAnchorStyle } from "../../lib/fixedMenuPlacement";
-import { cssZoomOf } from "../../lib/webZoom";
 import { useOnSurfaceHidden } from "../../lib/parkedSurface";
 import { cn } from "../ui/cn";
 import { ViewportOverlayPortal } from "../ui/ViewportOverlayHost";
@@ -258,13 +257,9 @@ export function ThreadCommentListItem({
   );
 }
 
-/** Places the list above its button, in layout pixels (see `cssZoomOf`). */
+/** Places the list above its button, in the viewport frame (see `fixedFrameOf`). */
 function menuStyleAbove(rect: DOMRect) {
-  const zoom = cssZoomOf();
-  return fixedMenuAboveAnchorStyle(
-    { left: rect.left / zoom, top: rect.top / zoom, right: rect.right / zoom },
-    { width: 340, align: "end", viewportWidth: window.innerWidth / zoom },
-  );
+  return fixedMenuAboveAnchorStyle(rect, { width: 340, align: "end" });
 }
 
 /**

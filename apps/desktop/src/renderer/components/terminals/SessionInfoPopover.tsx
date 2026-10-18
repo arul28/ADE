@@ -21,6 +21,7 @@ import { getTerminalRuntimeSnapshot } from "./TerminalView";
 import { SessionDeltaCard } from "./SessionDeltaCard";
 import { Button } from "../ui/Button";
 import { SmartTooltip } from "../ui/SmartTooltip";
+import { fixedFrameOf, fixedRect, fixedViewport } from "../../lib/webZoom";
 
 /**
  * The raw PROCESS column, not a session status. This is a different axis from
@@ -202,20 +203,25 @@ export function SessionInfoPopover({
   );
   const showLastOutput = Boolean(lastOutputRaw);
 
+  // The trigger rect and the window are screen px; the shell is written as
+  // `left`/`top` in the viewport frame, so both are converted first.
+  const frame = fixedFrameOf(null);
+  const box = fixedRect(frame, anchor);
+  const viewport = fixedViewport(frame);
   const POPOVER_W = 400;
   const margin = 8;
-  const popoverWidth = Math.min(POPOVER_W, window.innerWidth - 2 * margin);
+  const popoverWidth = Math.min(POPOVER_W, viewport.width - 2 * margin);
 
   // Prefer to the right of the trigger (into the workspace); flip left if needed.
-  let left = anchor.right + margin;
-  if (left + popoverWidth > window.innerWidth - margin) {
-    left = anchor.left - popoverWidth - margin;
+  let left = box.right + margin;
+  if (left + popoverWidth > viewport.right - margin) {
+    left = box.left - popoverWidth - margin;
   }
-  left = Math.max(margin, Math.min(left, window.innerWidth - popoverWidth - margin));
+  left = Math.max(margin, Math.min(left, viewport.right - popoverWidth - margin));
 
   // Align with trigger top; clamp so the shell stays on-screen (content scrolls inside).
-  let top = anchor.top - 4;
-  top = Math.max(margin, Math.min(top, window.innerHeight - margin));
+  let top = box.top - 4;
+  top = Math.max(margin, Math.min(top, viewport.bottom - margin));
 
   const shell = (
     <div

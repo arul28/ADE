@@ -17,6 +17,7 @@ import {
   type FocusFit,
   type WorkFocusPagerModel,
 } from "./WorkFocusGrid";
+import { toLayoutPx } from "../../lib/webZoom";
 
 const EMPTY_FOCUS_PAGE: readonly TerminalSessionSummary[] = [];
 /**
@@ -91,7 +92,7 @@ export function useWorkFocusGrid({
     if (!gridNode || typeof ResizeObserver === "undefined") return;
     const update = () => {
       const rect = gridNode.getBoundingClientRect();
-      const next = focusFit(rect.width, rect.height, maxTiles);
+      const next = focusFit(toLayoutPx(rect.width), toLayoutPx(rect.height), maxTiles);
       setFit((previous) => (
         previous.columns === next.columns && previous.rows === next.rows && previous.capacity === next.capacity
           ? previous

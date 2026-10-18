@@ -37,6 +37,7 @@ import {
   type PackResult,
 } from "./homeGridPack";
 import { WelcomeCardHead } from "../projects/ProjectWelcomeSidePanels";
+import { toLayoutPx } from "../../lib/webZoom";
 
 /**
  * The home page's grid. It never scrolls and never leaves a gap: its size
@@ -340,7 +341,10 @@ export function HomeWidgetGrid({
     if (!element) return undefined;
     const measure = () => {
       const rect = element.getBoundingClientRect();
-      setBox((current) => (current && Math.abs(current.width - rect.width) < 1 && Math.abs(current.height - rect.height) < 1 ? current : { width: rect.width, height: rect.height }));
+      // Layout px, the unit `gridMetrics` packs in.
+      const width = toLayoutPx(rect.width);
+      const height = toLayoutPx(rect.height);
+      setBox((current) => (current && Math.abs(current.width - width) < 1 && Math.abs(current.height - height) < 1 ? current : { width, height }));
     };
     measure();
     if (typeof ResizeObserver === "undefined") return undefined;

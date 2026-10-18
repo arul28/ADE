@@ -51,6 +51,7 @@ import { cn } from "../ui/cn";
 import { prStateTone } from "../../../shared/prChatScope";
 import { ModelRowLogo, ProviderLogo } from "../shared/ProviderLogos";
 import type { PrChecksStatus, PrSummary } from "../../../shared/types";
+import { fixedFrameOf, fixedPoint, fixedRect, fixedViewport } from "../../lib/webZoom";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -408,21 +409,26 @@ function MenuRow({
 }
 
 function getViewportMenuStyle(anchor: NonNullable<ChatCommandMenuProps["anchor"]>): CSSProperties {
-  const viewportWidth = typeof window === "undefined" ? MENU_WIDTH + VIEWPORT_GUTTER * 2 : window.innerWidth;
-  const viewportHeight = typeof window === "undefined" ? 720 : window.innerHeight;
+  // The anchor is a screen rect and the menu is written in the viewport frame, so the anchor is converted first.
+  const frame = fixedFrameOf(null);
+  const viewport = fixedViewport(frame);
+  const viewportWidth = viewport.width;
+  const viewportHeight = viewport.height;
   const width = Math.max(280, Math.min(MENU_WIDTH, viewportWidth - VIEWPORT_GUTTER * 2));
   const maxHeight = Math.max(220, Math.min(MENU_MAX_HEIGHT_CAP, viewportHeight * MENU_MAX_HEIGHT_RATIO));
   const maxLeft = Math.max(VIEWPORT_GUTTER, viewportWidth - width - VIEWPORT_GUTTER);
-  const left = Math.min(Math.max(VIEWPORT_GUTTER, anchor.left), maxLeft);
-  const anchorBottom = typeof anchor.bottom === "number" ? anchor.bottom : anchor.top;
-  const roomAbove = Math.max(0, anchor.top - VIEWPORT_GUTTER);
+  const anchorLeft = fixedPoint(frame, anchor.left, anchor.top).left;
+  const anchorTop = fixedPoint(frame, anchor.left, anchor.top).top;
+  const left = Math.min(Math.max(VIEWPORT_GUTTER, anchorLeft), maxLeft);
+  const anchorBottom = fixedPoint(frame, anchor.left, typeof anchor.bottom === "number" ? anchor.bottom : anchor.top).top;
+  const roomAbove = Math.max(0, anchorTop - VIEWPORT_GUTTER);
   const roomBelow = Math.max(0, viewportHeight - anchorBottom - VIEWPORT_GUTTER);
 
   if (roomAbove >= maxHeight || roomAbove >= roomBelow) {
     return {
       left,
       width,
-      bottom: Math.max(VIEWPORT_GUTTER, viewportHeight - anchor.top + MENU_GAP),
+      bottom: Math.max(VIEWPORT_GUTTER, viewportHeight - anchorTop + MENU_GAP),
       maxHeight: Math.max(160, Math.min(maxHeight, roomAbove - MENU_GAP)),
     };
   }
