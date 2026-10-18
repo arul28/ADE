@@ -3,6 +3,7 @@ import type {
   AgentChatModelCatalog,
   OpenProjectBinding,
   PersonalChatAction,
+  PersonalChatActionArgs,
 } from "../../../shared/types";
 import type { ChatPaneScope } from "../chat/agentChatApi";
 import {
@@ -23,7 +24,10 @@ export function personalChatsBridge(): PersonalChatsBridge {
   return candidate;
 }
 
-export async function callPersonal<T>(action: PersonalChatAction, args?: Record<string, unknown>): Promise<T> {
+export async function callPersonal<T, A extends PersonalChatAction = PersonalChatAction>(
+  action: A,
+  args?: PersonalChatActionArgs<A>,
+): Promise<T> {
   const request = (args === undefined ? { action } : { action, args }) as Parameters<PersonalChatsBridge["call"]>[0];
   return personalCallResult<T>(await personalChatsBridge().call(request));
 }

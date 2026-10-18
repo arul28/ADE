@@ -25275,23 +25275,34 @@ extension SyncService {
   func refreshPersonalChats(
     includeArchived: Bool = false,
     timeoutNanoseconds: UInt64? = nil,
+    machineKey: String? = nil,
     sessionId: String? = nil
   ) async throws -> [AgentChatSessionSummary] {
-    if let sessionId,
-       let remote = routedRemoteMachineChat(sessionId.trimmingCharacters(in: .whitespacesAndNewlines)) {
-      guard let connection = machineFleet?.connection(for: remote.machineKey),
-            connection.isLive,
-            connection.supportsAction("personalChats.list") else {
-        throw NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: "That machine is not connected or cannot list personal chats."])
+    // Another machine's list: `machineKey` names it, or the owner of `sessionId`.
+    // It goes to that machine's fleet connection and leaves the focused list alone.
+    let ownerKey = machineKey
+      ?? sessionId.flatMap { routedRemoteMachineChat($0.trimmingCharacters(in: .whitespacesAndNewlines))?.machineKey }
+    if let ownerKey, ownerKey != focusedMachineKey {
+      do {
+        guard let connection = machineFleet?.connection(for: ownerKey),
+              connection.isLive,
+              connection.supportsAction("personalChats.list") else {
+          throw NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: "That machine is not connected or cannot list personal chats."])
+        }
+        let response = try await connection.sendCommand(
+          action: "personalChats.list",
+          args: ["includeArchived": includeArchived],
+          projectId: nil,
+          projectRootPath: nil,
+          timeoutNanoseconds: timeoutNanoseconds ?? 5_000_000_000
+        )
+        return sortPersonalChats(try decode(response, as: [AgentChatSessionSummary].self))
+      } catch {
+        syncConnectLog.warning(
+          "personal chats list failed machine=\(ownerKey, privacy: .public) error=\(String(describing: error), privacy: .public)"
+        )
+        throw error
       }
-      let response = try await connection.sendCommand(
-        action: "personalChats.list",
-        args: ["includeArchived": includeArchived],
-        projectId: nil,
-        projectRootPath: nil,
-        timeoutNanoseconds: timeoutNanoseconds ?? 5_000_000_000
-      )
-      return sortPersonalChats(try decode(response, as: [AgentChatSessionSummary].self))
     }
     try requireInvokableRemoteAction("personalChats.list")
     let sessions = try await sendDecodableCommand(

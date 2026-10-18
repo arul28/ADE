@@ -9,6 +9,8 @@ struct PersonalChatsScreen: View {
   @State private var newChatPresented = false
   @State private var showsArchived = false
   @State private var sessionsByMachine: [String: [AgentChatSessionSummary]] = [:]
+  /// Fleet machines whose last list read failed, by machine key, with their names.
+  @State private var failedMachineNames: [String: String] = [:]
 
   private var primaryMachineKey: String { syncService.focusedMachineKey ?? "primary" }
   private var rows: [PersonalChatRowEntry] {
@@ -60,6 +62,17 @@ struct PersonalChatsScreen: View {
         ProgressView("Loading chats…")
           .tint(ADEColor.accent)
           .foregroundStyle(ADEColor.textSecondary)
+      } else if visibleSessions.isEmpty && searchText.isEmpty && !failedMachineNames.isEmpty && errorMessage == nil {
+        // A machine that did not answer is not "no chats".
+        ADENoticeCard(
+          title: "Chats unavailable",
+          message: failedMachinesMessage,
+          icon: "exclamationmark.triangle.fill",
+          tint: ADEColor.warning,
+          actionTitle: "Retry",
+          action: { Task { await refresh() } }
+        )
+        .padding(16)
       } else if visibleSessions.isEmpty {
         emptyState
       } else {
@@ -99,6 +112,13 @@ struct PersonalChatsScreen: View {
     .safeAreaInset(edge: .top, spacing: 0) {
       if syncService.connectionState.isHostUnreachable {
         Label("Offline · showing saved chats", systemImage: "wifi.slash")
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.warning)
+          .frame(maxWidth: .infinity)
+          .padding(.vertical, 7)
+          .background(ADEColor.warning.opacity(0.08))
+      } else if !failedMachineNames.isEmpty && !visibleSessions.isEmpty {
+        Label(failedMachinesMessage, systemImage: "exclamationmark.triangle")
           .font(.caption.weight(.semibold))
           .foregroundStyle(ADEColor.warning)
           .frame(maxWidth: .infinity)
@@ -229,34 +249,38 @@ struct PersonalChatsScreen: View {
     defer { loading = false }
     let timeout: UInt64 = 5_000_000_000
     async let focusedRefresh: Void = refreshFocused(timeoutNanoseconds: timeout)
-    await withTaskGroup(of: (String, [AgentChatSessionSummary]?).self) { group in
-      for machine in machineFleet.machines where machineFleet.isLive(machine.machineKey) {
-        guard let connection = machineFleet.connection(for: machine.machineKey),
-              connection.supportsAction("personalChats.list") else { continue }
+    // A machine whose ADE has no personal chats has nothing to list; it is not a failure.
+    let liveMachines = machineFleet.machines.filter {
+      machineFleet.isLive($0.machineKey)
+        && machineFleet.connection(for: $0.machineKey)?.supportsAction("personalChats.list") == true
+    }
+    await withTaskGroup(of: (String, String, [AgentChatSessionSummary]?).self) { group in
+      for machine in liveMachines {
         group.addTask { @MainActor in
-          do {
-            let response = try await connection.sendCommand(
-              action: "personalChats.list",
-              args: ["includeArchived": true],
-              projectId: nil,
-              projectRootPath: nil,
-              timeoutNanoseconds: timeout
-            )
-            return (machine.machineKey, try syncService.decode(response, as: [AgentChatSessionSummary].self))
-          } catch {
-            return (machine.machineKey, nil)
-          }
+          // A failed read keeps the machine's cached rows; the failure is shown below.
+          let summaries = try? await syncService.refreshPersonalChats(
+            includeArchived: true,
+            timeoutNanoseconds: timeout,
+            machineKey: machine.machineKey
+          )
+          return (machine.machineKey, machine.name, summaries)
         }
       }
-      for await (machineKey, summaries) in group {
-        guard let summaries else { continue }
-        let sorted = summaries.sorted { $0.lastActivityAt > $1.lastActivityAt }
-        sessionsByMachine[machineKey] = sorted
-        if let data = try? JSONEncoder().encode(sorted) {
+      for await (machineKey, name, summaries) in group {
+        guard let summaries else {
+          failedMachineNames[machineKey] = name
+          continue
+        }
+        failedMachineNames.removeValue(forKey: machineKey)
+        sessionsByMachine[machineKey] = summaries
+        if let data = try? JSONEncoder().encode(summaries) {
           ADESharedContainer.defaults.set(data, forKey: Self.cacheKey(machineKey))
         }
       }
     }
+    // A machine that went offline or left the fleet is no longer a failure.
+    let liveKeys = Set(liveMachines.map(\.machineKey))
+    failedMachineNames = failedMachineNames.filter { liveKeys.contains($0.key) }
     await focusedRefresh
   }
 
@@ -307,6 +331,10 @@ struct PersonalChatsScreen: View {
       return connection.isLive && connection.supportsAction("personalChats.\(action.rawValue)")
     }
     return syncService.canInvokeRemoteAction("personalChats.\(action.rawValue)")
+  }
+
+  private var failedMachinesMessage: String {
+    "Couldn’t load chats from \(failedMachineNames.values.sorted().joined(separator: ", "))."
   }
 
   private static func cacheKey(_ machineKey: String) -> String {

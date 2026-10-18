@@ -91,6 +91,9 @@ export const PERSONAL_CHAT_ACTIONS = [
 
 export type PersonalChatAction = (typeof PERSONAL_CHAT_ACTIONS)[number];
 
+/** The `args` a personal-chat action takes, read off `PersonalChatCallArgs`. */
+export type PersonalChatActionArgs<A extends PersonalChatAction> = Extract<PersonalChatCallArgs, { action: A }>["args"];
+
 /** The most `attachmentRoots` one personal chat may name. */
 export const MAX_PERSONAL_CHAT_ATTACHMENT_ROOTS = 32;
 

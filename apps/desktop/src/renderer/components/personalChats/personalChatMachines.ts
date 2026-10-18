@@ -16,6 +16,7 @@ import type {
   AgentChatSessionSummary,
   OpenProjectBinding,
   PersonalChatAction,
+  PersonalChatActionArgs,
   PersonalChatCallArgs,
 } from "../../../shared/types";
 import { THIS_MACHINE_ID, THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
@@ -51,10 +52,10 @@ export function personalChatsBridgeFor(machineId: string): PersonalChatsBridge {
   };
 }
 
-export async function callPersonalOn<T>(
+export async function callPersonalOn<T, A extends PersonalChatAction = PersonalChatAction>(
   machineId: string,
-  action: PersonalChatAction,
-  args?: Record<string, unknown>,
+  action: A,
+  args?: PersonalChatActionArgs<A>,
 ): Promise<T> {
   const request = (args === undefined ? { action } : { action, args }) as PersonalChatCallArgs;
   return personalCallResult<T>(await personalChatsBridgeFor(machineId).call(request));
@@ -213,7 +214,11 @@ export function usePersonalChatsAcrossMachines(
     const seq = (seqRef.current.get(machineId) ?? 0) + 1;
     seqRef.current.set(machineId, seq);
     const archived = showArchivedRef.current;
-    const current = () => seqRef.current.get(machineId) === seq && archived === showArchivedRef.current;
+    // A machine that left the list mid-read must not write its rows back: on
+    // reconnect they would pass for a fresh read.
+    const current = () => seqRef.current.get(machineId) === seq
+      && archived === showArchivedRef.current
+      && machinesRef.current.some((entry) => entry.id === machineId);
     try {
       const read = callPersonalOn<AgentChatSessionSummary[]>(machineId, "list", { includeArchived: archived });
       const rows = machine.isThisMachine ? await read : await withMachineTimeout(read, machine.name);
