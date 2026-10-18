@@ -56,9 +56,11 @@ type ChatLaunchState = {
   /** Launches this window's slide-out was told to stop showing. */
   dismissed: Record<string, true>;
   /**
-   * Launches whose real chat the Work roster has listed. Their stand-in never
-   * bridges again (`shouldBridgeChatLaunchRow`), so a chat deleted or archived
-   * before the bridge lapses cannot come back as a running row.
+   * Launches whose real chat the Work roster has listed, or that were deleted
+   * (`retireChatLaunchBridgesForSession`). Their stand-in never bridges again
+   * (`shouldBridgeChatLaunchRow`), so a chat deleted or archived before the
+   * bridge lapses cannot come back as a running row. Only kept while the
+   * launch's entry is (see `retiredWithin`).
    */
   bridgeRetired: Record<string, true>;
 };
@@ -231,8 +233,25 @@ function announceCancelled(snapshots: readonly ChatLaunchSnapshot[]): void {
 function setEntries(mutate: (entries: Record<string, ChatLaunchEntry>) => Record<string, ChatLaunchEntry> | null): void {
   chatLaunchStore.setState((state) => {
     const next = mutate(state.entries);
-    return next && next !== state.entries ? { entries: next } : state;
+    if (!next || next === state.entries) return state;
+    return { entries: next, bridgeRetired: retiredWithin(state.bridgeRetired, next) };
   });
+}
+
+/**
+ * `retired` without the launches `entries` no longer holds. A tombstone lives as
+ * long as its entry: a launch leaves `entries` only when the host has dropped it
+ * (a removal event, or its retention ran out), so there is no bridge left to
+ * guard. Returns `retired` itself when nothing is dropped.
+ */
+function retiredWithin(retired: Record<string, true>, entries: Record<string, ChatLaunchEntry>): Record<string, true> {
+  const ids = Object.keys(retired);
+  if (ids.every((id) => entries[id])) return retired;
+  const kept: Record<string, true> = {};
+  for (const id of ids) {
+    if (entries[id]) kept[id] = true;
+  }
+  return kept;
 }
 
 /** A launch this window is about to start, shown before the host answers. */
@@ -538,9 +557,9 @@ export function dismissChatLaunches(launchIds: readonly string[]): void {
 }
 
 /**
- * The Work roster has listed these launches' real chats: their stand-ins never
- * bridge again. Store-held so every Work surface in this window agrees, and so
- * a remounted surface does not restart a bridge the first one retired.
+ * These launches' real chats are listed or gone: their stand-ins never bridge
+ * again. Store-held so every Work surface in this window agrees, and so a
+ * remounted surface does not restart a bridge the first one retired.
  */
 export function retireChatLaunchBridges(launchIds: readonly string[]): void {
   if (launchIds.length === 0) return;
@@ -554,6 +573,19 @@ export function retireChatLaunchBridges(launchIds: readonly string[]): void {
     }
     return changed ? { bridgeRetired: next } : state;
   });
+}
+
+/**
+ * A chat was deleted: retire the bridge of the launch that owns it in this
+ * window, whether or not this window's roster ever listed the chat. Called for
+ * every window (`useChatLaunchSync`), so a delete seen in one window cannot
+ * leave another window's bridge showing the chat.
+ */
+export function retireChatLaunchBridgesForSession(sessionId: string): void {
+  const launchIds = Object.values(chatLaunchStore.getState().entries)
+    .filter((entry) => entry.snapshot.sessionId === sessionId)
+    .map((entry) => entry.launchId);
+  retireChatLaunchBridges(launchIds);
 }
 
 export function getChatLaunchEntry(launchId: string | null | undefined): ChatLaunchEntry | null {

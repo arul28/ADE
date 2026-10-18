@@ -40,11 +40,19 @@ export function shouldListChatLaunchRow(snapshot: ChatLaunchSnapshot): boolean {
 
 /**
  * How long a started chat's row stays listed while the host's own row is still
- * missing. Matches the optimistic-session windows in `crossMachineLanes` and
- * `useWorkSessions`: long enough for the chat's machine to list it, short
- * enough that a chat deleted or archived right after launch cannot linger.
+ * missing, counted from when this window saw the launch start.
+ *
+ * Sized to the slowest realistic landing on a pinned machine (`crossMachineLanes`):
+ * the forced read the launch asks for runs on the next coalesced tick (0.4 s, or
+ * up to `FOREIGN_MACHINE_REFRESH_MS`, 10 s, if a tick is already armed). If that
+ * read times out (`MACHINE_READ_TIMEOUT_MS`, 8 s) it stamps no clock, so the
+ * next poll (10 s later) carries the chat: about 28 s, plus a round trip. 40 s
+ * covers that with headroom. It also caps how long a window that never listed
+ * the chat can show a deleted or archived one, counted from when that window saw
+ * the launch start, for a delete no event reached (archive emits none; see
+ * `retireChatLaunchBridgesForSession`).
  */
-export const CHAT_LAUNCH_BRIDGE_TTL_MS = 2 * 60 * 1000;
+export const CHAT_LAUNCH_BRIDGE_TTL_MS = 40 * 1000;
 
 /**
  * A started chat whose row stays listed until the host's own row for it lands.
