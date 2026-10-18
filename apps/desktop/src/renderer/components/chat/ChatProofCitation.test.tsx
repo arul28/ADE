@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ComputerUseArtifactView } from "../../../shared/types";
 import type * as ChatRuntimeScopeModule from "./ChatRuntimeScope";
@@ -114,9 +114,15 @@ describe("CitedProofSlot", () => {
     view.rerender(<CitedProofSlot artifactId="art-pending" caption="Pending" />);
 
     expect(await screen.findByRole("img", { name: "Pending" })).toBeTruthy();
-    failFirst(new Error("host_unavailable"));
-    await Promise.resolve();
+    // Let the stale offline lookup settle completely (its catch and then both
+    // run) after the fresh one already painted the proof.
+    await act(async () => {
+      failFirst(new Error("host_unavailable"));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
     expect(screen.queryByText(/Couldn't load this proof/)).toBeNull();
+    expect(screen.getByRole("img", { name: "Pending" })).toBeTruthy();
     expect(computerUse.listArtifacts).toHaveBeenCalledTimes(2);
   });
 
