@@ -1,5 +1,6 @@
 import type { AiProviderConnectionStatus, AiProviderConnections } from "../../../shared/types";
 import type { CliAuthStatus } from "./authDetector";
+import type { CopilotSdkRuntimeResolution } from "./acpExecutables";
 import {
   isCodexTokenStale,
   readClaudeCredentials,
@@ -9,6 +10,7 @@ import {
   resolveProviderAccounts,
   type ProviderAccountIdentity,
 } from "../usage/providerAccountIdentity";
+import { resolveCodexExecutable } from "./codexExecutable";
 import { getAllApiKeys } from "./apiKeyStore";
 import { getCursorSdkAuthSnapshot } from "./cursorSdkAuth";
 import { inspectMuseCredentials } from "./museAuth";
@@ -26,9 +28,67 @@ import {
   ACP_PROVIDER_METADATA,
   type AcpProviderId,
 } from "../../../shared/acpProviderMetadata";
+import { pinnedToolFetchInFlight } from "../../../../../ade-cli/src/services/tools/onDemand";
+import { COPILOT_TOKEN_ENV_KEYS } from "../shared/providerConfigHomes";
+
+/** What the Copilot SDK runtime reported when ADE asked it who is signed in. */
+export type CopilotSdkAuthProbe = {
+  /** The runtime ADE starts for Copilot chats; only `fallback-command` means none was found. */
+  runtime: CopilotSdkRuntimeResolution;
+  /** Null when the probe itself failed; the disk check speaks instead. */
+  auth: { isAuthenticated: boolean; login?: string; authType?: string; statusMessage?: string } | null;
+};
+
+/**
+ * Why Copilot is signed out, in words the user can act on. A token in the
+ * environment wins over `copilot login`, so a bad one must be named: signing
+ * in again would not help.
+ */
+function copilotSignedOutBlocker(probe: CopilotSdkAuthProbe["auth"], env: NodeJS.ProcessEnv): string {
+  const tokenKey = COPILOT_TOKEN_ENV_KEYS.find((key) => env[key]?.trim());
+  if (tokenKey) {
+    const classic = (env[tokenKey]?.trim() ?? "").startsWith("ghp_");
+    return classic
+      ? `${tokenKey} holds a classic GitHub token, which Copilot does not accept, and it overrides your Copilot login. Unset ${tokenKey} or replace it with a fine-grained token that has the Copilot Requests permission, then refresh.`
+      : `Copilot rejected the token in ${tokenKey}, which overrides your Copilot login. Fix or unset ${tokenKey}, then refresh.`;
+  }
+  const detail = probe?.statusMessage?.trim();
+  return `${detail ? `${detail.replace(/\.$/, "")}. ` : ""}Sign in with \`copilot login\` or \`gh auth login\`, then refresh.`;
+}
+
+function buildCopilotConnection(
+  cli: CliAuthStatus | null,
+  probe: CopilotSdkAuthProbe | null | undefined,
+  checkedAt: string,
+  env: NodeJS.ProcessEnv,
+): AiProviderConnectionStatus {
+  const runtimePath = probe?.runtime.path ?? cli?.path ?? null;
+  const runtimeDetected = probe ? probe.runtime.source !== "fallback-command" : Boolean(cli?.installed);
+  // The SDK's live answer beats the disk heuristic, which misses keychain and
+  // `gh` logins and keeps stale ones.
+  // Copilot runs on ADE's runtime, so the disk check counts with no CLI installed.
+  const authAvailable = probe?.auth ? probe.auth.isAuthenticated : Boolean(cli?.authenticated);
+  const verified = Boolean(probe?.auth);
+  return {
+    ...createUnavailableStatus("copilot", checkedAt),
+    authAvailable,
+    runtimeDetected,
+    runtimeAvailable: authAvailable && runtimeDetected,
+    usageAvailable: authAvailable,
+    path: runtimePath,
+    sources: [{ kind: "cli", detected: runtimeDetected, authenticated: authAvailable, verified, path: runtimePath }],
+    blocker: !runtimeDetected
+      ? pinnedToolFetchInFlight("copilot")
+        ? "ADE is downloading the Copilot runtime for this machine. Refresh when it finishes."
+        : authAvailable
+          ? "ADE has not downloaded the Copilot runtime on this machine yet. Refresh to download it."
+          : "ADE has not downloaded the Copilot runtime on this machine yet. Sign in with `copilot login` or `gh auth login` and refresh, and ADE downloads it."
+      : !authAvailable ? copilotSignedOutBlocker(probe?.auth ?? null, env) : null,
+  };
+}
 
 function createUnavailableStatus(
-  provider: "claude" | "codex" | "cursor" | "droid" | "pi" | "muse" | AcpProviderId,
+  provider: "claude" | "codex" | "cursor" | "droid" | "pi" | "muse" | "copilot" | AcpProviderId,
   checkedAt: string,
 ): AiProviderConnectionStatus {
   return {
@@ -49,6 +109,7 @@ export async function buildProviderConnections(
   options?: {
     piInstallation?: PiInstallation | null;
     piInventory?: PiProfileInventory | null;
+    copilot?: CopilotSdkAuthProbe | null;
   },
 ): Promise<AiProviderConnections> {
   const checkedAt = nowIso();
@@ -70,8 +131,10 @@ export async function buildProviderConnections(
   const deriveProviderFlags = (
     cli: CliAuthStatus | null,
     localCreds: Awaited<ReturnType<typeof readClaudeCredentials>> | Awaited<ReturnType<typeof readCodexCredentials>>,
+    /** ADE's own copy (pinned download or bundled), which chats run on even with no CLI on the PATH. */
+    adeRuntimeDetected = false,
   ) => {
-    const runtimeDetected = Boolean(cli?.installed);
+    const runtimeDetected = Boolean(cli?.installed) || adeRuntimeDetected;
     const cliAuthenticated = Boolean(cli?.installed && cli.authenticated);
     const cliExplicitlyUnauthenticated = Boolean(cli?.installed && cli.verified && !cli.authenticated);
     const localCredsDetected = Boolean(localCreds);
@@ -84,7 +147,8 @@ export async function buildProviderConnections(
   };
 
   const claudeFlags = deriveProviderFlags(claudeCli, claudeLocalCreds);
-  const codexFlags = deriveProviderFlags(codexCli, codexLocalCreds);
+  const codexRuntimeSource = resolveCodexExecutable().source;
+  const codexFlags = deriveProviderFlags(codexCli, codexLocalCreds, codexRuntimeSource === "tools-cache" || codexRuntimeSource === "bundled");
   const codexUsageAvailable = Boolean(codexLocalCreds && !isCodexTokenStale(codexLocalCreds));
 
   function resolveBlocker(
@@ -460,6 +524,14 @@ export async function buildProviderConnections(
     acpConnections[provider] = status;
   }
 
+  const copilot = buildCopilotConnection(
+    cliStatuses.find((status) => status.cli === "copilot") ?? null,
+    options?.copilot,
+    checkedAt,
+    process.env,
+  );
+  applyRuntimeHealth(copilot, getProviderRuntimeHealth("copilot"));
+
   return {
     claude,
     codex,
@@ -468,6 +540,7 @@ export async function buildProviderConnections(
     ...(pi ? { pi } : {}),
     muse,
     ...acpConnections,
+    copilot,
   };
 }
 

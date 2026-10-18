@@ -25,6 +25,7 @@ import {
   summarizeNeutralRecords,
   type NeutralSessionRecord,
 } from "./discoverAcpShared";
+import { ADE_AGENT_PROMPT_OPENING } from "../ai/tools/systemPrompt";
 
 /**
  * GitHub Copilot CLI (verified against 1.0.88) keeps each session in
@@ -41,6 +42,7 @@ import {
  *
  * Sessions created by ADE itself (`client_name` `ade`, `ade-probe`,
  * `ade-telemetry-probe`, …) and folders without a single prompt are left out.
+ * Sub-agents run inside their parent session, so there are no child folders.
  */
 function copilotSessionStateDir(args: ExternalSessionDiscoveryArgs): string {
   return path.join(
@@ -99,6 +101,17 @@ export function parseFlatYaml(text: string): Record<string, string> {
     result[key] = unquoteYamlScalar(rawValue);
   }
   return result;
+}
+
+/**
+ * ADE's SDK chats from before they named themselves recorded the SDK default
+ * `client_name: sdk`. Their first system message opens with the coding-agent
+ * prompt ADE appends (`ADE_AGENT_PROMPT_OPENING`).
+ */
+function isUnnamedAdeSdkSession(workspace: Record<string, string>, head: readonly Record<string, unknown>[]): boolean {
+  if (workspace.client_name !== "sdk") return false;
+  const system = head.find((record) => record.type === "system.message");
+  return asString(asRecord(system?.data)?.content)?.includes(ADE_AGENT_PROMPT_OPENING) ?? false;
 }
 
 function copilotEventText(record: Record<string, unknown>): string | null {
@@ -165,6 +178,7 @@ function copilotRecordFromCandidate(
     candidate.workspace.cwd ?? asString(asRecord(startData?.context)?.cwd),
   );
   if (!cwdIsInScope(cwd, scopeRoots)) return null;
+  if (isUnnamedAdeSdkSession(candidate.workspace, window.head)) return null;
 
   const summary = summarizeNeutralRecords("copilot", {
     head: compact(window.head.map(neutralCopilotRecord)),

@@ -9,6 +9,7 @@ const REQUIRED_PACKAGED_ADE_CLI_PAYLOAD_PATHS = Object.freeze([
   "cursorSdkWorker.cjs",
   "droidSdkWorker.cjs",
   "copilotSdkWorker.cjs",
+  "piSdkWorker.cjs",
   "usageLedgerWorker.cjs",
   "adeRpcServer.cjs",
   "tuiClient/cli.mjs",

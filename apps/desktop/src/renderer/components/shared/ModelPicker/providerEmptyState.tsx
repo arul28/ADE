@@ -126,7 +126,7 @@ const PROVIDER_COPY: Partial<Record<ProviderFamily, ProviderCopy>> = {
   },
   "github-copilot": {
     title: "Set up GitHub Copilot",
-    body: "Install the Copilot CLI and run `copilot login`. ADE reuses that login and does not write ~/.copilot.",
+    body: "Sign in once with `copilot login` or `gh auth login`. ADE runs Copilot itself, reuses that login, and does not write ~/.copilot.",
     primary: { label: "Open Settings", action: { kind: "open-settings" } },
     secondary: {
       label: "Copilot CLI docs",

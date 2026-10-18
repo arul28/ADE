@@ -3,6 +3,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import { createServer } from "node:net";
 import path from "node:path";
+import { pinnedToolDownload } from "../../../../../ade-cli/src/services/tools/onDemand";
 import { OpenCode, type OpenCodeClient, type OpenCodeEvent } from "@opencode/client";
 import type { Logger } from "../logging/logger";
 import { userProcessEnv } from "../shared/hostRuntimeEnv";
@@ -874,11 +875,15 @@ export async function acquireOpenCodeServer(args: {
   if (!entry) {
     let pending = inFlightEntries.get(profile.key);
     if (!pending) {
-      pending = startEntry({
+      // Terminals and sign-in reach the server without a chat; a machine that
+      // never used OpenCode downloads it before the first launch. A live
+      // server needs no download, and concurrent starts share this one.
+      const download = pinnedToolDownload("opencode");
+      pending = (download ?? Promise.resolve()).then(() => startEntry({
         profile,
         config: args.config ?? { share: "disabled", update: "disable" },
         logger: args.logger,
-      }).finally(() => {
+      })).finally(() => {
         inFlightEntries.delete(profile.key);
       });
       inFlightEntries.set(profile.key, pending);

@@ -30,7 +30,24 @@ const REQUIRED_SHIPPING_PACKAGES = [
 
 test("the desktop exclusion list is the brain runtime archive list, not a copy", () => {
   assert.deepEqual(runtimeFetchedToolPackageNames, [...RUNTIME_FETCHED_TOOL_PACKAGES].sort());
-  assert.equal(runtimeFetchedToolPackageNames.length, 26);
+});
+
+// A package ADE downloads into the tools cache must never also ship in the
+// installer or the brain archive: the resolvers read the cache first, so a
+// bundled copy is hundreds of dead megabytes per target.
+test("every npm package the tools manifest pins is on the exclusion list", () => {
+  const manifest = JSON.parse(
+    fs.readFileSync(path.join(desktopRoot, "..", "ade-cli", "src", "services", "tools", "toolsManifest.generated.json"), "utf8"),
+  );
+  const pinned = manifest.tools.flatMap((tool) =>
+    Object.values(tool.targets).filter((pin) => pin.format !== "file").map((pin) => pin.package));
+  assert.ok(pinned.length > 0, "setup precondition: the manifest pins npm packages");
+  for (const packageName of pinned) {
+    assert.ok(
+      RUNTIME_FETCHED_TOOL_PACKAGES.has(packageName),
+      `${packageName} is fetched into the tools cache but not excluded from the packaged app`,
+    );
+  }
 });
 
 test("no runtime-fetched tool package is unpacked from the asar", () => {
@@ -71,7 +88,7 @@ test("the JS SDKs and launchers still ship", () => {
 // the app actually needs at runtime, and no test would notice until something
 // failed to spawn in a packaged build.
 //
-// Nothing is exempt today -- all 26 negations are tool packages, verified by
+// Nothing is exempt today -- all 34 negations are tool packages, verified by
 // reading build.files. A genuinely non-tool exclusion goes here as
 // `"!node_modules/foo/**", // why` -- one entry, one reason. That is the whole
 // point of the allowlist: it forces the justification to be written down next
@@ -137,7 +154,6 @@ test("the grep pattern matches every canonical package archive path", () => {
       );
     }
   }
-  assert.equal(runtimeFetchedToolPackageNames.length, 26);
 });
 
 test("the grep pattern spares the JS entry points that must ship", () => {

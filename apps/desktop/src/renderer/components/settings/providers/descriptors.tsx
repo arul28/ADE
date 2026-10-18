@@ -230,7 +230,7 @@ export const PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
   {
     id: "copilot",
     label: "GitHub Copilot",
-    tagline: "Uses your GitHub Copilot sign-in through the Copilot CLI and SDK.",
+    tagline: "Uses your GitHub Copilot sign-in through the Copilot SDK.",
     logo: (size) => <ProviderLogo family="github-copilot" size={size} />,
     permissions: { family: "github-copilot", isCliWrapped: true, key: "copilot" },
     status: (ctx) => cliStatus(ctx, "copilot"),

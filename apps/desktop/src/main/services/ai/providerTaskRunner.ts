@@ -10,8 +10,9 @@ import type { AgentPermissionMode } from "./agentExecutor";
 import { resolveClaudeCodeExecutable } from "./claudeCodeExecutable";
 import { resolveClaudeCliModel } from "./claudeModelUtils";
 import { resolveCodexExecutable } from "./codexExecutable";
+import { pinnedToolDownload } from "../../../../../ade-cli/src/services/tools/onDemand";
 import {
-  resolveCopilotExecutable,
+  resolveCopilotSdkRuntime,
   resolveGrokExecutable,
   resolveKimiExecutable,
   resolveQwenExecutable,
@@ -347,6 +348,8 @@ async function runClaudeTask(args: ProviderTaskRunnerArgs): Promise<ProviderTask
   }
   cliArgs.push("-p");
 
+  const claudeDownload = pinnedToolDownload("claude-code");
+  if (claudeDownload) await claudeDownload;
   const resolved = resolveClaudeCodeExecutable({ auth: args.auth });
   const result = await runCommand({
     command: resolved.path,
@@ -418,6 +421,8 @@ async function runCodexTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskR
     ? `${args.system.trim()}\n\n${prompt}`
     : prompt;
 
+  const codexDownload = pinnedToolDownload("codex");
+  if (codexDownload) await codexDownload;
   const resolved = resolveCodexExecutable({ auth: args.auth });
   try {
     const result = await runCommand({
@@ -625,7 +630,9 @@ async function runCopilotTask(args: ProviderTaskRunnerArgs): Promise<ProviderTas
   const combinedPrompt = args.system?.trim()
     ? `${args.system.trim()}\n\n${prompt}`
     : prompt;
-  const resolved = resolveCopilotExecutable({ auth: args.auth });
+  const copilotDownload = pinnedToolDownload("copilot");
+  if (copilotDownload) await copilotDownload;
+  const resolved = resolveCopilotSdkRuntime({ auth: args.auth });
   const baseEnv = userProcessEnv({ ...process.env, ...(args.accountEnv ?? {}) });
   const baseDirectory = copilotConfigHome({ env: baseEnv });
   const acquired = await acquireCopilotSdkConnection({

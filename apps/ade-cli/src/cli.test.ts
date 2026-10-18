@@ -77,6 +77,7 @@ import { JsonRpcClient } from "./tuiClient/jsonRpcClient";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
 import { readBrainHeartbeat } from "./services/runtime/brainHeartbeat";
 import { localIpcListenOptions } from "./services/runtime/localIpcListenOptions";
+import { SDK_WORKER_COMMANDS } from "../../desktop/src/main/services/chat/sdkWorkerProcess";
 
 type ResolveRootsOptions = Parameters<typeof resolveRoots>[0];
 
@@ -1483,6 +1484,13 @@ describe("ADE CLI", () => {
     expect(buildCliPlan(["__ade-usage-ledger-worker"])).toEqual({
       kind: "usage-ledger-worker",
     });
+  });
+
+  // The standalone runtime starts every SDK worker through these commands
+  // (sdkWorkerProcess.ts); one the CLI does not recognise is an "Unknown
+  // command" and a provider that cannot start on a headless machine.
+  it.each(Object.entries(SDK_WORKER_COMMANDS))("recognizes the hidden %s SDK worker entrypoint", (worker, command) => {
+    expect(buildCliPlan([command, "--ade-owner-pid=42"])).toEqual({ kind: "sdk-worker", worker });
   });
 
   it("passes the project root to the hidden icon worker entrypoint", () => {

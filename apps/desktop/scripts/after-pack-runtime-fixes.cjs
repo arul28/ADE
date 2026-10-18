@@ -402,11 +402,9 @@ function assertNoRuntimeFetchedToolPackages(
 }
 
 // Platform packages whose file names carry their arch in a form the Mach-O
-// twin check cannot map (copilot-sdk's libmsalruntime_arm64.dylib, koffi's
-// darwin_arm64/koffi.node). A per-arch macOS bundle never loads the other
-// arch's copy, so it is dropped instead of shipped.
+// twin check cannot map (koffi's darwin_arm64/koffi.node). A per-arch macOS
+// bundle never loads the other arch's copy, so it is dropped instead of shipped.
 const DARWIN_PER_ARCH_PACKAGES = [
-  ["@github", "copilot-sdk-darwin-"],
   ["@koromix", "koffi-darwin-"],
 ];
 

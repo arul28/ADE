@@ -78,7 +78,7 @@ export const CLI_TOOLS: CliTool[] = [
   {
     cli: "copilot",
     label: "GitHub Copilot",
-    authStory: "Uses your GitHub Copilot sign-in.",
+    authStory: "Runs on the Copilot runtime ADE downloads and reuses your GitHub sign-in.",
     loginCmd: "copilot login",
     installHint: "npm install -g @github/copilot",
   },

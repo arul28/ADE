@@ -95,6 +95,35 @@ beforeEach(async () => {
 });
 
 describe("buildProviderConnections", () => {
+  // Copilot's readiness comes from the SDK's live sign-in check, and from the
+  // disk check only when that probe could not answer. Copilot runs on ADE's own
+  // runtime, so neither needs a `copilot` CLI on the PATH.
+  it.each([
+    ["the SDK reports a sign-in", { runtime: { path: "/tools/copilot-runtime", source: "tools-cache" }, auth: { isAuthenticated: true, login: "octo" } }, null,
+      { authAvailable: true, runtimeDetected: true, runtimeAvailable: true, blocked: false }],
+    ["the SDK reports signed out", { runtime: { path: "/tools/copilot-runtime", source: "tools-cache" }, auth: { isAuthenticated: false, statusMessage: "Not signed in" } }, { installed: false, authenticated: true },
+      { authAvailable: false, runtimeDetected: true, runtimeAvailable: false, blocked: true }],
+    ["the probe failed and a gh login is on disk", { runtime: { path: "/tools/copilot-runtime", source: "tools-cache" }, auth: null }, { installed: false, authenticated: true },
+      { authAvailable: true, runtimeDetected: true, runtimeAvailable: true, blocked: false }],
+    ["no runtime was found", { runtime: { path: "copilot", source: "fallback-command" }, auth: null }, { installed: false, authenticated: true },
+      { authAvailable: true, runtimeDetected: false, runtimeAvailable: false, blocked: true }],
+  ] as const)("builds Copilot's connection when %s", async (_case, probe, cli, expected) => {
+    const cliStatuses = mergeCliStatuses(cli ? [{ cli: "copilot", path: null, verified: false, ...cli }] : []);
+    const connections = await (buildProviderConnections as (
+      statuses: CliAuthStatus[],
+      options: { copilot: unknown },
+    ) => Promise<AiProviderConnections>)(cliStatuses, { copilot: probe });
+
+    const copilot = connections.copilot;
+    expect(copilot, "Copilot always has a connection entry").toBeTruthy();
+    expect(copilot).toMatchObject({
+      authAvailable: expected.authAvailable,
+      runtimeDetected: expected.runtimeDetected,
+      runtimeAvailable: expected.runtimeAvailable,
+    });
+    expect(Boolean(copilot?.blocker)).toBe(expected.blocked);
+  });
+
   it("does not mark Claude runtime as connected when the CLI explicitly reports signed out", async () => {
     mockState.readClaudeCredentials.mockResolvedValue({
       accessToken: "token",

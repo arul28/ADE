@@ -10,6 +10,9 @@ const logger = { info: vi.fn(), warn: vi.fn() };
  * under `~/.ade/tools`.
  */
 const noopGc = (async () => ({ removed: [], kept: [] })) as never;
+// Which tools a machine fetches reads its PATH, homes and tokens; these tests
+// pin "every pinned tool" so they mean the same thing on every CI host.
+const fetchEveryTool = (tools: readonly string[]) => ({ fetch: [...tools], skip: [] });
 
 function resolution(tool: string) {
   return {
@@ -27,6 +30,7 @@ describe("createAgentToolsCacheService", () => {
     const ensure = vi.fn(async () => new Map());
     const service = createAgentToolsCacheService({
       logger,
+      selectDemand: fetchEveryTool,
       gc: noopGc,
       listPinned: () => ["codex", "claude-code", "opencode"],
       // codex is already on disk; the other two are not.
@@ -45,6 +49,7 @@ describe("createAgentToolsCacheService", () => {
   it("reports a failed tool with its typed kind and keeps going", async () => {
     const service = createAgentToolsCacheService({
       logger,
+      selectDemand: fetchEveryTool,
       gc: noopGc,
       listPinned: () => ["codex", "opencode"],
       resolve: (() => null) as never,
@@ -71,6 +76,7 @@ describe("createAgentToolsCacheService", () => {
     let clock = 0;
     const service = createAgentToolsCacheService({
       logger,
+      selectDemand: fetchEveryTool,
       gc: noopGc,
       productAnalyticsService: { captureInternal } as never,
       listPinned: () => ["claude-code", "opencode"],
@@ -114,6 +120,7 @@ describe("createAgentToolsCacheService", () => {
     );
     const service = createAgentToolsCacheService({
       logger,
+      selectDemand: fetchEveryTool,
       gc: noopGc,
       listPinned: () => ["opencode"],
       resolve: (() => null) as never,
@@ -132,6 +139,7 @@ describe("createAgentToolsCacheService", () => {
     const seen: Array<number | null> = [];
     const service = createAgentToolsCacheService({
       logger,
+      selectDemand: fetchEveryTool,
       gc: noopGc,
       listPinned: () => ["opencode"],
       resolve: (() => null) as never,
@@ -171,6 +179,7 @@ describe("createAgentToolsCacheService", () => {
     });
     const service = createAgentToolsCacheService({
       logger,
+      selectDemand: fetchEveryTool,
       gc: noopGc,
       listPinned: () => ["opencode"],
       resolve: (() => null) as never,
@@ -208,6 +217,7 @@ describe("createAgentToolsCacheService", () => {
     const gc = vi.fn(async () => ({ removed: ["/cache/old"], kept: ["/cache/new"] }));
     const service = createAgentToolsCacheService({
       logger,
+      selectDemand: fetchEveryTool,
       gc: gc as never,
       listPinned: () => ["opencode"],
       resolve: (() => null) as never,
@@ -225,6 +235,7 @@ describe("createAgentToolsCacheService", () => {
     const gc = vi.fn(async () => ({ removed: [], kept: [] }));
     const service = createAgentToolsCacheService({
       logger,
+      selectDemand: fetchEveryTool,
       gc: gc as never,
       listPinned: () => ["codex", "opencode"],
       resolve: (() => null) as never,
@@ -240,6 +251,7 @@ describe("createAgentToolsCacheService", () => {
     // And a sweep that throws must not turn a successful ensure into a failure.
     const exploding = createAgentToolsCacheService({
       logger,
+      selectDemand: fetchEveryTool,
       gc: (async () => {
         throw new Error("cache volume disappeared");
       }) as never,
@@ -266,6 +278,7 @@ describe("createAgentToolsCacheService", () => {
     const ensure = vi.fn(async () => new Map());
     const service = createAgentToolsCacheService({
       logger,
+      selectDemand: fetchEveryTool,
       gc: noopGc,
       listPinned: () => ["codex", "opencode"],
       resolve: ((tool: string) => {

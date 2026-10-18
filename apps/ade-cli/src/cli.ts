@@ -42,6 +42,9 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { CURSOR_HOOK_RUNNER_COMMAND, runCursorHookScript } from "../../desktop/src/main/services/chat/cursorSdkHooks";
+import { SDK_WORKER_COMMANDS, type SdkWorkerName } from "../../desktop/src/main/services/chat/sdkWorkerProcess";
+import { PROXY_HEALTH_PROBE_COMMAND, probeProxyHealthOnce } from "./services/proxy/cliProxyApiSupervisor";
 import { pathToFileURL } from "node:url";
 import { computeRuntimeBuildHash } from "./services/runtime/runtimeBuildIdentity";
 import YAML from "yaml";
@@ -851,6 +854,7 @@ export type CliPlan =
   | { kind: "rpc-stdio"; rest: string[] }
   | { kind: "pty-host-worker" }
   | { kind: "usage-ledger-worker" }
+  | { kind: "sdk-worker"; worker: SdkWorkerName }
   | { kind: "project-icon-worker"; rootPath: string }
   | { kind: "init"; targetPath: string | null }
   | { kind: "cursor-cloud"; rest: string[] }
@@ -19847,6 +19851,11 @@ function buildCliPlan(
   if (primary === "__ade-usage-ledger-worker") {
     return { kind: "usage-ledger-worker" };
   }
+  // The standalone runtime is one executable with no <name>SdkWorker.cjs
+  // beside it, and fork() from it re-enters this CLI, so the SDK pools start
+  // their workers through these commands instead (chat/sdkWorkerProcess.ts).
+  const sdkWorker = (Object.keys(SDK_WORKER_COMMANDS) as SdkWorkerName[]).find((name) => SDK_WORKER_COMMANDS[name] === primary);
+  if (sdkWorker) return { kind: "sdk-worker", worker: sdkWorker };
   if (primary === "__ade-project-icon-worker") {
     const primaryIndex = args.indexOf(primary);
     return {
@@ -26568,6 +26577,10 @@ async function runServe(
         + "Set ADE_FORCE_TOOLS_FETCH=1 to fetch them anyway.",
     });
   } else {
+    if (!toolsFetchDisabled) {
+      const { enablePinnedToolFetch } = await import("./services/tools/onDemand");
+      enablePinnedToolFetch(headlessProjectLogger);
+    }
     void import("./services/tools/backgroundFetch").then(({ startBackgroundAgentToolsFetch }) => {
       startBackgroundAgentToolsFetch(headlessProjectLogger);
     });
@@ -34257,6 +34270,18 @@ async function runParsedCli(
       });
       return { output: "", exitCode: 0 };
     }
+    if (plan.kind === "sdk-worker") {
+      // Each worker module serves its IPC channel as soon as it loads.
+      await SDK_WORKER_MODULES[plan.worker]();
+      await new Promise<void>((resolve) => {
+        if (typeof process.send !== "function") {
+          resolve();
+          return;
+        }
+        process.once("disconnect", resolve);
+      });
+      return { output: "", exitCode: 0 };
+    }
     if (plan.kind === "usage-ledger-worker") {
       const { runUsageLedgerWorkerEntrypoint } = await import(
         "../../desktop/src/main/services/usage/usageLedgerWorker"
@@ -34539,6 +34564,14 @@ async function writeProcessOutput(
   });
 }
 
+/** The module each hidden `__ade-*-sdk-worker` command loads (`SDK_WORKER_COMMANDS`). */
+const SDK_WORKER_MODULES: Record<SdkWorkerName, () => Promise<unknown>> = {
+  copilot: () => import("../../desktop/src/main/services/chat/copilotSdkWorker"),
+  cursor: () => import("../../desktop/src/main/services/chat/cursorSdkWorker"),
+  droid: () => import("../../desktop/src/main/services/chat/droidSdkWorker"),
+  pi: () => import("../../desktop/src/main/services/chat/piSdkWorker"),
+};
+
 async function main(): Promise<void> {
   const writeDiagnostic = (...args: unknown[]) => {
     process.stderr.write(
@@ -34549,6 +34582,22 @@ async function main(): Promise<void> {
   console.info = writeDiagnostic;
   console.warn = writeDiagnostic;
   try {
+    // Cursor's hook wrapper runs ADE's hook scripts through this on the
+    // standalone runtime (cursorSdkHooks.ts), before any argument parsing: the
+    // hook's own `--socket <path>` is not an `ade` flag.
+    if (process.argv[2] === CURSOR_HOOK_RUNNER_COMMAND) {
+      await runCursorHookScript(process.argv[3]);
+      return;
+    }
+    // The proxy supervisor's synchronous health probe on the standalone runtime.
+    if (process.argv[2] === PROXY_HEALTH_PROBE_COMMAND) {
+      const port = Number(process.argv[3]);
+      const timeoutMs = Number(process.argv[4]);
+      const healthy = Number.isInteger(port) && port > 0 && port < 65_536
+        && await probeProxyHealthOnce(port, Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 1_500);
+      process.exitCode = healthy ? 0 : 1;
+      return;
+    }
     const result = await runCli(process.argv.slice(2));
     await writeProcessOutput(process.stdout, result.output);
     process.exitCode = result.exitCode;

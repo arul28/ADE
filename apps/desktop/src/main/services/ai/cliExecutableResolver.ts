@@ -460,10 +460,10 @@ function getKnownBinDirs(
     : getUnixLikeKnownBinDirs(env, command);
 }
 
-function isExecutableFile(candidatePath: string): boolean {
+export function isExecutableFile(candidatePath: string, platform: NodeJS.Platform = process.platform): boolean {
   try {
     const stat = fs.statSync(candidatePath);
-    return stat.isFile() && (process.platform === "win32" || (stat.mode & 0o111) !== 0);
+    return stat.isFile() && (platform === "win32" || (stat.mode & 0o111) !== 0);
   } catch {
     return false;
   }

@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
  * Generate `src/services/tools/toolsManifest.generated.json` from
- * `package-lock.json` and `scripts/muse-release.json`.
+ * `package-lock.json`, `../desktop/package-lock.json` (the Copilot runtime) and
+ * `scripts/muse-release.json`.
  *
  * The manifest pins the agent CLI platform packages ADE no longer vendors, so
  * that a fresh install can fetch them from the npm registry instead of shipping
@@ -26,6 +27,11 @@ import { FILE_PIN_HOST } from "./file-pin-host.mjs";
 
 const packageRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const lockPath = path.join(packageRoot, "package-lock.json");
+// The Copilot SDK is a desktop dependency (its worker is bundled from desktop
+// source), so its runtime is pinned from the lockfile that actually installs it.
+// Reading it there rather than mirroring the dependency here means a bumped SDK
+// fails `tools:manifest:check` until the runtime pin moves with it.
+const desktopLockPath = path.join(packageRoot, "..", "desktop", "package-lock.json");
 const outputPath = path.join(packageRoot, "src", "services", "tools", "toolsManifest.generated.json");
 const museReleasePath = path.join(packageRoot, "scripts", "muse-release.json");
 
@@ -91,6 +97,19 @@ const TOOLS = [
       "win32-x64": "@opencode/cli-windows-x64-baseline",
     },
   },
+  {
+    name: "copilot",
+    description: "GitHub Copilot runtime that the Copilot SDK worker spawns (`--headless --stdio`).",
+    entry: { kind: "binary", path: "prebuilds/*/copilot-runtime", windowsPath: "prebuilds/*/copilot-runtime.exe" },
+    lockPath: desktopLockPath,
+    packages: {
+      "darwin-arm64": "@github/copilot-sdk-darwin-arm64",
+      "darwin-x64": "@github/copilot-sdk-darwin-x64",
+      "linux-arm64": "@github/copilot-sdk-linux-arm64",
+      "linux-x64": "@github/copilot-sdk-linux-x64",
+      "win32-x64": "@github/copilot-sdk-win32-x64",
+    },
+  },
 ];
 
 /**
@@ -114,15 +133,15 @@ function fail(message) {
   process.exit(1);
 }
 
-function readLockPackages() {
+function readLockPackages(file = lockPath) {
   let lock;
   try {
-    lock = JSON.parse(readFileSync(lockPath, "utf8"));
+    lock = JSON.parse(readFileSync(file, "utf8"));
   } catch (error) {
-    fail(`could not read ${lockPath}: ${error.message}`);
+    fail(`could not read ${file}: ${error.message}`);
   }
   if (!lock.packages || typeof lock.packages !== "object") {
-    fail(`${lockPath} has no "packages" map; lockfileVersion 2+ is required.`);
+    fail(`${file} has no "packages" map; lockfileVersion 2+ is required.`);
   }
   return lock.packages;
 }
@@ -198,14 +217,16 @@ function readFileToolRelease(packages, tool) {
 
 function buildManifest() {
   const packages = readLockPackages();
+  const desktopPackages = readLockPackages(desktopLockPath);
   const tools = TOOLS.map((tool) => {
+    const lockPackages = tool.lockPath === desktopLockPath ? desktopPackages : packages;
     const targets = {};
     for (const target of TARGETS) {
       const packageName = tool.packages[target];
       if (!packageName) {
         fail(`${tool.name} has no package mapped for supported target ${target}.`);
       }
-      targets[target] = pinFor(packages, tool.name, target, packageName);
+      targets[target] = pinFor(lockPackages, tool.name, target, packageName);
     }
     const entry = tool.entry.windowsPath
       ? { kind: tool.entry.kind, path: tool.entry.path, windowsPath: tool.entry.windowsPath }
@@ -216,7 +237,7 @@ function buildManifest() {
 
   return {
     schemaVersion: SCHEMA_VERSION,
-    generatedFrom: "apps/ade-cli/package-lock.json + apps/ade-cli/scripts/muse-release.json",
+    generatedFrom: "apps/ade-cli/package-lock.json + apps/desktop/package-lock.json + apps/ade-cli/scripts/muse-release.json",
     tools,
   };
 }

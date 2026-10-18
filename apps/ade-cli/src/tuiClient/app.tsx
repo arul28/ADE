@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { resolveTrustedWindowsTool } from "../lib/trustedWindowsTools";
+import { resolveCurrentCliEntry } from "../lib/cliDelegation";
 import { Box, Text, useApp, useInput, type Key as InkKey } from "ink";
 import { isChatTaskListEvent } from "../../../desktop/src/shared/chatTaskList";
 import { isTurnInFlightError } from "../../../desktop/src/shared/codedError";
@@ -3586,7 +3587,9 @@ function signalTerminalWithCliSync(args: {
   terminalId: string;
   signal: "SIGTERM" | "SIGKILL";
 }): boolean {
-  const entrypoint = process.argv[1];
+  // The standalone runtime is one executable whose argv[1] is a bare "cli.cjs";
+  // it is its own entry, and takes the command with no script path.
+  const entrypoint = resolveCurrentCliEntry();
   if (!entrypoint || !fs.existsSync(entrypoint)) return false;
   const env = { ...process.env };
   const socketPath = args.socketPath?.trim() || process.env.ADE_RUNTIME_SOCKET_PATH?.trim() || null;
@@ -3595,7 +3598,7 @@ function signalTerminalWithCliSync(args: {
     env.ADE_RPC_SOCKET_PATH = socketPath;
   }
   const result = spawnSync(process.execPath, [
-    entrypoint,
+    ...(entrypoint === process.execPath ? [] : [entrypoint]),
     "--project-root",
     args.projectRoot,
     "--socket",

@@ -48,7 +48,7 @@ import {
   type LocalProviderFamily,
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
-import { disabledProviderSet } from "../../../shared/providerEnablement";
+import { disabledProviderSet, isProviderDisabled } from "../../../shared/providerEnablement";
 import { presetSourceLabel } from "../../../shared/harnessPresets";
 import { applyPersistedAcpModelCatalogs, warmAcpModelCatalog } from "../chat/acpHost/acpModelDiscovery";
 import { readHarnessPresetsOrEmpty } from "../chat/harnessPresetSettings";
@@ -85,7 +85,7 @@ import {
   initialize as initModelsDevService,
   getLastFetchedAt as getModelsDevLastFetchedAt,
 } from "./modelsDevService";
-import { isRecord } from "../shared/utils";
+import { isRecord, toOptionalString } from "../shared/utils";
 import { parseStructuredOutput } from "./utils";
 import {
   deleteApiKey as deleteStoredApiKey,
@@ -105,7 +105,7 @@ import {
 import { verifyExplicitCursorModelSelection } from "../chat/cursorModelSelection";
 import { discoverDroidCliModelDescriptors, markDroidModelCachesStale } from "../chat/droidModelsDiscovery";
 import { resolveDroidExecutable } from "./droidExecutable";
-import { buildProviderConnections } from "./providerConnectionStatus";
+import { buildProviderConnections, type CopilotSdkAuthProbe } from "./providerConnectionStatus";
 import { piModelDescriptorsFromInventory, probePiProfileInventory, resolvePiInstallation } from "./piInstallation";
 import {
   getProviderRuntimeHealth,
@@ -117,7 +117,7 @@ import { buildClaudeAvailabilityFromConnection, resolveBundledClaudeBinary, with
 import { runProviderTask } from "./providerTaskRunner";
 import { resolveClaudeCodeExecutable } from "./claudeCodeExecutable";
 import { loadCursorSdk } from "./cursorSdkLoader";
-import { resolveCopilotExecutable } from "./acpExecutables";
+import { resolveCopilotExecutable, resolveCopilotSdkRuntime } from "./acpExecutables";
 import { copilotConfigHome } from "../shared/providerConfigHomes";
 import { acquireCopilotSdkConnection, releaseCopilotSdkConnection } from "../chat/copilotSdkPool";
 import { COPILOT_MODELS_TTL_MS, readCopilotModelCatalogCache, refreshCopilotModelCatalog, type CopilotModelCatalogCache } from "../chat/copilotModelsDiscovery";
@@ -129,6 +129,8 @@ import {
   selectCursorAgentTurnUsage,
 } from "../usage/cursorUsageMapping";
 import { recordCursorBilledUsage } from "../usage/cursorBilledUsageStore";
+import { pinnedToolInstallGeneration } from "../../../../../ade-cli/src/services/tools/onDemand";
+import { startDemandedAgentToolFetches } from "../tools/agentToolDemand";
 import {
   openCursorCloudCredentialStore,
   readCursorCloudLaneSecretNames,
@@ -597,7 +599,8 @@ function redactDetectedAuth(
   auth: DetectedAuth[],
   cliStatuses: CliAuthStatus[],
   runtimeReadyAcpProviders?: ReadonlySet<string>,
-  copilotLogin?: string | null,
+  /** The SDK answered the live sign-in check, so its verdict in `auth` stands. */
+  copilotSdkVerified = false,
 ): NonNullable<AiIntegrationStatus["detectedAuth"]> {
   const redacted = auth.map((entry) => {
     if (entry.type === "cli-subscription") {
@@ -635,6 +638,9 @@ function redactDetectedAuth(
 
   for (const cliStatus of cliStatuses) {
     if (!cliStatus.installed) continue;
+    // The SDK's live verdict already sits in `auth`; the disk heuristic must
+    // not overwrite it (it misses keychain and `gh` logins).
+    if (cliStatus.cli === "copilot" && copilotSdkVerified) continue;
     const runtimeReady = runtimeReadyAcpProviders?.has(cliStatus.cli) === true;
     const existingIndex = redacted.findIndex(
       (entry) => entry.type === "cli-subscription" && entry.cli === cliStatus.cli,
@@ -645,7 +651,6 @@ function redactDetectedAuth(
       path: cliStatus.path ?? cliStatus.cli,
       authenticated: runtimeReady || cliStatus.authenticated,
       verified: runtimeReady || cliStatus.verified,
-      ...(cliStatus.cli === "copilot" && copilotLogin ? { login: copilotLogin } : {}),
     };
     if (existingIndex >= 0) {
       redacted[existingIndex] = normalizedEntry;
@@ -1112,17 +1117,40 @@ export function createAiIntegrationService(args: {
     };
   };
 
-  const getCopilotSdkAuthStatus = async (auth: DetectedAuth[]): Promise<{ isAuthenticated: boolean; login?: string } | null> => {
-    const executable = resolveCopilotExecutable({ auth, env: process.env });
+  let lastCopilotProbeFailure: string | null = null;
+  const getCopilotSdkAuthStatus = async (auth: DetectedAuth[]): Promise<CopilotSdkAuthProbe> => {
+    const runtime = resolveCopilotSdkRuntime({ auth, env: process.env });
+    // Nothing to start: no pinned download, bundled copy or `copilot` CLI.
+    if (runtime.source === "fallback-command") return { runtime, auth: null };
     const baseEnv = { ...process.env };
-    const connection = await acquireCopilotSdkConnection({ cliPath: executable.path, baseDirectory: copilotConfigHome({ env: baseEnv }), baseEnv, logger });
     try {
-      const value = await connection.pooled.request<unknown>("auth");
-      if (!value || typeof value !== "object") return null;
-      const row = value as Record<string, unknown>;
-      return { isAuthenticated: row.isAuthenticated === true, ...(typeof row.login === "string" && row.login.trim() ? { login: row.login.trim() } : {}) };
-    } finally {
-      releaseCopilotSdkConnection(connection.poolKey, connection.generation);
+      const connection = await acquireCopilotSdkConnection({ cliPath: runtime.path, baseDirectory: copilotConfigHome({ env: baseEnv }), baseEnv, logger });
+      try {
+        const value = await connection.pooled.request<unknown>("auth");
+        if (!value || typeof value !== "object") return { runtime, auth: null };
+        const row = value as Record<string, unknown>;
+        lastCopilotProbeFailure = null;
+        const login = toOptionalString(row.login);
+        const authType = toOptionalString(row.authType);
+        const statusMessage = toOptionalString(row.statusMessage);
+        return {
+          runtime,
+          auth: {
+            isAuthenticated: row.isAuthenticated === true,
+            ...(login ? { login } : {}),
+            ...(authType ? { authType } : {}),
+            ...(statusMessage ? { statusMessage } : {}),
+          },
+        };
+      } finally {
+        releaseCopilotSdkConnection(connection.poolKey, connection.generation);
+      }
+    } catch (error) {
+      // Once per distinct failure: this runs on every status refresh.
+      const message = error instanceof Error ? error.message : String(error);
+      if (message !== lastCopilotProbeFailure) logger.warn("ai.copilot_sdk_auth_status_unavailable", { error: message });
+      lastCopilotProbeFailure = message;
+      return { runtime, auth: null };
     }
   };
 
@@ -1144,7 +1172,7 @@ export function createAiIntegrationService(args: {
     // which populates dynamic OpenCode descriptors (including local providers).
 
     let available = getAvailableModels(auth);
-    const copilotExecutable = resolveCopilotExecutable({ auth, env: process.env });
+    const copilotExecutable = resolveCopilotSdkRuntime({ auth, env: process.env });
     if (copilotExecutable.source !== "fallback-command") {
       const cached = copilotModelsCache;
       if (!cached || Date.now() - cached.savedAt >= COPILOT_MODELS_TTL_MS) {
@@ -2028,7 +2056,8 @@ export function createAiIntegrationService(args: {
   };
 
   const STATUS_CACHE_TTL_MS = 30_000; // 30 seconds
-  let statusCache: { result: AiIntegrationStatus; cachedAt: number; runtimeHealthVersion: number } | null = null;
+  // `toolInstallGeneration`: an on-demand tool download changes what is detected, so it voids the cache.
+  let statusCache: { result: AiIntegrationStatus; cachedAt: number; runtimeHealthVersion: number; toolInstallGeneration: number } | null = null;
   const statusRequestsInFlight = new Map<string, Promise<AiIntegrationStatus>>();
   let providerReadinessCacheGeneration = 0;
 
@@ -2097,6 +2126,7 @@ export function createAiIntegrationService(args: {
         && options?.refreshOpenCodeInventory !== true
         && statusCache
         && statusCache.runtimeHealthVersion === runtimeHealthVersion
+        && statusCache.toolInstallGeneration === pinnedToolInstallGeneration()
         && now - statusCache.cachedAt < STATUS_CACHE_TTL_MS
       ) {
         return statusCache.result;
@@ -2120,6 +2150,7 @@ export function createAiIntegrationService(args: {
       const request = (async (): Promise<AiIntegrationStatus> => {
         const requestId = randomUUID();
         const totalStartedAt = Date.now();
+        const toolInstallGeneration = pinnedToolInstallGeneration();
         const phases: AiStatusPhaseTiming[] = [];
         const shouldProbeCliModels = options?.force === true || options?.refreshOpenCodeInventory === true;
         const phaseContext = {
@@ -2164,28 +2195,33 @@ export function createAiIntegrationService(args: {
             force: options?.force,
             shallowCliAuth: !shouldProbeCliModels,
           }));
-          let copilotSdkLogin: string | null = null;
-          try {
-            const sdkAuth = await timePhase("probe_copilot_sdk_auth", () => getCopilotSdkAuthStatus(auth));
-            if (sdkAuth) {
-              copilotSdkLogin = sdkAuth.login ?? null;
-              const copilotEntry: DetectedAuth = {
-                type: "cli-subscription",
-                cli: "copilot",
-                path: resolveCopilotExecutable({ auth, env: process.env }).path,
-                authenticated: sdkAuth.isAuthenticated,
-                verified: sdkAuth.isAuthenticated,
-                ...(sdkAuth.login ? { login: sdkAuth.login } : {}),
-              };
-              const copilotIndex = auth.findIndex((entry) => entry.type === "cli-subscription" && entry.cli === "copilot");
-              if (copilotIndex >= 0) {
-                auth = auth.map((entry, index) => index === copilotIndex ? copilotEntry : entry);
-              } else {
-                auth = [...auth, copilotEntry];
-              }
+          // A provider signed in since launch whose pinned tool was never
+          // downloaded starts downloading now, before the probes below, so its
+          // status reads "downloading"; the refresh after it lands sees the tool.
+          const startedToolFetches = startDemandedAgentToolFetches({
+            enabled: (provider) => !isProviderDisabled(projectConfigService.get().effective.ai, provider),
+            opencodeBacked: auth.some((entry) => entry.type === "api-key" || entry.type === "openrouter" || entry.type === "local"),
+          });
+          if (startedToolFetches.length) logger.info("ai.pinned_tool_fetch_started", { tools: startedToolFetches.join(",") });
+          const copilotProbe = await timePhase("probe_copilot_sdk_auth", () => getCopilotSdkAuthStatus(auth));
+          const sdkAuth = copilotProbe.auth;
+          if (sdkAuth) {
+            // A live answer, so it is verified either way: a signed-out
+            // verdict must read as signed out, not as unknown.
+            const copilotEntry: DetectedAuth = {
+              type: "cli-subscription",
+              cli: "copilot",
+              path: resolveCopilotExecutable({ auth, env: process.env }).path,
+              authenticated: sdkAuth.isAuthenticated,
+              verified: true,
+              ...(sdkAuth.login ? { login: sdkAuth.login } : {}),
+            };
+            const copilotIndex = auth.findIndex((entry) => entry.type === "cli-subscription" && entry.cli === "copilot");
+            if (copilotIndex >= 0) {
+              auth = auth.map((entry, index) => index === copilotIndex ? copilotEntry : entry);
+            } else {
+              auth = [...auth, copilotEntry];
             }
-          } catch (error) {
-            logger.debug?.("ai.copilot_sdk_auth_status_unavailable", { error: error instanceof Error ? error.message : String(error) });
           }
           // detectAuth -> detectAllAuth already called detectCliAuthStatuses() and
           // populated the cache, so this reads instantly from cache:
@@ -2239,6 +2275,7 @@ export function createAiIntegrationService(args: {
           const providerConnections = await timePhase("build_provider_connections", () => buildProviderConnections(cliStatuses, {
             piInstallation,
             piInventory: piProfileInventory,
+            copilot: copilotProbe,
           }));
           const configuredLocalProviders = timeSyncPhase(
             "read_local_provider_config",
@@ -2369,7 +2406,7 @@ export function createAiIntegrationService(args: {
             availableProviders: availability,
             models,
             detectedAuth: timeSyncPhase("redact_auth", () => [
-              ...redactDetectedAuth(auth, cliStatuses, runtimeReadyAcpProviders, copilotSdkLogin),
+              ...redactDetectedAuth(auth, cliStatuses, runtimeReadyAcpProviders, copilotProbe.auth != null),
               ...redactPiDetectedAuth(piProfileInventory),
             ]),
             providerConnections,
@@ -2388,7 +2425,7 @@ export function createAiIntegrationService(args: {
             ...timeSyncPhase("harness_brains", () => readHarnessBrains()),
           };
           if (requestGeneration === providerReadinessCacheGeneration) {
-            statusCache = { result, cachedAt: Date.now(), runtimeHealthVersion };
+            statusCache = { result, cachedAt: Date.now(), runtimeHealthVersion, toolInstallGeneration };
           }
           logger.info("ai.status.summary", {
             ...phaseContext,

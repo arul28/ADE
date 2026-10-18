@@ -122,7 +122,8 @@ export async function runToolsCommand(
 
   if (sub === "ensure") {
     // Named tools are opt-in; with none the command means "everything this
-    // build pins", which is what the installer and the brain both want.
+    // build pins". The brain fetches only what the machine uses
+    // (`selectDemandedAgentTools`); this is the explicit "fetch it all".
     const requested = positionals.slice(1);
     for (const name of requested) {
       if (!pinned.includes(name)) {

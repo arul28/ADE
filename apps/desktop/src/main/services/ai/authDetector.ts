@@ -19,7 +19,7 @@ import type { AiLocalProviderConfigs } from "../../../shared/types";
 import { inspectLocalProvider, clearLocalProviderInspectionCache } from "./localModelDiscovery";
 import { resolveDroidExecutable } from "./droidExecutable";
 import { loadQwenUserSettings } from "./qwenUserSettings";
-import { devinCredentialFiles, grokConfigHome } from "../shared/providerConfigHomes";
+import { COPILOT_TOKEN_ENV_KEYS, copilotConfigHome, devinCredentialFiles, ghHostsFiles, grokConfigHome } from "../shared/providerConfigHomes";
 import {
   reportProviderRuntimeAuthFailure,
   reportProviderRuntimeFailure,
@@ -198,23 +198,30 @@ async function inspectAcpCliCredentials(
   return { authenticated: false, verified: false };
 }
 
+/**
+ * The disk heuristic for a Copilot sign-in, used only when the SDK's live
+ * `getAuthStatus` cannot answer. It covers the runtime's own fallbacks: a
+ * token in the environment, a `copilot login` recorded in `config.json`, and a
+ * `gh auth login`. Keychain-only logins are invisible here; the SDK sees them.
+ */
 async function inspectCopilotCliCredentials(): Promise<{ authenticated: boolean; verified: false }> {
   const env = process.env;
-  const home = homedir();
-  // Copilot's durable login is normally keychain/session-state backed, not a
-  // reliable JSON field in config.json. The SDK performs live auth verification.
-  if (env.GITHUB_TOKEN?.trim() || env.GH_TOKEN?.trim()) {
+  if (COPILOT_TOKEN_ENV_KEYS.some((key) => env[key]?.trim())) {
     return { authenticated: true, verified: false };
   }
-  const root = env.COPILOT_HOME?.trim() ? path.resolve(env.COPILOT_HOME) : path.join(home, ".copilot");
   try {
-    const raw = await readFile(path.join(root, "config.json"), "utf8");
+    const raw = await readFile(path.join(copilotConfigHome({ env }), "config.json"), "utf8");
     const parsed = JSON.parse(raw) as { logged_in_users?: unknown };
-    const users = Array.isArray(parsed.logged_in_users) ? parsed.logged_in_users : [];
-    return { authenticated: users.length > 0, verified: false };
+    if (Array.isArray(parsed.logged_in_users) && parsed.logged_in_users.length > 0) {
+      return { authenticated: true, verified: false };
+    }
   } catch {
-    return { authenticated: false, verified: false };
+    // No `copilot login` on record; gh is the remaining fallback.
   }
+  for (const hostsFile of ghHostsFiles({ env })) {
+    if (await fileExists(hostsFile)) return { authenticated: true, verified: false };
+  }
+  return { authenticated: false, verified: false };
 }
 
 async function fileExists(target: string): Promise<boolean> {
@@ -633,7 +640,7 @@ async function inspectDroidCliPresence(command: string, options?: { deep?: boole
   return { installed: true, authenticated: false, verified: false };
 }
 
-const ENV_KEY_MAP: Record<string, string> = {
+export const ENV_KEY_MAP: Record<string, string> = {
   ANTHROPIC_API_KEY: "anthropic",
   OPENAI_API_KEY: "openai",
   GOOGLE_API_KEY: "google",
@@ -1269,7 +1276,7 @@ export async function detectCliAuthStatuses(options?: { force?: boolean; skipAut
     await refreshProcessPathFromShell();
   }
 
-  const cliChecks: CliName[] = ["claude", "codex", "cursor", "droid", ...ACP_CLI_NAMES];
+  const cliChecks: CliName[] = ["claude", "codex", "cursor", "droid", "copilot", ...ACP_CLI_NAMES];
 
   // Probe all CLIs in parallel
   const statuses = await Promise.all(
@@ -1286,6 +1293,11 @@ export async function detectCliAuthStatuses(options?: { force?: boolean; skipAut
       }
       const installed = path !== null;
       const cmd = path ?? spawnName;
+      // Copilot chats run on ADE's own runtime, so a sign-in counts with no CLI.
+      if (!installed && cli === "copilot") {
+        const auth = await inspectCopilotCliCredentials();
+        return { cli, installed, path, authenticated: auth.authenticated, verified: auth.verified };
+      }
       if (!installed) {
         return {
           cli,

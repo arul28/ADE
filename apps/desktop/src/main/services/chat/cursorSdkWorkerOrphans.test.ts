@@ -78,6 +78,9 @@ describe("selectOrphanedCursorSdkWorkers", () => {
       { pid: 13, ppid: 200, command: `node ${WORKER} --ade-owner-pid=200` },
       { pid: 14, ppid: 1, command: `node ${WORKER} --ade-owner-pid=500` },
       { pid: 15, ppid: 1, command: "node /usr/local/bin/some-other-worker.cjs --ade-owner-pid=300" },
+      // The standalone runtime runs workers through its own hidden command.
+      { pid: 16, ppid: 1, command: "/home/u/.ade/bin/ade __ade-copilot-sdk-worker --ade-owner-pid=300" },
+      { pid: 17, ppid: 200, command: "/home/u/.ade/bin/ade __ade-cursor-sdk-worker --ade-owner-pid=200" },
     ];
 
     const selected = selectOrphanedCursorSdkWorkers(rows, {
@@ -86,9 +89,9 @@ describe("selectOrphanedCursorSdkWorkers", () => {
       isAlive: (pid) => alive.has(pid),
     });
 
-    // 11 and 13 have live owners (13 may be another brain). 14 is owned by
+    // 11, 13 and 17 have live owners (13 may be another brain). 14 is owned by
     // this process. 15 is not a Cursor worker.
-    expect(selected).toEqual([{ pid: 12, ppid: 1, ownerPid: 300 }]);
+    expect(selected).toEqual([{ pid: 12, ppid: 1, ownerPid: 300 }, { pid: 16, ppid: 1, ownerPid: 300 }]);
   });
 
   it("treats an unmarked worker as orphaned only when POSIX reparented it to init", () => {

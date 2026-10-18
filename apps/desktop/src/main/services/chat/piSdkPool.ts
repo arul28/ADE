@@ -1,6 +1,6 @@
 import { captureWorkerFailure } from "../../sentry/workerFailures";
 import type { ProviderCompactionSettings } from "../../../shared/compactionSettings";
-import { fork, type ChildProcess, type ForkOptions } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -31,6 +31,7 @@ import {
   type PiSdkWorkerRequest,
 } from "./piSdkProtocol";
 import { buildPiWorkerEnvironment, type PiWorkerActivityScope } from "./piSdkEnvironment";
+import { startSdkWorker } from "./sdkWorkerProcess";
 
 export type PiSdkBridge = {
   onEvent: ((event: JsonValue) => void) | null;
@@ -315,9 +316,10 @@ function createPiSdkConnection(args: AcquirePiSdkConnectionArgs): Promise<PiSdkP
   const validationError = validatePiSdkWorkerRequest(initMessage);
   if (validationError) return Promise.reject(new Error(validationError));
 
-  // fork() forwards windowsHide to spawn(), although the older @types/node
-  // bundled by ADE does not include it in ForkOptions.
-  const child = fork(resolveWorkerPath(), [], {
+  const child = startSdkWorker({
+    worker: "pi",
+    workerPath: resolveWorkerPath,
+    argv: [],
     cwd: args.cwd,
     // Environment inheritance preserves Pi's normal provider credential
     // resolution. Credentials themselves never cross the ADE IPC payload.
@@ -325,10 +327,7 @@ function createPiSdkConnection(args: AcquirePiSdkConnectionArgs): Promise<PiSdkP
     // at production call sites. Tests and future inventory callers cannot
     // accidentally inherit ADE capability/session variables.
     env: buildPiWorkerEnvironment(args.baseEnv ?? process.env, args.agentDir, args.activityScope),
-    stdio: ["ignore", "pipe", "pipe", "ipc"],
-    execArgv: [],
-    windowsHide: true,
-  } as ForkOptions & { windowsHide: boolean });
+  });
   const pending = new Map<string, PendingRpc>();
   let disposeTimer: NodeJS.Timeout | null = null;
   let killTimer: NodeJS.Timeout | null = null;

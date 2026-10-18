@@ -11,6 +11,7 @@ import { ensureTools, gcTools, resolveTool, tryResolvePreviousTool, tryResolveTo
 import { type ToolsManifest, parseToolsManifest } from "./manifest";
 import { TOOL_INSTALL_SENTINEL, toolSentinelPath, toolVersionDir } from "./paths";
 import { acquireToolLock, isToolLockContention } from "./lock";
+import { enablePinnedToolFetch, pinnedToolDownload, pinnedToolFetchInFlight, pinnedToolInstallGeneration } from "./onDemand";
 
 const execFileAsync = promisify(execFile);
 
@@ -667,5 +668,46 @@ describe("acquireToolLock", () => {
     await acquisition.release();
 
     expect(fs.existsSync(lockPath)).toBe(false);
+  });
+});
+
+describe("pinnedToolDownload", () => {
+  // A chat, a task and a status refresh can all ask for the same missing tool;
+  // they must share one install, and an offline machine must not retry on
+  // every status refresh.
+  it("shares one download per tool, counts it once, and backs off after a failure", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const archive = await buildTarball({ "bin/demo": "#!/bin/sh\necho demo\n", "package.json": "{}" });
+      const manifest = manifestFor({ entryPath: "bin/demo", integrity: archive.integrity });
+      const logger = { info: vi.fn(), warn: vi.fn() };
+      enablePinnedToolFetch(logger);
+      const offline: ToolDownloader = async () => {
+        throw new ToolError("getaddrinfo ENOTFOUND registry.npmjs.org", { kind: "network", tool: "demo" });
+      };
+
+      const failure = await pinnedToolDownload("demo", { ...baseContext(manifest), download: offline });
+      expect(failure?.kind).toBe("network");
+      expect(logger.warn).toHaveBeenCalledWith("tools.on_demand_fetch_failed", { tool: "demo", kind: "network" });
+      expect(pinnedToolDownload("demo", { ...baseContext(manifest), download: offline }), "still backing off").toBeNull();
+
+      vi.setSystemTime(Date.now() + 3 * 60_000);
+      const recorder: Recorder = { calls: 0 };
+      const context = { ...baseContext(manifest), download: stubDownloader(archive.path, archive.integrity, recorder) };
+      const generation = pinnedToolInstallGeneration();
+      const first = pinnedToolDownload("demo", context);
+      const second = pinnedToolDownload("demo", context);
+      expect(first, "a retry once the backoff passed").not.toBeNull();
+      expect(second, "the second caller joins the running download").not.toBeNull();
+      expect(pinnedToolFetchInFlight("demo")).toBe(true);
+
+      await expect(Promise.all([first, second])).resolves.toEqual([null, null]);
+      expect(recorder.calls).toBe(1);
+      expect(pinnedToolInstallGeneration()).toBe(generation + 1);
+      expect(pinnedToolFetchInFlight("demo")).toBe(false);
+      expect(pinnedToolDownload("demo", context), "installed, nothing to fetch").toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

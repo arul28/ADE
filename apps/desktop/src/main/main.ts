@@ -455,6 +455,7 @@ import { createAutoDiagnosticsService } from "./services/diagnostics/autoDiagnos
 import { resolveAutoDiagnosticsStateFile } from "./services/diagnostics/autoDiagnosticsStore";
 import { collectDiagnosticReport } from "./services/diagnostics/diagnosticReportService";
 import { createAgentToolsCacheService } from "./services/tools/agentToolsCacheService";
+import { enablePinnedToolFetch } from "../../../ade-cli/src/services/tools/onDemand";
 import { DEFAULT_RELEASE_REPOSITORY } from "./services/updates/autoUpdateVersions";
 import { cleanupStaleTempArtifacts } from "./services/runtime/tempCleanupService";
 import type { Logger } from "./services/logging/logger";
@@ -3219,6 +3220,8 @@ app.whenReady().then(async () => {
     productAnalyticsService,
   });
   if (app.isPackaged && process.env.NODE_ENV !== "test" && process.env.ADE_DISABLE_TOOLS_FETCH !== "1") {
+    // Tools this machine shows no sign of using download when something needs them.
+    enablePinnedToolFetch(updateLogger);
     void agentToolsCacheService.ensureMissing().catch(() => {
       // Per-tool failures are already recorded on the snapshot and in the log;
       // a rejected kick must never take down app startup.

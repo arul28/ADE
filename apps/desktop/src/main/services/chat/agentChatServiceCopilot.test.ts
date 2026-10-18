@@ -40,7 +40,10 @@ describe("copilot chat runtime", () => {
     // [level, request, user decision on the card (null: no card expected), Copilot gets]
     ["ask", { kind: "shell", fullCommandText: "rm -rf build" }, "accept", { kind: "approve-once" }],
     ["ask", { kind: "shell", fullCommandText: "rm -rf build" }, "decline", { kind: "reject" }],
-    ["ask", { kind: "write", fileName: "src/a.ts" }, "accept_for_session", { kind: "approve-for-session" }],
+    // A session approval carries the rule Copilot remembers, and only when Copilot offers one.
+    ["ask", { kind: "write", fileName: "src/a.ts", promptRequest: { kind: "write", canOfferSessionApproval: true } }, "accept_for_session", { kind: "approve-for-session", approval: { kind: "write" } }],
+    ["ask", { kind: "shell", fullCommandText: "rm -rf build", promptRequest: { kind: "commands", canOfferSessionApproval: false, commandIdentifiers: ["rm"] } }, "accept_for_session", { kind: "approve-once" }],
+    ["ask", { kind: "write", fileName: "src/a.ts" }, "accept_for_session", { kind: "approve-once" }],
     ["auto-edit", { kind: "write", fileName: "src/a.ts" }, null, { kind: "approve-once" }],
     ["auto-edit", { kind: "write", fileName: "../outside.ts" }, "decline", { kind: "reject" }],
     ["auto-edit", { kind: "shell", fullCommandText: "npm test" }, "accept", { kind: "approve-once" }],
@@ -118,5 +121,42 @@ describe("copilot chat runtime", () => {
     const applied = pooled.request.mock.calls.find(([, payload]: [string, { action?: string }]) => payload.action === "apply");
     expect(applied?.[1]).toMatchObject({ eventId: "copilot-user-event-2" });
     expect(result.filesChanged).toEqual(["a.ts"]);
+  });
+
+  // An eligible rate limit is held while Copilot offers Auto. When no one says
+  // "yes" (the card never showed, or the turn ended first), the held error is
+  // still the turn's error: a turn that reads "completed" never arms the
+  // usage-limit resume.
+  it("fails the turn with a held rate-limit error that no one switched away from", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const harness = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+    const session = await harness.service.createSession({
+      laneId: "lane-1", provider: "copilot", model: "auto", modelId: "github-copilot/auto",
+    } as never);
+    const dones = () => events.filter((envelope) => envelope.event.type === "done");
+    await harness.service.sendMessage({ sessionId: session.id, text: "open the runtime" });
+    await waitFor(() => dones().length === 1);
+    const pooled = mockState.copilotPooled;
+    pooled.send.mockImplementation(async (chatId: string) => {
+      queueMicrotask(() => {
+        pooled.bridge.onEvent?.(chatId, {
+          type: "session.error",
+          data: { message: "You have hit the rate limit.", errorType: "rate_limit", eligibleForAutoSwitch: true },
+        });
+        pooled.bridge.onEvent?.(chatId, { type: "session.idle", data: {} });
+      });
+      return "copilot-message-2";
+    });
+
+    await harness.service.sendMessage({ sessionId: session.id, text: "keep going" });
+    await waitFor(() => dones().length === 2);
+
+    const done = dones()[1]!.event as { status: string };
+    const errors = events
+      .map((envelope) => envelope.event as { type: string; message?: string; errorInfo?: { category?: string } })
+      .filter((event) => event.type === "error");
+    expect(done.status).toBe("failed");
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({ message: "You have hit the rate limit.", errorInfo: { category: "rate_limit" } });
   });
 });

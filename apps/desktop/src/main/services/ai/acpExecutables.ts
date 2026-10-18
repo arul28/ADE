@@ -18,9 +18,11 @@
  */
 
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import type { DetectedAuth } from "./authDetector";
-import { resolveExecutableCandidatesFromKnownLocations } from "./cliExecutableResolver";
+import { cachedToolEntryPath, previousCachedToolEntryPath } from "../../../../../ade-cli/src/services/tools/cacheLookup";
+import { isExecutableFile, resolveExecutableCandidatesFromKnownLocations } from "./cliExecutableResolver";
 import { preferNativeExecutablePath } from "../shared/processExecution";
 import type { AcpChatProvider } from "../../../shared/types/chat";
 type ResolvableCliProvider = AcpChatProvider | "copilot";
@@ -28,6 +30,12 @@ type ResolvableCliProvider = AcpChatProvider | "copilot";
 export type AcpExecutableResolution = {
   path: string;
   source: "env" | "auth" | "path" | "common-dir" | "fallback-command";
+};
+
+/** Where the Copilot SDK runtime came from; `tools-cache` is ADE's pinned download. */
+export type CopilotSdkRuntimeResolution = {
+  path: string;
+  source: AcpExecutableResolution["source"] | "tools-cache" | "bundled";
 };
 
 /** Environment overrides ADE honors, in order, per provider. */
@@ -119,6 +127,90 @@ export function resolveCopilotExecutable(args?: {
   const resolved = resolveAcpExecutable("copilot", args);
   const native = copilotNativeExecutableForShim(resolved.path, args?.platform ?? process.platform, args?.arch ?? process.arch);
   return native ? { ...resolved, path: native } : resolved;
+}
+
+/**
+ * The runtime Copilot chats run on, in the same order as Claude's binary: an
+ * explicit override, ADE's pinned download (`~/.ade/tools`), the SDK's own
+ * platform package (a source checkout, or an older build that shipped it), the
+ * previous pinned version while a new one downloads, and last the machine's own
+ * `copilot`.
+ *
+ * ADE's runtimes are the version the SDK was built against, so they speak its
+ * protocol and need no Copilot CLI install. They are headless only: they reuse
+ * the login the machine already has (`copilot login`, `gh auth login`, or a
+ * token in the environment) and cannot sign anyone in. The terminal `copilot`
+ * launch keeps using `resolveCopilotExecutable`.
+ */
+export function resolveCopilotSdkRuntime(args?: {
+  auth?: DetectedAuth[];
+  env?: NodeJS.ProcessEnv;
+  platform?: NodeJS.Platform;
+  arch?: string;
+  resourcesPath?: string | null;
+}): CopilotSdkRuntimeResolution {
+  const env = args?.env ?? process.env;
+  if (ACP_EXECUTABLE_ENV_KEYS.copilot.some((key) => env[key]?.trim())) return resolveCopilotExecutable(args);
+  const platform = args?.platform ?? process.platform;
+  const cacheContext = { env, platform: args?.platform, arch: args?.arch };
+  const cached = cachedToolEntryPath("copilot", cacheContext);
+  if (cached && isCopilotRuntime(cached, platform)) return { path: cached, source: "tools-cache" };
+  const bundled = bundledCopilotSdkRuntime(args);
+  if (bundled) return { path: bundled, source: "bundled" };
+  const previous = previousCachedToolEntryPath("copilot", cacheContext);
+  if (previous && isCopilotRuntime(previous, platform)) return { path: previous, source: "tools-cache" };
+  return resolveCopilotExecutable(args);
+}
+
+/** The runtime wrapper only starts with its `runtime.node` beside it. */
+function isCopilotRuntime(candidate: string, platform: NodeJS.Platform): boolean {
+  return isExecutableFile(candidate, platform) && fs.existsSync(path.join(path.dirname(candidate), "runtime.node"));
+}
+
+/** The SDK's platform package names for this host, as `@github/copilot-sdk` picks them. */
+function copilotSdkRuntimePlatforms(platform: NodeJS.Platform, arch: string): string[] {
+  if (platform === "darwin" || platform === "win32") return [`${platform}-${arch}`];
+  if (platform === "linux") return [`linux-${arch}`, `linuxmusl-${arch}`];
+  return [];
+}
+
+function bundledCopilotSdkRuntime(args?: {
+  platform?: NodeJS.Platform;
+  arch?: string;
+  resourcesPath?: string | null;
+}): string | null {
+  const platform = args?.platform ?? process.platform;
+  const arch = args?.arch ?? process.arch;
+  const wrapper = platform === "win32" ? "copilot-runtime.exe" : "copilot-runtime";
+  const resourcesPath = args?.resourcesPath ?? (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath ?? null;
+  // ESM (`tsx` from source) has no `__filename`; the script it runs is ADE's own.
+  const script = process.argv[1];
+  const fromFile = typeof __filename === "string" ? __filename : script && path.isAbsolute(script) ? script : null;
+  for (const runtimePlatform of copilotSdkRuntimePlatforms(platform, arch)) {
+    const packageName = `copilot-sdk-${runtimePlatform}`;
+    const roots: string[] = [];
+    if (resourcesPath) {
+      for (const unpacked of ["app.asar.unpacked", `app-${arch}.asar.unpacked`]) {
+        roots.push(path.join(resourcesPath, unpacked, "node_modules", "@github", packageName));
+      }
+    }
+    // ADE's own install; `require.resolve` also searches the brain's NODE_PATH,
+    // which points at the packaged app's unpacked node_modules.
+    if (fromFile) {
+      try {
+        const packageJson = createRequire(fromFile).resolve(`@github/${packageName}/package.json`);
+        // A copy inside an asar cannot be spawned; its unpacked twin can.
+        roots.push(path.dirname(packageJson).replace(/([\\/]app(?:-[a-z0-9]+)?\.asar)(?=[\\/])/, "$1.unpacked"));
+      } catch {
+        // Not installed for this platform.
+      }
+    }
+    for (const root of roots) {
+      const candidate = path.join(root, "prebuilds", runtimePlatform, wrapper);
+      if (isCopilotRuntime(candidate, platform)) return candidate;
+    }
+  }
+  return null;
 }
 
 /**

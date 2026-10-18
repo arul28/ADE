@@ -18,6 +18,7 @@ import os from "node:os";
 import path from "node:path";
 import { isPathInside, pathsEqual } from "../../../desktop/src/main/services/shared/pathCompare";
 import {
+  isEmbeddedAdeRuntime,
   resolveCliSpawnInvocation,
   shouldUseWindowsCmdWrapper,
 } from "../../../desktop/src/main/services/shared/processExecution";
@@ -154,14 +155,7 @@ export function resolveCliDelegationTarget(
  * Node SEA build (whose argv[1] is rewritten to a bare "cli.cjs"), else argv[1].
  */
 export function resolveCurrentCliEntry(proc: Pick<NodeJS.Process, "argv" | "execPath"> = process): string | null {
-  try {
-    const sea = (process as NodeJS.Process & {
-      getBuiltinModule?: (id: string) => unknown;
-    }).getBuiltinModule?.("node:sea") as { isSea?: () => boolean } | undefined;
-    if (sea?.isSea?.()) return proc.execPath;
-  } catch {
-    // Older runtimes without node:sea are never SEA builds.
-  }
+  if (isEmbeddedAdeRuntime()) return proc.execPath;
   const argv1 = proc.argv[1]?.trim();
   return argv1 ? path.resolve(argv1) : null;
 }
