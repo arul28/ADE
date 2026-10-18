@@ -7591,10 +7591,22 @@ function AgentChatMessageListMain({
   // `overflow-anchor: none` on the pane keeps the browser out of it.
   useLayoutEffect(() => {
     const anchor = pendingListAnchorRef.current;
-    if (!anchor) return;
     pendingListAnchorRef.current = null;
     const el = scrollRef.current;
-    if (!el || stickToBottomRef.current) return;
+    if (el && stickToBottomRef.current) {
+      // A reader following the tail takes no anchor, so nothing else re-pins
+      // in this commit: a prepended page would paint one frame at the old
+      // scrollTop, blank on the virtualized path. Pin before paint instead.
+      // Stands down where the view places itself (see the capture above).
+      if (
+        !pendingFoldAnchorRef.current
+        && !pendingRevealScrollKeyRef.current
+        && !pendingChatEventAnchorRef.current
+        && !scrollRestoreActiveRef.current
+      ) pinScrollToBottomNow(el);
+      return;
+    }
+    if (!anchor || !el) return;
     let shift: number | null = null;
     for (const row of anchor.rows) {
       const top = readLaidOutChatRowTop(el, row.key);
@@ -7619,7 +7631,7 @@ function AgentChatMessageListMain({
     el.scrollTop = Math.max(0, before + shift);
     if (el.scrollTop !== before) programmaticScrollTargetRef.current = el.scrollTop;
     setScrollTop(el.scrollTop);
-  }, [groupedRowKeys, measuredRowStartOffsets]);
+  }, [groupedRowKeys, measuredRowStartOffsets, pinScrollToBottomNow]);
 
   // Apply a pending fold anchor: move scrollTop by exactly how far the anchor
   // row moved, so the fold change reads as happening below/inside the reader's

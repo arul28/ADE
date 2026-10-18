@@ -55,7 +55,7 @@ function mergeProjectFromHealth(health: BridgeHealth, existing: any) {
   };
 }
 
-function patchSyncMethods(ade: any) {
+function patchSyncMethods(ade: any, health: BridgeHealth) {
   ade.sync.getStatus = async (args?: Record<string, unknown>) =>
     bridgePost("/sync", { method: "sync.getStatus", params: args ?? {} });
   ade.sync.refreshDiscovery = async () =>
@@ -66,8 +66,9 @@ function patchSyncMethods(ade: any) {
     bridgePost("/sync", { method: "sync.updateLocalDevice", params: args });
   ade.sync.connectToBrain = async (draft: Record<string, unknown>) =>
     bridgePost("/sync", { method: "sync.connectToBrain", params: draft });
+  // The brain refuses a disconnect that names no project, so name this one.
   ade.sync.disconnectFromBrain = async () =>
-    bridgePost("/sync", { method: "sync.disconnectFromBrain" });
+    bridgePost("/sync", { method: "sync.disconnectFromBrain", params: { projectId: health.projectId } });
   ade.sync.forgetDevice = async (deviceId: string) =>
     bridgePost("/sync", { method: "sync.forgetDevice", params: { deviceId } });
   ade.sync.getTransferReadiness = async () =>
@@ -194,7 +195,7 @@ export async function attachBrowserRuntimeBridge(): Promise<boolean> {
     openProjectTabs: [project],
   });
 
-  if (ade.sync && typeof ade.sync === "object") patchSyncMethods(ade);
+  if (ade.sync && typeof ade.sync === "object") patchSyncMethods(ade, health);
   if (ade.cto && typeof ade.cto === "object") patchLinearMethods(ade);
   if (ade.jira && typeof ade.jira === "object") patchJiraMethods(ade, health);
   if (ade.lanes && typeof ade.lanes === "object") patchLaneMethods(ade);

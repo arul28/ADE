@@ -172,6 +172,128 @@ describe("createSyncService", () => {
     })).toBe(false);
   });
 
+  describe("a project's legacy sync draft and the shared pairing directory", () => {
+    const sharedDraftFile = "sync-peer-draft.json";
+    const draftJson = (host: string, port: number) => JSON.stringify({
+      host,
+      port,
+      authKind: "bootstrap",
+      pairedDeviceId: null,
+      lastRemoteDbVersion: 0,
+    });
+    // One machine-wide pairing directory, shared by every project in a test.
+    const makeMachineDir = () => {
+      const machineDir = makeTempRoot("ade-sync-machine-");
+      cleanupRoots.push(machineDir);
+      fs.writeFileSync(path.join(machineDir, "sync-bootstrap-token"), "token\n");
+      return machineDir;
+    };
+    const openProject = async (machineDir: string) => {
+      const projectRoot = makeTempRoot("ade-sync-project-");
+      cleanupRoots.push(projectRoot);
+      const db = await openKvDb(path.join(projectRoot, ".ade", "kv.sqlite"), createLogger() as any);
+      const service = createService(db, projectRoot, { phonePairingStateDir: machineDir });
+      return { projectRoot, db, service, registry: service.getDeviceRegistryService() };
+    };
+    const followBrain = (registry: ReturnType<SyncService["getDeviceRegistryService"]>, deviceId: string, host: string, port: number) => {
+      registry.upsertPeerMetadata({
+        deviceId,
+        deviceName: deviceId,
+        platform: "macOS",
+        deviceType: "desktop",
+        siteId: `${deviceId}-site`,
+        dbVersion: 1,
+      } as any, { lastSeenAt: new Date(Date.now() - 2 * 60_000).toISOString(), lastHost: host, lastPort: port });
+      registry.setClusterState({ brainDeviceId: deviceId, brainEpoch: 1 });
+    };
+
+    it("adopts the project's own legacy draft when its cluster record names that brain, tagged for that project", async () => {
+      const machineDir = makeMachineDir();
+      const project = await openProject(machineDir);
+      try {
+        followBrain(project.registry, "brain-a", "192.0.2.20", 45872);
+        fs.mkdirSync(path.join(project.projectRoot, ".ade", "secrets"), { recursive: true });
+        fs.writeFileSync(path.join(project.projectRoot, ".ade", "secrets", sharedDraftFile), draftJson("192.0.2.20", 45872));
+        expect(project.service.getHostBlocker()).toEqual({ reason: "saved_connection", host: "192.0.2.20", port: 45872 });
+        const adopted = JSON.parse(fs.readFileSync(path.join(machineDir, sharedDraftFile), "utf8"));
+        expect(adopted.projectSiteId).toBe(project.registry.getLocalSiteId());
+      } finally {
+        await project.service.dispose();
+        project.db.close();
+      }
+    });
+
+    it("does not adopt a legacy draft that dials a brain this project does not follow", async () => {
+      const machineDir = makeMachineDir();
+      const project = await openProject(machineDir);
+      try {
+        followBrain(project.registry, "brain-a", "192.0.2.20", 45872);
+        fs.mkdirSync(path.join(project.projectRoot, ".ade", "secrets"), { recursive: true });
+        // The ghost from the 2026-10-16 incident, saved by a project that followed it.
+        fs.writeFileSync(path.join(project.projectRoot, ".ade", "secrets", sharedDraftFile), draftJson("192.168.1.89", 45872));
+        expect(project.service.getHostBlocker()).toEqual({ reason: "cluster_record", host: "192.0.2.20", port: 45872 });
+        expect(fs.existsSync(path.join(machineDir, sharedDraftFile))).toBe(false);
+      } finally {
+        await project.service.dispose();
+        project.db.close();
+      }
+    });
+
+    it("does not let an untagged draft in the shared file redirect another project", async () => {
+      const machineDir = makeMachineDir();
+      fs.writeFileSync(path.join(machineDir, sharedDraftFile), draftJson("192.168.1.89", 45872));
+      const following = await openProject(machineDir);
+      const unjoined = await openProject(machineDir);
+      try {
+        followBrain(following.registry, "brain-b", "192.0.2.30", 45872);
+        expect(following.service.getHostBlocker()).toEqual({ reason: "cluster_record", host: "192.0.2.30", port: 45872 });
+        expect(unjoined.service.getHostBlocker()).toBeNull();
+      } finally {
+        await following.service.dispose();
+        following.db.close();
+        await unjoined.service.dispose();
+        unjoined.db.close();
+      }
+    });
+
+    it("refuses disconnectFromBrain on the brain and keeps its devices and cluster record", async () => {
+      const machineDir = makeMachineDir();
+      const project = await openProject(machineDir);
+      try {
+        const registry = project.registry;
+        registry.setClusterState({ brainDeviceId: registry.getLocalDeviceId(), brainEpoch: 1 });
+        registry.upsertPeerMetadata({
+          deviceId: "phone-1",
+          deviceName: "Phone",
+          platform: "iOS",
+          deviceType: "phone",
+          siteId: "phone-1-site",
+          dbVersion: 1,
+        } as any, { lastSeenAt: new Date().toISOString() });
+        await expect(project.service.disconnectFromBrain()).rejects.toThrow("This project is the sync brain");
+        expect(registry.getClusterState()?.brainDeviceId).toBe(registry.getLocalDeviceId());
+        expect(registry.listDevices().map((device) => device.deviceId)).toContain("phone-1");
+      } finally {
+        await project.service.dispose();
+        project.db.close();
+      }
+    });
+
+    it("still lets a viewer disconnect from its brain", async () => {
+      const machineDir = makeMachineDir();
+      const project = await openProject(machineDir);
+      try {
+        followBrain(project.registry, "brain-a", "192.0.2.20", 45872);
+        expect((await project.service.getStatus()).role).toBe("viewer");
+        await project.service.disconnectFromBrain();
+        expect(project.registry.getClusterState()).toBeNull();
+      } finally {
+        await project.service.dispose();
+        project.db.close();
+      }
+    });
+  });
+
   it("leaves a dead brain's cluster record alone when this runtime may not host", async () => {
     const projectRoot = makeTempRoot("ade-sync-service-no-draft-failover-");
     cleanupRoots.push(projectRoot);
@@ -197,6 +319,197 @@ describe("createSyncService", () => {
       await service.dispose();
       db.close();
     }
+  });
+
+  // The viewer branch dials only when the CRDT extension is available, and the
+  // win32 mock above turns it off, so this test cannot see the dial or the warn there.
+  it.skipIf(process.platform === "win32")("never dials this machine for a fresh remote brain that has no address", async () => {
+    const projectRoot = makeTempRoot("ade-sync-service-addressless-brain-");
+    cleanupRoots.push(projectRoot);
+    const db = await openKvDb(path.join(projectRoot, ".ade", "kv.sqlite"), createLogger() as any);
+    // A fake standing in for this machine's own listener on a random port: a
+    // viewer that dials 127.0.0.1 for the remote brain lands here.
+    let selfDials = 0;
+    const selfListener = net.createServer((socket) => {
+      selfDials += 1;
+      socket.destroy();
+    });
+    await new Promise<void>((resolve) => selfListener.listen(0, "127.0.0.1", resolve));
+    const selfPort = (selfListener.address() as net.AddressInfo).port;
+    const logger = createLogger();
+    const service = createService(db, projectRoot, { hostStartupEnabled: false, logger: logger as any });
+    const registry = service.getDeviceRegistryService();
+    registry.upsertPeerMetadata({
+      deviceId: "addressless-brain",
+      deviceName: "Addressless brain",
+      platform: "macOS",
+      deviceType: "desktop",
+      siteId: "addressless-site",
+      dbVersion: 1,
+    } as any, { lastSeenAt: new Date().toISOString(), lastPort: selfPort });
+    registry.setClusterState({ brainDeviceId: "addressless-brain", brainEpoch: 1 });
+    fs.mkdirSync(path.join(projectRoot, ".ade", "secrets", "sync"), { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, ".ade", "secrets", "sync", "sync-bootstrap-token"), "token\n");
+    try {
+      await service.reevaluateHostRole();
+      expect(selfDials).toBe(0);
+      expect(logger.warn).toHaveBeenCalledWith("sync.role.viewer_no_reachable_address", {
+        brainDeviceId: "addressless-brain",
+        brainRecordKnown: true,
+      });
+      expect(registry.getClusterState()?.brainDeviceId).toBe("addressless-brain");
+    } finally {
+      await service.dispose();
+      await new Promise<void>((resolve) => selfListener.close(() => resolve()));
+      db.close();
+    }
+  });
+
+  describe("a saved draft that names loopback", () => {
+    const draftFileName = "sync-peer-draft.json";
+    const lanAddress = (() => {
+      for (const addresses of Object.values(os.networkInterfaces())) {
+        const found = addresses?.find((address) => address.family === "IPv4" && !address.internal);
+        if (found) return found.address;
+      }
+      return null;
+    })();
+    // Counts the TCP connections it receives and drops them, so a test can see
+    // which address a viewer reached.
+    const countingListener = async (host: string, port: number) => {
+      let connections = 0;
+      const server = net.createServer((socket) => {
+        connections += 1;
+        socket.destroy();
+      });
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(port, host, () => resolve());
+      });
+      return {
+        port: (server.address() as net.AddressInfo).port,
+        connections: () => connections,
+        close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+      };
+    };
+    // A viewer whose saved draft dials `draftHost` on the brain's port. The draft
+    // is tagged for this project, as a current build writes it. The brain is
+    // either another machine (`remote`) or this one (`local`).
+    const openProject = async (options: {
+      brain: "remote" | "local";
+      lastHost: string | null;
+      lastPort: number;
+      draftHost: string;
+    }) => {
+      const projectRoot = makeTempRoot("ade-sync-service-loopback-draft-");
+      cleanupRoots.push(projectRoot);
+      const db = await openKvDb(path.join(projectRoot, ".ade", "kv.sqlite"), createLogger() as any);
+      const logger = createLogger();
+      const service = createService(db, projectRoot, { hostStartupEnabled: false, logger: logger as any });
+      const registry = service.getDeviceRegistryService();
+      if (options.brain === "remote") {
+        registry.upsertPeerMetadata({
+          deviceId: "remote-brain",
+          deviceName: "Remote brain",
+          platform: "macOS",
+          deviceType: "desktop",
+          siteId: "remote-brain-site",
+          dbVersion: 1,
+        } as any, { lastSeenAt: new Date().toISOString(), lastHost: options.lastHost, lastPort: options.lastPort });
+        registry.setClusterState({ brainDeviceId: "remote-brain", brainEpoch: 1 });
+      } else {
+        registry.setClusterState({ brainDeviceId: registry.getLocalDeviceId(), brainEpoch: 1 });
+      }
+      const secretsDir = path.join(projectRoot, ".ade", "secrets", "sync");
+      fs.mkdirSync(secretsDir, { recursive: true });
+      fs.writeFileSync(path.join(secretsDir, "sync-bootstrap-token"), "token\n");
+      const draftFile = path.join(secretsDir, draftFileName);
+      fs.writeFileSync(draftFile, JSON.stringify({
+        host: options.draftHost,
+        port: options.lastPort,
+        authKind: "bootstrap",
+        pairedDeviceId: null,
+        lastRemoteDbVersion: 0,
+        projectSiteId: registry.getLocalSiteId(),
+      }));
+      return { service, logger, db, draftFile };
+    };
+
+    // Dialing needs the CRDT extension, which the win32 mock turns off; the
+    // draft-selection assertions below still run there.
+    it.skipIf(lanAddress == null || process.platform === "win32")("dials the remote brain's real address, never this machine's loopback", async () => {
+      const self = await countingListener("127.0.0.1", 0);
+      // The brain has one port for all its addresses, so the real address listens on the same one.
+      const remote = await countingListener(lanAddress!, self.port);
+      const project = await openProject({ brain: "remote", lastHost: lanAddress, lastPort: self.port, draftHost: "127.0.0.1" });
+      try {
+        await project.service.reevaluateHostRole();
+        expect(remote.connections()).toBeGreaterThan(0);
+        expect(self.connections()).toBe(0);
+        // The draft is user state, so it is kept: the connection to the real
+        // address rewrites it with that address instead of the loopback one.
+        expect(JSON.parse(fs.readFileSync(project.draftFile, "utf8")).host).toBe(lanAddress);
+      } finally {
+        await project.service.dispose();
+        project.db.close();
+        await self.close();
+        await remote.close();
+      }
+    });
+
+    it.each(["127.0.0.1", "::1", "::ffff:127.0.0.1", "2130706433", "0x7f000001"])(
+      "ignores a saved %s draft for a remote brain with no reachable address, and dials nothing",
+      async (draftHost) => {
+        const self = await countingListener("127.0.0.1", 0);
+        const project = await openProject({ brain: "remote", lastHost: null, lastPort: self.port, draftHost });
+        try {
+          await project.service.reevaluateHostRole();
+          expect(self.connections()).toBe(0);
+          expect(project.logger.warn).toHaveBeenCalledWith("sync.role.saved_draft_loopback_ignored", {
+            host: draftHost,
+            port: self.port,
+          });
+          expect((await project.service.getStatus()).client.savedDraft).toBeNull();
+          expect(fs.existsSync(project.draftFile)).toBe(true);
+        } finally {
+          await project.service.dispose();
+          project.db.close();
+          await self.close();
+        }
+      },
+    );
+
+    it.skipIf(process.platform === "win32")("logs viewer_no_reachable_address for a saved loopback draft with no reachable address", async () => {
+      const self = await countingListener("127.0.0.1", 0);
+      const project = await openProject({ brain: "remote", lastHost: null, lastPort: self.port, draftHost: "127.0.0.1" });
+      try {
+        await project.service.reevaluateHostRole();
+        expect(self.connections()).toBe(0);
+        expect(project.logger.warn).toHaveBeenCalledWith("sync.role.viewer_no_reachable_address", {
+          brainDeviceId: "remote-brain",
+          brainRecordKnown: true,
+        });
+      } finally {
+        await project.service.dispose();
+        project.db.close();
+        await self.close();
+      }
+    });
+
+    it("keeps a saved loopback draft while this machine is the brain", async () => {
+      const self = await countingListener("127.0.0.1", 0);
+      const project = await openProject({ brain: "local", lastHost: null, lastPort: self.port, draftHost: "127.0.0.1" });
+      try {
+        await project.service.reevaluateHostRole();
+        expect((await project.service.getStatus()).client.savedDraft?.host).toBe("127.0.0.1");
+        expect(self.connections()).toBe(0);
+        expect(project.logger.warn).not.toHaveBeenCalledWith("sync.role.saved_draft_loopback_ignored", expect.anything());
+      } finally {
+        await project.service.dispose();
+        project.db.close();
+        await self.close();
+      }
+    });
   });
 
   const seedDeadBrainRecord = (registry: ReturnType<SyncService["getDeviceRegistryService"]>) => {

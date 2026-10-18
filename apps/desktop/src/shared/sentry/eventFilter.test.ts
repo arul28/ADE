@@ -110,7 +110,7 @@ describe("createSentryEventHooks", () => {
     ["a remote machine that is slow to answer", "Remote ADE service timed out waiting for method ade/actions/call pr.refresh (30000ms).", true],
     ["a Mac-only surface asked for before the runtime connected", "Mac Desktop is not available on this machine.", true],
     ["the brain restarting for an update", "ADE is applying an update. The background service is restarting.", true],
-    ["a project set to follow another machine", "This project is set to follow another ADE machine at 192.168.1.89:8788, so this machine cannot open it for sync. Open it on that machine, or disconnect it from that machine on this computer.", true],
+    ["a project set to follow another machine", "This project is set to follow another ADE machine at 192.168.1.89:8788, so this machine cannot open it for sync. Open it on that machine, or stop following it on this computer: in Connections, under This computer, choose Stop following.", true],
     ["a sync-host activation overrunning its budget, which is ADE's", "Sync host activation for project_474a1c2f timed out after 10000ms.", false],
     ["a paired machine slow to answer an action", "IPC handler for 'ade.remoteRuntime.callAction' timed out after 75000ms (callId=12593)", true],
     ["a local call that hangs, which is ADE's", "IPC handler for 'ade.accountSettings.sync' timed out after 30000ms (callId=40553)", false],

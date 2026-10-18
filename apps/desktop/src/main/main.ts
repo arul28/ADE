@@ -225,6 +225,7 @@ import {
 import { pathKey, pathsEqual } from "./services/shared/pathCompare";
 import { assertLocalProjectDataAvailable, deriveProjectId, ProjectRegistry, recordLocalProjectDatabaseIdentity } from "../../../ade-cli/src/services/projects/projectRegistry";
 import { buildRosterSnapshot } from "../../../ade-cli/src/services/sync/rosterBuilder";
+import { activeCompileCacheDir, scheduleStaleCompileCachePrune } from "../../../ade-cli/src/services/runtime/compileCachePrune";
 import {
   detectDefaultBaseRef,
   resolveRepoRoot,
@@ -1296,12 +1297,12 @@ async function createWindow(args: {
     // The load did not finish because there is no window left to finish it in:
     // the app is quitting, or the user closed the window while the renderer was
     // still coming up. Chromium words that exactly like a real failure —
-    // `ERR_FAILED (-2) loading '<url>'` — so it cannot be told apart by message,
-    // and a second launch that loses the single-instance lock reaches here on
-    // every start: `app.quit()` before `ready` does not stop `ready` (Electron
-    // 41.5.0, measured), so the whole boot — this window, its load, and the
-    // built-in browser bridge — runs inside a process that is already leaving
-    // and closes the window under the load (2026-10-16, ADE-DESKTOP-1T).
+    // `ERR_FAILED (-2) loading '<url>'` — so it cannot be told apart by message.
+    // A second launch that lost the single-instance lock reached here after
+    // `app.quit()` before `ready` (2026-10-16, ADE-DESKTOP-1T): the boot ran in
+    // a process that was already leaving and closed the window under the load.
+    // A lock loser now exits before the boot (see `registerAdeProtocolHandler`),
+    // so this branch is for a window closed mid-load by someone else.
     //
     // A warning, not an error: nothing failed, and the fallback page below has
     // nobody to be shown to — loading it anyway throws `Object has been
@@ -1417,8 +1418,8 @@ const dispatchOrQueueAppNavigationRequest = (request: AppNavigationRequest): voi
 // second `open ade://...` invocation reuses the running window. Dispatch to the
 // focused window's renderer via the existing IPC.appNavigate channel.
 // A dev app that lost the single-instance lock shares its user-data folder with
-// another running dev app. Electron then never fires `ready`: no window, no
-// error, a process that waits forever. Say so and exit instead.
+// another running dev app. Without this it would exit with no message, and the
+// user would see nothing happen. Say so and exit instead.
 function exitDevAppSharingUserData(): void {
   const userData = app.getPath("userData");
   let holder = "another ADE dev app";
@@ -1446,6 +1447,11 @@ registerAdeProtocolHandler({
   log: (event, fields) => logMachineEvent("info", event, fields),
   flushLog: flushMachineMainLog,
   ...(app.isPackaged ? {} : { onLockLostWithoutForward: exitDevAppSharingUserData }),
+  // Read only when the lock is lost, for the log line: the update install writes
+  // `pendingInstallUpdate` into the global state file, and only the launch that
+  // lands the install clears it.
+  hasPendingInstallUpdate: () =>
+    Boolean(readGlobalState(path.join(app.getPath("userData"), "ade-state.json")).pendingInstallUpdate),
 });
 
 let pendingProjectOpenFiles: string[] = [];
@@ -9755,6 +9761,13 @@ app.whenReady().then(async () => {
   builtInBrowserService.attachToWindow(initialWindow);
   initialWindowNavigationReady = true;
   drainPendingAppNavigationRequests();
+  // Compile caches of earlier builds go once the first window is up. An explicit
+  // ADE_COMPILE_CACHE_DIR or NODE_COMPILE_CACHE is the caller's directory, so it is left alone.
+  if (!process.env.ADE_COMPILE_CACHE_DIR?.trim() && !process.env.NODE_COMPILE_CACHE?.trim()) {
+    scheduleStaleCompileCachePrune(activeCompileCacheDir(), {
+      onPruned: (removed) => logMachineEvent("info", "compile_cache.pruned", { removed }),
+    });
+  }
   if (shouldShowRuntimeMigrationNotice && process.env.NODE_ENV !== "test") {
     void dialog.showMessageBox(initialWindow, {
       type: "info",

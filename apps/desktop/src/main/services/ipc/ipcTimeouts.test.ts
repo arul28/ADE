@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { IPC } from "../../../shared/ipc";
 import { ipcInvokeTimeoutMs, readRuntimeActionRequest } from "./ipcTimeouts";
 import { MCP_SIGN_IN_TIMEOUT_MS } from "../mcp/mcpOAuth";
@@ -461,6 +461,29 @@ describe("ipcInvokeTimeoutMs", () => {
     IPC.machineResetStart,
   ])("keeps %s open well past a person or a slow download", (channel) => {
     expect(ipcInvokeTimeoutMs(channel)).toBeGreaterThanOrEqual(5 * 60_000);
+  });
+});
+
+describe("sync status read IPC timer", () => {
+  const originalPlatform = process.platform;
+
+  afterEach(() => {
+    Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+    vi.resetModules();
+  });
+
+  it("outlives the handler's Windows cap instead of the 30s default", async () => {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    vi.resetModules();
+    const [ipc, policy] = await Promise.all([
+      import("./ipcTimeouts"),
+      import("../localRuntime/localRuntimeTimeoutPolicy"),
+    ]);
+
+    expect(ipc.ipcInvokeTimeoutMs(IPC.syncGetLocalStatus)).toBe(policy.LOCAL_RUNTIME_SYNC_STATUS_IPC_TIMEOUT_MS);
+    expect(ipc.ipcInvokeTimeoutMs(IPC.syncGetLocalStatus)).toBeGreaterThan(
+      policy.LOCAL_RUNTIME_SYNC_STATUS_OVERALL_TIMEOUT_MS,
+    );
   });
 });
 

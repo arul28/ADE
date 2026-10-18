@@ -2918,6 +2918,9 @@ export type SyncRemoteCommandAction =
   // panes, they never drive them.
   | "workTools.getLaneState"
   | "workTools.readObservationPreview"
+  // Proof records for the hosted web client's citations and scene stills. Read-only;
+  // the desktop reads the same list through its own IPC.
+  | "computerUse.listArtifacts"
   // The lane's private macOS screen. `getStatus` / `streamSubscribe` /
   // `streamUnsubscribe` are read-only; `start` / `stop` exist for the hosted
   // web client (the phone is view-only and never calls them). Records and the

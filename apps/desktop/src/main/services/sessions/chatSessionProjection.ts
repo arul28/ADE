@@ -1,4 +1,5 @@
 import type {
+  AgentChatIdentityKey,
   AgentChatSessionSummary,
   ListSessionsArgs,
   SessionActiveGoal,
@@ -20,9 +21,10 @@ type ChatProjectionServices = {
   agentChatService?: {
     listSessions(
       laneId?: string,
-      options?: { includeIdentity?: boolean; includeAutomation?: boolean },
+      options?: { includeIdentity?: boolean; includeAutomation?: boolean; sessionIds?: readonly string[] },
     ): Promise<AgentChatSessionSummary[]>;
     getSessionSummary(sessionId: string): Promise<AgentChatSessionSummary | null>;
+    getSessionIdentityKey(sessionId: string): Promise<AgentChatIdentityKey | null>;
   } | null;
   logger: {
     warn(event: string, data: Record<string, unknown>): void;
@@ -269,9 +271,9 @@ export function projectChatSummariesOntoSessions(
   /**
    * Identity sessions, by id, so a CHILD can be told who its parent is.
    *
-   * The identity rows are already in `allChats` (the caller asks for them with
-   * `includeIdentity: true`) and are already indexed here to be filtered OUT of
-   * the roster — the CTO thread is hidden from every session list. Keying their
+   * The identity rows are in `allChats` (the caller asks for the window's with
+   * `includeIdentity: true`, and reads the page's others by id) and are indexed
+   * here to be filtered OUT of the roster — the CTO thread is hidden from every session list. Keying their
    * identity here costs one map and makes the lineage stamp a pure function of
    * host state: no extra fetch, no renderer cache, and nothing to go stale.
    */
@@ -326,10 +328,31 @@ export async function listSessionsWithChatProjection(
   let allChats: AgentChatSessionSummary[] = [];
   if (services.agentChatService) {
     try {
+      // Only the chats this page lists are summarized. The list reads only the
+      // newest chats (of the lane, when one is given). A page chat it did not return
+      // and a spawn parent it did not return (outside the page, in another lane, or
+      // older than that window) are checked by id. Only an identity row is then
+      // summarized and kept: it is hidden from the roster and indexed as a parent.
+      // Any other chat outside the window keeps its unprojected row, as on main.
+      const shownChatIds = sessions
+        .filter((session) => isChatToolType(session.toolType))
+        .map((session) => session.id);
       allChats = await services.agentChatService.listSessions(laneId || undefined, {
         includeIdentity: true,
         includeAutomation: true,
+        sessionIds: shownChatIds,
       });
+      const summarized = new Set(allChats.map((chat) => chat.sessionId));
+      const readIds = new Set<string>(shownChatIds.filter((id) => !summarized.has(id)));
+      for (const chat of allChats) {
+        const parentId = chat.orchestrationParentSessionId;
+        if (parentId && !summarized.has(parentId)) readIds.add(parentId);
+      }
+      for (const id of readIds) {
+        if (!(await services.agentChatService.getSessionIdentityKey(id))) continue;
+        const chat = await services.agentChatService.getSessionSummary(id);
+        if (chat) allChats.push(chat);
+      }
     } catch (error) {
       services.logger.warn("sessions.chat_projection_failed", {
         laneId: laneId || null,

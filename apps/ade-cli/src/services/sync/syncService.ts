@@ -8,6 +8,7 @@ import {
   type SyncCloudRelayStatus,
   type SyncAccountDirectoryHealth,
   type SyncDesktopConnectionDraft,
+  type SyncDeviceRecord,
   type SyncDeviceRuntimeState,
   type SyncGetStatusArgs,
   type SyncPairingConnectInfo,
@@ -88,6 +89,7 @@ import type { AppleDeviceRemoteService, AppleStreamTicketIssuer } from "./appleR
 import {
   buildAddressCandidates,
   buildPairingConnectInfo,
+  isLoopbackHost,
   tailscaleDnsNameFromDevice,
 } from "./syncPairingConnectInfo";
 import { buildRelayRouteHealth, deriveListenerHealth } from "./syncRouteHealth";
@@ -621,12 +623,10 @@ export function createSyncService(args: SyncServiceArgs) {
   const pinPath = path.join(pairingStateDir, PIN_FILE);
   const runtimeNamePath = path.join(pairingStateDir, RUNTIME_NAME_FILE);
   const pairingSecretsPath = path.join(pairingStateDir, PAIRED_DEVICES_FILE);
-  migrateLegacySyncSecretFile({
-    legacyPath: path.join(layout.secretsDir, DRAFT_FILE),
-    appPath: draftPath,
-    logger: args.logger,
-    label: DRAFT_FILE,
-  });
+  // The project's own pre-tag draft. It is not copied up front: copying it into the
+  // shared file made one project's draft the machine's connection for every project.
+  // It is adopted on read, only by the project whose cluster record names its brain.
+  const legacyProjectDraftPath = path.join(layout.secretsDir, DRAFT_FILE);
   migrateLegacySyncSecretFile({
     legacyPath: path.join(layout.secretsDir, TOKEN_FILE),
     appPath: tokenPath,
@@ -755,19 +755,32 @@ export function createSyncService(args: SyncServiceArgs) {
   // another brain is a decision about ONE project database. The draft records
   // the site id of the project that made it, and every other project ignores
   // it. A draft from before that tag applies only to a project whose cluster
-  // record already names another machine's brain: a project that never joined
-  // anything (no record, or a record naming this machine) must not be turned
-  // into a viewer of a machine it has never seen.
+  // record names the same brain address the draft dials: a project that never
+  // joined anything, or follows a different machine, must not be redirected by
+  // a draft another project left behind.
   const projectSiteId = deviceRegistryService.getLocalSiteId();
+
+  const legacyDraftNamesClusterBrain = (raw: unknown): boolean => {
+    const row = raw as Record<string, unknown>;
+    const host = typeof row.host === "string" ? normalizeHostKey(row.host) : null;
+    const port = Number(row.port ?? 0);
+    if (!host || !Number.isFinite(port) || port <= 0) return false;
+    const cluster = deviceRegistryService.getClusterState();
+    if (!cluster || cluster.brainDeviceId === deviceRegistryService.getLocalDeviceId()) return false;
+    const brain = deviceRegistryService.getDevice(cluster.brainDeviceId);
+    if (!brain || Math.floor(port) !== (brain.lastPort ?? DEFAULT_SYNC_HOST_PORT)) return false;
+    // The brain is remote here: the local device returned above.
+    return buildAddressCandidates(brain, { isLocalDevice: false }).some(
+      (candidate) => candidate.kind !== "loopback" && normalizeHostKey(candidate.host) === host,
+    );
+  };
 
   const savedDraftAppliesToProject = (raw: unknown): boolean => {
     const owner = (raw as { projectSiteId?: unknown } | null)?.projectSiteId;
     if (typeof owner === "string" && owner.trim()) {
       return owner.trim() === projectSiteId;
     }
-    const cluster = deviceRegistryService.getClusterState();
-    return cluster != null
-      && cluster.brainDeviceId !== deviceRegistryService.getLocalDeviceId();
+    return legacyDraftNamesClusterBrain(raw);
   };
 
   const readSavedDraftFile = (): unknown => {
@@ -775,11 +788,52 @@ export function createSyncService(args: SyncServiceArgs) {
     return safeJsonParse(fs.readFileSync(draftPath, "utf8"), null);
   };
 
+  let legacyDraftSkipLogged = false;
+  // Adopts this project's own pre-tag draft into the shared file, tagged with
+  // this project's site id. It runs only while the shared file is absent:
+  // writing over a draft another project saved would disconnect that project.
+  const adoptLegacyProjectDraft = (): unknown => {
+    if (legacyProjectDraftPath === draftPath || fs.existsSync(draftPath)) return null;
+    if (!fs.existsSync(legacyProjectDraftPath)) return null;
+    const raw = safeJsonParse(fs.readFileSync(legacyProjectDraftPath, "utf8"), null) as Record<string, unknown> | null;
+    const tagged = typeof raw?.projectSiteId === "string" && raw.projectSiteId.trim().length > 0;
+    if (!raw || tagged || !legacyDraftNamesClusterBrain(raw)) {
+      if (!legacyDraftSkipLogged) {
+        legacyDraftSkipLogged = true;
+        args.logger.info("sync.legacy_draft_skipped", { path: legacyProjectDraftPath });
+      }
+      return null;
+    }
+    const adopted = { ...raw, projectSiteId };
+    writeTextAtomic(draftPath, `${JSON.stringify(adopted, null, 2)}\n`);
+    args.logger.info("sync.legacy_draft_adopted", { path: legacyProjectDraftPath, host: raw.host, port: raw.port });
+    return adopted;
+  };
+
+  // A draft saved before the loopback fix can still name 127.0.0.1 while the
+  // cluster brain is another machine, and dialing it reaches this machine's own
+  // listener. Only the dial ignores such a draft: the file is user state and
+  // stays, and the viewer falls back to the brain's registry address (or dials
+  // nothing) through resolveViewerDraftFromRegistry.
+  const savedDraftDialsOwnListener = (draft: SyncDesktopConnectionDraft): boolean => {
+    const cluster = deviceRegistryService.getClusterState();
+    if (!cluster || cluster.brainDeviceId === deviceRegistryService.getLocalDeviceId()) return false;
+    const host = normalizeHostKey(draft.host);
+    return host != null && isLoopbackHost(host);
+  };
+
+  let loopbackDraftSkipLogged = false;
   const readSavedDraft = (): SyncDesktopConnectionDraft | null => {
     if (forceHostRole) return null;
-    const raw = readSavedDraftFile();
+    const raw = readSavedDraftFile() ?? adoptLegacyProjectDraft();
     if (!raw || !savedDraftAppliesToProject(raw)) return null;
-    return sanitizeDraft(raw, readToken());
+    const draft = sanitizeDraft(raw, readToken());
+    if (!draft || !savedDraftDialsOwnListener(draft)) return draft;
+    if (!loopbackDraftSkipLogged) {
+      loopbackDraftSkipLogged = true;
+      args.logger.warn("sync.role.saved_draft_loopback_ignored", { host: draft.host, port: draft.port });
+    }
+    return null;
   };
 
   const writeSavedDraft = (draft: SyncDesktopConnectionDraft | null): void => {
@@ -1315,6 +1369,14 @@ export function createSyncService(args: SyncServiceArgs) {
     }
   };
 
+  // The host a viewer dials for a brain: its best address candidate. Loopback is
+  // offered only when the brain is this device, so a remote brain with no
+  // address yields null instead of this machine's own listener.
+  const brainDialHost = (brain: SyncDeviceRecord): string | null =>
+    buildAddressCandidates(brain, {
+      isLocalDevice: brain.deviceId === deviceRegistryService.getLocalDeviceId(),
+    })[0]?.host ?? null;
+
   const resolveViewerDraftFromRegistry =
     (): SyncDesktopConnectionDraft | null => {
       if (forceHostRole) return null;
@@ -1322,10 +1384,15 @@ export function createSyncService(args: SyncServiceArgs) {
       const token = readToken();
       if (!cluster || !token) return null;
       const brain = deviceRegistryService.getDevice(cluster.brainDeviceId);
-      const host =
-        brain != null ? buildAddressCandidates(brain)[0]?.host ?? null : null;
+      const host = brain != null ? brainDialHost(brain) : null;
       const port = brain?.lastPort ?? DEFAULT_SYNC_HOST_PORT;
-      if (!host) return null;
+      if (!host) {
+        args.logger.warn("sync.role.viewer_no_reachable_address", {
+          brainDeviceId: cluster.brainDeviceId,
+          brainRecordKnown: brain != null,
+        });
+        return null;
+      }
       return {
         host,
         port,
@@ -1406,7 +1473,7 @@ export function createSyncService(args: SyncServiceArgs) {
     const brain = deviceRegistryService.getDevice(cluster.brainDeviceId);
     return {
       reason: "cluster_record",
-      host: brain ? buildAddressCandidates(brain)[0]?.host ?? null : null,
+      host: brain ? brainDialHost(brain) : null,
       port: brain?.lastPort ?? null,
     };
   };
@@ -1938,6 +2005,12 @@ export function createSyncService(args: SyncServiceArgs) {
     },
 
     async disconnectFromBrain(): Promise<SyncRoleSnapshot> {
+      // Only a viewer has a brain to leave. On the brain this would also clear
+      // its own devices and cluster record, which the phones and other machines
+      // still depend on.
+      if ((await this.getStatus()).role === "brain") {
+        throw new Error("This project is the sync brain, so it has no brain to disconnect from. Its devices and cluster record are kept.");
+      }
       syncPeerService.disconnect();
       writeSavedDraft(null);
       deviceRegistryService.clearClusterRegistryForViewerJoin();

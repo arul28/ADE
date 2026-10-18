@@ -1,12 +1,13 @@
 /* @vitest-environment jsdom */
 
 import React from "react";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DiffChanges, GitConflictState, GitStashSummary, GitUpstreamSyncStatus, LaneSummary } from "../../../shared/types";
 import { __resetLaneGitActionRuntimeForTests, formatLaneGitError, LaneGitActionsPane } from "./LaneGitActionsPane";
+import { laneGitListScope } from "./laneGitListCache";
 
 const commitTimelineMock = vi.hoisted(() => vi.fn((props: Record<string, unknown>) => null));
 
@@ -122,6 +123,80 @@ function buildStash(
   };
 }
 
+const CHANGE_LIST_VIEWPORT_PX = 600;
+const CHANGE_LIST_ROW_PX = 28;
+const GENERATED_FILE_ROW = /^src\/generated\/file-\d+\.ts$/;
+
+/**
+ * jsdom has no layout, and the Files list virtualizes against its viewport
+ * height and each row's height (both read from offsetHeight). Give the list a
+ * fixed viewport and fixed rows so the window mounts the way it does in the app.
+ */
+function stubChangeListLayout(): () => void {
+  const original = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
+  const inChangeList = (element: HTMLElement) =>
+    element.closest("[data-testid='git-pane-branch'], [data-testid='git-pane-uncommitted']");
+  Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
+    configurable: true,
+    get(this: HTMLElement) {
+      const testId = this.getAttribute("data-testid");
+      if (testId === "git-pane-branch" || testId === "git-pane-uncommitted") return CHANGE_LIST_VIEWPORT_PX;
+      if (this.hasAttribute("data-index") && inChangeList(this)) return CHANGE_LIST_ROW_PX;
+      return original?.get?.call(this) ?? 0;
+    },
+  });
+  return () => {
+    if (original) Object.defineProperty(HTMLElement.prototype, "offsetHeight", original);
+  };
+}
+
+function changeListScroller(): HTMLElement {
+  const scroller = document.querySelector<HTMLElement>("[data-testid='git-pane-branch'], [data-testid='git-pane-uncommitted']");
+  if (!scroller) throw new Error("Files list is not mounted");
+  return scroller;
+}
+
+/**
+ * jsdom has no layout or scrolling, and a browser scrolls the list to bring a
+ * focused row into view. The virtualizer clamps that scroll to
+ * scrollHeight - clientHeight, so give the list its viewport and content heights,
+ * and make scrollTo scroll and fire the scroll event a browser would. With
+ * `deliverScrollEvents: false` the list still scrolls, but the virtualizer never
+ * hears it.
+ */
+function stubListScrollTo(scroller: HTMLElement, { deliverScrollEvents = true }: { deliverScrollEvents?: boolean } = {}): void {
+  Object.defineProperty(scroller, "clientHeight", { configurable: true, get: () => CHANGE_LIST_VIEWPORT_PX });
+  Object.defineProperty(scroller, "scrollHeight", {
+    configurable: true,
+    get: () => parseFloat((scroller.firstElementChild as HTMLElement | null)?.style.height ?? "") || 0,
+  });
+  Object.defineProperty(scroller, "scrollTo", {
+    configurable: true,
+    value: ({ top }: ScrollToOptions) => {
+      scroller.scrollTop = top ?? 0;
+      // The browser fires the scroll event after the keyboard handler has returned.
+      if (deliverScrollEvents) setTimeout(() => fireEvent.scroll(scroller), 0);
+    },
+  });
+}
+
+/** The aria-label of the focused control, or its tag when it has none. */
+function focusedControlLabel(): string | null {
+  return document.activeElement?.getAttribute("aria-label") ?? document.activeElement?.tagName ?? null;
+}
+
+/** Scrolls the Files list from the top, half a viewport at a time, until a row's text is mounted. */
+async function scrollChangeListTo(text: string): Promise<HTMLElement> {
+  const scroller = changeListScroller();
+  fireEvent.scroll(scroller, { target: { scrollTop: 0 } });
+  for (let step = 1; step <= 400; step += 1) {
+    const match = screen.queryByText(text);
+    if (match) return match;
+    fireEvent.scroll(scroller, { target: { scrollTop: step * (CHANGE_LIST_VIEWPORT_PX / 2) } });
+  }
+  throw new Error(`"${text}" never scrolled into the Files list`);
+}
+
 describe("LaneGitActionsPane rescue action", () => {
   const originalAde = globalThis.window.ade;
   let mockChangesByLaneId: Record<string, DiffChanges>;
@@ -129,6 +204,8 @@ describe("LaneGitActionsPane rescue action", () => {
   let mockConflictState: GitConflictState;
   let mockSyncStatus: GitUpstreamSyncStatus;
   let failDiffRefresh: boolean;
+  let hangDiffRefresh: boolean;
+  let restoreChangeListLayout: () => void = () => undefined;
 
   beforeEach(() => {
     mockStoreState = {
@@ -193,6 +270,7 @@ describe("LaneGitActionsPane rescue action", () => {
     };
     mockAutoRebaseStatuses = [];
     failDiffRefresh = false;
+    hangDiffRefresh = false;
     commitTimelineMock.mockClear();
 
     globalThis.window.ade = {
@@ -200,6 +278,9 @@ describe("LaneGitActionsPane rescue action", () => {
         getChanges: vi.fn(async ({ laneId }: { laneId: string }) => {
           if (failDiffRefresh) {
             throw new Error("diff refresh noisy");
+          }
+          if (hangDiffRefresh) {
+            return new Promise<DiffChanges>(() => undefined);
           }
           return mockChangesByLaneId[laneId] ?? { staged: [], unstaged: [] };
         }),
@@ -229,10 +310,12 @@ describe("LaneGitActionsPane rescue action", () => {
         createFromUnstaged: vi.fn(async () => buildLane({ id: "lane-2", name: "Rescue lane", status: { dirty: true, ahead: 0, behind: 0, remoteBehind: -1, rebaseInProgress: false } })),
       },
     } as any;
+    restoreChangeListLayout = stubChangeListLayout();
   });
 
   afterEach(() => {
     cleanup();
+    restoreChangeListLayout();
     __resetLaneGitActionRuntimeForTests();
     if (originalAde === undefined) {
       delete (globalThis.window as any).ade;
@@ -446,6 +529,283 @@ describe("LaneGitActionsPane rescue action", () => {
     expect(screen.queryByText("src/studio-b.ts")).toBeNull();
   });
 
+  it("paints the last uncommitted changes on a revisit before the read lands", async () => {
+    const first = renderPane();
+    expect(await screen.findByText("src/file.ts")).toBeTruthy();
+    first.unmount();
+
+    hangDiffRefresh = true;
+    renderPane();
+
+    expect(screen.getByText("src/file.ts")).toBeTruthy();
+  });
+
+  it("never paints the pre-stage changes on a remount after a stage", async () => {
+    const user = userEvent.setup();
+    const first = renderPane();
+    expect(await screen.findByText("src/file.ts")).toBeTruthy();
+
+    hangDiffRefresh = true;
+    await user.click(screen.getByRole("button", { name: "Stage src/file.ts" }));
+    await waitFor(() => {
+      expect(window.ade.git.stageFile).toHaveBeenCalled();
+    });
+    first.unmount();
+
+    renderPane();
+
+    expect(screen.queryByText("src/file.ts")).toBeNull();
+  });
+
+  it("keeps a revisit's first commit free of the cached Branch rows, and paints them in a later commit", async () => {
+    mockBranchChanges(() => ["src/alpha.ts"]);
+    const first = renderPane({ laneId: "lane-2" });
+    expect(await screen.findByTitle("src/alpha.ts")).toBeTruthy();
+    first.unmount();
+
+    (window.ade.diff as any).getBranchChanges = vi.fn(() => new Promise(() => undefined));
+    // What each commit shows: the React Profiler runs after its commit is in the DOM.
+    const commits: Array<{ loading: boolean; rows: boolean }> = [];
+    render(
+      <React.Profiler
+        id="pane"
+        onRender={() =>
+          commits.push({
+            loading: document.body.textContent?.includes("Reading branch changes") ?? false,
+            rows: document.querySelector('[title="src/alpha.ts"]') !== null,
+          })
+        }
+      >
+        <MemoryRouter>
+          <LaneGitActionsPane
+            laneId="lane-2"
+            autoRebaseEnabled={false}
+            onOpenSettings={vi.fn()}
+            onSelectFile={vi.fn()}
+            onSelectCommit={vi.fn()}
+            selectedPath={null}
+            selectedMode={null}
+            selectedCommit={null}
+            selectedCommitSha={null}
+          />
+        </MemoryRouter>
+      </React.Profiler>,
+    );
+
+    // The mount commit is the cold shell (the read's placeholder, no rows), as on main.
+    expect(commits[0]).toEqual({ loading: true, rows: false });
+    expect(commits.at(-1)).toEqual({ loading: false, rows: true });
+    expect(screen.getByTitle("src/alpha.ts")).toBeTruthy();
+    expect((window.ade.diff as any).getBranchChanges).toHaveBeenCalledTimes(1);
+  });
+
+  it("paints the last Branch diff on a revisit before the fresh read lands", async () => {
+    mockBranchChanges(() => ["src/alpha.ts"]);
+    const first = renderPane({ laneId: "lane-2" });
+    expect(await screen.findByTitle("src/alpha.ts")).toBeTruthy();
+    first.unmount();
+
+    (window.ade.diff as any).getBranchChanges = vi.fn(() => new Promise(() => undefined));
+    renderPane({ laneId: "lane-2" });
+
+    expect(screen.getByTitle("src/alpha.ts")).toBeTruthy();
+    expect((window.ade.diff as any).getBranchChanges).toHaveBeenCalledWith({ laneId: "lane-2" }, null);
+  });
+
+  it("clears a revisit's cached Branch summary when the fresh read fails", async () => {
+    mockBranchChanges(() => ["src/alpha.ts"]);
+    const first = renderPane({ laneId: "lane-2" });
+    expect(await screen.findByTitle("src/alpha.ts")).toBeTruthy();
+    first.unmount();
+
+    let rejectRead: (error: Error) => void = () => undefined;
+    (window.ade.diff as any).getBranchChanges = vi.fn(() => new Promise((_resolve, reject) => { rejectRead = reject; }));
+    renderPane({ laneId: "lane-2" });
+    expect(await screen.findByText(/vs main/)).toBeTruthy();
+
+    await act(async () => { rejectRead(new Error("Lane worktree is missing. Restore it.")); });
+
+    expect(await screen.findByText("Lane worktree is missing. Restore it.")).toBeTruthy();
+    expect(screen.queryByText(/vs main/)).toBeNull();
+    expect(screen.queryByTitle("src/alpha.ts")).toBeNull();
+  });
+
+  it("ends a revisit with the same Branch rows as a cold read of the same fixture", async () => {
+    mockBranchChanges(() => ["src/alpha.ts", "src/beta.ts"]);
+    const cold = renderPane({ laneId: "lane-2" });
+    expect(await screen.findByTitle("src/beta.ts")).toBeTruthy();
+    const coldHtml = cold.container.innerHTML;
+    cold.unmount();
+
+    const warm = renderPane({ laneId: "lane-2" });
+    expect(warm.container.innerHTML).not.toContain("Reading branch changes");
+    const freshRead = (window.ade.diff as any).getBranchChanges.mock.results[1].value;
+    await act(async () => {
+      await freshRead;
+    });
+
+    expect(warm.container.innerHTML).toBe(coldHtml);
+  });
+
+  it("never paints the old branch's Branch rows after the lane's branch changes", async () => {
+    mockBranchChanges(() => ["src/alpha.ts"]);
+    const view = renderPane({ laneId: "lane-2" });
+    expect(await screen.findByTitle("src/alpha.ts")).toBeTruthy();
+
+    (window.ade.diff as any).getBranchChanges = vi.fn(() => new Promise(() => undefined));
+    mockStoreState.lanes = mockStoreState.lanes.map((lane) =>
+      lane.id === "lane-2" ? { ...lane, branchRef: "feature/renamed" } : lane,
+    );
+    view.rerender(
+      <MemoryRouter>
+        <LaneGitActionsPane
+          laneId="lane-2"
+          autoRebaseEnabled={false}
+          onOpenSettings={vi.fn()}
+          onSelectFile={vi.fn()}
+          onSelectCommit={vi.fn()}
+          selectedPath={null}
+          selectedMode={null}
+          selectedCommit={null}
+          selectedCommitSha={null}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText("Reading branch changes…")).toBeTruthy();
+    expect(screen.queryByTitle("src/alpha.ts")).toBeNull();
+  });
+
+  it("never paints the old branch's rows when a read started before a branch rename lands", async () => {
+    let resolveOldBranchRead: ((value: unknown) => void) | null = null;
+    (window.ade.diff as any).getBranchChanges = vi.fn()
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveOldBranchRead = resolve; }))
+      .mockImplementation(() => new Promise(() => undefined));
+    const view = renderPane({ laneId: "lane-2" });
+    await waitFor(() => expect(resolveOldBranchRead).not.toBeNull());
+
+    mockStoreState.lanes = mockStoreState.lanes.map((lane) =>
+      lane.id === "lane-2" ? { ...lane, branchRef: "feature/renamed" } : lane,
+    );
+    view.rerender(
+      <MemoryRouter>
+        <LaneGitActionsPane
+          laneId="lane-2"
+          autoRebaseEnabled={false}
+          onOpenSettings={vi.fn()}
+          onSelectFile={vi.fn()}
+          onSelectCommit={vi.fn()}
+          selectedPath={null}
+          selectedMode={null}
+          selectedCommit={null}
+          selectedCommitSha={null}
+        />
+      </MemoryRouter>,
+    );
+
+    await act(async () => {
+      resolveOldBranchRead!({
+        baseRef: "main",
+        mergeBase: "0123456789abcdef",
+        files: [{ path: "src/alpha.ts", kind: "modified", additions: 1, deletions: 0 }],
+        additions: 1,
+        deletions: 0,
+      });
+    });
+
+    expect(screen.queryByTitle("src/alpha.ts")).toBeNull();
+  });
+
+  it("paints a revisit's cached Branch diff through the Files list window, not every row", async () => {
+    mockBranchChanges(() => Array.from({ length: 188 }, (_, index) => `src/generated/file-${index}.ts`));
+    const first = renderPane({ laneId: "lane-2" });
+    expect(await screen.findByTitle("src/generated/file-0.ts")).toBeTruthy();
+    first.unmount();
+
+    (window.ade.diff as any).getBranchChanges = vi.fn(() => new Promise(() => undefined));
+    renderPane({ laneId: "lane-2" });
+
+    // The cached rows paint on mount, and only the window of them mounts.
+    expect(screen.getByTitle("src/generated/file-0.ts")).toBeTruthy();
+    const mounted = document.querySelectorAll("[data-testid='git-pane-branch'] [data-index]").length;
+    expect(mounted).toBeGreaterThan(0);
+    expect(mounted).toBeLessThan(60);
+  });
+
+  it("paints a revisit's cached uncommitted list through the Files list window, not every row", async () => {
+    mockChangesByLaneId["lane-1"] = {
+      staged: [],
+      unstaged: Array.from({ length: 188 }, (_, index) => ({ path: `src/generated/file-${index}.ts`, kind: "modified" as const })),
+    };
+    const first = renderPane();
+    expect(await screen.findByText("Unstaged (188)")).toBeTruthy();
+    first.unmount();
+
+    hangDiffRefresh = true;
+    renderPane();
+
+    expect(screen.getByText("src/generated/file-0.ts")).toBeTruthy();
+    const mounted = document.querySelectorAll("[data-testid='git-pane-uncommitted'] [data-index]").length;
+    expect(mounted).toBeGreaterThan(0);
+    expect(mounted).toBeLessThan(60);
+  });
+
+  it("never caches a read that lands while a stage is still running", async () => {
+    const user = userEvent.setup();
+    const pane = (active: boolean) => (
+      <MemoryRouter>
+        <LaneGitActionsPane
+          laneId="lane-1"
+          active={active}
+          autoRebaseEnabled={false}
+          onOpenSettings={vi.fn()}
+          onSelectFile={vi.fn()}
+          onSelectCommit={vi.fn()}
+          selectedPath={null}
+          selectedMode={null}
+          selectedCommit={null}
+          selectedCommitSha={null}
+        />
+      </MemoryRouter>
+    );
+    const first = render(pane(true));
+    expect(await screen.findByText("src/file.ts")).toBeTruthy();
+
+    let finishStage: () => void = () => undefined;
+    (window.ade.git as any).stageFile = vi.fn(() => new Promise((resolve) => {
+      finishStage = () => resolve({ operationId: "stage-file", preHeadSha: "abc", postHeadSha: "abc" });
+    }));
+    void user.click(screen.getByRole("button", { name: "Stage src/file.ts" }));
+    await waitFor(() => expect(window.ade.git.stageFile).toHaveBeenCalled());
+
+    // A read that starts while the stage runs still sees the file unstaged, and lands.
+    const readsBefore = (window.ade.diff.getChanges as any).mock.calls.length;
+    first.rerender(pane(false));
+    first.rerender(pane(true));
+    await waitFor(() => expect((window.ade.diff.getChanges as any).mock.calls.length).toBeGreaterThan(readsBefore));
+    await act(async () => undefined);
+
+    hangDiffRefresh = true;
+    await act(async () => {
+      finishStage();
+    });
+    first.unmount();
+
+    renderPane();
+
+    expect(screen.queryByText("src/file.ts")).toBeNull();
+  });
+
+  it("keys the History list by the lane's cache scope and branch", async () => {
+    renderPane({ laneId: "lane-2" });
+    await screen.findByTestId("git-pane-rebase");
+
+    expect(commitTimelineMock).toHaveBeenLastCalledWith(expect.objectContaining({
+      cacheScope: laneGitListScope("/tmp/ade", "lane-2"),
+      cacheBranchRef: "feature/second",
+    }));
+  });
+
   it("does not refresh the global lane store on initial mount", async () => {
     renderPane();
 
@@ -654,11 +1014,13 @@ describe("LaneGitActionsPane rescue action", () => {
 
     expect(await screen.findByText("Unstaged (305)")).toBeTruthy();
     expect(screen.getByText("src/generated/file-0.ts")).toBeTruthy();
-    expect(screen.getByText("Showing first 300 of 305 unstaged files.")).toBeTruthy();
+    // The notice closes the list, so reaching it means scrolling there.
+    await scrollChangeListTo("Showing first 300 of 305 unstaged files.");
     expect(screen.queryByText("src/generated/file-300.ts")).toBeNull();
 
     await user.click(screen.getByRole("button", { name: "Show all" }));
 
+    await scrollChangeListTo("src/generated/file-300.ts");
     expect(screen.getByText("src/generated/file-300.ts")).toBeTruthy();
   });
 
@@ -676,12 +1038,201 @@ describe("LaneGitActionsPane rescue action", () => {
 
     expect(await screen.findByText("Staged (305)")).toBeTruthy();
     expect(screen.getByText("src/staged/file-0.ts")).toBeTruthy();
-    expect(screen.getByText("Showing first 300 of 305 staged files.")).toBeTruthy();
+    await scrollChangeListTo("Showing first 300 of 305 staged files.");
     expect(screen.queryByText("src/staged/file-300.ts")).toBeNull();
 
     await user.click(screen.getByRole("button", { name: "Show all" }));
 
+    await scrollChangeListTo("src/staged/file-300.ts");
     expect(screen.getByText("src/staged/file-300.ts")).toBeTruthy();
+  });
+
+  it("reads every row of a long Files list in order as it scrolls", async () => {
+    const paths = Array.from({ length: 300 }, (_, index) => `src/generated/file-${index}.ts`);
+    mockChangesByLaneId["lane-1"] = {
+      staged: [],
+      unstaged: paths.map((path) => ({ path, kind: "modified" as const })),
+    };
+
+    renderPane();
+
+    const firstRow = await screen.findByText("src/generated/file-0.ts");
+    const scroller = firstRow.closest<HTMLElement>("[style*='overflow: auto']");
+    if (!scroller) throw new Error("Files list is not scrollable");
+    // Only the rows near the viewport are mounted, not all 300 files.
+    expect(screen.queryAllByText(GENERATED_FILE_ROW).length).toBeLessThan(60);
+
+    const seen: string[] = [];
+    for (let step = 0; step < 40; step += 1) {
+      fireEvent.scroll(scroller, { target: { scrollTop: step * (CHANGE_LIST_VIEWPORT_PX / 2) } });
+      for (const row of screen.queryAllByText(GENERATED_FILE_ROW)) {
+        const label = row.textContent ?? "";
+        if (!seen.includes(label)) seen.push(label);
+      }
+    }
+
+    expect(seen).toEqual([...paths].sort((a, b) => a.localeCompare(b)));
+  });
+
+  it("collapses and expands a folder in the Files list", async () => {
+    const user = userEvent.setup();
+    mockChangesByLaneId["lane-1"] = {
+      staged: [],
+      unstaged: [
+        { path: "src/alpha/one.ts", kind: "modified" },
+        { path: "src/alpha/two.ts", kind: "modified" },
+        { path: "README.md", kind: "modified" },
+      ],
+    };
+
+    renderPane();
+
+    expect(await screen.findByText("src/alpha/one.ts")).toBeTruthy();
+    const folder = screen.getByText("alpha").closest("button");
+    if (!folder) throw new Error("folder row is not a button");
+
+    await user.click(folder);
+    expect(screen.queryByText("src/alpha/one.ts")).toBeNull();
+    expect(screen.getByText("README.md")).toBeTruthy();
+
+    await user.click(folder);
+    expect(screen.getByText("src/alpha/one.ts")).toBeTruthy();
+  });
+
+  it("Tab walks every Files row's controls in order, past the mounted window", async () => {
+    const user = userEvent.setup();
+    const paths = Array.from({ length: 80 }, (_, index) => `src/generated/file-${index}.ts`).sort((a, b) => a.localeCompare(b));
+    mockChangesByLaneId["lane-1"] = {
+      staged: [],
+      unstaged: paths.map((path) => ({ path, kind: "modified" as const })),
+    };
+
+    renderPane();
+
+    await screen.findByText(paths[0]!);
+    const scroller = changeListScroller();
+    stubListScrollTo(scroller);
+    const controls = paths.flatMap((path) => [`Stage ${path}`, `Discard changes to ${path}`]);
+
+    screen.getByRole("button", { name: controls[0] }).focus();
+    const reached: Array<string | null> = [];
+    for (let step = 1; step < controls.length; step += 1) {
+      await user.tab();
+      reached.push(focusedControlLabel());
+    }
+
+    expect(reached).toEqual(controls.slice(1));
+    await user.tab();
+    expect(scroller.contains(document.activeElement)).toBe(false);
+  });
+
+  it("Shift+Tab walks the same controls back, from the last row", async () => {
+    const user = userEvent.setup();
+    const paths = Array.from({ length: 80 }, (_, index) => `src/generated/file-${index}.ts`).sort((a, b) => a.localeCompare(b));
+    mockChangesByLaneId["lane-1"] = {
+      staged: [],
+      unstaged: paths.map((path) => ({ path, kind: "modified" as const })),
+    };
+
+    renderPane();
+
+    await screen.findByText(paths[0]!);
+    await scrollChangeListTo(paths[paths.length - 1]!);
+    const scroller = changeListScroller();
+    stubListScrollTo(scroller);
+    const controls = paths.flatMap((path) => [`Stage ${path}`, `Discard changes to ${path}`]);
+
+    screen.getByRole("button", { name: controls[controls.length - 1]! }).focus();
+    const reached: Array<string | null> = [];
+    for (let step = 0; step < controls.length - 1; step += 1) {
+      await user.tab({ shift: true });
+      reached.push(focusedControlLabel());
+    }
+
+    expect(reached).toEqual(controls.slice(0, -1).reverse());
+    // The two folders above the first file come next, then focus leaves the list.
+    for (const folder of ["generated", "src"]) {
+      await user.tab({ shift: true });
+      expect(document.activeElement).toBe(screen.getByText(folder).closest("button"));
+    }
+    await user.tab({ shift: true });
+    expect(scroller.contains(document.activeElement)).toBe(false);
+  });
+
+  it("keeps keyboard focus on a row that scrolls out of the mounted window", async () => {
+    const user = userEvent.setup();
+    const paths = Array.from({ length: 80 }, (_, index) => `src/generated/file-${index}.ts`).sort((a, b) => a.localeCompare(b));
+    mockChangesByLaneId["lane-1"] = {
+      staged: [],
+      unstaged: paths.map((path) => ({ path, kind: "modified" as const })),
+    };
+
+    renderPane();
+
+    await screen.findByText(paths[0]!);
+    const scroller = changeListScroller();
+    stubListScrollTo(scroller);
+    const discard = screen.getByRole("button", { name: `Discard changes to ${paths[0]}` });
+    discard.focus();
+
+    // Far enough down that the focused row is no longer in the window.
+    fireEvent.scroll(scroller, { target: { scrollTop: 2000 } });
+    expect(discard.isConnected).toBe(true);
+    expect(document.activeElement).toBe(discard);
+
+    await user.tab();
+    expect(focusedControlLabel()).toBe(`Stage ${paths[1]}`);
+  });
+
+  it("Tab still walks past the window when the list never hears its own scroll", async () => {
+    const user = userEvent.setup();
+    const paths = Array.from({ length: 80 }, (_, index) => `src/generated/file-${index}.ts`).sort((a, b) => a.localeCompare(b));
+    mockChangesByLaneId["lane-1"] = {
+      staged: [],
+      unstaged: paths.map((path) => ({ path, kind: "modified" as const })),
+    };
+
+    renderPane();
+
+    await screen.findByText(paths[0]!);
+    const scroller = changeListScroller();
+    // The list scrolls for Tab, but the scroll event never reaches the window, so the window keeps the rows it had.
+    stubListScrollTo(scroller, { deliverScrollEvents: false });
+    const controls = paths.flatMap((path) => [`Stage ${path}`, `Discard changes to ${path}`]);
+
+    screen.getByRole("button", { name: controls[0]! }).focus();
+    const reached: Array<string | null> = [];
+    for (let step = 1; step < controls.length; step += 1) {
+      await user.tab();
+      reached.push(focusedControlLabel());
+    }
+
+    expect(reached).toEqual(controls.slice(1));
+    await user.tab();
+    expect(scroller.contains(document.activeElement)).toBe(false);
+  });
+
+  it("Branch mode: Tab reaches every folder, past the mounted window", async () => {
+    const user = userEvent.setup();
+    const folders = ["alpha", "beta", "gamma"];
+    const paths = folders.flatMap((folder) => Array.from({ length: 40 }, (_, index) => `${folder}/file-${index}.ts`));
+    mockBranchChanges(() => paths);
+
+    // A clean lane opens on the Branch scope.
+    renderPane({ laneId: "lane-2" });
+
+    await screen.findByText("alpha/file-0.ts");
+    const scroller = changeListScroller();
+    stubListScrollTo(scroller);
+    const folderButton = (name: string) => screen.getByText(name).closest("button");
+
+    folderButton("alpha")!.focus();
+    for (const folder of ["beta", "gamma"]) {
+      await user.tab();
+      expect(document.activeElement).toBe(folderButton(folder));
+    }
+    await user.tab();
+    expect(scroller.contains(document.activeElement)).toBe(false);
   });
 
   it("disables the rescue button during an in-progress merge or rebase", async () => {

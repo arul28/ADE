@@ -630,6 +630,27 @@ describe("createAgentChatService", () => {
       await expect(service.listSessions(undefined, { includeArchived: false })).resolves.toEqual([]);
     });
 
+    it("summarizes only the named sessions when sessionIds is given", async () => {
+      const { service } = createService();
+      const first = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/anthropic/claude-sonnet-5",
+      });
+      const second = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/anthropic/claude-sonnet-5",
+      });
+
+      const named = await service.listSessions(undefined, { sessionIds: [second.id] });
+      expect(named.map((session) => session.sessionId)).toEqual([second.id]);
+      expect(named.map((session) => session.sessionId)).not.toContain(first.id);
+      await expect(service.listSessions(undefined, { sessionIds: [] })).resolves.toEqual([]);
+    });
+
     it("does not expose completion summaries as the session summary before the chat is ended", async () => {
       const { service } = createService();
 

@@ -1,7 +1,8 @@
-import React from "react";
+import React, { startTransition } from "react";
 import type { GitCommitSummary, OpenProjectBinding } from "../../../shared/types";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { COLORS, LABEL_STYLE, MONO_FONT, inlineBadge } from "./laneDesignTokens";
+import { isSameListResult, laneGitListEpoch, readLaneGitListCache, writeLaneGitListCache } from "./laneGitListCache";
 
 function formatTs(ts: string): string {
   const date = new Date(ts);
@@ -65,6 +66,8 @@ export function CommitTimeline({
   hasUpstream,
   remoteMissing,
   runtimePin = null,
+  cacheScope = null,
+  cacheBranchRef = null,
   hideHeader = false
 }: {
   laneId: string | null;
@@ -76,6 +79,12 @@ export function CommitTimeline({
   remoteMissing?: boolean;
   /** Machine this lane lives on; `null` means the tab's bound machine. */
   runtimePin?: OpenProjectBinding | null;
+  /**
+   * The lane's cache scope and branch (`laneGitListCache.ts`). The last
+   * successful history is painted from it on mount; `null` keeps this list uncached.
+   */
+  cacheScope?: string | null;
+  cacheBranchRef?: string | null;
   /**
    * Drop the timeline's own "COMMITS n · blue = merge · REFRESH" bar.
    *
@@ -102,16 +111,19 @@ export function CommitTimeline({
     if (!active || !laneId) return;
     setLoading(true);
     setError(null);
+    const epochAtStart = laneGitListEpoch();
     try {
       const rows = await window.ade.git.listRecentCommits({ laneId, limit }, pin);
-      setCommits([...rows].reverse());
+      const next = [...rows].reverse();
+      writeLaneGitListCache(cacheScope, epochAtStart, cacheBranchRef, { commits: next });
+      setCommits((prev) => (isSameListResult(prev, next) ? prev : next));
     } catch (err) {
       setError(formatTimelineError(err));
       setCommits([]);
     } finally {
       setLoading(false);
     }
-  }, [active, laneId, limit, pin]);
+  }, [active, cacheBranchRef, cacheScope, laneId, limit, pin]);
 
   React.useEffect(() => {
     metaByShaRef.current = new Map();
@@ -121,6 +133,13 @@ export function CommitTimeline({
     setLimit(40);
     didInitialScrollRef.current = false;
   }, [laneId, pin]);
+
+  // Declared before the read's effect, so the cached rows are queued before its
+  // result. A transition keeps them out of the mount's first commit.
+  React.useEffect(() => {
+    const cached = readLaneGitListCache(cacheScope, cacheBranchRef)?.commits;
+    if (cached) startTransition(() => setCommits(cached));
+  }, [cacheBranchRef, cacheScope]);
 
   React.useEffect(() => {
     void load();

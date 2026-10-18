@@ -376,6 +376,7 @@ import { DraftMachinePicker, type DraftMachineOption } from "./DraftMachinePicke
 import { useNewLaneDraftConfig } from "./useNewLaneDraftConfig";
 import { CursorCloudAdvancedMenu } from "./CursorCloudAdvancedMenu";
 import { useCursorCloudDraftState } from "./useCursorCloudDraftState";
+import { releaseDeletedTerminalIds, rememberKnownTerminalId } from "./knownTerminalIds";
 import {
   collectDraftVisualAttachmentPaths,
   useDraftAttachmentTransfer,
@@ -4478,9 +4479,15 @@ export function AgentChatPane({
     nonce: number;
   } | null>(null);
   const terminalRevealNonceRef = useRef(0);
-  // Terminals this pane has revealed or already knows exist. Survives the reveal
-  // effect's re-subscriptions, so a replayed "created" cannot reopen the pane.
+  // Terminals this pane has revealed or seen listed by the chat. Survives the
+  // reveal effect's re-subscriptions, so a replayed "created" cannot reopen the
+  // pane. An id leaves only when its terminal is gone: by its "deleted" event, or,
+  // for a deletion missed while the pane was hidden, when the chat's next read omits
+  // it and a lookup finds no row (see releaseDeletedTerminalIds). An omission alone
+  // never releases one: a list can be stale or partial.
   const knownTerminalIdsRef = useRef(new Set<string>());
+  // Which chat each remembered terminal belongs to, so a chat's read only checks its own ids.
+  const knownTerminalOwnersRef = useRef(new Map<string, string>());
   const hasExternalTerminalPane = Boolean(onToggleTerminalPane || onOpenTerminalPane);
   const openTerminalPanel = useCallback(() => {
     if (onOpenTerminalPane) {
@@ -8750,25 +8757,63 @@ export function AgentChatPane({
     // the machine to hear them from and read them on.
     const pin = chatRuntimePinRef.current;
     const knownTerminalIds = knownTerminalIdsRef.current;
+    const knownTerminalOwners = knownTerminalOwnersRef.current;
     // Re-subscribing replays events the new subscriber missed, so a terminal
     // that already existed (its "created" from minutes ago) arrives again. Every
     // terminal the chat has when this subscription starts is therefore known,
     // not news. Ids are compared, not `startedAt`: a remote machine's clock is
     // not ours, and a shell it just started must still reveal.
-    const baseline = selectedSessionId
-      ? sessionsApi.list({ chatSessionId: selectedSessionId, limit: null }, pin).then(
-        (rows) => {
-          for (const row of rows) knownTerminalIds.add(row.id);
-          return true;
-        },
-        (error: unknown) => {
-          // Without the baseline an old terminal cannot be told from a new one,
-          // so this subscription reveals nothing rather than reopen a closed pane.
-          console.error("[AgentChatPane] terminal baseline read failed", { sessionId: selectedSessionId, error });
-          return false;
-        },
-      )
-      : Promise.resolve(true);
+    //
+    // Until a read has loaded, nothing is news, because an unloaded baseline cannot
+    // tell an old terminal from a new one. A failed read leaves it unloaded and the
+    // next event retries it. The read is authoritative, so an unanswered list cannot
+    // pass for "the chat has no terminals".
+    const baselineChatSessionId = selectedSessionId;
+    let baselineLoaded = !baselineChatSessionId;
+    let baselineRead: Promise<boolean> | null = null;
+    const loadBaseline = (): Promise<boolean> => {
+      if (baselineLoaded || !baselineChatSessionId) return Promise.resolve(true);
+      // Events that arrive while a read is in flight share it.
+      if (!baselineRead) {
+        baselineRead = sessionsApi.list(
+          { chatSessionId: baselineChatSessionId, limit: null },
+          pin,
+          { authoritative: true },
+        )
+          .then((rows) => {
+            // Anything but a list is a failed read, not an empty chat.
+            if (!Array.isArray(rows)) throw new Error("the chat's terminal list did not come back as a list");
+            const listedIds = new Set<string>();
+            for (const row of rows) {
+              rememberKnownTerminalId(knownTerminalIds, row.id);
+              knownTerminalOwners.set(row.id, baselineChatSessionId);
+              listedIds.add(row.id);
+            }
+            // An omission alone releases nothing (a read can be stale or partial);
+            // each omitted id of this chat is looked up, and only a gone row lets go.
+            void releaseDeletedTerminalIds({
+              known: knownTerminalIds,
+              owners: knownTerminalOwners,
+              chatSessionId: baselineChatSessionId,
+              listedIds,
+              // Authoritative, so an unanswered read rejects and keeps the id rather than reading as "gone".
+              lookup: (id) => sessionsApi.get(id, pin, { authoritative: true }),
+            });
+            baselineLoaded = true;
+            return true;
+          })
+          .catch((error: unknown) => {
+            console.error("[AgentChatPane] terminal baseline read failed", { sessionId: baselineChatSessionId, error });
+            return false;
+          })
+          .finally(() => {
+            // Cleared on every outcome, so a failed read is retried by the next event.
+            baselineRead = null;
+          });
+      }
+      return baselineRead;
+    };
+    void loadBaseline();
     const revealCreatedTerminal = async (sessionId: string) => {
       if (knownTerminalIds.has(sessionId)) return;
       let session: TerminalSessionDetail | null = null;
@@ -8778,8 +8823,8 @@ export function AgentChatPane({
         return;
       }
       // A replay can land before the baseline read does, so judge it after.
-      const baselineLoaded = await baseline;
-      if (disposed || !baselineLoaded || !session) return;
+      const baselineOk = await loadBaseline();
+      if (disposed || !baselineOk || !session) return;
       if (knownTerminalIds.has(sessionId)) return;
       const selectedChatSessionId = selectedSessionIdRef.current;
       if (!selectedChatSessionId || session.chatSessionId !== selectedChatSessionId) return;
@@ -8789,7 +8834,8 @@ export function AgentChatPane({
 
       // Each terminal reveals once per pane: a duplicate or replayed "created"
       // for it never reopens the pane the user closed.
-      knownTerminalIds.add(sessionId);
+      rememberKnownTerminalId(knownTerminalIds, sessionId);
+      knownTerminalOwners.set(sessionId, selectedChatSessionId);
       openTerminalPanel();
       if (!hasExternalTerminalPane) {
         setTerminalRevealRequest({
@@ -8802,6 +8848,13 @@ export function AgentChatPane({
     };
 
     const unsubscribe = sessionsApi.onChanged((event) => {
+      // A deleted terminal's row is gone, so get() finds nothing to reveal and its
+      // id can leave the set. No chat read would ever release it otherwise.
+      if (event.reason === "deleted") {
+        knownTerminalIds.delete(event.sessionId);
+        knownTerminalOwners.delete(event.sessionId);
+        return;
+      }
       if (event.reason !== "created") return;
       void revealCreatedTerminal(event.sessionId);
     }, pin);

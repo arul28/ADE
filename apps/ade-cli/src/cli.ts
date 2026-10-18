@@ -385,12 +385,14 @@ import {
   type SyncRoleSnapshot,
 } from "../../desktop/src/shared/types/sync";
 import {
+  defaultRuntimeCompileCacheDir,
   isCurrentProcessDescendantOfPid,
   resolveAdeServeCommand,
   RuntimeServiceStillStartingError,
   type AdeServiceCommand,
 } from "./serviceManager/common";
 import { awaitRuntimeServiceEndpoint } from "./services/runtime/awaitRuntimeServiceEndpoint";
+import { activeCompileCacheDir, scheduleStaleCompileCachePrune } from "./services/runtime/compileCachePrune";
 import { readBrainStartupState } from "./services/runtime/brainStartupState";
 import {
   readEmbeddedParentPid,
@@ -26474,6 +26476,12 @@ async function runServe(
   headlessProjectLogger.info("brain.listening", {
     socketPath,
     tcpUrl: tcpUrl ?? null,
+  });
+  // Compile caches of earlier builds go once the brain is listening. Only the brain's
+  // default root is pruned: an explicit NODE_COMPILE_CACHE is the caller's directory.
+  scheduleStaleCompileCachePrune(activeCompileCacheDir(), {
+    expectedRoot: defaultRuntimeCompileCacheDir(),
+    onPruned: (removed) => headlessProjectLogger.info("brain.compile_cache_pruned", { removed }),
   });
   if (droppedCallerIdentity.length > 0) {
     headlessProjectLogger.warn("brain.inherited_caller_identity_dropped", { keys: droppedCallerIdentity });

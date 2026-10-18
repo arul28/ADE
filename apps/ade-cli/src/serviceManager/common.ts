@@ -393,7 +393,12 @@ function runtimeCompileCacheEnv(env: Record<string, string>): Record<string, str
   if (process.env.NODE_DISABLE_COMPILE_CACHE !== undefined) return {};
   const explicit = process.env.NODE_COMPILE_CACHE?.trim();
   if (explicit) return { NODE_COMPILE_CACHE: explicit };
-  return { NODE_COMPILE_CACHE: path.join(resolveMachineAdeDir(env), "cache", "node-compile") };
+  return { NODE_COMPILE_CACHE: defaultRuntimeCompileCacheDir(env) };
+}
+
+/** The brain's compile-cache root when no NODE_COMPILE_CACHE overrides it. */
+export function defaultRuntimeCompileCacheDir(env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(resolveMachineAdeDir(env), "cache", "node-compile");
 }
 
 function runtimeEnvironment(entry?: string): Record<string, string> | undefined {

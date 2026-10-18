@@ -126,8 +126,16 @@ Desktop main process — protocol handler:
   (`syncRemoteCommandService.ts`'s `deeplinks.open`). Its `log` hook is wired
   to the machine logger (`~/.ade/runtime/desktop-main.jsonl`), not a project
   one — all of this happens before a project can be open — and the branch that
-  loses the single-instance lock and quits calls `flushLog` first, so
+  loses the single-instance lock calls `flushLog` first, so
   `deeplink.single_instance.lock_lost` survives the exit.
+
+  Every launch that loses the lock exits there with `app.exit(0)`, before the
+  boot in `main.ts` (windows, bridge, services). Any `ade://` URL or file it was
+  launched with has already gone to the running copy through
+  `requestSingleInstanceLock()`, which reaches the holder's `second-instance`
+  handler. That includes an update relaunch: the lock log line records
+  `pendingInstallUpdate` (set in `ade-state.json` while an install is pending),
+  so an update race can be told apart from a stray launch.
 - `apps/desktop/src/main/services/deeplinks/projectNavigationWindowSelection.ts`
   — pure selection helper for project-scoped navigation. It first prefers a
   window whose active project already matches the target root, then a window

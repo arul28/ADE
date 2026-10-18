@@ -1212,6 +1212,7 @@ describe("runtime session actions", () => {
     expect(listSessions).toHaveBeenCalledWith("lane-1", {
       includeIdentity: true,
       includeAutomation: true,
+      sessionIds: ["codex-chat", "claude-chat", "opencode-chat", "cursor-chat", "droid-chat", "identity-chat"],
     });
     expect(result).toHaveLength(providers.length);
     expect(result.map((session) => session.id)).not.toContain("identity-chat");

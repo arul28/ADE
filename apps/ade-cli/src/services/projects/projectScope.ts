@@ -90,7 +90,7 @@ export function describeSyncHostBlocker(blocker: SyncHostBlocker): string {
   const target = blocker.host
     ? ` at ${blocker.host}${blocker.port != null ? `:${blocker.port}` : ""}`
     : "";
-  return `This project is set to follow another ADE machine${target}, so this machine cannot open it for sync. Open it on that machine, or disconnect it from that machine on this computer.`;
+  return `This project is set to follow another ADE machine${target}, so this machine cannot open it for sync. Open it on that machine, or stop following it on this computer: in Connections, under This computer, choose Stop following.`;
 }
 
 /** The target project follows another machine, so this machine cannot host it. */

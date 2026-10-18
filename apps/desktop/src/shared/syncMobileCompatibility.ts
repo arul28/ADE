@@ -186,6 +186,9 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   // aggregator at all.
   "workTools.getLaneState",
   "workTools.readObservationPreview",
+  // Proof a chat cites, read from the machine that owns the chat. Optional: an older
+  // host omits it and the web client reports the proof as unreadable, not missing.
+  "computerUse.listArtifacts",
   // Mac Desktop over the sync socket. `getStatus` and the two
   // stream-subscription calls are read-only and viewer-allowed; `start`/`stop`
   // create and destroy a host display, so they are controller-only like the
