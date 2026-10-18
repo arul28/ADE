@@ -98,6 +98,7 @@ describe("fixedMenuAboveAnchorStyle", () => {
     // The panel's box on screen: origin at (300, 100), half of its layout size, times the zoom.
     panel.getBoundingClientRect = () => rectOf(300, 100, 200 * 1.1 * 0.5, 100 * 1.1 * 0.5);
     Object.defineProperty(panel, "offsetWidth", { configurable: true, value: 200 });
+    Object.defineProperty(panel, "offsetHeight", { configurable: true, value: 100 });
     // An anchor at screen (400, 150) sits 100 screen px right and 50 down from the origin.
     const style = fixedMenuAboveAnchorStyle(
       { left: 400, top: 150, right: 410 },

@@ -131,6 +131,7 @@ describe("AnchoredMenu", () => {
     panel.style.transform = "scale(0.5)";
     document.body.appendChild(panel);
     Object.defineProperty(panel, "offsetWidth", { configurable: true, value: 200 });
+    Object.defineProperty(panel, "offsetHeight", { configurable: true, value: 100 });
     panel.getBoundingClientRect = () => rectOf(300, 100, 200 * 1.1 * 0.5, 100 * 1.1 * 0.5);
     const buttonRef = { current: null as HTMLButtonElement | null };
     render(

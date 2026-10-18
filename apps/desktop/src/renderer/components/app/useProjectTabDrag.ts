@@ -7,7 +7,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type RefObject,
 } from "react";
-import { cssZoomOf } from "../../lib/webZoom";
+import { cssZoomOf, toLayoutPx } from "../../lib/webZoom";
 
 /** Movement before a press becomes a drag, so a plain click still clicks. */
 const DRAG_START_PX = 5;
@@ -199,7 +199,9 @@ export function useProjectTabDrag(args: {
         dx,
         targetIndex,
         order: session.order,
-        width: session.tabRect.width,
+        // The neighbours shift by layout px (the translate is written in them), so
+        // the rect's screen width is converted before it is used as a shift.
+        width: toLayoutPx(session.tabRect.width),
         torn: false,
       });
     };

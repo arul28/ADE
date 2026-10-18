@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   applyHostedWebZoom,
   __resetHostedWebZoomForTests,
@@ -89,8 +89,9 @@ describe("fixed placement frame under the hosted zoom", () => {
   it("converts a screen rect and pointer into the viewport frame by the zoom", () => {
     stubZoomedBody(1.1);
     const frame = fixedFrameOf(null);
-    expect(frame).toEqual({ originX: 0, originY: 0, scale: expect.any(Number) });
-    expect(frame.scale).toBeCloseTo(1.1, 6);
+    expect(frame).toEqual({ originX: 0, originY: 0, scaleX: expect.any(Number), scaleY: expect.any(Number) });
+    expect(frame.scaleX).toBeCloseTo(1.1, 6);
+    expect(frame.scaleY).toBeCloseTo(1.1, 6);
     const rect = fixedRect(frame, rectOf(110, 55, 110, 22));
     expect(rect.left).toBeCloseTo(100, 6);
     expect(rect.right).toBeCloseTo(200, 6);
@@ -104,7 +105,8 @@ describe("fixed placement frame under the hosted zoom", () => {
   it("is the identity at zoom 1, as in Electron", () => {
     stubZoomedBody(1);
     const frame = fixedFrameOf(null);
-    expect(frame.scale).toBe(1);
+    expect(frame.scaleX).toBe(1);
+    expect(frame.scaleY).toBe(1);
     expect(fixedRect(frame, rectOf(120, 40, 80, 20))).toMatchObject({ left: 120, top: 40, width: 80, height: 20 });
     expect(fixedViewport(frame).width).toBe(1280);
   });
@@ -115,13 +117,15 @@ describe("fixed placement frame under the hosted zoom", () => {
     panel.style.transform = "scale(0.5)";
     document.body.appendChild(panel);
     Object.defineProperty(panel, "offsetWidth", { configurable: true, value: 200 });
+    Object.defineProperty(panel, "offsetHeight", { configurable: true, value: 100 });
     panel.getBoundingClientRect = () => rectOf(300, 100, 200 * 1.1 * 0.5, 100 * 1.1 * 0.5);
     const child = document.createElement("div");
     panel.appendChild(child);
     const frame = fixedFrameOf(child.parentElement);
     expect(frame.originX).toBe(300);
     expect(frame.originY).toBe(100);
-    expect(frame.scale).toBeCloseTo(1.1 * 0.5, 6);
+    expect(frame.scaleX).toBeCloseTo(1.1 * 0.5, 6);
+    expect(frame.scaleY).toBeCloseTo(1.1 * 0.5, 6);
   });
 
   it("ignores a plain (non-containing-block) ancestor", () => {
@@ -132,5 +136,75 @@ describe("fixed placement frame under the hosted zoom", () => {
     const frame = fixedFrameOf(plain);
     expect(frame.originX).toBe(0);
     expect(frame.originY).toBe(0);
+  });
+
+  it("places each axis by its own scale under a non-uniform transform", () => {
+    stubZoomedBody(1.1);
+    const panel = document.createElement("div");
+    panel.style.transform = "scale(0.5, 0.75)";
+    document.body.appendChild(panel);
+    Object.defineProperty(panel, "offsetWidth", { configurable: true, value: 200 });
+    Object.defineProperty(panel, "offsetHeight", { configurable: true, value: 100 });
+    panel.getBoundingClientRect = () => rectOf(300, 100, 200 * 1.1 * 0.5, 100 * 1.1 * 0.75);
+    const frame = fixedFrameOf(panel);
+    expect(frame.originX).toBe(300);
+    expect(frame.originY).toBe(100);
+    expect(frame.scaleX).toBeCloseTo(1.1 * 0.5, 6);
+    expect(frame.scaleY).toBeCloseTo(1.1 * 0.75, 6);
+    // Style point (40, 20) inside the panel, drawn at its screen position.
+    const rect = fixedRect(frame, rectOf(300 + 40 * 0.55, 100 + 20 * 0.825, 10 * 0.55, 10 * 0.825));
+    expect(rect.left).toBeCloseTo(40, 6);
+    expect(rect.top).toBeCloseTo(20, 6);
+    expect(rect.width).toBeCloseTo(10, 6);
+    expect(rect.height).toBeCloseTo(10, 6);
+    const point = fixedPoint(frame, 300 + 40 * 0.55, 100 + 20 * 0.825);
+    expect(point.left).toBeCloseTo(40, 6);
+    expect(point.top).toBeCloseTo(20, 6);
+  });
+
+  it("falls back to the viewport frame under a rotated containing block", () => {
+    stubZoomedBody(1.1);
+    const panel = document.createElement("div");
+    document.body.appendChild(panel);
+    panel.getBoundingClientRect = () => rectOf(300, 100, 50, 50);
+    const realGetComputedStyle = globalThis.getComputedStyle;
+    vi.spyOn(globalThis, "getComputedStyle").mockImplementation((el: Element, pseudo?: string | null) =>
+      el === panel
+        ? ({ transform: "matrix(0.866, 0.5, -0.5, 0.866, 0, 0)" } as CSSStyleDeclaration)
+        : realGetComputedStyle(el, pseudo),
+    );
+    try {
+      const frame = fixedFrameOf(panel);
+      expect(frame).toEqual({ originX: 0, originY: 0, scaleX: expect.any(Number), scaleY: expect.any(Number) });
+      expect(frame.scaleX).toBeCloseTo(1.1, 6);
+      expect(frame.scaleY).toBeCloseTo(1.1, 6);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("falls back to the viewport frame under a skewed ancestor of the containing block", () => {
+    stubZoomedBody(1.1);
+    const skewed = document.createElement("div");
+    const panel = document.createElement("div");
+    skewed.appendChild(panel);
+    document.body.appendChild(skewed);
+    panel.getBoundingClientRect = () => rectOf(300, 100, 50, 50);
+    const realGetComputedStyle = globalThis.getComputedStyle;
+    vi.spyOn(globalThis, "getComputedStyle").mockImplementation((el: Element, pseudo?: string | null) =>
+      el === skewed
+        ? ({ transform: "matrix(1, 0, 0.4, 1, 0, 0)" } as CSSStyleDeclaration)
+        : el === panel
+          ? ({ transform: "matrix(0.5, 0, 0, 0.5, 0, 0)" } as CSSStyleDeclaration)
+          : realGetComputedStyle(el, pseudo),
+    );
+    try {
+      const frame = fixedFrameOf(panel);
+      expect(frame.originX).toBe(0);
+      expect(frame.originY).toBe(0);
+      expect(frame.scaleX).toBeCloseTo(1.1, 6);
+    } finally {
+      vi.restoreAllMocks();
+    }
   });
 });

@@ -157,13 +157,36 @@ export function cssZoomOf(el: HTMLElement | null = typeof document === "undefine
  * it maps a rect measured on screen into that frame. The containing block is the
  * viewport unless an ancestor creates one (a transform, filter, perspective,
  * backdrop-filter, `contain`, or `will-change` for those). Then it is that
- * ancestor's box, and its own scale (its transform, times the body zoom) is the
- * screen-pixels-per-style-pixel ratio. `scale` is 1 in Electron.
+ * ancestor's box, and its own scale per axis (its transform, times the body
+ * zoom) is the screen-pixels-per-style-pixel ratio on x and y separately, so
+ * `scale(0.5, 0.75)` places both axes. Both are 1 in Electron.
  */
-export type FixedFrame = { originX: number; originY: number; scale: number };
+export type FixedFrame = { originX: number; originY: number; scaleX: number; scaleY: number };
 
 function isSet(value: string | null | undefined): boolean {
   return Boolean(value) && value !== "none";
+}
+
+/**
+ * Rotation or skew turns a rect into the bounding box of a tilted box, which
+ * per-axis ratios cannot undo. Browsers report a computed transform as
+ * `matrix()` or `matrix3d()`; b and c are the off-diagonal terms, zero for any
+ * combination of translate and scale.
+ */
+function isRotatedOrSkewed(transform: string | null | undefined): boolean {
+  const match = /^matrix(3d)?\((.*)\)$/.exec(transform ?? "");
+  if (!match) return false;
+  const values = match[2].split(",").map((value) => parseFloat(value));
+  const b = values[1] ?? 0;
+  const c = (match[1] ? values[4] : values[2]) ?? 0;
+  return Math.abs(b) > 1e-9 || Math.abs(c) > 1e-9;
+}
+
+/** Screen size over layout size on one axis: the zoom, or 1 when unmeasurable. */
+function axisZoom(rectSize: number, layoutSize: number): number {
+  if (!layoutSize) return 1;
+  const zoom = rectSize / layoutSize;
+  return Number.isFinite(zoom) && zoom > 0 ? zoom : 1;
 }
 
 function createsContainingBlock(el: HTMLElement): boolean {
@@ -174,30 +197,57 @@ function createsContainingBlock(el: HTMLElement): boolean {
   return /transform|perspective|filter/.test(style.willChange ?? "");
 }
 
+let warnedRotatedContainingBlock = false;
+
 /**
  * The frame for a fixed child rendered inside `parent`. Pass null for the viewport
  * frame (a child of `body`), which is the common case.
+ *
+ * A containing block that is rotated or skewed (or sits in one) falls back to
+ * the viewport frame. A bounding box cannot place a fixed child there, so
+ * the child lands off by the tilt. That is a known limit, not a silent one:
+ * dev builds warn once.
  */
 export function fixedFrameOf(parent: Element | null): FixedFrame {
   if (typeof document !== "undefined" && typeof getComputedStyle === "function") {
     for (let el = parent; el && el !== document.body && el !== document.documentElement; el = el.parentElement) {
-      if (el instanceof HTMLElement && createsContainingBlock(el)) {
-        const box = el.getBoundingClientRect();
-        return { originX: box.left, originY: box.top, scale: cssZoomOf(el) };
-      }
+      if (el instanceof HTMLElement && createsContainingBlock(el)) return containingBlockFrame(el);
     }
   }
-  return { originX: 0, originY: 0, scale: cssZoomOf() };
+  return viewportFrame();
+}
+
+function viewportFrame(): FixedFrame {
+  const zoom = cssZoomOf();
+  return { originX: 0, originY: 0, scaleX: zoom, scaleY: zoom };
+}
+
+function containingBlockFrame(el: HTMLElement): FixedFrame {
+  for (let node: HTMLElement | null = el; node && node !== document.body; node = node.parentElement) {
+    if (!isRotatedOrSkewed(getComputedStyle(node).transform)) continue;
+    if (import.meta.env.DEV && !warnedRotatedContainingBlock) {
+      warnedRotatedContainingBlock = true;
+      console.warn("[webZoom] fixed placement under a rotated or skewed containing block falls back to the viewport frame");
+    }
+    return viewportFrame();
+  }
+  const box = el.getBoundingClientRect();
+  return {
+    originX: box.left,
+    originY: box.top,
+    scaleX: axisZoom(box.width, el.offsetWidth),
+    scaleY: axisZoom(box.height, el.offsetHeight),
+  };
 }
 
 type RectLike = { left: number; top: number; width: number; height: number };
 
 /** A screen rect as the `left`/`top`/`width`/… of a fixed child in `frame`. */
 export function fixedRect(frame: FixedFrame, rect: RectLike) {
-  const left = (rect.left - frame.originX) / frame.scale;
-  const top = (rect.top - frame.originY) / frame.scale;
-  const width = rect.width / frame.scale;
-  const height = rect.height / frame.scale;
+  const left = (rect.left - frame.originX) / frame.scaleX;
+  const top = (rect.top - frame.originY) / frame.scaleY;
+  const width = rect.width / frame.scaleX;
+  const height = rect.height / frame.scaleY;
   return { left, top, right: left + width, bottom: top + height, width, height };
 }
 
