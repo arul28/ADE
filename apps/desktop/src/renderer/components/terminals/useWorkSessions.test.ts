@@ -190,7 +190,7 @@ import {
   resetChatLaunchStoreForTests,
 } from "../../state/chatLaunchStore";
 import { announceChatLaunchClosed, resetChatLaunchDraftRestoreForTests } from "../chat/launch/chatLaunchDraftRestore";
-import { CHAT_LAUNCH_BRIDGE_TTL_MS, syncChatLaunchBridgeClock } from "../chat/launch/chatLaunchSynthetic";
+import { CHAT_LAUNCH_BRIDGE_SAFETY_CAP_MS } from "../chat/launch/chatLaunchSynthetic";
 
 // ---------------------------------------------------------------------------
 // window.ade stubs
@@ -265,6 +265,8 @@ describe("useWorkSessions — pending new-lane chat launches", () => {
 
   afterEach(() => {
     cleanup();
+    // A failed assertion mid-test must not leave fake timers for the rest of the file.
+    vi.useRealTimers();
     resetChatLaunchStoreForTests();
     resetChatLaunchDraftRestoreForTests();
     delete (window as any).ade;
@@ -380,9 +382,9 @@ describe("useWorkSessions — pending new-lane chat launches", () => {
     });
     expect(result.current.sessionsById.has("launch-2")).toBe(true);
 
-    // Once the chat exists and the agent runs, the stand-in bridges until the host lists the
-    // chat, then lapses: a chat deleted or archived before the host lists it must not come back
-    // as a ghost (see shouldBridgeChatLaunchRow).
+    // Once the chat exists and the agent runs, the stand-in bridges until the host lists the chat.
+    // Two reads that began after the start and did not list it end the bridge, so a chat deleted
+    // or archived then cannot come back as a ghost (see shouldBridgeChatLaunchRow).
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     act(() => {
       applyChatLaunchSnapshot(null, launch({
@@ -395,62 +397,38 @@ describe("useWorkSessions — pending new-lane chat launches", () => {
       }));
     });
     expect(result.current.sessionsById.has("launch-2")).toBe(true);
-    // The window is hidden past the TTL: reads cannot run, so the hidden time does not count.
-    // It had used no visible time, so on return it has its full TTL.
-    syncChatLaunchBridgeClock(true);
+    // A hidden window reads nothing, so the bridge waits however long it stays hidden.
+    setDocumentVisibility("hidden");
     act(() => {
-      vi.advanceTimersByTime(CHAT_LAUNCH_BRIDGE_TTL_MS * 2);
+      vi.advanceTimersByTime(60_000);
     });
     expect(result.current.sessionsById.has("launch-2")).toBe(true);
-    syncChatLaunchBridgeClock(false);
-    act(() => {
-      vi.advanceTimersByTime(CHAT_LAUNCH_BRIDGE_TTL_MS - 1_000);
+    setDocumentVisibility("visible");
+    // A read that fails does not count.
+    listSessionsCachedMock.mockRejectedValueOnce(new Error("offline"));
+    await act(async () => {
+      await result.current.refresh({ showLoading: false }).catch(() => {});
     });
     expect(result.current.sessionsById.has("launch-2")).toBe(true);
-    // The host lists the chat, then it is deleted inside the bridge window: it must not come back.
-    listSessionsCachedMock.mockResolvedValue([makeSession("launch-2", "lane-new")]);
+    // The first read that misses the chat is not enough, and it goes to the host, not the cache.
     await act(async () => {
-      await result.current.refresh({ showLoading: false, force: true });
+      await result.current.refresh({ showLoading: false });
     });
-    listSessionsCachedMock.mockResolvedValue([]);
+    expect(listSessionsCachedMock).toHaveBeenLastCalledWith({ limit: 500 }, { force: true });
+    expect(result.current.sessionsById.has("launch-2")).toBe(true);
     await act(async () => {
-      await result.current.refresh({ showLoading: false, force: true });
+      await result.current.refresh({ showLoading: false });
     });
     expect(result.current.sessionsById.has("launch-2")).toBe(false);
-    act(() => {
-      vi.advanceTimersByTime(CHAT_LAUNCH_BRIDGE_TTL_MS);
-    });
-    expect(result.current.sessionsById.has("launch-2")).toBe(false);
-    // Repeated hide/show cycles on a fresh launch, 10 s hidden and 19 s visible each. The visible
-    // time used carries over, and the one grace is spent on the return that leaves it short, so
-    // the bridge stays up through the third cycle and lapses for good in the fourth.
+    // A launch no read ever ends lapses at the safety cap.
     act(() => {
       applyChatLaunchSnapshot(null, launch({ launchId: "launch-3", sessionId: "launch-3", sequence: 4 }));
-      applyChatLaunchSnapshot(null, launch({
-        launchId: "launch-3",
-        sessionId: "launch-3",
-        phase: "completed",
-        sessionCreated: true,
-        agentStarted: true,
-        sequence: 5,
-      }));
+      applyChatLaunchSnapshot(null, launch({ launchId: "launch-3", sessionId: "launch-3", phase: "completed", sessionCreated: true, agentStarted: true, sequence: 5 }));
     });
-    for (let cycle = 0; cycle < 10; cycle += 1) {
-      act(() => {
-        syncChatLaunchBridgeClock(true);
-      });
-      act(() => {
-        vi.advanceTimersByTime(10_000);
-      });
-      act(() => {
-        syncChatLaunchBridgeClock(false);
-      });
-      act(() => {
-        vi.advanceTimersByTime(19_000);
-      });
-      expect(result.current.sessionsById.has("launch-3")).toBe(cycle <= 2);
-    }
-    vi.useRealTimers();
+    act(() => { vi.advanceTimersByTime(CHAT_LAUNCH_BRIDGE_SAFETY_CAP_MS - 1_000); });
+    expect(result.current.sessionsById.has("launch-3")).toBe(true);
+    act(() => { vi.advanceTimersByTime(1_000); });
+    expect(result.current.sessionsById.has("launch-3")).toBe(false);
   });
 });
 

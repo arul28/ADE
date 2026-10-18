@@ -71,6 +71,7 @@ import {
   type AppState,
   type CrossMachineMachineLanes,
 } from "./appStore";
+import { chatLaunchBindingKey, noteChatLaunchSourceRead } from "./chatLaunchStore";
 
 /** Coalescing window for burst-y event sources (lane lifecycle, session churn). */
 const REFRESH_COALESCE_MS = 400;
@@ -1454,6 +1455,9 @@ async function readMachine(
     }
   };
   try {
+    // A read counts toward a pinned launch's bridge only if it began after the launch
+    // started (`noteChatLaunchSourceRead`), so its start is taken before anything else.
+    const readStartedAtMs = Date.now();
     const statusDue = shouldReadLaneStatus(machineId, depth);
     const lanesDue = statusDue || shouldReadLanes(machineId);
     const [laneResult, sessionResult, duePrs] = await Promise.all([
@@ -1513,6 +1517,7 @@ async function readMachine(
       sessions: reconcileCrossMachineOptimisticSessions(binding, sessions),
       error: null,
     });
+    noteChatLaunchSourceRead(chatLaunchBindingKey(binding), readStartedAtMs, new Set(sessions.map((session) => session.id)));
   } catch (error) {
     if (generation !== runtime.generation) return;
     // Record the failure WITHOUT lanes/sessions: retention is the point. A
@@ -1562,6 +1567,7 @@ async function readThisMachine(
     }
   };
   try {
+    const readStartedAtMs = Date.now();
     const statusDue = shouldReadLaneStatus(THIS_MACHINE_ID, depth);
     const lanesDue = statusDue || shouldReadLanes(THIS_MACHINE_ID);
     const [laneResult, sessions, duePrs] = await Promise.all([
@@ -1602,6 +1608,7 @@ async function readThisMachine(
       sessions: reconcileCrossMachineOptimisticSessions(binding, sessions),
       error: null,
     });
+    noteChatLaunchSourceRead(chatLaunchBindingKey(binding), readStartedAtMs, new Set(sessions.map((session) => session.id)));
   } catch (error) {
     if (generation !== runtime.generation) return;
     store.mergeCrossMachineLanes({

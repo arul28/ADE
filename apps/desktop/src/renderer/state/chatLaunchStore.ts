@@ -50,17 +50,10 @@ export type ChatLaunchEntry = {
    */
   pendingEndedAtMs: number | null;
   /**
-   * The bridge's clock once this window has resumed reading with the bridge still
-   * running (`resumeChatLaunchBridges`), or null before then. Its TTL counts from
-   * the later of this base and `pendingEndedAtMs` (`syncChatLaunchBridgeClock`).
+   * Reads of this launch's source that began after the bridge did and did not list
+   * its chat (`noteChatLaunchSourceRead`). Two of them end the bridge.
    */
-  bridgeClock: ChatLaunchBridgeClock | null;
-};
-
-/** A bridge's clock after a hidden stretch: where its TTL counts from, and whether its one return grace is spent. */
-export type ChatLaunchBridgeClock = {
-  baseMs: number;
-  graceUsed: boolean;
+  unlistedReads: number;
 };
 
 type ChatLaunchState = {
@@ -68,17 +61,11 @@ type ChatLaunchState = {
   /** Launches this window's slide-out was told to stop showing. */
   dismissed: Record<string, true>;
   /**
-   * When this window stopped reading (its document was hidden), or null while it
-   * can read. The Work roster freezes its bridge clock here and arms no expiry
-   * timer while this is set (see `syncChatLaunchBridgeClock`).
-   */
-  hiddenSinceMs: number | null;
-  /**
-   * Launches whose real chat the Work roster has listed, or that were deleted
-   * (`retireChatLaunchBridgesForSession`). Their stand-in never bridges again
-   * (`shouldBridgeChatLaunchRow`), so a chat deleted or archived before the
-   * bridge lapses cannot come back as a running row. Only kept while the
-   * launch's entry is (see `retiredWithin`).
+   * Launches whose stand-in no longer bridges: the Work roster has listed their real
+   * chat, the chat was deleted (`retireChatLaunchBridgesForSession`), or reads ended
+   * the bridge (`noteChatLaunchSourceRead`). Never bridges again
+   * (`shouldBridgeChatLaunchRow`), so a chat deleted or archived later cannot come
+   * back as a running row. Only kept while the launch's entry is (see `retiredWithin`).
    */
   bridgeRetired: Record<string, true>;
 };
@@ -87,7 +74,6 @@ export const chatLaunchStore = createStore<ChatLaunchState>(() => ({
   entries: {},
   dismissed: {},
   bridgeRetired: {},
-  hiddenSinceMs: null,
 }));
 
 export function chatLaunchBindingKey(binding: OpenProjectBinding | null | undefined): string {
@@ -287,7 +273,7 @@ export function insertOptimisticChatLaunch(binding: OpenProjectBinding | null, s
         hostSeen: false,
         startError: null,
         pendingEndedAtMs: null,
-        bridgeClock: null,
+        unlistedReads: 0,
       },
     };
   });
@@ -321,7 +307,7 @@ export function applyChatLaunchSnapshot(binding: OpenProjectBinding | null, snap
         hostSeen: true,
         startError: null,
         pendingEndedAtMs: pendingEndedAtFor(current, merged),
-        bridgeClock: current?.bridgeClock ?? null,
+        unlistedReads: current?.unlistedReads ?? 0,
       },
     };
   });
@@ -363,7 +349,7 @@ export function hydrateChatLaunches(binding: OpenProjectBinding | null, snapshot
         hostSeen: true,
         startError: null,
         pendingEndedAtMs: pendingEndedAtFor(current, merged),
-        bridgeClock: current?.bridgeClock ?? null,
+        unlistedReads: current?.unlistedReads ?? 0,
       };
     }
     return next;
@@ -610,27 +596,64 @@ export function retireChatLaunchBridgesForSession(sessionId: string): void {
   retireChatLaunchBridges(launchIds);
 }
 
-/** The window stopped reading at `nowMs`. The first hide of a hidden stretch is kept. */
-export function pauseChatLaunchBridges(nowMs: number): void {
-  chatLaunchStore.setState((state) => (state.hiddenSinceMs == null ? { hiddenSinceMs: nowMs } : state));
+/** Reads that must list a started chat before its bridge ends on reads (`noteChatLaunchSourceRead`). */
+export const CHAT_LAUNCH_BRIDGE_UNLISTED_READS = 2;
+
+/**
+ * Whether a launch's stand-in still waits for the host's own row: its agent started,
+ * its chat exists, and its bridge has not ended. Time-free; the roster adds its
+ * safety cap on top (`shouldBridgeChatLaunchRow`).
+ */
+export function chatLaunchAwaitsHostRow(
+  source: Pick<ChatLaunchRowSource, "snapshot" | "pendingEndedAtMs" | "bridgeRetired">,
+): boolean {
+  const { snapshot, pendingEndedAtMs, bridgeRetired } = source;
+  return pendingEndedAtMs != null
+    && !bridgeRetired
+    && snapshot.kind === "chat"
+    && Boolean(snapshot.sessionId)
+    && snapshot.sessionCreated
+    && isChatLaunchSucceeded(snapshot);
+}
+
+/** Whether a started chat on `bindingKey` still waits for its host's row, so that host's next read must be fresh. */
+export function chatLaunchAwaitingHostRowOn(bindingKey: string): boolean {
+  return chatLaunchRowSourcesNow().some((source) => source.bindingKey === bindingKey && chatLaunchAwaitsHostRow(source));
 }
 
 /**
- * The window can read again. Each bridge still running when it hid takes the clock
- * `syncChatLaunchBridgeClock` worked out for it; a bridge that lapsed before the
- * hide has no entry in `clocks` and stays lapsed. Writes entries only when there
- * is a bridge to resume.
+ * An authoritative read of a launch's source finished: the active binding's host
+ * list, or a pinned machine's slice read. `startedAtMs` is when the read was sent
+ * and `listedSessionIds` is what it returned. Each open bridge on `bindingKey` that
+ * began before the read was sent, and whose chat the read did not list, counts one
+ * unlisted read; at `CHAT_LAUNCH_BRIDGE_UNLISTED_READS` the bridge ends. A read that
+ * began before the start may predate the chat, so it does not count. Each window
+ * counts its own reads, because each window renders from its own.
  */
-export function resumeChatLaunchBridges(clocks: Readonly<Record<string, ChatLaunchBridgeClock>>): void {
+export function noteChatLaunchSourceRead(
+  bindingKey: string,
+  startedAtMs: number,
+  listedSessionIds: ReadonlySet<string>,
+): void {
   chatLaunchStore.setState((state) => {
-    const launchIds = Object.keys(clocks);
-    if (launchIds.length === 0) return { hiddenSinceMs: null };
-    const entries = { ...state.entries };
-    for (const launchId of launchIds) {
-      const entry = entries[launchId];
-      if (entry) entries[launchId] = { ...entry, bridgeClock: clocks[launchId] };
+    let entries: Record<string, ChatLaunchEntry> | null = null;
+    let bridgeRetired: Record<string, true> | null = null;
+    for (const entry of Object.values(state.entries)) {
+      const { pendingEndedAtMs, snapshot } = entry;
+      const sessionId = snapshot.sessionId;
+      if (entry.bindingKey !== bindingKey || !sessionId || listedSessionIds.has(sessionId)) continue;
+      if (pendingEndedAtMs == null || pendingEndedAtMs >= startedAtMs) continue;
+      if (!chatLaunchAwaitsHostRow({ snapshot, pendingEndedAtMs, bridgeRetired: state.bridgeRetired[entry.launchId] })) continue;
+      entries ??= { ...state.entries };
+      const unlistedReads = entry.unlistedReads + 1;
+      entries[entry.launchId] = { ...entry, unlistedReads };
+      if (unlistedReads >= CHAT_LAUNCH_BRIDGE_UNLISTED_READS) {
+        bridgeRetired ??= { ...state.bridgeRetired };
+        bridgeRetired[entry.launchId] = true;
+      }
     }
-    return { entries, hiddenSinceMs: null };
+    if (!entries) return state;
+    return bridgeRetired ? { entries, bridgeRetired } : { entries };
   });
 }
 
@@ -655,7 +678,7 @@ export function isChatLaunchLane(laneId: string | null | undefined): boolean {
 }
 
 export function resetChatLaunchStoreForTests(): void {
-  chatLaunchStore.setState({ entries: {}, dismissed: {}, bridgeRetired: {}, hiddenSinceMs: null });
+  chatLaunchStore.setState({ entries: {}, dismissed: {}, bridgeRetired: {} });
   localRecords.clear();
   unsentQueuedMessages.clear();
   refreshingLaunchIds.clear();
@@ -743,7 +766,6 @@ export type ChatLaunchRowSource = {
   binding: OpenProjectBinding | null;
   bindingKey: string;
   pendingEndedAtMs?: number | null;
-  bridgeClock?: ChatLaunchBridgeClock | null;
   bridgeRetired?: boolean;
 };
 
@@ -755,7 +777,6 @@ export function chatLaunchRowSourcesNow(state: ChatLaunchState = chatLaunchStore
       binding: entry.binding,
       bindingKey: entry.bindingKey,
       pendingEndedAtMs: entry.pendingEndedAtMs,
-      bridgeClock: entry.bridgeClock,
       bridgeRetired: Boolean(state.bridgeRetired[entry.launchId]),
     }))
     .sort((a, b) => a.snapshot.launchId.localeCompare(b.snapshot.launchId));
@@ -779,7 +800,6 @@ function rowSignature(source: ChatLaunchRowSource): string {
     isChatLaunchPending(s) ? "pending" : "started",
     isChatLaunchSucceeded(s) ? "succeeded" : "unsucceeded",
     source.pendingEndedAtMs ?? "",
-    source.bridgeClock ? `${source.bridgeClock.baseMs}/${source.bridgeClock.graceUsed}` : "",
     source.bridgeRetired ? "retired" : "",
     source.bindingKey,
   ].join("\u0001");

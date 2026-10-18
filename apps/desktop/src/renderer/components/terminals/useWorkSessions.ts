@@ -69,7 +69,13 @@ import { requestCrossMachineLanesForMachine, seedCrossMachineOptimisticSession, 
 import { cachedGitRemoteIdentity, originUrlForBinding } from "../lanes/laneMachines";
 import { useWorkMachineRouter } from "./useWorkMachineRouter";
 import { clearChatCompanionUiState } from "../chat/chatCompanionUiState";
-import { chatLaunchBindingKey, retireChatLaunchBridges, useChatLaunchRowSources, useChatLaunchSelector } from "../../state/chatLaunchStore";
+import {
+  chatLaunchAwaitingHostRowOn,
+  chatLaunchBindingKey,
+  noteChatLaunchSourceRead,
+  retireChatLaunchBridges,
+  useChatLaunchRowSources,
+} from "../../state/chatLaunchStore";
 import {
   mergeChatLaunchRows,
   nextChatLaunchBridgeExpiryMs,
@@ -757,6 +763,10 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const [hostSessions, setHostSessions] = useState<TerminalSessionSummary[]>([]);
   const chatLaunchRowSources = useChatLaunchRowSources();
   const activeChatLaunchBindingKey = chatLaunchBindingKey(projectBinding);
+  const activeChatLaunchBindingKeyRef = useRef(activeChatLaunchBindingKey);
+  useEffect(() => {
+    activeChatLaunchBindingKeyRef.current = activeChatLaunchBindingKey;
+  }, [activeChatLaunchBindingKey]);
   // Bindings of this same project on other machines. A launch pinned to one of
   // them lists here too (that machine's slice does not list its chat yet); a
   // launch of any other project never ghosts into this roster.
@@ -778,18 +788,14 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     [activeChatLaunchBindingKey, chatLaunchRowSources, crossMachineBindingKeys],
   );
   // A started chat's row bridges until the host lists it (`shouldBridgeChatLaunchRow`).
-  // It lapses on its own clock: the roster's poll only runs while the host has a
-  // running chat, so a bridged row for a chat that never appears would not be
-  // re-read otherwise. While this window is hidden the clock is frozen at the hide
-  // (`hiddenSinceMs`): a bridge still running then is kept, and no timer runs until
-  // the window can read again (`syncChatLaunchBridgeClock` resumes the bridges).
-  const hiddenSinceMs = useChatLaunchSelector((state) => state.hiddenSinceMs, Object.is);
+  // The reads end the bridge (`noteChatLaunchSourceRead`); the safety cap is the
+  // backstop for a source that never completes one, and the roster's poll may not run
+  // to re-check it, so a timer fires at the cap. Nothing is armed without a bridge.
   const [bridgeEpoch, setBridgeEpoch] = useState(0);
   const bridgeExpiryMs = useMemo(() => {
     void bridgeEpoch;
-    if (hiddenSinceMs != null) return null;
     return nextChatLaunchBridgeExpiryMs(chatLaunchRowSources, Date.now());
-  }, [bridgeEpoch, chatLaunchRowSources, hiddenSinceMs]);
+  }, [bridgeEpoch, chatLaunchRowSources]);
   useEffect(() => {
     if (bridgeExpiryMs == null) return;
     const timer = window.setTimeout(
@@ -815,13 +821,12 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   }, [hostSessions, retainedCrossMachineSlices]);
   const sessions = useMemo(() => {
     // Re-selected on every roster read, so a bridged row is re-checked against
-    // its deadline whenever the roster moves, and on the timer when it does not.
+    // its safety cap whenever the roster moves, and on the timer when it does not.
     void bridgeEpoch;
     const launches = selectRosterChatLaunches(
       chatLaunchRowSources,
       activeChatLaunchBindingKey,
       crossMachineBindingKeys,
-      hiddenSinceMs ?? Date.now(),
     );
     if (launches.length === 0) return hostSessions;
     return mergeChatLaunchRows(hostSessions, launches, listedChatSessionIds);
@@ -830,7 +835,6 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     bridgeEpoch,
     chatLaunchRowSources,
     crossMachineBindingKeys,
-    hiddenSinceMs,
     hostSessions,
     listedChatSessionIds,
   ]);
@@ -850,8 +854,8 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     }
   }, [activeChatLaunchBindingKey, chatLaunchRowSources, crossMachineBindingKeys]);
   // Once the roster has listed a launch's real chat, its stand-in never bridges
-  // again: a chat deleted or archived before the bridge lapses must not come back
-  // as a running row (`shouldBridgeChatLaunchRow`). An empty batch writes nothing.
+  // again: a chat deleted or archived after that must not come back as a running
+  // row (`shouldBridgeChatLaunchRow`). An empty batch writes nothing.
   useEffect(() => {
     const listed: string[] = [];
     for (const { snapshot, bridgeRetired } of chatLaunchRowSources) {
@@ -1740,10 +1744,16 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     refreshInFlightRef.current = true;
     if (showLoading) setLoading(true);
     try {
+      // A started chat's bridge ends on reads that began after its start
+      // (`noteChatLaunchSourceRead`). The list cache can answer with a read that began
+      // earlier, so while such a bridge waits on this binding the read goes to the host.
+      const bindingKey = activeChatLaunchBindingKeyRef.current;
+      const awaitingHostRow = chatLaunchAwaitingHostRowOn(bindingKey);
+      const readStartedAtMs = Date.now();
       const rows = (
         await listSessionsCached(
           { limit: 500 },
-          options.force
+          options.force || awaitingHostRow
             ? { force: true }
             : undefined,
         )
@@ -1751,6 +1761,8 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       if (projectRootRef.current !== requestedProjectRoot) {
         return;
       }
+      // Counted before the optimistic rows below join `rows`: only what the host listed counts.
+      if (awaitingHostRow) noteChatLaunchSourceRead(bindingKey, readStartedAtMs, new Set(rows.map((session) => session.id)));
       const pending = pendingOptimisticSessionsRef.current;
       if (pending.size > 0) {
         const now = Date.now();

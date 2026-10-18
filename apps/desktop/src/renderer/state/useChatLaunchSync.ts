@@ -2,7 +2,6 @@ import { useEffect, useRef } from "react";
 import type { ChatLaunchEvent, OpenProjectBinding } from "../../shared/types";
 import { isChatLaunchTerminal, laneSetupLaunchIdFromCardId } from "../../shared/chatLaunch";
 import { useAppStore } from "./appStore";
-import { syncChatLaunchBridgeClock } from "../components/chat/launch/chatLaunchSynthetic";
 import {
   applyChatLaunchEvent,
   chatLaunchBindingKey,
@@ -182,29 +181,12 @@ export function useChatLaunchSync(): void {
   }, [projectBinding, extraSignature]);
 
   // A deleted chat stops bridging in every window that hears the delete, even a
-  // window whose roster never listed it. Archive emits only a generic meta
-  // update, so an archived chat is bounded by the bridge TTL instead. Window-wide
-  // (not Work-only) because the roster that would synthesize the row may mount
-  // later.
+  // window whose roster never listed it. Window-wide (not Work-only) because the
+  // roster that would synthesize the row may mount later. Archive emits no delete,
+  // so an archived chat ends on the reads or on the safety cap instead.
   useEffect(() => window.ade?.sessions?.onChanged?.((event) => {
     if (event.reason === "deleted") retireChatLaunchBridgesForSession(event.sessionId);
   }), []);
-
-  // A launch bridge runs its TTL only on time this window can read: frozen while
-  // hidden, resumed on return with the visible time it had used
-  // (`syncChatLaunchBridgeClock`). Window-wide for the same reason as the delete
-  // above. Focus also syncs: macOS does not reliably fire `visibilitychange` on the
-  // way back, and the window is focused when the user returns to it.
-  useEffect(() => {
-    const sync = () => syncChatLaunchBridgeClock(document.visibilityState === "hidden");
-    sync();
-    document.addEventListener("visibilitychange", sync);
-    window.addEventListener("focus", sync);
-    return () => {
-      document.removeEventListener("visibilitychange", sync);
-      window.removeEventListener("focus", sync);
-    };
-  }, []);
 
   // A chat whose launch still reads as live but is already exchanging
   // messages (or has written its finished setup card) means a launch update
