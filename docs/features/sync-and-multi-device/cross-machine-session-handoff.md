@@ -27,6 +27,11 @@ destination would say (`previewCrossMachineHandoff`: a read-only
 `preflightCrossMachineDestination`, nothing prepared, packed or cloned), so it
 describes the path the move actually takes.
 
+In the desktop handoff modal, the new-chat model picker's Claude sign-in uses
+the selected destination machine's open project binding. Claude sign-in stays
+hidden until that binding is available; sign-in actions for other providers
+continue to open their existing Settings flow.
+
 No move binds acceptance to a route kind. The brain uses the account's paired
 agent connection for every step; the modal only states which kind of route
 that is (see [Transport and security](#transport-and-security)).

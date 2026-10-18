@@ -78,6 +78,7 @@ export type ModelPickerProps = {
   models?: readonly ModelDescriptor[];
   providerAuthStatus?: Partial<Record<ProviderFamily, AuthStatus>>;
   onOpenSignIn?: (family?: ProviderFamily, authTypes?: readonly AuthType[]) => void;
+  hideSignInFamilies?: readonly ProviderFamily[];
   onRuntimeCatalogRefreshed?: (
     provider: AgentChatModelCatalogRefreshProvider,
     catalogScopeKey?: string,
@@ -184,6 +185,7 @@ export const ModelPicker = memo(function ModelPicker({
   models,
   providerAuthStatus,
   onOpenSignIn,
+  hideSignInFamilies,
   onRuntimeCatalogRefreshed,
   runtimePin,
   constrainToAvailableModelIds = false,
@@ -575,6 +577,7 @@ export const ModelPicker = memo(function ModelPicker({
                 {...(onCopilotContextTierChange ? { copilotContextTier, onCopilotContextTierChange } : {})}
                 {...(filter ? { registryFilter: filter } : {})}
                 {...(onOpenSignIn ? { onOpenSignIn: handleOpenSignIn } : {})}
+                {...(hideSignInFamilies ? { hideSignInFamilies } : {})}
                 {...(runtimePin ? { runtimePin } : {})}
               />
             ) : null}

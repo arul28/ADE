@@ -594,6 +594,7 @@ export function CrossMachineHandoffModal({
           {...(onOpenSignIn ? {
             onOpenSignIn: (family?: ProviderFamily) => onOpenSignIn(family, selectedMachineBinding),
           } : {})}
+          {...(!selectedMachineBinding ? { hideSignInFamilies: ["anthropic"] as const } : {})}
           fastMode={Boolean(fastMode)}
           fastTier={fastTier}
           fastModeSupported={destinationFastModeSupported}
