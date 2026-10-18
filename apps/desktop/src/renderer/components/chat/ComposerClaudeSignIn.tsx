@@ -10,7 +10,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import type { ProviderInstance } from "../../../shared/types/providerInstances";
-import { THIS_MACHINE_ID } from "../../../shared/machineIdentity";
+import { captureError } from "../../../shared/sentry/capture";
 import { CLAUDE_AUTH_LOGIN_COMMAND } from "../../lib/claudeAuthPrompt";
 import { SettingsMachineScopeProvider, settingsMachineScope } from "../settings/SettingsMachineScope";
 import { AddProviderAccountSheet } from "../settings/providers/accounts/AddProviderAccountSheet";
@@ -18,8 +18,11 @@ import { pinnedProviderInstances } from "../settings/providers/accounts/useProvi
 import { ProviderSignInModal } from "../settings/providers/ProviderSignInModal";
 
 export type ComposerClaudeSignInTarget = {
+  /** Distinguishes one click from the next, so a retry starts over. */
+  openId: number;
   /** The machine to sign in on. Null is the tab's own machine, when that is This computer. */
   pin: OpenProjectBinding | null;
+  machineId: string;
   isThisMachine: boolean;
   machineName: string;
 };
@@ -48,7 +51,9 @@ function ClaudeSignInOnMachine({
       .then((list) => {
         if (alive) setInstance(list.find((entry) => entry.isDefault) ?? null);
       })
-      .catch(() => {
+      .catch((error) => {
+        // The login terminal below still signs that machine in.
+        captureError(error, { fingerprint: ["composer-claude-sign-in", "account-list"] });
         if (alive) setInstance(null);
       });
     return () => {
@@ -92,15 +97,15 @@ export function ComposerClaudeSignIn({
   target: ComposerClaudeSignInTarget;
   onClose: (changed: boolean) => void;
 }) {
-  const { pin, isThisMachine, machineName } = target;
+  const { pin, machineId, isThisMachine, machineName } = target;
   const scope = useMemo(() => settingsMachineScope({
-    machineId: pin?.key ?? THIS_MACHINE_ID,
+    machineId,
     machineName,
     target: pin ? { kind: "pinned", binding: pin } : { kind: "this" },
     isThisMachine,
     isActiveBinding: !pin,
     online: true,
-  }), [isThisMachine, machineName, pin]);
+  }), [isThisMachine, machineId, machineName, pin]);
   return (
     <SettingsMachineScopeProvider scope={scope}>
       <ClaudeSignInOnMachine pin={pin} onClose={onClose} />

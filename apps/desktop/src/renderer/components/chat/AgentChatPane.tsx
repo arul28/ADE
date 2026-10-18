@@ -335,7 +335,7 @@ import { ClaudeLoginPromptButton } from "../work/ClaudeLoginPromptButton";
 import { ComposerClaudeSignIn, type ComposerClaudeSignInTarget } from "./ComposerClaudeSignIn";
 import { CHAT_AUTH_RECOVERED_EVENT, CHAT_AUTH_RETRY_REJECTED_EVENT, CHAT_RETRY_AUTH_TURN_EVENT } from "./AgentCliAuthCard";
 import { rootAppStoreApi, selectActiveProjectRoot, selectActiveProjectStateKey, useAppStore, useRootAppStore } from "../../state/appStore";
-import { takeWorkDraftLaneRequest, WORK_DRAFT_LANE_REQUESTED_EVENT } from "../../lib/workDraft";
+import { useWorkDraftLaneRequest } from "./useWorkDraftLaneRequest";
 import { resolveHarnessLaunchTarget } from "../settings/harnesses/harnessLaunchTarget";
 import type { HarnessPreset } from "../../../shared/harnessPresets";
 import { setLaneNaming } from "../../state/laneNamingStore";
@@ -7473,20 +7473,25 @@ export function AgentChatPane({
       openAiProvidersSettings();
       return;
     }
+    // A personal pane has no project machine; it signs in the tab's machine.
     const scope = resolveAiStatusRuntimeScope();
-    if (!scope) {
+    if (!scope && !isPersonalPane) {
       setError("Pick a machine for this chat before signing in to Claude.");
       return;
     }
     // A null pin means the tab's own machine; Settings pins that one too when
     // it is another computer.
-    const pin = scope.runtimePin ?? (projectBinding?.kind === "remote" ? projectBinding : null);
+    const pin = scope?.runtimePin ?? (projectBinding?.kind === "remote" ? projectBinding : null);
+    const machineId = machineIdForBinding(pin);
     setClaudeSignInTarget({
+      // Each click is a fresh sign-in, even for the same machine.
+      openId: Date.now(),
       pin,
-      isThisMachine: pin == null,
+      machineId,
+      isThisMachine: machineId === THIS_MACHINE_ID,
       machineName: pin?.kind === "remote" ? pin.runtimeName : THIS_MACHINE_NAME,
     });
-  }, [openAiProvidersSettings, projectBinding, resolveAiStatusRuntimeScope]);
+  }, [isPersonalPane, openAiProvidersSettings, projectBinding, resolveAiStatusRuntimeScope]);
 
   const shouldRefreshOpenCodeInventoryForStatus = useCallback(() => {
     const selectedModelProvider = modelId.trim()
@@ -10744,29 +10749,16 @@ export function AgentChatPane({
 
   // A "New chat in this lane" request names its lane; the draft restored above
   // may still target "Auto-create lane", which would hide that lane and create
-  // a new one on send. Drop the saved target once the draft has settled.
+  // a new one on send.
   const workDraftProjectStateKey = useAppStore(selectActiveProjectStateKey);
-  const [workDraftLaneRequestTick, setWorkDraftLaneRequestTick] = useState(0);
-  useEffect(() => {
-    if (!isWorkDraftComposer) return;
-    const onLaneRequested = () => setWorkDraftLaneRequestTick((tick) => tick + 1);
-    window.addEventListener(WORK_DRAFT_LANE_REQUESTED_EVENT, onLaneRequested);
-    return () => window.removeEventListener(WORK_DRAFT_LANE_REQUESTED_EVENT, onLaneRequested);
-  }, [isWorkDraftComposer]);
-  useEffect(() => {
-    if (!isWorkDraftComposer) return;
-    if (hydratedComposerDraftStorageKey !== composerDraftStorageKeyValue) return;
-    if (!takeWorkDraftLaneRequest(workDraftProjectStateKey)) return;
-    setDraftLaunchTargetId(null);
-    clearNewLaneConfig();
-  }, [
-    clearNewLaneConfig,
-    composerDraftStorageKeyValue,
-    hydratedComposerDraftStorageKey,
-    isWorkDraftComposer,
-    workDraftLaneRequestTick,
-    workDraftProjectStateKey,
-  ]);
+  useWorkDraftLaneRequest({
+    ready: isWorkDraftComposer && hydratedComposerDraftStorageKey === composerDraftStorageKeyValue,
+    projectStateKey: workDraftProjectStateKey,
+    onRequest: () => {
+      setDraftLaunchTargetId(null);
+      clearNewLaneConfig();
+    },
+  });
 
   const currentComposerDraftSnapshot = useMemo<ComposerDraftStorageSnapshot>(() => ({
     version: 1,
@@ -18299,7 +18291,7 @@ export function AgentChatPane({
         />
       ) : null}
       {claudeSignInTarget ? (
-        <ComposerClaudeSignIn target={claudeSignInTarget} onClose={closeClaudeSignIn} />
+        <ComposerClaudeSignIn key={claudeSignInTarget.openId} target={claudeSignInTarget} onClose={closeClaudeSignIn} />
       ) : null}
       {onImportedSession && importTargetLane ? (
         <ImportSessionBrowser

@@ -7,7 +7,7 @@ import { navigateToAppTarget } from "../../../lib/openExternal";
 import { useCallback } from "react";
 import { selectActiveProjectStateKey, useAppStore } from "../../../state/appStore";
 import { machineIdForBinding } from "../../../../shared/machineIdentity";
-import { chatDraftMachineId, noteWorkDraftLaneRequested, startChatDraftPatch } from "../../../lib/workDraft";
+import { chatDraftMachineId, openStartChatDraft } from "../../../lib/workDraft";
 import { usePrRuntimePin } from "../state/prMachines";
 
 /**
@@ -181,7 +181,7 @@ export type PrChatHandoffArgs = {
  * machine (the PR runtime pin is set) the Work tab must not resolve the bare
  * lane or session id against the tab's machine: an existing chat is focused
  * with its binding (`ade:work:select-session`), and a new chat starts as a
- * draft that carries the owner machine (`startChatDraftPatch`), the same way
+ * draft that carries the owner machine (`openStartChatDraft`), the same way
  * `useStartChatInLane` does.
  */
 export function usePrChatHandoff(
@@ -216,11 +216,7 @@ export function usePrChatHandoff(
     }
     const draftMachineId = chatDraftMachineId(machineIdForBinding(pin), machineIdForBinding(projectBinding));
     if (projectStateKey) {
-      setWorkViewState(projectStateKey, (prev) => ({
-        ...prev,
-        ...startChatDraftPatch(args.laneId, draftMachineId),
-      }));
-      noteWorkDraftLaneRequested(projectStateKey);
+      openStartChatDraft(setWorkViewState, projectStateKey, args.laneId, draftMachineId);
     }
     navigateToAppTarget({ kind: "work" });
   }, [pin, projectBinding, projectStateKey, setWorkViewState]);

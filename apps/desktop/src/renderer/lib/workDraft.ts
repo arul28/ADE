@@ -23,13 +23,36 @@ export function chatDraftMachineId(
   return trimmed;
 }
 
+export type WorkViewStateUpdater = (
+  projectRoot: string,
+  next: WorkProjectViewState | ((prev: WorkProjectViewState) => WorkProjectViewState),
+) => void;
+
+/**
+ * Point the Work draft at a lane the user named ("New chat in this lane", a
+ * PR's chat action), and note the request so the composer shows that lane
+ * instead of a restored "Auto-create lane".
+ */
+export function openStartChatDraft(
+  setWorkViewState: WorkViewStateUpdater,
+  projectStateKey: string,
+  laneId: string,
+  machineId: string | null,
+): void {
+  setWorkViewState(projectStateKey, (prev) => ({
+    ...prev,
+    ...startChatDraftPatch(laneId, machineId),
+  }));
+  if (laneId) noteWorkDraftLaneRequested(projectStateKey);
+}
+
 export function startChatDraftPatch(
   laneId: string,
   machineId: string | null = null,
 ): StartChatDraftPatch {
   return {
     draftKind: "chat",
-    draftLaneId: laneId,
+    draftLaneId: laneId || null,
     draftMachineId: machineId,
     activeItemId: null,
     selectedItemId: null,
@@ -52,7 +75,9 @@ const laneRequestedAtByProject = new Map<string, number>();
 
 export function noteWorkDraftLaneRequested(projectStateKey: string): void {
   laneRequestedAtByProject.set(projectStateKey, Date.now());
-  window.dispatchEvent(new CustomEvent(WORK_DRAFT_LANE_REQUESTED_EVENT));
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent(WORK_DRAFT_LANE_REQUESTED_EVENT));
+  }
 }
 
 export function takeWorkDraftLaneRequest(projectStateKey: string | null): boolean {
