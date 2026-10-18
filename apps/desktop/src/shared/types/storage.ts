@@ -231,7 +231,7 @@ export type RuntimeHealthSnapshot = {
   /**
    * Background service calls that succeeded but took over 500 ms in the last
    * 24 h. Storage and project-health scans are excluded: they are slow by
-   * design, and opening Settings → Health would otherwise count itself.
+   * design, and opening Settings → Overview would otherwise count itself.
    */
   slowActions24h: number;
   /** 95th percentile duration of those slow calls, in ms. */

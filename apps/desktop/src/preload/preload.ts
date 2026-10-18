@@ -168,7 +168,7 @@ import type {
   StorageCompressionResult,
   StorageSnapshot,
 } from "../shared/types/storage";
-import type { ProjectHealthFixResult, ProjectHealthReport } from "../shared/types/projectHealth";
+import type { ProjectHealthFixArgs, ProjectHealthFixResult, ProjectHealthReport } from "../shared/types/projectHealth";
 import type {
   AdeCleanupResult,
   AdeProjectEvent,
@@ -4879,7 +4879,7 @@ const adeBridge = {
       callPinnedOrBoundRuntimeActionOr(pin, "project_health", "getReport", { args }, () =>
         ipcRenderer.invoke(IPC.projectHealthGetReport, args),
       ),
-    fix: async (args: { fixId: string }, pin?: OpenProjectBinding | null): Promise<ProjectHealthFixResult> =>
+    fix: async (args: ProjectHealthFixArgs, pin?: OpenProjectBinding | null): Promise<ProjectHealthFixResult> =>
       callPinnedOrBoundRuntimeActionOr(pin, "project_health", "fix", { args }, () =>
         ipcRenderer.invoke(IPC.projectHealthFix, args),
       ),

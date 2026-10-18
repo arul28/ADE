@@ -742,7 +742,7 @@ Renderer — settings:
   `#chat-launch-clipboard`, `#agent-completion-sound`,
   `#auto-updates`, `#pr-chat-transcripts`.
 - `apps/desktop/src/renderer/components/settings/AutoUpdatesSection.tsx`
-  — the Updates block inside the top Settings > General ADE card. Automatic installation is off by
+  — the Updates block inside Settings → ADE service. Automatic installation is off by
   default, leaving installation under the top-right control. Enabling it
   reveals the default-on **Wait until active work finishes** safety option,
   which delays the restart countdown until no agent turn or work session is
@@ -1892,7 +1892,7 @@ the General settings tab via `AdeCliSection`:
    command" card calls `window.ade.adeCli.installForUser()`, which
    delegates to the platform helper script bundled with the desktop
    (`/Applications/ADE.app/Contents/Resources/ade-cli/install-path.sh`
-   on macOS, equivalents on other platforms). Settings → General shows the
+   on macOS, equivalents on other platforms). Settings → ADE service shows the
    current install path, an Install / Repair button, and an "Add to
    PATH" hint when the install target is not on the user's `$PATH`.
 5. Register projects with the runtime. Opening a project on desktop
@@ -2004,11 +2004,24 @@ Settings is organised by **scope**. The sidebar group is the answer to "where
 does this save, and who does it affect", said once at the top of a group instead
 of repeated as a badge on every row:
 
+Settings opens on **Overview**: one **Needs attention** list (every problem
+from the project, this computer, other machines, providers, MCP servers,
+integrations and Apple, each with its Fix button where there is one, and "Ask
+an agent" for the whole list) and an **At a glance** card per area. It gathers
+problems in the renderer (`settings/overview/useNeedsAttention.ts`); the
+project part is `projectHealth.getReport`
+([`project-health.md`](./project-health.md)). Nothing else is called Health.
+
 | Group | Saves to | Pages |
 |---|---|---|
-| **Account** | Your ADE account, everywhere | Account, Chat, Notifications, Activity, MCP servers, Usage |
-| **Project** | Your account, for this repository | Secrets |
-| **Machines** | The selected machine | General, Appearance (This computer), Apple devices (This computer), Providers, Lanes, Integrations, Diagnostics |
+| **Overview** | — | Needs attention, At a glance |
+| **You** | Your ADE account, everywhere | Account, Chat, Notifications, MCP servers, Usage |
+| **Project** | The open project (routed to the machine that owns it) | Lanes (your lanes, Storage, Archive, Cleanups, Sessions, How lanes start), Location (move, project checks), Secrets (this project on every computer), Integrations |
+| **Computer** | The selected machine | ADE service (service status, updates, `ade` command, Send a report, Reset), Providers, Apple devices (This computer), Appearance (This computer), Behaviour |
+
+General and the old Diagnostics/Health page are gone; every entry kept its
+id and anchor, and old tab links (`general`, `storage`, `disk`, `diagnostics`,
+`health`, `archive`, `project-location`, …) land on the page that holds them.
 
 The Machines group contains one set of pages per project machine. Calls from a
 machine page use that machine's binding; sections that only work on the current
@@ -2102,7 +2115,7 @@ surfaces *Auto-rebase child lanes — Lanes* and lands on that card.
 
 ### Keeping the machine awake
 
-**Keep this Mac awake while agents work** (Settings > General > Sleep, anchor
+**Keep this Mac awake while agents work** (Settings → Behaviour, anchor
 `keep-awake`) is one radiogroup with three levels, persisted as
 `keepAwakePreferences` on `GlobalState`:
 
@@ -2158,7 +2171,7 @@ and [machine power and sleep in the account directory](../sync-and-multi-device/
 
 ### Capturing a window with a key gesture
 
-**Settings > General > Screen capture > "Capture with a key gesture"**
+**Settings → Behaviour → "Capture with a key gesture"**
 (anchor `capture-gesture`, `CaptureGestureSection.tsx`) arms the global
 screenshot chord — both ⌘ on macOS, both Ctrl on Windows — described in
 [Capture gesture](../capture-gesture/README.md).

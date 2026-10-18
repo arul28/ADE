@@ -1049,7 +1049,7 @@ import type { createLinearIssueTracker } from "../cto/linearIssueTracker";
 import type { createUsageTrackingService } from "../usage/usageTrackingService";
 import type { createStorageInsightsService } from "../storage/storageInsightsService";
 import type { ProjectHealthService } from "../../../../../ade-cli/src/services/projects/projectHealth/projectHealthService";
-import type { ProjectHealthFixResult, ProjectHealthReport } from "../../../shared/types/projectHealth";
+import type { ProjectHealthFixArgs, ProjectHealthFixResult, ProjectHealthReport } from "../../../shared/types/projectHealth";
 import type {
   MaintenanceRunReport,
   RuntimeHealthSnapshot,
@@ -4376,7 +4376,7 @@ export function registerIpc({
     return service.getReport(args ?? {});
   });
 
-  ipcMain.handle(IPC.projectHealthFix, async (_event, args: { fixId: string }): Promise<ProjectHealthFixResult> => {
+  ipcMain.handle(IPC.projectHealthFix, async (_event, args: ProjectHealthFixArgs): Promise<ProjectHealthFixResult> => {
     const service = requireAppContextValue(getCtx(), "projectHealthService");
     return service.fix(args);
   });

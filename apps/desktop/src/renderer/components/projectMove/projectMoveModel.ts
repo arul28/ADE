@@ -63,7 +63,7 @@ export function agentCheckPrompt(record: ProjectMoveRecord): string {
     "2. Run `git --no-optional-locks status` in the project and in each lane. Nothing should look unexpectedly changed.",
     dependencies,
     `4. Find files that still name \`${record.sourceRoot}\`: the list ADE found is below; also check scripts, .env files, editor settings and Python virtualenvs. For each, say the change you'd make. Ask me before editing.`,
-    "5. Run `ade health --text` (the same list as Settings → Health) and go through any open issues with me: explain each, and offer its fix or what I should do. Fixes are mine to press in Settings → Health.",
+    "5. Run `ade health --text` (the same checks Settings → Project shows) and go through any open issues with me: explain each, and offer its fix or what I should do. Fixes are mine to press there.",
     "",
     "## What ADE did",
     bullets(record.followUps),
@@ -79,6 +79,6 @@ export function agentCheckPrompt(record: ProjectMoveRecord): string {
     ...(record.destinationInternal ? [] : ["- This project is on an external drive. Simulator screenshots: use ADE's Apple tools (`ade apple …`), which handle the drive; a hand-run `xcrun simctl io … screenshot` must write to /tmp."]),
     "- Keep the report short: what works, what you fixed (only with my OK), what I need to do.",
     "",
-    "Finish by telling me: when I'm happy, I can delete the old copy, keep it, or set a reminder from ADE's banner or Settings → Project location.",
+    "Finish by telling me: when I'm happy, I can delete the old copy, keep it, or set a reminder from ADE's banner or Settings → Project → Location.",
   ].join("\n");
 }

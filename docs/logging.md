@@ -1065,7 +1065,7 @@ carry no path, project identity, Trash location or error text. A per-action,
 per-outcome one-hour deduplication key bounds a retry loop to 24 accepted
 events per key, 96 across the four, per installation per UTC day, inside the
 existing `ade_feature_used` 140-per-day / 30-per-minute limits; no ceiling was
-raised. Moving a project (Settings → General → Project location) records the
+raised. Moving a project (Settings → Location) records the
 same event at the same boundary with `action: "project_move"` and
 `outcome: "completed" | "failed"` once a move ran; a move refused before it
 began is not counted. The same one-hour key bounds it to 48 accepted events

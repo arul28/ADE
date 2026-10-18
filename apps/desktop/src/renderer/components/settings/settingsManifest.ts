@@ -28,35 +28,42 @@ import { isWebClientMode } from "../../lib/webClientMode";
 export type { SettingScope, SettingWebScope } from "../../../shared/types/settingsScope";
 
 export const SETTINGS_TAB_IDS = [
+  "overview",
   "account",
-  "general",
-  "appearance",
   "chat",
-  "apple",
-  "agents",
-  "lanes-git",
-  "integrations",
   "notifications",
   "mcp",
-  "secrets",
-  "storage",
-  "archive",
   "stats",
+  // Project → Lanes keeps the id `lanes-git` so every link ever shipped to it
+  // still lands; Storage, Archive and Cleanups joined it.
+  "lanes-git",
+  "location",
+  "secrets",
+  "integrations",
+  "service",
+  "agents",
+  "apple",
+  "appearance",
+  "behaviour",
 ] as const;
 
 export type SettingsTabId = (typeof SETTINGS_TAB_IDS)[number];
 
 /**
- * The three sidebar groups, one per place a setting can live:
+ * The sidebar: Overview on its own, then three groups, one per place a setting
+ * can live:
  *
- *  - **Account** applies everywhere you sign in.
- *  - **Project** is this repository, shared across every machine that has it.
- *  - **Machines** is one entry per machine (This computer, then each connected
+ *  - **You** applies everywhere you sign in.
+ *  - **Project** is the open project. Its pages always act on the machine that
+ *    owns the project (the tab's binding), so they have no machine picker, and
+ *    they are not shown when no project is open.
+ *  - **Computer** is one entry per machine (This computer, then each connected
  *    one). Its pages read and write through that machine's pin.
  *
  * The group IS the scope — that is the whole reorganisation in one sentence.
+ * The ids (`account`, `machines`) predate the labels and stay as they are.
  */
-export type SettingsGroupId = "account" | "project" | "machines";
+export type SettingsGroupId = "overview" | "account" | "project" | "machines";
 
 export type SettingsTab = {
   id: SettingsTabId;
@@ -93,18 +100,30 @@ export type SettingsGroup = {
  * Render order: broadest reach to narrowest.
  */
 export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
-  { id: "account", label: "Account", scope: "account" },
+  // Overview is one row above the groups, with no heading of its own.
+  { id: "overview", label: "Overview", scope: "account" },
+  { id: "account", label: "You", scope: "account" },
   { id: "project", label: "Project", scope: "account-repo" },
-  // The Machines group lists machines, not pages; its pages hang under the
+  // The Computer group lists machines, not pages; its pages hang under the
   // selected machine. Machine names come from `shared/machineIdentity`.
-  { id: "machines", label: "Machines", scope: "machine" },
+  { id: "machines", label: "Computer", scope: "machine" },
 ] as const;
 
-/** The pages that exist once per machine. */
-export const MACHINE_SETTINGS_TAB_IDS: readonly SettingsTabId[] = ["general", "appearance", "apple", "agents", "lanes-git", "integrations", "storage", "archive"];
+/** The pages that exist once per machine (the Computer group). */
+export const MACHINE_SETTINGS_TAB_IDS: readonly SettingsTabId[] = ["service", "agents", "apple", "appearance", "behaviour"];
 
 export function isMachineSettingsTab(tab: SettingsTabId): boolean {
   return MACHINE_SETTINGS_TAB_IDS.includes(tab);
+}
+
+/**
+ * The open project's pages. They always act on the machine that owns the
+ * project (the tab's binding), never on a picked machine.
+ */
+export const PROJECT_SETTINGS_TAB_IDS: readonly SettingsTabId[] = ["lanes-git", "location", "secrets", "integrations"];
+
+export function isProjectSettingsTab(tab: SettingsTabId): boolean {
+  return PROJECT_SETTINGS_TAB_IDS.includes(tab);
 }
 
 /**
@@ -121,7 +140,11 @@ export function isThisComputerOnlyTab(tab: SettingsTabId): boolean {
 }
 
 export const SETTINGS_TABS: readonly SettingsTab[] = [
-  // ── Account: applies everywhere ─────────────────────────────────────────
+  // ── Overview: where Settings opens ─────────────────────────────────────
+  // No description: the page is what needs attention, then a glance at each area.
+  { id: "overview", label: "Overview", group: "overview" },
+
+  // ── You: applies everywhere ─────────────────────────────────────────────
   // No description: the page opens on your name and email.
   { id: "account", label: "Account", group: "account" },
   { id: "chat", label: "Chat", description: "How the chat transcript reads, and what the composer does.", group: "account" },
@@ -131,17 +154,14 @@ export const SETTINGS_TABS: readonly SettingsTab[] = [
   { id: "mcp", label: "MCP servers", description: "Tools you add once. Every ADE agent gets them, on every computer.", group: "account" },
   { id: "stats", label: "Usage", description: "Spend and pacing across your providers and machines.", group: "account" },
 
-  // ── Project: this repository, on every machine ─────────────────────────
-  // Only what actually syncs through the account under this repository's
-  // identity. Everything else a repo "has" lives in each checkout's
-  // `.ade/local.yaml` or a machine credential store, so it is per machine.
-  { id: "secrets", label: "Secrets", description: "Keys and tokens your agents use in this repository, on every machine.", group: "project" },
+  // ── Project: the open project, on the machine that owns it ──────────────
+  { id: "lanes-git", label: "Lanes", description: "Every lane in this project, the space they take, and how new ones start.", group: "project" },
+  { id: "location", label: "Location", description: "Where this project lives, and anything that needs fixing there.", group: "project" },
+  { id: "secrets", label: "Secrets", description: "This project, on every computer.", group: "project" },
+  { id: "integrations", label: "Integrations", description: "GitHub, Linear and Jira for this project.", group: "project" },
 
-  // ── Machines: one set of these pages per machine ───────────────────────
-  { id: "general", label: "General", description: "ADE on this machine: runtime, project location, links, privacy, and power.", group: "machines" },
-  // Appearance is per computer: each screen has its own theme, fonts and
-  // terminal, and none of it follows the account.
-  { id: "appearance", label: "Appearance", description: "How ADE looks on this computer: theme, fonts, terminal, and Apple Development.", group: "machines" },
+  // ── Computer: one set of these pages per machine ───────────────────────
+  { id: "service", label: "ADE service", description: "The background service, version and updates, and the ade command.", group: "machines" },
   // No description. The page is a list of named providers with their status —
   // a sentence restating that above it is the caption the owner called out.
   { id: "agents", label: "Providers", group: "machines" },
@@ -149,12 +169,10 @@ export const SETTINGS_TABS: readonly SettingsTab[] = [
   // network. Values are filed under this device's account scope so the brain
   // on this computer can read the remote streaming cap (see accountSettingsSync).
   { id: "apple", label: "Apple devices", description: "Simulator display, recording overlays, and remote streaming on this computer.", group: "machines" },
-  { id: "lanes-git", label: "Lanes", description: "How lanes start and stay current in this machine's checkout.", group: "machines" },
-  { id: "integrations", label: "Integrations", description: "GitHub, Linear and Jira, as connected on this machine.", group: "machines" },
-  // The tab id stays `storage` so every link ever shipped still lands here.
-  { id: "storage", label: "Health", description: "What needs attention in this project, the space ADE uses, and its background service.", group: "machines" },
-  // No description: the page's own header says what the archive is.
-  { id: "archive", label: "Archive", group: "machines" },
+  // Appearance is per computer: each screen has its own theme, fonts and
+  // terminal, and none of it follows the account.
+  { id: "appearance", label: "Appearance", description: "How ADE looks on this computer: theme, fonts and terminal.", group: "machines" },
+  { id: "behaviour", label: "Behaviour", description: "Sleep, screen capture, links, and the ADE browser.", group: "machines" },
 ] as const;
 
 /**
@@ -181,7 +199,7 @@ export function groupScopeHint(group: SettingsGroupId): string {
  * sidebar silently moved the default landing page — the kind of change that is
  * invisible in review and obvious to a user who opens Settings every day.
  */
-export const DEFAULT_SETTINGS_TAB: SettingsTabId = "general";
+export const DEFAULT_SETTINGS_TAB: SettingsTabId = "overview";
 
 /**
  * Where `/account` lands inside a project. The standalone account page is
@@ -262,32 +280,36 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Found on this computer",
   },
 
-  // ── General ──────────────────────────────────────────────────────────────
+  // ── Overview ─────────────────────────────────────────────────────────────
+  // Settings opens here. Both cards read this computer over plain IPC and the
+  // open project through the tab's binding, which a browser has neither of.
   {
-    id: "general.project-location",
-    label: "Project location",
-    keywords: ["move", "relocate", "drive", "disk", "external", "folder", "path", "space", "storage"],
-    tab: "general",
-    anchor: "project-location",
+    id: "overview.attention",
+    label: "Needs attention",
+    keywords: ["problems", "issues", "fix", "health", "doctor", "broken", "warnings", "errors", "check"],
+    tab: "overview",
+    anchor: "needs-attention",
     scope: "machine",
     web: "hidden",
-    group: "Project",
+    group: "Overview",
   },
   {
-    id: "general.ade-cli",
-    label: "ADE command line",
-    keywords: ["cli", "terminal", "ade code", "install", "path", "shell"],
-    tab: "general",
-    anchor: "ade-cli",
+    id: "overview.glance",
+    label: "At a glance",
+    keywords: ["summary", "status", "version", "disk", "free space", "lanes", "usage", "sign in", "dashboard"],
+    tab: "overview",
+    anchor: "at-a-glance",
     scope: "machine",
     web: "hidden",
-    group: "Command line",
+    group: "Overview",
   },
+
+  // ── Computer → ADE service ───────────────────────────────────────────────
   {
     id: "general.background-service",
     label: "Background service",
     keywords: ["background", "service", "brain", "stop", "quit", "agents", "login item", "daemon", "runtime"],
-    tab: "general",
+    tab: "service",
     anchor: "background-service",
     scope: "machine",
     // Stopping the service is a desktop action on this computer.
@@ -298,7 +320,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     id: "general.quit-confirmation",
     label: "Ask before quitting",
     keywords: ["quit", "close", "exit", "confirm", "background", "agents", "don't ask again"],
-    tab: "general",
+    tab: "service",
     anchor: "quit-confirmation",
     scope: "machine",
     // The question is asked by the desktop app when it quits.
@@ -306,31 +328,87 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Background service",
   },
   {
+    id: "storage.diagnostics",
+    label: "Service status",
+    keywords: ["diagnostics", "debug", "health", "troubleshoot", "slow", "failed", "memory", "repair", "restart", "brain", "service"],
+    tab: "service",
+    anchor: "diagnostics",
+    scope: "machine",
+    web: "hidden",
+    group: "Background service",
+  },
+  {
+    id: "general.about",
+    label: "About ADE",
+    keywords: ["version", "build", "license", "logs", "support"],
+    tab: "service",
+    anchor: "about",
+    scope: "machine",
+    web: "hidden",
+    group: "Version and updates",
+  },
+  {
     id: "general.auto-updates",
     label: "Automatic updates",
     keywords: ["update", "upgrade", "release", "channel", "version"],
-    tab: "general",
+    tab: "service",
     anchor: "auto-updates",
     scope: "machine",
     web: "hidden",
-    group: "Updates",
+    group: "Version and updates",
   },
   {
     id: "general.update-other-machines",
     label: "Update other machines",
     keywords: ["update", "upgrade", "version", "machines", "computers", "remote", "update all", "restart"],
-    tab: "general",
+    tab: "service",
     anchor: "update-other-machines",
     scope: "machine",
     // A browser cannot ask a machine to update itself.
     web: "hidden",
-    group: "Updates",
+    group: "Version and updates",
   },
+  {
+    id: "general.ade-cli",
+    label: "ADE command line",
+    keywords: ["cli", "terminal", "ade code", "install", "path", "shell"],
+    tab: "service",
+    anchor: "ade-cli",
+    scope: "machine",
+    web: "hidden",
+    group: "Command line",
+  },
+  {
+    id: "general.diagnostics-sharing",
+    // Not plain "Diagnostics": `storage.diagnostics` already owns that label,
+    // and two identically named search hits pointing at different tabs is a
+    // coin flip for whoever is looking for the report button.
+    label: "Send a report to ADE",
+    keywords: ["diagnostics", "crash", "report", "report issue", "error", "send", "support"],
+    tab: "service",
+    anchor: "diagnostics-sharing",
+    scope: "machine",
+    // The report is built on this machine by the desktop app; a browser cannot build one.
+    web: "hidden",
+    group: "Privacy",
+  },
+  {
+    id: "general.reset",
+    label: "Reset ADE",
+    keywords: ["reset", "uninstall", "remove", "wipe", "start over", "fresh install", "broken"],
+    tab: "service",
+    anchor: "reset-ade",
+    scope: "machine",
+    web: "hidden",
+    group: "Reset",
+  },
+
+  // ── Computer → Behaviour ─────────────────────────────────────────────────
   {
     id: "general.keep-awake",
     label: "Keep this computer awake",
     keywords: ["sleep", "awake", "lid", "idle", "power", "battery", "caffeinate", "pmset"],
-    tab: "general",
+    tab: "behaviour",
     anchor: "keep-awake",
     scope: "machine",
     // A browser holds no power lock and cannot read the machine's sleep
@@ -342,7 +420,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     id: "general.capture-gesture",
     label: "Capture with a key gesture",
     keywords: ["screenshot", "capture", "screen", "gesture", "command", "ctrl", "window", "cto", "shortcut"],
-    tab: "general",
+    tab: "behaviour",
     anchor: "capture-gesture",
     scope: "machine",
     // A browser tab cannot watch the keyboard outside itself or read another
@@ -355,7 +433,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     id: "general.link-open-mode",
     label: "Open links",
     keywords: ["browser", "external", "system browser", "in-app", "click", "url", "hyperlink"],
-    tab: "general",
+    tab: "behaviour",
     anchor: "link-open-mode",
     scope: "machine-repo",
     // The built-in browser is an Electron surface with a machine-local profile;
@@ -367,7 +445,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     id: "general.browser-agent-access",
     label: "Agents can use the ADE browser",
     keywords: ["browser", "agent", "approve", "approval", "allow", "block", "lane", "chat", "permission", "consent", "signed in"],
-    tab: "general",
+    tab: "behaviour",
     anchor: "browser-agent-access",
     scope: "machine",
     // The ADE browser and its signed-in profile live in the desktop main
@@ -375,39 +453,28 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     web: "hidden",
     group: "ADE browser",
   },
+
+  // ── Project → Location ───────────────────────────────────────────────────
   {
-    id: "general.diagnostics-sharing",
-    // Not plain "Diagnostics": `storage.diagnostics` already owns that label,
-    // and two identically named search hits pointing at different tabs is a
-    // coin flip for whoever is looking for the report button.
-    label: "Send a report to ADE",
-    keywords: ["diagnostics", "crash", "report", "report issue", "error", "send", "support"],
-    tab: "general",
-    anchor: "diagnostics-sharing",
+    id: "general.project-location",
+    label: "Project location",
+    keywords: ["move", "relocate", "drive", "disk", "external", "folder", "path", "space", "storage"],
+    tab: "location",
+    anchor: "project-location",
     scope: "machine",
-    // The report is built on this machine by the desktop app; a browser cannot build one.
     web: "hidden",
-    group: "Privacy",
+    group: "Location",
   },
+
   {
-    id: "general.about",
-    label: "About ADE",
-    keywords: ["version", "build", "license", "logs", "support"],
-    tab: "general",
-    anchor: "about",
-    scope: "machine",
+    id: "storage.project-health",
+    label: "Project checks",
+    keywords: ["issues", "problems", "fix", "check", "moved", "paths", "doctor", "broken", "health", "dependencies", "venv", "trust", "git links"],
+    tab: "location",
+    anchor: "project-health",
+    scope: "machine-repo",
     web: "hidden",
-    group: "About",
-  },
-  {
-    id: "general.reset",
-    label: "Reset ADE",
-    keywords: ["reset", "uninstall", "remove", "wipe", "start over", "fresh install", "broken"],
-    tab: "general",
-    anchor: "reset-ade",
-    scope: "machine",
-    web: "hidden",
-    group: "Reset",
+    group: "Checks",
   },
 
   // ── Appearance ───────────────────────────────────────────────────────────
@@ -854,6 +921,79 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   },
 
   // ── Lanes ────────────────────────────────────────────────────────────────
+  // Project → Lanes: the lanes, then the space they take, the archive and
+  // cleanups, then the rules for how new lanes start. The storage, archive and
+  // session ids keep their old namespaces: deeplinks and telemetry hold them.
+  {
+    id: "lanes-git.lanes",
+    label: "Your lanes",
+    keywords: ["lanes", "stale", "merged", "done", "archive", "bulk", "clean up", "worktree", "dirty", "unpushed", "running"],
+    tab: "lanes-git",
+    anchor: "lane-list",
+    scope: "machine-repo",
+    web: "hidden",
+    group: "Lanes",
+  },
+  {
+    id: "storage.usage",
+    label: "Storage",
+    keywords: ["space", "size", "clean", "reclaim", "gb", "free", "disk", "storage", "usage", "clean up safely"],
+    tab: "lanes-git",
+    anchor: "storage",
+    scope: "machine-repo",
+    web: "hidden",
+    group: "Storage",
+  },
+  {
+    id: "archive.items",
+    label: "Archived lanes, chats, and shells",
+    keywords: ["archive", "archived", "restore", "unarchive", "delete", "cleanup", "old", "lanes", "chats", "shells"],
+    tab: "lanes-git",
+    anchor: "archive",
+    scope: "machine-repo",
+    web: "machine",
+    group: "Archive",
+  },
+  {
+    id: "storage.cleanups",
+    label: "Cleanup history",
+    keywords: ["cleanup", "freed", "maintenance", "journal", "reclaimed"],
+    tab: "lanes-git",
+    anchor: "storage-cleanups",
+    scope: "machine-repo",
+    web: "hidden",
+    group: "Cleanups",
+  },
+  {
+    id: "storage.lane-rules",
+    label: "Archive idle lanes",
+    keywords: ["archive", "inactivity", "cleanup", "worktree", "max lanes", "retention", "lane storage rules"],
+    tab: "lanes-git",
+    anchor: "lane-storage-rules",
+    scope: "machine-repo",
+    web: "hidden",
+    group: "Cleanups",
+  },
+  {
+    id: "storage.session-lifecycle",
+    label: "Session lifecycle",
+    keywords: ["session", "idle", "close", "terminal", "cleanup", "settle"],
+    tab: "lanes-git",
+    anchor: "session-lifecycle",
+    scope: "machine",
+    web: "hidden",
+    group: "Sessions",
+  },
+  {
+    id: "storage.project-files",
+    label: "Project files",
+    keywords: [".ade", "folder", "repair", "session logs", "config", "icon", "name", "repository", "root"],
+    tab: "lanes-git",
+    anchor: "project",
+    scope: "machine-repo",
+    web: "hidden",
+    group: "Sessions",
+  },
   {
     id: "lanes-git.new-lane-base",
     label: "New lane base",
@@ -1115,90 +1255,6 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Secrets",
   },
 
-  // ── Health ───────────────────────────────────────────────────────────────
-  {
-    id: "storage.project-health",
-    label: "Project health",
-    keywords: ["issues", "problems", "fix", "check", "moved", "paths", "doctor", "broken"],
-    tab: "storage",
-    anchor: "project-health",
-    scope: "machine-repo",
-    web: "hidden",
-    group: "Overview",
-  },
-  {
-    id: "storage.usage",
-    label: "Disk space",
-    keywords: ["space", "size", "clean", "reclaim", "gb", "free", "disk", "storage", "usage"],
-    tab: "storage",
-    anchor: "storage",
-    scope: "machine",
-    web: "hidden",
-    group: "Space",
-  },
-  {
-    id: "storage.cleanups",
-    label: "Cleanup history",
-    keywords: ["cleanup", "freed", "maintenance", "journal", "reclaimed"],
-    tab: "storage",
-    anchor: "storage-cleanups",
-    scope: "machine",
-    web: "hidden",
-    group: "Cleanups",
-  },
-  {
-    id: "storage.lane-rules",
-    label: "Archive idle lanes",
-    keywords: ["archive", "inactivity", "cleanup", "worktree", "max lanes", "retention", "lane storage rules"],
-    tab: "storage",
-    anchor: "lane-storage-rules",
-    scope: "machine-repo",
-    web: "hidden",
-    group: "Cleanups",
-  },
-  {
-    id: "storage.session-lifecycle",
-    label: "Session lifecycle",
-    keywords: ["session", "idle", "close", "terminal", "cleanup", "settle"],
-    tab: "storage",
-    anchor: "session-lifecycle",
-    scope: "machine",
-    web: "hidden",
-    group: "Sessions",
-  },
-  {
-    id: "storage.project-files",
-    label: "Project files",
-    keywords: [".ade", "folder", "repair", "session logs", "config", "icon", "name", "repository", "root"],
-    tab: "storage",
-    anchor: "project",
-    scope: "machine-repo",
-    web: "hidden",
-    group: "Sessions",
-  },
-  {
-    id: "storage.diagnostics",
-    label: "Background service",
-    keywords: ["diagnostics", "debug", "health", "troubleshoot", "slow", "memory", "repair", "brain", "service"],
-    tab: "storage",
-    anchor: "diagnostics",
-    scope: "machine",
-    web: "hidden",
-    group: "Service",
-  },
-
-  // ── Archive ──────────────────────────────────────────────────────────────
-  {
-    id: "archive.items",
-    label: "Archived lanes, chats, and shells",
-    keywords: ["archive", "archived", "restore", "unarchive", "delete", "cleanup", "old", "lanes", "chats", "shells"],
-    tab: "archive",
-    anchor: "archive",
-    scope: "machine-repo",
-    web: "machine",
-    group: "Archive",
-  },
-
   // ── Stats ────────────────────────────────────────────────────────────────
   {
     id: "stats.usage",
@@ -1226,30 +1282,67 @@ export const LEGACY_TAB_ALIASES: Readonly<Record<string, SettingsTabId>> = {
   "lane-templates": "lanes-git",
   "ade-usage": "stats",
   usage: "stats",
-  disk: "storage",
-  diagnostics: "storage",
-  health: "storage",
-  archived: "archive",
   secret: "secrets",
-  // Swept into General before this rewrite; now have real homes again.
-  workspace: "general",
-  project: "general",
-  context: "general",
+  // General was split up: ADE itself went to Computer → ADE service, the
+  // computer's habits to Computer → Behaviour, and the project's folder to
+  // Project → Location. A bare `?tab=general` opens ADE service, where most of
+  // it went; a `#hash` on the same link still lands on its own card.
+  general: "service",
+  // Health (tab id `storage`) was split up too: its lanes, space, cleanups and
+  // sessions are on Project → Lanes, its project checks on Project → Location,
+  // its service on Computer → ADE service, and its summary is the Overview.
+  storage: "lanes-git",
+  disk: "lanes-git",
+  space: "lanes-git",
+  health: "overview",
+  diagnostics: "service",
+  archive: "lanes-git",
+  archived: "lanes-git",
+  // Swept into General before; now each has a real home.
+  workspace: "location",
+  project: "location",
+  "project-location": "location",
+  context: "service",
   integrations: "integrations",
-  sync: "general",
-  devices: "general",
-  "multi-device": "general",
+  sync: "account",
+  devices: "account",
+  "multi-device": "account",
   github: "integrations",
   linear: "integrations",
-  "computer-use": "general",
-  onboarding: "general",
-  help: "general",
-  tours: "general",
+  "computer-use": "behaviour",
+  behavior: "behaviour",
+  onboarding: "overview",
+  help: "overview",
+  tours: "overview",
+  home: "overview",
+  lanes: "lanes-git",
+  "session-lifecycle": "lanes-git",
   // The Attention center became the Activity pane, and Activity's settings
   // joined Notifications on one page.
   attention: "notifications",
   activity: "notifications",
 };
+
+/**
+ * Legacy `?tab=` values that named one card's page. With no `#hash` of its
+ * own, such a link scrolls to that card on its new page instead of landing on
+ * the top of it: `?tab=archive` opens Project → Lanes at the archive.
+ */
+export const LEGACY_TAB_ANCHORS: Readonly<Record<string, string>> = {
+  storage: "storage",
+  disk: "storage",
+  space: "storage",
+  archive: "archive",
+  archived: "archive",
+  diagnostics: "diagnostics",
+  "session-lifecycle": "session-lifecycle",
+  "project-location": "project-location",
+};
+
+export function legacyTabAnchor(value: string | null | undefined): string | null {
+  const raw = value?.trim().toLowerCase() ?? "";
+  return raw ? (LEGACY_TAB_ANCHORS[raw] ?? null) : null;
+}
 
 /**
  * Legacy `#hash` values → the entry that now owns them, for hashes whose
@@ -1267,7 +1360,7 @@ export const LEGACY_HASH_ALIASES: Readonly<Record<string, string>> = {
   "github-connection": "integrations.github",
   "linear-connection": "integrations.linear",
   "pr-chat-transcripts": "lanes-git.pr-chat-transcripts",
-  // `session-lifecycle` is still a live anchor (Health → Sessions).
+  // `session-lifecycle` is still a live anchor (Project → Lanes → Sessions).
   // Reset ADE lived inside the About card (#1410) before it got its own section.
   "about.reset": "general.reset",
   "auto-updates": "general.auto-updates",
@@ -1472,8 +1565,8 @@ export function settingsTabForRoute(route: string): SettingsTabId {
 }
 
 /**
- * Whether a route is a machine-scoped settings page: one of the This computer
- * pages (General, Diagnostics, Providers and the rest). Those describe one
+ * Whether a route is a machine-scoped settings page: one of the
+ * Computer pages (ADE service, Providers and the rest). Those describe one
  * computer, so a project must never remember one as its place to return to.
  */
 export function isMachineScopedSettingsRoute(route: string): boolean {

@@ -262,7 +262,7 @@ const resolvedArg2 =
     v;
 
 /**
- * A storage snapshot shaped like a real project for Settings → Health in the
+ * A storage snapshot shaped like a real project for Settings → Project → Lanes in the
  * browser preview: a few lanes (one archived, one left over), history, caches,
  * build staging, proof and the database, with a cleanup history.
  */
@@ -382,10 +382,40 @@ function createMockStorageSnapshot(now: string) {
   };
 }
 
-/** A project health report with a few issues, for Settings → Health in the browser preview. */
+/** A project health report with a few issues and lanes, for Settings → Project in the browser preview. */
 function createMockProjectHealthReport(now: string) {
   const root = MOCK_PROJECT.rootPath;
+  const daysAgo = (days: number) => new Date(Date.parse(now) - days * 24 * 60 * 60_000).toISOString();
+  const lane = (
+    laneId: string,
+    name: string,
+    extra: Partial<{ laneType: string; pr: { number: number; state: string; url: string | null; mergedAt: string | null } | null; lastActivityAt: string; dirty: boolean; changedFileCount: number; unpushedCommits: number; runningSessions: number; stale: "pr-merged" | "pr-closed" | "idle" | null; safeToArchive: boolean }> = {},
+  ) => ({
+    laneId,
+    name,
+    laneType: extra.laneType ?? "worktree",
+    worktreePath: extra.laneType === "primary" ? root : `${root}/.ade/worktrees/${name}`,
+    branch: extra.laneType === "primary" ? "main" : `ade/${name}`,
+    folderExists: true,
+    pr: extra.pr ?? null,
+    lastActivityAt: extra.lastActivityAt ?? daysAgo(1),
+    dirty: extra.dirty ?? false,
+    changedFileCount: extra.changedFileCount ?? 0,
+    unpushedCommits: extra.unpushedCommits ?? 0,
+    runningSessions: extra.runningSessions ?? 0,
+    stale: extra.stale ?? null,
+    safeToArchive: extra.safeToArchive ?? !(extra.dirty || extra.unpushedCommits),
+  });
   return {
+    lanes: [
+      lane("lane-main", "main", { laneType: "primary", lastActivityAt: daysAgo(0) }),
+      lane("lane-billing", "billing-page", { pr: { number: 412, state: "merged", url: "https://github.com/mock/repo/pull/412", mergedAt: daysAgo(3) }, stale: "pr-merged", lastActivityAt: daysAgo(3) }),
+      lane("lane-search", "search-index", { stale: "idle", lastActivityAt: daysAgo(21) }),
+      lane("lane-spike", "perf-spike", { pr: { number: 398, state: "closed", url: null, mergedAt: null }, stale: "pr-closed", dirty: true, changedFileCount: 3, lastActivityAt: daysAgo(9) }),
+      lane("lane-auth", "auth-refactor", { pr: { number: 431, state: "open", url: null, mergedAt: null }, runningSessions: 1, lastActivityAt: daysAgo(0) }),
+      lane("lane-docs", "docs-pass", { unpushedCommits: 2, lastActivityAt: daysAgo(2) }),
+    ],
+    staleAfterDays: 14,
     projectRoot: root,
     checkedAt: now,
     previousRoots: ["/Users/mock/Projects/old-location"],
@@ -415,6 +445,14 @@ function createMockProjectHealthReport(now: string) {
         severity: "info" as const,
         title: "Time Machine doesn't back up this drive",
         detail: "Pushed branches are safe on your git host, but unpushed work, ADE's chats and proof on this drive have no backup.",
+      },
+      {
+        id: "stale-lanes",
+        area: "git" as const,
+        severity: "info" as const,
+        title: "3 lanes look done",
+        detail: "Their PR is merged or closed, or nothing happened in them for 14 days. 2 can be archived without losing anything; the rest have changes or unpushed commits.",
+        items: ["billing-page: PR #412 merged", "search-index: idle", "perf-spike: PR #398 closed (has unsaved work)"],
       },
     ],
     checks: [

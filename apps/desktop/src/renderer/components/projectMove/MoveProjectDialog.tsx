@@ -544,7 +544,7 @@ export function MoveProjectDialog({
                     {record.cleanup.choice === "pending" ? (
                       <>
                         <div className="ade-pm-muted ade-pm-mono" title={record.originalParkedAt ?? ""}>{displayPath(record.originalParkedAt ?? "")}</div>
-                        <div className="ade-pm-muted">No rush: you can clean it up later from Settings → Project location.</div>
+                        <div className="ade-pm-muted">No rush: you can clean it up later from Settings → Location.</div>
                       </>
                     ) : (
                       <div className="ade-pm-muted">

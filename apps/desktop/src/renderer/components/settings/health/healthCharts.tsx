@@ -1,5 +1,6 @@
 /**
- * Small hand-drawn charts for Settings → Health, in the Usage tab's style:
+ * Small hand-drawn charts for the project and service settings pages, in the
+ * Usage tab's style:
  * flat bars, one hue per series, at most four series plus a neutral "Other",
  * a legend that names every segment with its value (identity never rests on
  * colour alone), tabular mono numbers and a hover readout.
@@ -208,6 +209,124 @@ export function CleanupRunChart({ runs }: { runs: RunColumn[] }) {
           ))}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+export type CompareBar = {
+  id: string;
+  label: string;
+  value: number;
+  /** Shown instead of the number, e.g. "≥ 3" or "—". */
+  display?: string;
+  tone?: "warn" | "crit";
+};
+
+/**
+ * A few counts side by side as horizontal bars scaled to the largest, e.g.
+ * slow against failed responses. A zero draws an empty track, not a gap.
+ */
+export function CompareBars({ bars, ariaLabel }: { bars: CompareBar[]; ariaLabel: string }) {
+  const max = Math.max(...bars.map((bar) => bar.value), 1);
+  return (
+    <ul className="ade-health-hbars" aria-label={ariaLabel}>
+      {bars.map((bar) => (
+        <li key={bar.id} className="ade-health-hbar" data-compact="true">
+          <span className="ade-health-hbar-label"><span className="ade-health-hbar-name">{bar.label}</span></span>
+          <span className="ade-health-hbar-track" aria-hidden>
+            {bar.value > 0 ? (
+              <span
+                style={{
+                  width: `${Math.max(2, (bar.value / max) * 100)}%`,
+                  background: bar.tone ? `var(--kit-${bar.tone})` : undefined,
+                }}
+              />
+            ) : null}
+          </span>
+          <span className="ade-health-hbar-value kit-num">{bar.display ?? bar.value}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/**
+ * This computer's memory as one bar: the ADE service, everything else in use,
+ * and what is free, with a legend that names each with its size.
+ */
+export function MemoryBar({
+  serviceBytes,
+  totalBytes,
+  freeBytes,
+}: {
+  serviceBytes: number;
+  totalBytes: number;
+  freeBytes: number | null;
+}) {
+  const theme = useChartTheme();
+  if (totalBytes <= 0) return null;
+  const used = freeBytes != null ? Math.max(serviceBytes, totalBytes - freeBytes) : null;
+  const other = used != null ? Math.max(0, used - serviceBytes) : null;
+  const parts = [
+    { id: "service", label: "ADE service", bytes: serviceBytes, color: SPLIT_COLORS.input[theme] },
+    ...(other != null ? [{ id: "other", label: "Everything else", bytes: other, color: SPLIT_COLORS.neutral[theme] }] : []),
+    ...(freeBytes != null ? [{ id: "free", label: "Free", bytes: Math.max(0, freeBytes), color: "var(--kit-track)" }] : []),
+  ];
+  return (
+    <div className="usage-split" role="group" aria-label="Memory on this computer">
+      <div
+        className="usage-split-bar ade-health-bar"
+        role="img"
+        aria-label={parts.map((part) => `${part.label} ${formatBytes(part.bytes)}`).join(", ")}
+      >
+        {parts.map((part) => (
+          <span
+            key={part.id}
+            style={{ flexGrow: Math.max(part.bytes, totalBytes * 0.006), flexBasis: 0, background: part.color }}
+            title={`${part.label} · ${formatBytes(part.bytes)}`}
+          />
+        ))}
+      </div>
+      <div className="usage-split-legend">
+        {parts.map((part) => (
+          <span key={part.id} className="usage-split-legend-item">
+            <i aria-hidden style={{ background: part.color }} />
+            {part.label}
+            <b>{formatBytes(part.bytes)}</b>
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * A count split into parts as one thin stacked bar with a legend, e.g. lanes
+ * that are active, stale and with changes. Colours mean status: neutral for
+ * fine, amber for stale, the accent for work in progress.
+ */
+export function CountBar({
+  parts,
+  ariaLabel,
+  height,
+}: {
+  parts: Array<{ id: string; label: string; count: number; color: string }>;
+  ariaLabel: string;
+  height?: number;
+}) {
+  const total = parts.reduce((sum, part) => sum + part.count, 0);
+  if (total <= 0) return null;
+  const shown = parts.filter((part) => part.count > 0);
+  return (
+    <div
+      className="usage-split-bar ade-health-bar"
+      role="img"
+      aria-label={`${ariaLabel}: ${shown.map((part) => `${part.count} ${part.label.toLowerCase()}`).join(", ")}`}
+      style={height ? { height } : undefined}
+    >
+      {shown.map((part) => (
+        <span key={part.id} style={{ flexGrow: part.count, flexBasis: 0, background: part.color }} title={`${part.count} ${part.label.toLowerCase()}`} />
+      ))}
     </div>
   );
 }

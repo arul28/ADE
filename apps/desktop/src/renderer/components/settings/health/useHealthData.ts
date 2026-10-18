@@ -40,16 +40,29 @@ export type ReportData = {
 
 const EMPTY_POLICY: LaneCleanupConfig = {};
 
+/** Which of the three reads a page needs; each page loads only its own. */
+export type HealthDataParts = { storage?: boolean; diagnostics?: boolean; report?: boolean };
+
+const ALL_PARTS: HealthDataParts = { storage: true, diagnostics: true, report: true };
+
 /**
- * Everything Settings → Health reads, loaded once when the page opens and
- * again on demand (Rescan, Check again, after a cleanup). No polling.
+ * What the project and service pages read (Project → Lanes and Location,
+ * Computer → ADE service), loaded once when the page opens and again on
+ * demand (Measure again, Check again, after a cleanup). No polling.
  *
  * Remote machines: every storage, lane, config and project-health call carries
  * the Settings machine's `pin`. Disk pressure, resource usage and runtime
  * health are plain IPC that only reach this computer, so they are read only
  * when `isThisMachine`, and the page says "Only on this computer" otherwise.
  */
-export function useHealthData(pin: OpenProjectBinding | null, isThisMachine: boolean) {
+export function useHealthData(
+  pin: OpenProjectBinding | null,
+  isThisMachine: boolean,
+  parts: HealthDataParts = ALL_PARTS,
+) {
+  const wantStorage = Boolean(parts.storage);
+  const wantDiagnostics = Boolean(parts.diagnostics);
+  const wantReport = Boolean(parts.report);
   const [storage, setStorage] = React.useState<StorageData>({
     snapshot: null,
     pressureState: undefined,
@@ -57,7 +70,7 @@ export function useHealthData(pin: OpenProjectBinding | null, isThisMachine: boo
     archivedAtByKey: new Map(),
     policy: EMPTY_POLICY,
     effectivePolicy: EMPTY_POLICY,
-    loading: true,
+    loading: wantStorage,
     refreshing: false,
     error: null,
   });
@@ -70,7 +83,7 @@ export function useHealthData(pin: OpenProjectBinding | null, isThisMachine: boo
   const reportAvailable = typeof window.ade?.projectHealth?.getReport === "function";
   const [report, setReportState] = React.useState<ReportData>({
     report: null,
-    loading: reportAvailable,
+    loading: reportAvailable && wantReport,
     checking: false,
     error: null,
     available: reportAvailable,
@@ -81,6 +94,7 @@ export function useHealthData(pin: OpenProjectBinding | null, isThisMachine: boo
   const reportRequest = React.useRef(0);
 
   const loadStorage = React.useCallback(async (opts: { force?: boolean; silent?: boolean } = {}) => {
+    if (!wantStorage) return;
     const request = ++storageRequest.current;
     setStorage((current) => ({
       ...current,
@@ -129,9 +143,10 @@ export function useHealthData(pin: OpenProjectBinding | null, isThisMachine: boo
         error: err instanceof Error ? err.message : String(err),
       }));
     }
-  }, [isThisMachine, pin]);
+  }, [isThisMachine, pin, wantStorage]);
 
   const loadDiagnostics = React.useCallback(async () => {
+    if (!wantDiagnostics) return;
     const runtimeHealthFn = isThisMachine && typeof window.ade?.app?.getRuntimeHealth === "function"
       ? window.ade.app.getRuntimeHealth
       : null;
@@ -145,10 +160,10 @@ export function useHealthData(pin: OpenProjectBinding | null, isThisMachine: boo
       runtimeHealth,
       runtimeHealthAvailable: Boolean(runtimeHealthFn),
     });
-  }, [isThisMachine]);
+  }, [isThisMachine, wantDiagnostics]);
 
   const loadReport = React.useCallback(async (opts: { force?: boolean } = {}) => {
-    if (!reportAvailable) return;
+    if (!reportAvailable || !wantReport) return;
     const request = ++reportRequest.current;
     setReportState((current) => ({
       ...current,
@@ -169,7 +184,7 @@ export function useHealthData(pin: OpenProjectBinding | null, isThisMachine: boo
         error: err instanceof Error ? err.message : String(err),
       }));
     }
-  }, [pin, reportAvailable]);
+  }, [pin, reportAvailable, wantReport]);
 
   /** A fix returns the report after it; show that one. */
   const setReport = React.useCallback((next: ProjectHealthReport) => {

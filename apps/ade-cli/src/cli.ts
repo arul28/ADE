@@ -3587,7 +3587,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   old folder after a move, lanes whose folder or git link is broken, missing
   dependencies, virtualenvs made for another folder, agents that don't trust the
   folder yet, history filed under an old path, the drive. The same list as
-  Settings → Health. Reading is safe; a fix changes data or files, so it is
+  Settings → Overview. Reading is safe; a fix changes data or files, so it is
   CTO-only (agents read the report and offer fixes to the person).
 
     $ ade health --text                              Issues, each with its fix id
@@ -17494,6 +17494,11 @@ function formatProjectHealth(value: unknown): string {
   if (!report || !Array.isArray(report.issues)) return JSON.stringify(value, null, 2);
   const lines = [`Project health: ${report.projectRoot ?? ""}`];
   if (report.previousRoots?.length) lines.push(`Moved from: ${report.previousRoots.join(" ← ")}`);
+  const lanes = (report as { lanes?: Array<{ name: string; stale: string | null; safeToArchive: boolean; laneType: string }> }).lanes ?? [];
+  if (lanes.length) {
+    const stale = lanes.filter((lane) => lane.stale);
+    lines.push(`Lanes: ${lanes.filter((lane) => lane.laneType !== "primary").length} active, ${stale.length} stale (${stale.filter((lane) => lane.safeToArchive).length} safe to archive with \`ade lanes archive-and-reclaim <lane> --confirm RECLAIM\`)`);
+  }
   if (!report.issues.length) lines.push("", `Everything looks good (${report.checks?.length ?? 0} checks).`);
   for (const issue of report.issues) {
     lines.push("", `[${issue.severity}] ${issue.title}`, `  ${issue.detail}`);

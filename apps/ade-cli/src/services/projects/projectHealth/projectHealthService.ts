@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -8,6 +9,8 @@ import type {
   ProjectHealthFixResult,
   ProjectHealthIssue,
   ProjectHealthReport,
+  ProjectLaneHealth,
+  ProjectLaneStaleReason,
 } from "../../../../../desktop/src/shared/types/projectHealth";
 import { formatBytes } from "../../../../../desktop/src/shared/formatting";
 import { listAppleDeviceMarkers } from "../../../../../desktop/src/main/services/ios/appleDeviceMarker";
@@ -20,7 +23,8 @@ import {
 } from "../projectMove/moveAgentHistory";
 import { countPathsNaming, rewritePathsInDatabase, type PathRewriteDb } from "../projectMove/moveDatabase";
 import { listSymlinks, relinkAbsoluteSymlinks, remapUnderRoot, rewriteWorktreeLinksInCopy, rootSpellings } from "../projectMove/moveGitLinks";
-import { listMoveRecords, previousProjectRoots } from "../projectMove/moveJournal";
+import { listMoveRecords } from "../projectMove/moveJournal";
+import { previousProjectRoots } from "../projectMove/movePreviousRoots";
 import { rewriteAdeJsonFiles, rewriteSimulatorMarkers } from "../projectMove/projectMoveEngine";
 import { filesMentioningPath, installCommandFor, lockfileKind, timeMachineBacksUp } from "../projectMove/projectMovePreflight";
 import { readMoveVolume } from "../projectMove/moveVolumes";
@@ -52,6 +56,12 @@ export type ProjectHealthServiceDeps = {
 };
 
 const REPORT_CACHE_MS = 30_000;
+/** A lane with no activity for this long, and no open PR, counts as stale. */
+const STALE_AFTER_DAYS = 14;
+const DAY_MS = 24 * 60 * 60_000;
+/** A git lock file older than this with no git running is a leftover from a crash. */
+const STALE_LOCK_MS = 10 * 60_000;
+const GIT_CONCURRENCY = 4;
 const VENV_DIRS = [".venv", "venv", "env"];
 
 type Checkout = { laneId: string; label: string; root: string; primary: boolean };
@@ -227,6 +237,91 @@ function dependencyPlan(ctx: Context): { installs: DependencyInstall[]; brokenLi
   return { installs, brokenLinks };
 }
 
+
+function gitOutput(cwd: string, args: string[]): Promise<string | null> {
+  return new Promise((resolve) => {
+    execFile("git", ["--no-optional-locks", "-C", cwd, ...args], { timeout: 20_000, maxBuffer: 8 * 1024 * 1024 }, (error, stdout) => {
+      resolve(error ? null : stdout);
+    });
+  });
+}
+
+async function mapLimit<T, R>(items: T[], limit: number, work: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const index = next++;
+      results[index] = await work(items[index]!);
+    }
+  }));
+  return results;
+}
+
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM: alive, owned by someone else.
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+function latest(...values: Array<string | null | undefined>): string | null {
+  let best: string | null = null;
+  for (const value of values) {
+    if (!value) continue;
+    if (!best || Date.parse(value) > Date.parse(best)) best = value;
+  }
+  return best;
+}
+
+/** Git state of a lane: uncommitted files and commits on no remote. Nulls when git can't tell. */
+async function laneGitState(root: string): Promise<{ dirty: boolean | null; changedFileCount: number | null; unpushedCommits: number | null }> {
+  const [status, unpushed] = await Promise.all([
+    gitOutput(root, ["status", "--porcelain", "--untracked-files=normal"]),
+    gitOutput(root, ["rev-list", "--count", "HEAD", "--not", "--remotes"]),
+  ]);
+  const changed = status === null ? null : status.split("\n").filter((line) => line.trim()).length;
+  const count = unpushed === null ? null : Number.parseInt(unpushed.trim(), 10);
+  return {
+    dirty: changed === null ? null : changed > 0,
+    changedFileCount: changed,
+    unpushedCommits: count === null || !Number.isFinite(count) ? null : count,
+  };
+}
+
+/** Git leftovers in the repository: lock files from a crashed git, operations stopped halfway. */
+function gitLeftovers(projectRoot: string, nowMs: number): string[] {
+  const gitDir = path.join(projectRoot, ".git");
+  const admins: Array<{ label: string; dir: string }> = [{ label: path.basename(projectRoot), dir: gitDir }];
+  try {
+    for (const name of fs.readdirSync(path.join(gitDir, "worktrees"))) admins.push({ label: name, dir: path.join(gitDir, "worktrees", name) });
+  } catch {
+    // no lanes
+  }
+  const found: string[] = [];
+  for (const admin of admins) {
+    for (const lock of ["index.lock", "HEAD.lock", "config.lock"]) {
+      try {
+        const stat = fs.statSync(path.join(admin.dir, lock));
+        if (nowMs - stat.mtimeMs > STALE_LOCK_MS) found.push(`${admin.label}: ${lock} left by a git that stopped`);
+      } catch {
+        // none
+      }
+    }
+    const stopped = [
+      ["rebase-merge", "a rebase"],
+      ["rebase-apply", "a rebase"],
+      ["MERGE_HEAD", "a merge"],
+      ["CHERRY_PICK_HEAD", "a cherry-pick"],
+    ].find(([file]) => exists(path.join(admin.dir, file!)));
+    if (stopped) found.push(`${admin.label}: ${stopped[1]} was stopped halfway`);
+  }
+  return found;
+}
+
 export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
   const projectRoot = path.resolve(deps.projectRoot);
   let cached: { at: number; report: Promise<ProjectHealthReport> } | null = null;
@@ -285,8 +380,89 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
     });
   }
 
+
+  type SessionRow = { lane_id: string; status: string | null; owner_pid: number | null; title: string | null; activity: string | null };
+
+  /** Every active lane with its PR, activity, git state and whether it is stale. */
+  async function laneHealth(ctx: Context): Promise<{ lanes: ProjectLaneHealth[]; stuck: string[] }> {
+    const nowMs = Date.now();
+    const prs = new Map<string, { pr: NonNullable<ProjectLaneHealth["pr"]>; headSha: string | null }>();
+    for (const row of deps.db.all<{ lane_id: string; number: number; state: string; url: string | null; merged_at: string | null; head_sha: string | null }>(
+      `select lane_id, github_pr_number as number, state, github_url as url, merged_at, head_sha
+         from pull_requests where lane_id is not null order by coalesce(updated_at, created_at) asc`,
+    )) {
+      // Ascending, so the newest PR for a lane wins.
+      prs.set(row.lane_id, { pr: { number: Number(row.number), state: row.state, url: row.url, mergedAt: row.merged_at }, headSha: row.head_sha });
+    }
+    const activity = new Map<string, string | null>();
+    const running = new Map<string, number>();
+    const stuck: string[] = [];
+    for (const row of deps.db.all<SessionRow>(
+      `select lane_id, status, owner_pid, title, max(coalesce(last_output_at, ended_at, started_at)) as activity
+         from terminal_sessions where lane_id is not null and archived_at is null group by id`,
+    )) {
+      activity.set(row.lane_id, latest(activity.get(row.lane_id), row.activity));
+      if (row.status !== "running") continue;
+      const pid = Number(row.owner_pid);
+      if (Number.isFinite(pid) && pid > 0 && !processAlive(pid)) {
+        stuck.push(`${row.title ?? "Untitled"} (${ctx.lanes.find((lane) => lane.id === row.lane_id)?.name ?? "lane"})`);
+        continue;
+      }
+      running.set(row.lane_id, (running.get(row.lane_id) ?? 0) + 1);
+    }
+    const staleBefore = nowMs - STALE_AFTER_DAYS * DAY_MS;
+    const lanes = await mapLimit(ctx.lanes, GIT_CONCURRENCY, async (lane): Promise<ProjectLaneHealth> => {
+      const folderExists = Boolean(lane.worktreePath) && exists(lane.worktreePath);
+      const primary = lane.laneType === "primary";
+      const git = folderExists ? await laneGitState(lane.worktreePath) : { dirty: null, changedFileCount: null, unpushedCommits: null };
+      const prRecord = primary ? null : prs.get(lane.id) ?? null;
+      const pr = prRecord?.pr ?? null;
+      // A squash-merged PR's branch is usually deleted from the remote, so its
+      // commits are on no remote branch; they are still safe when nothing was
+      // committed after the PR's head.
+      if (pr?.state === "merged" && git.unpushedCommits && prRecord?.headSha) {
+        const head = (await gitOutput(lane.worktreePath, ["rev-parse", "HEAD"]))?.trim();
+        if (head === prRecord.headSha) git.unpushedCommits = 0;
+      }
+      const lastActivityAt = latest(activity.get(lane.id), lane.createdAt, lane.lastCommitAt);
+      const runningSessions = running.get(lane.id) ?? 0;
+      let stale: ProjectLaneStaleReason | null = null;
+      if (!primary) {
+        if (pr?.state === "merged") stale = "pr-merged";
+        else if (pr?.state === "closed") stale = "pr-closed";
+        else if (pr?.state !== "open" && lastActivityAt && Date.parse(lastActivityAt) < staleBefore) stale = "idle";
+      }
+      return {
+        laneId: lane.id,
+        name: lane.name,
+        laneType: lane.laneType,
+        worktreePath: lane.worktreePath,
+        branch: lane.branchRef || null,
+        folderExists,
+        pr,
+        lastActivityAt,
+        ...git,
+        runningSessions,
+        stale,
+        // Git only. The archive stops running chats after confirmation, so
+        // bulk archive checks each lane's reclaim risk right before acting.
+        safeToArchive: !primary && (!folderExists || (git.dirty === false && git.unpushedCommits === 0)),
+      };
+    });
+    lanes.sort((a, b) => {
+      if (a.laneType === "primary") return -1;
+      if (b.laneType === "primary") return 1;
+      return Date.parse(b.lastActivityAt ?? "0") - Date.parse(a.lastActivityAt ?? "0");
+    });
+    return { lanes, stuck };
+  }
+
   async function buildReport(): Promise<ProjectHealthReport> {
     const ctx = await context();
+    const laneReport = await laneHealth(ctx).catch((error) => {
+      deps.logger.warn("project_health.lanes_failed", { error: error instanceof Error ? error.message : String(error) });
+      return { lanes: [] as ProjectLaneHealth[], stuck: [] as string[] };
+    });
     const issues: ProjectHealthIssue[] = [];
     const checks: ProjectHealthReport["checks"] = [];
     const run = async (id: string, label: string, check: () => Promise<ProjectHealthIssue[]> | ProjectHealthIssue[]) => {
@@ -317,6 +493,46 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
           detail: `ADE looks for these at ${oldRoot}, which is gone or no longer this project: proof files can't be recovered and lanes can look missing.`,
           items: Object.entries(counts).map(([where, n]) => `${where}: ${n}`),
           fix: { id: "update-paths", label: "Update paths", description: `Points every saved path at ${projectRoot}. Synced to your other devices like any edit.`, kind: "change" },
+        }];
+      }),
+      run("stale-lanes", "No stale lanes", () => {
+        const stale = laneReport.lanes.filter((lane) => lane.stale);
+        if (!stale.length) return [];
+        const safe = stale.filter((lane) => lane.safeToArchive).length;
+        const why = (lane: ProjectLaneHealth) => lane.stale === "pr-merged" ? `PR #${lane.pr?.number} merged`
+          : lane.stale === "pr-closed" ? `PR #${lane.pr?.number} closed`
+          : `idle since ${lane.lastActivityAt?.slice(0, 10) ?? "?"}`;
+        return [{
+          id: "stale-lanes",
+          area: "git",
+          severity: "info",
+          title: `${plural(stale.length, "lane")} look${stale.length === 1 ? "s" : ""} done`,
+          detail: `Their PR is merged or closed, or nothing happened in them for ${STALE_AFTER_DAYS} days. ${safe === stale.length ? "All can be archived without losing anything." : `${safe} can be archived without losing anything; the rest have changes or unpushed commits.`}`,
+          items: stale.map((lane) => `${lane.name}: ${why(lane)}${lane.safeToArchive ? "" : " (has unsaved work)"}`),
+        }];
+      }),
+      run("stuck-sessions", "No chats stuck as running", () => {
+        if (!laneReport.stuck.length) return [];
+        return [{
+          id: "stuck-sessions",
+          area: "agents",
+          severity: "warning",
+          title: `${plural(laneReport.stuck.length, "chat")} still show${laneReport.stuck.length === 1 ? "s" : ""} as running`,
+          detail: "The process that ran them is gone, so they will never finish on their own. Open each and stop or resume it.",
+          items: laneReport.stuck,
+        }];
+      }),
+      run("git-leftovers", "No git leftovers", () => {
+        if (!exists(path.join(projectRoot, ".git"))) return [];
+        const leftovers = gitLeftovers(projectRoot, Date.now());
+        if (!leftovers.length) return [];
+        return [{
+          id: "git-leftovers",
+          area: "git",
+          severity: "warning",
+          title: `Git was interrupted in ${plural(leftovers.length, "place")}`,
+          detail: "A lock file makes every git command in that checkout fail; a stopped rebase or merge leaves files half-changed. Finish or abort it there, or remove the lock if no git is running.",
+          items: leftovers,
         }];
       }),
       run("lane-folders", "Every lane's folder exists", () => {
@@ -464,7 +680,7 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
           area: "storage" as const,
           severity: "info" as const,
           title: `The old copy is still at ${record.originalParkedAt}`,
-          detail: `${record.originalBytes ? `${formatBytes(record.originalBytes)} you can free. ` : ""}Delete it from Settings → Project location once the project works here.`,
+          detail: `${record.originalBytes ? `${formatBytes(record.originalBytes)} you can free. ` : ""}Delete it from Settings → Location once the project works here.`,
         }));
       }),
       run("drive", "The drive is the one ADE expects", async () => {
@@ -503,6 +719,8 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
       previousRoots: ctx.previousRoots,
       drive: volume ? { name: volume.name, internal: volume.internal, freeBytes: volume.freeBytes, totalBytes: volume.totalBytes } : null,
       issues,
+      lanes: laneReport.lanes,
+      staleAfterDays: STALE_AFTER_DAYS,
       checks: checks.sort((a, b) => a.label.localeCompare(b.label)),
     };
   }

@@ -1,4 +1,5 @@
 import React from "react";
+import { CaretDown } from "@phosphor-icons/react";
 import type { MaintenanceRunReport } from "../../../../shared/types/storage";
 import type { LaneCleanupConfig } from "../../../../shared/types";
 import { ModernRow, ModernRows, ModernSection, SettingsNumber } from "../primitives";
@@ -26,7 +27,11 @@ function runKey(run: MaintenanceRunReport, index: number): string {
   return `${run.startedAt}:${index}`;
 }
 
+/** Runs listed before "Show N more"; the chart above already shows them all. */
+const INITIAL_RUNS = 5;
+
 function CleanupHistory({ runs, loading }: { runs: MaintenanceRunReport[]; loading: boolean }) {
+  const [showAll, setShowAll] = React.useState(false);
   const columns = React.useMemo<RunColumn[]>(() => [...runs].slice(0, 14).reverse().map((run, index) => {
     const parts = cleanupRunParts(run);
     return {
@@ -47,7 +52,7 @@ function CleanupHistory({ runs, loading }: { runs: MaintenanceRunReport[]; loadi
         ? "Loading cleanup history…"
         : runs.length > 0
         ? `${runs.length === 1 ? "1 cleanup" : `${runs.length} cleanups`} freed ${formatBytes(total)}. The last ran ${relativeWhen(runs[0]!.finishedAt || runs[0]!.startedAt)}.`
-        : "ADE tidies its own data every day. Files you clean up from Space show here too."}
+        : "ADE tidies its own data every day. Files you clean up from Storage show here too."}
     >
       {runs.length > 0 ? (
         <>
@@ -55,7 +60,7 @@ function CleanupHistory({ runs, loading }: { runs: MaintenanceRunReport[]; loadi
             <CleanupRunChart runs={columns} />
           </div>
           <ul className="ade-modern-rows ade-health-runlist">
-            {runs.map((run, index) => {
+            {(showAll ? runs : runs.slice(0, INITIAL_RUNS)).map((run, index) => {
               const parts = cleanupRunParts(run);
               const breakdown = cleanupPartsLine(parts);
               const failures = maintenanceActionLines(run).filter((line) => line.failed);
@@ -82,6 +87,12 @@ function CleanupHistory({ runs, loading }: { runs: MaintenanceRunReport[]; loadi
               );
             })}
           </ul>
+          {!showAll && runs.length > INITIAL_RUNS ? (
+            <button type="button" className="ade-health-disclosure" onClick={() => setShowAll(true)}>
+              <CaretDown size={11} weight="bold" className="ade-health-caret" />
+              Show {runs.length - INITIAL_RUNS} more
+            </button>
+          ) : null}
         </>
       ) : null}
     </ModernSection>
@@ -167,7 +178,7 @@ function ArchivePolicy({
         {field("cleanupIntervalHours", "Check every", "How often ADE looks for idle lanes. Off turns the rules below off.", "Off", "hours")}
         {field("autoArchiveAfterHours", "Archive after inactivity", "Hours without activity before a lane may be archived.", "Off", "hours")}
         {field("maxActiveLanes", "Keep at most", "Archive the longest-idle lanes above this many.", "No limit", "lanes")}
-        {field("reclaimArchivedAfterHours", "Offer to remove archived folders after", "Archived lane folders show in Space for you to remove. ADE never removes them itself.", "Off", "hours")}
+        {field("reclaimArchivedAfterHours", "Offer to remove archived folders after", "Archived lane folders show in Storage for you to remove. ADE never removes them itself.", "Off", "hours")}
       </ModernRows>
       <p className="ade-modern-muted">
         Only clean, merged, idle lanes with no running chat or terminal are archived; the primary lane and attached folders never are.

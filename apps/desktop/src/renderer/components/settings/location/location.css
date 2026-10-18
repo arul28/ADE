@@ -1,0 +1,30 @@
+/*
+ * Settings → Project → Location: the drive the project lives on, drawn as one
+ * calm row (icon, name, free-space meter). Kit tokens only.
+ */
+
+.ade-loc-hero {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--kit-panel-edge);
+  background: var(--kit-panel-bg);
+  flex-wrap: wrap;
+}
+.ade-loc-hero-icon {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-fg) 5%, transparent);
+  color: var(--kit-text-2);
+}
+.ade-loc-hero-body { flex: 1 1 200px; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.ade-loc-hero-title { display: flex; align-items: center; gap: 8px; font-size: 13.5px; font-weight: 600; color: var(--color-fg); }
+.ade-loc-hero-meter { flex: 0 1 240px; min-width: 160px; display: flex; flex-direction: column; gap: 6px; }
+.ade-loc-hero-meter-label { display: flex; align-items: baseline; gap: 6px; font-size: 12.5px; }
+.ade-loc-hero-meter-label .kit-num { font-size: 15px; font-weight: 600; color: var(--color-fg); }

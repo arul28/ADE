@@ -2,22 +2,23 @@ import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useSt
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import type { Icon as PhosphorIcon } from "@phosphor-icons/react";
 import {
-  Archive,
   ArrowLeft,
   Bell,
   Brain,
   ChartLineUp,
   ChatCircle,
   DeviceMobile,
-  GearSix,
+  Gauge,
   GitBranch,
   HardDrives,
-  Heartbeat,
   Key,
   MagnifyingGlass,
+  MapPin,
   Palette,
   Plugs,
   PlugsConnected,
+  SlidersHorizontal,
+  SquaresFour,
   UserCircle,
 } from "@phosphor-icons/react";
 import { RemoteSettingsBanner } from "../settings/RemoteContextBadge";
@@ -50,7 +51,9 @@ import {
   SETTINGS_GROUPS,
   groupScopeHint,
   isMachineSettingsTab,
+  isProjectSettingsTab,
   isThisComputerOnlyTab,
+  legacyTabAnchor,
 } from "../settings/settingsManifest";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { useAppStore } from "../../state/appStore";
@@ -74,24 +77,26 @@ import {
  */
 
 const TAB_ICONS: Record<SettingsTabId, PhosphorIcon> = {
+  overview: SquaresFour,
   account: UserCircle,
-  general: GearSix,
-  appearance: Palette,
   chat: ChatCircle,
-  apple: DeviceMobile,
-  agents: Brain,
-  "lanes-git": GitBranch,
-  integrations: PlugsConnected,
   notifications: Bell,
   mcp: Plugs,
-  secrets: Key,
-  storage: Heartbeat,
-  archive: Archive,
   stats: ChartLineUp,
+  "lanes-git": GitBranch,
+  location: MapPin,
+  secrets: Key,
+  integrations: PlugsConnected,
+  service: Gauge,
+  agents: Brain,
+  apple: DeviceMobile,
+  appearance: Palette,
+  behaviour: SlidersHorizontal,
 };
 
 /** Tabs whose content sits in the centred `SettingsColumn`. */
 const CENTERED_COLUMN_TABS: ReadonlySet<SettingsTabId> = new Set<SettingsTabId>([
+  "overview",
   "appearance",
   "chat",
   "apple",
@@ -99,12 +104,12 @@ const CENTERED_COLUMN_TABS: ReadonlySet<SettingsTabId> = new Set<SettingsTabId>(
   "mcp",
   "stats",
   "secrets",
-  "general",
+  "service",
+  "behaviour",
   "agents",
   "lanes-git",
+  "location",
   "integrations",
-  "storage",
-  "archive",
 ]);
 
 
@@ -279,7 +284,8 @@ export function SettingsPage({
   const tabs = useMemo(
     () => {
       const all = availableSettingsTabs();
-      return standalone ? all.filter((tab) => STANDALONE_TAB_IDS.has(tab.id)) : all;
+      // With no project open there is no Project group at all.
+      return standalone ? all.filter((tab) => STANDALONE_TAB_IDS.has(tab.id) && tab.group !== "project") : all;
     },
     // `machineBound` is read by the manifest's web resolver, not here: the
     // list has to be recomputed when it changes.
@@ -332,11 +338,14 @@ export function SettingsPage({
     if (!tabParam || !resolvedTab || tabParam === resolvedTab) return;
     const nextParams = new URLSearchParams(searchParams);
     nextParams.set("tab", resolvedTab);
+    // A legacy tab that was one card's page (`?tab=archive`) lands on that
+    // card on its new page, unless the link already names a card.
+    const legacyAnchor = location.hash ? null : legacyTabAnchor(tabParam);
     // Navigate rather than setSearchParams: the latter drops the hash, which
     // would throw away the very anchor that selected this tab and leave the
     // scroll effect below with nothing to scroll to.
     navigate(
-      { pathname: location.pathname, search: `?${nextParams.toString()}`, hash: location.hash },
+      { pathname: location.pathname, search: `?${nextParams.toString()}`, hash: legacyAnchor ? `#${legacyAnchor}` : location.hash },
       { replace: true },
     );
   }, [active, location.hash, location.pathname, navigate, resolvedTab, searchParams, tabParam]);
@@ -513,10 +522,17 @@ export function SettingsPage({
     <SettingsSidebarHeader onOpenAccount={() => navigateToTab("account")} />
   );
 
-  // The machine a Machines page is about, as the section components see it.
-  const machinePageScope = useSettingsMachinePage(
-    pageMachine && isMachineSettingsTab(section) ? pageMachine : null,
-  );
+  // The machine a page acts on, as the section components see it: the picked
+  // machine for a Computer page, and the machine that owns the open project
+  // (the tab's binding) for a Project page. You pages have none.
+  const projectMachine = machines.find((machine) => machine.isActiveBinding) ?? null;
+  const scopeMachine = isMachineSettingsTab(section)
+    ? pageMachine
+    : isProjectSettingsTab(section) ? projectMachine : null;
+  const pageScope = useSettingsMachinePage(scopeMachine);
+  // Only Computer pages name their machine above the title; Project pages
+  // follow the tab, which the remote banner names when it is another machine.
+  const machinePageScope = pageScope && isMachineSettingsTab(section) ? pageScope : null;
 
   const activeTab = tabs.find((tab) => tab.id === section)
     ?? tabs.find((tab) => tab.id === defaultTab)
@@ -568,6 +584,14 @@ export function SettingsPage({
         // A group with nothing reachable in it is not rendered (the hosted web
         // client drops whole pages whose writes have nowhere to land).
         if (!groupTabs.length) return null;
+        // Overview is one row on its own, above the groups.
+        if (group.id === "overview") {
+          return (
+            <div key={group.id} style={{ marginBottom: 14 }}>
+              {groupTabs.map((tab) => renderTabButton(tab))}
+            </div>
+          );
+        }
         const label = group.label ?? THIS_MACHINE_NAME;
         const hint = group.id === "project" && hasOpenProject
           ? `${repoGroupLabel}. ${groupScopeHint(group.id)}`
@@ -660,8 +684,8 @@ export function SettingsPage({
             A browser has no "this one", and every section already states its
             own scope, so web gets the per-section lines instead. */}
         {FLASH_STYLES}
-        {/* Machines pages name their own machine below; the remote banner is
-            for Account and Project pages, which follow the tab's binding. */}
+        {/* Computer pages name their own machine below; the remote banner is
+            for You and Project pages, which follow the tab's binding. */}
         {isWebClientMode() || machinePageScope ? null : <RemoteSettingsBanner />}
         {webMachineSectionsHidden && tabHasMachineSettings(section) ? <WebNoMachineNotice /> : null}
 
@@ -796,17 +820,17 @@ export function SettingsPage({
         ) : null}
 
         <div style={{ display: "flex", flexDirection: "column", gap: 32 }}>
-          {machinePageScope ? (
+          {pageScope ? (
             // Keyed by machine so nothing one machine loaded can linger into,
             // or be saved onto, the next machine's page.
-            <SettingsMachineScopeProvider key={machinePageScope.machineId} scope={machinePageScope}>
+            <SettingsMachineScopeProvider key={pageScope.machineId} scope={pageScope}>
               <SettingsSearchAnchorsContext.Provider value={searchAnchors}>
-                <TabContent tab={section} machine={machinePageScope} standalone={standalone} />
+                <TabContent tab={section} machine={pageScope} standalone={standalone} />
               </SettingsSearchAnchorsContext.Provider>
             </SettingsMachineScopeProvider>
           ) : (
             <SettingsSearchAnchorsContext.Provider value={searchAnchors}>
-              <TabContent tab={section} machine={null} />
+              <TabContent tab={section} machine={null} standalone={standalone} />
             </SettingsSearchAnchorsContext.Provider>
           )}
         </div>

@@ -544,7 +544,7 @@ and the health probe uses whatever endpoint `resolveMachineAdeLayout` reports
 ## Automatic installation policy
 
 Packaged builds keep checking for and downloading updates, but restarting to
-install them is manual by default. Settings > General exposes the machine-local
+install them is manual by default. Settings → ADE service exposes the machine-local
 `AutoUpdatePreferences` contract:
 
 - `automaticInstall: false` by default. A `ready` update waits for the user to

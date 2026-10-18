@@ -1854,7 +1854,7 @@ parallel.
 
 The same action is offered where this computer's own update lives: **Update
 other machines** (`components/settings/OtherMachinesUpdateSection.tsx`) sits
-under Updates in Settings > General and under Your computers on the Account
+under Updates in Settings → ADE service and under Your computers on the Account
 page. It lists each connected machine with its version, "Update & restart" for
 the ones behind, and "Update all N". Every place that starts or shows one of
 these updates, the install dialog below included, goes through one store

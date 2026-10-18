@@ -1,13 +1,11 @@
 import React, { useCallback } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import {
-  Desktop,
-  FolderOpen,
-  GitBranch,
+  Gauge,
   GithubLogo,
   Info,
   ShieldCheck,
-  Stack,
+  Terminal,
   UsersThree,
   Warning,
 } from "@phosphor-icons/react";
@@ -27,26 +25,24 @@ import { JiraMark } from "../lanes/jiraBrand";
 import { KeepAwakeSection } from "./KeepAwakeSection";
 import { BackgroundServiceSection } from "./BackgroundServiceSection";
 import { CaptureGestureSection } from "./CaptureGestureSection";
-import { LaneBehaviorSection } from "./LaneBehaviorSection";
-import { LaneTemplatesSection } from "./LaneTemplatesSection";
 import { LinearIntegrationSection } from "./LinearIntegrationSection";
 import { JiraSection } from "./JiraSection";
 import { NotificationsSection } from "./NotificationsSection";
 import { McpServersSection } from "./mcp/McpServersSection";
-import { PrChatTranscriptsSection } from "./PrChatTranscriptsSection";
 import { BrowserLinksSection } from "./BrowserLinksSection";
 import { BrowserAgentAccessSection } from "./BrowserAgentAccessSection";
 import { DiagnosticsSharingSection } from "./DiagnosticsSharingSection";
 import { ResetAdeSection } from "./ResetAdeSection";
-import { ProjectLocationSection } from "./ProjectLocationSection";
 import { ProvidersSection } from "./ProvidersSection";
 import { ProviderAccountsPanel } from "./providers/accounts/ProviderAccountsPanel";
 import { SettingsManagerPage } from "./primitives/SettingsManagerPage";
 import { SettingsSection } from "./primitives/SettingsRows";
 import { providerDescriptor } from "./providers/descriptors";
 import { SecretsSection } from "./SecretsSection";
-import { HealthPage } from "./health/HealthPage";
-import { ArchiveSection } from "./ArchiveSection";
+import { ServiceStatusSection } from "./health/HealthService";
+import { SettingsOverview } from "./overview/SettingsOverview";
+import { LanesSettingsPage } from "./lanes/LanesSettingsPage";
+import { LocationPage } from "./location/LocationPage";
 import {
   MachineUnavailableNotice,
   machineSectionAvailable,
@@ -61,6 +57,7 @@ import {
   type SettingsTabId,
 } from "./settingsManifest";
 import { isWebClientMode } from "../../lib/webClientMode";
+import { decodeSettingsHash } from "./settingsHash";
 
 /**
  * What each Settings tab renders: its sections as data (`TAB_SECTIONS`), the
@@ -74,8 +71,8 @@ import { isWebClientMode } from "../../lib/webClientMode";
  * one of their sections is left (the rest unavailable on this machine).
  */
 const SECTION_LIST_TABS: ReadonlySet<SettingsTabId> = new Set<SettingsTabId>([
-  "general",
-  "lanes-git",
+  "service",
+  "behaviour",
   "integrations",
 ]);
 
@@ -88,23 +85,8 @@ function settingsEntryIdsForTab(tab: SettingsTabId): string[] {
   return SETTINGS_ENTRIES.filter((entry) => entry.tab === tab).map((entry) => entry.id);
 }
 
-/**
- * A `location.hash` as the manifest wants it: no leading `#`, percent-decoding
- * applied, and a malformed escape treated as literal text rather than thrown.
- *
- * Three call sites decoded the hash themselves — provider deeplinks, tab
- * resolution, and the scroll effect — which meant three chances for one of them
- * to forget the try/catch and take the settings page down on a URL a user can
- * type by hand.
- */
-export function decodeSettingsHash(hash: string): string {
-  const raw = hash.replace(/^#/, "");
-  try {
-    return decodeURIComponent(raw);
-  } catch {
-    return raw;
-  }
-}
+// Re-exported: the settings page and older imports read it from here.
+export { decodeSettingsHash } from "./settingsHash";
 
 /** `#ai-provider-<id>` — the deeplink form of one provider's page. */
 const PROVIDER_ANCHOR_PREFIX = "ai-provider-";
@@ -245,23 +227,23 @@ type TabGroup = {
 };
 
 const TAB_GROUPS = {
-  ade: {
-    title: "ADE",
-    description: "The app and its background service, updates, and the ade command.",
-    icon: <Info size={15} weight="duotone" />,
+  service: {
+    title: "Background service",
+    description: "The service that runs your lanes, chats and terminals.",
+    icon: <Gauge size={15} weight="duotone" />,
     tone: "blue",
   },
-  project: {
-    title: "This project",
-    description: "The .ade folder in this repository.",
-    icon: <FolderOpen size={15} weight="duotone" />,
-    tone: "green",
+  version: {
+    title: "Version and updates",
+    description: "What is installed here, and how it updates.",
+    icon: <Info size={15} weight="duotone" />,
+    tone: "accent",
   },
-  computer: {
-    title: "This computer",
-    description: "Sleep, screen capture, the ADE browser, and where links open.",
-    icon: <Desktop size={15} weight="duotone" />,
-    tone: "violet",
+  cli: {
+    title: "Command line",
+    description: "The ade command in your terminal.",
+    icon: <Terminal size={15} weight="duotone" />,
+    tone: "slate",
   },
   privacy: {
     title: "Privacy",
@@ -274,18 +256,6 @@ const TAB_GROUPS = {
     description: "Can't be undone. Read what it removes before you go on.",
     icon: <Warning size={15} weight="duotone" />,
     tone: "red",
-  },
-  lanes: {
-    title: "How lanes behave",
-    description: "Where new lanes start, staying current with the base, and PR transcripts.",
-    icon: <GitBranch size={15} weight="duotone" />,
-    tone: "accent",
-  },
-  templates: {
-    title: "Templates",
-    description: "Setups a new lane can start from.",
-    icon: <Stack size={15} weight="duotone" />,
-    tone: "amber",
   },
   github: {
     title: "GitHub",
@@ -301,7 +271,7 @@ const TAB_GROUPS = {
   },
   jira: {
     title: "Jira",
-    description: "Issues and the Jira Cloud site connected on this machine.",
+    description: "Issues and the Jira Cloud site connected for this project.",
     icon: <JiraMark size={15} />,
     tone: "blue",
   },
@@ -334,7 +304,29 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
       ),
     },
   ],
-  general: [
+  // Settings opens here. Computer-wide facts are plain IPC to this computer;
+  // the project's come through the tab's binding (unpinned), which is the
+  // machine that owns the project.
+  overview: [
+    { entryIds: ["overview.attention", "overview.glance"], render: () => <SettingsColumn wide><SettingsOverview /></SettingsColumn> },
+  ],
+  // Computer → ADE service. Everything here is plain IPC to the main process
+  // ADE runs in, so another machine's page names it instead of showing it.
+  service: [
+    {
+      entryIds: ["storage.diagnostics"],
+      render: () => <ServiceStatusSection />,
+      machine: "local",
+      title: "Service status",
+      group: "service",
+    },
+    {
+      entryIds: ["general.background-service", "general.quit-confirmation"],
+      render: () => <BackgroundServiceSection />,
+      machine: "local",
+      title: "Background service",
+      group: "service",
+    },
     {
       entryIds: ["general.about", "general.auto-updates", "general.update-other-machines"],
       // About has no section file of its own, so the page supplies its anchor.
@@ -344,31 +336,10 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
         </div>
       ),
       machine: "local",
-      title: "About ADE and updates",
-      group: "ade",
+      title: "Version and updates",
+      group: "version",
     },
-    { entryIds: ["general.ade-cli"], render: () => <AdeCliSection />, machine: "local", title: "ADE command line", group: "ade" },
-    {
-      entryIds: ["general.background-service", "general.quit-confirmation"],
-      render: () => <BackgroundServiceSection />,
-      machine: "local",
-      title: "Background service",
-      group: "ade",
-    },
-    // The move runs in this computer's main process, on a project this computer has.
-    { entryIds: ["general.project-location"], render: () => <ProjectLocationSection />, machine: "local", title: "Project location", group: "project" },
-    { entryIds: ["general.keep-awake"], render: () => <KeepAwakeSection />, machine: "local", title: "Keep awake", group: "computer" },
-    { entryIds: ["general.capture-gesture"], render: () => <CaptureGestureSection />, machine: "local", title: "Capture gesture", group: "computer" },
-    {
-      entryIds: ["general.browser-agent-access"],
-      render: () => <BrowserAgentAccessSection />,
-      machine: "local",
-      title: "ADE browser access",
-      group: "computer",
-    },
-    // `.ade/local.yaml`, read by the link router of the window bound to that
-    // checkout, so it has an effect only on the tab's own machine.
-    { entryIds: ["general.link-open-mode"], render: () => <BrowserLinksSection />, machine: "bound", title: "Open links", group: "computer" },
+    { entryIds: ["general.ade-cli"], render: () => <AdeCliSection />, machine: "local", title: "ADE command line", group: "cli" },
     {
       entryIds: ["general.diagnostics-sharing"],
       render: () => <DiagnosticsSharingSection />,
@@ -376,14 +347,28 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
       title: "Send a report to ADE",
       group: "privacy",
     },
-    // Last on purpose: the hard reset is its own section at the very bottom of
-    // General, never a routine control beside About.
+    // Last on purpose: the hard reset is its own section at the very bottom,
+    // never a routine control beside About.
     {
       entryIds: ["general.reset"],
       render: () => <ResetAdeSection />,
       machine: "local",
       title: "Reset ADE",
       group: "danger",
+    },
+  ],
+  // Computer → Behaviour: what this computer does on its own.
+  behaviour: [
+    { entryIds: ["general.keep-awake"], render: () => <KeepAwakeSection />, machine: "local", title: "Keep awake" },
+    { entryIds: ["general.capture-gesture"], render: () => <CaptureGestureSection />, machine: "local", title: "Capture gesture" },
+    // `.ade/local.yaml`, read by the link router of the window bound to that
+    // checkout, so it has an effect only on the tab's own machine.
+    { entryIds: ["general.link-open-mode"], render: () => <BrowserLinksSection />, machine: "bound", title: "Open links" },
+    {
+      entryIds: ["general.browser-agent-access"],
+      render: () => <BrowserAgentAccessSection />,
+      machine: "local",
+      title: "ADE browser access",
     },
   ],
   appearance: [{ entryIds: "tab", render: () => <AppearanceSection /> }],
@@ -394,55 +379,28 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
       render: () => <ChatSection />,
     },
   ],
+  // Project → Lanes: the lane list, storage, archive, cleanups, sessions and
+  // how lanes start, on the machine that owns the project (its pin).
   "lanes-git": [
-    {
-      entryIds: [
-        "lanes-git.new-lane-base",
-        "lanes-git.auto-rebase",
-        "lanes-git.rebase-suggestions",
-        "lanes-git.rebase-min-behind",
-      ],
-      render: () => <LaneBehaviorSection />,
-      machine: "routed",
-      title: "Lane behaviour",
-      group: "lanes",
-    },
-    {
-      entryIds: ["lanes-git.pr-chat-transcripts"],
-      render: () => <PrChatTranscriptsSection />,
-      machine: "routed",
-      title: "PR chat transcripts",
-      group: "lanes",
-    },
-    // The template manager sits under the two behaviour sections.
-    { entryIds: ["lanes-git.lane-templates"], render: () => <LaneTemplatesSection />, machine: "routed", title: "Lane templates", group: "templates" },
+    { entryIds: "tab", render: () => <SettingsColumn wide><LanesSettingsPage /></SettingsColumn>, machine: "routed", title: "Lanes" },
   ],
-  // Connections live in the machine's credential store and are read by its
-  // runtime. Every call takes the machine's pin, so each machine's page shows
-  // and changes that machine's own GitHub and Linear connections. Browser
-  // steps (device codes, OAuth pages) still open on This computer.
+  // Project → Location: where the project lives (the move runs in this
+  // computer's main process, and says so for a project on another one) and
+  // the project's checks, read through the project machine's pin.
+  location: [
+    { entryIds: "tab", render: () => <SettingsColumn wide><LocationPage /></SettingsColumn>, machine: "bound", title: "Location" },
+  ],
+  // Connections live in the credential store of the machine that owns the
+  // project and are read by its runtime. Every call takes that machine's pin.
+  // Browser steps (device codes, OAuth pages) still open on This computer.
   integrations: [
-    { entryIds: ["integrations.github"], render: () => <GitHubIntegrationSection />, machine: "routed", linksToTabMachine: true, title: "GitHub", group: "github" },
-    { entryIds: ["integrations.linear"], render: () => <LinearIntegrationSection />, machine: "routed", linksToTabMachine: true, title: "Linear", group: "linear" },
-    { entryIds: ["integrations.jira", "integrations.jira-projects", "integrations.jira-top-bar"], render: () => <JiraSection />, machine: "routed", linksToTabMachine: true, title: "Jira", group: "jira" },
+    { entryIds: ["integrations.github"], render: () => <GitHubIntegrationSection />, machine: "routed", title: "GitHub", group: "github" },
+    { entryIds: ["integrations.linear"], render: () => <LinearIntegrationSection />, machine: "routed", title: "Linear", group: "linear" },
+    { entryIds: ["integrations.jira", "integrations.jira-projects", "integrations.jira-top-bar"], render: () => <JiraSection />, machine: "routed", title: "Jira", group: "jira" },
   ],
   notifications: [{ entryIds: "tab", render: () => <NotificationsSection /> }],
   mcp: [{ entryIds: "tab", render: () => <McpServersSection /> }],
   secrets: [{ entryIds: ["secrets.secrets"], render: () => <SecretsSection /> }],
-  // Health: project issues, space, cleanups, sessions and the background
-  // service, as tabs of one page. Runtime calls carry the machine's pin; the
-  // service's plain-IPC reads show only on This computer.
-  storage: [
-    {
-      entryIds: "tab",
-      render: () => <SettingsColumn wide><HealthPage /></SettingsColumn>,
-      machine: "routed",
-      title: "Health",
-    },
-  ],
-  // Archived lanes and sessions belong to one machine's checkout, so the page
-  // reads and acts through that machine's pin.
-  archive: [{ entryIds: ["archive.items"], render: () => <ArchiveSection />, machine: "routed" }],
   stats: [{ entryIds: ["stats.usage"], render: () => <AdeUsageSection /> }],
 };
 
@@ -485,7 +443,7 @@ export function TabContent({
   standalone = false,
 }: {
   tab: SettingsTabId;
-  /** The machine a Machines page is for. Null for Account and Project pages. */
+  /** The machine a Computer page (or the open project) is on. Null for You pages. */
   machine: SettingsMachinePage | null;
   /** Standalone Settings (no project) also drops sections with nothing to show. */
   standalone?: boolean;

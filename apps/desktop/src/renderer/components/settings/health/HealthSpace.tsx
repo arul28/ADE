@@ -17,7 +17,7 @@ import type {
   StorageCleanupTarget,
   StorageItem,
 } from "../../../../shared/types/storage";
-import type { LaneReclaimRisk, OpenProjectBinding } from "../../../../shared/types";
+import type { OpenProjectBinding } from "../../../../shared/types";
 import { ModernSection } from "../primitives";
 import { useSettingsMachineScope } from "../SettingsMachineScope";
 import { showToast, type ToastTone } from "../../app/toast/toastStore";
@@ -26,7 +26,7 @@ import { SmartTooltip } from "../../ui/SmartTooltip";
 import { UsageSparkline } from "../../usage/UsageSparks";
 import { AppleRecordingsWarning } from "../AppleRecordingsWarning";
 import { StorageCleanupDialog, type SafeCleanupPlanConfig } from "../storage/StorageCleanupDialog";
-import { ReclaimConfirmDialog } from "../storage/ReclaimConfirmDialog";
+import { useLaneReclaim } from "../lanes/useLaneReclaim";
 import {
   CATEGORY_META,
   DB_COMPACTION_PENDING_HINT,
@@ -43,10 +43,9 @@ import {
   freeSpaceLevel,
   groupLaneItems,
   groupRowsByLabel,
-  laneBars,
   maintenanceOutcome,
 } from "../storage/storageView";
-import { FreeSpaceMeter, LaneBars, StackedBreakdown } from "./healthCharts";
+import { FreeSpaceMeter, StackedBreakdown } from "./healthCharts";
 import type { HealthData } from "./useHealthData";
 
 /** One storage result at a time: a new outcome replaces the last in place. */
@@ -73,10 +72,6 @@ export function HealthSpace({ data }: { data: HealthData }) {
   const [cleanup, setCleanup] = React.useState<CleanupRequest | null>(null);
   const [safeOpen, setSafeOpen] = React.useState(false);
   const [compressing, setCompressing] = React.useState(false);
-  const [reclaimRisk, setReclaimRisk] = React.useState<LaneReclaimRisk | null>(null);
-  const [reclaimConfirm, setReclaimConfirm] = React.useState("");
-  const [discardDirtyConfirmed, setDiscardDirtyConfirmed] = React.useState(false);
-  const [reclaimBusy, setReclaimBusy] = React.useState(false);
   const [detailsOpen, setDetailsOpen] = React.useState(false);
 
   const runMaintenanceBridge = React.useMemo(() => getRunMaintenanceNow(), []);
@@ -137,37 +132,7 @@ export function HealthSpace({ data }: { data: HealthData }) {
     }
   }, [compressNow, notify, pin, refreshAfterChange]);
 
-  const openReclaim = React.useCallback(async (laneId: string) => {
-    try {
-      const risk = await window.ade.lanes.getReclaimRisk({ laneId }, pin);
-      setReclaimConfirm("");
-      setDiscardDirtyConfirmed(false);
-      setReclaimRisk(risk);
-    } catch (err) {
-      notify(err instanceof Error ? err.message : "Could not review this lane", "error");
-    }
-  }, [notify, pin]);
-
-  const confirmReclaim = React.useCallback(async () => {
-    if (!reclaimRisk || reclaimConfirm !== "RECLAIM" || (reclaimRisk.dirty && !discardDirtyConfirmed)) return;
-    setReclaimBusy(true);
-    try {
-      const result = await window.ade.lanes.archiveAndReclaim({
-        laneId: reclaimRisk.laneId,
-        confirmation: "RECLAIM",
-        ...(reclaimRisk.dirty && discardDirtyConfirmed ? { forceDirty: true } : {}),
-      }, pin);
-      notify(`Reclaimed about ${formatBytes(result.reclaimedBytes)}. The lane, branch, and chats were kept.`);
-      setReclaimRisk(null);
-      setReclaimConfirm("");
-      setDiscardDirtyConfirmed(false);
-      refreshAfterChange();
-    } catch (err) {
-      notify(err instanceof Error ? err.message : "Could not reclaim this lane", "error");
-    } finally {
-      setReclaimBusy(false);
-    }
-  }, [discardDirtyConfirmed, notify, pin, reclaimConfirm, reclaimRisk, refreshAfterChange]);
+  const reclaim = useLaneReclaim(pin, refreshAfterChange);
 
   const restoreLane = React.useCallback(async (laneId: string) => {
     try {
@@ -192,7 +157,6 @@ export function HealthSpace({ data }: { data: HealthData }) {
 
   const series = React.useMemo(() => categorySeries(snapshot?.categories ?? []), [snapshot]);
   const lanes = byId.get("lanes_worktrees");
-  const bars = React.useMemo(() => laneBars(lanes?.items ?? []), [lanes]);
   const dbSamples = React.useMemo(() => dbSizeSamples(snapshot?.extras), [snapshot]);
   const dbTrend = dbSizeTrend(dbSamples);
   const database = byId.get("database");
@@ -206,10 +170,10 @@ export function HealthSpace({ data }: { data: HealthData }) {
       <ModernSection
         group="Disk"
         anchor="storage"
-        title="Space"
+        title="Storage"
         hint={snapshot
           ? `ADE keeps ${formatMeasuredBytes(snapshot.totalAdeBytes, snapshot.truncated)} for this project. Measured ${relativeWhen(snapshot.generatedAt)}.`
-          : "What ADE keeps on this machine for this project, and what you can clear."}
+          : "What ADE keeps for this project, and what you can clear."}
         actions={snapshot ? (
           <>
             <button
@@ -313,18 +277,6 @@ export function HealthSpace({ data }: { data: HealthData }) {
         ) : null}
       </ModernSection>
 
-      {snapshot && bars.length > 0 ? (
-        <ModernSection
-          group="Disk"
-          title="Lanes"
-          hint={lanes
-            ? `${lanes.itemCount ?? lanes.items.length} lane folders, ${formatMeasuredBytes(lanes.bytes, lanes.partial)} in all.`
-            : undefined}
-        >
-          <LaneBars bars={bars} />
-        </ModernSection>
-      ) : null}
-
       {snapshot && plan && (plan.rows.length > 0 || plan.alsoRuns.length > 0) ? (
         <ModernSection
           group="Disk"
@@ -365,7 +317,7 @@ export function HealthSpace({ data }: { data: HealthData }) {
             onClick={() => setDetailsOpen((value) => !value)}
           >
             <CaretDown size={12} weight="bold" className="ade-health-caret" data-open={detailsOpen || undefined} />
-            Details: every lane, leftovers and what each kind of data holds
+            Details: lane folders, leftovers and what each kind of data holds
           </button>
           {detailsOpen ? (
             <div className="ade-modern-sections" style={{ gap: 28 }}>
@@ -375,7 +327,7 @@ export function HealthSpace({ data }: { data: HealthData }) {
                   laneIdByKey={laneIdByKey}
                   archivedAtByKey={archivedAtByKey}
                   onRequestCleanup={setCleanup}
-                  onReclaim={(laneId) => void openReclaim(laneId)}
+                  onReclaim={(laneId) => void reclaim.open(laneId)}
                   onRestore={(laneId) => void restoreLane(laneId)}
                 />
               ) : null}
@@ -418,23 +370,7 @@ export function HealthSpace({ data }: { data: HealthData }) {
         />
       ) : null}
 
-      {reclaimRisk ? (
-        <ReclaimConfirmDialog
-          risk={reclaimRisk}
-          busy={reclaimBusy}
-          value={reclaimConfirm}
-          discardDirtyConfirmed={discardDirtyConfirmed}
-          onChange={setReclaimConfirm}
-          onDiscardDirtyChange={setDiscardDirtyConfirmed}
-          onClose={() => {
-            if (!reclaimBusy) {
-              setReclaimRisk(null);
-              setDiscardDirtyConfirmed(false);
-            }
-          }}
-          onConfirm={() => void confirmReclaim()}
-        />
-      ) : null}
+      {reclaim.dialog}
     </div>
   );
 }

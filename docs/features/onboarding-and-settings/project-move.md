@@ -1,6 +1,6 @@
 # Moving a project to another folder or drive
 
-Settings → General → **Project location** shows where the open project lives
+Settings → Project → **Location** shows where the open project lives
 and offers **Move…**. The move copies the project with every lane, rewrites
 every place that names its old path, checks the copy, then switches over. The
 original is kept, renamed, until the person deletes it. macOS only for now;
@@ -67,14 +67,14 @@ untouched original.
   the prompt promises to ask before changing anything; nothing launches until
   *Start agent*, and the chat shows the whole prompt. The old
   copy's Keep / Remind me / Delete can wait: the card says it can be cleaned
-  up later from Settings → Project location.
+  up later from Settings → Location.
 - **The old-copy banner** shows only in the moved project's tab (matched on
   the record's `destinationRoot`), never over another open project.
 - **Trust.** `finishSwitch` copies folder trust to the new path, append only:
   Codex `trust_level` in `$CODEX_HOME/config.toml`, Claude Code's
   `projects["<path>"]` entries (trust, allowed tools, MCP approvals) in
   `~/.claude.json` and each ADE Claude home, and Copilot's `trustedFolders`.
-- **Health.** Settings → Health (and `ade health`) checks a moved project for
+- **Health.** Settings → Location and Overview (and `ade health`) check a moved project for
   anything left behind and fixes it in place; see
   [`project-health.md`](./project-health.md). The check agent's prompt carries
   the preflight's notes, what ADE did and couldn't do, and points at

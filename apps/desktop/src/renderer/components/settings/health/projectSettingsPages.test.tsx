@@ -5,7 +5,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { expectNoJargon } from "../../../../test/jargonGuard";
-import { HealthPage } from "./HealthPage";
+import { LanesSettingsPage } from "../lanes/LanesSettingsPage";
+import { LocationPage } from "../location/LocationPage";
+import { ServiceStatusSection } from "./HealthService";
 import { ToastStack } from "../../app/toast/ToastStack";
 import { dismissToast, getToasts } from "../../app/toast/toastStore";
 import { DialogHost } from "../../ui/dialog";
@@ -20,7 +22,7 @@ import type {
   StorageSnapshot,
   StorageSnapshotExtras,
 } from "../../../../shared/types/storage";
-import type { ProjectHealthFixResult, ProjectHealthReport } from "../../../../shared/types/projectHealth";
+import type { ProjectHealthFixResult, ProjectHealthReport, ProjectLaneHealth } from "../../../../shared/types/projectHealth";
 import type {
   AppResourceUsageSnapshot,
   LaneCleanupConfig,
@@ -366,6 +368,8 @@ function makeReport(): ProjectHealthReport {
         fix: { id: "install-dependencies", label: "Install", description: "Opens a terminal and runs npm install.", kind: "terminal" },
       },
     ],
+    lanes: [],
+    staleAfterDays: 14,
     checks: [
       { id: "stale-paths", label: "Saved paths point at this folder", ok: false },
       { id: "lane-folders", label: "Every lane has its folder", ok: true },
@@ -373,10 +377,32 @@ function makeReport(): ProjectHealthReport {
   };
 }
 
-function renderHealth(entry = "/settings?tab=storage&health=space", scope?: Parameters<typeof settingsMachineScope>[0]) {
+function makeLane(laneId: string, overrides: Partial<ProjectLaneHealth> = {}): ProjectLaneHealth {
+  return {
+    laneId,
+    name: laneId,
+    laneType: "worktree",
+    worktreePath: `${PROJECT}/.ade/worktrees/${laneId}`,
+    branch: `ade/${laneId}`,
+    folderExists: true,
+    pr: null,
+    lastActivityAt: new Date().toISOString(),
+    dirty: false,
+    changedFileCount: 0,
+    unpushedCommits: 0,
+    runningSessions: 0,
+    stale: null,
+    safeToArchive: true,
+    ...overrides,
+  };
+}
+
+type ScopeInput = Parameters<typeof settingsMachineScope>[0];
+
+function renderPage(node: React.ReactNode, entry = "/settings?tab=lanes-git", scope?: ScopeInput) {
   const page = (
     <MemoryRouter initialEntries={[entry]}>
-      <HealthPage />
+      {node}
       <ToastStack />
       <DialogHost />
     </MemoryRouter>
@@ -384,11 +410,16 @@ function renderHealth(entry = "/settings?tab=storage&health=space", scope?: Para
   return render(scope ? <SettingsMachineScopeProvider scope={settingsMachineScope(scope)}>{page}</SettingsMachineScopeProvider> : page);
 }
 
-async function openDetails() {
-  fireEvent.click(await screen.findByRole("button", { name: /details: every lane/i }));
+/** Project → Lanes: the lane list, storage, cleanups, and the closed blocks. */
+function renderLanes(entry?: string, scope?: ScopeInput) {
+  return renderPage(<LanesSettingsPage />, entry, scope);
 }
 
-describe("HealthPage", () => {
+async function openDetails() {
+  fireEvent.click(await screen.findByRole("button", { name: /details: lane folders/i }));
+}
+
+describe("Project → Lanes, Location, and Computer → ADE service", () => {
   afterEach(() => {
     cleanup();
     for (const toast of getToasts()) dismissToast(toast.id);
@@ -400,7 +431,7 @@ describe("HealthPage", () => {
 
   it("shows what ADE keeps as at most four categories plus Other, with free space", async () => {
     installAdeMock();
-    renderHealth();
+    renderLanes();
 
     await screen.findByRole("img", { name: /Lanes & worktrees/ });
     const legend = screen.getByRole("group", { name: /What ADE keeps, by category/ });
@@ -420,7 +451,7 @@ describe("HealthPage", () => {
     lanes.partial = true;
     lanes.items[0]!.partial = true;
     vi.mocked(window.ade.storage.getSnapshot).mockResolvedValue(partial);
-    renderHealth();
+    renderLanes();
 
     expect((await screen.findAllByText("≥ 4.0 GB")).length).toBeGreaterThan(0);
     expect(screen.getByText(/Sizes marked ≥ are at least that much/)).toBeTruthy();
@@ -428,7 +459,7 @@ describe("HealthPage", () => {
 
   it("lists archived and left-over lanes with their actions, and keeps active lanes", async () => {
     installAdeMock();
-    renderHealth();
+    renderLanes();
     await openDetails();
 
     expect((await screen.findAllByText("Old feature")).length).toBeGreaterThan(0);
@@ -442,7 +473,7 @@ describe("HealthPage", () => {
 
   it("opens proof removal by its own name, and points blocked proof at the proof drawer", async () => {
     installAdeMock();
-    renderHealth();
+    renderLanes();
     await openDetails();
     const proofRow = (await screen.findByText("Proof and recordings")).closest(".ade-st-item") as HTMLElement;
     fireEvent.click(within(proofRow).getByRole("button", { name: "Remove…" }));
@@ -453,14 +484,14 @@ describe("HealthPage", () => {
     const blockedSnapshot = makeSnapshot();
     blockedSnapshot.categories.find((category) => category.id === "proof_attachments")!.items = [];
     vi.mocked(window.ade.storage.getSnapshot).mockResolvedValue(blockedSnapshot);
-    renderHealth();
+    renderLanes();
     await openDetails();
     expect(await screen.findByText(/Open the proof drawer in a chat to delete individual items/)).toBeTruthy();
   });
 
   it("removes a leftover lane folder: previews, then removes the same targets and reports freed space", async () => {
     const { cleanupPreview, cleanup: cleanupFn } = installAdeMock();
-    renderHealth();
+    renderLanes();
     await openDetails();
 
     fireEvent.click((await screen.findAllByRole("button", { name: /remove files/i }))[0]!);
@@ -486,7 +517,7 @@ describe("HealthPage", () => {
         }],
       },
     });
-    renderHealth();
+    renderLanes();
     await openDetails();
 
     fireEvent.click((await screen.findAllByRole("button", { name: /archive & reclaim/i }))[0]!);
@@ -507,7 +538,7 @@ describe("HealthPage", () => {
 
   it("keeps reclaim focus inside the dialog and closes it on Escape", async () => {
     installAdeMock();
-    renderHealth();
+    renderLanes();
     await openDetails();
 
     const trigger = (await screen.findAllByRole("button", { name: /archive & reclaim/i }))[0]!;
@@ -539,7 +570,7 @@ describe("HealthPage", () => {
         },
       },
     });
-    renderHealth("/settings?tab=storage&health=cleanups");
+    renderLanes();
 
     // An inherited rule shows the value in force, not an empty box.
     const inherited = await screen.findByLabelText(/Archive after inactivity/i);
@@ -558,41 +589,48 @@ describe("HealthPage", () => {
 
   it("offers history compression only when the machine can compress, and reports what it saved", async () => {
     installAdeMock({ withCompress: false });
-    renderHealth();
+    renderLanes();
     await openDetails();
     await screen.findByText("Older than two weeks").catch(() => null);
     expect(screen.queryByRole("button", { name: /compress now/i })).toBeNull();
     cleanup();
 
     const { compressNow } = installAdeMock({ withCompress: true });
-    renderHealth();
+    renderLanes();
     await openDetails();
     fireEvent.click(await screen.findByRole("button", { name: /compress now/i }));
     await waitFor(() => expect(compressNow).toHaveBeenCalledTimes(1));
     expect(await screen.findByText(/Compressed 12 files, saved 300 MB/)).toBeTruthy();
   });
 
-  it("uses plain language with no internal jargon on every tab", async () => {
+  it("uses plain language with no internal jargon on every page", async () => {
     installAdeMock({ withExtras: true });
-    const { container } = renderHealth();
+    const lanes = renderLanes();
     await openDetails();
-    expectNoJargon(container.textContent ?? "");
-    for (const tab of ["Overview", "Cleanups", "Service"]) {
-      fireEvent.click(screen.getByRole("tab", { name: new RegExp(tab) }));
-      await waitFor(() => expect(screen.getByRole("tab", { name: new RegExp(tab) }).getAttribute("aria-selected")).toBe("true"));
-      expectNoJargon(container.textContent ?? "");
-    }
+    expectNoJargon(lanes.container.textContent ?? "");
+    cleanup();
+
+    installAdeMock({ withExtras: true });
+    const location = renderPage(<LocationPage />, "/settings?tab=location");
+    await screen.findByText("2 things need attention");
+    expectNoJargon(location.container.textContent ?? "");
+    cleanup();
+
+    installAdeMock({ withExtras: true });
+    const service = renderPage(<ServiceStatusSection />, "/settings?tab=service");
+    await screen.findAllByText("280 MB");
+    expectNoJargon(service.container.textContent ?? "");
   });
 
   it("offers safe cleanup for an obsolete backup even when the cache estimate is zero", async () => {
     installAdeMock({ extras: { ...makeExtras(), safeReclaimableBytes: 0 } });
-    renderHealth();
+    renderLanes();
     expect(await screen.findByRole("button", { name: /clean up safely/i })).toBeTruthy();
   });
 
   it("puts on the Clean up button what it removes, previews those files, then runs maintenance", async () => {
     const { cleanupPreview, cleanup: cleanupFn, runMaintenanceNow } = installAdeMock({ withExtras: true });
-    renderHealth();
+    renderLanes();
 
     // npm 250 MB + iOS build data 200 MB + the obsolete backup 60 MB.
     const primary = await screen.findByRole("button", { name: "Clean up safely · 510 MB" });
@@ -631,7 +669,7 @@ describe("HealthPage", () => {
       dbSizeBytes: 30 * MB,
     };
     installAdeMock({ withExtras: true, maintenanceReport: failedReport });
-    renderHealth();
+    renderLanes();
 
     fireEvent.click(await screen.findByRole("button", { name: /clean up safely/i }));
     const dialog = await screen.findByRole("dialog");
@@ -643,7 +681,7 @@ describe("HealthPage", () => {
 
   it("shows the database breakdown in plain words", async () => {
     installAdeMock({ withExtras: true });
-    renderHealth();
+    renderLanes();
     await openDetails();
     expect(await screen.findByText("Webhook history")).toBeTruthy();
     expect(screen.getByText("Sync bookkeeping")).toBeTruthy();
@@ -653,20 +691,23 @@ describe("HealthPage", () => {
 
   it("lists cleanups with what each freed, by kind", async () => {
     installAdeMock({ withExtras: true });
-    renderHealth("/settings?tab=storage&health=cleanups");
+    renderLanes();
     expect(await screen.findByText(/database 480 MB/)).toBeTruthy();
     expect(screen.getByText(/2 cleanups freed 480 MB/)).toBeTruthy();
   });
 
   it("shows the background service: slow and failed apart, p95, memory and load", async () => {
     installAdeMock({ withExtras: true });
-    renderHealth("/settings?tab=storage&health=service");
+    renderPage(<ServiceStatusSection />, "/settings?tab=service");
 
-    expect(await screen.findByText("280 MB")).toBeTruthy();
-    expect(await screen.findByText("Light")).toBeTruthy();
-    expect(screen.getByText(/95% of them within 5\.2 s/)).toBeTruthy();
-    const failed = screen.getByText("Failed responses").closest(".ade-modern-stat") as HTMLElement;
+    expect((await screen.findAllByText("280 MB")).length).toBeGreaterThan(0);
+    expect(await screen.findByText(/Load: Light/)).toBeTruthy();
+    expect(screen.getByText(/95% of slow ones finished within 5\.2 s/)).toBeTruthy();
+    const responses = screen.getByRole("list", { name: /slow and failed responses/i });
+    const failed = within(responses).getByText("Failed").closest("li") as HTMLElement;
     expect(within(failed).getByText("1")).toBeTruthy();
+    const slow = within(responses).getByText(/^Slow/).closest("li") as HTMLElement;
+    expect(within(slow).getByText("3")).toBeTruthy();
   });
 
   it("does not show a load reading when resource pressure is unavailable", async () => {
@@ -680,17 +721,17 @@ describe("HealthPage", () => {
       freeMemoryMB: null,
     } as AppResourceUsageSnapshot;
     const { getResourceUsage } = installAdeMock({ withExtras: true, resourceUsage: unavailableUsage });
-    renderHealth("/settings?tab=storage&health=service");
+    renderPage(<ServiceStatusSection />, "/settings?tab=service");
 
     await waitFor(() => expect(getResourceUsage).toHaveBeenCalledTimes(1));
-    await screen.findByText("Background service");
-    expect(screen.queryByText("Light")).toBeNull();
+    await screen.findByText("Service status");
+    expect(screen.queryByText(/Load:/)).toBeNull();
   });
 
   it("warns when Apple recordings exceed the warning size, without a delete action", async () => {
     vi.mocked(readAppleRecordingsTotalBytes).mockResolvedValue(6 * 1024 ** 3);
     installAdeMock({ withExtras: true });
-    renderHealth();
+    renderLanes();
     await openDetails();
 
     expect(await screen.findByText("Apple recordings")).toBeTruthy();
@@ -701,7 +742,7 @@ describe("HealthPage", () => {
 
   it("runs a project fix after confirming what it changes, and shows the report it returns", async () => {
     const { fix, getReport } = installAdeMock();
-    renderHealth("/settings?tab=storage");
+    renderPage(<LocationPage />, "/settings?tab=location");
 
     expect(await screen.findByText("2 things need attention")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Update paths" }));
@@ -717,35 +758,74 @@ describe("HealthPage", () => {
     await waitFor(() => expect(getReport).toHaveBeenLastCalledWith({ forceRefresh: true }, null));
   });
 
-  it.each([
-    ["#diagnostics", "Service"],
-    ["#storage", "Space"],
-    ["#lane-storage-rules", "Cleanups"],
-    ["#session-lifecycle", "Sessions"],
-  ])("opens the tab that holds an old %s link", async (hash, tab) => {
+  it("opens the closed block a link names", async () => {
     installAdeMock({ withExtras: true });
     (window.ade as any).sessions = { getLifecycleSettings: vi.fn(async () => ({ autoSettleLaneSessionsOnPrMerge: true })) };
     (window.ade as any).project = { getSnapshot: vi.fn(() => new Promise(() => undefined)), onStateEvent: vi.fn(() => () => undefined) };
-    renderHealth(`/settings?tab=storage${hash}`);
-    await waitFor(() => expect(screen.getByRole("tab", { name: new RegExp(tab) }).getAttribute("aria-selected")).toBe("true"));
+    // jsdom draws no layout; the page scrolls the named card into view.
+    Element.prototype.scrollIntoView = vi.fn();
+    renderLanes("/settings?tab=lanes-git#session-lifecycle");
+    expect(await screen.findByRole("button", { name: /^sessions$/i, expanded: true })).toBeTruthy();
+    expect(await screen.findByText("Auto-settle sessions when lane PR merges")).toBeTruthy();
+    // The blocks the link did not name stay closed.
+    expect(screen.getByRole("button", { name: /how lanes start/i, expanded: false })).toBeTruthy();
   });
 
-  it("reads another machine through its pin and keeps this computer's service numbers off its page", async () => {
+  it("reads the project's machine through its pin and keeps this computer's service numbers off another machine's page", async () => {
     const { getReport, getResourceUsage, getRuntimeHealth } = installAdeMock({ withExtras: true });
     const binding = { key: "remote:studio" } as unknown as OpenProjectBinding;
-    renderHealth("/settings?tab=storage&health=service", {
+    const studio: ScopeInput = {
       machineId: "studio",
       machineName: "Mac Studio",
       target: { kind: "pinned", binding },
       isThisMachine: false,
-      isActiveBinding: false,
+      isActiveBinding: true,
       online: true,
-    });
-
-    expect(await screen.findByText(/Only on this computer/)).toBeTruthy();
+    };
+    renderLanes("/settings?tab=lanes-git", studio);
     await waitFor(() => expect(window.ade.storage.getSnapshot).toHaveBeenCalledWith({ forceRefresh: undefined }, binding));
     expect(getReport).toHaveBeenCalledWith({ forceRefresh: undefined }, binding);
+    cleanup();
+
+    renderPage(<ServiceStatusSection />, "/settings?tab=service&machine=studio", { ...studio, isActiveBinding: false });
+    expect(await screen.findByText(/Only on this computer/)).toBeTruthy();
     expect(getResourceUsage).not.toHaveBeenCalled();
     expect(getRuntimeHealth).not.toHaveBeenCalled();
+  });
+
+  it("bulk-archives only lanes that lose nothing, checks each again first, and names the ones it skipped", async () => {
+    const report = makeReport();
+    report.lanes = [
+      makeLane("primary", { laneType: "primary", name: "main" }),
+      makeLane("merged-clean", { stale: "pr-merged", pr: { number: 12, state: "merged", url: null, mergedAt: null } }),
+      makeLane("idle-picked-up-work", { stale: "idle" }),
+      makeLane("closed-dirty", { stale: "pr-closed", dirty: true, changedFileCount: 2, safeToArchive: false }),
+    ];
+    const { archiveAndReclaim, getReclaimRisk } = installAdeMock({ report });
+    // Since the list was read, a chat started in one of the selected lanes.
+    getReclaimRisk.mockImplementation(async ({ laneId }: { laneId: string }) => ({
+      laneId,
+      laneName: laneId,
+      worktreePath: `${PROJECT}/.ade/worktrees/${laneId}`,
+      blockedReasons: laneId === "idle-picked-up-work"
+        ? [{ code: "active_work", disposition: "confirmation_required", message: "A chat is running" }]
+        : [],
+    }) as unknown as LaneReclaimRisk);
+    renderLanes();
+
+    // A lane with unsaved work can't be picked for the bulk archive.
+    const dirty = await screen.findByRole("checkbox", { name: /closed-dirty: It has uncommitted changes/ });
+    expect((dirty as HTMLInputElement).disabled).toBe(true);
+    expect(screen.queryByRole("checkbox", { name: /main/ })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Select 2 stale" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Archive 2 lanes/ }));
+    const confirm = await screen.findByRole("alertdialog", { name: "Archive 2 lanes?" });
+    fireEvent.click(within(confirm).getByRole("button", { name: "Archive 2 lanes" }));
+
+    await waitFor(() => expect(getReclaimRisk).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(archiveAndReclaim).toHaveBeenCalledTimes(1));
+    expect(archiveAndReclaim).toHaveBeenCalledWith({ laneId: "merged-clean", confirmation: "RECLAIM" }, null);
+    expect(await screen.findByText(/Skipped idle-picked-up-work: A chat is running/)).toBeTruthy();
   });
 });

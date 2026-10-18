@@ -41,7 +41,7 @@ import {
   ratesForRequest,
   resolveTokenPrice,
 } from "./usagePricing";
-import { previousProjectRoots } from "../../../../../ade-cli/src/services/projects/projectMove/moveJournal";
+import { previousProjectRoots } from "../../../../../ade-cli/src/services/projects/projectMove/movePreviousRoots";
 
 /**
  * The machine-local per-turn usage ledger: one JSON line for each finished

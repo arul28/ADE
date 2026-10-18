@@ -34,8 +34,25 @@ Most checks matter after a project moves (see
 | `agent-history` | Other tools' history still filed under the old path | `move-history`: renames folders, never overwrites |
 | `simulators` | Lane simulators that record the old folder | `repoint-simulators` |
 | `mentions` | Files that name the old folder (git grep + common untracked config) | none; an agent goes through them with the person |
-| `old-copy` | The parked original still on disk | delete from Settings → Project location |
+| `old-copy` | The parked original still on disk | delete from Settings → Location |
 | `drive` | A different drive mounted under the project's drive name; no Time Machine backup | none |
+| `stale-lanes` | Lanes whose PR is merged or closed, or with no activity for 14 days (no open PR) | archive from Settings → Project → Lanes, one by one or in bulk (only lanes that are safe) |
+| `stuck-sessions` | Chats or terminals marked running whose owning process is gone | none; open each and stop or resume it |
+| `git-leftovers` | Lock files older than 10 minutes, a rebase/merge/cherry-pick stopped halfway | none; finish or abort it, remove the lock |
+
+## Lanes
+
+The report carries `lanes`: every active lane with its PR (newest for the
+lane), last activity (latest chat/terminal output, creation or branch tip), git
+state (`git status` and `rev-list HEAD --not --remotes`, read without locks)
+and `stale`. `safeToArchive` means archiving loses nothing: no uncommitted
+files and no commits that exist only in the lane. A squash-merged PR's branch is
+usually deleted from the remote, so commits up to the PR's recorded head count
+as saved. `safeToArchive` is about git only. The lane archive stops running
+chats and terminals after confirmation, so bulk archive in Settings first reads
+each lane's `lanes.getReclaimRisk` and skips (and names) any lane with work
+running or any other confirmation, then calls the ordinary pinned
+`lanes.archiveAndReclaim` once per lane.
 
 ## Gotchas
 

@@ -59,6 +59,7 @@ Measured with `route-sweep.mjs` (idle phase), `gpu-trace.mjs`, and
 | Work with a chat streaming: main-thread work | — | 39–43 ms/s, 36–40 style recalcs/s | 60 ms/s |
 | Work, idle Claude chat with mod UI on screen (dock with the band of three mods, 116 elements): main-thread work | — | 11–17 ms/s; 10–15 ms/s with the setting off, which is the default (Mac Studio M4 Max, 2026-10-12, not the baseline machine) | 30 ms/s |
 | Settings, nothing animating: frames drawn | — | 0/s | 0/s |
+| Settings › Overview, Project › Lanes, Location, Computer › ADE service, idle after load: main-thread work | — | 0.2–0.4 ms/s (Overview 6.8–9.2 ms/s in the first 26 s while its lazy reads land, then 0.3 ms/s); 1.2–1.6k page elements (Mac Studio M4 Max dev build, 2026-10-18, on top of `13d6f10c2`, not the baseline machine) | 30 ms/s |
 | PRs with running checks (3 spinners): frames drawn | 63/s | 30/s | 40/s |
 | PRs with running checks: GPU swap time | 118 ms/s | 57 ms/s | 80 ms/s |
 | Chat list cards: re-renders | ~15/s | 0 | 0 |
