@@ -24,6 +24,7 @@ import {
 import { createChatLaunchEventCoalescer } from "./useChatLaunchSync";
 import {
   buildChatLaunchThreadEvents,
+  CHAT_LAUNCH_BRIDGE_TTL_MS,
   mergeChatLaunchRows,
   selectRosterChatLaunches,
 } from "../components/chat/launch/chatLaunchSynthetic";
@@ -162,10 +163,16 @@ describe("chat launch stand-ins", () => {
     const withReal = mergeChatLaunchRows([realRow], [optimistic("launch-1")]);
     expect(withReal).toEqual([realRow]);
     expect(mergeChatLaunchRows([], [optimistic("launch-1")], new Set(["launch-1"]))).toEqual([]);
-    expect(mergeChatLaunchRows([], [optimistic("launch-1", { phase: "cancelled" })])).toEqual([]);
-    // Once the chat exists and the agent runs, only the host's row lists it.
-    expect(mergeChatLaunchRows([], [optimistic("launch-1", { sessionCreated: true, agentStarted: true, phase: "completed" })])).toEqual([]);
+    const cancelled = optimistic("launch-1", { phase: "cancelled" });
+    expect(selectRosterChatLaunches([{ snapshot: cancelled, binding: BINDING_A, bindingKey: BINDING_A.key }], BINDING_A.key, new Set())).toEqual([]);
     expect(mergeChatLaunchRows([], [optimistic("launch-1", { sessionCreated: true })])).toHaveLength(1);
+    // Once the chat exists and the agent runs, the host's row takes over; the stand-in
+    // bridges only for a bounded window after the agent started (see shouldBridgeChatLaunchRow).
+    const started = optimistic("launch-1", { sessionCreated: true, agentStarted: true, phase: "completed" });
+    const startedAtMs = Date.parse("2026-09-22T10:00:00.000Z");
+    const bridging = [{ snapshot: started, binding: BINDING_A, bindingKey: BINDING_A.key, pendingEndedAtMs: startedAtMs }];
+    expect(selectRosterChatLaunches(bridging, BINDING_A.key, new Set(), startedAtMs + 1_000)).toHaveLength(1);
+    expect(selectRosterChatLaunches(bridging, BINDING_A.key, new Set(), startedAtMs + CHAT_LAUNCH_BRIDGE_TTL_MS)).toEqual([]);
   });
 
   it("lists launches of this binding and of the same project on another machine only", () => {

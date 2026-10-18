@@ -9,7 +9,7 @@ import type {
   LaneEnvInitStep,
   OpenProjectBinding,
 } from "../../shared/types";
-import { chatLaunchStatusLine, createChatLaunchSnapshot, isChatLaunchPending, mergeChatLaunchSnapshot } from "../../shared/chatLaunch";
+import { chatLaunchStatusLine, createChatLaunchSnapshot, isChatLaunchPending, isChatLaunchSucceeded, mergeChatLaunchSnapshot } from "../../shared/chatLaunch";
 import type { DraftLaunchSnapshot } from "../lib/draftLaunchJobs";
 import type { WorkPtyLaunchArgs } from "../components/terminals/cliLaunch";
 import { announceChatLaunchClosed } from "../components/chat/launch/chatLaunchDraftRestore";
@@ -43,6 +43,12 @@ export type ChatLaunchEntry = {
    * shows the failure; Retry re-sends `start` with the same launch id.
    */
   startError: string | null;
+  /**
+   * Local time this window first saw the launch stop being pending (its agent
+   * started). The Work roster bridges a started chat's row from then — see
+   * `shouldBridgeChatLaunchRow`. Local clock, so a host's skew cannot move it.
+   */
+  pendingEndedAtMs: number | null;
 };
 
 type ChatLaunchState = {
@@ -235,9 +241,20 @@ export function insertOptimisticChatLaunch(binding: OpenProjectBinding | null, s
         snapshot,
         hostSeen: false,
         startError: null,
+        pendingEndedAtMs: null,
       },
     };
   });
+}
+
+/**
+ * The local time a launch first showed as no longer pending, carried forward once
+ * set. Only a move this window watches from pending to not pending stamps it: a
+ * launch first seen already started keeps none, so its row is never bridged.
+ */
+function pendingEndedAtFor(current: ChatLaunchEntry | undefined, merged: ChatLaunchSnapshot): number | null {
+  if (current?.pendingEndedAtMs != null) return current.pendingEndedAtMs;
+  return current && isChatLaunchPending(current.snapshot) && !isChatLaunchPending(merged) ? Date.now() : null;
 }
 
 /** Host-authored snapshot (start/retry results, events, list hydration). */
@@ -257,6 +274,7 @@ export function applyChatLaunchSnapshot(binding: OpenProjectBinding | null, snap
         snapshot: merged,
         hostSeen: true,
         startError: null,
+        pendingEndedAtMs: pendingEndedAtFor(current, merged),
       },
     };
   });
@@ -297,6 +315,7 @@ export function hydrateChatLaunches(binding: OpenProjectBinding | null, snapshot
         snapshot: merged,
         hostSeen: true,
         startError: null,
+        pendingEndedAtMs: pendingEndedAtFor(current, merged),
       };
     }
     return next;
@@ -619,6 +638,7 @@ export type ChatLaunchRowSource = {
   snapshot: ChatLaunchSnapshot;
   binding: OpenProjectBinding | null;
   bindingKey: string;
+  pendingEndedAtMs?: number | null;
 };
 
 function rowSignature(source: ChatLaunchRowSource): string {
@@ -632,10 +652,13 @@ function rowSignature(source: ChatLaunchRowSource): string {
     s.title,
     s.modelId ?? "",
     s.startedAt,
-    // What decides whether the roster lists a stand-in row (`shouldListChatLaunchRow`).
+    // What decides whether the roster lists a stand-in row (`shouldListChatLaunchRow`,
+    // `shouldBridgeChatLaunchRow`).
     s.phase === "cancelled" ? "cancelled" : "live",
     s.sessionCreated ? "created" : "reserved",
     isChatLaunchPending(s) ? "pending" : "started",
+    isChatLaunchSucceeded(s) ? "succeeded" : "unsucceeded",
+    source.pendingEndedAtMs ?? "",
     source.bindingKey,
   ].join("\u0001");
 }
@@ -652,7 +675,12 @@ function sameRowSources(a: ChatLaunchRowSource[], b: ChatLaunchRowSource[]): boo
 export function useChatLaunchRowSources(): ChatLaunchRowSource[] {
   return useChatLaunchSelector(
     (state) => Object.values(state.entries)
-      .map((entry) => ({ snapshot: entry.snapshot, binding: entry.binding, bindingKey: entry.bindingKey }))
+      .map((entry) => ({
+        snapshot: entry.snapshot,
+        binding: entry.binding,
+        bindingKey: entry.bindingKey,
+        pendingEndedAtMs: entry.pendingEndedAtMs,
+      }))
       .sort((a, b) => a.snapshot.launchId.localeCompare(b.snapshot.launchId)),
     sameRowSources,
   );

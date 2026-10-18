@@ -65,12 +65,17 @@ import {
 } from "./cliLaunch";
 import { sortLanesForTabs } from "../lanes/laneUtils";
 import { setPendingSessionAnchor } from "./pendingSessionAnchors";
-import { seedCrossMachineOptimisticSession, useRetainedCrossMachineSlices } from "../../state/crossMachineLanes";
+import { requestCrossMachineLanesForMachine, seedCrossMachineOptimisticSession, useRetainedCrossMachineSlices } from "../../state/crossMachineLanes";
 import { cachedGitRemoteIdentity, originUrlForBinding } from "../lanes/laneMachines";
 import { useWorkMachineRouter } from "./useWorkMachineRouter";
 import { clearChatCompanionUiState } from "../chat/chatCompanionUiState";
 import { chatLaunchBindingKey, useChatLaunchRowSources } from "../../state/chatLaunchStore";
-import { mergeChatLaunchRows, selectKnownLaunchSessionIds, selectRosterChatLaunches } from "../chat/launch/chatLaunchSynthetic";
+import {
+  mergeChatLaunchRows,
+  nextChatLaunchBridgeExpiryMs,
+  selectKnownLaunchSessionIds,
+  selectRosterChatLaunches,
+} from "../chat/launch/chatLaunchSynthetic";
 import { subscribeChatLaunchClosed } from "../chat/launch/chatLaunchDraftRestore";
 
 type WorkStatusNavigation = "all" | "running" | "awaiting-input" | "ended" | "settled";
@@ -762,10 +767,6 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     }
     return keys;
   }, [retainedCrossMachineSlices]);
-  const pendingChatLaunches = useMemo(
-    () => selectRosterChatLaunches(chatLaunchRowSources, activeChatLaunchBindingKey, crossMachineBindingKeys),
-    [activeChatLaunchBindingKey, chatLaunchRowSources, crossMachineBindingKeys],
-  );
   /**
    * Session ids owned by a live launch on this project — listed or not (see
    * `selectKnownLaunchSessionIds`). The prune below keeps these valid so the
@@ -776,16 +777,64 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     () => selectKnownLaunchSessionIds(chatLaunchRowSources, activeChatLaunchBindingKey, crossMachineBindingKeys),
     [activeChatLaunchBindingKey, chatLaunchRowSources, crossMachineBindingKeys],
   );
+  // A started chat's row bridges until the host lists it (`shouldBridgeChatLaunchRow`).
+  // It lapses on its own clock: the roster's poll only runs while the host has a
+  // running chat, so a bridged row for a chat that never appears would not be
+  // re-read otherwise.
+  const [bridgeEpoch, setBridgeEpoch] = useState(0);
+  const bridgeExpiryMs = useMemo(() => {
+    void bridgeEpoch;
+    return nextChatLaunchBridgeExpiryMs(chatLaunchRowSources, Date.now());
+  }, [bridgeEpoch, chatLaunchRowSources]);
+  useEffect(() => {
+    if (bridgeExpiryMs == null) return;
+    const timer = window.setTimeout(
+      () => setBridgeEpoch((value) => value + 1),
+      Math.max(0, bridgeExpiryMs - Date.now()),
+    );
+    return () => window.clearTimeout(timer);
+  }, [bridgeEpoch, bridgeExpiryMs]);
   const sessions = useMemo(() => {
-    if (pendingChatLaunches.length === 0) return hostSessions;
+    // Re-selected on every roster read, so a bridged row is re-checked against
+    // its deadline whenever the roster moves, and on the timer when it does not.
+    void bridgeEpoch;
+    const launches = selectRosterChatLaunches(chatLaunchRowSources, activeChatLaunchBindingKey, crossMachineBindingKeys);
+    if (launches.length === 0) return hostSessions;
     // A launch row yields to the real row wherever it appears — this roster or
-    // the machine slice that owns a launch pinned to another machine.
+    // the machine slice that owns a launch pinned to another machine. A slice
+    // session only appears once its machine also lists its lane
+    // (`buildCrossMachineLaneRows` renders nothing without one).
     const knownIds = new Set<string>();
     for (const machine of retainedCrossMachineSlices) {
-      for (const session of machine.sessions) knownIds.add(session.id);
+      const laneIds = new Set(machine.lanes.map((lane) => lane.id));
+      for (const session of machine.sessions) {
+        if (laneIds.has(session.laneId)) knownIds.add(session.id);
+      }
     }
-    return mergeChatLaunchRows(hostSessions, pendingChatLaunches, knownIds);
-  }, [hostSessions, pendingChatLaunches, retainedCrossMachineSlices]);
+    return mergeChatLaunchRows(hostSessions, launches, knownIds);
+  }, [
+    activeChatLaunchBindingKey,
+    bridgeEpoch,
+    chatLaunchRowSources,
+    crossMachineBindingKeys,
+    hostSessions,
+    retainedCrossMachineSlices,
+  ]);
+
+  // A launch pinned to another machine lands its chat in that machine's slice,
+  // which the union re-reads only on its own tick. Ask for that machine as soon
+  // as the agent starts — once per launch — so the chat lands on the next
+  // coalesced read instead of up to one tick later.
+  const foreignLaunchRefreshRequestedRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    for (const { snapshot, binding, bindingKey, pendingEndedAtMs } of chatLaunchRowSources) {
+      if (pendingEndedAtMs == null || snapshot.phase === "cancelled") continue;
+      if (!binding || bindingKey === activeChatLaunchBindingKey || !crossMachineBindingKeys.has(bindingKey)) continue;
+      if (foreignLaunchRefreshRequestedRef.current.has(snapshot.launchId)) continue;
+      foreignLaunchRefreshRequestedRef.current.add(snapshot.launchId);
+      requestCrossMachineLanesForMachine(machineIdForBinding(binding));
+    }
+  }, [activeChatLaunchBindingKey, chatLaunchRowSources, crossMachineBindingKeys]);
   const [loading, setLoading] = useState(false);
   /** Bumped when the soonest snooze deadline lapses so the partition re-derives. */
   const [snoozeEpoch, setSnoozeEpoch] = useState(0);

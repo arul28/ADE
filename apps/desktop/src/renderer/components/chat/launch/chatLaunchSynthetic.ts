@@ -6,7 +6,7 @@ import type {
 import { LAUNCH_DELIVERY_ERROR_METADATA_KEY } from "../../../../shared/chatUserMessageStatus";
 import type { AdeCardPayload } from "../../../../shared/adeCard";
 import { getModelById, resolveProviderGroupForModel } from "../../../../shared/modelRegistry";
-import { buildLaneSetupCard, isChatLaunchPending, laneSetupCardId } from "../../../../shared/chatLaunch";
+import { buildLaneSetupCard, isChatLaunchPending, isChatLaunchSucceeded, laneSetupCardId } from "../../../../shared/chatLaunch";
 import { chatToolTypeForProvider } from "../../../lib/sessions";
 import { getChatLaunchLocalRecord, type ChatLaunchRowSource } from "../../../state/chatLaunchStore";
 
@@ -39,28 +39,68 @@ export function shouldListChatLaunchRow(snapshot: ChatLaunchSnapshot): boolean {
 }
 
 /**
+ * How long a started chat's row stays listed while the host's own row is still
+ * missing. Matches the optimistic-session windows in `crossMachineLanes` and
+ * `useWorkSessions`: long enough for the chat's machine to list it, short
+ * enough that a chat deleted or archived right after launch cannot linger.
+ */
+export const CHAT_LAUNCH_BRIDGE_TTL_MS = 2 * 60 * 1000;
+
+/**
+ * A started chat whose row stays listed until the host's own row for it lands.
+ *
+ * The agent is up, but the chat's machine has not listed the chat yet: the
+ * active roster refresh and a pinned machine's next slice read both lag the
+ * start. Dropping the stand-in in that gap hands the open tab to the first old
+ * chat (`WorkViewArea` falls back to `visibleSessions[0]`). The bridge lapses
+ * `CHAT_LAUNCH_BRIDGE_TTL_MS` after the launch stopped being pending.
+ */
+export function shouldBridgeChatLaunchRow(source: ChatLaunchRowSource, nowMs: number): boolean {
+  const { snapshot, pendingEndedAtMs } = source;
+  return snapshot.kind === "chat"
+    && Boolean(snapshot.sessionId)
+    && snapshot.sessionCreated
+    && isChatLaunchSucceeded(snapshot)
+    && pendingEndedAtMs != null
+    && nowMs - pendingEndedAtMs < CHAT_LAUNCH_BRIDGE_TTL_MS;
+}
+
+/** When the next bridged row lapses, or null when none is bridging. Drives the roster's expiry timer. */
+export function nextChatLaunchBridgeExpiryMs(sources: readonly ChatLaunchRowSource[], nowMs: number): number | null {
+  let next: number | null = null;
+  for (const source of sources) {
+    if (source.pendingEndedAtMs == null || !shouldBridgeChatLaunchRow(source, nowMs)) continue;
+    const expiresAtMs = source.pendingEndedAtMs + CHAT_LAUNCH_BRIDGE_TTL_MS;
+    if (next == null || expiresAtMs < next) next = expiresAtMs;
+  }
+  return next;
+}
+
+/**
  * The launches the Work roster lists: the active binding's, plus those pinned
  * to the same project on another machine (`sameProjectBindingKeys`). Another
- * project's launch never shows here.
+ * project's launch never shows here. A started chat stays listed while it is
+ * bridging (see `shouldBridgeChatLaunchRow`).
  */
 export function selectRosterChatLaunches(
   sources: readonly ChatLaunchRowSource[],
   activeBindingKey: string,
   sameProjectBindingKeys: ReadonlySet<string>,
+  nowMs: number = Date.now(),
 ): ChatLaunchSnapshot[] {
   return sources
     .filter((source) => source.bindingKey === activeBindingKey || sameProjectBindingKeys.has(source.bindingKey))
-    .map((source) => source.snapshot)
-    .filter(shouldListChatLaunchRow);
+    .filter((source) => shouldListChatLaunchRow(source.snapshot) || shouldBridgeChatLaunchRow(source, nowMs))
+    .map((source) => source.snapshot);
 }
 
 /**
  * Session ids owned by a live launch on this project — listed or not.
  *
- * A launch row delists the instant its agent starts (see `shouldListChatLaunchRow`)
- * while the host's own row for it lands only on the next roster read. Work keeps
- * these ids valid across that gap so an open tab is not dropped (and the active
- * chat moved) in the hand-off.
+ * A launch row can outlive its listing (see `shouldBridgeChatLaunchRow`) while
+ * the host's own row for it lands only on the next roster read. Work keeps these
+ * ids valid across that gap so an open tab is not dropped (and the active chat
+ * moved) in the hand-off.
  */
 export function selectKnownLaunchSessionIds(
   sources: readonly ChatLaunchRowSource[],
@@ -111,8 +151,9 @@ export function buildChatLaunchSessionRow(snapshot: ChatLaunchSnapshot): Termina
 }
 
 /**
- * Merge pending launch rows into a roster. A real row with the same id always
- * wins; launch rows only fill ids the roster does not have yet.
+ * Merge the launch rows the roster lists (`selectRosterChatLaunches`) into a
+ * roster. A real row with the same id always wins; launch rows only fill ids
+ * the roster does not have yet.
  */
 export function mergeChatLaunchRows(
   sessions: TerminalSessionSummary[],
@@ -123,7 +164,6 @@ export function mergeChatLaunchRows(
   const present = new Set(sessions.map((session) => session.id));
   const additions: TerminalSessionSummary[] = [];
   for (const launch of launches) {
-    if (!shouldListChatLaunchRow(launch)) continue;
     const id = launch.sessionId ?? launch.launchId;
     if (present.has(id) || knownIds?.has(id)) continue;
     present.add(id);

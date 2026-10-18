@@ -190,6 +190,7 @@ import {
   resetChatLaunchStoreForTests,
 } from "../../state/chatLaunchStore";
 import { announceChatLaunchClosed, resetChatLaunchDraftRestoreForTests } from "../chat/launch/chatLaunchDraftRestore";
+import { CHAT_LAUNCH_BRIDGE_TTL_MS } from "../chat/launch/chatLaunchSynthetic";
 
 // ---------------------------------------------------------------------------
 // window.ade stubs
@@ -379,8 +380,10 @@ describe("useWorkSessions — pending new-lane chat launches", () => {
     });
     expect(result.current.sessionsById.has("launch-2")).toBe(true);
 
-    // Once the chat exists and the agent runs, the host's row is the chat: no stand-in
-    // (so a chat deleted or archived later does not come back as a ghost).
+    // Once the chat exists and the agent runs, the stand-in bridges until the host lists the
+    // chat, then lapses: a chat deleted or archived before the host lists it must not come back
+    // as a ghost (see shouldBridgeChatLaunchRow).
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     act(() => {
       applyChatLaunchSnapshot(null, launch({
         launchId: "launch-2",
@@ -391,7 +394,12 @@ describe("useWorkSessions — pending new-lane chat launches", () => {
         sequence: 3,
       }));
     });
+    expect(result.current.sessionsById.has("launch-2")).toBe(true);
+    act(() => {
+      vi.advanceTimersByTime(CHAT_LAUNCH_BRIDGE_TTL_MS);
+    });
     expect(result.current.sessionsById.has("launch-2")).toBe(false);
+    vi.useRealTimers();
   });
 });
 
