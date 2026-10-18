@@ -323,8 +323,7 @@ import {
   type SyncCredentialStore,
 } from "../../../ade-cli/src/services/credentials/credentialStore";
 import { adoptFileBackedCredentials } from "../../../ade-cli/src/services/credentials/credentialStoreAdoption";
-import { readDefaultOsBoundKeyMaterialAsync } from "../../../ade-cli/src/services/credentials/osBoundKeyMaterial";
-import { WINDOWS_DPAPI_KEY_FILE } from "../../../ade-cli/src/services/credentials/windowsDpapiMaterial";
+import { readExistingOsBoundKeyMaterialAsync } from "../../../ade-cli/src/services/credentials/osBoundKeyMaterial";
 import {
   createRoutedCredentialStore,
   createUnavailableCredentialStore,
@@ -9052,13 +9051,12 @@ app.whenReady().then(async () => {
   // blocking PowerShell child (230-350 ms on this thread). Decrypt it here, off
   // the thread, and wait for it so that read finds the key cached. Started after
   // the dormant context above, so a key that context already read is not read
-  // again. Only an existing key is read: a missing one is still created by the
+  // again. The read is read-only: a missing key is still created by the
   // synchronous path, as before. Open-file requests that arrive while this waits
   // queue in `pendingProjectOpenFiles`, because `handleProjectOpenFile` is set
   // after it.
   const accountKeyPrewarm = process.platform === "win32"
-    && fs.existsSync(path.join(machineAdeLayout.secretsDir, WINDOWS_DPAPI_KEY_FILE))
-    ? readDefaultOsBoundKeyMaterialAsync(machineAdeLayout.secretsDir).catch(() => null)
+    ? readExistingOsBoundKeyMaterialAsync(machineAdeLayout.secretsDir).catch(() => null)
     : null;
   if (accountKeyPrewarm) await accountKeyPrewarm;
   handleProjectOpenFile = (filePath) => {
