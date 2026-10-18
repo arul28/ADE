@@ -2711,12 +2711,31 @@ function createBuiltInBrowserWindowService(args: {
     return false;
   };
 
-  /** No lease and no handoff waiting to be handed back: free for the taking. */
+  /**
+   * Free for the taking: no live lease and no handoff waiting to be handed
+   * back. A lapsed lease counts as free — nothing else ever lets go of a tab
+   * when its chat finishes, so treating a stale owner as an owner hid every
+   * finished chat's tabs from other agents forever. They filled the tab limit
+   * and no agent could see them to close them (2026-10-18).
+   */
   const isUnownedTab = (tab: BrowserTabState): boolean =>
-    !tab.ownerLaneId
-    && !tab.ownerChatSessionId
-    && !tab.handoff?.previousOwner.laneId
-    && !tab.handoff?.previousOwner.chatSessionId;
+    !tab.handoff?.previousOwner.laneId
+    && !tab.handoff?.previousOwner.chatSessionId
+    && ((!tab.ownerLaneId && !tab.ownerChatSessionId) || isLeaseExpired(tab.ownerLeaseExpiresAt));
+
+  /**
+   * The tab-limit refusal, naming the tabs this caller may close so an agent
+   * can free a slot itself instead of waiting on a person.
+   */
+  const tabLimitError = (input: Pick<BuiltInBrowserClaimArgs, "laneId" | "chatSessionId"> = {}): Error => {
+    const closable = tabs
+      .filter((tab) => !tab.webContents.isDestroyed() && (tabMatchesOwnerInput(tab, input) || isUnownedTab(tab)))
+      .map((tab) => `${tab.id} (${emptyToNull(tab.webContents.getURL()) ?? "blank"})`);
+    const hint = closable.length > 0
+      ? ` Tabs you can close with \`ade browser close --tab <id>\`: ${closable.join(", ")}.`
+      : " Every tab is in use by another chat; ask the user to close one.";
+    return new Error(`ADE browser is limited to ${MAX_BROWSER_TABS} tabs. Close a tab before opening another.${hint}`);
+  };
 
   const reusableOwnedTabForInput = (
     input: BuiltInBrowserClaimArgs = {},
@@ -3511,7 +3530,7 @@ function createBuiltInBrowserWindowService(args: {
       return null;
     }
     if (tabs.length >= MAX_BROWSER_TABS) {
-      emitError(new Error(`ADE browser is limited to ${MAX_BROWSER_TABS} tabs. Close a tab before opening another.`));
+      emitError(tabLimitError());
       return null;
     }
     return popupUrl;
@@ -4943,7 +4962,7 @@ function createBuiltInBrowserWindowService(args: {
       || (Boolean(isolation) && !input.tabId && !reusableOwnedTab);
     const shouldActivate = input.openPanel === true || input.activate !== false || !activeTabId;
     if (createNewTab && tabs.length >= MAX_BROWSER_TABS) {
-      throw new Error(`ADE browser is limited to ${MAX_BROWSER_TABS} tabs. Close a tab before opening another.`);
+      throw tabLimitError(input);
     }
     // Validate tabId BEFORE any side effects (stopInspect/clearSelection) so an invalid id
     // doesn't leave the service with cleared inspect/selection state.
@@ -5024,7 +5043,7 @@ function createBuiltInBrowserWindowService(args: {
     await args.waitForProfileMigration();
     await tabRestorationPromise;
     if (tabs.length >= MAX_BROWSER_TABS) {
-      throw new Error(`ADE browser is limited to ${MAX_BROWSER_TABS} tabs. Close a tab before opening another.`);
+      throw tabLimitError(input);
     }
     // Normalize URL and profile up front so we don't leave an orphan tab, or
     // side effects, on invalid input.

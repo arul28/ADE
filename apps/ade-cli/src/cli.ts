@@ -30547,13 +30547,18 @@ function formatBrowserStatus(value: unknown): string {
   }
   const tabs = Array.isArray(status.tabs) ? status.tabs.filter(isRecord) : [];
   const activeTabId = asString(status.activeTabId);
-  // `claimable` marks a tab the human opened that no chat owns. It is visible
+  // `claimable` marks a tab with no owner or an expired lease. It is visible
   // so an agent can discover it instead of starting a duplicate tab, but every
   // action on it still fails until the caller claims it — so the owner column
   // says exactly that, with the command that fixes it.
   const ownerForTab = (tab: Record<string, unknown>): string => {
     if (tab.claimable === true) {
-      return `not yours — ade browser claim --tab ${asString(tab.id) ?? "<id>"}`;
+      const id = asString(tab.id) ?? "<id>";
+      // A claimable tab that still names an owner is one whose chat went idle
+      // and let its lease lapse: free to reuse, or to close to free a slot.
+      return asString(tab.ownerChatSessionId) || asString(tab.ownerLaneId)
+        ? `idle (lease lapsed) — ade browser claim --tab ${id}, or close it`
+        : `not yours — ade browser claim --tab ${id}`;
     }
     const lane = asString(tab.ownerLaneId);
     const chat = asString(tab.ownerChatSessionId);
