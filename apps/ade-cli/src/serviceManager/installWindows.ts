@@ -1140,10 +1140,11 @@ async function installWindowsServiceImpl(
   // The desktop runs this install on every launch, and replacing that brain
   // ended every chat, agent and terminal running on this machine each time
   // ADE was opened. Re-register the Run value (idempotent) and leave it be.
-  // A session-bound brain is not kept: Windows ends it with the session that
-  // started it, so this install retries the handover that makes it always-on.
+  // Only a brain known to be always-on is kept. A session-bound one (Windows
+  // ends it with the session that started it) or one whose record cannot say
+  // (`sessionBound: null`) is replaced, retrying the always-on handover.
   const forceRestart = env.ADE_FORCE_RUNTIME_SERVICE_RESTART === "1";
-  if (!forceRestart && launcherUnchanged && readPidRecord(pidPath)?.sessionBound !== true) {
+  if (!forceRestart && launcherUnchanged && readPidRecord(pidPath)?.sessionBound === false) {
     const running = await waitForWindowsRuntimeReadiness({
       command: serviceCommand,
       launcherPath,
