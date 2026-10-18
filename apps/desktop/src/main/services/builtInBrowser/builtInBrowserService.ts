@@ -2174,6 +2174,7 @@ function createBuiltInBrowserWindowService(args: {
   let handlingInspectNode = false;
   /** Bumped by every inspect start and stop, so late async work from an earlier run is dropped. */
   let inspectGeneration = 0;
+  let inspectTransition: Promise<unknown> = Promise.resolve();
   let browserSessionConfigured = false;
   let lastEmittedStatusKey: string | null = null;
   let restoringTabs = false;
@@ -3530,6 +3531,7 @@ function createBuiltInBrowserWindowService(args: {
     if (shouldActivate) {
       if (inspecting) {
         inspecting = false;
+        inspectGeneration += 1;
         void teardownInspectWebContents(inspectListenerWebContents).catch((error) => {
           logger()?.debug("built_in_browser.popup_stop_inspect_failed", {
             err: error instanceof Error ? error.message : String(error),
@@ -5213,14 +5215,35 @@ function createBuiltInBrowserWindowService(args: {
     return scopeStatusForInput(getStatus(), input);
   }
 
-  async function startInspect(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserStatus> {
-    // Taken before any wait, so a stop that lands during tab preparation wins.
-    const generation = ++inspectGeneration;
+  /**
+   * Inspect starts and stops run one at a time, so a stop can never land in
+   * the middle of a start (or the reverse) and tear down half of a newer run.
+   */
+  const serializeInspectTransition = <T>(transition: () => Promise<T>): Promise<T> => {
+    const next = inspectTransition.then(transition, transition);
+    inspectTransition = next.catch(() => {});
+    return next;
+  };
+
+  function startInspect(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserStatus> {
+    return serializeInspectTransition(() => startInspectNow(input));
+  }
+
+  function stopInspect(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserStatus> {
+    return serializeInspectTransition(() => stopInspectNow(input, null));
+  }
+
+  /** Stop the inspect run `generation` only; a newer run is left alone. */
+  function stopInspectRun(generation: number): Promise<BuiltInBrowserStatus> {
+    return serializeInspectTransition(() => stopInspectNow({}, generation));
+  }
+
+  async function startInspectNow(input: BuiltInBrowserTabTargetArgs): Promise<BuiltInBrowserStatus> {
     const tab = await prepareTabCapability(input, {
       emptyMessage: "No active browser tab. Open a tab before starting inspect.",
       consentReason: "The agent requested DOM inspection for this browser tab.",
     });
-    if (generation !== inspectGeneration) return scopeStatusForInput(getStatus(), input);
+    inspectGeneration += 1;
     const wc = tab.webContents;
     attachViewsToCurrentWindow();
     attachDebuggerListeners(wc);
@@ -5241,11 +5264,6 @@ function createBuiltInBrowserWindowService(args: {
           err: error instanceof Error ? error.message : String(error),
         });
       });
-      if (generation !== inspectGeneration) {
-        // Inspect was stopped while it was starting; undo what this run added.
-        await teardownInspectWebContents(wc);
-        return scopeStatusForInput(getStatus(), input);
-      }
       inspecting = true;
       emitStatus();
       return scopeStatusForInput(getStatus(), input);
@@ -5261,7 +5279,11 @@ function createBuiltInBrowserWindowService(args: {
     }
   }
 
-  async function stopInspect(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserStatus> {
+  async function stopInspectNow(
+    input: BuiltInBrowserTabTargetArgs,
+    onlyGeneration: number | null,
+  ): Promise<BuiltInBrowserStatus> {
+    if (onlyGeneration !== null && onlyGeneration !== inspectGeneration) return scopeStatusForInput(getStatus(), input);
     const inspectWc = inspectListenerWebContents && !inspectListenerWebContents.isDestroyed()
       ? inspectListenerWebContents
       : null;
@@ -5928,7 +5950,7 @@ function createBuiltInBrowserWindowService(args: {
     } finally {
       // Only end the run this click came from, never a newer one.
       if (!superseded()) {
-        await stopInspect().catch((error) => {
+        await stopInspectRun(generation).catch((error) => {
           logger()?.debug("built_in_browser.inspect_cleanup_failed", {
             err: error instanceof Error ? error.message : String(error),
           });

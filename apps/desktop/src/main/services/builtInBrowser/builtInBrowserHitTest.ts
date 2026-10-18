@@ -112,9 +112,9 @@ function childFrameIds(node: CdpFrameTreeNode | undefined, depth = 0): string[] 
 }
 
 /**
- * Move metadata measured inside an iframe out into its parent's viewport. The
- * item belongs to the tab's page; the innermost frame's own address rides
- * along under `metadata.iframe`.
+ * Move metadata measured inside an iframe out into the tab's viewport through
+ * the frame's full (composed) transform. The item belongs to the tab's page;
+ * the frame's own address rides along under `metadata.iframe`.
  */
 export function moveFrameMetadataOut<T extends FrameMeasuredMetadata>(
   measured: T,
@@ -122,14 +122,6 @@ export function moveFrameMetadataOut<T extends FrameMeasuredMetadata>(
   frameId: string,
   viewport: BuiltInBrowserFrame,
 ): T {
-  const existing = measured.metadata.iframe && typeof measured.metadata.iframe === "object"
-    ? measured.metadata.iframe as Record<string, unknown>
-    : null;
-  const innerOrigin = existing?.origin && typeof existing.origin === "object"
-    ? existing.origin as BrowserViewportPoint
-    : { x: 0, y: 0 };
-  // Where the innermost frame's top-left corner sits in this viewport.
-  const origin = roundedPoint(frameToParentPoint({ x: finiteOrZero(innerOrigin.x), y: finiteOrZero(innerOrigin.y) }, transform));
   return {
     ...measured,
     frame: frameToParentRect(measured.frame, transform),
@@ -138,12 +130,24 @@ export function moveFrameMetadataOut<T extends FrameMeasuredMetadata>(
     title: null,
     metadata: {
       ...measured.metadata,
-      iframe: existing
-        ? { ...existing, origin }
-        : { frameId, url: measured.url, title: measured.title, origin },
+      iframe: {
+        frameId,
+        url: measured.url,
+        title: measured.title,
+        // Where the frame's top-left corner sits in the tab's viewport.
+        origin: roundedPoint(frameToParentPoint({ x: 0, y: 0 }, transform)),
+      },
     },
   };
 }
+
+/** A hit, still in the measuring frame's pixels, and how that frame maps into the caller's viewport. */
+type Located<T> = {
+  measured: T;
+  transform: FrameTransform;
+  /** The innermost iframe the node lives in; null for the top document. */
+  frameId: string | null;
+};
 
 /** Where a same-renderer iframe sits, and at what scale, in its session's viewport. */
 async function readFrameOwnerTransform(
@@ -174,15 +178,16 @@ export function createBrowserHitTester<T extends FrameMeasuredMetadata>(deps: Br
   /**
    * Hit-test one session's viewport. Same-renderer iframes are hit-tested
    * through; a cross-site iframe answers as its <iframe> element, so attach to
-   * it and look inside. Results come back in this session's viewport pixels.
+   * it and look inside. The answer stays in the measuring frame's own pixels,
+   * with the transform that maps that frame into this session's viewport, so
+   * nested frames compose transforms rather than boxes.
    */
   const locate = async (
     wc: WebContents,
     point: BrowserViewportPoint,
     sessionId: string | undefined,
-    tabViewport: BuiltInBrowserFrame,
     depth: number,
-  ): Promise<T | null> => {
+  ): Promise<Located<T> | null> => {
     if (sessionId) await sendDebuggerCommand(wc, "DOM.enable", {}, sessionId);
     const metrics = await sendDebuggerCommand<CdpLayoutMetricsResponse>(wc, "Page.getLayoutMetrics", {}, sessionId);
     const result = await sendDebuggerCommand<CdpGetNodeForLocationResponse>(wc, "DOM.getNodeForLocation", {
@@ -201,7 +206,7 @@ export function createBrowserHitTester<T extends FrameMeasuredMetadata>(deps: Br
         .catch(() => null);
       const owner = described?.node;
       if (owner?.frameId && !owner.contentDocument) {
-        const inner = await locateInCrossSiteFrame(wc, point, sessionId, backendNodeId, owner.frameId, tabViewport, depth)
+        const inner = await locateInCrossSiteFrame(wc, point, sessionId, backendNodeId, owner.frameId, depth)
           .catch((error) => {
             logger()?.warn("built_in_browser.cross_site_frame_hit_test_failed", { err: errorMessage(error) });
             return null;
@@ -215,13 +220,13 @@ export function createBrowserHitTester<T extends FrameMeasuredMetadata>(deps: Br
       : null;
     if (!result.frameId || result.frameId === rootFrameId) {
       const measured = await readNodeMetadata(wc, backendNodeId, point, sessionId);
-      return depth > 0 ? { ...measured, viewport: tabViewport } : measured;
+      return { measured, transform: IDENTITY_FRAME_TRANSFORM, frameId: null };
     }
     // A same-renderer iframe: the metadata script measures in that frame's
-    // viewport, so hand it a frame-local point and map the box back out.
+    // viewport, so hand it a frame-local point.
     const transform = await readFrameOwnerTransform(sendDebuggerCommand, wc, result.frameId, sessionId);
     const measured = await readNodeMetadata(wc, backendNodeId, roundedPoint(parentToFramePoint(point, transform)), sessionId);
-    return moveFrameMetadataOut(measured, transform, result.frameId, tabViewport);
+    return { measured, transform, frameId: result.frameId };
   };
 
   const locateInCrossSiteFrame = async (
@@ -230,9 +235,8 @@ export function createBrowserHitTester<T extends FrameMeasuredMetadata>(deps: Br
     sessionId: string | undefined,
     ownerBackendNodeId: number,
     frameId: string,
-    tabViewport: BuiltInBrowserFrame,
     depth: number,
-  ): Promise<T | null> => {
+  ): Promise<Located<T> | null> => {
     const box = await sendDebuggerCommand<CdpBoxModelResponse>(wc, "DOM.getBoxModel", {
       backendNodeId: ownerBackendNodeId,
     }, sessionId);
@@ -244,8 +248,13 @@ export function createBrowserHitTester<T extends FrameMeasuredMetadata>(deps: Br
     const childSessionId = attached.sessionId;
     if (!childSessionId) return null;
     try {
-      const inner = await locate(wc, roundedPoint(parentToFramePoint(point, transform)), childSessionId, tabViewport, depth + 1);
-      return inner ? moveFrameMetadataOut(inner, transform, frameId, tabViewport) : null;
+      const inner = await locate(wc, roundedPoint(parentToFramePoint(point, transform)), childSessionId, depth + 1);
+      if (!inner) return null;
+      return {
+        measured: inner.measured,
+        transform: composeFrameTransforms(transform, inner.transform),
+        frameId: inner.frameId ?? frameId,
+      };
     } finally {
       await sendDebuggerCommand(wc, "Target.detachFromTarget", { sessionId: childSessionId }).catch(() => {});
     }
@@ -272,8 +281,12 @@ export function createBrowserHitTester<T extends FrameMeasuredMetadata>(deps: Br
       height: finiteOrZero(viewport?.clientHeight),
     };
     try {
-      const located = await locate(wc, point, undefined, tabViewport, 0);
-      if (located) return located;
+      const located = await locate(wc, point, undefined, 0);
+      if (located) {
+        return located.frameId
+          ? moveFrameMetadataOut(located.measured, located.transform, located.frameId, tabViewport)
+          : located.measured;
+      }
     } catch (error) {
       logger()?.warn("built_in_browser.point_hit_test_fell_back", { err: errorMessage(error) });
     }
@@ -377,7 +390,12 @@ export function createBrowserFrameInspector(deps: BrowserFrameInspectorDeps) {
       returnByValue: true,
       awaitPromise: false,
       silent: true,
-    }, sessionArg(context.sessionId)).catch(() => {});
+    }, sessionArg(context.sessionId)).catch((error) => {
+      const message = errorMessage(error);
+      // A frame that navigated or closed took its overlay with it.
+      if (/context|session|target/i.test(message) && /not found|cannot find|closed|detached/i.test(message)) return;
+      logger()?.warn("built_in_browser.inspect_frame_cleanup_failed", { err: message });
+    });
   };
 
   const exposeBinding = async (wc: WebContents, sessionId: string): Promise<void> => {
