@@ -1264,7 +1264,7 @@ import {
 import { acquireCopilotSdkConnection, isCopilotSdkWorkerLive, releaseCopilotSdkConnection, type CopilotSdkPooled } from "./copilotSdkPool";
 import type { CopilotRewindListing, CopilotRewindPreview, CopilotRewindResult } from "./copilotSdkProtocol";
 import { createCopilotSdkEventMapperState, mapCopilotSdkEvent, copilotSdkDoneUsage, type CopilotSdkEventMapperState } from "./copilotSdkEventMapper";
-import { copilotSessionApproval } from "./copilotSdkPermissions";
+import { copilotSessionApproval, copilotSessionApprovalLabel } from "./copilotSdkPermissions";
 import { copilotSdkModelDescriptors, readCopilotModelCatalogCache, refreshCopilotModelCatalog } from "./copilotModelsDiscovery";
 import { resolveCopilotSdkRuntime } from "../ai/acpExecutables";
 import { pinnedToolDownload } from "../../../../../ade-cli/src/services/tools/onDemand";
@@ -25574,6 +25574,33 @@ export function createAgentChatService(args: {
     "Cursor tool approval was cancelled because the session closed.";
 
   /** Tear down the active runtime, releasing all resources and cancelling pending approvals. */
+  // Bumped by every teardown, so a runtime start that began before one is not
+  // joined by a send after it (`joinRuntimeStart`).
+  const runtimeTeardownEpochs = new WeakMap<ManagedChatSession, number>();
+  const runtimeTeardownEpoch = (managed: ManagedChatSession): number => runtimeTeardownEpochs.get(managed) ?? 0;
+
+  /**
+   * One runtime start per chat at a time: a send that arrives while a start
+   * (or its first-use download) runs joins it instead of spawning a second
+   * runtime that would orphan the first. A teardown in between (restart, model
+   * switch, close) ends the sharing, and the next send starts afresh.
+   */
+  const joinRuntimeStart = <R>(
+    starts: WeakMap<ManagedChatSession, { epoch: number; promise: Promise<R> }>,
+    managed: ManagedChatSession,
+    start: () => Promise<R>,
+  ): Promise<R> => {
+    const inFlight = starts.get(managed);
+    if (inFlight && inFlight.epoch === runtimeTeardownEpoch(managed)) return inFlight.promise;
+    const promise = start().finally(() => {
+      if (starts.get(managed)?.promise === promise) starts.delete(managed);
+    });
+    // Read after `start()` ran to its first await: a start that tears down a
+    // dead runtime of its own bumps the epoch, and must stay joinable.
+    starts.set(managed, { epoch: runtimeTeardownEpoch(managed), promise });
+    return promise;
+  };
+
   const teardownRuntime = (
     managed: ManagedChatSession,
     openCodeReason: "handle_close" | "idle_ttl" | "ended_session" | "model_switch" | "project_close" | "budget_eviction" | "pool_compaction" | "paused_run" | "shutdown" | "restart" = "handle_close",
@@ -25582,6 +25609,7 @@ export function createAgentChatService(args: {
       cursorPermissionWaiterReason?: string;
     },
   ): void => {
+    runtimeTeardownEpochs.set(managed, runtimeTeardownEpoch(managed) + 1);
     flushBufferedReasoning(managed);
     flushBufferedText(managed);
     closeHttpMcpServers(managed);
@@ -41346,8 +41374,8 @@ export function createAgentChatService(args: {
    * The download of the provider's pinned tool when this machine has not
    * fetched it yet, telling the chat while it waits; null when the tool is on
    * disk, so a ready runtime starts with no extra await. A failed download is
-   * logged and left to the resolver, which falls back to ADE's previous copy or
-   * the machine's own CLI exactly as before.
+   * left to the resolver, which falls back to ADE's previous copy or the
+   * machine's own CLI exactly as before.
    */
   const chatPinnedToolDownload = (managed: ManagedChatSession | null, tool: string, label: string): Promise<void> | null => {
     const download = pinnedToolDownload(tool);
@@ -41360,15 +41388,8 @@ export function createAgentChatService(args: {
         detail: "ADE downloads each agent the first time this machine uses it. The chat continues when it finishes.",
       });
     }
-    return download.then((error) => {
-      if (!error) return;
-      logger.warn("agent_chat.pinned_tool_fetch_failed", {
-        sessionId: managed?.session.id ?? null,
-        tool,
-        kind: error.kind,
-        message: error.message,
-      });
-    });
+    // onDemand.ts logs the outcome; a failure leaves resolution as it was.
+    return download.then(() => undefined);
   };
 
   const startCodexRuntime = async (managed: ManagedChatSession): Promise<CodexRuntime> => {
@@ -41754,9 +41775,14 @@ export function createAgentChatService(args: {
     return runtime;
   };
 
+  const codexRuntimeStarts = new WeakMap<ManagedChatSession, { epoch: number; promise: Promise<CodexRuntime> }>();
   const ensureCodexSessionRuntime = async (managed: ManagedChatSession): Promise<CodexRuntime> => {
     refreshRuntimeCompactionSettings(managed);
     if (managed.runtime?.kind === "codex") return managed.runtime;
+    return joinRuntimeStart(codexRuntimeStarts, managed, () => attachNewCodexRuntime(managed));
+  };
+
+  const attachNewCodexRuntime = async (managed: ManagedChatSession): Promise<CodexRuntime> => {
     runtimeBudget.enforce(managed.session.id);
     const runtime = await startCodexRuntime(managed);
     runtimeCompactionSettings.set(runtime, compactionSignatureFor(managed));
@@ -55030,10 +55056,15 @@ export function createAgentChatService(args: {
     else teardownRuntime(managed, "restart");
   };
 
+  const copilotRuntimeStarts = new WeakMap<ManagedChatSession, { epoch: number; promise: Promise<CopilotRuntime> }>();
   const ensureCopilotRuntime = async (managed: ManagedChatSession): Promise<CopilotRuntime> => {
     if (managed.runtime?.kind === "copilot" && isCopilotSdkWorkerLive(managed.runtime.sdk.process)) {
       return managed.runtime;
     }
+    return joinRuntimeStart(copilotRuntimeStarts, managed, () => startCopilotRuntime(managed));
+  };
+
+  const startCopilotRuntime = async (managed: ManagedChatSession): Promise<CopilotRuntime> => {
     if (managed.runtime) teardownRuntime(managed, managed.runtime.kind === "copilot" ? "restart" : "handle_close");
     const copilotDownload = chatPinnedToolDownload(managed, "copilot", "the Copilot runtime");
     if (copilotDownload) await copilotDownload;
@@ -55282,7 +55313,7 @@ export function createAgentChatService(args: {
             options: [
               { label: "Allow once", value: "approve-once" },
               // Only when Copilot can remember it (see copilotSessionApproval).
-              ...(sessionApproval ? [{ label: "Allow for this session", value: "approve-for-session" }] : []),
+              ...(sessionApproval ? [{ label: copilotSessionApprovalLabel(sessionApproval), value: "approve-for-session" }] : []),
               { label: "Deny", value: "reject" },
             ],
           }],
@@ -55327,20 +55358,30 @@ export function createAgentChatService(args: {
         const retryAfter = typeof request.retryAfterSeconds === "number" && request.retryAfterSeconds > 0
           ? ` The limit resets in about ${Math.ceil(request.retryAfterSeconds / 60)} min.`
           : "";
-        const response = await requestChatInput({
-          chatSessionId: target.session.id,
-          title: "Copilot hit a rate limit",
-          body: `Continue this turn on Auto, which picks an available model?${retryAfter}`,
-          source: "ade",
-          kind: "structured_question",
-          questions: [{ id: "copilot-auto-switch", question: "Switch this chat to Auto?", options: [
-            { label: "Switch to Auto", value: "yes" },
-            { label: "Always switch to Auto", value: "yes_always" },
-            { label: "Wait for the limit", value: "no" },
-          ] }],
-        });
-        const choice = response.answers["copilot-auto-switch"]?.[0];
-        const answer = choice === "yes" || choice === "yes_always" ? choice : "no";
+        let answer: "yes" | "yes_always" | "no" = "no";
+        try {
+          const response = await requestChatInput({
+            chatSessionId: target.session.id,
+            title: "Copilot hit a rate limit",
+            body: `Continue this turn on Auto, which picks an available model?${retryAfter}`,
+            source: "ade",
+            kind: "structured_question",
+            questions: [{ id: "copilot-auto-switch", question: "Switch this chat to Auto?", options: [
+              { label: "Switch to Auto", value: "yes" },
+              { label: "Always switch to Auto", value: "yes_always" },
+              { label: "Wait for the limit", value: "no" },
+            ] }],
+          });
+          const choice = response.answers["copilot-auto-switch"]?.[0];
+          if (choice === "yes" || choice === "yes_always") answer = choice;
+        } catch (error) {
+          // A card that never got an answer is a "no": the held error below
+          // must still become the turn's error.
+          logger.warn("agent_chat.copilot_auto_switch_prompt_failed", {
+            sessionId: target.session.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
         // The rate-limit error was held back for this prompt. Declining makes
         // it the turn's error, so the usage-limit resume can be armed.
         const current = target.runtime?.kind === "copilot" ? target.runtime : null;
@@ -55548,6 +55589,14 @@ export function createAgentChatService(args: {
       runtime.activeTurnId = null;
       runtime.turnSettled = undefined;
       markSessionIdleWithFreshCache(managed);
+      // A rate-limit error held for the Auto-switch question that nothing
+      // answered with "yes" is still this turn's error.
+      const held = runtime.eventMapperState.heldRateLimitError;
+      runtime.eventMapperState.heldRateLimitError = null;
+      if (held && !runtime.interrupted && !runtime.eventMapperState.turnError) {
+        runtime.eventMapperState.turnError = held.message;
+        emitChatEvent(managed, held);
+      }
       // A root `session.error` ends the turn even though `session.idle` follows.
       const endStatus = runtime.interrupted ? "interrupted" : runtime.eventMapperState.turnError ? "failed" : "completed";
       emitChatEvent(managed, { type: "status", turnStatus: endStatus, turnId });

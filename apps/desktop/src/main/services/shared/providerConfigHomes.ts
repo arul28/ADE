@@ -78,6 +78,9 @@ export function qwenConfigHome(args: HomeArg = {}): string {
   return configured ? path.resolve(configured) : path.join(baseHome(args), ".qwen");
 }
 
+/** The Copilot CLI's token variables, in the order it reads them; each beats `copilot login`. */
+export const COPILOT_TOKEN_ENV_KEYS = ["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"] as const;
+
 /** `COPILOT_HOME` names the config directory itself (the `--config-dir` flag is deprecated). */
 export function copilotConfigHome(args: HomeArg = {}): string {
   const configured = trimmed((args.env ?? process.env).COPILOT_HOME);

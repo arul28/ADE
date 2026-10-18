@@ -2,17 +2,14 @@ import fs from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { listPinnedTools, tryResolvePreviousTool, tryResolveTool, type ToolsContext } from "../../../../../ade-cli/src/services/tools/install";
-import {
-  pinnedToolFetchInFlight,
-  pinnedToolNeedsFetch,
-  startPinnedToolFetch,
-} from "../../../../../ade-cli/src/services/tools/onDemand";
+import { pinnedToolDownload, pinnedToolFetchInFlight, pinnedToolNeedsFetch } from "../../../../../ade-cli/src/services/tools/onDemand";
 import { ENV_KEY_MAP } from "../ai/authDetector";
 import { resolveExecutableFromKnownLocations } from "../ai/cliExecutableResolver";
 import { resolveMuseConfigDir } from "../ai/museAuth";
 import {
   claudeConfigHome,
   codexConfigHome,
+  COPILOT_TOKEN_ENV_KEYS,
   copilotConfigHome,
   openCodeDataDirs,
 } from "../shared/providerConfigHomes";
@@ -25,7 +22,7 @@ import {
  * current) or the machine shows signs of using its provider: the provider's own
  * CLI, its login files, or its tokens. Everything else waits until something
  * needs it: a chat, a one-shot task, or a status refresh that finds the
- * provider signed in (`ensurePinnedTool` / `startPinnedToolFetch`). A machine
+ * provider signed in (`pinnedToolDownload`, `startDemandedAgentToolFetches`). A machine
  * that only uses Claude no longer downloads Codex, OpenCode, Copilot and Muse.
  *
  * Cheap on purpose: file and env checks and a PATH walk, never a spawn, so it
@@ -42,8 +39,6 @@ type DemandArgs = {
 };
 
 export type AgentToolDemand = { fetch: string[]; skip: string[] };
-
-const COPILOT_TOKEN_ENV = ["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"] as const;
 
 function hasEnv(env: NodeJS.ProcessEnv, keys: readonly string[]): boolean {
   return keys.some((key) => Boolean(env[key]?.trim()));
@@ -92,7 +87,7 @@ function providerSignals(tool: string, env: NodeJS.ProcessEnv, home: string, pla
       return onPath("codex", env) || exists(path.join(codexConfigHome(homeArgs), "auth.json"));
     case "copilot":
       return onPath("copilot", env)
-        || hasEnv(env, COPILOT_TOKEN_ENV)
+        || hasEnv(env, COPILOT_TOKEN_ENV_KEYS)
         || exists(path.join(copilotConfigHome(homeArgs), "config.json"))
         || ghHostsFiles(env, home, platform).some(exists);
     case "opencode":
@@ -158,15 +153,18 @@ const TOOL_PROVIDER: Record<string, string> = {
 export function startDemandedAgentToolFetches(args: {
   enabled: (provider: string) => boolean;
   opencodeBacked: boolean;
-  env?: NodeJS.ProcessEnv;
-  listPinned?: () => string[];
 }): string[] {
-  const env = args.env ?? process.env;
-  const missing = (args.listPinned ?? (() => listPinnedTools({ env })))()
-    .filter((tool) => !pinnedToolFetchInFlight(tool) && pinnedToolNeedsFetch(tool, { env }))
+  const missing = listPinnedTools()
+    .filter((tool) => !pinnedToolFetchInFlight(tool) && pinnedToolNeedsFetch(tool))
     .filter((tool) => args.enabled(TOOL_PROVIDER[tool] ?? tool));
   if (!missing.length) return [];
-  const demanded = new Set(selectDemandedAgentTools(missing, { env }).fetch);
+  const demanded = new Set(selectDemandedAgentTools(missing).fetch);
   if (args.opencodeBacked) demanded.add("opencode");
-  return missing.filter((tool) => demanded.has(tool) && startPinnedToolFetch(tool, { env }));
+  const started: string[] = [];
+  for (const tool of missing) {
+    if (!demanded.has(tool)) continue;
+    const download = pinnedToolDownload(tool);
+    if (download) started.push(tool);
+  }
+  return started;
 }

@@ -1,7 +1,8 @@
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { getErrorMessage } from "../shared/utils";
-import { isEmbeddedAdeRuntime } from "./sdkWorkerProcess";
+import { isEmbeddedAdeRuntime } from "../shared/processExecution";
 
 const ADE_HOOK_SCRIPT_NAME = "ade-tool-gate.cjs";
 const ADE_HOOK_SHELL_COMMAND_NAME = "ade-tool-gate.sh";
@@ -102,6 +103,42 @@ function embeddedAdeHookRunnerPath(): string {
 
 export const CURSOR_HOOK_RUNNER_COMMAND = "__ade-cursor-hook";
 export const CURSOR_HOOK_SCRIPT_NAMES: readonly string[] = [ADE_HOOK_SCRIPT_NAME, ADE_PRECOMPACT_SCRIPT_NAME];
+
+/**
+ * Run one of ADE's Cursor hook scripts in this process. Only an absolute path
+ * with one of ADE's two hook script names is accepted (no more than that: a
+ * caller able to run `ade` already runs as the user, and `hooks.json` runs any
+ * command it names); the script reads stdin, answers on
+ * stdout and parses its own flags from `process.argv`. `createRequire` gives a
+ * filesystem require, which the SEA's built-in one is not. Resolves once the
+ * script's answer is flushed: `runMainAndExit` exits the moment `main` returns.
+ */
+export async function runCursorHookScript(scriptPath: string | undefined): Promise<void> {
+  if (!scriptPath || !path.isAbsolute(scriptPath) || !CURSOR_HOOK_SCRIPT_NAMES.includes(path.basename(scriptPath))) {
+    process.stderr.write(`ade: ${CURSOR_HOOK_RUNNER_COMMAND} runs only ADE's Cursor hook scripts.\n`);
+    process.exitCode = 2;
+    return;
+  }
+  const stdout = process.stdout;
+  const write = stdout.write.bind(stdout) as (chunk: unknown, encoding?: unknown, callback?: unknown) => boolean;
+  const answered = new Promise<void>((resolve) => {
+    stdout.write = ((chunk: unknown, encoding?: unknown, callback?: unknown) => {
+      const done = typeof encoding === "function" ? encoding : callback;
+      return write(chunk, typeof encoding === "function" ? undefined : encoding, (error?: Error | null) => {
+        if (typeof done === "function") done(error);
+        resolve();
+      });
+    }) as typeof stdout.write;
+  });
+  try {
+    createRequire(scriptPath)(scriptPath);
+  } catch (error) {
+    process.stderr.write(`ade: could not run ${scriptPath}: ${error instanceof Error ? error.message : String(error)}\n`);
+    process.exitCode = 1;
+    return;
+  }
+  await answered;
+}
 
 function buildHookCommand(
   nodePath: string | undefined,

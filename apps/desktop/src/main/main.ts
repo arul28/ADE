@@ -3221,7 +3221,7 @@ app.whenReady().then(async () => {
   });
   if (app.isPackaged && process.env.NODE_ENV !== "test" && process.env.ADE_DISABLE_TOOLS_FETCH !== "1") {
     // Tools this machine shows no sign of using download when something needs them.
-    enablePinnedToolFetch();
+    enablePinnedToolFetch(updateLogger);
     void agentToolsCacheService.ensureMissing().catch(() => {
       // Per-tool failures are already recorded on the snapshot and in the log;
       // a rejected kick must never take down app startup.

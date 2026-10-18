@@ -14,6 +14,7 @@ import type {
 import type { Logger } from "../logging/logger";
 import type { ProductAnalyticsService } from "../analytics/productAnalyticsService";
 import { selectDemandedAgentTools, type AgentToolDemand } from "./agentToolDemand";
+import { trackPinnedToolFetch } from "../../../../../ade-cli/src/services/tools/onDemand";
 
 export type AgentToolsCacheService = {
   getSnapshot(): AgentToolsCacheSnapshot;
@@ -193,7 +194,13 @@ export function createAgentToolsCacheService(args: {
     for (const tool of missing) {
       const startedAtMs = now();
       try {
-        await ensure([tool], { onProgress: applyProgress });
+        // Through the shared tracker, so a chat that needs this tool meanwhile
+        // joins this download and status reads see it in flight. A download a
+        // chat already started reports no progress here, so mark it now.
+        states.set(tool, { tool, status: "fetching", percent: null, errorKind: null });
+        emit();
+        const failure = await trackPinnedToolFetch(tool, () => ensure([tool], { onProgress: applyProgress }));
+        if (failure) throw failure;
         states.set(tool, { tool, status: "installed", percent: null, errorKind: null });
         args.logger.info("agentTools.fetched", { tool });
         captureOutcome(tool, "success", now() - startedAtMs);

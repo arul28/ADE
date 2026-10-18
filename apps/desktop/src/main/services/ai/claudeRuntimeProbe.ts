@@ -2,6 +2,7 @@ import { query as claudeQuery, type SDKMessage } from "@anthropic-ai/claude-agen
 // Deep import rather than the `services/tools` barrel: this is the only symbol
 // the probe needs and the barrel pulls the whole fetch/install stack with it.
 import { pinnedToolFetchPending } from "../../../../../ade-cli/src/services/tools/cacheLookup";
+import { pinnedToolDownload } from "../../../../../ade-cli/src/services/tools/onDemand";
 import type { Logger } from "../logging/logger";
 import { getErrorMessage } from "../shared/utils";
 import {
@@ -183,9 +184,12 @@ export async function probeClaudeRuntimeHealth(args: {
         && isExecutablePath(claudeExecutable.path)
         && normalizeErrorMessage(error).toLowerCase().includes("native binary not found");
       // Nothing resolved AND the pinned tool has not landed yet: this is the
-      // cold first-run window, not a broken machine. Say so instead of passing
-      // the SDK's raw "not found" through.
-      const fetchPending = !resolvedToRealExecutable && pinnedToolFetchPending(CLAUDE_TOOL_NAME);
+      // cold first-run window, not a broken machine. Start (or join) the
+      // download so "still downloading" is true, instead of passing the SDK's
+      // raw "not found" through.
+      const fetchPending = !resolvedToRealExecutable
+        && pinnedToolFetchPending(CLAUDE_TOOL_NAME)
+        && pinnedToolDownload(CLAUDE_TOOL_NAME) != null;
       const runtimeFailureMessage = fetchPending
         ? CLAUDE_RUNTIME_FETCH_PENDING_ERROR
         : missingMessageIsFalseNegative

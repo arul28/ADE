@@ -101,6 +101,7 @@ import { isProviderInstanceProvider } from "../../../shared/types/providerInstan
 import { detectCliAuthStatuses } from "../ai/authDetector";
 import { buildClaudeAvailabilityFromConnection } from "../ai/claudeAvailability";
 import { buildProviderConnections } from "../ai/providerConnectionStatus";
+import { resolveCopilotSdkRuntime } from "../ai/acpExecutables";
 import { collectAcpProviderDiagnostics, runAcpProviderUpdate } from "../ai/acpProviderDiagnostics";
 import { resolvePiInstallation } from "../ai/piInstallation";
 import { pathsEqual } from "../shared/pathCompare";
@@ -1567,7 +1568,11 @@ async function buildGlobalAiStatus(args?: { force?: boolean }): Promise<AiSettin
     force: args?.force === true,
     skipAuthProbe: args?.force !== true,
   });
-  const providerConnections = await buildProviderConnections(cliStatuses);
+  // No live sign-in probe here, but ADE's own Copilot runtime still counts as
+  // installed; the disk check answers for the sign-in.
+  const providerConnections = await buildProviderConnections(cliStatuses, {
+    copilot: { runtime: resolveCopilotSdkRuntime({ env: process.env }), auth: null },
+  });
   const hasConfirmedSubscriptionProvider =
     providerConnections.claude.authAvailable ||
     providerConnections.codex.authAvailable ||

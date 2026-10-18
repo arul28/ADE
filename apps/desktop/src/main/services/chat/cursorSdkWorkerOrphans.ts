@@ -25,8 +25,13 @@ export type CursorSdkOrphanSweepResult = {
   skippedPids: number[];
 };
 
-/** Script names of SDK workers sharing the same dead-owner sweep. */
-const SDK_WORKER_SCRIPT_PATTERN = /(?:^|[\\/"\s])(?:cursor|copilot)SdkWorker\.cjs(?=["\s]|$)/;
+/**
+ * SDK workers sharing the same dead-owner sweep: the forked script, or the
+ * standalone runtime's hidden command (`sdkWorkerProcess.ts`), which always
+ * carries the owner marker.
+ */
+const SDK_WORKER_SCRIPT_PATTERN =
+  /(?:^|[\\/"\s])(?:(?:cursor|copilot)SdkWorker\.cjs|__ade-(?:cursor|copilot)-sdk-worker)(?=["\s]|$)/;
 /**
  * An installed app running the worker from its own bundle:
  * `/Applications/ADE Beta.app/Contents/MacOS/ADE Beta /Applications/ADE Beta.app/Contents/Resources/…/cursorSdkWorker.cjs`.

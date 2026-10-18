@@ -68,13 +68,15 @@ shared ACP host. Their spec is `acp-providers-spec.md`.
   Copilot CLI with `copilot update`". On Windows the fallback follows an npm
   `copilot.cmd` shim to the native `copilot.exe` beside it.
 - **Other machines.** Every brain downloads the same pinned runtime for itself;
-  only a host the manifest does not pin (Windows on Arm, musl Linux) falls back
-  to its own `copilot` CLI. The standalone `ade` runtime (`install.sh`, the SSH
+  only a host the manifest does not pin (Windows on Arm) falls back to its own
+  `copilot` CLI. Target detection does not tell musl Linux from glibc, so an
+  Alpine host gets the glibc `linux-x64` pin, as it already does for Claude and
+  Codex. The standalone `ade` runtime (`install.sh`, the SSH
   bootstrap) is one Node SEA executable with no `copilotSdkWorker.cjs` beside
   it, and `fork()` from it re-enters the CLI, so there the pool runs the worker
   through the executable's hidden `__ade-copilot-sdk-worker` command
-  (`chat/sdkWorkerProcess.ts`). Cursor and Droid do the same with
-  `__ade-cursor-sdk-worker` and `__ade-droid-sdk-worker`.
+  (`chat/sdkWorkerProcess.ts`). Cursor, Droid and Pi do the same with
+  `__ade-cursor-sdk-worker`, `__ade-droid-sdk-worker` and `__ade-pi-sdk-worker`.
 - The terminal Copilot CLI launch is separate and still needs `copilot`
   installed (`resolveCopilotExecutable`).
 
@@ -205,7 +207,12 @@ Auto-edit to `edit`, and Full-auto to `full-auto`.
 `canOfferSessionApproval`, and the answer carries the rule Copilot matches later
 requests against (the command identifiers, the MCP server and tool, the URL's
 domain, the workflow's approval key). Path grants, hook prompts and extension
-environment access offer Allow once and Deny only.
+environment access offer Allow once and Deny only, and so does any prompt that
+arrives without Copilot's `promptRequest`, since there is nothing to scope the
+rule to. The option names its scope (`copilotSessionApprovalLabel`), because
+Copilot's `read`, `write` and `memory` rules cover every request of that kind
+for the rest of the session: "Allow all file reads for this session", "Allow
+these commands for this session", "Allow example.com for this session".
 
 Questions from the agent go to ADE's question card through `onUserInputRequest`.
 Free-form answers are allowed unless the request forbids them.

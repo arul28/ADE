@@ -1,11 +1,7 @@
 import type { PermissionRequestResult } from "@github/copilot-sdk";
-import { asRecord as record } from "../shared/utils";
+import { asRecord as record, toOptionalString as text } from "../shared/utils";
 
 type SessionApproval = Extract<PermissionRequestResult, { kind: "approve-for-session" }>;
-
-function text(value: unknown): string | null {
-  return typeof value === "string" && value.trim() ? value.trim() : null;
-}
 
 /**
  * The "Allow for this session" answer Copilot can remember for one permission
@@ -14,11 +10,12 @@ function text(value: unknown): string | null {
  * identifiers, the MCP tool, the URL's domain. A bare answer without it leaves
  * Copilot nothing to match the next request against.
  *
- * With no prompt at all (an older runtime) the bare answer is kept, as before.
+ * With no prompt at all (an older runtime) there is nothing to scope the rule
+ * to, so no session option is offered.
  */
 export function copilotSessionApproval(promptRequest: unknown): SessionApproval | null {
   const prompt = record(promptRequest);
-  if (!prompt) return { kind: "approve-for-session" };
+  if (!prompt) return null;
   switch (prompt.kind) {
     case "commands": {
       const ids = Array.isArray(prompt.commandIdentifiers)
@@ -69,5 +66,30 @@ export function copilotSessionApproval(promptRequest: unknown): SessionApproval 
     // Path grants, hook prompts and extension env access have no session rule.
     default:
       return null;
+  }
+}
+
+/**
+ * The option label for a session approval, naming what it covers: Copilot's
+ * `read`, `write` and `memory` rules cover every request of that kind for the
+ * rest of the session, not only the one on the card.
+ */
+export function copilotSessionApprovalLabel(approval: SessionApproval): string {
+  if (approval.domain) return `Allow ${approval.domain} for this session`;
+  const rule = approval.approval;
+  switch (rule?.kind) {
+    case "commands":
+      return "Allow these commands for this session";
+    case "write":
+      return "Allow all file edits for this session";
+    case "read":
+      return "Allow all file reads for this session";
+    case "memory":
+      return "Allow memory updates for this session";
+    case "mcp":
+    case "custom-tool":
+      return rule.toolName ? `Allow ${rule.toolName} for this session` : "Allow for this session";
+    default:
+      return "Allow for this session";
   }
 }

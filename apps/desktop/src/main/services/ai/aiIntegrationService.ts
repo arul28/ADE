@@ -85,7 +85,7 @@ import {
   initialize as initModelsDevService,
   getLastFetchedAt as getModelsDevLastFetchedAt,
 } from "./modelsDevService";
-import { isRecord } from "../shared/utils";
+import { isRecord, toOptionalString } from "../shared/utils";
 import { parseStructuredOutput } from "./utils";
 import {
   deleteApiKey as deleteStoredApiKey,
@@ -599,7 +599,8 @@ function redactDetectedAuth(
   auth: DetectedAuth[],
   cliStatuses: CliAuthStatus[],
   runtimeReadyAcpProviders?: ReadonlySet<string>,
-  copilotSdkAuth?: CopilotSdkAuthProbe["auth"],
+  /** The SDK answered the live sign-in check, so its verdict in `auth` stands. */
+  copilotSdkVerified = false,
 ): NonNullable<AiIntegrationStatus["detectedAuth"]> {
   const redacted = auth.map((entry) => {
     if (entry.type === "cli-subscription") {
@@ -639,7 +640,7 @@ function redactDetectedAuth(
     if (!cliStatus.installed) continue;
     // The SDK's live verdict already sits in `auth`; the disk heuristic must
     // not overwrite it (it misses keychain and `gh` logins).
-    if (cliStatus.cli === "copilot" && copilotSdkAuth) continue;
+    if (cliStatus.cli === "copilot" && copilotSdkVerified) continue;
     const runtimeReady = runtimeReadyAcpProviders?.has(cliStatus.cli) === true;
     const existingIndex = redacted.findIndex(
       (entry) => entry.type === "cli-subscription" && entry.cli === cliStatus.cli,
@@ -1116,20 +1117,22 @@ export function createAiIntegrationService(args: {
     };
   };
 
+  let lastCopilotProbeFailure: string | null = null;
   const getCopilotSdkAuthStatus = async (auth: DetectedAuth[]): Promise<CopilotSdkAuthProbe> => {
-    const executable = resolveCopilotSdkRuntime({ auth, env: process.env });
-    const runtime = { path: executable.path, source: executable.source };
+    const runtime = resolveCopilotSdkRuntime({ auth, env: process.env });
+    // Nothing to start: no pinned download, bundled copy or `copilot` CLI.
+    if (runtime.source === "fallback-command") return { runtime, auth: null };
     const baseEnv = { ...process.env };
     try {
-      const connection = await acquireCopilotSdkConnection({ cliPath: executable.path, baseDirectory: copilotConfigHome({ env: baseEnv }), baseEnv, logger });
+      const connection = await acquireCopilotSdkConnection({ cliPath: runtime.path, baseDirectory: copilotConfigHome({ env: baseEnv }), baseEnv, logger });
       try {
         const value = await connection.pooled.request<unknown>("auth");
         if (!value || typeof value !== "object") return { runtime, auth: null };
         const row = value as Record<string, unknown>;
-        const str = (field: unknown) => typeof field === "string" && field.trim() ? field.trim() : undefined;
-        const login = str(row.login);
-        const authType = str(row.authType);
-        const statusMessage = str(row.statusMessage);
+        lastCopilotProbeFailure = null;
+        const login = toOptionalString(row.login);
+        const authType = toOptionalString(row.authType);
+        const statusMessage = toOptionalString(row.statusMessage);
         return {
           runtime,
           auth: {
@@ -1143,7 +1146,10 @@ export function createAiIntegrationService(args: {
         releaseCopilotSdkConnection(connection.poolKey, connection.generation);
       }
     } catch (error) {
-      logger.debug?.("ai.copilot_sdk_auth_status_unavailable", { error: error instanceof Error ? error.message : String(error) });
+      // Once per distinct failure: this runs on every status refresh.
+      const message = error instanceof Error ? error.message : String(error);
+      if (message !== lastCopilotProbeFailure) logger.warn("ai.copilot_sdk_auth_status_unavailable", { error: message });
+      lastCopilotProbeFailure = message;
       return { runtime, auth: null };
     }
   };
@@ -2400,7 +2406,7 @@ export function createAiIntegrationService(args: {
             availableProviders: availability,
             models,
             detectedAuth: timeSyncPhase("redact_auth", () => [
-              ...redactDetectedAuth(auth, cliStatuses, runtimeReadyAcpProviders, copilotProbe.auth),
+              ...redactDetectedAuth(auth, cliStatuses, runtimeReadyAcpProviders, copilotProbe.auth != null),
               ...redactPiDetectedAuth(piProfileInventory),
             ]),
             providerConnections,

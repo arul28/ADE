@@ -22,7 +22,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import type { DetectedAuth } from "./authDetector";
 import { cachedToolEntryPath, previousCachedToolEntryPath } from "../../../../../ade-cli/src/services/tools/cacheLookup";
-import { resolveExecutableCandidatesFromKnownLocations } from "./cliExecutableResolver";
+import { isExecutableFile, resolveExecutableCandidatesFromKnownLocations } from "./cliExecutableResolver";
 import { preferNativeExecutablePath } from "../shared/processExecution";
 import type { AcpChatProvider } from "../../../shared/types/chat";
 type ResolvableCliProvider = AcpChatProvider | "copilot";
@@ -150,10 +150,7 @@ export function resolveCopilotSdkRuntime(args?: {
   resourcesPath?: string | null;
 }): CopilotSdkRuntimeResolution {
   const env = args?.env ?? process.env;
-  for (const key of ACP_EXECUTABLE_ENV_KEYS.copilot) {
-    const configured = env[key]?.trim();
-    if (configured?.length) return resolveCopilotExecutable(args);
-  }
+  if (ACP_EXECUTABLE_ENV_KEYS.copilot.some((key) => env[key]?.trim())) return resolveCopilotExecutable(args);
   const platform = args?.platform ?? process.platform;
   const cacheContext = { env, platform: args?.platform, arch: args?.arch };
   const cached = cachedToolEntryPath("copilot", cacheContext);
@@ -167,7 +164,7 @@ export function resolveCopilotSdkRuntime(args?: {
 
 /** The runtime wrapper only starts with its `runtime.node` beside it. */
 function isCopilotRuntime(candidate: string, platform: NodeJS.Platform): boolean {
-  return isSpawnableFile(candidate, platform) && fs.existsSync(path.join(path.dirname(candidate), "runtime.node"));
+  return isExecutableFile(candidate, platform) && fs.existsSync(path.join(path.dirname(candidate), "runtime.node"));
 }
 
 /** The SDK's platform package names for this host, as `@github/copilot-sdk` picks them. */
@@ -214,15 +211,6 @@ function bundledCopilotSdkRuntime(args?: {
     }
   }
   return null;
-}
-
-function isSpawnableFile(candidate: string, platform: NodeJS.Platform): boolean {
-  try {
-    const stat = fs.statSync(candidate);
-    return stat.isFile() && (platform === "win32" || (stat.mode & 0o111) !== 0);
-  } catch {
-    return false;
-  }
 }
 
 /**

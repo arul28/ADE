@@ -138,7 +138,10 @@ export function isOpenCodeNotFoundError(error: unknown): boolean {
   return isOpenCodeTaggedError(error, "SessionNotFoundError");
 }
 
-export function ensureOpenCodeAvailable(): void {
+/** Download ADE's pinned OpenCode when this machine never used it, then require a binary. */
+export async function ensureOpenCodeAvailable(): Promise<void> {
+  const download = pinnedToolDownload("opencode");
+  if (download) await download;
   if (!resolveOpenCodeBinaryPath()) {
     throw new Error("OpenCode is not available: no bundled or installed OpenCode 2 binary was found.");
   }
@@ -231,10 +234,7 @@ export async function startOpenCodeChatSession(args: {
   ownerId?: string | null;
   logger?: Logger | null;
 }): Promise<OpenCodeSessionHandle> {
-  // A machine that never used OpenCode downloads it here, before the check.
-  const download = pinnedToolDownload("opencode");
-  if (download) await download;
-  ensureOpenCodeAvailable();
+  await ensureOpenCodeAvailable();
   const lease = await acquireOpenCodeServer({
     profile: openCodeProfileFor({
       projectConfig: args.config.projectConfig,
@@ -346,9 +346,7 @@ export async function runOpenCodeTextPrompt(args: {
   signal?: AbortSignal;
   logger?: Logger | null;
 }): Promise<{ text: string; inputTokens: number | null; outputTokens: number | null }> {
-  const download = pinnedToolDownload("opencode");
-  if (download) await download;
-  ensureOpenCodeAvailable();
+  await ensureOpenCodeAvailable();
   const lease = await acquireOpenCodeServer({
     profile: sharedOpenCodeProfileFor(args.config.projectConfig),
     config: buildOpenCodeConfig(args.config),

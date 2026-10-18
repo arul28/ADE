@@ -42,8 +42,8 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { createRequire } from "node:module";
-import { CURSOR_HOOK_RUNNER_COMMAND, CURSOR_HOOK_SCRIPT_NAMES } from "../../desktop/src/main/services/chat/cursorSdkHooks";
+import { CURSOR_HOOK_RUNNER_COMMAND, runCursorHookScript } from "../../desktop/src/main/services/chat/cursorSdkHooks";
+import { SDK_WORKER_COMMANDS, type SdkWorkerName } from "../../desktop/src/main/services/chat/sdkWorkerProcess";
 import { PROXY_HEALTH_PROBE_COMMAND, probeProxyHealthOnce } from "./services/proxy/cliProxyApiSupervisor";
 import { pathToFileURL } from "node:url";
 import { computeRuntimeBuildHash } from "./services/runtime/runtimeBuildIdentity";
@@ -854,7 +854,7 @@ export type CliPlan =
   | { kind: "rpc-stdio"; rest: string[] }
   | { kind: "pty-host-worker" }
   | { kind: "usage-ledger-worker" }
-  | { kind: "sdk-worker"; worker: "copilot" | "cursor" | "droid" | "pi" }
+  | { kind: "sdk-worker"; worker: SdkWorkerName }
   | { kind: "project-icon-worker"; rootPath: string }
   | { kind: "init"; targetPath: string | null }
   | { kind: "cursor-cloud"; rest: string[] }
@@ -19854,10 +19854,8 @@ function buildCliPlan(
   // The standalone runtime is one executable with no <name>SdkWorker.cjs
   // beside it, and fork() from it re-enters this CLI, so the SDK pools start
   // their workers through these commands instead (chat/sdkWorkerProcess.ts).
-  if (primary === "__ade-copilot-sdk-worker") return { kind: "sdk-worker", worker: "copilot" };
-  if (primary === "__ade-cursor-sdk-worker") return { kind: "sdk-worker", worker: "cursor" };
-  if (primary === "__ade-droid-sdk-worker") return { kind: "sdk-worker", worker: "droid" };
-  if (primary === "__ade-pi-sdk-worker") return { kind: "sdk-worker", worker: "pi" };
+  const sdkWorker = (Object.keys(SDK_WORKER_COMMANDS) as SdkWorkerName[]).find((name) => SDK_WORKER_COMMANDS[name] === primary);
+  if (sdkWorker) return { kind: "sdk-worker", worker: sdkWorker };
   if (primary === "__ade-project-icon-worker") {
     const primaryIndex = args.indexOf(primary);
     return {
@@ -26581,7 +26579,7 @@ async function runServe(
   } else {
     if (!toolsFetchDisabled) {
       const { enablePinnedToolFetch } = await import("./services/tools/onDemand");
-      enablePinnedToolFetch();
+      enablePinnedToolFetch(headlessProjectLogger);
     }
     void import("./services/tools/backgroundFetch").then(({ startBackgroundAgentToolsFetch }) => {
       startBackgroundAgentToolsFetch(headlessProjectLogger);
@@ -34274,10 +34272,7 @@ async function runParsedCli(
     }
     if (plan.kind === "sdk-worker") {
       // Each worker module serves its IPC channel as soon as it loads.
-      if (plan.worker === "copilot") await import("../../desktop/src/main/services/chat/copilotSdkWorker");
-      else if (plan.worker === "cursor") await import("../../desktop/src/main/services/chat/cursorSdkWorker");
-      else if (plan.worker === "pi") await import("../../desktop/src/main/services/chat/piSdkWorker");
-      else await import("../../desktop/src/main/services/chat/droidSdkWorker");
+      await SDK_WORKER_MODULES[plan.worker]();
       await new Promise<void>((resolve) => {
         if (typeof process.send !== "function") {
           resolve();
@@ -34569,39 +34564,13 @@ async function writeProcessOutput(
   });
 }
 
-/**
- * Run one of ADE's Cursor hook scripts in this process. Only the two scripts
- * ADE writes are accepted, by absolute path; the script reads stdin, answers on
- * stdout and parses its own flags from `process.argv`. `createRequire` gives a
- * filesystem require, which the SEA's built-in one is not. Resolves once the
- * script's answer is flushed: `runMainAndExit` exits the moment `main` returns.
- */
-async function runCursorHookScript(scriptPath: string | undefined): Promise<void> {
-  if (!scriptPath || !path.isAbsolute(scriptPath) || !CURSOR_HOOK_SCRIPT_NAMES.includes(path.basename(scriptPath))) {
-    process.stderr.write(`ade: ${CURSOR_HOOK_RUNNER_COMMAND} runs only ADE's Cursor hook scripts.\n`);
-    process.exitCode = 2;
-    return;
-  }
-  const stdout = process.stdout;
-  const write = stdout.write.bind(stdout) as (chunk: unknown, encoding?: unknown, callback?: unknown) => boolean;
-  const answered = new Promise<void>((resolve) => {
-    stdout.write = ((chunk: unknown, encoding?: unknown, callback?: unknown) => {
-      const done = typeof encoding === "function" ? encoding : callback;
-      return write(chunk, typeof encoding === "function" ? undefined : encoding, (error?: Error | null) => {
-        if (typeof done === "function") done(error);
-        resolve();
-      });
-    }) as typeof stdout.write;
-  });
-  try {
-    createRequire(scriptPath)(scriptPath);
-  } catch (error) {
-    process.stderr.write(`ade: could not run ${scriptPath}: ${error instanceof Error ? error.message : String(error)}\n`);
-    process.exitCode = 1;
-    return;
-  }
-  await answered;
-}
+/** The module each hidden `__ade-*-sdk-worker` command loads (`SDK_WORKER_COMMANDS`). */
+const SDK_WORKER_MODULES: Record<SdkWorkerName, () => Promise<unknown>> = {
+  copilot: () => import("../../desktop/src/main/services/chat/copilotSdkWorker"),
+  cursor: () => import("../../desktop/src/main/services/chat/cursorSdkWorker"),
+  droid: () => import("../../desktop/src/main/services/chat/droidSdkWorker"),
+  pi: () => import("../../desktop/src/main/services/chat/piSdkWorker"),
+};
 
 async function main(): Promise<void> {
   const writeDiagnostic = (...args: unknown[]) => {

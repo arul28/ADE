@@ -8,6 +8,7 @@ import {
   listPinnedTools,
 } from "./install";
 import { isToolError } from "./errors";
+import { trackPinnedToolFetch } from "./onDemand";
 import { selectDemandedAgentTools, type AgentToolDemand } from "../../../../desktop/src/main/services/tools/agentToolDemand";
 
 type FetchLogger = {
@@ -27,7 +28,7 @@ export type BackgroundToolsFetchDeps = {
 /**
  * Populate the pinned agent-tools cache in the background at brain startup,
  * with the tools this machine uses (`selectDemandedAgentTools`). The others are
- * fetched by `ensurePinnedTool` when a chat or a status refresh needs them.
+ * fetched by `pinnedToolDownload` when a chat or a status refresh needs them.
  *
  * Deliberately not awaited by the caller. These are 100-300 MB downloads and
  * the brain must be answering RPC immediately; a machine with a cold cache
@@ -76,27 +77,29 @@ export function startBackgroundAgentToolsFetch(
     // no Claude and no opencode for its entire lifetime, because nothing kicks
     // this again. Same shape as the desktop's agentToolsCacheService.run().
     for (const tool of pinned) {
-      try {
-        await ensure([tool], {
-          onProgress: (progress) => {
-            // One line per phase change, never per download chunk: this lands
-            // in the brain's long-lived service log.
-            if (progress.phase === "downloading") return;
-            logger.info("tools.fetch_progress", {
-              tool: progress.tool,
-              version: progress.version,
-              phase: progress.phase,
-            });
-          },
-        });
-        fetched.push(tool);
-      } catch (error) {
+      // Through the shared tracker, so a chat that needs this tool meanwhile
+      // joins this download instead of queueing a second one.
+      const error = await trackPinnedToolFetch(tool, () => ensure([tool], {
+        onProgress: (progress) => {
+          // One line per phase change, never per download chunk: this lands
+          // in the brain's long-lived service log.
+          if (progress.phase === "downloading") return;
+          logger.info("tools.fetch_progress", {
+            tool: progress.tool,
+            version: progress.version,
+            phase: progress.phase,
+          });
+        },
+      }));
+      if (error) {
         failures += 1;
         logger.warn("tools.fetch_failed", {
-          kind: isToolError(error) ? error.kind : "unknown",
-          tool: isToolError(error) ? error.tool ?? tool : tool,
-          message: error instanceof Error ? error.message : String(error),
+          kind: error.kind,
+          tool: error.tool ?? tool,
+          message: error.message,
         });
+      } else {
+        fetched.push(tool);
       }
     }
 

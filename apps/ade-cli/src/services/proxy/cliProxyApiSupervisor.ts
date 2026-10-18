@@ -11,7 +11,7 @@ import {
   terminateProcessTree,
 } from "../../../../desktop/src/main/services/shared/processExecution";
 import { resolveMachineAdeLayout } from "../projects/machineLayout";
-import { isEmbeddedAdeRuntime } from "../../../../desktop/src/main/services/chat/sdkWorkerProcess";
+import { isEmbeddedAdeRuntime } from "../../../../desktop/src/main/services/shared/processExecution";
 import {
   ensurePrivateDirectory,
   securePrivatePath,

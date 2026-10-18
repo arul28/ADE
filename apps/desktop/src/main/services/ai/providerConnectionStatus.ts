@@ -1,5 +1,6 @@
 import type { AiProviderConnectionStatus, AiProviderConnections } from "../../../shared/types";
 import type { CliAuthStatus } from "./authDetector";
+import type { CopilotSdkRuntimeResolution } from "./acpExecutables";
 import {
   isCodexTokenStale,
   readClaudeCredentials,
@@ -28,17 +29,15 @@ import {
   type AcpProviderId,
 } from "../../../shared/acpProviderMetadata";
 import { pinnedToolFetchInFlight } from "../../../../../ade-cli/src/services/tools/onDemand";
+import { COPILOT_TOKEN_ENV_KEYS } from "../shared/providerConfigHomes";
 
 /** What the Copilot SDK runtime reported when ADE asked it who is signed in. */
 export type CopilotSdkAuthProbe = {
-  /** The runtime ADE starts for Copilot chats; `bundled` needs no CLI install. */
-  runtime: { path: string; source: string };
+  /** The runtime ADE starts for Copilot chats; only `fallback-command` means none was found. */
+  runtime: CopilotSdkRuntimeResolution;
   /** Null when the probe itself failed; the disk check speaks instead. */
   auth: { isAuthenticated: boolean; login?: string; authType?: string; statusMessage?: string } | null;
 };
-
-/** The Copilot CLI's token variables, in the order it reads them. */
-const COPILOT_TOKEN_ENV_KEYS = ["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"] as const;
 
 /**
  * Why Copilot is signed out, in words the user can act on. A token in the
@@ -48,7 +47,7 @@ const COPILOT_TOKEN_ENV_KEYS = ["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKE
 function copilotSignedOutBlocker(probe: CopilotSdkAuthProbe["auth"], env: NodeJS.ProcessEnv): string {
   const tokenKey = COPILOT_TOKEN_ENV_KEYS.find((key) => env[key]?.trim());
   if (tokenKey) {
-    const classic = env[tokenKey]!.trim().startsWith("ghp_");
+    const classic = (env[tokenKey]?.trim() ?? "").startsWith("ghp_");
     return classic
       ? `${tokenKey} holds a classic GitHub token, which Copilot does not accept, and it overrides your Copilot login. Unset ${tokenKey} or replace it with a fine-grained token that has the Copilot Requests permission, then refresh.`
       : `Copilot rejected the token in ${tokenKey}, which overrides your Copilot login. Fix or unset ${tokenKey}, then refresh.`;
@@ -108,7 +107,6 @@ export async function buildProviderConnections(
     piInstallation?: PiInstallation | null;
     piInventory?: PiProfileInventory | null;
     copilot?: CopilotSdkAuthProbe | null;
-    env?: NodeJS.ProcessEnv;
   },
 ): Promise<AiProviderConnections> {
   const checkedAt = nowIso();
@@ -527,7 +525,7 @@ export async function buildProviderConnections(
     cliStatuses.find((status) => status.cli === "copilot") ?? null,
     options?.copilot,
     checkedAt,
-    options?.env ?? process.env,
+    process.env,
   );
   applyRuntimeHealth(copilot, getProviderRuntimeHealth("copilot"));
 

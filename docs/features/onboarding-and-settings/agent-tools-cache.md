@@ -396,7 +396,14 @@ that is missing, its provider switched on in Settings, and the machine now shows
 the signals above (or, for `opencode`, the refresh found an API key, OpenRouter
 key or local model, including keys in ADE's own store), it starts the download
 without waiting. Copilot's blocker reads "ADE is downloading the Copilot
-runtime" meanwhile. A download that lands bumps `pinnedToolInstallGeneration()`,
+runtime" meanwhile. The launch and `ade serve` passes run their own fetches
+through the same tracker (`trackPinnedToolFetch`), so an on-demand caller joins
+a download already running in that process instead of queueing a second
+install, and the blocker reads "downloading" during the launch fetch too.
+On-demand outcomes log as `tools.on_demand_fetch_started` / `_complete` /
+`_failed` (packaged builds only, since on-demand is off elsewhere). A tool whose
+on-demand download failed is not retried for two minutes, so an offline machine
+does not retry on every status refresh; callers fall back as on any failure. A download that lands bumps `pinnedToolInstallGeneration()`,
 which voids the cached status, so the next refresh sees the tool.
 
 Model-list requests never start a download: the picker can ask every provider

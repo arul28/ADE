@@ -1,4 +1,5 @@
 import { fork, spawn, type ChildProcess, type ForkOptions } from "node:child_process";
+import { isEmbeddedAdeRuntime } from "../shared/processExecution";
 
 /**
  * The hidden `ade` commands that run an SDK worker inside the CLI itself
@@ -15,17 +16,14 @@ export const SDK_WORKER_COMMANDS = {
   pi: "__ade-pi-sdk-worker",
 } as const;
 
-export function isEmbeddedAdeRuntime(): boolean {
-  const sea = process.getBuiltinModule?.("node:sea") as { isSea?: () => boolean } | undefined;
-  return sea?.isSea?.() === true;
-}
+export type SdkWorkerName = keyof typeof SDK_WORKER_COMMANDS;
 
 /**
  * Start an SDK worker with an IPC channel: fork its bundled script, or on the
  * standalone runtime run it through the executable's hidden command.
  */
 export function startSdkWorker(args: {
-  worker: keyof typeof SDK_WORKER_COMMANDS;
+  worker: SdkWorkerName;
   workerPath: () => string;
   argv: string[];
   cwd: string;

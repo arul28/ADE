@@ -19,7 +19,7 @@ import type { AiLocalProviderConfigs } from "../../../shared/types";
 import { inspectLocalProvider, clearLocalProviderInspectionCache } from "./localModelDiscovery";
 import { resolveDroidExecutable } from "./droidExecutable";
 import { loadQwenUserSettings } from "./qwenUserSettings";
-import { devinCredentialFiles, grokConfigHome } from "../shared/providerConfigHomes";
+import { COPILOT_TOKEN_ENV_KEYS, devinCredentialFiles, grokConfigHome } from "../shared/providerConfigHomes";
 import {
   reportProviderRuntimeAuthFailure,
   reportProviderRuntimeFailure,
@@ -203,7 +203,7 @@ async function inspectCopilotCliCredentials(): Promise<{ authenticated: boolean;
   const home = homedir();
   // Copilot's durable login is normally keychain/session-state backed, not a
   // reliable JSON field in config.json. The SDK performs live auth verification.
-  if (env.COPILOT_GITHUB_TOKEN?.trim() || env.GH_TOKEN?.trim() || env.GITHUB_TOKEN?.trim()) {
+  if (COPILOT_TOKEN_ENV_KEYS.some((key) => env[key]?.trim())) {
     return { authenticated: true, verified: false };
   }
   const root = env.COPILOT_HOME?.trim() ? path.resolve(env.COPILOT_HOME) : path.join(home, ".copilot");
