@@ -656,6 +656,14 @@ chat pane mount, which happens either way.
   rather than the old `ResizeObserver`-based 28 %-of-height formula;
   that eliminated the observer churn without changing the visible
   ceiling for normal tile sizes.
+- **A paste into the rich editor is plain text.** Text pasted into the
+  contenteditable prompt box enters at the caret as the clipboard's
+  `text/plain`, so it takes the prompt box's own font and colour instead of
+  the source's HTML — a copy from a web page or a chat transcript used to
+  carry its size, weight and white background along. Chip payloads, images
+  and files, large pastes folded into a `Pasted · N lines` attachment, and
+  the plain-textarea path (before a completed URL promotes the box) are
+  unchanged; a pasted URL is still tokenized into a chip.
 - **Drafts and scheduled send.** Cmd/Ctrl+S stores the current prompt text
   in the project runtime and clears the composer only after the runtime confirms
   the write. The bookmark control immediately left of the context-usage meter
