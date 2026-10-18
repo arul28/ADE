@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import {
   ROOT_OUTSIDE_ALLOWED_PROJECT_ROOTS_MESSAGE,
   resolveWithinAllowedProjectRoots,
@@ -26,8 +26,25 @@ fs.writeFileSync(outsideFile, "secret");
 afterAll(() => {
   fs.rmSync(tempRoot, { recursive: true, force: true });
 });
+afterEach(() => vi.restoreAllMocks());
 
 const allowedRoots = [allowedRoot, secondAllowedRoot];
+
+// Fs calls made refusing `candidate`, in order, with its leaf name masked.
+function probesOf(candidate: string): string[] {
+  const spies = {
+    lstatSync: vi.spyOn(fs, "lstatSync"), statSync: vi.spyOn(fs, "statSync"),
+    readlinkSync: vi.spyOn(fs, "readlinkSync"), realpathSync: vi.spyOn(fs.realpathSync, "native"),
+  };
+  expect(() => resolveWithinAllowedProjectRoots(allowedRoots, candidate), candidate)
+    .toThrow(new Error(ROOT_OUTSIDE_ALLOWED_PROJECT_ROOTS_MESSAGE));
+  return Object.entries(spies)
+    .flatMap(([name, spy]) => spy.mock.calls.map((args, i) => ({
+      order: spy.mock.invocationCallOrder[i],
+      text: `${name}(${String(args[0]).split(path.basename(candidate)).join("<leaf>")})`,
+    })))
+    .sort((a, b) => a.order - b.order).map((call) => call.text);
+}
 
 describe("resolveWithinAllowedProjectRoots", () => {
   it("accepts a folder inside an allowed root, in canonical form", () => {
@@ -175,8 +192,8 @@ describe("resolveWithinAllowedProjectRoots", () => {
   // An outside target must refuse with the same text whether it exists, is
   // missing, or is reached through a link out of the roots. Otherwise the text
   // shows which of them exists.
-  it("refuses a present, a missing and a linked outside target with the same message", (ctx) => {
-    const escapeDir = path.join(allowedRoot, "escape-dir");
+  it("refuses a present, a missing and a linked outside target with the same message and calls", (ctx) => {
+    const escapeDir = path.join(allowedRoot, "table-escape-dir");
     try {
       fs.symlinkSync(outsideRoot, escapeDir, "dir");
     } catch {
@@ -189,14 +206,7 @@ describe("resolveWithinAllowedProjectRoots", () => {
       path.join(escapeDir, "secret.txt"),
       path.join(escapeDir, "not-there.txt"),
     ];
-    for (const candidate of candidates) {
-      let message = "";
-      try {
-        resolveWithinAllowedProjectRoots(allowedRoots, candidate);
-      } catch (error) {
-        message = (error as Error).message;
-      }
-      expect(message, candidate).toBe(ROOT_OUTSIDE_ALLOWED_PROJECT_ROOTS_MESSAGE);
-    }
+    const probes = candidates.map((candidate) => probesOf(candidate));
+    expect([probes[1], probes[3]]).toEqual([probes[0], probes[2]]);
   });
 });
