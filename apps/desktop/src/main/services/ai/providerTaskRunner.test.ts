@@ -59,6 +59,8 @@ vi.mock("./codexExecutable", () => ({
 
 vi.mock("./acpExecutables", () => ({
   resolveCopilotExecutable: () => resolveCopilotExecutableMock(),
+  // Copilot one-shot tasks run on the SDK runtime; the stub resolves the same path.
+  resolveCopilotSdkRuntime: () => resolveCopilotExecutableMock(),
   resolveQwenExecutable: () => resolveQwenExecutableMock(),
   resolveKimiExecutable: () => resolveKimiExecutableMock(),
   resolveGrokExecutable: () => resolveGrokExecutableMock(),
