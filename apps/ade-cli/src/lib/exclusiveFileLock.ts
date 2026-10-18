@@ -127,10 +127,9 @@ export async function withExclusiveFileLock<T>(
   const owner = createExclusiveFileLockOwner();
   let fd: number | null = null;
   while (fd == null) {
+    let created: number;
     try {
-      fd = fs.openSync(lockPath, "wx", 0o600);
-      fs.writeFileSync(fd, serializeExclusiveFileLockOwner(owner), "utf8");
-      break;
+      created = fs.openSync(lockPath, "wx", 0o600);
     } catch (error) {
       if (!isExclusiveFileLockContention(error)) throw error;
       if (unlinkExclusiveFileLockIfStale(lockPath)) continue;
@@ -141,7 +140,18 @@ export async function withExclusiveFileLock<T>(
         );
       }
       await new Promise((resolve) => setTimeout(resolve, 100));
+      continue;
     }
+    // The file is ours now. If its owner record cannot be written, give it back
+    // rather than hold (or strand) a lock nobody can identify.
+    try {
+      fs.writeFileSync(created, serializeExclusiveFileLockOwner(owner), "utf8");
+    } catch (error) {
+      try { fs.closeSync(created); } catch {}
+      try { fs.unlinkSync(lockPath); } catch {}
+      throw error;
+    }
+    fd = created;
   }
 
   try {
