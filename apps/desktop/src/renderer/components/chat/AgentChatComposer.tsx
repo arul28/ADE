@@ -6674,9 +6674,13 @@ function AgentChatComposerImpl({
 
   const pasteAsPlainTextIntoRichEditor = (event: React.ClipboardEvent<HTMLElement>) => {
     if (event.currentTarget instanceof HTMLTextAreaElement) return;
+    const text = event.clipboardData.getData("text/plain");
+    // An HTML-only clipboard carries no text/plain. Leave the browser's own
+    // paste alone rather than cancelling it and inserting nothing.
+    if (!text) return;
     event.preventDefault();
     if (composerInputLocked) return;
-    insertPlainTextIntoRichEditor(event.clipboardData.getData("text/plain"));
+    insertPlainTextIntoRichEditor(text);
   };
 
   const handlePaste = (event: React.ClipboardEvent<HTMLElement>) => {
