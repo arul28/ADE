@@ -1187,7 +1187,7 @@ describe("createAgentChatService", () => {
         expect(persisted.importedFrom).toMatchObject({ provider: "pi", mode: "continue" });
       });
 
-      it("continues a Copilot session in place by seeding its ACP session id", async () => {
+      it("continues a Copilot session in place: the next message resumes that session", async () => {
         vi.mocked(loadExternalSessionEvents).mockResolvedValueOnce(
           importEvents("import-preview", { user: "Count the lines.", assistant: "35" }),
         );
@@ -1203,8 +1203,13 @@ describe("createAgentChatService", () => {
 
         const persisted = readPersistedChatState(result.chatSessionId);
         expect(result.chatSummary).toMatchObject({ provider: "copilot" });
-        expect(persisted.acpSessionId).toBe("42f148ac-e59c-442f-ab18-520fc7b6081b");
         expect(persisted.importedFrom).toMatchObject({ provider: "copilot", mode: "continue" });
+
+        await service.sendMessage({ sessionId: result.chatSessionId, text: "keep going" });
+        await waitFor(() => Boolean(mockState.copilotPooled?.openSession.mock.calls.length));
+        expect(mockState.copilotPooled.openSession.mock.calls[0][0]).toMatchObject({
+          sessionId: "42f148ac-e59c-442f-ab18-520fc7b6081b",
+        });
       });
 
       it("refuses to continue a provider whose own session an ADE chat cannot reopen", async () => {

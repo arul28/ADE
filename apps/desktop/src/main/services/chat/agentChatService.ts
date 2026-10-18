@@ -49119,11 +49119,11 @@ export function createAgentChatService(args: {
    * writes: Droid's SDK `resumeSession` (`droid.load_session`, same binary and
    * `~/.factory/sessions`), OpenCode's `session.get` on the user-env server
    * (same data dir as the CLI), Pi's `SessionManager.list(cwd)` over the one
-   * store chat and CLI share. Copilot's ACP server loads a CLI-created
-   * session over `session/load` from the same `~/.copilot/session-state`
-   * (verified live on 1.0.88, 2026-09-24); ADE already holds the transcript,
-   * so the load replay is suppressed. Qwen, Kimi and Grok are left out until
-   * the same is shown for them.
+   * store chat and CLI share. Copilot's SDK `resumeSession` opens a
+   * CLI-created session from the same `~/.copilot/session-state` (verified
+   * live on runtime 1.0.98, 2026-10-18); the events it returns are not
+   * replayed, since ADE already holds the transcript. Qwen, Kimi and Grok are
+   * left out until the same is shown for them.
    */
   const NATIVE_CHAT_CONTINUE_PROVIDERS: ReadonlySet<AgentChatImportProvider> = new Set<AgentChatImportProvider>([
     "droid",
@@ -49712,8 +49712,8 @@ export function createAgentChatService(args: {
   };
 
   /**
-   * Continue a Droid, OpenCode or Pi session as an ADE chat: a chat in the
-   * session's own lane whose provider pointer is the external session id, so
+   * Continue a Droid, OpenCode, Pi, Muse or Copilot session as an ADE chat: a
+   * chat in the session's own lane whose provider pointer is the external session id, so
    * the first turn opens that session the same way a restart reopens one of
    * ADE's own chats. The history is written for display only — the provider
    * already holds it, so nothing is replayed into the prompt.
@@ -49786,7 +49786,7 @@ export function createAgentChatService(args: {
       } else if (provider === "muse") {
         seedForkedProviderPointer(managed, { museSessionId: externalSessionId });
       } else if (provider === "copilot") {
-        seedForkedProviderPointer(managed, { acpSessionId: externalSessionId });
+        seedForkedProviderPointer(managed, { copilotSdkSessionId: externalSessionId });
       }
       const events = loaded.map((envelope) => ({ ...envelope, sessionId: created.id }));
       applyImportedChatMetadata(managed, args, events, importedAt, "continue");

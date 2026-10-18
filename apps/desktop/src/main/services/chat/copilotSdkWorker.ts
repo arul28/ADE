@@ -122,6 +122,10 @@ async function applyPermissionMode(session: Session, chatId: string, level: stri
 function sessionConfig(config: CopilotSdkSessionConfig): CopilotSdk.SessionConfig {
   return {
     sessionId: config.sessionId,
+    // Recorded as `client_name` in the session's `workspace.yaml` (on create
+    // only; a resume keeps the CLI's own name), which is how session import
+    // tells ADE's chats apart from the user's CLI sessions in the shared store.
+    clientName: "ade",
     workingDirectory: config.cwd,
     model: config.model && config.model !== "auto" ? config.model : undefined,
     reasoningEffort: reasoningEffort(config.reasoningEffort),

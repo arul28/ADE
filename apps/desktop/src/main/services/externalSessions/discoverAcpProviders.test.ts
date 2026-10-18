@@ -6,6 +6,7 @@ import { discoverCopilotSessions, parseFlatYaml } from "./discoverCopilot";
 import { discoverGrokSessions } from "./discoverGrok";
 import { discoverKimiSessions } from "./discoverKimi";
 import { discoverQwenSessions, qwenProjectSlugForCwd } from "./discoverQwen";
+import { ADE_AGENT_PROMPT_OPENING } from "../ai/tools/systemPrompt";
 
 // Fixtures mirror the real on-disk shapes of Qwen Code 0.22.3, Grok 1.0.40 and
 // Copilot CLI 1.0.88. Kimi's are derived from the 0.39.1 bundle (no real
@@ -432,9 +433,22 @@ describe("Copilot discovery", () => {
     });
     const kept = "d26fc721-0000-4000-8000-000000000005";
     writeCopilotSession(copilotHome, kept);
+    // ADE's SDK chats from before they set `clientName` recorded the SDK
+    // default; their first system message is ADE's coding-agent prompt.
+    const sdkSession = (id: string, system: string) => writeCopilotSession(copilotHome, id, {
+      yaml: `id: ${id}\ncwd: ${repo}\nclient_name: sdk\nsummary: Some work\nupdated_at: 2026-03-12T17:39:06.905Z\n`,
+      events: [
+        { type: "session.start", data: { context: { cwd: repo } }, id: "e1", timestamp: "2026-03-12T17:37:01.580Z" },
+        { type: "system.message", data: { content: system }, id: "e2", timestamp: "2026-03-12T17:37:01.590Z" },
+        { type: "user.message", data: { content: "fix the build", source: "user" }, id: "e3", timestamp: "2026-03-12T17:37:02.000Z" },
+      ],
+    });
+    sdkSession("7a5e0c11-0000-4000-8000-000000000006", `${ADE_AGENT_PROMPT_OPENING} ${repo}.`);
+    const otherSdkApp = "7a5e0c11-0000-4000-8000-000000000007";
+    sdkSession(otherSdkApp, "You are a helpful assistant.");
 
     const sessions = await discoverCopilotSessions({ homeDir, env, limit: 10 });
-    expect(sessions.map((session) => session.id)).toEqual([kept]);
+    expect(sessions.map((session) => session.id).sort()).toEqual([otherSdkApp, kept].sort());
   });
 
   it("filters by scope, resolves exact lookups, falls back to the start event cwd, and honours COPILOT_HOME", async () => {

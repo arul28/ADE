@@ -403,9 +403,30 @@ see them.
   `terminals-and-sessions/`.
 - **Usage history import.** The local usage ledgers and the account scanners are
   unchanged. See `onboarding-and-settings/usage-tracking.md`.
-- **External session import.** Discovery of the CLI's own sessions and the
-  transcript conversion are unchanged. See
+- **External session import.** Discovery still reads the CLI's own store
+  (`session-state/<id>/workspace.yaml` and `events.jsonl`), and the transcript
+  conversion is unchanged. See
   `terminals-and-sessions/external-session-import.md`.
+
+## Session import
+
+ADE's chats and the user's Copilot CLI share one session store
+(`COPILOT_HOME`, default `~/.copilot`), so the import box has to tell them apart.
+
+- **Marking.** The worker creates every session with `clientName: "ade"`, which
+  Copilot writes to `workspace.yaml` as `client_name`. A resume does not
+  rewrite it. Discovery leaves out `client_name` values that start with `ade`,
+  and `client_name: sdk` sessions whose first system message carries ADE's
+  coding-agent prompt (ADE's chats from before the marking).
+- **Claiming.** A live chat's `copilotSdkSessionId` (or an older chat's
+  `acpSessionId`) marks that session "already in ADE" in the import box.
+- **Continue.** Continuing a CLI session as a chat seeds it as the chat's
+  `copilotSdkSessionId`. The first message opens it with `resumeSession`, in
+  the lane root (the importer refuses a session from another folder), on the
+  session's recorded model when ADE knows it, else the Copilot default, and in
+  the permission mode a new Copilot chat gets (Ask unless a default level maps
+  to another). The CLI session's own mode is not carried over. The events the resume returns are not
+  replayed; the chat already shows the imported history.
 
 ## Not in this build
 
