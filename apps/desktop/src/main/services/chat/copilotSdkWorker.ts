@@ -22,6 +22,15 @@ type UserInputResponse = { answer: string; wasFreeform: boolean };
 type McpAuthResult = { kind: "cancelled" } | { kind: "token"; accessToken: string; expiresIn: number };
 let client: Client | null = null;
 const sessions = new Map<string, Session>();
+/**
+ * The prompt each pending permission request carries. SDK 1.0.22 hands the
+ * permission handler only `permissionRequest`, while the safety judge's
+ * recommendation (`assistedApproval`) and the session-approval data live on the
+ * event's `promptRequest`. The SDK calls the handler and then the event
+ * listeners in one synchronous dispatch, with the same request object, so the
+ * handler waits a microtask and reads it from here.
+ */
+const permissionPrompts = new WeakMap<object, unknown>();
 const waiters = new Map<string, { chatId: string; type: CopilotSdkWaiterType; resolve: (value: unknown) => void }>();
 let disposed = false;
 /** A title or summary call; the SDK default (60 s) is too tight for a cold runtime. */
@@ -133,10 +142,24 @@ function sessionConfig(config: CopilotSdkSessionConfig): CopilotSdk.SessionConfi
     skipCustomInstructions: config.utility,
     onPermissionRequest: config.utility
       ? () => ({ kind: "reject" as const })
-      : (request) => waitFor<CopilotSdk.PermissionRequestResult>("permission_request", config.chatId, request),
+      : async (request) => {
+        await Promise.resolve();
+        const promptRequest = permissionPrompts.get(request);
+        permissionPrompts.delete(request);
+        return waitFor<CopilotSdk.PermissionRequestResult>("permission_request", config.chatId, promptRequest ? { ...request, promptRequest } : request);
+      },
     onUserInputRequest: config.utility
       ? undefined
       : (request) => waitFor<UserInputResponse>("user_input_request", config.chatId, request),
+    // An eligible rate limit asks whether to continue on Auto instead of
+    // waiting for the limit to reset.
+    onAutoModeSwitchRequest: config.utility
+      ? undefined
+      : (request) => waitFor<CopilotSdk.AutoModeSwitchResponse>("auto_mode_switch_request", config.chatId, request),
+    // MCP servers can ask the user for structured input (form or URL).
+    onElicitationRequest: config.utility
+      ? undefined
+      : (request) => waitFor<CopilotSdk.ElicitationResult>("elicitation_request", config.chatId, request),
     onMcpAuthRequest: config.utility
       ? async () => ({ kind: "cancelled" as const })
       : (request) => waitFor<McpAuthResult>("mcp_auth_request", config.chatId, request),
@@ -147,6 +170,9 @@ function sessionConfig(config: CopilotSdkSessionConfig): CopilotSdk.SessionConfi
 
 function watchSession(chatId: string, session: Session): void {
   session.on((event) => {
+    if (event.type === "permission.requested" && event.data.promptRequest) {
+      permissionPrompts.set(event.data.permissionRequest, event.data.promptRequest);
+    }
     if (event.type === "session.task_complete") {
       postLog("info", "Copilot task completion event", {
         chatId,
@@ -173,18 +199,26 @@ async function initialize(payload: CopilotSdkWorkerInit): Promise<unknown> {
     useLoggedInUser: true,
     logLevel: "error",
   });
-  await client.start();
+  try {
+    await client.start();
+  } catch (error) {
+    // Only a machine CLI (an override, or no bundled runtime) can be too old;
+    // the SDK's own message does not say how to fix it.
+    const message = error instanceof Error ? error.message : String(error);
+    if (/protocol version mismatch/i.test(message)) throw new Error(`${message} Update the Copilot CLI with \`copilot update\`.`);
+    throw error;
+  }
   const status = await client.getStatus();
-  if (status.protocolVersion < 3) throw new Error(`Copilot CLI protocol ${status.protocolVersion} is unsupported. Update Copilot CLI with copilot update.`);
   disposed = false;
   return status;
 }
 
 async function dispatch(req: CopilotSdkWorkerRequest): Promise<unknown> {
-  if (req.type === "respond_permission" || req.type === "respond_user_input" || req.type === "respond_mcp_auth" || req.type === "respond_exit_plan") {
+  if (req.type === "respond_permission" || req.type === "respond_user_input" || req.type === "respond_mcp_auth" || req.type === "respond_exit_plan"
+    || req.type === "respond_auto_mode_switch" || req.type === "respond_elicitation") {
     const waiter = waiters.get(req.payload.waiterId);
     if (waiter) {
-      const result = req.type === "respond_permission" || req.type === "respond_mcp_auth" || req.type === "respond_exit_plan" ? req.payload.result : req.payload.response;
+      const result = req.type === "respond_user_input" ? req.payload.response : req.payload.result;
       waiter.resolve(result);
       waiters.delete(req.payload.waiterId);
     }

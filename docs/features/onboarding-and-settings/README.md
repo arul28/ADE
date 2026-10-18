@@ -243,12 +243,13 @@ Main process:
   application. The active renderer
   no longer mounts guided tours.
 - `apps/desktop/src/main/services/tools/agentToolsCacheService.ts` — the
-  desktop half of the pinned agent-tools cache. Kicks a coalesced ensure on
-  packaged launch, one `ensureTools` call per tool so a single failure cannot
-  abandon the rest, GCs superseded versions only after a fully clean pass, and
-  publishes an `AgentToolsCacheSnapshot` (per-tool status, percent, typed
-  `errorKind`) to the AI Runtimes band over IPC. Resolution failures are per
-  tool, never per pass. See
+  desktop half of the pinned agent-tools cache. Kicks a coalesced ensure of the
+  tools this machine uses (`agentToolDemand.ts`) on packaged launch, one
+  `ensureTools` call per tool so a single failure cannot abandon the rest, GCs
+  superseded versions only after a fully clean pass, and keeps an
+  `AgentToolsCacheSnapshot` (per-tool status, percent, typed `errorKind`) over
+  IPC. Resolution failures are per tool, never per pass. Other tools download on
+  demand (`onDemand.ts`). See
   [agent-tools-cache.md](./agent-tools-cache.md).
 - `apps/desktop/src/main/services/onboarding/onboardingSuggestedConfig.ts` —
   pure GitHub Actions workflow parsing and suggested test/automation/provider

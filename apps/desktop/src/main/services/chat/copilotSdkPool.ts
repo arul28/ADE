@@ -1,13 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
-import { fork, type ChildProcess, type ForkOptions } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Logger } from "../logging/logger";
 import { captureWorkerFailure } from "../../sentry/workerFailures";
-import { resolveCopilotExecutable } from "../ai/acpExecutables";
+import { resolveCopilotSdkRuntime } from "../ai/acpExecutables";
 import { terminateChildProcessTree } from "../shared/utils";
 import { cursorSdkOwnerPidArg } from "./cursorSdkWorkerGuards";
+import { startSdkWorker } from "./sdkWorkerProcess";
 import type {
   AgentChatCopilotAutoTier,
   AgentChatCopilotContextTier,
@@ -29,6 +30,8 @@ export type CopilotSdkBridge = {
   onExitPlanRequest: ((chatId: string, waiterId: string, request: unknown) => Promise<unknown>) | null;
   onUserInputRequest: ((chatId: string, waiterId: string, request: unknown) => Promise<unknown>) | null;
   onMcpAuthRequest: ((chatId: string, waiterId: string, request: unknown) => Promise<unknown>) | null;
+  onAutoModeSwitchRequest: ((chatId: string, waiterId: string, request: unknown) => Promise<unknown>) | null;
+  onElicitationRequest: ((chatId: string, waiterId: string, request: unknown) => Promise<unknown>) | null;
 };
 /** The bridge handler that answers each kind of worker request. */
 const WAITER_HANDLERS = {
@@ -36,6 +39,8 @@ const WAITER_HANDLERS = {
   exit_plan_request: "onExitPlanRequest",
   user_input_request: "onUserInputRequest",
   mcp_auth_request: "onMcpAuthRequest",
+  auto_mode_switch_request: "onAutoModeSwitchRequest",
+  elicitation_request: "onElicitationRequest",
 } as const satisfies Record<CopilotSdkWaiterType, keyof CopilotSdkBridge>;
 
 export type CopilotSdkPooled = {
@@ -80,20 +85,20 @@ function poolKey(init: CopilotSdkWorkerInit): string {
 async function create(init: CopilotSdkWorkerInit, logger?: Logger): Promise<CopilotSdkPooled> {
   // The shared SDK orphan sweep reads this marker to distinguish a worker
   // whose owning brain died from one owned by another live ADE instance.
-  const child = fork(resolveWorkerPath(), [cursorSdkOwnerPidArg(process.pid)], {
+  const child = startSdkWorker({
+    worker: "copilot",
+    workerPath: resolveWorkerPath,
+    argv: [cursorSdkOwnerPidArg(process.pid)],
     cwd: process.cwd(),
     env: { ...init.baseEnv },
-    stdio: ["ignore", "pipe", "pipe", "ipc"],
-    execArgv: [],
-    windowsHide: true,
-  } as ForkOptions & { windowsHide: boolean });
+  });
   const waiters = new Map<string, Waiter>();
   const errorClosed = () => new Error("Copilot SDK worker IPC channel is closed.");
   const send = (message: CopilotSdkWorkerRequest): void => {
     if (child.exitCode != null || child.killed || child.connected === false) throw errorClosed();
     child.send(message);
   };
-  const bridge: CopilotSdkBridge = { onEvent: null, onWorkerExit: null, onPermissionRequest: null, onExitPlanRequest: null, onUserInputRequest: null, onMcpAuthRequest: null };
+  const bridge: CopilotSdkBridge = { onEvent: null, onWorkerExit: null, onPermissionRequest: null, onExitPlanRequest: null, onUserInputRequest: null, onMcpAuthRequest: null, onAutoModeSwitchRequest: null, onElicitationRequest: null };
   const pooled: CopilotSdkPooled = {
     process: child,
     bridge,
@@ -180,7 +185,7 @@ export async function readCopilotAccountQuota(args: {
   gitHubToken?: string;
   logger?: Logger;
 }): Promise<unknown> {
-  const executable = resolveCopilotExecutable({ env: args.env });
+  const executable = resolveCopilotSdkRuntime({ env: args.env });
   const acquired = await acquireCopilotSdkConnection({
     cliPath: executable.path,
     baseDirectory: args.baseDirectory,

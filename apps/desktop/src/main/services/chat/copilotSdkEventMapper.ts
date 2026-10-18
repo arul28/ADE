@@ -15,13 +15,19 @@ export type CopilotSdkEventMapperState = {
   contextTokens: number | null;
   contextWindow: number | null;
   servedModel: string | null;
-  costUsd: number | null;
   premiumRequestCost: number;
   streamedMessages: Set<string>;
   compactionTokens: number | null;
   requestedModel: string | null;
   askedAuto: boolean;
   mismatchModels: Set<string>;
+  /** The root agent's `session.error` this turn, which makes the turn fail. */
+  turnError: string | null;
+  /**
+   * A rate-limit error Copilot follows with an auto-mode-switch prompt. It is
+   * shown only if the user declines the switch (see onAutoModeSwitchRequest).
+   */
+  heldRateLimitError: Extract<AgentChatEvent, { type: "error" }> | null;
 };
 export function createCopilotSdkEventMapperState(): CopilotSdkEventMapperState {
   return {
@@ -34,35 +40,85 @@ export function createCopilotSdkEventMapperState(): CopilotSdkEventMapperState {
     contextTokens: null,
     contextWindow: null,
     servedModel: null,
-    costUsd: null,
     premiumRequestCost: 0,
     streamedMessages: new Set(),
     compactionTokens: null,
     requestedModel: null,
     askedAuto: false,
     mismatchModels: new Set(),
+    turnError: null,
+    heldRateLimitError: null,
   };
 }
 
-type CopilotErrorCategory = "auth" | "rate_limit" | "network" | "unknown";
+type CopilotErrorCategory = "auth" | "rate_limit" | "budget" | "network" | "unknown";
 
-function classifyCopilotError(message: string): CopilotErrorCategory {
-  if (/auth|login|token/i.test(message)) return "auth";
-  if (/limit|quota|premium/i.test(message)) return "rate_limit";
-  if (/network|connect/i.test(message)) return "network";
-  return "unknown";
+/**
+ * ADE's error category from Copilot's typed `errorType` ("authentication",
+ * "authorization", "policy", "quota", "rate_limit", "context_limit", "query",
+ * …). Only a rate limit arms the usage-limit resume; an exhausted quota waits
+ * for a billing change, not a timer.
+ */
+function classifyCopilotError(errorType: string | null): CopilotErrorCategory {
+  switch (errorType) {
+    case "authentication":
+    case "authorization":
+      return "auth";
+    case "rate_limit":
+      return "rate_limit";
+    case "quota":
+      return "budget";
+    case "network":
+    case "connection":
+      return "network";
+    default:
+      return "unknown";
+  }
 }
 
-/** One notice per served model that is not the one the chat picked (never for Auto). */
-function servedModelNotice(state: CopilotSdkEventMapperState, served: string | null, turnId: string): AgentChatEvent[] {
+/**
+ * One notice per served model that is not the one the chat picked (never for
+ * Auto). `cause` is Copilot's reason for a switch it made itself; without one,
+ * the likely reason is the plan.
+ */
+function servedModelNotice(state: CopilotSdkEventMapperState, served: string | null, turnId: string, cause?: string | null): AgentChatEvent[] {
   if (!served) return [];
   state.servedModel = served;
   if (state.askedAuto || !state.requestedModel || state.requestedModel === served || state.mismatchModels.has(served)) return [];
   state.mismatchModels.add(served);
+  const why = cause === "rate_limit_auto_switch" ? "after a rate limit"
+    : cause === "refusal_fallback" ? `because ${state.requestedModel} declined the request`
+      : "(your plan may not include it)";
+  const message = cause === "rate_limit_auto_switch" || cause === "refusal_fallback"
+    ? `Copilot switched to ${served} ${why}`
+    : `Copilot used ${served}, not ${state.requestedModel} ${why}`;
   // `model_switched` stays visible outside the turn fold: the composer names a
   // model that did not write this reply.
-  return [{ type: "system_notice", noticeKind: "info", status: "model_switched", message: `Copilot used ${served}, not ${state.requestedModel} (your plan may not include it)`, turnId }];
+  return [{ type: "system_notice", noticeKind: "info", status: "model_switched", message, turnId }];
 }
+
+/** What to do about a `session.error`, by its `remediation`. */
+const COPILOT_REMEDIATIONS: Record<string, string> = {
+  sign_in: "Sign in again with `copilot login` or `gh auth login`, then retry.",
+  switch_account: "Sign in with a GitHub account that has access to this, then retry.",
+  show_account: "Check which GitHub account Copilot is signed in with.",
+  review_sandbox_policy: "Review Copilot's sandbox policy for the blocked path or host.",
+  allow_sandbox_outbound: "Allow outbound network access in Copilot's sandbox policy.",
+  rewind_conversation: "Rewind the chat to before the blocked request, then continue.",
+};
+
+/** Events a sub-agent sends on the parent stream that only the root agent's state may see. */
+const ROOT_ONLY_EVENTS = new Set([
+  "assistant.message_delta",
+  "assistant.message",
+  "assistant.reasoning_delta",
+  "assistant.reasoning",
+  "session.model_change",
+  "session.auto_mode_resolved",
+  "session.usage_info",
+  "session.error",
+  "abort",
+]);
 
 export function mapCopilotSdkEvent(event: unknown, args: { turnId: string; state: CopilotSdkEventMapperState }): AgentChatEvent[] {
   const root = record(event);
@@ -71,6 +127,12 @@ export function mapCopilotSdkEvent(event: unknown, args: { turnId: string; state
   const type = text(root.type);
   const turnId = args.turnId;
   const state = args.state;
+  // Sub-agent events share the parent stream and carry an envelope `agentId`;
+  // root events omit it. A sub-agent's text, model and context are not the
+  // reply's: its own card shows its start and result, and its tool calls
+  // still render, but nothing else of it reaches the main turn.
+  const subagentId = text(root.agentId);
+  if (subagentId && type && ROOT_ONLY_EVENTS.has(type)) return [];
   switch (type) {
     case "assistant.message_delta": {
       const chunk = text(data.deltaContent);
@@ -131,12 +193,13 @@ export function mapCopilotSdkEvent(event: unknown, args: { turnId: string; state
       state.cacheReadTokens += number(usage.cacheReadTokens) ?? 0;
       state.cacheCreationTokens += number(usage.cacheWriteTokens) ?? 0;
       state.reasoningTokens += number(usage.reasoningTokens) ?? 0;
-      state.contextTokens = number(usage.inputTokens) ?? state.contextTokens;
-      state.servedModel = text(usage.model) ?? state.servedModel;
-      state.costUsd = number(usage.cost) ?? state.costUsd;
-      const copilotUsage = record(usage.copilotUsage);
-      const premiumCost = number(copilotUsage?.totalPremiumRequestCost) ?? number(copilotUsage?.premiumRequestCost);
-      if (premiumCost != null) state.premiumRequestCost = Math.max(state.premiumRequestCost, premiumCost);
+      // Sub-agent calls cost tokens too, but their prompt is not the chat's
+      // context and their model did not write the reply. Premium requests
+      // come from the account metrics read around the turn.
+      if (!subagentId) {
+        state.contextTokens = number(usage.inputTokens) ?? state.contextTokens;
+        state.servedModel = text(usage.model) ?? state.servedModel;
+      }
       return [];
     }
     case "session.usage_info": {
@@ -145,30 +208,56 @@ export function mapCopilotSdkEvent(event: unknown, args: { turnId: string; state
       if (current == null || limit == null || limit <= 0) return [];
       state.contextTokens = current;
       state.contextWindow = limit;
-      const usage: AgentChatContextUsage = { categories: [], totalTokens: current, maxTokens: limit, percentage: Math.min(100, Math.max(0, current / limit * 100)), ...(state.servedModel ? { model: state.servedModel } : {}) };
+      const percent = (tokens: number) => Math.min(100, Math.max(0, tokens / limit * 100));
+      const categories = ([["System", data.systemTokens], ["Tools", data.toolDefinitionsTokens], ["Conversation", data.conversationTokens]] as const)
+        .flatMap(([name, value]) => {
+          const tokens = number(value);
+          return tokens != null && tokens > 0 ? [{ name, tokens, percentage: percent(tokens) }] : [];
+        });
+      const usage: AgentChatContextUsage = { categories, totalTokens: current, maxTokens: limit, percentage: percent(current), ...(state.servedModel ? { model: state.servedModel } : {}) };
       return [{ type: "context_usage", usage, origin: "live", state: "measured", turnId }];
     }
     case "session.compaction_start":
       state.compactionTokens = number(data.currentTokens);
       return [{ type: "context_compact", trigger: data.trigger === "manual" ? "manual" : "auto", preTokens: state.compactionTokens ?? undefined, provider: "copilot", state: "started", turnId }];
     case "session.compaction_complete": {
-      const preTokens = state.compactionTokens;
+      const preTokens = number(data.preCompactionTokens) ?? state.compactionTokens;
       const removed = number(data.tokensRemoved);
+      const postTokens = number(data.postCompactionTokens) ?? (preTokens != null && removed != null ? Math.max(0, preTokens - removed) : null);
       state.compactionTokens = null;
-      return [{ type: "context_compact", trigger: data.trigger === "manual" ? "manual" : "auto", preTokens: preTokens ?? undefined, postTokens: preTokens != null && removed != null ? Math.max(0, preTokens - removed) : undefined, provider: "copilot", state: data.success === false ? "failed" : "completed", failReason: data.success === false ? "provider_error" : undefined, turnId }];
+      const failed = data.success === false;
+      const compact: AgentChatEvent = { type: "context_compact", trigger: data.trigger === "manual" ? "manual" : "auto", preTokens: preTokens ?? undefined, postTokens: postTokens ?? undefined, provider: "copilot", state: failed ? "failed" : "completed", failReason: failed ? "provider_error" : undefined, turnId };
+      const reason = failed ? text(data.error) : null;
+      return reason ? [compact, { type: "system_notice", noticeKind: "warning", severity: "warning", message: `Copilot could not compact the conversation: ${reason}`, turnId }] : [compact];
     }
     case "session.warning": {
       const message = text(data.message) ?? text(data.reason) ?? "Copilot reported a warning.";
       return [{ type: "system_notice", noticeKind: "warning", severity: "warning", message, turnId }];
     }
-    case "session.error":
-    case "model.call_failure": {
-      const message = text(data.message) ?? text(data.error) ?? text(data.reason) ?? "Copilot reported a runtime error.";
-      return [{ type: "error", message, errorInfo: { category: classifyCopilotError(message), provider: "copilot", model: state.servedModel ?? undefined }, turnId }];
+    case "session.error": {
+      const message = text(data.message) ?? "Copilot reported a runtime error.";
+      const remediation = COPILOT_REMEDIATIONS[text(data.remediation) ?? ""] ?? null;
+      const detail = [remediation, text(data.url)].filter(Boolean).join("\n");
+      const error: Extract<AgentChatEvent, { type: "error" }> = {
+        type: "error", message, ...(detail ? { detail } : {}),
+        errorInfo: { category: classifyCopilotError(text(data.errorType)), provider: "copilot", model: state.servedModel ?? undefined }, turnId,
+      };
+      // Copilot follows an eligible rate limit with an offer to continue on
+      // Auto; the error waits for that answer instead of arming a resume, and
+      // fails the turn only if the user declines.
+      if (data.eligibleForAutoSwitch === true) {
+        state.heldRateLimitError = error;
+        return [];
+      }
+      state.turnError = message;
+      return [error];
     }
+    // `model.call_failure` is per-attempt telemetry: it fires for retries that
+    // recover and for sub-agent calls. A failure that ends the turn arrives as
+    // `session.error`.
     case "session.model_change":
     case "session.auto_mode_resolved": {
-      return servedModelNotice(state, type === "session.model_change" ? text(data.newModel) : text(data.chosenModel), turnId);
+      return servedModelNotice(state, type === "session.model_change" ? text(data.newModel) : text(data.chosenModel), turnId, type === "session.model_change" ? text(data.cause) : null);
     }
     case "ade.todos": {
       const rows = record(data)?.rows;

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { getErrorMessage } from "../shared/utils";
+import { isEmbeddedAdeRuntime } from "./sdkWorkerProcess";
 
 const ADE_HOOK_SCRIPT_NAME = "ade-tool-gate.cjs";
 const ADE_HOOK_SHELL_COMMAND_NAME = "ade-tool-gate.sh";
@@ -89,6 +90,19 @@ function commandPathQuote(value: string): string {
   return process.platform === "win32" ? windowsCmdQuote(value) : shellQuote(value);
 }
 
+/**
+ * The standalone `ade` runtime as the hook runner. It is a single executable
+ * that cannot run a script it is handed, so it runs ADE's hook scripts through
+ * its hidden `__ade-cursor-hook` command; without it a headless machine with no
+ * `node` on the PATH would deny every tool call in ADE-managed Cursor sessions.
+ */
+function embeddedAdeHookRunnerPath(): string {
+  return isEmbeddedAdeRuntime() ? process.execPath : "";
+}
+
+export const CURSOR_HOOK_RUNNER_COMMAND = "__ade-cursor-hook";
+export const CURSOR_HOOK_SCRIPT_NAMES: readonly string[] = [ADE_HOOK_SCRIPT_NAME, ADE_PRECOMPACT_SCRIPT_NAME];
+
 function buildHookCommand(
   nodePath: string | undefined,
   scriptPath: string,
@@ -111,6 +125,8 @@ function buildHookCommand(
     }
     return `ELECTRON_RUN_AS_NODE=1 ${shellQuote(process.execPath)} ${shellQuote(scriptPath)}`;
   }
+  const adeRunner = embeddedAdeHookRunnerPath();
+  if (adeRunner) return `${commandPathQuote(adeRunner)} ${CURSOR_HOOK_RUNNER_COMMAND} ${commandPathQuote(scriptPath)}`;
   return `${commandPathQuote(process.execPath)} ${commandPathQuote(scriptPath)}`;
 }
 
@@ -341,6 +357,7 @@ function hookShellWrapperSource(args: {
   scriptPath: string;
   nodePath?: string;
   electronPath?: string;
+  adeRunnerPath?: string;
   guardEnv: readonly string[];
   requiredEnv?: string;
   unsetAnswer: string;
@@ -378,6 +395,7 @@ fi
 script_path=${shellSingleQuote(args.scriptPath)}
 configured_node=${shellSingleQuote(args.nodePath?.trim() ?? "")}
 configured_electron=${shellSingleQuote(args.electronPath?.trim() ?? "")}
+configured_ade=${shellSingleQuote(args.adeRunnerPath?.trim() ?? "")}
 
 if [ -n "\${ADE_CURSOR_SDK_NODE:-}" ] && [ -x "$ADE_CURSOR_SDK_NODE" ]; then
   exec "$ADE_CURSOR_SDK_NODE" "$script_path" "$@"
@@ -385,6 +403,10 @@ fi
 
 if [ -n "$configured_node" ] && [ -x "$configured_node" ]; then
   exec "$configured_node" "$script_path" "$@"
+fi
+
+if [ -n "$configured_ade" ] && [ -x "$configured_ade" ]; then
+  exec "$configured_ade" ${CURSOR_HOOK_RUNNER_COMMAND} "$script_path" "$@"
 fi
 
 if command -v node >/dev/null 2>&1; then
@@ -431,7 +453,11 @@ function writeHookShellCommandScript(
   rules: HookWrapperRules,
 ): void {
   ensureDir(path.dirname(args.commandPath));
-  fs.writeFileSync(args.commandPath, hookShellWrapperSource({ ...args, ...rules }), { mode: 0o755 });
+  fs.writeFileSync(
+    args.commandPath,
+    hookShellWrapperSource({ ...args, adeRunnerPath: embeddedAdeHookRunnerPath(), ...rules }),
+    { mode: 0o755 },
+  );
 }
 
 export function writeCursorSdkHookShellCommandScript(args: {

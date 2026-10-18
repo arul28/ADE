@@ -1264,8 +1264,10 @@ import {
 import { acquireCopilotSdkConnection, isCopilotSdkWorkerLive, releaseCopilotSdkConnection, type CopilotSdkPooled } from "./copilotSdkPool";
 import type { CopilotRewindListing, CopilotRewindPreview, CopilotRewindResult } from "./copilotSdkProtocol";
 import { createCopilotSdkEventMapperState, mapCopilotSdkEvent, copilotSdkDoneUsage, type CopilotSdkEventMapperState } from "./copilotSdkEventMapper";
+import { copilotSessionApproval } from "./copilotSdkPermissions";
 import { copilotSdkModelDescriptors, readCopilotModelCatalogCache, refreshCopilotModelCatalog } from "./copilotModelsDiscovery";
-import { resolveCopilotExecutable } from "../ai/acpExecutables";
+import { resolveCopilotSdkRuntime } from "../ai/acpExecutables";
+import { pinnedToolDownload } from "../../../../../ade-cli/src/services/tools/onDemand";
 import {
   acquirePiSdkConnection,
   isPiSdkPooledAlive,
@@ -31700,6 +31702,8 @@ export function createAgentChatService(args: {
     timeoutMs = 45_000,
   ): Promise<ClaudeBackgroundCliResult> => {
     const env = buildAgentRuntimeEnv(managed);
+    const claudeDownload = chatPinnedToolDownload(null, "claude-code", "Claude Code");
+    if (claudeDownload) await claudeDownload;
     const resolved = resolveClaudeCodeExecutable({ env });
     const invocation = resolveCliSpawnInvocation(resolved.path, cliArgs, env);
     logger.debug("agent_chat.claude_background_cli_spawn", {
@@ -41338,7 +41342,38 @@ export function createAgentChatService(args: {
     } else if (previous === undefined) runtimeCompactionSettings.set(runtime, signature);
   };
 
+  /**
+   * The download of the provider's pinned tool when this machine has not
+   * fetched it yet, telling the chat while it waits; null when the tool is on
+   * disk, so a ready runtime starts with no extra await. A failed download is
+   * logged and left to the resolver, which falls back to ADE's previous copy or
+   * the machine's own CLI exactly as before.
+   */
+  const chatPinnedToolDownload = (managed: ManagedChatSession | null, tool: string, label: string): Promise<void> | null => {
+    const download = pinnedToolDownload(tool);
+    if (!download) return null;
+    if (managed) {
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "info",
+        message: `Downloading ${label} for this machine`,
+        detail: "ADE downloads each agent the first time this machine uses it. The chat continues when it finishes.",
+      });
+    }
+    return download.then((error) => {
+      if (!error) return;
+      logger.warn("agent_chat.pinned_tool_fetch_failed", {
+        sessionId: managed?.session.id ?? null,
+        tool,
+        kind: error.kind,
+        message: error.message,
+      });
+    });
+  };
+
   const startCodexRuntime = async (managed: ManagedChatSession): Promise<CodexRuntime> => {
+    const codexDownload = chatPinnedToolDownload(managed, "codex", "Codex");
+    if (codexDownload) await codexDownload;
     logger.info("agent_chat.codex_runtime_start", {
       sessionId: managed.session.id,
       cwd: managed.laneWorktreePath,
@@ -43215,6 +43250,11 @@ export function createAgentChatService(args: {
       claudeSubprocessReaper.reapForSession(managed.session.id, "claude_stale_start");
       throw new Error("Claude query start superseded by reset/interrupt");
     };
+    const claudeDownload = chatPinnedToolDownload(managed, "claude-code", "Claude Code");
+    if (claudeDownload) {
+      await claudeDownload;
+      assertCurrentStart();
+    }
     const options = buildClaudeQueryOptions(managed, runtime);
     if (runtime.forkFromSdkSessionId) {
       if (!runtime.sdkSessionId) {
@@ -43617,6 +43657,8 @@ export function createAgentChatService(args: {
         }
       };
       try {
+        const claudeDownload = chatPinnedToolDownload(null, "claude-code", "Claude Code");
+        if (claudeDownload) await claudeDownload;
         const options = buildClaudeQueryOptions(managed, runtime);
         if (runtime.forkFromSdkSessionId) {
           if (!runtime.sdkSessionId) {
@@ -54993,8 +55035,10 @@ export function createAgentChatService(args: {
       return managed.runtime;
     }
     if (managed.runtime) teardownRuntime(managed, managed.runtime.kind === "copilot" ? "restart" : "handle_close");
+    const copilotDownload = chatPinnedToolDownload(managed, "copilot", "the Copilot runtime");
+    if (copilotDownload) await copilotDownload;
     const auth = await detectAuth();
-    const executable = resolveCopilotExecutable({ auth, env: buildAgentRuntimeEnv(managed) });
+    const executable = resolveCopilotSdkRuntime({ auth, env: buildAgentRuntimeEnv(managed) });
     const baseEnv = buildAgentRuntimeEnv(managed);
     const home = copilotConfigHome({ env: baseEnv });
     const acquired = await acquireCopilotSdkConnection({ cliPath: executable.path, baseDirectory: home, baseEnv, logger });
@@ -55072,6 +55116,12 @@ export function createAgentChatService(args: {
         if (!target || current?.kind !== "copilot" || !current.activeTurnId) return;
         const eventRecord = event && typeof event === "object" ? event as Record<string, unknown> : {};
         const eventData = eventRecord.data && typeof eventRecord.data === "object" ? eventRecord.data as Record<string, unknown> : {};
+        // A sub-agent's prompt, idle, abort or task end is not the turn's: only
+        // the mapper sees it (its card shows it).
+        if (typeof eventRecord.agentId === "string" && eventRecord.agentId) {
+          for (const mapped of mapCopilotSdkEvent(event, { turnId: current.activeTurnId, state: current.eventMapperState })) emitChatEvent(target, mapped);
+          return;
+        }
         // The prompt ADE sent is the turn's first `user.message` that is not an
         // Autopilot continuation, a hidden injection (`source` set) or ephemeral.
         const userMessageData = eventRecord.type === "user.message" ? eventData : null;
@@ -55177,19 +55227,24 @@ export function createAgentChatService(args: {
         const request = rawRequest && typeof rawRequest === "object" ? rawRequest as Record<string, unknown> : {};
         const kind = typeof request.kind === "string" ? request.kind : "tool";
         const mode = target.session.copilotPermissionMode ?? "ask";
-        if (request.managedApprovalRequired !== true && mode === "full-auto") {
+        // The worker attaches the event's prompt: the judge's recommendation,
+        // managed policy and the session-approval data live there.
+        const prompt = request.promptRequest && typeof request.promptRequest === "object"
+          ? request.promptRequest as Record<string, unknown>
+          : null;
+        const managedApprovalRequired = request.managedApprovalRequired === true || prompt?.managedApprovalRequired === true;
+        if (!managedApprovalRequired && mode === "full-auto") {
           return { kind: "approve-once", approvedInteractively: false };
         }
         // Assisted: Copilot's safety judge attaches a recommendation and leaves
         // the decision to ADE. Only an explicit "approve" skips the prompt;
         // "requireApproval", "excluded" and judge errors still ask.
-        const assisted = request.assistedApproval && typeof request.assistedApproval === "object"
-          ? request.assistedApproval as Record<string, unknown>
-          : null;
-        if (request.managedApprovalRequired !== true && mode === "assisted" && assisted?.recommendation === "approve") {
+        const assistedRaw = prompt?.assistedApproval ?? request.assistedApproval;
+        const assisted = assistedRaw && typeof assistedRaw === "object" ? assistedRaw as Record<string, unknown> : null;
+        if (!managedApprovalRequired && mode === "assisted" && assisted?.recommendation === "approve") {
           return { kind: "approve-once", approvedInteractively: false };
         }
-        if (request.managedApprovalRequired !== true && mode === "auto-edit" && (kind === "read" || kind === "write")) {
+        if (!managedApprovalRequired && mode === "auto-edit" && (kind === "read" || kind === "write")) {
           const requestedPath = typeof request.fileName === "string" ? request.fileName : typeof request.path === "string" ? request.path : "";
           if (requestedPath) {
             // Real paths, so a symlink in the lane that points outside it still asks.
@@ -55211,6 +55266,7 @@ export function createAgentChatService(args: {
           ?? (typeof request.diff === "string" ? request.diff : null)
           ?? (typeof request.description === "string" ? request.description : typeof request.toolName === "string" ? request.toolName : title);
         const itemId = typeof request.requestId === "string" ? request.requestId : randomUUID();
+        const sessionApproval = copilotSessionApproval(prompt);
         const response = await requestChatInput({
           chatSessionId: target.session.id,
           title,
@@ -55225,7 +55281,8 @@ export function createAgentChatService(args: {
             question: kind === "exit_plan_mode" ? "Approve this plan and let Copilot continue?" : copilotPermissionQuestion(kind, request, commandText),
             options: [
               { label: "Allow once", value: "approve-once" },
-              { label: "Allow for this session", value: "approve-for-session" },
+              // Only when Copilot can remember it (see copilotSessionApproval).
+              ...(sessionApproval ? [{ label: "Allow for this session", value: "approve-for-session" }] : []),
               { label: "Deny", value: "reject" },
             ],
           }],
@@ -55236,7 +55293,9 @@ export function createAgentChatService(args: {
         if (choice === "reject" || response.decision === "decline" || response.decision === "cancel") {
           return { kind: "reject", feedback: response.responseText || "Denied in ADE." };
         }
-        if (response.decision === "accept_for_session" || choice === "approve-for-session") return { kind: "approve-for-session" };
+        if (response.decision === "accept_for_session" || choice === "approve-for-session") {
+          return sessionApproval ?? { kind: "approve-once", approvedInteractively: true };
+        }
         if (response.decision === "accept") return { kind: "approve-once", approvedInteractively: true };
         return { kind: "reject", feedback: response.responseText || "Denied in ADE." };
       };
@@ -55260,6 +55319,63 @@ export function createAgentChatService(args: {
         });
         const answer = response.answers["copilot-user-input"]?.[0] ?? response.responseText ?? "";
         return { answer, wasFreeform: !choices.includes(answer) };
+      };
+      acquired.pooled.bridge.onAutoModeSwitchRequest = async (chatId, _waiterId, rawRequest) => {
+        const target = managedSessions.get(chatId);
+        if (!target || target.runtime?.kind !== "copilot") return "no";
+        const request = rawRequest && typeof rawRequest === "object" ? rawRequest as Record<string, unknown> : {};
+        const retryAfter = typeof request.retryAfterSeconds === "number" && request.retryAfterSeconds > 0
+          ? ` The limit resets in about ${Math.ceil(request.retryAfterSeconds / 60)} min.`
+          : "";
+        const response = await requestChatInput({
+          chatSessionId: target.session.id,
+          title: "Copilot hit a rate limit",
+          body: `Continue this turn on Auto, which picks an available model?${retryAfter}`,
+          source: "ade",
+          kind: "structured_question",
+          questions: [{ id: "copilot-auto-switch", question: "Switch this chat to Auto?", options: [
+            { label: "Switch to Auto", value: "yes" },
+            { label: "Always switch to Auto", value: "yes_always" },
+            { label: "Wait for the limit", value: "no" },
+          ] }],
+        });
+        const choice = response.answers["copilot-auto-switch"]?.[0];
+        const answer = choice === "yes" || choice === "yes_always" ? choice : "no";
+        // The rate-limit error was held back for this prompt. Declining makes
+        // it the turn's error, so the usage-limit resume can be armed.
+        const current = target.runtime?.kind === "copilot" ? target.runtime : null;
+        const held = current?.eventMapperState.heldRateLimitError ?? null;
+        if (current) current.eventMapperState.heldRateLimitError = null;
+        if (answer === "no" && held && current) {
+          current.eventMapperState.turnError = held.message;
+          emitChatEvent(target, held);
+        }
+        return answer;
+      };
+      acquired.pooled.bridge.onElicitationRequest = async (chatId, _waiterId, rawRequest) => {
+        const target = managedSessions.get(chatId);
+        if (!target || target.runtime?.kind !== "copilot") return { action: "cancel" };
+        const request = rawRequest && typeof rawRequest === "object" ? rawRequest as Record<string, unknown> : {};
+        const source = typeof request.elicitationSource === "string" && request.elicitationSource.trim() ? request.elicitationSource.trim() : "An MCP server";
+        const message = typeof request.message === "string" && request.message.trim() ? request.message : `${source} is requesting input.`;
+        const url = request.mode === "url" && typeof request.url === "string" ? request.url : null;
+        const schema = request.requestedSchema && typeof request.requestedSchema === "object" ? request.requestedSchema as Record<string, unknown> : null;
+        const questions = url ? [] : mcpElicitationQuestions(schema).map(({ options, ...question }) => ({ ...question, ...(options ? { options } : {}) }));
+        const response = await requestChatInput({
+          chatSessionId: target.session.id,
+          title: `${source} needs your input`,
+          body: url ? `${message}\n\n${url}` : message,
+          source: "ade",
+          kind: questions.length ? "structured_question" : "approval",
+          ...(questions.length ? { questions } : {}),
+        });
+        if (response.decision === "decline") return { action: "decline" };
+        if (response.decision === "cancel" || response.timedOut) return { action: "cancel" };
+        if (url) return { action: "accept" };
+        return {
+          action: "accept",
+          content: mcpElicitationContent(schema, response.answers, response.responseText) as Record<string, string | number | boolean | string[]>,
+        };
       };
       acquired.pooled.bridge.onMcpAuthRequest = async (chatId, _waiterId, request) => {
         const target = managedSessions.get(chatId);
@@ -55432,9 +55548,11 @@ export function createAgentChatService(args: {
       runtime.activeTurnId = null;
       runtime.turnSettled = undefined;
       markSessionIdleWithFreshCache(managed);
-      emitChatEvent(managed, { type: "status", turnStatus: runtime.interrupted ? "interrupted" : "completed", turnId });
+      // A root `session.error` ends the turn even though `session.idle` follows.
+      const endStatus = runtime.interrupted ? "interrupted" : runtime.eventMapperState.turnError ? "failed" : "completed";
+      emitChatEvent(managed, { type: "status", turnStatus: endStatus, turnId });
       emitChatEvent(managed, {
-        type: "done", status: runtime.interrupted ? "interrupted" : "completed", turnId,
+        type: "done", status: endStatus, turnId,
         model: managed.session.model, modelId: managed.session.modelId ?? undefined,
         usage: copilotSdkDoneUsage(runtime.eventMapperState),
         servedModel: runtime.eventMapperState.servedModel ?? undefined,
@@ -63865,7 +63983,7 @@ export function createAgentChatService(args: {
               const auth = await detectAuth();
               const baseEnv = userProcessEnv();
               return (await refreshCopilotModelCatalog({
-                cliPath: resolveCopilotExecutable({ auth, env: baseEnv }).path,
+                cliPath: resolveCopilotSdkRuntime({ auth, env: baseEnv }).path,
                 baseDirectory: copilotConfigHome({ env: baseEnv }), baseEnv, logger,
               })).descriptors;
             })()

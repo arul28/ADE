@@ -3,6 +3,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import { createServer } from "node:net";
 import path from "node:path";
+import { pinnedToolDownload } from "../../../../../ade-cli/src/services/tools/onDemand";
 import { OpenCode, type OpenCodeClient, type OpenCodeEvent } from "@opencode/client";
 import type { Logger } from "../logging/logger";
 import { userProcessEnv } from "../shared/hostRuntimeEnv";
@@ -865,6 +866,10 @@ export async function acquireOpenCodeServer(args: {
   ownerId?: string | null;
   logger?: Logger | null;
 }): Promise<OpenCodeServerLease> {
+  // Terminals and sign-in reach the server without a chat; a machine that
+  // never used OpenCode downloads it before the first launch.
+  const download = pinnedToolDownload("opencode");
+  if (download) await download;
   const profile = args.profile;
   let entry = serverEntries.get(profile.key);
   if (entry?.closed) {

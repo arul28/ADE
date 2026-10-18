@@ -8,6 +8,7 @@ import {
   listPinnedTools,
 } from "./install";
 import { isToolError } from "./errors";
+import { selectDemandedAgentTools, type AgentToolDemand } from "../../../../desktop/src/main/services/tools/agentToolDemand";
 
 type FetchLogger = {
   info: (event: string, fields?: Record<string, unknown>) => void;
@@ -18,11 +19,15 @@ export type BackgroundToolsFetchDeps = {
   env?: NodeJS.ProcessEnv;
   ensure?: (names: string[], options?: EnsureToolsOptions) => Promise<Map<string, ToolResolution>>;
   listPinned?: () => string[];
+  /** Which pinned tools this machine fetches unasked; the rest download when something needs them. */
+  selectDemand?: (pinned: readonly string[]) => AgentToolDemand;
   gc?: (options?: GcToolsOptions) => Promise<GcToolsResult>;
 };
 
 /**
- * Populate the pinned agent-tools cache in the background at brain startup.
+ * Populate the pinned agent-tools cache in the background at brain startup,
+ * with the tools this machine uses (`selectDemandedAgentTools`). The others are
+ * fetched by `ensurePinnedTool` when a chat or a status refresh needs them.
  *
  * Deliberately not awaited by the caller. These are 100-300 MB downloads and
  * the brain must be answering RPC immediately; a machine with a cold cache
@@ -53,7 +58,13 @@ export function startBackgroundAgentToolsFetch(
 
   const ensure = deps.ensure ?? ensureTools;
   const gc = deps.gc ?? gcTools;
-  const pinned = (deps.listPinned ?? listPinnedTools)();
+  const demand = (deps.selectDemand ?? ((tools) => selectDemandedAgentTools(tools, { env })))(
+    (deps.listPinned ?? listPinnedTools)(),
+  );
+  const pinned = demand.fetch;
+  if (demand.skip.length) {
+    logger.info("tools.fetch_deferred", { tools: demand.skip.join(","), reason: "no sign this machine uses them" });
+  }
 
   return (async () => {
     const fetched: string[] = [];

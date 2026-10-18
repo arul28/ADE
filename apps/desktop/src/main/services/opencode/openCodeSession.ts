@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { pinnedToolDownload } from "../../../../../ade-cli/src/services/tools/onDemand";
 import type { OpenCodeClient, OpenCodeEvent } from "@opencode/client";
 import type { ModelDescriptor } from "../../../shared/modelRegistry";
 import { resolveUserOpenCodeDataRoot } from "../../../shared/opencodeDataHome";
@@ -230,6 +231,9 @@ export async function startOpenCodeChatSession(args: {
   ownerId?: string | null;
   logger?: Logger | null;
 }): Promise<OpenCodeSessionHandle> {
+  // A machine that never used OpenCode downloads it here, before the check.
+  const download = pinnedToolDownload("opencode");
+  if (download) await download;
   ensureOpenCodeAvailable();
   const lease = await acquireOpenCodeServer({
     profile: openCodeProfileFor({
@@ -342,6 +346,8 @@ export async function runOpenCodeTextPrompt(args: {
   signal?: AbortSignal;
   logger?: Logger | null;
 }): Promise<{ text: string; inputTokens: number | null; outputTokens: number | null }> {
+  const download = pinnedToolDownload("opencode");
+  if (download) await download;
   ensureOpenCodeAvailable();
   const lease = await acquireOpenCodeServer({
     profile: sharedOpenCodeProfileFor(args.config.projectConfig),

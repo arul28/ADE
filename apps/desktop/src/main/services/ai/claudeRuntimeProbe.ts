@@ -27,8 +27,8 @@ const DEFAULT_RUNTIME_FAILURE =
  * a broken install, which it is not.
  */
 export const CLAUDE_RUNTIME_FETCH_PENDING_ERROR =
-  "ADE is still downloading the Claude Code runtime (first-run setup). "
-  + "It retries automatically — see Settings → AI Runtimes.";
+  "ADE is still downloading the Claude Code runtime for this machine. "
+  + "Start the chat again when it finishes.";
 /** The pinned tool that backs the Claude runtime, as named in the tools manifest. */
 const CLAUDE_TOOL_NAME = "claude-code";
 

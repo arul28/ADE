@@ -2,7 +2,8 @@
 
 How ADE runs a GitHub Copilot chat. Copilot is no longer an ACP provider. It is
 an SDK provider, like Droid and Cursor: ADE drives the official
-`@github/copilot-sdk` against the Copilot CLI already installed on the machine.
+`@github/copilot-sdk` on the Copilot runtime that SDK ships, which ADE pins and
+downloads like Claude's binary.
 The provider id stays `copilot`, so saved chats, the CLI, iOS and analytics keep
 the same name.
 
@@ -21,6 +22,9 @@ shared ACP host. Their spec is `acp-providers-spec.md`.
 | `apps/desktop/src/main/services/chat/copilotSdkPool.ts` | Worker lifecycle. Keys a worker by CLI path, config home and environment. Reference-counted. |
 | `apps/desktop/src/main/services/chat/copilotSdkProtocol.ts` | Messages between the app and the worker. |
 | `apps/desktop/src/main/services/chat/copilotSdkEventMapper.ts` | SDK session events to ADE chat events. |
+| `apps/desktop/src/main/services/chat/copilotSdkPermissions.ts` | The "Allow for this session" rule Copilot can remember for a permission prompt. |
+| `apps/desktop/src/main/services/ai/acpExecutables.ts` (`resolveCopilotSdkRuntime`) | Picks the runtime chats run on: an override, ADE's pinned download, the SDK's own package (a source checkout), the previous pinned version, then the machine's `copilot`. |
+| `apps/desktop/src/main/services/ai/providerConnectionStatus.ts` (`buildCopilotConnection`) | Copilot's Settings and availability status, from the SDK's live sign-in check. |
 | `apps/desktop/src/main/services/chat/copilotModelsDiscovery.ts` | Model rows, the Auto-only fallback, and the saved model catalog. |
 | `apps/desktop/src/main/services/ai/copilotSdkLoader.ts` | Loads `@github/copilot-sdk` inside the worker only. |
 | `apps/desktop/src/main/services/ai/providerTaskRunner.ts` | Copilot one-shot tasks (titles, summaries) through a utility session. |
@@ -40,16 +44,39 @@ shared ACP host. Their spec is `acp-providers-spec.md`.
 
 ## Requirements
 
-- The Copilot CLI installed on the machine (npm package `@github/copilot`). The
-  SDK JavaScript ships with ADE. The Copilot runtime does not. ADE starts the
-  installed `copilot` binary over stdio, through `RuntimeConnection.forStdio({ path })`.
-  On Windows an npm install puts a `copilot.cmd` shim on PATH, which the SDK
-  cannot spawn (it uses no shell). ADE follows the shim to the native
-  `copilot.exe` in the `@github/copilot-win32-<arch>` package beside it.
-- A Copilot CLI that speaks SDK protocol 3. If the CLI is older, the chat fails
-  with "Update Copilot CLI with copilot update."
-- A missing CLI shows the "install Copilot CLI" empty state, with the sign-in
-  steps. ADE reuses that login and does not write `~/.copilot`.
+- **No Copilot CLI install.** `@github/copilot-sdk` ships its runtime in a
+  per-platform package (`@github/copilot-sdk-<platform>`, about 125 MB). ADE
+  pins it in the tools manifest (`copilot`, from `apps/desktop/package-lock.json`,
+  so the worker's SDK and the runtime it spawns cannot drift) and downloads it to
+  `~/.ade/tools` like Claude's binary; the installer and the brain archive no
+  longer carry it. ADE starts that `copilot-runtime` over stdio through
+  `RuntimeConnection.forStdio({ path })`. It is the version the SDK was built
+  against, so it always speaks the SDK's protocol.
+- **When it downloads.** At launch and `ade serve` when the machine shows signs
+  of Copilot (a `copilot` CLI, a token in the environment, `~/.copilot`, or a
+  `gh auth login`); otherwise when a status refresh first finds one of those, or
+  when a Copilot chat or task starts. A chat says "Downloading the Copilot
+  runtime for this machine" while it waits. See
+  [agent-tools-cache.md](../onboarding-and-settings/agent-tools-cache.md#which-tools-a-machine-fetches).
+- **Runtime order** (`resolveCopilotSdkRuntime`): `COPILOT_EXECUTABLE` or
+  `GITHUB_COPILOT_EXECUTABLE` when set, then the pinned download, then the SDK's
+  own platform package in `node_modules` (a source checkout, which
+  `require.resolve` also finds through the brain's `NODE_PATH`), then the
+  previous pinned version while a new one downloads, then the machine's
+  `copilot`. A candidate counts only with its `runtime.node` beside it. A machine
+  CLI that is too old fails with the SDK's protocol message plus "Update the
+  Copilot CLI with `copilot update`". On Windows the fallback follows an npm
+  `copilot.cmd` shim to the native `copilot.exe` beside it.
+- **Other machines.** Every brain downloads the same pinned runtime for itself;
+  only a host the manifest does not pin (Windows on Arm, musl Linux) falls back
+  to its own `copilot` CLI. The standalone `ade` runtime (`install.sh`, the SSH
+  bootstrap) is one Node SEA executable with no `copilotSdkWorker.cjs` beside
+  it, and `fork()` from it re-enters the CLI, so there the pool runs the worker
+  through the executable's hidden `__ade-copilot-sdk-worker` command
+  (`chat/sdkWorkerProcess.ts`). Cursor and Droid do the same with
+  `__ade-cursor-sdk-worker` and `__ade-droid-sdk-worker`.
+- The terminal Copilot CLI launch is separate and still needs `copilot`
+  installed (`resolveCopilotExecutable`).
 
 ## How it runs
 
@@ -72,10 +99,21 @@ shared ACP host. Their spec is `acp-providers-spec.md`.
 
 ## Auth and plan
 
-- Sign-in is the Copilot CLI's own login (`copilot login`). Settings keeps that
-  terminal flow and its copy.
-- ADE reads the signed-in state with `client.getAuthStatus()`. This needs no
-  session, so checking auth never starts a session or an MCP server.
+- ADE signs no one in. The runtime reuses the login the machine already has, in
+  the CLI's order: `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`, then the
+  stored `copilot login` (keychain), then `gh auth login`. ADE's runtime is
+  headless and has no `login` command, so Settings shows `copilot login` and the
+  empty state names `gh auth login` too.
+- ADE reads the signed-in state with `client.getAuthStatus()` on every status
+  refresh. This needs no session, so checking auth never starts a session or an
+  MCP server. Its answer is the truth for Copilot's Settings tile and
+  availability (`providerConnections.copilot`): the disk check (a token variable
+  or `logged_in_users` in `$COPILOT_HOME/config.json`) is used only when the
+  probe fails, because it misses keychain and `gh` logins and keeps stale ones.
+- **A token variable wins over `copilot login`.** When the SDK says signed out
+  and one of the token variables is set, Settings names it: a classic `ghp_`
+  token is not accepted by Copilot, so unset it or replace it with a
+  fine-grained token that has the Copilot Requests permission.
 - The plan and premium-request quota come from the usage poll. See
   [Usage, context and quota](#usage-context-and-quota).
 - **Auto-only plans.** Some accounts get an empty model list. ADE then offers a
@@ -93,8 +131,14 @@ shared ACP host. Their spec is `acp-providers-spec.md`.
   offers Auto.
 - Each row keeps its id (`github-copilot/<model>`), name, context window, output
   limit, vision support, `supportedReasoningEfforts`, `defaultReasoningEffort`,
-  `supportedContextTiers`, long-context window, and billing multiplier. Rows with
-  a disabled policy are hidden. Duplicate ids are dropped.
+  context tiers, long-context window, and billing multiplier. Rows with a
+  disabled policy are hidden (an `unconfigured` policy only means none is set).
+  Duplicate ids are dropped.
+- **Windows are prompt budgets per tier**, as the Copilot CLI's picker shows
+  them: `billing.tokenPrices.maxPromptTokens` for the default tier and
+  `billing.tokenPrices.longContext.maxPromptTokens` for the long tier (each
+  falling back to its deprecated `contextMax`). Without tier prices the window is
+  `capabilities.limits.max_prompt_tokens`, then `max_context_window_tokens`.
 - Reasoning effort comes only from the model's own `supportedReasoningEfforts`
   (the SDK ladder: low, medium, high, xhigh, max). Changing it calls
   `session.setModel(model, { reasoningEffort })` on the live session. No process
@@ -104,14 +148,22 @@ shared ACP host. Their spec is `acp-providers-spec.md`.
   and `assistant.usage`.
 - **Served-model notice.** When the model that writes a reply is not the one the
   chat picked, ADE shows one notice per served model:
-  "Copilot used <served>, not <picked> (your plan may not include it)". It is
-  never shown for Auto, and it stays visible outside the turn's fold.
+  "Copilot used <served>, not <picked> (your plan may not include it)". When
+  Copilot switched on its own (`session.model_change.cause`), the notice says
+  why instead: "Copilot switched to <served> after a rate limit" or "… because
+  <picked> declined the request". It is never shown for Auto, and it stays
+  visible outside the turn's fold.
 
 ## Context tier
 
 - `copilotContextTier` is `default` or `long_context`. A missing or invalid value
   means `default`. A tier is only kept on a model whose row lists
   `long_context` in `supportedContextTiers`. Otherwise it is `default`.
+- **Where the tiers come from.** Copilot's own models carry them in
+  `billing.tokenPrices`: a model with a `longContext` price offers the long tier,
+  and the row lists `default` and `long_context`. The SDK's
+  `Model.supportedContextTiers` is only filled by providers with no pricing to
+  publish, so it is merged in but never relied on.
 - The chip appears only on those rows. On the default tier it shows the model's
   window size. On the long tier it shows the long-context window size, or "Long"
   when that size is unknown. Its tooltip says long context costs more.
@@ -141,16 +193,32 @@ ADE's five levels map onto Copilot's session mode and permission mode:
 |---|---|
 | Plan | Session mode `plan`, with approvals set to manual so a chat that was at Full-auto cannot plan under allow-all. When the agent asks to leave plan mode, ADE's plan-approval card shows the plan with "Approve and continue" and "Reject". Approving picks Copilot's recommended action, never Autopilot, and the chat moves to Ask. |
 | Ask (default) | Every request goes to ADE's approval card: "Allow once", "Allow for this session" or "Deny". The card shows the write diff or the full shell command. |
-| Assisted | Copilot's assisted mode. A safety model attaches a recommendation to each request (`assistedApproval.recommendation`). ADE approves a request only when it says `approve`. Every other answer (`requireApproval`, `excluded`, a judge error) goes to ADE's approval card. If the plan does not allow Assisted, the chat drops to Ask and shows a notice: "Assisted isn't available on this Copilot plan; using Ask". This happens on open and when the level is changed. |
+| Assisted | Copilot's assisted mode. A safety model attaches a recommendation to each request (`promptRequest.assistedApproval.recommendation`). SDK 1.0.22 does not pass `promptRequest` to the permission handler, so the worker reads it from the `permission.requested` event the SDK dispatches with the same request object, and attaches it. ADE approves a request only when it says `approve`. Every other answer (`requireApproval`, `excluded`, a judge error) goes to ADE's approval card. If the plan does not allow Assisted, the chat drops to Ask and shows a notice: "Assisted isn't available on this Copilot plan; using Ask". This happens on open and when the level is changed. |
 | Auto-edit | Reads and writes inside the lane worktree are approved. Everything else asks. |
 | Full-auto | Each request is approved once. A request that managed policy marks `managedApprovalRequired` still asks. |
 
 Shared permission ladder: Plan maps to `plan`, Ask to `default`, Assisted and
 Auto-edit to `edit`, and Full-auto to `full-auto`.
 
+**Allow for this session** is offered only when Copilot can remember it
+(`copilotSessionApproval`): shell and write prompts must say
+`canOfferSessionApproval`, and the answer carries the rule Copilot matches later
+requests against (the command identifiers, the MCP server and tool, the URL's
+domain, the workflow's approval key). Path grants, hook prompts and extension
+environment access offer Allow once and Deny only.
+
 Questions from the agent go to ADE's question card through `onUserInputRequest`.
-Free-form answers are allowed unless the request forbids them. The SDK's
-elicitation requests are not handled.
+Free-form answers are allowed unless the request forbids them.
+
+MCP elicitation (`onElicitationRequest`) uses the same question card: a form
+becomes one question per schema field, as for Codex, and a URL request shows the
+link with Accept and Decline.
+
+**Rate limits and Auto.** When a rate limit is eligible for it, Copilot asks
+through `onAutoModeSwitchRequest` whether to continue on Auto. ADE asks "Switch
+to Auto", "Always switch to Auto" or "Wait for the limit". The rate-limit error
+is held back while it asks; it is shown (and the usage-limit resume armed) only
+when the user chooses to wait.
 
 ## Goals (`/goal`)
 
@@ -191,13 +259,22 @@ elicitation requests are not handled.
 | `tool.execution_complete` `fileEdits` | File change rows with the path and the create, modify or delete kind. The diff is not carried here. |
 | `session.todos_changed` | Triggers a re-read of the todos through `rpc.plan.readSqlTodos()`. |
 | `subagent.started`, `completed`, `failed` | Subagent cards, attributed by the event's `agentId`. |
-| `session.compaction_start` / `complete` | Context compaction events. |
-| `session.usage_info` | The context meter (`currentTokens` over `tokenLimit`). |
-| `session.error`, `model.call_failure`, `session.warning` | Errors and notices. Errors are classed as auth, rate limit, network or unknown. |
+| `session.compaction_start` / `complete` | Context compaction events, with `preCompactionTokens` and `postCompactionTokens`. A failed compaction's `error` becomes a warning notice. |
+| `session.usage_info` | The context meter (`currentTokens` over `tokenLimit`), broken down into system, tools and conversation tokens. |
+| `session.error` | The turn's error, classed by `errorType` (authentication and authorization → auth, rate_limit → rate limit, quota → budget). Its `remediation` and `url` become the detail. A root `session.error` ends the turn as failed. |
+| `session.warning` | A warning notice. |
+| `model.call_failure` | Not shown: it is per-attempt telemetry and fires for retries that recover. |
 | `abort` | "Copilot turn was interrupted." |
 | `session.model_change`, `session.auto_mode_resolved` | Served-model notice and Auto profile confirmation. |
 | `session.auto_tier_switch_failed` | Restores the last confirmed Auto profile. |
 | `session.task_complete` | Ends the active goal, with "Goal reached" or "Goal blocked". |
+
+**Sub-agent events.** Sub-agents stream on the parent session with an envelope
+`agentId`; the root agent's events omit it. Only the sub-agent's start and result
+cards and its tool calls reach the transcript. Its text, reasoning, model
+changes, context usage, errors, idle and abort do not touch the turn, the
+served-model notice or the context meter. Its token usage still counts toward the
+turn's totals.
 
 Diffs for file writes come from the write approval's `diff`, when ADE asks for
 one. The file change rows that follow a tool call carry paths only.
@@ -334,8 +411,11 @@ These are deliberately not built yet:
 
 ## Troubleshooting
 
-- **"Update Copilot CLI."** The installed CLI speaks an older SDK protocol. Run
-  `copilot update`, then retry.
+- **"Update the Copilot CLI."** Only a machine `copilot` (an override, or a
+  remote machine) can be too old for the SDK. Run `copilot update`, then retry.
+- **Copilot shows as signed out but `copilot login` worked.** A token variable
+  (`COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`) overrides it; Settings
+  names the variable to fix or unset.
 - **Only "Auto" in the model list.** Expected on an Auto-only plan, or before the
   first live model list is saved.
 - **"<server> needs a sign-in."** If the notice asks you to add the server, add it

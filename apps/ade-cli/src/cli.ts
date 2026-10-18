@@ -42,6 +42,9 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { createRequire } from "node:module";
+import { CURSOR_HOOK_RUNNER_COMMAND, CURSOR_HOOK_SCRIPT_NAMES } from "../../desktop/src/main/services/chat/cursorSdkHooks";
+import { PROXY_HEALTH_PROBE_COMMAND, probeProxyHealthOnce } from "./services/proxy/cliProxyApiSupervisor";
 import { pathToFileURL } from "node:url";
 import { computeRuntimeBuildHash } from "./services/runtime/runtimeBuildIdentity";
 import YAML from "yaml";
@@ -851,6 +854,7 @@ export type CliPlan =
   | { kind: "rpc-stdio"; rest: string[] }
   | { kind: "pty-host-worker" }
   | { kind: "usage-ledger-worker" }
+  | { kind: "sdk-worker"; worker: "copilot" | "cursor" | "droid" | "pi" }
   | { kind: "project-icon-worker"; rootPath: string }
   | { kind: "init"; targetPath: string | null }
   | { kind: "cursor-cloud"; rest: string[] }
@@ -19847,6 +19851,13 @@ function buildCliPlan(
   if (primary === "__ade-usage-ledger-worker") {
     return { kind: "usage-ledger-worker" };
   }
+  // The standalone runtime is one executable with no <name>SdkWorker.cjs
+  // beside it, and fork() from it re-enters this CLI, so the SDK pools start
+  // their workers through these commands instead (chat/sdkWorkerProcess.ts).
+  if (primary === "__ade-copilot-sdk-worker") return { kind: "sdk-worker", worker: "copilot" };
+  if (primary === "__ade-cursor-sdk-worker") return { kind: "sdk-worker", worker: "cursor" };
+  if (primary === "__ade-droid-sdk-worker") return { kind: "sdk-worker", worker: "droid" };
+  if (primary === "__ade-pi-sdk-worker") return { kind: "sdk-worker", worker: "pi" };
   if (primary === "__ade-project-icon-worker") {
     const primaryIndex = args.indexOf(primary);
     return {
@@ -26568,6 +26579,10 @@ async function runServe(
         + "Set ADE_FORCE_TOOLS_FETCH=1 to fetch them anyway.",
     });
   } else {
+    if (!toolsFetchDisabled) {
+      const { enablePinnedToolFetch } = await import("./services/tools/onDemand");
+      enablePinnedToolFetch();
+    }
     void import("./services/tools/backgroundFetch").then(({ startBackgroundAgentToolsFetch }) => {
       startBackgroundAgentToolsFetch(headlessProjectLogger);
     });
@@ -34257,6 +34272,21 @@ async function runParsedCli(
       });
       return { output: "", exitCode: 0 };
     }
+    if (plan.kind === "sdk-worker") {
+      // Each worker module serves its IPC channel as soon as it loads.
+      if (plan.worker === "copilot") await import("../../desktop/src/main/services/chat/copilotSdkWorker");
+      else if (plan.worker === "cursor") await import("../../desktop/src/main/services/chat/cursorSdkWorker");
+      else if (plan.worker === "pi") await import("../../desktop/src/main/services/chat/piSdkWorker");
+      else await import("../../desktop/src/main/services/chat/droidSdkWorker");
+      await new Promise<void>((resolve) => {
+        if (typeof process.send !== "function") {
+          resolve();
+          return;
+        }
+        process.once("disconnect", resolve);
+      });
+      return { output: "", exitCode: 0 };
+    }
     if (plan.kind === "usage-ledger-worker") {
       const { runUsageLedgerWorkerEntrypoint } = await import(
         "../../desktop/src/main/services/usage/usageLedgerWorker"
@@ -34539,6 +34569,40 @@ async function writeProcessOutput(
   });
 }
 
+/**
+ * Run one of ADE's Cursor hook scripts in this process. Only the two scripts
+ * ADE writes are accepted, by absolute path; the script reads stdin, answers on
+ * stdout and parses its own flags from `process.argv`. `createRequire` gives a
+ * filesystem require, which the SEA's built-in one is not. Resolves once the
+ * script's answer is flushed: `runMainAndExit` exits the moment `main` returns.
+ */
+async function runCursorHookScript(scriptPath: string | undefined): Promise<void> {
+  if (!scriptPath || !path.isAbsolute(scriptPath) || !CURSOR_HOOK_SCRIPT_NAMES.includes(path.basename(scriptPath))) {
+    process.stderr.write(`ade: ${CURSOR_HOOK_RUNNER_COMMAND} runs only ADE's Cursor hook scripts.\n`);
+    process.exitCode = 2;
+    return;
+  }
+  const stdout = process.stdout;
+  const write = stdout.write.bind(stdout) as (chunk: unknown, encoding?: unknown, callback?: unknown) => boolean;
+  const answered = new Promise<void>((resolve) => {
+    stdout.write = ((chunk: unknown, encoding?: unknown, callback?: unknown) => {
+      const done = typeof encoding === "function" ? encoding : callback;
+      return write(chunk, typeof encoding === "function" ? undefined : encoding, (error?: Error | null) => {
+        if (typeof done === "function") done(error);
+        resolve();
+      });
+    }) as typeof stdout.write;
+  });
+  try {
+    createRequire(scriptPath)(scriptPath);
+  } catch (error) {
+    process.stderr.write(`ade: could not run ${scriptPath}: ${error instanceof Error ? error.message : String(error)}\n`);
+    process.exitCode = 1;
+    return;
+  }
+  await answered;
+}
+
 async function main(): Promise<void> {
   const writeDiagnostic = (...args: unknown[]) => {
     process.stderr.write(
@@ -34548,6 +34612,21 @@ async function main(): Promise<void> {
   console.log = writeDiagnostic;
   console.info = writeDiagnostic;
   console.warn = writeDiagnostic;
+  // Cursor's hook wrapper runs ADE's hook scripts through this on the
+  // standalone runtime (cursorSdkHooks.ts), before any argument parsing: the
+  // hook's own `--socket <path>` is not an `ade` flag.
+  if (process.argv[2] === CURSOR_HOOK_RUNNER_COMMAND) {
+    await runCursorHookScript(process.argv[3]);
+    return;
+  }
+  // The proxy supervisor's synchronous health probe on the standalone runtime.
+  if (process.argv[2] === PROXY_HEALTH_PROBE_COMMAND) {
+    const port = Number(process.argv[3]);
+    const healthy = Number.isInteger(port) && port > 0 && port < 65_536
+      && await probeProxyHealthOnce(port, Number(process.argv[4]) || 1_500);
+    process.exitCode = healthy ? 0 : 1;
+    return;
+  }
   try {
     const result = await runCli(process.argv.slice(2));
     await writeProcessOutput(process.stdout, result.output);

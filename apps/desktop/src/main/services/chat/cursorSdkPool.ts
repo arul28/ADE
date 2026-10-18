@@ -1,5 +1,5 @@
 import { captureWorkerFailure } from "../../sentry/workerFailures";
-import { fork, type ChildProcess, type ForkOptions } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { randomUUID, createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -13,6 +13,7 @@ import { CURSOR_SDK_PRECOMPACT_ENV } from "./cursorSdkHooks";
 import { CURSOR_SDK_KILL_ESCALATION_MS, CURSOR_SDK_ONESHOT_POLICY } from "./cursorSdkPolicy";
 import { terminateChildProcessTree } from "../shared/utils";
 import { cursorSdkOwnerPidArg } from "./cursorSdkWorkerGuards";
+import { startSdkWorker } from "./sdkWorkerProcess";
 import type {
   CursorSdkCloudArtifactDescriptor,
   CursorSdkErrorDetail,
@@ -640,10 +641,10 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
   // The owner pid rides in argv so the orphan sweep
   // (`cursorSdkWorkerOrphans.ts`) can read it from a process listing on every
   // platform.
-  //
-  // fork() forwards its options to spawn(), which supports windowsHide, but
-  // the installed @types/node ForkOptions declaration omits that property.
-  const child = fork(workerPath, [cursorSdkOwnerPidArg(process.pid)], {
+  const child = startSdkWorker({
+    worker: "cursor",
+    workerPath: () => workerPath,
+    argv: [cursorSdkOwnerPidArg(process.pid)],
     cwd: args.workspacePath,
     env: buildCursorSdkWorkerEnv({
       baseEnv: args.baseEnv,
@@ -654,10 +655,7 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
       sessionId: args.sessionId,
       activityRuntimeSocketPath: args.activityRuntimeSocketPath,
     }),
-    stdio: ["ignore", "pipe", "pipe", "ipc"],
-    execArgv: [],
-    windowsHide: true,
-  } as ForkOptions & { windowsHide: boolean });
+  });
   const pending = new Map<string, PendingRpc>();
   let disposeTimer: NodeJS.Timeout | null = null;
   let killTimer: NodeJS.Timeout | null = null;

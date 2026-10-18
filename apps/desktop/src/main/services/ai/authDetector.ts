@@ -203,7 +203,7 @@ async function inspectCopilotCliCredentials(): Promise<{ authenticated: boolean;
   const home = homedir();
   // Copilot's durable login is normally keychain/session-state backed, not a
   // reliable JSON field in config.json. The SDK performs live auth verification.
-  if (env.GITHUB_TOKEN?.trim() || env.GH_TOKEN?.trim()) {
+  if (env.COPILOT_GITHUB_TOKEN?.trim() || env.GH_TOKEN?.trim() || env.GITHUB_TOKEN?.trim()) {
     return { authenticated: true, verified: false };
   }
   const root = env.COPILOT_HOME?.trim() ? path.resolve(env.COPILOT_HOME) : path.join(home, ".copilot");
@@ -633,7 +633,7 @@ async function inspectDroidCliPresence(command: string, options?: { deep?: boole
   return { installed: true, authenticated: false, verified: false };
 }
 
-const ENV_KEY_MAP: Record<string, string> = {
+export const ENV_KEY_MAP: Record<string, string> = {
   ANTHROPIC_API_KEY: "anthropic",
   OPENAI_API_KEY: "openai",
   GOOGLE_API_KEY: "google",

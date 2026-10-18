@@ -13,11 +13,12 @@ import type {
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { ProductAnalyticsService } from "../analytics/productAnalyticsService";
+import { selectDemandedAgentTools, type AgentToolDemand } from "./agentToolDemand";
 
 export type AgentToolsCacheService = {
   getSnapshot(): AgentToolsCacheSnapshot;
   onStateChange(listener: (snapshot: AgentToolsCacheSnapshot) => void): () => void;
-  /** Fetch anything missing. Safe to call repeatedly; concurrent calls coalesce. */
+  /** Fetch the missing tools this machine uses (`agentToolDemand.ts`). Safe to call repeatedly; concurrent calls coalesce. */
   ensureMissing(): Promise<AgentToolsCacheSnapshot>;
   dispose(): void;
 };
@@ -47,6 +48,8 @@ export function createAgentToolsCacheService(args: {
   ensure?: typeof ensureTools;
   resolve?: typeof tryResolveTool;
   listPinned?: typeof listPinnedTools;
+  /** Which pinned tools this machine fetches unasked; the rest download when something needs them. */
+  selectDemand?: (pinned: readonly string[]) => AgentToolDemand;
   gc?: typeof gcTools;
   now?: () => number;
 }): AgentToolsCacheService {
@@ -55,6 +58,7 @@ export function createAgentToolsCacheService(args: {
   const gc = args.gc ?? gcTools;
   const now = args.now ?? Date.now;
   const pinned = (args.listPinned ?? listPinnedTools)();
+  const selectDemand = args.selectDemand ?? ((tools: readonly string[]) => selectDemandedAgentTools(tools));
 
   const states = new Map<string, AgentToolCacheState>(
     pinned.map((tool) => [tool, { tool, status: "missing", percent: null, errorKind: null }]),
@@ -178,7 +182,8 @@ export function createAgentToolsCacheService(args: {
 
   async function run(): Promise<AgentToolsCacheSnapshot> {
     refreshInstalled();
-    const missing = pinned.filter((tool) => states.get(tool)?.status !== "installed");
+    const demanded = new Set(selectDemand(pinned).fetch);
+    const missing = pinned.filter((tool) => demanded.has(tool) && states.get(tool)?.status !== "installed");
     if (missing.length === 0) {
       emit();
       return snapshot();
