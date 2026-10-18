@@ -111,6 +111,7 @@ export function CrossMachineHandoffModal({
   nativeControls,
   onNativeControlsChange,
   onOpenSignIn,
+  machineBindings = [],
   turnActive,
   awaitingInput,
   onStopTurn,
@@ -146,7 +147,9 @@ export function CrossMachineHandoffModal({
   onFastModeChange?: (next: boolean, tier?: FastTier) => void;
   nativeControls?: NativeControlState;
   onNativeControlsChange?: (next: NativeControlState) => void;
-  onOpenSignIn?: (family?: ProviderFamily) => void;
+  onOpenSignIn?: (family?: ProviderFamily, destinationBinding?: OpenProjectBinding | null) => void;
+  /** Open bindings for routing sign-in to the selected handoff destination. */
+  machineBindings?: OpenProjectBinding[];
   turnActive: boolean;
   awaitingInput: boolean;
   onStopTurn: () => Promise<void>;
@@ -261,6 +264,10 @@ export function CrossMachineHandoffModal({
     () => machines.find((machine) => machine.machineKey === selectedMachineKey) ?? null,
     [machines, selectedMachineKey],
   );
+  const selectedMachineBinding = useMemo(() => machineBindings.find((binding) =>
+    binding.kind === "remote"
+    && (binding.targetId === selectedMachine?.machineKey || binding.key === selectedMachine?.machineKey),
+  ) ?? null, [machineBindings, selectedMachine]);
 
   /** Asks the brain what the move looks like from here. */
   const loadOptions = useCallback(async (): Promise<void> => {
@@ -584,7 +591,10 @@ export function CrossMachineHandoffModal({
           compact
           {...(modelIdsForMode ? { availableModelIds: modelIdsForMode } : {})}
           {...(mode === "fork" ? { filter: forkModelFilter } : {})}
-          {...(onOpenSignIn ? { onOpenSignIn } : {})}
+          {...(onOpenSignIn ? {
+            onOpenSignIn: (family?: ProviderFamily) => onOpenSignIn(family, selectedMachineBinding),
+          } : {})}
+          {...(!selectedMachineBinding ? { hideSignInFamilies: ["anthropic"] as const } : {})}
           fastMode={Boolean(fastMode)}
           fastTier={fastTier}
           fastModeSupported={destinationFastModeSupported}

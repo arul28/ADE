@@ -180,6 +180,7 @@ export type ModelPickerContentProps = {
   refreshingProvider?: AgentChatModelCatalogRefreshProvider | null;
   refreshErrorProvider?: AgentChatModelCatalogRefreshProvider | null;
   onOpenSignIn?: (family?: ProviderFamily, authTypes?: readonly AuthType[]) => void;
+  hideSignInFamilies?: readonly ProviderFamily[];
   allowCliOnlyModels?: boolean;
   /**
    * Whether this picker offers the Custom rail entry at all.
@@ -244,6 +245,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   refreshingProvider,
   refreshErrorProvider,
   onOpenSignIn,
+  hideSignInFamilies,
   hidePermissionRail = false,
   allowCliOnlyModels = false,
   listsHarnessPresets = true,
@@ -757,7 +759,8 @@ export const ModelPickerContent = memo(function ModelPickerContent({
         const target = visibleModels[focusedIndex];
         if (!target) return;
         if (!isAvailableForUse(target)) {
-          onOpenSignIn?.(pickerFamilyForModel(target), target.authTypes);
+          const family = pickerFamilyForModel(target);
+          if (!hideSignInFamilies?.includes(family)) onOpenSignIn?.(family, target.authTypes);
           return;
         }
         handleRowSelect(target.id);
@@ -770,6 +773,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
       isAvailableForUse,
       modelListVirtualizer,
       onOpenSignIn,
+      hideSignInFamilies,
       onRequestClose,
       visibleModels,
       harnessesActive,
@@ -816,7 +820,8 @@ export const ModelPickerContent = memo(function ModelPickerContent({
         return;
       }
       if (!isAvailableForUse(model)) {
-        onOpenSignIn?.(pickerFamilyForModel(model), model.authTypes);
+        const family = pickerFamilyForModel(model);
+        if (!hideSignInFamilies?.includes(family)) onOpenSignIn?.(family, model.authTypes);
         return;
       }
       recordUsage(modelId);
@@ -824,7 +829,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
       // controlled consumers from rebuilding two patches from the same render.
       onSelect(modelId, { fastMode: true });
     },
-    [expandedModels, isAvailableForUse, onFastModeChange, onOpenSignIn, onSelect, recordUsage, value],
+    [expandedModels, hideSignInFamilies, isAvailableForUse, onFastModeChange, onOpenSignIn, onSelect, recordUsage, value],
   );
 
   /**
@@ -840,13 +845,14 @@ export const ModelPickerContent = memo(function ModelPickerContent({
         return;
       }
       if (!isAvailableForUse(model)) {
-        onOpenSignIn?.(pickerFamilyForModel(model), model.authTypes);
+        const family = pickerFamilyForModel(model);
+        if (!hideSignInFamilies?.includes(family)) onOpenSignIn?.(family, model.authTypes);
         return;
       }
       recordUsage(modelId);
       onSelect(modelId, { fastMode: false, copilotContextTier: next });
     },
-    [expandedModels, isAvailableForUse, onCopilotContextTierChange, onOpenSignIn, onSelect, recordUsage, value],
+    [expandedModels, hideSignInFamilies, isAvailableForUse, onCopilotContextTierChange, onOpenSignIn, onSelect, recordUsage, value],
   );
 
   const handleServiceTierChange = useCallback(
@@ -856,7 +862,8 @@ export const ModelPickerContent = memo(function ModelPickerContent({
       if (next === "fast" && !modelSupportsServiceTier(model, "fast")) return;
       if (next === "standard" && !modelSupportsServiceTier(model, "standard")) return;
       if (!isAvailableForUse(model)) {
-        onOpenSignIn?.(pickerFamilyForModel(model), model.authTypes);
+        const family = pickerFamilyForModel(model);
+        if (!hideSignInFamilies?.includes(family)) onOpenSignIn?.(family, model.authTypes);
         return;
       }
       recordUsage(modelId);
@@ -866,7 +873,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
         onSelect(modelId, { fastMode: next === "fast", serviceTier: next });
       }
     },
-    [expandedModels, isAvailableForUse, onOpenSignIn, onSelect, onServiceTierChange, recordUsage, value],
+    [expandedModels, hideSignInFamilies, isAvailableForUse, onOpenSignIn, onSelect, onServiceTierChange, recordUsage, value],
   );
 
   const handleCopyId = useCallback((modelId: string) => {
@@ -921,6 +928,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
     activeProviderFamily != null
     && onOpenSignIn != null
     && effectiveAuth[activeProviderFamily] === "unauthed"
+    && !hideSignInFamilies?.includes(activeProviderFamily)
     && !activeFamilyNeedsOpencode
     && !activeProviderRefreshFailed
     && !activeProviderRefreshing;
@@ -1161,7 +1169,10 @@ export const ModelPickerContent = memo(function ModelPickerContent({
                 providerAuthStatus={effectiveAuth}
                 getProviderLabel={refreshProviderLabel}
                 isProviderReady={providerIsReady}
-                {...(onOpenSignIn ? { onOpenSignIn } : {})}
+                {...(onOpenSignIn
+                  && (!activeProviderFamily || !hideSignInFamilies?.includes(activeProviderFamily))
+                  ? { onOpenSignIn }
+                  : {})}
               />
             ) : (
               <div
@@ -1216,7 +1227,9 @@ export const ModelPickerContent = memo(function ModelPickerContent({
                           onCopilotContextTierChange: handleCopilotContextTierChange,
                         } : {})}
                         omitProviderInDetail={providerScopedList && m.family === activeProviderFamily}
-                        {...(onOpenSignIn ? { onSignIn: () => onOpenSignIn(pickerFamilyForModel(m), m.authTypes) } : {})}
+                        {...(onOpenSignIn && !hideSignInFamilies?.includes(pickerFamilyForModel(m))
+                          ? { onSignIn: () => onOpenSignIn(pickerFamilyForModel(m), m.authTypes) }
+                          : {})}
                       />
                     </div>
                   );
