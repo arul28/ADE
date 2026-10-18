@@ -4,7 +4,7 @@ Settings → General → **Project location** shows where the open project lives
 and offers **Move…**. The move copies the project with every lane, rewrites
 every place that names its old path, checks the copy, then switches over. The
 original is kept, renamed, until the person deletes it. macOS only for now;
-other systems show the row disabled.
+other systems show the row with no **Move…** button.
 
 Research, the full map of stored paths and the experiments behind each rule:
 [`docs/plans/project-move.md`](../../plans/project-move.md).

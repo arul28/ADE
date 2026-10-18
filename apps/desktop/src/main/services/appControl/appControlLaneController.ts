@@ -1145,13 +1145,16 @@ async function killProcessTreeIfAlive(
 // does not; on macOS the same driver reports "not implemented".
 const COMPUTER_USE_PLATFORM_REASON =
   "The computer-use App Control driver is not implemented in this build; native app control would be macOS only.";
+// Windows has a route for native app control today, so its reason names it.
+const COMPUTER_USE_WINDOWS_REASON =
+  `${COMPUTER_USE_PLATFORM_REASON} On Windows, drive native apps through the lane's Windows screen instead (\`ade screen\`).`;
 const COMPUTER_USE_UNIMPLEMENTED_REASON =
   "The computer-use App Control driver is not implemented in this build.";
 
 const computerUseCapability = (): AppControlDriverCapability => (
   process.platform === "darwin"
     ? { driver: "computer_use", status: "unavailable", reason: COMPUTER_USE_UNIMPLEMENTED_REASON, implemented: false }
-    : { driver: "computer_use", status: "unavailable", reason: COMPUTER_USE_PLATFORM_REASON, implemented: false }
+    : { driver: "computer_use", status: "unavailable", reason: process.platform === "win32" ? COMPUTER_USE_WINDOWS_REASON : COMPUTER_USE_PLATFORM_REASON, implemented: false }
 );
 
 export const listDriversFor = (activeSession: AppControlSession | null): AppControlDriversResult => ({
