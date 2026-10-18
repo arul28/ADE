@@ -1281,11 +1281,14 @@ function ensureBootstrapToken(filePath: string): string {
 }
 
 function createBlobFromBuffer(filePath: string, buf: Buffer): SyncFileBlob {
-  const isBinary = hasNullByte(buf);
+  const mimeType = inferMimeType(filePath);
+  // An image is binary whatever its first 8 KiB holds: the NUL scan is only a guess
+  // about the bytes, and the type is known. Read as UTF-8 an image has no data URL.
+  const isBinary = hasNullByte(buf) || mimeType?.startsWith("image/") === true;
   return {
     path: filePath,
     size: buf.length,
-    mimeType: inferMimeType(filePath),
+    mimeType,
     encoding: isBinary ? "base64" : "utf-8",
     isBinary,
     content: isBinary ? buf.toString("base64") : buf.toString("utf8"),
@@ -2365,6 +2368,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     ctoStateService: args.ctoStateService,
     ctoMemoryService: args.ctoMemoryService,
     workToolsStateService: args.workToolsStateService,
+    computerUseArtifactBrokerService: args.computerUseArtifactBrokerService,
     macDesktopService,
     macDesktopSyncStream,
     appControlSyncStream: args.appControlSyncStream ?? null,

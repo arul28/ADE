@@ -303,6 +303,8 @@ import {
 } from "../../../../desktop/src/shared/types/push";
 import type { PushPublisherService } from "../push/pushPublisherService";
 import type { WorkToolsStateService } from "../workTools/workToolsStateService";
+import type { ComputerUseArtifactBrokerService } from "../../../../desktop/src/main/services/computerUse/computerUseArtifactBrokerService";
+import type { ComputerUseArtifactListArgs } from "../../../../desktop/src/shared/types";
 import type { createMacDesktopService } from "../../../../desktop/src/main/services/macDesktop/macDesktopService";
 import type { MacDesktopSyncStream, MacDesktopSyncStreamSink } from "../../../../desktop/src/main/services/macDesktop/macDesktopSyncStream";
 import type { AppControlSyncStream, AppControlSyncStreamSink } from "./appControlSyncStream";
@@ -622,6 +624,12 @@ type SyncRemoteCommandServiceArgs = {
    * controllers feature-detect its absence rather than seeing it fail.
    */
   workToolsStateService?: WorkToolsStateService | null;
+  /**
+   * The proof store the hosted web client's citations read. Absent on a runtime
+   * that never built one, in which case `computerUse.*` is not registered and the
+   * web client reports a cited proof as unreadable rather than missing.
+   */
+  computerUseArtifactBrokerService?: Pick<ComputerUseArtifactBrokerService, "listArtifacts"> | null;
   /**
    * The runtime's Mac Desktop service. Present on a host that can hold a
    * display (and answers `supported: false` off macOS, which is how a Windows
@@ -6018,6 +6026,34 @@ function registerWorkToolsRemoteCommands({ args, register }: RemoteCommandRegist
 }
 
 /**
+ * Proof records for the hosted web client's citations and scene stills. Read-only
+ * and project-scoped, because proof lives on the machine that owns the lane or
+ * chat. Only the filters the broker's own list takes are forwarded, each checked
+ * for type, so the wire cannot ask for anything the broker does not already accept.
+ */
+function registerComputerUseRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
+  const broker = args.computerUseArtifactBrokerService;
+  if (!broker) return;
+  register("computerUse.listArtifacts", { viewerAllowed: true }, async (payload) =>
+    broker.listArtifacts(computerUseListArgs(payload)));
+}
+
+function computerUseListArgs(payload: Record<string, unknown>): ComputerUseArtifactListArgs {
+  const text = (value: unknown): string | undefined =>
+    typeof value === "string" && value.trim() ? value.trim() : undefined;
+  const limit = typeof payload.limit === "number" && Number.isFinite(payload.limit) ? payload.limit : undefined;
+  return {
+    artifactId: text(payload.artifactId),
+    ownerKind: text(payload.ownerKind) as ComputerUseArtifactListArgs["ownerKind"],
+    ownerId: text(payload.ownerId),
+    kind: text(payload.kind) as ComputerUseArtifactListArgs["kind"],
+    metadataKind: text(payload.metadataKind) as ComputerUseArtifactListArgs["metadataKind"],
+    excludeMetadataKind: text(payload.excludeMetadataKind) as ComputerUseArtifactListArgs["excludeMetadataKind"],
+    ...(limit !== undefined ? { limit } : {}),
+  };
+}
+
+/**
  * Every Mac Desktop lease a sync connection took, keyed by lane.
  *
  * The holder id itself is derived from the connection, so a closed socket's
@@ -7882,6 +7918,7 @@ let projectRemoteCommandDescriptors: SyncRemoteCommandDescriptor[] | null = null
 export function listProjectRemoteCommandDescriptors(): SyncRemoteCommandDescriptor[] {
   projectRemoteCommandDescriptors ??= createSyncRemoteCommandService({
     workToolsStateService: {},
+    computerUseArtifactBrokerService: {},
   } as unknown as SyncRemoteCommandServiceArgs).getDescriptors();
   return projectRemoteCommandDescriptors;
 }
@@ -8119,6 +8156,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   registerPersonalChatRemoteCommands({ args, register });
   registerModelPickerRemoteCommands({ args, register });
   registerWorkToolsRemoteCommands({ args, register });
+  registerComputerUseRemoteCommands({ args, register });
   registerMacDesktopRemoteCommands({ args, register, connectionLeases: macDesktopConnectionLeases });
   registerAppControlRemoteCommands({ args, register });
   registerAppleRemoteCommands({ args, register });

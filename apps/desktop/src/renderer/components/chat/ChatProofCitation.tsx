@@ -47,49 +47,84 @@ export function ProofCitationProvider({
 }
 
 /**
+ * What one lookup by id answered. `ok: false` means the machine could not say
+ * (offline, too old, refused): that is not the same as the machine saying the
+ * proof is not there, and the citation must not claim it is.
+ */
+type CitedArtifactLookup =
+  | { ok: true; artifact: ComputerUseArtifactView | null }
+  | { ok: false };
+
+/**
  * Records fetched by id, per machine. A cited artifact the chat's list does not
  * hold (another chat's proof in the same lane, or a list that has not caught
- * up) is read once through the chat's runtime and kept. A miss is not kept, so
- * the next render after the list changes asks again.
+ * up) is read once through the chat's runtime and kept. A miss or a failed read
+ * is not kept, so the next render after the list changes asks again.
  */
-const fetchedArtifacts = new Map<string, Promise<ComputerUseArtifactView | null>>();
+type FetchedArtifactRequest = {
+  promise: Promise<CitedArtifactLookup>;
+  startedOnline: boolean;
+  settled: boolean;
+};
+
+const fetchedArtifacts = new Map<string, FetchedArtifactRequest>();
 
 type CitedArtifactState =
   | { status: "loading" }
   | { status: "missing" }
+  | { status: "unreadable"; retry: () => void }
   | { status: "ready"; artifact: ComputerUseArtifactView };
 
 function useCitedProofArtifact(artifactId: string): CitedArtifactState {
   const { artifactsById } = useContext(ProofCitationContext);
   const scope = useChatRuntimeScope();
   const known = artifactsById.get(artifactId) ?? null;
-  const [fetched, setFetched] = useState<{ key: string; artifact: ComputerUseArtifactView | null } | null>(null);
+  const [fetched, setFetched] = useState<{ key: string; lookup: CitedArtifactLookup } | null>(null);
+  const [attempt, setAttempt] = useState(0);
   const machineKey = `${JSON.stringify(scope.pin ?? null)}:${scope.rootPath ?? ""}`;
   const key = `${machineKey}|${artifactId}`;
+  // A failed lookup is not kept, so the pinned machine coming back asks again
+  // instead of leaving the card on "couldn't load" until a remount.
+  const online = scope.online;
+  // Retry asks again through this same effect, with no remount.
+  const retry = () => {
+    setFetched(null);
+    setAttempt((count) => count + 1);
+  };
 
   useEffect(() => {
     if (known) return;
     let cancelled = false;
-    let pending = fetchedArtifacts.get(key);
+    const cached = fetchedArtifacts.get(key);
+    // A lookup begun while the machine was offline may still be pending when it
+    // comes back. Its failure would stick, so ask again rather than wait on it.
+    const reusable = cached && !(online && !cached.startedOnline && !cached.settled);
+    let pending = reusable ? cached.promise : null;
     if (!pending) {
       pending = window.ade.computerUse
         .listArtifacts({ artifactId, limit: 1 }, scope.pin)
-        .then((rows) => rows.find((row) => row.id === artifactId) ?? null)
-        .catch(() => null);
-      fetchedArtifacts.set(key, pending);
+        .then((rows): CitedArtifactLookup => ({ ok: true, artifact: rows.find((row) => row.id === artifactId) ?? null }))
+        .catch((): CitedArtifactLookup => ({ ok: false }));
+      fetchedArtifacts.set(key, { promise: pending, startedOnline: online, settled: false });
     }
-    void pending.then((artifact) => {
-      if (!artifact) fetchedArtifacts.delete(key);
-      if (!cancelled) setFetched({ key, artifact });
+    const request = pending;
+    void request.then((lookup) => {
+      const current = fetchedArtifacts.get(key);
+      if (current?.promise === request) {
+        current.settled = true;
+        if (!lookup.ok || !lookup.artifact) fetchedArtifacts.delete(key);
+      }
+      if (!cancelled) setFetched({ key, lookup });
     });
     return () => {
       cancelled = true;
     };
-  }, [artifactId, key, known, scope.pin]);
+  }, [artifactId, attempt, key, known, online, scope.pin]);
 
   if (known) return { status: "ready", artifact: known };
   if (!fetched || fetched.key !== key) return { status: "loading" };
-  return fetched.artifact ? { status: "ready", artifact: fetched.artifact } : { status: "missing" };
+  if (!fetched.lookup.ok) return { status: "unreadable", retry };
+  return fetched.lookup.artifact ? { status: "ready", artifact: fetched.lookup.artifact } : { status: "missing" };
 }
 
 function CitationPlaceholder({ children, tone = "muted" }: { children: React.ReactNode; tone?: "muted" | "warning" }) {
@@ -224,6 +259,7 @@ export function CitedProofSlot({ artifactId, caption, compact, fallback }: {
   fallback?: React.ReactNode;
 }) {
   const state = useCitedProofArtifact(artifactId);
+  const scope = useChatRuntimeScope();
   if (fallback != null && state.status !== "ready") return <>{fallback}</>;
   if (state.status === "loading") {
     return (
@@ -238,6 +274,23 @@ export function CitedProofSlot({ artifactId, caption, compact, fallback }: {
       <CitationPlaceholder tone="warning">
         <WarningCircle size={14} aria-hidden />
         {`ADE has no proof with the id ${artifactId}.${caption?.trim() ? ` It was cited as "${caption.trim()}".` : ""}`}
+      </CitationPlaceholder>
+    );
+  }
+  if (state.status === "unreadable") {
+    return (
+      <CitationPlaceholder tone="warning">
+        <WarningCircle size={14} aria-hidden />
+        <span className="min-w-0">
+          {`Couldn't load this proof from ${scope.isRemote ? scope.machineName : "this computer"}.${caption?.trim() ? ` It was cited as "${caption.trim()}".` : ""}`}
+        </span>
+        <button
+          type="button"
+          onClick={state.retry}
+          className="ml-auto shrink-0 rounded-md border border-amber-200/[0.22] px-2 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-amber-100/85 hover:bg-amber-200/[0.08] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-200/60"
+        >
+          Retry
+        </button>
       </CitationPlaceholder>
     );
   }
