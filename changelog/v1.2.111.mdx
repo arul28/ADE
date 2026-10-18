@@ -1,0 +1,38 @@
+---
+title: "v1.2.111"
+description: "Release notes for ADE v1.2.111 - October 17, 2026"
+---
+
+ADE 1.2.111 pastes text into the prompt box in ADE's own formatting, makes long lists and revisits faster, improves the hosted web client, and fixes another run of sync and multi-machine edges.
+
+## Fixes
+
+- Pasting into the prompt box keeps ADE's own formatting instead of the source's font, size and background (#1775).
+- Claude sign-in from the model picker runs on the composer's machine, and a lane's new-chat button keeps its lane (#1774).
+- A warm chat switch keeps the transcript, and loading older messages keeps you at the bottom (#1767).
+- A stale chat read no longer reopens the Tools pane for a live terminal (#1750).
+- CTO identity chats are recognised across lanes and beyond the 500 most recent chats (#1765).
+- A second ADE launch that loses the single-instance lock exits cleanly (#1759).
+- The Copilot Auto profile menu matches the thinking-levels menu (#1746).
+- Old Node compile caches no longer pile up after updates (#1748).
+- Path refusals outside a project no longer reveal through their error text whether the target exists (#1752).
+
+## Speed
+
+- The Files list mounts only the rows on screen (#1761).
+- Revisiting Lanes paints the last Branch diff and History right away (#1762).
+- Session lists summarize only the chats they show (#1754).
+
+## Hosted web client
+
+- Submenus and context menus open beside their row (#1771).
+- Cited proofs load instead of reading as missing (#1773).
+- Older chat history pages in 512 KB chunks (#1772).
+
+## Sync & multi-machine reliability
+
+- A computer following another machine can stop following it (#1757).
+- A viewer never dials this machine for a remote brain with no address (#1766).
+- Legacy drafts stay scoped to their project, and the brain refuses an unsafe disconnect (#1764).
+- A sync disconnect names its project and never stops another one (#1751).
+- On Windows, taking over stops a stale brain on the same channel over RPC (#1755), and a slow start no longer shows the degraded This-Machine card (#1758).
