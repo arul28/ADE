@@ -72,7 +72,7 @@ const fetchedArtifacts = new Map<string, FetchedArtifactRequest>();
 type CitedArtifactState =
   | { status: "loading" }
   | { status: "missing" }
-  | { status: "unreadable" }
+  | { status: "unreadable"; retry: () => void }
   | { status: "ready"; artifact: ComputerUseArtifactView };
 
 function useCitedProofArtifact(artifactId: string): CitedArtifactState {
@@ -80,11 +80,17 @@ function useCitedProofArtifact(artifactId: string): CitedArtifactState {
   const scope = useChatRuntimeScope();
   const known = artifactsById.get(artifactId) ?? null;
   const [fetched, setFetched] = useState<{ key: string; lookup: CitedArtifactLookup } | null>(null);
+  const [attempt, setAttempt] = useState(0);
   const machineKey = `${JSON.stringify(scope.pin ?? null)}:${scope.rootPath ?? ""}`;
   const key = `${machineKey}|${artifactId}`;
   // A failed lookup is not kept, so the pinned machine coming back asks again
   // instead of leaving the card on "couldn't load" until a remount.
   const online = scope.online;
+  // Retry asks again through this same effect, with no remount.
+  const retry = () => {
+    setFetched(null);
+    setAttempt((count) => count + 1);
+  };
 
   useEffect(() => {
     if (known) return;
@@ -113,11 +119,11 @@ function useCitedProofArtifact(artifactId: string): CitedArtifactState {
     return () => {
       cancelled = true;
     };
-  }, [artifactId, key, known, online, scope.pin]);
+  }, [artifactId, attempt, key, known, online, scope.pin]);
 
   if (known) return { status: "ready", artifact: known };
   if (!fetched || fetched.key !== key) return { status: "loading" };
-  if (!fetched.lookup.ok) return { status: "unreadable" };
+  if (!fetched.lookup.ok) return { status: "unreadable", retry };
   return fetched.lookup.artifact ? { status: "ready", artifact: fetched.lookup.artifact } : { status: "missing" };
 }
 
@@ -275,7 +281,16 @@ export function CitedProofSlot({ artifactId, caption, compact, fallback }: {
     return (
       <CitationPlaceholder tone="warning">
         <WarningCircle size={14} aria-hidden />
-        {`Couldn't load this proof from ${scope.isRemote ? scope.machineName : "this computer"}.${caption?.trim() ? ` It was cited as "${caption.trim()}".` : ""}`}
+        <span className="min-w-0">
+          {`Couldn't load this proof from ${scope.isRemote ? scope.machineName : "this computer"}.${caption?.trim() ? ` It was cited as "${caption.trim()}".` : ""}`}
+        </span>
+        <button
+          type="button"
+          onClick={state.retry}
+          className="ml-auto shrink-0 rounded-md border border-amber-200/[0.22] px-2 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-amber-100/85 hover:bg-amber-200/[0.08] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-200/60"
+        >
+          Retry
+        </button>
       </CitationPlaceholder>
     );
   }

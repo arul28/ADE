@@ -2,6 +2,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { ComputerUseArtifactView } from "../../../shared/types";
 import type * as ChatRuntimeScopeModule from "./ChatRuntimeScope";
 import { CitedProofSlot } from "./ChatProofCitation";
@@ -117,6 +118,55 @@ describe("CitedProofSlot", () => {
     await Promise.resolve();
     expect(screen.queryByText(/Couldn't load this proof/)).toBeNull();
     expect(computerUse.listArtifacts).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not start a second lookup when the machine blips offline and back while the first is pending", async () => {
+    let answer: (rows: unknown[]) => void = () => {};
+    const computerUse = stubAde(() => new Promise<unknown[]>((resolve) => { answer = resolve; }));
+
+    const view = render(<CitedProofSlot artifactId="art-blip" caption="Blip" />);
+    scopeState.online = false;
+    view.rerender(<CitedProofSlot artifactId="art-blip" caption="Blip" />);
+    scopeState.online = true;
+    view.rerender(<CitedProofSlot artifactId="art-blip" caption="Blip" />);
+
+    answer([{ ...READY, id: "art-blip" }]);
+    expect(await screen.findByRole("img", { name: "Blip" })).toBeTruthy();
+    expect(computerUse.listArtifacts).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries an unreadable proof from its Retry button, from the keyboard, without a remount", async () => {
+    let reply: (rows: unknown[]) => void = () => {};
+    let calls = 0;
+    const computerUse = stubAde(() => {
+      calls += 1;
+      if (calls === 1) return Promise.reject(new Error("timeout"));
+      return new Promise<unknown[]>((resolve) => { reply = resolve; });
+    });
+    const user = userEvent.setup();
+
+    render(<CitedProofSlot artifactId="art-in-place" caption="In place" />);
+    expect(await screen.findByText(/Couldn't load this proof/)).toBeTruthy();
+
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Retry" }));
+    await user.keyboard("{Enter}");
+
+    // While the retry is in flight the card reads as loading again, not as the old failure.
+    expect(screen.queryByText(/Couldn't load this proof/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    reply([{ ...READY, id: "art-in-place" }]);
+    expect(await screen.findByRole("img", { name: "In place" })).toBeTruthy();
+    expect(computerUse.listArtifacts).toHaveBeenCalledTimes(2);
+  });
+
+  it("offers no Retry for a proof the machine says it does not have", async () => {
+    stubAde(async () => []);
+
+    render(<CitedProofSlot artifactId="art-absent" caption="Absent" />);
+
+    expect(await screen.findByText(/ADE has no proof/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
   });
 
   it("asks again when the pinned machine comes back online after a failed read", async () => {
