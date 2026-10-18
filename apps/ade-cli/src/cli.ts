@@ -30553,7 +30553,12 @@ function formatBrowserStatus(value: unknown): string {
   // says exactly that, with the command that fixes it.
   const ownerForTab = (tab: Record<string, unknown>): string => {
     if (tab.claimable === true) {
-      return `not yours — ade browser claim --tab ${asString(tab.id) ?? "<id>"}`;
+      const id = asString(tab.id) ?? "<id>";
+      // A claimable tab that still names an owner is one whose chat went idle
+      // and let its lease lapse: free to reuse, or to close to free a slot.
+      return asString(tab.ownerChatSessionId) || asString(tab.ownerLaneId)
+        ? `idle (lease lapsed) — ade browser claim --tab ${id}, or close it`
+        : `not yours — ade browser claim --tab ${id}`;
     }
     const lane = asString(tab.ownerLaneId);
     const chat = asString(tab.ownerChatSessionId);

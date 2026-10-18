@@ -111,7 +111,7 @@ import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { ProviderOutdatedNoticeRow } from "./ProviderOutdatedNoticeRow";
 import { transcriptRowGapPx } from "./chatAppearance";
 import { UserMessageIssueContext } from "./UserMessageIssueContext";
-import type { AgentChatContextAttachment, AgentChatEventMetadata, AgentChatFileRef } from "../../../shared/types";
+import type { AgentChatContextAttachment, AgentChatFileRef } from "../../../shared/types";
 import type { LaneJiraIssue } from "../../../shared/types/jira";
 import { getToolMeta } from "./chatToolAppearance";
 import { deriveChatSources, type ChatSource, type ChatSources } from "../../../shared/chatSources";
@@ -223,6 +223,7 @@ import {
   computeScrollTopForRow,
   placeMinimapEntriesOnVisibleRows,
   resolveRowAnchorAtScrollTop,
+  isReaderAuthoredMessage,
   type ChatUserMinimapSourceEntry,
 } from "./chatUserMinimap.logic";
 import { buildLegacyPendingInputFromApprovalEvent } from "./pendingInput";
@@ -2476,25 +2477,6 @@ function dispatchAdeCardAction(
   } catch {
     /* no-op */
   }
-}
-
-/**
- * True for a message the reader wrote. ADE, the scheduler and other agents
- * also deliver `user_message` events (a board move, a PR watch wake, a
- * scheduled wake, a child's completion, a relay, a resume prompt); none of
- * those is the reader answering a scene.
- */
-function isReaderAuthoredMessage(metadata: AgentChatEventMetadata | null | undefined): boolean {
-  if (!metadata) return true;
-  return !(
-    metadata.boardMove
-    || metadata.prWatchWake
-    || metadata.scheduledWake
-    || metadata.spawnCompletion
-    || metadata.agentRelay
-    || metadata.hostContinuation
-    || metadata.usageLimitResume
-  );
 }
 
 /**

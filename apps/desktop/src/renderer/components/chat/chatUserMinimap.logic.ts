@@ -1,3 +1,4 @@
+import type { AgentChatEventMetadata } from "../../../shared/types";
 import type { ChatTranscriptGroupedEnvelope } from "./chatTranscriptRows";
 import { summarizeInlineText } from "./chatTranscriptRows";
 import { tickIndexFromPointer, tickTopPercent } from "../../lib/tickStripGeometry";
@@ -69,6 +70,25 @@ export function isTimelineUserMessageRow(row: ChatTranscriptGroupedEnvelope): ro
   if (event.type !== "user_message") return false;
   if (event.deliveryState === "queued" && event.steerId) return false;
   return true;
+}
+
+/**
+ * True for a message the reader wrote. ADE, the scheduler and other agents
+ * also deliver `user_message` events (a board move, a PR watch wake, a
+ * scheduled wake, a child's completion, a relay, a resume prompt); none of
+ * those is the reader speaking.
+ */
+export function isReaderAuthoredMessage(metadata: AgentChatEventMetadata | null | undefined): boolean {
+  if (!metadata) return true;
+  return !(
+    metadata.boardMove
+    || metadata.prWatchWake
+    || metadata.scheduledWake
+    || metadata.spawnCompletion
+    || metadata.agentRelay
+    || metadata.hostContinuation
+    || metadata.usageLimitResume
+  );
 }
 
 function terminalTurnOutcome(value: string | undefined): ChatUserMinimapTurnOutcome | null {
@@ -167,6 +187,10 @@ export function collectUserMessageMinimapSourceEntries(
         PREVIEW_MAX_CHARS,
       );
       if (hideFullPrompt && preview.length === 0) continue;
+      // Only what the reader wrote gets a tick. Subagent returns, scheduled
+      // wakes, relays and resume prompts arrive as user messages too, and in a
+      // coordinator chat they outnumber the real prompts many times over.
+      if (!isReaderAuthoredMessage(event.metadata)) continue;
       const entry: ChatUserMinimapSourceEntry = {
         rowIndex,
         key: row.key,
@@ -392,6 +416,24 @@ export function resolveMinimapRailHeightStyle(itemCount: number, availablePx: nu
   const naturalHeight = (itemCount - 1) * CHAT_USER_MINIMAP_TICK_SPACING_PX;
   const cappedHeight = Math.min(naturalHeight, availablePx - CHAT_USER_MINIMAP_RAIL_PADDING_PX);
   return `${Math.max(1, cappedHeight)}px`;
+}
+
+/** Most ticks the rail draws at once; older ones fold behind an "earlier" control. */
+export const CHAT_USER_MINIMAP_WINDOW_SIZE = 50;
+
+/**
+ * The slice of entries the rail draws: `[start, end)`, at most
+ * `CHAT_USER_MINIMAP_WINDOW_SIZE` long. `requestedEnd` is the exclusive end the
+ * reader paged to; `null` keeps the window on the newest entries.
+ */
+export function resolveMinimapWindow(
+  itemCount: number,
+  requestedEnd: number | null,
+): { start: number; end: number } {
+  const count = Math.max(0, itemCount);
+  const size = Math.min(CHAT_USER_MINIMAP_WINDOW_SIZE, count);
+  const end = Math.max(size, Math.min(count, requestedEnd ?? count));
+  return { start: end - size, end };
 }
 
 /** Too little room left to render a usable rail. */
