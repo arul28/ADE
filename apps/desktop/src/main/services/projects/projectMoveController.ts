@@ -143,6 +143,9 @@ export function createProjectMoveController(deps: ProjectMoveControllerDeps) {
             sourceRoot: args.projectRoot,
             destinationRoot: args.destinationRoot,
             moveAgentHistory: args.moveAgentHistory,
+            // Room is checked again here: the drive may have filled since.
+            copyDependencies: args.copyDependencies === true && preflight.canCopyDependencies,
+            notes: preflight.notes,
             hooks: {
               closeProject: deps.releaseProject,
               onProgress: deps.emitProgress,

@@ -242,8 +242,10 @@ export async function relinkAbsoluteSymlinks(args: {
   copyRoot: string;
   finalRoot: string;
   oldSpellings: string[];
+  /** Copied dependency folders can hold absolute links into the project too (e.g. a bundled runtime's `.bin`). */
+  includeDependencies?: boolean;
 }): Promise<number> {
-  const links = await listSymlinks(args.copyRoot);
+  const links = await listSymlinks(args.copyRoot, { includeDependencies: args.includeDependencies });
   let count = 0;
   for (const link of links) {
     let target: string;
@@ -263,9 +265,10 @@ export async function relinkAbsoluteSymlinks(args: {
   return count;
 }
 
-function listSymlinks(root: string): Promise<string[]> {
+export function listSymlinks(root: string, options: { includeDependencies?: boolean } = {}): Promise<string[]> {
+  const prune = options.includeDependencies ? [] : ["(", "-name", "node_modules", "-type", "d", ")", "-prune", "-o"];
   return new Promise((resolve, reject) => {
-    const child = spawn("/usr/bin/find", [root, "(", "-name", "node_modules", "-type", "d", ")", "-prune", "-o", "-type", "l", "-print0"], {
+    const child = spawn("/usr/bin/find", [root, ...prune, "-type", "l", "-print0"], {
       stdio: ["ignore", "pipe", "pipe"],
     });
     const chunks: Buffer[] = [];

@@ -162,6 +162,7 @@ import { createConflictService } from "./services/conflicts/conflictService";
 import { createProjectConfigService } from "./services/config/projectConfigService";
 import { createDiskPressureMonitor } from "./services/storage/diskPressure";
 import { createStorageInsightsService } from "./services/storage/storageInsightsService";
+import { createProjectHealthService } from "../../../ade-cli/src/services/projects/projectHealth/projectHealthService";
 import { recoverOrphanedAdeAgentProcesses } from "./services/processes/orphanedAgentProcessReaper";
 import { createTestService } from "./services/tests/testService";
 import { createOperationService } from "./services/history/operationService";
@@ -5502,6 +5503,23 @@ app.whenReady().then(async () => {
       computerUseArtifactBrokerService.purgeArtifactRecordsUnder(removedPath);
     },
     });
+    const projectHealthService = createProjectHealthService({
+      projectRoot,
+      db,
+      logger,
+      listLanes: () => laneService.list({ includeArchived: false }),
+      openTerminal: async (request) => {
+        await ptyService.create({
+          laneId: request.laneId,
+          cwd: request.cwd,
+          cols: 120,
+          rows: 32,
+          title: request.title,
+          tracked: true,
+          startupCommand: request.command,
+        });
+      },
+    });
 
     // Phone sync is owned by the per-machine ADE service. The desktop
     // keeps a non-host sync service for legacy viewer state and explicit
@@ -6314,6 +6332,7 @@ app.whenReady().then(async () => {
       githubPollingService,
       usageTrackingService,
       storageInsightsService,
+      projectHealthService,
       budgetCapService,
       syncHostService: syncService.getHostService(),
       syncService,

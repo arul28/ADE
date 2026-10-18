@@ -169,9 +169,11 @@ describe.skipIf(process.platform !== "darwin")("runProjectMove", () => {
     expect(record.state, record.error).toBe("done");
     expect(record.problems).toEqual([]);
 
-    // Dependencies git tracks travel; installed ones are reinstalled later.
+    // Dependencies git tracks travel. On the same drive installed ones come
+    // along too (as clones), so nothing needs reinstalling.
     expect(fs.readFileSync(path.join(destination, "vendor", "node_modules", "patched", "index.js"), "utf8")).toBe("patched\n");
-    expect(fs.existsSync(path.join(destination, "node_modules"))).toBe(false);
+    expect(fs.readFileSync(path.join(destination, "node_modules", "pkg", "index.js"), "utf8")).toBe("installed\n");
+    expect(record.copiedDependencies).toBe(true);
 
     // The lane inside keeps its uncommitted work and belongs to the moved repo.
     const movedLane = path.join(destination, ".ade", "worktrees", "alpha");

@@ -71,6 +71,10 @@ import {
 
 const SLOW_ACTION_THRESHOLD_MS = 500;
 const RUNTIME_HEALTH_WINDOW_MS = 24 * 60 * 60_000;
+// Disk scans and project-health checks are slow by design, and Settings →
+// Health runs them when it opens. Counting them made the page report its own
+// scans as the service being slow.
+const RUNTIME_HEALTH_EXCLUDED_DOMAINS: ReadonlySet<string> = new Set(["storage", "project_health"]);
 const LOCAL_RUNTIME_STARTUP_PROBE_TIMEOUT_MS = 2_000;
 const LOCAL_RUNTIME_STARTUP_RETRY_MS = 250;
 // Ring-cap the in-memory slow-action window so a sustained slow-call storm can
@@ -83,7 +87,7 @@ type LocalRuntimeConnection = {
   socketPath: string;
 };
 
-type SlowActionSample = { at: number; totalMs: number };
+type SlowActionSample = { at: number; totalMs: number; failed: boolean };
 
 type RuntimeEventNotification = {
   subscriptionId: string;
@@ -1210,7 +1214,7 @@ export class LocalRuntimeConnectionPool {
   // still connected may serve the long window; see `serviceHealthReadMaxAgeMs`.
   private serviceHealthSteadyClient: RuntimeRpcClient | null = null;
   private runtimeStatusRefreshPromise: Promise<void> | null = null;
-  // Rolling 24 h aggregate of slow (>500 ms) or errored daemon action calls.
+  // Rolling 24 h aggregate of slow (>500 ms) and of failed daemon action calls.
   // Feeds the machine-level runtime-health diagnostic surfaced in Settings.
   private slowActionSamples: SlowActionSample[] = [];
   /** Lanes whose App Control frames this desktop's windows show. */
@@ -1385,8 +1389,8 @@ export class LocalRuntimeConnectionPool {
     return Array.from(new Set(pids));
   }
 
-  private recordSlowAction(atMs: number, totalMs: number): void {
-    this.slowActionSamples.push({ at: atMs, totalMs });
+  private recordSlowAction(atMs: number, totalMs: number, failed = false): void {
+    this.slowActionSamples.push({ at: atMs, totalMs, failed });
     // Keep the window bounded on both age and count.
     const horizon = atMs - RUNTIME_HEALTH_WINDOW_MS;
     if (this.slowActionSamples.length > RUNTIME_HEALTH_MAX_SAMPLES || this.slowActionSamples[0]!.at < horizon) {
@@ -1402,16 +1406,20 @@ export class LocalRuntimeConnectionPool {
     const recent = this.slowActionSamples.filter((sample) => sample.at >= horizon);
     // Prune while we are here so idle pools do not retain a stale window.
     this.slowActionSamples = recent;
+    // A failed call is counted once, as failed, however long it took: a
+    // timeout is a failure first.
+    const slow = recent.filter((sample) => !sample.failed);
     let p95: number | null = null;
-    if (recent.length > 0) {
-      const sorted = recent.map((sample) => sample.totalMs).sort((left, right) => left - right);
+    if (slow.length > 0) {
+      const sorted = slow.map((sample) => sample.totalMs).sort((left, right) => left - right);
       // Nearest-rank p95: index ceil(0.95*n)-1, clamped into range.
       const rank = Math.min(sorted.length - 1, Math.max(0, Math.ceil(0.95 * sorted.length) - 1));
       p95 = sorted[rank]!;
     }
     return {
-      slowActions24h: recent.length,
+      slowActions24h: slow.length,
       slowActionP95Ms: p95,
+      failedActions24h: recent.length - slow.length,
       sampledAt: new Date(nowMs).toISOString(),
     };
   }
@@ -2210,7 +2218,9 @@ export class LocalRuntimeConnectionPool {
         const tCall = Date.now();
         const totalMs = tCall - tStart;
         if (totalMs > SLOW_ACTION_THRESHOLD_MS || callError) {
-          this.recordSlowAction(tCall, totalMs);
+          if (!RUNTIME_HEALTH_EXCLUDED_DOMAINS.has(request.domain)) {
+            this.recordSlowAction(tCall, totalMs, Boolean(callError));
+          }
           this.logger.warn("local_runtime.action_slow", {
             domain: request.domain,
             action: request.action,

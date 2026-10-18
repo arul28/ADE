@@ -68,12 +68,44 @@ export function readMaintenanceJournal(journalPath: string): MaintenanceRunRepor
   }
 }
 
+/**
+ * How long a files-only run (files the person confirmed in Settings) waits for
+ * the manual maintenance run that "Clean up safely" starts right after it.
+ */
+export const FILES_RUN_FOLD_WINDOW_MS = 10 * 60_000;
+
+function foldsInto(previous: MaintenanceRunReport, next: MaintenanceRunReport): boolean {
+  if (!previous.filesOnly || next.filesOnly || next.trigger !== "manual") return false;
+  const gap = Date.parse(next.startedAt) - Date.parse(previous.finishedAt);
+  return Number.isFinite(gap) && gap >= -1_000 && gap <= FILES_RUN_FOLD_WINDOW_MS;
+}
+
+/**
+ * One cleanup is one journal entry. "Clean up safely" removes the confirmed
+ * files first and then runs maintenance; without this the journal showed two
+ * runs, and the maintenance one ("reclaimed 13.6 MB") hid the files it had
+ * just removed.
+ */
+function foldRuns(files: MaintenanceRunReport, maintenance: MaintenanceRunReport): MaintenanceRunReport {
+  return {
+    ...maintenance,
+    startedAt: files.startedAt,
+    actions: [...files.actions, ...maintenance.actions],
+    reclaimedBytes: files.reclaimedBytes + maintenance.reclaimedBytes,
+  };
+}
+
 export function appendMaintenanceJournal(
   journalPath: string,
   report: MaintenanceRunReport,
   ctx: { logger: Logger; projectRoot: string },
 ): MaintenanceRunReport[] {
-  const next = [report, ...readMaintenanceJournal(journalPath)].slice(0, MAINTENANCE_JOURNAL_MAX_RUNS);
+  const existing = readMaintenanceJournal(journalPath);
+  const [newest, ...older] = existing;
+  const next = (newest && foldsInto(newest, report)
+    ? [foldRuns(newest, report), ...older]
+    : [report, ...existing]
+  ).slice(0, MAINTENANCE_JOURNAL_MAX_RUNS);
   try {
     fs.mkdirSync(path.dirname(journalPath), { recursive: true });
     // Write to a sibling temp file then rename over the target so a crash mid-

@@ -138,7 +138,7 @@ export const SETTINGS_TABS: readonly SettingsTab[] = [
   { id: "secrets", label: "Secrets", description: "Keys and tokens your agents use in this repository, on every machine.", group: "project" },
 
   // ── Machines: one set of these pages per machine ───────────────────────
-  { id: "general", label: "General", description: "ADE on this machine: runtime, project health, links, privacy, and power.", group: "machines" },
+  { id: "general", label: "General", description: "ADE on this machine: runtime, project location, links, privacy, and power.", group: "machines" },
   // Appearance is per computer: each screen has its own theme, fonts and
   // terminal, and none of it follows the account.
   { id: "appearance", label: "Appearance", description: "How ADE looks on this computer: theme, fonts, terminal, and Apple Development.", group: "machines" },
@@ -151,7 +151,8 @@ export const SETTINGS_TABS: readonly SettingsTab[] = [
   { id: "apple", label: "Apple devices", description: "Simulator display, recording overlays, and remote streaming on this computer.", group: "machines" },
   { id: "lanes-git", label: "Lanes", description: "How lanes start and stay current in this machine's checkout.", group: "machines" },
   { id: "integrations", label: "Integrations", description: "GitHub, Linear and Jira, as connected on this machine.", group: "machines" },
-  { id: "storage", label: "Diagnostics", description: "What ADE keeps on disk, and what you can clear.", group: "machines" },
+  // The tab id stays `storage` so every link ever shipped still lands here.
+  { id: "storage", label: "Health", description: "What needs attention in this project, the space ADE uses, and its background service.", group: "machines" },
   // No description: the page's own header says what the archive is.
   { id: "archive", label: "Archive", group: "machines" },
 ] as const;
@@ -262,16 +263,6 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   },
 
   // ── General ──────────────────────────────────────────────────────────────
-  {
-    id: "general.project",
-    label: "Project",
-    keywords: ["icon", "name", "repository", "root"],
-    tab: "general",
-    anchor: "project",
-    scope: "machine-repo",
-    web: "hidden",
-    group: "Project",
-  },
   {
     id: "general.project-location",
     label: "Project location",
@@ -1124,31 +1115,51 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Secrets",
   },
 
-  // ── Diagnostics ──────────────────────────────────────────────────────────
+  // ── Health ───────────────────────────────────────────────────────────────
+  {
+    id: "storage.project-health",
+    label: "Project health",
+    keywords: ["issues", "problems", "fix", "check", "moved", "paths", "doctor", "broken"],
+    tab: "storage",
+    anchor: "project-health",
+    scope: "machine-repo",
+    web: "hidden",
+    group: "Overview",
+  },
   {
     id: "storage.usage",
-    label: "Disk usage",
-    keywords: ["space", "size", "clean", "reclaim", "gb", "free"],
+    label: "Disk space",
+    keywords: ["space", "size", "clean", "reclaim", "gb", "free", "disk", "storage", "usage"],
     tab: "storage",
     anchor: "storage",
     scope: "machine",
     web: "hidden",
-    group: "Disk",
+    group: "Space",
+  },
+  {
+    id: "storage.cleanups",
+    label: "Cleanup history",
+    keywords: ["cleanup", "freed", "maintenance", "journal", "reclaimed"],
+    tab: "storage",
+    anchor: "storage-cleanups",
+    scope: "machine",
+    web: "hidden",
+    group: "Cleanups",
   },
   {
     id: "storage.lane-rules",
-    label: "Lane storage rules",
-    keywords: ["archive", "inactivity", "cleanup", "worktree", "max lanes", "retention"],
+    label: "Archive idle lanes",
+    keywords: ["archive", "inactivity", "cleanup", "worktree", "max lanes", "retention", "lane storage rules"],
     tab: "storage",
     anchor: "lane-storage-rules",
     scope: "machine-repo",
     web: "hidden",
-    group: "Disk",
+    group: "Cleanups",
   },
   {
     id: "storage.session-lifecycle",
     label: "Session lifecycle",
-    keywords: ["session", "idle", "close", "terminal", "cleanup"],
+    keywords: ["session", "idle", "close", "terminal", "cleanup", "settle"],
     tab: "storage",
     anchor: "session-lifecycle",
     scope: "machine",
@@ -1156,14 +1167,24 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Sessions",
   },
   {
+    id: "storage.project-files",
+    label: "Project files",
+    keywords: [".ade", "folder", "repair", "session logs", "config", "icon", "name", "repository", "root"],
+    tab: "storage",
+    anchor: "project",
+    scope: "machine-repo",
+    web: "hidden",
+    group: "Sessions",
+  },
+  {
     id: "storage.diagnostics",
-    label: "Diagnostics",
-    keywords: ["debug", "logs", "health", "troubleshoot", "report"],
+    label: "Background service",
+    keywords: ["diagnostics", "debug", "health", "troubleshoot", "slow", "memory", "repair", "brain", "service"],
     tab: "storage",
     anchor: "diagnostics",
     scope: "machine",
     web: "hidden",
-    group: "Diagnostics",
+    group: "Service",
   },
 
   // ── Archive ──────────────────────────────────────────────────────────────
@@ -1206,6 +1227,8 @@ export const LEGACY_TAB_ALIASES: Readonly<Record<string, SettingsTabId>> = {
   "ade-usage": "stats",
   usage: "stats",
   disk: "storage",
+  diagnostics: "storage",
+  health: "storage",
   archived: "archive",
   secret: "secrets",
   // Swept into General before this rewrite; now have real homes again.
@@ -1244,11 +1267,10 @@ export const LEGACY_HASH_ALIASES: Readonly<Record<string, string>> = {
   "github-connection": "integrations.github",
   "linear-connection": "integrations.linear",
   "pr-chat-transcripts": "lanes-git.pr-chat-transcripts",
-  "session-lifecycle": "storage.session-lifecycle",
+  // `session-lifecycle` is still a live anchor (Health → Sessions).
   // Reset ADE lived inside the About card (#1410) before it got its own section.
   "about.reset": "general.reset",
   "auto-updates": "general.auto-updates",
-  storage: "storage.usage",
   // Moved out of Notifications when Activity got its own tab.
   "attention-sounds": "activity.sounds",
   "hide-previews": "activity.hide-details",

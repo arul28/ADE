@@ -168,6 +168,7 @@ import type {
   StorageCompressionResult,
   StorageSnapshot,
 } from "../shared/types/storage";
+import type { ProjectHealthFixResult, ProjectHealthReport } from "../shared/types/projectHealth";
 import type {
   AdeCleanupResult,
   AdeProjectEvent,
@@ -4868,6 +4869,19 @@ const adeBridge = {
     ): Promise<StorageCleanupResult> =>
       callPinnedOrBoundRuntimeActionOr(pin, "storage", "cleanup", { args: { targets, preview: opts.preview } }, () =>
         ipcRenderer.invoke(IPC.storageCleanup, { targets, preview: opts.preview }),
+      ),
+  },
+  projectHealth: {
+    getReport: async (
+      args: { forceRefresh?: boolean } = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<ProjectHealthReport> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "project_health", "getReport", { args }, () =>
+        ipcRenderer.invoke(IPC.projectHealthGetReport, args),
+      ),
+    fix: async (args: { fixId: string }, pin?: OpenProjectBinding | null): Promise<ProjectHealthFixResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "project_health", "fix", { args }, () =>
+        ipcRenderer.invoke(IPC.projectHealthFix, args),
       ),
   },
   archive: {

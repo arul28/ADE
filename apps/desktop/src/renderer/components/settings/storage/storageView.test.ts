@@ -12,21 +12,21 @@ import {
   buildCleanupTarget,
   buildSafeCleanupPlan,
   categoryPolicyChip,
-  daemonMemoryBytes,
   dbBreakdownRows,
   dbSizeSamples,
   dbSizeTrend,
   formatApproxBytes,
   formatRunClock,
-  formatSlowActions,
-  healthChip,
   journalEntries,
   lastMaintenanceRun,
   ledgerLabel,
   maintenanceActionLines,
   maintenanceHeadline,
+  loadChip,
   maintenanceOutcome,
+  responseHealth,
   safeReclaimableBytes,
+  serviceMemory,
   sparklinePoints,
 } from "./storageView";
 
@@ -75,25 +75,20 @@ describe("dbBreakdownRows", () => {
     { table: "pr_snap", label: "Pull request cache", bytes: 4 * MB, category: "pr_cache", action: "compaction_pending" },
   ];
 
-  it("sorts largest first and maps actions to friendly labels", () => {
+  it("sorts largest first and marks the tables Clean up safely trims", () => {
     const rows = dbBreakdownRows(entries);
     expect(rows.map((r) => r.label)).toEqual(["Webhook history", "Sync bookkeeping", "Core data", "Pull request cache"]);
-    const webhook = rows.find((r) => r.table === "automation_ingress_events")!;
-    expect(webhook.actionLabel).toBe("Clean up");
-    const ops = rows.find((r) => r.table === "operations")!;
-    expect(ops.actionLabel).toBe("Compact now");
+    expect(rows.filter((r) => r.trimmedByCleanup).map((r) => r.table)).toEqual(["automation_ingress_events", "operations"]);
   });
 
-  it("frames core data as protected with no action", () => {
-    const core = dbBreakdownRows(entries).find((r) => r.category === "core")!;
+  it("frames core data as protected and pending rows as pending, neither trimmed", () => {
+    const rows = dbBreakdownRows(entries);
+    const core = rows.find((r) => r.category === "core")!;
     expect(core.isProtected).toBe(true);
-    expect(core.actionLabel).toBeNull();
-  });
-
-  it("marks compaction_pending rows as pending with no action", () => {
-    const pending = dbBreakdownRows(entries).find((r) => r.category === "pr_cache")!;
+    expect(core.trimmedByCleanup).toBe(false);
+    const pending = rows.find((r) => r.category === "pr_cache")!;
     expect(pending.isPending).toBe(true);
-    expect(pending.actionLabel).toBeNull();
+    expect(pending.trimmedByCleanup).toBe(false);
   });
 
   it("returns nothing for an absent breakdown", () => {
@@ -192,14 +187,16 @@ describe("dbSizeSamples / dbSizeTrend / sparklinePoints", () => {
     maintenance: {
       lastRun: null,
       journal: [
-        run({ finishedAt: "2026-07-16T03:00:00.000Z", dbSizeBytes: 100 * MB }),
-        run({ finishedAt: "2026-07-10T03:00:00.000Z", dbSizeBytes: 200 * MB }),
-        run({ finishedAt: "2026-07-12T03:00:00.000Z", dbSizeBytes: null }),
+        run({ finishedAt: "2026-07-16T03:00:00.000Z", dbSizeBytes: 100 * MB, dbSizeDefinition: "files" }),
+        run({ finishedAt: "2026-07-10T03:00:00.000Z", dbSizeBytes: 200 * MB, dbSizeDefinition: "files" }),
+        run({ finishedAt: "2026-07-12T03:00:00.000Z", dbSizeBytes: null, dbSizeDefinition: "files" }),
+        // Measured the main file only: not comparable, so not in the trend.
+        run({ finishedAt: "2026-07-14T03:00:00.000Z", dbSizeBytes: 20 * MB }),
       ],
     },
   } as unknown as StorageSnapshotExtras;
 
-  it("extracts positive samples in chronological order", () => {
+  it("extracts positive samples of one definition in chronological order", () => {
     const samples = dbSizeSamples(extras);
     expect(samples.map((s) => s.bytes)).toEqual([200 * MB, 100 * MB]);
   });
@@ -222,29 +219,33 @@ describe("dbSizeSamples / dbSizeTrend / sparklinePoints", () => {
 });
 
 describe("machine health helpers", () => {
-  it("sums ade-runtime resident memory to bytes, else null", () => {
+  it("reports ADE service memory with its process count, else null", () => {
     const usage = {
       roleUsage: [
-        { role: "ade-runtime", processCount: 1, cpuPercent: 2, memoryMB: 280 },
+        { role: "ade-runtime", processCount: 2, cpuPercent: 2, memoryMB: 280 },
         { role: "electron-main", processCount: 1, cpuPercent: 5, memoryMB: 500 },
       ],
     } as unknown as AppResourceUsageSnapshot;
-    expect(daemonMemoryBytes(usage)).toBe(280 * MB);
-    expect(daemonMemoryBytes({} as AppResourceUsageSnapshot)).toBeNull();
-    expect(daemonMemoryBytes(null)).toBeNull();
+    expect(serviceMemory(usage)).toEqual({ bytes: 280 * MB, processCount: 2 });
+    expect(serviceMemory({} as AppResourceUsageSnapshot)).toBeNull();
+    expect(serviceMemory(null)).toBeNull();
   });
 
-  it("maps pressure level to a health chip", () => {
-    expect(healthChip(0).label).toBe("Healthy");
-    expect(healthChip(2).label).toBe("Busy");
-    expect(healthChip(4).label).toBe("Under load");
+  it.each([
+    [0, "Light"],
+    [2, "Busy"],
+    [4, "Heavy"],
+  ] as const)("calls pressure level %i %s load", (level, label) => {
+    expect(loadChip(level).label).toBe(label);
   });
 
-  it("describes slow actions in plain language", () => {
-    expect(formatSlowActions(null)).toBe("Not available yet");
-    expect(formatSlowActions({ slowActions24h: 0 } as RuntimeHealthSnapshot)).toBe("None in the last 24h");
-    expect(formatSlowActions({ slowActions24h: 1 } as RuntimeHealthSnapshot)).toBe("1 slow response in 24h");
-    expect(formatSlowActions({ slowActions24h: 4 } as RuntimeHealthSnapshot)).toBe("4 slow responses in 24h");
+  it.each([
+    ["no snapshot", null, null],
+    ["nothing slow", { slowActions24h: 0, slowActionP95Ms: null, failedActions24h: 2 }, { slow: 0, failed: 2, p95Ms: null }],
+    ["slow with a p95", { slowActions24h: 3, slowActionP95Ms: 1200, failedActions24h: 0 }, { slow: 3, failed: 0, p95Ms: 1200 }],
+    ["an older build without failures", { slowActions24h: 1, slowActionP95Ms: 700 }, { slow: 1, failed: null, p95Ms: 700 }],
+  ] as const)("keeps slow and failed apart: %s", (_name, health, expected) => {
+    expect(responseHealth(health as RuntimeHealthSnapshot | null)).toEqual(expected);
   });
 });
 
@@ -295,28 +296,58 @@ describe("buildSafeCleanupPlan", () => {
     ],
   } as unknown as StorageSnapshotExtras;
 
-  it("groups compressible history, database rows, and filesystem targets", () => {
+  it("puts on the button exactly what it removes, itemized, and promises no bytes for the rest", () => {
     const plan = buildSafeCleanupPlan({ categories, extras }, new Map());
-    expect(plan.estimatedBytes).toBe(720 * MB);
-    expect(plan.groups.map((g) => g.heading)).toEqual([
-      "Chats & terminal history",
-      "Project database",
-      "Temporary & rebuildable files",
-      "Obsolete recovery backups",
+    // npm 300 + iOS build data 200 + the obsolete backup 60; never the newest backup.
+    expect(plan.estimatedBytes).toBe(560 * MB);
+    expect(plan.rows.reduce((sum, row) => sum + row.bytes, 0)).toBe(plan.estimatedBytes);
+    expect(plan.rows.map((row) => row.label)).toEqual(["npm", "iOS build data", "Old recovery backup"]);
+    expect(plan.fsTargets).toEqual([
+      { kind: "rebuildable_cache", path: "/proj/.ade/cache/npm" },
+      { kind: "rebuildable_cache", path: "/proj/.ade/cache/ios-simulator/DerivedData" },
+      { kind: "recovery_backup", path: "/proj/.ade/ade.db.recovery-old.bak" },
+    ].sort((a, b) => a.path.length - b.path.length));
+    expect(plan.alsoRuns.join(" ")).toContain("120 MB of old chat and terminal history");
+    expect(plan.alsoRuns.join(" ")).toContain("Webhook history");
+    expect(plan.alsoRuns.join(" ")).not.toContain("idle lanes");
+    expect(plan.keeps).toContain("newest recovery backup");
+  });
+
+  it("counts a folder inside another target once, and groups same-named rows", () => {
+    const nested: StorageCategorySnapshot[] = [
+      {
+        id: "caches",
+        bytes: 50 * MB,
+        fileCount: 2,
+        safety: "safe_to_remove",
+        items: [
+          { id: "sim", label: "ios-simulator", path: "/proj/.ade/cache/ios-simulator", bytes: 50 * MB, fileCount: 1, lastModifiedAt: null, safety: "safe_to_remove" },
+        ],
+      },
+      {
+        id: "build_release",
+        bytes: 230 * MB,
+        fileCount: 3,
+        safety: "safe_to_remove",
+        items: [
+          { id: "dd", label: "iOS build data", path: "/proj/.ade/cache/ios-simulator/DerivedData", bytes: 200 * MB, fileCount: 1, lastModifiedAt: null, safety: "safe_to_remove" },
+          { id: "t1", label: "Release and build staging", path: "/tmp/ade-a", bytes: 20 * MB, fileCount: 1, lastModifiedAt: null, safety: "safe_to_remove" },
+          { id: "t2", label: "Release and build staging", path: "/tmp/ade-b", bytes: 10 * MB, fileCount: 1, lastModifiedAt: null, safety: "safe_to_remove" },
+          { id: "t3", label: "Release and build staging", path: "/tmp/ade-c", bytes: 0, fileCount: 0, lastModifiedAt: null, safety: "safe_to_remove" },
+        ],
+      },
+    ];
+    const plan = buildSafeCleanupPlan({ categories: nested }, new Map());
+    expect(plan.fsTargets.map((target) => target.path)).not.toContain("/proj/.ade/cache/ios-simulator/DerivedData");
+    expect(plan.rows).toEqual([
+      { label: "ios-simulator", count: 1, bytes: 50 * MB },
+      { label: "Release and build staging", count: 2, bytes: 30 * MB },
     ]);
-    expect(plan.fsTargets).toHaveLength(3);
-    expect(plan.fsBytes).toBe(560 * MB);
-    expect(plan.fsGroup?.rows).toHaveLength(2);
-    expect(plan.groups.find((group) => group.heading === "Temporary & rebuildable files")?.rows)
-      .toEqual([
-        { label: "npm", size: "300 MB" },
-        { label: "iOS build data", size: "200 MB" },
-      ]);
-    expect(plan.groups.find((group) => group.heading === "Obsolete recovery backups")?.rows)
-      .toEqual([{ label: "Obsolete recovery backup", size: "60.0 MB" }]);
-    expect(plan.groups.flatMap((group) => group.rows).some((row) => row.label === "Newest recovery backup")).toBe(false);
-    expect(plan.whatHappens.at(-1)).toContain("never touched");
-    expect(plan.whatHappens.at(-1)).toContain("newest backup is always kept");
+  });
+
+  it("says the idle-lane check runs first when the archive rules are on", () => {
+    const plan = buildSafeCleanupPlan({ categories, extras, lifecycle: { policy: { cleanupIntervalHours: 24 } } }, new Map());
+    expect(plan.alsoRuns[0]).toContain("idle lanes");
   });
 });
 

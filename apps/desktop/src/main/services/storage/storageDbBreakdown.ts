@@ -65,7 +65,8 @@ export function mapDbBreakdown(
 export function deriveSyncBookkeepingAction(
   journal: readonly MaintenanceRunReport[],
 ): DbBreakdownEntry["action"] {
-  const lastCompact = journal[0]?.actions.find(
+  // A files-only run never compacts; read the last run that could have.
+  const lastCompact = journal.find((run) => !run.filesOnly)?.actions.find(
     (action) => action.ledgerId === "db.operations_crsql" && action.kind === "compact",
   );
   if (!lastCompact) return "compaction_pending";

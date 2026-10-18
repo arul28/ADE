@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import type {
+  ProjectMoveNote,
   ProjectMoveProgress,
   ProjectMoveRecord,
   ProjectMoveStepId,
@@ -11,8 +12,8 @@ import type {
 import { listAppleDeviceMarkers, writeAppleDeviceMarker } from "../../../../../desktop/src/main/services/ios/appleDeviceMarker";
 import { ProjectRegistry } from "../projectRegistry";
 import { readGitDirPointer } from "../projectRoots";
-import { applyAgentHistoryRenames, carryCodexTrust, planAgentHistoryRenames } from "./moveAgentHistory";
-import { copyProjectTree, countCopiedEntries, diskUsageBytes, trackedDependencyDirs } from "./moveCopy";
+import { applyAgentHistoryRenames, carryClaudeProjectSettings, carryCodexTrust, carryCopilotTrust, planAgentHistoryRenames } from "./moveAgentHistory";
+import { copyProjectTree, countCopiedEntries, diskUsageBytes, onSameVolume, trackedDependencyDirs } from "./moveCopy";
 import {
   projectDatabasePath,
   readProjectDatabaseSummary,
@@ -145,7 +146,7 @@ function adeJsonFilesWithPaths(copyRoot: string): string[] {
 }
 
 /** Rewrites path values in small JSON files ADE keeps under `.ade`. */
-function rewriteAdeJsonFiles(copyRoot: string, oldSpellings: string[], finalRoot: string): void {
+export function rewriteAdeJsonFiles(copyRoot: string, oldSpellings: string[], finalRoot: string): void {
   for (const file of adeJsonFilesWithPaths(copyRoot)) {
     if (!fs.existsSync(file)) continue;
     const text = fs.readFileSync(file, "utf8");
@@ -156,7 +157,7 @@ function rewriteAdeJsonFiles(copyRoot: string, oldSpellings: string[], finalRoot
 }
 
 /** Simulators ADE created for this project's lanes record the project root. */
-function rewriteSimulatorMarkers(oldSpellings: string[], finalRoot: string): number {
+export function rewriteSimulatorMarkers(oldSpellings: string[], finalRoot: string): number {
   const dataRoot = path.join(process.env.HOME ?? "", "Library", "Developer", "CoreSimulator", "Devices");
   let changed = 0;
   for (const { udid, marker } of listAppleDeviceMarkers(dataRoot)) {
@@ -220,10 +221,21 @@ async function copy(run: MoveRun, links: WorktreeLink[], leftoverIsOurs: boolean
   );
   record.copyCreated = true;
   writeMoveRecord(record);
+  const clone = onSameVolume(run.sourceRoot, path.dirname(run.finalRoot));
+  if (clone) {
+    // Clones share the original's blocks, so dependencies come along for free
+    // and nothing needs reinstalling.
+    record.copiedDependencies = true;
+    writeMoveRecord(record);
+    run.progress("Same drive: copying by cloning, which takes almost no time or space");
+  }
+  const includeDependencies = record.copiedDependencies === true;
   const { totalFiles } = await copyProjectTree({
     sourceRoot: run.sourceRoot,
     copyRoot,
     keepDependencyDirs: keep,
+    includeDependencies,
+    clone,
     onProgress: (copied, total) =>
       run.progress(`Copying files (${copied.toLocaleString()} of ${total.toLocaleString()})`, {
         fraction: total ? copied / total : undefined,
@@ -259,7 +271,7 @@ async function rewrite(run: MoveRun): Promise<WorktreeLink[]> {
   const links = rewriteWorktreeLinksInCopy({ copyRoot, finalRoot, oldSpellings });
   await enableRelativeWorktrees(copyRoot);
   const configKeys = await rewriteAbsoluteGitConfig({ copyRoot, finalRoot, oldSpellings });
-  const relinked = await relinkAbsoluteSymlinks({ copyRoot, finalRoot, oldSpellings });
+  const relinked = await relinkAbsoluteSymlinks({ copyRoot, finalRoot, oldSpellings, includeDependencies: run.record.copiedDependencies === true });
   run.progress(`Updated ${plural(links.inside.length, "lane link")}, ${plural(configKeys.length, "git setting")}, ${plural(relinked, "symlink")}`);
 
   enter(run, "data", "Updating ADE's project data");
@@ -271,7 +283,7 @@ async function rewrite(run: MoveRun): Promise<WorktreeLink[]> {
 /** 5. Prove the copy matches the original and points only at itself. */
 async function verify(run: MoveRun, args: { totalFiles: number; keep: string[]; before: DatabaseSummary; insideLanes: WorktreeLink[]; links: WorktreeLink[] }): Promise<void> {
   enter(run, "verify", "Checking the copy");
-  const copied = await countCopiedEntries(run.copyRoot, args.keep);
+  const copied = await countCopiedEntries(run.copyRoot, args.keep, run.record.copiedDependencies === true);
   if (copied !== args.totalFiles) {
     throw new Error(`The copy has ${copied.toLocaleString()} items but the project has ${args.totalFiles.toLocaleString()}.`);
   }
@@ -341,6 +353,10 @@ export async function runProjectMove(args: {
   sourceRoot: string;
   destinationRoot: string;
   moveAgentHistory: boolean;
+  /** Copy `node_modules` too, so nothing needs reinstalling. Off: they are left out and reinstalled. */
+  copyDependencies?: boolean;
+  /** The preflight's notes, kept on the record for the check agent. */
+  notes?: ProjectMoveNote[];
   hooks: ProjectMoveHooks;
 }): Promise<ProjectMoveRecord> {
   const sourceRoot = path.resolve(args.sourceRoot);
@@ -364,6 +380,8 @@ export async function runProjectMove(args: {
     finishedAt: null,
     state: "running",
     cleanup: { choice: "pending" },
+    copiedDependencies: args.copyDependencies === true,
+    notes: args.notes ?? [],
     followUps: [],
     problems: [],
     pid: process.pid,
@@ -479,6 +497,16 @@ function finishSwitch(record: ProjectMoveRecord): void {
   attempt("ADE couldn't carry Codex's folder trust over", () => {
     if (carryCodexTrust({ oldSpellings: resume.sourceSpellings, newRoot: finalRoot })) {
       record.followUps.push("Codex trusts the new location, as it did the old one.");
+    }
+  });
+  attempt("ADE couldn't carry Claude's folder settings over", () => {
+    if (carryClaudeProjectSettings({ oldSpellings: resume.sourceSpellings, newRoot: finalRoot })) {
+      record.followUps.push("Claude trusts the new location and keeps its allowed tools and MCP approvals.");
+    }
+  });
+  attempt("ADE couldn't carry Copilot's folder trust over", () => {
+    if (carryCopilotTrust({ oldSpellings: resume.sourceSpellings, newRoot: finalRoot })) {
+      record.followUps.push("Copilot trusts the new location, as it did the old one.");
     }
   });
 }

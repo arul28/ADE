@@ -682,6 +682,8 @@ export type FormatterId =
   | "storage-snapshot"
   | "storage-compress"
   | "storage-maintenance"
+  | "project-health"
+  | "project-health-fix"
   | "sync-status"
   | "sync-web"
   | "sync-pin"
@@ -3577,6 +3579,20 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   Each item reports done or failed on its own; the command exits non-zero when
   any item failed. Deleting is yours alone: do it in Settings → Archive on the
   desktop, the web client, or the phone. Agents and automations can't delete.
+`,
+  health: `${ADE_BANNER}
+  Project health
+
+  What is wrong with this project and how to fix it: stored paths that name an
+  old folder after a move, lanes whose folder or git link is broken, missing
+  dependencies, virtualenvs made for another folder, agents that don't trust the
+  folder yet, history filed under an old path, the drive. The same list as
+  Settings → Health. Reading is safe; a fix changes data or files, so it is
+  CTO-only (agents read the report and offer fixes to the person).
+
+    $ ade health --text                              Issues, each with its fix id
+    $ ade health --refresh --text                    Check again instead of the 30 s cache
+    $ ade --role cto health --fix update-paths --text   Run one fix and show the new report
 `,
   storage: `${ADE_BANNER}
   ADE storage insights and disk hygiene
@@ -17450,6 +17466,56 @@ function buildStoragePlan(args: string[]): CliPlan {
   );
 }
 
+function buildHealthPlan(args: string[]): CliPlan {
+  if (hasHelpFlag(args)) {
+    return { kind: "help", text: HELP_BY_COMMAND.health ?? topLevelHelpText() };
+  }
+  const fixIndex = args.indexOf("--fix");
+  if (fixIndex >= 0) {
+    const fixId = requireValue(args[fixIndex + 1], "fix id");
+    return {
+      kind: "execute",
+      label: "project health fix",
+      formatter: "project-health-fix",
+      steps: [actionStep("result", "project_health", "fix", { fixId })],
+    };
+  }
+  const forceRefresh = readFlag(args, ["--refresh", "--force-refresh"]);
+  return {
+    kind: "execute",
+    label: "project health",
+    formatter: "project-health",
+    steps: [actionStep("result", "project_health", "getReport", forceRefresh ? { forceRefresh: true } : {})],
+  };
+}
+
+function formatProjectHealth(value: unknown): string {
+  const report = value as { projectRoot?: string; previousRoots?: string[]; issues?: Array<{ id: string; severity: string; title: string; detail: string; items?: string[]; fix?: { id: string; label: string; description: string } }>; checks?: Array<{ label: string; ok: boolean }> } | null;
+  if (!report || !Array.isArray(report.issues)) return JSON.stringify(value, null, 2);
+  const lines = [`Project health: ${report.projectRoot ?? ""}`];
+  if (report.previousRoots?.length) lines.push(`Moved from: ${report.previousRoots.join(" ← ")}`);
+  if (!report.issues.length) lines.push("", `Everything looks good (${report.checks?.length ?? 0} checks).`);
+  for (const issue of report.issues) {
+    lines.push("", `[${issue.severity}] ${issue.title}`, `  ${issue.detail}`);
+    for (const item of (issue.items ?? []).slice(0, 12)) lines.push(`  - ${item}`);
+    if ((issue.items?.length ?? 0) > 12) lines.push(`  - … ${issue.items!.length - 12} more`);
+    if (issue.fix) lines.push(`  fix: ${issue.fix.id} (${issue.fix.label}): ${issue.fix.description}`);
+  }
+  return lines.join("\n");
+}
+
+function formatProjectHealthFix(value: unknown): string {
+  const result = value as { ok?: boolean; done?: string[]; problems?: string[]; report?: unknown } | null;
+  if (!result || !Array.isArray(result.done)) return JSON.stringify(value, null, 2);
+  return [
+    result.ok ? "Fixed." : "The fix didn't fully work.",
+    ...result.done.map((line) => `  done: ${line}`),
+    ...(result.problems ?? []).map((line) => `  problem: ${line}`),
+    "",
+    formatProjectHealth(result.report),
+  ].join("\n");
+}
+
 function buildSecretsPlan(args: string[]): CliPlan {
   if (hasHelpFlag(args)) {
     return { kind: "help", text: HELP_BY_COMMAND.secrets ?? topLevelHelpText() };
@@ -20212,6 +20278,7 @@ function buildCliPlan(
   if (primary === "router") return buildRouterPlan(args);
   if (primary === "storage" || primary === "disk")
     return buildStoragePlan(args);
+  if (primary === "health") return buildHealthPlan(args);
   if (primary === "archive" || primary === "archived")
     return buildArchivePlan(args);
   if (primary === "secrets" || primary === "secret")
@@ -32212,6 +32279,10 @@ function formatTextOutput(
       return formatStorageCompression(value);
     case "storage-maintenance":
       return formatStorageMaintenance(value);
+    case "project-health":
+      return formatProjectHealth(value);
+    case "project-health-fix":
+      return formatProjectHealthFix(value);
     case "usage-snapshot":
       return formatUsageSnapshot(value);
     case "usage-stats":

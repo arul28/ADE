@@ -8,18 +8,23 @@ const execFileAsync = promisify(execFile);
 
 /**
  * What the copy leaves out, as `find` arguments evaluated from the project
- * root: dependency folders (reinstalled after the move, and pnpm needs its
- * store on the new drive anyway; a lane's `node_modules` *link* to the main
- * checkout is kept and re-pointed, so lanes work once the main checkout is
- * reinstalled), the project database (copied separately through SQLite so the
- * write-ahead log is not lost), and sockets. `keep` names dependency folders
- * that hold files committed to git: those are part of the project and copied.
+ * root: the project database (copied separately through SQLite so the
+ * write-ahead log is not lost), sockets, and, unless dependencies are copied
+ * too, dependency folders. Left-out dependencies are reinstalled after the
+ * move; a lane's `node_modules` *link* to the main checkout is always kept and
+ * re-pointed, so lanes work once the main checkout has its dependencies.
+ * `keep` names dependency folders that hold files committed to git: those are
+ * part of the project and always copied.
  */
-function findExclusions(keep: readonly string[]): string[] {
+function findExclusions(keep: readonly string[], includeDependencies: boolean): string[] {
   const kept = keep.flatMap((dir) => ["!", "-path", escapeFindPattern(dir)]);
   return [
     "(",
-    "(", "-name", "node_modules", "-type", "d", ...kept, ")",
+    ...(includeDependencies ? [] : ["(", "-name", "node_modules", "-type", "d", ...kept, ")", "-o"]),
+    // The search index is a cache the brain may hold open; it is rebuilt.
+    "-path", "./.ade/cache/search-index.db",
+    "-o", "-path", "./.ade/cache/search-index.db-wal",
+    "-o", "-path", "./.ade/cache/search-index.db-shm",
     "-o", "-path", "./.ade/ade.db",
     "-o", "-path", "./.ade/ade.db-wal",
     "-o", "-path", "./.ade/ade.db-shm",
@@ -90,10 +95,10 @@ export function measureProject(root: string): Promise<{ copyBytes: number; depen
 }
 
 /** Relative paths (`./a/b`) the copy includes, written to `listFile`. Returns how many. */
-export function writeCopyList(root: string, listFile: string, keep: readonly string[]): Promise<number> {
+export function writeCopyList(root: string, listFile: string, keep: readonly string[], includeDependencies: boolean): Promise<number> {
   return new Promise((resolve, reject) => {
     const out = fs.createWriteStream(listFile);
-    const child = spawn("/usr/bin/find", [".", ...findExclusions(keep), "-o", "-print"], {
+    const child = spawn("/usr/bin/find", [".", ...findExclusions(keep, includeDependencies), "-o", "-print"], {
       cwd: root,
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -127,22 +132,26 @@ function firstLine(text: string): string {
  * Copies the project into `copyRoot` with `ditto`, which keeps permissions,
  * extended attributes, ACLs and symlinks. (macOS 27's `rsync` is openrsync,
  * which drops extended attributes.) The copy runs from a bill of materials so
- * the exclusions above are honored. Any error fails the copy.
+ * the exclusions above are honored. On the same drive `clone` makes APFS
+ * clones: the copy is near-instant and takes no space until a file changes.
+ * Any error fails the copy.
  */
 export async function copyProjectTree(args: {
   sourceRoot: string;
   copyRoot: string;
   keepDependencyDirs: readonly string[];
+  includeDependencies: boolean;
+  clone: boolean;
   onProgress: (copiedFiles: number, totalFiles: number) => void;
 }): Promise<{ totalFiles: number }> {
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-project-move-"));
   try {
     const listFile = path.join(workDir, "files.txt");
     const bomFile = path.join(workDir, "files.bom");
-    const totalFiles = await writeCopyList(args.sourceRoot, listFile, args.keepDependencyDirs);
+    const totalFiles = await writeCopyList(args.sourceRoot, listFile, args.keepDependencyDirs, args.includeDependencies);
     await execFileAsync("/usr/bin/mkbom", ["-s", "-i", listFile, bomFile], { timeout: 10 * 60_000 });
     await new Promise<void>((resolve, reject) => {
-      const child = spawn("/usr/bin/ditto", ["-V", "--bom", bomFile, args.sourceRoot, args.copyRoot], {
+      const child = spawn("/usr/bin/ditto", ["-V", ...(args.clone ? ["--clone"] : []), "--bom", bomFile, args.sourceRoot, args.copyRoot], {
         stdio: ["ignore", "pipe", "pipe"],
       });
       let copied = 0;
@@ -188,11 +197,26 @@ function describeCopyFailure(errors: string, code: number | null): string {
 }
 
 /** How many entries the copy holds, counted with the same exclusions as the list. */
-export async function countCopiedEntries(copyRoot: string, keep: readonly string[]): Promise<number> {
+export async function countCopiedEntries(copyRoot: string, keep: readonly string[], includeDependencies: boolean): Promise<number> {
   const listFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "ade-project-move-count-")), "files.txt");
   try {
-    return await writeCopyList(copyRoot, listFile, keep);
+    return await writeCopyList(copyRoot, listFile, keep, includeDependencies);
   } finally {
     fs.rmSync(path.dirname(listFile), { recursive: true, force: true });
   }
+}
+
+/** Whether two paths (or their nearest existing folders) are on the same volume. */
+export function onSameVolume(a: string, b: string): boolean {
+  const device = (target: string): number | null => {
+    for (let current = path.resolve(target); ; current = path.dirname(current)) {
+      try {
+        return fs.statSync(current).dev;
+      } catch {
+        if (path.dirname(current) === current) return null;
+      }
+    }
+  };
+  const first = device(a);
+  return first !== null && first === device(b);
 }

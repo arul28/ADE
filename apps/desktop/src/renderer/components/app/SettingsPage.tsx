@@ -12,6 +12,7 @@ import {
   GearSix,
   GitBranch,
   HardDrives,
+  Heartbeat,
   Key,
   MagnifyingGlass,
   Palette,
@@ -21,6 +22,7 @@ import {
 } from "@phosphor-icons/react";
 import { RemoteSettingsBanner } from "../settings/RemoteContextBadge";
 import { SettingsMachineScopeProvider } from "../settings/SettingsMachineScope";
+import { SettingsSearchAnchorsContext } from "../settings/settingsSearchContext";
 import {
   SettingsMachineEyebrow,
   SettingsMachineNavRow,
@@ -83,7 +85,7 @@ const TAB_ICONS: Record<SettingsTabId, PhosphorIcon> = {
   notifications: Bell,
   mcp: Plugs,
   secrets: Key,
-  storage: HardDrives,
+  storage: Heartbeat,
   archive: Archive,
   stats: ChartLineUp,
 };
@@ -532,6 +534,10 @@ export function SettingsPage({
   };
   const tabEntryCount = settingsEntriesForTab(section).length;
   const noMatchesHere = trimmedQuery.length > 0 && (matchesThisTab?.length ?? 0) === 0;
+  const searchAnchors = useMemo(
+    () => (matchesThisTab ? matchesThisTab.map((entry) => entry.anchor) : null),
+    [matchesThisTab],
+  );
 
   // Inside a project the section list lives in the project sidebar. Outside
   // one (the hosted web client, tests) the page keeps its own column.
@@ -794,10 +800,14 @@ export function SettingsPage({
             // Keyed by machine so nothing one machine loaded can linger into,
             // or be saved onto, the next machine's page.
             <SettingsMachineScopeProvider key={machinePageScope.machineId} scope={machinePageScope}>
-              <TabContent tab={section} machine={machinePageScope} standalone={standalone} />
+              <SettingsSearchAnchorsContext.Provider value={searchAnchors}>
+                <TabContent tab={section} machine={machinePageScope} standalone={standalone} />
+              </SettingsSearchAnchorsContext.Provider>
             </SettingsMachineScopeProvider>
           ) : (
-            <TabContent tab={section} machine={null} />
+            <SettingsSearchAnchorsContext.Provider value={searchAnchors}>
+              <TabContent tab={section} machine={null} />
+            </SettingsSearchAnchorsContext.Provider>
           )}
         </div>
         </div>

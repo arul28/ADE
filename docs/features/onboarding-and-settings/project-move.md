@@ -15,7 +15,7 @@ Research, the full map of stored paths and the experiments behind each rule:
 |---|---|
 | `apps/ade-cli/src/services/projects/projectMove/projectMovePreflight.ts` | Read-only checks before a move: destination, drive (network, format, case), space, write access (the probe also raises the macOS external-drive prompt early), agents at work, git busy or mid-operation, lanes, plus the notes ADE can't fix. |
 | `apps/ade-cli/src/services/projects/projectMove/projectMoveEngine.ts` | `runProjectMove` (prepare → copy → git → data → verify → switch), `finishSwitch`, `recoverInterruptedMoves`, `deleteParkedOriginal`. |
-| `apps/ade-cli/src/services/projects/projectMove/moveCopy.ts` | `du` sizes, the file list (no `node_modules` folders, no live database, no sockets) and the `ditto --bom` copy with progress. |
+| `apps/ade-cli/src/services/projects/projectMove/moveCopy.ts` | `du` sizes, the file list (no live database, no search index, no sockets; `node_modules` only when dependencies are copied) and the `ditto --bom` copy with progress, `--clone` on the same drive. |
 | `apps/ade-cli/src/services/projects/projectMove/moveGitLinks.ts` | Lane links written directly in the copy (never `git worktree repair`), relative worktrees, absolute git config values, absolute symlinks, outside lanes at switch-over. |
 | `apps/ade-cli/src/services/projects/projectMove/moveDatabase.ts` | SQLite-backup snapshot of `ade.db`, the path rewrite with cr-sqlite loaded, and its verification. |
 | `apps/ade-cli/src/services/projects/projectMove/moveAgentHistory.ts` | Renames other tools' history folders for the project (Claude, Cursor, Droid, Qwen, Grok, Pi). ADE's own Claude homes always; the rest opt-in. |
@@ -34,6 +34,11 @@ Research, the full map of stored paths and the experiments behind each rule:
    service, then wait until `lsof` shows nothing holding `ade.db`.
 2. **Copy** into `<destination>.ade-moving`, a name nothing opens. The
    database goes through SQLite's backup API so its write-ahead log is kept.
+   On the same drive the copy is APFS clones: near-instant, no extra space,
+   dependencies included. To another drive, `node_modules` come along when the
+   person leaves **Copy dependencies too** on (the default when there is room);
+   otherwise they are reinstalled afterwards. The search index is a cache and
+   is rebuilt, not copied.
 3. **Git.** For each lane inside the project, write `<lane>/.git` and
    `.git/worktrees/<name>/gitdir` as relative links computed for the final
    location; set `core.repositoryformatversion=1` *before*
@@ -65,9 +70,29 @@ untouched original.
   up later from Settings → Project location.
 - **The old-copy banner** shows only in the moved project's tab (matched on
   the record's `destinationRoot`), never over another open project.
-- **Codex trust.** `finishSwitch` adds the old path's `trust_level` from
-  `$CODEX_HOME/config.toml` for the new path (append only; the old entry
-  stays), so Codex doesn't ask to trust the folder again.
+- **Trust.** `finishSwitch` copies folder trust to the new path, append only:
+  Codex `trust_level` in `$CODEX_HOME/config.toml`, Claude Code's
+  `projects["<path>"]` entries (trust, allowed tools, MCP approvals) in
+  `~/.claude.json` and each ADE Claude home, and Copilot's `trustedFolders`.
+- **Health.** Settings → Health (and `ade health`) checks a moved project for
+  anything left behind and fixes it in place; see
+  [`project-health.md`](./project-health.md). The check agent's prompt carries
+  the preflight's notes, what ADE did and couldn't do, and points at
+  `ade health`.
+
+## External drives
+
+- **Simulator screenshots.** CoreSimulatorService can't show macOS's
+  external-drive prompt, so `simctl io screenshot`/`recordVideo` into a
+  project on another drive fails with "Operation not permitted" (tested).
+  `ade apple` captures into the internal temp folder and ADE writes the file.
+  Installs, `xcodebuild` builds and XCTest from the drive work (tested).
+- **Preflight notes** for an external drive: keep it connected, Simulator
+  capture, Time Machine not backing it up (external drives are excluded by
+  default).
+- **Other holders.** Preflight names processes other than ADE that have
+  `ade.db` open (usually a dev build started from a lane); the move stops
+  before changing anything if they don't let go.
 
 ## Gotchas
 

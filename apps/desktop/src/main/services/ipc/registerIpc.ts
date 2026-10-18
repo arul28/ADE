@@ -1048,6 +1048,8 @@ import { RemoteProjectNotFoundError, registerRuntimeBridge } from "./runtimeBrid
 import type { createLinearIssueTracker } from "../cto/linearIssueTracker";
 import type { createUsageTrackingService } from "../usage/usageTrackingService";
 import type { createStorageInsightsService } from "../storage/storageInsightsService";
+import type { ProjectHealthService } from "../../../../../ade-cli/src/services/projects/projectHealth/projectHealthService";
+import type { ProjectHealthFixResult, ProjectHealthReport } from "../../../shared/types/projectHealth";
 import type {
   MaintenanceRunReport,
   RuntimeHealthSnapshot,
@@ -1375,6 +1377,7 @@ export type AppContext = {
   linearIssueTracker?: ReturnType<typeof createLinearIssueTracker> | null;
   usageTrackingService?: ReturnType<typeof createUsageTrackingService> | null;
   storageInsightsService?: ReturnType<typeof createStorageInsightsService> | null;
+  projectHealthService?: ProjectHealthService | null;
   budgetCapService?: ReturnType<typeof createBudgetCapService> | null;
   configReloadService?: ConfigReloadService | null;
   syncHostService?: ReturnType<typeof createSyncHostService> | null;
@@ -4363,6 +4366,19 @@ export function registerIpc({
   ): Promise<StorageSnapshot> => {
     const service = requireAppContextValue(getCtx(), "storageInsightsService");
     return service.getSnapshot(args ?? {});
+  });
+
+  ipcMain.handle(IPC.projectHealthGetReport, async (
+    _event,
+    args: { forceRefresh?: boolean } | undefined,
+  ): Promise<ProjectHealthReport> => {
+    const service = requireAppContextValue(getCtx(), "projectHealthService");
+    return service.getReport(args ?? {});
+  });
+
+  ipcMain.handle(IPC.projectHealthFix, async (_event, args: { fixId: string }): Promise<ProjectHealthFixResult> => {
+    const service = requireAppContextValue(getCtx(), "projectHealthService");
+    return service.fix(args);
   });
 
   ipcMain.handle(IPC.storageCompressNow, async (): Promise<StorageCompressionResult> => {

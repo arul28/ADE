@@ -1104,6 +1104,7 @@ import type {
   StorageCompressionResult,
   StorageSnapshot,
 } from "../shared/types/storage";
+import type { ProjectHealthFixResult, ProjectHealthReport } from "../shared/types/projectHealth";
 import type { ProjectDataProblem, ProjectDataRestoreResult, ProjectDataStatus, ProjectRecoveryDiagnosis, ProjectRepairReport, RepairStepResult } from "../shared/types/recovery";
 import type {
   ProjectMoveAttention,
@@ -1329,6 +1330,11 @@ declare global {
           opts: { preview: StorageCleanupPreview },
           pin?: OpenProjectBinding | null,
         ) => Promise<StorageCleanupResult>;
+      };
+      /** Project health: issues with a fix each, from the machine that owns the project. */
+      projectHealth: {
+        getReport: (args?: { forceRefresh?: boolean }, pin?: OpenProjectBinding | null) => Promise<ProjectHealthReport>;
+        fix: (args: { fixId: string }, pin?: OpenProjectBinding | null) => Promise<ProjectHealthFixResult>;
       };
       /**
        * One archive across lanes, chats, and shells. Every call takes an

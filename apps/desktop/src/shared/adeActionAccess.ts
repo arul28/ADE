@@ -426,6 +426,14 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "cleanup", "compressNow", "runMaintenanceNow",
     ],
   },
+  project_health: {
+    read: [
+      "getReport",
+    ],
+    write: [
+      "fix",
+    ],
+  },
   archive: {
     read: [
       "list", "summary",
@@ -653,6 +661,7 @@ const UNREPLAYED_READS = new Set<string>([
   "conflicts.scanRebaseNeeds",
   "file.blame",
   "storage.cleanupPreview",
+  "project_health.getReport",
 ]);
 
 /**

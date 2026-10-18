@@ -5,11 +5,9 @@ import {
   FolderOpen,
   GitBranch,
   GithubLogo,
-  HardDrives,
   Info,
   ShieldCheck,
   Stack,
-  Timer,
   UsersThree,
   Warning,
 } from "@phosphor-icons/react";
@@ -40,7 +38,6 @@ import { BrowserLinksSection } from "./BrowserLinksSection";
 import { BrowserAgentAccessSection } from "./BrowserAgentAccessSection";
 import { DiagnosticsSharingSection } from "./DiagnosticsSharingSection";
 import { ResetAdeSection } from "./ResetAdeSection";
-import { ProjectSection } from "./ProjectSection";
 import { ProjectLocationSection } from "./ProjectLocationSection";
 import { ProvidersSection } from "./ProvidersSection";
 import { ProviderAccountsPanel } from "./providers/accounts/ProviderAccountsPanel";
@@ -48,8 +45,7 @@ import { SettingsManagerPage } from "./primitives/SettingsManagerPage";
 import { SettingsSection } from "./primitives/SettingsRows";
 import { providerDescriptor } from "./providers/descriptors";
 import { SecretsSection } from "./SecretsSection";
-import { SessionLifecycleSection } from "./SessionLifecycleSection";
-import { StorageSection } from "./StorageSection";
+import { HealthPage } from "./health/HealthPage";
 import { ArchiveSection } from "./ArchiveSection";
 import {
   MachineUnavailableNotice,
@@ -81,7 +77,6 @@ const SECTION_LIST_TABS: ReadonlySet<SettingsTabId> = new Set<SettingsTabId>([
   "general",
   "lanes-git",
   "integrations",
-  "storage",
 ]);
 
 /**
@@ -310,18 +305,6 @@ const TAB_GROUPS = {
     icon: <JiraMark size={15} />,
     tone: "blue",
   },
-  disk: {
-    title: "Disk",
-    description: "What ADE keeps on this machine, and what you can clear.",
-    icon: <HardDrives size={15} weight="duotone" />,
-    tone: "orange",
-  },
-  sessions: {
-    title: "Sessions",
-    description: "When finished chats and terminals are put away.",
-    icon: <Timer size={15} weight="duotone" />,
-    tone: "pink",
-  },
 } satisfies Record<string, TabGroup>;
 
 type TabGroupId = keyof typeof TAB_GROUPS;
@@ -372,7 +355,6 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
       title: "Background service",
       group: "ade",
     },
-    { entryIds: ["general.project"], render: () => <ProjectSection />, machine: "routed", title: "Project health", group: "project" },
     // The move runs in this computer's main process, on a project this computer has.
     { entryIds: ["general.project-location"], render: () => <ProjectLocationSection />, machine: "local", title: "Project location", group: "project" },
     { entryIds: ["general.keep-awake"], render: () => <KeepAwakeSection />, machine: "local", title: "Keep awake", group: "computer" },
@@ -447,20 +429,15 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
   notifications: [{ entryIds: "tab", render: () => <NotificationsSection /> }],
   mcp: [{ entryIds: "tab", render: () => <McpServersSection /> }],
   secrets: [{ entryIds: ["secrets.secrets"], render: () => <SecretsSection /> }],
+  // Health: project issues, space, cleanups, sessions and the background
+  // service, as tabs of one page. Runtime calls carry the machine's pin; the
+  // service's plain-IPC reads show only on This computer.
   storage: [
     {
-      entryIds: ["storage.usage", "storage.lane-rules", "storage.diagnostics"],
-      render: () => <StorageSection />,
+      entryIds: "tab",
+      render: () => <SettingsColumn wide><HealthPage /></SettingsColumn>,
       machine: "routed",
-      title: "Disk usage and cleanup",
-      group: "disk",
-    },
-    {
-      entryIds: ["storage.session-lifecycle"],
-      render: () => <SessionLifecycleSection />,
-      machine: "routed",
-      title: "Session lifecycle",
-      group: "sessions",
+      title: "Health",
     },
   ],
   // Archived lanes and sessions belong to one machine's checkout, so the page

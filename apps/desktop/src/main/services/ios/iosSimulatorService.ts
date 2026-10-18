@@ -4622,8 +4622,19 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       }
     }
     await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
-    await run("xcrun", ["simctl", "io", device.udid, "screenshot", "--type=png", filePath], { timeoutMs: 30_000 });
-    const buffer = await fs.promises.readFile(filePath);
+    // `simctl io` hands the write to CoreSimulatorService, which cannot raise
+    // macOS's external-drive prompt: on a project moved to another drive it
+    // fails with "Operation not permitted". It captures into the internal
+    // temp folder, and ADE (which holds the drive permission) writes the file.
+    const capturePath = path.join(os.tmpdir(), `ade-sim-shot-${randomUUID().slice(0, 8)}.png`);
+    let buffer: Buffer;
+    try {
+      await run("xcrun", ["simctl", "io", device.udid, "screenshot", "--type=png", capturePath], { timeoutMs: 30_000 });
+      buffer = await fs.promises.readFile(capturePath);
+    } finally {
+      await fs.promises.rm(capturePath, { force: true }).catch(() => {});
+    }
+    await fs.promises.writeFile(filePath, buffer);
     const dimensions = pngDimensions(buffer) ?? { width: null, height: null };
     if (!requestedOutPath) void pruneScreenshotCache(cacheDirectory);
     return {

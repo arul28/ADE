@@ -9,20 +9,21 @@ import type {
 import { COLORS, SANS_FONT, fgTint } from "../../lanes/laneDesignTokens";
 import { Dialog, type DialogAction } from "../../ui/dialog";
 import { Banner } from "../../ui/notice";
-import { baseName, formatBytes, type SafeCleanupGroup } from "./storageView";
+import { baseName, cleanupPartsLine, cleanupRunParts, formatBytes, groupRowsByLabel } from "./storageView";
 import { useSettingsMachineScope } from "../SettingsMachineScope";
 
 /**
- * Optional "safe cleanup" plan. When present the dialog shows a grouped,
- * plain-language review and a single primary confirmation. Filesystem targets
- * are still previewed and removed through the preview-bound cleanup contract;
- * `runMaintenance`, when available, handles the separate compression and
- * database work after that removal.
+ * Optional "safe cleanup" plan. When present the dialog shows what the
+ * confirmed preview will remove, grouped by kind, and what else runs, with a
+ * single primary confirmation. Filesystem targets are previewed and removed
+ * through the preview-bound cleanup contract; `runMaintenance`, when
+ * available, handles the separate compression and database work after that.
  */
 export type SafeCleanupPlanConfig = {
-  groups: SafeCleanupGroup[];
-  whatHappens: string[];
-  estimatedBytes: number;
+  /** Work that runs after the files, with no byte promise (see `buildSafeCleanupPlan`). */
+  alsoRuns: string[];
+  /** What is never touched, in one line. */
+  keeps: string;
   confirmLabel: string;
   runMaintenance?: () => Promise<MaintenanceRunReport>;
   onMaintenanceDone?: (report: MaintenanceRunReport) => void;
@@ -263,6 +264,15 @@ export function StorageCleanupDialog({
     (removableCount === 0 && !plan?.runMaintenance);
   const confirmLabel = plan?.confirmLabel
     ?? (removableCount > 0 ? `Remove ${removableCount === 1 ? "1 item" : `${removableCount} items`}` : "Remove");
+  // Files removed plus what the maintenance run returned, by kind, so the
+  // total can be checked against its parts.
+  const doneBreakdown = result && report
+    ? cleanupPartsLine({
+        ...cleanupRunParts(report),
+        // `result.freedBytes` already adds the maintenance run's bytes.
+        files: Math.max(0, result.freedBytes - Math.max(0, report.reclaimedBytes)),
+      })
+    : "";
   const cleanupFailed = Boolean(result?.failed.length)
     || Boolean(report?.actions.some((action) => Boolean(action.error)));
 
@@ -346,89 +356,48 @@ export function StorageCleanupDialog({
         />
       ) : null}
 
-      {maintenanceMode && plan && (stage === "review" || stage === "removing") ? (
+      {maintenanceMode && plan && (stage === "review" || stage === "removing") && preview ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-          {plan.groups.length > 0 ? (
-            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              {plan.groups.map((group) => (
-                <div key={group.heading} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                  <div
-                    style={{
-                      fontFamily: SANS_FONT,
-                      fontSize: 10,
-                      fontWeight: 600,
-                      letterSpacing: 0.7,
-                      textTransform: "uppercase",
-                      color: COLORS.textMuted,
-                    }}
-                  >
-                    {group.heading}
-                  </div>
-                  {group.rows.map((row, index) => (
-                    <div
-                      key={`${group.heading}-${row.label}-${index}`}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                        gap: 12,
-                        padding: "8px 11px",
-                        borderRadius: 9,
-                        border: `1px solid ${COLORS.borderMuted}`,
-                        background: COLORS.cardBg,
-                      }}
-                    >
-                      <span style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textPrimary }}>{row.label}</span>
-                      <span
-                        style={{
-                          fontFamily: SANS_FONT,
-                          fontSize: 12,
-                          fontWeight: 600,
-                          color: COLORS.textSecondary,
-                          fontVariantNumeric: "tabular-nums",
-                          flexShrink: 0,
-                        }}
-                      >
-                        {row.size}
-                      </span>
-                    </div>
-                  ))}
+          {preview.items.length > 0 ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <div className="kit-eyebrow">Removes</div>
+              {groupRowsByLabel(preview.items).map((row) => (
+                <div key={row.label} className="ade-st-item">
+                  <span className="ade-st-item-label">
+                    {row.label}
+                    {row.count > 1 ? <span className="ade-st-item-size kit-num"> · {row.count}</span> : null}
+                  </span>
+                  <span className="ade-st-item-label kit-num">{formatBytes(row.bytes)}</span>
                 </div>
               ))}
-            </div>
-          ) : null}
-
-          {plan.whatHappens.length > 0 ? (
-            <div
-              style={{
-                display: "flex",
-                flexDirection: "column",
-                gap: 6,
-                padding: "12px 14px",
-                borderRadius: 10,
-                background: fgTint(2.5),
-                border: `1px solid ${COLORS.borderMuted}`,
-              }}
-            >
-              <div style={{ fontFamily: SANS_FONT, fontSize: 11, fontWeight: 650, color: COLORS.textSecondary }}>
-                What happens
+              <div style={{ fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600, color: COLORS.textPrimary, marginTop: 4 }}>
+                Frees {formatBytes(preview.totalBytes)} of files.
               </div>
-              {plan.whatHappens.map((line, index) => (
-                <div
-                  key={index}
-                  style={{ display: "flex", gap: 8, fontFamily: SANS_FONT, fontSize: 11.5, lineHeight: 1.5, color: COLORS.textMuted }}
-                >
+            </div>
+          ) : (
+            <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted }}>
+              No files need removing right now.
+            </div>
+          )}
+
+          {plan.runMaintenance && plan.alsoRuns.length > 0 ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <div className="kit-eyebrow">Then</div>
+              {plan.alsoRuns.map((line) => (
+                <div key={line} style={{ display: "flex", gap: 8, fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.5, color: COLORS.textSecondary }}>
                   <span aria-hidden style={{ color: COLORS.textDim }}>·</span>
                   <span>{line}</span>
                 </div>
               ))}
+              <div style={{ fontFamily: SANS_FONT, fontSize: 11.5, color: COLORS.textMuted }}>
+                What these free is counted once they finish.
+              </div>
             </div>
           ) : null}
 
-          <div style={{ fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600, color: COLORS.textPrimary }}>
-            This will free about {formatBytes(plan.estimatedBytes)}.
-          </div>
-          {preview && preview.blocked.length > 0 ? (
+          <div style={{ fontFamily: SANS_FONT, fontSize: 11.5, color: COLORS.textMuted }}>{plan.keeps}</div>
+
+          {preview.blocked.length > 0 ? (
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 6, fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>
                 <WarningCircle size={13} weight="fill" style={{ color: COLORS.warning }} />
@@ -505,6 +474,11 @@ export function StorageCleanupDialog({
                 ? `Freed ${formatBytes(result.freedBytes)}.`
                 : "Nothing needed removing."}
           </div>
+          {doneBreakdown ? (
+            <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted }}>
+              {doneBreakdown}
+            </div>
+          ) : null}
           {result.removed.length > 0 ? (
             <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted }}>
               Removed {result.removed.length === 1 ? "1 item" : `${result.removed.length} items`}.
