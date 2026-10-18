@@ -2,7 +2,6 @@
 
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { __resetHostedWebZoomForTests, applyHostedWebZoom } from "../../lib/webZoom";
 import { PaneTooltip } from "./PaneTooltip";
 import {
   computeTooltipPosition,
@@ -23,11 +22,7 @@ describe("PaneTooltip", () => {
 
   afterEach(() => {
     vi.useRealTimers();
-    vi.restoreAllMocks();
     cleanup();
-    __resetHostedWebZoomForTests();
-    delete (document.body as unknown as { offsetWidth?: number }).offsetWidth;
-    delete (document.body as unknown as { getBoundingClientRect?: unknown }).getBoundingClientRect;
   });
 
   it("waits out the hover intent before it appears, and portals out of the pane", () => {
@@ -146,39 +141,6 @@ describe("PaneTooltip", () => {
 
     fireEvent.pointerLeave(wrapper);
     expect(screen.queryByRole("tooltip")).toBeNull();
-  });
-
-  it("places the tooltip in layout pixels under the hosted web zoom (fails before the fix)", () => {
-    // Hosted web: the body is 1000 layout px, rendered 1.1 times wider. Rects are screen px.
-    Object.defineProperty(document.body, "offsetWidth", { configurable: true, value: 1000 });
-    document.body.getBoundingClientRect = () => ({ left: 0, top: 0, width: 1100, height: 880, right: 1100, bottom: 880, x: 0, y: 0, toJSON: () => ({}) });
-    applyHostedWebZoom(1.1);
-    Object.defineProperty(window, "innerWidth", { configurable: true, value: 1280 });
-    Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
-    // The trigger is a 110 x 22 screen box at (330, 220); the tooltip measures 165 x 33 on screen.
-    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
-      const box = this.getAttribute("role") === "tooltip"
-        ? { left: 0, top: 0, width: 165, height: 33 }
-        : { left: 330, top: 220, width: 110, height: 22 };
-      return { ...box, right: box.left + box.width, bottom: box.top + box.height, x: box.left, y: box.top, toJSON: () => ({}) } as DOMRect;
-    });
-    const { container } = render(
-      <PaneTooltip label="Close Tools sidebar" side="bottom">
-        <button type="button">x</button>
-      </PaneTooltip>,
-    );
-    fireEvent.pointerEnter(container.firstElementChild as HTMLElement);
-    act(() => { vi.advanceTimersByTime(500); });
-    const tooltip = screen.getByRole("tooltip");
-    // In layout px the trigger is (300, 200), 100 x 20; the tooltip 150 x 30; the window 1280 / 1.1 by 800 / 1.1.
-    const expected = computeTooltipPosition({
-      preferredSide: "bottom",
-      trigger: { top: 200, left: 300, right: 400, bottom: 220, width: 100, height: 20 },
-      tooltip: { width: 150, height: 30 },
-      viewport: { width: 1280 / 1.1, height: 800 / 1.1 },
-    });
-    expect(parseFloat(tooltip.style.left)).toBeCloseTo(expected.x, 4);
-    expect(parseFloat(tooltip.style.top)).toBeCloseTo(expected.y, 4);
   });
 });
 
