@@ -101,6 +101,15 @@ export function deriveChatWorkflowRuns(snapshots: ChatSubagentSnapshot[]): ChatW
     };
   });
 
+  // Each workflow task is its own run with its own Stop, even when two share
+  // a name. A legacy member that carries only the name joins the workflow of
+  // that name when exactly one exists.
+  const fallbackWorkflowIdsByName = new Map<string, string[]>();
+  for (const snapshot of snapshots) {
+    const name = snapshot.workflowName?.trim();
+    if (!name || snapshot.taskType !== "local_workflow" || directParentIds.has(snapshot.taskId)) continue;
+    fallbackWorkflowIdsByName.set(name, [...(fallbackWorkflowIdsByName.get(name) ?? []), snapshot.taskId]);
+  }
   const fallbackGroups = new Map<string, ChatSubagentSnapshot[]>();
   for (const snapshot of snapshots) {
     const name = snapshot.workflowName?.trim();
@@ -112,11 +121,14 @@ export function deriveChatWorkflowRuns(snapshots: ChatSubagentSnapshot[]): ChatW
     // stoppable workflow. Keep it out of the fallback so the renderer never
     // routes a stop action to the child's task ID.
     if (lineageParentId && !snapshotIds.has(lineageParentId)) continue;
+    const namedWorkflowIds = fallbackWorkflowIdsByName.get(name) ?? [];
     const groupKey = lineageParentId
       ? "lineage:" + lineageParentId
-      : lineageParentIds.has(snapshot.taskId)
+      : lineageParentIds.has(snapshot.taskId) || snapshot.taskType === "local_workflow"
         ? "lineage:" + snapshot.taskId
-        : "name:" + name;
+        : namedWorkflowIds.length === 1
+          ? "lineage:" + namedWorkflowIds[0]
+          : "name:" + name;
     const group = fallbackGroups.get(groupKey) ?? [];
     group.push(snapshot);
     fallbackGroups.set(groupKey, group);

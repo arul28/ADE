@@ -1330,7 +1330,13 @@ export function ChatSubagentsPanel({
     () => selfHealSubagentSnapshots(snapshots, { runtimeAlive, childChatStatuses }),
     [snapshots, runtimeAlive, childChatStatuses],
   );
-  const workflowTaskIds = useMemo(() => workflowRunTaskIds(snapshots), [snapshots]);
+  // The workflow card owns these rows, so it reads the same healed status:
+  // a run whose runtime died must not stay "Active" with a live Stop.
+  const workflowTaskIds = useMemo(() => workflowRunTaskIds(healedSnapshots), [healedSnapshots]);
+  const workflowRunningCount = useMemo(
+    () => healedSnapshots.filter((snap) => snap.taskType === "local_workflow" && snap.status === "running").length,
+    [healedSnapshots],
+  );
   const healedBackgroundItems = useMemo(
     () => selfHealBackgroundSnapshots(backgroundItems, { runtimeAlive }),
     [backgroundItems, runtimeAlive],
@@ -1485,7 +1491,8 @@ export function ChatSubagentsPanel({
 
   const headerSummary = useMemo(() => {
     const parts: string[] = [];
-    if (runningCount) parts.push(`${runningCount} running`);
+    // A running workflow is not a Subagents row, but the drawer is not idle.
+    if (runningCount + workflowRunningCount) parts.push(`${runningCount + workflowRunningCount} running`);
     if (bgRunningCount) parts.push(`${bgRunningCount} bg`);
     if (backgroundGroups.active.length) parts.push(`${backgroundGroups.active.length} background`);
     if (scheduleGroups.active.length) parts.push(`${scheduleGroups.active.length} scheduled`);
@@ -1494,7 +1501,7 @@ export function ChatSubagentsPanel({
     if (!parts.length && subagents.length) parts.push(`${subagents.length} tracked`);
     if (!parts.length) parts.push("idle");
     return parts.join(" · ");
-  }, [backgroundGroups.active.length, completedCount, runningCount, bgRunningCount, scheduleGroups.active.length, scheduleGroups.earlier.length, subagents.length]);
+  }, [backgroundGroups.active.length, completedCount, runningCount, workflowRunningCount, bgRunningCount, scheduleGroups.active.length, scheduleGroups.earlier.length, subagents.length]);
 
   const takeover = (snap: ChatSubagentSnapshot) => {
     setExpandedTaskId(null);
@@ -1633,7 +1640,7 @@ export function ChatSubagentsPanel({
   const body = (
     <div className="flex flex-col font-sans">
       <ChatWorkflowActiveCard
-        snapshots={snapshots}
+        snapshots={healedSnapshots}
         plans={workflowPlans}
         onSelectSubagent={handleRowClick}
         onStopWorkflow={onStopSubagent}
