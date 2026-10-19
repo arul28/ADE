@@ -642,7 +642,7 @@ function browserMockPackageChannel(): AppPackageChannel {
 /**
  * Host platform the preview should pretend to run on. Defaults to the real
  * browser's platform (so the preview matches the machine you are on) and can be
- * forced to exercise platform-gated UI — the Windows beta notice above all:
+ * forced to exercise platform-gated UI:
  *   http://localhost:5173/?adePlatform=win32   (or darwin / linux)
  *   localStorage.setItem("ade.mock.platform", "darwin")
  */
@@ -5156,7 +5156,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       // Mirrors the preload's synchronous channel bridge.
       packageChannel: browserMockPackageChannel(),
       // Mirrors the preload's synchronous platform bridge, so platform-gated UI
-      // (the Windows beta notice) can be previewed with ?adePlatform=win32.
+      // can be previewed with ?adePlatform=win32.
       runtimeTarget: { platform: browserMockPlatform(), arch: "x64" },
       ping: resolved("pong" as const),
       getInfo: resolved({
@@ -5165,7 +5165,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         isPackaged: false,
         automationsEnabled: true,
         // Matches the synchronous runtimeTarget bridge above so platform-gated
-        // surfaces (Settings → About's Windows beta row) preview correctly.
+        // surfaces preview correctly.
         platform: browserMockPlatform(),
         arch: "web",
         versions: {

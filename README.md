@@ -30,7 +30,7 @@
   <img src="https://img.shields.io/github/downloads/arul28/ADE/total?style=flat-square&label=downloads&labelColor=12101a&color=a78bfa" alt="Downloads" />
   <a href="https://github.com/arul28/ADE/stargazers"><img src="https://img.shields.io/github/stars/arul28/ADE?style=flat-square&labelColor=12101a&color=a78bfa" alt="Stars" /></a>
   <img src="https://img.shields.io/badge/macOS-13%2B-efe6d0?style=flat-square&labelColor=12101a" alt="macOS 13+" />
-  <img src="https://img.shields.io/badge/Windows-10%2F11%20x64%20beta-efe6d0?style=flat-square&labelColor=12101a" alt="Windows 10/11 x64 beta" />
+  <img src="https://img.shields.io/badge/Windows-10%2F11%20x64-efe6d0?style=flat-square&labelColor=12101a" alt="Windows 10/11 x64" />
 </p>
 
 <p align="center">
@@ -150,7 +150,7 @@ macOS and Windows. Install it with the one-liner above, or download it directly:
 
 Requirements: macOS 13+, or Windows 10/11 **x64** (ARM64 unsupported)
 
-Windows is in **beta** and may be a little buggy, PR's and bug reports are encouraged to help grow this project. Due to lack of support and general Windows quirks, some features are not available that work on MacOS, nothing major though. Full detail: [docs/development/windows-support.md](docs/development/windows-support.md).
+Some features that work on macOS are not available on Windows because of platform differences, nothing major. PRs and bug reports are encouraged. Full detail: [docs/development/windows-support.md](docs/development/windows-support.md).
 
 <sub>If you prefer Homebrew, this command installs the full desktop app + ADE Brain: `brew install --cask arul28/ade/ade`</sub>
 

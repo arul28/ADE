@@ -38,6 +38,7 @@ import { isBackgroundItemBlocked } from "../../../shared/types/core";
 import { APP_FALLBACK_REFUSED_FAILURES, appFallbackReason, type AppFallbackReason } from "./appFallbackPolicy";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { resolveMovedProjectRoot } from "../../../../../ade-cli/src/services/projects/projectMove/moveJournal";
+import { requestAdeRuntimeShutdown } from "../../../../../ade-cli/src/serviceManager/runtimeShutdownRequest";
 import {
   SYSTEM_PROJECT_REGISTRATION,
   type ProjectRegistrationIntent,
@@ -175,6 +176,13 @@ const LOCAL_RUNTIME_SERVICE_REPAIR_CONNECT_TIMEOUT_MS = RUNTIME_SERVICE_START_WA
  * exactly as it did before — so a wedged runtime still costs a bounded delay.
  */
 const LOCAL_RUNTIME_DRAIN_TIMEOUT_MS = 2_000;
+/**
+ * How long quit gives this desktop's own brain to exit after it is asked to
+ * shut down, on Windows, before the brain is force-killed. The request and the
+ * wait share this one budget. 3 s is the quit budget the user approved for the
+ * round-4 Windows fixes. See `stopOwnedRuntimeCooperatively`.
+ */
+const LOCAL_RUNTIME_QUIT_BRAIN_BUDGET_MS = 3_000;
 const LOCAL_RUNTIME_STATUS_REFRESH_TIMEOUT_MS = 2_000;
 // The Windows service probe itself costs ~2.1s (two PowerShell spawns), so the
 // off-thread child needs generous headroom before it is treated as unanswerable.
@@ -1072,6 +1080,31 @@ function disposeOwnedRuntimeChild(
   cleanupTimer.unref?.();
 }
 
+/** Node's record that the child exited. Once it has, the pid is reaped and must not be signalled. */
+function hasChildExited(child: ChildProcess): boolean {
+  return (child.exitCode ?? null) !== null || (child.signalCode ?? null) !== null;
+}
+
+/**
+ * Resolves `true` when `child` exits and `false` when `timeoutMs` passes first.
+ * Never rejects. The timer is unref'd like the other bounded waits in this file.
+ */
+function waitForChildExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (hasChildExited(child)) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const onExit = (): void => {
+      clearTimeout(timer);
+      resolve(true);
+    };
+    const timer = setTimeout(() => {
+      child.off("exit", onExit);
+      resolve(false);
+    }, Math.max(0, timeoutMs));
+    timer.unref?.();
+    child.once("exit", onExit);
+  });
+}
+
 async function waitForSocket(socketPath: string, timeoutMs = 10_000): Promise<void> {
   const startedAt = Date.now();
   let lastError: Error | null = null;
@@ -1123,6 +1156,7 @@ const APP_CONTROL_FRAME_DEMAND_TIMEOUT_MS = 5_000;
 
 export class LocalRuntimeConnectionPool {
   private disposed = false;
+  private stopping = false;
   private connection: Promise<LocalRuntimeConnection> | null = null;
   private activeConnection: LocalRuntimeConnection | null = null;
   private activeClient: RuntimeRpcClient | null = null;
@@ -1131,6 +1165,8 @@ export class LocalRuntimeConnectionPool {
   private activeRuntimePublishHealth: LocalRuntimeStatus["publishHealth"] = null;
   private activeRuntimeLastWedge: LocalRuntimeStatus["lastWedge"] = null;
   private ownedRuntimeChild: ChildProcess | null = null;
+  /** The endpoint belongs to the child, even after its active connection resets. */
+  private ownedRuntimeSocketPath: string | null = null;
   private appFallback: LocalRuntimeStatus["appFallback"] = null;
   private appFallbackHandoverPending: LocalRuntimeStatus["appFallback"] = null;
   /** Set while an install runs in place of the fallback it stopped. */
@@ -2475,6 +2511,71 @@ export class LocalRuntimeConnectionPool {
     }
   }
 
+  /**
+   * Quit on Windows: ask this desktop's own brain to shut down, and force-kill
+   * it if it is still running when the budget runs out, or at once if it does
+   * not acknowledge the request.
+   *
+   * Windows has no deliverable SIGTERM, so `dispose()`'s signal is a
+   * `TerminateProcess` that skips the brain's shutdown hooks: the SQLite/CRDT
+   * flush, chat and terminal teardown, the socket cleanup. The brain's
+   * `shutdown` RPC runs the same `finish()` its SIGTERM handler runs, so it is
+   * asked first, over the endpoint recorded when that child was spawned.
+   *
+   * Scope: only the child this pool spawned (`ownedRuntimeChild`), which is
+   * local by construction. The request goes out only after the child's recorded
+   * endpoint reports that child's pid, so a service brain on another socket is
+   * never asked to stop. The request and wait share the 3 s budget. The method
+   * always resolves, so quit cannot hang here. A brain that has already exited
+   * is not waited for.
+   *
+   * POSIX is unchanged. `dispose()` still sends SIGTERM there, which the brain
+   * already handles cooperatively.
+   *
+   * `closeAdmission` defaults to true for app quit. An updater handoff passes
+   * false because the app may remain open if the installer does not take over.
+   */
+  async stopOwnedRuntimeCooperatively(options: { closeAdmission?: boolean } = {}): Promise<void> {
+    if (process.platform !== "win32") return;
+    const child = this.ownedRuntimeChild;
+    if (!child || child.pid == null || hasChildExited(child)) return;
+    // Normal quit closes admission synchronously, before waiting on the shutdown
+    // RPC. The updater leaves admission open in case the install handoff fails
+    // and the app keeps running.
+    if (options.closeAdmission !== false) this.stopping = true;
+    this.clearIsolatedRecoveryTimer();
+    const pid = child.pid;
+    const deadline = Date.now() + LOCAL_RUNTIME_QUIT_BRAIN_BUDGET_MS;
+    try {
+      const socketPath = this.ownedRuntimeSocketPath
+        ?? this.activeConnection?.socketPath
+        ?? resolveMachineAdeLayout().socketPath;
+      const acknowledged = await requestAdeRuntimeShutdown({
+        pid,
+        socketPath,
+        timeoutMs: LOCAL_RUNTIME_QUIT_BRAIN_BUDGET_MS,
+      }).then((result) => result.requested, () => false);
+      if (acknowledged) await waitForChildExit(child, deadline - Date.now());
+      if (hasChildExited(child)) {
+        this.logger.info("local_runtime.quit_brain_exited", { pid, acknowledged });
+        return;
+      }
+      this.logger.warn("local_runtime.quit_brain_force_stopped", { pid, acknowledged });
+      // Clear the slot first, so `dispose()` does not signal this handle a second time.
+      if (this.ownedRuntimeChild === child) {
+        this.ownedRuntimeChild = null;
+        this.ownedRuntimeSocketPath = null;
+      }
+      disposeOwnedRuntimeChild(child, socketPath);
+    } catch (error) {
+      // Not rethrown: quit goes on, and `dispose()` still force-kills the brain.
+      this.logger.warn("local_runtime.quit_brain_stop_failed", {
+        pid,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
@@ -2482,7 +2583,9 @@ export class LocalRuntimeConnectionPool {
     this.markIsolatedMode(false, { notify: false });
     this.clearAppFallback("stopped");
     const ownedChild = this.ownedRuntimeChild;
-    const ownedSocket = this.activeConnection?.socketPath ?? resolveMachineAdeLayout().socketPath;
+    const ownedSocket = this.ownedRuntimeSocketPath
+      ?? this.activeConnection?.socketPath
+      ?? resolveMachineAdeLayout().socketPath;
     const pending = this.connection;
     this.connection = null;
     this.activeConnection = null;
@@ -2492,6 +2595,7 @@ export class LocalRuntimeConnectionPool {
     this.activeRuntimePublishHealth = null;
     this.activeRuntimeLastWedge = null;
     this.ownedRuntimeChild = null;
+    this.ownedRuntimeSocketPath = null;
     disposeOwnedRuntimeChild(ownedChild, ownedSocket);
     this.projectsByRoot.clear();
     this.projectRegistrationsByRoot.clear();
@@ -2536,6 +2640,9 @@ export class LocalRuntimeConnectionPool {
   private assertNotDisposed(): void {
     if (this.disposed) {
       throw new Error("Local runtime connection pool is disposed.");
+    }
+    if (this.stopping) {
+      throw new Error("Local runtime connection pool is stopping.");
     }
   }
 
@@ -2894,7 +3001,13 @@ export class LocalRuntimeConnectionPool {
     // "installed" includes a service brain that is still starting: it holds
     // the socket, so the fallback must not reclaim it. Should that brain die,
     // the next connect starts the fallback by itself.
-    if (!reason || this.disposed || this.serviceInstallStatus.state === "installed" || this.connection) return;
+    if (
+      !reason
+      || this.disposed
+      || this.stopping
+      || this.serviceInstallStatus.state === "installed"
+      || this.connection
+    ) return;
     const socketPath = process.env.ADE_RUNTIME_SOCKET_PATH?.trim() || resolveMachineAdeLayout().socketPath;
     try {
       await this.connect(() => this.startAppFallback(socketPath, reason));
@@ -3075,7 +3188,10 @@ export class LocalRuntimeConnectionPool {
       const client = await this.connectClient(socketPath, { isMachineService: true });
       const child = this.activeRuntimePid === this.ownedRuntimeChild?.pid ? this.ownedRuntimeChild : null;
       if (!child) this.noteServiceHandover();
-      if (!child) this.ownedRuntimeChild = null;
+      if (!child) {
+        this.ownedRuntimeChild = null;
+        this.ownedRuntimeSocketPath = null;
+      }
       return { client, child, socketPath };
     } catch (error) {
       if (error instanceof LocalRuntimeCompatibilityError) {
@@ -3211,7 +3327,10 @@ export class LocalRuntimeConnectionPool {
         const client = await this.connectClient(socketPath, { isMachineService: true });
         const child = this.activeRuntimePid === this.ownedRuntimeChild?.pid ? this.ownedRuntimeChild : null;
         if (!child) this.noteServiceHandover();
-        if (!child) this.ownedRuntimeChild = null;
+        if (!child) {
+          this.ownedRuntimeChild = null;
+          this.ownedRuntimeSocketPath = null;
+        }
         return { client, child, socketPath };
       } catch (error) {
         lastError = error;
@@ -3268,6 +3387,7 @@ export class LocalRuntimeConnectionPool {
     try {
       const client = await this.connectClient(socketPath, { preserveVersionSkew: true });
       this.ownedRuntimeChild = null;
+      this.ownedRuntimeSocketPath = null;
       this.scheduleIsolatedRuntimeRecovery(primarySocketPath);
       return { client, child: null, socketPath };
     } catch (error) {
@@ -3369,7 +3489,10 @@ export class LocalRuntimeConnectionPool {
     this.markIsolatedMode(false);
     this.clearVersionSkewStatus();
     closeRuntimeClient(entry.client);
-    if (this.ownedRuntimeChild === entry.child) this.ownedRuntimeChild = null;
+    if (this.ownedRuntimeChild === entry.child) {
+      this.ownedRuntimeChild = null;
+      this.ownedRuntimeSocketPath = null;
+    }
     disposeOwnedRuntimeChild(entry.child, entry.socketPath, { unlinkSocket: true });
   }
 
@@ -3589,6 +3712,7 @@ export class LocalRuntimeConnectionPool {
       windowsHide: true,
     });
     this.ownedRuntimeChild = child;
+    this.ownedRuntimeSocketPath = socketPath;
     const outputBase = {
       logger: this.logger,
       socketPath,
@@ -3609,6 +3733,7 @@ export class LocalRuntimeConnectionPool {
       if (this.ownedRuntimeChild !== child) return;
       const client = this.activeClient;
       this.ownedRuntimeChild = null;
+      this.ownedRuntimeSocketPath = null;
       this.clearAppFallback("stopped");
       this.connection = null;
       this.activeConnection = null;

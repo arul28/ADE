@@ -4,7 +4,7 @@ description: "Install ADE with one command on macOS, Linux, or Windows, or downl
 icon: "download"
 ---
 
-ADE is a native desktop app, a headless engine, and an iOS companion. It is generally available on macOS, in beta on Windows 10/11 x64, and runs headless on Linux. The fastest path on every platform is one command.
+ADE is a native desktop app, a headless engine, and an iOS companion. The desktop app is available on macOS and Windows 10/11 x64, and the brain runs headless on Linux. The fastest path on every platform is one command.
 
 <Frame caption="Add your first repository from the welcome screen">
   <img src="/media/features/project/add-project-button.webp" alt="Add your first repository from the ADE welcome screen" />
@@ -61,7 +61,7 @@ When no terminal is attached — CI, or a provisioning script — the installer 
     brew upgrade --cask ade
     ```
   </Accordion>
-  <Accordion title="Windows (beta)" icon="windows">
+  <Accordion title="Windows" icon="windows">
     Download the [**signed Windows installer**](https://ade-app.dev/download/windows) for Windows 10/11 x64.
 
     It is a per-user NSIS installer: no administrator rights, and it installs the app, the `ade` CLI, `ade code`, and the background ADE brain into your user profile. Read [ADE on Windows](/getting-started/windows) for the capabilities that differ from macOS.
@@ -84,7 +84,7 @@ Want the brain binary directly, without piping a script? Download it for [`darwi
 
 <CardGroup cols={3}>
   <Card title="macOS 13+, Windows 10/11, or Linux" icon="desktop">
-    macOS on Apple Silicon or Intel, shipped as a signed, notarized app. Windows is in beta, x64 only — see [ADE on Windows](/getting-started/windows). Linux runs the brain headless on x64 and arm64.
+    macOS on Apple Silicon or Intel, shipped as a signed, notarized app. Windows supports x64 only — see [ADE on Windows](/getting-started/windows). Linux runs the brain headless on x64 and arm64.
   </Card>
   <Card title="Git" icon="git-alt">
     Required — ADE uses branches and worktrees to run lanes.
@@ -112,7 +112,7 @@ ADE keeps itself current with a built-in auto-updater: it downloads new releases
 </Note>
 
 <Info>
-macOS is the generally available desktop platform. Windows 10/11 x64 is in beta: the app, brain, and CLI all run, but native OS computer use and the iOS Simulator drawer are macOS-only. [ADE on Windows](/getting-started/windows) lists every difference. The iOS companion is available through TestFlight.
+On Windows 10/11 x64 the app, brain, and CLI all run, but native OS computer use and the iOS Simulator drawer are macOS-only. [ADE on Windows](/getting-started/windows) lists every difference. The iOS companion is available through TestFlight.
 </Info>
 
 ## Next

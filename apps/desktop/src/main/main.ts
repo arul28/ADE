@@ -3151,6 +3151,7 @@ app.whenReady().then(async () => {
     // feed exists.
     autoCheckEnabled: app.isPackaged && !normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL),
     beforeQuitAndInstall: prepareAutoUpdateInstall,
+    stopOwnedRuntimeCooperatively: (options) => localRuntimePool.stopOwnedRuntimeCooperatively(options),
     rollbackQuitAndInstall: rollbackAutoUpdateInstall,
     onInstallHandoff: process.platform === "win32" && app.isPackaged
       ? ({ version, installerPath }) => startWindowsInstallProgress({
@@ -8160,8 +8161,14 @@ app.whenReady().then(async () => {
         destroyWindowsForExit();
         await localRuntimePool.drain({ timeoutMs: 2_000 });
         // Sentry flushes alongside analytics: a crash that triggered this
-        // shutdown is the report that must not be lost to the exit.
-        await Promise.all([productAnalyticsService.shutdown(), flushSentry(2_000)]);
+        // shutdown is the report that must not be lost to the exit. On Windows the
+        // brain this desktop spawned is asked to shut down in the same window, and
+        // force-killed if it is still up after 3 s.
+        await Promise.all([
+          productAnalyticsService.shutdown(),
+          flushSentry(2_000),
+          localRuntimePool.stopOwnedRuntimeCooperatively(),
+        ]);
         runImmediateProcessCleanup(`complete:${args.reason}`);
       }
     })().finally(() => {
