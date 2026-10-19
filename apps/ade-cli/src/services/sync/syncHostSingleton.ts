@@ -735,16 +735,6 @@ export type SyncHostProbeRunner = (
   maxBuffer: number,
 ) => Promise<{ stdout: string; failed: boolean }>;
 
-export type SyncHostSingletonAsyncVerdict = {
-  conflict: SyncHostSingletonConflict | null;
-  /**
-   * Settles when the background identity check of an owner that `ignoreOwner`
-   * accepted has finished. It unlinks the lock only on a definite mismatch and
-   * never rejects. The launch does not wait for it.
-   */
-  ignoredOwnerCheck: Promise<void>;
-};
-
 /**
  * `detectSyncHostSingletonConflict` for a caller that must not block its event
  * loop: the packaged desktop launch gate, which runs before first paint.
@@ -764,35 +754,34 @@ export async function detectSyncHostSingletonConflictAsync(
     runProbe?: SyncHostProbeRunner;
     ignoreOwner?: (owner: SyncHostSingletonOwner) => boolean;
   } = {},
-): Promise<SyncHostSingletonAsyncVerdict> {
+): Promise<SyncHostSingletonConflict | null> {
   const platform = deps.platform ?? process.platform;
   const injected = Boolean(deps.processMatchesOwner || deps.scanListeners || deps.scanListenersReadText);
   // Same test-mode gate as `detectSyncHostSingletonConflict`: a test that opts in runs this path.
   const testRun = isTestProcess() && process.env.ADE_SYNC_HOST_SINGLETON_TEST_MODE !== "1";
   if (platform !== "win32" || !deps.skipListenerScan || injected || testRun) {
-    return { conflict: detectSyncHostSingletonConflict(deps), ignoredOwnerCheck: Promise.resolve() };
+    return detectSyncHostSingletonConflict(deps);
   }
   const lockPath = deps.lockPath ?? syncHostSingletonLockPath();
   const pidAlive = deps.pidAlive ?? defaultPidAlive;
   const lockOwner = safeReadLock(lockPath, platform)?.owner ?? null;
   const checkOwner = lockOwner && lockOwner.pid !== process.pid && pidAlive(lockOwner.pid) ? lockOwner : null;
-  if (!checkOwner) return { conflict: detectSyncHostSingletonConflict(deps), ignoredOwnerCheck: Promise.resolve() };
+  if (!checkOwner) return detectSyncHostSingletonConflict(deps);
   const runProbe = options.runProbe ?? execFileText;
   if (options.ignoreOwner?.(checkOwner)) {
-    return { conflict: null, ignoredOwnerCheck: recheckIgnoredOwner(lockPath, checkOwner, platform, runProbe) };
+    // Detached on purpose: the launch answers now, and recheckIgnoredOwner never rejects.
+    void recheckIgnoredOwner(lockPath, checkOwner, platform, runProbe);
+    return null;
   }
   const ownerVerdict = await probeWindowsOwnerIdentity(checkOwner, runProbe);
-  return {
-    conflict: detectSyncHostSingletonConflict({
-      ...deps,
-      // The lock may have changed hands while the probe ran; any other owner gets
-      // the synchronous check, as before.
-      processMatchesOwner: (owner) => owner.id === checkOwner.id && owner.pid === checkOwner.pid
-        ? ownerVerdict
-        : defaultProcessMatchesOwner(owner, platform),
-    }),
-    ignoredOwnerCheck: Promise.resolve(),
-  };
+  return detectSyncHostSingletonConflict({
+    ...deps,
+    // The lock may have changed hands while the probe ran; any other owner gets
+    // the synchronous check, as before.
+    processMatchesOwner: (owner) => owner.id === checkOwner.id && owner.pid === checkOwner.pid
+      ? ownerVerdict
+      : defaultProcessMatchesOwner(owner, platform),
+  });
 }
 
 /** The owner's identity from one PowerShell probe; `null` when unknown. Never throws. */

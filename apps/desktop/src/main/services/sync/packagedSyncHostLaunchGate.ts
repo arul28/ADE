@@ -54,12 +54,13 @@ const runWindowsProbeOffThread: SyncHostProbeRunner = (command, args, timeoutMs,
  * the same class of pre-paint main-thread block this branch set out to remove.
  *
  * So on Windows the gate skips the listener scan and answers from the lock file.
- * The downgrade: a cross-channel brain that was hard-killed and left a stale lock
- * is not detected at launch, so two channels can briefly both hold phone sync.
- * Every current build writes the lock, making that the legacy/crash case only --
- * and `ade serve` still runs the full scan when it starts a brain, where the cost
- * is bounded and nothing is waiting to paint. Documented in
- * docs/development/windows-support.md.
+ * The downgrade: a brain that holds phone sync without a usable lock file
+ * (missing, unreadable, or another lock version) is not seen at launch, so two
+ * channels can briefly both hold phone sync. A hard-killed brain's lock is cleared
+ * once its PID is dead. Every current build writes the lock, so the missing-lock
+ * case is the legacy one only -- and `ade serve` still runs the full scan when it
+ * starts a brain, where the cost is bounded and nothing is waiting to paint.
+ * Documented in docs/development/windows-support.md.
  *
  * The one process probe left is the owner-identity check that rejects a reused
  * PID, and it runs off the main thread. For a live owner on ANOTHER channel the
@@ -71,8 +72,7 @@ export async function detectCrossChannelSyncHostConflict(
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
 ): Promise<SyncHostSingletonConflict | null> {
-  // `ignoredOwnerCheck` is deliberately not awaited: it never rejects, and the verdict is already settled.
-  const { conflict } = await detectSyncHostSingletonConflictAsync(
+  const conflict = await detectSyncHostSingletonConflictAsync(
     { skipListenerScan: platform === "win32" },
     {
       ignoreOwner: (owner: SyncHostSingletonOwner) => isSameChannelSyncHostOwner(owner, env),

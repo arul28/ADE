@@ -587,7 +587,7 @@ describe("detectSyncHostSingletonConflictAsync (Windows launch gate)", () => {
     // A cross-channel verdict waits for the probe, so the probe answers before the launch resolves.
     if (!sameChannel) answer.resolve(probeAnswer(recorded, identity));
 
-    const verdict = await launch;
+    const conflict = await launch;
     if (sameChannel) {
       // The launch answered while the probe was still pending: it neither waited
       // for the probe nor touched the lock. A newer owner may take the lock now.
@@ -595,9 +595,11 @@ describe("detectSyncHostSingletonConflictAsync (Windows launch gate)", () => {
       if (handOff) writeLock(lockPath, owner({ id: "newer-brain", pid: 5555 }));
       answer.resolve(probeAnswer(recorded, identity));
     }
-    await verdict.ignoredOwnerCheck;
+    // The background check is promise-only (the probe is injected, the unlink is
+    // synchronous), so one macrotask turn lets it run to its end.
+    await new Promise((done) => setImmediate(done));
 
-    expect(verdict.conflict !== null).toBe(blocked);
+    expect(conflict !== null).toBe(blocked);
     expect(fs.existsSync(lockPath)).toBe(lockKept);
   });
 });
