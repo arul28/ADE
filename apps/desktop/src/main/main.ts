@@ -3150,6 +3150,7 @@ app.whenReady().then(async () => {
     // feed exists.
     autoCheckEnabled: app.isPackaged && !normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL),
     beforeQuitAndInstall: prepareAutoUpdateInstall,
+    stopOwnedRuntimeCooperatively: () => localRuntimePool.stopOwnedRuntimeCooperatively(),
     rollbackQuitAndInstall: rollbackAutoUpdateInstall,
     onInstallHandoff: process.platform === "win32" && app.isPackaged
       ? ({ version, installerPath }) => startWindowsInstallProgress({

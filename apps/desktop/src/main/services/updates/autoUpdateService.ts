@@ -136,6 +136,8 @@ type CreateAutoUpdateServiceArgs = {
    * launch that lands the update can name what came back.
    */
   beforeQuitAndInstall?: (resumeChats: boolean) => void | Promise<UpdateInterruptedChat[] | void>;
+  /** Asks this desktop's owned runtime child to shut down before the app quits. */
+  stopOwnedRuntimeCooperatively?: () => Promise<void>;
   rollbackQuitAndInstall?: (reason: string) => void | Promise<void>;
   /**
    * Runs right before the native installer takes over, so something can be on
@@ -480,6 +482,7 @@ export function createAutoUpdateService({
   globalStatePath,
   updater = autoUpdater as unknown as AutoUpdaterLike,
   beforeQuitAndInstall,
+  stopOwnedRuntimeCooperatively,
   rollbackQuitAndInstall,
   onInstallHandoff,
   relaunchApp,
@@ -2077,6 +2080,15 @@ export function createAutoUpdateService({
           // The window is a courtesy; the install goes ahead without it.
           logger.warn("autoUpdate.install_handoff_surface_failed", {
             message: formatErrorMessage(error),
+          });
+        }
+        // The preparation hook has already captured chat state and completed
+        // any service-brain uninstall. Only this desktop's owned child is
+        // stopped here, just before electron-updater starts quitting the app.
+        if (platform === "win32" && stopOwnedRuntimeCooperatively) {
+          await stopOwnedRuntimeCooperatively();
+          logger.info("autoUpdate.owned_runtime_stop_before_quit_done", {
+            version: snapshot.version ?? installVersion,
           });
         }
         // Mark the quit before entering electron-updater: it calls app.quit()
