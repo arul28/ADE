@@ -157,11 +157,12 @@ standard deviation of the 18 values. Command: `scripts/perf/desktop-main-start.m
   Files.
 - **First Work open after launch:** a long chat backfills its older history
   in idle slots: 114–171 pages over 8–14 s, at about 350 ms/s of main-thread
-  work, once per chat per session. A page is 256 KB of raw JSONL
-  (`CHAT_HISTORY_PAGE_MAX_BYTES`), and the batch reader stops at the first page
-  that holds a `user_message`, which a full page almost always does — so one
-  idle slot is one page, and the count is the older transcript's bytes over
-  256 KB. Each page re-collapsed the whole resident transcript, with a scan of
+  work, once per chat per session. An older page is 512 KB of raw JSONL
+  (`CHAT_HISTORY_OLDER_PAGE_MAX_BYTES`; it was 256 KB before this change, which
+  halves the page count), and the batch reader stops at the first page that
+  holds a `user_message`, which a full page almost always does — so one idle
+  slot is one page, and the count is the older transcript's bytes over 512 KB.
+  Each page re-collapsed the whole resident transcript, with a scan of
   every row per `tool_result` on top of it (quadratic over a backfill); the
   scan is gone in `334ea36ad`. Measured with `chat-backfill.bench.mts` (new; a
   54,000-event chat over 63 pages, this machine, Node 22.13.1), before → after:
@@ -169,6 +170,9 @@ standard deviation of the 18 values. Command: `scripts/perf/desktop-main-start.m
   first page 3.7 ms → 3.5 ms, with identical pages, resident events and
   resident rows. What is left is one linear collapse pass plus the list's
   commit per page. The app-level numbers above were not re-measured.
+  With 512 KB older pages (same bench, same 54,000-event shape, Windows,
+  Node 22.13.1, back to back): 63 → 31 pages, row pipeline 1,119 → 541 ms,
+  last page 35 → 33 ms, merge 111 → 94 ms.
 - **Remote browser host, not measured:** a desktop that has shown a chat
   from another machine keeps one runtime event subscription for that machine
   after the chat leaves the front, so it can run that chat's browser commands

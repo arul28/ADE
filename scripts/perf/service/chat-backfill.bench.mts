@@ -1,9 +1,10 @@
 // cd apps/ade-cli && npx tsx ../../scripts/perf/service/chat-backfill.bench.mts [file.chat.jsonl ...]
 // What the renderer pays to backfill a long chat's older history in idle slots.
 //
-// AgentChatMessageList pages the rest of a transcript in one 256 KB page per
-// idle slot, and each landed page is a new event list, so the pane commits it
-// and the list rebuilds its rows for the whole resident transcript. This runs
+// AgentChatMessageList pages the rest of a transcript in one older page per
+// idle slot (CHAT_HISTORY_OLDER_PAGE_MAX_BYTES), and each landed page is a new
+// event list, so the pane commits it and the list rebuilds its rows for the
+// whole resident transcript. This runs
 // that loop without the app: the pager's byte window and turn anchoring, the
 // capped merge, then the row pipeline the list memo runs for the new events
 // (`chatDisplayEvents` -> collapse -> visible filter -> group -> fold).
@@ -20,7 +21,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentChatEventEnvelope } from "../../../apps/desktop/src/shared/types/chat";
 import {
-  CHAT_HISTORY_PAGE_MAX_BYTES,
+  CHAT_HISTORY_OLDER_PAGE_MAX_BYTES,
   INITIAL_SELECTED_CHAT_HISTORY_EVENTS,
   MAX_SELECTED_CHAT_SESSION_RESIDENT_BYTES,
   MAX_SELECTED_CHAT_SESSION_RESIDENT_EVENTS,
@@ -37,7 +38,7 @@ import {
 } from "../../../apps/desktop/src/renderer/components/chat/chatTranscriptRows";
 import { foldTurnFailureRows } from "../../../apps/desktop/src/renderer/components/chat/turnFailureRows";
 
-const PAGE_BYTES = CHAT_HISTORY_PAGE_MAX_BYTES;
+const PAGE_BYTES = CHAT_HISTORY_OLDER_PAGE_MAX_BYTES;
 
 function defaultTranscripts(): string[] {
   const here = path.dirname(fileURLToPath(import.meta.url));

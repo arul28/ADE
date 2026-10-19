@@ -222,6 +222,7 @@ import { useSessionLifecycleSnapshot } from "../work/useSessionLifecycleSnapshot
 import { useForeignSessionLaneId, useLanesForPin } from "../../state/crossMachineLanes";
 import { isWebRuntimePinUnroutableError } from "../../webclient/adapter/runtimePinGuard";
 import {
+  CHAT_HISTORY_OLDER_PAGE_MAX_BYTES,
   CHAT_HISTORY_PAGE_MAX_BYTES,
   chatDisplayEvents,
   chatEventDedupKey,
@@ -8391,7 +8392,7 @@ export function AgentChatPane({
         readPage: (beforeOffset) => agentChatApiRef.current.getEventHistoryPage({
           sessionId,
           beforeOffset,
-          maxBytes: CHAT_HISTORY_PAGE_MAX_BYTES,
+          maxBytes: CHAT_HISTORY_OLDER_PAGE_MAX_BYTES,
         }, pin),
       });
       if (!batch || !isCurrentRequest()) return false;

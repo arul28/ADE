@@ -13,6 +13,15 @@ const chatEventResidentSizeCache = new WeakMap<AgentChatEventEnvelope, number>()
 
 export const INITIAL_SELECTED_CHAT_HISTORY_EVENTS = 1_000;
 export const CHAT_HISTORY_PAGE_MAX_BYTES = 256 * 1024;
+/**
+ * Bytes per OLDER page: scroll-back, underfill and idle backfill. Each page is a
+ * round trip, and a long chat walks to its head one page at a time, so older
+ * pages are twice the initial window's: the 2.7 MB chat measured in the Windows
+ * round takes 5 trips instead of 10. The hosted web client already pages at this
+ * size. The initial read keeps CHAT_HISTORY_PAGE_MAX_BYTES, because a bigger
+ * first read delays first paint.
+ */
+export const CHAT_HISTORY_OLDER_PAGE_MAX_BYTES = 512 * 1024;
 export const MAX_SELECTED_CHAT_SESSION_RESIDENT_EVENTS = 60_000;
 export const MAX_SELECTED_CHAT_SESSION_RESIDENT_BYTES = 32 * 1024 * 1024;
 export const MAX_BACKGROUND_CHAT_SESSION_EVENTS = 1_000;
