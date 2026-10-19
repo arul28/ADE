@@ -7,11 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.112] - 2026-10-19
+
 ### Desktop and web
 
-- ADE runs its own tested copy of every agent (Claude Code, Codex, OpenCode, Copilot, Cursor, Droid, Grok, Qwen, Kimi, Devin, Pi, Muse), downloaded for each machine the first time it is used, with self-update off and your existing sign-ins reused. You no longer install agent CLIs yourself, and ADE no longer runs the one on your PATH; Settings shows each copy's version and a Download or Retry button.
+- ADE runs its own tested copy of every agent (Claude Code, Codex, OpenCode, Copilot, Cursor, Droid, Grok, Qwen, Kimi, Devin, Pi, Muse), downloaded for each machine the first time it is used, with self-update off and your existing sign-ins reused. You no longer install agent CLIs yourself, and ADE no longer runs the one on your PATH; Settings shows each copy's version and a Download or Retry button (#1805).
 - Claude Code moves to a newer build on its own only when Anthropic refuses the pinned one as too old, and says so in Settings.
 - Google Antigravity is a new chat provider. It runs Google's official Antigravity agent and signs in with your Google account, Gemini Enterprise, a Gemini API key or Agent Platform; from another machine you paste the sign-in's return address.
+- Settings opens on an Overview with lane cleanup and project checks; moves work on an external drive (#1780).
+- The Windows beta notice is gone (#1804); Copilot downloads like Claude and SDK agents run on headless ADE (#1776).
+- Chat and multi-machine fixes (#1777, #1779, #1781, #1783, #1794, #1795, #1798).
+- Windows brain lifecycle fixes (#1782, #1786, #1791, #1800, #1801, #1802).
+- Faster startup, chat sends and listing (#1784, #1785, #1787, #1788, #1789, #1790, #1796, #1797, #1799).
 
 ## [1.2.111] - 2026-10-17
 
@@ -2601,7 +2608,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.111...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.112...HEAD
+[1.2.112]: https://github.com/arul28/ADE/compare/v1.2.111...v1.2.112
 [1.2.111]: https://github.com/arul28/ADE/compare/v1.2.110...v1.2.111
 [1.2.110]: https://github.com/arul28/ADE/compare/v1.2.109...v1.2.110
 [1.2.109]: https://github.com/arul28/ADE/compare/v1.2.108...v1.2.109

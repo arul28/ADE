@@ -1,0 +1,39 @@
+---
+title: "v1.2.112"
+description: "Release notes for ADE v1.2.112 - October 19, 2026"
+---
+
+ADE 1.2.112 runs its own pinned copy of every agent provider and adds Google Antigravity, reorganizes Settings around a new Overview, lets moves work on an external drive, drops the Windows beta notice, and makes Windows and multi-machine use faster and steadier.
+
+## New
+
+- ADE runs its own tested copy of every agent (Claude Code, Codex, OpenCode, Copilot, Cursor, Droid, Grok, Qwen, Kimi, Devin, Pi, Muse), downloaded per machine on first use with your existing sign-ins reused. You no longer install agent CLIs yourself; Settings shows each copy's version and a Download or Retry button (#1805).
+- Claude Code moves to a newer build on its own only when Anthropic refuses the pinned one as too old, and says so in Settings (#1805).
+- Google Antigravity is a new chat provider, signing in with your Google account, Gemini Enterprise, a Gemini API key or Agent Platform (#1805).
+- Settings opens on an Overview, with lane cleanup and project checks; moving a project or lanes onto an external drive just works (#1780).
+- The Windows beta notice is gone (#1804).
+- Copilot downloads like Claude, and SDK agents run on a headless ADE (#1776).
+
+## Fixes
+
+- Every machine's chats are listed, and picking a machine no longer opens project tabs (#1779).
+- A chat launched onto another machine stays on screen while that machine lists it (#1777).
+- Chats on an archived lane say so instead of "lane record is missing" (#1798).
+- A chat's proof count is its own the moment you switch to it (#1795).
+- Long transcript rails are easier to navigate (#1783).
+- The browser element picker and select work on scrolled pages and inside iframes (#1781).
+- A dead LAN address no longer delays every connect to another machine by 10 seconds (#1794).
+
+## Windows
+
+- Opening ADE no longer restarts a healthy brain (#1782), and quitting lets the brain shut down cleanly (#1802).
+- Stopping the brain never kills a process that is not ADE's (#1800), and concurrent service installs no longer replace each other's brain (#1791).
+- The GitHub CLI token is read from gh's config folder instead of spawning gh (#1801).
+- Capability gates and known gaps name the Windows route (#1786).
+
+## Speed
+
+- Windows stops spawning 14 processes every 15 seconds to re-check the background service (#1799).
+- Startup decrypts keys off the main thread (#1785, #1789), and the launch gate and OpenCode recovery no longer block it (#1788, #1790).
+- Checking whether a tool is installed no longer blocks a chat send (#1796), and chat listing stops re-reading per-row state (#1797).
+- Launch status reads the Cursor sign-in file directly (#1787), and project icon detection lists each folder once (#1784).
