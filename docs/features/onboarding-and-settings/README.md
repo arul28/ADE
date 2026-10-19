@@ -2213,7 +2213,8 @@ interesting failures are all things only the user can fix: macOS has not
 been told ADE may record the screen (`permission_denied`, recovery
 `grant_permission`), macOS 27 has not been told ADE may watch the keyboard
 (`permission_denied` with an Input Monitoring message, recovery `retry`,
-because the helper installs its tap again in place), or the helper is
+because the helper installs its tap again in place), the key monitor could
+not start (`monitor_unavailable`, recovery `retry`), or the helper is
 missing from the install (`missing`, recovery `reinstall_or_update`). A
 bare switch that is on while the gesture does nothing is the exact state
 this card exists to prevent. On Linux the card renders `CAPTURE_GESTURE_UNSUPPORTED_BLOCKER`

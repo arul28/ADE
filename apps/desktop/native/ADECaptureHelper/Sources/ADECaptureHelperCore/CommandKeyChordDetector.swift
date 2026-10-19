@@ -30,13 +30,19 @@ public struct CommandKeyChordDetector {
     ///   - commandDown: whether the event's flags still contain generic Command.
     /// - Returns: true exactly once per press of the chord.
     public mutating func consume(keyCode: Int64, commandDown: Bool) -> Bool {
-        guard keyCode == Self.leftCommandKeyCode || keyCode == Self.rightCommandKeyCode else {
-            return false
-        }
+        // Any event with Command clear is an all-up sample, even when the key
+        // that changed was not Command itself. Check it before the key-code
+        // guard so a missed release cannot leave a half-remembered press stuck.
         if !commandDown {
             leftDown = false
             rightDown = false
-        } else if keyCode == Self.leftCommandKeyCode {
+            engaged = false
+            return false
+        }
+        guard keyCode == Self.leftCommandKeyCode || keyCode == Self.rightCommandKeyCode else {
+            return false
+        }
+        if keyCode == Self.leftCommandKeyCode {
             leftDown.toggle()
         } else {
             rightDown.toggle()

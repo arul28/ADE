@@ -378,6 +378,23 @@ describe("CaptureHelper", () => {
     expect(helper.getHealth().state).toBe("running");
   });
 
+  it("reports a tap that cannot start and clears it when the tap comes up", async () => {
+    const child = fakeChild();
+    spawnMock.mockReturnValue(child);
+    const { helper, onFailure } = createHelper();
+    helper.updateSettings({ enabled: true });
+    child.emit("spawn");
+    child.stdout.write('{"type":"chord-unavailable"}\n');
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(onFailure.mock.calls[0][0].message).toContain("key monitor");
+    expect(helper.getHealth().state).toBe("monitor_unavailable");
+    expect(helper.getHealth().recovery).toBe("retry");
+
+    child.stdout.write('{"type":"chord-ready"}\n');
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(helper.getHealth().state).toBe("running");
+  });
+
   it("ignores a chord while a capture is already in flight", async () => {
     const child = fakeChild();
     spawnMock.mockReturnValue(child);

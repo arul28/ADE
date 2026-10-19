@@ -73,15 +73,35 @@ export function CaptureGestureSection() {
     setBusy(true);
     try {
       const updated = await window.ade?.captureGesture?.retry();
-      if (mounted.current && updated) setHealth(updated);
-      // The helper installs the tap again asynchronously; ask once more after
-      // it has had time to answer, so granting Input Monitoring clears the
-      // warning without reopening Settings.
-      window.setTimeout(() => { void refreshHealth(); }, 600);
-    } finally {
+      if (!mounted.current) return;
+      if (updated) setHealth(updated);
+      // The helper installs the tap again asynchronously, and the user may
+      // still be granting the permission in System Settings. Keep the button
+      // busy and ask for the verdict for a bounded window instead of one
+      // fixed delay that can race the grant.
+      const deadline = Date.now() + 10_000;
+      const poll = async () => {
+        if (!mounted.current) return;
+        const next = await window.ade?.captureGesture?.getHealth().catch(() => null);
+        if (!mounted.current) return;
+        if (next) setHealth(next);
+        if (
+          next
+          && Date.now() < deadline
+          && (next.state === "permission_denied"
+            || next.state === "monitor_unavailable"
+            || next.state === "starting")
+        ) {
+          window.setTimeout(() => { void poll(); }, 500);
+          return;
+        }
+        setBusy(false);
+      };
+      window.setTimeout(() => { void poll(); }, 500);
+    } catch {
       if (mounted.current) setBusy(false);
     }
-  }, [refreshHealth]);
+  }, []);
 
   const chord = captureGestureChord();
   const blocker = captureGestureBlocker();

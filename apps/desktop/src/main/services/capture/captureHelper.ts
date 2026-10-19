@@ -3,10 +3,7 @@ import { isPathInside } from "../shared/pathCompare";
 import { terminateChildProcessTree } from "../shared/utils";
 import fs from "node:fs";
 import path from "node:path";
-import {
-  captureGestureChordLabel,
-  isCaptureGestureSupported,
-} from "../../../shared/captureGesturePlatformSupport";
+import { isCaptureGestureSupported } from "../../../shared/captureGesturePlatformSupport";
 import type {
   CaptureGestureFailure,
   CaptureGestureHealth,
@@ -15,11 +12,11 @@ import type {
 } from "../../../shared/types/captureGesture";
 import type { Logger } from "../logging/logger";
 import {
-  MAC_OS_INPUT_MONITORING_REMEDY,
   captureAttachmentFilename,
   captureFailureFor,
   captureGestureHealth,
   evaluateCaptureChord,
+  inputMonitoringMessageFor,
   parseCaptureHelperOutput,
   resolveCaptureHelperExecutablePath,
   type CaptureHelperInput,
@@ -89,6 +86,7 @@ export class CaptureHelper {
   private stdoutBuffer = "";
   private permissionDenied = false;
   private inputMonitoringRequired = false;
+  private monitorUnavailable = false;
   private captureInFlight = false;
   private lastCaptureAtMs: number | null = null;
   private pendingSource: CaptureGestureSource = "chord";
@@ -112,8 +110,6 @@ export class CaptureHelper {
       });
       return false;
     }
-
-    this.inputMonitoringRequired = false;
 
     try {
       fs.mkdirSync(this.options.outputDirectory, { recursive: true });
@@ -276,6 +272,7 @@ export class CaptureHelper {
       running: this.child != null && this.childReady,
       permissionDenied: this.permissionDenied,
       inputMonitoringRequired: this.inputMonitoringRequired,
+      monitorUnavailable: this.monitorUnavailable,
       exhaustedRestarts:
         this.child == null
         && this.restartAttempts >= MAX_RESTART_ATTEMPTS
@@ -419,15 +416,24 @@ export class CaptureHelper {
       case "chord-ready":
         // A retry after the user granted Input Monitoring installed the tap.
         this.inputMonitoringRequired = false;
+        this.monitorUnavailable = false;
         return;
       case "input-monitoring-required":
         this.inputMonitoringRequired = true;
+        this.monitorUnavailable = false;
         this.options.onFailure({
           reason: "permission-denied",
           source: this.pendingSource,
-          message: this.platform === "darwin"
-            ? `ADE needs Input Monitoring permission to detect ${captureGestureChordLabel(this.platform)}. ${MAC_OS_INPUT_MONITORING_REMEDY}`
-            : "This system refused the key monitoring the capture gesture needs.",
+          message: inputMonitoringMessageFor(this.platform),
+        });
+        return;
+      case "chord-unavailable":
+        this.inputMonitoringRequired = false;
+        this.monitorUnavailable = true;
+        this.options.onFailure({
+          reason: "capture-failed",
+          source: this.pendingSource,
+          message: "ADE couldn’t start the key monitor. Choose Try again in Settings › General.",
         });
         return;
       case "chord": {

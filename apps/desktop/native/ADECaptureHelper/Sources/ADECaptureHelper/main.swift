@@ -280,22 +280,27 @@ final class CaptureHelperApp: NSObject {
     /// Install the chord monitor, preferring the event tap and falling back to
     /// the old poll only where the poll still carries the left/right bits.
     private func installChordMonitor() {
+        // A reinstall can happen while a key is held, and the events that would
+        // have released it are gone. Start both detectors from a known state.
+        detector.reset()
+        pollDetector.reset()
         stopPolling()
         removeEventTap()
+        // Before macOS 27 the static poll still carries the device bits and
+        // costs no permission. Only the version that lost them needs the tap.
+        guard ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27 else {
+            startPolling()
+            return
+        }
         if !CGPreflightListenEventAccess() {
             // The prompt names ADE (the responsible app), not this helper.
             _ = CGRequestListenEventAccess()
         }
         if installEventTap() { return }
-        // macOS 27 stopped putting the device bits in the static poll, so a
-        // missing tap there means there is no working chord at all. Say why
-        // instead of reporting a healthy gesture that can never fire.
-        if ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27,
-           !CGPreflightListenEventAccess() {
-            writer.emit(.inputMonitoringRequired)
-            return
-        }
-        startPolling()
+        // macOS 27 has no working poll fallback here, so a missing tap means
+        // the gesture cannot fire at all. Say which remedy applies instead of
+        // reporting a healthy gesture that never will.
+        writer.emit(CGPreflightListenEventAccess() ? .chordUnavailable : .inputMonitoringRequired)
     }
 
     private func installEventTap() -> Bool {
@@ -310,7 +315,11 @@ final class CaptureHelperApp: NSObject {
         ) else {
             return false
         }
-        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        guard let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0) else {
+            CGEvent.tapEnable(tap: tap, enable: false)
+            CFMachPortInvalidate(tap)
+            return false
+        }
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
         eventTap = tap
@@ -356,6 +365,11 @@ final class CaptureHelperApp: NSObject {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             if let tap = eventTap {
                 CGEvent.tapEnable(tap: tap, enable: true)
+                // A tap disabled by secure input or a revoked grant can refuse
+                // to come back. Falling silent leaves health claiming running.
+                if !CGEvent.tapIsEnabled(tap: tap) {
+                    writer.emit(CGPreflightListenEventAccess() ? .chordUnavailable : .inputMonitoringRequired)
+                }
             }
             detector.reset()
             return

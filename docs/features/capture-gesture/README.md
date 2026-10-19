@@ -56,7 +56,8 @@ So `main.swift` now installs a **listen-only `CGEventTap` for `.flagsChanged`** 
 The tap is a key-event tap, so macOS gates it behind **Input Monitoring**. That is a real change from the original "no permission" design, and it is surfaced rather than hidden:
 
 - `CGPreflightListenEventAccess()` is consulted before the tap is attempted. Without a grant the helper answers `input-monitoring-required`, health says *"ADE can't watch the Command keys"* with the System Settings path, and the card offers **Try again**.
-- `retry` re-attempts the tap in place, so granting the permission does not require restarting ADE.
+- If the grant is present but the tap still cannot be created or restored, the helper answers `chord-unavailable` and health says *"The capture gesture couldn't start"* with the same retry. It never reports `chord-ready` for a monitor that is not actually installed.
+- `retry` re-attempts the tap in place, so granting the permission does not require restarting ADE. The settings card polls health for a bounded window while the button is busy, so a grant made in System Settings clears the warning without reopening Settings.
 - On **macOS 26 and earlier** the helper keeps the old `NSEvent.modifierFlags` poll as the fallback, which is still permission-free there. `ChordDetector` remains for that path and is covered by the Swift tests.
 - The Windows helper is unaffected; its low-level hook already reads `VK_LCONTROL` and `VK_RCONTROL` separately.
 
@@ -95,7 +96,7 @@ NDJSON both ways, one message per line.
 | Direction | Messages |
 |---|---|
 | ADE → helper | `{"type":"capture"}`, `{"type":"settings","enabled":bool}`, `{"type":"retry"}`, `{"type":"quit"}` |
-| helper → ADE | `{"type":"ready"}`, `{"type":"chord-ready"}`, `{"type":"input-monitoring-required"}`, `{"type":"chord"}`, `{"type":"captured", path, appName, windowTitle, ownerPid, bounds}`, `{"type":"permission-denied"}`, `{"type":"no-window"}`, `{"type":"capture-failed", message}` |
+| helper → ADE | `{"type":"ready"}`, `{"type":"chord-ready"}`, `{"type":"input-monitoring-required"}`, `{"type":"chord-unavailable"}`, `{"type":"chord"}`, `{"type":"captured", path, appName, windowTitle, ownerPid, bounds}`, `{"type":"permission-denied"}`, `{"type":"no-window"}`, `{"type":"capture-failed", message}` |
 
 Both sides drop what they cannot interpret rather than failing. `HelperCommand.parse` returns nil for an unknown command so a newer ADE can add one without wedging an older helper; `parseCaptureHelperOutput` returns null for both malformed JSON and a well-formed message this build has never heard of — the caller logs them differently, because only the first is a protocol violation worth showing in health.
 

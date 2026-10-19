@@ -85,6 +85,15 @@ final class ChordDetectorTests: XCTestCase {
         XCTAssertTrue(detector.consume(keyCode: 54, commandDown: true))
     }
 
+    func testKeyCodeDetectorResyncsWhenAForeignKeyReportsAllUp() {
+        var detector = CommandKeyChordDetector()
+        XCTAssertFalse(detector.consume(keyCode: 55, commandDown: true))
+        // Shift (56) releases after Command was already missed as up: the
+        // generic bit is clear, so this must drop the half-held left Command.
+        XCTAssertFalse(detector.consume(keyCode: 56, commandDown: false))
+        XCTAssertFalse(detector.consume(keyCode: 54, commandDown: true))
+    }
+
     func testKeyCodeDetectorResetDropsAHalfHeldChord() {
         var detector = CommandKeyChordDetector()
         XCTAssertFalse(detector.consume(keyCode: 55, commandDown: true))

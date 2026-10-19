@@ -39,6 +39,8 @@ public enum HelperEvent {
     case chordReady
     /// The host has no Input Monitoring grant, so modifier changes are invisible.
     case inputMonitoringRequired
+    /// The grant is present, but the event tap could not be started or restored.
+    case chordUnavailable
     case chord
     case captured(
         path: String,
@@ -59,6 +61,8 @@ public enum HelperEvent {
             return ["type": "chord-ready"]
         case .inputMonitoringRequired:
             return ["type": "input-monitoring-required"]
+        case .chordUnavailable:
+            return ["type": "chord-unavailable"]
         case .chord:
             return ["type": "chord"]
         case .permissionDenied:

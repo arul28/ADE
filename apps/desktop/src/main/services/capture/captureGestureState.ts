@@ -94,6 +94,7 @@ export type CaptureHelperOutput =
   | { type: "ready" }
   | { type: "chord-ready" }
   | { type: "input-monitoring-required" }
+  | { type: "chord-unavailable" }
   | { type: "chord" }
   | {
       type: "captured";
@@ -162,6 +163,8 @@ export function parseCaptureHelperOutput(line: string): CaptureHelperOutput | nu
       return { type: "chord-ready" };
     case "input-monitoring-required":
       return { type: "input-monitoring-required" };
+    case "chord-unavailable":
+      return { type: "chord-unavailable" };
     case "chord":
       return { type: "chord" };
     case "permission-denied":
@@ -213,6 +216,13 @@ export const MAC_OS_SCREEN_RECORDING_REMEDY =
  */
 export const MAC_OS_INPUT_MONITORING_REMEDY =
   "Grant Input Monitoring to ADE in System Settings › Privacy & Security › Input Monitoring, then choose Try again.";
+
+/** One sentence for the refusal and the health card, like the Screen Recording remedy. */
+export function inputMonitoringMessageFor(platform: NodeJS.Platform): string {
+  return platform === "darwin"
+    ? `ADE needs Input Monitoring permission to detect ${captureGestureChordLabel(platform)}. ${MAC_OS_INPUT_MONITORING_REMEDY}`
+    : "This system refused the key monitoring the capture gesture needs.";
+}
 
 /**
  * What the capture-gesture IPC answers when no supervisor exists — a runtime
@@ -281,7 +291,9 @@ export type CaptureHealthInput = {
   running: boolean;
   permissionDenied: boolean;
   /** macOS 27: the event tap needs Input Monitoring, and ADE has no grant. */
-  inputMonitoringRequired?: boolean;
+  inputMonitoringRequired: boolean;
+  /** The grant is present, but the event tap could not be started or restored. */
+  monitorUnavailable: boolean;
   exhaustedRestarts: boolean;
 };
 
@@ -322,11 +334,17 @@ export function captureGestureHealth(input: CaptureHealthInput): CaptureGestureH
     return {
       state: "permission_denied",
       title: "ADE can’t watch the Command keys",
-      message: input.platform === "darwin"
-        ? `ADE needs Input Monitoring permission to detect ${captureGestureChordLabel(input.platform)}. ${MAC_OS_INPUT_MONITORING_REMEDY}`
-        : "This system refused the key monitoring the capture gesture needs.",
+      message: inputMonitoringMessageFor(input.platform),
       // The helper installs the tap again on retry, so granting the permission
       // does not require restarting ADE.
+      recovery: "retry",
+    };
+  }
+  if (input.monitorUnavailable) {
+    return {
+      state: "monitor_unavailable",
+      title: "The capture gesture couldn’t start",
+      message: "ADE couldn’t start the key monitor. Choose Try again; if it keeps happening, restart ADE.",
       recovery: "retry",
     };
   }

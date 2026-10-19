@@ -84,6 +84,8 @@ describe("helper output parsing", () => {
     expect(parseCaptureHelperOutput('{"type":"chord-ready"}')).toEqual({ type: "chord-ready" });
     expect(parseCaptureHelperOutput('{"type":"input-monitoring-required"}'))
       .toEqual({ type: "input-monitoring-required" });
+    expect(parseCaptureHelperOutput('{"type":"chord-unavailable"}'))
+      .toEqual({ type: "chord-unavailable" });
     expect(parseCaptureHelperOutput('{"type":"chord"}')).toEqual({ type: "chord" });
     expect(parseCaptureHelperOutput('{"type":"no-window"}')).toEqual({ type: "no-window" });
     expect(parseCaptureHelperOutput('{"type":"permission-denied"}'))
@@ -181,6 +183,8 @@ describe("health", () => {
     executableExists: true,
     running: true,
     permissionDenied: false,
+    inputMonitoringRequired: false,
+    monitorUnavailable: false,
     exhaustedRestarts: false,
   };
 
@@ -218,6 +222,12 @@ describe("health", () => {
     });
     expect(health.state).toBe("permission_denied");
     expect(health.message).toContain("Input Monitoring");
+    expect(health.recovery).toBe("retry");
+  });
+
+  it("reports a tap that cannot start as retryable, not healthy", () => {
+    const health = captureGestureHealth({ ...base, monitorUnavailable: true });
+    expect(health.state).toBe("monitor_unavailable");
     expect(health.recovery).toBe("retry");
   });
 
