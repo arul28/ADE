@@ -3,14 +3,17 @@ import os from "node:os";
 import path from "node:path";
 import type * as ChildProcess from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  entryPathForPlatform,
+  findToolPin,
+  findToolTargetPin,
+  loadToolsManifest,
+} from "../../../../../ade-cli/src/services/tools/manifest";
+import { TOOL_INSTALL_SENTINEL, detectToolTarget, toolVersionDir } from "../../../../../ade-cli/src/services/tools/paths";
 
 const childProcessMockState = vi.hoisted(() => ({
   execFileSync: vi.fn(),
 }));
-const cacheLookupMockState = vi.hoisted(() => ({
-  cachedToolEntryPath: vi.fn(),
-}));
-
 vi.mock("node:child_process", async () => {
   const actual = await vi.importActual<typeof ChildProcess>("node:child_process");
   return {
@@ -18,10 +21,6 @@ vi.mock("node:child_process", async () => {
     execFileSync: (...args: unknown[]) => childProcessMockState.execFileSync(...args),
   };
 });
-
-vi.mock("../../../../../ade-cli/src/services/tools/cacheLookup", () => ({
-  cachedToolEntryPath: (..._args: unknown[]) => cacheLookupMockState.cachedToolEntryPath(),
-}));
 
 import {
   clearOpenCodeBinaryCache,
@@ -32,6 +31,7 @@ import {
 const originalEnv = {
   ADE_DISABLE_BUNDLED_OPENCODE: process.env.ADE_DISABLE_BUNDLED_OPENCODE,
   ADE_OPENCODE_BUNDLE_ROOT: process.env.ADE_OPENCODE_BUNDLE_ROOT,
+  ADE_TOOLS_ROOT: process.env.ADE_TOOLS_ROOT,
   HOME: process.env.HOME,
   NODE_PATH: process.env.NODE_PATH,
   PATH: process.env.PATH,
@@ -60,6 +60,18 @@ function makeExecutable(filePath: string): void {
   fs.chmodSync(filePath, 0o755);
 }
 
+function installPinnedOpenCode(toolsRoot: string): string {
+  const target = detectToolTarget(originalProcessPlatform, originalProcessArch);
+  const manifest = loadToolsManifest();
+  const pin = findToolPin(manifest, "opencode");
+  const targetPin = findToolTargetPin(manifest, "opencode", target);
+  const versionDir = toolVersionDir(toolsRoot, targetPin.package, targetPin.version);
+  const entryPath = path.join(versionDir, entryPathForPlatform(pin.entry, originalProcessPlatform));
+  makeExecutable(entryPath);
+  fs.writeFileSync(path.join(versionDir, TOOL_INSTALL_SENTINEL), "{}\n");
+  return entryPath;
+}
+
 function enoent(): NodeJS.ErrnoException {
   const error: NodeJS.ErrnoException = new Error("ENOENT");
   error.code = "ENOENT";
@@ -81,28 +93,18 @@ describe("openCodeBinaryManager", () => {
 
   beforeEach(() => {
     childProcessMockState.execFileSync.mockReset();
-    cacheLookupMockState.cachedToolEntryPath.mockReset();
-    cacheLookupMockState.cachedToolEntryPath.mockReturnValue(null);
     tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-opencode-bin-"));
     homeDir = path.join(tempRoot, "home");
     fs.mkdirSync(homeDir, { recursive: true });
     process.env.HOME = homeDir;
+    process.env.ADE_TOOLS_ROOT = path.join(tempRoot, "tools");
+    fs.mkdirSync(process.env.ADE_TOOLS_ROOT, { recursive: true });
     delete process.env.ADE_DISABLE_BUNDLED_OPENCODE;
     delete process.env.ADE_OPENCODE_BUNDLE_ROOT;
     delete process.env.NODE_PATH;
     process.env.PATH = "/usr/bin:/bin";
     process.env.SHELL = "/bin/false";
     clearOpenCodeBinaryCache();
-
-    const realStatSync = fs.statSync;
-    vi.spyOn(fs, "statSync").mockImplementation(((candidatePath: fs.PathLike, opts?: any) => {
-      const normalized = path.normalize(String(candidatePath));
-      const normalizedRoot = path.normalize(tempRoot);
-      if (path.basename(normalized) === "opencode" && !normalized.startsWith(normalizedRoot)) {
-        throw enoent();
-      }
-      return realStatSync(normalized, opts);
-    }) as typeof fs.statSync);
   });
 
   afterEach(() => {
@@ -112,6 +114,7 @@ describe("openCodeBinaryManager", () => {
     vi.restoreAllMocks();
     restoreEnv("ADE_DISABLE_BUNDLED_OPENCODE");
     restoreEnv("ADE_OPENCODE_BUNDLE_ROOT");
+    restoreEnv("ADE_TOOLS_ROOT");
     restoreEnv("HOME");
     restoreEnv("NODE_PATH");
     restoreEnv("PATH");
@@ -135,12 +138,7 @@ describe("openCodeBinaryManager", () => {
   it("keeps an explicit bundle root ahead of the tools cache and user install", () => {
     process.env.ADE_OPENCODE_BUNDLE_ROOT = tempRoot;
     const bundledPath = path.join(tempRoot, "node_modules", "@opencode", "cli", "bin", "opencode");
-    const cachedPath = path.join(tempRoot, "cache", "opencode");
-    const userPath = path.join(homeDir, ".npm-global", "bin", "opencode");
     makeExecutable(bundledPath);
-    makeExecutable(cachedPath);
-    makeExecutable(userPath);
-    cacheLookupMockState.cachedToolEntryPath.mockReturnValue(cachedPath);
 
     expect(resolveOpenCodeBinary()).toEqual({
       path: bundledPath,
@@ -150,6 +148,27 @@ describe("openCodeBinaryManager", () => {
     fs.rmSync(bundledPath);
     clearOpenCodeBinaryCache();
     expect(resolveOpenCodeBinary()).toEqual({ path: null, source: "missing" });
+  });
+
+  it("rediscovers a pinned install after an initial cache miss", () => {
+    const toolsRoot = process.env.ADE_TOOLS_ROOT!;
+    process.env.ADE_OPENCODE_BUNDLE_ROOT = path.join(tempRoot, "empty-bundle");
+    fs.mkdirSync(process.env.ADE_OPENCODE_BUNDLE_ROOT, { recursive: true });
+    expect(resolveOpenCodeBinary()).toEqual({ path: null, source: "missing" });
+
+    const entryPath = installPinnedOpenCode(toolsRoot);
+    delete process.env.ADE_OPENCODE_BUNDLE_ROOT;
+    expect(resolveOpenCodeBinary()).toEqual({ path: entryPath, source: "tools-cache" });
+  });
+
+  it("invalidates a cached pinned path after its executable disappears", () => {
+    const entryPath = installPinnedOpenCode(process.env.ADE_TOOLS_ROOT!);
+    expect(resolveOpenCodeBinary()).toEqual({ path: entryPath, source: "tools-cache" });
+
+    fs.rmSync(entryPath);
+    const fallback = resolveOpenCodeBinary();
+    expect(fallback.source).toBe("bundled");
+    expect(fallback.path).not.toBe(entryPath);
   });
 
   it("accepts an explicit node_modules root with a trailing separator", () => {

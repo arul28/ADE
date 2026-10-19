@@ -11,6 +11,10 @@ import { isPtySendPreDeliveryError } from "../../../shared/types";
 import { expectNoJargon } from "../../../test/jargonGuard";
 import { resetSharedProviderInstanceStoresForTests } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 
+const PINNED_CLAUDE = "/ade-test/tools/claude/claude";
+const PINNED_CODEX = "/ade-test/tools/codex/codex -c check_for_update_on_startup=false";
+const PINNED_CURSOR = "/ade-test/tools/cursor/cursor-agent";
+
 // ---------------------------------------------------------------------------
 // Hoisted mocks
 // ---------------------------------------------------------------------------
@@ -326,8 +330,12 @@ vi.mock("./pinnedProviderCli", async (importOriginal) => {
     return {
       provider,
       command,
-      leadingArgs: provider === "pi" ? ["/ade-test/tools/pi/dist/cli.js"] : [],
-      env: {},
+      leadingArgs: provider === "pi"
+        ? ["/ade-test/tools/pi/dist/cli.js"]
+        : provider === "codex" ? ["-c", "check_for_update_on_startup=false"] : [],
+      env: provider === "claude"
+        ? { DISABLE_AUTOUPDATER: "1", CLAUDE_CODE_AUTOUPDATER_DISABLED_BY_HOST: "1" }
+        : {},
     };
   };
   return {
@@ -2041,6 +2049,12 @@ describe("ptyService", () => {
         expect.arrayContaining(["--plugin-dir", pluginRoot]),
         expect.any(Object),
       );
+      expect(ptyLib.spawn.mock.calls.at(-1)?.[2]).toEqual(expect.objectContaining({
+        env: expect.objectContaining({
+          DISABLE_AUTOUPDATER: "1",
+          CLAUDE_CODE_AUTOUPDATER_DISABLED_BY_HOST: "1",
+        }),
+      }));
       expect(ptyLib.spawn.mock.calls.at(-1)?.[1]).toEqual(expect.arrayContaining([
         "--plugin-dir=/tmp/custom-plugin",
       ]));
@@ -2079,9 +2093,9 @@ describe("ptyService", () => {
       // The env prefix does not hide the claude token from either injection, so
       // the fallback line carries the bundled plugin AND the same deterministic
       // session id the direct-spawn argv got.
-      expect(mockPty.write).toHaveBeenCalledWith(expect.stringContaining(
-        `--plugin-dir \"${pluginRoot}\" --session-id uuid-3 --plugin-dir=/tmp/custom-plugin --permission-mode default\r`,
-      ));
+      expect(mockPty.write).toHaveBeenCalledWith(
+        `ADE_RUN_ID='run 1' ADE_DEFAULT_ROLE=agent ${PINNED_CLAUDE} --plugin-dir \"${pluginRoot}\" --session-id uuid-3 --plugin-dir=/tmp/custom-plugin --permission-mode default\r`,
+      );
     });
 
     it("does not duplicate the bundled Claude plugin in env-prefixed startup commands", async () => {
@@ -2107,9 +2121,9 @@ describe("ptyService", () => {
 
       // Only the deterministic session id is added; the plugin flag already
       // present in the startup command is not duplicated.
-      expect(mockPty.write).toHaveBeenCalledWith(expect.stringContaining(
-        `--session-id uuid-3 --plugin-dir "${pluginRoot}" --plugin-dir=/tmp/custom-plugin\r`,
-      ));
+      expect(mockPty.write).toHaveBeenCalledWith(
+        `ADE_RUN_ID=run-1 ${PINNED_CLAUDE} --session-id uuid-3 --plugin-dir "${pluginRoot}" --plugin-dir=/tmp/custom-plugin\r`,
+      );
     });
 
     it("keeps argv and the startup command in agreement when Claude is an absolute path", async () => {
@@ -2203,7 +2217,7 @@ describe("ptyService", () => {
       // bash's own argv must be untouched apart from the rewritten -lc payload.
       expect(spawnedArgs.slice(0, 3)).toEqual(["--noprofile", "--norc", "-lc"]);
       expect(spawnedArgs).toHaveLength(4);
-      expect(spawnedArgs[3]).toContain(`claude --plugin-dir "${pluginRoot}" --resume claude-session-123`);
+      expect(spawnedArgs[3]).toBe(`${PINNED_CLAUDE} --plugin-dir "${pluginRoot}" --resume claude-session-123`);
     });
 
     it("keeps a resumable session's prior status when the resume launch dies immediately", async () => {
@@ -3621,7 +3635,7 @@ describe("ptyService", () => {
 
       expect(spawn).toHaveBeenCalledWith(
         "/ade-test/tools/codex/codex",
-        ["--no-alt-screen", "ADE session guidance"],
+        ["-c", "check_for_update_on_startup=false", "--no-alt-screen", "ADE session guidance"],
         expect.any(Object),
       );
       expect(spawn).toHaveBeenCalledWith(
@@ -3629,7 +3643,7 @@ describe("ptyService", () => {
         expect.any(Array),
         expect.any(Object),
       );
-      expect(mockPty.write).toHaveBeenCalledWith(expect.stringContaining("codex --no-alt-screen \"ADE session guidance\"\r"));
+      expect(mockPty.write).toHaveBeenCalledWith(`${PINNED_CODEX} --no-alt-screen \"ADE session guidance\"\r`);
     });
 
     it("falls back to a shell exec command when direct command spawn fails before a terminal attaches", async () => {
@@ -4479,7 +4493,7 @@ describe("ptyService", () => {
         "claude --resume claude-session-123",
       );
       expect(mockPty.write).toHaveBeenCalledWith(
-        expect.stringContaining(`claude --plugin-dir "${pluginRoot}" --resume claude-session-123\r`),
+        `${PINNED_CLAUDE} --plugin-dir "${pluginRoot}" --resume claude-session-123\r`,
       );
     });
 
@@ -4550,7 +4564,7 @@ describe("ptyService", () => {
           "session-codex-picker",
           "codex resume thread-resume",
         );
-        expect(mockPty.write).toHaveBeenCalledWith(expect.stringContaining("codex resume thread-resume\r"));
+        expect(mockPty.write).toHaveBeenCalledWith(`${PINNED_CODEX} resume thread-resume\r`);
       } finally {
         vi.useRealTimers();
       }
@@ -5066,7 +5080,7 @@ describe("ptyService", () => {
         const spawn = (loadPty.mock.results[0]?.value as any).spawn;
         expect(spawn).toHaveBeenCalledWith(
           "/bin/bash",
-          ["--noprofile", "--norc", "-lc", expect.stringContaining("codex --no-alt-screen resume thread-storage continue")],
+          ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen resume thread-storage continue`],
           expect.any(Object),
         );
       } finally {
@@ -5134,7 +5148,7 @@ describe("ptyService", () => {
       const spawn = (loadPty.mock.results[0]?.value as any).spawn;
       expect(spawn).toHaveBeenCalledWith(
         "/bin/bash",
-        ["--noprofile", "--norc", "-lc", expect.stringContaining("codex --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"high\\\"\" -c \"service_tier=\\\"fast\\\"\" -c features.fast_mode=true --sandbox danger-full-access --ask-for-approval on-request resume thread-ended \"fix failing tests\"")],
+        ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"high\\\"\" -c \"service_tier=\\\"fast\\\"\" -c features.fast_mode=true --sandbox danger-full-access --ask-for-approval on-request resume thread-ended \"fix failing tests\"`],
         expect.any(Object),
       );
       expect(sessionService.get("session-ended-send")?.resumeMetadata?.launch).toMatchObject({
@@ -5189,7 +5203,7 @@ describe("ptyService", () => {
       const spawn = (loadPty.mock.results[0]?.value as any).spawn;
       expect(spawn).toHaveBeenCalledWith(
         "/bin/bash",
-        ["--noprofile", "--norc", "-lc", expect.stringContaining("codex --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"medium\\\"\" --sandbox workspace-write --ask-for-approval untrusted resume thread-stored continue")],
+        ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"medium\\\"\" --sandbox workspace-write --ask-for-approval untrusted resume thread-stored continue`],
         expect.any(Object),
       );
     });
@@ -5240,7 +5254,7 @@ describe("ptyService", () => {
       const spawn = (loadPty.mock.results[0]?.value as any).spawn;
       expect(spawn).toHaveBeenLastCalledWith(
         "/bin/bash",
-        ["--noprofile", "--norc", "-lc", expect.stringContaining("codex --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-permission-override \"first continuation\"")],
+        ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-permission-override \"first continuation\"`],
         expect.any(Object),
       );
 
@@ -5254,7 +5268,7 @@ describe("ptyService", () => {
       const laterSpawn = (loadPty.mock.results[1]?.value as any).spawn;
       expect(laterSpawn).toHaveBeenCalledWith(
         "/bin/bash",
-        ["--noprofile", "--norc", "-lc", expect.stringContaining("codex --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-permission-override \"later continuation\"")],
+        ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-permission-override \"later continuation\"`],
         expect.any(Object),
       );
     });
@@ -5288,7 +5302,7 @@ describe("ptyService", () => {
       const spawn = (loadPty.mock.results[0]?.value as any).spawn;
       expect(spawn).toHaveBeenCalledWith(
         "/bin/bash",
-        ["--noprofile", "--norc", "-lc", expect.stringContaining("codex --no-alt-screen --sandbox workspace-write --ask-for-approval untrusted resume thread-legacy \"continue legacy thread\"")],
+        ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen --sandbox workspace-write --ask-for-approval untrusted resume thread-legacy \"continue legacy thread\"`],
         expect.any(Object),
       );
       expect(mockPty.write).not.toHaveBeenCalled();
@@ -5334,7 +5348,7 @@ describe("ptyService", () => {
       const spawn = (loadPty.mock.results[0]?.value as any).spawn;
       expect(spawn).toHaveBeenCalledWith(
         "/bin/bash",
-        ["--noprofile", "--norc", "-lc", expect.stringContaining("codex --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-resume-only")],
+        ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-resume-only`],
         expect.any(Object),
       );
       expect(mockPty.write).not.toHaveBeenCalled();
@@ -5427,7 +5441,7 @@ describe("ptyService", () => {
         const spawn = (loadPty.mock.results[0]?.value as any).spawn;
         expect(spawn).toHaveBeenCalledWith(
           "/bin/bash",
-          ["--noprofile", "--norc", "-lc", expect.stringContaining("codex --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-visible-composer \"continue from the visible prompt\"")],
+          ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-visible-composer \"continue from the visible prompt\"`],
           expect.any(Object),
         );
         expect(mockPty.write).not.toHaveBeenCalled();
@@ -5533,7 +5547,7 @@ describe("ptyService", () => {
         const spawn = (loadPty.mock.results[0]?.value as any).spawn;
         expect(spawn).toHaveBeenCalledWith(
           "/bin/bash",
-          ["--noprofile", "--norc", "-lc", expect.stringContaining("codex --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-not-ready-preserve \"this should not kill the resumed terminal\"")],
+          ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-not-ready-preserve \"this should not kill the resumed terminal\"`],
           expect.any(Object),
         );
         expect(mockPty.write).not.toHaveBeenCalled();
@@ -5592,7 +5606,7 @@ describe("ptyService", () => {
         const spawn = (loadPty.mock.results[0]?.value as any).spawn;
         expect(spawn).toHaveBeenCalledWith(
           "/bin/bash",
-          ["--noprofile", "--norc", "-lc", expect.stringContaining("cursor-agent --model auto --resume cursor-chat-1")],
+          ["--noprofile", "--norc", "-lc", `${PINNED_CURSOR} --model auto --resume cursor-chat-1`],
           expect.any(Object),
         );
         mockPty._emitter.emit("data", "Cursor Agent\nv2026.05.24\n→ Add a follow-up\n");
@@ -5673,7 +5687,7 @@ describe("ptyService", () => {
         const spawn = (loadPty.mock.results[0]?.value as any).spawn;
         expect(spawn).toHaveBeenCalledWith(
           "/bin/bash",
-          ["--noprofile", "--norc", "-lc", expect.stringContaining("cursor-agent --model auto --resume cursor-chat-trust")],
+          ["--noprofile", "--norc", "-lc", `${PINNED_CURSOR} --model auto --resume cursor-chat-trust`],
           expect.any(Object),
         );
         expect(mockPty.write).not.toHaveBeenCalled();
@@ -5850,7 +5864,7 @@ describe("ptyService", () => {
       const spawn = (loadPty.mock.results[0]?.value as any).spawn;
       expect(spawn).toHaveBeenCalledWith(
         "/bin/bash",
-        ["--noprofile", "--norc", "-lc", expect.stringContaining("codex --no-alt-screen --sandbox workspace-write --ask-for-approval on-request resume thread-concurrent first")],
+        ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen --sandbox workspace-write --ask-for-approval on-request resume thread-concurrent first`],
         expect.any(Object),
       );
       const writes = (mockPty.write as any).mock.calls.map((call: string[]) => call[0]);

@@ -124,6 +124,7 @@ beforeEach(async () => {
 describe("authDetector", () => {
   const originalEnv = { ...process.env };
   let tempHomeDir: string | null = null;
+  let tempToolsRoot: string | null = null;
 
   beforeEach(() => {
     spawnMock.mockReset();
@@ -139,6 +140,10 @@ describe("authDetector", () => {
     if (tempHomeDir) {
       fs.rmSync(tempHomeDir, { recursive: true, force: true });
       tempHomeDir = null;
+    }
+    if (tempToolsRoot) {
+      fs.rmSync(tempToolsRoot, { recursive: true, force: true });
+      tempToolsRoot = null;
     }
   });
 
@@ -176,6 +181,9 @@ describe("authDetector", () => {
         return new Response("{}", { status: 503 });
       }),
     );
+
+    tempToolsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-auth-empty-tools-"));
+    process.env.ADE_TOOLS_ROOT = tempToolsRoot;
 
     const auth = await detectAllAuth({
       openai: "config-openai",
