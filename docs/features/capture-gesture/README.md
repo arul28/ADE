@@ -2,7 +2,7 @@
 
 Press **both ⌘ keys** on macOS, or **both Ctrl keys** on Windows, anywhere on the OS — in ADE, in a browser, in Xcode, over a video call — and the window in front is captured and handed to the CTO. It is staged on the CTO composer and ADE comes forward with it already attached.
 
-The whole feature is one sentence of user intent — *ask the CTO about what I am looking at* — and everything below is what that sentence costs to implement without asking the user for a permission they would refuse.
+The whole feature is one sentence of user intent — *ask the CTO about what I am looking at* — and everything below is what that sentence costs to implement. On macOS 26 and earlier it asks for no key-monitoring permission; on macOS 27 the public modifier poll stopped carrying the left/right bits, so the chord now uses a listen-only event tap that macOS gates behind Input Monitoring. The chord itself, its copy, and the Windows helper are unchanged.
 
 ## Source file map
 
@@ -13,7 +13,7 @@ The whole feature is one sentence of user intent — *ask the CTO about what I a
 
 ### Main process (`apps/desktop/src/main/services/capture/`)
 
-- `captureGestureState.ts` — everything about the gesture that is a decision rather than an effect, split out so the decisions are testable without a process. Owns `captureHelperExecutableName` and `resolveCaptureHelperExecutablePath` (packaged: `<resourcesPath>/native/…`; dev: `<appPath>/resources/native/…`), the chord admission rule `evaluateCaptureChord`, the protocol decoder `parseCaptureHelperOutput`, the user-facing `captureFailureFor` and `captureGestureHealth`, `captureAttachmentFilename`, `UNAVAILABLE_CAPTURE_GESTURE_HEALTH`, and `MAC_OS_SCREEN_RECORDING_REMEDY` — one sentence for the macOS Screen Recording remedy, shared by the refusal a capture returns and the health card in Settings, because two wordings of one remedy read as two different problems. None of it needs a process to test.
+- `captureGestureState.ts` — everything about the gesture that is a decision rather than an effect, split out so the decisions are testable without a process. Owns `captureHelperExecutableName` and `resolveCaptureHelperExecutablePath` (packaged: `<resourcesPath>/native/…`; dev: `<appPath>/resources/native/…`), the chord admission rule `evaluateCaptureChord`, the protocol decoder `parseCaptureHelperOutput`, the user-facing `captureFailureFor` and `captureGestureHealth`, `captureAttachmentFilename`, `UNAVAILABLE_CAPTURE_GESTURE_HEALTH`, `MAC_OS_SCREEN_RECORDING_REMEDY`, and `MAC_OS_INPUT_MONITORING_REMEDY` — one sentence per macOS remedy, shared by the refusal a capture returns and the health card in Settings, because two wordings of one remedy read as two different problems. `captureGestureHealth` takes `inputMonitoringRequired` and answers it before the Screen Recording refusal, because a missing Input Monitoring grant means the chord itself can never fire. None of it needs a process to test.
 - `captureShotFit.ts` — `fitCaptureShotToAttachmentLimit`, the four-halvings downscale, with the two Electron image operations injected so the arithmetic is testable without a browser process. Lived in `main.ts`.
 - `captureGestureTarget.ts` — `pickCaptureGestureWindow`, the focused → last-focused → any-live order, pure and generic over the window type; main keeps only the liveness filter, which is the part only Electron can answer.
 - `captureHelper.ts` — the supervisor. Its policy — line cap (`MAX_HELPER_LINE_BYTES`, 64 KB), restart budget (`MAX_RESTART_ATTEMPTS`, 3), graceful-shutdown window, `windowsHide` — because the failure modes of a supervised NDJSON child are identical and a second, subtly different supervision policy in the same app is how one of them rots. It also owns `captureNow()`, the capture timeout (`CAPTURE_TIMEOUT_MS`, 8 s), the read-back cap (`MAX_CAPTURE_BYTES`, 48 MB), and the `isAdeWindow` determination. One boolean, `captureInFlight`, is the whole request latch — there is no generation counter — and `settleCapture()` is the single place it is cleared: it returns whether anything was actually in flight, so a `captured` line that arrives after its own timeout already reported a failure is dropped rather than delivered as a shot the user has been told did not happen, and its orphaned PNG is deleted rather than left for the dispose-time purge. Failures do not go through that gate at all: the Windows helper emits `permission-denied` at startup, before any capture was asked for, and that is the one signal saying why the gesture will never fire.
@@ -21,7 +21,7 @@ The whole feature is one sentence of user intent — *ask the CTO about what I a
 
 ### Native helpers
 
-- `apps/desktop/native/ADECaptureHelper/` — the macOS helper (SwiftPM). `Package.swift` splits it into an `ADECaptureHelperCore` library and a thin `ADECaptureHelper` executable precisely so the two pure pieces have a test target: `Sources/ADECaptureHelperCore/ChordDetector.swift` is the rising-edge detector and `Protocol.swift` the NDJSON codec, both covered by `Tests/ADECaptureHelperCoreTests/ChordDetectorTests.swift` (`swift test` in that directory), while `Sources/ADECaptureHelper/main.swift` keeps the run loop and window capture — the half that needs a Mac with a screen. Built by `npm run build:capture-helper`.
+- `apps/desktop/native/ADECaptureHelper/` — the macOS helper (SwiftPM). `Package.swift` splits it into an `ADECaptureHelperCore` library and a thin `ADECaptureHelper` executable precisely so the pure pieces have a test target: `Sources/ADECaptureHelperCore/CommandKeyChordDetector.swift` is the key-code rising-edge detector used by the event tap, `ChordDetector.swift` is the legacy device-bit detector used by the polling fallback, and `Protocol.swift` the NDJSON codec, all covered by `Tests/ADECaptureHelperCoreTests/ChordDetectorTests.swift` (`swift test` in that directory), while `Sources/ADECaptureHelper/main.swift` keeps the run loop, event tap, and window capture — the half that needs a Mac with a screen. Built by `npm run build:capture-helper`.
 - `apps/desktop/native/ADECaptureHelperWin/src/main.cpp` — the Windows helper, same NDJSON contract. Built by `npm run build:capture-helper:win`.
 
 ### Renderer (`apps/desktop/src/renderer/components/capture/`)
@@ -40,22 +40,28 @@ Any global shortcut with a letter in it is a key-event tap, and on macOS a key-e
 
 Both modifier keys held at once avoids that entirely, and it is also a chord that no application binds, needs no chooser UI, and is the same physical motion on both platforms. The cost is that it is not configurable; that is the trade the feature is built on.
 
-### The macOS consequence: poll, do not monitor
+### The macOS consequence: key codes from an event tap
 
-`main.swift` detects the chord by **polling `NSEvent.modifierFlags`** on a timer rather than installing a global `.flagsChanged` monitor or a `CGEventTap`. That is not a style choice and must not be "cleaned up":
-
-> `NSEvent.addGlobalMonitorForEvents` and `CGEventTap` are key-event taps, and macOS gates both behind Accessibility. `NSEvent.modifierFlags` is a **static read of current hardware state** — not an event delivery — and is not gated at all.
-
-Swapping the poll for a monitor would read exactly the same keys and immediately reintroduce the permission prompt the chord exists to avoid.
-
-Telling the two ⌘ keys apart takes one more step. `NSEvent.ModifierFlags.command` only reports "a Command key is down". The device-dependent masks from `IOKit/hidsystem/IOLLEvent.h` ride along in the same raw value and do distinguish them, so `ModifierMask` names the two bits ADE reads:
+Until macOS 27 the helper detected the chord by **polling `NSEvent.modifierFlags`** on a timer. That was not a style choice: the static property is a hardware-state read, not an event delivery, so it needed no Accessibility or Input Monitoring grant. The device-dependent masks from `IOKit/hidsystem/IOLLEvent.h` rode along in the same raw value:
 
 | Mask | Value |
 |---|---|
 | `NX_DEVICELCMDKEYMASK` (`ModifierMask.leftCommand`) | `0x0000_0008` |
 | `NX_DEVICERCMDKEYMASK` (`ModifierMask.rightCommand`) | `0x0000_0010` |
 
-`ChordDetector.consume(rawFlags:)` is a pure rising-edge detector over those two bits, and **latching is the whole job**: modifier keys are held, so a poll sees the same both-down sample a dozen times for one deliberate press. It fires once on the transition into both-down and cannot fire again until at least one key has been released. `reset()` drops the latch without reporting a chord, so switching the gesture off while the keys happen to be down does not fire the moment it is switched back on.
+**macOS 27 stopped putting those two bits in the static poll.** Both keys now read as the generic `0x0010_0000` Command bit, so the old detector can never fire. The device bits still ride on `NSEvent` *event objects*, but a background helper only sees its own events.
+
+So `main.swift` now installs a **listen-only `CGEventTap` for `.flagsChanged`** and reads the key code the event names: **55 is left Command, 54 is right Command**. `CommandKeyChordDetector.consume(keyCode:commandDown:)` is the pure rising-edge detector over those key codes; each event is one transition of that key, so the state toggles, and the generic `commandDown` sample resets both states when no Command key is left. `reset()` drops the latch without reporting a chord, so switching the gesture off while the keys happen to be down does not fire the moment it is switched back on.
+
+The tap is a key-event tap, so macOS gates it behind **Input Monitoring**. That is a real change from the original "no permission" design, and it is surfaced rather than hidden:
+
+- `CGPreflightListenEventAccess()` is consulted before the tap is attempted. Without a grant the helper answers `input-monitoring-required`, health says *"ADE can't watch the Command keys"* with the System Settings path, and the card offers **Try again**.
+- If the grant is present but the tap still cannot be created or restored, the helper answers `chord-unavailable` and health says *"The capture gesture couldn't start"* with the same retry. It never reports `chord-ready` for a monitor that is not actually installed.
+- `retry` re-attempts the tap in place, so granting the permission does not require restarting ADE. The settings card polls health for a bounded window while the button is busy, so a grant made in System Settings clears the warning without reopening Settings.
+- On **macOS 26 and earlier** the helper keeps the old `NSEvent.modifierFlags` poll as the fallback, which is still permission-free there. `ChordDetector` remains for that path and is covered by the Swift tests.
+- The Windows helper is unaffected; its low-level hook already reads `VK_LCONTROL` and `VK_RCONTROL` separately.
+
+The host keeps the same protocol latching either way: `chord-ready` means a working monitor is installed, `input-monitoring-required` means the tap could not be created.
 
 The pixels come from `/usr/sbin/screencapture -l<windowID>`, not `CGWindowListCreateImage`: the CG call was deprecated in macOS 14 in favour of ScreenCaptureKit, whose window capture is async and pulls in a much larger surface, while `screencapture` is a supported, stable tool that does exactly one window. It does require the **Screen Recording** grant, which is why the app declares `NSScreenCaptureUsageDescription`. That grant is the one permission this feature asks for, and it is asked for by the capture rather than by the keyboard.
 
@@ -89,8 +95,8 @@ NDJSON both ways, one message per line.
 
 | Direction | Messages |
 |---|---|
-| ADE → helper | `{"type":"capture"}`, `{"type":"settings","enabled":bool}`, `{"type":"quit"}` |
-| helper → ADE | `{"type":"ready"}`, `{"type":"chord"}`, `{"type":"captured", path, appName, windowTitle, ownerPid, bounds}`, `{"type":"permission-denied"}`, `{"type":"no-window"}`, `{"type":"capture-failed", message}` |
+| ADE → helper | `{"type":"capture"}`, `{"type":"settings","enabled":bool}`, `{"type":"retry"}`, `{"type":"quit"}` |
+| helper → ADE | `{"type":"ready"}`, `{"type":"chord-ready"}`, `{"type":"input-monitoring-required"}`, `{"type":"chord-unavailable"}`, `{"type":"chord"}`, `{"type":"captured", path, appName, windowTitle, ownerPid, bounds}`, `{"type":"permission-denied"}`, `{"type":"no-window"}`, `{"type":"capture-failed", message}` |
 
 Both sides drop what they cannot interpret rather than failing. `HelperCommand.parse` returns nil for an unknown command so a newer ADE can add one without wedging an older helper; `parseCaptureHelperOutput` returns null for both malformed JSON and a well-formed message this build has never heard of — the caller logs them differently, because only the first is a protocol violation worth showing in health.
 
@@ -142,6 +148,7 @@ The generated binaries are gitignored; `apps/desktop/resources/native/README.md`
 ## Limits
 
 - **A big display's shot is downscaled, not dropped.** The helper accepts up to `MAX_CAPTURE_BYTES` (48 MB), but `saveTempAttachment` moves bytes as base64 in a command payload and rejects anything over `LEGACY_MAX_CHAT_ATTACHMENT_BYTES` (10 MB). `fitCaptureShotToAttachmentLimit` (`services/capture/captureShotFit.ts`) halves the PNG (via `nativeImage.resize`, width only, so the aspect ratio is kept) until it fits, and only fails — with "That screen is too large to attach, even scaled down." — if four halvings are not enough. Before this the oversized capture reached the composer and then failed to stage, so the gesture silently did nothing.
+- **Input Monitoring on macOS 27.** The event tap that reads the left/right Command key codes is gated by macOS, so the helper asks for Input Monitoring there. On macOS 26 and earlier the static modifier poll is still used and no key-monitoring grant is needed. Screen Recording is required for the pixels on every macOS version. The settings card reports either refusal instead of leaving a switch that looks on and does nothing.
 - **Desktop GUI only, deliberately.** The gesture is an OS-level key hook plus a native window grab, so there is no `ade` CLI, `ade code` TUI, or ADE Mobile equivalent — nothing to mirror, and the shot has to reach a composer on the machine that took it.
 - **Linux ships nothing.** X11 and Wayland need different grabs, Wayland refuses foreign-window pixel capture outright without a portal handshake, and ADE has no Linux packaging target. The gesture is hidden there rather than shipped as a permanently dead switch.
 - **Both helper binaries are built, not committed.** `resources/native` is gitignored, so a checkout carries the helper sources only. `npm run build:capture-helper` produces the macOS binary locally, and each platform builds its own helper at package time.

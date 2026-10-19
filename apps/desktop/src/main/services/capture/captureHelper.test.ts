@@ -354,6 +354,49 @@ describe("CaptureHelper", () => {
     expect(helper.retry().state).toBe("running");
   });
 
+  it("surfaces a missing Input Monitoring grant and clears it when the tap comes up", async () => {
+    const child = fakeChild();
+    spawnMock.mockReturnValue(child);
+    const { helper, onFailure } = createHelper();
+    helper.updateSettings({ enabled: true });
+    child.emit("spawn");
+    child.stdout.write('{"type":"input-monitoring-required"}\n');
+    await new Promise((resolve) => setImmediate(resolve));
+    // Setup health, not a failed press; the card is the surface.
+    expect(onFailure).not.toHaveBeenCalled();
+    expect(helper.getHealth().state).toBe("permission_denied");
+    expect(helper.getHealth().message).toContain("Input Monitoring");
+    expect(helper.getHealth().recovery).toBe("retry");
+
+    // Retry re-asks the running helper rather than spawning a second child; a
+    // successful tap answers chord-ready and the warning goes away.
+    const written = stdinLines(child);
+    expect(helper.retry().recovery).toBe("retry");
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(written).toContain('{"type":"retry"}');
+    child.stdout.write('{"type":"chord-ready"}\n');
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(helper.getHealth().state).toBe("running");
+  });
+
+  it("reports a tap that cannot start and clears it when the tap comes up", async () => {
+    const child = fakeChild();
+    spawnMock.mockReturnValue(child);
+    const { helper, onFailure } = createHelper();
+    helper.updateSettings({ enabled: true });
+    child.emit("spawn");
+    child.stdout.write('{"type":"chord-unavailable"}\n');
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(onFailure).not.toHaveBeenCalled();
+    expect(helper.getHealth().state).toBe("monitor_unavailable");
+    expect(helper.getHealth().message).toContain("key monitor");
+    expect(helper.getHealth().recovery).toBe("retry");
+
+    child.stdout.write('{"type":"chord-ready"}\n');
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(helper.getHealth().state).toBe("running");
+  });
+
   it("ignores a chord while a capture is already in flight", async () => {
     const child = fakeChild();
     spawnMock.mockReturnValue(child);

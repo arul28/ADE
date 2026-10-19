@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { WarningCircle } from "@phosphor-icons/react";
 
+import { captureError } from "../../../shared/sentry/capture";
 import type { CaptureGestureHealth } from "../../../shared/types/captureGesture";
 import {
   captureGestureBlocker,
@@ -73,8 +74,50 @@ export function CaptureGestureSection() {
     setBusy(true);
     try {
       const updated = await window.ade?.captureGesture?.retry();
-      if (mounted.current && updated) setHealth(updated);
-    } finally {
+      if (!mounted.current) return;
+      if (updated) setHealth(updated);
+      // The helper installs the tap again asynchronously, and the user may
+      // still be granting the permission in System Settings. Keep the button
+      // busy and ask for the verdict for a bounded window instead of one
+      // fixed delay that can race the grant.
+      const deadline = Date.now() + 10_000;
+      let healthFailureReported = false;
+      const poll = async () => {
+        if (!mounted.current) return;
+        const next = await window.ade?.captureGesture?.getHealth().catch((error: unknown) => {
+          // A poll can run twenty times in this window; report the first
+          // failure as one issue, not one event per tick.
+          if (!healthFailureReported) {
+            healthFailureReported = true;
+            captureError(error, {
+              tags: { feature: "capture_gesture", action: "health" },
+              fingerprint: ["capture_gesture", "settings_health"],
+              handled: true,
+            });
+          }
+          return null;
+        });
+        if (!mounted.current) return;
+        if (next) setHealth(next);
+        if (
+          next
+          && Date.now() < deadline
+          && (next.state === "permission_denied"
+            || next.state === "monitor_unavailable"
+            || next.state === "starting")
+        ) {
+          window.setTimeout(() => { void poll(); }, 500);
+          return;
+        }
+        setBusy(false);
+      };
+      window.setTimeout(() => { void poll(); }, 500);
+    } catch (error) {
+      captureError(error, {
+        tags: { feature: "capture_gesture", action: "retry" },
+        fingerprint: ["capture_gesture", "settings_retry"],
+        handled: true,
+      });
       if (mounted.current) setBusy(false);
     }
   }, []);
