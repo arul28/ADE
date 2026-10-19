@@ -2453,7 +2453,7 @@ export function createMultiProjectRpcRequestHandler(
         import("./services/remoteMcp/remoteMcpShared"),
         import("./services/remoteMcp/remoteMcpService"),
       ]);
-      return remoteMcpActionHandlers(getSharedRemoteMcpService())[action](isRecord(params.args) ? params.args : {});
+      return remoteMcpActionHandlers(getSharedRemoteMcpService(), "api")[action](isRecord(params.args) ? params.args : {});
     }
 
     // `ade notify`: machine-wide, so it neither needs nor registers the

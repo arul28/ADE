@@ -165,6 +165,7 @@ export async function createMachineRelayTunnel(args: MachineRelayTunnelArgs): Pr
       : null;
   });
   tunnel.attachRemoteMcp(remoteMcp);
+  remoteMcp.attachAnalytics({ captureInternal: args.captureAnalytics });
   // Only the runtime holding the machine-wide sync host lease may register the
   // tunnel. See relayTunnelAuthorityGate for why the old "has a listener" gate
   // let secondary brains evict the real host.

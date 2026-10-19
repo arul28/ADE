@@ -578,7 +578,7 @@ function buildProxyDomainService(runtime: AdeRuntime): OpaqueService | null {
 function buildRemoteMcpDomainService(runtime: AdeRuntime): OpaqueService | null {
   const service = runtime.remoteMcpService;
   if (!service) return null;
-  const handlers = remoteMcpActionHandlers(service);
+  const handlers = remoteMcpActionHandlers(service, "desktop");
   return Object.fromEntries(
     Object.entries(handlers).map(([action, handler]) => [action, (args?: Record<string, unknown>) => handler(args ?? {})]),
   );

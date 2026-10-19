@@ -522,6 +522,12 @@ ade login --headless                      # open no browser here: QR code + veri
 ade auth status --text                    # account identity + loopback/device/env-token source
 ade account token create --text           # print a self-contained durable ADE_ACCOUNT_TOKEN once
 ade logout
+ade mcp status --text                     # ADE MCP: on/off, the server URL AI apps add, connections
+ade mcp on | off                          # let AI apps (claude.ai, ChatGPT, Cursor) use this computer, or stop
+ade mcp token create --label Grok [--read-only] --text   # a bearer token for header-based apps (shown once)
+ade mcp scope <connection-id> read|write  # change one app's or token's access
+ade mcp remove <connection-id>            # disconnect an app or revoke a token
+ade mcp activity --text                   # what connected apps ran here
 ade machines list --text                           # includes presence: asleep/online + battery or wall power
 ade machines rename <machine-key> "Build Mac"      # or --clear to fall back to the hostname
 ade machines remove <machine-key> --confirm REMOVE # revoke a machine and clear its Activity

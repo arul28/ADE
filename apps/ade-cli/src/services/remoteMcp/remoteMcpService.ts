@@ -5,6 +5,11 @@ import { samePathOnPlatform } from "../../../../desktop/src/shared/pathContainme
 import { AccountAttestationError, verifyClerkAccountAttestation } from "../account/accountAttestationVerifier";
 import type { AccountAttestationConfig } from "../account/sharedAccountAuthService";
 import {
+  captureAdeMcpAnalytics,
+  type FeatureAnalytics,
+} from "../../../../desktop/src/main/services/analytics/featureProductAnalytics";
+import type { ProductAnalyticsSurface } from "../../../../desktop/src/shared/types/productAnalytics";
+import {
   isRemoteMcpScope,
   type RemoteMcpAction,
   type RemoteMcpActivityEntry,
@@ -153,6 +158,7 @@ export function createRemoteMcpService(args: {
   const authorization = createRemoteMcpAuthorizationState();
   const enabledListeners = new Set<(enabled: boolean) => void>();
   let relayEndpoint: () => RemoteMcpRelayEndpoint | null = () => null;
+  let analytics: FeatureAnalytics | null = null;
   let activeRuns = 0;
 
   const base = (): string | null => {
@@ -605,6 +611,7 @@ export function createRemoteMcpService(args: {
     } catch (error) {
       return fail("invalid_request", error instanceof Error ? error.message : String(error));
     }
+    captureAdeMcpAnalytics({ analytics, surface: "api", action: "app_connected", outcome: "completed" });
     args.logger?.info?.("remote_mcp.app_connected", {
       connectionId: created.connection.id,
       scope: created.connection.scope,
@@ -704,23 +711,34 @@ export function createRemoteMcpService(args: {
     attachRelayEndpoint(resolve: () => RemoteMcpRelayEndpoint | null): void {
       relayEndpoint = resolve;
     },
+    /** The machine's product analytics sink, attached with the relay tunnel. */
+    attachAnalytics(sink: FeatureAnalytics | null): void {
+      analytics = sink;
+    },
     onEnabledChange(listener: (enabled: boolean) => void): () => void {
       enabledListeners.add(listener);
       return () => enabledListeners.delete(listener);
     },
-    setEnabled(input: { enabled?: unknown }): RemoteMcpStatus {
+    setEnabled(input: { enabled?: unknown }, surface: ProductAnalyticsSurface = "desktop"): RemoteMcpStatus {
       if (typeof input?.enabled !== "boolean") throw new Error("Pass enabled: true or false.");
       store.setEnabled(input.enabled);
+      captureAdeMcpAnalytics({
+        analytics,
+        surface,
+        action: "server_toggled",
+        outcome: input.enabled ? "enabled" : "disabled",
+      });
       args.logger?.info?.("remote_mcp.enabled_changed", { enabled: input.enabled });
       notifyEnabled(input.enabled);
       return getStatus();
     },
-    createToken(input: { label?: unknown; scope?: unknown }): RemoteMcpCreatedToken {
+    createToken(input: { label?: unknown; scope?: unknown }, surface: ProductAnalyticsSurface = "desktop"): RemoteMcpCreatedToken {
       const created = store.create({
         kind: "token",
         label: typeof input?.label === "string" ? input.label : "Token",
         scope: parseScope(input?.scope, "write"),
       });
+      captureAdeMcpAnalytics({ analytics, surface, action: "token_created", outcome: "completed" });
       args.logger?.info?.("remote_mcp.token_created", { connectionId: created.connection.id, scope: created.connection.scope });
       return { ...created, serverUrl: getStatus().serverUrl };
     },
@@ -731,10 +749,13 @@ export function createRemoteMcpService(args: {
         ...(typeof input.label === "string" ? { label: input.label } : {}),
       });
     },
-    removeConnection(input: { id?: unknown }): { removed: boolean } {
+    removeConnection(input: { id?: unknown }, surface: ProductAnalyticsSurface = "desktop"): { removed: boolean } {
       if (typeof input?.id !== "string") throw new Error("Pass the connection id.");
       const removed = store.remove(input.id);
-      if (removed) args.logger?.info?.("remote_mcp.connection_removed", { connectionId: input.id });
+      if (removed) {
+        captureAdeMcpAnalytics({ analytics, surface, action: "connection_removed", outcome: "completed" });
+        args.logger?.info?.("remote_mcp.connection_removed", { connectionId: input.id });
+      }
       return { removed };
     },
     listActivity(input: { limit?: unknown } = {}): RemoteMcpActivityEntry[] {
@@ -749,13 +770,15 @@ export function createRemoteMcpService(args: {
  */
 export function remoteMcpActionHandlers(
   service: RemoteMcpService,
+  /** Who asked, for product analytics: Settings is `desktop`, `ade mcp` is `api`. */
+  surface: ProductAnalyticsSurface,
 ): Record<RemoteMcpAction, (args: Record<string, unknown>) => unknown> {
   return {
     getStatus: () => service.getStatus(),
     listActivity: (args) => service.listActivity(args),
-    setEnabled: (args) => service.setEnabled(args),
-    createToken: (args) => service.createToken(args),
+    setEnabled: (args) => service.setEnabled(args, surface),
+    createToken: (args) => service.createToken(args, surface),
     updateConnection: (args) => service.updateConnection(args),
-    removeConnection: (args) => service.removeConnection(args),
+    removeConnection: (args) => service.removeConnection(args, surface),
   };
 }
