@@ -30,9 +30,10 @@ keys folding off the path *shape*, because the renderer has no reliable
 platform. Folding applies on `win32` and `darwin`; Linux stays case-sensitive,
 so never lowercase unconditionally.
 
-`apps/ade-cli/src/services/credentials/credentialStore.ts` still compares with
-`path.resolve(left) === path.resolve(right)`; ade-cli does not import
-`pathCompare`. Do not copy that shape into new CLI code.
+`apps/ade-cli/src/services/credentials/credentialStore.ts` identifies a store by
+`credentialPathKey`, which folds case on `win32` and `darwin`. ade-cli imports
+`pathCompare` too (`cli.ts`, `lib/cliDelegation.ts`), so new CLI code uses it
+rather than `path.resolve`.
 
 ## 2. Separators, drive letters, UNC roots
 
