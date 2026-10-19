@@ -102,8 +102,6 @@ export function createGitNamespaces(infra: AdapterInfra): GitNamespaces {
   }
 
   Object.assign(git, {
-    generateCommitMessage: (args: unknown, pin?: Pin) =>
-      guarded("git.generateCommitMessage", args, pin, { message: "", model: null }),
     listRecentCommits: (args: unknown, pin?: Pin) => guarded("git.listRecentCommits", args, pin, []),
     listCommitFiles: (args: unknown, pin?: Pin) => guarded("git.listCommitFiles", args, pin, []),
     getCommitMessage: (args: unknown, pin?: Pin) => guarded("git.getCommitMessage", args, pin, ""),

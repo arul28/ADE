@@ -115,6 +115,8 @@ export type TerminalToolType =
   | "grok-chat"
   | "copilot-chat"
   | "devin-chat"
+  // Antigravity is ACP-only: it has a chat runtime and no terminal CLI.
+  | "antigravity-chat"
   | "aider"
   | "continue"
   | "other";

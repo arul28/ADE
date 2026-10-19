@@ -40,6 +40,7 @@ import {
 import type { Logger } from "../../logging/logger";
 import { acpProbeConfigHome } from "../../ai/acpAuthProbe";
 import { resolveAcpExecutable } from "../../ai/acpExecutables";
+import { pinnedToolNotReadyError } from "../../ai/pinnedProviderTools";
 import { prepareAcpProbeSpawnPlan } from "../../ai/acpProbeSpawnPlan";
 import { createAcpConnection, initializeAcpConnection } from "./acpConnection";
 import { acpDialectFor } from "./acpDialects";
@@ -239,9 +240,14 @@ async function probeAcpModels(provider: Exclude<AcpModelProviderGroup, "devin">,
   // away from every project.
   const cwd = path.join(os.tmpdir(), "ade-acp-model-probe");
   fs.mkdirSync(cwd, { recursive: true });
+  // Discovery runs ADE's pinned copy once it is on this machine; it never
+  // starts that download (a model list read must not fetch hundreds of MB).
   const executable = resolveAcpExecutable(provider, { env });
+  if (executable.source === "fallback-command") throw pinnedToolNotReadyError(provider, dialect.displayName);
   const spawnPlan = await prepareAcpProbeSpawnPlan(provider, dialect.buildSpawnPlan({
     binaryPath: executable.path,
+    ...(executable.args?.length ? { binaryArgs: executable.args } : {}),
+    ...(executable.files ? { binaryFiles: executable.files } : {}),
     cwd,
     baseEnv: env,
     configHome: acpProbeConfigHome(provider, env),
@@ -291,7 +297,8 @@ async function discoverProviderModels(provider: AcpModelProviderGroup, env: Node
     // Loaded on use: this module sits under the chat service's import graph.
     const { discoverDevinModels } = await import("../../ai/devinModelsDiscovery");
     const executable = resolveAcpExecutable("devin", { env });
-    return discoverDevinModels(executable.source === "fallback-command" ? undefined : { binaryPath: executable.path });
+    if (executable.source === "fallback-command") throw pinnedToolNotReadyError("devin", "Devin");
+    return discoverDevinModels({ binaryPath: executable.path });
   }
   return probeAcpModels(provider, env);
 }
@@ -304,8 +311,8 @@ let queue: Promise<void> = Promise.resolve();
 
 /**
  * Refresh one provider's live list in the background when it is missing or
- * older than the TTL. Call only for a provider that is installed and signed
- * in. Never throws, never blocks: the read that calls this serves the cache.
+ * older than the TTL. Call only for a provider whose pinned copy is on this
+ * machine and signed in; a missing copy fails the warm (retried later). Never throws, never blocks: the read that calls this serves the cache.
  */
 export function warmAcpModelCatalog(
   provider: AcpModelProviderGroup,

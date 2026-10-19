@@ -5,8 +5,8 @@
  *
  * Those callers used to carry their own hand-copied chain and retry loop, which
  * had already drifted apart. They live here so "the same chain" is a fact
- * rather than a comment: the cheap ADE-provider helper, then this session's
- * model. Settings pickers are not part of the chain.
+ * rather than a comment: one model per chat provider (see
+ * buildSessionIntelligenceModelCandidates). Settings pickers are not part of it.
  */
 import {
   adeBackgroundUtilityProvider,
@@ -396,9 +396,8 @@ export async function runSessionMetadataGeneration(args: {
   shouldStop?: () => boolean;
   onFailure: (failure: NamingAttemptFailure) => void;
 }): Promise<NamingRunOutcome<GeneratedSessionMetadata>> {
-  // Walk the caller's setting-then-session candidates only. Cursor Grok (and
-  // other non-schema models) often return unusable JSON; the next candidate
-  // still gets a turn. ADE already holds the transcript excerpt.
+  // Walk the caller's candidates only (session intelligence passes one).
+  // ADE already holds the transcript excerpt.
   const systemPrompt = args.systemPrompt ?? SESSION_METADATA_SYSTEM_PROMPT;
   return runNamingAcrossProviders<GeneratedSessionMetadata>(args.candidateModelIds, {
     shouldStop: args.shouldStop,
@@ -485,10 +484,12 @@ export function buildNamingModelCandidates(args: {
 }
 
 /**
- * Session intelligence picks a model in this order only: the cheap helper for
- * this ADE provider (`claude`/`codex`/`cursor`), then this session's model.
- * OpenCode, Droid, Pi, and ACP skip the cheap helper and use the session model.
- * Callers fall through to a deterministic title when both miss.
+ * Session intelligence runs on exactly one model, from the vendor the chat
+ * already talks to: the cheap helper for a Claude, Codex, or Cursor chat
+ * (Haiku, Luna, Composer), and the chat's own model for every other provider.
+ * There is no second candidate, so a chat's content never goes to another
+ * vendor; when that one call fails the caller keeps its deterministic title,
+ * and the agent renames the chat or lane itself.
  */
 export function buildSessionIntelligenceModelCandidates(args: {
   availableModels: ModelDescriptor[];
@@ -500,12 +501,13 @@ export function buildSessionIntelligenceModelCandidates(args: {
   const hasProvider = typeof args.provider === "string" && args.provider.trim().length > 0;
   const utilityProvider = adeBackgroundUtilityProvider(args.provider)
     ?? (hasProvider ? null : adeBackgroundUtilityProviderFromToolType(args.toolType));
-  const cheapModelId = utilityProvider ? backgroundUtilityModelId(utilityProvider) : null;
-  const preferred = [cheapModelId, args.sessionModelId, args.sessionModel];
+  const preferred = utilityProvider
+    ? [backgroundUtilityModelId(utilityProvider)]
+    : [args.sessionModelId, args.sessionModel];
   return buildNamingModelCandidates({
     availableModels: withSessionModelDescriptors(args.availableModels, preferred),
     preferred,
-  });
+  }).slice(0, 1);
 }
 
 export type NamingAttemptFailure = {

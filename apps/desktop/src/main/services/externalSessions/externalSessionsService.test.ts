@@ -544,6 +544,7 @@ describe("externalSessionsService", () => {
       sessionService: { list: () => [], listClaudeSessionPointers: () => [] },
       ptyService: { create: vi.fn() },
       logger: makeLogger(),
+      env: { DROID_EXECUTABLE: process.platform === "win32" ? "C:\\ade-test\\tools\\droid.exe" : "/ade-test/tools/droid" },
     });
 
     const sessions = await service.list({ providers: ["droid"], laneId: "lane-1", scope: "project", limit: 5 });
@@ -593,6 +594,7 @@ describe("externalSessionsService", () => {
       sessionService: { list: () => [], listClaudeSessionPointers: () => [] },
       ptyService: { create },
       logger: makeLogger(),
+      env: { DROID_EXECUTABLE: process.platform === "win32" ? "C:\\ade-test\\tools\\droid.exe" : "/ade-test/tools/droid" },
     });
 
     const [summary] = await service.list({ providers: ["droid"], scope: "all", limit: 5 });
@@ -648,6 +650,7 @@ describe("externalSessionsService", () => {
       sessionService: { list: () => [], listClaudeSessionPointers: () => [] },
       ptyService: { create },
       logger: makeLogger(),
+      env: { DROID_EXECUTABLE: process.platform === "win32" ? "C:\\ade-test\\tools\\droid.exe" : "/ade-test/tools/droid" },
       onImportOutcome,
     });
 
@@ -693,6 +696,7 @@ describe("externalSessionsService", () => {
       sessionService: { list: () => [], listClaudeSessionPointers: () => [] },
       ptyService: { create },
       logger: makeLogger(),
+      env: { DROID_EXECUTABLE: process.platform === "win32" ? "C:\\ade-test\\tools\\droid.exe" : "/ade-test/tools/droid" },
       onImportOutcome,
     });
 
@@ -1218,10 +1222,7 @@ describe("droid fork probe", () => {
   }
 
   it("does not cache a negative answer when the probe never ran", async () => {
-    // Node has refused to spawn a `.cmd`/`.bat` without a shell since
-    // CVE-2024-27980, so a probe against an npm shim used to come back
-    // `spawn EINVAL` with the error discarded — caching "no --fork" for the
-    // service's whole lifetime and permanently disabling fork import.
+    // A transient probe failure must not cache a negative fork capability.
     const { homeDir, projectRoot, laneCwd, id } = droidFixture();
     const warn = vi.fn();
     let call = 0;
@@ -1246,6 +1247,7 @@ describe("droid fork probe", () => {
       sessionService: { list: () => [], listClaudeSessionPointers: () => [] },
       ptyService: { create },
       logger: { warn, info: vi.fn() },
+      env: { DROID_EXECUTABLE: process.platform === "win32" ? "C:\\ade-test\\tools\\droid.exe" : "/ade-test/tools/droid" },
     });
 
     await expect(service.importExternalSession({
@@ -1263,28 +1265,6 @@ describe("droid fork probe", () => {
     expect(create.mock.calls[0]![0].startupCommand).toBe(`droid --fork ${id}`);
   });
 
-  it.runIf(process.platform === "win32")("probes droid through cmd.exe rather than spawning the shim directly", async () => {
-    const { homeDir, projectRoot, laneCwd } = droidFixture();
-    execFileMock.mockImplementation((...callArgs: any[]) => {
-      const callback = callArgs[3] as (error: Error | null, stdout: string, stderr: string) => void;
-      setTimeout(() => callback(null, "usage: droid --resume --fork", ""), 0);
-      return { pid: 123 } as ReturnType<typeof execFile>;
-    });
-    createExternalSessionsService({
-      projectRoot,
-      homeDir,
-      laneService: { getLaneWorktreePath: () => laneCwd },
-      sessionService: { list: () => [], listClaudeSessionPointers: () => [] },
-      ptyService: { create: vi.fn() },
-      logger: makeLogger(),
-    });
-
-    expect(execFileMock).toHaveBeenCalled();
-    const [command, spawnArgs] = execFileMock.mock.calls[0]! as unknown as [string, string[]];
-    expect(command.toLowerCase()).toContain("cmd");
-    expect(spawnArgs.join(" ")).toContain("droid");
-    expect(spawnArgs.join(" ")).toContain("--help");
-  });
 });
 
 describe("transplantClaudeSession", () => {

@@ -66,6 +66,7 @@ import {
   withOptionalEnv,
 } from "./shared";
 import { readKimiAccount } from "./acpAccounts";
+import { pinnedToolSelfUpdateEnv } from "../../../../../shared/pinnedToolSpawnEnv";
 
 export const KIMI_WINDOWS_DEGRADATION_NOTE =
   "Kimi needs Git for Windows on this machine, because Git Bash is its shell.";
@@ -88,7 +89,10 @@ function buildSpawnPlan(context: AcpSpawnContext): AcpSpawnPlan {
     command: context.binaryPath,
     args,
     cwd: context.cwd,
-    env: withOptionalEnv(context.baseEnv, { KIMI_CODE_HOME: context.configHome }),
+    env: withOptionalEnv(context.baseEnv, {
+      KIMI_CODE_HOME: context.configHome,
+      ...pinnedToolSelfUpdateEnv("kimi"),
+    }),
   };
 }
 

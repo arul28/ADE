@@ -84,6 +84,10 @@ import {
 } from "../git/git";
 import { redactSecretsDeep } from "../../utils/redaction";
 import { extractFirstJsonObject } from "../ai/utils";
+import { resolveCodexExecutable } from "../ai/codexExecutable";
+import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
+import { requirePinnedProviderExecutable } from "../ai/pinnedProviderTools";
+import { providerSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
 import { safeSegment } from "../shared/packLegacyUtils";
 import { signalProcessGroup, asString, isRecord, normalizeBranchName, parseDiffNameOnly, safeJsonParse, uniqueSorted } from "../shared/utils";
 
@@ -3581,10 +3585,20 @@ export function createConflictService({
         .replace(/\{\{runDir\}\}/g, runDir)
     );
 
-    const bin = renderedCommand[0];
-    if (!bin) {
+    const configuredBin = renderedCommand[0];
+    if (!configuredBin) {
       throw new Error("Invalid external resolver command template");
     }
+    // ADE's suggested templates name `codex`/`claude` bare; those run ADE's
+    // pinned copy (downloaded first if needed), never a PATH CLI. Any other
+    // command is the user's own choice and runs as written.
+    const pinnedProvider = configuredBin === "codex" ? "codex" : configuredBin === "claude" ? "claude" : null;
+    const bin = pinnedProvider === "codex"
+      ? (await requirePinnedProviderExecutable("codex", () => resolveCodexExecutable())).path
+      : pinnedProvider === "claude"
+        ? (await requirePinnedProviderExecutable("claude", () => resolveClaudeCodeExecutable())).path
+        : configuredBin;
+    const resolverEnv = pinnedProvider ? { ...process.env, ...providerSelfUpdateEnv(pinnedProvider) } : process.env;
 
     writeExternalRunRecord({
       ...existingRun,
@@ -3592,10 +3606,10 @@ export function createConflictService({
     });
 
     const proc = await new Promise<{ stdout: string; stderr: string; status: number | null; signal: NodeJS.Signals | null; timedOut: boolean }>((resolve) => {
-      const invocation = resolveCliSpawnInvocation(bin, renderedCommand.slice(1), process.env);
+      const invocation = resolveCliSpawnInvocation(bin, renderedCommand.slice(1), resolverEnv);
       const child = spawn(invocation.command, invocation.args, {
         cwd: cwdLane.worktreePath,
-        env: process.env,
+        env: resolverEnv,
         stdio: ["ignore", "pipe", "pipe"],
         detached: process.platform !== "win32",
         windowsHide: true,

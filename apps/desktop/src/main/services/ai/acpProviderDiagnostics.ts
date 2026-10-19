@@ -1,10 +1,11 @@
 /**
  * What ADE can say about one ACP provider CLI without opening a chat.
  *
- * Settings needs four facts that no status payload carries — where the binary
- * resolved from, which directory the CLI keeps its config in, what version it
- * is, and what the last auth probe concluded — plus, for the two vendors that
- * ship one, the output of their own `doctor` command.
+ * Settings needs four facts that no status payload carries — where ADE's
+ * pinned copy resolved from, which directory the CLI keeps its config in, what
+ * version it reports, and what the last auth probe concluded — plus, for the
+ * two vendors that ship one, the output of their own `doctor` command. ADE
+ * picks the version (the tools-cache pin), so nothing here offers an update.
  *
  * None of this runs on a status refresh: `--version` and `doctor` are process
  * spawns, and spawning four CLIs to draw a grid of tiles is the mistake
@@ -12,20 +13,14 @@
  * page opens, and again when someone presses "Run doctor".
  */
 
-import type { AcpChatProvider, AgentChatEvent } from "../../../shared/types/chat";
-import type { AcpProviderDiagnostics, AcpProviderUpdateInfo, AcpProviderUpdateResult } from "../../../shared/types/config";
+import type { AcpChatProvider } from "../../../shared/types/chat";
+import type { AcpProviderDiagnostics } from "../../../shared/types/config";
+import { providerSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
 import { spawnAsync } from "../shared/utils";
 import { grokConfigHome } from "../shared/providerConfigHomes";
 import { acpProbeConfigHome, getCachedAcpAuthProbe } from "./acpAuthProbe";
 import { resolveAcpExecutable } from "./acpExecutables";
-import {
-  ACP_PROVIDER_VERSION_POLICY,
-  decideAcpProviderUpdate,
-  resolveAcpInstaller,
-  runAcpProviderInstall,
-  type AcpInstallerIo,
-  type AcpSpawn,
-} from "./acpProviderUpdate";
+import { pinnedToolForProvider, pinnedToolState } from "./pinnedProviderTools";
 
 const VERSION_TIMEOUT_MS = 6_000;
 const DOCTOR_TIMEOUT_MS = 25_000;
@@ -76,9 +71,14 @@ export type CollectAcpProviderDiagnosticsArgs = {
   env?: NodeJS.ProcessEnv;
   /** Test seam. Same contract as `spawnAsync`: resolves, never rejects. */
   run?: typeof spawnAsync;
-  /** Test seam for install-kind detection. */
-  installerIo?: AcpInstallerIo;
 };
+
+/** Why there is no binary to ask: the pinned tool's download state, in the sentence status rows use. */
+function missingBinaryReason(provider: AcpChatProvider): string {
+  const pinned = pinnedToolForProvider(provider);
+  const blocker = pinned ? pinnedToolState(pinned.tool, pinned.label).blocker : null;
+  return blocker ?? `ADE's copy of \`${provider}\` is not on this machine.`;
+}
 
 export async function collectAcpProviderDiagnostics(
   args: CollectAcpProviderDiagnosticsArgs,
@@ -86,9 +86,8 @@ export async function collectAcpProviderDiagnostics(
   const env = args.env ?? process.env;
   const run = args.run ?? spawnAsync;
   const executable = resolveAcpExecutable(args.provider, { env });
-  // "fallback-command" means nothing was found and the bare name is a guess, so
-  // reporting it as a path would be a claim ADE cannot make.
-  const binaryPath = executable.source === "fallback-command" ? null : executable.path;
+  // A miss resolves to an empty path; never spawn it (it would not be ADE's copy).
+  const binaryPath = executable.source === "fallback-command" || !executable.path ? null : executable.path;
   const probe = getCachedAcpAuthProbe(args.provider, args.cwd);
 
   const base: AcpProviderDiagnostics = {
@@ -106,12 +105,29 @@ export async function collectAcpProviderDiagnostics(
   };
 
   if (!binaryPath) {
-    return { ...base, versionError: `\`${args.provider}\` was not found on this machine.` };
+    return { ...base, versionError: missingBinaryReason(args.provider) };
   }
 
-  const version = await run(executable.path, ["--version"], {
+  // Antigravity's server has no `--version`: any argv starts the server,
+  // which unpacks itself into the temp directory. The version is the pin's.
+  if (args.provider === "antigravity") {
+    const pinned = pinnedToolForProvider(args.provider);
+    const status = pinned ? pinnedToolState(pinned.tool, pinned.label).status : null;
+    const pinnedVersion = status?.runningVersion ?? status?.version ?? null;
+    return {
+      ...base,
+      version: pinnedVersion ? `agy_acp_server ${pinnedVersion} (ADE's pinned copy)` : null,
+      versionError: pinnedVersion ? null : "ADE could not read its Antigravity version.",
+    };
+  }
+
+  // Qwen's entry is its bundled Node, so its script leads every argv.
+  const leadingArgs = executable.args ?? [];
+  const spawnEnv = { ...env, ...providerSelfUpdateEnv(args.provider) };
+  const version = await run(binaryPath, [...leadingArgs, "--version"], {
     timeout: VERSION_TIMEOUT_MS,
     cwd: args.cwd,
+    env: spawnEnv,
   });
   const versionLine = version.status === 0 ? firstVersionLine(version.stdout, version.stderr) : null;
   const result: AcpProviderDiagnostics = {
@@ -121,21 +137,15 @@ export async function collectAcpProviderDiagnostics(
       ? null
       : firstVersionLine(version.stderr, version.stdout) ?? "The CLI did not report a version.",
   };
-  result.update = versionLine
-    ? decideAcpProviderUpdate({
-      provider: args.provider,
-      versionLine,
-      installer: resolveAcpInstaller(args.provider, binaryPath, args.installerIo),
-    })
-    : null;
 
   const doctorArgs = DOCTOR_COMMANDS[args.provider];
   if (!args.runDoctor || !doctorArgs) return result;
 
-  const doctor = await run(executable.path, [...doctorArgs], {
+  const doctor = await run(binaryPath, [...leadingArgs, ...doctorArgs], {
     timeout: DOCTOR_TIMEOUT_MS,
     maxOutputBytes: DOCTOR_MAX_OUTPUT_BYTES,
     cwd: args.cwd,
+    env: spawnEnv,
   });
   const output = `${doctor.stdout}${doctor.stderr}`.trim();
   return {
@@ -150,135 +160,6 @@ export async function collectAcpProviderDiagnostics(
           : "No output.",
     },
   };
-}
-
-/**
- * The version standing of the CLI a chat is about to use, read once per binary.
- *
- * A chat start pays one `--version` spawn the first time a binary is seen; later
- * chats reuse the answer for 30 minutes, so an update made outside ADE is seen
- * without a restart. An update through ADE clears it at once. Never rejects: an
- * unreadable version is `null`, which raises no warning.
- */
-const LAUNCH_STANDING_TTL_MS = 30 * 60_000;
-const launchStandingCache = new Map<string, { readAt: number; pending: Promise<AcpProviderUpdateInfo | null> }>();
-
-export function readAcpProviderLaunchStanding(args: {
-  provider: AcpChatProvider;
-  cwd: string;
-  env?: NodeJS.ProcessEnv;
-  run?: typeof spawnAsync;
-}): Promise<AcpProviderUpdateInfo | null> {
-  const env = args.env ?? process.env;
-  const executable = resolveAcpExecutable(args.provider, { env });
-  if (executable.source === "fallback-command") return Promise.resolve(null);
-  const key = `${args.provider}\0${executable.path}`;
-  const cached = launchStandingCache.get(key);
-  if (cached && Date.now() - cached.readAt < LAUNCH_STANDING_TTL_MS) return cached.pending;
-  const run = args.run ?? spawnAsync;
-  // The chat's environment: the brain adds the user's shell PATH there, and an
-  // npm CLI may need the Node it finds on it.
-  const pending = run(executable.path, ["--version"], { timeout: VERSION_TIMEOUT_MS, cwd: args.cwd, env })
-    .then((version) => {
-      const versionLine = version.status === 0 ? firstVersionLine(version.stdout, version.stderr) : null;
-      if (!versionLine) return null;
-      return decideAcpProviderUpdate({
-        provider: args.provider,
-        versionLine,
-        installer: resolveAcpInstaller(args.provider, executable.path),
-      });
-    })
-    .catch(() => null);
-  launchStandingCache.set(key, { readAt: Date.now(), pending });
-  return pending;
-}
-
-/** The chat warning for a CLI older than ADE supports, or null when none is due. */
-export function acpProviderOutdatedNotice(
-  provider: AcpChatProvider,
-  info: AcpProviderUpdateInfo | null,
-): AgentChatEvent | null {
-  if (!info || info.standing !== "below" || !info.installedVersion) return null;
-  const label = ACP_PROVIDER_VERSION_POLICY[provider].label;
-  return {
-    type: "system_notice",
-    noticeKind: "warning",
-    severity: "warning",
-    status: "acp_provider_outdated",
-    message: `${label} ${info.installedVersion} is older than ADE supports. Update to ${info.targetVersion}.`,
-    detail: {
-      providerUpdate: {
-        provider,
-        installedVersion: info.installedVersion,
-        targetVersion: info.targetVersion,
-        canUpdate: info.canUpdate,
-        note: info.note,
-      },
-    },
-  };
-}
-
-/**
- * Updates in flight, by provider and binary. Two chat warnings, or a warning and
- * Settings, would otherwise run two installs into the same npm prefix at once;
- * a second request joins the first instead.
- */
-const updatesInFlight = new Map<string, Promise<AcpProviderUpdateResult>>();
-
-/**
- * Install the newest tested version of one provider CLI.
- *
- * It re-resolves the binary and refuses when the installer is unknown, so the
- * renderer's button can never run a guess. Grok runs with its config home in
- * `GROK_HOME`, so a custom home updates itself rather than the default `~/.grok`.
- */
-export async function runAcpProviderUpdate(args: {
-  provider: AcpChatProvider;
-  cwd: string;
-  env?: NodeJS.ProcessEnv;
-  /** Test seam, same contract as `AcpSpawn`. */
-  run?: AcpSpawn;
-  installerIo?: AcpInstallerIo;
-}): Promise<AcpProviderUpdateResult> {
-  const policy = ACP_PROVIDER_VERSION_POLICY[args.provider];
-  if (!policy) {
-    return { ok: false, message: `Updates are not supported for ${args.provider}.`, version: null };
-  }
-  const env = { ...(args.env ?? process.env) };
-  const executable = resolveAcpExecutable(args.provider, { env });
-  if (executable.source === "fallback-command") {
-    return { ok: false, message: `${policy.label} was not found on this machine.`, version: null };
-  }
-  const installer = resolveAcpInstaller(args.provider, executable.path, args.installerIo);
-  if (!installer) {
-    return {
-      ok: false,
-      message: `ADE could not tell how this ${policy.label} was installed. Update it with the installer you used.`,
-      version: null,
-    };
-  }
-  if (args.provider === "grok") {
-    const home = configHomeFor("grok", env);
-    if (home) env.GROK_HOME = home;
-  }
-  const key = `${args.provider}\0${executable.path}`;
-  const running = updatesInFlight.get(key);
-  if (running) return running;
-  const pending = runAcpProviderInstall({
-    provider: args.provider,
-    installer,
-    env,
-    cwd: args.cwd,
-    ...(args.run ? { run: args.run } : {}),
-    ...(args.installerIo ? { io: args.installerIo } : {}),
-  }).finally(() => {
-    updatesInFlight.delete(key);
-    // Any attempt may have changed the binary, even one whose version check
-    // then failed; the next chat re-reads it (one `--version` spawn).
-    launchStandingCache.delete(key);
-  });
-  updatesInFlight.set(key, pending);
-  return pending;
 }
 
 /**
@@ -303,14 +184,6 @@ export function formatAcpProviderDiagnosticsReport(
       : "not run"}`,
     `checked at: ${diagnostics.checkedAt}`,
   ];
-  if (diagnostics.update) {
-    const versionIndex = lines.findIndex((line) => line.startsWith("version:"));
-    const { testedRange, standing, updateAvailable, installer } = diagnostics.update;
-    const updateLine = `tested: ${testedRange.min} to ${testedRange.max} (${standing},`
-      + ` update available: ${updateAvailable ? "yes" : "no"},`
-      + ` installer: ${installer ?? "unknown"})`;
-    lines.splice(versionIndex + 1, 0, updateLine);
-  }
   if (diagnostics.doctor) {
     lines.push(
       "",

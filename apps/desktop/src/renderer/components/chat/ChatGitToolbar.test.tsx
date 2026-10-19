@@ -35,7 +35,6 @@ function installAdeMocks() {
       push: vi.fn().mockResolvedValue(undefined),
       stageAll: vi.fn().mockResolvedValue(undefined),
       commit: vi.fn().mockResolvedValue(undefined),
-      generateCommitMessage: vi.fn().mockResolvedValue({ message: "Commit changes" }),
       getActionRuntime: vi.fn().mockResolvedValue(null),
       onActionRuntimeEvent: vi.fn().mockImplementation(() => () => undefined),
     },

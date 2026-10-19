@@ -4060,6 +4060,18 @@ describe("ADE CLI", () => {
     ).toThrow(/provider must be one of/);
   });
 
+  it.each([
+    { surface: "chat create", args: ["chat", "create", "--lane", "lane-1", "--provider", "antigravity", "--print-config"], accepts: true },
+    { surface: "chat launch", args: ["chat", "launch", "prompt", "--provider", "antigravity", "--dry-run"], accepts: true },
+    { surface: "terminal launch", args: ["shell", "create", "--lane", "lane-1", "--provider", "antigravity", "--print-config"], accepts: false },
+  ])("validates Antigravity as a chat-only provider on $surface", ({ args, accepts }) => {
+    if (accepts) {
+      expect(() => buildCliPlan(args)).not.toThrow();
+    } else {
+      expect(() => buildCliPlan(args)).toThrow(/provider must be one of/);
+    }
+  });
+
   it("accepts a mis-cased provider when starting a CLI session", () => {
     const plan = buildCliPlan([
       "shell",
@@ -6657,6 +6669,43 @@ describe("ADE CLI", () => {
     expect(() => buildCliPlan(["chat", "launch", "hi", "--provider", "shell"])).toThrow();
     const dryRun = buildCliPlan(["chat", "launch", "hi", "--dry-run"]);
     expect(dryRun.kind).toBe("static");
+  });
+
+  it.each([
+    {
+      label: "rejects malformed chat.create input",
+      args: ["--arg", "chat.create=not-an-object"],
+      error: /chat launch needs chat.create to be an object/,
+    },
+    {
+      label: "lets the top-level provider override --provider",
+      args: ["--provider", "claude", "--arg", "provider=antigravity"],
+      provider: "antigravity",
+    },
+    {
+      label: "lets chat.create.provider override --provider",
+      args: ["--provider", "claude", "--arg", "chat.create.provider=antigravity"],
+      provider: "antigravity",
+    },
+    {
+      label: "rejects two disagreeing provider overrides",
+      args: ["--arg", "provider=claude", "--arg", "chat.create.provider=antigravity"],
+      error: /disagree/,
+    },
+  ])("chat launch $label", ({ args, error, provider }) => {
+    const build = () => buildCliPlan(["chat", "launch", "prompt", "--dry-run", ...args]);
+    if (error) {
+      expect(build).toThrow(error);
+      return;
+    }
+    const plan = build();
+    if (plan.kind !== "static") throw new Error("expected a dry-run plan");
+    expect(plan.value).toMatchObject({
+      input: {
+        provider,
+        chat: { create: { provider } },
+      },
+    });
   });
 
   it("builds chat launches / launch-status / launch-cancel over the launch actions", () => {

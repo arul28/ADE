@@ -105,7 +105,7 @@ describe("buildProviderConnections", () => {
       { authAvailable: false, runtimeDetected: true, runtimeAvailable: false, blocked: true }],
     ["the probe failed and a gh login is on disk", { runtime: { path: "/tools/copilot-runtime", source: "tools-cache" }, auth: null }, { installed: false, authenticated: true },
       { authAvailable: true, runtimeDetected: true, runtimeAvailable: true, blocked: false }],
-    ["no runtime was found", { runtime: { path: "copilot", source: "fallback-command" }, auth: null }, { installed: false, authenticated: true },
+    ["no runtime was found", { runtime: { path: "", source: "fallback-command" }, auth: null }, { installed: false, authenticated: true },
       { authAvailable: true, runtimeDetected: false, runtimeAvailable: false, blocked: true }],
   ] as const)("builds Copilot's connection when %s", async (_case, probe, cli, expected) => {
     const cliStatuses = mergeCliStatuses(cli ? [{ cli: "copilot", path: null, verified: false, ...cli }] : []);
@@ -122,38 +122,6 @@ describe("buildProviderConnections", () => {
       runtimeAvailable: expected.runtimeAvailable,
     });
     expect(Boolean(copilot?.blocker)).toBe(expected.blocked);
-  });
-
-  it("does not mark Claude runtime as connected when the CLI explicitly reports signed out", async () => {
-    mockState.readClaudeCredentials.mockResolvedValue({
-      accessToken: "token",
-      source: "claude-credentials-file",
-    });
-
-    const result = await buildProviderConnections(
-      mergeCliStatuses([
-        {
-          cli: "claude",
-          installed: true,
-          path: "/Users/arul/.local/bin/claude",
-          authenticated: false,
-          verified: true,
-        },
-        {
-          cli: "codex",
-          installed: false,
-          path: null,
-          authenticated: false,
-          verified: false,
-        },
-      ]),
-    );
-
-    expect(result.claude.authAvailable).toBe(true);
-    expect(result.claude.runtimeDetected).toBe(true);
-    expect(result.claude.runtimeAvailable).toBe(false);
-    expect(result.claude.blocker).toContain("Claude CLI reports no active login");
-    expect(result.claude.blocker).toContain("claude auth login");
   });
 
   it("keeps the optimistic local-credentials fallback when CLI auth could not be verified", async () => {
@@ -184,38 +152,6 @@ describe("buildProviderConnections", () => {
     expect(result.claude.authAvailable).toBe(true);
     expect(result.claude.runtimeAvailable).toBe(true);
     expect(result.claude.blocker).toBeNull();
-  });
-
-  it("applies the same signed-out guard to Codex when local auth artifacts remain on disk", async () => {
-    mockState.readCodexCredentials.mockResolvedValue({
-      accessToken: "token",
-      source: "codex-auth-file",
-    });
-
-    const result = await buildProviderConnections(
-      mergeCliStatuses([
-        {
-          cli: "claude",
-          installed: false,
-          path: null,
-          authenticated: false,
-          verified: false,
-        },
-        {
-          cli: "codex",
-          installed: true,
-          path: "/Users/arul/.local/bin/codex",
-          authenticated: false,
-          verified: true,
-        },
-      ]),
-    );
-
-    expect(result.codex.authAvailable).toBe(true);
-    expect(result.codex.runtimeDetected).toBe(true);
-    expect(result.codex.runtimeAvailable).toBe(false);
-    expect(result.codex.blocker).toContain("Codex CLI reports no active login");
-    expect(result.codex.blocker).toContain("codex login");
   });
 
   it("downgrades Claude runtime availability when runtime health reports auth-failed", async () => {
@@ -656,9 +592,9 @@ describe("buildProviderConnections", () => {
       const result = await withTarget("win32", "arm64", () =>
         buildProviderConnections(
           mergeCliStatuses([
-            { cli: "claude", installed: true, path: "claude", authenticated: true, verified: true },
-            { cli: "codex", installed: true, path: "codex", authenticated: true, verified: true },
-            { cli: "droid", installed: true, path: "droid", authenticated: true, verified: true },
+            { cli: "claude", installed: true, path: "/ade-test/tools/claude", authenticated: true, verified: true },
+            { cli: "codex", installed: true, path: "/ade-test/tools/codex", authenticated: true, verified: true },
+            { cli: "droid", installed: true, path: "/ade-test/tools/droid", authenticated: true, verified: true },
           ]),
         ),
       );

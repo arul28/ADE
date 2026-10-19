@@ -33,6 +33,12 @@ import {
   killWindowsProcessTreeAsync,
   resolveCliSpawnInvocation,
 } from "../shared/processExecution";
+import {
+  pinnedCliDownloadingLine,
+  pinnedProviderCliState,
+  requirePinnedProviderCli,
+  type PinnedProviderCli,
+} from "../pty/pinnedProviderCli";
 
 /** A sign-in nobody finishes in this long is abandoned; the CLI is stopped. */
 const LOGIN_TIMEOUT_MS = 10 * 60_000;
@@ -181,33 +187,16 @@ export function createProviderLoginRunner(deps: ProviderLoginRunnerDeps) {
     }
   }
 
-  function start(id: string, options: { deviceAuth?: boolean } = {}): ProviderLoginStatus {
-    const instance = deps.getInstance(id);
-    if (!instance) throw new Error(`No provider account with id ${JSON.stringify(id)}.`);
+  /**
+   * Runs the sign-in on ADE's pinned copy of the provider CLI: the account's
+   * argv with its command word replaced by that copy, which also carries the
+   * switches that keep it from updating itself. Never a CLI from the PATH.
+   */
+  function spawnLogin(record: LoginRecord, instance: ProviderInstance, cli: PinnedProviderCli, deviceAuth: boolean): void {
     const command = deps.loginCommand(instance.id);
-    // Only Codex has a device sign-in; Claude's link already ends in a pasted code.
-    const deviceAuth = options.deviceAuth === true && instance.provider === "codex";
-    const args = deviceAuth ? [...command.args, "--device-auth"] : command.args;
-    const env: NodeJS.ProcessEnv = { ...userProcessEnv(), ...command.env, TERM: "xterm-256color" };
-    const invocation = resolveCliSpawnInvocation(command.command, args, env);
-    const loginId = randomUUID();
-    const record: LoginRecord = {
-      status: {
-        loginId,
-        instanceId: instance.id,
-        provider: instance.provider,
-        state: "running",
-        url: null,
-        awaitingCode: false,
-        output: "",
-        startedAt: now().toISOString(),
-      },
-      pty: null,
-      rawOutput: "",
-      submittedCodes: [],
-      timeout: null,
-      cleanup: null,
-    };
+    const args = [...cli.leadingArgs, ...command.args, ...(deviceAuth ? ["--device-auth"] : [])];
+    const env: NodeJS.ProcessEnv = { ...userProcessEnv(), ...command.env, ...cli.env, TERM: "xterm-256color" };
+    const invocation = resolveCliSpawnInvocation(cli.command, args, env);
     // A cmd.exe wrapper carries one pre-quoted command line; node-pty must not
     // quote it again.
     const ptyArgs = invocation.windowsVerbatimArguments ? invocation.args.join(" ") : invocation.args;
@@ -224,13 +213,13 @@ export function createProviderLoginRunner(deps: ProviderLoginRunnerDeps) {
       // A failed spawn must not stop the sign-in already running for this
       // account: the new attempt never existed.
       const detail = error instanceof Error ? error.message : "the CLI could not be started";
-      throw new Error(`Could not run the ${instance.provider} sign-in command (${command.command}): ${detail}`);
+      throw new Error(`Could not run the ${instance.provider} sign-in command (${cli.command}): ${detail}`);
     }
     record.pty = pty;
     // One sign-in per account: a second start replaces the first, now that this
     // one is really running.
     for (const live of logins.values()) {
-      if (live.status.instanceId === instance.id && isLive(live)) {
+      if (live !== record && live.status.instanceId === instance.id && isLive(live)) {
         finish(live, { state: "cancelled", message: "Replaced by a new sign-in." });
       }
     }
@@ -255,6 +244,51 @@ export function createProviderLoginRunner(deps: ProviderLoginRunnerDeps) {
     pty.onExit(({ exitCode }) => {
       void onExit(record, exitCode);
     });
+  }
+
+  function start(id: string, options: { deviceAuth?: boolean } = {}): ProviderLoginStatus {
+    const instance = deps.getInstance(id);
+    if (!instance) throw new Error(`No provider account with id ${JSON.stringify(id)}.`);
+    // Only Codex has a device sign-in; Claude's link already ends in a pasted code.
+    const deviceAuth = options.deviceAuth === true && instance.provider === "codex";
+    const pinned = pinnedProviderCliState(instance.provider);
+    if (pinned.kind === "blocked") throw new Error(pinned.message);
+    const loginId = randomUUID();
+    const record: LoginRecord = {
+      status: {
+        loginId,
+        instanceId: instance.id,
+        provider: instance.provider,
+        state: "running",
+        url: null,
+        awaitingCode: false,
+        output: "",
+        startedAt: now().toISOString(),
+      },
+      pty: null,
+      rawOutput: "",
+      submittedCodes: [],
+      timeout: null,
+      cleanup: null,
+    };
+    if (pinned.kind === "ready") {
+      spawnLogin(record, instance, pinned.cli, deviceAuth);
+    } else {
+      // This machine has no copy yet: the sign-in reads as running with the
+      // download's line, and starts once the copy lands (or fails with why).
+      record.status.output = pinnedCliDownloadingLine(pinned.label);
+      void pinned.done
+        .then(() => requirePinnedProviderCli(instance.provider))
+        .then((cli) => {
+          if (!isLive(record)) return;
+          record.status.output = "";
+          spawnLogin(record, instance, cli, deviceAuth);
+        })
+        .catch((error: unknown) => {
+          if (!isLive(record)) return;
+          finish(record, { state: "failed", message: error instanceof Error ? error.message : String(error) });
+        });
+    }
     record.timeout = setTimeout(() => {
       if (isLive(record)) finish(record, { state: "failed", message: "The sign-in timed out after 10 minutes." });
     }, LOGIN_TIMEOUT_MS);

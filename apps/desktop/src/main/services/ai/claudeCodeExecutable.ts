@@ -4,27 +4,33 @@ import { createRequire } from "node:module";
 import { captureError } from "../../../shared/sentry/capture";
 import type { DetectedAuth } from "./authDetector";
 import { cachedToolEntryPath, previousCachedToolEntryPath } from "../../../../../ade-cli/src/services/tools/cacheLookup";
-import { resolveExecutableFromKnownLocations } from "./cliExecutableResolver";
+import { resolveActiveToolVersionOverride } from "../../../../../ade-cli/src/services/tools/overrides";
 import {
   getClaudeNativeBinaryFileName,
   getClaudeNativeBinaryPackageName,
 } from "../../packagedRuntimeSmokeShared";
 
+/**
+ * Where ADE's Claude Code binary is. `fallback-command` means ADE has no copy
+ * on this machine (`path` is empty): the caller downloads it or reports why,
+ * and never spawns a `claude` from the PATH. `auth`, `path` and `common-dir`
+ * are no longer produced; they stay in the union for callers that name them.
+ */
 export type ClaudeCodeExecutableResolution = {
   path: string;
   source: "env" | "tools-cache" | "bundled" | "auth" | "path" | "common-dir" | "fallback-command";
+  /**
+   * Set when this is the newer, untested build ADE moved to because Anthropic
+   * refused the pin as too old (`claudeFallForward.ts`). Still ADE's own,
+   * verified copy in the tools cache (`source` is `tools-cache`).
+   */
+  fallForward?: {
+    pinnedVersion: string;
+    overrideVersion: string;
+    claudeCodeVersion: string | null;
+    rejectedClaudeCodeVersion: string | null;
+  };
 };
-
-function findClaudeAuthPath(auth?: DetectedAuth[]): string | null {
-  for (const entry of auth ?? []) {
-    if (entry.type !== "cli-subscription" || entry.cli !== "claude") continue;
-    const candidate = entry.path.trim();
-    if (candidate) {
-      return candidate;
-    }
-  }
-  return null;
-}
 
 export function isExecutablePath(candidatePath: string): boolean {
   try {
@@ -133,6 +139,18 @@ function resolveOwnInstallClaudeBinary(args?: ClaudeBinaryLookupArgs): string | 
   }
 }
 
+/**
+ * ADE's own Claude Code: the dev/test override, the newer build ADE moved to
+ * after Anthropic refused the current pin as too old (only while that pin is
+ * still the manifest's and the build's install is complete, so an ADE update
+ * that moves the pin ends it), the current pin in the tools cache, the copy
+ * ADE's lockfile put in `node_modules` (a source checkout, or an older build
+ * that shipped it), then the previous pin while a new one downloads. Never
+ * the user's `claude`: that can be any version, and ADE delivers its plugins
+ * only to its own copies.
+ *
+ * `auth` is accepted for call-site compatibility and ignored.
+ */
 export function resolveClaudeCodeExecutable(args?: {
   auth?: DetectedAuth[];
   env?: NodeJS.ProcessEnv;
@@ -147,16 +165,22 @@ export function resolveClaudeCodeExecutable(args?: {
     return { path: envPath, source: "env" };
   }
 
-  // The pinned tools cache is the packaged app's real source for this binary:
-  // the platform packages are no longer bundled, the brain fetches them on
-  // first run, and both processes reach them through this one lookup. A miss
-  // (dev checkout, pre-fetch, or a target the manifest does not pin) falls
-  // through to the bundled copy, so a source checkout keeps working untouched.
-  const cachedPath = cachedToolEntryPath("claude-code", {
-    env,
-    platform: args?.platform,
-    arch: args?.arch,
-  });
+  const cacheContext = { env, platform: args?.platform, arch: args?.arch };
+  const forced = resolveActiveToolVersionOverride("claude-code", cacheContext);
+  if (forced && isExecutablePath(forced.resolution.entryPath)) {
+    return {
+      path: forced.resolution.entryPath,
+      source: "tools-cache",
+      fallForward: {
+        pinnedVersion: forced.override.pinnedVersion,
+        overrideVersion: forced.override.overrideVersion,
+        claudeCodeVersion: forced.override.overrideToolVersion,
+        rejectedClaudeCodeVersion: forced.override.rejectedToolVersion,
+      },
+    };
+  }
+
+  const cachedPath = cachedToolEntryPath("claude-code", cacheContext);
   if (cachedPath && isExecutablePath(cachedPath)) {
     return { path: cachedPath, source: "tools-cache" };
   }
@@ -166,27 +190,12 @@ export function resolveClaudeCodeExecutable(args?: {
     return { path: bundledPath, source: "bundled" };
   }
 
-  // Just after an ADE update the new pin can still be downloading. ADE's
-  // previous copy, which the cache keeps for this, beats the machine's own
-  // `claude`: that one can be any version, and ADE delivers its plugins only
-  // to its own copies.
-  const previousPath = previousCachedToolEntryPath("claude-code", { env, platform: args?.platform, arch: args?.arch });
+  // Just after an ADE update the new pin can still be downloading; the cache
+  // keeps ADE's previous copy for exactly this.
+  const previousPath = previousCachedToolEntryPath("claude-code", cacheContext);
   if (previousPath && isExecutablePath(previousPath)) {
     return { path: previousPath, source: "tools-cache" };
   }
 
-  const authPath = findClaudeAuthPath(args?.auth);
-  if (authPath) {
-    return { path: authPath, source: "auth" };
-  }
-
-  const resolved = resolveExecutableFromKnownLocations("claude", env);
-  if (resolved) {
-    return {
-      path: resolved.path,
-      source: resolved.source === "path" ? "path" : "common-dir",
-    };
-  }
-
-  return { path: "claude", source: "fallback-command" };
+  return { path: "", source: "fallback-command" };
 }

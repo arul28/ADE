@@ -37,6 +37,7 @@ import {
   qwenConfigHome,
 } from "../shared/providerConfigHomes";
 import { resolveAcpExecutable } from "./acpExecutables";
+import { awaitPinnedToolDownload, pinnedToolForProvider, pinnedToolNotReadyError } from "./pinnedProviderTools";
 import { prepareAcpProbeSpawnPlan } from "./acpProbeSpawnPlan";
 import {
   getProviderRuntimeHealth,
@@ -82,6 +83,9 @@ export function acpProbeConfigHome(
     // Devin reads `~/.config/devin` (%APPDATA%\devin on Windows) and honors
     // no override env var, so ADE sets nothing — same posture as Grok.
     case "devin":
+      return null;
+    // GEMINI_HOME stays at the user's default (shared login); ADE sets nothing.
+    case "antigravity":
       return null;
   }
 }
@@ -136,7 +140,10 @@ function loginBlocker(provider: AcpChatProvider): string {
   const dialect = acpDialectFor(provider);
   const keys = dialect.authProbe.apiKeyEnvVars;
   const keyHint = keys.length ? ` or set ${keys.join(" / ")}` : "";
-  return `${dialect.displayName} is installed but not signed in. Run \`${dialect.authProbe.loginCommand}\` in a terminal${keyHint}, then refresh AI settings.`;
+  if (!dialect.authProbe.loginCommand) {
+    return `${dialect.displayName} is not signed in. ${dialect.authProbe.signInHint ?? "Sign in from Settings > Providers"}, then refresh AI settings.`;
+  }
+  return `${dialect.displayName} is not signed in. Run \`${dialect.authProbe.loginCommand}\` in a terminal${keyHint}, then refresh AI settings.`;
 }
 
 function publishResult(provider: AcpChatProvider, result: AcpAuthProbeResult): void {
@@ -228,14 +235,30 @@ export async function probeAcpProviderAuth(
     return result;
   }
 
+  // The probe runs ADE's pinned copy, so it waits for that copy's download.
+  // A miss is neither cached nor published as runtime health: it is a
+  // download state, and the next probe after the download lands must run.
+  const baseEnv = args.env ?? process.env;
+  const tool = pinnedToolForProvider(provider);
+  if (tool) await awaitPinnedToolDownload(tool.tool);
+  const executable = resolveAcpExecutable(provider, { env: baseEnv });
+  if (executable.source === "fallback-command" && !args.spawnOverride) {
+    return {
+      state: "runtime-failed",
+      message: tool
+        ? pinnedToolNotReadyError(tool.tool, tool.label).message
+        : `ADE has no ${provider} runtime on this machine.`,
+    };
+  }
+
   const probe = (async (): Promise<AcpAuthProbeResult> => {
     const dialect = acpDialectFor(provider);
-    const baseEnv = args.env ?? process.env;
-    const executable = resolveAcpExecutable(provider, { env: baseEnv });
     let connection: ReturnType<typeof createAcpConnection> | null = null;
     try {
       const spawnPlan = await prepareAcpProbeSpawnPlan(provider, dialect.buildSpawnPlan({
         binaryPath: executable.path,
+        ...(executable.args?.length ? { binaryArgs: executable.args } : {}),
+        ...(executable.files ? { binaryFiles: executable.files } : {}),
         cwd,
         baseEnv,
         configHome: acpProbeConfigHome(provider, baseEnv),
@@ -275,7 +298,7 @@ export async function probeAcpProviderAuth(
         }
       }
 
-      if (!methodId) {
+      if (!methodId || dialect.authProbe.probeMayAuthenticate === false) {
         return { state: "auth-failed", message: loginBlocker(provider) };
       }
       // A `type: "terminal"` method means the agent wants to run its own login
@@ -310,9 +333,7 @@ export async function probeAcpProviderAuth(
       const detail = error instanceof Error ? error.message : String(error);
       return {
         state: "runtime-failed",
-        message: executable.source === "fallback-command"
-          ? `The ${dialect.displayName} CLI (\`${dialect.binaryNames[0]}\`) was not found on this machine.`
-          : `${dialect.displayName} was detected at ${executable.path}, but ADE could not start it: ${detail}`,
+        message: `ADE could not start its ${dialect.displayName} at ${executable.path}: ${detail}`,
       };
     } finally {
       connection?.dispose("auth probe finished");
@@ -342,7 +363,7 @@ export async function probeAcpProviderAuth(
   }
 }
 
-/** Probe every ACP provider that is installed. Used by the force-refresh path. */
+/** Probe every ACP provider whose pinned copy is on this machine. Used by the force-refresh path. */
 export async function probeAllAcpProviderAuth(args: {
   providers: readonly AcpChatProvider[];
   cwd: string;

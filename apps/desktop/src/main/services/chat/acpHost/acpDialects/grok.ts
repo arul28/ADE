@@ -97,6 +97,7 @@ import {
   readGrokSessionNotification,
 } from "./grokTelemetry";
 import { grokSupervisionEnv } from "../../../../../shared/grokSupervision";
+import { GROK_NO_AUTO_UPDATE_ARG, pinnedToolSelfUpdateEnv } from "../../../../../shared/pinnedToolSpawnEnv";
 
 export { GROK_CLAUDE_MARKER_OVERRIDE_ENV, grokSupervisionEnv } from "../../../../../shared/grokSupervision";
 
@@ -138,7 +139,7 @@ export const GROK_CONFIG_OPTION_IDS = ["model", "reasoning_effort"] as const;
 
 function buildSpawnPlan(context: AcpSpawnContext): AcpSpawnPlan {
   const args = [
-    "--no-auto-update",
+    GROK_NO_AUTO_UPDATE_ARG,
     "--no-plan",
     ...grokPermissionModeFlags(context.permissionMode),
     "agent",
@@ -169,6 +170,7 @@ function buildSpawnPlan(context: AcpSpawnContext): AcpSpawnPlan {
     env: withOptionalEnv(context.baseEnv, {
       GROK_HOME: context.configHome,
       ...grokSupervisionEnv(),
+      ...pinnedToolSelfUpdateEnv("grok"),
     }),
   };
 }

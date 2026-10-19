@@ -1094,6 +1094,8 @@ private func cliProviderForTerminalSession(_ session: TerminalSessionSummary) ->
   if toolType.hasPrefix("kimi") { return "kimi" }
   if toolType.hasPrefix("grok") { return "grok" }
   if toolType.hasPrefix("copilot") { return "copilot" }
+  if toolType.hasPrefix("devin") { return "devin" }
+  if toolType.hasPrefix("antigravity") { return "antigravity" }
   return "shell"
 }
 

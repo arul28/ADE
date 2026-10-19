@@ -79,7 +79,7 @@ runs it, which source supplies the model, which model it is, how hard it
 thinks, and what it is called.
 
 1. **Pick a harness.** Every harness is shown with its real provider mark. A
-   harness that is not installed or not signed in shows the reason and stays
+   harness that is not downloaded or not signed in shows the reason and stays
    selectable — a preset is a saved intention, not a description of this
    computer.
 2. **Pick a source, then a model.** A source rail lists every provider this
@@ -399,6 +399,19 @@ as unavailable with the reason, so the choice cannot be made and then ignored.
 the matching `claude --model …` / `codex -m …` command. The output contains the
 provider token and is never written anywhere by ADE.
 
+The script runs ADE's pinned copy of the harness, never the one on the PATH
+(`buildHarnessLaunchEnv` in `chat/harnessRouteCatalog.ts`). It first waits for
+or joins the pin's download, exports the harness's self-update switches, and
+ends with a shell function named after the harness command that runs the
+pinned binary: `claude() { '<pin>' … "$@"; }` in zsh/bash,
+`function claude { & '<pin>' … @args }` in PowerShell. Node-run harnesses get
+`'<node>' '<script>'` (plus Cursor's flags). So the copied
+`… && claude --model …` runs the pin with no change. When the pin is not
+available on this machine or its download fails, the action throws the state
+sentence and `ade harness env` exits non-zero, so neither launcher form runs
+anything. `ai.harnessLaunchEnv` runs on the brain's machine, so the path it
+prints is that machine's.
+
 ## Source file map
 
 - `apps/desktop/src/shared/harnessPresets.ts` — the type, validation,
@@ -444,7 +457,7 @@ provider token and is never written anywhere by ADE.
   - `harnessSources.ts` — reads the provider accounts, the stored keys, and the
     proxy subscriptions into the rows the rail lists. The renderer-local type is
     `HarnessModelSource`.
-  - `harnessAvailability.ts` — whether a harness is installed and signed in on
+  - `harnessAvailability.ts` — whether a harness's pinned copy is downloaded and signed in on
     this computer, as a reason string rather than a disabled row.
   - `harnessModels.ts` — pure: source → provider family, the model choices for a
     source (a key's declared models, then the live catalog, then the static

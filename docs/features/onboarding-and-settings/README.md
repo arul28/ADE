@@ -1043,10 +1043,10 @@ Renderer — settings:
   `ade` available to the user's own terminals.
 - `apps/desktop/src/renderer/components/settings/AiFeaturesSection.tsx`
   — Pause all scheduled work and the active durable-job list. Naming,
-  commit suggestions, idle status lines, and similar background helpers
-  pick a cheap model from the ADE provider that owns the session
-  (Haiku 5.5 at `low` effort for Claude, GPT-5.6 Luna for Codex, Composer 2.5 for
-  Cursor; other providers reuse the session model). There is no
+  idle status lines, and similar background helpers run on one model
+  from the ADE provider that owns the session (Haiku 5.5 at `low` effort
+  for Claude, GPT-6 Luna at `low` for Codex, Composer 2.5 for Cursor;
+  every other provider uses the session's own model). There is no
   Settings picker for those helpers. The section owns **Pause all scheduled
   work**, persisted as `ai.chat.scheduledWorkPaused`. This pauses Claude
   wakeups, cron tasks, and `/loop` schedules across the project runtime
@@ -1081,8 +1081,9 @@ Renderer — settings:
   `provider/model` slugs writing `ai.customModelSlugs`, both via
   `updateConfig`). When the OpenCode provider inventory is served from the
   persisted disk cache on a cold start, `opencodeProvidersStale` renders an
-  italic "updating…" hint until the first live probe. When the OpenCode
-  binary is missing the group collapses to an install card. The **Pi** card is a
+  italic "updating…" hint until the first live probe. When ADE's OpenCode
+  copy is not downloaded yet the group collapses to a card with the pinned-copy
+  line and Download/Retry. The **Pi** card is a
   `CollapsibleProviderCard` (readiness tone, version, CLI path, and Open
   `settings.json` / `auth.json` / `models.json` shortcuts) whose body is
   `PiProvidersPanel.tsx`.
@@ -1098,9 +1099,10 @@ Renderer — settings:
   come from `providerAccountIdentity.ts`, the same reader the usage poller uses,
   so Providers and the Limits cards cannot disagree about who is signed in.
 - `apps/desktop/src/shared/providerRemediation.ts` — the single source of the
-  install command, login command, display name, and docs URL for every
-  CLI-backed provider, with the Windows spelling where the vendor ships a
-  different installer. Four surfaces read it and none keeps its own copy: the
+  login command, display name, and docs URL for every CLI-backed provider. It
+  has no install commands any more: ADE downloads its own pinned copy of every
+  agent ([agent tools cache](agent-tools-cache.md)), and `installCommand` is
+  always `null`. Four surfaces read it and none keeps its own copy: the
   Settings CLI-tools cards (`settings/providers/cliTools.ts`), the model
   picker's empty states (`shared/ModelPicker/providerEmptyState.tsx`), the CLI
   agent registry (`apps/ade-cli/src/services/agentRegistry.ts`), and the
@@ -1109,9 +1111,7 @@ Renderer — settings:
   Each string is the vendor's own documented one, and two are not the obvious
   guess: Droid has no non-interactive login, so the honest `loginCommand` is the
   bare `droid`, and Pi signs in through the interactive CLI's `/login`, so its
-  `loginCommand` is the bare `pi`. On Windows, Claude, Cursor and Droid each
-  ship a PowerShell installer rather than the POSIX line; a `curl … | sh` shown
-  to a Windows user is a dead end, not a fix.
+  `loginCommand` is the bare `pi`.
 - `apps/desktop/src/renderer/components/settings/PiProvidersPanel.tsx`
   — Pi's half of Settings → Providers: the sign-in flow and the provider
   catalog. Its own module because Pi's catalog is the size of OpenCode's and the
@@ -2105,7 +2105,7 @@ The pages themselves:
 | Appearance (Machines → This computer) | `AppearanceSection.tsx`, `AppearanceTerminal.tsx`, `ThemeGallery.tsx`, `ThemeCustomizer.tsx`, `ThemeImportExport.tsx` | Per computer, never synced. Theme families (dark + light each) with search, the Auto / Light / Dark mode choice, import and export, the interface and code faces, reduce motion, the Focus grid's chats per page, terminal text, and the **Background** (`#background`) scene picker — plain, gradient, one picture, or a shuffled library, with the shuffle cadence and App colours from the picture. It has one page, under This computer: a remote machine has no copy of it to show. Everything chat-shaped is on the Chat page. |
 | Apple devices (Machines → This computer) | `AppleDevicesSection.tsx` | This computer's own simulator and preview choices — the 3D device body, recording overlays (tap rings, typed-text badges), the remote streaming bitrate cap, and the recordings storage warning — drawn in the Appearance language. Per computer, because every Mac has its own simulators, and it sits beside Appearance under This computer rather than on the Account group. It still files through the account store so the brain on this computer can read the remote streaming cap and the recording overlays: each computer's copy lives under the account-wide scope with the device in the key (`device.<syncDeviceId>.<key>`, `accountDeviceSettingKey`). |
 | Chat | `ChatSection.tsx`, `DictationSection.tsx`, `LaunchPromptSection.tsx` (renders `ChatAppearancePreview`) | Chat typography and density, chat surface (tint, corners), chat details (copy-button position, message minimap, drafts button, launch-prompt clipboard, live preview), and voice input — which is chat dictation, so it lives here. The label maps stay exported from `AppearanceSection.tsx` and are imported, not copied, so the two pages cannot drift on what "Comfortable" means. |
-| Providers | `ProvidersSection.tsx`, `OAuthConnectModal.tsx` | Provider connections, model routing, spend cap, and voice input — merged because provider auth and per-task model routing are one mental model. **Coding Agents** cards (Claude Code, Codex CLI, Muse Code, Cursor, Droid, Pi — Pi's card also carries in-app provider sign-in) and **OpenCode — Universal Model Access**. Background helpers on this tab are scheduled-work pause/recovery only; naming and commit suggestions use the session's ADE provider. Legacy `?tab=ai`, `?tab=providers`, `?tab=background-jobs`, and `?tab=automations` land here. On the hosted web client every provider page is hidden (sign-in, keys and permissions run on the machine), so the tab instead renders the web-only **AI accounts** card (`agents.accounts`, `#ai-accounts`) with the connected machine's Claude and Codex `ProviderAccountsPanel`s. |
+| Providers | `ProvidersSection.tsx`, `OAuthConnectModal.tsx` | Provider connections, model routing, spend cap, and voice input — merged because provider auth and per-task model routing are one mental model. **Coding Agents** cards (Claude Code, Codex CLI, Muse Code, Cursor, Droid, Pi — Pi's card also carries in-app provider sign-in) and **OpenCode — Universal Model Access**. Background helpers on this tab are scheduled-work pause/recovery only; naming uses the session's ADE provider. Legacy `?tab=ai`, `?tab=providers`, `?tab=background-jobs`, and `?tab=automations` land here. On the hosted web client every provider page is hidden (sign-in, keys and permissions run on the machine), so the tab instead renders the web-only **AI accounts** card (`agents.accounts`, `#ai-accounts`) with the connected machine's Claude and Codex `ProviderAccountsPanel`s. |
 | Lanes | `LaneBehaviorSection.tsx`, `LaneTemplatesSection.tsx`, `PrChatTranscriptsSection.tsx` | How lanes start (`new lane base`), stay current (`auto-rebase`), and tell you they fell behind (`rebase suggestions` off/badge/banner + min-behind threshold), plus lane init recipes and PR transcript gists. Legacy `?tab=lane-templates` lands here. |
 | Integrations | `GitHubIntegrationSection.tsx`, `LinearIntegrationSection.tsx` | GitHub and Linear — reinstated as its own tab. Legacy `?tab=integrations`, `?tab=github`, and `?tab=linear` land here; `?integration=github|linear` too, while `?integration=cli` follows the `ade-cli` anchor to General. |
 | Notifications | `NotificationsSection.tsx`, `AgentCompletionSoundSection.tsx`, `ActivitySettingsControls.tsx`, `AiFeaturesSection.tsx` | Everything ADE tells you about running work. Delivery for `AttentionPreferences`: per-event policy (off / ambient / notify) for agent and PR events, quiet hours, focus suppression, phone delivery and escalation, and the agent completion sound — the per-event matrix and quiet hours were fully modelled with balanced defaults but had **no UI at all** before this page. Then the surfaces Activity paints: the ADE notch (enabled, reveal mode — `always` or `hover`, which render the identical strip and differ only in whether it is there before you point at it — expanded panel), celebrations, Activity sounds, hide-previews, and the per-machine notification mute. The retired `activity.notch-auto-reveal` and `activity.notch-ticker` entries are gone rather than hidden: the notch always flashes for work that needs you, and the strip is state-group counts with no ticker to cycle. All of it reads and writes through one `useActivitySettings()` model, so a change on one control can no longer be overwritten by a save from another copy; `ActivitySettingsControls` is mounted here **and** by the gear inside the Activity popover and pane, so the entry points cannot drift. Legacy `?tab=attention`, `?tab=activity`, and the `#attention-notch`, `#celebrations`, `#attention-sounds`, and `#hide-previews` hashes land here. |
@@ -2357,8 +2357,8 @@ only surface that shows the whole set of local logins for that provider. No
 other provider page has the panel, because no other provider can hold more than
 one identity per machine. Sign-in for Claude and Codex lives on each account
 row and on **Add account**. The left column does not repeat a Sign in section.
-A missing CLI still shows an Install block there, because the account rows do
-not carry the install command.
+A copy that is not downloaded yet shows the pinned-copy row (Download/Retry)
+under the status chip instead.
 
 - **Routing strip** above the cards, shown only when it has a switch: *Smart
   balance* (two or more accounts) and *Auto-start 5-hour windows* (while the

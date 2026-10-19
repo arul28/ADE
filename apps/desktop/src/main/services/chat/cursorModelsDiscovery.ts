@@ -15,7 +15,7 @@ import {
   reportProviderRuntimeReady,
 } from "../ai/providerRuntimeHealth";
 import { isCursorSdkResolutionError, loadCursorSdk } from "../ai/cursorSdkLoader";
-import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "../ai/cliExecutableResolver";
+import { resolvePinnedCursorAgentCli } from "../ai/pinnedProviderTools";
 import { stripVTControlCharacters } from "node:util";
 
 export type CursorModelParameterValue = { id: string; value: string };
@@ -1205,7 +1205,10 @@ export function mergeCursorModelDescriptorSources(args: {
 }
 
 /**
- * Best-effort: run `agent models` (and JSON variants) and parse stdout.
+ * Best-effort: run `agent models` (and JSON variants) on ADE's pinned Cursor
+ * CLI and parse stdout. `agentPath` is that pin's entry
+ * (`resolvePinnedCursorAgentCli().command`, Cursor's bundled Node); the
+ * script and flags its launcher would pass are added here.
  */
 export async function listCursorModelsFromCli(agentPath: string): Promise<CursorCliModelRow[]> {
   const now = Date.now();
@@ -1222,19 +1225,15 @@ export async function listCursorModelsFromCli(agentPath: string): Promise<Cursor
 
   let cliReportedNoModels = false;
   const failures: Array<Record<string, unknown>> = [];
-  const env = { ...process.env };
-  if (process.platform === "win32") {
-    // Discovery can find the shim in a newly installed directory even while
-    // the brain's inherited PATH is stale. Its node/agent children need the
-    // same expanded PATH, with Windows' original Path/PATH casing preserved.
-    setPathEnvValue(env, augmentProcessPathWithShellAndKnownCliDirs({ env }));
-  }
+  const pinned = resolvePinnedCursorAgentCli();
+  const leadingArgs = pinned?.command === agentPath ? pinned.leadingArgs : [];
+  const env = { ...process.env, ...pinned?.env };
   for (const args of probes) {
     try {
       // `agent models` lists every model and variant: ~13 KB on a current
       // account, past spawnAsync's 10 KB default, which silently cut the list
       // (and could leave a half-written last id that parsed as a model).
-      const result = await spawnAsync(agentPath, args, {
+      const result = await spawnAsync(agentPath, [...leadingArgs, ...args], {
         timeout: 12_000,
         maxOutputBytes: CURSOR_CLI_MODELS_MAX_OUTPUT_BYTES,
         env,

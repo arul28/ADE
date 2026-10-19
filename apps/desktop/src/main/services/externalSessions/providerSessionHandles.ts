@@ -5,6 +5,7 @@ import { resolveHomeDir } from "./discoveryUtils";
 import { piSessionRootForEnvironment } from "../chat/piSessionStore";
 import { museSessionsRoot } from "./discoverMuse";
 import { isPathInside, pathKey } from "../shared/pathCompare";
+import { resolvePinnedTool } from "../../../../../ade-cli/src/services/tools/pinnedTool";
 import type { ExternalSessionProvider } from "../../../shared/types/externalSessions";
 import {
   claudeConfigHome,
@@ -353,6 +354,7 @@ async function listProviderCliPids(
   runCommand: RunCommand,
   platform: NodeJS.Platform,
 ): Promise<number[]> {
+  const nodeCliMarkers = pinnedNodeCliMarkers();
   if (platform === "win32") {
     const result = await runCommand(
       "powershell.exe",
@@ -370,7 +372,7 @@ async function listProviderCliPids(
     for (const line of result.stdout.split(/\r?\n/u).slice(1)) {
       if (!line.trim()) continue;
       const lower = line.toLowerCase();
-      if (!isProviderCliCommandLine(lower)) continue;
+      if (!isProviderCliCommandLine(lower, nodeCliMarkers)) continue;
       const pid = Number.parseInt(line.replace(/^"+|"+$/g, "").split(",")[0] ?? "", 10);
       if (Number.isInteger(pid) && pid > 0) pids.push(pid);
     }
@@ -382,14 +384,50 @@ async function listProviderCliPids(
   for (const line of result.stdout.split(/\n/u)) {
     const match = line.trim().match(/^(\d+)\s+(.+)$/u);
     if (!match) continue;
-    if (!isProviderCliCommandLine(match[2]!.toLowerCase())) continue;
+    if (!isProviderCliCommandLine(match[2]!.toLowerCase(), nodeCliMarkers)) continue;
     pids.push(Number.parseInt(match[1]!, 10));
   }
   return uniquePositivePids(pids);
 }
 
-function isProviderCliCommandLine(lowerArgs: string): boolean {
-  if (/(?:^|[\\/\s])(?:claude|codex|droid|opencode|cursor-agent|qwen|grok|copilot|kimi)(?:\.exe)?(?:\s|$)/u.test(lowerArgs)) {
+/**
+ * ADE's pinned CLIs that run on a Node (`<node> <script>`): Qwen's bundle,
+ * Pi's package and Cursor's agent. Their process is a Node, so the script is
+ * what names them: any version of it inside the tool's own tools-cache
+ * package directory (a terminal can still run the previous pin after an
+ * update). Native pins are matched by their executable's name below.
+ */
+const NODE_RUN_PINNED_CLIS: ReadonlyArray<{ tool: string; file: string }> = [
+  { tool: "qwen", file: "script" },
+  { tool: "pi", file: "cli" },
+  { tool: "cursor-cli", file: "script" },
+];
+
+function pinnedNodeCliMarkers(): Array<{ packageDir: string; script: string }> {
+  const slashes = (value: string) => value.replace(/\\/g, "/").toLowerCase();
+  const markers: Array<{ packageDir: string; script: string }> = [];
+  for (const { tool, file } of NODE_RUN_PINNED_CLIS) {
+    const pinned = resolvePinnedTool(tool);
+    const script = pinned?.files[file];
+    if (!pinned || !script) continue;
+    markers.push({
+      packageDir: `${slashes(path.dirname(pinned.dir))}/`,
+      script: slashes(path.relative(pinned.dir, script)),
+    });
+  }
+  return markers;
+}
+
+function isProviderCliCommandLine(
+  lowerArgs: string,
+  nodeCliMarkers: ReadonlyArray<{ packageDir: string; script: string }>,
+): boolean {
+  // A bare name or any absolute path to it, ADE's pinned native entries included.
+  if (/(?:^|[\\/\s])(?:claude|codex|droid|opencode|cursor-agent|qwen|grok|copilot|kimi|muse)(?:\.exe)?(?:\s|$)/u.test(lowerArgs)) {
+    return true;
+  }
+  const normalized = lowerArgs.replace(/\\/g, "/");
+  if (nodeCliMarkers.some((marker) => normalized.includes(marker.packageDir) && normalized.includes(marker.script))) {
     return true;
   }
   return /(?:^|[\\/\s])pi(?:\.exe)?(?:\s|$)/u.test(lowerArgs)

@@ -294,7 +294,7 @@ describe("createAgentChatService", () => {
 
         expect(spawn).toHaveBeenCalledWith(
           "codex",
-          ["app-server"],
+          ["app-server", "-c", "check_for_update_on_startup=false"],
           expect.objectContaining({ detached: process.platform !== "win32" }),
         );
         expect(processKillSpy).toHaveBeenCalledWith(-99999, "SIGTERM");

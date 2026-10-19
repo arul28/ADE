@@ -595,7 +595,7 @@ export function createCodexVoiceSessions<
 
   const hostTransport = async (chat: TChat, session: VoiceSession<TRuntime>): Promise<Transport<TRuntime>> => {
     const { executable, env } = deps.resolveCodexExecutable(chat);
-    if (!executable) throw new Error("Voice needs Codex installed. Install Codex and sign in with ChatGPT.");
+    if (!executable) throw new Error("Voice needs ADE's Codex on this machine and a ChatGPT sign-in.");
     const host: CodexVoiceHost = await startCodexVoiceHost({
       executable,
       env,

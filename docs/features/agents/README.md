@@ -13,8 +13,8 @@ The former worker/hiring agents were removed. There is one persistent identity �
 | `apps/desktop/src/main/services/ai/tools/ctoOperatorTools.ts` | CTO operator tools for chat spawning, lanes/PRs/git/tests, Linear reads/writes, the `saveMemory` / `searchMemory` / `readMemory` / `readDiscoveries` memory tools, and the `loadCtoTools` pack loader. |
 | `apps/desktop/src/main/services/ai/tools/ctoToolPacks.ts` | The closed list of 11 CTO tool packs and their scopes, shared by the tool factory and the prompt's capability manifest. |
 | `apps/desktop/src/main/services/chat/ctoTurnContext.ts`, `codexCtoToolDeferral.ts` | The pure turn-context helpers and the Codex pack-deferral predicate, split out of `agentChatService` so they are testable without the provider graph. |
-| `apps/desktop/src/main/services/agentTools/agentToolsService.ts` | Detects external CLI tools on PATH. |
-| `apps/desktop/src/main/services/ai/piInstallation.ts` | Resolves the user's Pi installation — CLI path, SDK package root/entry, agent dir, `auth.json` / models / settings paths, provider inventory, and a `blocker` when the SDK path is unusable. `sdkAvailable` and `cliAvailable` are independent signals. Provider rows are the shared `AiPiProviderStatus` shape; a provider whose `baseUrl` is a loopback host is classified `local` and carries that endpoint through, so a model server the user runs is never mistaken for an API provider on the strength of a placeholder key. |
+| `apps/desktop/src/main/services/agentTools/agentToolsService.ts` | Detects external CLI tools on PATH (`ade.agentTools.detect`). Informational only: ADE never runs what it finds; agents run from ADE's pinned copies. |
+| `apps/desktop/src/main/services/ai/piInstallation.ts` | Resolves ADE's pinned Pi (the `pi` npm-tree pin; `ADE_PI_PACKAGE_ROOT` is a dev/test override, never a user install) — CLI path (`dist/cli.js`, run with a Node >= 22.19), SDK package root/entry, agent dir, `auth.json` / models / settings paths, provider inventory, and a `blocker` when the SDK path is unusable. `sdkAvailable` and `cliAvailable` are independent signals. Provider rows are the shared `AiPiProviderStatus` shape; a provider whose `baseUrl` is a loopback host is classified `local` and carries that endpoint through, so a model server the user runs is never mistaken for an API provider on the strength of a placeholder key. |
 | `apps/desktop/src/main/services/ai/piAuthService.ts` | In-app Pi sign-in: enumerates signable providers, drives Pi's own `ModelRuntime.login` on a dedicated inventory-only worker, and relays Pi's prompts and notices to whatever surface is listening. Relays credentials, never stores or logs them. |
 | `apps/ade-cli/src/cli.ts` | Agent-focused `ade` command surface and text/JSON output formatters. `ade new chat --mode chat|cli ... --type <subagent|peer>` mirrors the desktop New Chat toggle; parented agent sessions inherit `ADE_CHAT_SESSION_ID` and must choose a type, while `--no-parent` creates an independent top-level session. `ade chat read <session> --limit <n> --max-chars <n>` silently reads a bounded project-backed transcript window across registered projects, and `--page --cursor <offset>` walks older content. Personal chats remain on `ade chat ... --personal`. `ade chat activity` sets or clears a fixed session-card activity detail; the file also owns typed Work status, scheduled work, Linear attachment, secrets, iOS Simulator, App Control, and browser command families. |
 | `apps/ade-cli/src/services/account/accountAuthService.ts` | Required ADE account auth for humans, remote agents, and CI: loopback OAuth, account-directory device authorization, shared `account.session.v1` refresh storage, JWT-`exp`-authoritative access-token refresh, one cross-process refresh-rotation recovery attempt after `invalid_grant`, and ephemeral `ADE_ACCOUNT_TOKEN` credentials. Desktop, CLI, and ADE Code ask the brain-owned refresh broker for access tokens. |
@@ -287,11 +287,20 @@ When the spawned work must carry the current lane's unmerged commits, spawn
 into a child lane instead of a fresh one — see
 [Lanes › Child-lane guidance for spawned work](../lanes/stacking.md#child-lane-guidance-for-spawned-work).
 
-## Agent CLI install / auth from chat
+## Agent download / auth from chat
 
-When a chat targets a provider whose CLI is missing or unauthenticated on the active runtime, the chat surfaces an inline `AgentCliAuthCard`. The card is built by `classifyAgentCliError` from `apps/ade-cli/src/services/agentRegistry.ts` and gives the user a tracked terminal action for install or login.
+ADE runs its own pinned copy of every agent and downloads it on demand
+([agent tools cache](../onboarding-and-settings/agent-tools-cache.md)); nothing
+asks the user to install a CLI. When a chat targets a provider whose copy is not
+downloaded yet on the chat's machine, or is unauthenticated, the chat surfaces
+an inline `AgentCliAuthCard`. The card is built by `classifyAgentCliError` from
+`apps/ade-cli/src/services/agentRegistry.ts`. A missing copy gets Download/Retry
+(`ai.pinnedToolDownload`); a logged-out one gets a tracked terminal action for
+login, which runs the pinned binary.
 
-The important invariant is runtime locality: a desktop window bound to a remote `ade serve` daemon launches the install/auth command on that remote machine, not locally.
+The important invariant is runtime locality: both act on the chat's machine
+(`useChatRuntimeScope().pin`), so a remote chat downloads and signs in on that
+remote machine, not locally.
 
 **Pi is the exception: it signs in inside ADE.** Settings → Providers drives
 Pi's own `ModelRuntime.login` through `piAuthService.ts` and renders whatever Pi

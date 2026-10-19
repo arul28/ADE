@@ -11,8 +11,13 @@ import {
   codexConfigHome,
   COPILOT_TOKEN_ENV_KEYS,
   copilotConfigHome,
+  devinCredentialFiles,
+  factoryConfigHome,
   ghHostsFiles,
+  grokConfigHome,
+  kimiCodeConfigHome,
   openCodeDataDirs,
+  qwenConfigHome,
 } from "../shared/providerConfigHomes";
 
 /**
@@ -27,8 +32,9 @@ import {
  * that only uses Claude no longer downloads Codex, OpenCode, Copilot and Muse.
  *
  * Cheap on purpose: file and env checks and a PATH walk, never a spawn, so it
- * can run at startup. A tool this file does not know is always fetched, the old
- * behavior, so a newly pinned tool is never stranded by a missing signal.
+ * can run at startup. The user's own CLI on the PATH only counts as a sign of
+ * use (ADE never runs it). A tool this file has no rule for is never fetched
+ * at launch: it downloads the first time something needs it.
  */
 
 type DemandArgs = {
@@ -72,7 +78,9 @@ function providerSignals(tool: string, env: NodeJS.ProcessEnv, home: string, pla
         || exists(path.join(home, ".claude.json"));
     case "codex":
       return onPath("codex", env) || exists(path.join(codexConfigHome(homeArgs), "auth.json"));
+    // The terminal CLI follows the same account as the SDK runtime.
     case "copilot":
+    case "copilot-cli":
       return onPath("copilot", env)
         || hasEnv(env, COPILOT_TOKEN_ENV_KEYS)
         || exists(path.join(copilotConfigHome(homeArgs), "config.json"))
@@ -89,9 +97,57 @@ function providerSignals(tool: string, env: NodeJS.ProcessEnv, home: string, pla
         || exists(path.join(home, ".lmstudio"));
     case "muse":
       return onPath("muse", env) || exists(path.join(resolveMuseConfigDir({ ...env, HOME: home }), "auth.json"));
+    case "droid":
+      // Factory keeps no credential file ADE can read (authDetector.ts), so a
+      // Factory home of any kind is the sign.
+      return onPath("droid", env) || hasEnv(env, ["FACTORY_API_KEY"]) || exists(factoryConfigHome(homeArgs));
+    case "grok":
+      return onPath("grok", env) || hasEnv(env, ["XAI_API_KEY"]) || exists(path.join(grokConfigHome(homeArgs), "auth.json"));
+    case "qwen": {
+      const qwenHome = qwenConfigHome(homeArgs);
+      return onPath("qwen", env)
+        || hasEnv(env, ["QWEN_API_KEY", "DASHSCOPE_API_KEY"])
+        || ["oauth_creds.json", ".env", "settings.json"].some((file) => exists(path.join(qwenHome, file)));
+    }
+    case "kimi": {
+      const kimiHome = kimiCodeConfigHome(homeArgs);
+      return onPath("kimi", env) || exists(path.join(kimiHome, "config.toml")) || exists(path.join(kimiHome, "credentials"));
+    }
+    case "devin":
+      return onPath("devin", env) || hasEnv(env, ["WINDSURF_API_KEY"]) || devinCredentialFiles({ ...homeArgs, platform }).some(exists);
+    case "antigravity": {
+      // The agy CLI and the ACP server keep their state under GEMINI_HOME. A
+      // bare GEMINI_API_KEY is not a sign: plenty of tools read it.
+      const geminiHome = env.GEMINI_HOME?.trim() ? path.resolve(env.GEMINI_HOME.trim()) : path.join(home, ".gemini");
+      return onPath("agy", env)
+        || exists(path.join(geminiHome, "antigravity-acp"))
+        || exists(path.join(geminiHome, "antigravity-cli"));
+    }
+    case "cursor-cli": {
+      // cli-config.json lives under CURSOR_CONFIG_DIR (default ~/.cursor); the
+      // login is auth.json in Cursor's per-platform config dir.
+      const configDir = env.CURSOR_CONFIG_DIR?.trim() ? path.resolve(env.CURSOR_CONFIG_DIR.trim()) : path.join(home, ".cursor");
+      return onPath("cursor-agent", env)
+        || hasEnv(env, ["CURSOR_API_KEY"])
+        || exists(path.join(configDir, "cli-config.json"))
+        || exists(cursorAuthFile(env, home, platform));
+    }
+    // Node is only ADE's runtime for Pi's terminal CLI, so it follows Pi.
+    case "pi":
+    case "node": {
+      const agentDir = env.PI_CODING_AGENT_DIR?.trim() ? path.resolve(env.PI_CODING_AGENT_DIR.trim()) : path.join(home, ".pi", "agent");
+      return onPath("pi", env) || exists(path.join(agentDir, "auth.json"));
+    }
     default:
       return null;
   }
+}
+
+/** Where Cursor's CLI keeps its login (`getAuthFilePath` in the shipped CLI). */
+function cursorAuthFile(env: NodeJS.ProcessEnv, home: string, platform: NodeJS.Platform): string {
+  if (platform === "win32") return path.join(env.APPDATA?.trim() || path.join(home, "AppData", "Roaming"), "Cursor", "auth.json");
+  if (platform === "darwin") return path.join(home, ".cursor", "auth.json");
+  return path.join(env.XDG_CONFIG_HOME?.trim() || path.join(home, ".config"), "cursor", "auth.json");
 }
 
 function inCache(tool: string, context: ToolsContext): boolean {
@@ -111,7 +167,7 @@ export function selectDemandedAgentTools(pinned: readonly string[], args: Demand
   const fetch: string[] = [];
   const skip: string[] = [];
   for (const tool of pinned) {
-    const wanted = inCache(tool, context) || (providerSignals(tool, env, home, platform) ?? true);
+    const wanted = inCache(tool, context) || (providerSignals(tool, env, home, platform) ?? false);
     (wanted ? fetch : skip).push(tool);
   }
   return { fetch, skip };
@@ -122,6 +178,9 @@ const TOOL_PROVIDER: Record<string, string> = {
   "claude-code": "claude",
   codex: "codex",
   copilot: "copilot",
+  "copilot-cli": "copilot",
+  "cursor-cli": "cursor",
+  node: "pi",
   muse: "muse",
   opencode: "opencode",
 };

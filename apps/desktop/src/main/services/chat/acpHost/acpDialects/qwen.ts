@@ -79,6 +79,7 @@ import { asRecord, toOptionalString } from "../../../shared/utils";
 import { readQwenAccount } from "./acpAccounts";
 import { createQwenUsageLedger } from "./qwenUsageLedger";
 import { QWEN_SYSTEM_DEFAULTS_PATH_ENV } from "./qwenSkillDefaults";
+import { pinnedToolSelfUpdateEnv } from "../../../../../shared/pinnedToolSpawnEnv";
 
 /** Config option ids Qwen exposes through `session/set_config_option`. */
 export const QWEN_CONFIG_OPTION_IDS = ["mode", "model", "reasoning_effort"] as const;
@@ -104,14 +105,20 @@ export function readQwenModelUpdate(params: unknown): { sessionId: string | null
   };
 }
 
+/**
+ * ADE's pinned Qwen is the vendor's standalone bundle: its own Node running
+ * `lib/cli-entry.js`, so the command is that Node and `binaryArgs` carries the
+ * script. Spawned directly on every OS, never through a `.cmd` shim.
+ */
 function buildSpawnPlan(context: AcpSpawnContext): AcpSpawnPlan {
   return {
     command: context.binaryPath,
-    args: ["--acp"],
+    args: [...(context.binaryArgs ?? []), "--acp"],
     cwd: context.cwd,
     env: withOptionalEnv(context.baseEnv, {
       QWEN_HOME: context.configHome,
       [QWEN_SYSTEM_DEFAULTS_PATH_ENV]: context.adeSkillDefaultsPath,
+      ...pinnedToolSelfUpdateEnv("qwen"),
     }),
   };
 }

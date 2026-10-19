@@ -10,7 +10,7 @@ function setPlatform(value: NodeJS.Platform): void {
 afterEach(() => setPlatform(originalPlatform));
 
 describe("classifyAgentCliError", () => {
-  it("classifies missing agent CLIs with POSIX install/auth commands", async () => {
+  it("classifies missing agent CLIs with their sign-in command", async () => {
     setPlatform("linux");
     vi.resetModules();
     const { classifyAgentCliError: classifyForLinux } = await import("./agentRegistry");
@@ -18,9 +18,6 @@ describe("classifyAgentCliError", () => {
       agent: "codex",
       displayName: "Codex CLI",
       category: "missing",
-      installCommand: process.platform === "win32"
-        ? "npm install -g @openai/codex"
-        : 'mkdir -p "$HOME/.npm-global" "$HOME/.local/bin" && NPM_CONFIG_PREFIX="$HOME/.npm-global" npm install -g @openai/codex',
       authCommand: "codex login",
     });
   });
@@ -32,13 +29,11 @@ describe("classifyAgentCliError", () => {
     expect(classifyForWindows("spawn codex ENOENT")).toMatchObject({
       agent: "codex",
       category: "missing",
-      installCommand: "npm install -g @openai/codex",
       authCommand: "codex login",
     });
     expect(classifyForWindows("spawn cursor-agent ENOENT", "cursor")).toMatchObject({
       agent: "cursor",
       category: "missing",
-      installCommand: `powershell.exe -NoProfile -Command "irm 'https://cursor.com/install?win32=true' | iex"`,
       authCommand: "cursor-agent login",
     });
     // Factory ships a Windows installer; the POSIX `curl … | sh` line is a dead
@@ -47,23 +42,16 @@ describe("classifyAgentCliError", () => {
       agent: "droid",
       displayName: "Factory Droid",
       category: "missing",
-      installCommand: `powershell.exe -NoProfile -Command "irm https://app.factory.ai/cli/windows | iex"`,
       authCommand: "droid",
     });
     expect(classifyForWindows("spawn claude ENOENT")).toMatchObject({
       agent: "claude",
       category: "missing",
-      installCommand: `powershell.exe -NoProfile -Command "irm https://claude.ai/install.ps1 | iex"`,
       authCommand: "claude auth login",
     });
   });
 
-  it("takes every shipped provider's commands from the one remediation table", async () => {
-    // `providerRemediation.ts` owns the vendor strings; this registry only wraps
-    // them for the shell it hands them to. A row that drifts from the table is
-    // the bug this test exists to catch — a Windows user was told to run
-    // `npm install -g @anthropic-ai/claude-code` on one screen and Anthropic's
-    // PowerShell installer on another.
+  it("takes every shipped provider's sign-in command from the remediation table", async () => {
     for (const platform of ["darwin", "win32"] as const) {
       setPlatform(platform);
       vi.resetModules();
@@ -75,32 +63,6 @@ describe("classifyAgentCliError", () => {
         const row = AGENT_CLI_REGISTRY.find((entry) => entry.agent === provider);
         const shared = resolveProviderRemediation(provider, platform);
         expect(row?.authCommand).toBe(shared.loginCommand);
-        expect(row?.installCommand).toContain(shared.installCommand ?? "");
-      }
-    }
-  });
-
-  it("installs every ACP CLI from the shared source, at its latest release", async () => {
-    // ADE runs whichever version of these CLIs is installed, so the install
-    // command must fetch the latest release: a pinned `@x.y.z` here would leave
-    // a new user on a build nobody verified.
-    for (const platform of ["darwin", "win32"] as const) {
-      setPlatform(platform);
-      vi.resetModules();
-      const [{ AGENT_CLI_REGISTRY }, { ACP_PROVIDER_METADATA, ACP_PROVIDER_IDS }] = await Promise.all([
-        import("./agentRegistry"),
-        import("../../../desktop/src/shared/acpProviderMetadata"),
-      ]);
-      for (const provider of ACP_PROVIDER_IDS) {
-        const row = AGENT_CLI_REGISTRY.find((entry) => entry.agent === provider);
-        const source = ACP_PROVIDER_METADATA[provider].install;
-        expect(row?.authCommand).toBe(ACP_PROVIDER_METADATA[provider].loginCommand);
-        if (source.kind === "npm") {
-          expect(row?.installCommand).toContain(`npm install -g ${source.packageName}`);
-          expect(row?.installCommand).not.toMatch(/@\d+\.\d+/);
-        } else {
-          expect(row?.installCommand).toBe(source.command);
-        }
       }
     }
   });

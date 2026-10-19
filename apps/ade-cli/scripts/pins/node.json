@@ -1,0 +1,57 @@
+{
+  "tool": "node",
+  "version": "24.22.0",
+  "source": "nodejs.org/dist/v24.22.0/SHASUMS256.txt",
+  "targets": {
+    "darwin-arm64": {
+      "format": "archive",
+      "package": "node-darwin-arm64",
+      "version": "24.22.0",
+      "url": "https://nodejs.org/dist/v24.22.0/node-v24.22.0-darwin-arm64.tar.gz",
+      "archive": "tar.gz",
+      "stripComponents": 1,
+      "sha256": "6a9724d9b50a5f22b4816cded441b5a8d9ddae546191a5e5b7efa5a5e2ee26d5",
+      "size": 53049576
+    },
+    "darwin-x64": {
+      "format": "archive",
+      "package": "node-darwin-x64",
+      "version": "24.22.0",
+      "url": "https://nodejs.org/dist/v24.22.0/node-v24.22.0-darwin-x64.tar.gz",
+      "archive": "tar.gz",
+      "stripComponents": 1,
+      "sha256": "495e3f273c645f3c4677d438304cdfc701729ea5dec5728f5c8e76a2dece4b91",
+      "size": 54356645
+    },
+    "linux-arm64": {
+      "format": "archive",
+      "package": "node-linux-arm64",
+      "version": "24.22.0",
+      "url": "https://nodejs.org/dist/v24.22.0/node-v24.22.0-linux-arm64.tar.gz",
+      "archive": "tar.gz",
+      "stripComponents": 1,
+      "sha256": "b7e7991d5407815adfa74a2a9cd4db683552c8ce32ff4a295c22e972849c3f5d",
+      "size": 57997377
+    },
+    "linux-x64": {
+      "format": "archive",
+      "package": "node-linux-x64",
+      "version": "24.22.0",
+      "url": "https://nodejs.org/dist/v24.22.0/node-v24.22.0-linux-x64.tar.gz",
+      "archive": "tar.gz",
+      "stripComponents": 1,
+      "sha256": "28ea0a438de9a13bd7891fd758eee6c7819ee8af5442dfd8d45bd65e56d4228c",
+      "size": 58256361
+    },
+    "win32-x64": {
+      "format": "archive",
+      "package": "node-win32-x64",
+      "version": "24.22.0",
+      "url": "https://nodejs.org/dist/v24.22.0/node-v24.22.0-win-x64.zip",
+      "archive": "zip",
+      "stripComponents": 1,
+      "sha256": "f9683a19877e12a9b167305c8db71040d812876359de21f0d2e97c3f321f80c3",
+      "size": 37733703
+    }
+  }
+}

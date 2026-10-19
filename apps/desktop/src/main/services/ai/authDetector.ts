@@ -10,14 +10,19 @@ import {
   augmentProcessPathWithShellAndKnownCliDirs,
   invalidateExecutableLookupCache,
   refreshWindowsPersistedPathDirs,
-  resolveExecutableFromKnownLocations,
   setPathEnvValue,
 } from "./cliExecutableResolver";
 import { getLocalProviderDefaultEndpoint, type LocalProviderFamily } from "../../../shared/modelRegistry";
-import { CURSOR_CLI_EXECUTABLES } from "../../../shared/providerCliExecutables";
+import { providerSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
 import type { AiLocalProviderConfigs } from "../../../shared/types";
 import { inspectLocalProvider, clearLocalProviderInspectionCache } from "./localModelDiscovery";
 import { resolveDroidExecutable } from "./droidExecutable";
+import { resolveClaudeCodeExecutable } from "./claudeCodeExecutable";
+import { resolveCodexExecutable } from "./codexExecutable";
+import { resolveAcpExecutable, resolveCopilotSdkRuntime } from "./acpExecutables";
+import { pinnedToolForProvider, pinnedToolPresence, resolvePinnedCursorAgentCli } from "./pinnedProviderTools";
+import { pinnedToolInstallGeneration } from "../../../../../ade-cli/src/services/tools/onDemand";
+import type { PinnedToolState } from "../../../../../ade-cli/src/services/tools/pinnedTool";
 import { loadQwenUserSettings } from "./qwenUserSettings";
 import { COPILOT_TOKEN_ENV_KEYS, copilotConfigHome, devinCredentialFiles, ghHostsFiles, grokConfigHome } from "../shared/providerConfigHomes";
 import {
@@ -37,13 +42,14 @@ type CliName =
   | "kimi"
   | "grok"
   | "copilot"
-  | "devin";
+  | "devin"
+  | "antigravity";
 
 /**
  * ACP CLIs whose auth state is read from disk, not from a spawn: see
  * `inspectAcpCliCredentials`.
  */
-const ACP_CLI_NAMES = ["qwen", "kimi", "grok", "devin"] as const;
+const ACP_CLI_NAMES = ["qwen", "kimi", "grok", "devin", "antigravity"] as const;
 type AcpCliName = (typeof ACP_CLI_NAMES)[number];
 
 function isAcpCliName(cli: CliName): cli is AcpCliName {
@@ -63,8 +69,14 @@ export type ApiKeyVerificationResult = {
 
 export type CliAuthStatus = {
   cli: CliName;
+  /** ADE's own pinned copy is on this machine (never a CLI the user installed). */
   installed: boolean;
+  /** That copy's path; null when not installed. */
   path: string | null;
+  /** Why it is not installed: the tools cache's state. "ready" when installed. */
+  pinnedState?: PinnedToolState;
+  /** The sentence for that state, when not installed. */
+  pinnedBlocker?: string | null;
   authenticated: boolean;
   verified: boolean;
   /** Optional Cursor CLI diagnostic only — not used for Cursor SDK auth. */
@@ -128,6 +140,9 @@ const CLI_AUTH_PROBES: Record<CliName, string[][]> = {
   // `devin auth status` is a real, non-interactive subcommand; the
   // protocol-level handshake is still authoritative.
   devin: [["auth", "status"], ["--version"]],
+  // Antigravity's server has no CLI surface at all: its sign-in is read off
+  // disk (and the macOS keychain's item list) by `inspectAntigravityCredentials`.
+  antigravity: [],
 };
 
 /**
@@ -195,6 +210,12 @@ async function inspectAcpCliCredentials(
     return { authenticated: false, verified: false };
   }
 
+  if (cli === "antigravity") {
+    const { inspectAntigravityCredentials } = await import("./antigravityAuth");
+    const state = await inspectAntigravityCredentials(env);
+    return { authenticated: state.authenticated, verified: false };
+  }
+
   return { authenticated: false, verified: false };
 }
 
@@ -231,15 +252,6 @@ async function fileExists(target: string): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-function cliSpawnCommands(cli: CliName): readonly string[] {
-  if (cli === "cursor") return CURSOR_CLI_EXECUTABLES.launchCandidates;
-  return [cli];
-}
-
-function cliSpawnCommand(cli: CliName): string {
-  return cliSpawnCommands(cli)[0]!;
 }
 
 const AUTH_INDICATORS = [
@@ -288,66 +300,42 @@ function hasPattern(text: string, patterns: RegExp[]): boolean {
   return patterns.some((pattern) => pattern.test(text));
 }
 
-function getLookupShell(): string {
-  return process.env.SHELL || "/bin/zsh";
-}
-
-function findExplicitCommandPath(command: string): string | null {
-  return resolveExecutableFromKnownLocations(command)?.path ?? null;
-}
+/** The spawn ADE's copy of a CLI needs: its entry, plus a script for a JS CLI on a pinned Node. */
+type PinnedCliCommand = { command: string; leadingArgs: string[] };
 
 /**
- * Resolve where a CLI actually lives, or null when it is not installed.
- *
- * One function answers both "is it installed" and "what do we launch", so the
- * Settings card can never advertise a provider the chat runtime cannot spawn:
- * `installed` is exactly "this file exists" and `path` is exactly that file,
- * which is what flows into {@link DetectedAuth} and on into
- * `resolveClaudeCodeExecutable`/`resolveDroidExecutable`.
- *
- * Windows: never probe by exit code. `spawnAsync` routes extension-less
- * commands through `cmd.exe /d /s /c "…"` (see `resolveCliSpawnInvocation`),
- * and cmd.exe itself always starts — a missing binary comes back as exit 1
- * with `'claude' is not recognized as an internal or external command`, not as
- * the ENOENT spawn error (`status === null`) that means "missing" on
- * macOS/Linux. An exit-code probe therefore reports *every* CLI as installed
- * on Windows. The known-location scan answers it honestly instead: it walks
- * every PATH entry, then the known install dirs, matching PATHEXT names (plus
- * `.ps1`). That is everything `where.exe` searches except the current
- * directory, which ADE must not resolve a CLI from — so a miss there is final,
- * and no `where.exe` is spawned. Each one blocked the brain's event loop for up
- * to ~100 ms, once per missing CLI per detection pass.
+ * Where ADE's own copy of a provider CLI is, through the resolver that
+ * provider's runtime uses, or null when this machine has none. Never a PATH,
+ * `which` or login-shell search: a CLI the user installed is not ADE's.
  */
-async function resolveCommandLocation(command: string): Promise<string | null> {
-  const explicitPath = findExplicitCommandPath(command);
-  if (explicitPath) return explicitPath;
-
-  if (process.platform === "win32") return null;
-
-  // POSIX: a direct spawn bypasses shell init (.zshrc errors, slow profiles),
-  // and here ENOENT really does surface as `status === null`.
-  try {
-    const direct = await spawnAsync(command, ["--version"], { timeout: 5_000 });
-    if (direct.status !== null) {
-      const which = await spawnAsync("which", [command], { timeout: 3_000 });
-      const line = which.status === 0 ? (which.stdout ?? "").trim() : "";
-      return line || command;
+function pinnedCliCommand(cli: CliName): PinnedCliCommand | null {
+  const env = process.env;
+  const resolved: { path: string; source: string; args?: string[] } | null = (() => {
+    switch (cli) {
+      case "claude": return resolveClaudeCodeExecutable({ env });
+      case "codex": return resolveCodexExecutable({ env });
+      case "droid": return resolveDroidExecutable({ env });
+      // Copilot chats run on ADE's SDK runtime; that is the install that matters.
+      case "copilot": return resolveCopilotSdkRuntime({ env });
+      case "cursor": {
+        // Diagnostic only: Cursor chat runs on the bundled @cursor/sdk.
+        const pinned = resolvePinnedCursorAgentCli();
+        return pinned ? { path: pinned.command, source: "tools-cache", args: pinned.leadingArgs } : null;
+      }
+      default: return resolveAcpExecutable(cli, { env });
     }
-  } catch {
-    // fall through to shell-based lookup
-  }
+  })();
+  if (!resolved || resolved.source === "fallback-command" || !resolved.path) return null;
+  return { command: resolved.path, leadingArgs: resolved.args ?? [] };
+}
 
-  try {
-    const result = await spawnAsync(getLookupShell(), ["-lc", 'command -v "$1"', "--", command], { timeout: 5_000 });
-    if (result.status === 0) {
-      const line = (result.stdout ?? "").trim();
-      if (line) return line;
-    }
-  } catch {
-    // Not installed.
-  }
-
-  return null;
+/** The probe environment: the machine's, with the CLI's self-update switched off. */
+function probeEnv(cli: CliName): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    ...providerSelfUpdateEnv(cli),
+    ...(cli === "cursor" ? resolvePinnedCursorAgentCli()?.env : {}),
+  };
 }
 
 async function refreshProcessPathFromShell(): Promise<void> {
@@ -406,14 +394,15 @@ export function parseJsonAuthStatus(stdout: string): ParsedJsonAuthStatus {
 
 async function inspectCliAuthentication(
   cli: CliName,
-  command: string = cli,
+  pinned: PinnedCliCommand,
 ): Promise<Pick<CliAuthStatus, "authenticated" | "verified">> {
   const probes = CLI_AUTH_PROBES[cli] ?? [];
   let sawUnsupported = false;
+  const env = probeEnv(cli);
 
   for (const args of probes) {
     try {
-      const result = await spawnAsync(command, args, { timeout: 8_000 });
+      const result = await spawnAsync(pinned.command, [...pinned.leadingArgs, ...args], { timeout: 8_000, env });
       // A missing binary answers no probe; the remaining ones would only
       // spawn more `cmd.exe` "not recognized" exits on Windows.
       if (result.notFound) break;
@@ -491,21 +480,18 @@ function inferCursorPaidPlanFromJson(json: Record<string, unknown>): boolean {
   return true;
 }
 
-async function inspectCursorCliAuthentication(command: string): Promise<{
+async function inspectCursorCliAuthentication(pinned: PinnedCliCommand): Promise<{
   authenticated: boolean;
   verified: boolean;
   paidPlan: boolean;
 }> {
   const probes = CLI_AUTH_PROBES.cursor ?? [];
   let sawUnsupported = false;
-  const env = { ...process.env };
-  if (process.platform === "win32") {
-    setPathEnvValue(env, augmentProcessPathWithShellAndKnownCliDirs({ env }));
-  }
+  const env = probeEnv("cursor");
 
   for (const args of probes) {
     try {
-      const result = await spawnAsync(command, args, { timeout: 8_000, env });
+      const result = await spawnAsync(pinned.command, [...pinned.leadingArgs, ...args], { timeout: 8_000, env });
       if (result.notFound) break;
       const stdout = result.stdout ?? "";
       const normalized = `${stdout}\n${result.stderr ?? ""}`.trim().toLowerCase();
@@ -587,7 +573,7 @@ async function hasDroidConfiguredCredentials(): Promise<boolean> {
   }
 }
 
-async function inspectDroidCliPresence(command: string, options?: { deep?: boolean }): Promise<{
+async function inspectDroidCliPresence(pinned: PinnedCliCommand, options?: { deep?: boolean }): Promise<{
   installed: boolean;
   authenticated: boolean;
   verified: boolean;
@@ -601,7 +587,7 @@ async function inspectDroidCliPresence(command: string, options?: { deep?: boole
   let sawVersionOk = false;
   for (const args of probes) {
     try {
-      const result = await spawnAsync(command, args, { timeout: 8_000 });
+      const result = await spawnAsync(pinned.command, [...pinned.leadingArgs, ...args], { timeout: 8_000, env: probeEnv("droid") });
       if (result.status === 0) {
         sawVersionOk = true;
         break;
@@ -1241,7 +1227,13 @@ export async function verifyProviderApiKey(
 // CLI auth cache — avoid re-probing every time a dialog opens
 // ---------------------------------------------------------------------------
 const CLI_AUTH_CACHE_TTL_MS = 60_000; // 1 minute
-let cachedCliAuth: { checkedAtMs: number; statuses: CliAuthStatus[]; skipAuthProbe: boolean } | null = null;
+let cachedCliAuth: {
+  checkedAtMs: number;
+  statuses: CliAuthStatus[];
+  skipAuthProbe: boolean;
+  /** A pinned tool that lands changes `installed`, so the cache is stale then. */
+  toolInstallGeneration: number;
+} | null = null;
 
 /** Synchronous read from cache — returns empty array if not yet populated. */
 export function getCachedCliAuthStatuses(): CliAuthStatus[] {
@@ -1255,6 +1247,7 @@ export async function detectCliAuthStatuses(options?: { force?: boolean; skipAut
     !options?.force
     && cachedCliAuth
     && now - cachedCliAuth.checkedAtMs < CLI_AUTH_CACHE_TTL_MS
+    && cachedCliAuth.toolInstallGeneration === pinnedToolInstallGeneration()
     && (!cachedCliAuth.skipAuthProbe || skipAuthProbe)
   ) {
     return cachedCliAuth.statuses;
@@ -1265,12 +1258,11 @@ export async function detectCliAuthStatuses(options?: { force?: boolean; skipAut
     cachedLocalProviders = null;
     invalidateExecutableLookupCache();
   }
-  // Windows: pick up CLIs whose installer only touched the persisted PATH
-  // since ADE started. Cached for 30 s, so a non-forced pass usually costs
-  // nothing; the forced pass (Settings "re-check") always rereads it. Folding
-  // it into process.env as well means provider CLIs spawned from here on (and
-  // their own children) resolve the same tools. On Windows that merge spawns
-  // nothing; elsewhere it runs a login shell, so it stays force-only there.
+  const toolInstallGeneration = pinnedToolInstallGeneration();
+  // Windows: pick up tools whose installer only touched the persisted PATH
+  // since ADE started, for the provider CLIs' own children (git, shells).
+  // Cached for 30 s, so a non-forced pass usually costs nothing. Provider CLIs
+  // themselves are never looked up on the PATH: ADE runs its own copies.
   await refreshWindowsPersistedPathDirs({ force: options?.force === true });
   if (options?.force || process.platform === "win32") {
     await refreshProcessPathFromShell();
@@ -1280,89 +1272,69 @@ export async function detectCliAuthStatuses(options?: { force?: boolean; skipAut
 
   // Probe all CLIs in parallel
   const statuses = await Promise.all(
-    cliChecks.map(async (cli) => {
-      let spawnName = cliSpawnCommand(cli);
-      let path: string | null = null;
-      for (const candidate of cliSpawnCommands(cli)) {
-        const location = await resolveCommandLocation(candidate);
-        if (location) {
-          spawnName = candidate;
-          path = location;
-          break;
-        }
-      }
-      const installed = path !== null;
-      const cmd = path ?? spawnName;
-      // Copilot chats run on ADE's own runtime, so a sign-in counts with no CLI.
-      if (!installed && cli === "copilot") {
-        const auth = await inspectCopilotCliCredentials();
-        return { cli, installed, path, authenticated: auth.authenticated, verified: auth.verified };
-      }
-      if (!installed) {
-        return {
-          cli,
-          installed,
-          path,
-          authenticated: false,
-          verified: false,
-        };
-      }
+    cliChecks.map(async (cli): Promise<CliAuthStatus> => {
+      const pinned = pinnedCliCommand(cli);
+      const tool = pinnedToolForProvider(cli);
+      const presence = tool
+        ? pinnedToolPresence(tool.tool, tool.label, pinned?.command ?? null)
+        : { installed: pinned !== null, path: pinned?.command ?? null, state: "ready" as const, blocker: null };
+      const installed = pinned !== null;
+      const path = presence.path;
+      const base = { cli, installed, path, pinnedState: presence.state, pinnedBlocker: presence.blocker };
+      // Disk-only sign-ins are read whether or not ADE's copy is here yet, so
+      // a signed-in provider reads "downloading", not "not signed in". Copilot
+      // chats run on ADE's runtime, so a sign-in counts with no CLI at all.
       if (cli === "copilot") {
         const auth = await inspectCopilotCliCredentials();
-        return { cli, installed, path, authenticated: auth.authenticated, verified: auth.verified };
+        return { ...base, authenticated: auth.authenticated, verified: auth.verified };
       }
       if (isAcpCliName(cli)) {
         // Disk-only, so there is nothing for `skipAuthProbe` to skip.
         const auth = await inspectAcpCliCredentials(cli);
-        return { cli, installed, path, authenticated: auth.authenticated, verified: auth.verified };
+        return { ...base, authenticated: auth.authenticated, verified: auth.verified };
+      }
+      // Every other probe runs ADE's copy, so it waits for that copy.
+      if (!pinned) {
+        return { ...base, authenticated: false, verified: false };
       }
       if (skipAuthProbe && cli !== "droid") {
         return {
-          cli,
-          installed,
-          path,
+          ...base,
           authenticated: true,
           verified: false,
           ...(cli === "cursor" ? { paidPlan: true } : {}),
         };
       }
       if (cli === "cursor") {
-        const auth = await inspectCursorCliAuthentication(cmd);
+        const auth = await inspectCursorCliAuthentication(pinned);
         return {
-          cli,
-          installed,
-          path,
+          ...base,
           authenticated: auth.authenticated,
           verified: auth.verified,
           paidPlan: auth.paidPlan,
         };
       }
       if (cli === "droid") {
-        // `path` is a file resolveCommandLocation() proved exists, so it is
-        // strictly better than resolveDroidExecutable(), whose last resort is
-        // the bare command name. Reached only when installed, so the shallow
-        // presence check below is asking about credentials, not existence.
-        const auth = await inspectDroidCliPresence(cmd, { deep: options?.force === true });
+        // Reached only when ADE's copy is here, so the shallow presence check
+        // below is asking about credentials, not existence.
+        const auth = await inspectDroidCliPresence(pinned, { deep: options?.force === true });
         return {
-          cli,
+          ...base,
           installed: auth.installed,
-          path,
           authenticated: auth.authenticated,
           verified: auth.verified,
         };
       }
-      const auth = await inspectCliAuthentication(cli, cmd);
+      const auth = await inspectCliAuthentication(cli, pinned);
       return {
-        cli,
-        installed,
-        path,
+        ...base,
         authenticated: auth.authenticated,
         verified: auth.verified,
       };
     }),
   );
 
-  cachedCliAuth = { checkedAtMs: now, statuses, skipAuthProbe };
+  cachedCliAuth = { checkedAtMs: now, statuses, skipAuthProbe, toolInstallGeneration };
   return statuses;
 }
 
@@ -1383,7 +1355,7 @@ export async function detectAllAuth(
     results.push({
       type: "cli-subscription",
       cli: cli.cli,
-      path: cli.path ?? cliSpawnCommand(cli.cli),
+      path: cli.path ?? "",
       authenticated: cli.authenticated,
       verified: cli.verified,
       ...(cli.cli === "cursor" && typeof cli.paidPlan === "boolean" ? { paidPlan: cli.paidPlan } : {}),

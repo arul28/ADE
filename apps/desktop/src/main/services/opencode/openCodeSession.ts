@@ -8,6 +8,7 @@ import { resolveUserOpenCodeDataRoot } from "../../../shared/opencodeDataHome";
 import type { Logger } from "../logging/logger";
 import { ADE_OPENCODE_LAUNCH_ENV } from "../../../shared/cliLaunch";
 import { resolveOpenCodeBinaryPath } from "./openCodeBinaryManager";
+import { pinnedToolNotReadyError } from "../ai/pinnedProviderTools";
 import { readOpenCodeDb } from "./openCodeCredentials";
 import {
   buildOpenCodeConfig,
@@ -143,7 +144,7 @@ export async function ensureOpenCodeAvailable(): Promise<void> {
   const download = pinnedToolDownload("opencode");
   if (download) await download;
   if (!resolveOpenCodeBinaryPath()) {
-    throw new Error("OpenCode is not available: no bundled or installed OpenCode 2 binary was found.");
+    throw pinnedToolNotReadyError("opencode", "OpenCode");
   }
 }
 

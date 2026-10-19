@@ -23,7 +23,7 @@ shared ACP host. Their spec is `acp-providers-spec.md`.
 | `apps/desktop/src/main/services/chat/copilotSdkProtocol.ts` | Messages between the app and the worker. |
 | `apps/desktop/src/main/services/chat/copilotSdkEventMapper.ts` | SDK session events to ADE chat events. |
 | `apps/desktop/src/main/services/chat/copilotSdkPermissions.ts` | The "Allow for this session" rule Copilot can remember for a permission prompt. |
-| `apps/desktop/src/main/services/ai/acpExecutables.ts` (`resolveCopilotSdkRuntime`) | Picks the runtime chats run on: an override, ADE's pinned download, the SDK's own package (a source checkout), the previous pinned version, then the machine's `copilot`. |
+| `apps/desktop/src/main/services/ai/acpExecutables.ts` (`resolveCopilotSdkRuntime`) | Picks the runtime chats run on: a dev/test override, ADE's pinned download, the SDK's own package (a source checkout), the previous pinned version. Never the machine's `copilot`. `resolveCopilotExecutable` in the same file resolves the separate `copilot-cli` pin that terminals run. |
 | `apps/desktop/src/main/services/ai/providerConnectionStatus.ts` (`buildCopilotConnection`) | Copilot's Settings and availability status, from the SDK's live sign-in check. |
 | `apps/desktop/src/main/services/chat/copilotModelsDiscovery.ts` | Model rows, the Auto-only fallback, and the saved model catalog. |
 | `apps/desktop/src/main/services/ai/copilotSdkLoader.ts` | Loads `@github/copilot-sdk` inside the worker only. |
@@ -55,21 +55,31 @@ shared ACP host. Their spec is `acp-providers-spec.md`.
 - **When it downloads.** At launch and `ade serve` when the machine shows signs
   of Copilot (a `copilot` CLI, a token in the environment, `~/.copilot`, or a
   `gh auth login`); otherwise when a status refresh first finds one of those, or
-  when a Copilot chat or task starts. A chat says "Downloading the Copilot
-  runtime for this machine" while it waits. See
+  when a Copilot chat or task starts. A chat says "ADE is downloading the
+  Copilot runtime for this machine" while it waits. See
   [agent-tools-cache.md](../onboarding-and-settings/agent-tools-cache.md#which-tools-a-machine-fetches).
 - **Runtime order** (`resolveCopilotSdkRuntime`): `COPILOT_EXECUTABLE` or
   `GITHUB_COPILOT_EXECUTABLE` when set, then the pinned download, then the SDK's
   own platform package in `node_modules` (a source checkout, which
   `require.resolve` also finds through the brain's `NODE_PATH`), then the
-  previous pinned version while a new one downloads, then the machine's
-  `copilot`. A candidate counts only with its `runtime.node` beside it. A machine
-  CLI that is too old fails with the SDK's protocol message plus "Update the
-  Copilot CLI with `copilot update`". On Windows the fallback follows an npm
-  `copilot.cmd` shim to the native `copilot.exe` beside it.
+  previous pinned version while a new one downloads, else missing (the chat
+  waits for the download). A candidate counts only with its `runtime.node`
+  beside it. The machine's own `copilot` is never used. An override that does
+  not match the SDK fails with the SDK's protocol message plus
+  "COPILOT_EXECUTABLE names a Copilot that does not match ADE's Copilot SDK."
+- **Self-update off.** The SDK passes `--no-auto-update` to its runtime, and ADE
+  also sets `COPILOT_AUTO_UPDATE=false` on the runtime and the terminal CLI.
+- **No fall-forward.** The runtime is version-paired with the SDK, so ADE never
+  swaps in a newer one on its own. When an organisation policy requires a newer
+  client (`managed_client_update_required`, or "your organization's managed
+  settings require version X or newer"), the failed request and the chat's
+  `session.error` read "Your organization's GitHub Copilot policy requires
+  Copilot X or newer. ADE runs its own tested copy (Y) and does not update it on
+  its own, so Copilot cannot run until ADE is updated." The stderr line logs as
+  `agent_chat.copilot_client_update_required`.
 - **Other machines.** Every brain downloads the same pinned runtime for itself;
-  only a host the manifest does not pin (Windows on Arm) falls back to its own
-  `copilot` CLI. Target detection does not tell musl Linux from glibc, so an
+  a host the manifest does not pin (Windows on Arm) reads "not available on
+  this machine". Target detection does not tell musl Linux from glibc, so an
   Alpine host gets the glibc `linux-x64` pin, as it already does for Claude and
   Codex. The standalone `ade` runtime (`install.sh`, the SSH
   bootstrap) is one Node SEA executable with no `copilotSdkWorker.cjs` beside
@@ -77,8 +87,12 @@ shared ACP host. Their spec is `acp-providers-spec.md`.
   through the executable's hidden `__ade-copilot-sdk-worker` command
   (`chat/sdkWorkerProcess.ts`). Cursor, Droid and Pi do the same with
   `__ade-cursor-sdk-worker`, `__ade-droid-sdk-worker` and `__ade-pi-sdk-worker`.
-- The terminal Copilot CLI launch is separate and still needs `copilot`
-  installed (`resolveCopilotExecutable`).
+- **The terminal Copilot CLI** is a separate pin, `copilot-cli` (npm
+  `@github/copilot-<platform>`, 1.0.98), because the SDK runtime is not an
+  interactive CLI. Terminals and sign-in run it by absolute path
+  (`resolveCopilotExecutable`, `pty/pinnedProviderCli.ts`) and wait for its
+  download. Logins stay in `~/.copilot` (`COPILOT_HOME`), shared with the
+  user's own CLI.
 
 ## How it runs
 
@@ -316,7 +330,7 @@ one. The file change rows that follow a tool call carry paths only.
 
 ## Background tasks never start user MCP servers
 
-Titles, summaries and commit messages run on a utility session, not on a chat:
+Titles and summaries run on a utility session, not on a chat:
 
 - `disabledMcpServers` lists every server name in the user's Copilot config, so
   none of them start or authenticate. If ADE cannot list them, the task fails
@@ -398,9 +412,9 @@ see them.
 
 ## What stays the same
 
-- **The terminal Copilot CLI.** Launching the native `copilot` in a terminal,
-  its session id flag and its terminal signals are unchanged. See
-  `terminals-and-sessions/`.
+- **The terminal Copilot CLI.** Its session id flag and its terminal signals
+  are unchanged; the terminal now runs ADE's pinned `copilot-cli` instead of the
+  `copilot` on the PATH. See `terminals-and-sessions/`.
 - **Usage history import.** The local usage ledgers and the account scanners are
   unchanged. See `onboarding-and-settings/usage-tracking.md`.
 - **External session import.** Discovery still reads the CLI's own store
@@ -439,8 +453,12 @@ These are deliberately not built yet:
 
 ## Troubleshooting
 
-- **"Update the Copilot CLI."** Only a machine `copilot` (an override, or a
-  remote machine) can be too old for the SDK. Run `copilot update`, then retry.
+- **"Your organization's GitHub Copilot policy requires Copilot X or newer."**
+  The organisation's floor is above ADE's pinned runtime. A newer ADE release
+  with a newer pin fixes it; ADE does not update Copilot on its own.
+- **"ADE is downloading the Copilot runtime" / "Couldn't download …".** Wait, or
+  press Retry in Settings > Providers > GitHub Copilot on the machine that runs
+  the chat.
 - **Copilot shows as signed out but `copilot login` worked.** A token variable
   (`COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`) overrides it; Settings
   names the variable to fix or unset.

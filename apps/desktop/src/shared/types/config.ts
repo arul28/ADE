@@ -1078,7 +1078,6 @@ export type AiTaskRoutingKey =
   | "review"
   | "conflict_resolution"
   | "narrative"
-  | "pr_description"
   | "terminal_summary"
   | "session_title"
   | "session_summary"
@@ -1098,8 +1097,6 @@ export type AiTaskRoutingRule = {
 export type AiFeatureKey =
   | "narratives"
   | "conflict_proposals"
-  | "commit_messages"
-  | "pr_descriptions"
   | "terminal_summaries"
   | "initial_context";
 
@@ -1120,7 +1117,7 @@ export type AiFeatureUsageRow = {
 
 export type AiDetectedAuth = {
   type: "cli-subscription" | "api-key" | "oauth" | "openrouter" | "local";
-  cli?: "claude" | "codex" | "cursor" | "droid" | "muse" | "qwen" | "kimi" | "grok" | "copilot" | "devin";
+  cli?: "claude" | "codex" | "cursor" | "droid" | "muse" | "qwen" | "kimi" | "grok" | "copilot" | "devin" | "antigravity";
   provider?: string;
   source?: "config" | "env" | "store" | "file";
   endpointSource?: "auto" | "config";
@@ -1159,7 +1156,7 @@ export type AiProviderConnectionSource = {
 };
 
 export type AiProviderConnectionStatus = {
-  provider: "claude" | "codex" | "cursor" | "droid" | "pi" | "muse" | "qwen" | "kimi" | "grok" | "copilot" | "devin";
+  provider: "claude" | "codex" | "cursor" | "droid" | "pi" | "muse" | "qwen" | "kimi" | "grok" | "copilot" | "devin" | "antigravity";
   authAvailable: boolean;
   runtimeDetected: boolean;
   runtimeAvailable: boolean;
@@ -1193,6 +1190,7 @@ export type AiProviderConnections = {
   grok?: AiProviderConnectionStatus;
   copilot?: AiProviderConnectionStatus;
   devin?: AiProviderConnectionStatus;
+  antigravity?: AiProviderConnectionStatus;
 };
 
 /**
@@ -1203,10 +1201,11 @@ export type AiProviderConnections = {
  * meaningful next to one that does.
  */
 export type AcpProviderDiagnostics = {
-  provider: "qwen" | "kimi" | "grok" | "copilot" | "devin";
-  /** Null when nothing was found — the bare command name is a guess, not a path. */
+  provider: "qwen" | "kimi" | "grok" | "copilot" | "devin" | "antigravity";
+  /** Null when ADE's pinned copy is not on this machine. */
   binaryPath: string | null;
-  binarySource: "env" | "auth" | "path" | "common-dir" | "fallback-command";
+  /** `tools-cache` is ADE's pinned copy; `env` a developer override. The others are no longer produced. */
+  binarySource: "env" | "tools-cache" | "auth" | "path" | "common-dir" | "fallback-command";
   /** Directory the CLI reads its config from, including Grok's `GROK_HOME`. */
   configHome: string | null;
   version: string | null;
@@ -1216,47 +1215,98 @@ export type AcpProviderDiagnostics = {
   lastProbe: { state: "ready" | "auth-failed" | "runtime-failed"; message: string | null } | null;
   /** Present only when the vendor ships a `doctor` command and it was run. */
   doctor: { command: string; exitCode: number | null; output: string } | null;
-  /** Version standing and update state. `null` when no version was read. */
-  update?: AcpProviderUpdateInfo | null;
   checkedAt: string;
 };
 
-/** Where an installed CLI version sits against the range ADE has tested. */
-export type AcpProviderVersionStanding = "below" | "tested" | "above" | "unknown";
+/**
+ * ADE's pinned copy of one provider's tool on one machine, as the
+ * `ai.pinnedToolStatus` and `ai.pinnedToolDownload` actions report it. ADE
+ * downloads and runs its own checksum-verified build of every provider and
+ * never a CLI the user installed, so this is the whole "is it installed"
+ * story. Cheap to read (no spawn, no network); Settings polls it only while a
+ * download runs.
+ */
+export type PinnedProviderToolStatus = {
+  /** ADE provider id (`claude`, `codex`, `qwen`, `muse`, ...). */
+  provider: string;
+  /** Tools-cache name (`claude-code`, `cursor-cli`, `qwen`, ...). */
+  tool: string;
+  /** How sentences name it ("Claude Code", "the Copilot runtime"). */
+  label: string;
+  state: "ready" | "downloading" | "failed" | "unavailable" | "missing";
+  /** The version this ADE pins for that machine; null when unavailable. */
+  version: string | null;
+  /** The version a ready tool runs: `version`, or the previous pin while the new one downloads. */
+  runningVersion: string | null;
+  /** A download of the current pin is running, including under a ready previous pin. */
+  downloading: boolean;
+  receivedBytes: number | null;
+  totalBytes: number | null;
+  /** The tools cache's typed failure (`network`, `integrity`, ...) when failed. */
+  errorKind: string | null;
+  /** Plain words for `errorKind` ("the download failed"), when failed. */
+  failureReason: string | null;
+  /** The one sentence status rows show for a state that is not ready; null when ready. */
+  message: string | null;
+  /** Whether that machine would download it when asked (false with downloads turned off). */
+  fetchAllowed: boolean;
+  /**
+   * A warning that holds even when ready: "Running untested Claude Code X:
+   * Anthropic stopped supporting Y." while ADE runs the newer build it moved
+   * to after Anthropic refused the pin. Absent from older hosts.
+   */
+  notice?: string | null;
+};
+
+// ── Antigravity sign-in ──────────────────────────────────────────────────────
+
+/** The four `authenticate` methods Google's Antigravity ACP agent advertises (1.4.1). */
+export const ANTIGRAVITY_AUTH_METHODS = ["oauth-personal", "oauth-business", "gemini-api-key", "agent-platform"] as const;
+export type AntigravityAuthMethod = (typeof ANTIGRAVITY_AUTH_METHODS)[number];
+
+/** ADE's saved Agent Platform project and location (ADE's own file on that machine). */
+export type AntigravityAgentPlatformConfig = { project: string | null; location: string | null };
+
+export type AntigravitySignInPhase = "idle" | "starting" | "waiting" | "verifying" | "succeeded" | "failed" | "cancelled";
 
 /**
- * How an installed ACP provider CLI compares to the versions ADE has tested,
- * and whether ADE may update it.
- *
- * An update always installs `targetVersion`, the newest tested version, never
- * npm `latest`. ADE only offers the button when it could resolve the binary to
- * a known installer, so an unresolvable install stays manual with a note.
+ * One machine's Antigravity sign-in, as the `ai.antigravitySignIn*` actions
+ * report it. The sign-in runs on the machine that owns the provider row; a
+ * client elsewhere opens `authorizationUrl` in any browser and pastes the
+ * 127.0.0.1 page it lands on back as `callbackUrl`.
  */
-export type AcpProviderUpdateInfo = {
-  /** The `x.y.z` read from `--version`, or null when it could not be parsed. */
-  installedVersion: string | null;
-  /** Inclusive range of versions checked against ADE. */
-  testedRange: { min: string; max: string };
-  standing: AcpProviderVersionStanding;
-  /** The version an update installs: the top of the tested range. */
-  targetVersion: string;
-  /** True when the installed version is older than `targetVersion` and not above the range. */
-  updateAvailable: boolean;
-  /** Which installer owns the binary, or null when ADE cannot tell. */
-  installer: "native" | "npm" | null;
-  /** True when ADE may run the update for this install. */
-  canUpdate: boolean;
-  /** What to run by hand when there is no button. */
-  note: string | null;
+export type AntigravitySignInState = {
+  /** Present while a flow runs or just finished; actions name it. */
+  flowId: string | null;
+  method: AntigravityAuthMethod | null;
+  phase: AntigravitySignInPhase;
+  /** Google's sign-in page, only while `phase` is `waiting`. */
+  authorizationUrl: string | null;
+  /**
+   * Gemini Enterprise's license page. The agent serves it on that machine's
+   * loopback, so it opens only in a browser on that machine.
+   */
+  licensePickerUrl: string | null;
+  /** True while a pasted return URL can still finish the flow. */
+  acceptsCallbackUrl: boolean;
+  /** One sentence for the user. Never carries a code or token. */
+  message: string | null;
+  expiresAt: string | null;
+  /** The method the agent recorded on that machine, null before any sign-in. */
+  recordedMethod: AntigravityAuthMethod | null;
+  /** Disk check: a sign-in for `recordedMethod` exists (not verified against Google). */
+  signedIn: boolean;
+  agentPlatform: AntigravityAgentPlatformConfig;
 };
 
-/** Outcome of a one-click provider update. */
-export type AcpProviderUpdateResult = {
-  ok: boolean;
-  message: string;
-  /** The version re-read after the update, when it succeeded. */
-  version: string | null;
+export type AntigravitySignInStartArgs = {
+  method: AntigravityAuthMethod;
+  /** Agent Platform only. Empty strings clear the saved value. */
+  agentPlatform?: { project?: string | null; location?: string | null; apiKey?: string | null };
 };
+
+export type AntigravitySignInCompleteArgs = { flowId: string; callbackUrl: string };
+export type AntigravitySignInCancelArgs = { flowId: string };
 
 export type AiApiKeyVerificationResult = {
   provider: string;
@@ -1860,6 +1910,7 @@ export type AiSettingsStatus = {
     grok?: boolean;
     copilot?: boolean;
     devin?: boolean;
+    antigravity?: boolean;
   };
   models: {
     claude: AiModelDescriptor[];
@@ -1872,6 +1923,7 @@ export type AiSettingsStatus = {
     grok?: AiModelDescriptor[];
     copilot?: AiModelDescriptor[];
     devin?: AiModelDescriptor[];
+    antigravity?: AiModelDescriptor[];
   };
   features: AiFeatureUsageRow[];
   detectedAuth?: AiDetectedAuth[];
@@ -1950,6 +2002,7 @@ export type AiProviderPermissions = {
   grok?: AgentChatPermissionMode;
   copilot?: AgentChatPermissionMode;
   devin?: AgentChatPermissionMode;
+  antigravity?: AgentChatPermissionMode;
   codexSandbox?: "read-only" | "workspace-write" | "danger-full-access";
   writablePaths?: string[];
   allowedTools?: string[];
@@ -2076,7 +2129,7 @@ export type AiConfig = {
    */
   disabledProviders?: string[];
   workerSafety?: WorkerSafetyPolicy;
-  /** Per-feature model overrides, e.g. { pr_descriptions: "claude-sonnet-5" } */
+  /** Per-feature model overrides, e.g. { narratives: "claude-sonnet-5" } */
   featureModelOverrides?: Partial<Record<AiFeatureKey, string | null>>;
   /** Per-feature reasoning effort overrides */
   featureReasoningOverrides?: Partial<Record<AiFeatureKey, string | null>>;
@@ -2105,6 +2158,7 @@ export type AiIntegrationStatus = {
     grok?: boolean;
     copilot?: boolean;
     devin?: boolean;
+    antigravity?: boolean;
   };
   models: {
     claude: AgentChatModelInfo[];
@@ -2117,6 +2171,7 @@ export type AiIntegrationStatus = {
     grok?: AgentChatModelInfo[];
     copilot?: AgentChatModelInfo[];
     devin?: AgentChatModelInfo[];
+    antigravity?: AgentChatModelInfo[];
   };
   // OpenCode/runtime-backed fields
   detectedAuth?: AiDetectedAuth[];

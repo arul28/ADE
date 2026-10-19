@@ -14,6 +14,7 @@ describe("model picker provider order", () => {
       "muse",
       "cursor",
       "devin",
+      "antigravity",
       "opencode",
       "pi",
       "copilot",

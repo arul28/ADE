@@ -574,14 +574,22 @@ export function shellWordSpans(command: string): Array<{ start: number; end: num
     if (index >= command.length) break;
 
     const start = index;
-    let quote: "'" | "\"" | null = null;
+    // `$'` is ANSI-C quoting, which `quoteShellArg` uses for multi-line text:
+    // a backslash escapes inside it, so `\'` does not close it.
+    let quote: "'" | "\"" | "$'" | null = null;
     let escaped = false;
     while (index < command.length) {
       const char = command[index]!;
       if (escaped) {
         escaped = false;
+      } else if (quote === "$'") {
+        if (char === "\\") escaped = true;
+        else if (char === "'") quote = null;
       } else if (quote === "'") {
         if (char === "'") quote = null;
+      } else if (char === "$" && command[index + 1] === "'" && quote === null) {
+        quote = "$'";
+        index += 1;
       } else if (quote === "\"") {
         if (char === "\"") quote = null;
         else if (char === "\\") escaped = true;
@@ -841,6 +849,89 @@ export function withPreassignedSessionIdInCommandLine(
   const span = shellWordSpans(commandLine)[invocation.binaryIndex];
   if (!span) return commandLine;
   return `${commandLine.slice(0, span.end)} ${commandArrayToLine(preassignedSessionIdArgs(provider, sessionId))}${commandLine.slice(span.end)}`;
+}
+
+const POSIX_COMMAND_SEPARATORS = new Set(["&&", "||", "|", ";"]);
+
+/**
+ * Spans of the words in a canonical POSIX command line that run one of
+ * `binaries` as a command: the first word after any `KEY=value` assignments,
+ * at the start and after each `&&`, `||`, `|` or `;`. Not only the first
+ * command: Droid's launch line writes its settings file before it runs `droid`.
+ * A word counts bare, as a path, or as a Windows `.exe`/`.cmd` name.
+ */
+export function providerCommandWordSpans(
+  commandLine: string,
+  binaries: readonly string[],
+): Array<{ start: number; end: number }> {
+  if (!commandLine?.trim() || binaries.length === 0) return [];
+  let words: string[];
+  try {
+    words = parseCommandLine(commandLine, { platform: "linux" });
+  } catch {
+    return [];
+  }
+  const spans = shellWordSpans(commandLine);
+  // The two splitters agree on every line ADE builds; anything they read
+  // differently is not a line to rewrite.
+  if (spans.length !== words.length) return [];
+  const matches: Array<{ start: number; end: number }> = [];
+  let atCommandStart = true;
+  for (let index = 0; index < spans.length; index += 1) {
+    const span = spans[index]!;
+    const raw = commandLine.slice(span.start, span.end);
+    if (POSIX_COMMAND_SEPARATORS.has(raw)) {
+      atCommandStart = true;
+      continue;
+    }
+    if (atCommandStart && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[index]!)) {
+      if (binaries.some((binary) => isProviderBinaryCommand(words[index], binary) || isProviderBinaryCommand(raw, binary))) {
+        matches.push(span);
+      }
+      atCommandStart = false;
+    }
+    // `cmd; next` keeps the separator on the word before it.
+    if (raw.endsWith(";") && !raw.endsWith("\\;")) atCommandStart = true;
+  }
+  return matches;
+}
+
+/**
+ * Replace every command word naming one of `binaries` with `replacement`
+ * (already quoted for the shell that reads the line). Unchanged when none does.
+ */
+export function withProviderCommandWord(
+  commandLine: string,
+  binaries: readonly string[],
+  replacement: string,
+): string {
+  const spans = providerCommandWordSpans(commandLine, binaries);
+  let next = commandLine;
+  for (const span of spans.slice().reverse()) {
+    next = `${next.slice(0, span.start)}${replacement}${next.slice(span.end)}`;
+  }
+  return next;
+}
+
+/**
+ * The PowerShell form of {@link withProviderCommandWord}, for Windows Droid's
+ * `& 'droid' …` launch line: the call operator's operand is replaced with
+ * `replacement` (already PowerShell-quoted). Unchanged when no operand names one.
+ */
+export function withPowerShellProviderCommand(
+  commandLine: string,
+  binaries: readonly string[],
+  replacement: string,
+): string {
+  return commandLine.replace(
+    /(^|[;{(\s])&\s+('(?:[^']|'')*'|"[^"]*"|[^\s;'"]+)/g,
+    (match, lead: string, operand: string) => {
+      const word = operand.startsWith("'")
+        ? operand.slice(1, -1).replace(/''/g, "'")
+        : operand.replace(/^"|"$/g, "");
+      return binaries.some((binary) => isProviderBinaryCommand(word, binary)) ? `${lead}& ${replacement}` : match;
+    },
+  );
 }
 
 export function defaultTrackedCliStartupCommand(provider: CliProvider): string {
@@ -1110,10 +1201,10 @@ export function buildTrackedCliLaunchCommand(args: {
     commandArgs.push("--append-system-prompt", guidance);
     commandArgs.push(...permissionModeToClaudeFlag(permissionMode));
     // Windows keeps the user's prompt off argv. ADE launches the bare word
-    // `claude`; the PTY boundary substitutes a real `claude.exe` when it can
-    // find one, but any install that only ships a `.cmd` shim still goes
-    // through `cmd.exe /d /s /c "…"`, which rewrites the command line before
-    // Claude ever sees it. Measured through a real shim: `%USERPROFILE%`
+    // `claude` and the PTY boundary runs ADE's pinned `claude.exe` directly,
+    // but a launch that falls back to a shell line (or waits for that copy to
+    // download) is typed into cmd or PowerShell, and cmd rewrites the line
+    // before Claude ever sees it. Measured through a real shim: `%USERPROFILE%`
     // expands (and cannot be escaped — see processExecution.ts), newlines
     // flatten to spaces, and at 8501 characters the spawn dies outright with
     // "The command line is too long." The guidance blob is already ~2KB of
@@ -1157,9 +1248,9 @@ export function buildTrackedCliLaunchCommand(args: {
       ...codexComputerUseMcpFlags(args.codexComputerUse),
       ...permissionModeToCodexFlags(permissionMode),
     ];
-    // The launcher is the bare command `codex`, which on Windows has no
-    // extension and therefore always has to be spawned through
-    // `cmd.exe /d /s /c "…"`. cmd rewrites the command line before Codex sees
+    // The launcher is the bare command `codex`. The PTY boundary runs ADE's
+    // pinned `codex.exe` directly, but a shell fallback types the line into
+    // cmd or PowerShell, and cmd rewrites the command line before Codex sees
     // it: `%` is doubled, `%NAME%` is expanded, newlines collapse to spaces,
     // and the whole line is capped at ~8191 characters. The work-tab prompt is
     // a ~2.4KB multi-line ADE preamble with the user's text appended, so
@@ -2107,7 +2198,8 @@ function droidSettingsJson(args: {
   return JSON.stringify(settings);
 }
 
-function quotePowerShellArg(value: string): string {
+/** PowerShell's literal-string quoting. */
+export function quotePowerShellArg(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
 }
 

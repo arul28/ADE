@@ -709,7 +709,7 @@ struct WorkModelPickerSheet: View {
     let refreshProvider: String?
     switch groupKey {
     case "opencode", "cursor", "droid", "pi", "muse", "lmstudio", "ollama",
-         "qwen", "kimi", "grok", "copilot":
+         "qwen", "kimi", "grok", "copilot", "devin", "antigravity":
       refreshProvider = groupKey
     default:
       refreshProvider = nil

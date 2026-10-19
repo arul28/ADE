@@ -24,7 +24,6 @@ import {
 } from "../../utils/codexComputerUse";
 import { runGit } from "../git/git";
 import { signalProcessGroup } from "../shared/utils";
-import { resolveOpenCodeBinaryPath } from "../opencode/openCodeBinaryManager";
 import { attachOpenCodeTerminal, listAdeOpenCodeSessions } from "../opencode/openCodeTerminal";
 import type { OpenCodeServerLease } from "../opencode/openCodeServer";
 import { SESSION_ACTIVITY_SESSION_ID_ENV } from "../../../shared/sessionActivity";
@@ -47,7 +46,6 @@ import {
   resolvePiSessionFile,
 } from "../chat/piSessionStore";
 import {
-  preferNativeExecutablePath,
   resolveCliSpawnInvocation,
   shouldUseWindowsCmdWrapper,
   windowsTaskkillInvocation,
@@ -59,10 +57,7 @@ import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 import type { ResourceAttributionRoot, ResourceAttributionRootKind } from "./resourceUsageSampling";
 import {
   augmentProcessPathWithShellAndKnownCliDirs,
-  getPathEnvValue,
-  resolveExecutableCandidatesFromKnownLocations,
   setPathEnvValue,
-  splitPathEntries,
 } from "../ai/cliExecutableResolver";
 import type {
   PtyDataEvent,
@@ -112,7 +107,6 @@ import {
   providerInstanceEnvPatch,
   resolveProviderInstanceForLaunch,
 } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
-import { CURSOR_CLI_EXECUTABLES } from "../../../shared/providerCliExecutables";
 import {
   buildTrackedCliSessionActivityGuidance,
   buildTrackedCliLaunchCommand,
@@ -142,8 +136,9 @@ import {
   withClaudePluginInCommandLine,
   withClaudeSessionIdInCommandLine,
   withCodexNoAltScreen,
-  MUSE_CLI_COMMAND,
-  shellWordSpans,
+  withPowerShellProviderCommand,
+  withProviderCommandWord,
+  quotePowerShellArg,
   resolveWindowsShellLaunchFields,
   resolveWindowsShellKind,
 } from "../../../shared/cliLaunch";
@@ -169,7 +164,17 @@ import { summarizeTerminalSession } from "../../utils/sessionSummary";
 import { derivePreviewFromChunk, type PreviewCursorState } from "../../utils/terminalPreview";
 import { claudeConfigHome, codexConfigHome, factoryConfigHome, kimiCodeConfigHome } from "../shared/providerConfigHomes";
 import { checkKimiWindowsPrerequisites } from "../ai/acpExecutables";
-import { resolveMuseExecutable, startMuseBinaryFetch } from "../ai/museExecutable";
+import {
+  PINNED_CLI_PROVIDERS,
+  pinnedCliBinaries,
+  pinnedCliDownloadingLine,
+  pinnedCliEnv,
+  pinnedCliProviderForToolType,
+  pinnedProviderCliState,
+  requirePinnedProviderCli,
+  type PinnedCliProvider,
+  type PinnedProviderCli,
+} from "./pinnedProviderCli";
 import { museCredentialEnv } from "../ai/museAuth";
 import { findMuseSessionForCwd } from "../externalSessions/discoverMuse";
 import {
@@ -1198,11 +1203,6 @@ function isOpenCodeToolType(toolType: TerminalToolType | null): boolean {
   return toolType === "opencode" || toolType === "opencode-chat" || toolType === "opencode-orchestrated";
 }
 
-function isOpenCodeCommandName(command: string): boolean {
-  const basename = command.trim().split(/[\\/]/).pop()?.toLowerCase() ?? "";
-  return basename === "opencode" || basename === "opencode.exe" || basename === "opencode.cmd" || basename === "opencode.bat";
-}
-
 export /**
  * Pi's continuation flags. `-r` is Pi's interactive session *picker* and `-c`
  * is "continue the most recent session" — neither is a resume ADE can target,
@@ -1222,121 +1222,110 @@ export function isPiExecutableCommand(command: string): boolean {
   return basename === "pi" || basename === "pi.exe" || basename === "pi.cmd" || basename === "pi.bat";
 }
 
-function resolveDirectOpenCodeCommand(command: string, toolType: TerminalToolType | null): string {
-  if (!isOpenCodeToolType(toolType) || !isOpenCodeCommandName(command)) return command;
-  return resolveOpenCodeBinaryPath() ?? command;
+function isPosixShellCommand(command: string): boolean {
+  const base = command.trim().replace(/^['"]|['"]$/g, "").split(/[\\/]/).pop()?.toLowerCase() ?? "";
+  return base === "bash" || base === "sh" || base === "zsh" || base === "dash";
 }
 
-/**
- * Bare provider words that ADE puts in `command`, and the executables each one
- * may actually be installed as on Windows.
- *
- * A bare word has no extension, so `resolveCliSpawnInvocation` wraps it in
- * `cmd.exe /d /s /c "…"` — and cmd rewrites the command line before the CLI
- * sees argv: measured through a real shim, `%USERPROFILE%` expands and cannot
- * be escaped, embedded newlines flatten to spaces, and an 8501-character line
- * fails outright with "The command line is too long." Claude's fresh launch
- * carries a ~2KB multi-line `--append-system-prompt` blob, so it hit all three.
- * Resolving the bare word to the installed `.exe` here means the PTY spawns it
- * directly, `shouldUseWindowsCmdWrapper` returns false, and argv arrives
- * byte-for-byte. When only a `.cmd`/`.ps1` shim exists the wrapper is still
- * used and the launch builders keep user text off the command line instead.
- */
-const WINDOWS_DIRECT_PROVIDER_EXECUTABLES: ReadonlyArray<{
-  toolTypes: readonly TerminalToolType[];
-  launchCandidates: readonly string[];
-}> = [
-  { toolTypes: ["cursor", "cursor-cli"], launchCandidates: CURSOR_CLI_EXECUTABLES.launchCandidates },
-  { toolTypes: ["claude", "claude-orchestrated"], launchCandidates: ["claude"] },
-  { toolTypes: ["codex", "codex-orchestrated"], launchCandidates: ["codex"] },
-  { toolTypes: ["droid"], launchCandidates: ["droid"] },
-  { toolTypes: ["pi", "pi-chat"], launchCandidates: ["pi"] },
-];
+/** The parts of a launch that can name a provider CLI, rewritten together. */
+type ProviderLaunchParts = { directCommand: string; directArgs: string[]; startupCommand: string };
 
 /**
- * ADE's pinned Muse binary, or a clear error. ADE never runs a user's own
- * `muse`: its version drifts from the protocol ADE was built against and it can
- * self-update under a running session. A missing build starts its fetch in the
- * background so the next launch finds it.
+ * The provider whose pinned CLI this launch runs: the terminal's own provider,
+ * or, for a shell (a sign-in terminal, a quick command), the provider whose
+ * CLI its command starts. ADE never runs a provider CLI from the PATH; only a
+ * plain shell the user types into does.
  */
-function pinnedMuseBinaryPathOrThrow(): string {
-  const resolution = resolveMuseExecutable();
-  if (resolution.path) return resolution.path;
-  if (resolution.source === "unsupported") {
-    throw new Error("Muse Code has no build for this computer, so ADE cannot start it here.");
+function pinnedCliProviderForLaunch(
+  toolType: TerminalToolType | null,
+  parts: ProviderLaunchParts,
+): PinnedCliProvider | null {
+  const own = pinnedCliProviderForToolType(toolType);
+  const candidates = own ? [own] : toolType == null || toolType === "shell" ? PINNED_CLI_PROVIDERS : [];
+  for (const provider of candidates) {
+    // Every name counts in a shell too: the chat's sign-in card can start
+    // Cursor's login as `agent login`, its legacy name.
+    if (launchNamesProviderCli(parts, pinnedCliBinaries(provider))) return provider;
   }
-  // Settings > Providers reports fetch failures; the launch error below is enough here.
-  startMuseBinaryFetch();
-  throw new Error(resolution.fetchPending
-    ? "Muse Code is still downloading. Try again when it finishes (Settings > Providers > Muse Code)."
-    : "Muse Code is not installed yet. ADE started downloading it; try again when it finishes (Settings > Providers > Muse Code).");
+  return null;
+}
+
+/** Stands in for an entry path to test whether a launch has a CLI word to swap. */
+const PROBE_ENTRY = "\u0000ade-pinned-cli";
+
+function launchNamesProviderCli(parts: ProviderLaunchParts, binaries: readonly string[]): boolean {
+  const probed = withPinnedProviderArgv(parts, binaries, [PROBE_ENTRY]);
+  return probed.directCommand !== parts.directCommand
+    || probed.directArgs.some((arg, index) => arg !== parts.directArgs[index])
+    || probed.startupCommand !== parts.startupCommand;
 }
 
 /**
- * Swap the `muse` word of a Muse terminal for the pinned binary. Any word that
- * names Muse is replaced, a path included: a persisted line can carry an older
- * pinned build's path, or a user's own install, and both must run the current
- * pin. The result stays in ADE's canonical POSIX form, like OpenCode's.
+ * Put `argv` (an absolute entry and its leading arguments) where the launch
+ * names one of `binaries`: the spawned command itself, the `-c` line of a
+ * POSIX shell wrapper, the `-Command` line of Windows Droid's PowerShell, and
+ * the startup line a shell fallback types. Every other word stays as it is,
+ * so `--plugin-dir`, session ids and resume flags added earlier survive.
  */
-function withPinnedMuseCommandLine(commandLine: string, toolType: TerminalToolType | null): string {
-  if (toolType !== "muse") return commandLine;
-  const invocation = providerInvocationInCommandLine(commandLine, MUSE_CLI_COMMAND);
-  if (!invocation) return commandLine;
-  const span = shellWordSpans(commandLine)[invocation.binaryIndex];
-  if (!span) return commandLine;
-  const pinned = pinnedMuseBinaryPathOrThrow();
-  return `${commandLine.slice(0, span.start)}${quoteCanonicalShellArg(pinned)}${commandLine.slice(span.end)}`;
-}
-
-function withBundledProviderCommandLine(commandLine: string, toolType: TerminalToolType | null): string {
-  return withPinnedMuseCommandLine(withBundledOpenCodeCommandLine(commandLine, toolType), toolType);
-}
-
-function resolveDirectProviderCommand(command: string, toolType: TerminalToolType | null): string {
-  if (toolType === "muse" && isProviderBinaryCommand(command, MUSE_CLI_COMMAND)) {
-    return pinnedMuseBinaryPathOrThrow();
+function withPinnedProviderArgv(
+  parts: ProviderLaunchParts,
+  binaries: readonly string[],
+  argv: readonly string[],
+): ProviderLaunchParts {
+  const [entry, ...leadingArgs] = argv;
+  let { directCommand, directArgs } = parts;
+  if (directCommand && binaries.some((binary) => isProviderBinaryCommand(directCommand, binary))) {
+    directCommand = entry!;
+    directArgs = [...leadingArgs, ...directArgs];
+  } else if (directCommand && isPosixShellCommand(directCommand)) {
+    const index = shellCommandLineArgIndex(directArgs);
+    if (index >= 0) {
+      directArgs = directArgs.slice();
+      directArgs[index] = withProviderCommandWord(directArgs[index]!, binaries, argv.map(quotePosixShellArg).join(" "));
+    }
+  } else if (directCommand && resolveWindowsShellKind(directCommand) === "powershell") {
+    const index = directArgs.findIndex((arg) => /^-command$/i.test(arg)) + 1;
+    if (index > 0 && index < directArgs.length) {
+      directArgs = directArgs.slice();
+      directArgs[index] = withPowerShellProviderCommand(directArgs[index]!, binaries, argv.map(quotePowerShellArg).join(" "));
+    }
   }
-  const openCodeCommand = resolveDirectOpenCodeCommand(command, toolType);
-  if (process.platform !== "win32" || openCodeCommand !== command) return openCodeCommand;
-  const trimmedCommand = command.trim();
-  // An explicit path is the caller's choice of install; never second-guess it.
-  if (!trimmedCommand || /[\\/]/.test(trimmedCommand)) return command;
-  const entry = WINDOWS_DIRECT_PROVIDER_EXECUTABLES.find(
-    (candidate) => toolType != null && candidate.toolTypes.includes(toolType),
-  );
-  if (!entry) return command;
-  const basename = trimmedCommand.toLowerCase();
-  const matchesLaunchCandidate = entry.launchCandidates.some((name) =>
-    basename === name
-    || basename === `${name}.exe`
-    || basename === `${name}.cmd`
-    || basename === `${name}.bat`);
-  if (!matchesLaunchCandidate) return command;
-  // Cursor has shipped both `cursor-agent` and the legacy `agent` shim on
-  // Windows. Resolve the executable at the PTY boundary so fresh launches and
-  // durable resume metadata work with either installation layout.
-  for (const candidate of entry.launchCandidates) {
-    const resolved = preferNativeExecutablePath(
-      resolveExecutableCandidatesFromKnownLocations(candidate).map((executable) => executable.path),
-    );
-    if (resolved) return resolved;
-  }
-  return command;
+  return { directCommand, directArgs, startupCommand: withPinnedStartupLine(parts.startupCommand, binaries, argv) };
 }
 
 /**
- * Substitute the bundled binary for the bare `opencode` word. The result stays
- * in ADE's canonical POSIX form on every platform — a Windows install path is
- * quoted here because it contains spaces, not because a POSIX shell will run it.
- * The launch boundary recovers argv from that line and spawns it directly, or
- * re-renders it for the shell that receives it; neither needs, or wants, the
- * PowerShell call operator baked in at this layer.
+ * The startup line with its provider CLI swapped for `argv`. ADE's canonical
+ * POSIX line on every platform, except Windows Droid's PowerShell line.
  */
-function withBundledOpenCodeCommandLine(commandLine: string, toolType: TerminalToolType | null): string {
-  if (!isOpenCodeToolType(toolType)) return commandLine;
-  const bundled = resolveOpenCodeBinaryPath();
-  if (!bundled) return commandLine;
-  return commandLine.replace(/(^|\s)opencode(?=\s|$)/, `$1${quoteCanonicalShellArg(bundled)}`);
+function withPinnedStartupLine(line: string, binaries: readonly string[], argv: readonly string[]): string {
+  if (!line) return line;
+  if (process.platform === "win32") {
+    const powerShell = withPowerShellProviderCommand(line, binaries, argv.map(quotePowerShellArg).join(" "));
+    if (powerShell !== line) return powerShell;
+  }
+  return withProviderCommandWord(line, binaries, argv.map(quoteCanonicalShellArg).join(" "));
+}
+
+function withPinnedProviderCli(parts: ProviderLaunchParts, cli: PinnedProviderCli): ProviderLaunchParts {
+  return withPinnedProviderArgv(parts, pinnedCliBinaries(cli.provider), [cli.command, ...cli.leadingArgs]);
+}
+
+/**
+ * The line to type into a shell for a launch whose CLI downloaded after the
+ * shell started, or null when the launch cannot be expressed as one. A POSIX
+ * direct launch keeps its full argv (`exec …`); otherwise the launch's own
+ * startup line, which on Windows already keeps long text off the command line.
+ */
+function pinnedLaunchShellLine(parts: ProviderLaunchParts, cli: PinnedProviderCli): string | null {
+  const binaries = pinnedCliBinaries(cli.provider);
+  const swapped = withPinnedProviderCli(parts, cli);
+  const directNamesCli = Boolean(parts.directCommand)
+    && binaries.some((binary) => isProviderBinaryCommand(parts.directCommand, binary));
+  if (directNamesCli && (process.platform !== "win32" || !parts.startupCommand)) {
+    return buildDirectCommandShellFallback(swapped.directCommand, swapped.directArgs);
+  }
+  if (parts.startupCommand && swapped.startupCommand !== parts.startupCommand) return swapped.startupCommand;
+  return null;
 }
 
 function clampDims(cols: number, rows: number): { cols: number; rows: number } {
@@ -1454,6 +1443,7 @@ function normalizeToolType(raw: unknown): TerminalToolType | null {
     "grok-chat",
     "copilot-chat",
     "devin-chat",
+    "antigravity-chat",
     "aider",
     "continue",
     "other",
@@ -1748,7 +1738,8 @@ function isPersistedChatToolType(toolType: TerminalToolType | null): boolean {
     || toolType === "kimi-chat"
     || toolType === "grok-chat"
     || toolType === "copilot-chat"
-    || toolType === "devin-chat";
+    || toolType === "devin-chat"
+    || toolType === "antigravity-chat";
 }
 
 function inferSessionCwdFromTranscriptPath(transcriptPath: string | null | undefined): string | null {
@@ -1757,48 +1748,6 @@ function inferSessionCwdFromTranscriptPath(transcriptPath: string | null | undef
   const markerIndex = normalized.indexOf("/.ade/transcripts/");
   if (markerIndex < 0) return null;
   return transcriptPath.slice(0, markerIndex) || null;
-}
-
-function isNodeModulesBinPath(value: string): boolean {
-  const normalized = value.replace(/\\/g, "/").toLowerCase();
-  const userYarnGlobalBin = path
-    .join(os.homedir(), ".config", "yarn", "global", "node_modules", ".bin")
-    .replace(/\\/g, "/")
-    .toLowerCase();
-  return normalized.endsWith("/node_modules/.bin") && normalized !== userYarnGlobalBin;
-}
-
-function looksLikeCodexCommand(command: string | null | undefined): boolean {
-  const trimmed = String(command ?? "").trim();
-  return /^codex(?:\s|$)/.test(trimmed);
-}
-
-function shouldPreferUserCodexPath(args: {
-  toolType: TerminalToolType | null;
-  directCommand?: string | null;
-  startupCommand?: string | null;
-}): boolean {
-  return isCodexTrackedCliToolType(args.toolType)
-    || looksLikeCodexCommand(args.directCommand)
-    || looksLikeCodexCommand(args.startupCommand);
-}
-
-function withUserCodexCliPathPriority(
-  env: NodeJS.ProcessEnv,
-  args: { toolType: TerminalToolType | null; directCommand?: string | null; startupCommand?: string | null },
-): NodeJS.ProcessEnv {
-  if (!shouldPreferUserCodexPath(args)) return env;
-  const pathValue = getPathEnvValue(env);
-  const entries = splitPathEntries(pathValue);
-  const nodeModulesEntries = entries.filter(isNodeModulesBinPath);
-  if (nodeModulesEntries.length === 0) return env;
-  const nonNodeModulesEntries = entries.filter((entry) => !isNodeModulesBinPath(entry));
-  const next = { ...env };
-  // ADE's dev/package dependency bin can shadow the user's already-updated
-  // Codex CLI and send every Work launch into Codex's update-and-restart flow.
-  // Keep node_modules bins as a last-resort fallback, but never let them win.
-  setPathEnvValue(next, [...nonNodeModulesEntries, ...nodeModulesEntries].join(path.delimiter));
-  return next;
 }
 
 function withResolvedCliLaunchPath(
@@ -2864,9 +2813,11 @@ export function createPtyService({
   const resolveCliTitleModelIds = (
     session: { toolType?: string | null; resumeMetadata?: TerminalResumeMetadata | null } | null | undefined,
   ): string[] => {
+    // One model, as for chats (sessionNaming.ts): the cheap helper for a
+    // Claude, Codex, or Cursor CLI, else the model the CLI launched with.
     const provider = adeBackgroundUtilityProviderFromToolType(session?.toolType);
     const cheap = provider ? backgroundUtilityModelId(provider) : undefined;
-    return uniqueCliModelIds(cheap, resolveSessionLaunchModelId(session));
+    return uniqueCliModelIds(cheap ?? resolveSessionLaunchModelId(session));
   };
 
   const resolveSessionLaunchModelId = (
@@ -6292,7 +6243,7 @@ export function createPtyService({
       const transcriptPath = tracked
         ? (existingSession?.transcriptPath?.trim() || safeTranscriptPathFor(sessionId))
         : "";
-      let startupCommand = withBundledProviderCommandLine(requestedStartupCommand.trim(), toolTypeHint);
+      let startupCommand = requestedStartupCommand.trim();
       const cleanupPaths: string[] = [];
       let piSessionLease: PiSessionLease | null = null;
       let openCodeLease: OpenCodeServerLease | null = null;
@@ -6441,7 +6392,7 @@ export function createPtyService({
       }
 
       const requestedDirectCommand = typeof effectiveArgs.command === "string" ? effectiveArgs.command.trim() : "";
-      const directCommand = resolveDirectProviderCommand(requestedDirectCommand, toolTypeHint);
+      let directCommand = requestedDirectCommand;
       let directArgs = Array.isArray(effectiveArgs.args)
         ? effectiveArgs.args.filter((value): value is string => typeof value === "string")
         : [];
@@ -6537,7 +6488,7 @@ export function createPtyService({
         if (updatedSession?.resumeCommand?.trim()) {
           initialResumeCommand = updatedSession.resumeCommand.trim();
           initialResumeMetadata = updatedSession.resumeMetadata ?? initialResumeMetadata;
-          startupCommand = withBundledProviderCommandLine(initialResumeCommand, toolTypeHint);
+          startupCommand = initialResumeCommand;
         }
       }
       const claudePluginLaunch = withBundledClaudePlugin(
@@ -6549,11 +6500,6 @@ export function createPtyService({
       );
       directArgs = claudePluginLaunch.args;
       startupCommand = claudePluginLaunch.startupCommand;
-      launchEnv = withUserCodexCliPathPriority(launchEnv, {
-        toolType: toolTypeHint,
-        directCommand,
-        startupCommand,
-      });
       // Stamp a per-launch ownership nonce Codex echoes into its rollout, so
       // thread capture never has to infer ownership from prompt text alone. An
       // explicitly configured override wins: the caller's identity choice is
@@ -6576,6 +6522,15 @@ export function createPtyService({
       else if (useLoginInteractiveShell) shellMode = "login";
       const shellCandidates = resolveShellCandidates(shellMode);
       let launchedDirectCommand = false;
+      // Set when the launch names a provider CLI: its pinned copy runs, and a
+      // caller's per-shell Windows lines (bare words) no longer apply.
+      let pinnedCliApplied = false;
+      let pendingPinnedLaunch: {
+        provider: PinnedCliProvider;
+        label: string;
+        done: Promise<void>;
+        parts: ProviderLaunchParts;
+      } | null = null;
       try {
         const piResumeTargetId = initialResumeMetadata?.provider === "pi"
           && initialResumeMetadata.targetKind === "session"
@@ -6648,19 +6603,16 @@ export function createPtyService({
             // shell, so hardcoding the binary dropped the model, thinking and
             // tool flags that the argv path keeps — the two renderings are
             // meant to be the same launch.
-            startupCommand = withBundledProviderCommandLine(
-              buildTrackedCliResumeLaunchCommand(
-                {
-                  provider: "pi",
-                  targetKind: "session",
-                  targetId: null,
-                  launch: initialResumeMetadata?.launch ?? {},
-                },
-                {},
-                { platform: "linux" },
-              ).startupCommand,
-              toolTypeHint,
-            );
+            startupCommand = buildTrackedCliResumeLaunchCommand(
+              {
+                provider: "pi",
+                targetKind: "session",
+                targetId: null,
+                launch: initialResumeMetadata?.launch ?? {},
+              },
+              {},
+              { platform: "linux" },
+            ).startupCommand;
             if (directCommand && isPiExecutableCommand(directCommand)) {
               directArgs = stripPiContinuationArgs(directArgs);
             }
@@ -6708,7 +6660,7 @@ export function createPtyService({
               recordPiSessionOwner({ sessionFile: piSessionFile, owner: "cli", ownerSessionId: sessionId });
               const piResumeCommand = `pi --session ${latest.id}`;
               initialResumeCommand = piResumeCommand;
-              startupCommand = withBundledProviderCommandLine(piResumeCommand, toolTypeHint);
+              startupCommand = piResumeCommand;
               sessionService.setResumeCommand(sessionId, piResumeCommand);
               if (directCommand && isPiExecutableCommand(directCommand)) {
                 directArgs = directArgs.filter((arg) => !/^(?:--continue|-c|-r)$/iu.test(arg));
@@ -6739,6 +6691,18 @@ export function createPtyService({
           }
           launchEnv.ADE_PI_SESSION_LEASE_PATH = piSessionLease.lockPath;
         }
+        // Which pinned CLI this launch runs, decided now that resume backfill
+        // and Pi's session work have settled the launch. OpenCode's TUI
+        // attaches to ADE's server, which needs the binary before the PTY
+        // exists, so its download is awaited here; every other CLI downloads
+        // behind a terminal that says so.
+        const pinnedCliProvider = pinnedCliProviderForLaunch(toolTypeHint, { directCommand, directArgs, startupCommand });
+        let pinnedCliState = pinnedCliProvider ? pinnedProviderCliState(pinnedCliProvider) : null;
+        if (pinnedCliProvider) Object.assign(launchEnv, pinnedCliEnv(pinnedCliProvider));
+        if (pinnedCliProvider === "opencode" && pinnedCliState?.kind === "downloading") {
+          pinnedCliState = { kind: "ready", cli: await requirePinnedProviderCli("opencode") };
+        }
+        if (pinnedCliState?.kind === "blocked") throw new Error(pinnedCliState.message);
         // Applied here, not earlier, because `startupCommand` is still being
         // rewritten above this point — resume-target backfill in particular
         // replaces it wholesale with the session's persisted `resumeCommand`.
@@ -6788,6 +6752,29 @@ export function createPtyService({
               initialResumeMetadata = updated?.resumeMetadata ?? initialResumeMetadata;
             }
           }
+        }
+        // The provider word becomes ADE's pinned copy last, after every step
+        // above has read and rewritten the launch in its bare form (resume
+        // flags, `--plugin-dir`, preassigned session ids, OpenCode's attach).
+        // Nothing swapped is persisted: resume commands stay bare words.
+        if (pinnedCliProvider && pinnedCliState?.kind === "ready") {
+          ({ directCommand, directArgs, startupCommand } = withPinnedProviderCli(
+            { directCommand, directArgs, startupCommand },
+            pinnedCliState.cli,
+          ));
+          pinnedCliApplied = true;
+        } else if (pinnedCliProvider && pinnedCliState?.kind === "downloading") {
+          const parts = { directCommand, directArgs, startupCommand };
+          const probeCli: PinnedProviderCli = { provider: pinnedCliProvider, command: PROBE_ENTRY, leadingArgs: [], env: {} };
+          if (!pinnedLaunchShellLine(parts, probeCli)) {
+            throw new Error(`ADE is downloading ${pinnedCliState.label} for this machine. Open this terminal again when it finishes.`);
+          }
+          // Nothing runs until ADE's copy lands: a clean shell opens with the
+          // download's line, and the launch is typed into it afterwards.
+          pendingPinnedLaunch = { provider: pinnedCliProvider, label: pinnedCliState.label, done: pinnedCliState.done, parts };
+          directCommand = "";
+          startupCommand = "";
+          pinnedCliApplied = true;
         }
         const spawnHelperRepair = ensureNodePtySpawnHelperExecutable();
         if (spawnHelperRepair.status === "chmod_applied") {
@@ -7225,48 +7212,82 @@ export function createPtyService({
       // whichever shell actually won the spawn race, and only when it is plain
       // argv — a caller-supplied per-shell line always wins, and a line that is
       // not losslessly recoverable is left exactly as it is today.
-      const renderedWindowsStartupCommand = (() => {
-        if (!selectedWindowsShellKind || !selectedShell || !startupCommand) return null;
-        const launch = resolveCanonicalCommandLineLaunch(startupCommand);
-        if (!launch || launch.env) return null;
+      const renderForSelectedShell = (line: string): string => {
+        if (!selectedWindowsShellKind || !selectedShell || !line) return line;
+        const launch = resolveCanonicalCommandLineLaunch(line);
+        if (!launch || launch.env) return line;
         return commandArrayToWindowsShellLine([launch.command, ...launch.args], {
           kind: selectedWindowsShellKind,
           shellPath: selectedShell.file,
         });
-      })();
-      const selectedStartupCommand = selectedWindowsShellKind
-        ? effectiveArgs.windowsStartupCommands?.[selectedWindowsShellKind]
-          ?? renderedWindowsStartupCommand
-          ?? startupCommand
-        : startupCommand;
-      if (selectedStartupCommand && !launchedDirectCommand && selectedShell) {
-        const writeStartupCommand = () => {
-          entry.startupTimer = null;
-          if (entry.disposed) return;
-          try {
-            pty.write(`${selectedStartupCommand}\r`);
-            setRuntimeState(sessionId, "running");
-            scheduleIdleTransition(sessionId);
-          } catch (err) {
-            logger.warn("pty.startup_command_failed", {
-              ptyId,
-              sessionId,
-              cwd,
-              toolType: toolTypeHint,
-              envShell: process.env.SHELL ?? "",
-              envPath: process.env.PATH ?? "",
-              err: String(err),
-            });
-          }
-        };
+      };
+      const selectedStartupCommand = selectedWindowsShellKind && !pinnedCliApplied
+        ? effectiveArgs.windowsStartupCommands?.[selectedWindowsShellKind] ?? renderForSelectedShell(startupCommand)
+        : renderForSelectedShell(startupCommand);
+      const writeStartupLine = (line: string) => {
+        entry.startupTimer = null;
+        if (entry.disposed) return;
+        try {
+          pty.write(`${line}\r`);
+          setRuntimeState(sessionId, "running");
+          scheduleIdleTransition(sessionId);
+        } catch (err) {
+          logger.warn("pty.startup_command_failed", {
+            ptyId,
+            sessionId,
+            cwd,
+            toolType: toolTypeHint,
+            envShell: process.env.SHELL ?? "",
+            envPath: process.env.PATH ?? "",
+            err: String(err),
+          });
+        }
+      };
+      const scheduleStartupLine = (line: string) => {
         const startupDelayMs = normalizeStartupCommandDelayMs(effectiveArgs.startupDelayMs);
         if (startupDelayMs > 0) {
-          entry.startupTimer = setTimeout(writeStartupCommand, startupDelayMs);
+          entry.startupTimer = setTimeout(() => writeStartupLine(line), startupDelayMs);
           entry.startupTimer.unref?.();
         } else {
-          writeStartupCommand();
+          writeStartupLine(line);
         }
+      };
+      if (selectedStartupCommand && !launchedDirectCommand && selectedShell) {
+        scheduleStartupLine(selectedStartupCommand);
       }
+      // A provider CLI that was not on this machine yet: say so in the
+      // terminal, and type the launch once ADE's copy lands. A failed or
+      // refused download ends the terminal with the reason; nothing else runs.
+      // Resolves true once the launch line is written.
+      const pending = pendingPinnedLaunch;
+      const pinnedLaunchStarted: Promise<boolean> | null = pending && selectedShell
+        ? (async () => {
+            const show = (text: string) => {
+              if (!entry.disposed) entry.processOutputData?.(`${text}\r\n`);
+            };
+            show(pinnedCliDownloadingLine(pending.label));
+            logger.info("pty.pinned_cli_download_wait", { ptyId, sessionId, provider: pending.provider });
+            let line: string | null = null;
+            let reason = "";
+            try {
+              await pending.done;
+              if (entry.disposed) return false;
+              line = pinnedLaunchShellLine(pending.parts, await requirePinnedProviderCli(pending.provider));
+            } catch (error) {
+              reason = error instanceof Error ? error.message : String(error);
+            }
+            if (entry.disposed) return false;
+            if (!line) {
+              logger.warn("pty.pinned_cli_unavailable", { ptyId, sessionId, provider: pending.provider, reason });
+              show(reason || `ADE could not start ${pending.label} here.`);
+              terminatePtyProcessTree(entry, "SIGTERM", logger);
+              closeEntry(ptyId, 1);
+              return false;
+            }
+            scheduleStartupLine(renderForSelectedShell(line));
+            return true;
+          })()
+        : null;
 
       if (requestedInitialInput.length > 0) {
         const normalizedInitialInput = requestedInitialInput.replace(/\r\n?/g, "\n");
@@ -7444,6 +7465,9 @@ export function createPtyService({
         };
         if (effectiveArgs.awaitInitialInput) {
           try {
+            if (pinnedLaunchStarted && !await pinnedLaunchStarted) {
+              throw new Error("The provider CLI did not start; initial input was not sent.");
+            }
             if (initialInputDelayMs > 0) await delay(initialInputDelayMs);
             await writeInitialInput();
           } catch (err) {
@@ -7458,20 +7482,33 @@ export function createPtyService({
             closeEntry(ptyId, 1);
             throw err;
           }
-        } else if (toolTypeHint === "pi" && initialInputDelayMs > 0) {
-          void (async () => {
-            const readiness = await waitForPtyQuiet(initialInputDelayMs, 15_000);
-            if (entry.disposed) return;
-            logger.info("pty.pi_initial_input_ready", { ptyId, sessionId, readiness });
-            await writeInitialInput().catch(failInitialInputLaunch);
-          })();
-        } else if (initialInputDelayMs > 0) {
-          entry.initialInputTimer = setTimeout(() => {
-            void writeInitialInput().catch(failInitialInputLaunch);
-          }, initialInputDelayMs);
-          entry.initialInputTimer.unref?.();
         } else {
-          void writeInitialInput().catch(failInitialInputLaunch);
+          const scheduleInitialInput = () => {
+            if (toolTypeHint === "pi" && initialInputDelayMs > 0) {
+              void (async () => {
+                const readiness = await waitForPtyQuiet(initialInputDelayMs, 15_000);
+                if (entry.disposed) return;
+                logger.info("pty.pi_initial_input_ready", { ptyId, sessionId, readiness });
+                await writeInitialInput().catch(failInitialInputLaunch);
+              })();
+            } else if (initialInputDelayMs > 0) {
+              entry.initialInputTimer = setTimeout(() => {
+                void writeInitialInput().catch(failInitialInputLaunch);
+              }, initialInputDelayMs);
+              entry.initialInputTimer.unref?.();
+            } else {
+              void writeInitialInput().catch(failInitialInputLaunch);
+            }
+          };
+          // While a CLI downloads, the terminal is a bare shell: the input
+          // waits for the launch line, or it would run as shell commands.
+          if (pinnedLaunchStarted) {
+            void pinnedLaunchStarted.then((started) => {
+              if (started && !entry.disposed) scheduleInitialInput();
+            });
+          } else {
+            scheduleInitialInput();
+          }
         }
       }
 

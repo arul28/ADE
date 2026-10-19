@@ -67,6 +67,11 @@ async function probePty(): Promise<{ ok: true; output: string }> {
 async function probeClaudeStartup(): Promise<ClaudeStartupProbeResult> {
   const claude = await import("@anthropic-ai/claude-agent-sdk");
   const claudeExecutable = resolveClaudeCodeExecutable();
+  // A fresh package has not downloaded ADE's pinned Claude Code yet; there is
+  // nothing to start, and no PATH `claude` is ever tried instead.
+  if (claudeExecutable.source === "fallback-command") {
+    return { state: "binary-missing", message: "ADE's pinned Claude Code is not downloaded on this machine." };
+  }
   const abortController = new AbortController();
   let didTimeout = false;
   const timeout = setTimeout(() => {

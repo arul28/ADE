@@ -8,7 +8,7 @@ import {
   listPinnedTools,
 } from "./install";
 import { isToolError } from "./errors";
-import { trackPinnedToolFetch } from "./onDemand";
+import { notePinnedToolProgress, trackPinnedToolFetch } from "./onDemand";
 import { selectDemandedAgentTools, type AgentToolDemand } from "../../../../desktop/src/main/services/tools/agentToolDemand";
 
 type FetchLogger = {
@@ -81,6 +81,7 @@ export function startBackgroundAgentToolsFetch(
       // joins this download instead of queueing a second one.
       const error = await trackPinnedToolFetch(tool, () => ensure([tool], {
         onProgress: (progress) => {
+          notePinnedToolProgress(progress);
           // One line per phase change, never per download chunk: this lands
           // in the brain's long-lived service log.
           if (progress.phase === "downloading") return;

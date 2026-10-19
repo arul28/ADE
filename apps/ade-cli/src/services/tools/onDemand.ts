@@ -1,6 +1,7 @@
 import { pinnedToolFetchPending } from "./cacheLookup";
-import { asToolError, type ToolError } from "./errors";
-import type { ToolsContext } from "./install";
+import { asToolError, type ToolError, type ToolErrorKind } from "./errors";
+import type { ToolProgress, ToolsContext } from "./install";
+import { findToolPin, loadToolsManifest } from "./manifest";
 
 /**
  * Download a pinned tool the moment something needs it.
@@ -11,14 +12,16 @@ import type { ToolsContext } from "./install";
  * `pinnedToolDownload` before they resolve the binary, and the resolver then
  * finds the fresh copy. Muse keeps its own `ensureMuseBinary`, which predates this.
  *
- * Off until a packaged process turns it on (`enablePinnedToolFetch`): a source
- * checkout resolves every tool from the repo's `node_modules`, and a dev loop
- * or a test must never start a 100-450 MB download.
+ * Off until a process turns it on (`enablePinnedToolFetch`), so a test never
+ * starts a 100-450 MB download. A source checkout turns it on for the tools
+ * that exist only as a download (`downloadOnly`): the lockfile-pinned ones
+ * (codex, claude-code, opencode, copilot) resolve from the repo's
+ * `node_modules` and are never fetched there.
  *
  * One fetch per tool per process; other processes are serialized by the tools
  * cache's own lock. Never throws: a failed download leaves resolution exactly
- * where it was (ADE's previous copy, then the machine's own CLI), so the caller
- * fails the way it always did rather than on a new error path.
+ * where it was (ADE's previous copy, or missing), and the failure's kind is
+ * kept for `getPinnedToolStatus` to report.
  */
 
 type FetchLogger = {
@@ -27,16 +30,62 @@ type FetchLogger = {
 };
 
 let fetchEnabled = false;
+/** Source checkout: fetch only tools with no `node_modules` copy (`ToolPin.checkoutCopy`). */
+let fetchDownloadOnly = false;
 let fetchLogger: FetchLogger | null = null;
 let installGeneration = 0;
 const inFlight = new Map<string, Promise<ToolError | null>>();
 /** When each tool's last on-demand download failed; an offline machine must not retry on every status refresh. */
 const lastFailureAt = new Map<string, number>();
 const FAILED_FETCH_BACKOFF_MS = 2 * 60_000;
+/** The last tracked download of each tool that failed, until one succeeds. */
+const lastFailure = new Map<string, { kind: ToolErrorKind; message: string }>();
+/** Bytes so far of each tracked download that reports progress. */
+const progressByTool = new Map<string, { receivedBytes: number | null; totalBytes: number | null }>();
 
-export function enablePinnedToolFetch(logger: FetchLogger): void {
+export function enablePinnedToolFetch(logger: FetchLogger, options: { downloadOnly?: boolean } = {}): void {
   fetchEnabled = true;
+  fetchDownloadOnly = options.downloadOnly === true;
   fetchLogger = logger;
+}
+
+/** Log cache bookkeeping failures through the logger installed for tool fetches. */
+export function warnPinnedToolFetch(event: string, fields: Record<string, unknown>): void {
+  fetchLogger?.warn(event, fields);
+}
+
+/** False when downloads are off here, or this is a checkout and the tool lives in its node_modules. */
+export function pinnedToolFetchAllowed(name: string, context: ToolsContext = {}): boolean {
+  const env = context.env ?? process.env;
+  if (!fetchEnabled || env.ADE_DISABLE_TOOLS_FETCH === "1") return false;
+  if (!fetchDownloadOnly) return true;
+  try {
+    return findToolPin(context.manifest ?? loadToolsManifest(), name).checkoutCopy !== true;
+  } catch {
+    return false;
+  }
+}
+
+/** The last failed download of `name` in this process, cleared by the next success. */
+export function pinnedToolLastFailure(name: string): { kind: ToolErrorKind; message: string } | null {
+  return lastFailure.get(name) ?? null;
+}
+
+/** Bytes received of the running download of `name`, when it reports progress. */
+export function pinnedToolFetchProgress(name: string): { receivedBytes: number | null; totalBytes: number | null } | null {
+  return inFlight.has(name) ? progressByTool.get(name) ?? { receivedBytes: null, totalBytes: null } : null;
+}
+
+/**
+ * Record progress of a tracked download, so a status read can show it. Every
+ * runner of `trackPinnedToolFetch` passes its `ensureTools` progress here.
+ */
+export function notePinnedToolProgress(progress: ToolProgress): void {
+  if (!inFlight.has(progress.tool) || progress.phase !== "downloading") return;
+  progressByTool.set(progress.tool, {
+    receivedBytes: progress.receivedBytes ?? null,
+    totalBytes: progress.totalBytes ?? null,
+  });
 }
 
 /** Bumped by every tracked download that lands, so a cached "not detected" status knows it is stale. */
@@ -54,8 +103,7 @@ export function pinnedToolFetchInFlight(name: string): boolean {
  * falls back to ADE's previous copy or the machine's CLI, as on any failure).
  */
 export function pinnedToolNeedsFetch(name: string, context: ToolsContext = {}): boolean {
-  const env = context.env ?? process.env;
-  if (!fetchEnabled || env.ADE_DISABLE_TOOLS_FETCH === "1") return false;
+  if (!pinnedToolFetchAllowed(name, context)) return false;
   const failedAt = lastFailureAt.get(name);
   if (failedAt !== undefined && Date.now() - failedAt < FAILED_FETCH_BACKOFF_MS) return false;
   return pinnedToolFetchPending(name, context);
@@ -82,11 +130,15 @@ export function trackPinnedToolFetch(name: string, run: () => Promise<unknown>):
     try {
       await run();
       installGeneration += 1;
+      lastFailure.delete(name);
       settle(null);
     } catch (error) {
-      settle(asToolError(error, { kind: "filesystem", tool: name }));
+      const failure = asToolError(error, { kind: "filesystem", tool: name });
+      lastFailure.set(name, { kind: failure.kind, message: failure.message });
+      settle(failure);
     } finally {
       inFlight.delete(name);
+      progressByTool.delete(name);
     }
   })();
   return fetch;
@@ -102,12 +154,29 @@ export function pinnedToolDownload(name: string, context: ToolsContext = {}): Pr
   const running = inFlight.get(name);
   if (running) return running;
   if (!pinnedToolNeedsFetch(name, context)) return null;
+  return startTrackedDownload(name, context);
+}
+
+/**
+ * An explicit Download/Retry from the user: like `pinnedToolDownload`, but
+ * not held back by a recent failure. Still null when downloads are off here,
+ * the host has no pin, or the tool is already on disk.
+ */
+export function retryPinnedToolDownload(name: string, context: ToolsContext = {}): Promise<ToolError | null> | null {
+  const running = inFlight.get(name);
+  if (running) return running;
+  if (!pinnedToolFetchAllowed(name, context) || !pinnedToolFetchPending(name, context)) return null;
+  lastFailureAt.delete(name);
+  return startTrackedDownload(name, context);
+}
+
+function startTrackedDownload(name: string, context: ToolsContext): Promise<ToolError | null> {
   fetchLogger?.info("tools.on_demand_fetch_started", { tool: name });
   return trackPinnedToolFetch(name, async () => {
     // Deep import, lazily: the resolvers reach this module on every spawn,
     // and only a real miss should load the download stack.
     const { ensureTools } = await import("./install");
-    await ensureTools([name], context);
+    await ensureTools([name], { ...context, onProgress: notePinnedToolProgress });
   }).then((error) => {
     if (error) {
       lastFailureAt.set(name, Date.now());

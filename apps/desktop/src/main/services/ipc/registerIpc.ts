@@ -102,7 +102,7 @@ import { detectCliAuthStatuses } from "../ai/authDetector";
 import { buildClaudeAvailabilityFromConnection } from "../ai/claudeAvailability";
 import { buildProviderConnections } from "../ai/providerConnectionStatus";
 import { resolveCopilotSdkRuntime } from "../ai/acpExecutables";
-import { collectAcpProviderDiagnostics, runAcpProviderUpdate } from "../ai/acpProviderDiagnostics";
+import { collectAcpProviderDiagnostics } from "../ai/acpProviderDiagnostics";
 import { resolvePiInstallation } from "../ai/piInstallation";
 import { pathsEqual } from "../shared/pathCompare";
 import { browseProjectDirectories } from "../projects/projectBrowserService";
@@ -284,7 +284,6 @@ import type {
   ConflictProposalPreview,
   ConflictOverlap,
   ConflictStatus,
-  DraftPrDescriptionArgs,
   CreateLaneArgs,
   CreateChildLaneArgs,
   CreateLaneFromUnstagedArgs,
@@ -329,8 +328,6 @@ import type {
   GitCherryPickArgs,
   GitCommitArgs,
   GitCreateTagArgs,
-  GitGenerateCommitMessageArgs,
-  GitGenerateCommitMessageResult,
   GitCommitSummary,
   GitConflictState,
   GitGetCommitMessageArgs,
@@ -687,7 +684,11 @@ import type {
   AiFeatureKey,
   AiProviderConnections,
   AcpProviderDiagnostics,
-  AcpProviderUpdateResult,
+  PinnedProviderToolStatus,
+  AntigravitySignInCancelArgs,
+  AntigravitySignInCompleteArgs,
+  AntigravitySignInStartArgs,
+  AntigravitySignInState,
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
@@ -955,7 +956,7 @@ import {
 import { createAccountSettingsSyncService } from "../account/accountSettingsSync";
 import { pruneOrphanedPresetConfigHomesFromMachine } from "../chat/harnessPresetConfigHomes";
 import { readHarnessPresetsFromMachine } from "../chat/harnessPresetSettings";
-import { captureAutomationTestAnalytics, captureMcpServerSignInAnalytics, capturePresetAnalytics, captureProviderCliUpdateAnalytics, captureProviderAccountSettingsChange, captureWebhookUrlCreatedAnalytics, providerAccountAnalyticsCapture } from "../analytics/featureProductAnalytics";
+import { captureAutomationTestAnalytics, captureMcpServerSignInAnalytics, capturePresetAnalytics, captureProviderAccountSettingsChange, captureWebhookUrlCreatedAnalytics, providerAccountAnalyticsCapture } from "../analytics/featureProductAnalytics";
 import type {
   AccountSettingRow,
   AccountSettingsResult,
@@ -1454,8 +1455,6 @@ function escapeCsvCell(value: string | null | undefined): string {
 const AI_USAGE_FEATURE_KEYS: AiFeatureKey[] = [
   "narratives",
   "conflict_proposals",
-  "commit_messages",
-  "pr_descriptions",
   "terminal_summaries",
   "initial_context"
 ];
@@ -5565,6 +5564,39 @@ export function registerIpc({
     return startMuseBinaryFetch();
   });
 
+  // The unpinned route: ADE's pinned copy of a provider's tool on this
+  // machine. A pinned call goes to the owning machine's `ai.pinnedToolStatus`
+  // / `ai.pinnedToolDownload`.
+  ipcMain.handle(IPC.aiPinnedToolStatus, async (_event, arg: { provider: string }): Promise<PinnedProviderToolStatus> => {
+    const { getPinnedProviderToolStatus } = await import("../ai/pinnedProviderTools");
+    return getPinnedProviderToolStatus(arg.provider);
+  });
+
+  ipcMain.handle(IPC.aiPinnedToolDownload, async (_event, arg: { provider: string }): Promise<PinnedProviderToolStatus> => {
+    const { startPinnedProviderToolDownload } = await import("../ai/pinnedProviderTools");
+    return startPinnedProviderToolDownload(arg.provider);
+  });
+
+  // The unpinned route for Antigravity sign-in on this machine; a pinned call
+  // goes to the owning machine's `ai.antigravitySignIn*` actions.
+  ipcMain.handle(IPC.aiAntigravitySignInStatus, async (): Promise<AntigravitySignInState> => {
+    const { getAntigravitySignInState } = await import("../ai/antigravitySignIn");
+    return getAntigravitySignInState();
+  });
+  ipcMain.handle(IPC.aiAntigravitySignInStart, async (_event, arg: AntigravitySignInStartArgs): Promise<AntigravitySignInState> => {
+    const { startAntigravitySignIn, setAntigravitySignInLogger } = await import("../ai/antigravitySignIn");
+    setAntigravitySignInLogger(getCtx().logger);
+    return startAntigravitySignIn(arg);
+  });
+  ipcMain.handle(IPC.aiAntigravitySignInComplete, async (_event, arg: AntigravitySignInCompleteArgs): Promise<AntigravitySignInState> => {
+    const { completeAntigravitySignIn } = await import("../ai/antigravitySignIn");
+    return completeAntigravitySignIn(arg);
+  });
+  ipcMain.handle(IPC.aiAntigravitySignInCancel, async (_event, arg: AntigravitySignInCancelArgs): Promise<AntigravitySignInState> => {
+    const { cancelAntigravitySignIn } = await import("../ai/antigravitySignIn");
+    return cancelAntigravitySignIn(arg);
+  });
+
   // The unpinned route for Settings > Muse Code on this machine; a pinned call
   // goes to the owning machine's `ai.museSettings` / `ai.museSettingsClose`.
   ipcMain.handle(IPC.aiMuseSettings, async (_event, args: unknown): Promise<MuseSettingsResult> => {
@@ -5725,29 +5757,6 @@ export function registerIpc({
         cwd: ctx.project.rootPath,
         ...(arg.runDoctor === true ? { runDoctor: true } : {}),
       });
-    },
-  );
-
-  ipcMain.handle(
-    IPC.aiAcpProviderUpdate,
-    async (
-      _event,
-      arg: { provider: AcpChatProvider },
-    ): Promise<AcpProviderUpdateResult> => {
-      const ctx = getCtx();
-      // Same reasoning as diagnostics: this updates the CLI on the machine the
-      // main process runs on, never a remote host's.
-      const result = await runAcpProviderUpdate({
-        provider: arg.provider,
-        cwd: ctx.project.rootPath,
-      });
-      captureProviderCliUpdateAnalytics({
-        analytics: productAnalyticsService,
-        surface: "desktop",
-        provider: arg.provider,
-        outcome: result.ok ? "completed" : "failed",
-      });
-      return result;
     },
   );
 
@@ -11535,15 +11544,6 @@ export function registerIpc({
     return ctx.gitService.commit(arg);
   });
 
-  ipcMain.handle(
-    IPC.gitGenerateCommitMessage,
-    async (_event, arg: GitGenerateCommitMessageArgs): Promise<GitGenerateCommitMessageResult> => {
-      const ctx = getCtx();
-      requireAppContextServices(ctx, ["gitService"] as const);
-      return ctx.gitService.generateCommitMessage(arg);
-    }
-  );
-
   ipcMain.handle(IPC.gitListRecentCommits, async (_event, arg: GitListRecentCommitsArgs): Promise<GitCommitSummary[]> => {
     const ctx = ensureGitContext();
     return ctx.gitService.listRecentCommits(arg);
@@ -12832,11 +12832,6 @@ export function registerIpc({
     const result = await ctx.prService.delete(arg);
     ctx.prPollingService.poke();
     return result;
-  });
-
-  ipcMain.handle(IPC.prsDraftDescription, async (_event, arg: DraftPrDescriptionArgs): Promise<{ title: string; body: string }> => {
-    const ctx = ensurePrReadContext();
-    return await ctx.prService.draftDescription(arg);
   });
 
   ipcMain.handle(IPC.prsLand, async (_event, arg: LandPrArgs): Promise<LandResult> => {

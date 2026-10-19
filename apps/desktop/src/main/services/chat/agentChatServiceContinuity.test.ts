@@ -515,7 +515,7 @@ describe("suggestLaneNameFromPrompt", () => {
     expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledTimes(1);
   });
 
-  it("uses the launched chat model when the cheap helper answers unusably", async () => {
+  it("keeps the deterministic identity when the cheap helper answers unusably, without asking the launched model", async () => {
     vi.mocked(detectAllAuth).mockResolvedValue([
       { type: "cli-subscription" as any, cli: "codex", authenticated: true, path: "/usr/bin/codex", verified: true },
     ]);
@@ -536,18 +536,12 @@ describe("suggestLaneNameFromPrompt", () => {
       temporaryBranch: "ade/1a2b3c4d",
     });
 
-    expect(result).toMatchObject({
-      laneTitle: "Claude OAuth Login",
-      branchFragment: "claude-oauth-login",
-      source: "ai",
-    });
-    expect(aiIntegrationService.summarizeTerminal).toHaveBeenNthCalledWith(1, expect.objectContaining({
+    // One model per chat provider: a Codex chat names only on Luna.
+    expect(result).toMatchObject({ source: "deterministic" });
+    expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledTimes(1);
+    expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledWith(expect.objectContaining({
       model: "openai/gpt-6-luna",
     }));
-    expect(aiIntegrationService.summarizeTerminal).toHaveBeenNthCalledWith(2, expect.objectContaining({
-      model: "openai/gpt-5.4",
-    }));
-    expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledTimes(2);
   });
 
   it("uses the cheap helper before the launched model", async () => {

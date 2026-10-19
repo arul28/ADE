@@ -4148,9 +4148,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       "openai/gpt-5-codex",
     ],
     features: [
-      { feature: "pr_descriptions", enabled: true },
+      { feature: "narratives", enabled: true },
       { feature: "terminal_summaries", enabled: false },
-      { feature: "commit_messages", enabled: false },
     ],
     providerConnections: {
       claude: BROWSER_MOCK_PROVIDER_CONNECTION("claude"),
@@ -4707,7 +4706,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       laneOverlayPolicies: [],
       git: { autoRebaseOnHeadChange: false },
       ai: {
-        featureModelOverrides: { pr_descriptions: "anthropic/claude-sonnet-5" },
+        featureModelOverrides: { narratives: "anthropic/claude-sonnet-5" },
         permissions: {
           cli: { mode: "full-auto", sandboxPermissions: "workspace-write" },
           inProcess: { mode: "full-auto" },
@@ -8863,10 +8862,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       getReviewThreadsByGithub: async (args: any) => getAdeDbPrSnapshotByGithubCoordinates(args)?.reviewThreads ?? [],
       updateDescription: resolvedArg(undefined),
       delete: resolvedArg({ deleted: true }),
-      draftDescription: resolvedArg({
-        title: "AI-drafted title",
-        body: "AI-drafted body",
-      }),
       land: async (args: { prId?: string }) => {
         const pr = ALL_PRS.find((item: any) => item.id === args?.prId) ?? null;
         const stack = pr ? browserMockPrSummaryWithStack(pr).stack : null;

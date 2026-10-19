@@ -6,6 +6,10 @@ import { fileURLToPath } from "node:url";
 import type { Logger } from "../logging/logger";
 import { captureWorkerFailure } from "../../sentry/workerFailures";
 import { resolveCopilotSdkRuntime } from "../ai/acpExecutables";
+import { pinnedToolNotReadyError } from "../ai/pinnedProviderTools";
+import { copilotVersionRejectionMessage, detectCopilotVersionRejection } from "../ai/providerVersionRejection";
+import { getPinnedToolStatus } from "../../../../../ade-cli/src/services/tools/pinnedTool";
+import { pinnedToolSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
 import { terminateChildProcessTree } from "../shared/utils";
 import { cursorSdkOwnerPidArg } from "./cursorSdkWorkerGuards";
 import { startSdkWorker } from "./sdkWorkerProcess";
@@ -75,6 +79,24 @@ function resolveWorkerPath(): string {
   return candidates.find((candidate) => fs.existsSync(candidate)) ?? candidates[0]!;
 }
 
+/**
+ * Copilot refusing to run because the organisation's managed settings require
+ * a newer client, in the precise words (required and pinned versions, and that
+ * only an ADE update helps); null for every other text. ADE never moves
+ * Copilot past its pin: the runtime is paired with @github/copilot-sdk.
+ */
+export function copilotUpdateRequiredMessage(text: unknown, logger?: Logger): string | null {
+  const rejection = detectCopilotVersionRejection(text);
+  if (!rejection) return null;
+  const pinned = getPinnedToolStatus("copilot");
+  logger?.warn("agent_chat.copilot_client_update_required", {
+    requiredVersion: rejection.requiredVersion,
+    reportedVersion: rejection.reportedVersion,
+    pinnedVersion: pinned.version,
+  });
+  return copilotVersionRejectionMessage(rejection, pinned.runningVersion ?? pinned.version);
+}
+
 function poolKey(init: CopilotSdkWorkerInit): string {
   const envFingerprint = createHash("sha256")
     .update(Object.entries(init.baseEnv).sort(([a], [b]) => a.localeCompare(b)).map(([key, value]) => `${key}=${value ?? ""}`).join("\0"))
@@ -132,7 +154,12 @@ async function create(init: CopilotSdkWorkerInit, logger?: Logger): Promise<Copi
     },
   };
   child.stdout?.on("data", (chunk) => { const text = String(chunk).trim(); if (text) logger?.debug("agent_chat.copilot_sdk_worker_stdout", { text }); });
-  child.stderr?.on("data", (chunk) => { const text = String(chunk).trim(); if (text) logger?.warn("agent_chat.copilot_sdk_worker_stderr", { text }); });
+  child.stderr?.on("data", (chunk) => {
+    const text = String(chunk).trim();
+    if (!text) return;
+    logger?.warn("agent_chat.copilot_sdk_worker_stderr", { text });
+    copilotUpdateRequiredMessage(text, logger);
+  });
   const rejectAll = (error: Error) => { for (const waiter of waiters.values()) waiter.reject(error); waiters.clear(); };
   child.on("message", (raw: unknown) => {
     const message = raw as CopilotSdkWorkerResponse;
@@ -142,7 +169,7 @@ async function create(init: CopilotSdkWorkerInit, logger?: Logger): Promise<Copi
       if (!waiter) return;
       waiters.delete(message.requestId);
       if (message.ok) waiter.resolve(message.result);
-      else waiter.reject(new Error(`Copilot SDK ${waiter.type} failed: ${message.error}`));
+      else waiter.reject(new Error(copilotUpdateRequiredMessage(message.error, logger) ?? `Copilot SDK ${waiter.type} failed: ${message.error}`));
       return;
     }
     if (message.type === "event") { bridge.onEvent?.(message.chatId, message.event); return; }
@@ -186,6 +213,7 @@ export async function readCopilotAccountQuota(args: {
   logger?: Logger;
 }): Promise<unknown> {
   const executable = resolveCopilotSdkRuntime({ env: args.env });
+  if (executable.source === "fallback-command") throw pinnedToolNotReadyError("copilot", "the Copilot runtime");
   const acquired = await acquireCopilotSdkConnection({
     cliPath: executable.path,
     baseDirectory: args.baseDirectory,
@@ -214,7 +242,8 @@ export async function acquireCopilotSdkConnection(args: {
   baseEnv: NodeJS.ProcessEnv;
   logger?: Logger;
 }): Promise<{ pooled: CopilotSdkPooled; generation: number; poolKey: string }> {
-  const init = { cliPath: args.cliPath, baseDirectory: args.baseDirectory, baseEnv: args.baseEnv };
+  // The runtime gets this env; ADE's pinned copy must not update itself.
+  const init = { cliPath: args.cliPath, baseDirectory: args.baseDirectory, baseEnv: { ...args.baseEnv, ...pinnedToolSelfUpdateEnv("copilot") } };
   const key = poolKey(init);
   for (let staleInitRetries = 0; ; staleInitRetries += 1) {
     const active = pools.get(key);

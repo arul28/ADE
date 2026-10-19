@@ -217,7 +217,7 @@ import { discoverCursorSlashCommandsAsync } from "./cursorSlashCommandDiscovery"
 import { resolveProviderSlashCommandPrompt } from "./slashCommandPromptExpansion";
 import { resolveSmartLinkPreview } from "./smartLinkPreviewService";
 import { buildCanonicalAgentChatRuntimeEvent } from "./runtimeEvents";
-import { classifyAgentCliError, isAgentBinaryMissingError } from "../../../../../ade-cli/src/services/agentRegistry";
+import { classifyAgentCliError, isAgentBinaryMissingError, isPinnedToolNotReadyMessage } from "../../../../../ade-cli/src/services/agentRegistry";
 import type {
   RuntimeFilePart as FilePart,
   RuntimeImagePart as ImagePart,
@@ -411,7 +411,14 @@ import {
 } from "./harnessPresetCredentialCatalog";
 import { HARNESS_PRESET_BODIES } from "../../../shared/harnessPresets";
 import { CLAUDE_RUNTIME_AUTH_ERROR, isClaudeRuntimeAuthError } from "../ai/claudeRuntimeProbe";
-import { resolveCodexExecutable } from "../ai/codexExecutable";
+import { resolveCodexExecutable, type CodexExecutableResolution } from "../ai/codexExecutable";
+import { codexFallForwardNotice, handleCodexVersionRejection } from "../ai/codexFallForward";
+import { CODEX_NO_UPDATE_CHECK_ARGS, providerSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
+import {
+  pinnedToolForProvider,
+  pinnedToolNotReadyError,
+  resolvePinnedCursorAgentCli,
+} from "../ai/pinnedProviderTools";
 import { createCodexVoiceSessions } from "./codexVoiceSession";
 import type { FeatureAnalytics } from "../analytics/featureProductAnalytics";
 import { parseStructuredOutput, withTimeout } from "../ai/utils";
@@ -949,7 +956,16 @@ import { resolveClaudeCliModel } from "../ai/claudeModelUtils";
 import {
   isExecutablePath,
   resolveClaudeCodeExecutable,
+  type ClaudeCodeExecutableResolution,
 } from "../ai/claudeCodeExecutable";
+import { claudeFallForwardNotice, handleClaudeVersionRejection } from "../ai/claudeFallForward";
+import {
+  detectClaudeVersionRejectionInError,
+  detectClaudeVersionRejectionInMessage,
+  detectCodexVersionRejection,
+  type ClaudeVersionRejection,
+  type CodexVersionRejection,
+} from "../ai/providerVersionRejection";
 import type { createAiIntegrationService, ProviderTaskAccount } from "../ai/aiIntegrationService";
 import {
   getProviderRuntimeHealth,
@@ -1204,7 +1220,6 @@ import {
   type AcpSlashCommand,
   type AcpRuntimeState,
 } from "./acpHost";
-import { ACP_PROVIDER_METADATA, acpInstallDisplayCommand } from "../../../shared/acpProviderMetadata";
 import {
   codexConfigHome,
   copilotConfigHome,
@@ -6559,6 +6574,7 @@ const CHAT_SESSION_TOOL_TYPES = [
   "grok-chat",
   "copilot-chat",
   "devin-chat",
+  "antigravity-chat",
 ] satisfies TerminalToolType[];
 type ChatSessionToolType = (typeof CHAT_SESSION_TOOL_TYPES)[number];
 
@@ -6590,6 +6606,7 @@ function providerFromToolType(toolType: TerminalToolType | null | undefined): Ag
   if (toolType === "grok" || toolType === "grok-chat") return "grok";
   if (toolType === "copilot" || toolType === "copilot-chat") return "copilot";
   if (toolType === "devin" || toolType === "devin-chat") return "devin";
+  if (toolType === "antigravity-chat") return "antigravity";
   return "codex";
 }
 
@@ -6605,6 +6622,7 @@ function toolTypeFromProvider(provider: AgentChatProvider): TerminalToolType {
   if (provider === "grok") return "grok-chat";
   if (provider === "copilot") return "copilot-chat";
   if (provider === "devin") return "devin-chat";
+  if (provider === "antigravity") return "antigravity-chat";
   return "codex-chat";
 }
 
@@ -7841,6 +7859,7 @@ function resumeCommandForProvider(provider: AgentChatProvider, sessionId: string
   if (provider === "grok") return `chat:grok:${sessionId}`;
   if (provider === "copilot") return `chat:copilot:${sessionId}`;
   if (provider === "devin") return `chat:devin:${sessionId}`;
+  if (provider === "antigravity") return `chat:antigravity:${sessionId}`;
   return `chat:claude:${sessionId}`;
 }
 
@@ -11847,6 +11866,9 @@ export function createAgentChatService(args: {
       // channel URL or RPC socket from the provider preset.
       Object.assign(env, buildAdeRuntimeSocketEnv(activityRuntime.runtimeSocketPath));
     }
+    // ADE runs its own pinned copy of the provider and moves that pin itself,
+    // so the copy must never update itself in place.
+    Object.assign(env, providerSelfUpdateEnv(managed.session.provider));
     return env;
   };
 
@@ -16873,9 +16895,12 @@ export function createAgentChatService(args: {
       piRuntimeSetupInterruptRequested.delete(managed);
       throw new Error("Pi session interrupted during setup.");
     }
+    // ADE's pinned Pi package tree, downloaded first when this machine never used Pi.
+    const piDownload = chatPinnedToolDownload(managed, "pi", "Pi");
+    if (piDownload) await piDownload;
     const installation = resolvePiInstallation(buildAgentRuntimeEnv(managed));
     if (!installation.sdkAvailable || !installation.packageRoot || !installation.packageEntry) {
-      throw new Error(installation.blocker ?? "Pi SDK is not available. Install Pi or configure ADE_PI_PACKAGE_ROOT.");
+      throw new Error(installation.blocker ?? "ADE could not load its Pi package on this machine.");
     }
     const descriptor = resolveSessionModelDescriptor(managed.session);
     const piProfileId = managed.session.piProfileId?.trim() || descriptor?.piProfileId?.trim() || "default";
@@ -19524,7 +19549,8 @@ export function createAgentChatService(args: {
       case "qwen":
       case "kimi":
       case "grok":
-      case "devin": return { acpSessionId: candidate.pointer };
+      case "devin":
+      case "antigravity": return { acpSessionId: candidate.pointer };
       default: return {};
     }
   };
@@ -20186,19 +20212,12 @@ export function createAgentChatService(args: {
     setSessionPreview(managed, event.text);
   };
 
-  /** Install command each ACP CLI documents, from the shared provider table. Only used to write the error card. */
-  const ACP_INSTALL_COMMANDS: Record<AcpChatProvider, string> = {
-    qwen: acpInstallDisplayCommand(ACP_PROVIDER_METADATA.qwen.install),
-    kimi: acpInstallDisplayCommand(ACP_PROVIDER_METADATA.kimi.install),
-    grok: acpInstallDisplayCommand(ACP_PROVIDER_METADATA.grok.install),
-    devin: acpInstallDisplayCommand(ACP_PROVIDER_METADATA.devin.install),
-  };
-
   /**
    * Turn an ACP failure into the same card shape the tracked CLIs produce.
    *
-   * Only two verdicts are reachable here: the binary is missing, or the
-   * credential is not good. Anything else is a real error and keeps the red
+   * Only two verdicts are reachable here: ADE's pinned copy is not on this
+   * machine (the card offers its Download/Retry), or the credential is not
+   * good. Anything else is a real error and keeps the red
    * frame, because telling someone to log in when the agent crashed sends them
    * to fix the wrong thing.
    */
@@ -20211,13 +20230,13 @@ export function createAgentChatService(args: {
     const base = {
       agent: provider,
       displayName: dialect.displayName,
-      installCommand: ACP_INSTALL_COMMANDS[provider],
-      authCommand: dialect.authProbe.loginCommand,
+      // Antigravity has no terminal login; its card points at Settings.
+      authCommand: dialect.authProbe.loginCommand ?? "",
     };
     // Only a message that names this agent's binary as the missing thing. A
     // bare "command not found" is as often the agent's reply to a slash command
     // it does not know, and "no such file or directory" a tool's missing file.
-    if (isAgentBinaryMissingError(text, provider)) {
+    if (isAgentBinaryMissingError(text, provider) || isPinnedToolNotReadyMessage(text)) {
       return { ...base, category: "missing" as const };
     }
     if (isAcpAuthError(text)) return { ...base, category: "unauthenticated" as const };
@@ -20262,7 +20281,6 @@ export function createAgentChatService(args: {
           agent: match.agent,
           displayName: match.displayName,
           category: match.category,
-          installCommand: match.installCommand,
           authCommand: match.authCommand,
         },
       },
@@ -22239,7 +22257,9 @@ export function createAgentChatService(args: {
     ensureCodexThread: (managed, runtime) => ensureCodexControlThread(managed, runtime, "voice"),
     resolveCodexExecutable: (managed) => {
       const env = buildAgentRuntimeEnv(managed);
-      return { executable: resolveCodexExecutable({ env }).path, env };
+      const executable = resolveCodexExecutable({ env }).path;
+      if (!executable) throw pinnedToolNotReadyError("codex", "Codex");
+      return { executable, env };
     },
     chatSummary: (sessionId) => sessionService.get(sessionId) ?? null,
   });
@@ -28831,6 +28851,10 @@ export function createAgentChatService(args: {
       }
       const metadata = extractClaudeResultMetadata(resultMsg);
       logClaudeStartupFailure(logger, managed, metadata, turnId);
+      const idleVersionRejection = detectClaudeVersionRejectionInMessage(resultMsg);
+      if (idleVersionRejection) {
+        void handleClaudeChatVersionRejection(managed, runtime, idleVersionRejection, { turnId, restart: null });
+      }
       state.canonicalModel = metadata.canonicalModel;
       state.modelProvider = metadata.modelProvider;
       state.apiErrorStatus = metadata.apiErrorStatus;
@@ -29133,6 +29157,8 @@ export function createAgentChatService(args: {
       onBackendDispatched?: () => void;
       /** This run is the single automatic retry after a too-long handoff replay. */
       replayOverflowRetry?: boolean;
+      /** This run is the single restart after ADE moved past a Claude Code Anthropic refused at startup. */
+      versionFallForwardRetry?: boolean;
       /** The user message is already in the transcript; do not echo it again. */
       suppressUserEcho?: boolean;
     },
@@ -29240,6 +29266,32 @@ export function createAgentChatService(args: {
     let reportedInitModel: string | null = null;
     const reportedUsageModels = new Set<string>();
     const turnStartedAt = Date.now();
+    /** Anthropic refusing this build as too old, if this turn saw it. */
+    const claudeVersionRejection: { value: ClaudeVersionRejection | null } = { value: null };
+    const sdkSessionIdBeforeTurn = runtime.sdkSessionId;
+    // A startup refusal ran nothing, so the turn runs again once on the new build.
+    const restartAfterFallForward = args.versionFallForwardRetry === true
+      ? null
+      : () => {
+        // The CLI died before it wrote anything: a thread id this turn assigned is not resumable.
+        if (runtime.sdkSessionId && runtime.sdkSessionId !== sdkSessionIdBeforeTurn) {
+          runtime.sdkSessionId = null;
+          persistChatState(managed);
+        }
+        void runClaudeTurn(managed, {
+          ...args,
+          versionFallForwardRetry: true,
+          suppressUserEcho: true,
+          onDispatched: undefined,
+          onBackendDispatched: undefined,
+        }).catch((restartError) => {
+          logger.warn("agent_chat.claude_fall_forward_restart_failed", {
+            sessionId: managed.session.id,
+            turnId,
+            error: restartError instanceof Error ? restartError.message : String(restartError),
+          });
+        });
+      };
     let firstStreamEventLogged = false;
     const emittedClaudeToolIds = new Set<string>();
     const emittedPermissionDeniedToolUseIds = new Set<string>();
@@ -30711,6 +30763,7 @@ export function createAgentChatService(args: {
         // assistant message — process content blocks
         if (msg.type === "assistant") {
           const assistantMsg = msg as any;
+          claudeVersionRejection.value ??= detectClaudeVersionRejectionInMessage(assistantMsg);
           const earlyUserMessageUuid = readClaudeUserMessageUuid(assistantMsg);
           if (earlyUserMessageUuid && !resultUserMessageUuid) {
             resultUserMessageUuid = earlyUserMessageUuid;
@@ -31164,6 +31217,7 @@ export function createAgentChatService(args: {
         if (msg.type === "result") {
           await settleDetachedClaudeToolCalls(managed, runtime);
           const resultMsg = msg as any;
+          claudeVersionRejection.value ??= detectClaudeVersionRejectionInMessage(resultMsg);
           const resultErrors = partitionClaudeResultErrors(resultMsg.errors);
           const diagnosticOnlyError = resultMsg.is_error === true
             && resultErrors.all.length > 0
@@ -31519,6 +31573,12 @@ export function createAgentChatService(args: {
 
       // This path drains the queue itself below; a Compact first hold has nothing to keep.
       if (managed.compactFirstHold === "holding") managed.compactFirstHold = undefined;
+      if (claudeVersionRejection.value && managed.runtime === runtime) {
+        void handleClaudeChatVersionRejection(managed, runtime, claudeVersionRejection.value, {
+          turnId,
+          restart: restartAfterFallForward,
+        });
+      }
       // Process queued steers (skip if session was disposed during execution)
       if (managed.runtime === runtime) {
         if (extraUsageStopRequested) {
@@ -31563,6 +31623,7 @@ export function createAgentChatService(args: {
       runtime.busy = false;
       runtime.activeTurnId = null;
       const effectiveError = timeoutError ?? error;
+      claudeVersionRejection.value ??= detectClaudeVersionRejectionInError(effectiveError);
       settleClaudeInitialInputDispatch(
         runtime,
         effectiveError instanceof Error ? effectiveError : new Error(String(effectiveError)),
@@ -31754,6 +31815,13 @@ export function createAgentChatService(args: {
         }
       }
 
+      if (claudeVersionRejection.value && !runtime.interrupted && managed.runtime === runtime) {
+        void handleClaudeChatVersionRejection(managed, runtime, claudeVersionRejection.value, {
+          turnId,
+          // A steer's sender handles a failure before dispatch itself.
+          restart: failedBeforeBackendDispatch ? null : restartAfterFallForward,
+        });
+      }
       if (args.replayOverflowRetry === true && !runtime.interrupted) {
         claudeReplayOverflow.reportRetryFailed(managed, runtime, turnId);
       }
@@ -31780,6 +31848,7 @@ export function createAgentChatService(args: {
     const claudeDownload = chatPinnedToolDownload(null, "claude-code", "Claude Code");
     if (claudeDownload) await claudeDownload;
     const resolved = resolveClaudeCodeExecutable({ env });
+    if (resolved.source === "fallback-command") throw pinnedToolNotReadyError("claude-code", "Claude Code");
     const invocation = resolveCliSpawnInvocation(resolved.path, cliArgs, env);
     logger.debug("agent_chat.claude_background_cli_spawn", {
       sessionId: managed.session.id,
@@ -32287,6 +32356,8 @@ export function createAgentChatService(args: {
       // Devin reads `~/.config/devin` (%APPDATA%\devin on Windows) and honors
       // no override env var, so ADE sets nothing.
       case "devin": return null;
+      // Antigravity keeps the default GEMINI_HOME (the shared login).
+      case "antigravity": return null;
     }
   };
 
@@ -32577,16 +32648,18 @@ export function createAgentChatService(args: {
       if (!preflight.ok) throw new Error(preflight.message);
     }
 
-    const cliStatuses = await detectCliAuthStatuses({ skipAuthProbe: true }).catch(() => []);
-    const cli = cliStatuses.find((entry) => entry.cli === provider) ?? null;
-    const executable = resolveAcpExecutable(provider, {
-      env: runtimeEnv,
-      ...(cli?.path ? { auth: [{ type: "cli-subscription", cli: provider, path: cli.path, authenticated: cli.authenticated, verified: cli.verified }] } : {}),
-    });
-    if (executable.source === "fallback-command" && cli && !cli.installed) {
-      throw new Error(
-        `The ${dialect.displayName} CLI (\`${dialect.binaryNames[0]}\`) was not found on this machine. Install it, then refresh AI settings.`,
-      );
+    // ADE's pinned copy, downloaded first when this machine never used the
+    // provider. Never a CLI the user installed.
+    const pinnedTool = pinnedToolForProvider(provider);
+    if (pinnedTool) {
+      const download = chatPinnedToolDownload(managed, pinnedTool.tool, pinnedTool.label);
+      if (download) await download;
+    }
+    const executable = resolveAcpExecutable(provider, { env: runtimeEnv });
+    if (executable.source === "fallback-command" && !args.acpSpawnOverride) {
+      throw pinnedTool
+        ? pinnedToolNotReadyError(pinnedTool.tool, pinnedTool.label)
+        : new Error(`ADE has no ${dialect.displayName} runtime on this machine.`);
     }
 
     const configHome = acpConfigHomeFor(provider, runtimeEnv);
@@ -32608,7 +32681,8 @@ export function createAgentChatService(args: {
       logSkillDelivery(managed, {
         mechanism: "qwen-skill-directories",
         rootCount: qwenSkillDefaults.roots.length,
-        delivered: qwenSkillDefaults.path !== null,
+        // The file also carries ADE's update switch, so it can exist with no skills in it.
+        delivered: qwenSkillDefaults.roots.length > 0,
         ...(qwenSkillDefaults.reason ? { reason: qwenSkillDefaults.reason } : {}),
       });
     }
@@ -32618,6 +32692,8 @@ export function createAgentChatService(args: {
       : acpModelTokenFor(managed.session);
     const spawnPlan = dialect.buildSpawnPlan({
       binaryPath: executable.path,
+      ...(executable.args?.length ? { binaryArgs: executable.args } : {}),
+      ...(executable.files ? { binaryFiles: executable.files } : {}),
       cwd: managed.laneWorktreePath,
       baseEnv: runtimeEnv,
       modelId: modelToken,
@@ -40060,6 +40136,15 @@ export function createAgentChatService(args: {
       ...(errorInfo ? { errorInfo } : {}),
       ...(detail ? { detail } : {}),
     });
+    // OpenAI's exact per-model "needs a newer Codex" refusal (only errors, never
+    // assistant text). Mid-turn: a notice, never a resend.
+    const versionRejection = detectCodexVersionRejection({
+      message,
+      errorInfo: input.errorInfo,
+      detail,
+      requestedModel: managed.session.model,
+    });
+    if (versionRejection) void handleCodexChatVersionRejection(managed, runtime, versionRejection, turnId);
   }
 
   async function finishCodexTurnFromReconciledState(
@@ -41430,8 +41515,9 @@ export function createAgentChatService(args: {
    * The download of the provider's pinned tool when this machine has not
    * fetched it yet, telling the chat while it waits; null when the tool is on
    * disk, so a ready runtime starts with no extra await. A failed download is
-   * left to the resolver, which falls back to ADE's previous copy or the
-   * machine's own CLI exactly as before.
+   * left to the resolver, which finds ADE's previous copy or nothing; the
+   * start then throws the download state (`pinnedToolNotReadyError`). It
+   * never falls back to a CLI the user installed.
    */
   const chatPinnedToolDownload = (managed: ManagedChatSession | null, tool: string, label: string): Promise<void> | null => {
     const download = pinnedToolDownload(tool);
@@ -41448,6 +41534,58 @@ export function createAgentChatService(args: {
     return download.then(() => undefined);
   };
 
+  /** The Codex build and spawn env each app-server runs: a refusal names the build refused and probes with the same account. */
+  const codexLaunchByRuntime = new WeakMap<CodexRuntime, { resolution: CodexExecutableResolution; env: NodeJS.ProcessEnv }>();
+  /** Runtimes that already reacted to a version refusal (once each). */
+  const codexVersionRejectionHandled = new WeakSet<CodexRuntime>();
+
+  /**
+   * OpenAI refused this chat's model for the Codex that ran (its exact
+   * per-model sentence, `providerVersionRejection.ts`). `codexFallForward.ts`
+   * re-checks with one short request, and moves this machine to OpenAI's
+   * newest Codex only when that build is accepted for the model. The refusal
+   * arrives on a model request inside a turn (Codex's app-server never meets it
+   * at startup), so nothing is resent: once switched, the idle app-server is
+   * stopped so the user's next message starts the new build.
+   */
+  const handleCodexChatVersionRejection = async (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    rejection: CodexVersionRejection,
+    turnId: string | null,
+  ): Promise<void> => {
+    if (codexVersionRejectionHandled.has(runtime)) return;
+    codexVersionRejectionHandled.add(runtime);
+    const turnScope = turnId ? { turnId } : {};
+    const launch = codexLaunchByRuntime.get(runtime);
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: "warning",
+      severity: "warning",
+      message: `OpenAI says ${rejection.model} needs a newer Codex. ADE is checking with one short request whether a newer Codex fixes it…`,
+      ...turnScope,
+    });
+    const accountEnv = launch?.env ?? buildAgentRuntimeEnv(managed);
+    const outcome = await handleCodexVersionRejection({
+      rejection,
+      rejected: launch?.resolution ?? resolveCodexExecutable({ env: accountEnv }),
+      accountEnv,
+      logger,
+    });
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: "warning",
+      severity: "warning",
+      message: codexFallForwardNotice(outcome, { after: "resend" }),
+      ...turnScope,
+    });
+    // Only an idle app-server that is still this chat's is stopped; a turn the
+    // user started meanwhile is never cut off.
+    if (outcome.switched && managed.runtime === runtime && !managed.closed && !runtime.activeTurnId) {
+      teardownRuntime(managed, "restart");
+    }
+  };
+
   const startCodexRuntime = async (managed: ManagedChatSession): Promise<CodexRuntime> => {
     const codexDownload = chatPinnedToolDownload(managed, "codex", "Codex");
     if (codexDownload) await codexDownload;
@@ -41459,10 +41597,13 @@ export function createAgentChatService(args: {
     });
     const spawnEnv = buildAgentRuntimeEnv(managed);
     let codexExecutable: string;
+    let codexResolution: CodexExecutableResolution;
     try {
-      codexExecutable = resolveCodexExecutable({ env: spawnEnv }).path;
+      codexResolution = resolveCodexExecutable({ env: spawnEnv });
+      codexExecutable = codexResolution.path;
       if (!codexExecutable) {
-        throw new Error("Codex executable path was empty.");
+        // The download above finished without a copy: report its state.
+        throw pinnedToolNotReadyError("codex", "Codex");
       }
     } catch (error) {
       logger.error("Failed to resolve Codex executable for spawn in agentChatService (resolveCodexExecutable)", {
@@ -41481,7 +41622,12 @@ export function createAgentChatService(args: {
     // thread on this app-server, not just this chat.
     const compact = compactionSettingsFor(managed);
     const window = resolveSessionModelDescriptor(managed.session)?.contextWindow;
-    const appServerArgs = ["app-server", ...(compact.atTokens ? ["-c", `model_auto_compact_token_limit=${Math.min(compact.atTokens, window || compact.atTokens)}`] : [])];
+    const appServerArgs = [
+      "app-server",
+      // ADE's pinned Codex never checks for (or offers) its own update.
+      ...CODEX_NO_UPDATE_CHECK_ARGS,
+      ...(compact.atTokens ? ["-c", `model_auto_compact_token_limit=${Math.min(compact.atTokens, window || compact.atTokens)}`] : []),
+    ];
     const invocation = resolveCliSpawnInvocation(codexExecutable, appServerArgs);
     const proc = spawn(invocation.command, invocation.args, {
       cwd: managed.laneWorktreePath,
@@ -41643,6 +41789,7 @@ export function createAgentChatService(args: {
         );
       }
     };
+    codexLaunchByRuntime.set(runtime, { resolution: codexResolution, env: spawnEnv });
 
     reader.on("line", (line) => {
       const payload = parseJsonLine(line);
@@ -42411,6 +42558,54 @@ export function createAgentChatService(args: {
     return { behavior: "completed", result: choice };
   };
 
+  /** The Claude Code each runtime's latest query was built on: a refusal names the build refused. */
+  const claudeExecutableByRuntime = new WeakMap<ClaudeRuntime, ClaudeCodeExecutableResolution>();
+  /** Runtimes whose pre-warm already started again after a fall-forward (once each). */
+  const claudeFallForwardRestartedRuntimes = new WeakSet<ClaudeRuntime>();
+
+  /**
+   * Anthropic refused this chat's Claude Code as too old (an exact signal,
+   * `providerVersionRejection.ts`). Moves this machine to Anthropic's newest
+   * build when it can (`claudeFallForward.ts`, at most once per pin per
+   * process) and says what happened; once switched, the chat's next query
+   * runs the new build. `restart` is for a refusal at startup, where nothing
+   * ran: the session starts once more on the new build. A refusal mid-turn is
+   * never resent; the user sends the message again.
+   */
+  const handleClaudeChatVersionRejection = async (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+    rejection: ClaudeVersionRejection,
+    options: { turnId?: string | null; restart: (() => void) | null },
+  ): Promise<void> => {
+    const turnScope = options.turnId ? { turnId: options.turnId } : {};
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: "warning",
+      severity: "warning",
+      message: "Anthropic refused this Claude Code as too old. ADE is checking for a newer build for this machine…",
+      ...turnScope,
+    });
+    const outcome = await handleClaudeVersionRejection({
+      rejection,
+      rejected: claudeExecutableByRuntime.get(runtime) ?? resolveClaudeCodeExecutable(),
+      logger,
+    });
+    // Only an idle session that is still this chat's is restarted or reset; a
+    // turn the user started meanwhile is never cut off.
+    const idle = managed.runtime === runtime && !managed.closed && !runtime.busy;
+    const restart = outcome.switched && rejection.signal !== "api_min_version" && idle ? options.restart : null;
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: "warning",
+      severity: "warning",
+      message: claudeFallForwardNotice(outcome, { after: restart ? "restart" : "resend" }),
+      ...turnScope,
+    });
+    if (outcome.switched && idle) await resetClaudeQuerySession(managed, runtime, "session_reset");
+    restart?.();
+  };
+
   const buildClaudeQueryOptions = (
     managed: ManagedChatSession,
     runtime: ClaudeRuntime,
@@ -42464,6 +42659,10 @@ export function createAgentChatService(args: {
       Object.assign(claudeEnv, claudeAccountPromptCacheEnv(managed.session.instanceId, claudeEnv));
     }
     const claudeExecutable = resolveClaudeCodeExecutable({ env: claudeEnv });
+    // Callers await the download first; still none means it failed, is not
+    // available for this machine, or downloads are off here.
+    if (claudeExecutable.source === "fallback-command") throw pinnedToolNotReadyError("claude-code", "Claude Code");
+    claudeExecutableByRuntime.set(runtime, claudeExecutable);
     const outputStyle = resolveManagedClaudeOutputStyle(managed);
     // ADE's preferred default, supplied only when no settings file states one.
     const workflowSizeGuideline = readClaudeWorkflowSizeGuideline(managed.laneWorktreePath)
@@ -43823,6 +44022,18 @@ export function createAgentChatService(args: {
             "claude",
             error instanceof Error ? error.message : String(error),
           );
+        }
+        const warmupVersionRejection = detectClaudeVersionRejectionInError(error);
+        if (warmupVersionRejection) {
+          // A refused pre-warm ran nothing; warm the session once more on the new build.
+          void handleClaudeChatVersionRejection(managed, runtime, warmupVersionRejection, {
+            restart: claudeFallForwardRestartedRuntimes.has(runtime)
+              ? null
+              : () => {
+                claudeFallForwardRestartedRuntimes.add(runtime);
+                prewarmClaudeQuery(managed);
+              },
+          });
         }
         logger.warn("agent_chat.claude_prewarm_failed", {
           sessionId: managed.session.id,
@@ -46574,8 +46785,10 @@ export function createAgentChatService(args: {
       // Not on `runtime`: the process that forks keeps the new thread's writer
       // lock, and the forked chat resumes it from its own app-server.
       const forkEnv = buildAgentRuntimeEnv(managed);
+      const forkExecutable = resolveCodexExecutable({ env: forkEnv }).path;
+      if (!forkExecutable) throw pinnedToolNotReadyError("codex", "Codex");
       const forkedThreadId = await forkCodexThreadInEphemeralAppServer({
-        executable: resolveCodexExecutable({ env: forkEnv }).path,
+        executable: forkExecutable,
         env: forkEnv,
         cwd: managed.laneWorktreePath,
         forkParams: {
@@ -47787,7 +48000,8 @@ export function createAgentChatService(args: {
             || targetProvider === "qwen"
             || targetProvider === "kimi"
             || targetProvider === "grok"
-            || targetProvider === "copilot",
+            || targetProvider === "copilot"
+            || targetProvider === "antigravity",
           ...(targetProvider === "cursor" ? { cursorSource: "sdk" } : {}),
         });
         modelAvailable = availableModels.some((model) =>
@@ -55124,9 +55338,9 @@ export function createAgentChatService(args: {
     if (managed.runtime) teardownRuntime(managed, managed.runtime.kind === "copilot" ? "restart" : "handle_close");
     const copilotDownload = chatPinnedToolDownload(managed, "copilot", "the Copilot runtime");
     if (copilotDownload) await copilotDownload;
-    const auth = await detectAuth();
-    const executable = resolveCopilotSdkRuntime({ auth, env: buildAgentRuntimeEnv(managed) });
     const baseEnv = buildAgentRuntimeEnv(managed);
+    const executable = resolveCopilotSdkRuntime({ env: baseEnv });
+    if (executable.source === "fallback-command") throw pinnedToolNotReadyError("copilot", "the Copilot runtime");
     const home = copilotConfigHome({ env: baseEnv });
     const acquired = await acquireCopilotSdkConnection({ cliPath: executable.path, baseDirectory: home, baseEnv, logger });
     const persisted = readPersistedState(managed.session.id);
@@ -55729,8 +55943,12 @@ export function createAgentChatService(args: {
     let poolGeneration = 0;
     let released = false;
     try {
-      const auth = await detectAuth();
+      // ADE's pinned Droid, downloaded first when this machine never used it.
+      const droidDownload = chatPinnedToolDownload(managed, "droid", "Droid");
+      if (droidDownload) await droidDownload;
       throwIfDroidSetupInterrupted();
+      const droidExecutable = resolveDroidExecutable({ env: buildAgentRuntimeEnv(managed) });
+      if (droidExecutable.source === "fallback-command") throw pinnedToolNotReadyError("droid", "Droid");
       const droidMcpLeases = await ensureHttpMcpLeases(managed);
       // Droid's native MCP config is user/project scoped. The worker keeps
       // ADE's inline lease and disables every other live MCP tool through the
@@ -55748,7 +55966,7 @@ export function createAgentChatService(args: {
       const persisted = readPersistedState(managed.session.id);
       const acquired = await acquireDroidSdkConnection({
         poolKey,
-        droidPath: resolveDroidExecutable({ auth }).path,
+        droidPath: droidExecutable.path,
         workspacePath: managed.laneWorktreePath,
         sessionId: managed.session.id,
         resumeSessionId: persisted?.droidSdkSessionId ?? null,
@@ -63825,6 +64043,7 @@ export function createAgentChatService(args: {
     "kimi",
     "grok",
     "copilot",
+    "antigravity",
   ];
   let modelCatalogCache: AgentChatModelCatalog | null = null;
   // A newly applied model manifest can add, hide, or re-default models, so the
@@ -63986,9 +64205,9 @@ export function createAgentChatService(args: {
         const cursorCli = auth.find((entry) =>
           entry.type === "cli-subscription" && entry.cli === "cursor" && entry.authenticated !== false,
         );
-        const cursorCliPath = cursorCli?.type === "cli-subscription" && cursorCli.cli === "cursor"
-          ? cursorCli.path
-          : null;
+        // ADE's pinned Cursor CLI, only once it is on this machine: a model
+        // list never starts its download.
+        const cursorCliPath = cursorCli ? resolvePinnedCursorAgentCli()?.command ?? null : null;
         // Probe only the source the requesting surface runs models through —
         // chat surfaces use the SDK (~300ms), CLI lane drafts use the CLI
         // (a process spawn that can take seconds). The other source serves
@@ -64056,9 +64275,11 @@ export function createAgentChatService(args: {
 
     if (provider === "droid") {
       try {
-        const auth = await detectAuth();
-        const droidPath = resolveDroidExecutable({ auth }).path;
-        const ordered = await discoverDroidSdkModelDescriptors(droidPath, {
+        // Models come from ADE's pinned Droid once it is on this machine; a
+        // list read never starts its download.
+        const droidExecutable = resolveDroidExecutable();
+        if (droidExecutable.source === "fallback-command") return [];
+        const ordered = await discoverDroidSdkModelDescriptors(droidExecutable.path, {
           mode: args.activateRuntime ? "probe" : "cached-or-fallback",
         });
         const preferred = pickDefaultDroidDescriptorFromCliList(ordered);
@@ -64087,10 +64308,12 @@ export function createAgentChatService(args: {
       try {
         const descriptors = args.activateRuntime
           ? await (async () => {
-              const auth = await detectAuth();
               const baseEnv = userProcessEnv();
+              const runtime = resolveCopilotSdkRuntime({ env: baseEnv });
+              // A list read never starts the runtime's download.
+              if (runtime.source === "fallback-command") return readCopilotModelCatalogCache()?.descriptors ?? copilotSdkModelDescriptors([]);
               return (await refreshCopilotModelCatalog({
-                cliPath: resolveCopilotSdkRuntime({ auth, env: baseEnv }).path,
+                cliPath: runtime.path,
                 baseDirectory: copilotConfigHome({ env: baseEnv }), baseEnv, logger,
               })).descriptors;
             })()
@@ -64329,6 +64552,7 @@ export function createAgentChatService(args: {
     "droid",
     "kimi",
     "qwen",
+    "antigravity",
   ] as const satisfies readonly AgentChatProvider[];
 
   /**
@@ -64420,6 +64644,7 @@ export function createAgentChatService(args: {
       "muse",
       "kimi",
       "qwen",
+      "antigravity",
     ] as ModelProviderGroup[]).filter((provider) => !providerIsDisabled(provider));
     const modelsByProvider = await Promise.all(
       catalogProviders.map(async (provider) => {

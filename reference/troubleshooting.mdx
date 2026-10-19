@@ -15,7 +15,7 @@ ade doctor                # local runtime, git, GitHub, Linear, and provider rea
 `ade doctor` reports local readiness only — it never calls provider, GitHub, or Linear networks and never prints secret values. It's safe to run anytime.
 </Tip>
 
-If a check fails and you'd rather not work it by hand, `ade triage` hands the whole thing to your own coding agent: it writes a redacted machine context plus a repair playbook to a temp directory and starts the first agent CLI it finds (`claude`, `codex`, `cursor-agent`, `opencode`, `droid`). Inside an agent session already, run `ade triage --agent` — it prints the two file paths and a prompt instead of launching anything.
+If a check fails and you'd rather not work it by hand, `ade triage` hands the whole thing to a coding agent: it writes a redacted machine context plus a repair playbook to a temp directory and starts the first agent ADE has already downloaded (`claude`, `codex`, `cursor-agent`, `opencode`, `droid`, `muse`). Inside an agent session already, run `ade triage --agent` — it prints the two file paths and a prompt instead of launching anything.
 
 <AccordionGroup>
   <Accordion title="The app won't connect / nothing loads" icon="plug">
@@ -36,8 +36,9 @@ If a check fails and you'd rather not work it by hand, `ade triage` hands the wh
 
     - **Add the key.** Open **Settings → AI**, connect the provider (Claude subscription or Anthropic key, Cursor API key, OpenCode backend, etc.), and confirm a green status.
     - **Give discovery a moment.** Cursor and Droid model lists are discovered live and served stale-while-revalidate — a freshly connected provider may need a refresh in **Settings → AI**, or an ADE restart.
-    - **For CLI-launched agents** (a provider run as a terminal session that isn't installed or signed in), ADE surfaces an inline auth card in chat with install / login buttons that open a tracked terminal on the active machine.
-    - **Check `ade doctor`** — it reports provider/model readiness from local config, API-key references, and provider CLI availability.
+    - **Wait for the download.** ADE downloads its own copy of each agent the first time a machine uses it; you never install the CLI yourself. While it downloads, the provider reads "Downloading … for this machine". If the download failed, press **Retry** on the provider's page or on the chat card.
+    - **For agents that aren't downloaded or signed in yet**, ADE surfaces an inline card in chat with a Download / Retry button or a sign-in button that opens a tracked terminal on the chat's machine.
+    - **Check `ade doctor`** — it reports provider/model readiness from local config, API-key references, and whether ADE's copy of each provider CLI is downloaded.
   </Accordion>
 
   <Accordion title="My phone isn't syncing" icon="mobile">
@@ -74,7 +75,7 @@ If a check fails and you'd rather not work it by hand, `ade triage` hands the wh
     - **`ADE service is not installed … no bundled ADE service is available`** — the desktop has no bundled runtime for that remote's architecture. Use a release build that includes runtime resources for it, or install `ade` on the remote.
     - **`Remote ADE service version mismatch` / `does not support multi-project mode`** — the remote is running an older or mismatched runtime. Re-bootstrap from a current desktop build.
 
-    Authentication failures for an agent CLI on the remote (Claude / Codex / Cursor / Droid not installed or signed in) appear as an inline auth card whose install / login buttons run on the **remote** machine.
+    An agent that is not downloaded or not signed in on the remote (Claude / Codex / Cursor / Droid and the rest) appears as an inline card whose Download / sign-in buttons act on the **remote** machine. Each machine downloads its own copy of each agent.
   </Accordion>
 
   <Accordion title="Models or providers behave differently in a remote project" icon="cloud">

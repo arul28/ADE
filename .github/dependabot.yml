@@ -31,6 +31,7 @@ updates:
       - dependency-name: "@opencode/client"
       - dependency-name: "@cursor/sdk"
       - dependency-name: "@factory/droid-sdk"
+      - dependency-name: "@github/copilot-sdk"
       - dependency-name: "@muse-code/sdk"
     # One PR for each SDK. group-by puts the bump for both folders in that
     # one PR, so apps/desktop and apps/ade-cli stay on the same version.
@@ -41,5 +42,5 @@ updates:
       - dependencies
     commit-message:
       prefix: "deps"
-    # One open PR for each of the 7 SDKs.
-    open-pull-requests-limit: 7
+    # One open PR for each of the 8 SDKs.
+    open-pull-requests-limit: 8

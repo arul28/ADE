@@ -14,7 +14,11 @@ import type {
 import type { Logger } from "../logging/logger";
 import type { ProductAnalyticsService } from "../analytics/productAnalyticsService";
 import { selectDemandedAgentTools, type AgentToolDemand } from "./agentToolDemand";
-import { pinnedToolFetchInFlight, trackPinnedToolFetch } from "../../../../../ade-cli/src/services/tools/onDemand";
+import {
+  notePinnedToolProgress,
+  pinnedToolFetchInFlight,
+  trackPinnedToolFetch,
+} from "../../../../../ade-cli/src/services/tools/onDemand";
 
 export type AgentToolsCacheService = {
   getSnapshot(): AgentToolsCacheSnapshot;
@@ -113,6 +117,7 @@ export function createAgentToolsCacheService(args: {
   }
 
   function applyProgress(progress: ToolProgress): void {
+    notePinnedToolProgress(progress);
     const previous = states.get(progress.tool);
     let next: AgentToolCacheState;
     if (progress.phase === "installed" || progress.phase === "cached") {

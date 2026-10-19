@@ -757,20 +757,6 @@ export type CreateLaneFromPrBranchResult = {
   pr: PrSummary;
 };
 
-export type DraftPrDescriptionArgs = {
-  laneId: string;
-  model?: string;
-  reasoningEffort?: string | null;
-  baseBranch?: string;
-  closeLinearIssueOnMerge?: boolean;
-  /**
-   * When true, surface real AI failures to the caller (throw) instead of silently
-   * returning the deterministic template. Used by explicit AI-draft callers that
-   * need a hard failure instead of a stub.
-   */
-  requireAi?: boolean;
-};
-
 export type UpdatePrDescriptionArgs = {
   prId: string;
   body: string;

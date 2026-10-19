@@ -250,6 +250,21 @@ const SPECS: Record<SettingsProviderId, ProviderKeySpec> = {
     legacyDefaultSlot: false,
     note: "Devin's browser sign-in (`devin auth login`) covers every account and needs no key. Only headless setups need WINDSURF_API_KEY.",
   },
+  antigravity: {
+    provider: "antigravity",
+    // Read by the Antigravity dialect only when its recorded sign-in method is
+    // "Gemini API key" (`antigravityAuth.ts`); never exported otherwise.
+    credentialProvider: "antigravity-gemini",
+    keyEnvVar: "GEMINI_API_KEY",
+    keyHelp: "A Gemini Developer API key. Antigravity uses it when you connect with the Gemini API key method.",
+    endpoint: null,
+    protocol: false,
+    models: false,
+    providerId: false,
+    verifiable: false,
+    legacyDefaultSlot: false,
+    note: "Google-account and Gemini Enterprise sign-ins need no key. Save a key here, then choose Gemini API key and Connect.",
+  },
 };
 
 export function providerKeySpec(provider: SettingsProviderId): ProviderKeySpec {

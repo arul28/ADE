@@ -617,12 +617,12 @@ Params: `{ refresh?: boolean }`. Result:
   providers: Record<string, {
     provider: string;                // "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi"
     displayName: string;
-    installed: boolean;              // a usable binary or package was found
+    installed: boolean;              // ADE's pinned copy is on disk (never a PATH CLI)
     binaryPath: string | null;       // what the runtime would spawn or load
     version: string | null;          // verbatim first line of `--version`
     authenticated: boolean;
     authMethod: "subscription" | "api-key" | "oauth" | "unknown" | null;
-    installCommand: string | null;
+    installCommand: string | null;   // always null: ADE downloads its own copy
     loginCommand: string | null;
     docsUrl: string | null;
     source: "probed";
@@ -700,25 +700,28 @@ Each provider's record is cached for **60 s** (`PROVIDER_STATUS_CACHE_TTL_MS`).
 `stale` means "served from the cache rather than probed on this call", so a
 record served from inside the TTL carries `stale: true` too — it is not a claim
 that the record is expired. `refresh: true` bypasses
-the cache, which is what an embedder's "I just installed it" button calls;
+the cache, which is what an embedder's "I just signed in" button calls;
 `providers.onChange` polling must not use it. Concurrent callers share one
 in-flight probe, so mounting several provider cards does not multiply spawns.
 The whole report is capped at 8 s: a provider that overruns falls back to its
 last record or to an empty one, and never removes the other five from the
 report.
 
-Install and login strings come from one shared table,
+Login strings come from one shared table,
 `apps/desktop/src/shared/providerRemediation.ts`, which ADE's own Settings
-cards, model-picker empty states and CLI agent registry read from too. So an
-embedder rendering `installCommand` shows the same string ADE shows, and a
+cards, model-picker empty states and CLI agent registry read from too, so a
 vendor command that changes is corrected in one place for all four.
+`installCommand` stays in the record for compatibility and is always `null`:
+the runtime runs only its own pinned copy of each CLI, downloaded on demand
+into the machine tools cache, so there is nothing for a user to install. A
+provider whose copy is not downloaded yet reports `installed: false` with the
+download state in `detail`.
 
 Embedders should render those rather than hardcoding a vendor command. Two of
 them are not the obvious guess and would be wrong if invented: Droid has no
 non-interactive login subcommand, so its `loginCommand` is the bare `droid`,
 and Pi signs in through the interactive CLI's own `/login`, so its
-`loginCommand` is the bare `pi`. On win32 the table returns the vendor's
-PowerShell installer for Claude, Cursor and Droid rather than the POSIX line.
+`loginCommand` is the bare `pi`.
 
 Source: `apps/desktop/src/main/services/ai/providerStatusProbe.ts`; dispatch in
 `apps/ade-cli/src/multiProjectRpcServer.ts`.

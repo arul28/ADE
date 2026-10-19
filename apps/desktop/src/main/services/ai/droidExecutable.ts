@@ -1,25 +1,30 @@
 import type { DetectedAuth } from "./authDetector";
-import { resolveExecutableCandidatesFromKnownLocations } from "./cliExecutableResolver";
-import { preferNativeExecutablePath } from "../shared/processExecution";
+import { isExecutableFile } from "./cliExecutableResolver";
+import { resolveCurrentPinnedTool, resolvePreviousPinnedTool } from "../../../../../ade-cli/src/services/tools/pinnedTool";
 
+/**
+ * Where ADE's Droid binary is. `fallback-command` means ADE has no copy on
+ * this machine (`path` is empty). `auth` and `common-dir` are no longer
+ * produced; `path` labels the dev/test override, as it always has.
+ */
 export type DroidExecutableResolution = {
   path: string;
-  source: "auth" | "path" | "common-dir" | "fallback-command";
+  source: "tools-cache" | "auth" | "path" | "common-dir" | "fallback-command";
 };
 
-function findDroidAuthPath(auth?: DetectedAuth[]): string | null {
-  for (const entry of auth ?? []) {
-    if (entry.type !== "cli-subscription" || entry.cli !== "droid") continue;
-    const candidate = entry.path.trim();
-    if (candidate) return candidate;
-  }
-  return null;
-}
-
-/** Resolves the Factory Droid CLI binary (`droid`). */
+/**
+ * ADE's own Factory Droid CLI: the dev/test override (`DROID_EXECUTABLE`), the
+ * current pin in the tools cache, then the previous pin while a new one
+ * downloads. Never a `droid` the user installed. The pin is the native
+ * `droid[.exe]`, so the Droid SDK can spawn it with no shell.
+ *
+ * `auth` is accepted for call-site compatibility and ignored.
+ */
 export function resolveDroidExecutable(args?: {
   auth?: DetectedAuth[];
   env?: NodeJS.ProcessEnv;
+  platform?: NodeJS.Platform;
+  arch?: string;
 }): DroidExecutableResolution {
   const env = args?.env ?? process.env;
 
@@ -28,27 +33,13 @@ export function resolveDroidExecutable(args?: {
     return { path: envPath, source: "path" };
   }
 
-  const authPath = findDroidAuthPath(args?.auth);
-  if (authPath) {
-    return { path: authPath, source: "auth" };
+  const platform = args?.platform ?? process.platform;
+  const context = { env, platform: args?.platform, arch: args?.arch };
+  for (const pinned of [resolveCurrentPinnedTool("droid", context), resolvePreviousPinnedTool("droid", context)]) {
+    if (pinned && isExecutableFile(pinned.entryPath, platform)) {
+      return { path: pinned.entryPath, source: "tools-cache" };
+    }
   }
 
-  // The Droid chat SDK hands this path straight to `spawn()` with no shell
-  // (`ProcessTransport.connect()`), and since CVE-2024-27980 Node refuses a bare
-  // `.cmd`/`.bat` spawn with `EINVAL` (errno -4071) — a session whose only
-  // resolution was `%APPDATA%\npm\droid.cmd` died on the first message. Where a
-  // real `droid.exe` is installed alongside the shim, prefer it so nothing has
-  // to be wrapped at all; the spawn patch in droidSdkWindowsHide.ts covers the
-  // shim-only installs that remain.
-  const candidates = resolveExecutableCandidatesFromKnownLocations("droid", env);
-  const preferred = preferNativeExecutablePath(candidates.map((candidate) => candidate.path));
-  const resolved = candidates.find((candidate) => candidate.path === preferred);
-  if (resolved) {
-    return {
-      path: resolved.path,
-      source: resolved.source === "path" ? "path" : "common-dir",
-    };
-  }
-
-  return { path: "droid", source: "fallback-command" };
+  return { path: "", source: "fallback-command" };
 }

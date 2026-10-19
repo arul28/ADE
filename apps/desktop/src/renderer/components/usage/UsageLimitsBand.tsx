@@ -339,7 +339,7 @@ export function UsageLimitsBand({
           <Gauge size={30} weight="regular" className="mb-3 text-muted-fg" />
           <div className={cn(USAGE_TEXT.body, "font-semibold text-fg")}>No provider CLIs detected</div>
           <div className={cn(USAGE_TEXT.detail, "mt-1.5 max-w-[44ch] text-muted-fg")}>
-            Install Claude Code or the Codex CLI to start tracking usage here.
+            Sign in to Claude Code or Codex in Settings &gt; Providers to start tracking usage here.
           </div>
         </div>
       ) : (

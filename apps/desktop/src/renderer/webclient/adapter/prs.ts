@@ -258,7 +258,6 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
     },
     getReviewThreads: (prId: string) => read("prs.getReviewThreads", { prId }, []),
     delete: (args: unknown) => call("prs.delete", args, { ok: false, error: "unsupported" }, false),
-    draftDescription: (args: unknown) => call("prs.draftDescription", args, { title: "", body: "" }),
     land: (args: unknown) => call("prs.land", args, null, false),
     updateBranch: (args: unknown) => call("prs.updateBranch", args, null, false),
     openInGitHub: async (prId: string) => {

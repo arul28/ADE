@@ -5,6 +5,10 @@
  * uses, run on the Settings page's own machine: the provider's login command
  * for the default account, with its link and code shown in the sheet. Droid has
  * no such flow, so the honest surface there is the command to run.
+ *
+ * None of these offers an install: ADE runs its own pinned copy, and the
+ * page's pinned-tool row downloads it. A login run before that download lands
+ * waits for it on that machine.
  */
 import React from "react";
 import { SignIn } from "@phosphor-icons/react";
@@ -13,7 +17,7 @@ import { CopyableCommand } from "../providerUi";
 import { useAccountSignInSheet } from "../accounts/AddProviderAccountSheet";
 import { useDefaultProviderInstance } from "../accounts/useProviderInstances";
 import type { ProviderInstanceProvider } from "../../../../../shared/types/providerInstances";
-import { cliTool, installHintFor } from "../cliTools";
+import { cliTool } from "../cliTools";
 import type { ProvidersViewContext } from "../types";
 
 /** The login command for a host with no account bridge. */
@@ -62,10 +66,7 @@ function DefaultAccountSignIn({
 export function ClaudeAuthActions({ ctx }: { ctx: ProvidersViewContext }) {
   const availability = ctx.status?.availableProviders?.claude ?? null;
   if (ctx.isInitialCheckInFlight) return null;
-  if (!availability?.binary.present) {
-    return <CopyableCommand command={installHintFor(cliTool("claude"))} />;
-  }
-  if (!availability.auth.ready) {
+  if (!availability?.auth.ready) {
     return <DefaultAccountSignIn ctx={ctx} provider="claude" providerLabel="Claude Code" />;
   }
   return null;
@@ -74,15 +75,16 @@ export function ClaudeAuthActions({ ctx }: { ctx: ProvidersViewContext }) {
 function CliAuthActions({ ctx, cli }: { ctx: ProvidersViewContext; cli: "codex" | "droid" | "copilot" }) {
   const tool = cliTool(cli);
   const connection = ctx.status?.providerConnections?.[cli] ?? null;
-  if (ctx.isInitialCheckInFlight || connection?.runtimeAvailable) return null;
-  const needsInstall = !connection?.runtimeDetected;
-  if (cli === "codex" && !needsInstall) return <DefaultAccountSignIn ctx={ctx} provider="codex" providerLabel="Codex" />;
+  // Signed in already: what is left is the download, which the pinned-tool
+  // row above shows.
+  if (ctx.isInitialCheckInFlight || connection?.runtimeAvailable || connection?.authAvailable) return null;
+  if (cli === "codex") return <DefaultAccountSignIn ctx={ctx} provider="codex" providerLabel="Codex" />;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
       <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
-        {needsInstall ? "Install it, then refresh:" : "Sign in from a terminal, then refresh:"}
+        Sign in from a terminal, then refresh:
       </div>
-      <CopyableCommand command={needsInstall ? installHintFor(tool) : tool.loginCmd} />
+      <CopyableCommand command={tool.loginCmd} />
     </div>
   );
 }

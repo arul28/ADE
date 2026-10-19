@@ -206,10 +206,10 @@ async function initialize(payload: CopilotSdkWorkerInit): Promise<unknown> {
   try {
     await client.start();
   } catch (error) {
-    // Only a machine CLI (an override, or no bundled runtime) can be too old;
-    // the SDK's own message does not say how to fix it.
+    // ADE's pinned runtime matches its SDK; only a COPILOT_EXECUTABLE override
+    // can speak another protocol, and the SDK's own message does not say so.
     const message = error instanceof Error ? error.message : String(error);
-    if (/protocol version mismatch/i.test(message)) throw new Error(`${message} Update the Copilot CLI with \`copilot update\`.`);
+    if (/protocol version mismatch/i.test(message)) throw new Error(`${message} COPILOT_EXECUTABLE names a Copilot that does not match ADE's Copilot SDK.`);
     throw error;
   }
   const status = await client.getStatus();

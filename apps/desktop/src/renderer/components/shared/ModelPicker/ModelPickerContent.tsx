@@ -82,6 +82,7 @@ const PICKER_FAMILY_BY_GROUP: Record<ProviderGroupKey, ProviderFamily> = {
   kimi: "moonshot",
   qwen: "qwen",
   devin: "devin",
+  antigravity: "antigravity",
   ollama: "ollama",
   lmstudio: "lmstudio",
 };
@@ -116,7 +117,8 @@ function providerAuthEstablishesModelAvailability(model: ModelDescriptor): boole
     || provider === "qwen"
     || provider === "kimi"
     || provider === "grok"
-    || provider === "copilot";
+    || provider === "copilot"
+    || provider === "antigravity";
 }
 
 // The runtime catalog flags a model as requiring configuration when it is
@@ -298,7 +300,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   // The cheap binary probe answers "is OpenCode installed?" in ms (separate
   // from the slow full getStatus probe). Until that lands we don't render
   // the OpenCode-required empty state — we just show an empty list so we
-  // don't make a false "Install OpenCode" claim during the brief unknown
+  // don't make a false "OpenCode needed" claim during the brief unknown
   // window.
   const opencodeBinaryInstalled = internalAuth.opencodeBinaryInstalled;
   const opencodeBinaryKnown = internalAuth.binaryProbed;
@@ -422,9 +424,9 @@ export const ModelPickerContent = memo(function ModelPickerContent({
     (m: ModelDescriptor): boolean => {
       // Models for opencode/ollama/lmstudio require the OpenCode CLI runtime.
       // When the cheap binary check has completed AND OpenCode isn't installed,
-      // hide them so the panes surface the "Install OpenCode" empty state.
+      // hide them so the panes surface the "OpenCode needed" empty state.
       // While the probe is still in-flight (binaryKnown === false) we don't
-      // hide anything — the alternative would flash "Install OpenCode" briefly
+      // hide anything — the alternative would flash "OpenCode needed" briefly
       // for users who do have it.
       if (opencodeBinaryKnown && !opencodeBinaryInstalled && isOpencodeRequiredFamily(pickerFamilyForModel(m))) {
         return false;
@@ -918,7 +920,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   //
   // Suppress the per-provider banner for opencode/ollama/lmstudio when the
   // OpenCode binary itself is missing — those families render a unified
-  // "Install OpenCode" empty state instead.
+  // "OpenCode needed" empty state instead.
   const activeFamilyNeedsOpencode =
     activeProviderFamily != null
     && isOpencodeRequiredFamily(activeProviderFamily)

@@ -162,7 +162,7 @@ export type PrBriefHint = {
   message: string;
 };
 
-/** The lines ADE's own empty draft holds, one for each part. */
+/** The lines ADE's old empty draft held, one for each part; still detected as placeholders. */
 export const PR_BRIEF_PLACEHOLDERS = {
   why: "_The problem, in one or two plain sentences._",
   changed: "_What is different now for the person who uses it._",

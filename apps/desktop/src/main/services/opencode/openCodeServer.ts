@@ -14,6 +14,8 @@ import {
   shouldUseWindowsCmdWrapper,
 } from "../shared/processExecution";
 import { probeOpenCodeBinaryQuarantine, resolveOpenCodeBinaryPath } from "./openCodeBinaryManager";
+import { pinnedToolNotReadyError } from "../ai/pinnedProviderTools";
+import { pinnedToolSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
 import {
   ADE_OPENCODE_MANAGED_ENV,
   ADE_OPENCODE_OWNER_PID_ENV,
@@ -423,7 +425,7 @@ function buildOpenCodeServerEnv(args: {
   env.OPENCODE_CONFIG = args.configFile;
   env.OPENCODE_SERVER_PASSWORD = args.password;
   // ADE resolves and pins the binary, so OpenCode's own updater stays off.
-  env.OPENCODE_DISABLE_AUTOUPDATE = "1";
+  Object.assign(env, pinnedToolSelfUpdateEnv("opencode"));
   env[ADE_OPENCODE_MANAGED_ENV] = "1";
   env[ADE_OPENCODE_OWNER_PID_ENV] = String(process.pid);
   return env;
@@ -432,7 +434,7 @@ function buildOpenCodeServerEnv(args: {
 function buildOpenCodeServeLaunchSpec(args: OpenCodeServerLaunchArgs): OpenCodeServeLaunchSpec {
   const executable = resolveOpenCodeBinaryPath();
   if (!executable) {
-    throw new Error("OpenCode executable is not available.");
+    throw pinnedToolNotReadyError("opencode", "OpenCode");
   }
   const serveArgs = ["serve", "--hostname=127.0.0.1", `--port=${args.port}`];
   // Only shim through cmd.exe when the resolved target actually needs it (a

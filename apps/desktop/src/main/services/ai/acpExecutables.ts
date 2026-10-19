@@ -1,20 +1,17 @@
 /**
- * Binary resolution for the four ACP provider CLIs.
+ * Binary resolution for the ACP provider CLIs and the Copilot runtime.
  *
- * Same shape as `droidExecutable.ts`: an explicit environment override wins,
- * then a path the auth detector already proved exists, then PATH and the known
- * install directories, then the bare command as a last resort.
+ * ADE runs only its own pinned copy of each one, from the tools cache
+ * (`~/.ade/tools`): an explicit environment override (a developer/test hook,
+ * never shown in the UI), the current pin, then the previous pin while a new
+ * one downloads. Never a CLI the user installed: no PATH walk, no install
+ * directories. A miss is `fallback-command` with an empty path; the caller
+ * starts the download (`pinnedToolDownload`) and reports why, and must not
+ * spawn anything.
  *
- * Two provider-specific notes:
- *
- * - `qwen` is an npm bin, so on Windows it resolves to a `.cmd` shim.
- *   `resolveCliSpawnInvocation` in the ACP connection rewrites that into the
- *   form Node will spawn, so a shim is a usable answer here. `copilot` is an
- *   npm bin too, but the Copilot SDK spawns it with no shell, so its resolver
- *   follows the shim to the native `copilot.exe` (see below).
- * - `kimi` is a native binary and `grok` is a Rust binary, so
- *   `preferNativeExecutablePath` picks the real executable when a shim sits
- *   beside it.
+ * Qwen's pin is a standalone bundle with its own Node, so its entry is that
+ * Node and `args` carries the script it runs (`<node> <cli-entry.js> --acp`):
+ * no cmd shim on Windows, no Electron-as-Node.
  */
 
 import fs from "node:fs";
@@ -22,78 +19,94 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import type { DetectedAuth } from "./authDetector";
 import { cachedToolEntryPath, previousCachedToolEntryPath } from "../../../../../ade-cli/src/services/tools/cacheLookup";
+import { resolveCurrentPinnedTool, resolvePreviousPinnedTool } from "../../../../../ade-cli/src/services/tools/pinnedTool";
+import type { ToolResolution } from "../../../../../ade-cli/src/services/tools/install";
 import { isExecutableFile, resolveExecutableCandidatesFromKnownLocations } from "./cliExecutableResolver";
-import { preferNativeExecutablePath } from "../shared/processExecution";
 import type { AcpChatProvider } from "../../../shared/types/chat";
 type ResolvableCliProvider = AcpChatProvider | "copilot";
 
+/**
+ * `auth`, `path` and `common-dir` are no longer produced; they stay in the
+ * union for callers that name them.
+ */
 export type AcpExecutableResolution = {
   path: string;
-  source: "env" | "auth" | "path" | "common-dir" | "fallback-command";
+  source: "env" | "tools-cache" | "auth" | "path" | "common-dir" | "fallback-command";
+  /** Leading arguments the entry needs before the provider's own (Qwen's script). */
+  args?: string[];
+  /** The pin's named files (`harness`, `script`), absolute, when it came from the cache. */
+  files?: Record<string, string>;
 };
 
 /** Where the Copilot SDK runtime came from; `tools-cache` is ADE's pinned download. */
 export type CopilotSdkRuntimeResolution = {
   path: string;
-  source: AcpExecutableResolution["source"] | "tools-cache" | "bundled";
+  source: AcpExecutableResolution["source"] | "bundled";
 };
 
-/** Environment overrides ADE honors, in order, per provider. */
+/** Environment overrides ADE honors, in order, per provider. Developer/test hooks only. */
 const ACP_EXECUTABLE_ENV_KEYS: Record<ResolvableCliProvider, readonly string[]> = {
   qwen: ["QWEN_EXECUTABLE", "QWEN_CODE_EXECUTABLE"],
   kimi: ["KIMI_EXECUTABLE", "KIMI_CODE_EXECUTABLE"],
   grok: ["GROK_EXECUTABLE", "XAI_GROK_EXECUTABLE"],
   copilot: ["COPILOT_EXECUTABLE", "GITHUB_COPILOT_EXECUTABLE"],
   devin: ["DEVIN_EXECUTABLE", "DEVIN_CLI_EXECUTABLE"],
+  // The harness travels beside the server; an override names the server and
+  // the dialect finds `localharness_external` next to it.
+  antigravity: ["ANTIGRAVITY_ACP_EXECUTABLE", "AGY_ACP_SERVER_EXECUTABLE"],
 };
 
-/** The command name each provider installs. */
-const ACP_EXECUTABLE_COMMANDS: Record<ResolvableCliProvider, string> = {
+/** The tools-cache name of each provider's pinned CLI (Copilot's terminal CLI; chats use the runtime). */
+const ACP_EXECUTABLE_TOOLS: Record<ResolvableCliProvider, string> = {
   qwen: "qwen",
   kimi: "kimi",
   grok: "grok",
-  copilot: "copilot",
+  copilot: "copilot-cli",
   devin: "devin",
+  antigravity: "antigravity",
 };
 
-function findAcpAuthPath(provider: ResolvableCliProvider, auth?: DetectedAuth[]): string | null {
-  for (const entry of auth ?? []) {
-    if (entry.type !== "cli-subscription" || entry.cli !== provider) continue;
-    const candidate = entry.path.trim();
-    // The detector's last resort is the bare command name, which tells us
-    // nothing the fallback below would not already say.
-    if (candidate && candidate !== ACP_EXECUTABLE_COMMANDS[provider]) return candidate;
+function envOverride(provider: ResolvableCliProvider, env: NodeJS.ProcessEnv): string | null {
+  for (const key of ACP_EXECUTABLE_ENV_KEYS[provider]) {
+    const configured = env[key]?.trim();
+    if (configured?.length) return configured;
   }
   return null;
 }
 
-/** Resolve one ACP provider CLI. Never throws; always returns something spawnable. */
-export function resolveAcpExecutable(
-  provider: ResolvableCliProvider,
-  args?: { auth?: DetectedAuth[]; env?: NodeJS.ProcessEnv },
-): AcpExecutableResolution {
-  const env = args?.env ?? process.env;
-  const command = ACP_EXECUTABLE_COMMANDS[provider];
+type CacheContext = { env: NodeJS.ProcessEnv; platform?: NodeJS.Platform; arch?: string };
 
-  for (const key of ACP_EXECUTABLE_ENV_KEYS[provider]) {
-    const configured = env[key]?.trim();
-    if (configured?.length) return { path: configured, source: "env" };
-  }
-
-  const authPath = findAcpAuthPath(provider, args?.auth);
-  if (authPath) return { path: authPath, source: "auth" };
-
-  const candidates = resolveExecutableCandidatesFromKnownLocations(command, env);
-  const preferred = preferNativeExecutablePath(candidates.map((candidate) => candidate.path));
-  const resolved = candidates.find((candidate) => candidate.path === preferred);
-  if (resolved) {
-    return { path: resolved.path, source: resolved.source === "path" ? "path" : "common-dir" };
-  }
-
-  return { path: command, source: "fallback-command" };
+function fromPin(resolution: ToolResolution | null, platform: NodeJS.Platform): AcpExecutableResolution | null {
+  if (!resolution || !isExecutableFile(resolution.entryPath, platform)) return null;
+  const script = resolution.files.script;
+  return {
+    path: resolution.entryPath,
+    source: "tools-cache",
+    ...(script ? { args: [script] } : {}),
+    ...(Object.keys(resolution.files).length ? { files: resolution.files } : {}),
+  };
 }
 
-/** Resolves the Qwen Code CLI binary (`qwen`). */
+/** ADE's pinned copy of `tool`: the current pin, else the previous one. */
+function resolvePinnedExecutable(tool: string, context: CacheContext): AcpExecutableResolution | null {
+  const platform = context.platform ?? process.platform;
+  return fromPin(resolveCurrentPinnedTool(tool, context), platform)
+    ?? fromPin(resolvePreviousPinnedTool(tool, context), platform);
+}
+
+/** Resolve one ACP provider CLI. Never throws, never searches the PATH. */
+export function resolveAcpExecutable(
+  provider: ResolvableCliProvider,
+  args?: { auth?: DetectedAuth[]; env?: NodeJS.ProcessEnv; platform?: NodeJS.Platform; arch?: string },
+): AcpExecutableResolution {
+  const env = args?.env ?? process.env;
+  const override = envOverride(provider, env);
+  if (override) return { path: override, source: "env" };
+  return resolvePinnedExecutable(ACP_EXECUTABLE_TOOLS[provider], { env, platform: args?.platform, arch: args?.arch })
+    ?? { path: "", source: "fallback-command" };
+}
+
+/** Resolves ADE's Qwen Code (its bundled Node plus `args`). */
 export function resolveQwenExecutable(args?: {
   auth?: DetectedAuth[];
   env?: NodeJS.ProcessEnv;
@@ -101,7 +114,7 @@ export function resolveQwenExecutable(args?: {
   return resolveAcpExecutable("qwen", args);
 }
 
-/** Resolves the Kimi Code CLI binary (`kimi`). */
+/** Resolves ADE's Kimi Code CLI. */
 export function resolveKimiExecutable(args?: {
   auth?: DetectedAuth[];
   env?: NodeJS.ProcessEnv;
@@ -109,7 +122,7 @@ export function resolveKimiExecutable(args?: {
   return resolveAcpExecutable("kimi", args);
 }
 
-/** Resolves the xAI Grok CLI binary (`grok`). */
+/** Resolves ADE's xAI Grok CLI. */
 export function resolveGrokExecutable(args?: {
   auth?: DetectedAuth[];
   env?: NodeJS.ProcessEnv;
@@ -117,30 +130,37 @@ export function resolveGrokExecutable(args?: {
   return resolveAcpExecutable("grok", args);
 }
 
-/** Resolves the GitHub Copilot CLI binary (`copilot`). */
+/**
+ * Resolves ADE's Antigravity ACP server (`agy_acp_server`). Its `files.harness`
+ * is the `localharness_external` the server runs; the dialect exports it as
+ * `ANTIGRAVITY_HARNESS_PATH`.
+ */
+export function resolveAntigravityExecutable(args?: {
+  auth?: DetectedAuth[];
+  env?: NodeJS.ProcessEnv;
+}): AcpExecutableResolution {
+  return resolveAcpExecutable("antigravity", args);
+}
+
+/** Resolves ADE's GitHub Copilot terminal CLI (`copilot-cli` pin). Chats use {@link resolveCopilotSdkRuntime}. */
 export function resolveCopilotExecutable(args?: {
   auth?: DetectedAuth[];
   env?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
   arch?: string;
 }): AcpExecutableResolution {
-  const resolved = resolveAcpExecutable("copilot", args);
-  const native = copilotNativeExecutableForShim(resolved.path, args?.platform ?? process.platform, args?.arch ?? process.arch);
-  return native ? { ...resolved, path: native } : resolved;
+  return resolveAcpExecutable("copilot", args);
 }
 
 /**
- * The runtime Copilot chats run on, in the same order as Claude's binary: an
- * explicit override, ADE's pinned download (`~/.ade/tools`), the SDK's own
- * platform package (a source checkout, or an older build that shipped it), the
- * previous pinned version while a new one downloads, and last the machine's own
- * `copilot`.
+ * The runtime Copilot chats run on, in the same order as Claude's binary: the
+ * dev/test override, ADE's pinned download, the SDK's own platform package (a
+ * source checkout, or an older build that shipped it), then the previous
+ * pinned version while a new one downloads. Never the user's `copilot`.
  *
  * ADE's runtimes are the version the SDK was built against, so they speak its
- * protocol and need no Copilot CLI install. They are headless only: they reuse
- * the login the machine already has (`copilot login`, `gh auth login`, or a
- * token in the environment) and cannot sign anyone in. The terminal `copilot`
- * launch keeps using `resolveCopilotExecutable`.
+ * protocol. They are headless only: they reuse the login the machine already
+ * has (`copilot login`, `gh auth login`, or a token in the environment).
  */
 export function resolveCopilotSdkRuntime(args?: {
   auth?: DetectedAuth[];
@@ -150,7 +170,8 @@ export function resolveCopilotSdkRuntime(args?: {
   resourcesPath?: string | null;
 }): CopilotSdkRuntimeResolution {
   const env = args?.env ?? process.env;
-  if (ACP_EXECUTABLE_ENV_KEYS.copilot.some((key) => env[key]?.trim())) return resolveCopilotExecutable(args);
+  const override = envOverride("copilot", env);
+  if (override) return { path: override, source: "env" };
   const platform = args?.platform ?? process.platform;
   const cacheContext = { env, platform: args?.platform, arch: args?.arch };
   const cached = cachedToolEntryPath("copilot", cacheContext);
@@ -159,7 +180,7 @@ export function resolveCopilotSdkRuntime(args?: {
   if (bundled) return { path: bundled, source: "bundled" };
   const previous = previousCachedToolEntryPath("copilot", cacheContext);
   if (previous && isCopilotRuntime(previous, platform)) return { path: previous, source: "tools-cache" };
-  return resolveCopilotExecutable(args);
+  return { path: "", source: "fallback-command" };
 }
 
 /** The runtime wrapper only starts with its `runtime.node` beside it. */
@@ -211,34 +232,6 @@ function bundledCopilotSdkRuntime(args?: {
     }
   }
   return null;
-}
-
-/**
- * The real `copilot.exe` behind an npm shim on Windows.
- *
- * `npm i -g @github/copilot` writes `copilot.cmd`/`copilot.ps1` beside a
- * `node_modules` tree whose platform package (`@github/copilot-win32-<arch>`)
- * carries a native `copilot.exe`. The Copilot SDK spawns the CLI path with no
- * shell, and Node refuses to spawn a `.cmd` that way (CVE-2024-27980), so chats
- * need the `.exe`. npm may nest the platform package or hoist it.
- */
-function copilotNativeExecutableForShim(shimPath: string, platform: NodeJS.Platform, arch: string): string | null {
-  if (platform !== "win32") return null;
-  const ext = path.win32.extname(shimPath).toLowerCase();
-  if (ext !== ".cmd" && ext !== ".bat" && ext !== ".ps1" && ext !== "") return null;
-  const shimDir = path.win32.dirname(shimPath);
-  const platformPackage = path.win32.join("@github", `copilot-win32-${arch}`, "copilot.exe");
-  const candidates = [
-    path.win32.join(shimDir, "node_modules", "@github", "copilot", "node_modules", platformPackage),
-    path.win32.join(shimDir, "node_modules", platformPackage),
-  ];
-  return candidates.find((candidate) => {
-    try {
-      return fs.existsSync(candidate);
-    } catch {
-      return false;
-    }
-  }) ?? null;
 }
 
 /**

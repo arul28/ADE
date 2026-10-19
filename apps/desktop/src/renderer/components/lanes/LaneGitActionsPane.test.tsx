@@ -256,7 +256,6 @@ describe("LaneGitActionsPane rescue action", () => {
         unstageFile: vi.fn(async () => ({ operationId: "unstage-file", preHeadSha: "abc", postHeadSha: "abc" })),
         discardFile: vi.fn(async () => ({ operationId: "discard-file", preHeadSha: "abc", postHeadSha: "abc" })),
         restoreStagedFile: vi.fn(async () => ({ operationId: "restore-staged-file", preHeadSha: "abc", postHeadSha: "abc" })),
-        generateCommitMessage: vi.fn(async () => ({ message: "feat: auto", model: "openai/gpt-5.4-mini" })),
         stashList: vi.fn(async ({ laneId }: { laneId: string }) => mockStashesByLaneId[laneId] ?? []),
         stashPush: vi.fn(async () => ({ operationId: "stash-push", preHeadSha: "abc", postHeadSha: "abc" })),
         stashApply: vi.fn(async () => ({ operationId: "stash-apply", preHeadSha: "abc", postHeadSha: "abc" })),
@@ -1003,122 +1002,20 @@ describe("LaneGitActionsPane rescue action", () => {
     expect(screen.getByText("keep me")).toBeTruthy();
   });
 
-  it("keeps the generating commit state when leaving and returning to the lane", async () => {
-    const user = userEvent.setup();
-    let resolveGeneratedMessage: ((value: { message: string; model: string | null }) => void) | undefined;
-    const generatedMessagePromise = new Promise<{ message: string; model: string | null }>((resolve) => {
-      resolveGeneratedMessage = resolve;
-    });
-    mockChangesByLaneId["lane-1"] = {
-      staged: [{ path: "src/file.ts", kind: "modified" }],
-      unstaged: [],
-    };
-    (window.ade.git.generateCommitMessage as any).mockImplementation(() => generatedMessagePromise);
-
-    const { rerender } = render(
-      <MemoryRouter>
-        <LaneGitActionsPane
-          laneId="lane-1"
-          autoRebaseEnabled={false}
-          onOpenSettings={vi.fn()}
-          onSelectFile={vi.fn()}
-          onSelectCommit={vi.fn()}
-          selectedPath={null}
-          selectedMode={null}
-          selectedCommit={null}
-          selectedCommitSha={null}
-        />
-      </MemoryRouter>,
-    );
-
-    await user.click(await screen.findByTestId("git-pane-commit"));
-    await waitFor(() => {
-      expect(window.ade.git.generateCommitMessage).toHaveBeenCalledWith({ laneId: "lane-1", amend: false }, null);
-    });
-    expect(screen.getByText("GENERATING COMMIT MESSAGE...")).toBeTruthy();
-
-    rerender(
-      <MemoryRouter>
-        <LaneGitActionsPane
-          laneId="lane-2"
-          autoRebaseEnabled={false}
-          onOpenSettings={vi.fn()}
-          onSelectFile={vi.fn()}
-          onSelectCommit={vi.fn()}
-          selectedPath={null}
-          selectedMode={null}
-          selectedCommit={null}
-          selectedCommitSha={null}
-        />
-      </MemoryRouter>,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByTestId("git-pane-commit")).toBeTruthy();
-    });
-    expect(screen.queryByText("GENERATING COMMIT MESSAGE...")).toBeNull();
-
-    rerender(
-      <MemoryRouter>
-        <LaneGitActionsPane
-          laneId="lane-1"
-          autoRebaseEnabled={false}
-          onOpenSettings={vi.fn()}
-          onSelectFile={vi.fn()}
-          onSelectCommit={vi.fn()}
-          selectedPath={null}
-          selectedMode={null}
-          selectedCommit={null}
-          selectedCommitSha={null}
-        />
-      </MemoryRouter>,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByText("GENERATING COMMIT MESSAGE...")).toBeTruthy();
-    });
-
-    rerender(
-      <MemoryRouter>
-        <LaneGitActionsPane
-          laneId="lane-2"
-          autoRebaseEnabled={false}
-          onOpenSettings={vi.fn()}
-          onSelectFile={vi.fn()}
-          onSelectCommit={vi.fn()}
-          selectedPath={null}
-          selectedMode={null}
-          selectedCommit={null}
-          selectedCommitSha={null}
-        />
-      </MemoryRouter>,
-    );
-
-    resolveGeneratedMessage!({ message: "feat: auto", model: "openai/gpt-5.4-mini" });
-    await waitFor(() => {
-      expect(window.ade.git.commit).toHaveBeenCalledWith({ laneId: "lane-1", message: "feat: auto", amend: false }, null);
-    });
-
-    const commitInput = screen.getByPlaceholderText(/commit message/i) as HTMLInputElement;
-    expect(commitInput.value).toBe("");
-  });
-
-  it("does not commit when generated message is empty", async () => {
+  it("does not commit when the commit message is empty", async () => {
     const user = userEvent.setup();
     mockChangesByLaneId["lane-1"] = {
       staged: [{ path: "src/file.ts", kind: "modified" }],
       unstaged: [],
     };
-    (window.ade.git.generateCommitMessage as any).mockResolvedValueOnce({ message: "", model: null });
 
     renderPane();
     await user.click(await screen.findByTestId("git-pane-commit"));
 
     await waitFor(() => {
-      expect(window.ade.git.generateCommitMessage).toHaveBeenCalledWith({ laneId: "lane-1", amend: false }, null);
+      expect(screen.getByText(/Type a commit message, then commit/)).toBeTruthy();
     });
     expect(window.ade.git.commit).not.toHaveBeenCalled();
-    expect(screen.getByText(/No turned chat on this lane to suggest a commit message/)).toBeTruthy();
   });
 });
 

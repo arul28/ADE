@@ -43,6 +43,11 @@ import {
   storeApiCredential,
 } from "../ai/apiKeyStore";
 import type { ApiCredentialStoreArgs } from "../../../shared/types/apiCredentials";
+import type {
+  AntigravitySignInCancelArgs,
+  AntigravitySignInCompleteArgs,
+  AntigravitySignInStartArgs,
+} from "../../../shared/types/config";
 import { getLastFetchedAt as getModelsDevLastFetchedAt, refreshNow as refreshModelsDevNow } from "../ai/modelsDevService";
 import { buildHarnessLaunchEnv, listHarnessRouteCatalog } from "../chat/harnessRouteCatalog";
 import { testHarnessRoute } from "../chat/harnessRouteTest";
@@ -111,7 +116,7 @@ import type {
 } from "../../../shared/types/chat";
 import type { AutomationRule } from "../../../shared/types/config";
 import { isAcpChatProvider } from "../../../shared/types/chat";
-import { collectAcpProviderDiagnostics, runAcpProviderUpdate } from "../ai/acpProviderDiagnostics";
+import { collectAcpProviderDiagnostics } from "../ai/acpProviderDiagnostics";
 import { stripHostOnlyChatMetadata } from "../../../shared/chatAutoResume";
 import { areAutomationsEnabledForPackagedState } from "../../../shared/automationAvailability";
 import type { LinearIngressStatus } from "../automations/linearIngressService";
@@ -236,7 +241,6 @@ import { createProxyActionDomainService } from "../../../../../ade-cli/src/servi
 import {
   captureSecretRequestedAnalytics,
   captureNotificationSentAnalytics,
-  captureProviderCliUpdateAnalytics,
   captureWebhookUrlCreatedAnalytics,
   captureAutomationTestAnalytics,
   captureProviderAccountSettingsChange,
@@ -2450,10 +2454,10 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
           ...(typeof args?.label === "string" ? { label: args.label } : {}),
         }),
       ),
-    // Diagnostics and the updater report on the CLIs installed on the machine
-    // this runtime runs on. Exposed as actions so Settings can show (and
-    // update) another machine's install through that machine's own runtime,
-    // rather than reading This computer's answer and labelling it theirs.
+    // Diagnostics report on ADE's pinned CLI on the machine this runtime runs
+    // on. Exposed as an action so Settings can show another machine's copy
+    // through that machine's own runtime, rather than reading This
+    // computer's answer and labelling it theirs.
     acpProviderDiagnostics: (args?: { provider?: string; runDoctor?: boolean }) => {
       const provider = args?.provider;
       if (!isAcpChatProvider(provider)) throw new Error("provider must be one of qwen, kimi, grok, devin.");
@@ -2461,19 +2465,6 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
         provider,
         cwd: runtime.projectRoot,
         ...(args?.runDoctor === true ? { runDoctor: true } : {}),
-      });
-    },
-    acpProviderUpdate: (args?: { provider?: string }) => {
-      const provider = args?.provider;
-      if (!isAcpChatProvider(provider)) throw new Error("provider must be one of qwen, kimi, grok, devin.");
-      return runAcpProviderUpdate({ provider, cwd: runtime.projectRoot }).then((result) => {
-        captureProviderCliUpdateAnalytics({
-          analytics: runtime.productAnalyticsService,
-          surface: "api",
-          provider,
-          outcome: result.ok ? "completed" : "failed",
-        });
-        return result;
       });
     },
     piLoginProviders: () => listPiLoginProviders(),
@@ -2588,6 +2579,44 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
     ensureMuseBinary: async () => {
       const { startMuseBinaryFetch } = await import("../ai/museExecutable");
       return startMuseBinaryFetch();
+    },
+    // ADE's pinned copy of any provider's tool on THIS machine, for the
+    // Settings rows and chat cards of a chat or lane that lives here.
+    // `pinnedToolDownload` starts (or joins) the download and returns at
+    // once; callers poll `pinnedToolStatus` for progress.
+    pinnedToolStatus: async (args?: { provider?: string }) => {
+      const provider = requireNonEmptyString(args?.provider, "provider");
+      const { getPinnedProviderToolStatus } = await import("../ai/pinnedProviderTools");
+      return getPinnedProviderToolStatus(provider);
+    },
+    pinnedToolDownload: async (args?: { provider?: string }) => {
+      const provider = requireNonEmptyString(args?.provider, "provider");
+      const { startPinnedProviderToolDownload } = await import("../ai/pinnedProviderTools");
+      return startPinnedProviderToolDownload(provider);
+    },
+    // Antigravity sign-in on THIS machine: the ACP `authenticate` request run
+    // by ADE's pinned agent here. A browser elsewhere pastes the 127.0.0.1
+    // address Google ended on (`antigravitySignInComplete`), which is forwarded
+    // to the agent's listener on this machine only.
+    antigravitySignInStatus: async () => {
+      const { getAntigravitySignInState } = await import("../ai/antigravitySignIn");
+      return getAntigravitySignInState();
+    },
+    antigravitySignInStart: async (args?: AntigravitySignInStartArgs) => {
+      const { startAntigravitySignIn, setAntigravitySignInLogger } = await import("../ai/antigravitySignIn");
+      setAntigravitySignInLogger(runtime.logger);
+      return startAntigravitySignIn(args as AntigravitySignInStartArgs);
+    },
+    antigravitySignInComplete: async (args?: AntigravitySignInCompleteArgs) => {
+      const { completeAntigravitySignIn } = await import("../ai/antigravitySignIn");
+      return completeAntigravitySignIn({
+        flowId: requireNonEmptyString(args?.flowId, "flowId"),
+        callbackUrl: requireNonEmptyString(args?.callbackUrl, "callbackUrl"),
+      });
+    },
+    antigravitySignInCancel: async (args?: AntigravitySignInCancelArgs) => {
+      const { cancelAntigravitySignIn } = await import("../ai/antigravitySignIn");
+      return cancelAntigravitySignIn({ flowId: requireNonEmptyString(args?.flowId, "flowId") });
     },
     // Settings > Providers > Muse Code on THIS machine: plugins, marketplaces,
     // skills, hooks, computer use and feedback, through a short-lived
@@ -2796,8 +2825,6 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
 const AI_SETTINGS_FEATURE_KEYS: AiFeatureKey[] = [
   "narratives",
   "conflict_proposals",
-  "commit_messages",
-  "pr_descriptions",
   "terminal_summaries",
   "initial_context",
 ];

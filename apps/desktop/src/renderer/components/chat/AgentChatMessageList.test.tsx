@@ -1944,7 +1944,6 @@ describe("AgentChatMessageList transcript rendering", () => {
               agent: "claude",
               displayName: "Claude Code",
               category: "unauthenticated",
-              installCommand: "npm install -g @anthropic-ai/claude-code",
               authCommand: "claude auth login",
             },
           },

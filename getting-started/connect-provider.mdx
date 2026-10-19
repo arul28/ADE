@@ -4,7 +4,7 @@ description: "Add one provider — by API key or your existing subscription — 
 icon: "key"
 ---
 
-ADE runs the agents you already use. Connect at least one provider and you can start chats, workers, CTO delegation, auto-titles, and AI summaries. Bring your own API key, or sign in with a subscription you already pay for.
+ADE runs the agents you already use, with your existing sign-in. It downloads its own copy of each agent the first time a machine needs it, so there is nothing to install. Connect at least one provider and you can start chats, workers, CTO delegation, auto-titles, and AI summaries. Bring your own API key, or sign in with a subscription you already pay for.
 
 <Frame caption="Connect providers in Settings">
   <img src="/media/features/settings/settings-tab.webp" alt="Connect AI providers in ADE Settings" />
@@ -16,16 +16,16 @@ Open **Settings → AI Providers** and connect whichever you use. Each runs agai
 
 <CardGroup cols={2}>
   <Card title="Claude Code" icon="anthropic">
-    Strong default for coding and project reasoning. API key or an authenticated `claude` CLI.
+    Strong default for coding and project reasoning. API key or your Claude subscription sign-in.
   </Card>
   <Card title="Codex" icon="openai">
-    OpenAI's coding agent. Authenticated Codex CLI or configured OpenAI access.
+    OpenAI's coding agent. ChatGPT sign-in or configured OpenAI access.
   </Card>
   <Card title="Cursor" icon="arrow-pointer">
-    Cursor agent runs from inside ADE. Cursor API key or signed-in CLI.
+    Cursor agent runs from inside ADE. Cursor API key or Cursor sign-in.
   </Card>
   <Card title="Factory Droid" icon="robot">
-    Factory's Droid agent, including AGI mode. Droid CLI or API key.
+    Factory's Droid agent, including AGI mode. Factory sign-in or API key.
   </Card>
   <Card title="OpenCode" icon="code">
     Local or OpenRouter-backed CLI workflows. OpenCode config and a provider key.
@@ -50,7 +50,7 @@ One reaches dozens of models — Anthropic, OpenAI, Gemini, Qwen, and more — d
     Pick the one you already use, or start with Claude Code if you're unsure.
   </Step>
   <Step title="Add credentials">
-    Paste an API key, or make sure the provider CLI is installed and signed in.
+    Paste an API key, or sign in from the provider's page. A sign-in you already have in the provider's own CLI is reused.
   </Step>
   <Step title="Verify">
     Click **Verify** or **Refresh**. ADE checks the provider and confirms it can start sessions.
@@ -69,8 +69,8 @@ Provider calls go from your machine straight to the provider. ADE does not proxy
 <AccordionGroup>
   <Accordion title="Troubleshoot a failed provider" icon="triangle-exclamation">
     - Confirm the key is active and has model access.
-    - Restart ADE after installing a new provider CLI.
-    - Open a terminal and run the provider CLI directly to confirm it's authenticated.
+    - If the provider reads "Downloading …", wait for it to finish; if it reads "Couldn't download …", choose **Retry download**.
+    - Sign in again from the provider's page; the sign-in terminal runs ADE's copy of the agent.
     - Return to **Settings → AI Providers** and click **Refresh**.
   </Accordion>
 </AccordionGroup>

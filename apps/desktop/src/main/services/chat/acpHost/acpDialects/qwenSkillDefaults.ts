@@ -53,11 +53,11 @@ export const QWEN_SYSTEM_SETTINGS_PATH_ENV = "QWEN_CODE_SYSTEM_SETTINGS_PATH";
 const DEFAULTS_DIR_NAME = "qwen-skill-defaults";
 
 export type QwenSkillDefaultsResult = {
-  /** The file ADE wrote, or null when nothing was delivered. */
+  /** The file ADE wrote, or null when none could be written. */
   path: string | null;
-  /** The skill roots that reached the file. Empty when nothing was delivered. */
+  /** The skill roots that reached the file. Empty when no skills were delivered. */
   roots: string[];
-  /** Why nothing was delivered. Absent on success. */
+  /** Why no skills were delivered. Absent when they were. */
   reason?: string;
 };
 
@@ -153,7 +153,12 @@ function readJsonObject(file: string): BaseRead {
  * The settings object ADE writes.
  *
  * `base` is whatever Qwen's own system-defaults file held, so redirecting the
- * env var adds ADE's roots instead of erasing an existing system tier.
+ * env var adds ADE's roots instead of erasing an existing system tier. It
+ * always turns Qwen's self-update off (`general.enableAutoUpdate`): ADE runs
+ * its own pinned Qwen bundle, which would otherwise replace itself in place.
+ * This tier is the lowest, so a user who turned updates on in their own
+ * settings still wins there; `QWEN_CODE_SKIP_UPDATE_CHECK_ONCE` on every
+ * launch (pinnedToolSpawnEnv.ts) covers that case.
  */
 export function buildQwenAdeSkillDefaults(args: {
   roots: readonly string[];
@@ -174,14 +179,20 @@ export function buildQwenAdeSkillDefaults(args: {
     seen.add(key);
     directories.push(trimmed);
   }
-  return { ...base, skills: { ...baseSkills, directories } };
+  const baseGeneral = isRecord(base.general) ? base.general : {};
+  return {
+    ...base,
+    general: { ...baseGeneral, enableAutoUpdate: false },
+    ...(directories.length ? { skills: { ...baseSkills, directories } } : {}),
+  };
 }
 
 /**
  * Write the ADE-owned system-defaults file for a Qwen launch, and report what
  * happened so the caller can log one delivery line.
  *
- * A personal chat deliberately gets none — ADE capabilities are not part of
+ * Every launch with a lane gets the file, for its update switch. A personal
+ * chat deliberately gets no skill roots — ADE capabilities are not part of
  * that surface. Roots are filtered against the disk by
  * `existingAgentSkillRoots`, because a directory that does not exist is a
  * directory Qwen would scan and silently find nothing in.
@@ -196,14 +207,13 @@ export function ensureQwenAdeSkillDefaultsFile(args: {
   env: NodeJS.ProcessEnv;
   personalSession: boolean;
 }): QwenSkillDefaultsResult {
-  if (args.personalSession) return { path: null, roots: [], reason: "personal_session" };
   const projectRoot = args.projectRoot?.trim();
   const laneWorktreePath = args.laneWorktreePath?.trim();
   if (!projectRoot || !laneWorktreePath) {
     return { path: null, roots: [], reason: "no_project_root" };
   }
-  const roots = existingAgentSkillRoots(args.env);
-  if (!roots.length) return { path: null, roots: [], reason: "no_existing_roots" };
+  const roots = args.personalSession ? [] : existingAgentSkillRoots(args.env);
+  const noRootsReason = args.personalSession ? "personal_session" : roots.length ? undefined : "no_existing_roots";
 
   const target = qwenAdeSkillDefaultsPath({ projectRoot, laneWorktreePath });
   // A previous ADE launch may already have exported the env var into this
@@ -230,7 +240,7 @@ export function ensureQwenAdeSkillDefaultsFile(args: {
       `${JSON.stringify(buildQwenAdeSkillDefaults({ roots, base }), null, 2)}\n`,
       { encoding: "utf8", mode: 0o600 },
     );
-    return { path: target, roots };
+    return { path: target, roots, ...(noRootsReason ? { reason: noRootsReason } : {}) };
   } catch (error) {
     return {
       path: null,

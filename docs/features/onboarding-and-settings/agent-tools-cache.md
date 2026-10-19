@@ -1,46 +1,139 @@
 # Agent tools cache
 
-ADE drives several agent CLIs, and five of them ship as native binaries that dwarf
-everything else in the product. They used to be vendored twice — once inside the
-packaged desktop app, once inside the brain runtime tarball — at roughly 650 MB
-unpacked per target. They are now fetched on demand from the npm registry into a
-machine-level, version-addressed cache that the desktop app, the brain, and every
-release channel share.
+ADE runs its own pinned, checksum-verified copy of every agent CLI and runtime.
+It never runs a CLI the user installed: no PATH lookup, no common install
+directories, no path found by sign-in detection. The copies are downloaded on
+demand into a machine-level, version-addressed cache that the desktop app, the
+brain, and every release channel share. They used to be vendored twice — once
+inside the packaged desktop app, once inside the brain runtime tarball — at
+roughly 650 MB unpacked per target for the first three alone.
 
-The cache is implemented in `apps/ade-cli/src/services/tools/` and reached
-through one shared lookup, `cacheLookup.ts`.
+Three rules hold for every copy ADE runs (chat runtimes, auth probes, model
+discovery, one-shot tasks, terminals):
+
+- **ADE's copy only.** A miss is reported as a download state, never filled
+  from the PATH. A host with no vendor build reads "not available on this
+  machine". There is no "use my own CLI" setting; a user who wants their own
+  version opens a plain shell.
+- **Vendor self-update is off**, so the bytes on disk keep matching the pin
+  (see [Self-update switches](#self-update-switches)).
+- **Logins stay in the default config homes** (`~/.claude`, `~/.codex`,
+  `~/.copilot`, `~/.factory`, `~/.grok`, `~/.qwen`, `~/.kimi-code`, Devin's XDG
+  dirs, `~/.gemini`, `~/.pi/agent`, `~/.config/muse`). ADE's copy reads the
+  same login as the user's own CLI and never writes the user's config files.
+  Per-account `CLAUDE_CONFIG_DIR` / `CODEX_HOME` provider homes work as before.
+
+The cache is implemented in `apps/ade-cli/src/services/tools/`. Resolvers reach
+it through `cacheLookup.ts` and `pinnedTool.ts`; downloads go through
+`onDemand.ts`.
 
 ## What is fetched and what stays bundled
 
-| Tool | Manifest name | Fetched | Why |
+| Tool | Manifest name | Fetched as | Used for |
 |---|---|---|---|
-| Codex | `codex` | Native platform package | ~110 MB compressed, ~297 MB unpacked per target. |
-| Claude Code | `claude-code` | Native platform package | Same order of magnitude; the SDK's binary half. |
-| OpenCode | `opencode` | Native platform package | Same. |
-| GitHub Copilot | `copilot` | Native platform package (`@github/copilot-sdk-<platform>`) | ~125 MB unpacked per target. The Copilot SDK worker spawns its `copilot-runtime`; it used to ride inside the desktop installer and was missing from the brain archive entirely, so remote brains fell back to whatever `copilot` CLI the machine had. |
+| Codex | `codex` | Native platform package (npm) | Codex chats, one-shots, terminals. ~297 MB unpacked per target. |
+| Claude Code | `claude-code` | Native platform package (npm) | The binary half of the Claude Agent SDK; chats, one-shots, terminals. |
+| OpenCode | `opencode` | Native platform package (npm) | OpenCode server, API-key and local models, terminals. |
+| GitHub Copilot runtime | `copilot` | Native platform package (`@github/copilot-sdk-<platform>`) | The `copilot-runtime` the Copilot SDK worker spawns. Version-paired with `@github/copilot-sdk`. |
+| GitHub Copilot CLI | `copilot-cli` | Native platform package (`@github/copilot-<platform>`) | Copilot terminals and sign-in. The SDK runtime above is not an interactive CLI. |
+| Cursor CLI | `cursor-cli` | Archive from `downloads.cursor.com` | Cursor terminals, sign-in, the CLI status check and model discovery. Cursor chats still use the bundled `@cursor/sdk`. |
+| Factory Droid | `droid` | Native platform package (`@factory/cli-<platform>`; x64 targets use the `-baseline` builds) | The `droid` CLI the bundled `@factory/droid-sdk` spawns, and Droid terminals. |
+| Grok | `grok` | Native platform package (`@xai-official/grok-<platform>`), brotli-inflated after extract | Grok ACP chats and terminals. |
+| Qwen Code | `qwen` | Vendor standalone bundle from GitHub releases, with its own Node | Qwen ACP chats and terminals. |
+| Kimi Code | `kimi` | Archive from GitHub releases | Kimi ACP chats and terminals. |
+| Devin | `devin` | Archive from `static.devin.ai` | Devin ACP chats and terminals. |
+| Antigravity | `antigravity` | Zip from `dl.google.com` | See the Antigravity provider doc. |
+| Pi | `pi` | npm dependency tree of `@earendil-works/pi-coding-agent` | The Pi SDK worker imports it; terminals run its `dist/cli.js`. |
+| Node | `node` | Archive from `nodejs.org` | Runtime for Pi's terminal CLI only. |
 | Muse Code | `muse` | One bare executable from Meta's release manifest | Not on npm at all; 330-470 MB per target. See [Muse: a direct-file pin](#muse-a-direct-file-pin). |
-| Cursor | — | No, still bundled | `@cursor/sdk` is reached through a bare `import()` (`services/ai/cursorSdkLoader.ts`), so moving it means rewiring module resolution, and the platform half is only ~7.6 MB. All risk, ~1% of the saving. |
-| Factory Droid | — | No, still bundled | `@factory/droid-sdk` is pure JS (~15 MB) and force-inlined into the ade-cli bundle. There is no platform package to fetch. |
+| Cursor SDK | — | No, still bundled | `@cursor/sdk` is reached through a bare `import()` (`services/ai/cursorSdkLoader.ts`), and its platform half is only ~7.6 MB. |
+| Droid SDK | — | No, still bundled | `@factory/droid-sdk` is pure JS (~15 MB) and force-inlined into the ade-cli bundle. |
 
-The JS launcher and SDK packages of the fetched three — `@anthropic-ai/claude-agent-sdk`
-(ADE calls `query()` on it in-process), `@openai/codex`, `@opencode/client` —
-keep shipping. Only their **native platform siblings** move to the cache.
+The JS launcher and SDK packages of the npm tools — `@anthropic-ai/claude-agent-sdk`
+(ADE calls `query()` on it in-process), `@openai/codex`, `@opencode/client`,
+`@github/copilot-sdk` — keep shipping. Only their **native platform siblings**
+move to the cache.
 
-There is no offline or full-install variant. Internet at install time is an
+There is no offline or full-install variant. Internet at first use is an
 accepted requirement, not a degraded mode.
 
 ## The manifest
 
 `apps/ade-cli/src/services/tools/toolsManifest.generated.json` is the single
 source of truth for what gets fetched. It is generated by
-`apps/ade-cli/scripts/generate-tools-manifest.mjs` from
-`apps/ade-cli/package-lock.json`, carries `schemaVersion: 1`, and pins every
-tool across five targets. The one exception is `copilot`: `@github/copilot-sdk`
-is a desktop dependency (the Copilot worker is bundled from desktop source), so
-its runtime is pinned from `apps/desktop/package-lock.json`, the lockfile that
-installs the SDK. A Dependabot bump of the SDK therefore fails
-`tools:manifest:check` until the runtime pin moves with it, so the worker and the
-runtime it spawns cannot drift apart.
+`apps/ade-cli/scripts/generate-tools-manifest.mjs`, carries `schemaVersion: 1`,
+and pins every tool across five targets. The generator reads three kinds of
+input, all checked in:
+
+| Input | Tools |
+|---|---|
+| `apps/ade-cli/package-lock.json` | `codex`, `claude-code`, `opencode` |
+| `apps/desktop/package-lock.json` | `copilot`. `@github/copilot-sdk` is a desktop dependency (the Copilot worker is bundled from desktop source), so its runtime is pinned from the lockfile that installs the SDK. A Dependabot bump of the SDK fails `tools:manifest:check` until the runtime pin moves with it, so the worker and the runtime it spawns cannot drift apart. |
+| `apps/ade-cli/scripts/muse-release.json` | `muse` |
+| `apps/ade-cli/scripts/pins/<tool>.json` | `droid`, `grok`, `qwen`, `kimi`, `devin`, `antigravity`, `pi`, `copilot-cli`, `cursor-cli`, `node`. These are in no ADE lockfile; `npm run tools:pin` writes them (see [Bumping a pinned version](#bumping-a-pinned-version)). |
+
+The lockfile-derived pins carry `checkoutCopy: true`: a source checkout already
+has them in `node_modules`, so it never downloads them.
+
+### Current pins
+
+| Tool | Version | Format | Integrity | Download host |
+|---|---|---|---|---|
+| `claude-code` | 0.3.300 (Claude Code 2.1.300) | `npm-tarball` | npm sha512 SRI | `registry.npmjs.org` |
+| `codex` | 0.162.1 | `npm-tarball` | npm sha512 SRI | `registry.npmjs.org` |
+| `opencode` | 2.0.29 | `npm-tarball` | npm sha512 SRI | `registry.npmjs.org` |
+| `copilot` | 1.0.22 | `npm-tarball` | npm sha512 SRI | `registry.npmjs.org` |
+| `copilot-cli` | 1.0.98 | `npm-tarball` | npm sha512 SRI | `registry.npmjs.org` |
+| `droid` | 0.244.0 | `npm-tarball` | npm sha512 SRI | `registry.npmjs.org` |
+| `grok` | 1.0.46 | `npm-tarball` + brotli step | npm sha512 SRI | `registry.npmjs.org` |
+| `pi` | 0.84.0 | `npm-tree` (about 136 packages per target) | npm sha512 SRI per package | `registry.npmjs.org` |
+| `qwen` | 0.25.0 | `archive` (tar.gz, win zip, strip 1) | vendor `SHA256SUMS`, cross-checked with GitHub asset digests | `github.com` + release-asset hosts |
+| `kimi` | 2.1.1 | `archive` (tar.gz, win zip) | vendor `.sha256` sidecars, cross-checked with GitHub asset digests | `github.com` + release-asset hosts |
+| `devin` | 3000.11.3 | `archive` (tar.gz, win zip) | vendor `manifest.json` sha256 | `static.devin.ai` |
+| `antigravity` | 1.4.1 | `archive` (zip) | sha256 computed by `tools:pin` (Google publishes none) | `dl.google.com` |
+| `cursor-cli` | 2026.10.16-e3cb207 | `archive` (tar.gz, win zip, strip 1) | sha256 computed by `tools:pin` (Cursor publishes none) | `downloads.cursor.com` |
+| `node` | 24.22.0 | `archive` (tar.gz, win zip, strip 1) | vendor `SHASUMS256.txt` | `nodejs.org` |
+| `muse` | 1.4.7-R6101.1 | `file` | Meta manifest sha256 + size | `lookaside.facebook.com` |
+
+For the two computed hashes, the first download is trusted; re-pinning the same
+version must reproduce the hash or `tools:pin` fails.
+
+### Pin formats
+
+| `format` | Shape | Install |
+|---|---|---|
+| `npm-tarball` (default) | `package`, `version`, `tarball`, `integrity`; optional `decompress` steps | Download, check SRI, `tar` with `--strip-components 1` (npm's `package/` root). |
+| `file` | `url`, `sha256`, `size` | The download is the binary (Muse). |
+| `archive` | `url`, `archive: "tar.gz" \| "zip"`, `stripComponents` 0-3, `sha256`, `size`; optional `decompress` | Check sha256 and size **before** unpacking, then extract. |
+| `npm-tree` | `packages: [{ path, tarball, integrity, size }]`, `unpackedSize` | Install every package tarball at its lockfile `node_modules` path, recreating the exact tree. No install scripts run. The pin script filters packages by `os`/`cpu`/`libc` (glibc) per target, so install has no filtering logic. |
+
+A `decompress` step (`{ algorithm: "brotli", from, to }`) runs after extraction
+with Node's zlib; Grok ships `bin/grok.br` and runs `bin/grok`.
+
+An entry may name extra required `files` (`{ path, windowsPath?, executable? }`).
+Every resolution returns them as absolute paths, and an install that lacks one
+is not usable. Qwen's `script`, Cursor's `script`, Pi's `module` and `cli`, and
+Antigravity's `harness` are files.
+
+### Download hosts
+
+Each pin may download only from its own host list (`allowedDownloadHosts` in
+`manifest.ts`). The first URL and every redirect are checked before any request,
+and HTTPS is required.
+
+| Pins | Allowed hosts |
+|---|---|
+| `npm-tarball`, `npm-tree` | `registry.npmjs.org` |
+| `muse` | `lookaside.facebook.com` |
+| `devin` | `static.devin.ai` |
+| `antigravity` | `dl.google.com` |
+| `qwen`, `kimi` | `github.com`, `release-assets.githubusercontent.com`, `objects.githubusercontent.com` |
+| `cursor-cli` | `downloads.cursor.com` |
+| `node` | `nodejs.org` |
+
+A pinned URL must be on the first host of its list, or the manifest fails to
+load. A tool with no row cannot have a vendor pin. `scripts/file-pin-host.mjs`
+holds the same table for the scripts.
 
 | Target | Pinned |
 |---|---|
@@ -50,18 +143,19 @@ runtime it spawns cannot drift apart.
 | `linux-x64` | yes |
 | `win32-x64` | yes |
 
-Each target pin carries exact npm version, registry tarball URL, and the
-`sha512-…` subresource-integrity string — all three lifted verbatim from the
-lockfile. The generator invents nothing and never touches the network. A tool
-with a missing lockfile entry, a non-HTTPS `resolved`, or a non-sha512
-`integrity` fails the generator rather than being silently dropped from the
-manifest.
+A lockfile-derived target pin carries exact npm version, registry tarball URL,
+and the `sha512-…` subresource-integrity string — all three lifted verbatim from
+the lockfile. The generator invents nothing and never touches the network; the
+pin files and `muse-release.json` are its only other inputs. A tool with a
+missing lockfile entry, a non-HTTPS `resolved`, or a non-sha512 `integrity`
+fails the generator rather than being silently dropped from the manifest.
 
 `manifest.ts` re-validates all of it at load time: package names and versions are
 checked against traversal-safe patterns before they are ever joined into a path,
-entry paths must be relative POSIX paths with no `.`/`..` segments, tarball URLs
-must be `https://`, and integrity must match `/^sha512-[A-Za-z0-9+/]+={0,2}$/`.
-The manifest is a data file, so it is treated as untrusted input.
+entry paths must be relative POSIX paths with no `.`/`..` segments, URLs must be
+`https://` on the pin's allowed host, integrity must match
+`/^sha512-[A-Za-z0-9+/]+={0,2}$/`, and a sha256 must be lowercase hex. The
+manifest is a data file, so it is treated as untrusted input.
 
 ### Two naming quirks worth knowing
 
@@ -110,7 +204,25 @@ without unpacking the tarball.
 | `claude-code` | `claude` | `claude.exe` |
 | `opencode` | `bin/opencode` | `bin/opencode.exe` |
 | `copilot` | `prebuilds/*/copilot-runtime` | `prebuilds/*/copilot-runtime.exe` |
+| `copilot-cli` | `copilot` | `copilot.exe` |
 | `muse` | `muse` | `muse.exe` |
+| `droid` | `bin/droid` | `bin/droid.exe` |
+| `grok` | `bin/grok` (inflated from `bin/grok.br`) | `bin/grok.exe` |
+| `qwen` | `node/bin/node` + file `script` = `lib/cli-entry.js` | `node/node.exe` |
+| `kimi` | `kimi` | `kimi.exe` |
+| `devin` | `bin/devin` | `bin/devin.exe` |
+| `antigravity` | `agy_acp_server.par` + file `harness` = `localharness_external` | `agy_acp_server.exe`, `localharness_external.exe` |
+| `pi` | directory `node_modules/@earendil-works/pi-coding-agent` + files `module` = `dist/index.js`, `cli` = `dist/cli.js` | same |
+| `cursor-cli` | `node` (Cursor's bundled Node) + file `script` = `index.js` | `node.exe` |
+| `node` | `bin/node` | `node.exe` |
+
+Node-run tools are spawned as `<entry> <script> …`, never through a `.cmd` shim
+or Electron-as-Node: Qwen `<node> <cli-entry.js> --acp`; Cursor
+`<node> [--use-system-ca] <index.js> --disable-auto-update …` with
+`CURSOR_INVOKED_AS=cursor-agent` (`--use-system-ca` is POSIX only, like Cursor's
+own launcher); the Pi terminal `<pinned node> <pi dist/cli.js>`. The ACP spawn
+context carries these leading args as `binaryArgs`. Pi's `dist/cli.js` path is
+for 0.84; a Pi bump must re-check it (1.x moved it to `dist/bundle/cli.js`).
 
 ## Muse: a direct-file pin
 
@@ -152,8 +264,9 @@ The macOS builds carry a Developer ID signature with hardened runtime, and the
 same no-quarantine property as the npm tools holds: the fetched `muse` runs
 `--version` straight from the cache.
 
-The desktop app prefetches `muse` on packaged launch with the other pinned
-tools, and `ade serve` does in the brain. Settings > Providers > Muse Code can
+The desktop app prefetches `muse` on packaged launch when the machine shows
+signs of using it (see [Which tools a machine fetches](#which-tools-a-machine-fetches)),
+and `ade serve` does in the brain. Settings > Providers > Muse Code can
 also start the download on the machine the page is showing
 (`ai.ensureMuseBinary`, which returns at once) and poll it
 (`ai.museBinaryStatus`), because 350+ MB must not hold a remote action open.
@@ -182,15 +295,30 @@ profile — 650 MB must never roam.
   @openai/codex-darwin-arm64/0.162.1-darwin-arm64/
     vendor/aarch64-apple-darwin/bin/codex
     .install-complete
-  @anthropic-ai/claude-agent-sdk-darwin-arm64/0.3.287/
+  @anthropic-ai/claude-agent-sdk-darwin-arm64/0.3.300/
   @opencode/cli-darwin-arm64/2.0.29/
+  devin-darwin-arm64/3000.11.3/
+  pi-coding-agent-darwin-arm64/0.84.0/node_modules/…
   .staging/
   .locks/
+  .installed-packages.json
+  .version-overrides.json      <- only after a fall-forward (Claude, Codex, Muse)
 ```
 
+Vendor pins use a cache directory name of their own (`devin-<target>`,
+`qwen-code-<target>`, `antigravity-acp-<target>`, …), not an npm package name.
+
 `.install-complete` (`TOOL_INSTALL_SENTINEL`) is written as the last step of an
-install and contains the tool name, package, version, target, integrity, and an
-install timestamp.
+install and contains the tool name, package, version, target, integrity (or
+sha256), and an install timestamp.
+
+`.installed-packages.json` is the GC ledger (`ledger.ts`): every package name
+ADE ever installed under this root, with the last time any ADE run pinned it.
+See [Garbage collection](#garbage-collection). `.version-overrides.json` holds
+fall-forward records (`overrides.ts`); see
+[Claude fall-forward](#claude-fall-forward),
+[Codex fall-forward](#codex-fall-forward) and
+[Muse vendor floor](#muse-vendor-floor).
 
 ### Publish is atomic, and "usable" is a two-part test
 
@@ -254,65 +382,248 @@ concurrently only trades install latency for a much worse disk-full profile.
 
 ## Resolution order
 
-`cachedToolEntryPath(name)` in
-`apps/ade-cli/src/services/tools/cacheLookup.ts` is the one place the cache is
-consulted by an executable resolver. It never throws: a miss must degrade to the
-bundled copy rather than break agent spawning. Two misses are routine —
-`not-installed` (the normal dev-machine and pre-fetch state) and
-`unsupported-target` (the manifest pins five targets, but the bundled
-platform-package maps also cover `win32-arm64`, where there is no pin to
-resolve).
+Every provider resolver uses the same order:
 
-All three desktop resolvers call it before their bundled-`node_modules` probe, so
-cache-first ordering is defined once and cannot drift. This is the whole
-resolution surface for both processes: **neither package keeps a second copy of
-a resolver.** `apps/ade-cli` imports the Claude, Codex and OpenCode resolvers
-from the desktop main-process services (`import … from
-"../../desktop/src/main/services/…"`). Muse runs the other way: its
-Electron-free resolver lives in `apps/ade-cli/src/services/tools/muse.ts`, and
-desktop's `museExecutable.ts` re-exports it and adds only the UI blocker text.
-Either way desktop main and the brain share one resolution path by
-construction rather than by convention.
+1. **Env override** — a developer/test hook only; no UI sets it.
+2. **Fall-forward override** — Claude Code, Codex and Muse only, see
+   [Claude fall-forward](#claude-fall-forward),
+   [Codex fall-forward](#codex-fall-forward) and
+   [Muse vendor floor](#muse-vendor-floor).
+3. **Current pin** in the tools cache.
+4. **`node_modules` copy** — source checkouts only, and only for the
+   lockfile-pinned tools (`codex`, `claude-code`, `opencode`, `copilot`). The
+   lockfile is the pin there. Muse has no checkout copy: its order is env (dev
+   runs only), fall-forward override, current pin, previous pin.
+5. **Previous pin** in the tools cache, which GC keeps so a machine still
+   downloading a new pin has the old one to run.
+6. **Missing.** The resolver returns `source: "fallback-command"` with an
+   **empty** `path` (OpenCode: `missing`). The caller starts or joins the
+   download and reports its state. Nothing spawns a bare command name, so a
+   forgotten call site fails instead of running a PATH CLI.
 
-| Tool | Resolver | Order |
+`cachedToolEntryPath` / `previousCachedToolEntryPath` (`cacheLookup.ts`) and
+`resolveCurrentPinnedTool` / `resolvePreviousPinnedTool` / `resolvePinnedTool`
+(`pinnedTool.ts`) are the cache steps. They never throw. Neither package keeps a
+second copy of a resolver: `apps/ade-cli` imports the desktop main-process
+resolvers (`import … from "../../desktop/src/main/services/…"`), and Muse runs
+the other way (`apps/ade-cli/src/services/tools/muse.ts`, re-exported by
+desktop's `museExecutable.ts`). Desktop main and the brain share one resolution
+path by construction.
+
+| Tool | Resolver | Env override (dev/test) |
 |---|---|---|
-| `claude-code` | `apps/desktop/src/main/services/ai/claudeCodeExecutable.ts` | `CLAUDE_CODE_EXECUTABLE_PATH` → tools cache → bundled `node_modules` (packaged, else ADE's own install, resolved from the module and never the working directory) → the previous pinned version still in the cache (`previousCachedToolEntryPath`) → detected auth → PATH / known dirs → bare `claude` |
-| `codex` | `apps/desktop/src/main/services/ai/codexExecutable.ts` | `CODEX_EXECUTABLE` / `CODEX_EXECUTABLE_PATH` → tools cache → bundled → detected auth → PATH / known dirs → standalone installer dirs → bare `codex` |
-| `opencode` | `apps/desktop/src/main/services/opencode/openCodeBinaryManager.ts` | tools cache → bundled `node_modules` roots → user-installed PATH → `missing` |
-| `copilot` | `resolveCopilotSdkRuntime` in `apps/desktop/src/main/services/ai/acpExecutables.ts` | `COPILOT_EXECUTABLE` / `GITHUB_COPILOT_EXECUTABLE` (the machine's own CLI) → tools cache → the SDK's platform package in `node_modules` (a source checkout) → the previous pinned version still in the cache → the machine's own `copilot`. A candidate counts only with its `runtime.node` beside it. The terminal `copilot` launch keeps using `resolveCopilotExecutable`. |
-| `muse` | `apps/ade-cli/src/services/tools/muse.ts` (re-exported by `apps/desktop/src/main/services/ai/museExecutable.ts`) | `ADE_MUSE_EXECUTABLE` (dev runs only) → tools cache → `missing`. Never PATH: ADE runs only the pinned build. |
+| `claude-code` | `ai/claudeCodeExecutable.ts` | `CLAUDE_CODE_EXECUTABLE_PATH` |
+| `codex` | `ai/codexExecutable.ts` | `CODEX_EXECUTABLE` / `CODEX_EXECUTABLE_PATH`; `ADE_CODEX_BUNDLE_ROOT` points a test at a `node_modules` root |
+| `opencode` | `opencode/openCodeBinaryManager.ts` | `ADE_OPENCODE_BUNDLE_ROOT` (hermetic: skips the cache and the previous pin) |
+| `copilot` (SDK runtime) | `resolveCopilotSdkRuntime` in `ai/acpExecutables.ts` | `COPILOT_EXECUTABLE` / `GITHUB_COPILOT_EXECUTABLE`. A candidate counts only with its `runtime.node` beside it. |
+| `copilot-cli`, `qwen`, `kimi`, `grok`, `devin` | `ai/acpExecutables.ts` | `COPILOT_EXECUTABLE`, `QWEN_EXECUTABLE`, `KIMI_EXECUTABLE`, `GROK_EXECUTABLE`, `DEVIN_EXECUTABLE` (and their aliases in `ACP_EXECUTABLE_ENV_KEYS`) |
+| `droid` | `ai/droidExecutable.ts` | `DROID_EXECUTABLE` / `FACTORY_DROID_EXECUTABLE` |
+| `pi` | `ai/piInstallation.ts` | `ADE_PI_PACKAGE_ROOT` / `PI_CODING_AGENT_PACKAGE_ROOT` |
+| `cursor-cli` | `resolvePinnedCursorAgentCli` in `ai/pinnedProviderTools.ts` | — |
+| `muse` | `apps/ade-cli/src/services/tools/muse.ts` | `ADE_MUSE_EXECUTABLE` (dev runs only) |
 
-Codex is the special case. It is the one tool that cannot be reached by seeding a
-module search path: its binary lives at `vendor/<triple>/bin/codex` and is found
-by a directory probe, never by `NODE_PATH`. The cache therefore has to hand it
-the resolved `entryPath` explicitly.
+All resolvers in the table live under `apps/desktop/src/main/services/` unless
+the path says otherwise. The old `ADE_DISABLE_BUNDLED_CODEX` /
+`ADE_DISABLE_BUNDLED_OPENCODE` opt-outs, the PATH and known-dir lookups, the
+Codex standalone-installer dirs and the paths sign-in detection found are gone.
 
-`cacheLookup.ts` exports one other thing: `pinnedToolFetchPending(name)`, true
-only when this build pins the tool for the current host *and* it is not on disk
-yet. That is the cold first-run window, and it exists so a spawn failure inside
-it can be reworded rather than re-routed — `claudeRuntimeProbe.ts` uses it to
-replace the SDK's raw "not found" with `CLAUDE_RUNTIME_FETCH_PENDING_ERROR`
-("ADE is still downloading the Claude Code runtime"), and only when nothing
-resolved at all. It changes no resolution: a miss still falls through to the
-bundled copy. It is expressed through `resolveTool` rather than re-deriving
-`detectToolTarget` + `findToolPin` + the sentinel, so the predicate cannot drift
-from the resolver, and it never throws — `unsupported-target` and a malformed
-manifest both answer false, because nothing is pending when nothing will ever
-be fetched. The probe deep-imports it rather than going through the barrel,
-which would pull the whole fetch/install stack in with it.
+Codex is the special case among the npm tools. It is the one tool that cannot be
+reached by seeding a module search path: its binary lives at
+`vendor/<triple>/bin/codex` and is found by a directory probe, never by
+`NODE_PATH`. The cache therefore has to hand it the resolved `entryPath`
+explicitly.
 
-OpenCode's bundled probe uses `ADE_OPENCODE_BUNDLE_ROOT` as an explicit bundle
-override when it is set. Otherwise it walks the packaged `resourcesPath` roots
-(`app.asar.unpacked`, `app-<arch>.asar.unpacked`, `app`), every `NODE_PATH`
-entry, `process.cwd()`, and then every `node_modules` directory up the module's
-ancestor chain.
+### Status and the Download/Retry action
 
-### Opt-outs
+`getPinnedToolStatus(name)` (`pinnedTool.ts`) never throws and reports one of:
 
-`ADE_DISABLE_BUNDLED_CODEX=1` and `ADE_DISABLE_BUNDLED_OPENCODE=1` skip the
-**cache as well as** the bundled copy. They mean "use my own tool, not ADE's,"
-and a cache hit is still ADE's copy. `claude-code` has no equivalent flag; its
-override is the explicit `CLAUDE_CODE_EXECUTABLE_PATH`.
+| `state` | Meaning | Copy |
+|---|---|---|
+| `ready` | Current or previous pin on disk. `runningVersion` says which; `downloading` is true while a newer pin downloads behind it. | "Ready (pinned vX)" |
+| `downloading` | A download of the current pin is running **in this process**, with `receivedBytes` / `totalBytes`. | "Downloading <Tool> for this machine…" |
+| `failed` | The last tracked download in this process failed; `errorKind` is the `ToolError` kind. | "Couldn't download <Tool>: <reason>." + Retry |
+| `missing` | Pinned and supported, not on disk, nothing running. `fetchAllowed` says whether a download could start here. | "ADE downloads <Tool> for this machine the first time it is used." + Download |
+| `unavailable` | No pin for this host (`win32-arm64`, musl Linux, …) or an unknown tool. | "<Tool> is not available on this machine (<target>)." |
+
+Status is per process: a download running in another process on the same
+machine (desktop vs brain) reads `missing` until it lands.
+
+`ai/pinnedProviderTools.ts` maps a provider to its tool (`pinnedToolForProvider`;
+ACP providers derive from `ACP_PROVIDER_IDS`, Cursor maps to `cursor-cli`) and
+builds the one blocker sentence every surface shows (`pinnedToolBlocker`).
+Runtime starts, one-shots, usage reads and automations call
+`requirePinnedProviderExecutable`, which awaits the download and throws
+`PinnedToolNotReadyError` (`tool`, `state`, `errorKind`) on a miss.
+
+Two runtime actions expose it to clients, both in the `ai` domain and reachable
+remotely (`actionPolicy` remote list, `adeActionAccess` read/write tiers):
+
+| Action | Does |
+|---|---|
+| `ai.pinnedToolStatus {provider}` | Returns `PinnedProviderToolStatus` (a renderer-safe projection: no entry path). |
+| `ai.pinnedToolDownload {provider}` | Calls `retryPinnedToolDownload` (ignores the 2-minute failure backoff) and returns at once; poll the status. Muse delegates to its own `ensureMuseBinary` tracker. |
+
+The preload methods `window.ade.ai.pinnedToolStatus(args, pin)` and
+`pinnedToolDownload(args, pin)` route through `callPinnedOrBoundRuntimeActionOr`,
+so Settings (`useSettingsMachineScope().pin`) and the chat card
+(`useChatRuntimeScope().pin`) act on the machine that owns the row or chat.
+The renderer reads them with `hooks/usePinnedToolStatus.ts` (one read per
+provider and `pin?.key`, a 1 s poll only while downloading) and shows them in
+`settings/providers/bodies/PinnedToolStatusRow.tsx` and `AgentCliAuthCard.tsx`.
+
+### Self-update switches
+
+Every place that starts a pinned copy applies `shared/pinnedToolSpawnEnv.ts`:
+
+| Tool | Switch |
+|---|---|
+| `claude-code` | `DISABLE_AUTOUPDATER=1`, `CLAUDE_CODE_AUTOUPDATER_DISABLED_BY_HOST=1` |
+| `codex` | `-c check_for_update_on_startup=false` (a config flag; there is no env var) |
+| `copilot`, `copilot-cli` | `COPILOT_AUTO_UPDATE=false` (the SDK also passes `--no-auto-update` to its runtime) |
+| `opencode` | `OPENCODE_DISABLE_AUTOUPDATE=1` |
+| `droid` | `FACTORY_DROID_AUTO_UPDATE_ENABLED=false` |
+| `grok` | `GROK_DISABLE_AUTOUPDATER=1` and `--no-auto-update` |
+| `kimi` | `KIMI_CODE_NO_AUTO_UPDATE=1` |
+| `qwen` | `QWEN_CODE_SKIP_UPDATE_CHECK_ONCE=true`, plus `general.enableAutoUpdate: false` in ADE's own system-defaults file (`QWEN_CODE_SYSTEM_DEFAULTS_PATH`, `qwenSkillDefaults.ts`); the user's `~/.qwen/settings.json` is never written |
+| `pi` | `PI_SKIP_VERSION_CHECK=1` |
+| `cursor-cli` | `--disable-auto-update` (no env var; its updater would relink the user's `~/.local/bin/cursor-agent`) |
+| `devin`, `antigravity`, `muse` | none found; their updaters do not touch ADE's layout |
+
+### Claude fall-forward
+
+Claude Code, Codex and Muse are the tools that can move past their pin on their
+own. Claude moves only when Anthropic provably refuses the pinned build as too old
+(`ai/providerVersionRejection.ts` detects the exact typed signals:
+`startup_failure_reason: "cli_version_too_old"`, the exit-1 "needs an update"
+text, API `claude_code_version_too_old` on a 400 that is not the org-policy
+variant, and the client-data "requires Claude Code X or newer" document).
+Network, auth, rate-limit, crash, timeout and local DB errors never match.
+
+On a match `ai/claudeFallForward.ts` reads npm's `latest` for the platform
+package, which must be newer than the refused build, installs it as its own
+version dir through the normal npm-tarball path (registry host, sha512 SRI),
+and probes it (`--version`, `auth status --json`, no model request). A build
+that fails the probe, or carries a Claude Code below the required or refused
+version, is deleted at once, so it can never run as the previous pin. Only if
+the probe passes does it write a record to `.version-overrides.json`:
+`{tool, target, packageName, format, pinnedVersion, overrideVersion, tarball,
+integrity, reason, requiredVersion, rejectedToolVersion, overrideToolVersion,
+at, lastUsedAt}`. Codex and Muse write the same record, with two extra fields:
+
+- `format`: `npm-tarball` (Claude, Codex) or `file` (Muse). A file record
+  carries `url`, `sha256` and `size` instead of `tarball` / `integrity`, and
+  only the lookaside host is allowed. A record without `format` is an older
+  npm record and still reads.
+- `scope`: what the refusal was limited to. Codex stores the model; Claude and
+  Muse store none.
+
+- The override is active only while its `pinnedVersion` and package equal the
+  manifest's current pin for this target and its install is complete. A new
+  pin ends it with no extra code.
+- It never counts as "the previous pin".
+- GC keeps every recorded override dir and drops records no ADE used for 14 days.
+- One attempt per pinned version per process; a refusal of the override itself
+  stops (`newest-refused`). It never loops.
+- Gated by `pinnedToolFetchAllowed("claude-code")`: tests,
+  `ADE_DISABLE_TOOLS_FETCH=1` and source checkouts never fall forward, and a
+  `CLAUDE_CODE_EXECUTABLE_PATH` override is left alone.
+- A startup refusal restarts that turn once on the new build; a mid-turn API
+  refusal shows a notice and resends nothing. The status row reads "Running
+  untested Claude Code X: Anthropic stopped supporting Y."
+  (`PinnedProviderToolStatus.notice`). Each attempt logs `ai.claude_fall_forward`.
+
+### Codex fall-forward
+
+Codex moves only when OpenAI refuses the pinned build for a model:
+`The '<model>' model requires a newer version of Codex. Please upgrade to the
+latest app or CLI and try again.` The text is server-side only (it is not in
+the binary). It matches only from an app-server `error` notification (not
+`willRetry`) or a failed `turn/completed`, with `codexErrorInfo` absent or
+`badRequest` / `other`, and only when the model it names is the chat's model.
+A one-shot `codex exec` matches on a non-zero exit with the same sentence and
+the model ADE passed. Usage-limit, auth, network, context-window and sqlx
+`VersionTooOld` / `VersionMismatch` errors never match, and neither does
+assistant text.
+
+`ai/codexFallForward.ts` then:
+
+1. Checks the refusal again on the refused build with one short request. If
+   the build is accepted, or the check fails for another reason, nothing
+   changes.
+2. Reads npm's `@openai/codex` `latest` (must be a plain `X.Y.Z` newer than the
+   refused build) and its platform build's version document (tarball, sha512
+   SRI), and installs it through the normal npm-tarball path.
+3. Runs `--version` (must be `codex-cli <latest>`), then the same one-request
+   probe for that model:
+   `codex exec -c check_for_update_on_startup=false -c log_dir=<tmp> --json
+   --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check
+   --sandbox read-only --color never --model <m> --cd <empty tmp> "Reply with
+   OK"`, 90 s. It passes on exit 0 with `turn.completed` and no refusal. If the
+   new build is refused too (`newest-refused`) or fails another way
+   (`probe-failed`), its directory is deleted.
+4. Writes the record with `scope` = the model and checks that
+   `resolveCodexExecutable` now returns it.
+
+The probes run with the chat's own `CODEX_HOME` account, so each costs one
+short request of the user's Codex quota; the notice says so. They set
+`CODEX_SQLITE_HOME` and `log_dir` to a temp dir, so a newer build never
+migrates the databases in the user's `CODEX_HOME` past what the pin knows.
+
+- One attempt per pin and model per process; two refusals at once share it. A
+  refusal of the override itself stops (`newest-refused`).
+- Gated by `pinnedToolFetchAllowed("codex")`; a `CODEX_EXECUTABLE` override is
+  left alone.
+- The override switches every Codex on that machine, for all models.
+- A chat never resends. After a switch, an idle app-server the chat still owns
+  is torn down, so the next message starts the new build. A one-shot task runs
+  once more on the new build.
+- The status row reads "Running untested Codex X: OpenAI stopped supporting Y
+  for <model>." Each attempt logs `ai.codex_fall_forward`.
+
+### Muse vendor floor
+
+Muse has no refusal to detect. Instead, every Muse host start calls
+`checkMuseVendorFloor` (`ai/museFallForward.ts`), at most once per 4 hours per
+process, only where downloads are allowed and only once the pin is on disk. It
+reads Meta's channel document (`GET
+https://api.meta.ai/muse-code/channels/muse-stable`) and compares its
+`min_version` with the running build (`X.Y.Z[-R<n>…]`; a floor without a build
+is met by every build of that release):
+
+| Channel document | Action |
+|---|---|
+| fetch fails, not JSON, another channel, `min_version` null or unparseable | nothing |
+| floor met by the running build | nothing |
+| below the floor, channel build of the same release (pairs with the pinned SDK) and at least the floor | fall forward |
+| below the floor, channel build of another release or below the floor | status line "Meta requires Muse Code ≥ X; this ADE has Y. Update ADE." |
+
+An `urgency` of `high`, `critical`, `urgent` or `required` adds "Meta marks
+this update as urgent." To fall forward, ADE downloads the channel build as a
+`file` pin from the lookaside host (sha256 and size checked) and runs
+`--version`; a build that reports another version is deleted. The record has
+`reason: "vendor_min_version"`. The status row then reads "Running untested
+Muse Code X: Meta stopped supporting Y." The check logs `ai.muse_fall_forward`
+for each attempt and `ai.muse_vendor_floor` when ADE must be updated.
+
+### Copilot
+
+Copilot has no fall-forward: its runtime is version-paired with
+`@github/copilot-sdk`. On the organisation-policy refusal
+(`managed_client_update_required`, or "your organization's managed settings
+require version X or newer") it shows a precise message naming the required and
+pinned versions and logs `agent_chat.copilot_client_update_required`.
+
+### The cold-start wording
+
+`cacheLookup.ts` also exports `pinnedToolFetchPending(name)`, true only when this
+build pins the tool for the current host *and* it is not on disk yet.
+`claudeRuntimeProbe.ts` uses it with the download state: while the download
+runs it reports `CLAUDE_RUNTIME_FETCH_PENDING_ERROR` ("ADE is still downloading
+the Claude Code runtime"), spawns nothing, and does not cache or publish the
+result, so health does not stick once the download lands. It is expressed
+through `resolveTool` rather than re-deriving `detectToolTarget` + `findToolPin`
++ the sentinel, so the predicate cannot drift from the resolver, and it never
+throws — `unsupported-target` and a malformed manifest both answer false.
 
 ### Reported sources
 
@@ -325,44 +636,63 @@ IPC boundary and must stay in lockstep in four files:
 - `apps/desktop/src/main/services/ipc/registerIpc.ts` (`aiIsOpenCodeInstalled`)
 - `apps/desktop/src/preload/preload.ts` and `global.d.ts`
 
-## Dev-mode fallback
+## Dev checkouts
 
-A source checkout still has the platform packages in `node_modules` — they remain
-`dependencies`, and only the *packaged* app excludes them — so a cache miss
-silently resolves to the bundled copy and development needs no fetch at all.
-This was verified empirically with a partially-warm cache:
+A source checkout still has the lockfile-pinned platform packages in
+`node_modules` — they remain `dependencies`, and only the *packaged* app
+excludes them — so `codex`, `claude-code`, `opencode` and `copilot` resolve from
+there (step 4 above) and are never downloaded in a checkout.
 
-| Tool | Cache state | Resolved source |
-|---|---|---|
-| `opencode` | cached | `tools-cache` |
-| `codex` | not cached | `bundled` |
-| `claude-code` | not cached | `bundled` (ADE's own `node_modules`) |
+Every other pin exists only as a download. A dev desktop (`!app.isPackaged`) and
+a source-checkout `ade serve` therefore turn on-demand fetch on in
+**download-only** mode (`enablePinnedToolFetch(logger, { downloadOnly: true })`):
+`droid`, `grok`, `qwen`, `kimi`, `devin`, `antigravity`, `pi`, `copilot-cli`,
+`cursor-cli`, `node` and `muse` download the first time something needs them.
+The startup pass stays packaged-only.
 
-Claude used to fall through to the developer's own `claude` here, because its
-bundled lookup accepted only a packaged copy. That ran whatever Claude Code
-version the machine had, and without ADE's plugins, which ADE delivers only to
-its own copies. After an ADE update, while the new pin downloads, Claude now
-runs the previous pinned version that `gcTools` keeps instead of the PATH one.
-A first install with nothing in the cache still falls back to the machine's
-`claude`, so chats work before the download lands.
+| Variable | Effect |
+|---|---|
+| `ADE_TOOLS_ROOT` | Use this tools root instead of `~/.ade/tools`. Point validation runs at a temp dir; never download into the real root by hand. |
+| `ADE_DISABLE_TOOLS_FETCH=1` | No download of any kind, startup or on demand. Wins over everything. |
+| `ADE_FORCE_TOOLS_FETCH=1` | `ade serve` from a checkout behaves like a packaged install: it runs the startup pass for the demanded tools, and on-demand fetch covers the lockfile tools too. |
+
+Desktop never enables fetching under `NODE_ENV=test`.
+
+Claude used to fall through to the developer's own `claude` here, which ran
+whatever version the machine had and without ADE's plugins (ADE delivers them
+only to its own copies). It now runs the checkout's copy, or the previous pin,
+or reports the download.
 
 ## When the cache gets populated
 
+Downloads happen only on demand. Neither the brain nor the desktop app
+downloads every pinned tool at launch: every pin together is well over a
+gigabyte (Antigravity alone unpacks to about 1 GB on Linux).
+
 ### Which tools a machine fetches
 
-Neither the brain nor the desktop app downloads every pinned tool any more.
 `selectDemandedAgentTools` (`apps/desktop/src/main/services/tools/agentToolDemand.ts`)
-picks the tools this machine uses, and only those are fetched at startup:
+picks the tools this machine shows signs of using, and only those are fetched at
+startup. A CLI on the PATH counts only as a sign of use (so a machine that ran
+the user's own CLI before migrates to ADE's copy); ADE never runs it.
 
 | Tool | Fetched at startup when |
 |---|---|
 | any | it is already in the cache, current or previous version, so an ADE update keeps it current |
 | `claude-code` | `claude` on the PATH or a known install dir, `ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN`, `~/.claude/.credentials.json`, or `~/.claude.json` |
 | `codex` | `codex` on the PATH, or `~/.codex/auth.json` (`CODEX_HOME`) |
-| `copilot` | `copilot` on the PATH, `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` / `GITHUB_TOKEN`, `~/.copilot/config.json`, or gh's `hosts.yml` (`gh auth login`) |
+| `copilot`, `copilot-cli` | `copilot` on the PATH, `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` / `GITHUB_TOKEN`, `~/.copilot/config.json`, or gh's `hosts.yml` (`gh auth login`) |
 | `opencode` | `opencode`, `ollama` or `lms` on the PATH, an API-key env var ADE reads (`ENV_KEY_MAP`, `OPENROUTER_API_KEY`), an OpenCode `auth.json`, or `~/.ollama` / `~/.lmstudio`. OpenCode runs ADE's API-key, OpenRouter and local models too. |
 | `muse` | `muse` on the PATH, or Muse's `auth.json` |
-| a tool with no rule | always, the old behavior, so a newly pinned tool is never stranded |
+| `droid` | `droid` on the PATH, `FACTORY_API_KEY`, or a Factory home (`~/.factory`, `FACTORY_HOME_OVERRIDE`) |
+| `grok` | `grok` on the PATH, `XAI_API_KEY`, or `$GROK_HOME/auth.json` |
+| `qwen` | `qwen` on the PATH, `QWEN_API_KEY` / `DASHSCOPE_API_KEY`, or `oauth_creds.json` / `.env` / `settings.json` in the Qwen home |
+| `kimi` | `kimi` on the PATH, or `config.toml` / `credentials/` in the Kimi Code home |
+| `devin` | `devin` on the PATH, `WINDSURF_API_KEY`, or Devin's `credentials.toml` |
+| `antigravity` | `agy` on the PATH, or `antigravity-acp` / `antigravity-cli` under `GEMINI_HOME` (default `~/.gemini`). A bare `GEMINI_API_KEY` is not a sign. |
+| `cursor-cli` | `cursor-agent` on the PATH, `CURSOR_API_KEY`, `$CURSOR_CONFIG_DIR/cli-config.json`, or Cursor's per-platform `auth.json` |
+| `pi`, `node` | `pi` on the PATH, or `$PI_CODING_AGENT_DIR/auth.json` (default `~/.pi/agent`). `node` is only Pi's terminal runtime, so it follows Pi. |
+| a tool with no rule | never at startup; it downloads when first needed |
 
 The checks are file, env and PATH lookups only, never a spawn, so they run at
 startup. Every other tool downloads when something needs it.
@@ -370,22 +700,27 @@ startup. Every other tool downloads when something needs it.
 ### Downloading on demand
 
 `apps/ade-cli/src/services/tools/onDemand.ts` downloads a pinned tool the moment
-it is needed. It is off until a packaged process turns it on
-(`enablePinnedToolFetch`, called by `main.ts` and by `ade serve` under the same
-conditions as their startup fetch), so a source checkout, a dev loop or a test
-never starts a download. `ADE_DISABLE_TOOLS_FETCH=1` still wins.
+it is needed. It is off until a process turns it on (`enablePinnedToolFetch`,
+called by `main.ts` and by `ade serve`): packaged builds fetch every pin, source
+checkouts fetch only the download-only pins (see [Dev checkouts](#dev-checkouts)),
+and tests never fetch. `ADE_DISABLE_TOOLS_FETCH=1` still wins.
 
 `pinnedToolDownload(name)` is synchronous: it returns the running or newly
-started download, or `null` when the tool is on disk, so a ready runtime starts
-with no extra await. One download per tool per process; other processes are
-serialized by the cache lock. It never throws: a failed download leaves
-resolution where it was (ADE's previous copy, then the machine's own CLI).
+started download, or `null` when there is nothing to do (on disk, not allowed
+here, no pin, or failed less than two minutes ago), so a ready runtime starts
+with no extra await. `retryPinnedToolDownload(name)` is the explicit user
+Download/Retry and ignores the backoff. One download per tool per process;
+other processes are serialized by the cache lock. Both promises resolve to the
+`ToolError` or `null` and never reject: a failed download leaves resolution
+where it was (ADE's previous copy, or missing), never a PATH CLI.
 
 | Who waits for it | Tool |
 |---|---|
-| Chat runtime start (`startClaudeQuery`, the Claude warm start, `runClaudeBackgroundCliCommand`, `startCodexRuntime`, `ensureCopilotRuntime`). The chat shows "Downloading … for this machine" while it waits. | `claude-code`, `codex`, `copilot` |
-| One-shot tasks (`providerTaskRunner.ts`: Claude, Codex, Copilot) | same |
+| Chat runtime start: Claude (`startClaudeQuery`, the warm start, `runClaudeBackgroundCliCommand`), Codex, Copilot, Droid, Pi and every ACP provider. The chat shows "Downloading … for this machine" while it waits, then throws `PinnedToolNotReadyError` if the download fails. | every provider's tool |
+| One-shot tasks (`providerTaskRunner.ts`), auth probes (`acpAuthProbe.ts`, `claudeRuntimeProbe.ts`), usage reads, automation planning, sign-out, the orchestrated worker PTY | the provider's tool |
 | `startOpenCodeChatSession`, `runOpenCodeTextPrompt`, and `acquireOpenCodeServer` (terminals, sign-in) | `opencode` |
+| Provider terminals and login terminals (`pty/pinnedProviderCli.ts`): the terminal prints "ADE is downloading <Tool> for this machine. It starts here when the download finishes." and types the launch once it lands | the CLI tool (`copilot-cli`, `cursor-cli`, `pi` + `node`, …) |
+| `ade harness env` | the harness's tool |
 | Muse keeps its own `ensureMuseBinary` | `muse` |
 
 A provider the user signs in to after launch would otherwise read "not
@@ -395,19 +730,23 @@ AI status refresh calls `startDemandedAgentToolFetches`: for every pinned tool
 that is missing, its provider switched on in Settings, and the machine now shows
 the signals above (or, for `opencode`, the refresh found an API key, OpenRouter
 key or local model, including keys in ADE's own store), it starts the download
-without waiting. Copilot's blocker reads "ADE is downloading the Copilot
-runtime" meanwhile. The launch and `ade serve` passes run their own fetches
+without waiting. The provider's blocker reads "ADE is downloading <Tool> for
+this machine" meanwhile. The launch and `ade serve` passes run their own fetches
 through the same tracker (`trackPinnedToolFetch`), so an on-demand caller joins
 a download already running in that process instead of queueing a second
 install, and the blocker reads "downloading" during the launch fetch too.
 On-demand outcomes log as `tools.on_demand_fetch_started` / `_complete` /
-`_failed` (packaged builds only, since on-demand is off elsewhere). A tool whose
-on-demand download failed is not retried for two minutes, so an offline machine
-does not retry on every status refresh; callers fall back as on any failure. A download that lands bumps `pinnedToolInstallGeneration()`,
-which voids the cached status, so the next refresh sees the tool.
+`_failed`. A tool whose on-demand download failed is not retried automatically
+for two minutes, so an offline machine does not retry on every status refresh.
+A download that lands bumps `pinnedToolInstallGeneration()`, which voids the
+cached status (including `authDetector`'s), so the next refresh sees the tool.
 
 Model-list requests never start a download: the picker can ask every provider
-at once.
+at once. Neither do Droid/Copilot model reads, ACP warm-up or Devin cloud reads.
+
+Remote machines: every download runs in the process that owns the chat, lane or
+status (the brain on that machine), against that machine's tools root. A remote
+chat downloads on its own machine.
 
 ### Brain startup
 
@@ -420,7 +759,7 @@ are 100-300 MB downloads, and a machine with a cold cache would otherwise look
 wedged for minutes on first run while RPC went unanswered.
 
 Not awaiting it is safe because every consequence is handled elsewhere. An agent
-spawn that needs a still-missing tool gets a typed `not-installed` `ToolError`;
+spawn that needs a still-missing tool awaits its download or reports it;
 resolvers read the cache per call, and `resolveOpenCodeBinary` explicitly never
 caches a miss — so a fetch that lands mid-session is picked up with no restart of
 anything. `ensureTools` is itself cross-process locked, so racing the desktop app
@@ -434,7 +773,7 @@ download.
 
 | Signal | Meaning |
 |---|---|
-| `tools.fetch_skipped` | The fetch did not run. Either `ADE_DISABLE_TOOLS_FETCH=1`, or `ade serve` is running from a source checkout — where all three tools already resolve from the repo's own `node_modules`, so fetching ~600 MB on every dev-loop serve and every CI job buys nothing. `ADE_FORCE_TOOLS_FETCH=1` opts a checkout back in; `ADE_DISABLE_TOOLS_FETCH=1` still wins over it. |
+| `tools.fetch_skipped` | The startup pass did not run. Either `ADE_DISABLE_TOOLS_FETCH=1`, or `ade serve` is running from a source checkout — where the lockfile-pinned tools resolve from the repo's own `node_modules` and the download-only tools still download on demand. `ADE_FORCE_TOOLS_FETCH=1` runs the pass anyway; `ADE_DISABLE_TOOLS_FETCH=1` still wins over it. |
 | `tools.fetch_deferred` | The pinned tools this pass skipped because the machine shows no sign of using them; they download on demand. |
 | `tools.fetch_progress` | One line per phase change — never per download chunk, because this goes to the brain's long-lived service log |
 | `tools.fetch_complete` | The tools that succeeded, their count, and a `failed` count |
@@ -446,7 +785,8 @@ download.
 
 `apps/desktop/src/main/services/tools/agentToolsCacheService.ts` kicks a
 coalesced ensure of the demanded tools on packaged launch and keeps a per-tool
-snapshot over IPC (`ai.getToolsCache`); no renderer surface reads it today.
+snapshot over IPC (`ai.getToolsCache`); no renderer surface reads it today
+(Settings reads `ai.pinnedToolStatus`).
 Same shape as the brain's pass — one `ensureTools` call per tool, GC only after a
 fully clean one — plus one rule of its own: **resolution failures are per tool,
 never per pass.** `tryResolveTool` swallows only `not-installed`, so a host with
@@ -462,13 +802,17 @@ carrying its `kind`, logged once per transition as `agentTools.resolve_failed`.
 background, so this command exists for the cases where waiting for that is wrong:
 an installer that wants the download finished before it hands the machine over,
 CI that wants a warm cache, and a user debugging a failed fetch who wants the
-error rather than a silent retry.
+error rather than a silent retry. It acts on the local machine's tools root.
 
 | Command | Behavior |
 |---|---|
 | `ade tools status` | Per-tool `installed` / `packageName` / `version` / `entryPath`, plus a `missing` list and the resolved `toolsRoot`. Never touches the network. |
-| `ade tools ensure [names…]` | Fetch what is missing. With no names it means every tool this build pins, which is what the installer and the brain both want. An unknown name is a usage error listing the pinned set. |
-| `ade tools gc [--dry-run] [--no-keep-previous]` | Drop cached versions this build no longer pins, plus abandoned staging dirs and orphaned locks older than 24h. |
+| `ade tools ensure` | Fetch the tools this machine shows signs of using (the brain's own `selectDemandedAgentTools` rule). The result lists the rest under `skipped`; each downloads when first needed. |
+| `ade tools ensure <names…>` | Fetch exactly those. An unknown name is a usage error listing the pinned set. |
+| `ade tools ensure --all` | Fetch every tool this build pins (well over a gigabyte). |
+| `ade tools gc [--dry-run] [--no-keep-previous]` | Collect what this build no longer needs (see [Garbage collection](#garbage-collection)), plus abandoned staging dirs and orphaned locks older than 24h. |
+
+`ade setup` ensures the same demanded set as `ade tools ensure` with no names.
 
 JSON is the default output mode. The global `--text` flag streams per-phase
 progress lines to **stderr** (`<tool> (<pkg>@<version>) downloading 42% (…)`), so
@@ -480,19 +824,38 @@ document.
 typed `kind` is the whole point of the module: callers and support threads branch
 on it rather than parsing prose.
 
-`gc` keeps the newest superseded version of each package by default
-(`keepPrevious`), preferring a finished install over a newer half-written one,
-so rolling back to the previous ADE build does not re-download hundreds of
-megabytes, and a machine still downloading a new pin has the old one to run
-(`tryResolvePreviousTool` reads the same order, `supersededVersionDirs`). Packages the manifest has never heard of are left alone:
-on a machine running two ADE channels, an unknown directory is far more likely to
-belong to the other channel than to be garbage.
+### Garbage collection
+
+`gcTools` (`install.ts`) runs after a fully clean startup pass and on
+`ade tools gc`.
+
+- **Versions of a pinned package:** it keeps the current pin and the newest
+  superseded version (`keepPrevious`), preferring a finished install over a
+  newer half-written one, so rolling back to the previous ADE build does not
+  re-download hundreds of megabytes, and a machine still downloading a new pin
+  has the old one to run (`tryResolvePreviousTool` reads the same order,
+  `supersededVersionDirs`). Fall-forward override dirs are kept outside that
+  ranking, so the true previous pin is kept too.
+- **Packages this manifest no longer pins:** removed only when the package name
+  is in the ledger (`.installed-packages.json`), no ADE run on this machine has
+  pinned it for 14 days (`RETIRED_PACKAGE_GRACE_MS`, so another channel still
+  using it keeps it), the name passes the package-name pattern, and the
+  directory resolves under the tools root. Empty `@scope/` dirs go with it. A
+  failed removal keeps the ledger entry.
+- **Anything not in the ledger is left alone.** On a machine running two ADE
+  channels, an unknown directory is far more likely to belong to the other
+  channel than to be garbage.
+
+Every install records its package in the ledger before the rename, and every GC
+run refreshes the entries its manifest pins. A new ledger is seeded with the
+five pre-#1361 `opencode-<target>` names, so the old ~276 MB
+`opencode-darwin-arm64/1.18.x` orphan is collected on the first clean GC.
 
 ### Install scripts
 
 `apps/ade-cli/scripts/install-runtime.sh` and `install-runtime.ps1` do not
 prefetch tools. The brain fetches the demanded ones on first `ade serve` and the
-rest on demand; `ade tools ensure` still fetches everything pinned when run by
+rest on demand; `ade tools ensure --all` fetches everything pinned when run by
 hand.
 
 ## Failure modes
@@ -506,14 +869,14 @@ A later UX layer maps these onto retry buttons, "free up disk" banners, and
 | `kind` | Cause | What it means to a user |
 |---|---|---|
 | `manifest` | Malformed bundled manifest, or a tool name that does not exist | A broken build or a typo; not a transient condition. |
-| `unsupported-target` | No pinned build for this platform/arch | e.g. `win32-arm64`, where the bundled copy is the only answer. |
-| `network` | DNS, TLS, HTTP status, redirect limit, truncation, or an idle socket | Retry. |
-| `integrity` | Download completed but its sha512 (npm tools) or sha256 and byte size (Muse) did not match the pin | Do not retry blindly — either the source or the transport is wrong. |
+| `unsupported-target` | No pinned build for this platform/arch | e.g. `win32-arm64` or musl Linux. The provider reads "not available on this machine"; ADE never falls back to a PATH CLI. |
+| `network` | DNS, TLS, HTTP status, redirect limit, truncation, an idle socket, or a URL or redirect outside the pin's allowed hosts | Retry. |
+| `integrity` | Download completed but its sha512 (npm tools, every package of an `npm-tree`) or sha256 and byte size (`file` and `archive` pins) did not match the pin. Checked before anything is unpacked. | Do not retry blindly — either the source or the transport is wrong. |
 | `disk-space` | Preflight failed, or `ENOSPC` mid-write | Free space and retry; the message names required vs available. |
-| `extract` | `tar` failed, or the archive did not contain the declared entry | Corrupt archive or a wrong entry path in the manifest. |
+| `extract` | `tar` or the zip reader failed, the archive was hostile (see below), a decompress step failed, or the entry or a named file is missing after install | Corrupt archive or a wrong entry path in the manifest. No sentinel is written. |
 | `lock-timeout` | Another process held the install lock past 15 minutes | Names the holding pid and host when the lock record is readable. |
 | `filesystem` | mkdir/rename/unlink failed for any other reason | Permissions or a hostile FS. |
-| `not-installed` | Pinned and supported, but not fetched on this machine | The normal pre-fetch state; callers turn it into an `ensureTools` call. |
+| `not-installed` | Pinned and supported, but not fetched on this machine | The normal pre-fetch state; callers start the download (`pinnedToolDownload`). |
 
 `asToolError` wraps unknown throws as `filesystem` **unless they already carry a
 kind**, so a `catch` block cannot flatten a real integrity or disk-space
@@ -521,7 +884,11 @@ diagnosis into a generic message.
 
 ### Disk preflight
 
-The npm lockfile carries no byte size, so the preflight runs on the
+`file` and `archive` pins carry their exact size, so their preflight uses it
+(`file`: size + 256 MiB; `archive`: size × 4 + 256 MiB; a zip also checks its
+declared unpacked total). An `npm-tree` pin checks the sum of its tarballs plus
+its `unpackedSize` plus 256 MiB. The npm lockfile carries no byte size, so for
+`npm-tarball` pins the preflight runs on the
 `Content-Length` header the moment response headers arrive, before any body byte
 is written (`ToolDownloadOptions.onSize`). `estimateToolRequiredBytes` in
 `diskSpace.ts` computes `archiveBytes × 4 + 256 MiB`: the unpacked tree runs
@@ -545,16 +912,30 @@ Three independent guards:
 - Publish is the rename of a fully-populated directory, and a directory without a
   usable entry is treated as a crashed install and refetched.
 
-`extract.ts` shells out to the system `tar` with `--strip-components 1` (dropping
-npm's `package/` root) for the same reason `commands/brainUpdate.ts` does: ADE
+`extract.ts` shells out to the system `tar` for npm tarballs (with
+`--strip-components 1`, dropping npm's `package/` root) and `tar.gz` archives
+(with the pin's `stripComponents`), for the same reason `commands/brainUpdate.ts` does: ADE
 ships no tar library and adding one to unpack a 300 MB binary would cost more than
 it saves. It is async on purpose — this runs inside the long-lived brain, where a
 synchronous multi-hundred-megabyte extraction would stall every other session. On
 Windows the `tar` is resolved to System32's bsdtar by absolute path
 (`resolveTrustedWindowsTool`), so a PATH-planted `tar.exe` does not get to unpack
-a 300 MB archive with ADE's privileges.
+a 300 MB archive with ADE's privileges. After `tar`, `auditExtractedTree`
+refuses symlinks that are absolute or resolve outside the payload, and any
+fifo, socket or device.
 
-Downloads are HTTPS-only, refuse insecure redirects, cap at 5 redirects, and
+Zips are read by ADE's own streaming reader on Node's zlib (`createInflateRaw`,
+`zlib.crc32`) on every OS, because Linux GNU tar cannot unzip and a library's
+local-header streaming mis-handles data-descriptor members (Kimi's Windows zip).
+It reads the authoritative central directory and refuses symlink members,
+encryption, multi-disk archives, methods other than stored/deflate, absolute,
+drive-letter, backslash, NUL, `.`, `..` or empty path segments, case-folded
+duplicate paths, files above the strip depth, and members that inflate past
+their declared size or fail CRC-32. Zip64 is supported. Files are written with
+`wx`, never through an existing path. POSIX entries and `executable` files are
+`chmod 755`'d after extraction (a zip's stored mode is not trusted).
+
+Downloads are HTTPS-only, stay on the pin's allowed hosts, cap at 5 redirects, and
 enforce a 30-second idle-socket timeout on the **body** as well as the handshake
 — a stalled CDN that holds the connection open must not hang an install forever.
 
@@ -583,7 +964,10 @@ OpenCode 1.x was ad-hoc signed and depended on the no-quarantine property above.
 `openCodeBinaryManager.ts` still tells a quarantined binary (fixable with
 `xattr -d`) apart from a bad signature.
 
-Extraction preserves mode 755, so no chmod pass is needed after unpacking.
+`tar` preserves mode 755; `finalizePayload` still `chmod 755`s every binary entry
+and `executable` file on POSIX, because zips do not carry a trustworthy mode.
+The table above predates the vendor pins; their macOS builds have not each been
+put through `spctl`, only run (`--version`) from the cache.
 
 ## Packaging exclusions
 
@@ -591,7 +975,9 @@ The runtime native-dependency archive excludes the fetched packages through an
 **exact-name** `Set` in `apps/ade-cli/scripts/native-deps-entry-filter.mjs`
 (`RUNTIME_FETCHED_TOOL_PACKAGES`, 34 entries covering every variant including the
 `-musl`, `linuxmusl-` and `-baseline` builds and the `win32-arm64` siblings the
-manifest does not pin). The check runs before the per-entry root guard so `fs.cp` skips the
+manifest does not pin). The vendor-only npm packages (`@factory/cli-*`,
+`@xai-official/grok-*`, `@github/copilot-*`) are in no lockfile, so nothing
+ships them. The check runs before the per-entry root guard so `fs.cp` skips the
 whole tree, and it is independent of `target` — no target ships any of them.
 
 The set is exact-name rather than a prefix match on purpose: a prefix test on
@@ -623,12 +1009,27 @@ and `missing` (OpenCode).
 
 ## Bumping a pinned version
 
+The pin is what every ADE user runs, so a bump is a product change: run the new
+version in ADE before it merges.
+
+### Lockfile tools (Dependabot)
+
+`.github/dependabot.yml` watches the provider SDKs ADE installs from npm, one PR
+per SDK (`group-by: dependency-name`, both `apps/desktop` and `apps/ade-cli` in
+the same PR): `@anthropic-ai/claude-agent-sdk`, `@openai/codex`, `@opencode/cli`,
+`@opencode/client`, `@cursor/sdk`, `@factory/droid-sdk`, `@github/copilot-sdk`,
+`@muse-code/sdk`. Dependabot cannot regenerate the manifest, so its PRs fail
+`tools:manifest:check` until someone runs the step below on the branch.
+
 For `@github/copilot-sdk`, bump it in `apps/desktop`, reinstall there, then run
-`npm run tools:manifest` in `apps/ade-cli`.
+`npm run tools:manifest` in `apps/ade-cli`. The SDK and the `copilot` runtime
+pin move together.
 
 For `@muse-code/sdk`, bump the SDK in both `apps/desktop` and `apps/ade-cli`,
 then run `npm run tools:muse-pin` in `apps/ade-cli` (it regenerates the
-manifest too). The steps below are for the npm-published tools.
+manifest too).
+
+For the other npm-published tools:
 
 1. Edit the version in `apps/ade-cli/package.json`.
 2. Reinstall so `apps/ade-cli/package-lock.json` picks up the new version,
@@ -637,20 +1038,82 @@ manifest too). The steps below are for the npm-published tools.
    `toolsManifest.generated.json`.
 4. Commit the regenerated manifest alongside the lockfile.
 
-`npm run tools:manifest:check` is the CI drift gate. It rebuilds the manifest in
-memory and byte-compares it against the committed file, failing with
-`… is out of date with package-lock.json. Run: npm run tools:manifest` on any
-difference and with `… is missing` if the file is absent. Output is byte-stable
-across runs and machines because key order is fixed by construction in the
-generator and `TARGETS` is a literal array — the check has no false positives from
-key ordering.
+### Vendor pins (`npm run tools:pin`)
+
+`droid`, `grok`, `qwen`, `kimi`, `devin`, `antigravity`, `pi`, `copilot-cli`,
+`cursor-cli` and `node` are in no lockfile. `apps/ade-cli/scripts/pin-tool.mjs`
+pins them:
+
+```
+npm run tools:pin -- <tool> [version] [--no-manifest]   # write scripts/pins/<tool>.json, regenerate the manifest
+npm run tools:pin -- <tool> --latest-version            # print the vendor's newest stable version; writes nothing
+```
+
+With no version it pins the vendor's newest stable release (the same one
+`--latest-version` prints). It is the only step that talks to the network, and
+needs only Node built-ins (plus the `npm` CLI for Pi's tree); no `npm ci`.
+
+| Tool | Version source | Integrity source |
+|---|---|---|
+| `droid` | npm `droid` latest | npm version manifest (x64 targets use `-baseline`) |
+| `grok` | npm `@xai-official/grok` latest | npm version manifest |
+| `qwen` | newest non-prerelease `v<x.y.z>` GitHub release (GitHub's "latest" points at an SDK tag) | `SHA256SUMS`, cross-checked with GitHub asset digests |
+| `kimi` | newest `@moonshot-ai/kimi-code@<x.y.z>` GitHub release | `.sha256` sidecars, cross-checked with GitHub asset digests |
+| `devin` | `static.devin.ai/cli/current/manifest.json` | `static.devin.ai/cli/<v>/manifest.json` + HEAD size |
+| `antigravity` | the ACP registry's `antigravity-acp/agent.json` | downloads every target and hashes it (~1 GB) |
+| `pi` | npm latest | `npm install --package-lock-only --ignore-scripts` in a scratch dir, every tarball downloaded once to measure and verify its sha512 |
+| `copilot-cli` | npm `@github/copilot` latest | npm version manifest |
+| `cursor-cli` | the build named in `https://cursor.com/install` | downloads every target and hashes it (~0.8 GB) |
+| `node` | newest Node 24 LTS in `nodejs.org/dist/index.json` (`NODE_MAJOR` in the script) | `SHASUMS256.txt` |
+
+`qwen` and `kimi` use the GitHub API (60 unauthenticated requests an hour per
+IP); set `GITHUB_TOKEN`. Pinning Pi to 1.x needs more than a re-pin: its CLI
+path moved (see [Entry paths](#entry-paths)) and ADE was built against 0.84.
+
+The scheduled workflow `.github/workflows/agent-tool-pins.yml` runs daily at
+01:37 UTC (after Dependabot) and on `workflow_dispatch` (optional `tool` input).
+For each vendor pin it compares `--latest-version` with
+`scripts/pins/<tool>.json`; when the vendor is newer and the branch does not
+already propose that version, it runs `tools:pin`, force-pushes
+`pins/<tool>`, opens or updates that tool's one PR (label `dependencies`), and
+starts `ci.yml` on the branch with `workflow_dispatch` (pushes made with
+`GITHUB_TOKEN` do not start CI). A newer release updates the same PR. Two tools
+run at a time.
+
+### Bumping safely
+
+1. Re-pin (Dependabot + `tools:manifest`, `tools:muse-pin`, or `tools:pin`).
+   `npm run tools:manifest:check` must pass.
+2. Run the new version in ADE on a real machine: a chat (or a terminal for a
+   CLI-only tool), sign-in status, model list, resume, and anything the
+   provider's dialect depends on. Validate into a temp `ADE_TOOLS_ROOT`, never
+   the real `~/.ade/tools`.
+3. Check that the self-update switch still exists in the new build (see
+   [Self-update switches](#self-update-switches)) and that entry paths and
+   named files did not move.
+4. Update the dialect and the provider docs if anything changed, then merge.
+
+`npm run tools:manifest:check` is the CI drift gate (and the `pretest` step). It
+rebuilds the manifest in memory and byte-compares it against the committed file,
+failing with `… is out of date with package-lock.json or muse-release.json. Run:
+npm run tools:manifest` on any difference (a stale pin file reads the same way)
+and with `… is missing` if the file is absent. Output is byte-stable across runs
+and machines because key order is fixed by construction in the generator and
+`TARGETS` is a literal array — the check has no false positives from key
+ordering.
 
 Bumping a pin does not strand the old copy: the cache is version-addressed, the
-new version installs into a new directory, and `ade tools gc` keeps the newest
-superseded version as a rollback target.
+new version installs into a new directory, and GC keeps the newest superseded
+version, so machines still downloading the new pin run the old one. A new pin
+also ends any fall-forward override.
 
 ## Cross-links
 
 - Configuration schema: [configuration-schema.md](./configuration-schema.md)
 - Desktop auto-update and artifact size budgets:
   [desktop-auto-update.md](./desktop-auto-update.md)
+- ACP providers (spawn plans, `binaryArgs`, self-update in the dialects):
+  [../chat/acp-providers-spec.md](../chat/acp-providers-spec.md)
+- Copilot SDK runtime and terminal CLI:
+  [../chat/copilot-sdk-provider.md](../chat/copilot-sdk-provider.md)
+- Log lines: [../../logging.md](../../logging.md)

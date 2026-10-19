@@ -2083,7 +2083,8 @@ type ChatRuntimeProviderKey =
   | "kimi"
   | "grok"
   | "copilot"
-  | "devin";
+  | "devin"
+  | "antigravity";
 
 function resolveChatRuntimeProvider(desc: ModelDescriptor | null | undefined): ChatRuntimeProviderKey {
   return desc ? resolveProviderGroupForModel(desc) : "opencode";
@@ -6636,11 +6637,11 @@ export function AgentChatPane({
     : "codex";
   const cliRuntimeBody = activeProviderConnection?.blocker
     ?? (activeProviderConnection?.provider === "droid"
-      ? "Droid is not available. Install the Factory CLI, ensure `droid` is on PATH, and configure Factory authentication."
+      ? "Droid is not available. Let ADE finish downloading Droid for this machine, then sign in to Factory or set FACTORY_API_KEY."
       : activeProviderConnection?.provider === "muse"
         ? "Muse Code is not available. Let ADE finish downloading its pinned Muse, then sign in with `" + MUSE_LOGIN_COMMAND + "` or set META_API_KEY."
       : activeProviderConnection?.provider === "cursor"
-        ? "Cursor agent is not available. Ensure Cursor is installed and the agent is enabled."
+        ? "Cursor agent is not available. Sign in with Cursor or add a Cursor API key in Settings > Providers."
       : null);
 
   const mergedRuntimeBanner = useMemo(() => {
@@ -12117,7 +12118,12 @@ export function AgentChatPane({
     if (desc.family === "cursor" && desc.cursorAvailability?.cli !== true) {
       throw new Error("This Cursor model is available for chat only. Choose a Cursor CLI model for a CLI session.");
     }
-    const provider = desc.family === "cursor" ? "cursor" : resolveCliProviderForModel(desc) ?? "opencode";
+    const resolvedProvider = desc.family === "cursor" ? "cursor" : resolveCliProviderForModel(desc) ?? "opencode";
+    if (resolvedProvider === "antigravity") {
+      // Google ships Antigravity's agent for ACP only; there is no terminal CLI.
+      throw new Error("Antigravity runs as a chat only. Start a chat with this model instead of a CLI session.");
+    }
+    const provider = resolvedProvider;
     const runtimeModel = getRuntimeModelRefForDescriptor(desc, provider);
     const supportsFastMode = modelSupportsFastMode(desc);
     const launchFastMode = supportsFastMode

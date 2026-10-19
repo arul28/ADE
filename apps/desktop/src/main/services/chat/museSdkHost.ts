@@ -65,6 +65,7 @@ import type {
 import type { Logger } from "../logging/logger";
 import { museCredentialEnv } from "../ai/museAuth";
 import { ensureMuseBinary, museProviderOverride, resolveMuseExecutable } from "../ai/museExecutable";
+import { checkMuseVendorFloor } from "../ai/museFallForward";
 import { isRecord } from "../shared/utils";
 import { terminateProcessTree } from "../shared/processExecution";
 
@@ -574,6 +575,9 @@ export async function resolvePinnedMuseLaunch(options: PinnedMuseLaunchOptions):
     ...options.baseEnv,
     ...museCredentialEnv(options.baseEnv, options.credentialId ?? undefined),
   };
+  // Meta's published floor, read at most every few hours; a switch it makes
+  // applies to the next launch (this one already resolved its build).
+  void checkMuseVendorFloor();
   let musePath: string;
   if (options.binary === "installed") {
     const resolved = resolveMuseExecutable();
