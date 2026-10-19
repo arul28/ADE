@@ -1,6 +1,7 @@
-import fs from "node:fs";
+import type fs from "node:fs";
 import path from "node:path";
 import chokidar, { type ChokidarOptions } from "chokidar";
+import { nonAsarFs } from "./nonAsarFs";
 
 /**
  * Watches a directory tree and reports `add`, `change`, `unlink`, `addDir` and
@@ -100,7 +101,7 @@ function createNativeTreeWatcher(rootPath: string, options: TreeWatcherOptions):
 
   const statOrNull = async (absPath: string): Promise<fs.Stats | null> => {
     try {
-      return await fs.promises.stat(absPath);
+      return await nonAsarFs.promises.stat(absPath);
     } catch {
       return null;
     }
@@ -228,7 +229,7 @@ function createNativeTreeWatcher(rootPath: string, options: TreeWatcherOptions):
   function openNativeWatch(dir: string): boolean {
     if (closed) return false;
     try {
-      const watcher = fs.watch(dir, { recursive: true }, (_event, filename) => {
+      const watcher = nonAsarFs.watch(dir, { recursive: true }, (_event, filename) => {
         onNativeEvent(dir, filename);
       });
       watcher.on("error", (error) => emit("error", error));
@@ -269,7 +270,7 @@ function createNativeTreeWatcher(rootPath: string, options: TreeWatcherOptions):
     if (closed) return;
     let dirents: fs.Dirent[];
     try {
-      dirents = await io(() => fs.promises.readdir(absDir, { withFileTypes: true }));
+      dirents = await io(() => nonAsarFs.promises.readdir(absDir, { withFileTypes: true }));
     } catch {
       return;
     }
@@ -317,7 +318,7 @@ function createNativeTreeWatcher(rootPath: string, options: TreeWatcherOptions):
   const walkLinkedDirectory = async (absDir: string, announce: boolean, visitedReal: Set<string>): Promise<void> => {
     let real: string;
     try {
-      real = await io(() => fs.promises.realpath(absDir));
+      real = await io(() => nonAsarFs.promises.realpath(absDir));
     } catch {
       return;
     }
@@ -336,7 +337,7 @@ function createNativeTreeWatcher(rootPath: string, options: TreeWatcherOptions):
   const walkDirectory = async (absDir: string, announce: boolean, visitedReal: Set<string>): Promise<void> => {
     let linked = false;
     try {
-      linked = (await fs.promises.lstat(absDir)).isSymbolicLink();
+      linked = (await nonAsarFs.promises.lstat(absDir)).isSymbolicLink();
     } catch {
       return;
     }
@@ -349,7 +350,7 @@ function createNativeTreeWatcher(rootPath: string, options: TreeWatcherOptions):
     let current = absDir;
     while (current.startsWith(root)) {
       try {
-        visited.add(await fs.promises.realpath(current));
+        visited.add(await nonAsarFs.promises.realpath(current));
       } catch {
         // A missing ancestor is handled by its own event.
       }
@@ -394,7 +395,7 @@ function createNativeTreeWatcher(rootPath: string, options: TreeWatcherOptions):
         await walkDirectory(absPath, true, visited);
         return;
       }
-      await syncDirectory(absPath, true, visited.add(await fs.promises.realpath(absPath).catch(() => absPath)));
+      await syncDirectory(absPath, true, visited.add(await nonAsarFs.promises.realpath(absPath).catch(() => absPath)));
       return;
     }
     if (!stat.isFile()) return;
@@ -417,7 +418,7 @@ function createNativeTreeWatcher(rootPath: string, options: TreeWatcherOptions):
     await Promise.all(knownBefore.map(async (child) => {
       if (closed || !entries.get(child)?.dir) return;
       if (!linked.has(child)) return resyncTree(child, visitedReal, linked);
-      const real = await io(() => fs.promises.realpath(child)).catch(() => null);
+      const real = await io(() => nonAsarFs.promises.realpath(child)).catch(() => null);
       if (real && !visitedReal.has(real)) await resyncTree(child, new Set(visitedReal).add(real), linked);
     }));
   };
@@ -501,7 +502,7 @@ function createNativeTreeWatcher(rootPath: string, options: TreeWatcherOptions):
     if (parent === root) return;
     const name = path.basename(root).toLowerCase();
     try {
-      parentWatcher = fs.watch(parent, (_event, filename) => {
+      parentWatcher = nonAsarFs.watch(parent, (_event, filename) => {
         if (!filename || String(filename).toLowerCase() === name) enqueue(root);
       });
       // Losing the parent's watch only loses news of the root itself.

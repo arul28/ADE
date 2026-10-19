@@ -7,6 +7,7 @@
 
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
+import { nonAsarFs } from "./nonAsarFs";
 import path from "node:path";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { isWindowsCmdCommandNotFound, resolveCliSpawnInvocation, windowsTaskkillCommand } from "./processExecution";
@@ -414,9 +415,9 @@ export function isLexicallyWithinRoot(root: string, candidate: string): boolean 
 }
 
 function realpathExisting(filePath: string): string {
-  return typeof fs.realpathSync.native === "function"
-    ? fs.realpathSync.native(filePath)
-    : fs.realpathSync(filePath);
+  return typeof nonAsarFs.realpathSync.native === "function"
+    ? nonAsarFs.realpathSync.native(filePath)
+    : nonAsarFs.realpathSync(filePath);
 }
 
 function candidateExpressionFromRoot(root: string, candidate: string): string {
@@ -439,7 +440,7 @@ function splitPathSegments(filePath: string): { root: string; segments: string[]
 
 function pathEntryExists(filePath: string): boolean {
   try {
-    fs.lstatSync(filePath);
+    nonAsarFs.lstatSync(filePath);
     return true;
   } catch (error) {
     const code = error && typeof error === "object"
@@ -514,7 +515,7 @@ export function resolvePathWithinRoot(
 
 function readLinkOrNull(filePath: string): string | null {
   try {
-    return fs.readlinkSync(filePath);
+    return nonAsarFs.readlinkSync(filePath);
   } catch {
     return null;
   }
@@ -677,17 +678,17 @@ export function resolveWithinAllowedRoots(
 }
 
 function openReadOnlyNoFollow(filePath: string): number {
-  const noFollowFlag = typeof fs.constants.O_NOFOLLOW === "number"
-    ? fs.constants.O_NOFOLLOW
+  const noFollowFlag = typeof nonAsarFs.constants.O_NOFOLLOW === "number"
+    ? nonAsarFs.constants.O_NOFOLLOW
     : 0;
-  return fs.openSync(filePath, fs.constants.O_RDONLY | noFollowFlag);
+  return nonAsarFs.openSync(filePath, nonAsarFs.constants.O_RDONLY | noFollowFlag);
 }
 
 function openWriteNoFollow(filePath: string, flags: number, mode: number): number {
-  const noFollowFlag = typeof fs.constants.O_NOFOLLOW === "number"
-    ? fs.constants.O_NOFOLLOW
+  const noFollowFlag = typeof nonAsarFs.constants.O_NOFOLLOW === "number"
+    ? nonAsarFs.constants.O_NOFOLLOW
     : 0;
-  return fs.openSync(filePath, flags | noFollowFlag, mode);
+  return nonAsarFs.openSync(filePath, flags | noFollowFlag, mode);
 }
 
 function isPathAlignedWithRoot(rootReal: string, candidatePath: string): boolean {
@@ -718,12 +719,12 @@ function ensureDirectoryChainWithinRoot(
 
     const nextPath = path.join(cursor, segment);
     try {
-      fs.lstatSync(nextPath);
+      nonAsarFs.lstatSync(nextPath);
       const resolvedPath = realpathExisting(nextPath);
       if (!isPathAlignedWithRoot(rootReal, resolvedPath)) {
         throw new Error(PATH_ESCAPES_ROOT_MESSAGE);
       }
-      if (!fs.statSync(resolvedPath).isDirectory()) {
+      if (!nonAsarFs.statSync(resolvedPath).isDirectory()) {
         throw new Error(`Path is not a directory: ${nextPath}`);
       }
       cursor = resolvedPath;
@@ -737,7 +738,7 @@ function ensureDirectoryChainWithinRoot(
       if (!isPathAlignedWithRoot(rootReal, nextPath)) {
         throw new Error(PATH_ESCAPES_ROOT_MESSAGE);
       }
-      fs.mkdirSync(nextPath);
+      nonAsarFs.mkdirSync(nextPath);
       const createdPath = realpathExisting(nextPath);
       if (!isPathAlignedWithRoot(rootReal, createdPath)) {
         throw new Error(PATH_ESCAPES_ROOT_MESSAGE);
@@ -772,11 +773,11 @@ function writeFileByDescriptor(
   const mode = typeof options === "object" && options != null && typeof options.mode === "number"
     ? options.mode
     : 0o666;
-  const fd = openWriteNoFollow(filePath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC, mode);
+  const fd = openWriteNoFollow(filePath, nonAsarFs.constants.O_WRONLY | nonAsarFs.constants.O_CREAT | nonAsarFs.constants.O_TRUNC, mode);
   try {
-    fs.writeFileSync(fd, data, options as fs.WriteFileOptions | BufferEncoding | undefined);
+    nonAsarFs.writeFileSync(fd, data, options as fs.WriteFileOptions | BufferEncoding | undefined);
   } finally {
-    fs.closeSync(fd);
+    nonAsarFs.closeSync(fd);
   }
 }
 
@@ -837,7 +838,7 @@ export function readFileWithinRootSecure(
   }
   const fd = openReadOnlyNoFollow(expectedPath);
   try {
-    const openStat = fs.fstatSync(fd);
+    const openStat = nonAsarFs.fstatSync(fd);
     if (!openStat.isFile()) {
       throw new Error("Path is not a regular file");
     }
@@ -845,7 +846,7 @@ export function readFileWithinRootSecure(
       throw new Error(`File is too large (${openStat.size} bytes)`);
     }
     const currentPath = resolvePathWithinRoot(root, expectedPath, { allowMissing: false });
-    const currentStat = fs.statSync(currentPath);
+    const currentStat = nonAsarFs.statSync(currentPath);
     // Node 22.13 on Windows reports `dev` as 0 from statSync but the volume
     // serial from fstatSync, so a zero `dev` on either side proves nothing;
     // the file index (`ino`) still has to match.
@@ -853,9 +854,9 @@ export function readFileWithinRootSecure(
     if (!sameDevice || openStat.ino !== currentStat.ino) {
       throw new Error("Path changed during open");
     }
-    return fs.readFileSync(fd);
+    return nonAsarFs.readFileSync(fd);
   } finally {
-    fs.closeSync(fd);
+    nonAsarFs.closeSync(fd);
   }
 }
 
@@ -885,11 +886,11 @@ export function secureWriteTextAtomicWithinRoot(root: string, candidate: string,
   writeFileByDescriptor(tmpPath, text, "utf8");
   try {
     const { targetPath } = prepareMutationTargetWithinRoot(root, candidate);
-    fs.renameSync(tmpPath, targetPath);
+    nonAsarFs.renameSync(tmpPath, targetPath);
     return targetPath;
   } catch (error) {
     try {
-      fs.unlinkSync(tmpPath);
+      nonAsarFs.unlinkSync(tmpPath);
     } catch {
       // ignore cleanup errors
     }
@@ -903,14 +904,14 @@ export function secureCopyFileIntoRoot(root: string, candidate: string, sourcePa
     initialTarget.parentPath,
     `.${path.basename(initialTarget.targetPath) || "tmp"}.${randomUUID()}.tmp`,
   );
-  fs.copyFileSync(sourcePath, tmpPath);
+  nonAsarFs.copyFileSync(sourcePath, tmpPath);
   try {
     const { targetPath } = prepareMutationTargetWithinRoot(root, candidate);
-    fs.renameSync(tmpPath, targetPath);
+    nonAsarFs.renameSync(tmpPath, targetPath);
     return targetPath;
   } catch (error) {
     try {
-      fs.unlinkSync(tmpPath);
+      nonAsarFs.unlinkSync(tmpPath);
     } catch {
       // ignore cleanup errors
     }
@@ -919,10 +920,10 @@ export function secureCopyFileIntoRoot(root: string, candidate: string, sourcePa
 }
 
 export function secureCopyPathIntoRoot(root: string, candidate: string, sourcePath: string): string {
-  const stat = fs.statSync(sourcePath);
+  const stat = nonAsarFs.statSync(sourcePath);
   if (stat.isDirectory()) {
     const targetPath = secureMkdirWithinRoot(root, candidate);
-    for (const entry of fs.readdirSync(sourcePath, { withFileTypes: true })) {
+    for (const entry of nonAsarFs.readdirSync(sourcePath, { withFileTypes: true })) {
       secureCopyPathIntoRoot(root, path.join(candidate, entry.name), path.join(sourcePath, entry.name));
     }
     return targetPath;
@@ -936,7 +937,7 @@ export function secureRenameWithinRoot(root: string, sourceCandidate: string, ta
 } {
   const sourcePath = resolvePathWithinRoot(root, sourceCandidate, { allowMissing: false });
   const { targetPath } = prepareMutationTargetWithinRoot(root, targetCandidate);
-  fs.renameSync(sourcePath, targetPath);
+  nonAsarFs.renameSync(sourcePath, targetPath);
   return { sourcePath, targetPath };
 }
 

@@ -3,15 +3,18 @@ import { createRequire } from "node:module";
 import path from "node:path";
 
 /**
- * `fs` without Electron's asar patch, for deleting user folders.
+ * `fs` without Electron's asar patch, for the user's own files.
  *
  * ADE's brain and main process run inside Electron, whose `fs` reads every
  * `.asar` file as a folder. A lane worktree of an Electron app holds
  * `node_modules/electron/dist/resources/default_app.asar`, and a recursive
  * `fs.promises.rm` of that worktree tries to `rmdir` the archive and fails with
  * EBUSY on every attempt — the delete stops partway and leaves the folder
- * half-removed. Electron's `original-fs` is the unpatched module. Outside
- * Electron (tests, a plain Node CLI) this is plain `fs`.
+ * half-removed. A stat, realpath or read of a built `app.asar` opens the
+ * archive and keeps it open until the process exits, so on Windows the next
+ * build cannot replace it, and the file reads as a folder. Electron's
+ * `original-fs` is the unpatched module. Outside Electron (tests, a plain Node
+ * CLI) this is plain `fs`.
  */
 export const nonAsarFs: typeof fs = (() => {
   if (!process.versions.electron) return fs;

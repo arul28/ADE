@@ -1,4 +1,4 @@
-import fs, { promises as fsp } from "node:fs";
+import type fs from "node:fs";
 import path from "node:path";
 import type {
   FileChangeEvent,
@@ -47,6 +47,7 @@ import {
 } from "../shared/utils";
 import { createFileWatcherService } from "./fileWatcherService";
 import { createFileSearchIndexService } from "./fileSearchIndexService";
+import { nonAsarFs } from "../shared/nonAsarFs";
 export { createExternalFilesWorkspaceRegistry, type ExternalFilesWorkspaceRegistry } from "./externalFilesWorkspaceRegistry";
 
 export type FileServiceLaneAdapter = Pick<
@@ -335,7 +336,7 @@ function completeUtf8ByteLength(buf: Buffer): number {
 }
 
 async function readFilePrefix(absPath: string, maxBytes: number): Promise<Buffer> {
-  const fd = await fsp.open(absPath, "r");
+  const fd = await nonAsarFs.promises.open(absPath, "r");
   try {
     const buf = Buffer.alloc(maxBytes);
     const { bytesRead } = await fd.read(buf, 0, buf.length, 0);
@@ -648,7 +649,7 @@ export function createFileService({
    * repo has submodules: ls-files names a submodule but not the files in it.
    */
   const listVisibleFilesForRoot = (rootPath: string) => async (): Promise<string[] | null> => {
-    if (fs.existsSync(path.join(rootPath, ".gitmodules"))) return null;
+    if (nonAsarFs.existsSync(path.join(rootPath, ".gitmodules"))) return null;
     const result = await runGit(["ls-files", "-z", "--cached", "--others", "--exclude-standard"], {
       cwd: rootPath,
       timeoutMs: 15_000,
@@ -667,7 +668,7 @@ export function createFileService({
   });
   const workspaceRootExists = (rootPath: string): boolean => {
     try {
-      return fs.existsSync(rootPath) && fs.statSync(rootPath).isDirectory();
+      return nonAsarFs.existsSync(rootPath) && nonAsarFs.statSync(rootPath).isDirectory();
     } catch {
       return false;
     }
@@ -716,8 +717,8 @@ export function createFileService({
       throw new Error("External path must be absolute.");
     }
 
-    const realPath = await fsp.realpath(trimmedPath);
-    const stat = await fsp.stat(realPath);
+    const realPath = await nonAsarFs.promises.realpath(trimmedPath);
+    const stat = await nonAsarFs.promises.stat(realPath);
     if (!stat.isFile() && !stat.isDirectory()) {
       throw new Error("External path must be a file or directory.");
     }
@@ -725,7 +726,7 @@ export function createFileService({
     const workspaceCandidates = await Promise.all(
       listWorkspaces().filter((workspace) => workspace.kind !== "external").map(async (workspace) => {
         try {
-          const realRootPath = await fsp.realpath(workspace.rootPath);
+          const realRootPath = await nonAsarFs.promises.realpath(workspace.rootPath);
           const relativePath = path.relative(realRootPath, realPath);
           if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) return null;
           return { workspace, relativePath: normalizeRelative(relativePath), realRootPath };
@@ -853,7 +854,7 @@ export function createFileService({
     includeIgnored: boolean,
   ): Promise<VisibleChildEntries> => {
     const { absPath: dirPath } = ensureSafePath(rootPath, parentPath);
-    const entries = await fsp.readdir(dirPath, { withFileTypes: true });
+    const entries = await nonAsarFs.promises.readdir(dirPath, { withFileTypes: true });
     const entryPaths = entries.map((entry) => normalizeRelative(path.join(parentPath, entry.name)));
     await primeIgnoreCache(rootPath, entryPaths, includeIgnored);
     entries.sort((a, b) => {
@@ -1078,7 +1079,7 @@ export function createFileService({
     async readFile(args: FilesReadFileArgs): Promise<FileContent> {
       const workspace = resolveWorkspace(args.workspaceId);
       const { absPath, normalizedRel } = ensureSafePath(workspace.rootPath, args.path);
-      const stat = await fsp.stat(absPath);
+      const stat = await nonAsarFs.promises.stat(absPath);
       if (!stat.isFile()) {
         throw new Error("Path is not a file.");
       }
@@ -1093,7 +1094,7 @@ export function createFileService({
             reason: "too_large",
           });
         }
-        const buf = await fsp.readFile(absPath);
+        const buf = await nonAsarFs.promises.readFile(absPath);
         const base64 = buf.toString("base64");
         return {
           content: base64,
@@ -1119,7 +1120,7 @@ export function createFileService({
         ? await readFilePrefix(absPath, STREAM_FIRST_CHUNK_BYTES)
         : sniffBeforeFullRead
           ? await readFilePrefix(absPath, 8192)
-          : await fsp.readFile(absPath);
+          : await nonAsarFs.promises.readFile(absPath);
       const isBinary = looksLikeBinary(head.subarray(0, 8192), normalizedRel);
       if (isBinary) {
         const mimeType = inferBinaryMimeType(normalizedRel);
@@ -1164,7 +1165,7 @@ export function createFileService({
           nextOffset: rangeEnd < stat.size ? rangeEnd : null,
         };
       }
-      const body = sniffBeforeFullRead ? await fsp.readFile(absPath) : head;
+      const body = sniffBeforeFullRead ? await nonAsarFs.promises.readFile(absPath) : head;
       return {
         content: body.toString("utf8"),
         encoding: "utf-8",
@@ -1186,7 +1187,7 @@ export function createFileService({
     async readFileRange(args: FilesReadFileRangeArgs): Promise<FilesReadFileRangeResult> {
       const workspace = resolveWorkspace(args.workspaceId);
       const { absPath, normalizedRel } = ensureSafePath(workspace.rootPath, args.path);
-      const stat = await fsp.stat(absPath);
+      const stat = await nonAsarFs.promises.stat(absPath);
       if (!stat.isFile()) {
         throw new Error("Path is not a file.");
       }
@@ -1209,7 +1210,7 @@ export function createFileService({
         };
       }
 
-      const fd = await fsp.open(absPath, "r");
+      const fd = await nonAsarFs.promises.open(absPath, "r");
       try {
         const buf = Buffer.alloc(Math.min(length, totalSize - offset));
         const { bytesRead } = await fd.read(buf, 0, buf.length, offset);
@@ -1315,7 +1316,7 @@ export function createFileService({
       const workspace = resolveWorkspace(args.workspaceId);
       const normalizedRel = assertMutablePathAllowed(workspace.rootPath, args.path);
       const { absPath } = ensureSafePath(workspace.rootPath, args.path, { allowMissing: true });
-      if (!fs.existsSync(absPath)) {
+      if (!nonAsarFs.existsSync(absPath)) {
         secureWriteFileWithinRoot(workspace.rootPath, args.path, args.content ?? "", "utf8");
       }
       invalidateGitStatusCache(workspace.rootPath);
@@ -1367,7 +1368,7 @@ export function createFileService({
       if (isWorkspaceRootRelativePath(normalizedRel)) {
         throw new Error("Refusing to delete workspace root.");
       }
-      fs.rmSync(absPath, { recursive: true, force: true });
+      nonAsarFs.rmSync(absPath, { recursive: true, force: true });
       invalidateGitStatusCache(workspace.rootPath);
       clearPagedDirectoryEntriesCacheForRoot(workspace.rootPath);
       if (normalizedRel === ".gitignore") {
