@@ -1917,12 +1917,21 @@ describe("createAutoUpdateService", () => {
     service.dispose();
   });
 
-  it("runs the pre-install cleanup hook before handing off to the updater", async () => {
+  it("cooperatively stops an owned runtime after preparation and before updater handoff", async () => {
     const globalStatePath = makeStatePath();
     const updaterCacheDir = makeUpdaterCacheDir();
     const logger = makeLogger();
     const updater = new FakeAutoUpdater();
-    const beforeQuitAndInstall = vi.fn(async () => {});
+    const order: string[] = [];
+    const beforeQuitAndInstall = vi.fn(async () => {
+      order.push("prepare");
+    });
+    const stopOwnedRuntimeCooperatively = vi.fn(async () => {
+      order.push("stop-owned-runtime");
+    });
+    updater.quitAndInstall.mockImplementation(() => {
+      order.push("quit-and-install");
+    });
     const cancelHandoff = vi.fn();
     const onInstallHandoff = vi.fn(() => cancelHandoff);
     const service = createAutoUpdateService({
@@ -1934,7 +1943,9 @@ describe("createAutoUpdateService", () => {
       periodicCheckMs: 60_000,
       now: () => "2026-04-06T15:21:00.000Z",
       updater,
+      platform: "win32",
       beforeQuitAndInstall,
+      stopOwnedRuntimeCooperatively,
       onInstallHandoff,
     });
 
@@ -1944,9 +1955,18 @@ describe("createAutoUpdateService", () => {
 
     await expect(service.quitAndInstall()).resolves.toBe(true);
     expect(beforeQuitAndInstall).toHaveBeenCalledTimes(1);
+    expect(stopOwnedRuntimeCooperatively).toHaveBeenCalledWith({ closeAdmission: false });
     expect(updater.quitAndInstall).toHaveBeenCalledWith(true, true);
+    expect(order).toEqual(["prepare", "stop-owned-runtime", "quit-and-install"]);
     expect(beforeQuitAndInstall.mock.invocationCallOrder[0]).toBeLessThan(
       updater.quitAndInstall.mock.invocationCallOrder[0],
+    );
+    expect(stopOwnedRuntimeCooperatively.mock.invocationCallOrder[0]).toBeLessThan(
+      updater.quitAndInstall.mock.invocationCallOrder[0],
+    );
+    expect(logger.info).toHaveBeenCalledWith(
+      "autoUpdate.owned_runtime_stop_before_quit_done",
+      { version: "1.2.3" },
     );
     // The update window has to be up before ADE quits into the installer, and
     // a handoff that went through leaves it running.
