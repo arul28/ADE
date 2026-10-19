@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import type { OpenCodeClient } from "@opencode/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type * as OffThreadSpawn from "../shared/offThreadSpawn";
 import { resolveAdeOpenCodeIsolationPaths } from "../../../shared/opencodeDataHome";
 import {
   classifyOpenCodeLaunchFailure,
@@ -20,6 +21,15 @@ const spawnSyncMock = vi.hoisted(() => vi.fn());
 vi.mock("node:child_process", () => ({
   spawn: vi.fn(),
   spawnSync: spawnSyncMock,
+}));
+// The Windows listing runs on a worker thread, which the node:child_process mock above does not reach.
+// Answer it from the same fake, as the worker's child process would.
+vi.mock("../shared/offThreadSpawn", async (importOriginal) => ({
+  ...(await importOriginal<typeof OffThreadSpawn>()),
+  execFileOffThread: async (command: string, args: readonly string[], options: { maxBuffer?: number }) => {
+    const result = spawnSyncMock(command, args, { encoding: "utf8", windowsHide: true, maxBuffer: options.maxBuffer });
+    return { exitCode: result.status ?? null, stdout: String(result.stdout ?? ""), stderr: "", error: result.error ?? null };
+  },
 }));
 
 let adeHome = "";
