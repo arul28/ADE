@@ -1,5 +1,6 @@
 import path from "node:path";
 import { defineConfig } from "vitest/config";
+import { windowsScaledTimeout } from "./vitest.timeouts";
 
 const emojiDataStub = path.resolve(
   __dirname,
@@ -28,8 +29,8 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
-    testTimeout: 20_000,
-    hookTimeout: 20_000,
+    testTimeout: windowsScaledTimeout(20_000),
+    hookTimeout: windowsScaledTimeout(20_000),
     setupFiles: ["src/test/setup.ts"],
     // `pool` and `poolOptions` are vitest 1.x keys. This project pins vitest
     // 0.34.6, which does not know either of them, so the maxForks: 4 cap below
