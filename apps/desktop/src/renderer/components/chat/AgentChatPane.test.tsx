@@ -2415,7 +2415,7 @@ describe("AgentChatPane companion drawers", () => {
     }
   });
 
-  it("a slow older proof read never overwrites a newer one, and a failed read after a chat switch never shows the other chat's proof", async () => {
+  it("a slow older proof read never overwrites a newer one, and a chat switch never shows the other chat's proof, while its read is pending or after it fails", async () => {
     setDocumentVisibleForTests(true);
     const layout = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect")
       .mockReturnValue({ width: 400, height: 600 } as DOMRect);
@@ -2489,10 +2489,17 @@ describe("AgentChatPane companion drawers", () => {
       expect(screen.getByText("Newer proof")).toBeTruthy();
       expect(screen.queryByText("Older proof")).toBeNull();
 
-      // The pane moves to the second chat, whose proof cannot be read.
-      vi.mocked(window.ade.computerUse.getOwnerSnapshot).mockRejectedValue(new Error("runtime offline"));
+      // The pane moves to the second chat. Its proof read is still in flight, and
+      // the first chat's proof count must not show while it waits.
+      let failSecondRead: (error: Error) => void = () => {};
+      vi.mocked(window.ade.computerUse.getOwnerSnapshot)
+        .mockRejectedValue(new Error("runtime offline"))
+        .mockImplementationOnce(() => new Promise<ComputerUseOwnerSnapshot>((_resolve, reject) => { failSecondRead = reject; }));
       view.rerender(paneFor(second));
-      await screen.findByRole("button", { name: "Open chat actions drawer" });
+      const drawerButton = await screen.findByRole("button", { name: "Open chat actions drawer" });
+      expect(within(drawerButton).queryByText("1")).toBeNull();
+      // Then the second chat's proof cannot be read.
+      await act(async () => { failSecondRead(new Error("runtime offline")); });
       await showProof("wts-second", second.sessionId);
       await new Promise((resolve) => setTimeout(resolve, 50));
       expect(screen.queryByText("Newer proof")).toBeNull();
