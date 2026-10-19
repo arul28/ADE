@@ -1401,6 +1401,8 @@ export type AgentChatWorkflowAgent = {
   toolCalls?: number;
   durationMs?: number;
   lastToolName?: string;
+  /** ISO time of the agent's newest transcript line, when ADE could read it. */
+  lastActivityAt?: string;
 };
 
 export type AgentChatWorkflowProgress = {

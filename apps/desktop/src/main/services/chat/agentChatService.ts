@@ -106,6 +106,7 @@ import {
 import {
   isCorruptThinkingTranscriptError,
   repairClaudeResumeTranscript,
+  resolveClaudeSdkTranscriptPath,
 } from "./claudeThinkingTranscriptRepair";
 import { repairSplicedEnvelopeFileSync } from "./chatEnvelopeSpliceRepair";
 import { isQuestionShapedPendingInput, readPendingInputRecord } from "./pendingInputRecovery";
@@ -23357,9 +23358,15 @@ export function createAgentChatService(args: {
     // started) carries no task_type. It is still that shell: classified as a
     // subagent it became a "Background task" row stuck at running, because the
     // shell's end only ever reaches its background row.
+    // A background Workflow (or subagent) is in the same background-task sets,
+    // and its task_progress carries no task_type either; read as a shell, every
+    // workflow_progress snapshot after its start was swallowed.
     const knownBackgroundShell = !rawTaskType
       && !messageAgentType
       && !existing?.agentType
+      && existing?.taskType !== "local_workflow"
+      && existing?.taskType !== "subagent"
+      && existing?.taskType !== "cron"
       && Boolean(taskId && (runtime.liveBackgroundTaskIds.has(taskId) || runtime.backgroundTaskTitleById.has(taskId)));
     const taskType = localBashIsBackground || knownBackgroundShell
       ? "background"
@@ -67906,6 +67913,115 @@ export function createAgentChatService(args: {
   }
 
   /**
+   * Workflow agent transcripts live outside the SDK's subagent search path.
+   */
+  const readClaudeWorkflowAgentTranscript = async (args: {
+    sessionId: string;
+    claudeSessionId: string;
+    agentId: string;
+    sessionDir: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<AgentChatSubagentTranscriptMessage[] | null> => {
+    const agentId = args.agentId;
+    if (!/^a[0-9a-z-]{6,}$/i.test(agentId) || agentId.length > 241) return null;
+    const maxMessages = Math.min(args.limit ?? 500, 500);
+    const offset = Math.min(args.offset ?? 0, 10_000);
+    let remainingBytes = 8 * 1024 * 1024;
+    const workflowRoot = path.join(args.sessionDir, "subagents", "workflows");
+    const candidatePaths: string[] = [];
+    try {
+      const entries = await fs.promises.readdir(workflowRoot, { withFileTypes: true });
+      candidatePaths.push(...entries
+        .filter((entry) => entry.isDirectory() && /^wf_[a-z0-9-]{6,}$/i.test(entry.name))
+        .slice(0, 100)
+        .map((entry) => path.join(workflowRoot, entry.name)));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") {
+        logger.debug("agent_chat.claude_workflow_transcript_scan_failed", {
+          sessionId: args.sessionId,
+          errorName: error instanceof Error ? error.name : "unknown",
+        });
+      }
+    }
+    const seenPaths = new Set<string>();
+    for (const runDir of candidatePaths) {
+      if (remainingBytes <= 0) break;
+      const filePath = path.join(runDir, `agent-${agentId}.jsonl`);
+      const normalizedFilePath = path.resolve(filePath);
+      if (seenPaths.has(normalizedFilePath)) continue;
+      seenPaths.add(normalizedFilePath);
+      let stream: fs.ReadStream | null = null;
+      let lines: readline.Interface | null = null;
+      const page: ClaudeSdkSessionMessage[] = [];
+      let messageIndex = 0;
+      let lineNumber = 0;
+      try {
+        stream = fs.createReadStream(normalizedFilePath, { encoding: "utf8", highWaterMark: 64 * 1024 });
+        lines = readline.createInterface({ input: stream, crlfDelay: Infinity });
+        for await (const line of lines) {
+          const lineBytes = Buffer.byteLength(line, "utf8") + 1;
+          if (lineBytes > remainingBytes) break;
+          remainingBytes -= lineBytes;
+          lineNumber += 1;
+          if (!line.includes('"type"') || (!line.includes('"assistant"') && !line.includes('"user"'))) continue;
+          let record: Record<string, unknown> | null;
+          try {
+            record = asRecord(JSON.parse(line));
+          } catch {
+            continue;
+          }
+          if (!record || (record.type !== "assistant" && record.type !== "user")) continue;
+          if (messageIndex < offset) {
+            messageIndex += 1;
+            continue;
+          }
+          const message = asRecord(record.message);
+          const messageId = compactString(message?.id);
+          const uuid = compactString(record.uuid) ?? messageId ?? `workflow-${agentId}-${lineNumber}`;
+          const session_id = compactString(record.sessionId) ?? args.claudeSessionId;
+          page.push({
+            type: record.type,
+            uuid,
+            session_id,
+            message: record.message ?? record,
+            parent_tool_use_id: compactString(record.parent_tool_use_id)
+              ?? compactString(record.parentToolUseId)
+              ?? null,
+            parent_agent_id: compactString(record.parent_agent_id)
+              ?? compactString(record.parentAgentId)
+              ?? null,
+            ...(typeof record.timestamp === "string" ? { timestamp: record.timestamp } : {}),
+          } as ClaudeSdkSessionMessage);
+          messageIndex += 1;
+          if (page.length >= maxMessages) break;
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") {
+          logger.debug("agent_chat.claude_workflow_transcript_read_failed", {
+            sessionId: args.sessionId,
+            errorName: error instanceof Error ? error.name : "unknown",
+          });
+        }
+        continue;
+      } finally {
+        lines?.close();
+        stream?.destroy();
+      }
+      if (page.length === 0) continue;
+      const childModel = page
+        .map(normalizeClaudeSdkSessionMessageModel)
+        .find((candidate): candidate is string => Boolean(candidate))
+        ?? null;
+      const metadata: AgentChatSubagentMetadata | null = childModel
+        ? { threadId: agentId, parentThreadId: args.claudeSessionId, model: childModel }
+        : null;
+      return page.map((message) => mapClaudeSdkSessionMessageWithMetadata(message, metadata));
+    }
+    return null;
+  };
+
+  /**
    * Fetch the transcript of a subagent run within an existing chat session.
    *
    * Dispatch by runtime kind:
@@ -68125,6 +68241,28 @@ export function createAgentChatService(args: {
       ...(normalizedLimit !== undefined ? { limit: normalizedLimit } : {}),
       ...(normalizedOffset !== undefined ? { offset: normalizedOffset } : {}),
     });
+    if (messages.length === 0) {
+      const configHome = managed ? sessionConfigHome(managed) : null;
+      const parentTranscriptPath = resolveClaudeSdkTranscriptPath(
+        claudeSessionId,
+        laneFallback.dir,
+        configHome,
+      );
+      let sessionDir = parentTranscriptPath
+        ? parentTranscriptPath.slice(0, -".jsonl".length)
+        : null;
+      if (sessionDir) {
+        const workflowTranscript = await readClaudeWorkflowAgentTranscript({
+          sessionId: normalizedSessionId,
+          claudeSessionId,
+          agentId: normalizedAgentId,
+          sessionDir,
+          ...(normalizedLimit !== undefined ? { limit: normalizedLimit } : {}),
+          ...(normalizedOffset !== undefined ? { offset: normalizedOffset } : {}),
+        });
+        if (workflowTranscript) return workflowTranscript;
+      }
+    }
     const childModel = messages
       .map(normalizeClaudeSdkSessionMessageModel)
       .find((candidate): candidate is string => Boolean(candidate))

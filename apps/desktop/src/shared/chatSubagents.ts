@@ -101,7 +101,7 @@ function isWorkflowAgent(value: unknown): value is AgentChatWorkflowProgress["ag
     || (value.status !== "running" && value.status !== "completed" && value.status !== "failed" && value.status !== "stopped")
     || !isBoundedString(value.summary)
   ) return false;
-  for (const key of ["agentId", "agentType", "model", "phaseTitle", "lastToolName"] as const) {
+  for (const key of ["agentId", "agentType", "model", "phaseTitle", "lastToolName", "lastActivityAt"] as const) {
     if (value[key] !== undefined && !isBoundedString(value[key])) return false;
   }
   for (const key of ["tokens", "toolCalls", "durationMs"] as const) {

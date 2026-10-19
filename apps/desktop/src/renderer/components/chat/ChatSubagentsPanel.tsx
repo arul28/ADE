@@ -62,7 +62,7 @@ import { selfHealBackgroundSnapshots, selfHealSubagentSnapshots } from "./chatPa
 import { navigateToSpawnedChat } from "./spawnNavigation";
 import { ChatShellsSection } from "./ChatShellsSection";
 import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
-import { ChatWorkflowActiveCard } from "./ChatWorkflowActiveCard";
+import { ChatWorkflowActiveCard, workflowRunTaskIds } from "./ChatWorkflowActiveCard";
 import type { ChatWorkflowScriptPlan } from "../../../shared/chatWorkflowScript";
 import { redactCommandLine } from "../../../shared/secretRedaction";
 
@@ -1330,6 +1330,7 @@ export function ChatSubagentsPanel({
     () => selfHealSubagentSnapshots(snapshots, { runtimeAlive, childChatStatuses }),
     [snapshots, runtimeAlive, childChatStatuses],
   );
+  const workflowTaskIds = useMemo(() => workflowRunTaskIds(snapshots), [snapshots]);
   const healedBackgroundItems = useMemo(
     () => selfHealBackgroundSnapshots(backgroundItems, { runtimeAlive }),
     [backgroundItems, runtimeAlive],
@@ -1345,6 +1346,7 @@ export function ChatSubagentsPanel({
     let completed = 0;
     let bgRunning = 0;
     for (const snap of healedSnapshots) {
+      if (workflowTaskIds.has(snap.taskId)) continue;
       if (isBackgroundShellCommand({
         taskType: snap.taskType,
         agentType: snap.agentType,
@@ -1368,7 +1370,7 @@ export function ChatSubagentsPanel({
       completedCount: completed,
       bgRunningCount: bgRunning,
     };
-  }, [healedSnapshots]);
+  }, [healedSnapshots, workflowTaskIds]);
 
   const [expandedFinishedIds, setExpandedFinishedIds] = useState<Set<string>>(() => new Set());
   const annotatedSubagents = useMemo(() => annotateSubagentTree(subagents), [subagents]);
@@ -1592,9 +1594,10 @@ export function ChatSubagentsPanel({
   const hasClaudeGoal = Boolean(claudeGoal?.condition?.trim());
   const hasTasks = (taskList?.items.length ?? 0) > 0;
   const hasSubagents = subagents.length > 0;
+  const hasWorkflowRuns = workflowTaskIds.size > 0;
   const hasBackground = healedBackgroundItems.length > 0;
   const hasScheduled = scheduleItems.length > 0;
-  const hasAnything = hasGoal || hasClaudeGoal || hasTasks || hasSubagents || shells.length > 0
+  const hasAnything = hasGoal || hasClaudeGoal || hasTasks || hasSubagents || hasWorkflowRuns || shells.length > 0
     || shellsLoadError || hasBackground || hasScheduled;
   const renderSubagentPaneRow = (snap: ChatSubagentSnapshot) => (
     <SubagentRow
