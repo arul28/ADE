@@ -1197,9 +1197,10 @@ export class LocalRuntimeConnectionPool {
   // Wall clock at which the in-flight probe started. A caller can only join
   // that probe when it began recently enough to satisfy its own `maxAgeMs`.
   private serviceHealthRefreshStartedAtMs = 0;
-  // Whether the last probe started while `isServiceHealthSteady`. Only such a
-  // snapshot may serve the long window; see `serviceHealthReadMaxAgeMs`.
-  private serviceHealthProbedWhileSteady = false;
+  // The brain client the last probe started under, while the pool was steady on
+  // it; null when it was not. Only a snapshot taken under the client that is
+  // still connected may serve the long window; see `serviceHealthReadMaxAgeMs`.
+  private serviceHealthSteadyClient: RuntimeRpcClient | null = null;
   private runtimeStatusRefreshPromise: Promise<void> | null = null;
   // Rolling 24 h aggregate of slow (>500 ms) or errored daemon action calls.
   // Feeds the machine-level runtime-health diagnostic surfaced in Settings.
@@ -1241,18 +1242,38 @@ export class LocalRuntimeConnectionPool {
   }
 
   /**
+   * For a recovery or a report that chooses what to do from service health.
+   * Inside the steady window the cache can be five minutes old, so this probes
+   * first when the cache is older than a status read would accept, then resolves
+   * with the snapshot. Anywhere else it answers from the cache and refreshes in
+   * the background, as `getStatus` does, without waiting: a caller that polls
+   * (the recovery screen re-diagnoses every 2 s) would otherwise stack probes.
+   * `getFreshStatus` is the poll behind `app.getInfo` and never probes.
+   */
+  async getStatusAfterServiceProbe(): Promise<LocalRuntimeStatus> {
+    if (this.steadyWindowApplies()) await this.refreshServiceHealth(SERVICE_HEALTH_READ_MAX_AGE_MS);
+    return this.getStatus();
+  }
+
+  /**
    * How old a cached service-health snapshot a read may serve before it probes
-   * again. The long window applies only on Windows, while the pool is connected
-   * to the machine service's own brain, and only to a snapshot taken in that
-   * same state. Nothing else gets it: disconnected, connecting, an app-owned
-   * fallback, an install in flight, a failed probe, and every read on macOS and
-   * Linux keep the 2 s window.
+   * again. Only `steadyWindowApplies` gets the long window; everything else
+   * (disconnected, connecting, an app-owned fallback, an install in flight, a
+   * failed probe, and every read on macOS and Linux) keeps the 2 s window.
    */
   private serviceHealthReadMaxAgeMs(): number {
-    if (process.platform === "win32" && this.serviceHealthProbedWhileSteady && this.isServiceHealthSteady()) {
-      return SERVICE_HEALTH_STEADY_MAX_AGE_MS;
-    }
-    return SERVICE_HEALTH_READ_MAX_AGE_MS;
+    return this.steadyWindowApplies() ? SERVICE_HEALTH_STEADY_MAX_AGE_MS : SERVICE_HEALTH_READ_MAX_AGE_MS;
+  }
+
+  /**
+   * Whether the cached snapshot may be read through the long window: Windows,
+   * connected to the brain client the snapshot was taken under, and that brain
+   * is the machine service's own (see `isServiceHealthSteady`).
+   */
+  private steadyWindowApplies(): boolean {
+    return process.platform === "win32"
+      && this.isServiceHealthSteady()
+      && this.serviceHealthSteadyClient === this.activeClient;
   }
 
   /**
@@ -1403,10 +1424,10 @@ export class LocalRuntimeConnectionPool {
    *
    * Staleness contract: callers that only *read* health (`getStatus`) accept a
    * snapshot up to their read window old (`serviceHealthReadMaxAgeMs`) and never
-   * wait; callers that need a fresh answer to choose a recovery code await this
-   * with `maxAgeMs: 0`. The
-   * cache is only ever invalidated by time, so "fresh" is enforced on the probe
-   * itself: a caller only joins an in-flight probe that *started* within its
+   * wait; callers that choose a recovery or a report from it await this with
+   * `maxAgeMs: 0`, through `getStatusAfterServiceProbe`. The cache is only ever
+   * invalidated by time, so "fresh" is enforced on the probe itself: a caller
+   * only joins an in-flight probe that *started* within its
    * `maxAgeMs`. A `maxAgeMs: 0` caller therefore never adopts a probe that
    * began before the install/repair it is asking about — it queues its own
    * behind the running one.
@@ -1451,7 +1472,7 @@ export class LocalRuntimeConnectionPool {
       // the age check while it runs.
       this.serviceHealthRefreshStartedAtMs = Date.now();
       this.serviceHealthCheckedAtMs = this.serviceHealthRefreshStartedAtMs;
-      this.serviceHealthProbedWhileSteady = this.isServiceHealthSteady();
+      this.serviceHealthSteadyClient = this.isServiceHealthSteady() ? this.activeClient : null;
       return (this.options.queryServiceStatusAsync ?? defaultQueryServiceStatusAsync)()
         .then(applyStatus, applyError);
     };
@@ -1618,7 +1639,7 @@ export class LocalRuntimeConnectionPool {
     }).finally(() => {
       // The service was just installed or removed, so a snapshot taken before
       // this settled may no longer describe it: the next read probes again.
-      this.serviceHealthProbedWhileSteady = false;
+      this.serviceHealthSteadyClient = null;
     });
   }
 

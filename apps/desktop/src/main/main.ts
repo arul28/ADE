@@ -3253,7 +3253,7 @@ app.whenReady().then(async () => {
           reportsDir: path.join(app.getPath("userData"), "diagnostic-reports"),
           installId: productAnalyticsService.getDistinctId(),
           accountUserId: readAccountOwnerId(),
-          getLocalRuntimeStatus: () => localRuntimePool.getStatus(),
+          getLocalRuntimeStatus: () => localRuntimePool.getStatusAfterServiceProbe(),
           // Deliberately no `diagnoseProject`. The recovery diagnosis is itself
           // one of the triggers, so asking for a fresh one while building the
           // report about it would re-enter the code path that asked for it.

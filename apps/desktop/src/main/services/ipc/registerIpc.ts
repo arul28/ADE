@@ -4232,9 +4232,10 @@ export function registerIpc({
     }
   );
 
-  // Called once as a surface that shows the background service opens. Status
-  // reads never probe it on their own while the brain is connected, so this is
-  // the one place that asks for a fresh answer.
+  // Called as a surface that shows the background service opens. Status reads do
+  // not probe it on their own while the brain is connected, so this asks for a
+  // fresh answer for that surface. Recovery and reports ask through
+  // `getStatusAfterServiceProbe`.
   ipcMain.handle(IPC.appRefreshServiceHealth, async (): Promise<void> => {
     await localRuntimeConnectionPool?.refreshServiceHealthForView();
   });
@@ -5207,7 +5208,7 @@ export function registerIpc({
         reportsDir: path.join(app.getPath("userData"), "diagnostic-reports"),
         installId: productAnalyticsService?.getDistinctId() ?? null,
         accountUserId: getCurrentAccountOwnerId?.() ?? null,
-        getLocalRuntimeStatus: () => localRuntimeConnectionPool?.getStatus() ?? null,
+        getLocalRuntimeStatus: () => localRuntimeConnectionPool?.getStatusAfterServiceProbe() ?? null,
         getRemoteRuntimeSnapshot: () => runtimeBridge.snapshot(),
         diagnoseProject: projectRecoveryService
           ? (root: string) => projectRecoveryService.diagnose(root)

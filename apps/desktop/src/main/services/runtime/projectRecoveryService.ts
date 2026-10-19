@@ -105,7 +105,7 @@ type BrainRestartOutcome =
 
 export type ProjectRecoveryConnectionPool = Pick<
   LocalRuntimeConnectionPool,
-  "getStatus" | "installServiceBestEffort" | "uninstallServiceBestEffort" | "callSync" | "ensureProject" | "callActionForRoot" | "removeProject"
+  "getStatus" | "getStatusAfterServiceProbe" | "installServiceBestEffort" | "uninstallServiceBestEffort" | "callSync" | "ensureProject" | "callActionForRoot" | "removeProject"
 >;
 
 export type ProjectRecoveryServiceDeps = {
@@ -672,15 +672,17 @@ export class ProjectRecoveryService {
       };
     }
     const dbPath = path.join(normalizedRoot, ".ade", "ade.db");
-    const [{ free, dbSize }, failures] = await Promise.all([
+    // Service health decides the diagnosis. The probe runs alongside these reads,
+    // and is awaited only when the cached answer may be too old to use.
+    const [{ free, dbSize }, failures, serviceStatus] = await Promise.all([
       this.storage(normalizedRoot),
       this.readFailureReports(normalizedRoot),
+      this.deps.connectionPool.getStatusAfterServiceProbe(),
     ]);
     const latestFailure = newestFailure(failures.project, failures.machine);
     const freshFailure = isFreshFailure(latestFailure, this.now()) ? latestFailure : null;
     const socketReachable = await this.probeSocket(this.socketPath, 750);
     const endpointHealthy = socketReachable && await this.pingEndpoint(this.socketPath, 1_500);
-    const serviceStatus = this.deps.connectionPool.getStatus();
     const installStartedAt = Date.parse(serviceStatus.serviceInstall.attemptStartedAt ?? "");
     // Time-bounded on purpose: the installer's `starting` flag alone would keep
     // a brain that wedged during boot reading as "starting" forever.
@@ -950,7 +952,10 @@ export class ProjectRecoveryService {
       // service is the plausible owner, stop it and let the release check
       // below decide: an endpoint that survives that is genuinely someone
       // else's.
-      const serviceCouldOwnEndpoint = this.serviceOwnsEndpoint(this.deps.connectionPool.getStatus());
+      // Read probe-first: whether the service owns this endpoint decides if repair stops it.
+      const serviceCouldOwnEndpoint = this.serviceOwnsEndpoint(
+        await this.deps.connectionPool.getStatusAfterServiceProbe(),
+      );
       if (!isAdeEndpoint && !serviceCouldOwnEndpoint) {
         return fail(
           "stop_service",
