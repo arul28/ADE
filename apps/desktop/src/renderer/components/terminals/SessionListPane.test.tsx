@@ -183,6 +183,7 @@ function paneElement(props: Partial<ComponentProps<typeof SessionListPane>> = {}
         workCollapsedSectionIds={[]}
         toggleWorkSectionCollapsed={vi.fn()}
         sessionsGroupedByLane={new Map([[session.laneId, [session]]])}
+        resolveSessionRuntimePin={() => null}
         {...props}
       />
     </MemoryRouter>
@@ -281,6 +282,30 @@ describe("SessionListPane", () => {
       expect.anything(),
       ["session-mobile"],
     );
+  });
+
+  it("groups a chat on an archived lane as archived, and still orphans a lane that is missing", async () => {
+    const archivedLane = makeLane({ id: "lane-archived", name: "Old spike", archivedAt: "2026-10-15T09:00:00.000Z" });
+    const archivedChat = makeSession({ id: "session-archived", laneId: archivedLane.id, laneName: archivedLane.name });
+    const missingChat = makeSession({ id: "session-missing", laneId: "lane-gone", laneName: "Gone lane" });
+    // Like the real lane list: archived lanes come back only when asked for.
+    const list = vi.fn(async (args?: { includeArchived?: boolean }) => (args?.includeArchived ? [archivedLane] : []));
+    Object.defineProperty(window, "ade", { configurable: true, value: { lanes: { list } } });
+
+    renderPane({
+      runningFiltered: [archivedChat, missingChat],
+      allSessionsUnfiltered: [archivedChat, missingChat],
+      sessionsGroupedByLane: new Map([
+        [archivedChat.laneId, [archivedChat]],
+        [missingChat.laneId, [missingChat]],
+      ]),
+    });
+
+    // The archived group only appears once the lookup has resolved, so the
+    // orphan check below runs against the settled classification.
+    expect(await screen.findByRole("heading", { name: "Archived lane: Old spike (1)" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Orphaned sessions: Gone lane (1)" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: /Orphaned sessions: Old spike/ })).toBeNull();
   });
 
   it("offers non-destructive reconciliation for an orphaned session group", () => {
