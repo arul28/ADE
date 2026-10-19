@@ -662,7 +662,6 @@ describe("lane delete form helpers", () => {
     expect(formFieldUsesPromptInput("lane-delete", "force")).toBe(false);
     expect(formFieldUsesPromptInput("lane-delete", "remoteName")).toBe(true);
     expect(formFieldUsesPromptInput("chat-delete", "confirm")).toBe(false);
-    expect(formFieldUsesPromptInput("feedback", "body")).toBe(true);
   });
 
   it("treats chat and lane delete as two-step enter confirms", () => {

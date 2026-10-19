@@ -84,7 +84,6 @@ function createMockPrService() {
     replyToReviewThread: vi.fn().mockResolvedValue({ id: "comment-2" }),
     setReviewThreadResolved: vi.fn().mockResolvedValue({ threadId: "thread-1", isResolved: true }),
     reactToComment: vi.fn().mockResolvedValue(undefined),
-    aiReviewSummary: vi.fn().mockResolvedValue({ summary: "ready" }),
     simulateIntegration: vi.fn().mockResolvedValue({ proposalId: "proposal-1", status: "proposed", overallOutcome: "clean" }),
     commitIntegration: vi.fn().mockResolvedValue({ groupId: "group-1", integrationLaneId: "lane-int", pr: { id: "pr-1" }, mergeResults: [] }),
     listIntegrationWorkflows: vi.fn().mockResolvedValue([]),

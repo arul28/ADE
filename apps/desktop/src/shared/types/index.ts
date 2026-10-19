@@ -39,7 +39,6 @@ export * from "./projectSecrets";
 export * from "./personalChats";
 
 export * from "./linearSync";
-export * from "./feedback";
 export * from "./search";
 export * from "./externalSessions";
 export * from "./externalSessionDetail";

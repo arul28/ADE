@@ -1,25 +1,23 @@
 import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowLeft, ChatCircleDots, Minus, Plus } from "@phosphor-icons/react";
+import { ArrowLeft, Minus, Plus } from "@phosphor-icons/react";
 import type { GitHubStatus } from "../../../shared/types";
 import { accountSessionShortLabel, accountSessionState, useAccountStatus } from "../../lib/account";
 import { resetAppZoom, useAppZoom, zoomAppIn, zoomAppOut } from "../../lib/appZoom";
 import { modifierChordLabel } from "../../lib/platform";
 import { DEFAULT_ZOOM } from "../../lib/zoom";
 import { AccountAvatar } from "../account/AccountAvatar";
-import { FeedbackReporterModal } from "../app/FeedbackReporterModal";
 import { HelpMenu } from "../onboarding/HelpMenu";
 import { settingsReturnRoute } from "../app/projectSidebar/settingsReturnRoute";
 import { useAppStore } from "../../state/appStore";
 
 /**
- * The top of the settings sidebar: a quiet row of app tools (feedback, help,
- * zoom), then who you are. These used to sit in the top bar, where they were
+ * The top of the settings sidebar: a quiet row of app tools (help, zoom),
+ * then who you are. These used to sit in the top bar, where they were
  * always in the way; here they are one click from anywhere and out of sight
  * the rest of the time.
  */
 export function SettingsSidebarHeader({ onOpenAccount }: { onOpenAccount: () => void }) {
-  const [feedbackOpen, setFeedbackOpen] = useState(false);
   const zoom = useAppZoom();
   const navigate = useNavigate();
   // The same key the project sidebar uses to remember where you were.
@@ -39,15 +37,6 @@ export function SettingsSidebarHeader({ onOpenAccount }: { onOpenAccount: () => 
         >
           <ArrowLeft size={13} weight="bold" />
           <span>Back</span>
-        </button>
-        <button
-          type="button"
-          className="ade-settings-sidebar-tool"
-          aria-label="Send feedback"
-          title="Send feedback"
-          onClick={() => setFeedbackOpen(true)}
-        >
-          <ChatCircleDots size={14} weight="regular" />
         </button>
         <HelpMenu align="start" className="ade-settings-sidebar-tool" iconSize={14} />
 
@@ -83,8 +72,6 @@ export function SettingsSidebarHeader({ onOpenAccount }: { onOpenAccount: () => 
       </div>
 
       <SettingsSidebarIdentity onOpen={onOpenAccount} />
-
-      <FeedbackReporterModal open={feedbackOpen} onOpenChange={setFeedbackOpen} />
     </div>
   );
 }

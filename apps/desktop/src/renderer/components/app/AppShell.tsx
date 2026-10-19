@@ -61,7 +61,6 @@ import { AppFallbackBanner } from "./AppFallbackBanner";
 import { FolderSimpleDashed, ShieldWarning } from "@phosphor-icons/react";
 import { ELEVATED_DESKTOP_MESSAGE, ELEVATED_DESKTOP_TITLE } from "../../../shared/types/builtInBrowser";
 import { WorktreeOpenDialog } from "../projects/WorktreeOpenDialog";
-import { dismissToast, showToast } from "./toast/toastStore";
 import { usePrEventToasts } from "./toast/usePrEventToasts";
 import { useStaleCliToast } from "./toast/useStaleCliToast";
 import { ARCHIVE_SETTINGS_ROUTE, useArchiveReminderBanner } from "./useArchiveReminderBanner";
@@ -240,7 +239,6 @@ function writeStoredProjectRoute(projectRoot: string, route: string): void {
   }
 }
 
-const FEEDBACK_PROGRESS_TOAST_ID = "ade-feedback-report-progress";
 
 /**
  * The shell renders several times during one project or tab switch, and its
@@ -299,7 +297,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const currentProjectRoot = useAppStore(selectActiveProjectRoot);
   const isRemoteProject = projectBinding?.kind === "remote";
   const [projectMissing, setProjectMissing] = useState(false);
-  const [feedbackGenerating, setFeedbackGenerating] = useState(false);
   const lastRouteSaveProjectRootRef = useRef<string | null | undefined>(undefined);
   const githubStatusProjectRootRef = useRef<string | null>(null);
   const githubConnectionStateRef = useRef<string | null>(null);
@@ -881,33 +878,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       }) ?? (() => {})
     );
   }, [currentProjectRoot, isRemoteProject, location.pathname]);
-
-  useEffect(() => {
-    if (!window.ade.feedback?.onUpdate) return;
-    const dispose = window.ade.feedback.onUpdate((event) => {
-      const s = event.submission?.status;
-      setFeedbackGenerating(s === "generating" || s === "posting");
-    });
-    return dispose;
-  }, []);
-
-  // A report in flight is a progress toast, not a strip: it is short-lived and
-  // about something the user just asked for.
-  useEffect(() => {
-    if (!feedbackGenerating) {
-      dismissToast(FEEDBACK_PROGRESS_TOAST_ID);
-      return;
-    }
-    showToast({
-      id: FEEDBACK_PROGRESS_TOAST_ID,
-      title: "Generating feedback report...",
-      tone: "accent",
-      busy: true,
-      durationMs: 0,
-      dismissible: false,
-    });
-  }, [feedbackGenerating]);
-  useEffect(() => () => dismissToast(FEEDBACK_PROGRESS_TOAST_ID), []);
 
   const relocateMissingProject = useCallback(() => {
     void openRepo()

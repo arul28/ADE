@@ -2141,8 +2141,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   for — quote that one, since most shells treat '#' as a comment.
   Merging, closing, reopening, commenting, reviewing, labels, reviewers, checks and
   branch cleanup all work on any PR in the repo, whether or not a lane exists for it.
-  The exceptions need one: create and link take a lane by definition, and threads,
-  deployments and ai-review-summary still resolve through ADE's own row.
+  The exceptions need one: create and link take a lane by definition, and threads
+  and deployments still resolve through ADE's own row.
 
     $ ade prs list --text                           List PRs known to ADE
     $ ade prs list-open --text                      List every open GitHub PR in the repo, keyed by head branch
@@ -8564,19 +8564,6 @@ function buildPrPlan(args: string[], explicitProjectRoot: string | null = null):
       ],
     };
   }
-  if (sub === "ai-review-summary")
-    return {
-      kind: "execute",
-      label: "PR AI review summary",
-      steps: [
-        actionStep(
-          "result",
-          "pr",
-          "aiReviewSummary",
-          withPr({ prId: prId ?? firstPositional(args) }),
-        ),
-      ],
-    };
   if (sub === "mobile-snapshot")
     return {
       kind: "execute",

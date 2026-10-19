@@ -3337,7 +3337,6 @@ function getPrAiRuntimeBridge(runtime: AdeRuntime): PrAiRuntimeBridge {
 function buildPrDomainService(runtime: AdeRuntime): OpaqueService | null {
   const prService = runtime.prService;
   if (!prService) return null;
-  const prSummaryService = runtime.prSummaryService ?? null;
 
   return {
     ...(prService as unknown as OpaqueService),
@@ -3353,16 +3352,6 @@ function buildPrDomainService(runtime: AdeRuntime): OpaqueService | null {
     aiResolutionStop(args?: unknown) {
       return getPrAiRuntimeBridge(runtime).stop(args);
     },
-    ...(prSummaryService
-      ? {
-          getAiSummary(prId: unknown) {
-            return prSummaryService.getSummary(readStringActionArg(prId, "prId"));
-          },
-          regenerateAiSummary(prId: unknown) {
-            return prSummaryService.regenerateSummary(readStringActionArg(prId, "prId"));
-          },
-        }
-      : {}),
   };
 }
 
@@ -4161,7 +4150,6 @@ export function getAdeActionDomainServices(
     github: buildGithubDomainService(runtime),
     jira: toService(runtime.jiraService),
     issues: toService(runtime.issueTrackerService),
-    feedback: toService(runtime.feedbackReporterService),
     usage: toService(runtime.usageTrackingService),
     analytics: toService(runtime.productAnalyticsService),
     storage: toService(buildStorageDomainService(runtime)),

@@ -30,7 +30,7 @@ tab reads on the remote runtime through `callPrReadRuntimeActionOr`
 (`domain: "pr"`). Local-bound windows call the in-process PR IPC
 handlers directly for high-volume reads such as `listWithConflicts`,
 `getDetail`, `getStatus`, `getChecks`, `getReviews`, `getComments`,
-`getDetailBundle`, `getFiles`, `getCommits`, `getDeployments`, `getAiSummary`, and
+`getDetailBundle`, `getFiles`, `getCommits`, `getDeployments`, and
 `getGitHubSnapshot`, so opening the PR tab does not wait on local
 daemon startup. Mutations and long-running workflows still use the
 project runtime route where that route owns the behavior.
@@ -163,7 +163,6 @@ Service files (`apps/desktop/src/main/services/prs/`):
 | `prPollingService.ts` | Webhook-first PR freshness plus the direct-GitHub safety net. `reconcilePrs(prIds)` coalesces webhook-linked ids and refreshes only those rows immediately. A healthy relay suppresses hot polling and reduces broad refreshes to a 15-minute safety sweep; an unhealthy relay uses the configurable 60 s fallback (clamped to 5 s–5 min) and user-driven hot windows of 15 s for the first minute, then 30 s until the three-minute cap. Repo-snapshot discovery runs at most every 30 minutes with a healthy relay or 10 minutes without one, whether or not PRs are already tracked: a PR opened with `gh pr create` has no row until a snapshot maps it to its lane by branch, and a viewer on another machine depends on the sweep because the desktop focus reconcile only reaches a project open on this computer. Before every network refresh, the poller honors credential cooldown/reset state and preserves the final 500 core/GraphQL requests for foreground actions. It writes `last_polled_at` per PR for delta polling. The ADE daemon owns an instance (created + started + disposed in `apps/ade-cli/src/bootstrap.ts`) for runtime-bound windows; the desktop main process owns the local-bound instance. |
 | `prMergeAutoSettlementService.ts` | Applies the enabled lane-PR merge settlement policy after each polling snapshot. It files chat and tracked-agent-CLI sessions for a newly discovered merged PR even when the session has pending input or background work: the merge is the explicit override. It defers when a chat turn is running *right now* — see [Active-turn deferral](#active-turn-deferral) — and also when the session still has other open or draft **linked** PRs (`sessionHasOpenLinkedPrs`; unedged current-branch fallbacks do not count). **Which** sessions it may file is an explicit `MergeSettlementScope` union rather than an implicit fallthrough — see [Merge settlement scope](#merge-settlement-scope). Each PR is handled once — including when the scope resolves to `ambiguous` and nothing is filed at all, because this merge looked and decided — so user reactivation is not re-filed by that old merge, while another linked PR can file a later lifecycle. It emits `pr-sessions-auto-settled` only when the preceding in-memory snapshot contained that PR as open or draft. A first-sight merge — including backfilled history from another machine or the first snapshot after restart — is filed silently, so an imported history cannot generate merge toasts or push notifications. |
 | `prChatCards.ts` | Converts bounded PR polling transitions into durable `ade_card` episodes for linked Work chats: CI completion/failure, review received, merge ready, conflicts, merged, and `pr_stack_land` when every GitHub stack sibling is merged. Stack-land cards use a stable `pr-stack-land:{owner}:{repo}:{stackNumber}` id so later layers merge in place, and they fan out to every linked chat even when those chats live on another lane. CI jobs are failure-first, capped at three visible rows with `rowsTruncated`, and report an honest `degradedReason` + Retry action when both job/check detail sources fail instead of rendering an empty success state. Desktop-main and daemon-owned pollers call the same emitter, and failures are isolated per PR/session so one cold or malformed chat cannot stop the poll loop. |
-| `prSummaryService.ts` | Unused by current PR UI. Cached `PrAiSummary` generator remains in-process for the old IPC; desktop and iOS no longer fetch or show it. |
 | `workflowGraph.ts` | `createWorkflowGraph` — reconstructs the CI pipeline DAG (`PrWorkflowGraph`) behind a swappable `WorkflowGraph` interface. GitHub's jobs API does not return `needs:`, so the graph is built by parsing the workflow YAML that actually ran and joining it to live run state. Parses **only** `jobs.<id>.needs` and `jobs.<id>.strategy.matrix`, with the existing `yaml` dep. Source order: lane worktree `git show <headSha>:.github/workflows/<file>` → GitHub Contents API `?ref=<headSha>` (fork PRs / non-local repos) → `source: "none"` with an `unavailableReason`; it never guesses an edge. A single WORKFLOW degrades to flat swimlanes (not the whole graph) when a job uses a reusable workflow (`uses:`), has a `${{ }}` `name:`, or the YAML will not parse. Matrix legs collapse into one node whose state is the worst leg (failed > running > queued > passed > skipped); `tier` is a cycle-safe longest-path rank over `needs`; `criticalPath` is the longest-duration chain. Running nodes report live elapsed. Parsed YAML is cached per `(repo, headSha)` behind a TTL; the graph itself is always recomputed from live run state. |
 | `checkLogParser.ts` | Pure parsing for `prService.getCheckLog`: strips the per-line ISO timestamp, splits a job log on top-level `##[group]` / `##[endgroup]` markers into step sections, selects the failing step's section, and lifts a framework summary headline (vitest/jest/pytest/go) — falling through to `null` rather than guessing. `selectStepSection` returns the section **and** how it chose it (`named-step` / `errored-step` / `whole-log`); when neither a step name nor an `##[error]` identifies one it returns no section, because the previous "last section" fallback resolved to the `Post Run …` cleanup group on any job that passed. `prService` owns the bounded streaming download (the logs endpoint 302s to a pre-signed blob; the redirect is followed without the API token and reading stops past a few MB, setting `truncated`). |
 | `githubStackStore.ts` | Native GitHub stack decoding, persistence, and repository reconciliation |
@@ -460,7 +459,6 @@ See [Which machine answers a PR read](#which-machine-answers-a-pr-read).
 - `ade.prs.updateComment` — REST PATCH of an issue or review comment the write-capable GitHub account authored (`UpdatePrCommentArgs.source` defaults to `"issue"`). Works for mapped rows and synthetic `gh:owner/repo#num` ids.
 - `ade.prs.postReviewComment`, `ade.prs.setReviewThreadResolved`, `ade.prs.reactToComment` — GraphQL-backed mutations used by the timeline's thread cards; `reactToComment` also powers `PrReactionBar` on description and issue-comment cards
 - `ade.prs.getDeployments` — deployments for the PR's head SHA, with the latest status status URL and environment URL
-- `ade.prs.getAiSummary` / `ade.prs.regenerateAiSummary` — cached/forced `PrAiSummary` per `(prId, headSha)`
 - `ade.prs.rebaseResolutionStart`
 - `ade.prs.retargetBase` — re-point an individual PR's base branch
 - `ade.prs.getGitHubSnapshot` — repository PR snapshot for the active GitHub repo. The DTO still carries `externalPullRequests` and accepts `includeExternalClosed` for compatibility, but the current service returns repo PRs only and the renderer ignores legacy cross-repo external items. Args are `{ force?, includeExternalClosed?, historyPageLimit?, automaticRefresh? }`. `force` means "do not serve me the cache"; `automaticRefresh: true` additionally says "this force came from a timer, not a person", which keeps the call inside the [GitHub read failure ladder](#github-read-failure-ladder). The same three fields flow through all three transports that reach the service — in-process IPC (`registerIpc.ts`), the runtime action registry, and the sync remote command service (`prs.getGitHubSnapshot`) — so a remote-bound window behaves like a local one.
@@ -2372,14 +2370,11 @@ Overview tab is selected):
 | `g f` | Open the changed-files palette |
 | `[` / `]` | Prev / next unresolved thread |
 
-## AI summary cache
+## No AI PR summaries
 
-PR detail no longer shows an AI summary card and `PrsContext` does
-not fetch `getAiSummary`. `prSummaryService` and the
-`ade.prs.getAiSummary` / `ade.prs.regenerateAiSummary` IPC remain
-as unused in-process compatibility until they are deleted. They read
-the Summaries (`terminal_summaries`) model; ADE no longer has a PR
-Descriptions model.
+ADE does not write AI PR summaries or AI review summaries. The old
+`pull_request_ai_summaries` cache table is dropped when a database
+opens (desktop `kvDb.ts`, iOS `Database.swift`).
 
 ## Delta polling cursor
 

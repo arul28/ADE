@@ -6288,7 +6288,6 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     );
     db.run("insert into pr_groups(id, project_id, group_type, name, created_at) values (?, ?, ?, ?, ?)", ["group-child", projectId, "queue", "Queue", now]);
     db.run("insert into pr_group_members(id, group_id, pr_id, lane_id, position, role) values (?, ?, ?, ?, ?, ?)", ["member-child", "group-child", "pr-child", "lane-child", 0, "member"]);
-    db.run("insert into pull_request_ai_summaries(pr_id, head_sha, summary_json, generated_at) values (?, ?, ?, ?)", ["pr-child", "abc123", "{}", now]);
     db.run("insert into pull_request_snapshots(pr_id, updated_at) values (?, ?)", ["pr-child", now]);
     db.run(
       `
@@ -6963,7 +6962,6 @@ describe("laneService - branchSwitch", () => {
             "stale", "open", "main", "feature/a", 0, 0, BSW_NOW, BSW_NOW,
           ],
         );
-        db.run("insert into pull_request_ai_summaries(pr_id, head_sha, summary_json, generated_at) values (?, ?, ?, ?)", ["pr-stale", "abc123", "{}", BSW_NOW]);
         db.run("insert into pull_request_snapshots(pr_id, updated_at) values (?, ?)", ["pr-stale", BSW_NOW]);
 
         vi.mocked(runGitOrThrow).mockImplementation(async () => ({ exitCode: 0, stdout: "", stderr: "" } as any));

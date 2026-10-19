@@ -779,10 +779,6 @@ import type {
   GenerateRedirectUrisArgs,
   EncodeOAuthStateArgs,
   DecodeOAuthStateArgs,
-  FeedbackPrepareDraftArgs,
-  FeedbackPreparedDraft,
-  FeedbackSubmission,
-  FeedbackSubmitDraftArgs,
   CursorCloudAgentSummary,
   CursorCloudArtifactDownload,
   CursorCloudArtifactSummary,
@@ -967,7 +963,6 @@ import type { createPrPollingService } from "../prs/prPollingService";
 import type { PrWatchService } from "../prs/prWatchService";
 import type { AgentChatRestartSessionResult } from "../../../shared/types/chat";
 import { parsePrWatchMode, type GetPrChatWatchArgs, type PrChatWatchSummary, type SetPrChatWatchArgs } from "../../../shared/prWatch";
-import type { createPrSummaryService } from "../prs/prSummaryService";
 import type { createSearchService } from "../search/searchService";
 import type { createExternalSessionsService } from "../externalSessions/externalSessionsService";
 import { isExternalSessionProvider } from "../../../shared/types/externalSessions";
@@ -1068,7 +1063,6 @@ import {
   buildLanePresenceByLaneId,
   decorateLaneSummariesWithPresence,
 } from "../lanes/laneListSnapshotService";
-import type { createFeedbackReporterService } from "../feedback/feedbackReporterService";
 import type { AdeProjectService } from "../projects/adeProjectService";
 import type { ConfigReloadService } from "../projects/configReloadService";
 import type { createProjectScaffoldService } from "../projects/projectScaffoldService";
@@ -1355,7 +1349,6 @@ export type AppContext = {
   prService: ReturnType<typeof createPrService> | null;
   prPollingService: ReturnType<typeof createPrPollingService> | null;
   prWatchService: PrWatchService | null;
-  prSummaryService: ReturnType<typeof createPrSummaryService> | null;
   searchService?: ReturnType<typeof createSearchService> | null;
   externalSessionsService?: ReturnType<typeof createExternalSessionsService> | null;
   jobEngine: ReturnType<typeof createJobEngine> | null;
@@ -1389,7 +1382,6 @@ export type AppContext = {
   keepAwakeService?: KeepAwakeService | null;
   agentToolsCacheService?: AgentToolsCacheService | null;
   updateInstallImpactProvider?: (() => Promise<UpdateInstallImpact>) | null;
-  feedbackReporterService?: ReturnType<typeof createFeedbackReporterService> | null;
   transcriptionService?: ReturnType<typeof createTranscriptionService> | null;
 };
 
@@ -12134,25 +12126,6 @@ export function registerIpc({
     },
   );
 
-  // ── Feedback Reporter ──────────────────────────────────────────────
-  ipcMain.handle(IPC.feedbackPrepareDraft, async (_event, arg: FeedbackPrepareDraftArgs): Promise<FeedbackPreparedDraft> => {
-    const ctx = getCtx();
-    if (!ctx.feedbackReporterService) throw new Error("Feedback reporter not available");
-    return await ctx.feedbackReporterService.prepareDraft(arg);
-  });
-
-  ipcMain.handle(IPC.feedbackSubmitDraft, async (_event, arg: FeedbackSubmitDraftArgs): Promise<FeedbackSubmission> => {
-    const ctx = getCtx();
-    if (!ctx.feedbackReporterService) throw new Error("Feedback reporter not available");
-    return await ctx.feedbackReporterService.submitPreparedDraft(arg);
-  });
-
-  ipcMain.handle(IPC.feedbackList, async (): Promise<FeedbackSubmission[]> => {
-    const ctx = getCtx();
-    if (!ctx.feedbackReporterService) return [];
-    return ctx.feedbackReporterService.list();
-  });
-
   // Electron main stops exchanging the account refresh credential here, and
   // asks the brain for a token instead. Exactly one process per machine may
   // POST a single-use rotating credential; every `invalid_grant` sign-out in
@@ -13452,18 +13425,11 @@ export function registerIpc({
   ipcMain.handle(IPC.prsSetDraft, (_e, args) => ensurePrReadContext().prService.setDraft(args));
   ipcMain.handle(IPC.prsSetAutoMerge, (_e, args) => ensurePrReadContext().prService.setAutoMerge(args));
   ipcMain.handle(IPC.prsRerunChecks, (_e, args) => ensurePrReadContext().prService.rerunChecks(args));
-  ipcMain.handle(IPC.prsAiReviewSummary, (_e, args) => ensurePrReadContext().prService.aiReviewSummary(args));
 
   // PRs Tab redesign (Timeline + Rails)
   ipcMain.handle(IPC.prsGetDeployments, (_e, args: { prId: string }) => {
     const ctx = ensurePrReadContext();
     return ctx.prService.getDeployments(args.prId);
-  });
-  ipcMain.handle(IPC.prsGetAiSummary, (_e, args: { prId: string }) => getCtx().prSummaryService?.getSummary(args.prId) ?? null);
-  ipcMain.handle(IPC.prsRegenerateAiSummary, (_e, args: { prId: string }) => {
-    const service = getCtx().prSummaryService;
-    if (!service) throw new Error("PR summary service is unavailable for this project window.");
-    return service.regenerateSummary(args.prId);
   });
   ipcMain.handle(IPC.prsPostReviewComment, (_e, args: PostPrReviewCommentArgs) => ensurePrReadContext().prService.postReviewComment(args));
   ipcMain.handle(

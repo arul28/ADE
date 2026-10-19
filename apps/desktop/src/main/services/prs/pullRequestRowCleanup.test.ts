@@ -238,23 +238,13 @@ describe("pullRequestRowCleanup detach", () => {
     insertPr("pr-foreign", { projectId: OTHER_PROJECT_ID, laneId: "lane-foreign" });
     insertSnapshot("pr-local");
     insertSnapshot("pr-foreign");
-    db.run(
-      "insert into pull_request_ai_summaries(pr_id, head_sha, summary_json, generated_at) values (?, 'head', '{}', ?)",
-      ["pr-local", DETACHED_AT],
-    );
-    db.run(
-      "insert into pull_request_ai_summaries(pr_id, head_sha, summary_json, generated_at) values (?, 'head', '{}', ?)",
-      ["pr-foreign", DETACHED_AT],
-    );
 
     deletePullRequestRowsByIds(db, PROJECT_ID, ["pr-local", "pr-foreign"]);
 
     expect(db.get("select id from pull_requests where id = 'pr-local'")).toBeNull();
     expect(db.get("select pr_id from pull_request_snapshots where pr_id = 'pr-local'")).toBeNull();
-    expect(db.get("select pr_id from pull_request_ai_summaries where pr_id = 'pr-local'")).toBeNull();
     expect(db.get("select id from pull_requests where id = 'pr-foreign'")).not.toBeNull();
     expect(db.get("select pr_id from pull_request_snapshots where pr_id = 'pr-foreign'")).not.toBeNull();
-    expect(db.get("select pr_id from pull_request_ai_summaries where pr_id = 'pr-foreign'")).not.toBeNull();
   });
 
   it("counts zero provenance for a lane with no recorded activity", () => {

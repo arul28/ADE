@@ -692,7 +692,6 @@ import type {
   PrChatSessionLink,
   StackLinkOffer,
   PrDeployment,
-  PrAiSummary,
   PostPrReviewCommentArgs,
   SetPrReviewThreadResolvedArgs,
   SetPrReviewThreadResolvedResult,
@@ -711,8 +710,6 @@ import type {
   SetPrAutoMergeArgs,
   SetPrDraftArgs,
   RerunPrChecksArgs,
-  AiReviewSummaryArgs,
-  AiReviewSummary,
   PrAgentPermissionMode,
   UpdateIntegrationProposalArgs,
   UpdatePrDescriptionArgs,
@@ -1063,11 +1060,6 @@ import type {
   ChatTerminalSession,
   ChatTerminalSignalArgs,
   ChatTerminalWriteArgs,
-  FeedbackPrepareDraftArgs,
-  FeedbackPreparedDraft,
-  FeedbackSubmission,
-  FeedbackSubmissionEvent,
-  FeedbackSubmitDraftArgs,
   SearchIndexStatus,
   SearchQueryArgs,
   SearchQueryResult,
@@ -4248,16 +4240,6 @@ declare global {
         ) => Promise<SuggestResolverTargetResult>;
         onEvent: (cb: (ev: ConflictEventPayload) => void) => () => void;
       };
-      feedback: {
-        prepareDraft: (
-          args: FeedbackPrepareDraftArgs,
-        ) => Promise<FeedbackPreparedDraft>;
-        submitDraft: (
-          args: FeedbackSubmitDraftArgs,
-        ) => Promise<FeedbackSubmission>;
-        list: () => Promise<FeedbackSubmission[]>;
-        onUpdate: (cb: (event: FeedbackSubmissionEvent) => void) => () => void;
-      };
       github: {
         getStatus: (opts?: { forceRefresh?: boolean }, pin?: OpenProjectBinding | null) => Promise<GitHubStatus>;
         getRemoteStatus: (opts?: {
@@ -4644,9 +4626,6 @@ declare global {
         setDraft: (args: SetPrDraftArgs, pin?: OpenProjectBinding | null) => Promise<void>;
         setAutoMerge: (args: SetPrAutoMergeArgs, pin?: OpenProjectBinding | null) => Promise<void>;
         rerunChecks: (args: RerunPrChecksArgs, pin?: OpenProjectBinding | null) => Promise<void>;
-        aiReviewSummary: (
-          args: AiReviewSummaryArgs,
-        ) => Promise<AiReviewSummary>;
         dismissIntegrationCleanup: (
           args: DismissIntegrationCleanupArgs,
           pin?: OpenProjectBinding | null,
@@ -4656,8 +4635,6 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<CleanupIntegrationWorkflowResult>;
         getDeployments: (prId: string, pin?: OpenProjectBinding | null) => Promise<PrDeployment[]>;
-        getAiSummary: (prId: string, pin?: OpenProjectBinding | null) => Promise<PrAiSummary | null>;
-        regenerateAiSummary: (prId: string) => Promise<PrAiSummary>;
         postReviewComment: (
           args: PostPrReviewCommentArgs,
         ) => Promise<PrReviewThreadComment>;

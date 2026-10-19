@@ -911,7 +911,7 @@ Renderer — settings:
   `githubStatusHasWriteCredential` for capability-gating mutations, and the
   shared banner/Settings copy for the account, repo, and gh-CLI/token
   sub-states. Imported by `GitHubAppInstallPanel`, `GitHubSection`,
-  `IntegrationBanners`, and write surfaces such as `FeedbackReporterModal`;
+  and `IntegrationBanners`;
   App-only read connectivity therefore keeps PR data live while still prompting
   for GitHub CLI or a PAT before a mutation. This module only translates the
   service's `credentialState` into copy — it does not re-derive the account's
@@ -961,11 +961,9 @@ Renderer — settings:
   GitHub problem and is not fixed on the GitHub card, whereas an outage and
   every auth failure are — there the credential ADE holds is readable and it is
   the account behind it, or GitHub itself, that has the objection.
-- `apps/desktop/src/renderer/components/app/IntegrationBanners.tsx` and
-  `FeedbackReporterModal.tsx` — consume the shared read/write distinction. The
-  app shell raises a write-access banner for an otherwise connected App-only
-  status, and feedback submission requires a write-capable credential rather
-  than treating read connectivity as sufficient. The gh-CLI/token banner routes
+- `apps/desktop/src/renderer/components/app/IntegrationBanners.tsx` — consumes
+  the shared read/write distinction. The app shell raises a write-access
+  banner for an otherwise connected App-only status. The gh-CLI/token banner routes
   its single action by the `target` the derivation supplies — the GitHub
   connection settings route, or the same Connections panel the relay banner
   opens — and keys its dismissal fingerprint on the sub-state, so a store that

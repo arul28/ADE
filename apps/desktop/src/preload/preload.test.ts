@@ -4941,7 +4941,6 @@ describe("preload Apple device input routing", () => {
     const conflicts = vi.fn();
     const rebase = vi.fn();
     const githubStatusChanged = vi.fn();
-    const feedback = vi.fn();
     const computerUse = vi.fn();
     const iosSimulator = vi.fn();
     const appControl = vi.fn();
@@ -4952,7 +4951,6 @@ describe("preload Apple device input routing", () => {
       bridge.conflicts.onEvent(conflicts),
       bridge.rebase.onEvent(rebase),
       bridge.github.onStatusChanged(githubStatusChanged),
-      bridge.feedback.onUpdate(feedback),
       bridge.computerUse.onEvent(computerUse),
       bridge.iosSimulator.onEvent(iosSimulator),
       bridge.appControl.onEvent(appControl),
@@ -4997,7 +4995,6 @@ describe("preload Apple device input routing", () => {
       repoAccessError: null,
       connected: true,
     };
-    const feedbackEvent = { type: "feedback-submission-updated", submission: { id: "sub-1" } };
     const computerUseEvent = { type: "artifact-ingested", artifactId: "artifact-1", at: "now" };
     const iosEvent = { type: "session-updated", session: null };
     const appControlEvent = { type: "session-updated", session: null };
@@ -5006,7 +5003,6 @@ describe("preload Apple device input routing", () => {
     emit(3, { ...automationEvent, source: "automations" });
     emit(4, { type: "conflict_event", event: conflictEvent }, "dag_mutation");
     emit(5, { type: "github_status_changed", event: githubStatus });
-    emit(7, { type: "feedback_submission_event", event: feedbackEvent });
     emit(8, { type: "computer_use_event", event: computerUseEvent });
     emit(9, { type: "ios_simulator_event", event: iosEvent });
     emit(10, { type: "app_control_event", event: appControlEvent });
@@ -5016,7 +5012,6 @@ describe("preload Apple device input routing", () => {
     expect(conflicts).toHaveBeenCalledWith(conflictEvent);
     expect(rebase).toHaveBeenCalledWith(conflictEvent);
     expect(githubStatusChanged).toHaveBeenCalledWith(githubStatus);
-    expect(feedback).toHaveBeenCalledWith(feedbackEvent);
     expect(computerUse).toHaveBeenCalledWith(computerUseEvent);
     expect(iosSimulator).toHaveBeenCalledWith(iosEvent);
     expect(appControl).toHaveBeenCalledWith(appControlEvent);

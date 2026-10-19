@@ -190,13 +190,6 @@ describe("commands", () => {
     expect(parsed?.spec?.name).toBe("/status");
     expect(parsed?.userCommand).toBeNull();
     expect(parsed ? commandPlacement(parsed) : null).toBe("right");
-
-    const feedback = parseCommand("/feedback", [
-      { name: "/feedback", description: "Runtime feedback", source: "sdk" },
-    ]);
-    expect(feedback?.spec?.name).toBe("/feedback");
-    expect(feedback?.userCommand).toBeNull();
-    expect(feedback ? commandPlacement(feedback) : null).toBe("right");
   });
 
   it("keeps provider login as an ADE-code terminal command", () => {

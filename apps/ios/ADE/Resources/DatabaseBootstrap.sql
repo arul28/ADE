@@ -576,17 +576,6 @@ create table if not exists pr_auto_link_ignores (
 
 create index if not exists idx_pr_auto_link_ignores_project_repo on pr_auto_link_ignores(project_id, repo_owner, repo_name);
 
-create table if not exists pull_request_ai_summaries (
-      pr_id text not null,
-      head_sha text not null,
-      summary_json text not null,
-      generated_at text not null,
-      primary key(pr_id, head_sha),
-      foreign key(pr_id) references pull_requests(id)
-    );
-
-create index if not exists idx_pr_ai_summaries_pr_id on pull_request_ai_summaries(pr_id);
-
 create table if not exists pull_request_snapshots (
       pr_id text primary key,
       detail_json text,

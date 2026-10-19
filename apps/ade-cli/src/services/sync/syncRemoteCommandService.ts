@@ -114,7 +114,6 @@ import type {
   AgentChatDismissSubagentTakeoverPromptArgs,
   AddGitHubPrStackPullRequestsArgs,
   AddPrCommentArgs,
-  AiReviewSummaryArgs,
   ApplyLaneTemplateArgs,
   ArchiveLaneArgs,
   ChatTerminalActiveForChatArgs,
@@ -383,7 +382,6 @@ import type { createRebaseSuggestionService } from "../../../../desktop/src/main
 import { buildProviderInstancesDomainService, createSessionBoardMoveActions } from "../../../../desktop/src/main/services/adeActions/registry";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { createPrService } from "../../../../desktop/src/main/services/prs/prService";
-import type { createPrSummaryService } from "../../../../desktop/src/main/services/prs/prSummaryService";
 import type { createPtyService } from "../../../../desktop/src/main/services/pty/ptyService";
 import { resolveProviderInstanceForLaunch } from "../providerInstances/providerInstanceStore";
 import { resolveTrackedCliPreset } from "../../../../desktop/src/main/services/chat/harnessPresetLaunch";
@@ -580,7 +578,6 @@ type SyncRemoteCommandServiceArgs = {
   projectRoot?: string;
   laneService: ReturnType<typeof createLaneService>;
   prService: ReturnType<typeof createPrService>;
-  prSummaryService?: ReturnType<typeof createPrSummaryService> | null;
   ptyService: ReturnType<typeof createPtyService>;
   /** False when this runtime has no RPC endpoint that accepts activity reports. */
   sessionActivityReportingEnabled?: boolean;
@@ -4023,13 +4020,6 @@ function parseReactToCommentArgs(value: Record<string, unknown>): ReactToPrComme
     prId: requirePrId(value, "prs.reactToComment"),
     commentId: requireString(value.commentId, "prs.reactToComment requires commentId."),
     content: content as ReactToPrCommentArgs["content"],
-  };
-}
-
-function parseAiReviewSummaryArgs(value: Record<string, unknown>): AiReviewSummaryArgs {
-  return {
-    prId: requirePrId(value, "prs.aiReviewSummary"),
-    ...(asTrimmedString(value.model) ? { model: asTrimmedString(value.model)! } : {}),
   };
 }
 
@@ -7674,12 +7664,6 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
     args.prService.getDetailBundle(requirePrId(payload, "prs.getDetailBundle")));
   register("prs.postReviewComment", { viewerAllowed: true, queueable: true }, async (payload) =>
     args.prService.postReviewComment(parsePostPrReviewCommentArgs(payload)));
-  register("prs.getAiSummary", { viewerAllowed: true, observesAbort: true }, async (payload) =>
-    args.prSummaryService?.getSummary(requirePrId(payload, "prs.getAiSummary")) ?? null);
-  register("prs.regenerateAiSummary", { viewerAllowed: true, queueable: true }, async (payload) =>
-    requireService(args.prSummaryService, "PR summary service not available.").regenerateSummary(
-      requirePrId(payload, "prs.regenerateAiSummary"),
-    ));
   register("prs.getIntegrationResolutionState", { viewerAllowed: true, observesAbort: true }, async (payload) =>
     args.prService.getIntegrationResolutionState(
       requireString(payload.proposalId, "prs.getIntegrationResolutionState requires proposalId."),
@@ -7845,8 +7829,6 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
     await args.prService.reactToComment(parseReactToCommentArgs(payload));
     return { ok: true };
   });
-  register("prs.aiReviewSummary", { viewerAllowed: true, queueable: true }, async (payload) =>
-    args.prService.aiReviewSummary(parseAiReviewSummaryArgs(payload)));
   register("prs.simulateIntegration", { viewerAllowed: true, queueable: true }, async (payload) =>
     args.prService.simulateIntegration(parseSimulateIntegrationArgs(payload)));
   register("prs.commitIntegration", { viewerAllowed: true, queueable: true }, async (payload) =>

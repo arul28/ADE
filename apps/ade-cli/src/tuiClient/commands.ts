@@ -205,7 +205,6 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/issue attach", description: "Attach a Linear, GitHub, or Jira issue to this chat", placement: "right", argumentHint: "<PROJ-123|owner/repo#42|#42>", category: "Issues" },
   { name: "/issue list", description: "List issues attached to this chat", placement: "right", category: "Issues" },
   { name: "/issue detach", description: "Detach a Linear, GitHub, or Jira issue from this chat", placement: "right", argumentHint: "<PROJ-123|owner/repo#42|#42>", category: "Issues" },
-  { name: "/feedback", description: "Submit ADE feedback to GitHub issues", placement: "right", category: "Nav" },
   { name: "/chats", description: "List chats in the active lane", placement: "right", argumentHint: "[filter]", category: "Chats" },
   { name: "/switch", description: "Switch lane or chat", placement: "right", argumentHint: "[lane|chat]", category: "Chats" },
   { name: "/help", description: "Show keymap and command help", placement: "right", category: "System" },

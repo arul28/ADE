@@ -2555,25 +2555,6 @@ export function createAiIntegrationService(args: {
       });
     },
 
-    /** Read-only PR review summaries (`prs.aiReviewSummary`, `prs.regenerateAiSummary`). */
-    async summarizePullRequest(args: {
-      cwd: string;
-      prompt: string;
-      timeoutMs?: number;
-      model?: string;
-      reasoningEffort?: string | null;
-    }): Promise<ExecuteAiTaskResult> {
-      return await executeReadOnlyOneShotTask({
-        feature: "terminal_summaries",
-        taskType: "review",
-        cwd: args.cwd,
-        prompt: args.prompt,
-        timeoutMs: args.timeoutMs,
-        model: args.model,
-        reasoningEffort: args.reasoningEffort
-      });
-    },
-
     async summarizeTerminal(args: {
       cwd: string;
       prompt: string;

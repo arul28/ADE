@@ -2925,7 +2925,6 @@ final class DatabaseService {
 
     for tableName in [
       "pull_request_snapshots",
-      "pull_request_ai_summaries",
       "pull_request_chat_sessions",
       "pull_request_chat_session_dismissals",
       "pr_group_members",
@@ -3255,16 +3254,8 @@ final class DatabaseService {
         stack_json text
       )
     """)
-    try exec("""
-      create table if not exists pull_request_ai_summaries (
-        pr_id text not null,
-        head_sha text not null,
-        summary_json text not null,
-        generated_at text not null,
-        primary key(pr_id, head_sha)
-      )
-    """)
-    try exec("create index if not exists idx_pr_ai_summaries_pr_id on pull_request_ai_summaries(pr_id)")
+    // The desktop no longer writes AI PR summaries; drop the old empty cache.
+    try exec("drop table if exists pull_request_ai_summaries")
     try exec("""
       create table if not exists pr_groups (
         id text primary key,
@@ -3347,7 +3338,6 @@ final class DatabaseService {
     let childTables = [
       "pull_request_snapshots",
       "pull_request_stack_snapshots",
-      "pull_request_ai_summaries",
       "pull_request_chat_sessions",
       "pull_request_chat_session_dismissals",
       "pr_group_members",
@@ -3557,7 +3547,6 @@ final class DatabaseService {
     "lane_detail_snapshots",
     "lane_list_snapshots",
     "pr_auto_link_ignores",
-    "pull_request_ai_summaries",
   ]
 
   /// Tables the phone replaces from explicit hydration commands after connect.
