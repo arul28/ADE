@@ -10,6 +10,7 @@ import {
   ADE_RUNTIME_SERVICE_NAME,
   buildWindowsParentPidQueryArgs,
   buildWindowsProcessCommandLineQueryArgs,
+  channelServeIdentity,
   listStaleChannelServePids,
   parsePsElapsedMs,
   isCurrentProcessDescendantOfPid,
@@ -21,6 +22,7 @@ import {
   serviceManagerOwnsRuntimeRecovery,
   terminatePidGracefullyAsync,
   type AdeServiceCommand,
+  type ChannelServeMatch,
   type ServiceManagerProcessResult,
   type ServiceManagerSpawnSync,
   MATERIALIZE_DATALESS_FILES_KEY,
@@ -660,6 +662,13 @@ describe("listStaleChannelServePids", () => {
 });
 
 describe("terminatePidGracefullyAsync on win32", () => {
+  const channelPipe = "\\\\.\\pipe\\ade-runtime-stable-0123456789abcdef";
+  const channelServe: ChannelServeMatch = {
+    cliScriptPath: "C:\\Program Files\\ADE\\resources\\ade-cli\\cli.cjs",
+    primarySocketPath: channelPipe,
+  };
+  const channelBrainCommandLine = `"C:\\Program Files\\ADE\\ade.exe" "C:\\Program Files\\ADE\\resources\\ade-cli\\cli.cjs" "serve"`;
+
   // `process.kill(pid, "SIGTERM")` is TerminateProcess on Windows: the target's
   // SIGTERM handler never runs and it is gone in ~19ms (measured), so the whole
   // grace loop was dead code and the brain was killed mid-write.
@@ -668,12 +677,14 @@ describe("terminatePidGracefullyAsync on win32", () => {
     const forced: number[] = [];
     let alive = true;
     const requests: Array<{ pid: number; socketPath: string }> = [];
+    const readCommandLine = vi.fn(() => channelBrainCommandLine);
     await terminatePidGracefullyAsync(4242, {
       platform: "win32",
-      runtimeSocketPath: "\\\\.\\pipe\\ade-runtime-stable-0123456789abcdef",
+      runtimeSocketPath: channelPipe,
       kill: (_pid, signal) => { signals.push(signal); },
       forceKill: (pid) => { forced.push(pid); },
       pidAlive: () => alive,
+      isExpectedProcess: channelServeIdentity(channelServe, readCommandLine),
       requestRuntimeShutdown: async ({ pid, socketPath }) => {
         requests.push({ pid, socketPath });
         alive = false;
@@ -681,35 +692,61 @@ describe("terminatePidGracefullyAsync on win32", () => {
       },
     });
     expect(requests).toEqual([
-      { pid: 4242, socketPath: "\\\\.\\pipe\\ade-runtime-stable-0123456789abcdef" },
+      { pid: 4242, socketPath: channelPipe },
     ]);
     expect(signals).toEqual([]);
     expect(forced).toEqual([]);
+    expect(readCommandLine).not.toHaveBeenCalled();
   });
 
-  it("escalates to a forced kill when the runtime will not answer", async () => {
+  // A pid that does not answer is force-killed only when a command-line query
+  // proves it is this channel's serve brain. A stale PID record or port scan can
+  // name a pid that Windows has since handed to another program, and that one
+  // must survive.
+  it.each([
+    { label: "this channel's serve brain", commandLine: channelBrainCommandLine, forced: [4242] },
+    { label: "another program", commandLine: "\"C:\\Windows\\System32\\notepad.exe\"", forced: [] },
+    { label: "a process whose command line cannot be read", commandLine: null, forced: [] },
+  ])("force-kills a pid that did not answer only when it is $label", async ({ commandLine, forced: expected }) => {
     const forced: number[] = [];
     await terminatePidGracefullyAsync(4242, {
       platform: "win32",
-      runtimeSocketPath: "\\\\.\\pipe\\ade-runtime-stable-0123456789abcdef",
+      runtimeSocketPath: channelPipe,
+      forceKill: (pid) => { forced.push(pid); },
+      pidAlive: () => true,
+      isExpectedProcess: channelServeIdentity(channelServe, () => commandLine),
+      requestRuntimeShutdown: async () => ({ requested: false, reason: "wedged" }),
+    });
+    expect(forced).toEqual(expected);
+  });
+
+  it("never force-kills a pid that did not answer when no identity check is supplied", async () => {
+    const forced: number[] = [];
+    await terminatePidGracefullyAsync(4242, {
+      platform: "win32",
+      runtimeSocketPath: channelPipe,
       forceKill: (pid) => { forced.push(pid); },
       pidAlive: () => true,
       requestRuntimeShutdown: async () => ({ requested: false, reason: "wedged" }),
     });
-    expect(forced).toEqual([4242]);
+    expect(forced).toEqual([]);
   });
 
   it("escalates when a brain accepts the request but does not leave in time", async () => {
     const forced: number[] = [];
+    const readCommandLine = vi.fn(() => channelBrainCommandLine);
     await terminatePidGracefullyAsync(4242, {
       platform: "win32",
       graceTimeoutMs: 120,
-      runtimeSocketPath: "\\\\.\\pipe\\ade-runtime-stable-0123456789abcdef",
+      runtimeSocketPath: channelPipe,
       forceKill: (pid) => { forced.push(pid); },
       pidAlive: () => true,
+      isExpectedProcess: channelServeIdentity(channelServe, readCommandLine),
       requestRuntimeShutdown: async () => ({ requested: true }),
     });
     expect(forced).toEqual([4242]);
+    // The pid answered, so it IS the brain: the post-grace kill needs no query.
+    expect(readCommandLine).not.toHaveBeenCalled();
   });
 
   // The 5s default exists because this loop is the ONLY thing standing between

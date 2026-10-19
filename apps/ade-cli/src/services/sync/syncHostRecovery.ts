@@ -34,7 +34,11 @@ export type SyncHostRecoveryDeps = {
   holdsLease?: () => boolean;
   pidAlive?: (pid: number) => boolean;
   processMatchesOwner?: (owner: SyncHostSingletonOwner) => boolean | null;
-  terminatePid?: (pid: number, socketPath?: string | null) => Promise<void>;
+  terminatePid?: (
+    pid: number,
+    socketPath?: string | null,
+    isExpectedProcess?: () => boolean,
+  ) => Promise<void>;
   startSyncHost?: () => Promise<void>;
   restartBrain?: () => Promise<void> | void;
   prove?: () => Promise<boolean>;
@@ -382,8 +386,8 @@ async function runSyncHostRecovery(
   const pidAlive = deps.pidAlive ?? defaultPidAlive;
   const processMatchesOwner = deps.processMatchesOwner
     ?? ((owner) => defaultProcessMatchesOwner(owner));
-  const terminatePid = deps.terminatePid ?? (async (pid, socketPath) => {
-    await terminatePidGracefullyAsync(pid, { runtimeSocketPath: socketPath ?? null });
+  const terminatePid = deps.terminatePid ?? (async (pid, socketPath, isExpectedProcess) => {
+    await terminatePidGracefullyAsync(pid, { runtimeSocketPath: socketPath ?? null, isExpectedProcess });
   });
   const sleep = deps.sleep ?? defaultSleep;
   const now = deps.now ?? Date.now;
@@ -475,7 +479,13 @@ async function runSyncHostRecovery(
       return { status: "skipped", detail: "Would have targeted this brain." };
     }
     try {
-      await terminatePid(rechecked.owner.pid, rechecked.owner.socketPath);
+      // The owner check is run again at kill time, not only above: the RPC
+      // round trip before a last-resort kill is long enough for the pid to change hands.
+      await terminatePid(
+        rechecked.owner.pid,
+        rechecked.owner.socketPath,
+        () => processMatchesOwner(rechecked.owner) === true,
+      );
       return { status: "done" };
     } catch (error) {
       return {

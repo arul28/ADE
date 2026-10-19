@@ -541,6 +541,15 @@ export type TerminatePidDeps = {
   }) => Promise<{ requested: boolean; reason?: string }>;
   /** Injectable last-resort kill; on win32 this is `taskkill /PID n /F`. */
   forceKill?: (pid: number) => void;
+  /**
+   * win32 only: whether `pid` is provably the ADE process this caller means to
+   * stop. It is asked only on the non-cooperative path, right before `forceKill`;
+   * a pid that answered the shutdown request is the brain by construction, so the
+   * cooperative path never asks. A pid that is not proven is left alone, and with
+   * no check supplied nothing is force-killed at all: a PID record or a port scan
+   * can name a pid that Windows has since handed to another program.
+   */
+  isExpectedProcess?: (pid: number) => boolean;
 };
 
 function defaultKill(pid: number, signal: NodeJS.Signals | number): void {
@@ -620,6 +629,19 @@ export function sleepSync(ms: number): void {
 }
 
 /**
+ * `deps.isExpectedProcess`, failing closed: a check that is not supplied, or that
+ * throws, leaves the pid unproven, so it is never force-killed.
+ */
+function provablyExpectedProcess(pid: number, deps: TerminatePidDeps): boolean {
+  if (!deps.isExpectedProcess) return false;
+  try {
+    return deps.isExpectedProcess(pid) === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Synchronous SIGTERM-then-SIGKILL teardown. POSIX only.
  *
  * The cooperative Windows path needs a socket round trip, which cannot be done
@@ -634,7 +656,9 @@ export function terminatePidGracefully(pid: number | null, deps: TerminatePidDep
   const kill = deps.kill ?? defaultKill;
   const pidAlive = deps.pidAlive ?? isPidAlive;
   if ((deps.platform ?? process.platform) === "win32") {
-    (deps.forceKill ?? defaultWindowsForceKill)(pid);
+    // A sync caller cannot wait out a grace window, so the force-kill is the whole
+    // stop, and it needs the same proof of identity as the async path.
+    if (provablyExpectedProcess(pid, deps)) (deps.forceKill ?? defaultWindowsForceKill)(pid);
     return;
   }
   try {
@@ -704,8 +728,10 @@ async function terminateWindowsPidGracefullyAsync(
   }
   if (!cooperative) {
     // Nothing answered for this pid on this endpoint: either it is not an ADE
-    // brain, or it is too wedged to answer. Neither can be talked down.
-    forceKill(pid);
+    // brain, or it is too wedged to answer. A wedged brain can only be force-killed,
+    // and only once the pid is proven to still be the expected process. A stale
+    // record can name a pid that another program now owns; that one stays alive.
+    if (pidAlive(pid) && provablyExpectedProcess(pid, deps)) forceKill(pid);
     return;
   }
   const deadline = Date.now() + (deps.graceTimeoutMs ?? WINDOWS_COOPERATIVE_GRACE_MS);
@@ -713,6 +739,9 @@ async function terminateWindowsPidGracefullyAsync(
     if (!pidAlive(pid)) return;
     await sleepAsync(50);
   }
+  // The brain may have exited right at the deadline. Re-check before escalating.
+  // The pid was the brain when it answered, so no identity query runs here.
+  if (!pidAlive(pid)) return;
   forceKill(pid);
 }
 
@@ -910,6 +939,60 @@ export function listStaleChannelServePids(
   return {
     ok: true,
     pids: parseStaleChannelServePids(processOutputRaw(result), /^(\d+)\s+(.+)$/, opts),
+  };
+}
+
+/** The channel brain a stop means to reach: this channel's CLI serving its primary socket. */
+export type ChannelServeMatch = { cliScriptPath: string; primarySocketPath: string };
+
+/** PowerShell that prints one process's command line; exits 3 when it is gone or unreadable. */
+export function buildWindowsPidCommandLineQueryArgs(pid: number): string[] {
+  const query = [
+    "$ErrorActionPreference = 'Stop'",
+    `$process = Get-CimInstance Win32_Process -Filter ${powerShellSingleQuotedLiteral(`ProcessId = ${Math.floor(pid)}`)} -ErrorAction SilentlyContinue`,
+    "if ($null -eq $process -or -not $process.CommandLine) { exit 3 }",
+    "[Console]::Out.Write($process.CommandLine)",
+  ].join("; ");
+  return ["-NoProfile", "-NonInteractive", "-Command", query];
+}
+
+/**
+ * The command line of `pid`, or null when it is gone, unreadable, or the query
+ * cannot answer. Only the non-cooperative stop asks, so the PowerShell start it
+ * costs is paid by the rare stop, never by a cooperative one.
+ */
+export function readWindowsPidCommandLine(
+  pid: number,
+  run: ServiceManagerSpawnSync = spawnSync,
+): string | null {
+  try {
+    const result = run(resolveTrustedWindowsTool("powershell"), buildWindowsPidCommandLineQueryArgs(pid), {
+      encoding: "utf8",
+      // Cold PowerShell start plus the first CIM call routinely exceeds 5s on a
+      // contended host; a timeout reads as "not proven", so buy the budget.
+      timeout: 10_000,
+      windowsHide: true,
+    });
+    if (result.status !== 0) return null;
+    return processOutputText(result) || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Identity check for a pid a caller means to stop: its command line must be this
+ * channel's `serve` brain, by the same predicate the stale scan uses. The command
+ * line is read through `readCommandLine`, so a caller that already holds a process
+ * run can supply its own query.
+ */
+export function channelServeIdentity(
+  match: ChannelServeMatch,
+  readCommandLine: (pid: number) => string | null = (pid) => readWindowsPidCommandLine(pid),
+): (pid: number) => boolean {
+  return (pid) => {
+    const commandLine = readCommandLine(pid);
+    return commandLine !== null && isStaleChannelServeCommandLine(commandLine, match);
   };
 }
 

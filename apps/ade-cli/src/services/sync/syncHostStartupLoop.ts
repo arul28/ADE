@@ -1,4 +1,5 @@
 import {
+  defaultProcessMatchesOwner,
   isSameChannelSyncHostOwner,
   SyncHostSingletonConflictError,
 } from "./syncHostSingleton";
@@ -220,13 +221,18 @@ async function terminatePidAsync(
   deps: Required<Pick<SyncHostStartupLoopDeps, "kill" | "pidAlive" | "sleep">> & {
     platform: NodeJS.Platform;
     terminatePidDeps: NonNullable<SyncHostStartupLoopDeps["terminatePidDeps"]>;
+    /** win32: whether `pid` still is the lock owner that was read. */
+    ownerMatches: () => boolean;
   },
 ): Promise<void> {
   if (!Number.isFinite(pid) || pid <= 0 || pid === process.pid) return;
   if (deps.platform === "win32") {
     // A bare SIGTERM here would be TerminateProcess, which skips the stale
-    // brain's flush. The RPC shutdown is the only orderly exit Windows offers.
+    // brain's flush. The RPC shutdown is the only orderly exit Windows offers, and
+    // the last-resort kill needs the lock owner's identity still to hold: the lock
+    // file can outlive the brain and its pid can have been reused.
     await terminatePidGracefullyAsync(pid, {
+      isExpectedProcess: deps.ownerMatches,
       ...deps.terminatePidDeps,
       platform: "win32",
       pidAlive: deps.pidAlive,
@@ -492,6 +498,7 @@ export async function runSyncHostStartupLoop(deps: SyncHostStartupLoopDeps): Pro
             sleep,
             platform,
             terminatePidDeps: deps.terminatePidDeps ?? {},
+            ownerMatches: () => defaultProcessMatchesOwner(owner, "win32") === true,
           });
           continue;
         }

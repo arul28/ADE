@@ -177,24 +177,30 @@ describe("sync loopback collision recovery", () => {
 
   it("reaps a stale ADE holder and retries the occupied candidate", async () => {
     const port = await findFreeLegacyPort();
+    const logger = { info: vi.fn(), warn: vi.fn() };
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-sync-zombie-"));
+    const previousAdeHome = process.env.ADE_HOME;
+    process.env.ADE_HOME = adeHome;
+    // The holder's real command line is the serve command the port scan reports,
+    // on this channel's primary socket. On Windows the reap re-reads the live
+    // command line before it force-kills, so a stand-in that does not look like
+    // this channel's serve brain is (correctly) left alone.
+    const holderCommand = ["apps/ade-cli/dist/cli.cjs", "serve", "--socket", resolveMachineAdeLayout().socketPath];
     const holder = spawn(process.execPath, [
       "-e",
       [
         "const http=require('node:http');",
-        "const port=Number(process.argv[1]);",
+        "const port=Number(process.argv.at(-1));",
         "const server=http.createServer();",
         "server.listen(port,'127.0.0.1',()=>process.stdout.write('ready\\n'));",
         "process.on('SIGTERM',()=>server.close(()=>process.exit(0)));",
       ].join(""),
+      ...holderCommand,
       String(port),
     ], {
       stdio: ["ignore", "pipe", "ignore"],
     });
     await once(holder.stdout!, "data");
-    const logger = { info: vi.fn(), warn: vi.fn() };
-    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-sync-zombie-"));
-    const previousAdeHome = process.env.ADE_HOME;
-    process.env.ADE_HOME = adeHome;
     const listener = createSharedSyncListener({
       bindHost: "127.0.0.1",
       logger,
@@ -203,8 +209,7 @@ describe("sync loopback collision recovery", () => {
         port: candidate,
         holders: [{
           pid: holder.pid!,
-          command:
-            `apps/ade-cli/dist/cli.cjs serve --socket ${resolveMachineAdeLayout().socketPath}`,
+          command: holderCommand.join(" "),
           startTime: "test-holder-birth",
         }],
       }),

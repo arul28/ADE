@@ -1211,6 +1211,60 @@ describe("Windows background service helpers", () => {
     expect(fs.existsSync(launcherPath)).toBe(false);
   });
 
+  // A PID record outlives the brain it names, and Windows may hand that pid to an
+  // unrelated program. Uninstall force-kills the recorded brain only while a
+  // command-line query still shows this channel's serve brain on that pid.
+  it.each([
+    {
+      name: "leaves a recorded pid alone when another program now holds it",
+      commandLine: "\"C:\\Windows\\System32\\notepad.exe\"",
+      killed: false,
+    },
+    {
+      name: "force-kills a recorded pid that still runs this channel's serve brain",
+      commandLine: `"C:\\Program Files\\ADE\\ade.exe" "C:\\Program Files\\ADE\\resources\\ade-cli\\cli.cjs" "serve"`,
+      killed: true,
+    },
+  ])("$name", async ({ commandLine, killed }) => {
+    // A real live process stands in for the recorded brain, so the liveness check
+    // is real. Its identity query and the taskkill go through the fake spawn.
+    const brain = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    try {
+      const brainPid = brain.pid!;
+      const launcherPath = path.join(makeTempHome("ade-windows-service-recorded-brain-"), "brain-service.ps1");
+      fs.writeFileSync(`${launcherPath}.pid.json`, JSON.stringify({ ...readyPidRecord, runtimePid: brainPid }), "utf8");
+      const calls: Array<{ command: string; args: string[] }> = [];
+      const spawnSync = spawnSequence(calls, [
+        { status: 3, stdout: "", stderr: "" },                                  // channel task: absent
+        { status: 3, stdout: "", stderr: "" },                                  // legacy task: absent
+        { status: 0, stdout: `    ${taskName}    REG_SZ    x`, stderr: "" },     // Run entry: installed
+        { status: 0, stdout: "", stderr: "" },                                  // supervisor probe: running
+        { status: 0, stdout: "SUCCESS", stderr: "" },                           // taskkill supervisor
+        { status: 0, stdout: commandLine, stderr: "" },                         // recorded pid: its command line
+        { status: 0, stdout: "SUCCESS", stderr: "" },                           // taskkill recorded pid (only when proven)
+        { status: 0, stdout: "SUCCESS: deleted", stderr: "" },                  // reg delete
+      ]);
+
+      const result = await uninstallWindowsService({
+        command: serviceCommand,
+        launcherPath,
+        serviceName,
+        spawnSync,
+        userName: taskUser,
+      });
+
+      expect(result.ok).toBe(true);
+      const brainKill = { command: windowsTaskkillCommand(), args: ["/PID", String(brainPid), "/F"] };
+      if (killed) expect(calls).toContainEqual(brainKill);
+      else expect(calls).not.toContainEqual(brainKill);
+    } finally {
+      brain.kill();
+    }
+  });
+
   it("surfaces scheduled task removal failures", async () => {
     const calls: Array<{ command: string; args: string[] }> = [];
     const spawnSync = spawnSequence(calls, [

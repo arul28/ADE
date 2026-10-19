@@ -142,6 +142,9 @@ describe("runSyncHostStartupLoop", () => {
       env: betaEnv,
       terminatePidDeps: {
         runtimeSocketPath: "\\\\.\\pipe\\ade-runtime-beta-0123456789abcdef",
+        // The lock owner is proven to still be this process, so a refusal is the
+        // only reason the force-kill below can run.
+        isExpectedProcess: () => true,
         requestRuntimeShutdown: async ({ pid }) => {
           events.push(`rpc ${pid}`);
           if (accepted) ownerAlive = false;

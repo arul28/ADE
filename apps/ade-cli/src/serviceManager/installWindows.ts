@@ -11,10 +11,12 @@ import {
 } from "../lib/trustedWindowsTools";
 import {
   type AdeServiceCommand,
+  channelServeIdentity,
   cmdQuote,
   isPidAlive,
   listStaleChannelServePids,
   powerShellSingleQuotedLiteral,
+  readWindowsPidCommandLine,
   renderWindowsCommand,
   resolveAdeServeCliScriptPath,
   resolveAdeServeCommand,
@@ -809,21 +811,31 @@ function windowsLauncherCommand(launcherPath: string): string {
  * over the RPC endpoint (same `finish()` macOS gets), waits out the grace
  * window, and forces only what is still standing. Crucially it verifies the pid
  * over `runtime/info` before asking anything to exit, so a recycled pid from a
- * stale supervisor record cannot talk down an unrelated brain. This wrapper only
- * supplies the Windows tools: `taskkill` through the same injected `spawnSync`
- * and memoized trusted-tool lookup the rest of this file uses, so tests observe
- * the escalation instead of really killing a pid.
+ * stale supervisor record cannot talk down an unrelated brain. The last-resort
+ * `taskkill` is gated the same way: it runs only when a command-line query shows
+ * this channel's `serve` brain on that pid, so a pid a stale record names but
+ * Windows has since reused is left alone. This wrapper supplies the Windows tools:
+ * `taskkill` through the same injected `spawnSync` and memoized trusted-tool
+ * lookup the rest of this file uses, so tests observe the escalation instead of
+ * really killing a pid.
  *
  * The supervisor must already be gone when this runs, or it would simply
  * restart the brain we just stopped.
  */
 async function stopWindowsBrainGracefully(
   run: ServiceManagerSpawnSync,
-  args: { socketPath: string; runtimePid: number },
+  args: { socketPath: string; runtimePid: number; command: AdeServiceCommand },
 ): Promise<void> {
   await terminatePidGracefullyAsync(args.runtimePid, {
     platform: "win32",
     runtimeSocketPath: args.socketPath,
+    isExpectedProcess: channelServeIdentity(
+      {
+        cliScriptPath: resolveAdeServeCliScriptPath(args.command),
+        primarySocketPath: args.socketPath,
+      },
+      (pid) => readWindowsPidCommandLine(pid, run),
+    ),
     forceKill: (pid) => {
       run(windowsTaskkillCommand(), ["/PID", String(pid), "/F"], {
         encoding: "utf8",
@@ -839,10 +851,11 @@ async function removeWindowsRunEntryIfPresent(
   launcherPath: string,
   pidPath: string,
   /**
-   * Present whenever the caller can name the brain's endpoint. Without it there
-   * is no cooperative channel and the supervisor tree is force-killed as before.
+   * Present whenever the caller can name the brain's endpoint and the command it
+   * runs. Without it there is no cooperative channel, and the brain is not
+   * stopped here; the supervisor tree is still force-killed.
    */
-  brain?: { socketPath: string },
+  brain?: { socketPath: string; command: AdeServiceCommand },
 ): Promise<WindowsTaskRemovalResult> {
   const query = run(windowsRegCommand(), buildWindowsRunKeyQueryArgs(valueName), {
     encoding: "utf8",
@@ -875,6 +888,7 @@ async function removeWindowsRunEntryIfPresent(
       await stopWindowsBrainGracefully(run, {
         socketPath: brain.socketPath,
         runtimePid,
+        command: brain.command,
       });
     }
     if (stop.status !== 0) {
@@ -1285,7 +1299,7 @@ async function installWindowsServiceImpl(
     taskName,
     launcherPath,
     pidPath,
-    { socketPath },
+    { socketPath, command: serviceCommand },
   );
   if (!startupRemoval.ok) {
     return {
@@ -1334,7 +1348,7 @@ async function installWindowsServiceImpl(
     primarySocketPath: socketPath,
   }, "win32");
   for (const stalePid of staleScan.ok ? staleScan.pids : []) {
-    await stopWindowsBrainGracefully(run, { socketPath, runtimePid: stalePid });
+    await stopWindowsBrainGracefully(run, { socketPath, runtimePid: stalePid, command: serviceCommand });
   }
   const command = windowsLauncherCommand(launcherPath);
   const registration = run(
@@ -1489,6 +1503,7 @@ async function uninstallWindowsServiceImpl(
     pidPath,
     {
       socketPath: resolveMachineAdeLayout({ ...env, ...(serviceCommand.env ?? {}) }, "win32").socketPath,
+      command: serviceCommand,
     },
   );
   // ADE-160: uninstall removes EVERY Run value that belongs to this channel or

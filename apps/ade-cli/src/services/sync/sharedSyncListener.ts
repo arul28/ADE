@@ -18,6 +18,7 @@ import {
   type SyncLoopbackValidationStatus,
 } from "./syncLoopbackProbe";
 import {
+  channelServeIdentity,
   isStaleChannelServeCommandLine,
   resolveAdeServeCliScriptPath,
   resolveAdeServeCommand,
@@ -321,9 +322,12 @@ export function createSharedSyncListener(options: {
   // Every holder `findStaleHolder` matches is, by construction, a brain serving
   // THIS channel's primary endpoint -- so that endpoint is exactly where a
   // cooperative shutdown request has to go. Windows has no catchable SIGTERM,
-  // so without this the reap was a `TerminateProcess` of a brain mid-write.
+  // so without this the reap was a `TerminateProcess` of a brain mid-write. The
+  // last-resort kill is gated on the same channel-brain predicate, read again at
+  // kill time: the port scan is older than the shutdown request's grace window.
   const terminatePid = options.terminatePid ?? ((pid) => terminatePidGracefullyAsync(pid, {
     runtimeSocketPath: staleServeMatch.primarySocketPath,
+    isExpectedProcess: channelServeIdentity(staleServeMatch),
   }));
   const findStaleHolder = (
     diagnosis: SyncListenerPortDiagnosis,
