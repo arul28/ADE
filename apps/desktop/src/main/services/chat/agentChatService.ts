@@ -410,6 +410,7 @@ import {
   listLaunchableCredentials,
 } from "./harnessPresetCredentialCatalog";
 import { HARNESS_PRESET_BODIES, type HarnessPreset } from "../../../shared/harnessPresets";
+import type { AdeRecoveryErrorCode } from "../../../shared/types/recovery";
 import { CLAUDE_RUNTIME_AUTH_ERROR, isClaudeRuntimeAuthError } from "../ai/claudeRuntimeProbe";
 import { resolveCodexExecutable, type CodexExecutableResolution } from "../ai/codexExecutable";
 import { codexFallForwardNotice, handleCodexVersionRejection } from "../ai/codexFallForward";
@@ -11588,14 +11589,17 @@ export function createAgentChatService(args: {
         if (result.reasonCode) return null;
       } else {
         plan = result;
+        // `null` here is "no route applies" (a key a provider reads on its
+        // own, like Muse's), not a failure: nothing to block.
         launchPlanBlockBySession.delete(managed.session.id);
       }
-      if (!plan) managed.launchRouteFellBack = true;
     } catch (error) {
       logger.warn("agent_chat.harness_preset_resolve_failed", {
         sessionId: managed.session.id,
         error: error instanceof Error ? error.message : String(error),
       });
+      launchPlanBlockBySession.set(managed.session.id, "ADE could not prepare it on this machine.");
+      managed.launchRouteFellBack = true;
     }
     sessionLaunchPlanCache.set(managed.session.id, { key: cacheKey, plan });
     return plan;
@@ -11613,7 +11617,8 @@ export function createAgentChatService(args: {
     const credentialId = managed.session.credentialId?.trim() ?? "";
     if (!presetId && !credentialId) return null;
     if (resolveSessionLaunchPlan(managed)) return null;
-    const reason = launchPlanBlockBySession.get(managed.session.id) ?? "ADE could not prepare it on this machine.";
+    const reason = launchPlanBlockBySession.get(managed.session.id);
+    if (!reason) return null;
     return presetId
       ? `This chat's custom provider could not be used, so the message was not sent. ${reason}`
       : `This chat's saved key could not be used, so the message was not sent. ${reason}`;
@@ -11638,25 +11643,7 @@ export function createAgentChatService(args: {
       turnId,
       messageId: randomUUID(),
     });
-    emitChatEvent(managed, {
-      type: "error",
-      message,
-      errorInfo: {
-        category: "unknown",
-        provider: managed.session.provider,
-        model: managed.session.model,
-      },
-      turnId,
-    });
-    emitChatEvent(managed, { type: "status", turnStatus: "failed", message, turnId });
-    emitChatEvent(managed, {
-      type: "done",
-      turnId,
-      status: "failed",
-      model: managed.session.model,
-      ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
-    });
-    persistChatState(managed);
+    emitRefusedTurnEnd(managed, turnId, message);
   };
 
   /**
@@ -46628,6 +46615,9 @@ export function createAgentChatService(args: {
       ...publicArgs
     } = args as AgentChatCreateArgs & { launchedBySessionId?: unknown };
     const actor = publicArgs.runtimeActor;
+    // A snapshot is written into the account's preset list, which is the
+    // user's to change: an agent's create runs on the list as it stands.
+    if (actor?.kind === "agent") delete publicArgs.presetSnapshot;
     // A recovery continues an earlier chat; it is not a launch by the actor.
     const launchedBySessionId = !publicArgs.orchestrationParentSessionId?.trim()
       && !publicArgs.recoveredFromSessionId?.trim()
@@ -50797,23 +50787,28 @@ export function createAgentChatService(args: {
       detail: { kind: "disk_pressure", state },
       turnId,
     });
+    emitRefusedTurnEnd(managed, turnId, message, "disk_full");
+  };
+
+  /** The error, failed status and done that end a turn ADE refused to start. */
+  const emitRefusedTurnEnd = (
+    managed: ManagedChatSession,
+    turnId: string,
+    message: string,
+    code?: AdeRecoveryErrorCode,
+  ): void => {
     emitChatEvent(managed, {
       type: "error",
       message,
       errorInfo: {
         category: "unknown",
-        code: "disk_full",
+        ...(code ? { code } : {}),
         provider: managed.session.provider,
         model: managed.session.model,
       },
       turnId,
     });
-    emitChatEvent(managed, {
-      type: "status",
-      turnStatus: "failed",
-      message,
-      turnId,
-    });
+    emitChatEvent(managed, { type: "status", turnStatus: "failed", message, turnId });
     emitChatEvent(managed, {
       type: "done",
       turnId,

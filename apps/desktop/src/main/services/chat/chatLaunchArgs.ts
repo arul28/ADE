@@ -10,6 +10,7 @@ import type {
   ChatLaunchLaneConfig,
   ChatLaunchQueueMessageArgs,
 } from "../../../shared/types";
+import { normalizeHarnessPreset } from "../../../shared/harnessPresets";
 import { parseLaneLinearIssueValue } from "../../../shared/laneLinearIssue";
 import { isRecord } from "../shared/utils";
 
@@ -127,8 +128,11 @@ export function parseAgentChatCreateFields(value: Record<string, unknown>): Omit
   if ("requestedCwd" in value) parsed.requestedCwd = value.requestedCwd == null ? undefined : requireString(value.requestedCwd, "chat.create requires a non-empty requestedCwd when provided.");
   // A saved harness preset the caller picked (the phone's Custom section). The
   // runtime resolves it against its own account-scoped list and machine stores;
-  // an id that no longer names a preset produces a notice, not a failed create.
+  // an id that no longer names a preset fails the chat's turns, not the create.
   if (asTrimmedString(value.presetId)) parsed.presetId = asTrimmedString(value.presetId)!;
+  // The launching machine's copy of that preset, for a list not synced here yet.
+  const presetSnapshot = parsed.presetId ? normalizeHarnessPreset(value.presetSnapshot) : null;
+  if (presetSnapshot && presetSnapshot.id === parsed.presetId) parsed.presetSnapshot = presetSnapshot;
 
   return parsed;
 }
