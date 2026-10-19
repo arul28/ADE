@@ -74,10 +74,14 @@ export function CaptureGestureSection() {
     try {
       const updated = await window.ade?.captureGesture?.retry();
       if (mounted.current && updated) setHealth(updated);
+      // The helper installs the tap again asynchronously; ask once more after
+      // it has had time to answer, so granting Input Monitoring clears the
+      // warning without reopening Settings.
+      window.setTimeout(() => { void refreshHealth(); }, 600);
     } finally {
       if (mounted.current) setBusy(false);
     }
-  }, []);
+  }, [refreshHealth]);
 
   const chord = captureGestureChord();
   const blocker = captureGestureBlocker();

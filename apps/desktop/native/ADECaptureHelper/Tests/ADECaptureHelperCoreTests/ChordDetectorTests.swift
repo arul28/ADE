@@ -42,6 +42,7 @@ final class ChordDetectorTests: XCTestCase {
     func testParsesKnownCommandsAndIgnoresUnknownOnes() {
         XCTAssertEqual(HelperCommand.parse(line: "{\"type\":\"capture\"}"), .capture)
         XCTAssertEqual(HelperCommand.parse(line: "{\"type\":\"quit\"}"), .quit)
+        XCTAssertEqual(HelperCommand.parse(line: "{\"type\":\"retry\"}"), .retry)
         XCTAssertEqual(
             HelperCommand.parse(line: "{\"type\":\"settings\",\"enabled\":false}"),
             .settings(enabled: false)
@@ -49,6 +50,46 @@ final class ChordDetectorTests: XCTestCase {
         XCTAssertNil(HelperCommand.parse(line: "{\"type\":\"from-a-newer-ade\"}"))
         XCTAssertNil(HelperCommand.parse(line: "not json"))
         XCTAssertNil(HelperCommand.parse(line: ""))
+    }
+
+    /* The macOS 27 route: key codes from .flagsChanged, not device bits. */
+
+    func testKeyCodeDetectorFiresOnceWhenBothCommandKeysArePressed() {
+        var detector = CommandKeyChordDetector()
+        XCTAssertFalse(detector.consume(keyCode: 55, commandDown: true))
+        XCTAssertTrue(detector.consume(keyCode: 54, commandDown: true))
+        // The latch stays engaged while both keys are held, and only a release
+        // can rearm the chord.
+        XCTAssertTrue(detector.isEngaged)
+    }
+
+    func testKeyCodeDetectorRearmsAfterOneKeyIsReleased() {
+        var detector = CommandKeyChordDetector()
+        XCTAssertFalse(detector.consume(keyCode: 55, commandDown: true))
+        XCTAssertTrue(detector.consume(keyCode: 54, commandDown: true))
+        // Right Command released while left remains down: generic Command is
+        // still set, so the key code is what identifies the release.
+        XCTAssertFalse(detector.consume(keyCode: 54, commandDown: true))
+        XCTAssertTrue(detector.consume(keyCode: 54, commandDown: true))
+    }
+
+    func testKeyCodeDetectorIgnoresOtherKeysAndResyncsOnAllUp() {
+        var detector = CommandKeyChordDetector()
+        XCTAssertFalse(detector.consume(keyCode: 56, commandDown: true))
+        XCTAssertFalse(detector.consume(keyCode: 0, commandDown: false))
+        // A missed release is repaired by the all-up sample.
+        XCTAssertFalse(detector.consume(keyCode: 55, commandDown: true))
+        XCTAssertFalse(detector.consume(keyCode: 55, commandDown: false))
+        XCTAssertFalse(detector.isEngaged)
+        XCTAssertFalse(detector.consume(keyCode: 55, commandDown: true))
+        XCTAssertTrue(detector.consume(keyCode: 54, commandDown: true))
+    }
+
+    func testKeyCodeDetectorResetDropsAHalfHeldChord() {
+        var detector = CommandKeyChordDetector()
+        XCTAssertFalse(detector.consume(keyCode: 55, commandDown: true))
+        detector.reset()
+        XCTAssertFalse(detector.consume(keyCode: 54, commandDown: true))
     }
 
     func testEncodesCapturedEventWithOptionalFieldsOmitted() throws {

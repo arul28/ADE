@@ -3,7 +3,10 @@ import { isPathInside } from "../shared/pathCompare";
 import { terminateChildProcessTree } from "../shared/utils";
 import fs from "node:fs";
 import path from "node:path";
-import { isCaptureGestureSupported } from "../../../shared/captureGesturePlatformSupport";
+import {
+  captureGestureChordLabel,
+  isCaptureGestureSupported,
+} from "../../../shared/captureGesturePlatformSupport";
 import type {
   CaptureGestureFailure,
   CaptureGestureHealth,
@@ -12,6 +15,7 @@ import type {
 } from "../../../shared/types/captureGesture";
 import type { Logger } from "../logging/logger";
 import {
+  MAC_OS_INPUT_MONITORING_REMEDY,
   captureAttachmentFilename,
   captureFailureFor,
   captureGestureHealth,
@@ -84,6 +88,7 @@ export class CaptureHelper {
   private captureTimer: NodeJS.Timeout | null = null;
   private stdoutBuffer = "";
   private permissionDenied = false;
+  private inputMonitoringRequired = false;
   private captureInFlight = false;
   private lastCaptureAtMs: number | null = null;
   private pendingSource: CaptureGestureSource = "chord";
@@ -107,6 +112,8 @@ export class CaptureHelper {
       });
       return false;
     }
+
+    this.inputMonitoringRequired = false;
 
     try {
       fs.mkdirSync(this.options.outputDirectory, { recursive: true });
@@ -268,6 +275,7 @@ export class CaptureHelper {
       executableExists: this.supported && fs.existsSync(this.options.executablePath),
       running: this.child != null && this.childReady,
       permissionDenied: this.permissionDenied,
+      inputMonitoringRequired: this.inputMonitoringRequired,
       exhaustedRestarts:
         this.child == null
         && this.restartAttempts >= MAX_RESTART_ATTEMPTS
@@ -279,11 +287,16 @@ export class CaptureHelper {
     if (!this.disposed) {
       this.restartAttempts = 0;
       this.permissionDenied = false;
+      // `inputMonitoringRequired` stays until the helper reports chord-ready:
+      // clearing it here would make the warning vanish before the tap exists.
       if (this.restartTimer) {
         clearTimeout(this.restartTimer);
         this.restartTimer = null;
       }
-      if (!this.child && this.enabled) this.start();
+      // A running helper can try the tap again in place; only a missing one
+      // needs a fresh process.
+      if (this.child) this.write({ type: "retry" });
+      else if (this.enabled) this.start();
     }
     return this.getHealth();
   }
@@ -402,6 +415,20 @@ export class CaptureHelper {
   private handleOutput(output: CaptureHelperOutput): void {
     switch (output.type) {
       case "ready":
+        return;
+      case "chord-ready":
+        // A retry after the user granted Input Monitoring installed the tap.
+        this.inputMonitoringRequired = false;
+        return;
+      case "input-monitoring-required":
+        this.inputMonitoringRequired = true;
+        this.options.onFailure({
+          reason: "permission-denied",
+          source: this.pendingSource,
+          message: this.platform === "darwin"
+            ? `ADE needs Input Monitoring permission to detect ${captureGestureChordLabel(this.platform)}. ${MAC_OS_INPUT_MONITORING_REMEDY}`
+            : "This system refused the key monitoring the capture gesture needs.",
+        });
         return;
       case "chord": {
         const decision = evaluateCaptureChord({

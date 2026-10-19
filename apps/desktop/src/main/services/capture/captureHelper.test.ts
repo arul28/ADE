@@ -354,6 +354,30 @@ describe("CaptureHelper", () => {
     expect(helper.retry().state).toBe("running");
   });
 
+  it("surfaces a missing Input Monitoring grant and clears it when the tap comes up", async () => {
+    const child = fakeChild();
+    spawnMock.mockReturnValue(child);
+    const { helper, onFailure } = createHelper();
+    helper.updateSettings({ enabled: true });
+    child.emit("spawn");
+    child.stdout.write('{"type":"input-monitoring-required"}\n');
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(onFailure.mock.calls[0][0].reason).toBe("permission-denied");
+    expect(onFailure.mock.calls[0][0].message).toContain("Input Monitoring");
+    expect(helper.getHealth().state).toBe("permission_denied");
+    expect(helper.getHealth().recovery).toBe("retry");
+
+    // Retry re-asks the running helper rather than spawning a second child; a
+    // successful tap answers chord-ready and the warning goes away.
+    const written = stdinLines(child);
+    expect(helper.retry().recovery).toBe("retry");
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(written).toContain('{"type":"retry"}');
+    child.stdout.write('{"type":"chord-ready"}\n');
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(helper.getHealth().state).toBe("running");
+  });
+
   it("ignores a chord while a capture is already in flight", async () => {
     const child = fakeChild();
     spawnMock.mockReturnValue(child);

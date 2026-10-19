@@ -81,6 +81,9 @@ describe("chord admission", () => {
 describe("helper output parsing", () => {
   it("parses each known message", () => {
     expect(parseCaptureHelperOutput('{"type":"ready"}')).toEqual({ type: "ready" });
+    expect(parseCaptureHelperOutput('{"type":"chord-ready"}')).toEqual({ type: "chord-ready" });
+    expect(parseCaptureHelperOutput('{"type":"input-monitoring-required"}'))
+      .toEqual({ type: "input-monitoring-required" });
     expect(parseCaptureHelperOutput('{"type":"chord"}')).toEqual({ type: "chord" });
     expect(parseCaptureHelperOutput('{"type":"no-window"}')).toEqual({ type: "no-window" });
     expect(parseCaptureHelperOutput('{"type":"permission-denied"}'))
@@ -205,6 +208,17 @@ describe("health", () => {
     const health = captureGestureHealth({ ...base, permissionDenied: true });
     expect(health.state).toBe("permission_denied");
     expect(health.recovery).toBe("grant_permission");
+  });
+
+  it("asks for Input Monitoring before Screen Recording and offers a retry", () => {
+    const health = captureGestureHealth({
+      ...base,
+      permissionDenied: true,
+      inputMonitoringRequired: true,
+    });
+    expect(health.state).toBe("permission_denied");
+    expect(health.message).toContain("Input Monitoring");
+    expect(health.recovery).toBe("retry");
   });
 
   it("reports an exhausted restart budget as a crash loop", () => {
