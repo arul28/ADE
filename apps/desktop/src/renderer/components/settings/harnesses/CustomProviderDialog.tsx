@@ -771,7 +771,9 @@ export function CustomProviderDialog({
                 event.target.value = "";
               }}
             />
-            {compactingLogo ? <p className="text-xs text-muted-foreground">Preparing logo…</p> : null}
+            {compactingLogo ? (
+              <p style={{ margin: 0, fontSize: 11, color: COLORS.textMuted }}>Preparing logo…</p>
+            ) : null}
             {logoError ? <FieldError>{logoError}</FieldError> : null}
           </section>
         </fieldset>
