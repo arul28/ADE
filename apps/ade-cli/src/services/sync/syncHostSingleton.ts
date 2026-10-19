@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { resolveTrustedWindowsTool } from "../../lib/trustedWindowsTools";
+import { readWindowsProcessFacts, type WindowsProcessFacts } from "../../serviceManager/common";
 import {
   buildWindowsListeningPortHolderQueryArgs,
   parseWindowsPortHolders,
@@ -229,6 +230,35 @@ function windowsOwnerMatchArgs(owner: SyncHostSingletonOwner): string[] {
     "[Console]::Out.Write((@{ executablePath = $executablePath; startedAt = $startedAt } | ConvertTo-Json -Compress))",
   ].join("; ");
   return ["-NoProfile", "-NonInteractive", "-Command", script];
+}
+
+/**
+ * Whether a live win32 process, read in one PowerShell call, is the lock owner
+ * that was recorded: the same executable and the same birth time within the
+ * owner tolerance. The verified-kill path decides on these facts, so the decision
+ * and the kill see the same process.
+ */
+export function ownerMatchesWindowsProcess(
+  owner: SyncHostSingletonOwner,
+  facts: WindowsProcessFacts,
+): boolean {
+  return windowsOwnerMatchFromOutput(
+    owner,
+    JSON.stringify({ executablePath: facts.executablePath, startedAt: facts.startTime }),
+  ) === true;
+}
+
+/**
+ * `defaultProcessMatchesOwner` for a caller on the event loop. On win32 the
+ * PowerShell identity read is asynchronous, so the probe does not stall the brain.
+ */
+export async function processMatchesOwnerAsync(
+  owner: SyncHostSingletonOwner,
+  platform: NodeJS.Platform = process.platform,
+): Promise<boolean | null> {
+  if (platform !== "win32") return defaultProcessMatchesOwner(owner, platform);
+  const read = await readWindowsProcessFacts(owner.pid);
+  return read.state === "found" ? ownerMatchesWindowsProcess(owner, read.facts) : null;
 }
 
 function executableFromCommandLine(commandLine: string | null): string | null {

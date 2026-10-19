@@ -319,16 +319,21 @@ export function createSharedSyncListener(options: {
     cliScriptPath: resolveAdeServeCliScriptPath(serviceCommand),
     primarySocketPath: resolveMachineAdeLayout().socketPath,
   };
-  // Every holder `findStaleHolder` matches is, by construction, a brain serving
-  // THIS channel's primary endpoint -- so that endpoint is exactly where a
-  // cooperative shutdown request has to go. Windows has no catchable SIGTERM,
-  // so without this the reap was a `TerminateProcess` of a brain mid-write. The
-  // last-resort kill is gated on the same channel-brain predicate, read again at
-  // kill time: the port scan is older than the shutdown request's grace window.
-  const terminatePid = options.terminatePid ?? ((pid) => terminatePidGracefullyAsync(pid, {
-    runtimeSocketPath: staleServeMatch.primarySocketPath,
-    isExpectedProcess: channelServeIdentity(staleServeMatch),
-  }));
+  // A holder `findStaleHolder` matches names this channel's primary endpoint, so
+  // that endpoint is where a cooperative shutdown request goes. Windows has no
+  // catchable SIGTERM, so without this the reap was a `TerminateProcess` of a brain
+  // mid-write. The last-resort kill is a verified kill: the process is read again at
+  // kill time and must still be this channel's brain. A holder that is not proven
+  // is left running, and the caller treats the port as still occupied.
+  const terminatePid = options.terminatePid ?? (async (pid: number) => {
+    const outcome = await terminatePidGracefullyAsync(pid, {
+      runtimeSocketPath: staleServeMatch.primarySocketPath,
+      isExpectedProcess: channelServeIdentity(staleServeMatch),
+    });
+    if (outcome !== "stopped" && outcome !== "killed") {
+      throw new Error(`stale sync holder ${pid} could not be verified and was left running`);
+    }
+  });
   const findStaleHolder = (
     diagnosis: SyncListenerPortDiagnosis,
   ): SyncListenerPortDiagnosis["holders"][number] | null => {
@@ -699,16 +704,27 @@ export function createSharedSyncListener(options: {
               && confirmedHolder.startTime === staleHolder.startTime
             ) {
               zombieReapedPorts.add(attemptedPort);
-              await terminatePid(staleHolder.pid);
-              reapedStaleHolder = true;
-              logger.info?.("sync_listener.zombie_reaped", {
-                port: attemptedPort,
-                pid: staleHolder.pid,
-                servicePid: activeServicePid(),
-              });
-              // Non-preferred candidates occur only once in the normal plan.
-              // Insert exactly one immediate retry for the newly-freed port.
-              attemptPlan.splice(attemptIndex + 1, 0, attemptedPort);
+              try {
+                await terminatePid(staleHolder.pid);
+                reapedStaleHolder = true;
+              } catch (error) {
+                // Not proven, or the kill did not take: the holder still owns the port.
+                logger.warn?.("sync_listener.zombie_not_reaped", {
+                  port: attemptedPort,
+                  pid: staleHolder.pid,
+                  error: error instanceof Error ? error.message : String(error),
+                });
+              }
+              if (reapedStaleHolder) {
+                logger.info?.("sync_listener.zombie_reaped", {
+                  port: attemptedPort,
+                  pid: staleHolder.pid,
+                  servicePid: activeServicePid(),
+                });
+                // Non-preferred candidates occur only once in the normal plan.
+                // Insert exactly one immediate retry for the newly-freed port.
+                attemptPlan.splice(attemptIndex + 1, 0, attemptedPort);
+              }
             }
           }
           // A confirmed live holder will not disappear during a 3.2 second

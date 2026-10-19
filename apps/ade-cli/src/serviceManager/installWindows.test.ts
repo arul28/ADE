@@ -14,6 +14,7 @@ import {
   type AdeServiceCommand,
   type ServiceManagerProcessResult,
   type ServiceManagerSpawnSync,
+  type WindowsProcessFacts,
 } from "./common";
 import {
   buildWindowsCreateTaskArgs,
@@ -44,7 +45,6 @@ import {
   windowsPowerShellCommand,
   windowsRegCommand,
   windowsSchtasksCommand,
-  windowsTaskkillCommand,
   WINDOWS_TASK_ACTION_FIELD_SEPARATOR,
   buildWindowsRuntimeQueryArgs,
   renderWindowsServiceLauncher,
@@ -110,6 +110,65 @@ function spawnSequence(
     calls.push({ command, args });
     return results.shift() ?? { status: 0, stdout: "", stderr: "" };
   };
+}
+
+/**
+ * The processes the stop path reads and kills through PowerShell, keyed by pid.
+ * An identity read of a listed pid answers with its record; a verified kill of a
+ * listed pid succeeds and removes it. Every other call, including the supervisor
+ * query and the predecessor scan, goes to `fallback`.
+ */
+function processTableSpawn(
+  calls: Array<{ command: string; args: string[] }>,
+  processes: Map<number, WindowsProcessFacts>,
+  fallback: ServiceManagerSpawnSync,
+): ServiceManagerSpawnSync {
+  return (command, args, options) => {
+    const script = args.at(-1) ?? "";
+    if (command !== windowsPowerShellCommand()) return fallback(command, args, options);
+    const killTarget = /GetProcessById\((\d+)\)/.exec(script);
+    if (killTarget) {
+      calls.push({ command, args });
+      const pid = Number(killTarget[1]);
+      if (!processes.has(pid)) return { status: 3, stdout: "", stderr: "" };
+      processes.delete(pid);
+      return { status: 0, stdout: "", stderr: "" };
+    }
+    if (script.includes("ConvertTo-Json")) {
+      const pid = Number(/ProcessId = (\d+)/.exec(script)?.[1]);
+      const facts = processes.get(pid);
+      return facts
+        ? { status: 0, stdout: JSON.stringify(facts), stderr: "" }
+        : { status: 3, stdout: "", stderr: "" };
+    }
+    return fallback(command, args, options);
+  };
+}
+
+/** A live launcher supervisor as its identity read reports it: powershell running this launcher. */
+function supervisorFacts(pid: number, launcherPath: string): WindowsProcessFacts {
+  return {
+    pid,
+    startTime: "2026-10-18T22:00:00.0000000Z",
+    commandLine: `"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -NoProfile -File "${launcherPath}"`,
+    executablePath: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+    parentPid: 1,
+  };
+}
+
+/**
+ * The pids a kill was sent for, in order: a verified kill, or a bare `taskkill /PID`.
+ * Counting both means a kill by either mechanism is seen.
+ */
+function killedPids(calls: Array<{ command: string; args: string[] }>): number[] {
+  return calls.flatMap((call) => {
+    if (/taskkill(\.exe)?$/i.test(call.command)) {
+      const at = call.args.indexOf("/PID");
+      return at >= 0 ? [Number(call.args[at + 1])] : [];
+    }
+    const target = /GetProcessById\((\d+)\)/.exec(call.args.at(-1) ?? "");
+    return call.command === windowsPowerShellCommand() && target ? [Number(target[1])] : [];
+  });
 }
 
 describe("Windows background service helpers", () => {
@@ -586,17 +645,20 @@ describe("Windows background service helpers", () => {
     const launcherPath = path.join(home, "brain-service.ps1");
     fs.writeFileSync(`${launcherPath}.pid.json`, JSON.stringify(readyPidRecord), "utf8");
     const calls: Array<{ command: string; args: string[] }> = [];
-    const spawnSync = spawnSequence(calls, [
+    const spawnSync = processTableSpawn(
+      calls,
+      new Map([[readyPidRecord.supervisorPid, supervisorFacts(readyPidRecord.supervisorPid, launcherPath)]]),
+      spawnSequence(calls, [
       { status: 3, stdout: "", stderr: "" },                     // legacy task: absent
       { status: 3, stdout: "", stderr: "" },                     // channel task: absent
       { status: 0, stdout: `    ${taskName}    REG_SZ    x`, stderr: "" }, // Run entry: installed
       { status: 0, stdout: "", stderr: "" },                     // supervisor probe: running
-      { status: 0, stdout: "SUCCESS", stderr: "" },              // taskkill supervisor
       { status: 0, stdout: "SUCCESS: deleted", stderr: "" },     // reg delete
       { status: 0, stdout: "", stderr: "" },                     // stale same-channel serve scan: none
       { status: 0, stdout: "SUCCESS: created", stderr: "" },     // reg add
       { status: 0, stdout: "1234", stderr: "" },                 // start task
-    ]);
+    ]),
+    );
 
     const result = await installWindowsService({
       ...immediateReadiness,
@@ -609,17 +671,14 @@ describe("Windows background service helpers", () => {
     });
 
     expect(result.ok).toBe(true);
-    // The supervisor is killed on its own, WITHOUT `/T`. The brain is its
+    // The supervisor is killed on its own, WITHOUT a tree kill. The brain is its
     // child, so a tree kill took the brain down mid-write — no SQLite/CRDT
     // flush, no lock release — and the next start had to recover from a lock
-    // whose owner never got to release it. The brain is talked down separately
-    // once the supervisor can no longer relaunch it. Repair is still a real
-    // restart, which is what this test exists to protect: the supervisor dies
-    // and a fresh one is started below.
-    expect(calls).toContainEqual({
-      command: windowsTaskkillCommand(),
-      args: ["/PID", String(readyPidRecord.supervisorPid), "/F"],
-    });
+    // whose owner never got to release it. The kill goes through the supervisor's
+    // verified handle, never a bare pid. Repair is still a real restart, which is
+    // what this test exists to protect: the supervisor dies and a fresh one is
+    // started below.
+    expect(killedPids(calls)).toEqual([readyPidRecord.supervisorPid]);
     expect(calls.at(-1)).toEqual({
       command: windowsPowerShellCommand(),
       args: buildWindowsStartTaskArgs(launcherPath, resolveWindowsStartTaskName(taskName)),
@@ -761,8 +820,6 @@ describe("Windows background service helpers", () => {
     { label: "replaces a healthy brain when forced", sessionBound: false, env: { ADE_FORCE_RUNTIME_SERVICE_RESTART: "1" }, replaced: true },
   ])("on an unchanged launcher with an old brain, $label", async ({ sessionBound, env, replaced }) => {
     const calls: Array<{ command: string; args: string[] }> = [];
-    // Legacy task absent; every later Windows tool call succeeds.
-    const spawnSync = spawnSequence(calls, [{ status: 3, stdout: "", stderr: "" }]);
     const launcherPath = path.join(makeTempHome("ade-windows-service-keep-"), "brain-service.ps1");
     const pidPath = `${launcherPath}.pid.json`;
     const runtimeEnv = { ...process.env, ...env, ...(serviceCommand.env ?? {}) };
@@ -781,6 +838,12 @@ describe("Windows background service helpers", () => {
     })}`, "utf8");
     const oldRecord = { ...readyPidRecord, runtimeStartedAtMs: Date.now() - 10 * 60_000, sessionBound };
     fs.writeFileSync(pidPath, JSON.stringify(oldRecord), "utf8");
+    // Legacy task absent; the supervisor is live; every other Windows tool call succeeds.
+    const spawnSync = processTableSpawn(
+      calls,
+      new Map([[oldRecord.supervisorPid, supervisorFacts(oldRecord.supervisorPid, launcherPath)]]),
+      spawnSequence(calls, [{ status: 3, stdout: "", stderr: "" }]),
+    );
 
     const result = await installWindowsService({
       command: serviceCommand,
@@ -796,8 +859,7 @@ describe("Windows background service helpers", () => {
     });
 
     expect(result.ok).toBe(true);
-    const supervisorKilled = calls.some((call) =>
-      call.command === windowsTaskkillCommand() && call.args.includes(String(oldRecord.supervisorPid)));
+    const supervisorKilled = killedPids(calls).includes(oldRecord.supervisorPid);
     expect(supervisorKilled).toBe(replaced);
     expect(result.restarted === true).toBe(replaced);
     // Kept or not, the Run value is (re)registered.
@@ -1212,22 +1274,39 @@ describe("Windows background service helpers", () => {
   });
 
   // A PID record outlives the brain it names, and Windows may hand that pid to an
-  // unrelated program. Uninstall force-kills the recorded brain only while a
-  // command-line query still shows this channel's serve brain on that pid.
+  // unrelated program. Uninstall identifies the recorded brain before it stops
+  // anything. It stops the supervisor and then the brain only for a process that
+  // is this channel's serve brain and was started by that supervisor. Anything
+  // else stops nothing, and the uninstall fails naming the pid it left running.
+  const supervisorPid = readyPidRecord.supervisorPid;
+  const serveCommandLine = `"C:\\Program Files\\ADE\\ade.exe" "C:\\Program Files\\ADE\\resources\\ade-cli\\cli.cjs" "serve"`;
   it.each([
     {
-      name: "leaves a recorded pid alone when another program now holds it",
-      commandLine: "\"C:\\Windows\\System32\\notepad.exe\"",
-      killed: false,
+      name: "refuses, and stops nothing, when another program now holds the recorded pid",
+      commandLine: `"C:\\Windows\\System32\\notepad.exe"`,
+      parentPid: 4321,
+      ok: false,
     },
     {
-      name: "force-kills a recorded pid that still runs this channel's serve brain",
-      commandLine: `"C:\\Program Files\\ADE\\ade.exe" "C:\\Program Files\\ADE\\resources\\ade-cli\\cli.cjs" "serve"`,
-      killed: true,
+      name: "refuses a recorded brain that serves a different --socket",
+      commandLine: `${serveCommandLine} "--socket" "\\\\.\\pipe\\ade-runtime-other-0123456789abcdef"`,
+      parentPid: supervisorPid,
+      ok: false,
     },
-  ])("$name", async ({ commandLine, killed }) => {
-    // A real live process stands in for the recorded brain, so the liveness check
-    // is real. Its identity query and the taskkill go through the fake spawn.
+    {
+      name: "refuses a recorded brain without --socket that this supervisor did not start",
+      commandLine: serveCommandLine,
+      parentPid: 4321,
+      ok: false,
+    },
+    {
+      name: "stops the supervisor, then the recorded brain, when this supervisor started it",
+      commandLine: serveCommandLine,
+      parentPid: supervisorPid,
+      ok: true,
+    },
+  ])("$name", async ({ commandLine, parentPid, ok }) => {
+    // A real live process stands in for the recorded brain, so the liveness check is real.
     const brain = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
       stdio: "ignore",
       windowsHide: true,
@@ -1237,16 +1316,23 @@ describe("Windows background service helpers", () => {
       const launcherPath = path.join(makeTempHome("ade-windows-service-recorded-brain-"), "brain-service.ps1");
       fs.writeFileSync(`${launcherPath}.pid.json`, JSON.stringify({ ...readyPidRecord, runtimePid: brainPid }), "utf8");
       const calls: Array<{ command: string; args: string[] }> = [];
-      const spawnSync = spawnSequence(calls, [
+      const processes = new Map<number, WindowsProcessFacts>([
+        [supervisorPid, supervisorFacts(supervisorPid, launcherPath)],
+        [brainPid, {
+          pid: brainPid,
+          startTime: "2026-10-18T22:05:00.0000000Z",
+          commandLine,
+          executablePath: "C:\Program Files\ADE\ade.exe",
+          parentPid,
+        }],
+      ]);
+      const spawnSync = processTableSpawn(calls, processes, spawnSequence(calls, [
         { status: 3, stdout: "", stderr: "" },                                  // channel task: absent
         { status: 3, stdout: "", stderr: "" },                                  // legacy task: absent
         { status: 0, stdout: `    ${taskName}    REG_SZ    x`, stderr: "" },     // Run entry: installed
         { status: 0, stdout: "", stderr: "" },                                  // supervisor probe: running
-        { status: 0, stdout: "SUCCESS", stderr: "" },                           // taskkill supervisor
-        { status: 0, stdout: commandLine, stderr: "" },                         // recorded pid: its command line
-        { status: 0, stdout: "SUCCESS", stderr: "" },                           // taskkill recorded pid (only when proven)
         { status: 0, stdout: "SUCCESS: deleted", stderr: "" },                  // reg delete
-      ]);
+      ]));
 
       const result = await uninstallWindowsService({
         command: serviceCommand,
@@ -1256,14 +1342,14 @@ describe("Windows background service helpers", () => {
         userName: taskUser,
       });
 
-      expect(result.ok).toBe(true);
-      const brainKill = { command: windowsTaskkillCommand(), args: ["/PID", String(brainPid), "/F"] };
-      if (killed) expect(calls).toContainEqual(brainKill);
-      else expect(calls).not.toContainEqual(brainKill);
+      expect(result.ok).toBe(ok);
+      if (!ok) expect(result.message).toContain(`the brain process ${brainPid}; it was left running`);
+      expect(killedPids(calls)).toEqual(ok ? [supervisorPid, brainPid] : []);
     } finally {
       brain.kill();
     }
   });
+
 
   it("surfaces scheduled task removal failures", async () => {
     const calls: Array<{ command: string; args: string[] }> = [];

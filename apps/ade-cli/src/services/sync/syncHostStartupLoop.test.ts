@@ -150,7 +150,17 @@ describe("runSyncHostStartupLoop", () => {
           if (accepted) ownerAlive = false;
           return accepted ? { requested: true } : { requested: false, reason: "wedged" };
         },
-        forceKill: (pid) => { events.push(`force ${pid}`); ownerAlive = false; },
+        // The identity read finds a live process; the verified kill of that exact
+        // process is the force-kill. Nothing real is signalled.
+        runWindowsPowerShell: (args) => {
+          if ((args.at(-1) ?? "").includes("GetProcessById(4242)")) {
+            events.push("force 4242");
+            ownerAlive = false;
+            return { status: 0, stdout: "", stderr: "" };
+          }
+          const facts = { pid: 4242, startTime: "2026-10-18T22:00:00.0000000Z", commandLine: "ade.exe serve", executablePath: null, parentPid: 1 };
+          return { status: 0, stdout: JSON.stringify(facts), stderr: "" };
+        },
       },
     });
     expect(attempts).toBe(2);

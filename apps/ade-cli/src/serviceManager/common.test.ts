@@ -1,8 +1,8 @@
 import fs from "node:fs";
 import net from "node:net";
-import { EventEmitter } from "node:events";
+import { EventEmitter, once } from "node:events";
 import { createHash } from "node:crypto";
-import { spawnSync as spawnChildSync } from "node:child_process";
+import { spawn, spawnSync as spawnChildSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -11,8 +11,11 @@ import {
   buildWindowsParentPidQueryArgs,
   buildWindowsProcessCommandLineQueryArgs,
   channelServeIdentity,
+  isPidAlive,
+  killVerifiedWindowsProcess,
   listStaleChannelServePids,
   parsePsElapsedMs,
+  readWindowsProcessFacts,
   isCurrentProcessDescendantOfPid,
   isStaleChannelServeCommandLine,
   PARENT_PID_UNKNOWN,
@@ -25,6 +28,7 @@ import {
   type ChannelServeMatch,
   type ServiceManagerProcessResult,
   type ServiceManagerSpawnSync,
+  type WindowsProcessFacts,
   MATERIALIZE_DATALESS_FILES_KEY,
 } from "./common";
 
@@ -668,153 +672,195 @@ describe("terminatePidGracefullyAsync on win32", () => {
     primarySocketPath: channelPipe,
   };
   const channelBrainCommandLine = `"C:\\Program Files\\ADE\\ade.exe" "C:\\Program Files\\ADE\\resources\\ade-cli\\cli.cjs" "serve"`;
+  const otherPipe = "\\\\.\\pipe\\ade-runtime-other-0123456789abcdef";
+  const facts = (commandLine: string): WindowsProcessFacts => ({
+    pid: 4242,
+    startTime: "2026-10-18T22:00:00.0000000Z",
+    commandLine,
+    executablePath: "C:\\Program Files\\ADE\\ade.exe",
+    parentPid: 1,
+  });
+  // The PowerShell boundary for pid 4242: the identity read answers `read`, and a
+  // verified kill of that pid is recorded and succeeds.
+  const processBoundary = (read: WindowsProcessFacts | "gone" | "unreadable", killed: number[]) =>
+    (args: string[]): ServiceManagerProcessResult => {
+      const script = args.at(-1) ?? "";
+      if (script.includes("GetProcessById(")) {
+        killed.push(Number(/GetProcessById\((\d+)\)/.exec(script)?.[1]));
+        return { status: 0, stdout: "", stderr: "" };
+      }
+      if (read === "gone") return { status: 3, stdout: "", stderr: "" };
+      if (read === "unreadable") return { status: 1, stdout: "", stderr: "denied" };
+      return { status: 0, stdout: JSON.stringify(read), stderr: "" };
+    };
 
   // `process.kill(pid, "SIGTERM")` is TerminateProcess on Windows: the target's
   // SIGTERM handler never runs and it is gone in ~19ms (measured), so the whole
   // grace loop was dead code and the brain was killed mid-write.
-  it("asks the runtime to shut down and never signals the pid", async () => {
-    const signals: Array<string | number> = [];
-    const forced: number[] = [];
-    let alive = true;
+  it("does not signal or identify a process that answers the shutdown request", async () => {
+    const signals: unknown[] = [];
     const requests: Array<{ pid: number; socketPath: string }> = [];
-    const readCommandLine = vi.fn(() => channelBrainCommandLine);
-    await terminatePidGracefullyAsync(4242, {
+    const boundary = vi.fn(processBoundary("gone", []));
+    const identity = vi.fn(() => true);
+    let alive = true;
+    const outcome = await terminatePidGracefullyAsync(4242, {
       platform: "win32",
       runtimeSocketPath: channelPipe,
       kill: (_pid, signal) => { signals.push(signal); },
-      forceKill: (pid) => { forced.push(pid); },
       pidAlive: () => alive,
-      isExpectedProcess: channelServeIdentity(channelServe, readCommandLine),
+      isExpectedProcess: identity,
+      runWindowsPowerShell: boundary,
       requestRuntimeShutdown: async ({ pid, socketPath }) => {
         requests.push({ pid, socketPath });
         alive = false;
         return { requested: true };
       },
     });
-    expect(requests).toEqual([
-      { pid: 4242, socketPath: channelPipe },
-    ]);
+    expect(outcome).toBe("stopped");
+    expect(requests).toEqual([{ pid: 4242, socketPath: channelPipe }]);
     expect(signals).toEqual([]);
-    expect(forced).toEqual([]);
-    expect(readCommandLine).not.toHaveBeenCalled();
+    // The cooperative path is query-free: no identity read, no identity decision.
+    expect(boundary).not.toHaveBeenCalled();
+    expect(identity).not.toHaveBeenCalled();
   });
 
-  // A pid that does not answer is force-killed only when a command-line query
-  // proves it is this channel's serve brain. A stale PID record or port scan can
-  // name a pid that Windows has since handed to another program, and that one
-  // must survive.
+  // A pid that does not answer is force-killed only when its identity read proves it
+  // is this channel's serve brain. A stale PID record or port scan can name a pid that
+  // Windows has since handed to another program, and that one must survive. A brain
+  // with no `--socket` is also left alone: nothing answered on the endpoint to prove
+  // which endpoint it serves.
   it.each([
-    { label: "this channel's serve brain", commandLine: channelBrainCommandLine, forced: [4242] },
-    { label: "another program", commandLine: "\"C:\\Windows\\System32\\notepad.exe\"", forced: [] },
-    { label: "a process whose command line cannot be read", commandLine: null, forced: [] },
-  ])("force-kills a pid that did not answer only when it is $label", async ({ commandLine, forced: expected }) => {
-    const forced: number[] = [];
-    await terminatePidGracefullyAsync(4242, {
+    {
+      label: "this channel's serve brain, naming the channel socket",
+      read: facts(`${channelBrainCommandLine} "--socket" "${channelPipe}"`),
+      outcome: "killed",
+      killed: [4242],
+    },
+    {
+      label: "this channel's serve brain with no --socket",
+      read: facts(channelBrainCommandLine),
+      outcome: "not-proven",
+      killed: [],
+    },
+    {
+      label: "this channel's CLI serving a different --socket",
+      read: facts(`${channelBrainCommandLine} "--socket" "${otherPipe}"`),
+      outcome: "not-proven",
+      killed: [],
+    },
+    {
+      label: "another program",
+      read: facts(`"C:\\Windows\\System32\\notepad.exe"`),
+      outcome: "not-proven",
+      killed: [],
+    },
+    {
+      label: "a process whose identity cannot be read",
+      read: "unreadable" as const,
+      outcome: "not-proven",
+      killed: [],
+    },
+    {
+      label: "a process that has already exited",
+      read: "gone" as const,
+      outcome: "stopped",
+      killed: [],
+    },
+  ])("force-kills a pid that did not answer only when it is $label", async ({ read, outcome, killed }) => {
+    const kills: number[] = [];
+    const result = await terminatePidGracefullyAsync(4242, {
       platform: "win32",
       runtimeSocketPath: channelPipe,
-      forceKill: (pid) => { forced.push(pid); },
       pidAlive: () => true,
-      isExpectedProcess: channelServeIdentity(channelServe, () => commandLine),
+      isExpectedProcess: channelServeIdentity(channelServe),
+      runWindowsPowerShell: processBoundary(read, kills),
       requestRuntimeShutdown: async () => ({ requested: false, reason: "wedged" }),
     });
-    expect(forced).toEqual(expected);
+    expect(result).toBe(outcome);
+    expect(kills).toEqual(killed);
   });
 
   it("never force-kills a pid that did not answer when no identity check is supplied", async () => {
-    const forced: number[] = [];
-    await terminatePidGracefullyAsync(4242, {
+    const kills: number[] = [];
+    const boundary = vi.fn(processBoundary(facts(channelBrainCommandLine), kills));
+    const result = await terminatePidGracefullyAsync(4242, {
       platform: "win32",
       runtimeSocketPath: channelPipe,
-      forceKill: (pid) => { forced.push(pid); },
       pidAlive: () => true,
+      runWindowsPowerShell: boundary,
       requestRuntimeShutdown: async () => ({ requested: false, reason: "wedged" }),
     });
-    expect(forced).toEqual([]);
+    expect(result).toBe("not-proven");
+    expect(kills).toEqual([]);
+    expect(boundary).not.toHaveBeenCalled();
   });
 
-  it("escalates when a brain accepts the request but does not leave in time", async () => {
-    const forced: number[] = [];
-    const readCommandLine = vi.fn(() => channelBrainCommandLine);
-    await terminatePidGracefullyAsync(4242, {
+  it("escalates after the grace window to a verified kill of the brain that accepted the request", async () => {
+    const kills: number[] = [];
+    const identity = vi.fn(channelServeIdentity(channelServe));
+    const result = await terminatePidGracefullyAsync(4242, {
       platform: "win32",
       graceTimeoutMs: 120,
       runtimeSocketPath: channelPipe,
-      forceKill: (pid) => { forced.push(pid); },
       pidAlive: () => true,
-      isExpectedProcess: channelServeIdentity(channelServe, readCommandLine),
+      isExpectedProcess: identity,
+      runWindowsPowerShell: processBoundary(facts(channelBrainCommandLine), kills),
       requestRuntimeShutdown: async () => ({ requested: true }),
     });
-    expect(forced).toEqual([4242]);
-    // The pid answered, so it IS the brain: the post-grace kill needs no query.
-    expect(readCommandLine).not.toHaveBeenCalled();
-  });
-
-  // The 5s default exists because this loop is the ONLY thing standing between
-  // a mid-flush brain and `taskkill /F`. It used to be exercised by nothing:
-  // `graceTimeoutMs` fed both the RPC request timeout and this deadline, so
-  // every test that wanted a fast handshake also collapsed the grace window.
-  it("gives an accepted shutdown the documented default grace budget", async () => {
-    vi.useFakeTimers();
-    try {
-      const forced: number[] = [];
-      const settled = terminatePidGracefullyAsync(4242, {
-        platform: "win32",
-        runtimeSocketPath: "\\\\.\\pipe\\ade-runtime-stable-0123456789abcdef",
-        forceKill: (pid) => { forced.push(pid); },
-        pidAlive: () => true,
-        requestRuntimeShutdown: async () => ({ requested: true }),
-      });
-      await vi.advanceTimersByTimeAsync(4_800);
-      expect(forced).toEqual([]);
-      await vi.advanceTimersByTimeAsync(400);
-      expect(forced).toEqual([4242]);
-      await settled;
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("does not let a short handshake budget shorten the grace window", async () => {
-    vi.useFakeTimers();
-    try {
-      const timeouts: number[] = [];
-      const forced: number[] = [];
-      const settled = terminatePidGracefullyAsync(4242, {
-        platform: "win32",
-        shutdownRequestTimeoutMs: 300,
-        runtimeSocketPath: "\\\\.\\pipe\\ade-runtime-stable-0123456789abcdef",
-        forceKill: (pid) => { forced.push(pid); },
-        pidAlive: () => true,
-        requestRuntimeShutdown: async ({ timeoutMs }) => {
-          timeouts.push(timeoutMs);
-          return { requested: true };
-        },
-      });
-      await vi.advanceTimersByTimeAsync(4_800);
-      expect(timeouts).toEqual([300]);
-      expect(forced).toEqual([]);
-      await vi.advanceTimersByTimeAsync(400);
-      expect(forced).toEqual([4242]);
-      await settled;
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("keeps the POSIX SIGTERM/SIGKILL sequence off win32", async () => {
-    const signals: Array<string | number> = [];
-    await terminatePidGracefullyAsync(4242, {
-      platform: "darwin",
-      graceTimeoutMs: 60,
-      kill: (_pid, signal) => { signals.push(signal); },
-      pidAlive: () => true,
-      requestRuntimeShutdown: async () => {
-        throw new Error("the POSIX path must never open an RPC channel");
-      },
-    });
-    expect(signals).toEqual(["SIGTERM", "SIGKILL"]);
+    expect(result).toBe("killed");
+    expect(kills).toEqual([4242]);
+    // It answered on this endpoint, so the escalation is judged as an answered pid.
+    expect(identity).toHaveBeenCalledWith(expect.objectContaining({ pid: 4242 }), true);
   });
 });
+
+// Real processes and the real PowerShell boundary. A pid can be handed to another
+// program between the identity read and the kill; the kill must then leave that
+// program alone. Only these rows exercise the handle-bound kill itself.
+describe.skipIf(process.platform !== "win32")("verified kill on win32", () => {
+  it.each([
+    {
+      label: "the identity it was read with",
+      change: (facts: WindowsProcessFacts): WindowsProcessFacts => facts,
+      killed: true,
+    },
+    {
+      label: "a different birth time, as after pid reuse",
+      change: (facts: WindowsProcessFacts): WindowsProcessFacts => ({ ...facts, startTime: "2001-01-01T00:00:00.0000000Z" }),
+      killed: false,
+    },
+    {
+      label: "a different command line",
+      change: (facts: WindowsProcessFacts): WindowsProcessFacts => ({ ...facts, commandLine: `${facts.commandLine} --changed` }),
+      killed: false,
+    },
+  ])("kills the stood-in process only while it still matches $label", async ({ change, killed }) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-verified-kill-"));
+    const script = path.join(dir, "cli.cjs");
+    fs.writeFileSync(script, "setInterval(() => {}, 1000);\n");
+    const child = spawn(process.execPath, [script, "serve"], { stdio: "ignore", windowsHide: true });
+    try {
+      const pid = child.pid!;
+      const read = await readWindowsProcessFacts(pid);
+      if (read.state !== "found") throw new Error(`the stand-in was not readable: ${read.state}`);
+      // Listen before the kill: the exit can land while the kill is still in flight.
+      const exited = killed ? once(child, "exit") : null;
+      const outcome = await killVerifiedWindowsProcess(change(read.facts));
+      if (killed) {
+        expect(outcome).toBe("killed");
+        await exited;
+        expect(isPidAlive(pid)).toBe(false);
+      } else {
+        expect(outcome).toBe("not-proven");
+        expect(isPidAlive(pid)).toBe(true);
+      }
+    } finally {
+      child.kill();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 
 describe("service manager status parsers", () => {
   it("detects running launchd services from launchctl print output", () => {

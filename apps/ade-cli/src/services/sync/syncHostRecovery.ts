@@ -1,6 +1,6 @@
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { terminatePidGracefullyAsync } from "../../serviceManager/common";
+import { terminatePidGracefullyAsync, type WindowsProcessFacts } from "../../serviceManager/common";
 import type {
   SyncHostConflictPublic,
   SyncHostOwnerKind,
@@ -18,9 +18,10 @@ import {
 } from "../../../../desktop/src/shared/types/syncHostRecovery";
 import {
   detectSyncHostSingletonConflict,
-  defaultProcessMatchesOwner,
   holdsSyncHostSingleton,
   isSameChannelSyncHostOwner,
+  ownerMatchesWindowsProcess,
+  processMatchesOwnerAsync,
   type SyncHostSingletonConflict,
   type SyncHostSingletonOwner,
 } from "./syncHostSingleton";
@@ -33,11 +34,11 @@ export type SyncHostRecoveryDeps = {
   detectConflict?: (options: { skipListenerScan: boolean }) => SyncHostSingletonConflict | null;
   holdsLease?: () => boolean;
   pidAlive?: (pid: number) => boolean;
-  processMatchesOwner?: (owner: SyncHostSingletonOwner) => boolean | null;
+  processMatchesOwner?: (owner: SyncHostSingletonOwner) => boolean | null | Promise<boolean | null>;
   terminatePid?: (
     pid: number,
     socketPath?: string | null,
-    isExpectedProcess?: () => boolean,
+    isExpectedProcess?: (facts: WindowsProcessFacts, answered: boolean) => boolean,
   ) => Promise<void>;
   startSyncHost?: () => Promise<void>;
   restartBrain?: () => Promise<void> | void;
@@ -384,10 +385,16 @@ async function runSyncHostRecovery(
   const lockOnlyOptions = { skipListenerScan: true };
   const holds = deps.holdsLease ?? holdsSyncHostSingleton;
   const pidAlive = deps.pidAlive ?? defaultPidAlive;
-  const processMatchesOwner = deps.processMatchesOwner
-    ?? ((owner) => defaultProcessMatchesOwner(owner));
+  // Asynchronous on win32: the owner probe runs on the brain's event loop.
+  const processMatchesOwner = deps.processMatchesOwner ?? processMatchesOwnerAsync;
   const terminatePid = deps.terminatePid ?? (async (pid, socketPath, isExpectedProcess) => {
-    await terminatePidGracefullyAsync(pid, { runtimeSocketPath: socketPath ?? null, isExpectedProcess });
+    const outcome = await terminatePidGracefullyAsync(pid, {
+      runtimeSocketPath: socketPath ?? null,
+      isExpectedProcess,
+    });
+    if (outcome !== "stopped" && outcome !== "killed") {
+      throw new Error(`The blocking runtime (pid ${pid}) could not be verified, so it was left running.`);
+    }
   });
   const sleep = deps.sleep ?? defaultSleep;
   const now = deps.now ?? Date.now;
@@ -457,7 +464,7 @@ async function runSyncHostRecovery(
     if (owner.pid === selfPid) {
       return { status: "skipped", detail: "Would have targeted this brain." };
     }
-    if (!pidAlive(owner.pid) || processMatchesOwner(owner) !== true) {
+    if (!pidAlive(owner.pid) || (await processMatchesOwner(owner)) !== true) {
       return { status: "skipped", detail: "Owner identity changed before stop." };
     }
     if (!publicConflictFromOwner(conflict, deps.env).recoveryEligible) {
@@ -470,7 +477,7 @@ async function runSyncHostRecovery(
     const rechecked = detect(scanOptions);
     if (
       !rechecked
-      || processMatchesOwner(rechecked.owner) !== true
+      || (await processMatchesOwner(rechecked.owner)) !== true
       || !sameOwner(owner, rechecked.owner)
     ) {
       return { status: "skipped", detail: "Owner identity changed before stop." };
@@ -479,12 +486,13 @@ async function runSyncHostRecovery(
       return { status: "skipped", detail: "Would have targeted this brain." };
     }
     try {
-      // The owner check is run again at kill time, not only above: the RPC
-      // round trip before a last-resort kill is long enough for the pid to change hands.
+      // The owner is identified again at kill time, not only above: the RPC round
+      // trip before a last-resort kill is long enough for the pid to change hands.
+      // The kill then takes only the process that this read describes.
       await terminatePid(
         rechecked.owner.pid,
         rechecked.owner.socketPath,
-        () => processMatchesOwner(rechecked.owner) === true,
+        (facts) => ownerMatchesWindowsProcess(rechecked.owner, facts),
       );
       return { status: "done" };
     } catch (error) {

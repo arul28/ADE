@@ -14,20 +14,26 @@ import {
   channelServeIdentity,
   cmdQuote,
   isPidAlive,
+  isStaleChannelServeCommandLine,
+  killIdentifiedWindowsProcess,
   listStaleChannelServePids,
   powerShellSingleQuotedLiteral,
-  readWindowsPidCommandLine,
+  type PidStopOutcome,
+  readWindowsProcessFacts,
   renderWindowsCommand,
   resolveAdeServeCliScriptPath,
   resolveAdeServeCommand,
   resolveRuntimeServiceName,
   RUNTIME_SERVICE_YOUNG_BRAIN_MS,
+  sameWindowsProcess,
   serviceManagerResultText,
   WINDOWS_HANDOVER_TIMEOUT_MS,
   terminatePidGracefullyAsync,
   type ServiceManagerResult,
   type ServiceManagerSpawnSync,
   type ServiceManagerStatusResult,
+  type WindowsPowerShell,
+  type WindowsProcessFacts,
 } from "./common";
 import { resolveMachineAdeDir, resolveMachineAdeLayout } from "../services/projects/machineLayout";
 import { BRAIN_HEARTBEAT_FILE } from "../services/runtime/brainHeartbeat";
@@ -83,10 +89,6 @@ export function windowsRegCommand(): string {
 
 export function windowsSchtasksCommand(): string {
   return trustedTool("schtasks");
-}
-
-export function windowsTaskkillCommand(): string {
-  return trustedTool("taskkill");
 }
 
 /**
@@ -812,37 +814,75 @@ function windowsLauncherCommand(launcherPath: string): string {
  * window, and forces only what is still standing. Crucially it verifies the pid
  * over `runtime/info` before asking anything to exit, so a recycled pid from a
  * stale supervisor record cannot talk down an unrelated brain. The last-resort
- * `taskkill` is gated the same way: it runs only when a command-line query shows
- * this channel's `serve` brain on that pid, so a pid a stale record names but
- * Windows has since reused is left alone. This wrapper supplies the Windows tools:
- * `taskkill` through the same injected `spawnSync` and memoized trusted-tool
- * lookup the rest of this file uses, so tests observe the escalation instead of
- * really killing a pid.
+ * kill is a verified kill: it reads the process, lets `isExpectedProcess` decide,
+ * and kills only that exact process through a handle, so a pid reused in between
+ * is left alone. The PowerShell calls go through this file's injected `spawnSync`,
+ * so tests observe the escalation instead of really killing a pid.
  *
  * The supervisor must already be gone when this runs, or it would simply
- * restart the brain we just stopped.
+ * restart the brain we just stopped. The caller decides `isExpectedProcess` before
+ * that stop, from the facts it read while the supervisor was still alive.
  */
 async function stopWindowsBrainGracefully(
   run: ServiceManagerSpawnSync,
-  args: { socketPath: string; runtimePid: number; command: AdeServiceCommand },
-): Promise<void> {
-  await terminatePidGracefullyAsync(args.runtimePid, {
+  args: {
+    socketPath: string;
+    runtimePid: number;
+    isExpectedProcess: (facts: WindowsProcessFacts, answered: boolean) => boolean;
+  },
+): Promise<PidStopOutcome> {
+  return terminatePidGracefullyAsync(args.runtimePid, {
     platform: "win32",
     runtimeSocketPath: args.socketPath,
-    isExpectedProcess: channelServeIdentity(
-      {
-        cliScriptPath: resolveAdeServeCliScriptPath(args.command),
-        primarySocketPath: args.socketPath,
-      },
-      (pid) => readWindowsPidCommandLine(pid, run),
-    ),
-    forceKill: (pid) => {
-      run(windowsTaskkillCommand(), ["/PID", String(pid), "/F"], {
-        encoding: "utf8",
-        windowsHide: true,
-      });
-    },
+    runWindowsPowerShell: windowsPowerShellRunner(run),
+    isExpectedProcess: args.isExpectedProcess,
   });
+}
+
+/** The PowerShell boundary for identity reads and verified kills, through this file's injected `spawnSync`. */
+function windowsPowerShellRunner(run: ServiceManagerSpawnSync): WindowsPowerShell {
+  return (args) => run(windowsPowerShellCommand(), args, {
+    encoding: "utf8",
+    timeout: 10_000,
+    windowsHide: true,
+  });
+}
+
+/**
+ * Whether `facts` is this launcher's supervisor: a powershell running the
+ * launcher script, the same identity `queryWindowsSupervisor` checks.
+ */
+function isLauncherSupervisor(facts: WindowsProcessFacts, launcherPath: string): boolean {
+  const executable = facts.executablePath ? path.win32.basename(facts.executablePath).toLowerCase() : "";
+  return /^powershell(\.exe)?$/.test(executable)
+    && facts.commandLine.toLowerCase().includes(launcherPath.toLowerCase());
+}
+
+/**
+ * Reads the brain the supervisor recorded, while that supervisor still runs, and
+ * proves it. The proof is that its command line is this channel's serve brain and
+ * its parent is the supervisor. A supervisor that is gone cannot vouch for the
+ * parent afterwards, so this runs before anything is stopped. `facts` is null when
+ * the recorded brain is already gone.
+ */
+async function readRecordedBrain(
+  run: ServiceManagerSpawnSync,
+  args: { runtimePid: number; supervisorPid: number; command: AdeServiceCommand; socketPath: string },
+): Promise<{ ok: true; facts: WindowsProcessFacts | null } | { ok: false; message: string }> {
+  const read = await readWindowsProcessFacts(args.runtimePid, windowsPowerShellRunner(run));
+  if (read.state === "gone") return { ok: true, facts: null };
+  const unverified = {
+    ok: false as const,
+    message: `Could not verify the brain process ${args.runtimePid}; it was left running. Nothing was stopped.`,
+  };
+  if (read.state === "unreadable") return unverified;
+  const match = {
+    cliScriptPath: resolveAdeServeCliScriptPath(args.command),
+    primarySocketPath: args.socketPath,
+  };
+  if (!isStaleChannelServeCommandLine(read.facts.commandLine, match)) return unverified;
+  if (read.facts.parentPid !== args.supervisorPid) return unverified;
+  return { ok: true, facts: read.facts };
 }
 
 async function removeWindowsRunEntryIfPresent(
@@ -877,26 +917,44 @@ async function removeWindowsRunEntryIfPresent(
     // flush -- and only then talk the brain down. Without this ordering the
     // supervisor would relaunch the brain the moment it exited.
     const runtimePid = brain ? supervisor.record?.runtimePid ?? null : null;
-    const stop = run(
-      windowsTaskkillCommand(),
-      runtimePid == null
-        ? ["/PID", String(supervisor.pid), "/T", "/F"]
-        : ["/PID", String(supervisor.pid), "/F"],
-      { encoding: "utf8", windowsHide: true },
+    // Identify the brain before anything is stopped. Its proof names this
+    // supervisor as the parent, which only holds while the supervisor still runs.
+    const recorded = runtimePid != null && brain
+      ? await readRecordedBrain(run, {
+        runtimePid,
+        supervisorPid: supervisor.pid,
+        command: brain.command,
+        socketPath: brain.socketPath,
+      })
+      : { ok: true as const, facts: null };
+    if (!recorded.ok) return { ok: false, message: recorded.message };
+    // Killed by its verified handle and nothing else: never a bare pid, and never a
+    // tree. With no recorded brain there is no brain of this channel left to stop,
+    // because the supervisor records every brain it starts.
+    const supervisorOutcome = await killIdentifiedWindowsProcess(
+      supervisor.pid,
+      (facts) => isLauncherSupervisor(facts, launcherPath),
+      windowsPowerShellRunner(run),
     );
-    if (runtimePid != null && brain && isPidAlive(runtimePid)) {
-      await stopWindowsBrainGracefully(run, {
+    if (supervisorOutcome === "not-proven" || supervisorOutcome === "failed") {
+      return {
+        ok: false,
+        message: `Could not verify the ADE startup process ${supervisor.pid}; it was left running. Nothing was stopped.`,
+      };
+    }
+    const brainFacts = recorded.facts;
+    if (brain && runtimePid != null && brainFacts) {
+      // Only this exact process, as read above, may be stopped: a pid reused since
+      // then is a different process and is left alone.
+      const outcome = await stopWindowsBrainGracefully(run, {
         socketPath: brain.socketPath,
         runtimePid,
-        command: brain.command,
+        isExpectedProcess: (live) => sameWindowsProcess(live, brainFacts),
       });
-    }
-    if (stop.status !== 0) {
-      const recheck = queryWindowsSupervisor({ spawnSync: run, launcherPath, pidPath });
-      if (recheck.running || recheck.error) {
+      if (outcome === "not-proven" || outcome === "failed") {
         return {
           ok: false,
-          message: `Unable to stop the ADE startup process: ${serviceManagerResultText(stop) || recheck.error || "taskkill failed."}`,
+          message: `Could not verify the brain process ${runtimePid}; it was left running.`,
         };
       }
     }
@@ -1347,8 +1405,21 @@ async function installWindowsServiceImpl(
     cliScriptPath: resolveAdeServeCliScriptPath(serviceCommand),
     primarySocketPath: socketPath,
   }, "win32");
+  // A stale brain is force-killed only once it is proven to be this channel's: it
+  // must name the channel socket itself, or answer on that endpoint. Any other
+  // stale candidate is left running and reported, not claimed as taken over.
+  const staleMatch = {
+    cliScriptPath: resolveAdeServeCliScriptPath(serviceCommand),
+    primarySocketPath: socketPath,
+  };
+  const unverifiedStalePids: number[] = [];
   for (const stalePid of staleScan.ok ? staleScan.pids : []) {
-    await stopWindowsBrainGracefully(run, { socketPath, runtimePid: stalePid, command: serviceCommand });
+    const outcome = await stopWindowsBrainGracefully(run, {
+      socketPath,
+      runtimePid: stalePid,
+      isExpectedProcess: channelServeIdentity(staleMatch),
+    });
+    if (outcome === "not-proven" || outcome === "failed") unverifiedStalePids.push(stalePid);
   }
   const command = windowsLauncherCommand(launcherPath);
   const registration = run(
@@ -1428,15 +1499,20 @@ async function installWindowsServiceImpl(
   // route reported success: a "successful" in-session launch is precisely the
   // case that used to be reported as a healthy always-on brain.
   const sessionBound = readPidRecord(pidPath)?.sessionBound === true;
+  // A stale candidate that could not be proven is still running. Say so, rather
+  // than claim the replacement took over from a clean slate.
+  const staleWarning = unverifiedStalePids.length > 0
+    ? ` Left running ${unverifiedStalePids.length === 1 ? "1 ADE process" : `${unverifiedStalePids.length} ADE processes`} that could not be verified as this channel's brain (pid ${unverifiedStalePids.join(", ")}); they were not stopped.`
+    : "";
   return {
     ok: true,
     restarted: true,
     serviceName,
     action: "install",
     path: taskName,
-    message: sessionBound
+    message: (sessionBound
       ? `ADE per-user startup entry installed and the channel brain is ready, but it is bound to this session. ${WINDOWS_SESSION_BOUND_WARNING}`
-      : "ADE per-user startup entry installed and channel brain is ready.",
+      : "ADE per-user startup entry installed and channel brain is ready.") + staleWarning,
   };
 }
 

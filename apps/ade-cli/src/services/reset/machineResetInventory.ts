@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { resolveTrustedWindowsTool } from "../../lib/trustedWindowsTools";
+import { killIdentifiedWindowsProcess } from "../../serviceManager/common";
 import { backgroundItemStatusCommand, parseBackgroundItemStatus } from "../../serviceManager/installLaunchd";
 import {
   laneHasWork,
@@ -33,7 +34,7 @@ export type MachineResetDeps = {
   selfPid: number;
   run: (command: string, args: string[], options?: { cwd?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv }) => RunResult;
   listProcesses: () => ProcessEntry[];
-  kill: (pid: number, signal: NodeJS.Signals) => void;
+  kill: (pid: number, signal: NodeJS.Signals) => void | Promise<void>;
   pidAlive: (pid: number) => boolean;
   sleep: (ms: number) => Promise<void>;
   now: () => Date;
@@ -70,9 +71,12 @@ export function defaultMachineResetDeps(overrides: Partial<MachineResetDeps> = {
       };
     },
     listProcesses: () => listProcessesDefault(platform),
-    kill: (pid, signal) => {
+    kill: async (pid, signal) => {
       if (platform === "win32") {
-        spawnSync(resolveTrustedWindowsTool("taskkill"), ["/PID", String(pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
+        // Read again at kill time, through the handle that is killed: a pid the
+        // inventory listed may have been handed to another program since. Only a
+        // process that is still an ADE process by the inventory's own predicate dies.
+        await killIdentifiedWindowsProcess(pid, (facts) => isAdeProcessCommand(facts.commandLine));
         return;
       }
       process.kill(pid, signal);
