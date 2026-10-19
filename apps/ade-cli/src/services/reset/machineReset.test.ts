@@ -1,8 +1,10 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { isPidAlive } from "../../serviceManager/common";
 import {
   defaultMachineResetDeps,
   executeMachineReset,
@@ -401,6 +403,34 @@ describe("isAdeProcessCommand", () => {
     ["/Applications/MyADE.app/Contents/MacOS/MyADE", false],
   ])("%s -> %s", (command, expected) => {
     expect(isAdeProcessCommand(command)).toBe(expected);
+  });
+});
+
+// The reset lists a pid, then kills it later. On win32 the kill re-reads the pid
+// through a process handle and kills it only while it is still an ADE process. Real
+// stand-ins: an ADE CLI, and an unrelated program that happens to be running.
+// WINDOWS-GATE: real Windows processes and PowerShell; verified green on a native Windows host. The rest of this file is not yet run on the windows-latest job (git identity on the runner).
+describe.skipIf(process.platform !== "win32")("machine reset kill on win32", () => {
+  it.each([
+    { label: "an ADE process", folder: "ade-cli", killed: true },
+    { label: "an unrelated program", folder: "unrelated", killed: false },
+  ])("kills a listed pid only while it is $label", async ({ folder, killed }) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-reset-kill-"));
+    const script = path.join(dir, folder, "cli.cjs");
+    fs.mkdirSync(path.dirname(script), { recursive: true });
+    fs.writeFileSync(script, "setInterval(() => {}, 1000);\n");
+    const child = spawn(process.execPath, [script], { stdio: "ignore", windowsHide: true });
+    try {
+      const pid = child.pid!;
+      // Listen before the kill: the exit can land while the kill is still in flight.
+      const exited = killed ? once(child, "exit") : null;
+      await defaultMachineResetDeps({ platform: "win32" }).kill(pid, "SIGTERM");
+      if (exited) await exited;
+      expect(isPidAlive(pid)).toBe(!killed);
+    } finally {
+      child.kill();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
