@@ -1,6 +1,6 @@
 # Windows support and troubleshooting
 
-ADE supports the packaged Windows 10/11 x64 desktop, shipped as a public beta.
+ADE supports the packaged Windows 10/11 x64 desktop.
 Windows ARM64 and iOS Simulator remain out of scope. App Control over CDP, the
 built-in Browser, proof-file ingestion, phone pairing, the local Windows brain,
 Windows as an SSH-bootstrap runtime target, and a per-lane Windows screen

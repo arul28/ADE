@@ -449,12 +449,6 @@ Then:
 - Close every page that is not the app (`curl -s http://127.0.0.1:9222/json/list`,
   `curl -s http://127.0.0.1:9222/json/close/<id>`). The dev app opens a
   DevTools window on Windows.
-- Dismiss the **ADE on Windows is in beta** dialog
-  (`node scripts/perf/ui/cdp.mjs eval '[...document.querySelectorAll("button")].find(b=>b.textContent.trim()==="Dismiss")?.click()'`).
-  It comes back after every renderer reload, including the one
-  `render-count.mjs ... reload` does, and its blurred scrim covers the app: with
-  it open the chat switch's first frame was 139-179 ms instead of 88 ms, and
-  `press-to-paint.mjs` misses every press.
 - `render-count.mjs ... reload` leaves its render hook in the page, which
   inflates the heap (255 MB) and the renderer's memory. Reload the page from a
   fresh CDP session (`cdp.mjs eval 'location.reload()'`) before measuring

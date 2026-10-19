@@ -13,7 +13,7 @@ import {
   type RepairStepResult,
 } from "../../../shared/types/recovery";
 import { useAppStore } from "../../state/appStore";
-import { isWindowsPlatform } from "../../lib/windowsBetaNotice";
+import { isWindowsPlatform } from "../../lib/platform";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { confirmDialog } from "../ui/dialog";
 import { WorkToolPickerBackdrop } from "../terminals/WorkToolPickerBackdrop";
