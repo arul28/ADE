@@ -1,7 +1,6 @@
 import { parseForeignCallerSessionId } from "../../../shared/runtimeClientNames";
 import { externalChatContext } from "../chat/externalChats";
 import { randomUUID } from "node:crypto";
-import { errno as getErrno, load as loadFfiLibrary, os as ffiOs } from "koffi";
 import { execFile as execFileCallback, spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -199,38 +198,6 @@ const SCREENSHOT_CACHE_SEGMENTS = [".ade", "cache", "ios-simulator", "screenshot
 const SCREENSHOT_KEEP_COUNT = 20;
 /** Where a `frame` grab lands when the caller named no path. */
 const FRAME_CACHE_SEGMENTS = [".ade", "cache", "ios-simulator", "frames"] as const;
-
-let macSystemLibrary: ReturnType<typeof loadFfiLibrary> | null = null;
-
-function openFileAtDirectory(directoryFd: number, name: string, flags: number, mode: number): number {
-  macSystemLibrary ??= loadFfiLibrary("/usr/lib/libSystem.B.dylib");
-  const openAt = macSystemLibrary.func("int openat(int dirfd, const char *pathname, int flags, ...)");
-  const fd = openAt(directoryFd, name, flags, "int", mode) as number;
-  if (fd >= 0) return fd;
-
-  const errorNumber = getErrno();
-  const code = Object.entries(ffiOs.errno).find(([, value]) => value === errorNumber)?.[0];
-  const error = new Error(`${code ?? "openat failed"}: ${name}`) as NodeJS.ErrnoException;
-  error.errno = errorNumber;
-  error.code = code;
-  error.syscall = "openat";
-  error.path = name;
-  throw error;
-}
-
-function closeFileDescriptor(fd: number): void {
-  macSystemLibrary ??= loadFfiLibrary("/usr/lib/libSystem.B.dylib");
-  const close = macSystemLibrary.func("int close(int fd)");
-  if ((close(fd) as number) !== 0) {
-    const errorNumber = getErrno();
-    const code = Object.entries(ffiOs.errno).find(([, value]) => value === errorNumber)?.[0];
-    const error = new Error(`${code ?? "close failed"}: ${fd}`) as NodeJS.ErrnoException;
-    error.errno = errorNumber;
-    error.code = code;
-    error.syscall = "close";
-    throw error;
-  }
-}
 
 /**
  * Helper `orientation` values. These match `HIDInjector`'s
@@ -4677,33 +4644,15 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       if (isPathEscapeError(error)) throw new IosSimulatorOutPathOutsideRootError(filePath, root);
       throw error;
     }
-    // Keep the validated parent directory open across the write. Resolving
-    // the absolute path again here would let a replaced parent symlink redirect
-    // the write after the containment check above.
-    const parentHandle = await fs.promises.open(
-      path.dirname(filePath),
-      fs.constants.O_RDONLY | (fs.constants.O_DIRECTORY ?? 0) | fs.constants.O_NOFOLLOW,
+    const handle = await fs.promises.open(
+      filePath,
+      fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW,
+      0o644,
     );
     try {
-      const openedParent = await parentHandle.stat();
-      const resolvedParent = resolvePathWithinRoot(root, path.dirname(filePath), { allowMissing: false });
-      const currentParent = await fs.promises.stat(resolvedParent);
-      if (openedParent.dev !== currentParent.dev || openedParent.ino !== currentParent.ino) {
-        throw new IosSimulatorOutPathOutsideRootError(filePath, root);
-      }
-      const fd = openFileAtDirectory(
-        parentHandle.fd,
-        path.basename(filePath),
-        fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW,
-        0o644,
-      );
-      try {
-        fs.writeFileSync(fd, buffer);
-      } finally {
-        closeFileDescriptor(fd);
-      }
+      await handle.writeFile(buffer);
     } finally {
-      await parentHandle.close();
+      await handle.close();
     }
     const dimensions = pngDimensions(buffer) ?? { width: null, height: null };
     if (!requestedOutPath) void pruneScreenshotCache(cacheDirectory);
