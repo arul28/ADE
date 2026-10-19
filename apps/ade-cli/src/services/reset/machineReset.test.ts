@@ -409,6 +409,7 @@ describe("isAdeProcessCommand", () => {
 // The reset lists a pid, then kills it later. On win32 the kill re-reads the pid
 // through a process handle and kills it only while it is still an ADE process. Real
 // stand-ins: an ADE CLI, and an unrelated program that happens to be running.
+// WINDOWS-GATE: real Windows processes and PowerShell; verified green on a native Windows host. The rest of this file is not yet run on the windows-latest job (git identity on the runner).
 describe.skipIf(process.platform !== "win32")("machine reset kill on win32", () => {
   it.each([
     { label: "an ADE process", folder: "ade-cli", killed: true },
