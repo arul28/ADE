@@ -22,19 +22,26 @@ export function commandExists(command: string): boolean {
 
 const COMMAND_EXISTS_CACHE_MS = 60_000;
 const COMMAND_EXISTS_PROBE_TIMEOUT_MS = 10_000;
+/**
+ * The last answer for each command. `checkedAt` is when the last probe that
+ * finished for it returned, or 0 while none has. A probe that fails leaves both
+ * fields as they were, so the next call past the TTL probes again at once.
+ */
 const commandExistsCache = new Map<string, { available: boolean; checkedAt: number }>();
-const commandExistsRefreshing = new Set<string>();
+/** The probe in flight for each command. A caller that asks again joins it. */
+const commandExistsRefreshing = new Map<string, Promise<void>>();
 
 /**
  * `commandExists`, run off the event loop. Resolves `null` when the probe could
  * not run or timed out: that says nothing about the command, so the caller keeps
- * its last answer instead of reading a hung probe as "not installed".
+ * its last answer instead of reading a hung probe as "not installed". The probe
+ * starts before this function returns, so a caller can count it at once.
  */
-function commandExistsOffThread(command: string): Promise<boolean | null> {
+async function commandExistsOffThread(command: string): Promise<boolean | null> {
   const { file, args } = commandExistsProbe(command);
   if (offThreadSpawnEnabled()) {
-    return execFileOffThread(file, args, { timeoutMs: COMMAND_EXISTS_PROBE_TIMEOUT_MS })
-      .then((result) => (result.exitCode === null ? null : result.exitCode === 0));
+    const result = await execFileOffThread(file, args, { timeoutMs: COMMAND_EXISTS_PROBE_TIMEOUT_MS });
+    return result.exitCode === null ? null : result.exitCode === 0;
   }
   return new Promise((resolve) => {
     execFile(file, args, { timeout: COMMAND_EXISTS_PROBE_TIMEOUT_MS, windowsHide: true }, (error) => {
@@ -44,20 +51,35 @@ function commandExistsOffThread(command: string): Promise<boolean | null> {
   });
 }
 
-/** One background probe per command at a time; its answer lands in the cache when it finishes. */
-function refreshCommandExists(command: string): void {
-  if (commandExistsRefreshing.has(command)) return;
-  commandExistsRefreshing.add(command);
-  void commandExistsOffThread(command)
+/**
+ * Starts a probe for `command`, unless one is already in flight. The returned
+ * promise settles once the cache holds the probe's answer.
+ */
+function refreshCommandExists(command: string): Promise<void> {
+  const inFlight = commandExistsRefreshing.get(command);
+  if (inFlight) return inFlight;
+  const refresh = commandExistsOffThread(command)
     .catch(() => null)
     .then((available) => {
-      // A probe that could not run keeps the last answer, and retries after the next TTL.
-      const last = commandExistsCache.get(command)?.available ?? false;
-      commandExistsCache.set(command, { available: available ?? last, checkedAt: Date.now() });
+      if (available !== null) {
+        commandExistsCache.set(command, { available, checkedAt: Date.now() });
+      } else if (!commandExistsCache.has(command)) {
+        // Never answered: report "not installed", as a failed `commandExists` does,
+        // but leave checkedAt at 0 so the next call probes again.
+        commandExistsCache.set(command, { available: false, checkedAt: 0 });
+      }
     })
     .finally(() => {
       commandExistsRefreshing.delete(command);
     });
+  commandExistsRefreshing.set(command, refresh);
+  return refresh;
+}
+
+/** Starts a background probe when the cached answer for `command` is past its TTL. */
+function refreshIfStale(command: string): void {
+  const cached = commandExistsCache.get(command);
+  if (cached && Date.now() - cached.checkedAt >= COMMAND_EXISTS_CACHE_MS) void refreshCommandExists(command);
 }
 
 /**
@@ -69,15 +91,18 @@ function refreshCommandExists(command: string): void {
  * A cached answer is returned at once, whatever its age. Once it is older than
  * the TTL, the call starts a background probe; the first call made after that
  * probe finishes returns the new answer. A command with no answer yet is probed
- * synchronously, once per process, unless {@link prewarmCommandExists} already
- * started it.
+ * synchronously, once per process, unless a probe for it is already running
+ * (see {@link prewarmCommandExists}). In that case there is no answer to give
+ * and a second probe would block the loop, so this returns `false` and caches
+ * nothing. {@link settleCommandExists} lets an async caller wait for the answer.
  */
 export function commandExistsCached(command: string): boolean {
   const cached = commandExistsCache.get(command);
   if (cached) {
-    if (Date.now() - cached.checkedAt >= COMMAND_EXISTS_CACHE_MS) refreshCommandExists(command);
+    refreshIfStale(command);
     return cached.available;
   }
+  if (commandExistsRefreshing.has(command)) return false;
   const available = commandExists(command);
   commandExistsCache.set(command, { available, checkedAt: Date.now() });
   return available;
@@ -86,8 +111,27 @@ export function commandExistsCached(command: string): boolean {
 /** Starts the first probe of each command in the background, so its first `commandExistsCached` call does not block. */
 export function prewarmCommandExists(commands: readonly string[]): void {
   for (const command of commands) {
-    if (!commandExistsCache.has(command)) refreshCommandExists(command);
+    if (!commandExistsCache.has(command)) void refreshCommandExists(command);
   }
+}
+
+/**
+ * Makes sure each command has an answer in the cache, so the next
+ * `commandExistsCached` call for it reads the cache and does not probe. A command
+ * that already has an answer is not waited for: a stale one refreshes in the
+ * background, as `commandExistsCached` does. Only a command with no answer yet
+ * waits, for its first probe, and joins a probe that is already running.
+ *
+ * Returns `null` when nothing had to wait, so a caller that awaits only a
+ * non-null result keeps its synchronous path while the cache is warm.
+ */
+export function settleCommandExists(commands: readonly string[]): Promise<void> | null {
+  const firstProbes: Promise<void>[] = [];
+  for (const command of commands) {
+    if (commandExistsCache.has(command)) refreshIfStale(command);
+    else firstProbes.push(refreshCommandExists(command));
+  }
+  return firstProbes.length > 0 ? Promise.all(firstProbes).then(() => undefined) : null;
 }
 
 export function isCursorAdminApiKey(value: string | null | undefined): boolean {
