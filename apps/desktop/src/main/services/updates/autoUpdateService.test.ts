@@ -3132,6 +3132,110 @@ describe("createAutoUpdateService", () => {
 
     service.dispose();
   });
+
+  describe("a download that stops receiving data", () => {
+    const STALLED = {
+      version: "1.2.3",
+      files: [{ url: "ADE-1.2.3-mac.zip", size: 100 * 1024 * 1024, sha512: "stalled" }],
+    };
+    const NEWER = {
+      version: "1.2.4",
+      files: [{ url: "ADE-1.2.4-mac.zip", size: 100 * 1024 * 1024, sha512: "newer" }],
+    };
+
+    function makeDownloadingService() {
+      vi.useFakeTimers();
+      const updater = Object.assign(new FakeAutoUpdater(), {
+        downloadUpdate: vi.fn<[unknown?], Promise<unknown>>(async () => undefined),
+      });
+      const service = createAutoUpdateService({
+        logger: makeLogger(),
+        currentVersion: "1.2.2",
+        globalStatePath: makeStatePath(),
+        updaterCacheDir: makeEmptyUpdaterCacheDir(),
+        getDiskSpace: plentyOfDisk,
+        autoCheckEnabled: false,
+        updater,
+      });
+      const token = new CancellationToken();
+      updater.checkForUpdates.mockImplementationOnce(async () => {
+        updater.emit("checking-for-update");
+        updater.emit("update-available", STALLED);
+        return { updateInfo: STALLED, cancellationToken: token };
+      });
+      // Like electron-updater: the download settles only when its bytes end
+      // or its token is cancelled, and a cancel emits `update-cancelled`.
+      let finishDownload: () => void = () => {};
+      updater.downloadUpdate.mockImplementationOnce((passedToken) => {
+        // The service passes electron-updater's own token class, as the real updater requires.
+        const active = (passedToken as CancellationToken | undefined) ?? new CancellationToken();
+        return active.createPromise<void>((resolve) => {
+          finishDownload = () => {
+            updater.emit("update-downloaded", STALLED);
+            resolve();
+          };
+        }).catch((error: unknown) => {
+          updater.emit("update-cancelled", STALLED);
+          throw error;
+        });
+      });
+      const progress = (transferred: number) => updater.emit("download-progress", {
+        percent: transferred,
+        bytesPerSecond: 1,
+        transferred,
+        total: 100,
+      });
+      return { updater, service, token, progress, finish: () => finishDownload() };
+    }
+
+    it("cancels it after two silent minutes, and the next check fetches the newest release", async () => {
+      const { updater, service, token, progress } = makeDownloadingService();
+
+      const check = service.checkForUpdates();
+      await vi.advanceTimersByTimeAsync(0);
+      progress(6);
+      await vi.advanceTimersByTimeAsync(3 * 60_000);
+
+      expect(token.cancelled).toBe(true);
+      expect(service.getSnapshot()).toMatchObject({
+        status: "error",
+        version: "1.2.3",
+        errorDetails: { kind: "network", phase: "download", preservesDownload: false },
+      });
+      await check;
+
+      updater.checkForUpdates.mockImplementationOnce(async () => {
+        updater.emit("checking-for-update");
+        updater.emit("update-available", NEWER);
+        return { updateInfo: NEWER, cancellationToken: new CancellationToken() };
+      });
+      updater.downloadUpdate.mockImplementationOnce(async () => {
+        updater.emit("update-downloaded", NEWER);
+      });
+      await service.checkForUpdates();
+
+      expect(service.getSnapshot()).toMatchObject({ status: "ready", version: "1.2.4", error: null });
+      service.dispose();
+    });
+
+    it("leaves a slow download alone while bytes keep arriving", async () => {
+      const { service, token, progress, finish } = makeDownloadingService();
+
+      const check = service.checkForUpdates();
+      await vi.advanceTimersByTimeAsync(0);
+      for (let transferred = 10; transferred < 100; transferred += 10) {
+        progress(transferred);
+        await vi.advanceTimersByTimeAsync(90_000);
+      }
+
+      expect(token.cancelled).toBe(false);
+      expect(service.getSnapshot()).toMatchObject({ status: "downloading", version: "1.2.3" });
+      finish();
+      await check;
+      expect(service.getSnapshot()).toMatchObject({ status: "ready", version: "1.2.3", error: null });
+      service.dispose();
+    });
+  });
 });
 
 describe("the installed notice and the resume it still owes", () => {

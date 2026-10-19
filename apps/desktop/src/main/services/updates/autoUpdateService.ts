@@ -30,6 +30,7 @@ import {
   MAC_UPDATE_ARTIFACT_TOO_LARGE_MESSAGE,
   readDiskSpace,
   updateDownloadBytes,
+  updaterPendingBytes,
   type DiskSpaceInfo,
 } from "./autoUpdateErrors";
 import {
@@ -48,8 +49,16 @@ import {
   replaceUpdaterNetSession,
   switchUpdaterToNodeTransport,
 } from "./updaterNetRecovery";
+import { startDownloadStallWatchdog, type DownloadStallWatchdog } from "./downloadStallWatchdog";
 
 const DEFAULT_INSTALL_WATCHDOG_MS = 30_000;
+// A download that received nothing for this long is cancelled, and the next
+// check starts over (see downloadStallWatchdog.ts). Left alone, it would stay
+// pending and every later check would wait on it until ADE restarts.
+const DEFAULT_DOWNLOAD_STALL_MS = 2 * 60_000;
+const DEFAULT_DOWNLOAD_STALL_POLL_MS = 15_000;
+const DOWNLOAD_STALLED_MESSAGE =
+  "The update download stopped receiving data, so ADE cancelled it. ADE tries again on the next check.";
 // Warn only, never fatal. Squirrel.Mac needs roughly this long just to expand
 // and code-sign verify the archive, so killing here loses a coin flip against a
 // healthy install — which is exactly the bug this replaced.
@@ -82,17 +91,29 @@ const UPDATE_TRANSACTION_ANALYTICS_DEDUPE_MS = 60 * 60_000;
 const UPDATE_TRANSACTION_ANALYTICS_STEPS = new Set<UpdateTransactionStepId>([
   "service", "restart", "health",
 ]);
+/**
+ * builder-util-runtime's `CancellationToken`. ADE never constructs one from its
+ * own import: electron-updater tells a cancel apart from a failure with
+ * `instanceof`, so the token has to come from electron-updater's copy, which
+ * the check result carries.
+ */
+type CancellationTokenLike = {
+  readonly cancelled: boolean;
+  cancel: () => void;
+};
+
 type AutoUpdaterLike = {
   logger: typeof autoUpdater.logger;
   autoDownload: boolean;
   autoInstallOnAppQuit: boolean;
+  disableDifferentialDownload?: boolean;
   setFeedURL?: (
     options:
       | { provider: "github"; owner: string; repo: string }
       | { provider: "generic"; url: string },
   ) => void;
   checkForUpdates: () => Promise<unknown>;
-  downloadUpdate?: () => Promise<unknown>;
+  downloadUpdate?: (cancellationToken?: CancellationTokenLike) => Promise<unknown>;
   quitAndInstall: (isSilent?: boolean, isForceRunAfter?: boolean) => void;
   quitAndInstallCalled?: boolean;
   on: (event: string, listener: (...args: any[]) => void) => unknown;
@@ -165,6 +186,8 @@ type CreateAutoUpdateServiceArgs = {
   getDiskSpace?: (targetPath: string) => DiskSpaceInfo;
   platform?: NodeJS.Platform;
   installWatchdogMs?: number;
+  downloadStallMs?: number;
+  downloadStallPollMs?: number;
   quitStagingSlowWarnMs?: number;
   quitHardDeadlineMs?: number;
   quitPostStagingDeadlineMs?: number;
@@ -180,7 +203,15 @@ type CreateAutoUpdateServiceArgs = {
 type UpdateCheckResultLike = {
   downloadPromise?: Promise<unknown> | null;
   updateInfo?: UpdateInfo;
+  cancellationToken?: unknown;
 };
+
+function isCancellationTokenLike(value: unknown): value is CancellationTokenLike {
+  return Boolean(value)
+    && typeof value === "object"
+    && typeof (value as { cancel?: unknown }).cancel === "function"
+    && typeof (value as { cancelled?: unknown }).cancelled === "boolean";
+}
 
 type ProgressInfo = {
   percent: number;
@@ -500,6 +531,8 @@ export function createAutoUpdateService({
   getDiskSpace = readDiskSpace,
   platform = process.platform,
   installWatchdogMs = DEFAULT_INSTALL_WATCHDOG_MS,
+  downloadStallMs = DEFAULT_DOWNLOAD_STALL_MS,
+  downloadStallPollMs = DEFAULT_DOWNLOAD_STALL_POLL_MS,
   quitStagingSlowWarnMs = DEFAULT_QUIT_STAGING_SLOW_WARN_MS,
   // Only Squirrel.Mac reports staging progress; electron-updater's other
   // backends never touch the native updater, so arming the long bound off a
@@ -521,6 +554,13 @@ export function createAutoUpdateService({
   // after discovering the artifact size but before bytes are written.
   updater.autoDownload = false;
   updater.autoInstallOnAppQuit = false;
+  // Always download the whole archive. The differential path fetches one byte
+  // range per request, one after another, and those requests take no
+  // cancellation token: one that hangs cannot be stopped, so the download
+  // watchdog below could never free it. GitHub also refuses multi-range
+  // requests, so on a slow link a differential update is hundreds of
+  // sequential round trips and slower than the full download.
+  updater.disableDifferentialDownload = true;
   let overrideFeedUrl: string | undefined;
   try {
     // Dev/test override: ADE_UPDATE_FEED_URL points the updater at a local/staging
@@ -667,6 +707,14 @@ export function createAutoUpdateService({
   let netRecoveryExhausted = false;
   // Set by the net recovery when the feed is reachable but the updater is not.
   let checkFailureKind: AutoUpdateErrorKind | null = null;
+  // Only one download runs at a time: a check's and a staged-archive restore's
+  // never overlap (runUpdateCheck returns early while `downloading`, and a
+  // restore owns `archiveRestoreInProgress`).
+  let downloadWatchdog: DownloadStallWatchdog | null = null;
+  /** Set when the watchdog cancelled the running download; read once by its owner. */
+  let downloadStalled = false;
+  /** electron-updater's own token class, learned from the last check result. */
+  let cancellationTokenClass: (new () => CancellationTokenLike) | null = null;
   const listeners = new Set<(snapshot: AutoUpdateSnapshot) => void>();
 
   function emit(): void {
@@ -983,6 +1031,7 @@ export function createAutoUpdateService({
   };
 
   const onDownloadProgress = (info: ProgressInfo) => {
+    downloadWatchdog?.noteProgress(finitePositive(info.total) != null && info.transferred >= info.total);
     if (ignoredDownloadVersion) return;
     currentPhase = "download";
     compressedUpdateBytes = finitePositive(info.total) ?? compressedUpdateBytes;
@@ -1063,6 +1112,12 @@ export function createAutoUpdateService({
       logger.warn("autoUpdate.update_cancelled_ignored_during_archive_restore", {
         version: info.version,
       });
+      return;
+    }
+    if (downloadStalled) {
+      // The watchdog cancelled it. electron-updater has already removed the
+      // partial file; the download's owner decides what the snapshot says.
+      logger.info("autoUpdate.update_cancelled_after_stall", { version: info.version });
       return;
     }
     logger.warn("autoUpdate.update_cancelled", { version: info.version });
@@ -1154,6 +1209,73 @@ export function createAutoUpdateService({
   updater.on("update-not-available", onUpdateNotAvailable);
   updater.on("update-cancelled", onUpdateCancelled);
   updater.on("error", onError);
+
+  /** Reads and clears whether the watchdog cancelled the download that just ended. */
+  function takeDownloadStalled(): boolean {
+    const stalled = downloadStalled;
+    downloadStalled = false;
+    return stalled;
+  }
+
+  function newCancellationToken(): CancellationTokenLike | null {
+    if (!cancellationTokenClass) return null;
+    try {
+      return new cancellationTokenClass();
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Runs `downloadUpdate()` under a stall watchdog (downloadStallWatchdog.ts)
+   * and cancels it when no bytes arrive for `downloadStallMs`.
+   *
+   * Cancelling makes electron-updater remove the partial file, emit
+   * `update-cancelled`, and reject with a `CancellationError`, so the caller's
+   * catch runs; it calls `takeDownloadStalled()` to tell a stall from a
+   * failure. Without a token there is nothing that can stop the request, and
+   * the download runs unwatched, as before.
+   */
+  async function downloadWatchingForStall(
+    token: CancellationTokenLike | null,
+    context: "check" | "restore",
+  ): Promise<unknown> {
+    const downloadUpdate = updater.downloadUpdate;
+    if (!downloadUpdate) return undefined;
+    downloadStalled = false;
+    if (!token) {
+      logger.warn("autoUpdate.download_watchdog_unavailable", { context, version: snapshot.version });
+      return downloadUpdate.call(updater);
+    }
+    const watchdog = startDownloadStallWatchdog({
+      stallMs: downloadStallMs,
+      pollMs: downloadStallPollMs,
+      nowMs,
+      readPendingBytes: () => (updaterCacheDir ? updaterPendingBytes(updaterCacheDir) : null),
+      onSuspendGap: (gapMs) => {
+        logger.info("autoUpdate.download_watchdog_resumed", { context, sinceLastPollMs: gapMs });
+      },
+      onStall: (idleMs) => {
+        downloadStalled = true;
+        logger.warn("autoUpdate.download_stalled", {
+          context,
+          version: snapshot.version,
+          idleMs,
+          progressPercent: snapshot.progressPercent,
+          transferredBytes: snapshot.transferredBytes,
+          totalBytes: snapshot.totalBytes,
+        });
+        token.cancel();
+      },
+    });
+    downloadWatchdog = watchdog;
+    try {
+      return await downloadUpdate.call(updater, token);
+    } finally {
+      watchdog.stop();
+      if (downloadWatchdog === watchdog) downloadWatchdog = null;
+    }
+  }
 
   /**
    * One feed check that survives a wedged updater session. When Chromium fails
@@ -1290,6 +1412,12 @@ export function createAutoUpdateService({
         currentPhase = "download";
         patchSnapshot({ lastCheckedAt: nowMs(), checkFailure: null });
         const updateInfo = isUpdateCheckResultLike(result) ? result.updateInfo : undefined;
+        const checkToken = isUpdateCheckResultLike(result) && isCancellationTokenLike(result.cancellationToken)
+          ? result.cancellationToken
+          : null;
+        if (checkToken) {
+          cancellationTokenClass = checkToken.constructor as new () => CancellationTokenLike;
+        }
         if (
           updateInfo
           && (!snapshot.version || compareUpdateVersions(updateInfo.version, snapshot.version) >= 0)
@@ -1317,7 +1445,7 @@ export function createAutoUpdateService({
             errorDetails: null,
           });
           if (updater.downloadUpdate) {
-            await updater.downloadUpdate();
+            await downloadWatchingForStall(checkToken ?? newCancellationToken(), "check");
             return;
           }
         }
@@ -1327,6 +1455,7 @@ export function createAutoUpdateService({
         }
       })
       .catch((error) => {
+        const stalled = takeDownloadStalled();
         // Same ordering as onError: the pre-install refresh owns the failure
         // first, then the guard that keeps a staged update intact.
         if (readyRefreshInProgress) {
@@ -1337,6 +1466,19 @@ export function createAutoUpdateService({
           return;
         }
         if (preserveStagedUpdateOnCheckFailure(error)) return;
+        if (stalled) {
+          // A network failure of the download, with words that say what
+          // happened instead of electron-updater's bare "cancelled". The
+          // periodic check (or Check again) starts a fresh download.
+          setErrorSnapshot({
+            error,
+            fallbackPhase: "download",
+            kind: "network",
+            message: DOWNLOAD_STALLED_MESSAGE,
+            preservesDownload: false,
+          });
+          return;
+        }
         // electron-updater normally emits `error` as well as rejecting. Keep
         // this fallback so synchronous filesystem failures cannot disappear.
         if (snapshot.status !== "error") {
@@ -1719,12 +1861,13 @@ export function createAutoUpdateService({
         errorDetails: null,
       });
       try {
-        await updater.downloadUpdate();
+        await downloadWatchingForStall(newCancellationToken(), "restore");
       } catch (error) {
         logger.warn("autoUpdate.staged_archive_restore_failed", {
           reason,
           version: snapshot.version,
           message: formatErrorMessage(error),
+          stalled: takeDownloadStalled(),
         });
         // Leftover Squirrel errors often reject downloadUpdate after
         // update-downloaded already restored the archive. Wiping here would
@@ -2253,6 +2396,8 @@ export function createAutoUpdateService({
       clearQuitDeadline();
       clearAutoApplySchedule();
       clearAutoApplyDeadline();
+      downloadWatchdog?.stop();
+      downloadWatchdog = null;
       listeners.clear();
       updater.removeListener("checking-for-update", onCheckingForUpdate);
       updater.removeListener("update-available", onUpdateAvailable);
