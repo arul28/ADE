@@ -2,7 +2,6 @@ import fs from "node:fs";
 import { createGithubIssueOps } from "./githubIssueOps";
 import { issueWriteCandidates } from "./githubIssueWriteAccess";
 import type { GitHubIssueLike, GitHubIssuePatch } from "../../../shared/laneGitHubIssue";
-import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -28,6 +27,7 @@ import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { parseGithubRemoteUrl } from "../../../shared/githubRemote";
 import { parseGitHubScopeHeaders } from "../../../shared/githubScopes";
 import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
+import { ghConfigDir } from "../../../../../ade-cli/src/services/credentials/ghConfigDir";
 import { createExpiringPromiseCache } from "../../../shared/expiringPromiseCache";
 import {
   GITHUB_CREDENTIAL_CACHE_TTL_MS,
@@ -262,9 +262,7 @@ class GithubCredentialAttemptError extends Error {
  * contexts (the launchd brain) where spawning gh has proven fragile.
  */
 function readGhHostsFileToken(env: NodeJS.ProcessEnv = process.env): string | null {
-  const configDir = env.GH_CONFIG_DIR?.trim()
-    || path.join(env.XDG_CONFIG_HOME?.trim() || path.join(os.homedir(), ".config"), "gh");
-  const hostsPath = path.join(configDir, "hosts.yml");
+  const hostsPath = path.join(ghConfigDir(env), "hosts.yml");
   const cached = processGhHostsTokenCache.get(hostsPath);
   if (cached && cached.expiresAt > Date.now()) {
     processGhHostsTokenCache.delete(hostsPath);
