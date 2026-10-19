@@ -279,9 +279,12 @@ The capture gesture writes its own local structured line family, and it is not
 a PostHog event. `capture.*` is the helper supervisor's family
 (`helper_started`, `helper_spawn_failed`, `helper_exited`, `helper_error`,
 `helper_stderr`, `helper_invalid_output`, `helper_output_overflow`,
-`helper_path_outside_output_dir`, `chord_ignored`, `late_answer_dropped`); it
-records why a chord was refused or a shot never arrived and carries no window
-title, app name, or image.
+`helper_path_outside_output_dir`, `input_monitoring_required`,
+`chord_unavailable`, `chord_ignored`, `late_answer_dropped`); it records why a
+chord was refused or a shot never arrived and carries no window title, app
+name, or image. The two setup-health lines are not PostHog events: a missing
+grant or a monitor that cannot start is an environment fact, not a person
+using the gesture, and the settings health card is the user-facing surface.
 
 When an agent switches its lane to a new branch during a turn, ADE adopts
 the branch or leaves the choice to the user, and writes the local structured

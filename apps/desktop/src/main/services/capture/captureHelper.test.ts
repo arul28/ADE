@@ -362,9 +362,10 @@ describe("CaptureHelper", () => {
     child.emit("spawn");
     child.stdout.write('{"type":"input-monitoring-required"}\n');
     await new Promise((resolve) => setImmediate(resolve));
-    expect(onFailure.mock.calls[0][0].reason).toBe("permission-denied");
-    expect(onFailure.mock.calls[0][0].message).toContain("Input Monitoring");
+    // Setup health, not a failed press; the card is the surface.
+    expect(onFailure).not.toHaveBeenCalled();
     expect(helper.getHealth().state).toBe("permission_denied");
+    expect(helper.getHealth().message).toContain("Input Monitoring");
     expect(helper.getHealth().recovery).toBe("retry");
 
     // Retry re-asks the running helper rather than spawning a second child; a
@@ -386,8 +387,9 @@ describe("CaptureHelper", () => {
     child.emit("spawn");
     child.stdout.write('{"type":"chord-unavailable"}\n');
     await new Promise((resolve) => setImmediate(resolve));
-    expect(onFailure.mock.calls[0][0].message).toContain("key monitor");
+    expect(onFailure).not.toHaveBeenCalled();
     expect(helper.getHealth().state).toBe("monitor_unavailable");
+    expect(helper.getHealth().message).toContain("key monitor");
     expect(helper.getHealth().recovery).toBe("retry");
 
     child.stdout.write('{"type":"chord-ready"}\n');

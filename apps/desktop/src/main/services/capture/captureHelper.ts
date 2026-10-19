@@ -419,22 +419,16 @@ export class CaptureHelper {
         this.monitorUnavailable = false;
         return;
       case "input-monitoring-required":
+        // Setup health, not a failed press: no banner and no analytics. The
+        // settings card is where the missing grant is explained and retried.
         this.inputMonitoringRequired = true;
         this.monitorUnavailable = false;
-        this.options.onFailure({
-          reason: "permission-denied",
-          source: this.pendingSource,
-          message: inputMonitoringMessageFor(this.platform),
-        });
+        this.options.logger.warn("capture.input_monitoring_required", {});
         return;
       case "chord-unavailable":
         this.inputMonitoringRequired = false;
         this.monitorUnavailable = true;
-        this.options.onFailure({
-          reason: "capture-failed",
-          source: this.pendingSource,
-          message: "ADE couldn’t start the key monitor. Choose Try again in Settings › General.",
-        });
+        this.options.logger.warn("capture.chord_unavailable", {});
         return;
       case "chord": {
         const decision = evaluateCaptureChord({
