@@ -53,15 +53,21 @@ async function commandExistsOffThread(command: string): Promise<boolean | null> 
 /**
  * Starts a background probe for `command` unless one is in flight, and caches
  * its answer. A probe that gives no answer leaves the cache as it was: a stale
- * answer keeps its check time, so the next call past the TTL probes again.
+ * answer keeps its check time, so the next call past the TTL probes again. An
+ * answer checked after this probe started (a synchronous first probe that ran
+ * while it was in flight) is newer, so this probe does not replace it.
  */
 function refreshCommandExists(command: string): void {
   if (commandExistsRefreshing.has(command)) return;
   commandExistsRefreshing.add(command);
+  const startedAt = Date.now();
   void commandExistsOffThread(command)
     .catch(() => null)
     .then((available) => {
-      if (available !== null) commandExistsCache.set(command, { available, checkedAt: Date.now() });
+      if (available === null) return;
+      const current = commandExistsCache.get(command);
+      if (current && current.checkedAt >= startedAt) return;
+      commandExistsCache.set(command, { available, checkedAt: Date.now() });
     })
     .finally(() => {
       commandExistsRefreshing.delete(command);

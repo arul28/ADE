@@ -1475,6 +1475,13 @@ describe("computerUseArtifactBrokerService", () => {
       expect(available(broker)).toBe(true);
       expect(syncProbes).toBe(1);
       expect(started).toHaveLength(1);
+
+      if (!settle) {
+        // The first probe started before the read's own probe, so its late answer is older and must not replace it.
+        started[0]!(exitedWith(1));
+        await flush();
+        expect(available(broker)).toBe(true);
+      }
     });
 
     it("a warm read never probes on this thread, and a read past the TTL starts one background refresh that later reads join", async () => {
