@@ -3,7 +3,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 
-const execFileAsync = promisify(execFile);
 
 /**
  * Git links in a copied project.
@@ -189,7 +188,9 @@ function writeFileKeepingMode(file: string, content: string): void {
 }
 
 async function gitConfig(configFile: string, args: string[]): Promise<string> {
-  const { stdout } = await execFileAsync("git", ["config", "--file", configFile, ...args], {
+  // Wrapped here, not at load: the usage ledger imports this module through
+  // movePreviousRoots, and must load where child_process is stubbed.
+  const { stdout } = await promisify(execFile)("git", ["config", "--file", configFile, ...args], {
     timeout: 15_000,
     maxBuffer: 8 * 1024 * 1024,
     env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
