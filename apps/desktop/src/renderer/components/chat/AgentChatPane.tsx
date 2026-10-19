@@ -571,6 +571,80 @@ const LEGACY_MODEL_KEY_PREFIX = "ade.chat.lastModel";
 
 const COMPUTER_USE_SNAPSHOT_COOLDOWN_MS = 750;
 
+// Each chat's last proof read, per machine, so a warm switch shows that chat's
+// own proof while its read is in flight. Keyed by pin key and session id: one
+// chat's proof is never shown for another chat or another machine. Recency is
+// the last successful read. Off in tests, like the view cache, since tests
+// share this module.
+const COMPUTER_USE_SNAPSHOT_CACHE_ENABLED = import.meta.env.MODE !== "test";
+const MAX_COMPUTER_USE_SNAPSHOT_CACHE_ENTRIES = 64;
+/** The pane's proof snapshot, with the pin key (machine) its read went to. */
+type ComputerUseSnapshotState = {
+  snapshot: ComputerUseOwnerSnapshot;
+  pinKey: string | null;
+};
+type ComputerUseSnapshotCacheEntry = {
+  snapshot: ComputerUseOwnerSnapshot;
+  // The read that wrote it. An older read never replaces a newer entry.
+  readSequence: number;
+};
+const computerUseSnapshotCacheByKey = new Map<string, ComputerUseSnapshotCacheEntry>();
+let computerUseReadSequence = 0;
+
+function computerUseSnapshotCacheKey(pinKey: string | null, sessionId: string): string {
+  return `${pinKey ?? "local"}|${sessionId}`;
+}
+
+/** Read without touching LRU recency — safe to call during render. */
+function peekComputerUseSnapshotCache(pinKey: string | null, sessionId: string): ComputerUseOwnerSnapshot | null {
+  if (!COMPUTER_USE_SNAPSHOT_CACHE_ENABLED) return null;
+  return computerUseSnapshotCacheByKey.get(computerUseSnapshotCacheKey(pinKey, sessionId))?.snapshot ?? null;
+}
+
+function writeComputerUseSnapshotCache(
+  pinKey: string | null,
+  sessionId: string,
+  snapshot: ComputerUseOwnerSnapshot,
+  readSequence: number,
+): void {
+  if (!COMPUTER_USE_SNAPSHOT_CACHE_ENABLED) return;
+  const key = computerUseSnapshotCacheKey(pinKey, sessionId);
+  const existing = computerUseSnapshotCacheByKey.get(key);
+  if (existing && existing.readSequence > readSequence) return;
+  computerUseSnapshotCacheByKey.delete(key);
+  computerUseSnapshotCacheByKey.set(key, { snapshot, readSequence });
+  while (computerUseSnapshotCacheByKey.size > MAX_COMPUTER_USE_SNAPSHOT_CACHE_ENTRIES) {
+    const oldest = computerUseSnapshotCacheByKey.keys().next().value;
+    if (typeof oldest !== "string") break;
+    computerUseSnapshotCacheByKey.delete(oldest);
+  }
+}
+
+/** A failed read drops the chat's entry, unless a newer read already wrote one. */
+function dropComputerUseSnapshotCache(pinKey: string | null, sessionId: string, readSequence: number): void {
+  const key = computerUseSnapshotCacheKey(pinKey, sessionId);
+  const existing = computerUseSnapshotCacheByKey.get(key);
+  if (!existing || existing.readSequence > readSequence) return;
+  computerUseSnapshotCacheByKey.delete(key);
+}
+
+/** The drawer's optimistic artifact removal also applies to the cached copy. */
+function removeArtifactFromComputerUseSnapshotCache(pinKey: string | null, sessionId: string, artifactId: string): void {
+  const key = computerUseSnapshotCacheKey(pinKey, sessionId);
+  const existing = computerUseSnapshotCacheByKey.get(key);
+  if (!existing) return;
+  const { snapshot } = existing;
+  // Re-set in place, so the entry keeps its recency.
+  computerUseSnapshotCacheByKey.set(key, {
+    ...existing,
+    snapshot: {
+      ...snapshot,
+      artifacts: snapshot.artifacts.filter((artifact) => artifact.id !== artifactId),
+      recentArtifacts: snapshot.recentArtifacts.filter((artifact) => artifact.id !== artifactId),
+    },
+  });
+}
+
 type ChatActionsAutoOpenStorage = Pick<Storage, "getItem" | "setItem" | "removeItem" | "key" | "length">;
 
 export function getChatActionsAutoOpenStorageKey(sessionId: string): string {
@@ -4384,7 +4458,7 @@ export function AgentChatPane({
   const [replayForkDisclosure, setReplayForkDisclosure] = useState<AgentChatReplayForkDisclosure | null>(null);
   const handoffErrorClearTimerRef = useRef<number | null>(null);
   const [deletingChatSessionId, setDeletingChatSessionId] = useState<string | null>(null);
-  const [computerUseSnapshot, setComputerUseSnapshot] = useState<ComputerUseOwnerSnapshot | null>(null);
+  const [computerUseSnapshot, setComputerUseSnapshot] = useState<ComputerUseSnapshotState | null>(null);
   const [claudeSignInTarget, setClaudeSignInTarget] = useState<ComposerClaudeSignInTarget | null>(null);
   const [chatActionsOpen, setChatActionsOpen] = useState(
     () => readChatCompanionUiState(initialCompanionStateKey).chatActionsOpen,
@@ -4843,8 +4917,8 @@ export function AgentChatPane({
    */
   const renderSelectedSessionIdRef = useRef<string | null>(selectedSessionId);
   renderSelectedSessionIdRef.current = selectedSessionId;
-  const computerUseSnapshotInFlightRef = useRef<{ sessionId: string; promise: Promise<void> } | null>(null);
-  const lastComputerUseSnapshotRef = useRef<{ sessionId: string; fetchedAt: number } | null>(null);
+  const computerUseSnapshotInFlightRef = useRef<{ sessionId: string; pinKey: string | null; promise: Promise<void> } | null>(null);
+  const lastComputerUseSnapshotRef = useRef<{ sessionId: string; pinKey: string | null; fetchedAt: number } | null>(null);
   const knownSessionIdsRef = useRef<Set<string>>(new Set());
   const seededInitialSummaryRef = useRef(false);
   /** Pending re-read of the locked chat's summary; `missingSince` is when "not found" began. */
@@ -5011,6 +5085,24 @@ export function AgentChatPane({
       : chatMachineRouter.pinForLane(renderedSession?.laneId ?? foreignRenderedLaneId ?? laneId)),
     [chatMachineRouter, foreignRenderedLaneId, hostRuntimePin, laneId, renderedSession?.laneId],
   );
+  // The proof snapshot this pane may show: only the rendered chat's own, read
+  // from the rendered chat's own machine (`renderedChatRuntimePin`, not the
+  // selection's, which trails a switch). The state is shown only when both the
+  // chat and the machine it was read from match. Until a chat's read lands, its
+  // last-known snapshot on its own machine stands in (a visible tile only: an
+  // inactive tile keeps none). Another chat's or another machine's snapshot
+  // never does. Derived at render, so a switch paints without an empty frame.
+  const renderedChatPinKey = renderedChatRuntimePin?.key ?? null;
+  const renderedStateSnapshot = computerUseSnapshot
+    && computerUseSnapshot.pinKey === renderedChatPinKey
+    && computerUseSnapshot.snapshot.owner?.kind === "chat_session"
+    && computerUseSnapshot.snapshot.owner.id === renderedSessionId
+    ? computerUseSnapshot.snapshot
+    : null;
+  const renderedComputerUseSnapshot = renderedStateSnapshot
+    ?? (renderedSessionId && isTileActive
+      ? peekComputerUseSnapshotCache(renderedChatPinKey, renderedSessionId)
+      : null);
   // Lifecycle actions must follow the session currently rendered in the pane.
   // Resolve this after the machine pin so foreign chats never send a wake or
   // unsettle request to the tab-bound runtime.
@@ -7989,13 +8081,20 @@ export function AgentChatPane({
       setComputerUseSnapshot(null);
       return;
     }
+    // The machine this read goes to, fixed now: its in-flight slot and its
+    // cache entry belong to it, whatever the pin does while the read runs.
+    const pinKey = chatRuntimePinRef.current?.key ?? null;
     if (!options?.force) {
       const inFlight = computerUseSnapshotInFlightRef.current;
-      if (inFlight?.sessionId === sessionId) {
+      if (inFlight?.sessionId === sessionId && inFlight.pinKey === pinKey) {
         return inFlight.promise;
       }
       const previous = lastComputerUseSnapshotRef.current;
-      if (previous?.sessionId === sessionId && Date.now() - previous.fetchedAt < COMPUTER_USE_SNAPSHOT_COOLDOWN_MS) {
+      if (
+        previous?.sessionId === sessionId
+        && previous.pinKey === pinKey
+        && Date.now() - previous.fetchedAt < COMPUTER_USE_SNAPSHOT_COOLDOWN_MS
+      ) {
         return;
       }
     }
@@ -8003,6 +8102,7 @@ export function AgentChatPane({
     // A personal chat's computer-use owner lives in the machine scope, not
     // this project's runtime; asking the project would only miss.
     if (isPersonalPane) return;
+    const readSequence = ++computerUseReadSequence;
     let request: Promise<void> | null = null;
     request = (async () => {
       try {
@@ -8011,17 +8111,27 @@ export function AgentChatPane({
         }, chatRuntimePinRef.current);
         lastComputerUseSnapshotRef.current = {
           sessionId,
+          pinKey,
           fetchedAt: Date.now(),
         };
+        writeComputerUseSnapshotCache(pinKey, sessionId, snapshot, readSequence);
         // A read that a newer one replaced writes nothing: its data is older.
         if (selectedSessionIdRef.current === sessionId && computerUseSnapshotInFlightRef.current?.promise === request) {
-          setComputerUseSnapshot(snapshot);
+          setComputerUseSnapshot({ snapshot, pinKey });
         }
       } catch {
+        // A failed read drops this chat's cached proof, unless keepOnError keeps it.
+        if (!options?.keepOnError) dropComputerUseSnapshotCache(pinKey, sessionId, readSequence);
         if (selectedSessionIdRef.current === sessionId && computerUseSnapshotInFlightRef.current?.promise === request) {
-          // `keepOnError` keeps this chat's proof on screen, never another chat's.
+          // `keepOnError` keeps this chat's proof on screen, never another chat's
+          // or another machine's.
           setComputerUseSnapshot((current) => (
-            options?.keepOnError && current?.owner.kind === "chat_session" && current.owner.id === sessionId ? current : null
+            options?.keepOnError
+              && current?.pinKey === pinKey
+              && current.snapshot.owner?.kind === "chat_session"
+              && current.snapshot.owner.id === sessionId
+              ? current
+              : null
           ));
         }
       } finally {
@@ -8030,7 +8140,7 @@ export function AgentChatPane({
         }
       }
     })();
-    computerUseSnapshotInFlightRef.current = { sessionId, promise: request };
+    computerUseSnapshotInFlightRef.current = { sessionId, pinKey, promise: request };
     try {
       await request;
     } catch {
@@ -9349,7 +9459,10 @@ export function AgentChatPane({
       void refreshComputerUseSnapshot(readableSessionId);
     }, 180);
     return () => window.clearTimeout(handle);
+    // The read goes to the pin's machine, read through the ref. Its key must
+    // re-run the refresh: the same chat on another machine has its own proof.
   }, [
+    chatRuntimePinKey,
     isTileActive,
     lockedSingleSessionMode,
     readableSessionId,
@@ -9943,13 +10056,22 @@ export function AgentChatPane({
       // event may not carry an owner. Optimistically remove the matching id
       // from this drawer, then force an authoritative snapshot refresh.
       if (event.type === "artifact-deleted" && (event.owner == null || belongsToSelectedChat)) {
+        // Only this chat's snapshot on this pin is edited. A late event from the
+        // previous machine must not remove an artifact from the new one.
         setComputerUseSnapshot((current) => current
+          && current.pinKey === chatRuntimePinKey
+          && current.snapshot.owner?.kind === "chat_session"
+          && current.snapshot.owner.id === selectedSessionId
           ? {
               ...current,
-              artifacts: current.artifacts.filter((artifact) => artifact.id !== event.artifactId),
-              recentArtifacts: current.recentArtifacts.filter((artifact) => artifact.id !== event.artifactId),
+              snapshot: {
+                ...current.snapshot,
+                artifacts: current.snapshot.artifacts.filter((artifact) => artifact.id !== event.artifactId),
+                recentArtifacts: current.snapshot.recentArtifacts.filter((artifact) => artifact.id !== event.artifactId),
+              },
             }
           : current);
+        removeArtifactFromComputerUseSnapshotCache(chatRuntimePinKey, selectedSessionId, event.artifactId);
         void refreshComputerUseSnapshot(selectedSessionId, { force: true });
       } else if (belongsToSelectedChat) {
         void refreshComputerUseSnapshot(selectedSessionId, { force: true });
@@ -15712,7 +15834,7 @@ export function AgentChatPane({
     modelFamily: composerModelDescribesRenderedChat ? selectedModelDesc?.family ?? null : null,
     modelColor: composerModelDescribesRenderedChat ? selectedModelDesc?.color ?? null : null,
   });
-  const proofArtifactCount = computerUseSnapshot?.artifacts?.length ?? 0;
+  const proofArtifactCount = renderedComputerUseSnapshot?.artifacts?.length ?? 0;
   // Always handed to the drawer: the panel is runtime-agnostic (Codex and
   // Claude both emit subagent/plan/goal events) and renders nothing when it
   // has nothing, so the drawer never shows an empty agents area. A host-side
@@ -15858,7 +15980,7 @@ export function AgentChatPane({
   const proofTabContent = (
     <div ref={proofDrawerRef}>
       <ChatComputerUsePanel
-        snapshot={computerUseSnapshot}
+        snapshot={renderedComputerUseSnapshot}
         events={selectedEventsForDisplay}
         onRefresh={() => refreshComputerUseSnapshot(selectedSessionId, { force: true })}
         allowLocalArtifactProtocol={!isRemoteChat}
@@ -16207,7 +16329,7 @@ export function AgentChatPane({
       footer={chatAccountNote}
       sections={[
         { key: "agents", content: agentsTabContent },
-        (proofArtifactCount > 0 || (proofShowRequested && computerUseSnapshot)) && { key: "proof", content: proofTabContent },
+        (proofArtifactCount > 0 || (proofShowRequested && renderedComputerUseSnapshot)) && { key: "proof", content: proofTabContent },
         selectedMission && missionHasContent(selectedMission) && {
           key: "mission",
           content: (
@@ -16941,7 +17063,7 @@ export function AgentChatPane({
             musePermissionMode={musePermissionMode}
             cursorModeSnapshot={effectiveCursorModeSnapshot}
             executionMode={selectedExecutionMode?.value ?? "focused"}
-            computerUseSnapshot={computerUseSnapshot}
+            computerUseSnapshot={renderedComputerUseSnapshot}
             iosElementContextItems={iosElementContextItems}
             appControlContextItems={appControlContextItems}
             builtInBrowserContextItems={builtInBrowserContextItems}
@@ -17983,7 +18105,7 @@ export function AgentChatPane({
                         onStopSubagent={listStopSubagent}
                         unreadSince={subagentView ? null : unreadSince}
                         scrollToPromptHistoryRequest={subagentView ? null : promptHistoryJumpRequest}
-                        proofArtifacts={subagentView ? EMPTY_PROOF_ARTIFACTS : computerUseSnapshot?.artifacts ?? EMPTY_PROOF_ARTIFACTS}
+                        proofArtifacts={subagentView ? EMPTY_PROOF_ARTIFACTS : renderedComputerUseSnapshot?.artifacts ?? EMPTY_PROOF_ARTIFACTS}
                         allowLocalProofArtifactProtocol={!isRemoteChat}
                         onOpenProofDrawer={subagentView ? undefined : openProofDrawer}
                         onOpenTurnSources={subagentView ? undefined : openTurnSources}
