@@ -96,7 +96,6 @@ import {
 import { createPrPollingService } from "../../desktop/src/main/services/prs/prPollingService";
 import { createPrWatchService } from "../../desktop/src/main/services/prs/prWatchService";
 import { chatLivenessReader, createPrMergeAutoSettlementService } from "../../desktop/src/main/services/prs/prMergeAutoSettlementService";
-import { createPrSummaryService } from "../../desktop/src/main/services/prs/prSummaryService";
 import { createCtoStateService } from "../../desktop/src/main/services/cto/ctoStateService";
 import { createCtoMemoryService } from "../../desktop/src/main/services/cto/ctoMemoryService";
 import { projectContextAccountPort } from "../../desktop/src/main/services/cto/projectContextStore";
@@ -133,7 +132,6 @@ import type { createGithubService } from "../../desktop/src/main/services/github
 import { createJiraCredentialService } from "../../desktop/src/main/services/jira/jiraCredentialService";
 import { createJiraService } from "../../desktop/src/main/services/jira/jiraService";
 import { createIssueTrackerService } from "../../desktop/src/main/services/issueTrackers/issueTrackerService";
-import { createFeedbackReporterService } from "../../desktop/src/main/services/feedback/feedbackReporterService";
 import {
   ADE_AGENT_SKILLS_DIRS_ENV,
   ADE_BUNDLED_AGENT_SKILLS_DIR_ENV,
@@ -452,7 +450,6 @@ export type AdeRuntime = {
   cursorCloudFleetService?: ReturnType<typeof createCursorCloudFleetService> | null;
   cloudAgentsService?: CloudAgentsService | null;
   prService?: ReturnType<typeof createPrService>;
-  prSummaryService?: ReturnType<typeof createPrSummaryService> | null;
   fileService?: ReturnType<typeof createFileService> | null;
   ctoStateService: ReturnType<typeof createCtoStateService>;
   ctoMemoryService?: ReturnType<typeof createCtoMemoryService> | null;
@@ -499,7 +496,6 @@ export type AdeRuntime = {
   automationIngressService?: ReturnType<typeof createAutomationIngressService> | null;
   linearIngressService?: ReturnType<typeof createLinearIngressService> | null;
   cursorCloudIngressService?: ReturnType<typeof createCursorCloudIngressService> | null;
-  feedbackReporterService?: ReturnType<typeof createFeedbackReporterService> | null;
   usageTrackingService?: UsageTrackingHost | null;
   productAnalyticsService?: ProductAnalyticsService | null;
   usageProductAnalyticsExporter?: UsageProductAnalyticsExporter | null;
@@ -2262,15 +2258,6 @@ export async function createAdeRuntime(args: {
       void linearOAuthService.dispose().catch(() => {});
     });
 
-    const feedbackReporterService = createFeedbackReporterService({
-      db,
-      logger,
-      projectRoot,
-      aiIntegrationService,
-      githubService: headlessLinearServices.githubService,
-      onSubmissionUpdated: (event) => pushEvent("runtime", { type: "feedback_submission_event", event }),
-    });
-
     let automationServiceRef: ReturnType<typeof createAutomationService> | null = null;
     // Built after the chat service; smart balance and the usage-limit account
     // switch read it through this late binding.
@@ -2963,7 +2950,7 @@ export async function createAdeRuntime(args: {
       })
       : null;
 
-    // PR event fan-out and AI-summary services.
+    // PR event fan-out.
     // Fan-out for the push publisher: PR lifecycle/status notifications are
     // bridged here so the publisher never has to poll GitHub itself. Populated
     // by pushPublisherService.start() (declared below), so it stays empty and inert
@@ -2997,13 +2984,6 @@ export async function createAdeRuntime(args: {
         }
       }
     };
-    const prSummaryService = createPrSummaryService({
-      db,
-      logger,
-      projectRoot,
-      prService: headlessLinearServices.prService,
-      aiIntegrationService,
-    });
     const prMergeAutoSettlementService = createPrMergeAutoSettlementService({
       db,
       projectId,
@@ -3389,7 +3369,6 @@ export async function createAdeRuntime(args: {
         conflictService,
         operationService,
         prService: headlessLinearServices.prService,
-        prSummaryService,
         sessionService,
         sessionDeltaService,
         ptyService,
@@ -3593,10 +3572,8 @@ export async function createAdeRuntime(args: {
       linearOAuthService,
       linearAgentRuntime,
       prService: headlessLinearServices.prService,
-      prSummaryService,
       fileService: headlessLinearServices.fileService,
       linearIssueTracker: headlessLinearServices.linearIssueTracker,
-      feedbackReporterService,
       usageTrackingService,
       productAnalyticsService,
       usageProductAnalyticsExporter,

@@ -123,7 +123,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "getDetailByGithub", "getDeployments", "getForLane", "getFiles", "getFilesByGithub",
       "getGithubSnapshot", "listGithubStacks", "getIntegrationResolutionState",
       "getMergeContext", "getMergeContexts", "getMobileGithubDetail", "getMobileSnapshot",
-      "getPrHealth", "getAiSummary", "getReviewThreads", "getReviewThreadsByGithub",
+      "getPrHealth", "getReviewThreads", "getReviewThreadsByGithub",
       "getReviews", "getReviewsByGithub", "getStatus", "listAll", "listGroupPrs",
       "listIntegrationProposals", "listIntegrationWorkflows", "listPrsByLane",
       "listOpenPullRequests", "listSnapshots", "listWithConflicts", "listChatSessionsForPr",
@@ -131,14 +131,14 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     ],
     write: [
       "addComment", "reconcileOnFocus", "syncLanePr", "aiResolutionInput", "aiResolutionStart",
-      "aiResolutionStop", "aiReviewSummary", "cleanupBranch", "cleanupIntegrationWorkflow",
+      "aiResolutionStop", "cleanupBranch", "cleanupIntegrationWorkflow",
       "closePr", "commitIntegration", "createFromLane", "createLaneFromPrBranch",
       "createIntegrationLane", "createIntegrationLaneForProposal", "createIntegrationPr",
       "createGithubStack", "delete", "deleteIntegrationProposal", "dismissIntegrationCleanup",
       "ingestGithubWebhook", "land", "linkToLane", "postReviewComment",
       "reactToComment", "recheckIntegrationStep", "refresh", "addGithubStackPullRequests",
       "requestReviewers", "resolveReviewThread", "retargetBase", "reopenPr", "setDraft",
-      "setAutoMerge", "replyToReviewThread", "rerunChecks", "regenerateAiSummary", "setLabels",
+      "setAutoMerge", "replyToReviewThread", "rerunChecks", "setLabels",
       "setReviewThreadResolved", "simulateIntegration", "startIntegrationResolution",
       "preflightCreateLaneFromPrBranch", "submitReview", "syncGithubStacks",
       "unstackGithubStack", "linkChatSession", "unlinkChatSession", "linkChatStack",
@@ -390,14 +390,6 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
   issues: {
     read: ["list", "get", "resolve"],
     write: ["comment", "setState", "create"],
-  },
-  feedback: {
-    read: [
-      "list",
-    ],
-    write: [
-      "prepareDraft", "submitPreparedDraft",
-    ],
   },
   usage: {
     read: [

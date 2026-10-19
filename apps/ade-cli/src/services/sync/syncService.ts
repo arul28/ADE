@@ -49,7 +49,6 @@ import type { createAutoRebaseService } from "../../../../desktop/src/main/servi
 import type { createPortAllocationService } from "../../../../desktop/src/main/services/lanes/portAllocationService";
 import type { createRebaseSuggestionService } from "../../../../desktop/src/main/services/lanes/rebaseSuggestionService";
 import type { createPrService } from "../../../../desktop/src/main/services/prs/prService";
-import type { createPrSummaryService } from "../../../../desktop/src/main/services/prs/prSummaryService";
 import type { createPtyService } from "../../../../desktop/src/main/services/pty/ptyService";
 import type { createSessionDeltaService } from "../../../../desktop/src/main/services/sessions/sessionDeltaService";
 import type { createSessionService } from "../../../../desktop/src/main/services/sessions/sessionService";
@@ -142,7 +141,6 @@ type SyncServiceArgs = {
   operationService?: ReturnType<typeof createOperationService> | null;
   githubService?: ReturnType<typeof createGithubService> | null;
   prService: ReturnType<typeof createPrService>;
-  prSummaryService?: ReturnType<typeof createPrSummaryService> | null;
   sessionService: ReturnType<typeof createSessionService>;
   sessionDeltaService?: ReturnType<typeof createSessionDeltaService> | null;
   ptyService: ReturnType<typeof createPtyService>;
@@ -959,7 +957,6 @@ export function createSyncService(args: SyncServiceArgs) {
     projectRoot: args.projectRoot,
     laneService: args.laneService,
     prService: args.prService,
-    prSummaryService: args.prSummaryService,
     ptyService: args.ptyService,
     sessionActivityReportingEnabled: args.sessionActivityReportingEnabled,
     sessionService: args.sessionService,
@@ -1174,7 +1171,6 @@ export function createSyncService(args: SyncServiceArgs) {
       conflictService: args.conflictService,
       operationService: args.operationService,
       prService: args.prService,
-      prSummaryService: args.prSummaryService,
       sessionService: args.sessionService,
       sessionDeltaService: args.sessionDeltaService,
       ptyService: args.ptyService,

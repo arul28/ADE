@@ -1984,15 +1984,14 @@ on the same exhausted account.
 
 ## One-shot utility tasks
 
-ADE does not write commit messages or PR titles and descriptions: the
-person or the agent that commits or opens the PR writes them. Graph
+ADE does not write commit messages, PR titles and descriptions, PR
+summaries, or GitHub issues: the person or the agent that commits, opens
+the PR, or files the issue writes them. Graph
 and iOS PR create is a title (from the lane name) plus optional
 markdown. Graph edge clicks run merge simulation only — there is no AI
 conflict-proposal flyout.
 
 - Conflict proposals throw `Choose a … model in Settings`.
-- PR AI summaries read the Summaries (`terminal_summaries`) model and
-  use the deterministic fallback when it is empty.
 - Live chat compaction is unchanged — it always uses the chat's own
   provider.
 

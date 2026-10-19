@@ -178,7 +178,6 @@ import type { createPortAllocationService } from "../../../../desktop/src/main/s
 import type { createRebaseSuggestionService } from "../../../../desktop/src/main/services/lanes/rebaseSuggestionService";
 import type { createPtyService } from "../../../../desktop/src/main/services/pty/ptyService";
 import type { createPrService } from "../../../../desktop/src/main/services/prs/prService";
-import type { createPrSummaryService } from "../../../../desktop/src/main/services/prs/prSummaryService";
 import type { createSessionDeltaService } from "../../../../desktop/src/main/services/sessions/sessionDeltaService";
 import type { createSessionService } from "../../../../desktop/src/main/services/sessions/sessionService";
 import type { createComputerUseArtifactBrokerService } from "../../../../desktop/src/main/services/computerUse/computerUseArtifactBrokerService";
@@ -1115,7 +1114,6 @@ type SyncHostServiceArgs = {
   conflictService?: ReturnType<typeof createConflictService>;
   operationService?: ReturnType<typeof createOperationService> | null;
   prService: ReturnType<typeof createPrService>;
-  prSummaryService?: ReturnType<typeof createPrSummaryService> | null;
   sessionService: ReturnType<typeof createSessionService>;
   sessionDeltaService?: ReturnType<typeof createSessionDeltaService> | null;
   ptyService: ReturnType<typeof createPtyService>;
@@ -2346,7 +2344,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     projectRoot: args.projectRoot,
     laneService: args.laneService,
     prService: args.prService,
-    prSummaryService: args.prSummaryService,
     ptyService: args.ptyService,
     sessionActivityReportingEnabled: args.sessionActivityReportingEnabled,
     sessionService: args.sessionService,

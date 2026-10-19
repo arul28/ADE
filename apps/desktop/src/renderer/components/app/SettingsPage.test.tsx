@@ -68,7 +68,6 @@ vi.mock("../settings/RemoteContextBadge", () => ({ RemoteSettingsBanner: () => n
 vi.mock("../account/AccountPage", () => ({
   AccountPage: ({ embedded }: { embedded?: boolean }) => <div>{embedded ? "account embedded" : "account page"}</div>,
 }));
-vi.mock("./FeedbackReporterModal", () => ({ FeedbackReporterModal: () => null }));
 
 function LocationProbe() {
   const location = useLocation();
@@ -201,11 +200,10 @@ describe("SettingsPage", () => {
     expect(rows.slice(0, 4)).toEqual(["Overview", "Account", "Chat", "Notifications"]);
   });
 
-  it("carries feedback, help, zoom, and the identity row above the sections", async () => {
+  it("carries help, zoom, and the identity row above the sections", async () => {
     renderSettings("/settings?tab=appearance");
     await screen.findByRole("heading", { name: "Appearance" });
 
-    expect(screen.getByRole("button", { name: "Send feedback" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Help menu" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Zoom in" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Zoom out" })).toBeTruthy();

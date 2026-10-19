@@ -107,7 +107,6 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   // settings, the same tier.
   ai: { only: ["harnessLaunchEnv", "testHarnessRoute", "acpProviderDiagnostics", "museSettings", "museSettingsClose", "storeApiCredential", "removeApiCredential", "updateConfig", "storeApiKey", "deleteApiKey", "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey", "clearOpencodeProviderKey", "opencodeAccountActivate", "opencodeAccountRename", "opencodeAccountRemove", "opencodeCloudConnect", "refreshModelsDev", "piLoginStart", "piLoginSubmit", "piLoginCancel", "cursorAuthLogin", "cursorAuthLogout", "cursorAuthCancel", "antigravitySignInStart", "antigravitySignInComplete", "antigravitySignInCancel"] },
   budget: { only: ["updateConfig"] },
-  feedback: { only: ["submitPreparedDraft"] },
   // `applyAccountRollups` writes another machine's history into a
   // CRR-replicated table. The desktop app pushes it over the local socket
   // after its own account fan-out; no agent has any reason to call it.
@@ -546,7 +545,6 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "aiResolutionInput",
     "aiResolutionStart",
     "aiResolutionStop",
-    "aiReviewSummary",
     "cleanupBranch",
     "cleanupIntegrationWorkflow",
     "closePr",
@@ -589,7 +587,6 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getMobileGithubDetail",
     "getMobileSnapshot",
     "getPrHealth",
-    "getAiSummary",
     "getReviewThreads",
     "getReviewThreadsByGithub",
     "getReviews",
@@ -619,7 +616,6 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "setAutoMerge",
     "replyToReviewThread",
     "rerunChecks",
-    "regenerateAiSummary",
     "setLabels",
     "setReviewThreadResolved",
     "simulateIntegration",
@@ -1050,7 +1046,6 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "createIssue",
   ],
   issues: ["list", "get", "resolve", "comment", "setState", "create"],
-  feedback: ["list", "prepareDraft", "submitPreparedDraft"],
   usage: [
     "applyAccountRollups",
     "consumeResetCredit",

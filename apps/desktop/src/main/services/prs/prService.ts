@@ -101,8 +101,6 @@ import type {
   SetPrAutoMergeArgs,
   SetPrDraftArgs,
   RerunPrChecksArgs,
-  AiReviewSummaryArgs,
-  AiReviewSummary,
   AddGitHubPrStackPullRequestsArgs,
   CreateGitHubPrStackArgs,
   GitHubPrListItem,
@@ -155,7 +153,6 @@ import type { createRebaseSuggestionService } from "../lanes/rebaseSuggestionSer
 import type { createOperationService } from "../history/operationService";
 import type { createGithubService } from "../github/githubService";
 import type { createProjectConfigService } from "../config/projectConfigService";
-import { readConfiguredFeatureModel, type createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createConflictService } from "../conflicts/conflictService";
 import type { createAgentChatService } from "../chat/agentChatService";
 import type { LaneWorktreeLockService } from "../lanes/laneWorktreeLockService";
@@ -202,7 +199,6 @@ import {
   type PrChatWatchSummary,
   type SetPrChatWatchArgs,
 } from "../../../shared/prWatch";
-import { extractFirstJsonObject } from "../ai/utils";
 import { buildIntegrationPreflight } from "./integrationPlanning";
 import { createWorkflowGraph, type WorkflowFileSource } from "./workflowGraph";
 import { parseCheckLog } from "./checkLogParser";
@@ -1551,7 +1547,6 @@ export function createPrService({
   laneService,
   operationService,
   githubService,
-  aiIntegrationService,
   projectConfigService,
   conflictService,
   laneWorktreeLockService,
@@ -1570,7 +1565,6 @@ export function createPrService({
   laneService: ReturnType<typeof createLaneService>;
   operationService: ReturnType<typeof createOperationService>;
   githubService: ReturnType<typeof createGithubService>;
-  aiIntegrationService?: ReturnType<typeof createAiIntegrationService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   conflictService?: ReturnType<typeof createConflictService>;
   laneWorktreeLockService?: LaneWorktreeLockService | null;
@@ -13419,94 +13413,6 @@ export function createPrService({
         }
       }
       await refreshAfterMutation(target);
-    },
-
-    async aiReviewSummary(args: AiReviewSummaryArgs): Promise<AiReviewSummary> {
-      const row = requireRow(args.prId);
-      const repo = repoFromRow(row);
-      let files: PrFile[] = [];
-      try {
-        const data = await fetchAllPages<any>({
-          path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}/files`
-        });
-        files = data.map((f: any) => ({
-          filename: asString(f?.filename) || "",
-          status: toFileStatus(f?.status),
-          additions: Number(f?.additions) || 0,
-          deletions: Number(f?.deletions) || 0,
-          patch: asString(f?.patch) || null,
-          previousFilename: asString(f?.previous_filename) || null
-        }));
-      } catch {
-        // Continue without files
-      }
-
-      const configuredModel = readConfiguredFeatureModel(
-        projectConfigService.get().effective.ai,
-        "terminal_summaries",
-      );
-      const model = (args.model?.trim() || configuredModel) || undefined;
-
-      if (aiIntegrationService && model) {
-        const diffSummary = files
-          .map((f) => `${f.status} ${f.filename} (+${f.additions}/-${f.deletions})`)
-          .join("\n");
-
-        const prompt = [
-          "You are a code reviewer. Analyze the following PR changes and return a JSON object with this exact shape:",
-          '{"summary": string, "potentialIssues": string[], "recommendations": string[], "mergeReadiness": "ready" | "needs_work" | "blocked"}',
-          "",
-          `PR Title: ${row.title ?? "Untitled"}`,
-          "",
-          "Changed files:",
-          diffSummary || "(no files)",
-          "",
-          "Patches:",
-          ...files.slice(0, 10).map((f) => `--- ${f.filename} ---\n${f.patch ?? "(binary or too large)"}`),
-          "",
-          "Return ONLY the JSON object, no markdown."
-        ].join("\n");
-
-        try {
-          const draft = await aiIntegrationService.summarizePullRequest({
-            cwd: projectRoot,
-            prompt,
-            model,
-          });
-          const rawJson = extractFirstJsonObject(draft.text);
-          if (rawJson) {
-            const obj = JSON.parse(rawJson) as Record<string, unknown>;
-            return {
-              summary: typeof obj.summary === "string" ? obj.summary : "AI review completed.",
-              potentialIssues: Array.isArray(obj.potentialIssues)
-                ? obj.potentialIssues.filter((i): i is string => typeof i === "string")
-                : [],
-              recommendations: Array.isArray(obj.recommendations)
-                ? obj.recommendations.filter((r): r is string => typeof r === "string")
-                : [],
-              mergeReadiness:
-                obj.mergeReadiness === "ready" || obj.mergeReadiness === "needs_work" || obj.mergeReadiness === "blocked"
-                  ? obj.mergeReadiness
-                  : "needs_work"
-            };
-          }
-        } catch (error) {
-          logger.warn("prs.ai_review_summary_failed", {
-            prId: args.prId,
-            error: error instanceof Error ? error.message : String(error)
-          });
-        }
-      }
-
-      // Fallback: return a basic summary based on file stats
-      const totalAdditions = files.reduce((s, f) => s + f.additions, 0);
-      const totalDeletions = files.reduce((s, f) => s + f.deletions, 0);
-      return {
-        summary: `This PR modifies ${files.length} file(s) with +${totalAdditions}/-${totalDeletions} changes.`,
-        potentialIssues: [],
-        recommendations: ["Review the changes manually for a detailed assessment."],
-        mergeReadiness: "needs_work"
-      };
     },
 
     async getMobileSnapshot(): Promise<PrMobileSnapshot> {

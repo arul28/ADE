@@ -671,8 +671,7 @@ a boolean.
   — `getDetailBundle` groups a PR's status, checks, reviews, and
   comments reads while preserving successful sidecars on partial failure
 - `getChecks`, `getReviews`, `getComments`, `getFiles`
-- `postReviewComment`, `getAiSummary`, `regenerateAiSummary`, `delete`,
-  `cleanupBranch`
+- `postReviewComment`, `delete`, `cleanupBranch`
 - `getIntegrationResolutionState`, `aiResolutionGetSession`,
   `aiResolutionStart`
 - `listProposals`, `getMergeContext`, `getMergeContexts`,

@@ -313,7 +313,7 @@ all writes and controllers only read. The local-only excluded set
 is enumerated in `kvDb.ts`'s `LOCAL_ONLY_CRR_EXCLUDED_TABLES` — the
 lane and PR projections (`lane_detail_snapshots`, `lane_list_snapshots`,
 `github_pr_projections`, `github_pr_stacks`, `github_pr_stack_entries`,
-`pull_request_ai_summaries`, `pr_auto_link_ignores`), machine-local
+`pr_auto_link_ignores`), machine-local
 automation and runtime bookkeeping (`automation_ingress_events`,
 `automation_schedule_occurrences`, `automation_scheduled_cleanups`,
 `github_webhook_deliveries`, `runtime_processes`, `test_suites`,

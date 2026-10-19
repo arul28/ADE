@@ -163,7 +163,6 @@ export function createAdeWebAdapter(
     usage: misc.usage,
     providerInstances: misc.providerInstances,
     automations: misc.automations,
-    feedback: misc.feedback,
     updateCheckForUpdates: async () => undefined,
     keepAwakeGet: webKeepAwakeMethods.keepAwakeGet,
     keepAwakeSetLevel: webKeepAwakeMethods.keepAwakeSetLevel,

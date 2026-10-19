@@ -42,7 +42,6 @@ function createService(options?: {
   laneService?: Record<string, unknown>;
   operationService?: Record<string, unknown>;
   prService?: Record<string, unknown>;
-  prSummaryService?: Record<string, unknown>;
   projectRoot?: string;
   ptyService?: Record<string, unknown>;
   sessionActivityReportingEnabled?: boolean;
@@ -97,7 +96,6 @@ function createService(options?: {
     ...(options?.projectRoot ? { projectRoot: options.projectRoot } : {}),
     laneService: options?.laneService ?? {},
     prService: options?.prService ?? {},
-    ...(options?.prSummaryService ? { prSummaryService: options.prSummaryService } : {}),
     ptyService,
     sessionActivityReportingEnabled: options?.sessionActivityReportingEnabled,
     sessionService,

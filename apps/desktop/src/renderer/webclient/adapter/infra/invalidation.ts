@@ -112,7 +112,6 @@ const TABLE_DOMAINS: Readonly<Record<string, readonly InvalidationDomain[]>> = {
 
   // ── PRs ──────────────────────────────────────────────────────────────────
   pull_request_snapshots: ["prs"],
-  pull_request_ai_summaries: ["prs"],
   github_pr_projections: ["prs"],
   github_pr_stacks: ["prs"],
   github_pr_stack_entries: ["prs"],

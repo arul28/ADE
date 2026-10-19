@@ -375,7 +375,6 @@ export const MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS = [
   "prs.replyToReviewThread",
   "prs.setReviewThreadResolved",
   "prs.reactToComment",
-  "prs.aiReviewSummary",
   "prs.simulateIntegration",
   "prs.commitIntegration",
   "prs.listIntegrationWorkflows",

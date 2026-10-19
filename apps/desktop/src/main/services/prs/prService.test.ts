@@ -318,7 +318,6 @@ interface BuildServiceOpts {
   autoRebaseService?: any;
   refreshDefaultBranchAfterMerge?: (baseBranch: string) => Promise<void>;
   projectConfigService?: any;
-  aiIntegrationService?: any;
   onHotRefreshChanged?: () => void;
   operationService?: any;
   /**
@@ -392,7 +391,6 @@ function buildService(opts: BuildServiceOpts = {}) {
     rebaseSuggestionService: opts.rebaseSuggestionService,
     autoRebaseService: opts.autoRebaseService,
     refreshDefaultBranchAfterMerge: opts.refreshDefaultBranchAfterMerge,
-    ...(opts.aiIntegrationService ? { aiIntegrationService: opts.aiIntegrationService } : {}),
     onHotRefreshChanged: opts.onHotRefreshChanged,
     openExternal: vi.fn(async () => {}),
   });
@@ -6233,14 +6231,11 @@ describe("prService.delete", () => {
     await service.delete({ prId: "pr-row-1", closeOnGitHub: false, archiveLane: false });
 
     const runSql: string[] = db.run.mock.calls.map((call: unknown[]) => String(call[0]));
-    const summaryDeleteIndex = runSql.findIndex((sql: string) => sql.includes("delete from pull_request_ai_summaries"));
     const snapshotDeleteIndex = runSql.findIndex((sql: string) => sql.includes("delete from pull_request_snapshots"));
     const prDeleteIndex = runSql.findIndex((sql: string) => sql.includes("delete from pull_requests"));
 
-    expect(summaryDeleteIndex).toBeGreaterThanOrEqual(0);
     expect(snapshotDeleteIndex).toBeGreaterThanOrEqual(0);
     expect(prDeleteIndex).toBeGreaterThanOrEqual(0);
-    expect(summaryDeleteIndex).toBeLessThan(prDeleteIndex);
     expect(snapshotDeleteIndex).toBeLessThan(prDeleteIndex);
   });
 });

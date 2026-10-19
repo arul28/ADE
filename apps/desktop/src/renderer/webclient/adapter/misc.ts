@@ -69,7 +69,6 @@ export type MiscNamespaces = {
   devTools: AdeNamespace<"devTools">;
   localhost: AdeNamespace<"localhost">;
   tests: AdeNamespace<"tests">;
-  feedback: AdeNamespace<"feedback">;
   computerUse: AdeNamespace<"computerUse">;
   iosSimulator: AdeNamespace<"iosSimulator">;
   builtInBrowser: AdeNamespace<"builtInBrowser">;
@@ -966,7 +965,6 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     devTools: ({ detect: async () => ({ tools: [] }) } as unknown as AdeNamespace<"devTools">),
     localhost: { probePort: async () => false } as AdeNamespace<"localhost">,
     tests: createTestStubs() as AdeNamespace<"tests">,
-    feedback: createFeedbackStubs() as AdeNamespace<"feedback">,
     computerUse: createComputerUseNamespace(infra),
     iosSimulator: createAppleDeviceNamespace(call, appleEndpointReader(client)),
     builtInBrowser: {
@@ -1213,15 +1211,6 @@ function createTestStubs(): Record<string, unknown> {
     listRuns: async () => [],
     getLogTail: async () => "",
     onEvent: () => () => {},
-  };
-}
-
-function createFeedbackStubs(): Record<string, unknown> {
-  return {
-    prepareDraft: async () => null,
-    submitDraft: async () => null,
-    list: async () => [],
-    onUpdate: () => () => {},
   };
 }
 

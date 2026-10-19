@@ -67,7 +67,7 @@ export type CaptionInsetArgs = {
 
 /**
  * CSS px to reserve at the end of the title bar so the Windows caption buttons
- * never cover ADE's trailing controls (feedback reporter, help menu, zoom).
+ * never cover ADE's trailing controls (help menu, zoom).
  *
  * The overlay rect is the page-owned slice of the title bar, so the reserved
  * width is `viewport - (rect.x + rect.width)` — whatever the caption buttons

@@ -8458,48 +8458,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       generateDocs: resolvedArg({}),
       openDoc: resolvedArg(undefined),
     },
-    feedback: {
-      prepareDraft: resolvedArg({
-        category: "bug",
-        draftInput: {
-          category: "bug",
-          summary: "Mock feedback",
-          stepsToReproduce: "",
-          expectedBehavior: "",
-          actualBehavior: "",
-          environment: "",
-          additionalContext: "",
-        },
-        userDescription: "## Summary\n\nMock feedback",
-        modelId: null,
-        reasoningEffort: null,
-        title: "Mock feedback",
-        body: "## Description\n\nMock feedback",
-        labels: ["bug"],
-        generationMode: "deterministic",
-        generationWarning:
-          "ADE used a deterministic draft because no AI model was selected.",
-      }),
-      submitDraft: resolvedArg({
-        id: "mock-feedback-1",
-        category: "bug",
-        userDescription: "Mock feedback",
-        modelId: null,
-        status: "posted",
-        generationMode: null,
-        generationWarning: null,
-        generatedTitle: null,
-        generatedBody: null,
-        issueUrl: null,
-        issueNumber: null,
-        issueState: null,
-        error: null,
-        createdAt: new Date().toISOString(),
-        completedAt: null,
-      }),
-      list: resolved([]),
-      onUpdate: () => () => {},
-    },
     github: {
       getStatus: resolved({
         tokenStored: true,
@@ -9074,8 +9032,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       getCommits: async (prId: string) =>
         ADE_DB_PR_SNAPSHOT_BY_ID.get(prId)?.commits ?? [],
       getDeployments: resolvedArg([]),
-      getAiSummary: resolvedArg(null),
-      regenerateAiSummary: resolvedArg(null),
       postReviewComment: resolvedArg({
         id: "mock-review-comment",
         author: "you",
@@ -9127,12 +9083,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       setDraft: resolvedArg(undefined),
       setAutoMerge: resolvedArg(undefined),
       rerunChecks: resolvedArg(undefined),
-      aiReviewSummary: resolvedArg({
-        summary: "AI review summary placeholder",
-        potentialIssues: [],
-        recommendations: [],
-        mergeReadiness: "ready",
-      }),
       listProposals: resolved([]),
       dismissIntegrationCleanup: resolvedArg(
         USE_ADE_DB_SNAPSHOT

@@ -193,7 +193,6 @@ import { createGithubService } from "./services/github/githubService";
 import { createProjectScaffoldService } from "./services/projects/projectScaffoldService";
 import { createProjectTabDragService } from "./services/projects/projectTabDragService";
 import { consumeFirstOpenStabilityMarker } from "./services/projects/projectLocalDatabase";
-import { createFeedbackReporterService } from "./services/feedback/feedbackReporterService";
 import { createPrService } from "./services/prs/prService";
 import { createPrPollingService } from "./services/prs/prPollingService";
 import { createPrWatchService } from "./services/prs/prWatchService";
@@ -201,7 +200,6 @@ import { chatLivenessReader, createPrMergeAutoSettlementService } from "./servic
 import {
   emitPrCardsForChange,
 } from "./services/prs/prChatCards";
-import { createPrSummaryService } from "./services/prs/prSummaryService";
 import { openExternalUrl } from "./services/shared/externalLinks";
 import {
   CaptureHelper,
@@ -4113,15 +4111,6 @@ app.whenReady().then(async () => {
       githubService,
     });
 
-    const feedbackReporterService = createFeedbackReporterService({
-      db,
-      logger,
-      projectRoot,
-      aiIntegrationService,
-      githubService,
-      onSubmissionUpdated: (event) => broadcast(IPC.feedbackOnUpdate, event),
-    });
-
     const conflictService = createConflictService({
       db,
       logger,
@@ -4184,7 +4173,6 @@ app.whenReady().then(async () => {
       laneService,
       operationService,
       githubService,
-      aiIntegrationService,
       projectConfigService,
       conflictService,
       laneWorktreeLockService,
@@ -4323,14 +4311,6 @@ app.whenReady().then(async () => {
       },
     });
     prPollingServiceRef = prPollingService;
-
-    const prSummaryService = createPrSummaryService({
-      db,
-      logger,
-      projectRoot,
-      prService,
-      aiIntegrationService,
-    });
 
     const externalFilesRegistry = createExternalFilesWorkspaceRegistry();
     const fileService = createFileService({
@@ -6024,7 +6004,6 @@ app.whenReady().then(async () => {
       aiIntegrationService,
       agentChatService,
       prService,
-      prSummaryService,
       fileService,
       searchService,
       externalSessionsService,
@@ -6047,7 +6026,6 @@ app.whenReady().then(async () => {
       cursorCloudIngressService,
       cursorCloudFleetService,
       cloudAgentsService,
-      feedbackReporterService,
       usageTrackingService,
       storageInsightsService,
       budgetCapService,
@@ -6277,7 +6255,6 @@ app.whenReady().then(async () => {
         githubService,
         keybindingsService,
         onboardingService,
-        feedbackReporterService,
         usageTrackingService,
         storageInsightsService,
         budgetCapService,
@@ -6327,7 +6304,6 @@ app.whenReady().then(async () => {
       aiIntegrationService,
       githubService,
       projectScaffoldService,
-      feedbackReporterService,
       prService,
       prPollingService,
       prWatchService: prWatchServiceRef,
@@ -6335,7 +6311,6 @@ app.whenReady().then(async () => {
       iosSimulatorService,
       macDesktopService,
       appControlService,
-      prSummaryService,
       searchService,
       externalSessionsService,
       jobEngine,
@@ -6547,11 +6522,9 @@ app.whenReady().then(async () => {
       builtInBrowserService: null,
       githubService: dormantGithubService,
       projectScaffoldService: dormantProjectScaffoldService,
-      feedbackReporterService: null,
       prService: null,
       prPollingService: null,
       prWatchService: null,
-      prSummaryService: null,
       jobEngine: null,
       transcriptionService: getSharedTranscriptionService(logger),
       automationService: null,

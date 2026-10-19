@@ -561,7 +561,6 @@ import type {
   ReplyToPrReviewThreadArgs,
   ResolvePrReviewThreadArgs,
   PrDeployment,
-  PrAiSummary,
   PostPrReviewCommentArgs,
   SetPrReviewThreadResolvedArgs,
   SetPrReviewThreadResolvedResult,
@@ -577,8 +576,6 @@ import type {
   SetPrAutoMergeArgs,
   SetPrDraftArgs,
   RerunPrChecksArgs,
-  AiReviewSummaryArgs,
-  AiReviewSummary,
   UpdateIntegrationProposalArgs,
   UpdatePrDescriptionArgs,
   LandPrArgs,
@@ -1209,11 +1206,6 @@ import type {
   ChatTerminalSession,
   ChatTerminalSignalArgs,
   ChatTerminalWriteArgs,
-  FeedbackPrepareDraftArgs,
-  FeedbackPreparedDraft,
-  FeedbackSubmission,
-  FeedbackSubmissionEvent,
-  FeedbackSubmitDraftArgs,
   SearchIndexStatus,
   SearchQueryArgs,
   SearchQueryResult,
@@ -2997,11 +2989,6 @@ const remoteGitHubStatusChangedFanout = createRemoteRuntimeFanout<GitHubStatus>(
     githubAppInstallationStatusCache.clear();
   },
 });
-const remoteFeedbackEventFanout = createRemoteRuntimeFanout<FeedbackSubmissionEvent>({
-  eventType: "feedback_submission_event",
-  label: "feedback",
-  onSubscribe: () => ensureRemoteRuntimeEventPump(),
-});
 const remoteComputerUseEventFanout = createRemoteRuntimeFanout<ComputerUseEventPayload>({
   eventType: "computer_use_event",
   label: "computer use",
@@ -3082,7 +3069,6 @@ export const REMOTE_RUNTIME_FANOUTS: readonly RemoteRuntimeFanoutEntry[] = [
   remoteAutomationsEventFanout,
   remoteConflictEventFanout,
   remoteGitHubStatusChangedFanout,
-  remoteFeedbackEventFanout,
   remoteComputerUseEventFanout,
   remoteIosSimulatorEventFanout,
   remoteMacDesktopEventFanout,
@@ -3188,11 +3174,6 @@ const subscribeLocalConflictEvents =
   createLocalIpcEventSubscription<ConflictEventPayload>(
     IPC.conflictsEvent,
     "conflict event",
-  );
-const subscribeLocalFeedbackEvents =
-  createLocalIpcEventSubscription<FeedbackSubmissionEvent>(
-    IPC.feedbackOnUpdate,
-    "feedback event",
   );
 const subscribeLocalOpenCodeOAuthStatusEvents =
   createLocalIpcEventSubscription<OpenCodeOAuthStatusEvent>(
@@ -3777,12 +3758,6 @@ function subscribeRemoteGitHubStatusChangedEvents(
   return remoteGitHubStatusChangedFanout.subscribe(cb);
 }
 
-function subscribeRemoteFeedbackEvents(
-  cb: (payload: FeedbackSubmissionEvent) => void,
-): () => void {
-  return remoteFeedbackEventFanout.subscribe(cb);
-}
-
 function subscribeRemoteComputerUseEvents(
   cb: (payload: ComputerUseEventPayload) => void,
 ): () => void {
@@ -3950,16 +3925,6 @@ function isRebaseEventPayload(
   );
 }
 
-function subscribeFeedbackEvents(
-  cb: (payload: FeedbackSubmissionEvent) => void,
-): () => void {
-  const removeLocal = subscribeLocalFeedbackEvents(cb);
-  const removeRemote = subscribeRemoteFeedbackEvents(cb);
-  return () => {
-    removeRemote();
-    removeLocal();
-  };
-}
 
 function subscribePinnedProjectRuntimeEvents<T>(
   pin: OpenProjectBinding | null | undefined,
@@ -12145,28 +12110,6 @@ const adeBridge = {
       ),
     onEvent: subscribeConflictEvents,
   },
-  feedback: {
-    prepareDraft: async (
-      args: FeedbackPrepareDraftArgs,
-    ): Promise<FeedbackPreparedDraft> =>
-      callProjectRuntimeActionOr("feedback", "prepareDraft", { args }, () =>
-        ipcRenderer.invoke(IPC.feedbackPrepareDraft, args),
-      ),
-    submitDraft: async (
-      args: FeedbackSubmitDraftArgs,
-    ): Promise<FeedbackSubmission> =>
-      callProjectRuntimeActionOr(
-        "feedback",
-        "submitPreparedDraft",
-        { args },
-        () => ipcRenderer.invoke(IPC.feedbackSubmitDraft, args),
-      ),
-    list: async (): Promise<FeedbackSubmission[]> =>
-      callProjectRuntimeActionOr("feedback", "list", {}, () =>
-        ipcRenderer.invoke(IPC.feedbackList),
-      ),
-    onUpdate: subscribeFeedbackEvents,
-  },
   github: {
     getStatus: async (opts?: {
       forceRefresh?: boolean;
@@ -13230,12 +13173,6 @@ const adeBridge = {
       callPinnedOrBoundRuntimeActionOr(pin, "pr", "rerunChecks", { args }, () =>
         ipcRenderer.invoke(IPC.prsRerunChecks, args),
       ),
-    aiReviewSummary: async (
-      args: AiReviewSummaryArgs,
-    ): Promise<AiReviewSummary> =>
-      callProjectRuntimeActionOr("pr", "aiReviewSummary", { args }, () =>
-        ipcRenderer.invoke(IPC.prsAiReviewSummary, args),
-      ),
     dismissIntegrationCleanup: async (
       args: DismissIntegrationCleanupArgs,
       pin?: OpenProjectBinding | null,
@@ -13261,17 +13198,6 @@ const adeBridge = {
     getDeployments: async (prId: string, pin?: OpenProjectBinding | null): Promise<PrDeployment[]> =>
       callPrReadRuntimeActionOr(pin, "getDeployments", { arg: prId }, () =>
         ipcRenderer.invoke(IPC.prsGetDeployments, { prId }),
-      ),
-    getAiSummary: async (prId: string, pin?: OpenProjectBinding | null): Promise<PrAiSummary | null> =>
-      callPrReadRuntimeActionOr(pin, "getAiSummary", { arg: prId }, () =>
-        ipcRenderer.invoke(IPC.prsGetAiSummary, { prId }),
-      ),
-    regenerateAiSummary: async (prId: string): Promise<PrAiSummary> =>
-      callProjectRuntimeActionOr(
-        "pr",
-        "regenerateAiSummary",
-        { arg: prId },
-        () => ipcRenderer.invoke(IPC.prsRegenerateAiSummary, { prId }),
       ),
     postReviewComment: async (
       args: PostPrReviewCommentArgs,

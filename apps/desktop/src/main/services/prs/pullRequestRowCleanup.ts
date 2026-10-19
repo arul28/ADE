@@ -123,11 +123,6 @@ export function deletePullRequestRowsByIds(db: DbLike, projectId: string, prIds:
     scope.params,
   );
   db.run(
-    `delete from pull_request_ai_summaries
-     where pr_id in (${scope.selectSql})`,
-    scope.params,
-  );
-  db.run(
     `delete from pull_request_snapshots
      where pr_id in (${scope.selectSql})`,
     scope.params,

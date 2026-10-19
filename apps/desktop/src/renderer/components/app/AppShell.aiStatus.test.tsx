@@ -13,7 +13,6 @@ import {
 } from "../../lib/sessionListCache";
 import { useAppStore } from "../../state/appStore";
 import { AppShell, productAnalyticsScreenForPathname } from "./AppShell";
-import { getToasts } from "./toast/toastStore";
 
 vi.mock("./CommandPalette", () => ({
   CommandPalette: () => null,
@@ -173,9 +172,6 @@ describe("AppShell AI provider status", () => {
         },
         cto: {
           onLinearWorkflowEvent: vi.fn(() => () => {}),
-        },
-        feedback: {
-          onUpdate: vi.fn(() => () => {}),
         },
         github: {
           getStatus: githubGetStatusMock,
@@ -345,30 +341,6 @@ describe("AppShell AI provider status", () => {
       screen.getByRole("button", { name: /^Dismiss: Project directory not found/ }).click();
     });
     expect(screen.queryByText(/Project directory not found/)).toBeNull();
-  });
-
-  it("shows report generation as a sticky progress toast and clears it when done", async () => {
-    let onFeedback: ((event: { submission?: { status?: string } }) => void) | null = null;
-    vi.mocked(window.ade.feedback.onUpdate).mockImplementation(((listener: typeof onFeedback) => {
-      onFeedback = listener;
-      return () => {};
-    }) as never);
-
-    render(
-      <MemoryRouter initialEntries={["/work"]}>
-        <AppShell>
-          <div>Work content</div>
-        </AppShell>
-      </MemoryRouter>,
-    );
-    await act(async () => {});
-
-    act(() => onFeedback?.({ submission: { status: "generating" } }));
-    const toast = getToasts().find((entry) => entry.title === "Generating feedback report...");
-    expect(toast).toMatchObject({ busy: true, dismissible: false, durationMs: 0 });
-
-    act(() => onFeedback?.({ submission: { status: "posted" } }));
-    expect(getToasts().some((entry) => entry.title === "Generating feedback report...")).toBe(false);
   });
 
   it("refreshes the missing-provider banner when AI status cache is invalidated", async () => {

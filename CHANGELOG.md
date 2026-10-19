@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Desktop and web
+
+- The in-app feedback form, AI PR summaries and AI PR review summaries are gone. To report a bug or idea, ask your agent to file a GitHub issue.
+
 ## [1.2.112] - 2026-10-19
 
 ### Desktop and web
