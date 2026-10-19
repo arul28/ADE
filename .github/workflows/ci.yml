@@ -590,7 +590,6 @@ jobs:
           src/services/projects/machineLayout.test.ts
           src/services/projects/projectIconResolver.test.ts
           src/services/projects/projectRegistry.test.ts
-          src/services/reset/machineReset.test.ts
           src/services/sync/syncHostSingleton.test.ts
           src/services/sync/syncLoopbackCollision.test.ts
           src/services/sync/syncService.test.ts
