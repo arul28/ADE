@@ -434,7 +434,6 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     web: "hidden",
     group: "ADE MCP",
   },
-
   {
     id: "general.capture-gesture",
     label: "Capture with a key gesture",

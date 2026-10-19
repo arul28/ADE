@@ -83,6 +83,7 @@ import {
 } from "../../desktop/src/main/services/adeActions/actionPolicy";
 import { buildSendNotificationAction } from "../../desktop/src/main/services/adeActions/registry";
 import { callerIdentityIsAgent, normalizeAdeRuntimeRole, resolveSessionBoundRole } from "./runtimeRoles";
+import { isRemoteMcpAction } from "../../desktop/src/shared/types/remoteMcp";
 import {
   createSyncAccountDirectoryHealth,
   type SyncAccountDirectoryHealth,
@@ -2434,9 +2435,6 @@ export function createMultiProjectRpcRequestHandler(
       return { accepted: true };
     }
 
-    // `ade notify`: machine-wide, so it neither needs nor registers the
-    // caller's folder as a project. Open to agents, like the
-    // `attention.sendNotification` action it shares its rules with.
     if (method === "remoteMcp.call") {
       // `ade mcp` in the person's own terminal. Granting an outside AI app this
       // computer is the person's call: an agent (a chat-bound caller) never
@@ -2448,27 +2446,19 @@ export function createMultiProjectRpcRequestHandler(
         );
       }
       const action = typeof params.action === "string" ? params.action.trim() : "";
-      const actionArgs = isRecord(params.args) ? params.args : {};
-      const { getSharedRemoteMcpService } = await import("./services/remoteMcp/remoteMcpShared");
-      const service = getSharedRemoteMcpService();
-      switch (action) {
-        case "getStatus":
-          return service.getStatus();
-        case "listActivity":
-          return service.listActivity(actionArgs);
-        case "setEnabled":
-          return service.setEnabled(actionArgs);
-        case "createToken":
-          return service.createToken(actionArgs);
-        case "updateConnection":
-          return service.updateConnection(actionArgs);
-        case "removeConnection":
-          return service.removeConnection(actionArgs);
-        default:
-          throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Unknown remote access action "${action}".`);
+      if (!isRemoteMcpAction(action)) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Unknown ADE MCP action "${action}".`);
       }
+      const [{ getSharedRemoteMcpService }, { remoteMcpActionHandlers }] = await Promise.all([
+        import("./services/remoteMcp/remoteMcpShared"),
+        import("./services/remoteMcp/remoteMcpService"),
+      ]);
+      return remoteMcpActionHandlers(getSharedRemoteMcpService())[action](isRecord(params.args) ? params.args : {});
     }
 
+    // `ade notify`: machine-wide, so it neither needs nor registers the
+    // caller's folder as a project. Open to agents, like the
+    // `attention.sendNotification` action it shares its rules with.
     if (method === "notify.send") {
       if (!callerHasRoleAtLeast(callerRole(), "agent")) {
         throw new JsonRpcError(

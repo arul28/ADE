@@ -1,8 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
+import { ensurePrivateDirectory } from "../../lib/trustedWindowsTools";
 import type { RemoteMcpActivityEntry } from "../../../../desktop/src/shared/types/remoteMcp";
-
-export type { RemoteMcpActivityEntry, RemoteMcpActivityOutcome } from "../../../../desktop/src/shared/types/remoteMcp";
 
 /**
  * What connected AI apps ran on this computer, newest last, for Settings and
@@ -13,9 +12,10 @@ export type { RemoteMcpActivityEntry, RemoteMcpActivityOutcome } from "../../../
 const MAX_LOG_BYTES = 512 * 1024;
 const MAX_DETAIL_CHARS = 300;
 
-export type RemoteMcpActivityLog = ReturnType<typeof createRemoteMcpActivityLog>;
-
-export function createRemoteMcpActivityLog(args: { filePath: string }) {
+export function createRemoteMcpActivityLog(args: {
+  filePath: string;
+  logger?: { warn?: (event: string, data?: Record<string, unknown>) => void };
+}) {
   const rolledPath = `${args.filePath}.1`;
 
   const readLines = (filePath: string): string[] => {
@@ -33,7 +33,7 @@ export function createRemoteMcpActivityLog(args: { filePath: string }) {
         ...(entry.detail ? { detail: entry.detail.slice(0, MAX_DETAIL_CHARS) } : {}),
       })}\n`;
       try {
-        fs.mkdirSync(path.dirname(args.filePath), { recursive: true });
+        ensurePrivateDirectory(path.dirname(args.filePath));
         let size = 0;
         try {
           size = fs.statSync(args.filePath).size;
@@ -44,8 +44,11 @@ export function createRemoteMcpActivityLog(args: { filePath: string }) {
           fs.renameSync(args.filePath, rolledPath);
         }
         fs.appendFileSync(args.filePath, line, { encoding: "utf8", mode: 0o600 });
-      } catch {
+      } catch (error) {
         // The log is a convenience for the person; a full disk must not fail the call.
+        args.logger?.warn?.("remote_mcp.activity_write_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     },
 

@@ -71,7 +71,7 @@ Internal docs live under `docs/` (rebuilt tree). The public Mintlify site
 | `apps/ios/**` | `docs/features/sync-and-multi-device/ios-companion.md` + `features/apple-device/` | — |
 | `apps/desktop/src/main/services/ios/**`, `apps/desktop/src/renderer/components/apple/**`, `apps/desktop/native/ADESimHelper/**` | `docs/features/apple-device/` + skill `ade-apple` | `ade-perf-work` |
 | `apps/web/**` | `docs/ARCHITECTURE.md` (Apps & Processes) | — |
-| `apps/ade-cli/src/services/remoteMcp/**`, `apps/ade-cli/src/cliRemoteMcp.ts`, `apps/tunnel-relay/**`, `RemoteAiAccessSection.tsx` (keywords: remote MCP, MCP server, ADE MCP, `ade mcp`, connector) | `docs/features/ade-mcp/README.md` + `apps/tunnel-relay/README.md` | — |
+| `apps/ade-cli/src/services/remoteMcp/**`, `apps/ade-cli/src/cliRemoteMcp.ts`, `apps/tunnel-relay/**`, `AdeMcpPage.tsx` (keywords: remote MCP, MCP server, ADE MCP, `ade mcp`, connector) | `docs/features/ade-mcp/README.md` + `apps/tunnel-relay/README.md` | — |
 | `.github/workflows/**` | `docs/ARCHITECTURE.md` (Build/Test/Deploy) | — |
 
 ---

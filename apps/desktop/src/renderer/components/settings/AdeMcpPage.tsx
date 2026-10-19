@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AppWindow, Check, Copy, Key, Plus, WarningCircle } from "@phosphor-icons/react";
+import { AppWindow, Check, Copy, Key, Plus } from "@phosphor-icons/react";
 import type {
   RemoteMcpAction,
   RemoteMcpActivityEntry,
@@ -9,6 +9,8 @@ import type {
   RemoteMcpStatus,
 } from "../../../shared/types/remoteMcp";
 import { usageProviderLogo } from "../terminals/ToolLogos";
+import { Banner } from "../ui/notice";
+import { ipcErrorMessage } from "../../lib/format";
 import { ModernPage, ModernRow, ModernRows, ModernSection, SettingsSegmented, SettingsToggle } from "./primitives";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
 import "./adeMcpPage.css";
@@ -55,10 +57,7 @@ function AppMark({ connection }: { connection: RemoteMcpConnectionSummary }) {
 }
 
 function errorText(error: unknown, fallback: string): string {
-  const message = error instanceof Error
-    ? error.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, "")
-    : "";
-  return message || fallback;
+  return ipcErrorMessage(error) || fallback;
 }
 
 function usedText(iso: string | null): string {
@@ -119,6 +118,7 @@ export function AdeMcpPage() {
   const loadRequest = useRef(0);
   const [status, setStatus] = useState<RemoteMcpStatus | null>(null);
   const [activity, setActivity] = useState<RemoteMcpActivityEntry[]>([]);
+  const [activityError, setActivityError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -136,23 +136,24 @@ export function AdeMcpPage() {
     };
   }, []);
 
-  const call = useCallback(<T,>(action: RemoteMcpAction, args?: Record<string, unknown>): Promise<T> => {
-    const activePin = pinRef.current;
-    return activePin
-      ? window.ade.remoteMcpCall<T>(action, args, activePin)
-      : window.ade.remoteMcpCall<T>(action, args);
-  }, []);
+  // A null pin is this computer; the preload routes it to this machine's brain.
+  const call = useCallback(<T,>(action: RemoteMcpAction, args?: Record<string, unknown>): Promise<T> =>
+    window.ade.remoteMcpCall<T>(action, args, pinRef.current), []);
 
   const load = useCallback(async () => {
     const request = ++loadRequest.current;
     try {
       const [next, recent] = await Promise.all([
         call<RemoteMcpStatus>("getStatus"),
-        call<RemoteMcpActivityEntry[]>("listActivity", { limit: 50 }).catch(() => [] as RemoteMcpActivityEntry[]),
+        call<RemoteMcpActivityEntry[]>("listActivity", { limit: 50 })
+          .then((entries) => ({ entries, error: null }))
+          .catch((error: unknown) => ({ entries: null, error: errorText(error, "Couldn't load recent activity.") })),
       ]);
       if (!mounted.current || request !== loadRequest.current) return;
       setStatus(next);
-      setActivity(Array.isArray(recent) ? recent : []);
+      // A failed read keeps what was shown and says so, rather than looking empty.
+      if (recent.entries) setActivity(Array.isArray(recent.entries) ? recent.entries : []);
+      setActivityError(recent.error);
       setLoadError(null);
     } catch (error) {
       if (!mounted.current || request !== loadRequest.current) return;
@@ -226,13 +227,15 @@ export function AdeMcpPage() {
     return (
       <ModernPage>
         <ModernSection group="ADE MCP" anchor="ade-mcp" title="ADE MCP">
-          <div className="ade-modern-note" data-tone="warn" style={{ alignItems: "center" }}>
-            <WarningCircle size={14} weight="fill" style={{ marginTop: 0 }} />
-            <span style={{ flex: 1 }}>{loadError}</span>
-            <button type="button" className="ade-modern-btn" data-size="sm" onClick={() => void load()}>
-              Retry
-            </button>
-          </div>
+          <Banner
+            layout="inline"
+            model={{
+              id: "ade-mcp-load-error",
+              tone: "warning",
+              title: loadError,
+              actions: [{ label: "Retry", onClick: () => { void load(); } }],
+            }}
+          />
         </ModernSection>
       </ModernPage>
     );
@@ -250,7 +253,7 @@ export function AdeMcpPage() {
                 checked={enabled}
                 disabled={busy || !status}
                 onChange={setEnabled}
-                label="Let AI apps use this computer"
+                label={`Let AI apps use ${computer}`}
               />
             )}
           />
@@ -261,7 +264,7 @@ export function AdeMcpPage() {
                 <span className="ade-mcp-status">
                   <span className="kit-dot" data-state={status?.serverUrl && status.relayConnected ? "ok" : "warn"} />
                   {!status?.serverUrl
-                    ? "Sign in to your ADE account on this computer to get an address."
+                    ? `Sign in to your ADE account on ${computer} to get an address.`
                     : status.relayConnected
                       ? "Reachable through ADE Relay."
                       : "ADE Relay isn't connected, so apps can't reach it right now."}
@@ -449,6 +452,18 @@ export function AdeMcpPage() {
       ) : null}
 
       {actionError ? <span role="alert" className="ade-modern-error">{actionError}</span> : null}
+
+      {activityError ? (
+        <Banner
+          layout="inline"
+          model={{
+            id: "ade-mcp-activity-error",
+            tone: "warning",
+            title: activityError,
+            actions: [{ label: "Retry", onClick: () => { void load(); } }],
+          }}
+        />
+      ) : null}
 
       {activity.length ? (
         <ModernSection

@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import path from "node:path";
-import { terminateProcessTree } from "../../../../desktop/src/main/services/shared/processExecution";
+import { signalChildProcessTree, terminateChildProcessTree } from "../../../../desktop/src/main/services/shared/utils";
 
 /**
  * Runs one `ade` command for a remote AI app, as a child of this brain.
@@ -60,7 +60,7 @@ async function resolveLaunch(): Promise<Launch> {
     }
     launch = { command: process.execPath, prefixArgs: [entry], env };
   } else if (/\.(?:cmd|bat|ps1)$/i.test(entry)) {
-    throw new Error("This computer's ade command is a script wrapper, which remote access will not run through a shell.");
+    throw new Error("This computer's ade command is a script wrapper, which ADE MCP will not run through a shell.");
   } else {
     launch = { command: entry, prefixArgs: [], env };
   }
@@ -70,22 +70,9 @@ async function resolveLaunch(): Promise<Launch> {
 
 const running = new Set<ChildProcess>();
 
-function killTree(child: ChildProcess, signal: NodeJS.Signals): void {
-  if (process.platform !== "win32" && typeof child.pid === "number") {
-    try {
-      // Started detached, so the CLI leads its own process group.
-      process.kill(-child.pid, signal);
-      return;
-    } catch {
-      // fall through to the direct kill
-    }
-  }
-  terminateProcessTree(child, signal);
-}
-
 /** Stops every command still running, e.g. when the brain shuts down. */
 export function stopAllRemoteRuns(): void {
-  for (const child of running) killTree(child, "SIGKILL");
+  for (const child of running) signalChildProcessTree(child, "SIGKILL");
   running.clear();
 }
 
@@ -143,11 +130,21 @@ export async function runAdeForRemote(args: {
       errBytes = collect(err, chunk, errBytes);
     });
     let killTimer: NodeJS.Timeout | null = null;
+    let abandonTimer: NodeJS.Timeout | null = null;
     const timer = setTimeout(() => {
       timedOut = true;
-      killTree(child, "SIGTERM");
-      killTimer = setTimeout(() => killTree(child, "SIGKILL"), KILL_GRACE_MS);
+      // SIGTERM to the group (the CLI was started detached, so it leads one), then SIGKILL.
+      killTimer = terminateChildProcessTree(child, null, KILL_GRACE_MS);
       killTimer.unref?.();
+      // A descendant that left the group (or that taskkill missed) can keep the
+      // pipes open, and then `close` never comes. Stop waiting for it, so the
+      // run's slot is freed.
+      abandonTimer = setTimeout(() => {
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+        finish(child.exitCode);
+      }, KILL_GRACE_MS * 2);
+      abandonTimer.unref?.();
     }, timeoutMs);
     timer.unref?.();
     const finish = (exitCode: number | null, spawnError?: Error): void => {
@@ -155,6 +152,7 @@ export async function runAdeForRemote(args: {
       settled = true;
       clearTimeout(timer);
       if (killTimer) clearTimeout(killTimer);
+      if (abandonTimer) clearTimeout(abandonTimer);
       running.delete(child);
       resolve({
         exitCode,

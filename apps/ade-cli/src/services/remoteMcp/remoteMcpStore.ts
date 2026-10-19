@@ -1,13 +1,13 @@
 import fs from "node:fs";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { writeTextAtomic } from "../../../../desktop/src/main/services/shared/utils";
-import type {
-  RemoteMcpConnectionKind,
-  RemoteMcpConnectionSummary,
-  RemoteMcpScope,
+import { securePrivatePath } from "../../lib/trustedWindowsTools";
+import {
+  isRemoteMcpScope,
+  type RemoteMcpConnectionKind,
+  type RemoteMcpConnectionSummary,
+  type RemoteMcpScope,
 } from "../../../../desktop/src/shared/types/remoteMcp";
-
-export type { RemoteMcpConnectionKind, RemoteMcpConnectionSummary };
 
 /**
  * This machine's ADE MCP: whether it is on, and every connection that
@@ -19,8 +19,11 @@ export type { RemoteMcpConnectionKind, RemoteMcpConnectionSummary };
  * working on the next request.
  */
 
-/** The stored record: what Settings and the CLI see, plus the token's hash. */
-export type RemoteMcpConnection = RemoteMcpConnectionSummary & { tokenHash: string };
+/**
+ * The stored record: what Settings and the CLI see, plus the token's hash and,
+ * for an app, which registration it signed in with.
+ */
+export type RemoteMcpConnection = RemoteMcpConnectionSummary & { tokenHash: string; clientKey?: string };
 
 type RemoteMcpFile = {
   version: 1;
@@ -39,7 +42,7 @@ export function hashRemoteMcpToken(token: string): string {
   return createHash("sha256").update(token, "utf8").digest("hex");
 }
 
-export function mintRemoteMcpToken(): string {
+function mintRemoteMcpToken(): string {
   return `${REMOTE_MCP_TOKEN_PREFIX}${randomBytes(32).toString("base64url")}`;
 }
 
@@ -51,17 +54,13 @@ export function cleanRemoteMcpLabel(value: unknown, fallback: string): string {
   return clean.length > MAX_REMOTE_MCP_LABEL_CHARS ? `${clean.slice(0, MAX_REMOTE_MCP_LABEL_CHARS - 1)}…` : clean;
 }
 
-function isScope(value: unknown): value is RemoteMcpScope {
-  return value === "read" || value === "write";
-}
-
 function parseConnection(value: unknown): RemoteMcpConnection | null {
   if (!value || typeof value !== "object") return null;
   const record = value as Record<string, unknown>;
   if (typeof record.id !== "string" || !/^[a-f0-9]{8,32}$/.test(record.id)) return null;
   if (typeof record.tokenHash !== "string" || !/^[a-f0-9]{64}$/.test(record.tokenHash)) return null;
   if (record.kind !== "app" && record.kind !== "token") return null;
-  if (!isScope(record.scope)) return null;
+  if (!isRemoteMcpScope(record.scope)) return null;
   return {
     id: record.id,
     kind: record.kind,
@@ -72,18 +71,23 @@ function parseConnection(value: unknown): RemoteMcpConnection | null {
     createdAt: typeof record.createdAt === "string" ? record.createdAt : new Date(0).toISOString(),
     lastUsedAt: typeof record.lastUsedAt === "string" ? record.lastUsedAt : null,
     redirectHost: typeof record.redirectHost === "string" ? record.redirectHost.slice(0, 253) : null,
+    ...(typeof record.clientKey === "string" && /^[a-f0-9]{64}$/.test(record.clientKey) ? { clientKey: record.clientKey } : {}),
   };
 }
 
 export function summarizeRemoteMcpConnection(connection: RemoteMcpConnection): RemoteMcpConnectionSummary {
-  const { tokenHash: _tokenHash, ...summary } = connection;
+  const { tokenHash: _tokenHash, clientKey: _clientKey, ...summary } = connection;
   return summary;
 }
 
-export type RemoteMcpStore = ReturnType<typeof createRemoteMcpStore>;
+type StoreLogger = { warn?: (event: string, data?: Record<string, unknown>) => void };
 
-export function createRemoteMcpStore(args: { filePath: string; now?: () => Date }) {
-  const now = args.now ?? (() => new Date());
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export function createRemoteMcpStore(args: { filePath: string; logger?: StoreLogger }) {
+  const now = (): Date => new Date();
   let cache: { mtimeMs: number; size: number; file: RemoteMcpFile } | null = null;
   // lastUsedAt is bumped in memory on every call and persisted at most once a
   // minute per connection, so a busy app does not rewrite the file per request.
@@ -110,9 +114,10 @@ export function createRemoteMcpStore(args: { filePath: string; now?: () => Date 
             : [],
         };
       }
-    } catch {
+    } catch (error) {
       // An unreadable file fails closed: off, with no connections. The next
       // write replaces it.
+      args.logger?.warn?.("remote_mcp.store_unreadable", { error: errorMessage(error) });
     }
     cache = { mtimeMs: stat.mtimeMs, size: stat.size, file };
     return file;
@@ -120,12 +125,14 @@ export function createRemoteMcpStore(args: { filePath: string; now?: () => Date 
 
   const write = (file: RemoteMcpFile): void => {
     writeTextAtomic(args.filePath, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 });
+    // The file decides who may use this computer; on Windows mode bits do nothing.
+    securePrivatePath(args.filePath);
     cache = null;
   };
 
-  const update = (mutate: (file: RemoteMcpFile) => RemoteMcpFile): RemoteMcpFile => {
+  const rewrite = (change: (file: RemoteMcpFile) => RemoteMcpFile): RemoteMcpFile => {
     const current = read();
-    const next = mutate({ ...current, connections: current.connections.map((entry) => ({ ...entry })) });
+    const next = change({ ...current, connections: current.connections.map((entry) => ({ ...entry })) });
     write(next);
     return next;
   };
@@ -136,7 +143,7 @@ export function createRemoteMcpStore(args: { filePath: string; now?: () => Date 
     },
 
     setEnabled(enabled: boolean): void {
-      update((file) => ({ ...file, enabled }));
+      rewrite((file) => ({ ...file, enabled }));
     },
 
     list(): RemoteMcpConnectionSummary[] {
@@ -149,9 +156,18 @@ export function createRemoteMcpStore(args: { filePath: string; now?: () => Date 
       label: string;
       scope: RemoteMcpScope;
       redirectHost?: string | null;
+      /**
+       * The app registration this sign-in came from. Signing in again with the
+       * same one replaces that connection, so an app that re-authorizes does
+       * not pile up rows (or fill the cap) with tokens it no longer uses.
+       */
+      clientKey?: string;
     }): { token: string; connection: RemoteMcpConnectionSummary } {
       const current = read();
-      if (current.connections.length >= MAX_REMOTE_MCP_CONNECTIONS) {
+      const kept = input.clientKey
+        ? current.connections.filter((entry) => entry.clientKey !== input.clientKey)
+        : current.connections;
+      if (kept.length >= MAX_REMOTE_MCP_CONNECTIONS) {
         throw new Error(
           `This computer already has ${MAX_REMOTE_MCP_CONNECTIONS} ADE MCP connections. Remove one in Settings first.`,
         );
@@ -167,20 +183,27 @@ export function createRemoteMcpStore(args: { filePath: string; now?: () => Date 
         createdAt: now().toISOString(),
         lastUsedAt: null,
         redirectHost: input.redirectHost ?? null,
+        ...(input.clientKey ? { clientKey: input.clientKey } : {}),
       };
-      update((file) => ({ ...file, connections: [...file.connections, connection] }));
+      rewrite((file) => ({
+        ...file,
+        connections: [
+          ...(input.clientKey ? file.connections.filter((entry) => entry.clientKey !== input.clientKey) : file.connections),
+          connection,
+        ],
+      }));
       return { token, connection: summarizeRemoteMcpConnection(connection) };
     },
 
     update(id: string, patch: { scope?: RemoteMcpScope; label?: string }): RemoteMcpConnectionSummary {
       let found: RemoteMcpConnection | null = null;
-      update((file) => ({
+      rewrite((file) => ({
         ...file,
         connections: file.connections.map((entry) => {
           if (entry.id !== id) return entry;
           found = {
             ...entry,
-            ...(patch.scope && isScope(patch.scope) ? { scope: patch.scope } : {}),
+            ...(patch.scope && isRemoteMcpScope(patch.scope) ? { scope: patch.scope } : {}),
             ...(patch.label !== undefined ? { label: cleanRemoteMcpLabel(patch.label, entry.label) } : {}),
           };
           return found;
@@ -192,7 +215,7 @@ export function createRemoteMcpStore(args: { filePath: string; now?: () => Date 
 
     remove(id: string): boolean {
       let removed = false;
-      update((file) => {
+      rewrite((file) => {
         const connections = file.connections.filter((entry) => entry.id !== id);
         removed = connections.length !== file.connections.length;
         return { ...file, connections };
@@ -219,12 +242,13 @@ export function createRemoteMcpStore(args: { filePath: string; now?: () => Date 
       if (at.getTime() - last < LAST_USED_WRITE_INTERVAL_MS) return;
       lastPersistedUse.set(id, at.getTime());
       try {
-        update((file) => ({
+        rewrite((file) => ({
           ...file,
           connections: file.connections.map((entry) => (entry.id === id ? { ...entry, lastUsedAt: at.toISOString() } : entry)),
         }));
-      } catch {
+      } catch (error) {
         // Last-used is informational; a failed write must not fail the call.
+        args.logger?.warn?.("remote_mcp.last_used_write_failed", { error: errorMessage(error) });
       }
     },
   };

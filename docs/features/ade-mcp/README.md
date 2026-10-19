@@ -42,7 +42,7 @@ AI app ◄───────────────────────�
 ```
 
 - The relay holds no key and runs no ADE logic. It answers early only when the
-  machine is offline (503), has the feature off (404 `remote_access_off`, from
+  machine is offline (503), has the feature off (404 `ade_mcp_off`, from
   the control socket's `mcp` flag, so a disabled machine is never woken), or is
   over its limits (16 requests in flight, 300 a minute: 429). It forwards a
   short list of request headers and returns a short list of response headers.
@@ -112,16 +112,31 @@ create a connection on any machine.
 | Read & write (default) | Any `ade` command except the blocked list below. | `cto` (a person's terminal) |
 | Read only | An allowlist of reading commands (`describeReadOnlyCommands()`), plus `ade actions run` for actions `adeActionAccess` declares `read` and that return no secret. | `agent` |
 
-Blocked at every level, because they would outlive or get around the switch
-that grants access, or cut the connection: `mcp`, `account token`,
-`actions run remote_mcp.*` / `account.createToken`, `login`, `logout`,
-`connect`, `setup`, `reset`, `brain`, `serve`, `runtime`, `rpc`, `code`,
-`desktop`. A leading flag is refused too, so `--socket`, `--headless` and
-`--role` cannot move a call to another brain or role. The user-only action
-gate also keeps every `remote_mcp` write away from any CLI, whatever its role.
+Refused at every level, because they would outlive or get around the switch
+that grants access, or cut the connection:
 
-Full access is real: an app can start shells and agents, so it can do what the
-person can. Revoking stops new calls; it does not undo anything already done.
+- the commands `mcp`, `account`, `login`, `logout`, `connect`, `setup`,
+  `reset`, `brain`, `serve`, `runtime`, `rpc`, `code` and `desktop`;
+- through `ade actions` (or its alias `action`): any `remote_mcp.*` action, any
+  `account.*` action except `status` (tokens, sign-out), in both the
+  `<domain.action>` and `<domain> <action>` spellings, and the raw tool doors
+  `actions call|direct|tool`;
+- a first word that is not a plain command word, so `--socket`, `--headless`,
+  `--role` and a socket path cannot move a call to another brain or role;
+- `--machine`, `--all-machines` and `--machine-project`: ADE MCP is switched
+  on per computer, so a call never forwards to another machine.
+
+Read only also refuses `search --rebuild`. The user-only action gate keeps
+every `remote_mcp` action (reads included) away from any client but the
+desktop, whatever its role.
+
+The blocklist stops the obvious routes, not a determined app: full access is
+real, and an app can start shells and agents, so it can do what the person
+can. Revoking stops new calls; it does not undo anything already done.
+
+An app that signs in again with the same registration replaces its earlier
+connection (and that token stops working), so re-authorizing never piles up
+rows or fills the 50-connection cap.
 
 ## Running a command
 

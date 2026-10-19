@@ -1,20 +1,26 @@
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { samePathOnPlatform } from "../../../../desktop/src/shared/pathContainment";
 import { AccountAttestationError, verifyClerkAccountAttestation } from "../account/accountAttestationVerifier";
 import type { AccountAttestationConfig } from "../account/sharedAccountAuthService";
 import {
+  isRemoteMcpScope,
+  type RemoteMcpAction,
+  type RemoteMcpActivityEntry,
+  type RemoteMcpActivityOutcome,
+  type RemoteMcpConnectionSummary,
+  type RemoteMcpCreatedToken,
+  type RemoteMcpScope,
+  type RemoteMcpStatus,
+} from "../../../../desktop/src/shared/types/remoteMcp";
+import {
   checkRemoteAdeCommand,
   describeReadOnlyCommands,
   redactedCommandForLog,
   splitCommandLine,
-  type RemoteMcpScope,
 } from "./remoteMcpCommandPolicy";
-import {
-  createRemoteMcpActivityLog,
-  type RemoteMcpActivityEntry,
-  type RemoteMcpActivityOutcome,
-} from "./remoteMcpActivityLog";
+import { createRemoteMcpActivityLog } from "./remoteMcpActivityLog";
 import {
   AUTHORIZE_PAGE_HEADERS,
   buildRedirect,
@@ -31,11 +37,8 @@ import {
   scopeToOAuth,
   verifyPkce,
 } from "./remoteMcpOAuth";
-import { DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS, runAdeForRemote, type RemoteRunResult } from "./remoteMcpRunner";
-import {
-  createRemoteMcpStore,
-  type RemoteMcpConnectionSummary,
-} from "./remoteMcpStore";
+import { DEFAULT_TIMEOUT_MS, MAX_OUTPUT_BYTES, MAX_TIMEOUT_MS, runAdeForRemote, type RemoteRunResult } from "./remoteMcpRunner";
+import { createRemoteMcpStore } from "./remoteMcpStore";
 
 /**
  * ADE MCP: an MCP server for this computer, reached through ADE Relay.
@@ -69,18 +72,19 @@ export type RemoteMcpRelayEndpoint = {
   connected: boolean;
 };
 
-export type { RemoteMcpStatus } from "../../../../desktop/src/shared/types/remoteMcp";
-import type { RemoteMcpStatus } from "../../../../desktop/src/shared/types/remoteMcp";
-
 export type RemoteMcpProject = { projectId: string; rootPath: string; displayName: string; lastOpenedAt: number };
 
 export const MAX_CONCURRENT_REMOTE_RUNS = 4;
-export const MAX_REQUEST_BODY_CHARS = 1024 * 1024;
+const MAX_REQUEST_BODY_CHARS = 1024 * 1024;
 const SUPPORTED_PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 const DEFAULT_PROTOCOL_VERSION = "2025-06-18";
 const TOOL_NAME = "ade";
 
 type JsonRpcMessage = { jsonrpc?: unknown; id?: unknown; method?: unknown; params?: unknown };
+
+function withoutTrailingSlash(url: string): string {
+  return url.replace(/\/+$/, "");
+}
 
 function json(status: number, value: unknown, headers: Record<string, string> = {}): RemoteMcpHttpResponse {
   return {
@@ -143,15 +147,10 @@ export function createRemoteMcpService(args: {
     oauth: () => { issuer: string; clientId: string } | null;
     attestation: () => AccountAttestationConfig | null;
   };
-  /** Test seam for the command runner; production runs the real CLI. */
-  run?: typeof runAdeForRemote;
-  /** Test seam for the call to ADE's sign-in; production uses fetch. */
-  fetchImpl?: typeof fetch;
 }) {
-  const store = createRemoteMcpStore({ filePath: args.storePath });
-  const activity = createRemoteMcpActivityLog({ filePath: args.activityPath });
+  const store = createRemoteMcpStore({ filePath: args.storePath, logger: args.logger });
+  const activity = createRemoteMcpActivityLog({ filePath: args.activityPath, logger: args.logger });
   const authorization = createRemoteMcpAuthorizationState();
-  const run = args.run ?? runAdeForRemote;
   const enabledListeners = new Set<(enabled: boolean) => void>();
   let relayEndpoint: () => RemoteMcpRelayEndpoint | null = () => null;
   let activeRuns = 0;
@@ -159,15 +158,17 @@ export function createRemoteMcpService(args: {
   const base = (): string | null => {
     const endpoint = relayEndpoint();
     if (!endpoint) return null;
-    return `${endpoint.relayUrl.replace(/\/+$/, "")}/m/${endpoint.machineKey}`;
+    return `${withoutTrailingSlash(endpoint.relayUrl)}/m/${endpoint.machineKey}`;
   };
 
   const notifyEnabled = (enabled: boolean): void => {
     for (const listener of enabledListeners) {
       try {
         listener(enabled);
-      } catch {
-        // a listener's failure is its own
+      } catch (error) {
+        args.logger?.warn?.("remote_mcp.enabled_listener_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     }
   };
@@ -256,7 +257,7 @@ export function createRemoteMcpService(args: {
     const stderr = result.stderr.trimEnd();
     if (stdout) parts.push(stdout);
     if (stderr) parts.push(stdout ? `stderr:\n${stderr}` : stderr);
-    if (result.truncated) parts.push("[Output was cut off at 200 KB. Narrow the command, e.g. with --text, filters or --limit.]");
+    if (result.truncated) parts.push(`[Output was cut off at ${MAX_OUTPUT_BYTES / 1024} KB. Narrow the command, e.g. with --text, filters or --limit.]`);
     if (result.timedOut) parts.push(`[Stopped: the command ran past its time limit after ${Math.round(result.durationMs / 1000)}s.]`);
     else if (result.exitCode !== 0) parts.push(`[exit code ${result.exitCode ?? "unknown"}]`);
     return parts.join("\n\n") || "(no output)";
@@ -294,7 +295,7 @@ export function createRemoteMcpService(args: {
     activeRuns += 1;
     let result: RemoteRunResult;
     try {
-      result = await run({
+      result = await runAdeForRemote({
         argv: verdict.args,
         cwd: project.cwd,
         timeoutMs: Math.round(timeoutSeconds * 1000),
@@ -318,8 +319,11 @@ export function createRemoteMcpService(args: {
 
   const handleRpc = async (
     connection: RemoteMcpConnectionSummary,
-    message: JsonRpcMessage,
+    message: JsonRpcMessage | null,
   ): Promise<Record<string, unknown> | null> => {
+    if (!message || typeof message !== "object" || Array.isArray(message)) {
+      return { jsonrpc: "2.0", id: null, error: { code: -32600, message: "Invalid request." } };
+    }
     const id = message.id;
     const isRequest = id !== undefined && id !== null && (typeof id === "string" || typeof id === "number");
     const method = typeof message.method === "string" ? message.method : "";
@@ -420,10 +424,13 @@ export function createRemoteMcpService(args: {
     authorization_response_iss_parameter_supported: true,
   });
 
+  const expiredSignIn = (): RemoteMcpHttpResponse =>
+    html(400, renderMessagePage("This sign-in expired", "Go back to the app and connect again."));
+
   /** Where ADE sign-in sends the person back: the relay's one fixed callback. */
   const accountCallbackUrl = (): string | null => {
     const endpoint = relayEndpoint();
-    return endpoint ? `${endpoint.relayUrl.replace(/\/+$/, "")}/oauth/callback` : null;
+    return endpoint ? `${withoutTrailingSlash(endpoint.relayUrl)}/oauth/callback` : null;
   };
 
   const denyToApp = (authRequest: AuthorizeRequest, serverBase: string): RemoteMcpHttpResponse =>
@@ -451,29 +458,31 @@ export function createRemoteMcpService(args: {
     }
     const authRequest = parsed.request;
     const machineName = args.machineName();
-    const owner = args.account.signedIn();
     const oauth = args.account.oauth();
     const callbackUrl = accountCallbackUrl();
     const endpoint = relayEndpoint();
-    const unavailable = !owner
+    const ready = oauth && args.account.attestation() && callbackUrl && endpoint
+      ? { oauth, callbackUrl, endpoint }
+      : null;
+    const unavailable = !args.account.signedIn()
       ? `${machineName} isn't signed in to an ADE account. Sign in to ADE on it, then try again.`
-      : !oauth || !args.account.attestation() || !callbackUrl || !endpoint
+      : !ready
         ? `${machineName} can't check ADE sign-ins right now. Update ADE on it, then try again.`
         : null;
     if (!isPost) return html(200, renderSignInPage({ request: authRequest, machineName, error: unavailable }));
     if (params.get("decision") === "deny") return denyToApp(authRequest, serverBase);
-    if (unavailable || !oauth || !callbackUrl || !endpoint) {
+    if (unavailable || !ready) {
       return html(409, renderSignInPage({ request: authRequest, machineName, error: unavailable }));
     }
     const { nonce, accountChallenge } = authorization.beginSignIn(authRequest);
-    const signIn = new URL(`${oauth.issuer.replace(/\/+$/, "")}/oauth/authorize`);
+    const signIn = new URL(`${withoutTrailingSlash(ready.oauth.issuer)}/oauth/authorize`);
     signIn.searchParams.set("response_type", "code");
-    signIn.searchParams.set("client_id", oauth.clientId);
-    signIn.searchParams.set("redirect_uri", callbackUrl);
+    signIn.searchParams.set("client_id", ready.oauth.clientId);
+    signIn.searchParams.set("redirect_uri", ready.callbackUrl);
     signIn.searchParams.set("code_challenge", accountChallenge);
     signIn.searchParams.set("code_challenge_method", "S256");
     // The relay routes the callback back to this machine by the key before the dot.
-    signIn.searchParams.set("state", `${endpoint.machineKey}.${nonce}`);
+    signIn.searchParams.set("state", `${ready.endpoint.machineKey}.${nonce}`);
     signIn.searchParams.set("scope", "openid profile email");
     return redirect(signIn.toString());
   };
@@ -483,8 +492,7 @@ export function createRemoteMcpService(args: {
     const oauth = args.account.oauth();
     const callbackUrl = accountCallbackUrl();
     if (!oauth || !callbackUrl) throw new Error("ADE sign-in isn't configured on this computer.");
-    const fetcher = args.fetchImpl ?? fetch;
-    const response = await fetcher(`${oauth.issuer.replace(/\/+$/, "")}/oauth/token`, {
+    const response = await fetch(`${withoutTrailingSlash(oauth.issuer)}/oauth/token`, {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
       body: new URLSearchParams({
@@ -507,7 +515,7 @@ export function createRemoteMcpService(args: {
     const nonce = state.slice(state.indexOf(".") + 1);
     const pending = nonce ? authorization.pendingAccountStep(nonce) : null;
     if (!pending) {
-      return html(400, renderMessagePage("This sign-in expired", "Go back to the app and connect again."));
+      return expiredSignIn();
     }
     const { request: authRequest } = pending;
     if (query.get("error") || !query.get("code")) {
@@ -537,7 +545,7 @@ export function createRemoteMcpService(args: {
       ));
     }
     const csrf = authorization.markSignedIn(nonce, owner);
-    if (!csrf) return html(400, renderMessagePage("This sign-in expired", "Go back to the app and connect again."));
+    if (!csrf) return expiredSignIn();
     return html(200, renderConsentPage({
       request: authRequest,
       machineName: args.machineName(),
@@ -553,7 +561,7 @@ export function createRemoteMcpService(args: {
     if (request.method !== "POST") return json(405, { error: "Method not allowed." });
     const params = parseForm(request);
     const taken = authorization.takeConsent(params.get("nonce") ?? "", params.get("csrf") ?? "");
-    if (!taken) return html(400, renderMessagePage("This sign-in expired", "Go back to the app and connect again."));
+    if (!taken) return expiredSignIn();
     const { request: authRequest } = taken;
     if (params.get("decision") !== "allow") return denyToApp(authRequest, serverBase);
     const scope: RemoteMcpScope = params.get("access") === "read" ? "read" : "write";
@@ -592,6 +600,7 @@ export function createRemoteMcpService(args: {
         label: pending.clientName,
         scope: pending.scope,
         redirectHost: redirectDisplayHost(pending.redirectUri),
+        clientKey: createHash("sha256").update(pending.clientId, "utf8").digest("hex"),
       });
     } catch (error) {
       return fail("invalid_request", error instanceof Error ? error.message : String(error));
@@ -631,7 +640,7 @@ export function createRemoteMcpService(args: {
 
   const handleHttp = async (request: RemoteMcpHttpRequest): Promise<RemoteMcpHttpResponse> => {
     if (!store.isEnabled()) {
-      return json(404, { error: "remote_access_off", error_description: "ADE MCP is off on this computer." });
+      return json(404, { error: "ade_mcp_off", error_description: "ADE MCP is off on this computer." });
     }
     const serverBase = base();
     if (!serverBase) return json(503, { error: "unavailable", error_description: "This computer has no relay address yet." });
@@ -683,7 +692,7 @@ export function createRemoteMcpService(args: {
 
   const parseScope = (value: unknown, fallback: RemoteMcpScope): RemoteMcpScope => {
     if (value === undefined || value === null || value === "") return fallback;
-    if (value === "read" || value === "write") return value;
+    if (isRemoteMcpScope(value)) return value;
     throw new Error("Access must be \"read\" or \"write\".");
   };
 
@@ -706,11 +715,7 @@ export function createRemoteMcpService(args: {
       notifyEnabled(input.enabled);
       return getStatus();
     },
-    createToken(input: { label?: unknown; scope?: unknown }): {
-      token: string;
-      connection: RemoteMcpConnectionSummary;
-      serverUrl: string | null;
-    } {
+    createToken(input: { label?: unknown; scope?: unknown }): RemoteMcpCreatedToken {
       const created = store.create({
         kind: "token",
         label: typeof input?.label === "string" ? input.label : "Token",
@@ -735,5 +740,22 @@ export function createRemoteMcpService(args: {
     listActivity(input: { limit?: unknown } = {}): RemoteMcpActivityEntry[] {
       return activity.recent(typeof input?.limit === "number" ? input.limit : 100);
     },
+  };
+}
+
+/**
+ * The one table of what Settings (the `remote_mcp` action domain) and
+ * `ade mcp` (the machine method `remoteMcp.call`) may ask the service.
+ */
+export function remoteMcpActionHandlers(
+  service: RemoteMcpService,
+): Record<RemoteMcpAction, (args: Record<string, unknown>) => unknown> {
+  return {
+    getStatus: () => service.getStatus(),
+    listActivity: (args) => service.listActivity(args),
+    setEnabled: (args) => service.setEnabled(args),
+    createToken: (args) => service.createToken(args),
+    updateConnection: (args) => service.updateConnection(args),
+    removeConnection: (args) => service.removeConnection(args),
   };
 }

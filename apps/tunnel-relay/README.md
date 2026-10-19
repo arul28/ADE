@@ -84,7 +84,7 @@ location must never decide where a machine's object lives, so `/connect`,
 it creates the object, so this steers new machines and leaves existing ones
 exactly where they are.
 
-## ADE MCP (MCP)
+## ADE MCP
 
 The same Durable Object also carries a machine's remote MCP server
 (`docs/features/ade-mcp/README.md`). HTTP requests under
@@ -96,7 +96,7 @@ socket, no session object.
 
 - The brain sends `{t:"mcp_state", enabled}` on every control open and toggle;
   the DO keeps it in the control socket's attachment. Off (or a brain that
-  never says) → `404 remote_access_off` without waking the machine.
+  never says) → `404 ade_mcp_off` without waking the machine.
 - No control socket → `503 offline`. Over 16 in flight or 300 a minute →
   `429`. Request bodies over 1 MiB → `413`. A request with no answer in 11
   minutes → `504`; a control socket that closes or is replaced fails its

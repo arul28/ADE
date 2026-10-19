@@ -53,6 +53,9 @@ const MCP_MAX_PER_MINUTE = 300;
 // The brain stops a command after 10 minutes; give its answer time to arrive.
 const MCP_RESPONSE_TIMEOUT_MS = 11 * 60 * 1000;
 const MCP_MAX_REQUEST_BYTES = 1024 * 1024;
+// The brain refuses a longer path; refusing it here answers at once instead of
+// leaving the request to wait out MCP_RESPONSE_TIMEOUT_MS.
+const MCP_MAX_PATH_CHARS = 8_192;
 const MCP_FORWARDED_REQUEST_HEADERS = [
   "authorization",
   "content-type",
@@ -79,6 +82,35 @@ type PendingMcpRequest = {
   resolve: (response: Response) => void;
   timer: ReturnType<typeof setTimeout>;
 };
+
+/**
+ * The request body as text, or null once it passes `maxBytes`. Read as a
+ * stream, so a body with no content-length (chunked) can never be buffered
+ * whole: this object also carries the machine's phone connections.
+ */
+async function readBodyCapped(request: Request, maxBytes: number): Promise<string | null> {
+  if (!request.body) return "";
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      return null;
+    }
+    chunks.push(value);
+  }
+  const joined = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    joined.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return textDecoder.decode(joined);
+}
 
 function mcpJson(status: number, error: string, description: string, extra: Record<string, string> = {}): Response {
   return new Response(JSON.stringify({ error, error_description: description }), {
@@ -248,13 +280,14 @@ export class TunnelDurableObject implements DurableObject {
    */
   private async handleMcp(request: Request, path: string): Promise<Response> {
     if (!MCP_METHODS.has(request.method)) return mcpJson(405, "method_not_allowed", "Method not allowed.");
+    if (path.length > MCP_MAX_PATH_CHARS) return mcpJson(414, "uri_too_long", "Request address too long.");
     const control = this.currentControl();
     if (!control) {
       return mcpJson(503, "offline", "That computer is offline, or ADE isn't running on it.", { "retry-after": "30" });
     }
     const controlAttachment = this.normalizedAttachment(control);
     if (controlAttachment?.mcp !== true) {
-      return mcpJson(404, "remote_access_off", "ADE MCP is off on that computer. Turn it on in ADE Settings → ADE MCP.");
+      return mcpJson(404, "ade_mcp_off", "ADE MCP is off on that computer. Turn it on in ADE Settings → ADE MCP.");
     }
     const now = Date.now();
     if (now - this.mcpWindowStart >= 60_000) {
@@ -272,8 +305,8 @@ export class TunnelDurableObject implements DurableObject {
     }
     let body: string | null = null;
     if (request.method === "POST") {
-      body = await request.text();
-      if (textEncoder.encode(body).byteLength > MCP_MAX_REQUEST_BYTES) return mcpJson(413, "too_large", "Request too large.");
+      body = await readBodyCapped(request, MCP_MAX_REQUEST_BYTES);
+      if (body === null) return mcpJson(413, "too_large", "Request too large.");
     }
     const headers: Record<string, string> = {};
     for (const name of MCP_FORWARDED_REQUEST_HEADERS) {

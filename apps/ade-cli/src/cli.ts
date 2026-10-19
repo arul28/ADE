@@ -363,7 +363,6 @@ import {
 } from "./cliMacDesktopFormat";
 import {
   REMOTE_MCP_HELP,
-  RemoteMcpUsageError,
   buildRemoteMcpPlan,
   formatRemoteMcpResult,
 } from "./cliRemoteMcp";
@@ -20022,12 +20021,7 @@ function buildCliPlan(
     return buildSyncPlan(args);
   }
   if (primary === "mcp") {
-    try {
-      return buildRemoteMcpPlan(args);
-    } catch (error) {
-      if (error instanceof RemoteMcpUsageError) throw new CliUsageError(error.message);
-      throw error;
-    }
+    return buildRemoteMcpPlan(args);
   }
   if (primary === "notify") {
     const title = readValue(args, ["--title", "-t"]) ?? firstStandalonePositional(args) ?? "";

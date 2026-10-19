@@ -15,9 +15,20 @@ import { createRemoteMcpService, type RemoteMcpService } from "./remoteMcpServic
  * so its in-memory sign-ins and running-command count are one per machine.
  */
 
-let shared: { home: string; service: RemoteMcpService } | null = null;
+type RemoteMcpLogger = NonNullable<Parameters<typeof createRemoteMcpService>[0]["logger"]>;
 
-export function getSharedRemoteMcpService(logger?: Parameters<typeof createRemoteMcpService>[0]["logger"]): RemoteMcpService {
+let shared: { home: string; service: RemoteMcpService } | null = null;
+// Whoever reaches the service first may have no logger (`ade mcp` through
+// `remoteMcp.call`); the brain's logger arrives with the relay tunnel. The
+// service logs through this, so it uses the first real logger it is given.
+let machineLogger: RemoteMcpLogger | null = null;
+const forwardingLogger: RemoteMcpLogger = {
+  info: (event, data) => machineLogger?.info?.(event, data),
+  warn: (event, data) => machineLogger?.warn?.(event, data),
+};
+
+export function getSharedRemoteMcpService(logger?: RemoteMcpLogger): RemoteMcpService {
+  if (logger && !machineLogger) machineLogger = logger;
   const layout = resolveMachineAdeLayout();
   if (shared && shared.home === layout.adeDir) return shared.service;
   const registry = new ProjectRegistry(layout);
@@ -48,7 +59,7 @@ export function getSharedRemoteMcpService(logger?: Parameters<typeof createRemot
         return config.issuer && config.jwksUrl && config.oauthClientId ? config : null;
       },
     },
-    ...(logger ? { logger } : {}),
+    logger: forwardingLogger,
   });
   shared = { home: layout.adeDir, service };
   return service;

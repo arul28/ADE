@@ -2,8 +2,6 @@ import { ADE_ACTION_ACCESS } from "../../../../desktop/src/shared/adeActionAcces
 import { isSecretBearingAdeAction } from "../../../../desktop/src/main/services/adeActions/actionPolicy";
 import type { RemoteMcpScope } from "../../../../desktop/src/shared/types/remoteMcp";
 
-export type { RemoteMcpScope };
-
 /**
  * Which `ade` commands a remote AI app may run, by the scope of its connection.
  *
@@ -36,11 +34,7 @@ const BLOCKED_COMMANDS: ReadonlyMap<string, string> = new Map([
   ["rpc", "The raw RPC stream is not available remotely."],
   ["code", "`ade code` needs a terminal."],
   ["desktop", "Opening the desktop app is done on the computer itself."],
-]);
-
-/** Blocked only with a particular subcommand. */
-const BLOCKED_SUBCOMMANDS: ReadonlyMap<string, ReadonlyMap<string, string>> = new Map([
-  ["account", new Map([["token", "Account tokens outlive remote access, so they are created on the computer itself."]])],
+  ["account", "Account tokens outlive ADE MCP, so they are created on the computer itself."],
 ]);
 
 /**
@@ -131,36 +125,91 @@ export function checkRemoteAdeCommand(input: unknown, scope: RemoteMcpScope): Re
   if (args[0] === "ade") args.shift();
   if (args.length === 0) return { ok: false, reason: "Name an ade command, e.g. [\"help\"]." };
   if (args.length > MAX_REMOTE_ARGS) return { ok: false, reason: `At most ${MAX_REMOTE_ARGS} arguments.` };
-  const command = args[0]!;
-  // Global flags (`--socket`, `--headless`, `--role`, `--project-root`) only
-  // take effect before the command word. Refusing a leading flag keeps every
-  // remote call on this brain, at the caller's scope, in the chosen project.
-  if (command.startsWith("-")) {
+  // Only a plain command word may come first. Global flags (`--socket`,
+  // `--headless`, `--role`, `--project-root`) take effect before it, and the
+  // runner's own `--socket` takes a path-looking next word as the socket; a
+  // command word can be neither, so every call stays on this brain, at the
+  // caller's scope, in the chosen project.
+  if (!COMMAND_WORD.test(args[0]!)) {
     return {
       ok: false,
       reason: "Start with the command word (e.g. \"lanes\"); options go after it. Use the `project` parameter to pick a project.",
     };
   }
+  const command = COMMAND_ALIASES.get(args[0]!) ?? args[0]!;
   const blocked = BLOCKED_COMMANDS.get(command);
   if (blocked) return { ok: false, reason: `\`ade ${command}\` is not available remotely. ${blocked}` };
-  const sub = args[1];
-  const blockedSub = sub ? BLOCKED_SUBCOMMANDS.get(command)?.get(sub) : undefined;
-  if (blockedSub) return { ok: false, reason: `\`ade ${command} ${sub}\` is not available remotely. ${blockedSub}` };
-  // The generic action door must not reach what the blocked commands wrap.
-  if (command === "actions" && sub === "run") {
-    const name = args[2] ?? "";
-    if (name.startsWith("remote_mcp.")) {
-      return { ok: false, reason: `\`${name}\` is not available remotely. ${BLOCKED_COMMANDS.get("mcp")}` };
-    }
-    if (name === "account.createToken") {
-      return { ok: false, reason: `\`${name}\` is not available remotely. ${BLOCKED_SUBCOMMANDS.get("account")?.get("token")}` };
-    }
+  // ADE MCP is switched on per computer. Forwarding to another machine would
+  // reach one whose owner may have it off.
+  if (args.some((word) => MACHINE_TARGET_FLAG.test(word))) {
+    return {
+      ok: false,
+      reason: "ADE MCP reaches only this computer. Connect to another computer's own ADE MCP server to work there.",
+    };
+  }
+  const words = positionalWords(args);
+  if (command === "actions") {
+    const actionVerdict = checkActionsCommand(words, scope);
+    if (actionVerdict) return actionVerdict;
   }
   if (scope === "write") return { ok: true, args };
-  return checkReadOnly(args);
+  return checkReadOnly([command, ...args.slice(1)], words);
 }
 
-function checkReadOnly(args: string[]): RemoteCommandVerdict {
+const COMMAND_WORD = /^[a-z][a-z0-9-]*$/;
+/** Spellings the CLI treats as the same command. */
+const COMMAND_ALIASES: ReadonlyMap<string, string> = new Map([["action", "actions"]]);
+const MACHINE_TARGET_FLAG = /^--(?:machine|all-machines|machine-project)(?:=|$)/;
+/** `ade actions` subcommands that call RPC tools by name, around the action table. */
+const RAW_ACTION_DOORS: ReadonlySet<string> = new Set(["call", "direct", "tool"]);
+
+/** The command's non-flag words after the command itself, the way the CLI reads them. */
+function positionalWords(args: readonly string[]): string[] {
+  return args.slice(1).filter((word) => word !== "--" && !word.startsWith("-"));
+}
+
+/** `<domain.action>` or `<domain> <action>`, as `ade actions run` accepts. */
+function actionRunTarget(words: readonly string[]): { domain: string; action: string } | null {
+  const first = words[1];
+  if (!first) return null;
+  const dot = first.indexOf(".");
+  if (dot > 0) return { domain: first.slice(0, dot), action: first.slice(dot + 1) };
+  return words[2] ? { domain: first, action: words[2] } : null;
+}
+
+/**
+ * `ade actions` reaches every service action, so it must not reach what the
+ * blocked commands wrap: managing ADE MCP, or account credentials and sign-out
+ * that would outlive revoking the connection.
+ */
+function checkActionsCommand(words: readonly string[], scope: RemoteMcpScope): RemoteCommandVerdict | null {
+  const sub = words[0] ?? "list";
+  if (RAW_ACTION_DOORS.has(sub)) {
+    return { ok: false, reason: `\`ade actions ${sub}\` is not available remotely. Use \`ade actions run <domain.action>\`.` };
+  }
+  if (sub !== "run") return null;
+  const target = actionRunTarget(words);
+  if (!target) return null;
+  const name = `${target.domain}.${target.action}`;
+  if (target.domain === "remote_mcp") {
+    return { ok: false, reason: `\`${name}\` is not available remotely. ${BLOCKED_COMMANDS.get("mcp")}` };
+  }
+  if (target.domain === "account" && target.action !== "status") {
+    return { ok: false, reason: `\`${name}\` is not available remotely. ${BLOCKED_COMMANDS.get("account")}` };
+  }
+  if (scope === "read") {
+    const access = Object.hasOwn(ADE_ACTION_ACCESS, target.domain) ? ADE_ACTION_ACCESS[target.domain] : undefined;
+    if (!access?.read.includes(target.action)) {
+      return { ok: false, reason: `This connection is read-only, and \`${name}\` changes things.` };
+    }
+    if (isSecretBearingAdeAction(target.domain, target.action)) {
+      return { ok: false, reason: `\`${name}\` returns a secret, so it is not available remotely.` };
+    }
+  }
+  return null;
+}
+
+function checkReadOnly(args: string[], words: readonly string[]): RemoteCommandVerdict {
   const refuse = (): RemoteCommandVerdict => ({
     ok: false,
     reason: `This connection is read-only, and \`ade ${args.slice(0, 3).filter((word) => !word.startsWith("-")).join(" ")}\` isn't one of the commands it can run. `
@@ -175,32 +224,19 @@ function checkReadOnly(args: string[]): RemoteCommandVerdict {
     if (allowed instanceof Set && sub && allowed.has(sub)) return { ok: true, args };
     return refuse();
   }
+  if (command === "search" && args.some((word) => SEARCH_WRITE_FLAGS.has(word))) return refuse();
   const allowed = READ_ONLY_COMMANDS.get(command);
   if (allowed === true) return { ok: true, args };
   if (!(allowed instanceof Set)) return refuse();
   const sub = args[1];
-  if (command === "actions" && sub === "run") return checkReadOnlyActionRun(args, refuse);
+  // `actions run` passed checkActionsCommand's read-only test before getting here.
+  if (command === "actions" && sub === "run" && words[0] === "run") return { ok: true, args };
   if (sub && allowed.has(sub)) return { ok: true, args };
   return refuse();
 }
 
-/**
- * `ade actions run <domain.action>` is allowed read-only when ADE declares the
- * action a read and its result carries no secret.
- */
-function checkReadOnlyActionRun(args: string[], refuse: () => RemoteCommandVerdict): RemoteCommandVerdict {
-  const name = args[2] ?? "";
-  const dot = name.indexOf(".");
-  if (dot <= 0) return refuse();
-  const domain = name.slice(0, dot);
-  const action = name.slice(dot + 1);
-  const access = ADE_ACTION_ACCESS[domain];
-  if (!access || !access.read.includes(action)) return refuse();
-  if (isSecretBearingAdeAction(domain, action)) {
-    return { ok: false, reason: `\`${name}\` returns a secret, so it is not available remotely.` };
-  }
-  return { ok: true, args };
-}
+/** `ade search` flags that rebuild the index instead of reading it. */
+const SEARCH_WRITE_FLAGS: ReadonlySet<string> = new Set(["--rebuild", "--rebuild-index"]);
 
 let readOnlyDescription: string | null = null;
 
@@ -268,6 +304,9 @@ export function splitCommandLine(line: string): string[] | null {
   return words;
 }
 
+/** A flag whose value is a credential (`--api-key sk-…`). */
+const SECRET_FLAG_NAME = /token|secret|password|api[-_]?key|credential/i;
+
 /**
  * The words safe to keep in the activity log. Values that look like they set a
  * secret are replaced, and the whole line is bounded.
@@ -283,6 +322,11 @@ export function redactedCommandForLog(args: readonly string[]): string {
     }
     if (/(?:token|secret|password|api[-_]?key)=/i.test(word)) {
       out.push(word.replace(/=.*/, "=[redacted]"));
+      continue;
+    }
+    const previous = args[index - 1] ?? "";
+    if (previous.startsWith("-") && SECRET_FLAG_NAME.test(previous)) {
+      out.push("[redacted]");
       continue;
     }
     out.push(/\s/.test(word) ? JSON.stringify(word) : word);

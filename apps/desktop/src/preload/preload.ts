@@ -13941,16 +13941,6 @@ const adeBridge = {
   // Keep-awake is a "This computer" section: with no pin it means this
   // computer, so it goes to local IPC (which asks this machine's own brain),
   // never to the project tab's bound runtime, which may be another machine.
-  // ADE MCP is a "This computer" section like keep-awake: no pin means
-  // this machine's own brain (through main), a pin means that machine's brain.
-  remoteMcpCall: async <T = unknown>(
-    action: RemoteMcpAction,
-    args?: Record<string, unknown>,
-    pin?: OpenProjectBinding | null,
-  ): Promise<T> => {
-    if (pin) return await callPinnedRuntimeAction<T>(pin, "remote_mcp", action, { args: args ?? {} });
-    return await ipcRenderer.invoke(IPC.remoteMcpCall, action, args ?? {}) as T;
-  },
   keepAwakeGet: async (pin?: OpenProjectBinding | null): Promise<KeepAwakeSnapshot> => {
     if (pin) return await callPinnedRuntimeAction<KeepAwakeSnapshot>(pin, "keep_awake", "getSnapshot", {});
     await ipcRenderer.invoke(IPC.keepAwakeMigrateLegacy).catch(() => false);
@@ -13973,6 +13963,16 @@ const adeBridge = {
     pin
       ? Promise.resolve({ ok: false, error: "Open Settings on the selected Mac to change lid-closed mode." })
       : ipcRenderer.invoke(IPC.keepAwakeApplyLidClosed, disabled),
+  // ADE MCP is a "This computer" section like keep-awake: no pin means
+  // this machine's own brain (through main), a pin means that machine's brain.
+  remoteMcpCall: async <T = unknown>(
+    action: RemoteMcpAction,
+    args?: Record<string, unknown>,
+    pin?: OpenProjectBinding | null,
+  ): Promise<T> => {
+    if (pin) return await callPinnedRuntimeAction<T>(pin, "remote_mcp", action, { args: args ?? {} });
+    return await ipcRenderer.invoke(IPC.remoteMcpCall, action, args ?? {}) as T;
+  },
   updateCheckForUpdates: () => ipcRenderer.invoke(IPC.updateCheckForUpdates),
   updateGetState: (): Promise<AutoUpdateSnapshot> =>
     ipcRenderer.invoke(IPC.updateGetState),

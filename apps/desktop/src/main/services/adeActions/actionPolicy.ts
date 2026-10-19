@@ -76,8 +76,8 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   // Keep-awake preferences are machine-wide power policy. The desktop, phone,
   // and direct user clients can change them; session-bound agents cannot.
   keep_awake: { only: ["getSnapshot", "setLevel", "migrateLegacyPreference", "fixSystemSleep"] },
-  // ADE MCP grants an outside app this machine. Reading who has it is
-  // operator work too; agents never see or change it.
+  // ADE MCP grants an outside app this machine. Every action is also user-only
+  // (below), so only the desktop reaches it through the action bus.
   remote_mcp: { allExcept: [] },
   linear_credentials: {
     only: [
@@ -301,7 +301,7 @@ export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly stri
   chat: ["resolveCrossMachineHandoffApproval", "mcpAppRequest", "revokeMcpAppGrant"],
   // Granting an outside AI app this computer is the person's call. `ade mcp`
   // in their own terminal reaches the same service through `remoteMcp.call`.
-  remote_mcp: ["setEnabled", "createToken", "updateConnection", "removeConnection"],
+  remote_mcp: ["getStatus", "listActivity", "setEnabled", "createToken", "updateConnection", "removeConnection"],
 };
 
 export function isUserOnlyAdeAction(domain: AdeActionDomain, action: string): boolean {

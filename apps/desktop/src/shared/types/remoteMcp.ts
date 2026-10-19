@@ -6,6 +6,10 @@
 
 export type RemoteMcpScope = "read" | "write";
 
+export function isRemoteMcpScope(value: unknown): value is RemoteMcpScope {
+  return value === "read" || value === "write";
+}
+
 export type RemoteMcpConnectionKind = "app" | "token";
 
 export type RemoteMcpConnectionSummary = {

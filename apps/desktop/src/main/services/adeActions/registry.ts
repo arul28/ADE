@@ -87,6 +87,7 @@ import {
 } from "../../../shared/types/attention";
 import { normalizeCustomNotificationLink } from "../../../shared/customNotificationLink";
 import { deriveProjectId } from "../../../../../ade-cli/src/services/projects/projectRegistry";
+import { remoteMcpActionHandlers } from "../../../../../ade-cli/src/services/remoteMcp/remoteMcpService";
 import {
   PushRelayNotifyRateLimitedError,
   PushRelayRequestError,
@@ -577,14 +578,10 @@ function buildProxyDomainService(runtime: AdeRuntime): OpaqueService | null {
 function buildRemoteMcpDomainService(runtime: AdeRuntime): OpaqueService | null {
   const service = runtime.remoteMcpService;
   if (!service) return null;
-  return {
-    getStatus: () => service.getStatus(),
-    listActivity: (args: { limit?: unknown }) => service.listActivity(args ?? {}),
-    setEnabled: (args: { enabled?: unknown }) => service.setEnabled(args ?? {}),
-    createToken: (args: { label?: unknown; scope?: unknown }) => service.createToken(args ?? {}),
-    updateConnection: (args: { id?: unknown; scope?: unknown; label?: unknown }) => service.updateConnection(args ?? {}),
-    removeConnection: (args: { id?: unknown }) => service.removeConnection(args ?? {}),
-  };
+  const handlers = remoteMcpActionHandlers(service);
+  return Object.fromEntries(
+    Object.entries(handlers).map(([action, handler]) => [action, (args?: Record<string, unknown>) => handler(args ?? {})]),
+  );
 }
 
 function buildKeepAwakeDomainService(runtime: AdeRuntime): OpaqueService | null {

@@ -9556,30 +9556,22 @@ app.whenReady().then(async () => {
     }),
   });
 
-  const keepAwakeAction = async (action: string, args?: Record<string, unknown>): Promise<unknown> => {
-    const projects = await localRuntimePool.projects();
-    const rootPath = projects[0]?.rootPath;
-    if (!rootPath) throw new Error("Keep-awake settings need a project connected to this machine's brain.");
-    const response = await localRuntimePool.callActionForRoot(rootPath, {
-      domain: "keep_awake",
-      action,
-      ...(args ? { args } : {}),
-    });
-    return response.result;
-  };
-  // ADE MCP lives in this machine's brain (machine-level, shared by
-  // every project scope), so any project the brain hosts reaches it.
-  const remoteMcpAction = async (action: string, args?: Record<string, unknown>): Promise<unknown> => {
-    const projects = await localRuntimePool.projects();
-    const rootPath = projects[0]?.rootPath;
-    if (!rootPath) throw new Error("ADE MCP needs a project open on this computer's ADE brain.");
-    const response = await localRuntimePool.callActionForRoot(rootPath, {
-      domain: "remote_mcp",
-      action,
-      ...(args ? { args } : {}),
-    });
-    return response.result;
-  };
+  // A machine-level domain on this computer's own brain. Every project scope
+  // the brain hosts shares it, so any one of them reaches it.
+  const machineBrainAction = (domain: string, missingProjectMessage: string) =>
+    async (action: string, args?: Record<string, unknown>): Promise<unknown> => {
+      const projects = await localRuntimePool.projects();
+      const rootPath = projects[0]?.rootPath;
+      if (!rootPath) throw new Error(missingProjectMessage);
+      const response = await localRuntimePool.callActionForRoot(rootPath, {
+        domain,
+        action,
+        ...(args ? { args } : {}),
+      });
+      return response.result;
+    };
+  const keepAwakeAction = machineBrainAction("keep_awake", "Keep-awake settings need a project connected to this machine's brain.");
+  const remoteMcpAction = machineBrainAction("remote_mcp", "ADE MCP needs a project open on this computer's ADE brain.");
   const migrateLegacyKeepAwakePreference = async (): Promise<boolean> => {
     const legacy = readGlobalState(globalStatePath).keepAwakePreferences;
     if (!legacy) {

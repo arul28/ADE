@@ -1,5 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import type { RemoteMcpScope } from "./remoteMcpCommandPolicy";
+import type { RemoteMcpScope } from "../../../../desktop/src/shared/types/remoteMcp";
+import { cleanRemoteMcpLabel } from "./remoteMcpStore";
 
 /**
  * The OAuth half of ADE MCP, run entirely on this computer.
@@ -26,16 +27,15 @@ const CLIENT_ID_PREFIX = "ade1.";
 const MAX_CLIENT_ID_CHARS = 4_096;
 const MAX_REDIRECT_URIS = 10;
 const MAX_REDIRECT_URI_CHARS = 1_024;
-const MAX_CLIENT_NAME_CHARS = 60;
 const MAX_STATE_CHARS = 1_024;
 const PKCE_CHALLENGE = /^[A-Za-z0-9\-._~]{43,128}$/;
 const PKCE_VERIFIER = /^[A-Za-z0-9\-._~]{43,128}$/;
 const FORBIDDEN_SCHEMES = new Set(["javascript:", "data:", "file:", "vbscript:", "about:", "blob:", "filesystem:"]);
 
 /** How long a person has to finish the ADE sign-in and accept. */
-export const SIGN_IN_TTL_MS = 10 * 60_000;
-export const MAX_PENDING_SIGN_INS = 20;
-export const AUTH_CODE_TTL_MS = 2 * 60_000;
+const SIGN_IN_TTL_MS = 10 * 60_000;
+const MAX_PENDING_SIGN_INS = 20;
+const AUTH_CODE_TTL_MS = 2 * 60_000;
 
 export type RegisteredClient = {
   redirectUris: string[];
@@ -90,11 +90,8 @@ export function redirectDisplayHost(value: string): string {
   }
 }
 
-export function cleanClientName(value: unknown): string {
-  const raw = typeof value === "string" ? value : "";
-  const clean = raw.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/\s+/g, " ").trim();
-  if (!clean) return "AI app";
-  return clean.length > MAX_CLIENT_NAME_CHARS ? `${clean.slice(0, MAX_CLIENT_NAME_CHARS - 1)}…` : clean;
+function cleanClientName(value: unknown): string {
+  return cleanRemoteMcpLabel(value, "AI app");
 }
 
 export type RegistrationResult =
@@ -140,7 +137,7 @@ export function registerClient(body: unknown): RegistrationResult {
   return { ok: true, clientId, client };
 }
 
-export function encodeClientId(client: RegisteredClient): string {
+function encodeClientId(client: RegisteredClient): string {
   return CLIENT_ID_PREFIX + Buffer.from(JSON.stringify({ r: client.redirectUris, n: client.clientName }), "utf8")
     .toString("base64url");
 }
@@ -240,11 +237,19 @@ export function buildRedirect(redirectUri: string, params: Record<string, string
   return url.toString();
 }
 
+function pkceChallengeFor(verifier: string): string {
+  return createHash("sha256").update(verifier, "ascii").digest("base64url");
+}
+
+/** Constant-time string comparison for secrets of any length. */
+function sameSecret(left: string, right: string): boolean {
+  const a = Buffer.from(left, "utf8");
+  const b = Buffer.from(right, "utf8");
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
 export function verifyPkce(verifier: string, challenge: string): boolean {
-  if (!PKCE_VERIFIER.test(verifier)) return false;
-  const computed = Buffer.from(createHash("sha256").update(verifier, "ascii").digest("base64url"), "utf8");
-  const expected = Buffer.from(challenge, "utf8");
-  return computed.length === expected.length && timingSafeEqual(computed, expected);
+  return PKCE_VERIFIER.test(verifier) && sameSecret(pkceChallengeFor(verifier), challenge);
 }
 
 export type SignedInAccount = { userId: string; email: string | null; name: string | null };
@@ -267,26 +272,14 @@ type PendingAuthCode = {
   expiresAt: number;
 };
 
-function pkceChallengeFor(verifier: string): string {
-  return createHash("sha256").update(verifier, "ascii").digest("base64url");
-}
-
-function sameSecret(left: string, right: string): boolean {
-  const a = Buffer.from(left, "utf8");
-  const b = Buffer.from(right, "utf8");
-  return a.length === b.length && timingSafeEqual(a, b);
-}
-
-export type RemoteMcpAuthorizationState = ReturnType<typeof createRemoteMcpAuthorizationState>;
-
 /**
  * In-memory, single-use state for signing apps in: sign-ins waiting on the
  * ADE account step or on the person's accept, and authorization codes waiting
  * to be exchanged. A brain restart forgets them, which only means signing in
  * again.
  */
-export function createRemoteMcpAuthorizationState(args: { now?: () => number } = {}) {
-  const now = args.now ?? (() => Date.now());
+export function createRemoteMcpAuthorizationState() {
+  const now = (): number => Date.now();
   const signIns = new Map<string, PendingSignIn>();
   const authCodes = new Map<string, PendingAuthCode>();
 

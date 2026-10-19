@@ -19,6 +19,7 @@ import {
   type RelaySelfProbeResult,
 } from "./syncRelaySelfProbe";
 import { SYNC_RELAY_BRIDGE_PROOF_HEADER } from "./sharedSyncListener";
+import type { RemoteMcpHttpRequest, RemoteMcpHttpResponse } from "../remoteMcp/remoteMcpService";
 
 type Logger = {
   info?: (event: string, data?: Record<string, unknown>) => void;
@@ -328,7 +329,10 @@ export type ControlHttpMessage = {
   body: string | null;
 };
 
-export type ControlMessage = ControlOpenMessage | ControlHttpMessage | {
+/** An `http` frame whose request id is usable but whose request is not; it gets a 400. */
+type ControlHttpRejectedMessage = { t: "http_invalid"; rid: string };
+
+export type ControlMessage = ControlOpenMessage | ControlHttpMessage | ControlHttpRejectedMessage | {
   t: "pong";
 };
 
@@ -337,18 +341,20 @@ const MAX_HTTP_PATH_CHARS = 8_192;
 const MAX_HTTP_HEADERS = 32;
 const MAX_HTTP_BODY_CHARS = 1024 * 1024;
 /** What the relay accepts back, with room for JSON escaping of a full body. */
-export const MAX_HTTP_RESPONSE_ENVELOPE_CHARS = 4 * 1024 * 1024;
+const MAX_HTTP_RESPONSE_ENVELOPE_CHARS = 4 * 1024 * 1024;
 
-function parseControlHttpMessage(parsed: Record<string, unknown>): ControlHttpMessage | null {
+function parseControlHttpMessage(parsed: Record<string, unknown>): ControlHttpMessage | ControlHttpRejectedMessage | null {
   const { rid, method, path, headers, body } = parsed;
   if (typeof rid !== "string" || !/^[a-f0-9]{16,32}$/i.test(rid)) return null;
-  if (typeof method !== "string" || !HTTP_METHODS.has(method)) return null;
-  if (typeof path !== "string" || !path.startsWith("/") || path.startsWith("//") || path.length > MAX_HTTP_PATH_CHARS) return null;
-  if (body !== null && body !== undefined && (typeof body !== "string" || body.length > MAX_HTTP_BODY_CHARS)) return null;
+  // The relay waits on this rid; answer it rather than leave it to time out.
+  const rejected: ControlHttpRejectedMessage = { t: "http_invalid", rid };
+  if (typeof method !== "string" || !HTTP_METHODS.has(method)) return rejected;
+  if (typeof path !== "string" || !path.startsWith("/") || path.startsWith("//") || path.length > MAX_HTTP_PATH_CHARS) return rejected;
+  if (body !== null && body !== undefined && (typeof body !== "string" || body.length > MAX_HTTP_BODY_CHARS)) return rejected;
   const cleanHeaders: Record<string, string> = {};
   if (headers && typeof headers === "object" && !Array.isArray(headers)) {
     const entries = Object.entries(headers as Record<string, unknown>);
-    if (entries.length > MAX_HTTP_HEADERS) return null;
+    if (entries.length > MAX_HTTP_HEADERS) return rejected;
     for (const [key, value] of entries) {
       if (typeof value === "string" && value.length <= 8_192) cleanHeaders[key.toLowerCase()] = value;
     }
@@ -360,12 +366,7 @@ function parseControlHttpMessage(parsed: Record<string, unknown>): ControlHttpMe
 export type TunnelRemoteMcpHost = {
   isEnabled(): boolean;
   onEnabledChange(listener: (enabled: boolean) => void): () => void;
-  handleHttp(request: {
-    method: string;
-    path: string;
-    headers: Record<string, string>;
-    body: string | null;
-  }): Promise<{ status: number; headers: Record<string, string>; body: string }>;
+  handleHttp(request: RemoteMcpHttpRequest): Promise<RemoteMcpHttpResponse>;
 };
 
 /** Parses a host control frame; returns null for anything unrecognized. */
@@ -1179,7 +1180,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
           acceptJsonPong?.();
           return;
         }
-        if (message?.t === "http") {
+        if (message?.t === "http" || message?.t === "http_invalid") {
           void answerRemoteMcpHttp(socket, message);
           return;
         }
@@ -1660,20 +1661,32 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
     }
   };
 
-  const sendRemoteMcpState = (controlSocket: WebSocket | null): void => {
-    if (!controlSocket) return;
-    // An older relay ignores the message; a relay that never hears "on" keeps
-    // answering 404 without waking this machine.
+  /**
+   * Tell the relay whether ADE MCP is on. Said only by a client that has (or
+   * just lost) the service: a relay that never hears "on" keeps answering 404
+   * without waking this machine, and an older relay ignores the message.
+   */
+  const sendRemoteMcpState = (controlSocket: WebSocket | null, force = false): void => {
+    if (!controlSocket || (!remoteMcp && !force)) return;
     sendControlLifecycle(controlSocket, { t: "mcp_state", enabled: remoteMcp?.isEnabled() === true });
   };
 
-  const answerRemoteMcpHttp = async (controlSocket: WebSocket, message: ControlHttpMessage): Promise<void> => {
-    let response: { status: number; headers: Record<string, string>; body: string };
-    if (!remoteMcp) {
+  const answerRemoteMcpHttp = async (
+    controlSocket: WebSocket,
+    message: ControlHttpMessage | ControlHttpRejectedMessage,
+  ): Promise<void> => {
+    let response: RemoteMcpHttpResponse;
+    if (message.t === "http_invalid") {
+      response = {
+        status: 400,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ error: "bad_request", error_description: "The request was malformed." }),
+      };
+    } else if (!remoteMcp) {
       response = {
         status: 404,
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ error: "remote_access_off", error_description: "ADE MCP is off on this computer." }),
+        body: JSON.stringify({ error: "ade_mcp_off", error_description: "ADE MCP is off on this computer." }),
       };
     } else {
       try {
@@ -1703,8 +1716,9 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
     if (controlSocket.readyState !== WebSocket.OPEN) return;
     try {
       controlSocket.send(envelope);
-    } catch {
-      // The relay times the request out; the socket's own handlers deal with the failure.
+    } catch (error) {
+      // The relay fails the request when the socket goes; the socket's own handlers deal with that.
+      log.warn?.("remote_mcp.response_send_failed", { error: error instanceof Error ? error.message : String(error) });
     }
   };
 
@@ -2075,13 +2089,15 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
 
     attachRemoteMcp(host: TunnelRemoteMcpHost | null): void {
       if (remoteMcp === host) return;
+      const hadHost = remoteMcp !== null;
       detachRemoteMcp?.();
       detachRemoteMcp = null;
       remoteMcp = host;
       if (host) {
         detachRemoteMcp = host.onEnabledChange(() => sendRemoteMcpState(control));
       }
-      sendRemoteMcpState(control);
+      // Losing the service turns the relay's flag off too.
+      sendRemoteMcpState(control, hadHost);
     },
 
     attachHostListener(listener: TunnelHostListener | null): void {
