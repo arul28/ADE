@@ -262,9 +262,16 @@ export function readJsonWithRecovery<T>(
 /** A cache entry is trusted only once its file has gone this long unchanged. */
 const STAMP_SETTLE_MS = 2_000;
 
+/**
+ * Two clock readings taken a few microseconds apart differ by timer jitter. A
+ * fall in the wall clock's lead over the monotonic clock larger than this is a
+ * step back.
+ */
+const CLOCK_STEP_TOLERANCE_MS = 500;
+
 export type StampedJsonCacheLimits = {
   maxEntries: number;
-  /** Bytes of JSON on disk, not of the parsed heap. */
+  /** Bytes of JSON on disk, not of the parsed heap. An entry larger than this is never kept. */
   maxBytes: number;
 };
 
@@ -285,6 +292,9 @@ export type StampedJsonCacheLimits = {
  * file has no write that new, so its stamp cannot match a later version. A
  * recovered read (the `.lkg` copy) and a missing file are never cached: they go
  * through readJsonWithRecovery, so recovery and its warnings run as they always did.
+ *
+ * The settle check reads the wall clock. If that clock steps back, a settled
+ * stamp proves nothing, so every entry is dropped.
  */
 export function createStampedJsonCache<T>(
   validate: (value: unknown) => value is T,
@@ -293,6 +303,14 @@ export function createStampedJsonCache<T>(
   type Entry = { stamp: string; bytes: number; text: string };
   const entries = new Map<string, Entry>();
   let totalBytes = 0;
+  // The wall clock's lead over the monotonic clock at the last read. It falls only
+  // when the wall clock is stepped back.
+  let lastClockLead: number | null = null;
+
+  const clear = (): void => {
+    entries.clear();
+    totalBytes = 0;
+  };
 
   const forget = (filePath: string): void => {
     const entry = entries.get(filePath);
@@ -324,9 +342,18 @@ export function createStampedJsonCache<T>(
 
   return {
     read(filePath: string): ReadJsonRecoveryResult<T> {
+      // A step back of the wall clock can give a later write the stamp an entry
+      // already holds. The check compares the wall clock's lead over the monotonic
+      // clock, not the wall clock alone: comparing wall readings misses a step
+      // whenever more time than the step has passed between two reads.
+      const wallNow = Date.now();
+      const clockLead = wallNow - performance.now();
+      if (lastClockLead !== null && clockLead < lastClockLead - CLOCK_STEP_TOLERANCE_MS) clear();
+      lastClockLead = clockLead;
+
       // Both the clock and the stat come before the read: a write that lands
       // after them leaves the entry under the older stamp, so the next stat misses.
-      const settledBefore = Date.now() - STAMP_SETTLE_MS;
+      const settledBefore = wallNow - STAMP_SETTLE_MS;
       const stat = statOrNull(filePath);
       const stamp = stat && stat.ino ? `${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}` : null;
       const cached = entries.get(filePath);
@@ -352,7 +379,12 @@ export function createStampedJsonCache<T>(
       const value = text === null ? null : parseValid(text);
       if (text !== null && value !== null) {
         if (stat && stamp !== null && Math.max(stat.mtimeMs, stat.ctimeMs) <= settledBefore) {
-          remember(filePath, { stamp, bytes: stat.size, text });
+          // Charged for the text read, not stat.size: a rewrite between the stat and
+          // the read makes the two differ. remember() evicts the oldest entries to fit
+          // a new one, so an entry over the whole budget is skipped rather than
+          // emptying the cache for itself.
+          const bytes = Buffer.byteLength(text, "utf8");
+          if (bytes <= limits.maxBytes) remember(filePath, { stamp, bytes, text });
         }
         return { value, source: "primary" };
       }
