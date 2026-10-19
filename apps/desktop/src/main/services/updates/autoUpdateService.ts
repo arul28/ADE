@@ -49,18 +49,14 @@ import {
   replaceUpdaterNetSession,
   switchUpdaterToNodeTransport,
 } from "./updaterNetRecovery";
+import { startDownloadStallWatchdog, type DownloadStallWatchdog } from "./downloadStallWatchdog";
 
 const DEFAULT_INSTALL_WATCHDOG_MS = 30_000;
-// electron-updater arms its 60 s request timeout on a `socket` event that
-// Electron's `net` requests never emit, so a download whose connection goes
-// quiet never fails on its own: `downloadUpdate()` stays pending and every
-// later check waits on it until ADE restarts. ADE cancels a download that has
-// received nothing for this long, and the next check starts over.
+// A download that received nothing for this long is cancelled, and the next
+// check starts over (see downloadStallWatchdog.ts). Left alone, it would stay
+// pending and every later check would wait on it until ADE restarts.
 const DEFAULT_DOWNLOAD_STALL_MS = 2 * 60_000;
 const DEFAULT_DOWNLOAD_STALL_POLL_MS = 15_000;
-// A poll gap this many times the interval means the process was suspended
-// (the Mac slept), not that the connection stalled.
-const DOWNLOAD_STALL_SUSPEND_FACTOR = 4;
 const DOWNLOAD_STALLED_MESSAGE =
   "The update download stopped receiving data, so ADE cancelled it. ADE tries again on the next check.";
 // Warn only, never fatal. Squirrel.Mac needs roughly this long just to expand
@@ -711,11 +707,10 @@ export function createAutoUpdateService({
   let netRecoveryExhausted = false;
   // Set by the net recovery when the feed is reachable but the updater is not.
   let checkFailureKind: AutoUpdateErrorKind | null = null;
-  // Download watchdog. Only one download runs at a time: a check's and a
-  // staged-archive restore's never overlap (runUpdateCheck returns early while
-  // `downloading`, and a restore owns `archiveRestoreInProgress`).
-  let lastDownloadActivityAtMs = 0;
-  let downloadTransferComplete = false;
+  // Only one download runs at a time: a check's and a staged-archive restore's
+  // never overlap (runUpdateCheck returns early while `downloading`, and a
+  // restore owns `archiveRestoreInProgress`).
+  let downloadWatchdog: DownloadStallWatchdog | null = null;
   /** Set when the watchdog cancelled the running download; read once by its owner. */
   let downloadStalled = false;
   /** electron-updater's own token class, learned from the last check result. */
@@ -1036,9 +1031,7 @@ export function createAutoUpdateService({
   };
 
   const onDownloadProgress = (info: ProgressInfo) => {
-    // Bytes arrived, whichever download they belong to.
-    lastDownloadActivityAtMs = nowMs();
-    downloadTransferComplete = finitePositive(info.total) != null && info.transferred >= info.total;
+    downloadWatchdog?.noteProgress(finitePositive(info.total) != null && info.transferred >= info.total);
     if (ignoredDownloadVersion) return;
     currentPhase = "download";
     compressedUpdateBytes = finitePositive(info.total) ?? compressedUpdateBytes;
@@ -1234,12 +1227,8 @@ export function createAutoUpdateService({
   }
 
   /**
-   * Runs `downloadUpdate()` and cancels it when no bytes arrive for
-   * `downloadStallMs`. Progress events and growth of the partial file under
-   * `pending/` both count as bytes. Once every byte is in, the hash check,
-   * rename and (on Windows) signature check can take a while without progress,
-   * so the watchdog stands down. A poll gap far longer than the interval means
-   * the machine slept; the window restarts instead of blaming the connection.
+   * Runs `downloadUpdate()` under a stall watchdog (downloadStallWatchdog.ts)
+   * and cancels it when no bytes arrive for `downloadStallMs`.
    *
    * Cancelling makes electron-updater remove the partial file, emit
    * `update-cancelled`, and reject with a `CancellationError`, so the caller's
@@ -1254,49 +1243,37 @@ export function createAutoUpdateService({
     const downloadUpdate = updater.downloadUpdate;
     if (!downloadUpdate) return undefined;
     downloadStalled = false;
-    downloadTransferComplete = false;
-    lastDownloadActivityAtMs = nowMs();
     if (!token) {
       logger.warn("autoUpdate.download_watchdog_unavailable", { context, version: snapshot.version });
       return downloadUpdate.call(updater);
     }
-    const readPendingBytes = () => (updaterCacheDir ? updaterPendingBytes(updaterCacheDir) : null);
-    let lastPollAtMs = lastDownloadActivityAtMs;
-    let lastPendingBytes = readPendingBytes();
-    const watchdog = setInterval(() => {
-      const at = nowMs();
-      const sinceLastPoll = at - lastPollAtMs;
-      lastPollAtMs = at;
-      if (token.cancelled || downloadTransferComplete) return;
-      const pendingBytes = readPendingBytes();
-      if (pendingBytes != null && pendingBytes !== lastPendingBytes) {
-        lastPendingBytes = pendingBytes;
-        lastDownloadActivityAtMs = at;
-        return;
-      }
-      if (sinceLastPoll > downloadStallPollMs * DOWNLOAD_STALL_SUSPEND_FACTOR) {
-        logger.info("autoUpdate.download_watchdog_resumed", { context, sinceLastPollMs: sinceLastPoll });
-        lastDownloadActivityAtMs = at;
-        return;
-      }
-      const idleMs = at - lastDownloadActivityAtMs;
-      if (idleMs < downloadStallMs) return;
-      downloadStalled = true;
-      logger.warn("autoUpdate.download_stalled", {
-        context,
-        version: snapshot.version,
-        idleMs,
-        progressPercent: snapshot.progressPercent,
-        transferredBytes: snapshot.transferredBytes,
-        totalBytes: snapshot.totalBytes,
-      });
-      token.cancel();
-    }, downloadStallPollMs);
-    watchdog.unref?.();
+    const watchdog = startDownloadStallWatchdog({
+      stallMs: downloadStallMs,
+      pollMs: downloadStallPollMs,
+      nowMs,
+      readPendingBytes: () => (updaterCacheDir ? updaterPendingBytes(updaterCacheDir) : null),
+      onSuspendGap: (gapMs) => {
+        logger.info("autoUpdate.download_watchdog_resumed", { context, sinceLastPollMs: gapMs });
+      },
+      onStall: (idleMs) => {
+        downloadStalled = true;
+        logger.warn("autoUpdate.download_stalled", {
+          context,
+          version: snapshot.version,
+          idleMs,
+          progressPercent: snapshot.progressPercent,
+          transferredBytes: snapshot.transferredBytes,
+          totalBytes: snapshot.totalBytes,
+        });
+        token.cancel();
+      },
+    });
+    downloadWatchdog = watchdog;
     try {
       return await downloadUpdate.call(updater, token);
     } finally {
-      clearInterval(watchdog);
+      watchdog.stop();
+      if (downloadWatchdog === watchdog) downloadWatchdog = null;
     }
   }
 
@@ -2419,6 +2396,8 @@ export function createAutoUpdateService({
       clearQuitDeadline();
       clearAutoApplySchedule();
       clearAutoApplyDeadline();
+      downloadWatchdog?.stop();
+      downloadWatchdog = null;
       listeners.clear();
       updater.removeListener("checking-for-update", onCheckingForUpdate);
       updater.removeListener("update-available", onUpdateAvailable);
