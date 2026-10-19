@@ -61,7 +61,7 @@ function makeDeps(overrides: Partial<IdentityThreadRotationDeps<Managed>> = {}) 
     flushContinuity: vi.fn(),
     writeContinuitySummary: vi.fn(),
     writeThreadState: vi.fn(),
-    memory: { appendDailyEntry: vi.fn(), appendMemoryFact: vi.fn() },
+    memory: { appendDailyEntry: vi.fn() },
     // Settled by default; the refusal tests are the ones that turn this on.
     isTurnActive: () => false,
     dispose: vi.fn(async () => undefined),
@@ -152,8 +152,9 @@ describe("startFreshIdentitySession", () => {
       expect.stringContaining("Where it left off:"),
       "session_rotation",
     );
-    expect(deps.memory?.appendMemoryFact).toHaveBeenCalledWith(
-      expect.stringContaining("2026-09-16 hand-off from retired CTO thread session-old:"),
+    // The hand-off is journaled, not filed as a durable fact.
+    expect(deps.memory?.appendDailyEntry).toHaveBeenCalledWith(
+      expect.stringContaining("Thread retired (session-old) and a fresh CTO session started. Hand-off: Where it left off:"),
     );
     expect(deps.dispose).toHaveBeenCalledWith({ sessionId: "session-old" });
     // `reuseExisting: false` is the whole point — reusing would hand back the

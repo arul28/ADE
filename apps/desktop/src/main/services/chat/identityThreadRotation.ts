@@ -72,10 +72,23 @@ export type IdentityThreadRotationDeps<TManaged> = {
   writeContinuitySummary: (managed: TManaged, summary: string) => void;
   /** Mirror the note into the CTO's durable thread state. */
   writeThreadState: (managed: TManaged, summary: string, reason: string) => void;
+  /**
+   * A hand-off written by ADE's helper model from the transcript on disk, for
+   * a thread that cannot write its own (over its limit, or the turn failed).
+   * Null when no helper is reachable. Also files any durable facts it finds.
+   */
+  summarizeForHandoff?: (managed: TManaged) => Promise<string | null>;
+  /**
+   * Scheduled work still armed on the outgoing thread, taken before it is
+   * disposed (disposal cancels it) and re-armed on the new thread. Without
+   * this a rotation silently dropped the nightly memory pass and every
+   * check-in the CTO had scheduled.
+   */
+  takeScheduledWork?: (managed: TManaged) => unknown[];
+  restoreScheduledWork?: (rows: unknown[], sessionId: string) => Promise<number>;
   /** Durable memory writes, absent when no memory service is wired. */
   memory: {
     appendDailyEntry: (line: string) => void;
-    appendMemoryFact: (line: string) => void;
   } | null;
   /**
    * Is a turn running on this thread right now — foreground or background?
@@ -205,7 +218,11 @@ export function createIdentityThreadRotation<TManaged>(
     // already on disk, so it works on a thread that cannot think — and a thread
     // with nothing in it at all needs no model round-trip to tell us so.
     const described = deps.describeSession(managed);
-    const summary = described.summaryOrPreview.trim();
+    // A thread that died on an error previews that error. "Where it left off:
+    // Prompt is too long" says nothing about the work, so it is left out.
+    const failureText = deps.readTurnHealthRecord(managed).failure?.message.trim() ?? "";
+    const preview = described.summaryOrPreview.trim();
+    const summary = failureText && (failureText.startsWith(preview) || preview.startsWith(failureText)) ? "" : preview;
     const recent = deps.listUserMessages(managed)
       .slice(-8)
       .map((text) => `- ${clipHandoffLine(text)}`);
@@ -238,6 +255,23 @@ export function createIdentityThreadRotation<TManaged>(
         if (text.length) return { text, source: "model", thin: false };
       } catch (error) {
         deps.logger.warn("agent_chat.identity_handoff_turn_failed", {
+          sessionId: described.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    // The thread could not write its own note. ADE's helper model reads the
+    // transcript on disk instead, which works on a thread that cannot think.
+    if (sections.length && deps.summarizeForHandoff) {
+      try {
+        const helped = (await deps.summarizeForHandoff(managed))?.trim() ?? "";
+        if (helped.length) {
+          const asks = recent.length ? `\n\n${["What was asked, most recent last:", ...recent].join("\n")}` : "";
+          return { text: `${helped}${asks}`, source: "model", thin: false };
+        }
+      } catch (error) {
+        deps.logger.warn("agent_chat.identity_handoff_helper_failed", {
           sessionId: described.id,
           error: error instanceof Error ? error.message : String(error),
         });
@@ -283,6 +317,7 @@ export function createIdentityThreadRotation<TManaged>(
   }> => {
     const existing = (await deps.listIdentitySessions(args.identityKey))[0] ?? null;
     let handoff: IdentityHandoff = { written: false, thin: false, source: "none" };
+    let carriedScheduledWork: unknown[] = [];
 
     if (existing) {
       const managed = deps.ensureManagedSession(existing.sessionId);
@@ -304,15 +339,22 @@ export function createIdentityThreadRotation<TManaged>(
         // The same routine a compaction runs, for the same reason: the rolling
         // summary and `thread-state.md` are what the NEXT thread reads first.
         deps.flushContinuity(managed, "session_rotation");
-        deps.writeContinuitySummary(managed, distilled.text);
-        deps.writeThreadState(managed, distilled.text, "session_rotation");
+        // A thin hand-off has nothing to say, so it must not replace what is
+        // already written. Retiring a thread that never took a turn used to
+        // overwrite the previous thread's real hand-off with "could not be
+        // summarized" and file that sentence as a durable fact.
+        if (!distilled.thin) {
+          deps.writeContinuitySummary(managed, distilled.text);
+          deps.writeThreadState(managed, distilled.text, "session_rotation");
+        }
         if (args.identityKey === "cto" && deps.memory) {
-          const stamp = deps.nowIso().slice(0, 10);
+          // The hand-off goes in the daily log, which keeps every one of them
+          // and is searchable. It used to be filed as a durable "fact" too,
+          // which made a twelve-line status note rank beside real decisions.
           deps.memory.appendDailyEntry(
-            `Thread retired (${existing.sessionId}) and a fresh CTO session started${distilled.thin ? " — hand-off was thin; see the retired transcript" : ""}.`,
-          );
-          deps.memory.appendMemoryFact(
-            `${stamp} hand-off from retired CTO thread ${existing.sessionId}: ${distilled.text}`,
+            distilled.thin
+              ? `Thread retired (${existing.sessionId}) and a fresh CTO session started — hand-off was thin; see the retired transcript.`
+              : `Thread retired (${existing.sessionId}) and a fresh CTO session started. Hand-off: ${clipHandoffLine(distilled.text, 1_500)}`,
           );
         }
         handoff = { written: true, thin: distilled.thin, source: distilled.source };
@@ -321,6 +363,14 @@ export function createIdentityThreadRotation<TManaged>(
         // thread that cannot answer — the rotation still happens, and the
         // transcript is still on disk.
         deps.logger.warn("agent_chat.identity_handoff_write_failed", {
+          sessionId: existing.sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      try {
+        carriedScheduledWork = deps.takeScheduledWork?.(managed) ?? [];
+      } catch (error) {
+        deps.logger.warn("agent_chat.identity_rotation_schedule_snapshot_failed", {
           sessionId: existing.sessionId,
           error: error instanceof Error ? error.message : String(error),
         });
@@ -340,12 +390,24 @@ export function createIdentityThreadRotation<TManaged>(
       laneId: args.laneId,
       reuseExisting: false,
     });
+    let scheduledWorkCarried = 0;
+    if (carriedScheduledWork.length && deps.restoreScheduledWork) {
+      try {
+        scheduledWorkCarried = await deps.restoreScheduledWork(carriedScheduledWork, session.id);
+      } catch (error) {
+        deps.logger.warn("agent_chat.identity_rotation_schedule_restore_failed", {
+          sessionId: session.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
     deps.logger.info("agent_chat.identity_session_rotated", {
       identityKey: args.identityKey,
       previousSessionId: existing?.sessionId ?? null,
       sessionId: session.id,
       handoffSource: handoff.source,
       handoffThin: handoff.thin,
+      scheduledWorkCarried,
     });
     return { session, previousSessionId: existing?.sessionId ?? null, handoff };
   };

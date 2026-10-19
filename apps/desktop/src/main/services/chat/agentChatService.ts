@@ -717,6 +717,7 @@ import {
   queuedSteersCanReorder,
   defaultActiveTurnDispatchMode,
   providerSupportsLiveRedirect,
+  CTO_THREAD_ROLLED_OVER_STATUS,
   supportsActiveTurnDispatchMode,
   cursorSessionRunsInCloud,
   unsupportedActiveTurnDispatchModeMessage,
@@ -1133,6 +1134,12 @@ import {
 import { stripAnsi } from "../../utils/ansiStrip";
 import type { createCtoStateService } from "../cto/ctoStateService";
 import type { CtoMemoryService } from "../cto/ctoMemoryService";
+import {
+  buildContinuityCapturePrompt,
+  formatCaptureTranscript,
+  parseContinuityCapture,
+  type ContinuityCaptureEntry,
+} from "../cto/ctoMemoryCapture";
 import type { IssueTracker } from "../cto/issueTracker";
 import type { createPrService } from "../prs/prService";
 import type { ComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
@@ -15518,18 +15525,19 @@ export function createAgentChatService(args: {
 
   const collectConversationEntries = (
     managed: ManagedChatSession,
-  ): SessionMetadataConversationEntry[] => {
+  ): Array<SessionMetadataConversationEntry & { displayText?: string }> => {
     // Assistant replies are stored as streamed chunks ("raises a", " Windows
     // admin"), so one reply is many `text` events: join each turn's chunks
     // with `joinAssistantChunk`, the same rule the live ring uses.
     // `includeBuffered` adds events still on their way to disk, so a refresh
     // right after a turn ends sees that turn's last words.
-    const fromTranscript: Array<SessionMetadataConversationEntry & { turnId?: string; messageId?: string }> = [];
+    const fromTranscript: Array<SessionMetadataConversationEntry & { displayText?: string; turnId?: string; messageId?: string }> = [];
     try {
       for (const { event } of readTranscriptEnvelopes(managed, { includeBuffered: true })) {
         if (event.type === "user_message") {
           const text = event.text.trim();
-          if (text) fromTranscript.push({ role: "user", text });
+          const displayText = event.displayText?.trim();
+          if (text) fromTranscript.push({ role: "user", text, ...(displayText ? { displayText } : {}) });
         } else if (event.type === "text") {
           const last = fromTranscript[fromTranscript.length - 1];
           if (last?.role === "assistant" && last.turnId === event.turnId) {
@@ -15548,9 +15556,13 @@ export function createAgentChatService(args: {
     // the latest turns in a different shape.
     const source = fromTranscript.length
       ? fromTranscript
-      : managed.recentConversationEntries.map((entry) => ({ role: entry.role, text: entry.text }));
+      : managed.recentConversationEntries.map((entry) => ({ role: entry.role, text: entry.text, displayText: entry.displayText }));
     return source
-      .map((entry) => ({ role: entry.role, text: entry.text.trim() }))
+      .map((entry) => ({
+        role: entry.role,
+        text: entry.text.trim(),
+        ...(entry.displayText?.trim() ? { displayText: entry.displayText.trim() } : {}),
+      }))
       .filter((entry) => entry.text.length > 0);
   };
 
@@ -15594,13 +15606,41 @@ export function createAgentChatService(args: {
 
   const usesIdentityContinuity = (managed: ManagedChatSession): boolean => Boolean(managed.session.identityKey);
 
+  const CONTINUITY_SNAPSHOT_HEADING = "Recent continuity snapshot:";
+  const CTO_MEMORY_CHECKPOINT_TURNS = 6;
+  const ctoTurnsSinceMemoryCheckpoint = new Map<string, number>();
+
+  /** What the person typed, not the wrapper ADE sent: the memory pass reads this. */
+  const collectCaptureEntries = (managed: ManagedChatSession): ContinuityCaptureEntry[] =>
+    collectConversationEntries(managed).map((entry) => ({
+      role: entry.role === "user" ? "user" : "assistant",
+      text: entry.role === "user" ? entry.displayText?.trim() || entry.text : entry.text,
+    }));
+
+  /**
+   * The model-written part of a continuity summary, without a snapshot that a
+   * deterministic flush appended to it.
+   */
+  const modelWrittenContinuity = (summary: string | null | undefined): string => {
+    const text = summary?.trim() ?? "";
+    const at = text.indexOf(CONTINUITY_SNAPSHOT_HEADING);
+    return (at === -1 ? text : text.slice(0, at)).trim().slice(0, 2_500);
+  };
+
+  /**
+   * The deterministic continuity snapshot: the newest turns, each clipped,
+   * behind whatever the last model-written summary knew.
+   *
+   * Both halves matter. It used to be the last twenty entries verbatim and
+   * nothing else, so every compaction replaced a good summary of what the
+   * thread is FOR with a raw copy of what was just said — and the head-kept
+   * injection then showed the oldest of those twenty, not the newest.
+   */
   const buildDeterministicContinuitySummary = (managed: ManagedChatSession): string | null => {
-    const recentConversation = buildRecentConversationContext(managed, 20).trim();
-    if (!recentConversation.length) return null;
-    return [
-      "Recent continuity snapshot:",
-      recentConversation,
-    ].join("\n");
+    const recent = formatCaptureTranscript(collectCaptureEntries(managed).slice(-12), 6_000).trim();
+    if (!recent.length) return null;
+    const previous = modelWrittenContinuity(managed.continuitySummary);
+    return [previous, `${CONTINUITY_SNAPSHOT_HEADING}\n${recent}`].filter((part) => part.length).join("\n\n");
   };
 
   // Mirror a continuity summary into the CTO's durable thread-state.md so the
@@ -15679,17 +15719,19 @@ export function createAgentChatService(args: {
     return deterministic;
   };
 
-  const maybeRefreshIdentityContinuitySummary = async (
+  /**
+   * ADE's memory pass over an identity thread: one call to the cheap helper
+   * model on the vendor the chat already uses, reading ADE's own transcript.
+   * Returns the rolling summary, and files any durable facts it found into the
+   * CTO's memory. This is what makes memory independent of the model
+   * remembering to call saveMemory, and of which provider it runs on.
+   */
+  const runIdentityMemoryPass = async (
     managed: ManagedChatSession,
-    reason: "compaction" | "provider_reset",
-  ): Promise<void> => {
-    // Deterministic flush runs first and unconditionally so the durable
-    // thread-state is guaranteed fresh even when an LLM upgrade is still in
-    // flight (the switch path depends on this synchronous prefix).
-    const deterministic = flushIdentityContinuityDeterministic(managed, reason);
-    if (!deterministic) return;
-    if (managed.continuitySummaryInFlight) return;
-
+    reason: string,
+  ): Promise<string | null> => {
+    const entries = collectCaptureEntries(managed);
+    if (!entries.length) return null;
     const auth = await detectAuth().catch(() => []);
     const availableModels = await getAvailableRegistryModels(auth);
     const candidateModelIds = buildSessionIntelligenceModelCandidates({
@@ -15698,51 +15740,132 @@ export function createAgentChatService(args: {
       sessionModelId: managed.session.modelId,
       sessionModel: managed.session.model,
     });
-    if (!candidateModelIds.length) return;
-
-    const prompt = [
-      "You are ADE's continuity compaction assistant.",
-      "Summarize the persistent identity chat's active continuity for recovery after provider resets or context compaction.",
-      "Focus on current objectives, active delegations, decisions already made, and blockers that still matter.",
-      "Return 3-6 concise bullet points and do not add Markdown headings.",
-      "",
-      `Reason: ${reason}`,
-      `Identity: ${managed.session.identityKey}`,
-      deterministic,
-    ].join("\n");
-
-    managed.continuitySummaryInFlight = true;
-    try {
-      const { result } = await runNamingAcrossProviders<string>(candidateModelIds, {
-        run: async (descriptor) => {
-          const response = await runSessionIntelligencePrompt({
-            cwd: managed.laneWorktreePath,
-            modelId: descriptor.id,
-            prompt,
-            taskType: "continuity_summary",
-            providerAccount: sessionProviderAccount(managed),
-          });
-          const text = response.text.trim();
-          return text.length ? text : null;
-        },
-        onFailure: (failure) => {
-          logger.warn("agent_chat.identity_continuity_summary_failed", {
+    if (!candidateModelIds.length) return null;
+    const memory = managed.session.identityKey === "cto" ? ctoMemoryService : null;
+    const prompt = buildContinuityCapturePrompt({
+      reason,
+      transcript: formatCaptureTranscript(entries.slice(-40)),
+      knownFacts: memory?.listKnownFacts(40) ?? [],
+      previousSummary: modelWrittenContinuity(managed.continuitySummary),
+    });
+    const { result } = await runNamingAcrossProviders<string>(candidateModelIds, {
+      run: async (descriptor) => {
+        const response = await runSessionIntelligencePrompt({
+          cwd: managed.laneWorktreePath,
+          modelId: descriptor.id,
+          prompt,
+          taskType: "continuity_summary",
+          providerAccount: sessionProviderAccount(managed),
+        });
+        const text = response.text.trim();
+        return text.length ? text : null;
+      },
+      onFailure: (failure) => {
+        logger.warn("agent_chat.identity_continuity_summary_failed", {
+          sessionId: managed.session.id,
+          reason,
+          modelId: failure.descriptor.id,
+          error: failure.error instanceof Error ? failure.error.message : String(failure.error),
+        });
+      },
+    });
+    if (!result) return null;
+    const capture = parseContinuityCapture(result);
+    if (memory && capture.facts.length) {
+      try {
+        const filed = memory.captureFacts(capture.facts);
+        if (filed.saved.length) {
+          logger.info("agent_chat.cto_memory_captured", {
             sessionId: managed.session.id,
             reason,
-            modelId: failure.descriptor.id,
-            error: failure.error instanceof Error ? failure.error.message : String(failure.error),
+            saved: filed.saved.length,
+            skipped: filed.skipped,
           });
-        },
-      });
-      if (result) {
-        managed.continuitySummary = result;
+        }
+      } catch (error) {
+        logger.warn("agent_chat.cto_memory_capture_failed", {
+          sessionId: managed.session.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return capture.summary;
+  };
+
+  const maybeRefreshIdentityContinuitySummary = async (
+    managed: ManagedChatSession,
+    reason: "compaction" | "provider_reset" | "checkpoint",
+  ): Promise<void> => {
+    // Deterministic flush runs first and unconditionally so the durable
+    // thread-state is guaranteed fresh even when an LLM upgrade is still in
+    // flight (the switch path depends on this synchronous prefix). A
+    // checkpoint skips it: nothing is about to be lost, and a failed pass
+    // should leave the last good summary exactly as it was.
+    if (reason !== "checkpoint" && !flushIdentityContinuityDeterministic(managed, reason)) return;
+    if (managed.continuitySummaryInFlight) return;
+    managed.continuitySummaryInFlight = true;
+    try {
+      const summary = await runIdentityMemoryPass(managed, reason);
+      if (summary) {
+        managed.continuitySummary = summary;
         managed.continuitySummaryUpdatedAt = nowIso();
         persistChatState(managed);
-        writeCtoThreadStateFromSummary(managed, result, reason);
+        writeCtoThreadStateFromSummary(managed, summary, reason);
       }
     } finally {
       managed.continuitySummaryInFlight = false;
     }
+  };
+
+  /**
+   * Count a settled CTO turn toward the next memory checkpoint.
+   *
+   * Compaction alone is too rare to be the memory schedule: a long thread on a
+   * big window went weeks between compactions, and its thread state stayed a
+   * month old the whole time. Every few turns the same pass runs in the
+   * background, on the cheap helper model.
+   */
+  const noteCtoTurnForMemoryCheckpoint = (managed: ManagedChatSession): void => {
+    const count = (ctoTurnsSinceMemoryCheckpoint.get(managed.session.id) ?? 0) + 1;
+    if (count < CTO_MEMORY_CHECKPOINT_TURNS) {
+      ctoTurnsSinceMemoryCheckpoint.set(managed.session.id, count);
+      return;
+    }
+    ctoTurnsSinceMemoryCheckpoint.set(managed.session.id, 0);
+    void maybeRefreshIdentityContinuitySummary(managed, "checkpoint").catch((error) => {
+      logger.warn("agent_chat.cto_memory_checkpoint_failed", {
+        sessionId: managed.session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
+
+  /**
+   * An identity thread's provider compacted its context, on any provider.
+   *
+   * This used to hang off Claude's compaction observer only, so a Codex CTO
+   * compacted without flushing `thread-state.md` and without being told its
+   * doctrine again. Two things happen here:
+   * - started: the deterministic flush, from ADE's own transcript, before the
+   *   provider's summary replaces what the model can see.
+   * - completed: the best-effort summary upgrade, and the once-per-thread
+   *   static block is re-armed. It was said once at the top of the thread, and
+   *   a compacted thread keeps only what the provider's summary kept, so
+   *   without this a compacted CTO quietly stops being told who it is.
+   */
+  const observeIdentityCompaction = (
+    managed: ManagedChatSession,
+    event: Extract<AgentChatEvent, { type: "context_compact" | "codex_context_compaction" }>,
+  ): void => {
+    if (event.state === "started") {
+      flushIdentityContinuityDeterministic(managed, "compaction");
+      return;
+    }
+    // A `context_compact` with no state comes from a completion-only source.
+    if (event.state !== "completed" && !(event.type === "context_compact" && event.state === undefined)) return;
+    resetStagedSection(managed.ctoStaticContext);
+    void maybeRefreshIdentityContinuitySummary(managed, "compaction");
+    refreshReconstructionContext(managed);
   };
 
   const appendRecentConversationEntry = (managed: ManagedChatSession, event: AgentChatEvent): void => {
@@ -15834,7 +15957,9 @@ export function createAgentChatService(args: {
       sections.push({ id: null, text: ctoStateService.buildReconstructionContext(8) });
     }
 
-    if (usesIdentityContinuity(managed) && managed.continuitySummary?.trim()) {
+    // The CTO's memory sections already carry this summary as its thread state
+    // (every write goes to both), so it would be said twice on every turn.
+    if (usesIdentityContinuity(managed) && managed.continuitySummary?.trim() && !(isCto && ctoMemoryService)) {
       sections.push({
         id: null,
         text: ["Continuity Summary", managed.continuitySummary.trim()].join("\n"),
@@ -20231,16 +20356,18 @@ export function createAgentChatService(args: {
     return `${trimmed.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
   };
 
-  // Turn-completion hook. Worker/subordinate activity logging has been removed
-  // with the workers subsystem; this remains as the turn-end extension point that
-  // the CTO memory system (durable thread flushes) will hook into.
-  // Deterministic per-turn journal for the CTO's daily log. On each completed
-  // (or failed) CTO turn we append one compact line capturing the user's intent
-  // and the outcome. No LLM call; fully guarded so a failure never breaks the
-  // turn. Non-CTO sessions are ignored.
+  // Deterministic per-turn journal for the CTO's daily log: one compact line of
+  // the user's intent and the outcome per settled CTO turn. No LLM call; fully
+  // guarded so a failure never breaks the turn. Non-CTO sessions are ignored.
+  //
+  // Called from `commitChatEvent` on `done`, the one place every provider
+  // agrees a turn is over. It used to be called by hand from each provider's
+  // own completion path, and Codex's main-thread path never got the call: a
+  // Codex CTO ran 29 turns without writing one line to the daily log.
   const appendCtoTurnJournal = (
     managed: ManagedChatSession,
-    input: { assistantText?: string | null; failureNote?: string | null } = {},
+    done: Extract<AgentChatEvent, { type: "done" }>,
+    errorText: string | null,
   ): void => {
     if (managed.session.identityKey !== "cto" || !ctoMemoryService) return;
     try {
@@ -20249,15 +20376,20 @@ export function createAgentChatService(args: {
       let lastAssistant = "";
       for (let i = entries.length - 1; i >= 0; i -= 1) {
         const entry = entries[i];
-        if (!lastAssistant && entry.role === "assistant") lastAssistant = entry.text.trim();
+        // Only this turn's answer: a failed turn that wrote nothing must not be
+        // journaled with the previous turn's reply as its outcome.
+        const sameTurn = !done.turnId || !entry.turnId || entry.turnId === done.turnId;
+        if (!lastAssistant && entry.role === "assistant" && sameTurn) lastAssistant = entry.text.trim();
         if (!lastUser && entry.role === "user") {
           lastUser = (entry.displayText?.trim() || entry.text.trim());
         }
-        if (lastUser && lastAssistant) break;
+        if (lastUser) break;
       }
-      const outcome = input.failureNote?.trim()
-        ? input.failureNote.trim()
-        : (input.assistantText?.trim() || lastAssistant);
+      const outcome = done.status === "failed"
+        ? `Turn failed${errorText?.trim() ? `: ${errorText.trim()}` : ""}`
+        : done.status === "interrupted"
+          ? `Stopped${lastAssistant ? `: ${lastAssistant}` : ""}`
+          : lastAssistant;
       if (!lastUser && !outcome) return;
       ctoMemoryService.appendTurnJournal({ user: lastUser, outcome });
     } catch (error) {
@@ -21260,7 +21392,14 @@ export function createAgentChatService(args: {
     ) {
       managed.liveTurnErrorText = storedEvent.message;
     } else if (storedEvent.type === "done") {
+      // Read before `recordSettledTurnHealth` spends it.
+      const turnErrorText = managed.liveTurnErrorText;
       recordSettledTurnHealth(managed, storedEvent);
+      appendCtoTurnJournal(managed, storedEvent, turnErrorText);
+      if (managed.session.identityKey === "cto") {
+        if (storedEvent.status === "completed") noteCtoTurnForMemoryCheckpoint(managed);
+        else if (managed.lastTurnFailure?.kind === "context_overflow") maybeAutoRolloverCtoThread(managed);
+      }
     }
 
     // Session summaries are generated only when the chat is explicitly ended in ADE,
@@ -22027,6 +22166,7 @@ export function createAgentChatService(args: {
       // before the rest of the event is bookkept. Terminal states only: an
       // event with no state is not evidence that the compaction finished.
       if (event.state === "completed" || event.state === "failed") settleCompactionWaiters(managed.session.id);
+      if (managed.session.identityKey) observeIdentityCompaction(managed, event);
     }
     if (event.type === "context_compact") {
       if (event.state === "failed") {
@@ -22737,10 +22877,6 @@ export function createAgentChatService(args: {
       );
     }
     if (!options.completed) return;
-    if (managed.session.identityKey) {
-      void maybeRefreshIdentityContinuitySummary(managed, "compaction");
-      refreshReconstructionContext(managed);
-    }
     if (!internalTrigger) {
       logger.info("agent_chat.claude_context_compaction_observed", {
         sessionId: managed.session.id,
@@ -27847,9 +27983,6 @@ export function createAgentChatService(args: {
       ...(state.queuedTurnCount != null ? { queuedTurnCount: state.queuedTurnCount } : {}),
       ...(terminalReason ? { terminalReason, terminalReasonSource: "sdk" as const } : {}),
     });
-    if (state.assistantText.trim().length > 0) {
-      appendCtoTurnJournal(managed, { assistantText: state.assistantText });
-    }
     const endSha = await computeHeadShaBestEffort(resolveManagedExecutionLaneId(managed)).catch(() => null);
     if (endSha) {
       sessionService.setHeadShaEnd(managed.session.id, endSha);
@@ -31608,10 +31741,6 @@ export function createAgentChatService(args: {
         void emitTurnDiffSummaryIfChanged(managed, turnId);
       }
 
-      if (assistantText.trim().length > 0) {
-        appendCtoTurnJournal(managed, { assistantText });
-      }
-
       // Adopt the SDK-generated session title (once) when the turn settles and
       // the chat still carries the provider-default name. Fire-and-forget.
       if (runtimeStillCurrent) maybeAdoptClaudeSdkSessionTitle(managed, runtime);
@@ -31784,7 +31913,6 @@ export function createAgentChatService(args: {
           ...doneModel,
         });
 
-        appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${errorMessage}` });
       } else if (isAbortRelatedError(effectiveError)) {
         // System-triggered abort (dispose/teardown) that wasn't flagged as interrupted.
         // Treat as interruption to avoid surfacing raw SDK messages like "aborted by user".
@@ -31861,7 +31989,6 @@ export function createAgentChatService(args: {
           ...doneModel,
         });
 
-        appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${errorMessage}` });
 
         // If resume failed, clear sessionId and the caller can retry fresh
         if (runtime.sdkSessionId && isClaudeStaleSessionError(effectiveError)) {
@@ -32385,9 +32512,6 @@ export function createAgentChatService(args: {
       } else {
         reportProviderRuntimeFailure("claude", result.state?.detail ?? result.state?.state ?? result.status);
       }
-      if (result.assistantText.trim().length > 0) {
-        appendCtoTurnJournal(managed, { assistantText: result.assistantText });
-      }
       const endSha = await computeHeadShaBestEffort(resolveManagedExecutionLaneId(managed)).catch(() => null);
       if (endSha) {
         sessionService.setHeadShaEnd(managed.session.id, endSha);
@@ -32417,7 +32541,6 @@ export function createAgentChatService(args: {
         status: "failed",
         ...doneModel,
       });
-      appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${errorMessage}` });
       persistChatState(managed);
     }
   };
@@ -33141,7 +33264,6 @@ export function createAgentChatService(args: {
       );
       emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
       emitChatEvent(managed, { type: "done", turnId, status: "failed", ...doneModel });
-      appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${message}` });
       persistChatState(managed);
       return;
     }
@@ -33278,7 +33400,6 @@ export function createAgentChatService(args: {
         emitAcpTurnFailure(managed, turnId, message);
         emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
         emitChatEvent(managed, { type: "done", turnId, status: "failed", ...doneModel });
-        appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${message}` });
       }
       persistChatState(managed);
     } finally {
@@ -34397,7 +34518,6 @@ export function createAgentChatService(args: {
       emitChatEvent(managed, { type: "error", message, turnId: setupTurnId });
       emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId: setupTurnId });
       emitChatEvent(managed, { type: "done", turnId: setupTurnId, status: "failed", ...doneModel() });
-      appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${message}` });
       persistChatState(managed);
       return;
     }
@@ -34541,7 +34661,6 @@ export function createAgentChatService(args: {
         });
         emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
         emitChatEvent(managed, done);
-        appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${message}` });
       }
       persistChatState(managed);
     } catch (error) {
@@ -34557,7 +34676,6 @@ export function createAgentChatService(args: {
         emitChatEvent(managed, { type: "error", message, turnId });
         emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
         emitChatEvent(managed, { type: "done", turnId, status: "failed", ...doneModel() });
-        appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${message}` });
       }
       persistChatState(managed);
     } finally {
@@ -34762,7 +34880,6 @@ export function createAgentChatService(args: {
         model: managed.session.model,
         ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
       });
-      appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${message}` });
       persistChatState(managed);
       return;
     }
@@ -34848,7 +34965,6 @@ export function createAgentChatService(args: {
         emitChatEvent(managed, { type: "error", message, turnId });
         emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
         emitChatEvent(managed, doneEvent);
-        appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${message}` });
       }
       persistChatState(managed);
     } finally {
@@ -35047,8 +35163,6 @@ export function createAgentChatService(args: {
         ...(servedModel ? { servedModel } : {}),
         account: turnUsageAccounts.openCode(managed, served?.providerID || turn.requestedModel.providerID),
       });
-      const finalText = turn.mapper.finalText();
-      if (finalText.trim().length > 0) appendCtoTurnJournal(managed, { assistantText: finalText });
       void computeHeadShaBestEffort(resolveManagedExecutionLaneId(managed))
         .then((endSha) => {
           if (endSha) sessionService.setHeadShaEnd(managed.session.id, endSha);
@@ -35092,7 +35206,6 @@ export function createAgentChatService(args: {
         ...(doneUsage ? { usage: doneUsage.usage } : {}),
         ...doneCost,
       });
-      appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${message}` });
     }
     persistChatState(managed);
     turn.settle();
@@ -50787,7 +50900,6 @@ export function createAgentChatService(args: {
       ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
     });
 
-    appendCtoTurnJournal(managed, { failureNote: `Turn failed before execution: ${message}` });
     persistChatState(managed);
   };
 
@@ -53516,7 +53628,6 @@ export function createAgentChatService(args: {
         shouldDeliverQueuedSteer = runtime.pendingSteers.length > 0;
       }
 
-      appendCtoTurnJournal(managed);
       persistChatState(managed);
     } catch (error) {
       // `args.onBackendDispatched` is cleared the moment the ack is registered,
@@ -53539,7 +53650,6 @@ export function createAgentChatService(args: {
       } else {
         const classified = classifyCursorTurnFailure(managed, error);
         emitCursorTurnFailed(managed, { turnId, turnModel, turnModelId }, classified);
-        appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${classified.message}` });
       }
       persistChatState(managed);
       // The terminal set for this turn has now been emitted; the tag stops the
@@ -54323,7 +54433,6 @@ export function createAgentChatService(args: {
         }
       }
 
-      appendCtoTurnJournal(managed);
       persistChatState(managed);
     } catch (error) {
       turnStatus = runtime.interrupted ? "interrupted" : "failed";
@@ -54362,7 +54471,6 @@ export function createAgentChatService(args: {
           model: turnModel,
           ...(turnModelId ? { modelId: turnModelId } : {}),
         });
-        appendCtoTurnJournal(managed, { failureNote: `Cloud turn failed: ${msg}` });
       }
       persistChatState(managed);
       if (failedBeforeDispatch) throw error;
@@ -56360,7 +56468,6 @@ export function createAgentChatService(args: {
         shouldDeliverQueuedSteer = runtime.pendingSteers.length > 0;
       }
 
-      appendCtoTurnJournal(managed);
       persistChatState(managed);
     } catch (error) {
       const failedBeforeDispatch = runtime.pendingDispatchAck?.turnId === turnId;
@@ -56414,7 +56521,6 @@ export function createAgentChatService(args: {
           model: managed.session.model,
           ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
         });
-        appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${msg}` });
       }
       persistChatState(managed);
       if (failedBeforeDispatch) throw error;
@@ -63226,7 +63332,7 @@ export function createAgentChatService(args: {
     // the CTO on a thread it can never steer.
     if (args.identityKey === "cto" && !providerSupportsLiveRedirect(provider)) {
       throw new Error(
-        "The CTO needs a model that can steer a live turn — Claude, Codex, or Cursor. Pick one in CTO settings.",
+        "The CTO needs a model that can steer a live turn — Claude, Codex, Cursor, or OpenCode. Pick one in CTO settings.",
       );
     }
 
@@ -63280,9 +63386,12 @@ export function createAgentChatService(args: {
       failure: managed.lastTurnFailure,
       context: managed.contextHealth,
     }),
+    // What the person typed, not what ADE wrapped around it: a hand-off built
+    // from `text` once filed eight copies of an injected preamble, clipped
+    // before the words the user actually said.
     listUserMessages: (managed) => collectConversationEntries(managed)
       .filter((entry) => entry.role === "user")
-      .map((entry) => entry.text),
+      .map((entry) => entry.displayText?.trim() || entry.text),
     listScheduledWorkLines: (managed) => (scheduledWorkScheduler?.list(managed.session.id) ?? [])
       .map((schedule) => schedule.prompt || schedule.kind),
     runSessionTurn: (args) => runSessionTurn(args),
@@ -63297,12 +63406,33 @@ export function createAgentChatService(args: {
     writeThreadState: (managed, summary, reason) => {
       writeCtoThreadStateFromSummary(managed, summary, reason);
     },
+    summarizeForHandoff: (managed) => runIdentityMemoryPass(managed, "session_rotation"),
+    // ADE-owned rows only: a Claude provider schedule is bound to the outgoing
+    // SDK session and is paused, not moved, by the disposal that follows.
+    takeScheduledWork: (managed) => (scheduledWorkScheduler?.list(managed.session.id) ?? []).filter((schedule) =>
+      schedule.status !== "done"
+      && schedule.status !== "cancelled"
+      && !(schedule.provider === "claude" && schedule.durable === true)),
+    restoreScheduledWork: async (rows, sessionId) => {
+      await scheduledWorkReady;
+      if (!scheduledWorkScheduler) return 0;
+      let restored = 0;
+      for (const row of rows as ChatScheduledWorkRecord[]) {
+        const { terminalAt: _terminalAt, activeTurnId: _activeTurnId, ...rest } = row;
+        await scheduledWorkScheduler.upsert({
+          ...rest,
+          sessionId,
+          status: row.pausedFlag ? "paused" : "scheduled",
+        });
+        restored += 1;
+      }
+      return restored;
+    },
     // Read once at construction rather than per rotation: the memory service is
     // wired when the chat service is built and never swapped under it.
     memory: ctoMemoryService
       ? {
         appendDailyEntry: (line) => ctoMemoryService.appendDailyEntry(line),
-        appendMemoryFact: (line) => ctoMemoryService.appendMemoryFact(line),
       }
       : null,
     // The same pair `hasActiveWorkloads` uses: the session row carries the
@@ -63315,6 +63445,71 @@ export function createAgentChatService(args: {
   });
 
   const { getSessionTurnHealth, getCtoThreadHealth, startFreshIdentitySession } = identityThreadRotation;
+
+  /**
+   * A CTO thread that no longer fits its context window is retired by ADE
+   * itself, and the message that failed is sent again on the fresh thread.
+   *
+   * Rotation stays an offer while the thread still answers. Once it cannot,
+   * every message fails the same way — one thread took ten failed turns over
+   * thirteen hours before anyone pressed the button — so there is nothing left
+   * to protect by waiting. Guarded twice: a thread that overflows within its
+   * first few messages is not full (the message is too big, and a new thread
+   * would fail the same way), and a cooldown stops a loop if it is.
+   */
+  const CTO_AUTO_ROLLOVER_MIN_USER_TURNS = 3;
+  const CTO_AUTO_ROLLOVER_COOLDOWN_MS = 10 * 60_000;
+  let ctoAutoRolloverInFlight = false;
+  let ctoAutoRolloverLastAt = 0;
+  const maybeAutoRolloverCtoThread = (managed: ManagedChatSession): void => {
+    if (ctoAutoRolloverInFlight || managed.closed) return;
+    if (Date.now() - ctoAutoRolloverLastAt < CTO_AUTO_ROLLOVER_COOLDOWN_MS) return;
+    const userEntries = collectConversationEntries(managed).filter((entry) => entry.role === "user");
+    if (userEntries.length < CTO_AUTO_ROLLOVER_MIN_USER_TURNS) return;
+    const failed = userEntries[userEntries.length - 1];
+    const previousSessionId = managed.session.id;
+    const laneId = managed.session.laneId;
+    ctoAutoRolloverInFlight = true;
+    ctoAutoRolloverLastAt = Date.now();
+    logger.info("agent_chat.cto_auto_rollover_started", { sessionId: previousSessionId });
+    // Deferred: this runs inside the commit of the failed turn's `done`, and
+    // the rotation disposes this very session.
+    setTimeout(() => {
+      void (async () => {
+        try {
+          const result = await startFreshIdentitySession({ identityKey: "cto", laneId, force: true });
+          const next = ensureManagedSession(result.session.id);
+          // On the new thread, so it is the first thing the user reads there,
+          // and so the CTO page (which listens for this status) follows it.
+          emitChatEvent(next, {
+            type: "system_notice",
+            noticeKind: "info",
+            status: CTO_THREAD_ROLLED_OVER_STATUS,
+            message: "The previous CTO thread was over its context limit, so ADE started this one with a hand-off. Your last message was sent again here.",
+          });
+          if (failed) {
+            await sendMessage({
+              sessionId: result.session.id,
+              text: failed.text,
+              ...(failed.displayText ? { displayText: failed.displayText } : {}),
+            });
+          }
+          logger.info("agent_chat.cto_auto_rollover_completed", {
+            previousSessionId,
+            sessionId: result.session.id,
+            handoffSource: result.handoff.source,
+          });
+        } catch (error) {
+          logger.warn("agent_chat.cto_auto_rollover_failed", {
+            sessionId: previousSessionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        } finally {
+          ctoAutoRolloverInFlight = false;
+        }
+      })();
+    }, 0);
+  };
 
   /**
    * Cancel every pending-input surface before a user settles the session.

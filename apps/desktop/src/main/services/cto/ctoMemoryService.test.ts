@@ -39,6 +39,7 @@ describe("ctoMemoryService", () => {
     expect(service.appendMemoryFact("Prefer sentence case in UI copy.")).toEqual({
       saved: true,
       fact: "Prefer sentence case in UI copy.",
+      id: expect.any(String),
     });
     expect(service.appendMemoryFact("Ship one push per review cycle.").saved).toBe(true);
     // Exact duplicate (after whitespace normalization) is a no-op.

@@ -573,6 +573,8 @@ export type CtoMemorySearchRow = {
   date: string | null;
   line: number;
   snippet: string;
+  /** The context-store id when the row is a live fact: what saveMemory `replaces` and forgetMemory take. */
+  id?: string;
 };
 
 export type CtoSearchMemoryResult = {

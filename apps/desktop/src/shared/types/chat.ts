@@ -5172,8 +5172,20 @@ export function unsupportedActiveTurnDispatchModeMessage(
  * Cursor qualifies through interrupt-and-resend: the live run is cancelled and
  * the message continues on the same agent thread, which is still a redirect of
  * work in flight rather than a wait for the turn boundary.
+ *
+ * OpenCode qualifies through its own inbox: an inline message is delivered at
+ * the running turn's next step boundary, inside the same execution. It is also
+ * what puts every model OpenCode reaches (Zen, OpenRouter, local models) in
+ * reach of the CTO.
  */
-export const CTO_LIVE_REDIRECT_PROVIDERS = ["claude", "codex", "cursor"] as const;
+export const CTO_LIVE_REDIRECT_PROVIDERS = ["claude", "codex", "cursor", "opencode"] as const;
+
+/**
+ * `system_notice.status` on the first row of a CTO thread ADE opened by itself
+ * because the previous one no longer fit its context window. The CTO page
+ * follows the thread when it sees it.
+ */
+export const CTO_THREAD_ROLLED_OVER_STATUS = "cto_thread_rolled_over";
 
 /** True when `provider` can redirect a turn that is already running. */
 export function providerSupportsLiveRedirect(provider: string): boolean {
