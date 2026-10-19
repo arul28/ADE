@@ -2707,9 +2707,11 @@ setInterval(() => {}, 1000);
       } as never, { disableSync: true });
       const internals = pool as unknown as {
         ownedRuntimeChild: ChildProcess | null;
+        ownedRuntimeSocketPath: string | null;
         activeConnection: { socketPath: string } | null;
       };
       internals.ownedRuntimeChild = child;
+      internals.ownedRuntimeSocketPath = child ? socketPath : null;
       internals.activeConnection = { socketPath };
       return pool;
     }
@@ -2802,6 +2804,101 @@ setInterval(() => {}, 1000);
       } finally {
         pool.dispose();
       }
+    });
+
+    it("uses the owned isolated endpoint after its active connection resets", async () => {
+      const endpoint = runtimeEndpoint();
+      const brain = startBrain(endpoint, "ack-and-exit");
+      await brain.saw("ready");
+      const pool = poolOwning(brain.child, endpoint);
+      const client = { close: vi.fn() };
+      const entry = { client, child: brain.child, socketPath: endpoint };
+      const internals = pool as unknown as {
+        activeClient: unknown;
+        activeConnection: unknown;
+        resetActiveConnection: (entry: unknown) => void;
+      };
+      internals.activeClient = client;
+      internals.activeConnection = entry;
+      const kill = vi.spyOn(brain.child, "kill");
+      const exited = once(brain.child, "exit");
+      try {
+        await asWindows(async () => {
+          internals.resetActiveConnection(entry);
+          expect(internals.activeConnection).toBeNull();
+          await pool.stopOwnedRuntimeCooperatively();
+          pool.dispose();
+        });
+        const [exitCode] = await exited;
+        // A graceful stop must use the child's isolated endpoint after the
+        // active connection has been dropped, even though another socket may
+        // be configured as this machine's primary endpoint.
+        expect(exitCode).toBe(0);
+        expect(kill).not.toHaveBeenCalled();
+      } finally {
+        pool.dispose();
+      }
+    });
+
+    it("rejects connection and spawn attempts while cooperative shutdown waits", async () => {
+      await withFakeRuntimeCli(
+        () => "setInterval(() => {}, 1_000);\n",
+        async ({ socketPath }) => {
+          const endpoint = runtimeEndpoint();
+          const brain = startBrain(endpoint, "ack-and-hang");
+          await brain.saw("ready");
+          const pool = poolOwning(brain.child, endpoint);
+          const internals = pool as unknown as {
+            connect: (create: () => Promise<unknown>) => Promise<unknown>;
+            spawnRuntime: (socketPath: string) => ChildProcess;
+            ownedRuntimeChild: ChildProcess | null;
+          };
+          const connect = internals.connect.bind(pool);
+          const spawnRuntime = internals.spawnRuntime.bind(pool);
+          const originalChild = brain.child;
+          let createCalled = false;
+          let unexpectedChild: ChildProcess | null = null;
+          vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+          try {
+            await asWindows(async () => {
+              const stop = pool.stopOwnedRuntimeCooperatively();
+              try {
+                await brain.saw("shutdown-requested");
+
+                const connectAttempt = connect(async () => {
+                  createCalled = true;
+                  throw new Error("A connection factory ran during shutdown.");
+                });
+                await expect(connectAttempt).rejects.toThrow("Local runtime connection pool is stopping.");
+                expect(createCalled).toBe(false);
+
+                let spawnError: unknown;
+                try {
+                  unexpectedChild = spawnRuntime(`${socketPath}-replacement`);
+                } catch (error) {
+                  spawnError = error;
+                }
+                expect(spawnError).toBeInstanceOf(Error);
+                expect((spawnError as Error).message).toBe("Local runtime connection pool is stopping.");
+                expect(unexpectedChild).toBeNull();
+                expect(internals.ownedRuntimeChild).toBe(originalChild);
+              } finally {
+                await vi.advanceTimersByTimeAsync(3_000);
+                await stop;
+              }
+            });
+          } finally {
+            vi.useRealTimers();
+            pool.dispose();
+            const spawnedChild = unexpectedChild as ChildProcess | null;
+            if (spawnedChild && spawnedChild.exitCode == null && spawnedChild.signalCode == null) {
+              const exited = once(spawnedChild, "exit");
+              signalChildProcessTree(spawnedChild, "SIGKILL");
+              await exited.catch(() => []);
+            }
+          }
+        },
+      );
     });
 
     it("does not wait for a desktop-owned brain that has already exited", async () => {
