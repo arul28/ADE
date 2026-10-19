@@ -258,6 +258,7 @@ import type { AccountSettingsStore } from "./services/account/accountSettingsSto
 import { createAppleStreamRelayForService } from "../../desktop/src/main/services/ios/appleStreamRelay";
 import { setActiveAppleStreamRouter } from "./services/sync/appleStreamListenerRoute";
 import { ACCOUNT_SCOPE_ALL, accountDeviceSettingKey } from "../../desktop/src/shared/accountSettingsScope";
+import { HARNESS_PRESETS_SETTING_KEY, mergeHarnessPresetSnapshot } from "../../desktop/src/shared/harnessPresets";
 import {
   APPLE_DEVICE_SETTING_KEYS,
   DEFAULT_APPLE_REMOTE_BITRATE_KBPS,
@@ -2331,6 +2332,14 @@ export async function createAdeRuntime(args: {
         machineAdeHome: resolveMachineAdeLayout().adeDir,
         // The MCP registry's secret values: the generic vault kind, account-wide.
         readAccountSecret: (vaultKey) => accountVaultStore?.get("all", MCP_SECRET_VAULT_KIND, vaultKey) ?? null,
+        adoptHarnessPreset: (preset) => {
+          if (!accountSettingsStore) return;
+          const next = mergeHarnessPresetSnapshot(
+            accountSettingsStore.get(ACCOUNT_SCOPE_ALL, HARNESS_PRESETS_SETTING_KEY),
+            preset,
+          );
+          if (next) accountSettingsStore.set(ACCOUNT_SCOPE_ALL, HARNESS_PRESETS_SETTING_KEY, next);
+        },
         resolveMcpAuthToken: createMcpRegistryAuthTokenResolver({
           adeHome: resolveMachineAdeLayout().adeDir,
           readSecret: (key) => accountVaultStore?.get("all", MCP_SECRET_VAULT_KIND, key) ?? null,

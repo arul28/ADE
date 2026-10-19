@@ -6,8 +6,7 @@
  * it reads the very same `account-settings.json` — so a save immediately
  * followed by a launch, or a launch on a machine whose tick has not run, reads
  * a list the preset is not in yet and reports "this harness preset no longer
- * exists on this account" while the chat quietly falls back to the harness's
- * own sign-in.
+ * exists on this account", and the chat's turn fails with that reason.
  *
  * Both entry points therefore go through here:
  *
@@ -23,6 +22,7 @@
 
 import {
   HARNESS_PRESETS_SETTING_KEY,
+  HARNESS_PRESETS_SYNC_MAX_CHARS,
   normalizeHarnessPresetList,
   type HarnessPreset,
 } from "../../shared/harnessPresets";
@@ -86,6 +86,14 @@ function samePresetOnBothSides(local: HarnessPreset, machine: HarnessPreset | nu
  * in doubt — this answers only whether the account has it too.
  */
 export async function saveHarnessPresetsToAccount(): Promise<HarnessPresetAccountSyncOutcome> {
+  // The account refuses a setting over its cap, and only after the save has
+  // already looked done. Said here, where the user is still looking.
+  if (JSON.stringify(rootAppStoreApi.getState().harnessPresets).length > HARNESS_PRESETS_SYNC_MAX_CHARS) {
+    return {
+      ok: false,
+      message: "Saved on this computer only: your custom providers are too large to sync to your other machines. Remove a logo or a provider you no longer use.",
+    };
+  }
   const result = await flushAccountSettingKey(HARNESS_PRESETS_SETTING_KEY);
   if (result.ok) return { ok: true, message: null };
   return { ok: false, message: result.message };

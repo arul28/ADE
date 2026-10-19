@@ -8,8 +8,9 @@ import { COLORS, SANS_FONT, outlineButton, primaryButton } from "../../lanes/lan
  * to be round too — scaling a rectangular photo into that circle is how you get
  * a logo that is recognisable in the wizard and a sliver of forehead in the
  * model picker. Drag moves the image, the slider scales it, and the output is
- * always a 256×256 PNG: one fixed size, small enough to live in a preference
- * blob and sharp enough on a retina row.
+ * a 256×256 PNG, which the dialog then shrinks to a small icon
+ * (`harnessLogoCompaction.ts`) so the preset list still fits the one setting
+ * it syncs as.
  *
  * The canvas is the only place this component does real work. When a renderer
  * cannot give us a 2D context (an old surface, a hardened test environment) the

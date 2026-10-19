@@ -35,6 +35,7 @@ import { SettingsDisclosure } from "../primitives/SettingsDisclosure";
 import { SettingsSelect, SettingsTextField } from "../primitives/SettingsControls";
 import { CustomProviderModelPane } from "./CustomProviderModelPane";
 import { harnessAvailability } from "./harnessAvailability";
+import { compactHarnessPresetLogo } from "../../../lib/harnessLogoCompaction";
 import { HarnessLogoCropper } from "./HarnessLogoCropper";
 import { buildTerminalLauncher } from "./harnessLauncher";
 import {
@@ -309,7 +310,7 @@ export function CustomProviderDialog({
     setLogoError(null);
     try {
       const result = await generate({ name: draft.name, harness: draft.harness, accentColor: draft.accentColor });
-      if (result?.dataUrl) patch({ logo: { kind: "generated", dataUrl: result.dataUrl } });
+      if (result?.dataUrl) patch({ logo: await compactHarnessPresetLogo({ kind: "generated", dataUrl: result.dataUrl }) });
     } catch (error) {
       setLogoError(error instanceof Error ? error.message : "The logo could not be generated.");
     } finally {
@@ -467,7 +468,7 @@ export function CustomProviderDialog({
                 id: "custom-provider-account-sync",
                 tone: "warning",
                 title: "Saved on this computer, but not on your ADE account yet",
-                detail: `${accountError} Until it reaches the account, a chat launched on it now falls back to the harness's own sign-in. Retry to send it again.`,
+                detail: `${accountError} Until it reaches the account, another computer may not have it. Retry to send it again.`,
               }}
             />
           ) : null}
@@ -774,8 +775,13 @@ export function CustomProviderDialog({
             imageSrc={cropSrc}
             onCancel={() => setCropSrc(null)}
             onConfirm={(dataUrl) => {
-              patch({ logo: { kind: "upload", dataUrl } });
               setCropSrc(null);
+              // Shrunk to an icon before it is kept: the preset list syncs as
+              // one small setting, and a full-size image keeps it off the account.
+              void compactHarnessPresetLogo({ kind: "upload", dataUrl }).then((logo) => {
+                if (logo.kind === "upload") patch({ logo });
+                else setLogoError("This image could not be shrunk to a logo. Try another one.");
+              });
             }}
           />
         </Dialog>

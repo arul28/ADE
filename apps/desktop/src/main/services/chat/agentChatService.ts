@@ -409,7 +409,7 @@ import {
   encodeOpenCodeCustomCredentialId,
   listLaunchableCredentials,
 } from "./harnessPresetCredentialCatalog";
-import { HARNESS_PRESET_BODIES } from "../../../shared/harnessPresets";
+import { HARNESS_PRESET_BODIES, type HarnessPreset } from "../../../shared/harnessPresets";
 import { CLAUDE_RUNTIME_AUTH_ERROR, isClaudeRuntimeAuthError } from "../ai/claudeRuntimeProbe";
 import { resolveCodexExecutable, type CodexExecutableResolution } from "../ai/codexExecutable";
 import { codexFallForwardNotice, handleCodexVersionRejection } from "../ai/codexFallForward";
@@ -4831,6 +4831,13 @@ type ManagedChatSession = {
    * tears it down first. In memory only: a restarted brain builds a new one.
    */
   profileRestartPending?: boolean;
+  /**
+   * Something was built for this chat while its custom provider or stored key
+   * could not be resolved, so it carries the harness's own sign-in. The next
+   * turn that can resolve the route tears that process down first rather than
+   * run on it. In memory only: a restarted brain builds a new one.
+   */
+  launchRouteFellBack?: boolean;
   ctoSessionStartedAt: string | null;
   pendingReconstructionContext: string | null;
   /**
@@ -10672,6 +10679,12 @@ export function createAgentChatService(args: {
    * without their secret values.
    */
   readAccountSecret?: ((vaultKey: string) => string | null) | null;
+  /**
+   * Add a preset a launch carried (`AgentChatCreateArgs.presetSnapshot`) to
+   * this machine's copy of the account's preset list, unless it holds the same
+   * preset already at the same or a newer edit.
+   */
+  adoptHarnessPreset?: ((preset: HarnessPreset) => void) | null;
   /** Resolve an ADE registry MCP sign-in from the owning brain's account vault. */
   resolveMcpAuthToken?: ((serverUrl: string) => Promise<{ accessToken?: string; expiresIn?: number; registryConfigured: boolean }>) | null;
   /** Optional main-process analytics sink for successful desktop voice starts. */
@@ -11494,12 +11507,12 @@ export function createAgentChatService(args: {
    * cache key carries both ids so switching a chat's preset re-resolves rather
    * than serving the previous brain's environment.
    *
-   * An `unsupported` result is remembered as "no plan" and reported once: the
-   * chat then launches on the harness's own sign-in, which is the honest
-   * fallback, and the notice tells the user which capability was dropped.
+   * An `unsupported` result is "no plan", and its reason is kept in
+   * `launchPlanBlockBySession`: the send gate refuses the turn with it rather
+   * than let the chat run on the harness's own sign-in.
    */
   const sessionLaunchPlanCache = new Map<string, { key: string; plan: HarnessPresetLaunchPlan | null }>();
-  const launchPlanNoticeBySession = new Map<string, string>();
+  const launchPlanBlockBySession = new Map<string, string>();
 
   /**
    * The model a chat on a preset sends. Prepares the launch first, before
@@ -11564,27 +11577,20 @@ export function createAgentChatService(args: {
           presetId: presetId || undefined,
           reason: result.unsupported,
         });
-        // Said in the chat, not only the log: the turn now runs on the
-        // harness's own sign-in, and a model another vendor serves will not
-        // exist there, so the user needs the real reason next to the failure.
-        // Once per reason: this resolver runs on every helper lookup too.
-        if (launchPlanNoticeBySession.get(managed.session.id) !== result.unsupported) {
-          launchPlanNoticeBySession.set(managed.session.id, result.unsupported);
-          emitChatEvent(managed, {
-            type: "system_notice",
-            noticeKind: "warning",
-            severity: "warning",
-            message: `This chat's custom provider could not be used, so it runs on ${managed.session.provider === "claude" ? "Claude Code" : managed.session.provider}'s own sign-in: ${result.unsupported}`,
-          });
-        }
+        // Never a quiet fallback: the send gate (`launchRouteBlockReason`)
+        // refuses the turn with this reason, so the chat never runs on the
+        // harness's own sign-in when the user picked another provider.
+        launchPlanBlockBySession.set(managed.session.id, result.unsupported);
+        managed.launchRouteFellBack = true;
         // A reason the user can fix without touching the chat (the proxy
         // starting, an OpenCode sign-in refreshed) is not remembered: the next
         // turn resolves again and picks the route back up.
         if (result.reasonCode) return null;
       } else {
         plan = result;
-        launchPlanNoticeBySession.delete(managed.session.id);
+        launchPlanBlockBySession.delete(managed.session.id);
       }
+      if (!plan) managed.launchRouteFellBack = true;
     } catch (error) {
       logger.warn("agent_chat.harness_preset_resolve_failed", {
         sessionId: managed.session.id,
@@ -11593,6 +11599,64 @@ export function createAgentChatService(args: {
     }
     sessionLaunchPlanCache.set(managed.session.id, { key: cacheKey, plan });
     return plan;
+  };
+
+  /**
+   * Why this chat's turn must not run, or null when it may.
+   *
+   * A chat that names a custom provider (or a stored key) runs on it or not at
+   * all. Running it on the harness's own sign-in instead spends the wrong
+   * account on the wrong model, and the user only finds out afterwards.
+   */
+  const launchRouteBlockReason = (managed: ManagedChatSession): string | null => {
+    const presetId = managed.session.presetId?.trim() ?? "";
+    const credentialId = managed.session.credentialId?.trim() ?? "";
+    if (!presetId && !credentialId) return null;
+    if (resolveSessionLaunchPlan(managed)) return null;
+    const reason = launchPlanBlockBySession.get(managed.session.id) ?? "ADE could not prepare it on this machine.";
+    return presetId
+      ? `This chat's custom provider could not be used, so the message was not sent. ${reason}`
+      : `This chat's saved key could not be used, so the message was not sent. ${reason}`;
+  };
+
+  /** Ends a turn that never started because its route could not be resolved. */
+  const emitLaunchRouteSendFailure = (
+    managed: ManagedChatSession,
+    args: AgentChatSendArgs,
+    message: string,
+  ): void => {
+    const turnId = randomUUID();
+    // The text stays in the chat so it can be copied and sent again once the
+    // provider is fixed; the provider itself never saw it.
+    emitChatEvent(managed, {
+      type: "user_message",
+      text: args.text,
+      ...(args.displayText !== undefined && args.displayText.trim() !== args.text.trim()
+        ? { displayText: args.displayText.trim() }
+        : {}),
+      attachments: args.attachments ?? [],
+      turnId,
+      messageId: randomUUID(),
+    });
+    emitChatEvent(managed, {
+      type: "error",
+      message,
+      errorInfo: {
+        category: "unknown",
+        provider: managed.session.provider,
+        model: managed.session.model,
+      },
+      turnId,
+    });
+    emitChatEvent(managed, { type: "status", turnStatus: "failed", message, turnId });
+    emitChatEvent(managed, {
+      type: "done",
+      turnId,
+      status: "failed",
+      model: managed.session.model,
+      ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+    });
+    persistChatState(managed);
   };
 
   /**
@@ -43911,6 +43975,8 @@ export function createAgentChatService(args: {
     const runtime = managed.runtime;
     if (!runtime || runtime.kind !== "claude") return;
     if (runtime.query || runtime.warmQuery || runtime.warmupDone) return;
+    // A warm query built now would carry the harness's own sign-in.
+    if (launchRouteBlockReason(managed)) return;
 
     runtime.warmupCancelled = false;
     const warmupStartedAt = Date.now();
@@ -45697,6 +45763,7 @@ export function createAgentChatService(args: {
     acpPermissionMode: requestedAcpPermissionModeArg,
     instanceId: requestedInstanceId,
     presetId: requestedPresetId,
+    presetSnapshot: requestedPresetSnapshot,
     credentialId: requestedCredentialId,
     piProfileId: requestedPiProfileId,
     piProviderId: requestedPiProviderId,
@@ -45794,6 +45861,14 @@ export function createAgentChatService(args: {
     // preset's model before any provider default can fill the gap: a default
     // recorded "Claude Opus" on a chat that ran DeepSeek.
     const trimmedPresetId = requestedPresetId?.trim() ?? "";
+    // The launching machine's copy, for a list that has not synced here yet.
+    if (trimmedPresetId && requestedPresetSnapshot?.id === trimmedPresetId) {
+      try {
+        args.adoptHarnessPreset?.(requestedPresetSnapshot);
+      } catch (error) {
+        logger.warn("agent_chat.preset_snapshot_adopt_failed", { presetId: trimmedPresetId, error: getErrorMessage(error) });
+      }
+    }
     const presetSpec = trimmedPresetId ? readPresetLaunchTarget(trimmedPresetId, resolveMachineAdeDir()) : null;
     const callerModel = typeof model === "string" ? model : "";
     const rawModelId = typeof modelId === "string" ? modelId.trim() : "";
@@ -57261,6 +57336,17 @@ export function createAgentChatService(args: {
         emitDiskPressureSendFailure(managed, diskDecision.state, diskDecision.message);
         return;
       }
+      if (!runtimeMidTurn(managed) && managed.session.status !== "active") {
+        const blocked = launchRouteBlockReason(managed);
+        // Whatever was built while the route could not be resolved carries the
+        // harness's own sign-in; it never serves a turn.
+        if (managed.launchRouteFellBack && managed.runtime) teardownRuntime(managed, "restart");
+        managed.launchRouteFellBack = false;
+        if (blocked) {
+          emitLaunchRouteSendFailure(managed, args, blocked);
+          return;
+        }
+      }
     }
     // A user-originated message clears the lifecycle markers (settled /
     // attention / turn-failure) whether it starts a fresh turn OR steers an
@@ -66089,7 +66175,7 @@ export function createAgentChatService(args: {
         if (route.leavesCredential) delete managed.session.credentialId;
         managed.leftLaunchRoute = route.leftLaunchRoute;
         sessionLaunchPlanCache.delete(managed.session.id);
-        launchPlanNoticeBySession.delete(managed.session.id);
+        launchPlanBlockBySession.delete(managed.session.id);
       }
       const launchModel = joinsPreset && nextPresetId
         ? await resolvePresetLaunchModel(nextProvider, nextPresetId, nextModel)

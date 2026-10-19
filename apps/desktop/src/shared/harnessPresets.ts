@@ -569,6 +569,25 @@ export function normalizeHarnessPresetList(value: unknown): HarnessPreset[] {
   return out;
 }
 
+/**
+ * The stored list with a launch's preset snapshot in it, or null when nothing
+ * changes: the list already holds that preset at the same or a newer edit, the
+ * snapshot is unusable, or the stored value is a shape this build does not
+ * understand (replacing it would drop a list nobody read).
+ *
+ * An oversized logo is left behind: it would keep the list off the account.
+ */
+export function mergeHarnessPresetSnapshot(stored: unknown, snapshot: unknown): HarnessPreset[] | null {
+  if (stored !== undefined && !Array.isArray(stored)) return null;
+  const preset = normalizeHarnessPreset(snapshot);
+  if (!preset) return null;
+  const list = normalizeHarnessPresetList(stored);
+  const existing = list.find((entry) => entry.id === preset.id);
+  if (existing && !(Date.parse(preset.updatedAt) > Date.parse(existing.updatedAt))) return null;
+  const adopted = harnessPresetLogoTooLarge(preset.logo) ? { ...preset, logo: { ...DEFAULT_HARNESS_PRESET_LOGO } } : preset;
+  return existing ? list.map((entry) => (entry.id === preset.id ? adopted : entry)) : [...list, adopted];
+}
+
 // ---------------------------------------------------------------------------
 // Labels
 // ---------------------------------------------------------------------------
@@ -677,7 +696,25 @@ function sourceForExport(source: HarnessPresetSource): HarnessPresetSource {
   return { kind: "subscription", provider: source.provider };
 }
 
-function dataUrlByteLength(dataUrl: string): number {
+/**
+ * Biggest logo a saved preset keeps. The whole preset list travels to the
+ * account as ONE setting, which the account service caps at 16,000 characters,
+ * so a logo is a small icon (a 64×64 WebP lands near 2 KB), never a photo. One
+ * oversized logo once kept a preset from ever leaving the machine it was saved
+ * on.
+ */
+export const HARNESS_PRESET_LOGO_SYNC_MAX_BYTES = 3 * 1024;
+
+/** The account service's cap on one setting, as JSON characters. */
+export const HARNESS_PRESETS_SYNC_MAX_CHARS = 16_000;
+
+/** True when this logo carries an image too large to sync with the list. */
+export function harnessPresetLogoTooLarge(logo: HarnessPresetLogo): boolean {
+  return (logo.kind === "upload" || logo.kind === "generated")
+    && dataUrlByteLength(logo.dataUrl) > HARNESS_PRESET_LOGO_SYNC_MAX_BYTES;
+}
+
+export function dataUrlByteLength(dataUrl: string): number {
   const comma = dataUrl.indexOf(",");
   const payload = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
   // base64 → bytes, minus the padding the tail carries.
