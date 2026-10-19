@@ -15,6 +15,7 @@ export type AcpToolKind =
   | "switch_mode"
   | "other";
 
+import type { HarnessPreset } from "../harnessPresets";
 import type { CodexVoicePreferences } from "../codexVoice";
 import type { ModelManifest } from "../modelManifest";
 import type { OpenCodeFastRoutes } from "../modelRegistry";
@@ -3011,8 +3012,8 @@ export type AgentChatSession = PersonalAttachmentRootsField & {
    * subagent pins as one value, so it is the id that has to survive a resume —
    * re-deriving the launch from the individual fields would lose whichever of
    * them the preset set and the session does not carry. A preset that has since
-   * been deleted resolves to `unsupported` at launch and the chat falls back to
-   * the harness's native sign-in with a notice.
+   * been deleted resolves to `unsupported` at launch, and the chat's turns fail
+   * with the reason rather than run on the harness's native sign-in.
    */
   presetId?: string;
   /**
@@ -4102,9 +4103,17 @@ export type AgentChatCreateArgs = PersonalAttachmentRootsField & {
   /**
    * Launch this chat from a saved harness preset. The runtime resolves it
    * against the account-scoped preset list and the machine's own stores; an id
-   * that no longer names a preset produces a notice, not a failed create.
+   * that no longer names a preset fails the chat's turns with the reason, not
+   * the create.
    */
   presetId?: string;
+  /**
+   * The launching machine's copy of the preset `presetId` names. The chat may
+   * run on another machine whose synced copy of the list is behind; that
+   * machine adds this one to its list when it has no newer copy. Ids into the
+   * key and sign-in stores only, never a secret.
+   */
+  presetSnapshot?: HarnessPreset;
   /**
    * Launch this chat on a specific stored API credential, for a model chosen
    * from a provider-card key rather than from a preset.

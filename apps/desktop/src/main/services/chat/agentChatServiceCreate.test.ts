@@ -1316,6 +1316,40 @@ describe("createAgentChatService", () => {
       service.forceDisposeAll();
     });
 
+    it("refuses a turn when its saved-key preset can no longer be resolved", async () => {
+      const { savedPreset } = saveClaudePresets();
+      const events: AgentChatEventEnvelope[] = [];
+      const send = vi.fn().mockResolvedValue(undefined);
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        ...makeDefaultClaudeSession(),
+        send,
+      } as any);
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: savedPreset.model,
+        presetId: savedPreset.id,
+      } as any);
+
+      await service.sendMessage({ sessionId: session.id, text: "Use the saved provider." }, { awaitDispatch: true });
+
+      expect(send).not.toHaveBeenCalled();
+      expect(events.map((entry) => entry.event.type)).toEqual(expect.arrayContaining([
+        "user_message",
+        "error",
+        "status",
+        "done",
+      ]));
+      expect(events.find((entry) => entry.event.type === "error")?.event).toMatchObject({
+        message: expect.stringContaining("custom provider could not be used"),
+      });
+      expect(events.some((entry) => entry.event.type === "status" && entry.event.turnStatus === "failed")).toBe(true);
+      service.forceDisposeAll();
+    });
+
     it("moves an open chat onto a preset and off it, starting a fresh thread a foreign model can read", async () => {
       // Picking a preset on a running chat used to show the preset and run
       // the old model; a preset whose model cannot read the chat's thread

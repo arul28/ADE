@@ -1213,6 +1213,8 @@ import type {
 } from "../shared/types";
 import type { GitHubIssueCommentLike, GitHubIssueLike, GitHubIssuePatch } from "../shared/laneGitHubIssue";
 import { MUSIC_IPC, type MusicBridge, type MusicState } from "../shared/types/music";
+import { HARNESS_PRESETS_SETTING_KEY, normalizeHarnessPresetList } from "../shared/harnessPresets";
+import { isRoutePresetId } from "../shared/harnessRoutes";
 import { HOME_WIDGETS_IPC, type HomeClipboardState, type HomeNowPlayingCommand, type HomeNowPlayingState, type HomeWidgetsBridge } from "../shared/types/homeWidgets";
 
 // Renderer errors reach Sentry through main over this bridge, so the
@@ -1474,6 +1476,30 @@ const sessionDeltaCache = createKeyedShortIpcCache<SessionDeltaSummary | null>(
     ),
   1_000,
 );
+
+/**
+ * The create args with this machine's copy of the preset they name.
+ *
+ * The chat may run on another machine (a pin, or a project tab bound to one),
+ * whose synced copy of the account's preset list can be behind this one; the
+ * snapshot lets it run the preset the user picked here. Best effort: an
+ * unreadable list sends the args as they were.
+ */
+async function withPresetSnapshot<Args extends { presetId?: string; presetSnapshot?: AgentChatCreateArgs["presetSnapshot"] }>(
+  args: Args,
+): Promise<Args> {
+  const presetId = args.presetId?.trim();
+  if (!presetId || isRoutePresetId(presetId) || args.presetSnapshot) return args;
+  try {
+    const result = await ipcRenderer.invoke(IPC.accountSettingsGet, { scope: "all", key: HARNESS_PRESETS_SETTING_KEY }) as
+      AccountSettingsResult<unknown> | null;
+    if (!result || result.ok !== true) return args;
+    const preset = normalizeHarnessPresetList(result.value).find((entry) => entry.id === presetId);
+    return preset ? { ...args, presetSnapshot: preset } : args;
+  } catch {
+    return args;
+  }
+}
 
 const agentChatSummaryCache =
   createKeyedShortIpcCache<AgentChatSessionSummary | null>(
@@ -7756,8 +7782,10 @@ const adeBridge = {
    * Always runtime-backed: there is no in-process Electron implementation.
    */
   chatLaunch: {
-    start: (args: ChatLaunchArgs, pin?: OpenProjectBinding | null): Promise<ChatLaunchSnapshot> =>
-      callChatLaunchAction<ChatLaunchSnapshot>(pin, "startLaunch", { args }),
+    start: async (args: ChatLaunchArgs, pin?: OpenProjectBinding | null): Promise<ChatLaunchSnapshot> =>
+      await callChatLaunchAction<ChatLaunchSnapshot>(pin, "startLaunch", {
+        args: args.chat ? { ...args, chat: { ...args.chat, create: await withPresetSnapshot(args.chat.create) } } : args,
+      }),
     get: (args: ChatLaunchIdArgs, pin?: OpenProjectBinding | null): Promise<ChatLaunchSnapshot | null> =>
       callChatLaunchAction<ChatLaunchSnapshot | null>(pin, "getLaunch", { args }),
     list: (pin?: OpenProjectBinding | null): Promise<ChatLaunchSnapshot[]> =>
@@ -7849,8 +7877,9 @@ const adeBridge = {
         ? runtime.result
         : agentChatSummaryCache.get(sessionId);
     },
-    create: async (args: AgentChatCreateArgs, pin?: OpenProjectBinding | null): Promise<AgentChatSession> => {
+    create: async (rawArgs: AgentChatCreateArgs, pin?: OpenProjectBinding | null): Promise<AgentChatSession> => {
       agentChatSummaryCache.clear();
+      const args = await withPresetSnapshot(rawArgs);
       const session = pin
         ? await callPinnedRuntimeAction<AgentChatSession>(pin, "chat", "createSession", { args })
         : await (async () => {
@@ -7867,10 +7896,11 @@ const adeBridge = {
       return session as AgentChatSession;
     },
     launch: async (
-      args: AgentChatLaunchArgs,
+      rawArgs: AgentChatLaunchArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<AgentChatSession> => {
       agentChatSummaryCache.clear();
+      const args = await withPresetSnapshot(rawArgs);
       // The lane's machine runs the launch; a pin addresses it directly.
       if (pin) {
         const pinned = await callPinnedRuntimeAction<AgentChatSession>(pin, "chat", "launchHeadless", { args });

@@ -83,7 +83,7 @@ export function CustomProvidersSection({
   /** Legacy stored-key provider list, for import's "do you hold this key" check. */
   storedProviders: readonly string[];
 }) {
-  const { pin } = useSettingsMachineScope();
+  const { pin, machineName } = useSettingsMachineScope();
   const credentialPin = useApiCredentialsPin();
   const { presets, createPreset, updatePreset, duplicatePreset, deletePreset } = useHarnessPresets();
 
@@ -245,9 +245,18 @@ export function CustomProvidersSection({
       group="Connections"
       anchor="ai-harnesses"
       title="Custom"
-      hint="Any harness on a model you already pay for, saved once and picked from any model picker."
+      hint="Any harness on a model you already pay for. Saved to your ADE account, so every computer you sign in on can pick it."
       actions={toolbar}
     >
+      {pin ? (
+        // The rest of this page edits the selected machine; this list does
+        // not, and reading it as that machine's list is how a preset saved on
+        // one computer was expected on another before it had synced there.
+        <p data-custom-account-scope="" className="ade-custom-empty-copy" style={{ margin: "0 0 10px" }}>
+          These belong to your ADE account, not to {machineName}. A change here is saved from this computer
+          and reaches {machineName} when it syncs.
+        </p>
+      ) : null}
       <input
         ref={importInputRef}
         type="file"

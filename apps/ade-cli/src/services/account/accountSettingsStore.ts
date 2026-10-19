@@ -29,6 +29,13 @@ const CACHE_VERSION = 1;
 /** Matches the account-directory heartbeat, so the two converge together. */
 const DEFAULT_SYNC_INTERVAL_MS = 30_000;
 
+/**
+ * The Worker's cap on one setting's JSON (`MAX_SETTING_VALUE_BYTES` in
+ * `push-relay/src/accountSettings.ts`). It rejects a whole batch for one value
+ * over it, so such a value is dropped from the queue instead of sent.
+ */
+const MAX_UPLOAD_VALUE_CHARS = 16_000;
+
 /** Separator for the composite cache key. NUL cannot occur in either half. */
 const KEY_SEPARATOR = "\u0000";
 
@@ -169,8 +176,17 @@ export function createAccountSettingsStore(args: {
     decodePending: decodePendingWrite,
     async upload(pending) {
       const relay = args.relay!;
-      const writes = pending.filter((entry) => !entry.deleted);
       const completedSeqs: number[] = [];
+      const writes = pending.filter((entry) => {
+        if (entry.deleted) return false;
+        if ((JSON.stringify(entry.value) ?? "").length <= MAX_UPLOAD_VALUE_CHARS) return true;
+        // Retrying it can never succeed, and while it waits in the batch every
+        // other setting this machine changes stays off the account too. It
+        // stays in this machine's cache; the next smaller write replaces it.
+        logger.warn("account.settings_value_too_large", { scope: entry.scope, key: entry.key });
+        completedSeqs.push(entry.seq);
+        return false;
+      });
       let uploadedAt: string | null = null;
       if (writes.length) {
         const result = await relay.putAccountSettings(

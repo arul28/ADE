@@ -30,7 +30,7 @@ provider list — and appear as the first tab of every model picker.
 | Effort | The model's thinking tier, when it offers tiers. |
 | Subagents | A model id, or `Same as main`, and — where the harness takes one — its own thinking level. |
 | Subagent naming | Per-role pins for the types the harness exposes by name (Explore, Plan, general-purpose), each with its own level where the harness takes one. A role that follows the subagents takes their model and level. |
-| Name, accent, logo | The identity a preset is recognised by. The logo is the ADE mark, a provider mark, an uploaded 256×256 PNG, or a generated one. |
+| Name, accent, logo | The identity a preset is recognised by. The logo is the ADE mark, a provider mark, an uploaded image, or a generated one, kept as a small icon so the list fits the one setting it syncs as. |
 
 A preset never holds a credential. The `key` source stores the credential's id
 and label; the key itself stays in the API-key store.
@@ -68,6 +68,24 @@ sync writes, so a save and a launch cannot be allowed to race:
   resolves again on its next turn instead of pinning the failure for the
   session's life. That is the same rule `proxy-not-ready` and
   `sign-in-expired` already followed.
+- **A launch carries the preset.** The chat may run on another machine (a
+  pinned launch, or a project tab bound to one) whose synced list is behind.
+  The preload attaches this machine's copy as `presetSnapshot` to chat create,
+  headless launch and new-lane launch; the receiving brain adds it to its own
+  list (`mergeHarnessPresetSnapshot`) unless it already holds the same preset
+  at the same or a newer edit.
+- **A chat never runs on a fallback.** When a chat's preset or stored key
+  cannot be resolved, its turn fails with the reason and the message stays in
+  the transcript (`launchRouteBlockReason` in `agentChatService.ts`). Anything
+  built for the chat meanwhile (a pre-warmed query) is torn down before the
+  next turn, so it cannot run on the harness's own sign-in either.
+- **The list must fit one setting.** The account service caps a setting at
+  16,000 characters and refuses the whole upload batch over it. An uploaded or
+  generated logo is shrunk to a small WebP icon
+  (`renderer/lib/harnessLogoCompaction.ts`), oversized logos already saved are
+  shrunk in the background, a save that would still not fit says so, and the
+  brain drops an unsendable value from its upload queue instead of letting it
+  hold back every other setting.
 
 A route id (`route.<…>`) needs none of this: it carries its whole launch spec
 in the id, so there is nothing to look up.
@@ -349,8 +367,9 @@ the level has somewhere to land.
 Models are passed through exactly as saved, and every pin that travels through
 ADE's proxy carries the proxy's upstream prefix, the same as the main model.
 
-An unsupported pairing is a value, not an error: the chat runs on the harness's
-own sign-in and says which capability was dropped. It never fails the launch.
+An unsupported pairing is a value, not an error: the create succeeds, and the
+chat's turns fail with the reason until the preset can be resolved. A chat
+never runs on the harness's own sign-in in its place.
 
 ### Model ids are passed through
 
