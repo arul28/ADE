@@ -471,11 +471,20 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     return { instance: getDefault(provider), fellBack: false };
   }
 
+  /**
+   * ADE's pinned copy of the provider CLI (the strict resolver: dev/test
+   * override, pinned download, checkout copy, previous pin). Before this
+   * machine has one, the bare command name, as a placeholder only: nothing ADE
+   * runs spawns it. The login runner, sign-out and ADE terminals replace it
+   * with the pinned copy, waiting for its download or reporting why there is
+   * none; never a CLI from the PATH.
+   */
   function resolveBinary(provider: ProviderInstanceProvider): string {
     if (options.resolveBinary) return options.resolveBinary(provider);
-    return provider === "claude"
+    const pinned = provider === "claude"
       ? resolveClaudeCodeExecutable({ env }).path
       : resolveCodexExecutable({ env }).path;
+    return pinned || provider;
   }
 
   /**

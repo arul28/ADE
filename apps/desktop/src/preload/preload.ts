@@ -298,7 +298,11 @@ import type {
   AdeCliInstallResult,
   AdeCliStatus,
   AcpProviderDiagnostics,
-  AcpProviderUpdateResult,
+  PinnedProviderToolStatus,
+  AntigravitySignInCancelArgs,
+  AntigravitySignInCompleteArgs,
+  AntigravitySignInStartArgs,
+  AntigravitySignInState,
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
@@ -350,7 +354,6 @@ import type {
   SyncRoleSnapshot,
   SyncStatusEventPayload,
   SyncTransferReadiness,
-  DraftPrDescriptionArgs,
   CtoGetStateArgs,
   CtoEnsureSessionArgs,
   CtoUpdateIdentityArgs,
@@ -462,8 +465,6 @@ import type {
   GitCreateTagArgs,
   GitConflictState,
   GitGetCommitMessageArgs,
-  GitGenerateCommitMessageArgs,
-  GitGenerateCommitMessageResult,
   GitListCommitFilesArgs,
   GitListRecentCommitsArgs,
   GitFileActionArgs,
@@ -5464,6 +5465,36 @@ const adeBridge = {
       callPinnedOrBoundRuntimeActionOr(pin, "ai", "ensureMuseBinary", {}, () =>
         ipcRenderer.invoke(IPC.aiEnsureMuseBinary),
       ),
+    // ADE's pinned copy of a provider's tool lives in the tools cache of the
+    // machine that runs the provider, so its status and Download/Retry go to
+    // the machine that owns the chat, lane or Settings page.
+    pinnedToolStatus: async (args: { provider: string }, pin?: OpenProjectBinding | null): Promise<PinnedProviderToolStatus> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "ai", "pinnedToolStatus", { args }, () =>
+        ipcRenderer.invoke(IPC.aiPinnedToolStatus, args),
+      ),
+    pinnedToolDownload: async (args: { provider: string }, pin?: OpenProjectBinding | null): Promise<PinnedProviderToolStatus> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "ai", "pinnedToolDownload", { args }, () =>
+        ipcRenderer.invoke(IPC.aiPinnedToolDownload, args),
+      ),
+    // Antigravity sign-in runs where the provider row's machine runs the
+    // agent; start, its status reads, a pasted return URL and cancel all go
+    // to that same machine.
+    antigravitySignInStatus: async (pin?: OpenProjectBinding | null): Promise<AntigravitySignInState> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "ai", "antigravitySignInStatus", {}, () =>
+        ipcRenderer.invoke(IPC.aiAntigravitySignInStatus),
+      ),
+    antigravitySignInStart: async (args: AntigravitySignInStartArgs, pin?: OpenProjectBinding | null): Promise<AntigravitySignInState> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "ai", "antigravitySignInStart", { args }, () =>
+        ipcRenderer.invoke(IPC.aiAntigravitySignInStart, args),
+      ),
+    antigravitySignInComplete: async (args: AntigravitySignInCompleteArgs, pin?: OpenProjectBinding | null): Promise<AntigravitySignInState> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "ai", "antigravitySignInComplete", { args }, () =>
+        ipcRenderer.invoke(IPC.aiAntigravitySignInComplete, args),
+      ),
+    antigravitySignInCancel: async (args: AntigravitySignInCancelArgs, pin?: OpenProjectBinding | null): Promise<AntigravitySignInState> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "ai", "antigravitySignInCancel", { args }, () =>
+        ipcRenderer.invoke(IPC.aiAntigravitySignInCancel, args),
+      ),
     // Settings > Muse Code: one Settings-owned `muse serve` host per page visit
     // on the machine the page is showing (never a chat's host). The page
     // closes it with `museSettingsClose` when it leaves.
@@ -5547,7 +5578,7 @@ const adeBridge = {
           ),
       ),
     acpProviderDiagnostics: async (args: {
-      provider: "qwen" | "kimi" | "grok" | "copilot" | "devin";
+      provider: "qwen" | "kimi" | "grok" | "copilot" | "devin" | "antigravity";
       runDoctor?: boolean;
     }, pin?: OpenProjectBinding | null): Promise<AcpProviderDiagnostics> =>
       // Unpinned stays on desktop IPC: it reports on the CLIs installed on the
@@ -5557,14 +5588,6 @@ const adeBridge = {
       pin
         ? callPinnedRuntimeAction<AcpProviderDiagnostics>(pin, "ai", "acpProviderDiagnostics", { args })
         : ipcRenderer.invoke(IPC.aiAcpProviderDiagnostics, args),
-    acpProviderUpdate: async (args: {
-      provider: "qwen" | "kimi" | "grok" | "copilot" | "devin";
-    }, pin?: OpenProjectBinding | null): Promise<AcpProviderUpdateResult> =>
-      // Same rule as diagnostics: unpinned updates This computer's CLI, a pin
-      // updates the named machine's.
-      pin
-        ? callPinnedRuntimeAction<AcpProviderUpdateResult>(pin, "ai", "acpProviderUpdate", { args })
-        : ipcRenderer.invoke(IPC.aiAcpProviderUpdate, args),
     opencodeAuthMethods: async (pin?: OpenProjectBinding | null): Promise<{ methods: OpenCodeProviderAuthMethods }> =>
       callPinnedOrBoundRuntimeActionOr(pin, "ai", "opencodeAuthMethods", {}, () =>
         ipcRenderer.invoke(IPC.aiOpencodeAuthMethods),
@@ -11526,17 +11549,6 @@ const adeBridge = {
       clearGitReadCaches();
       return result as GitActionResult;
     },
-    generateCommitMessage: async (
-      args: GitGenerateCommitMessageArgs,
-      pin?: OpenProjectBinding | null,
-    ): Promise<GitGenerateCommitMessageResult> =>
-      callPinnedOrBoundRuntimeActionOr<GitGenerateCommitMessageResult>(
-        pin,
-        "git",
-        "generateCommitMessage",
-        { args },
-        () => ipcRenderer.invoke(IPC.gitGenerateCommitMessage, args),
-      ),
     listRecentCommits: async (
       args: GitListRecentCommitsArgs,
       pin?: OpenProjectBinding | null,
@@ -12719,12 +12731,6 @@ const adeBridge = {
     delete: async (args: DeletePrArgs, pin?: OpenProjectBinding | null): Promise<DeletePrResult> =>
       callPinnedOrBoundRuntimeActionOr(pin, "pr", "delete", { args }, () =>
         ipcRenderer.invoke(IPC.prsDelete, args),
-      ),
-    draftDescription: async (
-      args: DraftPrDescriptionArgs,
-    ): Promise<{ title: string; body: string }> =>
-      callProjectRuntimeActionOr("pr", "draftDescription", { args }, () =>
-        ipcRenderer.invoke(IPC.prsDraftDescription, args),
       ),
     land: async (args: LandPrArgs, pin?: OpenProjectBinding | null): Promise<LandResult> =>
       callPinnedOrBoundRuntimeActionOr(pin, "pr", "land", { args }, () =>

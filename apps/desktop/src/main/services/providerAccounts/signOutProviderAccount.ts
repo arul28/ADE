@@ -1,5 +1,10 @@
 import { execFile } from "node:child_process";
+import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
+import { resolveCodexExecutable } from "../ai/codexExecutable";
+import { requirePinnedProviderExecutable } from "../ai/pinnedProviderTools";
+import { providerSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
 import os from "node:os";
+import path from "node:path";
 import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import {
   isBaseProviderInstance,
@@ -22,8 +27,18 @@ async function runLogout(id: string): Promise<void> {
 }
 
 async function runLogoutCommand(command: ProviderInstanceLoginCommand): Promise<void> {
-  const env: NodeJS.ProcessEnv = { ...userProcessEnv(), ...command.env };
-  const invocation = resolveCliSpawnInvocation(command.command, command.args, env);
+  // The account store names ADE's pinned CLI, or the bare provider name before
+  // this machine has downloaded it; sign-out then waits for that download and
+  // never runs a `claude`/`codex` from the PATH.
+  const provider = command.command === "claude" || command.command === "codex" ? command.command : null;
+  const executable = provider
+    ? (await requirePinnedProviderExecutable(provider, () =>
+      provider === "claude" ? resolveClaudeCodeExecutable() : resolveCodexExecutable())).path
+    : command.command;
+  // Both pins' entries are named after their provider (`claude`, `codex[.exe]`).
+  const pinnedFor = path.basename(executable).replace(/\.exe$/i, "");
+  const env: NodeJS.ProcessEnv = { ...userProcessEnv(), ...command.env, ...providerSelfUpdateEnv(pinnedFor) };
+  const invocation = resolveCliSpawnInvocation(executable, command.args, env);
   await new Promise<void>((resolve, reject) => {
     let timedOut = false;
     const child = execFile(

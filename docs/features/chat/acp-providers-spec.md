@@ -7,16 +7,21 @@ Full Settings → Models redesign for all providers. Research record lives in th
 
 ## Version policy
 
-ADE runs whatever version of these CLIs is installed; it does not pin one. Every
-install command fetches the latest release. What a given CLI can do is read from
-the `initialize` handshake at runtime, not from a version number, so a newer or
-older CLI degrades rather than failing: unknown `session/update` kinds, content
-blocks, tool kinds/statuses, stop reasons, and agent-to-client methods are
-ignored or answered as unsupported. If an agent advertises an ACP protocol
-version this build of ADE does not speak, the launch fails at the handshake with
-a message naming the CLI and telling the user to update ADE or the CLI.
+ADE runs its own pinned, checksum-verified copy of each ACP CLI, downloaded on
+demand into the machine tools cache, never a CLI the user installed. See
+[Pinned CLIs and self-update](#pinned-clis-and-self-update) and
+`../onboarding-and-settings/agent-tools-cache.md`. A new version reaches users
+only when the pin moves. What a CLI can do is still read from the `initialize`
+handshake at runtime, not from a version number: unknown `session/update`
+kinds, content blocks, tool kinds/statuses, stop reasons, and agent-to-client
+methods are ignored or answered as unsupported. If an agent advertises an ACP
+protocol version this build of ADE does not speak, the launch fails at the
+handshake with a message naming the CLI and telling the user to update ADE.
 
 ### Last verified versions
+
+The current pins are grok 1.0.46, qwen 0.25.0, kimi 2.1.1 and devin 3000.11.3,
+the latest verified versions below.
 
 | Provider | Latest verified | Older version checked | Scope | Date |
 |---|---|---|---|---|
@@ -80,7 +85,7 @@ providers identically.
 
 ## 3. Per-provider dialects (verified facts — do not re-derive)
 
-### Qwen (`qwen --acp`, npm `@qwen-code/qwen-code` **0.22.3 / 0.24.0 / 0.25.0**)
+### Qwen (`qwen --acp`, **0.22.3 / 0.24.0 / 0.25.0**; ADE pins the vendor's standalone bundle 0.25.0)
 - Caps (0.22.3, 0.24.0, and 0.25.0 agree): loadSession, session list/resume,
   image **and audio** prompts, MCP http/sse. Slash via
   `available_commands_update`. **`session/close` is not advertised and answers
@@ -150,8 +155,12 @@ providers identically.
   ADE guidance. The flag set and its parse errors are identical on 0.22.3 and
   0.25.0; only the default help text changed (0.25.0 lists the load-bearing
   flags that older builds hid).
-- Windows: npm `.cmd` shim → prompt rides PTY (`promptRidesInArgv = platform
-  !== "win32"`), same rule as Claude.
+- Spawn: the pinned bundle's own Node runs its script, `<root>/node/bin/node
+  <root>/lib/cli-entry.js --acp` (`node\node.exe` on Windows); the script rides
+  `binaryArgs`. Never a `.cmd` shim or Electron-as-Node.
+- Windows terminal: prompt rides PTY (`promptRidesInArgv = platform
+  !== "win32"`), same rule as Claude. The rule dates from the npm `.cmd` shim
+  and is kept.
 
 ### Kimi (`kimi acp`, latest verified **2.1.1**, baseline **0.39.1**,
 repo MoonshotAI/kimi-code — NOT the deprecated Python kimi-cli)
@@ -452,8 +461,9 @@ Rust, Apache-2.0)
   options, cancel-as-notification, close, resume, and a
   `session/request_permission` for a write and an execute in
   `--permission-mode default` with `_GROK_CLAUDE_MARKER_OVERRIDE=1`, including a
-  symlinked cwd. ADE's setup and error copy install the latest
-  `@xai-official/grok` release.
+  symlinked cwd. ADE pins `@xai-official/grok-<target>` 1.0.46 and downloads it
+  on demand; `--no-auto-update` plus `GROK_DISABLE_AUTOUPDATER=1` keep it at
+  the pin.
 
 ### Copilot (removed from ACP)
 
@@ -600,7 +610,7 @@ the terminal CLI and for usage history stay in `terminals-and-sessions/` and
 chat's model token and effort.
 
 - **The picker shows the provider's live list.** `acpHost/acpModelDiscovery.ts`
-  warms each installed, signed-in provider in the background (`initialize`,
+  warms each downloaded, signed-in provider in the background (`initialize`,
   `session/new`, `session/close`, never a prompt; `devin models list` for
   Devin), one provider at a time, and saves the last good list per provider in
   `userData/acp-model-catalog-cache.json` for 6 hours. A stale list is served
@@ -751,13 +761,13 @@ From the internal audit (all file:line refs verified 2026-08-30):
 - Grid: responsive `repeat(auto-fit, minmax(280px, 1fr))`. Reuse/extend
   `providerSectionPrimitives.tsx` (`ProviderGrid`/`ProviderTile`).
 - Tile (labeled): logo · name · status dot + word (Connected / Sign in /
-  Needs attention / Not installed / Checking / Disabled) · model count ·
+  Needs attention / Not downloaded / Checking / Disabled) · model count ·
   version · Preview chip (grok) · one-line error when unhealthy.
   "Checking" is a first-class state distinct from "Not detected".
 - Detail page: two-column. Left rail: identity, status, version, auth actions
-  (sign in/out), diagnostics entry, disable toggle. Grok adds one update
-  surface the others do not have: an update advisory plus a one-click **Update
-  now** when ADE resolved the binary to a known installer. Right: models
+  (sign in/out), diagnostics entry, disable toggle, and the pinned-copy row
+  (Ready (pinned vX) / Downloading / Couldn't download + Retry / Not available
+  on this machine). There is no update surface: ADE moves the pin. Right: models
   (curated ★default + discovered, search), permission defaults, default model,
   usage bars where the provider reports them (Kimi's appear once Kimi reports
   usage).
@@ -786,45 +796,53 @@ From the internal audit (all file:line refs verified 2026-08-30):
 Rejected: env-var provenance surfacing, authenticating pulse animation,
 picker overhaul beyond greying.
 
-## Provider versions and update
+## Pinned CLIs and self-update
 
-Users install the ACP CLIs themselves, so ADE checks each one against a
-**tested range**: the oldest and newest versions someone checked ADE against.
-`ai/acpProviderUpdate.ts` holds one row per provider in
-`ACP_PROVIDER_VERSION_POLICY` (label, npm package or none, tested range, and
-whether the vendor's updater can install an exact version). The evidence for
-each range is in the dialect file. Raise a range only after a live check of
-the new version.
+ADE runs its own pinned copy of each ACP CLI from the machine tools cache
+(`../onboarding-and-settings/agent-tools-cache.md`). The user's installed CLI is
+never run, and there is no version check, update button or tested range any
+more: the old `ai/acpProviderUpdate.ts`, the `acp_provider_outdated` notice and
+its `ProviderOutdatedNoticeRow` were removed. Old persisted notices render as a
+plain warning line.
 
-- **Below the range.** When an ACP chat is ready, the runtime reads the
-  binary's `--version` (`readAcpProviderLaunchStanding`, cached per binary for
-  30 minutes so an update made outside ADE is seen without a restart) and, if
-  it is below the range, adds a `system_notice` with status
-  `acp_provider_outdated` and `detail.providerUpdate`, at most once per chat.
-  The chat row (`ProviderOutdatedNoticeRow`) shows an **Update to <max>**
-  button when the install is resolvable, and runs it on the chat's machine. The check runs
-  after the chat is ready and never delays it; a spawn override (a cloud
-  runtime) is skipped.
-- **Inside the range, not at the top.** The provider's Settings page offers
-  the update. **Above the range:** Settings says the version is newer than ADE
-  has tested. Users are never told to update past the range.
-- **The update installs `tested.max`, never npm `latest`.** A vendor-native
-  Grok runs `<binary> update --version <max>` with `GROK_HOME`. An npm install
-  runs `npm install -g --prefix <prefix> <pkg>@<max>`, where the prefix comes
-  from the binary's real path (`<prefix>/lib/node_modules/<pkg>` on POSIX,
-  the `.cmd` shim beside `<prefix>\node_modules\<pkg>` on Windows) and npm is
-  the one in that prefix when present. A project-local install
-  (`<repo>/node_modules/<pkg>`) has neither layout and stays manual. After the
-  installer exits 0, the binary must report `tested.max`; otherwise the
-  update fails with the version it still reports. One update per provider
-  binary runs at a time; a second request (another chat warning, or Settings)
-  joins the one in flight. An install ADE cannot place (or Kimi
-  and Devin, which have no npm package or exact-version updater) shows a
-  manual note and no button.
-- The updater spawns through `resolveCliSpawnInvocation`, so a Windows `.cmd`
-  shim works. Its POSIX child is detached and the timeout kills the whole
-  process group; on Windows `terminateProcessTree` kills the tree. A successful
-  update clears the cached launch version.
+- **Resolution** (`ai/acpExecutables.ts`): the dev/test env override
+  (`ACP_EXECUTABLE_ENV_KEYS`, e.g. `GROK_EXECUTABLE`) → the current pin → the
+  previous pin → missing. A miss returns `source: "fallback-command"` with an
+  empty path; nothing spawns a bare `qwen`/`kimi`/`grok`/`devin`.
+  `AcpExecutableResolution` carries `args` (leading args) and `files` (the pin's
+  named files, absolute).
+- **Spawn context.** Callers pass `binaryArgs: executable.args` into
+  `AcpSpawnContext`, and each dialect's `buildSpawnPlan` puts them before its
+  own argv. Only Qwen uses them today (`<pinned node> <cli-entry.js> --acp`).
+- **Download before use.** A chat start, auth probe (`acpAuthProbe.ts`) or
+  diagnostics run awaits the pin's download; a miss reports the download state
+  ("ADE is downloading <Tool> for this machine…", "Couldn't download <Tool>: …
+  Retry from Settings > Providers.", "<Tool> is not available on this machine
+  (<target>).") and is not cached as health. Model discovery
+  (`acpModelDiscovery.ts`) probes only a pin already on disk and never starts a
+  download.
+- **Status.** Sign-in is read from disk credentials even before the download, so
+  a row can read "signed in, downloading". Settings and the chat card show the
+  pinned-copy line from `ai.pinnedToolStatus` with Download/Retry
+  (`ai.pinnedToolDownload`), against the row's or chat's machine.
+- **Self-update off.** Each dialect applies `pinnedToolSelfUpdateEnv`
+  (`shared/pinnedToolSpawnEnv.ts`):
+
+| Provider | Switch |
+|---|---|
+| qwen | `QWEN_CODE_SKIP_UPDATE_CHECK_ONCE=true`; ADE's system-defaults file (`QWEN_CODE_SYSTEM_DEFAULTS_PATH`, `qwenSkillDefaults.ts`) always sets `general.enableAutoUpdate: false` and is written for every lane launch. The user's `~/.qwen/settings.json` is never written. |
+| kimi | `KIMI_CODE_NO_AUTO_UPDATE=1` |
+| grok | `GROK_DISABLE_AUTOUPDATER=1` plus `--no-auto-update` |
+| devin | none found; its updater targets its own layout |
+
+- **Logins** stay in the default homes (`QWEN_HOME`, `KIMI_CODE_HOME`,
+  `GROK_HOME`, Devin's XDG dirs), shared with the user's own CLI. Login
+  terminals run the pinned binary (the PTY swaps the bare login word in
+  `acpProviderMetadata.ts` for the pinned path) and wait for the download.
+- **Bumping** a pin: `npm run tools:pin -- <tool>`, then a live check of the new
+  version against this spec (handshake, a turn, cancel, close, resume,
+  permissions) before the pin PR merges. Record the result in
+  [Last verified versions](#last-verified-versions).
 
 ## 7. Test contract
 

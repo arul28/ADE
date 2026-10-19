@@ -524,6 +524,8 @@ func providerLabel(_ provider: String) -> String {
   case "deepseek": return "DeepSeek"
   case "grok": return "Grok"
   case "copilot": return "GitHub Copilot"
+  case "devin": return "Devin"
+  case "antigravity": return "Antigravity"
   default: return provider.capitalized
   }
 }
@@ -908,6 +910,8 @@ func providerFamilyKey(_ provider: String) -> String {
   if raw == "moonshot" || raw == "moonshotai" || raw.hasPrefix("kimi") { return "kimi" }
   if raw == "xai" || raw.hasPrefix("grok") { return "grok" }
   if raw == "github-copilot" || raw == "githubcopilot" || raw.hasPrefix("copilot") { return "copilot" }
+  // `antigravity-chat` (ACP-only) resolves to its provider id.
+  if raw.hasPrefix("antigravity") { return "antigravity" }
   return raw
 }
 
@@ -924,7 +928,7 @@ func workChatProviderFamilyFromToolType(_ toolType: String?) -> String? {
 /// Routed Pi models must stay on Pi rather than falling through to Claude.
 func workNormalizedChatProvider(_ provider: String) -> String {
   let family = providerFamilyKey(provider)
-  return ["claude", "codex", "muse", "cursor", "opencode", "droid", "pi", "qwen", "kimi", "grok", "copilot"].contains(family)
+  return ["claude", "codex", "muse", "cursor", "opencode", "droid", "pi", "qwen", "kimi", "grok", "copilot", "devin", "antigravity"].contains(family)
     ? family
     : "claude"
 }

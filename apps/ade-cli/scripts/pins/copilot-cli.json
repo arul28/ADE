@@ -1,0 +1,42 @@
+{
+  "tool": "copilot-cli",
+  "version": "1.0.98",
+  "source": "npm @github/copilot@1.0.98 platform packages",
+  "targets": {
+    "darwin-arm64": {
+      "format": "npm-tarball",
+      "package": "@github/copilot-darwin-arm64",
+      "version": "1.0.98",
+      "tarball": "https://registry.npmjs.org/@github/copilot-darwin-arm64/-/copilot-darwin-arm64-1.0.98.tgz",
+      "integrity": "sha512-2V3TL1nKk43TvxIa8T28df9+6VYT2zR/aSQLyd8WOVhUsF2hhpNzDeXGMOYEuyn2UrkbIJJ1V2TRrhQm+6HW1g=="
+    },
+    "darwin-x64": {
+      "format": "npm-tarball",
+      "package": "@github/copilot-darwin-x64",
+      "version": "1.0.98",
+      "tarball": "https://registry.npmjs.org/@github/copilot-darwin-x64/-/copilot-darwin-x64-1.0.98.tgz",
+      "integrity": "sha512-pQYqPtMcX75MO87Wd4Grqn0W5EzEJ88EPOulTszRa/3eYH41Dr5UEPaYW96ng53pnKvn1VwnJSm+X18YQfAYYw=="
+    },
+    "linux-arm64": {
+      "format": "npm-tarball",
+      "package": "@github/copilot-linux-arm64",
+      "version": "1.0.98",
+      "tarball": "https://registry.npmjs.org/@github/copilot-linux-arm64/-/copilot-linux-arm64-1.0.98.tgz",
+      "integrity": "sha512-x8VTkvNbXPxoKS8SVBQmC5fZw9Ccgcq/c8yy+D0KybUeBAfcRq0f4uRYxgbxNKHeEajtnCldTDa1bHrtY+rDfQ=="
+    },
+    "linux-x64": {
+      "format": "npm-tarball",
+      "package": "@github/copilot-linux-x64",
+      "version": "1.0.98",
+      "tarball": "https://registry.npmjs.org/@github/copilot-linux-x64/-/copilot-linux-x64-1.0.98.tgz",
+      "integrity": "sha512-CspYuA5OeroO+4kRukm7KG3b8CI1HUkhviilmcwyZkWKwSBIBjDRypBLqHy62aUWUnsq3SVnIUsMrq6rthD4EA=="
+    },
+    "win32-x64": {
+      "format": "npm-tarball",
+      "package": "@github/copilot-win32-x64",
+      "version": "1.0.98",
+      "tarball": "https://registry.npmjs.org/@github/copilot-win32-x64/-/copilot-win32-x64-1.0.98.tgz",
+      "integrity": "sha512-XlSIx7egXW4q3tbsPPl37WC0IxxRpjdwDIBLgTtzPR3qynBZML/H11WNandTVw5fVAUxnQ/RZE32r3At9emXQA=="
+    }
+  }
+}

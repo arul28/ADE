@@ -2246,7 +2246,7 @@ describe("createPrSummaryService", () => {
 
       const aiIntegrationService = {
         getConfiguredFeatureModel: vi.fn(() => "openai/gpt-5.5"),
-        draftPrDescription: vi.fn(async () => ({
+        summarizePullRequest: vi.fn(async () => ({
           text: '{"summary":"ok","riskAreas":["a"],"reviewerHotspots":["b"],"unresolvedConcerns":["c"]}',
           durationMs: 10,
           executedAt: "x",
@@ -2257,8 +2257,8 @@ describe("createPrSummaryService", () => {
           completionTokens: null,
           totalTokens: null,
           budgetState: null,
-          taskType: "pr_description" as const,
-          feature: "pr_descriptions" as const,
+          taskType: "review" as const,
+          feature: "terminal_summaries" as const,
         })),
       };
 
@@ -2274,8 +2274,8 @@ describe("createPrSummaryService", () => {
       expect(result.summary).toBe("ok");
       expect(result.riskAreas).toEqual(["a"]);
       expect(result.headSha).toBe("headA");
-      expect(aiIntegrationService.draftPrDescription).toHaveBeenCalledTimes(1);
-      expect(aiIntegrationService.draftPrDescription).toHaveBeenCalledWith(
+      expect(aiIntegrationService.summarizePullRequest).toHaveBeenCalledTimes(1);
+      expect(aiIntegrationService.summarizePullRequest).toHaveBeenCalledWith(
         expect.objectContaining({ model: "openai/gpt-5.5" }),
       );
 
@@ -2285,7 +2285,7 @@ describe("createPrSummaryService", () => {
 
       const again = await svc.regenerateSummary("pr-1");
       expect(again.summary).toBe("ok");
-      expect(aiIntegrationService.draftPrDescription).toHaveBeenCalledTimes(2);
+      expect(aiIntegrationService.summarizePullRequest).toHaveBeenCalledTimes(2);
     } finally {
       db.close();
       fs.rmSync(root, { recursive: true, force: true });

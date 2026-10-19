@@ -386,8 +386,8 @@ export function createFeedbackReporterService({
     if (modelId) {
       try {
         const result = await aiIntegrationService.executeTask({
-          feature: "pr_descriptions",
-          taskType: "pr_description",
+          feature: "terminal_summaries",
+          taskType: "terminal_summary",
           prompt: buildMetadataPrompt(draftInput, body),
           systemPrompt: METADATA_SYSTEM_PROMPT,
           cwd: projectRoot,

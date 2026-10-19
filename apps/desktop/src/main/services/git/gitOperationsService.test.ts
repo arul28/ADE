@@ -19,9 +19,6 @@ vi.mock("./git", () => ({
 }));
 
 import { createGitOperationsService } from "./gitOperationsService";
-import {
-  BACKGROUND_UTILITY_CODEX_MODEL_ID,
-} from "../../../shared/backgroundUtilityModel";
 
 const STASH_LIST_FORMAT = "--format=%H%x1f%gd%x1f%cI%x1f%gs";
 
@@ -29,7 +26,6 @@ function createTestGitOperationsService(
   branchRef = "feature/stash-test",
   overrides: {
     worktreePath?: string;
-    sessionService?: unknown;
     listBranchOwners?: () => Array<{ id: string; name: string; branchRef: string }>;
   } = {},
 ) {
@@ -62,12 +58,6 @@ function createTestGitOperationsService(
       list: mockList,
       listHeadChanges: mockListHeadChanges,
     } as any,
-    aiIntegrationService: {
-      getFeatureFlag: () => false,
-      getStatus: vi.fn(async () => ({ availableModelIds: [] })),
-      generateCommitMessage: vi.fn(),
-    } as any,
-    ...(overrides.sessionService ? { sessionService: overrides.sessionService as any } : {}),
     logger: mockLogger as any,
   });
 
@@ -79,15 +69,6 @@ function createTestGitOperationsService(
     mockListHeadChanges,
     mockInvalidateListCache,
     mockLogger,
-  };
-}
-
-function turnedLaneSession(toolType: string, model?: string) {
-  return {
-    toolType,
-    lastActivityAt: "2026-09-01T12:00:00.000Z",
-    lastOutputPreview: "done",
-    resumeMetadata: { launch: { model: model ?? null } },
   };
 }
 
@@ -935,11 +916,6 @@ describe("gitOperationsService.commit", () => {
         start: mockStart,
         finish: vi.fn(),
       } as any,
-      aiIntegrationService: {
-        getFeatureFlag: () => false,
-        getStatus: vi.fn(async () => ({ availableModelIds: [] })),
-        generateCommitMessage: vi.fn(),
-      } as any,
       logger: {
         info: vi.fn(),
         warn: vi.fn(),
@@ -1112,387 +1088,6 @@ describe("gitOperationsService commitSha option-injection guard", () => {
       expect(usedShaInGit).toBe(true);
     });
   }
-});
-
-describe("gitOperationsService.generateCommitMessage", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it("does not read main diffs when a stale lane path resolves to the main worktree", async () => {
-    const generateCommitMessage = vi.fn();
-    mockGit.runGit.mockImplementation(async (args: string[]) => {
-      if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--show-toplevel") {
-        return { exitCode: 0, stdout: "/tmp/main\n", stderr: "" };
-      }
-      return { exitCode: 1, stdout: "", stderr: `unexpected git command: ${args.join(" ")}` };
-    });
-
-    const service = createGitOperationsService({
-      laneService: {
-        getLaneBaseAndBranch: () => ({
-          baseRef: "main",
-          branchRef: "feature/stale",
-          worktreePath: "/tmp/main/.ade/worktrees/feature-stale-12345678",
-          laneType: "worktree",
-        }),
-      } as any,
-      operationService: {
-        start: vi.fn(),
-        finish: vi.fn(),
-      } as any,
-      aiIntegrationService: {
-        getFeatureFlag: () => true,
-        getStatus: vi.fn(async () => ({
-          availableModelIds: ["anthropic/claude-haiku-4-5"],
-        })),
-        generateCommitMessage,
-      } as any,
-      sessionService: {
-        list: () => [turnedLaneSession("claude-chat")],
-      } as any,
-      logger: makeStubLogger(),
-    });
-
-    await expect(service.generateCommitMessage({ laneId: "lane-1" })).rejects.toThrow(
-      "Lane worktree is missing. Restore or recreate the lane worktree at /tmp/main/.ade/worktrees/feature-stale-12345678 before viewing history.",
-    );
-
-    expect(mockGit.runGit).toHaveBeenCalledTimes(1);
-    expect(generateCommitMessage).not.toHaveBeenCalled();
-  });
-
-  it("returns an empty message when no session on the lane has turned", async () => {
-    const generateCommitMessage = vi.fn();
-    mockGit.runGit.mockImplementation(async (args: string[]) => {
-      if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--show-toplevel") {
-        return { exitCode: 0, stdout: "/tmp/ade-lane\n", stderr: "" };
-      }
-      return { exitCode: 1, stdout: "", stderr: `unexpected git command: ${args.join(" ")}` };
-    });
-    const service = createGitOperationsService({
-      laneService: {
-        getLaneBaseAndBranch: () => ({
-          baseRef: "main",
-          branchRef: "feature/commit-messages",
-          worktreePath: "/tmp/ade-lane",
-          laneType: "worktree",
-        }),
-      } as any,
-      operationService: {
-        start: vi.fn(),
-        finish: vi.fn(),
-      } as any,
-      aiIntegrationService: {
-        getFeatureFlag: () => true,
-        getStatus: vi.fn(async () => ({ availableModelIds: ["openai/gpt-5.4"] })),
-        generateCommitMessage,
-      } as any,
-      sessionService: {
-        list: () => [],
-      } as any,
-      logger: makeStubLogger(),
-    });
-
-    await expect(service.generateCommitMessage({ laneId: "lane-1" })).resolves.toEqual({
-      message: "",
-      model: null,
-    });
-    expect(generateCommitMessage).not.toHaveBeenCalled();
-  });
-
-  it("uses the configured model and sends a lightweight changed-files prompt", async () => {
-    let capturedPrompt = "";
-    let capturedModel = "";
-
-    mockGit.runGit.mockImplementation(async (args: string[]) => {
-      if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--show-toplevel") {
-        return { exitCode: 0, stdout: "/tmp/ade-lane\n", stderr: "" };
-      }
-      if (args[0] === "diff") {
-        return {
-          exitCode: 0,
-          stdout: "M\tapps/desktop/src/main/foo.ts\nA\tapps/desktop/src/main/bar.ts\n",
-          stderr: "",
-        };
-      }
-      if (args[0] === "show") {
-        return {
-          exitCode: 0,
-          stdout: "M\tapps/desktop/src/main/previous.ts\n",
-          stderr: "",
-        };
-      }
-      return {
-        exitCode: 1,
-        stdout: "",
-        stderr: `unexpected git command: ${args.join(" ")}`,
-      };
-    });
-
-    const service = createGitOperationsService({
-      laneService: {
-        getLaneBaseAndBranch: () => ({
-          baseRef: "main",
-          branchRef: "feature/commit-messages",
-          worktreePath: "/tmp/ade-lane",
-          laneType: "worktree",
-        }),
-      } as any,
-      operationService: {
-        start: vi.fn(),
-        finish: vi.fn(),
-      } as any,
-      aiIntegrationService: {
-        getFeatureFlag: () => true,
-        getStatus: vi.fn(async () => ({
-          availableModelIds: ["anthropic/claude-haiku-5-5"],
-        })),
-        generateCommitMessage: vi.fn(async (args: { prompt: string; model?: string }) => {
-          capturedPrompt = args.prompt;
-          capturedModel = args.model ?? "";
-          return {
-            text: "Update git service.",
-            structuredOutput: null,
-            provider: "anthropic",
-            model: null,
-            sessionId: null,
-            inputTokens: null,
-            outputTokens: null,
-            durationMs: 5,
-          };
-        }),
-      } as any,
-      sessionService: {
-        list: () => [turnedLaneSession("claude-chat")],
-      } as any,
-      logger: {
-        info: vi.fn(),
-        warn: vi.fn(),
-        error: vi.fn(),
-        debug: vi.fn(),
-      } as any,
-    });
-
-    const result = await service.generateCommitMessage({ laneId: "lane-1" });
-
-    expect(result).toEqual({
-      message: "Update git service",
-      model: "anthropic/claude-haiku-5-5",
-    });
-    expect(capturedModel).toBe("anthropic/claude-haiku-5-5");
-    expect(capturedPrompt).toContain("Changed files:");
-    expect(capturedPrompt).toContain("M\tapps/desktop/src/main/foo.ts");
-    expect(capturedPrompt).toContain("A\tapps/desktop/src/main/bar.ts");
-    expect(capturedPrompt).toContain("- fewer than 10 words");
-    expect(capturedPrompt).not.toContain("Staged diff stat");
-    expect(capturedPrompt).not.toContain("Staged patch preview");
-    expect(capturedPrompt).not.toContain("Branch:");
-    expect(capturedPrompt).toContain("Diff:");
-    expect(mockGit.runGit.mock.calls.map((call) => call[0])).toEqual([
-      ["rev-parse", "--path-format=absolute", "--show-toplevel"],
-      ["diff", "--cached", "--name-status", "--find-renames"],
-      ["show", "--name-status", "--format=", "--find-renames", "HEAD"],
-      ["diff", "--cached", "--no-color", "-U2", "--find-renames"],
-    ]);
-  });
-
-  it("picks the cheap helper from the last turned session's ADE provider", async () => {
-    mockGit.runGit.mockImplementation(async (args: string[]) => {
-      if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--show-toplevel") {
-        return { exitCode: 0, stdout: "/tmp/ade-lane\n", stderr: "" };
-      }
-      if (args[0] === "diff") {
-        return { exitCode: 0, stdout: "M\tapps/desktop/src/main/foo.ts\n", stderr: "" };
-      }
-      if (args[0] === "show") {
-        return { exitCode: 0, stdout: "", stderr: "" };
-      }
-      return { exitCode: 1, stdout: "", stderr: `unexpected git command: ${args.join(" ")}` };
-    });
-
-    const generateCommitMessage = vi.fn(async (args: { model?: string; reasoningEffort?: string | null }) => ({
-      text: "Update git service.",
-      structuredOutput: null,
-      provider: "openai",
-      model: args.model ?? null,
-      sessionId: null,
-      inputTokens: null,
-      outputTokens: null,
-      durationMs: 5,
-    }));
-
-    const service = createGitOperationsService({
-      laneService: {
-        getLaneBaseAndBranch: () => ({
-          baseRef: "main",
-          branchRef: "feature/commit-messages",
-          worktreePath: "/tmp/ade-lane",
-          laneType: "worktree",
-        }),
-      } as any,
-      operationService: { start: vi.fn(), finish: vi.fn() } as any,
-      aiIntegrationService: {
-        getFeatureFlag: () => false,
-        getStatus: vi.fn(async () => ({ availableModelIds: [BACKGROUND_UTILITY_CODEX_MODEL_ID] })),
-        generateCommitMessage,
-      } as any,
-      sessionService: {
-        list: () => [turnedLaneSession("codex-chat", "openai/gpt-5.4")],
-      } as any,
-      logger: makeStubLogger(),
-    });
-
-    const result = await service.generateCommitMessage({ laneId: "lane-1" });
-    expect(result.model).toBe(BACKGROUND_UTILITY_CODEX_MODEL_ID);
-    expect(generateCommitMessage).toHaveBeenCalledWith(expect.objectContaining({
-      model: BACKGROUND_UTILITY_CODEX_MODEL_ID,
-      reasoningEffort: "low",
-    }));
-  });
-
-  it("uses the last turned session model when that session is not Claude, Codex, or Cursor", async () => {
-    mockGit.runGit.mockImplementation(async (args: string[]) => {
-      if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--show-toplevel") {
-        return { exitCode: 0, stdout: "/tmp/ade-lane\n", stderr: "" };
-      }
-      if (args[0] === "diff") {
-        return { exitCode: 0, stdout: "M\tapps/desktop/src/main/foo.ts\n", stderr: "" };
-      }
-      if (args[0] === "show") {
-        return { exitCode: 0, stdout: "", stderr: "" };
-      }
-      return { exitCode: 1, stdout: "", stderr: `unexpected git command: ${args.join(" ")}` };
-    });
-
-    const generateCommitMessage = vi.fn(async (args: { model?: string }) => ({
-      text: "Update git service.",
-      structuredOutput: null,
-      provider: "opencode",
-      model: args.model ?? null,
-      sessionId: null,
-      inputTokens: null,
-      outputTokens: null,
-      durationMs: 5,
-    }));
-
-    const service = createGitOperationsService({
-      laneService: {
-        getLaneBaseAndBranch: () => ({
-          baseRef: "main",
-          branchRef: "feature/commit-messages",
-          worktreePath: "/tmp/ade-lane",
-          laneType: "worktree",
-        }),
-      } as any,
-      operationService: { start: vi.fn(), finish: vi.fn() } as any,
-      aiIntegrationService: {
-        getFeatureFlag: () => false,
-        getStatus: vi.fn(async () => ({ availableModelIds: ["opencode/glm-4.6"] })),
-        generateCommitMessage,
-      } as any,
-      sessionService: {
-        list: () => [
-          { ...turnedLaneSession("claude-chat"), lastActivityAt: "2026-09-01T11:00:00.000Z" },
-          { ...turnedLaneSession("opencode-chat", "opencode/glm-4.6"), lastActivityAt: "2026-09-01T13:00:00.000Z" },
-        ],
-      } as any,
-      logger: makeStubLogger(),
-    });
-
-    const result = await service.generateCommitMessage({ laneId: "lane-1" });
-    expect(result.model).toBe("opencode/glm-4.6");
-    expect(generateCommitMessage).toHaveBeenCalledWith(expect.objectContaining({
-      model: "opencode/glm-4.6",
-    }));
-  });
-
-  it("prefixes generated commit messages with a Linear reference for linked lanes", async () => {
-    mockGit.runGit.mockImplementation(async (args: string[]) => {
-      if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--show-toplevel") {
-        return { exitCode: 0, stdout: "/tmp/ade-lane\n", stderr: "" };
-      }
-      if (args[0] === "diff") {
-        return {
-          exitCode: 0,
-          stdout: "M\tapps/desktop/src/main/foo.ts\n",
-          stderr: "",
-        };
-      }
-      if (args[0] === "show") {
-        return { exitCode: 0, stdout: "", stderr: "" };
-      }
-      return { exitCode: 1, stdout: "", stderr: `unexpected git command: ${args.join(" ")}` };
-    });
-
-    const service = createGitOperationsService({
-      laneService: {
-        getLaneBaseAndBranch: () => ({
-          baseRef: "main",
-          branchRef: "ade-123-connect-linear-commits",
-          worktreePath: "/tmp/ade-lane",
-          laneType: "worktree",
-          linearIssue: {
-            id: "issue-1",
-            identifier: "ADE-123",
-            title: "Connect Linear commits",
-            description: null,
-            url: null,
-            projectId: "project-1",
-            projectSlug: "ade",
-            teamId: "team-1",
-            teamKey: "ADE",
-            stateId: "state-1",
-            stateName: "In Progress",
-            stateType: "started",
-            priority: 0,
-            priorityLabel: "none",
-            labels: [],
-            assigneeId: null,
-            assigneeName: null,
-            createdAt: "2026-05-08T00:00:00.000Z",
-            updatedAt: "2026-05-08T00:00:00.000Z",
-          },
-        }),
-      } as any,
-      operationService: {
-        start: vi.fn(),
-        finish: vi.fn(),
-      } as any,
-      aiIntegrationService: {
-        getFeatureFlag: () => true,
-        getStatus: vi.fn(async () => ({
-          availableModelIds: ["anthropic/claude-haiku-5-5"],
-        })),
-        generateCommitMessage: vi.fn(async () => ({
-          text: "Update git service.",
-          structuredOutput: null,
-          provider: "anthropic",
-          model: null,
-          sessionId: null,
-          inputTokens: null,
-          outputTokens: null,
-          durationMs: 5,
-        })),
-      } as any,
-      sessionService: {
-        list: () => [turnedLaneSession("claude-chat")],
-      } as any,
-      logger: {
-        info: vi.fn(),
-        warn: vi.fn(),
-        error: vi.fn(),
-        debug: vi.fn(),
-      } as any,
-    });
-
-    const result = await service.generateCommitMessage({ laneId: "lane-1" });
-
-    expect(result).toEqual({
-      message: "Refs ADE-123: Update git service",
-      model: "anthropic/claude-haiku-5-5",
-    });
-  });
 });
 
 describe("gitOperationsService cached lane reads", () => {
@@ -1740,11 +1335,6 @@ function makeServiceWithLanes(opts: {
       start: vi.fn().mockReturnValue({ operationId: "op-1" }),
       finish: vi.fn(),
     } as any,
-    aiIntegrationService: {
-      getFeatureFlag: () => false,
-      getStatus: vi.fn(async () => ({ availableModelIds: [] })),
-      generateCommitMessage: vi.fn(),
-    } as any,
     logger: makeStubLogger(),
   });
 
@@ -1950,11 +1540,6 @@ describe("gitOperationsService.checkoutBranch", () => {
         switchBranch,
       } as any,
       operationService: { start: operationStart, finish: operationFinish } as any,
-      aiIntegrationService: {
-        getFeatureFlag: () => false,
-        getStatus: vi.fn(async () => ({ availableModelIds: [] })),
-        generateCommitMessage: vi.fn(),
-      } as any,
       logger: makeStubLogger(),
     });
 
@@ -2009,11 +1594,6 @@ describe("gitOperationsService.checkoutBranch", () => {
         switchBranch,
       } as any,
       operationService: { start: operationStart, finish: vi.fn() } as any,
-      aiIntegrationService: {
-        getFeatureFlag: () => false,
-        getStatus: vi.fn(async () => ({ availableModelIds: [] })),
-        generateCommitMessage: vi.fn(),
-      } as any,
       logger: makeStubLogger(),
     });
 

@@ -41,7 +41,8 @@ export type SettingsProviderId =
   | "kimi"
   | "grok"
   | "copilot"
-  | "devin";
+  | "devin"
+  | "antigravity";
 
 /** The providers ADE drives over the Agent Client Protocol. */
 export type AcpSettingsProviderId = AcpProviderId;
@@ -134,7 +135,6 @@ export type ProvidersViewContext = {
   acpDiagnostics: Partial<Record<AcpSettingsProviderId, AcpProviderDiagnostics>>;
   acpDiagnosticsBusy: AcpSettingsProviderId | null;
   acpDoctorBusy: AcpSettingsProviderId | null;
-  acpUpdateBusy: AcpSettingsProviderId | null;
   acpDiagnosticsError: Partial<Record<AcpSettingsProviderId, string>>;
 
   actions: ProvidersActions;
@@ -176,8 +176,6 @@ export type ProvidersActions = {
   loadAcpDiagnostics: (provider: AcpSettingsProviderId) => Promise<void>;
   /** Run the vendor's own `doctor` and fold the output into the diagnostics. */
   runAcpDoctor: (provider: AcpSettingsProviderId) => Promise<void>;
-  /** Run the provider's one-click updater, then refresh its diagnostics. */
-  updateAcpProvider: (provider: AcpSettingsProviderId) => Promise<void>;
   /** Open the embedded terminal that runs this provider's login command. */
   openSignInTerminal: (provider: SettingsProviderId) => void;
 };

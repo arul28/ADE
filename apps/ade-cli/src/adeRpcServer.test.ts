@@ -285,7 +285,6 @@ function createRuntime() {
       discardFile: vi.fn(async () => ({ success: true })),
       restoreStagedFile: vi.fn(async () => ({ success: true })),
       commit: vi.fn(async () => ({ success: true })),
-      generateCommitMessage: vi.fn(async () => ({ message: "generated commit message", model: "gpt-5-mini" })),
       listRecentCommits: vi.fn(async () => [{ sha: "abc123", subject: "test" }]),
       getSyncStatus: vi.fn(async () => ({ ahead: 1, behind: 0, tracking: true })),
       fetch: vi.fn(async () => ({ success: true })),
@@ -355,7 +354,6 @@ function createRuntime() {
     prService: {
       simulateIntegration: vi.fn(async () => ({ steps: [], conflicts: [], clean: true })),
       createIntegrationPr: vi.fn(async () => ({ prId: "pr-int-1", url: "https://github.com/pr/1" })),
-      draftDescription: vi.fn(async () => ({ title: "Drafted PR", body: "Drafted body" })),
       createFromLane: vi.fn(async () => ({
         id: "pr-new",
         laneId: "lane-1",
@@ -4111,12 +4109,10 @@ describe("adeRpcServer", () => {
     expect(response?.isError).toBeUndefined();
     expect(fixture.runtime.gitService.stageAll).toHaveBeenCalledTimes(1);
     expect(fixture.runtime.gitService.commit).toHaveBeenCalledTimes(1);
-    expect(fixture.runtime.gitService.generateCommitMessage).not.toHaveBeenCalled();
     expect(response.structuredContent.commit.sha).toBe("abc123");
-    expect(response.structuredContent.messageSource).toBe("provided");
   });
 
-  it("generates a commit message when commit_changes message is omitted", async () => {
+  it("rejects commit_changes without a message before staging anything", async () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
@@ -4126,38 +4122,9 @@ describe("adeRpcServer", () => {
       laneId: "lane-1",
     });
 
-    expect(response?.isError).toBeUndefined();
-    expect(fixture.runtime.gitService.generateCommitMessage).toHaveBeenCalledWith({
-      laneId: "lane-1",
-      amend: false,
-    });
-    expect(fixture.runtime.gitService.commit).toHaveBeenCalledWith({
-      laneId: "lane-1",
-      amend: false,
-      message: "generated commit message",
-    });
-    expect(response.structuredContent.messageSource).toBe("generated");
-    expect(response.structuredContent.generatedByModel).toBe("gpt-5-mini");
-  });
-
-  it("returns generated commit text without creating a commit", async () => {
-    const fixture = createRuntime();
-    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-    await initialize(handler, { callerId: "agent-1", role: "agent" });
-
-    const response = await callTool(handler, "generate_commit_message", {
-      laneId: "lane-1",
-      amend: true,
-    });
-
-    expect(response?.isError).toBeUndefined();
-    expect(fixture.runtime.gitService.generateCommitMessage).toHaveBeenCalledWith({
-      laneId: "lane-1",
-      amend: true,
-    });
+    expect(response?.isError).toBe(true);
+    expect(fixture.runtime.gitService.stageAll).not.toHaveBeenCalled();
     expect(fixture.runtime.gitService.commit).not.toHaveBeenCalled();
-    expect(response.structuredContent.message).toBe("generated commit message");
   });
 
   it("imports an existing branch as a lane", async () => {
@@ -4238,7 +4205,6 @@ describe("adeRpcServer", () => {
       baseBranch: "main",
     });
     expect(defaulted?.isError).toBeUndefined();
-    expect(fixture.runtime.prService.draftDescription).not.toHaveBeenCalled();
     expect(fixture.runtime.prService.createFromLane).toHaveBeenLastCalledWith({
       laneId: "lane-1",
       baseBranch: "main",

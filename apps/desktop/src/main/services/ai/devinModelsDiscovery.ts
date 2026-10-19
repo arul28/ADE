@@ -17,6 +17,8 @@
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { resolveAcpExecutable } from "./acpExecutables";
+import { pinnedToolNotReadyError } from "./pinnedProviderTools";
 import {
   createDynamicAcpModelDescriptor,
   type ModelDescriptor,
@@ -127,16 +129,17 @@ export function getCachedDevinModels(): ModelDescriptor[] | null {
   return cache && Date.now() - cache.at < CACHE_TTL_MS ? cache.models : null;
 }
 
-/** Run `devin models list --format json` and parse it. Throws on spawn failure. */
+/**
+ * Run `devin models list --format json` on ADE's pinned Devin and parse it.
+ * Throws on spawn failure, and when ADE has no Devin on this machine yet:
+ * discovery never starts a download and never runs a `devin` from the PATH.
+ */
 export async function discoverDevinModels(options?: {
   binaryPath?: string | null;
   timeoutMs?: number;
 }): Promise<ModelDescriptor[]> {
-  const binary =
-    options?.binaryPath?.trim()
-    || process.env.DEVIN_EXECUTABLE?.trim()
-    || process.env.DEVIN_CLI_EXECUTABLE?.trim()
-    || "devin";
+  const binary = options?.binaryPath?.trim() || resolveAcpExecutable("devin").path;
+  if (!binary) throw pinnedToolNotReadyError("devin", "Devin");
   const { stdout } = await execFileAsync(binary, ["models", "list", "--format", "json"], {
     timeout: options?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     maxBuffer: MAX_BUFFER_BYTES,

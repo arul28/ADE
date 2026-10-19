@@ -3213,19 +3213,34 @@ app.whenReady().then(async () => {
   // background fetch on `ade serve`, but the desktop app can be launched
   // against a brain that is already running (or one that failed its fetch), so
   // it kicks its own coalesced pass and owns the UI-facing progress state.
-  // Source checkouts still resolve these from node_modules, so this is
-  // packaged-only rather than a dev-loop download.
+  // Source checkouts resolve the lockfile-pinned tools from node_modules, so
+  // the startup pass is packaged-only rather than a dev-loop download; a dev
+  // run still downloads the download-only tools (droid, devin, pi, …) on demand.
   const agentToolsCacheService = createAgentToolsCacheService({
     logger: updateLogger,
     productAnalyticsService,
   });
-  if (app.isPackaged && process.env.NODE_ENV !== "test" && process.env.ADE_DISABLE_TOOLS_FETCH !== "1") {
+  if (process.env.NODE_ENV !== "test" && process.env.ADE_DISABLE_TOOLS_FETCH !== "1") {
     // Tools this machine shows no sign of using download when something needs them.
-    enablePinnedToolFetch(updateLogger);
-    void agentToolsCacheService.ensureMissing().catch(() => {
-      // Per-tool failures are already recorded on the snapshot and in the log;
-      // a rejected kick must never take down app startup.
-    });
+    enablePinnedToolFetch(updateLogger, { downloadOnly: !app.isPackaged });
+    if (app.isPackaged) {
+      void agentToolsCacheService.ensureMissing().catch(() => {
+        // Per-tool failures are already recorded on the snapshot and in the log;
+        // a rejected kick must never take down app startup.
+      });
+    }
+  }
+
+  // ACP agents ADE runs with a per-launch temp directory of its own (Antigravity
+  // unpacks about 1 GB there) delete it on exit; a force-killed ADE leaves it
+  // behind. Reclaim the ones whose owning ADE process is gone, off the boot path.
+  if (process.env.NODE_ENV !== "test") {
+    const scratchSweepTimer = setTimeout(() => {
+      void import("./services/chat/acpHost/acpScratchDirs")
+        .then(({ startAcpScratchSweepOnce }) => startAcpScratchSweepOnce())
+        .catch(() => undefined);
+    }, 60_000);
+    scratchSweepTimer.unref?.();
   }
 
   /**
@@ -4859,8 +4874,6 @@ app.whenReady().then(async () => {
     const gitService = createGitOperationsService({
       laneService,
       operationService,
-      aiIntegrationService,
-      sessionService,
       logger,
       onWorktreeChanged: ({ laneId, reason }) => {
         jobEngine.onLaneDirtyChanged({ laneId, reason });

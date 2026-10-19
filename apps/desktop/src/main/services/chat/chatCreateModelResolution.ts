@@ -29,6 +29,7 @@ export async function resolveChatCreateModel<T extends Pick<AgentChatCreateArgs,
       || payload.provider === "kimi"
       || payload.provider === "grok"
       || payload.provider === "copilot"
+      || payload.provider === "antigravity"
         ? { activateRuntime: true }
         : {}
     ),

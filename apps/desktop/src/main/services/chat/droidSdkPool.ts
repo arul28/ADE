@@ -21,6 +21,7 @@ import type {
   DroidSdkWorkerResponse,
 } from "./droidSdkProtocol";
 import { startSdkWorker } from "./sdkWorkerProcess";
+import { pinnedToolSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
 
 type PendingRpc = {
   resolve: (value: unknown) => void;
@@ -73,8 +74,9 @@ function resolveWorkerPath(): string {
   return candidates[0]!;
 }
 
+/** The worker's env, which the Droid it spawns inherits: ADE's pinned Droid never updates itself. */
 function sanitizeEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  return { ...base };
+  return { ...base, ...pinnedToolSelfUpdateEnv("droid") };
 }
 
 /**

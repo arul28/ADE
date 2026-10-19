@@ -29,15 +29,15 @@ where the machinery lives.
 | `apps/desktop/src/main/services/ai/apiKeyStore.ts`, `apps/desktop/src/main/services/account/accountVaultBridge.ts` | Encrypts ADE-managed provider keys in machine storage, records account/device provenance, mirrors account-origin keys to the brain-backed vault, and purges account-origin values at sign-out or account switch. |
 | `apps/desktop/src/main/services/shared/providerConfigHomes.ts` | Where each provider CLI keeps its user-level config (`claudeConfigHome`, `codexConfigHome`, `factoryConfigHome`), and the canonical statement of the config-ownership rule below. Every adapter that reads or writes a provider config path goes through it. |
 | `apps/desktop/src/main/services/ai/authDetector.ts` | Discovers available credentials (CLI, API key, OAuth) and reports auth status. |
-| `apps/desktop/src/main/services/ai/codexExecutable.ts` / `droidExecutable.ts` | CLI resolution for runtimes that still need an external binary (looks on PATH, in the app bundle, then in configured install paths where supported). Claude uses the bundled Claude Agent SDK binary; Cursor and Droid run through embedded SDKs (`@cursor/sdk`, `@factory/droid-sdk`). |
+| `apps/desktop/src/main/services/ai/codexExecutable.ts` / `droidExecutable.ts` | Resolve ADE's pinned Codex and Droid CLIs: the dev/test env override, (Codex only) the [fall-forward](../onboarding-and-settings/agent-tools-cache.md#codex-fall-forward) override, the current pin in the tools cache, (Codex only) a source checkout's `node_modules` copy, then the previous pin. Never the PATH. A miss is `fallback-command` with an empty path, and the caller downloads the pin first. Claude's binary resolves the same way (`claudeCodeExecutable.ts`); Cursor chats run through the embedded `@cursor/sdk`, and the embedded `@factory/droid-sdk` spawns the pinned `droid`. See [agent tools cache](../onboarding-and-settings/agent-tools-cache.md#resolution-order). |
 | `apps/desktop/src/main/services/ai/tools/systemPrompt.ts` | Adjusts the system prompt per mode (`chat`, `coding`, `planning`) and permission mode, and injects runtime-specific native-subagent versus ADE-child routing guidance. |
 | `apps/desktop/src/main/services/chat/openCodeTurnUsage.ts`, `codexSubagentUsage.ts`, `providerUsageAccount.ts` | Turn telemetry helpers for the inline OpenCode, Codex, and Claude adapters. `openCodeTurnUsage` sums OpenCode `step-finish` parts into the done event, builds the per-step live `context_usage` sample, and maps OpenCode's owned-store credential type (read for `type`/`accountId` only, cached) to the turn's account. `codexSubagentUsage` maps a subagent thread's token counter to the subagent usage split and reads a subagent's rollout `token_usage_record` lines back when no live counter arrived. `providerUsageAccount` decides the Claude and Codex account kind and caches the provider-instance lookup behind it. |
 | `apps/desktop/src/main/services/chat/droidSdkPool.ts`, `droidSdkWorker.ts`, `droidSdkProtocol.ts`, `droidSdkEventMapper.ts` | Droid SDK adapter. `droidSdkPool` forks `droidSdkWorker.cjs` (one per session), brokers prompt sends, permission requests, ask-user prompts, and settings updates via the JSON-line protocol in `droidSdkProtocol`. Send payloads carry screenshot paths (`DroidSdkUserImage`), and the worker materializes bytes locally through `workerAttachmentImages.ts`. `droidSdkEventMapper` translates Droid SDK events into the canonical `AgentChatEventEnvelope` shape; the per-session mapper state (`createDroidSdkEventMapperState`) tracks streaming text/thinking item ids, in-flight tool-use names, cumulative token usage, live context samples, provider compaction lifecycle, and derived mission-worker usage. |
 | `apps/desktop/src/main/services/chat/piSdkPool.ts`, `piSdkWorker.ts`, `piSdkProtocol.ts`, `piSdkEventMapper.ts` | Pi adapter. `piSdkPool` forks the worker (one per session key) and brokers prompts, model/thinking changes, compaction, inventory reads, sign-in, and the reverse-RPC UI channel described below. `piSdkProtocol` is protocol version 2 and carries the `ui_request` / `ui_notice` / `ui_cancel` / `ui_response` frames plus `login` / `login_cancel`, and validates every frame in both directions. `piSdkEventMapper` translates Pi SDK events into `AgentChatEvent`s and owns the card translation helpers (`piUiRequestToPendingInput`, `piUiResponseFromAnswer`, `piUiNoticeToChatEvents`, `piExtensionLoadNotice`). `piSdkSelection` applies the picked model and thinking level exactly and keeps Pi's settings read-only. |
 | `apps/desktop/src/main/services/chat/piSdkUiBridge.ts` | Worker-side half of the UI channel, deliberately free of Pi imports. Funnels Pi's three unrelated callback APIs — `AuthInteraction`, custom-tool `execute`, and an extension's `ExtensionUIContext` — into one never-rejecting `request()` that resolves to `null` when a card is dismissed, a turn aborts, or the worker is disposed. Also builds ADE's `ask_user` tool, the per-tool-call approval gate, and the extension UI context. |
-| `apps/desktop/src/main/services/ai/piInstallation.ts` | Resolves the user's Pi installation: CLI path, SDK package root/entry, agent dir, `auth.json` / models / settings paths, provider inventory, and a `blocker` string when the SDK cannot be used (missing package, or a Node older than `PI_SDK_MIN_NODE`). `sdkAvailable` and `cliAvailable` are independent — the CLI can be present while the SDK path is blocked. |
+| `apps/desktop/src/main/services/ai/piInstallation.ts` | Resolves ADE's pinned Pi (`pi` npm-tree pin; `ADE_PI_PACKAGE_ROOT` is a dev/test override): CLI path (`dist/cli.js`, run with a Node >= 22.19), SDK package root/entry, agent dir, `auth.json` / models / settings paths, provider inventory, and a `blocker` string when the SDK cannot be used (missing package, or a Node older than `PI_SDK_MIN_NODE`). `sdkAvailable` and `cliAvailable` are independent — the CLI can be present while the SDK path is blocked. |
 | `apps/desktop/src/main/services/ai/piAuthService.ts` | In-app Pi sign-in. Enumerates the providers that can actually be signed into (`listPiLoginProviders`), runs one `startPiLogin` per provider on a dedicated inventory-only worker, relays Pi's prompts/notices through `addPiAuthStatusListener`, and answers them with `submitPiLoginPrompt`. Bounded at 10 minutes; `cancelPiLogin` stops a flow and releases its worker. Never reads, stores, or logs a credential. |
-| `apps/desktop/src/main/services/chat/droidModelsDiscovery.ts` | Droid model discovery: probes the installed `droid` CLI (`droid exec --help`, with legacy `models`/`model list` fallbacks) for the model list and merges custom models from `<factoryConfigHome>/config.json` (`~/.factory` unless `FACTORY_HOME_OVERRIDE` is set), emitting `droid/<id>` descriptors via `createDynamicDroidCliModelDescriptor`. Droid fast choices are distinct model IDs, not ADE `serviceTiers`. The CLI probe is the only source — the SDK session's `availableModels` is not read (0.9.x removed the `initResult` surface). Like Cursor, the cache is stale-while-revalidate: `markDroidModelCachesStale` ages it without dropping last-known-good rows, which are served past the 120s window (up to ~6h) while one background warm per freshness window refreshes them, so an unauthenticated/mid-reauth droid isn't handed a session per passive read. |
+| `apps/desktop/src/main/services/chat/droidModelsDiscovery.ts` | Droid model discovery: probes ADE's pinned `droid` CLI, only once it is downloaded (`droid exec --help`, with legacy `models`/`model list` fallbacks) for the model list and merges custom models from `<factoryConfigHome>/config.json` (`~/.factory` unless `FACTORY_HOME_OVERRIDE` is set), emitting `droid/<id>` descriptors via `createDynamicDroidCliModelDescriptor`. Droid fast choices are distinct model IDs, not ADE `serviceTiers`. The CLI probe is the only source — the SDK session's `availableModels` is not read (0.9.x removed the `initResult` surface). Like Cursor, the cache is stale-while-revalidate: `markDroidModelCachesStale` ages it without dropping last-known-good rows, which are served past the 120s window (up to ~6h) while one background warm per freshness window refreshes them, so an unauthenticated/mid-reauth droid isn't handed a session per passive read. |
 
 ## Supported providers
 
@@ -47,14 +47,14 @@ for vendored runtimes without changing the union.
 
 | Provider | Runtime | Adapter location |
 |---|---|---|
-| `claude` | `@anthropic-ai/claude-agent-sdk` `query()` stream with an ADE async input pump, `startup()` warmup, bundled Claude Code binary, SDK sessions, hooks, output styles, plugins, context usage, rewind, and slash-command dispatch. | `agentChatService.ts` (inline; the file carries the full Claude adapter). |
+| `claude` | `@anthropic-ai/claude-agent-sdk` `query()` stream with an ADE async input pump, `startup()` warmup, ADE's pinned Claude Code binary (with the [fall-forward](../onboarding-and-settings/agent-tools-cache.md#claude-fall-forward) override when Anthropic refuses the pin), SDK sessions, hooks, output styles, plugins, context usage, rewind, and slash-command dispatch. | `agentChatService.ts` (inline; the file carries the full Claude adapter). |
 | `codex` | Pinned `@openai/codex` 0.162.1 `codex app-server` subprocess, JSON-RPC protocol. Spawn failures surface as error events. | `agentChatService.ts` (Codex adapter and thread config); executable resolution via `services/ai/codexExecutable.ts`. |
 | `opencode` | OpenCode server runtime: the provider catalog and model list come from OpenCode/Models.dev, with provider-native OAuth, API-key, custom, and local-server paths. | `agentChatService.ts` (OpenCode adapter); inventory in `openCodeInventory.ts`; auth in `openCodeAuthService.ts`. |
 | `cursor` | Official `@cursor/sdk` running in a Node worker pool. ADE owns permissions, hooks, and the system prompt; the SDK owns the model + tool execution. Slash commands are discovered from `.cursor/commands/`, `.cursor/agents/`, built-in subagents, and Agent Skill roots via `cursorSlashCommandDiscovery.ts`. A transport failure can wedge the server-side agent thread while the worker process stays alive, so every local turn carries a 90 s first-event watchdog and one automatic recycle-and-resend — see [Cursor thread recycling and the first-event watchdog](README.md#cursor-thread-recycling-and-the-first-event-watchdog). | `cursorSdkPool.ts`, `cursorSdkWorker.ts`, `cursorSdkProtocol.ts`, `cursorSdkPolicy.ts`, `cursorSdkSystemPrompt.ts`, `cursorSdkEventMapper.ts`, `cursorSdkErrors.ts`, `cursorSlashCommandDiscovery.ts`. |
-| `copilot` | The installed `copilot` CLI driven through `@github/copilot-sdk` over stdio. Each Copilot chat gets its own forked worker. Workers are keyed by the CLI path, `COPILOT_HOME`, and the environment, which carries the chat id. The model list is `client.listModels()`; an Auto-only plan shows one `auto` model. Permissions use ADE's five levels (plan, ask, assisted, auto-edit, full-auto). Background utility tasks run on a session that never starts a user MCP server. | `copilotSdkPool.ts`, `copilotSdkWorker.ts`, `copilotSdkProtocol.ts`, `copilotSdkEventMapper.ts`, `copilotModelsDiscovery.ts`, `ai/copilotSdkLoader.ts`; the Copilot branch of `agentChatService.ts`. Full design: [copilot-sdk-provider.md](copilot-sdk-provider.md). |
-| `devin` | The user's `devin` CLI spawned as `devin acp` over the shared ACP host (JSON-RPC stdio). Devin Cloud chats use the same CLI login over the cloud relay, `devin acp --cloud`, listed and launched through the provider-neutral cloud agents service. The same provider id covers the tracked `devin` CLI for PTY sessions. | `acpHost/acpDialects/devin.ts`, `acpHost/acpDialects/devinCloud.ts`; cloud listing in `services/chat/cloudAgentsService.ts` and `devinCloudDirectory.ts`. |
+| `copilot` | ADE's pinned Copilot runtime (`copilot` tools-cache pin, version-paired with `@github/copilot-sdk`) driven through `@github/copilot-sdk` over stdio. Each Copilot chat gets its own forked worker. Workers are keyed by the CLI path, `COPILOT_HOME`, and the environment, which carries the chat id. The model list is `client.listModels()`; an Auto-only plan shows one `auto` model. Permissions use ADE's five levels (plan, ask, assisted, auto-edit, full-auto). Background utility tasks run on a session that never starts a user MCP server. | `copilotSdkPool.ts`, `copilotSdkWorker.ts`, `copilotSdkProtocol.ts`, `copilotSdkEventMapper.ts`, `copilotModelsDiscovery.ts`, `ai/copilotSdkLoader.ts`; the Copilot branch of `agentChatService.ts`. Full design: [copilot-sdk-provider.md](copilot-sdk-provider.md). |
+| `devin` | ADE's pinned `devin` CLI spawned as `devin acp` over the shared ACP host (JSON-RPC stdio). Devin Cloud chats use the same CLI login over the cloud relay, `devin acp --cloud`, listed and launched through the provider-neutral cloud agents service. The same provider id covers the tracked `devin` CLI for PTY sessions. | `acpHost/acpDialects/devin.ts`, `acpHost/acpDialects/devinCloud.ts`; cloud listing in `services/chat/cloudAgentsService.ts` and `devinCloudDirectory.ts`. |
 | `droid` | Factory Droid models exposed as dynamic `droid/<modelId>` descriptors and driven through the official `@factory/droid-sdk` running in a forked Node worker pool. The adapter reports cumulative turn token usage, live context occupancy, provider-reported compaction, and Factory subscription account identity; mission-worker token usage is derived from the worker's bounded local settings file. The legacy ACP bridge (`droidAcpPool.ts`) has been retired. | `droidSdkPool.ts`, `droidSdkWorker.ts`, `droidSdkProtocol.ts`, `droidSdkEventMapper.ts`, `droidModelsDiscovery.ts`; model helpers in `modelRegistry.ts`. |
-| `pi` | The user's own Pi installation, loaded as a library inside a forked Node worker (never a static import — the worker resolves the installation only after init validation). The worker owns the Pi agent session, its model runtime, its tool registry, and its sign-in; ADE owns the cards the session blocks on. | `piSdkPool.ts`, `piSdkWorker.ts`, `piSdkProtocol.ts`, `piSdkEventMapper.ts`, `piSdkUiBridge.ts`, `piSdkEnvironment.ts`; the shared native session store in `piSessionStore.ts` (resolving the tree, reading headers, authorizing files), `piSessionLease.ts` (the live-writer lock), and `piSessionOwnership.ts` (the durable ownership claim); installation and sign-in in `services/ai/piInstallation.ts` and `services/ai/piAuthService.ts`. |
+| `pi` | ADE's pinned Pi package, loaded as a library inside a forked Node worker (never a static import — the worker resolves the installation only after init validation). The worker owns the Pi agent session, its model runtime, its tool registry, and its sign-in; ADE owns the cards the session blocks on. | `piSdkPool.ts`, `piSdkWorker.ts`, `piSdkProtocol.ts`, `piSdkEventMapper.ts`, `piSdkUiBridge.ts`, `piSdkEnvironment.ts`; the shared native session store in `piSessionStore.ts` (resolving the tree, reading headers, authorizing files), `piSessionLease.ts` (the live-writer lock), and `piSessionOwnership.ts` (the durable ownership claim); installation and sign-in in `services/ai/piInstallation.ts` and `services/ai/piAuthService.ts`. |
 
 ## Model registry
 
@@ -263,14 +263,19 @@ host-advertised model metadata over their static compatibility catalogs.
 
 `authDetector.ts` (`detectAllAuth`) probes every provider:
 
-- CLI-wrapped providers (`claude`, `codex`) check for the binary on PATH
-  and then for the app's auth token cache.
+- `installed` / `path` come from each provider's pinned resolver (ADE's
+  copy, never a PATH lookup); sign-in is read from the provider's own login
+  files, keychain or a probe of the pinned copy. Disk-only sign-ins (Copilot,
+  ACP) are read even before the download, so a row can be signed in while its
+  copy downloads. The detector's cache is keyed on
+  `pinnedToolInstallGeneration()`, so a download that lands is seen at once.
 - Cursor chat authenticates through the SDK (API key / managed
   credential). The Cursor CLI is still not the chat credential source,
-  but ADE now probes `cursor-agent` for CLI-launch model inventory and
-  merges those rows with the SDK registry so the picker can distinguish
-  SDK chat models from Cursor CLI-only models. On Windows, CLI auth and model
-  probes use the expanded installation PATH, including cached registry entries.
+  but ADE probes its pinned Cursor CLI (`cursor-cli`: Cursor's bundled Node +
+  `index.js` with `--disable-auto-update` and `CURSOR_INVOKED_AS=cursor-agent`)
+  for CLI-launch model inventory, only once it is downloaded, and merges those
+  rows with the SDK registry so the picker can distinguish SDK chat models from
+  Cursor CLI-only models.
   Model discovery accepts plain or terminal-decorated JSON arrays and
   `{ models: [...] }` responses, as well as the CLI table. Cursor SDK workers
   hide helper-command consoles on Windows; user-launched terminals retain their
@@ -1875,12 +1880,30 @@ none of them can reach this state.
 
 ADE names chats and auto-created lanes from the ADE provider that owns
 the session, not from a Settings picker and not from the model's
-registry family:
+registry family. Each provider gets exactly one model, from the vendor
+the chat already talks to, so a chat's content never goes to another
+vendor:
 
-- Claude → Haiku 5.5 (`low`), then this session's model, then a deterministic slug
-- Codex → GPT-6 Luna (`low`), then this session's model, then a slug
-- Cursor → Composer 2.5 (standard speed; it has no effort control), then this session's model, then a slug
-- OpenCode, Droid, Pi, ACP, local → this session's model, then a slug
+| Chat provider | Model | How it runs |
+|---|---|---|
+| Claude | Haiku 5.5 (`low`) | pinned `claude -p` |
+| Codex | GPT-6 Luna (`low`) | pinned `codex exec` |
+| Cursor | Composer 2.5 (standard speed; it has no effort control) | Cursor SDK worker pool |
+| Copilot, Muse, Qwen, Kimi, Grok | the chat's own model | pinned runtime (Copilot SDK utility session, `muse serve`, each ACP CLI's one-shot mode) |
+| Droid | the chat's own model | pinned `droid exec -o text`, read-only (no `--auto`) |
+| Devin | the chat's own model | pinned `devin -p --prompt-file`, stdin closed |
+| Pi | the chat's own model | pinned `pi -p --mode text --no-session --no-tools` |
+| Antigravity | the chat's own model | one ACP prompt on the pinned `agy_acp_server`; signed out fails before any spawn |
+| OpenCode, API-key, OpenRouter, local | the chat's own model | `runOpenCodeTextPrompt` on the pinned OpenCode |
+
+When that one call fails, the deterministic slug stays; the agent can
+rename the chat or lane itself (`ade chat update --title`, `ade lanes
+rename`). `providerTaskRunner.ts` dispatches on
+`resolveCliProviderForModel`: OpenCode gets only models with no CLI
+provider, so a Droid, Devin, Pi or Antigravity model never reaches it,
+and an unknown provider throws. Every CLI one-shot runs in its own
+process group; a timeout sends SIGTERM to the group, then SIGKILL after
+1.5 s (Windows: `taskkill /T /F`).
 
 These helper calls go through `summarizeTerminal`, which always runs as a
 background utility task (`ProviderTaskRunnerArgs.backgroundUtility`): every
@@ -1901,19 +1924,18 @@ selected model through their own ACP requests. ACP metadata generation uses the
 provider's own one-shot CLI: Qwen uses safe mode and receives its prompt over
 stdin, Kimi uses its model alias plus supported non-interactive prompt mode, and
 Grok uses its model plus plan mode. Qwen, Kimi, and Grok one-shot metadata routes
-are text-only; an image-backed metadata request is rejected explicitly so the
-naming fallback can try another provider instead of silently discarding the
-image.
+are text-only; an image-backed metadata request is rejected explicitly instead
+of silently discarding the image, and the deterministic name stays. Droid,
+Devin, Pi and Antigravity one-shots reject images the same way.
 
 Copilot is an SDK provider. It selects its model with `session.setModel`, and its
 one-shot metadata runs on a utility SDK session with tools and every configured
 MCP server disabled. That task takes text only, so a task with images is
 refused. See [copilot-sdk-provider.md](copilot-sdk-provider.md).
 
-Both stages walk `buildSessionIntelligenceModelCandidates` in
-`sessionNaming.ts`. A provider-level failure condemns every remaining
-model behind that provider. For a chat title, an empty candidate list
-uses the deterministic title.
+Both stages use `buildSessionIntelligenceModelCandidates` in
+`sessionNaming.ts`, which returns one model. For a chat title, an empty
+candidate list uses the deterministic title.
 
 `ai.sessionIntelligence.titles.enabled` is not a gate. Naming always
 runs (except Cursor Cloud titles and `manuallyNamed`).
@@ -1932,14 +1954,13 @@ suppresses further auto-title generation. The manual-rename check runs *before*
 the title write, not after, because adopting a title has side effects (session
 meta, runtime push) that a rename landing mid-request must stop.
 
-The same chain — cheap helper for the ADE provider, then this session's
-model — covers chat titles, idle status lines, explicit
+The same one model per provider covers chat titles, idle status lines, explicit
 session-metadata regeneration, automatic lane names, handoff briefs,
 and identity-continuity summaries. Chat titles and automatic lane
 names end in a deterministic name when every model misses; explicit
 regeneration and idle status lines do not (see below). CLI sessions
-are always ADE-named from the cheap helper plus the stored launch
-model. See
+are always ADE-named the same way: the cheap helper for a Claude, Codex
+or Cursor CLI, otherwise the stored launch model. See
 [AI-driven titles](../terminals-and-sessions/pty-and-sessions.md#ai-driven-titles).
 
 **Every helper call runs as the chat's own provider account.** The
@@ -1963,16 +1984,15 @@ on the same exhausted account.
 
 ## One-shot utility tasks
 
-Commit messages come from the last turned ADE chat on that lane
-(same cheap-helper rule). An empty suggestion does not commit. Graph
+ADE does not write commit messages or PR titles and descriptions: the
+person or the agent that commits or opens the PR writes them. Graph
 and iOS PR create is a title (from the lane name) plus optional
-markdown; ADE does not draft or summarize the PR. Graph edge clicks
-run merge simulation only — there is no AI conflict-proposal flyout.
+markdown. Graph edge clicks run merge simulation only — there is no AI
+conflict-proposal flyout.
 
-- Commit messages and conflict proposals throw `Choose a … model in Settings`.
-- PR drafts and PR AI summaries use the deterministic template when the
-  picker is empty; `requireAi` callers throw the Settings prompt instead
-  of a stub.
+- Conflict proposals throw `Choose a … model in Settings`.
+- PR AI summaries read the Summaries (`terminal_summaries`) model and
+  use the deterministic fallback when it is empty.
 - Live chat compaction is unchanged — it always uses the chat's own
   provider.
 

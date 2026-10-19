@@ -25,7 +25,7 @@ Once connected, ADE discovers Cursor's available models and they appear in the m
     | **Not authenticated** (amber) | Cursor API key is missing or invalid. |
   </Accordion>
   <Accordion title="Cursor Agent CLI in the Work tab" icon="terminal">
-    You can also launch the `cursor-agent` CLI as a tracked terminal session in the Work tab. ADE probes `cursor-agent` for CLI-only models and merges them into the picker, so the chat-vs-CLI distinction stays clear. This needs the `cursor-agent` binary on your `PATH`.
+    You can also launch the `cursor-agent` CLI as a tracked terminal session in the Work tab. ADE probes `cursor-agent` for CLI-only models and merges them into the picker, so the chat-vs-CLI distinction stays clear. ADE downloads its own copy of the Cursor CLI for the machine the first time it is needed; you do not install `cursor-agent` yourself, and one on your `PATH` is not used.
   </Accordion>
   <Accordion title="Cursor Cloud agents" icon="cloud">
     Kick off Cursor's hosted cloud agents from ADE and follow them in a lane:

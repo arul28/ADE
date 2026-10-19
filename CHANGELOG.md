@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Desktop and web
+
+- ADE runs its own tested copy of every agent (Claude Code, Codex, OpenCode, Copilot, Cursor, Droid, Grok, Qwen, Kimi, Devin, Pi, Muse), downloaded for each machine the first time it is used, with self-update off and your existing sign-ins reused. You no longer install agent CLIs yourself, and ADE no longer runs the one on your PATH; Settings shows each copy's version and a Download or Retry button.
+- Claude Code moves to a newer build on its own only when Anthropic refuses the pinned one as too old, and says so in Settings.
+- Google Antigravity is a new chat provider. It runs Google's official Antigravity agent and signs in with your Google account, Gemini Enterprise, a Gemini API key or Agent Platform; from another machine you paste the sign-in's return address.
+
 ## [1.2.111] - 2026-10-17
 
 ### Desktop and web

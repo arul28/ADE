@@ -107,6 +107,8 @@ import {
 import { listLinkedLaneWorktreeRoots } from "../projects/worktreeParent";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
+import { requirePinnedProviderExecutable } from "../ai/pinnedProviderTools";
+import { CODEX_NO_UPDATE_CHECK_ARGS, providerSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
 import { resolveCliSpawnInvocation, terminateProcessTree } from "../shared/processExecution";
 import { stripAnsi } from "../../utils/ansiStrip";
 import {
@@ -583,9 +585,10 @@ function parseClaudeCliUsage(text: string): UsageWindow[] {
 async function captureClaudeCliUsage(logger: Logger, configHome?: string): Promise<string> {
   const module = await import("node-pty");
   const nodePty = ((module as unknown as { default?: typeof module }).default ?? module);
-  const resolved = resolveClaudeCodeExecutable();
+  const resolved = await requirePinnedProviderExecutable("claude", () => resolveClaudeCodeExecutable());
   const env = {
     ...process.env,
+    ...providerSelfUpdateEnv("claude"),
     TERM: "xterm-256color",
     ...(configHome ? { [PROVIDER_INSTANCE_ENV_KEY.claude]: configHome } : {}),
   };
@@ -1594,10 +1597,8 @@ async function runCodexAppServerJsonRpc(args: {
 }): Promise<Map<number, Record<string, unknown>>> {
   const { logger, configHome, requests } = args;
   const timeoutMs = args.timeoutMs ?? CODEX_CLI_RPC_TIMEOUT_MS;
-  const codexPath = resolveCodexExecutable().path;
-  if (!codexPath.trim().length) {
-    throw new Error("codex executable not found");
-  }
+  // ADE's pinned Codex, downloaded first if this machine never used it.
+  const codexPath = (await requirePinnedProviderExecutable("codex", () => resolveCodexExecutable())).path;
   const lines = [
     JSON.stringify({
       jsonrpc: "2.0",
@@ -1629,7 +1630,7 @@ async function runCodexAppServerJsonRpc(args: {
   };
   const invocation = resolveCliSpawnInvocation(
     codexPath,
-    ["-s", "read-only", "-a", "never", "app-server"],
+    [...CODEX_NO_UPDATE_CHECK_ARGS, "-s", "read-only", "-a", "never", "app-server"],
     env,
   );
 

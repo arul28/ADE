@@ -105,11 +105,27 @@ export type AcpSpawnPlan = {
   args: string[];
   env: NodeJS.ProcessEnv;
   cwd: string;
+  /**
+   * A per-launch temp directory ADE owns (`allocateAcpScratchDir`). The
+   * connection creates it before the spawn and deletes it when the process
+   * exits; the dialect points the agent's TMPDIR/TEMP at it.
+   */
+  scratchDir?: string;
 };
 
 export type AcpSpawnContext = {
-  /** Absolute path of the agent binary or shim that the detector resolved. */
+  /** Absolute path of ADE's pinned agent entry (or the dev/test override). */
   binaryPath: string;
+  /**
+   * Arguments the entry needs before the agent's own: Qwen's pin is a Node
+   * plus a script, so this is `[<cli-entry.js>]`. Empty for a native binary.
+   */
+  binaryArgs?: readonly string[];
+  /**
+   * The pin's named sibling files, absolute (`harness` for Antigravity's
+   * `localharness_external`). Absent for a developer override.
+   */
+  binaryFiles?: Readonly<Record<string, string>>;
   /** Lane worktree. Becomes both the process cwd and the session cwd. */
   cwd: string;
   /** Environment to build on. Usually `process.env`. */
@@ -440,8 +456,19 @@ export type AcpAuthProbe = {
    * agent advertised in its `initialize` response".
    */
   methodId: string | null;
-  /** Command to print when the probe fails. */
-  loginCommand: string;
+  /**
+   * Command to print when the probe fails, or `null` when the agent has no
+   * terminal login and ADE signs it in itself (`signInHint` says where).
+   */
+  loginCommand: string | null;
+  /** Where to sign in when there is no `loginCommand`. */
+  signInHint?: string;
+  /**
+   * False when the probe must never send `authenticate`: every method the
+   * agent advertises is an interactive browser sign-in (Antigravity), so the
+   * probe only checks `session/new`.
+   */
+  probeMayAuthenticate?: boolean;
   /** Environment keys that also authenticate the provider. */
   apiKeyEnvVars: readonly string[];
 };

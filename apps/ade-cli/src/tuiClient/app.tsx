@@ -19,6 +19,7 @@ import {
 } from "../../../desktop/src/shared/modelRegistry";
 import { resolveStableLaneBaseBranch } from "../../../desktop/src/shared/laneBaseResolution";
 import { LAUNCH_PROFILE_TITLE, LAUNCH_PROFILE_TOOL_TYPE, resolveClaudeCliModelForLaunch } from "../../../desktop/src/shared/cliLaunch";
+import type { PinnedCliProvider } from "../../../desktop/src/main/services/pty/pinnedProviderCli";
 import { getAgentSkillRootCandidates } from "../../../desktop/src/shared/agentSkillRoots";
 import {
   activeTurnInlineAttachmentBlock,
@@ -2707,33 +2708,17 @@ export function isPromptCursorOnLastVisualRow(value: string, width: number, curs
   return promptVisualRowIndexForCursor(rows, clampPromptCursor(value, cursor)) >= rows.length - 1;
 }
 
-// Agent CLIs ship as npm shims on Windows (`claude.cmd`, `codex.cmd`, ...).
-// Node cannot spawn those by bare name (ENOENT) nor by `.cmd` path without a
-// shell (EINVAL, CVE-2024-27980), so resolve through `where` and route batch
-// shims through cmd.exe with quoted argv — `shell: true` does not quote for us.
-function resolveWindowsSpawnTarget(
+/**
+ * Run `command` with this terminal's stdio. `command` is an absolute path to
+ * ADE's pinned copy (a native binary or a Node), so it spawns directly on
+ * every platform: no PATH lookup, no shell, no `.cmd` shim.
+ */
+function runInteractiveTerminalCommand(
   command: string,
   args: string[],
-): { command: string; args: string[]; shell: boolean } {
-  if (process.platform !== "win32") return { command, args, shell: false };
-  const lookup = spawnSync("where", [command], { encoding: "utf8", windowsHide: true });
-  const resolved = lookup.status === 0
-    ? (lookup.stdout ?? "").split(/\r?\n/).map((line) => line.trim()).find(Boolean)
-    : undefined;
-  if (!resolved) {
-    // Preserve the bare name so callers keep seeing ENOENT and can fall through
-    // to the next candidate command.
-    return { command, args, shell: false };
-  }
-  if (!/\.(cmd|bat)$/i.test(resolved)) return { command: resolved, args, shell: false };
-  return {
-    command: `"${resolved}"`,
-    args: args.map((arg) => (/[\s&|<>^"]/.test(arg) ? `"${arg}"` : arg)),
-    shell: true,
-  };
-}
-
-function runInteractiveTerminalCommand(command: string, args: string[], cwd: string): Promise<number | null> {
+  cwd: string,
+  env: Record<string, string>,
+): Promise<number | null> {
   return new Promise((resolve, reject) => {
     const stdin = process.stdin as NodeJS.ReadStream & { isRaw?: boolean; setRawMode?: (mode: boolean) => void };
     const wasRaw = Boolean(stdin.isRaw);
@@ -2741,12 +2726,10 @@ function runInteractiveTerminalCommand(command: string, args: string[], cwd: str
       stdin.setRawMode(false);
     }
     process.stdout.write("\n");
-    const target = resolveWindowsSpawnTarget(command, args);
-    const child = spawn(target.command, target.args, {
+    const child = spawn(command, args, {
       cwd,
       stdio: "inherit",
-      env: process.env,
-      shell: target.shell,
+      env: { ...process.env, ...env },
     });
     const restore = () => {
       if (typeof stdin.setRawMode === "function") {
@@ -2765,19 +2748,21 @@ function runInteractiveTerminalCommand(command: string, args: string[], cwd: str
   });
 }
 
-type ProviderLoginCommand = { command: string; args: string[]; label: string };
+/** A provider's own sign-in, run on ADE's pinned copy of its CLI. */
+type ProviderLoginCommand = { provider: PinnedCliProvider; args: string[]; label: string };
 
-function loginCommandsForProvider(provider: AdeCodeProvider): ProviderLoginCommand[] {
-  if (provider === "claude") return [{ command: "claude", args: ["auth", "login"], label: "claude auth login" }];
-  if (provider === "codex") return [{ command: "codex", args: ["login"], label: "codex login" }];
-  if (provider === "opencode") return [{ command: "opencode", args: ["auth", "login"], label: "opencode auth login" }];
-  if (provider === "pi") return [{ command: "pi", args: [], label: "pi (then /login)" }];
+function loginCommandForProvider(provider: AdeCodeProvider): ProviderLoginCommand | null {
+  if (provider === "claude") return { provider, args: ["auth", "login"], label: "claude auth login" };
+  if (provider === "codex") return { provider, args: ["login"], label: "codex login" };
+  if (provider === "opencode") return { provider, args: ["auth", "login"], label: "opencode auth login" };
+  if (provider === "pi") return { provider, args: [], label: "pi (then /login)" };
   // 0.24.0 removed `qwen auth`. Sign-in is the OpenAI-compatible key path.
-  if (provider === "qwen") return [{ command: "qwen", args: ["--auth-type=openai"], label: "qwen --auth-type=openai" }];
-  if (provider === "kimi") return [{ command: "kimi", args: ["login"], label: "kimi login" }];
-  if (provider === "grok") return [{ command: "grok", args: ["login"], label: "grok login" }];
-  if (provider === "copilot") return [{ command: "copilot", args: ["login"], label: "copilot login" }];
-  return [];
+  if (provider === "qwen") return { provider, args: ["--auth-type=openai"], label: "qwen --auth-type=openai" };
+  if (provider === "kimi") return { provider, args: ["login"], label: "kimi login" };
+  if (provider === "grok") return { provider, args: ["login"], label: "grok login" };
+  if (provider === "copilot") return { provider, args: ["login"], label: "copilot login" };
+  if (provider === "devin") return { provider, args: ["auth", "login"], label: "devin auth login" };
+  return null;
 }
 
 function loginUnavailableHint(provider: AdeCodeProvider): string {
@@ -2786,6 +2771,9 @@ function loginUnavailableHint(provider: AdeCodeProvider): string {
   }
   if (provider === "droid") {
     return "ADE Droid chat uses the Factory Droid SDK. Set FACTORY_API_KEY before launching ADE, or run `droid` and use its interactive `/login`.";
+  }
+  if (provider === "antigravity") {
+    return "Antigravity has no terminal login. Sign in from the ADE app: Settings > Providers > Antigravity, on the machine that runs this chat.";
   }
   return "No terminal login command is known for this provider.";
 }
@@ -13101,30 +13089,32 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       const provider = requestedProvider
         ? requestedProvider as AdeCodeProvider
         : normalizeProvider(activeSession?.provider ?? modelState.provider);
-      const loginCommands = loginCommandsForProvider(provider);
-      if (!loginCommands.length) {
+      const login = loginCommandForProvider(provider);
+      if (!login) {
         addNotice(`/login is not available for ${providerLabel(provider)}. ${loginUnavailableHint(provider)}`, "error");
         return;
       }
-      let selectedLogin: ProviderLoginCommand | null = null;
-      let code: number | null = null;
-      let ranLogin = false;
-      for (const login of loginCommands) {
-        selectedLogin = login;
-        addNotice(`Starting \`${login.label}\` in this terminal.`, "info");
-        try {
-          code = await runInteractiveTerminalCommand(login.command, login.args, project.projectRoot);
-          ranLogin = true;
-          break;
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-            continue;
-          }
-          throw error;
-        }
+      // A sign-in lands in the config home of the machine that runs the
+      // provider, which is the brain's. This terminal is not that machine
+      // when ADE Code drives another one, so it never signs in here for it.
+      if (remoteLaunch || activeMachineKey !== LOCAL_MACHINE_KEY) {
+        addNotice(
+          `${providerLabel(provider)} signs in on the machine that runs it (${activeRemoteLabel ?? "the connected machine"}). `
+            + "Sign in there: ADE's Settings > Providers on that machine, or /login in ADE Code running on it.",
+          "error",
+        );
+        return;
       }
-      if (!selectedLogin || !ranLogin) {
-        addNotice(`Could not find a ${providerLabel(provider)} login command on PATH.`, "error");
+      let code: number | null = null;
+      try {
+        const { requirePinnedProviderCli } = await import("../../../desktop/src/main/services/pty/pinnedProviderCli");
+        const cli = await requirePinnedProviderCli(login.provider, (label) => {
+          addNotice(`ADE is downloading ${label} for this machine…`, "info");
+        });
+        addNotice(`Starting \`${login.label}\` in this terminal.`, "info");
+        code = await runInteractiveTerminalCommand(cli.command, [...cli.leadingArgs, ...login.args], project.projectRoot, cli.env);
+      } catch (error) {
+        addNotice(error instanceof Error ? error.message : String(error), "error");
         return;
       }
       if (code === 0) {
@@ -13513,7 +13503,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         addNotice(result.message ?? "Desktop route unavailable from this runtime.", "error");
       }
     }
-  }, [activeSession?.provider, addNotice, applyLocalModelArg, compactFirstState, applySessionSnooze, chatLinkedPrs, clearOlderHistoryCursor, displaySessions, loadProviderModels, modelState.provider, openSnoozeDurationPalette, pendingSteers, preferServiceRepair, project, refreshAiSetupStatus, refreshActivityPane, refreshState, remoteLaunch, requestAppExit, scheduleModelStateCommit, sendClaudeModelCommandToTerminal, setChatScrollOffset, socketPath]);
+  }, [activeSession?.provider, addNotice, applyLocalModelArg, compactFirstState, applySessionSnooze, chatLinkedPrs, clearOlderHistoryCursor, displaySessions, loadProviderModels, modelState.provider, openSnoozeDurationPalette, pendingSteers, preferServiceRepair, project, refreshAiSetupStatus, refreshActivityPane, refreshState, remoteLaunch, requestAppExit, scheduleModelStateCommit, sendClaudeModelCommandToTerminal, setChatScrollOffset, socketPath, activeMachineKey, activeRemoteLabel]);
 
   const submitRightForm = useCallback(async (
     form: Extract<RightPaneContent, { kind: "form" }>,

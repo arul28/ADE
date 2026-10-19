@@ -6,8 +6,6 @@ import type {
 export const AI_USAGE_FEATURE_KEYS: AiFeatureKey[] = [
   "narratives",
   "conflict_proposals",
-  "commit_messages",
-  "pr_descriptions",
   "terminal_summaries",
   "initial_context",
 ];

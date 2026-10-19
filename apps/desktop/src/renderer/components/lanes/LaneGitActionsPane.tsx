@@ -77,7 +77,6 @@ type PendingGuardedPush =
   | { kind: "push"; forceWithLease: boolean; warning: NonNullable<DivergenceWarning> }
   | { kind: "rebase-push"; confirmPublish: boolean; warning: NonNullable<DivergenceWarning> };
 
-const AUTO_GENERATE_COMMIT_ACTION = "generate commit message";
 /**
  * Lane orchestration IPC (`lanes.rebaseStart`, `lanes.createFromUnstaged`) has
  * no machine-pin parameter, so these actions cannot run against a chat on
@@ -1335,65 +1334,25 @@ export function LaneGitActionsPane({
     if (!laneId || (!hasStaged && !amendCommit) || busyAction != null) return;
 
     const message = commitMessage.trim();
-    if (message.length > 0) {
-      void runAction(amendCommit ? "amend commit" : "commit", async () => {
-        invalidateLaneGitCaches(projectStateKey, laneId);
-        await window.ade.git.commit({ laneId, message, amend: amendCommit }, pin);
-        await completeCommitRefresh(laneId);
+    if (!message.length) {
+      patchLaneGitActionRuntimeState(laneGitActionScopeKey, {
+        notice: null,
+        error: "Type a commit message, then commit.",
       });
       return;
     }
-
-    const actionLaneId = laneId;
-    const actionScopeKey = laneGitActionsStateKey(projectStateKey, actionLaneId);
-    const actionVersion = beginLaneGitActionRuntime(actionScopeKey, {
-      busyAction: AUTO_GENERATE_COMMIT_ACTION,
-      notice: "Generating commit message...",
-      error: null,
+    void runAction(amendCommit ? "amend commit" : "commit", async () => {
+      invalidateLaneGitCaches(projectStateKey, laneId);
+      await window.ade.git.commit({ laneId, message, amend: amendCommit }, pin);
+      await completeCommitRefresh(laneId);
     });
-    try {
-      const generated = await window.ade.git.generateCommitMessage({ laneId: actionLaneId, amend: amendCommit }, pin);
-      const generatedMessage = generated.message.trim();
-      if (!generatedMessage) {
-        if (isViewingLane(actionLaneId)) {
-          setCommitMessage("");
-        }
-        patchLaneGitActionRuntimeStateIfCurrent(actionScopeKey, actionVersion, {
-          busyAction: null,
-          notice: null,
-          error: "No turned chat on this lane to suggest a commit message. Type one, then commit.",
-        });
-        return;
-      }
-      if (isViewingLane(actionLaneId)) {
-        setCommitMessage(generatedMessage);
-      }
-      invalidateLaneGitCaches(projectStateKey, actionLaneId);
-      await window.ade.git.commit({ laneId: actionLaneId, message: generatedMessage, amend: amendCommit }, pin)
-        .finally(() => invalidateLaneGitCaches(projectStateKey, actionLaneId));
-      await completeCommitRefresh(actionLaneId);
-      patchLaneGitActionRuntimeStateIfCurrent(actionScopeKey, actionVersion, {
-        busyAction: null,
-        notice: "commit completed",
-        error: null,
-      });
-      scheduleLaneGitActionRuntimeClear(actionScopeKey, actionVersion, 3_000, {
-        notice: null,
-      });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      patchLaneGitActionRuntimeStateIfCurrent(actionScopeKey, actionVersion, {
-        busyAction: null,
-        notice: null,
-        error: message,
-      });
-    }
   }, [
     amendCommit,
     busyAction,
     commitMessage,
     completeCommitRefresh,
     hasStaged,
+    laneGitActionScopeKey,
     laneId,
     projectStateKey,
   ]);

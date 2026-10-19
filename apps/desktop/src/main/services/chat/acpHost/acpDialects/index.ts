@@ -7,6 +7,7 @@
  */
 
 import type { AcpDialect, AcpProviderId } from "../acpHostTypes";
+import { antigravityDialect } from "./antigravity";
 import { devinDialect } from "./devin";
 import { devinCloudDialect } from "./devinCloud";
 import { grokDialect } from "./grok";
@@ -18,6 +19,7 @@ export const ACP_DIALECTS: Record<AcpProviderId, AcpDialect> = {
   kimi: kimiDialect,
   grok: grokDialect,
   devin: devinDialect,
+  antigravity: antigravityDialect,
 };
 
 /**
@@ -29,7 +31,14 @@ export function acpDialectFor(providerId: AcpProviderId, options?: { cloud?: boo
   return ACP_DIALECTS[providerId];
 }
 
-export { devinCloudDialect, devinDialect, grokDialect, kimiDialect, qwenDialect };
+export { antigravityDialect, devinCloudDialect, devinDialect, grokDialect, kimiDialect, qwenDialect };
+export {
+  ANTIGRAVITY_AUTH_URL_PREFIX,
+  ANTIGRAVITY_CONFIG_OPTION_IDS,
+  ANTIGRAVITY_LICENSE_URL_PREFIX,
+  antigravityHarnessPath,
+  antigravitySpawnEnv,
+} from "./antigravity";
 export {
   GROK_CLAUDE_MARKER_OVERRIDE_ENV,
   GROK_CONFIG_OPTION_IDS,

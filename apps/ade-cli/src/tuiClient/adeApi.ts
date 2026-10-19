@@ -478,6 +478,7 @@ const CHAT_BACKED_TERMINAL_TOOL_TYPES = new Set([
   "grok-chat",
   "copilot-chat",
   "devin-chat",
+  "antigravity-chat",
 ]);
 
 const TRACKED_CLI_PROVIDERS = new Set<AdeCodeProvider>([

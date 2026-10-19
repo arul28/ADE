@@ -23,12 +23,12 @@ const ADE_BACKGROUND_TASK_TITLES = new Set([
   // Current `AiFeatureKey` values.
   "narratives",
   "conflict_proposals",
-  "commit_messages",
-  "pr_descriptions",
   "terminal_summaries",
   "initial_context",
   "api_credentials",
   // Names older builds used.
+  "commit_messages",
+  "pr_descriptions",
   "session summary",
   "initial chat title",
 ]);

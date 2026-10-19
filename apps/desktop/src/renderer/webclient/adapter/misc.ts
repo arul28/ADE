@@ -91,6 +91,11 @@ import type {
   CursorSdkAuthStatus,
   CursorSdkLoginResult,
   AdeUsagePriceOverrides,
+  PinnedProviderToolStatus,
+  AntigravitySignInCancelArgs,
+  AntigravitySignInCompleteArgs,
+  AntigravitySignInStartArgs,
+  AntigravitySignInState,
 } from "../../../shared/types";
 
 /** The web client's answer for the Muse binary actions: nothing known, nothing fetched. */
@@ -618,6 +623,36 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     ensureMuseBinary: async (pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("ai.ensureMuseBinary", pin, infra);
       return MUSE_BINARY_STATUS_UNAVAILABLE;
+    },
+    // The brain this client is connected to owns the chat, so a provider's
+    // pinned tool status and its Download/Retry go there. Offline there is
+    // nothing to report, so the card shows no download line.
+    pinnedToolStatus: async (args: { provider: string }, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("ai.pinnedToolStatus", pin, infra);
+      return await call<PinnedProviderToolStatus | null>("ai.pinnedToolStatus", args, null);
+    },
+    pinnedToolDownload: async (args: { provider: string }, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("ai.pinnedToolDownload", pin, infra);
+      return await call<PinnedProviderToolStatus | null>("ai.pinnedToolDownload", args, null, false);
+    },
+    // Antigravity sign-in runs on the connected brain's machine; the web
+    // client is always "another computer", so it shows the URL and the
+    // paste field.
+    antigravitySignInStatus: async (pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("ai.antigravitySignInStatus", pin, infra);
+      return await call<AntigravitySignInState | null>("ai.antigravitySignInStatus", {}, null);
+    },
+    antigravitySignInStart: async (args: AntigravitySignInStartArgs, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("ai.antigravitySignInStart", pin, infra);
+      return await call<AntigravitySignInState | null>("ai.antigravitySignInStart", args, null, false);
+    },
+    antigravitySignInComplete: async (args: AntigravitySignInCompleteArgs, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("ai.antigravitySignInComplete", pin, infra);
+      return await call<AntigravitySignInState | null>("ai.antigravitySignInComplete", args, null, false);
+    },
+    antigravitySignInCancel: async (args: AntigravitySignInCancelArgs, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("ai.antigravitySignInCancel", pin, infra);
+      return await call<AntigravitySignInState | null>("ai.antigravitySignInCancel", args, null, false);
     },
     // The Muse provider page (and its Settings host) is desktop-only, like the
     // binary download above.

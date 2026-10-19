@@ -12,6 +12,7 @@
 // no use for the user's tools, and starting them costs time and can fail.
 // ---------------------------------------------------------------------------
 
+import { CODEX_NO_UPDATE_CHECK_ARGS } from "../../../shared/pinnedToolSpawnEnv";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import readline from "node:readline";
 import { resolveCliSpawnInvocation } from "../shared/processExecution";
@@ -51,7 +52,8 @@ export async function startCodexVoiceHost(args: {
   onExit: (reason: string) => void;
 }): Promise<CodexVoiceHost> {
   const { logger, sessionId } = args;
-  const appServerArgs = ["-c", "mcp_servers={}", "app-server"];
+  // `executable` is ADE's pinned Codex (resolveCodexExecutable); it never checks for its own update.
+  const appServerArgs = [...CODEX_NO_UPDATE_CHECK_ARGS, "-c", "mcp_servers={}", "app-server"];
   const invocation = resolveCliSpawnInvocation(args.executable, appServerArgs, args.env);
   const proc: ChildProcessWithoutNullStreams = spawn(invocation.command, invocation.args, {
     cwd: args.cwd,

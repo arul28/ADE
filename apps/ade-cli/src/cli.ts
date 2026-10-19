@@ -121,7 +121,6 @@ import {
 import { prBriefHints } from "../../desktop/src/shared/prBrief";
 import { PR_THREAD_CLOSEOUT_RULE } from "../../desktop/src/shared/prWatch";
 import { prBodyProofIds } from "../../desktop/src/shared/prBodyProof";
-import { CURSOR_CLI_EXECUTABLES } from "../../desktop/src/shared/providerCliExecutables";
 import { effectiveCursorModeId } from "../../desktop/src/shared/cursorModes";
 import { stripParentClaudeSessionEnv } from "../../desktop/src/shared/parentAgentEnv";
 import {
@@ -142,6 +141,11 @@ import { SEARCH_DOC_KINDS } from "../../desktop/src/shared/types/search";
 import { pathsEqual } from "../../desktop/src/main/services/shared/pathCompare";
 import { stripHostRuntimeEnv } from "../../desktop/src/main/services/shared/hostRuntimeEnv";
 import { withTimeout } from "../../desktop/src/main/services/ai/utils";
+import { resolveClaudeCodeExecutable } from "../../desktop/src/main/services/ai/claudeCodeExecutable";
+import { resolveCodexExecutable } from "../../desktop/src/main/services/ai/codexExecutable";
+import { resolveDroidExecutable } from "../../desktop/src/main/services/ai/droidExecutable";
+import { resolvePinnedCursorAgentCli } from "../../desktop/src/main/services/ai/pinnedProviderTools";
+import { resolveOpenCodeBinaryPath } from "../../desktop/src/main/services/opencode/openCodeBinaryManager";
 import type { SyncHostStartupLoopDeps } from "./services/sync/syncHostStartupLoop";
 import type { ProjectSecretStorage } from "../../desktop/src/shared/types/projectSecrets";
 import type { SyncHostReadinessSnapshot } from "../../desktop/src/shared/types/syncHostRecovery";
@@ -1813,21 +1817,25 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   tools: `${ADE_BANNER}
   ADE Agent Tools
 
-  Inspect and populate the pinned agent-CLI cache. ADE pins exact versions of
-  Codex, Claude Code, and OpenCode and fetches them from the npm registry into a
-  machine-level cache shared by the desktop app, the brain, and every channel,
-  rather than bundling ~650 MB of binaries into each one.
+  Inspect and populate the pinned agent-CLI cache. ADE pins exact,
+  checksum-verified versions of every agent it runs (Claude Code, Codex,
+  OpenCode, Copilot, Droid, Grok, Qwen Code, Kimi, Devin, Pi, Muse, ...) and
+  downloads them into a machine-level cache shared by the desktop app, the
+  brain, and every channel. ADE never runs an agent CLI you installed yourself.
 
     $ ade tools status --text
     $ ade tools ensure --text
     $ ade tools ensure codex --text
+    $ ade tools ensure --all --text
     $ ade tools gc --dry-run --text
 
   Notes:
-    "ensure" with no tool names fetches everything this build pins, and is a
-    no-op for tools already cached. The brain also runs it in the background on
-    every "ade serve", so this is only needed to fetch on demand or to see why a
-    background fetch failed.
+    "ensure" with no tool names fetches the tools this machine shows signs of
+    using (a sign-in, a token, the provider's own CLI), the same rule the brain
+    applies on every "ade serve"; the rest download the first time a chat or
+    task needs them. Name tools to fetch just those, or pass --all for
+    everything this build pins (well over a gigabyte). It is a no-op for
+    tools already cached.
     Failures return ok:false with a typed "errorKind" (network, integrity,
     disk-space, lock-timeout, ...) rather than a message to scrape.
     "gc" drops cached versions this build no longer pins, keeping the most
@@ -2059,7 +2067,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade git stage --lane <lane> src/file.ts       Stage one file
     $ ade git stage-all --lane <lane>               Stage all current changes
     $ ade git unstage --lane <lane> src/file.ts     Unstage one file
-    $ ade git commit --lane <lane> [-m <message>]   Commit, adding Refs <issue-id> on linked Linear lanes
+    $ ade git commit --lane <lane> -m <message>     Commit, adding Refs <issue-id> on linked Linear lanes
     $ ade git push --lane <lane> --set-upstream     Push through ADE
     $ ade git push --lane <lane> --force-with-lease Force-push through ADE with lease
     $ ade git branches --lane <lane> --text         List branches with last-commit metadata
@@ -3666,7 +3674,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   Check one pairing with a one-token request (records the verdict for routing):
     $ ade harness test --harness claude --via opencode-go --model deepseek-v4.1-flash --text
 
-  Run a custom provider in your own terminal (the env is printed, never saved):
+  Run a custom provider in your own terminal (the env is printed, never saved;
+  the harness command it defines runs ADE's pinned copy, never one on your PATH):
     $ eval "$(ade harness env <preset-id> --text)" && claude --model <model>
     PS> ade harness env <preset-id> --shell pwsh --text | Out-String | Invoke-Expression
     The output contains the provider token. Do not paste it anywhere.
@@ -7363,19 +7372,6 @@ function buildGitPlan(args: string[]): CliPlan {
       steps: [actionCallStep("result", "commit_changes", withLane(input))],
     };
   }
-  if (sub === "generate-message") {
-    return {
-      kind: "execute",
-      label: "git commit message",
-      steps: [
-        actionCallStep(
-          "result",
-          "generate_commit_message",
-          withLane({ amend: readFlag(args, ["--amend"]) }),
-        ),
-      ],
-    };
-  }
   if (sub === "branches" || sub === "branch")
     return {
       kind: "execute",
@@ -7641,29 +7637,19 @@ function buildGitPlan(args: string[]): CliPlan {
     };
   }
   if (sub === "message" || sub === "commit-message" || sub === "show-message") {
-    const commitSha =
-      readValue(args, ["--commit", "--sha"]) ?? firstPositional(args);
-    if (commitSha)
-      return {
-        kind: "execute",
-        label: "git commit message",
-        steps: [
-          actionStep(
-            "result",
-            "git",
-            "getCommitMessage",
-            withLane({ commitSha }),
-          ),
-        ],
-      };
+    const commitSha = requireValue(
+      readValue(args, ["--commit", "--sha"]) ?? firstPositional(args),
+      "commitSha",
+    );
     return {
       kind: "execute",
       label: "git commit message",
       steps: [
-        actionCallStep(
+        actionStep(
           "result",
-          "generate_commit_message",
-          withLane({ amend: readFlag(args, ["--amend"]) }),
+          "git",
+          "getCommitMessage",
+          withLane({ commitSha }),
         ),
       ],
     };
@@ -8285,21 +8271,6 @@ function buildPrPlan(args: string[], explicitProjectRoot: string | null = null):
       steps: [actionArgsListStep("result", "pr", scalarPrActions[sub]!, [id])],
     };
   }
-  if (sub === "draft-description")
-    return {
-      kind: "execute",
-      label: "PR draft description",
-      steps: [
-        actionStep(
-          "result",
-          "pr",
-          "draftDescription",
-          collectGenericObjectArgs(args, {
-            laneId: readLaneId(args) ?? firstPositional(args),
-          }),
-        ),
-      ],
-    };
   if (sub === "update-description")
     return {
       kind: "execute",
@@ -20678,12 +20649,14 @@ function checkProviderReadiness(value: unknown): ReadinessCheck {
   const ai = isRecord(effective.ai) ? effective.ai : {};
   const defaultProvider = asString(ai.defaultProvider) ?? asString(ai.mode);
   const apiKeys = isRecord(ai.apiKeys) ? ai.apiKeys : {};
+  // ADE's own pinned copies on this machine; a CLI the user installed is
+  // never what ADE runs, so it does not count.
   const cliProviders = {
-    claude: commandExists("claude"),
-    codex: commandExists("codex"),
-    opencode: commandExists("opencode"),
-    cursor: CURSOR_CLI_EXECUTABLES.launchCandidates.some((command) => commandExists(command)),
-    droid: commandExists("droid"),
+    claude: resolveClaudeCodeExecutable().source !== "fallback-command",
+    codex: resolveCodexExecutable().source !== "fallback-command",
+    opencode: resolveOpenCodeBinaryPath() != null,
+    cursor: resolvePinnedCursorAgentCli() != null,
+    droid: resolveDroidExecutable().source !== "fallback-command",
   };
   const apiKeyProviders = Object.keys(apiKeys).filter((key) =>
     Boolean(asString(apiKeys[key])),
@@ -20697,11 +20670,11 @@ function checkProviderReadiness(value: unknown): ReadinessCheck {
     ready,
     status: ready ? "ready" : "warning",
     message: ready
-      ? "AI provider configuration or provider CLI availability was detected locally."
-      : "No AI provider configuration or provider CLI was detected locally.",
+      ? "AI provider configuration or one of ADE's provider runtimes was detected locally."
+      : "No AI provider configuration or ADE provider runtime was detected locally.",
     nextAction: ready
       ? undefined
-      : "Configure AI providers in ADE desktop or install/sign in to a provider CLI.",
+      : "Configure AI providers in ADE desktop or sign in to a provider; ADE downloads each agent the first time this machine uses it.",
     details: {
       defaultProvider,
       apiKeyProviders,
@@ -23895,7 +23868,11 @@ async function runSetupCli(
       env: process.env,
       ensureAgentTools: async (onProgress) => {
         const { ensureTools, listPinnedTools } = await import("./services/tools/install");
-        const names = listPinnedTools();
+        // Only what this machine uses, by the brain's own demand rule; the
+        // rest download the first time something needs them.
+        const { selectDemandedAgentTools } = await import("../../desktop/src/main/services/tools/agentToolDemand");
+        const names = selectDemandedAgentTools(listPinnedTools()).fetch;
+        if (!names.length) return { ok: true, detail: "none needed yet; each agent downloads the first time it is used" };
         await ensureTools(names, {
           onProgress: (progress) => {
             onProgress({
@@ -26555,26 +26532,31 @@ async function runServe(
   // hosting is still coming up (or still retrying).
   void startSyncHostInBackground();
 
-  // Pinned agent tools are fetched, not bundled — roughly 600 MB across the
-  // three of them. A source checkout still resolves all three out of the repo's
-  // own node_modules, so firing the fetch there downloads that much on every
-  // `ade serve` in a dev loop and on every CI job, for bytes nothing will read.
-  // Packaged installs have no node_modules to fall back on and do need it. The
-  // desktop app draws the same line (`app.isPackaged` in main.ts).
+  // Pinned agent tools are fetched, not bundled. A source checkout resolves the
+  // lockfile-pinned ones (codex, claude-code, opencode, copilot) out of the
+  // repo's own node_modules, so the startup pass is skipped there: it would
+  // download hundreds of MB on every `ade serve` in a dev loop and every CI job
+  // for bytes nothing reads. The tools that exist only as a download (droid,
+  // grok, qwen, kimi, devin, antigravity, pi, muse) still download on demand in
+  // a checkout, when a chat or a status refresh needs one. The desktop app
+  // draws the same line (`app.isPackaged` in main.ts).
   //
-  // ADE_FORCE_TOOLS_FETCH=1 opts a checkout back in (exercising the real fetch
-  // path locally); ADE_DISABLE_TOOLS_FETCH=1 still wins over it, and is handled
-  // inside startBackgroundAgentToolsFetch so the skip is logged there.
+  // ADE_FORCE_TOOLS_FETCH=1 makes a checkout behave like a packaged install
+  // (exercising the real fetch path locally); ADE_DISABLE_TOOLS_FETCH=1 still
+  // wins over it, and is handled inside startBackgroundAgentToolsFetch so the
+  // skip is logged there.
   const toolsFetchDisabled = process.env.ADE_DISABLE_TOOLS_FETCH === "1";
   const skipToolsFetchForSourceCheckout =
     !toolsFetchDisabled
     && isSourceCheckoutCliEntryPath(CLI_ENTRY_PATH)
     && process.env.ADE_FORCE_TOOLS_FETCH !== "1";
   if (skipToolsFetchForSourceCheckout) {
+    const { enablePinnedToolFetch } = await import("./services/tools/onDemand");
+    enablePinnedToolFetch(headlessProjectLogger, { downloadOnly: true });
     headlessProjectLogger.info("tools.fetch_skipped", {
       reason:
-        "Running from a source checkout, where the pinned agent tools resolve from the repo's node_modules. "
-        + "Set ADE_FORCE_TOOLS_FETCH=1 to fetch them anyway.",
+        "Running from a source checkout, where the lockfile-pinned agent tools resolve from the repo's node_modules; "
+        + "download-only tools still download on demand. Set ADE_FORCE_TOOLS_FETCH=1 to run the startup fetch anyway.",
     });
   } else {
     if (!toolsFetchDisabled) {

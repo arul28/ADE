@@ -47,6 +47,7 @@ import {
   type AcpSessionNotification,
 } from "./acpProtocolTypes";
 import type { AcpDialect, AcpSpawnPlan } from "./acpHostTypes";
+import { prepareAcpScratchDir, removeAcpScratchDir } from "./acpScratchDirs";
 
 /** Default ceiling for a single request. A prompt uses its own, much larger. */
 export const ACP_DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
@@ -153,6 +154,13 @@ export type AcpConnection = {
     handler: AcpReverseRequestHandler,
     options?: { matches?: AcpReverseRequestMatcher },
   ): () => void;
+  /**
+   * Every complete line the agent writes outside the protocol: stderr, and
+   * stdout text that is not a JSON-RPC frame. Unredacted, so a reader can
+   * pick a sign-in URL out of it; never log what it receives. Returns
+   * unsubscribe.
+   */
+  onDiagnosticLine(handler: (line: string, stream: AcpDiagnosticStream) => void): () => void;
   onExit(handler: (exit: AcpConnectionExit) => void): () => void;
   /** Resolves when the process has actually gone. */
   waitForExit(): Promise<AcpConnectionExit>;
@@ -172,6 +180,18 @@ type ReverseRequestRegistration = {
 };
 
 const STDERR_TAIL_LIMIT = 4_000;
+
+/**
+ * OAuth query values never reach a log line or an error message. Antigravity
+ * prints its Google sign-in URL (with `state`) on stderr; a callback URL would
+ * carry the `code`.
+ */
+export function redactAcpDiagnosticText(text: string): string {
+  return text.replace(
+    /([?&](?:code|state|access_token|refresh_token|id_token|client_secret)=)[^&\s"']+/gi,
+    "$1<redacted>",
+  );
+}
 
 /** Split a byte stream into complete lines. Holds the partial tail. */
 function createLineSplitter(onLine: (line: string) => void): (chunk: Buffer | string) => void {
@@ -208,6 +228,9 @@ export type CreateAcpConnectionArgs = {
   spawnOverride?: (plan: AcpSpawnPlan) => ChildProcessWithoutNullStreams;
 };
 
+/** Which non-protocol stream a diagnostic line came from. */
+export type AcpDiagnosticStream = "stderr" | "stdout";
+
 /**
  * Start the agent process and open the JSON-RPC channel.
  *
@@ -217,6 +240,9 @@ export type CreateAcpConnectionArgs = {
 export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnection {
   const { dialect, spawnPlan, logger } = args;
   const invocation = resolveCliSpawnInvocation(spawnPlan.command, spawnPlan.args);
+  // The agent's own temp directory exists before it starts and goes when it
+  // exits (see acpScratchDirs.ts).
+  if (spawnPlan.scratchDir) prepareAcpScratchDir(spawnPlan.scratchDir);
   const child = args.spawnOverride
     ? args.spawnOverride(spawnPlan)
     : (spawn(invocation.command, invocation.args, {
@@ -235,6 +261,16 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
   const notificationHandlers = new Map<string, Set<(params: unknown) => void>>();
   const requestHandlers = new Map<string, Set<ReverseRequestRegistration>>();
   const exitHandlers = new Set<(exit: AcpConnectionExit) => void>();
+  const diagnosticLineHandlers = new Set<(line: string, stream: AcpDiagnosticStream) => void>();
+  const emitDiagnosticLine = (line: string, stream: AcpDiagnosticStream) => {
+    for (const handler of diagnosticLineHandlers) {
+      try {
+        handler(line, stream);
+      } catch {
+        // A diagnostic reader must never break the transport.
+      }
+    }
+  };
 
   let nextRequestId = 1;
   let disposed = false;
@@ -264,6 +300,7 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
   const settleExit = (exit: AcpConnectionExit) => {
     if (exited) return;
     exited = exit;
+    if (spawnPlan.scratchDir) removeAcpScratchDir(spawnPlan.scratchDir);
     if (killTimer) {
       clearTimeout(killTimer);
       killTimer = null;
@@ -398,7 +435,8 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
     if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) {
       // Some CLIs print a banner or an update notice before the first frame.
       // That text is not a protocol error, so it must not kill the connection.
-      logEvent("debug", "agent_chat.acp_stdout_non_protocol", { text: trimmed.slice(0, 400) });
+      logEvent("debug", "agent_chat.acp_stdout_non_protocol", { text: redactAcpDiagnosticText(trimmed.slice(0, 400)) });
+      emitDiagnosticLine(trimmed, "stdout");
       return;
     }
     let parsed: unknown;
@@ -414,11 +452,14 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
   });
 
   child.stdout?.on("data", readStdoutLine);
+  const readStderrLine = createLineSplitter((line) => emitDiagnosticLine(line, "stderr"));
   child.stderr?.on("data", (chunk: Buffer | string) => {
     const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
-    stderrTail = `${stderrTail}${text}`.slice(-STDERR_TAIL_LIMIT);
-    const trimmed = text.trim();
+    const safe = redactAcpDiagnosticText(text);
+    stderrTail = `${stderrTail}${safe}`.slice(-STDERR_TAIL_LIMIT);
+    const trimmed = safe.trim();
     if (trimmed.length) logEvent("warn", "agent_chat.acp_stderr", { text: trimmed.slice(0, 1_000) });
+    if (diagnosticLineHandlers.size) readStderrLine(text);
   });
   child.on("error", (error) => {
     logEvent("error", "agent_chat.acp_process_error", { error: error.message });
@@ -501,6 +542,10 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
         current.delete(registration);
         if (!current.size) requestHandlers.delete(method);
       };
+    },
+    onDiagnosticLine: (handler) => {
+      diagnosticLineHandlers.add(handler);
+      return () => diagnosticLineHandlers.delete(handler);
     },
     onExit: (handler) => {
       if (exited) {

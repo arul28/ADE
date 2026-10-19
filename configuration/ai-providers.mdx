@@ -10,7 +10,7 @@ Settings → Providers is organized into two groups: the coding agents, and ever
 
 ## Coding agents
 
-Each coding agent uses the login or key you already have. ADE detects your existing CLI credentials automatically, so most of these light up green without any extra setup.
+Each coding agent uses the login or key you already have. ADE detects your existing CLI credentials automatically, so most of these light up green without any extra setup. You do not install the agents yourself: ADE downloads its own tested copy of each one for the machine that runs it, the first time that machine uses it, and keeps it at that version. Your own CLI's sign-in is reused.
 
 | Agent | Connect with |
 |-------|--------------|
@@ -18,10 +18,11 @@ Each coding agent uses the login or key you already have. ADE detects your exist
 | **Codex CLI** | Your ChatGPT sign-in — a Plus/Pro subscription or `OPENAI_API_KEY`. |
 | **Cursor** | A Cursor API key (`CURSOR_API_KEY`). ADE verifies it and lists Cursor's models. |
 | **Droid** | Your Factory login or `FACTORY_API_KEY`. |
+| **Antigravity** | Google's Antigravity agent: sign in from its page with a Google account, Gemini Enterprise, a Gemini API key, or Agent Platform. |
 
 <AccordionGroup>
   <Accordion title="Claude Code" icon="anthropic">
-    Sign in with a Claude subscription or paste an Anthropic API key. ADE runs Claude through the bundled Claude Agent SDK, so the `claude` CLI does not need to be installed separately. If sign-in is required, the card offers a one-click login. See [Claude Code](/ai-tools/claude-code) for lane context and permission modes.
+    Sign in with a Claude subscription or paste an Anthropic API key. ADE runs Claude through the Claude Agent SDK and its own copy of Claude Code, so the `claude` CLI does not need to be installed. If sign-in is required, the card offers a one-click login. See [Claude Code](/ai-tools/claude-code) for lane context and permission modes.
   </Accordion>
   <Accordion title="Codex CLI" icon="openai">
     Sign in with your ChatGPT account or provide an API key. Codex runs as a CLI-backed session and reaches OpenAI models.
@@ -31,6 +32,13 @@ Each coding agent uses the login or key you already have. ADE detects your exist
   </Accordion>
   <Accordion title="Droid" icon="robot">
     Sign in with Factory or set `FACTORY_API_KEY`. Droid runs as an agent provider and supports AGI mode for larger autonomous tasks.
+  </Accordion>
+  <Accordion title="Antigravity" icon="google">
+    ADE downloads Google's Antigravity agent for the machine that runs the chat and signs it in from **Settings → Providers → Antigravity**. Pick a method (Google account, Gemini Enterprise, Gemini API key, or Agent Platform) and choose **Sign in**. The login is the agent's own and is separate from the Antigravity app and the `agy` CLI.
+
+    Signing in to another machine from this one: open the Google link anywhere, then paste the full address the last page ends on (it starts with `http://127.0.0.1` and will not load) into the return-address field and choose **Continue**. It holds a one-time sign-in code, so paste it only there. Gemini Enterprise's license page opens only in a browser on the machine that runs Antigravity.
+
+    Models come from your Antigravity account. Antigravity cannot rewind or edit earlier turns, and it has no read-only Plan mode in ADE; use its own `/plan` command.
   </Accordion>
 </AccordionGroup>
 
@@ -116,8 +124,11 @@ Running several agents in parallel can spend quickly. Use cheaper models for rou
   <Accordion title="OpenCode won't launch on macOS">
     If OpenCode is blocked by macOS Gatekeeper, its diagnostics report a quarantined binary and the exact fix — clear the quarantine attribute with `xattr -d com.apple.quarantine <path>` (the card shows the full path), then re-check.
   </Accordion>
-  <Accordion title="A CLI shows as detected but not signed in">
-    Run the login command the card suggests, then hit **Refresh**. If a CLI is installed but not found, make sure it is on the shell PATH that ADE launches from.
+  <Accordion title="An agent shows as not signed in">
+    Run the login command the card suggests, then hit **Refresh**. The sign-in terminal runs ADE's copy of the agent, and the login is shared with your own CLI.
+  </Accordion>
+  <Accordion title="An agent shows as downloading or not downloaded">
+    ADE downloads each agent the first time the machine uses it. The provider's page shows the progress. If the download failed, choose **Retry download**. "Not available on this machine" means the vendor publishes no build for this platform (for example Windows on Arm); installing the CLI yourself does not change that, because ADE only runs its own copy.
   </Accordion>
 </AccordionGroup>
 

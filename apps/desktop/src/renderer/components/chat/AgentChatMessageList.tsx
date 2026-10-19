@@ -108,7 +108,6 @@ import {
 } from "./chatTranscriptChrome";
 import { useAppStore } from "../../state/appStore";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
-import { ProviderOutdatedNoticeRow } from "./ProviderOutdatedNoticeRow";
 import { transcriptRowGapPx } from "./chatAppearance";
 import { UserMessageIssueContext } from "./UserMessageIssueContext";
 import type { AgentChatContextAttachment, AgentChatEventMetadata, AgentChatFileRef } from "../../../shared/types";
@@ -3655,23 +3654,6 @@ function renderEvent(
           chipLabel={chipLabel}
         />
       );
-    }
-
-    if (event.status === "acp_provider_outdated") {
-      const providerUpdate = typeof event.detail === "object" && event.detail && !Array.isArray(event.detail)
-        ? event.detail.providerUpdate
-        : undefined;
-      if (providerUpdate) {
-        return (
-          <ProviderOutdatedNoticeRow
-            message={event.message}
-            update={providerUpdate}
-            className={cn(style.border, style.bg, style.text)}
-            icon={<NoticeIcon size={11} weight="bold" />}
-            chipLabel="update"
-          />
-        );
-      }
     }
 
     // Warnings are one text-sized line, like the thread's other rows; the full

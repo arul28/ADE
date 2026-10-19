@@ -135,7 +135,6 @@ import type {
   DeletePrArgs,
   DeleteIntegrationProposalArgs,
   DismissIntegrationCleanupArgs,
-  DraftPrDescriptionArgs,
   GetDiffChangesArgs,
   GetFileDiffArgs,
   GitBatchFileActionArgs,
@@ -143,7 +142,6 @@ import type {
   GitCommitArgs,
   GitCreateTagArgs,
   GitFileActionArgs,
-  GitGenerateCommitMessageArgs,
   GitGetCommitMessageArgs,
   GitGetFileHistoryArgs,
   GitCheckoutBranchArgs,
@@ -3412,13 +3410,6 @@ function parseGitCommitArgs(value: Record<string, unknown>): GitCommitArgs {
   };
 }
 
-function parseGitGenerateCommitMessageArgs(value: Record<string, unknown>): GitGenerateCommitMessageArgs {
-  return {
-    laneId: requireString(value.laneId, "git.generateCommitMessage requires laneId."),
-    amend: asOptionalBoolean(value.amend),
-  };
-}
-
 function parseGitListRecentCommitsArgs(value: Record<string, unknown>): GitListRecentCommitsArgs {
   const skip = asOptionalNumber(value.skip);
   const scope = value.scope === "lanes" || value.scope === "lane" ? value.scope : undefined;
@@ -3655,6 +3646,7 @@ const MODEL_CATALOG_REFRESH_PROVIDERS = new Set<AgentChatModelCatalogRefreshProv
   "grok",
   "copilot",
   "devin",
+  "antigravity",
 ]);
 
 function parseChatModelCatalogArgs(value: Record<string, unknown>): AgentChatModelCatalogArgs {
@@ -3853,18 +3845,6 @@ function parseCreateLaneFromPrBranchArgs(value: Record<string, unknown>): Create
     repoName,
     githubPrNumber,
     ...(laneName ? { laneName } : {}),
-  };
-}
-
-function parseDraftPrDescriptionArgs(value: Record<string, unknown>): DraftPrDescriptionArgs {
-  return {
-    laneId: requireString(value.laneId, "prs.draftDescription requires laneId."),
-    ...(asTrimmedString(value.model) ? { model: asTrimmedString(value.model)! } : {}),
-    ...("reasoningEffort" in value
-      ? { reasoningEffort: value.reasoningEffort == null ? null : (asTrimmedString(value.reasoningEffort) ?? null) }
-      : {}),
-    ...(asTrimmedString(value.baseBranch) ? { baseBranch: asTrimmedString(value.baseBranch)! } : {}),
-    ...(typeof value.closeLinearIssueOnMerge === "boolean" ? { closeLinearIssueOnMerge: value.closeLinearIssueOnMerge } : {}),
   };
 }
 
@@ -4237,6 +4217,7 @@ async function resolveChatCreateArgs<T extends AgentChatCreateArgs>(
       || payload.provider === "grok"
       || payload.provider === "copilot"
       || payload.provider === "devin"
+      || payload.provider === "antigravity"
         ? { activateRuntime: true }
         : {}
     ),
@@ -6937,8 +6918,6 @@ function registerGitAndFileRemoteCommands({ args, register }: RemoteCommandRegis
     requireService(args.gitService, "Git service not available.").restoreStagedFile(parseGitFileActionArgs(payload, "git.restoreStagedFile")));
   register("git.commit", { viewerAllowed: true, queueable: true }, async (payload) =>
     requireService(args.gitService, "Git service not available.").commit(parseGitCommitArgs(payload)));
-  register("git.generateCommitMessage", { viewerAllowed: true }, async (payload) =>
-    requireService(args.gitService, "Git service not available.").generateCommitMessage(parseGitGenerateCommitMessageArgs(payload)));
   register("git.listRecentCommits", { viewerAllowed: true }, async (payload) =>
     requireService(args.gitService, "Git service not available.").listRecentCommits(parseGitListRecentCommitsArgs(payload)));
   register("git.listCommitFiles", { viewerAllowed: true }, async (payload) =>
@@ -7814,8 +7793,6 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
   register("prs.linkToLane", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.linkToLane(parseLinkPrToLaneArgs(payload)));
   register("prs.preflightCreateLaneFromPrBranch", { viewerAllowed: true, observesAbort: true }, async (payload) => args.prService.preflightCreateLaneFromPrBranch(parseCreateLaneFromPrBranchArgs(payload)));
   register("prs.createLaneFromPrBranch", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.createLaneFromPrBranch(parseCreateLaneFromPrBranchArgs(payload)));
-  register("prs.draftDescription", { viewerAllowed: true, queueable: true }, async (payload) =>
-    args.prService.draftDescription(parseDraftPrDescriptionArgs(payload)));
   register("prs.land", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.land(parseLandPrArgs(payload)));
   register("prs.updateBranch", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.updateBranch(parseUpdateBranchArgs(payload)));
   register("prs.close", { viewerAllowed: true, queueable: true }, async (payload) => {

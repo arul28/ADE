@@ -231,6 +231,30 @@ cleanup and a per-paste failure, so they stay local: the connection flaps and
 the sweeps have no user action behind them, and a paste failure's reason is
 free text that cannot cross the analytics boundary.
 
+Five local lines record a provider refusing ADE's pinned build as too old, and
+none is a PostHog event. `ai.claude_fall_forward` (warn) records each Claude
+fall-forward attempt (`claudeFallForward.ts`) with `tool`, `signal`,
+`pinnedVersion`, `rejectedClaudeCodeVersion`, `requiredVersion`,
+`vendorMessage`, `outcome` (`switched` or `not_switched`), and then either
+`overrideVersion` / `claudeCodeVersion` or `reason` / `detail`. It goes to the
+caller's logger, else the machine log (`desktop-main.jsonl`).
+`ai.codex_fall_forward` (warn) records each Codex fall-forward attempt
+(`codexFallForward.ts`) with `tool`, `signal`, `model`, `pinnedVersion`,
+`vendorMessage`, `modelProbes` (one-request probes run, which use the user's
+quota), `outcome`, and then either `overrideVersion` / `codexVersion` or
+`reason` / `detail` / `newestCodexVersion`. `ai.muse_fall_forward` (warn)
+records each Muse attempt (`museFallForward.ts`) with `tool`, `signal`
+(`vendor_min_version`), `pinnedVersion`, `minVersion`, `urgency`,
+`channelVersion`, `outcome`, and `reason` / `detail` when it did not switch.
+`ai.muse_vendor_floor` (warn) records a Meta floor ADE cannot meet without an
+update, with `minVersion`, `runningVersion` and `urgency`. All three go to the
+same logger as the Claude line.
+`agent_chat.copilot_client_update_required` (warn) records Copilot's
+organisation-policy floor (`copilotSdkPool.ts`) with `requiredVersion`,
+`reportedVersion` and `pinnedVersion`; Copilot has no fall-forward. All are
+rare vendor refusals with no user action behind them, and `vendorMessage` is
+vendor text that cannot cross the analytics boundary.
+
 Claude mod UI (what Claude Code plugins draw in a chat) writes three local
 debug lines and no PostHog event: `agent_chat.claude_plugin_ui_render_failed`
 (session id, render site, error message), `agent_chat.claude_plugin_ui_action_failed`
@@ -367,7 +391,6 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 | `work` | `session_continue_chat`, `session_copy_chat`, `session_continue_cli`, `session_copy_cli` | `completed`, `failed` | coarse provider family (Qwen, Kimi, Grok and Copilot report `other`) |
 | `automations` | `webhook_url_created` | `completed` | omitted; never the URL, hook id, preset, or rule |
 | `automations` | `safe_test_started`, `live_test_started` | `completed`, `failed` | omitted; never the rule, its steps, the event, or the lanes it made |
-| `updates` | `provider_cli_updated` | `completed`, `failed` | coarse provider family (the ACP CLIs report `other`); never the version, install path, or output |
 | `chat` | `secret_requested` | `completed` (saved), `kept`, `cancelled` (declined), `failed` (unanswered in time or the request failed) | omitted; never the secret's name, value, reason, or chat |
 | `home` | `tab_opened` | `tab_browser`, `tab_music` | omitted; never a URL, tab, song, or page |
 | `home` | `widget_added` | `widget_<type>` (one per home widget type) | omitted; never the layout, a preset name, or a widget's settings |
@@ -382,14 +405,6 @@ keeps only the event's property keys and closed values; its `safeStringProperty`
 path drops arbitrary strings. Provider mapping is also performed by
 `featureProductAnalytics.ts` before capture, and local dedupe keys are hashed
 by the analytics service rather than transmitted.
-
-ADE's one-click update of a user-installed provider CLI (from the provider's
-Settings page or the chat warning for a CLI older than ADE supports) records
-`updates/provider_cli_updated` where the update runs: the desktop IPC handler
-(`surface: "desktop"`) and the `ai.acpProviderUpdate` action (`surface: "api"`).
-It is a rare, deliberate click, deduplicated per outcome and provider family
-for an hour, so the worst case is a few events a day inside the existing
-`ade_feature_used` 140-per-day / 30-per-minute ceilings.
 
 A browser sign-in to an MCP server (Settings › MCP servers) records
 `mcp_servers/sign_in` once when it ends, in the desktop IPC handler that runs

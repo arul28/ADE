@@ -213,7 +213,7 @@ Windows-sensitive surface, parity still required]
 plane · app/browser/iOS-sim/macOS-VM control · Linear (via `ade`) · computer-use
 + proof drawer. Depth → the matching `ade-*` skill.
 **Dev loop:** /context → work → /quality → /test → /ship. Utilities: /audit,
-/finalize, /optimize, /release. Open each skill when you reach it.
+/finalize, /optimize, /release, /update-providers. Open each skill when you reach it.
 **Tests:** [commands for this area — see AGENTS.md "Validation"]
 
 Ready to assist with [feature].

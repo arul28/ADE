@@ -98,14 +98,14 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   automations: { only: ["setWebhookGatewayPublicUrl", "linearIngressSetup", "linearIngressTeardown", "cancelScheduledCleanup"] },
   // Writing or destroying a provider credential is operator work.
   // `acpProviderDiagnostics` can run a provider CLI's doctor, so it is
-  // operator-only like the updater it pairs with.
+  // operator-only.
   // `harnessLaunchEnv` returns a routed launch's environment WITH its tokens
   // (it is how `ade harness env` runs a custom provider in the user's own
   // terminal), and `testHarnessRoute` spends the user's key on a live request.
   // Both are operator work, like `project_secret.exportEnv`. `museSettings`
   // opens a Muse host on the user's credential to read or change Muse's own
-  // settings, the same tier as the updater beside it.
-  ai: { only: ["harnessLaunchEnv", "testHarnessRoute", "acpProviderDiagnostics", "acpProviderUpdate", "museSettings", "museSettingsClose", "storeApiCredential", "removeApiCredential", "updateConfig", "storeApiKey", "deleteApiKey", "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey", "clearOpencodeProviderKey", "opencodeAccountActivate", "opencodeAccountRename", "opencodeAccountRemove", "opencodeCloudConnect", "refreshModelsDev", "piLoginStart", "piLoginSubmit", "piLoginCancel", "cursorAuthLogin", "cursorAuthLogout", "cursorAuthCancel"] },
+  // settings, the same tier.
+  ai: { only: ["harnessLaunchEnv", "testHarnessRoute", "acpProviderDiagnostics", "museSettings", "museSettingsClose", "storeApiCredential", "removeApiCredential", "updateConfig", "storeApiKey", "deleteApiKey", "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey", "clearOpencodeProviderKey", "opencodeAccountActivate", "opencodeAccountRename", "opencodeAccountRemove", "opencodeCloudConnect", "refreshModelsDev", "piLoginStart", "piLoginSubmit", "piLoginCancel", "cursorAuthLogin", "cursorAuthLogout", "cursorAuthCancel"] },
   budget: { only: ["updateConfig"] },
   feedback: { only: ["submitPreparedDraft"] },
   // `applyAccountRollups` writes another machine's history into a
@@ -469,7 +469,6 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "createTag",
     "discardFile",
     "fetch",
-    "generateCommitMessage",
     "getCommit",
     "getCommitMessage",
     "isCommitInLaneHistory",
@@ -558,7 +557,6 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "delete",
     "deleteIntegrationProposal",
     "dismissIntegrationCleanup",
-    "draftDescription",
     "getActionRuns",
     "getActionRunsByGithub",
     "getActivity",
@@ -809,10 +807,15 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "isOpenCodeInstalled",
     "museBinaryStatus",
     "ensureMuseBinary",
+    "pinnedToolStatus",
+    "pinnedToolDownload",
+    "antigravitySignInStatus",
+    "antigravitySignInStart",
+    "antigravitySignInComplete",
+    "antigravitySignInCancel",
     "museSettings",
     "museSettingsClose",
     "acpProviderDiagnostics",
-    "acpProviderUpdate",
     "listApiCredentials",
     "getApiCredential",
     "storeApiCredential",

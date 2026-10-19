@@ -325,11 +325,10 @@ type AiConfig = {
 
 `featureModelOverrides` / `featureReasoningOverrides` remain in the
 schema for older configs, but Settings no longer offers per-helper
-model pickers. Background naming, idle status lines, and commit
-suggestions pick a cheap model from the ADE provider that owns the
-session (Haiku 5.5 / GPT-5.6 Luna / Composer 2.5), then that session's
-model, then a deterministic slug. OpenCode, Droid, Pi, and ACP skip the
-cheap helper and use the session model. Manual Graph PR create is
+model pickers. Background naming and idle status lines run on one
+model: the cheap helper for a Claude, Codex or Cursor session (Haiku 5.5
+/ GPT-6 Luna / Composer 2.5), the session's own model for every other
+provider, then a deterministic slug. Manual Graph PR create is
 title plus optional markdown — ADE does not draft the description.
 Live chat compaction stays on
 the chat's own provider. Session intelligence
@@ -427,11 +426,13 @@ end-of-session summaries:
 - `summaries.modelId` (`null` clears a project override)
 - `summaries.reasoningEffort`
 
-Chat, lane, metadata, handoff, and continuity callers walk
-`titles.modelId` / `summaries.modelId` and then this session's model.
-An empty list still uses the deterministic name. CLI title/summary
-callers walk the same settings and then `resumeMetadata.launch.model`,
-and skip AI when both are missing.
+`titles.modelId` / `summaries.modelId` are parsed but do not pick the
+model. Chat, lane, metadata, handoff, and continuity callers use one
+model: the cheap helper for a Claude, Codex or Cursor chat, otherwise
+this session's model. An empty list still uses the deterministic name.
+CLI title callers use the cheap helper for a Claude, Codex or Cursor
+CLI, otherwise `resumeMetadata.launch.model`, and skip AI when neither
+exists.
 
 Legacy `ai.chat.autoTitleEnabled`, `ai.chat.autoTitleModelId`, and
 `ai.chat.autoTitleRefreshOnComplete` are read on load and migrated

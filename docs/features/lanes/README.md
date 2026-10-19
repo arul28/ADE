@@ -235,10 +235,8 @@ iOS companion (`apps/ios/ADE/Views/Lanes/`):
   stash, sync, manage, chat-launch, and file-tree parity surfaces.
   `LaneDetailGitActionsPane.swift` is the single git surface embedded
   in the lane detail (a port of desktop's `LaneGitActionsPane`):
-  commit message + amend with an AI "Suggest message" button (calls
-  `aiCommitMessages.generate`, which requires the Commit Messages model
-  from Settings and shows an inline setup hint when that picker is
-  empty — it does not fall through to Haiku), pull/push/fetch,
+  commit message + amend (the message is always typed by the user or
+  the agent; ADE does not generate commit messages), pull/push/fetch,
   staged and unstaged files with per-file and bulk stage / unstage /
   discard / restore / open-diff / open-files affordances, a read-only
   "Branch vs <base>" section (shown when the host advertises

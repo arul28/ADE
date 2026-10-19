@@ -36,9 +36,7 @@ import {
   ProviderTileBadge,
 } from "../../providerSectionPrimitives";
 import type { OpenCodeProviderDetail } from "../../OpenCodeProviderDetailModal";
-import { CopyableCommand } from "../providerUi";
 import { OpenCodeCustomProvidersPanel } from "../keys/OpenCodeCustomProvidersPanel";
-import { openCodeInstallCommands } from "../cliTools";
 import type { ProvidersViewContext } from "../types";
 
 function formatLocalModelLabel(modelId: string): string {
@@ -335,12 +333,8 @@ export function OpenCodeBody({ ctx }: { ctx: ProvidersViewContext }) {
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.55 }}>
-          OpenCode powers every subscription, API key, and local model below. Install it, then re-check:
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          {openCodeInstallCommands().map((cmd) => (
-            <CopyableCommand key={cmd} command={cmd} />
-          ))}
+          OpenCode powers every subscription, API key, and local model below. ADE runs its own pinned
+          copy, never one you installed; download it from the left, then re-check.
         </div>
         <div>
           <button

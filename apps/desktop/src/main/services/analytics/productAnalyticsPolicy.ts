@@ -262,8 +262,6 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // A person started a safe or live test of an automation. Never the rule or event.
   "safe_test_started",
   "live_test_started",
-  // ADE's one-click update of a user-installed provider CLI. Never the version.
-  "provider_cli_updated",
   // A custom notification (`ade notify`, an agent, an automation's "Send
   // notification to mobile app" step): sent, refused by the hourly cap, or
   // failed. Never the title, the body, the link, or which phones got it.

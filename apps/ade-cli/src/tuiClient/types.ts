@@ -113,6 +113,7 @@ export type AdeCodeProvider =
     "codex" | "claude" | "muse" | "opencode" | "cursor" | "droid" | "pi" | "qwen" | "kimi" | "grok" | "copilot"
   >
   | "devin"
+  | "antigravity"
   | "ollama"
   | "lmstudio";
 

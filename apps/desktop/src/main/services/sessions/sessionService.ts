@@ -751,6 +751,7 @@ export function createSessionService({
       "grok-chat",
       "copilot-chat",
       "devin-chat",
+      "antigravity-chat",
       "aider",
       "continue",
       "other"
@@ -774,6 +775,7 @@ export function createSessionService({
     if (normalized.startsWith("chat:grok:")) return "grok-chat";
     if (normalized.startsWith("chat:copilot:")) return "copilot-chat";
     if (normalized.startsWith("chat:devin:")) return "devin-chat";
+    if (normalized.startsWith("chat:antigravity:")) return "antigravity-chat";
     if (normalized.startsWith("chat:muse:")) return "muse-chat";
     if (normalized === "chat:codex" || normalized.startsWith("chat:codex:")) return "codex-chat";
     return toolType;

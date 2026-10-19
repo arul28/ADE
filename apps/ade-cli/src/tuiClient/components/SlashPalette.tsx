@@ -57,6 +57,8 @@ const PROVIDER_LABELS: Record<AgentChatProvider, string> = {
   kimi: "Kimi",
   grok: "Grok",
   copilot: "GitHub Copilot",
+  devin: "Devin",
+  antigravity: "Antigravity",
 };
 
 function providerLabel(provider?: AgentChatProvider | null): string {

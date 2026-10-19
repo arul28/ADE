@@ -1,16 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowClockwise, CheckCircle, CopySimple, Play, Terminal, Warning } from "@phosphor-icons/react";
+import { ArrowClockwise, CheckCircle, CopySimple, DownloadSimple, Play, Terminal, Warning } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { ProviderSignInModal } from "../settings/providers/ProviderSignInModal";
 import { acpLoginCommand } from "../settings/providers/acpProviders";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
+import { pinnedToolLine, usePinnedToolStatus } from "../../hooks/usePinnedToolStatus";
 
 export type AgentCliAuthCardInfo = {
   agent: string;
   displayName: string;
   category: "missing" | "unauthenticated";
-  installCommand: string;
   authCommand: string;
 };
 
@@ -186,9 +186,6 @@ export function AgentCliAuthCard({
   const runtimePin = chatScope.pin;
   const chatLaneId = chatScope.laneId ?? laneId ?? null;
   const accent = agentCli.agent === "claude" ? CLAUDE_ACCENT : AMBER_ACCENT;
-  // Retry only makes sense for the logged-out variant (not the "missing CLI"
-  // variant) and only when there's a session to resend the last message into.
-  const canRetry = !missing && Boolean(chatSessionId);
 
   const [loginStarted, setLoginStarted] = useState(false);
   const [signInOpen, setSignInOpen] = useState(false);
@@ -199,6 +196,12 @@ export function AgentCliAuthCard({
   const embeddedSignInCommand = missing ? null : acpLoginCommand(agentCli.agent);
   const [resolved, setResolved] = useState(false);
   const retryResetTimerRef = useRef<number | null>(null);
+  // "Missing" means ADE's pinned copy is not on the chat's machine yet: read
+  // where its download stands there, and offer Download/Retry there.
+  const pinnedTool = usePinnedToolStatus(agentCli.agent, runtimePin, { enabled: missing });
+  // Retry needs a session to resend the last message into, and for the
+  // "missing" variant a copy that has landed on the chat's machine.
+  const canRetry = Boolean(chatSessionId) && (!missing || pinnedTool.status?.state === "ready");
 
   useEffect(() => () => {
     if (retryResetTimerRef.current != null) {
@@ -272,11 +275,14 @@ export function AgentCliAuthCard({
   // once a chat's machine can change underneath it.
   const installLocation = runtimeName?.trim() ? runtimeName.trim() : "This computer";
   const title = missing
-    ? `${agentCli.displayName} is not installed`
+    ? `${agentCli.displayName} is not on ${installLocation} yet`
     : `${agentCli.displayName} is logged out`;
   const body = missing
-    ? `Install the CLI on ${installLocation}, authenticate it, then retry the chat.`
+    ? `ADE runs its own copy of ${agentCli.displayName} and downloads it for ${installLocation}. Once it is there, sign in if needed and retry the chat.`
     : `Log back in on ${installLocation} to continue this chat.`;
+  const pinnedLine = missing && pinnedTool.status
+    ? pinnedToolLine(pinnedTool.status, { machineName: installLocation })
+    : null;
 
   return (
     <div className={cn("mt-3 overflow-hidden rounded-[calc(var(--chat-radius-card)-6px)] border", accent.cardBorder, accent.cardBg)}>
@@ -292,31 +298,53 @@ export function AgentCliAuthCard({
             {body}
           </div>
           <div className="mt-3 grid gap-2">
-            {missing ? (
+            {pinnedLine && pinnedTool.status ? (
               <div className="grid gap-1.5">
                 <div className={cn("font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em]", accent.label)}>
-                  Install
+                  Download
                 </div>
                 <div className="flex flex-wrap items-center gap-2 rounded-lg border border-fg/[0.06] bg-black/20 px-2.5 py-2">
-                  <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/78">
-                    {agentCli.installCommand}
-                  </code>
-                  <ShellRunButton
-                    command={agentCli.installCommand}
-                    label="Run install"
-                    laneId={chatLaneId}
-                    chatSessionId={chatSessionId}
-                    accent={accent}
-                    onRevealTerminal={onRevealTerminal}
-                  />
-                  <CommandCopyButton command={agentCli.installCommand} label="Copy install" />
+                  <span
+                    className={cn(
+                      "min-w-0 flex-1 text-[length:calc(var(--chat-font-size)*11/14)]",
+                      pinnedLine.tone === "error" ? "text-red-200/80" : "text-fg/78",
+                    )}
+                  >
+                    {pinnedLine.text}
+                  </span>
+                  {pinnedLine.action ? (
+                    <button
+                      type="button"
+                      onClick={() => void pinnedTool.download()}
+                      disabled={pinnedTool.starting}
+                      className={cn(
+                        "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.14em] transition-colors disabled:pointer-events-none disabled:opacity-45",
+                        accent.runButton,
+                      )}
+                    >
+                      <DownloadSimple size={12} weight="bold" aria-hidden />
+                      {pinnedTool.starting ? "Starting" : pinnedLine.action === "retry" ? "Retry" : "Download"}
+                    </button>
+                  ) : null}
                 </div>
+                {pinnedTool.error ? (
+                  <div className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] text-red-200/70">
+                    {pinnedTool.error}
+                  </div>
+                ) : null}
               </div>
             ) : null}
             <div className={cn("grid gap-1.5", missing ? "" : "mt-0")}>
               <div className={cn("font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em]", accent.label)}>
                 Authenticate
               </div>
+              {!agentCli.authCommand ? (
+                // An agent with no terminal login (Antigravity): ADE signs it in
+                // from Settings, on the machine that runs this chat.
+                <div className="rounded-lg border border-fg/[0.06] bg-black/20 px-2.5 py-2 text-[length:calc(var(--chat-font-size)*11/14)] text-fg/78">
+                  Sign in from Settings &gt; Providers &gt; {agentCli.displayName} on {installLocation}, then retry this turn.
+                </div>
+              ) : (
               <div className="flex flex-wrap items-center gap-2 rounded-lg border border-fg/[0.06] bg-black/20 px-2.5 py-2">
                 <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/78">
                   {agentCli.authCommand}
@@ -353,6 +381,7 @@ export function AgentCliAuthCard({
                 )}
                 <CommandCopyButton command={agentCli.authCommand} label="Copy auth" />
               </div>
+              )}
             </div>
             {canRetry ? (
               <div className="flex items-center justify-end gap-2">

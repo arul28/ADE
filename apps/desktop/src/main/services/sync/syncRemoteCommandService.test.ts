@@ -71,7 +71,6 @@ function createMockPrService() {
     getComments: vi.fn().mockResolvedValue([]),
     getFiles: vi.fn().mockResolvedValue([]),
     createFromLane: vi.fn().mockResolvedValue({ prId: "pr-1" }),
-    draftDescription: vi.fn().mockResolvedValue({ title: "Draft title", body: "Draft body" }),
     land: vi.fn().mockResolvedValue({ ok: true }),
     closePr: vi.fn().mockResolvedValue(undefined),
     reopenPr: vi.fn().mockResolvedValue(undefined),
@@ -153,7 +152,6 @@ function createMockGitService() {
     discardFile: vi.fn().mockResolvedValue(undefined),
     restoreStagedFile: vi.fn().mockResolvedValue(undefined),
     commit: vi.fn().mockResolvedValue({ sha: "abc123" }),
-    generateCommitMessage: vi.fn().mockResolvedValue({ message: "feat: auto" }),
     listRecentCommits: vi.fn().mockResolvedValue([]),
     listCommitFiles: vi.fn().mockResolvedValue([]),
     getFileHistory: vi.fn().mockResolvedValue([]),
@@ -423,7 +421,6 @@ describe("createSyncRemoteCommandService", () => {
       expect(actions).toContain("lanes.importBranch");
       expect(actions).toContain("prs.list");
       expect(actions).toContain("prs.createFromLane");
-      expect(actions).toContain("prs.draftDescription");
       expect(actions).toContain("prs.rerunChecks");
       expect(actions).toContain("prs.addComment");
       expect(actions).toContain("git.commit");
@@ -936,20 +933,6 @@ describe("createSyncRemoteCommandService", () => {
     it("prs.createFromLane throws when laneId or title is missing", async () => {
       await expect(service.execute(makePayload("prs.createFromLane", { laneId: "lane-1" })))
         .rejects.toThrow("prs.createFromLane requires laneId and title.");
-    });
-
-    it("prs.draftDescription parses laneId and optional model controls", async () => {
-      const result = await service.execute(makePayload("prs.draftDescription", {
-        laneId: "lane-1",
-        model: "gpt-5.4",
-        reasoningEffort: "medium",
-      }));
-      expect(prService.draftDescription).toHaveBeenCalledWith({
-        laneId: "lane-1",
-        model: "gpt-5.4",
-        reasoningEffort: "medium",
-      });
-      expect(result).toEqual({ title: "Draft title", body: "Draft body" });
     });
 
     it("prs.land validates method enum", async () => {

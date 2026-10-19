@@ -1,5 +1,6 @@
 import type { AgentChatContextUsage, AgentChatEvent } from "../../../shared/types";
 import { asRecord as record, finiteNumberOrNull as number } from "../shared/utils";
+import { copilotUpdateRequiredMessage } from "./copilotSdkPool";
 
 function text(value: unknown): string | null {
   return typeof value === "string" && value.length ? value : null;
@@ -235,7 +236,8 @@ export function mapCopilotSdkEvent(event: unknown, args: { turnId: string; state
       return [{ type: "system_notice", noticeKind: "warning", severity: "warning", message, turnId }];
     }
     case "session.error": {
-      const message = text(data.message) ?? "Copilot reported a runtime error.";
+      // An organisation policy that needs a newer Copilot gets precise words.
+      const message = copilotUpdateRequiredMessage(data) ?? text(data.message) ?? "Copilot reported a runtime error.";
       const remediation = COPILOT_REMEDIATIONS[text(data.remediation) ?? ""] ?? null;
       const detail = [remediation, text(data.url)].filter(Boolean).join("\n");
       const error: Extract<AgentChatEvent, { type: "error" }> = {

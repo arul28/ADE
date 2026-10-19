@@ -31,6 +31,7 @@ import {
   type PiSdkWorkerRequest,
 } from "./piSdkProtocol";
 import { buildPiWorkerEnvironment, type PiWorkerActivityScope } from "./piSdkEnvironment";
+import { pinnedToolSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
 import { startSdkWorker } from "./sdkWorkerProcess";
 
 export type PiSdkBridge = {
@@ -326,7 +327,9 @@ function createPiSdkConnection(args: AcquirePiSdkConnectionArgs): Promise<PiSdkP
     // Enforce the Pi environment boundary at the process boundary as well as
     // at production call sites. Tests and future inventory callers cannot
     // accidentally inherit ADE capability/session variables.
-    env: buildPiWorkerEnvironment(args.baseEnv ?? process.env, args.agentDir, args.activityScope),
+    // ADE's pinned Pi never checks for its own update; the worker's env is an
+    // allowlist, so the switch is added after it.
+    env: { ...buildPiWorkerEnvironment(args.baseEnv ?? process.env, args.agentDir, args.activityScope), ...pinnedToolSelfUpdateEnv("pi") },
   });
   const pending = new Map<string, PendingRpc>();
   let disposeTimer: NodeJS.Timeout | null = null;

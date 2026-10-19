@@ -87,7 +87,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     ],
     write: [
       "abortRebase", "checkoutBranch", "cherryPickCommit", "commit", "continueRebase",
-      "createTag", "discardFile", "fetch", "generateCommitMessage", "mergeAbort",
+      "createTag", "discardFile", "fetch", "mergeAbort",
       "mergeContinue", "pull", "push", "rebaseAbort", "rebaseContinue", "redoLastHeadChange",
       "resetToCommit", "restoreStagedFile", "revertCommit", "stageAll", "stageFile",
       "stagePaths", "stash", "stashApply", "stashClear", "stashDrop", "stashPop", "stashPush",
@@ -135,7 +135,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "closePr", "commitIntegration", "createFromLane", "createLaneFromPrBranch",
       "createIntegrationLane", "createIntegrationLaneForProposal", "createIntegrationPr",
       "createGithubStack", "delete", "deleteIntegrationProposal", "dismissIntegrationCleanup",
-      "draftDescription", "ingestGithubWebhook", "land", "linkToLane", "postReviewComment",
+      "ingestGithubWebhook", "land", "linkToLane", "postReviewComment",
       "reactToComment", "recheckIntegrationStep", "refresh", "addGithubStackPullRequests",
       "requestReviewers", "resolveReviewThread", "retargetBase", "reopenPr", "setDraft",
       "setAutoMerge", "replyToReviewThread", "rerunChecks", "regenerateAiSummary", "setLabels",
@@ -208,7 +208,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
   },
   ai: {
     read: [
-      "getStatus", "getOpenCodeRuntimeDiagnostics", "isOpenCodeInstalled", "museBinaryStatus", "listApiCredentials",
+      "getStatus", "getOpenCodeRuntimeDiagnostics", "isOpenCodeInstalled", "museBinaryStatus", "pinnedToolStatus", "antigravitySignInStatus", "listApiCredentials",
       "getApiCredential", "listApiKeys", "opencodeAuthMethods", "opencodeAccounts", "listHarnessRoutes",
       "piLoginProviders", "cursorAuthStatus", "listCursorCloudRepositories",
       "listCursorCloudAgents", "listCursorCloudRuns", "getCursorCloudLaneSecretNames",
@@ -216,8 +216,9 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "listCloudAgents",
     ],
     write: [
-      "getCursorAgentUsage", "ensureMuseBinary", "museSettings", "museSettingsClose",
-      "acpProviderDiagnostics", "acpProviderUpdate", "storeApiCredential", "removeApiCredential",
+      "getCursorAgentUsage", "ensureMuseBinary", "pinnedToolDownload", "antigravitySignInStart", "antigravitySignInComplete",
+      "antigravitySignInCancel", "museSettings", "museSettingsClose",
+      "acpProviderDiagnostics", "storeApiCredential", "removeApiCredential",
       "verifyApiKeyConnection", "storeApiKey", "deleteApiKey", "updateConfig",
       "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey",
       "clearOpencodeProviderKey", "opencodeAccountActivate", "opencodeAccountRename",

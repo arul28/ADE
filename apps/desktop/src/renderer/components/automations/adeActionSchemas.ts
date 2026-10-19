@@ -285,13 +285,6 @@ export const ADE_ACTION_SCHEMAS: readonly AdeActionSchema[] = [
   },
   {
     domain: "git",
-    action: "generateCommitMessage",
-    label: "Generate commit message",
-    description: "Use AI to draft a commit message from the lane's currently staged changes.",
-    params: [LANE_ID_PARAM, { name: "amend", type: "boolean" }],
-  },
-  {
-    domain: "git",
     action: "getCommitMessage",
     label: "Get commit message",
     description: "Read the full commit message for a specific commit.",

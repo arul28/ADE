@@ -49,7 +49,7 @@ detached").
 
 **"Run the dev loop"** — when the user says this (or "dev loop") after work is implemented, it names one task, not a suggestion: invoke `/quality`, then `/test`, then `/ship`, in that order. Actually invoke each skill — approximating one (running tests is not `/test`; green CI is not `/quality`) does not count. Print each skill's summary, then continue to the next without stopping; stop early only for a genuine blocker (a failing gate or a decision only the user can make) and name it.
 
-Utilities (run when relevant, not part of the core loop): **/audit** (targeted bug hunt), **/finalize** (optional pre-push local-CI gate), **/optimize** (perf profiling), **/release** (cut a release).
+Utilities (run when relevant, not part of the core loop): **/audit** (targeted bug hunt), **/finalize** (optional pre-push local-CI gate), **/optimize** (perf profiling), **/release** (cut a release), **/update-providers** (research a provider version bump on its Dependabot or pin PR; changes no code).
 
 ### Performance budget
 

@@ -53,6 +53,8 @@ import {
 } from "./discoveryUtils";
 import { pathsEqual } from "../shared/pathCompare";
 import { resolveCliSpawnInvocation } from "../shared/processExecution";
+import { resolveDroidExecutable } from "../ai/droidExecutable";
+import { providerSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import {
   liveChatProviderRefsFromPersistedState,
@@ -516,17 +518,19 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     if (droidForkProbePromise) return droidForkProbePromise;
     droidForkProbePromise = new Promise((resolve) => {
       const env = args.env ?? process.env;
-      // `npm i -g @factory-ai/factory` installs `%APPDATA%\npm\droid.cmd` on
-      // Windows, and Node has refused to spawn a `.cmd`/`.bat` without a shell
-      // since CVE-2024-27980 — a bare `execFile("droid", …)` throws
-      // `spawn EINVAL` before the CLI ever runs. Same install is a directly
-      // executable script on macOS, so this only breaks on Windows. Routed
-      // through the shared helper, which shims those targets through cmd.exe
-      // and leaves a real `.exe` alone (discoverOpenCode does the same).
+      // ADE's pinned Droid (a native `droid[.exe]`), the one a forked chat
+      // would run; never a `droid` from the PATH. Not downloaded yet means
+      // the answer is unknown, and the next caller probes again.
+      const droid = resolveDroidExecutable({ env });
+      if (droid.source === "fallback-command") {
+        droidForkProbePromise = null;
+        resolve(null);
+        return;
+      }
       const invocation = resolveCliSpawnInvocation(
-        "droid",
+        droid.path,
         ["--help"],
-        env,
+        { ...env, ...providerSelfUpdateEnv("droid") },
       );
       execFile(invocation.command, invocation.args, {
         timeout: 1500,

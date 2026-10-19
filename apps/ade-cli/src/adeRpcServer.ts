@@ -32,6 +32,10 @@ import {
 } from "../../desktop/src/main/services/externalSessions/sessionHome";
 import { REMOTE_RUNTIME_EVENT_CATEGORIES } from "../../desktop/src/shared/types/remoteRuntime";
 import { createCtoOperatorTools } from "../../desktop/src/main/services/ai/tools/ctoOperatorTools";
+import { resolveClaudeCodeExecutable } from "../../desktop/src/main/services/ai/claudeCodeExecutable";
+import { resolveCodexExecutable } from "../../desktop/src/main/services/ai/codexExecutable";
+import { requirePinnedProviderExecutable } from "../../desktop/src/main/services/ai/pinnedProviderTools";
+import { CODEX_NO_UPDATE_CHECK_ARGS, providerSelfUpdateEnv } from "../../desktop/src/shared/pinnedToolSpawnEnv";
 import {
   createComputerUseArtifactPath,
   createComputerUseScratchPath,
@@ -321,31 +325,6 @@ const DEFAULT_PTY_COLS = 120;
 const DEFAULT_PTY_ROWS = 36;
 
 const RESOURCE_MIME_JSON = "application/json";
-
-function resolveExecutableOnPath(command: string, env: NodeJS.ProcessEnv = process.env): string | null {
-  const trimmed = command.trim();
-  if (!trimmed) return null;
-  const lookup = process.platform === "win32"
-    ? { command: "where.exe", args: [trimmed] }
-    // `-l` lets a user's shell profile replace PATH (notably on macOS, where
-    // zsh can restore Homebrew's PATH ahead of a lane-provided executable).
-    // Resolution must honor the environment we pass to the PTY, so use a
-    // non-login shell and let the caller supply the already-resolved PATH.
-    : { command: env.SHELL?.trim() || "/bin/sh", args: ["-c", `command -v ${shellEscapeArg(trimmed)}`] };
-  const result = spawnSync(lookup.command, lookup.args, {
-    encoding: "utf8",
-    env,
-    stdio: ["ignore", "pipe", "ignore"],
-    windowsHide: true,
-  });
-  if (result.status !== 0 || typeof result.stdout !== "string") return null;
-  const first = result.stdout
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .find(Boolean);
-  if (!first) return null;
-  return path.isAbsolute(first) ? first : null;
-}
 
 const TOOL_SPECS: ToolSpec[] = [
   {
@@ -1033,27 +1012,16 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "commit_changes",
-    description: "Stage and commit lane changes. If message is omitted, ADE generates one with the configured Commit Messages model.",
+    description: "Stage and commit lane changes with the given commit message.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
+      required: ["message"],
       properties: {
         laneId: { type: "string", minLength: 1 },
         message: { type: "string", minLength: 1 },
         amend: { type: "boolean", default: false },
         stageAll: { type: "boolean", default: true }
-      }
-    }
-  },
-  {
-    name: "generate_commit_message",
-    description: "Generate a commit message for a lane using ADE's Commit Messages model settings.",
-    inputSchema: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        laneId: { type: "string", minLength: 1 },
-        amend: { type: "boolean", default: false }
       }
     }
   },
@@ -1620,7 +1588,6 @@ const READ_ONLY_TOOLS = new Set([
   "git_list_branches",
   "git_get_user_identity",
   "prs_list_open",
-  "generate_commit_message",
   "list_stashes",
   "simulate_integration",
   "get_pr_health",
@@ -7742,18 +7709,13 @@ async function runTool(args: {
     const laneId = requireLaneIdForTool(runtime, session, toolArgs, "commit_changes");
     const amend = asBoolean(toolArgs.amend, false);
     const stageAll = asBoolean(toolArgs.stageAll, true);
+    const message = asOptionalTrimmedString(toolArgs.message);
+    if (!message) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "commit_changes requires a commit message.");
+    }
 
     if (stageAll) {
       await runtime.gitService.stageAll({ laneId, paths: [] });
-    }
-
-    const explicitMessage = asOptionalTrimmedString(toolArgs.message);
-    const generated = explicitMessage
-      ? null
-      : await runtime.gitService.generateCommitMessage({ laneId, amend });
-    const message = explicitMessage ?? generated?.message ?? "";
-    if (!message.trim().length) {
-      throw new JsonRpcError(JsonRpcErrorCode.toolFailed, "Commit message is empty after generation.");
     }
 
     const action = await runtime.gitService.commit({ laneId, message, amend });
@@ -7763,19 +7725,6 @@ async function runTool(args: {
       action,
       commit: latest[0] ?? null,
       message,
-      messageSource: explicitMessage ? "provided" : "generated",
-      ...(generated?.model ? { generatedByModel: generated.model } : {})
-    };
-  }
-
-  if (name === "generate_commit_message") {
-    const laneId = requireLaneIdForTool(runtime, session, toolArgs, "generate_commit_message");
-    const amend = asBoolean(toolArgs.amend, false);
-    const result = await runtime.gitService.generateCommitMessage({ laneId, amend });
-    return {
-      laneId,
-      amend,
-      ...result,
     };
   }
 
@@ -8143,7 +8092,8 @@ async function runTool(args: {
     }
     const finalPrompt = promptSegments.join("\n").trim();
 
-    const commandArgs: string[] = [];
+    // ADE's pinned Codex never checks for its own update; the preview stays short.
+    const commandArgs: string[] = provider === "codex" ? [...CODEX_NO_UPDATE_CHECK_ARGS] : [];
     const commandPreviewParts: string[] = [provider];
     if (model) {
       commandArgs.push("--model", model);
@@ -8217,7 +8167,11 @@ async function runTool(args: {
     const startupCommand = startupEnvPrefixParts.length > 0
       ? `${startupEnvPrefixParts.join(" ")} ${commandPreviewParts.join(" ")}`
       : commandPreviewParts.join(" ");
-    const providerExecutable = resolveExecutableOnPath(provider);
+    // ADE's pinned copy (downloaded first if this machine never used it),
+    // never a `claude`/`codex` from the PATH.
+    const providerExecutable = (await requirePinnedProviderExecutable(provider, () =>
+      provider === "claude" ? resolveClaudeCodeExecutable() : resolveCodexExecutable())).path;
+    Object.assign(workerEnv, providerSelfUpdateEnv(provider));
 
     const created = await runtime.ptyService.create({
       laneId,
@@ -8226,7 +8180,8 @@ async function runTool(args: {
       title,
       tracked: true,
       toolType: `${provider}-orchestrated`,
-      ...(providerExecutable ? { command: providerExecutable, args: commandArgs } : {}),
+      command: providerExecutable,
+      args: commandArgs,
       env: workerEnv,
       startupCommand
     });

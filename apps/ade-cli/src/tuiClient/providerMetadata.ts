@@ -17,6 +17,7 @@ const TUI_PROVIDER_LABELS: Record<AdeCodeProvider, string> = {
   kimi: "Kimi",
   qwen: "Qwen",
   devin: "Devin",
+  antigravity: "Antigravity",
   ollama: "Ollama",
   lmstudio: "LM Studio",
 };
@@ -39,6 +40,7 @@ const PROVIDER_FAMILY_LABELS: Record<AdeCodeProvider, string> = {
   grok: "xAI",
   copilot: "GitHub Copilot",
   devin: "Devin",
+  antigravity: "Google",
   ollama: "Ollama",
   lmstudio: "LM Studio",
 };
@@ -65,6 +67,7 @@ export const PROVIDER_TOKEN_LABELS: Record<string, string> = {
   factory: "Droid",
   cursor: "Cursor",
   devin: "Devin",
+  antigravity: "Antigravity",
   qwen: "Qwen",
   copilot: "GitHub Copilot",
   githubcopilot: "GitHub Copilot",
@@ -151,6 +154,7 @@ const REFRESH_PROVIDERS: Record<AdeCodeProvider, AgentChatModelCatalogRefreshPro
   grok: "grok",
   copilot: "copilot",
   devin: "devin",
+  antigravity: "antigravity",
   ollama: "ollama",
   lmstudio: "lmstudio",
 };

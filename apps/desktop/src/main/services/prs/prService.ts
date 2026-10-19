@@ -23,7 +23,6 @@ import type {
   DeleteIntegrationProposalArgs,
   DeleteIntegrationProposalResult,
   DismissIntegrationCleanupArgs,
-  DraftPrDescriptionArgs,
   DeletePrArgs,
   DeletePrResult,
   GitHubStatus,
@@ -156,7 +155,7 @@ import type { createRebaseSuggestionService } from "../lanes/rebaseSuggestionSer
 import type { createOperationService } from "../history/operationService";
 import type { createGithubService } from "../github/githubService";
 import type { createProjectConfigService } from "../config/projectConfigService";
-import { missingFeatureModelMessage, readConfiguredFeatureModel, type createAiIntegrationService } from "../ai/aiIntegrationService";
+import { readConfiguredFeatureModel, type createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createConflictService } from "../conflicts/conflictService";
 import type { createAgentChatService } from "../chat/agentChatService";
 import type { LaneWorktreeLockService } from "../lanes/laneWorktreeLockService";
@@ -167,7 +166,6 @@ import { parseSyntheticGithubPrId, syntheticGithubPrId } from "../../../shared/t
 import { COMMIT_STATUS_APP_SLUG, rollupChecks, rollupPrChecks } from "../../../shared/prChecksRollup";
 import { describeAutoMergeFailure } from "../../../shared/prAutoMerge";
 import { classifyPrAuthor } from "../../../shared/prBotIdentity";
-import { PR_BRIEF_HEADINGS, PR_BRIEF_PLACEHOLDERS } from "../../../shared/prBrief";
 import { isChatToolType } from "../../../shared/sessionSpawnNesting";
 import { resolvePrNextStepFromStatus } from "../../../shared/prNextStep";
 import type { ChecksRollup, ChecksRollupCheckRun, ChecksRollupCommitStatus } from "../../../shared/prChecksRollup";
@@ -223,7 +221,6 @@ import {
 } from "./laneBranchHistoryOwnership";
 import { normalizePrCreationStrategy, resolvePrRebaseMode } from "../../../shared/prStrategy";
 import {
-  buildLinearPrTitle,
   dedupeLinearPrIssueReferences,
   ensureLinearPrIssueLinkSection,
   ensureLinearPrReferences,
@@ -1375,18 +1372,6 @@ function repoRefKey(repo: GitHubRepoRef | null | undefined): string | null {
   return owner && name ? `${owner}/${name}` : null;
 }
 
-function readPrTemplate(projectRoot: string): string | null {
-  const templatePath = path.join(projectRoot, ".github", "PULL_REQUEST_TEMPLATE.md");
-  if (!fs.existsSync(templatePath)) return null;
-  try {
-    const raw = fs.readFileSync(templatePath, "utf8");
-    return raw.trim().length ? raw : null;
-  } catch {
-    return null;
-  }
-}
-
-
 function normalizePrDetailBody(body: string | null | undefined): string | null {
   if (typeof body !== "string") return null;
   const trimmed = body.trim();
@@ -1399,21 +1384,6 @@ function normalizePrDetail(detail: PrDetail | null): PrDetail | null {
   const body = normalizePrDetailBody(detail.body);
   if (body === detail.body) return detail;
   return { ...detail, body };
-}
-
-function parsePrDraftJson(text: string): { title: string; body: string } | null {
-  const candidate = extractFirstJsonObject(text);
-  if (!candidate) return null;
-  try {
-    const parsed = JSON.parse(candidate);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-    const title = asString((parsed as Record<string, unknown>).title).trim();
-    const body = normalizePrDetailBody(asString((parsed as Record<string, unknown>).body).trim());
-    if (!title.length || !body) return null;
-    return { title, body: `${body}\n` };
-  } catch {
-    return null;
-  }
 }
 
 function parseDiffStatOutput(stdout: string): IntegrationProposalStep["diffStat"] {
@@ -7417,173 +7387,6 @@ export function createPrService({
     };
   };
 
-  /** The parts of a drafted description: the Brief's, without the optional one. */
-  const PR_BRIEF_DRAFT_HEADINGS = [
-    PR_BRIEF_HEADINGS.why,
-    PR_BRIEF_HEADINGS.changed,
-    PR_BRIEF_HEADINGS.evidence,
-    PR_BRIEF_HEADINGS.not_checked,
-  ];
-
-  const draftDescription = async (args: DraftPrDescriptionArgs): Promise<{ title: string; body: string }> => {
-    const { laneId, reasoningEffort } = args;
-    const lane = (await laneService.list({ includeArchived: true })).find((entry) => entry.id === laneId);
-    if (!lane) throw new Error(`Lane not found: ${laneId}`);
-
-    const baseRefForDiff = (args.baseBranch && args.baseBranch.trim().length > 0)
-      ? args.baseBranch.trim()
-      : lane.baseRef;
-
-    const template = readPrTemplate(projectRoot);
-    const packBody = await (async () => {
-      // W6: pack-based context removed. Provide a bounded git-native lane change summary instead.
-      const diff = await runGit(
-        ["diff", "--name-status", `${baseRefForDiff}...HEAD`],
-        { cwd: lane.worktreePath, timeoutMs: 15_000 }
-      );
-      if (diff.exitCode === 0) {
-        return diff.stdout.trim() || "(no changed files)";
-      }
-      const status = await runGit(["status", "--short"], { cwd: lane.worktreePath, timeoutMs: 15_000 });
-      return status.exitCode === 0 ? status.stdout.trim() || "(no changed files)" : "(unable to compute lane change summary)";
-    })();
-
-    const commits = await runGit(
-      ["log", "-n20", "--date=iso-strict", "--pretty=format:%h %aI %an %s"],
-      { cwd: lane.worktreePath, timeoutMs: 15_000 }
-    ).then((res) => (res.exitCode === 0 ? res.stdout.trim().split("\n").filter(Boolean) : []));
-
-    const context = {
-      laneId,
-      laneName: lane.name,
-      branchRef: lane.branchRef,
-      baseRef: baseRefForDiff,
-      parentLaneId: lane.parentLaneId,
-      linearIssue: lane.linearIssue,
-      linearIssueLinks: lane.linearIssueLinks ?? [],
-      commits,
-      packBody,
-      prTemplate: template
-    };
-
-    const providerMode = projectConfigService.get().effective.providerMode ?? "guest";
-    const configuredModel = readConfiguredFeatureModel(
-      projectConfigService.get().effective.ai,
-      "pr_descriptions",
-    );
-    const model = (args.model?.trim() || configuredModel) || undefined;
-    const defaultTitle = lane.linearIssue
-      ? buildLinearPrTitle(lane.linearIssue)
-      : lane.name.replace(/[-_/]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()).trim() || lane.name;
-    const closeLinearIssueOnMerge = args.closeLinearIssueOnMerge !== false;
-    const finalizeDraft = (draft: { title: string; body: string }): { title: string; body: string } => {
-      const linearRefs = collectLinearPrIssueReferences(lane, closeLinearIssueOnMerge);
-      const githubRefs = collectGitHubPrIssueReferencesForLaneSessions(lane.id);
-      const jiraKeys = collectJiraIssueKeysForLaneSessions(lane.id);
-      if (!linearRefs.length && !githubRefs.length && !jiraKeys.length) return draft;
-      const body = applyIssuePrLinkage(draft.body, lane, closeLinearIssueOnMerge);
-      if (!lane.linearIssue) return { title: draft.title, body };
-      const escapedIdentifier = lane.linearIssue.identifier.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const hasExactIdentifier = new RegExp(`(^|[^A-Za-z0-9])${escapedIdentifier}([^A-Za-z0-9]|$)`, "i").test(draft.title);
-      return {
-        title: hasExactIdentifier ? draft.title : defaultTitle,
-        body,
-      };
-    };
-
-    // Explicit AI-draft callers set requireAi. If the caller already has a live
-    // runtime, the coarse stored providerMode — which stays "guest" until the user
-    // enables subscription mode in Settings -> AI Connections, and is NOT derived
-    // from active CLI auth — must NOT gate it. We attempt the real AI path using
-    // the requested model and let aiIntegrationService.executeTask perform the
-    // authoritative auth/runtime detection.
-    if (args.requireAi && !aiIntegrationService) {
-      throw new Error(
-        "AI drafting is unavailable in this mode — open this lane in the desktop app to draft with AI.",
-      );
-    }
-
-    if (args.requireAi && !model) {
-      throw new Error(missingFeatureModelMessage("pr_descriptions"));
-    }
-
-    if (aiIntegrationService && model && (providerMode !== "guest" || args.requireAi)) {
-      const prompt = [
-        "You are ADE's PR drafting assistant. Keep content factual and concise.",
-        "Return JSON only with shape: {\"title\": string, \"body\": string}.",
-        `The body must be GitHub-flavored markdown with these sections, in this order: ${PR_BRIEF_DRAFT_HEADINGS.join(", ")}.`,
-        "Write for a person who has two minutes and did not see the work. Use plain words. Explain a technical term in the sentence where it first appears. Keep file and function names out of Why and What changed.",
-        "Evidence says how the change was checked and what was seen; write only what the context shows, and never invent a test run. Not checked says what was not checked.",
-        "If Linear issue context is present, include the primary Linear issue identifier in the title and include Linear references in the body.",
-        "",
-        "PR Context JSON:",
-        JSON.stringify(context, null, 2)
-      ].join("\n");
-
-      try {
-        const draft = await aiIntegrationService.draftPrDescription({
-          laneId,
-          cwd: lane.worktreePath,
-          prompt,
-          model,
-          ...(reasoningEffort ? { reasoningEffort } : {})
-        });
-        const parsed = parsePrDraftJson(draft.text);
-        if (parsed) return finalizeDraft(parsed);
-
-        if (draft.text.trim().length) {
-          return finalizeDraft({
-            title: defaultTitle,
-            body: `${draft.text.trim()}\n`
-          });
-        }
-
-        // requireAi promises a real AI draft, never a stub template — so an empty
-        // (but non-throwing) model response is itself a failure to surface. The
-        // catch below adds the "AI draft failed:" prefix.
-        if (args.requireAi) {
-          throw new Error("the model returned an empty response.");
-        }
-      } catch (error) {
-        logger.warn("prs.draft.ai_failed", {
-          laneId,
-          error: error instanceof Error ? error.message : String(error)
-        });
-        if (args.requireAi) {
-          throw new Error(`AI draft failed: ${error instanceof Error ? error.message : String(error)}`);
-        }
-      }
-    }
-
-    // Guest/CLI fallback: deterministic content.
-    const lines: string[] = [];
-    lines.push(`## ${PR_BRIEF_HEADINGS.why}`);
-    lines.push("");
-    lines.push(PR_BRIEF_PLACEHOLDERS.why);
-    lines.push("");
-    lines.push(`## ${PR_BRIEF_HEADINGS.changed}`);
-    lines.push("");
-    lines.push(PR_BRIEF_PLACEHOLDERS.changed);
-    lines.push("");
-    lines.push(`## ${PR_BRIEF_HEADINGS.evidence}`);
-    lines.push("");
-    lines.push(PR_BRIEF_PLACEHOLDERS.evidence);
-    lines.push("");
-    lines.push(`## ${PR_BRIEF_HEADINGS.not_checked}`);
-    lines.push("");
-    lines.push(PR_BRIEF_PLACEHOLDERS.not_checked);
-    if (template) {
-      lines.push("");
-      lines.push("---");
-      lines.push("");
-      lines.push(template);
-    }
-    return finalizeDraft({
-      title: defaultTitle || lane.name,
-      body: `${lines.join("\n")}\n`
-    });
-  };
-
   /**
    * A plain `git switch` inside a lane's worktree leaves ADE's record on the
    * old branch. Opening a PR from that record pushes the new branch (a bare
@@ -12552,9 +12355,6 @@ export function createPrService({
       return await deletePr(args);
     },
 
-    async draftDescription(args: DraftPrDescriptionArgs): Promise<{ title: string; body: string }> {
-      return await draftDescription(args);
-    },
 
     async land(args: LandPrArgs): Promise<LandResult> {
       return await land(args);
@@ -13643,7 +13443,7 @@ export function createPrService({
 
       const configuredModel = readConfiguredFeatureModel(
         projectConfigService.get().effective.ai,
-        "pr_descriptions",
+        "terminal_summaries",
       );
       const model = (args.model?.trim() || configuredModel) || undefined;
 
@@ -13668,8 +13468,7 @@ export function createPrService({
         ].join("\n");
 
         try {
-          const draft = await aiIntegrationService.draftPrDescription({
-            laneId: row.lane_id,
+          const draft = await aiIntegrationService.summarizePullRequest({
             cwd: projectRoot,
             prompt,
             model,

@@ -32,11 +32,10 @@
  *    only when the CLI is installed and nothing else knows. Being silently
  *    wrong about a signed-in user is worse than one bounded process.
  *
- * 3. **A `fallback-command` resolution is not an install.** Those resolvers end
- *    with a bare command name (`"claude"`) so a spawn can still try PATH. That
- *    is a hope, not a finding, so this module downgrades it to
- *    `installed: false` unless a real PATH lookup (PATHEXT-aware on win32)
- *    confirms a file.
+ * 3. **Only ADE's own copy is an install.** The resolvers return ADE's pinned
+ *    copy or nothing; a CLI the user installed on the PATH is never promoted
+ *    to `installed`, because nothing would spawn it. A miss carries the tools
+ *    cache's reason (downloading, failed, not available here) in `detail`.
  *
  * Results are cached per provider for {@link PROVIDER_STATUS_CACHE_TTL_MS};
  * `refresh: true` bypasses the cache, which is what an embedder's "I just
@@ -53,6 +52,7 @@
 
 import fs from "node:fs";
 import { resolveExecutableFromKnownLocations } from "./cliExecutableResolver";
+import { providerSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
 import {
   REMEDIATION_PROVIDERS,
   resolveProviderRemediation,
@@ -236,11 +236,13 @@ async function withDeadline<T>(work: Promise<T>, deadlineMs: number, fallback: T
 
 async function probeOne(
   provider: ShippedProvider,
-  context: ProbeContext,
+  baseContext: ProbeContext,
   now: () => number,
   resolvers: Record<ShippedProvider, ProviderBinaryResolver>,
   auth: Record<ShippedProvider, ProviderAuthResolver>,
 ): Promise<ProviderStatusRecord> {
+  // Every spawn below runs ADE's pinned copy, which must not update itself.
+  const context: ProbeContext = { ...baseContext, env: { ...baseContext.env, ...providerSelfUpdateEnv(provider) } };
   const checkedAt = new Date(now()).toISOString();
   const base = emptyRecord(provider, context.platform, checkedAt, null);
 
@@ -256,19 +258,8 @@ async function probeOne(
     };
   }
 
-  let binaryPath = resolved.path;
+  const binaryPath = resolved.path;
   let detail = resolved.detail ?? null;
-
-  // A bare command name is the resolvers' last resort, not a finding. Only a
-  // real PATH lookup promotes it to an install.
-  if (!binaryPath && resolved.requiresPathConfirmation && resolved.command) {
-    const found = context.findOnPath(resolved.command, context.env);
-    if (found) {
-      binaryPath = found;
-    } else {
-      detail = joinDetails(detail, PROVIDER_STATUS_DETAILS.notOnPath(resolved.command));
-    }
-  }
 
   const installed = binaryPath != null
     && (resolved.installedWithoutBinary === true || isExecutableFile(binaryPath, context));

@@ -1,19 +1,25 @@
 /**
- * The four providers ADE reaches over the Agent Client Protocol.
+ * The providers ADE reaches over the Agent Client Protocol.
  *
  * They share a host, so they share almost everything here: one status reader,
  * one facts builder, one auth-actions component. What differs per provider is
  * data — the label, the login command, the config-home env var, and the one
  * honest-degradation note Kimi needs — so it lives in a table rather than in
  * four near-identical descriptors.
+ *
+ * ADE runs its own pinned copy of each CLI, downloaded for the machine that
+ * runs it, and picks its version; the page's pinned-tool row shows that copy
+ * and its Download/Retry. Sign-in stays the vendor's own, in its own config
+ * home.
  */
 import React from "react";
 import { FolderSimple, Key, Terminal, Warning, Wrench } from "@phosphor-icons/react";
 import { COLORS, MONO_FONT, SANS_FONT, outlineButton } from "../../lanes/laneDesignTokens";
 import { ProviderLogo } from "../../shared/ProviderLogos";
 import { listModelDescriptorsForProvider, providerTierIsPreview } from "../../../../shared/modelRegistry";
-import { ACP_PROVIDER_METADATA, acpInstallDisplayCommand } from "../../../../shared/acpProviderMetadata";
-import { CopyableCommand, SubsectionTitle } from "./providerUi";
+import { ACP_PROVIDER_METADATA } from "../../../../shared/acpProviderMetadata";
+import { SubsectionTitle } from "./providerUi";
+import { AntigravitySignIn } from "./bodies/AntigravitySignIn";
 import type {
   AcpSettingsProviderId,
   ProviderDescriptor,
@@ -30,17 +36,18 @@ type AcpProviderSpec = {
   tagline: string;
   /** Family the logo table keys off. */
   logoFamily: string;
-  /** What to run in a terminal to sign in. Also what the embedded modal runs. */
-  loginCommand: string;
-  /** How to install it, per the vendor's own docs. */
-  installCommand: string;
+  /**
+   * What to run in a terminal to sign in. Also what the embedded modal runs.
+   * Null for Antigravity, whose sign-in is ADE's own action (no terminal).
+   */
+  loginCommand: string | null;
   /** Environment variable that names its config directory, when it has one. */
   configHomeEnv: string | null;
   /** Where credentials come from, in one plain sentence. */
   credentialSource: string;
   /**
-   * How to set this CLI up on the machine. ADE reuses the vendor install; it
-   * does not configure these four for you.
+   * How to set this CLI up. ADE downloads and runs its own copy, but sign-in
+   * and the CLI's own configuration stay the vendor's.
    */
   setup: string;
   /** One line about a capability this provider does not have. Rendered plainly. */
@@ -58,20 +65,18 @@ export const ACP_PROVIDER_SPECS: readonly AcpProviderSpec[] = [
   {
     ...ACP_PROVIDER_METADATA.qwen,
     id: "qwen",
-    tagline: "Uses the Qwen Code CLI you already set up.",
+    tagline: "ADE's pinned Qwen Code, with your Qwen configuration.",
     logoFamily: "qwen",
-    installCommand: acpInstallDisplayCommand(ACP_PROVIDER_METADATA.qwen.install),
     credentialSource: "OPENAI_API_KEY (and optional OPENAI_BASE_URL), a custom provider in ~/.qwen/settings.json, or `qwen --auth-type=openai` / `qwen --auth-type=openai-responses`. Recent releases no longer ship the `qwen auth` subcommand.",
-    setup: "Install Qwen Code and configure it in that CLI. ADE does not write ~/.qwen. Point Qwen at DashScope, OpenRouter, or any OpenAI-compatible server (OPENAI_BASE_URL plus a dummy or real key). Models you add with /model show up here after a refresh.",
+    setup: "ADE downloads Qwen Code for this machine. Configure it the way Qwen documents; ADE does not write ~/.qwen. Point Qwen at DashScope, OpenRouter, or any OpenAI-compatible server (OPENAI_BASE_URL plus a dummy or real key). Models you add with /model show up here after a refresh.",
   },
   {
     ...ACP_PROVIDER_METADATA.kimi,
     id: "kimi",
     tagline: "Uses your Moonshot account through the kimi CLI.",
     logoFamily: "kimi",
-    installCommand: acpInstallDisplayCommand(ACP_PROVIDER_METADATA.kimi.install),
     credentialSource: "Signed in through `kimi login`; stored in its config.toml. ADE does not write that file.",
-    setup: "Install Kimi Code and run `kimi login` in a terminal. Use `--region global` for kimi.ai or `--region mainland-cn` for kimi.com. ADE reuses ~/.kimi-code and does not configure Kimi for you. On Windows the binary needs Git for Windows, because Git Bash is its shell.",
+    setup: "ADE downloads Kimi Code for this machine; sign in with `kimi login` (Sign in runs it with ADE's copy). Use `--region global` for kimi.ai or `--region mainland-cn` for kimi.com. ADE reuses ~/.kimi-code and does not configure Kimi for you. On Windows the binary needs Git for Windows, because Git Bash is its shell.",
     // Stated plainly rather than hidden behind a tooltip: Kimi's usage signals
     // are thinner than other providers', and a user who is not told why will
     // read a gap as a bug in ADE.
@@ -82,19 +87,26 @@ export const ACP_PROVIDER_SPECS: readonly AcpProviderSpec[] = [
     id: "grok",
     tagline: "Uses your grok login, or XAI_API_KEY.",
     logoFamily: "xai",
-    installCommand: acpInstallDisplayCommand(ACP_PROVIDER_METADATA.grok.install),
     credentialSource: "Signed in through `grok login` (GROK_HOME/auth.json, default ~/.grok/auth.json), or XAI_API_KEY. ADE does not write Grok's config.",
-    setup: "Install the Grok CLI and run `grok login`, or set XAI_API_KEY. ADE passes GROK_HOME through to the ACP process and defaults to ~/.grok. Permission cards in ADE chats are the ones ADE can honour; Grok's own defaultMode is not the source of truth.",
+    setup: "ADE downloads the Grok CLI for this machine; sign in with `grok login` (Sign in runs it with ADE's copy), or set XAI_API_KEY. ADE passes GROK_HOME through to the ACP process and defaults to ~/.grok. Permission cards in ADE chats are the ones ADE can honour; Grok's own defaultMode is not the source of truth.",
   },
   {
     ...ACP_PROVIDER_METADATA.devin,
     id: "devin",
-    tagline: "Your local Devin CLI.",
+    tagline: "ADE's pinned Devin CLI, with your Devin login.",
     logoFamily: "devin",
-    installCommand: acpInstallDisplayCommand(ACP_PROVIDER_METADATA.devin.install),
     credentialSource: "`devin auth login`, or WINDSURF_API_KEY.",
-    setup: "Install the devin CLI, then run `devin auth login`.",
+    setup: "ADE downloads the Devin CLI for this machine; sign in with `devin auth login` (Sign in runs it with ADE's copy).",
     degradation: "No org Knowledge, Playbooks, or Secrets in local sessions.",
+  },
+  {
+    ...ACP_PROVIDER_METADATA.antigravity,
+    id: "antigravity",
+    tagline: "Google's Antigravity agent, with your Google sign-in.",
+    logoFamily: "antigravity",
+    credentialSource: "Antigravity's own sign-in (Google account or Gemini Enterprise), kept by the agent under ~/.gemini/antigravity-acp (the macOS keychain on a Mac); or a Gemini API key / Agent Platform credentials. Separate from the Antigravity app's and the agy CLI's login.",
+    setup: "ADE downloads Google's Antigravity ACP agent for this machine and signs it in here: pick a method and choose Sign in. ADE does not write ~/.gemini; the agent saves its own login there, shared with other apps that run it.",
+    degradation: "No rewind or edit of earlier turns, and no read-only Plan mode (use Antigravity's /plan). Subagent work shows as tool activity.",
   },
 ];
 
@@ -126,7 +138,7 @@ function acpStatus(ctx: ProvidersViewContext, id: AcpSettingsProviderId): Provid
     return {
       state: "checking",
       label: "Checking…",
-      message: `Checking whether ${spec.label} is installed and signed in.`,
+      message: `Checking whether ${spec.label} is on this machine and signed in.`,
     };
   }
   const connection = ctx.status?.providerConnections?.[id] ?? null;
@@ -135,7 +147,7 @@ function acpStatus(ctx: ProvidersViewContext, id: AcpSettingsProviderId): Provid
     // running a build that predates it — not that the CLI is missing.
     return {
       state: "not-installed",
-      label: "Not installed",
+      label: "Not downloaded",
       message: `This machine did not report ${spec.label} status.`,
     };
   }
@@ -147,13 +159,19 @@ function acpStatus(ctx: ProvidersViewContext, id: AcpSettingsProviderId): Provid
       state: "sign-in",
       label: "Sign in required",
       message: connection.blocker
-        ?? `${spec.label} is installed but no login was detected. Run \`${spec.loginCommand}\`.`,
+        ?? (spec.loginCommand
+          ? `${spec.label} is ready but no login was detected. Run \`${spec.loginCommand}\`.`
+          : `${spec.label} is ready but not signed in. Sign in below.`),
     };
   }
+  // ADE's copy is not on this machine yet; the host's sentence says whether it
+  // is downloading, failed, or has no build for this machine.
+  const blocker = connection.blocker
+    ?? `ADE downloads ${spec.label} for this machine the first time it is used.`;
   return {
     state: "not-installed",
-    label: "Not installed",
-    message: `The ${spec.label} CLI is not on this machine. Install it with \`${spec.installCommand}\`, then check again.`,
+    label: "Not downloaded",
+    message: blocker,
     errorLine: connection.blocker ?? null,
   };
 }
@@ -236,17 +254,13 @@ function acpCredentialLine(ctx: ProvidersViewContext, id: AcpSettingsProviderId)
 function AcpAuthActions({ ctx, id }: { ctx: ProvidersViewContext; id: AcpSettingsProviderId }) {
   const spec = specFor(id);
   const status = acpStatus(ctx, id);
-  if (status.state === "checking" || status.state === "connected") return null;
-  if (status.state === "not-installed") {
-    return (
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
-          Install it, then check again:
-        </div>
-        <CopyableCommand command={spec.installCommand} />
-      </div>
-    );
-  }
+  if (status.state === "checking") return null;
+  // No terminal login: ADE runs the agent's own `authenticate` on that
+  // machine. Shown when connected too, to switch method or account.
+  if (!spec.loginCommand) return <AntigravitySignIn ctx={ctx} />;
+  if (status.state === "connected") return null;
+  // Signed in and only waiting on the download: the pinned-tool row says so.
+  if (status.state === "not-installed" && ctx.status?.providerConnections?.[id]?.authAvailable) return null;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
       <button
@@ -257,8 +271,8 @@ function AcpAuthActions({ ctx, id }: { ctx: ProvidersViewContext; id: AcpSetting
         Sign in
       </button>
       <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
-        Opens a terminal here and runs <code style={{ fontFamily: MONO_FONT }}>{spec.loginCommand}</code>.
-        It closes itself once you are signed in.
+        Opens a terminal on this machine and runs <code style={{ fontFamily: MONO_FONT }}>{spec.loginCommand}</code> with
+        ADE's copy (downloading it first if needed). It closes itself once you are signed in.
       </div>
     </div>
   );
@@ -346,75 +360,13 @@ function DevinBody() {
   );
 }
 
-/**
- * Where the installed CLI sits against the versions ADE has tested.
- *
- * An update installs the newest tested version, never npm `latest`. The button
- * exists only when the host resolved the binary to a known installer
- * (`update.canUpdate`); otherwise the note says how to update by hand, and
- * there is no button to run the wrong command.
- */
-function AcpVersionBody({ ctx, id, label }: { ctx: ProvidersViewContext; id: AcpSettingsProviderId; label: string }) {
-  const diagnostics = ctx.acpDiagnostics[id] ?? null;
-  const update = diagnostics?.update ?? null;
-  if (!diagnostics || !update) return null;
-  const busy = ctx.acpUpdateBusy === id;
-  const error = ctx.acpDiagnosticsError[id] ?? null;
-  const installed = update.installedVersion ?? diagnostics.version ?? "unknown";
-  const { min, max } = update.testedRange;
-  const statusLine = update.standing === "below"
-    ? `${label} ${installed} is older than ADE supports. Update to ${update.targetVersion}.`
-    : update.standing === "above"
-      ? `${label} ${installed} is newer than ADE has tested. Some features may not work.`
-      : update.updateAvailable
-        ? `Update available: ${installed} → ${update.targetVersion}.`
-        : update.standing === "unknown"
-          ? `ADE could not read the ${label} version.`
-          : `Up to date (${installed}).`;
-  const tone = update.standing === "below"
-    ? COLORS.warning
-    : update.updateAvailable
-      ? COLORS.textPrimary
-      : COLORS.textMuted;
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-      <SubsectionTitle>Version</SubsectionTitle>
-      <div style={{ fontSize: 11, fontFamily: SANS_FONT, lineHeight: 1.5, color: tone }}>
-        {statusLine}
-      </div>
-      <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
-        ADE is tested with {min === max ? min : `${min} to ${max}`}.
-      </div>
-      {update.note ? (
-        <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
-          {update.note}
-        </div>
-      ) : null}
-      {update.canUpdate ? (
-        <button
-          type="button"
-          style={outlineButton({ height: 28 })}
-          disabled={busy}
-          onClick={() => void ctx.actions.updateAcpProvider(id)}
-        >
-          {busy ? "Updating…" : `Update to ${update.targetVersion}`}
-        </button>
-      ) : null}
-      {error ? (
-        <div style={{ fontSize: 11, fontFamily: SANS_FONT, lineHeight: 1.5, color: COLORS.danger, overflowWrap: "anywhere" }}>
-          {error}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
 const ACP_EXTRA_BODIES: Partial<Record<AcpSettingsProviderId, () => React.JSX.Element>> = {
   kimi: KimiBody,
   devin: DevinBody,
 };
 
 function buildAcpDescriptor(spec: AcpProviderSpec): ProviderDescriptor {
+  const ExtraBody = ACP_EXTRA_BODIES[spec.id];
   return {
     id: spec.id,
     label: spec.label,
@@ -425,7 +377,11 @@ function buildAcpDescriptor(spec: AcpProviderSpec): ProviderDescriptor {
     // chip on its own.
     preview: providerTierIsPreview(spec.id),
     // All four share one permission vocabulary because they share one host.
-    permissions: { family: spec.id === "kimi" ? "moonshot" : spec.id === "grok" ? "xai" : spec.id === "devin" ? "devin" : "qwen", isCliWrapped: true, key: spec.id },
+    permissions: {
+      family: spec.id === "kimi" ? "moonshot" : spec.id === "grok" ? "xai" : spec.id === "devin" ? "devin" : spec.id === "antigravity" ? "antigravity" : "qwen",
+      isCliWrapped: true,
+      key: spec.id,
+    },
     status: (ctx) => acpStatus(ctx, spec.id),
     models: (ctx) => acpModels(ctx, spec.id),
     version: (ctx) => acpVersion(ctx, spec.id),
@@ -435,15 +391,7 @@ function buildAcpDescriptor(spec: AcpProviderSpec): ProviderDescriptor {
     ...(spec.id === "grok" || spec.id === "kimi"
       ? { Diagnostics: ({ ctx }: { ctx: ProvidersViewContext }) => <AcpDiagnostics ctx={ctx} id={spec.id} /> }
       : {}),
-    Body: ({ ctx }: { ctx: ProvidersViewContext }) => {
-      const Extra = ACP_EXTRA_BODIES[spec.id];
-      return (
-        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-          <AcpVersionBody ctx={ctx} id={spec.id} label={spec.label} />
-          {Extra ? <Extra /> : null}
-        </div>
-      );
-    },
+    ...(ExtraBody ? { Body: ExtraBody } : {}),
   };
 }
 

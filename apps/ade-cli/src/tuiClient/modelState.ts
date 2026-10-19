@@ -285,7 +285,8 @@ export function usesToolPermissionModes(provider: AdeCodeProvider): boolean {
  * Interface=CLI launch path.
  */
 export function cliProviderForModelStateProvider(provider: AdeCodeProvider): CliTerminalProvider | null {
-  return provider === "ollama" || provider === "lmstudio" ? null : provider;
+  // Antigravity is ACP-only (Google ships no terminal CLI for it).
+  return provider === "ollama" || provider === "lmstudio" || provider === "antigravity" ? null : provider;
 }
 
 export function modelStatePatchForModel(provider: AdeCodeProvider, model: AgentChatModelInfo): Pick<AdeCodeModelState, "provider" | "model" | "modelId" | "displayName"> {

@@ -83,6 +83,8 @@ export type AgentChatProvider =
   | "kimi"
   | "grok"
   | "copilot"
+  | "devin"
+  | "antigravity"
   | (string & {});
 
 /**
@@ -90,7 +92,7 @@ export type AgentChatProvider =
  * one session-config shape, so surfaces branch on this list instead of naming
  * the four providers again.
  */
-export const ACP_CHAT_PROVIDERS = ["qwen", "kimi", "grok", "devin"] as const;
+export const ACP_CHAT_PROVIDERS = ["qwen", "kimi", "grok", "devin", "antigravity"] as const;
 export type AcpChatProvider = (typeof ACP_CHAT_PROVIDERS)[number];
 
 /**
@@ -629,17 +631,6 @@ export type AgentChatVoiceSession = {
 
 export type AgentChatNoticeDetail = {
   kind?: "continuity_recovery" | "disk_pressure";
-  /**
-   * An ACP provider CLI older than the range ADE has tested. The notice row
-   * offers an Update button when `canUpdate` is true and the host can run it.
-   */
-  providerUpdate?: {
-    provider: AcpChatProvider;
-    installedVersion: string;
-    targetVersion: string;
-    canUpdate: boolean;
-    note: string | null;
-  };
   /**
    * The usage-snapshot account id a notice is about (`<provider>:<instanceId>`).
    *
@@ -1655,8 +1646,8 @@ export type AgentChatEvent =
         agentCli?: {
           agent: string;
           displayName: string;
+          /** `missing`: ADE's pinned copy is not on the chat's machine (the card offers Download/Retry). */
           category: "missing" | "unauthenticated";
-          installCommand: string;
           authCommand: string;
         };
       };
@@ -3824,7 +3815,8 @@ export type AgentChatModelCatalogRefreshProvider =
   | "kimi"
   | "grok"
   | "copilot"
-  | "devin";
+  | "devin"
+  | "antigravity";
 
 export type AgentChatModelCatalogMode = "cached" | "refresh-stale" | "force";
 
@@ -5016,6 +5008,7 @@ export const ACTIVE_TURN_DISPATCH_MODES: Partial<Record<AgentChatProvider, reado
   qwen: ["queue"],
   kimi: ["queue"],
   grok: ["queue"],
+  antigravity: ["queue"],
   copilot: ["inline", "queue"],
 };
 

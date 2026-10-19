@@ -211,7 +211,7 @@ export function createPrSummaryService(deps: PrSummaryServiceDeps) {
       unresolvedThreadCount: inputs.unresolvedThreadCount,
     });
 
-    const model = deps.aiIntegrationService?.getConfiguredFeatureModel("pr_descriptions") ?? null;
+    const model = deps.aiIntegrationService?.getConfiguredFeatureModel("terminal_summaries") ?? null;
     if (!deps.aiIntegrationService || !model) {
       const fallback: PrAiSummary = {
         prId,
@@ -230,8 +230,7 @@ export function createPrSummaryService(deps: PrSummaryServiceDeps) {
     }
 
     try {
-      const result = await deps.aiIntegrationService.draftPrDescription({
-        laneId: "", // aiIntegrationService accepts empty laneId for one-shot tasks; uses projectRoot cwd.
+      const result = await deps.aiIntegrationService.summarizePullRequest({
         cwd: deps.projectRoot,
         prompt,
         model,

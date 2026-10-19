@@ -39,6 +39,8 @@ const acquireCopilotConnectionMock = vi.fn(async (_args: unknown) => ({
   generation: 7,
 }));
 const assertCursorSdkSupportedMock = vi.fn();
+const openCodeTextPromptMock = vi.fn();
+const antigravityCredentialsMock = vi.fn(async (_env: unknown) => ({ authenticated: false, verified: false, method: null }));
 const getApiKeyMock = vi.fn((_provider: string): string | null => null);
 
 vi.mock("node:child_process", async () => {
@@ -64,6 +66,27 @@ vi.mock("./acpExecutables", () => ({
   resolveQwenExecutable: () => resolveQwenExecutableMock(),
   resolveKimiExecutable: () => resolveKimiExecutableMock(),
   resolveGrokExecutable: () => resolveGrokExecutableMock(),
+  resolveAntigravityExecutable: () => ({ path: "/tools/antigravity/agy_acp_server.par", source: "tools-cache" }),
+}));
+
+// ADE's pinned copies live in the tools cache; the resolver is that boundary.
+vi.mock("../pty/pinnedProviderCli", () => ({
+  requirePinnedProviderCli: async (provider: string) => ({
+    provider,
+    command: provider === "pi" ? "/tools/node/bin/node" : `/tools/${provider}/bin/${provider}`,
+    leadingArgs: provider === "pi" ? ["/tools/pi/dist/cli.js"] : [],
+    env: {},
+  }),
+}));
+
+// OpenCode runs an HTTP server; a misrouted task would land here.
+vi.mock("../opencode/openCodeSession", () => ({
+  runOpenCodeTextPrompt: (...args: unknown[]) => openCodeTextPromptMock(...args),
+}));
+
+// The real check reads the agent's settings file and the macOS keychain.
+vi.mock("./antigravityAuth", () => ({
+  inspectAntigravityCredentials: (env: unknown) => antigravityCredentialsMock(env),
 }));
 
 // The real store reads the OS credential store, so a developer machine with a
@@ -180,6 +203,7 @@ afterEach(() => {
   assertCursorSdkSupportedMock.mockReset();
   getApiKeyMock.mockReset();
   getApiKeyMock.mockReturnValue(null);
+  openCodeTextPromptMock.mockReset();
 });
 
 describe("runProviderTask", () => {
@@ -225,10 +249,11 @@ describe("runProviderTask", () => {
   });
 
   it("pipes Claude prompts over stdin instead of argv", async () => {
-    const child = createMockProcess({
-      stdout: '{"result":"READY"}',
+    let child: MockSpawnProcess | null = null;
+    spawnMock.mockImplementationOnce(() => {
+      child = createMockProcess({ stdout: '{"result":"READY"}' });
+      return child;
     });
-    spawnMock.mockReturnValueOnce(child);
 
     const result = await runProviderTask({
       cwd: process.cwd(),
@@ -251,7 +276,7 @@ describe("runProviderTask", () => {
     expect(options).toMatchObject({
       stdio: ["pipe", "pipe", "pipe"],
     });
-    expect(child.stdin.end).toHaveBeenCalledWith("Summarize the worktree state.");
+    expect(child!.stdin.end).toHaveBeenCalledWith("Summarize the worktree state.");
   });
 
   it.each([
@@ -304,7 +329,7 @@ describe("runProviderTask", () => {
       expectedEffort: null,
     },
   ])("$label for a Claude task", async ({ descriptor, reasoningEffort, expectedEffort }) => {
-    spawnMock.mockReturnValueOnce(createMockProcess({ stdout: '{"result":"READY"}' }));
+    spawnMock.mockImplementationOnce(() => createMockProcess({ stdout: '{"result":"READY"}' }));
 
     await runProviderTask({
       cwd: process.cwd(),
@@ -320,9 +345,11 @@ describe("runProviderTask", () => {
     expect(launchArgvValueAfter(argv, "--effort")).toBe(expectedEffort);
   });
 
-  it("terminates a provider task when writing its prompt fails", async () => {
+  it("terminates a provider task's process group when writing its prompt fails", async () => {
     const child = createMockProcess({ deferClose: true });
     spawnMock.mockReturnValueOnce(child);
+    // The mock's pid is not ours: never let the group kill reach the real OS.
+    const killSpy = vi.spyOn(process, "kill").mockImplementation((() => true) as typeof process.kill);
 
     const pending = runProviderTask({
       cwd: process.cwd(),
@@ -341,8 +368,15 @@ describe("runProviderTask", () => {
     });
     child.stdin.emit("error", Object.assign(new Error("EIO"), { code: "EIO" }));
 
-    await expect(pending).rejects.toThrow("EIO");
-    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+    try {
+      await expect(pending).rejects.toThrow("EIO");
+      if (process.platform === "win32") expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+      else expect(killSpy).toHaveBeenCalledWith(-child.pid, "SIGTERM");
+    } finally {
+      // Exited, so the delayed SIGKILL refuses to fire after the spy is gone.
+      child.exitCode = 1;
+      killSpy.mockRestore();
+    }
   });
 
   it("pipes Codex prompts over stdin instead of argv", async () => {
@@ -400,7 +434,7 @@ describe("runProviderTask", () => {
     { label: "a background utility call", backgroundUtility: true },
     { label: "an ordinary read-only call", backgroundUtility: false },
   ])("launches Claude for $label", async ({ backgroundUtility }) => {
-    spawnMock.mockReturnValueOnce(createMockProcess({ stdout: '{"result":"{\\"title\\":\\"Fix\\"}"}' }));
+    spawnMock.mockImplementationOnce(() => createMockProcess({ stdout: '{"result":"{\\"title\\":\\"Fix\\"}"}' }));
 
     await runProviderTask({
       cwd: process.cwd(),
@@ -427,7 +461,7 @@ describe("runProviderTask", () => {
     { family: "anthropic", providerModelId: "claude-haiku-5-5", key: "CLAUDE_CONFIG_DIR" },
     { family: "openai", providerModelId: "gpt-6-luna", key: "CODEX_HOME" },
   ])("runs the $family CLI in the caller's account config home", async ({ family, providerModelId, key }) => {
-    spawnMock.mockReturnValueOnce(createMockProcess({ stdout: '{"result":"ok"}' }));
+    spawnMock.mockImplementationOnce(() => createMockProcess({ stdout: '{"result":"ok"}' }));
 
     await runProviderTask({
       cwd: process.cwd(),
@@ -463,7 +497,7 @@ describe("runProviderTask", () => {
       message: /weekly limit · resets 6am/,
     },
   ])("reports Claude's own reason for $label", async ({ stdout, exitCode, message }) => {
-    spawnMock.mockReturnValueOnce(createMockProcess({ stdout, exitCode }));
+    spawnMock.mockImplementationOnce(() => createMockProcess({ stdout, exitCode }));
 
     await expect(runProviderTask({
       cwd: process.cwd(),
@@ -477,7 +511,7 @@ describe("runProviderTask", () => {
   });
 
   it.each([true, false])("pins Codex to standard speed only for a background utility call (%s)", async (backgroundUtility) => {
-    spawnMock.mockReturnValueOnce(createMockProcess());
+    spawnMock.mockImplementationOnce(() => createMockProcess());
 
     await runProviderTask({
       cwd: process.cwd(),
@@ -553,9 +587,9 @@ describe("runProviderTask", () => {
 
   it("runs Qwen, Kimi, and Grok metadata prompts through their ACP CLIs", async () => {
     spawnMock
-      .mockReturnValueOnce(createMockProcess({ stdout: '{"chatTitle":"Qwen title"}' }))
-      .mockReturnValueOnce(createMockProcess({ stdout: '{"chatTitle":"Kimi title"}' }))
-      .mockReturnValueOnce(createMockProcess({ stdout: '{"chatTitle":"Grok title"}' }));
+      .mockImplementationOnce(() => createMockProcess({ stdout: '{"chatTitle":"Qwen title"}' }))
+      .mockImplementationOnce(() => createMockProcess({ stdout: '{"chatTitle":"Kimi title"}' }))
+      .mockImplementationOnce(() => createMockProcess({ stdout: '{"chatTitle":"Grok title"}' }));
 
     const common = {
       cwd: "/tmp/lane",
@@ -765,5 +799,45 @@ describe("runProviderTask", () => {
       projectConfig: {} as any,
     })).rejects.toThrow("Cursor tasks require a Cursor API key.");
     expect(cursorLocalPromptMock).not.toHaveBeenCalled();
+  });
+
+  // Each provider's own model runs on that provider's pinned CLI. Before, these
+  // fell through to OpenCode, which sent the chat to a model it does not own.
+  it.each([
+    ["Droid", { family: "factory", isCliWrapped: true, providerModelId: "custom:claude-opus-5" }, "/tools/droid/bin/droid", ["-m", "custom:claude-opus-5"]],
+    ["Devin", { family: "devin", providerRoute: "devin-acp", isCliWrapped: true, providerModelId: "swe" }, "/tools/devin/bin/devin", ["--model", "swe"]],
+    ["Pi", { family: "anthropic", providerRoute: "pi-sdk", isCliWrapped: false, providerModelId: "anthropic/claude-haiku-5-5" }, "/tools/node/bin/node", ["--model", "anthropic/claude-haiku-5-5"]],
+  ] as const)("runs a %s model on its own pinned CLI, never OpenCode", async (_label, descriptor, command, modelFlag) => {
+    // Built at spawn time: the runner resolves its pinned CLI first, and a
+    // process made earlier would have closed before anyone listened.
+    spawnMock.mockImplementationOnce(() => createMockProcess({ stdout: "Pinned Title\n" }));
+
+    const result = await runProviderTask({
+      cwd: "/tmp/lane",
+      descriptor: descriptor as any,
+      prompt: "Name this chat.",
+      feature: "session-metadata",
+      backgroundUtility: true,
+      projectConfig: {} as any,
+    });
+
+    expect(result.text).toBe("Pinned Title");
+    expect(openCodeTextPromptMock).not.toHaveBeenCalled();
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    const [launchedCommand, argv] = spawnMock.mock.calls[0]!;
+    expect(launchedCommand).toBe(expectedLaunchCommand(command));
+    expect(launchArgvContainsRun(argv, [...modelFlag])).toBe(true);
+  });
+
+  it("fails an Antigravity task before starting the agent when this machine is not signed in", async () => {
+    await expect(runProviderTask({
+      cwd: "/tmp/lane",
+      descriptor: { family: "antigravity", providerRoute: "antigravity-acp", isCliWrapped: true, providerModelId: "gemini-3-flash" } as any,
+      prompt: "Name this chat.",
+      feature: "session-metadata",
+      projectConfig: {} as any,
+    })).rejects.toThrow("Antigravity is not signed in on this machine.");
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(openCodeTextPromptMock).not.toHaveBeenCalled();
   });
 });

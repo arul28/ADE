@@ -43,19 +43,12 @@ export function buildClaudeAvailabilityFromConnection(
         path: connection.path,
       };
   const authMode = detectClaudeAuthModeFromConnection(connection);
-  const binaryOnlyBlockers = [
-    "could not find the claude cli",
-    "cli not found",
-    "claude cli is installed",
-    "add that bin directory",
-  ];
-  const normalizedBlocker = connection.blocker?.toLowerCase() ?? "";
-  const blockerIsOnlyAboutPath = binary.source === "bundled"
-    && binaryOnlyBlockers.some((needle) => normalizedBlocker.includes(needle));
+  // The connection's runtime is the same resolver's answer, so a blocker here
+  // is about sign-in or runtime health, never a binary ADE has but missed.
   const ready = options?.disabled !== true
     && binary.present
     && connection.authAvailable
-    && (connection.runtimeAvailable || blockerIsOnlyAboutPath || !connection.blocker);
+    && (connection.runtimeAvailable || !connection.blocker);
   return {
     binary: withReportedClaudeVersion(binary),
     auth: {

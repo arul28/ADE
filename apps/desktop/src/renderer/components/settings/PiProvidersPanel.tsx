@@ -78,19 +78,19 @@ export function buildPiMessage(
   const availableModels = installation.availableModelIds.length;
   if (connection?.runtimeAvailable) {
     const version = installation.version ? `Pi ${installation.version}` : "Pi";
-    return `${version} is installed. ${availableModels} model${availableModels === 1 ? " is" : "s are"} available across ${configuredProviders} configured provider${configuredProviders === 1 ? "" : "s"}.`;
+    return `${version} is ready. ${availableModels} model${availableModels === 1 ? " is" : "s are"} available across ${configuredProviders} configured provider${configuredProviders === 1 ? "" : "s"}.`;
   }
   if (connection?.blocker) {
     return connection.blocker;
   }
   if (installation.installed && !installation.sdkAvailable) {
     return installation.blocker
-      ?? "Pi CLI is available, but ADE's Pi SDK package is missing. Install @earendil-works/pi-coding-agent or set ADE_PI_PACKAGE_ROOT.";
+      ?? "ADE's pinned Pi is on this machine, but its SDK could not be loaded. Check again; if it persists, copy the diagnostics.";
   }
   if (!installation.installed) {
-    return "Pi is not installed for this user yet. Install @earendil-works/pi-coding-agent, then use Refresh. Pi keeps its own credentials and profile.";
+    return "ADE has not downloaded Pi for this machine yet. It downloads the first time this machine uses it. Pi keeps its own credentials and profile.";
   }
-  return "Pi is installed, but no configured providers or available models were detected yet.";
+  return "Pi is ready, but no configured providers or available models were detected yet.";
 }
 
 type PiSignInFlow = {
@@ -251,7 +251,7 @@ function PiTerminalFallback({ installation }: { installation: AiPiInstallationSt
     <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim, lineHeight: 1.5 }}>
       {installation.cliAvailable
         ? "Signing in from ADE needs Pi's SDK. Until the blocker above is resolved, run pi in a terminal and use its /login command."
-        : "Install Pi to sign in."}
+        : "Sign in once ADE has downloaded Pi for this machine."}
     </span>
   );
 }

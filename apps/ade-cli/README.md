@@ -72,7 +72,7 @@ Three ways to put `ade` on a machine:
 
    After a successful install both scripts hand off to `ade setup`, passing what they already did (`--continue --runtime-path … --native-path … --elapsed-ms … --downloaded-bytes …`) so the closing summary can recap all five steps. The shell owns only the two steps that must happen before the `ade` binary exists; everything after is one TypeScript implementation shared by both platforms, which is what stops Windows and macOS drifting apart the way they had.
 
-   `ade setup` runs the pinned agent CLIs (Codex, Claude Code, OpenCode) into the shared machine cache so the first agent run is not a surprise multi-hundred-megabyte download — non-fatal, since the brain retries it on every `ade serve`. It then handles the account: an already-linked machine is offered keep / switch / skip instead of being asked to sign in blind. Finally the desktop app (macOS `.zip` via `ditto`, Windows NSIS installer via a silent per-user `/S` run), verified against the base64 SHA-512 in the electron-updater manifest (`latest-mac.yml` / `latest.yml`) — the published `SHA256SUMS` covers only the standalone runtime assets. That download resumes from a partial file via a Range request, is skipped entirely when the same version is already installed, and the installed app is launched detached so a Windows GUI child never inherits the console.
+   `ade setup` downloads ADE's pinned agent CLIs that this machine shows signs of using (the same demand rule as the brain: a login file, a token, or the vendor's CLI on the PATH) into the shared machine cache, so the first agent run is not a surprise multi-hundred-megabyte download — non-fatal, since the brain retries it on every `ade serve` and every other pin downloads the first time ADE needs it. ADE always runs its own pinned copies, never a CLI on the PATH. It then handles the account: an already-linked machine is offered keep / switch / skip instead of being asked to sign in blind. Finally the desktop app (macOS `.zip` via `ditto`, Windows NSIS installer via a silent per-user `/S` run), verified against the base64 SHA-512 in the electron-updater manifest (`latest-mac.yml` / `latest.yml`) — the published `SHA256SUMS` covers only the standalone runtime assets. That download resumes from a partial file via a Range request, is skipped entirely when the same version is already installed, and the installed app is launched detached so a Windows GUI child never inherits the console.
 
    The run ends with an end-to-end verification (brain reachable, machine linked) and a summary. A failed step reports the command that fixes it inline and again under "What's left"; a clean run prints neither, so the installer never claims success it did not achieve. Prompts are read from `/dev/tty` on POSIX because `curl | sh` occupies stdin; when no terminal is attached (CI, automation) both scripts pass `--no-prompt` and `ade setup` prints the follow-up commands instead. `install.ps1` also accepts `-NoPrompt`. Re-run `ade setup` at any time to redo the flow.
 
@@ -515,7 +515,7 @@ ade connect                               # account + login service + account-di
 ade connect --status --text               # report the three steps without changing anything
 ade connect --headless                    # sign in from another device: QR code, link, and code
 ade connect --no-login --no-service       # opt out of either half
-ade setup                                 # finish/redo install setup: agent CLIs, account, desktop app, verification, summary
+ade setup                                 # finish/redo install setup: pinned agent CLIs this machine uses, account, desktop app, verification, summary
 ade setup --no-desktop --no-prompt        # non-interactive; skips the ~1 GB desktop download
 ade login                                 # browser here, plus a QR code + link + code to finish on another device
 ade login --headless                      # open no browser here: QR code + verification URL + user code only
@@ -533,13 +533,14 @@ ade doctor --online --text                        # also check the latest deskto
 ade report-issue --text                           # print a redacted diagnostic report + a prefilled GitHub issue URL (local files only; no brain needed)
 ade report-issue --open                           # also copy the report to the clipboard and open that issue URL in the browser
 ade report-issue --send                           # also upload the same redacted report to ADE and print its reference id
-ade triage                                        # build a redacted context.md + repair playbook and hand them to your first installed agent CLI
-ade triage --provider codex                       # pick the agent CLI (claude | codex | cursor-agent | opencode | droid)
+ade triage                                        # build a redacted context.md + repair playbook and hand them to the first agent ADE has downloaded
+ade triage --provider codex                       # pick the agent (claude | codex | cursor-agent | opencode | droid | muse)
 ade triage --agent --json                         # launch nothing: print contextPath, playbookPath, playbookSource, suggestedPrompt, detected agents
 ade reset --all --dry-run --text                  # list everything a hard reset would remove, changing nothing
 ade reset --all                                   # remove everything ADE put on this computer (asks you to type RESET first)
 ade tools status --text                           # pinned agent CLIs: installed version + entry path per tool, plus the machine tools root
-ade tools ensure --text                           # fetch whatever this build pins and is missing (no names = all); streams progress to stderr
+ade tools ensure --text                           # fetch the pinned tools this machine shows signs of using (the rest are listed as skipped); streams progress to stderr
+ade tools ensure --all --text                     # fetch every tool this build pins (well over 1 GB)
 ade tools ensure codex --text                     # one tool; an unknown name is a usage error listing the pinned set
 ade tools gc --dry-run --text                     # drop cached versions this build no longer pins (keeps the newest superseded one)
 ade providers opencode accounts list --text       # OpenCode logins saved on this machine
@@ -1144,16 +1145,19 @@ can tell "not requested" from "requested and failed".
 
 `ade triage` is the third step after those two: `doctor` says which check
 failed, `report-issue` produces something to file, and `triage` hands the repair
-to the user's own coding agent. It runs the same doctor checks and the same
+to a coding agent. It runs the same doctor checks and the same
 redacted diagnostic collection, writes them as a single `context.md` into a
 fresh temp directory (`ade-triage-<timestamp>-<random>/`) alongside a repair
-playbook, and then launches the first agent CLI it finds — `claude`, `codex`,
-`cursor-agent`, `opencode`, `droid`, in that order, resolved through the same
-PATHEXT-aware lookup ADE uses everywhere, so a Windows `codex.cmd` shim is
-found and an unlaunchable extension-less sibling is not. The agent inherits
+playbook, and then launches the first agent whose ADE-pinned copy is already
+on disk — `claude`, `codex`, `cursor-agent`, `opencode`, `droid`, `muse`, in
+that order. It never looks on the PATH and never starts a download: each runs by
+absolute path with its leading args (Cursor: its bundled Node + `index.js` +
+`--disable-auto-update`; Muse: `--contributor-mode off`) and self-update env. The agent inherits
 stdio, so the user talks to it directly; `ade triage` exits with the agent's
 exit code and prints nothing on stdout in that mode (both paths are printed on
-stderr before the launch). `--provider <name>` picks one. OpenCode is launched
+stderr before the launch). `--provider <name>` picks one; a provider without a copy on disk prints its
+pinned state ("ADE is downloading …", "ADE has not downloaded … for this machine
+yet.", "Couldn't download …", "… is not available on this machine") instead. OpenCode is launched
 bare because its positional argument is a project directory rather than a
 prompt, and the prompt is printed for pasting instead.
 
@@ -1171,9 +1175,9 @@ to a reduced built-in one; `playbookSource` (`remote` / `local`) and
 `playbookPath`, `playbookSource`, `playbookOrigin`, `suggestedPrompt`, the
 detected agent CLIs and a `message`, and exits 0. That is the mode for an agent
 that is already running — an ADE Work chat triaging its own machine — and a
-machine with no agent CLI installed gets the same payload unasked, with a
-message saying so, rather than a failure. Branch on `mode`, not on the exit
-code: `agent` was asked for, `no-provider` means nothing was installed to
+machine where ADE has downloaded no agent yet gets the same payload unasked,
+with a message saying so, rather than a failure. Branch on `mode`, not on the exit
+code: `agent` was asked for, `no-provider` means no pinned copy was on disk to
 launch, and `launch` means an agent ran — that last one prints nothing on
 stdout and exits with the agent's own code. The context file is redacted with
 the same rules as `ade report-issue`: it never contains credentials, and it is

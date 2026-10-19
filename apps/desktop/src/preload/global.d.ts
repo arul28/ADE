@@ -432,7 +432,11 @@ import type {
   BudgetCapProvider,
   BudgetCapConfig,
   AcpProviderDiagnostics,
-  AcpProviderUpdateResult,
+  PinnedProviderToolStatus,
+  AntigravitySignInCancelArgs,
+  AntigravitySignInCompleteArgs,
+  AntigravitySignInStartArgs,
+  AntigravitySignInState,
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
@@ -543,8 +547,6 @@ import type {
   GitCreateTagArgs,
   GitConflictState,
   GitGetCommitMessageArgs,
-  GitGenerateCommitMessageArgs,
-  GitGenerateCommitMessageResult,
   GitListBranchesArgs,
   GitGetUserIdentityArgs,
   GitUserIdentity,
@@ -648,7 +650,6 @@ import type {
   DeletePrArgs,
   DeletePrResult,
   DismissIntegrationCleanupArgs,
-  DraftPrDescriptionArgs,
   GitHubPrSnapshot,
   GitHubPrStack,
   LandPrArgs,
@@ -1605,6 +1606,22 @@ declare global {
         isOpenCodeInstalled: (pin?: OpenProjectBinding | null) => Promise<{ installed: boolean; source: "user-installed" | "tools-cache" | "bundled" | "missing" }>;
         museBinaryStatus: (pin?: OpenProjectBinding | null) => Promise<MuseBinaryStatus>;
         ensureMuseBinary: (pin?: OpenProjectBinding | null) => Promise<MuseBinaryStatus>;
+        /**
+         * ADE's pinned copy of a provider's tool on the machine `pin` names.
+         * Optional: an older preload predates it, so callers guard.
+         */
+        pinnedToolStatus?: (args: { provider: string }, pin?: OpenProjectBinding | null) => Promise<PinnedProviderToolStatus>;
+        /** Start (or join) that copy's download there and return at once; poll `pinnedToolStatus`. */
+        pinnedToolDownload?: (args: { provider: string }, pin?: OpenProjectBinding | null) => Promise<PinnedProviderToolStatus>;
+        /**
+         * Antigravity sign-in on the machine `pin` names (the ACP `authenticate`
+         * request). Optional: an older preload or brain predates it.
+         */
+        antigravitySignInStatus?: (pin?: OpenProjectBinding | null) => Promise<AntigravitySignInState>;
+        antigravitySignInStart?: (args: AntigravitySignInStartArgs, pin?: OpenProjectBinding | null) => Promise<AntigravitySignInState>;
+        /** Forward a pasted 127.0.0.1 return URL to that machine's agent. */
+        antigravitySignInComplete?: (args: AntigravitySignInCompleteArgs, pin?: OpenProjectBinding | null) => Promise<AntigravitySignInState>;
+        antigravitySignInCancel?: (args: AntigravitySignInCancelArgs, pin?: OpenProjectBinding | null) => Promise<AntigravitySignInState>;
         /** Settings > Muse Code on the machine `pin` names: a Settings-owned `muse serve` host per `handleId`. */
         museSettings: <R extends MuseSettingsRequest>(
           args: MuseSettingsRunArgs<R>,
@@ -1624,16 +1641,9 @@ declare global {
          * have it and callers must guard before reaching for it.
          */
         acpProviderDiagnostics?: (args: {
-          provider: "qwen" | "kimi" | "grok" | "copilot" | "devin";
+          provider: "qwen" | "kimi" | "grok" | "copilot" | "devin" | "antigravity";
           runDoctor?: boolean;
         }, pin?: OpenProjectBinding | null) => Promise<AcpProviderDiagnostics>;
-        /**
-         * Runs the provider's one-click updater on this machine. Optional: an
-         * older host that predates it leaves this undefined.
-         */
-        acpProviderUpdate?: (args: {
-          provider: "qwen" | "kimi" | "grok" | "copilot" | "devin";
-        }, pin?: OpenProjectBinding | null) => Promise<AcpProviderUpdateResult>;
         opencodeAuthMethods: (pin?: OpenProjectBinding | null) => Promise<{ methods: OpenCodeProviderAuthMethods }>;
         opencodeOAuthStart: (args: {
           providerId: string;
@@ -4042,10 +4052,6 @@ declare global {
           args: GitCommitArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<GitActionResult>;
-        generateCommitMessage: (
-          args: GitGenerateCommitMessageArgs,
-          pin?: OpenProjectBinding | null,
-        ) => Promise<GitGenerateCommitMessageResult>;
         listRecentCommits: (
           args: GitListRecentCommitsArgs,
           pin?: OpenProjectBinding | null,
@@ -4471,9 +4477,6 @@ declare global {
         getReviewThreads: (prId: string, pin?: OpenProjectBinding | null) => Promise<PrReviewThread[]>;
         updateDescription: (args: UpdatePrDescriptionArgs) => Promise<void>;
         delete: (args: DeletePrArgs, pin?: OpenProjectBinding | null) => Promise<DeletePrResult>;
-        draftDescription: (
-          args: DraftPrDescriptionArgs,
-        ) => Promise<{ title: string; body: string }>;
         land: (args: LandPrArgs, pin?: OpenProjectBinding | null) => Promise<LandResult>;
         updateBranch: (args: UpdateBranchArgs, pin?: OpenProjectBinding | null) => Promise<UpdateBranchResult>;
         retargetBase: (args: {

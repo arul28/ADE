@@ -1,16 +1,11 @@
-// OpenCode binary resolution with bundled fallback
-import { execFileSync, spawnSync } from "node:child_process";
-import { accessSync, constants, statSync } from "node:fs";
+// OpenCode binary resolution: ADE's pinned copy only.
+import { execFileSync } from "node:child_process";
+import { accessSync, constants } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { cachedToolEntryPath } from "../../../../../ade-cli/src/services/tools/cacheLookup";
-import { quoteWindowsCmdArg, resolveWindowsCmdLineInvocation, shouldUseWindowsCmdWrapper } from "../shared/processExecution";
-import {
-  augmentProcessPathWithShellAndKnownCliDirs,
-  resolveExecutableFromKnownLocations,
-  setPathEnvValue,
-} from "../ai/cliExecutableResolver";
+import { cachedToolEntryPath, previousCachedToolEntryPath } from "../../../../../ade-cli/src/services/tools/cacheLookup";
 
+/** `user-installed` is no longer produced; it stays for callers that name it. */
 export type OpenCodeBinarySource = "user-installed" | "tools-cache" | "bundled" | "missing";
 
 export type OpenCodeBinaryInfo = {
@@ -87,9 +82,8 @@ function collectBundledNodeModulesRoots(env: NodeJS.ProcessEnv): string[] {
     roots.push(trimmed.endsWith("node_modules") ? trimmed : join(trimmed, "node_modules"));
   }
 
-  roots.push(join(process.cwd(), "node_modules"));
-  roots.push(join(process.cwd(), "apps", "desktop", "node_modules"));
-
+  // ADE's own `node_modules`, found from this module. Never the working
+  // directory: that can be any project, with an OpenCode of its own.
   let current = moduleDir;
   for (;;) {
     roots.push(join(current, "node_modules"));
@@ -147,48 +141,13 @@ function canRunBinaryCandidate(filePath: string): boolean {
   }
 }
 
-const openCode2BinaryCache = new Map<string, boolean>();
-
 /**
- * The cache key names the file as it is now: an upgrade in place (1.x to 2 at
- * the same path) changes its size or time and is probed again.
+ * ADE's own OpenCode: the current pin in the tools cache, the copy ADE's
+ * lockfile put in `node_modules` (a source checkout, or a legacy build that
+ * shipped it; `ADE_OPENCODE_BUNDLE_ROOT` points a test at one and skips the
+ * cache), then the previous pin while a new one downloads. Never an OpenCode
+ * the user installed.
  */
-function binaryIdentity(binaryPath: string): string {
-  try {
-    const stat = statSync(binaryPath);
-    return `${binaryPath}\0${stat.size}\0${stat.mtimeMs}`;
-  } catch {
-    return binaryPath;
-  }
-}
-
-/** Whether `opencode --version` reports major version 2 (`opencode v2.0.18`). */
-function isOpenCode2Binary(binaryPath: string): boolean {
-  const cacheKey = binaryIdentity(binaryPath);
-  const cached = openCode2BinaryCache.get(cacheKey);
-  if (cached !== undefined) return cached;
-  let isV2 = false;
-  try {
-    // A `.cmd` shim cannot be spawned directly on Windows; the shared helper
-    // quotes it through cmd.exe the same way every other ADE launch does.
-    const invocation = process.platform === "win32" && shouldUseWindowsCmdWrapper(binaryPath)
-      ? resolveWindowsCmdLineInvocation(`${quoteWindowsCmdArg(binaryPath)} --version`, process.env)
-      : { command: binaryPath, args: ["--version"] };
-    const result = spawnSync(invocation.command, invocation.args, {
-      encoding: "utf8",
-      timeout: 5_000,
-      windowsHide: true,
-      windowsVerbatimArguments: invocation.command !== binaryPath,
-    });
-    const version = `${result.stdout ?? ""}${result.stderr ?? ""}`.match(/\bv?(\d+)\.\d+\.\d+/);
-    isV2 = result.status === 0 && version?.[1] === "2";
-  } catch {
-    isV2 = false;
-  }
-  openCode2BinaryCache.set(cacheKey, isV2);
-  return isV2;
-}
-
 export function resolveOpenCodeBinary(): OpenCodeBinaryInfo {
   if (cachedInfo?.path && canRunBinaryCandidate(cachedInfo.path)) {
     return cachedInfo;
@@ -196,50 +155,35 @@ export function resolveOpenCodeBinary(): OpenCodeBinaryInfo {
   cachedInfo = null;
   const explicitBundleRoot = process.env.ADE_OPENCODE_BUNDLE_ROOT?.trim();
 
-  // Ensure PATH includes shell paths and known CLI dirs before searching.
-  // On Windows, `process.env.PATH = …` can create a duplicate `PATH` key
-  // while the inherited `Path` key remains unchanged, so later readers see
-  // the stale value. setPathEnvValue collapses case-variant duplicates.
-  setPathEnvValue(process.env, augmentProcessPathWithShellAndKnownCliDirs({ env: process.env }));
-
-  // 1. Prefer ADE's pinned runtime, matching the Claude/Codex resolver policy.
-  // Developers can opt out to exercise a local install.
-  if (process.env.ADE_DISABLE_BUNDLED_OPENCODE !== "1") {
-    // The machine tools cache first: in a packaged build the platform package
-    // is fetched there rather than bundled. The manifest already encodes the
-    // win32-x64 -> @opencode/cli-windows-x64-baseline substitution, so the AVX2
-    // avoidance documented on OPENCODE_PLATFORM_PACKAGES holds here too.
-    if (!explicitBundleRoot) {
-      const cachedPath = cachedToolEntryPath("opencode");
-      if (cachedPath && canRunBinaryCandidate(cachedPath)) {
-        cachedInfo = { path: cachedPath, source: "tools-cache" };
-        return cachedInfo;
-      }
-    }
-
-    const bundled = bundledBinaryCandidatePaths().find((candidate) => canRunBinaryCandidate(candidate));
-    if (bundled) {
-      cachedInfo = { path: bundled, source: "bundled" };
-      return cachedInfo;
-    }
-  }
-
-  // 2. Fall back to user-installed binary (PATH, ~/.opencode/bin, etc.)
-  // An explicit bundle root is a hermetic override: never silently select a
-  // cache or user installation from a different runtime when it is incomplete.
+  // The manifest already encodes the win32-x64 ->
+  // @opencode/cli-windows-x64-baseline substitution, so the AVX2 avoidance
+  // documented on OPENCODE_PLATFORM_PACKAGES holds for the cache too.
   if (!explicitBundleRoot) {
-    const userInstalled = resolveExecutableFromKnownLocations("opencode");
-    // ADE speaks only the OpenCode 2 API; a 1.x install on PATH would start a
-    // server ADE cannot drive.
-    if (userInstalled?.path && isOpenCode2Binary(userInstalled.path)) {
-      cachedInfo = { path: userInstalled.path, source: "user-installed" };
+    const cachedPath = cachedToolEntryPath("opencode");
+    if (cachedPath && canRunBinaryCandidate(cachedPath)) {
+      cachedInfo = { path: cachedPath, source: "tools-cache" };
       return cachedInfo;
     }
   }
 
-  // Do not cache misses. Users can install OpenCode or fix PATH while ADE is
-  // running, and the picker/settings cheap probe should pick that up without
-  // requiring a main-process restart.
+  const bundled = bundledBinaryCandidatePaths().find((candidate) => canRunBinaryCandidate(candidate));
+  if (bundled) {
+    cachedInfo = { path: bundled, source: "bundled" };
+    return cachedInfo;
+  }
+
+  // An explicit bundle root is hermetic: an incomplete one is a miss, never
+  // the cache's copy.
+  if (!explicitBundleRoot) {
+    const previousPath = previousCachedToolEntryPath("opencode");
+    if (previousPath && canRunBinaryCandidate(previousPath)) {
+      // Not memoized: the current pin is downloading and should win once it lands.
+      return { path: previousPath, source: "tools-cache" };
+    }
+  }
+
+  // Misses are not memoized, so a download that lands is picked up without a
+  // restart.
   return { path: null, source: "missing" };
 }
 

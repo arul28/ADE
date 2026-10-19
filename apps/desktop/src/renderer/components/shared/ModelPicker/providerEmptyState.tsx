@@ -36,10 +36,10 @@ const PROVIDER_COPY: Partial<Record<ProviderFamily, ProviderCopy>> = {
   },
   openai: {
     title: "Sign in to OpenAI Codex",
-    body: "Install the Codex CLI and sign in to use OpenAI GPT models.",
+    body: "Sign in to Codex to use OpenAI GPT models. ADE downloads its own pinned Codex for this machine.",
     primary: { label: "Open Settings", action: { kind: "open-settings" } },
     secondary: {
-      label: "Codex CLI install",
+      label: "Codex CLI docs",
       action: { kind: "open-external", url: PROVIDER_REMEDIATION.codex.docsUrl },
     },
   },
@@ -62,8 +62,8 @@ const PROVIDER_COPY: Partial<Record<ProviderFamily, ProviderCopy>> = {
     },
   },
   factory: {
-    title: "Install Droid CLI",
-    body: "Install Factory's `droid` CLI and ensure it's on PATH to discover Droid models.",
+    title: "Set up Droid",
+    body: "Sign in to Factory or set FACTORY_API_KEY to discover Droid models. ADE downloads its own pinned Droid for this machine.",
     primary: { label: "Open Settings", action: { kind: "open-settings" } },
     secondary: {
       label: "Droid quickstart",
@@ -71,8 +71,8 @@ const PROVIDER_COPY: Partial<Record<ProviderFamily, ProviderCopy>> = {
     },
   },
   opencode: {
-    title: "Install OpenCode",
-    body: "Install the OpenCode CLI to surface 75+ models from Anthropic, Google, Mistral, DeepSeek, and more.",
+    title: "Set up OpenCode",
+    body: "OpenCode surfaces 75+ models from Anthropic, Google, Mistral, DeepSeek, and more. ADE downloads its own pinned OpenCode for this machine; connect providers in Settings.",
     primary: { label: "Open Settings", action: { kind: "open-settings" } },
     secondary: {
       label: "OpenCode site",
@@ -99,7 +99,7 @@ const PROVIDER_COPY: Partial<Record<ProviderFamily, ProviderCopy>> = {
   },
   qwen: {
     title: "Set up Qwen Code",
-    body: "Install Qwen Code and configure it in that CLI (`qwen --auth-type=openai` or `qwen --auth-type=openai-responses`). ADE reuses ~/.qwen and does not write it. Point Qwen at an OpenAI-compatible key (OPENAI_API_KEY, optional OPENAI_BASE_URL for a local proxy).",
+    body: "ADE downloads its own pinned Qwen Code for this machine. Configure Qwen the way it documents (`qwen --auth-type=openai` or `qwen --auth-type=openai-responses`); ADE reuses ~/.qwen and does not write it. Point Qwen at an OpenAI-compatible key (OPENAI_API_KEY, optional OPENAI_BASE_URL for a local proxy).",
     primary: { label: "Open Settings", action: { kind: "open-settings" } },
     secondary: {
       label: "Qwen Code docs",
@@ -108,7 +108,7 @@ const PROVIDER_COPY: Partial<Record<ProviderFamily, ProviderCopy>> = {
   },
   moonshot: {
     title: "Set up Kimi",
-    body: "Install Kimi Code and run `kimi login` (`--region global` for kimi.ai, `--region mainland-cn` for kimi.com). ADE reuses ~/.kimi-code and does not write it.",
+    body: "Sign in with `kimi login` (`--region global` for kimi.ai, `--region mainland-cn` for kimi.com). ADE runs its own pinned Kimi Code, reuses ~/.kimi-code, and does not write it.",
     primary: { label: "Open Settings", action: { kind: "open-settings" } },
     secondary: {
       label: "Kimi Code docs",
@@ -117,7 +117,7 @@ const PROVIDER_COPY: Partial<Record<ProviderFamily, ProviderCopy>> = {
   },
   xai: {
     title: "Set up Grok",
-    body: "Install the Grok CLI and run `grok login`, or set XAI_API_KEY. ADE uses GROK_HOME when set and defaults to ~/.grok.",
+    body: "Sign in with `grok login`, or set XAI_API_KEY. ADE runs its own pinned Grok CLI, uses GROK_HOME when set, and defaults to ~/.grok.",
     primary: { label: "Open Settings", action: { kind: "open-settings" } },
     secondary: {
       label: "Grok CLI docs",
@@ -189,8 +189,8 @@ const OPENCODE_REQUIRED_PROVIDER_LABELS: Record<"opencode" | "ollama" | "lmstudi
 function opencodeRequiredCopy(forProvider: "opencode" | "ollama" | "lmstudio"): ProviderCopy {
   const label = OPENCODE_REQUIRED_PROVIDER_LABELS[forProvider];
   return {
-    title: "Install OpenCode",
-    body: `Install OpenCode to use ${label} models.`,
+    title: "OpenCode needed",
+    body: `${label} models run through OpenCode. ADE downloads its own pinned OpenCode for this machine.`,
     primary: { label: "Open Settings", action: { kind: "open-settings" } },
     secondary: {
       label: "OpenCode site",

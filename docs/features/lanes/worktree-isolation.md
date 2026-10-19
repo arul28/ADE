@@ -236,7 +236,7 @@ present. This matters because:
   `gitOperationsService` validates that `worktree_path` is still the
   Git top-level for that lane. A stale path that now resolves to the
   primary repo checkout is treated as a missing lane worktree, so ADE
-  does not stage, commit, generate commit messages, list commits,
+  does not stage, commit, list commits,
   inspect branches/stashes/conflicts, or compute sync state from the
   wrong worktree.
 - `git worktree` detects in-progress merge/rebase state via files in

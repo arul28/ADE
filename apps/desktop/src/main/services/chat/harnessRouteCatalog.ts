@@ -36,9 +36,14 @@ import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projec
 import type { HarnessPresetLaunchResult } from "./harnessPresetLaunch";
 import { readRouteProbe } from "./harnessRouteProbes";
 import { routeSourceKey } from "./harnessRouteLaunch";
+import { pinnedCliBinaries, requirePinnedProviderCli, type PinnedProviderCli } from "../pty/pinnedProviderCli";
 
 /** Key-store providers whose keys never route: they sign their own tool in. */
-const NON_ROUTABLE_KEY_PROVIDERS = new Set(["cursor", "devin", "factory", "droid", "copilot", "github-copilot"]);
+const NON_ROUTABLE_KEY_PROVIDERS = new Set([
+  "cursor", "devin", "factory", "droid", "copilot", "github-copilot",
+  // Antigravity's Gemini and Agent Platform keys are read only by its own agent.
+  "antigravity-gemini", "antigravity-agent-platform",
+]);
 
 const REGISTRY_FAMILY_FOR_PROVIDER: Record<string, ProviderFamily> = {
   anthropic: "anthropic",
@@ -188,7 +193,10 @@ export type HarnessLaunchEnvResult = {
   harness: HarnessPresetBody;
   /** The model id the harness must be started on. */
   model: string;
-  /** Shell lines that export the environment. Contains secrets — print, never persist. */
+  /**
+   * Shell lines that export the environment and define the harness's command
+   * as ADE's pinned copy. Contains secrets — print, never persist.
+   */
   script: string;
 };
 
@@ -211,21 +219,43 @@ function cliModelFor(result: Extract<HarnessPresetLaunchResult, { status: "ready
   return decoded ? `${decoded.openCodeProviderId}/${decoded.openCodeModelId}` : model;
 }
 
-export function buildHarnessLaunchEnv(
+/**
+ * The function line that makes the harness's own command word run ADE's
+ * pinned copy in the shell that evaluates the script. Functions win over the
+ * PATH in zsh, bash and PowerShell, so a launcher's `claude --model …` runs
+ * the pin, never a CLI the user installed.
+ */
+function pinnedCliFunction(cli: PinnedProviderCli, shell: HarnessLaunchShell): string {
+  const name = pinnedCliBinaries(cli.provider)[0]!;
+  const prefix = [cli.command, ...cli.leadingArgs].map((part) => shellQuote(part, shell)).join(" ");
+  return shell === "pwsh"
+    ? `function ${name} { & ${prefix} @args }`
+    : `${name}() { ${prefix} "$@"; }`;
+}
+
+/**
+ * The environment, and the pinned CLI, for running a custom provider in the
+ * user's own terminal. Waits for the harness's pinned copy when this machine
+ * has not downloaded it yet; throws its state sentence (not available here, a
+ * failed download) when there is none.
+ */
+export async function buildHarnessLaunchEnv(
   args: { presetId: string; shell?: HarnessLaunchShell },
   resolve: (presetId: string) => HarnessPresetLaunchResult | null,
-): HarnessLaunchEnvResult {
+): Promise<HarnessLaunchEnvResult> {
   // PowerShell by default on Windows, where `export` lines mean nothing.
   const shell = args.shell ?? (process.platform === "win32" ? "pwsh" : "zsh");
   const result = resolve(args.presetId);
   if (!result) throw new Error("That custom provider does not exist on this account.");
   if (result.status === "unsupported") throw new Error(result.unsupported);
+  const cli = await requirePinnedProviderCli(result.provider);
   // The model rides along: a proxied route or a Droid route spells it in a way
   // only this resolution knows, and the copied launcher starts the harness on
   // `$ADE_HARNESS_MODEL`.
-  const exports = { ...result.env, [HARNESS_MODEL_ENV]: cliModelFor(result) };
+  const exports = { ...result.env, ...cli.env, [HARNESS_MODEL_ENV]: cliModelFor(result) };
   const lines = Object.entries(exports).map(([key, value]) => (shell === "pwsh"
     ? `$env:${key} = ${shellQuote(value, shell)}`
     : `export ${key}=${shellQuote(value, shell)}`));
+  lines.push(pinnedCliFunction(cli, shell));
   return { harness: result.provider, model: result.model.trim(), script: `${lines.join("\n")}\n` };
 }
