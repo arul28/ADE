@@ -21,7 +21,6 @@ import {
   type InboundDeeplinkDispatchOptions,
   type InboundDeeplinkTarget,
 } from "./InboundDeeplinkModal";
-import { WindowsBetaNoticeHost } from "./WindowsBetaNoticeModal";
 import { DialogHost } from "../ui/dialog/confirm";
 import { BrowserAgentAccessPromptHost } from "./BrowserAgentAccessPrompt";
 import { QuitPromptHost } from "./QuitPromptHost";
@@ -1570,11 +1569,6 @@ export function App() {
           )}
         >
           <OnboardingBootstrap />
-          {/* Windows beta notice: shown on every start of every Windows install
-              (Stable included), and re-openable from Settings → About or the
-              header build chip. Renders nothing at all on macOS and Linux, where
-              ADE is GA. */}
-          <WindowsBetaNoticeHost />
           <AppNavigationBridge />
           <CrossRepoPrBanner />
           <ClipboardDeeplinkBanner />

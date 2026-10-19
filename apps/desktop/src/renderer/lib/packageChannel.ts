@@ -9,8 +9,7 @@ import {
  * Deliberately a function rather than a module-scope const: the preload bridge
  * has to exist before it is read (same rule as `rendererRuntimeTarget()`).
  * Missing bridge means stable, so a stable build never pays for the channel
- * badge or an IPC round trip to learn it is stable. This is dev-facing only:
- * the user-visible Windows beta notice is gated on the platform, not on this.
+ * badge or an IPC round trip to learn it is stable. This is dev-facing only.
  */
 export function rendererPackageChannel(): AppPackageChannel {
   if (typeof window === "undefined") return "stable";
