@@ -352,6 +352,17 @@ describe("createAgentChatService", () => {
           task_type: "local_workflow",
           workflow_name: "review",
         };
+        // The SDK's authoritative background level can register a Workflow
+        // after task_started. Its later task_progress omits task_type.
+        yield {
+          type: "system",
+          subtype: "background_tasks_changed",
+          tasks: [{
+            task_id: "wf-1",
+            task_type: "local_workflow",
+            description: "Run review workflow",
+          }],
+        };
         // Tick 1: phase + one running agent, one queued agent (no startedAt).
         yield {
           type: "system",
@@ -440,6 +451,19 @@ describe("createAgentChatService", () => {
       expect((started[0]!.event as any).background).toBe(true);
       expect((results[0]!.event as any).status).toBe("completed");
       expect((results[0]!.event as any).usage?.totalTokens).toBe(900);
+
+      const parentProgress = events.find((e) =>
+        e.event.type === "subagent_progress"
+        && (e.event as any).taskId === "wf-1"
+        && (e.event as any).workflowProgress,
+      );
+      expect(parentProgress?.event).toMatchObject({
+        taskId: "wf-1",
+        workflowProgress: expect.objectContaining({
+          phases: [{ index: 0, title: "Scan" }],
+          agents: [expect.objectContaining({ name: "scan:auth" })],
+        }),
+      });
 
       // The queued agent only materializes once it starts, then is closed as
       // stopped when the workflow ends before it finishes.
@@ -2791,7 +2815,7 @@ describe("createAgentChatService", () => {
       expect(close).toHaveBeenCalled();
     });
 
-    it("keeps a background agent started with is_backgrounded through the turn end", async () => {
+    it("keeps background agent and workflow state through turn end and idle progress", async () => {
       // The SDK reports a background agent with is_backgrounded and no level
       // signal yet. Its turn ending is not its end: turn-end cleanup drops
       // finished foreground work, and this agent is still running.
@@ -2821,8 +2845,37 @@ describe("createAgentChatService", () => {
           description: "Review the diff",
           is_backgrounded: true,
         };
+        yield {
+          type: "system",
+          subtype: "task_started",
+          task_id: "workflow-idle",
+          description: "Run idle review",
+          task_type: "local_workflow",
+          workflow_name: "idle-review",
+        };
+        yield {
+          type: "system",
+          subtype: "background_tasks_changed",
+          tasks: [{
+            task_id: "workflow-idle",
+            task_type: "local_workflow",
+            description: "Run idle review",
+          }],
+        };
         await turnDonePromise;
         yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+        // The background query continues after the turn result. This snapshot
+        // has no task_type, as in the SDK's idle-query progress path.
+        yield {
+          type: "system",
+          subtype: "task_progress",
+          task_id: "workflow-idle",
+          description: "Run idle review",
+          workflow_progress: [
+            { type: "workflow_phase", index: 0, title: "Review" },
+            { type: "workflow_agent", index: 0, state: "start", startedAt: 1, label: "idle:review", agentId: "idle-agent" },
+          ],
+        };
         await queryEndPromise;
         throw new Error("idle query transport closed");
       })());
@@ -2843,6 +2896,27 @@ describe("createAgentChatService", () => {
       await vi.waitFor(() => {
         expect(events.some((e) => e.event.type === "done" && (e.event as any).status === "completed")).toBe(true);
       }, { timeout: 3_000 });
+
+      const idleProgress = await waitForEvent(events, (e): e is AgentChatEventEnvelope =>
+        e.event.type === "subagent_progress"
+        && (e.event as any).taskId === "workflow-idle"
+        && Boolean((e.event as any).workflowProgress),
+      );
+      expect(idleProgress.event).toMatchObject({
+        taskId: "workflow-idle",
+        workflowProgress: expect.objectContaining({
+          phases: [{ index: 0, title: "Review" }],
+          agents: [expect.objectContaining({ name: "idle:review", agentId: "idle-agent" })],
+        }),
+      });
+      const idleAgent = await waitForEvent(events, (e): e is AgentChatEventEnvelope =>
+        e.event.type === "subagent_started" && (e.event as any).taskId === "workflow-idle::a0",
+      );
+      expect(idleAgent.event).toMatchObject({
+        taskId: "workflow-idle::a0",
+        description: "idle:review",
+        workflowName: "idle-review",
+      });
 
       expect(events.some((e) =>
         e.event.type === "subagent_result" && (e.event as any).taskId === "task-bg-agent")).toBe(false);
