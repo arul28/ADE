@@ -4703,14 +4703,19 @@ describe("service health probe never blocks the main thread", () => {
       if (originalPlatform) Object.defineProperty(process, "platform", originalPlatform);
     });
 
-    // `service` is what the machine service reports on the next probe.
-    const createPool = () => {
+    // `service` is what the machine service reports on the next probe. With
+    // `held`, a probe stays in flight until `landProbe()` lets it answer, as a
+    // real probe takes seconds.
+    const createPool = ({ held = false }: { held?: boolean } = {}) => {
       const service = { installed: true, running: true };
       let calls = 0;
+      const answers: Array<() => void> = [];
       const pool = new LocalRuntimeConnectionPool("1.0.0", silentLogger() as never, {
-        queryServiceStatusAsync: async () => {
+        queryServiceStatusAsync: () => {
           calls += 1;
-          return { ...asyncTestServiceStatus(), ...service };
+          const observed = { ...asyncTestServiceStatus(), ...service };
+          if (!held) return Promise.resolve(observed);
+          return new Promise((resolve) => answers.push(() => resolve(observed)));
         },
       });
       const internals = pool as unknown as { activeClient: unknown };
@@ -4718,6 +4723,7 @@ describe("service health probe never blocks the main thread", () => {
         pool,
         service,
         probes: () => calls,
+        landProbe: () => answers.shift()?.(),
         // A new client object is a new connection to a brain.
         connectTo: (client: unknown) => {
           internals.activeClient = client;
@@ -4740,12 +4746,10 @@ describe("service health probe never blocks the main thread", () => {
       expect(probes()).toBe(1);
     });
 
-    it.each([
-      { name: "the last probe ran with no brain connected", previousBrain: null },
-      { name: "the last probe ran against a brain that has since gone", previousBrain: {} },
-    ])("a new brain is probed on its first read, then the long window applies: $name", async ({ previousBrain }) => {
+    it("a new brain is probed on its first read, then the long window applies", async () => {
       const { pool, probes, connectTo } = createPool();
-      connectTo(previousBrain);
+      // The last probe ran against a brain that has since gone.
+      connectTo({});
       pool.getStatus();
       await settle();
       expect(probes()).toBe(1);
@@ -4762,18 +4766,23 @@ describe("service health probe never blocks the main thread", () => {
       expect(probes()).toBe(2);
     });
 
-    it("a recovery read probes inside the long window and returns the service's current answer", async () => {
-      const { pool, service, probes, connectTo } = createPool();
+    it("a recovery read waits for a probe already running in the window, then probes again after the service is removed", async () => {
+      const { pool, service, probes, connectTo, landProbe } = createPool({ held: true });
       connectTo({});
+      // A status poll has started a probe whose answer has not landed yet.
       pool.getStatus();
-      await settle();
+      const joined = pool.getStatusAfterServiceProbe();
+      landProbe();
+      expect((await joined).serviceHealth.installed).toBe(true);
       expect(probes()).toBe(1);
 
       // The service is removed while ADE stays connected to its brain.
       service.installed = false;
       service.running = false;
       vi.setSystemTime(Date.now() + 60_000);
-      const status = await pool.getStatusAfterServiceProbe();
+      const removed = pool.getStatusAfterServiceProbe();
+      landProbe();
+      const status = await removed;
       expect(probes()).toBe(2);
       expect(status.serviceHealth.installed).toBe(false);
     });

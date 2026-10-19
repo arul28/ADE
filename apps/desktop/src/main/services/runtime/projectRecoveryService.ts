@@ -672,8 +672,8 @@ export class ProjectRecoveryService {
       };
     }
     const dbPath = path.join(normalizedRoot, ".ade", "ade.db");
-    // Service health decides the diagnosis. The probe runs alongside these reads,
-    // and is awaited only when the cached answer may be too old to use.
+    // Service health decides the diagnosis, so the probe is awaited with these
+    // reads: its answer is at most one 2 s read window old, never the steady snapshot.
     const [{ free, dbSize }, failures, serviceStatus] = await Promise.all([
       this.storage(normalizedRoot),
       this.readFailureReports(normalizedRoot),

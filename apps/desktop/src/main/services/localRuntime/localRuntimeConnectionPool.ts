@@ -1242,17 +1242,17 @@ export class LocalRuntimeConnectionPool {
   }
 
   /**
-   * For a recovery or a report that chooses what to do from service health.
-   * Inside the steady window the cache can be five minutes old, so this probes
-   * first when the cache is older than a status read would accept, then resolves
-   * with the snapshot. Anywhere else it answers from the cache and refreshes in
-   * the background, as `getStatus` does, without waiting: a caller that polls
-   * (the recovery screen re-diagnoses every 2 s) would otherwise stack probes.
-   * `getFreshStatus` is the poll behind `app.getInfo` and never probes.
+   * For a recovery or a report that chooses what to do from service health. It
+   * waits for a probe that started within the 2 s read window (joining one
+   * already running when it is that recent, queuing behind it otherwise), so the
+   * answer is never the five-minute steady snapshot. It never probes with
+   * `maxAgeMs: 0`: the recovery screen polls this every 2 s, and a probe per call
+   * queued behind a ~4 s probe would grow without bound. `getStatus` is the read
+   * for polls; `getFreshStatus` is the poll behind `app.getInfo`.
    */
   async getStatusAfterServiceProbe(): Promise<LocalRuntimeStatus> {
-    if (this.steadyWindowApplies()) await this.refreshServiceHealth(SERVICE_HEALTH_READ_MAX_AGE_MS);
-    return this.getStatus();
+    await this.refreshServiceHealth(SERVICE_HEALTH_READ_MAX_AGE_MS);
+    return this.statusSnapshot();
   }
 
   /**
@@ -1424,23 +1424,26 @@ export class LocalRuntimeConnectionPool {
    *
    * Staleness contract: callers that only *read* health (`getStatus`) accept a
    * snapshot up to their read window old (`serviceHealthReadMaxAgeMs`) and never
-   * wait; callers that choose a recovery or a report from it await this with
-   * `maxAgeMs: 0`, through `getStatusAfterServiceProbe`. The cache is only ever
-   * invalidated by time, so "fresh" is enforced on the probe itself: a caller
-   * only joins an in-flight probe that *started* within its
-   * `maxAgeMs`. A `maxAgeMs: 0` caller therefore never adopts a probe that
-   * began before the install/repair it is asking about — it queues its own
-   * behind the running one.
+   * wait; callers that choose a recovery or a report from it wait for a probe
+   * within the read window, through `getStatusAfterServiceProbe`; the install
+   * and repair path asks with `maxAgeMs: 0`. The cache is only ever invalidated
+   * by time, so "fresh" is enforced on the probe itself: a caller only joins an
+   * in-flight probe that *started* within its `maxAgeMs`. A `maxAgeMs: 0` caller
+   * therefore never adopts a probe that began before the install/repair it is
+   * asking about — it queues its own behind the running one.
    */
   private refreshServiceHealth(maxAgeMs = SERVICE_HEALTH_READ_MAX_AGE_MS): Promise<void> {
     const requestedAtMs = Date.now();
-    if (requestedAtMs - this.serviceHealthCheckedAtMs < maxAgeMs) return Promise.resolve();
     const inFlight = this.serviceHealthRefreshPromise;
     // Strictly greater: `Date.now()` has millisecond granularity, so a probe
     // that started in the same tick as a `maxAgeMs: 0` call may still have
     // asked before the install it is being questioned about. At any other
     // `maxAgeMs` this only moves the boundary by a millisecond.
+    // Checked before the cache age: a probe still running has not landed, so
+    // the cache holds the answer from before it, and a caller inside its window
+    // must wait for that probe rather than read the older snapshot.
     if (inFlight && this.serviceHealthRefreshStartedAtMs > requestedAtMs - maxAgeMs) return inFlight;
+    if (requestedAtMs - this.serviceHealthCheckedAtMs < maxAgeMs) return Promise.resolve();
     const applyStatus = (status: ServiceManagerStatusResult) => {
       this.serviceHealthStatus = {
         state: serviceHealthState(status),
