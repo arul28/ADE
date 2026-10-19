@@ -38,6 +38,7 @@ import { isBackgroundItemBlocked } from "../../../shared/types/core";
 import { APP_FALLBACK_REFUSED_FAILURES, appFallbackReason, type AppFallbackReason } from "./appFallbackPolicy";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { resolveMovedProjectRoot } from "../../../../../ade-cli/src/services/projects/projectMove/moveJournal";
+import { requestAdeRuntimeShutdown } from "../../../../../ade-cli/src/serviceManager/runtimeShutdownRequest";
 import {
   SYSTEM_PROJECT_REGISTRATION,
   type ProjectRegistrationIntent,
@@ -171,6 +172,13 @@ const LOCAL_RUNTIME_SERVICE_REPAIR_CONNECT_TIMEOUT_MS = RUNTIME_SERVICE_START_WA
  * exactly as it did before — so a wedged runtime still costs a bounded delay.
  */
 const LOCAL_RUNTIME_DRAIN_TIMEOUT_MS = 2_000;
+/**
+ * How long quit gives this desktop's own brain to exit after it is asked to
+ * shut down, on Windows, before the brain is force-killed. The request and the
+ * wait share this one budget. 3 s is the quit budget the user approved for the
+ * round-4 Windows fixes. See `stopOwnedRuntimeCooperatively`.
+ */
+const LOCAL_RUNTIME_QUIT_BRAIN_BUDGET_MS = 3_000;
 const LOCAL_RUNTIME_STATUS_REFRESH_TIMEOUT_MS = 2_000;
 // The Windows service probe itself costs ~2.1s (two PowerShell spawns), so the
 // off-thread child needs generous headroom before it is treated as unanswerable.
@@ -1060,6 +1068,31 @@ function disposeOwnedRuntimeChild(
     unlinkTimer.unref?.();
   }, 2_000);
   cleanupTimer.unref?.();
+}
+
+/** Node's record that the child exited. Once it has, the pid is reaped and must not be signalled. */
+function hasChildExited(child: ChildProcess): boolean {
+  return (child.exitCode ?? null) !== null || (child.signalCode ?? null) !== null;
+}
+
+/**
+ * Resolves `true` when `child` exits and `false` when `timeoutMs` passes first.
+ * Never rejects. The timer is unref'd like the other bounded waits in this file.
+ */
+function waitForChildExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (hasChildExited(child)) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const onExit = (): void => {
+      clearTimeout(timer);
+      resolve(true);
+    };
+    const timer = setTimeout(() => {
+      child.off("exit", onExit);
+      resolve(false);
+    }, Math.max(0, timeoutMs));
+    timer.unref?.();
+    child.once("exit", onExit);
+  });
 }
 
 async function waitForSocket(socketPath: string, timeoutMs = 10_000): Promise<void> {
@@ -2337,6 +2370,58 @@ export class LocalRuntimeConnectionPool {
       ]);
     } finally {
       if (timer) clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Quit on Windows: ask this desktop's own brain to shut down, and force-kill
+   * it if it is still running when the budget runs out, or at once if it does
+   * not acknowledge the request.
+   *
+   * Windows has no deliverable SIGTERM, so `dispose()`'s signal is a
+   * `TerminateProcess` that skips the brain's shutdown hooks: the SQLite/CRDT
+   * flush, chat and terminal teardown, the socket cleanup. The brain's
+   * `shutdown` RPC runs the same `finish()` its SIGTERM handler runs, so it is
+   * asked first, over the endpoint this pool already uses.
+   *
+   * Scope: only the child this pool spawned (`ownedRuntimeChild`), which is
+   * local by construction. The request goes out only after the endpoint reports
+   * that child's pid, so a service brain that holds the socket is never asked to
+   * stop. The budget covers the request and the wait together. The method always
+   * resolves, so quit cannot hang here. A brain that has already exited is not
+   * waited for.
+   *
+   * POSIX is unchanged. `dispose()` still sends SIGTERM there, which the brain
+   * already handles cooperatively.
+   */
+  async stopOwnedRuntimeCooperatively(): Promise<void> {
+    if (process.platform !== "win32") return;
+    const child = this.ownedRuntimeChild;
+    if (!child || child.pid == null || hasChildExited(child)) return;
+    const pid = child.pid;
+    const deadline = Date.now() + LOCAL_RUNTIME_QUIT_BRAIN_BUDGET_MS;
+    try {
+      const socketPath = this.activeConnection?.socketPath ?? resolveMachineAdeLayout().socketPath;
+      const acknowledged = await requestAdeRuntimeShutdown({
+        pid,
+        socketPath,
+        timeoutMs: LOCAL_RUNTIME_QUIT_BRAIN_BUDGET_MS,
+      }).then((result) => result.requested, () => false);
+      if (acknowledged) await waitForChildExit(child, deadline - Date.now());
+      if (hasChildExited(child)) {
+        this.logger.info("local_runtime.quit_brain_exited", { pid, acknowledged });
+        return;
+      }
+      this.logger.warn("local_runtime.quit_brain_force_stopped", { pid, acknowledged });
+      // Clear the slot first, so `dispose()` does not signal this handle a second time.
+      if (this.ownedRuntimeChild === child) this.ownedRuntimeChild = null;
+      disposeOwnedRuntimeChild(child, socketPath);
+    } catch (error) {
+      // Not rethrown: quit goes on, and `dispose()` still force-kills the brain.
+      this.logger.warn("local_runtime.quit_brain_stop_failed", {
+        pid,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
