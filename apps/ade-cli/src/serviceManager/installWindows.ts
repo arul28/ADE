@@ -15,7 +15,7 @@ import {
   cmdQuote,
   isPidAlive,
   isStaleChannelServeCommandLine,
-  killIdentifiedWindowsProcess,
+  killVerifiedWindowsProcess,
   listStaleChannelServePids,
   powerShellSingleQuotedLiteral,
   type PidStopOutcome,
@@ -710,7 +710,18 @@ type WindowsTaskRemovalResult =
   | { ok: true; removed: boolean }
   | { ok: false; message: string };
 
-function removeWindowsTaskIfPresent(
+/** What a scheduled task is, read without changing it. */
+type WindowsTaskState =
+  | { ok: true; present: false }
+  | { ok: true; present: true; running: boolean }
+  | { ok: false; message: string };
+
+/**
+ * Reads a scheduled task, and for the legacy name whether this command owns it,
+ * without changing anything. A caller that must identify its processes first reads
+ * here, and removes the task with `endAndDeleteWindowsTask` once that is done.
+ */
+function inspectWindowsTask(
   run: ServiceManagerSpawnSync,
   taskName: string,
   description: string,
@@ -721,14 +732,14 @@ function removeWindowsTaskIfPresent(
    * the machine, so it must not be touched without one.
    */
   ownedBy?: AdeServiceCommand,
-): WindowsTaskRemovalResult {
+): WindowsTaskState {
   const query = run(
     windowsPowerShellCommand(),
     buildWindowsQueryTaskArgs(taskName),
     { encoding: "utf8", windowsHide: true },
   );
   if (query.status === TASK_NOT_FOUND_EXIT_CODE) {
-    return { ok: true, removed: false };
+    return { ok: true, present: false };
   }
   if (query.status !== 0) {
     return {
@@ -743,7 +754,7 @@ function removeWindowsTaskIfPresent(
       { encoding: "utf8", windowsHide: true },
     );
     if (action.status === TASK_NOT_FOUND_EXIT_CODE) {
-      return { ok: true, removed: false };
+      return { ok: true, present: false };
     }
     if (action.status !== 0) {
       return {
@@ -754,10 +765,20 @@ function removeWindowsTaskIfPresent(
     // Another channel's always-on brain. Leaving it running is the whole point
     // of side-by-side isolation; `ade brain status` still reports it.
     if (!isWindowsLegacyTaskOwnedByCommand(action.stdout, ownedBy)) {
-      return { ok: true, removed: false };
+      return { ok: true, present: false };
     }
   }
-  if (isWindowsTaskStateRunning(query.stdout)) {
+  return { ok: true, present: true, running: isWindowsTaskStateRunning(query.stdout) };
+}
+
+/** Ends a running task and deletes it. Only for a task `inspectWindowsTask` found present. */
+function endAndDeleteWindowsTask(
+  run: ServiceManagerSpawnSync,
+  taskName: string,
+  description: string,
+  state: Extract<WindowsTaskState, { present: true }>,
+): WindowsTaskRemovalResult {
+  if (state.running) {
     const end = run(windowsSchtasksCommand(), buildWindowsEndTaskArgs(taskName), {
       encoding: "utf8",
       windowsHide: true,
@@ -780,6 +801,18 @@ function removeWindowsTaskIfPresent(
     };
   }
   return { ok: true, removed: true };
+}
+
+function removeWindowsTaskIfPresent(
+  run: ServiceManagerSpawnSync,
+  taskName: string,
+  description: string,
+  ownedBy?: AdeServiceCommand,
+): WindowsTaskRemovalResult {
+  const state = inspectWindowsTask(run, taskName, description, ownedBy);
+  if (!state.ok) return state;
+  if (!state.present) return { ok: true, removed: false };
+  return endAndDeleteWindowsTask(run, taskName, description, state);
 }
 
 function windowsLauncherCommand(launcherPath: string): string {
@@ -873,7 +906,7 @@ async function readRecordedBrain(
   if (read.state === "gone") return { ok: true, facts: null };
   const unverified = {
     ok: false as const,
-    message: `Could not verify the brain process ${args.runtimePid}; it was left running. Nothing was stopped.`,
+    message: `Could not verify the brain process ${args.runtimePid}; it was left running. Nothing was changed.`,
   };
   if (read.state === "unreadable") return unverified;
   const match = {
@@ -885,19 +918,46 @@ async function readRecordedBrain(
   return { ok: true, facts: read.facts };
 }
 
-async function removeWindowsRunEntryIfPresent(
+/**
+ * What the startup-entry removal will stop, identified before anything changes.
+ * `ok: false` is a refusal, and nothing has been changed when it is returned.
+ */
+type WindowsStartupPlan =
+  | { ok: false; message: string }
+  | {
+    ok: true;
+    /** The per-user startup Run value exists, so it is deleted. */
+    installed: boolean;
+    /** The recorded supervisor is running. */
+    supervisorRunning: boolean;
+    /** The recorded supervisor as read, while it is still running. */
+    supervisor: WindowsProcessFacts | null;
+    /** The recorded brain as read, when the supervisor that started it is ours. */
+    brain: { socketPath: string; runtimePid: number; facts: WindowsProcessFacts } | null;
+    /** Every other ADE supervisor of this launcher, and its children, as read. */
+    predecessors: WindowsPredecessorGroup[];
+  };
+
+/**
+ * Reads everything the startup-entry removal would stop, and decides whether it may.
+ * It only reads: a refusal leaves the startup entry, the scheduled task and every
+ * process as they were.
+ */
+async function planWindowsStartupRemoval(
   run: ServiceManagerSpawnSync,
-  valueName: string,
-  launcherPath: string,
-  pidPath: string,
-  /**
-   * Present whenever the caller can name the brain's endpoint and the command it
-   * runs. Without it there is no cooperative channel, and the brain is not
-   * stopped here; the supervisor tree is still force-killed.
-   */
-  brain?: { socketPath: string; command: AdeServiceCommand },
-): Promise<WindowsTaskRemovalResult> {
-  const query = run(windowsRegCommand(), buildWindowsRunKeyQueryArgs(valueName), {
+  args: {
+    valueName: string;
+    launcherPath: string;
+    pidPath: string;
+    /**
+     * Present whenever the caller can name the brain's endpoint and the command it
+     * runs. Without it there is no cooperative channel, and the brain is not
+     * stopped here; the supervisor tree is still force-killed.
+     */
+    brain?: { socketPath: string; command: AdeServiceCommand };
+  },
+): Promise<WindowsStartupPlan> {
+  const query = run(windowsRegCommand(), buildWindowsRunKeyQueryArgs(args.valueName), {
     encoding: "utf8",
     windowsHide: true,
   });
@@ -909,59 +969,105 @@ async function removeWindowsRunEntryIfPresent(
     };
   }
 
-  const supervisor = queryWindowsSupervisor({ spawnSync: run, launcherPath, pidPath });
+  const supervisor = queryWindowsSupervisor({
+    spawnSync: run,
+    launcherPath: args.launcherPath,
+    pidPath: args.pidPath,
+  });
   if (supervisor.error) return { ok: false, message: supervisor.error };
+  let supervisorFacts: WindowsProcessFacts | null = null;
+  let brain: Extract<WindowsStartupPlan, { ok: true }>["brain"] = null;
   if (supervisor.running && supervisor.pid) {
+    const supervisorPid = supervisor.pid;
     // The brain is the supervisor's child, so `/T` would kill it here. Take the
     // supervisor alone first -- it is a stateless restart loop with nothing to
     // flush -- and only then talk the brain down. Without this ordering the
     // supervisor would relaunch the brain the moment it exited.
-    const runtimePid = brain ? supervisor.record?.runtimePid ?? null : null;
+    const runtimePid = args.brain ? supervisor.record?.runtimePid ?? null : null;
     // Identify the brain before anything is stopped. Its proof names this
     // supervisor as the parent, which only holds while the supervisor still runs.
-    const recorded = runtimePid != null && brain
-      ? await readRecordedBrain(run, {
+    if (args.brain && runtimePid != null) {
+      const recorded = await readRecordedBrain(run, {
         runtimePid,
-        supervisorPid: supervisor.pid,
-        command: brain.command,
-        socketPath: brain.socketPath,
-      })
-      : { ok: true as const, facts: null };
-    if (!recorded.ok) return { ok: false, message: recorded.message };
-    // Killed by its verified handle and nothing else: never a bare pid, and never a
-    // tree. With no recorded brain there is no brain of this channel left to stop,
-    // because the supervisor records every brain it starts.
-    const supervisorOutcome = await killIdentifiedWindowsProcess(
-      supervisor.pid,
-      (facts) => isLauncherSupervisor(facts, launcherPath),
-      windowsPowerShellRunner(run),
-    );
-    if (supervisorOutcome === "not-proven" || supervisorOutcome === "failed") {
-      return {
-        ok: false,
-        message: `Could not verify the ADE startup process ${supervisor.pid}; it was left running. Nothing was stopped.`,
-      };
-    }
-    const brainFacts = recorded.facts;
-    if (brain && runtimePid != null && brainFacts) {
-      // Only this exact process, as read above, may be stopped: a pid reused since
-      // then is a different process and is left alone.
-      const outcome = await stopWindowsBrainGracefully(run, {
-        socketPath: brain.socketPath,
-        runtimePid,
-        isExpectedProcess: (live) => sameWindowsProcess(live, brainFacts),
+        supervisorPid,
+        command: args.brain.command,
+        socketPath: args.brain.socketPath,
       });
-      if (outcome === "not-proven" || outcome === "failed") {
-        return {
-          ok: false,
-          message: `Could not verify the brain process ${runtimePid}; it was left running.`,
-        };
+      if (!recorded.ok) return { ok: false, message: recorded.message };
+      if (recorded.facts) {
+        brain = { socketPath: args.brain.socketPath, runtimePid, facts: recorded.facts };
       }
     }
+    // The supervisor is killed only as it is read here, and only while it is still
+    // this launcher's. With no recorded brain there is no brain of this channel left
+    // to stop, because the supervisor records every brain it starts.
+    const read = await readWindowsProcessFacts(supervisorPid, windowsPowerShellRunner(run));
+    if (
+      read.state === "unreadable"
+      || (read.state === "found" && !isLauncherSupervisor(read.facts, args.launcherPath))
+    ) {
+      return {
+        ok: false,
+        message: `Could not verify the ADE startup process ${supervisorPid}; it was left running. Nothing was changed.`,
+      };
+    }
+    if (read.state === "found") supervisorFacts = read.facts;
   }
 
-  if (installed) {
-    const remove = run(windowsRegCommand(), buildWindowsRunKeyDeleteArgs(valueName), {
+  const listing = readWindowsPredecessorListing(run, args.launcherPath);
+  if (!listing.ok) return { ok: false, message: listing.message };
+  const predecessors = await confirmWindowsPredecessors(run, listing.groups);
+  if (!predecessors.ok) return { ok: false, message: predecessors.message };
+
+  return {
+    ok: true,
+    installed,
+    supervisorRunning: supervisor.running,
+    supervisor: supervisorFacts,
+    brain,
+    predecessors: predecessors.groups,
+  };
+}
+
+/**
+ * Stops what the plan identified, then deletes the startup Run value. The supervisor
+ * goes first and alone, and the brain only once it is gone, because a live
+ * supervisor would start the brain again. Every kill is verified against the facts
+ * the plan read.
+ */
+async function removeWindowsStartupEntry(
+  run: ServiceManagerSpawnSync,
+  args: { valueName: string; pidPath: string },
+  plan: Extract<WindowsStartupPlan, { ok: true }>,
+): Promise<WindowsTaskRemovalResult> {
+  if (plan.supervisor) {
+    // Killed by its verified handle and nothing else: never a bare pid, and never a tree.
+    const outcome = await killVerifiedWindowsProcess(plan.supervisor, windowsPowerShellRunner(run));
+    if (outcome === "not-proven" || outcome === "failed") {
+      return {
+        ok: false,
+        message: `Could not verify the ADE startup process ${plan.supervisor.pid}; it was left running.`,
+      };
+    }
+  }
+  if (plan.brain) {
+    // Only this exact process, as the plan read it, may be stopped: a pid reused since
+    // then is a different process and is left alone.
+    const brainFacts = plan.brain.facts;
+    const outcome = await stopWindowsBrainGracefully(run, {
+      socketPath: plan.brain.socketPath,
+      runtimePid: plan.brain.runtimePid,
+      isExpectedProcess: (live) => sameWindowsProcess(live, brainFacts),
+    });
+    if (outcome === "not-proven" || outcome === "failed") {
+      return {
+        ok: false,
+        message: `Could not verify the brain process ${plan.brain.runtimePid}; it was left running.`,
+      };
+    }
+  }
+  if (plan.installed) {
+    const remove = run(windowsRegCommand(), buildWindowsRunKeyDeleteArgs(args.valueName), {
       encoding: "utf8",
       windowsHide: true,
     });
@@ -972,8 +1078,8 @@ async function removeWindowsRunEntryIfPresent(
       };
     }
   }
-  try { fs.rmSync(pidPath, { force: true }); } catch { /* advisory record */ }
-  return { ok: true, removed: installed || supervisor.running };
+  try { fs.rmSync(args.pidPath, { force: true }); } catch { /* advisory record */ }
+  return { ok: true, removed: plan.installed || plan.supervisorRunning };
 }
 
 type WindowsRunPruneResult =
@@ -1036,66 +1142,192 @@ function pruneWindowsRunValues(
   return { ok: true, removed };
 }
 
+/** One ADE supervisor of this launcher, and the processes it started, as read at one moment. */
+type WindowsPredecessorGroup = { supervisor: WindowsProcessFacts; children: WindowsProcessFacts[] };
+
 /**
- * PIDs of powershell processes whose command line names this launcher, in any
- * session of this user.
+ * PowerShell that lists the supervisors of this launcher that run in this user's
+ * session, and each one's child processes, as they are now. Read-only: it stops
+ * nothing. One tab-separated line per process: `S` for a supervisor or `C` for a
+ * child, then pid, parent pid, birth time, executable path and command line. The
+ * command line comes last, so a tab inside it survives.
  *
- * The PID record is last-writer-wins, so a live supervisor the record does not
- * name is invisible to `queryWindowsSupervisor`. The command line is the
- * durable identity, so install/repair uses this to find and stop every
- * predecessor — including one started by another logon session — before it
- * starts a replacement.
+ * The PID record is last-writer-wins, so a live supervisor the record does not name
+ * is invisible to `queryWindowsSupervisor`. The command line is the durable identity,
+ * so install and uninstall use this to find every predecessor, including one started
+ * by another logon session, before either removes or starts anything.
  */
-function stopWindowsSupervisorsByCommandLine(
-  run: ServiceManagerSpawnSync,
-  launcherPath: string,
-): WindowsTaskRemovalResult {
-  // Hold the process handle before checking its identity. A PID collected in
-  // one command and taskkilled in a second can target an unrelated reused PID.
+function buildWindowsPredecessorQueryArgs(launcherPath: string): string[] {
   const script = [
     "$ErrorActionPreference = 'Stop'",
+    // Command lines carry user paths, which may hold non-ASCII; the facts must reach
+    // the caller byte-for-byte, so they match what the verified kill reads back.
+    "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)",
     `$launcher = ${powerShellSingleQuotedLiteral(launcherPath)}`,
     "$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value",
     "$escaped = [Regex]::Escape($launcher)",
     `$pattern = '(?i)(?:^|\\s)-File\\s+(?:"' + $escaped + '"|' + $escaped + ')(?=\\s|$)'`,
-    "$removed = 0",
+    "$lines = [System.Collections.Generic.List[string]]::new()",
+    "function Format-ProcessLine([string]$kind, $row) {",
+    "  \"$kind`t$($row.ProcessId)`t$($row.ParentProcessId)`t$(([datetime]$row.CreationDate).ToUniversalTime().ToString('o'))`t$($row.ExecutablePath)`t$($row.CommandLine)\"",
+    "}",
     "foreach ($row in @(Get-CimInstance Win32_Process -Filter \"Name = 'powershell.exe'\")) {",
     "  if (-not $row.CommandLine -or $row.CommandLine -notmatch $pattern) { continue }",
     "  $owner = Invoke-CimMethod -InputObject $row -MethodName GetOwnerSid",
     "  if ($owner.ReturnValue -ne 0 -or $owner.Sid -ne $sid) { continue }",
-    "  $process = $null",
-    "  try {",
-    "    try { $process = [System.Diagnostics.Process]::GetProcessById([int]$row.ProcessId); $handle = $process.Handle } catch [ArgumentException] { continue }",
-    "    if ($process.HasExited) { continue }",
-    "    if ([Math]::Abs(($process.StartTime.ToUniversalTime() - $row.CreationDate.ToUniversalTime()).TotalMilliseconds) -gt 1000) { throw 'Supervisor identity changed during repair.' }",
-    "    $children = [System.Collections.Generic.List[System.Diagnostics.Process]]::new()",
-    "    try {",
-    "      foreach ($childRow in @(Get-CimInstance Win32_Process -Filter ('ParentProcessId = ' + $row.ProcessId))) {",
-    "        $childOwner = Invoke-CimMethod -InputObject $childRow -MethodName GetOwnerSid",
-    "        if ($childOwner.ReturnValue -ne 0 -or $childOwner.Sid -ne $sid) { continue }",
-    "        $child = $null",
-    "        try {",
-    "          $child = [System.Diagnostics.Process]::GetProcessById([int]$childRow.ProcessId); $childHandle = $child.Handle",
-    "          if ($child.HasExited -or $child.StartTime.ToUniversalTime() -lt $process.StartTime.ToUniversalTime() -or [Math]::Abs(($child.StartTime.ToUniversalTime() - $childRow.CreationDate.ToUniversalTime()).TotalMilliseconds) -gt 1000) { $child.Dispose(); $child = $null; continue }",
-    "          $children.Add($child); $child = $null",
-    "        } catch [ArgumentException] { } finally { if ($null -ne $child) { $child.Dispose() } }",
-    "      }",
-    "      $process.Kill()",
-    "      if (-not $process.WaitForExit(5000)) { throw 'Existing ADE supervisor did not stop.' }",
-    "      foreach ($child in $children) { if (-not $child.HasExited) { $child.Kill(); if (-not $child.WaitForExit(5000)) { throw 'Existing ADE brain did not stop.' } } }",
-    "    } finally { foreach ($child in $children) { $child.Dispose() } }",
-    "    $removed++",
-    "  } finally { if ($null -ne $process) { $process.Dispose() } }",
+    "  $lines.Add((Format-ProcessLine 'S' $row))",
+    "  foreach ($childRow in @(Get-CimInstance Win32_Process -Filter ('ParentProcessId = ' + $row.ProcessId))) {",
+    "    $childOwner = Invoke-CimMethod -InputObject $childRow -MethodName GetOwnerSid",
+    "    if ($childOwner.ReturnValue -ne 0 -or $childOwner.Sid -ne $sid) { continue }",
+    // A child born before its parent cannot be its child: the parent's pid was reused.
+    "    if (([datetime]$childRow.CreationDate) -lt ([datetime]$row.CreationDate)) { continue }",
+    "    $lines.Add((Format-ProcessLine 'C' $childRow))",
+    "  }",
     "}",
-    "[Console]::Out.Write($removed)",
+    "[Console]::Out.Write(($lines -join \"`n\"))",
   ].join("\n");
-  const result = run(windowsPowerShellCommand(), ["-NoProfile", "-NonInteractive", "-Command", script], {
-    encoding: "utf8", timeout: 30_000, windowsHide: true,
+  return ["-NoProfile", "-NonInteractive", "-Command", script];
+}
+
+/**
+ * Parses the listing. A line that does not parse makes the whole listing unreadable
+ * (`null`), so nothing is stopped on a guess. A child whose supervisor is not in the
+ * listing is not stopped.
+ */
+function parseWindowsPredecessorListing(output: string): WindowsPredecessorGroup[] | null {
+  const groups: WindowsPredecessorGroup[] = [];
+  const children: Array<{ parentPid: number; facts: WindowsProcessFacts }> = [];
+  for (const line of output.split(/\r?\n/)) {
+    if (!line) continue;
+    const [kind, pidText, parentText, startTime, executablePath, ...commandParts] = line.split("\t");
+    const commandLine = commandParts.join("\t");
+    const pid = Number(pidText);
+    const parentPid = Number(parentText);
+    if (!Number.isInteger(pid) || pid <= 0 || !Number.isInteger(parentPid) || parentPid < 0 || !startTime || !commandLine) {
+      return null;
+    }
+    const facts: WindowsProcessFacts = {
+      pid,
+      startTime,
+      commandLine,
+      executablePath: executablePath || null,
+      parentPid: parentPid || null,
+    };
+    if (kind === "S") groups.push({ supervisor: facts, children: [] });
+    else if (kind === "C") children.push({ parentPid, facts });
+    else return null;
+  }
+  for (const child of children) {
+    groups.find((group) => group.supervisor.pid === child.parentPid)?.children.push(child.facts);
+  }
+  return groups;
+}
+
+/** Reads the predecessors of this launcher, as they are now. Changes nothing. */
+function readWindowsPredecessorListing(
+  run: ServiceManagerSpawnSync,
+  launcherPath: string,
+): { ok: true; groups: WindowsPredecessorGroup[] } | { ok: false; message: string } {
+  const result = run(windowsPowerShellCommand(), buildWindowsPredecessorQueryArgs(launcherPath), {
+    encoding: "utf8",
+    timeout: 30_000,
+    windowsHide: true,
   });
   if (result.status !== 0) {
-    return { ok: false, message: `Unable to stop ADE supervisors: ${serviceManagerResultText(result) || "the identity check failed."}` };
+    return {
+      ok: false,
+      message: `Unable to verify the existing ADE supervisors: ${serviceManagerResultText(result) || "the identity check failed."} Nothing was changed.`,
+    };
   }
-  return { ok: true, removed: Number(String(result.stdout ?? "").trim()) > 0 };
+  const groups = parseWindowsPredecessorListing(String(result.stdout ?? ""));
+  if (!groups) {
+    return {
+      ok: false,
+      message: "Unable to verify the existing ADE supervisors: the process listing was unreadable. Nothing was changed.",
+    };
+  }
+  return { ok: true, groups };
+}
+
+/** The live facts of `expected` while they still match it exactly; `gone` once it has exited; `unverified` otherwise. */
+async function confirmWindowsProcess(
+  expected: WindowsProcessFacts,
+  runner: WindowsPowerShell,
+): Promise<WindowsProcessFacts | "gone" | "unverified"> {
+  const read = await readWindowsProcessFacts(expected.pid, runner);
+  if (read.state === "gone") return "gone";
+  if (read.state === "unreadable") return "unverified";
+  return sameWindowsProcess(read.facts, expected) ? read.facts : "unverified";
+}
+
+/**
+ * Re-reads every process the listing named, and keeps only those still exactly as
+ * listed. A supervisor that has exited takes its children out of scope, as it always
+ * has. One that changed since it was listed (a reused pid, or a different command
+ * line) refuses the whole stop.
+ */
+async function confirmWindowsPredecessors(
+  run: ServiceManagerSpawnSync,
+  groups: WindowsPredecessorGroup[],
+): Promise<{ ok: true; groups: WindowsPredecessorGroup[] } | { ok: false; message: string }> {
+  const runner = windowsPowerShellRunner(run);
+  const confirmed: WindowsPredecessorGroup[] = [];
+  for (const group of groups) {
+    const supervisor = await confirmWindowsProcess(group.supervisor, runner);
+    if (supervisor === "unverified") {
+      return {
+        ok: false,
+        message: `Could not verify the ADE supervisor process ${group.supervisor.pid}; it was left running. Nothing was changed.`,
+      };
+    }
+    if (supervisor === "gone") continue;
+    const children: WindowsProcessFacts[] = [];
+    for (const child of group.children) {
+      const live = await confirmWindowsProcess(child, runner);
+      if (live === "unverified") {
+        return {
+          ok: false,
+          message: `Could not verify the ADE brain process ${child.pid}; it was left running. Nothing was changed.`,
+        };
+      }
+      if (live !== "gone") children.push(live);
+    }
+    confirmed.push({ supervisor, children });
+  }
+  return { ok: true, groups: confirmed };
+}
+
+/**
+ * Stops the confirmed predecessors: each supervisor, then its children, every kill
+ * verified against the facts confirmed above. A process that no longer matches is a
+ * failure, not a skip.
+ */
+async function stopWindowsPredecessors(
+  run: ServiceManagerSpawnSync,
+  groups: WindowsPredecessorGroup[],
+): Promise<WindowsTaskRemovalResult> {
+  const runner = windowsPowerShellRunner(run);
+  let removed = false;
+  for (const group of groups) {
+    const supervisorOutcome = await killVerifiedWindowsProcess(group.supervisor, runner);
+    if (supervisorOutcome === "not-proven" || supervisorOutcome === "failed") {
+      return {
+        ok: false,
+        message: `Could not stop the ADE supervisor ${group.supervisor.pid}; it was left running.`,
+      };
+    }
+    if (supervisorOutcome === "killed") removed = true;
+    for (const child of group.children) {
+      const outcome = await killVerifiedWindowsProcess(child, runner);
+      if (outcome === "not-proven" || outcome === "failed") {
+        return {
+          ok: false,
+          message: `Could not stop the ADE brain process ${child.pid}; it was left running.`,
+        };
+      }
+    }
+  }
+  return { ok: true, removed };
 }
 
 export async function installWindowsService(
@@ -1338,26 +1570,56 @@ async function installWindowsServiceImpl(
     }
     // The young brain died while we waited: fall through and replace it.
   }
-  const currentRemoval = removeWindowsTaskIfPresent(
-    run,
-    taskName,
-    "existing ADE service scheduled task",
-  );
-  if (!currentRemoval.ok) {
+  // The scheduled task is read now and removed only after the startup entry has been
+  // identified below, so a refusal leaves it in place.
+  const currentTask = inspectWindowsTask(run, taskName, "existing ADE service scheduled task");
+  if (!currentTask.ok) {
     return {
       ok: false,
       serviceName,
       action: "install",
       path: taskName,
-      message: currentRemoval.message,
+      message: currentTask.message,
     };
   }
-  const startupRemoval = await removeWindowsRunEntryIfPresent(
-    run,
-    taskName,
+  // Identify everything this install would stop before any registration is removed
+  // or changed. A refusal returns here, with the existing service untouched.
+  const startupPlan = await planWindowsStartupRemoval(run, {
+    valueName: taskName,
     launcherPath,
     pidPath,
-    { socketPath, command: serviceCommand },
+    brain: { socketPath, command: serviceCommand },
+  });
+  if (!startupPlan.ok) {
+    return {
+      ok: false,
+      serviceName,
+      action: "install",
+      path: taskName,
+      message: startupPlan.message,
+    };
+  }
+  if (currentTask.present) {
+    const currentRemoval = endAndDeleteWindowsTask(
+      run,
+      taskName,
+      "existing ADE service scheduled task",
+      currentTask,
+    );
+    if (!currentRemoval.ok) {
+      return {
+        ok: false,
+        serviceName,
+        action: "install",
+        path: taskName,
+        message: currentRemoval.message,
+      };
+    }
+  }
+  const startupRemoval = await removeWindowsStartupEntry(
+    run,
+    { valueName: taskName, pidPath },
+    startupPlan,
   );
   if (!startupRemoval.ok) {
     return {
@@ -1386,7 +1648,7 @@ async function installWindowsServiceImpl(
   // started by another logon session is invisible to it. Find and stop every
   // supervisor whose command line names this launcher before starting another
   // one, or the new brain would fight the old supervisor's over the pipe.
-  const predecessorStop = stopWindowsSupervisorsByCommandLine(run, launcherPath);
+  const predecessorStop = await stopWindowsPredecessors(run, startupPlan.predecessors);
   if (!predecessorStop.ok) {
     return {
       ok: false,
@@ -1450,6 +1712,12 @@ async function installWindowsServiceImpl(
       message: `ADE per-user startup entry was installed, but the background service failed to start: ${startFailure}`,
     };
   }
+  // A stale candidate that could not be proven is still running. Say so, rather than
+  // claim the replacement took over from a clean slate. Every return below that
+  // reports the replacement carries it, including the one that is still starting.
+  const staleWarning = unverifiedStalePids.length > 0
+    ? ` Left running ${unverifiedStalePids.length === 1 ? "1 ADE process" : `${unverifiedStalePids.length} ADE processes`} that could not be verified as this channel's brain (pid ${unverifiedStalePids.join(", ")}); they were not stopped.`
+    : "";
   const readiness = await waitForWindowsRuntimeReadiness({
     command: serviceCommand,
     launcherPath,
@@ -1480,7 +1748,8 @@ async function installWindowsServiceImpl(
       path: taskName,
       message:
         `ADE per-user startup entry installed; the channel brain is still starting on ${socketPath}: `
-        + readiness.diagnostic,
+        + readiness.diagnostic
+        + staleWarning,
     };
   }
   if (!readiness.ready) {
@@ -1499,11 +1768,6 @@ async function installWindowsServiceImpl(
   // route reported success: a "successful" in-session launch is precisely the
   // case that used to be reported as a healthy always-on brain.
   const sessionBound = readPidRecord(pidPath)?.sessionBound === true;
-  // A stale candidate that could not be proven is still running. Say so, rather
-  // than claim the replacement took over from a clean slate.
-  const staleWarning = unverifiedStalePids.length > 0
-    ? ` Left running ${unverifiedStalePids.length === 1 ? "1 ADE process" : `${unverifiedStalePids.length} ADE processes`} that could not be verified as this channel's brain (pid ${unverifiedStalePids.join(", ")}); they were not stopped.`
-    : "";
   return {
     ok: true,
     restarted: true,
@@ -1559,11 +1823,35 @@ async function uninstallWindowsServiceImpl(
   const taskName = resolveWindowsTaskName({ serviceName, userName });
   const launcherPath = deps.launcherPath ?? resolveWindowsServiceLauncherPath({ env, serviceName });
   const pidPath = deps.pidPath ?? `${launcherPath}.pid.json`;
-  const currentRemoval = removeWindowsTaskIfPresent(
-    run,
-    taskName,
-    "ADE service scheduled task",
-  );
+  // The scheduled tasks are read now and removed only after everything below has been
+  // identified, so a refusal leaves them in place.
+  const currentTask = inspectWindowsTask(run, taskName, "ADE service scheduled task");
+  // Identify everything this uninstall would stop before any registration is removed
+  // or changed. A refusal returns here, with the existing service untouched.
+  const startupPlan = await planWindowsStartupRemoval(run, {
+    valueName: taskName,
+    launcherPath,
+    pidPath,
+    brain: {
+      socketPath: resolveMachineAdeLayout({ ...env, ...(serviceCommand.env ?? {}) }, "win32").socketPath,
+      command: serviceCommand,
+    },
+  });
+  if (!startupPlan.ok) {
+    return {
+      ok: false,
+      serviceName,
+      action: "uninstall",
+      path: taskName,
+      message: startupPlan.message,
+    };
+  }
+  let currentRemoval: WindowsTaskRemovalResult = { ok: true, removed: false };
+  if (!currentTask.ok) {
+    currentRemoval = currentTask;
+  } else if (currentTask.present) {
+    currentRemoval = endAndDeleteWindowsTask(run, taskName, "ADE service scheduled task", currentTask);
+  }
   const legacyRemoval = taskName === TASK_NAME
     ? { ok: true as const, removed: false }
     : removeWindowsTaskIfPresent(
@@ -1572,15 +1860,10 @@ async function uninstallWindowsServiceImpl(
       "legacy ADE Runtime scheduled task",
       serviceCommand,
     );
-  const startupRemoval = await removeWindowsRunEntryIfPresent(
+  const startupRemoval = await removeWindowsStartupEntry(
     run,
-    taskName,
-    launcherPath,
-    pidPath,
-    {
-      socketPath: resolveMachineAdeLayout({ ...env, ...(serviceCommand.env ?? {}) }, "win32").socketPath,
-      command: serviceCommand,
-    },
+    { valueName: taskName, pidPath },
+    startupPlan,
   );
   // ADE-160: uninstall removes EVERY Run value that belongs to this channel or
   // names this launcher, not just the one the current identity hashes to — an
@@ -1589,7 +1872,7 @@ async function uninstallWindowsServiceImpl(
   // A supervisor whose command line names this launcher can outlive the value
   // that started it (last-writer-wins PID record, another logon session). Stop
   // every one so the removed startup entry cannot come straight back.
-  const predecessorStop = stopWindowsSupervisorsByCommandLine(run, launcherPath);
+  const predecessorStop = await stopWindowsPredecessors(run, startupPlan.predecessors);
   const removalErrors = [currentRemoval, legacyRemoval, startupRemoval]
     .filter((result): result is Extract<WindowsTaskRemovalResult, { ok: false }> => !result.ok)
     .map((result) => result.message);

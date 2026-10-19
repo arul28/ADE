@@ -106,7 +106,7 @@ function spawnSequence(
     // supervisors. Model the new maintenance boundaries independently of
     // their lifecycle result sequence; the repair test below owns them.
     if (command === windowsRegCommand() && JSON.stringify(args) === JSON.stringify(buildWindowsRunKeyListArgs())) return { status: 0, stdout: "", stderr: "" };
-    if (command === windowsPowerShellCommand() && args.at(-1)?.includes("GetOwnerSid")) return { status: 0, stdout: "0", stderr: "" };
+    if (command === windowsPowerShellCommand() && args.at(-1)?.includes("GetOwnerSid")) return { status: 0, stdout: "", stderr: "" };
     calls.push({ command, args });
     return results.shift() ?? { status: 0, stdout: "", stderr: "" };
   };
@@ -143,6 +143,53 @@ function processTableSpawn(
     }
     return fallback(command, args, options);
   };
+}
+
+/**
+ * The registry, scheduled task and supervisor-probe answers a startup-entry removal
+ * reads and changes. The channel task `channelTask` exists and is idle, the legacy
+ * task is absent, and a registry write updates `startup`. Every call is recorded, so
+ * a removal is visible in `calls` as well as in the table.
+ */
+function startupRegistrySpawn(
+  calls: Array<{ command: string; args: string[] }>,
+  startup: Map<string, string>,
+  channelTask: string,
+  supervisorProbeArgs: string[],
+): ServiceManagerSpawnSync {
+  return (command, args) => {
+    calls.push({ command, args });
+    if (command === windowsRegCommand()) {
+      const valueAt = args.indexOf("/V");
+      const name = valueAt < 0 ? null : args[valueAt + 1]!;
+      if (args[0] === "QUERY" && !name) {
+        return { status: 0, stdout: [...startup].map(([key, value]) => `    ${key}    REG_SZ    ${value}`).join("\r\n"), stderr: "" };
+      }
+      if (args[0] === "QUERY") {
+        return startup.has(name!)
+          ? { status: 0, stdout: startup.get(name!)!, stderr: "" }
+          : { status: 1, stdout: "", stderr: "ERROR: value not found" };
+      }
+      if (args[0] === "DELETE") startup.delete(name!);
+      if (args[0] === "ADD") startup.set(name!, args[args.indexOf("/D") + 1]!);
+      return { status: 0, stdout: "", stderr: "" };
+    }
+    if (command === windowsSchtasksCommand()) return { status: 0, stdout: "SUCCESS", stderr: "" };
+    if (JSON.stringify(args) === JSON.stringify(buildWindowsQueryTaskArgs(channelTask))) {
+      return { status: 0, stdout: "Ready", stderr: "" };
+    }
+    if (JSON.stringify(args) === JSON.stringify(buildWindowsQueryTaskArgs("ADE Runtime"))) {
+      return { status: 3, stdout: "", stderr: "" };
+    }
+    if (JSON.stringify(args) === JSON.stringify(supervisorProbeArgs)) return { status: 0, stdout: "", stderr: "" };
+    return { status: 0, stdout: "", stderr: "" };
+  };
+}
+
+/** A call that ends, deletes, creates or rewrites a scheduled task or a Run value. */
+function isRegistrationChange(call: { command: string; args: string[] }): boolean {
+  return call.command === windowsSchtasksCommand()
+    || (call.command === windowsRegCommand() && ["ADD", "DELETE"].includes(call.args[0] ?? ""));
 }
 
 /** A live launcher supervisor as its identity read reports it: powershell running this launcher. */
@@ -318,7 +365,7 @@ describe("Windows background service helpers", () => {
         return { status: 0, stdout: "", stderr: "" };
       }
       if ([taskName, "ADE Runtime"].some((name) => JSON.stringify(args) === JSON.stringify(buildWindowsQueryTaskArgs(name)))) return { status: 3, stdout: "", stderr: "" };
-      return { status: 0, stdout: "0", stderr: "" };
+      return { status: 0, stdout: "", stderr: "" };
     };
     const deps = { ...immediateReadiness, command: serviceCommand, launcherPath, serviceName, userName: taskUser, spawnSync: run };
     const result = operation === "install" ? await installWindowsService(deps) : await uninstallWindowsService(deps);
@@ -900,9 +947,9 @@ describe("Windows background service helpers", () => {
     const spawnSync = spawnSequence(calls, [
       { status: 3, stdout: "", stderr: "" },
       { status: 0, stdout: "Running", stderr: "" },
+      { status: 1, stdout: "", stderr: "" },
       { status: 0, stdout: "SUCCESS: ended", stderr: "" },
       { status: 0, stdout: "SUCCESS: deleted", stderr: "" },
-      { status: 1, stdout: "", stderr: "" },
       // launchd parity: the install now scans for stale same-channel serve
       // brains before registering. Nothing running.
       { status: 0, stdout: "", stderr: "" },
@@ -921,9 +968,11 @@ describe("Windows background service helpers", () => {
     });
 
     expect(result.ok).toBe(true);
-    expect(calls.slice(0, 4)).toEqual([
+    // The startup entry is identified before the channel task is ended and deleted.
+    expect(calls.slice(0, 5)).toEqual([
       { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs("ADE Runtime") },
       { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs(taskName) },
+      { command: windowsRegCommand(), args: buildWindowsRunKeyQueryArgs(taskName) },
       { command: windowsSchtasksCommand(), args: buildWindowsEndTaskArgs(taskName) },
       { command: windowsSchtasksCommand(), args: buildWindowsDeleteTaskArgs(taskName) },
     ]);
@@ -1035,9 +1084,9 @@ describe("Windows background service helpers", () => {
     const calls: Array<{ command: string; args: string[] }> = [];
     const spawnSync = spawnSequence(calls, [
       { status: 3, stdout: "", stderr: "" },
+      { status: 1, stdout: "", stderr: "ERROR: value not found" },
       { status: 0, stdout: "Running", stderr: "" },
       { status: 0, stdout: stableLegacyAction, stderr: "" },
-      { status: 1, stdout: "", stderr: "ERROR: value not found" },
     ]);
     const launcherPath = path.join(
       makeTempHome("ade-windows-service-foreign-legacy-uninstall-"),
@@ -1056,9 +1105,9 @@ describe("Windows background service helpers", () => {
     expect(result.ok).toBe(true);
     expect(calls).toEqual([
       { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs(taskName) },
+      { command: windowsRegCommand(), args: buildWindowsRunKeyQueryArgs(taskName) },
       { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs("ADE Runtime") },
       { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskActionArgs("ADE Runtime") },
-      { command: windowsRegCommand(), args: buildWindowsRunKeyQueryArgs(taskName) },
     ]);
     expect(calls.filter((call) => call.command === windowsSchtasksCommand())).toEqual([]);
     expect(fs.existsSync(launcherPath)).toBe(false);
@@ -1233,14 +1282,14 @@ describe("Windows background service helpers", () => {
   it("removes legacy tasks and the per-user startup entry", async () => {
     const calls: Array<{ command: string; args: string[] }> = [];
     const spawnSync = spawnSequence(calls, [
-      { status: 0, stdout: "Ready", stderr: "" },
-      { status: 0, stdout: "SUCCESS: deleted", stderr: "" },
-      { status: 0, stdout: "Running", stderr: "" },
+      { status: 0, stdout: "Ready", stderr: "" },                // channel task: present, idle
+      { status: 0, stdout: "startup value", stderr: "" },        // Run entry: installed
+      { status: 0, stdout: "SUCCESS: deleted", stderr: "" },     // channel task delete
+      { status: 0, stdout: "Running", stderr: "" },              // legacy task: running
       { status: 0, stdout: ownLegacyAction, stderr: "" },
       { status: 0, stdout: "SUCCESS: ended", stderr: "" },
       { status: 0, stdout: "SUCCESS: deleted", stderr: "" },
-      { status: 0, stdout: "startup value", stderr: "" },
-      { status: 0, stdout: "SUCCESS: deleted", stderr: "" },
+      { status: 0, stdout: "SUCCESS: deleted", stderr: "" },     // Run entry delete
     ]);
     const launcherPath = path.join(makeTempHome("ade-windows-service-remove-"), "brain-service.ps1");
     fs.writeFileSync(launcherPath, "old launcher", "utf8");
@@ -1262,12 +1311,12 @@ describe("Windows background service helpers", () => {
     });
     expect(calls).toEqual([
       { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs(taskName) },
+      { command: windowsRegCommand(), args: buildWindowsRunKeyQueryArgs(taskName) },
       { command: windowsSchtasksCommand(), args: buildWindowsDeleteTaskArgs(taskName) },
       { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs("ADE Runtime") },
       { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskActionArgs("ADE Runtime") },
       { command: windowsSchtasksCommand(), args: buildWindowsEndTaskArgs("ADE Runtime") },
       { command: windowsSchtasksCommand(), args: buildWindowsDeleteTaskArgs("ADE Runtime") },
-      { command: windowsRegCommand(), args: buildWindowsRunKeyQueryArgs(taskName) },
       { command: windowsRegCommand(), args: buildWindowsRunKeyDeleteArgs(taskName) },
     ]);
     expect(fs.existsSync(launcherPath)).toBe(false);
@@ -1280,32 +1329,52 @@ describe("Windows background service helpers", () => {
   // else stops nothing, and the uninstall fails naming the pid it left running.
   const supervisorPid = readyPidRecord.supervisorPid;
   const serveCommandLine = `"C:\\Program Files\\ADE\\ade.exe" "C:\\Program Files\\ADE\\resources\\ade-cli\\cli.cjs" "serve"`;
+  // Install and uninstall both identify the recorded brain before they remove the
+  // startup entry or the channel task, so a refusal from either leaves both as they were.
   it.each([
     {
+      operation: "uninstall",
       name: "refuses, and stops nothing, when another program now holds the recorded pid",
       commandLine: `"C:\\Windows\\System32\\notepad.exe"`,
       parentPid: 4321,
       ok: false,
     },
     {
+      operation: "uninstall",
       name: "refuses a recorded brain that serves a different --socket",
       commandLine: `${serveCommandLine} "--socket" "\\\\.\\pipe\\ade-runtime-other-0123456789abcdef"`,
       parentPid: supervisorPid,
       ok: false,
     },
     {
+      operation: "uninstall",
       name: "refuses a recorded brain without --socket that this supervisor did not start",
       commandLine: serveCommandLine,
       parentPid: 4321,
       ok: false,
     },
     {
+      operation: "install",
+      name: "install refuses a recorded brain another program now holds, and leaves the startup entry and task untouched",
+      commandLine: `"C:\\Windows\\System32\\notepad.exe"`,
+      parentPid: 4321,
+      ok: false,
+    },
+    {
+      operation: "install",
+      name: "install refuses a recorded brain this supervisor did not start, and leaves the startup entry and task untouched",
+      commandLine: serveCommandLine,
+      parentPid: 4321,
+      ok: false,
+    },
+    {
+      operation: "uninstall",
       name: "stops the supervisor, then the recorded brain, when this supervisor started it",
       commandLine: serveCommandLine,
       parentPid: supervisorPid,
       ok: true,
     },
-  ])("$name", async ({ commandLine, parentPid, ok }) => {
+  ])("$name", async ({ operation, commandLine, parentPid, ok }) => {
     // A real live process stands in for the recorded brain, so the liveness check is real.
     const brain = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
       stdio: "ignore",
@@ -1326,38 +1395,108 @@ describe("Windows background service helpers", () => {
           parentPid,
         }],
       ]);
-      const spawnSync = processTableSpawn(calls, processes, spawnSequence(calls, [
-        { status: 3, stdout: "", stderr: "" },                                  // channel task: absent
-        { status: 3, stdout: "", stderr: "" },                                  // legacy task: absent
-        { status: 0, stdout: `    ${taskName}    REG_SZ    x`, stderr: "" },     // Run entry: installed
-        { status: 0, stdout: "", stderr: "" },                                  // supervisor probe: running
-        { status: 0, stdout: "SUCCESS: deleted", stderr: "" },                  // reg delete
-      ]));
-
-      const result = await uninstallWindowsService({
-        command: serviceCommand,
-        launcherPath,
-        serviceName,
-        spawnSync,
-        userName: taskUser,
-      });
+      // The channel task and the Run value both exist. A removal that runs before the
+      // identity check shows up in `calls`, and a refusal must leave both alone.
+      const startupValue = `powershell.exe -File "${launcherPath}"`;
+      const startup = new Map([[taskName, startupValue]]);
+      const spawnSync = processTableSpawn(calls, processes, startupRegistrySpawn(
+        calls,
+        startup,
+        taskName,
+        buildWindowsSupervisorQueryArgs(supervisorPid, launcherPath),
+      ));
+      const deps = { command: serviceCommand, launcherPath, serviceName, spawnSync, userName: taskUser };
+      const result = operation === "install"
+        ? await installWindowsService(deps)
+        : await uninstallWindowsService(deps);
 
       expect(result.ok).toBe(ok);
       if (!ok) expect(result.message).toContain(`the brain process ${brainPid}; it was left running`);
       expect(killedPids(calls)).toEqual(ok ? [supervisorPid, brainPid] : []);
+      if (!ok) {
+        expect(calls.filter(isRegistrationChange)).toEqual([]);
+        expect(startup.get(taskName)).toBe(startupValue);
+      }
     } finally {
       brain.kill();
     }
   });
 
 
+  // Predecessor supervisors are found by command line, so the identity they were
+  // listed by must still be the live one when they are stopped. Here the listing
+  // names a real supervisor with a command line that process no longer has (its pid
+  // was reused, or its line changed, after it was listed). Uninstall refuses, and
+  // stops nothing. The PowerShell identity reads and verified kills are real; the
+  // registry and task calls are answered, never run.
+  (process.platform === "win32" ? it : it.skip)(
+    "refuses to stop a predecessor supervisor whose command line changed after it was listed",
+    async () => {
+      const launcherPath = path.join(
+        makeTempHome("ade-windows-service-predecessor-identity-"),
+        "brain-service.ps1",
+      );
+      fs.writeFileSync(launcherPath, "Write-Output 'ready'\r\nStart-Sleep -Seconds 120\r\n", "utf8");
+      const predecessor = spawn(
+        windowsPowerShellCommand(),
+        ["-NoProfile", "-NonInteractive", "-File", launcherPath],
+        { stdio: ["ignore", "pipe", "ignore"], windowsHide: true },
+      );
+      try {
+        // The launcher prints once it runs, so the listing can find it.
+        await new Promise<void>((resolve, reject) => {
+          predecessor.stdout!.once("data", () => resolve());
+          predecessor.once("exit", (code) => reject(new Error(`The predecessor supervisor exited with ${code}.`)));
+        });
+        const predecessorPid = predecessor.pid!;
+        // The listing reports this supervisor with one more argument than its live command line has.
+        const staleListing = (line: string): string =>
+          line.startsWith(`S\t${predecessorPid}\t`) ? `${line} -Stale` : line;
+        const calls: Array<{ command: string; args: string[] }> = [];
+        const startupValue = `powershell.exe -File "${launcherPath}"`;
+        const startup = new Map([[taskName, startupValue]]);
+        const answered = startupRegistrySpawn(calls, startup, taskName, []);
+        const spawnSync: ServiceManagerSpawnSync = (command, args) => {
+          const registryOrTask = [buildWindowsQueryTaskArgs(taskName), buildWindowsQueryTaskArgs("ADE Runtime")];
+          if (command !== windowsPowerShellCommand() || registryOrTask.some((expected) => JSON.stringify(args) === JSON.stringify(expected))) {
+            return answered(command, args);
+          }
+          const real = spawnChildSync(command, args, { encoding: "utf8", windowsHide: true });
+          return {
+            status: real.status,
+            stdout: String(real.stdout ?? "").split("\n").map(staleListing).join("\n"),
+            stderr: real.stderr,
+            error: real.error,
+          };
+        };
+
+        const result = await uninstallWindowsService({
+          command: serviceCommand,
+          launcherPath,
+          serviceName,
+          spawnSync,
+          userName: taskUser,
+        });
+
+        expect(result.ok).toBe(false);
+        expect(result.message).toContain(`supervisor process ${predecessorPid}`);
+        expect(predecessor.exitCode).toBeNull();
+        expect(calls.filter(isRegistrationChange)).toEqual([]);
+        expect(startup.get(taskName)).toBe(startupValue);
+      } finally {
+        predecessor.kill();
+      }
+    },
+    60_000,
+  );
+
   it("surfaces scheduled task removal failures", async () => {
     const calls: Array<{ command: string; args: string[] }> = [];
     const spawnSync = spawnSequence(calls, [
       { status: 0, stdout: "Ready", stderr: "" },
+      { status: 1, stdout: "", stderr: "" },
       { status: 1, stdout: "", stderr: "ERROR: The system cannot find the file specified." },
       { status: 3, stdout: "", stderr: "" },
-      { status: 1, stdout: "", stderr: "" },
     ]);
 
     const result = await uninstallWindowsService({
@@ -1371,9 +1510,9 @@ describe("Windows background service helpers", () => {
     expect(result.message).toContain("ERROR: The system cannot find the file specified.");
     expect(calls).toEqual([
       { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs(taskName) },
+      { command: windowsRegCommand(), args: buildWindowsRunKeyQueryArgs(taskName) },
       { command: windowsSchtasksCommand(), args: buildWindowsDeleteTaskArgs(taskName) },
       { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs("ADE Runtime") },
-      { command: windowsRegCommand(), args: buildWindowsRunKeyQueryArgs(taskName) },
     ]);
   });
 
@@ -1381,8 +1520,8 @@ describe("Windows background service helpers", () => {
     const calls: Array<{ command: string; args: string[] }> = [];
     const spawnSync = spawnSequence(calls, [
       { status: 3, stdout: "", stderr: "" },
-      { status: 3, stdout: "", stderr: "" },
       { status: 1, stdout: "", stderr: "" },
+      { status: 3, stdout: "", stderr: "" },
     ]);
     const launcherPath = makeTempHome("ade-windows-service-launcher-dir-");
 
