@@ -2018,6 +2018,17 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     Re-point the lane (and its name) at the live HEAD branch
     $ ade lanes create --name <name>                Create a lane from the current project context
     $ ade lanes create --linear-issue-json '{...}'  Create a lane linked to a Linear issue
+    $ ade lanes create --name <name> --template <id> Set up the new lane with a template
+    $ ade lanes create --name <name> --no-template  Create the worktree without environment setup
+    $ ade lanes templates list --text                List this machine's lane templates
+    $ ade lanes templates show <id>                  Show one lane template
+    $ ade lanes templates save --json '<...>'        Save a LaneTemplate JSON object
+    $ ade lanes templates default [<id>] [--clear]  Read or change the default lane template
+    $ ade lanes templates apply <id> --lane <lane>  Apply a template to an existing lane
+    $ ade lanes templates delete <id>                Delete a lane template
+    $ ade lanes deps [--refresh] --text              Check lockfiles and installed dependencies
+    $ ade lanes templates list --machine "<name>" --text
+                                                    Templates are stored per machine; --machine targets that computer
     $ ade lanes link-linear-issue <lane> --linear-issue-json '{...}'
                                                     Link an existing lane to a Linear issue (alias: attach-linear-issue)
     $ ade lanes detach-linear-issue <lane> [--issue-id ENG-431]
@@ -5725,6 +5736,134 @@ function buildActionRunStep(
     : actionStep("result", domain, action, objectArgs);
 }
 
+function laneTemplateIdFromValue(value: unknown): string | null {
+  const unwrapped = unwrapActionEnvelope(value);
+  if (typeof unwrapped === "string") return unwrapped.trim() || null;
+  return isRecord(unwrapped) ? asString(unwrapped.templateId) : null;
+}
+
+function formatLaneTemplatesText(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  const templates = Array.isArray(result.templates)
+    ? result.templates.filter(isRecord)
+    : [];
+  const defaultTemplateId = asString(result.defaultTemplateId);
+  return renderTable(
+    ["id", "name", "default", "dependencies", "copy paths", "env files", "setup script"],
+    templates.map((template) => {
+      const id = asString(template.id) ?? "";
+      return [
+        id,
+        asString(template.name) ?? id,
+        id && id === defaultTemplateId ? "default" : "",
+        Array.isArray(template.dependencies) ? template.dependencies.length : 0,
+        Array.isArray(template.copyPaths) ? template.copyPaths.length : 0,
+        Array.isArray(template.envFiles) ? template.envFiles.length : 0,
+        template.setupScript ? "yes" : "no",
+      ];
+    }),
+    "No lane templates are saved for this project.",
+  );
+}
+
+function formatLaneDependencyStatusText(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  const folders = Array.isArray(result.folders)
+    ? result.folders.filter(isRecord)
+    : [];
+  const table = renderTable(
+    ["lockfile", "manager", "installed", "out of date"],
+    folders.map((folder) => {
+      const reason = asString(folder.outOfDateReason);
+      return [
+        asString(folder.lockfile) ?? "",
+        asString(folder.manager) ?? "unknown",
+        folder.installed === true ? "yes" : folder.installed === false ? "no" : "unknown",
+        folder.outOfDate === true
+          ? `yes${reason ? ` — ${reason}` : ""}`
+          : "no",
+      ];
+    }),
+    "No lockfiles found.",
+  );
+  const lines = [table];
+  const updateCommand = asString(result.updateCommand);
+  if (updateCommand) lines.push(`Update command: ${updateCommand}`);
+  lines.push(`Default template: ${asString(result.defaultTemplateId) ?? "none"}`);
+  return lines.join("\n\n");
+}
+
+/** A new lane's setup runs inside `create_lane`; the request waits for it. */
+function newLaneSetupTimeoutMs(): number | null {
+  return longRunningLocalRuntimeActionTimeoutMs("lane.applyTemplate");
+}
+
+function newLaneSetupFailed(result: unknown): boolean {
+  if (!isRecord(result) || !isRecord(result.setup)) return false;
+  const setup = result.setup;
+  if (asString(setup.error)) return true;
+  return isRecord(setup.progress) && asString(setup.progress.overallStatus)?.toLowerCase() === "failed";
+}
+
+function formatLaneCreateResultText(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  const lane = isRecord(result.lane) ? result.lane : {};
+  const laneName = asString(lane.name) ?? asString(lane.id) ?? "lane";
+  const lines = [`Created lane ${laneName}.`];
+  // Agents read the id and path from this text to keep working in the lane.
+  for (const [label, field] of [["id", lane.id], ["branch", lane.branchRef], ["worktree", lane.worktreePath]] as const) {
+    const text = asString(field);
+    if (text) lines.push(`${label}: ${text}`);
+  }
+  const warning = asString(result.warning);
+  if (warning) lines.push(`Warning: ${warning}`);
+  const setup = isRecord(result.setup) ? result.setup : null;
+  if (!setup) {
+    lines.push("Setup: skipped. The lane is a plain git worktree.");
+    return lines.join("\n");
+  }
+  const templateId = asString(setup.templateId);
+  const setupError = asString(setup.error);
+  if (setupError) {
+    lines.push(`Setup failed${templateId ? ` (template ${templateId})` : ""}: ${setupError}`);
+    return lines.join("\n");
+  }
+  const progress = isRecord(setup.progress) ? setup.progress : {};
+  const steps = Array.isArray(progress.steps) ? progress.steps.filter(isRecord) : [];
+  if (!templateId && steps.length === 0) {
+    lines.push("Setup: nothing to do. No default lane template is set (see `ade lanes templates`).");
+    return lines.join("\n");
+  }
+  lines.push(`Setup${templateId ? ` (template ${templateId})` : ""}: ${asString(progress.overallStatus) ?? "unknown"}.`);
+  for (const step of steps) {
+    const error = asString(step.error);
+    if (error) lines.push(`Failed ${asString(step.label) ?? asString(step.kind) ?? "step"}: ${error}`);
+  }
+  return lines.join("\n");
+}
+
+function readLaneTemplatePayload(args: string[]): JsonObject {
+  // `--json` is also the CLI-wide output switch. The global parser removes it
+  // before this builder runs, leaving the JSON value as the positional input;
+  // consume it here too so direct plan-building callers can use the documented
+  // `save --json '<object>'` spelling.
+  readFlag(args, ["--json"]);
+  const fromFile = readJsonFileOption(args, ["--file"], "--file");
+  const inputJson = readValue(args, ["--input-json", "--template-json"]);
+  const positionalJson = inputJson == null ? firstPositional(args) : null;
+  const parsed = fromFile ?? (inputJson != null
+    ? parseJson(inputJson, "--input-json")
+    : positionalJson != null
+      ? parseJson(positionalJson, "--json")
+      : undefined);
+  if (!isRecord(parsed)) {
+    throw new CliUsageError(
+      "lanes templates save requires a LaneTemplate JSON object with --json or --file.",
+    );
+  }
+  return parsed;
+}
+
 function buildLanePlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "list";
   if (sub === "actions") {
@@ -5739,6 +5878,113 @@ function buildLanePlan(args: string[]): CliPlan {
       kind: "execute",
       label: "lane action",
       steps: [buildActionRunStep(["lane", ...args])],
+    };
+  }
+  if (sub === "templates") {
+    const operation = firstPositional(args) ?? "list";
+    if (operation === "list") {
+      return {
+        kind: "execute",
+        label: "lane templates list",
+        formatText: formatLaneTemplatesText,
+        shapeResult: (values) => {
+          const rawTemplates = unwrapActionEnvelope(values.templates);
+          const templates = Array.isArray(rawTemplates)
+            ? rawTemplates.filter(isRecord)
+            : firstArray(rawTemplates, ["templates"]);
+          return {
+            templates,
+            defaultTemplateId: laneTemplateIdFromValue(values.defaultTemplate),
+          };
+        },
+        steps: [
+          actionStep("templates", "lane", "listTemplates"),
+          actionStep("defaultTemplate", "lane", "getDefaultTemplate"),
+        ],
+      };
+    }
+    if (operation === "show") {
+      const templateId = requireValue(
+        readValue(args, ["--id"]) ?? firstPositional(args),
+        "templateId",
+      );
+      return {
+        kind: "execute",
+        label: "lane template show",
+        steps: [actionStep("result", "lane", "getTemplate", { templateId })],
+      };
+    }
+    if (operation === "save") {
+      const template = readLaneTemplatePayload(args);
+      return {
+        kind: "execute",
+        label: "lane template save",
+        shapeResult: (values) => ({
+          saved: true,
+          templateId: asString(template.id),
+          result: unwrapActionEnvelope(values.result),
+        }),
+        steps: [actionStep("result", "lane", "saveTemplate", { template })],
+      };
+    }
+    if (operation === "default") {
+      const clear = readFlag(args, ["--clear"]);
+      const templateId = readValue(args, ["--id"]) ?? firstPositional(args);
+      if (clear && templateId) {
+        throw new CliUsageError("lanes templates default accepts either <id> or --clear, not both.");
+      }
+      if (clear || templateId) {
+        const nextTemplateId = clear ? null : requireValue(templateId, "templateId");
+        return {
+          kind: "execute",
+          label: "lane template default",
+          shapeResult: () => ({ defaultTemplateId: nextTemplateId }),
+          steps: [actionStep("result", "lane", "setDefaultTemplate", { templateId: nextTemplateId })],
+        };
+      }
+      return {
+        kind: "execute",
+        label: "lane template default",
+        steps: [actionStep("result", "lane", "getDefaultTemplate")],
+      };
+    }
+    if (operation === "apply") {
+      // Read the flags first: `firstPositional` would otherwise take the
+      // value of `--lane` as the template id (`apply --lane L1 web`).
+      const templateFlag = readValue(args, ["--template"]);
+      const laneFlag = readLaneId(args);
+      const templateId = requireValue(templateFlag ?? firstPositional(args), "templateId");
+      const laneId = requireValue(laneFlag ?? firstPositional(args), "laneId");
+      const minTimeoutMs = longRunningLocalRuntimeActionTimeoutMs("lane.applyTemplate");
+      return {
+        kind: "execute",
+        label: "lane template apply",
+        ...(minTimeoutMs != null ? { minTimeoutMs } : {}),
+        steps: [actionStep("result", "lane", "applyTemplate", { laneId, templateId })],
+      };
+    }
+    if (operation === "delete") {
+      const templateId = requireValue(
+        readValue(args, ["--id"]) ?? firstPositional(args),
+        "templateId",
+      );
+      return {
+        kind: "execute",
+        label: "lane template delete",
+        steps: [actionStep("result", "lane", "deleteTemplate", { templateId })],
+      };
+    }
+    throw new CliUsageError(
+      `Unknown lanes templates command '${operation}'. Use list, show, save, default, apply, or delete.`,
+    );
+  }
+  if (sub === "deps") {
+    const refresh = readFlag(args, ["--refresh"]);
+    return {
+      kind: "execute",
+      label: "lane dependencies",
+      formatText: formatLaneDependencyStatusText,
+      steps: [actionStep("result", "lane", "getDependencyStatus", refresh ? { refresh: true } : {})],
     };
   }
   if (sub === "list" || sub === "ls") {
@@ -5874,6 +6120,14 @@ function buildLanePlan(args: string[]): CliPlan {
     };
   }
   if (sub === "create" || sub === "child") {
+    const requestedTemplateId = readValue(args, ["--template"]);
+    const noTemplate = readFlag(args, ["--no-template"]);
+    if (requestedTemplateId != null && noTemplate) {
+      throw new CliUsageError("lanes create accepts either --template <id> or --no-template, not both.");
+    }
+    if (requestedTemplateId != null && !requestedTemplateId.trim()) {
+      throw new CliUsageError("--template requires a non-empty template id.");
+    }
     const name = readValue(args, ["--name"]) ?? firstPositional(args);
     const input: JsonObject = {};
     input.name = requireValue(name, "name");
@@ -5908,20 +6162,23 @@ function buildLanePlan(args: string[]): CliPlan {
       throw new CliUsageError(
         "parent lane is required. Use --lane <parent> or --parent <parent>.",
       );
+    if (requestedTemplateId != null) input.templateId = requestedTemplateId.trim();
+    if (noTemplate) input.skipSetup = true;
     const createArgs = collectGenericObjectArgs(args, input);
+    const minTimeoutMs = noTemplate ? null : newLaneSetupTimeoutMs();
     return {
       kind: "execute",
       label: "lane create",
+      ...(minTimeoutMs != null ? { minTimeoutMs } : {}),
+      formatText: formatLaneCreateResultText,
+      // `create_lane` runs the lane's setup itself and returns
+      // `{ lane, warning?, setup? }`; scripts read `.lane.id` from `--json`.
+      shapeResult: (values) => unwrapActionEnvelope(values.result),
+      exitCodeFromResult: (result) => (newLaneSetupFailed(result) ? 1 : 0),
       ...(!createArgs.parentLaneId && !createArgs.baseBranch && typeof createArgs.name === "string" && createArgs.name.trim()
         ? { laneCreationNudge: { newLaneName: createArgs.name.trim() } }
         : {}),
-      steps: [
-        actionCallStep(
-          "result",
-          "create_lane",
-          createArgs,
-        ),
-      ],
+      steps: [actionCallStep("result", "create_lane", createArgs)],
     };
   }
   if (sub === "children") {
@@ -6745,6 +7002,9 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
   if (lane.autoCreateLane) {
     steps.push(actionCallStep("lane", "create_lane", lane.createLaneArgs ?? {}));
   }
+  // The new lane's template setup runs inside `create_lane`.
+  const laneSetupTimeoutMs = lane.autoCreateLane ? newLaneSetupTimeoutMs() : null;
+  const laneSetupTimeout = laneSetupTimeoutMs != null ? { minTimeoutMs: laneSetupTimeoutMs } : {};
 
   if (mode === "cli") {
     steps.push({
@@ -6764,6 +7024,7 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
       label: "new chat cli",
       formatter: "pty-create",
       steps,
+      ...laneSetupTimeout,
       ...(laneCreationNudge ? { laneCreationNudge } : {}),
     };
   }
@@ -6815,6 +7076,7 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
     kind: "execute",
     label: "new chat",
     steps,
+    ...laneSetupTimeout,
     ...(laneCreationNudge ? { laneCreationNudge } : {}),
   };
 }
@@ -7168,9 +7430,12 @@ function buildCreateLaneFromLinearPlan(args: string[], issue: JsonObject): CliPl
     });
   }
 
+  const setupTimeoutMs = newLaneSetupTimeoutMs();
   return {
     kind: "execute",
     label: startChat ? "lane create-from-linear + chat" : "lane create-from-linear",
+    // `create_lane` waits for the lane template's setup.
+    ...(setupTimeoutMs != null ? { minTimeoutMs: setupTimeoutMs } : {}),
     steps,
   };
 }
@@ -7210,9 +7475,12 @@ function buildBatchCreateLanesFromLinearPlan(args: string[], issues: JsonObject[
       optional: true,
     };
   });
+  const setupTimeoutMs = newLaneSetupTimeoutMs();
   return {
     kind: "execute",
     label: `lane batch-create-from-linear (${issues.length})`,
+    // Each `create_lane` waits for its lane template's setup.
+    ...(setupTimeoutMs != null ? { minTimeoutMs: setupTimeoutMs } : {}),
     steps,
   };
 }

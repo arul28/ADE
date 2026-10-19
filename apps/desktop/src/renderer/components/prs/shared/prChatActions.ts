@@ -2,13 +2,8 @@ import type { AgentChatSessionSummary, OpenProjectBinding, PrReviewThread, PrWit
 import { PR_THREAD_CLOSEOUT_RULE } from "../../../../shared/prWatch";
 import { digestPreview } from "../../../../shared/prConversationDigest";
 import { pipelineStateOf, type PrPipelineStateInput } from "../../../../shared/prPipelineState";
-import { queueAgentChatDraftHandoff } from "../../../lib/agentChatDraftHandoff";
-import { navigateToAppTarget } from "../../../lib/openExternal";
-import { useCallback } from "react";
-import { selectActiveProjectStateKey, useAppStore } from "../../../state/appStore";
-import { machineIdForBinding } from "../../../../shared/machineIdentity";
-import { chatDraftMachineId, openStartChatDraft } from "../../../lib/workDraft";
 import { usePrRuntimePin } from "../state/prMachines";
+import { useLaneChatHandoff, type LaneChatHandoffArgs } from "../../../lib/laneChatHandoff";
 
 /**
  * PR → chat hand-offs. Every action writes a prompt into a chat composer and
@@ -152,72 +147,14 @@ export function chatLabel(session: Pick<AgentChatSessionSummary, "title" | "sess
   return title && title.length > 0 ? title : `Chat ${session.sessionId.slice(0, 6)}`;
 }
 
-/**
- * Put `prompt` in a chat composer and go there. `sessionId: null` starts a new
- * chat in the PR's lane (the lane-owned PR is in every lane chat's PR scope).
- */
-export function handPromptToChat(args: { laneId: string; sessionId: string | null; prompt: string }): void {
-  if (args.sessionId) {
-    queueAgentChatDraftHandoff({ sessionId: args.sessionId }, args.prompt);
-    navigateToAppTarget({ kind: "work", laneId: args.laneId, sessionId: args.sessionId });
-    return;
-  }
-  queueAgentChatDraftHandoff({ draftTargetId: `work:draft:${args.laneId}:chat` }, args.prompt);
-  navigateToAppTarget({ kind: "work", laneId: args.laneId });
-}
+export { handPromptToChat } from "../../../lib/laneChatHandoff";
+export type { LaneChatHandoffArgs as PrChatHandoffArgs } from "../../../lib/laneChatHandoff";
 
-export type PrChatHandoffArgs = {
-  laneId: string;
-  /** An existing chat, or null to start a new chat in the lane. */
-  sessionId: string | null;
-  /** Written into the composer, never sent. Omit to just open the chat. */
-  prompt?: string | null;
-};
-
-/**
- * `handPromptToChat` that knows which machine the PR's lane lives on.
- *
- * On the tab's machine it is exactly `handPromptToChat`. For a lane on another
- * machine (the PR runtime pin is set) the Work tab must not resolve the bare
- * lane or session id against the tab's machine: an existing chat is focused
- * with its binding (`ade:work:select-session`), and a new chat starts as a
- * draft that carries the owner machine (`openStartChatDraft`), the same way
- * `useStartChatInLane` does.
- */
+/** `useLaneChatHandoff` for a PR's lane: the pin comes from the PR's machine. */
 export function usePrChatHandoff(
   /** The pane that sets the pin passes it directly; its own context is outside it. */
   pinOverride?: OpenProjectBinding | null,
-): (args: PrChatHandoffArgs) => void {
+): (args: LaneChatHandoffArgs) => void {
   const contextPin = usePrRuntimePin();
-  const pin = pinOverride !== undefined ? pinOverride : contextPin;
-  const projectStateKey = useAppStore(selectActiveProjectStateKey);
-  const projectBinding = useAppStore((state) => state.projectBinding);
-  const setWorkViewState = useAppStore((state) => state.setWorkViewState);
-  return useCallback((args: PrChatHandoffArgs) => {
-    const prompt = args.prompt ?? null;
-    if (!pin) {
-      if (prompt != null) {
-        handPromptToChat({ laneId: args.laneId, sessionId: args.sessionId, prompt });
-      } else {
-        navigateToAppTarget({ kind: "work", laneId: args.laneId, sessionId: args.sessionId });
-      }
-      return;
-    }
-    if (args.sessionId) {
-      if (prompt != null) queueAgentChatDraftHandoff({ sessionId: args.sessionId }, prompt);
-      window.dispatchEvent(new CustomEvent("ade:work:select-session", {
-        detail: { sessionId: args.sessionId, laneId: args.laneId, binding: pin },
-      }));
-      navigateToAppTarget({ kind: "work" });
-      return;
-    }
-    if (prompt != null) {
-      queueAgentChatDraftHandoff({ draftTargetId: `work:draft:${args.laneId}:chat` }, prompt);
-    }
-    const draftMachineId = chatDraftMachineId(machineIdForBinding(pin), machineIdForBinding(projectBinding));
-    if (projectStateKey) {
-      openStartChatDraft(setWorkViewState, projectStateKey, args.laneId, draftMachineId);
-    }
-    navigateToAppTarget({ kind: "work" });
-  }, [pin, projectBinding, projectStateKey, setWorkViewState]);
+  return useLaneChatHandoff(pinOverride !== undefined ? pinOverride : contextPin);
 }

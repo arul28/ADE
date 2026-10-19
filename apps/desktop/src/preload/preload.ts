@@ -876,6 +876,9 @@ import type {
   SetDefaultLaneTemplateArgs,
   ApplyLaneTemplateArgs,
   SaveLaneTemplateArgs,
+  GetLaneDependencyStatusArgs,
+  AcknowledgeLaneDependencyStatusArgs,
+  LaneDependencyStatus,
   DeleteLaneTemplateArgs,
   GetPortLeaseArgs,
   AcquirePortLeaseArgs,
@@ -7197,6 +7200,19 @@ const adeBridge = {
       callPinnedOrBoundRuntimeActionOr(pin, "lane", "listTemplates", {}, () =>
         ipcRenderer.invoke(IPC.lanesListTemplates),
       ),
+    // Runtime-only: the brain reads the checkout of the machine that owns it.
+    getDependencyStatus: (
+      args: GetLaneDependencyStatusArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<LaneDependencyStatus> =>
+      callPinnedOrBoundRuntimeActionOr<LaneDependencyStatus>(pin, "lane", "getDependencyStatus", { args }, () =>
+        Promise.reject(new Error("Package status needs a connected ADE runtime."))),
+    acknowledgeDependencyStatus: (
+      args: AcknowledgeLaneDependencyStatusArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<LaneDependencyStatus> =>
+      callPinnedOrBoundRuntimeActionOr<LaneDependencyStatus>(pin, "lane", "acknowledgeDependencyStatus", { args }, () =>
+        Promise.reject(new Error("Package status needs a connected ADE runtime."))),
     getTemplate: async (
       args: GetLaneTemplateArgs,
     ): Promise<LaneTemplate | null> =>

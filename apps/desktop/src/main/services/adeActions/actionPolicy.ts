@@ -374,6 +374,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   keep_awake: ["getSnapshot", "setLevel", "migrateLegacyPreference", "fixSystemSleep"],
   lane: [
     "archive",
+    "acknowledgeDependencyStatus",
     "archiveAndReclaim",
     "attachLinearIssueToSession",
     "attachGitHubIssueToSession",
@@ -400,6 +401,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getBranchDrift",
     "getChildren",
     "getDefaultTemplate",
+    "getDependencyStatus",
     "getDeleteRisk",
     "getLeftoverWorktree",
     "getReclaimRisk",

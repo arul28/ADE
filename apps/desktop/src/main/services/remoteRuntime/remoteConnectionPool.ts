@@ -29,6 +29,7 @@ import type { RemoteTargetRegistry } from "./remoteTargetRegistry";
 import { isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
 import {
   IOS_SIMULATOR_LAUNCH_REMOTE_TRANSPORT_TIMEOUT_MS,
+  LANE_ENV_SETUP_REMOTE_TRANSPORT_TIMEOUT_MS,
   IOS_SIMULATOR_PREVIEW_REMOTE_TRANSPORT_TIMEOUT_MS,
   IOS_SIMULATOR_DEVICE_CLEANUP_REMOTE_TRANSPORT_TIMEOUT_MS,
   IOS_SIMULATOR_RUN_TESTS_REMOTE_TRANSPORT_TIMEOUT_MS,
@@ -173,6 +174,9 @@ const LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> =
   // so it failed with "Remote ADE service timed out" while the remote build
   // was still running.
   ["ios_simulator.launch", IOS_SIMULATOR_LAUNCH_REMOTE_TRANSPORT_TIMEOUT_MS],
+  // A lane template's installs on the other machine; see LANE_ENV_SETUP_TIMEOUT_MS.
+  ["lane.initEnv", LANE_ENV_SETUP_REMOTE_TRANSPORT_TIMEOUT_MS],
+  ["lane.applyTemplate", LANE_ENV_SETUP_REMOTE_TRANSPORT_TIMEOUT_MS],
   ["ios_simulator.renderPreview", IOS_SIMULATOR_PREVIEW_REMOTE_TRANSPORT_TIMEOUT_MS],
   ["ios_simulator.renderCurrentPreview", IOS_SIMULATOR_PREVIEW_REMOTE_TRANSPORT_TIMEOUT_MS],
   ["ios_simulator.ensurePreviewWorkspace", IOS_SIMULATOR_PREVIEW_REMOTE_TRANSPORT_TIMEOUT_MS],

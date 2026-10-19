@@ -401,6 +401,9 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 | `home` | `spotify_connected` | `completed`, `cancelled`, `failed` | omitted; never the Spotify account, client ID, device, track or token |
 | `mcp_servers` | `sign_in` | `completed`, `cancelled`, `failed` | omitted; never the server's name, its URL, the authorization server, or the token |
 | `find` | `find_opened` | `chat_shortcut`, `chat_palette`, `chat_palette_hit`, `diff_shortcut` | omitted; never the query, the chat, the diff, a file, or a match count |
+| `lanes` | `template_setup_started` | `from_banner`, `from_settings` | omitted; never the lane, template, or machine |
+| `lanes` | `template_suggestion_hidden` | `completed` | omitted; never the lane, template, or machine |
+| `lanes` | `deps_update_started` | `completed`, `failed` | omitted; never the lane, package details, machine, or error |
 
 Every row is passed through `sanitizeProductAnalyticsProperties` in
 `apps/desktop/src/main/services/analytics/productAnalyticsPolicy.ts`, which
@@ -1326,6 +1329,17 @@ It records only the successful user action—not lane names, paths, sizes,
 blocked reasons, retries, or scheduled review scans. The existing
 `ade_feature_used` limits cap it at 30 accepted events per minute and 140 per
 UTC day without raising the shared 200-event ceiling.
+
+The renderer records `template_setup_started` when the setup chat draft opens
+(`from_banner` or `from_settings`), `template_suggestion_hidden` when the prompt
+is hidden (`completed`), and `deps_update_started` when an install terminal
+starts (`completed` or `failed`). They are emitted from
+`renderer/lib/laneSetupAnalytics.ts` because the chat draft and terminal start
+are renderer decisions with no durable backend mutation. They never carry a
+lane, path, lockfile name, package manager, folder count, template id or name,
+machine, or error text. A 24-hour per-action-and-outcome key allows at most five
+accepted events per installation per UTC day, inside the existing
+`ade_feature_used` 140-per-day / 30-per-minute limits; no ceiling was raised.
 
 Opening the account-wide Activity control (renamed from "Attention" in the UI;
 the analytics taxonomy deliberately keeps the frozen `attention` keys) records
