@@ -1,4 +1,4 @@
-import fs from "node:fs";
+import type fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import type { FilesQuickOpenItem, FilesSearchTextMatch } from "../../../shared/types";
@@ -7,6 +7,7 @@ import { terminateProcessTree } from "../shared/processExecution";
 import { pathKey } from "../shared/pathCompare";
 import { resolveGitExecutable, runGit } from "../git/git";
 import { GIT_READ_ENV } from "../git/gitReadEnv";
+import { nonAsarFs } from "../shared/nonAsarFs";
 
 const MAX_INDEXED_FILES = 25_000;
 const MAX_TEXT_FILE_BYTES = 1_000_000;
@@ -506,7 +507,7 @@ export function createFileSearchIndexService() {
 
     let stat: fs.Stats;
     try {
-      stat = fs.statSync(absPath);
+      stat = nonAsarFs.statSync(absPath);
     } catch {
       removePath(index, normalized);
       return;
@@ -536,7 +537,7 @@ export function createFileSearchIndexService() {
     if (args.entry.size > MAX_TEXT_FILE_BYTES) return [];
     let buf: Buffer;
     try {
-      buf = await fs.promises.readFile(toAbsolute(args.index.rootPath, args.entry.path));
+      buf = await nonAsarFs.promises.readFile(toAbsolute(args.index.rootPath, args.entry.path));
     } catch {
       return [];
     }
@@ -607,7 +608,7 @@ export function createFileSearchIndexService() {
 
       let entries: fs.Dirent[] = [];
       try {
-        entries = fs.readdirSync(absDir, { withFileTypes: true });
+        entries = nonAsarFs.readdirSync(absDir, { withFileTypes: true });
       } catch {
         continue;
       }
@@ -677,7 +678,7 @@ export function createFileSearchIndexService() {
       // on disk and never follow a link out of the workspace.
       let stat: fs.Stats;
       try {
-        stat = fs.lstatSync(toAbsolute(index.rootPath, relPath));
+        stat = nonAsarFs.lstatSync(toAbsolute(index.rootPath, relPath));
       } catch {
         continue;
       }
