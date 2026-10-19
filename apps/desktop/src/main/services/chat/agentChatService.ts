@@ -11600,6 +11600,7 @@ export function createAgentChatService(args: {
       });
       launchPlanBlockBySession.set(managed.session.id, "ADE could not prepare it on this machine.");
       managed.launchRouteFellBack = true;
+      return null;
     }
     sessionLaunchPlanCache.set(managed.session.id, { key: cacheKey, plan });
     return plan;

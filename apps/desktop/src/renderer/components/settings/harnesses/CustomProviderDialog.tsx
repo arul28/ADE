@@ -212,6 +212,12 @@ export function CustomProviderDialog({
     setDraft((prev) => ({ ...prev, ...next }));
   }, []);
 
+  const selectLogo = useCallback((logo: HarnessPresetLogo) => {
+    logoCompactionGenerationRef.current += 1;
+    setCompactingLogo(false);
+    patch({ logo });
+  }, [patch]);
+
   const chooseHarness = useCallback((harness: HarnessPresetBody) => {
     setDraft((prev) => {
       if (prev.harness === harness) return prev;
@@ -373,8 +379,8 @@ export function CustomProviderDialog({
   const orphaned = Boolean(draft.model) && !selected && !reach.loading;
 
   const tiles: Array<{ id: HarnessPresetLogo["kind"]; label: string; onSelect: () => void }> = [
-    { id: "ade", label: "Default", onSelect: () => patch({ logo: { kind: "ade" } }) },
-    { id: "provider", label: "Harness mark", onSelect: () => patch({ logo: { kind: "provider", providerId: draft.harness } }) },
+    { id: "ade", label: "Default", onSelect: () => selectLogo({ kind: "ade" }) },
+    { id: "provider", label: "Harness mark", onSelect: () => selectLogo({ kind: "provider", providerId: draft.harness }) },
     { id: "upload", label: "Upload", onSelect: () => fileInputRef.current?.click() },
     ...(typeof generate === "function"
       ? [{ id: "generated" as const, label: generating ? "Generating…" : "Generate", onSelect: () => void handleGenerate() }]
