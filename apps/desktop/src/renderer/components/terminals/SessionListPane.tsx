@@ -2221,7 +2221,13 @@ export const SessionListPane = React.memo(function SessionListPane({
         return leftName.localeCompare(rightName);
       });
   }, [lanes, sessionsGroupedByLane]);
-  const archivedLaneIds = useArchivedMissingLaneIds(missingLaneSessionGroups, resolveSessionRuntimePin);
+  // The tab's key scopes a chat with a null pin (the tab's own machine), so a
+  // project switch asks again instead of keeping the previous project's answer.
+  const archivedLaneIds = useArchivedMissingLaneIds(
+    missingLaneSessionGroups,
+    resolveSessionRuntimePin,
+    projectBinding?.key ?? null,
+  );
   const { launchingLaneGroups, archivedLaneGroups, orphanLaneGroups } = useMemo(() => {
     const launching: LaneGroup[] = [];
     const archived: LaneGroup[] = [];

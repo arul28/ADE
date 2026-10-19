@@ -4,34 +4,40 @@ import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared
 /** A lane the Work list has chats for but no lane row, and those chats. */
 type MissingLaneGroup = readonly [laneId: string, sessions: readonly TerminalSessionSummary[]];
 
-/** The missing lanes one machine owns: its pin (`null` is the tab's own machine) and their ids. */
-type MissingLaneQuery = { pin: OpenProjectBinding | null; laneIds: string[] };
+/**
+ * The missing lanes one machine owns: its pin (`null` is the tab's own machine),
+ * the scope that names that machine, and their ids. The scope is the pin's key,
+ * or the tab binding's key for a null pin, so a read never outlives its project.
+ */
+type MissingLaneQuery = { pin: OpenProjectBinding | null; scopeKey: string; laneIds: string[] };
 
 const NO_ARCHIVED_LANE_IDS: ReadonlySet<string> = new Set();
 
 /**
  * Groups the missing lanes by the machine their chats run on. A lane owns its
  * machine, so the first chat of a group names the machine for the whole group.
- * Sorted, so a list that merely re-orders (groups order by their newest chat)
- * produces the same queries.
+ * A null pin is the tab's own machine, so it takes the tab binding's key as its
+ * scope. Sorted, so a list that merely re-orders (groups order by their newest
+ * chat) produces the same queries.
  */
 function missingLaneQueries(
   groups: readonly MissingLaneGroup[],
   resolvePin: (session: TerminalSessionSummary) => OpenProjectBinding | null,
+  tabBindingKey: string | null,
 ): MissingLaneQuery[] {
-  const byPinKey = new Map<string, MissingLaneQuery>();
+  const byScopeKey = new Map<string, MissingLaneQuery>();
   for (const [laneId, sessions] of groups) {
     const first = sessions[0];
     if (!first) continue;
     const pin = resolvePin(first);
-    const pinKey = pin?.key ?? "";
-    const query = byPinKey.get(pinKey) ?? { pin, laneIds: [] };
+    const scopeKey = pin?.key ?? tabBindingKey ?? "";
+    const query = byScopeKey.get(scopeKey) ?? { pin, scopeKey, laneIds: [] };
     query.laneIds.push(laneId);
-    byPinKey.set(pinKey, query);
+    byScopeKey.set(scopeKey, query);
   }
-  return [...byPinKey.entries()]
-    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
-    .map(([, query]) => ({ pin: query.pin, laneIds: [...query.laneIds].sort() }));
+  return [...byScopeKey.values()]
+    .sort((left, right) => (left.scopeKey < right.scopeKey ? -1 : left.scopeKey > right.scopeKey ? 1 : 0))
+    .map((query) => ({ ...query, laneIds: [...query.laneIds].sort() }));
 }
 
 /** Which of the query's lanes its machine reports as archived. */
@@ -51,22 +57,25 @@ async function archivedLaneIdsOf(query: MissingLaneQuery): Promise<string[]> {
  *
  * The lane list asks for live lanes only, so a chat on an archived lane has no
  * lane row and would read as an orphan. This asks each owning machine once per
- * change of the missing set: the effect is keyed on the queries' ids and
- * `pin?.key`, never on the pin object, a group list rebuilt on every poll, or a
- * render. A lane the machine does not report as archived stays missing. A failed
- * read leaves its machine's groups as they were, and is not retried until the
- * missing set changes.
+ * change of the missing set or of a machine's scope: the effect is keyed on each
+ * query's scope and lane ids, never on the pin object, a group list rebuilt on
+ * every poll, or a render. `tabBindingKey` is the project tab's binding key. A
+ * chat with a null pin is on that machine, so switching the tab asks it again.
+ * A lane the machine does not report as archived stays missing. A machine that
+ * cannot answer leaves its groups missing, and is not asked again until the set
+ * or the scope changes.
  */
 export function useArchivedMissingLaneIds(
   missingGroups: readonly MissingLaneGroup[],
   resolvePin: (session: TerminalSessionSummary) => OpenProjectBinding | null,
+  tabBindingKey: string | null,
 ): ReadonlySet<string> {
   const queries = useMemo(
-    () => missingLaneQueries(missingGroups, resolvePin),
-    [missingGroups, resolvePin],
+    () => missingLaneQueries(missingGroups, resolvePin, tabBindingKey),
+    [missingGroups, resolvePin, tabBindingKey],
   );
   const queryKey = useMemo(
-    () => JSON.stringify(queries.map((query) => [query.pin?.key ?? "", query.laneIds])),
+    () => JSON.stringify(queries.map((query) => [query.scopeKey, query.laneIds])),
     [queries],
   );
   // The read effect below runs only when the key changes, and reads the queries
@@ -86,16 +95,16 @@ export function useArchivedMissingLaneIds(
     // they were before this read.
     void Promise.all(current.map((query) => archivedLaneIdsOf(query).catch(() => [] as string[])))
       .then((perMachine) => {
-        const archivedLaneIds = new Set(perMachine.flat());
-        // Nothing archived renders the same as no answer, so it needs no state.
-        if (cancelled || archivedLaneIds.size === 0) return;
-        setResolved({ queryKey, archivedLaneIds });
+        if (cancelled) return;
+        // Recorded even when nothing is archived: an answer kept from an earlier
+        // scope would otherwise come back when the tab returns to that scope.
+        setResolved({ queryKey, archivedLaneIds: new Set(perMachine.flat()) });
       });
     return () => {
       cancelled = true;
     };
   }, [queryKey]);
 
-  // A result for an earlier missing set says nothing about this one.
+  // A result for another missing set or scope says nothing about this one.
   return resolved?.queryKey === queryKey ? resolved.archivedLaneIds : NO_ARCHIVED_LANE_IDS;
 }
