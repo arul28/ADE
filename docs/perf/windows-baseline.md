@@ -171,6 +171,18 @@ from the poller in 228 steps (four seeds). The root was the primary checkout
 (`C:\Users\arul2\Documents\Programming\ADE`): a lane worktree path contains
 `.ade`, which the bench ignores, so it would watch nothing.
 
+### Brain: local chat send (new, Windows)
+
+| Metric | How | Baseline (run 1 / run 2) | Ceiling |
+|---|---|---|---|
+| Local new chat: Send → first Work row (the renderer's wait for the brain's `chat.createSession`, then `chat.sendMessage`, on this machine's brain). Before this change, installed app: 207–387 ms, median ~246 ms. After: coordinator to fill | in-app, installed app, Send to the first row, several new chats | before: 207–387 ms (median ~246 ms); after: coordinator to fill | *new* 150 ms (the Mac Studio's brain takes ~113 ms for the same flow) |
+
+The send path asks whether `agent-browser` is installed on every turn. The
+probe is a `where` process. Before this change it ran on the brain's event
+loop, about 40 ms, on the first ask and again each time the 60 s cache expired.
+Now the probe runs in the background, started when the brain creates its
+computer-use broker, and a send reads the cached answer without waiting.
+
 ### Process spawns (new, Windows)
 
 `spawn.bench.mts`, run from `apps/ade-cli`. `PATH` had 105 entries.
