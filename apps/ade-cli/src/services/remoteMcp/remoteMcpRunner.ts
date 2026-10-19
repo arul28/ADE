@@ -70,6 +70,11 @@ async function resolveLaunch(): Promise<Launch> {
 
 const running = new Set<ChildProcess>();
 
+/** How many commands connected apps have running right now. */
+export function activeRemoteRunCount(): number {
+  return running.size;
+}
+
 /** Stops every command still running, e.g. when the brain shuts down. */
 export function stopAllRemoteRuns(): void {
   for (const child of running) signalChildProcessTree(child, "SIGKILL");

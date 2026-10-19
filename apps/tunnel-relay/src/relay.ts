@@ -126,8 +126,9 @@ export function generateConnectionId(): string {
 
 export type TunnelRoute =
   /**
-   * ADE MCP: an HTTP request for the machine's MCP server, forwarded
-   * over its control socket. `path` is what the brain sees, with the query.
+   * ADE MCP: an HTTP request for a machine's MCP server, forwarded over its
+   * control socket. `machineKey` here is the machine's MCP endpoint key, not
+   * its relay key (see resolveMcpEndpoint). `path` is what the brain sees.
    */
   | { kind: "mcp"; machineKey: string; path: string }
   | { kind: "claim"; machineKey: string }
@@ -277,6 +278,35 @@ export function locationHintForGeo(
   }
 }
 
+/**
+ * ADE MCP addresses use an endpoint key, never the relay key: the URL is given
+ * to outside AI apps, and the relay key would let its holder open `/connect`
+ * tunnels and use up a machine's phone slots. The brain derives the endpoint
+ * key from its relay secret and registers it over its signed control socket;
+ * the object named `mcp-endpoint:<key>` remembers which machine it belongs to
+ * (first writer wins). The mapping never changes, so it is cached per isolate.
+ */
+export const MCP_ENDPOINT_PATH = "/__mcp-endpoint";
+const MAX_CACHED_ENDPOINTS = 1_000;
+const endpointCache = new Map<string, string>();
+
+export function mcpEndpointObjectName(endpointKey: string): string {
+  return `mcp-endpoint:${endpointKey.toLowerCase()}`;
+}
+
+async function resolveMcpEndpoint(env: TunnelRelayEnv, endpointKey: string): Promise<string | null> {
+  const cached = endpointCache.get(endpointKey);
+  if (cached) return cached;
+  const stub = env.TUNNEL.get(env.TUNNEL.idFromName(mcpEndpointObjectName(endpointKey)));
+  const response = await stub.fetch(`https://relay.internal${MCP_ENDPOINT_PATH}`);
+  if (!response.ok) return null;
+  const machineKey = ((await response.json()) as { machineKey?: unknown }).machineKey;
+  if (typeof machineKey !== "string" || !validKey(machineKey)) return null;
+  if (endpointCache.size >= MAX_CACHED_ENDPOINTS) endpointCache.clear();
+  endpointCache.set(endpointKey, machineKey);
+  return machineKey;
+}
+
 export async function handleRequest(request: Request, env: TunnelRelayEnv): Promise<Response> {
   const url = new URL(request.url);
   if (url.pathname === "/health") {
@@ -293,6 +323,16 @@ export async function handleRequest(request: Request, env: TunnelRelayEnv): Prom
   if (!route) return textResponse("not found", 404);
   if (route.kind === "mcp" && request.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: MCP_CORS_HEADERS });
+  }
+  if (route.kind === "mcp") {
+    const machineKey = await resolveMcpEndpoint(env, route.machineKey);
+    if (!machineKey) {
+      return jsonResponse(
+        { error: "ade_mcp_off", error_description: "ADE MCP is off on that computer. Turn it on in ADE Settings → ADE MCP." },
+        { status: 404, headers: { "cache-control": "no-store", ...MCP_CORS_HEADERS } },
+      );
+    }
+    return env.TUNNEL.get(env.TUNNEL.idFromName(machineKey)).fetch(request);
   }
 
   // Every route is scoped to a single machine → a single Durable Object

@@ -18,6 +18,7 @@ describe("checkRemoteAdeCommand", () => {
     ["write", "ADE MCP itself through actions", ["actions", "run", "remote_mcp", "createToken"]],
     ["write", "the raw RPC tool door", ["actions", "call", "run_ade_action"]],
     ["write", "forwarding to another machine", ["chat", "send", "x", "--machine", "desktop"]],
+    ["write", "removing a machine from the account, through the `machine` alias", ["machine", "remove", "key"]],
     ["read", "creating a lane", ["lanes", "create", "--name", "x"]],
     ["read", "a flag before the subcommand", ["lanes", "--text", "create"]],
     ["read", "a write action through actions", ["actions", "run", "lane", "create"]],

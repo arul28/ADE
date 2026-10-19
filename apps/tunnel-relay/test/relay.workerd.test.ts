@@ -470,18 +470,30 @@ describe("TunnelDurableObject in workerd", () => {
     const stub = stubFor(key);
     await claim(stub, key);
     const control = await openControl({ stub, key, epoch: CONTROL_EPOCH });
-    const mcp = (body: string): Promise<Response> => worker.fetch(new Request(`https://relay.test/m/${key}/mcp`, {
+    // The public address carries the brain's endpoint key, never the relay key.
+    const endpointKey = "7".repeat(40);
+    const mcpAt = (urlKey: string, body: string): Promise<Response> => worker.fetch(new Request(`https://relay.test/m/${urlKey}/mcp`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: "Bearer t" },
       body,
     }), env);
+    const mcp = (body: string): Promise<Response> => mcpAt(endpointKey, body);
 
-    // Off by default: answered at the relay, nothing sent to the machine.
+    // Before the brain registers it, the address is unknown.
+    const unknown = await mcp("{}");
+    expect(unknown.status).toBe(404);
+    expect(await unknown.json()).toMatchObject({ error: "ade_mcp_off" });
+
+    // Registered but off: answered at the relay, nothing sent to the machine.
+    control.send(JSON.stringify({ t: "mcp_state", enabled: false, endpointKey }));
+    const registered = nextMessage(control);
+    control.send(JSON.stringify({ t: "ping" }));
+    expect(await registered).toBe(JSON.stringify({ t: "pong" }));
     const off = await mcp("{}");
     expect(off.status).toBe(404);
     expect(await off.json()).toMatchObject({ error: "ade_mcp_off" });
 
-    control.send(JSON.stringify({ t: "mcp_state", enabled: true }));
+    control.send(JSON.stringify({ t: "mcp_state", enabled: true, endpointKey }));
     const pong = nextMessage(control);
     control.send(JSON.stringify({ t: "ping" }));
     expect(await pong).toBe(JSON.stringify({ t: "pong" }));
@@ -504,6 +516,10 @@ describe("TunnelDurableObject in workerd", () => {
     expect(response.status).toBe(200);
     expect(await response.text()).toBe("{\"ok\":true}");
     expect(response.headers.get("set-cookie")).toBeNull();
+
+    // The relay key itself is not an ADE MCP address.
+    const byRelayKey = await mcpAt(key, "{}");
+    expect(byRelayKey.status).toBe(404);
 
     // A request in flight when the machine's socket goes is failed at once.
     const second = nextMessage(control);

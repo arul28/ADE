@@ -400,8 +400,8 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
     { entryIds: ["integrations.jira", "integrations.jira-projects", "integrations.jira-top-bar"], render: () => <JiraSection />, machine: "routed", title: "Jira", group: "jira" },
   ],
   notifications: [{ entryIds: "tab", render: () => <NotificationsSection /> }],
-  // Served by that machine's brain; every call carries the page's pin.
-  "ade-mcp": [{ entryIds: "tab", render: () => <SettingsColumn><AdeMcpPage /></SettingsColumn>, machine: "local", title: "ADE MCP" }],
+  // Served by the selected machine's brain; every call carries its pin.
+  "ade-mcp": [{ entryIds: "tab", render: () => <SettingsColumn><AdeMcpPage /></SettingsColumn>, machine: "routed", title: "ADE MCP" }],
   mcp: [{ entryIds: "tab", render: () => <McpServersSection /> }],
   secrets: [{ entryIds: ["secrets.secrets"], render: () => <SecretsSection /> }],
   stats: [{ entryIds: ["stats.usage"], render: () => <AdeUsageSection /> }],

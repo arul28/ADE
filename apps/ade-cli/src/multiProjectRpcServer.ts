@@ -84,6 +84,7 @@ import {
 import { buildSendNotificationAction } from "../../desktop/src/main/services/adeActions/registry";
 import { callerIdentityIsAgent, normalizeAdeRuntimeRole, resolveSessionBoundRole } from "./runtimeRoles";
 import { isRemoteMcpAction } from "../../desktop/src/shared/types/remoteMcp";
+import { isDesktopClientName } from "../../desktop/src/shared/runtimeClientNames";
 import {
   createSyncAccountDirectoryHealth,
   type SyncAccountDirectoryHealth,
@@ -2453,7 +2454,9 @@ export function createMultiProjectRpcRequestHandler(
         import("./services/remoteMcp/remoteMcpShared"),
         import("./services/remoteMcp/remoteMcpService"),
       ]);
-      return remoteMcpActionHandlers(getSharedRemoteMcpService(), "api")[action](isRecord(params.args) ? params.args : {});
+      // Settings on this computer's desktop arrives here too (it needs no project).
+      const surface = isDesktopClientName(callerClientName()) ? "desktop" : "api";
+      return remoteMcpActionHandlers(getSharedRemoteMcpService(), surface)[action](isRecord(params.args) ? params.args : {});
     }
 
     // `ade notify`: machine-wide, so it neither needs nor registers the

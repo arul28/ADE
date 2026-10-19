@@ -24,7 +24,7 @@ MCP work, and new CLI commands appear on their own.
 | `apps/ade-cli/src/services/sync/machineRelayTunnel.ts` | Attaches the service to the machine's relay tunnel. |
 | `apps/ade-cli/src/multiProjectRpcServer.ts` | `remoteMcp.call`, the machine method behind `ade mcp` (operator only; never a chat-bound agent). |
 | `apps/ade-cli/src/cliRemoteMcp.ts` | `ade mcp` commands and their `--text` output. |
-| `apps/tunnel-relay/src/relay.ts`, `tunnelDo.ts` | `/m/<machineKey>/…` and OAuth discovery routes; forwarding over the control socket; limits; CORS. |
+| `apps/tunnel-relay/src/relay.ts`, `tunnelDo.ts` | `/m/<endpointKey>/…` and OAuth discovery routes; endpoint-key → machine mapping; forwarding over the control socket; limits; CORS. |
 | `apps/desktop/src/main/services/adeActions/registry.ts` | `remote_mcp` action domain (Settings). |
 | `apps/desktop/src/main/services/adeActions/actionPolicy.ts`, `apps/desktop/src/shared/adeActionAccess.ts` | `remote_mcp` is CTO-only; its writes are user-only (desktop clients); `createToken` is secret-bearing. |
 | `apps/desktop/src/shared/types/remoteMcp.ts` | Wire types shared by the brain, preload and Settings. |
@@ -34,7 +34,7 @@ MCP work, and new CLI commands appear on their own.
 
 ```
 AI app ──HTTPS──► ade-tunnel-relay Worker ──► TunnelDurableObject(machineKey)
-                   /m/<key>/mcp                │  {t:"http", rid, method, path, headers, body}
+                   /m/<endpointKey>/mcp        │  {t:"http", rid, method, path, headers, body}
                                                ▼  over the brain's existing control socket
                                           brain: remoteMcpService.handleHttp
                                                │  {t:"http_res", rid, status, headers, body}
@@ -51,13 +51,19 @@ AI app ◄───────────────────────�
 - A brain sends `mcp_state` on every control open and on every toggle. An older
   relay ignores it; an older brain never sends it, so its relay answers 404.
 
-URLs, with `<base>` = `https://ade-tunnel-relay.arulsharma1028.workers.dev/m/<machineKey>`:
+**The URL never contains the relay key.** It uses an endpoint key the brain
+derives from its relay secret (`mcpEndpointKeyFor`) and registers with each
+`mcp_state` over its signed control socket; the relay's `mcp-endpoint:<key>`
+object maps it to the machine (first writer wins). Handing the URL to an AI
+app therefore cannot open `/connect` tunnels or use up a machine's phone slots.
+
+URLs, with `<base>` = `https://ade-tunnel-relay.arulsharma1028.workers.dev/m/<endpointKey>`:
 
 | URL | What |
 |---|---|
 | `<base>/mcp` | MCP endpoint. POST only (stateless; GET/DELETE → 405). |
-| `/.well-known/oauth-protected-resource/m/<key>/mcp` | RFC 9728 metadata (also `<base>/.well-known/oauth-protected-resource`). |
-| `/.well-known/oauth-authorization-server/m/<key>` | RFC 8414 metadata; issuer is `<base>`. `openid-configuration` answers the same. |
+| `/.well-known/oauth-protected-resource/m/<endpointKey>/mcp` | RFC 9728 metadata (also `<base>/.well-known/oauth-protected-resource`). |
+| `/.well-known/oauth-authorization-server/m/<endpointKey>` | RFC 8414 metadata; issuer is `<base>`. `openid-configuration` answers the same. |
 | `<base>/oauth/register` | Dynamic client registration. |
 | `<base>/oauth/authorize` | Start page; Continue with ADE. |
 | `https://<relay>/oauth/callback` | ADE sign-in returns here; routed to `<base>/oauth/account-callback`. |
@@ -116,7 +122,9 @@ Refused at every level, because they would outlive or get around the switch
 that grants access, or cut the connection:
 
 - the commands `mcp`, `account`, `login`, `logout`, `connect`, `setup`,
-  `reset`, `brain`, `serve`, `runtime`, `rpc`, `code` and `desktop`;
+  `reset`, `brain`, `serve`, `runtime`, `rpc`, `code` and `desktop`, and every
+  `machines` (or `machine`) subcommand except `list`/`show` (renaming,
+  removing or re-pairing account machines);
 - through `ade actions` (or its alias `action`): any `remote_mcp.*` action, any
   `account.*` action except `status` (tokens, sign-out), in both the
   `<domain.action>` and `<domain> <action>` spellings, and the raw tool doors

@@ -48,7 +48,7 @@ import { createRemoteMcpStore } from "./remoteMcpStore";
 /**
  * ADE MCP: an MCP server for this computer, reached through ADE Relay.
  *
- * The relay Worker forwards each HTTP request under `/m/<machineKey>/` over
+ * The relay Worker forwards each HTTP request under `/m/<endpointKey>/` over
  * the brain's existing control socket, and returns whatever this answers. All
  * of it happens here: the MCP protocol, OAuth sign-in, token checks, and
  * running the `ade` command. The Worker stores nothing and can mint nothing.
@@ -73,7 +73,8 @@ export type RemoteMcpHttpResponse = {
 
 export type RemoteMcpRelayEndpoint = {
   relayUrl: string;
-  machineKey: string;
+  /** The key in the public URL; not the relay key (see mcpEndpointKeyFor). */
+  endpointKey: string;
   connected: boolean;
 };
 
@@ -164,7 +165,7 @@ export function createRemoteMcpService(args: {
   const base = (): string | null => {
     const endpoint = relayEndpoint();
     if (!endpoint) return null;
-    return `${withoutTrailingSlash(endpoint.relayUrl)}/m/${endpoint.machineKey}`;
+    return `${withoutTrailingSlash(endpoint.relayUrl)}/m/${endpoint.endpointKey}`;
   };
 
   const notifyEnabled = (enabled: boolean): void => {
@@ -488,7 +489,7 @@ export function createRemoteMcpService(args: {
     signIn.searchParams.set("code_challenge", accountChallenge);
     signIn.searchParams.set("code_challenge_method", "S256");
     // The relay routes the callback back to this machine by the key before the dot.
-    signIn.searchParams.set("state", `${ready.endpoint.machineKey}.${nonce}`);
+    signIn.searchParams.set("state", `${ready.endpoint.endpointKey}.${nonce}`);
     signIn.searchParams.set("scope", "openid profile email");
     return redirect(signIn.toString());
   };

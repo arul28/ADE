@@ -9,6 +9,7 @@ import type {
   RemoteMcpStatus,
 } from "../../../shared/types/remoteMcp";
 import { usageProviderLogo } from "../terminals/ToolLogos";
+import { confirmDialog } from "../ui/dialog";
 import { Banner } from "../ui/notice";
 import { ipcErrorMessage } from "../../lib/format";
 import { ModernPage, ModernRow, ModernRows, ModernSection, SettingsSegmented, SettingsToggle } from "./primitives";
@@ -126,7 +127,6 @@ export function AdeMcpPage() {
   const [tokenLabel, setTokenLabel] = useState("");
   const [tokenScope, setTokenScope] = useState<RemoteMcpScope>("write");
   const [created, setCreated] = useState<RemoteMcpCreatedToken | null>(null);
-  const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
   const [showAllActivity, setShowAllActivity] = useState(false);
 
   useEffect(() => {
@@ -208,12 +208,20 @@ export function AdeMcpPage() {
     await load();
   }, "ADE couldn't change that.");
 
-  const remove = (connection: RemoteMcpConnectionSummary) => void run(async () => {
-    await call("removeConnection", { id: connection.id });
-    setConfirmRemove(null);
-    if (created?.connection.id === connection.id) setCreated(null);
-    await load();
-  }, "ADE couldn't disconnect that.");
+  const confirmRemove = async (connection: RemoteMcpConnectionSummary) => {
+    const ok = await confirmDialog({
+      title: `Disconnect ${connection.label}?`,
+      message: "Its token stops working now. Connecting it again needs a new sign-in or token.",
+      confirmLabel: "Disconnect",
+      destructive: true,
+    });
+    if (!ok) return;
+    await run(async () => {
+      await call("removeConnection", { id: connection.id });
+      if (created?.connection.id === connection.id) setCreated(null);
+      await load();
+    }, "ADE couldn't disconnect that.");
+  };
 
   const enabled = status?.enabled === true;
   const computer = isThisMachine ? "this computer" : machineName;
@@ -418,31 +426,17 @@ export function AdeMcpPage() {
                       ariaLabel={`${connection.label} access`}
                       disabled={busy}
                     />
-                    {confirmRemove === connection.id ? (
-                      <button
-                        type="button"
-                        className="ade-modern-btn"
-                        data-size="sm"
-                        data-tone="danger"
-                        disabled={busy}
-                        onBlur={() => setConfirmRemove(null)}
-                        onClick={() => remove(connection)}
-                      >
-                        Disconnect
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        className="ade-modern-btn"
-                        data-size="sm"
-                        data-variant="ghost"
-                        disabled={busy}
-                        aria-label={`Disconnect ${connection.label}`}
-                        onClick={() => setConfirmRemove(connection.id)}
-                      >
-                        Disconnect…
-                      </button>
-                    )}
+                    <button
+                      type="button"
+                      className="ade-modern-btn"
+                      data-size="sm"
+                      data-variant="ghost"
+                      disabled={busy}
+                      aria-label={`Disconnect ${connection.label}`}
+                      onClick={() => void confirmRemove(connection)}
+                    >
+                      Disconnect
+                    </button>
                   </>
                 )}
               />

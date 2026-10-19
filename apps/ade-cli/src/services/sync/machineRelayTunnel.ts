@@ -160,8 +160,8 @@ export async function createMachineRelayTunnel(args: MachineRelayTunnelArgs): Pr
   const remoteMcp = getSharedRemoteMcpService(args.logger);
   remoteMcp.attachRelayEndpoint(() => {
     const status = tunnel.getStatus();
-    return status.machineKey
-      ? { relayUrl: status.relayUrl, machineKey: status.machineKey, connected: status.connected }
+    return status.machineKey && status.mcpEndpointKey
+      ? { relayUrl: status.relayUrl, endpointKey: status.mcpEndpointKey, connected: status.connected }
       : null;
   });
   tunnel.attachRemoteMcp(remoteMcp);

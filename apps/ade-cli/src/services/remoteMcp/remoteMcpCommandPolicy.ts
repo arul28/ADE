@@ -148,6 +148,14 @@ export function checkRemoteAdeCommand(input: unknown, scope: RemoteMcpScope): Re
     };
   }
   const words = positionalWords(args);
+  // Renaming, removing or re-pairing account machines outlives revoking the
+  // connection, like account tokens; reading the roster is fine.
+  if (command === "machines" && !MACHINE_READ_SUBCOMMANDS.has(words[0] ?? "list")) {
+    return {
+      ok: false,
+      reason: `\`ade machines ${words[0]}\` is not available remotely. Changing the machines on your ADE account is done on a computer itself.`,
+    };
+  }
   if (command === "actions") {
     const actionVerdict = checkActionsCommand(words, scope);
     if (actionVerdict) return actionVerdict;
@@ -158,7 +166,9 @@ export function checkRemoteAdeCommand(input: unknown, scope: RemoteMcpScope): Re
 
 const COMMAND_WORD = /^[a-z][a-z0-9-]*$/;
 /** Spellings the CLI treats as the same command. */
-const COMMAND_ALIASES: ReadonlyMap<string, string> = new Map([["action", "actions"]]);
+const COMMAND_ALIASES: ReadonlyMap<string, string> = new Map([["action", "actions"], ["machine", "machines"]]);
+/** `ade machines` subcommands that only read the roster. */
+const MACHINE_READ_SUBCOMMANDS: ReadonlySet<string> = new Set(["list", "ls", "show", "view", "get", "info"]);
 const MACHINE_TARGET_FLAG = /^--(?:machine|all-machines|machine-project)(?:=|$)/;
 /** `ade actions` subcommands that call RPC tools by name, around the action table. */
 const RAW_ACTION_DOORS: ReadonlySet<string> = new Set(["call", "direct", "tool"]);

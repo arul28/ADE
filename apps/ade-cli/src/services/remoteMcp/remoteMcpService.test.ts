@@ -17,7 +17,7 @@ import { createRemoteMcpService, type RemoteMcpHttpRequest } from "./remoteMcpSe
 const OWNER = "user_owner";
 const CLIENT_ID = "client_ade";
 const RELAY = "https://relay.test";
-const MACHINE_KEY = "a".repeat(32);
+const ENDPOINT_KEY = "a".repeat(40);
 const REDIRECT = "https://app.test/callback";
 const tempDirs: string[] = [];
 let server: Server;
@@ -89,7 +89,7 @@ function makeService() {
       attestation: () => ({ issuer, jwksUrl: `${issuer}/jwks`, oauthClientId: CLIENT_ID }),
     },
   });
-  service.attachRelayEndpoint(() => ({ relayUrl: RELAY, machineKey: MACHINE_KEY, connected: true }));
+  service.attachRelayEndpoint(() => ({ relayUrl: RELAY, endpointKey: ENDPOINT_KEY, connected: true }));
   service.setEnabled({ enabled: true });
   return service;
 }
@@ -135,7 +135,7 @@ async function signIn(service: ReturnType<typeof makeService>) {
   expect(`${toAde.origin}${toAde.pathname}`).toBe(`${issuer}/oauth/authorize`);
   expect(toAde.searchParams.get("redirect_uri")).toBe(`${RELAY}/oauth/callback`);
   const state = toAde.searchParams.get("state")!;
-  expect(state.startsWith(`${MACHINE_KEY}.`)).toBe(true);
+  expect(state.startsWith(`${ENDPOINT_KEY}.`)).toBe(true);
   const callback = await service.handleHttp(request("GET", `/oauth/account-callback?code=ade-code&state=${encodeURIComponent(state)}`));
   return { clientId, verifier, state, callback };
 }

@@ -88,13 +88,19 @@ exactly where they are.
 
 The same Durable Object also carries a machine's remote MCP server
 (`docs/features/ade-mcp/README.md`). HTTP requests under
-`/m/<machineKey>/` (and the OAuth discovery URLs
-`/.well-known/{oauth-protected-resource,oauth-authorization-server,openid-configuration}/m/<machineKey>[/mcp]`)
+`/m/<endpointKey>/` (and the OAuth discovery URLs
+`/.well-known/{oauth-protected-resource,oauth-authorization-server,openid-configuration}/m/<endpointKey>[/mcp]`)
 are sent to the brain over its **control socket** as `{t:"http", rid, …}` and
 answered with `{t:"http_res", rid, status, headers, body}`. No pipe, no second
 socket, no session object.
 
-- The brain sends `{t:"mcp_state", enabled}` on every control open and toggle;
+- The endpoint key is not the `machineKey`: the brain derives it from its
+  relay secret and sends it in `mcp_state`; the object named
+  `mcp-endpoint:<endpointKey>` stores which machine it belongs to (first
+  writer wins, reached only through the Worker's internal
+  `/__mcp-endpoint` path), and the Worker caches that mapping. So the URL an
+  AI app holds cannot dial `/connect` or `/prewarm` for the machine.
+- The brain sends `{t:"mcp_state", enabled, endpointKey}` on every control open and toggle;
   the DO keeps it in the control socket's attachment. Off (or a brain that
   never says) → `404 ade_mcp_off` without waking the machine.
 - No control socket → `503 offline`. Over 16 in flight or 300 a minute →

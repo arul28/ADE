@@ -57,7 +57,18 @@ export type SyncTunnelClientStatus = {
   identityRotationCapped?: boolean;
   /** Epoch ms the current uninterrupted control outage began; null when connected. */
   controlFailingSinceMs?: number | null;
+  /**
+   * The key in this machine's ADE MCP URL. Derived from the relay secret and
+   * never equal to `machineKey`, so the URL handed to AI apps cannot open
+   * phone tunnels.
+   */
+  mcpEndpointKey?: string;
 };
+
+/** The ADE MCP endpoint key for a relay identity (see SyncTunnelClientStatus). */
+export function mcpEndpointKeyFor(identity: { machineKey: string; secret: string }): string {
+  return signRelayHmacHex(identity.secret, `ade-mcp-endpoint:${identity.machineKey}`).slice(0, 40);
+}
 
 export type SyncTunnelClientService = {
   start(): Promise<void>;
@@ -1668,7 +1679,11 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
    */
   const sendRemoteMcpState = (controlSocket: WebSocket | null, force = false): void => {
     if (!controlSocket || (!remoteMcp && !force)) return;
-    sendControlLifecycle(controlSocket, { t: "mcp_state", enabled: remoteMcp?.isEnabled() === true });
+    sendControlLifecycle(controlSocket, {
+      t: "mcp_state",
+      enabled: remoteMcp?.isEnabled() === true,
+      endpointKey: mcpEndpointKeyFor(identity()),
+    });
   };
 
   const answerRemoteMcpHttp = async (
@@ -2194,7 +2209,8 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
     },
 
     getStatus(): SyncTunnelClientStatus {
-      const { machineKey } = identity();
+      const currentIdentity = identity();
+      const { machineKey } = currentIdentity;
       const currentValidationIdentity = bridgeValidationIdentity();
       const currentPort = currentValidationIdentity.port;
       const currentLoopbackNonce = currentValidationIdentity.nonce;
@@ -2209,6 +2225,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
         ? selfProbeRoundTripMs
         : null;
       return {
+        mcpEndpointKey: mcpEndpointKeyFor(currentIdentity),
         accountLeaseValid: eligible,
         connected: eligible && connected,
         activeTunnels: eligible ? tunnels.size : 0,

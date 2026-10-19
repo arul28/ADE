@@ -26720,13 +26720,18 @@ async function runServe(
     // Hoisted so the freshness monitor and the memory mitigation restart this
     // brain the same way. Two spellings of "restart the service" would be two
     // things to keep in step.
-    const isBrainIdle = async (): Promise<boolean> => (
-      await readMachineRuntimeActivitySummary({
-        projectRegistry,
-        scopeRegistry,
-        personalChatScope,
-      })
-    ).idle;
+    // A command an ADE MCP app is running is work too: a restart would kill it.
+    const isBrainIdle = async (): Promise<boolean> => {
+      const { activeRemoteRunCount } = await import("./services/remoteMcp/remoteMcpRunner");
+      if (activeRemoteRunCount() > 0) return false;
+      return (
+        await readMachineRuntimeActivitySummary({
+          projectRegistry,
+          scopeRegistry,
+          personalChatScope,
+        })
+      ).idle;
+    };
     // Single-flighted: the freshness monitor and the memory guard each
     // serialize only their own attempts, so without a shared latch both can
     // request a restart of this service at the same time. The second caller

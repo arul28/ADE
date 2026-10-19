@@ -7,7 +7,10 @@ import {
   DEFAULT_MAX_TUNNELS_PER_MACHINE,
   generateConnectionId,
   jsonResponse,
+  MACHINE_KEY_PATTERN,
   MCP_CORS_HEADERS,
+  MCP_ENDPOINT_PATH,
+  mcpEndpointObjectName,
   routeMcpPath,
   routeTunnelPath,
   verifySignedQuery,
@@ -184,6 +187,10 @@ type SocketAttachment = {
   correlationId?: string;
   /** Control sockets only: the brain said ADE MCP is on. */
   mcp?: boolean;
+  /** Control sockets only: the machine this socket registered for. */
+  machineKey?: string;
+  /** Control sockets only: the MCP endpoint key already registered. */
+  mcpEndpointKey?: string;
   ts: number;
 };
 
@@ -260,6 +267,8 @@ export class TunnelDurableObject implements DurableObject {
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    // Reached only from inside this Worker: the public router never routes it.
+    if (url.pathname === MCP_ENDPOINT_PATH) return this.handleMcpEndpoint(request);
     const route = routeTunnelPath(url.pathname) ?? routeMcpPath(url);
     if (!route) return new Response("not found", { status: 404 });
 
@@ -327,6 +336,32 @@ export class TunnelDurableObject implements DurableObject {
       this.settleMcp(rid, mcpJson(503, "offline", "That computer is offline, or ADE isn't running on it."));
     }
     return response;
+  }
+
+  /** The `mcp-endpoint:<key>` object: which machine an MCP endpoint key belongs to. */
+  private async handleMcpEndpoint(request: Request): Promise<Response> {
+    const stored = await this.state.storage.get<string>("mcpEndpointMachineKey");
+    if (request.method === "GET") {
+      return stored ? jsonResponse({ machineKey: stored }) : jsonResponse({ error: "unknown" }, { status: 404 });
+    }
+    if (request.method !== "PUT") return new Response("method not allowed", { status: 405 });
+    const machineKey = (await request.text()).trim();
+    if (!MACHINE_KEY_PATTERN.test(machineKey)) return new Response("bad machine key", { status: 400 });
+    if (stored && stored !== machineKey) {
+      logTunnel("mcp_endpoint_conflict", {});
+      return new Response("endpoint key already registered", { status: 409 });
+    }
+    if (!stored) await this.state.storage.put("mcpEndpointMachineKey", machineKey);
+    return new Response(null, { status: 204 });
+  }
+
+  /** Registers the brain's MCP endpoint key once per control socket. */
+  private async registerMcpEndpoint(ws: WebSocket, att: SocketAttachment, endpointKey: string): Promise<void> {
+    if (!att.machineKey || att.mcpEndpointKey === endpointKey) return;
+    if (!MACHINE_KEY_PATTERN.test(endpointKey) || endpointKey.toLowerCase() === att.machineKey.toLowerCase()) return;
+    const stub = this.env.TUNNEL.get(this.env.TUNNEL.idFromName(mcpEndpointObjectName(endpointKey)));
+    const response = await stub.fetch(`https://relay.internal${MCP_ENDPOINT_PATH}`, { method: "PUT", body: att.machineKey });
+    if (response.ok) this.writeAttachment(ws, { ...(this.normalizedAttachment(ws) ?? att), mcpEndpointKey: endpointKey });
   }
 
   private settleMcp(rid: string, response: Response): void {
@@ -464,7 +499,7 @@ export class TunnelDurableObject implements DurableObject {
       }
     }
     logTunnel("host_registered", { machineKey: machineKey.slice(0, 8) });
-    return this.acceptSocket({ role: "control", epoch });
+    return this.acceptSocket({ role: "control", epoch, machineKey });
   }
 
   private async handlePipe(request: Request, url: URL, machineKey: string, id: string): Promise<Response> {
@@ -827,6 +862,8 @@ export class TunnelDurableObject implements DurableObject {
               att = { ...att, mcp: enabled };
               this.writeAttachment(ws, att);
             }
+            const endpointKey = (parsed as { endpointKey?: unknown }).endpointKey;
+            if (typeof endpointKey === "string") await this.registerMcpEndpoint(ws, att, endpointKey);
           } else if (
             parsed?.t === "reject"
             && typeof parsed.id === "string"
