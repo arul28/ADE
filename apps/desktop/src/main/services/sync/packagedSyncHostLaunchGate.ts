@@ -62,24 +62,24 @@ const runWindowsProbeOffThread: SyncHostProbeRunner = (command, args, timeoutMs,
  * docs/development/windows-support.md.
  *
  * The one process probe left is the owner-identity check that rejects a reused
- * PID. It runs only for a live owner on ANOTHER channel (a same-channel owner is
- * never blocked, so it is never probed), and it is awaited off the main thread,
- * so the check costs the launch its wait but never freezes the event loop.
+ * PID, and it runs off the main thread. For a live owner on ANOTHER channel the
+ * launch awaits it, because that verdict decides whether to block. A same-channel
+ * owner is never blocked, so the launch does not wait for its check: the check
+ * runs in the background and only clears a stale lock.
  */
 export async function detectCrossChannelSyncHostConflict(
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
 ): Promise<SyncHostSingletonConflict | null> {
-  return resolveCrossChannelSyncHostConflict(
-    await detectSyncHostSingletonConflictAsync(
-      { skipListenerScan: platform === "win32" },
-      {
-        ignoreOwner: (owner: SyncHostSingletonOwner) => isSameChannelSyncHostOwner(owner, env),
-        ...(offThreadSpawnEnabled(env) ? { runProbe: runWindowsProbeOffThread } : {}),
-      },
-    ),
-    env,
+  // `ignoredOwnerCheck` is deliberately not awaited: it never rejects, and the verdict is already settled.
+  const { conflict } = await detectSyncHostSingletonConflictAsync(
+    { skipListenerScan: platform === "win32" },
+    {
+      ignoreOwner: (owner: SyncHostSingletonOwner) => isSameChannelSyncHostOwner(owner, env),
+      ...(offThreadSpawnEnabled(env) ? { runProbe: runWindowsProbeOffThread } : {}),
+    },
   );
+  return resolveCrossChannelSyncHostConflict(conflict, env);
 }
 
 export function buildPackagedSyncHostConflictDialogContent(args: {
