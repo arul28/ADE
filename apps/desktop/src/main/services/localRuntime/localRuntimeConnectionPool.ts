@@ -175,6 +175,12 @@ const LOCAL_RUNTIME_STATUS_REFRESH_TIMEOUT_MS = 2_000;
 // The Windows service probe itself costs ~2.1s (two PowerShell spawns), so the
 // off-thread child needs generous headroom before it is treated as unanswerable.
 const LOCAL_RUNTIME_SERVICE_STATUS_TIMEOUT_MS = 15_000;
+// How old a cached service-health snapshot may be when a status read finds it.
+// Windows probes are expensive (~14 child processes each), so while the pool is
+// connected to the machine service's own brain a snapshot is kept for the long
+// window instead; see `serviceHealthReadMaxAgeMs`.
+const SERVICE_HEALTH_READ_MAX_AGE_MS = 2_000;
+const SERVICE_HEALTH_STEADY_MAX_AGE_MS = 5 * 60_000;
 const PLACEHOLDER_RUNTIME_VERSION = "0.0.0";
 const LOCAL_RUNTIME_OUTPUT_LINE_MAX_CHARS = 4_000;
 const LOCAL_RUNTIME_OUTPUT_BUFFER_MAX_CHARS = 16_000;
@@ -1190,7 +1196,19 @@ export class LocalRuntimeConnectionPool {
   private serviceHealthRefreshPromise: Promise<void> | null = null;
   // Wall clock at which the in-flight probe started. A caller can only join
   // that probe when it began recently enough to satisfy its own `maxAgeMs`.
-  private serviceHealthRefreshStartedAtMs = 0;
+  // Null while the probe is queued and has not begun: it will ask after any
+  // caller that joins it, so every caller may join it.
+  private serviceHealthRefreshStartedAtMs: number | null = 0;
+  // Bumped whenever the service or the connection under it changes through the
+  // pool; see `bumpServiceStateGeneration`.
+  private serviceStateGeneration = 0;
+  // The generation the probe behind the cached snapshot began under. Only the
+  // current generation may serve that snapshot, or be joined while it runs.
+  private serviceHealthSnapshotGeneration = 0;
+  // The brain client the last probe started under, while the pool was steady on
+  // it; null when it was not. Only a snapshot taken under the client that is
+  // still connected may serve the long window; see `serviceHealthReadMaxAgeMs`.
+  private serviceHealthSteadyClient: RuntimeRpcClient | null = null;
   private runtimeStatusRefreshPromise: Promise<void> | null = null;
   // Rolling 24 h aggregate of slow (>500 ms) or errored daemon action calls.
   // Feeds the machine-level runtime-health diagnostic surfaced in Settings.
@@ -1218,8 +1236,69 @@ export class LocalRuntimeConnectionPool {
     // Read-only status must never wait on (or block for) the service probe:
     // this runs on every `app.getInfo`/status poll and the Windows probe costs
     // ~2.1s. Kick a background refresh and answer from cache.
-    void this.refreshServiceHealth();
+    void this.refreshServiceHealth(this.serviceHealthReadMaxAgeMs());
     return this.statusSnapshot();
+  }
+
+  /**
+   * For a surface the person just opened to read service health (About): probe
+   * now when the cached answer is older than the read window, and resolve once
+   * it has landed, so the next status read sees the new answer. Not for polls.
+   */
+  refreshServiceHealthForView(): Promise<void> {
+    return this.refreshServiceHealth(SERVICE_HEALTH_READ_MAX_AGE_MS);
+  }
+
+  /**
+   * For a recovery or a report that chooses what to do from service health. It
+   * joins a probe already running only when that probe began within the 2 s read
+   * window and in the current service-state generation, and otherwise queues one
+   * probe behind it that every later caller shares. So the answer is never the
+   * five-minute steady snapshot, and never a probe from before an install, repair,
+   * connect, disconnect or mode change. It never probes with
+   * `maxAgeMs: 0`: the recovery screen polls this every 2 s, and a probe per call
+   * queued behind a ~4 s probe would grow without bound. `getStatus` is the read
+   * for polls; `getFreshStatus` is the poll behind `app.getInfo`.
+   */
+  async getStatusAfterServiceProbe(): Promise<LocalRuntimeStatus> {
+    await this.refreshServiceHealth(SERVICE_HEALTH_READ_MAX_AGE_MS);
+    return this.statusSnapshot();
+  }
+
+  /**
+   * How old a cached service-health snapshot a read may serve before it probes
+   * again. Only `steadyWindowApplies` gets the long window; everything else
+   * (disconnected, connecting, an app-owned fallback, an install in flight, a
+   * failed probe, and every read on macOS and Linux) keeps the 2 s window.
+   */
+  private serviceHealthReadMaxAgeMs(): number {
+    return this.steadyWindowApplies() ? SERVICE_HEALTH_STEADY_MAX_AGE_MS : SERVICE_HEALTH_READ_MAX_AGE_MS;
+  }
+
+  /**
+   * Whether the cached snapshot may be read through the long window: Windows,
+   * connected to the brain client the snapshot was taken under, and that brain
+   * is the machine service's own (see `isServiceHealthSteady`).
+   */
+  private steadyWindowApplies(): boolean {
+    return process.platform === "win32"
+      && this.isServiceHealthSteady()
+      && this.serviceHealthSteadyClient === this.activeClient;
+  }
+
+  /**
+   * Connected to the brain this pool expects: the machine service's own, not an
+   * app-owned fallback or an isolated runtime, with no service install running
+   * and no failed probe waiting to be retried. The pool has no heartbeat; a brain
+   * that goes away clears `activeClient` in `onDisconnect`, and that is the
+   * signal this reads.
+   */
+  private isServiceHealthSteady(): boolean {
+    return this.activeClient !== null
+      && !this.isolatedModeActive
+      && this.appFallback === null
+      && this.serviceInstallPromise === null
+      && this.serviceHealthStatus.state !== "error";
   }
 
   private statusSnapshot(): LocalRuntimeStatus {
@@ -1354,23 +1433,37 @@ export class LocalRuntimeConnectionPool {
    * and a failing connect would each start their own child.
    *
    * Staleness contract: callers that only *read* health (`getStatus`) accept a
-   * snapshot up to one refresh interval old and never wait; callers that need a
-   * fresh answer to choose a recovery code await this with `maxAgeMs: 0`. The
-   * cache is only ever invalidated by time, so "fresh" is enforced on the probe
-   * itself: a caller only joins an in-flight probe that *started* within its
-   * `maxAgeMs`. A `maxAgeMs: 0` caller therefore never adopts a probe that
-   * began before the install/repair it is asking about — it queues its own
-   * behind the running one.
+   * snapshot up to their read window old (`serviceHealthReadMaxAgeMs`) and never
+   * wait; callers that choose a recovery or a report from it wait for a probe
+   * within the read window, through `getStatusAfterServiceProbe`; the install
+   * and repair path asks with `maxAgeMs: 0`. The cache ages out by time, and it
+   * is also invalidated by the service-state generation: a snapshot or a running
+   * probe from an earlier generation is never served, because an install, repair,
+   * connect, disconnect or mode change since then may have made it describe a
+   * service that is gone. Otherwise "fresh" is enforced on the probe itself: a
+   * caller joins a probe only if it has not begun yet, or it *started* within its
+   * `maxAgeMs`. A `maxAgeMs: 0` caller therefore never adopts a probe that began
+   * before the install/repair it is asking about — it queues its own behind a
+   * probe that is running, and joins one that has not started.
    */
-  private refreshServiceHealth(maxAgeMs = 2_000): Promise<void> {
+  private refreshServiceHealth(maxAgeMs = SERVICE_HEALTH_READ_MAX_AGE_MS): Promise<void> {
     const requestedAtMs = Date.now();
-    if (requestedAtMs - this.serviceHealthCheckedAtMs < maxAgeMs) return Promise.resolve();
+    const generation = this.serviceStateGeneration;
     const inFlight = this.serviceHealthRefreshPromise;
+    const inFlightStartedAtMs = this.serviceHealthRefreshStartedAtMs;
     // Strictly greater: `Date.now()` has millisecond granularity, so a probe
     // that started in the same tick as a `maxAgeMs: 0` call may still have
     // asked before the install it is being questioned about. At any other
     // `maxAgeMs` this only moves the boundary by a millisecond.
-    if (inFlight && this.serviceHealthRefreshStartedAtMs > requestedAtMs - maxAgeMs) return inFlight;
+    // Checked before the cache age: a probe still running has not landed, so
+    // the cache holds the answer from before it, and a caller inside its window
+    // must wait for that probe rather than read the older snapshot.
+    const joinable = inFlightStartedAtMs === null
+      || (this.serviceHealthSnapshotGeneration === generation && inFlightStartedAtMs > requestedAtMs - maxAgeMs);
+    if (inFlight && joinable) return inFlight;
+    if (this.serviceHealthSnapshotGeneration === generation && requestedAtMs - this.serviceHealthCheckedAtMs < maxAgeMs) {
+      return Promise.resolve();
+    }
     const applyStatus = (status: ServiceManagerStatusResult) => {
       this.serviceHealthStatus = {
         state: serviceHealthState(status),
@@ -1402,9 +1495,14 @@ export class LocalRuntimeConnectionPool {
       // the age check while it runs.
       this.serviceHealthRefreshStartedAtMs = Date.now();
       this.serviceHealthCheckedAtMs = this.serviceHealthRefreshStartedAtMs;
+      this.serviceHealthSnapshotGeneration = this.serviceStateGeneration;
+      this.serviceHealthSteadyClient = this.isServiceHealthSteady() ? this.activeClient : null;
       return (this.options.queryServiceStatusAsync ?? defaultQueryServiceStatusAsync)()
         .then(applyStatus, applyError);
     };
+    // A probe queued behind another has not begun, so it reads as not started
+    // until `runProbe` runs: every caller that arrives meanwhile joins it.
+    this.serviceHealthRefreshStartedAtMs = null;
     // An in-flight probe that started too early for this caller cannot answer
     // it, but running both at once would mean two probe children: queue behind
     // it instead. Its outcome is its own caller's to observe, so a rejection
@@ -1418,6 +1516,25 @@ export class LocalRuntimeConnectionPool {
       });
     this.serviceHealthRefreshPromise = refresh;
     return refresh;
+  }
+
+  /**
+   * The service or the connection to it changed through the pool: a service
+   * child started or settled, or the pool connected, disconnected or changed
+   * runtime mode. A probe that began under an older generation may describe the
+   * service as it was, so from now on no read joins a probe that began before
+   * this, or takes its snapshot. The next read queues one probe, and the reads
+   * after it share that probe.
+   */
+  private bumpServiceStateGeneration(): void {
+    this.serviceStateGeneration += 1;
+  }
+
+  /** Moves the brain client the pool is connected to. A change of client is a connection change. */
+  private setActiveClient(client: RuntimeRpcClient | null): void {
+    if (this.activeClient === client) return;
+    this.activeClient = client;
+    this.bumpServiceStateGeneration();
   }
 
   /**
@@ -1524,6 +1641,9 @@ export class LocalRuntimeConnectionPool {
     env?: NodeJS.ProcessEnv;
   }): Promise<ServiceManagerCommandResult> {
     return await new Promise<ServiceManagerCommandResult>((resolve, reject) => {
+      // The service starts changing as the child starts: a probe that began
+      // before this may describe it as it was.
+      this.bumpServiceStateGeneration();
       const child = spawn(process.execPath, [options.cliPath, "serve", options.flag], {
         env: options.env ?? buildLocalRuntimeNodeEnv(this.appVersion),
         stdio: ["ignore", "pipe", "pipe"],
@@ -1565,6 +1685,11 @@ export class LocalRuntimeConnectionPool {
           parsed: parseRuntimeServiceManagerOutput(output),
         });
       });
+    }).finally(() => {
+      // The service was just installed or removed, so a snapshot taken before
+      // this settled may no longer describe it: the next read probes again.
+      this.serviceHealthSteadyClient = null;
+      this.bumpServiceStateGeneration();
     });
   }
 
@@ -2351,7 +2476,7 @@ export class LocalRuntimeConnectionPool {
     const pending = this.connection;
     this.connection = null;
     this.activeConnection = null;
-    this.activeClient = null;
+    this.setActiveClient(null);
     this.activeRuntimePid = null;
     this.activeRuntimeSyncPort = null;
     this.activeRuntimePublishHealth = null;
@@ -2384,7 +2509,7 @@ export class LocalRuntimeConnectionPool {
       if (this.connection === connection) {
         this.connection = null;
         this.activeConnection = null;
-        this.activeClient = null;
+        this.setActiveClient(null);
         this.activeRuntimePid = null;
         this.activeRuntimeSyncPort = null;
         this.activeRuntimePublishHealth = null;
@@ -2412,7 +2537,7 @@ export class LocalRuntimeConnectionPool {
     if (!this.isCurrentConnection(entry)) return false;
     this.connection = null;
     this.activeConnection = null;
-    this.activeClient = null;
+    this.setActiveClient(null);
     this.activeRuntimePid = null;
     this.activeRuntimeSyncPort = null;
     this.activeRuntimePublishHealth = null;
@@ -2727,6 +2852,7 @@ export class LocalRuntimeConnectionPool {
     const fallback = this.appFallback;
     if (!fallback) return;
     this.appFallback = null;
+    this.bumpServiceStateGeneration();
     this.logger.info(`local_runtime.app_fallback_${event}`, {
       reason: fallback.reason,
       since: fallback.since,
@@ -2810,6 +2936,7 @@ export class LocalRuntimeConnectionPool {
       const client = await this.connectSpawnedRuntime(socketPath, child);
       this.appFallbackHandoverPending = null;
       this.appFallback = { reason, since: new Date().toISOString() };
+      this.bumpServiceStateGeneration();
       this.logger.warn("local_runtime.app_fallback_started", {
         socketPath, pid: child.pid ?? null, reason,
       });
@@ -3180,6 +3307,7 @@ export class LocalRuntimeConnectionPool {
   private markIsolatedMode(active: boolean, options: { notify?: boolean } = {}): void {
     if (this.isolatedModeActive === active) return;
     this.isolatedModeActive = active;
+    this.bumpServiceStateGeneration();
     if (options.notify === false) return;
     try {
       this.options.onRuntimeModeChange?.(active ? "isolated" : "primary");
@@ -3347,7 +3475,7 @@ export class LocalRuntimeConnectionPool {
     if (!options.preserveVersionSkew) {
       this.clearVersionSkewStatus();
     }
-    this.activeClient = client;
+    this.setActiveClient(client);
     this.noteConnectedRuntime(options.isMachineService === true);
     this.activeRuntimePid = runtimeInfo.pid;
     this.activeRuntimeSyncPort = runtimeInfo.syncPort;
@@ -3362,7 +3490,7 @@ export class LocalRuntimeConnectionPool {
       });
       this.connection = null;
       this.activeConnection = null;
-      this.activeClient = null;
+      this.setActiveClient(null);
       this.activeRuntimePid = null;
       this.activeRuntimeSyncPort = null;
       this.activeRuntimePublishHealth = null;
@@ -3474,7 +3602,7 @@ export class LocalRuntimeConnectionPool {
       this.clearAppFallback("stopped");
       this.connection = null;
       this.activeConnection = null;
-      this.activeClient = null;
+      this.setActiveClient(null);
       this.activeRuntimePid = null;
       this.activeRuntimeSyncPort = null;
       this.activeRuntimePublishHealth = null;
