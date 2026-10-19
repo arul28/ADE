@@ -2501,11 +2501,12 @@ export function registerIpc({
   };
 
   /**
-   * Runtime action calls all share one channel; name the action they carry so
-   * IPC summaries and perf runs can tell `lanes.list` from `chat.send`.
+   * Runtime action calls all share one channel each (local and remote); name
+   * the action they carry so IPC summaries and perf runs can tell `lanes.list`
+   * from `chat.send`, on this machine or another.
    */
   const perfChannelLabel = (channel: string, args: unknown[]): string => {
-    if (channel !== IPC.localRuntimeCallAction) return channel;
+    if (channel !== IPC.localRuntimeCallAction && channel !== IPC.remoteRuntimeCallAction) return channel;
     const request = (args[0] as { request?: { domain?: unknown; action?: unknown } } | undefined)?.request;
     return typeof request?.domain === "string" && typeof request.action === "string"
       ? `${channel}:${request.domain}.${request.action}`
