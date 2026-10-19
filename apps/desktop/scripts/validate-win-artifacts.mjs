@@ -734,7 +734,12 @@ async function validatePackagedRuntime(appDir) {
   if (payload?.claudeQuery !== "function") {
     fail(`Packaged smoke expected Claude SDK query() to be available, got ${String(payload?.claudeQuery)}`);
   }
-  if (typeof payload?.claudeExecutablePath !== "string" || payload.claudeExecutablePath.trim().length === 0) {
+  // An empty path is only valid when ADE has no copy yet ("fallback-command"):
+  // the pinned Claude Code is fetched on first use and PATH is never tried.
+  if (
+    typeof payload?.claudeExecutablePath !== "string"
+    || (payload.claudeExecutablePath.trim().length === 0 && payload?.claudeExecutableSource !== "fallback-command")
+  ) {
     fail("Packaged smoke did not report a Claude executable path");
   }
   await assertFetchedToolResolution("Claude", payload?.claudeExecutableSource, payload?.claudeExecutablePath, appDir);
