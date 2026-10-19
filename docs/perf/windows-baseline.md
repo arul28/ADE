@@ -80,7 +80,7 @@ after a renderer reload and one visit to every tab.
 | Renderer | 0.0% / 0.2% | 550 / 551 MB (480 MB) | 25%, **610 MB** (macOS: 300 MB; open item) |
 | Brain (`cli.cjs serve`) | 0.9% / 0.3% | 341 / 341 MB (349 MB) | 10%, **380 MB** (macOS: 250 MB; open item) |
 | Network utility | 0.0% / 0.0% | 61 / 61 MB | *new* 80 MB |
-| Service-health probe tree (`runtime service-status --json` and its children: 14 processes per probe, about 5 PowerShells and a nested CLI) | **Before**, installed app 1.2.111, job object over 5 runs: 3.2-3.7 s CPU and 3.7-4.4 s wall per probe, one probe every 15 s while connected, so about 13.6 s CPU and 56 process launches per minute. **After** (this branch): in-app, coordinator to fill | not sampled | *new*: not set yet; needs your OK |
+| Service-health probe tree (`runtime service-status --json` and its children: 14 processes per probe, about 5 PowerShells and a nested CLI) | **Before**, installed app 1.2.111, job object over 5 runs: 3.2-3.7 s CPU and 3.7-4.4 s wall per probe, one probe every 15 s while connected, so about 13.6 s CPU and 56 process launches per minute. **After** (installed app, integrated build 1.2.113 with #1799, 2026-10-19): 1 probe in 300 s idle while connected (was 20) | not sampled | *new*: not set yet; needs your OK |
 
 Right after launch (before any tab was visited) the renderer was 454 MB and
 the brain 239 MB. The CPU numbers are far lower than the macOS row because
@@ -177,7 +177,7 @@ from the poller in 228 steps (four seeds). The root was the primary checkout
 
 | Metric | How | Baseline (run 1 / run 2) | Ceiling |
 |---|---|---|---|
-| Local new chat: Send → first Work row (the renderer's wait for the brain's `chat.createSession`, then `chat.sendMessage`, on this machine's brain). Before this change, installed app: 207–387 ms, median ~246 ms. After: coordinator to fill | in-app, installed app, Send to the first row, several new chats | before: 207–387 ms (median ~246 ms); after: coordinator to fill | *new* 150 ms (the Mac Studio's brain takes ~113 ms for the same flow) |
+| Local new chat: Send → first Work row (the renderer's wait for the brain's `chat.createSession`, then `chat.sendMessage`, on this machine's brain). Before this change, installed app: 207–387 ms, median ~246 ms. After: see the next column | in-app, installed app, Send to the first row, several new chats | before: 207–387 ms (median ~246 ms); after (installed 1.2.114 = `main` 7a3615de5, 8 new chats 10 s apart): 69–211 ms, median ~158 ms | *new* 150 ms (the Mac Studio's brain takes ~113-128 ms for the same flow); open item: the median is 5% over, inside the macOS 120-175 ms range for the same action |
 
 The send path asks whether `agent-browser` is installed on every turn. The
 probe is a `where` process. Before this change it ran on the brain's event
@@ -409,6 +409,58 @@ statically.
   screen. High-refresh monitors are common on Windows PCs, so this is the
   next thing to fix: run the spin on the compositor, then re-measure with
   `gpu-trace.mjs` on the PRs tab.
+
+## Installed app, round 4 (2026-10-19)
+
+The tables above are a dev build. These rows are the **installed** app on the
+same PC, measured the way a user runs it: the per-user background brain,
+connected to the Mac Studio (paired, over Tailscale), two project tabs
+(ADE, Versic), window 1327x829 CSS px, nothing streaming, a measurement hold
+so no builds or tests ran meanwhile.
+
+- **Before:** the installed release 1.2.111 at the start of round 4, plus a
+  test build of the same day (1.2.112, earlier round-4 fixes only) where a row
+  was first measured there.
+- **After:** a local, unsigned build of `main` at `7a3615de5` (1.2.114), which
+  has every round-4 PR (#1782, #1784-#1792, #1794-#1801). Some rows were
+  measured on the integrated test build 1.2.113 (the same PRs before they
+  merged); those say so.
+
+| Row | How | Before | After | Ceiling |
+|---|---|---|---|---|
+| Cold start: first window (CDP page target) | `coldstart` script, 3 launches, brain already running | 1.76-2.30 s | 1.11-1.22 s | *new* 1.5 s, proposed, needs approval |
+| Cold start: app mounted (>300 elements) | same | 2.58-4.06 s | 1.79-1.91 s | *new* 2.4 s, proposed, needs approval |
+| Cold start: settled (element count unchanged 2 s) | same | 6.43-7.89 s | 2.65-5.67 s | *new* 7 s, proposed, needs approval |
+| Relaunch keeps the running brain | same | no: replaced whenever the brain was over 120 s old (killing its chats and terminals) | yes, every launch | must stay yes |
+| Electron main busy in the first 12 s of launch | inspector, 1 ms sampling, 2-3 launches | 4,229 / 5,910 ms | 1,371 / 1,324 ms (integrated build of #1787-#1791) | *new* 1,700 ms, proposed, needs approval |
+| Tab switch: page settled, warm | `interaction.mjs tabs 4`, 3 runs | worst 185 ms (CTO); Automations 170 ms | 18-216 ms; worst Automations 164-216 ms, CTO 179-183 ms; long frames 0 except PRs 53 ms | 250 ms |
+| Project-tab switch: page settled, warm | `interaction.mjs projects 4` | 1.2.111: ADE 54-80, Versic 58-67 ms; 1.2.112: ADE 67-113, Versic 68-97 ms | ADE 59-151 (median 71), Versic 54-84 (median 77) ms over 8 runs; no long frames | 300 ms |
+| Chat switch: settled | `chat-switch.mjs 3`, 3 runs, Mac Studio chats | avg 22-47 ms; worst long task 136 ms | avg 18-45 ms; worst long task 53 ms | 250 ms |
+| Chat switch: first changed frame, warm (median) | `interaction.mjs chats 4`, 3 runs | ~61 ms (45-91) | 56-59 ms | 60 ms |
+| Chat switch: every DOM change settled, warm | same | median 267-273 ms, worst 337 ms (the previous chat's proof count was replaced ~245 ms after each switch, #1795) | median 170-171 ms, worst 183 ms | 250 ms |
+| New chat on a Mac Studio lane: Send → first row | in-app, 8 new chats | 102-183 ms (median ~113 ms) | 107-151 ms (median ~128 ms) | 150 ms |
+| New chat on a local lane: Send → first row | same | 207-387 ms (median ~246 ms) | 69-211 ms (median ~158 ms) | 150 ms (see the row above; open item) |
+| Launch → Mac Studio connected | connection snapshot after launch, 3 launches | ~11.1-11.5 s (a dead LAN address timed out after 10 s first) | 1.57-2.35 s (#1794) | *new* 4 s, proposed, needs approval |
+| Service-health probes, idle and connected | process watcher, 300 s | 20 (each 14 processes, ~3.4 s CPU) | 1 (1.2.113, #1799) | — |
+| `gh auth token` launches by the brain, idle | process watcher, 420 s, 3 pairs | 2 / 2 / 3 | 0 / 0 / 0 (#1801) | — |
+| Brain: longest idle event-loop stall | brain CPU profile, 5 min idle | 2.0-2.7 s stalls, ~39 near-misses (over 2 s) in 8 days of logs (project-icon scan, DPAPI) | longest busy stretch 169 ms (#1784, #1785) | *new* 300 ms, proposed, needs approval |
+| Brain: blocked per chat send by the `agent-browser` probe | brain CPU profile, 4 sends 65 s apart | 78-152 ms per send | 0 (#1796) | — |
+| Chat list (`chat.listSessions`) per call | 20 calls from the renderer, brain bundle swapped, interleaved | median 39-43 ms | median 19-21 ms (#1797) | — |
+| Idle CPU, Work open (% of one core) | per-process CPU time over 120 s | — | brain 3.8, main 1.1, main renderer 0.8, GPU 0.3, others 0-0.6 | see Processes |
+| Update: quit → new version running | real NSIS update 1.2.111 → 1.2.112, local feed | 42-44 s (two real updates of the release) | 38.6 s quit → main started (42.1 s from the click); 24 s of it is the old copy's uninstaller | *new* 60 s, proposed, needs approval |
+
+Notes:
+
+- The project-switch row is within run-to-run drift: the same-day 1.2.112
+  build was slower than the current build, and no round-4 change sits on that
+  path. Re-measure it against this row, not the 1.2.111 numbers.
+- The local new-chat row is the one open item: 158 ms median against a
+  150 ms ceiling, inside the macOS range for the same action (120-175 ms).
+  The remaining cost on this PC is the brain building the Claude query
+  options synchronously when a chat is created (~41 ms per create) and
+  git processes started for the new lane's status.
+- Every *new* ceiling here is a proposal and does not count until the owner
+  approves it.
 
 ## How to measure on Windows
 
