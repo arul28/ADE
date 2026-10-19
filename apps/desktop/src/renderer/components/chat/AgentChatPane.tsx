@@ -10056,7 +10056,12 @@ export function AgentChatPane({
       // event may not carry an owner. Optimistically remove the matching id
       // from this drawer, then force an authoritative snapshot refresh.
       if (event.type === "artifact-deleted" && (event.owner == null || belongsToSelectedChat)) {
+        // Only this chat's snapshot on this pin is edited. A late event from the
+        // previous machine must not remove an artifact from the new one.
         setComputerUseSnapshot((current) => current
+          && current.pinKey === chatRuntimePinKey
+          && current.snapshot.owner?.kind === "chat_session"
+          && current.snapshot.owner.id === selectedSessionId
           ? {
               ...current,
               snapshot: {
