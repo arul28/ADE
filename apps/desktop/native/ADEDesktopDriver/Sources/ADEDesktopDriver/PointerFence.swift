@@ -93,10 +93,10 @@ final class PointerFence {
             return Unmanaged.passUnretained(event)
         }
 
-        // Never warp a held drag. The next ordinary move after mouse-up can
-        // bring a cursor home if the gesture ended on a lane display.
-        guard type == .mouseMoved else { return Unmanaged.passUnretained(event) }
-
+        // A physical drag is fenced too: a window dragged onto a lane display
+        // would be lost there with the pointer. Drags this driver posts were
+        // let through above, and a lane's own lease or gesture is left alone by
+        // `shouldRedirect`, so this only ever stops the person's own hand.
         let point = event.location
         let displays = displays(at: point)
         let realMatches = displays.filter { !isADEDisplay($0) }

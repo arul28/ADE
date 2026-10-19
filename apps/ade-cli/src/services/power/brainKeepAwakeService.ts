@@ -74,11 +74,18 @@ function defaultStoredState(): StoredKeepAwakeState {
   };
 }
 
+/**
+ * Consecutive failed activity reads a held lock survives, at one poll each.
+ * Three polls is fifteen seconds: far under any system sleep timer, and long
+ * enough to ride out a runtime that is restarting.
+ */
+const MAX_FAILED_ACTIVITY_READS = 3;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function readStoredState(filePath: string): {
+function readStoredState(filePath: string, onCorrupt?: (error: unknown) => void): {
   state: StoredKeepAwakeState;
   hasStoredPreference: boolean;
   migrationBlocked: boolean;
@@ -114,9 +121,10 @@ function readStoredState(filePath: string): {
       hasStoredPreference: isRecord(value.preferences) && isKeepAwakeLevel(value.preferences.level),
       migrationBlocked: false,
     };
-  } catch {
+  } catch (error) {
     // A truncated file is not permission to hold a lock. Allow the one-time
     // desktop migration to recover it, but keep the default off until then.
+    onCorrupt?.(error);
     return { state: defaultStoredState(), hasStoredPreference: false, migrationBlocked: false };
   }
 }
@@ -150,7 +158,11 @@ export function createBrainKeepAwakeService(
   let stored: ReturnType<typeof readStoredState>;
   let stateReadError: string | null = null;
   try {
-    stored = readStoredState(options.statePath);
+    stored = readStoredState(options.statePath, (error) => {
+      options.logger?.warn("keepAwake.state_corrupt", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
   } catch (error) {
     stored = {
       state: { ...defaultStoredState(), legacyMigrationComplete: true },
@@ -170,6 +182,8 @@ export function createBrainKeepAwakeService(
   let polling = false;
   let disposed = false;
   let attemptedThisActivePeriod = false;
+  /** Activity reads that failed in a row; a held lock survives a short run of them. */
+  let failedActivityReads = 0;
   let blockerError: string | null = stateReadError;
   const supportsWakeLock = platform === "darwin" || platform === "win32";
 
@@ -286,9 +300,19 @@ export function createBrainKeepAwakeService(
       try {
         const value = await options.readActiveAgentWork();
         active = typeof value === "number" ? value > 0 : value;
-      } catch {
-        // If activity is unreadable, release the lock; a failed read must not
-        // pin the machine awake indefinitely.
+        failedActivityReads = 0;
+      } catch (error) {
+        // One failed read in the middle of a turn must not let the machine
+        // sleep, so a held lock rides out a short run of them. A run longer
+        // than that releases it: an unreadable brain is not a reason to pin
+        // the machine awake indefinitely.
+        failedActivityReads += 1;
+        if (failedActivityReads === 1) {
+          options.logger?.warn("keepAwake.activity_read_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        if (child && failedActivityReads < MAX_FAILED_ACTIVITY_READS) return;
       }
       if (disposed) return;
       if (isNeverSelected() || !active) releaseBlocker();
@@ -296,6 +320,14 @@ export function createBrainKeepAwakeService(
     } finally {
       polling = false;
     }
+  };
+
+  /** Why the chosen level cannot hold on this machine, or null when it can. */
+  const levelUnsupportedError = (): string | null => {
+    const level = state.preferences.level;
+    if (level === "never") return null;
+    if (level === "lid-closed" && platform !== "darwin") return "This machine can't stay awake with the lid closed.";
+    return supportsWakeLock ? null : "This machine doesn't support a keep-awake lock.";
   };
 
   const snapshot = async (): Promise<KeepAwakeSnapshot> => {
@@ -308,14 +340,7 @@ export function createBrainKeepAwakeService(
       platform: platform === "darwin" ? "mac" : platform === "win32" ? "windows" : "other",
       lidClosedSupported: platform === "darwin",
       lidClosedActive: lidClosedActive === true,
-      levelError: blockerError
-        ?? (state.preferences.level === "never"
-          ? null
-          : state.preferences.level === "lid-closed" && platform !== "darwin"
-            ? "This machine can't stay awake with the lid closed."
-            : supportsWakeLock
-              ? null
-              : "This machine doesn't support a keep-awake lock."),
+      levelError: blockerError ?? levelUnsupportedError(),
       systemSleep,
     };
   };

@@ -9,6 +9,7 @@ import {
   systemSleepStopsAgents,
 } from "../../../shared/types/keepAwake";
 import { isMacRuntimeTarget } from "../../lib/platform";
+import { Banner } from "../ui/notice";
 import { ModernSection } from "./primitives";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
 import "./machineSettings.css";
@@ -56,6 +57,31 @@ const LEVEL_ART: Record<KeepAwakeLevel, Icon> = {
 const WINDOWS_NEVER_LIMIT = "Turns pause when this PC sleeps";
 
 const inertSnapshot = INERT_KEEP_AWAKE_SNAPSHOT;
+
+/**
+ * The levels a machine can honour. `lid-closed` is absent on Windows, not
+ * disabled: there is no `pmset disablesleep` equivalent, and a greyed row would
+ * imply one is coming.
+ */
+function availableLevels(snapshot: KeepAwakeSnapshot): KeepAwakeLevel[] {
+  if (snapshot.platform === "other") return ["never"];
+  if (snapshot.lidClosedSupported) return ["never", "while-away", "lid-closed"];
+  return ["never", "while-away"];
+}
+
+/** The line under a level's title, said about the machine it applies to. */
+function levelLimit(
+  level: KeepAwakeLevel,
+  machine: { platform: KeepAwakeSnapshot["platform"]; isThisMachine: boolean; mac: boolean },
+): string {
+  if (level === "lid-closed" && !machine.isThisMachine) {
+    return "Needs approval on that Mac. Stays on after you quit.";
+  }
+  if (level !== "never") return LEVEL_COPY[level].limit;
+  if (machine.platform === "windows") return WINDOWS_NEVER_LIMIT;
+  if (!machine.isThisMachine && machine.platform === "other") return "Turns pause when this computer sleeps";
+  return machine.mac ? "Turns pause when this Mac sleeps" : WINDOWS_NEVER_LIMIT;
+}
 
 /**
  * The stored level says "lid closed" but the machine says it can still sleep.
@@ -198,13 +224,7 @@ export function KeepAwakeControls() {
     }
   }, [busy, current.platform, isThisMachine, machineName, pinKey]);
 
-  // `lid-closed` is absent on Windows, not disabled: there is no `pmset
-  // disablesleep` equivalent, and a greyed row would imply one is coming.
-  const levels: KeepAwakeLevel[] = current.platform === "other"
-    ? ["never"]
-    : current.lidClosedSupported
-      ? ["never", "while-away", "lid-closed"]
-      : ["never", "while-away"];
+  const levels = availableLevels(current);
 
   const systemSleep = current.systemSleep;
   const warn = systemSleepStopsAgents(systemSleep);
@@ -224,17 +244,7 @@ export function KeepAwakeControls() {
         {levels.map((level) => {
           const selected = current.preferences.level === level;
           const copy = LEVEL_COPY[level];
-          const limit = level === "never"
-            ? current.platform === "windows"
-              ? WINDOWS_NEVER_LIMIT
-              : !isThisMachine && current.platform === "other"
-                ? "Turns pause when this computer sleeps"
-                : mac
-                  ? "Turns pause when this Mac sleeps"
-                  : WINDOWS_NEVER_LIMIT
-            : level === "lid-closed" && !isThisMachine
-              ? "Needs approval on that Mac. Stays on after you quit."
-              : copy.limit;
+          const limit = levelLimit(level, { platform: current.platform, isThisMachine, mac });
           const Art = LEVEL_ART[level];
           return (
             <button
@@ -298,12 +308,15 @@ export function KeepAwakeControls() {
       ) : null}
 
       {loadError ? (
-        <div className="ade-modern-note" data-tone="warn">
-          <span role="alert" style={{ flex: 1 }}>{loadError}</span>
-          <button type="button" className="ade-modern-btn" data-size="sm" onClick={() => setAttempt((value) => value + 1)}>
-            Try again
-          </button>
-        </div>
+        <Banner
+          layout="inline"
+          model={{
+            id: "keep-awake-load-error",
+            tone: "warning",
+            title: loadError,
+            actions: [{ label: "Try again", onClick: () => setAttempt((value) => value + 1) }],
+          }}
+        />
       ) : null}
 
       {warn && systemSleep ? (
