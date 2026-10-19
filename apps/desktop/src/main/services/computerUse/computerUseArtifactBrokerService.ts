@@ -48,7 +48,7 @@ import {
   toOptionalString,
   writeTextAtomic,
 } from "../shared/utils";
-import { commandExistsCached } from "../ai/utils";
+import { commandExistsCached, prewarmCommandExists } from "../ai/utils";
 import { readArtifactByteRange } from "./artifactByteRange";
 import { createComputerUseArtifactPath, getLocalComputerUseCapabilities, toProjectArtifactUri } from "./localComputerUse";
 import { isStreamableArtifactFile, knownArtifactMimeType } from "./artifactStreamProtocol";
@@ -546,6 +546,13 @@ export function createComputerUseArtifactBrokerService(args: {
       .map((root) => path.resolve(root)),
   ]));
   const deniedImportRoots = [layout.secretsDir];
+
+  // The send path asks `getBackendStatus` for these probes on every turn. Start
+  // them now, in the background, so the first send does not run them on the
+  // event loop. The local computer-use list mirrors `getLocalComputerUseCapabilities`.
+  prewarmCommandExists(process.platform === "darwin"
+    ? ["agent-browser", "screencapture", "open", "swift", "osascript"]
+    : ["agent-browser"]);
 
   const emit = (payload: ComputerUseEventPayload): void => {
     try {
