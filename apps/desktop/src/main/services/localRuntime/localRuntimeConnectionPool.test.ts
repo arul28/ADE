@@ -2729,6 +2729,30 @@ setInterval(() => {}, 1000);
       }
     }
 
+    it("keeps connection admission open when there is no desktop-owned brain to stop", async () => {
+      const endpoint = runtimeEndpoint();
+      const pool = poolOwning(null, endpoint);
+      const client = { close: vi.fn() };
+      const internals = pool as unknown as {
+        connect: (create: () => Promise<unknown>) => Promise<unknown>;
+      };
+      const create = vi.fn(async () => ({ client, child: null, socketPath: endpoint }));
+
+      try {
+        await asWindows(async () => {
+          await pool.stopOwnedRuntimeCooperatively();
+          await expect(internals.connect(create)).resolves.toEqual({
+            client,
+            child: null,
+            socketPath: endpoint,
+          });
+        });
+        expect(create).toHaveBeenCalledTimes(1);
+      } finally {
+        pool.dispose();
+      }
+    });
+
     it("does not force-kill the brain when it acknowledges the shutdown and exits", async () => {
       const endpoint = runtimeEndpoint();
       const brain = startBrain(endpoint, "ack-and-exit");

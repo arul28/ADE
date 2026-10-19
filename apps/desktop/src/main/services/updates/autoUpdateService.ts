@@ -137,7 +137,7 @@ type CreateAutoUpdateServiceArgs = {
    */
   beforeQuitAndInstall?: (resumeChats: boolean) => void | Promise<UpdateInterruptedChat[] | void>;
   /** Asks this desktop's owned runtime child to shut down before the app quits. */
-  stopOwnedRuntimeCooperatively?: () => Promise<void>;
+  stopOwnedRuntimeCooperatively?: (options?: { closeAdmission?: boolean }) => Promise<void>;
   rollbackQuitAndInstall?: (reason: string) => void | Promise<void>;
   /**
    * Runs right before the native installer takes over, so something can be on
@@ -2086,7 +2086,9 @@ export function createAutoUpdateService({
         // any service-brain uninstall. Only this desktop's owned child is
         // stopped here, just before electron-updater starts quitting the app.
         if (platform === "win32" && stopOwnedRuntimeCooperatively) {
-          await stopOwnedRuntimeCooperatively();
+          // The native handoff can fail and leave ADE open, so this preparatory
+          // stop must not permanently close the pool's connection admission.
+          await stopOwnedRuntimeCooperatively({ closeAdmission: false });
           logger.info("autoUpdate.owned_runtime_stop_before_quit_done", {
             version: snapshot.version ?? installVersion,
           });

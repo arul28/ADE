@@ -1955,7 +1955,7 @@ describe("createAutoUpdateService", () => {
 
     await expect(service.quitAndInstall()).resolves.toBe(true);
     expect(beforeQuitAndInstall).toHaveBeenCalledTimes(1);
-    expect(stopOwnedRuntimeCooperatively).toHaveBeenCalledTimes(1);
+    expect(stopOwnedRuntimeCooperatively).toHaveBeenCalledWith({ closeAdmission: false });
     expect(updater.quitAndInstall).toHaveBeenCalledWith(true, true);
     expect(order).toEqual(["prepare", "stop-owned-runtime", "quit-and-install"]);
     expect(beforeQuitAndInstall.mock.invocationCallOrder[0]).toBeLessThan(

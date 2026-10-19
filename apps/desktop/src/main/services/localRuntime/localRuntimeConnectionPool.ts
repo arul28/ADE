@@ -2396,15 +2396,19 @@ export class LocalRuntimeConnectionPool {
    *
    * POSIX is unchanged. `dispose()` still sends SIGTERM there, which the brain
    * already handles cooperatively.
+   *
+   * `closeAdmission` defaults to true for app quit. An updater handoff passes
+   * false because the app may remain open if the installer does not take over.
    */
-  async stopOwnedRuntimeCooperatively(): Promise<void> {
+  async stopOwnedRuntimeCooperatively(options: { closeAdmission?: boolean } = {}): Promise<void> {
     if (process.platform !== "win32") return;
-    // Close admission synchronously, before waiting on the shutdown RPC. A
-    // reconnect already in flight must not start a replacement child mid-quit.
-    this.stopping = true;
-    this.clearIsolatedRecoveryTimer();
     const child = this.ownedRuntimeChild;
     if (!child || child.pid == null || hasChildExited(child)) return;
+    // Normal quit closes admission synchronously, before waiting on the shutdown
+    // RPC. The updater leaves admission open in case the install handoff fails
+    // and the app keeps running.
+    if (options.closeAdmission !== false) this.stopping = true;
+    this.clearIsolatedRecoveryTimer();
     const pid = child.pid;
     const deadline = Date.now() + LOCAL_RUNTIME_QUIT_BRAIN_BUDGET_MS;
     try {
