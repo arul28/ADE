@@ -97,6 +97,8 @@ async function defaultLoadSdkStoredCredentials(
 /**
  * The SDK's record check (`parseStoredSdkCredentials` in @cursor/sdk 1.0.36,
  * dist/esm credential-store): a record it would not accept reads as signed out.
+ * The "file reader parity" tests in cursorSdkAuth.test.ts run the pinned SDK over
+ * the same files, so an SDK upgrade that changes this check fails there.
  */
 function parseStoredSdkCredentials(value: unknown): StoredSdkCredentialsLike | undefined {
   if (typeof value !== "object" || value === null) return undefined;
@@ -216,7 +218,8 @@ export async function getCursorSdkAuthSnapshot(): Promise<CursorSdkAuthSnapshot>
   // signed out, and ADE store/env still decide whether chat can run.
   const sdkStored = await hooks.readStoredCredentials();
   const sdkStoredKey = sdkStored?.apiKey?.trim() || undefined;
-  // Cursor.auth.status() is signed out with no record, or with a key past its expiry.
+  // Cursor.auth.status() (@cursor/sdk 1.0.36) is signed out with no record, or with a
+  // key at or past its expiry. The parity tests pin this boundary too.
   const sdkLoggedIn = sdkStored !== undefined
     && (sdkStored.apiKeyExpiresAtMs === undefined || sdkStored.apiKeyExpiresAtMs > Date.now());
   const adeKeyPresent = Boolean(adeKey);
