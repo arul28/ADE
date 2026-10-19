@@ -41,6 +41,7 @@ function makeDeps(overrides: Partial<IdentityThreadRotationDeps<Managed>> = {}) 
     listIdentitySessions: async () => [{ sessionId: "session-old" }],
     describeSession: (managed) => ({
       id: managed.id,
+      laneId: "lane-1",
       // Not "active": an active thread is mid-turn and is never asked.
       status: "idle",
       summaryOrPreview: "Shipping the capture gesture on Windows.",
@@ -61,6 +62,17 @@ function makeDeps(overrides: Partial<IdentityThreadRotationDeps<Managed>> = {}) 
     flushContinuity: vi.fn(),
     writeContinuitySummary: vi.fn(),
     writeThreadState: vi.fn(),
+    // No helper model is reachable unless a test says otherwise.
+    summarizeForHandoff: vi.fn(async () => null),
+    scheduledWork: null,
+    rollover: {
+      readInputs: () => ({ personMessageCount: 5, failedMessage: { text: "Did CI pass?" } }),
+      isClosed: () => false,
+      announce: vi.fn(),
+      resend: vi.fn(async () => undefined),
+      defer: (run) => run(),
+      nowMs: () => 0,
+    },
     memory: { appendDailyEntry: vi.fn() },
     // Settled by default; the refusal tests are the ones that turn this on.
     isTurnActive: () => false,
@@ -93,7 +105,7 @@ describe("distilIdentityHandoff", () => {
    */
   it("says so out loud when there was nothing readable to summarize", async () => {
     const { deps } = makeDeps({
-      describeSession: (managed) => ({ id: managed.id, status: "idle", summaryOrPreview: "   " }),
+      describeSession: (managed) => ({ id: managed.id, laneId: "lane-1", status: "idle", summaryOrPreview: "   " }),
       listUserMessages: () => [],
       listScheduledWorkLines: () => [],
     });

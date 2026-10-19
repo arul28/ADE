@@ -46,6 +46,11 @@ const THREAD_KEY_PREFIX = "ctx.thread.";
 
 export const PROJECT_CONTEXT_TAG_KEYS = ["lane", "pr", "path", "topic"] as const;
 
+/** A fact's trailing `[lane:x pr:123 path:a/b topic:t]` suffix, and nothing looser ("[WIP]" is text). */
+export const FACT_TAG_SUFFIX_PATTERN = new RegExp(
+  `\\[((?:${PROJECT_CONTEXT_TAG_KEYS.join("|")}):[^\\]\\s]+(?:\\s+(?:${PROJECT_CONTEXT_TAG_KEYS.join("|")}):[^\\]\\s]+)*)\\]\\s*$`,
+);
+
 export type ProjectContextKind = "fact" | "decision" | "convention" | "trap" | "environment" | "pointer";
 export type ProjectContextStatus = "active" | "pinned" | "archived";
 export type ProjectContextTrust = "human" | "cto" | "agent";
@@ -335,14 +340,22 @@ export function contextQueryTerms(query: string): string[] {
   return terms.slice(0, 24);
 }
 
+// Only words that never change what a fact says. Negations and modals ("not",
+// "never", "must", "only", "use") stay: "Use pnpm" and "Do not use pnpm" are
+// opposite facts, and dropping those words made them read as one.
 const SIMILARITY_STOPWORDS = new Set([
-  "the", "and", "for", "are", "was", "were", "with", "that", "this", "from", "into", "not", "but", "has", "have",
-  "use", "uses", "its", "it's", "all", "any", "can", "will", "should", "must", "when", "then", "than", "only",
+  "the", "and", "for", "are", "was", "were", "with", "that", "this", "from", "into", "its", "has", "have",
 ]);
 
+const NEGATION_WORDS = new Set(["not", "no", "never", "don't", "dont", "doesn't", "isn't", "can't", "cannot", "won't", "avoid", "without", "stop"]);
+
+function isNegated(text: string): boolean {
+  return text.replace(FACT_TAG_SUFFIX_PATTERN, "").toLowerCase().split(/[^a-z']+/).some((word) => NEGATION_WORDS.has(word));
+}
+
 function similarityTerms(text: string): Set<string> {
-  // Tag suffixes and markdown are noise for "do these say the same thing".
-  const body = text.replace(/\[[^\]]*\]\s*$/, "").toLowerCase();
+  // The tag suffix is compared separately; markdown is noise.
+  const body = text.replace(FACT_TAG_SUFFIX_PATTERN, "").toLowerCase();
   const terms = new Set<string>();
   for (const part of body.split(/[^a-z0-9]+/)) {
     // Numbers always count, however short: "Node 22" and "Node 20", or PR
@@ -360,6 +373,13 @@ function similarityTerms(text: string): Set<string> {
  * as the same fact.
  */
 export function factSimilarity(a: string, b: string): number {
+  // The same sentence about a different lane, PR or path is a different fact:
+  // lane-scoped injection only finds the copy that carries its own tag.
+  const tagsOf = (text: string): string => (FACT_TAG_SUFFIX_PATTERN.exec(text.trim())?.[0] ?? "").trim().toLowerCase();
+  if (tagsOf(a) !== tagsOf(b)) return 0;
+  // One fact negated and the other not are opposites, however many words
+  // they share: "Use pnpm" against "Do not use pnpm".
+  if (isNegated(a) !== isNegated(b)) return 0;
   const left = similarityTerms(a);
   const right = similarityTerms(b);
   if (!left.size || !right.size) return a.trim().toLowerCase() === b.trim().toLowerCase() ? 1 : 0;
@@ -452,10 +472,24 @@ export function projectContextAccountPort(args: {
 }
 
 /** A live fact that already says what `text` says, or null. */
-function findNearDuplicate(items: ProjectContextItem[], text: string): ProjectContextItem | null {
+function sameTags(left: ProjectContextItem["tags"], right: ProjectContextItem["tags"]): boolean {
+  return PROJECT_CONTEXT_TAG_KEYS.every((key) => (left[key] ?? "").toLowerCase() === (right[key] ?? "").toLowerCase());
+}
+
+/**
+ * A live fact that says what `text` says, about the same thing. `tags`, when
+ * given, must match too: a caller can pass them apart from the text, and the
+ * same sentence about another lane is another fact.
+ */
+function findNearDuplicate(
+  items: ProjectContextItem[],
+  text: string,
+  tags?: ProjectContextItem["tags"],
+): ProjectContextItem | null {
   let best: { item: ProjectContextItem; score: number } | null = null;
   for (const item of items) {
     if (item.status === "archived") continue;
+    if (tags && !sameTags(item.tags, tags)) continue;
     const score = factSimilarity(item.text, text);
     if (score >= NEAR_DUPLICATE_SIMILARITY && (!best || score > best.score)) best = { item, score };
   }
@@ -795,13 +829,31 @@ export function createProjectContextStore(args: ProjectContextStoreArgs) {
       trust?: ProjectContextTrust;
       status?: ProjectContextStatus;
       tags?: ProjectContextItem["tags"];
+      /**
+       * Every fact the person's notes file holds right now. A near-duplicate
+       * whose wording is no longer among them was edited into this one, so
+       * the stored row takes the new wording; one still in the file is a
+       * second line, and stays as it is.
+       */
+      notesFileFacts?: ReadonlySet<string>;
     }): { saved: boolean; item: ProjectContextItem | null } {
       const text = clip(input.text, MAX_ITEM_CHARS);
       if (!text || isLegacyPlaceholderFact(text)) return { saved: false, item: null };
       const current = readFromDisk();
-      const existing = current.items.find((item) => item.text === text && item.status !== "archived")
-        ?? findNearDuplicate(current.items, text);
-      if (existing) return { saved: false, item: existing };
+      const exact = current.items.find((item) => (
+        item.text === text && item.status !== "archived" && (!input.tags || sameTags(item.tags, input.tags))
+      ));
+      if (exact) return { saved: false, item: exact };
+      const near = findNearDuplicate(current.items, text, input.tags);
+      if (near && input.notesFileFacts && !input.notesFileFacts.has(near.text)) {
+        // A line of the notes file was edited: the new wording replaces the
+        // stored one rather than being refused as its duplicate.
+        const corrected: ProjectContextItem = { ...near, text, trust: "human", updatedAt: now() };
+        delete corrected.accountSyncedAt;
+        write({ ...current, items: current.items.map((item) => item.id === near.id ? corrected : item) });
+        return { saved: true, item: corrected };
+      }
+      if (near) return { saved: false, item: near };
       const stamp = now();
       const item: ProjectContextItem = {
         id: randomUUID(),

@@ -4,6 +4,7 @@ import type { CtoMemorySearchRow, CtoMemorySnapshot } from "../../../shared/type
 import { clipText, nowIso, redactSecrets, writeTextAtomic } from "../shared/utils";
 import {
   createProjectContextStore,
+  FACT_TAG_SUFFIX_PATTERN,
   PROJECT_CONTEXT_TAG_KEYS,
   type ProjectContextAccountPort,
   type ProjectContextItem,
@@ -84,13 +85,26 @@ const MEMORY_FACT_MAX_CHARS = 2000;
 const CAPTURE_MAX_FACTS = 5;
 const CAPTURE_FACT_MAX_CHARS = 300;
 
+/** The kinds a saved or captured fact may carry. */
 export const CTO_MEMORY_FACT_KINDS = ["fact", "decision", "convention", "trap", "environment", "preference"] as const;
 export type CtoMemoryFactKind = (typeof CTO_MEMORY_FACT_KINDS)[number];
 
-/** The store's closed kind list has no "preference"; a user preference is a convention about working together. */
+/**
+ * Where each kind lands in the store's closed list. Exhaustive, so a new kind
+ * cannot ship without one. A user preference is a convention about working
+ * together; `pointer` is reserved for notes-file imports.
+ */
+const STORE_KIND: Record<CtoMemoryFactKind, ProjectContextKind> = {
+  fact: "fact",
+  decision: "decision",
+  convention: "convention",
+  trap: "trap",
+  environment: "environment",
+  preference: "convention",
+};
+
 function storeKindFor(kind: CtoMemoryFactKind | null | undefined): ProjectContextKind {
-  if (!kind || kind === "preference") return kind === "preference" ? "convention" : "fact";
-  return kind;
+  return kind ? STORE_KIND[kind] : "fact";
 }
 
 const MEMORY_HEADER = "# CTO Durable Memory";
@@ -178,9 +192,7 @@ export function formatMemoryTagSuffix(tags?: CtoMemoryTags | null): string {
   return parts.length ? ` [${parts.join(" ")}]` : "";
 }
 
-const MEMORY_TAG_SUFFIX_PATTERN = new RegExp(
-  `\\[((?:${CTO_MEMORY_TAG_KEYS.join("|")}):[^\\]\\s]+(?:\\s+(?:${CTO_MEMORY_TAG_KEYS.join("|")}):[^\\]\\s]+)*)\\]\\s*$`,
-);
+const MEMORY_TAG_SUFFIX_PATTERN = FACT_TAG_SUFFIX_PATTERN;
 
 /** Parsed tags for one stored line. Untagged lines return an empty record. */
 export function parseMemoryTags(line: string): Record<CtoMemoryTagKey, string | undefined> {
@@ -293,10 +305,13 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     try {
       // The notes file is still the notes file. Only its bullets become facts,
       // and exact text is ignored, so a second save does not store the document.
-      for (const line of next.split(/\r?\n/)) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith("- ")) continue;
-        context.remember({ text: trimmed.slice(2), trust: "human", kind: "pointer" });
+      const bullets = next.split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line.startsWith("- "))
+        .map((line) => line.slice(2).replace(/\s+/g, " ").trim());
+      const notesFileFacts = new Set(bullets);
+      for (const text of bullets) {
+        context.remember({ text, trust: "human", kind: "pointer", notesFileFacts });
       }
       void context.reconcile();
     } catch (error) {
@@ -382,6 +397,7 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     }
 
     writeTextAtomic(memoryPath, `${rendered}\n`);
+    let storedId: string | undefined;
     try {
       const parsed = parseMemoryTags(tagged);
       const tags: ProjectContextItem["tags"] = {};
@@ -396,17 +412,19 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
         tags,
       });
       if (options.pin && remembered.item) context.setPinned(remembered.item.id, true);
+      storedId = remembered.item?.id;
       void context.reconcile();
-      return {
-        saved: true,
-        fact: tagged,
-        ...(remembered.item ? { id: remembered.item.id } : {}),
-        ...(evicted.length ? { evictedCount: evicted.length } : {}),
-      };
     } catch (error) {
+      // MEMORY.md has the fact; only the synced copy is missing, and the
+      // next save or reconcile does not repair it, so it is logged.
       warn("cto_context.remember_failed", error);
     }
-    return { saved: true, fact: tagged, ...(evicted.length ? { evictedCount: evicted.length } : {}) };
+    return {
+      saved: true,
+      fact: tagged,
+      ...(storedId ? { id: storedId } : {}),
+      ...(evicted.length ? { evictedCount: evicted.length } : {}),
+    };
   };
 
   /**
@@ -517,7 +535,11 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     const synced = context.threadState();
     if (!synced) return local;
     const localMtime = statMtimeIso(threadStatePath);
-    if (local.trim().length && localMtime && localMtime >= synced.updatedAt) return local;
+    // Both are written together, the file a moment first, so the same text
+    // counts as the file's (the synced copy is clipped and re-rendered).
+    if (local.trim().length && (local.includes(synced.text.replace(/…$/, "")) || (localMtime && localMtime >= synced.updatedAt))) {
+      return local;
+    }
     return `${renderThreadState(synced.text, synced.updatedAt, synced.reason)}\n`;
   };
 
@@ -1039,13 +1061,7 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     forgetFact,
     captureFacts,
     listKnownFacts,
-    setFactPinned: (id: string, pinned: boolean) => {
-      const item = context.setPinned(id, pinned);
-      if (item) void context.reconcile();
-      return item;
-    },
     listFactsForLane,
-    readThreadState,
     writeThreadState,
     appendDailyEntry,
     appendTurnJournal,

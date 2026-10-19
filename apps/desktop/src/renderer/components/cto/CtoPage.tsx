@@ -246,7 +246,17 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
   // seeing it on any other session means this page is showing a retired one.
   const followRolloverRef = useRef<() => void>(() => {});
   followRolloverRef.current = () => {
-    void refreshSession().catch(() => {});
+    const key = sessionCacheKey;
+    const ensure = window.ade?.cto?.ensureSession;
+    if (!ensure || !primaryLaneId || !homeReady) return;
+    void ensure({}, ctoPin)
+      .then((next) => {
+        // The person may have moved to another home while this was in flight.
+        if (!isCurrentCto(key)) return;
+        ctoPrimarySessions.set(key, next);
+        setSession(next);
+      })
+      .catch(() => {});
     void loadThreadHealth();
   };
   const ctoPinRef = useRef(ctoPin);

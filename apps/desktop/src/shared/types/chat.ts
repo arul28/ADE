@@ -598,6 +598,8 @@ export type AgentChatHostContinuationMetadata = {
     | "interrupted_turn_recovery"
     | "continuity_recovery"
     | "cto_intro"
+    /** ADE asking a CTO thread that is about to be retired for its hand-off note. */
+    | "cto_handoff_note"
     /** A chat wait the agent armed fired (`chat.armWait`). */
     | "chat_wait"
     /** A background job the agent was waiting on ended. */
