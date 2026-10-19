@@ -190,8 +190,8 @@ function workflowTotals(run: ChatWorkflowRun): { tokens: number | null; tools: n
   const parentTokens = run.parent.usage?.totalTokens;
   const parentTools = run.parent.usage?.toolUses;
   return {
-    tokens: rosterTokens > 0 ? rosterTokens : typeof parentTokens === "number" ? parentTokens : null,
-    tools: rosterTools > 0 ? rosterTools : typeof parentTools === "number" ? parentTools : null,
+    tokens: rosterTokens > 0 ? rosterTokens : parentTokens ?? null,
+    tools: rosterTools > 0 ? rosterTools : parentTools ?? null,
   };
 }
 
