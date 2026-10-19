@@ -827,6 +827,9 @@ import type {
   SetDefaultLaneTemplateArgs,
   ApplyLaneTemplateArgs,
   SaveLaneTemplateArgs,
+  GetLaneDependencyStatusArgs,
+  AcknowledgeLaneDependencyStatusArgs,
+  LaneDependencyStatus,
   DeleteLaneTemplateArgs,
   GetPortLeaseArgs,
   AcquirePortLeaseArgs,
@@ -2230,6 +2233,15 @@ declare global {
         getOverlay: (args: GetLaneOverlayArgs) => Promise<LaneOverlayOverrides>;
         onEnvEvent: (cb: (ev: LaneEnvInitEvent) => void) => () => void;
         listTemplates: (pin?: OpenProjectBinding | null) => Promise<LaneTemplate[]>;
+        /** Lockfiles in the main checkout of the pinned (or tab's) machine and whether each install is current. */
+        getDependencyStatus: (
+          args?: GetLaneDependencyStatusArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<LaneDependencyStatus>;
+        acknowledgeDependencyStatus: (
+          args?: AcknowledgeLaneDependencyStatusArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<LaneDependencyStatus>;
         getTemplate: (
           args: GetLaneTemplateArgs,
         ) => Promise<LaneTemplate | null>;

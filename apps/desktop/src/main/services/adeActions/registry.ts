@@ -146,7 +146,10 @@ import {
 } from "../chat/draftService";
 import type {
   AiConfig,
+  AcknowledgeLaneDependencyStatusArgs,
   ApplyLaneTemplateArgs,
+  GetLaneDependencyStatusArgs,
+  LaneDependencyStatus,
   ArchiveAndReclaimLaneArgs,
   DeleteLaneArgs,
   DeleteLaneResult,
@@ -198,6 +201,11 @@ import {
 } from "../lanes/laneRuntimeLifecycle";
 import { createArchiveService } from "../archive/archiveService";
 import { runLaneEnvironmentSetup, type LaneEnvironmentSetupDeps } from "../lanes/laneEnvironmentSetup";
+import {
+  acknowledgeLaneDependencyStatus,
+  readLaneDependencyStatus,
+  type LaneDependencyStatusDeps,
+} from "../lanes/laneDependencyStatus";
 import {
   parseChatLaunchArgs,
   parseChatLaunchCompleteClientArgs,
@@ -1950,6 +1958,16 @@ async function resolveLaneOverlayContextForRuntime(runtime: AdeRuntime, laneId: 
   );
 }
 
+/** Deps for `lane.getDependencyStatus` / `lane.acknowledgeDependencyStatus`: the main checkout of this runtime's project. */
+function laneDependencyStatusDeps(runtime: AdeRuntime): LaneDependencyStatusDeps {
+  return {
+    projectRoot: runtime.projectRoot,
+    cacheDir: runtime.paths.cacheDir,
+    getDefaultTemplateId: () => runtime.laneTemplateService?.getDefaultTemplateId() ?? null,
+    getTemplateCount: () => runtime.laneTemplateService?.listTemplates().length ?? 0,
+  };
+}
+
 /** Deps for the shared `runLaneEnvironmentSetup` (lane.initEnv / lane.applyTemplate). */
 function laneEnvironmentSetupDeps(
   runtime: AdeRuntime,
@@ -2234,6 +2252,14 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
     },
     deleteTemplate: (args?: { templateId?: string }) => {
       requireService(runtime.laneTemplateService, "Lane template service not available.").deleteTemplate(requireNonEmptyString(args?.templateId, "templateId"));
+    },
+    getDependencyStatus: (args?: GetLaneDependencyStatusArgs): Promise<LaneDependencyStatus> =>
+      readLaneDependencyStatus(laneDependencyStatusDeps(runtime), { refresh: args?.refresh === true }),
+    acknowledgeDependencyStatus: (args?: AcknowledgeLaneDependencyStatusArgs): Promise<LaneDependencyStatus> => {
+      const lockfiles = Array.isArray(args?.lockfiles)
+        ? args.lockfiles.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+        : undefined;
+      return acknowledgeLaneDependencyStatus(laneDependencyStatusDeps(runtime), lockfiles ? { lockfiles } : {});
     },
     portGetLease: async (args?: { laneId?: string }) => {
       const laneId = requireNonEmptyString(args?.laneId, "laneId");

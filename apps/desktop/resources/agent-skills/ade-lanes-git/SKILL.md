@@ -35,6 +35,40 @@ Archived lanes are listed by `ade archive list --kind lane --text`. The user
 restores or deletes them in Settings → Archive; see the `ade-cli-control-plane`
 skill for the archive commands.
 
+## Lane templates and dependencies
+
+New lanes are plain git worktrees. ADE does not copy, link, or install packages
+by itself. A project's default lane template runs for each new lane. A template
+can copy env files and paths, install dependencies, and run a setup script. If
+`injectPrimaryPath` is true, the script receives `$PRIMARY_WORKTREE_PATH`.
+
+Templates live in that machine's `.ade/local.yaml`. They do not sync. Use
+`--machine <name>` to read or write templates on another machine.
+
+```bash
+ade lanes templates list --text
+ade lanes templates show <id>
+ade lanes templates save --json '{"id":"web","name":"Web","dependencies":[{"command":["npm","install"],"cwd":"apps/web"}],"setupScript":{"unixCommands":["npm run codegen"],"windowsCommands":["npm run codegen"],"injectPrimaryPath":true}}'
+ade lanes templates default [<id>] [--clear]
+ade lanes templates apply <id> --lane <lane>
+ade lanes templates delete <id>
+ade lanes deps [--refresh] --text
+ade lanes create --name <name> --template <id>   # waits for setup; --no-template skips it
+```
+
+Dependency commands must start with `npm`, `yarn`, `pnpm`, `pip`, `pip3`,
+`bundle`, `cargo`, `go`, `composer`, `poetry`, `pipenv`, or `bun`. Put other
+commands in `setupScript`. Each dependency command can run for up to 20 minutes.
+
+To check a template, create a throwaway lane with
+`ade lanes create --name tmpl-test --template <id>`. Inspect the copied folders
+and run one quick check in that lane. Then remove it with
+`ade lanes delete <lane> --force`.
+
+Older lanes can still have `node_modules` symlinks into the main checkout.
+Do not delete one with a trailing slash (`rm -rf node_modules/`): that deletes
+the main checkout's packages. Remove the link itself with `rm node_modules`.
+
 ## ADE-aware Git
 
 Use ADE git commands when the operation should update ADE operation state and refresh lane status:

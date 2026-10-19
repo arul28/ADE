@@ -134,8 +134,15 @@ function resolveShellInvocation(commandLine: string, env: NodeJS.ProcessEnv): Sp
   return { command: "/bin/sh", args: ["-c", commandLine], windowsVerbatimArguments: false };
 }
 
-/** Timeout per setup command / script, matching the Docker step's budget. */
-const SETUP_SCRIPT_TIMEOUT_MS = 300_000;
+/**
+ * Timeout per install command and per setup command / script. A cold install of
+ * a large project (thousands of packages, native builds) can take many minutes,
+ * and a lane template is the only place a lane gets its packages, so a short
+ * budget would fail a setup that is still working. The abort path still stops
+ * a run the user cancels.
+ */
+export const LANE_ENV_COMMAND_TIMEOUT_MS = 20 * 60_000;
+const SETUP_SCRIPT_TIMEOUT_MS = LANE_ENV_COMMAND_TIMEOUT_MS;
 
 export type LaneEnvInitOptions = {
   /**
@@ -448,11 +455,15 @@ export function createLaneEnvironmentService({
     for (const dep of deps) {
       const baseCommand = dep.command[0];
       if (!ALLOWED_INSTALL_COMMANDS.has(baseCommand)) {
+        // Skipping it quietly made a template look fine while it did nothing.
         logger.warn("lane_env_init.dependency_command_not_allowed", { command: baseCommand });
+        failures.push(
+          `${baseCommand || "(empty command)"} is not an install command. Install steps can run ${[...ALLOWED_INSTALL_COMMANDS].join(", ")}; put other commands in the setup script.`,
+        );
         continue;
       }
       const cwd = resolveCheckedPath(worktreePath, dep.cwd ?? ".", logger, "lane_env_init.dependency_cwd_escape", { cwd: dep.cwd ?? ".", worktreePath });
-      const result = await execCommand(dep.command, cwd);
+      const result = await execCommand(dep.command, cwd, LANE_ENV_COMMAND_TIMEOUT_MS);
       if (result.exitCode !== 0) {
         failures.push(`${dep.command.join(" ")}: ${result.stderr.slice(0, 500)}`);
         logger.warn("lane_env_init.dependency_install_failed", {

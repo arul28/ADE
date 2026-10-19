@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { CaretDown, Plus, Stack } from "@phosphor-icons/react";
+import { CaretDown, ChatCircleText, Plus, Stack } from "@phosphor-icons/react";
 import {
   COLORS,
   MONO_FONT,
@@ -27,6 +27,7 @@ import type {
   LaneSetupScriptConfig,
 } from "../../../shared/types";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
+import { useLaneTemplateSetupChat } from "../lanes/useLaneTemplateSetupChat";
 
 function generateId(): string {
   return `tpl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
@@ -224,7 +225,8 @@ const DESCRIPTION = "Set up every new lane the same way: copy files in, install 
 export function LaneTemplatesSection() {
   // Templates live in each machine's `.ade/local.yaml`, so they are read and
   // written on the machine the Settings page shows.
-  const { pin } = useSettingsMachineScope();
+  const { pin, machineName } = useSettingsMachineScope();
+  const { start: startTemplateChat, busy: templateChatBusy } = useLaneTemplateSetupChat({ pin, machineName });
   const [templates, setTemplates] = useState<LaneTemplate[]>([]);
   const [defaultId, setDefaultId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -284,6 +286,21 @@ export function LaneTemplatesSection() {
     </button>
   );
 
+  // A new chat in this machine's main checkout, with a prompt that asks an
+  // agent to read the repo and write the template. Nothing is sent.
+  const agentSetupButton = (
+    <button
+      type="button"
+      className="ade-modern-btn"
+      disabled={templateChatBusy}
+      title={`Opens a new chat in the main checkout on ${machineName} with a setup prompt. You pick the model and press Send.`}
+      onClick={() => void startTemplateChat()}
+    >
+      <ChatCircleText size={12} weight="bold" />
+      {templateChatBusy ? "Opening chat…" : "Set up with an agent"}
+    </button>
+  );
+
   if (loading) {
     return (
       <ModernSection group={TITLE} anchor={ANCHOR} title={TITLE} hint={DESCRIPTION}>
@@ -312,18 +329,31 @@ export function LaneTemplatesSection() {
       anchor={ANCHOR}
       title={TITLE}
       hint={DESCRIPTION}
-      actions={templates.length > 0 ? newTemplateButton : undefined}
+      actions={templates.length > 0 ? <>{agentSetupButton}{newTemplateButton}</> : undefined}
     >
       {templates.length === 0 ? (
         <div className="ade-lt-empty">
           <Stack size={22} weight="light" />
           <div className="ade-ap-rowtitle">No templates yet</div>
-          <p className="ade-modern-muted" style={{ maxWidth: 420, textAlign: "center" }}>
-            A template says what happens when a lane is created: which files get copied in, what gets installed, and what script runs.
+          <p className="ade-modern-muted" style={{ maxWidth: 440, textAlign: "center" }}>
+            A template says what happens when a lane is created: which files get copied in, what gets installed, and what script runs. New lanes start without packages, so an agent can read this repo and write one for you.
           </p>
-          <button type="button" className="ade-modern-btn" data-tone="primary" onClick={() => setEditing(emptyTemplate())}>
-            Create your first template
-          </button>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "center" }}>
+            <button
+              type="button"
+              className="ade-modern-btn"
+              data-tone="primary"
+              disabled={templateChatBusy}
+              title={`Opens a new chat in the main checkout on ${machineName} with a setup prompt. You pick the model and press Send.`}
+              onClick={() => void startTemplateChat()}
+            >
+              <ChatCircleText size={12} weight="bold" />
+              {templateChatBusy ? "Opening chat…" : "Set up with an agent"}
+            </button>
+            <button type="button" className="ade-modern-btn" onClick={() => setEditing(emptyTemplate())}>
+              Create one yourself
+            </button>
+          </div>
         </div>
       ) : (
         <>

@@ -45,7 +45,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
   lane: {
     read: [
       "diagnosticsGetLaneHealth", "diagnosticsGetStatus", "getBranchDrift", "getChildren",
-      "getDefaultTemplate", "getDeleteRisk", "getLeftoverWorktree", "getReclaimRisk",
+      "getDefaultTemplate", "getDeleteRisk", "getDependencyStatus", "getLeftoverWorktree", "getReclaimRisk",
       "getEnvStatus", "getOverlay", "getStackChain", "getSummary", "getTemplate",
       "listAutoRebaseStatuses", "list", "listDeleteProgress", "listSnapshots",
       "listRebaseSuggestions", "listTemplates", "listLinearIssuesForLaneSessions",
@@ -56,7 +56,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "previewBranchSwitch", "proxyGetPreviewInfo", "proxyGetStatus",
     ],
     write: [
-      "archive", "archiveAndReclaim", "attachLinearIssueToSession", "attachGitHubIssueToSession",
+      "acknowledgeDependencyStatus", "archive", "archiveAndReclaim", "attachLinearIssueToSession", "attachGitHubIssueToSession",
       "attachJiraIssueToSession",
       "cancelDelete", "create", "createChild", "createFromUnstaged", "deferRebaseSuggestion",
       "delete", "deleteLeftoverWorktree", "deleteTemplate", "detachLinearIssueFromSession",

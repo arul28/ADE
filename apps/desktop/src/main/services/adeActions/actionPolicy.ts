@@ -370,6 +370,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   ],
   lane: [
     "archive",
+    "acknowledgeDependencyStatus",
     "archiveAndReclaim",
     "attachLinearIssueToSession",
     "attachGitHubIssueToSession",
@@ -396,6 +397,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getBranchDrift",
     "getChildren",
     "getDefaultTemplate",
+    "getDependencyStatus",
     "getDeleteRisk",
     "getLeftoverWorktree",
     "getReclaimRisk",

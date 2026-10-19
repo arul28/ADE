@@ -59,6 +59,8 @@ const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
     importBranch: IPC.lanesImportBranch,
     archive: IPC.lanesArchive,
     delete: IPC.lanesDelete,
+    initEnv: IPC.lanesInitEnv,
+    applyTemplate: IPC.lanesApplyTemplate,
   },
   ios_simulator: {
     // A remote runtime builds with the same xcodebuild as a local one, so a
@@ -200,6 +202,10 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     case IPC.lanesArchive:
     case IPC.lanesDelete:
       return 4 * 60_000;
+    // A lane template's installs and setup script; see LANE_ENV_SETUP_TIMEOUT_MS.
+    case IPC.lanesInitEnv:
+    case IPC.lanesApplyTemplate:
+      return localRuntimeActionIpcTimeoutMs("lane", "applyTemplate");
     // Handoff runs an AI brief + session creation + first-message dispatch
     // (and cross-machine prepare additionally packages provider history);
     // it must outlive the daemon-side 120s action timeout so the false

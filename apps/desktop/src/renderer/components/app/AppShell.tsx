@@ -64,6 +64,7 @@ import { WorktreeOpenDialog } from "../projects/WorktreeOpenDialog";
 import { usePrEventToasts } from "./toast/usePrEventToasts";
 import { useStaleCliToast } from "./toast/useStaleCliToast";
 import { ARCHIVE_SETTINGS_ROUTE, useArchiveReminderBanner } from "./useArchiveReminderBanner";
+import { useLaneDependencyBanners } from "./useLaneDependencyBanners";
 import { useLaneEventToasts } from "./toast/useLaneEventToasts";
 import { useAutoDiagnosticsToast } from "./toast/useAutoDiagnosticsToast";
 import { useProductAnalyticsLifecycle } from "../analytics/ProductAnalyticsLifecycle";
@@ -341,6 +342,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     projectRoot: project?.rootPath ?? null,
     enabled: !showWelcome,
     onReview: openArchiveSettings,
+  });
+  useLaneDependencyBanners({
+    projectRoot: project?.rootPath ?? null,
+    projectBinding,
+    lanes,
+    enabled: !showWelcome,
+    navigate,
   });
   const isLanesRouteRef = useRef(isLanesRoute);
 
