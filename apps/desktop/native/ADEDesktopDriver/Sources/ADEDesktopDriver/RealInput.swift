@@ -17,6 +17,12 @@ import CoreGraphics
 import Foundation
 import ADEDesktopDriverCore
 
+enum DriverPointerEventMarker {
+    /// Also set on the event's HID source, so another ADE helper can recognize
+    /// a lane-driving post even when its process id is different.
+    static let sourceUserData: Int64 = 0x4144_4544_5249_5645
+}
+
 final class RealInput {
     private let leases: InputLeaseStore
     private let log: (String) -> Void
@@ -51,6 +57,7 @@ final class RealInput {
     /// this feature actually has: a click that works and a pointer that is
     /// warped back within the same turn of the main queue.
     private func postMouse(_ event: CGEvent) {
+        event.setIntegerValueField(.eventSourceUserData, value: DriverPointerEventMarker.sourceUserData)
         event.post(tap: .cghidEventTap)
     }
 

@@ -65,6 +65,10 @@ final class VirtualDisplayHost {
     private var handles: [String: VirtualDisplayHandle] = [:]
     private let lock = NSRecursiveLock()
     private let log: (String) -> Void
+    private static let maximumPlacementAttempts = 3
+    private var placementTopology: [DisplayTopologyEntry]?
+    private var placementAttempts = 0
+    private var placementFailureLogged = false
 
     /// Why the private API could not be used, once something has tried.
     private(set) var unavailableReason: String?
@@ -113,6 +117,12 @@ final class VirtualDisplayHost {
         return handles[laneId]
     }
 
+    func laneId(forDisplayId displayId: CGDirectDisplayID) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return handles.values.first(where: { $0.mode == "virtual" && $0.displayId == displayId })?.laneId
+    }
+
     func all() -> [VirtualDisplayHandle] {
         lock.lock()
         defer { lock.unlock() }
@@ -129,23 +139,150 @@ final class VirtualDisplayHost {
     /// at the old rect, which now belonged to the other lane's screen.
     typealias DisplayMove = (laneId: String, displayId: CGDirectDisplayID, from: DisplayPlacement, to: DisplayPlacement)
 
+    private struct DisplayTopologyEntry: Equatable {
+        let displayId: CGDirectDisplayID
+        let isADE: Bool
+        let origin: CGPoint?
+        let width: CGFloat
+        let height: CGFloat
+        let pixelWidth: Int
+        let pixelHeight: Int
+    }
+
     func refreshMovedPlacements() -> [DisplayMove] {
         lock.lock()
         defer { lock.unlock() }
         var moved: [DisplayMove] = []
         for (laneId, handle) in handles where handle.mode == "virtual" {
             let bounds = CGDisplayBounds(handle.displayId)
-            guard bounds.width > 0, bounds.origin != handle.placement.origin else { continue }
+            guard bounds.width > 0, bounds.height > 0 else { continue }
             let next = DisplayPlacement(
                 origin: bounds.origin,
-                width: handle.placement.width,
-                height: handle.placement.height,
-                scale: handle.placement.scale
+                width: bounds.width,
+                height: bounds.height,
+                scale: Self.measuredBackingScale(displayId: handle.displayId, fallback: handle.placement.scale)
             )
+            guard next != handle.placement else { continue }
             moved.append((laneId: laneId, displayId: handle.displayId, from: handle.placement, to: next))
             handles[laneId]?.placement = next
         }
         return moved
+    }
+
+    /// Moves this process's lane displays into a corner-only chain. Configuration
+    /// is scoped to this login session; it never changes the saved arrangement.
+    /// A stubborn window server gets three attempts per stable display topology,
+    /// then the pointer fence remains the safety net until a display changes.
+    func repositionVirtualDisplays() {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let managed = handles.values
+            .filter { $0.mode == "virtual" }
+            .sorted { $0.createdAt < $1.createdAt }
+        guard !managed.isEmpty else { return }
+
+        let active = Self.activeDisplays()
+        let topology = active.map { display in
+            let isADE = CGDisplayVendorNumber(display.id) == VirtualDisplayIdentity.vendorID
+            let mode = CGDisplayCopyDisplayMode(display.id)
+            return DisplayTopologyEntry(
+                displayId: display.id,
+                isADE: isADE,
+                origin: isADE ? nil : display.frame.origin,
+                width: display.frame.width,
+                height: display.frame.height,
+                pixelWidth: mode?.pixelWidth ?? 0,
+                pixelHeight: mode?.pixelHeight ?? 0
+            )
+        }
+        if topology != placementTopology {
+            placementTopology = topology
+            placementAttempts = 0
+            placementFailureLogged = false
+        }
+
+        let realFrames = active
+            .filter { CGDisplayVendorNumber($0.id) != VirtualDisplayIdentity.vendorID }
+            .map(\.frame)
+        let managedIds = Set(managed.map(\.displayId))
+        let otherLaneFrames = active
+            .filter {
+                CGDisplayVendorNumber($0.id) == VirtualDisplayIdentity.vendorID
+                    && !managedIds.contains($0.id)
+            }
+            .map(\.frame)
+        guard let planned = Geometry.cornerChainPlacements(
+            realDisplayFrames: realFrames,
+            laneDisplayTemplates: managed.map(\.placement),
+            obstacleDisplayFrames: otherLaneFrames,
+            requiresIntegralOrigins: true
+        ) else {
+            if !placementFailureLogged {
+                placementFailureLogged = true
+                log("no safe integral corner chain is available for the current displays; the pointer fence remains active")
+            }
+            return
+        }
+
+        let targets = Array(zip(managed, planned))
+        guard targets.contains(where: { $0.0.placement.origin != $0.1.origin }) else { return }
+        guard placementAttempts < Self.maximumPlacementAttempts else {
+            if !placementFailureLogged {
+                placementFailureLogged = true
+                log("macOS did not keep the lane displays at corner-only positions after \(Self.maximumPlacementAttempts) attempts; the pointer fence remains active")
+            }
+            return
+        }
+        placementAttempts += 1
+
+        var configuration: CGDisplayConfigRef?
+        let begin = CGBeginDisplayConfiguration(&configuration)
+        guard begin == .success, let configuration else {
+            log("could not begin a session-only display placement (CGError \(begin.rawValue))")
+            return
+        }
+
+        for (handle, target) in targets {
+            let status = CGConfigureDisplayOrigin(
+                configuration,
+                handle.displayId,
+                Int32(target.origin.x),
+                Int32(target.origin.y)
+            )
+            guard status == .success else {
+                CGCancelDisplayConfiguration(configuration)
+                log("macOS refused corner placement for lane \(handle.laneId) (CGError \(status.rawValue))")
+                return
+            }
+        }
+
+        let complete = CGCompleteDisplayConfiguration(configuration, .forSession)
+        guard complete == .success else {
+            log("macOS refused the session-only corner placement (CGError \(complete.rawValue))")
+            return
+        }
+
+        let didKeepPlan = targets.allSatisfy { handle, target in
+            let actual = CGDisplayBounds(handle.displayId)
+            return actual.origin == target.origin
+                && actual.width == target.width
+                && actual.height == target.height
+        }
+        if !didKeepPlan {
+            log("macOS rearranged a lane display after placement attempt \(placementAttempts)/\(Self.maximumPlacementAttempts)")
+        } else {
+            placementAttempts = 0
+            placementFailureLogged = false
+        }
+    }
+
+    private static func activeDisplays() -> [(id: CGDirectDisplayID, frame: CGRect)] {
+        var count: UInt32 = 0
+        guard CGGetActiveDisplayList(0, nil, &count) == .success, count > 0 else { return [] }
+        var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
+        guard CGGetActiveDisplayList(count, &ids, &count) == .success else { return [] }
+        return ids.prefix(Int(count)).map { (id: $0, frame: CGDisplayBounds($0)) }
     }
 
     /// Creates, or returns, the lane's display.
@@ -403,6 +540,16 @@ final class VirtualDisplayHost {
             RunLoop.current.run(until: Date().addingTimeInterval(0.05))
         }
         return fallback
+    }
+
+    /// A nonblocking scale read for the display-change callback. The mode can
+    /// lag its bounds briefly after a reconfiguration; a later callback reads
+    /// it again without holding the event tap or the main run loop for a second.
+    private static func measuredBackingScale(displayId: CGDirectDisplayID, fallback: CGFloat) -> CGFloat {
+        guard let mode = CGDisplayCopyDisplayMode(displayId), mode.width > 0, mode.pixelWidth > 0 else {
+            return fallback
+        }
+        return CGFloat(mode.pixelWidth) / CGFloat(mode.width)
     }
 
     private func fail(_ reason: String) {
