@@ -4689,13 +4689,13 @@ describe("service health probe never blocks the main thread", () => {
 
   describe("read window", () => {
     const FOUR_MINUTES_MS = 4 * 60_000;
-    const SIX_MINUTES_MS = 6 * 60_000;
     const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform");
 
     beforeEach(() => {
-      // Only Date is faked: the promise flushes above wait on a real setImmediate.
+      // Only Date is faked: the promise flushes below wait on a real setImmediate.
       vi.useFakeTimers({ toFake: ["Date"] });
       vi.setSystemTime(new Date("2026-10-18T12:00:00Z"));
+      Object.defineProperty(process, "platform", { value: "win32" });
     });
 
     afterEach(() => {
@@ -4703,87 +4703,79 @@ describe("service health probe never blocks the main thread", () => {
       if (originalPlatform) Object.defineProperty(process, "platform", originalPlatform);
     });
 
-    const createPool = (platform: NodeJS.Platform, connected: boolean) => {
-      Object.defineProperty(process, "platform", { value: platform });
+    // `service` is what the machine service reports on the next probe.
+    const createPool = () => {
+      const service = { installed: true, running: true };
       let calls = 0;
       const pool = new LocalRuntimeConnectionPool("1.0.0", silentLogger() as never, {
         queryServiceStatusAsync: async () => {
           calls += 1;
-          return asyncTestServiceStatus();
+          return { ...asyncTestServiceStatus(), ...service };
         },
       });
-      if (connected) (pool as unknown as { activeClient: unknown }).activeClient = {};
-      return { pool, probes: () => calls };
+      const internals = pool as unknown as { activeClient: unknown };
+      return {
+        pool,
+        service,
+        probes: () => calls,
+        // A new client object is a new connection to a brain.
+        connectTo: (client: unknown) => {
+          internals.activeClient = client;
+        },
+      };
     };
 
-    it.each([
-      {
-        name: "win32 connected: a read inside the long window does not probe",
-        platform: "win32" as const,
-        connected: true,
-        elapsedMs: FOUR_MINUTES_MS,
-        probesAfter: 1,
-      },
-      {
-        name: "win32 connected: a read past the long window probes again",
-        platform: "win32" as const,
-        connected: true,
-        elapsedMs: SIX_MINUTES_MS,
-        probesAfter: 2,
-      },
-      {
-        name: "win32 disconnected: a read past the short window probes",
-        platform: "win32" as const,
-        connected: false,
-        elapsedMs: 3_000,
-        probesAfter: 2,
-      },
-      {
-        name: "macOS connected: a read past the short window probes",
-        platform: "darwin" as const,
-        connected: true,
-        elapsedMs: 3_000,
-        probesAfter: 2,
-      },
-    ])("$name", async ({ platform, connected, elapsedMs, probesAfter }) => {
-      const { pool, probes } = createPool(platform, connected);
+    const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+    it("a status read inside the long window does not probe while connected to the same brain", async () => {
+      const { pool, probes, connectTo } = createPool();
+      connectTo({});
       pool.getStatus();
-      await new Promise((resolve) => setImmediate(resolve));
+      await settle();
       expect(probes()).toBe(1);
 
-      vi.setSystemTime(Date.now() + elapsedMs);
+      vi.setSystemTime(Date.now() + FOUR_MINUTES_MS);
       pool.getStatus();
-      await new Promise((resolve) => setImmediate(resolve));
-      expect(probes()).toBe(probesAfter);
+      await settle();
+      expect(probes()).toBe(1);
     });
 
-    it("probes on the first read after connecting, even when the last probe ran disconnected", async () => {
-      const { pool, probes } = createPool("win32", false);
+    it.each([
+      { name: "the last probe ran with no brain connected", previousBrain: null },
+      { name: "the last probe ran against a brain that has since gone", previousBrain: {} },
+    ])("a new brain is probed on its first read, then the long window applies: $name", async ({ previousBrain }) => {
+      const { pool, probes, connectTo } = createPool();
+      connectTo(previousBrain);
       pool.getStatus();
-      await new Promise((resolve) => setImmediate(resolve));
+      await settle();
       expect(probes()).toBe(1);
 
-      (pool as unknown as { activeClient: unknown }).activeClient = {};
       vi.setSystemTime(Date.now() + 10_000);
+      connectTo({});
       pool.getStatus();
-      await new Promise((resolve) => setImmediate(resolve));
+      await settle();
       expect(probes()).toBe(2);
 
       vi.setSystemTime(Date.now() + FOUR_MINUTES_MS);
       pool.getStatus();
-      await new Promise((resolve) => setImmediate(resolve));
+      await settle();
       expect(probes()).toBe(2);
     });
 
-    it("a maxAgeMs: 0 caller probes inside the long window", async () => {
-      const { pool, probes } = createPool("win32", true);
-      const internals = pool as unknown as { refreshServiceHealth: (maxAgeMs?: number) => Promise<void> };
+    it("a recovery read probes inside the long window and returns the service's current answer", async () => {
+      const { pool, service, probes, connectTo } = createPool();
+      connectTo({});
       pool.getStatus();
-      await new Promise((resolve) => setImmediate(resolve));
+      await settle();
       expect(probes()).toBe(1);
 
-      await internals.refreshServiceHealth(0);
+      // The service is removed while ADE stays connected to its brain.
+      service.installed = false;
+      service.running = false;
+      vi.setSystemTime(Date.now() + 60_000);
+      const status = await pool.getStatusAfterServiceProbe();
       expect(probes()).toBe(2);
+      expect(status.serviceHealth.installed).toBe(false);
     });
   });
 });
