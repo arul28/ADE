@@ -34,11 +34,15 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   (`syncPairedMachineStore.ts`, whose endpoint list is append-only except for
   `forgetEndpoint`: an address that provably answered as a *different* host is
   dropped rather than demoted, because `markEndpointFailed` re-adds whatever it
-  records a failure for and the recently-failing demotion expires after two
-  minutes — a neighbour's tailnet name that once landed in the record would
-  otherwise be retried forever. The record's own endpoint always survives, so a
-  machine can never be left with nothing to dial), LAN → tailnet → relay ordering
-  (`pairedRuntimeRoutes.ts`), typed handshake rejections
+  records a failure for and a failing address stays in the list until it
+  answers or mDNS sees it after that failure — a neighbour's tailnet name that
+  once landed in the record would otherwise be dialled on every connect. The
+  record's own endpoint always survives, so a machine can never be left with
+  nothing to dial), LAN → tailnet → relay ordering (`pairedRuntimeRoutes.ts`:
+  an address with two or more consecutive silent failures and no answer or
+  mDNS sighting since ranks after the routes that are not failing; it is still
+  dialled, last; only timeouts, unreachable and unknown errors demote, so a
+  host that answered with a rejection never does), typed handshake rejections
   (`pairedRuntimeErrors.ts` — `PairedRuntimeHelloRejectedError` carries the
   host's structured `hello_error.code` and the rejecting host's identity, so
   classification never pattern-matches the host's prose;
@@ -1168,6 +1172,10 @@ run a local repair against data owned by the remote machine. See
    removes this machine's own Bonjour advertisement, and merges routes that
    identify the same machine. Discovered paired-capable ADE desktops appear in
    Available; offline or unsupported machines remain visible in Unavailable.
+   The same discovery also runs in the main process at launch (after the first
+   autoconnects start) and on wake or unlock, so a demoted LAN address that
+   answers the network again is ranked first at the next connect without a dial.
+   A connect never waits on it.
 2. Select a same-account computer for the primary PIN-less flow. ADE dials the
    directory-verified Relay first; when the target publishes an ed25519
    identity key in its directory row (`pubkey`), adoption can also fall back
@@ -1584,7 +1592,7 @@ diagnostics with `ADE_ENABLE_DESKTOP_SYNC_HOST=1`.
 - "<Machine> says this device's pairing is out of date — pair it again." — the host was reached and it *rejected* this desktop, so the other routes' `timed out`/`no answer` entries under **Details** are noise. When the machine is also on this ADE account the error card carries a **Pair again** button, which re-runs account-directory adoption (`account.pairMachine`) for that machine. Nothing re-pairs on its own.
 - The headline never lists routes. It is one sentence derived from the dominant attempt failure; every host, port, duration and the diagnostic ID stay in the collapsed **Details** list built from `RemoteRuntimeConnectErrorInfo.attempts`.
 - Attempt failures are classified from the host's structured `hello_error.code`, never from its message text — see [When the connect fails, the user reads one sentence](#when-the-connect-fails-the-user-reads-one-sentence) for the code table. Both `repair_required` and `auth_failed` mean the same thing to a paired client, so iOS treats them identically when deciding whether a saved pairing may be dropped — and only ever when the rejecting host's identity matches the saved pairing.
-- `wrong machine answered` in **Details** — the address answered as a different host. That endpoint is *forgotten* rather than demoted: the endpoint list is otherwise append-only (recording a failure re-adds the address, and the recently-failing demotion expires after two minutes), so a neighbour's tailnet name that once landed in the record would be retried forever.
+- `wrong machine answered` in **Details** — the address answered as a different host. That endpoint is *forgotten* rather than demoted: the endpoint list is otherwise append-only (recording a failure re-adds the address, and a demoted address is still dialled, last, until it answers or mDNS sees it again), so a neighbour's tailnet name that once landed in the record would be dialled on every connect.
 
 ## Pairing identity and paired-secret lifetime
 

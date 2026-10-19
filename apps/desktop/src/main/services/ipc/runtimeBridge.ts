@@ -598,6 +598,28 @@ export function registerRuntimeBridge({
   const remoteOpenProjectGenerations = new Map<string, number>();
   let remoteOpenProjectGeneration = 0;
   let lastDiscoveredMachines: RemoteRuntimeDiscoveryResult["machines"] = [];
+  // A sighting after a failure clears a demoted LAN address without a dial (see
+  // pairedEndpointIsFailing). So discovery also runs at launch and on wake or
+  // unlock, not only when the target list opens. Overlapping runs share one
+  // browse, and no connect waits on one.
+  let lanDiscoveryInFlight: Promise<RemoteRuntimeDiscoveryResult> | null = null;
+  const refreshLanDiscovery = (): Promise<RemoteRuntimeDiscoveryResult> => {
+    lanDiscoveryInFlight ??= (async () => {
+      const observedAt = Date.now();
+      const result = await discoverLanRuntimes();
+      lastDiscoveredMachines = result.machines;
+      remoteConnectionService.rememberDiscoveredMachines(result.machines, observedAt);
+      return result;
+    })().finally(() => {
+      lanDiscoveryInFlight = null;
+    });
+    return lanDiscoveryInFlight;
+  };
+  const logLanDiscoveryFailure = (error: unknown): void => {
+    console.warn("remote_runtime.lan_discovery_failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  };
 
   remoteConnectionPool.onPortForwardsInvalidated((targetId) => {
     // Two caches outlive the tunnel unless they are told. The browser's
@@ -636,12 +658,19 @@ export function registerRuntimeBridge({
           console.warn("remote_runtime.account_reconciliation_failed", {
             error: error instanceof Error ? error.message : String(error),
           });
+        })
+        // Discovery starts only after the first connects are under way, so it
+        // never runs ahead of one. It runs even when account trust did not
+        // reconcile: it only records what this network advertises.
+        .finally(() => {
+          void refreshLanDiscovery().catch(logLanDiscoveryFailure);
         });
     }, 0);
     autoconnectTimer.unref?.();
   }
   const probeRemoteConnectionsAfterWake = (): void => {
     remoteConnectionService.probeSavedConnections();
+    void refreshLanDiscovery().catch(logLanDiscoveryFailure);
   };
   powerMonitor?.on?.("resume", probeRemoteConnectionsAfterWake);
   powerMonitor?.on?.("unlock-screen", probeRemoteConnectionsAfterWake);
@@ -979,10 +1008,7 @@ export function registerRuntimeBridge({
   ipcMain.handle(
     IPC.remoteRuntimeListDiscoveredMachines,
     async (): Promise<RemoteRuntimeDiscoveryResult> => {
-      const result = await discoverLanRuntimes();
-      lastDiscoveredMachines = result.machines;
-      remoteConnectionService.rememberDiscoveredMachines(result.machines);
-      return result;
+      return await refreshLanDiscovery();
     },
   );
 
