@@ -9542,6 +9542,9 @@ function buildChatLaunchPlan(args: string[]): CliPlan {
   // `--arg` / `--input-json` escape hatch (dotted keys reach chat.create.*).
   for (const [key, value] of Object.entries(input)) {
     if (key === "chat" && isRecord(value)) {
+      if ("create" in value && !isRecord(value.create)) {
+        throw new CliUsageError("chat launch needs chat.create to be an object.");
+      }
       const chat = launchArgs.chat as JsonObject;
       if (isRecord(value.create)) Object.assign(chat.create as JsonObject, value.create);
       if (isRecord(value.message)) Object.assign(chat.message as JsonObject, value.message);
