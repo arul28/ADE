@@ -156,6 +156,7 @@ export function CustomProviderDialog({
   const [logoError, setLogoError] = useState<string | null>(null);
   const [accountError, setAccountError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [compactingLogo, setCompactingLogo] = useState(false);
   /**
    * The local write has happened.
    *
@@ -166,18 +167,26 @@ export function CustomProviderDialog({
    */
   const [written, setWritten] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const logoCompactionGenerationRef = useRef(0);
   const objectUrlRef = useRef<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   // Accent follows the harness until the person picks one of their own.
   const accentTouchedRef = useRef(initialDraft.accentColor !== normalizeHex(providerColor(initialDraft.harness)));
 
   useEffect(() => {
+    logoCompactionGenerationRef.current += 1;
+    setCompactingLogo(false);
+    if (!open) {
+      setCropSrc(null);
+      return;
+    }
     setDraft(initialDraft);
     setQuery("");
     setBrowsedSourceKey(null);
-  }, [initialDraft]);
+  }, [initialDraft, open]);
 
   useEffect(() => () => {
+    logoCompactionGenerationRef.current += 1;
     if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
   }, []);
 
@@ -322,7 +331,7 @@ export function CustomProviderDialog({
   const fallbackName = draft.model ? defaultPresetName(modelLabel, draft.harness) : "";
   const finalDraft: HarnessPresetDraft = { ...draft, name: draft.name.trim() || fallbackName };
   const errors = validateHarnessPreset(finalDraft);
-  const canSave = Object.keys(errors).length === 0;
+  const canSave = Object.keys(errors).length === 0 && !compactingLogo;
 
   // The launcher starts the SAVED preset (the CLI resolves it by id), so it is
   // built from what is saved, not from unsaved edits in this dialog.
@@ -429,9 +438,9 @@ export function CustomProviderDialog({
               : {
                   label: editingPresetId ? "Save" : "Create",
                   variant: "solid",
-                  disabled: !canSave || saving,
+                  disabled: !canSave || saving || generating,
                   onClick: () => {
-                    if (!canSave || saving) return;
+                    if (!canSave || saving || generating) return;
                     setSaving(true);
                     setWritten(true);
                     void onSave(finalDraft)
@@ -756,6 +765,7 @@ export function CustomProviderDialog({
                 event.target.value = "";
               }}
             />
+            {compactingLogo ? <p className="text-xs text-muted-foreground">Preparing logo…</p> : null}
             {logoError ? <FieldError>{logoError}</FieldError> : null}
           </section>
         </fieldset>
@@ -776,12 +786,25 @@ export function CustomProviderDialog({
             onCancel={() => setCropSrc(null)}
             onConfirm={(dataUrl) => {
               setCropSrc(null);
+              const generation = ++logoCompactionGenerationRef.current;
+              setCompactingLogo(true);
+              setLogoError(null);
               // Shrunk to an icon before it is kept: the preset list syncs as
               // one small setting, and a full-size image keeps it off the account.
-              void compactHarnessPresetLogo({ kind: "upload", dataUrl }).then((logo) => {
-                if (logo.kind === "upload") patch({ logo });
-                else setLogoError("This image could not be shrunk to a logo. Try another one.");
-              });
+              void compactHarnessPresetLogo({ kind: "upload", dataUrl })
+                .then((logo) => {
+                  if (generation !== logoCompactionGenerationRef.current) return;
+                  if (logo.kind === "upload") patch({ logo });
+                  else setLogoError("This image could not be shrunk to a logo. Try another one.");
+                })
+                .catch((error: unknown) => {
+                  if (generation === logoCompactionGenerationRef.current) {
+                    setLogoError(error instanceof Error ? error.message : "This image could not be shrunk to a logo. Try another one.");
+                  }
+                })
+                .finally(() => {
+                  if (generation === logoCompactionGenerationRef.current) setCompactingLogo(false);
+                });
             }}
           />
         </Dialog>

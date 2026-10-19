@@ -582,6 +582,9 @@ export function mergeHarnessPresetSnapshot(stored: unknown, snapshot: unknown): 
   const preset = normalizeHarnessPreset(snapshot);
   if (!preset) return null;
   const list = normalizeHarnessPresetList(stored);
+  // A newer build may have written presets this build cannot normalize. Do
+  // not let adopting one known snapshot replace the account list without them.
+  if (Array.isArray(stored) && list.length !== stored.length) return null;
   const existing = list.find((entry) => entry.id === preset.id);
   if (existing && !(Date.parse(preset.updatedAt) > Date.parse(existing.updatedAt))) return null;
   const adopted = harnessPresetLogoTooLarge(preset.logo) ? { ...preset, logo: { ...DEFAULT_HARNESS_PRESET_LOGO } } : preset;

@@ -10685,7 +10685,7 @@ export function createAgentChatService(args: {
    * this machine's copy of the account's preset list, unless it holds the same
    * preset already at the same or a newer edit.
    */
-  adoptHarnessPreset?: ((preset: HarnessPreset) => void) | null;
+  adoptHarnessPreset?: ((preset: HarnessPreset) => string | null | void) | null;
   /** Resolve an ADE registry MCP sign-in from the owning brain's account vault. */
   resolveMcpAuthToken?: ((serverUrl: string) => Promise<{ accessToken?: string; expiresIn?: number; registryConfigured: boolean }>) | null;
   /** Optional main-process analytics sink for successful desktop voice starts. */
@@ -11644,6 +11644,32 @@ export function createAgentChatService(args: {
       messageId: randomUUID(),
     });
     emitRefusedTurnEnd(managed, turnId, message);
+  };
+
+  /** Preserve a blocked follow-up without ending the live turn it tried to steer. */
+  const emitLaunchRouteSteerFailure = (
+    managed: ManagedChatSession,
+    args: AgentChatSendArgs,
+    message: string,
+  ): void => {
+    const turnId = randomUUID();
+    emitChatEvent(managed, {
+      type: "user_message",
+      text: args.text,
+      ...(args.displayText !== undefined && args.displayText.trim() !== args.text.trim()
+        ? { displayText: args.displayText.trim() }
+        : {}),
+      attachments: args.attachments ?? [],
+      turnId,
+      messageId: randomUUID(),
+      deliveryState: "failed",
+    });
+    emitChatEvent(managed, {
+      type: "error",
+      message,
+      errorInfo: { category: "unknown", provider: managed.session.provider, model: managed.session.model },
+      turnId,
+    });
   };
 
   /**
@@ -45849,9 +45875,10 @@ export function createAgentChatService(args: {
     // recorded "Claude Opus" on a chat that ran DeepSeek.
     const trimmedPresetId = requestedPresetId?.trim() ?? "";
     // The launching machine's copy, for a list that has not synced here yet.
+    let presetSnapshotAdoptionNotice: string | null = null;
     if (trimmedPresetId && requestedPresetSnapshot?.id === trimmedPresetId) {
       try {
-        args.adoptHarnessPreset?.(requestedPresetSnapshot);
+        presetSnapshotAdoptionNotice = args.adoptHarnessPreset?.(requestedPresetSnapshot) || null;
       } catch (error) {
         logger.warn("agent_chat.preset_snapshot_adopt_failed", { presetId: trimmedPresetId, error: getErrorMessage(error) });
       }
@@ -46535,6 +46562,15 @@ export function createAgentChatService(args: {
       pointerFingerprint(persistedPointerState({ provider: effectiveProvider })),
     );
     managedSessions.set(sessionId, managed);
+
+    if (presetSnapshotAdoptionNotice) {
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "warning",
+        severity: "warning",
+        message: presetSnapshotAdoptionNotice,
+      });
+    }
 
     // This SHA is best-effort session metadata. Do not hold chat creation (and
     // the first user message) on a git subprocess that can take seconds on a
@@ -57330,6 +57366,13 @@ export function createAgentChatService(args: {
       if (diskDecision && !diskDecision.allowed) {
         emitDiskPressureSendFailure(managed, diskDecision.state, diskDecision.message);
         return;
+      }
+      if (options?.routeActiveToSteer && canRouteActiveSendToSteer(managed)) {
+        const blocked = launchRouteBlockReason(managed);
+        if (blocked) {
+          emitLaunchRouteSteerFailure(managed, args, blocked);
+          return;
+        }
       }
       if (!runtimeMidTurn(managed) && managed.session.status !== "active") {
         const blocked = launchRouteBlockReason(managed);

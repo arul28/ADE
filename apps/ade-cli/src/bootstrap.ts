@@ -258,7 +258,11 @@ import type { AccountSettingsStore } from "./services/account/accountSettingsSto
 import { createAppleStreamRelayForService } from "../../desktop/src/main/services/ios/appleStreamRelay";
 import { setActiveAppleStreamRouter } from "./services/sync/appleStreamListenerRoute";
 import { ACCOUNT_SCOPE_ALL, accountDeviceSettingKey } from "../../desktop/src/shared/accountSettingsScope";
-import { HARNESS_PRESETS_SETTING_KEY, mergeHarnessPresetSnapshot } from "../../desktop/src/shared/harnessPresets";
+import {
+  HARNESS_PRESETS_SETTING_KEY,
+  HARNESS_PRESETS_SYNC_MAX_CHARS,
+  mergeHarnessPresetSnapshot,
+} from "../../desktop/src/shared/harnessPresets";
 import {
   APPLE_DEVICE_SETTING_KEYS,
   DEFAULT_APPLE_REMOTE_BITRATE_KBPS,
@@ -2333,12 +2337,19 @@ export async function createAdeRuntime(args: {
         // The MCP registry's secret values: the generic vault kind, account-wide.
         readAccountSecret: (vaultKey) => accountVaultStore?.get("all", MCP_SECRET_VAULT_KIND, vaultKey) ?? null,
         adoptHarnessPreset: (preset) => {
-          if (!accountSettingsStore) return;
+          if (!accountSettingsStore) return null;
           const next = mergeHarnessPresetSnapshot(
             accountSettingsStore.get(ACCOUNT_SCOPE_ALL, HARNESS_PRESETS_SETTING_KEY),
             preset,
           );
-          if (next) accountSettingsStore.set(ACCOUNT_SCOPE_ALL, HARNESS_PRESETS_SETTING_KEY, next);
+          if (!next) return null;
+          const chars = JSON.stringify(next).length;
+          if (chars > HARNESS_PRESETS_SYNC_MAX_CHARS) {
+            logger.warn("harness_presets_adoption_too_large", { chars });
+            return "This custom provider could not be copied here because your account's provider list is too large to sync. Remove a logo or provider in Settings, then try again.";
+          }
+          accountSettingsStore.set(ACCOUNT_SCOPE_ALL, HARNESS_PRESETS_SETTING_KEY, next);
+          return null;
         },
         resolveMcpAuthToken: createMcpRegistryAuthTokenResolver({
           adeHome: resolveMachineAdeLayout().adeDir,

@@ -10,6 +10,7 @@ import {
   harnessPresetAgentOverrideNote,
   harnessPresetMatchesQuery,
   importHarnessPreset,
+  mergeHarnessPresetSnapshot,
   normalizeHarnessPresetList,
   presetSourceLabel,
   presetSubagentLabel,
@@ -114,6 +115,14 @@ describe("normalizeHarnessPresetList", () => {
   it("returns an empty list for anything that is not an array", () => {
     expect(normalizeHarnessPresetList(null)).toEqual([]);
     expect(normalizeHarnessPresetList({ presets: [] })).toEqual([]);
+  });
+});
+
+describe("mergeHarnessPresetSnapshot", () => {
+  it("preserves an account list containing entries this build cannot read", () => {
+    const futurePreset = { id: "hp_future", harness: "new-provider", model: "future-model" };
+
+    expect(mergeHarnessPresetSnapshot([futurePreset], preset({ id: "hp_launch" }))).toBeNull();
   });
 });
 
