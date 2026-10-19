@@ -6,6 +6,7 @@ import { APP_BANNER_PRIORITY, useAppBanner } from "../ui/notice/appBannerStore";
 import { showToast } from "./toast/toastStore";
 import { revealTerminalSessionInWork } from "../work/ClaudeLoginPromptButton";
 import { useLaneTemplateSetupChat } from "../lanes/useLaneTemplateSetupChat";
+import { captureLaneSetupAnalytics } from "../../lib/laneSetupAnalytics";
 
 /**
  * Two notices about the open project's main checkout, on the tab's machine:
@@ -94,7 +95,7 @@ export function useLaneDependencyBanners({
   const machineName = machineNameForBinding(projectBinding);
   const scopeKey = projectRoot ? `${machineIdForBinding(projectBinding)}:${projectRoot}` : null;
   // The tab's own machine: unpinned calls reach it.
-  const { start: startTemplateChat, busy: templateChatBusy } = useLaneTemplateSetupChat({ pin: null, machineName });
+  const { start: startTemplateChat, busy: templateChatBusy } = useLaneTemplateSetupChat({ pin: null, machineName, origin: "banner" });
 
   // Bumped on every project switch, so an answer for the previous project is dropped.
   const generationRef = useRef(0);
@@ -163,10 +164,10 @@ export function useLaneDependencyBanners({
     const folders = status.folders.filter((folder) => folder.outOfDate && folder.installCommand);
     if (!folders.length) return;
     updatingRef.current = true;
+    let first: { terminalId: string; laneId: string } | null = null;
     try {
       // One terminal per folder, started in that folder: the install command
       // alone, so it runs the same in zsh, fish, PowerShell, cmd and Git Bash.
-      let first: { terminalId: string; laneId: string } | null = null;
       for (const folder of folders) {
         const created = await window.ade.pty.create({
           laneId: primaryLane.id,
@@ -178,6 +179,9 @@ export function useLaneDependencyBanners({
           toolType: "shell",
           startupCommand: folder.installCommand!,
         });
+        if (first === null) {
+          captureLaneSetupAnalytics({ action: "deps_update_started", outcome: "completed" });
+        }
         first ??= { terminalId: created.sessionId, laneId: primaryLane.id };
       }
       // Tools ADE cannot watch finish silently; count them as updated once
@@ -191,6 +195,9 @@ export function useLaneDependencyBanners({
       else void check(true);
       if (first) revealTerminalSessionInWork(navigate, first);
     } catch (error) {
+      if (first === null) {
+        captureLaneSetupAnalytics({ action: "deps_update_started", outcome: "failed" });
+      }
       showToast({
         tone: "error",
         title: "Could not start the update",
@@ -262,7 +269,14 @@ export function useLaneDependencyBanners({
                 void startTemplateChat(status);
               },
             },
-            { label: "Don't show again", variant: "link", onClick: () => snoozeSuggestion("never") },
+            {
+              label: "Don't show again",
+              variant: "link",
+              onClick: () => {
+                captureLaneSetupAnalytics({ action: "template_suggestion_hidden", outcome: "completed" });
+                snoozeSuggestion("never");
+              },
+            },
           ],
           dismiss: { onDismiss: () => snoozeSuggestion(Date.now() + SUGGESTION_SNOOZE_MS), title: "Remind me in two weeks" },
         }

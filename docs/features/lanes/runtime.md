@@ -306,7 +306,16 @@ leaves a plain worktree). So `ade lanes create`, `ade lanes child`,
 `create-from-linear`, `batch-create-from-linear`, `ade chat create` with a new
 lane, and the TUI all get it; `ade lanes create` takes `--template <id>` and
 `--no-template`. A failed setup is returned in `setup.error` or the progress,
-not thrown: the lane exists. Pass `--machine <name>` to run a command on another machine. Templates
+not thrown: the lane exists.
+
+The phone's paths that make a lane for a chat (the Hub composer, Work's new
+chat, Linear launch) send `setup: "default"` with the sync `lanes.create`
+command. The host answers with the lane at once and then runs the default
+template (or the lane environment config) in the background, the way the
+desktop's Work tab does; progress reaches every client through the lane env
+events, and a failure is logged as `sync.lane_default_setup_failed`. The phone's
+lane sheet keeps its own explicit template step and does not send the flag. An
+older host ignores the field. Pass `--machine <name>` to run a command on another machine. Templates
 are stored per machine and do not sync.
 
 ## Main checkout packages

@@ -13516,12 +13516,19 @@ final class SyncService: ObservableObject {
     startPoint: String? = nil,
     linearIssue: LaneLinearIssue? = nil,
     targetProjectId: String? = nil,
-    targetProjectRootPath: String? = nil
+    targetProjectRootPath: String? = nil,
+    // A path with no setup step of its own (a chat in a new lane) asks the
+    // host to run the default lane template in the background. Older hosts
+    // ignore it.
+    setUpLane: Bool = false
   ) async throws -> LaneSummary {
     var args: [String: Any] = [
       "name": name,
       "description": description,
     ]
+    if setUpLane {
+      args["setup"] = "default"
+    }
     if let parentLaneId, !parentLaneId.isEmpty {
       args["parentLaneId"] = parentLaneId
     }

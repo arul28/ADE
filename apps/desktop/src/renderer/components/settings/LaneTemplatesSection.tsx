@@ -226,7 +226,7 @@ export function LaneTemplatesSection() {
   // Templates live in each machine's `.ade/local.yaml`, so they are read and
   // written on the machine the Settings page shows.
   const { pin, machineName } = useSettingsMachineScope();
-  const { start: startTemplateChat, busy: templateChatBusy } = useLaneTemplateSetupChat({ pin, machineName });
+  const { start: startTemplateChat, busy: templateChatBusy } = useLaneTemplateSetupChat({ pin, machineName, origin: "settings" });
   const [templates, setTemplates] = useState<LaneTemplate[]>([]);
   const [defaultId, setDefaultId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);

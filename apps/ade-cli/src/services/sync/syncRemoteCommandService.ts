@@ -4453,6 +4453,32 @@ function registerProxyRemoteCommands({ args, register }: RemoteCommandRegistrati
 }
 
 function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
+  /**
+   * Run a new lane's setup without holding the reply: the default lane
+   * template, else the project's lane environment config. Progress reaches
+   * every client through the lane env events; a failure is logged, and the
+   * lane stays (Settings or `lanes.applyTemplate` can run it again).
+   */
+  const startDefaultLaneSetup = (laneId: string): void => {
+    if (!args.laneEnvironmentService || !args.projectConfigService) return;
+    const templateId = args.laneTemplateService?.getDefaultTemplateId() ?? null;
+    void runLaneEnvironmentSetup(
+      {
+        laneService: args.laneService,
+        projectConfigService: args.projectConfigService,
+        portAllocationService: args.portAllocationService,
+        laneEnvironmentService: args.laneEnvironmentService,
+        laneTemplateService: args.laneTemplateService ?? null,
+      },
+      { laneId, ...(templateId ? { templateId } : {}), includeArchived: false },
+    ).catch((error: unknown) => {
+      args.logger.warn("sync.lane_default_setup_failed", {
+        laneId,
+        templateId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
   register("lanes.list", { viewerAllowed: true }, async (payload) => args.laneService.list(parseListLanesArgs(payload)));
   register("lanes.listDeleteProgress", { viewerAllowed: true }, async () => args.laneService.listDeleteProgress());
   register("lanes.getBranchDrift", { viewerAllowed: true }, async (payload) =>
@@ -4492,11 +4518,18 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
     // create sheet's default) must branch from the project's configured
     // new-lane base — remote-first, matching desktop's create-lane dialog —
     // not from the possibly-stale LOCAL primary tip.
+    let lane: Awaited<ReturnType<typeof args.laneService.create>>;
     if (!parsed.baseBranch && !parsed.startPoint && !parsed.parentLaneId) {
       const remoteBase = await resolveLaneCreateRemoteBase(args);
-      if (remoteBase) return args.laneService.create({ ...parsed, baseBranch: remoteBase });
+      lane = await args.laneService.create(remoteBase ? { ...parsed, baseBranch: remoteBase } : parsed);
+    } else {
+      lane = await args.laneService.create(parsed);
     }
-    return args.laneService.create(parsed);
+    // `setup: "default"`: a phone path with no setup step of its own (a chat
+    // in a new lane) asks the host to set the lane up the way the desktop's
+    // Work tab does, in the background. New lanes get packages only this way.
+    if (payload.setup === "default") startDefaultLaneSetup(lane.id);
+    return lane;
   });
   // Background lane naming for mobile auto-create. Deliberately NOT queueable:
   // when the phone is offline we want the call to fail fast so the client uses

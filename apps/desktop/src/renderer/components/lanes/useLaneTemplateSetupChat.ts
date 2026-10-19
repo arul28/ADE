@@ -3,6 +3,7 @@ import type { LaneDependencyStatus, LaneSummary, OpenProjectBinding } from "../.
 import { useAppStore } from "../../state/appStore";
 import { useLaneChatHandoff } from "../../lib/laneChatHandoff";
 import { buildLaneTemplateSetupPrompt } from "../../lib/laneTemplateSetupPrompt";
+import { captureLaneSetupAnalytics } from "../../lib/laneSetupAnalytics";
 import { showToast } from "../app/toast/toastStore";
 
 /**
@@ -17,9 +18,11 @@ import { showToast } from "../app/toast/toastStore";
 export function useLaneTemplateSetupChat({
   pin,
   machineName,
+  origin,
 }: {
   pin: OpenProjectBinding | null;
   machineName: string;
+  origin?: "banner" | "settings";
 }): { start: (known?: LaneDependencyStatus | null) => Promise<void>; busy: boolean } {
   const handOff = useLaneChatHandoff(pin, { startDraftInLane: true });
   const tabLanes = useAppStore((state) => state.lanes);
@@ -50,6 +53,12 @@ export function useLaneTemplateSetupChat({
           defaultTemplateName: defaultTemplate ? defaultTemplate.name || defaultTemplate.id : null,
         }),
       });
+      if (origin) {
+        captureLaneSetupAnalytics({
+          action: "template_setup_started",
+          outcome: origin === "banner" ? "from_banner" : "from_settings",
+        });
+      }
     } catch (error) {
       showToast({
         tone: "error",
@@ -59,7 +68,7 @@ export function useLaneTemplateSetupChat({
     } finally {
       setBusy(false);
     }
-  }, [handOff, machineName, pin, projectName, tabLanes]);
+  }, [handOff, machineName, origin, pin, projectName, tabLanes]);
 
   return { start, busy };
 }

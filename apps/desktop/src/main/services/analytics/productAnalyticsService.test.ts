@@ -2087,6 +2087,37 @@ describe("product analytics producers", () => {
     })).toEqual({ feature: "find", action: "find_opened" });
   });
 
+  it.each([
+    ["template_setup_started", "from_banner"],
+    ["template_setup_started", "from_settings"],
+    ["template_suggestion_hidden", "completed"],
+    ["deps_update_started", "completed"],
+    ["deps_update_started", "failed"],
+  ])("keeps the lane setup fact %s / %s unchanged", (action, outcome) => {
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "lanes",
+      action,
+      outcome,
+      source: "renderer_route",
+      lane: "private-lane-name",
+      path: "/private/project",
+      manager: "npm",
+      error: "private error text",
+    })).toEqual({ feature: "lanes", action, outcome, source: "renderer_route" });
+  });
+
+  it.each(["template_setup_started", "template_suggestion_hidden", "deps_update_started"])(
+    "drops an unknown outcome for lane setup action %s",
+    (action) => {
+      expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+        feature: "lanes",
+        action,
+        outcome: "private_template_name",
+        source: "renderer_route",
+      })).toEqual({ feature: "lanes", action, source: "renderer_route" });
+    },
+  );
+
   it("keeps every Work tool id through the sanitizer and nothing that is not one", () => {
     // The pane is a picker plus one active tool, so the closed id set IS the
     // dimension. `WORK_TOOL_IDS` is the source of truth; a tool added there and

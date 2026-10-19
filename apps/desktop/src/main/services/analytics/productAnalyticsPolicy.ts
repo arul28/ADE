@@ -280,6 +280,11 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // Whether an installation opens find, on which surface, and whether the
   // palette's words get used. Never the query, the chat, the diff, or a match.
   "find_opened",
+  // Lane setup choices made in the renderer: template setup, hiding its prompt,
+  // and starting package updates. Never the lane, package details, or errors.
+  "template_setup_started",
+  "template_suggestion_hidden",
+  "deps_update_started",
 ]);
 
 const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>> = {
@@ -486,6 +491,8 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     // diff. Prefixed like the other renderer surfaces so none can be confused
     // with another action's outcome. A fifth spelling is dropped, not widened.
     "chat_shortcut", "chat_palette", "chat_palette_hit", "diff_shortcut",
+    // Where a lane-template setup chat was opened.
+    "from_banner", "from_settings",
   ]),
   provider: new Set(["codex", "openai", "claude", "cursor", "droid", "opencode", "pi", "muse", "gemini", "lmstudio", "local", "other"]),
   model_family: new Set([
