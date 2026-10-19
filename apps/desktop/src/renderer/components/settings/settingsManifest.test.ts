@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
-import { afterEach, describe, expect, it } from "vitest";
-import { SETTINGS_SECTIONS } from "../app/settingsSections";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { isMacPlatform } from "../../lib/platform";
 import {
   availableSettingsEntries,
   clearStandaloneSettingsResolver,
@@ -10,6 +10,7 @@ import {
   settingsTabLabel,
   LEGACY_HASH_ALIASES,
   LEGACY_TAB_ALIASES,
+  LEGACY_TAB_ANCHORS,
   SETTINGS_ENTRIES,
   SETTINGS_TAB_IDS,
   resolveSettingsHash,
@@ -29,12 +30,6 @@ import {
  * resolves to the wrong page is invisible in review but very visible to users.
  */
 describe("settings manifest", () => {
-  it("storage_label_matches_manifest_tab", () => {
-    expect(SETTINGS_SECTIONS.find((section) => section.id === "storage")?.label).toBe(
-      settingsTabLabel("storage"),
-    );
-  });
-
   it("gives every tab at least one setting", () => {
     for (const tab of SETTINGS_TABS) {
       const entries = SETTINGS_ENTRIES.filter((entry) => entry.tab === tab.id);
@@ -80,6 +75,30 @@ describe("settings manifest", () => {
     "appearance.apple-typed-badges": "apple",
     "appearance.apple-remote-bitrate": "apple",
     "appearance.apple-recordings-warn": "apple",
+    // General was split into Computer → ADE service and Behaviour, and
+    // Project → Location; Health into Project → Lanes, Location and ADE
+    // service. Their ids and anchors are what deeplinks and telemetry hold.
+    "general.background-service": "service",
+    "general.quit-confirmation": "service",
+    "general.about": "service",
+    "general.auto-updates": "service",
+    "general.update-other-machines": "service",
+    "general.ade-cli": "service",
+    "general.diagnostics-sharing": "service",
+    "general.reset": "service",
+    "general.keep-awake": "behaviour",
+    "general.capture-gesture": "behaviour",
+    "general.link-open-mode": "behaviour",
+    "general.browser-agent-access": "behaviour",
+    "general.project-location": "location",
+    "storage.project-health": "location",
+    "storage.diagnostics": "service",
+    "storage.usage": "lanes-git",
+    "storage.cleanups": "lanes-git",
+    "storage.lane-rules": "lanes-git",
+    "storage.session-lifecycle": "lanes-git",
+    "storage.project-files": "lanes-git",
+    "archive.items": "lanes-git",
   };
 
   it("namespaces every entry id under its tab, except the rows that deliberately moved", () => {
@@ -134,6 +153,11 @@ describe("settings manifest", () => {
       expect(SETTINGS_TAB_IDS).toContain(target);
       expect(resolveSettingsTab(legacy), `alias "${legacy}" did not resolve`).toBe(target);
     }
+    // A legacy tab that was one card's page lands on that card, on the page
+    // its alias opens.
+    for (const [legacy, anchor] of Object.entries(LEGACY_TAB_ANCHORS)) {
+      expect(resolveSettingsHash(anchor)?.tab, `legacy "${legacy}" lands on #${anchor}`).toBe(resolveSettingsTab(legacy));
+    }
   });
 
   it("resolves every legacy hash alias to a live entry", () => {
@@ -153,7 +177,7 @@ describe("settings manifest", () => {
     for (const [hash, expectedTab] of [
       ["attention-sounds", "notifications"],
       ["hide-previews", "notifications"],
-      ["about.reset", "general"],
+      ["about.reset", "service"],
     ] as const) {
       const entry = resolveSettingsHash(hash);
       expect(entry, `hash "${hash}" did not resolve`).not.toBeNull();
@@ -269,7 +293,8 @@ describe("settings manifest", () => {
 
   it("lists a tab's groups in first-appearance order with no duplicates", () => {
     const groups = settingsGroupsForTab("lanes-git");
-    expect(groups[0]).toBe("Starting lanes");
+    expect(groups[0]).toBe("Lanes");
+    expect(groups.indexOf("Storage")).toBeLessThan(groups.indexOf("Starting lanes"));
     expect(groups).toContain("Rebase & stacking");
     expect(new Set(groups).size).toBe(groups.length);
   });
@@ -453,10 +478,22 @@ describe("web machine-scoped availability", () => {
     SETTINGS_ENTRIES.filter((entry) => entry.web === "machine").map((entry) => entry.id),
   );
 
-  it("keeps every setting on the desktop, bound or not, except the web-only cards", () => {
-    const available = new Set(availableSettingsEntries().map((entry) => entry.id));
-    expect(SETTINGS_ENTRIES.some((entry) => entry.webOnly)).toBe(true);
-    for (const entry of SETTINGS_ENTRIES) expect(available.has(entry.id)).toBe(entry.webOnly !== true);
+  it.each([
+    { platform: "MacIntel", mac: true },
+    { platform: "Win32", mac: false },
+    { platform: "Linux x86_64", mac: false },
+  ])("keeps every setting on the desktop ($platform), except web-only cards and macOS-only ones off a Mac", ({ platform, mac }) => {
+    const spy = vi.spyOn(navigator, "platform", "get").mockReturnValue(platform);
+    try {
+      const available = new Set(availableSettingsEntries().map((entry) => entry.id));
+      expect(SETTINGS_ENTRIES.some((entry) => entry.webOnly)).toBe(true);
+      expect(available.has("general.project-location")).toBe(mac);
+      for (const entry of SETTINGS_ENTRIES) {
+        expect(available.has(entry.id)).toBe(entry.webOnly !== true && (mac || entry.macOnly !== true));
+      }
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("drops machine-scoped settings on web while no project tab is bound", () => {
@@ -489,7 +526,9 @@ describe("standalone settings availability", () => {
       const available = availableSettingsEntries();
       expect(available.some((entry) => isProjectScoped(entry.scope))).toBe(false);
       expect(available.map((entry) => entry.id)).toEqual(
-        SETTINGS_ENTRIES.filter((entry) => !entry.webOnly && !isProjectScoped(entry.scope)).map((entry) => entry.id),
+        SETTINGS_ENTRIES
+          .filter((entry) => !entry.webOnly && !isProjectScoped(entry.scope) && (isMacPlatform() || !entry.macOnly))
+          .map((entry) => entry.id),
       );
       expect(searchSettingsEntries("reset").map((entry) => entry.id)).toContain("general.reset");
       expect(searchSettingsEntries("secrets").some((entry) => entry.id === "secrets.secrets")).toBe(false);

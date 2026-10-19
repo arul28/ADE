@@ -11,7 +11,7 @@ import {
 } from "../../../shared/projectIcons";
 import type { ProjectIcon } from "../../../shared/types";
 import type { RemoteRuntimeProjectIconUpload } from "../../../shared/types/remoteRuntime";
-import { isWithinDir, resolvePathWithinRoot } from "../shared/utils";
+import { isWithinDir, PATH_ESCAPES_ROOT_MESSAGE, resolvePathWithinRoot } from "../shared/utils";
 import { writeFileAtomic } from "../state/durableFile";
 import { ensureSharedAdeProjectScaffold } from "./adeProjectService";
 
@@ -173,10 +173,10 @@ function toProjectRelative(projectRoot: string, filePath: string): string {
   return relative || ".";
 }
 
-function readProjectIconOverride(projectRoot: string): ProjectIconOverride {
+function readProjectIconOverride(scan: ProjectTreeScan): ProjectIconOverride {
   let filePath: string;
   try {
-    filePath = resolvePathWithinRoot(projectRoot, ".ade/local.yaml", { allowMissing: false });
+    filePath = resolveWithinScan(scan, ".ade/local.yaml");
   } catch {
     return undefined;
   }
@@ -202,20 +202,170 @@ function resolveConfiguredProjectIconPath(projectRoot: string, configured: Proje
   return match && isSupportedIconPath(match) ? match : null;
 }
 
-function listSubdirectories(root: string, relativeDir: string): string[] {
-  let dirPath: string;
+/**
+ * One icon resolve's view of the project tree. Each directory is canonicalized
+ * and listed at most once per resolve, so a candidate costs a lookup in its
+ * folder's listing instead of a `realpath` and an `lstat` per path segment.
+ * Whatever is read or returned is resolved by `resolveWithinScan`, which keeps
+ * the containment rule of `resolvePathWithinRoot`, so a symlink that leaves the
+ * root is refused as before.
+ */
+type ProjectTreeScan = {
+  root: string;
+  /** Canonical path per relative directory; null when the walk to it fails. */
+  canonicalDirs: Map<string, string | null>;
+  /** Listing per relative directory; null when it is missing, outside the root, or unreadable. */
+  listings: Map<string, DirectoryListing | null>;
+};
+
+type DirectoryListing = {
+  entries: fs.Dirent[];
+  /** Entries by their exact on-disk name. */
+  byName: Map<string, fs.Dirent>;
+  /** Lowercased names that are plain ASCII. */
+  asciiNames: Set<string>;
+  /** Some entry name is not plain ASCII, so a case-folded lookup cannot answer for this folder. */
+  hasOtherNames: boolean;
+};
+
+const PLAIN_NAME_RE = /^[\x21-\x7e](?:[\x20-\x7e]*[\x21-\x7e])?$/;
+const RESERVED_NAME_CHARS_RE = /[~<>:"|?*\\/]/;
+const PLAIN_ASCII_NAME_RE = /^[\x20-\x7e]+$/;
+
+/**
+ * Whether a folder listing answers for this name the way the filesystem does:
+ * printable ASCII with no leading or trailing space and no trailing dot (Windows
+ * strips those, so `icon.png.` would reach `icon.png`), no `~` (an 8.3 short
+ * name), and no reserved character. Anything else is probed directly.
+ */
+function isPlainName(name: string): boolean {
+  return PLAIN_NAME_RE.test(name) && !RESERVED_NAME_CHARS_RE.test(name) && !name.endsWith(".");
+}
+
+function createProjectTreeScan(root: string): ProjectTreeScan {
+  return { root, canonicalDirs: new Map(), listings: new Map() };
+}
+
+/** Whether no entry of a plain-ASCII listing can be this name in any letter case, so the filesystem cannot find it. */
+function listingLacksName(listing: DirectoryListing, name: string): boolean {
+  return !listing.hasOtherNames && isPlainName(name) && !listing.asciiNames.has(name.toLowerCase());
+}
+
+/**
+ * The path `resolvePathWithinRoot` would give this directory, or null when the
+ * walk to it fails. A real folder whose exact name the parent listing gives is
+ * already canonical, so it costs no syscall. A name with no case variant in a
+ * plain-ASCII listing is missing. Anything else goes through lstat and realpath.
+ */
+function canonicalProjectDirectory(scan: ProjectTreeScan, relativeDir: string): string | null {
+  if (relativeDir === ".") return scan.root;
+  const known = scan.canonicalDirs.get(relativeDir);
+  if (known !== undefined) return known;
+  const parentDir = path.posix.dirname(relativeDir);
+  const name = path.posix.basename(relativeDir);
+  const parent = canonicalProjectDirectory(scan, parentDir);
+  let canonical: string | null = null;
+  if (parent !== null) {
+    const parentListing = listProjectDirectory(scan, parentDir);
+    const exact = parentListing?.byName.get(name);
+    if (exact?.isDirectory()) {
+      canonical = path.join(parent, name);
+    } else if (parentListing && listingLacksName(parentListing, name)) {
+      canonical = null;
+    } else {
+      canonical = realpathIfPresent(path.join(parent, name));
+    }
+  }
+  scan.canonicalDirs.set(relativeDir, canonical);
+  return canonical;
+}
+
+/** realpath for a path that may be absent: one lstat says so without the throw that realpath would raise. */
+function realpathIfPresent(filePath: string): string | null {
   try {
-    dirPath = resolvePathWithinRoot(root, relativeDir, { allowMissing: false });
+    return fs.lstatSync(filePath, { throwIfNoEntry: false }) ? realpathExisting(filePath) : null;
   } catch {
-    return [];
+    return null;
+  }
+}
+
+function listProjectDirectory(scan: ProjectTreeScan, relativeDir: string): DirectoryListing | null {
+  const known = scan.listings.get(relativeDir);
+  if (known !== undefined) return known;
+  let listing: DirectoryListing | null = null;
+  const dirPath = canonicalProjectDirectory(scan, relativeDir);
+  if (dirPath !== null && isWithinDir(scan.root, dirPath)) {
+    try {
+      const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+      const byName = new Map<string, fs.Dirent>();
+      const asciiNames = new Set<string>();
+      let hasOtherNames = false;
+      for (const entry of entries) {
+        byName.set(entry.name, entry);
+        if (PLAIN_ASCII_NAME_RE.test(entry.name)) asciiNames.add(entry.name.toLowerCase());
+        else hasOtherNames = true;
+      }
+      listing = { entries, byName, asciiNames, hasOtherNames };
+    } catch {
+      listing = null;
+    }
+  }
+  scan.listings.set(relativeDir, listing);
+  return listing;
+}
+
+/**
+ * False only when the candidate provably does not resolve: its folder does not
+ * resolve, or the folder's listing has no entry with that name. True means
+ * "probe it": `resolveWithinScan` then makes the containment-checked call.
+ */
+function mayResolveCandidate(scan: ProjectTreeScan, candidate: string): boolean {
+  if (!candidate.split("/").every(isPlainName)) return true;
+  const parentDir = path.posix.dirname(candidate);
+  if (canonicalProjectDirectory(scan, parentDir) === null) return false;
+  const listing = listProjectDirectory(scan, parentDir);
+  if (!listing || listing.hasOtherNames) return true;
+  return listing.asciiNames.has(path.posix.basename(candidate).toLowerCase());
+}
+
+/**
+ * `resolvePathWithinRoot` for a path under the scan's root. The parent folder
+ * comes from the scan, so only the final name is realpath'd. The result and the
+ * refusal for a path that leaves the root are the same.
+ */
+function resolveWithinScan(scan: ProjectTreeScan, relativePath: string): string {
+  if (!relativePath.split("/").every(isPlainName)) {
+    return resolvePathWithinRoot(scan.root, relativePath, { allowMissing: false });
+  }
+  const parent = canonicalProjectDirectory(scan, path.posix.dirname(relativePath));
+  if (parent === null) throw new Error(`Path does not exist: ${relativePath}`);
+  const resolved = realpathExisting(path.join(parent, path.posix.basename(relativePath)));
+  if (!isWithinDir(scan.root, resolved)) throw new Error(PATH_ESCAPES_ROOT_MESSAGE);
+  return resolved;
+}
+
+/** The file a detected candidate names, or null. */
+function findDetectedIconFile(scan: ProjectTreeScan, candidate: string): string | null {
+  if (!mayResolveCandidate(scan, candidate)) return null;
+  let resolved: string;
+  try {
+    resolved = resolveWithinScan(scan, candidate);
+  } catch {
+    return null;
   }
   try {
-    return fs.readdirSync(dirPath, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory() && !IGNORED_ICON_DIRS.has(entry.name))
-      .map((entry) => path.posix.join(relativeDir === "." ? "" : relativeDir, entry.name));
+    return fs.statSync(resolved).isFile() ? resolved : null;
   } catch {
-    return [];
+    return null;
   }
+}
+
+function listSubdirectories(scan: ProjectTreeScan, relativeDir: string): string[] {
+  const listing = listProjectDirectory(scan, relativeDir);
+  if (!listing) return [];
+  return listing.entries
+    .filter((entry) => entry.isDirectory() && !IGNORED_ICON_DIRS.has(entry.name))
+    .map((entry) => path.posix.join(relativeDir === "." ? "" : relativeDir, entry.name));
 }
 
 type IconSearchRootsCacheEntry = {
@@ -325,7 +475,8 @@ function clearProjectIconResultCache(projectRoot: string): void {
 // turned into hundreds of `readdirSync` calls per refresh; cache the result
 // keyed on the mtime of those three directories so it invalidates when a
 // workspace dir is added/removed.
-function iconSearchRoots(projectRoot: string): string[] {
+function iconSearchRoots(scan: ProjectTreeScan): string[] {
+  const projectRoot = scan.root;
   const rootMtimeMs = dirMtimeMs(projectRoot);
   const appsMtimeMs = dirMtimeMs(path.join(projectRoot, "apps"));
   const packagesMtimeMs = dirMtimeMs(path.join(projectRoot, "packages"));
@@ -340,11 +491,11 @@ function iconSearchRoots(projectRoot: string): string[] {
   }
 
   const roots = new Set<string>(["."]);
-  for (const dir of listSubdirectories(projectRoot, ".")) {
+  for (const dir of listSubdirectories(scan, ".")) {
     roots.add(dir);
   }
   for (const workspaceDir of ["apps", "packages"]) {
-    for (const dir of listSubdirectories(projectRoot, workspaceDir)) {
+    for (const dir of listSubdirectories(scan, workspaceDir)) {
       roots.add(dir);
     }
   }
@@ -372,41 +523,33 @@ function isLikelyIconFile(fileName: string): boolean {
   return base.includes("icon") || base.includes("logo") || base === "favicon";
 }
 
-function discoverDirectoryIconFiles(projectRoot: string, relativeDir: string): string[] {
-  let dirPath: string;
-  try {
-    dirPath = resolvePathWithinRoot(projectRoot, relativeDir, { allowMissing: false });
-  } catch {
-    return [];
-  }
-  try {
-    return fs.readdirSync(dirPath, { withFileTypes: true })
-      .filter((entry) => entry.isFile() && isLikelyIconFile(entry.name))
-      .map((entry) => path.posix.join(relativeDir === "." ? "" : relativeDir, entry.name));
-  } catch {
-    return [];
-  }
+function discoverDirectoryIconFiles(scan: ProjectTreeScan, relativeDir: string): string[] {
+  const listing = listProjectDirectory(scan, relativeDir);
+  if (!listing) return [];
+  return listing.entries
+    .filter((entry) => entry.isFile() && isLikelyIconFile(entry.name))
+    .map((entry) => path.posix.join(relativeDir === "." ? "" : relativeDir, entry.name));
 }
 
-function buildDetectedIconCandidates(projectRoot: string): string[] {
+function buildDetectedIconCandidates(scan: ProjectTreeScan): string[] {
   const candidates = new Set<string>();
-  for (const root of iconSearchRoots(projectRoot)) {
+  for (const root of iconSearchRoots(scan)) {
     for (const candidateDir of candidateDirectoriesForRoot(root)) {
       for (const fileName of ICON_FILE_CANDIDATES) {
         candidates.add(path.posix.join(candidateDir === "." ? "" : candidateDir, fileName));
       }
-      for (const discovered of discoverDirectoryIconFiles(projectRoot, candidateDir)) {
+      for (const discovered of discoverDirectoryIconFiles(scan, candidateDir)) {
         candidates.add(discovered);
       }
     }
   }
-  for (const discovered of discoverIosAssetCatalogIconFiles(projectRoot)) {
+  for (const discovered of discoverIosAssetCatalogIconFiles(scan)) {
     candidates.add(discovered);
   }
   return Array.from(candidates);
 }
 
-function assetCatalogCandidateRoots(projectRoot: string): string[] {
+function assetCatalogCandidateRoots(scan: ProjectTreeScan): string[] {
   const candidates = new Set<string>();
   const addCatalogCandidates = (root: string) => {
     for (const candidateDir of IOS_ASSET_CATALOG_CANDIDATE_DIRS) {
@@ -416,20 +559,21 @@ function assetCatalogCandidateRoots(projectRoot: string): string[] {
   const addNestedCatalogCandidates = (root: string, remainingDepth: number) => {
     addCatalogCandidates(root);
     if (remainingDepth <= 0) return;
-    for (const child of listSubdirectories(projectRoot, root)) {
+    for (const child of listSubdirectories(scan, root)) {
       addNestedCatalogCandidates(child, remainingDepth - 1);
     }
   };
 
-  for (const root of iconSearchRoots(projectRoot)) {
+  for (const root of iconSearchRoots(scan)) {
     addNestedCatalogCandidates(root, 2);
   }
 
   const existing: string[] = [];
   for (const candidate of candidates) {
+    if (!mayResolveCandidate(scan, candidate)) continue;
     let resolved: string;
     try {
-      resolved = resolvePathWithinRoot(projectRoot, candidate, { allowMissing: false });
+      resolved = resolveWithinScan(scan, candidate);
     } catch {
       continue;
     }
@@ -454,8 +598,14 @@ function isLikelyIosAssetIconSet(dirName: string): boolean {
     || base.includes("mark");
 }
 
-function assetContentsFilenames(assetSetPath: string): string[] {
-  const contentsPath = path.join(assetSetPath, "Contents.json");
+function assetContentsFilenames(scan: ProjectTreeScan, relativeSetDir: string): string[] {
+  // Contents.json is read, so it goes through the containment check like any other read.
+  let contentsPath: string;
+  try {
+    contentsPath = resolveWithinScan(scan, path.posix.join(relativeSetDir, "Contents.json"));
+  } catch {
+    return [];
+  }
   let parsed: unknown;
   try {
     parsed = JSON.parse(fs.readFileSync(contentsPath, "utf8"));
@@ -482,35 +632,23 @@ function assetContentsFilenames(assetSetPath: string): string[] {
     );
 }
 
-function discoverIosAssetCatalogIconFiles(projectRoot: string): string[] {
+function discoverIosAssetCatalogIconFiles(scan: ProjectTreeScan): string[] {
   const candidates: string[] = [];
-  for (const catalogDir of assetCatalogCandidateRoots(projectRoot)) {
-    let catalogPath: string;
-    try {
-      catalogPath = resolvePathWithinRoot(projectRoot, catalogDir, { allowMissing: false });
-    } catch {
-      continue;
-    }
+  for (const catalogDir of assetCatalogCandidateRoots(scan)) {
+    const listing = listProjectDirectory(scan, catalogDir);
+    if (!listing) continue;
 
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(catalogPath, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-
-    for (const entry of entries) {
+    for (const entry of listing.entries) {
       if (!entry.isDirectory() || !isLikelyIosAssetIconSet(entry.name)) continue;
       const relativeSetDir = path.posix.join(catalogDir, entry.name);
-      const assetSetPath = path.join(catalogPath, entry.name);
-      const filenames = assetContentsFilenames(assetSetPath);
+      const filenames = assetContentsFilenames(scan, relativeSetDir);
       if (filenames.length > 0) {
         for (const filename of filenames) {
           candidates.push(path.posix.join(relativeSetDir, filename));
         }
         continue;
       }
-      for (const discovered of discoverDirectoryIconFiles(projectRoot, relativeSetDir)) {
+      for (const discovered of discoverDirectoryIconFiles(scan, relativeSetDir)) {
         candidates.push(discovered);
       }
     }
@@ -583,16 +721,16 @@ function isInlineableIconFile(filePath: string): boolean {
   }
 }
 
-function findBestDetectedIcon(projectRoot: string): string | null {
+function findBestDetectedIcon(scan: ProjectTreeScan): string | null {
   const matches: string[] = [];
-  for (const candidate of buildDetectedIconCandidates(projectRoot)) {
-    const match = findExistingFile(projectRoot, [candidate]);
+  for (const candidate of buildDetectedIconCandidates(scan)) {
+    const match = findDetectedIconFile(scan, candidate);
     if (match && isSupportedIconPath(match) && isInlineableIconFile(match)) matches.push(match);
   }
   matches.sort((a, b) => {
-    const delta = scoreIconCandidate(projectRoot, b) - scoreIconCandidate(projectRoot, a);
+    const delta = scoreIconCandidate(scan.root, b) - scoreIconCandidate(scan.root, a);
     if (delta !== 0) return delta;
-    return toProjectRelative(projectRoot, a).localeCompare(toProjectRelative(projectRoot, b));
+    return toProjectRelative(scan.root, a).localeCompare(toProjectRelative(scan.root, b));
   });
   return matches[0] ?? null;
 }
@@ -640,14 +778,15 @@ export function resolveProjectIconPath(
     });
     return value;
   };
+  const scan = createProjectTreeScan(root);
   const configured = Object.prototype.hasOwnProperty.call(options, "iconPathOverride")
     ? options.iconPathOverride
-    : readProjectIconOverride(root);
+    : readProjectIconOverride(scan);
   if (configured === null) return cacheValue(null);
   const configuredMatch = resolveConfiguredProjectIconPath(root, configured);
   if (configuredMatch) return cacheValue(configuredMatch);
 
-  const directMatch = findBestDetectedIcon(root);
+  const directMatch = findBestDetectedIcon(scan);
   if (directMatch) return cacheValue(directMatch);
 
   for (const sourceFile of ICON_SOURCE_FILES) {
@@ -656,7 +795,7 @@ export function resolveProjectIconPath(
     // the project root.
     let sourcePath: string;
     try {
-      sourcePath = resolvePathWithinRoot(root, sourceFile, { allowMissing: false });
+      sourcePath = resolveWithinScan(scan, sourceFile);
     } catch {
       continue;
     }
@@ -675,8 +814,8 @@ export function resolveProjectIconPath(
   }
 
   // No icon found: do not cache. A new icon can appear in any nested folder,
-  // and the cache checks only a few folder times. The scan is cheap since a
-  // missing candidate skips the containment walk.
+  // and the cache checks only a few folder times. The scan is cheap: each
+  // folder is listed once per resolve and a missing candidate costs no lookup.
   return null;
 }
 

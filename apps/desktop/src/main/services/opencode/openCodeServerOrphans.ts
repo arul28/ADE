@@ -8,6 +8,7 @@ import {
   resolveAdeOpenCodeIsolationPaths,
   resolveAdeOpenCodeRuntimeRoot,
 } from "../../../shared/opencodeDataHome";
+import { execFileOffThread, offThreadSpawnEnabled } from "../shared/offThreadSpawn";
 import { killWindowsProcessTree, windowsPowerShellCommand } from "../shared/processExecution";
 import { parseProcessRows, terminateOrphanProcess as terminateProcessOrphan } from "../shared/processOrphans";
 import { signalProcessGroup } from "../shared/utils";
@@ -35,6 +36,7 @@ export type OpenCodeProcessSnapshot = {
 
 type OpenCodeProcessController = {
   listProcesses(): OpenCodeProcessSnapshot[];
+  listProcessesAsync(): Promise<OpenCodeProcessSnapshot[]>;
   listListeningPids(port: number): number[];
   isProcessAlive(pid: number): boolean;
   killProcess(pid: number, signal: NodeJS.Signals): void;
@@ -141,16 +143,29 @@ export function parseWindowsWmicProcessCsv(stdout: string): OpenCodeProcessSnaps
   return rows;
 }
 
+// The two Windows queries, shared by the sync listing and the off-thread one.
+const WINDOWS_WMIC_PROCESS_ARGS = ["process", "get", "ProcessId,ParentProcessId,CommandLine", "/FORMAT:CSV"];
+const WINDOWS_POWERSHELL_PROCESS_ARGS = [
+  "-NoProfile",
+  "-NonInteractive",
+  "-ExecutionPolicy",
+  "Bypass",
+  "-Command",
+  "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Csv -NoTypeInformation",
+];
+const WINDOWS_PROCESS_LISTING_MAX_BUFFER = 50 * 1024 * 1024;
+/**
+ * A busy PC's CIM query can take seconds. A timeout only skips this pass: the
+ * registry records stay on disk, and an empty listing kills nothing.
+ */
+const WINDOWS_PROCESS_LISTING_TIMEOUT_MS = 30_000;
+
 function listWindowsProcessesFromWmic(): OpenCodeProcessSnapshot[] {
-  const result = spawnSync(
-    "wmic",
-    ["process", "get", "ProcessId,ParentProcessId,CommandLine", "/FORMAT:CSV"],
-    {
-      encoding: "utf8",
-      windowsHide: true,
-      maxBuffer: 50 * 1024 * 1024,
-    },
-  );
+  const result = spawnSync("wmic", WINDOWS_WMIC_PROCESS_ARGS, {
+    encoding: "utf8",
+    windowsHide: true,
+    maxBuffer: WINDOWS_PROCESS_LISTING_MAX_BUFFER,
+  });
   if (result.error || result.status !== 0 || typeof result.stdout !== "string") {
     return [];
   }
@@ -158,16 +173,14 @@ function listWindowsProcessesFromWmic(): OpenCodeProcessSnapshot[] {
 }
 
 function listWindowsProcessesFromPowerShell(): OpenCodeProcessSnapshot[] {
-  const script =
-    "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Csv -NoTypeInformation";
   const result = spawnSync(
     // The System32 path, so a poisoned PATH cannot answer the listing.
     windowsPowerShellCommand(),
-    ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+    WINDOWS_POWERSHELL_PROCESS_ARGS,
     {
       encoding: "utf8",
       windowsHide: true,
-      maxBuffer: 50 * 1024 * 1024,
+      maxBuffer: WINDOWS_PROCESS_LISTING_MAX_BUFFER,
     },
   );
   if (result.error || result.status !== 0 || typeof result.stdout !== "string") {
@@ -176,12 +189,32 @@ function listWindowsProcessesFromPowerShell(): OpenCodeProcessSnapshot[] {
   return parseWindowsWmicProcessCsv(result.stdout);
 }
 
+/** WMIC's rows count only when it listed something and every row has a command line. */
+function wmicListingIsUsable(rows: OpenCodeProcessSnapshot[]): boolean {
+  return rows.length > 0 && rows.every((process) => process.command.trim().length > 0);
+}
+
 function listWindowsProcesses(): OpenCodeProcessSnapshot[] {
   const fromWmic = listWindowsProcessesFromWmic();
-  if (fromWmic.length > 0 && fromWmic.every((process) => process.command.trim().length > 0)) {
+  if (wmicListingIsUsable(fromWmic)) {
     return fromWmic;
   }
   return listWindowsProcessesFromPowerShell();
+}
+
+/**
+ * The same two queries on a worker thread. `spawnSync` holds the main process
+ * for the whole query (~0.5 s for the PowerShell one on the reference PC).
+ */
+async function listWindowsProcessesAsync(): Promise<OpenCodeProcessSnapshot[]> {
+  const listing = { timeoutMs: WINDOWS_PROCESS_LISTING_TIMEOUT_MS, maxBuffer: WINDOWS_PROCESS_LISTING_MAX_BUFFER };
+  const wmic = await execFileOffThread("wmic", WINDOWS_WMIC_PROCESS_ARGS, listing);
+  const fromWmic = wmic.error || wmic.exitCode !== 0 ? [] : parseWindowsWmicProcessCsv(wmic.stdout);
+  if (wmicListingIsUsable(fromWmic)) {
+    return fromWmic;
+  }
+  const powerShell = await execFileOffThread(windowsPowerShellCommand(), WINDOWS_POWERSHELL_PROCESS_ARGS, listing);
+  return powerShell.error || powerShell.exitCode !== 0 ? [] : parseWindowsWmicProcessCsv(powerShell.stdout);
 }
 
 function withDarwinCandidateEnvironments(rows: OpenCodeProcessSnapshot[]): OpenCodeProcessSnapshot[] {
@@ -235,6 +268,13 @@ const openCodeProcesses: OpenCodeProcessController = {
       });
     }
     return withDarwinCandidateEnvironments(rows);
+  },
+  async listProcessesAsync(): Promise<OpenCodeProcessSnapshot[]> {
+    // POSIX keeps its listing exactly as it was.
+    if (process.platform !== "win32") return openCodeProcesses.listProcesses();
+    // ADE_DISABLE_OFF_THREAD_SPAWN=1 falls back to the direct spawn.
+    if (!offThreadSpawnEnabled()) return listWindowsProcesses();
+    return await listWindowsProcessesAsync();
   },
   listListeningPids(port: number): number[] {
     if (!Number.isInteger(port) || port <= 0) return [];
@@ -610,11 +650,13 @@ export async function recoverManagedOpenCodeOrphans(args: {
 
   const recoveryPromise = (async () => {
     const configMarkers = buildManagedConfigMarkers();
-    const activePorts = args.activePorts();
     const recoveredPids: number[] = [];
     const skippedPids: number[] = [];
     const handledPids = new Set<number>();
-    const snapshot = openCodeProcesses.listProcesses();
+    const snapshot = await openCodeProcesses.listProcessesAsync();
+    // Read after the listing, which now waits on a worker: a server this process
+    // starts meanwhile registers its launch port before it spawns, so it is covered.
+    const activePorts = args.activePorts();
     const commandByPid = new Map(snapshot.map((proc) => [proc.pid, proc.command]));
 
     for (const proc of snapshot) {

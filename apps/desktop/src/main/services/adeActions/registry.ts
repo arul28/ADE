@@ -4112,6 +4112,14 @@ function buildStorageDomainService(runtime: AdeRuntime): OpaqueService | null {
 }
 
 
+function buildProjectHealthDomainService(runtime: AdeRuntime): OpaqueService | null {
+  const projectHealthService = runtime.projectHealthService;
+  if (!projectHealthService) return null;
+  return {
+    getReport: (args?: { forceRefresh?: boolean }) => projectHealthService.getReport(args ?? {}),
+    fix: (args: { fixId: string }) => projectHealthService.fix(args),
+  };
+}
 
 export function getAdeActionDomainServices(
   runtime: AdeRuntime,
@@ -4157,6 +4165,7 @@ export function getAdeActionDomainServices(
     usage: toService(runtime.usageTrackingService),
     analytics: toService(runtime.productAnalyticsService),
     storage: toService(buildStorageDomainService(runtime)),
+    project_health: toService(buildProjectHealthDomainService(runtime)),
     archive: toService(createArchiveService(runtime)),
     budget: toService(runtime.budgetCapService),
     update: toService(runtime.autoUpdateService),

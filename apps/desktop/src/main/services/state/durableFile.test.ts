@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { injectFsFault } from "../../../test/faultInjection";
 import {
   cleanupAbandonedTempFiles,
+  createStampedJsonCache,
   readJsonWithRecovery,
   writeFileAtomic,
   writeJsonWithPrevious,
@@ -230,6 +231,36 @@ describe("durableFile", () => {
 
     it("reports missing when neither generation exists", () => {
       expect(readJsonWithRecovery(filePath, isFixture)).toEqual({ value: null, source: "missing" });
+    });
+  });
+
+  describe("createStampedJsonCache", () => {
+    it("re-reads a file after the wall clock steps back, even when its stamp still matches", () => {
+      // The settle window is measured on the wall clock. Once the clock has gone
+      // back, a rewrite can carry the stamp the cache already holds, so a matching
+      // stat no longer proves the bytes are unchanged.
+      fs.writeFileSync(filePath, JSON.stringify({ version: 1, sessionId: "s", value: 1 }));
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        vi.setSystemTime(Date.now() + 10_000);
+        const cache = createStampedJsonCache(isFixture, { maxEntries: 10, maxBytes: 1_000_000 });
+        expect(cache.read(filePath)).toEqual({
+          value: { version: 1, sessionId: "s", value: 1 },
+          source: "primary",
+        });
+
+        const stamped = fs.statSync(filePath);
+        fs.writeFileSync(filePath, JSON.stringify({ version: 1, sessionId: "s", value: 2 }));
+        vi.spyOn(fs, "statSync").mockReturnValue(stamped);
+        vi.setSystemTime(Date.now() - 5_000);
+
+        expect(cache.read(filePath)).toEqual({
+          value: { version: 1, sessionId: "s", value: 2 },
+          source: "primary",
+        });
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 

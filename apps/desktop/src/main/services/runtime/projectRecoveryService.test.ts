@@ -66,6 +66,7 @@ function status(overrides: Partial<ReturnType<ProjectRecoveryConnectionPool["get
 function pool(statusValue = status()): ProjectRecoveryConnectionPool {
   return {
     getStatus: vi.fn(() => statusValue),
+    getStatusAfterServiceProbe: vi.fn(async () => statusValue),
     installServiceBestEffort: vi.fn(async () => {}),
     uninstallServiceBestEffort: vi.fn(async () => {}),
     callSync: vi.fn(async () => ({ pong: true })) as unknown as ProjectRecoveryConnectionPool["callSync"],

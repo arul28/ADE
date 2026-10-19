@@ -134,7 +134,11 @@ export type ChatScheduledWorkScheduler = {
   refreshGlobalPause(): Promise<void>;
   list(sessionId?: string): ChatScheduledWorkRecord[];
   isSessionPaused(sessionId: string): boolean;
-  nextWakeAt(sessionId: string): number | null;
+  /**
+   * `globallyPaused` is the caller's read of the global pause, for a caller that
+   * reads many sessions in one pass; it defaults to asking `isGlobalPaused` now.
+   */
+  nextWakeAt(sessionId: string, globallyPaused?: boolean): number | null;
   claimNativeFire(sessionId: string, turnId: string, scheduleId?: string): ChatScheduledWorkRecord | null;
   recordTurnStarted(scheduleId: string, turnId: string): Promise<void>;
   recordTurnFinished(turnId: string, outcomeSummary?: string): Promise<void>;
@@ -784,8 +788,8 @@ export function createChatScheduledWorkScheduler(
       return pausedSessionIds.has(sessionId);
     },
 
-    nextWakeAt(sessionId): number | null {
-      if (options.isGlobalPaused() || pausedSessionIds.has(sessionId)) return null;
+    nextWakeAt(sessionId, globallyPaused = options.isGlobalPaused()): number | null {
+      if (globallyPaused || pausedSessionIds.has(sessionId)) return null;
       let next: number | null = null;
       for (const schedule of schedules.values()) {
         if (

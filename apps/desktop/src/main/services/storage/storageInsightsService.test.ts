@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -216,11 +217,14 @@ describe("storageInsightsService", () => {
     writeSized(path.join(activePath, "data"), 2);
     writeSized(path.join(archivedPath, "data"), 3);
     writeSized(path.join(orphanedPath, "data"), 29);
+    // A stray file (Finder's .DS_Store) is not a lane folder.
+    writeSized(path.join(projectRoot, ".ade", "worktrees", ".DS_Store"), 4);
     seedLane(db, { id: "active", name: "Current", worktreePath: activePath });
     seedLane(db, { id: "archived", name: "Past", worktreePath: archivedPath, archivedAt: "2026-07-02T00:00:00.000Z" });
 
     const snapshot = await createStorageInsightsService({ projectRoot, adeHome, db, logger }).getSnapshot();
     const items = snapshot.categories.find((category) => category.id === "lanes_worktrees")!.items;
+    expect(items.map((item) => path.basename(item.path)).sort()).toEqual(["active", "archived", "orphaned"]);
 
     expect(items.find((item) => item.path === activePath)).toMatchObject({ laneStatus: "active", safety: "protected" });
     expect(items.find((item) => item.path === archivedPath)).toMatchObject({ laneStatus: "archived", safety: "review_first" });
@@ -291,6 +295,8 @@ describe("storageInsightsService", () => {
     const activePath = path.join(projectRoot, ".ade", "worktrees", "active");
     const chatSessions = path.join(projectRoot, ".ade", "cache", "chat-sessions");
     const secrets = path.join(projectRoot, ".ade", "secrets");
+    const journal = path.join(projectRoot, ".ade", "cache", "storage-doctor-journal.json");
+    writeSized(journal, 5);
     writeSized(path.join(activePath, "data"), 5);
     writeSized(path.join(chatSessions, "pointer"), 5);
     writeSized(path.join(secrets, "secret"), 5);
@@ -300,18 +306,23 @@ describe("storageInsightsService", () => {
       { kind: "rebuildable_cache", path: chatSessions },
       { kind: "rebuildable_cache", path: path.join(projectRoot, ".ade", "ade.db") },
       { kind: "rebuildable_cache", path: secrets },
+      // The cleanup history lives in .ade/cache but is not a cache.
+      { kind: "rebuildable_cache", path: journal },
     ];
     const service = createStorageInsightsService({ projectRoot, adeHome, db, logger });
 
-    expect((await service.cleanupPreview(targets)).blocked).toHaveLength(4);
+    expect((await service.cleanupPreview(targets)).blocked).toHaveLength(5);
+    const snapshot = await service.getSnapshot();
+    expect(snapshot.categories.flatMap((category) => category.items).some((item) => item.path === journal)).toBe(false);
     const forged: StorageCleanupPreview = {
       items: targets.map((target) => ({ path: target.path, bytes: 5, label: "Forged" })),
-      totalBytes: 20,
+      totalBytes: 25,
       blocked: [],
     };
     const result = await service.cleanup(targets, { preview: forged });
     expect(result.removed).toHaveLength(0);
-    expect(result.failed).toHaveLength(4);
+    expect(result.failed).toHaveLength(5);
+    expect(fs.existsSync(journal)).toBe(true);
     expect(fs.existsSync(activePath)).toBe(true);
     expect(fs.existsSync(chatSessions)).toBe(true);
     expect(fs.existsSync(secrets)).toBe(true);
@@ -339,6 +350,105 @@ describe("storageInsightsService", () => {
     const result = await service.cleanup([{ kind: "stale_tmp_staging", path: stale }], { preview });
     expect(result).toEqual({ removed: [{ path: stale, bytes: 31 }], failed: [], freedBytes: 31 });
     expect(fs.existsSync(stale)).toBe(false);
+
+    // The removed files are in the cleanup history, and the maintenance run
+    // "Clean up safely" starts right after folds into the same entry instead
+    // of hiding them behind its own smaller number.
+    const journalPath = path.join(projectRoot, ".ade", "cache", "storage-doctor-journal.json");
+    expect(readMaintenanceJournal(journalPath)).toMatchObject([
+      { filesOnly: true, reclaimedBytes: 31, actions: [{ ledgerId: "fs.tmp_staging", kind: "delete", bytesReclaimed: 31 }] },
+    ]);
+    const maintenance = await service.runMaintenanceNow();
+    const journal = readMaintenanceJournal(journalPath);
+    expect(journal).toHaveLength(1);
+    expect(journal[0]!.filesOnly).toBeUndefined();
+    expect(journal[0]!.reclaimedBytes).toBe(31 + maintenance.reclaimedBytes);
+    expect(journal[0]!.actions.find((action) => action.bytesReclaimed === 31)?.ledgerId).toBe("fs.tmp_staging");
+    expect(journal[0]!.dbSizeDefinition).toBe("files");
+    service.dispose();
+  });
+
+  it("keeps a leftover lane folder that holds uncommitted work or commits no branch has", async () => {
+    const git = (cwd: string, ...args: string[]) => execFileSync("git", args, {
+      cwd,
+      stdio: "pipe",
+      env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" },
+    });
+    const worktrees = path.join(projectRoot, ".ade", "worktrees");
+    const leftover = (name: string) => {
+      const dir = path.join(worktrees, name);
+      fs.mkdirSync(dir, { recursive: true });
+      git(dir, "init", "-q", "-b", "main");
+      writeSized(path.join(dir, "file.txt"), 3);
+      git(dir, "add", ".");
+      git(dir, "commit", "-q", "-m", "base");
+      return dir;
+    };
+    const dirty = leftover("dirty");
+    writeSized(path.join(dirty, "unsaved.txt"), 2);
+    const detached = leftover("detached");
+    git(detached, "checkout", "-q", "--detach");
+    writeSized(path.join(detached, "more.txt"), 2);
+    git(detached, "add", ".");
+    git(detached, "commit", "-q", "-m", "only here");
+    const clean = leftover("clean");
+    const plain = path.join(worktrees, "plain");
+    writeSized(path.join(plain, "left.txt"), 4);
+
+    const service = createStorageInsightsService({ projectRoot, adeHome, db, logger });
+    const preview = await service.cleanupPreview([dirty, detached, clean, plain].map((dir) => ({ kind: "orphaned_worktree" as const, path: dir })));
+    expect(preview.items.map((item) => path.basename(item.path)).sort()).toEqual(["clean", "plain"]);
+    expect(Object.fromEntries(preview.blocked.map((entry) => [path.basename(entry.path), entry.reason]))).toEqual({
+      dirty: expect.stringContaining("uncommitted"),
+      detached: expect.stringContaining("no branch has"),
+    });
+    // A forged confirmation cannot get past the same check.
+    const forged: StorageCleanupPreview = {
+      items: [{ path: dirty, bytes: 1, label: "Forged", identity: "x" }],
+      totalBytes: 1,
+      blocked: [],
+    };
+    await service.cleanup([{ kind: "orphaned_worktree", path: dirty }], { preview: forged });
+    expect(fs.existsSync(path.join(dirty, "unsaved.txt"))).toBe(true);
+  });
+
+  it("measures every category and lane when one folder alone exceeds the scan budget", async () => {
+    // One huge history folder used to spend the shared budget and leave every
+    // lane reading 0 B.
+    for (let index = 0; index < 400; index += 1) {
+      writeSized(path.join(projectRoot, ".ade", "transcripts", `chat-${index}.jsonl`), 1);
+    }
+    const laneA = path.join(projectRoot, ".ade", "worktrees", "lane-a");
+    const laneB = path.join(projectRoot, ".ade", "worktrees", "lane-b");
+    writeSized(path.join(laneA, "a.bin"), 11);
+    writeSized(path.join(laneB, "b.bin"), 13);
+    seedLane(db, { id: "a", name: "A", worktreePath: laneA });
+    seedLane(db, { id: "b", name: "B", worktreePath: laneB });
+
+    const staging = fs.mkdtempSync(path.join(os.tmpdir(), "storage-empty-staging-"));
+    extraPaths.push(staging);
+    const snapshot = await createStorageInsightsService({ projectRoot, adeHome, db, logger, scanEntryLimit: 200, stagingTmpDir: staging }).getSnapshot();
+    const byId = Object.fromEntries(snapshot.categories.map((category) => [category.id, category]));
+    expect(byId.chats_history!.partial).toBe(true);
+    expect(snapshot.truncated).toBe(true);
+    expect(byId.lanes_worktrees!.items.map((item) => [item.label, item.bytes, item.partial ?? false]).sort()).toEqual([
+      ["A", 11, false],
+      ["B", 13, false],
+    ]);
+  });
+
+  it("does not call a long item list truncated: totals still cover every item", async () => {
+    for (let index = 0; index < 55; index += 1) {
+      writeSized(path.join(projectRoot, ".ade", "cache", `cache-${index}`, "data"), 2);
+    }
+    const staging = fs.mkdtempSync(path.join(os.tmpdir(), "storage-empty-staging-"));
+    extraPaths.push(staging);
+    const snapshot = await createStorageInsightsService({ projectRoot, adeHome, db, logger, stagingTmpDir: staging }).getSnapshot();
+    const caches = snapshot.categories.find((category) => category.id === "caches")!;
+    expect(caches.items).toHaveLength(50);
+    expect(caches.itemCount).toBe(55);
+    expect(caches.bytes).toBe(110);
+    expect(snapshot.truncated).toBe(false);
   });
 
   it("caches snapshots, lets force refresh bypass the cache, and reports scan caps", async () => {

@@ -162,6 +162,7 @@ import { createConflictService } from "./services/conflicts/conflictService";
 import { createProjectConfigService } from "./services/config/projectConfigService";
 import { createDiskPressureMonitor } from "./services/storage/diskPressure";
 import { createStorageInsightsService } from "./services/storage/storageInsightsService";
+import { createProjectHealthService } from "../../../ade-cli/src/services/projects/projectHealth/projectHealthService";
 import { recoverOrphanedAdeAgentProcesses } from "./services/processes/orphanedAgentProcessReaper";
 import { createTestService } from "./services/tests/testService";
 import { createOperationService } from "./services/history/operationService";
@@ -323,6 +324,7 @@ import {
   type SyncCredentialStore,
 } from "../../../ade-cli/src/services/credentials/credentialStore";
 import { adoptFileBackedCredentials } from "../../../ade-cli/src/services/credentials/credentialStoreAdoption";
+import { readExistingOsBoundKeyMaterialAsync } from "../../../ade-cli/src/services/credentials/osBoundKeyMaterial";
 import {
   createRoutedCredentialStore,
   createUnavailableCredentialStore,
@@ -1525,7 +1527,7 @@ app.whenReady().then(async () => {
     startMetricsSampler();
   }
 
-  if (blockPackagedLaunchForCrossChannelSyncConflict({
+  if (await blockPackagedLaunchForCrossChannelSyncConflict({
     isPackaged: app.isPackaged,
     channel: normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL),
   })) {
@@ -3267,7 +3269,7 @@ app.whenReady().then(async () => {
           reportsDir: path.join(app.getPath("userData"), "diagnostic-reports"),
           installId: productAnalyticsService.getDistinctId(),
           accountUserId: readAccountOwnerId(),
-          getLocalRuntimeStatus: () => localRuntimePool.getStatus(),
+          getLocalRuntimeStatus: () => localRuntimePool.getStatusAfterServiceProbe(),
           // Deliberately no `diagnoseProject`. The recovery diagnosis is itself
           // one of the triggers, so asking for a fresh one while building the
           // report about it would re-enter the code path that asked for it.
@@ -5514,6 +5516,23 @@ app.whenReady().then(async () => {
       computerUseArtifactBrokerService.purgeArtifactRecordsUnder(removedPath);
     },
     });
+    const projectHealthService = createProjectHealthService({
+      projectRoot,
+      db,
+      logger,
+      listLanes: () => laneService.list({ includeArchived: false }),
+      openTerminal: async (request) => {
+        await ptyService.create({
+          laneId: request.laneId,
+          cwd: request.cwd,
+          cols: 120,
+          rows: 32,
+          title: request.title,
+          tracked: true,
+          startupCommand: request.command,
+        });
+      },
+    });
 
     // Phone sync is owned by the per-machine ADE service. The desktop
     // keeps a non-host sync service for legacy viewer state and explicit
@@ -5995,6 +6014,7 @@ app.whenReady().then(async () => {
       operationService,
       projectConfigService,
       projectSecretService,
+      projectHealthService,
       conflictService,
       gitService,
       diffService,
@@ -6242,6 +6262,7 @@ app.whenReady().then(async () => {
         operationService,
         projectConfigService,
         projectSecretService,
+        projectHealthService,
         linearIssueTracker,
         fileService,
         ptyService,
@@ -6326,6 +6347,7 @@ app.whenReady().then(async () => {
       githubPollingService,
       usageTrackingService,
       storageInsightsService,
+      projectHealthService,
       budgetCapService,
       syncHostService: syncService.getHostService(),
       syncService,
@@ -9059,6 +9081,18 @@ app.whenReady().then(async () => {
     });
   };
 
+  // Windows: the account read below decrypts the machine credential key in a
+  // blocking PowerShell child (230-350 ms on this thread). Decrypt it here, off
+  // the thread, and wait for it so that read finds the key cached. Started after
+  // the dormant context above, so a key that context already read is not read
+  // again. The read is read-only: a missing key is still created by the
+  // synchronous path, as before. Open-file requests that arrive while this waits
+  // queue in `pendingProjectOpenFiles`, because `handleProjectOpenFile` is set
+  // after it.
+  const accountKeyPrewarm = process.platform === "win32"
+    ? readExistingOsBoundKeyMaterialAsync(machineAdeLayout.secretsDir).catch(() => null)
+    : null;
+  if (accountKeyPrewarm) await accountKeyPrewarm;
   handleProjectOpenFile = (filePath) => {
     void openProjectFileRequest(filePath).catch((error) => {
       getActiveContext().logger.warn("project.open_file_request_failed", {

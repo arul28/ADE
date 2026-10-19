@@ -49,9 +49,9 @@ describe("packagedSyncHostLaunchGate", () => {
     expect(content.detail).toContain(content.quitCommand);
   });
 
-  it("does not block dev builds", () => {
+  it("does not block dev builds", async () => {
     const quit = vi.fn();
-    const blocked = blockPackagedLaunchForCrossChannelSyncConflict({
+    const blocked = await blockPackagedLaunchForCrossChannelSyncConflict({
       isPackaged: false,
       channel: "beta",
       detectConflict: () => stableConflict,
@@ -62,9 +62,9 @@ describe("packagedSyncHostLaunchGate", () => {
     expect(quit).not.toHaveBeenCalled();
   });
 
-  it("does not block when the conflict owner is the same channel", () => {
+  it("does not block when the conflict owner is the same channel", async () => {
     const quit = vi.fn();
-    const blocked = blockPackagedLaunchForCrossChannelSyncConflict({
+    const blocked = await blockPackagedLaunchForCrossChannelSyncConflict({
       isPackaged: true,
       channel: "beta",
       env: {
@@ -87,12 +87,12 @@ describe("packagedSyncHostLaunchGate", () => {
     expect(quit).not.toHaveBeenCalled();
   });
 
-  it("blocks packaged launches, copies the stop command, and quits", () => {
+  it("blocks packaged launches, copies the stop command, and quits", async () => {
     const showDialog = vi.fn();
     const copyToClipboard = vi.fn();
     const quit = vi.fn();
 
-    const blocked = blockPackagedLaunchForCrossChannelSyncConflict({
+    const blocked = await blockPackagedLaunchForCrossChannelSyncConflict({
       isPackaged: true,
       channel: "beta",
       env: {

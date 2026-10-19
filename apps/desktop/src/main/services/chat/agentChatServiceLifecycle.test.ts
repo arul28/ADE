@@ -23,6 +23,7 @@ import {
   waitForFakeTimers,
   writePersistedChatState,
 } from "./agentChatService.testHarness";
+import { writeJsonWithPrevious } from "../state/durableFile";
 import { describe, expect, it, test, vi } from "vitest";
 import { ChatRuntimeOwnedElsewhereError, resolveAdeHomeForOwnership } from "./chatRuntimeOwnership";
 import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
@@ -1060,6 +1061,46 @@ describe("createAgentChatService", () => {
 
       const sessions = await service.listSessions();
       expect(sessions.length).toBe(2);
+    });
+
+    it.each([
+      ["rewritten in place by another writer", (filePath: string, state: Record<string, unknown>) => {
+        fs.writeFileSync(filePath, JSON.stringify(state, null, 2));
+      }],
+      ["replaced by the atomic write the service uses", (filePath: string, state: Record<string, unknown>) => {
+        writeJsonWithPrevious(filePath, state);
+      }],
+    ])("lists a chat from its file once it is %s", async (_how, writeState) => {
+      // The chat list keeps a state file only once it has been still for a moment,
+      // so the clock moves past that window. Timers stay real.
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        const { service } = createService();
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "opencode",
+          model: "",
+          modelId: "opencode/anthropic/claude-sonnet-5",
+        });
+        const filePath = path.join(tmpRoot, ".ade", "cache", "chat-sessions", `${session.id}.json`);
+        const listedIds = async (includeIdentity: boolean) =>
+          (await service.listSessions(undefined, { includeIdentity })).map((listed) => listed.sessionId);
+        vi.setSystemTime(Date.now() + 10_000);
+        expect(await listedIds(false)).toContain(session.id);
+        expect(await listedIds(false)).toContain(session.id);
+
+        // Another brain marks the chat as its CTO identity; the default list hides it.
+        writeState(filePath, { ...readPersistedChatState(session.id), identityKey: "cto" });
+        expect(await listedIds(false)).not.toContain(session.id);
+        expect(await listedIds(true)).toContain(session.id);
+
+        const plain: Record<string, unknown> = { ...readPersistedChatState(session.id) };
+        delete plain.identityKey;
+        writeState(filePath, plain);
+        expect(await listedIds(false)).toContain(session.id);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("rejects attachments outside the project root before dispatch", async () => {

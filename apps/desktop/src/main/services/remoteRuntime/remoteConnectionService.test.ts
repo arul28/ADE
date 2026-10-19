@@ -298,6 +298,77 @@ describe("RemoteConnectionService", () => {
     );
   });
 
+  it.each([
+    {
+      name: "records a sighting taken after the route's last failure, even inside the refresh window",
+      lastDiscoveredAgoMs: 40_000,
+      lastFailedAgoMs: 20_000,
+      recorded: true,
+    },
+    {
+      name: "skips a sighting that already post-dates the failure and is inside the refresh window",
+      lastDiscoveredAgoMs: 20_000,
+      lastFailedAgoMs: 40_000,
+      recorded: false,
+    },
+  ])("$name", ({ lastDiscoveredAgoMs, lastFailedAgoMs, recorded }) => {
+    const now = Date.now();
+    const endpoints = [
+      "ws://192.168.1.20:8787/",
+      "ws://100.70.0.2:8787/",
+      "ws://studio.local:8787/",
+    ];
+    const markEndpointsDiscovered = vi.fn();
+    const pairedStore = {
+      get: vi.fn(() => ({
+        hostIdentity: { deviceId: "host-1" },
+        endpoints,
+        endpointStates: endpoints.map((endpoint) => ({
+          endpoint,
+          lastSucceededAt: null,
+          lastDiscoveredAt: now - lastDiscoveredAgoMs,
+          lastFailedAt: now - lastFailedAgoMs,
+          consecutiveFailures: 2,
+        })),
+      })),
+      markEndpointsDiscovered,
+    };
+    const pool = {
+      onEntryConnected: vi.fn(() => () => {}),
+      onEntryEvicted: vi.fn(() => () => {}),
+    } as unknown as RemoteConnectionPool;
+    const service = new RemoteConnectionService(
+      { list: vi.fn(() => []) } as unknown as RemoteTargetRegistry,
+      pool,
+      {},
+      pairedStore as any,
+    );
+
+    service.rememberDiscoveredMachines([{
+      id: "host-1::service",
+      serviceName: "ADE Sync Studio",
+      machineName: "Studio",
+      hostIdentity: "host-1",
+      hostName: "studio.local",
+      port: 8787,
+      addresses: ["192.168.1.20", "100.70.0.2"],
+      primaryRoute: "192.168.1.20",
+      tailscaleAddress: "100.70.0.2",
+      runtimeKind: "brain",
+      runtimeVersion: "1.0.0",
+      connectable: true,
+      projectIds: [],
+      projectCount: 0,
+      lastSeenAt: 1,
+    }], now);
+
+    if (recorded) {
+      expect(markEndpointsDiscovered).toHaveBeenCalledWith("host-1", endpoints, now);
+    } else {
+      expect(markEndpointsDiscovered).not.toHaveBeenCalled();
+    }
+  });
+
   it("requires explicit reconnection after another client takes the machine", async () => {
     // Two ADEs sharing this computer's pairing each reconnected the moment the
     // host closed them with "Superseded by a newer connection", and took the

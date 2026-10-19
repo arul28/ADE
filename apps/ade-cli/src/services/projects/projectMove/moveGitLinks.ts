@@ -3,7 +3,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 
-const execFileAsync = promisify(execFile);
 
 /**
  * Git links in a copied project.
@@ -189,7 +188,9 @@ function writeFileKeepingMode(file: string, content: string): void {
 }
 
 async function gitConfig(configFile: string, args: string[]): Promise<string> {
-  const { stdout } = await execFileAsync("git", ["config", "--file", configFile, ...args], {
+  // Wrapped here, not at load: the usage ledger imports this module through
+  // movePreviousRoots, and must load where child_process is stubbed.
+  const { stdout } = await promisify(execFile)("git", ["config", "--file", configFile, ...args], {
     timeout: 15_000,
     maxBuffer: 8 * 1024 * 1024,
     env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
@@ -242,8 +243,10 @@ export async function relinkAbsoluteSymlinks(args: {
   copyRoot: string;
   finalRoot: string;
   oldSpellings: string[];
+  /** Copied dependency folders can hold absolute links into the project too (e.g. a bundled runtime's `.bin`). */
+  includeDependencies?: boolean;
 }): Promise<number> {
-  const links = await listSymlinks(args.copyRoot);
+  const links = await listSymlinks(args.copyRoot, { includeDependencies: args.includeDependencies });
   let count = 0;
   for (const link of links) {
     let target: string;
@@ -263,9 +266,10 @@ export async function relinkAbsoluteSymlinks(args: {
   return count;
 }
 
-function listSymlinks(root: string): Promise<string[]> {
+export function listSymlinks(root: string, options: { includeDependencies?: boolean } = {}): Promise<string[]> {
+  const prune = options.includeDependencies ? [] : ["(", "-name", "node_modules", "-type", "d", ")", "-prune", "-o"];
   return new Promise((resolve, reject) => {
-    const child = spawn("/usr/bin/find", [root, "(", "-name", "node_modules", "-type", "d", ")", "-prune", "-o", "-type", "l", "-print0"], {
+    const child = spawn("/usr/bin/find", [root, ...prune, "-type", "l", "-print0"], {
       stdio: ["ignore", "pipe", "pipe"],
     });
     const chunks: Buffer[] = [];

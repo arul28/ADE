@@ -178,6 +178,11 @@ import {
   createBuiltInBrowserTabCapabilities,
 } from "./builtInBrowserTabCapabilities";
 import { evaluateInTab } from "./builtInBrowserCdp";
+import {
+  createBrowserFrameInspector,
+  createBrowserHitTester,
+  INSPECT_FRAME_BINDING_NAME,
+} from "./builtInBrowserHitTest";
 import type { DemoEngine, DemoTrackEventKind } from "../../../shared/demoVideo/demoContract";
 import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
 import {
@@ -275,6 +280,11 @@ type BrowserInspectPoint = {
   y: number;
 };
 
+type BrowserInspectBindingCall = BrowserInspectPoint & {
+  /** Set when the click came from an iframe's overlay: the point is in that frame's viewport. */
+  executionContextId: number | null;
+};
+
 type DebuggerMessageListener = (
   event: Electron.Event,
   method: string,
@@ -318,13 +328,10 @@ type CdpScreenshotResponse = {
   data?: string;
 };
 
-type CdpGetNodeForLocationResponse = {
-  backendNodeId?: number;
-};
-
 type CdpRuntimeBindingCalledParams = {
   name?: string;
   payload?: string;
+  executionContextId?: number;
 };
 
 type CdpInputMouseButton = "left" | "middle" | "right" | "none";
@@ -2165,6 +2172,9 @@ function createBuiltInBrowserWindowService(args: {
   let lastSelectedItem: BuiltInBrowserContextItem | null = null;
   let lastSelectedTabId: string | null = null;
   let handlingInspectNode = false;
+  /** Bumped by every inspect start and stop, so late async work from an earlier run is dropped. */
+  let inspectGeneration = 0;
+  let inspectTransition: Promise<unknown> = Promise.resolve();
   let browserSessionConfigured = false;
   let lastEmittedStatusKey: string | null = null;
   let restoringTabs = false;
@@ -2701,12 +2711,31 @@ function createBuiltInBrowserWindowService(args: {
     return false;
   };
 
-  /** No lease and no handoff waiting to be handed back: free for the taking. */
+  /**
+   * Free for the taking: no live lease and no handoff waiting to be handed
+   * back. A lapsed lease counts as free — nothing else ever lets go of a tab
+   * when its chat finishes, so treating a stale owner as an owner hid every
+   * finished chat's tabs from other agents forever. They filled the tab limit
+   * and no agent could see them to close them (2026-10-18).
+   */
   const isUnownedTab = (tab: BrowserTabState): boolean =>
-    !tab.ownerLaneId
-    && !tab.ownerChatSessionId
-    && !tab.handoff?.previousOwner.laneId
-    && !tab.handoff?.previousOwner.chatSessionId;
+    !tab.handoff?.previousOwner.laneId
+    && !tab.handoff?.previousOwner.chatSessionId
+    && ((!tab.ownerLaneId && !tab.ownerChatSessionId) || isLeaseExpired(tab.ownerLeaseExpiresAt));
+
+  /**
+   * The tab-limit refusal, naming the tabs this caller may close so an agent
+   * can free a slot itself instead of waiting on a person.
+   */
+  const tabLimitError = (input: Pick<BuiltInBrowserClaimArgs, "laneId" | "chatSessionId"> = {}): Error => {
+    const closable = tabs
+      .filter((tab) => !tab.webContents.isDestroyed() && (tabMatchesOwnerInput(tab, input) || isUnownedTab(tab)))
+      .map((tab) => `${tab.id} (${emptyToNull(tab.webContents.getURL()) ?? "blank"})`);
+    const hint = closable.length > 0
+      ? ` Tabs you can close with \`ade browser close --tab <id>\`: ${closable.join(", ")}.`
+      : " Every tab is in use by another chat; ask the user to close one.";
+    return new Error(`ADE browser is limited to ${MAX_BROWSER_TABS} tabs. Close a tab before opening another.${hint}`);
+  };
 
   const reusableOwnedTabForInput = (
     input: BuiltInBrowserClaimArgs = {},
@@ -3501,7 +3530,7 @@ function createBuiltInBrowserWindowService(args: {
       return null;
     }
     if (tabs.length >= MAX_BROWSER_TABS) {
-      emitError(new Error(`ADE browser is limited to ${MAX_BROWSER_TABS} tabs. Close a tab before opening another.`));
+      emitError(tabLimitError());
       return null;
     }
     return popupUrl;
@@ -3519,13 +3548,12 @@ function createBuiltInBrowserWindowService(args: {
     tabs = [...tabs, tab];
     const shouldActivate = options.activate || !activeTab();
     if (shouldActivate) {
+      // Clicks in flight and any inspect start still waiting on this tab are
+      // dropped now; the teardown itself waits its turn behind them.
+      inspectGeneration += 1;
       if (inspecting) {
         inspecting = false;
-        void teardownInspectWebContents(inspectListenerWebContents).catch((error) => {
-          logger()?.debug("built_in_browser.popup_stop_inspect_failed", {
-            err: error instanceof Error ? error.message : String(error),
-          });
-        });
+        void stopInspectQuietly("built_in_browser.popup_stop_inspect_failed");
       }
       activeTabId = tab.id;
       clearSelectionInternal();
@@ -4934,7 +4962,7 @@ function createBuiltInBrowserWindowService(args: {
       || (Boolean(isolation) && !input.tabId && !reusableOwnedTab);
     const shouldActivate = input.openPanel === true || input.activate !== false || !activeTabId;
     if (createNewTab && tabs.length >= MAX_BROWSER_TABS) {
-      throw new Error(`ADE browser is limited to ${MAX_BROWSER_TABS} tabs. Close a tab before opening another.`);
+      throw tabLimitError(input);
     }
     // Validate tabId BEFORE any side effects (stopInspect/clearSelection) so an invalid id
     // doesn't leave the service with cleared inspect/selection state.
@@ -5015,7 +5043,7 @@ function createBuiltInBrowserWindowService(args: {
     await args.waitForProfileMigration();
     await tabRestorationPromise;
     if (tabs.length >= MAX_BROWSER_TABS) {
-      throw new Error(`ADE browser is limited to ${MAX_BROWSER_TABS} tabs. Close a tab before opening another.`);
+      throw tabLimitError(input);
     }
     // Normalize URL and profile up front so we don't leave an orphan tab, or
     // side effects, on invalid input.
@@ -5204,11 +5232,38 @@ function createBuiltInBrowserWindowService(args: {
     return scopeStatusForInput(getStatus(), input);
   }
 
-  async function startInspect(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserStatus> {
+  /**
+   * Inspect starts and stops run one at a time, so a stop can never land in
+   * the middle of a start (or the reverse) and tear down half of a newer run.
+   */
+  const serializeInspectTransition = <T>(transition: () => Promise<T>): Promise<T> => {
+    const next = inspectTransition.then(transition, transition);
+    inspectTransition = next.catch(() => {});
+    return next;
+  };
+
+  function startInspect(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserStatus> {
+    return serializeInspectTransition(() => startInspectNow(input));
+  }
+
+  function stopInspect(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserStatus> {
+    return serializeInspectTransition(() => stopInspectNow(input, null));
+  }
+
+  /** Stop the inspect run `generation` only; a newer run is left alone. */
+  function stopInspectRun(generation: number): Promise<BuiltInBrowserStatus> {
+    return serializeInspectTransition(() => stopInspectNow({}, generation));
+  }
+
+  async function startInspectNow(input: BuiltInBrowserTabTargetArgs): Promise<BuiltInBrowserStatus> {
+    const requestedGeneration = inspectGeneration;
     const tab = await prepareTabCapability(input, {
       emptyMessage: "No active browser tab. Open a tab before starting inspect.",
       consentReason: "The agent requested DOM inspection for this browser tab.",
     });
+    // Another tab took focus (a popup) while access was being prepared.
+    if (requestedGeneration !== inspectGeneration) return scopeStatusForInput(getStatus(), input);
+    inspectGeneration += 1;
     const wc = tab.webContents;
     attachViewsToCurrentWindow();
     attachDebuggerListeners(wc);
@@ -5222,6 +5277,12 @@ function createBuiltInBrowserWindowService(args: {
         returnByValue: true,
         awaitPromise: false,
         silent: true,
+      });
+      // Iframes are a bonus: the top document's picker works without them.
+      await frameInspector.start(wc).catch((error) => {
+        logger()?.warn("built_in_browser.inspect_frames_unavailable", {
+          err: error instanceof Error ? error.message : String(error),
+        });
       });
       inspecting = true;
       emitStatus();
@@ -5238,7 +5299,11 @@ function createBuiltInBrowserWindowService(args: {
     }
   }
 
-  async function stopInspect(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserStatus> {
+  async function stopInspectNow(
+    input: BuiltInBrowserTabTargetArgs,
+    onlyGeneration: number | null,
+  ): Promise<BuiltInBrowserStatus> {
+    if (onlyGeneration !== null && onlyGeneration !== inspectGeneration) return scopeStatusForInput(getStatus(), input);
     const inspectWc = inspectListenerWebContents && !inspectListenerWebContents.isDestroyed()
       ? inspectListenerWebContents
       : null;
@@ -5246,6 +5311,7 @@ function createBuiltInBrowserWindowService(args: {
     const tab = wc ? tabForWebContents(wc) : null;
     if (tab) await prepareAgentReadTabAsync(tab, input, "The agent requested access to stop DOM inspection.");
     inspecting = false;
+    inspectGeneration += 1;
     await teardownInspectWebContents(wc);
     emitStatus();
     return scopeStatusForInput(getStatus(), input);
@@ -5264,19 +5330,20 @@ function createBuiltInBrowserWindowService(args: {
       }
     }
     if (wc?.debugger.isAttached()) {
-      try {
-        await sendDebuggerCommand(wc, "Runtime.evaluate", {
-          expression: inspectOverlayCleanupScript(),
-          returnByValue: true,
-          awaitPromise: false,
-          silent: true,
-        });
-        await sendDebuggerCommand(wc, "Runtime.removeBinding", { name: INSPECT_BINDING_NAME }).catch(() => {});
-      } catch (error) {
+      // Each step runs on its own: a page mid-navigation can refuse the first
+      // and must still give back its iframe sessions.
+      await sendDebuggerCommand(wc, "Runtime.evaluate", {
+        expression: inspectOverlayCleanupScript(),
+        returnByValue: true,
+        awaitPromise: false,
+        silent: true,
+      }).catch((error) => {
         logger()?.debug("built_in_browser.stop_inspect_cleanup_failed", {
           err: error instanceof Error ? error.message : String(error),
         });
-      }
+      });
+      await sendDebuggerCommand(wc, "Runtime.removeBinding", { name: INSPECT_BINDING_NAME }).catch(() => {});
+      await frameInspector.stop(wc);
       if (ownsInspectDebugger) {
         try {
           if (wc.debugger.isAttached()) wc.debugger.detach();
@@ -5644,6 +5711,14 @@ function createBuiltInBrowserWindowService(args: {
   };
 
   async function selectPoint(input: BuiltInBrowserSelectPointArgs): Promise<BuiltInBrowserSelectResult> {
+    return selectPointUnless(input, () => false);
+  }
+
+  /** `superseded` is asked right before publishing; a picker click whose inspect run ended publishes nothing. */
+  async function selectPointUnless(
+    input: BuiltInBrowserSelectPointArgs,
+    superseded: () => boolean,
+  ): Promise<BuiltInBrowserSelectResult> {
     const tab = await prepareTabCapability(input, {
       emptyMessage: "No active browser tab. Open a tab before selecting a point.",
       consentReason: "The agent requested element inspection in this browser tab.",
@@ -5655,16 +5730,10 @@ function createBuiltInBrowserWindowService(args: {
     try {
       await sendDebuggerCommand(wc, "DOM.enable");
       await sendDebuggerCommand(wc, "Runtime.enable");
-      const result = await sendDebuggerCommand<CdpGetNodeForLocationResponse>(wc, "DOM.getNodeForLocation", {
-        x,
-        y,
-        includeUserAgentShadowDOM: true,
-        ignorePointerEventsNone: true,
-      });
-      if (!result.backendNodeId) {
+      const metadata = await hitTester.readNodeMetadataAtViewportPoint(wc, { x, y });
+      if (!metadata) {
         return { item: null };
       }
-      const metadata = await readNodeMetadata(wc, result.backendNodeId, { x, y });
       const screenshotDataUrl = input.includeScreenshot === false
         ? null
         : await captureElementScreenshot(wc, metadata.frame, metadata.viewport).catch((error) => {
@@ -5673,6 +5742,7 @@ function createBuiltInBrowserWindowService(args: {
             });
             return null;
           });
+      if (superseded()) return { item: null };
       const item = createContextItem(wc, metadata, screenshotDataUrl);
       lastSelectedItem = item;
       lastSelectedTabId = tab.id;
@@ -5768,11 +5838,19 @@ function createBuiltInBrowserWindowService(args: {
       detachDebuggerListeners(inspectListenerWebContents);
     }
     if (debuggerMessageListener || debuggerDetachListener) return;
-    debuggerMessageListener = (_event, method, params) => {
+    debuggerMessageListener = (_event, method, params, sessionId) => {
+      frameInspector.handleDebuggerMessage(wc, method, params, sessionId || undefined);
       if (method === "Runtime.bindingCalled") {
-        const point = parseInspectBindingPoint(params);
-        if (!point) return;
-        void handleInspectPointRequested(wc, point).catch(emitError);
+        const call = parseInspectBindingPoint(params);
+        if (!call) return;
+        const generation = inspectGeneration;
+        if (call.executionContextId === null) {
+          if (!sessionId) void handleInspectPointRequested(wc, call, generation).catch(emitError);
+          return;
+        }
+        void frameInspector.viewportPointForBinding(wc, { ...call, executionContextId: call.executionContextId }, sessionId || undefined)
+          .then((point) => (point ? handleInspectPointRequested(wc, point, generation) : undefined))
+          .catch(emitError);
         return;
       }
       if (method === "Overlay.inspectNodeRequested") {
@@ -5843,9 +5921,11 @@ function createBuiltInBrowserWindowService(args: {
     wc: WebContents,
     command: string,
     params?: Record<string, unknown>,
+    /** A flattened child session (a cross-process iframe) instead of the tab's own. */
+    sessionId?: string,
   ): Promise<T> => {
     return withTimeout(
-      wc.debugger.sendCommand(command, params),
+      sessionId ? wc.debugger.sendCommand(command, params ?? {}, sessionId) : wc.debugger.sendCommand(command, params),
       DEBUGGER_TIMEOUT_MS,
       `${command} timed out after ${DEBUGGER_TIMEOUT_MS}ms`,
     ) as Promise<T>;
@@ -5856,23 +5936,41 @@ function createBuiltInBrowserWindowService(args: {
     await sendDebuggerCommand(wc, "Runtime.addBinding", { name: INSPECT_BINDING_NAME });
   };
 
+  const hitTester = createBrowserHitTester<NodeMetadata>({
+    sendDebuggerCommand,
+    readNodeMetadata: (wc, backendNodeId, point, sessionId) => readNodeMetadata(wc, backendNodeId, point, sessionId),
+    readObjectMetadata: (wc, objectId, point) => readObjectMetadata(wc, objectId, point),
+    logger,
+  });
+
+  const frameInspector = createBrowserFrameInspector({
+    sendDebuggerCommand,
+    installScript: inspectOverlayInstallScript,
+    cleanupScript: inspectOverlayCleanupScript,
+    logger,
+  });
+
+  /** A picker click from the inspect run `generation`; stale once that run has stopped. */
   const handleInspectPointRequested = async (
     wc: WebContents,
     point: BrowserInspectPoint,
+    generation: number,
   ): Promise<void> => {
-    if (handlingInspectNode) return;
+    const superseded = () => generation !== inspectGeneration || !inspecting;
+    if (handlingInspectNode || superseded()) return;
     handlingInspectNode = true;
     try {
       const ownerTab = tabForWebContents(wc);
-      await selectPoint({
+      await selectPointUnless({
         ...(ownerTab ? { tabId: ownerTab.id } : {}),
         x: point.x,
         y: point.y,
         includeScreenshot: true,
-      });
+      }, superseded);
     } finally {
-      if (inspecting) {
-        await stopInspect().catch((error) => {
+      // Only end the run this click came from, never a newer one.
+      if (!superseded()) {
+        await stopInspectRun(generation).catch((error) => {
           logger()?.debug("built_in_browser.inspect_cleanup_failed", {
             err: error instanceof Error ? error.message : String(error),
           });
@@ -5948,15 +6046,24 @@ function createBuiltInBrowserWindowService(args: {
     wc: WebContents,
     backendNodeId: number,
     point: BrowserInspectPoint | null = null,
+    sessionId?: string,
   ): Promise<NodeMetadata> => {
     const resolved = await sendDebuggerCommand<CdpResolveNodeResponse>(wc, "DOM.resolveNode", {
       backendNodeId,
-    });
+    }, sessionId);
     const objectId = resolved.object?.objectId;
     if (!objectId) {
       throw new Error("Unable to resolve selected browser node.");
     }
+    return readObjectMetadata(wc, objectId, point, sessionId);
+  };
 
+  const readObjectMetadata = async (
+    wc: WebContents,
+    objectId: string,
+    point: BrowserInspectPoint | null,
+    sessionId?: string,
+  ): Promise<NodeMetadata> => {
     try {
       const response = await sendDebuggerCommand<CdpCallFunctionResponse>(wc, "Runtime.callFunctionOn", {
         objectId,
@@ -5964,13 +6071,13 @@ function createBuiltInBrowserWindowService(args: {
         silent: true,
         functionDeclaration: NODE_METADATA_FUNCTION,
         arguments: point ? [{ value: point }] : [],
-      });
+      }, sessionId);
       if (response.exceptionDetails) {
         throw new Error("Selected browser node metadata evaluation failed.");
       }
       return normalizeNodeMetadata(response.result?.value);
     } finally {
-      await sendDebuggerCommand(wc, "Runtime.releaseObject", { objectId }).catch(() => {});
+      await sendDebuggerCommand(wc, "Runtime.releaseObject", { objectId }, sessionId).catch(() => {});
     }
   };
 
@@ -7099,10 +7206,15 @@ function buildComponentId(metadata: NodeMetadata): string {
   return "browser-element";
 }
 
-function parseInspectBindingPoint(params: unknown): BrowserInspectPoint | null {
+function parseInspectBindingPoint(params: unknown): BrowserInspectBindingCall | null {
   if (!isRecord(params)) return null;
   const bindingParams = params as CdpRuntimeBindingCalledParams;
-  if (bindingParams.name !== INSPECT_BINDING_NAME || typeof bindingParams.payload !== "string") return null;
+  const fromFrame = bindingParams.name === INSPECT_FRAME_BINDING_NAME;
+  if ((!fromFrame && bindingParams.name !== INSPECT_BINDING_NAME) || typeof bindingParams.payload !== "string") return null;
+  const executionContextId = fromFrame && typeof bindingParams.executionContextId === "number"
+    ? bindingParams.executionContextId
+    : null;
+  if (fromFrame && executionContextId === null) return null;
   let parsed: unknown;
   try {
     parsed = JSON.parse(bindingParams.payload);
@@ -7113,7 +7225,7 @@ function parseInspectBindingPoint(params: unknown): BrowserInspectPoint | null {
   const x = typeof parsed.x === "number" && Number.isFinite(parsed.x) ? Math.round(parsed.x) : null;
   const y = typeof parsed.y === "number" && Number.isFinite(parsed.y) ? Math.round(parsed.y) : null;
   if (x === null || y === null) return null;
-  return { x, y };
+  return { x, y, executionContextId };
 }
 
 function withTimeout<T>(

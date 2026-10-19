@@ -1,0 +1,160 @@
+/*
+ * Settings → Project → Lanes. Built on the surface kit and the modern settings
+ * primitives; only the lane list's own layout lives here. Every colour is a
+ * theme token or a --kit-* mix.
+ */
+
+/* ── The view tabs ─────────────────────────────────────────────────────── */
+
+.ade-lanes-page { display: flex; flex-direction: column; gap: 22px; min-width: 0; }
+.ade-lanes-tabs {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  border-bottom: 1px solid var(--kit-rule);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.ade-lanes-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: -1px;
+  padding: 9px 12px 10px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--kit-text-3);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.ade-lanes-tab:hover { color: var(--color-fg); }
+.ade-lanes-tab[aria-selected="true"] { color: var(--color-fg); border-bottom-color: var(--color-accent); }
+.ade-lanes-tab:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; border-radius: 6px 6px 0 0; }
+.ade-lanes-tab-badge {
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  color: var(--kit-text-2);
+  background: color-mix(in srgb, var(--color-fg) 7%, transparent);
+}
+.ade-lanes-tab-badge[data-tone="warn"] { color: var(--kit-warn); background: color-mix(in srgb, var(--kit-warn) 14%, transparent); }
+
+/* ── Summary and toolbar ────────────────────────────────────────────────── */
+
+.ade-lanes { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.ade-lanes-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.ade-lanes-toolbar-actions { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+
+/* Filter tiles: the count of each kind of lane, and the filter that shows them. */
+.ade-lanes-tiles { display: flex; gap: 8px; flex-wrap: wrap; }
+.ade-lanes-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 92px;
+  padding: 8px 12px 9px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--kit-panel-edge);
+  background: var(--kit-panel-bg);
+  color: var(--kit-text-3);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ade-lanes-tile:hover { border-color: color-mix(in srgb, var(--color-fg) 22%, transparent); }
+.ade-lanes-tile[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--color-accent) 60%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 9%, var(--kit-panel-bg));
+}
+.ade-lanes-tile:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.ade-lanes-tile-count { font-size: 20px; line-height: 1.1; letter-spacing: -0.03em; color: var(--color-fg); }
+.ade-lanes-tile[data-tone="warn"] .ade-lanes-tile-count { color: var(--kit-warn); }
+.ade-lanes-tile-label { font-size: 11.5px; }
+
+/* ── Rows ───────────────────────────────────────────────────────────────── */
+
+.ade-lanes-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--kit-panel-edge);
+  background: var(--kit-panel-bg);
+  overflow: hidden;
+}
+.ade-lanes-row + .ade-lanes-row { border-top: 1px solid var(--kit-rule); }
+.ade-lanes-row[data-stale="true"] { background: color-mix(in srgb, var(--kit-warn) 4%, transparent); }
+.ade-lanes-row-main {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) 96px 64px 72px 84px;
+  align-items: center;
+  gap: 10px;
+  min-height: 38px;
+  padding: 4px 10px 4px 12px;
+}
+.ade-lanes-check { display: inline-flex; align-items: center; justify-content: center; color: var(--kit-text-3); }
+.ade-lanes-check input { margin: 0; cursor: pointer; accent-color: var(--color-accent); }
+.ade-lanes-check input:disabled { cursor: not-allowed; opacity: 0.45; }
+.ade-lanes-row-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ade-lanes-row-toggle:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; border-radius: 4px; }
+.ade-lanes-row-toggle > .kit-tag { flex: none; }
+.ade-lanes-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--color-fg);
+}
+.ade-lanes-running { display: inline-flex; align-items: center; gap: 5px; }
+.ade-lanes-pr { min-width: 0; }
+.ade-lanes-pr-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  white-space: nowrap;
+  color: var(--kit-text-2);
+  background: color-mix(in srgb, var(--color-fg) 6%, transparent);
+}
+.ade-lanes-pr-chip[data-state="merged"] { color: var(--pr-merged); background: color-mix(in srgb, var(--pr-merged) 12%, transparent); }
+.ade-lanes-pr-chip[data-state="open"] { color: var(--pr-open); background: color-mix(in srgb, var(--pr-open) 12%, transparent); }
+.ade-lanes-pr-chip[data-state="closed"] { color: var(--pr-closed); background: color-mix(in srgb, var(--pr-closed) 12%, transparent); }
+.ade-lanes-when, .ade-lanes-size { font-size: 11.5px; color: var(--kit-text-3); text-align: right; white-space: nowrap; }
+.ade-lanes-size { color: var(--kit-text-2); }
+.ade-lanes-action { display: flex; justify-content: flex-end; }
+.ade-lanes-row-details {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 16px 14px 44px;
+}
+
+.ade-lanes-skeleton { display: flex; flex-direction: column; gap: 8px; }
+.ade-lanes-skeleton > .ade-st-shimmer { height: 30px; }
+
+@container modernpage (max-width: 620px) {
+  .ade-lanes-row-main { grid-template-columns: 22px minmax(0, 1fr) 64px 84px; }
+  .ade-lanes-pr, .ade-lanes-when { display: none; }
+}

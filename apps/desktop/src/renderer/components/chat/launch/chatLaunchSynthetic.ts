@@ -8,7 +8,11 @@ import type { AdeCardPayload } from "../../../../shared/adeCard";
 import { getModelById, resolveProviderGroupForModel } from "../../../../shared/modelRegistry";
 import { buildLaneSetupCard, isChatLaunchPending, laneSetupCardId } from "../../../../shared/chatLaunch";
 import { chatToolTypeForProvider } from "../../../lib/sessions";
-import { getChatLaunchLocalRecord, type ChatLaunchRowSource } from "../../../state/chatLaunchStore";
+import {
+  chatLaunchAwaitsHostRow,
+  getChatLaunchLocalRecord,
+  type ChatLaunchRowSource,
+} from "../../../state/chatLaunchStore";
 
 /**
  * Stand-ins a pending chat launch renders before the host has created the
@@ -42,6 +46,15 @@ export function shouldListChatLaunchRow(snapshot: ChatLaunchSnapshot): boolean {
  * The launches the Work roster lists: the active binding's, plus those pinned
  * to the same project on another machine (`sameProjectBindingKeys`). Another
  * project's launch never shows here.
+ *
+ * A started chat stays listed while its bridge is open (`chatLaunchAwaitsHostRow`).
+ * The agent is up, but the chat's machine has not listed the chat yet: the active
+ * roster refresh and a pinned machine's next slice read both lag the start.
+ * Dropping the stand-in in that gap hands the open tab to the first old chat
+ * (`WorkViewArea` falls back to `visibleSessions[0]`). The bridge ends on the reads
+ * (`noteChatLaunchSourceRead`), on the roster listing the chat, or on its deletion,
+ * and never resumes once ended: a chat deleted or archived after that must not
+ * reappear as a running row. No clock ends it.
  */
 export function selectRosterChatLaunches(
   sources: readonly ChatLaunchRowSource[],
@@ -50,17 +63,17 @@ export function selectRosterChatLaunches(
 ): ChatLaunchSnapshot[] {
   return sources
     .filter((source) => source.bindingKey === activeBindingKey || sameProjectBindingKeys.has(source.bindingKey))
-    .map((source) => source.snapshot)
-    .filter(shouldListChatLaunchRow);
+    .filter((source) => shouldListChatLaunchRow(source.snapshot) || chatLaunchAwaitsHostRow(source))
+    .map((source) => source.snapshot);
 }
 
 /**
  * Session ids owned by a live launch on this project — listed or not.
  *
- * A launch row delists the instant its agent starts (see `shouldListChatLaunchRow`)
- * while the host's own row for it lands only on the next roster read. Work keeps
- * these ids valid across that gap so an open tab is not dropped (and the active
- * chat moved) in the hand-off.
+ * A launch row can outlive its listing (see `chatLaunchAwaitsHostRow`) while
+ * the host's own row for it lands only on the next roster read. Work keeps these
+ * ids valid across that gap so an open tab is not dropped (and the active chat
+ * moved) in the hand-off.
  */
 export function selectKnownLaunchSessionIds(
   sources: readonly ChatLaunchRowSource[],
@@ -111,8 +124,9 @@ export function buildChatLaunchSessionRow(snapshot: ChatLaunchSnapshot): Termina
 }
 
 /**
- * Merge pending launch rows into a roster. A real row with the same id always
- * wins; launch rows only fill ids the roster does not have yet.
+ * Merge the launch rows the roster lists (`selectRosterChatLaunches`) into a
+ * roster. A real row with the same id always wins; launch rows only fill ids
+ * the roster does not have yet.
  */
 export function mergeChatLaunchRows(
   sessions: TerminalSessionSummary[],
@@ -123,7 +137,6 @@ export function mergeChatLaunchRows(
   const present = new Set(sessions.map((session) => session.id));
   const additions: TerminalSessionSummary[] = [];
   for (const launch of launches) {
-    if (!shouldListChatLaunchRow(launch)) continue;
     const id = launch.sessionId ?? launch.launchId;
     if (present.has(id) || knownIds?.has(id)) continue;
     present.add(id);

@@ -8494,7 +8494,7 @@ function AgentChatComposerImpl({
                   forceEnabled
                   content={{
                     label: "Voice model not installed",
-                    description: "Tap to download the on-device voice model in Settings → General.",
+                    description: "Tap to download the on-device voice model in Settings → Chat.",
                   }}
                 >
                   <button

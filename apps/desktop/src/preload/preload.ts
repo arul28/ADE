@@ -168,6 +168,7 @@ import type {
   StorageCompressionResult,
   StorageSnapshot,
 } from "../shared/types/storage";
+import type { ProjectHealthFixArgs, ProjectHealthFixResult, ProjectHealthReport } from "../shared/types/projectHealth";
 import type {
   AdeCleanupResult,
   AdeProjectEvent,
@@ -4600,6 +4601,7 @@ const adeBridge = {
     setIgnoreMenuShortcuts: async (ignore: boolean): Promise<{ ok: true }> =>
       ipcRenderer.invoke(IPC.appSetIgnoreMenuShortcuts, { ignore }),
     getInfo: async (): Promise<AppInfo> => ipcRenderer.invoke(IPC.appGetInfo),
+    refreshServiceHealth: async (): Promise<void> => ipcRenderer.invoke(IPC.appRefreshServiceHealth),
     getInstalledEditors: async (): Promise<EditorTarget[]> => ipcRenderer.invoke(IPC.appGetInstalledEditors),
     getInstalledBrowsers: async (): Promise<InstalledBrowser[]> =>
       ipcRenderer.invoke(IPC.appGetInstalledBrowsers),
@@ -4868,6 +4870,19 @@ const adeBridge = {
     ): Promise<StorageCleanupResult> =>
       callPinnedOrBoundRuntimeActionOr(pin, "storage", "cleanup", { args: { targets, preview: opts.preview } }, () =>
         ipcRenderer.invoke(IPC.storageCleanup, { targets, preview: opts.preview }),
+      ),
+  },
+  projectHealth: {
+    getReport: async (
+      args: { forceRefresh?: boolean } = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<ProjectHealthReport> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "project_health", "getReport", { args }, () =>
+        ipcRenderer.invoke(IPC.projectHealthGetReport, args),
+      ),
+    fix: async (args: ProjectHealthFixArgs, pin?: OpenProjectBinding | null): Promise<ProjectHealthFixResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "project_health", "fix", { args }, () =>
+        ipcRenderer.invoke(IPC.projectHealthFix, args),
       ),
   },
   archive: {

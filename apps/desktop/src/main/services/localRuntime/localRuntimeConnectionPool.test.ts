@@ -4686,6 +4686,174 @@ describe("service health probe never blocks the main thread", () => {
       message: "Unable to query the ADE supervisor process.",
     });
   });
+
+  describe("read window", () => {
+    const FOUR_MINUTES_MS = 4 * 60_000;
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform");
+
+    beforeEach(() => {
+      // Only Date is faked: the promise flushes below wait on a real setImmediate.
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(new Date("2026-10-18T12:00:00Z"));
+      Object.defineProperty(process, "platform", { value: "win32" });
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+      if (originalPlatform) Object.defineProperty(process, "platform", originalPlatform);
+    });
+
+    // `service` is what the machine service reports on the next probe. With
+    // `held`, a probe stays in flight until `landProbe()` lets it answer, as a
+    // real probe takes seconds.
+    const createPool = ({ held = false }: { held?: boolean } = {}) => {
+      const service = { installed: true, running: true };
+      let calls = 0;
+      const answers: Array<() => void> = [];
+      const pool = new LocalRuntimeConnectionPool("1.0.0", silentLogger() as never, {
+        queryServiceStatusAsync: () => {
+          calls += 1;
+          const observed = { ...asyncTestServiceStatus(), ...service };
+          if (!held) return Promise.resolve(observed);
+          return new Promise((resolve) => answers.push(() => resolve(observed)));
+        },
+      });
+      const internals = pool as unknown as { activeClient: unknown };
+      return {
+        pool,
+        service,
+        probes: () => calls,
+        landProbe: () => answers.shift()?.(),
+        // A new client object is a new connection to a brain.
+        connectTo: (client: unknown) => {
+          internals.activeClient = client;
+        },
+      };
+    };
+
+    const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+    it("a status read inside the long window does not probe while connected to the same brain", async () => {
+      const { pool, probes, connectTo } = createPool();
+      connectTo({});
+      pool.getStatus();
+      await settle();
+      expect(probes()).toBe(1);
+
+      vi.setSystemTime(Date.now() + FOUR_MINUTES_MS);
+      pool.getStatus();
+      await settle();
+      expect(probes()).toBe(1);
+    });
+
+    it("a new brain is probed on its first read, then the long window applies", async () => {
+      const { pool, probes, connectTo } = createPool();
+      // The last probe ran against a brain that has since gone.
+      connectTo({});
+      pool.getStatus();
+      await settle();
+      expect(probes()).toBe(1);
+
+      vi.setSystemTime(Date.now() + 10_000);
+      connectTo({});
+      pool.getStatus();
+      await settle();
+      expect(probes()).toBe(2);
+
+      vi.setSystemTime(Date.now() + FOUR_MINUTES_MS);
+      pool.getStatus();
+      await settle();
+      expect(probes()).toBe(2);
+    });
+
+    it("a recovery read waits for a probe already running in the window, then probes again after the service is removed", async () => {
+      const { pool, service, probes, connectTo, landProbe } = createPool({ held: true });
+      connectTo({});
+      // A status poll has started a probe whose answer has not landed yet.
+      pool.getStatus();
+      const joined = pool.getStatusAfterServiceProbe();
+      landProbe();
+      expect((await joined).serviceHealth.installed).toBe(true);
+      expect(probes()).toBe(1);
+
+      // The service is removed while ADE stays connected to its brain.
+      service.installed = false;
+      service.running = false;
+      vi.setSystemTime(Date.now() + 60_000);
+      const removed = pool.getStatusAfterServiceProbe();
+      landProbe();
+      const status = await removed;
+      expect(probes()).toBe(2);
+      expect(status.serviceHealth.installed).toBe(false);
+    });
+
+    it("a recovery read after a service install does not resolve with a probe that began before it", async () => {
+      // The first probe begins while the service is absent and is held until the
+      // test lands it; every later probe answers at once.
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-read-window-install-"));
+      const logPath = path.join(dir, "installs.log");
+      const cliPath = path.join(dir, "fake-cli.cjs");
+      fs.writeFileSync(
+        cliPath,
+        [
+          "const fs = require('node:fs');",
+          `fs.appendFileSync(${JSON.stringify(logPath)}, 'install\\n');`,
+          "process.stdout.write(JSON.stringify({ ok: true, path: 'com.ade.runtime', message: 'installed' }));",
+        ].join("\n"),
+      );
+      const originalEnv = {
+        ADE_CLI_JS: process.env.ADE_CLI_JS,
+        ADE_RUNTIME_SOCKET_PATH: process.env.ADE_RUNTIME_SOCKET_PATH,
+      };
+      let installed = false;
+      let calls = 0;
+      const answers: Array<() => void> = [];
+      const pool = new LocalRuntimeConnectionPool("1.0.0", silentLogger() as never, {
+        queryServiceStatusAsync: () => {
+          calls += 1;
+          // Each probe reports the service as it stands when the probe asks.
+          const observed = {
+            ...asyncTestServiceStatus(),
+            installed,
+            running: installed,
+            message: installed ? "ADE test service is running." : "ADE test service is not installed.",
+          };
+          if (calls > 1) return Promise.resolve(observed);
+          return new Promise((resolve) => answers.push(() => resolve(observed)));
+        },
+      });
+      try {
+        process.env.ADE_CLI_JS = cliPath;
+        process.env.ADE_RUNTIME_SOCKET_PATH = path.join(dir, "missing.sock");
+
+        // A status poll starts a probe while the service is still absent.
+        pool.getStatus();
+        expect(calls).toBe(1);
+
+        // The pool installs the service itself while that probe is still in flight.
+        vi.setSystemTime(Date.now() + 500);
+        installed = true;
+        await pool.installServiceBestEffort();
+        expect(fs.readFileSync(logPath, "utf8")).toBe("install\n");
+
+        // Two recovery reads inside the window share one probe that begins after the install.
+        const recovered = pool.getStatusAfterServiceProbe();
+        const sharedRecovery = pool.getStatusAfterServiceProbe();
+        answers.shift()!();
+        const [status, shared] = await Promise.all([recovered, sharedRecovery]);
+        expect(status.serviceHealth).toMatchObject({ installed: true });
+        expect(shared.serviceHealth).toMatchObject({ installed: true });
+        expect(calls).toBe(2);
+      } finally {
+        pool.dispose();
+        if (originalEnv.ADE_CLI_JS === undefined) delete process.env.ADE_CLI_JS;
+        else process.env.ADE_CLI_JS = originalEnv.ADE_CLI_JS;
+        if (originalEnv.ADE_RUNTIME_SOCKET_PATH === undefined) delete process.env.ADE_RUNTIME_SOCKET_PATH;
+        else process.env.ADE_RUNTIME_SOCKET_PATH = originalEnv.ADE_RUNTIME_SOCKET_PATH;
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
 });
 
 describe("parseRuntimeServiceStatusJson", () => {

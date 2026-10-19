@@ -41,6 +41,7 @@ export const ADE_ACTION_DOMAIN_NAMES = [
   "usage",
   "analytics",
   "storage",
+  "project_health",
   "archive",
   "budget",
   "update",

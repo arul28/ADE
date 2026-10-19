@@ -76,44 +76,63 @@ describe("paired runtime endpoint routes", () => {
     ]);
   });
 
-  it("demotes a route after two recent failures, keeps it eligible, and expires the demotion", () => {
-    const endpoints = [
-      "ws://studio.local:8787",
-      "ws://studio.example.ts.net:8787",
-      "wss://relay.example/connect/machine",
-    ];
-    const endpointStates = [{
-      endpoint: "ws://studio.local:8787",
-      lastSucceededAt: 900,
-      lastFailedAt: 1_000,
-      consecutiveFailures: 2,
-    }];
+  describe("a route whose failures have not been answered", () => {
+    // Times are written as ages before now: the demotion has no clock window,
+    // so the rows describe what the store remembers, not when it is read.
+    const now = Date.now();
+    const MINUTE = 60_000;
+    const HOUR = 60 * MINUTE;
+    const lan = "ws://192.168.1.240:8787/";
+    const tailnet = "ws://studio.example.ts.net:8787/";
+    const relay = "wss://relay.example/connect/machine";
 
-    const demoted = buildPairedEndpointCandidates({
-      endpoints,
-      relayUrl: endpoints[2],
-      endpointStates,
-      nowMs: 1_001,
+    it.each([
+      {
+        name: "stays last long after its failures once a tailnet route answered since",
+        endpointStates: [
+          { endpoint: lan, lastSucceededAt: now - HOUR, lastFailedAt: now - 10 * MINUTE, consecutiveFailures: 3 },
+          { endpoint: tailnet, lastSucceededAt: now - MINUTE, lastFailedAt: null },
+        ],
+        expected: [tailnet, relay, lan],
+      },
+      {
+        name: "is still demoted right after a fresh failure streak, and stays eligible",
+        endpointStates: [
+          { endpoint: lan, lastSucceededAt: now - HOUR, lastFailedAt: now - 1_000, consecutiveFailures: 2 },
+        ],
+        expected: [tailnet, relay, lan],
+      },
+      {
+        name: "returns to kind order once mDNS has seen the address after its last failure",
+        endpointStates: [
+          { endpoint: lan, lastSucceededAt: now - HOUR, lastFailedAt: now - 1_000, consecutiveFailures: 2, lastDiscoveredAt: now - 500 },
+        ],
+        expected: [lan, tailnet, relay],
+      },
+      {
+        name: "keeps a LAN address that never failed ahead of tailnet",
+        endpointStates: [
+          { endpoint: tailnet, lastSucceededAt: now - MINUTE, lastFailedAt: null },
+        ],
+        expected: [lan, tailnet, relay],
+      },
+      {
+        name: "tries the more recently answering of two failing routes first",
+        endpointStates: [
+          { endpoint: lan, lastSucceededAt: now - HOUR, lastFailedAt: now - 30_000, consecutiveFailures: 2 },
+          { endpoint: tailnet, lastSucceededAt: now - 20_000, lastFailedAt: now - 5_000, consecutiveFailures: 2 },
+        ],
+        expected: [relay, tailnet, lan],
+      },
+    ])("$name", ({ endpointStates, expected }) => {
+      const candidates = buildPairedEndpointCandidates({
+        endpoints: [lan, tailnet, relay],
+        relayUrl: relay,
+        endpointStates,
+      });
+      expect(orderPairedCandidates(candidates).map((candidate) => candidate.endpoint))
+        .toEqual(expected);
     });
-    expect(orderPairedCandidates(demoted).map((candidate) => candidate.endpoint))
-      .toEqual([
-        "ws://studio.example.ts.net:8787/",
-        "wss://relay.example/connect/machine",
-        "ws://studio.local:8787/",
-      ]);
-
-    const expired = buildPairedEndpointCandidates({
-      endpoints,
-      relayUrl: endpoints[2],
-      endpointStates,
-      nowMs: 121_001,
-    });
-    expect(orderPairedCandidates(expired).map((candidate) => candidate.endpoint))
-      .toEqual([
-        "ws://studio.local:8787/",
-        "ws://studio.example.ts.net:8787/",
-        "wss://relay.example/connect/machine",
-      ]);
   });
 
   it("classifies normalized CGNAT and ts.net hostnames as tailnet", () => {

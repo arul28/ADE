@@ -61,12 +61,14 @@ const SETTINGS_PALETTE_CAPTIONS: Record<string, string> = {
   appearance: "Theme and terminal text",
   chat: "Transcript and composer",
   agents: "Models and provider setup",
-  "lanes-git": "How lanes stay current",
+  "lanes-git": "Lanes, storage, and archive",
   notifications: "What ADE interrupts you for",
   activity: "What's running everywhere",
-  integrations: "GitHub and Linear",
-  general: "Runtime, health, and privacy",
-  storage: "What ADE keeps on disk",
+  integrations: "GitHub, Linear and Jira",
+  overview: "What needs attention",
+  location: "Where this project lives",
+  service: "Service, updates, and the CLI",
+  behaviour: "Sleep, capture, and links",
 };
 
 export function settingsPaletteCaption(tabId: string): string | null {

@@ -1,0 +1,72 @@
+/*
+ * Settings → Overview. Built on the surface kit (`.kit-card`, `.kit-dot`,
+ * `.kit-tag`) and the modern settings primitives; only the attention rows and
+ * the glance grid live here. Every colour is a theme token or a --kit-* mix.
+ */
+
+/* ── Needs attention ────────────────────────────────────────────────────── */
+
+.ade-attn-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--kit-panel-edge);
+  background: var(--kit-panel-bg);
+  overflow: hidden;
+}
+.ade-attn-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 6px 8px 6px 14px;
+}
+.ade-attn-row + .ade-attn-row { border-top: 1px solid var(--kit-rule); }
+.ade-attn-row > .kit-dot { flex: none; }
+.ade-attn-row[data-severity="note"] > .kit-dot { background: var(--kit-text-3); }
+.ade-attn-text { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 10px; }
+.ade-attn-title { font-size: 12.5px; font-weight: 500; color: var(--color-fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: none; max-width: 70%; }
+.ade-attn-detail { font-size: 12px; color: var(--kit-text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.ade-attn-where { flex: none; }
+.ade-attn-row > .ade-modern-btn { flex: none; }
+.ade-attn-open { flex: none; width: 26px; height: 26px; color: var(--kit-text-3); }
+.ade-attn-open:hover { color: var(--color-fg); }
+
+@container settings-column (max-width: 620px) {
+  .ade-attn-detail { display: none; }
+  .ade-attn-title { max-width: none; flex: 1; }
+}
+
+/* ── At a glance ────────────────────────────────────────────────────────── */
+
+.ade-glance-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+.ade-glance-card { min-width: 0; }
+.ade-glance-card .kit-card-head-action { display: inline-flex; align-items: center; gap: 4px; }
+.ade-glance-body { display: flex; flex-direction: column; gap: 12px; font-size: 12.5px; color: var(--kit-text-2); }
+.ade-glance-line { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.ade-glance-line > span:not(.kit-dot):not(.kit-tag) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ade-glance-meter { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.ade-glance-meter-label { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-size: 12px; }
+.ade-glance-meter-label .kit-num { font-size: 11.5px; color: var(--color-fg); }
+
+/* A line or meter that opens its own page: plain until hovered. */
+.ade-glance-link {
+  border: 0;
+  margin: -4px -6px;
+  padding: 4px 6px;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ade-glance-link:hover { background: var(--kit-hover, color-mix(in srgb, var(--color-fg) 4%, transparent)); }
+.ade-glance-link:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }

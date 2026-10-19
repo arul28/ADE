@@ -195,7 +195,7 @@ async function stopProcesses(deps: MachineResetDeps, receipt: MachineResetReceip
   const targets = inventoryProcesses(deps);
   for (const entry of targets) {
     try {
-      deps.kill(entry.pid, "SIGTERM");
+      await deps.kill(entry.pid, "SIGTERM");
     } catch {
       // already gone
     }
@@ -207,7 +207,7 @@ async function stopProcesses(deps: MachineResetDeps, receipt: MachineResetReceip
   for (const entry of targets) {
     if (!deps.pidAlive(entry.pid)) continue;
     try {
-      deps.kill(entry.pid, "SIGKILL");
+      await deps.kill(entry.pid, "SIGKILL");
     } catch {
       // gone between the check and the kill
     }
@@ -522,7 +522,7 @@ async function stopStuckDesktop(pid: number, deps: MachineResetDeps, receipt: Ma
   }
   for (const signal of ["SIGTERM", "SIGKILL"] as const) {
     try {
-      deps.kill(pid, signal);
+      await deps.kill(pid, signal);
     } catch {
       // gone between the check and the signal
     }

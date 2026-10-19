@@ -2043,6 +2043,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             onBulkDelete={listBulkDelete}
             onBulkStopAndDelete={listBulkStopAndDelete}
             onRefreshOrphanSessions={listRefreshOrphanSessions}
+            resolveSessionRuntimePin={resolveSessionRuntimePin}
             onContextMenu={handleContextMenu}
             sessionListOrganization={work.sessionListOrganization}
             setSessionListOrganization={work.setSessionListOrganization}

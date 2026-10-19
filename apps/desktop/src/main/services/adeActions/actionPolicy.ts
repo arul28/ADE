@@ -114,6 +114,9 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   usage: { only: ["forceRefresh", "refreshHistory", "poll", "start", "stop", "applyAccountRollups", "setModelPriceOverride"] },
   analytics: { only: ["setEnabled", "flush"] },
   storage: { only: ["cleanup", "runMaintenanceNow"] },
+  // A fix edits the project's data, git links or other tools' config: the
+  // person presses it. Agents read the report and offer the fixes.
+  project_health: { only: ["fix"] },
   // Restoring brings a lane's worktree and services back up — the CTO's call,
   // not any agent's. Deleting is the person's alone (ADE_ACTION_USER_ONLY).
   archive: { only: ["restore"] },
@@ -1072,6 +1075,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   ],
   analytics: ["capture", "getStatus", "setEnabled", "flush"],
   storage: ["cleanup", "cleanupPreview", "compressNow", "getSnapshot", "runMaintenanceNow"],
+  project_health: ["fix", "getReport"],
   archive: ["delete", "list", "restore", "summary"],
   budget: ["checkBudget", "getConfig", "getCumulativeUsage", "recordUsage", "updateConfig"],
   update: ["checkForUpdates", "dismissInstalledNotice", "getSnapshot", "quitAndInstall"],

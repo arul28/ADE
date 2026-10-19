@@ -3,6 +3,7 @@ import { Archive } from "@phosphor-icons/react";
 import { useAppBanner, APP_BANNER_PRIORITY } from "../ui/notice/appBannerStore";
 import { DEFAULT_ARCHIVE_STALE_DAYS, type ArchiveSummary } from "../../../shared/types/archive";
 import { ARCHIVE_REMINDER_INTERVAL_MS, archiveReminderTitle } from "../../../shared/archive";
+import { settingsRouteFor } from "../settings/settingsManifest";
 
 /**
  * The weekly "clean up your archive" reminder.
@@ -17,7 +18,7 @@ import { ARCHIVE_REMINDER_INTERVAL_MS, archiveReminderTitle } from "../../../sha
 const SNOOZE_STORAGE_KEY = "ade.archiveReminder.v1";
 const FIRST_CHECK_DELAY_MS = 15_000;
 const RECHECK_INTERVAL_MS = 6 * 3_600_000;
-export const ARCHIVE_SETTINGS_ROUTE = "/settings?tab=archive";
+export const ARCHIVE_SETTINGS_ROUTE = settingsRouteFor("archive.items");
 
 function readSnoozes(): Record<string, number> {
   try {

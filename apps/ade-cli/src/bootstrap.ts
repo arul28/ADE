@@ -81,6 +81,7 @@ import { createRebaseSuggestionService } from "../../desktop/src/main/services/l
 import { createAutoRebaseService } from "../../desktop/src/main/services/lanes/autoRebaseService";
 import { createDiskPressureMonitor } from "../../desktop/src/main/services/storage/diskPressure";
 import { createStorageInsightsService } from "../../desktop/src/main/services/storage/storageInsightsService";
+import { createProjectHealthService } from "./services/projects/projectHealth/projectHealthService";
 import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "../../desktop/src/main/services/ai/cliExecutableResolver";
 import { createAgentChatService } from "../../desktop/src/main/services/chat/agentChatService";
 import { createChatRuntimeBudget } from "../../desktop/src/main/services/chat/chatRuntimeBudget";
@@ -248,6 +249,7 @@ import {
 } from "../../desktop/src/shared/types/builtInBrowser";
 import { WORK_TOOLS_STATE_CHANGED_EVENT } from "../../desktop/src/shared/types/workTools";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
+import { readExistingOsBoundKeyMaterialAsync } from "./services/credentials/osBoundKeyMaterial";
 import { createBrainLogger } from "./services/runtime/brainLogger";
 import { createPushRegistrationStore } from "./services/push/pushRegistrationStore";
 import { createPushRelayClient } from "./services/push/pushRelayClient";
@@ -502,6 +504,7 @@ export type AdeRuntime = {
   productAnalyticsService?: ProductAnalyticsService | null;
   usageProductAnalyticsExporter?: UsageProductAnalyticsExporter | null;
   storageInsightsService?: ReturnType<typeof createStorageInsightsService> | null;
+  projectHealthService?: ReturnType<typeof createProjectHealthService> | null;
   budgetCapService?: ReturnType<typeof createBudgetCapService> | null;
   sessionDeltaService?: ReturnType<typeof createSessionDeltaService> | null;
   searchService?: SearchService | null;
@@ -878,7 +881,18 @@ export async function createAdeRuntime(args: {
 
   assertLocalProjectDataAvailable(projectRoot);
   const hadAdeDb = fs.existsSync(path.join(projectRoot, ".ade", "ade.db"));
-  const baseRef = await detectDefaultBaseRef(projectRoot);
+  // On Windows each project's credential store is sealed with its own DPAPI
+  // key, decrypted in a PowerShell child on first read. Linear's status checks
+  // below read it synchronously, blocking the brain's event loop 440-690 ms
+  // for every project runtime it starts. Decrypt it off the loop here, beside
+  // the base-ref lookup; the key is cached, so those reads find it ready. Only an
+  // existing key is read (never created): a project without one is left as before.
+  const [baseRef] = await Promise.all([
+    detectDefaultBaseRef(projectRoot),
+    process.platform === "win32"
+      ? readExistingOsBoundKeyMaterialAsync(path.join(projectRoot, ".ade", "secrets")).catch(() => null)
+      : null,
+  ]);
   const paths = ensureAdePaths(projectRoot);
   const runtimeSocketPath = typeof resolvedArgs.runtimeSocketPath === "string"
     ? resolvedArgs.runtimeSocketPath.trim() || paths.socketPath
@@ -3292,6 +3306,23 @@ export async function createAdeRuntime(args: {
       },
     });
     teardown.push(() => storageInsightsService.dispose());
+    const projectHealthService = createProjectHealthService({
+      projectRoot,
+      db,
+      logger,
+      listLanes: () => laneService.list({ includeArchived: false }),
+      openTerminal: async (request) => {
+        await ptyService.create({
+          laneId: request.laneId,
+          cwd: request.cwd,
+          cols: 120,
+          rows: 32,
+          title: request.title,
+          tracked: true,
+          startupCommand: request.command,
+        });
+      },
+    });
     const budgetCapService = createBudgetCapService({
       db,
       logger,
@@ -3570,6 +3601,7 @@ export async function createAdeRuntime(args: {
       productAnalyticsService,
       usageProductAnalyticsExporter,
       storageInsightsService,
+      projectHealthService,
       budgetCapService,
       automationService,
       automationIngressService,

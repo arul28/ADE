@@ -10,7 +10,10 @@
 // cookies; the minted key is the credential.
 // ---------------------------------------------------------------------------
 
-import type { SdkAuthStatus, SdkLoginResult } from "@cursor/sdk";
+import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import type { SdkLoginResult } from "@cursor/sdk";
 import type { CursorSdkModule } from "./cursorSdkLoader";
 import { loadCursorSdk } from "./cursorSdkLoader";
 import {
@@ -22,6 +25,7 @@ import {
 } from "./apiKeyStore";
 import { openExternalUrl } from "../shared/externalLinks";
 import { isCursorAdminApiKey } from "./utils";
+import { isCursorProviderSupported } from "../../../shared/providerPlatformSupport";
 import type {
   AiProviderCredentialSource,
   CursorSdkAuthEvent,
@@ -62,6 +66,7 @@ type CursorSdkAuthHooks = {
   markOAuthMinted(): void;
   getOrigin(): "oauth" | "pasted" | null;
   loadSdkStoredCredentials(sdk: CursorSdkModule): Promise<StoredSdkCredentialsLike | undefined>;
+  readStoredCredentials(): Promise<StoredSdkCredentialsLike | undefined>;
 };
 
 function errorMessage(error: unknown): string {
@@ -89,6 +94,39 @@ async function defaultLoadSdkStoredCredentials(
   }
 }
 
+/**
+ * The SDK's record check (`parseStoredSdkCredentials` in @cursor/sdk 1.0.36,
+ * dist/esm credential-store): a record it would not accept reads as signed out.
+ * The "file reader parity" tests in cursorSdkAuth.test.ts run the pinned SDK over
+ * the same files, so an SDK upgrade that changes this check fails there.
+ */
+function parseStoredSdkCredentials(value: unknown): StoredSdkCredentialsLike | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const record = value as Record<string, unknown>;
+  const valid = record.version === 1
+    && typeof record.backendUrl === "string"
+    && typeof record.apiKey === "string"
+    && typeof record.createdAtMs === "number"
+    && (record.apiKeyExpiresAtMs === undefined || typeof record.apiKeyExpiresAtMs === "number")
+    && (record.email === undefined || typeof record.email === "string");
+  return valid ? (record as StoredSdkCredentialsLike) : undefined;
+}
+
+/**
+ * What `FileCredentialStore.load()` returns for ~/.cursor/sdk/auth.json, read
+ * without importing @cursor/sdk. Same platform gate as loadCursorSdk, so an
+ * unsupported host still reads as signed out.
+ */
+async function readSdkStoredCredentials(): Promise<StoredSdkCredentialsLike | undefined> {
+  if (!isCursorProviderSupported(process.platform, process.arch)) return undefined;
+  try {
+    const text = await readFile(join(homedir(), ".cursor", "sdk", "auth.json"), "utf8");
+    return parseStoredSdkCredentials(JSON.parse(text));
+  } catch {
+    return undefined;
+  }
+}
+
 const defaultHooks: CursorSdkAuthHooks = {
   loadSdk: loadCursorSdk,
   openLoginUrl: openExternalUrl,
@@ -98,6 +136,7 @@ const defaultHooks: CursorSdkAuthHooks = {
   markOAuthMinted: markCursorApiKeyOAuthMinted,
   getOrigin: getCursorApiKeyOrigin,
   loadSdkStoredCredentials: defaultLoadSdkStoredCredentials,
+  readStoredCredentials: readSdkStoredCredentials,
 };
 
 let hooks: CursorSdkAuthHooks = { ...defaultHooks };
@@ -157,9 +196,9 @@ function credentialSourceFrom(
 }
 
 /**
- * Combine Cursor.auth.status() with ADE's encrypted store. Agent.create still
- * resolves the key from ADE store then CURSOR_API_KEY — never from
- * ~/.cursor/sdk/auth.json alone.
+ * Combine the SDK sign-in record (the file Cursor.auth.status() reads) with
+ * ADE's encrypted store. Agent.create still resolves the key from ADE store
+ * then CURSOR_API_KEY — never from ~/.cursor/sdk/auth.json alone.
  */
 export async function getCursorSdkAuthSnapshot(): Promise<CursorSdkAuthSnapshot> {
   let storeUnavailable = false;
@@ -174,26 +213,20 @@ export async function getCursorSdkAuthSnapshot(): Promise<CursorSdkAuthSnapshot>
   const envKeyPresent = Boolean(envKey);
   const adminEnvKeyPresent = Boolean(adminEnvKey);
 
-  let sdkStatus: SdkAuthStatus = { status: "logged-out" };
-  let sdkStoredKey: string | undefined;
-  try {
-    const sdk = await hooks.loadSdk();
-    sdkStatus = await sdk.Cursor.auth.status();
-    const stored = await hooks.loadSdkStoredCredentials(sdk);
-    sdkStoredKey = stored?.apiKey?.trim() || undefined;
-  } catch {
-    // Missing SDK, unsupported platform, or unread auth file: ADE store/env
-    // still decide whether chat can run.
-  }
-
-  const sdkLoggedIn = sdkStatus.status === "logged-in";
+  // Reading the file here, not through the SDK, keeps the SDK's ESM import off
+  // the main thread at launch. Missing, unreadable or unsupported reads as
+  // signed out, and ADE store/env still decide whether chat can run.
+  const sdkStored = await hooks.readStoredCredentials();
+  const sdkStoredKey = sdkStored?.apiKey?.trim() || undefined;
+  // Cursor.auth.status() (@cursor/sdk 1.0.36) is signed out with no record, or with a
+  // key at or past its expiry. The parity tests pin this boundary too.
+  const sdkLoggedIn = sdkStored !== undefined
+    && (sdkStored.apiKeyExpiresAtMs === undefined || sdkStored.apiKeyExpiresAtMs > Date.now());
   const adeKeyPresent = Boolean(adeKey);
   const sdkKeyMatchesAde = Boolean(adeKey && sdkStoredKey && adeKey === sdkStoredKey);
   const origin = hooks.getOrigin();
-  const email = sdkStatus.status === "logged-in" ? sdkStatus.email?.trim() || undefined : undefined;
-  const apiKeyExpiresAtMs = sdkStatus.status === "logged-in"
-    ? sdkStatus.apiKeyExpiresAtMs
-    : undefined;
+  const email = sdkLoggedIn ? sdkStored?.email?.trim() || undefined : undefined;
+  const apiKeyExpiresAtMs = sdkLoggedIn ? sdkStored?.apiKeyExpiresAtMs : undefined;
 
   return {
     storeUnavailable,

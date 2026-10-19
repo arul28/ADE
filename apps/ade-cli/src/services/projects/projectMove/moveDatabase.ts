@@ -33,6 +33,13 @@ const PATH_COLUMNS: ReadonlyArray<readonly [table: string, column: string]> = [
  */
 const ARTIFACT_METADATA_PATH_KEYS = ["absolutePath", "path", "filePath", "sourcePath", "sourceUri", "callerRoot"];
 
+/**
+ * Path fields inside `kv` JSON values that ADE reads back: the context docs'
+ * last run (`prdPath`, `architecturePath`) and Cursor billing attribution
+ * (`projectPath`). Prompts and other free text in values are left alone.
+ */
+const KV_VALUE_PATH_KEYS = ["prdPath", "architecturePath", "projectPath"];
+
 /** `kv` keys that carry the project root (layout state keyed by project). */
 const KV_KEY_PREFIXES = ["dock_layout:", "tiling_tree:", "graph_state:"];
 
@@ -85,6 +92,133 @@ function closeWithCrsqlite(db: DatabaseSyncType): void {
   db.close();
 }
 
+/** The two calls the path rewrite needs, so it runs on a closed copy (node:sqlite) or on the brain's open database. */
+export type PathRewriteDb = {
+  all: (sql: string, params?: Array<string | number>) => Array<Record<string, unknown>>;
+  run: (sql: string, params?: Array<string | number>) => number;
+};
+
+function columnExists(db: PathRewriteDb, table: string, column: string): boolean {
+  const present = db.all("select 1 as present from sqlite_master where type = 'table' and name = ? limit 1", [table]).length > 0;
+  return present && db.all(`pragma table_info("${table}")`).some((row) => row.name === column);
+}
+
+/** Counts of stored values that still name one of `oldSpellings`, by `table.column`. Empty when none. */
+export function countPathsNaming(db: PathRewriteDb, oldSpellings: string[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  const add = (key: string, n: number) => {
+    if (n > 0) counts[key] = (counts[key] ?? 0) + n;
+  };
+  for (const old of oldSpellings) {
+    for (const [table, column] of PATH_COLUMNS) {
+      if (!columnExists(db, table, column)) continue;
+      const row = db.all(
+        `select count(*) as n from "${table}" where "${column}" = ? or substr("${column}", 1, ?) = ?`,
+        [old, old.length + 1, `${old}/`],
+      )[0];
+      add(`${table}.${column}`, Number(row?.n ?? 0));
+    }
+  }
+  if (columnExists(db, "computer_use_artifacts", "metadata_json")) {
+    for (const row of db.all("select metadata_json as json from computer_use_artifacts where metadata_json is not null")) {
+      const json = String(row.json);
+      if (!oldSpellings.some((spelling) => json.includes(spelling))) continue;
+      if (rewriteJsonPaths(json, oldSpellings, "/", ARTIFACT_METADATA_PATH_KEYS) !== json) add("computer_use_artifacts.metadata_json", 1);
+    }
+  }
+  if (columnExists(db, "kv", "key")) {
+    const pattern = kvRootPattern(oldSpellings);
+    for (const row of db.all("select key from kv")) {
+      const key = String(row.key);
+      if (KV_KEY_PREFIXES.some((prefix) => key.startsWith(prefix)) && pattern.test(key)) add("kv.key", 1);
+      pattern.lastIndex = 0;
+    }
+    for (const row of kvValuesNaming(db, oldSpellings)) {
+      if (rewriteJsonPaths(row.value, oldSpellings, "/", KV_VALUE_PATH_KEYS) !== row.value) add("kv.value", 1);
+    }
+  }
+  return counts;
+}
+
+function kvValuesNaming(db: PathRewriteDb, oldSpellings: string[]): Array<{ key: string; value: string }> {
+  if (!columnExists(db, "kv", "value")) return [];
+  return db.all("select key, value from kv where value is not null")
+    .map((row) => ({ key: String(row.key), value: String(row.value) }))
+    .filter((row) => oldSpellings.some((spelling) => row.value.includes(spelling)));
+}
+
+function kvRootPattern(oldSpellings: string[]): RegExp {
+  // One pass over all spellings, longest first, so a key is never rewritten twice.
+  const spellings = [...oldSpellings].sort((a, b) => b.length - a.length);
+  return new RegExp(`(?:${spellings.map(escapeRegExp).join("|")})(?=$|[/:])`, "gu");
+}
+
+/**
+ * The path rewrite itself, on any connection. The caller owns the
+ * transaction and must have the sync extension loaded, so the edits reach the
+ * person's other devices like any other edit. Returns how many values changed.
+ *
+ * `keepExisting` decides a layout key saved under both roots. A move rewrites
+ * the database it just copied, where the old root's row is the current one;
+ * a repair on a project already in use at the new root keeps that row.
+ */
+export function rewritePathsInDatabase(
+  db: PathRewriteDb,
+  oldSpellings: string[],
+  finalRoot: string,
+  opts: { keepExisting?: boolean } = {},
+): number {
+  let changed = 0;
+  for (const old of oldSpellings) {
+    for (const [table, column] of PATH_COLUMNS) {
+      if (!columnExists(db, table, column)) continue;
+      changed += db.run(
+        `update "${table}" set "${column}" = ? || substr("${column}", ?)
+         where "${column}" = ? or substr("${column}", 1, ?) = ?`,
+        [finalRoot, old.length + 1, old, old.length + 1, `${old}/`],
+      );
+    }
+  }
+  if (columnExists(db, "kv", "key")) {
+    const pattern = kvRootPattern(oldSpellings);
+    for (const row of db.all("select key from kv")) {
+      const key = String(row.key);
+      if (!KV_KEY_PREFIXES.some((prefix) => key.startsWith(prefix))) continue;
+      const next = key.replace(pattern, finalRoot);
+      if (next === key) continue;
+      // A synced table: delete then update, never `replace`, so the change
+      // reaches other devices as an ordinary delete and an ordinary edit.
+      if (opts.keepExisting && db.all("select key from kv where key = ?", [next]).length) {
+        changed += db.run("delete from kv where key = ?", [key]);
+        continue;
+      }
+      db.run("delete from kv where key = ?", [next]);
+      changed += db.run("update kv set key = ? where key = ?", [next, key]);
+    }
+    for (const row of kvValuesNaming(db, oldSpellings)) {
+      const next = rewriteJsonPaths(row.value, oldSpellings, finalRoot, KV_VALUE_PATH_KEYS);
+      if (next !== row.value) changed += db.run("update kv set value = ? where key = ?", [next, row.key]);
+    }
+  }
+  if (columnExists(db, "computer_use_artifacts", "metadata_json")) {
+    for (const row of db.all("select rowid as rid, metadata_json as json from computer_use_artifacts where metadata_json is not null")) {
+      const json = String(row.json);
+      if (!oldSpellings.some((spelling) => json.includes(spelling))) continue;
+      const next = rewriteJsonPaths(json, oldSpellings, finalRoot, ARTIFACT_METADATA_PATH_KEYS);
+      if (next === json) continue;
+      changed += db.run("update computer_use_artifacts set metadata_json = ? where rowid = ?", [next, Number(row.rid)]);
+    }
+  }
+  return changed;
+}
+
+function nodeSqliteRunner(db: DatabaseSyncType): PathRewriteDb {
+  return {
+    all: (sql, params = []) => db.prepare(sql).all(...params) as Array<Record<string, unknown>>,
+    run: (sql, params = []) => Number(db.prepare(sql).run(...params).changes),
+  };
+}
+
 /**
  * Rewrites every stored path from the old root to the final root, in one
  * transaction with the sync extension loaded, so the change syncs to the
@@ -104,39 +238,7 @@ export function rewriteProjectDatabasePaths(args: {
     }
     db.exec("begin immediate");
     try {
-      for (const old of args.oldSpellings) {
-        for (const [table, column] of PATH_COLUMNS) {
-          if (!hasTable(db, table) || !hasColumn(db, table, column)) continue;
-          db.prepare(
-            `update "${table}" set "${column}" = ? || substr("${column}", ?)
-             where "${column}" = ? or substr("${column}", 1, ?) = ?`,
-          ).run(args.finalRoot, old.length + 1, old, old.length + 1, `${old}/`);
-        }
-      }
-      if (hasTable(db, "kv")) {
-        // One pass over all spellings, so a key is never rewritten twice.
-        const spellings = [...args.oldSpellings].sort((a, b) => b.length - a.length);
-        const pattern = new RegExp(`(?:${spellings.map(escapeRegExp).join("|")})(?=$|[/:])`, "gu");
-        const rows = db.prepare("select key from kv").all() as Array<{ key: string }>;
-        for (const { key } of rows) {
-          if (!KV_KEY_PREFIXES.some((prefix) => key.startsWith(prefix))) continue;
-          const next = key.replace(pattern, args.finalRoot);
-          if (next === key) continue;
-          // A synced table: delete then update, never `replace`, so the change
-          // reaches other devices as an ordinary delete and an ordinary edit.
-          db.prepare("delete from kv where key = ?").run(next);
-          db.prepare("update kv set key = ? where key = ?").run(next, key);
-        }
-      }
-      if (hasTable(db, "computer_use_artifacts") && hasColumn(db, "computer_use_artifacts", "metadata_json")) {
-        const rows = db.prepare("select rowid as rid, metadata_json as json from computer_use_artifacts").all() as Array<{ rid: number; json: string | null }>;
-        for (const row of rows) {
-          if (!row.json || !args.oldSpellings.some((spelling) => row.json!.includes(spelling))) continue;
-          const next = rewriteJsonPaths(row.json, args.oldSpellings, args.finalRoot, ARTIFACT_METADATA_PATH_KEYS);
-          if (next === row.json) continue;
-          db.prepare("update computer_use_artifacts set metadata_json = ? where rowid = ?").run(next, row.rid);
-        }
-      }
+      rewritePathsInDatabase(nodeSqliteRunner(db), args.oldSpellings, args.finalRoot);
       db.exec("commit");
     } catch (error) {
       db.exec("rollback");

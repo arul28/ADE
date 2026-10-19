@@ -9,7 +9,7 @@ import type {
   LaneEnvInitStep,
   OpenProjectBinding,
 } from "../../shared/types";
-import { chatLaunchStatusLine, createChatLaunchSnapshot, isChatLaunchPending, mergeChatLaunchSnapshot } from "../../shared/chatLaunch";
+import { chatLaunchStatusLine, createChatLaunchSnapshot, isChatLaunchPending, isChatLaunchSucceeded, mergeChatLaunchSnapshot } from "../../shared/chatLaunch";
 import type { DraftLaunchSnapshot } from "../lib/draftLaunchJobs";
 import type { WorkPtyLaunchArgs } from "../components/terminals/cliLaunch";
 import { announceChatLaunchClosed } from "../components/chat/launch/chatLaunchDraftRestore";
@@ -43,17 +43,37 @@ export type ChatLaunchEntry = {
    * shows the failure; Retry re-sends `start` with the same launch id.
    */
   startError: string | null;
+  /**
+   * Local time this window first saw the launch stop being pending (its agent
+   * started). The Work roster bridges a started chat's row from then — see
+   * `chatLaunchAwaitsHostRow`. Local clock, so a host's skew cannot move it.
+   */
+  pendingEndedAtMs: number | null;
+  /**
+   * Reads of this launch's source that began after the bridge did and did not list
+   * its chat (`noteChatLaunchSourceRead`). Two of them end the bridge.
+   */
+  unlistedReads: number;
 };
 
 type ChatLaunchState = {
   entries: Record<string, ChatLaunchEntry>;
   /** Launches this window's slide-out was told to stop showing. */
   dismissed: Record<string, true>;
+  /**
+   * Launches whose stand-in no longer bridges: the Work roster has listed their real
+   * chat, the chat was deleted (`retireChatLaunchBridgesForSession`), or reads ended
+   * the bridge (`noteChatLaunchSourceRead`). Never bridges again
+   * (`chatLaunchAwaitsHostRow`), so a chat deleted or archived later cannot come
+   * back as a running row. Only kept while the launch's entry is (see `retiredWithin`).
+   */
+  bridgeRetired: Record<string, true>;
 };
 
 export const chatLaunchStore = createStore<ChatLaunchState>(() => ({
   entries: {},
   dismissed: {},
+  bridgeRetired: {},
 }));
 
 export function chatLaunchBindingKey(binding: OpenProjectBinding | null | undefined): string {
@@ -218,8 +238,25 @@ function announceCancelled(snapshots: readonly ChatLaunchSnapshot[]): void {
 function setEntries(mutate: (entries: Record<string, ChatLaunchEntry>) => Record<string, ChatLaunchEntry> | null): void {
   chatLaunchStore.setState((state) => {
     const next = mutate(state.entries);
-    return next && next !== state.entries ? { entries: next } : state;
+    if (!next || next === state.entries) return state;
+    return { entries: next, bridgeRetired: retiredWithin(state.bridgeRetired, next) };
   });
+}
+
+/**
+ * `retired` without the launches `entries` no longer holds. A tombstone lives as
+ * long as its entry: a launch leaves `entries` only when the host has dropped it
+ * (a removal event, or its retention ran out), so there is no bridge left to
+ * guard. Returns `retired` itself when nothing is dropped.
+ */
+function retiredWithin(retired: Record<string, true>, entries: Record<string, ChatLaunchEntry>): Record<string, true> {
+  const ids = Object.keys(retired);
+  if (ids.every((id) => entries[id])) return retired;
+  const kept: Record<string, true> = {};
+  for (const id of ids) {
+    if (entries[id]) kept[id] = true;
+  }
+  return kept;
 }
 
 /** A launch this window is about to start, shown before the host answers. */
@@ -235,9 +272,21 @@ export function insertOptimisticChatLaunch(binding: OpenProjectBinding | null, s
         snapshot,
         hostSeen: false,
         startError: null,
+        pendingEndedAtMs: null,
+        unlistedReads: 0,
       },
     };
   });
+}
+
+/**
+ * The local time a launch first showed as no longer pending, carried forward once
+ * set. Only a move this window watches from pending to not pending stamps it: a
+ * launch first seen already started keeps none, so its row is never bridged.
+ */
+function pendingEndedAtFor(current: ChatLaunchEntry | undefined, merged: ChatLaunchSnapshot): number | null {
+  if (current?.pendingEndedAtMs != null) return current.pendingEndedAtMs;
+  return current && isChatLaunchPending(current.snapshot) && !isChatLaunchPending(merged) ? Date.now() : null;
 }
 
 /** Host-authored snapshot (start/retry results, events, list hydration). */
@@ -257,6 +306,8 @@ export function applyChatLaunchSnapshot(binding: OpenProjectBinding | null, snap
         snapshot: merged,
         hostSeen: true,
         startError: null,
+        pendingEndedAtMs: pendingEndedAtFor(current, merged),
+        unlistedReads: current?.unlistedReads ?? 0,
       },
     };
   });
@@ -297,6 +348,8 @@ export function hydrateChatLaunches(binding: OpenProjectBinding | null, snapshot
         snapshot: merged,
         hostSeen: true,
         startError: null,
+        pendingEndedAtMs: pendingEndedAtFor(current, merged),
+        unlistedReads: current?.unlistedReads ?? 0,
       };
     }
     return next;
@@ -511,6 +564,106 @@ export function dismissChatLaunches(launchIds: readonly string[]): void {
   });
 }
 
+/**
+ * These launches' real chats are listed or gone: their stand-ins never bridge
+ * again. Store-held so every Work surface in this window agrees, and so a
+ * remounted surface does not restart a bridge the first one retired.
+ */
+export function retireChatLaunchBridges(launchIds: readonly string[]): void {
+  if (launchIds.length === 0) return;
+  chatLaunchStore.setState((state) => {
+    const next = { ...state.bridgeRetired };
+    let changed = false;
+    for (const id of launchIds) {
+      if (next[id]) continue;
+      next[id] = true;
+      changed = true;
+    }
+    return changed ? { bridgeRetired: next } : state;
+  });
+}
+
+/**
+ * A chat was deleted: retire the bridge of the launch that owns it in this
+ * window, whether or not this window's roster ever listed the chat. Called for
+ * every window (`useChatLaunchSync`), so a delete seen in one window cannot
+ * leave another window's bridge showing the chat.
+ */
+export function retireChatLaunchBridgesForSession(sessionId: string): void {
+  const launchIds = Object.values(chatLaunchStore.getState().entries)
+    .filter((entry) => entry.snapshot.sessionId === sessionId)
+    .map((entry) => entry.launchId);
+  retireChatLaunchBridges(launchIds);
+}
+
+/** Reads that must list a started chat before its bridge ends on reads (`noteChatLaunchSourceRead`). */
+export const CHAT_LAUNCH_BRIDGE_UNLISTED_READS = 2;
+
+/**
+ * Whether a launch's stand-in still waits for the host's own row: its agent started,
+ * its chat exists, and its bridge has not ended. Nothing here reads the clock: only
+ * the reads (`noteChatLaunchSourceRead`), the roster listing the chat, or its deletion
+ * end a bridge.
+ */
+export function chatLaunchAwaitsHostRow(
+  source: Pick<ChatLaunchRowSource, "snapshot" | "pendingEndedAtMs" | "bridgeRetired">,
+): boolean {
+  const { snapshot, pendingEndedAtMs, bridgeRetired } = source;
+  return pendingEndedAtMs != null
+    && !bridgeRetired
+    && snapshot.kind === "chat"
+    && Boolean(snapshot.sessionId)
+    && snapshot.sessionCreated
+    && isChatLaunchSucceeded(snapshot);
+}
+
+/** Whether a started chat on `bindingKey` still waits for its host's row, so that host's next read must be fresh. */
+export function chatLaunchAwaitingHostRowOn(bindingKey: string): boolean {
+  return chatLaunchRowSourcesNow().some((source) => source.bindingKey === bindingKey && chatLaunchAwaitsHostRow(source));
+}
+
+/**
+ * An authoritative read of a launch's source finished: the active binding's host
+ * list, or a pinned machine's slice read. `startedAtMs` is when the read was sent
+ * and `listedSessionIds` is what it returned. Each open bridge on `bindingKey` that
+ * began before the read was sent, and whose chat the read did not list, counts one
+ * unlisted read; at `CHAT_LAUNCH_BRIDGE_UNLISTED_READS` the bridge ends. A read that
+ * began before the start may predate the chat, so it does not count. Each window
+ * counts its own reads, because each window renders from its own.
+ */
+export function noteChatLaunchSourceRead(
+  bindingKey: string,
+  startedAtMs: number,
+  listedSessionIds: ReadonlySet<string>,
+): void {
+  chatLaunchStore.setState((state) => {
+    let entries: Record<string, ChatLaunchEntry> | null = null;
+    let bridgeRetired: Record<string, true> | null = null;
+    for (const entry of Object.values(state.entries)) {
+      const { pendingEndedAtMs, snapshot } = entry;
+      const sessionId = snapshot.sessionId;
+      if (entry.bindingKey !== bindingKey || !sessionId || listedSessionIds.has(sessionId)) continue;
+      if (pendingEndedAtMs == null || pendingEndedAtMs >= startedAtMs) continue;
+      if (!chatLaunchAwaitsHostRow({ snapshot, pendingEndedAtMs, bridgeRetired: state.bridgeRetired[entry.launchId] })) continue;
+      entries ??= { ...state.entries };
+      // A miss counts as absence only because the host lists newest-first
+      // (`order by s.started_at desc`, sessions/sessionService.ts:897, via
+      // adeActions/registry.ts:1656), so a started chat is inside any bounded read unless
+      // `limit` sessions started after it (60 foreign reads, crossMachineLanes.ts:134). The
+      // host writes the chat row before it publishes agentStarted (chat/chatLaunchService.ts:742,
+      // :760), so a read that began after the start can see it. Revisit if either changes.
+      const unlistedReads = entry.unlistedReads + 1;
+      entries[entry.launchId] = { ...entry, unlistedReads };
+      if (unlistedReads >= CHAT_LAUNCH_BRIDGE_UNLISTED_READS) {
+        bridgeRetired ??= { ...state.bridgeRetired };
+        bridgeRetired[entry.launchId] = true;
+      }
+    }
+    if (!entries) return state;
+    return bridgeRetired ? { entries, bridgeRetired } : { entries };
+  });
+}
+
 export function getChatLaunchEntry(launchId: string | null | undefined): ChatLaunchEntry | null {
   if (!launchId) return null;
   return chatLaunchStore.getState().entries[launchId] ?? null;
@@ -532,7 +685,7 @@ export function isChatLaunchLane(laneId: string | null | undefined): boolean {
 }
 
 export function resetChatLaunchStoreForTests(): void {
-  chatLaunchStore.setState({ entries: {}, dismissed: {} });
+  chatLaunchStore.setState({ entries: {}, dismissed: {}, bridgeRetired: {} });
   localRecords.clear();
   unsentQueuedMessages.clear();
   refreshingLaunchIds.clear();
@@ -619,7 +772,22 @@ export type ChatLaunchRowSource = {
   snapshot: ChatLaunchSnapshot;
   binding: OpenProjectBinding | null;
   bindingKey: string;
+  pendingEndedAtMs?: number | null;
+  bridgeRetired?: boolean;
 };
+
+/** Every launch in this window as row sources, in launch-id order. */
+export function chatLaunchRowSourcesNow(state: ChatLaunchState = chatLaunchStore.getState()): ChatLaunchRowSource[] {
+  return Object.values(state.entries)
+    .map((entry) => ({
+      snapshot: entry.snapshot,
+      binding: entry.binding,
+      bindingKey: entry.bindingKey,
+      pendingEndedAtMs: entry.pendingEndedAtMs,
+      bridgeRetired: Boolean(state.bridgeRetired[entry.launchId]),
+    }))
+    .sort((a, b) => a.snapshot.launchId.localeCompare(b.snapshot.launchId));
+}
 
 function rowSignature(source: ChatLaunchRowSource): string {
   const s = source.snapshot;
@@ -632,10 +800,14 @@ function rowSignature(source: ChatLaunchRowSource): string {
     s.title,
     s.modelId ?? "",
     s.startedAt,
-    // What decides whether the roster lists a stand-in row (`shouldListChatLaunchRow`).
+    // What decides whether the roster lists a stand-in row (`shouldListChatLaunchRow`,
+    // `chatLaunchAwaitsHostRow`).
     s.phase === "cancelled" ? "cancelled" : "live",
     s.sessionCreated ? "created" : "reserved",
     isChatLaunchPending(s) ? "pending" : "started",
+    isChatLaunchSucceeded(s) ? "succeeded" : "unsucceeded",
+    source.pendingEndedAtMs ?? "",
+    source.bridgeRetired ? "retired" : "",
     source.bindingKey,
   ].join("\u0001");
 }
@@ -650,12 +822,7 @@ function sameRowSources(a: ChatLaunchRowSource[], b: ChatLaunchRowSource[]): boo
 
 /** Launches as the Work roster needs them: identity, lane, title — not stage ticks. */
 export function useChatLaunchRowSources(): ChatLaunchRowSource[] {
-  return useChatLaunchSelector(
-    (state) => Object.values(state.entries)
-      .map((entry) => ({ snapshot: entry.snapshot, binding: entry.binding, bindingKey: entry.bindingKey }))
-      .sort((a, b) => a.snapshot.launchId.localeCompare(b.snapshot.launchId)),
-    sameRowSources,
-  );
+  return useChatLaunchSelector((state) => chatLaunchRowSourcesNow(state), sameRowSources);
 }
 
 function samePaneSnapshot(a: ChatLaunchSnapshot | null, b: ChatLaunchSnapshot | null): boolean {

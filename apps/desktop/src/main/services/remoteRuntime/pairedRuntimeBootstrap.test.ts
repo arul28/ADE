@@ -28,6 +28,7 @@ import {
   PairedRuntimeCompatibilityError,
   PairedRuntimeHelloRejectedError,
   PairedRuntimeRelayAuthRequiredError,
+  PairedRuntimeSupersededError,
   PairedRuntimeTransportUnavailableError,
 } from "./pairedRuntimeErrors";
 
@@ -428,6 +429,66 @@ describe("bootstrapPairedRuntime", () => {
     // A stale pairing says nothing about any route, so no endpoint is demoted.
     expect(markEndpointFailed).not.toHaveBeenCalled();
     expect(forgetEndpoint).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      name: "the host answers the hello as superseded",
+      stage: "open" as const,
+      reject: () => new PairedRuntimeHelloRejectedError(
+        "Another connection took over.",
+        "connection_attempt_superseded",
+      ),
+      failure: "superseded",
+    },
+    {
+      name: "the host answers the hello as too old for this client",
+      stage: "open" as const,
+      reject: () => new PairedRuntimeHelloRejectedError(
+        "Update ADE on that computer.",
+        "host_update_required",
+      ),
+      failure: "protocol",
+    },
+    {
+      name: "the channel closes because another connection took it over",
+      stage: "initialize" as const,
+      reject: () => new Error("Remote ADE service connection closed.", {
+        cause: new PairedRuntimeSupersededError(),
+      }),
+      failure: "superseded",
+    },
+  ])("does not demote a route whose host answered, when $name", async ({ stage, reject, failure }) => {
+    const markEndpointFailed = vi.fn();
+    if (stage === "initialize") initializeMock.mockRejectedValue(reject());
+    let captured: unknown;
+    try {
+      await bootstrapPairedRuntime({
+        target,
+        registry: { update: vi.fn(() => target) } as any,
+        pairedStore: {
+          getForReference: vi.fn(() => credentials),
+          save: vi.fn(),
+          markEndpointFailed,
+          forgetEndpoint: vi.fn(),
+          markEndpointSucceeded: vi.fn(),
+        } as any,
+        appVersion: "1.0.0",
+        options: {
+          openTransport: vi.fn(async () => {
+            if (stage === "open") throw reject();
+            return transport();
+          }),
+        },
+      });
+    } catch (error) {
+      captured = error;
+    }
+
+    expect(captured).toBeInstanceOf(PairedRuntimeTransportUnavailableError);
+    expect((captured as PairedRuntimeTransportUnavailableError).diagnostic?.failure)
+      .toBe(failure);
+    expect(markEndpointFailed).not.toHaveBeenCalled();
   });
 
   it("forgets an endpoint that answers as a different machine instead of retrying it forever", async () => {

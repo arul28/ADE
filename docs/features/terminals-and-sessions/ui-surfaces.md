@@ -1292,6 +1292,13 @@ Tabs:
   its lane's color. The robot mark shows only while a chat holds the tab
   (`ownerChatSessionId`); a lane group alone is not an agent lease.
 
+  Browser leases expire after their idle period. A tab whose owner lease has
+  expired is available for another agent to claim and appears in scoped
+  `ade browser tabs` output as `idle (lease lapsed)`. When opening a new tab
+  would exceed the tab limit, the error lists tabs owned by the caller or with
+  an expired lease that the agent can close; tabs with a live lease for another
+  chat remain protected.
+
   **Zoom-aware inspect.** The preview sets a CSS zoom on `<body>`. The inspect
   overlay attaches to the document element, outside that zoom, and each hit
   test also probes the pointer divided and multiplied by the zoom. It keeps

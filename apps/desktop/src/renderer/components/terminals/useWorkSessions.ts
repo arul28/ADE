@@ -65,12 +65,22 @@ import {
 } from "./cliLaunch";
 import { sortLanesForTabs } from "../lanes/laneUtils";
 import { setPendingSessionAnchor } from "./pendingSessionAnchors";
-import { seedCrossMachineOptimisticSession, useRetainedCrossMachineSlices } from "../../state/crossMachineLanes";
+import { requestCrossMachineLanesForMachine, seedCrossMachineOptimisticSession, useRetainedCrossMachineSlices } from "../../state/crossMachineLanes";
 import { cachedGitRemoteIdentity, originUrlForBinding } from "../lanes/laneMachines";
 import { useWorkMachineRouter } from "./useWorkMachineRouter";
 import { clearChatCompanionUiState } from "../chat/chatCompanionUiState";
-import { chatLaunchBindingKey, useChatLaunchRowSources } from "../../state/chatLaunchStore";
-import { mergeChatLaunchRows, selectKnownLaunchSessionIds, selectRosterChatLaunches } from "../chat/launch/chatLaunchSynthetic";
+import {
+  chatLaunchAwaitingHostRowOn,
+  chatLaunchBindingKey,
+  noteChatLaunchSourceRead,
+  retireChatLaunchBridges,
+  useChatLaunchRowSources,
+} from "../../state/chatLaunchStore";
+import {
+  mergeChatLaunchRows,
+  selectKnownLaunchSessionIds,
+  selectRosterChatLaunches,
+} from "../chat/launch/chatLaunchSynthetic";
 import { subscribeChatLaunchClosed } from "../chat/launch/chatLaunchDraftRestore";
 
 type WorkStatusNavigation = "all" | "running" | "awaiting-input" | "ended" | "settled";
@@ -752,6 +762,10 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const [hostSessions, setHostSessions] = useState<TerminalSessionSummary[]>([]);
   const chatLaunchRowSources = useChatLaunchRowSources();
   const activeChatLaunchBindingKey = chatLaunchBindingKey(projectBinding);
+  const activeChatLaunchBindingKeyRef = useRef(activeChatLaunchBindingKey);
+  useEffect(() => {
+    activeChatLaunchBindingKeyRef.current = activeChatLaunchBindingKey;
+  }, [activeChatLaunchBindingKey]);
   // Bindings of this same project on other machines. A launch pinned to one of
   // them lists here too (that machine's slice does not list its chat yet); a
   // launch of any other project never ghosts into this roster.
@@ -762,10 +776,6 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     }
     return keys;
   }, [retainedCrossMachineSlices]);
-  const pendingChatLaunches = useMemo(
-    () => selectRosterChatLaunches(chatLaunchRowSources, activeChatLaunchBindingKey, crossMachineBindingKeys),
-    [activeChatLaunchBindingKey, chatLaunchRowSources, crossMachineBindingKeys],
-  );
   /**
    * Session ids owned by a live launch on this project — listed or not (see
    * `selectKnownLaunchSessionIds`). The prune below keeps these valid so the
@@ -776,16 +786,65 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     () => selectKnownLaunchSessionIds(chatLaunchRowSources, activeChatLaunchBindingKey, crossMachineBindingKeys),
     [activeChatLaunchBindingKey, chatLaunchRowSources, crossMachineBindingKeys],
   );
-  const sessions = useMemo(() => {
-    if (pendingChatLaunches.length === 0) return hostSessions;
-    // A launch row yields to the real row wherever it appears — this roster or
-    // the machine slice that owns a launch pinned to another machine.
-    const knownIds = new Set<string>();
+  // A started chat's row bridges until the reads or the roster end it (`selectRosterChatLaunches`,
+  // `noteChatLaunchSourceRead`). No timer runs for it: nothing re-checks a bridge on a clock.
+  // The real chat rows this roster has listed: the host's own, and a machine
+  // slice's whose machine also lists its lane (`buildCrossMachineLaneRows`
+  // renders nothing without one). A launch row yields to these wherever they
+  // appear — this roster or the slice that owns a launch pinned to another
+  // machine — and seeing one retires that launch's bridge for good.
+  const listedChatSessionIds = useMemo(() => {
+    const ids = new Set<string>(hostSessions.map((session) => session.id));
     for (const machine of retainedCrossMachineSlices) {
-      for (const session of machine.sessions) knownIds.add(session.id);
+      const laneIds = new Set(machine.lanes.map((lane) => lane.id));
+      for (const session of machine.sessions) {
+        if (laneIds.has(session.laneId)) ids.add(session.id);
+      }
     }
-    return mergeChatLaunchRows(hostSessions, pendingChatLaunches, knownIds);
-  }, [hostSessions, pendingChatLaunches, retainedCrossMachineSlices]);
+    return ids;
+  }, [hostSessions, retainedCrossMachineSlices]);
+  const sessions = useMemo(() => {
+    const launches = selectRosterChatLaunches(
+      chatLaunchRowSources,
+      activeChatLaunchBindingKey,
+      crossMachineBindingKeys,
+    );
+    if (launches.length === 0) return hostSessions;
+    return mergeChatLaunchRows(hostSessions, launches, listedChatSessionIds);
+  }, [
+    activeChatLaunchBindingKey,
+    chatLaunchRowSources,
+    crossMachineBindingKeys,
+    hostSessions,
+    listedChatSessionIds,
+  ]);
+
+  // A launch pinned to another machine lands its chat in that machine's slice,
+  // which the union re-reads only on its own tick. Ask for that machine as soon
+  // as the agent starts — once per launch — so the chat lands on the next
+  // coalesced read instead of up to one tick later.
+  const foreignLaunchRefreshRequestedRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    for (const { snapshot, binding, bindingKey, pendingEndedAtMs } of chatLaunchRowSources) {
+      if (pendingEndedAtMs == null || snapshot.phase === "cancelled") continue;
+      if (!binding || bindingKey === activeChatLaunchBindingKey || !crossMachineBindingKeys.has(bindingKey)) continue;
+      if (foreignLaunchRefreshRequestedRef.current.has(snapshot.launchId)) continue;
+      foreignLaunchRefreshRequestedRef.current.add(snapshot.launchId);
+      requestCrossMachineLanesForMachine(machineIdForBinding(binding));
+    }
+  }, [activeChatLaunchBindingKey, chatLaunchRowSources, crossMachineBindingKeys]);
+  // Once the roster has listed a launch's real chat, its stand-in never bridges
+  // again: a chat deleted or archived after that must not come back as a running
+  // row (`chatLaunchAwaitsHostRow`). An empty batch writes nothing.
+  useEffect(() => {
+    const listed: string[] = [];
+    for (const { snapshot, bridgeRetired } of chatLaunchRowSources) {
+      if (!bridgeRetired && snapshot.sessionId && listedChatSessionIds.has(snapshot.sessionId)) {
+        listed.push(snapshot.launchId);
+      }
+    }
+    retireChatLaunchBridges(listed);
+  }, [chatLaunchRowSources, listedChatSessionIds]);
   const [loading, setLoading] = useState(false);
   /** Bumped when the soonest snooze deadline lapses so the partition re-derives. */
   const [snoozeEpoch, setSnoozeEpoch] = useState(0);
@@ -1665,10 +1724,16 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     refreshInFlightRef.current = true;
     if (showLoading) setLoading(true);
     try {
+      // A started chat's bridge ends on reads that began after its start
+      // (`noteChatLaunchSourceRead`). The list cache can answer with a read that began
+      // earlier, so while such a bridge waits on this binding the read goes to the host.
+      const bindingKey = activeChatLaunchBindingKeyRef.current;
+      const awaitingHostRow = chatLaunchAwaitingHostRowOn(bindingKey);
+      const readStartedAtMs = Date.now();
       const rows = (
         await listSessionsCached(
           { limit: 500 },
-          options.force
+          options.force || awaitingHostRow
             ? { force: true }
             : undefined,
         )
@@ -1676,6 +1741,8 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       if (projectRootRef.current !== requestedProjectRoot) {
         return;
       }
+      // Counted before the optimistic rows below join `rows`: only what the host listed counts.
+      if (awaitingHostRow) noteChatLaunchSourceRead(bindingKey, readStartedAtMs, new Set(rows.map((session) => session.id)));
       const pending = pendingOptimisticSessionsRef.current;
       if (pending.size > 0) {
         const now = Date.now();

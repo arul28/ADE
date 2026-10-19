@@ -395,7 +395,7 @@ export function BrowserOverflowMenu({
                 )}
               />
               {/* "In system browser", to pair with "In ADE" above it and to
-                  match the same choice in Settings → General → Links. */}
+                  match the same choice in Settings → Behaviour → Open links. */}
               <span className="min-w-0 flex-1 truncate">In system browser</span>
             </DropdownMenu.RadioItem>
           </DropdownMenu.RadioGroup>
@@ -404,7 +404,7 @@ export function BrowserOverflowMenu({
             <>
               {/*
                 Who may drive this browser. The same machine-wide choice as
-                Settings → General → ADE browser; answering a prompt with
+                Settings → Behaviour → ADE browser; answering a prompt with
                 "Allow this lane" or "Allow this chat" adds to the list below.
               */}
               <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />

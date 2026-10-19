@@ -62,6 +62,13 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** Failures where the address gave no answer at all. Demotion is for these only. */
+const ROUTE_SILENT_FAILURES = new Set<RemoteRuntimeConnectionAttemptFailure>([
+  "timeout",
+  "unreachable",
+  "unknown",
+]);
+
 function pairedArch(
   target: RemoteRuntimeTarget,
   credentials: DesktopPairedMachineCredentials,
@@ -133,18 +140,20 @@ export async function bootstrapPairedRuntime(args: {
     candidate: PairedRuntimeEndpointCandidate,
     failure: RemoteRuntimeConnectionAttemptFailure,
   ): void => {
-    // Nothing is wrong with the *route* when the account or the pairing is the
-    // problem — every other endpoint would fail the same way, so demoting this
-    // one teaches the dial order nothing.
-    if (failure === "authentication" || failure === "pairing") return;
     if (failure === "identity") {
-      // A different machine answered here. Demotion expires; this must not.
+      // A different machine answered here. Demotion clears on any answer, and a
+      // neighbour can answer too, so the address is forgotten, not demoted.
       args.pairedStore.forgetEndpoint(
         credentials.hostIdentity.deviceId,
         candidate.endpoint,
       );
       return;
     }
+    // Only a route that never answered is evidence against the address. Every
+    // other failure came from a host that did answer (a rejected pairing or
+    // account, a superseded or too-old peer), and demoting that route teaches
+    // the dial order nothing about whether the address is alive.
+    if (!ROUTE_SILENT_FAILURES.has(failure)) return;
     args.pairedStore.markEndpointFailed(
       credentials.hostIdentity.deviceId,
       candidate.endpoint,

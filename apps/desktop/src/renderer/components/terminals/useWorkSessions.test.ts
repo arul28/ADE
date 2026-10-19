@@ -264,6 +264,8 @@ describe("useWorkSessions — pending new-lane chat launches", () => {
 
   afterEach(() => {
     cleanup();
+    // A failed assertion mid-test must not leave fake timers for the rest of the file.
+    vi.useRealTimers();
     resetChatLaunchStoreForTests();
     resetChatLaunchDraftRestoreForTests();
     delete (window as any).ade;
@@ -379,8 +381,10 @@ describe("useWorkSessions — pending new-lane chat launches", () => {
     });
     expect(result.current.sessionsById.has("launch-2")).toBe(true);
 
-    // Once the chat exists and the agent runs, the host's row is the chat: no stand-in
-    // (so a chat deleted or archived later does not come back as a ghost).
+    // Once the chat exists and the agent runs, the stand-in bridges until the host lists the chat.
+    // Two reads that began after the start and did not list it end the bridge, so a chat deleted
+    // or archived then cannot come back as a ghost (see chatLaunchAwaitsHostRow).
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     act(() => {
       applyChatLaunchSnapshot(null, launch({
         launchId: "launch-2",
@@ -390,6 +394,29 @@ describe("useWorkSessions — pending new-lane chat launches", () => {
         agentStarted: true,
         sequence: 3,
       }));
+    });
+    expect(result.current.sessionsById.has("launch-2")).toBe(true);
+    // A hidden window reads nothing, so the bridge waits however long it stays hidden.
+    setDocumentVisibility("hidden");
+    act(() => {
+      vi.advanceTimersByTime(10 * 60_000);
+    });
+    expect(result.current.sessionsById.has("launch-2")).toBe(true);
+    setDocumentVisibility("visible");
+    // A read that fails does not count.
+    listSessionsCachedMock.mockRejectedValueOnce(new Error("offline"));
+    await act(async () => {
+      await result.current.refresh({ showLoading: false }).catch(() => {});
+    });
+    expect(result.current.sessionsById.has("launch-2")).toBe(true);
+    // The first read that misses the chat is not enough, and it goes to the host, not the cache.
+    await act(async () => {
+      await result.current.refresh({ showLoading: false });
+    });
+    expect(listSessionsCachedMock).toHaveBeenLastCalledWith({ limit: 500 }, { force: true });
+    expect(result.current.sessionsById.has("launch-2")).toBe(true);
+    await act(async () => {
+      await result.current.refresh({ showLoading: false });
     });
     expect(result.current.sessionsById.has("launch-2")).toBe(false);
   });

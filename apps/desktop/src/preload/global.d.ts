@@ -1105,6 +1105,7 @@ import type {
   StorageCompressionResult,
   StorageSnapshot,
 } from "../shared/types/storage";
+import type { ProjectHealthFixArgs, ProjectHealthFixResult, ProjectHealthReport } from "../shared/types/projectHealth";
 import type { ProjectDataProblem, ProjectDataRestoreResult, ProjectDataStatus, ProjectRecoveryDiagnosis, ProjectRepairReport, RepairStepResult } from "../shared/types/recovery";
 import type {
   ProjectMoveAttention,
@@ -1172,6 +1173,13 @@ declare global {
         /** Swallow this window's menu accelerators while a takeover drives. */
         setIgnoreMenuShortcuts: (ignore: boolean) => Promise<{ ok: true }>;
         getInfo: () => Promise<AppInfo>;
+        /**
+         * Probes the background service now if its cached installed/running
+         * answer is older than two seconds, and resolves once it has landed.
+         * Call it when a surface that shows that answer opens; `getInfo` itself
+         * answers from cache. Absent on the hosted-web client.
+         */
+        refreshServiceHealth?: () => Promise<void>;
         getInstalledEditors: () => Promise<EditorTarget[]>;
         /**
          * The browsers this machine can open a link in, each with its app icon
@@ -1323,6 +1331,11 @@ declare global {
           opts: { preview: StorageCleanupPreview },
           pin?: OpenProjectBinding | null,
         ) => Promise<StorageCleanupResult>;
+      };
+      /** Project health: issues with a fix each, from the machine that owns the project. */
+      projectHealth: {
+        getReport: (args?: { forceRefresh?: boolean }, pin?: OpenProjectBinding | null) => Promise<ProjectHealthReport>;
+        fix: (args: ProjectHealthFixArgs, pin?: OpenProjectBinding | null) => Promise<ProjectHealthFixResult>;
       };
       /**
        * One archive across lanes, chats, and shells. Every call takes an

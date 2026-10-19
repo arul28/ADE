@@ -27,6 +27,8 @@ switching projects so they cannot populate the new project's panes.
 
 | Path | Role |
 |---|---|
+| `apps/desktop/src/main/services/builtInBrowser/builtInBrowserHitTest.ts` | Shared hit-testing for the browser element picker, drag-to-capture, and `ade browser select`. Converts viewport points to CDP document coordinates, falls back to the page's `elementFromPoint`, and reaches same-renderer and cross-site iframe content. |
+| `apps/desktop/src/main/services/shared/cdpFrameTransform.ts` | Maps iframe points and rectangles between frame and tab viewports using the iframe's CDP content quad, including scale, rotation and skew. |
 | `apps/ios/ADE/Views/Work/WorkCommandRedaction.swift` | Display-only command masking shared by native Work cards and previews. |
 | `apps/desktop/src/main/services/chat/chatLaunchService.ts`, `apps/desktop/src/shared/types/chatLaunch.ts`, `apps/desktop/src/shared/chatLaunch.ts`, `apps/desktop/src/main/services/lanes/laneEnvironmentSetup.ts` | **New-lane launches.** Brain-owned "start a chat (or CLI session) in a lane that does not exist yet": reserved session and lane ids, the fetch → checkout → environment → start-agent stages, live snapshots on `chat_launch_event`, Cancel / Retry / Start now / queued messages, and the `lane_setup` transcript card. `chatLaunchService` is constructed in `apps/ade-cli/src/bootstrap.ts` only when an agent chat service exists, and exposed as `AdeRuntime.chatLaunchService` to the `chat` action domain and the sync host. `shared/chatLaunch.ts` holds the pure presentation helpers (stage labels, status line, progress, durations, `buildLaneSetupCard`, snapshot merge) every surface uses. See [New-lane launches](#new-lane-launches). |
 | `apps/desktop/src/main/services/chat/chatLaunchArgs.ts`, `chatLaunchRecords.ts`, `chatLaunchDelivery.ts`, `chatLaunchTranscriptCard.ts`, `chatCreateModelResolution.ts`, `apps/desktop/src/shared/uuid.ts` | Launch support modules. `chatLaunchArgs` is the one parser for untrusted launch input (`parseChatLaunchArgs`, `parseChatLaunchIdArgs`, `parseChatLaunchQueueMessageArgs`, `parseChatLaunchCompleteClientArgs`), used by both the action domain and the sync host, and also owns the `chat.create` / `chat.send` field parsers the sync host reuses for its direct chat commands. `chatLaunchRecords` persists launch records under `.ade/cache/chat-launches/` and, on reload, turns a mid-flight launch into an "interrupted" failure and jumps its `sequence` ahead. `chatLaunchDelivery` sends messages queued during setup in order; a failed send keeps the message with `deliveryError` and retries on a 2 s / 10 s / 30 s backoff, and a deleted chat clears the queue with an error. `chatLaunchTranscriptCard` emits and updates the `lane_setup` `ade_card` (first emit waits for the opening `user_message`, with a 4 s fallback). `chatCreateModelResolution.resolveChatCreateModel` fills an empty `model` with the host's first available one (activating OpenCode, Pi, and ACP provider runtimes first), shared by the sync host's `chat.create` / `chat.launch` and every launch. `shared/uuid.ts` normalizes reserved ids (`requireNormalizedUuid`). |
@@ -408,7 +410,8 @@ strip across project opens, switches and closes, like Chats.
 - **No chat, no chat tools.** Without a chat beside it the panel has no
   `sessionId`, so Inspect, Attach and "insert into the message" are not shown,
   and the Work pane's preview toggle and maximize (meaningless outside Work)
-  are replaced by the host's own `toolbarEnd` slot.
+  are replaced by the host's own `toolbarEnd` slot. When **Ask agent** docks a
+  chat, Inspect is available and sends the selected element to that chat.
 - **Ask agent.** The toolbar button docks a normal project-less chat on the
   right (`AgentChatPane` with the personal scope from
   `usePersonalChatPaneScope`, shared with the Chats page). Opening the dock
@@ -1991,7 +1994,27 @@ still-live button invites a second spend.
   capability; an unbound shell cannot use the human-authenticated profile.
   Inspect-mode hit-tests produce `BuiltInBrowserContextItem`
   payloads that the sidebar forwards to the active chat as composer
-  chips alongside iOS / App Control selections.
+  chips alongside iOS / App Control selections. The picker, drag-to-capture,
+  and `ade browser select` share `builtInBrowserHitTest.ts`: their points are
+  in tab viewport pixels, so CDP hit testing adds the current scroll offset
+  before calling `DOM.getNodeForLocation`, which expects document pixels. It
+  sets `ignorePointerEventsNone: false` so an invisible `pointer-events:none`
+  layer cannot win; when CDP finds no node, the page's own
+  `document.elementFromPoint` is the fallback. If a tab has a 0×0 viewport,
+  `ade browser select` fails with "This browser tab has no visible viewport
+  yet" and suggests showing the tab or using
+  `ade browser emulate --width <w> --height <h>`.
+
+  Inspect overlays also cover iframes. Same-renderer frames get an isolated
+  world whose binding is scoped to that execution context; cross-site frames
+  use flattened child debugger sessions, including nested frames. Frames that
+  appear or navigate during Inspect get an overlay as their execution context
+  is created. `cdpFrameTransform.ts` maps points and element rectangles through
+  the iframe's full 2D transform, so scaled and rotated frames line up with the
+  tab. A picked iframe element keeps the tab's URL and title, with its own
+  `frameId`, URL, title and origin in `metadata.iframe`. Inspect start/stop
+  transitions are serialized, clicks from an ended run are discarded, and
+  activating a popup tab cancels a pending Inspect start.
 - **Login import.** A human can seed the shared profile with cookies
   from a browser they already use, so ADE's browser starts out signed
   in. `apps/desktop/src/main/services/builtInBrowser/loginImport/`
@@ -2062,7 +2085,7 @@ still-live button invites a second spend.
   lives in the project config's `browser` section and ADE writes it to
   `.ade/local.yaml`, because which browser your links land in is a
   property of the machine you are sitting at, not of the repository.
-  Settings → General → Links exposes it as "Open links: In ADE / In
+  Settings → Behaviour → Open links exposes it as "Open links: In ADE / In
   system browser". Two overrides sit on top of the preference and are
   absolute, so nobody has to open Settings to get the other behaviour
   once: **Mod+Click** (Cmd on macOS, Ctrl elsewhere) always opens
