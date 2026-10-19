@@ -1398,7 +1398,7 @@ describe("computerUseArtifactBrokerService", () => {
     });
   });
 
-  describe("agent-browser probe under a chat send", () => {
+  describe("agent-browser probe", () => {
     const TTL_MS = 60_000;
     type ProbeCallback = (error: (Error & { code?: unknown }) | null) => void;
     const exitedWith = (code: number): Error & { code: number } =>
@@ -1455,11 +1455,19 @@ describe("computerUseArtifactBrokerService", () => {
       else process.env.ADE_DISABLE_OFF_THREAD_SPAWN = previousOffThread;
     });
 
-    it("a read before the first probe answers reports the probed answer, and the next read is warm", () => {
+    it.each([
+      { outcome: "has not answered yet", settle: null },
+      { outcome: "timed out", settle: timedOut() },
+      { outcome: "could not start", settle: Object.assign(new Error("spawn sh ENOENT"), { code: "ENOENT" }) },
+    ])("a read after a first probe that $outcome probes once on this thread and reports that answer", async ({ settle }) => {
       const broker = createBroker({ db, projectId: "project-1", projectRoot, logger: createLogger() });
       expect(started).toHaveLength(1);
+      if (settle) {
+        // A probe that gives no answer caches nothing, so the read below probes for itself.
+        started[0]!(settle);
+        await flush();
+      }
 
-      // The first probe has not answered, so the read probes synchronously and reports that answer.
       expect(available(broker)).toBe(true);
       expect(syncProbes).toBe(1);
       expect(started).toHaveLength(1);
@@ -1469,35 +1477,43 @@ describe("computerUseArtifactBrokerService", () => {
       expect(started).toHaveLength(1);
     });
 
-    it("a send that settles the status while the first probe runs joins that probe and starts none of its own", async () => {
-      const broker = createBroker({ db, projectId: "project-1", projectRoot, logger: createLogger() });
-      const settling = broker.settleBackendStatus();
-      expect(settling).not.toBeNull();
-      expect(started).toHaveLength(1);
-
-      started[0]!(null);
-      await settling;
-      expect(available(broker)).toBe(true);
-      expect(started).toHaveLength(1);
-      expect(syncProbes).toBe(0);
-    });
-
-    it("a probe that times out keeps the last answer, and the next call probes again", async () => {
+    it("a warm read never probes on this thread, and a read past the TTL starts one background refresh that later reads join", async () => {
       const broker = createBroker({ db, projectId: "project-1", projectRoot, logger: createLogger() });
       started[0]!(null);
       await flush();
+
       expect(available(broker)).toBe(true);
+      expect(syncProbes).toBe(0);
+      expect(started).toHaveLength(1);
 
       vi.setSystemTime(now + TTL_MS);
+      // The stale answer is returned at once. The refresh runs off this thread, and the second read joins it.
       expect(available(broker)).toBe(true);
+      expect(available(broker)).toBe(true);
+      expect(syncProbes).toBe(0);
+      expect(started).toHaveLength(2);
+    });
+
+    it.each([
+      { previous: "installed", firstAnswer: null, expected: true },
+      { previous: "missing", firstAnswer: exitedWith(1), expected: false },
+    ])("a refresh that times out keeps the $previous answer, and the next call retries at once", async ({ firstAnswer, expected }) => {
+      const broker = createBroker({ db, projectId: "project-1", projectRoot, logger: createLogger() });
+      started[0]!(firstAnswer);
+      await flush();
+      expect(available(broker)).toBe(expected);
+
+      vi.setSystemTime(now + TTL_MS);
+      expect(available(broker)).toBe(expected);
       expect(started).toHaveLength(2);
       started[1]!(timedOut());
       await flush();
 
       // A timeout says nothing about the tool, so the last answer stands.
-      expect(available(broker)).toBe(true);
+      expect(available(broker)).toBe(expected);
       // The next call retries at once, instead of waiting out another TTL.
       expect(started).toHaveLength(3);
+      expect(syncProbes).toBe(0);
     });
 
     it("an answer that changes is seen within one TTL plus one call", async () => {

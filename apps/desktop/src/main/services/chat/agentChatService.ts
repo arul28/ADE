@@ -56958,11 +56958,6 @@ export function createAgentChatService(args: {
     options?: SendMessageOptions,
   ): Promise<void | AgentChatSteerResult> {
     assertChatRuntimeOwnedHere(rawArgs.sessionId, "send to");
-    // prepareSendMessage reads the computer-use backend status synchronously, on
-    // this send and on a steer it routes to. A cold probe is awaited here, off the
-    // event loop; a warm status awaits nothing, so the turn registers where it did.
-    const backendStatusSettling = computerUseArtifactBrokerRef?.settleBackendStatus?.();
-    if (backendStatusSettling) await backendStatusSettling;
     // Composer @-mention chips expand here, before any routing decision, so a
     // fresh turn, a steer, and every provider all receive the same pointer
     // blocks. Skipped when the caller already prepared the message (the
@@ -68726,8 +68721,6 @@ export function createAgentChatService(args: {
     if (sessionTurnCollectors.has(sessionId)) {
       throw turnInFlightError(`Session '${sessionId}' already has an active background turn.`);
     }
-    const backendStatusSettling = computerUseArtifactBrokerRef?.settleBackendStatus?.();
-    if (backendStatusSettling) await backendStatusSettling;
     const prepared = prepareSendMessage({
       sessionId,
       text,

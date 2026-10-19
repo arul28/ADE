@@ -48,7 +48,7 @@ import {
   toOptionalString,
   writeTextAtomic,
 } from "../shared/utils";
-import { commandExistsCached, prewarmCommandExists, settleCommandExists } from "../ai/utils";
+import { commandExistsCached, prewarmCommandExists } from "../ai/utils";
 import { readArtifactByteRange } from "./artifactByteRange";
 import { createComputerUseArtifactPath, getLocalComputerUseCapabilities, toProjectArtifactUri } from "./localComputerUse";
 import { isStreamableArtifactFile, knownArtifactMimeType } from "./artifactStreamProtocol";
@@ -548,8 +548,8 @@ export function createComputerUseArtifactBrokerService(args: {
   const deniedImportRoots = [layout.secretsDir];
 
   // The probes `getBackendStatus` reads, which every chat turn asks for. They are
-  // prewarmed now, in the background, and settled before a send reads them
-  // (`settleBackendStatus`). The local list mirrors `getLocalComputerUseCapabilities`.
+  // prewarmed now, in the background, so a turn's read finds an answer. The local
+  // list mirrors `getLocalComputerUseCapabilities`.
   const backendProbeCommands = process.platform === "darwin"
     ? ["agent-browser", "screencapture", "open", "swift", "osascript"]
     : ["agent-browser"];
@@ -1872,8 +1872,6 @@ export function createComputerUseArtifactBrokerService(args: {
     },
 
     getBackendStatus,
-    /** A promise to await before a turn reads `getBackendStatus`, or null when it can read now (see `settleCommandExists`). */
-    settleBackendStatus: () => settleCommandExists(backendProbeCommands),
   };
 }
 
