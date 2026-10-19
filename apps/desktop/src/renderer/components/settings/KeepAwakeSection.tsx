@@ -169,7 +169,9 @@ export function KeepAwakeControls() {
             && level !== "lid-closed"
             && current.lidClosedActive;
           if (shouldEnableLid || shouldDisableLid) {
-            const result = await window.ade.keepAwakeApplyLidClosed(shouldEnableLid, activePin);
+            // This Mac's own admin prompt: plain IPC, never pinned, even when
+            // the page reaches this computer through a pinned binding.
+            const result = await window.ade.keepAwakeApplyLidClosed(shouldEnableLid);
             if (!result.ok) {
               setLevelActionError(result.error ?? "macOS couldn't change lid-closed mode.");
               return;

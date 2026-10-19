@@ -13981,41 +13981,26 @@ const adeBridge = {
         ipcRenderer.invoke(IPC.ctoGetAttention),
       ),
   },
+  // Keep-awake is a "This computer" section: with no pin it means this
+  // computer, so it goes to local IPC (which asks this machine's own brain),
+  // never to the project tab's bound runtime, which may be another machine.
   keepAwakeGet: async (pin?: OpenProjectBinding | null): Promise<KeepAwakeSnapshot> => {
-    if (!pin) await ipcRenderer.invoke(IPC.keepAwakeMigrateLegacy).catch(() => false);
-    try {
-      return await callPinnedOrBoundRuntimeActionOr(pin, "keep_awake", "getSnapshot", {}, () =>
-        ipcRenderer.invoke(IPC.keepAwakeGet),
-      );
-    } catch (error) {
-      if (pin || !isUnsupportedAdeActionError(error)) throw error;
-      return await ipcRenderer.invoke(IPC.keepAwakeGet);
-    }
+    if (pin) return await callPinnedRuntimeAction<KeepAwakeSnapshot>(pin, "keep_awake", "getSnapshot", {});
+    await ipcRenderer.invoke(IPC.keepAwakeMigrateLegacy).catch(() => false);
+    return await ipcRenderer.invoke(IPC.keepAwakeGet);
   },
   keepAwakeSetLevel: async (level: KeepAwakeLevel, pin?: OpenProjectBinding | null): Promise<KeepAwakeSnapshot> => {
-    if (!pin) await ipcRenderer.invoke(IPC.keepAwakeMigrateLegacy).catch(() => false);
-    try {
-      return await callPinnedOrBoundRuntimeActionOr(pin, "keep_awake", "setLevel", { args: { level } }, () =>
-        ipcRenderer.invoke(IPC.keepAwakeSetLevel, level),
-      );
-    } catch (error) {
-      if (pin || !isUnsupportedAdeActionError(error)) throw error;
-      return await ipcRenderer.invoke(IPC.keepAwakeSetLevel, level);
+    if (pin) {
+      return await callPinnedRuntimeAction<KeepAwakeSnapshot>(pin, "keep_awake", "setLevel", { args: { level } });
     }
+    await ipcRenderer.invoke(IPC.keepAwakeMigrateLegacy).catch(() => false);
+    return await ipcRenderer.invoke(IPC.keepAwakeSetLevel, level);
   },
-  keepAwakeFixSystemSleep: (pin?: OpenProjectBinding | null): Promise<KeepAwakeFixResult> => {
-    if (!pin && process.platform === "darwin") return ipcRenderer.invoke(IPC.keepAwakeFixSystemSleep);
-    return (async () => {
-      if (!pin) await ipcRenderer.invoke(IPC.keepAwakeMigrateLegacy).catch(() => false);
-      try {
-        return await callPinnedOrBoundRuntimeActionOr(pin, "keep_awake", "fixSystemSleep", {}, () =>
-          ipcRenderer.invoke(IPC.keepAwakeFixSystemSleep),
-        );
-      } catch (error) {
-        if (pin || !isUnsupportedAdeActionError(error)) throw error;
-        return await ipcRenderer.invoke(IPC.keepAwakeFixSystemSleep);
-      }
-    })();
+  keepAwakeFixSystemSleep: async (pin?: OpenProjectBinding | null): Promise<KeepAwakeFixResult> => {
+    if (pin) return await callPinnedRuntimeAction<KeepAwakeFixResult>(pin, "keep_awake", "fixSystemSleep", {});
+    // macOS fixes run in this desktop process; elsewhere the brain owns the level first.
+    if (process.platform !== "darwin") await ipcRenderer.invoke(IPC.keepAwakeMigrateLegacy).catch(() => false);
+    return await ipcRenderer.invoke(IPC.keepAwakeFixSystemSleep);
   },
   keepAwakeApplyLidClosed: (disabled: boolean, pin?: OpenProjectBinding | null): Promise<{ ok: boolean; error: string | null }> =>
     pin
