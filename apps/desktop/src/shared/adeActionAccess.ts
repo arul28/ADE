@@ -46,6 +46,10 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     read: ["getSnapshot"],
     write: ["setLevel", "migrateLegacyPreference", "fixSystemSleep"],
   },
+  remote_mcp: {
+    read: ["getStatus", "listActivity"],
+    write: ["setEnabled", "createToken", "updateConnection", "removeConnection"],
+  },
   lane: {
     read: [
       "diagnosticsGetLaneHealth", "diagnosticsGetStatus", "getBranchDrift", "getChildren",

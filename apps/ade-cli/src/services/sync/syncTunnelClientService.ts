@@ -72,6 +72,12 @@ export type SyncTunnelClientService = {
    * it wins regardless of who created the instance.
    */
   attachHostListener(listener: TunnelHostListener | null): void;
+  /**
+   * Hand this client the machine's ADE MCP service. The relay learns
+   * whether it is on from this socket (`mcp_state`), and forwards its HTTP
+   * requests here (`http` → `http_res`).
+   */
+  attachRemoteMcp(host: TunnelRemoteMcpHost | null): void;
   /** Re-probe the active shared listener without opening a Relay pipe. */
   validateCurrentBridge(): Promise<boolean>;
   /** Dial Relay exactly like a ready-v2 controller and verify bridge readiness. */
@@ -308,8 +314,58 @@ export function relayPipeLocalPath(message: { kind?: string; path?: string }): s
   return APPLE_STREAM_PIPE_PATH.test(path) ? path : "";
 }
 
-export type ControlMessage = ControlOpenMessage | {
+/**
+ * One HTTP request for this machine's ADE MCP, carried over the
+ * control socket. The relay forwards anything under `/m/<machineKey>/`; the
+ * remote MCP service decides what it means. See services/remoteMcp.
+ */
+export type ControlHttpMessage = {
+  t: "http";
+  rid: string;
+  method: string;
+  path: string;
+  headers: Record<string, string>;
+  body: string | null;
+};
+
+export type ControlMessage = ControlOpenMessage | ControlHttpMessage | {
   t: "pong";
+};
+
+const HTTP_METHODS = new Set(["GET", "POST", "DELETE", "HEAD"]);
+const MAX_HTTP_PATH_CHARS = 8_192;
+const MAX_HTTP_HEADERS = 32;
+const MAX_HTTP_BODY_CHARS = 1024 * 1024;
+/** What the relay accepts back, with room for JSON escaping of a full body. */
+export const MAX_HTTP_RESPONSE_ENVELOPE_CHARS = 4 * 1024 * 1024;
+
+function parseControlHttpMessage(parsed: Record<string, unknown>): ControlHttpMessage | null {
+  const { rid, method, path, headers, body } = parsed;
+  if (typeof rid !== "string" || !/^[a-f0-9]{16,32}$/i.test(rid)) return null;
+  if (typeof method !== "string" || !HTTP_METHODS.has(method)) return null;
+  if (typeof path !== "string" || !path.startsWith("/") || path.startsWith("//") || path.length > MAX_HTTP_PATH_CHARS) return null;
+  if (body !== null && body !== undefined && (typeof body !== "string" || body.length > MAX_HTTP_BODY_CHARS)) return null;
+  const cleanHeaders: Record<string, string> = {};
+  if (headers && typeof headers === "object" && !Array.isArray(headers)) {
+    const entries = Object.entries(headers as Record<string, unknown>);
+    if (entries.length > MAX_HTTP_HEADERS) return null;
+    for (const [key, value] of entries) {
+      if (typeof value === "string" && value.length <= 8_192) cleanHeaders[key.toLowerCase()] = value;
+    }
+  }
+  return { t: "http", rid, method, path, headers: cleanHeaders, body: typeof body === "string" ? body : null };
+}
+
+/** The slice of the remote MCP service the relay connection drives. */
+export type TunnelRemoteMcpHost = {
+  isEnabled(): boolean;
+  onEnabledChange(listener: (enabled: boolean) => void): () => void;
+  handleHttp(request: {
+    method: string;
+    path: string;
+    headers: Record<string, string>;
+    body: string | null;
+  }): Promise<{ status: number; headers: Record<string, string>; body: string }>;
 };
 
 /** Parses a host control frame; returns null for anything unrecognized. */
@@ -346,6 +402,7 @@ export function parseControlMessage(raw: string): ControlMessage | null {
     };
   }
   if (t === "pong") return { t: "pong" };
+  if (t === "http") return parseControlHttpMessage(parsed as Record<string, unknown>);
   return null;
 }
 
@@ -427,6 +484,8 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
   let connected = false;
   let hostListener: TunnelHostListener | null = null;
   let detachHostListener: (() => void) | null = null;
+  let remoteMcp: TunnelRemoteMcpHost | null = null;
+  let detachRemoteMcp: (() => void) | null = null;
   let lastError: string | null = null;
   let lastControlError: string | null = null;
   let bridgeOpenFailure: {
@@ -995,6 +1054,8 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
         controlFailingSinceMs = null;
         controlOpenedAtMs = Date.now();
         lastControlOpenAt = new Date().toISOString();
+        // A new control socket starts "off" at the relay; say what is true.
+        sendRemoteMcpState(socket);
         socketLivenessStop = armControlLiveness(
           socket,
           () => {
@@ -1116,6 +1177,10 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
         const message = parseControlMessage(rawToText(raw));
         if (message?.t === "pong") {
           acceptJsonPong?.();
+          return;
+        }
+        if (message?.t === "http") {
+          void answerRemoteMcpHttp(socket, message);
           return;
         }
         if (message?.t !== "open") return;
@@ -1595,6 +1660,54 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
     }
   };
 
+  const sendRemoteMcpState = (controlSocket: WebSocket | null): void => {
+    if (!controlSocket) return;
+    // An older relay ignores the message; a relay that never hears "on" keeps
+    // answering 404 without waking this machine.
+    sendControlLifecycle(controlSocket, { t: "mcp_state", enabled: remoteMcp?.isEnabled() === true });
+  };
+
+  const answerRemoteMcpHttp = async (controlSocket: WebSocket, message: ControlHttpMessage): Promise<void> => {
+    let response: { status: number; headers: Record<string, string>; body: string };
+    if (!remoteMcp) {
+      response = {
+        status: 404,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ error: "remote_access_off", error_description: "ADE MCP is off on this computer." }),
+      };
+    } else {
+      try {
+        response = await remoteMcp.handleHttp(message);
+      } catch (error) {
+        log.warn?.("remote_mcp.request_failed", { error: error instanceof Error ? error.message : String(error) });
+        response = {
+          status: 500,
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ error: "server_error", error_description: "This computer could not answer." }),
+        };
+      }
+    }
+    // The socket the request came on is the only one the relay can match the
+    // answer to. If it has gone, the relay already failed the request.
+    if (control !== controlSocket) return;
+    let envelope = JSON.stringify({ t: "http_res", rid: message.rid, ...response });
+    if (envelope.length > MAX_HTTP_RESPONSE_ENVELOPE_CHARS) {
+      envelope = JSON.stringify({
+        t: "http_res",
+        rid: message.rid,
+        status: 502,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ error: "response_too_large" }),
+      });
+    }
+    if (controlSocket.readyState !== WebSocket.OPEN) return;
+    try {
+      controlSocket.send(envelope);
+    } catch {
+      // The relay times the request out; the socket's own handlers deal with the failure.
+    }
+  };
+
   const sendControlReject = (
     controlSocket: WebSocket,
     connectionId: string,
@@ -1958,6 +2071,17 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       );
       accountStatusTimer.unref?.();
       await refreshAccountLease();
+    },
+
+    attachRemoteMcp(host: TunnelRemoteMcpHost | null): void {
+      if (remoteMcp === host) return;
+      detachRemoteMcp?.();
+      detachRemoteMcp = null;
+      remoteMcp = host;
+      if (host) {
+        detachRemoteMcp = host.onEnabledChange(() => sendRemoteMcpState(control));
+      }
+      sendRemoteMcpState(control);
     },
 
     attachHostListener(listener: TunnelHostListener | null): void {

@@ -46,6 +46,7 @@ export const SETTINGS_TAB_IDS = [
   "apple",
   "appearance",
   "behaviour",
+  "ade-mcp",
 ] as const;
 
 export type SettingsTabId = (typeof SETTINGS_TAB_IDS)[number];
@@ -111,7 +112,7 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
 ] as const;
 
 /** The pages that exist once per machine (the Computer group). */
-export const MACHINE_SETTINGS_TAB_IDS: readonly SettingsTabId[] = ["service", "agents", "apple", "appearance", "behaviour"];
+export const MACHINE_SETTINGS_TAB_IDS: readonly SettingsTabId[] = ["service", "agents", "apple", "appearance", "behaviour", "ade-mcp"];
 
 export function isMachineSettingsTab(tab: SettingsTabId): boolean {
   return MACHINE_SETTINGS_TAB_IDS.includes(tab);
@@ -174,6 +175,8 @@ export const SETTINGS_TABS: readonly SettingsTab[] = [
   // terminal, and none of it follows the account.
   { id: "appearance", label: "Appearance", description: "How ADE looks on this computer: theme, fonts and terminal.", group: "machines" },
   { id: "behaviour", label: "Behaviour", description: "Sleep, screen capture, links, and the ADE browser.", group: "machines" },
+  // Per computer: each machine is its own MCP server, switched on separately.
+  { id: "ade-mcp", label: "ADE MCP", description: "Let AI apps like claude.ai, ChatGPT and Cursor run ade on this computer.", group: "machines" },
 ] as const;
 
 /**
@@ -419,6 +422,19 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     web: "hidden",
     group: "Sleep",
   },
+  {
+    id: "ade-mcp.server",
+    label: "ADE MCP: let AI apps use this computer",
+    keywords: ["mcp", "ade mcp", "remote", "server", "claude.ai", "chatgpt", "cursor", "grok", "connector", "token", "oauth", "relay", "ai apps"],
+    tab: "ade-mcp",
+    anchor: "ade-mcp",
+    scope: "machine",
+    // Granting an outside app a machine is done from a desktop that reaches
+    // it, never from a browser tab.
+    web: "hidden",
+    group: "ADE MCP",
+  },
+
   {
     id: "general.capture-gesture",
     label: "Capture with a key gesture",

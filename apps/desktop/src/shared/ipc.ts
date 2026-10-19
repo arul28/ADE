@@ -1246,6 +1246,7 @@ export const IPC = {
   ctoGetLinearOAuthSession: "ade.cto.getLinearOAuthSession",
   ctoRunProjectScan: "ade.cto.runProjectScan",
   keepAwakeGet: "ade.keepAwake.get",
+  remoteMcpCall: "ade.remoteMcp.call",
   keepAwakeSetLevel: "ade.keepAwake.setLevel",
   keepAwakeFixSystemSleep: "ade.keepAwake.fixSystemSleep",
   keepAwakeMigrateLegacy: "ade.keepAwake.migrateLegacy",

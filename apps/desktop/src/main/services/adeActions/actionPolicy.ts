@@ -76,6 +76,9 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   // Keep-awake preferences are machine-wide power policy. The desktop, phone,
   // and direct user clients can change them; session-bound agents cannot.
   keep_awake: { only: ["getSnapshot", "setLevel", "migrateLegacyPreference", "fixSystemSleep"] },
+  // ADE MCP grants an outside app this machine. Reading who has it is
+  // operator work too; agents never see or change it.
+  remote_mcp: { allExcept: [] },
   linear_credentials: {
     only: [
       "setToken",
@@ -296,6 +299,9 @@ export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly stri
   // An agent asking to move a chat must not approve its own request. And only
   // a person's client hosts an MCP App, so only it may pass an app's call on.
   chat: ["resolveCrossMachineHandoffApproval", "mcpAppRequest", "revokeMcpAppGrant"],
+  // Granting an outside AI app this computer is the person's call. `ade mcp`
+  // in their own terminal reaches the same service through `remoteMcp.call`.
+  remote_mcp: ["setEnabled", "createToken", "updateConnection", "removeConnection"],
 };
 
 export function isUserOnlyAdeAction(domain: AdeActionDomain, action: string): boolean {
@@ -322,6 +328,8 @@ export const ADE_ACTION_SECRET_BEARING: Partial<Record<AdeActionDomain, readonly
   // Mints the loopback stream token.
   mac_desktop: ["startStream"],
   jira: ["connect"],
+  // A token gives an outside AI app this computer.
+  remote_mcp: ["createToken"],
 };
 
 /**
@@ -372,6 +380,14 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "sendNotification",
   ],
   keep_awake: ["getSnapshot", "setLevel", "migrateLegacyPreference", "fixSystemSleep"],
+  remote_mcp: [
+    "getStatus",
+    "listActivity",
+    "setEnabled",
+    "createToken",
+    "updateConnection",
+    "removeConnection",
+  ],
   lane: [
     "archive",
     "archiveAndReclaim",

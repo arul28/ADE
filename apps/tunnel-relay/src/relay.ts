@@ -125,6 +125,11 @@ export function generateConnectionId(): string {
 }
 
 export type TunnelRoute =
+  /**
+   * ADE MCP: an HTTP request for the machine's MCP server, forwarded
+   * over its control socket. `path` is what the brain sees, with the query.
+   */
+  | { kind: "mcp"; machineKey: string; path: string }
   | { kind: "claim"; machineKey: string }
   | { kind: "host"; machineKey: string }
   | { kind: "pipe"; machineKey: string; id: string }
@@ -162,6 +167,57 @@ export function routeTunnelPath(pathname: string): TunnelRoute | null {
   }
   return null;
 }
+
+/**
+ * ADE MCP routes. Everything under `/m/<machineKey>/` goes to the
+ * brain as is. OAuth discovery puts the well-known segment first (RFC 8414 /
+ * RFC 9728 path insertion), so `/.well-known/<kind>/m/<key>[/mcp]` maps onto
+ * the brain's own `/.well-known/<kind>`.
+ */
+const MCP_WELL_KNOWN = new Set(["oauth-protected-resource", "oauth-authorization-server", "openid-configuration"]);
+
+export function routeMcpPath(url: URL): TunnelRoute | null {
+  let parts: string[];
+  try {
+    parts = url.pathname.split("/").filter(Boolean).map((part) => decodeURIComponent(part));
+  } catch {
+    return null;
+  }
+  if (parts.some((part) => part === "." || part === ".." || part.includes("/") || part.includes("\\"))) return null;
+  // ADE sign-in (Clerk) returns every machine's sign-in to this one registered
+  // address; the state names the machine before the dot. The brain checks the
+  // rest of the state itself.
+  if (parts.length === 2 && parts[0] === "oauth" && parts[1] === "callback") {
+    const state = url.searchParams.get("state") ?? "";
+    const machineKey = state.slice(0, state.indexOf("."));
+    if (!validKey(machineKey)) return null;
+    return { kind: "mcp", machineKey, path: `/oauth/account-callback${url.search}` };
+  }
+  if (parts.length >= 2 && parts[0] === "m") {
+    if (!validKey(parts[1])) return null;
+    const rest = parts.slice(2);
+    return { kind: "mcp", machineKey: parts[1], path: `/${rest.map(encodeURIComponent).join("/")}${url.search}` };
+  }
+  if (parts.length >= 4 && parts[0] === ".well-known" && MCP_WELL_KNOWN.has(parts[1]!) && parts[2] === "m") {
+    if (!validKey(parts[3])) return null;
+    const suffix = parts.slice(4);
+    return {
+      kind: "mcp",
+      machineKey: parts[3],
+      path: `/.well-known/${parts[1]}${suffix.length ? `/${suffix.map(encodeURIComponent).join("/")}` : ""}${url.search}`,
+    };
+  }
+  return null;
+}
+
+/** CORS for ADE MCP: browser-based MCP clients call it cross-origin. */
+export const MCP_CORS_HEADERS: Record<string, string> = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-methods": "GET, POST, DELETE, OPTIONS",
+  "access-control-allow-headers": "authorization, content-type, accept, mcp-protocol-version, mcp-session-id, last-event-id",
+  "access-control-expose-headers": "www-authenticate, mcp-session-id",
+  "access-control-max-age": "86400",
+};
 
 function validKey(value: string | undefined): value is string {
   return typeof value === "string" && MACHINE_KEY_PATTERN.test(value);
@@ -233,8 +289,11 @@ export async function handleRequest(request: Request, env: TunnelRelayEnv): Prom
     });
   }
 
-  const route = routeTunnelPath(url.pathname);
+  const route = routeTunnelPath(url.pathname) ?? routeMcpPath(url);
   if (!route) return textResponse("not found", 404);
+  if (route.kind === "mcp" && request.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: MCP_CORS_HEADERS });
+  }
 
   // Every route is scoped to a single machine → a single Durable Object
   // instance. The DO owns the claim secret, signature verification, and the

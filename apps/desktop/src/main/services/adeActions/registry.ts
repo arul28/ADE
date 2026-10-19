@@ -569,6 +569,24 @@ function buildProxyDomainService(runtime: AdeRuntime): OpaqueService | null {
   return proxyService ? toService(createProxyActionDomainService(proxyService)) : null;
 }
 
+/**
+ * ADE MCP for Settings. Every write is user-only (the desktop), so an
+ * agent can neither read nor grant it; `ade mcp` reaches the same service
+ * through the machine method `remoteMcp.call`.
+ */
+function buildRemoteMcpDomainService(runtime: AdeRuntime): OpaqueService | null {
+  const service = runtime.remoteMcpService;
+  if (!service) return null;
+  return {
+    getStatus: () => service.getStatus(),
+    listActivity: (args: { limit?: unknown }) => service.listActivity(args ?? {}),
+    setEnabled: (args: { enabled?: unknown }) => service.setEnabled(args ?? {}),
+    createToken: (args: { label?: unknown; scope?: unknown }) => service.createToken(args ?? {}),
+    updateConnection: (args: { id?: unknown; scope?: unknown; label?: unknown }) => service.updateConnection(args ?? {}),
+    removeConnection: (args: { id?: unknown }) => service.removeConnection(args ?? {}),
+  };
+}
+
 function buildKeepAwakeDomainService(runtime: AdeRuntime): OpaqueService | null {
   const service = runtime.keepAwakeService;
   if (!service) return null;
@@ -4135,6 +4153,7 @@ export function getAdeActionDomainServices(
       : null,
     attention: toService(buildAttentionDomainService(runtime)),
     keep_awake: toService(buildKeepAwakeDomainService(runtime)),
+    remote_mcp: toService(buildRemoteMcpDomainService(runtime)),
     lane: toService(buildLaneDomainService(runtime)),
     proxy: toService(buildProxyDomainService(runtime)),
     git: toService(runtime.gitService),

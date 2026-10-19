@@ -464,6 +464,7 @@ const RUNTIME_METHODS = new Set([
   "runtime.activitySummary",
   "runtime.updateImpact",
   "account.call",
+  "remoteMcp.call",
   "attention.call",
   "notify.send",
   "providers.status",
@@ -2436,6 +2437,38 @@ export function createMultiProjectRpcRequestHandler(
     // `ade notify`: machine-wide, so it neither needs nor registers the
     // caller's folder as a project. Open to agents, like the
     // `attention.sendNotification` action it shares its rules with.
+    if (method === "remoteMcp.call") {
+      // `ade mcp` in the person's own terminal. Granting an outside AI app this
+      // computer is the person's call: an agent (a chat-bound caller) never
+      // reaches it, and neither does anything below the cto role.
+      if (!callerHasRoleAtLeast(callerRole(), "cto") || callerIdentityIsAgent(callerIdentity())) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidRequest,
+          "ADE MCP is managed by the person: run `ade mcp` in your own terminal, or use Settings → ADE MCP.",
+        );
+      }
+      const action = typeof params.action === "string" ? params.action.trim() : "";
+      const actionArgs = isRecord(params.args) ? params.args : {};
+      const { getSharedRemoteMcpService } = await import("./services/remoteMcp/remoteMcpShared");
+      const service = getSharedRemoteMcpService();
+      switch (action) {
+        case "getStatus":
+          return service.getStatus();
+        case "listActivity":
+          return service.listActivity(actionArgs);
+        case "setEnabled":
+          return service.setEnabled(actionArgs);
+        case "createToken":
+          return service.createToken(actionArgs);
+        case "updateConnection":
+          return service.updateConnection(actionArgs);
+        case "removeConnection":
+          return service.removeConnection(actionArgs);
+        default:
+          throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Unknown remote access action "${action}".`);
+      }
+    }
+
     if (method === "notify.send") {
       if (!callerHasRoleAtLeast(callerRole(), "agent")) {
         throw new JsonRpcError(
