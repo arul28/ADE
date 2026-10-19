@@ -4786,6 +4786,73 @@ describe("service health probe never blocks the main thread", () => {
       expect(probes()).toBe(2);
       expect(status.serviceHealth.installed).toBe(false);
     });
+
+    it("a recovery read after a service install does not resolve with a probe that began before it", async () => {
+      // The first probe begins while the service is absent and is held until the
+      // test lands it; every later probe answers at once.
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-read-window-install-"));
+      const logPath = path.join(dir, "installs.log");
+      const cliPath = path.join(dir, "fake-cli.cjs");
+      fs.writeFileSync(
+        cliPath,
+        [
+          "const fs = require('node:fs');",
+          `fs.appendFileSync(${JSON.stringify(logPath)}, 'install\\n');`,
+          "process.stdout.write(JSON.stringify({ ok: true, path: 'com.ade.runtime', message: 'installed' }));",
+        ].join("\n"),
+      );
+      const originalEnv = {
+        ADE_CLI_JS: process.env.ADE_CLI_JS,
+        ADE_RUNTIME_SOCKET_PATH: process.env.ADE_RUNTIME_SOCKET_PATH,
+      };
+      let installed = false;
+      let calls = 0;
+      const answers: Array<() => void> = [];
+      const pool = new LocalRuntimeConnectionPool("1.0.0", silentLogger() as never, {
+        queryServiceStatusAsync: () => {
+          calls += 1;
+          // Each probe reports the service as it stands when the probe asks.
+          const observed = {
+            ...asyncTestServiceStatus(),
+            installed,
+            running: installed,
+            message: installed ? "ADE test service is running." : "ADE test service is not installed.",
+          };
+          if (calls > 1) return Promise.resolve(observed);
+          return new Promise((resolve) => answers.push(() => resolve(observed)));
+        },
+      });
+      try {
+        process.env.ADE_CLI_JS = cliPath;
+        process.env.ADE_RUNTIME_SOCKET_PATH = path.join(dir, "missing.sock");
+
+        // A status poll starts a probe while the service is still absent.
+        pool.getStatus();
+        expect(calls).toBe(1);
+
+        // The pool installs the service itself while that probe is still in flight.
+        vi.setSystemTime(Date.now() + 500);
+        installed = true;
+        await pool.installServiceBestEffort();
+        expect(fs.readFileSync(logPath, "utf8")).toBe("install\n");
+
+        // Two recovery reads inside the window share one probe that begins after the install.
+        const recovered = pool.getStatusAfterServiceProbe();
+        const sharedRecovery = pool.getStatusAfterServiceProbe();
+        answers.shift()!();
+        const [status, shared] = await Promise.all([recovered, sharedRecovery]);
+        expect(status.serviceHealth).toMatchObject({ installed: true });
+        expect(shared.serviceHealth).toMatchObject({ installed: true });
+        expect(calls).toBe(2);
+      } finally {
+        pool.dispose();
+        if (originalEnv.ADE_CLI_JS === undefined) delete process.env.ADE_CLI_JS;
+        else process.env.ADE_CLI_JS = originalEnv.ADE_CLI_JS;
+        if (originalEnv.ADE_RUNTIME_SOCKET_PATH === undefined) delete process.env.ADE_RUNTIME_SOCKET_PATH;
+        else process.env.ADE_RUNTIME_SOCKET_PATH = originalEnv.ADE_RUNTIME_SOCKET_PATH;
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
   });
 });
 
