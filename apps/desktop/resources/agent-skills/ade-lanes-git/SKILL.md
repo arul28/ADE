@@ -56,9 +56,9 @@ ade lanes deps [--refresh] --text
 ade lanes create --name <name> --template <id>   # waits for setup; --no-template skips it
 ```
 
-Dependency commands must start with `npm`, `yarn`, `pnpm`, `pip`, `pip3`,
-`bundle`, `cargo`, `go`, `composer`, `poetry`, `pipenv`, or `bun`. Put other
-commands in `setupScript`. Each dependency command can run for up to 20 minutes.
+A dependency command runs directly, without a shell, so pipes, `&&` and `$VARS`
+need `setupScript`. Each dependency command and each setup command can run for
+up to 20 minutes.
 
 To check a template, create a throwaway lane with
 `ade lanes create --name tmpl-test --template <id>`. Inspect the copied folders

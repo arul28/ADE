@@ -38,6 +38,7 @@ export function useLaneTemplateSetupChat({
         known ? Promise.resolve(known) : window.ade.lanes.getDependencyStatus({}, pin).catch(() => null),
         window.ade.lanes.listTemplates(pin).catch(() => []),
       ]);
+      const defaultTemplate = templates.find((template) => template.id === status?.defaultTemplateId) ?? null;
       handOff({
         laneId: primary.id,
         sessionId: null,
@@ -46,6 +47,7 @@ export function useLaneTemplateSetupChat({
           machineName,
           folders: status?.folders ?? [],
           templateNames: templates.map((template) => template.name || template.id),
+          defaultTemplateName: defaultTemplate ? defaultTemplate.name || defaultTemplate.id : null,
         }),
       });
     } catch (error) {

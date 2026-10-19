@@ -13,15 +13,19 @@ export function buildLaneTemplateSetupPrompt(args: {
   machineName: string;
   folders: Array<Pick<LaneDependencyFolderStatus, "lockfile" | "manager">>;
   templateNames: string[];
+  /** The template that already runs for new lanes there, if any. */
+  defaultTemplateName?: string | null;
 }): string {
   const project = args.projectName?.trim() || "this project";
   const listed = args.folders.slice(0, MAX_LISTED_LOCKFILES).map((folder) => `- ${folder.lockfile} (${folder.manager})`);
   if (args.folders.length > MAX_LISTED_LOCKFILES) {
     listed.push(`- and ${args.folders.length - MAX_LISTED_LOCKFILES} more (run \`ade lanes deps --text\`)`);
   }
-  const existing = args.templateNames.length
-    ? `This machine already has these templates, but none runs for new lanes: ${args.templateNames.join(", ")}.`
-    : "This machine has no lane templates yet.";
+  const existing = !args.templateNames.length
+    ? "This machine has no lane templates yet."
+    : args.defaultTemplateName
+      ? `This machine has these templates: ${args.templateNames.join(", ")}. "${args.defaultTemplateName}" runs for new lanes; read it before you write a new one.`
+      : `This machine already has these templates, but none runs for new lanes: ${args.templateNames.join(", ")}.`;
 
   return [
     `Set up a lane template for ${project}, so every new lane is ready to work in and uses little disk.`,
@@ -30,6 +34,7 @@ export function buildLaneTemplateSetupPrompt(args: {
     "- A lane is a git worktree of this repo in its own folder. New lanes are plain worktrees: ADE does not copy, link or install any packages into them.",
     "- A lane template says what happens when a lane is created. It can copy env files, install packages, copy paths from the main checkout, and run a setup script. With `injectPrimaryPath: true`, the setup script gets `$PRIMARY_WORKTREE_PATH` (the main checkout).",
     "- The default template runs for every new lane on that machine. Templates are stored per machine (in that machine's `.ade/local.yaml`) and do not sync.",
+    `- This chat runs in the main checkout on ${args.machineName}, so a template you save here is for ${args.machineName}.`,
     "- Read `ade help lanes` and the ade-lanes-git skill for the template commands (`ade lanes templates …`, `ade lanes deps`).",
     "",
     "## What ADE found in the main checkout",

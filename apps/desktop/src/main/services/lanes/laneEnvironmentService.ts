@@ -443,23 +443,18 @@ export function createLaneEnvironmentService({
     return execCommand(["docker", ...args], worktreePath, 300_000);
   }
 
-  const ALLOWED_INSTALL_COMMANDS = new Set([
-    "npm", "yarn", "pnpm", "pip", "pip3", "bundle", "cargo", "go", "composer", "poetry", "pipenv", "bun"
-  ]);
-
+  // Any command runs here, like the setup script beside it. Both come only
+  // from this machine's `.ade/local.yaml` (a lane template or the project's
+  // lane config), never from the repo, so an allowlist guarded nothing and
+  // only stopped tools it did not list (uv, pod, mise, make, …).
   async function installDependencies(
     worktreePath: string,
     deps: LaneDependencyInstallConfig[]
   ): Promise<{ failures: string[] }> {
     const failures: string[] = [];
     for (const dep of deps) {
-      const baseCommand = dep.command[0];
-      if (!ALLOWED_INSTALL_COMMANDS.has(baseCommand)) {
-        // Skipping it quietly made a template look fine while it did nothing.
-        logger.warn("lane_env_init.dependency_command_not_allowed", { command: baseCommand });
-        failures.push(
-          `${baseCommand || "(empty command)"} is not an install command. Install steps can run ${[...ALLOWED_INSTALL_COMMANDS].join(", ")}; put other commands in the setup script.`,
-        );
+      if (!dep.command[0]?.trim()) {
+        failures.push("An install step has no command.");
         continue;
       }
       const cwd = resolveCheckedPath(worktreePath, dep.cwd ?? ".", logger, "lane_env_init.dependency_cwd_escape", { cwd: dep.cwd ?? ".", worktreePath });

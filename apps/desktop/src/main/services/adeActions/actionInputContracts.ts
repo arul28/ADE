@@ -351,9 +351,9 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     },
     saveTemplate: {
       description:
-        "Create or replace a lane template on this machine. Steps run in this order: envFiles, docker, dependencies (each command must start with "
-        + "npm, yarn, pnpm, pip, pip3, bundle, cargo, go, composer, poetry, pipenv or bun), mountPoints, copyPaths (from the main checkout), setupScript "
-        + "(any shell commands; injectPrimaryPath sets $PRIMARY_WORKTREE_PATH). Each command may run 20 minutes.",
+        "Create or replace a lane template on this machine. Steps run in this order: envFiles, docker, dependencies (each command runs directly, "
+        + "without a shell, in its cwd), mountPoints, copyPaths (from the main checkout), setupScript "
+        + "(shell commands; injectPrimaryPath sets $PRIMARY_WORKTREE_PATH). Each command may run 20 minutes.",
       input:
         "object { template: { id: string, name: string, description?, envFiles?: [{ source, dest, vars? }], dependencies?: [{ command: string[], cwd? }], "
         + "copyPaths?: [{ source, dest? }], envVars?: Record<string,string>, portRange?: { start, end }, "

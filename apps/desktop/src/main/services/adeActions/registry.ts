@@ -1965,11 +1965,12 @@ function laneDependencyStatusDeps(runtime: AdeRuntime): LaneDependencyStatusDeps
     cacheDir: runtime.paths.cacheDir,
     getDefaultTemplateId: () => runtime.laneTemplateService?.getDefaultTemplateId() ?? null,
     getTemplateCount: () => runtime.laneTemplateService?.listTemplates().length ?? 0,
+    logger: runtime.logger,
   };
 }
 
-/** Deps for the shared `runLaneEnvironmentSetup` (lane.initEnv / lane.applyTemplate). */
-function laneEnvironmentSetupDeps(
+/** Deps for the shared `runLaneEnvironmentSetup` (lane.initEnv / lane.applyTemplate, and `create_lane`'s setup). */
+export function laneEnvironmentSetupDeps(
   runtime: AdeRuntime,
   laneEnvironmentService: NonNullable<AdeRuntime["laneEnvironmentService"]>,
 ): LaneEnvironmentSetupDeps {
@@ -2259,6 +2260,10 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
       const lockfiles = Array.isArray(args?.lockfiles)
         ? args.lockfiles.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
         : undefined;
+      // Only an omitted list means "all"; an empty one changes nothing.
+      if (lockfiles && lockfiles.length === 0) {
+        return readLaneDependencyStatus(laneDependencyStatusDeps(runtime), { refresh: true });
+      }
       return acknowledgeLaneDependencyStatus(laneDependencyStatusDeps(runtime), lockfiles ? { lockfiles } : {});
     },
     portGetLease: async (args?: { laneId?: string }) => {

@@ -93,6 +93,7 @@ export type LaneDependencyStatusDeps = {
   cacheDir: string;
   getDefaultTemplateId: () => string | null;
   getTemplateCount: () => number;
+  logger?: { warn: (event: string, meta?: Record<string, unknown>) => void };
   platform?: NodeJS.Platform;
 };
 
@@ -125,15 +126,16 @@ function readBaselines(cacheDir: string): Baselines {
   }
 }
 
-function writeBaselines(cacheDir: string, baselines: Baselines): void {
+function writeBaselines(cacheDir: string, baselines: Baselines, logger?: LaneDependencyStatusDeps["logger"]): void {
   try {
     fs.mkdirSync(cacheDir, { recursive: true });
     const target = path.join(cacheDir, BASELINE_FILE);
     const temp = `${target}.${process.pid}.tmp`;
     fs.writeFileSync(temp, `${JSON.stringify(baselines, null, 2)}\n`);
     fs.renameSync(temp, target);
-  } catch {
-    // Best effort: without the file ADE only forgets what it already showed.
+  } catch (error) {
+    // Without the file ADE only forgets what it already showed.
+    logger?.warn("lane_dependency_status.baseline_write_failed", { cacheDir, error: error instanceof Error ? error.message : String(error) });
   }
 }
 
@@ -262,8 +264,10 @@ function folderStatus(projectRoot: string, lockfile: string, baselines: Baseline
       return recordCompare(base, lockStat, hiddenStat, memory, baselines, changedReason);
     }
     case "record": {
-      if (!base.installed && rule.installDir) return base;
-      return recordCompare(base, lockStat, newestRecord(dirAbs, rule.detection.files), memory, baselines, changedReason);
+      // Yarn Plug'n'Play installs leave a record and no `node_modules`.
+      const record = newestRecord(dirAbs, rule.detection.files);
+      if (!record) return base;
+      return recordCompare(base.installed ? base : { ...base, installed: true }, lockStat, record, memory, baselines, changedReason);
     }
   }
 }
@@ -343,11 +347,12 @@ export async function readLaneDependencyStatus(
     try {
       const status = folderStatus(deps.projectRoot, file, baselines);
       if (status) folders.push(status);
-    } catch {
+    } catch (error) {
       // One unreadable lockfile must not hide the others.
+      deps.logger?.warn("lane_dependency_status.lockfile_read_failed", { lockfile: file, error: error instanceof Error ? error.message : String(error) });
     }
   }
-  if (JSON.stringify(baselines) !== before) writeBaselines(deps.cacheDir, baselines);
+  if (JSON.stringify(baselines) !== before) writeBaselines(deps.cacheDir, baselines, deps.logger);
   const status: LaneDependencyStatus = {
     projectRoot: deps.projectRoot,
     platform,
@@ -384,6 +389,6 @@ export async function acknowledgeLaneDependencyStatus(
     const fingerprint = fingerprintOf(absolute, stat);
     baselines[file] = { fingerprint, installedFingerprint: fingerprint };
   }
-  writeBaselines(deps.cacheDir, baselines);
+  writeBaselines(deps.cacheDir, baselines, deps.logger);
   return readLaneDependencyStatus(deps, { refresh: true });
 }

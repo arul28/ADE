@@ -65,11 +65,10 @@ steps in order:
    `resolvePathWithinRoot` (symlink-aware) to prevent path traversal.
 2. **`docker`** — start lane-specific Docker Compose services.
    Compose file path validated against the project root.
-3. **`dependencies`** — run install commands from an allowlist:
-   `npm`, `yarn`, `pnpm`, `pip`, `pip3`, `bundle`, `cargo`, `go`,
-   `composer`, `poetry`, `pipenv`, `bun`. Any command outside this
-   set is rejected. Working directories must resolve inside the
-   worktree.
+3. **`dependencies`** — run install commands, each one directly (no
+   shell), in its `cwd`. Any command runs, like the setup script: both
+   come only from this machine's `.ade/local.yaml`. Working directories
+   must resolve inside the worktree.
 4. **`mount-points`** — configure runtime mount points for agent
    profiles/context. Source and destination validated.
 5. **`copy-paths`** — same validation as env files; used for copying
@@ -300,9 +299,14 @@ IPC: `ade.lanes.templates.list / get / getDefault / setDefault / apply`.
 
 Use `ade lanes templates list|show|save|default|apply|delete` to manage lane
 templates, and `ade lanes deps` to check lockfiles and installed dependencies.
-`ade lanes create` and `ade lanes child` apply the default template after
-creating a lane; pass `--template <id>` to choose one or `--no-template` to skip
-setup. Pass `--machine <name>` to run a command on another machine. Templates
+The agent tools `create_lane` and `import_lane` set a new lane up themselves,
+the way the desktop dialog does: `templateId`, else the default template, else
+the project's lane environment config, and they wait for it (`skipSetup: true`
+leaves a plain worktree). So `ade lanes create`, `ade lanes child`,
+`create-from-linear`, `batch-create-from-linear`, `ade chat create` with a new
+lane, and the TUI all get it; `ade lanes create` takes `--template <id>` and
+`--no-template`. A failed setup is returned in `setup.error` or the progress,
+not thrown: the lane exists. Pass `--machine <name>` to run a command on another machine. Templates
 are stored per machine and do not sync.
 
 ## Main checkout packages
@@ -338,17 +342,22 @@ the main checkout of the machine that owns it and never installs anything:
 - **Cost.** One `git ls-files` plus a `stat` per lockfile; a lockfile is hashed
   (and npm's two lockfiles parsed) only when its size or time changed. Results
   are cached for 20 s. The ADE repo (11 lockfiles) reads in about 90 ms.
-- **`updateCommand`** is one line for the owning machine's terminal: POSIX
-  `(cd 'dir' && npm install) && …`, or PowerShell `Push-Location -LiteralPath
-  'dir'; npm install; Pop-Location; …` on Windows.
+- **`updateCommand`** is one line `ade lanes deps` prints for a person to copy:
+  POSIX `(cd 'dir' && npm install) && …`, or PowerShell `Push-Location
+  -LiteralPath 'dir'; npm install; Pop-Location; …` on Windows. The desktop
+  does not run it.
 
 The desktop shows two notices from it (`useLaneDependencyBanners.tsx`), for the
 open project tab's machine:
 
 - **Packages in the main checkout are out of date** (docked, info). **Update**
-  opens a tracked shell in the primary lane that runs `updateCommand`, shows it
-  in Work, and checks again every 15 s until the lockfiles read as installed
-  (then a success toast). Dismissing it lasts until a lockfile changes again.
+  opens one tracked shell per out-of-date folder in the primary lane, started in
+  that folder and running only its install command (no shell syntax, so it runs
+  the same in zsh, fish, PowerShell, cmd and Git Bash), shows the first in
+  Work, and checks again every 15 s until the lockfiles read as installed (then
+  a success toast). Tools ADE cannot watch are acknowledged when Update starts.
+  Dismissing it lasts until a lockfile changes again; it can be dismissed while
+  the update runs.
 - **Set up a lane template** (floating prompt, accent) when the project has
   lockfiles and no default template. **Set up with an agent** opens a new chat
   draft in the primary lane with a setup prompt (`laneTemplateSetupPrompt.ts`)
@@ -371,9 +380,9 @@ notice.
 Each install command and each setup command or script may run 20 minutes
 (`LANE_ENV_COMMAND_TIMEOUT_MS`). The callers of `lane.initEnv` and
 `lane.applyTemplate` wait 45 minutes (`LANE_ENV_SETUP_TIMEOUT_MS`: local
-runtime table, IPC, and the remote transport a little shorter). An install step
-whose command is not on the allowlist now fails with a message that names the
-allowed tools and points to the setup script; it used to be skipped silently.
+runtime table, IPC, and the remote transport a little shorter). Install steps
+used to accept only twelve tools (npm, pnpm, …) and skipped any other command
+without a word; they now run any command, as the setup script already could.
 
 ## Overlay policies
 

@@ -10,9 +10,9 @@ import { useLaneTemplateSetupChat } from "../lanes/useLaneTemplateSetupChat";
 /**
  * Two notices about the open project's main checkout, on the tab's machine:
  *
- * - **Packages are out of date** (docked): a pull changed a lockfile after the
- *   last install. Update opens a terminal in the main checkout that runs the
- *   install; ADE never installs on its own.
+ * - **Packages are out of date** (docked): a lockfile no longer matches the
+ *   install, usually after a pull. Update opens one terminal per folder in the
+ *   main checkout that runs its install; ADE never installs on its own.
  * - **Set up a lane template** (floating prompt): the project has lockfiles and
  *   no default lane template, so new lanes start with no packages. Continue
  *   puts a setup prompt in a new chat in the main checkout.
@@ -159,25 +159,37 @@ export function useLaneDependencyBanners({
   const primaryLane = lanes.find((lane) => lane.laneType === "primary") ?? null;
 
   const runUpdate = useCallback(async () => {
-    if (!status?.updateCommand || !primaryLane || updatingRef.current) return;
+    if (!status || !primaryLane || updatingRef.current) return;
+    const folders = status.folders.filter((folder) => folder.outOfDate && folder.installCommand);
+    if (!folders.length) return;
     updatingRef.current = true;
     try {
-      // Tools ADE cannot watch finish silently; count them as updated now.
-      const untracked = status.folders.filter((folder) => folder.outOfDate && !folder.tracksInstall).map((folder) => folder.lockfile);
+      // One terminal per folder, started in that folder: the install command
+      // alone, so it runs the same in zsh, fish, PowerShell, cmd and Git Bash.
+      let first: { terminalId: string; laneId: string } | null = null;
+      for (const folder of folders) {
+        const created = await window.ade.pty.create({
+          laneId: primaryLane.id,
+          ...(folder.dir === "." ? {} : { cwd: folder.dir }),
+          cols: 100,
+          rows: 28,
+          title: folder.dir === "." ? "Update packages" : `Update packages · ${folder.dir}`,
+          tracked: true,
+          toolType: "shell",
+          startupCommand: folder.installCommand!,
+        });
+        first ??= { terminalId: created.sessionId, laneId: primaryLane.id };
+      }
+      // Tools ADE cannot watch finish silently; count them as updated once
+      // their installs have started (not before: a failed start keeps Update).
+      const untracked = folders.filter((folder) => !folder.tracksInstall).map((folder) => folder.lockfile);
       if (untracked.length) {
         await window.ade.lanes.acknowledgeDependencyStatus({ lockfiles: untracked }, null).catch(() => null);
       }
-      const created = await window.ade.pty.create({
-        laneId: primaryLane.id,
-        cols: 100,
-        rows: 28,
-        title: "Update packages",
-        tracked: true,
-        toolType: "shell",
-        startupCommand: status.updateCommand,
-      });
-      setWatchUntil(Date.now() + UPDATE_WATCH_MAX_MS);
-      revealTerminalSessionInWork(navigate, { terminalId: created.sessionId, laneId: primaryLane.id });
+      // Watch only installs that leave a record; the others cleared above.
+      if (folders.some((folder) => folder.tracksInstall)) setWatchUntil(Date.now() + UPDATE_WATCH_MAX_MS);
+      else void check(true);
+      if (first) revealTerminalSessionInWork(navigate, first);
     } catch (error) {
       showToast({
         tone: "error",
@@ -187,7 +199,7 @@ export function useLaneDependencyBanners({
     } finally {
       updatingRef.current = false;
     }
-  }, [navigate, primaryLane, status]);
+  }, [check, navigate, primaryLane, status]);
 
   const outOfDateDirs = outOfDate.map((folder) => folder.dir);
   useAppBanner(
@@ -199,16 +211,15 @@ export function useLaneDependencyBanners({
           busy: updating,
           title: updating ? "Updating packages in the main checkout…" : "Packages in the main checkout are out of date",
           detail: updating
-            ? `This goes away when ${describeFolders(outOfDateDirs)} ${outOfDateDirs.length === 1 ? "is" : "are"} installed.`
+            ? `The install runs in a terminal in Work. This goes away when ${describeFolders(outOfDateDirs)} ${outOfDateDirs.length === 1 ? "is" : "are"} installed.`
             : outOfDate.length === 1
               ? `${outOfDateDirs[0] === "." ? "The root folder" : outOfDateDirs[0]}: ${outOfDate[0]!.outOfDateReason ?? "the lockfile changed after the last install."}`
               : `${describeFolders(outOfDateDirs)} do not match their lockfiles. Update runs the installs in a terminal.`,
-          actions: updating || !status.updateCommand || !primaryLane
+          actions: updating || !primaryLane || !outOfDate.some((folder) => folder.installCommand)
             ? []
             : [{ label: "Update", variant: "primary", onClick: () => void runUpdate() }],
-          dismiss: updating
-            ? false
-            : { key: `lane-deps-out-of-date:${scopeKey}`, fingerprint: outOfDate.map((folder) => `${folder.lockfile}@${folder.fingerprint}`).join(",") },
+          // A failed install would otherwise leave "Updating…" up for the whole watch.
+          dismiss: { key: `lane-deps-out-of-date:${scopeKey}`, fingerprint: outOfDate.map((folder) => `${folder.lockfile}@${folder.fingerprint}`).join(",") },
         }
       : null,
     { placement: "docked", priority: APP_BANNER_PRIORITY.default },
