@@ -35,12 +35,15 @@ test("the desktop exclusion list is the brain runtime archive list, not a copy",
 // A package ADE downloads into the tools cache must never also ship in the
 // installer or the brain archive: the resolvers read the cache first, so a
 // bundled copy is hundreds of dead megabytes per target.
-test("every npm package the tools manifest pins is on the exclusion list", () => {
+test("every lockfile-pinned tool package is on the exclusion list", () => {
   const manifest = JSON.parse(
     fs.readFileSync(path.join(desktopRoot, "..", "ade-cli", "src", "services", "tools", "toolsManifest.generated.json"), "utf8"),
   );
-  const pinned = manifest.tools.flatMap((tool) =>
-    Object.values(tool.targets).filter((pin) => pin.format !== "file").map((pin) => pin.package));
+  // Only tools a checkout also installs from the lockfile (`checkoutCopy`) can
+  // sit in node_modules and be packaged; vendor-hosted pins never are.
+  const pinned = manifest.tools
+    .filter((tool) => tool.checkoutCopy === true)
+    .flatMap((tool) => Object.values(tool.targets).map((pin) => pin.package));
   assert.ok(pinned.length > 0, "setup precondition: the manifest pins npm packages");
   for (const packageName of pinned) {
     assert.ok(

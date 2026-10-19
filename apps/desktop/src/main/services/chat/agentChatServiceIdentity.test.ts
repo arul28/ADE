@@ -25,7 +25,18 @@ import {
   waitForCondition,
   writePersistedChatState,
 } from "./agentChatService.testHarness";
-import { beforeEach, describe, expect, it, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, test, vi } from "vitest";
+
+const originalCodexExecutable = process.env.CODEX_EXECUTABLE;
+beforeEach(() => {
+  // Chat launch tests use the fake app-server transport; pin the CLI resolver
+  // to a stable test executable instead of inheriting the host's tools cache.
+  process.env.CODEX_EXECUTABLE = "/ade-test/tools/codex";
+});
+afterEach(() => {
+  if (originalCodexExecutable === undefined) delete process.env.CODEX_EXECUTABLE;
+  else process.env.CODEX_EXECUTABLE = originalCodexExecutable;
+});
 
 describe("createAgentChatService", () => {
   describe("lane launch directives", () => {
@@ -208,7 +219,11 @@ describe("createAgentChatService", () => {
       // never the process: `-c` is the highest config layer (above the user's
       // ~/.codex/config.toml and their per-project .codex/config.toml) and a
       // spawn arg would apply to every thread on this app-server.
-      expect(spawn).toHaveBeenCalledWith("codex", ["app-server"], expect.any(Object));
+      expect(spawn).toHaveBeenCalledWith(
+        "codex",
+        ["app-server", "-c", "check_for_update_on_startup=false"],
+        expect.any(Object),
+      );
       const spawnArgs = vi.mocked(spawn).mock.calls[0]?.[1] as string[] | undefined;
       expect(spawnArgs?.join(" ")).not.toContain("model_reasoning_effort");
 
@@ -335,7 +350,7 @@ describe("createAgentChatService", () => {
       expect(getAdeCliAgentEnv).toHaveBeenCalled();
       expect(spawn).toHaveBeenCalledWith(
         "codex",
-        ["app-server"],
+        ["app-server", "-c", "check_for_update_on_startup=false"],
         expect.objectContaining({
           env: expect.objectContaining({
             PATH: "/tmp/ade-cli/bin",
