@@ -147,8 +147,8 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
     setExpanded, paneMaximize, busy, checkingPermissions, captureError, setCaptureError,
     captureNotice, setCaptureNotice, receipt, setReceipt, screenshotPending, viewRect, selectedWindowId,
     lastObservation, videoHost, attachCanvasSlot, attachSurface, display, lease, windows,
-    supported, iHaveControl, parkedWindows, claimAppIcons, missingPermissions, permissionCheck, confirmStop, setConfirmStop,
-    restartingCapture, restartCapture,
+    supported, iHaveControl, parkedWindows, claimAppIcons, missingPermissions, takeoverBlocked, permissionCheck, confirmStop,
+    setConfirmStop, restartingCapture, restartCapture,
     connectSlow, videoDetailsOpen, setVideoDetailsOpen, laneHostIsLocal, laneNames, live,
     cursorPoint, contentBox, lastFrame, handoverFrame, returnControl, takeControl, realInput, recording, toggleRecording,
     saveScreenshot, openReceipt, nowTick, present, refreshClaimable, claimWindow, releaseWindowById,
@@ -452,23 +452,6 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
         />
 
         <div className="ml-auto flex shrink-0 items-center gap-0.5">
-          {iHaveControl ? (
-            <span
-              className="mr-1 flex shrink-0 items-center gap-1.5 whitespace-nowrap px-1 text-[12px] text-amber-200"
-              data-testid={`mac-desktop-takeover-banner${suffix}`}
-            >
-              You have control
-              <button
-                type="button"
-                className="underline underline-offset-2"
-                onClick={() => void returnControl()}
-              >
-                Return to agent
-              </button>
-              <span className="text-[10px] text-muted-fg">Esc</span>
-            </span>
-          ) : null}
-
           <WorkToolChromeButton
             label={recording?.running ? "Stop recording" : "Record this screen"}
             onClick={() => void toggleRecording()}
@@ -501,9 +484,9 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
 
           {iHaveControl ? null : (
             <WorkToolChromeButton
-              label="Take over"
+              label={takeoverBlocked ? "Grant the permissions first" : "Take over"}
               onClick={() => void takeControl()}
-              disabled={busy}
+              disabled={busy || takeoverBlocked}
               testId={`mac-desktop-takeover${suffix}`}
             >
               <Cursor size={16} />
@@ -593,7 +576,7 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
           // at the lane's Mac coordinates, not this machine's arrow.
           "cursor-default",
         )}
-        title={iHaveControl ? undefined : "Click to take control"}
+        title={iHaveControl ? undefined : takeoverBlocked ? "Grant the permissions first" : "Click to take control"}
         /* Pointer, wheel and key handling are native listeners bound to this
            node while it is the active copy — see the effect on `surfaceNode`. */
       >
@@ -835,6 +818,40 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
     );
   };
 
+  /**
+   * The way out, on the picture, for the whole takeover.
+   *
+   * During a takeover ⌘Q is held back and clicks move focus onto the lane's
+   * screen, so Escape is the exit — and a person who did not know that had to
+   * restart their Mac. This used to be a small line at the right end of the
+   * chrome row, which a narrow pane clips; it is on the picture now, where
+   * they are looking. Click-through except the button, so it never steals a
+   * click from the lane.
+   */
+  const renderTakeoverHint = (scope: MacDesktopChromeScope) => {
+    if (!iHaveControl || scope !== (expanded ? "fullscreen" : "pane")) return null;
+    return (
+      <div className="pointer-events-none absolute inset-x-0 bottom-3 z-[13] flex justify-center px-3">
+        <div
+          role="status"
+          data-testid={`mac-desktop-takeover-banner${scope === "pane" ? "" : "-fs"}`}
+          className="flex items-center gap-2 rounded-full border border-amber-300/30 bg-[color-mix(in_srgb,var(--color-surface)_92%,transparent)] px-3 py-1 font-sans text-[12px] text-fg shadow-float"
+        >
+          <span>
+            You're driving this screen. Press <kbd className="font-medium text-amber-200">Esc</kbd> to give it back.
+          </span>
+          <button
+            type="button"
+            className="pointer-events-auto text-amber-200 underline underline-offset-2"
+            onClick={() => void returnControl()}
+          >
+            Return to agent
+          </button>
+        </div>
+      </div>
+    );
+  };
+
   /** Missing grants while a display is live: the card, not a strip line. */
   const renderPermissionNotice = () => (missingPermissions.length > 0 && status ? (
     <MacDesktopPermissionCard
@@ -1032,6 +1049,7 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
           {renderPicture("pane")}
           {renderCaptureOverlay("pane")}
           {renderVideoOverlay("pane")}
+          {renderTakeoverHint("pane")}
         </div>
 
         {/* ── Apps ────────────────────────────────────────────────────────
@@ -1159,6 +1177,7 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
         renderPicture={renderPicture}
         renderCaptureOverlay={renderCaptureOverlay}
         renderVideoOverlay={renderVideoOverlay}
+        renderTakeoverHint={renderTakeoverHint}
       />
     </div>
   );

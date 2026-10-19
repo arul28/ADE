@@ -1610,6 +1610,15 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       assertSupported();
       const laneId = args.laneId.trim();
       requireDisplay(laneId);
+      // No takeover without both grants. Without Screen Recording the person
+      // drives a picture that is not there; without Accessibility their clicks
+      // go nowhere. Either way the only thing they can do from inside the lane
+      // is wander into System Settings on a screen they cannot see, which is a
+      // grant macOS refuses from synthetic input anyway — and a password sheet
+      // there takes the keyboard, Escape included. The grant belongs on the
+      // real screen, so refuse here, on the host, for every client.
+      assertPermission("screenRecording");
+      assertPermission("accessibility");
       const decision = leases.takeControl({
         laneId,
         controllerId: args.controllerId,
