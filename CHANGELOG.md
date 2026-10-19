@@ -1225,7 +1225,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Windows
 
-- ADE runs on Windows as a beta: signed per-channel installers, a no-admin background brain service with a graceful RPC shutdown path, and a Windows support notice on every launch.
+- ADE runs on Windows as a beta: signed per-channel installers, a no-admin background brain service with a graceful RPC shutdown path, and a beta notice on every launch.
 - `ade code` starts — it was launching on a runtime with no TTY and could not resolve its dependencies out of the app archive.
 - Claude and Droid prompts are no longer dropped; both were passed on the Windows command line, and Claude's readiness marker never matched under ConPTY.
 - Codex sessions are visible and Archive & Reclaim is unblocked; extended-length (`\\?\`) paths made ADE misread its own session directory.
