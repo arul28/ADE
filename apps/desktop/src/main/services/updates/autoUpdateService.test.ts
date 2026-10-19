@@ -3146,7 +3146,7 @@ describe("createAutoUpdateService", () => {
     function makeDownloadingService() {
       vi.useFakeTimers();
       const updater = Object.assign(new FakeAutoUpdater(), {
-        downloadUpdate: vi.fn<[CancellationToken?], Promise<unknown>>(async () => undefined),
+        downloadUpdate: vi.fn<[unknown?], Promise<unknown>>(async () => undefined),
       });
       const service = createAutoUpdateService({
         logger: makeLogger(),
@@ -3167,7 +3167,8 @@ describe("createAutoUpdateService", () => {
       // or its token is cancelled, and a cancel emits `update-cancelled`.
       let finishDownload: () => void = () => {};
       updater.downloadUpdate.mockImplementationOnce((passedToken) => {
-        const active = passedToken ?? new CancellationToken();
+        // The service passes electron-updater's own token class, as the real updater requires.
+        const active = (passedToken as CancellationToken | undefined) ?? new CancellationToken();
         return active.createPromise<void>((resolve) => {
           finishDownload = () => {
             updater.emit("update-downloaded", STALLED);
