@@ -137,6 +137,15 @@ Run without the app (`scripts/perf/service/`).
 | Chat search across 37 registered projects (2,000 chat docs each, every doc a hit) | `search-fanout.bench.mts` | not from #1560: until 2026-10-13 the search loaded every project and blocked the brain past its 30 s watchdog | 325–341 ms, longest event-loop block 10 ms | 800 ms, block 50 ms |
 | `sessions.list` handler, 617 chat metadata files (synthetic, sized like a real project: 8.1 MB, p50 4.4 KB, p90 34 KB, max 152 KB). Chat-scoped (a chat pane's shells, per chat switch) / lane (`limit 200`) / unscoped (`limit 500`); median of 7 runs in each of 3 processes | `session-list.bench.mts` | — | chat-scoped 226 → 13 ms; lane 102 → 78 ms; unscoped 235 → 191 ms (main → head, with the orphan repair; medians of 3 interleaved processes). Chat metadata reads per call 500 → 0, 222 → 137, 500 → 351 | proposed, needs approval: chat-scoped 25 ms, lane 120 ms, unscoped 250 ms |
 
+On 2026-10-19, a focused Node 22 harness compared the existing 5-second
+desktop poll with the brain poll after this change. Both used the same activity
+summary over 35 registered projects (12 booted), with no active work, for 15 s:
+the old desktop loop used 0.711% process CPU for 3 summary reads; the brain loop
+used 0.082% for 4 reads. This is a service-only sample, not a full ADE process
+benchmark. The default remains `never`, so the brain adds no poll in the normal
+idle baseline above; the enabled path moves the existing poll to the brain and
+keeps its 5-second cadence.
+
 ### Desktop start-up (main process)
 
 Unpackaged build (`apps/desktop/electron.cjs` → `dist/main/main.cjs`), Electron

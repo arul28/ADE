@@ -1029,8 +1029,10 @@ Runtime support files outside `services/sync/`:
   times with 750 ms backoff, and a generation counter supersedes an in-flight
   resume loop so a stale `resume` can never land after a newer `suspend`.
   Battery changes are deliberately not forwarded — they ride the brain's own
-  poll. `keepAwakeService.ts` and `systemSleepConfig.ts` back the opt-in
-  keep-awake setting; see
+  poll. `brainKeepAwakeService.ts` owns the opt-in keep-awake preference and
+  wake lock, which remain active after the desktop quits; the desktop's
+  `keepAwakeService.ts` handles local GUI authorization and
+  `systemSleepConfig.ts` handles OS sleep timers. See
   [onboarding and settings](../onboarding-and-settings/README.md#keeping-the-machine-awake).
 - `apps/desktop/src/shared/types/power.ts` and
   `apps/desktop/src/shared/machinePresence.ts` — the shared vocabulary every

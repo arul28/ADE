@@ -569,6 +569,18 @@ function buildProxyDomainService(runtime: AdeRuntime): OpaqueService | null {
   return proxyService ? toService(createProxyActionDomainService(proxyService)) : null;
 }
 
+function buildKeepAwakeDomainService(runtime: AdeRuntime): OpaqueService | null {
+  const service = runtime.keepAwakeService;
+  if (!service) return null;
+  return {
+    getSnapshot: () => service.getSnapshot(),
+    setLevel: (args: { level?: unknown }) => service.setLevel(args?.level),
+    migrateLegacyPreference: (args: { level?: unknown }) =>
+      service.migrateLegacyPreference(args?.level),
+    fixSystemSleep: () => service.fixSystemSleep(),
+  };
+}
+
 // The base64/in-memory ceiling, single-sourced so the constant and the
 // rejection message can never drift apart.
 const MAX_TEMP_ATTACHMENT_BYTES = LEGACY_MAX_CHAT_ATTACHMENT_BYTES;
@@ -4133,6 +4145,7 @@ export function getAdeActionDomainServices(
         ))
       : null,
     attention: toService(buildAttentionDomainService(runtime)),
+    keep_awake: toService(buildKeepAwakeDomainService(runtime)),
     lane: toService(buildLaneDomainService(runtime)),
     proxy: toService(buildProxyDomainService(runtime)),
     git: toService(runtime.gitService),

@@ -3198,9 +3198,9 @@ app.whenReady().then(async () => {
     supported: app.isPackaged && !normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL),
     logger: updateLogger,
   });
-  // Opt-in, default off: ADE holds no power assertion until the user picks a
-  // level, and even then only while an agent turn is actually running. Turns
-  // live in the brain, so the live count is asked of the runtime pool.
+  // The brain owns the turn-following lock so it survives this app quitting.
+  // This desktop service handles GUI-authorized local OS changes and starts
+  // its old in-process blocker only when a connected brain lacks the new action.
   const keepAwakeService = createKeepAwakeService({
     globalStatePath,
     powerSaveBlocker,
@@ -3211,7 +3211,6 @@ app.whenReady().then(async () => {
     },
     productAnalyticsService,
   });
-  keepAwakeService.start();
   // Pinned agent tools are fetched, not bundled. The brain kicks its own
   // background fetch on `ade serve`, but the desktop app can be launched
   // against a brain that is already running (or one that failed its fetch), so
@@ -9584,6 +9583,45 @@ app.whenReady().then(async () => {
     }),
   });
 
+  const keepAwakeAction = async (action: string, args?: Record<string, unknown>): Promise<unknown> => {
+    const projects = await localRuntimePool.projects();
+    const rootPath = projects[0]?.rootPath;
+    if (!rootPath) throw new Error("Keep-awake settings need a project connected to this machine's brain.");
+    const response = await localRuntimePool.callActionForRoot(rootPath, {
+      domain: "keep_awake",
+      action,
+      ...(args ? { args } : {}),
+    });
+    return response.result;
+  };
+  const migrateLegacyKeepAwakePreference = async (): Promise<boolean> => {
+    const legacy = readGlobalState(globalStatePath).keepAwakePreferences;
+    if (!legacy) {
+      keepAwakeService.stopLegacyFallback();
+      return true;
+    }
+    try {
+      const result = await keepAwakeAction("migrateLegacyPreference", { level: legacy.level });
+      if (!result || typeof result !== "object" || (result as { handled?: unknown }).handled !== true) return false;
+      const current = readGlobalState(globalStatePath);
+      if (current.keepAwakePreferences?.level === legacy.level) {
+        const remaining = { ...current };
+        delete remaining.keepAwakePreferences;
+        writeGlobalState(globalStatePath, remaining);
+      }
+      keepAwakeService.stopLegacyFallback();
+      return true;
+    } catch (error) {
+      updateLogger.warn("keepAwake.legacy_preference_migration_deferred", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return false;
+    }
+  };
+  if (readGlobalState(globalStatePath).keepAwakePreferences) {
+    void migrateLegacyKeepAwakePreference();
+  }
+
   ipcBridge = registerIpc({
     getCtx: () => {
       const ctx = getActiveContext();
@@ -9593,6 +9631,8 @@ app.whenReady().then(async () => {
       if (!ctx.keepAwakeService) {
         ctx.keepAwakeService = keepAwakeService;
       }
+      if (!ctx.keepAwakeAction) ctx.keepAwakeAction = keepAwakeAction;
+      if (!ctx.keepAwakeMigrateLegacy) ctx.keepAwakeMigrateLegacy = migrateLegacyKeepAwakePreference;
       if (!ctx.agentToolsCacheService) {
         ctx.agentToolsCacheService = agentToolsCacheService;
       }

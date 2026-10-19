@@ -24901,6 +24901,24 @@ async function runServe(
       overrides,
     );
   let scopeRegistry: InstanceType<typeof ProjectScopeRegistry>;
+  const keepAwakeServiceModule = !embedded && servesMachineEndpoint
+    ? await import("./services/power/brainKeepAwakeService")
+    : null;
+  const keepAwakeService = keepAwakeServiceModule
+    ? keepAwakeServiceModule.createBrainKeepAwakeService({
+        statePath: path.join(layout.adeDir, "keep-awake.json"),
+        readActiveAgentWork: async () => {
+          const activity = await readMachineRuntimeActivitySummary({
+            projectRegistry,
+            scopeRegistry,
+            personalChatScope,
+          });
+          return activity.activeAgentTurns + (activity.activeAgentCliSessions ?? 0);
+        },
+        logger: headlessProjectLogger,
+        productAnalyticsService: brainProductAnalytics,
+      })
+    : null;
   const createHeadlessProjectScaffoldService = () => {
     const githubService = createHeadlessGitHubService(
       process.cwd(),
@@ -25528,6 +25546,7 @@ async function runServe(
   let crossMachineHandoffTransport: CrossMachineHandoffTransport | null = null;
   scopeRegistry = new ProjectScopeRegistry(projectRegistry, {
     runtimeSocketPath: socketPath,
+    ...(keepAwakeService ? { keepAwakeService } : {}),
     // An embedded guest can't reach other machines, so it owns no moves (and
     // its chat services never sweep any).
     ...(embedded ? {} : { crossMachineHandoffTransport: () => crossMachineHandoffTransport }),
@@ -25562,6 +25581,7 @@ async function runServe(
       personalChatScope,
     },
   });
+  keepAwakeService?.start();
   const previousRole = process.env.ADE_DEFAULT_ROLE;
   let clearSyncRuntimeRpcHandlerFactory: (() => void) | null = null;
   // Declared out here, beside clearSyncRuntimeRpcHandlerFactory, because the
@@ -25949,6 +25969,7 @@ async function runServe(
   };
   startSyncHostForRepair = () => startSyncHost(true);
   const disposeServeResources = async () => {
+    keepAwakeService?.dispose();
     releaseAccountPublisherAuthoritySubscription?.();
     releaseAccountPublisherAuthoritySubscription = null;
     stopSyncHostRehostWatch?.();

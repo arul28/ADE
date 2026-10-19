@@ -6,6 +6,7 @@ import { execFile } from "node:child_process";
 import type { MachineResetOptions, MachineResetPlan } from "../../../shared/types/machineReset";
 import { planMachineResetFromDesktop, startMachineResetFromDesktop } from "../runtime/machineResetLauncher";
 import type { IpcMainInvokeEvent } from "electron";
+import { isUnsupportedAdeActionError } from "../../../shared/codedError";
 import {
   createEmptyAutoUpdateSnapshot,
   type createAutoUpdateService,
@@ -31,7 +32,6 @@ import {
   type AppOpenSystemSettingsPaneResult,
 } from "../../../shared/types/systemSettings";
 import { createBuiltInBrowserIpcArgParsers } from "./builtInBrowserIpcArgs";
-import { INERT_KEEP_AWAKE_SNAPSHOT } from "../../../shared/types/keepAwake";
 import type {
   KeepAwakeFixResult,
   KeepAwakeSnapshot,
@@ -1387,6 +1387,8 @@ export type AppContext = {
   rpcSocketPath?: string;
   autoUpdateService?: ReturnType<typeof createAutoUpdateService> | null;
   keepAwakeService?: KeepAwakeService | null;
+  keepAwakeAction?: (action: string, args?: Record<string, unknown>) => Promise<unknown>;
+  keepAwakeMigrateLegacy?: () => Promise<boolean>;
   agentToolsCacheService?: AgentToolsCacheService | null;
   updateInstallImpactProvider?: (() => Promise<UpdateInstallImpact>) | null;
   feedbackReporterService?: ReturnType<typeof createFeedbackReporterService> | null;
@@ -14071,33 +14073,59 @@ export function registerIpc({
     return { detection };
   });
 
-  // A renderer running against a main process without the service must still
-  // get a well-formed snapshot — and one that says "off", because a missing
-  // service holds no lock. The shape lives with the type so the four surfaces
-  // that report "no lock held" cannot drift apart.
   ipcMain.handle(IPC.keepAwakeGet, async (): Promise<KeepAwakeSnapshot> => {
-    const service = getCtx().keepAwakeService;
-    return service ? await service.getSnapshot() : INERT_KEEP_AWAKE_SNAPSHOT;
+    const ctx = getCtx();
+    const action = ctx.keepAwakeAction;
+    if (!action) throw new Error("Keep-awake settings aren't available until this machine's brain is running.");
+    try {
+      return await action("getSnapshot") as KeepAwakeSnapshot;
+    } catch (error) {
+      if (!isUnsupportedAdeActionError(error) || !ctx.keepAwakeService) throw error;
+      ctx.keepAwakeService.start();
+      return await ctx.keepAwakeService.getSnapshot();
+    }
   });
 
   ipcMain.handle(
     IPC.keepAwakeSetLevel,
     async (_event, level: unknown): Promise<KeepAwakeSnapshot> => {
-      const service = getCtx().keepAwakeService;
-      return service ? await service.setLevel(level) : INERT_KEEP_AWAKE_SNAPSHOT;
+      const ctx = getCtx();
+      const action = ctx.keepAwakeAction;
+      if (!action) throw new Error("Keep-awake settings aren't available until this machine's brain is running.");
+      try {
+        return await action("setLevel", { level }) as KeepAwakeSnapshot;
+      } catch (error) {
+        if (!isUnsupportedAdeActionError(error) || !ctx.keepAwakeService) throw error;
+        ctx.keepAwakeService.start();
+        return await ctx.keepAwakeService.setLevel(level);
+      }
     },
   );
 
   ipcMain.handle(IPC.keepAwakeFixSystemSleep, async (): Promise<KeepAwakeFixResult> => {
-    const service = getCtx().keepAwakeService;
-    if (!service) {
-      return {
-        ok: false,
-        error: "ADE can't change this right now.",
-        snapshot: INERT_KEEP_AWAKE_SNAPSHOT,
-      };
+    const ctx = getCtx();
+    const service = ctx.keepAwakeService;
+    if (process.platform === "darwin" && service) return await service.fixSystemSleep();
+    if (ctx.keepAwakeAction) {
+      try {
+        return await ctx.keepAwakeAction("fixSystemSleep") as KeepAwakeFixResult;
+      } catch (error) {
+        if (!isUnsupportedAdeActionError(error) || !service) throw error;
+      }
     }
-    return await service.fixSystemSleep();
+    if (service) return await service.fixSystemSleep();
+    throw new Error("ADE can't change this right now.");
+  });
+
+  ipcMain.handle(IPC.keepAwakeMigrateLegacy, async (): Promise<boolean> => {
+    return await getCtx().keepAwakeMigrateLegacy?.() ?? false;
+  });
+
+  ipcMain.handle(IPC.keepAwakeApplyLidClosed, async (_event, disabled: unknown) => {
+    if (typeof disabled !== "boolean") throw new Error("Choose whether lid-closed mode should be on or off.");
+    const service = getCtx().keepAwakeService;
+    if (!service) throw new Error("Lid-closed mode is only available on this Mac.");
+    return await service.applyLidClosed(disabled);
   });
 
   ipcMain.handle(IPC.updateCheckForUpdates, async () => {

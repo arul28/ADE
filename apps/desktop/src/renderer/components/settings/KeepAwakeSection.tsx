@@ -10,6 +10,7 @@ import {
 } from "../../../shared/types/keepAwake";
 import { isMacRuntimeTarget } from "../../lib/platform";
 import { ModernSection } from "./primitives";
+import { useSettingsMachineScope } from "./SettingsMachineScope";
 import "./machineSettings.css";
 
 /**
@@ -29,7 +30,7 @@ import "./machineSettings.css";
 const LEVEL_COPY: Record<KeepAwakeLevel, { label: string; limit: string }> = {
   never: {
     label: "Never",
-    limit: "Turns pause when this Mac sleeps",
+    limit: "Turns pause when this computer sleeps",
   },
   "while-away": {
     label: "While I'm away",
@@ -75,11 +76,18 @@ function lidClosedOutOfForce(snapshot: KeepAwakeSnapshot): boolean {
 
 
 export function KeepAwakeControls() {
+  const { pin, isThisMachine, machineName } = useSettingsMachineScope();
+  const pinKey = pin?.key ?? null;
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
   const [snapshot, setSnapshot] = useState<KeepAwakeSnapshot | null>(null);
   const [busy, setBusy] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [fixError, setFixError] = useState<string | null>(null);
+  const [levelActionError, setLevelActionError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
   const mounted = useRef(true);
+  const loadRequest = useRef(0);
 
   useEffect(() => {
     mounted.current = true;
@@ -89,31 +97,62 @@ export function KeepAwakeControls() {
   }, []);
 
   const load = useCallback(async () => {
+    const request = ++loadRequest.current;
     try {
-      const next = await window.ade.keepAwakeGet();
-      if (mounted.current) {
+      const activePin = pinRef.current;
+      const next = activePin
+        ? await window.ade.keepAwakeGet(activePin)
+        : await window.ade.keepAwakeGet();
+      if (mounted.current && request === loadRequest.current) {
         setSnapshot(next);
         setLoadError(null);
       }
     } catch {
-      if (mounted.current) setLoadError("This setting isn't available right now.");
+      if (mounted.current && request === loadRequest.current) {
+        setSnapshot(null);
+        setLoadError("Couldn't load this machine's keep-awake setting.");
+      }
     }
-  }, []);
+  }, [pinKey]);
 
   useEffect(() => {
+    setSnapshot(null);
+    setLoadError(null);
+    setLevelActionError(null);
     void load();
-  }, [load]);
+  }, [load, attempt, pinKey]);
 
   const current = snapshot ?? inertSnapshot;
-  const mac = isMacRuntimeTarget();
+  const mac = snapshot?.platform ? snapshot.platform === "mac" : isMacRuntimeTarget();
 
   const choose = useCallback(
     async (level: KeepAwakeLevel) => {
       if (busy) return;
       setBusy(true);
       setFixError(null);
+      setLevelActionError(null);
       try {
-        const next = await window.ade.keepAwakeSetLevel(level);
+        const activePin = pinRef.current;
+        if (level === "lid-closed" && !isThisMachine) {
+          setLevelActionError(`Open Settings on ${machineName} to authorize lid-closed mode.`);
+          return;
+        }
+        if (isThisMachine && current.platform === "mac") {
+          const shouldEnableLid = level === "lid-closed" && !current.lidClosedActive;
+          const shouldDisableLid = current.preferences.level === "lid-closed"
+            && level !== "lid-closed"
+            && current.lidClosedActive;
+          if (shouldEnableLid || shouldDisableLid) {
+            const result = await window.ade.keepAwakeApplyLidClosed(shouldEnableLid, activePin);
+            if (!result.ok) {
+              setLevelActionError(result.error ?? "macOS couldn't change lid-closed mode.");
+              return;
+            }
+          }
+        }
+        const next = activePin
+          ? await window.ade.keepAwakeSetLevel(level, activePin)
+          : await window.ade.keepAwakeSetLevel(level);
         if (mounted.current) {
           setSnapshot(next);
           // A save that worked disproves whatever the last failure said. Left
@@ -124,12 +163,12 @@ export function KeepAwakeControls() {
           setLoadError(null);
         }
       } catch {
-        if (mounted.current) setLoadError("ADE couldn't save that.");
+        if (mounted.current) setLevelActionError("ADE couldn't save that.");
       } finally {
         if (mounted.current) setBusy(false);
       }
     },
-    [busy],
+    [busy, current, isThisMachine, machineName, pinKey],
   );
 
   const fix = useCallback(async () => {
@@ -137,22 +176,35 @@ export function KeepAwakeControls() {
     setBusy(true);
     setFixError(null);
     try {
-      const result = await window.ade.keepAwakeFixSystemSleep();
+      if (!isThisMachine && current.platform === "mac") {
+        setFixError(`Open Settings on ${machineName} to change its macOS sleep timer.`);
+        return;
+      }
+      const activePin = pinRef.current;
+      const result = activePin
+        ? await window.ade.keepAwakeFixSystemSleep(activePin)
+        : await window.ade.keepAwakeFixSystemSleep();
       if (!mounted.current) return;
-      setSnapshot(result.snapshot);
+      if (result.snapshot) {
+        setSnapshot((previous) => previous
+          ? { ...previous, systemSleep: result.snapshot.systemSleep }
+          : result.snapshot);
+      }
       if (!result.ok) setFixError(result.error ?? "That didn't work.");
     } catch {
       if (mounted.current) setFixError("That didn't work.");
     } finally {
       if (mounted.current) setBusy(false);
     }
-  }, [busy]);
+  }, [busy, current.platform, isThisMachine, machineName, pinKey]);
 
   // `lid-closed` is absent on Windows, not disabled: there is no `pmset
   // disablesleep` equivalent, and a greyed row would imply one is coming.
-  const levels: KeepAwakeLevel[] = current.lidClosedSupported
-    ? ["never", "while-away", "lid-closed"]
-    : ["never", "while-away"];
+  const levels: KeepAwakeLevel[] = current.platform === "other"
+    ? ["never"]
+    : current.lidClosedSupported
+      ? ["never", "while-away", "lid-closed"]
+      : ["never", "while-away"];
 
   const systemSleep = current.systemSleep;
   const warn = systemSleepStopsAgents(systemSleep);
@@ -161,16 +213,28 @@ export function KeepAwakeControls() {
     <div className="ade-modern-stack">
       <div
         role="radiogroup"
-        aria-label={mac
+        aria-label={isThisMachine && mac
           ? "Keep this Mac awake while agents work"
-          : "Keep this PC awake while agents work"}
+          : isThisMachine
+            ? "Keep this PC awake while agents work"
+            : `Keep ${machineName} awake while agents work`}
         className="ade-ap-grid3"
         style={levels.length === 2 ? { gridTemplateColumns: "repeat(2, minmax(0, 1fr))" } : undefined}
       >
         {levels.map((level) => {
           const selected = current.preferences.level === level;
           const copy = LEVEL_COPY[level];
-          const limit = level === "never" && !mac ? WINDOWS_NEVER_LIMIT : copy.limit;
+          const limit = level === "never"
+            ? current.platform === "windows"
+              ? WINDOWS_NEVER_LIMIT
+              : !isThisMachine && current.platform === "other"
+                ? "Turns pause when this computer sleeps"
+                : mac
+                  ? "Turns pause when this Mac sleeps"
+                  : WINDOWS_NEVER_LIMIT
+            : level === "lid-closed" && !isThisMachine
+              ? "Needs approval on that Mac. Stays on after you quit."
+              : copy.limit;
           const Art = LEVEL_ART[level];
           return (
             <button
@@ -229,8 +293,17 @@ export function KeepAwakeControls() {
         <p role="alert" className="ade-modern-warn">{current.levelError}</p>
       ) : null}
 
+      {levelActionError ? (
+        <p role="alert" className="ade-modern-error">{levelActionError}</p>
+      ) : null}
+
       {loadError ? (
-        <p role="alert" className="ade-modern-error">{loadError}</p>
+        <div className="ade-modern-note" data-tone="warn">
+          <span role="alert" style={{ flex: 1 }}>{loadError}</span>
+          <button type="button" className="ade-modern-btn" data-size="sm" onClick={() => setAttempt((value) => value + 1)}>
+            Try again
+          </button>
+        </div>
       ) : null}
 
       {warn && systemSleep ? (
@@ -268,14 +341,17 @@ export function KeepAwakeControls() {
 }
 
 export function KeepAwakeSection() {
+  const { isThisMachine, machineName } = useSettingsMachineScope();
   const mac = isMacRuntimeTarget();
   return (
     <ModernSection
       group="Sleep"
       anchor="keep-awake"
-      title={mac
-        ? "Keep this Mac awake while agents work"
-        : "Keep this PC awake while agents work"}
+      title={!isThisMachine
+        ? `Keep ${machineName} awake while agents work`
+        : mac
+          ? "Keep this Mac awake while agents work"
+          : "Keep this PC awake while agents work"}
       hint="A sleeping computer pauses every agent turn. Pick how far ADE may go to keep it awake."
     >
       <KeepAwakeControls />

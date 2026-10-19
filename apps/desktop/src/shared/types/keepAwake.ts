@@ -10,7 +10,7 @@
 // part users get wrong:
 //
 //   never       — ADE touches nothing. Turns pause when the machine sleeps.
-//   while-away  — an app-suspension blocker held ONLY while a turn is running.
+//   while-away  — a machine-level wake lock held ONLY while work is running.
 //                 It stops IDLE sleep. It does NOT survive a closed lid: a
 //                 wake assertion held for 35 days did not prevent two clamshell
 //                 sleeps. Copy anywhere near this level must not imply it does.
@@ -32,6 +32,8 @@ export const KEEP_AWAKE_LEVELS: readonly KeepAwakeLevel[] = [
 export type KeepAwakePreferences = {
   level: KeepAwakeLevel;
 };
+
+export type KeepAwakePlatform = "mac" | "windows" | "other";
 
 /** Off. ADE never holds power awake until the user asks it to. */
 export const DEFAULT_KEEP_AWAKE_PREFERENCES: KeepAwakePreferences = {
@@ -76,8 +78,10 @@ export type SystemSleepConfig = {
 /** Everything the settings section needs, in one read. */
 export type KeepAwakeSnapshot = {
   preferences: KeepAwakePreferences;
+  /** The machine whose brain answered, which may differ from this desktop. */
+  platform?: KeepAwakePlatform;
   /**
-   * `false` on Windows, where `pmset disablesleep` has no equivalent. The
+   * `false` off macOS, where `pmset disablesleep` has no equivalent. The
    * level is hidden entirely rather than shown disabled.
    */
   lidClosedSupported: boolean;
@@ -110,6 +114,7 @@ export type KeepAwakeSnapshot = {
  */
 export const INERT_KEEP_AWAKE_SNAPSHOT: KeepAwakeSnapshot = Object.freeze({
   preferences: Object.freeze({ ...DEFAULT_KEEP_AWAKE_PREFERENCES }),
+  platform: "other",
   lidClosedSupported: false,
   lidClosedActive: false,
   levelError: null,

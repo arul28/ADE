@@ -4839,9 +4839,10 @@ declare global {
         runProjectScan: (pin?: OpenProjectBinding | null) => Promise<CtoRunProjectScanResult>;
         getAttention: (pin?: OpenProjectBinding | null) => Promise<CtoAttentionState>;
       };
-      keepAwakeGet: () => Promise<KeepAwakeSnapshot>;
-      keepAwakeSetLevel: (level: KeepAwakeLevel) => Promise<KeepAwakeSnapshot>;
-      keepAwakeFixSystemSleep: () => Promise<KeepAwakeFixResult>;
+      keepAwakeGet: (pin?: OpenProjectBinding | null) => Promise<KeepAwakeSnapshot>;
+      keepAwakeSetLevel: (level: KeepAwakeLevel, pin?: OpenProjectBinding | null) => Promise<KeepAwakeSnapshot>;
+      keepAwakeFixSystemSleep: (pin?: OpenProjectBinding | null) => Promise<KeepAwakeFixResult>;
+      keepAwakeApplyLidClosed: (disabled: boolean, pin?: OpenProjectBinding | null) => Promise<{ ok: boolean; error: string | null }>;
       updateCheckForUpdates: () => Promise<void>;
       updateGetState: () => Promise<AutoUpdateSnapshot>;
       updateGetPreferences: () => Promise<AutoUpdatePreferences>;

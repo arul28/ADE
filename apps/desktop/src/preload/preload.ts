@@ -13981,11 +13981,46 @@ const adeBridge = {
         ipcRenderer.invoke(IPC.ctoGetAttention),
       ),
   },
-  keepAwakeGet: (): Promise<KeepAwakeSnapshot> => ipcRenderer.invoke(IPC.keepAwakeGet),
-  keepAwakeSetLevel: (level: KeepAwakeLevel): Promise<KeepAwakeSnapshot> =>
-    ipcRenderer.invoke(IPC.keepAwakeSetLevel, level),
-  keepAwakeFixSystemSleep: (): Promise<KeepAwakeFixResult> =>
-    ipcRenderer.invoke(IPC.keepAwakeFixSystemSleep),
+  keepAwakeGet: async (pin?: OpenProjectBinding | null): Promise<KeepAwakeSnapshot> => {
+    if (!pin) await ipcRenderer.invoke(IPC.keepAwakeMigrateLegacy).catch(() => false);
+    try {
+      return await callPinnedOrBoundRuntimeActionOr(pin, "keep_awake", "getSnapshot", {}, () =>
+        ipcRenderer.invoke(IPC.keepAwakeGet),
+      );
+    } catch (error) {
+      if (pin || !isUnsupportedAdeActionError(error)) throw error;
+      return await ipcRenderer.invoke(IPC.keepAwakeGet);
+    }
+  },
+  keepAwakeSetLevel: async (level: KeepAwakeLevel, pin?: OpenProjectBinding | null): Promise<KeepAwakeSnapshot> => {
+    if (!pin) await ipcRenderer.invoke(IPC.keepAwakeMigrateLegacy).catch(() => false);
+    try {
+      return await callPinnedOrBoundRuntimeActionOr(pin, "keep_awake", "setLevel", { args: { level } }, () =>
+        ipcRenderer.invoke(IPC.keepAwakeSetLevel, level),
+      );
+    } catch (error) {
+      if (pin || !isUnsupportedAdeActionError(error)) throw error;
+      return await ipcRenderer.invoke(IPC.keepAwakeSetLevel, level);
+    }
+  },
+  keepAwakeFixSystemSleep: (pin?: OpenProjectBinding | null): Promise<KeepAwakeFixResult> => {
+    if (!pin && process.platform === "darwin") return ipcRenderer.invoke(IPC.keepAwakeFixSystemSleep);
+    return (async () => {
+      if (!pin) await ipcRenderer.invoke(IPC.keepAwakeMigrateLegacy).catch(() => false);
+      try {
+        return await callPinnedOrBoundRuntimeActionOr(pin, "keep_awake", "fixSystemSleep", {}, () =>
+          ipcRenderer.invoke(IPC.keepAwakeFixSystemSleep),
+        );
+      } catch (error) {
+        if (pin || !isUnsupportedAdeActionError(error)) throw error;
+        return await ipcRenderer.invoke(IPC.keepAwakeFixSystemSleep);
+      }
+    })();
+  },
+  keepAwakeApplyLidClosed: (disabled: boolean, pin?: OpenProjectBinding | null): Promise<{ ok: boolean; error: string | null }> =>
+    pin
+      ? Promise.resolve({ ok: false, error: "Open Settings on the selected Mac to change lid-closed mode." })
+      : ipcRenderer.invoke(IPC.keepAwakeApplyLidClosed, disabled),
   updateCheckForUpdates: () => ipcRenderer.invoke(IPC.updateCheckForUpdates),
   updateGetState: (): Promise<AutoUpdateSnapshot> =>
     ipcRenderer.invoke(IPC.updateGetState),

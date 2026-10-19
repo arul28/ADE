@@ -462,7 +462,7 @@ installation per UTC day, within the existing `ade_feature_used` and shared
 daily ceilings.
 
 Choosing a keep-awake level records the same `ade_feature_used` event at the
-keep-awake service's persist boundary — after the choice is written, so a
+brain keep-awake service's persist boundary — after the choice is written, so a
 refused level (the lid-closed one whose password prompt was cancelled) is never
 counted as adopted. It carries `feature: "connections"`,
 `action: "preferences_changed"`, and one closed `outcome`:

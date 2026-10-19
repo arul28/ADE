@@ -42,6 +42,10 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "sendNotification",
     ],
   },
+  keep_awake: {
+    read: ["getSnapshot"],
+    write: ["setLevel", "migrateLegacyPreference", "fixSystemSleep"],
+  },
   lane: {
     read: [
       "diagnosticsGetLaneHealth", "diagnosticsGetStatus", "getBranchDrift", "getChildren",
