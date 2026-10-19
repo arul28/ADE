@@ -16,13 +16,13 @@ export type PairedRuntimeEndpointCandidate = {
   endpoint: string;
   kind: Exclude<RemoteRuntimeRouteKind, "ssh">;
   lastSucceededAt: number | null;
-  recentlyFailing: boolean;
+  /** Its failure streak is unanswered, so it is tried after every route that is not. */
+  failing: boolean;
   lastDiscoveredAt?: number | null;
 };
 
 export const MAX_ROUTE_ATTEMPTS = 8;
 export const PAIRED_ENDPOINT_FAILURE_THRESHOLD = 2;
-export const PAIRED_ENDPOINT_RECENT_FAILURE_WINDOW_MS = 120_000;
 
 export type PairedRouteAttemptRecorder = {
   attempts: RemoteRuntimeConnectionAttempt[];
@@ -63,23 +63,40 @@ export function orderPairedCandidates(
 ): PairedRuntimeEndpointCandidate[] {
   return [
     ...candidates.filter(
-      (candidate) => !candidate.recentlyFailing && candidate.kind !== "relay",
+      (candidate) => !candidate.failing && candidate.kind !== "relay",
     ),
     ...candidates.filter(
-      (candidate) => !candidate.recentlyFailing && candidate.kind === "relay",
+      (candidate) => !candidate.failing && candidate.kind === "relay",
     ),
-    ...candidates.filter((candidate) => candidate.recentlyFailing),
+    ...candidates.filter((candidate) => candidate.failing),
   ];
 }
 
-export function pairedEndpointIsRecentlyFailing(
-  state: DesktopPairedMachineEndpointState | null | undefined,
-  nowMs = Date.now(),
+type PairedEndpointFailureEvidence = {
+  lastSucceededAt?: number | null;
+  lastFailedAt?: number | null;
+  consecutiveFailures?: number;
+  lastDiscoveredAt?: number | null;
+};
+
+/**
+ * A route is failing while its failure streak is unanswered: at least
+ * PAIRED_ENDPOINT_FAILURE_THRESHOLD dials failed in a row and the address has
+ * not answered since. There is no clock window, because the streak is stored
+ * with the machine and a dead address would otherwise get the first dial again
+ * on every launch. The demotion clears when the address answers, or when mDNS
+ * sees it after its last failure. A failing route is demoted, never dropped.
+ */
+export function pairedEndpointIsFailing(
+  evidence: PairedEndpointFailureEvidence,
 ): boolean {
-  return state?.lastFailedAt != null
-    && Number.isFinite(state.lastFailedAt)
-    && (state.consecutiveFailures ?? 0) >= PAIRED_ENDPOINT_FAILURE_THRESHOLD
-    && nowMs - state.lastFailedAt <= PAIRED_ENDPOINT_RECENT_FAILURE_WINDOW_MS;
+  const lastFailedAt = evidence.lastFailedAt;
+  if (lastFailedAt == null || !Number.isFinite(lastFailedAt)) return false;
+  if ((evidence.consecutiveFailures ?? 0) < PAIRED_ENDPOINT_FAILURE_THRESHOLD) {
+    return false;
+  }
+  if ((evidence.lastSucceededAt ?? 0) >= lastFailedAt) return false;
+  return (evidence.lastDiscoveredAt ?? 0) <= lastFailedAt;
 }
 
 function normalizedEndpointOrNull(
@@ -127,7 +144,6 @@ export function buildPairedEndpointCandidates(args: {
   relayUrl?: string | null;
   endpointStates?: DesktopPairedMachineEndpointState[] | null;
   additionalEndpoints?: string[];
-  nowMs?: number;
 }): PairedRuntimeEndpointCandidate[] {
   const relayUrl = normalizedEndpointOrNull(args.relayUrl);
   const successByEndpoint = new Map<string, number>();
@@ -175,14 +191,17 @@ export function buildPairedEndpointCandidates(args: {
     const endpoint = normalizedEndpointOrNull(value);
     if (!endpoint || seen.has(endpoint)) continue;
     seen.add(endpoint);
+    const failureState = stateByEndpoint.get(endpoint);
     candidates.push({
       endpoint,
       kind: classifyPairedRuntimeEndpoint(endpoint, relayUrl),
       lastSucceededAt: successByEndpoint.get(endpoint) ?? null,
-      recentlyFailing: pairedEndpointIsRecentlyFailing(
-        stateByEndpoint.get(endpoint),
-        args.nowMs,
-      ),
+      failing: pairedEndpointIsFailing({
+        lastFailedAt: failureState?.lastFailedAt,
+        consecutiveFailures: failureState?.consecutiveFailures,
+        lastSucceededAt: successByEndpoint.get(endpoint) ?? null,
+        lastDiscoveredAt: discoveryByEndpoint.get(endpoint) ?? null,
+      }),
       ...(discoveryByEndpoint.has(endpoint)
         ? { lastDiscoveredAt: discoveryByEndpoint.get(endpoint)! }
         : {}),
@@ -198,7 +217,13 @@ export function buildPairedEndpointCandidates(args: {
   return candidates
     .sort(
       (left, right) =>
-        Number(left.recentlyFailing) - Number(right.recentlyFailing) ||
+        Number(left.failing) - Number(right.failing) ||
+        // Among failing routes, the one that answered most recently goes first.
+        // A failing route's last answer predates its last failure, so this
+        // puts a route that answered after another's failure in front of it.
+        (left.failing
+          ? (right.lastSucceededAt ?? 0) - (left.lastSucceededAt ?? 0)
+          : 0) ||
         rank[left.kind] - rank[right.kind] ||
         (right.lastDiscoveredAt ?? 0) - (left.lastDiscoveredAt ?? 0) ||
         (right.lastSucceededAt ?? 0) - (left.lastSucceededAt ?? 0) ||
