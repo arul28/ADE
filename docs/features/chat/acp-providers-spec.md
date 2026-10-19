@@ -468,7 +468,7 @@ Rust, Apache-2.0)
 ### Copilot (removed from ACP)
 
 Copilot is no longer an ACP provider. It runs as an SDK provider on
-`@github/copilot-sdk` against the installed Copilot CLI. Its dialect, probes,
+`@github/copilot-sdk` against ADE's pinned Copilot runtime. Its dialect, probes,
 usage ledger wiring and tests were removed with the move. The current design
 is in `copilot-sdk-provider.md`. The Copilot CLI facts that still matter for
 the terminal CLI and for usage history stay in `terminals-and-sessions/` and

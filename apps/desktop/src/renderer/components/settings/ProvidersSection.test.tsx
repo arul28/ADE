@@ -449,8 +449,8 @@ describe("ProvidersSection", () => {
       expect(window.ade.ai.listApiKeys).toHaveBeenCalledTimes(1);
     });
 
-    expect(await screen.findByText("Not installed")).toBeTruthy();
-    expect(screen.getAllByText(/Claude unavailable \(binary missing/i).length).toBeGreaterThan(0);
+    expect(await screen.findByText("Not downloaded")).toBeTruthy();
+    expect(screen.queryByText("Not installed")).toBeNull();
   });
 
   it("renders local runtime details and loaded local models", async () => {
@@ -819,7 +819,7 @@ describe("ProvidersSection", () => {
     renderProvidersSection("pi");
 
     expect(await screen.findByText("Pi")).toBeTruthy();
-    expect(screen.getByText(/Uses Pi’s installed SDK package/)).toBeTruthy();
+    expect(screen.getByText(/pinned Pi SDK/)).toBeTruthy();
     expect(screen.getByText("OpenAI Codex")).toBeTruthy();
     expect(screen.getByText(/7 models/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Open settings.json" })).toBeTruthy();
@@ -1320,15 +1320,15 @@ describe("ProvidersSection", () => {
     expect(window.ade.ai.piLoginProviders).not.toHaveBeenCalled();
   });
 
-  it("collapses the OpenCode group to an install card when the binary is missing", async () => {
+  it("explains that ADE manages the OpenCode copy when it is not downloaded", async () => {
     const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
     getStatusMock.mockReset();
     getStatusMock.mockResolvedValue(buildStatus(true, [], { opencodeBinaryInstalled: false }));
 
     renderProvidersSection("opencode");
 
-    expect(await screen.findByText("npm i -g @opencode/cli")).toBeTruthy();
-    expect(screen.getByRole("button", { name: /Re-check/ })).toBeTruthy();
+    expect(await screen.findByText(/ADE downloads it for this machine/)).toBeTruthy();
+    expect(screen.queryByText(/npm i -g/)).toBeNull();
     // The group body is hidden while uninstalled.
     expect(screen.queryByText(/^All providers/)).toBeNull();
   });

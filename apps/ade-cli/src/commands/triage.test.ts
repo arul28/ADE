@@ -3,7 +3,6 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { resolveExecutableFromKnownLocations } from "../../../desktop/src/main/services/ai/cliExecutableResolver";
 import type { DoctorCommandResult } from "./doctor";
 import type { ReportIssueResult } from "./reportIssue";
 import { runTriageCommand } from "./triage";
@@ -16,7 +15,6 @@ import {
 } from "./triageContext";
 import {
   buildTriageLaunchPlan,
-  defaultTriageExecutableResolver,
   detectTriageProviders,
   parseTriageProviderName,
   TRIAGE_PROVIDERS,
@@ -566,29 +564,6 @@ describe("detectTriageProviders", () => {
     expect(detected.map((provider) => provider.name)).toEqual(["codex"]);
   });
 
-  // Windows cannot execute an extension-less file, so detection must go through
-  // the shared PATHEXT-aware resolver rather than an `fs.existsSync` of the bare
-  // name — that probe finds `codex` (an sh script) and never `codex.cmd`.
-  it("resolves through the shared PATHEXT-aware executable resolver", () => {
-    const env = { PATHEXT: ".COM;.EXE;.CMD" };
-    const seen: string[] = [];
-    const detected = detectTriageProviders({
-      env,
-      resolve: (command, resolverEnv) => {
-        seen.push(command);
-        expect(resolverEnv).toBe(env);
-        return command === "claude"
-          ? { path: "C:\\Users\\ada\\AppData\\Roaming\\npm\\claude.cmd", source: "path" }
-          : null;
-      },
-    });
-
-    expect(seen).toEqual(TRIAGE_PROVIDERS.map((provider) => provider.command));
-    expect(detected[0]?.path).toBe("C:\\Users\\ada\\AppData\\Roaming\\npm\\claude.cmd");
-    expect(defaultTriageExecutableResolver("claude", env))
-      .toEqual(resolveExecutableFromKnownLocations("claude", env));
-  });
-
   it("rejects an unknown --provider and accepts the documented aliases", () => {
     expect(parseTriageProviderName("cursor")).toBe("cursor-agent");
     expect(parseTriageProviderName("Claude-Code")).toBe("claude");
@@ -746,7 +721,7 @@ describe("runTriageCommand", () => {
     expect(spawnAgent).not.toHaveBeenCalled();
     expect(exitCode).toBe(0);
     expect(payload.mode).toBe("no-provider");
-    expect(payload.message).toContain("No agent CLI found");
+    expect(payload.message).toContain("ADE has no agent CLI on this machine");
     expect(fs.existsSync(payload.contextPath)).toBe(true);
   });
 
@@ -797,7 +772,7 @@ describe("runTriageCommand", () => {
     expect(spawnAgent).not.toHaveBeenCalled();
     expect(exitCode).toBe(0);
     expect(payload.mode).toBe("no-provider");
-    expect(payload.message).toContain("claude is not installed");
+    expect(payload.message).toContain("could not start its copy of Claude Code");
   });
 
   it("pastes the prompt into the notice for an agent that cannot take it on argv", async () => {

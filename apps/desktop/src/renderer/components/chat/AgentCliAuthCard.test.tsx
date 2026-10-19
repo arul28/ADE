@@ -19,7 +19,6 @@ const missingCli: AgentCliAuthCardInfo = {
   agent: "codex",
   displayName: "Codex",
   category: "missing",
-  installCommand: "npm install -g @openai/codex",
   authCommand: "codex login",
 };
 
@@ -32,7 +31,6 @@ const unauthenticatedClaude: AgentCliAuthCardInfo = {
   agent: "claude",
   displayName: "Claude Code",
   category: "unauthenticated",
-  installCommand: "npm install -g @anthropic-ai/claude-code",
   authCommand: "claude auth login",
 };
 
@@ -47,6 +45,17 @@ function installAdeStub() {
     },
     lanes: {
       list: vi.fn().mockResolvedValue([{ id: "lane-default", name: "Main" }]),
+    },
+    ai: {
+      pinnedToolStatus: vi.fn().mockResolvedValue({
+        provider: "codex",
+        label: "Codex",
+        state: "missing",
+        fetchAllowed: true,
+        downloading: false,
+        version: "1.0.0",
+      }),
+      pinnedToolDownload: vi.fn().mockResolvedValue(undefined),
     },
   } as any;
 }
@@ -65,37 +74,15 @@ describe("AgentCliAuthCard", () => {
     }
   });
 
-  it("opens install commands in the chat PTY context", async () => {
-    const onRevealTerminal = vi.fn();
+  it("downloads the pinned provider copy from the chat card", async () => {
+    render(<AgentCliAuthCard agentCli={missingCli} laneId="lane-1" chatSessionId="chat-1" />);
 
-    render(
-      <AgentCliAuthCard
-        agentCli={missingCli}
-        laneId="lane-1"
-        chatSessionId="chat-1"
-        onRevealTerminal={onRevealTerminal}
-      />,
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: /run install/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /download/i }));
 
     await waitFor(() => {
-      expect(window.ade.pty.create).toHaveBeenCalledWith({
-        laneId: "lane-1",
-        chatSessionId: "chat-1",
-        cols: 100,
-        rows: 28,
-        title: "install",
-        tracked: true,
-        toolType: "shell",
-        startupCommand: "npm install -g @openai/codex",
-      }, null);
+      expect(window.ade.ai.pinnedToolDownload).toHaveBeenCalledWith({ provider: "codex" }, null);
     });
-    expect(onRevealTerminal).toHaveBeenCalledWith({
-      terminalId: "terminal-auth-1",
-      ptyId: "pty-auth-1",
-      label: "install",
-    });
+    expect(window.ade.pty.create).not.toHaveBeenCalled();
   });
 
   it("runs a chat's commands on the chat's own machine and lane, not the pane's", async () => {
@@ -158,16 +145,16 @@ describe("AgentCliAuthCard", () => {
     });
   });
 
-  it("names the machine the auth flow runs on", () => {
+  it("names the machine where the provider copy will be downloaded", () => {
     render(<AgentCliAuthCard agentCli={missingCli} runtimeName="Mac Studio" />);
 
-    expect(screen.getByText(/Install the CLI on Mac Studio/i)).toBeTruthy();
+    expect(screen.getByText(/downloads it for Mac Studio/i)).toBeTruthy();
   });
 
   it("names This computer absolutely when no runtime name is supplied", () => {
     render(<AgentCliAuthCard agentCli={missingCli} />);
 
-    expect(screen.getByText(/Install the CLI on This computer/)).toBeTruthy();
+    expect(screen.getByText(/downloads it for This computer/)).toBeTruthy();
     expect(screen.queryByText(/this machine/i)).toBeNull();
   });
 
@@ -226,23 +213,4 @@ describe("AgentCliAuthCard", () => {
     expect(screen.queryByText(/Reconnected to Claude Code/i)).toBeNull();
   });
 
-  it("uses the project default lane when no chat context is available", async () => {
-    render(<AgentCliAuthCard agentCli={missingCli} />);
-
-    const runInstall = screen.getByRole("button", { name: /run install/i });
-    expect(runInstall).toHaveProperty("disabled", false);
-
-    fireEvent.click(runInstall);
-
-    await waitFor(() => {
-      expect(window.ade.lanes.list).toHaveBeenCalledWith({
-        includeArchived: false,
-        includeStatus: false,
-      }, null);
-      expect(window.ade.pty.create).toHaveBeenCalledWith(expect.objectContaining({
-        laneId: "lane-default",
-        startupCommand: "npm install -g @openai/codex",
-      }), null);
-    });
-  });
 });

@@ -2296,7 +2296,7 @@ describe("ModelPicker", () => {
       );
     });
 
-    it("shows the same Install OpenCode copy for opencode, ollama, and lmstudio panes when the binary is missing", async () => {
+    it("uses the OpenCode-needed title for opencode, ollama, and lmstudio panes when the binary is missing", async () => {
       const user = userEvent.setup();
       opencodeBinaryInstalledInternal = false;
       renderPicker();
@@ -2304,7 +2304,6 @@ describe("ModelPicker", () => {
 
       const families: Array<"opencode" | "ollama" | "lmstudio"> = ["opencode", "ollama", "lmstudio"];
       const seenTitles = new Set<string>();
-      const seenBodies = new Set<string>();
       for (const family of families) {
         const railButton = document.querySelector(
           `[data-rail-selection="provider:${family}"]`,
@@ -2319,17 +2318,11 @@ describe("ModelPicker", () => {
 
         const title = emptyState!.querySelector("span")!.textContent;
         seenTitles.add((title ?? "").trim());
-        const bodyText = emptyState!.textContent ?? "";
-        // Capture the body line (after the title) so we can confirm it follows
-        // a consistent pattern across all three panes.
-        seenBodies.add(bodyText.includes("Install OpenCode to use") ? "shared-body" : "other");
       }
 
-      // All three panes converge on the same Install OpenCode title.
+      // All three panes converge on the same managed-tool title.
       expect(seenTitles.size).toBe(1);
-      expect([...seenTitles][0]).toBe("Install OpenCode");
-      // And the body uses the same "Install OpenCode to use … models." pattern.
-      expect(seenBodies).toEqual(new Set(["shared-body"]));
+      expect([...seenTitles][0]).toBe("OpenCode needed");
     });
 
     it("does not render the regular Set up banner for opencode/ollama/lmstudio rails when OpenCode is missing", async () => {
@@ -2408,6 +2401,7 @@ describe("ModelPicker", () => {
         "provider:muse",
         "provider:cursor",
         "provider:devin",
+        "provider:antigravity",
         "provider:opencode",
         "provider:pi",
         "provider:github-copilot",

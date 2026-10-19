@@ -277,37 +277,6 @@ describe("probeProviderStatuses — detection table", () => {
   });
 });
 
-describe("probeProviderStatuses — fallback-command resolutions", () => {
-  it("does not count a bare command name as installed", async () => {
-    const report = await probeProviderStatuses(baseOptions({
-      resolvers: {
-        claude: () => ({ path: null, requiresPathConfirmation: true, command: "claude" }),
-      },
-      findOnPath: () => null,
-    }));
-
-    expect(report.providers.claude).toMatchObject({ installed: false, binaryPath: null });
-    expect(report.providers.claude.detail).toContain(PROVIDER_STATUS_DETAILS.notOnPath("claude"));
-  });
-
-  it("counts it as installed once a PATH lookup confirms a file", async () => {
-    const report = await probeProviderStatuses(baseOptions({
-      fs: createFs({ "/opt/homebrew/bin/claude": { mode: 0o755 } }),
-      spawn: createSpawn({ stdout: "2.0.0" }).spawn,
-      resolvers: {
-        claude: () => ({ path: null, requiresPathConfirmation: true, command: "claude" }),
-      },
-      findOnPath: (command) => (command === "claude" ? "/opt/homebrew/bin/claude" : null),
-    }));
-
-    expect(report.providers.claude).toMatchObject({
-      installed: true,
-      binaryPath: "/opt/homebrew/bin/claude",
-      version: "2.0.0",
-    });
-  });
-});
-
 describe("probeProviderStatuses — timeout kills the process tree", () => {
   it("terminates the whole tree with the live child when --version never exits", async () => {
     // `child.kill()` is a TerminateProcess on the leader alone. On Windows the
@@ -417,21 +386,9 @@ describe("probeProviderStatuses — Windows", () => {
     expect(calls[0].options.windowsHide).toBe(true);
   });
 
-  it("uses the Windows install command on win32", async () => {
-    const report = await probeProviderStatuses(baseOptions({ platform: "win32" }));
-    expect(report.providers.claude.installCommand).toBe("irm https://claude.ai/install.ps1 | iex");
-    expect(report.providers.codex.installCommand).toBe("npm install -g @openai/codex");
-    // Cursor's POSIX line is a `curl … | bash` pipe, which a Windows user
-    // cannot run. Cursor ships its own Windows installer.
-    expect(report.providers.cursor.installCommand).toBe(
-      "irm 'https://cursor.com/install?win32=true' | iex",
-    );
-  });
-
   it("reports Cursor as unavailable on win32/arm64, with the blocker as the reason", async () => {
     // ADE refuses to load Cursor there — `@cursor/sdk` has no win32-arm64
-    // build. Offering an install command sends the user to install a CLI the
-    // app will not use, with no reason given.
+    // build, so a user-installed CLI does not make the provider available.
     const report = await probeProviderStatuses(baseOptions({
       platform: "win32",
       arch: "arm64",
@@ -441,13 +398,11 @@ describe("probeProviderStatuses — Windows", () => {
       installed: false,
       binaryPath: null,
       authenticated: false,
-      installCommand: null,
       detail: CURSOR_WINDOWS_ARM_BLOCKER,
     });
     // The docs URL is the whole remediation that is left.
     expect(report.providers.cursor.docsUrl).toBe("https://cursor.com/dashboard/api");
     // Every other provider is untouched by the gate.
-    expect(report.providers.claude.installCommand).toBe("irm https://claude.ai/install.ps1 | iex");
   });
 
   it("leaves Cursor alone on win32/x64, where it runs natively", async () => {
@@ -802,13 +757,6 @@ describe("probeProviderStatuses — report shape", () => {
       expect(record.provider).toBe(provider);
       expect(record.source).toBe("probed");
       expect(record.docsUrl).toMatch(/^https:\/\//);
-      // A null install command is a row's deliberate "nothing to install"
-      // (Muse: ADE downloads its own pinned build); every other row has one.
-      if (PROVIDER_REMEDIATION[provider].installCommand === null) {
-        expect(record.installCommand).toBeNull();
-      } else {
-        expect(record.installCommand).toBeTruthy();
-      }
       expect(record.loginCommand).toBeTruthy();
     }
   });

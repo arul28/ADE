@@ -694,6 +694,9 @@ describe("CTO domain coverage over the ADE action bus", () => {
       ["chat", "getCodexRealtimeState"],
       ["ai", "museSettings"],
       ["ai", "museSettingsClose"],
+      ["ai", "antigravitySignInStart"],
+      ["ai", "antigravitySignInComplete"],
+      ["ai", "antigravitySignInCancel"],
     ] as Array<[AdeActionDomain, string]>) {
       expect(isCtoOnlyAdeAction(domain, action), `${domain}.${action}`).toBe(true);
     }

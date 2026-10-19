@@ -26,6 +26,7 @@ const ADE_ENV_KEYS = [
   "ADE_STEP_ID",
   "ADE_ATTEMPT_ID",
   "ADE_OWNER_ID",
+  "ADE_TOOLS_ROOT",
 ] as const;
 const originalAdeEnv = new Map<string, string | undefined>(
   ADE_ENV_KEYS.map((key) => [key, process.env[key]]),
@@ -42,15 +43,18 @@ beforeEach(() => {
   for (const key of ADE_ENV_KEYS) {
     delete process.env[key];
   }
+  process.env.ADE_TOOLS_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), "ade-rpc-tools-"));
 });
 
 afterEach(() => {
+  const toolsRoot = process.env.ADE_TOOLS_ROOT;
   setPlatform(originalPlatform);
   for (const key of ADE_ENV_KEYS) {
     const value = originalAdeEnv.get(key);
     if (value == null) delete process.env[key];
     else process.env[key] = value;
   }
+  if (toolsRoot) fs.rmSync(toolsRoot, { recursive: true, force: true });
 });
 
 function createRuntime() {
@@ -2850,7 +2854,11 @@ describe("adeRpcServer", () => {
     const claudePath = createFakePathExecutable(binDir, "claude");
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    const response = await withEnv({ PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`, SHELL: "/bin/sh" }, async () => {
+    const response = await withEnv({
+      PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+      SHELL: "/bin/sh",
+      CLAUDE_CODE_EXECUTABLE_PATH: claudePath,
+    }, async () => {
       await initialize(handler, { role: "agent" });
       return await callTool(handler, "spawn_agent", {
         laneId: "lane-1",
@@ -2907,7 +2915,11 @@ describe("adeRpcServer", () => {
     createFakePathExecutable(binDir, "codex");
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    const response = await withEnv({ PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`, SHELL: "/bin/sh" }, async () => {
+    const response = await withEnv({
+      PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+      SHELL: "/bin/sh",
+      CODEX_EXECUTABLE: path.join(binDir, "codex"),
+    }, async () => {
       await initialize(handler, { role: "agent" });
       return await callTool(handler, "spawn_agent", {
         laneId: "lane-1",
@@ -3499,7 +3511,11 @@ describe("adeRpcServer", () => {
     const codexPath = createFakePathExecutable(binDir, "codex");
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    const response = await withEnv({ PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`, SHELL: "/bin/sh" }, async () => {
+    const response = await withEnv({
+      PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+      SHELL: "/bin/sh",
+      CODEX_EXECUTABLE: codexPath,
+    }, async () => {
       await initialize(handler, { role: "cto" });
       return await callTool(handler, "spawn_agent", {
         laneId: "lane-1",
@@ -3753,7 +3769,11 @@ describe("adeRpcServer", () => {
     const claudePath = createFakePathExecutable(binDir, "claude");
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    const response = await withEnv({ PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`, SHELL: "/bin/sh" }, async () => {
+    const response = await withEnv({
+      PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+      SHELL: "/bin/sh",
+      CLAUDE_CODE_EXECUTABLE_PATH: claudePath,
+    }, async () => {
       await initialize(handler, { role: "agent", runId: "run-from-identity" });
       return await callTool(handler, "spawn_agent", {
         laneId: "lane-1",
@@ -3788,42 +3808,20 @@ describe("adeRpcServer", () => {
     expect(createCall.command).toBe(claudePath);
   });
 
-  it("keeps spawn_agent on shell startup when the provider executable cannot be resolved", async () => {
-    const fixture = createRuntime();
-    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-    const response = await withEnv({ PATH: fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-empty-path-")), SHELL: "/bin/sh" }, async () => {
-      await initialize(handler, { role: "agent" });
-      return await callTool(handler, "spawn_agent", {
-        laneId: "lane-1",
-        provider: "claude",
-        prompt: "Implement API wiring",
-      });
-    });
-
-    expect(response?.isError).toBeUndefined();
-    expect(fixture.runtime.ptyService.create).toHaveBeenCalledWith(
-      expect.not.objectContaining({
-        command: expect.any(String),
-      })
-    );
-    expect(fixture.runtime.ptyService.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        startupCommand: expect.stringContaining("claude"),
-      })
-    );
-  });
-
-  it("does not use POSIX env assignment in unresolved Windows spawn_agent startup commands", async () => {
+  it("does not use POSIX env assignment for Windows spawn_agent launches", async () => {
     setPlatform("win32");
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    const response = await withEnv({ PATH: fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-empty-win-path-")) }, async () => {
+    const codexPath = "C:\\ADE\\codex.exe";
+    const response = await withEnv({
+      PATH: fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-empty-win-path-")),
+      CODEX_EXECUTABLE: codexPath,
+    }, async () => {
       await initialize(handler, { role: "agent" });
       return await callTool(handler, "spawn_agent", {
         laneId: "lane-1",
-        provider: "claude",
+        provider: "codex",
         prompt: "Implement API wiring",
         runId: "run-1",
         attemptId: "attempt-win-fallback",
@@ -3831,7 +3829,6 @@ describe("adeRpcServer", () => {
     });
 
     expect(response?.isError).toBeUndefined();
-    expect(response.structuredContent.startupCommand).toContain("claude");
     expect(response.structuredContent.startupCommand).not.toContain("ADE_RUN_ID=run-1");
     expect(response.structuredContent.startupCommand).not.toContain("ADE_ATTEMPT_ID=attempt-win-fallback");
     expect(fixture.runtime.ptyService.create).toHaveBeenCalledWith(
@@ -3843,6 +3840,9 @@ describe("adeRpcServer", () => {
         }),
         startupCommand: response.structuredContent.startupCommand,
       })
+    );
+    expect(fixture.runtime.ptyService.create).toHaveBeenCalledWith(
+      expect.objectContaining({ command: codexPath }),
     );
   });
 

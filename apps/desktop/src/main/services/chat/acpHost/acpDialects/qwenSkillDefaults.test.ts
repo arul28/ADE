@@ -175,7 +175,7 @@ describe("qwen skill defaults file", () => {
     expect(directoriesOf(result.path!)).not.toContain(file);
   });
 
-  it("writes nothing when every advertised root is missing", () => {
+  it("writes only the no-update default when every advertised root is missing", () => {
     const result = ensureQwenAdeSkillDefaultsFile({
       projectRoot,
       laneWorktreePath,
@@ -183,11 +183,13 @@ describe("qwen skill defaults file", () => {
       personalSession: false,
     });
 
-    expect(result).toEqual({ path: null, roots: [], reason: "no_existing_roots" });
-    expect(fs.existsSync(qwenAdeSkillDefaultsPath({ projectRoot, laneWorktreePath }))).toBe(false);
+    expect(result).toMatchObject({ roots: [], reason: "no_existing_roots" });
+    expect(JSON.parse(fs.readFileSync(result.path!, "utf8"))).toMatchObject({
+      general: { enableAutoUpdate: false },
+    });
   });
 
-  it("gives a personal chat no ADE skills and writes no file", () => {
+  it("gives a personal chat no ADE skills and keeps provider updates disabled", () => {
     const bundled = makeSkillRoot("bundled-skills", "ship");
 
     const result = ensureQwenAdeSkillDefaultsFile({
@@ -197,9 +199,11 @@ describe("qwen skill defaults file", () => {
       personalSession: true,
     });
 
-    expect(result).toEqual({ path: null, roots: [], reason: "personal_session" });
-    expect(fs.existsSync(qwenAdeSkillDefaultsPath({ projectRoot, laneWorktreePath }))).toBe(false);
-    expect(fs.existsSync(path.join(projectRoot, ".ade", "cache"))).toBe(false);
+    expect(result).toMatchObject({ roots: [], reason: "personal_session" });
+    expect(JSON.parse(fs.readFileSync(result.path!, "utf8"))).toMatchObject({
+      general: { enableAutoUpdate: false },
+    });
+    expect(fs.existsSync(path.join(projectRoot, ".ade", "cache"))).toBe(true);
   });
 
   it("never writes under the user's qwen config home", () => {
@@ -296,7 +300,10 @@ describe("qwen skill defaults file", () => {
     expect(buildQwenAdeSkillDefaults({
       roots: ["/a/skills", "/a/skills", "  ", "/b/skills"],
       base: { skills: { directories: ["/a/skills"] } },
-    })).toEqual({ skills: { directories: ["/a/skills", "/b/skills"] } });
+    })).toEqual({
+      general: { enableAutoUpdate: false },
+      skills: { directories: ["/a/skills", "/b/skills"] },
+    });
   });
 });
 
@@ -326,7 +333,7 @@ describe("qwen spawn plan", () => {
     expect(directoriesOf(plan.env[QWEN_SYSTEM_DEFAULTS_PATH_ENV]!)).toEqual([bundled]);
   });
 
-  it("leaves the env var unset when there is nothing to deliver", () => {
+  it("leaves the env var unset when no ADE defaults path was provided", () => {
     const personal = ensureQwenAdeSkillDefaultsFile({
       projectRoot,
       laneWorktreePath,
@@ -342,7 +349,7 @@ describe("qwen spawn plan", () => {
       adeSkillDefaultsPath: personal.path,
     });
 
-    expect(plan.env[QWEN_SYSTEM_DEFAULTS_PATH_ENV]).toBeUndefined();
+    expect(plan.env[QWEN_SYSTEM_DEFAULTS_PATH_ENV]).toBeDefined();
     expect(plan.env.QWEN_HOME).toBe(qwenConfigHome);
     expect(
       qwenDialect.buildSpawnPlan({ binaryPath: "/bin/qwen", cwd: laneWorktreePath, baseEnv: {} })

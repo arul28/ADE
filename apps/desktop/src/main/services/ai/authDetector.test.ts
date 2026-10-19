@@ -5,7 +5,6 @@ import os from "node:os";
 import path from "node:path";
 
 const spawnMock = vi.fn();
-const execFileSyncMock = vi.fn();
 const getAllApiKeysMock = vi.fn();
 const cursorMeMock = vi.fn();
 const cursorModelsListMock = vi.fn();
@@ -56,18 +55,6 @@ function commandBasename(command: string): string {
   return command.replace(/\\/g, "/").split("/").pop() ?? command;
 }
 
-function hideRealExecutable(command: string) {
-  const realStatSync = fs.statSync.bind(fs);
-  return vi.spyOn(fs, "statSync").mockImplementation(((candidatePath: fs.PathLike, options?: fs.StatOptions) => {
-    if (commandBasename(String(candidatePath)) === command) {
-      const error = new Error(`ENOENT: no such file or directory, stat '${String(candidatePath)}'`) as NodeJS.ErrnoException;
-      error.code = "ENOENT";
-      throw error;
-    }
-    return realStatSync(candidatePath, options as fs.StatOptions | undefined);
-  }) as typeof fs.statSync);
-}
-
 function withExecutableMode(stat: fs.Stats): fs.Stats {
   return new Proxy(stat, {
     get(target, property, receiver) {
@@ -83,7 +70,6 @@ vi.mock("node:child_process", async () => {
   return {
     ...actual,
     spawn: (...args: unknown[]) => spawnMock(...args),
-    execFileSync: (...args: unknown[]) => execFileSyncMock(...args),
   };
 });
 
@@ -138,24 +124,9 @@ beforeEach(async () => {
 describe("authDetector", () => {
   const originalEnv = { ...process.env };
   let tempHomeDir: string | null = null;
-  /**
-   * Fixtures written while `process.platform` is faked to "win32".
-   *
-   * The `node:path` mock at the top of this file switches to win32 semantics
-   * there, so `path.join("/var/folders/…", "npm")` returns `"\var\folders\…\npm"`
-   * — which on a POSIX host is not a path at all but a single literal filename,
-   * created relative to the CWD (apps/desktop) rather than under the temp dir.
-   * That is exactly what the code under test computes, so the fixture has to use
-   * it, and vitest runs this suite in worker threads where `process.chdir()`
-   * throws ERR_WORKER_UNSUPPORTED_OPERATION. Remembering what was written and
-   * removing it here is what keeps the repo from collecting a `\var\folders\…`
-   * file on every single run.
-   */
-  const windowsStyleFixtures: string[] = [];
 
   beforeEach(() => {
     spawnMock.mockReset();
-    execFileSyncMock.mockReset();
     getAllApiKeysMock.mockReset();
     vi.unstubAllGlobals();
     process.env = { ...originalEnv };
@@ -169,119 +140,6 @@ describe("authDetector", () => {
       fs.rmSync(tempHomeDir, { recursive: true, force: true });
       tempHomeDir = null;
     }
-    for (const fixture of windowsStyleFixtures.splice(0)) {
-      fs.rmSync(fixture, { recursive: true, force: true });
-    }
-  });
-
-  it("reports installed-but-unauthenticated CLI providers", async () => {
-    hideRealExecutable("claude");
-    spawnMock.mockImplementation((command: string, args: string[] = []) => {
-      // commandExists: direct spawn strategy
-      if (args[0] === "--version") {
-        if (command === "claude") return fakeChild({ status: 0, stdout: "1.0.0\n" });
-        return fakeError();
-      }
-      // commandPath: which strategy
-      if (command === "which") {
-        if (args[0] === "claude") return fakeChild({ status: 0, stdout: "/usr/local/bin/claude\n" });
-        return fakeChild({ status: 1 });
-      }
-      if (commandBasename(command) === "claude" && args[0] === "auth") {
-        return fakeChild({ status: 1, stderr: "Not logged in. Run `claude auth login`." });
-      }
-      return fakeChild({ status: 1 });
-    });
-
-    const statuses = await detectCliAuthStatuses();
-    const claude = statuses.find((entry) => entry.cli === "claude");
-
-    expect(claude).toEqual({
-      cli: "claude",
-      installed: true,
-      path: "/usr/local/bin/claude",
-      authenticated: false,
-      verified: true,
-    });
-  });
-
-  it("can skip expensive CLI auth probes for passive status checks", async () => {
-    hideRealExecutable("claude");
-    spawnMock.mockImplementation((command: string, args: string[] = []) => {
-      if (args[0] === "--version") {
-        if (command === "claude") return fakeChild({ status: 0, stdout: "1.0.0\n" });
-        return fakeError();
-      }
-      if (command === "which") {
-        if (args[0] === "claude") return fakeChild({ status: 0, stdout: "/usr/local/bin/claude\n" });
-        return fakeChild({ status: 1 });
-      }
-      if (commandBasename(command) === "claude" && args[0] === "auth") {
-        throw new Error("auth probe should not run");
-      }
-      return fakeChild({ status: 1 });
-    });
-
-    const statuses = await detectCliAuthStatuses({ skipAuthProbe: true });
-    const claude = statuses.find((entry) => entry.cli === "claude");
-
-    expect(claude).toEqual({
-      cli: "claude",
-      installed: true,
-      path: "/usr/local/bin/claude",
-      authenticated: true,
-      verified: false,
-    });
-    expect(spawnMock.mock.calls.some(([command, args]) => {
-      const argv = Array.isArray(args) ? args : [];
-      return String(command).includes("claude") && argv[0] === "auth";
-    })).toBe(false);
-  });
-
-  it("detects and probes a Windows cursor-agent.cmd outside PATH", async () => {
-    setPlatform("win32");
-    tempHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cursor-auth-win-"));
-    const npmBin = path.join(tempHomeDir, "npm");
-    const cursorAgentPath = path.join(npmBin, "cursor-agent.cmd");
-    fs.mkdirSync(npmBin, { recursive: true });
-    fs.writeFileSync(cursorAgentPath, "@echo off\r\n", "utf8");
-    // Both names are win32-joined and therefore CWD-relative here; see
-    // windowsStyleFixtures above. Model the directory listing as well, because
-    // executable resolution now discovers Windows shims from readdirSync.
-    windowsStyleFixtures.push(cursorAgentPath, npmBin);
-    const realReaddirSync = fs.readdirSync.bind(fs);
-    const readdirSpy = vi.spyOn(fs, "readdirSync").mockImplementation(((directory: fs.PathLike, options?: any) => {
-      if (path.normalize(String(directory)).toLowerCase() === path.normalize(npmBin).toLowerCase()) {
-        return [path.basename(cursorAgentPath)] as any;
-      }
-      return realReaddirSync(directory, options);
-    }) as typeof fs.readdirSync);
-    process.env.APPDATA = tempHomeDir;
-    process.env.PATH = "C:\\Windows\\System32";
-    process.env.ComSpec = "C:\\Windows\\System32\\cmd.exe";
-
-    spawnMock.mockImplementation((command: string, args: string[] = []) => {
-      const commandLine = args.join(" ").toLowerCase();
-      if (command.toLowerCase().endsWith("cmd.exe") && commandLine.includes("cursor-agent.cmd")) {
-        if (commandLine.includes("--version")) return fakeChild({ status: 0, stdout: "1.0.0\n" });
-        if (commandLine.includes("status")) {
-          return fakeChild({ status: 0, stdout: '{"authenticated":true,"plan":"pro"}\n' });
-        }
-      }
-      if (command === "where") return fakeChild({ status: 1 });
-      return fakeError();
-    });
-
-    const statuses = await detectCliAuthStatuses({ force: true });
-    expect(statuses.find((entry) => entry.cli === "cursor")).toMatchObject({
-      cli: "cursor",
-      installed: true,
-      authenticated: true,
-      verified: true,
-      paidPlan: true,
-    });
-    expect(statuses.find((entry) => entry.cli === "cursor")?.path?.toLowerCase()).toBe(cursorAgentPath.toLowerCase());
-    readdirSpy.mockRestore();
   });
 
   it("merges config, store, env, and local endpoint auth sources", async () => {
@@ -292,10 +150,11 @@ describe("authDetector", () => {
 
     process.env.OPENAI_API_KEY = "env-openai";
     process.env.GROQ_API_KEY = "env-groq";
+    process.env.CLAUDE_CODE_EXECUTABLE_PATH = "/ade-test/tools/claude";
 
     spawnMock.mockImplementation((command: string, args: string[] = []) => {
       if (args[0] === "--version") {
-        if (command === "claude") return fakeChild({ status: 0, stdout: "1.0.0\n" });
+        if (commandBasename(command) === "claude") return fakeChild({ status: 0, stdout: "1.0.0\n" });
         return fakeError();
       }
       if (command === "which") {
@@ -384,13 +243,13 @@ describe("authDetector", () => {
   it("does not treat droid exec list-tools as proof of authentication", async () => {
     tempHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-droid-auth-"));
     process.env.HOME = tempHomeDir;
-    // Create a fake droid binary in a known bin dir so resolveDroidExecutable
-    // (which uses fs.statSync against real paths) finds it without falling
-    // through to the real CI PATH.
+    // Use the explicit developer override so this test exercises auth probing
+    // without depending on a host installation or tools cache.
     const droidBinDir = path.join(tempHomeDir, ".local", "bin");
     fs.mkdirSync(droidBinDir, { recursive: true });
     const fakeDroidPath = path.join(droidBinDir, "droid");
     fs.writeFileSync(fakeDroidPath, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    process.env.DROID_EXECUTABLE = fakeDroidPath;
     // Strip PATH so resolveExecutableFromKnownLocations skips real binaries
     // on the CI runner and uses the temp home's known dirs.
     process.env.PATH = "";
@@ -418,7 +277,7 @@ describe("authDetector", () => {
 
     // Installed, auth unknown — not "authenticated and verified". The real CLI
     // in this state answers `droid exec "say hi"` with "Authentication failed."
-    expect(droid).toEqual({
+    expect(droid).toMatchObject({
       cli: "droid",
       installed: true,
       path: fakeDroidPath,
@@ -444,6 +303,7 @@ describe("authDetector", () => {
     fs.mkdirSync(droidBinDir, { recursive: true });
     const fakeDroidPath = path.join(droidBinDir, "droid");
     fs.writeFileSync(fakeDroidPath, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    process.env.DROID_EXECUTABLE = fakeDroidPath;
     process.env.PATH = "";
     const realStatSync = fs.statSync.bind(fs);
     const statSpy = vi.spyOn(fs, "statSync").mockImplementation(((candidatePath: fs.PathLike, options?: fs.StatOptions) => {
@@ -462,7 +322,7 @@ describe("authDetector", () => {
       const statuses = await detectCliAuthStatuses();
       const droid = statuses.find((entry) => entry.cli === "droid");
 
-      expect(droid).toEqual({
+      expect(droid).toMatchObject({
         cli: "droid",
         installed: true,
         path: fakeDroidPath,
@@ -536,129 +396,6 @@ describe("authDetector", () => {
       endpointSource: "auto",
       preferredModelId: "lmstudio/gemma-4",
     }));
-  });
-
-  it("marks unsupported CLI auth checks as unverified", async () => {
-    spawnMock.mockImplementation((command: string, args: string[] = []) => {
-      if (args[0] === "--version") {
-        if (command === "claude") return fakeChild({ status: 0, stdout: "1.0.0\n" });
-        return fakeError();
-      }
-      if (command === "which") {
-        if (args[0] === "claude") return fakeChild({ status: 0, stdout: "/usr/local/bin/claude\n" });
-        return fakeChild({ status: 1 });
-      }
-      if (commandBasename(command) === "claude") {
-        return fakeChild({ status: 1, stderr: "unknown command 'auth'" });
-      }
-      return fakeChild({ status: 1 });
-    });
-
-    const statuses = await detectCliAuthStatuses();
-    const claude = statuses.find((entry) => entry.cli === "claude");
-    expect(claude?.verified).toBe(false);
-    expect(claude?.authenticated).toBe(true);
-  });
-
-  it("finds codex through an npm-global prefix when PATH lookup fails", async () => {
-    tempHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-auth-detector-"));
-    const prefixDir = path.join(tempHomeDir, ".npm-global");
-    const preferredCodexPath = path.join(prefixDir, "bin", "codex");
-    fs.mkdirSync(path.join(prefixDir, "bin"), { recursive: true });
-    fs.writeFileSync(path.join(tempHomeDir, ".npmrc"), "prefix=~/.npm-global\n", "utf8");
-    fs.writeFileSync(preferredCodexPath, "#!/bin/sh\nexit 0\n", "utf8");
-    fs.chmodSync(preferredCodexPath, 0o755);
-    process.env.HOME = tempHomeDir;
-    process.env.PATH = "/usr/bin:/bin";
-
-    const realStatSync = fs.statSync.bind(fs);
-    const statSpy = vi.spyOn(fs, "statSync").mockImplementation(((candidatePath: fs.PathLike, options?: fs.StatOptions) => {
-      const resolved = String(candidatePath);
-      if (commandBasename(resolved) === "codex" && resolved !== preferredCodexPath) {
-        const error = new Error(`ENOENT: no such file or directory, stat '${resolved}'`) as NodeJS.ErrnoException;
-        error.code = "ENOENT";
-        throw error;
-      }
-      const stat = realStatSync(candidatePath, options as fs.StatOptions | undefined);
-      return resolved === preferredCodexPath ? withExecutableMode(stat) : stat;
-    }) as typeof fs.statSync);
-
-    try {
-      spawnMock.mockImplementation((command: string, args: string[] = []) => {
-        if (args[0] === "--version") {
-          if (command === "codex") return fakeError();
-          if (command === preferredCodexPath) return fakeChild({ status: 0, stdout: "0.105.0\n" });
-          return fakeError();
-        }
-        if (command === "which") {
-          return fakeChild({ status: 1 });
-        }
-        if (commandBasename(command) === "codex" && args[0] === "login" && args[1] === "status") {
-          return fakeChild({ status: 0, stdout: "Authenticated as test-user\n" });
-        }
-        return fakeChild({ status: 1 });
-      });
-
-      const statuses = await detectCliAuthStatuses();
-      const codex = statuses.find((entry) => entry.cli === "codex");
-
-      expect(codex).toEqual({
-        cli: "codex",
-        installed: true,
-        path: preferredCodexPath,
-        authenticated: true,
-        verified: true,
-      });
-    } finally {
-      statSpy.mockRestore();
-    }
-  });
-
-  it("repairs PATH from the interactive shell during a forced refresh", async () => {
-    hideRealExecutable("codex");
-    process.env.PATH = "/usr/bin:/bin:/usr/sbin:/sbin";
-    process.env.SHELL = "/bin/zsh";
-
-    execFileSyncMock.mockImplementation((_command: string, args: string[]) => {
-      if (args[0] === "-lc") {
-        return "__ADE_PATH_START__/Users/arul/.local/bin:/usr/local/bin:/usr/bin:/bin__ADE_PATH_END__";
-      }
-      if (args[0] === "-ic") {
-        return "shell noise\n__ADE_PATH_START__/Users/arul/.npm-global/bin:/Users/arul/.local/bin:/usr/local/bin:/usr/bin:/bin__ADE_PATH_END__";
-      }
-      throw new Error(`unexpected shell args: ${args.join(" ")}`);
-    });
-
-    spawnMock.mockImplementation((command: string, args: string[] = []) => {
-      if (args[0] === "--version") {
-        if (command === "codex" && process.env.PATH?.includes("/Users/arul/.npm-global/bin")) {
-          return fakeChild({ status: 0, stdout: "codex-cli 0.117.0\n" });
-        }
-        return fakeError();
-      }
-      if (command === "which") {
-        if (args[0] === "codex" && process.env.PATH?.includes("/Users/arul/.npm-global/bin")) {
-          return fakeChild({ status: 0, stdout: "/Users/arul/.npm-global/bin/codex\n" });
-        }
-        return fakeChild({ status: 1 });
-      }
-      if (commandBasename(command) === "codex" && args[0] === "login" && args[1] === "status") {
-        return fakeChild({ status: 0, stdout: "Logged in using ChatGPT\n" });
-      }
-      return fakeChild({ status: 1 });
-    });
-
-    const statuses = await detectCliAuthStatuses({ force: true });
-    const codex = statuses.find((entry) => entry.cli === "codex");
-
-    expect(process.env.PATH).toContain("/Users/arul/.npm-global/bin");
-    expect(codex).toEqual({
-      cli: "codex",
-      installed: true,
-      path: "/Users/arul/.npm-global/bin/codex",
-      authenticated: true,
-      verified: true,
-    });
   });
 
   it("verifies API keys with provider endpoints", async () => {

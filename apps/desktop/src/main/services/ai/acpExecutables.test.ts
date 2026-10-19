@@ -1,6 +1,18 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { checkKimiWindowsPrerequisites, resolveAcpExecutable } from "./acpExecutables";
+
+const pathFixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-acp-path-cli-"));
+const pathFixtureBin = path.join(pathFixtureRoot, "bin");
+fs.mkdirSync(pathFixtureBin);
+for (const command of ["qwen", "kimi", "grok", "devin"]) {
+  const file = path.join(pathFixtureBin, command);
+  fs.writeFileSync(file, "#!/bin/sh\nexit 0\n");
+  fs.chmodSync(file, 0o755);
+}
+afterAll(() => fs.rmSync(pathFixtureRoot, { recursive: true, force: true }));
 
 describe("resolveAcpExecutable", () => {
   it("prefers an explicit env override over PATH", () => {
@@ -10,18 +22,27 @@ describe("resolveAcpExecutable", () => {
     expect(resolved).toEqual({ path: "/opt/custom/grok", source: "env" });
   });
 
-  it("falls back to the bare command when nothing is installed", () => {
-    vi.spyOn(fs, "statSync").mockImplementation(() => {
-      const err: NodeJS.ErrnoException = new Error("ENOENT");
-      err.code = "ENOENT";
-      throw err;
+  it("reports a missing pinned copy with an empty path", () => {
+    const resolved = resolveAcpExecutable("qwen", {
+      env: { PATH: "", HOME: "/no-such-ade-home", ADE_TOOLS_ROOT: path.join(pathFixtureRoot, "empty-tools") },
     });
-    try {
-      const resolved = resolveAcpExecutable("qwen", { env: { PATH: "", HOME: "/no-such-ade-home" } });
-      expect(resolved).toEqual({ path: "qwen", source: "fallback-command" });
-    } finally {
-      vi.restoreAllMocks();
-    }
+    expect(resolved).toEqual({ path: "", source: "fallback-command" });
+  });
+
+  it.each([
+    ["qwen", "qwen"],
+    ["kimi", "kimi"],
+    ["grok", "grok"],
+    ["devin", "devin"],
+  ] as const)("never selects %s from PATH when ADE has no pin for this target", (provider, command) => {
+    const resolved = resolveAcpExecutable(provider, {
+      env: { PATH: pathFixtureBin, ADE_TOOLS_ROOT: path.join(pathFixtureRoot, "empty-tools") },
+      platform: "freebsd",
+      arch: "x64",
+    });
+
+    expect(fs.existsSync(path.join(pathFixtureBin, command))).toBe(true);
+    expect(resolved).toEqual({ path: "", source: "fallback-command" });
   });
 });
 

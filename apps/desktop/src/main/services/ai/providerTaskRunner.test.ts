@@ -7,28 +7,28 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const spawnMock = vi.fn();
 const resolveClaudeCodeExecutableMock = vi.fn(() => ({
-  path: "C:\\Users\\me\\AppData\\Roaming\\npm\\claude.cmd",
-  source: "path",
+  path: "/ade-test/tools/claude",
+  source: "tools-cache",
 }));
 const resolveCodexExecutableMock = vi.fn(() => ({
-  path: "C:\\Users\\me\\AppData\\Roaming\\npm\\codex.cmd",
-  source: "path",
+  path: "/ade-test/tools/codex",
+  source: "tools-cache",
 }));
 const resolveCopilotExecutableMock = vi.fn(() => ({
-  path: "C:\\Users\\me\\AppData\\Roaming\\npm\\copilot.cmd",
-  source: "path",
+  path: "/ade-test/tools/copilot",
+  source: "tools-cache",
 }));
 const resolveQwenExecutableMock = vi.fn(() => ({
-  path: "C:\\Users\\me\\AppData\\Roaming\\npm\\qwen.cmd",
-  source: "path",
+  path: "/ade-test/tools/qwen",
+  source: "tools-cache",
 }));
 const resolveKimiExecutableMock = vi.fn(() => ({
-  path: "C:\\Users\\me\\.kimi-code\\bin\\kimi.exe",
-  source: "path",
+  path: "/ade-test/tools/kimi",
+  source: "tools-cache",
 }));
 const resolveGrokExecutableMock = vi.fn(() => ({
-  path: "C:\\Users\\me\\.grok\\bin\\grok.exe",
-  source: "path",
+  path: "/ade-test/tools/grok",
+  source: "tools-cache",
 }));
 const cursorLocalPromptMock = vi.fn();
 const copilotUtilityMock = vi.fn();
@@ -270,7 +270,7 @@ describe("runProviderTask", () => {
     expect(result.text).toBe("READY");
     expect(spawnMock).toHaveBeenCalledTimes(1);
     const [command, argv, options] = spawnMock.mock.calls[0]!;
-    expect(command).toBe(expectedLaunchCommand("C:\\Users\\me\\AppData\\Roaming\\npm\\claude.cmd"));
+    expect(command).toBe(expectedLaunchCommand("/ade-test/tools/claude"));
     expect(launchArgvContains(argv, "-p")).toBe(true);
     expect(launchArgvContains(argv, "Summarize the worktree state.")).toBe(false);
     expect(options).toMatchObject({
@@ -349,7 +349,7 @@ describe("runProviderTask", () => {
     const child = createMockProcess({ deferClose: true });
     spawnMock.mockReturnValueOnce(child);
     // The mock's pid is not ours: never let the group kill reach the real OS.
-    const killSpy = vi.spyOn(process, "kill").mockImplementation((() => true) as typeof process.kill);
+    const killSpy = vi.spyOn(process, "kill").mockImplementation((() => true as const) as typeof process.kill);
 
     const pending = runProviderTask({
       cwd: process.cwd(),
@@ -413,7 +413,7 @@ describe("runProviderTask", () => {
       expect(result.text).toBe("DONE");
       expect(spawnMock).toHaveBeenCalledTimes(1);
       const [command, argv, options] = spawnMock.mock.calls[0]!;
-      expect(command).toBe(expectedLaunchCommand("C:\\Users\\me\\AppData\\Roaming\\npm\\codex.cmd"));
+      expect(command).toBe(expectedLaunchCommand("/ade-test/tools/codex"));
       expect(launchArgvContains(argv, "exec")).toBe(true);
       expect(launchArgvContains(argv, "-")).toBe(true);
       expect(launchArgvContains(argv, "--image")).toBe(true);
@@ -551,7 +551,7 @@ describe("runProviderTask", () => {
     expect(result.structuredOutput).toEqual({ chatTitle: "Copilot title" });
     expect(spawnMock).not.toHaveBeenCalled();
     expect(acquireCopilotConnectionMock).toHaveBeenCalledWith(expect.objectContaining({
-      cliPath: "C:\\Users\\me\\AppData\\Roaming\\npm\\copilot.cmd",
+      cliPath: "/ade-test/tools/copilot",
     }));
     expect(copilotUtilityMock).toHaveBeenCalledWith(expect.objectContaining({
       cwd: "/tmp/lane",

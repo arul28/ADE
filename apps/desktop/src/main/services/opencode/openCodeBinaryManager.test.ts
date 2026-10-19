@@ -119,34 +119,6 @@ describe("openCodeBinaryManager", () => {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   });
 
-  it("rechecks after a missing result so a newly installed OpenCode binary is discovered", () => {
-    process.env.ADE_DISABLE_BUNDLED_OPENCODE = "1";
-    expect(resolveOpenCodeBinary()).toEqual({ path: null, source: "missing" });
-
-    const binaryPath = path.join(homeDir, ".npm-global", "bin", "opencode");
-    makeExecutable(binaryPath);
-
-    expect(resolveOpenCodeBinary()).toEqual({
-      path: binaryPath,
-      source: "user-installed",
-    });
-  });
-
-  it("invalidates a cached positive path if the binary disappears", () => {
-    process.env.ADE_DISABLE_BUNDLED_OPENCODE = "1";
-    const binaryPath = path.join(homeDir, ".npm-global", "bin", "opencode");
-    makeExecutable(binaryPath);
-
-    expect(resolveOpenCodeBinary()).toEqual({
-      path: binaryPath,
-      source: "user-installed",
-    });
-
-    fs.rmSync(binaryPath);
-
-    expect(resolveOpenCodeBinary()).toEqual({ path: null, source: "missing" });
-  });
-
   it("prefers ADE's bundled OpenCode runtime over a user-installed binary", () => {
     process.env.ADE_OPENCODE_BUNDLE_ROOT = tempRoot;
     const bundledPath = path.join(tempRoot, "node_modules", "@opencode", "cli", "bin", "opencode.exe");

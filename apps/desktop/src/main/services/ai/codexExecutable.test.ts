@@ -44,9 +44,7 @@ function installFakeCachedCodex(toolsRoot: string, triple = "aarch64-apple-darwi
 
 
 describe("resolveCodexExecutable", () => {
-  it("uses the detected Codex auth path after bundled lookup is unavailable", () => {
-    mockState.resolveExecutableFromKnownLocations.mockReset();
-
+  it("does not use a detected Codex auth path when ADE has no pinned copy", () => {
     expect(
       resolveCodexExecutable({
         auth: [
@@ -63,11 +61,7 @@ describe("resolveCodexExecutable", () => {
         }),
         bundledRoots: [],
       }),
-    ).toEqual({
-      path: "/Users/arul/.npm-global/bin/codex",
-      source: "auth",
-    });
-    expect(mockState.resolveExecutableFromKnownLocations).not.toHaveBeenCalled();
+    ).toEqual({ path: "", source: "fallback-command" });
   });
 
   it("honors CODEX_EXECUTABLE before PATH lookup", () => {
@@ -182,35 +176,6 @@ describe("resolveCodexExecutable", () => {
             arch: "arm64",
           }),
         ).toEqual({ path: entryPath, source: "tools-cache" });
-      } finally {
-        fs.rmSync(toolsRoot, { recursive: true, force: true });
-      }
-    });
-
-    it("honours ADE_DISABLE_BUNDLED_CODEX by skipping the cache too", () => {
-      // The flag means "use my Codex, not ADE's". Leaving the cache in play
-      // would make it a no-op now that the cache, not node_modules, is where
-      // ADE's own copy lives.
-      mockState.resolveExecutableFromKnownLocations.mockReset();
-      mockState.resolveExecutableFromKnownLocations.mockReturnValue({
-        path: "/usr/local/bin/codex",
-        source: "path",
-      });
-      const toolsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-tools-codex-"));
-      try {
-        installFakeCachedCodex(toolsRoot);
-
-        expect(
-          resolveCodexExecutable({
-            env: {
-              ADE_TOOLS_ROOT: toolsRoot,
-              ADE_DISABLE_BUNDLED_CODEX: "1",
-              PATH: "/usr/bin:/bin",
-            },
-            platform: "darwin",
-            arch: "arm64",
-          }),
-        ).toEqual({ path: "/usr/local/bin/codex", source: "path" });
       } finally {
         fs.rmSync(toolsRoot, { recursive: true, force: true });
       }

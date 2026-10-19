@@ -41,6 +41,7 @@ const EXPECTED: Record<SettingsProviderId, { endpoint: boolean; protocol: boolea
   grok: { endpoint: false, protocol: false, models: false, providerId: false },
   copilot: { endpoint: false, protocol: false, models: false, providerId: false },
   devin: { endpoint: false, protocol: false, models: false, providerId: false },
+  antigravity: { endpoint: false, protocol: false, models: false, providerId: false },
 };
 
 describe("AddApiKeySheet", () => {

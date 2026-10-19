@@ -357,6 +357,30 @@ describe("gcTools", () => {
     expect(result.removed).not.toContain(foreign);
     expect(fs.existsSync(foreign)).toBe(true);
   });
+
+  it("gives legacy packages the full grace period from the first ledger creation", async () => {
+    vi.useFakeTimers();
+    try {
+      const createdAt = new Date("2026-08-01T12:00:00.000Z");
+      vi.setSystemTime(createdAt);
+      const manifest = manifestFor({ entryPath: "bin/demo", integrity: `sha512-${"A".repeat(86)}==` });
+      const legacy = toolVersionDir(toolsRoot, "opencode-darwin-arm64", "1.18.0");
+      await fsp.mkdir(legacy, { recursive: true });
+
+      const firstCollection = await gcTools(baseContext(manifest));
+
+      expect(firstCollection.removed).not.toContain(path.dirname(legacy));
+      expect(fs.existsSync(legacy)).toBe(true);
+
+      vi.setSystemTime(new Date(createdAt.getTime() + 15 * 24 * 60 * 60_000));
+      const laterCollection = await gcTools(baseContext(manifest));
+
+      expect(laterCollection.removed).toContain(path.dirname(legacy));
+      expect(fs.existsSync(path.dirname(legacy))).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("tryResolvePreviousTool", () => {
