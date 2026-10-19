@@ -26,6 +26,8 @@ export const IPC = {
   storageGetPressure: "ade.storage.getPressure",
   storageGetSnapshot: "ade.storage.getSnapshot",
   storageCompressNow: "ade.storage.compressNow",
+  projectHealthGetReport: "ade.projectHealth.getReport",
+  projectHealthFix: "ade.projectHealth.fix",
   storageRunMaintenanceNow: "ade.storage.runMaintenanceNow",
   storageCleanupPreview: "ade.storage.cleanupPreview",
   storageCleanup: "ade.storage.cleanup",

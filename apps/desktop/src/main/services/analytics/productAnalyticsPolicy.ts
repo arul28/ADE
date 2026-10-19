@@ -133,9 +133,12 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // (Start fresh, Use this copy). completed | failed.
   "project_data_restore",
   "project_data_start_fresh",
-  // Settings → General → Project location → Move…: whether people move a
+  // Settings → Location → Move…: whether people move a
   // project at all, and how often a move fails. completed | failed.
   "project_move",
+  // Settings → Location / Lanes → a project health fix (Update paths, Relink
+  // lanes, …): whether people use them and how often one fails. completed | failed.
+  "project_health_fix",
   // Settings → Background service → "Stop and quit ADE": whether people turn
   // the always-on service off at all. completed | rejected (a guard refused) | failed.
   "background_service_stop",

@@ -41,6 +41,7 @@ import {
   ratesForRequest,
   resolveTokenPrice,
 } from "./usagePricing";
+import { previousProjectRoots } from "../../../../../ade-cli/src/services/projects/projectMove/movePreviousRoots";
 
 /**
  * The machine-local per-turn usage ledger: one JSON line for each finished
@@ -940,9 +941,12 @@ export async function buildTurnUsageLedgerSummary(
   const turns = turnsSince(sinceMs);
   const burnTurns = turnsSince(burnSinceMs);
   const recentCount = clampWhole(args.recent, 0, ADE_TURN_USAGE_MAX_RECENT, 0);
-  const scopeKey = projectRootKey(options.projectRoot);
+  // A moved project keeps the turns it had at its earlier folders.
+  const scopeKeys = options.projectRoot
+    ? new Set([options.projectRoot, ...previousProjectRoots(options.projectRoot)].map(projectRootKey).filter(Boolean))
+    : null;
   const recentRows = (): AdeTurnUsageRecord[] => {
-    const pool = scopeKey ? turns.filter((row) => projectRootKey(row.projectRoot) === scopeKey) : turns;
+    const pool = scopeKeys ? turns.filter((row) => scopeKeys.has(projectRootKey(row.projectRoot))) : turns;
     return pool.slice(-recentCount);
   };
   return {

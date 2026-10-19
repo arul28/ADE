@@ -2082,7 +2082,7 @@ still-live button invites a second spend.
   lives in the project config's `browser` section and ADE writes it to
   `.ade/local.yaml`, because which browser your links land in is a
   property of the machine you are sitting at, not of the repository.
-  Settings → General → Links exposes it as "Open links: In ADE / In
+  Settings → Behaviour → Open links exposes it as "Open links: In ADE / In
   system browser". Two overrides sit on top of the preference and are
   absolute, so nobody has to open Settings to get the other behaviour
   once: **Mod+Click** (Cmd on macOS, Ctrl elsewhere) always opens

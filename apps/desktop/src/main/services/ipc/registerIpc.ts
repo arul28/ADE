@@ -48,7 +48,7 @@ import {
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import type { Server as NetServer } from "node:net";
-import type { DiskPressureMonitor, DiskPressureSnapshot } from "../storage/diskPressure";
+import { createDiskPressureMonitor, type DiskPressureMonitor, type DiskPressureSnapshot } from "../storage/diskPressure";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { stripHostOnlyChatMetadata } from "../../../shared/chatAutoResume";
@@ -1048,6 +1048,8 @@ import { RemoteProjectNotFoundError, registerRuntimeBridge } from "./runtimeBrid
 import type { createLinearIssueTracker } from "../cto/linearIssueTracker";
 import type { createUsageTrackingService } from "../usage/usageTrackingService";
 import type { createStorageInsightsService } from "../storage/storageInsightsService";
+import type { ProjectHealthService } from "../../../../../ade-cli/src/services/projects/projectHealth/projectHealthService";
+import type { ProjectHealthFixArgs, ProjectHealthFixResult, ProjectHealthReport } from "../../../shared/types/projectHealth";
 import type {
   MaintenanceRunReport,
   RuntimeHealthSnapshot,
@@ -1375,6 +1377,7 @@ export type AppContext = {
   linearIssueTracker?: ReturnType<typeof createLinearIssueTracker> | null;
   usageTrackingService?: ReturnType<typeof createUsageTrackingService> | null;
   storageInsightsService?: ReturnType<typeof createStorageInsightsService> | null;
+  projectHealthService?: ProjectHealthService | null;
   budgetCapService?: ReturnType<typeof createBudgetCapService> | null;
   configReloadService?: ConfigReloadService | null;
   syncHostService?: ReturnType<typeof createSyncHostService> | null;
@@ -4352,8 +4355,19 @@ export function registerIpc({
     await restartBrainForRepair(projectRecoveryService, productAnalyticsService);
   });
 
+  // With no project open (or one on another machine) there is no project
+  // monitor, but this computer's disk can still fill up: read the disk ADE's
+  // own folder lives on. It samples only when asked, so it costs nothing idle.
+  let machineDiskPressureMonitor: DiskPressureMonitor | null = null;
   ipcMain.handle(IPC.storageGetPressure, async (): Promise<DiskPressureSnapshot> => {
-    const monitor = requireAppContextValue(getCtx(), "diskPressureMonitor");
+    let projectMonitor: DiskPressureMonitor | null = null;
+    try {
+      projectMonitor = getCtx().diskPressureMonitor ?? null;
+    } catch {
+      // No project context yet: this computer's monitor below answers.
+    }
+    const monitor = projectMonitor
+      ?? (machineDiskPressureMonitor ??= createDiskPressureMonitor({ roots: [resolveMachineAdeLayout().adeDir] }));
     return monitor.getSnapshot({ maxAgeMs: 1_000 });
   });
 
@@ -4363,6 +4377,21 @@ export function registerIpc({
   ): Promise<StorageSnapshot> => {
     const service = requireAppContextValue(getCtx(), "storageInsightsService");
     return service.getSnapshot(args ?? {});
+  });
+
+  ipcMain.handle(IPC.projectHealthGetReport, async (
+    _event,
+    args: { forceRefresh?: boolean } | undefined,
+  ): Promise<ProjectHealthReport> => {
+    const service = requireAppContextValue(getCtx(), "projectHealthService");
+    return service.getReport(args ?? {});
+  });
+
+  ipcMain.handle(IPC.projectHealthFix, async (_event, args: ProjectHealthFixArgs): Promise<ProjectHealthFixResult> => {
+    const service = requireAppContextValue(getCtx(), "projectHealthService");
+    const result = await service.fix(args);
+    captureProjectDataRecovery("project_health_fix", result.ok ? "completed" : "failed");
+    return result;
   });
 
   ipcMain.handle(IPC.storageCompressNow, async (): Promise<StorageCompressionResult> => {
@@ -4972,7 +5001,7 @@ export function registerIpc({
   // missing and which way people recover. Nothing about the project. The 1 h
   // dedupe bounds a retry loop to 24 events per key per day.
   const captureProjectDataRecovery = (
-    action: "project_data_restore" | "project_data_start_fresh" | "project_move",
+    action: "project_data_restore" | "project_data_start_fresh" | "project_move" | "project_health_fix",
     outcome: "completed" | "failed",
   ) => {
     try {
@@ -5032,11 +5061,16 @@ export function registerIpc({
     const { root, controller } = projectMoveRoot(arg?.projectRoot);
     return controller.preflight({ projectRoot: root, destinationRoot: requireDestination(arg?.destinationRoot) });
   });
-  ipcMain.handle(IPC.projectMoveStart, async (event, arg: { projectRoot?: unknown; destinationRoot?: unknown; moveAgentHistory?: unknown }) => {
+  ipcMain.handle(IPC.projectMoveStart, async (event, arg: { projectRoot?: unknown; destinationRoot?: unknown; moveAgentHistory?: unknown; copyDependencies?: unknown }) => {
     const { root, controller } = projectMoveRoot(arg?.projectRoot);
     const windowId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;
     const result = await controller.start(
-      { projectRoot: root, destinationRoot: requireDestination(arg?.destinationRoot), moveAgentHistory: arg?.moveAgentHistory === true },
+      {
+        projectRoot: root,
+        destinationRoot: requireDestination(arg?.destinationRoot),
+        moveAgentHistory: arg?.moveAgentHistory === true,
+        copyDependencies: arg?.copyDependencies === true,
+      },
       windowId,
     );
     // A move refused before it began (another move running, a check that now

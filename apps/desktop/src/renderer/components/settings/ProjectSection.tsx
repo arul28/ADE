@@ -187,10 +187,10 @@ export function ProjectSection() {
     >
       <div className="ade-modern-stats">
         <div className="ade-modern-stat">
-          <span className="kit-eyebrow">Health</span>
+          <span className="kit-eyebrow">.ade folder</span>
           <span className="ade-modern-stat-value">
             <span className="kit-dot" data-state={healthy ? "ok" : "warn"} aria-hidden />
-            <span className="kit-stat">{healthy ? "Healthy" : "Needs attention"}</span>
+            <span className="kit-stat">{healthy ? "In good shape" : "Needs attention"}</span>
           </span>
           <span className="ade-modern-stat-sub">
             {healthy

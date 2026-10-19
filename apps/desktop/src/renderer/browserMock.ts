@@ -262,6 +262,211 @@ const resolvedArg2 =
     v;
 
 /**
+ * A storage snapshot shaped like a real project for Settings → Project → Lanes in the
+ * browser preview: a few lanes (one archived, one left over), history, caches,
+ * build staging, proof and the database, with a cleanup history.
+ */
+function createMockStorageSnapshot(now: string) {
+  const MB = 1024 ** 2;
+  const GB = 1024 ** 3;
+  const root = MOCK_PROJECT.rootPath;
+  const daysAgo = (days: number) => new Date(Date.now() - days * 24 * 60 * 60_000).toISOString();
+  const item = (
+    id: string,
+    label: string,
+    path: string,
+    bytes: number,
+    safety: "safe_to_remove" | "compressible" | "review_first" | "protected",
+    extra: Record<string, unknown> = {},
+  ) => ({ id, label, path, bytes, fileCount: Math.max(1, Math.round(bytes / (64 * 1024))), lastModifiedAt: daysAgo(9), safety, ...extra });
+  const lanes = [
+    item("lanes_worktrees:auth", "auth-refactor", `${root}/.ade/worktrees/auth-refactor`, 2.4 * GB, "protected", { laneStatus: "active", laneId: "lane-auth" }),
+    item("lanes_worktrees:billing", "billing-page", `${root}/.ade/worktrees/billing-page`, 1.7 * GB, "protected", { laneStatus: "active", laneId: "lane-billing" }),
+    item("lanes_worktrees:onboard", "onboarding-copy", `${root}/.ade/worktrees/onboarding-copy`, 1.1 * GB, "review_first", { laneStatus: "archived", laneId: "lane-onboard" }),
+    item("lanes_worktrees:search", "search-index", `${root}/.ade/worktrees/search-index`, 860 * MB, "protected", { laneStatus: "active", laneId: "lane-search" }),
+    item("lanes_worktrees:old", "spike-graphql", `${root}/.ade/worktrees/spike-graphql`, 420 * MB, "review_first", { laneStatus: "orphaned" }),
+  ];
+  const categories = [
+    { id: "lanes_worktrees" as const, items: lanes, safety: "review_first" as const },
+    {
+      id: "chats_history" as const,
+      items: [item("chats_history:transcripts", "Chat and terminal history", `${root}/.ade/transcripts`, 640 * MB, "compressible")],
+      safety: "compressible" as const,
+      compressibleBytes: 410 * MB,
+    },
+    {
+      id: "caches" as const,
+      items: [
+        item("caches:agent-tools", "agent-tools", `${root}/.ade/cache/agent-tools`, 180 * MB, "safe_to_remove", { detail: "Recreated when needed" }),
+        item("caches:chat-sessions", "Chat session records", `${root}/.ade/cache/chat-sessions`, 36 * MB, "protected", { detail: "Required to keep existing chats available" }),
+      ],
+      safety: "protected" as const,
+    },
+    {
+      id: "build_release" as const,
+      items: [
+        item("build_release:a", "Release and build staging", "/tmp/ade-release-a", 210 * MB, "safe_to_remove"),
+        item("build_release:b", "Release and build staging", "/tmp/ade-release-b", 96 * MB, "safe_to_remove"),
+        item("build_release:c", "Release and build staging", "/tmp/ade-release-c", 0, "safe_to_remove"),
+      ],
+      safety: "safe_to_remove" as const,
+    },
+    {
+      id: "proof_attachments" as const,
+      items: [item("proof_attachments:cu", "Proof and recordings", `${root}/.ade/artifacts/computer-use`, 320 * MB, "review_first")],
+      safety: "review_first" as const,
+    },
+    { id: "recovery_backups" as const, items: [], safety: "review_first" as const },
+    {
+      id: "database" as const,
+      items: [
+        item("database:db", "Project database", `${root}/.ade/ade.db`, 212 * MB, "protected"),
+        item("database:wal", "Project database support file", `${root}/.ade/ade.db-wal`, 38 * MB, "protected"),
+      ],
+      safety: "protected" as const,
+    },
+  ].map((category) => ({
+    ...category,
+    bytes: category.items.reduce((sum, entry) => sum + entry.bytes, 0),
+    fileCount: category.items.reduce((sum, entry) => sum + entry.fileCount, 0),
+    itemCount: category.items.length,
+  }));
+  const run = (days: number, trigger: "daily" | "manual", files: number, db: number, history: number, dbSize: number) => ({
+    startedAt: daysAgo(days),
+    finishedAt: daysAgo(days),
+    trigger,
+    actions: [
+      ...(files > 0 ? [{ ledgerId: "fs.tmp_staging", kind: "delete" as const, itemsAffected: 4, bytesReclaimed: files, durationMs: 900, skippedReason: null, error: null }] : []),
+      { ledgerId: "db.automation_ingress_events", kind: "prune" as const, itemsAffected: 120, bytesReclaimed: db, durationMs: 40, skippedReason: null, error: null },
+      { ledgerId: "fs.transcripts", kind: "compress" as const, itemsAffected: 6, bytesReclaimed: history, durationMs: 300, skippedReason: null, error: null },
+    ],
+    reclaimedBytes: files + db + history,
+    dbSizeBytes: dbSize,
+    dbSizeDefinition: "files" as const,
+  });
+  const journal = [
+    run(0.2, "manual", 392 * MB, 9 * MB, 4.6 * MB, 250 * MB),
+    run(1, "daily", 0, 2 * MB, 1.2 * MB, 262 * MB),
+    run(2, "daily", 0, 3 * MB, 0.8 * MB, 266 * MB),
+    run(3, "daily", 0, 0, 2.1 * MB, 271 * MB),
+    run(5, "manual", 120 * MB, 6 * MB, 0, 268 * MB),
+    run(6, "daily", 0, 1 * MB, 0.4 * MB, 259 * MB),
+  ];
+  return {
+    generatedAt: now,
+    projectRoot: root,
+    volume: { freeBytes: 68 * GB, totalBytes: 494 * GB },
+    totalAdeBytes: categories.reduce((sum, category) => sum + category.bytes, 0),
+    categories,
+    scanDurationMs: 1_840,
+    truncated: false,
+    extras: {
+      dbBreakdown: [
+        { table: "automation_ingress_events", label: "Webhook history", bytes: 12 * MB, category: "webhooks", action: "prunable" },
+        { table: "operations", label: "Sync bookkeeping", bytes: 46 * MB, category: "sync_bookkeeping", action: "compactable" },
+        { table: "pull_request_snapshots", label: "Pull request cache", bytes: 18 * MB, category: "pr_cache", action: "prunable" },
+        { table: "core", label: "Core data", bytes: 136 * MB, category: "core", action: null },
+      ],
+      maintenance: { lastRun: journal[0], journal },
+      safeReclaimableBytes: 486 * MB,
+      policyChips: {},
+    },
+    lifecycle: {
+      lastScanAt: daysAgo(0.1),
+      nextScanAt: daysAgo(-0.9),
+      scanInProgress: false,
+      policy: { maxActiveLanes: 0, cleanupIntervalHours: 24, autoArchiveAfterHours: 336, reclaimArchivedAfterHours: 0 },
+      archivedAutomatically: 1,
+      reviewReadyCount: 0,
+    },
+  };
+}
+
+/** A project health report with a few issues and lanes, for Settings → Project in the browser preview. */
+function createMockProjectHealthReport(now: string) {
+  const root = MOCK_PROJECT.rootPath;
+  const daysAgo = (days: number) => new Date(Date.parse(now) - days * 24 * 60 * 60_000).toISOString();
+  const lane = (
+    laneId: string,
+    name: string,
+    extra: Partial<{ laneType: string; pr: { number: number; state: string; url: string | null; mergedAt: string | null } | null; lastActivityAt: string; dirty: boolean; changedFileCount: number; unpushedCommits: number; runningSessions: number; stale: "pr-merged" | "pr-closed" | "idle" | null; safeToArchive: boolean }> = {},
+  ) => ({
+    laneId,
+    name,
+    laneType: extra.laneType ?? "worktree",
+    worktreePath: extra.laneType === "primary" ? root : `${root}/.ade/worktrees/${name}`,
+    branch: extra.laneType === "primary" ? "main" : `ade/${name}`,
+    folderExists: true,
+    pr: extra.pr ?? null,
+    lastActivityAt: extra.lastActivityAt ?? daysAgo(1),
+    dirty: extra.dirty ?? false,
+    changedFileCount: extra.changedFileCount ?? 0,
+    unpushedCommits: extra.unpushedCommits ?? 0,
+    runningSessions: extra.runningSessions ?? 0,
+    stale: extra.stale ?? null,
+    safeToArchive: extra.safeToArchive ?? !(extra.dirty || extra.unpushedCommits),
+  });
+  return {
+    lanes: [
+      lane("lane-main", "main", { laneType: "primary", lastActivityAt: daysAgo(0) }),
+      lane("lane-billing", "billing-page", { pr: { number: 412, state: "merged", url: "https://github.com/mock/repo/pull/412", mergedAt: daysAgo(3) }, stale: "pr-merged", lastActivityAt: daysAgo(3) }),
+      lane("lane-search", "search-index", { stale: "idle", lastActivityAt: daysAgo(21) }),
+      lane("lane-spike", "perf-spike", { pr: { number: 398, state: "closed", url: null, mergedAt: null }, stale: "pr-closed", dirty: true, changedFileCount: 3, lastActivityAt: daysAgo(9) }),
+      lane("lane-auth", "auth-refactor", { pr: { number: 431, state: "open", url: null, mergedAt: null }, runningSessions: 1, lastActivityAt: daysAgo(0) }),
+      lane("lane-docs", "docs-pass", { unpushedCommits: 2, lastActivityAt: daysAgo(2) }),
+    ],
+    staleAfterDays: 14,
+    projectRoot: root,
+    checkedAt: now,
+    previousRoots: ["/Users/mock/Projects/old-location"],
+    drive: { name: "Macintosh HD", internal: true, freeBytes: 68 * 1024 ** 3, totalBytes: 494 * 1024 ** 3 },
+    issues: [
+      {
+        id: "stale-paths",
+        area: "location" as const,
+        severity: "problem" as const,
+        title: "14 saved paths still name the old folder",
+        detail: "Chats, proof and lane records that point at the old folder open nothing. Updating them points each at this folder.",
+        items: ["Chat transcripts (9)", "Proof items (3)", "Lane records (2)"],
+        fix: { id: "update-paths", label: "Update paths", description: `Points every saved path at ${root}. Synced to your other devices like any edit.`, kind: "change" as const },
+      },
+      {
+        id: "dependencies",
+        area: "dependencies" as const,
+        severity: "warning" as const,
+        title: "2 checkouts need their dependencies installed",
+        detail: "Builds and tests fail in these lanes until their packages are installed.",
+        items: ["billing-page", "search-index"],
+        fix: { id: "install-dependencies", label: "Install", description: "Opens a terminal in each checkout and runs `npm install` there, where you can watch it.", kind: "terminal" as const },
+      },
+      {
+        id: "drive-backup",
+        area: "drive" as const,
+        severity: "info" as const,
+        title: "Time Machine doesn't back up this drive",
+        detail: "Pushed branches are safe on your git host, but unpushed work, ADE's chats and proof on this drive have no backup.",
+      },
+      {
+        id: "stale-lanes",
+        area: "git" as const,
+        severity: "info" as const,
+        title: "3 lanes look done",
+        detail: "Their PR is merged or closed, or nothing happened in them for 14 days. 2 can be archived without losing anything; the rest have changes or unpushed commits.",
+        items: ["billing-page: PR #412 merged", "search-index: idle", "perf-spike: PR #398 closed (has unsaved work)"],
+      },
+    ],
+    checks: [
+      { id: "stale-paths", label: "Saved paths point at this folder", ok: false },
+      { id: "lane-folders", label: "Every lane has its folder", ok: true },
+      { id: "git-links", label: "Lanes are linked to this repository", ok: true },
+      { id: "symlinks", label: "Links point inside this project", ok: true },
+      { id: "dependencies", label: "Dependencies are installed", ok: false },
+      { id: "agent-trust", label: "Agents trust this folder", ok: true },
+    ],
+  };
+}
+
+/**
  * In-memory archive for the browser preview: a few archived lanes, chats, and
  * shells of different ages, so Settings → Archive and the reminder banner have
  * something to show. Restore and delete drop the item from the list.
@@ -5026,8 +5231,9 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         ],
       }),
       getRuntimeHealth: resolved({
-        slowActions24h: 0,
-        slowActionP95Ms: null,
+        slowActions24h: 3,
+        slowActionP95Ms: 1_840,
+        failedActions24h: 0,
         sampledAt: now,
       }),
       getLatestRelease: resolved({
@@ -5123,49 +5329,16 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         perRoot: [],
         sampledAt: now,
       }),
-      getSnapshot: resolvedArg({
-        generatedAt: now,
-        projectRoot: MOCK_PROJECT.rootPath,
-        volume: { freeBytes: 100 * 1024 ** 3, totalBytes: 500 * 1024 ** 3 },
-        totalAdeBytes: 0,
-        categories: [],
-        scanDurationMs: 0,
-        truncated: false,
-        extras: {
-          dbBreakdown: [
-            { table: "automation_ingress_events", label: "Webhook history", bytes: 12 * 1024 ** 2, category: "webhooks", action: "prunable" },
-            { table: "operations", label: "Sync bookkeeping", bytes: 6 * 1024 ** 2, category: "sync_bookkeeping", action: "compactable" },
-            { table: "core", label: "Core data", bytes: 8 * 1024 ** 2, category: "core", action: null },
-          ],
-          maintenance: {
-            lastRun: {
-              startedAt: now,
-              finishedAt: now,
-              trigger: "daily",
-              actions: [],
-              reclaimedBytes: 0,
-              dbSizeBytes: 26 * 1024 ** 2,
-            },
-            journal: [
-              {
-                startedAt: now,
-                finishedAt: now,
-                trigger: "daily",
-                actions: [],
-                reclaimedBytes: 0,
-                dbSizeBytes: 26 * 1024 ** 2,
-              },
-            ],
-          },
-          safeReclaimableBytes: 18 * 1024 ** 2,
-          policyChips: {
-            chats_history: "Compressed after 14 days",
-            build_release: "Auto-cleans · 7 days",
-            caches: "Rebuilt on demand",
-          },
-        },
-      }),
-      cleanupPreview: resolvedArg({ items: [], totalBytes: 0, blocked: [] }),
+      getSnapshot: resolvedArg(createMockStorageSnapshot(now)),
+      cleanupPreview: async (targets: Array<{ path: string }>) => {
+        const items = (Array.isArray(targets) ? targets : []).map((target, index) => ({
+          path: target.path,
+          bytes: (index + 1) * 48 * 1024 ** 2,
+          label: target.path.includes("/.ade/cache/") ? "Rebuildable cache" : "Old release staging",
+          identity: `mock:${index}`,
+        }));
+        return { items, totalBytes: items.reduce((sum, item) => sum + item.bytes, 0), blocked: [] };
+      },
       compressNow: resolvedArg({ filesCompressed: 0, savedBytes: 0 }),
       cleanup: resolvedArg({ removed: [], failed: [], freedBytes: 0 }),
       runMaintenanceNow: resolved({
@@ -5175,6 +5348,15 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         actions: [],
         reclaimedBytes: 18 * 1024 ** 2,
         dbSizeBytes: 20 * 1024 ** 2,
+      }),
+    },
+    projectHealth: {
+      getReport: resolvedArg(createMockProjectHealthReport(now)),
+      fix: async (args: { fixId: string }) => ({
+        ok: true,
+        done: [args.fixId === "update-paths" ? "Updated 14 saved paths." : "Done."],
+        problems: [],
+        report: { ...createMockProjectHealthReport(now), issues: createMockProjectHealthReport(now).issues.filter((issue) => issue.fix?.id !== args.fixId) },
       }),
     },
     archive: createMockArchive(),

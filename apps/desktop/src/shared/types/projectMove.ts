@@ -31,6 +31,7 @@ export type ProjectMoveCheck = {
     | "drive"
     | "access"
     | "quiet"
+    | "holders"
     | "git"
     | "lanes";
   status: ProjectMoveCheckStatus;
@@ -70,8 +71,12 @@ export type ProjectMovePreflight = {
   destinationVolume: ProjectMoveVolume | null;
   /** Bytes copied (everything except dependency folders). */
   copyBytes: number;
-  /** Bytes of `node_modules`, reinstalled instead of copied. */
+  /** Bytes of `node_modules`: copied when `copyDependencies` is on, otherwise reinstalled. */
   dependencyBytes: number;
+  /** The destination is on the same drive: the copy is made of APFS clones and takes almost no space. */
+  sameDrive: boolean;
+  /** There is room to copy `node_modules` too (always true on the same drive). */
+  canCopyDependencies: boolean;
   laneCount: number;
   checks: ProjectMoveCheck[];
   canMove: boolean;
@@ -130,6 +135,10 @@ export type ProjectMoveRecord = {
     remindAt?: number;
     deletedAt?: number;
   };
+  /** `node_modules` were copied with the project; otherwise they need reinstalling. */
+  copiedDependencies?: boolean;
+  /** The preflight's notes (files naming the old path, virtualenvs, the drive), kept for the check agent and Health. */
+  notes?: ProjectMoveNote[];
   /** What ADE did after the switch-over. */
   followUps: string[];
   /** What ADE could not do after the switch-over; the move itself succeeded. */
@@ -152,6 +161,8 @@ export type ProjectMoveStartArgs = {
   destinationRoot: string;
   /** Also point Claude Code, Cursor and other tools' history for this project at the new location. */
   moveAgentHistory: boolean;
+  /** Copy `node_modules` with the project, so nothing needs reinstalling. */
+  copyDependencies?: boolean;
 };
 
 export type ProjectMoveResult =

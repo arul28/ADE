@@ -100,6 +100,10 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   actions keep their action-specific budgets. Automatic reconnects use bounded
   exponential backoff from 30 s to 5 minutes and remain eligible indefinitely,
   so a temporary sleep/network gap does not require restarting the desktop app.
+- `apps/desktop/src/renderer/components/settings/SettingsMachineScope.tsx`
+  and `settings/health/useHealthData.ts` — machine-scoped Settings pages pass
+  the selected machine binding to project reads and clear the previous
+  machine's lane, storage and health data before loading the new target.
 - `apps/desktop/src/main/services/ipc/runtimeEventSubscriptionRegistry.ts` —
   the store behind those streams. Subscriptions are keyed by
   `(sender, requestKey = <bindingKey>:<category|*>:<replay|live>)`, because one
@@ -1854,7 +1858,7 @@ parallel.
 
 The same action is offered where this computer's own update lives: **Update
 other machines** (`components/settings/OtherMachinesUpdateSection.tsx`) sits
-under Updates in Settings > General and under Your computers on the Account
+under Updates in Settings → ADE service and under Your computers on the Account
 page. It lists each connected machine with its version, "Update & restart" for
 the ones behind, and "Update all N". Every place that starts or shows one of
 these updates, the install dialog below included, goes through one store

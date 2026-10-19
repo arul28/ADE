@@ -245,8 +245,12 @@ export type DbBreakdownRow = {
   /** Core data is framed as protected and never gets a destructive action. */
   isProtected: boolean;
   action: DbBreakdownEntry["action"];
-  /** Quiet inline action verb, or null when the row is protected/pending. */
-  actionLabel: string | null;
+  /**
+   * "Clean up safely" trims this table (expired rows, sync tombstones). There
+   * is no per-row button: the only database action is the whole cleanup, and
+   * per-row "Clean up" / "Compact now" buttons that both ran it misled.
+   */
+  trimmedByCleanup: boolean;
   /** Waiting for a safe moment to compact (peers mid-sync); shows a tooltip, no action. */
   isPending: boolean;
 };
@@ -260,13 +264,7 @@ export function dbBreakdownRows(entries: DbBreakdownEntry[] | undefined): DbBrea
     .map((entry) => {
       const isProtected = entry.category === "core";
       const isPending = entry.action === "compaction_pending";
-      const actionLabel = isProtected || isPending
-        ? null
-        : entry.action === "prunable"
-          ? "Clean up"
-          : entry.action === "compactable"
-            ? "Compact now"
-            : null;
+      const trimmedByCleanup = !isProtected && (entry.action === "prunable" || entry.action === "compactable");
       return {
         table: entry.table,
         label: entry.label,
@@ -276,7 +274,7 @@ export function dbBreakdownRows(entries: DbBreakdownEntry[] | undefined): DbBrea
         hint: DB_CATEGORY_HINT[entry.category],
         isProtected,
         action: entry.action,
-        actionLabel,
+        trimmedByCleanup,
         isPending,
       };
     });
@@ -435,11 +433,17 @@ function runTime(report: MaintenanceRunReport): number {
 
 export type DbSizeSample = { ts: string; bytes: number };
 
-/** Database-size samples from doctor runs, chronological, positive-valued only. */
+/**
+ * Database-size samples from cleanup runs, chronological, positive-valued
+ * only. Only runs that measured the database the way the snapshot does (main
+ * file plus -wal and -shm) count: older runs measured the main file alone, and
+ * mixing the two made a cleanup look like the database grew.
+ */
 export function dbSizeSamples(extras: StorageSnapshotExtras | undefined): DbSizeSample[] {
   const journal = extras?.maintenance?.journal ?? [];
   const out: DbSizeSample[] = [];
   for (const run of journal) {
+    if (run.dbSizeDefinition !== "files") continue;
     const bytes = run.dbSizeBytes;
     const ts = run.finishedAt || run.startedAt;
     if (typeof bytes === "number" && Number.isFinite(bytes) && bytes > 0 && ts && !Number.isNaN(Date.parse(ts))) {
@@ -487,125 +491,253 @@ export function sparklinePoints(
 
 // ---- Machine health --------------------------------------------------------
 
-/** Resident memory of the ADE background service (ade-runtime role), in bytes, or null. */
-export function daemonMemoryBytes(usage: AppResourceUsageSnapshot | null): number | null {
+/**
+ * Resident memory of ADE's background service processes (the brain and any
+ * other ADE runtime this desktop runs; never the agents, shells or tools they
+ * start), with how many processes that is. Null when not sampled.
+ */
+export function serviceMemory(usage: AppResourceUsageSnapshot | null): { bytes: number; processCount: number } | null {
   const roleUsage = usage?.roleUsage;
   if (!roleUsage) return null;
   let mb = 0;
+  let processCount = 0;
   let found = false;
   for (const entry of roleUsage) {
     if (entry.role !== "ade-runtime") continue;
     if (typeof entry.memoryMB === "number" && Number.isFinite(entry.memoryMB)) {
       mb += entry.memoryMB;
+      processCount += Math.max(0, entry.processCount);
       found = true;
     }
   }
-  return found ? mb * 1024 * 1024 : null;
+  return found && processCount > 0 ? { bytes: mb * 1024 * 1024, processCount } : null;
 }
 
-export type HealthTone = "good" | "elevated" | "busy";
+export type LoadTone = "ok" | "warn" | "crit";
 
-/** Overall health chip derived from the resource-pressure level (0..4). */
-export function healthChip(level: ResourcePressureLevel): { label: string; tone: HealthTone } {
-  if (level >= 3) return { label: "Under load", tone: "busy" };
-  if (level === 2) return { label: "Busy", tone: "elevated" };
-  return { label: "Healthy", tone: "good" };
+/**
+ * How loaded this computer is right now, from the resource-pressure level
+ * (0..4). It is an instant reading of CPU and memory, so it is called "Load",
+ * not "Health".
+ */
+export function loadChip(level: ResourcePressureLevel): { label: string; tone: LoadTone } {
+  if (level >= 3) return { label: "Heavy", tone: "crit" };
+  if (level === 2) return { label: "Busy", tone: "warn" };
+  return { label: "Light", tone: "ok" };
 }
 
-/** Plain sentence for the slow-actions tile. */
-export function formatSlowActions(health: RuntimeHealthSnapshot | null): string {
-  if (!health) return "Not available yet";
-  const n = health.slowActions24h;
-  if (!Number.isFinite(n) || n <= 0) return "None in the last 24h";
-  return `${n} slow ${n === 1 ? "response" : "responses"} in 24h`;
+/** Slow and failed background-service calls over 24 h, kept apart. */
+export function responseHealth(health: RuntimeHealthSnapshot | null): {
+  slow: number;
+  failed: number | null;
+  p95Ms: number | null;
+} | null {
+  if (!health) return null;
+  const slow = Number.isFinite(health.slowActions24h) ? Math.max(0, health.slowActions24h) : 0;
+  const failed = typeof health.failedActions24h === "number" && Number.isFinite(health.failedActions24h)
+    ? Math.max(0, health.failedActions24h)
+    : null;
+  return { slow, failed, p95Ms: slow > 0 ? health.slowActionP95Ms : null };
+}
+
+export function formatDurationMs(ms: number): string {
+  if (ms < 1_000) return `${Math.round(ms)} ms`;
+  const seconds = ms / 1_000;
+  return `${seconds < 10 ? seconds.toFixed(1) : Math.round(seconds)} s`;
+}
+
+// ---- Cleanup history ---------------------------------------------------------
+
+export type CleanupRunParts = {
+  /** Files removed (staging, caches, backups, proof, leftover lane folders). */
+  files: number;
+  /** Database rows pruned, tombstones compacted, space vacuumed. */
+  database: number;
+  /** Chat and terminal history compression savings. */
+  history: number;
+  total: number;
+};
+
+/** What one run freed, by kind. `total` is the run's own reclaimed figure. */
+export function cleanupRunParts(run: MaintenanceRunReport): CleanupRunParts {
+  let files = 0;
+  let database = 0;
+  let history = 0;
+  for (const action of run.actions) {
+    const bytes = Math.max(0, action.bytesReclaimed);
+    if (bytes <= 0) continue;
+    if (action.ledgerId === "fs.transcripts") history += bytes;
+    else if (action.ledgerId.startsWith("db.")) database += bytes;
+    else files += bytes;
+  }
+  const total = Number.isFinite(run.reclaimedBytes) ? Math.max(0, run.reclaimedBytes) : files + database + history;
+  return { files, database, history, total };
+}
+
+/** "files 392 MB · database 12 MB · history 1.6 MB", parts with bytes only. */
+export function cleanupPartsLine(parts: CleanupRunParts): string {
+  const out: string[] = [];
+  if (parts.files > 0) out.push(`files ${formatBytes(parts.files)}`);
+  if (parts.database > 0) out.push(`database ${formatBytes(parts.database)}`);
+  if (parts.history > 0) out.push(`history ${formatBytes(parts.history)}`);
+  return out.join(" · ");
+}
+
+// ---- Rows ------------------------------------------------------------------
+
+export type GroupedRow = { label: string; count: number; bytes: number };
+
+/**
+ * Rows with the same label become one row with a count and a total, largest
+ * first, and rows with nothing to free are dropped. A dozen "Release and build
+ * staging · 0 B" rows say less than one "Release and build staging (12)".
+ */
+export function groupRowsByLabel(rows: ReadonlyArray<{ label: string; bytes: number }>): GroupedRow[] {
+  const byLabel = new Map<string, GroupedRow>();
+  for (const row of rows) {
+    if (!(row.bytes > 0)) continue;
+    const existing = byLabel.get(row.label);
+    if (existing) {
+      existing.count += 1;
+      existing.bytes += row.bytes;
+    } else {
+      byLabel.set(row.label, { label: row.label, count: 1, bytes: row.bytes });
+    }
+  }
+  return [...byLabel.values()].sort((a, b) => b.bytes - a.bytes);
+}
+
+/** A size that may be a lower bound: "≥ 4.1 GB" when not fully measured. */
+export function formatMeasuredBytes(bytes: number, partial: boolean | undefined): string {
+  if (!partial) return formatBytes(bytes);
+  return bytes > 0 ? `≥ ${formatBytes(bytes)}` : "Not measured";
+}
+
+// ---- Charts ----------------------------------------------------------------
+
+export type ChartSeries = { id: string; label: string; bytes: number; partial: boolean; members: string[] };
+
+/**
+ * ADE's data by category as at most four series plus "Other" (the chart
+ * rule in docs/design/visual-language.md), largest first, empty ones dropped.
+ */
+export function categorySeries(categories: StorageCategorySnapshot[], max = 4): ChartSeries[] {
+  const present = categories
+    .filter((category) => category.bytes > 0 || category.partial)
+    .sort((a, b) => b.bytes - a.bytes);
+  const head = present.length > max + 1 ? present.slice(0, max) : present;
+  const tail = present.length > max + 1 ? present.slice(max) : [];
+  const series: ChartSeries[] = head.map((category) => ({
+    id: category.id,
+    label: CATEGORY_META[category.id].name,
+    bytes: category.bytes,
+    partial: Boolean(category.partial),
+    members: [CATEGORY_META[category.id].name],
+  }));
+  if (tail.length > 0) {
+    series.push({
+      id: "other",
+      label: "Other",
+      bytes: tail.reduce((sum, category) => sum + category.bytes, 0),
+      partial: tail.some((category) => category.partial),
+      members: tail.map((category) => CATEGORY_META[category.id].name),
+    });
+  }
+  return series;
+}
+
+export type LaneBar = { id: string; label: string; bytes: number; partial: boolean; status: StorageItem["laneStatus"]; count: number };
+
+/** The largest lanes as bars, the rest folded into one "Other" bar. */
+export function laneBars(items: StorageItem[], max = 6): LaneBar[] {
+  const measured = items
+    .filter((item) => item.bytes > 0 || item.partial)
+    .sort((a, b) => b.bytes - a.bytes);
+  const head = measured.length > max + 1 ? measured.slice(0, max) : measured;
+  const tail = measured.length > max + 1 ? measured.slice(max) : [];
+  const bars: LaneBar[] = head.map((item) => ({
+    id: item.id,
+    label: item.label,
+    bytes: item.bytes,
+    partial: Boolean(item.partial),
+    status: item.laneStatus,
+    count: 1,
+  }));
+  if (tail.length > 0) {
+    bars.push({
+      id: "other",
+      label: `${tail.length} other ${tail.length === 1 ? "lane" : "lanes"}`,
+      bytes: tail.reduce((sum, item) => sum + item.bytes, 0),
+      partial: tail.some((item) => item.partial),
+      status: undefined,
+      count: tail.length,
+    });
+  }
+  return bars;
+}
+
+/** Free-space meter level: amber under 20% free, red under 5% (the Usage headroom rule). */
+export function freeSpaceLevel(freeBytes: number, totalBytes: number): "warn" | "crit" | undefined {
+  if (!(totalBytes > 0)) return undefined;
+  const percentFree = (freeBytes / totalBytes) * 100;
+  if (percentFree <= 5) return "crit";
+  if (percentFree <= 20) return "warn";
+  return undefined;
 }
 
 // ---- Safe-cleanup plan -----------------------------------------------------
 
-export type SafeCleanupGroup = {
-  heading: string;
-  rows: Array<{ label: string; size: string }>;
+export type SafeCleanupPlan = {
+  /** The files "Clean up safely" removes, deduplicated (no target inside another). */
+  fsTargets: StorageCleanupTarget[];
+  /**
+   * What those files take, by kind: one row per label with a count. The rows
+   * sum to `estimatedBytes`, the number on the button.
+   */
+  rows: GroupedRow[];
+  estimatedBytes: number;
+  /** Some of those sizes are lower bounds (the scan ran out of budget). */
+  partial: boolean;
+  /**
+   * The rest of the run, whose savings are only known once it has run, so no
+   * bytes are promised for it: history compression, database trims, and the
+   * idle-lane check that can archive lanes.
+   */
+  alsoRuns: string[];
+  /** What is never touched. */
+  keeps: string;
 };
 
-export type SafeCleanupPlan = {
-  /** Filesystem targets used only for the legacy fallback (cleanup-by-target). */
-  fsTargets: StorageCleanupTarget[];
-  /** Sum of the filesystem-safe targets' sizes (the legacy fallback reclaim). */
-  fsBytes: number;
-  /** Grouped, itemized preview of what the safe cleanup will reclaim. */
-  groups: SafeCleanupGroup[];
-  /** Just the filesystem group, for the legacy fallback preview. */
-  fsGroup: SafeCleanupGroup | null;
-  /** Plain-language "what happens" lines. */
-  whatHappens: string[];
-  /** Approximate total the doctor will reclaim. */
-  estimatedBytes: number;
-};
+function isSameOrInside(parent: string, candidate: string): boolean {
+  const a = parent.replace(/[\\/]+$/, "");
+  const b = candidate.replace(/[\\/]+$/, "");
+  return a === b || b.startsWith(`${a}/`) || b.startsWith(`${a}\\`);
+}
 
 /**
- * Assemble the itemized "Clean up safely" plan from the snapshot's extras. Only
- * meaningful when `extras.safeReclaimableBytes` is positive (the primary action
- * is otherwise hidden). Groups the reclaimable database rows and compressible
- * history, and collects the filesystem-safe targets for the legacy fallback path.
+ * Exactly what "Clean up safely" does, itemized: the rebuildable caches,
+ * old staging and obsolete recovery backups it removes (after a fresh preview
+ * the person confirms), then, when the maintenance run is available, the work
+ * it runs after.
  */
 export function buildSafeCleanupPlan(
-  snapshot: { categories: StorageCategorySnapshot[]; extras?: StorageSnapshotExtras },
+  snapshot: {
+    categories: StorageCategorySnapshot[];
+    extras?: StorageSnapshotExtras;
+    lifecycle?: { policy: { cleanupIntervalHours: number } };
+  },
   laneIdByKey: Map<string, string>,
+  opts: { maintenance: boolean } = { maintenance: true },
 ): SafeCleanupPlan {
-  const extras = snapshot.extras;
-  const daemonEstimatedBytes = safeReclaimableBytes(extras);
-
-  const groups: SafeCleanupGroup[] = [];
-  const whatHappens: string[] = [];
-
-  // Compressible chat & terminal history.
-  const chats = snapshot.categories.find((c) => c.id === "chats_history");
-  const compressible = chats?.compressibleBytes ?? 0;
-  if (compressible > 0) {
-    groups.push({
-      heading: "Chats & terminal history",
-      rows: [{ label: "Older history, compressed in place", size: formatBytes(compressible) }],
-    });
-    whatHappens.push("Compress older chat and terminal history — nothing is lost.");
-  }
-
-  // Reclaimable database rows (prunable/compactable).
-  const dbRows = (extras?.dbBreakdown ?? [])
-    .filter((entry) => entry.action === "prunable" || entry.action === "compactable")
-    .sort((a, b) => b.bytes - a.bytes)
-    .map((entry) => ({ label: entry.label, size: formatBytes(entry.bytes) }));
-  if (dbRows.length > 0) {
-    groups.push({ heading: "Project database", rows: dbRows });
-    whatHappens.push("Clean up data ADE keeps but no longer needs.");
-  }
-
-  // Filesystem-safe targets are removed through the preview-bound cleanup API
-  // in every runtime. The maintenance doctor separately handles compression and
-  // database retention.
-  const fsTargets: StorageCleanupTarget[] = [];
-  const fsRows: Array<{ label: string; size: string }> = [];
-  let fsBytes = 0;
+  const candidates: Array<{ item: StorageItem; target: StorageCleanupTarget }> = [];
   for (const category of snapshot.categories) {
     if (category.id !== "caches" && category.id !== "build_release") continue;
-    for (const entry of cleanableEntries(category.id, category, laneIdByKey)) {
-      fsTargets.push(entry.target);
-      fsRows.push({ label: entry.item.label, size: formatBytes(entry.item.bytes) });
-      fsBytes += entry.item.bytes;
-    }
-  }
-  const fsGroup: SafeCleanupGroup | null = fsRows.length > 0
-    ? { heading: "Temporary & rebuildable files", rows: fsRows }
-    : null;
-  if (fsGroup) {
-    groups.push(fsGroup);
-    whatHappens.push("Remove temporary and rebuildable files ADE recreates on demand.");
+    candidates.push(...cleanableEntries(category.id, category, laneIdByKey));
   }
 
   // Independently enforce the doctor's keepLatest: 1 policy instead of
-  // trusting the snapshot's safety classification. A stale snapshot may still
-  // label the newest backup safe-to-remove; the doctor will spare it, so the
-  // plan must not show or estimate it. Snapshot order is the deterministic
-  // fallback when modification times are unavailable.
+  // trusting the snapshot's safety classification: the newest backup is
+  // never offered, whatever the snapshot says.
   const recoveryBackups = snapshot.categories
     .find((category) => category.id === "recovery_backups")
     ?.items ?? [];
@@ -615,28 +747,48 @@ export function buildSafeCleanupPlan(
     const itemModifiedAt = item.lastModifiedAt ? Date.parse(item.lastModifiedAt) : Number.NEGATIVE_INFINITY;
     return itemModifiedAt > newestModifiedAt ? item : newest;
   }, null);
-  const obsoleteBackups = recoveryBackups.filter(
-    (item) => item !== newestBackup && item.safety === "safe_to_remove",
-  );
-  const obsoleteBackupBytes = obsoleteBackups.reduce((sum, item) => sum + item.bytes, 0);
-  if (obsoleteBackups.length > 0) {
-    for (const item of obsoleteBackups) {
-      fsTargets.push({ kind: "recovery_backup", path: item.path });
-      fsBytes += item.bytes;
-    }
-    groups.push({
-      heading: "Obsolete recovery backups",
-      rows: obsoleteBackups.map((item) => ({ label: item.label, size: formatBytes(item.bytes) })),
-    });
-    whatHappens.push("Remove obsolete recovery backups while keeping the newest backup.");
+  for (const item of recoveryBackups) {
+    if (item === newestBackup || item.safety !== "safe_to_remove") continue;
+    candidates.push({ item: { ...item, label: "Old recovery backup" }, target: { kind: "recovery_backup", path: item.path } });
   }
 
-  whatHappens.push("Your chats, projects, and active lanes are never touched, and your newest backup is always kept.");
+  // A target inside another target is removed with it; listing both would
+  // count its bytes twice.
+  const byDepth = [...candidates].sort((a, b) => a.target.path.length - b.target.path.length);
+  const kept: typeof candidates = [];
+  for (const entry of byDepth) {
+    if (kept.some((other) => isSameOrInside(other.target.path, entry.target.path))) continue;
+    kept.push(entry);
+  }
 
-  // The daemon estimate covers the validated staging/cache targets. Recovery
-  // backups are intentionally excluded there because cleanup always keeps the
-  // newest one, so add only the obsolete backups disclosed above.
-  const estimatedBytes = Math.max(0, daemonEstimatedBytes + obsoleteBackupBytes);
+  const rows = groupRowsByLabel(kept.map((entry) => ({ label: entry.item.label, bytes: entry.item.bytes })));
+  const estimatedBytes = rows.reduce((sum, row) => sum + row.bytes, 0);
+  const partial = kept.some((entry) => entry.item.partial);
 
-  return { fsTargets, fsBytes, groups, fsGroup, whatHappens, estimatedBytes };
+  const alsoRuns: string[] = [];
+  if (opts.maintenance) {
+    const lifecycle = snapshot.lifecycle;
+    if (lifecycle && lifecycle.policy.cleanupIntervalHours > 0) {
+      alsoRuns.push("Checks for idle lanes first and archives the ones your Archive idle lanes rules allow. Their branches, chats and files are kept.");
+    }
+    const compressible = snapshot.categories.find((c) => c.id === "chats_history")?.compressibleBytes ?? 0;
+    if (compressible > 0) {
+      alsoRuns.push(`Compresses ${formatBytes(compressible)} of old chat and terminal history. Nothing is lost.`);
+    }
+    const trimmed = (snapshot.extras?.dbBreakdown ?? [])
+      .filter((entry) => entry.action === "prunable" || entry.action === "compactable")
+      .map((entry) => entry.label);
+    alsoRuns.push(trimmed.length > 0
+      ? `Trims database data ADE no longer needs (${trimmed.join(", ")}) and returns free space to the disk.`
+      : "Returns free database space to the disk when the database is fragmented.");
+  }
+
+  return {
+    fsTargets: kept.map((entry) => entry.target),
+    rows,
+    estimatedBytes,
+    partial,
+    alsoRuns,
+    keeps: "Your chats, active lanes and newest recovery backup are never touched.",
+  };
 }

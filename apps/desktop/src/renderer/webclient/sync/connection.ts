@@ -79,7 +79,7 @@ const FULL_INVALIDATION_TABLES = [
   "rebase",
 ] as const;
 export const INVALIDATION_ONLY_V1_HOST_UPDATE_MESSAGE =
-  "Update ADE on this computer via Settings > General > Check for Updates, then retry.";
+  "Update ADE on this computer via Settings → ADE service → Check for updates, then retry.";
 
 function invalidationTables(payload: SyncInvalidationBatchPayload): Set<string> {
   if (!payload || typeof payload !== "object") return new Set(FULL_INVALIDATION_TABLES);

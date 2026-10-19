@@ -49,6 +49,25 @@ const DEFAULT_SCAN_ENTRY_LIMIT = 200_000;
 const DEFAULT_SCAN_BUDGET_MS = 20_000;
 const WALK_CONCURRENCY = 8;
 const MAX_CATEGORY_ITEMS = 50;
+/**
+ * Each category's share of the scan budget. Categories are measured in this
+ * order (cheapest first), and whatever one leaves unused passes on to the
+ * next, so lanes, measured last, get their share plus every leftover. One
+ * shared budget used to let chat history or caches spend it all and leave
+ * every lane reading "0 B".
+ */
+const CATEGORY_SCAN_ORDER: ReadonlyArray<[StorageCategoryId, number]> = [
+  ["database", 0.02],
+  ["recovery_backups", 0.03],
+  ["proof_attachments", 0.1],
+  ["caches", 0.15],
+  ["build_release", 0.15],
+  ["chats_history", 0.15],
+  ["lanes_worktrees", 0.4],
+];
+/** Every item gets at least this much, so a late item is never skipped outright. */
+const MIN_ITEM_SCAN_ENTRIES = 64;
+const MIN_ITEM_SCAN_MS = 100;
 const STALE_AGE_MS = 7 * 24 * 60 * 60_000;
 const COMPRESSIBLE_AGE_MS = COMPRESSION_MIN_AGE_MS;
 const RECOVERY_BACKUP_PATTERN = /(?:\.pre-crsqlite-w1\.bak|\.recovery-.*\.bak)$/;
@@ -102,6 +121,9 @@ type WalkState = {
   entries: number;
   entryLimit: number;
   budgetMs: number;
+  /** Floors for an item's budget, capped by the scan's own limits. */
+  minEntries: number;
+  minMs: number;
   truncated: boolean;
 };
 
@@ -302,6 +324,26 @@ async function walkPath(
     }
   }
   return result;
+}
+
+/**
+ * A budget for one item: an even part of what its parent has left, with a
+ * small floor (never more than the whole scan's own limits) so an item late
+ * in the order is still looked at.
+ */
+function childWalkState(parent: WalkState, itemsLeft: number): WalkState {
+  const share = Math.max(1, itemsLeft);
+  const entriesLeft = Math.max(0, parent.entryLimit - parent.entries);
+  const msLeft = Math.max(0, parent.budgetMs - (Date.now() - parent.startedAt));
+  return {
+    startedAt: Date.now(),
+    entries: 0,
+    entryLimit: Math.max(Math.min(MIN_ITEM_SCAN_ENTRIES, parent.minEntries), Math.floor(entriesLeft / share)),
+    budgetMs: Math.max(Math.min(MIN_ITEM_SCAN_MS, parent.minMs), msLeft / share),
+    minEntries: parent.minEntries,
+    minMs: parent.minMs,
+    truncated: false,
+  };
 }
 
 async function readdirOrEmpty(dirPath: string): Promise<string[]> {
@@ -535,6 +577,19 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
     }
   };
 
+  /**
+   * The database's size on disk: the main file plus its -wal and -shm files,
+   * the same definition the snapshot's database category uses. Null when the
+   * main file is missing.
+   */
+  const databaseFilesBytes = (): number | null => {
+    const main = statSizeOrNull(layout.dbPath);
+    if (main == null) return null;
+    return main
+      + (statSizeOrNull(`${layout.dbPath}-wal`) ?? 0)
+      + (statSizeOrNull(`${layout.dbPath}-shm`) ?? 0);
+  };
+
   const computeDbBreakdown = (syncBookkeepingAction: DbBreakdownEntry["action"]): DbBreakdownEntry[] => {
     // dbstat is a compile-time-optional virtual table; degrade to no breakdown
     // (empty list) when the SQLite build lacks it rather than failing the scan.
@@ -575,6 +630,12 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
     label: string;
     safety: StorageSafety;
     state: WalkState;
+    /**
+     * Items still to measure in this category, this one included. The item
+     * gets an even part of what the category has left, so one huge folder
+     * cannot leave the rest unmeasured. Default 1: everything left.
+     */
+    itemsLeft?: number;
     detail?: string;
     laneStatus?: StorageItem["laneStatus"];
     excludedRoots?: string[];
@@ -587,7 +648,10 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
     if (await hasSymlinkAncestor(anchor, args.path)) return null;
     const stat = await lstatOrNull(args.path);
     if (!stat) return null;
-    const size = await walkPath(args.path, args.state, args.excludedRoots);
+    const itemState = childWalkState(args.state, args.itemsLeft ?? 1);
+    const size = await walkPath(args.path, itemState, args.excludedRoots);
+    args.state.entries += itemState.entries;
+    if (itemState.truncated) args.state.truncated = true;
     return {
       item: {
         id: itemId(args.category, args.base, args.path),
@@ -599,6 +663,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
         safety: args.safety,
         ...(args.detail ? { detail: args.detail } : {}),
         ...(args.laneStatus ? { laneStatus: args.laneStatus } : {}),
+        ...(itemState.truncated ? { partial: true } : {}),
       },
       oldFileBytes: size.oldFileBytes,
       compressedBytes: size.compressedBytes,
@@ -609,18 +674,21 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
     id: StorageCategoryId,
     allItems: StorageItem[],
     fallbackSafety: StorageSafety,
-    state: WalkState,
     compressibleBytes?: number,
     compressedBytes?: number,
   ): StorageCategorySnapshot => {
+    // The list is capped for display; the totals below still sum every
+    // item, so the cap never under-counts and is not a truncation.
     const sorted = [...allItems].sort((a, b) => b.bytes - a.bytes || a.path.localeCompare(b.path));
-    if (sorted.length > MAX_CATEGORY_ITEMS) state.truncated = true;
+    const partial = allItems.some((item) => item.partial);
     return {
       id,
       bytes: allItems.reduce((sum, item) => sum + item.bytes, 0),
       fileCount: allItems.reduce((sum, item) => sum + item.fileCount, 0),
       safety: dominantSafety(allItems, fallbackSafety),
       items: sorted.slice(0, MAX_CATEGORY_ITEMS),
+      itemCount: allItems.length,
+      ...(partial ? { partial: true } : {}),
       ...(compressibleBytes == null ? {} : { compressibleBytes }),
       ...(compressedBytes == null ? {} : { compressedBytes }),
     };
@@ -631,7 +699,34 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
       return cachedSnapshot.value;
     }
     const startedAt = Date.now();
-    const state: WalkState = { startedAt, entries: 0, entryLimit: scanEntryLimit, budgetMs: scanBudgetMs, truncated: false };
+    const scan = {
+      entriesLeft: scanEntryLimit,
+      deadline: startedAt + scanBudgetMs,
+      sharesLeft: CATEGORY_SCAN_ORDER.reduce((sum, [, share]) => sum + share, 0),
+      entries: 0,
+    };
+    const minEntries = Math.min(MIN_ITEM_SCAN_ENTRIES, scanEntryLimit);
+    const minMs = Math.min(MIN_ITEM_SCAN_MS, scanBudgetMs);
+    // A category's budget: its share of what is left. Shares are taken in
+    // `CATEGORY_SCAN_ORDER`, so a cheap category's leftovers pass on.
+    const categoryState = (id: StorageCategoryId): WalkState => {
+      const share = CATEGORY_SCAN_ORDER.find(([candidate]) => candidate === id)?.[1] ?? 0;
+      const fraction = scan.sharesLeft > 0 ? Math.min(1, share / scan.sharesLeft) : 1;
+      scan.sharesLeft = Math.max(0, scan.sharesLeft - share);
+      return {
+        startedAt: Date.now(),
+        entries: 0,
+        entryLimit: Math.floor(Math.max(0, scan.entriesLeft) * fraction),
+        budgetMs: Math.max(0, scan.deadline - Date.now()) * fraction,
+        minEntries,
+        minMs,
+        truncated: false,
+      };
+    };
+    const finishCategory = (state: WalkState) => {
+      scan.entriesLeft -= state.entries;
+      scan.entries += state.entries;
+    };
     const categoryItems = new Map<StorageCategoryId, StorageItem[]>();
     const add = (category: StorageCategoryId, value: StorageItem | null | undefined) => {
       if (!value) return;
@@ -640,20 +735,202 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
       categoryItems.set(category, items);
     };
 
+    // Database: the main file and its -wal / -shm files, one definition
+    // everywhere ADE shows the database size.
+    const databaseState = categoryState("database");
+    const databasePaths = [layout.dbPath, `${layout.dbPath}-wal`, `${layout.dbPath}-shm`];
+    for (const [index, databasePath] of databasePaths.entries()) {
+      add("database", (await makeItem({
+        category: "database",
+        base: layout.adeDir,
+        path: databasePath,
+        label: databasePath === layout.dbPath ? "Project database" : "Project database support file",
+        safety: "protected",
+        state: databaseState,
+        itemsLeft: databasePaths.length - index,
+      }))?.item);
+    }
+    finishCategory(databaseState);
+
+    const backupsState = categoryState("recovery_backups");
+    const adeNames = await readdirOrEmpty(layout.adeDir);
+    const backupNames = adeNames.filter((value) => RECOVERY_BACKUP_PATTERN.test(value));
+    for (const [index, name] of backupNames.entries()) {
+      const backupPath = path.join(layout.adeDir, name);
+      add("recovery_backups", (await makeItem({
+        category: "recovery_backups",
+        base: layout.adeDir,
+        path: backupPath,
+        label: "Recovery backup",
+        safety: isObsoleteRecoveryBackup(backupPath, { projectRoot, db: options.db })
+          ? "safe_to_remove"
+          : "review_first",
+        state: backupsState,
+        itemsLeft: backupNames.length - index,
+      }))?.item);
+    }
+    finishCategory(backupsState);
+
+    const proofState = categoryState("proof_attachments");
+    const proofPath = path.join(layout.artifactsDir, "computer-use");
+    add("proof_attachments", (await makeItem({
+      category: "proof_attachments",
+      base: layout.adeDir,
+      path: proofPath,
+      label: "Proof and recordings",
+      safety: "review_first",
+      state: proofState,
+    }))?.item);
+    finishCategory(proofState);
+
+    const derivedData = iosDerivedDataDir;
+    const cachesState = categoryState("caches");
+    // The storage doctor's journal is the cleanup history Settings shows. It
+    // is ADE bookkeeping, not a cache: removing it would erase that history.
+    const cacheNames = (await readdirOrEmpty(layout.cacheDir)).filter((name) =>
+      name !== "terminal-snapshots"
+      && name !== MAINTENANCE_JOURNAL_FILENAME
+      && name !== `${MAINTENANCE_JOURNAL_FILENAME}.tmp`);
+    const updatesDir = path.join(adeHome, "runtime", "updates");
+    const updateNames = await readdirOrEmpty(updatesDir);
+    let cachesLeft = cacheNames.length + updateNames.length;
+    for (const name of cacheNames) {
+      const cachePath = path.join(layout.cacheDir, name);
+      const protectedItem = name === "chat-sessions";
+      const entry = await makeItem({
+        category: "caches",
+        base: layout.cacheDir,
+        path: cachePath,
+        label: protectedItem ? "Chat session records" : name,
+        safety: protectedItem ? "protected" : "safe_to_remove",
+        state: cachesState,
+        itemsLeft: cachesLeft,
+        ...(protectedItem ? { detail: "Required to keep existing chats available" } : { detail: "Recreated when needed" }),
+        ...(name === "ios-simulator" ? { excludedRoots: [derivedData] } : {}),
+      });
+      cachesLeft -= 1;
+      if (entry && (entry.item.bytes > 0 || name !== "ios-simulator")) add("caches", entry.item);
+    }
+    for (const name of updateNames) {
+      const updatePath = path.join(updatesDir, name);
+      const stat = await lstatOrNull(updatePath);
+      if (!stat) {
+        cachesLeft -= 1;
+        continue;
+      }
+      const stale = Date.now() - stat.mtimeMs > STALE_AGE_MS;
+      add("caches", (await makeItem({
+        category: "caches",
+        base: updatesDir,
+        path: updatePath,
+        label: "App update staging",
+        safety: stale ? "safe_to_remove" : "review_first",
+        state: cachesState,
+        itemsLeft: cachesLeft,
+        detail: stale ? "Old update files are no longer needed" : "An update may still be using these files",
+      }))?.item);
+      cachesLeft -= 1;
+    }
+    finishCategory(cachesState);
+
+    const buildState = categoryState("build_release");
+    const tempNames = (await readdirOrEmpty(stagingTmpRoot)).filter((value) => /^ade-/.test(value));
+    const adeTmpNames = await readdirOrEmpty(adeTmpDir);
+    let buildLeft = tempNames.length + adeTmpNames.length + 1;
+    for (const name of tempNames) {
+      const tempPath = path.join(stagingTmpRoot, name);
+      if (path.resolve(tempPath) === projectRoot || path.resolve(tempPath) === adeHome) {
+        buildLeft -= 1;
+        continue;
+      }
+      const stat = await lstatOrNull(tempPath);
+      // Skip symlinked staging dirs: the reaper's collectors refuse them, so
+      // showing one here would be an item cleanup could never act on.
+      if (!stat || stat.isSymbolicLink()) {
+        buildLeft -= 1;
+        continue;
+      }
+      const stale = Date.now() - stat.mtimeMs > STALE_AGE_MS;
+      const entry = await makeItem({
+        category: "build_release",
+        base: stagingTmpRoot,
+        path: tempPath,
+        label: "Release and build staging",
+        safety: stale ? "safe_to_remove" : "review_first",
+        state: buildState,
+        itemsLeft: buildLeft,
+        detail: stale ? "Old staging files are no longer in use" : "A current operation may still be using these files",
+      });
+      buildLeft -= 1;
+      add("build_release", entry?.item);
+    }
+    // `.ade/tmp` direct children: /release-skill staging that nothing else reaps.
+    for (const name of adeTmpNames) {
+      const adeTmpPath = path.join(adeTmpDir, name);
+      const stat = await lstatOrNull(adeTmpPath);
+      if (!stat || stat.isSymbolicLink()) {
+        buildLeft -= 1;
+        continue;
+      }
+      const stale = Date.now() - stat.mtimeMs > STALE_AGE_MS;
+      const entry = await makeItem({
+        category: "build_release",
+        base: adeTmpDir,
+        path: adeTmpPath,
+        label: "Release staging",
+        safety: stale ? "safe_to_remove" : "review_first",
+        state: buildState,
+        itemsLeft: buildLeft,
+        detail: stale ? "Old release staging is no longer in use" : "A current release may still be using these files",
+      });
+      buildLeft -= 1;
+      add("build_release", entry?.item);
+    }
+    const derivedDataEntry = await makeItem({
+      category: "build_release",
+      base: layout.adeDir,
+      path: derivedData,
+      label: "iOS build data",
+      safety: "review_first",
+      state: buildState,
+    });
+    if (derivedDataEntry) {
+      const lastModifiedMs = derivedDataEntry.item.lastModifiedAt
+        ? Date.parse(derivedDataEntry.item.lastModifiedAt)
+        : null;
+      const blockedReason = iosDerivedDataBlockReason(lastModifiedMs);
+      derivedDataEntry.item.safety = blockedReason ? "review_first" : "safe_to_remove";
+      derivedDataEntry.item.detail = blockedReason ?? "Recreated the next time you build";
+      add("build_release", derivedDataEntry.item);
+    }
+    finishCategory(buildState);
+
+    const chatsState = categoryState("chats_history");
     let compressibleBytes = 0;
     let compressedBytes = 0;
-    for (const [chatPath, label] of [
+    const chatRoots = [
       [layout.transcriptsDir, "Chat and terminal history"],
       [path.join(layout.cacheDir, "terminal-snapshots"), "Terminal snapshots"],
-    ] as const) {
-      const entry = await makeItem({ category: "chats_history", base: layout.adeDir, path: chatPath, label, safety: "compressible", state });
+    ] as const;
+    for (const [index, [chatPath, label]] of chatRoots.entries()) {
+      const entry = await makeItem({
+        category: "chats_history",
+        base: layout.adeDir,
+        path: chatPath,
+        label,
+        safety: "compressible",
+        state: chatsState,
+        itemsLeft: chatRoots.length - index,
+      });
       if (entry) {
         add("chats_history", entry.item);
         compressibleBytes += entry.oldFileBytes;
         compressedBytes += entry.compressedBytes;
       }
     }
+    finishCategory(chatsState);
 
+    const lanesState = categoryState("lanes_worktrees");
     const lanes = listLaneRows();
     const laneStorageStates = new Map(options.db.all<{
       lane_id: string;
@@ -665,10 +942,12 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
       [options.projectId ?? ""],
     ).map((entry) => [entry.lane_id, entry] as const));
     const worktreeNames = await readdirOrEmpty(layout.worktreesDir);
-    for (const name of worktreeNames) {
+    for (const [index, name] of worktreeNames.entries()) {
       const worktreePath = path.join(layout.worktreesDir, name);
       const stat = await lstatOrNull(worktreePath);
-      if (!stat) continue;
+      // Only folders are lanes: a stray file (Finder's .DS_Store) listed as a
+      // "left over lane" offered a cleanup that made no sense.
+      if (!stat || !stat.isDirectory()) continue;
       const row = laneForPath(worktreePath, undefined, lanes);
       const laneStatus: StorageItem["laneStatus"] = !row ? "orphaned" : row.archived_at ? "archived" : "active";
       const entry = await makeItem({
@@ -677,7 +956,10 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
         path: worktreePath,
         label: row?.name ?? name,
         safety: laneStatus === "active" ? "protected" : "review_first",
-        state,
+        state: lanesState,
+        // Every lane gets an even part of what is left, so the first big
+        // worktree cannot leave the others unmeasured.
+        itemsLeft: worktreeNames.length - index,
         laneStatus,
         ...(laneStatus === "archived"
           ? { detail: "Archived lane — its files are kept until you remove them" }
@@ -698,6 +980,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
         add("lanes_worktrees", entry.item);
       }
     }
+    finishCategory(lanesState);
     for (const row of lanes.filter((lane) => lane.archived_at && !fs.existsSync(lane.worktree_path))) {
       const storageState = laneStorageStates.get(row.id);
       add("lanes_worktrees", {
@@ -721,144 +1004,16 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
       });
     }
 
-    const tempNames = await readdirOrEmpty(stagingTmpRoot);
-    for (const name of tempNames.filter((value) => /^ade-/.test(value))) {
-      const tempPath = path.join(stagingTmpRoot, name);
-      if (path.resolve(tempPath) === projectRoot || path.resolve(tempPath) === adeHome) continue;
-      const stat = await lstatOrNull(tempPath);
-      // Skip symlinked staging dirs: the reaper's collectors refuse them, so
-      // showing one here would be an item cleanup could never act on.
-      if (!stat || stat.isSymbolicLink()) continue;
-      const stale = Date.now() - stat.mtimeMs > STALE_AGE_MS;
-      const entry = await makeItem({
-        category: "build_release",
-        base: stagingTmpRoot,
-        path: tempPath,
-        label: "Release and build staging",
-        safety: stale ? "safe_to_remove" : "review_first",
-        state,
-        detail: stale ? "Old staging files are no longer in use" : "A current operation may still be using these files",
-      });
-      add("build_release", entry?.item);
-    }
-    // `.ade/tmp` direct children: /release-skill staging that nothing else reaps.
-    const adeTmpNames = await readdirOrEmpty(adeTmpDir);
-    for (const name of adeTmpNames) {
-      const adeTmpPath = path.join(adeTmpDir, name);
-      const stat = await lstatOrNull(adeTmpPath);
-      if (!stat || stat.isSymbolicLink()) continue;
-      const stale = Date.now() - stat.mtimeMs > STALE_AGE_MS;
-      const entry = await makeItem({
-        category: "build_release",
-        base: adeTmpDir,
-        path: adeTmpPath,
-        label: "Release staging",
-        safety: stale ? "safe_to_remove" : "review_first",
-        state,
-        detail: stale ? "Old release staging is no longer in use" : "A current release may still be using these files",
-      });
-      add("build_release", entry?.item);
-    }
-    const derivedData = iosDerivedDataDir;
-    const derivedDataEntry = await makeItem({
-      category: "build_release",
-      base: layout.adeDir,
-      path: derivedData,
-      label: "iOS build data",
-      safety: "review_first",
-      state,
-    });
-    if (derivedDataEntry) {
-      const lastModifiedMs = derivedDataEntry.item.lastModifiedAt
-        ? Date.parse(derivedDataEntry.item.lastModifiedAt)
-        : null;
-      const blockedReason = iosDerivedDataBlockReason(lastModifiedMs);
-      derivedDataEntry.item.safety = blockedReason ? "review_first" : "safe_to_remove";
-      derivedDataEntry.item.detail = blockedReason ?? "Recreated the next time you build";
-      add("build_release", derivedDataEntry.item);
-    }
-
-    const cacheNames = await readdirOrEmpty(layout.cacheDir);
-    for (const name of cacheNames) {
-      if (name === "terminal-snapshots") continue;
-      const cachePath = path.join(layout.cacheDir, name);
-      const protectedItem = name === "chat-sessions";
-      const entry = await makeItem({
-        category: "caches",
-        base: layout.cacheDir,
-        path: cachePath,
-        label: protectedItem ? "Chat session records" : name,
-        safety: protectedItem ? "protected" : "safe_to_remove",
-        state,
-        ...(protectedItem ? { detail: "Required to keep existing chats available" } : { detail: "Recreated when needed" }),
-        ...(name === "ios-simulator" ? { excludedRoots: [derivedData] } : {}),
-      });
-      if (entry && (entry.item.bytes > 0 || name !== "ios-simulator")) add("caches", entry.item);
-    }
-
-    const updatesDir = path.join(adeHome, "runtime", "updates");
-    const updateNames = await readdirOrEmpty(updatesDir);
-    for (const name of updateNames) {
-      const updatePath = path.join(updatesDir, name);
-      const stat = await lstatOrNull(updatePath);
-      if (!stat) continue;
-      const stale = Date.now() - stat.mtimeMs > STALE_AGE_MS;
-      add("caches", (await makeItem({
-        category: "caches",
-        base: updatesDir,
-        path: updatePath,
-        label: "App update staging",
-        safety: stale ? "safe_to_remove" : "review_first",
-        state,
-        detail: stale ? "Old update files are no longer needed" : "An update may still be using these files",
-      }))?.item);
-    }
-
-    const proofPath = path.join(layout.artifactsDir, "computer-use");
-    add("proof_attachments", (await makeItem({
-      category: "proof_attachments",
-      base: layout.adeDir,
-      path: proofPath,
-      label: "Proof and recordings",
-      safety: "review_first",
-      state,
-    }))?.item);
-
-    const adeNames = await readdirOrEmpty(layout.adeDir);
-    for (const name of adeNames.filter((value) => RECOVERY_BACKUP_PATTERN.test(value))) {
-      const backupPath = path.join(layout.adeDir, name);
-      add("recovery_backups", (await makeItem({
-        category: "recovery_backups",
-        base: layout.adeDir,
-        path: backupPath,
-        label: "Recovery backup",
-        safety: isObsoleteRecoveryBackup(backupPath, { projectRoot, db: options.db })
-          ? "safe_to_remove"
-          : "review_first",
-        state,
-      }))?.item);
-    }
-
-    for (const databasePath of [layout.dbPath, `${layout.dbPath}-wal`, `${layout.dbPath}-shm`]) {
-      add("database", (await makeItem({
-        category: "database",
-        base: layout.adeDir,
-        path: databasePath,
-        label: databasePath === layout.dbPath ? "Project database" : "Project database support file",
-        safety: "protected",
-        state,
-      }))?.item);
-    }
-
     const categories = [
-      buildCategory("chats_history", categoryItems.get("chats_history") ?? [], "compressible", state, compressibleBytes, compressedBytes),
-      buildCategory("lanes_worktrees", categoryItems.get("lanes_worktrees") ?? [], "review_first", state),
-      buildCategory("build_release", categoryItems.get("build_release") ?? [], "safe_to_remove", state),
-      buildCategory("caches", categoryItems.get("caches") ?? [], "safe_to_remove", state),
-      buildCategory("proof_attachments", categoryItems.get("proof_attachments") ?? [], "review_first", state),
-      buildCategory("recovery_backups", categoryItems.get("recovery_backups") ?? [], "review_first", state),
-      buildCategory("database", categoryItems.get("database") ?? [], "protected", state),
+      buildCategory("chats_history", categoryItems.get("chats_history") ?? [], "compressible", compressibleBytes, compressedBytes),
+      buildCategory("lanes_worktrees", categoryItems.get("lanes_worktrees") ?? [], "review_first"),
+      buildCategory("build_release", categoryItems.get("build_release") ?? [], "safe_to_remove"),
+      buildCategory("caches", categoryItems.get("caches") ?? [], "safe_to_remove"),
+      buildCategory("proof_attachments", categoryItems.get("proof_attachments") ?? [], "review_first"),
+      buildCategory("recovery_backups", categoryItems.get("recovery_backups") ?? [], "review_first"),
+      buildCategory("database", categoryItems.get("database") ?? [], "protected"),
     ];
+    const truncated = categories.some((category) => category.partial);
     for (const category of categories) {
       for (const item of category.items) {
         item.ownership ??= item.path.startsWith(stagingTmpRoot)
@@ -921,7 +1076,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
       totalAdeBytes: categories.reduce((sum, category) => sum + category.bytes, 0),
       categories,
       scanDurationMs: Date.now() - startedAt,
-      truncated: state.truncated,
+      truncated,
       extras,
       lifecycle: (() => {
         const policy = lifecyclePolicy();
@@ -948,8 +1103,14 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
         };
       })(),
     };
-    if (state.truncated) {
-      options.logger.warn("storage.scan_truncated", { projectRoot, entries: state.entries, entryLimit: state.entryLimit, budgetMs: state.budgetMs });
+    if (truncated) {
+      options.logger.warn("storage.scan_truncated", {
+        projectRoot,
+        entries: scan.entries,
+        entryLimit: scanEntryLimit,
+        budgetMs: scanBudgetMs,
+        partialCategories: categories.filter((category) => category.partial).map((category) => category.id),
+      });
     }
     cachedSnapshot = { value: snapshot, createdAt: Date.now() };
     return snapshot;
@@ -969,7 +1130,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
       if (await hasSymlinkAncestor(projectRoot, targetPath)) {
         return { valid: null, reason: "Links cannot be used in a cleanup path." };
       }
-      if (!isDirectChild(layout.worktreesDir, targetPath)) {
+      if (!isDirectChild(layout.worktreesDir, targetPath) || !stat.isDirectory()) {
         return { valid: null, reason: "This path is not a managed lane worktree." };
       }
       const lane = laneForPath(targetPath, target.kind === "archived_lane_worktree" ? target.laneId : undefined);
@@ -985,6 +1146,10 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
           reason: "Use Archive & Reclaim so ADE can check running, dirty, and unmerged work before removing this lane folder.",
         };
       }
+      // Removal is `git worktree remove --force`, which discards uncommitted
+      // files and orphans commits no branch holds. Check before it can.
+      const workAtRisk = await orphanedWorktreeWorkAtRisk(targetPath);
+      if (workAtRisk) return { valid: null, reason: workAtRisk };
       label = lane?.name ?? path.basename(targetPath);
     } else if (target.kind === "stale_tmp_staging") {
       // Two staging roots share this kind: `ade-*` dirs in the system temp root,
@@ -1017,6 +1182,9 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
       }
       if (isSameOrWithin(path.join(layout.cacheDir, "terminal-snapshots"), targetPath)) {
         return { valid: null, reason: "Terminal history is protected from automatic cleanup." };
+      }
+      if (isSameOrWithin(journalPath, targetPath) || isSameOrWithin(`${journalPath}.tmp`, targetPath)) {
+        return { valid: null, reason: "This is ADE's cleanup history. It is kept." };
       }
       label = "Rebuildable cache";
     } else if (target.kind === "recovery_backup") {
@@ -1066,6 +1234,37 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
     return { valid: { target, path: targetPath, bytes: size.bytes, label, identity } };
   };
 
+  /**
+   * Why a leftover lane folder must not be removed, or null when nothing in
+   * it would be lost. A folder with no `.git` is plain leftover files. A
+   * checkout git cannot read is kept: ADE cannot tell what is in it.
+   */
+  const orphanedWorktreeWorkAtRisk = async (worktreePath: string): Promise<string | null> => {
+    if (!(await lstatOrNull(path.join(worktreePath, ".git")))) return null;
+    const status = await runGit(["status", "--porcelain", "--untracked-files=normal"], { cwd: worktreePath, timeoutMs: 15_000 });
+    if (status.exitCode !== 0) {
+      return "ADE couldn't check this folder for uncommitted work, so it is kept. Remove it by hand if you are sure nothing in it is needed.";
+    }
+    const changed = status.stdout.split("\n").filter((line) => line.trim().length > 0).length;
+    if (changed > 0) {
+      return `This folder has ${changed} uncommitted ${changed === 1 ? "change" : "changes"}. Commit or move them before removing it.`;
+    }
+    const head = await runGit(["rev-parse", "--verify", "--quiet", "HEAD"], { cwd: worktreePath, timeoutMs: 15_000 });
+    if (head.exitCode !== 0) return null; // No commits at all: nothing to lose.
+    const unheld = await runGit(
+      ["rev-list", "--count", "HEAD", "--not", "--branches", "--tags", "--remotes"],
+      { cwd: worktreePath, timeoutMs: 15_000 },
+    );
+    if (unheld.exitCode !== 0) {
+      return "ADE couldn't check this folder for commits that only it holds, so it is kept.";
+    }
+    const count = Number.parseInt(unheld.stdout.trim(), 10);
+    if (Number.isFinite(count) && count > 0) {
+      return `This folder holds ${count} ${count === 1 ? "commit" : "commits"} no branch has. Removing it would lose ${count === 1 ? "it" : "them"}.`;
+    }
+    return null;
+  };
+
   const cleanupPreview = async (targets: StorageCleanupTarget[]): Promise<StorageCleanupPreview> => {
     const items: StorageCleanupPreview["items"] = [];
     const blocked: StorageCleanupPreview["blocked"] = [];
@@ -1093,6 +1292,25 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
     return { items, totalBytes: items.reduce((sum, item) => sum + item.bytes, 0), blocked };
   };
 
+  /** The cleanup-history bucket a removed path is filed under. */
+  const cleanupLedgerId = (target: StorageCleanupTarget, targetPath: string): string => {
+    switch (target.kind) {
+      case "orphaned_worktree":
+      case "archived_lane_worktree":
+        return "fs.worktrees";
+      case "stale_tmp_staging":
+        return isDirectChild(adeTmpDir, targetPath) ? "fs.tmp" : "fs.tmp_staging";
+      case "rebuildable_cache":
+        return overlapsIosDerivedData(targetPath) ? "fs.ios_derived_data" : "fs.cache";
+      case "recovery_backup":
+        return "fs.recovery_backups";
+      case "proof_attachments":
+        return "fs.artifacts";
+      default:
+        return "fs.cache";
+    }
+  };
+
   const removeWorktree = async (targetPath: string): Promise<void> => {
     const removeResult = await runGit(["worktree", "remove", "--force", targetPath], { cwd: projectRoot, timeoutMs: 30_000 });
     if (removeResult.exitCode !== 0) {
@@ -1106,8 +1324,21 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
     targets: StorageCleanupTarget[],
     opts: { preview: StorageCleanupPreview },
   ): Promise<StorageCleanupResult> => {
+    const startedAt = new Date().toISOString();
+    const startedMs = Date.now();
     const removed: StorageCleanupResult["removed"] = [];
     const failed: StorageCleanupResult["failed"] = [];
+    // What this cleanup did, per kind of data, for the cleanup history.
+    const ledger = new Map<string, { items: number; bytes: number; errors: string[] }>();
+    const noteLedger = (ledgerId: string, change: { bytes?: number; error?: string }) => {
+      const entry = ledger.get(ledgerId) ?? { items: 0, bytes: 0, errors: [] };
+      if (change.error) entry.errors.push(change.error);
+      else {
+        entry.items += 1;
+        entry.bytes += change.bytes ?? 0;
+      }
+      ledger.set(ledgerId, entry);
+    };
     const previewByPath = new Map((opts?.preview?.items ?? []).map((item) => [path.resolve(item.path), item]));
     const seen = new Set<string>();
 
@@ -1169,8 +1400,11 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
           }
         }
         removed.push({ path: checked.valid.path, bytes: checked.valid.bytes });
+        noteLedger(cleanupLedgerId(target, checked.valid.path), { bytes: checked.valid.bytes });
       } catch (error) {
-        failed.push({ path: rawPath, reason: error instanceof Error ? error.message : String(error) });
+        const reason = error instanceof Error ? error.message : String(error);
+        failed.push({ path: rawPath, reason });
+        noteLedger(cleanupLedgerId(target, checked.valid.path), { error: reason });
       }
     }
     const result: StorageCleanupResult = {
@@ -1178,6 +1412,29 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
       failed,
       freedBytes: removed.reduce((sum, item) => sum + item.bytes, 0),
     };
+    if (ledger.size > 0) {
+      // Files the person removed are part of the cleanup history. Before
+      // this, only the maintenance run was journaled, so "Last cleanup" said
+      // 13.6 MB after hundreds of MB of files had gone.
+      appendMaintenanceJournal(journalPath, {
+        startedAt,
+        finishedAt: new Date().toISOString(),
+        trigger: "manual",
+        filesOnly: true,
+        actions: [...ledger.entries()].map(([ledgerId, entry]) => ({
+          ledgerId,
+          kind: "delete" as const,
+          itemsAffected: entry.items,
+          bytesReclaimed: entry.bytes,
+          durationMs: Date.now() - startedMs,
+          skippedReason: null,
+          error: entry.errors.length > 0 ? entry.errors[0]! : null,
+        })),
+        reclaimedBytes: result.freedBytes,
+        dbSizeBytes: databaseFilesBytes(),
+        dbSizeDefinition: "files",
+      }, { logger: options.logger, projectRoot });
+    }
     cachedSnapshot = null;
     options.logger.info("storage.cleanup_completed", {
       projectRoot,
@@ -1363,7 +1620,8 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
         trigger,
         actions,
         reclaimedBytes,
-        dbSizeBytes: statSizeOrNull(layout.dbPath),
+        dbSizeBytes: databaseFilesBytes(),
+        dbSizeDefinition: "files",
       };
       appendMaintenanceJournal(journalPath, report, { logger: options.logger, projectRoot });
       cachedSnapshot = null;

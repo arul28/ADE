@@ -51,25 +51,34 @@ export function formatReminder(at: number | undefined): string {
  * permission picker; the person starts the agent from there.
  */
 export function agentCheckPrompt(record: ProjectMoveRecord): string {
-  const followUps = record.followUps.length
-    ? record.followUps.map((line) => `- ${line}`).join("\n")
-    : "- Nothing else to note.";
+  const bullets = (lines: string[]) => (lines.length ? lines.map((line) => `- ${line}`).join("\n") : "- Nothing.");
+  const notes = (record.notes ?? []).map((note) => `### ${note.title}\n${note.detail}`).join("\n\n");
+  const dependencies = record.copiedDependencies
+    ? "3. Dependencies (node_modules) were copied with the project. Run the build and the quickest test command to prove they still work here. If a tool refuses its copied dependencies (pnpm can ask to reinstall when its store is on another drive), tell me and offer to reinstall; don't change code to make anything pass."
+    : "3. Dependencies (node_modules) were not copied. Detect the package manager from the lockfile and offer me to reinstall in the project and in each lane that has its own package install; run it only when I say so. Then run the build and the quickest test command. Lanes that link their node_modules to the main checkout's work again once the main checkout is installed; don't remove those links. Report failures; don't change code to make them pass.";
   return [
-    `ADE just moved this project from \`${record.sourceRoot}\` to \`${record.destinationRoot}\`${record.destinationVolumeName ? ` (on ${record.destinationVolumeName})` : ""}. Check that everything works here, then report back.`,
+    `ADE just moved this project from \`${record.sourceRoot}\` to \`${record.destinationRoot}\`${record.destinationVolumeName ? ` (on ${record.destinationVolumeName}${record.destinationInternal ? "" : ", an external drive"})` : ""}. Check that everything works here, find what still needs doing, and offer me the fixes. Ask before changing anything.`,
     "",
     "1. Confirm where you are: run `pwd` and `git worktree list`. Every lane should be under the new location, except lanes that always lived outside the project folder: those stay where they are and should now belong to this repository. Nothing should point at the old location.",
-    "2. Run `git status` in the project and in each lane. Nothing should look unexpectedly changed.",
-    "3. Dependencies (node_modules) were not copied. Reinstall them with the project's package manager, then run its build and its quickest test command. Report failures; don't change code to make them pass. Lanes link their node_modules to the main checkout's, so those links work again once the main checkout is reinstalled; don't remove them.",
-    `4. Find files that still mention \`${record.sourceRoot}\`: CLAUDE.md, AGENTS.md, .claude/settings*.json, .env files, scripts, editor settings. List each with its line and the change you'd make. Ask me before editing.`,
-    "5. ADE's notes from the move:",
-    followUps,
+    "2. Run `git --no-optional-locks status` in the project and in each lane. Nothing should look unexpectedly changed.",
+    dependencies,
+    `4. Find files that still name \`${record.sourceRoot}\`: the list ADE found is below; also check scripts, .env files, editor settings and Python virtualenvs. For each, say the change you'd make. Ask me before editing.`,
+    "5. Run `ade health --text` (the same checks Settings → Project shows) and go through any open issues with me: explain each, and offer its fix or what I should do. Fixes are mine to press there.",
+    "",
+    "## What ADE did",
+    bullets(record.followUps),
+    "",
+    "## What ADE couldn't do",
+    bullets(record.problems),
+    ...(notes ? ["", "## What ADE found before the move", notes] : []),
     "",
     "Rules:",
     record.originalParkedAt
       ? `- The old copy at \`${record.originalParkedAt}\` is read-only for you. Don't edit it, run git in it, or delete it, even if asked. I delete it from ADE.`
       : "- The old copy is already gone; work only in the moved project.",
+    ...(record.destinationInternal ? [] : ["- This project is on an external drive. Simulator screenshots: use ADE's Apple tools (`ade apple …`), which handle the drive; a hand-run `xcrun simctl io … screenshot` must write to /tmp."]),
     "- Keep the report short: what works, what you fixed (only with my OK), what I need to do.",
     "",
-    "Finish by telling me: when I'm happy, I can delete the old copy, keep it, or set a reminder from ADE's banner or Settings → Project location.",
+    "Finish by telling me: when I'm happy, I can delete the old copy, keep it, or set a reminder from ADE's banner or Settings → Project → Location.",
   ].join("\n");
 }

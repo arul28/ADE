@@ -48,6 +48,11 @@ export type StorageItem = {
   ageHours?: number | null;
   laneId?: string;
   reclaimState?: "kept" | "ready_for_review" | "reclaimed" | "failed";
+  /**
+   * The scan ran out of its budget inside this item, so `bytes` is a lower
+   * bound ("at least"), not the size. Absent on a fully measured item.
+   */
+  partial?: boolean;
 };
 
 export type StorageCategorySnapshot = {
@@ -58,6 +63,13 @@ export type StorageCategorySnapshot = {
   items: StorageItem[];
   compressibleBytes?: number;
   compressedBytes?: number;
+  /** Some item in this category was not fully measured: `bytes` is a lower bound. */
+  partial?: boolean;
+  /**
+   * How many items the category holds. `items` is capped for display; the
+   * totals above always cover every item, so a cap never under-counts.
+   */
+  itemCount?: number;
 };
 
 export type StorageCompressionResult = {
@@ -72,6 +84,10 @@ export type StorageSnapshot = {
   totalAdeBytes: number;
   categories: StorageCategorySnapshot[];
   scanDurationMs: number;
+  /**
+   * Some sizes are lower bounds because the scan ran out of budget (see each
+   * category's and item's `partial`). Never set just because a list was capped.
+   */
   truncated: boolean;
   // Optional so pre-overhaul snapshots (and the daemon-backed fallback
   // instance) remain valid; renderer must treat absence as "not available".
@@ -164,8 +180,25 @@ export type MaintenanceRunReport = {
   finishedAt: string;
   trigger: MaintenanceTrigger;
   actions: MaintenanceAction[];
+  /**
+   * Everything the run freed: files removed, database space returned and
+   * history compression savings. Each action carries its own share.
+   */
   reclaimedBytes: number;
+  /** Database size after the run. See `dbSizeDefinition`. */
   dbSizeBytes: number | null;
+  /**
+   * "files": the main database file plus its `-wal` and `-shm` files, the
+   * same definition the storage snapshot uses. Absent on older runs, which
+   * measured the main file only; those samples are not comparable.
+   */
+  dbSizeDefinition?: "files";
+  /**
+   * A run that only removed files the person confirmed in Settings (no
+   * database or history work). A manual maintenance run that follows within
+   * minutes folds into it, so one "Clean up" reads as one run.
+   */
+  filesOnly?: boolean;
 };
 
 export type DbBreakdownCategory =
@@ -195,7 +228,15 @@ export type StorageSnapshotExtras = {
 };
 
 export type RuntimeHealthSnapshot = {
+  /**
+   * Background service calls that succeeded but took over 500 ms in the last
+   * 24 h. Storage and project-health scans are excluded: they are slow by
+   * design, and opening Settings → Overview would otherwise count itself.
+   */
   slowActions24h: number;
+  /** 95th percentile duration of those slow calls, in ms. */
   slowActionP95Ms: number | null;
+  /** Calls that failed in the last 24 h (same exclusions). Absent on older builds. */
+  failedActions24h?: number;
   sampledAt: string;
 };

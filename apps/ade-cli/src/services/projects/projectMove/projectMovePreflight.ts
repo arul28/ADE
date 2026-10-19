@@ -12,7 +12,7 @@ import { formatBytes } from "../../../../../desktop/src/shared/formatting";
 import { isPathInside } from "../../../../../desktop/src/main/services/shared/pathCompare";
 import { detectCloudStorageProvider } from "../../../../../desktop/src/main/services/storage/cloudPlaceholder";
 import { planAgentHistoryRenames, summarizeAgentHistory } from "./moveAgentHistory";
-import { measureProject } from "./moveCopy";
+import { measureProject, onSameVolume } from "./moveCopy";
 import { projectDatabasePath, readProjectDatabaseSummary, type DatabaseSummary } from "./moveDatabase";
 import { listWorktreeLinks, rootSpellings, type WorktreeLink } from "./moveGitLinks";
 import { ownsLeftoverCopy } from "./moveJournal";
@@ -66,24 +66,83 @@ function gitOperationIn(adminDir: string): string | null {
   return null;
 }
 
-/** Files at the top of the project and each lane that mention the old path. */
-function filesMentioningPath(checkouts: string[], oldSpellings: string[]): string[] {
-  const names = ["CLAUDE.md", "AGENTS.md", "GEMINI.md", ".cursorrules", path.join(".claude", "settings.json"), path.join(".claude", "settings.local.json")];
-  const found: string[] = [];
+/** Untracked files that commonly hold absolute paths; tracked files are found with `git grep`. */
+const UNTRACKED_CONFIG_FILES = [
+  "CLAUDE.md", "AGENTS.md", "GEMINI.md", ".cursorrules", ".mcp.json", ".env", ".env.local", ".envrc",
+  path.join(".claude", "settings.json"), path.join(".claude", "settings.local.json"),
+  path.join(".vscode", "settings.json"), path.join(".vscode", "launch.json"),
+];
+const MAX_MENTIONS = 40;
+
+/**
+ * Files in the project and its lanes that name the old path: tracked files
+ * (scripts, configs, docs) through `git grep`, which reads without locking,
+ * plus the untracked config files agents and editors keep. Paths are relative
+ * to the project root, one entry per file.
+ */
+export async function filesMentioningPath(checkouts: string[], sourceRoot: string, oldSpellings: string[]): Promise<string[]> {
+  const found = new Set<string>();
   for (const checkout of checkouts) {
-    for (const name of names) {
+    if (found.size >= MAX_MENTIONS) break;
+    try {
+      const { stdout } = await execFileAsync(
+        "git",
+        ["--no-optional-locks", "-C", checkout, "grep", "-l", "-I", "-F", ...oldSpellings.flatMap((spelling) => ["-e", spelling])],
+        { timeout: 30_000, maxBuffer: 4 * 1024 * 1024 },
+      );
+      for (const line of stdout.split("\n")) {
+        if (line.trim()) found.add(path.relative(sourceRoot, path.join(checkout, line.trim())));
+      }
+    } catch {
+      // exit 1: no match; anything else: not a git checkout or git busy
+    }
+    for (const name of UNTRACKED_CONFIG_FILES) {
       const file = path.join(checkout, name);
       try {
         const stat = fs.statSync(file);
         if (!stat.isFile() || stat.size > 2 * 1024 * 1024) continue;
         const text = fs.readFileSync(file, "utf8");
-        if (oldSpellings.some((spelling) => text.includes(spelling))) found.push(file);
+        if (oldSpellings.some((spelling) => text.includes(spelling))) found.add(path.relative(sourceRoot, file));
       } catch {
         // missing
       }
     }
   }
-  return found;
+  return [...found].slice(0, MAX_MENTIONS);
+}
+
+/**
+ * Lane `node_modules` links that point into a dependency folder of the
+ * project. Those folders are reinstalled, not copied, when dependencies are
+ * left out, so the links stay broken until that install.
+ */
+function dependencyLinksIntoProject(checkouts: string[], oldSpellings: string[]): string[] {
+  const links: string[] = [];
+  const visit = (dir: string, depth: number) => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.name === "node_modules" && entry.isSymbolicLink()) {
+        try {
+          const target = fs.readlinkSync(full);
+          if (path.isAbsolute(target) && oldSpellings.some((spelling) => target === spelling || target.startsWith(`${spelling}/`))) links.push(full);
+        } catch {
+          // unreadable link
+        }
+        continue;
+      }
+      if (!entry.isDirectory() || depth >= 3) continue;
+      if (entry.name === "node_modules" || entry.name === ".git" || entry.name === ".ade" || entry.name.startsWith(".")) continue;
+      visit(full, depth + 1);
+    }
+  };
+  for (const checkout of checkouts) visit(checkout, 0);
+  return links;
 }
 
 function hasPythonEnvironment(checkouts: string[]): boolean {
@@ -92,7 +151,25 @@ function hasPythonEnvironment(checkouts: string[]): boolean {
   );
 }
 
-function lockfileKind(root: string): "pnpm" | "npm" | "yarn" | "bun" | null {
+/**
+ * The command that installs a checkout's dependencies: the project's own
+ * `setup` script when it has one (some repos install several packages from
+ * there), else the package manager's install.
+ */
+export function installCommandFor(root: string): string | null {
+  const manager = lockfileKind(root);
+  let scripts: Record<string, unknown> = {};
+  try {
+    scripts = (JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")) as { scripts?: Record<string, unknown> }).scripts ?? {};
+  } catch {
+    if (!manager) return null;
+  }
+  const runner = manager ?? "npm";
+  if (typeof scripts.setup === "string") return `${runner} run setup`;
+  return manager ? `${manager} install` : null;
+}
+
+export function lockfileKind(root: string): "pnpm" | "npm" | "yarn" | "bun" | null {
   if (fs.existsSync(path.join(root, "pnpm-lock.yaml"))) return "pnpm";
   if (fs.existsSync(path.join(root, "yarn.lock"))) return "yarn";
   if (fs.existsSync(path.join(root, "bun.lockb")) || fs.existsSync(path.join(root, "bun.lock"))) return "bun";
@@ -124,6 +201,8 @@ export async function preflightProjectMove(args: {
       destinationVolume: null,
       copyBytes: 0,
       dependencyBytes: 0,
+      sameDrive: false,
+      canCopyDependencies: false,
       laneCount: 0,
       checks: [{ id: "destination", status: "blocked", title: `The project isn't at ${sourceRoot}`, detail: "Connect its drive, or open it where it is now." }],
       canMove: false,
@@ -142,13 +221,18 @@ export async function preflightProjectMove(args: {
   const isMainCheckout = isDirectory(path.join(sourceRoot, ".git"));
   const links = isMainCheckout ? listWorktreeLinks(sourceRoot, oldSpellings) : [];
   const lanes = lanesCheck(sourceRoot, links);
+  const sameDrive = onSameVolume(sourceRoot, path.dirname(destinationRoot)) && destinationVolume?.fileSystem === "apfs";
+  const freeBytes = destinationVolume?.freeBytes ?? 0;
+  // On the same drive the copy is made of clones, which take no space.
+  const canCopyDependencies = sameDrive || freeBytes >= sizes.copyBytes + sizes.dependencyBytes + SPACE_MARGIN_BYTES;
 
   const checks: ProjectMoveCheck[] = [
     destinationCheck(sourceRoot, destinationRoot),
     driveCheck(sourceVolume, destinationVolume),
-    spaceCheck(sizes, destinationVolume?.freeBytes ?? 0, where),
+    spaceCheck(sizes, freeBytes, where, sameDrive),
     accessCheck(destinationRoot, where),
     quietCheck(args.activity),
+    await holdersCheck(sourceRoot),
     gitCheck({ sourceRoot, projectName, isMainCheckout, git, links }),
     lanes.check,
   ];
@@ -164,10 +248,15 @@ export async function preflightProjectMove(args: {
     destinationVolume,
     copyBytes: sizes.copyBytes,
     dependencyBytes: sizes.dependencyBytes,
+    sameDrive,
+    canCopyDependencies,
     laneCount: lanes.laneCount,
     checks,
     canMove: !checks.some((check) => check.status === "blocked"),
-    notes: afterMoveNotes(sourceRoot, links, oldSpellings, sizes.dependencyBytes),
+    notes: [
+      ...(await afterMoveNotes(sourceRoot, links, oldSpellings, sameDrive ? 0 : sizes.dependencyBytes, sameDrive)),
+      ...(await driveNotes(sourceRoot, destinationVolume)),
+    ],
     agentHistory,
   };
 }
@@ -198,7 +287,12 @@ function destinationCheck(sourceRoot: string, destinationRoot: string): ProjectM
     : { id: "destination", status: "ok", title: `New location: ${destinationRoot}` };
 }
 
-function spaceCheck(sizes: { copyBytes: number; dependencyBytes: number }, free: number, where: string): ProjectMoveCheck {
+function spaceCheck(sizes: { copyBytes: number; dependencyBytes: number }, free: number, where: string, sameDrive: boolean): ProjectMoveCheck {
+  if (sameDrive) {
+    return free < SPACE_MARGIN_BYTES
+      ? { id: "space", status: "blocked", title: `Not enough space on ${where}`, detail: `A move on the same drive takes almost no space, but ADE needs ${formatBytes(SPACE_MARGIN_BYTES)} free to work and ${where} has ${formatBytes(free)}.` }
+      : { id: "space", status: "ok", title: "Same drive: the move takes almost no space", detail: "Files are cloned, not duplicated, and dependencies come along." };
+  }
   const needed = sizes.copyBytes + SPACE_MARGIN_BYTES;
   if (free < needed) {
     return {
@@ -212,11 +306,55 @@ function spaceCheck(sizes: { copyBytes: number; dependencyBytes: number }, free:
     return {
       id: "space",
       status: "warning",
-      title: "Enough space to move, tight for reinstalling dependencies",
-      detail: `Moving needs ${formatBytes(sizes.copyBytes)}; reinstalling dependencies later needs about ${formatBytes(sizes.dependencyBytes)} more.`,
+      title: "Enough space to move, but not to bring dependencies along",
+      detail: `Moving needs ${formatBytes(sizes.copyBytes)}; dependencies need about ${formatBytes(sizes.dependencyBytes)} more, copied or reinstalled.`,
     };
   }
-  return { id: "space", status: "ok", title: `Enough space on ${where}`, detail: `${formatBytes(sizes.copyBytes)} to copy, ${formatBytes(free)} free.` };
+  return { id: "space", status: "ok", title: `Enough space on ${where}`, detail: `${formatBytes(sizes.copyBytes + sizes.dependencyBytes)} to copy with dependencies, ${formatBytes(free)} free.` };
+}
+
+/**
+ * Processes other than ADE itself that have the project's database open: a
+ * dev build started from a lane, a second ADE, a script. ADE closes its own
+ * copy for the move; these don't, and the move stops when they still hold it.
+ */
+async function holdersCheck(sourceRoot: string): Promise<ProjectMoveCheck> {
+  const dbPath = projectDatabasePath(sourceRoot);
+  let pids: number[] = [];
+  try {
+    const { stdout } = await execFileAsync("/usr/sbin/lsof", ["-t", "--", dbPath, `${dbPath}-wal`], { timeout: 10_000 });
+    pids = [...new Set(stdout.split(/\s+/u).filter(Boolean).map(Number))];
+  } catch (error) {
+    // lsof exits 1 when nothing has the file open.
+    const stdout = (error as { stdout?: string }).stdout ?? "";
+    pids = [...new Set(stdout.split(/\s+/u).filter(Boolean).map(Number))];
+  }
+  const own = new Set([process.pid, process.ppid]);
+  const others: string[] = [];
+  for (const pid of pids) {
+    if (!Number.isFinite(pid) || own.has(pid)) continue;
+    let command = "";
+    try {
+      ({ stdout: command } = await execFileAsync("/bin/ps", ["-o", "command=", "-p", String(pid)], { timeout: 5_000 }));
+    } catch {
+      continue; // already gone
+    }
+    command = command.trim();
+    // The installed app and its background service release the project when ADE closes it.
+    if (command.startsWith("/Applications/ADE") || command.includes("/ADE.app/Contents/")) continue;
+    others.push(`${pid}: ${command.length > 120 ? `${command.slice(0, 117)}…` : command}`);
+  }
+  if (!others.length) return { id: "holders", status: "ok", title: "Only ADE has the project's data open" };
+  return {
+    id: "holders",
+    // A warning, not a block: one of these can be the background service of
+    // the ADE running the move (a dev build), which lets go when asked. Any
+    // that don't stop the move before it changes anything.
+    status: "warning",
+    title: `${others.length === 1 ? "Another program has" : `${others.length} other programs have`} the project's data open`,
+    detail: "Usually a dev build of ADE started from a lane. Quit those first (stop their dev app or `ade serve`): if one still holds the data, the move stops before changing anything.",
+    items: others,
+  };
 }
 
 function quietCheck(activity: ProjectActivity): ProjectMoveCheck {
@@ -317,30 +455,97 @@ function lanesCheck(sourceRoot: string, links: WorktreeLink[]): { check: Project
 }
 
 /** What ADE leaves for the person to do after the move. */
-function afterMoveNotes(sourceRoot: string, links: WorktreeLink[], oldSpellings: string[], dependencyBytes: number): ProjectMoveNote[] {
+async function afterMoveNotes(sourceRoot: string, links: WorktreeLink[], oldSpellings: string[], dependencyBytes: number, sameDrive: boolean): Promise<ProjectMoveNote[]> {
   const notes: ProjectMoveNote[] = [];
-  const checkouts = [
-    sourceRoot,
-    ...links.flatMap((link) => (link.relativePath !== null && link.exists ? [path.join(sourceRoot, link.relativePath)] : [])),
-  ];
+  const lanes = links.flatMap((link) => (link.relativePath !== null && link.exists ? [path.join(sourceRoot, link.relativePath)] : []));
+  const checkouts = [sourceRoot, ...lanes];
   const lockfile = lockfileKind(sourceRoot);
-  if (dependencyBytes > 0 || lockfile) {
+  // On the same drive dependencies are cloned with the project: nothing to do.
+  if (!sameDrive && (dependencyBytes > 0 || lockfile)) {
+    const command = installCommandFor(sourceRoot) ?? "your install command";
+    const linked = dependencyLinksIntoProject(lanes, oldSpellings);
+    const hasDependencies = dependencyBytes > 0;
     notes.push({
       id: "dependencies",
-      title: `Run ${lockfile ? `${lockfile} install` : "your install command"}`,
-      detail: `${formatBytes(dependencyBytes)} of dependencies are reinstalled, not copied.`,
+      title: hasDependencies ? `Dependencies: copy them, or run ${command} after` : `Dependencies: run ${command} after`,
+      detail: hasDependencies
+        ? [
+            `${formatBytes(dependencyBytes)} of dependencies. Copy them with the project and nothing needs reinstalling; leave them out and ADE offers to run ${command} in each checkout after the move.`,
+            lockfile === "pnpm" ? "pnpm keeps one store per drive: on another drive, the first pnpm install reinstalls once into a store there." : "",
+            linked.length ? `${linked.length} lane link${linked.length === 1 ? "" : "s"} to the main checkout's dependencies only work once those are there:\n${linked.map((file) => path.relative(sourceRoot, file)).join("\n")}` : "",
+          ].filter(Boolean).join("\n")
+        : `No dependencies are installed yet. Run ${command} in each checkout after the move.`,
     });
   }
-  const mentions = filesMentioningPath(checkouts, oldSpellings);
+  const mentions = await filesMentioningPath(checkouts, sourceRoot, oldSpellings);
   if (mentions.length) {
     notes.push({
       id: "mentions",
-      title: `Update the old path in ${[...new Set(mentions.map((file) => path.basename(file)))].join(", ")}`,
-      detail: mentions.map((file) => path.relative(sourceRoot, file)).join("\n"),
+      title: `${mentions.length === MAX_MENTIONS ? `${MAX_MENTIONS}+` : mentions.length} file${mentions.length === 1 ? "" : "s"} name the old path`,
+      detail: `ADE doesn't edit your files. The check agent after the move lists them with the change it would make.\n${mentions.join("\n")}`,
     });
   }
   if (hasPythonEnvironment(checkouts)) {
-    notes.push({ id: "python", title: "Recreate Python virtual environments", detail: "A virtualenv records its own folder." });
+    notes.push({ id: "python", title: "Recreate Python virtual environments", detail: "A virtualenv records its own folder, so its scripts keep pointing at the old one." });
+  }
+  return notes;
+}
+
+function hasAppleProject(root: string): boolean {
+  const visit = (dir: string, depth: number): boolean => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return false;
+    }
+    for (const entry of entries) {
+      if (entry.name.endsWith(".xcodeproj") || entry.name.endsWith(".xcworkspace") || entry.name === "Package.swift") return true;
+    }
+    if (depth >= 3) return false;
+    return entries.some((entry) => entry.isDirectory() && !entry.name.startsWith(".") && entry.name !== "node_modules" && visit(path.join(dir, entry.name), depth + 1));
+  };
+  return visit(root, 0);
+}
+
+export async function timeMachineBacksUp(mountPath: string): Promise<boolean | null> {
+  try {
+    const { stdout } = await execFileAsync("/usr/bin/tmutil", ["destinationinfo"], { timeout: 10_000 });
+    if (/No destinations configured/iu.test(stdout)) return false;
+  } catch (error) {
+    if (/No destinations configured/iu.test(String((error as { stdout?: string; stderr?: string }).stdout ?? "") + String((error as { stderr?: string }).stderr ?? ""))) return false;
+    return null;
+  }
+  try {
+    const { stdout } = await execFileAsync("/usr/bin/tmutil", ["isexcluded", mountPath], { timeout: 10_000 });
+    return !/\[Excluded\]/u.test(stdout);
+  } catch {
+    return null;
+  }
+}
+
+/** What a different drive changes for the project, beyond the copy itself. */
+async function driveNotes(sourceRoot: string, destination: ProjectMoveVolume | null): Promise<ProjectMoveNote[]> {
+  if (!destination || destination.internal) return [];
+  const notes: ProjectMoveNote[] = [{
+    id: "drive-connected",
+    title: `Keep ${destination.name} connected while you work`,
+    detail: `With ${destination.name} unplugged the project shows as offline, and its agents and scheduled wake-ups wait until it is back. ADE won't open a different drive that appears under the same name.`,
+  }];
+  if (hasAppleProject(sourceRoot)) {
+    notes.push({
+      id: "simulator",
+      title: "Simulator screenshots go through ADE",
+      detail: `macOS doesn't let the Simulator's own service write to ${destination.name}, so \`xcrun simctl io … screenshot\` or \`recordVideo\` into the project fails with "Operation not permitted". ADE's Apple tools capture on the internal disk and save the file for you; a hand-run simctl command should write to /tmp. Builds, installs and tests work from ${destination.name}.`,
+    });
+  }
+  const backedUp = await timeMachineBacksUp(destination.mountPath);
+  if (backedUp === false) {
+    notes.push({
+      id: "backup",
+      title: `Time Machine doesn't back up ${destination.name}`,
+      detail: "Your pushed branches are safe on GitHub, but unpushed work, ADE's chats and proof on that drive have no backup. Add the drive in System Settings → General → Time Machine if you want one.",
+    });
   }
   return notes;
 }
