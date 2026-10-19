@@ -2469,7 +2469,7 @@ describe("AgentChatPane companion drawers", () => {
         .mockImplementationOnce(() => new Promise<ComputerUseOwnerSnapshot>((resolve) => { finishSlowRead = resolve; }))
         .mockResolvedValue(snapshotFor(first.sessionId, [artifact("proof-new", "Newer proof")]));
       seedDrawerStore();
-      const paneFor = (session: AgentChatSessionSummary) => (
+      const paneFor = (session: AgentChatSessionSummary, runtimePin?: OpenProjectBinding) => (
         <MemoryRouter>
           <AgentChatPane
             laneId={session.laneId}
@@ -2477,6 +2477,7 @@ describe("AgentChatPane companion drawers", () => {
             hideSessionTabs
             initialSessionSummary={session}
             onSessionCreated={vi.fn()}
+            runtimePin={runtimePin}
           />
         </MemoryRouter>
       );
@@ -2503,6 +2504,39 @@ describe("AgentChatPane companion drawers", () => {
       await showProof("wts-second", second.sessionId);
       await new Promise((resolve) => setTimeout(resolve, 50));
       expect(screen.queryByText("Newer proof")).toBeNull();
+
+      // The same chat moves to another machine. Its proof on the first machine
+      // must not show while the other machine's read is pending, and that
+      // machine's proof replaces it when the read lands.
+      view.unmount();
+      const studioBinding: OpenProjectBinding = {
+        kind: "remote",
+        key: "remote:studio:project-1",
+        targetId: "studio",
+        runtimeName: "Mac Studio",
+        projectId: "project-1",
+        rootPath: "/Volumes/work/project-under-test",
+        displayName: "project-under-test",
+        gitOriginUrl: "https://github.com/acme/project-under-test",
+      };
+      let resolveStudioRead: (snapshot: ComputerUseOwnerSnapshot) => void = () => {};
+      const studioRead = new Promise<ComputerUseOwnerSnapshot>((resolve) => { resolveStudioRead = resolve; });
+      vi.mocked(window.ade.computerUse.getOwnerSnapshot).mockImplementation((_args, pin) => (
+        pin?.key === studioBinding.key
+          ? studioRead
+          : Promise.resolve(snapshotFor(second.sessionId, [artifact("proof-local", "Local proof")]))
+      ));
+      const machineView = render(paneFor(second, LOCAL_PROJECT_BINDING));
+      await waitFor(() => expect(within(screen.getByRole("button", { name: /chat actions drawer/ })).getByText("1")).toBeTruthy());
+      machineView.rerender(paneFor(second, studioBinding));
+      expect(within(screen.getByRole("button", { name: /chat actions drawer/ })).queryByText("1")).toBeNull();
+      await waitFor(() => expect(
+        vi.mocked(window.ade.computerUse.getOwnerSnapshot).mock.calls.some(([, pin]) => pin?.key === studioBinding.key),
+      ).toBe(true));
+      await act(async () => {
+        resolveStudioRead(snapshotFor(second.sessionId, [artifact("proof-studio-a", "Studio proof"), artifact("proof-studio-b", "Studio proof 2")]));
+      });
+      await waitFor(() => expect(within(screen.getByRole("button", { name: /chat actions drawer/ })).getByText("2")).toBeTruthy());
     } finally {
       resetWorkToolShowRequestsForTests();
       setDocumentVisibleForTests(null);
