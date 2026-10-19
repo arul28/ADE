@@ -3,6 +3,7 @@ export const IPC = {
   appSetDockBadgeCount: "ade.app.setDockBadgeCount",
   appSetIgnoreMenuShortcuts: "ade.app.setIgnoreMenuShortcuts",
   appGetInfo: "ade.app.getInfo",
+  appRefreshServiceHealth: "ade.app.refreshServiceHealth",
   appGetInstalledEditors: "ade.app.getInstalledEditors",
   appGetInstalledBrowsers: "ade.app.getInstalledBrowsers",
   appOpenInBrowser: "ade.app.openInBrowser",

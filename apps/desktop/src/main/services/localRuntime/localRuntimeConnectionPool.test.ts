@@ -4686,6 +4686,106 @@ describe("service health probe never blocks the main thread", () => {
       message: "Unable to query the ADE supervisor process.",
     });
   });
+
+  describe("read window", () => {
+    const FOUR_MINUTES_MS = 4 * 60_000;
+    const SIX_MINUTES_MS = 6 * 60_000;
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform");
+
+    beforeEach(() => {
+      // Only Date is faked: the promise flushes above wait on a real setImmediate.
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(new Date("2026-10-18T12:00:00Z"));
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+      if (originalPlatform) Object.defineProperty(process, "platform", originalPlatform);
+    });
+
+    const createPool = (platform: NodeJS.Platform, connected: boolean) => {
+      Object.defineProperty(process, "platform", { value: platform });
+      let calls = 0;
+      const pool = new LocalRuntimeConnectionPool("1.0.0", silentLogger() as never, {
+        queryServiceStatusAsync: async () => {
+          calls += 1;
+          return asyncTestServiceStatus();
+        },
+      });
+      if (connected) (pool as unknown as { activeClient: unknown }).activeClient = {};
+      return { pool, probes: () => calls };
+    };
+
+    it.each([
+      {
+        name: "win32 connected: a read inside the long window does not probe",
+        platform: "win32" as const,
+        connected: true,
+        elapsedMs: FOUR_MINUTES_MS,
+        probesAfter: 1,
+      },
+      {
+        name: "win32 connected: a read past the long window probes again",
+        platform: "win32" as const,
+        connected: true,
+        elapsedMs: SIX_MINUTES_MS,
+        probesAfter: 2,
+      },
+      {
+        name: "win32 disconnected: a read past the short window probes",
+        platform: "win32" as const,
+        connected: false,
+        elapsedMs: 3_000,
+        probesAfter: 2,
+      },
+      {
+        name: "macOS connected: a read past the short window probes",
+        platform: "darwin" as const,
+        connected: true,
+        elapsedMs: 3_000,
+        probesAfter: 2,
+      },
+    ])("$name", async ({ platform, connected, elapsedMs, probesAfter }) => {
+      const { pool, probes } = createPool(platform, connected);
+      pool.getStatus();
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(probes()).toBe(1);
+
+      vi.setSystemTime(Date.now() + elapsedMs);
+      pool.getStatus();
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(probes()).toBe(probesAfter);
+    });
+
+    it("probes on the first read after connecting, even when the last probe ran disconnected", async () => {
+      const { pool, probes } = createPool("win32", false);
+      pool.getStatus();
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(probes()).toBe(1);
+
+      (pool as unknown as { activeClient: unknown }).activeClient = {};
+      vi.setSystemTime(Date.now() + 10_000);
+      pool.getStatus();
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(probes()).toBe(2);
+
+      vi.setSystemTime(Date.now() + FOUR_MINUTES_MS);
+      pool.getStatus();
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(probes()).toBe(2);
+    });
+
+    it("a maxAgeMs: 0 caller probes inside the long window", async () => {
+      const { pool, probes } = createPool("win32", true);
+      const internals = pool as unknown as { refreshServiceHealth: (maxAgeMs?: number) => Promise<void> };
+      pool.getStatus();
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(probes()).toBe(1);
+
+      await internals.refreshServiceHealth(0);
+      expect(probes()).toBe(2);
+    });
+  });
 });
 
 describe("parseRuntimeServiceStatusJson", () => {

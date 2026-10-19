@@ -4232,6 +4232,13 @@ export function registerIpc({
     }
   );
 
+  // Called once as a surface that shows the background service opens. Status
+  // reads never probe it on their own while the brain is connected, so this is
+  // the one place that asks for a fresh answer.
+  ipcMain.handle(IPC.appRefreshServiceHealth, async (): Promise<void> => {
+    await localRuntimeConnectionPool?.refreshServiceHealthForView();
+  });
+
   ipcMain.handle(IPC.appGetInfo, async (): Promise<AppInfo> => {
     const localRuntimeStatus = localRuntimeConnectionPool
       ? await localRuntimeConnectionPool.getFreshStatus()

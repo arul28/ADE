@@ -80,6 +80,7 @@ after a renderer reload and one visit to every tab.
 | Renderer | 0.0% / 0.2% | 550 / 551 MB (480 MB) | 25%, **610 MB** (macOS: 300 MB; open item) |
 | Brain (`cli.cjs serve`) | 0.9% / 0.3% | 341 / 341 MB (349 MB) | 10%, **380 MB** (macOS: 250 MB; open item) |
 | Network utility | 0.0% / 0.0% | 61 / 61 MB | *new* 80 MB |
+| Service-health probe tree (`runtime service-status --json` and its children: 14 processes per probe, about 5 PowerShells and a nested CLI) | **Before**, installed app 1.2.111, job object over 5 runs: 3.2-3.7 s CPU and 3.7-4.4 s wall per probe, one probe every 15 s while connected, so about 13.6 s CPU and 56 process launches per minute. **After** (this branch): in-app, coordinator to fill | not sampled | *new*: not set yet; needs your OK |
 
 Right after launch (before any tab was visited) the renderer was 454 MB and
 the brain 239 MB. The CPU numbers are far lower than the macOS row because

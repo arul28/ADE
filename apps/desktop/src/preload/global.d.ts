@@ -1171,6 +1171,13 @@ declare global {
         /** Swallow this window's menu accelerators while a takeover drives. */
         setIgnoreMenuShortcuts: (ignore: boolean) => Promise<{ ok: true }>;
         getInfo: () => Promise<AppInfo>;
+        /**
+         * Probes the background service now if its cached installed/running
+         * answer is older than two seconds, and resolves once it has landed.
+         * Call it when a surface that shows that answer opens; `getInfo` itself
+         * answers from cache. Absent on the hosted-web client.
+         */
+        refreshServiceHealth?: () => Promise<void>;
         getInstalledEditors: () => Promise<EditorTarget[]>;
         /**
          * The browsers this machine can open a link in, each with its app icon

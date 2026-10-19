@@ -4599,6 +4599,7 @@ const adeBridge = {
     setIgnoreMenuShortcuts: async (ignore: boolean): Promise<{ ok: true }> =>
       ipcRenderer.invoke(IPC.appSetIgnoreMenuShortcuts, { ignore }),
     getInfo: async (): Promise<AppInfo> => ipcRenderer.invoke(IPC.appGetInfo),
+    refreshServiceHealth: async (): Promise<void> => ipcRenderer.invoke(IPC.appRefreshServiceHealth),
     getInstalledEditors: async (): Promise<EditorTarget[]> => ipcRenderer.invoke(IPC.appGetInstalledEditors),
     getInstalledBrowsers: async (): Promise<InstalledBrowser[]> =>
       ipcRenderer.invoke(IPC.appGetInstalledBrowsers),

@@ -165,12 +165,19 @@ export function AboutSection() {
 
   useEffect(() => {
     let cancelled = false;
-    void window.ade.app
+    const readInfo = () => window.ade.app
       .getInfo()
       .then((value) => {
         if (!cancelled) setInfo(value);
       })
       .catch(() => {});
+    void readInfo();
+    // The background service's installed/running answer is cached between
+    // reads, so ask for a fresh one as this page opens and read again once it
+    // lands; the "checked" time then belongs to that probe.
+    void (window.ade.app.refreshServiceHealth?.() ?? Promise.resolve())
+      .catch(() => {})
+      .then(() => readInfo());
     void refreshLatest();
     return () => {
       cancelled = true;
