@@ -400,6 +400,8 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 | `home` | `music_connected` | `completed`, `cancelled`, `failed` | omitted; never the Apple account, storefront, or token |
 | `home` | `spotify_connected` | `completed`, `cancelled`, `failed` | omitted; never the Spotify account, client ID, device, track or token |
 | `mcp_servers` | `sign_in` | `completed`, `cancelled`, `failed` | omitted; never the server's name, its URL, the authorization server, or the token |
+| `ade_mcp` | `server_toggled` | `enabled`, `disabled` | omitted; never the machine, its server URL, or a connection |
+| `ade_mcp` | `app_connected`, `token_created`, `connection_removed` | `completed` | omitted; never the app's name, its redirect host, the access level, a token, or a command it ran |
 | `find` | `find_opened` | `chat_shortcut`, `chat_palette`, `chat_palette_hit`, `diff_shortcut` | omitted; never the query, the chat, the diff, a file, or a match count |
 | `lanes` | `template_setup_started` | `from_banner`, `from_settings` | omitted; never the lane, template, or machine |
 | `lanes` | `template_suggestion_hidden` | `completed` | omitted; never the lane, template, or machine |
@@ -417,6 +419,15 @@ A browser sign-in to an MCP server (Settings › MCP servers) records
 it (`desktop`). It is a deliberate click that waits on a browser, deduplicated
 per outcome for an hour, so the worst case is three events a day inside the
 existing `ade_feature_used` ceilings.
+
+ADE MCP (Settings › Computer › ADE MCP, `ade mcp`) records its decisions in
+the brain, after the change is stored: `server_toggled` when it is switched on
+or off, `token_created` and `connection_removed` from Settings (`desktop`) or
+`ade mcp` (`api`), and `app_connected` when an app finishes signing in
+(`api`). Each is deduplicated per action and outcome for an hour, so the worst
+case is five events a day inside the existing `ade_feature_used` ceilings. The
+commands connected apps run are never captured; they are counted only in the
+local activity log (`<ade home>/remote-mcp/activity.jsonl`) that Settings shows.
 
 Making a private webhook URL records `automations/webhook_url_created` where
 the URL is made: the desktop's IPC handler (`desktop`) or the

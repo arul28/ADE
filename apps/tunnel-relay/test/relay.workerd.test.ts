@@ -464,4 +464,70 @@ describe("TunnelDurableObject in workerd", () => {
     // Nothing was persisted, so the machine key is still free to be claimed.
     await claim(stubFor(key), key);
   });
+
+  it("keeps ADE MCP shut until the brain turns it on, forwards by rid, and fails a pending request when the host drops", async () => {
+    const key = machineKey("e");
+    const stub = stubFor(key);
+    await claim(stub, key);
+    const control = await openControl({ stub, key, epoch: CONTROL_EPOCH });
+    // The public address carries the brain's endpoint key, never the relay key.
+    const endpointKey = "7".repeat(40);
+    const mcpAt = (urlKey: string, body: string): Promise<Response> => worker.fetch(new Request(`https://relay.test/m/${urlKey}/mcp`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer t" },
+      body,
+    }), env);
+    const mcp = (body: string): Promise<Response> => mcpAt(endpointKey, body);
+
+    // Before the brain registers it, the address is unknown.
+    const unknown = await mcp("{}");
+    expect(unknown.status).toBe(404);
+    expect(await unknown.json()).toMatchObject({ error: "ade_mcp_off" });
+
+    // Registered but off: answered at the relay, nothing sent to the machine.
+    control.send(JSON.stringify({ t: "mcp_state", enabled: false, endpointKey }));
+    const registered = nextMessage(control);
+    control.send(JSON.stringify({ t: "ping" }));
+    expect(await registered).toBe(JSON.stringify({ t: "pong" }));
+    const off = await mcp("{}");
+    expect(off.status).toBe(404);
+    expect(await off.json()).toMatchObject({ error: "ade_mcp_off" });
+
+    control.send(JSON.stringify({ t: "mcp_state", enabled: true, endpointKey }));
+    const pong = nextMessage(control);
+    control.send(JSON.stringify({ t: "ping" }));
+    expect(await pong).toBe(JSON.stringify({ t: "pong" }));
+
+    // On: the request reaches the brain as the first frame since the socket
+    // opened (so the earlier request never did), and its answer comes back.
+    const frame = nextMessage(control);
+    const answered = mcp(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" }));
+    const forwarded = JSON.parse(await frame as string) as { t: string; rid: string; method: string; path: string; body: string };
+    expect(forwarded).toMatchObject({ t: "http", method: "POST", path: "/mcp" });
+    expect(JSON.parse(forwarded.body)).toEqual({ jsonrpc: "2.0", id: 1, method: "ping" });
+    control.send(JSON.stringify({
+      t: "http_res",
+      rid: forwarded.rid,
+      status: 200,
+      headers: { "content-type": "application/json", "set-cookie": "dropped=1" },
+      body: "{\"ok\":true}",
+    }));
+    const response = await answered;
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("{\"ok\":true}");
+    expect(response.headers.get("set-cookie")).toBeNull();
+
+    // The relay key itself is not an ADE MCP address.
+    const byRelayKey = await mcpAt(key, "{}");
+    expect(byRelayKey.status).toBe(404);
+
+    // A request in flight when the machine's socket goes is failed at once.
+    const second = nextMessage(control);
+    const pending = mcp("{}");
+    await second;
+    control.close(1000, "brain stopped");
+    const failed = await pending;
+    expect(failed.status).toBe(503);
+    expect(await failed.json()).toMatchObject({ error: "offline" });
+  });
 });

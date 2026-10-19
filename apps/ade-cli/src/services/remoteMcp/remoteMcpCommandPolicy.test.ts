@@ -1,0 +1,49 @@
+import { describe, expect, it } from "vitest";
+import { checkRemoteAdeCommand } from "./remoteMcpCommandPolicy";
+
+/**
+ * What an outside AI app may run through ADE MCP. Read only must never reach a
+ * write; full access must never reach what outlives revoking it (managing ADE
+ * MCP, account credentials), another brain, or another machine.
+ */
+describe("checkRemoteAdeCommand", () => {
+  it.each([
+    ["write", "a socket path in place of the command word", ["/Users/u/.ade/sock/ade.sock", "mcp", "token", "create"]],
+    ["write", "a leading global flag", ["--headless", "lanes", "create"]],
+    ["write", "managing ADE MCP", ["mcp", "token", "create"]],
+    ["write", "account tokens behind a flag or --", ["account", "--", "token", "create"]],
+    ["write", "an account token through actions, split spelling", ["actions", "run", "account", "createToken"]],
+    ["write", "the account bearer token through the `action` alias", ["action", "run", "account.getToken"]],
+    ["write", "signing the account out through actions", ["actions", "run", "account.signOut"]],
+    ["write", "ADE MCP itself through actions", ["actions", "run", "remote_mcp", "createToken"]],
+    ["write", "the raw RPC tool door", ["actions", "call", "run_ade_action"]],
+    ["write", "forwarding to another machine", ["chat", "send", "x", "--machine", "desktop"]],
+    ["write", "removing a machine from the account, through the `machine` alias", ["machine", "remove", "key"]],
+    ["read", "creating a lane", ["lanes", "create", "--name", "x"]],
+    ["read", "a flag before the subcommand", ["lanes", "--text", "create"]],
+    ["read", "a write action through actions", ["actions", "run", "lane", "create"]],
+    ["read", "a secret-returning read action", ["actions", "run", "account.getToken"]],
+    ["read", "rebuilding the search index", ["search", "--rebuild"]],
+    ["read", "an action named after an Object prototype member", ["actions", "run", "constructor.x"]],
+    ["read", "another machine", ["lanes", "list", "--all-machines"]],
+  ] as const)("%s access refuses %s", (scope, _label, args) => {
+    const verdict = checkRemoteAdeCommand([...args], scope);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.ok ? "" : verdict.reason).not.toBe("");
+    expect(verdict).not.toHaveProperty("args");
+  });
+
+  it.each([
+    ["read", ["lanes", "list", "--text"], ["lanes", "list", "--text"]],
+    ["read", ["ade", "git", "status", "--lane", "x"], ["git", "status", "--lane", "x"]],
+    ["read", ["actions", "run", "lane", "list"], ["actions", "run", "lane", "list"]],
+    ["read", ["search", "login bug", "--text"], ["search", "login bug", "--text"]],
+    ["write", ["lanes", "create", "--name", "fix-login"], ["lanes", "create", "--name", "fix-login"]],
+    ["write", ["action", "run", "lane.create", "--arg", "name=x"], ["action", "run", "lane.create", "--arg", "name=x"]],
+  ] as const)("%s access runs %j", (scope, input, expected) => {
+    const verdict = checkRemoteAdeCommand([...input], scope);
+    expect(verdict.ok).toBe(true);
+    expect(verdict.ok ? verdict.args : []).toEqual(expected);
+    expect(verdict.ok ? verdict.args[0] : "").not.toBe("ade");
+  });
+});

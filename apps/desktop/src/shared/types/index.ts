@@ -54,6 +54,7 @@ export * from "./accountStore";
 export * from "./attention";
 export * from "./power";
 export * from "./keepAwake";
+export * from "./remoteMcp";
 export * from "../appleDeviceSettings";
 export * from "./subscriptionProxy";
 export * from "./quitPrompt";

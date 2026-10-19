@@ -180,6 +180,7 @@ import type {
   KeepAwakeFixResult,
   KeepAwakeLevel,
   KeepAwakeSnapshot,
+  RemoteMcpAction,
   AutoUpdateSnapshot,
   UpdateImpact,
   UpdateInstallImpact,
@@ -4828,6 +4829,11 @@ declare global {
         runProjectScan: (pin?: OpenProjectBinding | null) => Promise<CtoRunProjectScanResult>;
         getAttention: (pin?: OpenProjectBinding | null) => Promise<CtoAttentionState>;
       };
+      remoteMcpCall: <T = unknown>(
+        action: RemoteMcpAction,
+        args?: Record<string, unknown>,
+        pin?: OpenProjectBinding | null,
+      ) => Promise<T>;
       keepAwakeGet: (pin?: OpenProjectBinding | null) => Promise<KeepAwakeSnapshot>;
       keepAwakeSetLevel: (level: KeepAwakeLevel, pin?: OpenProjectBinding | null) => Promise<KeepAwakeSnapshot>;
       keepAwakeFixSystemSleep: (pin?: OpenProjectBinding | null) => Promise<KeepAwakeFixResult>;

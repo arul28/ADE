@@ -124,6 +124,12 @@ const BOOLEAN_PROPERTIES = new Set([
 // are still meaningful product facts. Kept here rather than in the usage-stats
 // MEANINGFUL_ACTIONS set because they never correspond to a persisted mutation.
 const ANALYTICS_ONLY_ACTIONS = new Set([
+  // ADE MCP decisions (feature "ade_mcp"): switched on or off (outcome
+  // enabled | disabled), an app connected, a token made, a connection removed.
+  "server_toggled",
+  "app_connected",
+  "token_created",
+  "connection_removed",
   "maintenance_run",
   "header_opened",
   "preferences_changed",
@@ -399,6 +405,8 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     "find",
     // Settings › MCP servers: a browser sign-in to a registry server.
     "mcp_servers",
+    // ADE MCP: this computer as an MCP server for outside AI apps.
+    "ade_mcp",
   ]),
   outcome: new Set([
     "success", "started", "completed", "failure", "timeout", "opened", "cancelled", "approved", "denied",

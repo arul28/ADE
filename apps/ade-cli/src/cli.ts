@@ -362,6 +362,11 @@ import {
   recordingStopLeftNoFile,
 } from "./cliMacDesktopFormat";
 import {
+  REMOTE_MCP_HELP,
+  buildRemoteMcpPlan,
+  formatRemoteMcpResult,
+} from "./cliRemoteMcp";
+import {
   CHAT_PARENT_FLAGS,
   DEFAULT_PARENT_FLAGS,
   SPAWN_TYPE_FLAGS,
@@ -701,7 +706,8 @@ export type FormatterId =
   | "router-efficiency"
   | "router-shadow"
   | "update-status"
-  | "notify";
+  | "notify"
+  | "remote-mcp";
 
 type ChatWaitTarget =
   | "idle"
@@ -1188,6 +1194,8 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade search "<query>" --text                    Search chats, terminals, PRs, commits, lanes, files, Linear
     $ ade notify --title "<text>" [--body "<text>"] [--open <ade link>]
                                                     Send a push to the phones on your ADE account
+    $ ade mcp status | on | off | token create | activity
+                                                    ADE MCP: let AI apps (claude.ai, ChatGPT, Cursor) use this computer
     $ ade prs list | create | show | checks          Manage PRs, queues, and GitHub integration
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
     $ ade terminal list | resume | read | write | signal
@@ -1426,6 +1434,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     the brain must stay running for the machine to remain reachable.
     Undo with "ade logout" and "ade runtime uninstall-service".
 `,
+  mcp: `${ADE_BANNER}${REMOTE_MCP_HELP}`,
   notify: `${ADE_BANNER}
   Send a notification to your phone
 
@@ -20279,6 +20288,9 @@ function buildCliPlan(
   if (primary === "sync") {
     return buildSyncPlan(args);
   }
+  if (primary === "mcp") {
+    return buildRemoteMcpPlan(args);
+  }
   if (primary === "notify") {
     const title = readValue(args, ["--title", "-t"]) ?? firstStandalonePositional(args) ?? "";
     const body = readValue(args, ["--body", "-b"]);
@@ -22303,6 +22315,7 @@ function isMachineRuntimeScopedMethod(method: string): boolean {
     method === "runtime/info" ||
     method === "machineInfo.get" ||
     method.startsWith("account.") ||
+    method === "remoteMcp.call" ||
     method === "notify.send" ||
     method.startsWith("sync.") ||
     method.startsWith("projects.") ||
@@ -26238,6 +26251,13 @@ async function runServe(
     brainSyncTunnelClient = null;
     brainSyncHostLease?.dispose();
     brainSyncHostLease = null;
+    try {
+      // Commands remote AI apps started run in their own process groups.
+      const { stopAllRemoteRuns } = await import("./services/remoteMcp/remoteMcpRunner");
+      stopAllRemoteRuns();
+    } catch {
+      // Shutdown must never fail on remote-command cleanup.
+    }
     // Before scopes detach (which clears the run map): best-effort Live
     // Activity `end` so the lock screen doesn't show dead agents until the
     // stale-date dim. Bounded by the publisher's internal timeout.
@@ -26968,13 +26988,18 @@ async function runServe(
     // Hoisted so the freshness monitor and the memory mitigation restart this
     // brain the same way. Two spellings of "restart the service" would be two
     // things to keep in step.
-    const isBrainIdle = async (): Promise<boolean> => (
-      await readMachineRuntimeActivitySummary({
-        projectRegistry,
-        scopeRegistry,
-        personalChatScope,
-      })
-    ).idle;
+    // A command an ADE MCP app is running is work too: a restart would kill it.
+    const isBrainIdle = async (): Promise<boolean> => {
+      const { activeRemoteRunCount } = await import("./services/remoteMcp/remoteMcpRunner");
+      if (activeRemoteRunCount() > 0) return false;
+      return (
+        await readMachineRuntimeActivitySummary({
+          projectRegistry,
+          scopeRegistry,
+          personalChatScope,
+        })
+      ).idle;
+    };
     // Single-flighted: the freshness monitor and the memory guard each
     // serialize only their own attempts, so without a shared latch both can
     // request a restart of this service at the same time. The second caller
@@ -32591,6 +32616,8 @@ function formatTextOutput(
       return formatUpdateStatus(value);
     case "github-app-auth":
       return formatGithubAppUserAuth(value);
+    case "remote-mcp":
+      return formatRemoteMcpResult(value);
     case "notify": {
       const result = isRecord(value) && isRecord(value.result) ? value.result : value;
       if (!isRecord(result)) return "Notification sent.";

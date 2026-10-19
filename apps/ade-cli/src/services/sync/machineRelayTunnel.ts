@@ -154,6 +154,18 @@ export async function createMachineRelayTunnel(args: MachineRelayTunnelArgs): Pr
   // means the gate's very first `start()` already has a bridge to validate
   // against, since no later event would re-trigger validation.
   if (args.hostListener) tunnel.attachHostListener(args.hostListener);
+  // ADE MCP rides this same control socket. Machine-level, like the
+  // tunnel, so attaching it again from a second scope is a no-op.
+  const { getSharedRemoteMcpService } = await import("../remoteMcp/remoteMcpShared");
+  const remoteMcp = getSharedRemoteMcpService(args.logger);
+  remoteMcp.attachRelayEndpoint(() => {
+    const status = tunnel.getStatus();
+    return status.machineKey && status.mcpEndpointKey
+      ? { relayUrl: status.relayUrl, endpointKey: status.mcpEndpointKey, connected: status.connected }
+      : null;
+  });
+  tunnel.attachRemoteMcp(remoteMcp);
+  remoteMcp.attachAnalytics({ captureInternal: args.captureAnalytics });
   // Only the runtime holding the machine-wide sync host lease may register the
   // tunnel. See relayTunnelAuthorityGate for why the old "has a listener" gate
   // let secondary brains evict the real host.

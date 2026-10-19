@@ -87,6 +87,7 @@ import {
 } from "../../../shared/types/attention";
 import { normalizeCustomNotificationLink } from "../../../shared/customNotificationLink";
 import { deriveProjectId } from "../../../../../ade-cli/src/services/projects/projectRegistry";
+import { remoteMcpActionHandlers } from "../../../../../ade-cli/src/services/remoteMcp/remoteMcpService";
 import {
   PushRelayNotifyRateLimitedError,
   PushRelayRequestError,
@@ -575,6 +576,20 @@ function toService(value: unknown): OpaqueService | null {
 function buildProxyDomainService(runtime: AdeRuntime): OpaqueService | null {
   const proxyService = runtime.getProxyService?.() ?? runtime.proxyService;
   return proxyService ? toService(createProxyActionDomainService(proxyService)) : null;
+}
+
+/**
+ * ADE MCP for Settings. Every write is user-only (the desktop), so an
+ * agent can neither read nor grant it; `ade mcp` reaches the same service
+ * through the machine method `remoteMcp.call`.
+ */
+function buildRemoteMcpDomainService(runtime: AdeRuntime): OpaqueService | null {
+  const service = runtime.remoteMcpService;
+  if (!service) return null;
+  const handlers = remoteMcpActionHandlers(service, "desktop");
+  return Object.fromEntries(
+    Object.entries(handlers).map(([action, handler]) => [action, (args?: Record<string, unknown>) => handler(args ?? {})]),
+  );
 }
 
 function buildKeepAwakeDomainService(runtime: AdeRuntime): OpaqueService | null {
@@ -4166,6 +4181,7 @@ export function getAdeActionDomainServices(
       : null,
     attention: toService(buildAttentionDomainService(runtime)),
     keep_awake: toService(buildKeepAwakeDomainService(runtime)),
+    remote_mcp: toService(buildRemoteMcpDomainService(runtime)),
     lane: toService(buildLaneDomainService(runtime)),
     proxy: toService(buildProxyDomainService(runtime)),
     git: toService(runtime.gitService),

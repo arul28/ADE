@@ -36,6 +36,7 @@ import type {
   KeepAwakeFixResult,
   KeepAwakeSnapshot,
 } from "../../../shared/types/keepAwake";
+import { isRemoteMcpAction } from "../../../shared/types/remoteMcp";
 import type { KeepAwakeService } from "../power/keepAwakeService";
 import type { AgentToolsCacheService } from "../tools/agentToolsCacheService";
 import type { MuseBinaryStatus } from "../../../shared/museBinary";
@@ -1381,6 +1382,8 @@ export type AppContext = {
   autoUpdateService?: ReturnType<typeof createAutoUpdateService> | null;
   keepAwakeService?: KeepAwakeService | null;
   keepAwakeAction?: (action: string, args?: Record<string, unknown>) => Promise<unknown>;
+  /** This machine's own brain's `remote_mcp` domain (Settings → ADE MCP). */
+  remoteMcpAction?: (action: string, args?: Record<string, unknown>) => Promise<unknown>;
   keepAwakeMigrateLegacy?: () => Promise<boolean>;
   agentToolsCacheService?: AgentToolsCacheService | null;
   updateInstallImpactProvider?: (() => Promise<UpdateInstallImpact>) | null;
@@ -14037,6 +14040,17 @@ export function registerIpc({
     requireAppContextServices(ctx, ["onboardingService"] as const);
     const detection = await ctx.onboardingService.detectDefaults().catch(() => null);
     return { detection };
+  });
+
+  // ADE MCP on This computer: always this machine's own brain, never
+  // the project tab's bound runtime (which may be another machine). A pinned
+  // machine goes straight from the preload to its runtime action instead.
+  ipcMain.handle(IPC.remoteMcpCall, async (_event, action: unknown, args: unknown): Promise<unknown> => {
+    if (!isRemoteMcpAction(action)) throw new Error("Unknown ADE MCP action.");
+    const call = getCtx().remoteMcpAction;
+    if (!call) throw new Error("ADE MCP isn't available until this computer's ADE brain is running.");
+    const actionArgs = args && typeof args === "object" && !Array.isArray(args) ? args as Record<string, unknown> : {};
+    return await call(action, actionArgs);
   });
 
   ipcMain.handle(IPC.keepAwakeGet, async (): Promise<KeepAwakeSnapshot> => {

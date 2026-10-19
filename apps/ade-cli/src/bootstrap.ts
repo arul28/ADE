@@ -447,6 +447,8 @@ export type AdeRuntime = {
   accountVaultStore?: AccountVaultStore | null;
   /** Shared by every project scope in the brain; the desktop owns the GUI prompt. */
   keepAwakeService?: BrainKeepAwakeService | null;
+  /** Machine-level ADE MCP (MCP over ADE Relay); shared by every scope. */
+  remoteMcpService?: import("./services/remoteMcp/remoteMcpService").RemoteMcpService | null;
   conflictService: ReturnType<typeof createConflictService>;
   gitService: ReturnType<typeof createGitOperationsService>;
   diffService: ReturnType<typeof createDiffService>;
@@ -3362,6 +3364,8 @@ export async function createAdeRuntime(args: {
     // subscription, or a disposed scope could later stop the shared tunnel on a
     // lease transition it no longer has any business observing.
     teardown.push(() => relayTunnelGate.dispose());
+    const { getSharedRemoteMcpService } = await import("./services/remoteMcp/remoteMcpShared");
+    const remoteMcpService = getSharedRemoteMcpService(logger);
     // Registered before the sync service exists: the closure reads the variable
     // at drain time, so a throw inside the initialization below still stops it.
     teardown.push(() => syncService?.dispose());
@@ -3572,6 +3576,7 @@ export async function createAdeRuntime(args: {
       accountSettingsStore,
       accountVaultStore,
       keepAwakeService,
+      remoteMcpService,
       conflictService,
       gitService,
       diffService,

@@ -212,6 +212,17 @@ export function extractError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/**
+ * The message an IPC call failed with, without Electron's
+ * "Error invoking remote method '<channel>': Error: " wrapper. Empty when the
+ * thrown value carries no message, so the caller can show its own fallback.
+ */
+export function ipcErrorMessage(err: unknown): string {
+  return err instanceof Error
+    ? err.message.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, "").trim()
+    : "";
+}
+
 /** Shorten a SHA-like hash to the first 8 characters. */
 export function shortSha(value: string | null | undefined): string {
   return value?.slice(0, 8) ?? "";
