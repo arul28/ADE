@@ -1,7 +1,6 @@
 import {
   EMPTY_AGENT_TOOLS_CACHE_SNAPSHOT,
   peerToRuntimeDeviceState,
-  type AgentChatSession,
   type AiConfig,
   type CloudAgentArchiveArgs,
   type CloudAgentLaunchArgs,
