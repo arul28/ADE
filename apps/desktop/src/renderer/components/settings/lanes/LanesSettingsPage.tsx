@@ -60,9 +60,10 @@ const VIEWS: readonly View[] = [
 /** The hosted web client can reach only the archive and the lane rules. */
 const WEB_VIEWS: ReadonlySet<ViewId> = new Set(["archive", "rules"]);
 
-function viewForAnchor(anchor: string | null): ViewId | null {
+/** The view among `views` that draws `anchor`, or null when none of them does. */
+function viewForAnchor(views: readonly View[], anchor: string | null): ViewId | null {
   if (!anchor) return null;
-  return VIEWS.find((view) => view.anchors.includes(anchor))?.id ?? null;
+  return views.find((view) => view.anchors.includes(anchor))?.id ?? null;
 }
 
 /**
@@ -83,26 +84,26 @@ export function LanesSettingsPage() {
   const web = isWebClientMode();
   const data = useHealthData(pin, isThisMachine, web ? {} : { storage: true, report: true });
   const fix = useProjectFix(pin, data.setReport);
-  const views = web ? VIEWS.filter((view) => WEB_VIEWS.has(view.id)) : VIEWS;
+  const views = React.useMemo(() => (web ? VIEWS.filter((view) => WEB_VIEWS.has(view.id)) : VIEWS), [web]);
 
   const hashAnchor = location.hash ? decodeSettingsHash(location.hash) : null;
-  const [view, setView] = React.useState<ViewId>(() => viewForAnchor(hashAnchor) ?? views[0]!.id);
+  const [view, setView] = React.useState<ViewId>(() => viewForAnchor(views, hashAnchor) ?? views[0]!.id);
 
   // A link that names a card shows its view, then lands on the card once the
   // view is drawn (and again once the lane list and storage have loaded and
   // moved it).
   React.useEffect(() => {
-    const target = viewForAnchor(hashAnchor);
+    const target = viewForAnchor(views, hashAnchor);
     if (target) setView(target);
-  }, [hashAnchor]);
+  }, [hashAnchor, views]);
   const settled = !data.report.loading && !data.storage.loading;
   React.useEffect(() => {
-    if (!hashAnchor || hashAnchor === "lane-list" || viewForAnchor(hashAnchor) !== view) return;
+    if (!hashAnchor || hashAnchor === "lane-list" || viewForAnchor(views, hashAnchor) !== view) return;
     const frame = window.requestAnimationFrame(() => {
       document.getElementById(hashAnchor)?.scrollIntoView({ block: "start" });
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [hashAnchor, view, settled]);
+  }, [hashAnchor, view, settled, views]);
 
   // A search with no match in this view moves to the first view that has one.
   React.useEffect(() => {
@@ -114,6 +115,8 @@ export function LanesSettingsPage() {
   const { report, loading: reportLoading, checking, error: reportError, available } = data.report;
   const laneIssues = issuesForPage(report, "lanes").filter((issue) => issue.id !== "stale-lanes");
   const laneCategory = data.storage.snapshot?.categories.find((category) => category.id === "lanes_worktrees") ?? null;
+  // The lanes couldn't be read: the report says so, and an empty list would lie.
+  const lanesFailed = report?.issues.some((issue) => issue.id === "lanes-failed") ?? false;
   const staleCount = report?.lanes?.filter((lane) => lane.stale).length ?? 0;
   const snapshot = data.storage.snapshot;
   const reloadAll = React.useCallback(() => {
@@ -172,7 +175,7 @@ export function LanesSettingsPage() {
               <div className="ade-lanes-skeleton" aria-busy="true">
                 {[0, 1, 2, 3].map((index) => <span key={index} className="ade-st-shimmer" />)}
               </div>
-            ) : report?.lanes ? (
+            ) : lanesFailed ? null : report?.lanes ? (
               <LaneList
                 lanes={report.lanes}
                 staleAfterDays={report.staleAfterDays ?? 14}

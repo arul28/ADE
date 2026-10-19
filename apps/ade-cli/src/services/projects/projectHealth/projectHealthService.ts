@@ -48,7 +48,7 @@ export type ProjectHealthTerminalRequest = {
 
 export type ProjectHealthServiceDeps = {
   projectRoot: string;
-  db: Pick<AdeDb, "all" | "runChanged">;
+  db: Pick<AdeDb, "all" | "run" | "runChanged">;
   logger: Pick<Logger, "info" | "warn">;
   listLanes: () => Promise<LaneSummary[]>;
   /** Opens a terminal in the lane and runs the command, so the person sees it. */
@@ -81,6 +81,12 @@ function exists(target: string): boolean {
   } catch {
     return false;
   }
+}
+
+function isWithinPath(root: string, target: string, allowEqual = false): boolean {
+  const relative = path.relative(path.resolve(root), path.resolve(target));
+  if (!relative) return allowEqual;
+  return !relative.startsWith("..") && !path.isAbsolute(relative);
 }
 
 function plural(count: number, word: string, many = `${word}s`): string {
@@ -213,8 +219,9 @@ function dependencyPlan(ctx: Context): { installs: DependencyInstall[]; brokenLi
       } catch {
         // unreadable link
       }
-      if (primary && target && path.dirname(target).startsWith(primary.root) && !path.dirname(target).startsWith(path.join(primary.root, ".ade"))) {
-        mark(primary, path.dirname(target));
+      const targetRoot = target ? path.dirname(target) : "";
+      if (primary && targetRoot && isWithinPath(primary.root, targetRoot, true) && !isWithinPath(path.join(primary.root, ".ade"), targetRoot, true)) {
+        mark(primary, targetRoot);
       } else {
         brokenLinks.push(nodeModules);
       }
@@ -240,7 +247,7 @@ function dependencyPlan(ctx: Context): { installs: DependencyInstall[]; brokenLi
 
 function gitOutput(cwd: string, args: string[]): Promise<string | null> {
   return new Promise((resolve) => {
-    execFile("git", ["--no-optional-locks", "-C", cwd, ...args], { timeout: 20_000, maxBuffer: 8 * 1024 * 1024 }, (error, stdout) => {
+    execFile("git", ["--no-optional-locks", "-C", cwd, ...args], { timeout: 20_000, maxBuffer: 8 * 1024 * 1024, windowsHide: true }, (error, stdout) => {
       resolve(error ? null : stdout);
     });
   });
@@ -459,12 +466,15 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
 
   async function buildReport(): Promise<ProjectHealthReport> {
     const ctx = await context();
-    const laneReport = await laneHealth(ctx).catch((error) => {
-      deps.logger.warn("project_health.lanes_failed", { error: error instanceof Error ? error.message : String(error) });
-      return { lanes: [] as ProjectLaneHealth[], stuck: [] as string[] };
-    });
     const issues: ProjectHealthIssue[] = [];
     const checks: ProjectHealthReport["checks"] = [];
+    const laneReport = await laneHealth(ctx).catch((error) => {
+      deps.logger.warn("project_health.lanes_failed", { error: error instanceof Error ? error.message : String(error) });
+      const detail = error instanceof Error ? error.message : String(error);
+      checks.push({ id: "lanes", label: "Lanes", ok: false });
+      issues.push({ id: "lanes-failed", area: "git", severity: "warning", title: "ADE couldn't check lanes", detail });
+      return null;
+    });
     const run = async (id: string, label: string, check: () => Promise<ProjectHealthIssue[]> | ProjectHealthIssue[]) => {
       try {
         const found = await check();
@@ -495,7 +505,7 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
           fix: { id: "update-paths", label: "Update paths", description: `Points every saved path at ${projectRoot}. Synced to your other devices like any edit.`, kind: "change" },
         }];
       }),
-      run("stale-lanes", "No stale lanes", () => {
+      ...(laneReport ? [run("stale-lanes", "No stale lanes", () => {
         const stale = laneReport.lanes.filter((lane) => lane.stale);
         if (!stale.length) return [];
         const safe = stale.filter((lane) => lane.safeToArchive).length;
@@ -510,8 +520,8 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
           detail: `Their PR is merged or closed, or nothing happened in them for ${STALE_AFTER_DAYS} days. ${safe === stale.length ? "All can be archived without losing anything." : `${safe} can be archived without losing anything; the rest have changes or unpushed commits.`}`,
           items: stale.map((lane) => `${lane.name}: ${why(lane)}${lane.safeToArchive ? "" : " (has unsaved work)"}`),
         }];
-      }),
-      run("stuck-sessions", "No chats stuck as running", () => {
+      })] : []),
+      ...(laneReport ? [run("stuck-sessions", "No chats stuck as running", () => {
         if (!laneReport.stuck.length) return [];
         return [{
           id: "stuck-sessions",
@@ -521,7 +531,7 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
           detail: "The process that ran them is gone, so they will never finish on their own. Open each and stop or resume it.",
           items: laneReport.stuck,
         }];
-      }),
+      })] : []),
       run("git-leftovers", "No git leftovers", () => {
         if (!exists(path.join(projectRoot, ".git"))) return [];
         const leftovers = gitLeftovers(projectRoot, Date.now());
@@ -719,7 +729,7 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
       previousRoots: ctx.previousRoots,
       drive: volume ? { name: volume.name, internal: volume.internal, freeBytes: volume.freeBytes, totalBytes: volume.totalBytes } : null,
       issues,
-      lanes: laneReport.lanes,
+      lanes: laneReport?.lanes ?? [],
       staleAfterDays: STALE_AFTER_DAYS,
       checks: checks.sort((a, b) => a.label.localeCompare(b.label)),
     };
@@ -746,7 +756,15 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
       switch (args.fixId) {
         case "update-paths": {
           needsMove();
-          const changed = rewritePathsInDatabase(rewriteDb(deps.db), ctx.previousSpellings, projectRoot);
+          deps.db.run("begin immediate");
+          let changed: number;
+          try {
+            changed = rewritePathsInDatabase(rewriteDb(deps.db), ctx.previousSpellings, projectRoot, { keepExisting: true });
+            deps.db.run("commit");
+          } catch (error) {
+            deps.db.run("rollback");
+            throw error;
+          }
           rewriteAdeJsonFiles(projectRoot, ctx.previousSpellings, projectRoot);
           done.push(`Updated ${plural(changed, "saved path")}.`);
           break;
@@ -755,6 +773,8 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
           needsMove();
           const links = rewriteWorktreeLinksInCopy({ copyRoot: projectRoot, finalRoot: projectRoot, oldSpellings: ctx.previousSpellings });
           done.push(`Relinked ${plural(links.inside.length, "lane")}.`);
+          problems.push(...links.outside.map((lane) => `${lane.name} is outside the project folder, so ADE left its link alone.`));
+          problems.push(...links.missing.map((lane) => `${lane.name}'s folder is missing.`));
           break;
         }
         case "relink-symlinks": {

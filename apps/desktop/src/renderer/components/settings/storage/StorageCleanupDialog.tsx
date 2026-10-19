@@ -184,10 +184,15 @@ export function StorageCleanupDialog({
   // land out of order — the stale one must not overwrite the fresh preview, nor
   // drag a settled dialog back to "error".
   const requestRef = React.useRef(0);
+  // The targets the shown preview was read for. The parent can recompute its
+  // targets while the dialog is open; the removal must name the same list the
+  // preview covered, or the service refuses the new ones and skips the old.
+  const previewTargetsRef = React.useRef(targets);
 
   const loadPreview = React.useCallback((): Promise<void> => {
     const { targets: openTargets } = initRef.current;
     const requestId = ++requestRef.current;
+    previewTargetsRef.current = openTargets;
     setResult(null);
     setReport(null);
     setError(null);
@@ -233,7 +238,7 @@ export function StorageCleanupDialog({
         return;
       }
       const filesystemResult = preview.items.length > 0
-        ? await window.ade.storage.cleanup(targets, { preview }, pin)
+        ? await window.ade.storage.cleanup(previewTargetsRef.current, { preview }, pin)
         : { removed: [], failed: [], freedBytes: 0 };
       const nextReport = plan?.runMaintenance ? await plan.runMaintenance() : null;
       const maintenanceBytes = typeof nextReport?.reclaimedBytes === "number" && Number.isFinite(nextReport.reclaimedBytes)
@@ -255,7 +260,7 @@ export function StorageCleanupDialog({
       setErrorPhase("removing");
       setStage("error");
     }
-  }, [pin, plan, preview, targets, onCleaned]);
+  }, [pin, plan, preview, onCleaned]);
 
   if (!open) return null;
 
@@ -266,11 +271,13 @@ export function StorageCleanupDialog({
     ?? (removableCount > 0 ? `Remove ${removableCount === 1 ? "1 item" : `${removableCount} items`}` : "Remove");
   // Files removed plus what the maintenance run returned, by kind, so the
   // total can be checked against its parts.
-  const doneBreakdown = result && report
+  const runParts = report ? cleanupRunParts(report) : null;
+  const doneBreakdown = result && report && runParts
     ? cleanupPartsLine({
-        ...cleanupRunParts(report),
-        // `result.freedBytes` already adds the maintenance run's bytes.
-        files: Math.max(0, result.freedBytes - Math.max(0, report.reclaimedBytes)),
+        ...runParts,
+        // `result.freedBytes` already adds the maintenance run's bytes; the
+        // previewed files are the rest, on top of files the run removed itself.
+        files: runParts.files + Math.max(0, result.freedBytes - Math.max(0, report.reclaimedBytes)),
       })
     : "";
   const cleanupFailed = Boolean(result?.failed.length)

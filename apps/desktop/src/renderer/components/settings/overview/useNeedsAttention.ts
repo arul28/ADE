@@ -24,8 +24,9 @@ import { settingsRouteFor } from "../settingsManifest";
  * Read once when the page opens and again on "Check again"; never polled.
  * The cheap reads run at once; the ones that reach the network or spawn a
  * process (MCP sign-ins, Linear, Jira) run after the first paint so they
- * never hold the list back. Any read that fails or is missing on this build
- * contributes nothing rather than an error row.
+ * never hold the list back. A read missing on this build contributes nothing;
+ * a read that fails adds one "couldn't check" row, so a failure never reads
+ * as "Nothing needs attention".
  *
  * Remote machines: the project's reads are unpinned, which is the tab's own
  * binding, i.e. the machine that owns the open project. Everything about
@@ -73,13 +74,29 @@ const EMPTY_SOURCES: OverviewSources = {
 
 const SEVERITY_ORDER: Record<AttentionSeverity, number> = { problem: 0, warning: 1, note: 2 };
 
-async function quiet<T>(read: (() => Promise<T>) | null | undefined): Promise<T | null> {
+/** The read's value, or null when it is missing or fails; a failure adds `label` to `failed`. */
+async function quiet<T>(read: (() => Promise<T>) | null | undefined, failed?: string[], label?: string): Promise<T | null> {
   if (!read) return null;
   try {
     return await read();
   } catch {
+    if (failed && label) failed.push(label);
     return null;
   }
+}
+
+function readFailureItem(failed: string[], recheck: () => Promise<void>): AttentionItem[] {
+  if (failed.length === 0) return [];
+  const names = failed.length === 1 ? failed[0]! : `${failed.slice(0, -1).join(", ")} and ${failed[failed.length - 1]}`;
+  return [{
+    id: "overview-read-failed",
+    severity: "warning",
+    title: failed.length === 1 ? `ADE couldn't check ${names}` : `ADE couldn't check ${failed.length} things`,
+    detail: `Couldn't read ${names}, so this list may be missing something.`,
+    where: "Overview",
+    route: settingsRouteFor("overview"),
+    fix: { label: "Check again", run: recheck },
+  }];
 }
 
 // ── What each source says is wrong ────────────────────────────────────────
@@ -459,18 +476,19 @@ export function useNeedsAttention({ hasProject }: { hasProject: boolean }) {
     const current = ++request.current;
     if (opts.force) setChecking(true);
     const ade = window.ade;
+    const failed: string[] = [];
     const [info, update, pressure, runtimeHealth, report, usage, ai, cli, machines, sync, github] = await Promise.all([
-      quiet(() => ade.app.getInfo()),
-      quiet(ade.updateGetState ? () => ade.updateGetState() : null),
-      quiet(ade.storage?.getPressure ? () => ade.storage.getPressure() : null),
-      quiet(ade.app?.getRuntimeHealth ? () => ade.app.getRuntimeHealth!() : null),
-      hasProject ? quiet(ade.projectHealth?.getReport ? () => ade.projectHealth.getReport({ forceRefresh: opts.force }) : null) : Promise.resolve(null),
-      quiet(ade.usage?.getSnapshot ? () => ade.usage.getSnapshot() : null),
-      quiet(ade.ai?.getStatus ? () => ade.ai.getStatus() : null),
-      quiet(ade.adeCli?.getStatus ? () => ade.adeCli.getStatus() : null),
-      quiet(ade.remoteRuntime?.getConnectionSnapshot ? () => ade.remoteRuntime.getConnectionSnapshot() : null),
-      quiet(ade.sync?.getStatus ? () => ade.sync.getStatus({ includeTransferReadiness: false }) : null),
-      hasProject ? quiet(ade.github?.getStatus ? () => ade.github.getStatus({}) : null) : Promise.resolve(null),
+      quiet(() => ade.app.getInfo(), failed, "ADE's service"),
+      quiet(ade.updateGetState ? () => ade.updateGetState() : null, failed, "updates"),
+      quiet(ade.storage?.getPressure ? () => ade.storage.getPressure() : null, failed, "disk space"),
+      quiet(ade.app?.getRuntimeHealth ? () => ade.app.getRuntimeHealth!() : null, failed, "ADE's service health"),
+      hasProject ? quiet(ade.projectHealth?.getReport ? () => ade.projectHealth.getReport({ forceRefresh: opts.force }) : null, failed, "this project") : Promise.resolve(null),
+      quiet(ade.usage?.getSnapshot ? () => ade.usage.getSnapshot() : null, failed, "usage"),
+      quiet(ade.ai?.getStatus ? () => ade.ai.getStatus() : null, failed, "providers"),
+      quiet(ade.adeCli?.getStatus ? () => ade.adeCli.getStatus() : null, failed, "the ade command"),
+      quiet(ade.remoteRuntime?.getConnectionSnapshot ? () => ade.remoteRuntime.getConnectionSnapshot() : null, failed, "other machines"),
+      quiet(ade.sync?.getStatus ? () => ade.sync.getStatus({ includeTransferReadiness: false }) : null, failed, "sync"),
+      hasProject ? quiet(ade.github?.getStatus ? () => ade.github.getStatus({}) : null, failed, "GitHub") : Promise.resolve(null),
     ]);
     if (current !== request.current) return;
     const providers = connectedProviders(ai);
@@ -486,6 +504,7 @@ export function useNeedsAttention({ hasProject }: { hasProject: boolean }) {
       ...githubItems(github),
       ...machineItems(machines, update),
       ...syncItems(sync),
+      ...readFailureItem(failed, () => load({ force: true })),
     ]);
     setLoading(false);
     setChecking(false);

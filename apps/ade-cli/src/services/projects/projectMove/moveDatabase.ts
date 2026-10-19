@@ -157,8 +157,17 @@ function kvRootPattern(oldSpellings: string[]): RegExp {
  * The path rewrite itself, on any connection. The caller owns the
  * transaction and must have the sync extension loaded, so the edits reach the
  * person's other devices like any other edit. Returns how many values changed.
+ *
+ * `keepExisting` decides a layout key saved under both roots. A move rewrites
+ * the database it just copied, where the old root's row is the current one;
+ * a repair on a project already in use at the new root keeps that row.
  */
-export function rewritePathsInDatabase(db: PathRewriteDb, oldSpellings: string[], finalRoot: string): number {
+export function rewritePathsInDatabase(
+  db: PathRewriteDb,
+  oldSpellings: string[],
+  finalRoot: string,
+  opts: { keepExisting?: boolean } = {},
+): number {
   let changed = 0;
   for (const old of oldSpellings) {
     for (const [table, column] of PATH_COLUMNS) {
@@ -179,6 +188,10 @@ export function rewritePathsInDatabase(db: PathRewriteDb, oldSpellings: string[]
       if (next === key) continue;
       // A synced table: delete then update, never `replace`, so the change
       // reaches other devices as an ordinary delete and an ordinary edit.
+      if (opts.keepExisting && db.all("select key from kv where key = ?", [next]).length) {
+        changed += db.run("delete from kv where key = ?", [key]);
+        continue;
+      }
       db.run("delete from kv where key = ?", [next]);
       changed += db.run("update kv set key = ? where key = ?", [next, key]);
     }

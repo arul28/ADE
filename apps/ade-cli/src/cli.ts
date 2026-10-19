@@ -17478,6 +17478,7 @@ function buildHealthPlan(args: string[]): CliPlan {
       label: "project health fix",
       formatter: "project-health-fix",
       steps: [actionStep("result", "project_health", "fix", { fixId })],
+      exitCodeFromResult: (result) => (isRecord(result) && result.ok === true ? 0 : 1),
     };
   }
   const forceRefresh = readFlag(args, ["--refresh", "--force-refresh"]);

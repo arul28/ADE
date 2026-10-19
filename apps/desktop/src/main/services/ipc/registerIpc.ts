@@ -4360,7 +4360,13 @@ export function registerIpc({
   // own folder lives on. It samples only when asked, so it costs nothing idle.
   let machineDiskPressureMonitor: DiskPressureMonitor | null = null;
   ipcMain.handle(IPC.storageGetPressure, async (): Promise<DiskPressureSnapshot> => {
-    const monitor = getCtx().diskPressureMonitor
+    let projectMonitor: DiskPressureMonitor | null = null;
+    try {
+      projectMonitor = getCtx().diskPressureMonitor ?? null;
+    } catch {
+      // No project context yet: this computer's monitor below answers.
+    }
+    const monitor = projectMonitor
       ?? (machineDiskPressureMonitor ??= createDiskPressureMonitor({ roots: [resolveMachineAdeLayout().adeDir] }));
     return monitor.getSnapshot({ maxAgeMs: 1_000 });
   });

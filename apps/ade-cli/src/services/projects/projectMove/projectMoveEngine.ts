@@ -172,6 +172,7 @@ type MoveRun = {
   sourceRoot: string;
   finalRoot: string;
   copyRoot: string;
+  destinationFileSystem: string | null;
   oldSpellings: string[];
   hooks: ProjectMoveHooks;
   step: ProjectMoveStepId;
@@ -221,7 +222,7 @@ async function copy(run: MoveRun, links: WorktreeLink[], leftoverIsOurs: boolean
   );
   record.copyCreated = true;
   writeMoveRecord(record);
-  const clone = onSameVolume(run.sourceRoot, path.dirname(run.finalRoot));
+  const clone = onSameVolume(run.sourceRoot, path.dirname(run.finalRoot)) && run.destinationFileSystem === "apfs";
   if (clone) {
     // Clones share the original's blocks, so dependencies come along for free
     // and nothing needs reinstalling.
@@ -391,7 +392,7 @@ export async function runProjectMove(args: {
   writeMoveRecord(record);
   markMoveActive(record.moveId, true);
   try {
-    return await executeMove(record, sourceRoot, finalRoot, copyRoot, leftoverIsOurs, args.hooks);
+    return await executeMove(record, sourceRoot, finalRoot, copyRoot, leftoverIsOurs, destinationVolume?.fileSystem ?? null, args.hooks);
   } finally {
     markMoveActive(record.moveId, false);
   }
@@ -403,6 +404,7 @@ async function executeMove(
   finalRoot: string,
   copyRoot: string,
   leftoverIsOurs: boolean,
+  destinationFileSystem: string | null,
   hooks: ProjectMoveHooks,
 ): Promise<ProjectMoveRecord> {
   const run: MoveRun = {
@@ -410,6 +412,7 @@ async function executeMove(
     sourceRoot,
     finalRoot,
     copyRoot,
+    destinationFileSystem,
     oldSpellings: rootSpellings(sourceRoot),
     hooks,
     step: "prepare",

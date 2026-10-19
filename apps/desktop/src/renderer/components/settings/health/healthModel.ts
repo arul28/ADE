@@ -8,7 +8,7 @@ import type { ProjectHealthIssue, ProjectHealthReport } from "../../../../shared
  */
 export type ProjectIssuePage = "lanes" | "location";
 
-const LANE_ISSUE_IDS: ReadonlySet<string> = new Set(["stale-lanes", "stuck-sessions", "git-leftovers", "lane-folders"]);
+const LANE_ISSUE_IDS: ReadonlySet<string> = new Set(["lanes-failed", "stale-lanes", "stuck-sessions", "git-leftovers", "lane-folders"]);
 
 export function projectIssuePage(issue: Pick<ProjectHealthIssue, "id">): ProjectIssuePage {
   return LANE_ISSUE_IDS.has(issue.id) ? "lanes" : "location";

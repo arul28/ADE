@@ -4634,7 +4634,26 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     } finally {
       await fs.promises.rm(capturePath, { force: true }).catch(() => {});
     }
-    await fs.promises.writeFile(filePath, buffer);
+    // Never through a link swapped in during the capture: ADE holds the
+    // external-drive permission, so a followed link could land anywhere. The
+    // folder is checked again and the file itself is opened without
+    // following a link.
+    try {
+      resolvePathWithinRoot(root, filePath, { allowMissing: true });
+    } catch (error) {
+      if (isPathEscapeError(error)) throw new IosSimulatorOutPathOutsideRootError(filePath, root);
+      throw error;
+    }
+    const handle = await fs.promises.open(
+      filePath,
+      fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW,
+      0o644,
+    );
+    try {
+      await handle.writeFile(buffer);
+    } finally {
+      await handle.close();
+    }
     const dimensions = pngDimensions(buffer) ?? { width: null, height: null };
     if (!requestedOutPath) void pruneScreenshotCache(cacheDirectory);
     return {

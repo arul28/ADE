@@ -118,12 +118,18 @@ export function LaneList({
     const failed: string[] = [];
     let freed = 0;
     try {
+      // The merged-PR exception reads the lane's git state, so read it again
+      // now: a lane can have picked up commits since the list was drawn. When
+      // the fresh read fails, no lane gets the exception.
+      const fresh = await window.ade.projectHealth.getReport({ forceRefresh: true }, pin)
+        .then((report) => new Map((report.lanes ?? []).map((lane) => [lane.laneId, lane])))
+        .catch(() => null);
       // One at a time, each checked again right before it goes: a lane may
       // have picked up changes or a running chat since the list was read.
       for (const lane of selectedLanes) {
         try {
           const risk = await window.ade.lanes.getReclaimRisk({ laneId: lane.laneId }, pin);
-          const skipReason = laneBulkArchiveSkipReason(lane, risk);
+          const skipReason = laneBulkArchiveSkipReason(fresh?.get(lane.laneId) ?? { ...lane, pr: null }, risk);
           if (skipReason) {
             skipped.push(`${lane.name}: ${skipReason}`);
             continue;

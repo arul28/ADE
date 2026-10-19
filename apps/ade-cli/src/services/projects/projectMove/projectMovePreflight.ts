@@ -221,7 +221,7 @@ export async function preflightProjectMove(args: {
   const isMainCheckout = isDirectory(path.join(sourceRoot, ".git"));
   const links = isMainCheckout ? listWorktreeLinks(sourceRoot, oldSpellings) : [];
   const lanes = lanesCheck(sourceRoot, links);
-  const sameDrive = onSameVolume(sourceRoot, path.dirname(destinationRoot));
+  const sameDrive = onSameVolume(sourceRoot, path.dirname(destinationRoot)) && destinationVolume?.fileSystem === "apfs";
   const freeBytes = destinationVolume?.freeBytes ?? 0;
   // On the same drive the copy is made of clones, which take no space.
   const canCopyDependencies = sameDrive || freeBytes >= sizes.copyBytes + sizes.dependencyBytes + SPACE_MARGIN_BYTES;
@@ -464,14 +464,17 @@ async function afterMoveNotes(sourceRoot: string, links: WorktreeLink[], oldSpel
   if (!sameDrive && (dependencyBytes > 0 || lockfile)) {
     const command = installCommandFor(sourceRoot) ?? "your install command";
     const linked = dependencyLinksIntoProject(lanes, oldSpellings);
+    const hasDependencies = dependencyBytes > 0;
     notes.push({
       id: "dependencies",
-      title: `Dependencies: copy them, or run ${command} after`,
-      detail: [
-        `${formatBytes(dependencyBytes)} of dependencies. Copy them with the project and nothing needs reinstalling; leave them out and ADE offers to run ${command} in each checkout after the move.`,
-        lockfile === "pnpm" ? "pnpm keeps one store per drive: on another drive, the first pnpm install reinstalls once into a store there." : "",
-        linked.length ? `${linked.length} lane link${linked.length === 1 ? "" : "s"} to the main checkout's dependencies only work once those are there:\n${linked.map((file) => path.relative(sourceRoot, file)).join("\n")}` : "",
-      ].filter(Boolean).join("\n"),
+      title: hasDependencies ? `Dependencies: copy them, or run ${command} after` : `Dependencies: run ${command} after`,
+      detail: hasDependencies
+        ? [
+            `${formatBytes(dependencyBytes)} of dependencies. Copy them with the project and nothing needs reinstalling; leave them out and ADE offers to run ${command} in each checkout after the move.`,
+            lockfile === "pnpm" ? "pnpm keeps one store per drive: on another drive, the first pnpm install reinstalls once into a store there." : "",
+            linked.length ? `${linked.length} lane link${linked.length === 1 ? "" : "s"} to the main checkout's dependencies only work once those are there:\n${linked.map((file) => path.relative(sourceRoot, file)).join("\n")}` : "",
+          ].filter(Boolean).join("\n")
+        : `No dependencies are installed yet. Run ${command} in each checkout after the move.`,
     });
   }
   const mentions = await filesMentioningPath(checkouts, sourceRoot, oldSpellings);

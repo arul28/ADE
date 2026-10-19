@@ -40,6 +40,31 @@ export type ReportData = {
 
 const EMPTY_POLICY: LaneCleanupConfig = {};
 
+function emptyStorage(loading: boolean): StorageData {
+  return {
+    snapshot: null,
+    pressureState: undefined,
+    laneIdByKey: new Map(),
+    archivedAtByKey: new Map(),
+    policy: EMPTY_POLICY,
+    effectivePolicy: EMPTY_POLICY,
+    loading,
+    refreshing: false,
+    error: null,
+  };
+}
+
+function emptyReport(available: boolean, wanted: boolean): ReportData {
+  return { report: null, loading: available && wanted, checking: false, error: null, available };
+}
+
+const EMPTY_DIAGNOSTICS: DiagnosticsData = {
+  usage: null,
+  usageReady: false,
+  runtimeHealth: null,
+  runtimeHealthAvailable: false,
+};
+
 /** Which of the three reads a page needs; each page loads only its own. */
 export type HealthDataParts = { storage?: boolean; diagnostics?: boolean; report?: boolean };
 
@@ -63,34 +88,14 @@ export function useHealthData(
   const wantStorage = Boolean(parts.storage);
   const wantDiagnostics = Boolean(parts.diagnostics);
   const wantReport = Boolean(parts.report);
-  const [storage, setStorage] = React.useState<StorageData>({
-    snapshot: null,
-    pressureState: undefined,
-    laneIdByKey: new Map(),
-    archivedAtByKey: new Map(),
-    policy: EMPTY_POLICY,
-    effectivePolicy: EMPTY_POLICY,
-    loading: wantStorage,
-    refreshing: false,
-    error: null,
-  });
-  const [diagnostics, setDiagnostics] = React.useState<DiagnosticsData>({
-    usage: null,
-    usageReady: false,
-    runtimeHealth: null,
-    runtimeHealthAvailable: false,
-  });
   const reportAvailable = typeof window.ade?.projectHealth?.getReport === "function";
-  const [report, setReportState] = React.useState<ReportData>({
-    report: null,
-    loading: reportAvailable && wantReport,
-    checking: false,
-    error: null,
-    available: reportAvailable,
-  });
+  const [storage, setStorage] = React.useState<StorageData>(() => emptyStorage(wantStorage));
+  const [diagnostics, setDiagnostics] = React.useState<DiagnosticsData>(EMPTY_DIAGNOSTICS);
+  const [report, setReportState] = React.useState<ReportData>(() => emptyReport(reportAvailable, wantReport));
   // A newer read wins over an older one still in flight (a Rescan pressed
   // while the first scan runs, or a machine switch).
   const storageRequest = React.useRef(0);
+  const diagnosticsRequest = React.useRef(0);
   const reportRequest = React.useRef(0);
 
   const loadStorage = React.useCallback(async (opts: { force?: boolean; silent?: boolean } = {}) => {
@@ -147,6 +152,7 @@ export function useHealthData(
 
   const loadDiagnostics = React.useCallback(async () => {
     if (!wantDiagnostics) return;
+    const request = ++diagnosticsRequest.current;
     const runtimeHealthFn = isThisMachine && typeof window.ade?.app?.getRuntimeHealth === "function"
       ? window.ade.app.getRuntimeHealth
       : null;
@@ -154,6 +160,7 @@ export function useHealthData(
       isThisMachine ? getAppResourceUsageCoalesced().catch(() => null) : Promise.resolve(null),
       runtimeHealthFn ? runtimeHealthFn().catch(() => null) : Promise.resolve(null),
     ]);
+    if (request !== diagnosticsRequest.current) return;
     setDiagnostics({
       usage,
       usageReady: true,
@@ -205,11 +212,21 @@ export function useHealthData(
   }, []);
 
   // Keyed on the machine (pin identity follows its key), not on each render.
+  // On a machine switch the old machine's lanes and sizes go first: they must
+  // never show, or be acted on, as the new machine's.
+  const machineKey = pin?.key ?? null;
+  const shownMachine = React.useRef(machineKey);
   React.useEffect(() => {
+    if (shownMachine.current !== machineKey) {
+      shownMachine.current = machineKey;
+      setStorage(emptyStorage(wantStorage));
+      setDiagnostics(EMPTY_DIAGNOSTICS);
+      setReportState(emptyReport(reportAvailable, wantReport));
+    }
     void loadStorage();
     void loadDiagnostics();
     void loadReport();
-  }, [loadStorage, loadDiagnostics, loadReport]);
+  }, [loadStorage, loadDiagnostics, loadReport, machineKey, reportAvailable, wantReport, wantStorage]);
 
   return {
     storage,
