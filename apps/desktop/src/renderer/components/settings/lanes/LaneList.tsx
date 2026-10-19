@@ -7,12 +7,10 @@ import { confirmDialog } from "../../ui/dialog";
 import { READABLE_TOAST_DURATION_MS, showToast } from "../../app/toast/toastStore";
 import { relativeWhen } from "../../../lib/format";
 import { formatBytes, formatMeasuredBytes } from "../storage/storageView";
-import { CountBar } from "../health/healthCharts";
 import { useLaneReclaim } from "./useLaneReclaim";
 import {
   laneBulkArchiveSkipReason,
   LANE_FILTERS,
-  laneBucket,
   laneFilterMatches,
   laneNotSelectableReason,
   laneStaleReason,
@@ -39,12 +37,6 @@ function sizeIndex(items: readonly StorageItem[]): { byId: Map<string, LaneSize>
   return { byId, byPath };
 }
 
-const BUCKET_COLORS = {
-  active: "color-mix(in srgb, var(--color-fg) 32%, transparent)",
-  changes: "var(--color-accent)",
-  stale: "var(--kit-warn)",
-} as const;
-
 /**
  * Project → Lanes, the list: every lane with its status, PR, last activity and
  * size, stale lanes first. Stale lanes that lose nothing when archived can be
@@ -57,15 +49,12 @@ export function LaneList({
   lanes,
   staleAfterDays,
   laneItems,
-  totalBytes,
   pin,
   onChanged,
 }: {
   lanes: readonly ProjectLaneHealth[];
   staleAfterDays: number;
   laneItems: readonly StorageItem[];
-  /** All lane folders together, from the storage snapshot. */
-  totalBytes: { bytes: number; partial: boolean } | null;
   pin: OpenProjectBinding | null;
   onChanged: () => void;
 }) {
@@ -82,11 +71,11 @@ export function LaneList({
     [sizes],
   );
   const sorted = React.useMemo(() => sortLanes(lanes), [lanes]);
-  const counts = React.useMemo(() => {
-    const result = { active: 0, changes: 0, stale: 0 };
-    for (const lane of lanes) result[laneBucket(lane)] += 1;
-    return result;
-  }, [lanes]);
+  // Each tile counts exactly the lanes its filter shows.
+  const counts = React.useMemo(
+    () => Object.fromEntries(LANE_FILTERS.map((option) => [option.id, lanes.filter((lane) => laneFilterMatches(lane, option.id)).length])) as Record<LaneFilter, number>,
+    [lanes],
+  );
   const filtered = sorted.filter((lane) => laneFilterMatches(lane, filter));
   const visible = showAll ? filtered : filtered.slice(0, INITIAL_ROWS);
   const hidden = filtered.length - visible.length;
@@ -172,50 +161,22 @@ export function LaneList({
 
   return (
     <div className="ade-lanes">
-      <div className="ade-lanes-summary">
-        <div className="ade-lanes-summary-figures">
-          <span className="kit-stat kit-num">{lanes.length}</span>
-          <span className="ade-modern-muted">{lanes.length === 1 ? "lane" : "lanes"}</span>
-          {totalBytes ? (
-            <span className="ade-modern-muted">· <span className="kit-num">{formatMeasuredBytes(totalBytes.bytes, totalBytes.partial)}</span> in lane folders</span>
-          ) : null}
-        </div>
-        <CountBar
-          ariaLabel="Lanes by state"
-          parts={[
-            { id: "active", label: "Active", count: counts.active, color: BUCKET_COLORS.active },
-            { id: "changes", label: "With changes", count: counts.changes, color: BUCKET_COLORS.changes },
-            { id: "stale", label: "Stale", count: counts.stale, color: BUCKET_COLORS.stale },
-          ]}
-        />
-        <div className="ade-health-legend">
-          {([
-            ["active", "Active", counts.active],
-            ["changes", "With changes", counts.changes],
-            ["stale", "Stale", counts.stale],
-          ] as const).map(([id, label, count]) => (
-            <span key={id} className="kit-legend">
-              <i style={{ background: BUCKET_COLORS[id] }} />
-              {label}
-              <b>{count}</b>
-            </span>
-          ))}
-        </div>
-      </div>
-
       <div className="ade-lanes-toolbar">
-        <div className="kit-seg" data-case="sentence" role="group" aria-label="Show lanes">
+        <div className="ade-lanes-tiles" role="group" aria-label="Show lanes">
           {LANE_FILTERS.map((option) => (
             <button
               key={option.id}
               type="button"
+              className="ade-lanes-tile"
+              data-tone={option.id === "stale" && counts.stale > 0 ? "warn" : undefined}
               aria-pressed={filter === option.id}
               onClick={() => {
                 setFilter(option.id);
                 setShowAll(false);
               }}
             >
-              {option.label}
+              <span className="ade-lanes-tile-count kit-num">{counts[option.id]}</span>
+              <span className="ade-lanes-tile-label">{option.label}</span>
             </button>
           ))}
         </div>

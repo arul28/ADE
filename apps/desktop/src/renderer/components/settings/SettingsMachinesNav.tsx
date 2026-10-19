@@ -99,8 +99,12 @@ export function MachineUnavailableNotice({
   machine: SettingsMachinePage;
   unavailableTitles?: string[];
 }) {
-  const list = unavailableTitles?.join(", ") ?? "These settings";
+  const titles = unavailableTitles ?? [];
+  const list = titles.length > 1
+    ? `${titles.slice(0, -1).join(", ")} and ${titles[titles.length - 1]}`
+    : titles[0] ?? "These settings";
   let message: string;
+  let detail: string | undefined;
   if (!machine.online) {
     message = `${machine.machineName} is offline. Its settings come back when it does.`;
   } else if (!machine.isThisMachine && !machine.isActiveBinding && !machine.hasRepo) {
@@ -108,13 +112,14 @@ export function MachineUnavailableNotice({
   } else if (machine.isThisMachine) {
     message = `${list} can't be reached on ${THIS_MACHINE_NAME} from this project tab yet.`;
   } else {
-    message = `${list} can only be changed on ${machine.machineName} itself for now.`;
+    message = `Open ADE on ${machine.machineName} to change these.`;
+    detail = `${list} ${titles.length === 1 ? "is" : "are"} managed on that computer for now.`;
   }
   return (
     <Banner
       layout="inline"
       testId="settings-machine-unavailable"
-      model={{ id: `settings-machine-unavailable:${machine.machineId}`, tone: "neutral", title: message }}
+      model={{ id: `settings-machine-unavailable:${machine.machineId}`, tone: "neutral", title: message, detail }}
     />
   );
 }

@@ -4,52 +4,77 @@
  * theme token or a --kit-* mix.
  */
 
-/* ── A block that opens on demand ───────────────────────────────────────── */
+/* ── The view tabs ─────────────────────────────────────────────────────── */
 
-.ade-lanes-block-toggle {
+.ade-lanes-page { display: flex; flex-direction: column; gap: 22px; min-width: 0; }
+.ade-lanes-tabs {
   display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  border-bottom: 1px solid var(--kit-rule);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.ade-lanes-tab {
+  display: inline-flex;
   align-items: center;
-  gap: 10px;
-  width: 100%;
-  margin-bottom: -22px;
-  padding: 6px 0;
+  gap: 7px;
+  margin-bottom: -1px;
+  padding: 9px 12px 10px;
   border: 0;
-  border-bottom: 1px solid color-mix(in srgb, var(--color-fg) 8%, transparent);
+  border-bottom: 2px solid transparent;
   background: transparent;
+  color: var(--kit-text-3);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.ade-lanes-tab:hover { color: var(--color-fg); }
+.ade-lanes-tab[aria-selected="true"] { color: var(--color-fg); border-bottom-color: var(--color-accent); }
+.ade-lanes-tab:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; border-radius: 6px 6px 0 0; }
+.ade-lanes-tab-badge {
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  color: var(--kit-text-2);
+  background: color-mix(in srgb, var(--color-fg) 7%, transparent);
+}
+.ade-lanes-tab-badge[data-tone="warn"] { color: var(--kit-warn); background: color-mix(in srgb, var(--kit-warn) 14%, transparent); }
+
+/* ── Summary and toolbar ────────────────────────────────────────────────── */
+
+.ade-lanes { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.ade-lanes-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.ade-lanes-toolbar-actions { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+
+/* Filter tiles: the count of each kind of lane, and the filter that shows them. */
+.ade-lanes-tiles { display: flex; gap: 8px; flex-wrap: wrap; }
+.ade-lanes-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 92px;
+  padding: 8px 12px 9px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--kit-panel-edge);
+  background: var(--kit-panel-bg);
   color: var(--kit-text-3);
   font: inherit;
   text-align: left;
   cursor: pointer;
 }
-.ade-lanes-block-toggle:hover .ade-settings-group-title,
-.ade-lanes-block-toggle:hover { color: var(--color-fg); }
-.ade-lanes-block-toggle:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; border-radius: 4px; }
-.ade-lanes-block-toggle[aria-expanded="false"] { margin-bottom: -30px; }
-.ade-lanes-block-hint {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12px;
-  color: var(--kit-text-3);
+.ade-lanes-tile:hover { border-color: color-mix(in srgb, var(--color-fg) 22%, transparent); }
+.ade-lanes-tile[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--color-accent) 60%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 9%, var(--kit-panel-bg));
 }
-
-/* ── Summary and toolbar ────────────────────────────────────────────────── */
-
-.ade-lanes { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
-.ade-lanes-summary {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 14px 16px;
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--kit-panel-edge);
-  background: var(--kit-panel-bg);
-}
-.ade-lanes-summary-figures { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
-.ade-lanes-summary-figures .kit-stat { font-size: 22px; letter-spacing: -0.03em; }
-.ade-lanes-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-.ade-lanes-toolbar-actions { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.ade-lanes-tile:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.ade-lanes-tile-count { font-size: 20px; line-height: 1.1; letter-spacing: -0.03em; color: var(--color-fg); }
+.ade-lanes-tile[data-tone="warn"] .ade-lanes-tile-count { color: var(--kit-warn); }
+.ade-lanes-tile-label { font-size: 11.5px; }
 
 /* ── Rows ───────────────────────────────────────────────────────────────── */
 

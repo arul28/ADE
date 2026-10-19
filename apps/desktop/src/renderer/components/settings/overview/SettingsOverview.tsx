@@ -290,6 +290,9 @@ function ComputerCard({ sources, onOpen }: { sources: Sources; onOpen: () => voi
 function ProjectCard({ sources, onOpen }: { sources: Sources; onOpen: (route: string) => void }) {
   const theme = useChartTheme();
   const projectName = useAppStore((state) => state.project?.displayName ?? null);
+  // A project on another computer: its machine names its own disk "This Mac",
+  // which would read as this computer here, so the line names the machine.
+  const remoteName = useAppStore((state) => (state.projectBinding?.kind === "remote" ? state.projectBinding.runtimeName : null));
   const report = sources.report;
   const [archived, setArchived] = React.useState<number | null>(null);
   const [storage, setStorage] = React.useState<StorageSnapshot | null>(null);
@@ -324,7 +327,11 @@ function ProjectCard({ sources, onOpen }: { sources: Sources; onOpen: (route: st
       {drive ? (
         <button type="button" className="ade-glance-line ade-glance-link" onClick={() => onOpen(settingsRouteFor("general.project-location"))}>
           {drive.internal ? <HardDrive size={13} /> : <HardDrives size={13} />}
-          <span>{drive.internal ? "On" : "On external drive"} {drive.name}</span>
+          <span>
+            {remoteName
+              ? drive.internal ? `On ${remoteName}` : `On ${remoteName}'s external drive ${drive.name}`
+              : `${drive.internal ? "On" : "On external drive"} ${drive.name}`}
+          </span>
         </button>
       ) : null}
       {lanes.length > 0 ? (

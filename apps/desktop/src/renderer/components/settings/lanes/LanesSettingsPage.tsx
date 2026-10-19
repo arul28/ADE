@@ -1,16 +1,7 @@
 import React from "react";
 import { useLocation } from "react-router-dom";
-import {
-  Archive,
-  ArrowClockwise,
-  Broom,
-  CaretDown,
-  GitBranch,
-  HardDrives,
-  Rocket,
-  Timer,
-} from "@phosphor-icons/react";
-import { ModernSection, SettingsSectionRail } from "../primitives";
+import { Archive, ArrowClockwise, GitBranch, HardDrives, SlidersHorizontal } from "@phosphor-icons/react";
+import { ModernSection } from "../primitives";
 import { useSettingsMachineScope } from "../SettingsMachineScope";
 import { useSettingsSearchAnchors } from "../settingsSearchContext";
 import { decodeSettingsHash } from "../settingsHash";
@@ -25,6 +16,7 @@ import { HealthCleanups } from "../health/HealthCleanups";
 import { ProjectIssueList, useProjectFix } from "../health/ProjectIssues";
 import { issuesForPage } from "../health/healthModel";
 import { useHealthData } from "../health/useHealthData";
+import { formatMeasuredBytes } from "../storage/storageView";
 import { relativeWhen } from "../../../lib/format";
 import { isWebClientMode } from "../../../lib/webClientMode";
 import { Banner } from "../../ui/notice";
@@ -33,56 +25,53 @@ import "../machineSettings.css";
 import "../health/health.css";
 import "./lanes.css";
 
-type BlockId = "lanes" | "storage" | "archive" | "cleanups" | "sessions" | "start";
+type ViewId = "lanes" | "space" | "archive" | "rules";
 
-type Block = {
-  id: BlockId;
-  title: string;
+type View = {
+  id: ViewId;
+  label: string;
   icon: React.ReactNode;
-  /** Collapsed until opened, a link names one of its cards, or a search matches one. */
-  collapsible?: { hint: string; anchors: readonly string[] };
+  /** The manifest anchors drawn in this view, so links and search find it. */
+  anchors: readonly string[];
 };
 
-const BLOCKS: readonly Block[] = [
-  { id: "lanes", title: "Lanes", icon: <GitBranch size={14} weight="duotone" /> },
-  { id: "storage", title: "Storage", icon: <HardDrives size={14} weight="duotone" /> },
+const VIEWS: readonly View[] = [
+  { id: "lanes", label: "Lanes", icon: <GitBranch size={13} weight="duotone" />, anchors: ["lane-list"] },
+  { id: "space", label: "Space", icon: <HardDrives size={13} weight="duotone" />, anchors: ["storage", "storage-cleanups"] },
+  { id: "archive", label: "Archive", icon: <Archive size={13} weight="duotone" />, anchors: ["archive"] },
   {
-    id: "archive",
-    title: "Archive",
-    icon: <Archive size={14} weight="duotone" />,
-    collapsible: { hint: "Archived lanes, chats and shells. Restore or delete them.", anchors: ["archive"] },
-  },
-  { id: "cleanups", title: "Cleanups", icon: <Broom size={14} weight="duotone" /> },
-  {
-    id: "sessions",
-    title: "Sessions",
-    icon: <Timer size={14} weight="duotone" />,
-    collapsible: { hint: "When finished lane work settles, and repairing the .ade folder.", anchors: ["session-lifecycle", "project"] },
-  },
-  {
-    id: "start",
-    title: "How lanes start",
-    icon: <Rocket size={14} weight="duotone" />,
-    collapsible: {
-      hint: "Where new lanes branch from, rebasing, PR transcripts and templates.",
-      anchors: ["new-lane-base", "auto-rebase", "rebase-suggestions", "rebase-min-behind", "pr-chat-transcripts", "lane-templates"],
-    },
+    id: "rules",
+    label: "Rules",
+    icon: <SlidersHorizontal size={13} weight="duotone" />,
+    anchors: [
+      "lane-storage-rules",
+      "session-lifecycle",
+      "project",
+      "new-lane-base",
+      "auto-rebase",
+      "rebase-suggestions",
+      "rebase-min-behind",
+      "pr-chat-transcripts",
+      "lane-templates",
+    ],
   },
 ];
 
 /** The hosted web client can reach only the archive and the lane rules. */
-const WEB_BLOCKS: ReadonlySet<BlockId> = new Set(["archive", "start"]);
+const WEB_VIEWS: ReadonlySet<ViewId> = new Set(["archive", "rules"]);
 
-function blockId(id: BlockId): string {
-  return `settings-group-lanes-${id}`;
+function viewForAnchor(anchor: string | null): ViewId | null {
+  if (!anchor) return null;
+  return VIEWS.find((view) => view.anchors.includes(anchor))?.id ?? null;
 }
 
 /**
- * Settings → Project → Lanes: every lane in the project with its state, then
- * the space lanes and ADE's data take (Clean up safely), the archive, the
- * cleanup history and rules, sessions, and how new lanes start. A sticky rail
- * names each block; the long and rarely used ones open on demand, so the page
- * reads top-down as list → space → rules.
+ * Settings → Project → Lanes, as four views under one tab strip: the lanes
+ * themselves (stale ones first, with a safe bulk archive), the space they and
+ * ADE's data take, the archive, and the rules for how lanes start, settle and
+ * get archived. One view shows at a time, so the page is never a long scroll
+ * of folded sections; a link or a settings search that names a card switches
+ * to the view that holds it.
  *
  * Remote machines: the page always acts on the machine that owns the project
  * (`useSettingsMachineScope().pin`), and so does every section in it.
@@ -94,90 +83,52 @@ export function LanesSettingsPage() {
   const web = isWebClientMode();
   const data = useHealthData(pin, isThisMachine, web ? {} : { storage: true, report: true });
   const fix = useProjectFix(pin, data.setReport);
-  const blocks = web ? BLOCKS.filter((block) => WEB_BLOCKS.has(block.id)) : BLOCKS;
+  const views = web ? VIEWS.filter((view) => WEB_VIEWS.has(view.id)) : VIEWS;
 
   const hashAnchor = location.hash ? decodeSettingsHash(location.hash) : null;
-  const [open, setOpen] = React.useState<ReadonlySet<BlockId>>(() => new Set(
-    BLOCKS.filter((block) => block.collapsible && hashAnchor && block.collapsible.anchors.includes(hashAnchor)).map((block) => block.id),
-  ));
-  const pendingScroll = React.useRef<string | null>(null);
+  const [view, setView] = React.useState<ViewId>(() => viewForAnchor(hashAnchor) ?? views[0]!.id);
 
-  // A link that names a card in a closed block opens the block, then scrolls
-  // to the card once it is drawn.
+  // A link that names a card shows its view, then lands on the card once the
+  // view is drawn (and again once the lane list and storage have loaded and
+  // moved it).
   React.useEffect(() => {
-    if (!hashAnchor) return;
-    const block = BLOCKS.find((entry) => entry.collapsible?.anchors.includes(hashAnchor));
-    if (!block) return;
-    setOpen((current) => {
-      if (current.has(block.id)) return current;
-      pendingScroll.current = hashAnchor;
-      return new Set([...current, block.id]);
-    });
+    const target = viewForAnchor(hashAnchor);
+    if (target) setView(target);
   }, [hashAnchor]);
-
-  // A search that matches a card in a closed block opens it, so the match shows.
-  React.useEffect(() => {
-    if (!searchAnchors || searchAnchors.length === 0) return;
-    const matched = BLOCKS.filter((block) => block.collapsible?.anchors.some((anchor) => searchAnchors.includes(anchor)));
-    if (matched.length === 0) return;
-    setOpen((current) => (matched.every((block) => current.has(block.id)) ? current : new Set([...current, ...matched.map((block) => block.id)])));
-  }, [searchAnchors]);
-
-  React.useEffect(() => {
-    const target = pendingScroll.current;
-    if (!target) return;
-    pendingScroll.current = null;
-    const frame = window.requestAnimationFrame(() => {
-      document.getElementById(target)?.scrollIntoView({ block: "start", behavior: "smooth" });
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [open]);
-
-  // The lane list and storage load after the page opens and push everything
-  // below them down, so a link to a card further down lands once more when
-  // they are in.
   const settled = !data.report.loading && !data.storage.loading;
-  const relandedFor = React.useRef<string | null>(null);
   React.useEffect(() => {
-    if (!settled || !hashAnchor || relandedFor.current === hashAnchor) return;
-    relandedFor.current = hashAnchor;
-    if (hashAnchor === "lane-list") return;
+    if (!hashAnchor || hashAnchor === "lane-list" || viewForAnchor(hashAnchor) !== view) return;
     const frame = window.requestAnimationFrame(() => {
       document.getElementById(hashAnchor)?.scrollIntoView({ block: "start" });
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [hashAnchor, settled]);
+  }, [hashAnchor, view, settled]);
 
-  const toggle = (id: BlockId) => {
-    setOpen((current) => {
-      const next = new Set(current);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
-
-  // Picking a closed block in the rail opens it and scrolls to it once it is
-  // drawn; scrolling before that stops short near the end of the page.
-  const openFromRail = React.useCallback((id: string): boolean => {
-    const block = BLOCKS.find((entry) => blockId(entry.id) === id);
-    if (!block?.collapsible || open.has(block.id)) return false;
-    pendingScroll.current = id;
-    setOpen((current) => new Set([...current, block.id]));
-    return true;
-  }, [open]);
+  // A search with no match in this view moves to the first view that has one.
+  React.useEffect(() => {
+    if (!searchAnchors || searchAnchors.length === 0) return;
+    const holds = (id: ViewId) => VIEWS.find((entry) => entry.id === id)!.anchors.some((anchor) => searchAnchors.includes(anchor));
+    setView((current) => (holds(current) ? current : views.find((entry) => holds(entry.id))?.id ?? current));
+  }, [searchAnchors, views]);
 
   const { report, loading: reportLoading, checking, error: reportError, available } = data.report;
   const laneIssues = issuesForPage(report, "lanes").filter((issue) => issue.id !== "stale-lanes");
   const laneCategory = data.storage.snapshot?.categories.find((category) => category.id === "lanes_worktrees") ?? null;
   const staleCount = report?.lanes?.filter((lane) => lane.stale).length ?? 0;
+  const snapshot = data.storage.snapshot;
   const reloadAll = React.useCallback(() => {
     void data.loadReport({ force: true });
     void data.loadStorage({ force: true, silent: true });
   }, [data]);
 
-  const renderBlock = (block: Block): React.ReactNode => {
-    switch (block.id) {
+  const badge = (id: ViewId): { text: string; tone?: "warn" } | null => {
+    if (id === "lanes" && report?.lanes) return staleCount > 0 ? { text: `${staleCount} stale`, tone: "warn" } : { text: String(report.lanes.length) };
+    if (id === "space" && snapshot) return { text: formatMeasuredBytes(snapshot.totalAdeBytes, snapshot.truncated) };
+    return null;
+  };
+
+  const renderView = (id: ViewId): React.ReactNode => {
+    switch (id) {
       case "lanes":
         return (
           <ModernSection
@@ -185,7 +136,11 @@ export function LanesSettingsPage() {
             anchor="lane-list"
             title={report?.lanes ? (staleCount > 0 ? `${staleCount} of ${report.lanes.length} lanes look done` : "Your lanes") : "Your lanes"}
             hint={report
-              ? `Stale once its PR merges or closes, or after ${report.staleAfterDays ?? 14} days idle. Checked ${relativeWhen(report.checkedAt)}.`
+              ? [
+                  `Stale once its PR merges or closes, or after ${report.staleAfterDays ?? 14} days idle.`,
+                  laneCategory ? `Lane folders take ${formatMeasuredBytes(laneCategory.bytes, Boolean(laneCategory.partial))}.` : null,
+                  `Checked ${relativeWhen(report.checkedAt)}.`,
+                ].filter(Boolean).join(" ")
               : available ? "Every lane in this project, stale ones first." : "The lane list needs a newer ADE on this machine."}
             actions={available ? (
               <button
@@ -222,7 +177,6 @@ export function LanesSettingsPage() {
                 lanes={report.lanes}
                 staleAfterDays={report.staleAfterDays ?? 14}
                 laneItems={laneCategory?.items ?? []}
-                totalBytes={laneCategory ? { bytes: laneCategory.bytes, partial: Boolean(laneCategory.partial) } : null}
                 pin={pin}
                 onChanged={reloadAll}
               />
@@ -231,22 +185,21 @@ export function LanesSettingsPage() {
             ) : null}
           </ModernSection>
         );
-      case "storage":
-        return <HealthSpace data={data} />;
-      case "archive":
-        return <ArchiveSection />;
-      case "cleanups":
-        return <HealthCleanups data={data} />;
-      case "sessions":
+      case "space":
         return (
           <>
-            <SessionLifecycleSection />
-            <ProjectSection />
+            <HealthSpace data={data} />
+            <HealthCleanups data={data} show="history" />
           </>
         );
-      case "start":
+      case "archive":
+        return <ArchiveSection />;
+      case "rules":
         return (
           <>
+            {web ? null : <HealthCleanups data={data} show="rules" />}
+            <SessionLifecycleSection />
+            <ProjectSection />
             <LaneBehaviorSection />
             <PrChatTranscriptsSection />
             <LaneTemplatesSection />
@@ -258,45 +211,37 @@ export function LanesSettingsPage() {
   };
 
   return (
-    <div className="ade-settings-layout">
-      <SettingsSectionRail
-        entries={blocks.map((block) => ({ id: blockId(block.id), title: block.title, icon: block.icon }))}
-        onSelect={openFromRail}
-      />
-      <div className="ade-settings-flow">
-        {blocks.map((block) => {
-          const collapsed = block.collapsible && !open.has(block.id);
+    <div className="ade-lanes-page">
+      <div className="ade-lanes-tabs" role="tablist" aria-label="Lanes settings">
+        {views.map((entry) => {
+          const count = badge(entry.id);
           return (
-            <section
-              key={block.id}
-              id={blockId(block.id)}
-              className="ade-settings-group-block"
-              data-settings-group={block.title}
+            <button
+              key={entry.id}
+              type="button"
+              role="tab"
+              id={`lanes-tab-${entry.id}`}
+              aria-selected={view === entry.id}
+              aria-controls={`lanes-view-${entry.id}`}
+              className="ade-lanes-tab"
+              onClick={() => setView(entry.id)}
             >
-              {block.collapsible ? (
-                <button
-                  type="button"
-                  className="ade-lanes-block-toggle"
-                  aria-expanded={!collapsed}
-                  onClick={() => toggle(block.id)}
-                >
-                  <CaretDown size={12} weight="bold" className="ade-health-caret" data-open={!collapsed || undefined} />
-                  <span className="ade-settings-group-title">{block.title}</span>
-                  {collapsed ? <span className="ade-lanes-block-hint">{block.collapsible.hint}</span> : null}
-                  {/* While closed, the block still answers the settings search. */}
-                  {collapsed ? block.collapsible.anchors.map((anchor) => (
-                    <span key={anchor} hidden data-settings-anchor={anchor} />
-                  )) : null}
-                </button>
-              ) : (
-                <header className="ade-settings-group-head">
-                  <h2 className="ade-settings-group-title">{block.title}</h2>
-                </header>
-              )}
-              {collapsed ? null : <div className="ade-settings-flow-item">{renderBlock(block)}</div>}
-            </section>
+              {entry.icon}
+              {entry.label}
+              {count ? <span className="ade-lanes-tab-badge kit-num" data-tone={count.tone}>{count.text}</span> : null}
+              {/* Views not drawn still answer the settings search. */}
+              {view === entry.id ? null : entry.anchors.map((anchor) => <span key={anchor} hidden data-settings-anchor={anchor} />)}
+            </button>
           );
         })}
+      </div>
+      <div
+        role="tabpanel"
+        id={`lanes-view-${view}`}
+        aria-labelledby={`lanes-tab-${view}`}
+        className="ade-modern-sections"
+      >
+        {renderView(view)}
       </div>
     </div>
   );

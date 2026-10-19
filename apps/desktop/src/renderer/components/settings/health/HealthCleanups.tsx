@@ -189,7 +189,11 @@ function ArchivePolicy({
   );
 }
 
-export function HealthCleanups({ data }: { data: HealthData }) {
+/**
+ * The cleanup history (`show="history"`, under Space) or the archive-idle-lanes
+ * rules (`show="rules"`, under Rules).
+ */
+export function HealthCleanups({ data, show }: { data: HealthData; show: "history" | "rules" }) {
   const runs = React.useMemo(() => journalEntries(data.storage.snapshot?.extras, 30), [data.storage.snapshot]);
   const [busy, setBusy] = React.useState(false);
   const pending = React.useRef<{ timer: ReturnType<typeof setTimeout>; value: LaneCleanupConfig } | null>(null);
@@ -229,16 +233,15 @@ export function HealthCleanups({ data }: { data: HealthData }) {
     void savePolicy(queued.value).catch(() => undefined);
   }, [savePolicy]);
 
-  return (
-    <div className="ade-modern-sections">
-      <CleanupHistory runs={runs} loading={data.storage.loading && !data.storage.snapshot} />
-      <ArchivePolicy
-        value={data.storage.policy}
-        effectiveValue={data.storage.effectivePolicy}
-        lastScanAt={data.storage.snapshot?.lifecycle?.lastScanAt ?? null}
-        busy={busy}
-        onChange={commit}
-      />
-    </div>
+  return show === "history" ? (
+    <CleanupHistory runs={runs} loading={data.storage.loading && !data.storage.snapshot} />
+  ) : (
+    <ArchivePolicy
+      value={data.storage.policy}
+      effectiveValue={data.storage.effectivePolicy}
+      lastScanAt={data.storage.snapshot?.lifecycle?.lastScanAt ?? null}
+      busy={busy}
+      onChange={commit}
+    />
   );
 }

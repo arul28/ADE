@@ -25,7 +25,7 @@ import "./location.css";
  * `ProjectLocationSection` says so for a project on another computer.
  */
 export function LocationPage() {
-  const { pin, isThisMachine } = useSettingsMachineScope();
+  const { pin, isThisMachine, machineName } = useSettingsMachineScope();
   const data = useHealthData(pin, isThisMachine, { report: true });
   const fix = useProjectFix(pin, data.setReport);
   const [askOpen, setAskOpen] = React.useState(false);
@@ -45,10 +45,17 @@ export function LocationPage() {
           </span>
           <div className="ade-loc-hero-body">
             <div className="ade-loc-hero-title">
-              <span>{drive?.name ?? "This computer"}</span>
+              {/* Another machine calls its own disk "This Mac"; name the machine instead. */}
+              <span>{drive ? (drive.internal && !isThisMachine ? machineName : drive.name) : isThisMachine ? "This computer" : machineName}</span>
               {drive ? <span className="kit-tag">{drive.internal ? "Built-in" : "External"}</span> : null}
             </div>
-            <span className="ade-modern-muted">{drive ? (drive.internal ? "This computer's own disk" : "A drive plugged into this computer") : "Where this project's folder is"}</span>
+            <span className="ade-modern-muted">
+              {drive
+                ? drive.internal
+                  ? isThisMachine ? "This computer's own disk" : `${machineName}'s own disk`
+                  : isThisMachine ? "A drive plugged into this computer" : `A drive plugged into ${machineName}`
+                : "Where this project's folder is"}
+            </span>
           </div>
           {drive && drive.totalBytes > 0 ? (
             <div className="ade-loc-hero-meter">

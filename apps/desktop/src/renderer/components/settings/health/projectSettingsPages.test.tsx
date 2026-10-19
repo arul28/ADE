@@ -410,9 +410,14 @@ function renderPage(node: React.ReactNode, entry = "/settings?tab=lanes-git", sc
   return render(scope ? <SettingsMachineScopeProvider scope={settingsMachineScope(scope)}>{page}</SettingsMachineScopeProvider> : page);
 }
 
-/** Project → Lanes: the lane list, storage, cleanups, and the closed blocks. */
+/** Project → Lanes: the lane list, then storage, the archive and the rules, one view each. */
 function renderLanes(entry?: string, scope?: ScopeInput) {
   return renderPage(<LanesSettingsPage />, entry, scope);
+}
+
+/** Shows one of the page's views (Lanes, Space, Archive, Rules) by its tab. */
+async function openView(name: string) {
+  fireEvent.click(await screen.findByRole("tab", { name: new RegExp(`^${name}`) }));
 }
 
 async function openDetails() {
@@ -432,6 +437,7 @@ describe("Project → Lanes, Location, and Computer → ADE service", () => {
   it("shows what ADE keeps as at most four categories plus Other, with free space", async () => {
     installAdeMock();
     renderLanes();
+    await openView("Space");
 
     await screen.findByRole("img", { name: /Lanes & worktrees/ });
     const legend = screen.getByRole("group", { name: /What ADE keeps, by category/ });
@@ -452,6 +458,7 @@ describe("Project → Lanes, Location, and Computer → ADE service", () => {
     lanes.items[0]!.partial = true;
     vi.mocked(window.ade.storage.getSnapshot).mockResolvedValue(partial);
     renderLanes();
+    await openView("Space");
 
     expect((await screen.findAllByText("≥ 4.0 GB")).length).toBeGreaterThan(0);
     expect(screen.getByText(/Sizes marked ≥ are at least that much/)).toBeTruthy();
@@ -460,6 +467,7 @@ describe("Project → Lanes, Location, and Computer → ADE service", () => {
   it("lists archived and left-over lanes with their actions, and keeps active lanes", async () => {
     installAdeMock();
     renderLanes();
+    await openView("Space");
     await openDetails();
 
     expect((await screen.findAllByText("Old feature")).length).toBeGreaterThan(0);
@@ -474,6 +482,7 @@ describe("Project → Lanes, Location, and Computer → ADE service", () => {
   it("opens proof removal by its own name, and points blocked proof at the proof drawer", async () => {
     installAdeMock();
     renderLanes();
+    await openView("Space");
     await openDetails();
     const proofRow = (await screen.findByText("Proof and recordings")).closest(".ade-st-item") as HTMLElement;
     fireEvent.click(within(proofRow).getByRole("button", { name: "Remove…" }));
@@ -485,6 +494,7 @@ describe("Project → Lanes, Location, and Computer → ADE service", () => {
     blockedSnapshot.categories.find((category) => category.id === "proof_attachments")!.items = [];
     vi.mocked(window.ade.storage.getSnapshot).mockResolvedValue(blockedSnapshot);
     renderLanes();
+    await openView("Space");
     await openDetails();
     expect(await screen.findByText(/Open the proof drawer in a chat to delete individual items/)).toBeTruthy();
   });
@@ -492,6 +502,7 @@ describe("Project → Lanes, Location, and Computer → ADE service", () => {
   it("removes a leftover lane folder: previews, then removes the same targets and reports freed space", async () => {
     const { cleanupPreview, cleanup: cleanupFn } = installAdeMock();
     renderLanes();
+    await openView("Space");
     await openDetails();
 
     fireEvent.click((await screen.findAllByRole("button", { name: /remove files/i }))[0]!);
@@ -518,6 +529,7 @@ describe("Project → Lanes, Location, and Computer → ADE service", () => {
       },
     });
     renderLanes();
+    await openView("Space");
     await openDetails();
 
     fireEvent.click((await screen.findAllByRole("button", { name: /archive & reclaim/i }))[0]!);
@@ -539,6 +551,7 @@ describe("Project → Lanes, Location, and Computer → ADE service", () => {
   it("keeps reclaim focus inside the dialog and closes it on Escape", async () => {
     installAdeMock();
     renderLanes();
+    await openView("Space");
     await openDetails();
 
     const trigger = (await screen.findAllByRole("button", { name: /archive & reclaim/i }))[0]!;
@@ -570,7 +583,11 @@ describe("Project → Lanes, Location, and Computer → ADE service", () => {
         },
       },
     });
+    // The Rules view also draws the session and .ade folder sections.
+    (window.ade as any).sessions = { getLifecycleSettings: vi.fn(async () => ({ autoSettleLaneSessionsOnPrMerge: true })) };
+    (window.ade as any).project = { getSnapshot: vi.fn(() => new Promise(() => undefined)), onStateEvent: vi.fn(() => () => undefined) };
     renderLanes();
+    await openView("Rules");
 
     // An inherited rule shows the value in force, not an empty box.
     const inherited = await screen.findByLabelText(/Archive after inactivity/i);
@@ -590,6 +607,7 @@ describe("Project → Lanes, Location, and Computer → ADE service", () => {
   it("offers history compression only when the machine can compress, and reports what it saved", async () => {
     installAdeMock({ withCompress: false });
     renderLanes();
+    await openView("Space");
     await openDetails();
     await screen.findByText("Older than two weeks").catch(() => null);
     expect(screen.queryByRole("button", { name: /compress now/i })).toBeNull();
@@ -597,6 +615,7 @@ describe("Project → Lanes, Location, and Computer → ADE service", () => {
 
     const { compressNow } = installAdeMock({ withCompress: true });
     renderLanes();
+    await openView("Space");
     await openDetails();
     fireEvent.click(await screen.findByRole("button", { name: /compress now/i }));
     await waitFor(() => expect(compressNow).toHaveBeenCalledTimes(1));
@@ -606,6 +625,7 @@ describe("Project → Lanes, Location, and Computer → ADE service", () => {
   it("uses plain language with no internal jargon on every page", async () => {
     installAdeMock({ withExtras: true });
     const lanes = renderLanes();
+    await openView("Space");
     await openDetails();
     expectNoJargon(lanes.container.textContent ?? "");
     cleanup();
@@ -625,12 +645,14 @@ describe("Project → Lanes, Location, and Computer → ADE service", () => {
   it("offers safe cleanup for an obsolete backup even when the cache estimate is zero", async () => {
     installAdeMock({ extras: { ...makeExtras(), safeReclaimableBytes: 0 } });
     renderLanes();
+    await openView("Space");
     expect(await screen.findByRole("button", { name: /clean up safely/i })).toBeTruthy();
   });
 
   it("puts on the Clean up button what it removes, previews those files, then runs maintenance", async () => {
     const { cleanupPreview, cleanup: cleanupFn, runMaintenanceNow } = installAdeMock({ withExtras: true });
     renderLanes();
+    await openView("Space");
 
     // npm 250 MB + iOS build data 200 MB + the obsolete backup 60 MB.
     const primary = await screen.findByRole("button", { name: "Clean up safely · 510 MB" });
@@ -670,6 +692,7 @@ describe("Project → Lanes, Location, and Computer → ADE service", () => {
     };
     installAdeMock({ withExtras: true, maintenanceReport: failedReport });
     renderLanes();
+    await openView("Space");
 
     fireEvent.click(await screen.findByRole("button", { name: /clean up safely/i }));
     const dialog = await screen.findByRole("dialog");
@@ -682,6 +705,7 @@ describe("Project → Lanes, Location, and Computer → ADE service", () => {
   it("shows the database breakdown in plain words", async () => {
     installAdeMock({ withExtras: true });
     renderLanes();
+    await openView("Space");
     await openDetails();
     expect(await screen.findByText("Webhook history")).toBeTruthy();
     expect(screen.getByText("Sync bookkeeping")).toBeTruthy();
@@ -692,6 +716,7 @@ describe("Project → Lanes, Location, and Computer → ADE service", () => {
   it("lists cleanups with what each freed, by kind", async () => {
     installAdeMock({ withExtras: true });
     renderLanes();
+    await openView("Space");
     expect(await screen.findByText(/database 480 MB/)).toBeTruthy();
     expect(screen.getByText(/2 cleanups freed 480 MB/)).toBeTruthy();
   });
@@ -732,6 +757,7 @@ describe("Project → Lanes, Location, and Computer → ADE service", () => {
     vi.mocked(readAppleRecordingsTotalBytes).mockResolvedValue(6 * 1024 ** 3);
     installAdeMock({ withExtras: true });
     renderLanes();
+    await openView("Space");
     await openDetails();
 
     expect(await screen.findByText("Apple recordings")).toBeTruthy();
@@ -758,17 +784,17 @@ describe("Project → Lanes, Location, and Computer → ADE service", () => {
     await waitFor(() => expect(getReport).toHaveBeenLastCalledWith({ forceRefresh: true }, null));
   });
 
-  it("opens the closed block a link names", async () => {
+  it("shows the view that holds the card a link names", async () => {
     installAdeMock({ withExtras: true });
     (window.ade as any).sessions = { getLifecycleSettings: vi.fn(async () => ({ autoSettleLaneSessionsOnPrMerge: true })) };
     (window.ade as any).project = { getSnapshot: vi.fn(() => new Promise(() => undefined)), onStateEvent: vi.fn(() => () => undefined) };
     // jsdom draws no layout; the page scrolls the named card into view.
     Element.prototype.scrollIntoView = vi.fn();
     renderLanes("/settings?tab=lanes-git#session-lifecycle");
-    expect(await screen.findByRole("button", { name: /^sessions$/i, expanded: true })).toBeTruthy();
+    expect(await screen.findByRole("tab", { name: /^Rules/, selected: true })).toBeTruthy();
     expect(await screen.findByText("Auto-settle sessions when lane PR merges")).toBeTruthy();
-    // The blocks the link did not name stay closed.
-    expect(screen.getByRole("button", { name: /how lanes start/i, expanded: false })).toBeTruthy();
+    // The lane list belongs to another view and is not drawn.
+    expect(screen.queryByRole("button", { name: /check again/i })).toBeNull();
   });
 
   it("reads the project's machine through its pin and keeps this computer's service numbers off another machine's page", async () => {

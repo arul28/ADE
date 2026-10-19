@@ -48,7 +48,7 @@ import {
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import type { Server as NetServer } from "node:net";
-import type { DiskPressureMonitor, DiskPressureSnapshot } from "../storage/diskPressure";
+import { createDiskPressureMonitor, type DiskPressureMonitor, type DiskPressureSnapshot } from "../storage/diskPressure";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { stripHostOnlyChatMetadata } from "../../../shared/chatAutoResume";
@@ -4355,8 +4355,13 @@ export function registerIpc({
     await restartBrainForRepair(projectRecoveryService, productAnalyticsService);
   });
 
+  // With no project open (or one on another machine) there is no project
+  // monitor, but this computer's disk can still fill up: read the disk ADE's
+  // own folder lives on. It samples only when asked, so it costs nothing idle.
+  let machineDiskPressureMonitor: DiskPressureMonitor | null = null;
   ipcMain.handle(IPC.storageGetPressure, async (): Promise<DiskPressureSnapshot> => {
-    const monitor = requireAppContextValue(getCtx(), "diskPressureMonitor");
+    const monitor = getCtx().diskPressureMonitor
+      ?? (machineDiskPressureMonitor ??= createDiskPressureMonitor({ roots: [resolveMachineAdeLayout().adeDir] }));
     return monitor.getSnapshot({ maxAgeMs: 1_000 });
   });
 
@@ -5048,11 +5053,16 @@ export function registerIpc({
     const { root, controller } = projectMoveRoot(arg?.projectRoot);
     return controller.preflight({ projectRoot: root, destinationRoot: requireDestination(arg?.destinationRoot) });
   });
-  ipcMain.handle(IPC.projectMoveStart, async (event, arg: { projectRoot?: unknown; destinationRoot?: unknown; moveAgentHistory?: unknown }) => {
+  ipcMain.handle(IPC.projectMoveStart, async (event, arg: { projectRoot?: unknown; destinationRoot?: unknown; moveAgentHistory?: unknown; copyDependencies?: unknown }) => {
     const { root, controller } = projectMoveRoot(arg?.projectRoot);
     const windowId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;
     const result = await controller.start(
-      { projectRoot: root, destinationRoot: requireDestination(arg?.destinationRoot), moveAgentHistory: arg?.moveAgentHistory === true },
+      {
+        projectRoot: root,
+        destinationRoot: requireDestination(arg?.destinationRoot),
+        moveAgentHistory: arg?.moveAgentHistory === true,
+        copyDependencies: arg?.copyDependencies === true,
+      },
       windowId,
     );
     // A move refused before it began (another move running, a check that now

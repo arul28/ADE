@@ -5,21 +5,13 @@ export type SettingsRailEntry = { id: string; title: string; icon?: ReactNode };
 
 /**
  * A sticky list of the sections on one settings page, with the one you are
- * looking at marked. Clicking an entry scrolls to it. `onSelect` runs first;
- * when it returns true the page scrolls itself (say, once a folded section
- * it just opened is drawn), and the rail does not.
+ * looking at marked. Clicking an entry scrolls to it.
  *
  * Drawn only where the page has room: the CSS container query hides the rail
  * below the split width. `TabContent` leaves it out for a page with fewer than
  * two named sections.
  */
-export function SettingsSectionRail({
-  entries,
-  onSelect,
-}: {
-  entries: readonly SettingsRailEntry[];
-  onSelect?: (id: string) => boolean | void;
-}) {
+export function SettingsSectionRail({ entries }: { entries: readonly SettingsRailEntry[] }) {
   const railRef = useRef<HTMLElement | null>(null);
   const [activeId, setActiveId] = useState<string | null>(entries[0]?.id ?? null);
   // The page hands over a fresh array each render; the listeners follow the
@@ -66,9 +58,8 @@ export function SettingsSectionRail({
   }, [entriesKey]);
 
   const jump = useCallback((id: string) => {
-    if (onSelect?.(id) === true) return;
     document.getElementById(id)?.scrollIntoView({ block: "start", behavior: "smooth" });
-  }, [onSelect]);
+  }, []);
 
   return (
     <nav ref={railRef} className="ade-settings-rail" aria-label="On this page">

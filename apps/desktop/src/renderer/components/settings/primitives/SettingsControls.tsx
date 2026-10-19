@@ -287,10 +287,20 @@ export function SettingsNumber({
           textAlign: "right",
         }}
       />
-      {atSentinel ? (
-        <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textDim }}>{sentinelLabel}</span>
-      ) : suffix ? (
-        <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>{suffix}</span>
+      {/* One width for the unit and the "off" word, so a column of these
+          fields keeps its boxes lined up whichever word each one shows. */}
+      {sentinelLabel != null || suffix ? (
+        <span
+          style={{
+            minWidth: 48,
+            fontFamily: SANS_FONT,
+            fontSize: 11,
+            color: atSentinel ? COLORS.textDim : COLORS.textMuted,
+            whiteSpace: "nowrap",
+          }}
+        >
+          {atSentinel ? sentinelLabel : suffix}
+        </span>
       ) : null}
     </span>
   );

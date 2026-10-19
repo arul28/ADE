@@ -172,7 +172,7 @@ export function HealthSpace({ data }: { data: HealthData }) {
         anchor="storage"
         title="Storage"
         hint={snapshot
-          ? `ADE keeps ${formatMeasuredBytes(snapshot.totalAdeBytes, snapshot.truncated)} for this project. Measured ${relativeWhen(snapshot.generatedAt)}.`
+          ? `ADE keeps ${formatMeasuredBytes(snapshot.totalAdeBytes, snapshot.truncated)} for this project and its own temporary files. Measured ${relativeWhen(snapshot.generatedAt)}.`
           : "What ADE keeps for this project, and what you can clear."}
         actions={snapshot ? (
           <>
@@ -187,7 +187,17 @@ export function HealthSpace({ data }: { data: HealthData }) {
               {refreshing ? "Measuring" : "Measure again"}
             </button>
             {canCleanUp ? (
-              <button type="button" onClick={() => setSafeOpen(true)} className="ade-modern-btn" data-tone="primary">
+              <button
+                type="button"
+                onClick={() => {
+                  setSafeOpen(true);
+                  // The preview measures now; re-measure the page too, so this
+                  // button's size catches up with the one the preview shows.
+                  void loadStorage({ force: true, silent: true });
+                }}
+                className="ade-modern-btn"
+                data-tone="primary"
+              >
                 <Broom size={13} />
                 {cleanLabel}
               </button>
@@ -241,7 +251,7 @@ export function HealthSpace({ data }: { data: HealthData }) {
                 <span className="ade-modern-stat-value">
                   <span className="kit-stat kit-num">{formatMeasuredBytes(snapshot.totalAdeBytes, snapshot.truncated)}</span>
                 </span>
-                <span className="ade-modern-stat-sub">This project&apos;s lanes, chats, proof, caches and database</span>
+                <span className="ade-modern-stat-sub">This project&apos;s lanes, chats, proof, caches and database, plus ADE&apos;s temporary files on this machine</span>
               </div>
               <div className="ade-modern-stat">
                 <span className="kit-eyebrow">Database</span>
