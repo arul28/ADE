@@ -41,8 +41,12 @@ stops after three refused placements for the same display layout.
 
 A listen-only mouse event tap watches for an unleased physical pointer entering
 an ADE display and returns it to the nearest point inside the real display it
-came from. It leaves driver-posted input and active leases alone, and does not
-interrupt a drag. The offscreen-region fallback has no virtual display to fence.
+came from. It leaves driver-posted input and active leases alone. A physical
+drag is fenced too, so a window the person drags cannot be lost on a lane
+display; a lane's own lease or gesture is never interrupted. On a single
+5120x1440 display, relative HID pushes diagonally into the corner crossed onto
+the lane display without the fence and stop just inside the corner with it.
+The offscreen-region fallback has no virtual display to fence.
 
 Four rules make the isolation hold:
 
@@ -256,7 +260,8 @@ client.
   `macDesktop.takeControl` / `returnControl` / `renewLease` / `input`, all
   controller-only (never `viewerAllowed`) and advertised with
   `hello.features.macDesktopControl`. The browser pane draws the same strip
-  state ("You have control · Return to agent"), forwards pointer and keyboard
+  state as the desktop pane — a pill on the picture, "You're driving this
+  screen. Press Esc to give it back · Return to agent" — forwards pointer and keyboard
   through `useMacDesktopRealInput` with a sync sender, draws the same local
   cursor glyph, and renews the lease every TTL/3. It gives control back when
   the user hands it back, the tab hides, the page unloads, the socket closes,
@@ -349,7 +354,13 @@ names the holding lane.
    synthetic event posted without Accessibility is dropped by macOS with no
    error: the service refuses real input with `MAC_DESKTOP_PERMISSION_REQUIRED`
    naming the grant (`macDesktopInput.ts`) instead of letting a takeover look
-   like a dead screen.
+   like a dead screen. A person cannot take control at all while either grant
+   is off: `takeControl` refuses with `MAC_DESKTOP_PERMISSION_REQUIRED` on the
+   host, so the phone, the web client and the desktop all get the same answer,
+   and the pane disables Take over and the click-to-take on the picture. The
+   grant is made on the real screen through the permission card; macOS ignores
+   synthetic clicks on its privacy switches, and a password sheet raised on a
+   lane display would take the keyboard, Escape included.
 3. **Idle release.** A display with no parked windows, no stream reader and no
    running recording for `MAC_DESKTOP_IDLE_RELEASE_MS` is destroyed on a 30s
    sweep. The next open recreates it. The display size comes from the

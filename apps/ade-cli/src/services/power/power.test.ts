@@ -1,4 +1,17 @@
-import { describe, expect, it, vi } from "vitest";
+import { EventEmitter } from "node:events";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+const { spawnMock } = vi.hoisted(() => ({ spawnMock: vi.fn() }));
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return {
+    ...actual,
+    spawn: (...args: unknown[]) => spawnMock(...args),
+  };
+});
+
 import type { MachinePower } from "../../../../desktop/src/shared/types/power";
 import {
   createMachinePowerMonitor,
@@ -16,6 +29,7 @@ import {
   createSuspendGapDetector,
   type SuspendGapDetector,
 } from "./suspendGapDetector";
+import { createBrainKeepAwakeService } from "./brainKeepAwakeService";
 
 // The brain's power surface as one contract: reading what the hardware says
 // (machinePowerReader), noticing a suspend nobody announced (suspendGapDetector),
@@ -642,5 +656,135 @@ describe("createMachinePowerMonitor", () => {
     h.monitor.noteAnnouncedSuspend();
 
     expect(h.events).toEqual([]);
+  });
+});
+
+function fakeKeepAwakeChild() {
+  return Object.assign(new EventEmitter(), {
+    kill: vi.fn(() => true),
+    unref: vi.fn(),
+  });
+}
+
+describe("createBrainKeepAwakeService", () => {
+  const children: ReturnType<typeof fakeKeepAwakeChild>[] = [];
+  const services: Array<ReturnType<typeof createBrainKeepAwakeService>> = [];
+  const temporaryDirectories: string[] = [];
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
+    children.length = 0;
+    spawnMock.mockReset();
+    spawnMock.mockImplementation(() => {
+      const child = fakeKeepAwakeChild();
+      children.push(child);
+      return child;
+    });
+  });
+
+  afterEach(() => {
+    for (const service of services.splice(0)) service.dispose();
+    for (const directory of temporaryDirectories.splice(0)) {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+    spawnMock.mockReset();
+    vi.useRealTimers();
+  });
+
+  /** One poll interval of the real `start()` timer, with its async read settled. */
+  const poll = () => vi.advanceTimersByTimeAsync(5_000);
+
+  /** Starts the service the way the brain does; its first pass runs at once. */
+  async function started(service: ReturnType<typeof createBrainKeepAwakeService>) {
+    service.start();
+    await vi.advanceTimersByTimeAsync(0);
+    return service;
+  }
+
+  function makeService(readActiveAgentWork: () => Promise<boolean | number>) {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "brain-keep-awake-test-"));
+    temporaryDirectories.push(directory);
+    const statePath = path.join(directory, "keep-awake.json");
+    fs.writeFileSync(statePath, JSON.stringify({
+      version: 1,
+      preferences: { level: "while-away" },
+      legacyMigrationComplete: true,
+    }));
+    const service = createBrainKeepAwakeService({
+      statePath,
+      platform: "darwin",
+      pollMs: 5_000,
+      readActiveAgentWork,
+    });
+    services.push(service);
+    return service;
+  }
+
+  it("holds one caffeinate child through repeated active polls, releases it when idle, and starts again with work", async () => {
+    let active = true;
+    await started(makeService(async () => active));
+    await poll();
+    await poll();
+
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(spawnMock).toHaveBeenNthCalledWith(
+      1,
+      "/usr/bin/caffeinate",
+      ["-i", "-w", String(process.pid)],
+      expect.objectContaining({ stdio: "ignore", windowsHide: true }),
+    );
+    expect(children).toHaveLength(1);
+
+    active = false;
+    await poll();
+    expect(children[0]?.kill).toHaveBeenCalledTimes(1);
+
+    active = true;
+    await poll();
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+    expect(children[1]).not.toBe(children[0]);
+  });
+
+  it("stops a held child for Never, skips later polls, and releases another held child on dispose", async () => {
+    const neverService = await started(makeService(async () => true));
+    const neverChild = children[0];
+    const snapshot = await neverService.setLevel("never");
+
+    expect(snapshot.preferences.level).toBe("never");
+    expect(neverChild?.kill).toHaveBeenCalledTimes(1);
+    await poll();
+    await poll();
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+
+    const disposeService = await started(makeService(async () => true));
+    const disposeChild = children[1];
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+    disposeService.dispose();
+    expect(disposeChild?.kill).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the lock through brief activity read failures, then releases on the third and resets after success", async () => {
+    let failRead = false;
+    await started(makeService(() => failRead
+      ? Promise.reject(new Error("activity source unavailable"))
+      : Promise.resolve(true)));
+    const child = children[0];
+
+    failRead = true;
+    await poll();
+    await poll();
+    expect(child?.kill).not.toHaveBeenCalled();
+
+    failRead = false;
+    await poll();
+    expect(child?.kill).not.toHaveBeenCalled();
+
+    failRead = true;
+    await poll();
+    await poll();
+    expect(child?.kill).not.toHaveBeenCalled();
+    await poll();
+    expect(child?.kill).toHaveBeenCalledTimes(1);
+    expect(spawnMock).toHaveBeenCalledTimes(1);
   });
 });

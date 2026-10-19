@@ -49,8 +49,6 @@ export type BrainKeepAwakeService = {
     handled: boolean;
   }>;
   fixSystemSleep(): Promise<KeepAwakeFixResult>;
-  /** Runs one activity reconciliation pass. */
-  refreshBlocker(): Promise<void>;
 };
 
 export type BrainKeepAwakeServiceOptions = {
@@ -202,9 +200,12 @@ export function createBrainKeepAwakeService(
     if (!current) return;
     try {
       current.kill();
-    } catch {
+    } catch (error) {
       // `caffeinate -w` and the Windows parent-handle waiter also release on
       // brain exit; a failed explicit stop is not grounds to keep polling.
+      options.logger?.warn("keepAwake.lock_stop_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
     options.logger?.info("keepAwake.lock_released");
   };
@@ -330,10 +331,19 @@ export function createBrainKeepAwakeService(
     return supportsWakeLock ? null : "This machine doesn't support a keep-awake lock.";
   };
 
+  /** A probe the settings pane shows as "could not be read"; logged so it is not silent. */
+  const warnProbeFailed = (probe: "lid_closed" | "system_sleep", error: unknown): null => {
+    options.logger?.warn("keepAwake.probe_failed", {
+      probe,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  };
+
   const snapshot = async (): Promise<KeepAwakeSnapshot> => {
     const [lidClosedActive, systemSleep] = await Promise.all([
-      readLidClosedActive(platform).catch(() => null),
-      readSystemSleepConfig({ platform }).catch(() => null),
+      readLidClosedActive(platform).catch((error: unknown) => warnProbeFailed("lid_closed", error)),
+      readSystemSleepConfig({ platform }).catch((error: unknown) => warnProbeFailed("system_sleep", error)),
     ]);
     return {
       preferences: { ...state.preferences },
@@ -451,7 +461,5 @@ export function createBrainKeepAwakeService(
       if (!result.ok) options.logger?.warn("keepAwake.system_sleep_fix_failed", result);
       return { ...result, snapshot: await snapshot() };
     },
-
-    refreshBlocker,
   };
 }
