@@ -398,11 +398,11 @@ async function mcpItems(): Promise<AttentionItem[]> {
   return items;
 }
 
-async function integrationItems(hasProject: boolean): Promise<AttentionItem[]> {
+async function integrationItems(hasProject: boolean, failed?: string[]): Promise<AttentionItem[]> {
   if (!hasProject) return [];
   const [linear, jira] = await Promise.all([
-    quiet(window.ade.cto?.getLinearConnectionStatus ? () => window.ade.cto!.getLinearConnectionStatus() : null),
-    quiet(() => window.ade.jira.getConnectionStatus()),
+    quiet(window.ade.cto?.getLinearConnectionStatus ? () => window.ade.cto!.getLinearConnectionStatus() : null, failed, "Linear"),
+    quiet(() => window.ade.jira.getConnectionStatus(), failed, "Jira"),
   ]);
   const items: AttentionItem[] = [];
   if (linear && linear.tokenStored && !linear.connected) {
@@ -510,11 +510,15 @@ export function useNeedsAttention({ hasProject }: { hasProject: boolean }) {
     setChecking(false);
     // The slow ones, after the list is on screen.
     const late = await Promise.all([
-      quiet(mcpItems),
-      quiet(() => integrationItems(hasProject)),
+      quiet(mcpItems, failed, "MCP servers"),
+      quiet(() => integrationItems(hasProject, failed), failed, "integrations"),
     ]);
     if (current !== request.current) return;
     setLateItems(late.flatMap((entry) => entry ?? []));
+    setItems((currentItems) => [
+      ...currentItems.filter((item) => item.id !== "overview-read-failed"),
+      ...readFailureItem(failed, () => load({ force: true })),
+    ]);
   }, [hasProject]);
 
   React.useEffect(() => {

@@ -90,6 +90,7 @@
     "@cursor/sdk": "1.0.36",
     "@factory/droid-sdk": "0.9.1",
     "@github/copilot-sdk": "1.0.22",
+    "koffi": "3.2.1",
     "@linear/sdk": "^84.0.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@openai/codex": "0.162.1",
