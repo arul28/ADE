@@ -50,9 +50,22 @@ final class DriverRuntime: NSObject {
     private lazy var capture = CaptureEngine(log: log, emit: emit)
     lazy var realInput = RealInput(leases: leases, log: log)
     lazy var backgroundInput = BackgroundInput(log: log)
-    lazy var displayReconfiguration = DisplayReconfigurationWatcher { [weak self] in
-        self?.relocateMovedDisplays()
-    }
+    private lazy var pointerFence = PointerFence(
+        shouldRedirect: { [weak self] laneId in
+            guard let self else { return false }
+            // Another ADE helper owns its own lease state and fence. Do not
+            // interfere with a display this process cannot associate to a lane.
+            guard let laneId else { return false }
+            let hasLease = self.leases.lease(forLane: laneId)?.isValid(now: Date()) ?? false
+            return !hasLease && self.gestures.activeLaneId != laneId
+        },
+        laneIdForDisplay: { [weak self] displayId in self?.displays.laneId(forDisplayId: displayId) },
+        log: log
+    )
+    lazy var displayReconfiguration = DisplayReconfigurationWatcher(
+        onChange: { [weak self] in self?.relocateMovedDisplays() },
+        log: log
+    )
 
     /// "A drag — real, or background — is in flight right now." Consulted by
     /// the dispatcher below, set by the `drag` paths in `InputCommands`, and read by
@@ -137,6 +150,7 @@ final class DriverRuntime: NSObject {
         installSignalHandlers()
         startWatchdog()
         displayReconfiguration.start()
+        pointerFence.start()
         log("ade-desktop-driver \(driverVersion) ready (pid \(getpid()))")
         application.run()
     }
@@ -252,6 +266,7 @@ final class DriverRuntime: NSObject {
         isShuttingDown = true
         shutdownStarted.set()
         log("shutting down: \(reason)")
+        pointerFence.stop()
         watchdog?.cancel()
         watchdog = nil
         permissionTimer?.invalidate()
@@ -588,6 +603,7 @@ final class DriverRuntime: NSObject {
         let quit = windows.quitLaunchedApps(laneId: laneId)
         let released = windows.releaseLane(laneId)
         let destroyed = displays.destroy(laneId: laneId)
+        relocateMovedDisplays()
         lastActivity.removeValue(forKey: laneId)
         emit(
             DriverEvent(
@@ -615,6 +631,7 @@ final class DriverRuntime: NSObject {
         _ = try? capture.stopRecording(laneId: laneId)
         let quit = windows.quitLaunchedApps(laneId: laneId)
         let released = windows.releaseLane(laneId)
+        relocateMovedDisplays()
         lastActivity.removeValue(forKey: laneId)
         log("lane \(laneId) lost its virtual display; released \(released) window(s)")
         emit(
@@ -642,6 +659,7 @@ final class DriverRuntime: NSObject {
             windows.stopGate.end(laneId)
             destroyed.append(laneId)
         }
+        if !destroyed.isEmpty { relocateMovedDisplays() }
         updatePermissionProbe()
         return ["destroyed": .array(destroyed.map(JSONValue.string))]
     }

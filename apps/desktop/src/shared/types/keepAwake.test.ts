@@ -15,6 +15,7 @@ describe("INERT_KEEP_AWAKE_SNAPSHOT", () => {
     // fourth — and the value that gets forgotten is always the dangerous one.
     expect(INERT_KEEP_AWAKE_SNAPSHOT).toEqual({
       preferences: DEFAULT_KEEP_AWAKE_PREFERENCES,
+      platform: "other",
       lidClosedSupported: false,
       lidClosedActive: false,
       levelError: null,

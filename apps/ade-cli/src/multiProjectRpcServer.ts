@@ -418,10 +418,15 @@ export async function readMachineRuntimeActivitySummary(args: BootedRuntimeSourc
   ];
   const activeAgentTurns = parts.reduce((total, part) => total + part.activeAgentTurns, 0);
   const activeWorkSessions = parts.reduce((total, part) => total + part.activeWorkSessions, 0);
+  const activeAgentCliSessions = parts.reduce(
+    (total, part) => total + (part.activeAgentCliSessions ?? 0),
+    0,
+  );
   return {
     idle: activeAgentTurns === 0 && activeWorkSessions === 0,
     activeAgentTurns,
     activeWorkSessions,
+    ...(activeAgentCliSessions > 0 ? { activeAgentCliSessions } : {}),
   };
 }
 

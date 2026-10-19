@@ -141,13 +141,12 @@ Main process:
   brain, the CLI, and the desktop all see an interrupted rotation. `tryBegin`
   compare-and-swaps that entry so a live peer's in-flight Clerk refresh is a
   mutex, not a race.
-- `apps/desktop/src/main/services/power/keepAwakeService.ts` and
-  `systemSleepConfig.ts` — the opt-in keep-awake setting. The service holds an
-  Electron `powerSaveBlocker` only while a turn is actually running, reads and
-  writes the macOS lid-sleep switch, and reads the machine's own idle-sleep
-  timer so the UI can offer to fix a setting that would stop agents anyway.
-  Constructed in `main.ts` with `readActiveTurns` wired to the runtime pool's
-  `activitySummary()`. See [Keeping the machine awake](#keeping-the-machine-awake).
+- `apps/ade-cli/src/services/power/brainKeepAwakeService.ts` — the brain-owned
+  keep-awake preference and turn-following lock. The desktop helper in
+  `apps/desktop/src/main/services/power/keepAwakeService.ts` handles the local
+  macOS authorization prompt and is an in-process fallback only when an older
+  brain does not expose the new action; `systemSleepConfig.ts` reads and fixes
+  the OS's idle-sleep timer. See [Keeping the machine awake](#keeping-the-machine-awake).
 - `apps/desktop/src/shared/types/keepAwake.ts` — `KeepAwakeLevel`,
   `KeepAwakeSnapshot`, `normalizeKeepAwakePreferences` (anything unrecognized
   degrades to `never` — an unreadable preference must never be read as "hold the
@@ -2130,13 +2129,16 @@ surfaces *Auto-rebase child lanes — Lanes* and lands on that card.
 ### Keeping the machine awake
 
 **Keep this Mac awake while agents work** (Settings → Behaviour, anchor
-`keep-awake`) is one radiogroup with three levels, persisted as
-`keepAwakePreferences` on `GlobalState`:
+`keep-awake`) is one radiogroup with three levels. The selected machine's brain
+stores the preference in `<ADE_HOME>/keep-awake.json`, so the rule remains in
+effect after the desktop quits and the brain serves a phone. On first use, the
+desktop migrates `keepAwakePreferences` from `GlobalState` and removes the old
+value only after the brain confirms the migration:
 
 | Level | What it does | Where it works |
 |---|---|---|
 | `never` (default) | ADE holds nothing. Turns pause when the machine sleeps, and the chat says so. | everywhere |
-| `while-away` | Electron `powerSaveBlocker.start("prevent-app-suspension")`, held **only while a turn is running**. Stops idle sleep. Not the lid. | macOS, Windows |
+| `while-away` | The brain holds one OS wake lock **only while work is running**. macOS runs `caffeinate -i -w <brain pid>`; Windows runs a helper using `SetThreadExecutionState` that exits with the brain. Stops idle sleep. Not the lid. | macOS, Windows |
 | `lid-closed` | `pmset -a disablesleep 1` through the system authorization dialog. Machine-wide, and it outlives ADE. | macOS only |
 
 The distinction between the middle and top levels is the whole point of the
@@ -2145,21 +2147,20 @@ only.** An `IOPMAssertion` held continuously for 35 days sat through two
 clamshell sleeps. Nothing in this feature's code or copy may imply otherwise.
 Only `pmset -a disablesleep` survives a closed lid, and it is root-only and
 machine-wide — which is why the top level asks for a password and warns that it
-stays on after you quit. Windows has no equivalent, so the third level is
-**absent** on Windows rather than disabled; a greyed row would imply one is
-coming. The renderer keys that off `snapshot.lidClosedSupported` rather than a
-client-side platform check, and only the copy ("this Mac" vs "this PC") reads
-the local platform.
+stays on after you quit. The password prompt runs in the selected Mac's desktop;
+for a remote Mac, open Settings on that Mac to authorize the change. Windows has
+no equivalent, so the third level is **absent** on Windows rather than disabled.
+The selected brain reports its platform, so the settings pane describes the
+machine it is showing.
 
 Two behaviors follow from the level being an arming switch, not a pin:
 
-- The blocker follows the **turn**, not the setting. A 5-second poll asks the
-  runtime pool how many agent turns are active and acquires or releases
-  accordingly; a failed read counts as zero, failing toward releasing the lock.
-  Choosing `never` releases synchronously instead of waiting for the next poll.
-  The `runtime.activitySummary` call the poll depends on carries its own 4-second
-  budget precisely because a wedged call inheriting the 10-minute RPC default
-  could hold the lock long after the user turned it off.
+- The lock follows the **work**, not the setting. A 5-second brain poll counts
+  active agent turns plus tracked agent CLI sessions whose PTY state is
+  `running`; idle shells and merely-open sessions do not count. One helper runs
+  for the full active period, and a failed activity read releases the lock.
+  `never` releases synchronously. macOS's `-w` and the Windows process-handle
+  wait also release the lock when the brain exits.
 - The snapshot reports what the **machine** says, not what the stored level
   says. A `lid-closed` level whose assertion was released behind ADE's back
   renders a "This Mac can still sleep." alert with a **Turn on again** action,
@@ -2174,10 +2175,15 @@ one-click fix. The macOS fix writes system power settings and is labelled
 **Fix — needs your password**; the Windows fix edits the signed-in user's active
 scheme and needs no elevation.
 
-The three IPC channels are `ade.keepAwake.get`, `ade.keepAwake.setLevel`, and
-`ade.keepAwake.fixSystemSleep`. Hosted web and the browser mock implement the
-same names against `INERT_KEEP_AWAKE_SNAPSHOT` and answer the fix with "Change
-this on the computer itself."
+Reads and writes use the remote-capable `keep_awake` runtime action, pinned to
+the selected machine. The local desktop handles the macOS admin prompt because
+the brain has no GUI. Fixing the local Mac's system sleep timer still uses that
+prompt; a remote Mac is directed to its own Settings, while Windows uses the
+selected brain action. The desktop starts its old in-process blocker only when
+the connected local brain reports that it lacks the new action; successful
+brain reads stop that fallback before it can duplicate the brain's lock. Hosted
+web and the browser mock report the frozen inert snapshot and direct the user
+to change power settings on the computer.
 
 For what happens when the machine sleeps anyway, see
 [chat → When the host machine sleeps](../chat/README.md#when-the-host-machine-sleeps)
@@ -2223,7 +2229,7 @@ proxy fabricates callable namespaces for missing properties, so
 | Context doc prefs | `AdeDb` via `context:docs:preferences.v1` | provider, model, reasoning effort, event triggers |
 | Terminal preferences | `localStorage` under `ade.terminalPreferences.v1` | font size, line height, scrollback, font family |
 | Work view state | `localStorage` under `ade.workViewState.v1` | per-project and per-lane-project slices |
-| Keep-awake level | `GlobalState` in `<userData>/ade-state.json` under `keepAwakePreferences` | machine-scoped; anything unreadable normalizes to `never` |
+| Keep-awake level | `<ADE_HOME>/keep-awake.json` | brain-owned and machine-scoped; old `GlobalState.keepAwakePreferences` migrates once; unreadable state fails toward `never` |
 | GitHub credentials | Keychain via `safeStorage` | tokens encrypted; a store ADE cannot decrypt reports `credentialStoreUnreadable` rather than "not connected" |
 | Account settings cache | `~/.ade/account-settings.json` | Plaintext, owner-tagged cache; settings survive sign-out and stamps are namespaced by account |
 | Account vault cache | `~/.ade/account-vault.json.enc` | Encrypted with the machine credential-store key, written atomically with `0600`; legacy plaintext is removed after a successful encrypted write |

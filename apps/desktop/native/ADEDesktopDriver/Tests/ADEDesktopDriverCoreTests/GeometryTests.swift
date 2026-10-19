@@ -35,6 +35,65 @@ final class GeometryTests: XCTestCase {
         )
     }
 
+    func testCornerChainTouchesTheLowestLeftSafeCornerAndKeepsOnlyPointContacts() {
+        let real = [CGRect(x: 0, y: 0, width: 5120, height: 1440)]
+        let templates = [
+            DisplayPlacement(origin: .zero, width: 2560, height: 1440, scale: 1),
+            DisplayPlacement(origin: .zero, width: 1280, height: 800, scale: 2),
+        ]
+
+        let planned = Geometry.cornerChainPlacements(
+            realDisplayFrames: real,
+            laneDisplayTemplates: templates
+        )
+
+        XCTAssertEqual(planned?.map(\.origin), [
+            CGPoint(x: -2560, y: 1440),
+            CGPoint(x: -3840, y: 2880),
+        ])
+        XCTAssertEqual(planned?.map(\.scale), [1, 2])
+        for placement in planned ?? [] {
+            for display in real {
+                let overlapWidth = min(placement.frame.maxX, display.maxX) - max(placement.frame.minX, display.minX)
+                let overlapHeight = min(placement.frame.maxY, display.maxY) - max(placement.frame.minY, display.minY)
+                XCTAssertFalse(
+                    overlapWidth >= 0 && overlapHeight >= 0 && (overlapWidth > 0 || overlapHeight > 0),
+                    "A lane display may touch a real display at a point, but may not overlap or share an edge."
+                )
+            }
+        }
+    }
+
+    func testCornerChainSkipsAnUnsafeCornerOnAnAsymmetricMonitorLayout() {
+        let real = [
+            CGRect(x: 0, y: 0, width: 1920, height: 1080),
+            // This display blocks the primary's bottom-left corner with an edge.
+            CGRect(x: -1280, y: 1080, width: 1280, height: 1024),
+        ]
+        let template = DisplayPlacement(origin: .zero, width: 1600, height: 900, scale: 1)
+
+        let planned = Geometry.cornerChainPlacements(
+            realDisplayFrames: real,
+            laneDisplayTemplates: [template]
+        )
+
+        XCTAssertEqual(planned?.first?.origin, CGPoint(x: -2880, y: 2104))
+    }
+
+    func testCornerChainAvoidsAnExistingLaneDisplayAtThePreferredCorner() {
+        let real = [CGRect(x: 0, y: 0, width: 5120, height: 1440)]
+        let otherLane = [CGRect(x: -2560, y: 0, width: 2560, height: 1440)]
+        let template = DisplayPlacement(origin: .zero, width: 2560, height: 1440, scale: 1)
+
+        let planned = Geometry.cornerChainPlacements(
+            realDisplayFrames: real,
+            laneDisplayTemplates: [template],
+            obstacleDisplayFrames: otherLane
+        )
+
+        XCTAssertEqual(planned?.first?.origin, CGPoint(x: 5120, y: 1440))
+    }
+
     /// Cocoa origin is the primary's bottom-left; Quartz / CGEvent origin is
     /// the primary's top-left. A pointer 100pt up from the bottom of a
     /// 1080-tall primary is y=980 in Quartz.

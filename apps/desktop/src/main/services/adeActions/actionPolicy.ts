@@ -73,6 +73,9 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
       "putMachinePreferences",
     ],
   },
+  // Keep-awake preferences are machine-wide power policy. The desktop, phone,
+  // and direct user clients can change them; session-bound agents cannot.
+  keep_awake: { only: ["getSnapshot", "setLevel", "migrateLegacyPreference", "fixSystemSleep"] },
   linear_credentials: {
     only: [
       "setToken",
@@ -368,6 +371,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     // the relay caps it at 60 an hour per account.
     "sendNotification",
   ],
+  keep_awake: ["getSnapshot", "setLevel", "migrateLegacyPreference", "fixSystemSleep"],
   lane: [
     "archive",
     "archiveAndReclaim",

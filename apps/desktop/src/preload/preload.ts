@@ -13937,11 +13937,31 @@ const adeBridge = {
         ipcRenderer.invoke(IPC.ctoGetAttention),
       ),
   },
-  keepAwakeGet: (): Promise<KeepAwakeSnapshot> => ipcRenderer.invoke(IPC.keepAwakeGet),
-  keepAwakeSetLevel: (level: KeepAwakeLevel): Promise<KeepAwakeSnapshot> =>
-    ipcRenderer.invoke(IPC.keepAwakeSetLevel, level),
-  keepAwakeFixSystemSleep: (): Promise<KeepAwakeFixResult> =>
-    ipcRenderer.invoke(IPC.keepAwakeFixSystemSleep),
+  // Keep-awake is a "This computer" section: with no pin it means this
+  // computer, so it goes to local IPC (which asks this machine's own brain),
+  // never to the project tab's bound runtime, which may be another machine.
+  keepAwakeGet: async (pin?: OpenProjectBinding | null): Promise<KeepAwakeSnapshot> => {
+    if (pin) return await callPinnedRuntimeAction<KeepAwakeSnapshot>(pin, "keep_awake", "getSnapshot", {});
+    await ipcRenderer.invoke(IPC.keepAwakeMigrateLegacy).catch(() => false);
+    return await ipcRenderer.invoke(IPC.keepAwakeGet);
+  },
+  keepAwakeSetLevel: async (level: KeepAwakeLevel, pin?: OpenProjectBinding | null): Promise<KeepAwakeSnapshot> => {
+    if (pin) {
+      return await callPinnedRuntimeAction<KeepAwakeSnapshot>(pin, "keep_awake", "setLevel", { args: { level } });
+    }
+    await ipcRenderer.invoke(IPC.keepAwakeMigrateLegacy).catch(() => false);
+    return await ipcRenderer.invoke(IPC.keepAwakeSetLevel, level);
+  },
+  keepAwakeFixSystemSleep: async (pin?: OpenProjectBinding | null): Promise<KeepAwakeFixResult> => {
+    if (pin) return await callPinnedRuntimeAction<KeepAwakeFixResult>(pin, "keep_awake", "fixSystemSleep", {});
+    // macOS fixes run in this desktop process; elsewhere the brain owns the level first.
+    if (process.platform !== "darwin") await ipcRenderer.invoke(IPC.keepAwakeMigrateLegacy).catch(() => false);
+    return await ipcRenderer.invoke(IPC.keepAwakeFixSystemSleep);
+  },
+  keepAwakeApplyLidClosed: (disabled: boolean, pin?: OpenProjectBinding | null): Promise<{ ok: boolean; error: string | null }> =>
+    pin
+      ? Promise.resolve({ ok: false, error: "Open Settings on the selected Mac to change lid-closed mode." })
+      : ipcRenderer.invoke(IPC.keepAwakeApplyLidClosed, disabled),
   updateCheckForUpdates: () => ipcRenderer.invoke(IPC.updateCheckForUpdates),
   updateGetState: (): Promise<AutoUpdateSnapshot> =>
     ipcRenderer.invoke(IPC.updateGetState),

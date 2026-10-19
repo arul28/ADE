@@ -393,6 +393,8 @@ export type AutoUpdateSnapshot = {
 export type RuntimeActivityCounts = {
   activeAgentTurns: number;
   activeWorkSessions: number;
+  /** Tracked CLI sessions whose runtime reports active execution. */
+  activeAgentCliSessions?: number;
 };
 
 export type RuntimeActivitySummary = RuntimeActivityCounts & {

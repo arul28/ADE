@@ -1026,16 +1026,17 @@ describe("macDesktopService lease", () => {
 
 describe("macDesktopService real input and the lease", () => {
   it("refuses real input while Accessibility is off, naming the grant, before the driver sees it", async () => {
-    const driver = createFakeDriver({
-      [MAC_DESKTOP_DRIVER_OPS.health]: () => ({
-        version: "1.0.0",
-        permissions: { screenRecording: "granted", accessibility: "denied" },
-        displayMode: "virtual",
-      }),
-    });
+    const driver = createFakeDriver();
     const { service } = makeService({ driver });
     await service.start({ laneId: "lane-1" });
     await service.takeControl({ laneId: "lane-1", controllerId: "ade-window:abc" });
+    driver.overrides[MAC_DESKTOP_DRIVER_OPS.health] = () => ({
+      version: "1.0.0",
+      permissions: { screenRecording: "granted", accessibility: "denied" },
+      displayMode: "virtual",
+    });
+    await service.recheckPermissions({ restartDriver: false });
+    expect((await service.getStatus({ laneId: "lane-1" })).lease).not.toBeNull();
 
     // macOS drops a synthetic event posted without Accessibility silently; the
     // service says so instead of letting the takeover look like a dead screen.
@@ -1051,7 +1052,39 @@ describe("macDesktopService real input and the lease", () => {
       message: expect.stringContaining("Accessibility"),
     });
     expect(driver.calls.some((call) => call.op === MAC_DESKTOP_DRIVER_OPS.input)).toBe(false);
+    service.dispose();
   });
+
+  it.each(["screenRecording", "accessibility"] as const)(
+    "refuses takeover while %s is denied, without leasing the display",
+    async (permission) => {
+      const driver = createFakeDriver();
+      const { service } = makeService({ driver });
+      try {
+        await service.start({ laneId: "lane-1" });
+        driver.overrides[MAC_DESKTOP_DRIVER_OPS.health] = () => ({
+          version: "1.0.0",
+          permissions: {
+            screenRecording: permission === "screenRecording" ? "denied" : "granted",
+            accessibility: permission === "accessibility" ? "denied" : "granted",
+          },
+          displayMode: "virtual",
+        });
+        await service.recheckPermissions({ restartDriver: false });
+        driver.calls.length = 0;
+
+        await expect(service.takeControl({ laneId: "lane-1", controllerId: "ade-window:abc" }))
+          .rejects.toMatchObject({
+            code: "MAC_DESKTOP_PERMISSION_REQUIRED",
+            message: expect.stringContaining(permission === "screenRecording" ? "Screen Recording" : "Accessibility"),
+          });
+        expect((await service.getStatus({ laneId: "lane-1" })).lease).toBeNull();
+        expect(driver.calls.filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.setLease)).toEqual([]);
+      } finally {
+        service.dispose();
+      }
+    },
+  );
 
   it("lets the controller who took over drive, and refuses a chat id that did not", async () => {
     const driver = createFakeDriver();

@@ -16,21 +16,27 @@ import ADEDesktopDriverCore
 /// on the main queue, a beat after the change completes.
 final class DisplayReconfigurationWatcher {
     private let onChange: () -> Void
+    private let log: (String) -> Void
     private var started = false
     private var scheduled = false
 
-    init(onChange: @escaping () -> Void) {
+    init(onChange: @escaping () -> Void, log: @escaping (String) -> Void) {
         self.onChange = onChange
+        self.log = log
     }
 
     func start() {
         guard !started else { return }
         started = true
-        CGDisplayRegisterReconfigurationCallback({ _, flags, refcon in
+        let result = CGDisplayRegisterReconfigurationCallback({ _, flags, refcon in
             guard let refcon, !flags.contains(.beginConfigurationFlag) else { return }
             let watcher = Unmanaged<DisplayReconfigurationWatcher>.fromOpaque(refcon).takeUnretainedValue()
             DispatchQueue.main.async { watcher.schedule() }
         }, Unmanaged.passUnretained(self).toOpaque())
+        if result != .success {
+            started = false
+            log("display reconfiguration callback unavailable (CGError \(result.rawValue)); placements will update on lane changes")
+        }
     }
 
     /// Runs the follow-up once, a beat from now, however many asked.
@@ -56,7 +62,35 @@ extension DriverRuntime {
             displayReconfiguration.schedule()
             return
         }
-        for move in displays.refreshMovedPlacements() {
+
+        var changedByLane: [String: VirtualDisplayHost.DisplayMove] = [:]
+        var order: [String] = []
+        func collect(_ moves: [VirtualDisplayHost.DisplayMove]) {
+            for move in moves {
+                if let first = changedByLane[move.laneId] {
+                    changedByLane[move.laneId] = (
+                        laneId: move.laneId,
+                        displayId: move.displayId,
+                        from: first.from,
+                        to: move.to
+                    )
+                } else {
+                    order.append(move.laneId)
+                    changedByLane[move.laneId] = move
+                }
+            }
+        }
+
+        // Refresh first so a resolution change supplies the real size to the
+        // placement math. Refresh again after ConfigureDisplayOrigin because
+        // the window server may move a lane as it applies the whole chain.
+        collect(displays.refreshMovedPlacements())
+        displays.repositionVirtualDisplays()
+        collect(displays.refreshMovedPlacements())
+
+        for laneId in order {
+            guard let move = changedByLane[laneId] else { continue }
+            guard move.from != move.to else { continue }
             windows.displayMoved(laneId: move.laneId, from: move.from, to: move.to, displayId: move.displayId)
             emit(DriverEvent(event: "display-moved", fields: [
                 "laneId": .string(move.laneId),
@@ -64,6 +98,9 @@ extension DriverRuntime {
                     "x": .double(Double(move.to.origin.x)),
                     "y": .double(Double(move.to.origin.y)),
                 ]),
+                "width": .double(Double(move.to.width)),
+                "height": .double(Double(move.to.height)),
+                "scale": .double(Double(move.to.scale)),
             ]))
         }
     }

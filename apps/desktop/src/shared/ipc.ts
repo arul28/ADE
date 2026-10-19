@@ -1248,6 +1248,8 @@ export const IPC = {
   keepAwakeGet: "ade.keepAwake.get",
   keepAwakeSetLevel: "ade.keepAwake.setLevel",
   keepAwakeFixSystemSleep: "ade.keepAwake.fixSystemSleep",
+  keepAwakeMigrateLegacy: "ade.keepAwake.migrateLegacy",
+  keepAwakeApplyLidClosed: "ade.keepAwake.applyLidClosed",
   updateCheckForUpdates: "ade.update.checkForUpdates",
   updateGetState: "ade.update.getState",
   updateGetPreferences: "ade.update.getPreferences",

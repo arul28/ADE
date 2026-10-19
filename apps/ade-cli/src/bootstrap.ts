@@ -86,6 +86,7 @@ import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "../
 import { createAgentChatService } from "../../desktop/src/main/services/chat/agentChatService";
 import { createChatRuntimeBudget } from "../../desktop/src/main/services/chat/chatRuntimeBudget";
 import { borrowSharedMachinePowerSource } from "./services/power/sharedMachinePowerMonitor";
+import type { BrainKeepAwakeService } from "./services/power/brainKeepAwakeService";
 import type { createPrService } from "../../desktop/src/main/services/prs/prService";
 import {
   emitPrCardsForChange,
@@ -444,6 +445,8 @@ export type AdeRuntime = {
   accountSettingsStore?: AccountSettingsStore | null;
   /** Machine-scoped, so null on a `--no-sync` brain. */
   accountVaultStore?: AccountVaultStore | null;
+  /** Shared by every project scope in the brain; the desktop owns the GUI prompt. */
+  keepAwakeService?: BrainKeepAwakeService | null;
   conflictService: ReturnType<typeof createConflictService>;
   gitService: ReturnType<typeof createGitOperationsService>;
   diffService: ReturnType<typeof createDiffService>;
@@ -857,6 +860,8 @@ export async function createAdeRuntime(args: {
   syncRuntime?: AdeRuntimeSyncOptions;
   /** The brain's way to another machine, for moving a chat there. */
   crossMachineHandoffTransport?: () => CrossMachineHandoffTransport | null;
+  /** Machine-scoped power service shared by every project runtime in a brain. */
+  keepAwakeService?: BrainKeepAwakeService | null;
 } | string): Promise<AdeRuntime> {
   const resolvedArgs = typeof args === "string"
     ? { projectRoot: args, workspaceRoot: args }
@@ -1297,6 +1302,7 @@ export async function createAdeRuntime(args: {
       accountSettingsStore,
       accountVaultStore,
     } = accountRuntimeLifecycle;
+    const keepAwakeService = resolvedArgs.keepAwakeService ?? null;
     initApiKeyStore(projectRoot, {
       credentialStore: new EncryptedFileCredentialStore(),
       getAccountVault: accountRuntimeLifecycle.getAccountVault,
@@ -3565,6 +3571,7 @@ export async function createAdeRuntime(args: {
       projectSecretService,
       accountSettingsStore,
       accountVaultStore,
+      keepAwakeService,
       conflictService,
       gitService,
       diffService,
