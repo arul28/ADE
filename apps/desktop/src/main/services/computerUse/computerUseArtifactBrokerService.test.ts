@@ -1439,9 +1439,11 @@ describe("computerUseArtifactBrokerService", () => {
         else callback(exitedWith(1));
         return undefined;
       }) as any));
+      // The synchronous probe answers the same way the async one does: installed.
       vi.mocked(childProcess.spawnSync).mockImplementation((((_file: string, args: readonly string[]) => {
-        if (args.some((arg) => arg.includes("agent-browser"))) syncProbes += 1;
-        return { status: 1 };
+        if (!args.some((arg) => arg.includes("agent-browser"))) return { status: 1 };
+        syncProbes += 1;
+        return { status: 0 };
       }) as any));
     });
 
@@ -1453,17 +1455,28 @@ describe("computerUseArtifactBrokerService", () => {
       else process.env.ADE_DISABLE_OFF_THREAD_SPAWN = previousOffThread;
     });
 
-    it("a send that reads the status while the first probe runs starts no probe of its own", async () => {
+    it("a read before the first probe answers reports the probed answer, and the next read is warm", () => {
       const broker = createBroker({ db, projectId: "project-1", projectRoot, logger: createLogger() });
       expect(started).toHaveLength(1);
 
-      // Read before the probe has answered: no answer yet, so the tool is not reported installed.
-      expect(available(broker)).toBe(false);
+      // The first probe has not answered, so the read probes synchronously and reports that answer.
+      expect(available(broker)).toBe(true);
+      expect(syncProbes).toBe(1);
       expect(started).toHaveLength(1);
-      expect(syncProbes).toBe(0);
+
+      expect(available(broker)).toBe(true);
+      expect(syncProbes).toBe(1);
+      expect(started).toHaveLength(1);
+    });
+
+    it("a send that settles the status while the first probe runs joins that probe and starts none of its own", async () => {
+      const broker = createBroker({ db, projectId: "project-1", projectRoot, logger: createLogger() });
+      const settling = broker.settleBackendStatus();
+      expect(settling).not.toBeNull();
+      expect(started).toHaveLength(1);
 
       started[0]!(null);
-      await broker.settleBackendStatus();
+      await settling;
       expect(available(broker)).toBe(true);
       expect(started).toHaveLength(1);
       expect(syncProbes).toBe(0);

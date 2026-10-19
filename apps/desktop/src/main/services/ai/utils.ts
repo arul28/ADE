@@ -91,10 +91,10 @@ function refreshIfStale(command: string): void {
  * A cached answer is returned at once, whatever its age. Once it is older than
  * the TTL, the call starts a background probe; the first call made after that
  * probe finishes returns the new answer. A command with no answer yet is probed
- * synchronously, once per process, unless a probe for it is already running
- * (see {@link prewarmCommandExists}). In that case there is no answer to give
- * and a second probe would block the loop, so this returns `false` and caches
- * nothing. {@link settleCommandExists} lets an async caller wait for the answer.
+ * synchronously, once per process, and that answer is cached. If a probe for it
+ * is already running (see {@link prewarmCommandExists}), that probe still lands
+ * its answer in the cache when it finishes. An async caller that must not block
+ * waits with {@link settleCommandExists} first.
  */
 export function commandExistsCached(command: string): boolean {
   const cached = commandExistsCache.get(command);
@@ -102,7 +102,6 @@ export function commandExistsCached(command: string): boolean {
     refreshIfStale(command);
     return cached.available;
   }
-  if (commandExistsRefreshing.has(command)) return false;
   const available = commandExists(command);
   commandExistsCache.set(command, { available, checkedAt: Date.now() });
   return available;
