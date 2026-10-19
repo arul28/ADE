@@ -259,6 +259,120 @@ export function readJsonWithRecovery<T>(
     : { value: null, source: "missing" };
 }
 
+/** A cache entry is trusted only once its file has gone this long unchanged. */
+const STAMP_SETTLE_MS = 2_000;
+
+export type StampedJsonCacheLimits = {
+  maxEntries: number;
+  /** Bytes of JSON on disk, not of the parsed heap. */
+  maxBytes: number;
+};
+
+/**
+ * JSON file text kept while the file's bytes are unchanged.
+ *
+ * A reader that walks many small files, such as one state file per chat, pays a
+ * synchronous open and read for each file on every call. The stat (inode, size,
+ * mtime, ctime) says whether the cached text still holds. Every writer here
+ * replaces a file by rename, which gives it a new inode, or rewrites it, which
+ * gives it a new mtime and ctime. The ctime cannot be set back by a copy that
+ * keeps the mtime. Each hit parses the cached text again: that is cheaper than
+ * copying a parsed value, and every caller gets an object of its own.
+ *
+ * Only a primary-file read is cached, and only when the file had been unchanged
+ * for STAMP_SETTLE_MS before the read began. Two writes in one timestamp tick can
+ * leave the same size and mtime, and a filesystem can reuse the inode; a settled
+ * file has no write that new, so its stamp cannot match a later version. A
+ * recovered read (the `.lkg` copy) and a missing file are never cached: they go
+ * through readJsonWithRecovery, so recovery and its warnings run as they always did.
+ */
+export function createStampedJsonCache<T>(
+  validate: (value: unknown) => value is T,
+  limits: StampedJsonCacheLimits,
+) {
+  type Entry = { stamp: string; bytes: number; text: string };
+  const entries = new Map<string, Entry>();
+  let totalBytes = 0;
+
+  const forget = (filePath: string): void => {
+    const entry = entries.get(filePath);
+    if (!entry) return;
+    entries.delete(filePath);
+    totalBytes -= entry.bytes;
+  };
+
+  const remember = (filePath: string, entry: Entry): void => {
+    forget(filePath);
+    entries.set(filePath, entry);
+    totalBytes += entry.bytes;
+    // Map keeps insertion order, so the first key is the least recently used.
+    while (entries.size > limits.maxEntries || totalBytes > limits.maxBytes) {
+      const oldest = entries.keys().next().value;
+      if (oldest === undefined) break;
+      forget(oldest);
+    }
+  };
+
+  const parseValid = (text: string): T | null => {
+    try {
+      const parsed: unknown = JSON.parse(text);
+      return validate(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
+  };
+
+  return {
+    read(filePath: string): ReadJsonRecoveryResult<T> {
+      // Both the clock and the stat come before the read: a write that lands
+      // after them leaves the entry under the older stamp, so the next stat misses.
+      const settledBefore = Date.now() - STAMP_SETTLE_MS;
+      const stat = statOrNull(filePath);
+      const stamp = stat && stat.ino ? `${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}` : null;
+      const cached = entries.get(filePath);
+      if (stamp !== null && cached?.stamp === stamp) {
+        const value = parseValid(cached.text);
+        if (value !== null) {
+          // Re-insert to mark it most recently used.
+          entries.delete(filePath);
+          entries.set(filePath, cached);
+          return { value, source: "primary" };
+        }
+      }
+      if (cached) forget(filePath);
+
+      // The primary read, as readJsonWithRecovery does it. Anything but a valid
+      // primary falls through to readJsonWithRecovery, which runs the recovery.
+      let text: string | null = null;
+      try {
+        text = fs.readFileSync(filePath, "utf8");
+      } catch {
+        // Missing or unreadable: the recovery read reports it.
+      }
+      const value = text === null ? null : parseValid(text);
+      if (text !== null && value !== null) {
+        if (stat && stamp !== null && Math.max(stat.mtimeMs, stat.ctimeMs) <= settledBefore) {
+          remember(filePath, { stamp, bytes: stat.size, text });
+        }
+        return { value, source: "primary" };
+      }
+      return readJsonWithRecovery(filePath, validate);
+    },
+
+    /** Drops the entry for a file that was deleted or is about to be. */
+    forget,
+  };
+}
+
+function statOrNull(filePath: string): fs.Stats | null {
+  try {
+    return fs.statSync(filePath, { throwIfNoEntry: false }) ?? null;
+  } catch {
+    // An unreadable file is read the normal way, which reports it as the read always has.
+    return null;
+  }
+}
+
 const ABANDONED_TEMP_FILE_PATTERN = /^\..+\.tmp-\d+-[A-Za-z0-9_-]+$/;
 
 export function cleanupAbandonedTempFiles(

@@ -331,7 +331,7 @@ import type { createProjectConfigService } from "../config/projectConfigService"
 import type { AdeDb } from "../state/kvDb";
 import {
   cleanupAbandonedTempFiles,
-  readJsonWithRecovery,
+  createStampedJsonCache,
   writeFileAtomic,
   writeJsonWithPrevious,
 } from "../state/durableFile";
@@ -12056,6 +12056,13 @@ export function createAgentChatService(args: {
   }
   // Before any chat loads, so no persist can race the rewrite.
   sweepPersistedCallerMcpHeaderValues(chatSessionsDir, logger);
+  // Each chat's state file, read once and reused while the file is unchanged, so a
+  // listing does not re-read every chat. Other brains and the sweep above also write
+  // these files, so a hit is checked against the file's stat, not this brain's writes.
+  const persistedStateFiles = createStampedJsonCache(isPersistedChatStateShape, {
+    maxEntries: 1_000,
+    maxBytes: 16 * 1024 * 1024,
+  });
   fs.mkdirSync(transcriptsDir, { recursive: true });
   fs.mkdirSync(chatTranscriptsDir, { recursive: true });
 
@@ -18766,7 +18773,7 @@ export function createAgentChatService(args: {
 
   const readPersistedState = (sessionId: string): PersistedChatState | null => {
     const filePath = metadataPathFor(sessionId);
-    const recovered = readJsonWithRecovery(filePath, isPersistedChatStateShape);
+    const recovered = persistedStateFiles.read(filePath);
     if (recovered.value === null) return null;
     if (recovered.source === "previous") {
       logger.warn("agent_chat.persisted_state_recovered_lkg", { sessionId });
@@ -64954,6 +64961,7 @@ export function createAgentChatService(args: {
       dedicatedTranscriptPath,
       current.transcriptPath,
     ]);
+    persistedStateFiles.forget(persistedMetadataPath);
     for (const filePath of transcriptPaths) {
       deletePersistedChatFile(filePath);
     }
