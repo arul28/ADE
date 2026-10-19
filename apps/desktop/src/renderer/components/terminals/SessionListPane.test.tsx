@@ -4,7 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import type { ComponentProps } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { LaneSummary, PrSummary, TerminalSessionSummary } from "../../../shared/types";
+import type { LaneSummary, OpenProjectBinding, PrSummary, TerminalSessionSummary } from "../../../shared/types";
 import { createPendingLaneDeleteProgress } from "../../lib/laneDeleteProgress";
 import { eventMatchesBinding } from "../../lib/keybindings";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
@@ -258,7 +258,7 @@ describe("SessionListPane", () => {
     vi.useRealTimers();
     cleanup();
     lanePrsByLaneIdForTest.clear();
-    useAppStore.setState({ laneDeleteProgressByLaneId: {} });
+    useAppStore.setState({ laneDeleteProgressByLaneId: {}, projectBinding: null });
     Reflect.deleteProperty(window, "ade");
   });
 
@@ -284,13 +284,19 @@ describe("SessionListPane", () => {
     );
   });
 
-  it("groups a chat on an archived lane as archived, and still orphans a lane that is missing", async () => {
+  it("classifies a missing lane per project: archived only where its machine reports it archived", async () => {
+    const projectA: OpenProjectBinding = { kind: "local", key: "local:/repo-a", rootPath: "/repo-a", displayName: "Repo A" };
+    const projectB: OpenProjectBinding = { kind: "local", key: "local:/repo-b", rootPath: "/repo-b", displayName: "Repo B" };
     const archivedLane = makeLane({ id: "lane-archived", name: "Old spike", archivedAt: "2026-10-15T09:00:00.000Z" });
     const archivedChat = makeSession({ id: "session-archived", laneId: archivedLane.id, laneName: archivedLane.name });
     const missingChat = makeSession({ id: "session-missing", laneId: "lane-gone", laneName: "Gone lane" });
-    // Like the real lane list: archived lanes come back only when asked for.
-    const list = vi.fn(async (args?: { includeArchived?: boolean }) => (args?.includeArchived ? [archivedLane] : []));
+    // Like the real lane list: archived lanes come back only when asked for, and
+    // only project A's machine has this lane archived.
+    const list = vi.fn(async (args?: { includeArchived?: boolean }) =>
+      args?.includeArchived && useAppStore.getState().projectBinding?.key === projectA.key ? [archivedLane] : [],
+    );
     Object.defineProperty(window, "ade", { configurable: true, value: { lanes: { list } } });
+    useAppStore.setState({ projectBinding: projectA });
 
     renderPane({
       runningFiltered: [archivedChat, missingChat],
@@ -301,11 +307,22 @@ describe("SessionListPane", () => {
       ]),
     });
 
-    // The archived group only appears once the lookup has resolved, so the
-    // orphan check below runs against the settled classification.
-    expect(await screen.findByRole("heading", { name: "Archived lane: Old spike (1)" })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Orphaned sessions: Gone lane (1)" })).toBeTruthy();
-    expect(screen.queryByRole("heading", { name: /Orphaned sessions: Old spike/ })).toBeNull();
+    // Membership, not copy: a chat's row sits inside its group's wrapper.
+    const groupHolds = (groupId: string, sessionId: string) =>
+      document.querySelector(`[data-group-id="${groupId}"] [data-session-id="${sessionId}"]`) !== null;
+    // The archived group appears once the lookup resolves; the orphan group is
+    // there from the first render, so the checks below run on the settled state.
+    await waitFor(() => expect(groupHolds("archived:lane-archived", "session-archived")).toBe(true));
+    expect(document.querySelector('[data-group-id="orphan:lane-archived"]')).toBeNull();
+    expect(groupHolds("orphan:lane-gone", "session-missing")).toBe(true);
+
+    // The tab moves to project B, where the same lane id is not archived. The
+    // group is decided for B, not carried over from A, and its chat stays listed.
+    act(() => {
+      useAppStore.setState({ projectBinding: projectB });
+    });
+    await waitFor(() => expect(groupHolds("orphan:lane-archived", "session-archived")).toBe(true));
+    expect(document.querySelector('[data-group-id="archived:lane-archived"]')).toBeNull();
   });
 
   it("offers non-destructive reconciliation for an orphaned session group", () => {
