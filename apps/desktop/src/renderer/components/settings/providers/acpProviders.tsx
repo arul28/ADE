@@ -158,7 +158,9 @@ function acpStatus(ctx: ProvidersViewContext, id: AcpSettingsProviderId): Provid
     return {
       state: "sign-in",
       label: "Sign in required",
-      message: connection.blocker
+      message: id === "antigravity" && !connection.authAvailable
+        ? "Not signed in."
+        : connection.blocker
         ?? (spec.loginCommand
           ? `${spec.label} is ready but no login was detected. Run \`${spec.loginCommand}\`.`
           : `${spec.label} is ready but not signed in. Sign in below.`),

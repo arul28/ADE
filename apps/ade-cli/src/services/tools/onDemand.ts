@@ -49,6 +49,11 @@ export function enablePinnedToolFetch(logger: FetchLogger, options: { downloadOn
   fetchLogger = logger;
 }
 
+/** Log cache bookkeeping failures through the logger installed for tool fetches. */
+export function warnPinnedToolFetch(event: string, fields: Record<string, unknown>): void {
+  fetchLogger?.warn(event, fields);
+}
+
 /** False when downloads are off here, or this is a checkout and the tool lives in its node_modules. */
 export function pinnedToolFetchAllowed(name: string, context: ToolsContext = {}): boolean {
   const env = context.env ?? process.env;

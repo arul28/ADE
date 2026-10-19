@@ -23,7 +23,6 @@
  * stops with the message instead of looping. Everything acts on the tools
  * cache of the process it runs in, i.e. the brain that owns the chat.
  */
-import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import { isToolError } from "../../../../../ade-cli/src/services/tools/errors";
@@ -40,16 +39,14 @@ import { detectToolTarget } from "../../../../../ade-cli/src/services/tools/path
 import { providerSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
 import { compareUpdateVersions } from "../../../shared/updateVersions";
 import type { Logger } from "../logging/logger";
-import { getMachineMainLogger } from "../logging/machineLogger";
 import { resolveClaudeCodeExecutable, type ClaudeCodeExecutableResolution } from "./claudeCodeExecutable";
 import type { ClaudeVersionRejection } from "./providerVersionRejection";
+import { fallForwardOnce, fetchVendorJson, runProbeProcess } from "./providerFallForward";
 
 const TOOL = "claude-code";
 const NPM_REGISTRY = "https://registry.npmjs.org";
 /** The SDK package whose `claudeCodeVersion` names the Claude Code a platform package carries. */
 const SDK_PACKAGE = "@anthropic-ai/claude-agent-sdk";
-const REGISTRY_TIMEOUT_MS = 15_000;
-const PROBE_TIMEOUT_MS = 20_000;
 const CLAUDE_VERSION_OUTPUT = /^(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?) \(Claude Code\)/;
 
 export type ClaudeFallForwardFailure =
@@ -90,8 +87,6 @@ export type ClaudeFallForwardOutcome =
 
 type FallForwardLogger = Pick<Logger, "info" | "warn">;
 
-const attempts = new Map<string, Promise<ClaudeFallForwardOutcome>>();
-
 function failed(
   reason: ClaudeFallForwardFailure,
   rejection: ClaudeVersionRejection,
@@ -107,15 +102,7 @@ function registryUrl(packageName: string, versionOrTag: string): string {
 }
 
 async function fetchRegistryDocument(url: string): Promise<Record<string, unknown>> {
-  const response = await fetch(url, {
-    headers: { accept: "application/json" },
-    redirect: "error",
-    signal: AbortSignal.timeout(REGISTRY_TIMEOUT_MS),
-  });
-  if (!response.ok) throw new Error(`npm answered HTTP ${response.status}`);
-  const body = await response.json() as unknown;
-  if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("npm answered with no package document");
-  return body as Record<string, unknown>;
+  return fetchVendorJson(url, ["registry.npmjs.org"]);
 }
 
 /** npm's `latest` of the platform package: its version, tarball and SRI. */
@@ -144,26 +131,13 @@ async function lookupClaudeCodeVersion(sdkVersion: string): Promise<string | nul
 
 /** Run a Claude Code with no prompt and no model request; stdout, or the reason it failed. */
 function runProbe(executable: string, args: string[]): Promise<{ exitCode: number | null; stdout: string }> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(executable, args, {
-      env: { ...process.env, ...providerSelfUpdateEnv("claude"), NO_COLOR: "1" },
-      stdio: ["ignore", "pipe", "pipe"],
-      windowsHide: true,
-    });
-    let stdout = "";
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      reject(new Error(`\`claude ${args.join(" ")}\` did not finish within ${PROBE_TIMEOUT_MS / 1000}s`));
-    }, PROBE_TIMEOUT_MS);
-    child.stdout?.on("data", (chunk) => { stdout += String(chunk); });
-    child.on("error", (error) => {
-      clearTimeout(timer);
-      reject(error);
-    });
-    child.on("close", (exitCode) => {
-      clearTimeout(timer);
-      resolve({ exitCode, stdout });
-    });
+  return runProbeProcess(executable, args, {
+    env: { ...process.env, ...providerSelfUpdateEnv("claude"), NO_COLOR: "1" },
+    timeoutMs: 20_000,
+  }).then((result) => {
+    if (result.timedOut) throw new Error(`\`claude ${args.join(" ")}\` did not finish within 20s`);
+    if (result.exitCode === null) throw new Error(result.stderr || `\`claude ${args.join(" ")}\` could not start`);
+    return { exitCode: result.exitCode, stdout: result.stdout };
   });
 }
 
@@ -320,22 +294,14 @@ export function handleClaudeVersionRejection(args: {
     return Promise.resolve(failed("no-pin", rejection, rejection.rejectedVersion));
   }
   const key = `${pin.package}@${pin.version}`;
-  const existing = attempts.get(key);
-  if (existing) {
-    // The build this process already moved to was refused as well: stop.
-    if (rejected.fallForward) {
-      return existing.then((outcome) => outcome.switched && outcome.overrideVersion === rejected.fallForward?.overrideVersion
-        ? failed("newest-refused", rejection, rejected.fallForward.claudeCodeVersion)
-        : outcome);
-    }
-    return existing;
-  }
   if (!pinnedToolFetchAllowed(TOOL)) {
     return Promise.resolve(failed("not-allowed", rejection, rejection.rejectedVersion));
   }
-  const attempt = attemptFallForward({ rejection, rejected, pin, target })
-    .catch((error: unknown) => failed("download-failed", rejection, rejection.rejectedVersion, error instanceof Error ? error.message : String(error)))
-    .then((outcome) => {
+  return fallForwardOnce(key, () => attemptFallForward({ rejection, rejected, pin, target })
+    .catch((error: unknown) => failed("download-failed", rejection, rejection.rejectedVersion, error instanceof Error ? error.message : String(error))), {
+    event: "ai.claude_fall_forward",
+    logger: args.logger,
+    fields: (outcome) => {
       const fields = {
         tool: TOOL,
         signal: rejection.signal,
@@ -347,13 +313,13 @@ export function handleClaudeVersionRejection(args: {
           ? { outcome: "switched", overrideVersion: outcome.overrideVersion, claudeCodeVersion: outcome.claudeCodeVersion }
           : { outcome: "not_switched", reason: outcome.reason, detail: outcome.detail }),
       };
-      // A machine-level change (the tools root is per machine), so a caller
-      // without a logger of its own logs to the machine's log.
-      (args.logger ?? getMachineMainLogger()).warn("ai.claude_fall_forward", fields);
-      return outcome;
-    });
-  attempts.set(key, attempt);
-  return attempt;
+      return fields;
+    },
+  }).then((outcome) => rejected.fallForward
+    && outcome.switched
+    && outcome.overrideVersion === rejected.fallForward.overrideVersion
+    ? failed("newest-refused", rejection, rejected.fallForward.claudeCodeVersion)
+    : outcome);
 }
 
 function versionLabel(version: string | null): string {

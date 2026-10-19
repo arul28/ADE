@@ -47,6 +47,8 @@ import { DEFAULT_PARENT_FLAGS, SPAWN_TYPE_FLAGS } from "./launchFlagNames";
 import type { AgentChatPermissionMode } from "../../desktop/src/shared/types";
 import {
   isAgentChatDroidPermissionMode,
+  CHAT_PROVIDER_IDS,
+  type ChatProviderId,
 } from "../../desktop/src/shared/types/chat";
 import {
   isLaunchProfile,
@@ -262,6 +264,8 @@ export function requireLaunchProfile(
 export type LaunchArgRuleOptions = {
   /** Whether `shell` is a usable profile on this surface. */
   allowShell: boolean;
+  /** Persistent chat providers that do not have a terminal launch profile. */
+  allowChatProviders?: boolean;
   /**
    * The ambient `$ADE_CHAT_SESSION_ID` the spawn-lineage reader threw away
    * because the launch named `shell` on the flag — `undefined` when nothing was
@@ -302,7 +306,9 @@ export function assertMergedLaunchArgs(
   // The profile the session actually launches under. A launch that names none
   // leaves the choice to the runtime's default, so there is nothing for the
   // pairing rules below to contradict.
-  const provider = requireLaunchProfile(merged.provider, { allowShell });
+  const provider = options.allowChatProviders
+    ? requireChatProvider(merged.provider)
+    : requireLaunchProfile(merged.provider, { allowShell });
   // The `--instance` rule, applied to the *merged* pair: the flags and the arg
   // bag fill the same two wire fields, so only the merged values are worth
   // checking.
@@ -325,7 +331,7 @@ export function assertMergedLaunchArgs(
   // would otherwise reach the runtime as a shell terminal running a mode shells
   // have no answer for. The shared validator throws a plain Error, so it is
   // re-dressed as the usage error every other rule here answers with.
-  if (provider && merged.permissionMode !== undefined) {
+  if (provider && isLaunchProfile(provider) && merged.permissionMode !== undefined) {
     try {
       validateLaunchProfilePermissionMode(
         provider,
@@ -465,7 +471,7 @@ export function normalizeLaunchArgs(
   merged: JsonObject,
   options: LaunchArgRuleOptions,
 ): JsonObject {
-  const { allowShell } = options;
+  const { allowShell, allowChatProviders } = options;
 
   // One pre-pass, before any rule reads the bag: an explicit `null` or a blank
   // string means "unset" for every launch-identity field, so the key is
@@ -481,7 +487,9 @@ export function normalizeLaunchArgs(
   // A provider the pre-pass dropped stays dropped — see the note above on why
   // there is no fallback to re-install here.
   if (merged.provider !== undefined) {
-    merged.provider = requireLaunchProfile(merged.provider, { allowShell });
+    merged.provider = allowChatProviders
+      ? requireChatProvider(merged.provider)
+      : requireLaunchProfile(merged.provider, { allowShell });
   }
   // A non-string account id is a typo the runtime would otherwise store
   // verbatim, and a padded one would have it hunting for an account named
@@ -526,6 +534,20 @@ export function normalizeLaunchArgs(
 
   assertMergedLaunchArgs(merged, options);
   return merged;
+}
+
+/** Validate a persistent chat provider, including chat-only providers. */
+export function requireChatProvider(raw: unknown): ChatProviderId | null {
+  if (raw == null) return null;
+  if (typeof raw !== "string") throw chatProviderUsageError();
+  const value = raw.trim().toLowerCase();
+  if (!value) return null;
+  if (!(CHAT_PROVIDER_IDS as readonly string[]).includes(value)) throw chatProviderUsageError();
+  return value as ChatProviderId;
+}
+
+function chatProviderUsageError(): CliUsageError {
+  return new CliUsageError(`provider must be one of: ${CHAT_PROVIDER_IDS.join(", ")}.`);
 }
 
 /**

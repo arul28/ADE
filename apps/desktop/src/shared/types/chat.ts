@@ -87,6 +87,24 @@ export type AgentChatProvider =
   | "antigravity"
   | (string & {});
 
+/** Providers that can own persistent Work chats (some do not have a CLI). */
+export const CHAT_PROVIDER_IDS = [
+  "claude",
+  "codex",
+  "cursor",
+  "droid",
+  "opencode",
+  "pi",
+  "muse",
+  "qwen",
+  "kimi",
+  "grok",
+  "copilot",
+  "devin",
+  "antigravity",
+] as const;
+export type ChatProviderId = (typeof CHAT_PROVIDER_IDS)[number];
+
 /**
  * Providers ADE drives over the Agent Client Protocol. They share one host and
  * one session-config shape, so surfaces branch on this list instead of naming

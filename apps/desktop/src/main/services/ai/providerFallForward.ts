@@ -47,11 +47,6 @@ export function fallForwardOnce<T>(
   return running;
 }
 
-/** True when this process already tried `key`. */
-export function fallForwardAttempted(key: string): boolean {
-  return attempts.has(key);
-}
-
 /**
  * GET a small JSON object over HTTPS from one of `hosts`, following no
  * redirect. Throws on anything else: a non-200, a body that is not one JSON

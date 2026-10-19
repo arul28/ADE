@@ -370,7 +370,10 @@ async function refreshAfterSignIn(): Promise<void> {
     probe.resetAcpAuthProbeCache();
     const discovery = await import("../chat/acpHost/acpModelDiscovery");
     discovery.markAcpModelCatalogStale("antigravity");
-  } catch {
+  } catch (error) {
+    logger?.warn("antigravity.sign_in_cache_refresh_failed", {
+      message: error instanceof Error ? error.message : String(error),
+    });
     // Best effort; the next status refresh probes again.
   }
 }

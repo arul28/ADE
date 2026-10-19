@@ -245,9 +245,10 @@ Running your own CLI build is a dev/test hook only: `CLAUDE_CODE_EXECUTABLE_PATH
 `ADE_MUSE_EXECUTABLE` and the ACP `<PROVIDER>_EXECUTABLE` variables. See
 [agent tools cache](../features/onboarding-and-settings/agent-tools-cache.md#dev-checkouts).
 
-`npm run build:static` in `apps/ade-cli` refuses to embed a Node older than
-22.19.0, because the headless runtime runs Pi's SDK worker on its own Node. Run
-it with a newer Node or set `ADE_STATIC_NODE_BINARY`.
+Use Node 22.23.3 for repository development. `npm run build:static` in
+`apps/ade-cli` requires Node 22.19.0 or newer because the headless runtime runs
+Pi's SDK worker on its own Node. Set `ADE_STATIC_NODE_BINARY` to use another
+Node binary for that build.
 
 ### On Windows
 

@@ -16,8 +16,7 @@
  */
 import { pinnedToolDownload } from "../../../../../ade-cli/src/services/tools/onDemand";
 import { getPinnedToolStatus, resolvePinnedTool } from "../../../../../ade-cli/src/services/tools/pinnedTool";
-import { CODEX_NO_UPDATE_CHECK_ARGS, GROK_NO_AUTO_UPDATE_ARG, pinnedToolSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
-import { MUSE_CLI_COMMAND } from "../../../shared/cliLaunch";
+import { CODEX_NO_UPDATE_CHECK_ARGS, PINNED_PROVIDER_TOOLS, pinnedToolSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
 import type { TerminalToolType } from "../../../shared/types";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
@@ -69,6 +68,12 @@ type ProviderCliSpec = {
   resolve: () => PinnedProviderCli | null;
 };
 
+function terminalSpec(provider: PinnedCliProvider) {
+  const spec = PINNED_PROVIDER_TOOLS[provider]?.terminal;
+  if (!spec) throw new Error(`No terminal tool mapping for ${provider}`);
+  return spec;
+}
+
 function nativeCli(
   provider: PinnedCliProvider,
   command: string | null | undefined,
@@ -92,9 +97,11 @@ function acpCli(
 /** Pi's CLI is a script; it runs on ADE's pinned Node, never Electron's or the user's. */
 function piCli(): PinnedProviderCli | null {
   const script = resolvePiInstallation().cliPath;
-  const node = resolvePinnedTool("node");
+  const nodeTool = terminalSpec("pi").tools.find(({ tool }) => tool === "node")?.tool;
+  if (!nodeTool) return null;
+  const node = resolvePinnedTool(nodeTool);
   if (!script || !node || !isExecutableFile(node.entryPath, process.platform)) return null;
-  return { provider: "pi", command: node.entryPath, leadingArgs: [script], env: pinnedToolSelfUpdateEnv("pi") };
+  return { provider: "pi", command: node.entryPath, leadingArgs: [script], env: pinnedToolSelfUpdateEnv(terminalSpec("pi").selfUpdateTool) };
 }
 
 function cursorCli(): PinnedProviderCli | null {
@@ -104,90 +111,86 @@ function cursorCli(): PinnedProviderCli | null {
 
 const PROVIDER_CLIS: Readonly<Record<PinnedCliProvider, ProviderCliSpec>> = {
   claude: {
-    label: "Claude Code",
-    binaries: ["claude"],
-    tools: [{ tool: "claude-code", label: "Claude Code" }],
-    resolve: () => nativeCli("claude", resolveClaudeCodeExecutable().path, "claude-code"),
+    label: terminalSpec("claude").label,
+    binaries: terminalSpec("claude").binaries,
+    tools: terminalSpec("claude").tools,
+    resolve: () => nativeCli("claude", resolveClaudeCodeExecutable().path, terminalSpec("claude").selfUpdateTool),
   },
   codex: {
-    label: "Codex",
-    binaries: ["codex"],
-    tools: [{ tool: "codex", label: "Codex" }],
+    label: terminalSpec("codex").label,
+    binaries: terminalSpec("codex").binaries,
+    tools: terminalSpec("codex").tools,
     // Codex's update check is a config key, not a variable; `-c` is a global flag.
-    resolve: () => nativeCli("codex", resolveCodexExecutable().path, "codex", CODEX_NO_UPDATE_CHECK_ARGS),
+    resolve: () => nativeCli("codex", resolveCodexExecutable().path, terminalSpec("codex").selfUpdateTool, CODEX_NO_UPDATE_CHECK_ARGS),
   },
   opencode: {
-    label: "OpenCode",
-    binaries: ["opencode"],
-    tools: [{ tool: "opencode", label: "OpenCode" }],
-    resolve: () => nativeCli("opencode", resolveOpenCodeBinaryPath(), "opencode"),
+    label: terminalSpec("opencode").label,
+    binaries: terminalSpec("opencode").binaries,
+    tools: terminalSpec("opencode").tools,
+    resolve: () => nativeCli("opencode", resolveOpenCodeBinaryPath(), terminalSpec("opencode").selfUpdateTool),
   },
   copilot: {
-    label: "the Copilot CLI",
-    binaries: ["copilot"],
-    tools: [{ tool: "copilot-cli", label: "the Copilot CLI" }],
-    resolve: () => acpCli("copilot", "copilot-cli"),
+    label: terminalSpec("copilot").label,
+    binaries: terminalSpec("copilot").binaries,
+    tools: terminalSpec("copilot").tools,
+    resolve: () => acpCli("copilot", terminalSpec("copilot").selfUpdateTool),
   },
   cursor: {
-    label: "the Cursor CLI",
+    label: terminalSpec("cursor").label,
     // `agent` is the legacy name of the same launcher.
-    binaries: ["cursor-agent", "agent"],
-    tools: [{ tool: "cursor-cli", label: "the Cursor CLI" }],
+    binaries: terminalSpec("cursor").binaries,
+    tools: terminalSpec("cursor").tools,
     resolve: cursorCli,
   },
   droid: {
-    label: "Droid",
-    binaries: ["droid"],
-    tools: [{ tool: "droid", label: "Droid" }],
+    label: terminalSpec("droid").label,
+    binaries: terminalSpec("droid").binaries,
+    tools: terminalSpec("droid").tools,
     resolve: () => {
       const resolved = resolveDroidExecutable();
-      return resolved.source === "fallback-command" ? null : nativeCli("droid", resolved.path, "droid");
+      return resolved.source === "fallback-command" ? null : nativeCli("droid", resolved.path, terminalSpec("droid").selfUpdateTool);
     },
   },
   pi: {
-    label: "Pi",
-    binaries: ["pi"],
-    tools: [{ tool: "pi", label: "Pi" }, { tool: "node", label: "the Node.js runtime Pi runs on" }],
+    label: terminalSpec("pi").label,
+    binaries: terminalSpec("pi").binaries,
+    tools: terminalSpec("pi").tools,
     resolve: piCli,
   },
   qwen: {
-    label: "Qwen Code",
-    binaries: ["qwen"],
-    tools: [{ tool: "qwen", label: "Qwen Code" }],
-    resolve: () => acpCli("qwen", "qwen"),
+    label: terminalSpec("qwen").label,
+    binaries: terminalSpec("qwen").binaries,
+    tools: terminalSpec("qwen").tools,
+    resolve: () => acpCli("qwen", terminalSpec("qwen").selfUpdateTool),
   },
   kimi: {
-    label: "Kimi",
-    binaries: ["kimi"],
-    tools: [{ tool: "kimi", label: "Kimi" }],
-    resolve: () => acpCli("kimi", "kimi"),
+    label: terminalSpec("kimi").label,
+    binaries: terminalSpec("kimi").binaries,
+    tools: terminalSpec("kimi").tools,
+    resolve: () => acpCli("kimi", terminalSpec("kimi").selfUpdateTool),
   },
   grok: {
-    label: "Grok",
-    binaries: ["grok"],
-    tools: [{ tool: "grok", label: "Grok" }],
+    label: terminalSpec("grok").label,
+    binaries: terminalSpec("grok").binaries,
+    tools: terminalSpec("grok").tools,
     // Grok reads the flag before its subcommand, so it leads.
-    resolve: () => acpCli("grok", "grok", [GROK_NO_AUTO_UPDATE_ARG]),
+    resolve: () => acpCli("grok", terminalSpec("grok").selfUpdateTool, [...(terminalSpec("grok").selfUpdateArgs ?? [])]),
   },
   devin: {
-    label: "Devin",
-    binaries: ["devin"],
-    tools: [{ tool: "devin", label: "Devin" }],
-    resolve: () => acpCli("devin", "devin"),
+    label: terminalSpec("devin").label,
+    binaries: terminalSpec("devin").binaries,
+    tools: terminalSpec("devin").tools,
+    resolve: () => acpCli("devin", terminalSpec("devin").selfUpdateTool),
   },
   muse: {
-    label: "Muse Code",
-    binaries: [MUSE_CLI_COMMAND],
-    tools: [{ tool: "muse", label: "Muse Code" }],
-    resolve: () => nativeCli("muse", resolveMuseExecutable().path, "muse"),
+    label: terminalSpec("muse").label,
+    binaries: terminalSpec("muse").binaries,
+    tools: terminalSpec("muse").tools,
+    resolve: () => nativeCli("muse", resolveMuseExecutable().path, terminalSpec("muse").selfUpdateTool),
   },
 };
 
 export const PINNED_CLI_PROVIDERS = Object.keys(PROVIDER_CLIS) as PinnedCliProvider[];
-
-export function pinnedCliLabel(provider: PinnedCliProvider): string {
-  return PROVIDER_CLIS[provider].label;
-}
 
 /** The command words that name `provider`'s CLI in a launch line (`cursor-agent`, `agent`, ...). */
 export function pinnedCliBinaries(provider: PinnedCliProvider): readonly string[] {

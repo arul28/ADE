@@ -6,7 +6,9 @@
  * is no install source here.
  */
 
-export const ACP_PROVIDER_IDS = ["qwen", "kimi", "grok", "devin", "antigravity"] as const;
+import { ACP_CHAT_PROVIDERS } from "./types/chat";
+
+export const ACP_PROVIDER_IDS = ACP_CHAT_PROVIDERS;
 export type AcpProviderId = (typeof ACP_PROVIDER_IDS)[number];
 
 export type AcpProviderMetadata = {

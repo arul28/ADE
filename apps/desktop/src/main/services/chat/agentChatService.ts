@@ -415,7 +415,6 @@ import { resolveCodexExecutable, type CodexExecutableResolution } from "../ai/co
 import { codexFallForwardNotice, handleCodexVersionRejection } from "../ai/codexFallForward";
 import { CODEX_NO_UPDATE_CHECK_ARGS, providerSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
 import {
-  awaitPinnedToolDownload,
   pinnedToolForProvider,
   pinnedToolNotReadyError,
   resolvePinnedCursorAgentCli,

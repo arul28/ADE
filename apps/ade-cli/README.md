@@ -102,7 +102,7 @@ Three ways to put `ade` on a machine:
    npm link            # or: npm pack && npm install -g ./ade-cli-*.tgz
    ```
 
-   Requires Node.js 22.13 or newer (the headless runtime depends on `node:sqlite` and the Cursor SDK).
+   Requires Node.js 22.19 or newer to build the headless runtime (it embeds the Node version used by Pi's SDK worker).
 
 ## Service manager
 

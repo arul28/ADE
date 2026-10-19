@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { type ToolResolution, type ToolsContext, tryResolveTool } from "./install";
 import { RETIRED_PACKAGE_GRACE_MS } from "./ledger";
+import { warnPinnedToolFetch } from "./onDemand";
 import { type ToolPin, type ToolsManifest, findToolPin, findToolTargetPin, loadToolsManifest, parseToolsManifest } from "./manifest";
 import { type ToolTarget, assertSafePackageCoordinates, detectToolTarget, isToolTarget, resolveMachineToolsRoot } from "./paths";
 
@@ -143,7 +144,10 @@ export function readToolVersionOverrides(context: ToolsContext = {}): ToolVersio
   let stat: fs.Stats;
   try {
     stat = fs.statSync(file);
-  } catch {
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      warnPinnedToolFetch("tools.version_overrides_stat_failed", { message: error instanceof Error ? error.message : String(error) });
+    }
     return [];
   }
   if (readCache && readCache.file === file && readCache.mtimeMs === stat.mtimeMs && readCache.size === stat.size) {
@@ -152,7 +156,10 @@ export function readToolVersionOverrides(context: ToolsContext = {}): ToolVersio
   let overrides: ToolVersionOverride[] = [];
   try {
     overrides = parseOverrides(JSON.parse(fs.readFileSync(file, "utf8")));
-  } catch {
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      warnPinnedToolFetch("tools.version_overrides_read_failed", { message: error instanceof Error ? error.message : String(error) });
+    }
     overrides = [];
   }
   readCache = { file, mtimeMs: stat.mtimeMs, size: stat.size, overrides };

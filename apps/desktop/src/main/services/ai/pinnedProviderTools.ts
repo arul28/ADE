@@ -27,26 +27,15 @@ import type { ToolErrorKind } from "../../../../../ade-cli/src/services/tools/er
 import { ACP_PROVIDER_IDS, ACP_PROVIDER_METADATA, type AcpProviderId } from "../../../shared/acpProviderMetadata";
 import type { MuseBinaryStatus } from "../../../shared/museBinary";
 import type { PinnedProviderToolStatus } from "../../../shared/types/config";
+import { PINNED_PROVIDER_TOOLS } from "../../../shared/pinnedToolSpawnEnv";
 import { claudeFallForwardStatusLine } from "./claudeFallForward";
 import { codexFallForwardStatusLine } from "./codexFallForward";
 import { museFallForwardStatusLine } from "./museFallForward";
 import { getMuseBinaryStatus, startMuseBinaryFetch } from "./museExecutable";
 
-/** Tools-cache name and the label a sentence names it by, for each provider with a pinned tool. */
-const PROVIDER_TOOLS: Readonly<Record<string, { tool: string; label: string }>> = {
-  claude: { tool: "claude-code", label: "Claude Code" },
-  codex: { tool: "codex", label: "Codex" },
-  opencode: { tool: "opencode", label: "OpenCode" },
-  copilot: { tool: "copilot", label: "the Copilot runtime" },
-  muse: { tool: "muse", label: "Muse" },
-  droid: { tool: "droid", label: "Droid" },
-  pi: { tool: "pi", label: "Pi" },
-  cursor: { tool: "cursor-cli", label: "the Cursor CLI" },
-};
-
 /** The pinned tool behind a provider id, or null for a provider ADE pins nothing for. */
 export function pinnedToolForProvider(provider: string): { tool: string; label: string } | null {
-  const fixed = PROVIDER_TOOLS[provider];
+  const fixed = PINNED_PROVIDER_TOOLS[provider];
   if (fixed) return fixed;
   if ((ACP_PROVIDER_IDS as readonly string[]).includes(provider)) {
     // ACP tools are named after the provider; Antigravity and later ACP
@@ -135,7 +124,7 @@ export type PinnedCursorAgentCli = { command: string; leadingArgs: string[]; env
  * not on this machine. Never a `cursor-agent` from the PATH, never a download.
  */
 export function resolvePinnedCursorAgentCli(platform: NodeJS.Platform = process.platform): PinnedCursorAgentCli | null {
-  const pinned = resolvePinnedTool("cursor-cli", { platform });
+  const pinned = resolvePinnedTool(PINNED_PROVIDER_TOOLS.cursor.tool, { platform });
   const script = pinned?.files.script;
   if (!pinned || !script) return null;
   return {

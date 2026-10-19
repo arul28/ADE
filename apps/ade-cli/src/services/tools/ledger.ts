@@ -1,6 +1,7 @@
 import { promises as fsp } from "node:fs";
 import path from "node:path";
 import { assertSafePackageCoordinates } from "./paths";
+import { warnPinnedToolFetch } from "./onDemand";
 
 /**
  * Every package directory ADE has written under the tools root, and when an
@@ -29,7 +30,7 @@ export const RETIRED_PACKAGE_GRACE_MS = 14 * 24 * 60 * 60_000;
 /**
  * Package directories ADE builds wrote before the ledger existed and no build
  * pins any more: OpenCode's platform packages before the `@opencode/cli-*`
- * rename (#1361). Seeded as long-unpinned when a ledger is first created.
+ * rename (#1361). Seeded at ledger creation so the usual grace period applies.
  */
 const LEGACY_TOOL_PACKAGES = [
   "opencode-darwin-arm64",
@@ -62,8 +63,12 @@ export async function readToolsLedger(toolsRoot: string): Promise<ToolsLedger> {
   let raw: unknown;
   try {
     raw = JSON.parse(await fsp.readFile(ledgerPath(toolsRoot), "utf8"));
-  } catch {
-    return { packages: Object.fromEntries(LEGACY_TOOL_PACKAGES.map((name) => [name, 0])) };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      warnPinnedToolFetch("tools.ledger_read_failed", { message: error instanceof Error ? error.message : String(error) });
+    }
+    const createdAt = Date.now();
+    return { packages: Object.fromEntries(LEGACY_TOOL_PACKAGES.map((name) => [name, createdAt])) };
   }
   const packages: Record<string, number> = {};
   const recorded = (raw as { packages?: unknown } | null)?.packages;
@@ -98,7 +103,8 @@ export async function recordPinnedPackages(toolsRoot: string, packageNames: read
     const ledger = await readToolsLedger(toolsRoot);
     for (const name of packageNames) ledger.packages[name] = now;
     await writeToolsLedger(toolsRoot, ledger);
-  } catch {
+  } catch (error) {
+    warnPinnedToolFetch("tools.ledger_write_failed", { message: error instanceof Error ? error.message : String(error) });
     // The next install or collection records it again.
   }
 }

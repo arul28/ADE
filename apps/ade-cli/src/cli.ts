@@ -334,6 +334,7 @@ import {
   normalizeLaunchArgs,
   readAgentSpawnLineage,
   requireLaunchProfile,
+  requireChatProvider,
   spawnLineageLaunchArgs,
   DROID_PERMISSION_MODE_ENUM_MESSAGE,
   PERMISSION_MODE_ENUM_MESSAGE,
@@ -1946,7 +1947,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --type <subagent|peer>  Required for a parented agent spawn. Use subagent
                            whenever you will need, join, or review the result;
                            use peer only for fire-and-forget work.
-    --provider <name>      claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot. CLI mode also accepts shell.
+    --provider <name>      Chat: claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot | devin | antigravity.
+                           CLI: claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot | devin; CLI mode also accepts shell.
     --model <id>           Runtime model id.
     --reasoning-effort <v> Reasoning tier. Alias: --effort.
     --permissions <mode>   default | auto | plan | edit | full-auto | config-toml.
@@ -2457,7 +2459,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     Start a tracked provider CLI session
 
   Create flags:
-    --provider <name>       claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot.
+    --provider <name>       claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot | devin | antigravity.
     --model <id>            Model id, also sent as modelId for runtime parity.
     --reasoning-effort <v>  Reasoning tier when the selected model supports it.
                             Common tiers: minimal, low, medium, high, xhigh, ultra, ultracode.
@@ -2519,7 +2521,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   Flags:
     --personal              Use machine-owned chats instead of a project/lane chat.
     --lane <lane>           Lane/worktree for the chat.
-    --provider <name>       claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot.
+    --provider <name>       claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot | devin | antigravity.
     --model <id>            Model id, also sent as modelId for runtime parity.
     --reasoning-effort <v>  Reasoning tier when supported by the model.
     --effort <v>            Alias for --reasoning-effort.
@@ -6620,7 +6622,7 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
   // One options object per surface, so the profile the flag is checked against
   // and the profile the merged arg bag is checked against cannot drift.
   const launchOpts = { allowShell: mode !== "chat" };
-  const provider = requireLaunchProfile(providerRaw, launchOpts) ?? "codex";
+  const provider = (mode === "chat" ? requireChatProvider(providerRaw) : requireLaunchProfile(providerRaw, launchOpts)) ?? "codex";
   const copilotFlags = readCopilotLaunchFlags(args, provider);
   if (mode !== "chat" && Object.keys(copilotFlags).length > 0) {
     throw new CliUsageError("--copilot-permission-mode, --copilot-context-tier and --copilot-auto-tier apply to chat mode only.");
@@ -6672,7 +6674,7 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
         ...(credentialId ? { credentialId } : {}),
         ...(fastMode !== undefined ? { fastMode, codexFastMode: fastMode } : {}),
         ...(readFastTierFlag(args) ? { fastTier: "ultrafast" } : {}),
-      }, launchOptions)
+      }, { ...launchOptions, allowChatProviders: true })
     : collectLaunchArgs(args, {
         provider,
         permissionMode,
@@ -7095,7 +7097,7 @@ function buildCreateLaneFromLinearPlan(args: string[], issue: JsonObject): CliPl
   // a bag it built itself rather than collecting one: on THIS command
   // `--arg`/`--input-json` fill the lane-create payload below, not the chat.
   const launchConfig = startChat
-    ? normalizeLaunchArgs({ ...chatLaunchFlags, ...lineageArgs }, launchOptions)
+    ? normalizeLaunchArgs({ ...chatLaunchFlags, ...lineageArgs }, { ...launchOptions, allowChatProviders: true })
     : {};
 
   const steps: InvocationStep[] = [
@@ -9502,7 +9504,7 @@ function buildChatLaunchPlan(args: string[]): CliPlan {
   const pollIntervalMs = readIntOption(args, ["--poll-interval-ms", "--interval-ms"], 1_000) ?? 1_000;
   if (timeoutMs <= 0) throw new CliUsageError("chat launch --timeout-ms must be greater than zero.");
   if (pollIntervalMs <= 0) throw new CliUsageError("chat launch --poll-interval-ms must be greater than zero.");
-  const provider = requireLaunchProfile(readValue(args, ["--provider"]), { allowShell: false }) ?? "codex";
+  const provider = requireChatProvider(readValue(args, ["--provider"])) ?? "codex";
   const { instanceId, presetId, credentialId } = readLaunchIdentitySelectors(args, {
     provider,
     model: modelArg,
@@ -9547,6 +9549,27 @@ function buildChatLaunchPlan(args: string[]): CliPlan {
     }
     launchArgs[key] = value;
   }
+  // The escape hatch can replace `chat` or `provider` wholesale, so check the
+  // merged plan: the launch record and the chat it creates must name one
+  // known provider.
+  const mergedChat = launchArgs.chat;
+  if (!isRecord(mergedChat) || !isRecord(mergedChat.create)) {
+    throw new CliUsageError("chat launch needs chat.create to be an object.");
+  }
+  // An override wins over the --provider flag; two overrides must agree.
+  const inputChat = isRecord(input.chat) ? input.chat : null;
+  const topLevelOverride = "provider" in input ? requireChatProvider(input.provider) : null;
+  const nestedOverride = inputChat && isRecord(inputChat.create) && "provider" in inputChat.create
+    ? requireChatProvider(inputChat.create.provider)
+    : null;
+  if (topLevelOverride && nestedOverride && topLevelOverride !== nestedOverride) {
+    throw new CliUsageError(
+      `provider (${topLevelOverride}) and chat.create.provider (${nestedOverride}) disagree; set one of them.`,
+    );
+  }
+  const effectiveProvider = nestedOverride ?? topLevelOverride ?? provider;
+  launchArgs.provider = effectiveProvider;
+  mergedChat.create.provider = effectiveProvider;
 
   if (printConfig) {
     return {
@@ -10227,7 +10250,7 @@ function buildChatPlan(args: string[]): CliPlan {
     // use it. A chat is never a shell session, so `shell` is rejected here the
     // same way `ade new chat --mode chat` rejects it.
     const launchOpts = { allowShell: false };
-    const provider = requireLaunchProfile(readValue(args, ["--provider"]), launchOpts);
+    const provider = requireChatProvider(readValue(args, ["--provider"]));
     const { instanceId, presetId, credentialId } = readLaunchIdentitySelectors(args, { provider, model: modelArg });
     const { base: lineageArgs, launchOptions } = spawnLineageLaunchArgs(lineage, launchOpts);
     const actionArgs = collectLaunchArgs(args, {
@@ -10258,7 +10281,7 @@ function buildChatPlan(args: string[]): CliPlan {
       ...(fastMode !== undefined ? { fastMode, codexFastMode: fastMode } : {}),
       ...(readFastTierFlag(args) ? { fastTier: "ultrafast" } : {}),
       ...(createRuntimeMode ? { runtimeMode: createRuntimeMode } : {}),
-    }, launchOptions);
+    }, { ...launchOptions, allowChatProviders: true });
     const createStep = actionStep("result", "chat", "createSession", actionArgs);
     const kickoffText =
       explicitKickoff ??
