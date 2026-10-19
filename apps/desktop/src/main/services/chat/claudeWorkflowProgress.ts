@@ -77,7 +77,15 @@ type RawAgentEntry = {
   tokens?: number;
   toolCalls?: number;
   durationMs?: number;
+  lastActivityAt?: string;
 };
+
+function isoFromEpochMs(value: unknown): string | undefined {
+  const ms = readFiniteNumber(value);
+  if (ms === undefined || ms <= 0) return undefined;
+  const date = new Date(ms);
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+}
 
 function normalizeAgentEntry(entry: Record<string, unknown>): RawAgentEntry | undefined {
   const index = readNonNegativeSafeInteger(entry.index);
@@ -86,7 +94,7 @@ function normalizeAgentEntry(entry: Record<string, unknown>): RawAgentEntry | un
   const terminal = state === "done" || state === "error";
   const started = terminal
     || readFiniteNumber(entry.startedAt) !== undefined
-    || readFiniteNumber(entry.lastProgressAt) !== undefined;
+    || state === "progress";
   return {
     index,
     state,
@@ -107,6 +115,7 @@ function normalizeAgentEntry(entry: Record<string, unknown>): RawAgentEntry | un
     tokens: readFiniteNumber(entry.tokens),
     toolCalls: readFiniteNumber(entry.toolCalls),
     durationMs: readFiniteNumber(entry.durationMs),
+    lastActivityAt: isoFromEpochMs(entry.lastProgressAt),
   };
 }
 
@@ -201,6 +210,7 @@ export function parseClaudeWorkflowProgress(
       ...(entry.toolCalls !== undefined ? { toolCalls: entry.toolCalls } : {}),
       ...(entry.durationMs !== undefined ? { durationMs: entry.durationMs } : {}),
       ...(entry.lastToolName !== undefined ? { lastToolName: entry.lastToolName } : {}),
+      ...(entry.lastActivityAt !== undefined ? { lastActivityAt: entry.lastActivityAt } : {}),
     });
   }
   return {

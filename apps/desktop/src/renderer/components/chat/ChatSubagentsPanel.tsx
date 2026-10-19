@@ -62,7 +62,7 @@ import { selfHealBackgroundSnapshots, selfHealSubagentSnapshots } from "./chatPa
 import { navigateToSpawnedChat } from "./spawnNavigation";
 import { ChatShellsSection } from "./ChatShellsSection";
 import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
-import { ChatWorkflowActiveCard } from "./ChatWorkflowActiveCard";
+import { ChatWorkflowActiveCard, workflowRunTaskIds } from "./ChatWorkflowActiveCard";
 import type { ChatWorkflowScriptPlan } from "../../../shared/chatWorkflowScript";
 import { redactCommandLine } from "../../../shared/secretRedaction";
 
@@ -1330,6 +1330,13 @@ export function ChatSubagentsPanel({
     () => selfHealSubagentSnapshots(snapshots, { runtimeAlive, childChatStatuses }),
     [snapshots, runtimeAlive, childChatStatuses],
   );
+  // The workflow card owns these rows, so it reads the same healed status:
+  // a run whose runtime died must not stay "Active" with a live Stop.
+  const workflowTaskIds = useMemo(() => workflowRunTaskIds(healedSnapshots), [healedSnapshots]);
+  const workflowRunningCount = useMemo(
+    () => healedSnapshots.filter((snap) => snap.taskType === "local_workflow" && snap.status === "running").length,
+    [healedSnapshots],
+  );
   const healedBackgroundItems = useMemo(
     () => selfHealBackgroundSnapshots(backgroundItems, { runtimeAlive }),
     [backgroundItems, runtimeAlive],
@@ -1345,6 +1352,7 @@ export function ChatSubagentsPanel({
     let completed = 0;
     let bgRunning = 0;
     for (const snap of healedSnapshots) {
+      if (workflowTaskIds.has(snap.taskId)) continue;
       if (isBackgroundShellCommand({
         taskType: snap.taskType,
         agentType: snap.agentType,
@@ -1368,7 +1376,7 @@ export function ChatSubagentsPanel({
       completedCount: completed,
       bgRunningCount: bgRunning,
     };
-  }, [healedSnapshots]);
+  }, [healedSnapshots, workflowTaskIds]);
 
   const [expandedFinishedIds, setExpandedFinishedIds] = useState<Set<string>>(() => new Set());
   const annotatedSubagents = useMemo(() => annotateSubagentTree(subagents), [subagents]);
@@ -1483,7 +1491,8 @@ export function ChatSubagentsPanel({
 
   const headerSummary = useMemo(() => {
     const parts: string[] = [];
-    if (runningCount) parts.push(`${runningCount} running`);
+    // A running workflow is not a Subagents row, but the drawer is not idle.
+    if (runningCount + workflowRunningCount) parts.push(`${runningCount + workflowRunningCount} running`);
     if (bgRunningCount) parts.push(`${bgRunningCount} bg`);
     if (backgroundGroups.active.length) parts.push(`${backgroundGroups.active.length} background`);
     if (scheduleGroups.active.length) parts.push(`${scheduleGroups.active.length} scheduled`);
@@ -1492,7 +1501,7 @@ export function ChatSubagentsPanel({
     if (!parts.length && subagents.length) parts.push(`${subagents.length} tracked`);
     if (!parts.length) parts.push("idle");
     return parts.join(" · ");
-  }, [backgroundGroups.active.length, completedCount, runningCount, bgRunningCount, scheduleGroups.active.length, scheduleGroups.earlier.length, subagents.length]);
+  }, [backgroundGroups.active.length, completedCount, runningCount, workflowRunningCount, bgRunningCount, scheduleGroups.active.length, scheduleGroups.earlier.length, subagents.length]);
 
   const takeover = (snap: ChatSubagentSnapshot) => {
     setExpandedTaskId(null);
@@ -1592,9 +1601,10 @@ export function ChatSubagentsPanel({
   const hasClaudeGoal = Boolean(claudeGoal?.condition?.trim());
   const hasTasks = (taskList?.items.length ?? 0) > 0;
   const hasSubagents = subagents.length > 0;
+  const hasWorkflowRuns = workflowTaskIds.size > 0;
   const hasBackground = healedBackgroundItems.length > 0;
   const hasScheduled = scheduleItems.length > 0;
-  const hasAnything = hasGoal || hasClaudeGoal || hasTasks || hasSubagents || shells.length > 0
+  const hasAnything = hasGoal || hasClaudeGoal || hasTasks || hasSubagents || hasWorkflowRuns || shells.length > 0
     || shellsLoadError || hasBackground || hasScheduled;
   const renderSubagentPaneRow = (snap: ChatSubagentSnapshot) => (
     <SubagentRow
@@ -1630,7 +1640,7 @@ export function ChatSubagentsPanel({
   const body = (
     <div className="flex flex-col font-sans">
       <ChatWorkflowActiveCard
-        snapshots={snapshots}
+        snapshots={healedSnapshots}
         plans={workflowPlans}
         onSelectSubagent={handleRowClick}
         onStopWorkflow={onStopSubagent}

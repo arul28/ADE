@@ -108,6 +108,7 @@ import {
   repairClaudeResumeTranscript,
 } from "./claudeThinkingTranscriptRepair";
 import { repairSplicedEnvelopeFileSync } from "./chatEnvelopeSpliceRepair";
+import { readClaudeWorkflowAgentMessages } from "./claudeWorkflowTranscript";
 import { isQuestionShapedPendingInput, readPendingInputRecord } from "./pendingInputRecovery";
 import {
   discoverClaudePluginPaths,
@@ -23357,9 +23358,15 @@ export function createAgentChatService(args: {
     // started) carries no task_type. It is still that shell: classified as a
     // subagent it became a "Background task" row stuck at running, because the
     // shell's end only ever reaches its background row.
+    // A background Workflow (or subagent) is in the same background-task sets,
+    // and its task_progress carries no task_type either; read as a shell, every
+    // workflow_progress snapshot after its start was swallowed.
     const knownBackgroundShell = !rawTaskType
       && !messageAgentType
       && !existing?.agentType
+      && existing?.taskType !== "local_workflow"
+      && existing?.taskType !== "subagent"
+      && existing?.taskType !== "cron"
       && Boolean(taskId && (runtime.liveBackgroundTaskIds.has(taskId) || runtime.backgroundTaskTitleById.has(taskId)));
     const taskType = localBashIsBackground || knownBackgroundShell
       ? "background"
@@ -68120,11 +68127,28 @@ export function createAgentChatService(args: {
       : await resolveClaudeSessionLaneFallback(
         laneId ?? pointer?.laneId ?? managed?.session.laneId ?? null,
       );
-    const messages = await getClaudeSdkSubagentMessages(claudeSessionId, normalizedAgentId, {
+    const sdkMessages = await getClaudeSdkSubagentMessages(claudeSessionId, normalizedAgentId, {
       ...(laneFallback.dir ? { dir: laneFallback.dir } : {}),
       ...(normalizedLimit !== undefined ? { limit: normalizedLimit } : {}),
       ...(normalizedOffset !== undefined ? { offset: normalizedOffset } : {}),
     });
+    // A workflow agent's transcript sits outside the SDK's search path. A chat
+    // that is not loaded has no known account home, so try every one.
+    const messages = sdkMessages.length > 0
+      ? sdkMessages
+      : await readClaudeWorkflowAgentMessages({
+        configHomes: managed ? [sessionConfigHome(managed)] : claudeConfigRoots(),
+        cwd: laneFallback.dir,
+        claudeSessionId,
+        agentId: normalizedAgentId,
+        ...(normalizedLimit !== undefined ? { limit: normalizedLimit } : {}),
+        ...(normalizedOffset !== undefined ? { offset: normalizedOffset } : {}),
+        onUnexpectedError: (stage, error) => logger.warn("agent_chat.claude_workflow_transcript_read_failed", {
+          sessionId: normalizedSessionId,
+          stage,
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      }) ?? sdkMessages;
     const childModel = messages
       .map(normalizeClaudeSdkSessionMessageModel)
       .find((candidate): candidate is string => Boolean(candidate))
