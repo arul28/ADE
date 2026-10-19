@@ -15,14 +15,16 @@ Research, the full map of stored paths and the experiments behind each rule:
 |---|---|
 | `apps/ade-cli/src/services/projects/projectMove/projectMovePreflight.ts` | Read-only checks before a move: destination, drive (network, format, case), space, write access (the probe also raises the macOS external-drive prompt early), agents at work, git busy or mid-operation, lanes, plus the notes ADE can't fix. |
 | `apps/ade-cli/src/services/projects/projectMove/projectMoveEngine.ts` | `runProjectMove` (prepare → copy → git → data → verify → switch), `finishSwitch`, `recoverInterruptedMoves`, `deleteParkedOriginal`. |
-| `apps/ade-cli/src/services/projects/projectMove/moveCopy.ts` | `du` sizes, the file list (no live database, no search index, no sockets; `node_modules` only when dependencies are copied) and the `ditto --bom` copy with progress, `--clone` on the same drive. |
+| `apps/ade-cli/src/services/projects/projectMove/moveCopy.ts` | `du` sizes, the file list (no live database, no search index, no sockets; `node_modules` only when dependencies are copied) and the `ditto --bom` copy with progress, `--clone` for same-volume APFS moves. |
 | `apps/ade-cli/src/services/projects/projectMove/moveGitLinks.ts` | Lane links written directly in the copy (never `git worktree repair`), relative worktrees, absolute git config values, absolute symlinks, outside lanes at switch-over. |
 | `apps/ade-cli/src/services/projects/projectMove/moveDatabase.ts` | SQLite-backup snapshot of `ade.db`, the path rewrite with cr-sqlite loaded, and its verification. |
 | `apps/ade-cli/src/services/projects/projectMove/moveAgentHistory.ts` | Renames other tools' history folders for the project (Claude, Cursor, Droid, Qwen, Grok, Pi). ADE's own Claude homes always; the rest opt-in. |
 | `apps/ade-cli/src/services/projects/projectMove/moveJournal.ts` | `<ADE_HOME>/project-moves/<moveId>.json`: one record per move, the cleanup choice and reminder. |
+| `apps/ade-cli/src/services/projects/projectMove/movePreviousRoots.ts` | Resolves prior roots by following this project's move records in time order, preserving each recorded path spelling without including unrelated projects that reused a destination. |
 | `apps/ade-cli/src/services/projects/projectMove/moveVolumes.ts` | Drives via `df` + `diskutil info -plist`. |
 | `apps/ade-cli/src/services/projects/projectRegistry.ts` | `relocate()` re-keys the registry and writes `project-aliases.json` (old id → new id); `assertProjectNotMovedAway` and `assertProjectNotBeingMoved` refuse opening the kept original or a project mid-move, on every open path. |
 | `apps/desktop/src/main/services/projects/projectMoveController.ts` | One move at a time; activity, release, reopen and progress wiring come from `main.ts`. |
+| `apps/desktop/src/main/services/ipc/registerIpc.ts` | Forwards the `copyDependencies` choice from the desktop IPC request to the move controller. |
 | `apps/desktop/src/renderer/components/projectMove/` | `MoveProjectDialog` (one setup screen with the drive, folder and checks → Moving → Done), `ProjectMoveHost` (the dialog host and the old-copy banner), the agent check prompt. |
 | `apps/ade-cli/src/services/projects/projectMove/projectMoveEngine.test.ts` | Whole moves on real git repos and project data, Codex trust carry-over, interrupted-move recovery, and the journal's process check. |
 | `apps/desktop/src/renderer/components/projectMove/projectMove.test.tsx` | The old-copy banner shows only in the moved project's tab; the check agent launches only on Start agent, ask-first, with the edited prompt. |
@@ -34,11 +36,12 @@ Research, the full map of stored paths and the experiments behind each rule:
    service, then wait until `lsof` shows nothing holding `ade.db`.
 2. **Copy** into `<destination>.ade-moving`, a name nothing opens. The
    database goes through SQLite's backup API so its write-ahead log is kept.
-   On the same drive the copy is APFS clones: near-instant, no extra space,
-   dependencies included. To another drive, `node_modules` come along when the
-   person leaves **Copy dependencies too** on (the default when there is room);
-   otherwise they are reinstalled afterwards. The search index is a cache and
-   is rebuilt, not copied.
+   On the same volume, when the destination is APFS, the copy uses APFS clones:
+   near-instant and with no preflight space check; dependencies come along as
+   clones too. On other destinations, `node_modules` come along when
+   **Copy dependencies too** is on (the default when there is room), including
+   through the desktop IPC bridge; otherwise they are reinstalled afterwards.
+   The search index is a cache and is rebuilt, not copied.
 3. **Git.** For each lane inside the project, write `<lane>/.git` and
    `.git/worktrees/<name>/gitdir` as relative links computed for the final
    location; set `core.repositoryformatversion=1` *before*
@@ -68,8 +71,9 @@ untouched original.
   *Start agent*, and the chat shows the whole prompt. The old
   copy's Keep / Remind me / Delete can wait: the card says it can be cleaned
   up later from Settings → Location.
-- **The old-copy banner** shows only in the moved project's tab (matched on
-  the record's `destinationRoot`), never over another open project.
+- **The old-copy banner** shows only in the moved project's tab, matched to its
+  move record and destination; a reused folder path does not make an unrelated
+  project's move record apply.
 - **Trust.** `finishSwitch` copies folder trust to the new path, append only:
   Codex `trust_level` in `$CODEX_HOME/config.toml`, Claude Code's
   `projects["<path>"]` entries (trust, allowed tools, MCP approvals) in

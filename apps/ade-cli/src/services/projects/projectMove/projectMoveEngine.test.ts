@@ -9,7 +9,9 @@ import { openKvDb } from "../../../../../desktop/src/main/services/state/kvDb";
 import { loadNodeSqlite } from "../../../../../desktop/src/main/services/projects/readOnlySqlite";
 import { ProjectRegistry } from "../projectRegistry";
 import { carryCodexTrust } from "./moveAgentHistory";
+import { rewritePathsInDatabase } from "./moveDatabase";
 import { relativeToRoot } from "./moveGitLinks";
+import { previousProjectRoots } from "./movePreviousRoots";
 import { currentBootMinute, isMoveProcessAlive, listMoveRecords, markMoveActive, readMovedMarker, writeMoveRecord } from "./moveJournal";
 import { recoverInterruptedMoves, runProjectMove } from "./projectMoveEngine";
 import { copyLocation } from "./projectMovePreflight";
@@ -448,5 +450,53 @@ describe("relativeToRoot", () => {
     expect(relativeToRoot(root, [root])).toBe("");
     expect(relativeToRoot(`${root}-other/a`, [root])).toBeNull();
     expect(relativeToRoot(path.join(tmp, "proj", "lanes", "a"), [root])).toBe(diskIgnoresCase ? "lanes/a" : null);
+  });
+});
+
+describe("previousProjectRoots", () => {
+  it("follows the move chain back in time, never into another project that later moved into a folder", () => {
+    const [x, b, y, z] = ["x", "b", "y", "z"].map((name) => path.join(tmp, name));
+    const done = (moveId: string, sourceRoot: string, destinationRoot: string, finishedAt: number) =>
+      writeMoveRecord(moveRecord({ moveId, sourceRoot, destinationRoot, state: "done", finishedAt }));
+    // Project A: x → b, then b → y. Later an unrelated project C: z → b.
+    done("a1", x!, b!, 1_000);
+    done("a2", b!, y!, 2_000);
+    done("c1", z!, b!, 3_000);
+
+    expect(previousProjectRoots(y!)).toEqual([b, x]);
+    expect(previousProjectRoots(b!)).toEqual([z]);
+    expect(previousProjectRoots(x!)).toEqual([]);
+  });
+});
+
+describe("rewritePathsInDatabase", () => {
+  // A layout key saved under both roots: a move rewrites the copy it just
+  // made, where the old root's row is current; a repair on a project already
+  // used at the new root keeps that row.
+  it.each([
+    { keepExisting: false, kept: "moved" },
+    { keepExisting: true, kept: "current" },
+  ])("keepExisting=$keepExisting keeps the $kept layout and drops the old key", ({ keepExisting, kept }) => {
+    const { DatabaseSync } = loadNodeSqlite();
+    const db = new DatabaseSync(":memory:");
+    try {
+      db.exec("create table kv (key text primary key, value text)");
+      const insert = db.prepare("insert into kv(key, value) values (?, ?)");
+      insert.run("dock_layout:/old/proj", "\"moved\"");
+      insert.run("dock_layout:/new/proj", "\"current\"");
+      insert.run("tiling_tree:/old/proj:files", "\"tree\"");
+      const runner = {
+        all: (sql: string, params: unknown[] = []) => db.prepare(sql).all(...(params as never[])) as Array<Record<string, unknown>>,
+        run: (sql: string, params: unknown[] = []) => Number(db.prepare(sql).run(...(params as never[])).changes),
+      };
+
+      expect(rewritePathsInDatabase(runner, ["/old/proj"], "/new/proj", { keepExisting })).toBeGreaterThan(0);
+      expect(db.prepare("select key, value from kv order by key").all()).toEqual([
+        { key: "dock_layout:/new/proj", value: `"${kept}"` },
+        { key: "tiling_tree:/new/proj:files", value: "\"tree\"" },
+      ]);
+    } finally {
+      db.close();
+    }
   });
 });

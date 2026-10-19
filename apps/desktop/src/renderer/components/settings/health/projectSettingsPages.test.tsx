@@ -826,13 +826,19 @@ describe("Project → Lanes, Location, and Computer → ADE service", () => {
       makeLane("merged-clean", { stale: "pr-merged", pr: { number: 12, state: "merged", url: null, mergedAt: null } }),
       makeLane("idle-picked-up-work", { stale: "idle" }),
       makeLane("closed-dirty", { stale: "pr-closed", dirty: true, changedFileCount: 2, safeToArchive: false }),
+      makeLane("merged-then-committed", { stale: "pr-merged", pr: { number: 13, state: "merged", url: null, mergedAt: null } }),
     ];
-    const { archiveAndReclaim, getReclaimRisk } = installAdeMock({ report });
-    // Since the list was read, a chat started in one of the selected lanes.
+    const { archiveAndReclaim, getReclaimRisk, getReport } = installAdeMock({ report });
+    // Since the list was read, a chat started in one lane, and another lane
+    // whose PR merged got new commits: the merged PR no longer covers them.
+    getReport.mockImplementation(async (args?: { forceRefresh?: boolean }) => (args?.forceRefresh
+      ? { ...report, lanes: report.lanes!.map((lane) => (lane.laneId === "merged-then-committed" ? { ...lane, unpushedCommits: 2 } : lane)) }
+      : report));
     getReclaimRisk.mockImplementation(async ({ laneId }: { laneId: string }) => ({
       laneId,
       laneName: laneId,
       worktreePath: `${PROJECT}/.ade/worktrees/${laneId}`,
+      hasUnpushedCommits: laneId === "merged-then-committed",
       blockedReasons: laneId === "idle-picked-up-work"
         ? [{ code: "active_work", disposition: "confirmation_required", message: "A chat is running" }]
         : [],
@@ -844,14 +850,15 @@ describe("Project → Lanes, Location, and Computer → ADE service", () => {
     expect((dirty as HTMLInputElement).disabled).toBe(true);
     expect(screen.queryByRole("checkbox", { name: /main/ })).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "Select 2 stale" }));
-    fireEvent.click(screen.getByRole("button", { name: /^Archive 2 lanes/ }));
-    const confirm = await screen.findByRole("alertdialog", { name: "Archive 2 lanes?" });
-    fireEvent.click(within(confirm).getByRole("button", { name: "Archive 2 lanes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Select 3 stale" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Archive 3 lanes/ }));
+    const confirm = await screen.findByRole("alertdialog", { name: "Archive 3 lanes?" });
+    fireEvent.click(within(confirm).getByRole("button", { name: "Archive 3 lanes" }));
 
-    await waitFor(() => expect(getReclaimRisk).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(archiveAndReclaim).toHaveBeenCalledTimes(1));
-    expect(archiveAndReclaim).toHaveBeenCalledWith({ laneId: "merged-clean", confirmation: "RECLAIM" }, null);
+    await waitFor(() => expect(getReclaimRisk).toHaveBeenCalledTimes(3));
     expect(await screen.findByText(/Skipped idle-picked-up-work: A chat is running/)).toBeTruthy();
+    expect(screen.getByText(/Skipped merged-then-committed: It has commits that aren't pushed/)).toBeTruthy();
+    expect(archiveAndReclaim).toHaveBeenCalledTimes(1);
+    expect(archiveAndReclaim).toHaveBeenCalledWith({ laneId: "merged-clean", confirmation: "RECLAIM" }, null);
   });
 });

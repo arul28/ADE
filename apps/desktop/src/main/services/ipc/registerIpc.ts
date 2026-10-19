@@ -4389,7 +4389,9 @@ export function registerIpc({
 
   ipcMain.handle(IPC.projectHealthFix, async (_event, args: ProjectHealthFixArgs): Promise<ProjectHealthFixResult> => {
     const service = requireAppContextValue(getCtx(), "projectHealthService");
-    return service.fix(args);
+    const result = await service.fix(args);
+    captureProjectDataRecovery("project_health_fix", result.ok ? "completed" : "failed");
+    return result;
   });
 
   ipcMain.handle(IPC.storageCompressNow, async (): Promise<StorageCompressionResult> => {
@@ -4999,7 +5001,7 @@ export function registerIpc({
   // missing and which way people recover. Nothing about the project. The 1 h
   // dedupe bounds a retry loop to 24 events per key per day.
   const captureProjectDataRecovery = (
-    action: "project_data_restore" | "project_data_start_fresh" | "project_move",
+    action: "project_data_restore" | "project_data_start_fresh" | "project_move" | "project_health_fix",
     outcome: "completed" | "failed",
   ) => {
     try {

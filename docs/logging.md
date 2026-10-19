@@ -1069,7 +1069,12 @@ raised. Moving a project (Settings → Location) records the
 same event at the same boundary with `action: "project_move"` and
 `outcome: "completed" | "failed"` once a move ran; a move refused before it
 began is not counted. The same one-hour key bounds it to 48 accepted events
-per installation per day. The diagnosis itself is not reported: a folder the person moved or
+per installation per day. Pressing a project health fix (Settings → Location
+or Lanes) records it too, with `action: "project_health_fix"` and `outcome`
+from the fix result (`completed` when every step worked, else `failed`); which
+fix ran is not sent. The same key bounds it to 48 accepted events per
+installation per day. A fix run on another machine goes through that
+machine's runtime, not this IPC handler, and is not counted. The diagnosis itself is not reported: a folder the person moved or
 deleted is their action, not a fault in ADE. The dashboard spec is untouched.
 
 Pressing "Report issue" on any of ADE's error surfaces — the project recovery

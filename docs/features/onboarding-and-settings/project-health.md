@@ -1,9 +1,11 @@
 # Project health
 
-Settings → **Health** lists what is wrong with the open project, why it
-matters, and a fix for what ADE can fix. `ade health --text` prints the same
-list. Checks only read; a fix runs when the person presses it (fixes are
-CTO-only at the action bridge, so agents read the report and offer fixes).
+Project health checks appear in Settings → Overview and Settings → Project →
+Location, and `ade health --text` prints the same report. Checks only read; a
+fix runs when the person presses it. The `project_health.fix` action is
+CTO-only at the action bridge, so agents can read the report and offer fixes
+but cannot apply them. `ade health --fix <id>` returns a non-zero exit code
+when the requested fix fails.
 
 Most checks matter after a project moves (see
 [`project-move.md`](./project-move.md)); the rest hold for any project.
@@ -14,17 +16,19 @@ Most checks matter after a project moves (see
 |---|---|
 | `apps/ade-cli/src/services/projects/projectHealth/projectHealthService.ts` | `getReport` (all checks, cached 30 s) and `fix`. Runs in the brain that owns the project. |
 | `apps/desktop/src/shared/types/projectHealth.ts` | Report, issue, fix and fix-result types. |
-| `apps/ade-cli/src/services/projects/projectMove/moveJournal.ts` | `previousProjectRoots`: where the project lived before, from ADE's move records. |
+| `apps/ade-cli/src/services/projects/projectMove/movePreviousRoots.ts` | `previousProjectRoots`: follows this project's move chain in time order and retains each recorded spelling of every prior root. |
 | `apps/ade-cli/src/services/projects/projectMove/moveDatabase.ts` | `countPathsNaming` / `rewritePathsInDatabase`: the same path rewrite the move runs, on any connection. |
 | `apps/desktop/src/main/services/adeActions/registry.ts` | `project_health` action domain (`getReport`, `fix`). |
 | `apps/desktop/src/preload/preload.ts` | `window.ade.projectHealth.{getReport,fix}`, routed with the Settings machine pin. |
+| `apps/desktop/src/main/services/adeActions/actionPolicy.ts` | Restricts `project_health.fix` to the CTO role at the action bridge. |
 | `apps/ade-cli/src/cli.ts` | `ade health [--refresh] [--fix <id>]`. |
 
 ## Checks
 
 | Check | Problem it finds | Fix |
 |---|---|---|
-| `stale-paths` | Saved paths (lanes, proof metadata, layout keys, kv path fields) still name a folder the project was moved out of | `update-paths`: the move's rewrite, through the brain's own connection so it syncs |
+| `stale-paths` | Saved paths (lanes, proof metadata, layout keys, kv path fields) still name a folder the project was moved out of | `update-paths`: the move's rewrite in one database transaction, through the brain's own connection so it syncs. Layout kv rows already saved at the new root are preserved; when a move itself collides, the moved row wins. |
+| `Lanes` check failure | ADE could not read lane state | The report includes a failed `Lanes` check and a `lanes-failed` issue. It does not report an empty lane list as success. |
 | `lane-folders` | Active lanes whose folder is gone | none (restore or archive) |
 | `git-links` | A lane's `.git` points at another repository or a missing folder, or the repository doesn't link back | `relink-lanes` (after a move): relative links, as the move writes them |
 | `symlinks` | Absolute links still pointing at the old folder | `relink-symlinks` |
@@ -49,20 +53,30 @@ and `stale`. `safeToArchive` means archiving loses nothing: no uncommitted
 files and no commits that exist only in the lane. A squash-merged PR's branch is
 usually deleted from the remote, so commits up to the PR's recorded head count
 as saved. `safeToArchive` is about git only. The lane archive stops running
-chats and terminals after confirmation, so bulk archive in Settings first reads
-each lane's `lanes.getReclaimRisk` and skips (and names) any lane with work
-running or any other confirmation, then calls the ordinary pinned
-`lanes.archiveAndReclaim` once per lane.
+chats and terminals after confirmation. Bulk archive re-reads each lane's git
+state before applying the merged-PR exception, then checks reclaim risk; it
+skips and names dirty, active, or unpushed lanes (and any lane requiring
+confirmation) before calling the ordinary pinned `lanes.archiveAndReclaim`
+for eligible lanes.
 
 ## Gotchas
 
 - **No move record, no stale-path fixes.** Fixes that rewrite paths need to know
-  the old folder; they read it from `<ADE_HOME>/project-moves/*.json`, which
-  survives deleting the old copy. A project moved by hand (Finder) has none.
+  the old folder; they follow this project's ordered move chain in
+  `<ADE_HOME>/project-moves/*.json`, which survives deleting the old copy. A
+  project moved by hand (Finder) has none.
 - **Dependencies in lanes.** ADE lanes usually link `node_modules` to the main
   checkout's. A lane is only expected to have its own top-level install; a
   missing `apps/*` install in a lane is normal.
 - **`~/.claude.json` is always included,** even when `CLAUDE_CONFIG_DIR` points
   at an ADE Claude home (as it does inside ADE's own agent processes).
+- **Failed reads stay visible as failures.** A failed lane read becomes a
+  failed `Lanes` check and `lanes-failed` issue, not a successful empty list;
+  Overview likewise shows a "couldn't check" row if a source read fails.
+- **Install containment uses real paths.** Health resolves filesystem paths
+  before deciding whether an install target belongs inside the project, so a
+  string-prefix sibling or a link cannot be mistaken for a contained target.
+- **Relinking reports untouched lanes.** `relink-lanes` describes lanes it
+  leaves alone as well as those it changes.
 - **Remote:** every call carries the Settings machine pin; the checks run on
   the machine that owns the project.

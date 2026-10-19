@@ -80,6 +80,17 @@ Main process:
   effects do not re-run (and cancel an in-flight provider sign-in) on every
   cross-machine sync tick — the scope's `pin` is the machine identity a section
   keys its runtime effects on, not a value to rebuild per render.
+- `apps/desktop/src/renderer/components/settings/overview/SettingsOverview.tsx`
+  and `overview/useNeedsAttention.ts` — Overview's area cards and aggregated
+  attention list. A failed source read adds a "couldn't check" row with Check
+  again; a capability missing on an older build is simply absent.
+- `apps/desktop/src/renderer/components/settings/lanes/LanesSettingsPage.tsx`
+  and `lanes/LaneList.tsx` — Project → Lanes views and lane list. The desktop
+  has Lanes, Space, Archive and Rules tabs; the web client shows Archive and
+  Rules. Hash links and Settings search switch to the view containing a card.
+- `apps/desktop/src/main/services/ipc/registerIpc.ts` — project-move start
+  forwards `copyDependencies`; disk pressure falls back to this computer's ADE
+  storage root when no local project monitor is available.
 - `apps/desktop/src/main/services/account/accountBridge.ts`,
   `apps/ade-cli/src/services/account/accountAuthService.ts`, and
   `accountMachineDirectoryService.ts` — machine-scoped Clerk session and
@@ -2007,16 +2018,18 @@ of repeated as a badge on every row:
 Settings opens on **Overview**: one **Needs attention** list (every problem
 from the project, this computer, other machines, providers, MCP servers,
 integrations and Apple, each with its Fix button where there is one, and "Ask
-an agent" for the whole list) and an **At a glance** card per area. It gathers
-problems in the renderer (`settings/overview/useNeedsAttention.ts`); the
-project part is `projectHealth.getReport`
+an agent" for the whole list) and an **At a glance** card per area. A failed
+read appears as a "couldn't check" row with Check again instead of claiming
+nothing needs attention. It gathers problems in the renderer
+(`settings/overview/useNeedsAttention.ts`); the project part is
+`projectHealth.getReport`
 ([`project-health.md`](./project-health.md)). Nothing else is called Health.
 
 | Group | Saves to | Pages |
 |---|---|---|
 | **Overview** | — | Needs attention, At a glance |
 | **You** | Your ADE account, everywhere | Account, Chat, Notifications, MCP servers, Usage |
-| **Project** | The open project (routed to the machine that owns it) | Lanes (your lanes, Storage, Archive, Cleanups, Sessions, How lanes start), Location (move, project checks), Secrets (this project on every computer), Integrations |
+| **Project** | The open project (routed to the machine that owns it) | Lanes (Lanes, Space, Archive, Rules), Location (move, project checks), Secrets (this project on every computer), Integrations |
 | **Computer** | The selected machine | ADE service (service status, updates, `ade` command, Send a report, Reset), Providers, Apple devices (This computer), Appearance (This computer), Behaviour |
 
 General and the old Diagnostics/Health page are gone; every entry kept its
@@ -2043,13 +2056,16 @@ because its callback cannot reach it, and the API key path is shown instead.
 Their `linksToTabMachine` flag keeps a settings link with no `?machine=` (an
 integration banner, a PR's GitHub notice) landing on the tab's machine.
 
-Section pages are one column of a few named blocks, each with an icon, a
-title and one line: General is **ADE**, **This project**, **This computer**,
-**Privacy** and a red **Danger zone** holding Reset ADE; Lanes is **How lanes
-behave** and **Templates**; Integrations is **GitHub** and **Linear**;
-Diagnostics is **Disk** and **Sessions**. When a page has two or more blocks, a
-sticky rail (`SettingsSectionRail`) lists them and scrolls to each; it appears
-only when the page container is 900px or wider.
+Section pages use one-column blocks. Project → Lanes is a four-tab page:
+**Lanes** lists active lanes with All, Stale, Has changes and Running count
+tiles; **Space** shows lane and ADE storage; **Archive** manages archived
+lanes; **Rules** holds lane storage, session lifecycle and lane-start rules.
+The hosted web client shows Archive and Rules only. Links and Settings search
+switch to the tab containing the destination. Bulk archive re-reads git state
+before applying the merged-PR exception, then skips dirty, active or unpushed
+lanes. A machine change clears the previous machine's lane, storage and health
+data before loading the new machine. Disk pressure remains available in
+Settings with no project open by reading this computer's ADE storage root.
 
 ### Settings with no project
 
