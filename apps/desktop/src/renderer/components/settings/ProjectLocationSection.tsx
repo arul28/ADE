@@ -45,16 +45,8 @@ export function ProjectLocationSection() {
     return () => window.removeEventListener(PROJECT_MOVE_CHANGED_EVENT, refresh);
   }, [refresh]);
 
-  if (!root) return null;
-  if (!api || !isMacPlatform()) {
-    return (
-      <ModernSection group="Project" anchor="project-location" title="Project location">
-        <ModernRows>
-          <ModernRow title="Moving a project to another drive" hint="Available on macOS for now." />
-        </ModernRows>
-      </ModernSection>
-    );
-  }
+  // Moving needs macOS's copy and drive tools; elsewhere the card is absent.
+  if (!root || !api || !isMacPlatform()) return null;
   const projectName = project?.displayName || root.split("/").pop() || "this project";
 
   if (remote) {

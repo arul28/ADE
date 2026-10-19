@@ -1,5 +1,6 @@
 /* @vitest-environment jsdom */
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { isMacPlatform } from "../../lib/platform";
 import {
   availableSettingsEntries,
   clearStandaloneSettingsResolver,
@@ -477,10 +478,22 @@ describe("web machine-scoped availability", () => {
     SETTINGS_ENTRIES.filter((entry) => entry.web === "machine").map((entry) => entry.id),
   );
 
-  it("keeps every setting on the desktop, bound or not, except the web-only cards", () => {
-    const available = new Set(availableSettingsEntries().map((entry) => entry.id));
-    expect(SETTINGS_ENTRIES.some((entry) => entry.webOnly)).toBe(true);
-    for (const entry of SETTINGS_ENTRIES) expect(available.has(entry.id)).toBe(entry.webOnly !== true);
+  it.each([
+    { platform: "MacIntel", mac: true },
+    { platform: "Win32", mac: false },
+    { platform: "Linux x86_64", mac: false },
+  ])("keeps every setting on the desktop ($platform), except web-only cards and macOS-only ones off a Mac", ({ platform, mac }) => {
+    const spy = vi.spyOn(navigator, "platform", "get").mockReturnValue(platform);
+    try {
+      const available = new Set(availableSettingsEntries().map((entry) => entry.id));
+      expect(SETTINGS_ENTRIES.some((entry) => entry.webOnly)).toBe(true);
+      expect(available.has("general.project-location")).toBe(mac);
+      for (const entry of SETTINGS_ENTRIES) {
+        expect(available.has(entry.id)).toBe(entry.webOnly !== true && (mac || entry.macOnly !== true));
+      }
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("drops machine-scoped settings on web while no project tab is bound", () => {
@@ -513,7 +526,9 @@ describe("standalone settings availability", () => {
       const available = availableSettingsEntries();
       expect(available.some((entry) => isProjectScoped(entry.scope))).toBe(false);
       expect(available.map((entry) => entry.id)).toEqual(
-        SETTINGS_ENTRIES.filter((entry) => !entry.webOnly && !isProjectScoped(entry.scope)).map((entry) => entry.id),
+        SETTINGS_ENTRIES
+          .filter((entry) => !entry.webOnly && !isProjectScoped(entry.scope) && (isMacPlatform() || !entry.macOnly))
+          .map((entry) => entry.id),
       );
       expect(searchSettingsEntries("reset").map((entry) => entry.id)).toContain("general.reset");
       expect(searchSettingsEntries("secrets").some((entry) => entry.id === "secrets.secrets")).toBe(false);

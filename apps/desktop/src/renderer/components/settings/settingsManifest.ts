@@ -14,6 +14,7 @@
 
 import { PROVIDER_DISPLAY_NAME } from "../../../shared/providers";
 import { SCOPE_COPY, type SettingScope, type SettingWebScope } from "../../../shared/types/settingsScope";
+import { isMacPlatform } from "../../lib/platform";
 import { isWebClientMode } from "../../lib/webClientMode";
 
 /**
@@ -228,6 +229,8 @@ export type SettingEntry = {
    * its nav, search and palette must not offer an anchor it never draws.
    */
   webOnly?: true;
+  /** Only macOS has this capability; elsewhere nav, search and the palette never offer it. */
+  macOnly?: true;
 };
 
 /**
@@ -464,6 +467,8 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     scope: "machine",
     web: "hidden",
     group: "Location",
+    // Moving needs macOS's copy and drive tools.
+    macOnly: true,
   },
 
   {
@@ -1391,6 +1396,7 @@ export function settingsEntryById(id: string): SettingEntry | null {
  * where to land it.
  */
 export function isSettingAvailable(entry: SettingEntry): boolean {
+  if (entry.macOnly && !isMacPlatform()) return false;
   if (!isWebClientMode()) {
     // Standalone Settings, opened from the new-project screen with no project:
     // a project-scoped setting has nowhere to write, so it is hidden here as
