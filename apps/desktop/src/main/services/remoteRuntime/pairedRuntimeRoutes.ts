@@ -7,6 +7,7 @@ import type {
 import type { SyncHelloErrorPayload } from "../../../shared/types/sync";
 import { isTailnetHostname } from "../../../shared/tailnet";
 import {
+  isPairedRuntimeSupersededError,
   PairedRuntimeHelloRejectedError,
   PairedRuntimeRelayAuthRequiredError,
 } from "./pairedRuntimeErrors";
@@ -278,6 +279,10 @@ export function classifyPairedRuntimeFailure(
   error: unknown,
 ): RemoteRuntimeConnectionAttemptFailure {
   if (error instanceof PairedRuntimeRelayAuthRequiredError) return "authentication";
+  // The host closed the channel because another connection took it over. The
+  // close arrives as a plain transport error, so the message regex below would
+  // file it as "unreachable" and demote a route that just answered.
+  if (isPairedRuntimeSupersededError(error)) return "superseded";
   if (error instanceof PairedRuntimeHelloRejectedError) {
     const mapped = error.helloCode
       ? HELLO_CODE_FAILURES[error.helloCode]

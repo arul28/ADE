@@ -721,10 +721,11 @@ export class DesktopPairedMachineStore {
    * Drop an endpoint that provably belongs to a different machine.
    *
    * The endpoint set is otherwise append-only: `markEndpointFailed` re-adds the
-   * address it is recording a failure for, and the recently-failing demotion
-   * expires after two minutes. So a neighbour's Tailscale name that once landed
-   * in this record (an mDNS advert keyed on an unverified TXT device id, or a
-   * directory endpoint that never got dialled) would be retried forever. When
+   * address it is recording a failure for, and a failing address stays in the
+   * list, demoted, until it answers or mDNS sees it after that failure. So a
+   * neighbour's Tailscale name that once landed in this record (an mDNS advert
+   * keyed on an unverified TXT device id, or a directory endpoint that never got
+   * dialled) would be dialled on every connect. When
    * the handshake proves the address answers as some *other* host, the only
    * correct move is to forget it. The record's own endpoint always survives so
    * a machine can never be left with nothing to dial.
