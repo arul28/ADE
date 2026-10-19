@@ -331,7 +331,7 @@ import type { createProjectConfigService } from "../config/projectConfigService"
 import type { AdeDb } from "../state/kvDb";
 import {
   cleanupAbandonedTempFiles,
-  readJsonWithRecovery,
+  createStampedJsonCache,
   writeFileAtomic,
   writeJsonWithPrevious,
 } from "../state/durableFile";
@@ -12056,6 +12056,13 @@ export function createAgentChatService(args: {
   }
   // Before any chat loads, so no persist can race the rewrite.
   sweepPersistedCallerMcpHeaderValues(chatSessionsDir, logger);
+  // Each chat's state file, read once and reused while the file is unchanged, so a
+  // listing does not re-read every chat. Other brains and the sweep above also write
+  // these files, so a hit is checked against the file's stat, not this brain's writes.
+  const persistedStateFiles = createStampedJsonCache(isPersistedChatStateShape, {
+    maxEntries: 1_000,
+    maxBytes: 16 * 1024 * 1024,
+  });
   fs.mkdirSync(transcriptsDir, { recursive: true });
   fs.mkdirSync(chatTranscriptsDir, { recursive: true });
 
@@ -18766,7 +18773,7 @@ export function createAgentChatService(args: {
 
   const readPersistedState = (sessionId: string): PersistedChatState | null => {
     const filePath = metadataPathFor(sessionId);
-    const recovered = readJsonWithRecovery(filePath, isPersistedChatStateShape);
+    const recovered = persistedStateFiles.read(filePath);
     if (recovered.value === null) return null;
     if (recovered.source === "previous") {
       logger.warn("agent_chat.persisted_state_recovered_lkg", { sessionId });
@@ -19335,6 +19342,43 @@ export function createAgentChatService(args: {
       processRegistry?.isProcessIdentityLive(pid, startedAt) ?? false,
   });
 
+  /**
+   * What one chat listing reads once for all of its rows. Each of these is a
+   * disk or database read per row otherwise: the project config (its read stats
+   * every path the config names), the machine's provider accounts (a registry
+   * file read per lookup), and each owner's liveness (a runtime-process query
+   * per owner). A listing builds one scope and its rows share the answers; the
+   * scope lives only for that call, so the first read of a call is as fresh as
+   * a row's own read was.
+   */
+  const createSummaryCallScope = () => {
+    let config: ReturnType<typeof projectConfigService.get> | null = null;
+    let accounts: ReturnType<ReturnType<typeof getMachineProviderInstanceStore>["list"]> | null = null;
+    const ownerDecisions = new Map<string, ChatRuntimeOwnershipDecision>();
+    return {
+      projectConfig: () => {
+        config ??= projectConfigService.get();
+        return config;
+      },
+      providerInstance: (id: string) => {
+        accounts ??= getMachineProviderInstanceStore().list();
+        const trimmed = id.trim();
+        return accounts.find((account) => account.id === trimmed) ?? null;
+      },
+      ownershipOf: (owner: ChatRuntimeOwner): ChatRuntimeOwnershipDecision => {
+        // The decision reads only these four owner fields, and `self` is fixed for this service.
+        const key = JSON.stringify([owner.brainId, owner.pid, owner.startedAt ?? null, owner.adeHome ?? null]);
+        let decision = ownerDecisions.get(key);
+        if (!decision) {
+          decision = chatRuntimeOwnershipDecision(owner);
+          ownerDecisions.set(key, decision);
+        }
+        return decision;
+      },
+    };
+  };
+  type SummaryCallScope = ReturnType<typeof createSummaryCallScope>;
+
   const chatRuntimeAdoptable = (
     sessionId: string,
     persisted?: PersistedChatState | null,
@@ -19364,6 +19408,7 @@ export function createAgentChatService(args: {
   const siblingBrainOwnerOnDisk = (
     sessionId: string,
     persisted?: PersistedChatState | null,
+    scope?: SummaryCallScope,
   ): ChatRuntimeOwner | null => {
     let owner: ChatRuntimeOwner | null = null;
     try {
@@ -19372,7 +19417,8 @@ export function createAgentChatService(args: {
         : persisted?.runtimeOwner ?? null;
     } catch { /* unreadable state is unowned */ }
     if (!owner) return null;
-    return chatRuntimeOwnershipDecision(owner).verdict === "live-foreign-brain" ? owner : null;
+    const decision = scope ? scope.ownershipOf(owner) : chatRuntimeOwnershipDecision(owner);
+    return decision.verdict === "live-foreign-brain" ? owner : null;
   };
 
   /**
@@ -19385,7 +19431,8 @@ export function createAgentChatService(args: {
   const liveForeignChatRuntimeOwner = (
     sessionId: string,
     persisted?: PersistedChatState | null,
-  ): ChatRuntimeOwner | null => siblingBrainOwnerOnDisk(sessionId, persisted);
+    scope?: SummaryCallScope,
+  ): ChatRuntimeOwner | null => siblingBrainOwnerOnDisk(sessionId, persisted, scope);
 
   /**
    * Refuse to drive a chat another live brain owns. Every caller here would
@@ -41320,18 +41367,24 @@ export function createAgentChatService(args: {
   // `projectConfigService.get()` resolves and validates the whole config, and this
   // runs per usage event, so the compaction block is read at most once a second.
   let compactionConfigCache: { at: number; value: Record<string, unknown> | undefined } | null = null;
-  const readCompactionConfig = (): Record<string, unknown> | undefined => {
+  const readCompactionConfig = (scope?: SummaryCallScope): Record<string, unknown> | undefined => {
+    if (scope) return scope.projectConfig().effective.ai?.compaction;
     const now = Date.now();
     if (!compactionConfigCache || now - compactionConfigCache.at > 1_000) {
       compactionConfigCache = { at: now, value: projectConfigService.get().effective.ai?.compaction };
     }
     return compactionConfigCache.value;
   };
-  const compactionSettingsForSession = (session: { provider?: string; instanceId?: string | null }) => {
+  const compactionSettingsForSession = (
+    session: { provider?: string; instanceId?: string | null },
+    scope?: SummaryCallScope,
+  ) => {
     const provider = session.provider ?? "";
-    const defaults = normalizeCompactionSettings(readCompactionConfig()?.[provider]);
+    const defaults = normalizeCompactionSettings(readCompactionConfig(scope)?.[provider]);
     const account = isProviderInstanceProvider(provider)
-      ? getMachineProviderInstanceStore().get(session.instanceId ?? defaultProviderInstanceId(provider))
+      ? (scope
+        ? scope.providerInstance(session.instanceId ?? defaultProviderInstanceId(provider))
+        : getMachineProviderInstanceStore().get(session.instanceId ?? defaultProviderInstanceId(provider)))
       : null;
     return { ...defaults, ...account?.compaction };
   };
@@ -41341,8 +41394,11 @@ export function createAgentChatService(args: {
    * starts at `never`, so nobody who never opened the setting sees an offer;
    * turning it on in Settings → Providers is what shows it.
    */
-  const compactionIdleModeFor = (session: { provider?: string; instanceId?: string | null }): "ask" | "always" | "never" => {
-    return compactionSettingsForSession(session).idleMode ?? compactionIdleModeDefault(session.provider);
+  const compactionIdleModeFor = (
+    session: { provider?: string; instanceId?: string | null },
+    scope?: SummaryCallScope,
+  ): "ask" | "always" | "never" => {
+    return compactionSettingsForSession(session, scope).idleMode ?? compactionIdleModeDefault(session.provider);
   };
   const compactionSettingsFor = (managed: ManagedChatSession) => compactionSettingsForSession(managed.session);
   /** OpenCode runs `/compact` only when its server lists the command. */
@@ -61017,6 +61073,7 @@ export function createAgentChatService(args: {
 
   const summarizeSessionRow = async (
     row: ReturnType<ReturnType<typeof createSessionService>["list"]>[number],
+    scope: SummaryCallScope = createSummaryCallScope(),
   ): Promise<AgentChatSessionSummary> => {
     const persisted = readPersistedState(row.id);
     const liveManagedInitial = managedSessions.get(row.id) ?? null;
@@ -61039,7 +61096,7 @@ export function createAgentChatService(args: {
     }
     const liveManaged = managedSessions.get(row.id) ?? liveManagedInitial;
     const liveSession = liveManaged?.session ?? null;
-    const foreignRuntimeOwner = liveForeignChatRuntimeOwner(row.id, persisted);
+    const foreignRuntimeOwner = liveForeignChatRuntimeOwner(row.id, persisted, scope);
     const persistedProvider = liveSession?.provider ?? persisted?.provider ?? null;
     const provider = persistedProvider ?? providerFromToolType(row.toolType);
     if (persistedProvider && isChatToolType(row.toolType)) {
@@ -61120,9 +61177,8 @@ export function createAgentChatService(args: {
     let scheduledWorkPaused = false;
     let scheduledWork: AgentChatScheduledWorkItem[] = [];
     try {
-      scheduledWorkPaused =
-        projectConfigService.get().effective.ai?.chat?.scheduledWorkPaused === true;
-      const next = scheduledWorkScheduler?.nextWakeAt(row.id) ?? null;
+      scheduledWorkPaused = scope.projectConfig().effective.ai?.chat?.scheduledWorkPaused === true;
+      const next = scheduledWorkScheduler?.nextWakeAt(row.id, scheduledWorkPaused) ?? null;
       nextWakeAt = next == null ? null : new Date(next).toISOString();
       scheduledWorkPaused =
         scheduledWorkScheduler?.isSessionPaused(row.id) === true
@@ -61220,7 +61276,7 @@ export function createAgentChatService(args: {
       ...(provider === "opencode" ? { manualCompactAvailable: await openCodeCompactListed(row.id) } : {}),
       ...(compactFirstSupportedProvider(provider)
         ? {
-            compactionIdleMode: compactionIdleModeFor({ provider, instanceId: liveSession?.instanceId ?? persisted?.instanceId }),
+            compactionIdleMode: compactionIdleModeFor({ provider, instanceId: liveSession?.instanceId ?? persisted?.instanceId }, scope),
             // Always sent, so a client built with an older floor offers at this one.
             compactFirstMinTokens: compactFirstMinTokens ?? COMPACT_FIRST_MIN_TOKENS,
             // The provider's documented (or, for Claude, measured) cache window.
@@ -61529,7 +61585,9 @@ export function createAgentChatService(args: {
     const includeAutomation = options?.includeAutomation === true;
     const includeArchived = options?.includeArchived !== false;
 
-    return (await Promise.all(summarizedRows.map((row) => summarizeSessionRow(row))))
+    // One scope for the whole call: the config, the accounts and each owner are read once, not per row.
+    const scope = createSummaryCallScope();
+    return (await Promise.all(summarizedRows.map((row) => summarizeSessionRow(row, scope))))
       .filter((summary) => includeIdentity || !summary.identityKey)
       .filter((summary) => includeAutomation || (summary.surface ?? "work") !== "automation")
       .filter((summary) => includeArchived || summary.archivedAt == null);
@@ -64954,6 +65012,7 @@ export function createAgentChatService(args: {
       dedicatedTranscriptPath,
       current.transcriptPath,
     ]);
+    persistedStateFiles.forget(persistedMetadataPath);
     for (const filePath of transcriptPaths) {
       deletePersistedChatFile(filePath);
     }

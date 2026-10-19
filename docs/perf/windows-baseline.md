@@ -161,6 +161,7 @@ Run without the app (`scripts/perf/service/`).
 | Tree watcher: CPU until ready (includes the bench's 1.5 s after close) | same | 407 / 313 ms (before: 3,344 / 3,234; 4,187 / 3,563 on the day) | *new* 500 ms |
 | Tree watcher: CPU at idle over 5 s | same | 0 / 93 ms (other agents were writing in the tree) | 150 ms |
 | Tree watcher: memory held by one open watcher of the repository | a focused script (`process.memoryUsage()` around ready, after GC) | 2 / 2 MB heap, 20 / 23 MB RSS (chokidar's native mode: 20 MB heap, 86 MB RSS) | *new* 30 MB RSS |
+| `sessions.list` handler, same 617-file fixture as the macOS row. Unscoped (`limit 500`) / lane (`limit 200`) / chat-scoped (3 rows). Median of 7 runs in each of 3 interleaved processes. Main `46b92f0b8` → round 1 `57f8b5e53` (state-file cache) → `f049cc176` (+ per-call hoists). Medians: unscoped 386 → 339 → 200 ms; lane 158 → 135 → 79 ms; chat 39 → 38 → 39 ms (not affected). Chat metadata reads per call: unscoped 352 → 0 → 0; lane 138 → 0 → 0. Config reads per call: unscoped 703 → 702 → 2; lane 274 → 274 → 2. Returned rows byte-identical across all three (parity dump, 12 shapes) | `session-list.bench.mts` | *new*, proposed, needs approval: unscoped 250 ms, lane 120 ms, chat 25 ms (chat is 39 ms here and unchanged by this work; see the macOS row) |
 
 Since Windows pass 1 (`ade/friend-feedback-bug-triage`, after `3137fc9b9`)
 `watchTree` on Windows is the single recursive native watch macOS uses
