@@ -1526,7 +1526,7 @@ app.whenReady().then(async () => {
     startMetricsSampler();
   }
 
-  if (blockPackagedLaunchForCrossChannelSyncConflict({
+  if (await blockPackagedLaunchForCrossChannelSyncConflict({
     isPackaged: app.isPackaged,
     channel: normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL),
   })) {

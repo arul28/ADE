@@ -7,6 +7,7 @@ import {
   defaultProcessMatchesOwner,
   buildQuitCommand,
   detectSyncHostSingletonConflict,
+  detectSyncHostSingletonConflictAsync,
   formatSyncHostSingletonConflictMessage,
   holdsSyncHostSingleton,
   isSameChannelSyncHostOwner,
@@ -526,5 +527,79 @@ describe("Windows sync-host listener scan", () => {
     });
     expect(commands).toEqual([]);
     expect(conflict).toBeNull();
+  });
+});
+
+// The desktop launch gate's async path on Windows. Only the identity probe is
+// injected (the PowerShell child, the process boundary); the lock file and the
+// verdict logic run for real. `pidAlive` is pinned so the recorded owner is live.
+describe("detectSyncHostSingletonConflictAsync (Windows launch gate)", () => {
+  const betaHome = path.join(os.homedir(), ".ade-beta");
+  const betaEnv = { ADE_PACKAGE_CHANNEL: "beta", ADE_HOME: betaHome };
+
+  // What the PowerShell owner check answers for a live PID: the recorded birth
+  // time when the PID still belongs to the owner, an hour later when it was reused.
+  function probeAnswer(recorded: SyncHostSingletonOwner, identity: "match" | "mismatch" | "failed") {
+    if (identity === "failed") return { stdout: "", failed: true };
+    return {
+      stdout: JSON.stringify({
+        executablePath: null,
+        startedAt: identity === "match" ? recorded.processStartedAt : "2026-06-10T12:00:00.000Z",
+      }),
+      failed: false,
+    };
+  }
+
+  function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((done) => {
+      resolve = done;
+    });
+    return { promise, resolve };
+  }
+
+  it.each([
+    { name: "cross-channel owner, identity matches: blocks and keeps the lock", owner: "cross-channel", identity: "match", blocked: true, lockKept: true, handOff: false },
+    { name: "cross-channel owner, identity mismatch: allows and unlinks the lock", owner: "cross-channel", identity: "mismatch", blocked: false, lockKept: false, handOff: false },
+    { name: "cross-channel owner, probe fails: blocks and keeps the lock", owner: "cross-channel", identity: "failed", blocked: true, lockKept: true, handOff: false },
+    { name: "same-channel owner, identity matches: allows and keeps the lock", owner: "same-channel", identity: "match", blocked: false, lockKept: true, handOff: false },
+    { name: "same-channel owner, identity mismatch: allows at once, then unlinks the lock", owner: "same-channel", identity: "mismatch", blocked: false, lockKept: false, handOff: false },
+    { name: "same-channel owner, probe fails: allows and keeps the lock", owner: "same-channel", identity: "failed", blocked: false, lockKept: true, handOff: false },
+    { name: "same-channel owner, mismatch, lock handed to a newer owner: keeps the newer lock", owner: "same-channel", identity: "mismatch", blocked: false, lockKept: true, handOff: true },
+  ] as const)("$name", async ({ owner: ownerKind, identity, blocked, lockKept, handOff }) => {
+    const sameChannel = ownerKind === "same-channel";
+    const lockPath = tempLockPath();
+    const recorded = owner({
+      id: "recorded-brain",
+      pid: 4321,
+      adeHome: sameChannel ? betaHome : path.join(os.homedir(), ".ade"),
+    });
+    writeLock(lockPath, recorded);
+
+    const answer = deferred<{ stdout: string; failed: boolean }>();
+    const launch = detectSyncHostSingletonConflictAsync(
+      { lockPath, pidAlive: () => true, platform: "win32", skipListenerScan: true },
+      {
+        runProbe: () => answer.promise,
+        ignoreOwner: (candidate) => isSameChannelSyncHostOwner(candidate, betaEnv),
+      },
+    );
+    // A cross-channel verdict waits for the probe, so the probe answers before the launch resolves.
+    if (!sameChannel) answer.resolve(probeAnswer(recorded, identity));
+
+    const conflict = await launch;
+    if (sameChannel) {
+      // The launch answered while the probe was still pending: it neither waited
+      // for the probe nor touched the lock. A newer owner may take the lock now.
+      expect(fs.existsSync(lockPath)).toBe(true);
+      if (handOff) writeLock(lockPath, owner({ id: "newer-brain", pid: 5555 }));
+      answer.resolve(probeAnswer(recorded, identity));
+    }
+    // The background check is promise-only (the probe is injected, the unlink is
+    // synchronous), so one macrotask turn lets it run to its end.
+    await new Promise((done) => setImmediate(done));
+
+    expect(conflict !== null).toBe(blocked);
+    expect(fs.existsSync(lockPath)).toBe(lockKept);
   });
 });
