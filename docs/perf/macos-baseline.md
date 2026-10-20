@@ -881,8 +881,7 @@ user-scope `npx @playwright/mcp@latest`, a local-scope
 Each chat was created with `ade chat create ... --prompt "Reply with exactly: ok"`;
 footprint is `footprint -p` summed over every process under each chat's
 runtime (`codex app-server` / `claude`), shells excluded, 45 s after the
-last chat. Before is main at `0d9211fd1`, after is
-`perf(mcp): start npx MCP servers without npm's launcher`.
+last chat. Before is main at `0d9211fd1`, after is `338962c68`.
 
 | Metric | How | Before | After | Ceiling |
 |---|---|---|---|---|
