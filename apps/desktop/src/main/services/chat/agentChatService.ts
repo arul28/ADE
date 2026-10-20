@@ -404,6 +404,13 @@ import {
 import { prepareHarnessLaunch } from "./harnessLaunchPrepare";
 import { launchRouteTransition, readPresetLaunchTarget } from "./chatLaunchRoute";
 import { mcpRegistryLaunchNotices, resolveMcpRegistryForLaunch } from "./mcpRegistryLaunch";
+import { createNpxDirectLauncher } from "../mcp/npxDirectLaunch";
+import {
+  claudeUserNpxDirectServers,
+  codexUserNpxDirectOverrides,
+  prepareClaudeUserNpxDirect,
+  prepareCodexUserNpxDirect,
+} from "../mcp/mcpUserServerNpxDirect";
 import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import {
   createCredentialModelDescriptorBase,
@@ -5980,6 +5987,13 @@ type CodexThreadConfigOptions = {
    */
   callerServers?: CallerMcpServers | null;
   callerStrictAgainstConfiguredServerNames?: readonly string[] | null;
+  /**
+   * The user's own config.toml `npx` servers re-pointed at the package npx
+   * already installed (`mcpUserServerNpxDirect.ts`). Merged into the user's
+   * table by name, so only the process changes; anything ADE or a caller names
+   * wins over it.
+   */
+  userNpxDirectServers?: Record<string, { command: string; args: string[] }> | null;
 };
 
 function codexThreadConfigArgs(
@@ -5990,6 +6004,7 @@ function codexThreadConfigArgs(
     computerUse = null,
     callerServers = null,
     callerStrictAgainstConfiguredServerNames = null,
+    userNpxDirectServers = null,
   } = options;
   const effort = typeof reasoningEffort === "string" ? reasoningEffort.trim() : "";
   const baseMcpServers = computerUse ? { computer_use: computerUse } : null;
@@ -6004,9 +6019,11 @@ function codexThreadConfigArgs(
   // overrides so a server the caller explicitly asked for is never disabled,
   // but ADE-managed servers now win over both. That matches every other
   // adapter, where the ADE lease is spread last.
-  const mcpServers = baseMcpServers || callerStrictOverrides || callerCodexServers
+  const userNpxDirect = userNpxDirectServers && Object.keys(userNpxDirectServers).length ? userNpxDirectServers : null;
+  const mcpServers = baseMcpServers || callerStrictOverrides || callerCodexServers || userNpxDirect
     ? {
       ...(callerStrictOverrides ?? {}),
+      ...(userNpxDirect ?? {}),
       ...(callerCodexServers ?? {}),
       ...(baseMcpServers ?? {}),
     }
@@ -11111,6 +11128,8 @@ export function createAgentChatService(args: {
         platform: process.platform,
         store: db?.get ? { get: db.get } : null,
       });
+  /** Starts `npx` MCP servers without npm's launcher process when the installed copy is provably the one npx would run. */
+  const npxDirectLauncher = createNpxDirectLauncher({ logger });
   const resolveCodexComputerUseMcp = resolveCodexComputerUseMcpOverride
     ?? resolveCodexComputerUseMcpConfig;
   const resolveCodexConfiguredMcpServerNames = resolveCodexConfiguredMcpServerNamesOverride
@@ -11162,7 +11181,24 @@ export function createAgentChatService(args: {
         emitChatEvent(managed, { type: "system_notice", noticeKind: "warning", severity: "warning", message });
       }
     }
-    return registry.servers;
+    if (!registry.servers) return null;
+    // ADE hands these servers over itself, so starting one without npm's
+    // launcher cannot add a second copy on any provider. Synchronous: a tag
+    // npx would check online starts the check here and is re-pointed from the
+    // next launch on.
+    const servers: CallerMcpServers = {};
+    for (const [name, server] of Object.entries(registry.servers)) {
+      const direct = server.type === "stdio"
+        ? npxDirectLauncher.resolve({
+          command: server.command,
+          args: server.args ?? [],
+          cwd: managed.laneWorktreePath,
+          env: { ...process.env, ...(server.env ?? {}) },
+        })
+        : null;
+      servers[name] = direct && server.type === "stdio" ? { ...server, ...direct } : server;
+    }
+    return servers;
   };
 
   /** The caller's servers on top of the registry's: a caller that names a server keeps its own definition. */
@@ -11217,6 +11253,17 @@ export function createAgentChatService(args: {
     // server: starting it would only add tools the gate then denies.
     const policy = managed.session.permissionPolicy ?? null;
     const policyRefusesComputerUse = policy != null && policyRefusesMcpServer(policy, "computer_use", "codex");
+    // Strict mode turns every config.toml server off, so there is nothing of
+    // the user's to re-point.
+    let userNpxDirectServers: Record<string, { command: string; args: string[] }> | null = null;
+    if (!callerStrict) {
+      const userNpxDirectArgs = {
+        cwd: managed.laneWorktreePath,
+        skipNames: new Set(["computer_use", ...Object.keys(callerServers ?? {})]),
+      };
+      await prepareCodexUserNpxDirect(npxDirectLauncher, userNpxDirectArgs);
+      userNpxDirectServers = codexUserNpxDirectOverrides(npxDirectLauncher, userNpxDirectArgs);
+    }
     return codexThreadConfigArgs({
       reasoningEffort,
       computerUse: policyRefusesComputerUse ? null : await resolveCodexComputerUseMcp(),
@@ -11224,6 +11271,7 @@ export function createAgentChatService(args: {
       callerStrictAgainstConfiguredServerNames: callerStrict
         ? await resolveCodexConfiguredMcpServerNames()
         : null,
+      userNpxDirectServers,
     });
   };
   const notifiedSettledTurns = new Set<string>();
@@ -42825,6 +42873,26 @@ export function createAgentChatService(args: {
     restart?.();
   };
 
+  /**
+   * Re-point the user's own `npx` MCP servers at the copy npx already
+   * installed, through the launch's MCP config: a server named there replaces
+   * the same name from ~/.claude.json, and every other server of the user's
+   * still loads. Nothing to do when the query ignores the user's MCP config.
+   */
+  const applyClaudeUserNpxDirect = async (options: ClaudeSDKOptions): Promise<void> => {
+    if (options.strictMcpConfig || !options.settingSources?.length || !options.cwd) return;
+    const directArgs = {
+      env: (options.env ?? process.env) as NodeJS.ProcessEnv,
+      cwd: options.cwd,
+      projectRoots: [args.projectRoot],
+      settingSources: options.settingSources,
+      skipNames: new Set(Object.keys(options.mcpServers ?? {})),
+    };
+    await prepareClaudeUserNpxDirect(npxDirectLauncher, directArgs);
+    const direct = claudeUserNpxDirectServers(npxDirectLauncher, directArgs);
+    if (Object.keys(direct).length) options.mcpServers = { ...direct, ...(options.mcpServers ?? {}) };
+  };
+
   const buildClaudeQueryOptions = (
     managed: ManagedChatSession,
     runtime: ClaudeRuntime,
@@ -43756,6 +43824,8 @@ export function createAgentChatService(args: {
       assertCurrentStart();
     }
     const options = buildClaudeQueryOptions(managed, runtime);
+    await applyClaudeUserNpxDirect(options);
+    assertCurrentStart();
     if (runtime.forkFromSdkSessionId) {
       if (!runtime.sdkSessionId) {
         runtime.sdkSessionId = randomUUID();
@@ -44162,6 +44232,7 @@ export function createAgentChatService(args: {
         const claudeDownload = chatPinnedToolDownload(null, "claude-code", "Claude Code");
         if (claudeDownload) await claudeDownload;
         const options = buildClaudeQueryOptions(managed, runtime);
+        await applyClaudeUserNpxDirect(options);
         if (runtime.forkFromSdkSessionId) {
           if (!runtime.sdkSessionId) {
             assignedSessionId = randomUUID();
