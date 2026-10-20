@@ -76,11 +76,15 @@ function makeHandoff(
   return { handoff: createMacDesktopHandoff(deps), deps };
 }
 
-async function startLiveProcess(): Promise<ChildProcess> {
+type Adopt = MacDesktopHandoffDeps["adopt"];
+
+/** A second live process, for a handoff that names two running apps. */
+async function startLivePid(): Promise<number> {
   const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
   await once(child, "spawn");
   liveChild = child;
-  return child;
+  expect(child.pid, "setup precondition: the child has a pid").toBeTypeOf("number");
+  return child.pid as number;
 }
 
 function assertDeadPid(pid: number): void {
@@ -96,10 +100,10 @@ function assertDeadPid(pid: number): void {
 describe("createMacDesktopHandoff", () => {
   it("lets only one scheduled instance claim and restore a shared file", async () => {
     const file = handoffPath();
-    const child = await startLiveProcess();
+    const childPid = await startLivePid();
     const now = () => handoffNow;
-    const adopt = vi.fn<MacDesktopHandoffDeps["adopt"]>(async () => true);
-    writeHandoff(file, [app(process.pid), app(child.pid)]);
+    const adopt = vi.fn<Parameters<Adopt>, ReturnType<Adopt>>(async () => true);
+    writeHandoff(file, [app(process.pid), app(childPid)]);
     const first = makeHandoff(file, now, { adopt });
     const second = makeHandoff(file, now, { adopt });
     vi.useFakeTimers();
@@ -110,7 +114,7 @@ describe("createMacDesktopHandoff", () => {
 
     expect(adopt).toHaveBeenCalledTimes(2);
     expect(adopt.mock.calls.map(([restored]) => restored.pid).sort((a, b) => a - b))
-      .toEqual([process.pid, child.pid].sort((a, b) => a - b));
+      .toEqual([process.pid, childPid].sort((a, b) => a - b));
     expect(fs.existsSync(file)).toBe(false);
     first.handoff.dispose();
     second.handoff.dispose();
@@ -118,17 +122,17 @@ describe("createMacDesktopHandoff", () => {
 
   it("merges a transient requeue with another writer and preserves per-app expiry", async () => {
     const file = handoffPath();
-    const child = await startLiveProcess();
+    const childPid = await startLivePid();
     const deadPid = 2_147_483_647;
     assertDeadPid(deadPid);
     let nowMs = handoffNow;
     const originalHandedOffAt = handoffNow - 5_000;
     let firstAttempt = true;
-    const adopt = vi.fn<MacDesktopHandoffDeps["adopt"]>(async () => {
+    const adopt = vi.fn<Parameters<Adopt>, ReturnType<Adopt>>(async () => {
       if (firstAttempt) {
         firstAttempt = false;
         writeHandoff(file, [
-          app(child.pid, "lane-b", nowMs),
+          app(childPid, "lane-b", nowMs),
           app(deadPid, "lane-expired", nowMs - handoffMaxAgeMs - 1),
         ], [lane("lane-b"), lane("lane-expired")]);
         throw Object.assign(new Error("driver disappeared"), { code: MAC_DESKTOP_DRIVER_UNAVAILABLE_CODE });
@@ -143,7 +147,7 @@ describe("createMacDesktopHandoff", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     const requeued = JSON.parse(fs.readFileSync(file, "utf8")) as { apps: Array<{ pid: number; handedOffAt: number }>; lanes: Array<{ laneId: string }> };
-    expect(requeued.apps.map((entry) => entry.pid).sort((a, b) => a - b)).toEqual([process.pid, child.pid].sort((a, b) => a - b));
+    expect(requeued.apps.map((entry) => entry.pid).sort((a, b) => a - b)).toEqual([process.pid, childPid].sort((a, b) => a - b));
     expect(requeued.apps.find((entry) => entry.pid === process.pid)?.handedOffAt).toBe(originalHandedOffAt);
     expect(requeued.apps.some((entry) => entry.pid === deadPid)).toBe(false);
     expect(requeued.lanes.map((entry) => entry.laneId).sort()).toEqual(["lane-a", "lane-b"]);
@@ -153,7 +157,7 @@ describe("createMacDesktopHandoff", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(adopt).toHaveBeenCalledTimes(3);
     expect(adopt.mock.calls.slice(1).map(([restored]) => restored.pid).sort((a, b) => a - b))
-      .toEqual([process.pid, child.pid].sort((a, b) => a - b));
+      .toEqual([process.pid, childPid].sort((a, b) => a - b));
     expect(fs.existsSync(file)).toBe(false);
     handoff.dispose();
   });
@@ -162,7 +166,7 @@ describe("createMacDesktopHandoff", () => {
     const file = handoffPath();
     let nowMs = handoffNow;
     const startLane = vi.fn(async () => undefined);
-    const adopt = vi.fn<MacDesktopHandoffDeps["adopt"]>(async () => true);
+    const adopt = vi.fn<Parameters<Adopt>, ReturnType<Adopt>>(async () => true);
     const { handoff } = makeHandoff(file, () => nowMs, {
       hasDisplay: vi.fn(() => false),
       startLane,
@@ -190,7 +194,7 @@ describe("createMacDesktopHandoff", () => {
 
   it("checks for the handoff file when the scheduled timer fires", async () => {
     const file = handoffPath();
-    const adopt = vi.fn<MacDesktopHandoffDeps["adopt"]>(async () => true);
+    const adopt = vi.fn<Parameters<Adopt>, ReturnType<Adopt>>(async () => true);
     const { handoff } = makeHandoff(file, () => handoffNow, { adopt });
     vi.useFakeTimers();
 
