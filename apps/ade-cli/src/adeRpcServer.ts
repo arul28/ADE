@@ -165,6 +165,7 @@ import {
   type AdeCaptureRegistry,
 } from "./services/proof/adeCaptureRegistry";
 import { resolveCodexComputerUseMcpConfig } from "../../desktop/src/main/utils/codexComputerUse";
+import { resolveTrackedCliUserMcp } from "../../desktop/src/main/services/mcp/trackedCliUserMcp";
 import { parseTrackedCliLaunchConfig } from "../../desktop/src/main/utils/terminalSessionSignals";
 import { RUNTIME_COMPAT_LEVEL } from "../../desktop/src/shared/adeRuntimeProtocol";
 import { trackBrainLoopWatchdogCommand } from "./services/runtime/brainLoopWatchdog";
@@ -6483,6 +6484,12 @@ async function runTool(args: {
     const launchInstance = resolveProviderInstanceForLaunch(provider, instanceId);
     await prepareHarnessLaunch({ provider, presetId, credentialId });
     const trackedPreset = resolveTrackedCliPreset(provider, { presetId, credentialId });
+    const userMcp = await resolveTrackedCliUserMcp({
+      provider,
+      cwd: laneWorktreePath,
+      instance: launchInstance,
+      presetEnv: trackedPreset?.preset?.env ?? null,
+    });
     const launchPreset = trackedPreset?.preset;
     if (trackedPreset?.gateReason) {
       runtime.logger?.info?.("start_cli_session.preset_gated", {
@@ -6512,6 +6519,7 @@ async function runTool(args: {
         initialPrompt: initialInput,
         laneWorktreePath,
         ...(provider === "codex" ? { codexComputerUse } : {}),
+        userMcp,
         // Resolved here rather than forwarded as an id: this process owns the
         // lane, so it is the one that can turn the id into a config home. The
         // shared resolver also owns the fallback — an id that no longer names

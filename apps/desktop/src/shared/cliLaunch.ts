@@ -76,6 +76,58 @@ export type CodexComputerUseCliConfig = {
   args?: readonly string[];
 };
 
+/**
+ * The user's own MCP servers as one tracked Claude or Codex CLI should start
+ * them, resolved in the main process (`trackedCliUserMcp.ts`): the machine
+ * login's servers an ADE account's config home lacks, and `npx` servers
+ * re-pointed at the package npx already installed. Each entry replaces the
+ * CLI's own server of that name. Nothing secret rides here: a tracked CLI's
+ * command can be typed into the terminal as text, so Claude's servers are a
+ * file path and Codex's are the entries with no secret in them.
+ */
+export type TrackedCliUserMcp = {
+  /** `mcp_servers.<name>` overlay keys for Codex (`-c mcp_servers.<name>.<key>=…`). */
+  codex?: Record<string, Record<string, unknown>> | null;
+  /** A private ADE-owned file holding Claude's servers, for `--mcp-config <path>`. */
+  claudeConfigPath?: string | null;
+};
+
+const TOML_BARE_KEY = /^[A-Za-z0-9_-]+$/;
+
+/** One JSON value as TOML: strings, numbers, booleans, string arrays, and flat string tables. */
+function tomlValue(value: unknown): string | null {
+  if (typeof value === "string") return JSON.stringify(value);
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (Array.isArray(value)) return value.every((entry) => typeof entry === "string") ? JSON.stringify(value) : null;
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>);
+    if (!entries.every(([, entry]) => typeof entry === "string")) return null;
+    return `{ ${entries.map(([key, entry]) => `${JSON.stringify(key)} = ${JSON.stringify(entry)}`).join(", ")} }`;
+  }
+  return null;
+}
+
+/** The launch flags that hand a tracked CLI the user's own servers; none for other providers. */
+export function trackedCliUserMcpFlags(provider: string, userMcp: TrackedCliUserMcp | null | undefined): string[] {
+  if (provider === "codex" && userMcp?.codex) {
+    const flags: string[] = [];
+    for (const [name, entry] of Object.entries(userMcp.codex)) {
+      // A name TOML cannot take bare is a basic-string key, as Codex writes it.
+      const tomlName = TOML_BARE_KEY.test(name) ? name : JSON.stringify(name);
+      for (const [key, value] of Object.entries(entry)) {
+        const toml = TOML_BARE_KEY.test(key) ? tomlValue(value) : null;
+        if (toml != null) flags.push("-c", `mcp_servers.${tomlName}.${key}=${toml}`);
+      }
+    }
+    return flags;
+  }
+  if (provider === "claude" && userMcp?.claudeConfigPath) {
+    return ["--mcp-config", userMcp.claudeConfigPath];
+  }
+  return [];
+}
+
 export type CleanShellLaunchFields = {
   command: string;
   args: string[];
@@ -1100,6 +1152,8 @@ export function buildTrackedCliStartupCommand(args: {
   laneWorktreePath?: string | null;
   /** Signed standalone Computer Use MCP client selected by ADE's main process. */
   codexComputerUse?: CodexComputerUseCliConfig | null;
+  /** The user's own MCP servers for a Claude or Codex launch, resolved in main. */
+  userMcp?: TrackedCliUserMcp | null;
   /**
    * Provider account to launch under, already resolved by the caller. Only
    * `claude` and `codex` have one; every other provider ignores it.
@@ -1139,6 +1193,8 @@ export function buildTrackedCliLaunchCommand(args: {
   laneWorktreePath?: string | null;
   /** Signed standalone Computer Use MCP client selected by ADE's main process. */
   codexComputerUse?: CodexComputerUseCliConfig | null;
+  /** The user's own MCP servers for a Claude or Codex launch, resolved in main. */
+  userMcp?: TrackedCliUserMcp | null;
   /**
    * Provider account to launch under, already resolved by the caller. Only
    * `claude` and `codex` have one; every other provider ignores it.
@@ -1195,6 +1251,8 @@ export function buildTrackedCliLaunchCommand(args: {
     }
     commandArgs.push(...claudeRuntimeEffortFlags(args.reasoningEffort));
     commandArgs.push(...claudeSessionSettingsFlags(args.fastMode, args.reasoningEffort));
+    // `--mcp-config` takes several values, so a flag must follow it, never the prompt.
+    commandArgs.push(...trackedCliUserMcpFlags("claude", args.userMcp));
     const guidance = [buildAdeCliSessionGuidance(skillRoots), activityGuidance]
       .filter((part): part is string => Boolean(part))
       .join("\n\n");
@@ -1245,6 +1303,7 @@ export function buildTrackedCliLaunchCommand(args: {
       ...modelToCliFlag(codexModel),
       ...codexReasoningEffortFlags(args.reasoningEffort),
       ...codexServiceTierFlags(args.fastMode, args.fastTier),
+      ...trackedCliUserMcpFlags("codex", args.userMcp),
       ...codexComputerUseMcpFlags(args.codexComputerUse),
       ...permissionModeToCodexFlags(permissionMode),
     ];
@@ -2380,6 +2439,8 @@ export type TrackedCliResumeOverrides = {
   codexConfigSource?: AgentChatCodexConfigSource | null;
   prompt?: string | null;
   codexComputerUse?: CodexComputerUseCliConfig | null;
+  /** The user's own MCP servers for a Claude or Codex resume, resolved in main. */
+  userMcp?: TrackedCliUserMcp | null;
   /**
    * The account named by `metadata.launch.instanceId`, already resolved by the
    * caller (including the fallback to the provider's default when that id no
@@ -2545,6 +2606,7 @@ function buildProviderResumeLaunchCommand(
     if (claudeModel) parts.push("--model", claudeModel);
     parts.push(...claudeRuntimeEffortFlags(reasoningEffort));
     parts.push(...claudeSessionSettingsFlags(fastMode, reasoningEffort));
+    parts.push(...trackedCliUserMcpFlags("claude", overrides.userMcp));
     parts.push("--resume");
     if (targetId) parts.push(targetId);
     if (prompt) parts.push(prompt);
@@ -2565,6 +2627,7 @@ function buildProviderResumeLaunchCommand(
       ...modelToCliFlag(codexModel),
       ...codexReasoningEffortFlags(reasoningEffort),
       ...codexServiceTierFlags(fastMode, fastTier),
+      ...trackedCliUserMcpFlags("codex", overrides.userMcp),
       ...codexComputerUseMcpFlags(overrides.codexComputerUse),
       ...codexResumePermissionFlags({
         permissionMode,

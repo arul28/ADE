@@ -30,6 +30,7 @@ import {
   credentialConfigHome,
   type HarnessPresetOpenCodeProvider,
   presetConfigHome,
+  mirrorUserDroidMcpConfig,
   writeDroidPresetSettings,
   writeOpenCodePresetConfig,
 } from "./harnessPresetConfigHomes";
@@ -240,6 +241,7 @@ function buildKeySourceEnv(args: {
       if (writeConfig) {
         ensurePrivateDirectory(configHome, security);
         writeDroidPresetSettings(configHome, credential, key, security);
+        mirrorUserDroidMcpConfig(configHome, security);
       }
       return {
         status: "ready",

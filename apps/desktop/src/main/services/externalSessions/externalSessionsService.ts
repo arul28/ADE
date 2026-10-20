@@ -6,6 +6,7 @@ import {
   buildTrackedCliResumeCommand,
   buildTrackedCliResumeLaunchCommand,
   withCodexNoAltScreen,
+  type TrackedCliUserMcp,
 } from "../../../shared/cliLaunch";
 import type {
   AgentChatImportExternalSessionResult,
@@ -36,6 +37,7 @@ import {
   EXTERNAL_SESSION_PROVIDERS,
 } from "../../../shared/types/externalSessions";
 import { resolveCodexComputerUseMcpConfig } from "../../utils/codexComputerUse";
+import { resolveTrackedCliUserMcp } from "../mcp/trackedCliUserMcp";
 import { CLAUDE_SESSION_POINTER_MAX_LIMIT } from "../sessions/sessionService";
 import { createImportedSessionStore, type ImportedSessionStore } from "./importedSessionStore";
 import {
@@ -409,6 +411,8 @@ type LaunchOverrides = {
   codexApprovalPolicy: TerminalResumeMetadata["launch"]["codexApprovalPolicy"];
   codexSandbox: TerminalResumeMetadata["launch"]["codexSandbox"];
   codexConfigSource: TerminalResumeMetadata["launch"]["codexConfigSource"];
+  /** The user's own MCP servers for this launch; never stored in the metadata. */
+  userMcp?: TrackedCliUserMcp | null;
 };
 
 function metadataForImport(args: {
@@ -1192,10 +1196,14 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     // Kept as a named const rather than inlined into buildTrackedCliResumeCommand:
     // the Windows launch path below needs to know whether this was a resume, so it
     // can recover argv instead of typing a POSIX line into PowerShell.
+    // `npx` MCP servers without npm's launcher, for the Claude or Codex this
+    // import starts (it runs on the machine's own login).
+    const userMcp = await resolveTrackedCliUserMcp({ provider, cwd: runCwd, projectRoot: args.projectRoot });
     const resumeOverrides = importArgs.mode === "resume"
       ? {
           ...overrides,
           ...(provider === "codex" ? { codexComputerUse: await resolveCodexComputerUseMcpConfig() } : {}),
+          ...(userMcp ? { userMcp } : {}),
         }
       : null;
     const startupCommand = resumeOverrides
@@ -1204,7 +1212,7 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
           provider,
           metadata,
           targetId: launchTargetId,
-          overrides,
+          overrides: userMcp ? { ...overrides, userMcp } : overrides,
           transplantedClaude,
         });
 

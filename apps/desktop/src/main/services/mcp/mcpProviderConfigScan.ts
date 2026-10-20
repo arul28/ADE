@@ -24,6 +24,7 @@ import { mcpServerDefinitionFromConfig, type McpServerDefinition } from "../../.
 import { parseJsonc } from "../../../shared/theme/jsonc";
 import type { McpConfigProvider, McpFoundServer, McpRegistryScan } from "../../../shared/types/mcpRegistry";
 import { pathsEqual } from "../shared/pathCompare";
+import { factoryConfigHome, grokConfigHome, kimiCodeConfigHome, qwenConfigHome } from "../shared/providerConfigHomes";
 
 export type ScannedMcpServer = McpServerDefinition & { providers: McpConfigProvider[] };
 
@@ -39,14 +40,15 @@ export type ProviderMcpScanArgs = {
   homeDir?: string;
 };
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+export function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 /** A config file may be a megabyte of chat history (`~/.claude.json`); cap what is read. */
 const MAX_CONFIG_BYTES = 32 * 1024 * 1024;
 
-function readText(filePath: string): string | null {
+/** A config file's text, BOM stripped and size capped; null when missing or unreadable. */
+export function readText(filePath: string): string | null {
   try {
     if (fs.statSync(filePath).size > MAX_CONFIG_BYTES) return null;
     // A BOM is common on files written by Windows tools and breaks JSON.parse.
@@ -56,7 +58,8 @@ function readText(filePath: string): string | null {
   }
 }
 
-function readJson(filePath: string): Record<string, unknown> | null {
+/** A JSON or JSONC config file as an object; null when missing, unreadable or not an object. */
+export function readJson(filePath: string): Record<string, unknown> | null {
   const text = readText(filePath);
   if (text == null) return null;
   try {
@@ -199,8 +202,16 @@ function tomlListIsOpen(value: string): boolean {
  * `mcp_servers`, which is how Codex itself writes them. A server declared only
  * through an inline `mcp_servers = { ... }` table is not read.
  */
+/**
+ * The one name that still reaches `Object.prototype` once a record built here
+ * is spread or indexed by an ordinary object downstream.
+ */
+const UNSAFE_TABLE_KEYS = new Set(["__proto__"]);
+
 export function parseCodexMcpServers(configText: string): Record<string, Record<string, unknown>> {
-  const servers: Record<string, Record<string, unknown>> = {};
+  // A project's own config is read too, and that file comes with the
+  // repository: tables are prototype-free and `__proto__` is skipped.
+  const servers: Record<string, Record<string, unknown>> = Object.create(null);
   let target: Record<string, unknown> | null = null;
   const lines = configText.replace(/\r\n?/g, "\n").split("\n");
   for (let index = 0; index < lines.length; index += 1) {
@@ -211,12 +222,13 @@ export function parseCodexMcpServers(configText: string): Record<string, Record<
       const segments = splitTomlKey(header[1] ?? "");
       target = null;
       if (segments[0] !== "mcp_servers" || segments.length < 2 || segments.length > 3) continue;
-      const server = (servers[segments[1]!] ??= {});
+      if (segments.slice(1).some((segment) => UNSAFE_TABLE_KEYS.has(segment))) continue;
+      const server = (servers[segments[1]!] ??= Object.create(null) as Record<string, unknown>);
       if (segments.length === 2) {
         target = server;
       } else {
         const existing = server[segments[2]!];
-        const sub: Record<string, unknown> = isRecord(existing) ? existing : {};
+        const sub: Record<string, unknown> = isRecord(existing) ? existing : Object.create(null);
         server[segments[2]!] = sub;
         target = sub;
       }
@@ -232,7 +244,7 @@ export function parseCodexMcpServers(configText: string): Record<string, Record<
     }
     const key = splitTomlKey(line.slice(0, equals).trim());
     const value = parseTomlValue(line.slice(equals + 1));
-    if (key.length === 1 && value !== undefined) target[key[0]!] = value;
+    if (key.length === 1 && value !== undefined && !UNSAFE_TABLE_KEYS.has(key[0]!)) target[key[0]!] = value;
   }
   return servers;
 }
@@ -361,4 +373,82 @@ export function toFoundServers(scan: ProviderMcpScan): McpRegistryScan {
     })),
     skipped: [...scan.skipped],
   };
+}
+
+/**
+ * The MCP server names a provider loads from its own config files for a chat
+ * in `cwd`, for the providers that cannot drop their own copy of a server.
+ * ADE then leaves out a registry server of the same name, which would
+ * otherwise start a second copy (Droid, Qwen, Kimi, Grok, Devin, Antigravity:
+ * not shown to replace), or refuse the session's server (Muse). Claude, Codex,
+ * Copilot (probed) and Cursor (documented first-match precedence, inline
+ * first) replace a same-named server from the launch, and OpenCode merges its
+ * config by key, so they are not listed.
+ */
+export function providerOwnMcpServerNames(
+  provider: string,
+  args: { cwd: string; env?: NodeJS.ProcessEnv; homeDir?: string },
+): Set<string> {
+  const env = args.env ?? process.env;
+  const homeDir = args.homeDir ?? os.homedir();
+  const files: Array<{ file: string; key: string; toml?: string }> = [];
+  switch (provider) {
+    case "droid":
+      // The user file, and `.factory/mcp.json` in the folder and every folder above it.
+      files.push({ file: path.join(factoryConfigHome({ env, homeDir }), "mcp.json"), key: "mcpServers" });
+      for (let dir = path.resolve(args.cwd); ; dir = path.dirname(dir)) {
+        files.push({ file: path.join(dir, ".factory", "mcp.json"), key: "mcpServers" });
+        if (path.dirname(dir) === dir) break;
+      }
+      break;
+    case "qwen":
+      files.push({ file: path.join(qwenConfigHome({ env, homeDir }), "settings.json"), key: "mcpServers" });
+      files.push({ file: path.join(args.cwd, ".qwen", "settings.json"), key: "mcpServers" });
+      break;
+    case "muse":
+      // Muse refuses a session server whose name its own config already has,
+      // rather than starting either.
+      files.push({ file: path.join(env.XDG_CONFIG_HOME?.trim() || path.join(homeDir, ".config"), "muse", "settings.json"), key: "mcpServers" });
+      files.push({ file: path.join(args.cwd, ".mcp.json"), key: "mcpServers" });
+      break;
+    case "kimi":
+      // `<KIMI_CODE_HOME>/mcp.json`, and the project's `.kimi-code/mcp.json`
+      // (docs) or `.mcp.json` (the bundled import skill names both).
+      files.push({ file: path.join(kimiCodeConfigHome({ env, homeDir }), "mcp.json"), key: "mcpServers" });
+      files.push({ file: path.join(args.cwd, ".kimi-code", "mcp.json"), key: "mcpServers" });
+      files.push({ file: path.join(args.cwd, ".mcp.json"), key: "mcpServers" });
+      break;
+    case "grok":
+      // `[mcp_servers.<name>]` in `<GROK_HOME>/config.toml` and `./.grok/config.toml`.
+      for (const file of [path.join(grokConfigHome({ env, homeDir }), "config.toml"), path.join(args.cwd, ".grok", "config.toml")]) {
+        const text = readText(file);
+        if (text != null) files.push({ file, key: "", toml: text });
+      }
+      break;
+    case "devin": {
+      // 3000.3+ keeps servers in `mcp_config.json` per scope; older builds
+      // kept `mcpServers` in `config.json` (migrated at startup).
+      const userDir = process.platform === "win32"
+        ? path.join(env.APPDATA?.trim() || path.join(homeDir, "AppData", "Roaming"), "devin")
+        : path.join(env.XDG_CONFIG_HOME?.trim() || path.join(homeDir, ".config"), "devin");
+      for (const dir of [userDir, path.join(args.cwd, ".devin")]) {
+        for (const file of ["mcp_config.json", "mcp_config.local.json", "config.json", "config.local.json"]) {
+          files.push({ file: path.join(dir, file), key: "mcpServers" });
+        }
+      }
+      break;
+    }
+    case "antigravity":
+      files.push({ file: path.join(homeDir, ".gemini", "config", "mcp_config.json"), key: "mcpServers" });
+      files.push({ file: path.join(args.cwd, ".agents", "mcp_config.json"), key: "mcpServers" });
+      break;
+    default:
+      break;
+  }
+  const names = new Set<string>();
+  for (const { file, key, toml } of files) {
+    const table = toml != null ? parseCodexMcpServers(toml) : readJson(file)?.[key];
+    if (isRecord(table)) for (const name of Object.keys(table)) names.add(name.trim());
+  }
+  return names;
 }

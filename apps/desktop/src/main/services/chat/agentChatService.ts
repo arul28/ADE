@@ -405,6 +405,7 @@ import {
 import { prepareHarnessLaunch } from "./harnessLaunchPrepare";
 import { launchRouteTransition, readPresetLaunchTarget } from "./chatLaunchRoute";
 import { mcpRegistryLaunchNotices, resolveMcpRegistryForLaunch } from "./mcpRegistryLaunch";
+import { createChatUserMcp } from "../mcp/chatUserMcp";
 import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import {
   createCredentialModelDescriptorBase,
@@ -6080,6 +6081,14 @@ type CodexThreadConfigOptions = {
    */
   callerServers?: CallerMcpServers | null;
   callerStrictAgainstConfiguredServerNames?: readonly string[] | null;
+  /**
+   * The user's own config.toml servers as this thread should start them
+   * (`mcpUserServersForLaunch.ts`): the machine login's servers an ADE
+   * account's `CODEX_HOME` lacks, and `npx` servers re-pointed at the package
+   * npx already installed. Merged into the account's table by name; anything
+   * ADE or a caller names wins over it.
+   */
+  userServers?: Record<string, Record<string, unknown>> | null;
 };
 
 function codexThreadConfigArgs(
@@ -6090,6 +6099,7 @@ function codexThreadConfigArgs(
     computerUse = null,
     callerServers = null,
     callerStrictAgainstConfiguredServerNames = null,
+    userServers = null,
   } = options;
   const effort = typeof reasoningEffort === "string" ? reasoningEffort.trim() : "";
   const baseMcpServers = computerUse ? { computer_use: computerUse } : null;
@@ -6104,9 +6114,11 @@ function codexThreadConfigArgs(
   // overrides so a server the caller explicitly asked for is never disabled,
   // but ADE-managed servers now win over both. That matches every other
   // adapter, where the ADE lease is spread last.
-  const mcpServers = baseMcpServers || callerStrictOverrides || callerCodexServers
+  const userOverlay = userServers && Object.keys(userServers).length ? userServers : null;
+  const mcpServers = baseMcpServers || callerStrictOverrides || callerCodexServers || userOverlay
     ? {
       ...(callerStrictOverrides ?? {}),
+      ...(userOverlay ?? {}),
       ...(callerCodexServers ?? {}),
       ...(baseMcpServers ?? {}),
     }
@@ -11253,6 +11265,14 @@ export function createAgentChatService(args: {
         platform: process.platform,
         store: db?.get ? { get: db.get } : null,
       });
+  /** How a launch starts the user's MCP servers (accounts, `npx` without npm, no double copies). */
+  const chatUserMcp = createChatUserMcp({ projectRoot: args.projectRoot, logger });
+  const chatMcpTarget = (managed: ManagedChatSession) => ({
+    provider: managed.session.provider,
+    ignoresUserMcp: managed.session.strictMcpConfig === true || managed.session.sessionProfile === "light",
+    cwd: managed.laneWorktreePath,
+    env: buildAgentRuntimeEnv(managed),
+  });
   const resolveCodexComputerUseMcp = resolveCodexComputerUseMcpOverride
     ?? resolveCodexComputerUseMcpConfig;
   const resolveCodexConfiguredMcpServerNames = resolveCodexConfiguredMcpServerNamesOverride
@@ -11304,14 +11324,15 @@ export function createAgentChatService(args: {
         emitChatEvent(managed, { type: "system_notice", noticeKind: "warning", severity: "warning", message });
       }
     }
-    return registry.servers;
+    return registry.servers ? chatUserMcp.registryServers(chatMcpTarget(managed), registry.servers) : null;
   };
 
   /** The caller's servers on top of the registry's: a caller that names a server keeps its own definition. */
   const withRegistryMcpServers = (managed: ManagedChatSession, caller: CallerMcpServers | null): CallerMcpServers | null => {
     const registry = registryMcpServersForLaunch(managed);
-    if (!registry) return caller;
-    return { ...registry, ...(caller ?? {}) };
+    const userNpx = chatUserMcp.providerServers(chatMcpTarget(managed));
+    if (!registry && !userNpx) return caller;
+    return { ...(userNpx ?? {}), ...(registry ?? {}), ...(caller ?? {}) };
   };
 
   /**
@@ -11359,6 +11380,14 @@ export function createAgentChatService(args: {
     // server: starting it would only add tools the gate then denies.
     const policy = managed.session.permissionPolicy ?? null;
     const policyRefusesComputerUse = policy != null && policyRefusesMcpServer(policy, "computer_use", "codex");
+    // Strict mode turns every config.toml server off, so there is nothing of
+    // the user's to add or re-point.
+    const userServers = callerStrict
+      ? null
+      : await chatUserMcp.codexThreadServers(
+        { ...chatMcpTarget(managed), ignoresUserMcp: false },
+        new Set(["computer_use", ...Object.keys(callerServers ?? {})]),
+      );
     const args = codexThreadConfigArgs({
       reasoningEffort,
       computerUse: policyRefusesComputerUse ? null : await resolveCodexComputerUseMcp(),
@@ -11366,6 +11395,7 @@ export function createAgentChatService(args: {
       callerStrictAgainstConfiguredServerNames: callerStrict
         ? await resolveCodexConfiguredMcpServerNames()
         : null,
+      userServers,
     });
     const compact = compactionSettingsFor(managed);
     const window = resolveSessionModelDescriptor(managed.session)?.contextWindow;
@@ -17777,6 +17807,7 @@ export function createAgentChatService(args: {
     // Caller-injected servers (ADE SDK embedders) join the same map, ADE leases
     // last so a caller cannot displace one by reusing its name. OpenCode's
     // config calls an HTTP/SSE server "remote" and a stdio server "local".
+    await chatUserMcp.prepareProviderServers(chatMcpTarget(managed));
     const opencodeCallerMcpServers = callerMcpServersForLaunch(managed);
     const opencodeMcpConfig = opencodeMcpLeases.length || opencodeCallerMcpServers
       ? {
@@ -44293,7 +44324,14 @@ export function createAgentChatService(args: {
       await claudeDownload;
       assertCurrentStart();
     }
+    await chatUserMcp.prepareClaude({
+      ...chatMcpTarget(managed),
+      // The query's own strict decision: it ignores ~/.claude.json, so there is nothing to prepare.
+      ignoresUserMcp: resolveClaudeStrictMcpConfig(managed.session, isLightweightSession(managed.session)),
+    });
+    assertCurrentStart();
     const options = buildClaudeQueryOptions(managed, runtime);
+    chatUserMcp.applyClaude(options);
     if (runtime.forkFromSdkSessionId) {
       if (!runtime.sdkSessionId) {
         runtime.sdkSessionId = randomUUID();
@@ -44699,7 +44737,13 @@ export function createAgentChatService(args: {
       try {
         const claudeDownload = chatPinnedToolDownload(null, "claude-code", "Claude Code");
         if (claudeDownload) await claudeDownload;
+        await chatUserMcp.prepareClaude({
+      ...chatMcpTarget(managed),
+      // The query's own strict decision: it ignores ~/.claude.json, so there is nothing to prepare.
+      ignoresUserMcp: resolveClaudeStrictMcpConfig(managed.session, isLightweightSession(managed.session)),
+    });
         const options = buildClaudeQueryOptions(managed, runtime);
+        chatUserMcp.applyClaude(options);
         if (runtime.forkFromSdkSessionId) {
           if (!runtime.sdkSessionId) {
             assignedSessionId = randomUUID();
@@ -53101,6 +53145,7 @@ export function createAgentChatService(args: {
     // shadowed by a caller reusing its name. Strict mode rides a trimmed
     // `local.settingSources`; see CALLER_MCP_SUPPORT.cursor for the residual
     // (user-layer servers).
+    await chatUserMcp.prepareProviderServers(chatMcpTarget(managed));
     const cursorCallerMcpServers = callerMcpServersForLaunch(managed);
     const cursorMcpServerConfig = cursorMcpLeases.length || cursorCallerMcpServers
       ? {
@@ -56137,6 +56182,7 @@ export function createAgentChatService(args: {
     const modelId = resolveSessionModelDescriptor(managed.session)?.providerModelId ?? "auto";
     try {
       const persistedSessionId = persistedCopilotSessionId(managed.session.provider, persisted);
+      await chatUserMcp.prepareProviderServers(chatMcpTarget(managed));
       const sessionOptions = {
         cwd: managed.laneWorktreePath,
         model: modelId === "auto" ? undefined : modelId,

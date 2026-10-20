@@ -20,6 +20,7 @@ import { terminateChildProcessTree } from "../shared/utils";
 import type { Logger } from "../logging/logger";
 import { codexPlanIncludesVoice } from "../../../shared/codexVoice";
 import { codexAuthModeFromAccountRead } from "./providerUsageAccount";
+import { codexDisableConfiguredMcpArgs } from "../mcp/codexMcpOff";
 
 const REQUEST_TIMEOUT_MS = 30_000;
 /** The relay thread's model: the cheapest model on every voice-capable plan. */
@@ -53,7 +54,7 @@ export async function startCodexVoiceHost(args: {
 }): Promise<CodexVoiceHost> {
   const { logger, sessionId } = args;
   // `executable` is ADE's pinned Codex (resolveCodexExecutable); it never checks for its own update.
-  const appServerArgs = [...CODEX_NO_UPDATE_CHECK_ARGS, "-c", "mcp_servers={}", "app-server"];
+  const appServerArgs = [...CODEX_NO_UPDATE_CHECK_ARGS, ...codexDisableConfiguredMcpArgs(args.env, args.cwd), "app-server"];
   const invocation = resolveCliSpawnInvocation(args.executable, appServerArgs, args.env);
   const proc: ChildProcessWithoutNullStreams = spawn(invocation.command, invocation.args, {
     cwd: args.cwd,

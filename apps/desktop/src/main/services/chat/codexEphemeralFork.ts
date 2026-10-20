@@ -27,6 +27,7 @@ import readline from "node:readline";
 import { resolveCliSpawnInvocation } from "../shared/processExecution";
 import { terminateChildProcessTree } from "../shared/utils";
 import type { Logger } from "../logging/logger";
+import { codexDisableConfiguredMcpArgs } from "../mcp/codexMcpOff";
 
 /** How long a clean exit (stdin closed) may take before the process is killed. */
 const EXIT_GRACE_MS = 5_000;
@@ -47,7 +48,7 @@ export async function forkCodexThreadInEphemeralAppServer(args: {
   sessionId: string;
 }): Promise<string> {
   // `executable` is ADE's pinned Codex (resolveCodexExecutable); it never checks for its own update.
-  const invocation = resolveCliSpawnInvocation(args.executable, [...CODEX_NO_UPDATE_CHECK_ARGS, "-c", "mcp_servers={}", "app-server"], args.env);
+  const invocation = resolveCliSpawnInvocation(args.executable, [...CODEX_NO_UPDATE_CHECK_ARGS, ...codexDisableConfiguredMcpArgs(args.env, args.cwd), "app-server"], args.env);
   const proc = spawn(invocation.command, invocation.args, {
     cwd: args.cwd,
     env: args.env,

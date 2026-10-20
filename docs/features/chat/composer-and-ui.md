@@ -1722,7 +1722,7 @@ same brain. Audio still flows from the computer the user is sitting at.
 | Mode | Chats | Where voice runs | How a request reaches the chat |
 |---|---|---|---|
 | native | Codex | The chat's own Codex thread | Codex runs each hand-off as a turn on that thread. ADE adopts that turn (normally ADE ignores a turn it did not start) and shows the spoken request as its user message. Adoption also runs on the resumed-turn path, because starting voice resumes the thread. |
-| host | every other provider | A private `codex -c mcp_servers={} app-server` with one ephemeral relay thread (`codexVoiceHost.ts`) | Codex still runs each hand-off as a turn on the relay thread, which replies only `[RELAYED]` on GPT-6 Luna at low effort. ADE sends the spoken text into the real chat with `sendMessage` or an inline `steer`, then narrates that chat's turn. |
+| host | every other provider | A private `codex app-server` with every config.toml MCP server switched off by name (`codexMcpOff.ts`) with one ephemeral relay thread (`codexVoiceHost.ts`) | Codex still runs each hand-off as a turn on the relay thread, which replies only `[RELAYED]` on GPT-6 Luna at low effort. ADE sends the spoken text into the real chat with `sendMessage` or an inline `steer`, then narrates that chat's turn. |
 
 Both modes set `clientManagedHandoffs: true`, so Codex never speaks an agent's
 output on its own and ADE is the single place that decides what voice says and

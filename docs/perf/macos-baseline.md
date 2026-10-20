@@ -1081,3 +1081,31 @@ difference is within measurement noise. The reported optional offer is
 now decided locally, so that case does not make a model request. These service
 numbers do not establish Electron idle, GPU, typing, or memory performance;
 those desktop scenarios were not measured for this change.
+
+## Mac Studio (M4 Max): MCP server processes per chat (2026-10-20)
+
+Mac16,9, M4 Max, 36 GB, macOS 27.0. A brain-only dev runtime
+(`npm run dev:runtime`) on its own socket and its own `ADE_HOME`, `--no-sync`,
+with only a throwaway git project registered and every `ADE_*`,
+`CLAUDE_CONFIG_DIR` and `CODEX_HOME` variable of the calling chat removed.
+Codex read the real `~/.codex/config.toml` (Playwright via
+`npx @playwright/mcp@latest`, `node_repl`, plus Codex's own plugin helpers);
+Claude read a throwaway `CLAUDE_CONFIG_DIR` whose `.claude.json` held a
+user-scope `npx @playwright/mcp@latest`, a local-scope
+`npx -y xcodebuildmcp@latest mcp` and one server switched off for the folder.
+Each chat was created with `ade chat create ... --prompt "Reply with exactly: ok"`;
+footprint is `footprint -p` summed over every process under each chat's
+runtime (`codex app-server` / `claude`), shells excluded, 45 s after the
+last chat. Before is main at `0d9211fd1`, after is `338962c68`.
+
+| Metric | How | Before | After | Ceiling |
+|---|---|---|---|---|
+| Codex chat: MCP processes from the user's config.toml, 5 chats | sum over the 5 runtimes | 30 processes, 1,598 MB (311–325 MB per chat; `npm exec` 181–192 MB of it) | 25 processes, 656 MB (125–136 MB per chat) | 160 MB per chat |
+| Claude chat (account reading a `.claude.json`) with two `npx` servers | one runtime | 4 processes, 635 MB | 2 processes, 238 MB | 300 MB |
+| One `npx @playwright/mcp@latest` server: spawn to `tools/list` answered | one-off stdio probe, 3 runs each | 1,261–1,809 ms, 2 processes, ~290 MB | 218–360 ms, 1 process, ~104 MB | 600 ms |
+| Codex side job (`codex exec`, background utility such as a chat title): processes it starts | one-off sampler every 100 ms, 3 runs each | peak 5–6 (npm, Playwright, `node_repl`, plugin helpers) | peak 2–3 (Codex plugin helpers only) | 3 |
+
+A server switched off for the folder stayed off. A Codex chat called
+Playwright's `browser_navigate` through the direct launch and read the page
+title back. Wall time of the side job was within noise (3.0–3.9 s against
+3.3–4.3 s, one 47.8 s outlier on the old path).

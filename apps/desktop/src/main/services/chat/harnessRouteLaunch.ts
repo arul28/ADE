@@ -72,6 +72,7 @@ import {
   type ProxySubscriptionConnectionUnavailable,
 } from "./harnessPresetProxyConnection";
 import { readRouteProbe } from "./harnessRouteProbes";
+import { mirrorUserDroidMcpConfig, userGrokMcpServersToml } from "./harnessPresetConfigHomes";
 import {
   codexSubagentConfigTomlLines,
   grokSubagentConfigTomlLines,
@@ -437,7 +438,10 @@ function buildHarnessEndpointEnv(args: {
       if (args.sessionHeader) env[ROUTE_SESSION_ENV] = args.sessionHeader;
       if (args.writeConfig) {
         ensurePrivateDirectory(args.configHome, args.security);
-        writePrivateFile(path.join(args.configHome, "config.toml"), grokRouteConfigToml({
+        // GROK_HOME moves the whole config, so the user's own MCP servers ride
+        // along or they would vanish from routed Grok launches.
+        const userMcp = userGrokMcpServersToml();
+        writePrivateFile(path.join(args.configHome, "config.toml"), `${grokRouteConfigToml({
           model,
           protocol,
           baseUrl,
@@ -445,7 +449,7 @@ function buildHarnessEndpointEnv(args: {
           sessionHeader: Boolean(args.sessionHeader),
           limits,
           ...(subagent ? { subagent } : {}),
-        }), args.security);
+        })}${userMcp ? `\n${userMcp}` : ""}`, args.security);
       }
       return { status: "ready", env, model };
     }
@@ -475,6 +479,7 @@ function buildHarnessEndpointEnv(args: {
           }, null, 2)}\n`,
           args.security,
         );
+        mirrorUserDroidMcpConfig(args.configHome, args.security);
       }
       return {
         status: "ready",
