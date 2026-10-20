@@ -59,13 +59,16 @@ const cpuSeconds = () => {
   return t.replace("-", ":").split(":").reduce((a, x) => a * 60 + Number(x), 0);
 };
 
-const created = await evaluate(`window.ade.pty.create({
-  laneId: ${JSON.stringify(laneId)}, cols: 120, rows: 36, title: "terminal-flood ${mode}",
-  tracked: true, toolType: "shell", startupCommand: ${JSON.stringify(`sleep 2; ${flood}; exit`)},
-}).then((r) => ({ ptyId: r.ptyId, sessionId: r.sessionId }))`);
-const { ptyId, sessionId: session } = created;
+let ptyId = null;
+let session = null;
 let result = { finished: false };
 try {
+  const created = await evaluate(`window.ade.pty.create({
+    laneId: ${JSON.stringify(laneId)}, cols: 120, rows: 36, title: "terminal-flood ${mode}",
+    tracked: true, toolType: "shell", startupCommand: ${JSON.stringify(`sleep 2; ${flood}; exit`)},
+  }).then((r) => ({ ptyId: r.ptyId, sessionId: r.sessionId }))`);
+  ptyId = created.ptyId;
+  session = created.sessionId;
   await evaluate(`window.dispatchEvent(new CustomEvent("ade:work:select-session", { detail: { sessionId: ${JSON.stringify(session)}, laneId: ${JSON.stringify(laneId)} } })); 1`);
   const cpuBefore = cpuSeconds();
   result = await evaluate(`new Promise((resolve) => {
@@ -116,7 +119,7 @@ try {
     brainCpuSec: cpuBefore == null ? null : +(cpuAfter - cpuBefore).toFixed(1),
   }));
 } finally {
-  if (!result.finished) {
+  if (!result.finished && ptyId) {
     // Do not leave the flood running into the next measurement.
     await evaluate(`window.ade.pty.dispose({ ptyId: ${JSON.stringify(ptyId)}, sessionId: ${JSON.stringify(session)} }).then(() => 1)`).catch(() => {});
   }

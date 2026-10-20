@@ -57,9 +57,11 @@ const DELEGATED_ARTIFACT_LIMIT = 200;
 const MAX_DOC_BODY_CHARS = 32_000;
 // One pass indexes this much transcript in a single synchronous transaction.
 // 4 MB passes held the brain for 1.5-2 s at a time while a terminal flooded
-// output; the queue re-enqueues the remainder and yields between passes. A
-// chat record longer than this is read on to its newline in the same pass.
+// output; the queue re-enqueues the remainder and yields between passes.
 const MAX_READ_BYTES_PER_PASS = 512 * 1024;
+// A chat record longer than one pass is read on to its newline, up to this
+// (the window chat passes always had); a longer record is skipped, as before.
+const MAX_CHAT_RECORD_BYTES = 4 * 1024 * 1024;
 const COMMITS_PER_LANE = 100;
 const DEFAULT_QUERY_LIMIT = 50;
 const BACKFILL_RETRY_MS = 60_000;
@@ -709,15 +711,21 @@ export function createSearchService(deps: SearchServiceDeps) {
     let readEnd = Math.min(fileSize, source.cursor + MAX_READ_BYTES_PER_PASS);
     const ranges = [await readRange(source.cursor, readEnd)];
     // One record longer than the pass: read on to its newline, so it is indexed
-    // whole instead of being split across passes and lost. The file's size
-    // bounds it; the ranges are joined once.
-    while (ranges[ranges.length - 1].lastIndexOf(0x0a) < 0 && readEnd < fileSize) {
-      const nextEnd = Math.min(fileSize, readEnd + MAX_READ_BYTES_PER_PASS);
+    // whole instead of being split across passes. The ranges are joined once.
+    const recordEnd = Math.min(fileSize, source.cursor + MAX_CHAT_RECORD_BYTES);
+    while (ranges[ranges.length - 1].lastIndexOf(0x0a) < 0 && readEnd < recordEnd) {
+      const nextEnd = Math.min(recordEnd, readEnd + MAX_READ_BYTES_PER_PASS);
       ranges.push(await readRange(readEnd, nextEnd));
       readEnd = nextEnd;
     }
     const buf = ranges.length === 1 ? ranges[0] : Buffer.concat(ranges);
     const lastNewline = buf.lastIndexOf(0x0a);
+    if (lastNewline < 0 && readEnd < fileSize) {
+      // A single record over MAX_CHAT_RECORD_BYTES; skip past it defensively.
+      putSource(sourceId, "chat-session", readEnd, source.docSeq, JSON.stringify({ path: filePath }));
+      enqueue("chat-session", sessionId, 0);
+      return;
+    }
     // Never consume an unterminated tail: the writer appends whole
     // `JSON.stringify(envelope) + "\n"` lines, so a missing trailing newline
     // means a torn in-progress write — consuming it would advance the cursor
