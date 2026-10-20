@@ -271,7 +271,8 @@ in the fold only while a chat it launched (nested or `--no-parent`) is still bus
 in the same lane (`laneFocusRows`); the verdict alone never folds a lane, and it
 lives only in the brain's memory, so a restart falls back to the rules above. The
 desktop fold reads it on every machine's rows (`session.list` carries it); iOS's
-`WorkLaneFocus.swift` does not read it yet.
+`WorkLaneFocus.swift` reads it from the chat summary (`workLaneCountedFocus`),
+and a host that omits it leaves the iOS fold on the rules above.
 
 Every surface reads the same rule: the row label (`sessionStatusDisplay`'s
 `subagentBusy`), the lane rollup and Focus grid (`busySubagentParentIds`), the

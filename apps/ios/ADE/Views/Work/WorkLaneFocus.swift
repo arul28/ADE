@@ -43,6 +43,10 @@ struct WorkRowFocus: Equatable {
   /// rows do: a plain shell (a dev server, an App Control shell) runs forever,
   /// so it must not keep a lane folded once its chat is done.
   var countsAsBusy = true
+  /// A chat between turns (ready/idle) with nothing scheduled. Only such a row
+  /// may be lifted to Waiting by work it is waiting on: a failed or stopped
+  /// chat still needs the user. Mirrors desktop `resting`.
+  var resting = false
 }
 
 /// Has the user left this row since it last finished?
@@ -120,7 +124,7 @@ func workRowFocus(
     if workParsedDate(summary?.nextWakeAt) != nil {
       return WorkRowFocus(status: .done, holdsOut: true, missedWake: true)
     }
-    return WorkRowFocus(status: .done, holdsOut: !seen, missedWake: false)
+    return WorkRowFocus(status: .done, holdsOut: !seen, missedWake: false, resting: true)
   case .failed, .stopped, .ended:
     return WorkRowFocus(status: .done, holdsOut: !seen, missedWake: false)
   }
@@ -190,8 +194,13 @@ struct WorkLaneRosterRow {
 /// part). Each row's focus is computed once. The busy agent rows are read from
 /// those rows, and a finished helper whose launcher is one of them is then
 /// dropped. Busy never depends on `seen`, and a busy row is never finished.
+///
+/// A resting chat whose last reply said it waits on its own work
+/// (`awaitingOwnWorkAt`, read by Jev at turn end) is Waiting, but only while a
+/// chat it launched is busy in this lane; the verdict alone never folds a lane.
+/// Mirrors desktop `laneFocusRows`.
 func workLaneCountedFocus(_ roster: [WorkLaneRosterRow], laneWaiting: Bool, now: Date) -> [WorkRowFocus?] {
-  let rows: [WorkRowFocus?] = roster.map { row in
+  var rows: [WorkRowFocus?] = roster.map { row in
     workCountedRowFocus(
       session: row.session,
       summary: row.summary,
@@ -209,6 +218,24 @@ func workLaneCountedFocus(_ roster: [WorkLaneRosterRow], laneWaiting: Bool, now:
     if !focus.holdsOut, focus.status == .working || focus.status == .waiting, focus.countsAsBusy {
       busyIds.insert(roster[index].session.id)
     }
+  }
+  var busyLauncherIds: Set<String> = []
+  for index in roster.indices where busyIds.contains(roster[index].session.id) {
+    let row = roster[index]
+    if let launcher = workLauncherSessionId(row.session, summary: row.summary), launcher != row.session.id {
+      busyLauncherIds.insert(launcher)
+    }
+  }
+  for index in roster.indices {
+    let row = roster[index]
+    guard !(row.summary?.awaitingOwnWorkAt ?? "").isEmpty,
+      busyLauncherIds.contains(row.session.id),
+      let focus = rows[index], focus.resting
+    else { continue }
+    var waiting = WorkRowFocus(status: .waiting, holdsOut: false, missedWake: false)
+    waiting.countsAsBusy = focus.countsAsBusy
+    rows[index] = waiting
+    if waiting.countsAsBusy { busyIds.insert(row.session.id) }
   }
   return roster.indices.map { index -> WorkRowFocus? in
     let row = roster[index]
