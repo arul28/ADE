@@ -204,7 +204,7 @@ function SubagentCardFrame({
       onClick={open ? (event) => openOnCardClick(event, open) : undefined}
       title={metaTitle}
       className={cn(
-        "flex h-full w-full min-w-0 items-center gap-2.5 overflow-hidden text-left transition-colors",
+        "@container flex h-full w-full min-w-0 items-center gap-2.5 overflow-hidden text-left transition-colors",
         SUBAGENT_CARD_CHROME,
         open && "cursor-pointer",
       )}
@@ -260,7 +260,9 @@ function SubagentCardFrame({
         ) : null}
       </div>
       <div className="flex shrink-0 items-center gap-1.5">
-        {metrics ? <span className={cn("whitespace-nowrap text-fg/40", CARD_META_TEXT)}>{metrics}</span> : null}
+        {/* A narrow card drops the counts (they stay in the hover title), so
+            the agent's name is never squeezed to nothing. */}
+        {metrics ? <span className={cn("hidden whitespace-nowrap text-fg/40 @[19rem]:inline", CARD_META_TEXT)}>{metrics}</span> : null}
         <SubagentProviderMark provider={provider} />
         {action}
         {open ? (

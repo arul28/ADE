@@ -218,7 +218,7 @@ function ChipIcon({ chip, markSvg, iconDataUrl }: { chip: Chip; markSvg: string 
     );
   }
   // The composer's own kind marks, so a sent pill looks like the one typed.
-  if (chip.kind === "lane" || chip.kind === "chat" || chip.kind === "terminal" || chip.kind === "file") {
+  if (chip.kind === "lane" || chip.kind === "chat" || chip.kind === "terminal" || chip.kind === "machine" || chip.kind === "file") {
     return <span aria-hidden className={ICON_MARK_CLASS} dangerouslySetInnerHTML={{ __html: mentionChipMarkSvg(chip.kind) }} />;
   }
   return <span aria-hidden className="shrink-0 opacity-70">{chipGlyph(chip.kind)}</span>;
