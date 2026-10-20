@@ -431,7 +431,7 @@ describe("ade mac-desktop text output", () => {
       { text: true } as never,
       "mac-desktop-windows",
     );
-    expect(windows).toContain("wsl.exe [admin]");
+    expect(windows).toContain("[admin] wsl.exe");
     expect(windows).toContain("ADE cannot click, type into, focus past or minimize it");
   });
 

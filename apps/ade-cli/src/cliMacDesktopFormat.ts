@@ -565,7 +565,8 @@ export function formatMacDesktopWindows(value: unknown): string {
     ["id", "app", "title", "lane", "origin", "display"],
     windows.map((window) => [
       window.id,
-      window.elevated === true ? `${asString(window.appName) ?? ""} [admin]`.trim() : window.appName,
+      // Leading, so the column's truncation of a long app name cannot cut it.
+      window.elevated === true ? `[admin] ${asString(window.appName) ?? ""}`.trim() : window.appName,
       window.title,
       window.laneId,
       window.origin,
