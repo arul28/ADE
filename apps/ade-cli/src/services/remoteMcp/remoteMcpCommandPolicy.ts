@@ -203,7 +203,7 @@ const COMMAND_ALIASES: ReadonlyMap<string, string> = new Map([["action", "action
 const MACHINE_READ_SUBCOMMANDS: ReadonlySet<string> = new Set(["list", "ls", "show", "view", "get", "info"]);
 const MACHINE_TARGET_FLAG = /^--(?:machine|all-machines|machine-project)(?:=|$)/;
 const SERVICE_SIGN_IN_REASON =
-  "Connecting or disconnecting GitHub, Linear or Jira outlives ADE MCP, so it is done on the computer itself.";
+  "Signing this computer in or out of a service (GitHub, Linear, Jira, an AI provider) outlives ADE MCP, so it is done on the computer itself.";
 /** `ade github` groups that manage the machine's GitHub App authorization. */
 const GITHUB_AUTH_GROUPS: ReadonlySet<string> = new Set(["app-auth", "app", "auth"]);
 /** Spellings of `ade github app-auth login` and `clear`. */
@@ -217,12 +217,27 @@ const SERVICE_SIGN_IN_ACTIONS: ReadonlyMap<string, ReadonlySet<string> | true> =
   ["linear_credentials", true],
   ["linear_oauth", true],
   ["jira", new Set(["connect", "disconnect"])],
+  // Installing the ADE agent in Linear runs an OAuth consent and stores its token.
+  ["linear_agent", new Set(["startInstall", "uninstall"])],
+  ["ai", new Set([
+    "storeApiCredential", "removeApiCredential", "storeApiKey", "deleteApiKey",
+    "setOpencodeProviderKey", "clearOpencodeProviderKey", "opencodeOAuthStart", "opencodeCloudConnect",
+    "opencodeAccountRemove", "piLoginStart", "piLoginSubmit", "cursorAuthLogin", "cursorAuthLogout",
+    "antigravitySignInStart", "antigravitySignInComplete",
+  ])],
 ]);
 
-/** Signing this machine in or out of GitHub, Linear or Jira. */
+/** Spellings of `ade providers opencode accounts remove`, which signs OpenCode out. */
+const OPENCODE_ACCOUNT_REMOVALS: ReadonlySet<string> = new Set(["remove", "rm", "delete"]);
+
+/** Signing this machine in or out of a connected service. */
 function isServiceSignInCommand(command: string, words: readonly string[]): boolean {
   if (command === "github") return GITHUB_AUTH_GROUPS.has(words[0] ?? "") && GITHUB_AUTH_CHANGES.has(words[1] ?? "");
   if (command === "jira") return words[0] === "connect" || words[0] === "disconnect";
+  if (command === "providers") {
+    return words[0] === "opencode" && (words[1] === "accounts" || words[1] === "account")
+      && OPENCODE_ACCOUNT_REMOVALS.has(words[2] ?? "");
+  }
   return false;
 }
 
