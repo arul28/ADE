@@ -125,7 +125,8 @@ export const ComposerModelHintChip = memo(function ComposerModelHintChip({
   onReasoningEffortChange,
 }: ComposerModelHintChipProps) {
   const [answered, setAnswered] = useState<Answered | null>(null);
-  const [dismissed, setDismissed] = useState(false);
+  /** The prompt a hint was taken or dismissed on; it stays down until the text moves on. */
+  const [dismissedFor, setDismissedFor] = useState<string | null>(null);
   const askedTextRef = useRef<string | null>(null);
   const seqRef = useRef(0);
   const pinRef = useRef(pin);
@@ -192,6 +193,7 @@ export const ComposerModelHintChip = memo(function ComposerModelHintChip({
 
   // An answer about other text never shows under this text.
   const fresh = answered != null && changeShare(answered.text, text) < MIN_CHANGE_SHARE;
+  const dismissed = dismissedFor != null && changeShare(dismissedFor, text) < MIN_CHANGE_SHARE;
   const visible = active && fresh && !dismissed && hint != null;
 
   // Outcome log: what the hint offered and what the user did with it.
@@ -218,7 +220,7 @@ export const ComposerModelHintChip = memo(function ComposerModelHintChip({
   useEffect(() => {
     if (!empty) return;
     logOutcome("ignore");
-    setDismissed(false);
+    setDismissedFor(null);
     askedTextRef.current = null;
     setAnswered(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- runs on the empty edge only
@@ -238,7 +240,7 @@ export const ComposerModelHintChip = memo(function ComposerModelHintChip({
   const apply = () => {
     logOutcome("accept");
     // Taken: like a dismissal, it stays down for the rest of this prompt.
-    setDismissed(true);
+    setDismissedFor(text);
     if (hint.effortOnly) {
       onReasoningEffortChange(hint.effort);
       return;
@@ -275,7 +277,7 @@ export const ComposerModelHintChip = memo(function ComposerModelHintChip({
           className="inline-flex h-full items-center rounded-r-md px-1 text-fg/40 hover:bg-fg/[0.06] hover:text-fg"
           onClick={() => {
             logOutcome("dismiss");
-            setDismissed(true);
+            setDismissedFor(text);
             if (!hint.effortOnly) {
               modelDismissals.set(dismissalKey, (modelDismissals.get(dismissalKey) ?? 0) + 1);
               setDismissalTick((tick) => tick + 1);

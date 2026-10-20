@@ -253,15 +253,20 @@ function parseAnswer(question: JevQuestion, raw: unknown): JevAnswer | null {
       probabilities: Object.fromEntries(Object.keys(question.criteria).map((key) => [key, probability(probabilities[key]) ?? 0])),
     };
   }
-  const score = finiteNumberOrNull(answer.score);
-  if (score == null || !Number.isInteger(score) || score < 0 || score >= question.criteria.length) return null;
+  // Jev keys score probabilities by index ("0", "1", …).
+  const scoreProbabilities = question.criteria.map((_, index) => probability(probabilities[String(index)]) ?? 0);
+  const rawScore = finiteNumberOrNull(answer.score);
+  if (rawScore == null || rawScore < 0 || rawScore > question.criteria.length - 1) return null;
+  // When Jev is unsure, `score` is the probability-weighted mean (2.9 for
+  // {2: 0.1, 3: 0.9}), not an index: the most likely level is the answer.
+  const likeliest = scoreProbabilities.reduce((best, value, index) => (value > scoreProbabilities[best]! ? index : best), 0);
+  const score = Number.isInteger(rawScore) ? rawScore : scoreProbabilities[likeliest]! > 0 ? likeliest : Math.round(rawScore);
   return {
     type: "score",
     score,
     label: question.criteria[score]!,
     confidence,
-    // Jev keys score probabilities by index ("0", "1", …).
-    probabilities: question.criteria.map((_, index) => probability(probabilities[String(index)]) ?? 0),
+    probabilities: scoreProbabilities,
   };
 }
 
