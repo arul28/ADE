@@ -218,6 +218,48 @@ Decided at launch by `resolveMcpRegistryForLaunch`
 A change reaches chats started after it. A running chat keeps what it started
 with.
 
+## `npx` servers start without npm's launcher
+
+`npx <package>` keeps a whole npm CLI (`npm exec ...`) running as the parent
+of the server for as long as the server lives, and for a tag or a bare name it
+asks the registry first. Every chat starts its own copy, so the launcher is
+paid once per chat: about 95-190 MB and 1-1.5 s per server.
+
+For chats ADE starts, the launch runs the package npx already installed with
+`node` directly (`main/services/mcp/npxDirectLaunch.ts`). It does so only
+when that copy is provably the one npx would run today:
+
+- the command is `npx` with at most `-y`, `--yes`, `-q`, `--quiet` or
+  `--silent` before the package, and the package is a registry name with no
+  version, an exact version, or a dist-tag (not a range, git, path or URL);
+- npx's own cache folder for that spec (`<npm cache>/_npx/<sha512 16>`)
+  records exactly that spec, and holds the package;
+- the package is not in the project tree or the global prefix (npx would run
+  that one), and no `.npmrc` or `npm_config_registry` names another registry;
+- an exact version matches the installed one; a tag or bare name matches the
+  registry's answer for that tag, which the brain fetches (one small request,
+  kept six hours, never more than 1.5 s on the launch path; with no answer the
+  launch keeps `npx`);
+- the package's bin is a plain `node` script.
+
+Anything else launches as written. The user's config files are only read. A
+CLI the user starts in a terminal is unchanged.
+
+Which servers it applies to, per provider:
+
+| Provider | User's own `npx` servers | ADE registry `npx` servers |
+|---|---|---|
+| Codex | Re-pointed per thread: `mcp_servers.<name> = { command, args }` in the thread config, merged into config.toml's table, so env, tool approvals and timeouts stay. Skipped in strict mode, for a name a caller or ADE also sets, for a server with `cwd`, and for a name the project's `.codex/config.toml` redefines. | Re-pointed |
+| Claude | Re-pointed through the launch's MCP config: a server named there replaces the same name from the user and local scopes, and the user's other servers still load. Only for an entry that is just `command` and `args` (an `env` would have to be copied onto a command line), not for a name the project's `.mcp.json` declares or that the user switched off for the folder, and not in strict mode. | Re-pointed |
+| Cursor, Droid, Copilot, OpenCode, Muse, Qwen, Kimi, Grok, Devin, Antigravity | Unchanged. These cannot be shown to replace their own copy of a same-named server, and passing one would start a second. | Re-pointed (ADE hands these over itself) |
+| Pi | No MCP. | No MCP. |
+
+Codex side jobs (chat titles and other background utilities, `codex exec`)
+start none of the user's config.toml servers: each one gets
+`-c mcp_servers.<name>.enabled=false`. `-c mcp_servers={}` does not do this;
+Codex merges an override table into config.toml, so an empty one changes
+nothing. Servers a Codex plugin adds are not in the file and still start.
+
 ## Source file map
 
 | Path | Role |
@@ -229,4 +271,6 @@ with.
 | `apps/desktop/src/main/services/mcp/mcpOAuth.ts` | The browser sign-in: the probe, discovery, client registration, the loopback redirect, the token exchange and renewal. |
 | `apps/desktop/src/main/services/mcp/mcpProviderConfigScan.ts` | Reading the five provider configs, including the Codex TOML tables. |
 | `apps/desktop/src/main/services/chat/mcpRegistryLaunch.ts` | The registry as one chat launch sees it. |
+| `apps/desktop/src/main/services/mcp/npxDirectLaunch.ts` | Runs an `npx` server's installed package with `node` when it is provably the copy npx would run. |
+| `apps/desktop/src/main/services/mcp/mcpUserServerNpxDirect.ts` | The Codex thread overlay and the Claude launch servers that re-point the user's own `npx` servers. |
 | `apps/desktop/src/renderer/components/settings/mcp/` | The page, the add and edit dialog, the hook and the layout CSS. |

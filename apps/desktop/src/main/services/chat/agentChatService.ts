@@ -42878,18 +42878,27 @@ export function createAgentChatService(args: {
    * installed, through the launch's MCP config: a server named there replaces
    * the same name from ~/.claude.json, and every other server of the user's
    * still loads. Nothing to do when the query ignores the user's MCP config.
+   *
+   * Two halves so nothing is awaited between building a query's options and
+   * starting it: `prepare…` fetches the registry answers first (a superset of
+   * the servers the query can load), `apply…` is synchronous.
    */
-  const applyClaudeUserNpxDirect = async (options: ClaudeSDKOptions): Promise<void> => {
+  const prepareClaudeUserNpxDirectFor = (managed: ManagedChatSession): Promise<void> =>
+    prepareClaudeUserNpxDirect(npxDirectLauncher, {
+      env: buildAgentRuntimeEnv(managed),
+      cwd: managed.laneWorktreePath,
+      projectRoots: [args.projectRoot],
+      settingSources: ["user", "local"],
+    });
+  const applyClaudeUserNpxDirect = (options: ClaudeSDKOptions): void => {
     if (options.strictMcpConfig || !options.settingSources?.length || !options.cwd) return;
-    const directArgs = {
+    const direct = claudeUserNpxDirectServers(npxDirectLauncher, {
       env: (options.env ?? process.env) as NodeJS.ProcessEnv,
       cwd: options.cwd,
       projectRoots: [args.projectRoot],
       settingSources: options.settingSources,
       skipNames: new Set(Object.keys(options.mcpServers ?? {})),
-    };
-    await prepareClaudeUserNpxDirect(npxDirectLauncher, directArgs);
-    const direct = claudeUserNpxDirectServers(npxDirectLauncher, directArgs);
+    });
     if (Object.keys(direct).length) options.mcpServers = { ...direct, ...(options.mcpServers ?? {}) };
   };
 
@@ -43823,9 +43832,10 @@ export function createAgentChatService(args: {
       await claudeDownload;
       assertCurrentStart();
     }
-    const options = buildClaudeQueryOptions(managed, runtime);
-    await applyClaudeUserNpxDirect(options);
+    await prepareClaudeUserNpxDirectFor(managed);
     assertCurrentStart();
+    const options = buildClaudeQueryOptions(managed, runtime);
+    applyClaudeUserNpxDirect(options);
     if (runtime.forkFromSdkSessionId) {
       if (!runtime.sdkSessionId) {
         runtime.sdkSessionId = randomUUID();
@@ -44231,8 +44241,9 @@ export function createAgentChatService(args: {
       try {
         const claudeDownload = chatPinnedToolDownload(null, "claude-code", "Claude Code");
         if (claudeDownload) await claudeDownload;
+        await prepareClaudeUserNpxDirectFor(managed);
         const options = buildClaudeQueryOptions(managed, runtime);
-        await applyClaudeUserNpxDirect(options);
+        applyClaudeUserNpxDirect(options);
         if (runtime.forkFromSdkSessionId) {
           if (!runtime.sdkSessionId) {
             assignedSessionId = randomUUID();
