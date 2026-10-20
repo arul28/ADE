@@ -248,7 +248,7 @@ import {
 } from "../../desktop/src/shared/types/builtInBrowser";
 import { WORK_TOOLS_STATE_CHANGED_EVENT } from "../../desktop/src/shared/types/workTools";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
-import { readBrainHeartbeat, servesMachineRuntimeEndpoint } from "./services/runtime/brainHeartbeat";
+import { BRAIN_HEARTBEAT_STALE_MS, readBrainHeartbeat, servesMachineRuntimeEndpoint } from "./services/runtime/brainHeartbeat";
 import { readExistingOsBoundKeyMaterialAsync } from "./services/credentials/osBoundKeyMaterial";
 import { createBrainLogger } from "./services/runtime/brainLogger";
 import { createPushRegistrationStore } from "./services/push/pushRegistrationStore";
@@ -2413,7 +2413,12 @@ export async function createAdeRuntime(args: {
         // A non-machine socket yields chats it does not run to the installed
         // brain only while that brain is live on this project.
         ...(!servesMachineEndpoint ? {
-          machineBrainPid: () => readBrainHeartbeat(machineRuntimeLayout.runtimeDir)?.pid ?? null,
+          // A crashed machine brain stops beating; only a fresh beat counts,
+          // so a reused pid cannot hold this brain's unattended work.
+          machineBrainPid: () => {
+            const beat = readBrainHeartbeat(machineRuntimeLayout.runtimeDir);
+            return beat && Date.now() - beat.ts <= BRAIN_HEARTBEAT_STALE_MS ? beat.pid : null;
+          },
         } : {}),
         projectConfigService,
         db,

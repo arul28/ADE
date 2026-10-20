@@ -57659,8 +57659,10 @@ export function createAgentChatService(args: {
     if (routableText) {
       const diskDecision = diskPressureMonitor?.canPerform("chat_turn");
       if (diskDecision && !diskDecision.allowed) {
-        emitDiskPressureSendFailure(managed, diskDecision.state, diskDecision.message);
+        // A scheduled wake retries once the disk clears; posting the refusal
+        // first would leave a failed turn for work that is still pending.
         throwForScheduledWakeRefusal(diskDecision.message, true);
+        emitDiskPressureSendFailure(managed, diskDecision.state, diskDecision.message);
         return;
       }
       if (options?.routeActiveToSteer && canRouteActiveSendToSteer(managed)) {
