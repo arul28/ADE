@@ -438,25 +438,30 @@ describe("ipcInvokeTimeoutMs", () => {
     expect(ipcInvokeTimeoutMs(IPC.builtInBrowserRunRemoteAgentCall, [payload])).toBe(expectedMs);
   });
 
-  // These wait on a person at a native dialog, or on a download that can run
-  // for many minutes. The renderer must not report a failure while either is
-  // still going; the reset confirmation in particular stayed answerable after
-  // the window had already reported it failed.
+  // These wait on a person at a native dialog, a large project copy, or a
+  // download that can run for many minutes. The renderer must not report a
+  // failure while the operation is still going.
   it.each([
-    IPC.transcriptionDownloadModel,
-    IPC.aiEnsureToolsCache,
-    IPC.updateCheckForUpdates,
-    IPC.projectClone,
-    IPC.adeCliInstallForUser,
-    IPC.projectChooseDirectory,
-    IPC.projectChooseIcon,
-    IPC.projectSecretsChooseEnvFile,
-    IPC.machineResetChooseRescueDir,
-    IPC.historyExportOperations,
-    IPC.projectOpenRepo,
-    IPC.machineResetStart,
-  ])("keeps %s open well past a person or a slow download", (channel) => {
-    expect(ipcInvokeTimeoutMs(channel)).toBeGreaterThanOrEqual(5 * 60_000);
+    [IPC.transcriptionDownloadModel, 5 * 60_000],
+    [IPC.aiEnsureToolsCache, 5 * 60_000],
+    [IPC.updateCheckForUpdates, 5 * 60_000],
+    [IPC.projectClone, 5 * 60_000],
+    [IPC.adeCliInstallForUser, 5 * 60_000],
+    [IPC.projectChooseDirectory, 5 * 60_000],
+    [IPC.projectChooseIcon, 5 * 60_000],
+    [IPC.projectSecretsChooseEnvFile, 5 * 60_000],
+    [IPC.machineResetChooseRescueDir, 5 * 60_000],
+    [IPC.historyExportOperations, 5 * 60_000],
+    [IPC.projectOpenRepo, 5 * 60_000],
+    [IPC.machineResetStart, 5 * 60_000],
+    [IPC.projectMoveCleanup, 24 * 60 * 60_000],
+  ] as const)("keeps %s open for its full operation budget", (channel, minimumMs) => {
+    const timeoutMs = ipcInvokeTimeoutMs(channel);
+    expect(timeoutMs).toBeGreaterThanOrEqual(minimumMs);
+    if (channel === IPC.projectMoveCleanup) {
+      expect(timeoutMs).toBe(ipcInvokeTimeoutMs(IPC.projectMoveStart));
+      expect(timeoutMs).toBe(24 * 60 * 60_000);
+    }
   });
 });
 
