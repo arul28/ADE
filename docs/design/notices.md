@@ -130,7 +130,8 @@ event, and it is never urgent, so it has its own quiet presentation:
   viewport (`ToastViewport`), which owns that corner. Toasts come and go above
   it; the live Launches panel sits below it. That corner covers no header, tab
   or composer and pushes nothing, and it is where ADE already puts things you
-  may glance at and ignore. One suggestion shows at a time; the rest wait.
+  may glance at and ignore. One suggestion shows at a time; the rest wait. It
+  also waits while a modal or a first-chat onboarding hint is up.
 - **What it says.** A quiet eyebrow (`eyebrow`, default "Suggestion"), a title
   that says what the feature **is** ("Lane templates make new lanes ready to
   work"), one "why now" line in `detail`, then two actions: the primary
@@ -208,6 +209,7 @@ Pick a named layer and never type a z-index:
 | `menuPanel` | 60 | A submenu panel floating off its host menu row. Relative, not absolute: the panel is a child of the host menu, so the host's own layer decides what the whole menu covers |
 | `chatDraftDeparture` | 79 | Departing Work draft chrome during the first-message handoff |
 | `chatFirstMessageHandoff` | 80 | Composer and first-message handoff animation |
+| `onboardingHint` | 95 | First-chat onboarding hints (ghost cursor, ring, card). Under popovers, menus, sheets and dialogs, so anything the user opens covers a hint |
 | `popover` | 100 | Anchored pickers and menus (model picker, reasoning effort) |
 | `sidebar` | 100 | The app sidebar |
 | `floatingBanner` | 115 | Floating top-center banners, below the sheets: a sheet someone just opened is what they are looking at, and a banner drawn over it covers its header |

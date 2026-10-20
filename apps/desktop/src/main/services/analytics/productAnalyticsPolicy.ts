@@ -498,7 +498,7 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     // has to be added here deliberately rather than arriving as free text.
     "widget_projects", "widget_running", "widget_activity", "widget_limits", "widget_prs", "widget_clock",
     "widget_pomodoro", "widget_clipboard", "widget_machine", "widget_heatmap", "widget_shipped", "widget_feed",
-    "widget_now_playing",
+    "widget_now_playing", "widget_tips",
     // Where find was opened: ⌘F in a chat, the ⌘K "Find … in this chat" row, a
     // chat opened from a ⌘K message hit with the words handed off, or ⌘F in a
     // diff. Prefixed like the other renderer surfaces so none can be confused

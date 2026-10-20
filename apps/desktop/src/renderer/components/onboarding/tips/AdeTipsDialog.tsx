@@ -23,8 +23,9 @@ import "./adeTips.css";
 /**
  * ADE Tips: everything worth knowing, grouped, each with one sentence and a
  * "Try it" that opens the real surface. Suggestions the user postponed with
- * "Not now" sit on top, under "Suggested for you". Opened from the help menu
- * and the home screen's ADE Tips widget.
+ * "Not now" sit on top, under "Suggested for you". Opened with `openAdeTips`
+ * from the help menu, the home screen's ADE Tips widget and the command
+ * palette; `AdeTipsDialogHost` draws it.
  */
 
 const SUGGESTED_ID = "suggested";
@@ -241,5 +242,35 @@ function SuggestedRow({ entry, onStarted }: { entry: PostponedSuggestion; onStar
         </span>
       </div>
     </div>
+  );
+}
+
+const OPEN_ADE_TIPS_EVENT = "ade:open-ade-tips";
+
+/** Opens ADE Tips from anywhere (help menu, home widget, command palette). */
+export function openAdeTips(focusTipId?: string | null): void {
+  window.dispatchEvent(new CustomEvent<string | null>(OPEN_ADE_TIPS_EVENT, { detail: focusTipId ?? null }));
+}
+
+/** The one ADE Tips dialog, mounted once in the app shell. Renders nothing until opened. */
+export function AdeTipsDialogHost() {
+  const [request, setRequest] = useState<{ focusTipId: string | null } | null>(null);
+  useEffect(() => {
+    const onOpen = (event: Event) => {
+      const detail = (event as CustomEvent<string | null>).detail;
+      setRequest({ focusTipId: typeof detail === "string" ? detail : null });
+    };
+    window.addEventListener(OPEN_ADE_TIPS_EVENT, onOpen);
+    return () => window.removeEventListener(OPEN_ADE_TIPS_EVENT, onOpen);
+  }, []);
+  if (!request) return null;
+  return (
+    <AdeTipsDialog
+      open
+      onOpenChange={(next) => {
+        if (!next) setRequest(null);
+      }}
+      focusTipId={request.focusTipId}
+    />
   );
 }

@@ -51,12 +51,13 @@ describe("ProjectSidebar footer", () => {
     delete (window as { __adeWebClient?: boolean }).__adeWebClient;
   });
 
-  it("keeps CTO and History, and puts a settings cog at the end", () => {
+  it("keeps CTO and History, and puts help and a settings cog at the end", () => {
     renderSidebar("/work");
     const footerButtons = [...document.querySelectorAll(".ade-project-sidebar-footer button")];
     expect(footerButtons.map((button) => button.getAttribute("aria-label") ?? button.textContent)).toEqual([
       "CTO",
       "History",
+      "Help menu",
       "Settings",
     ]);
     expect(screen.getByRole("button", { name: "Settings" }).getAttribute("aria-current")).toBeNull();

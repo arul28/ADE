@@ -4,7 +4,7 @@ import { ArrowRight, CaretLeft, CaretRight, Lightbulb } from "@phosphor-icons/re
 import { WelcomeCardHead } from "../../projects/ProjectWelcomeSidePanels";
 import { useAppStore } from "../../../state/appStore";
 import { ADE_TIPS, adeTipGroup, runTipAction, tipActionAvailable, tipIndexForDay } from "../../../onboarding/adeTips";
-import { AdeTipsDialog } from "../../onboarding/tips/AdeTipsDialog";
+import { openAdeTips } from "../../onboarding/tips/AdeTipsDialog";
 import { useWidgetPreview } from "../HomeWidgetGrid";
 import type { HomeWidgetProps } from "../homeWidgetRegistry";
 import { useLocalDayStart } from "./widgetHooks";
@@ -23,7 +23,6 @@ export default function AdeTipsWidget({ item }: HomeWidgetProps) {
   const hasProject = useAppStore((state) => Boolean(state.project?.rootPath));
   const dayStart = useLocalDayStart();
   const [step, setStep] = useState(0);
-  const [dialogOpen, setDialogOpen] = useState(false);
 
   const count = ADE_TIPS.length;
   const index = (((tipIndexForDay(dayStart, count) + step) % count) + count) % count;
@@ -33,7 +32,7 @@ export default function AdeTipsWidget({ item }: HomeWidgetProps) {
 
   return (
     <section className="kit-card ade-home-card ade-tipw" aria-label="ADE Tips" data-size={item.size}>
-      <WelcomeCardHead icon={Lightbulb} title="ADE Tips" action={preview ? null : { label: "All tips", onClick: () => setDialogOpen(true) }} />
+      <WelcomeCardHead icon={Lightbulb} title="ADE Tips" action={preview ? null : { label: "All tips", onClick: () => openAdeTips(tip.id) }} />
       <div className="kit-card-body ade-tipw-body">
         <div className="ade-tipw-tip" aria-live="polite">
           <span className="ade-tipw-glyph" aria-hidden><TipIcon size={18} /></span>
@@ -60,7 +59,6 @@ export default function AdeTipsWidget({ item }: HomeWidgetProps) {
           </div>
         </div>
       </div>
-      {dialogOpen ? <AdeTipsDialog open onOpenChange={setDialogOpen} focusTipId={tip.id} /> : null}
     </section>
   );
 }

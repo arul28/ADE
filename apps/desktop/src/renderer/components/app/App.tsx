@@ -37,6 +37,7 @@ import { ProjectWelcomePage } from "../projects/ProjectWelcomePage";
 import { OnboardingBootstrap } from "../onboarding/OnboardingBootstrap";
 import { LaunchGate } from "../onboarding/LaunchGate";
 import { OnboardingHintHost } from "../onboarding/hints/OnboardingHintHost";
+import { AdeTipsDialogHost } from "../onboarding/tips/AdeTipsDialog";
 import { readStoredProjectRoute, writeStoredProjectRoute } from "./projectRouteStorage";
 import { linearIssueRef } from "../../../shared/issueRefs";
 import { openIssueRef } from "../../lib/issueNavigation";
@@ -1585,6 +1586,8 @@ export function App() {
           <DialogHost />
           {/* First-chat onboarding hints; renders nothing unless onboarding is on. */}
           <OnboardingHintHost />
+          {/* ADE Tips, opened from the help menu, the home widget or the palette. */}
+          <AdeTipsDialogHost />
           {/* "May this agent use the ADE browser?" — only when the setting asks. */}
           <BrowserAgentAccessPromptHost />
           {/* "Quit ADE?" — main asks the window it is quitting from. */}

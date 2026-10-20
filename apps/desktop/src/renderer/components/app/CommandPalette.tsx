@@ -5,6 +5,9 @@ import React, {
   useRef,
   useState,
 } from "react";
+import { openAdeTips } from "../onboarding/tips/AdeTipsDialog";
+import { restartOnboarding } from "../../onboarding/onboardingProgress";
+import { ADE_WELCOME_VIDEO_REPLAY_EVENT } from "../../../shared/welcomeVideo";
 import * as Dialog from "@radix-ui/react-dialog";
 import {
   ArrowLeft,
@@ -831,6 +834,25 @@ export function CommandPalette({
         },
       },
       {
+        id: "help-ade-tips",
+        title: "ADE Tips",
+        hint: "What ADE can do, one line each",
+        group: "Help",
+        keywords: ["help", "tips", "features", "learn"],
+        run: () => openAdeTips(),
+      },
+      {
+        id: "help-show-around",
+        title: "Show me around again",
+        hint: "Welcome, projects and first-chat hints",
+        group: "Help",
+        keywords: ["onboarding", "welcome", "tour", "setup"],
+        run: () => {
+          restartOnboarding();
+          window.dispatchEvent(new Event(ADE_WELCOME_VIDEO_REPLAY_EVENT));
+        },
+      },
+      {
         id: "ping",
         title: "Ping preload bridge",
         hint: 'Expect "pong"',
@@ -873,6 +895,8 @@ export function CommandPalette({
           command.id === "project-clone" ||
           command.id === "project-remote" ||
           command.id === "go-project" ||
+          command.id === "help-ade-tips" ||
+          command.id === "help-show-around" ||
           command.id === "ping",
       );
     }

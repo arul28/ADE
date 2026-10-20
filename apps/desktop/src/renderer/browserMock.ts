@@ -1304,6 +1304,22 @@ function browserMockGateState(): BrowserMockGateState | null {
   }
 }
 
+function browserMockLaneTemplate(): boolean {
+  try {
+    return new URLSearchParams(window.location.search).has("mockLaneTemplate");
+  } catch {
+    return false;
+  }
+}
+
+function browserMockNeedsYou(): boolean {
+  try {
+    return new URLSearchParams(window.location.search).has("mockNeedsYou");
+  } catch {
+    return false;
+  }
+}
+
 function browserMockFirstRun(): boolean {
   try {
     return new URLSearchParams(window.location.search).has("mockFirstRun");
@@ -1998,7 +2014,12 @@ const ADE_DB_SESSIONS: any[] =
 /** Prefer exported DB rows when present; otherwise built-ins so Work is usable without a snapshot file. */
 const MOCK_SESSIONS: any[] = [
   ...(ADE_DB_SESSIONS.length > 0 ? ADE_DB_SESSIONS : BUILTIN_MOCK_SESSIONS),
-].filter((session) => !(BROWSER_MOCK_FILM && session.id === BROWSER_MOCK_FILM_HIDDEN_CHAT));
+]
+  .filter((session) => !(BROWSER_MOCK_FILM && session.id === BROWSER_MOCK_FILM_HIDDEN_CHAT))
+  // `?mockNeedsYou` previews a chat waiting on the user (the "needs you" hint and row).
+  .map((session) => (browserMockNeedsYou() && session.id === "mock-session-claude-1"
+    ? { ...session, attentionRequestedAt: new Date().toISOString() }
+    : session));
 const ADE_DB_CHAT_TRANSCRIPTS: Record<
   string,
   { events?: any[]; path?: string | null }
@@ -6570,6 +6591,33 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       listRegistry: resolved([]),
     },
     lanes: {
+      // `?mockLaneTemplate` previews the lane template suggestion: a repo with
+      // packages and no default template. Without it the call fails, as it
+      // does on a runtime that predates the action, and nothing shows.
+      getDependencyStatus: async () => {
+        if (!browserMockLaneTemplate()) throw new Error("Not available in the browser preview.");
+        return {
+          projectRoot: MOCK_PROJECT.rootPath,
+          platform: "darwin",
+          folders: [{
+            manager: "npm",
+            lockfile: "package-lock.json",
+            dir: ".",
+            installCommand: "npm install",
+            installDir: "node_modules",
+            installed: true,
+            outOfDate: false,
+            outOfDateReason: null,
+            tracksInstall: true,
+            fingerprint: "mock",
+          }],
+          truncated: false,
+          updateCommand: null,
+          defaultTemplateId: null,
+          templateCount: 0,
+          checkedAt: new Date().toISOString(),
+        };
+      },
       list: resolved(MOCK_LANES),
       listSnapshots: async () =>
         MOCK_LANES.map((lane) => makeLaneSnapshot(lane)),

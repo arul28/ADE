@@ -157,7 +157,8 @@ function DesktopLaunchGate({ children }: LaunchGateProps) {
       ) : null}
       {step === "projects" ? (
         <div className="ade-gate-stack" data-step="projects" key="projects">
-          <FirstRunProjects onDone={finishSetup} onSkip={skipSetup} />
+          {/* Skipping the projects only skips adding them; the first-chat hints still follow. */}
+          <FirstRunProjects onDone={finishSetup} onSkip={() => finishSetup({ rootPaths: [] })} />
         </div>
       ) : null}
       {step === "sign-in" ? (

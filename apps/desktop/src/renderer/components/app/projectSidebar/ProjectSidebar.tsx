@@ -6,6 +6,7 @@ import { useAppStore } from "../../../state/appStore";
 import { isWebClientMode, WEB_CLIENT_TAB_PATHS } from "../../../lib/webClientMode";
 import { pressActivation } from "../../../lib/pressActivation";
 import { readStoredProjectSettingsRoute } from "../projectRouteStorage";
+import { HelpMenu } from "../../onboarding/HelpMenu";
 import {
   commitProjectSidebarWidth,
   getProjectSidebarPrefs,
@@ -197,6 +198,13 @@ export function ProjectSidebar({ route, heldRoute = null }: { route: string; hel
                 </button>
               );
             })}
+            {/* Help: ADE Tips, "Show me around again", docs. */}
+            <HelpMenu
+              align="start"
+              side="above"
+              className="ade-project-sidebar-footer-item ade-project-sidebar-footer-help"
+              iconSize={15}
+            />
             {settingsVisible ? (
               <button
                 type="button"

@@ -194,11 +194,25 @@
 
 /* Wide (Regular, two columns): a larger glyph leads, the words sit beside it. */
 @container widget (min-width: 440px) {
-  .ade-tipw-tip { display: flex; align-items: flex-start; gap: 16px; }
+  .ade-tipw-tip { display: flex; align-items: center; gap: 16px; }
   .ade-tipw-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .ade-tipw-text > .kit-eyebrow { align-self: flex-start; }
   .ade-tipw-title { margin-top: 2px; font-size: 15px; }
   .ade-tipw-sentence { font-size: 12.5px; }
   .ade-tipw-glyph { flex: none; width: 44px; height: 44px; border-radius: 12px; }
+}
+
+/* Tall (a widget that fills a row): the tip sits in the middle of the card and
+   reads larger, instead of hugging the head over an empty card. */
+@container widget (min-height: 300px) {
+  .ade-tipw-tip { align-content: center; grid-template-columns: 40px minmax(0, 1fr); column-gap: 12px; }
+  .ade-tipw-title { font-size: 17px; letter-spacing: -0.01em; }
+  .ade-tipw-sentence { font-size: 13px; -webkit-line-clamp: 4; }
+  .ade-tipw-glyph { width: 40px; height: 40px; border-radius: 11px; }
+}
+@container widget (min-width: 440px) and (min-height: 300px) {
+  .ade-tipw-glyph { width: 56px; height: 56px; border-radius: 15px; }
+  .ade-tipw-title { font-size: 19px; }
 }
 
 /* Short: fewer lines, then no sentence and no counter. */

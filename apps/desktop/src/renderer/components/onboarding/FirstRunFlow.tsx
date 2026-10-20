@@ -131,6 +131,7 @@ export function FirstRunProjects({
 }: {
   /** Setup is finished; `result` names what it added (possibly nothing). */
   onDone: (result: FirstRunResult) => void;
+  /** "Skip": add nothing and go on. */
   onSkip: () => void;
 }) {
   const [discovery, setDiscovery] = useState<DiscoveryState>({ phase: "loading" });

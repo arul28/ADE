@@ -16,15 +16,16 @@ import { useAppBannerEntries, type AppBannerEntry } from "./appBannerStore";
  * One at a time: the highest priority, then the first registered. The rest
  * wait their turn instead of stacking up.
  *
- * Out of the way of modals: the toast corner sits above dialogs (so a toast a
- * dialog raises is seen), but a suggestion must never sit on top of a dialog
- * or the first-run setup, so it waits while one is open.
+ * Out of the way of modals and hints: the toast corner sits above dialogs (so
+ * a toast a dialog raises is seen), but a suggestion must never sit on top of
+ * a dialog or the first-run setup, and must not compete with a first-chat
+ * hint for attention, so it waits while either is up.
  */
 
-const MODAL_SELECTOR = '[role="dialog"][aria-modal="true"], [role="alertdialog"]';
+const BUSY_SELECTOR = '[role="dialog"][aria-modal="true"], [role="alertdialog"], [data-onboarding-hint-layer]';
 
 /**
- * Whether a modal is open. Dialogs and overlays portal into <body>, so
+ * Whether a modal or a first-chat hint is up. Both portal into <body>, so
  * watching body's own children (not its subtree) is enough, and it only runs
  * while a suggestion wants to show.
  */
@@ -35,7 +36,7 @@ function useModalOpen(watch: boolean): boolean {
       setOpen(false);
       return;
     }
-    const check = () => setOpen(document.querySelector(MODAL_SELECTOR) !== null);
+    const check = () => setOpen(document.querySelector(BUSY_SELECTOR) !== null);
     check();
     const observer = new MutationObserver(check);
     observer.observe(document.body, { childList: true });

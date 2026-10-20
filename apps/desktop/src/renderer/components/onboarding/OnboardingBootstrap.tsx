@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ADE_WELCOME_VIDEO_REPLAY_EVENT } from "../../../shared/welcomeVideo";
 import { isWebClientMode } from "../../lib/webClientMode";
-import { markOnboardingStarted } from "../../onboarding/onboardingProgress";
+import { markOnboardingStarted, skipOnboarding } from "../../onboarding/onboardingProgress";
 import { ViewportOverlayPortal } from "../ui/ViewportOverlayHost";
 import { GateBackdrop } from "./GateBackdrop";
 import { FirstRunProjects, FirstRunWelcome, openFirstRunProjects, type FirstRunResult } from "./FirstRunFlow";
@@ -47,6 +47,12 @@ export function OnboardingBootstrap() {
     void window.ade.app.markWelcomeVideoSeen(reason).catch(() => undefined);
   }, []);
 
+  // Skip setup means skip onboarding: no first-chat hints follow, as on the launch gate.
+  const skip = useCallback(() => {
+    skipOnboarding();
+    close("dismissed");
+  }, [close]);
+
   const finish = useCallback((result: FirstRunResult) => {
     close("completed");
     openFirstRunProjects(result);
@@ -55,11 +61,11 @@ export function OnboardingBootstrap() {
   useEffect(() => {
     if (!step) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") close("dismissed");
+      if (event.key === "Escape") skip();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [close, step]);
+  }, [skip, step]);
 
   if (!step) return null;
 
@@ -69,11 +75,11 @@ export function OnboardingBootstrap() {
         <GateBackdrop />
         {step === "welcome" ? (
           <div className="ade-gate-stack" data-step="welcome" key="welcome">
-            <FirstRunWelcome onStart={() => setStep("projects")} onSkip={() => close("dismissed")} />
+            <FirstRunWelcome onStart={() => setStep("projects")} onSkip={skip} />
           </div>
         ) : (
           <div className="ade-gate-stack" data-step="projects" key="projects">
-            <FirstRunProjects onDone={finish} onSkip={() => close("dismissed")} />
+            <FirstRunProjects onDone={finish} onSkip={() => finish({ rootPaths: [] })} />
           </div>
         )}
       </div>

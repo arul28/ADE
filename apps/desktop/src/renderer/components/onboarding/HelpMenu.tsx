@@ -9,22 +9,26 @@ import { ADE_WELCOME_VIDEO_REPLAY_EVENT } from "../../../shared/welcomeVideo";
 import { fgTint } from "../lanes/laneDesignTokens";
 import { fixedFrameOf, fixedRect, fixedViewport } from "../../lib/webZoom";
 import { restartOnboarding } from "../../onboarding/onboardingProgress";
-import { AdeTipsDialog } from "./tips/AdeTipsDialog";
+import { openAdeTips } from "./tips/AdeTipsDialog";
 
-type MenuPosition = { top: number; left?: number; right?: number } | null;
+type MenuPosition = { top?: number; bottom?: number; left?: number; right?: number } | null;
 
 /**
  * The question-mark menu: docs, ADE Tips, the welcome tour again, and help
  * preferences.
  * `align` picks which edge of the button the menu lines up with; a button near
  * the left edge of the window wants "start" so the menu opens into the window.
+ * `side` picks where it opens: under the button, or above it for a button at
+ * the bottom of the window (the project sidebar footer).
  */
 export function HelpMenu({
   align = "end",
+  side = "below",
   className,
   iconSize = 14,
 }: {
   align?: "start" | "end";
+  side?: "below" | "above";
   className?: string;
   iconSize?: number;
 } = {}) {
@@ -32,7 +36,6 @@ export function HelpMenu({
   const setSmartTooltipsEnabled = useAppStore((s) => s.setSmartTooltipsEnabled);
 
   const [open, setOpen] = useState(false);
-  const [tipsOpen, setTipsOpen] = useState(false);
   const [position, setPosition] = useState<MenuPosition>(null);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -50,13 +53,16 @@ export function HelpMenu({
     const frame = fixedFrameOf(null);
     const r = fixedRect(frame, el.getBoundingClientRect());
     const viewport = fixedViewport(frame);
+    const vertical = side === "above"
+      ? { bottom: Math.max(8, viewport.height - r.top + 6) }
+      : { top: r.bottom + 6 };
     setPosition(
       align === "start"
-        ? { top: r.bottom + 6, left: Math.max(8, r.left) }
-        : { top: r.bottom + 6, right: Math.max(8, viewport.width - r.right) },
+        ? { ...vertical, left: Math.max(8, r.left) }
+        : { ...vertical, right: Math.max(8, viewport.width - r.right) },
     );
     setOpen(true);
-  }, [align]);
+  }, [align, side]);
 
   useEffect(() => {
     if (!open) return;
@@ -87,7 +93,7 @@ export function HelpMenu({
 
   const handleOpenTips = useCallback(() => {
     close();
-    setTipsOpen(true);
+    openAdeTips();
   }, [close]);
 
   // A fresh start: every first-run hint comes back, and the welcome flow
@@ -132,6 +138,7 @@ export function HelpMenu({
               style={{
                 position: "fixed",
                 top: position.top,
+                bottom: position.bottom,
                 left: position.left,
                 right: position.right,
                 zIndex: 9999,
@@ -165,7 +172,6 @@ export function HelpMenu({
             document.body,
           )
         : null}
-      {tipsOpen ? <AdeTipsDialog open onOpenChange={setTipsOpen} /> : null}
     </>
   );
 }

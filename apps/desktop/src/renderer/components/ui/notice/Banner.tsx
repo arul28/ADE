@@ -246,6 +246,13 @@ function SuggestionCard({
         fontFamily: "var(--font-sans)",
         color: "var(--color-fg)",
         ...NOTICE_FLOAT_SURFACE,
+        // A suggestion sits over the page for a while, often over a picture,
+        // where the theme's card colour is itself translucent. Mix from the
+        // background instead, so its words always read (as the onboarding
+        // hint card does with `.kit-card[data-float]`).
+        background: "color-mix(in srgb, var(--color-bg) 90%, transparent)",
+        backdropFilter: "blur(18px) saturate(1.2)",
+        WebkitBackdropFilter: "blur(18px) saturate(1.2)",
         ...style,
       }}
     >

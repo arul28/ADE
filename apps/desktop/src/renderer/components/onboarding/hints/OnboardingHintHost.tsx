@@ -231,9 +231,10 @@ function prefersReducedMotion(): boolean {
 type Box = { left: number; top: number; width: number; height: number };
 
 /**
- * Where the card goes: beside a small control (right, below, left, above),
- * above or below a wide one (the composer sits low, so above first). Clamped
- * inside the window either way.
+ * Where the card goes: beside a small control or a row (right, below, left,
+ * above), so a sidebar row's card sits in the open page instead of over the
+ * rows above it; above or below a wide control (the composer sits low, so
+ * above first). Clamped inside the window either way.
  */
 function placeCard(ring: Box, cardHeight: number, vw: number, vh: number): { x: number; y: number } {
   const w = CARD_WIDTH;
@@ -249,7 +250,8 @@ function placeCard(ring: Box, cardHeight: number, vw: number, vh: number): { x: 
     left: { x: ring.left - CARD_GAP - w, y: alignY, fits: ring.left - CARD_GAP - w >= VIEWPORT_MARGIN },
     above: { x: alignX, y: ring.top - CARD_GAP - h, fits: ring.top - CARD_GAP - h >= VIEWPORT_MARGIN },
   };
-  const order = wide
+  const rowLike = ring.width <= CARD_WIDTH * 2;
+  const order = wide && !rowLike
     ? [sides.above, sides.below, sides.right, sides.left]
     : [sides.right, sides.below, sides.left, sides.above];
   const pick = order.find((side) => side.fits) ?? order[0]!;
