@@ -26,39 +26,81 @@ jobs:
         with:
           node-version: 22
 
-      - name: Restore node_modules cache
-        id: cache
+      # One cache per dependency group, so each job restores only the
+      # node_modules it uses, and a PR that changes one lockfile saves only
+      # that group instead of a fresh copy of everything. desktop and ade-cli
+      # import each other's source, so they share one group. lookup-only
+      # checks for the entry without downloading it; a miss installs below
+      # and the post step saves the new entry.
+      - name: Check core node_modules cache
+        id: cache_core
         uses: actions/cache@v4
         with:
+          lookup-only: true
           path: |
             apps/desktop/node_modules
             apps/ade-cli/node_modules
+          key: nm-core-v1-${{ runner.os }}-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json') }}
+      - name: Check web node_modules cache
+        id: cache_web
+        uses: actions/cache@v4
+        with:
+          lookup-only: true
+          path: |
             apps/web/node_modules
+          key: nm-web-v1-${{ runner.os }}-${{ hashFiles('apps/web/package-lock.json') }}
+      - name: Check webhook-relay node_modules cache
+        id: cache_webhook_relay
+        uses: actions/cache@v4
+        with:
+          lookup-only: true
+          path: |
             apps/webhook-relay/node_modules
+          key: nm-webhook-relay-v1-${{ runner.os }}-${{ hashFiles('apps/webhook-relay/package-lock.json') }}
+      - name: Check push-relay node_modules cache
+        id: cache_push_relay
+        uses: actions/cache@v4
+        with:
+          lookup-only: true
+          path: |
             apps/push-relay/node_modules
+          key: nm-push-relay-v1-${{ runner.os }}-${{ hashFiles('apps/push-relay/package-lock.json') }}
+      - name: Check sdk node_modules cache
+        id: cache_sdk
+        uses: actions/cache@v4
+        with:
+          lookup-only: true
+          path: |
             packages/sdk/node_modules
+          key: nm-sdk-v1-${{ runner.os }}-${{ hashFiles('packages/sdk/package-lock.json') }}
+      - name: Check chat-ui node_modules cache
+        id: cache_chat_ui
+        uses: actions/cache@v4
+        with:
+          lookup-only: true
+          path: |
             packages/chat-ui/node_modules
-          key: nm-v3-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/webhook-relay/package-lock.json','apps/push-relay/package-lock.json','packages/sdk/package-lock.json','packages/chat-ui/package-lock.json') }}
+          key: nm-chat-ui-v1-${{ runner.os }}-${{ hashFiles('packages/chat-ui/package-lock.json') }}
 
-      - name: Install all dependencies (parallel)
-        if: steps.cache.outputs.cache-hit != 'true'
+      - name: Install missing dependency groups (parallel)
+        if: steps.cache_core.outputs.cache-hit != 'true' || steps.cache_web.outputs.cache-hit != 'true' || steps.cache_webhook_relay.outputs.cache-hit != 'true' || steps.cache_push_relay.outputs.cache-hit != 'true' || steps.cache_sdk.outputs.cache-hit != 'true' || steps.cache_chat_ui.outputs.cache-hit != 'true'
+        env:
+          MISS_CORE: ${{ steps.cache_core.outputs.cache-hit != 'true' }}
+          MISS_WEB: ${{ steps.cache_web.outputs.cache-hit != 'true' }}
+          MISS_WEBHOOK_RELAY: ${{ steps.cache_webhook_relay.outputs.cache-hit != 'true' }}
+          MISS_PUSH_RELAY: ${{ steps.cache_push_relay.outputs.cache-hit != 'true' }}
+          MISS_SDK: ${{ steps.cache_sdk.outputs.cache-hit != 'true' }}
+          MISS_CHAT_UI: ${{ steps.cache_chat_ui.outputs.cache-hit != 'true' }}
         run: |
           set -euo pipefail
           pids=()
-          (cd apps/desktop && npm ci) &
-          pids+=($!)
-          (cd apps/ade-cli && npm ci) &
-          pids+=($!)
-          (cd apps/web && npm ci) &
-          pids+=($!)
-          (cd apps/webhook-relay && npm ci) &
-          pids+=($!)
-          (cd apps/push-relay && npm ci) &
-          pids+=($!)
-          (cd packages/sdk && npm ci) &
-          pids+=($!)
-          (cd packages/chat-ui && npm ci) &
-          pids+=($!)
+          if [ "$MISS_CORE" = "true" ]; then (cd apps/desktop && npm ci) & pids+=($!); fi
+          if [ "$MISS_CORE" = "true" ]; then (cd apps/ade-cli && npm ci) & pids+=($!); fi
+          if [ "$MISS_WEB" = "true" ]; then (cd apps/web && npm ci) & pids+=($!); fi
+          if [ "$MISS_WEBHOOK_RELAY" = "true" ]; then (cd apps/webhook-relay && npm ci) & pids+=($!); fi
+          if [ "$MISS_PUSH_RELAY" = "true" ]; then (cd apps/push-relay && npm ci) & pids+=($!); fi
+          if [ "$MISS_SDK" = "true" ]; then (cd packages/sdk && npm ci) & pids+=($!); fi
+          if [ "$MISS_CHAT_UI" = "true" ]; then (cd packages/chat-ui && npm ci) & pids+=($!); fi
           fail=0
           for pid in "${pids[@]}"; do
             wait "$pid" || fail=1
@@ -113,12 +155,7 @@ jobs:
           path: |
             apps/desktop/node_modules
             apps/ade-cli/node_modules
-            apps/web/node_modules
-            apps/webhook-relay/node_modules
-            apps/push-relay/node_modules
-            packages/sdk/node_modules
-            packages/chat-ui/node_modules
-          key: nm-v3-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/webhook-relay/package-lock.json','apps/push-relay/package-lock.json','packages/sdk/package-lock.json','packages/chat-ui/package-lock.json') }}
+          key: nm-core-v1-${{ runner.os }}-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json') }}
       - run: cd apps/desktop && npm run typecheck
         env:
           # tsc on the desktop codebase sits near Node's default ~4GB heap;
@@ -138,12 +175,7 @@ jobs:
           path: |
             apps/desktop/node_modules
             apps/ade-cli/node_modules
-            apps/web/node_modules
-            apps/webhook-relay/node_modules
-            apps/push-relay/node_modules
-            packages/sdk/node_modules
-            packages/chat-ui/node_modules
-          key: nm-v3-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/webhook-relay/package-lock.json','apps/push-relay/package-lock.json','packages/sdk/package-lock.json','packages/chat-ui/package-lock.json') }}
+          key: nm-core-v1-${{ runner.os }}-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json') }}
       - run: cd apps/ade-cli && npm run typecheck
       # scripts/validate-docs.test.mjs covers the docs validator that the
       # validate-docs job runs. scripts/check-package-licenses.test.mjs covers
@@ -165,14 +197,8 @@ jobs:
       - uses: actions/cache/restore@v4
         with:
           path: |
-            apps/desktop/node_modules
-            apps/ade-cli/node_modules
             apps/web/node_modules
-            apps/webhook-relay/node_modules
-            apps/push-relay/node_modules
-            packages/sdk/node_modules
-            packages/chat-ui/node_modules
-          key: nm-v3-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/webhook-relay/package-lock.json','apps/push-relay/package-lock.json','packages/sdk/package-lock.json','packages/chat-ui/package-lock.json') }}
+          key: nm-web-v1-${{ runner.os }}-${{ hashFiles('apps/web/package-lock.json') }}
       - run: cd apps/web && npm run typecheck
       - run: cd apps/web && npm run test:analytics
       - run: npm run test:posthog
@@ -188,14 +214,8 @@ jobs:
       - uses: actions/cache/restore@v4
         with:
           path: |
-            apps/desktop/node_modules
-            apps/ade-cli/node_modules
-            apps/web/node_modules
             apps/webhook-relay/node_modules
-            apps/push-relay/node_modules
-            packages/sdk/node_modules
-            packages/chat-ui/node_modules
-          key: nm-v3-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/webhook-relay/package-lock.json','apps/push-relay/package-lock.json','packages/sdk/package-lock.json','packages/chat-ui/package-lock.json') }}
+          key: nm-webhook-relay-v1-${{ runner.os }}-${{ hashFiles('apps/webhook-relay/package-lock.json') }}
       - run: cd apps/webhook-relay && npm run typecheck
 
   typecheck-push-relay:
@@ -211,14 +231,8 @@ jobs:
       - uses: actions/cache/restore@v4
         with:
           path: |
-            apps/desktop/node_modules
-            apps/ade-cli/node_modules
-            apps/web/node_modules
-            apps/webhook-relay/node_modules
             apps/push-relay/node_modules
-            packages/sdk/node_modules
-            packages/chat-ui/node_modules
-          key: nm-v3-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/webhook-relay/package-lock.json','apps/push-relay/package-lock.json','packages/sdk/package-lock.json','packages/chat-ui/package-lock.json') }}
+          key: nm-push-relay-v1-${{ runner.os }}-${{ hashFiles('apps/push-relay/package-lock.json') }}
       - run: cd apps/push-relay && npm run typecheck
 
   lint-desktop:
@@ -234,12 +248,7 @@ jobs:
           path: |
             apps/desktop/node_modules
             apps/ade-cli/node_modules
-            apps/web/node_modules
-            apps/webhook-relay/node_modules
-            apps/push-relay/node_modules
-            packages/sdk/node_modules
-            packages/chat-ui/node_modules
-          key: nm-v3-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/webhook-relay/package-lock.json','apps/push-relay/package-lock.json','packages/sdk/package-lock.json','packages/chat-ui/package-lock.json') }}
+          key: nm-core-v1-${{ runner.os }}-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json') }}
       - run: cd apps/desktop && npm run test:lint-tooling
       - run: cd apps/desktop && npm run lint:ci
       # The iOS scene shell and the web client's scene headers are copies of
@@ -264,12 +273,7 @@ jobs:
           path: |
             apps/desktop/node_modules
             apps/ade-cli/node_modules
-            apps/web/node_modules
-            apps/webhook-relay/node_modules
-            apps/push-relay/node_modules
-            packages/sdk/node_modules
-            packages/chat-ui/node_modules
-          key: nm-v3-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/webhook-relay/package-lock.json','apps/push-relay/package-lock.json','packages/sdk/package-lock.json','packages/chat-ui/package-lock.json') }}
+          key: nm-core-v1-${{ runner.os }}-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json') }}
       - run: cd apps/desktop && npx vitest run --shard=${{ matrix.shard }}/8
 
   test-ade-cli:
@@ -285,12 +289,7 @@ jobs:
           path: |
             apps/desktop/node_modules
             apps/ade-cli/node_modules
-            apps/web/node_modules
-            apps/webhook-relay/node_modules
-            apps/push-relay/node_modules
-            packages/sdk/node_modules
-            packages/chat-ui/node_modules
-          key: nm-v3-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/webhook-relay/package-lock.json','apps/push-relay/package-lock.json','packages/sdk/package-lock.json','packages/chat-ui/package-lock.json') }}
+          key: nm-core-v1-${{ runner.os }}-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json') }}
       - run: cd apps/ade-cli && npm test
 
   # The publishable packages. Typecheck and unit suites run together per
@@ -309,14 +308,8 @@ jobs:
       - uses: actions/cache/restore@v4
         with:
           path: |
-            apps/desktop/node_modules
-            apps/ade-cli/node_modules
-            apps/web/node_modules
-            apps/webhook-relay/node_modules
-            apps/push-relay/node_modules
             packages/sdk/node_modules
-            packages/chat-ui/node_modules
-          key: nm-v3-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/webhook-relay/package-lock.json','apps/push-relay/package-lock.json','packages/sdk/package-lock.json','packages/chat-ui/package-lock.json') }}
+          key: nm-sdk-v1-${{ runner.os }}-${{ hashFiles('packages/sdk/package-lock.json') }}
       - run: cd packages/sdk && npm run typecheck
       # Every published package must carry its own LICENSE, because the root
       # LICENSE does not travel in an npm tarball. --require-pack checks the
@@ -340,14 +333,13 @@ jobs:
       - uses: actions/cache/restore@v4
         with:
           path: |
-            apps/desktop/node_modules
-            apps/ade-cli/node_modules
-            apps/web/node_modules
-            apps/webhook-relay/node_modules
-            apps/push-relay/node_modules
             packages/sdk/node_modules
+          key: nm-sdk-v1-${{ runner.os }}-${{ hashFiles('packages/sdk/package-lock.json') }}
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
             packages/chat-ui/node_modules
-          key: nm-v3-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/webhook-relay/package-lock.json','apps/push-relay/package-lock.json','packages/sdk/package-lock.json','packages/chat-ui/package-lock.json') }}
+          key: nm-chat-ui-v1-${{ runner.os }}-${{ hashFiles('packages/chat-ui/package-lock.json') }}
       # `@ade-dev/sdk` resolves through a `file:../sdk` symlink whose exports and
       # types point at `packages/sdk/dist`, which is gitignored. On a fresh
       # checkout that directory does not exist, so `tsc` cannot resolve the
@@ -369,14 +361,8 @@ jobs:
       - uses: actions/cache/restore@v4
         with:
           path: |
-            apps/desktop/node_modules
-            apps/ade-cli/node_modules
-            apps/web/node_modules
             apps/webhook-relay/node_modules
-            apps/push-relay/node_modules
-            packages/sdk/node_modules
-            packages/chat-ui/node_modules
-          key: nm-v3-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/webhook-relay/package-lock.json','apps/push-relay/package-lock.json','packages/sdk/package-lock.json','packages/chat-ui/package-lock.json') }}
+          key: nm-webhook-relay-v1-${{ runner.os }}-${{ hashFiles('apps/webhook-relay/package-lock.json') }}
       - run: cd apps/webhook-relay && npm test
 
   test-push-relay:
@@ -392,14 +378,8 @@ jobs:
       - uses: actions/cache/restore@v4
         with:
           path: |
-            apps/desktop/node_modules
-            apps/ade-cli/node_modules
-            apps/web/node_modules
-            apps/webhook-relay/node_modules
             apps/push-relay/node_modules
-            packages/sdk/node_modules
-            packages/chat-ui/node_modules
-          key: nm-v3-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/webhook-relay/package-lock.json','apps/push-relay/package-lock.json','packages/sdk/package-lock.json','packages/chat-ui/package-lock.json') }}
+          key: nm-push-relay-v1-${{ runner.os }}-${{ hashFiles('apps/push-relay/package-lock.json') }}
       - run: cd apps/push-relay && npm test
 
   # apps/tunnel-relay has its own lockfile and is not in the shared install
@@ -470,12 +450,12 @@ jobs:
           path: |
             apps/desktop/node_modules
             apps/ade-cli/node_modules
+          key: nm-core-v1-${{ runner.os }}-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json') }}
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
             apps/web/node_modules
-            apps/webhook-relay/node_modules
-            apps/push-relay/node_modules
-            packages/sdk/node_modules
-            packages/chat-ui/node_modules
-          key: nm-v3-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/webhook-relay/package-lock.json','apps/push-relay/package-lock.json','packages/sdk/package-lock.json','packages/chat-ui/package-lock.json') }}
+          key: nm-web-v1-${{ runner.os }}-${{ hashFiles('apps/web/package-lock.json') }}
       - run: cd apps/desktop && npm run build
       - run: cd apps/ade-cli && npm run build
       - run: cd apps/web && npm run build
@@ -506,8 +486,18 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: apps/ade-cli/package-lock.json
+
+      # npm's download cache, restored on every run but saved only from main.
+      # setup-node's `cache: npm` saved a separate copy for every PR (a PR's
+      # cache is visible to that PR alone), which pushed the repo past its
+      # 10 GB cache limit and got main's own entries evicted.
+      - name: Restore npm download cache
+        id: npm_cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.os == 'Windows' && '~/AppData/Local/npm-cache' || '~/.npm' }}
+          key: npm-dl-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/ade-cli/package-lock.json') }}
+          restore-keys: npm-dl-v1-${{ runner.os }}-${{ runner.arch }}-
 
       - uses: actions/setup-python@v5
         if: runner.os == 'macOS'
@@ -520,6 +510,13 @@ jobs:
 
       - name: Install ADE CLI dependencies
         run: cd apps/ade-cli && npm ci
+
+      - name: Save npm download cache
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.npm_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.os == 'Windows' && '~/AppData/Local/npm-cache' || '~/.npm' }}
+          key: npm-dl-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/ade-cli/package-lock.json') }}
 
       - name: Build ADE runtime binary
         run: cd apps/ade-cli && npm run build:static -- --target ${{ matrix.target }}
@@ -568,16 +565,37 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: |
-            apps/desktop/package-lock.json
-            apps/ade-cli/package-lock.json
+
+      # Caches the installed node_modules, not npm's download cache: on
+      # Windows the slow part of `npm ci` is writing ~100k files, which took
+      # desktop 4.5-6 minutes even with every tarball already downloaded.
+      # Saved only from main, so a labelled PR reads main's entry and never
+      # stores its own ~1.5 GB copy.
+      - name: Restore Windows node_modules cache
+        id: nm_win
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            apps/desktop/node_modules
+            apps/ade-cli/node_modules
+          key: nm-core-v1-${{ runner.os }}-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json') }}
 
       - name: Install ADE CLI dependencies
+        if: steps.nm_win.outputs.cache-hit != 'true'
         run: npm --prefix apps/ade-cli ci
 
       - name: Install desktop dependencies
+        if: steps.nm_win.outputs.cache-hit != 'true'
         run: npm --prefix apps/desktop ci
+
+      - name: Save Windows node_modules cache
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.nm_win.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            apps/desktop/node_modules
+            apps/ade-cli/node_modules
+          key: nm-core-v1-${{ runner.os }}-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json') }}
 
       - name: Test Windows service, layout, and IPC contracts
         run: >-
@@ -863,8 +881,9 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  # Pure source and workflow parsing with node: built-ins only, so it needs
+  # no node_modules and starts without waiting for the install job.
   validate-docs:
-    needs: install
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -874,17 +893,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - uses: actions/cache/restore@v4
-        with:
-          path: |
-            apps/desktop/node_modules
-            apps/ade-cli/node_modules
-            apps/web/node_modules
-            apps/webhook-relay/node_modules
-            apps/push-relay/node_modules
-            packages/sdk/node_modules
-            packages/chat-ui/node_modules
-          key: nm-v3-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/webhook-relay/package-lock.json','apps/push-relay/package-lock.json','packages/sdk/package-lock.json','packages/chat-ui/package-lock.json') }}
       - run: node scripts/validate-docs.mjs
       # Asserts that every platform-gated test assertion has a runner in this
       # workflow that actually executes it, and bans the vacuous
