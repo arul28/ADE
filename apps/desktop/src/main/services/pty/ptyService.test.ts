@@ -400,6 +400,7 @@ import {
 } from "../../../shared/backgroundUtilityModel";
 import { claudeConfigHome } from "../shared/providerConfigHomes";
 import { devServerRegistry } from "../devServers/devServerRegistry";
+import { trackPtyOutputBacklog } from "./ptyOutputFlowControl";
 
 const originalPlatform = process.platform;
 const originalHome = process.env.HOME;
@@ -7854,6 +7855,41 @@ describe("ptyService", () => {
         }));
         expect(mockPty.pause).toHaveBeenCalled();
       } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("keeps the rollover pause active after a client backlog drains", async () => {
+      vi.useFakeTimers();
+      const transcriptPath = "/tmp/transcripts/pause-reasons.log";
+      const maxTranscriptBytes = 16 * 1024 * 1024;
+      mocks.fileStats.set(transcriptPath, { size: maxTranscriptBytes });
+      const { service, mockPty } = createHarness();
+      let backlog: ReturnType<typeof trackPtyOutputBacklog> | null = null;
+      try {
+        await service.create({
+          laneId: "lane-1",
+          title: "t",
+          cols: 80,
+          rows: 24,
+          sessionId: "pause-reasons",
+        });
+        backlog = trackPtyOutputBacklog(() => 2 * 1024 * 1024);
+        backlog.afterWrite();
+        mockPty._emitter.emit("data", "x".repeat(20 * 1024));
+
+        expect(mockPty.pause).toHaveBeenCalledTimes(1);
+        expect(mockPty.resume).not.toHaveBeenCalled();
+
+        backlog.close();
+        expect(mockPty.resume).not.toHaveBeenCalled();
+
+        await flushTranscriptWork();
+        expect(mockPty.resume).toHaveBeenCalledTimes(1);
+        expect(mocks.fileStats.get(transcriptPath)?.size).toBeGreaterThan(0);
+      } finally {
+        backlog?.close();
+        service.disposeAll();
         vi.useRealTimers();
       }
     });

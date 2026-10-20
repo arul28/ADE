@@ -125,7 +125,8 @@ and in tests.
   literal text — and on overflow the carried tail is re-anchored on its last
   `ESC` so a blind slice cannot write escape garbage into the preview.
 - `apps/desktop/src/main/services/pty/supervisedPtyHost.ts` and
-  `ptyHostWorker.ts` — isolated node-pty worker host. Local runtimes fork the
+  `ptyHostWorker.ts` — node-pty worker host, out of the brain's process; one
+  host serves up to 8 terminals (`MAX_PTYS_PER_HOST`). Local runtimes fork the
   worker from the built desktop files; remote runtimes can receive
   `ADE_PTY_HOST_WORKER_PATH` + `ADE_PTY_HOST_WORKER_NODE` or
   `ADE_PTY_HOST_WORKER_COMMAND` from remote bootstrap so PTYs run through the
@@ -2816,6 +2817,45 @@ so explicitly rather than asserting a tier ADE never set.
 
 ## Gotchas
 
+- **No whole-buffer work per PTY chunk in the brain.** A flood delivers
+  thousands of chunks a second. The live tail (`recentOutputTail`) may
+  overshoot its 2M-character cap by 500K and is cut back only then; read it
+  through `readRecentOutputTail`. The resume-command scan runs at most every
+  250 ms, with a trailing scan and a final scan on close. Re-copying the tail
+  per chunk once pinned the brain at 100% CPU and timed out every other
+  request while one terminal printed (`docs/perf/macos-baseline.md`,
+  "Terminals").
+- **PTY output is flow-controlled; keep pauses counted and bounded.** The
+  pty host pauses a PTY past 256K unacknowledged chars (`RemotePty.emitData`
+  acknowledges after the listeners ran, even if one throws), and a brain
+  connection more than 1 MB behind pauses the PTYs printing over 16K per
+  200 ms until it drains (`ptyOutputFlowControl.ts`). Pause reasons are
+  counted per entry (`setOutputPaused`), so transcript rollover and flow
+  control cannot release each other; a connection that does not drain within
+  1.5 s is ignored until it catches up, and a paused PTY is resumed before
+  kill/dispose so its exit is read. Never let output overtake replies or the
+  reverse: a snapshot reply that overtakes older output gets that output
+  painted over it.
+- **A PTY host serves up to 8 terminals.** Each host is a whole Node process
+  (about 18-25 MB), so one per terminal made every agent CLI pay for its own.
+  A host crash ends every terminal it serves (they show as failed); new
+  terminals start a new host. A terminal that ignores kill, or whose spawn
+  timed out, is killed on its own through its host's live handle
+  (`disposeInHost`), never by killing a host others still use. node-pty on
+  Windows rejects a signal, so the worker calls `kill()` without one there. Every spawn must pass its own `env` and `cwd`: a shared host's own
+  environment is from whenever it started.
+- **Parked terminals give their WebGL context back after 30 s**
+  (`PARKED_WEBGL_RELEASE_MS`) and take one again on the next mount
+  (`reclaimParkedWebgl`). Only `MAX_WEBGL_TERMINALS` exist, so a terminal
+  that keeps its context while hidden pushes newer ones onto the DOM renderer.
+- **A resumed terminal erases its old output before rehydrating.** A parked
+  runtime pauses its stream; on reveal the hydration payload carries the
+  history again, so `finalizeHydration` clears screen and scrollback with
+  escape codes in the same write (not `term.reset()`, which would drop
+  bracketed paste and cursor-key modes). Alternate-screen content repaints in
+  place and is left alone. The blank-pane check reads xterm's buffer for
+  WebGL terminals: WebGL leaves `.xterm-rows` empty, and the DOM check made
+  every WebGL pane look blank and fetch its history a second time.
 - **Open in is SSH-or-local, never paired.** `resolveOpenInTarget` returns
   null for `transport: "paired"` and for a missing worktree path. Do not
   spawn a local editor against a remote path, and do not add **Open in**

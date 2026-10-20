@@ -140,6 +140,7 @@ import {
 import { SEARCH_DOC_KINDS } from "../../desktop/src/shared/types/search";
 import { pathsEqual } from "../../desktop/src/main/services/shared/pathCompare";
 import { stripHostRuntimeEnv } from "../../desktop/src/main/services/shared/hostRuntimeEnv";
+import { trackPtyOutputBacklog } from "../../desktop/src/main/services/pty/ptyOutputFlowControl";
 import { withTimeout } from "../../desktop/src/main/services/ai/utils";
 import { resolveClaudeCodeExecutable } from "../../desktop/src/main/services/ai/claudeCodeExecutable";
 import { resolveCodexExecutable } from "../../desktop/src/main/services/ai/codexExecutable";
@@ -22131,6 +22132,7 @@ function createHeadlessRpcServer(
   const server = net.createServer((conn) => {
     activeConnections.add(conn);
     const handler = createHandler();
+    const outputBacklog = trackPtyOutputBacklog(() => conn.writableLength);
     const transport: JsonRpcTransport = {
       onData(callback) {
         conn.on("data", (chunk) =>
@@ -22150,6 +22152,7 @@ function createHeadlessRpcServer(
           return;
         }
         conn.write(data);
+        outputBacklog.afterWrite();
       },
       close() {
         if (!conn.destroyed) conn.destroy();
@@ -22172,6 +22175,7 @@ function createHeadlessRpcServer(
     const cleanup = () => {
       if (cleanedUp) return;
       cleanedUp = true;
+      outputBacklog.close();
       activeConnections.delete(conn);
       activeStops.delete(stop);
       try {

@@ -55,6 +55,7 @@ import { stripHostRuntimeEnv } from "../shared/hostRuntimeEnv";
 import { detectDevServersInChunk, devServerRegistry } from "../devServers/devServerRegistry";
 import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 import type { ResourceAttributionRoot, ResourceAttributionRootKind } from "./resourceUsageSampling";
+import { isPtyOutputHeld, onPtyOutputHoldChange } from "./ptyOutputFlowControl";
 import {
   augmentProcessPathWithShellAndKnownCliDirs,
   setPathEnvValue,
@@ -309,6 +310,12 @@ const PTY_DATA_SUMMARY_INTERVAL_MS = 10_000;
 const PTY_LIVE_SESSION_RESYNC_INTERVAL_MS = 1_000;
 const DEFAULT_TERMINAL_READ_MAX_BYTES = 220_000;
 const LIVE_TRANSCRIPT_TAIL_BUFFER_CHARS = 2_000_000;
+// The live tail may overshoot its cap by this much before it is cut back.
+// Cutting on every chunk copied the whole 2M-char tail per PTY read, which
+// pinned the brain at ~100% CPU under an output flood and stalled every other
+// request for tens of seconds. Readers go through `readRecentOutputTail`, so
+// they still never see more than the cap.
+const LIVE_TRANSCRIPT_TAIL_TRIM_SLACK_CHARS = 500_000;
 // How often a running terminal's on-disk snapshot catches up with its output.
 // Every live reader (terminal preview, screen hydrate) serializes the live
 // mirror or flushes first, and exit and dispose flush, so this cadence only
@@ -700,6 +707,8 @@ function isSessionManuallyNamed(
   return sessionService.get(sessionId)?.manuallyNamed === true;
 }
 
+type PtyOutputPauseReason = "transcript-rollover" | "client-backlog";
+
 type PtyEntry = {
   pty: IPty;
   laneId: string;
@@ -722,6 +731,11 @@ type PtyEntry = {
   transcriptRolloverPendingBytes: number;
   transcriptRolloverPendingTrimmed: boolean;
   transcriptPausedForRollover: boolean;
+  /** Why the PTY is not being read; it resumes when the last reason clears. */
+  outputPauseReasons: Set<PtyOutputPauseReason>;
+  /** Output in the current busy-detection window (see PTY_BUSY_OUTPUT_*). */
+  outputWindowStartedAt: number;
+  outputWindowChars: number;
   transcriptWriteDisabled: boolean;
   transcriptLastErrorAt: number;
   lastPreviewWriteAt: number;
@@ -735,6 +749,8 @@ type PtyEntry = {
   resumeCommand: string | null;
   resumeCommandIsFallback: boolean;
   resumeScanBuffer: string;
+  resumeScanAt: number;
+  resumeScanTimer: ReturnType<typeof setTimeout> | null;
   /** Trailing partial line held back by the dev-server sniffer. */
   devServerScanCarry: string;
   lastRuntimeSignalAt: number;
@@ -1348,6 +1364,20 @@ function tailString(value: string, maxChars: number): string {
     : tail;
 }
 
+function clearResumeScanTimer(entry: Pick<PtyEntry, "resumeScanTimer">): void {
+  if (!entry.resumeScanTimer) return;
+  clearTimeout(entry.resumeScanTimer);
+  entry.resumeScanTimer = null;
+}
+
+/** The live output tail, cut back to its cap (appends let it overshoot). */
+function readRecentOutputTail(entry: Pick<PtyEntry, "recentOutputTail">): string {
+  if (entry.recentOutputTail.length > LIVE_TRANSCRIPT_TAIL_BUFFER_CHARS) {
+    entry.recentOutputTail = tailString(entry.recentOutputTail, LIVE_TRANSCRIPT_TAIL_BUFFER_CHARS);
+  }
+  return entry.recentOutputTail;
+}
+
 function computeSuffixPrefixOverlap(left: string, right: string, maxChars = 12_000): number {
   if (!left.length || !right.length) return 0;
   const cap = Math.min(maxChars, left.length, right.length);
@@ -1849,6 +1879,11 @@ const TRANSCRIPT_ROLLOVER_TARGET_BYTES = MAX_TRANSCRIPT_BYTES / 2;
 const TRANSCRIPT_ROLLOVER_STATE_VERSION = 1;
 const RESUME_TARGET_MISSING_COOLDOWN_MS = 10 * 60_000;
 const RESUME_SCAN_WINDOW_MS = 60_000;
+/** A terminal printing at least this much per window counts as busy for flow control. */
+const PTY_BUSY_OUTPUT_WINDOW_MS = 200;
+const PTY_BUSY_OUTPUT_CHARS = 16 * 1024;
+const RESUME_SCAN_BUFFER_CHARS = 12_000;
+const RESUME_SCAN_INTERVAL_MS = 250;
 /** Muse writes its session folder at TUI start; the tail covers a slow first launch. */
 const MUSE_CAPTURE_POLL_DELAYS_MS = [1_500, 4_000, 10_000, 25_000, 60_000] as const;
 const MUSE_CAPTURE_MAX_START_DELTA_MS = 120_000;
@@ -2868,7 +2903,7 @@ export function createPtyService({
       return;
     }
     const laneName = session.laneName?.trim() || "Current lane";
-    const outputSlice = stripAnsi(entry.recentOutputTail).replace(/\r/g, "\n").trim().slice(-4000);
+    const outputSlice = stripAnsi(readRecentOutputTail(entry)).replace(/\r/g, "\n").trim().slice(-4000);
     const titleModelIds = resolveCliTitleModelIds(session);
     if (!titleModelIds.length) return;
     const prompt = [
@@ -3251,6 +3286,52 @@ export function createPtyService({
     }).catch(() => {});
   };
 
+  const setOutputPaused = (entry: PtyEntry, reason: PtyOutputPauseReason, paused: boolean): void => {
+    const wasPaused = entry.outputPauseReasons.size > 0;
+    if (paused) entry.outputPauseReasons.add(reason);
+    else entry.outputPauseReasons.delete(reason);
+    const isPaused = entry.outputPauseReasons.size > 0;
+    if (wasPaused === isPaused) return;
+    try {
+      if (isPaused) entry.pty.pause();
+      else entry.pty.resume();
+    } catch (err) {
+      logger.warn("pty.output_pause_failed", {
+        sessionId: entry.sessionId,
+        reason,
+        paused,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
+
+  // Output per busy-detection window, so a held connection pauses only the
+  // terminals that are flooding it.
+  const noteOutputForFlowControl = (entry: PtyEntry, chars: number): boolean => {
+    const now = Date.now();
+    if (now - entry.outputWindowStartedAt > PTY_BUSY_OUTPUT_WINDOW_MS) {
+      entry.outputWindowStartedAt = now;
+      entry.outputWindowChars = 0;
+    }
+    entry.outputWindowChars += chars;
+    return entry.outputWindowChars >= PTY_BUSY_OUTPUT_CHARS;
+  };
+
+  const isOutputBusy = (entry: PtyEntry): boolean =>
+    Date.now() - entry.outputWindowStartedAt <= PTY_BUSY_OUTPUT_WINDOW_MS
+    && entry.outputWindowChars >= PTY_BUSY_OUTPUT_CHARS;
+
+  // A client connection that has fallen behind on terminal output stops the
+  // busy PTYs from being read until it catches up (see ptyOutputFlowControl).
+  // Quiet ones keep flowing, so typing in another terminal still echoes.
+  const unsubscribeOutputHold = onPtyOutputHoldChange((held) => {
+    for (const entry of ptys.values()) {
+      if (entry.disposed) continue;
+      if (!held) setOutputPaused(entry, "client-backlog", false);
+      else if (isOutputBusy(entry)) setOutputPaused(entry, "client-backlog", true);
+    }
+  });
+
   const disableTranscriptWrite = (entry: PtyEntry, err: unknown): void => {
     if (entry.transcriptWriteDisabled) return;
     entry.transcriptWriteDisabled = true;
@@ -3258,11 +3339,8 @@ export function createPtyService({
     entry.transcriptStream = null;
     if (entry.transcriptPausedForRollover) {
       entry.transcriptPausedForRollover = false;
-      try {
-        entry.pty.resume();
-      } catch {
-        // Live output remains authoritative even when transcript persistence fails.
-      }
+      // Live output remains authoritative even when transcript persistence fails.
+      setOutputPaused(entry, "transcript-rollover", false);
     }
     const now = Date.now();
     if (now - entry.transcriptLastErrorAt > 10_000) {
@@ -4614,6 +4692,7 @@ export function createPtyService({
       clearTimeout(entry.startupTimer);
       entry.startupTimer = null;
     }
+    flushResumeCommandScan(entry);
     if (entry.initialInputTimer) {
       clearTimeout(entry.initialInputTimer);
       entry.initialInputCancel?.();
@@ -4839,14 +4918,7 @@ export function createPtyService({
         entry.transcriptRolloverInProgress = false;
         if (entry.transcriptPausedForRollover) {
           entry.transcriptPausedForRollover = false;
-          try {
-            entry.pty.resume();
-          } catch (err) {
-            logger.warn("pty.transcript_rollover_resume_failed", {
-              sessionId: entry.sessionId,
-              error: err instanceof Error ? err.message : String(err),
-            });
-          }
+          setOutputPaused(entry, "transcript-rollover", false);
         }
         return;
       }
@@ -4855,6 +4927,11 @@ export function createPtyService({
     } finally {
       entry.transcriptRolloverInProgress = false;
       entry.transcriptRolloverPromise = null;
+      // pause() really stops reading now, so no exit path may leave it set.
+      if (entry.transcriptPausedForRollover) {
+        entry.transcriptPausedForRollover = false;
+        setOutputPaused(entry, "transcript-rollover", false);
+      }
     }
   };
 
@@ -4865,12 +4942,9 @@ export function createPtyService({
     // exit synchronously from pause, and close/dispose must still await the
     // queued transcript replacement before transcript-dependent work starts.
     entry.transcriptRolloverPromise = Promise.resolve().then(() => rollTranscript(entry));
-    try {
-      entry.pty.pause();
-      entry.transcriptPausedForRollover = true;
-    } catch {
-      // The bounded pending tail above is the fallback when pause is absent.
-    }
+    // The bounded pending tail above is the fallback when pause is absent.
+    entry.transcriptPausedForRollover = true;
+    setOutputPaused(entry, "transcript-rollover", true);
   };
 
   const writeTranscript = (entry: PtyEntry, data: string) => {
@@ -4898,9 +4972,48 @@ export function createPtyService({
     }
   };
 
+  const runResumeCommandScan = (entry: PtyEntry) => {
+    entry.resumeScanAt = Date.now();
+    if (!entry.resumeScanBuffer) return;
+    const detected = extractResumeCommandFromOutput(entry.resumeScanBuffer, entry.toolTypeHint);
+    if (detected && detected !== entry.resumeCommand) {
+      entry.resumeCommand = detected;
+      entry.resumeCommandIsFallback = false;
+      sessionService.setResumeCommand(entry.sessionId, detected);
+    }
+  };
+
+  // The scan strips ANSI and runs its regexes over the whole 12K window, so
+  // running it per chunk made a busy terminal's first minute cost ~45% of the
+  // brain's CPU. Scan at most every RESUME_SCAN_INTERVAL_MS, with a trailing
+  // scan so the last output is always looked at.
+  const scheduleResumeCommandScan = (entry: PtyEntry) => {
+    if (entry.resumeScanTimer) return;
+    const waitMs = entry.resumeScanAt + RESUME_SCAN_INTERVAL_MS - Date.now();
+    if (waitMs <= 0) {
+      runResumeCommandScan(entry);
+      return;
+    }
+    entry.resumeScanTimer = setTimeout(() => {
+      entry.resumeScanTimer = null;
+      if (!entry.disposed) runResumeCommandScan(entry);
+    }, waitMs);
+    entry.resumeScanTimer.unref?.();
+  };
+
+  /** On close, scan the output a pending throttled scan has not looked at yet. */
+  const flushResumeCommandScan = (entry: PtyEntry) => {
+    if (!entry.resumeScanTimer) return;
+    clearResumeScanTimer(entry);
+    runResumeCommandScan(entry);
+  };
+
   const appendRecentOutput = (entry: PtyEntry, data: string) => {
     if (!data) return;
-    entry.recentOutputTail = tailString(`${entry.recentOutputTail}${data}`, LIVE_TRANSCRIPT_TAIL_BUFFER_CHARS);
+    const next = `${entry.recentOutputTail}${data}`;
+    entry.recentOutputTail = next.length > LIVE_TRANSCRIPT_TAIL_BUFFER_CHARS + LIVE_TRANSCRIPT_TAIL_TRIM_SLACK_CHARS
+      ? tailString(next, LIVE_TRANSCRIPT_TAIL_BUFFER_CHARS)
+      : next;
   };
 
   const outputClearsSettledState = (entry: PtyEntry): boolean =>
@@ -5419,7 +5532,7 @@ export function createPtyService({
     const live = liveEntryBySessionId(sessionId);
     if (!live || live[1].disposed) return null;
     const entry = live[1];
-    const outputTail = stripAnsi(entry.recentOutputTail).replace(/\r/g, "\n");
+    const outputTail = stripAnsi(readRecentOutputTail(entry)).replace(/\r/g, "\n");
     const visibleText = entry.terminalSnapshot
       ? visibleRowsFromTerminal(entry.terminalSnapshot.terminal)
         .map((row) => row.text)
@@ -6927,6 +7040,9 @@ export function createPtyService({
         transcriptRolloverPendingBytes: 0,
         transcriptRolloverPendingTrimmed: false,
         transcriptPausedForRollover: false,
+        outputPauseReasons: new Set(),
+        outputWindowStartedAt: 0,
+        outputWindowChars: 0,
         transcriptWriteDisabled,
         transcriptLastErrorAt,
         lastPreviewWriteAt: 0,
@@ -6939,6 +7055,8 @@ export function createPtyService({
         resumeCommand: initialResumeCommand,
         resumeCommandIsFallback: Boolean(initialResumeCommand),
         resumeScanBuffer: "",
+        resumeScanAt: 0,
+        resumeScanTimer: null,
         devServerScanCarry: "",
         lastRuntimeSignalAt: 0,
         lastRuntimeSignalState: "running",
@@ -7112,6 +7230,10 @@ export function createPtyService({
         // emit ptyData after ptyExit while transcript summarization is in
         // flight.
         if (entry.disposed) return;
+        // A terminal that starts flooding while a client is already behind.
+        if (noteOutputForFlowControl(entry, data.length) && isPtyOutputHeld()) {
+          setOutputPaused(entry, "client-backlog", true);
+        }
         void maybeUpgradePiSessionLease(entry);
         resyncLiveSessionRowIfNeeded(entry, ptyId);
         appendRecentOutput(entry, data);
@@ -7143,15 +7265,11 @@ export function createPtyService({
           (!entry.resumeCommand || entry.resumeCommandIsFallback)
           && Date.now() - entry.createdAt < RESUME_SCAN_WINDOW_MS
         ) {
-          entry.resumeScanBuffer = `${entry.resumeScanBuffer}${data}`.slice(-12_000);
-          const detected = extractResumeCommandFromOutput(entry.resumeScanBuffer, entry.toolTypeHint);
-          if (detected && detected !== entry.resumeCommand) {
-            entry.resumeCommand = detected;
-            entry.resumeCommandIsFallback = false;
-            sessionService.setResumeCommand(sessionId, detected);
-          }
+          entry.resumeScanBuffer = `${entry.resumeScanBuffer}${data}`.slice(-RESUME_SCAN_BUFFER_CHARS);
+          scheduleResumeCommandScan(entry);
         } else if (entry.resumeScanBuffer.length > 0) {
           entry.resumeScanBuffer = "";
+          clearResumeScanTimer(entry);
         }
 
         // Dev-server discovery rides this same chunk: one bounded regex pass so
@@ -8063,7 +8181,8 @@ export function createPtyService({
         ? Math.max(1, Math.min(MAX_TRANSCRIPT_BYTES, Math.floor(args.maxBytes)))
         : DEFAULT_TERMINAL_READ_MAX_BYTES;
       const diskTail = await sessionService.readTranscriptTail(session.transcriptPath, maxBytes, { raw: true });
-      const live = liveEntryBySessionId(terminalId)?.[1].recentOutputTail ?? "";
+      const liveEntry = liveEntryBySessionId(terminalId)?.[1];
+      const live = liveEntry ? readRecentOutputTail(liveEntry) : "";
       const full = mergeTranscriptTailWithLiveOutput(diskTail, live, maxBytes);
       const since = typeof args.since === "number" && Number.isFinite(args.since)
         ? Math.max(0, Math.floor(args.since))
@@ -8394,7 +8513,8 @@ export function createPtyService({
       // A Work terminal can mount after the CLI has already drawn its first TUI
       // frame, while the transcript WriteStream is still buffered. Merge the
       // live tail so hydration can replay that initial screen state.
-      const live = liveEntryBySessionId(sessionId)?.[1].recentOutputTail ?? "";
+      const liveEntry = liveEntryBySessionId(sessionId)?.[1];
+      const live = liveEntry ? readRecentOutputTail(liveEntry) : "";
       const merged = mergeTranscriptTailWithLiveOutput(diskTail, live, maxBytes);
       return args.raw ? merged : stripAnsi(merged);
     },
@@ -8464,7 +8584,7 @@ export function createPtyService({
         && !live.transcriptWriteDisabled
         && live.recentOutputTail.length > 0
       ) {
-        const encoded = Buffer.from(live.recentOutputTail, "utf8");
+        const encoded = Buffer.from(readRecentOutputTail(live), "utf8");
         const logicalEnd = live.transcriptBytesWritten;
         const recentStart = Math.max(0, logicalEnd - encoded.length);
         const window = service.getTranscriptWindow(sessionId);
@@ -8770,6 +8890,7 @@ export function createPtyService({
         clearTimeout(entry.startupTimer);
         entry.startupTimer = null;
       }
+      flushResumeCommandScan(entry);
       if (entry.initialInputTimer) {
         clearTimeout(entry.initialInputTimer);
       entry.initialInputCancel?.();
@@ -8815,6 +8936,7 @@ export function createPtyService({
     },
 
     disposeAll(): void {
+      unsubscribeOutputHold();
       sessionService.agentShells.stop();
       for (const ptyId of [...ptys.keys()]) {
         try {

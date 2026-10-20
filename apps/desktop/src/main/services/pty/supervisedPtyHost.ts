@@ -23,7 +23,10 @@ type ChildRequest =
   | { type: "write"; ptyId: string; data: string }
   | { type: "resize"; ptyId: string; cols: number; rows: number }
   | { type: "kill"; ptyId: string; signal?: string }
-  | { type: "dispose"; ptyId: string };
+  | { type: "pause"; ptyId: string }
+  | { type: "resume"; ptyId: string }
+  | { type: "ack"; ptyId: string; chars: number }
+  | { type: "dispose"; ptyId: string; signal?: string };
 
 type HostErrorPayload = {
   message?: string;
@@ -45,6 +48,7 @@ type HostMessage =
   | { type: "data"; ptyId: string; data: string }
   | { type: "exit"; ptyId: string; exitCode: number | null; signal?: number | string | null }
   | { type: "operationError"; ptyId: string; operation: string; error?: HostErrorPayload }
+  | { type: "disposed"; ptyId: string }
   | { type: "fatal"; error?: HostErrorPayload };
 
 type PendingSpawn = {
@@ -59,6 +63,11 @@ type QueuedRequest = Exclude<ChildRequest, SpawnRequest>;
 type HostChildState = {
   child: ChildProcess;
   ptyIds: Set<string>;
+  /**
+   * Missed a spawn deadline or a kill grace: likely not processing IPC, so it
+   * keeps serving the PTYs it has but is never given a new one.
+   */
+  unresponsive?: boolean;
   stdoutTail: string;
   stderrTail: string;
 };
@@ -66,6 +75,15 @@ type HostChildState = {
 const HOST_KILL_GRACE_MS = 3_000;
 const HOST_SIGKILL_GRACE_MS = 500;
 const HOST_SPAWN_TIMEOUT_MS = 15_000;
+/**
+ * Terminals one host process serves. Each host is a whole Node process
+ * (about 25 MB), so one per terminal made every agent CLI pay for its own.
+ * A host crash ends only the terminals it serves; per-PTY output flow control
+ * keeps one flooding terminal from starving the others in its host.
+ */
+const MAX_PTYS_PER_HOST = 8;
+/** Output characters processed between acknowledgements to the PTY host. */
+const PTY_HOST_ACK_BATCH_CHARS = 32 * 1024;
 const INTERNAL_PTY_HOST_WORKER_ARG = "__ade-pty-host-worker";
 
 export type HostedPty = IPty & {
@@ -131,6 +149,7 @@ class RemotePty implements HostedPty {
   private readySettled = false;
   private spawned = false;
   private exited = false;
+  private unackedChars = 0;
 
   readonly __adePtyHostReady: Promise<void>;
   readonly __adePtyHostId: string;
@@ -172,7 +191,20 @@ class RemotePty implements HostedPty {
 
   emitData(data: string): void {
     if (this.exited) return;
-    this.emitter.emit("data", data);
+    try {
+      this.emitter.emit("data", data);
+    } finally {
+      // Acknowledged after the listeners ran, so the host reads no faster than
+      // this process works through the output (PTY_HOST_UNACKED_* in the
+      // worker). Even a throwing listener acknowledges, or the host would stay
+      // paused for good.
+      this.unackedChars += data.length;
+      if (this.unackedChars >= PTY_HOST_ACK_BATCH_CHARS) {
+        const chars = this.unackedChars;
+        this.unackedChars = 0;
+        this.sendOrQueue({ type: "ack", ptyId: this.__adePtyHostId, chars });
+      }
+    }
   }
 
   emitExit(exitCode: number | null, signal?: number | string | null): void {
@@ -219,11 +251,13 @@ class RemotePty implements HostedPty {
   }
 
   pause(): void {
-    // node-pty exposes flow-control hooks, but ADE does not use them.
+    if (this.exited) return;
+    this.sendOrQueue({ type: "pause", ptyId: this.__adePtyHostId });
   }
 
   resume(): void {
-    // node-pty exposes flow-control hooks, but ADE does not use them.
+    if (this.exited) return;
+    this.sendOrQueue({ type: "resume", ptyId: this.__adePtyHostId });
   }
 
   clear(): void {
@@ -292,7 +326,11 @@ class SupervisedPtyHost {
       const error = new Error("PTY host spawn timed out.");
       this.logger.warn("pty.host_spawn_timeout", { ptyId });
       this.ptys.delete(ptyId);
-      this.detachPtyFromChild(ptyId, "SIGKILL");
+      this.markUnresponsive(ptyId);
+      // A shared host outlives this PTY, so a spawn that completes late must
+      // still be ended there; IPC order puts this after the spawn request.
+      const disposing = this.disposeInHost(ptyId);
+      this.detachPtyFromChild(ptyId, "SIGKILL", disposing);
       pending.reject(error);
     }, HOST_SPAWN_TIMEOUT_MS);
     timer.unref?.();
@@ -302,7 +340,7 @@ class SupervisedPtyHost {
       resolve: () => {},
       reject: (error) => remote.markSpawnFailed(error),
     });
-    const childState = this.startChildForPty(ptyId);
+    const childState = this.childForNewPty(ptyId);
     this.sendToChild(childState, {
       type: "spawn",
       requestId,
@@ -316,7 +354,7 @@ class SupervisedPtyHost {
 
   send(request: ChildRequest): void {
     if (request.type === "spawn") {
-      const childState = this.childrenByPty.get(request.ptyId) ?? this.startChildForPty(request.ptyId);
+      const childState = this.childrenByPty.get(request.ptyId) ?? this.childForNewPty(request.ptyId);
       this.sendToChild(childState, request);
       return;
     }
@@ -403,6 +441,19 @@ class SupervisedPtyHost {
     for (const childState of childStates) {
       this.stopChild(childState, "SIGTERM");
     }
+  }
+
+  /** A live host with room, or a new one. A host being stopped is never reused. */
+  private childForNewPty(ptyId: string): HostChildState {
+    for (const candidate of new Set(this.childrenByPty.values())) {
+      const { child } = candidate;
+      if (candidate.unresponsive || child.killed || !child.connected || child.exitCode != null || child.signalCode != null) continue;
+      if (candidate.ptyIds.size >= MAX_PTYS_PER_HOST) continue;
+      candidate.ptyIds.add(ptyId);
+      this.childrenByPty.set(ptyId, candidate);
+      return candidate;
+    }
+    return this.startChildForPty(ptyId);
   }
 
   private startChildForPty(ptyId: string): HostChildState {
@@ -525,6 +576,10 @@ class SupervisedPtyHost {
       if (childState.ptyIds.size === 0) this.stopChild(childState, "SIGTERM");
       return;
     }
+    if (message.type === "disposed") {
+      if (childState.ptyIds.size === 0) this.stopChild(childState, "SIGTERM");
+      return;
+    }
     if (message.type === "operationError") {
       this.logger.warn("pty.host_operation_failed", {
         ptyId: message.ptyId,
@@ -587,13 +642,25 @@ class SupervisedPtyHost {
     }
   }
 
-  private detachPtyFromChild(ptyId: string, signal: NodeJS.Signals): void {
+  /**
+   * `awaitDisposed`: the host was sent a dispose for this PTY, so an emptied
+   * host is stopped when it reports `disposed`, or after HOST_KILL_GRACE_MS.
+   * Once out of childrenByPty, an emptied host is never given a new PTY.
+   */
+  private detachPtyFromChild(ptyId: string, signal: NodeJS.Signals, awaitDisposed = false): void {
     const childState = this.childrenByPty.get(ptyId);
     this.clearKillTimer(ptyId);
     if (!childState) return;
     childState.ptyIds.delete(ptyId);
     this.childrenByPty.delete(ptyId);
-    if (childState.ptyIds.size === 0) this.stopChild(childState, signal);
+    if (childState.ptyIds.size > 0) return;
+    if (!awaitDisposed) {
+      this.stopChild(childState, signal);
+      return;
+    }
+    const timer = setTimeout(() => this.stopChild(childState, signal), HOST_KILL_GRACE_MS);
+    timer.unref?.();
+    childState.child.once("exit", () => clearTimeout(timer));
   }
 
   private scheduleForcedDetach(ptyId: string, signal?: string): void {
@@ -607,11 +674,45 @@ class SupervisedPtyHost {
       });
       const remote = this.ptys.get(ptyId);
       this.ptys.delete(ptyId);
-      this.detachPtyFromChild(ptyId, "SIGKILL");
+      // Other terminals may share this host, so killing the host is not the
+      // escalation it is for a host of one: the host kills this PTY instead.
+      this.markUnresponsive(ptyId);
+      const disposing = this.disposeInHost(ptyId);
+      this.detachPtyFromChild(ptyId, "SIGKILL", disposing);
       remote?.markHostExited(1);
     }, signal === "SIGKILL" ? HOST_SIGKILL_GRACE_MS : HOST_KILL_GRACE_MS);
     timer.unref?.();
     this.killTimers.set(ptyId, timer);
+  }
+
+  private markUnresponsive(ptyId: string): void {
+    const childState = this.childrenByPty.get(ptyId);
+    if (childState) childState.unresponsive = true;
+  }
+
+  /**
+   * Ask the PTY's host to kill and forget it, through the host's live handle
+   * (which, on Windows, also ends the PTY's process tree). Returns whether the
+   * request was sent, so an emptied host is given time to act on it.
+   */
+  private disposeInHost(ptyId: string): boolean {
+    const childState = this.childrenByPty.get(ptyId);
+    if (!childState || !childState.child.connected) return false;
+    const report = (error: unknown) => {
+      this.logger.warn("pty.host_dispose_send_failed", {
+        ptyId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    };
+    try {
+      childState.child.send({ type: "dispose", ptyId, signal: "SIGKILL" }, (error) => {
+        if (error) report(error);
+      });
+      return true;
+    } catch (error) {
+      report(error);
+      return false;
+    }
   }
 
   private clearKillTimer(ptyId: string): void {
