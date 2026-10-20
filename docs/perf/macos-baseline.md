@@ -79,6 +79,32 @@ streaming in the background, perf runs off.
 | Renderer | 17.4% | 131 MB | 25%, 300 MB |
 | Brain (`cli.cjs serve`) | 4.5% | 55 MB | 10%, 250 MB |
 
+### Idle, no chats, 5 min (background work)
+
+The dev app on Work with no chat running, one window, DevTools closed, 150 s
+after launch, then a 5-minute window. Child processes are counted with
+`spawn-trace.cjs` loaded into the app and its brain, and summarized with
+`spawn-report.mjs`; a process sampler (`process-cpu.sh`) misses them because
+each lives for tens of milliseconds. Their CPU is the count times the measured
+cost of one run (`gh auth token` 54 ms, `ps -axo` 17 ms, `git status` 66 ms,
+most other git 9–12 ms). Measured 2026-10-20 on `2f8c10383` against its parent,
+back to back, on a Mac15,6-class machine with five other dev apps and agents
+running, the ADE repository open, and its lanes changing under other agents.
+
+| Metric | Before (`45458b44e`) | Baseline | Ceiling |
+|---|---|---|---|
+| Child processes started (app + brain) | 762 per 5 min (152/min) | 293 per 5 min (59/min) | 400 per 5 min |
+| `gh auth token` runs (brain, one per GitHub credential read before) | 207 | 5 | 12 (one per 30 s TTL) |
+| Machine-wide `ps` runs (Electron main, top bar load indicator) | 152 (every 2 s) | 30 (every 10 s while calm) | 40 |
+| CPU in those child processes | ~6.4% of a core | ~1.2% of a core | 2% |
+| Electron main / brain process CPU (`process-cpu.sh`) | 1.7% / 4.3% | 1.3% / 4.4% | 15% / 10% (the Processes table) |
+
+What is left is mostly git run by the brain as lanes change (`git remote
+get-url`, `worktree list`, `rev-parse` from the lane list and the search
+index's lane re-index) and a `launchctl print` service probe every 15 s
+(5 ms each). On a repository nobody else is changing, the git share should
+be far smaller; it was not measured that way.
+
 ### Chat and typing
 
 | Metric | How | Before #1560 | Baseline | Ceiling |
@@ -254,6 +280,7 @@ UI, against a running dev app (`scripts/perf/ui/`). The packaged app works too: 
 |---|---|
 | `route-sweep.mjs <runId> <route>,... [idleSecs]` | Per tab: long tasks after switching, IPC calls and time (perf run only), then idle task time, style recalcs, heap, page elements and running animations |
 | `process-cpu.sh <secs> <runtime-socket>` | CPU % and RSS for the main, GPU, renderer and brain processes |
+| `spawn-trace.cjs` (load with `NODE_OPTIONS="--require <abs path>"`) and `spawn-report.mjs <dir> <fromMs> <toMs>` | Every child process the app and its brain start, with the call site that started it, grouped over a time window. For the Idle background-work rows |
 | `gpu-trace.mjs <secs>` | Frames drawn, GPU swap time and rendering phases, for the whole browser |
 | `render-count.mjs <secs> reload` | React commits and which components re-render, and why (changed props or hooks) |
 | `chat-switch.mjs [rounds]` | Clicks through the chat list; time until each transcript settles, and long tasks |
