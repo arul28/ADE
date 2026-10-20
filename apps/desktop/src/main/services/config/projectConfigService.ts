@@ -125,7 +125,6 @@ const STRING_MAP_SCHEMA = z.record(z.string(), z.unknown())
   })
   .optional()
   .catch(() => undefined);
-const COMPUTE_BACKEND_SCHEMA = z.enum(["local", "vps", "daytona"]).optional().catch(undefined);
 
 function writeFileAtomicSync(target: string, data: string): void {
   durableWriteFileAtomic(target, data, { mode: 0o600, fsync: true });
@@ -163,10 +162,6 @@ function asNumber(value: unknown): number | undefined {
 
 function asBool(value: unknown): boolean | undefined {
   return OPTIONAL_BOOL_SCHEMA.parse(value);
-}
-
-function asComputeBackend(value: unknown): "local" | "vps" | "daytona" | undefined {
-  return COMPUTE_BACKEND_SCHEMA.parse(value);
 }
 
 function asNewLaneBaseSource(value: unknown): "local" | "remote" | undefined {
@@ -1232,14 +1227,12 @@ function coerceLaneOverlayPolicy(value: unknown): ConfigLaneOverlayPolicy | null
     const portStart = isRecord(value.overrides.portRange) ? asNumber(value.overrides.portRange.start) : undefined;
     const portEnd = isRecord(value.overrides.portRange) ? asNumber(value.overrides.portRange.end) : undefined;
     const proxyHostname = asString(value.overrides.proxyHostname)?.trim();
-    const computeBackend = asComputeBackend(value.overrides.computeBackend);
     const envInit = coerceLaneEnvInitConfig(value.overrides.envInit);
     if (env != null) overrides.env = env;
     if (cwd != null) overrides.cwd = cwd;
     if (testSuiteIds != null) overrides.testSuiteIds = testSuiteIds;
     if (portStart != null && portEnd != null) overrides.portRange = { start: portStart, end: portEnd };
     if (proxyHostname) overrides.proxyHostname = proxyHostname;
-    if (computeBackend != null) overrides.computeBackend = computeBackend;
     if (envInit != null) overrides.envInit = envInit;
     if (Object.keys(overrides).length > 0) out.overrides = overrides;
   }
@@ -2346,7 +2339,6 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
       ...(entry.overrides?.testSuiteIds ? { testSuiteIds: entry.overrides.testSuiteIds.map((v) => v.trim()).filter(Boolean) } : {}),
       ...(entry.overrides?.portRange ? { portRange: { ...entry.overrides.portRange } } : {}),
       ...(entry.overrides?.proxyHostname ? { proxyHostname: entry.overrides.proxyHostname.trim() } : {}),
-      ...(entry.overrides?.computeBackend ? { computeBackend: entry.overrides.computeBackend } : {}),
       ...(entry.overrides?.envInit ? { envInit: mergeLaneEnvInit(undefined, entry.overrides.envInit) } : {})
     }
   }));

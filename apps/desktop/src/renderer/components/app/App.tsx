@@ -169,9 +169,12 @@ import type {
 // the history API is not tied to a normal origin.
 // Relying only on `__adeBrowserMock` breaks when the flag is not set at module-eval
 // time, which can strand Cursor's embedded browser on a single path.
+// A build served from a sub-path (the public demo at `/demo/`) also uses hash
+// routes, so in-app paths never leave that sub-path.
 const usesBrowserRouter =
   typeof window !== "undefined" &&
-  (window.location.protocol === "http:" || window.location.protocol === "https:");
+  (window.location.protocol === "http:" || window.location.protocol === "https:") &&
+  import.meta.env.BASE_URL === "/";
 const Router = usesBrowserRouter ? BrowserRouter : HashRouter;
 
 const StartupSplashScreen = (

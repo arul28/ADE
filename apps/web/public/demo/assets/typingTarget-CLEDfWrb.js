@@ -1,0 +1,1 @@
+function e(e){return e instanceof HTMLElement?e instanceof HTMLInputElement||e instanceof HTMLTextAreaElement||e.isContentEditable?!0:e.closest(`[data-ade-escape-scope]`)!=null:!1}export{e as t};

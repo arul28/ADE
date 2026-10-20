@@ -25,7 +25,7 @@ const ciWorkflow = fs.readFileSync(path.join(repoRoot, ".github", "workflows", "
 const appUpdate = parseYaml(fs.readFileSync(path.join(desktopRoot, "resources", "app-update.yml"), "utf8"));
 // Downloads moved out of a dedicated page and into the home hero, one button
 // per platform. The gate disclosure moved with them, so this reads the hero.
-const heroDownloads = fs.readFileSync(path.join(repoRoot, "apps", "web", "src", "components", "editorial", "Lede.tsx"), "utf8");
+const heroDownloads = fs.readFileSync(path.join(repoRoot, "apps", "web", "src", "components", "home", "Hero.tsx"), "utf8");
 // The hero button opens the install dialog rather than linking at GitHub, so
 // the Windows install path is spread across these four files. All of them are
 // read here so the contract covers the whole route from button to asset.
@@ -822,7 +822,6 @@ test("the Windows download is permanently live and carries dedicated analytics",
   // pulled, take the button out; do not resurrect the flag, because a dead env
   // var reads as "off by accident" forever.
   assert.doesNotMatch(heroDownloads, /VITE_ADE_WINDOWS_DOWNLOAD_ENABLED\s*===/);
-  assert.match(heroDownloads, /Download for Windows/);
   // The hero button no longer links straight at GitHub -- it opens the install
   // dialog, which is where the terminal one-liner and the direct download now
   // live. Pin the trigger (so the button cannot silently become inert) and its

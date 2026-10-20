@@ -57,7 +57,7 @@ export function CompetitorEquation() {
               <motion.span
                 aria-hidden="true"
                 variants={item}
-                className="shrink-0 font-serif text-[16px] text-[color:var(--color-cream-faint)] sm:text-[18px]"
+                className="shrink-0 font-sans text-[14px] text-white/25 sm:text-[15px]"
               >
                 +
               </motion.span>
@@ -89,8 +89,8 @@ export function CompetitorEquation() {
         className="relative flex shrink-0 items-center gap-3 sm:gap-4"
       >
         <span
-          className="font-serif italic text-[color:var(--color-violet-bright)]"
-          style={{ fontSize: "clamp(20px, 2.1vw, 28px)" }}
+          className="font-sans font-medium tracking-[-0.02em] text-white/45"
+          style={{ fontSize: "clamp(15px, 1.4vw, 18px)" }}
         >
           equals
         </span>
@@ -99,7 +99,7 @@ export function CompetitorEquation() {
           {!reduceMotion && (
             <motion.div
               aria-hidden
-              className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-[28%]"
+              className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full"
               initial={{ opacity: 0, scale: 0.8 }}
               animate={{
                 opacity: [0, 0.65, 0],
@@ -111,16 +111,16 @@ export function CompetitorEquation() {
                 ease: "easeOut",
               }}
               style={{
-                width: "96px",
-                height: "96px",
-                boxShadow: "0 0 110px 34px rgba(124,58,237,0.5)",
+                width: "160px",
+                height: "160px",
+                background: "radial-gradient(circle, rgba(124,58,237,0.55) 0%, transparent 65%)",
               }}
             />
           )}
           <img
             src="/images/ade-dock-icon.webp"
             alt="ADE"
-            className="relative h-[64px] w-[64px] rounded-[22%] object-contain drop-shadow-[0_14px_48px_rgba(124,58,237,0.6)] sm:h-[78px] sm:w-[78px]"
+            className="relative h-[52px] w-[52px] rounded-[22%] object-contain drop-shadow-[0_10px_36px_rgba(124,58,237,0.55)] sm:h-[60px] sm:w-[60px]"
           />
         </div>
       </motion.div>
