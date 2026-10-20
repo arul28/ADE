@@ -134,7 +134,6 @@ type LaneRow = {
   parent_lane_id: string | null;
   color: string | null;
   icon: string | null;
-  emoji: string | null;
   tags_json: string | null;
   folder: string | null;
   created_at: string;
@@ -699,16 +698,16 @@ function parseLaneIcon(value: string | null): LaneIcon {
   return null;
 }
 
-function parseLaneEmoji(value: string | null, legacyIcon: string | null): string | null {
-  if (value) {
-    try {
-      return normalizeLaneEmoji(value);
-    } catch {
-      // A malformed value from a future/older peer should not make lane lists
-      // unreadable; the legacy icon remains a safe fallback.
-    }
+function parseLaneEmoji(storedIcon: string | null): string | null {
+  const legacyEmoji = legacyLaneIconEmoji(storedIcon);
+  if (legacyEmoji) return legacyEmoji;
+  if (!storedIcon) return null;
+  try {
+    return normalizeLaneEmoji(storedIcon);
+  } catch {
+    // A malformed value from a peer should not make lane lists unreadable.
+    return null;
   }
-  return legacyLaneIconEmoji(legacyIcon);
 }
 
 function parseLaneTags(raw: string | null): string[] {
@@ -944,7 +943,7 @@ function toLaneSummary(args: {
       kind: status.branchDriftKind,
     }),
     color: row.color,
-    emoji: parseLaneEmoji(row.emoji, row.icon),
+    emoji: parseLaneEmoji(row.icon),
     icon: parseLaneIcon(row.icon),
     tags: parseLaneTags(row.tags_json),
     folder: row.folder,
@@ -8197,14 +8196,16 @@ export function createLaneService({
         : color === undefined ? lane.color : color;
       const appearanceEmoji = emoji === undefined
         ? icon === undefined
-          ? parseLaneEmoji(lane.emoji, lane.icon)
+          ? parseLaneEmoji(lane.icon)
           : legacyLaneIconEmoji(icon)
         : normalizeLaneEmoji(emoji);
-      const normalizedLegacyIcon = emoji === undefined && icon === undefined
-        ? parseLaneIcon(lane.icon)
-        : emoji === undefined
-          ? icon ?? null
-          : legacyLaneEmojiIcon(appearanceEmoji);
+      const storedIcon = emoji === undefined
+        ? icon === undefined
+          ? lane.icon
+          : icon ?? null
+        : appearanceEmoji == null
+          ? null
+          : legacyLaneEmojiIcon(appearanceEmoji) ?? appearanceEmoji;
 
       if (lane.lane_type !== "primary" && normalizedColor && normalizedColor !== lane.color) {
         const conflict = db.get<{ name: string }>(
@@ -8224,13 +8225,12 @@ export function createLaneService({
       db.run(
         `
           update lanes
-          set color = ?, icon = ?, emoji = ?, tags_json = ?
+          set color = ?, icon = ?, tags_json = ?
           where id = ? and project_id = ?
         `,
         [
           normalizedColor ?? null,
-          normalizedLegacyIcon ?? null,
-          appearanceEmoji,
+          storedIcon,
           JSON.stringify(normalizedTags),
           laneId,
           projectId

@@ -100,7 +100,7 @@ import {
 } from "../../../shared/types/chat";
 import { showToast } from "../app/toast/toastStore";
 import { findGridSetForSession } from "../../lib/workGrid";
-import { laneEmojiForDisplay } from "../../shared/laneEmoji";
+import { laneEmojiForDisplay } from "../../../shared/laneEmoji";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { cn } from "../ui/cn";
 import { branchNameFromRef } from "../prs/shared/laneBranchTargets";

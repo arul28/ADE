@@ -2565,7 +2565,6 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
       parent_lane_id text,
       color text,
       icon text,
-      emoji text,
       tags_json text,
       folder text,
       status text not null,
@@ -2575,10 +2574,6 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
       foreign key(parent_lane_id) references lanes(id)
     )
   `);
-  // Nullable so existing rows and older CRR peers remain readable. The db
-  // wrapper brackets this migration with crsql_begin_alter/commit_alter when
-  // lanes is already a CRR table.
-  safeAddColumn(db, "alter table lanes add column emoji text");
   db.run("create index if not exists idx_lanes_project_id on lanes(project_id)");
   db.run("create index if not exists idx_lanes_project_type on lanes(project_id, lane_type)");
   db.run("create index if not exists idx_lanes_project_parent on lanes(project_id, parent_lane_id)");

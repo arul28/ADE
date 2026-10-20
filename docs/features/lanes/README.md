@@ -1005,12 +1005,13 @@ emoji grid and accepts any single emoji grapheme in its text field.
 
 `lanes.updateAppearance` accepts `emoji` as a string or `null`. The lane service
 trims and NFC-normalizes the value, validates it as one emoji grapheme, and
-stores it in the nullable `lanes.emoji` CRR column. `null` or an empty string
-clears it. Run `ade lanes appearance <lane> --emoji 🐛` to set one or
-`ade lanes appearance <lane> --emoji ""` to clear it. Older `icon` values
-remain readable and map to their matching emoji;
-the legacy field stays available to older clients, while new clients use
-`emoji`. Optional roster fields keep older iOS clients decodable.
+stores it in the existing `lanes.icon` CRR column so older peers can keep
+applying lane changes without learning a new replicated column. Legacy icon
+names remain accepted and map to their matching emoji on newer clients. The
+typed API and iOS cache expose `emoji`; `null` or an empty string clears it.
+Run `ade lanes appearance <lane> --emoji 🐛` to set one or
+`ade lanes appearance <lane> --emoji ""` to clear it. Optional roster fields
+keep older iOS clients decodable.
 
 During manual lane creation, ADE waits 600 ms after the name reaches three
 characters before asking Jev for a choice from the curated emoji set. A
