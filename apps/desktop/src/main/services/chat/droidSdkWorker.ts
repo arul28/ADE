@@ -326,32 +326,15 @@ async function cliSignInTransport(
   init: Pick<DroidSdkWorkerInit, "droidPath" | "laneRoot">,
 ): Promise<{ transport?: DroidSdkNodeTypes.CreateSessionOptions["transport"] }> {
   if (process.env.FACTORY_API_KEY?.trim()) return {};
-  const sdkDeps = sdk.resolveExecCoreDeps(undefined);
-  const sdkSanitizeSpawnEnv = sdkDeps.environmentResolver.sanitizeSpawnEnv.bind(sdkDeps.environmentResolver);
-  const transportDeps: DroidSdkNodeTypes.ExecCoreDeps = {
-    ...sdkDeps,
-    environmentResolver: {
-      ...sdkDeps.environmentResolver,
-      sanitizeSpawnEnv: (env) => sanitizeDroidChildEnv(sdkSanitizeSpawnEnv(env)),
-    },
-  };
   const transport = new sdk.ProcessTransport({
     droidExecPath: init.droidPath,
     cwd: init.laneRoot,
     // ProcessTransport merges this with its host process environment before
-    // sanitizing it. Keep only the SDK marker here; credentials are removed
-    // from the merged environment by transportDeps below.
+    // applying its default SDK environment handling.
     env: { FACTORY_UPSTREAM_CLIENT_TYPE: "sdk" },
-  }, transportDeps);
+  });
   await transport.connect();
   return { transport };
-}
-
-/** Keep host/provider credentials out of Droid and the shell tools it launches. */
-const DROID_CHILD_CREDENTIAL_ENV_NAME = /(?:^|[_-])(?:API[_-]?KEY|ADMIN[_-]?KEY|KEY|(?:ACCESS[_-]?)?TOKEN|SECRET|PASSWORD|CREDENTIALS?|PRIVATE[_-]?KEY|ACCESS[_-]?KEY)(?:[_-]|$)/i;
-
-function sanitizeDroidChildEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  return Object.fromEntries(Object.entries(env).filter(([name]) => !DROID_CHILD_CREDENTIAL_ENV_NAME.test(name)));
 }
 
 function resumeSessionOptions(init: DroidSdkWorkerInit): DroidSdkNodeTypes.ResumeSessionOptions {
