@@ -1,6 +1,7 @@
 import type { MuseBinaryStatus } from "../shared/museBinary";
 import type { MuseSettingsRequest, MuseSettingsResult, MuseSettingsRunArgs } from "../shared/museSettings";
 import type { HomeWidgetsBridge } from "../shared/types/homeWidgets";
+import type { AppBundleOwnershipBridge } from "../shared/types/appBundleOwnership";
 import type { MusicBridge } from "../shared/types/music";
 import type { SmartLinkPreview } from "../shared/smartLinks";
 import type { GitHubIssueTemplateSet } from "../shared/githubIssueTemplates";
@@ -4849,6 +4850,8 @@ declare global {
       /** Quits and reopens ADE after the usual quit warnings. False when unavailable. */
       updateRelaunchApp: () => Promise<boolean>;
       onUpdateEvent: (cb: (snapshot: AutoUpdateSnapshot) => void) => () => void;
+      /** Whether this computer's ADE.app needs a password on every update, and the one-click fix. Absent on the web client. */
+      appBundleOwnership?: AppBundleOwnershipBridge;
       /** Home page widgets backed by the desktop main process. Absent on the web client. */
       home?: HomeWidgetsBridge;
       /** Desktop-local Music: Apple Music playback and Spotify Connect, with catalog and library browsing. */

@@ -35,7 +35,7 @@
  */
 import os from "node:os";
 import { isPairedRuntimeSupersededError } from "../../../../desktop/src/main/services/remoteRuntime/pairedRuntimeErrors";
-import { normalizeGitRemoteIdentity } from "../../../../desktop/src/shared/crossMachineHandoff";
+import { normalizeGitRemoteIdentity, pickLiveCheckout } from "../../../../desktop/src/shared/crossMachineHandoff";
 import { accountMachinePresence } from "../../../../desktop/src/shared/machinePresence";
 import {
   CTO_REMOTE_CLIENT_NAME,
@@ -182,13 +182,11 @@ export function createCtoCrossMachineBridge(
       );
     }
     const records = await pool.listProjects(entry);
-    // The same repository can be registered twice on one machine (two
-    // checkouts). The one opened most recently is the one in use.
-    const matches = records
-      .filter((record) => normalizeGitRemoteIdentity(record.gitOriginUrl) === origin)
-      .sort((left, right) => right.lastOpenedAt - left.lastOpenedAt);
+    // The same repository can be registered several times on one machine
+    // (checkouts, temp copies); route to the live one, as every caller does.
+    const matches = records.filter((record) => normalizeGitRemoteIdentity(record.gitOriginUrl) === origin);
     hasProjectByMachine.set(machine.machineKey, matches.length > 0);
-    return matches[0] ?? null;
+    return pickLiveCheckout(matches);
   };
 
   const machineForTarget = async (target: CtoMachineTarget): Promise<AdeAccountMachine> => {

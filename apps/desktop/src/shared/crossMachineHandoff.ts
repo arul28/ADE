@@ -169,6 +169,47 @@ export function normalizeGitRemoteIdentity(value: string | null | undefined): st
   }
 }
 
+/** The fields of a registered project that say which checkout is the one in use. */
+export type RegisteredCheckoutRank = {
+  lastOpenedAt?: number | null;
+  /** "system" is a folder something ran ADE in, not one the person opened. */
+  catalogVisibility?: "recent" | "system" | null;
+  /**
+   * Set by `projects.list`: false when the project's folder is not on that
+   * machine (deleted, or on a drive that isn't mounted). Older brains leave it
+   * out, which counts as present.
+   */
+  exists?: boolean;
+};
+
+/**
+ * Picks the checkout of one repository to route to on another machine. A
+ * machine often registers a repository several times (a moved checkout, release
+ * copies in a temp folder, another tool's worktrees), and every caller that
+ * routes by repository must land on the same one: a folder that is there beats
+ * one that is gone, a project the person opened beats one ADE registered on its
+ * own, then the most recently opened wins, then registry order. A folder that is
+ * gone still wins when nothing else matches, so the caller hears why it can't
+ * be opened (an unplugged drive) instead of "not found".
+ *
+ * `candidates` are the records that already match the repository.
+ */
+export function pickLiveCheckout<T extends RegisteredCheckoutRank>(candidates: readonly T[]): T | null {
+  let best: T | null = null;
+  for (const candidate of candidates) {
+    if (!best || checkoutOutranks(candidate, best)) best = candidate;
+  }
+  return best;
+}
+
+function checkoutOutranks(candidate: RegisteredCheckoutRank, current: RegisteredCheckoutRank): boolean {
+  const candidatePresent = candidate.exists !== false;
+  if (candidatePresent !== (current.exists !== false)) return candidatePresent;
+  const candidateOpened = candidate.catalogVisibility !== "system";
+  if (candidateOpened !== (current.catalogVisibility !== "system")) return candidateOpened;
+  return (candidate.lastOpenedAt ?? 0) > (current.lastOpenedAt ?? 0);
+}
+
 export function sanitizePortableGitRemote(value: string): string {
   const trimmed = value.trim();
   try {

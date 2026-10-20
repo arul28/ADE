@@ -107,6 +107,12 @@ export type RemoteRuntimeProjectRecord = {
   catalogVisibility?: "recent" | "system";
   registrationSource?: "desktop" | "mobile" | "cli-explicit" | "runtime-auto" | "test";
   /**
+   * False when the project's folder is not on the host (deleted, or on a drive
+   * that isn't mounted). Absent from older hosts and when the check ran out of
+   * time; treat absent as present.
+   */
+  exists?: boolean;
+  /**
    * The project's icon as resolved on the host machine, inlined as a base64
    * data URL so a connected desktop can render the real project logo in its
    * tab instead of a blank folder. Null/absent when the host can't resolve an
@@ -513,8 +519,10 @@ export type RemoteRuntimeUpdateStep = {
  * Which updater took the request. `desktop_app`: the ADE app open on that
  * machine installs its own update and brings the brain with it.
  * `standalone`: no app is open there, so the standalone runtime is replaced.
+ * `terminal`: the asking machine ran `ade brain update` in a terminal there,
+ * for a build whose app cannot install updates (`isWindowsSelfInstallBlocked`).
  */
-export type RemoteRuntimeUpdateRoute = "desktop_app" | "standalone";
+export type RemoteRuntimeUpdateRoute = "desktop_app" | "standalone" | "terminal";
 
 export type RemoteRuntimeUpdateAndRestartResult = {
   ok: boolean;

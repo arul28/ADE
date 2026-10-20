@@ -67,3 +67,22 @@ export function updateVersionLabel(version: string | null | undefined, fallback:
   const bare = version?.trim().replace(/^v/i, "");
   return bare ? `v${bare}` : fallback;
 }
+
+/**
+ * ADE releases whose Windows app cannot install any update itself: before the
+ * install they prove the running brain against the wrong command and refuse to
+ * stop it, so every in-app install aborts. Another machine updates them by
+ * running `ade brain update` in a terminal there, which installs through the
+ * newer release's own code (`windowsDesktopRescue` in ade-cli).
+ */
+const WINDOWS_SELF_INSTALL_BLOCKED_VERSIONS = new Set(["1.2.112", "1.2.113"]);
+
+/** Whether `version` on `arch` (a runtime target such as `win32-x64`) is one of those builds. */
+export function isWindowsSelfInstallBlocked(
+  version: string | null | undefined,
+  arch: string | null | undefined,
+): boolean {
+  if (!/^win/i.test(arch?.trim() ?? "")) return false;
+  const core = version?.trim().replace(/^v/i, "").split(/[-+]/)[0] ?? "";
+  return WINDOWS_SELF_INSTALL_BLOCKED_VERSIONS.has(core);
+}

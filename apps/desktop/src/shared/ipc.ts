@@ -1261,6 +1261,9 @@ export const IPC = {
   updateDismissInstalledNotice: "ade.update.dismissInstalledNotice",
   updateRelaunchApp: "ade.update.relaunchApp",
   updateEvent: "ade.update.event",
+  // About the ADE.app on THIS computer only, so these take no remote pin.
+  appBundleOwnershipGetStatus: "ade.appBundleOwnership.getStatus",
+  appBundleOwnershipFix: "ade.appBundleOwnership.fix",
   transcriptionTranscribe: "ade.transcription.transcribe",
   transcriptionStatus: "ade.transcription.status",
   transcriptionRequestMicAccess: "ade.transcription.requestMicAccess",

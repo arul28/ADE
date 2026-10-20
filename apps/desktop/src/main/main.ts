@@ -71,6 +71,7 @@ import {
 } from "./services/deeplinks/projectNavigationWindowSelection";
 import { registerIpc } from "./services/ipc/registerIpc";
 import { connectBrowserToNowPlaying, registerHomeWidgetsIpc } from "./services/home/registerHomeWidgetsIpc";
+import { registerAppBundleOwnershipIpc } from "./services/updates/registerAppBundleOwnershipIpc";
 import { registerMusicIpc } from "./services/music/registerMusicIpc";
 import { createMusicTokenStore } from "./services/music/musicTokenStore";
 import { AttemptedProjectRoots } from "./services/ipc/knownProjectRoots";
@@ -309,7 +310,7 @@ import {
   getSharedAccountDirectoryBaseUrl,
   registerAccountConfigProjectRoot,
 } from "../../../ade-cli/src/services/account/sharedAccountAuthService";
-import { installRuntimeService, uninstallRuntimeService } from "../../../ade-cli/src/serviceManager";
+import { checkRuntimeServiceRemovable, installRuntimeService, uninstallRuntimeService } from "../../../ade-cli/src/serviceManager";
 import {
   deferToRunningWindowsInstall,
   startWindowsInstallProgress,
@@ -3197,6 +3198,8 @@ app.whenReady().then(async () => {
     // The same gate as the update checks themselves: a development or channel
     // build has no feed of its own, so the brain updates its standalone runtime.
     supported: app.isPackaged && !normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL),
+    // Only a service-managed app uninstalls its service before installing.
+    preflightInstall: shouldRepairRuntimeServiceOnFallback ? checkRuntimeServiceRemovable : undefined,
     logger: updateLogger,
   });
   // The brain owns the turn-following lock so it survives this app quitting.
@@ -9520,6 +9523,8 @@ app.whenReady().then(async () => {
     analytics: productAnalyticsService,
   });
 
+  // Whether this Mac's ADE.app is root-owned (a password on every update).
+  registerAppBundleOwnershipIpc({ logger: getMachineMainLogger(), analytics: productAnalyticsService });
   // The home page's clipboard, machine-health and weather widgets.
   registerHomeWidgetsIpc({
     logger: getMachineMainLogger(),

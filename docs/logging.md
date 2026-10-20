@@ -487,6 +487,20 @@ key per preference combination bounds this to at most four accepted events per
 installation per UTC day, within the existing `ade_feature_used` and shared
 daily ceilings.
 
+Pressing **Fix it** on the macOS banner that says ADE will ask for a password on
+every update (its app bundle belongs to root or another account) records the
+same `ade_feature_used` event at the IPC owner that runs the fix
+(`registerAppBundleOwnershipIpc.ts`), with `feature: "updates"`,
+`action: "bundle_ownership_fix"`, and one closed `outcome`: `completed`,
+`partial` (the command ran but some files still are not the user's),
+`cancelled` (the password prompt was dismissed), or `failed`. The product
+question is how many installations end up with a root-owned app and whether the
+fix clears it. It carries no path, owner name, uid, or osascript output; those
+stay in the local `app_bundle_ownership.fix` line. A one-hour deduplication key
+per outcome bounds it to four accepted events per installation per hour, and in
+practice one per affected installation, inside the existing `ade_feature_used`
+ceilings. The check itself and the banner showing capture nothing.
+
 Choosing a keep-awake level records the same `ade_feature_used` event at the
 brain keep-awake service's persist boundary — after the choice is written, so a
 refused level (the lid-closed one whose password prompt was cancelled) is never

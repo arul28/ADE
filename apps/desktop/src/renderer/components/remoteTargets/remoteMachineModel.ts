@@ -701,7 +701,12 @@ export function machineUpdateAttemptFromResult(
     ok: result.ok,
     message: result.message?.trim() || fallbackMessage,
     pendingVersion,
-    downloading: result.ok && result.route === "desktop_app" && result.updateApplied === false && pendingVersion != null,
+    // The terminal route has staged the runtime but still downloads the app
+    // installer, so it gets the download grace too.
+    downloading: result.ok
+      && (result.route === "desktop_app" || result.route === "terminal")
+      && result.updateApplied === false
+      && pendingVersion != null,
     startedAtMs: nowMs,
   };
 }
@@ -734,9 +739,7 @@ export function describeMachineUpdateAttempt(
   if (machine.connected) {
     return {
       ok: false,
-      message:
-        `Still on ${machine.version ?? "an older version"} — the update to ${pending} didn't apply. `
-        + "Try again, or quit and reopen ADE on that machine to install it.",
+      message: `Still on ${machine.version ?? "an older version"} — the update to ${pending} didn't install on that machine. Press Update to try again.`,
       inFlight: false,
     };
   }

@@ -1634,6 +1634,17 @@ been deleted.
 Auto-update (General preference, top-bar control, and exceptional recovery
 banner):
 
+- `apps/desktop/src/main/services/updates/appBundleOwnership.ts`,
+  `registerAppBundleOwnershipIpc.ts`,
+  `apps/desktop/src/shared/types/appBundleOwnership.ts` and
+  `apps/desktop/src/renderer/components/app/AppBundleOwnershipBanner.tsx` —
+  macOS root-owned `/Applications/ADE.app` detection and the docked "ADE will
+  ask for your password on every update" banner (Fix it runs an `osascript`
+  admin `chown -R`; local-only, no pin). See
+  [Desktop auto-update](./desktop-auto-update.md#app-bundle-ownership).
+- `apps/ade-cli/src/commands/windowsDesktopRescue.ts` — Windows
+  `brain update --apply-staged` installs the desktop app itself when one is
+  installed. See [Desktop auto-update](./desktop-auto-update.md).
 - `apps/desktop/src/main/services/updates/autoUpdateService.ts` —
   electron-updater wrapper that owns the renderer-visible
   `AutoUpdateSnapshot` (`status: "idle" | "checking" | "downloading"

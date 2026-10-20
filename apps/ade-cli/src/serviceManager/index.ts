@@ -6,6 +6,7 @@ import { getSystemdServiceStatus, installSystemdService, uninstallSystemdService
 import {
   getWindowsServiceStatus,
   installWindowsService,
+  checkWindowsServiceRemovable,
   readWindowsServicePidRecord,
   uninstallWindowsService,
 } from "./installWindows";
@@ -76,6 +77,15 @@ export async function uninstallRuntimeService(): Promise<ServiceManagerResult> {
         message: `ADE service removal is not supported on ${process.platform}.`,
       };
   }
+}
+
+/**
+ * Whether `uninstallRuntimeService` would go ahead, changing nothing. Only the
+ * Windows uninstall can refuse after identifying what it would stop; the
+ * launchd and systemd uninstalls have no such step.
+ */
+export async function checkRuntimeServiceRemovable(): Promise<{ ok: true } | { ok: false; message: string }> {
+  return process.platform === "win32" ? checkWindowsServiceRemovable() : { ok: true };
 }
 
 export function getRuntimeServiceStatus(): ServiceManagerStatusResult {

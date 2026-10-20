@@ -35,6 +35,7 @@ import {
   type WindowsPowerShell,
   type WindowsProcessFacts,
 } from "./common";
+import { parseCommandLine } from "../../../desktop/src/shared/shell";
 import { resolveMachineAdeDir, resolveMachineAdeLayout } from "../services/projects/machineLayout";
 import { BRAIN_HEARTBEAT_FILE } from "../services/runtime/brainHeartbeat";
 import { BRAIN_LOOP_WATCHDOG_BREADCRUMB_FILE } from "../services/runtime/brainLoopWatchdog";
@@ -891,16 +892,60 @@ function isLauncherSupervisor(facts: WindowsProcessFacts, launcherPath: string):
     && facts.commandLine.toLowerCase().includes(launcherPath.toLowerCase());
 }
 
+const LAUNCHER_START_INFO_LINE = /^\$startInfo\.(FileName|Arguments) = '((?:[^']|'')*)'\s*$/gm;
+
+/**
+ * The brain command a launcher script runs, read back from the `$startInfo`
+ * lines `renderWindowsServiceLauncher` wrote into it. Null when the script is
+ * missing or does not have that shape.
+ *
+ * Whoever installed the service decided this command, and it need not be the
+ * caller's own: the app's brain is `ADE.exe …\ade-cli\cli.cjs serve`, while a
+ * standalone runtime's is `ade.exe serve`, and either may stop the other's.
+ * Proving the live brain against the caller's command alone refused every such
+ * pair, which aborted Windows update installs from 1.2.112 on.
+ */
+function readLauncherBrainCommand(launcherPath: string): AdeServiceCommand | null {
+  let script: string;
+  try {
+    script = fs.readFileSync(launcherPath, "utf8");
+  } catch {
+    return null;
+  }
+  const fields: Partial<Record<"FileName" | "Arguments", string>> = {};
+  for (const match of script.matchAll(LAUNCHER_START_INFO_LINE)) {
+    const key = match[1] as "FileName" | "Arguments";
+    // The first assignment is the brain's; a later one would be something else.
+    fields[key] ??= (match[2] ?? "").replace(/''/g, "'");
+  }
+  const command = fields.FileName?.trim();
+  if (!command || fields.Arguments == null) return null;
+  return { command, args: parseCommandLine(fields.Arguments, { platform: "win32" }) };
+}
+
+/** The brain command this channel's installed Windows service runs, or null when none is installed. */
+export function readWindowsServiceBrainCommand(env: NodeJS.ProcessEnv = process.env): AdeServiceCommand | null {
+  return readLauncherBrainCommand(resolveWindowsServiceLauncherPath({ env }));
+}
+
 /**
  * Reads the brain the supervisor recorded, while that supervisor still runs, and
  * proves it. The proof is that its command line is this channel's serve brain and
- * its parent is the supervisor. A supervisor that is gone cannot vouch for the
- * parent afterwards, so this runs before anything is stopped. `facts` is null when
- * the recorded brain is already gone.
+ * its parent is the supervisor. "This channel's serve brain" is the command the
+ * launcher runs, or the caller's own when the launcher cannot be read. A
+ * supervisor that is gone cannot vouch for the parent afterwards, so this runs
+ * before anything is stopped. `facts` is null when the recorded brain is already
+ * gone.
  */
 async function readRecordedBrain(
   run: ServiceManagerSpawnSync,
-  args: { runtimePid: number; supervisorPid: number; command: AdeServiceCommand; socketPath: string },
+  args: {
+    runtimePid: number;
+    supervisorPid: number;
+    command: AdeServiceCommand;
+    socketPath: string;
+    launcherPath: string;
+  },
 ): Promise<{ ok: true; facts: WindowsProcessFacts | null } | { ok: false; message: string }> {
   const read = await readWindowsProcessFacts(args.runtimePid, windowsPowerShellRunner(run));
   if (read.state === "gone") return { ok: true, facts: null };
@@ -909,11 +954,14 @@ async function readRecordedBrain(
     message: `Could not verify the brain process ${args.runtimePid}; it was left running. Nothing was changed.`,
   };
   if (read.state === "unreadable") return unverified;
-  const match = {
-    cliScriptPath: resolveAdeServeCliScriptPath(args.command),
-    primarySocketPath: args.socketPath,
-  };
-  if (!isStaleChannelServeCommandLine(read.facts.commandLine, match)) return unverified;
+  const candidates = [readLauncherBrainCommand(args.launcherPath), args.command]
+    .filter((command): command is AdeServiceCommand => command !== null);
+  const isServeBrain = candidates.some((command) =>
+    isStaleChannelServeCommandLine(read.facts.commandLine, {
+      cliScriptPath: resolveAdeServeCliScriptPath(command),
+      primarySocketPath: args.socketPath,
+    }));
+  if (!isServeBrain) return unverified;
   if (read.facts.parentPid !== args.supervisorPid) return unverified;
   return { ok: true, facts: read.facts };
 }
@@ -992,6 +1040,7 @@ async function planWindowsStartupRemoval(
         supervisorPid,
         command: args.brain.command,
         socketPath: args.brain.socketPath,
+        launcherPath: args.launcherPath,
       });
       if (!recorded.ok) return { ok: false, message: recorded.message };
       if (recorded.facts) {
@@ -1801,9 +1850,19 @@ export async function uninstallWindowsService(
   }
 }
 
-async function uninstallWindowsServiceImpl(
-  deps: WindowsServiceManagerDeps = {},
-): Promise<ServiceManagerResult> {
+/** What an uninstall acts on, resolved once for the uninstall and for its read-only check. */
+function resolveWindowsUninstallTargets(deps: WindowsServiceManagerDeps):
+  | { ok: false; serviceName: string; message: string }
+  | {
+    ok: true;
+    run: ServiceManagerSpawnSync;
+    env: NodeJS.ProcessEnv;
+    serviceCommand: AdeServiceCommand;
+    serviceName: string;
+    taskName: string;
+    launcherPath: string;
+    pidPath: string;
+  } {
   const run = deps.spawnSync ?? spawnSync;
   const env = deps.env ?? process.env;
   const serviceCommand = deps.command ?? resolveAdeServeCommand();
@@ -1815,20 +1874,20 @@ async function uninstallWindowsServiceImpl(
     return {
       ok: false,
       serviceName,
-      action: "uninstall",
-      path: null,
       message: error instanceof Error ? error.message : "Unable to resolve current Windows user.",
     };
   }
   const taskName = resolveWindowsTaskName({ serviceName, userName });
   const launcherPath = deps.launcherPath ?? resolveWindowsServiceLauncherPath({ env, serviceName });
   const pidPath = deps.pidPath ?? `${launcherPath}.pid.json`;
-  // The scheduled tasks are read now and removed only after everything below has been
-  // identified, so a refusal leaves them in place.
-  const currentTask = inspectWindowsTask(run, taskName, "ADE service scheduled task");
-  // Identify everything this uninstall would stop before any registration is removed
-  // or changed. A refusal returns here, with the existing service untouched.
-  const startupPlan = await planWindowsStartupRemoval(run, {
+  return { ok: true, run, env, serviceCommand, serviceName, taskName, launcherPath, pidPath };
+}
+
+function planWindowsUninstallStartupRemoval(
+  targets: Extract<ReturnType<typeof resolveWindowsUninstallTargets>, { ok: true }>,
+): Promise<WindowsStartupPlan> {
+  const { run, env, serviceCommand, taskName, launcherPath, pidPath } = targets;
+  return planWindowsStartupRemoval(run, {
     valueName: taskName,
     launcherPath,
     pidPath,
@@ -1837,6 +1896,43 @@ async function uninstallWindowsServiceImpl(
       command: serviceCommand,
     },
   });
+}
+
+/**
+ * Whether `uninstallWindowsService` would go ahead, decided by the same
+ * identification and changing nothing. An update install asks this before it
+ * tells anyone it is installing, so a refusal is reported as the reason
+ * instead of surfacing minutes later as "the update didn't apply".
+ */
+export async function checkWindowsServiceRemovable(
+  deps: WindowsServiceManagerDeps = {},
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  const targets = resolveWindowsUninstallTargets(deps);
+  if (!targets.ok) return { ok: false, message: targets.message };
+  const plan = await planWindowsUninstallStartupRemoval(targets);
+  return plan.ok ? { ok: true } : { ok: false, message: plan.message };
+}
+
+async function uninstallWindowsServiceImpl(
+  deps: WindowsServiceManagerDeps = {},
+): Promise<ServiceManagerResult> {
+  const targets = resolveWindowsUninstallTargets(deps);
+  if (!targets.ok) {
+    return {
+      ok: false,
+      serviceName: targets.serviceName,
+      action: "uninstall",
+      path: null,
+      message: targets.message,
+    };
+  }
+  const { run, serviceCommand, serviceName, taskName, launcherPath, pidPath } = targets;
+  // The scheduled tasks are read now and removed only after everything below has been
+  // identified, so a refusal leaves them in place.
+  const currentTask = inspectWindowsTask(run, taskName, "ADE service scheduled task");
+  // Identify everything this uninstall would stop before any registration is removed
+  // or changed. A refusal returns here, with the existing service untouched.
+  const startupPlan = await planWindowsUninstallStartupRemoval(targets);
   if (!startupPlan.ok) {
     return {
       ok: false,

@@ -99,6 +99,8 @@ import {
   type WorkBoardColumn,
 } from "../../../shared/types/chat";
 import { showToast } from "../app/toast/toastStore";
+import { copyTextToClipboard } from "../../lib/launchPromptClipboard";
+import { Banner } from "../ui/notice";
 import { findGridSetForSession } from "../../lib/workGrid";
 import { iconGlyph } from "../lanes/laneIconGlyph";
 import { SmartTooltip } from "../ui/SmartTooltip";
@@ -1309,6 +1311,19 @@ export const SessionListPane = React.memo(function SessionListPane({
       ...others,
     ];
   }, [activeMachineId, crossMachineEntries, projectBinding]);
+  // A machine that answers the connection but refuses the chat read would
+  // otherwise just contribute nothing, which reads as "no chats there". Only
+  // when it has nothing retained to show: a blip on a machine whose chats are
+  // still listed is not worth a notice.
+  const machineReadFailures = useMemo(
+    // Only while this pane shows other machines' chats at all: entries can
+    // outlive the sync that filled them.
+    () => (crossMachineSyncActive ? Object.values(crossMachineEntries) : []).flatMap((entry) =>
+      entry.machineId !== activeMachineId && entry.online && entry.error && entry.sessions.length === 0
+        ? [{ machineId: entry.machineId, machineName: entry.machineName, error: entry.error }]
+        : []),
+    [activeMachineId, crossMachineEntries, crossMachineSyncActive],
+  );
   const localMachineFilteredOut = workSessionFilters.machine.length > 0
     && !workSessionFilters.machine.includes(activeMachineId);
 
@@ -4165,6 +4180,32 @@ export const SessionListPane = React.memo(function SessionListPane({
 
       {/* No rule under the strip: the toolbar's own bottom padding separates it
           from the list, and one fewer boundary before the first chat. */}
+
+      {machineReadFailures.map((failure) => (
+        <div key={failure.machineId} className="mx-2 mt-1.5" data-testid="work-machine-read-failure">
+          <Banner
+            layout="inline"
+            model={{
+              id: `work-machine-read-failure:${failure.machineId}`,
+              tone: "warning",
+              icon: <Desktop size={13} weight="bold" />,
+              title: `Couldn't load chats from ${failure.machineName}`,
+              detail: "That machine is connected but didn't send its chats. ADE tries again on its own.",
+              actions: [{
+                label: "Copy error",
+                variant: "link",
+                onClick: () => {
+                  void copyTextToClipboard(failure.error).then((copied) => {
+                    showToast(copied
+                      ? { title: "Error copied", tone: "success" }
+                      : { title: "Couldn't copy the error", tone: "error" });
+                  });
+                },
+              }],
+            }}
+          />
+        </div>
+      ))}
 
       {/* Session list */}
       <div

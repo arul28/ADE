@@ -1105,6 +1105,10 @@ Renderer surfaces:
   hook because the two trap shapes differ; its own doc names the dialogs not yet
   converged onto it.
 - `apps/desktop/src/renderer/components/terminals/SessionListPane.tsx` —
+  also shows an inline "Couldn't load chats from <machine>" banner, with a Copy
+  error action, only when that machine is online and returned an error with no
+  chats; an offline machine keeps its quiet state.
+- `apps/desktop/src/renderer/components/terminals/SessionListPane.tsx` —
   sidebar list with three organization modes (lane / status / time),
   sticky group headers, search/filter, and two quiet tails: Snoozed and
   Settled. Snoozed sits one tier above Settled and is fed by the separate

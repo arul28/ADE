@@ -16,6 +16,7 @@ import {
   IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS,
   IOS_SIMULATOR_DEVICE_CLEANUP_TIMEOUT_MS,
   WINDOWS_DESKTOP_INTERACTIVE_IPC_TIMEOUT_MS,
+  REMOTE_MACHINE_UPDATE_IPC_TIMEOUT_MS,
 } from "../localRuntime/localRuntimeTimeoutPolicy";
 import { DEMO_RECORDING_STOP_TIMEOUT_MS } from "../../../shared/demoVideo/demoContract";
 import { builtInBrowserRemoteCallDoneTimeoutMs } from "../../../shared/types/builtInBrowserRemote";
@@ -177,6 +178,10 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     // sign-in gives up on its own first, so the renderer hears why.
     case IPC.mcpRegistrySignIn:
       return MCP_SIGN_IN_TIMEOUT_MS + 60_000;
+    // Downloads and installs a build on another machine. On the 30s default the
+    // renderer reported a timeout while the update was still going.
+    case IPC.remoteRuntimeUpdateAndRestart:
+      return REMOTE_MACHINE_UPDATE_IPC_TIMEOUT_MS;
     case IPC.remoteRuntimeConnect:
     case IPC.remoteRuntimeListProjects:
     case IPC.remoteRuntimeAddProject:
@@ -293,6 +298,9 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     // An update check settles only once any download it started is over.
     case IPC.updateCheckForUpdates:
       return 30 * 60_000;
+    // Waits on the macOS administrator password dialog (its own 2 minute cap).
+    case IPC.appBundleOwnershipFix:
+      return 3 * 60_000;
     // `git clone` carries its own 5 minute timeout; sit above it so a slow
     // clone reports its own outcome instead of an IPC timeout mid-clone.
     case IPC.projectClone:

@@ -268,7 +268,6 @@ describe("brain update command", () => {
       failInstall: false,
       ok: true,
       restarted: true,
-      expectedServiceArgs: [["serve", "--uninstall-service"], ["serve", "--install-service"]],
     },
     {
       label: "without restoring a service that was not previously installed",
@@ -277,7 +276,6 @@ describe("brain update command", () => {
       failInstall: true,
       ok: false,
       restarted: false,
-      expectedServiceArgs: [["serve", "--uninstall-service"], ["serve", "--install-service"]],
     },
   ])("stops a Windows brain before replacing its executable $label", async ({
     updateArgs,
@@ -285,7 +283,6 @@ describe("brain update command", () => {
     failInstall,
     ok,
     restarted,
-    expectedServiceArgs,
   }) => {
     const root = tempRoot();
     const tmp = path.join(root, "tmp");
@@ -338,7 +335,12 @@ describe("brain update command", () => {
     );
 
     expect(result).toMatchObject({ ok, applied: ok, restarted, target: "win32-x64" });
-    expect(serviceCalls).toEqual(expectedServiceArgs.map((args) => [installedBinary, ...args]));
+    // The stop goes through the downloaded release (the runtime on disk may be
+    // a build whose service checks are broken); the restart through the new install.
+    expect(serviceCalls).toEqual([
+      [path.join(tmp, "ade.exe"), "serve", "--uninstall-service"],
+      [installedBinary, "serve", "--install-service"],
+    ]);
     if (ok) {
       expect(fs.readFileSync(installedBinary, "utf8")).toContain("ade-win32-x64.exe");
     } else {

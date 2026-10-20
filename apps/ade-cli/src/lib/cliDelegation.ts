@@ -418,6 +418,12 @@ export function cliCommandWord(argv: readonly string[]): string | null {
 
 export function cliArgvOwnsRuntime(argv: readonly string[]): boolean {
   const word = cliCommandWord(argv);
+  if (word === "brain" && argv.some((arg) => arg === "--apply-staged" || arg.startsWith("--apply-staged="))) {
+    // The update helper is the downloaded release, run on purpose. Started from
+    // an ADE terminal it inherits that app's ADE_CLI_PATH, and handing it back
+    // would apply the update with the old code it is there to replace.
+    return true;
+  }
   return word !== null && RUNTIME_OWNING_COMMANDS.has(word);
 }
 

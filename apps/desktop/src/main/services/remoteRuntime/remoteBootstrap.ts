@@ -1906,6 +1906,7 @@ export function coerceProjects(value: unknown): RemoteRuntimeProjectRecord[] {
         record.registrationSource === "test"
           ? record.registrationSource
           : undefined,
+      ...(typeof record.exists === "boolean" ? { exists: record.exists } : {}),
       icon: coerceProjectIcon(record.icon),
     }];
   });
