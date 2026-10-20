@@ -49,6 +49,19 @@ const JPEG_QUALITIES = [85, 70] as const;
 
 type Rgba = { width: number; height: number; data: Uint8Array; hasAlpha: boolean };
 
+/** Image formats every provider path may safely send as image bytes. */
+export const PROVIDER_IMAGE_BYTE_MEDIA_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+]);
+
+/** Return whether a provider accepts this MIME type as image bytes. */
+export function isProviderImageByteMediaType(mediaType: string): boolean {
+  return PROVIDER_IMAGE_BYTE_MEDIA_TYPES.has(mediaType.trim().toLowerCase());
+}
+
 export type FitImageOptions = {
   /** Names the provider in the log line, e.g. `claude` or `opencode`. */
   provider?: string;
@@ -78,6 +91,9 @@ export async function fitImageForProviderInline(
 }
 
 async function fitImage(bytes: Buffer, mediaType: string): Promise<ProviderInlineImageFit> {
+  if (!isProviderImageByteMediaType(mediaType)) {
+    return { kind: "omit", reason: `unsupported image MIME type ${mediaType}` };
+  }
   const dims = imageDimensions(bytes) ?? gifOrWebpDimensions(bytes);
   const longEdge = dims ? Math.max(dims.width, dims.height) : 0;
   if (bytes.byteLength <= MAX_PROVIDER_INLINE_IMAGE_BYTES && longEdge <= MAX_PROVIDER_INLINE_IMAGE_EDGE_PX) {

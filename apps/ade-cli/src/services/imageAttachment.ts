@@ -16,11 +16,15 @@ const MAX_IMAGE_BYTES = LEGACY_MAX_CHAT_ATTACHMENT_BYTES;
 export const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
   ".bmp": "image/bmp",
   ".gif": "image/gif",
+  ".heic": "image/heic",
+  ".heif": "image/heif",
   ".ico": "image/x-icon",
   ".jpeg": "image/jpeg",
   ".jpg": "image/jpeg",
   ".png": "image/png",
   ".svg": "image/svg+xml",
+  ".tif": "image/tiff",
+  ".tiff": "image/tiff",
   ".webp": "image/webp",
 };
 
@@ -35,6 +39,17 @@ function sniffImageMimeType(buffer: Buffer): string | null {
   if (buffer.length >= 12
     && buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46
     && buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50) return "image/webp";
+  if (buffer.length >= 4
+    && ((buffer[0] === 0x49 && buffer[1] === 0x49 && buffer[2] === 0x2A && buffer[3] === 0x00)
+      || (buffer[0] === 0x4D && buffer[1] === 0x4D && buffer[2] === 0x00 && buffer[3] === 0x2A))) {
+    return "image/tiff";
+  }
+  if (buffer.length >= 12 && buffer.toString("ascii", 4, 8) === "ftyp") {
+    const brand = buffer.toString("ascii", 8, 12);
+    if (["heic", "heix", "mif1", "msf1"].includes(brand)) {
+      return brand === "mif1" || brand === "msf1" ? "image/heif" : "image/heic";
+    }
+  }
   if (buffer.length >= 2 && buffer[0] === 0x42 && buffer[1] === 0x4D) return "image/bmp";
   if (buffer.length >= 4
     && buffer[0] === 0x00 && buffer[1] === 0x00 && buffer[2] === 0x01 && buffer[3] === 0x00) return "image/x-icon";

@@ -446,11 +446,12 @@ import {
 import { createTurnEndQuestionCheck } from "./turnEndQuestionCheck";
 import {
   exceedsInlineFileLimit,
+  imageAttachmentReferenceText,
   imageNotInlinedHintPart,
   inlineAttachmentHintPart,
 } from "./attachmentInlineGuard";
 import { MAX_PROVIDER_INLINE_FILE_BYTES } from "../../../shared/chatAttachmentLimits";
-import { fitImageForProviderInline } from "./providerInlineImage";
+import { fitImageForProviderInline, isProviderImageByteMediaType } from "./providerInlineImage";
 import { projectAttachmentsDir } from "../../../shared/chatAttachmentStagingFs";
 import { isRemoteOrDataUri } from "../../../shared/chatImageUrls";
 import {
@@ -729,6 +730,7 @@ import {
   type AgentChatResourceLink,
   type AgentChatWorkflowProgress,
   attachmentIsReferenceOnly,
+  getImageAttachmentMediaType,
   CLAUDE_SYNTHETIC_MODEL,
   DEFAULT_ATTACHMENT_ONLY_PROMPT,
   hasPastedTextPromptAttachment,
@@ -12431,6 +12433,19 @@ export function createAgentChatService(args: {
       }
       if (attachmentIsReferenceOnly(attachment)) {
         items.push(codexReferenceOnlyAttachmentInput(attachment));
+        continue;
+      }
+      const imageMimeType = attachment.type === "image"
+        ? attachment.mimeType?.trim().toLowerCase()
+          || getImageAttachmentMediaType(attachment.path)
+          || "image/png"
+        : null;
+      if (imageMimeType && !isProviderImageByteMediaType(imageMimeType)) {
+        items.push({
+          type: "text",
+          text: imageAttachmentReferenceText(attachment.path, imageMimeType),
+          text_elements: [],
+        });
         continue;
       }
       const stagedPath = await stageAttachmentForCodexInput(attachment);

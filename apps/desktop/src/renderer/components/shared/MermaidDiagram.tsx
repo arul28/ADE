@@ -26,15 +26,37 @@ type MermaidApi = {
   render: (id: string, source: string) => Promise<{ svg: string }>;
 };
 
-type RenderResult = { ok: true; svg: string } | { ok: false; error: string; kind: "load" | "parse" };
+type RenderResult =
+  | { ok: true; svg: string }
+  | { ok: false; error: string; kind: "load" | "parse" };
+export type MermaidRenderResult =
+  | { ok: true; svg: string }
+  | { ok: false; message: string; line: number | null };
+
+function errorLine(message: string): number | null {
+  const match = message.match(/(?:line\s*[:=]?\s*|\(line\s+)(\d+)/i);
+  if (!match) return null;
+  const line = Number(match[1]);
+  return Number.isInteger(line) && line > 0 ? line : null;
+}
 
 const MAX_SETTLED_RENDERS = 64;
 
 let mermaidPromise: Promise<MermaidApi> | null = null;
-const MERMAID_DEFAULT_SECURE_KEYS = ["secure", "securityLevel", "startOnLoad", "maxTextSize", "suppressErrorRendering", "maxEdges"];
+const MERMAID_DEFAULT_SECURE_KEYS = [
+  "secure",
+  "securityLevel",
+  "startOnLoad",
+  "maxTextSize",
+  "suppressErrorRendering",
+  "maxEdges",
+];
 let renderSeq = 0;
 let renderQueue: Promise<unknown> = Promise.resolve();
-const renderCache = new Map<string, { promise: Promise<RenderResult>; settled: boolean }>();
+const renderCache = new Map<
+  string,
+  { promise: Promise<RenderResult>; settled: boolean }
+>();
 
 function loadMermaid(): Promise<MermaidApi> {
   if (!mermaidPromise) {
@@ -58,17 +80,27 @@ function trimCache(): void {
 }
 
 function appBackgroundColor(theme: "dark" | "light"): string {
-  const value = typeof document === "undefined"
-    ? ""
-    : getComputedStyle(document.documentElement).getPropertyValue("--color-bg").trim();
-  return /^#[0-9a-f]{3,8}$/i.test(value) || /^rgba?\(/i.test(value) ? value : theme === "light" ? "#ffffff" : "#0c0b10";
+  const value =
+    typeof document === "undefined"
+      ? ""
+      : getComputedStyle(document.documentElement)
+          .getPropertyValue("--color-bg")
+          .trim();
+  return /^#[0-9a-f]{3,8}$/i.test(value) || /^rgba?\(/i.test(value)
+    ? value
+    : theme === "light"
+      ? "#ffffff"
+      : "#0c0b10";
 }
 
 /**
  * Mermaid's config is global, so renders run one at a time: each sets its own
  * theme and renders before the next one can change it.
  */
-function renderMermaid(source: string, theme: "dark" | "light"): Promise<RenderResult> {
+function renderMermaid(
+  source: string,
+  theme: "dark" | "light",
+): Promise<RenderResult> {
   const key = `${theme}\u0000${source}`;
   const cached = renderCache.get(key);
   if (cached) return cached.promise;
@@ -77,7 +109,11 @@ function renderMermaid(source: string, theme: "dark" | "light"): Promise<RenderR
     try {
       mermaid = await loadMermaid();
     } catch (error) {
-      return { ok: false, kind: "load", error: error instanceof Error ? error.message : String(error) };
+      return {
+        ok: false,
+        kind: "load",
+        error: error instanceof Error ? error.message : String(error),
+      };
     }
     try {
       mermaid.initialize({
@@ -85,7 +121,12 @@ function renderMermaid(source: string, theme: "dark" | "light"): Promise<RenderR
         securityLevel: "strict",
         // Keys a diagram's own `%%{init}%%` may not override: mermaid's
         // defaults plus HTML labels and raw theme CSS.
-        secure: [...MERMAID_DEFAULT_SECURE_KEYS, "htmlLabels", "flowchart", "themeCSS"],
+        secure: [
+          ...MERMAID_DEFAULT_SECURE_KEYS,
+          "htmlLabels",
+          "flowchart",
+          "themeCSS",
+        ],
         theme: theme === "light" ? "default" : "dark",
         // Edge labels sit on a box that hides the line behind the text.
         // Mermaid's dark theme paints it mid-grey, a patch on ADE's canvas;
@@ -100,7 +141,11 @@ function renderMermaid(source: string, theme: "dark" | "light"): Promise<RenderR
       const { svg } = await mermaid.render(`ade-mermaid-${renderSeq}`, source);
       return { ok: true, svg };
     } catch (error) {
-      return { ok: false, kind: "parse", error: error instanceof Error ? error.message : String(error) };
+      return {
+        ok: false,
+        kind: "parse",
+        error: error instanceof Error ? error.message : String(error),
+      };
     }
   });
   renderQueue = job.catch(() => undefined);
@@ -160,15 +205,19 @@ export function MermaidDiagram({
   source,
   variant,
   renderCode,
+  onRenderResult,
 }: {
   source: string;
   variant: "chat" | "pr" | "file";
   /** How this surface draws a code block, for the code toggle and failures. */
   renderCode: (code: string) => React.ReactNode;
+  /** Optional structured result for viewers that provide their own error UI. */
+  onRenderResult?: (result: MermaidRenderResult) => void;
 }) {
   const theme = useAppThemeMode();
   const trimmed = React.useMemo(() => source.replace(/\n+$/, ""), [source]);
   const [result, setResult] = React.useState<RenderResult | null>(null);
+  const [lastGoodSvg, setLastGoodSvg] = React.useState<string | null>(null);
   const [attempt, setAttempt] = React.useState(0);
   const [showCode, setShowCode] = React.useState(false);
   const [copied, setCopied] = React.useState(false);
@@ -182,21 +231,43 @@ export function MermaidDiagram({
       return;
     }
     void renderMermaid(trimmed, theme).then((next) => {
-      if (!cancelled) setResult(next);
+      if (cancelled) return;
+      setResult(next);
+      if (next.ok) {
+        setLastGoodSvg(next.svg);
+      }
     });
     return () => {
       cancelled = true;
     };
   }, [attempt, theme, trimmed]);
 
+  React.useEffect(() => {
+    if (!result || !onRenderResult) return;
+    if (result.ok) {
+      onRenderResult({ ok: true, svg: result.svg });
+    } else {
+      onRenderResult({
+        ok: false,
+        message: result.error,
+        line: errorLine(result.error),
+      });
+    }
+  }, [result, onRenderResult]);
+
   // One blob URL at a time, released when the viewer closes.
-  React.useEffect(() => () => {
-    if (lightboxUrl) URL.revokeObjectURL(lightboxUrl);
-  }, [lightboxUrl]);
+  React.useEffect(
+    () => () => {
+      if (lightboxUrl) URL.revokeObjectURL(lightboxUrl);
+    },
+    [lightboxUrl],
+  );
 
   const openLightbox = React.useCallback(() => {
     if (!result?.ok) return;
-    setLightboxUrl(URL.createObjectURL(new Blob([result.svg], { type: "image/svg+xml" })));
+    setLightboxUrl(
+      URL.createObjectURL(new Blob([result.svg], { type: "image/svg+xml" })),
+    );
   }, [result]);
 
   const copySource = React.useCallback(() => {
@@ -206,28 +277,50 @@ export function MermaidDiagram({
     });
   }, [trimmed]);
 
-  const frame = variant === "chat"
-    ? "my-3"
-    : "mb-3 rounded-md border border-[color:color-mix(in_srgb,var(--color-border)_70%,transparent)] bg-[color:color-mix(in_srgb,var(--color-fg)_3%,transparent)] p-3 last:mb-0";
+  const frame =
+    variant === "chat"
+      ? "my-3"
+      : "mb-3 rounded-md border border-[color:color-mix(in_srgb,var(--color-border)_70%,transparent)] bg-[color:color-mix(in_srgb,var(--color-fg)_3%,transparent)] p-3 last:mb-0";
 
-  if (!result) {
+  if (!result && !(onRenderResult && lastGoodSvg)) {
     return (
-      <div className={cn(frame, "flex items-center gap-2 py-4 text-[11px] text-muted-fg")} role="status">
+      <div
+        className={cn(
+          frame,
+          "flex items-center gap-2 py-4 text-[11px] text-muted-fg",
+        )}
+        role="status"
+      >
         <FlowArrow size={13} aria-hidden />
         Rendering diagram…
       </div>
     );
   }
 
-  if (!result.ok) {
+  if (result && !result.ok) {
+    if (onRenderResult && lastGoodSvg) {
+      return (
+        <div className={frame} data-mermaid-block="">
+          <div className="opacity-40" aria-hidden="true">
+            <MermaidSvg svg={lastGoodSvg} />
+          </div>
+        </div>
+      );
+    }
     return (
       <div className={frame}>
         <div className="mb-1.5 flex items-center gap-2 text-[11px] text-muted-fg">
           <span className="min-w-0 flex-1 truncate" title={result.error}>
-            {result.kind === "load" ? "Couldn't load the diagram renderer." : `Diagram error: ${result.error}`}
+            {result.kind === "load"
+              ? "Couldn't load the diagram renderer."
+              : `Diagram error: ${result.error}`}
           </span>
           {result.kind === "load" ? (
-            <button type="button" className="text-fg underline-offset-2 hover:underline" onClick={() => setAttempt((value) => value + 1)}>
+            <button
+              type="button"
+              className="text-fg underline-offset-2 hover:underline"
+              onClick={() => setAttempt((value) => value + 1)}
+            >
               Retry
             </button>
           ) : null}
@@ -237,9 +330,30 @@ export function MermaidDiagram({
     );
   }
 
+  const svgToShow = result?.ok ? result.svg : lastGoodSvg;
   return (
     <div className={frame} data-mermaid-block="">
-      {showCode ? renderCode(trimmed) : <MermaidSvg svg={result.svg} onOpen={variant === "chat" ? openLightbox : undefined} />}
+      {!svgToShow ? (
+        <div
+          className="flex items-center gap-2 py-4 text-[11px] text-muted-fg"
+          role="status"
+        >
+          <FlowArrow size={13} aria-hidden />
+          Rendering diagram…
+        </div>
+      ) : showCode ? (
+        renderCode(trimmed)
+      ) : (
+        <div
+          className={result?.ok ? undefined : "opacity-40"}
+          aria-hidden={!result?.ok}
+        >
+          <MermaidSvg
+            svg={svgToShow}
+            onOpen={variant === "chat" && result?.ok ? openLightbox : undefined}
+          />
+        </div>
+      )}
       {variant === "chat" ? (
         <div className="mt-1 flex items-center justify-end gap-1 text-muted-fg">
           <button

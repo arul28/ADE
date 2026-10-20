@@ -1007,9 +1007,15 @@ function inferMimeType(filePath: string): string | null {
     case ".html": case ".htm": return "text/html";
     case ".css": return "text/css";
     case ".png": return "image/png";
+    case ".bmp": return "image/bmp";
     case ".jpg": case ".jpeg": return "image/jpeg";
     case ".gif": return "image/gif";
     case ".svg": return "image/svg+xml";
+    case ".tif": case ".tiff": return "image/tiff";
+    case ".heic": return "image/heic";
+    case ".heif": return "image/heif";
+    case ".ico": case ".cur": return "image/x-icon";
+    case ".avif": return "image/avif";
     case ".webp": return "image/webp";
     case ".pdf": return "application/pdf";
     case ".zip": return "application/zip";

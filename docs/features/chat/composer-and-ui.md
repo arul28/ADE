@@ -1593,11 +1593,25 @@ allowing a cross-provider fork.
   flow.
 - `inferAttachmentType` and `mergeAttachments` in `shared/types/chat.ts`
   dedupe attachments by path (last-write wins).
-- MIME-type validation happens per provider. Claude enforces
-  `image/jpeg | image/png | image/gif | image/webp`; macOS HEIC/HEIF
-  uploads are normalized to JPEG before that boundary, while Windows/Linux
-  report the missing codec instead of relabeling HEIC bytes. Codex uses
-  local path references; OpenCode uses runtime content blocks.
+- MIME-type validation happens per provider, against one allowlist:
+  `PROVIDER_IMAGE_BYTE_MEDIA_TYPES` in `providerInlineImage.ts`
+  (`image/jpeg | image/png | image/gif | image/webp`). An image attachment
+  outside it (SVG, TIFF, BMP, ICO, AVIF, an unconverted HEIC) is never sent
+  as image bytes: every provider path — Claude, Codex's `localImage` input,
+  and the Cursor/Pi/Droid/OpenCode workers — sends the same text reference,
+  `[Image attached (image/svg+xml): <path>]`, built by
+  `imageAttachmentReferenceText`, so the agent reads the file itself. macOS
+  HEIC/HEIF uploads are normalized to JPEG before that boundary, while
+  Windows/Linux report the missing codec instead of relabeling HEIC bytes.
+  OpenCode uses runtime content blocks.
+- **Staged names follow the MIME type.** A pasted or dropped image whose name
+  has no extension or the wrong one (a clipboard `image`, a `diagram.bin` that
+  is really `image/svg+xml`) is renamed by `normalizeImageAttachmentFilename`
+  on both staging paths, so the stored file and `inferAttachmentType` agree.
+- **Thumbnails for formats Chromium cannot draw.** `getImageDataUrl` sniffs
+  TIFF and HEIC/HEIF and returns a JPEG converted with `sips` on macOS; on
+  Windows and Linux it returns a clean unsupported error and the tray keeps
+  the file chip.
 - **The attachment cap and the provider inline caps are different numbers.**
   `shared/chatAttachmentLimits.ts` single-sources them:
   `MAX_CHAT_ATTACHMENT_BYTES` (50 MB) is what may be staged on disk;
@@ -1922,6 +1936,34 @@ spelling out the model id and the flags.
   is dropped from the flags and named in the block.
 - **Transcript.** `chips.ts` parses the token into a `model` chip whose label
   is `Display name · Level · Mode`. It is a label, not a link.
+
+### Local files an agent embeds
+
+When a reply embeds a file on disk (`![tone](/abs/out.wav)`,
+`![](preview-fixtures/chart.png)`, a `file:` URL), `chatMarkdownBlock.tsx`'s
+`img` override hands it to `ChatInlineMedia.tsx` instead of drawing an `<img>`
+the CSP would block. Remote `http(s)`/`data:` images and `ade-proof://`
+citations keep their own paths.
+
+- **It resolves like a link.** `resolveWorkspaceMediaTarget` in
+  `chatWorkspacePaths.tsx` runs the same lane-aware rules as clicking a file
+  link, against the chat's machine (`useChatRuntimeScope().pin`), with a 30 s
+  cache so a lane created a moment ago still resolves. Nothing resolves until
+  the embed is near the viewport, so a long transcript does no work for
+  messages nobody scrolled to.
+- **What it draws.** An image draws inline (up to 25 MB) and opens in Files on
+  click. Audio gets `ChatInlineAudio`: a single-row player (play, seek, time,
+  mute, 1×/1.5×/2×, Open) that reads no bytes until the first Play, plays only
+  one clip at a time across the chat, and offers Retry after a failure. A video
+  is a tile that streams only when Play is pressed. Any other file is a chip
+  that opens it in Files, and a path outside the chat machine's workspaces is
+  the same chip, muted, saying it is not available on that machine — never a
+  broken image.
+- **Bytes stay on the chat's machine.** Every read is `streamFileBytes` over
+  `createPinnedFilesApi(pin)`, capped at 100 MB, into a Blob URL that is
+  revoked on unmount.
+- **Sent audio attachments use the same player.** A user message's audio
+  attachment renders `ChatInlineAudio` instead of a file chip.
 
 ### Entities an agent's reply names
 

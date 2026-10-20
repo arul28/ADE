@@ -100,6 +100,41 @@ export type StagedAttachment = {
   previewDataUrl: string | null;
 };
 
+const IMAGE_EXTENSION_BY_MIME_TYPE: Record<string, string> = {
+  "image/avif": ".avif",
+  "image/bmp": ".bmp",
+  "image/gif": ".gif",
+  "image/heic": ".heic",
+  "image/heif": ".heif",
+  "image/jpeg": ".jpg",
+  "image/png": ".png",
+  "image/svg+xml": ".svg",
+  "image/tiff": ".tiff",
+  "image/webp": ".webp",
+  "image/x-icon": ".ico",
+};
+
+/** Align an image's staged extension with its MIME so stored type inference agrees. */
+export function normalizeImageAttachmentFilename(
+  filename: string,
+  mimeType: string | null | undefined,
+): string {
+  const extension = IMAGE_EXTENSION_BY_MIME_TYPE[mimeType?.trim().toLowerCase() ?? ""];
+  if (!extension) return filename;
+  const currentExtension = filename.match(/\.[^./\\]+$/)?.[0]?.toLowerCase() ?? "";
+  let matchingExtensions: string[];
+  if (extension === ".jpg") {
+    matchingExtensions = [".jpg", ".jpeg"];
+  } else if (extension === ".tiff") {
+    matchingExtensions = [".tif", ".tiff"];
+  } else {
+    matchingExtensions = [extension];
+  }
+  if (matchingExtensions.includes(currentExtension)) return filename;
+  const stem = currentExtension ? filename.slice(0, -currentExtension.length) : filename;
+  return `${stem || "image"}${extension}`;
+}
+
 /**
  * A HEIC the renderer could not hand to the host as JPEG. Distinguished from
  * every other staging failure because the file will fail the same way on every
@@ -130,7 +165,7 @@ export async function stageAttachmentBytesFromFile(args: {
   api?: Pick<Window["ade"]["agentChat"], "saveTempAttachment">;
 }): Promise<StagedAttachment> {
   const buffer = await args.file.arrayBuffer();
-  let filename = args.filename;
+  let filename = normalizeImageAttachmentFilename(args.filename, args.file.type);
   let data = bytesToBase64(new Uint8Array(buffer));
   let mimeType: string | null = args.file.type || null;
   let previewDataUrl: string | null = null;
@@ -141,7 +176,7 @@ export async function stageAttachmentBytesFromFile(args: {
     }
     const converted = await convertImageToJpeg({
       data,
-      filename: args.filename,
+      filename,
       mimeType: args.file.type || null,
     });
     if (converted.ok !== true) {

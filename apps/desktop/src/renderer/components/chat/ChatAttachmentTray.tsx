@@ -13,6 +13,9 @@ import { GITHUB_BRAND } from "../lanes/githubBrand";
 import { JiraMark } from "../lanes/jiraBrand";
 import { LinearMark, LINEAR_BRAND } from "../lanes/linearBrand";
 import { fgTint } from "../lanes/laneDesignTokens";
+import { ChatInlineAudio } from "./ChatInlineMedia";
+import { isInlineAudioAttachment } from "./chatInlineMediaUtils";
+import { useChatRuntimeScope } from "./ChatRuntimeScope";
 /**
  * The preview popup pulls in the whole Files viewer platform — Monaco, the PDF
  * and document renderers, the CSV grid. That is a large amount of code for a
@@ -634,6 +637,23 @@ function FileAttachmentChip({
   const name = attachmentName(attachment.path);
   const preview = useAttachmentPreview({ path: attachment.path, title: name, pin: machinePin });
   const onOpen = preview.open;
+  const laneId = useChatRuntimeScope().laneId;
+  const mimeType = attachment.type === "image-url" ? undefined : attachment.mimeType;
+  if (!onRemove && isInlineAudioAttachment(attachment.path, mimeType)) {
+    return (
+      <>
+        <ChatInlineAudio
+          name={name}
+          attachmentPath={attachment.path}
+          mimeType={mimeType}
+          pin={machinePin}
+          laneId={laneId}
+          onOpen={onOpen}
+        />
+        {preview.element}
+      </>
+    );
+  }
   const { icon: Icon, color } = getFileIcon(name);
   const sizeLabel = typeof sizeBytes === "number" && Number.isFinite(sizeBytes)
     ? formatAttachmentSize(sizeBytes)

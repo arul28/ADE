@@ -261,6 +261,7 @@ import type { AgentChatAttachmentDropTarget } from "./chatAttachmentDropTarget";
 import {
   AttachmentConversionError,
   attachmentPlanRejection,
+  normalizeImageAttachmentFilename,
   planAttachmentStaging,
   readAttachmentStagingMode,
   stageAttachmentBytesFromFile,
@@ -3894,7 +3895,10 @@ function AgentChatComposerImpl({
           let staged: StagedAttachment;
           if (plan.transport === "path") {
             const { path: stagedPath } = await agentChatApiRef.current.stageFileAttachment(
-              { sourcePath: plan.sourcePath, filename: sourceAttachmentName },
+              {
+                sourcePath: plan.sourcePath,
+                filename: normalizeImageAttachmentFilename(sourceAttachmentName, file.type),
+              },
               attachmentOwnerBinding,
             );
             staged = { path: stagedPath, mimeType: file.type || null, previewDataUrl: null };

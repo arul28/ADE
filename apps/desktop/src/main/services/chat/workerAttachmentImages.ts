@@ -2,8 +2,8 @@ import path from "node:path";
 import { getImageAttachmentMediaType } from "../../../shared/types/chat";
 import { MAX_CHAT_ATTACHMENT_BYTES } from "../../../shared/chatAttachmentLimits";
 import { readFileWithinRootSecure } from "../shared/utils";
-import { imageNotInlinedText } from "./attachmentInlineGuard";
-import { fitImageForProviderInline } from "./providerInlineImage";
+import { imageAttachmentReferenceText, imageNotInlinedText } from "./attachmentInlineGuard";
+import { fitImageForProviderInline, isProviderImageByteMediaType } from "./providerInlineImage";
 
 export type WorkerPathImageSource = {
   path: string;
@@ -90,6 +90,11 @@ async function materializeOneWorkerImage(
     if (!url) {
       throw new Error(`${label} image is missing data, path, or url.`);
     }
+    const urlPath = url.split(/[?#]/, 1)[0] ?? url;
+    const mimeType = getImageAttachmentMediaType(urlPath);
+    if (mimeType && !isProviderImageByteMediaType(mimeType)) {
+      return { omitted: imageAttachmentReferenceText(url, mimeType) };
+    }
     return { url };
   }
   if ("data" in image) {
@@ -97,6 +102,9 @@ async function materializeOneWorkerImage(
     const mimeType = image.mimeType.trim();
     if (!inline || !mimeType) {
       throw new Error(`${label} image is missing mimeType.`);
+    }
+    if (!isProviderImageByteMediaType(mimeType)) {
+      return { omitted: imageAttachmentReferenceText("(image data)", mimeType) };
     }
     return { data: inline, mimeType };
   }
@@ -109,6 +117,9 @@ async function materializeOneWorkerImage(
     const mimeType = image.mimeType.trim()
       || getImageAttachmentMediaType(filePath)
       || "image/jpeg";
+    if (!isProviderImageByteMediaType(mimeType)) {
+      return { omitted: imageAttachmentReferenceText(filePath, mimeType) };
+    }
     const fileLabel = path.basename(filePath);
     let buf: Buffer;
     try {

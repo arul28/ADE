@@ -26,6 +26,7 @@ import { HighlightedCode } from "./CodeHighlighter";
 import { normalizeMathDelimiters } from "./chatMath";
 import { MathFormula } from "./MathFormula";
 import { ProofCitationFigure, ProofCompareFigure } from "./ChatProofCitation";
+import { ChatInlineMedia } from "./ChatInlineMedia";
 import { SceneAnswerContext, SceneFrame } from "./SceneFrame";
 import { TranscriptChip } from "./ChipText";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
@@ -230,7 +231,8 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
     onOpenWorkspacePath?.(path);
   }, [onOpenWorkspacePath]);
   // A `localhost` link in this reply means the chat's machine.
-  const runtimePin = useChatRuntimeScope().pin;
+  const runtimeScope = useChatRuntimeScope();
+  const runtimePin = runtimeScope.pin;
   // Right-click on a link: copy it, or send it to a browser of your choosing.
   const { onContextMenu: onLinkContextMenu, menu: linkContextMenu } = useChatLinkContextMenu(runtimePin);
   // Lanes, chats, models and the rest that this reply names. The lookup only
@@ -259,6 +261,19 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
     img: ({ src, alt }) => {
       const artifactId = parseProofCitationUrl(typeof src === "string" ? src : null);
       if (artifactId) return <ProofCitationFigure artifactId={artifactId} caption={alt ?? null} />;
+      const href = typeof src === "string" ? src : "";
+      const localPath = resolveWorkspacePathFromHref(href);
+      if (localPath && !/^(?:https?:|data:)/i.test(href)) {
+        return (
+          <ChatInlineMedia
+            src={href}
+            alt={alt ?? ""}
+            pin={runtimePin}
+            laneId={runtimeScope.laneId}
+            onOpen={() => openWorkspacePath(localPath)}
+          />
+        );
+      }
       return <img src={typeof src === "string" ? src : undefined} alt={alt ?? ""} />;
     },
     // Sized from the chat font, not the root font, and spaced here rather than
@@ -441,7 +456,7 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
         </a>
       );
     },
-  }), [sceneScopeKey, sceneAnswer, neu, openWorkspacePath, runtimePin, sceneLive, sceneStreaming, streamingMermaidBody, bubble, thought, onLinkContextMenu]);
+  }), [sceneScopeKey, sceneAnswer, neu, openWorkspacePath, runtimePin, runtimeScope.laneId, sceneLive, sceneStreaming, streamingMermaidBody, bubble, thought, onLinkContextMenu]);
 
   return (
     <div

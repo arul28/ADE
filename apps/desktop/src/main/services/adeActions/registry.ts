@@ -3,6 +3,10 @@ import fs from "node:fs";
 import { parseGitHubIssueCreateInput, parseGitHubIssueUpdate } from "../../../shared/laneGitHubIssue";
 import { parseGitHubIssueListState } from "../../../shared/githubIssueList";
 import nodePath from "node:path";
+import {
+  convertImageBufferToJpeg,
+  ImageAttachmentConversionError,
+} from "../chat/heicAttachmentConverter";
 import { randomUUID } from "node:crypto";
 import type { AdeRuntime } from "../../../../../ade-cli/src/bootstrap";
 import { ingestSceneSnapshot } from "../scenes/sceneSnapshotIngest";
@@ -749,6 +753,17 @@ function sniffImageMimeType(buffer: Buffer): string | null {
     && buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50) {
     return "image/webp";
   }
+  if (buffer.length >= 4
+    && ((buffer[0] === 0x49 && buffer[1] === 0x49 && buffer[2] === 0x2A && buffer[3] === 0x00)
+      || (buffer[0] === 0x4D && buffer[1] === 0x4D && buffer[2] === 0x00 && buffer[3] === 0x2A))) {
+    return "image/tiff";
+  }
+  if (buffer.length >= 12 && buffer.toString("ascii", 4, 8) === "ftyp") {
+    const brand = buffer.toString("ascii", 8, 12);
+    if (["heic", "heix", "mif1", "msf1"].includes(brand)) {
+      return brand === "mif1" || brand === "msf1" ? "image/heif" : "image/heic";
+    }
+  }
   if (buffer.length >= 2 && buffer[0] === 0x42 && buffer[1] === 0x4D) {
     return "image/bmp";
   }
@@ -781,6 +796,19 @@ async function getAgentChatImageDataUrl(projectRoot: string, arg: { path?: strin
   const mimeType = sniffImageMimeType(data);
   if (!mimeType) {
     throw new Error("Path is not an image.");
+  }
+  if (mimeType === "image/tiff" || mimeType === "image/heic" || mimeType === "image/heif") {
+    try {
+      const converted = await convertImageBufferToJpeg(data, nodePath.basename(imagePath), mimeType);
+      return {
+        dataUrl: `data:${converted.mimeType};base64,${converted.data.toString("base64")}`,
+      };
+    } catch (error) {
+      if (error instanceof ImageAttachmentConversionError && error.code === "unavailable") {
+        throw new Error("TIFF and HEIC image previews are available on macOS only.");
+      }
+      throw error;
+    }
   }
   return { dataUrl: `data:${mimeType};base64,${data.toString("base64")}` };
 }

@@ -9,8 +9,11 @@ import {
   readAgentAccessibleFileBytes,
   type DirtyFileTextLookup,
 } from "../shared/utils";
-import { imageNotInlinedHintPart } from "./attachmentInlineGuard";
-import { fitImageForProviderInline } from "./providerInlineImage";
+import {
+  imageAttachmentReferenceText,
+  imageNotInlinedHintPart,
+} from "./attachmentInlineGuard";
+import { fitImageForProviderInline, PROVIDER_IMAGE_BYTE_MEDIA_TYPES } from "./providerInlineImage";
 import { labelAttachments } from "../../../shared/attachmentLabels";
 import type { Logger } from "../logging/logger";
 
@@ -29,12 +32,7 @@ function sendsImageBytes(attachment: AgentChatFileRef): boolean {
 }
 
 /** MIME types the Anthropic API accepts for inline image content blocks. */
-export const ANTHROPIC_IMAGE_MEDIA_TYPES = new Set([
-  "image/jpeg",
-  "image/png",
-  "image/gif",
-  "image/webp",
-]);
+export const ANTHROPIC_IMAGE_MEDIA_TYPES = PROVIDER_IMAGE_BYTE_MEDIA_TYPES;
 
 /** Non-image extension-to-MIME lookup used by inferAttachmentMediaType. */
 const ATTACHMENT_MEDIA_TYPES: Record<string, string> = {
@@ -136,7 +134,10 @@ export async function buildClaudeV2MessageAsync(
     try {
       const mediaType = inferAttachmentMediaType(attachment);
       if (!ANTHROPIC_IMAGE_MEDIA_TYPES.has(mediaType)) {
-        content.push({ type: "text", text: `\n${labelPrefix(token)}[Image attached (${mediaType}): ${attachment.path}]` });
+        content.push({
+          type: "text",
+          text: `\n${labelPrefix(token)}${imageAttachmentReferenceText(attachment.path, mediaType)}`,
+        });
         continue;
       }
       const secureRoot = attachment._rootPath ?? options.baseDir;

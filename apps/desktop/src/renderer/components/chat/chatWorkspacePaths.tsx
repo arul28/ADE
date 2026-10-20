@@ -270,10 +270,71 @@ function machineCacheKey(pin: OpenProjectBinding | null | undefined): string {
 
 const cachedFilesWorkspaces = new Map<string, FilesWorkspace[]>();
 const inflightFilesWorkspaces = new Map<string, Promise<FilesWorkspace[]>>();
+const resolvedMediaTargets = new Map<string, {
+  expiresAt: number;
+  target: { workspaceId: string; relativePath: string };
+}>();
+const mediaWorkspaceLists = new Map<string, {
+  expiresAt: number;
+  pending: Promise<FilesWorkspace[]>;
+}>();
+
+function loadMediaWorkspaces(pin: OpenProjectBinding | null): Promise<FilesWorkspace[]> {
+  const key = machineCacheKey(pin);
+  const cached = mediaWorkspaceLists.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached.pending;
+  const pending = loadFilesWorkspaces(pin, true);
+  mediaWorkspaceLists.set(key, { expiresAt: Date.now() + 30_000, pending });
+  void pending.catch(() => mediaWorkspaceLists.delete(key));
+  return pending;
+}
+
+/** Resolve media using the same lane selection rules as opening a chat file link. */
+export async function resolveWorkspaceMediaTarget(args: {
+  path: string | WorkspacePathLocation;
+  laneId: string | null;
+  pin: OpenProjectBinding | null;
+}): Promise<{ workspaceId: string; relativePath: string } | null> {
+  const path = typeof args.path === "string" ? parseWorkspacePathLocation(args.path) : args.path;
+  if (!path) return null;
+  const key = `${machineCacheKey(args.pin)}\0${args.laneId ?? ""}\0${normalizePath(path.path)}`;
+  const cached = resolvedMediaTargets.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached.target;
+
+  // Force a fresh root list after the short media-target cache expires, so a newly
+  // created workspace becomes available without waiting for a Files tab visit.
+  const workspaces = await loadMediaWorkspaces(args.pin);
+  const target = resolveFilesNavigationTarget({
+    path,
+    workspaces,
+    fallbackLaneId: args.laneId,
+  });
+  if (!target) return null;
+  const absolutePath = path.path.startsWith("/") || isWindowsAbsolutePath(path.path);
+  const absoluteMatches = absolutePath
+    ? workspaces
+      .filter((candidate) => isPathEqualOrDescendant(path.path, candidate.rootPath))
+      .sort((left, right) => {
+        const leftMatchesLane = left.laneId === args.laneId ? 1 : 0;
+        const rightMatchesLane = right.laneId === args.laneId ? 1 : 0;
+        if (leftMatchesLane !== rightMatchesLane) return rightMatchesLane - leftMatchesLane;
+        return right.rootPath.length - left.rootPath.length;
+      })
+    : [];
+  const workspace = workspaces.find((candidate) => candidate.laneId === target.laneId)
+    ?? absoluteMatches[0]
+    ?? workspaces.find((candidate) => candidate.kind === "primary");
+  if (!workspace) return null;
+  const resolved = { workspaceId: workspace.id, relativePath: target.openFilePath };
+  resolvedMediaTargets.set(key, { target: resolved, expiresAt: Date.now() + 30_000 });
+  return resolved;
+}
 
 export function resetFilesWorkspaceCacheForTests(): void {
   cachedFilesWorkspaces.clear();
   inflightFilesWorkspaces.clear();
+  resolvedMediaTargets.clear();
+  mediaWorkspaceLists.clear();
 }
 
 async function loadFilesWorkspaces(

@@ -91,8 +91,8 @@ import { getModelById } from "../../../shared/modelRegistry";
 import { isAgentChatTurnRecoveryAction } from "../../../shared/types/chat";
 import { isAgentChatStopMode } from "../../../shared/chatStopModes";
 import {
-  convertHeicBufferToJpeg,
-  HeicAttachmentConversionError,
+  convertImageBufferToJpeg,
+  ImageAttachmentConversionError,
 } from "../chat/heicAttachmentConverter";
 import type { AcpChatProvider, ConvertImageToJpegResult } from "../../../shared/types/chat";
 import { appendEvent as perfAppend, isRunActive as isPerfRunActive } from "../perf/perfLog";
@@ -3894,6 +3894,17 @@ export function registerIpc({
       && buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50) {
       return "image/webp";
     }
+    if (buffer.length >= 4
+      && ((buffer[0] === 0x49 && buffer[1] === 0x49 && buffer[2] === 0x2A && buffer[3] === 0x00)
+        || (buffer[0] === 0x4D && buffer[1] === 0x4D && buffer[2] === 0x00 && buffer[3] === 0x2A))) {
+      return "image/tiff";
+    }
+    if (buffer.length >= 12 && buffer.toString("ascii", 4, 8) === "ftyp") {
+      const brand = buffer.toString("ascii", 8, 12);
+      if (["heic", "heix", "mif1", "msf1"].includes(brand)) {
+        return brand === "mif1" || brand === "msf1" ? "image/heif" : "image/heic";
+      }
+    }
     if (buffer.length >= 2 && buffer[0] === 0x42 && buffer[1] === 0x4D) {
       return "image/bmp";
     }
@@ -4088,7 +4099,7 @@ export function registerIpc({
         throw new Error(legacyAttachmentCapMessage("Temporary attachments"));
       }
       try {
-        const converted = await convertHeicBufferToJpeg(
+        const converted = await convertImageBufferToJpeg(
           content,
           filename,
           arg.mimeType,
@@ -4101,7 +4112,7 @@ export function registerIpc({
           mimeType: converted.mimeType,
         };
       } catch (error) {
-        if (error instanceof HeicAttachmentConversionError) {
+        if (error instanceof ImageAttachmentConversionError) {
           return { ok: false, errorCode: error.code };
         }
         throw error;
@@ -4131,6 +4142,24 @@ export function registerIpc({
     // file's *bytes*, not its extension, so a renderer can't smuggle
     // arbitrary text/binary back as a base64 `image/png` data URL.
     const { data, mimeType } = await readImageFileAndSniffMime(filePath);
+    if (mimeType === "image/tiff" || mimeType === "image/heic" || mimeType === "image/heif") {
+      try {
+        const converted = await convertImageBufferToJpeg(
+          data,
+          path.basename(filePath),
+          mimeType,
+          { tempRoot: app.getPath("temp") },
+        );
+        return {
+          dataUrl: `data:${converted.mimeType};base64,${converted.data.toString("base64")}`,
+        };
+      } catch (error) {
+        if (error instanceof ImageAttachmentConversionError && error.code === "unavailable") {
+          throw new Error("TIFF and HEIC image previews are available on macOS only.");
+        }
+        throw error;
+      }
+    }
     return {
       dataUrl: `data:${mimeType};base64,${data.toString("base64")}`,
     };
