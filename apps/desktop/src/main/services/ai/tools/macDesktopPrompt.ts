@@ -19,11 +19,21 @@
 export const MAC_DESKTOP_PROMPT_LINE =
   "This lane has a private macOS screen (Mac Desktop). Drive it with `ade mac-desktop` — observe first, act on the handles it returns; read the **ade-computer-use** skill before your first action.";
 
+/** The same line for a Windows host, whose lane screen is the Windows Desktop. */
+export const WINDOWS_DESKTOP_PROMPT_LINE =
+  "This lane has a private Windows screen (Windows Desktop). Drive it with `ade screen` — observe first, act on the handles it returns; read the **ade-computer-use** skill before your first action.";
+
 /**
- * @param enabled True when this lane has a Mac Desktop display right now. The
+ * @param enabled True when this lane has a lane display right now. The
  *   caller asks the runtime service directly, so there is one answer rather
  *   than a state object two callers could fill in differently.
+ * @param hostPlatform The platform of the machine that hosts the lane's
+ *   screen. A Windows host gets the Windows line; anything else the Mac one.
  */
-export function buildMacDesktopDirective(enabled: boolean): string | null {
-  return enabled ? MAC_DESKTOP_PROMPT_LINE : null;
+export function buildMacDesktopDirective(
+  enabled: boolean,
+  hostPlatform?: NodeJS.Platform | null,
+): string | null {
+  if (!enabled) return null;
+  return hostPlatform === "win32" ? WINDOWS_DESKTOP_PROMPT_LINE : MAC_DESKTOP_PROMPT_LINE;
 }

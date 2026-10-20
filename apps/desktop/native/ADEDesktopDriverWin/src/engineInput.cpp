@@ -98,12 +98,16 @@ Json Engine::accessibilityInput(Lane& lane, const std::string& command, const Js
   if (command == "click") {
     UiaElement e = resolveTarget(lane.laneId, payload);
     out["resolvedIndex"] = e.index;
-    if (priv) raiseOnPrivateSeat(e.window);
+    if (priv) {
+      failIfElevatedWindow(e.window, false);
+      raiseOnPrivateSeat(e.window);
+    }
     if (uia_.invoke(e)) return out;
     POINT c = centerOf(e.frame);
     int count = static_cast<int>(payload["count"].asInt(1));
     std::string button = payload["button"].str("left");
     if (priv) {
+      failIfElevatedWindow(WindowFromPoint(c), false);
       if (!sendClick(c.x, c.y, button, count)) failLocked();
     } else {
       postClick(e.window, c.x, c.y, button, count);
@@ -129,7 +133,11 @@ Json Engine::accessibilityInput(Lane& lane, const std::string& command, const Js
       uia_.remember(lane.laneId, observation);
       haveTarget = uia_.newestFocused(lane.laneId, e);
       if (!haveTarget && priv) {
-        if (!forceForeground(named) || currentForeground() != named) fail(code::kNoWindow, "Windows could not focus that window; no text was sent.");
+        failIfElevatedWindow(named, false);
+        if (!forceForeground(named) || currentForeground() != named) {
+          failIfElevatedWindow(named);
+          fail(code::kWindowActionFailed, "Windows could not focus that window; no text was sent.");
+        }
         if (clear && !sendKeys("a", {"ctrl"})) failLocked();
         if (!sendText(text)) failLocked();
         return out;
@@ -150,8 +158,11 @@ Json Engine::accessibilityInput(Lane& lane, const std::string& command, const Js
       HWND window = haveTarget ? e.window : currentForeground();
       if (!window || std::none_of(windows.begin(), windows.end(), [&](const WinInfo& w) { return w.hwnd == window; }))
         fail(code::kNoWindow, "Focus a window belonging to this lane before typing.");
-      if (!forceForeground(window) || currentForeground() != window)
-        fail(code::kNoWindow, "Windows could not focus this lane's window; no text was sent.");
+      failIfElevatedWindow(window, false);
+      if (!forceForeground(window) || currentForeground() != window) {
+        failIfElevatedWindow(window);
+        fail(code::kWindowActionFailed, "Windows could not focus this lane's window; no text was sent.");
+      }
       if (haveTarget && !uia_.focus(e)) fail(code::kHandleExpired, "The text target is no longer available. Observe again.");
       if (clear && !sendKeys("a", {"ctrl"})) failLocked();
       if (!sendText(text)) failLocked();
@@ -171,6 +182,7 @@ Json Engine::accessibilityInput(Lane& lane, const std::string& command, const Js
   if (command == "setValue") {
     UiaElement e = resolveTarget(lane.laneId, payload);
     out["resolvedIndex"] = e.index;
+    if (priv) failIfElevatedWindow(e.window, false);
     if (!uia_.setValue(e, widen(payload["value"].str()))) {
       fail(code::kInvalidArgument, e.role + " refused a value.");
     }
@@ -199,7 +211,11 @@ Json Engine::accessibilityInput(Lane& lane, const std::string& command, const Js
     if (!window && !windows.empty()) window = windows.front().hwnd;
     if (!window) fail(code::kNoWindow, "Lane " + lane.laneId + " has a screen but no window to send a key to.");
     if (priv) {
-      if (!forceForeground(window) || currentForeground() != window) fail(code::kNoWindow, "Windows could not focus the requested window; no key was sent.");
+      failIfElevatedWindow(window, false);
+      if (!forceForeground(window) || currentForeground() != window) {
+        failIfElevatedWindow(window);
+        fail(code::kWindowActionFailed, "Windows could not focus the requested window; no key was sent.");
+      }
       if (!sendKeys(key, modifiers)) failLocked();
       return out;
     }
@@ -212,6 +228,7 @@ Json Engine::accessibilityInput(Lane& lane, const std::string& command, const Js
     if (hasTarget(payload)) {
       UiaElement e = resolveTarget(lane.laneId, payload);
       out["resolvedIndex"] = e.index;
+      if (priv) failIfElevatedWindow(e.window, false);
       if (uia_.scroll(e, direction, amount)) return out;
       POINT c = centerOf(e.frame);
       if (priv) {
@@ -292,12 +309,18 @@ Json Engine::realInput(Lane& lane, const std::string& command, const Json& paylo
     POINT p = point("at");
     std::string button = payload["button"].str("left");
     int count = static_cast<int>(payload["count"].asInt(1));
-    ok = priv ? sendClick(p.x, p.y, button, count) : postClick(windowAt(p), p.x, p.y, button, count);
+    if (priv) {
+      failIfElevatedWindow(WindowFromPoint(p), false);
+      ok = sendClick(p.x, p.y, button, count);
+    } else {
+      ok = postClick(windowAt(p), p.x, p.y, button, count);
+    }
   } else if (command == "drag") {
     POINT from = point("from");
     POINT to = point("to");
     int duration = static_cast<int>(payload["durationMs"].asInt(300));
     if (priv) {
+      failIfElevatedWindow(WindowFromPoint(from), false);
       ok = sendDrag(from.x, from.y, to.x, to.y, duration);
     } else {
       HWND w = windowAt(from);
@@ -318,7 +341,12 @@ Json Engine::realInput(Lane& lane, const std::string& command, const Json& paylo
     POINT p = point("at");
     std::string direction = payload["direction"].str("down");
     int amount = static_cast<int>(payload["amount"].asInt(3));
-    ok = priv ? sendScroll(p.x, p.y, direction, amount) : postScroll(windowAt(p), p.x, p.y, direction, amount);
+    if (priv) {
+      failIfElevatedWindow(WindowFromPoint(p), false);
+      ok = sendScroll(p.x, p.y, direction, amount);
+    } else {
+      ok = postScroll(windowAt(p), p.x, p.y, direction, amount);
+    }
   } else if (command == "press" || command == "type") {
     auto windows = laneWindows(lane);
     UiaElement element;
@@ -332,7 +360,11 @@ Json Engine::realInput(Lane& lane, const std::string& command, const Json& paylo
       target = windows.empty() ? nullptr : windows.front().hwnd;
     HWND user = priv ? nullptr : currentForeground();
     if (!target) fail(code::kNoWindow, "This lane has no window to receive input.");
-    if (!forceForeground(target) || currentForeground() != target) fail(code::kNoWindow, "Windows could not focus this lane window; no input was sent.");
+    failIfElevatedWindow(target, false);
+    if (!forceForeground(target) || currentForeground() != target) {
+      failIfElevatedWindow(target);
+      fail(code::kWindowActionFailed, "Windows could not focus this lane window; no input was sent.");
+    }
     if (explicitTarget) {
       if (!uia_.focus(element)) fail(code::kHandleExpired, "The input target is no longer available. Observe again.");
       out["resolvedIndex"] = element.index;

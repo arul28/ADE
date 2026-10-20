@@ -9,6 +9,8 @@ import {
   MAC_DESKTOP_OUT_PATH_OUTSIDE_ROOT_CODE,
   MAC_DESKTOP_PERMISSION_REQUIRED_CODE,
   MAC_DESKTOP_UNSUPPORTED_PLATFORM_CODE,
+  WINDOWS_DESKTOP_ELEVATED_WINDOW_CODE,
+  WINDOWS_DESKTOP_WINDOW_ACTION_FAILED_CODE,
 } from "../../desktop/src/shared/types/macDesktop";
 import {
   buildCliPlan,
@@ -314,6 +316,10 @@ describe("macDesktopErrorHint", () => {
     // proof skill tells agents to write under.
     expect(macDesktopErrorHint(`${MAC_DESKTOP_OUT_PATH_OUTSIDE_ROOT_CODE}: /etc/x.png is outside both`))
       .toMatch(/lane worktree.*\$TMPDIR/);
+    expect(macDesktopErrorHint(`${WINDOWS_DESKTOP_ELEVATED_WINDOW_CODE}: an administrator window is in front`))
+      .toMatch(/Ask the user.*Do not close it yourself/);
+    expect(macDesktopErrorHint(`${WINDOWS_DESKTOP_WINDOW_ACTION_FAILED_CODE}: focus failed`))
+      .toContain("could not complete that window action");
     expect(macDesktopErrorHint("something else entirely")).toBeNull();
   });
 
@@ -372,6 +378,61 @@ describe("ade mac-desktop text output", () => {
       "mac-desktop-status",
     );
     expect(linux.startsWith(LANE_SCREEN_LINUX_UNSUPPORTED_MESSAGE)).toBe(true);
+  });
+
+  it("marks administrator windows and explains the Windows private sign-in", () => {
+    const elevatedWindow = {
+      id: 71,
+      appName: "wsl.exe",
+      title: "Administrator: Ubuntu",
+      laneId: "lane-1",
+      origin: "adopted",
+      onDisplayId: 8,
+      elevated: true,
+    };
+    const status = formatOutput(
+      {
+        platform: "win32",
+        supported: true,
+        display: {
+          name: "Windows private",
+          displayId: 8,
+          mode: "virtual",
+          width: 1920,
+          height: 1080,
+          seatMode: "private",
+        },
+        windows: [elevatedWindow],
+        lanes: [],
+      },
+      { text: true } as never,
+      "mac-desktop-status",
+    );
+    expect(status).toContain("wsl.exe [admin]");
+    expect(status).toContain("Warning: An administrator window is on this screen");
+    expect(status).toContain("This private seat is a real sign-in; sign-in tasks and startup apps run there too.");
+
+    const sharedStatus = formatOutput(
+      {
+        platform: "win32",
+        supported: true,
+        display: { name: "Windows shared", displayId: 8, mode: "offscreen-region", width: 1920, height: 1080, seatMode: "shared" },
+        windows: [elevatedWindow],
+        lanes: [],
+      },
+      { text: true } as never,
+      "mac-desktop-status",
+    );
+    expect(sharedStatus).not.toContain("Warning: An administrator window is on this screen");
+    expect(sharedStatus).not.toContain("This private seat is a real sign-in");
+
+    const windows = formatOutput(
+      { windows: [elevatedWindow] },
+      { text: true } as never,
+      "mac-desktop-windows",
+    );
+    expect(windows).toContain("wsl.exe [admin]");
+    expect(windows).toContain("ADE cannot click, type into, focus past or minimize it");
   });
 
   it("prints stop's quit apps and left-open sentences in full", () => {
@@ -467,6 +528,7 @@ describe("ade mac-desktop text output", () => {
   it("prints an action result as what it hit, whether it changed anything, and the state that followed", () => {
     const text = formatOutput(
       {
+        platform: "darwin",
         ok: true,
         action: "click",
         mode: "accessibility",

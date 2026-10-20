@@ -189,6 +189,7 @@ Json windowToJson(const WinInfo& w, const std::string& laneId, const std::string
   j["origin"] = origin.empty() ? "claimed" : origin;
   j["onDisplayId"] = laneId.empty() ? Json() : Json(displayId);
   j["minimized"] = w.minimized;
+  j["elevated"] = isWindowElevated(w.hwnd);
   j["singleInstance"] = false;
   j["iconPng"] = Json();
   return j;
@@ -797,11 +798,15 @@ Json Engine::windowCommand(const std::string& op, const Json& req, std::unique_l
   HWND hwnd = requireLaneWindow(*lane, windowId);
   Json out = Json::Object{{"windowId", windowId}};
   if (op == "window.focus") {
+    if (mode_ == Mode::Private) failIfElevatedWindow(hwnd, false);
     if (IsIconic(hwnd)) ShowWindow(hwnd, mode_ == Mode::Private ? SW_RESTORE : SW_SHOWNOACTIVATE);
     bool focused;
     if (mode_ == Mode::Private) {
       focused = forceForeground(hwnd) && currentForeground() == hwnd;
-      if (!focused) fail(code::kNoWindow, "Windows did not bring window " + std::to_string(windowId) + " to the front.");
+      if (!focused) {
+        failIfElevatedWindow(hwnd);
+        fail(code::kWindowActionFailed, "Windows did not bring window " + std::to_string(windowId) + " to the front.");
+      }
     } else {
       focused = SetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE) != FALSE;
     }
@@ -809,6 +814,10 @@ Json Engine::windowCommand(const std::string& op, const Json& req, std::unique_l
   } else if (op == "window.minimize") {
     ShowWindow(hwnd, SW_SHOWMINNOACTIVE);
     out["minimized"] = IsIconic(hwnd) != FALSE;
+    if (!out["minimized"].asBool()) {
+      failIfElevatedWindow(hwnd);
+      fail(code::kWindowActionFailed, "Windows did not minimize window " + std::to_string(windowId) + ".");
+    }
   } else {
     // WM_CLOSE asks; it never forces. An app with unsaved work may answer
     // with its own prompt, which then shows on the lane's screen, and the

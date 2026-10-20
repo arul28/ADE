@@ -50760,6 +50760,7 @@ export function createAgentChatService(args: {
             ? null
             : buildMacDesktopDirective(
                 macDesktopRuntime?.hasDisplaySync(executionContext.laneId ?? null) === true,
+                macDesktopRuntime?.seatHostPlatform?.() ?? null,
               ),
           shouldInjectAppleDeviceDirective ? appleDevice.directive : null,
           contextAttachmentPrompt || null,
