@@ -13450,6 +13450,32 @@ function iosSimulatorRootArgs(
 }
 
 /**
+ * A chat command that could not find its chat on this machine, when the chat
+ * may simply live on another machine on the account. The runtime answers with
+ * the same "not found" for both, and an agent handed a deep link to a chat on
+ * the Windows box read that as "the chat does not exist". Every `chat`
+ * subcommand except `handoff` takes `--machine`, so the hint can name the fix.
+ * Null when the command already targets a machine, or is not a `chat` command.
+ */
+function chatOtherMachineHint(argv: string[]): string | null {
+  let command: string[];
+  try {
+    command = parseCliArgs(argv).command;
+  } catch {
+    return null;
+  }
+  if (command[0]?.toLowerCase() !== "chat" || command[1]?.toLowerCase() === "handoff") return null;
+  const flags = flagNamesOutsideFreeText(command);
+  if (flags.has("--machine") || flags.has("--all-machines")) return null;
+  return "If this chat lives on another machine, find it with: ade chat list --all-machines --text, then re-run with --machine <name>";
+}
+
+/** The hint for a thrown error whose text says the chat was not found. */
+function chatNotFoundMachineHint(message: string, argv: string[]): string | null {
+  return /Chat session '[^']*' was not found/.test(message) ? chatOtherMachineHint(argv) : null;
+}
+
+/**
  * The one home for "what command do I run next" on iOS simulator failures.
  *
  * Service messages state the fact and the code and stop there — they are shared
@@ -13519,27 +13545,6 @@ function iosSimulatorErrorHint(
  * for the command), then take the first positional and resolve its alias.
  * Anything that is not an `ios-sim` invocation answers null.
  */
-/**
- * A chat command that could not find its chat on this machine, when the chat
- * may simply live on another machine on the account. The runtime answers with
- * the same "not found" for both, and an agent handed a deep link to a chat on
- * the Windows box read that as "the chat does not exist". Every `chat`
- * subcommand except `handoff` takes `--machine`, so the hint can name the fix.
- */
-function chatNotFoundMachineHint(message: string, argv: string[]): string | null {
-  if (!/Chat session '[^']*' was not found/.test(message)) return null;
-  let command: string[];
-  try {
-    command = parseCliArgs(argv).command;
-  } catch {
-    return null;
-  }
-  if (command[0]?.toLowerCase() !== "chat" || command[1]?.toLowerCase() === "handoff") return null;
-  const flags = flagNamesOutsideFreeText(command);
-  if (flags.has("--machine") || flags.has("--all-machines")) return null;
-  return "If this chat lives on another machine, find it with: ade chat list --all-machines --text, then re-run with --machine <name>";
-}
-
 function iosSimulatorSubcommandFromArgv(argv: string[]): string | null {
   let command: string[];
   try {
@@ -34276,6 +34281,8 @@ async function runChatWaitCommand(
           waitFor: plan.waitFor,
           elapsedMs,
         };
+        const machineHint = chatOtherMachineHint(process.argv.slice(2));
+        if (machineHint) process.stderr.write(`${machineHint}\n`);
         return { output: formatOutput(result, options), exitCode: 1 };
       }
       if (!ownerWarned) {
@@ -35082,7 +35089,10 @@ async function main(): Promise<void> {
     }
     if (error instanceof CliExecutionError) {
       await writeProcessOutput(process.stderr, `ade: ${error.message}\n`);
-      const machineHint = chatNotFoundMachineHint(error.message, process.argv.slice(2));
+      // `executePlan` wraps a raw failure as "Failed while running …" and keeps
+      // the original text in `details.cause`.
+      const cause = typeof error.details.cause === "string" ? error.details.cause : "";
+      const machineHint = chatNotFoundMachineHint(`${error.message}\n${cause}`, process.argv.slice(2));
       if (machineHint) await writeProcessOutput(process.stderr, `${machineHint}\n`);
       await writeProcessOutput(
         process.stderr,
