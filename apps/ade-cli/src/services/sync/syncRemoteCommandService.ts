@@ -336,6 +336,7 @@ import {
 import { launchAgentChatCli } from "../../../../desktop/src/main/services/chat/agentChatCliLaunch";
 import { deleteApiKey } from "../../../../desktop/src/main/services/ai/apiKeyStore";
 import { resolveCodexComputerUseMcpConfig } from "../../../../desktop/src/main/utils/codexComputerUse";
+import { resolveTrackedCliUserMcp } from "../../../../desktop/src/main/services/mcp/trackedCliUserMcp";
 import type { createCtoStateService } from "../../../../desktop/src/main/services/cto/ctoStateService";
 import type { CtoMemoryService } from "../../../../desktop/src/main/services/cto/ctoMemoryService";
 import type { createLinearCredentialService } from "../../../../desktop/src/main/services/cto/linearCredentialService";
@@ -4950,6 +4951,14 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
     const resolvedInstance = provider === "shell"
       ? null
       : resolveProviderInstanceForLaunch(provider, parsed.instanceId);
+    const userMcp = provider === "shell"
+      ? null
+      : await resolveTrackedCliUserMcp({
+        provider,
+        cwd: resolveLaneWorktreePathForSync(args, parsed.laneId),
+        instance: resolvedInstance,
+        presetEnv: remotePreset?.env ?? null,
+      });
     const resolvedModel = trackedPreset?.model || parsed.modelId || parsed.model || null;
     const resumeMetadata = provider === "shell"
       ? null
@@ -4990,6 +4999,7 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
         initialPrompt: parsed.initialInput,
         laneWorktreePath: resolveLaneWorktreePathForSync(args, parsed.laneId),
         ...(provider === "codex" ? { codexComputerUse } : {}),
+        userMcp,
         // The phone can pick a provider account too; without this a
         // remote-started CLI silently ran as the machine's default while the
         // same launch from the desktop honoured the choice.

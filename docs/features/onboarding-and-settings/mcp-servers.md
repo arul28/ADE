@@ -255,6 +255,13 @@ strict MCP mode gets none. Claude receives them through the launch's MCP
 config (on its command line, as registry servers already are); Codex through
 the thread config. Nothing is written to either config home.
 
+Tracked Claude and Codex CLIs (Work terminals ADE launches, resumes, imports
+or forks, including from the phone) get the same servers and the same `npx`
+re-pointing (`trackedCliUserMcp.ts`), as `-c mcp_servers.<name>.<key>=…`
+flags for Codex and one `--mcp-config` for Claude. One difference: a server
+whose definition carries env or header values is left out, because a tracked
+CLI's command line can be typed into the terminal as text.
+
 ## `npx` servers start without npm's launcher
 
 `npx <package>` keeps a whole npm CLI (`npm exec ...`) running as the parent
@@ -323,5 +330,6 @@ nothing. Servers a Codex plugin adds are not in the file and still start.
 | `apps/desktop/src/main/services/chat/mcpRegistryLaunch.ts` | The registry as one chat launch sees it. |
 | `apps/desktop/src/main/services/mcp/npxDirectLaunch.ts` | Runs an `npx` server's installed package with `node` when it is provably the copy npx would run. |
 | `apps/desktop/src/main/services/mcp/mcpUserServersForLaunch.ts` | The user's own servers for one Claude or Codex launch: the machine login's servers on an ADE account, and `npx` servers re-pointed. |
+| `apps/desktop/src/main/services/mcp/trackedCliUserMcp.ts` | The same servers for a tracked Claude or Codex CLI, without secret-bearing ones; `trackedCliUserMcpFlags` in `shared/cliLaunch.ts` renders them. |
 | `apps/desktop/src/main/services/mcp/codexMcpOff.ts` | Switches every config.toml server off by name for Codex runs that need none. |
 | `apps/desktop/src/renderer/components/settings/mcp/` | The page, the add and edit dialog, the hook and the layout CSS. |

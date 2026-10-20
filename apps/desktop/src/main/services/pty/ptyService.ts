@@ -22,6 +22,7 @@ import {
   resolveCodexComputerUseMcpConfig,
   type CodexComputerUseMcpConfig,
 } from "../../utils/codexComputerUse";
+import { resolveTrackedCliUserMcp } from "../mcp/trackedCliUserMcp";
 import { runGit } from "../git/git";
 import { signalProcessGroup } from "../shared/utils";
 import { attachOpenCodeTerminal, listAdeOpenCodeSessions } from "../opencode/openCodeTerminal";
@@ -132,6 +133,7 @@ import {
   type ProviderInstanceLaunchTarget,
   type TrackedCliLaunchCommand,
   type TrackedCliPresetLaunch,
+  type TrackedCliUserMcp,
   type WindowsShellLaunchMode,
   withClaudePluginInCommandLine,
   withClaudeSessionIdInCommandLine,
@@ -216,7 +218,7 @@ function normalizeStartupCommandDelayMs(value: unknown): number {
 export function materializeRuntimeCliLaunch(
   runtimeCliLaunch: NonNullable<PtyCreateArgs["runtimeCliLaunch"]>,
   laneWorktreePath: string,
-  options: { sessionActivityReportingEnabled?: boolean } = {},
+  options: { sessionActivityReportingEnabled?: boolean; userMcp?: TrackedCliUserMcp | null } = {},
 ): TrackedCliLaunchCommand {
   const provider = String(runtimeCliLaunch.provider);
   if (!isLaunchProfile(provider) || provider === "shell") {
@@ -247,6 +249,7 @@ export function materializeRuntimeCliLaunch(
       }
       : {}),
     sessionActivityReportingEnabled: options.sessionActivityReportingEnabled,
+    ...(options.userMcp ? { userMcp: options.userMcp } : {}),
   });
 }
 
@@ -5724,11 +5727,33 @@ export function createPtyService({
     }
   };
 
+  /**
+   * The user's own MCP servers for resuming a tracked Claude or Codex CLI:
+   * the machine login's servers its account lacks, and `npx` servers without
+   * npm's launcher (`trackedCliUserMcp.ts`). Resolved before the resume
+   * command is built, which stays synchronous.
+   */
+  const resolveResumeUserMcp = async (
+    session: TerminalSessionSummary,
+    provider: string,
+  ): Promise<TrackedCliUserMcp | null> => {
+    if (provider !== "claude" && provider !== "codex") return null;
+    const metadata = session.resumeMetadata ?? null;
+    return resolveTrackedCliUserMcp({
+      provider,
+      cwd: resolveSessionRunCwd(session),
+      projectRoot,
+      instance: metadata ? resolveProviderInstanceForLaunch(provider, trackedCliResumeInstanceId(metadata)) : null,
+      presetEnv: resolveResumePresetLaunch(provider, metadata)?.env ?? null,
+    });
+  };
+
   const buildResumeCommandForSession = (
     session: TerminalSessionSummary,
     provider: TerminalResumeProvider,
     overrides: ReturnType<typeof resumeLaunchOverrides> & { prompt?: string | null },
     codexComputerUse: CodexComputerUseMcpConfig | null = null,
+    userMcp: TrackedCliUserMcp | null = null,
   ): { launch: TrackedCliLaunchCommand | null; promptAtLaunch: boolean } => {
     const prompt = typeof overrides.prompt === "string" && overrides.prompt.trim().length
       ? overrides.prompt
@@ -5756,6 +5781,7 @@ export function createPtyService({
       ...overrides,
       ...(resumeInstance ? { instance: resumeInstance } : {}),
       ...(resumePreset ? { preset: resumePreset } : {}),
+      ...(userMcp ? { userMcp } : {}),
     };
     const metadataOverrides = provider === "cursor"
       ? { ...baseOverrides, prompt: null }
@@ -6011,10 +6037,23 @@ export function createPtyService({
           credentialId: runtimeCliLaunch.credentialId ?? null,
         });
       }
+      const runtimeUserMcp = runtimeCliLaunch
+        ? await resolveTrackedCliUserMcp({
+            provider: String(runtimeCliLaunch.provider),
+            cwd: worktreePath,
+            projectRoot,
+            instance: resolveProviderInstanceForLaunch(String(runtimeCliLaunch.provider), runtimeCliLaunch.instanceId),
+            presetEnv: resolveTrackedCliPreset(String(runtimeCliLaunch.provider), {
+              presetId: runtimeCliLaunch.presetId ?? null,
+              credentialId: runtimeCliLaunch.credentialId ?? null,
+            })?.preset?.env ?? null,
+          })
+        : null;
       const materializedRuntimeLaunch = runtimeCliLaunch
         ? materializeRuntimeCliLaunch(runtimeCliLaunch, worktreePath, {
             sessionActivityReportingEnabled:
               sessionActivityReportingEnabled !== false && Boolean(runtimeSocketPath?.trim()),
+            userMcp: runtimeUserMcp,
           })
         : null;
       let effectiveArgs: PtyCreateArgs = materializedRuntimeLaunch
@@ -7737,6 +7776,7 @@ export function createPtyService({
       const codexComputerUse = provider === "codex"
         ? await resolveCodexComputerUseMcpConfig()
         : null;
+      const resumeUserMcp = await resolveResumeUserMcp(resumableSession, provider);
       // Resolve Computer Use before this single-flight snapshot. Once the
       // snapshot is taken, command construction and flight creation must stay
       // synchronous so a concurrent send cannot also assume its prompt will be
@@ -7750,6 +7790,7 @@ export function createPtyService({
           ...(!resumeFlightAlreadyInProgress ? { prompt: text } : {}),
         },
         codexComputerUse,
+        resumeUserMcp,
       );
       const promptAtLaunch = !resumeFlightAlreadyInProgress
         && builtResume.promptAtLaunch;
@@ -7813,11 +7854,13 @@ export function createPtyService({
       const codexComputerUse = provider === "codex"
         ? await resolveCodexComputerUseMcpConfig()
         : null;
+      const resumeUserMcp = await resolveResumeUserMcp(resumableSession, provider);
       const { launch: resumeLaunch } = buildResumeCommandForSession(
         resumableSession,
         provider,
         resumeLaunchOverrides(args),
         codexComputerUse,
+        resumeUserMcp,
       );
       if (!resumeLaunch) {
         throw new Error(`Terminal session '${sessionId}' does not have a resume command.`);
@@ -7991,10 +8034,20 @@ export function createPtyService({
         const reattachPreset = metadata
           ? resolveResumePresetLaunch(metadata.provider, metadata)
           : null;
+        const reattachUserMcp = metadata
+          ? await resolveTrackedCliUserMcp({
+            provider: metadata.provider,
+            cwd: resolveSessionRunCwd(session),
+            projectRoot,
+            instance: reattachInstance,
+            presetEnv: reattachPreset?.env ?? null,
+          })
+          : null;
         const resumeOverrides = {
           ...(metadata?.provider === "codex" ? { codexComputerUse } : {}),
           ...(reattachInstance ? { instance: reattachInstance } : {}),
           ...(reattachPreset ? { preset: reattachPreset } : {}),
+          ...(reattachUserMcp ? { userMcp: reattachUserMcp } : {}),
         };
         const resumeLaunch = withHarnessPresetEnv(withProviderInstanceEnv(
           metadata && process.platform === "win32"

@@ -16,6 +16,7 @@ import { resolveProviderInstanceForLaunch } from "../../../../../ade-cli/src/ser
 import { resolveTrackedCliPreset } from "./harnessPresetLaunch";
 import { prepareHarnessLaunch } from "./harnessLaunchPrepare";
 import { resolveCodexComputerUseMcpConfig } from "../../utils/codexComputerUse";
+import { resolveTrackedCliUserMcp } from "../mcp/trackedCliUserMcp";
 
 type LaneServiceForCliLaunch = Pick<
   ReturnType<typeof createLaneService>,
@@ -127,6 +128,14 @@ export async function launchAgentChatCli(
     initialPrompt: kickoffPrompt,
     laneWorktreePath: worktreePath,
     ...(provider === "codex" ? { codexComputerUse: await resolveCodexComputerUseMcpConfig() } : {}),
+    // The user's own MCP servers: the machine login's when this account's
+    // config home lacks them, and `npx` ones without npm's launcher.
+    userMcp: await resolveTrackedCliUserMcp({
+      provider,
+      cwd: worktreePath,
+      instance,
+      presetEnv: presetPlan?.env ?? null,
+    }),
     // Handing a chat to a CLI must not also hand it to a different account.
     // Resolution (including the silent fallback for a removed account) lives in
     // `resolveProviderInstanceForLaunch`, so this path cannot drift from the
