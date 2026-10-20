@@ -461,6 +461,31 @@ describe("createAgentChatService", () => {
       service.forceDisposeAll();
     });
 
+    it("re-arms the directive when compaction completes before dispatch bookkeeping settles", async () => {
+      const fixture = installClaudeResponseFixture({
+        sdkSessionId: "sdk-cu-compact",
+        responseText: "ok",
+        compactAfterTurn: 1,
+      });
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      installAvailableBroker(service);
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+
+      await service.runSessionTurn({ sessionId: session.id, text: "first" });
+      await settleDirectiveBookkeeping();
+      await service.runSessionTurn({ sessionId: session.id, text: "after compaction" });
+      await settleDirectiveBookkeeping();
+      await service.runSessionTurn({ sessionId: session.id, text: "same context" });
+      await settleDirectiveBookkeeping();
+
+      const prompts = fixture.send.mock.calls.map(([message]) => claudeInputText(message));
+      expect(events.some(({ event }) => event.type === "context_compact" && event.state === "completed")).toBe(true);
+      // The initial SDK setup also calls send; the final three are the user turns.
+      expect(prompts.slice(-3).map((text) => text.includes("## Computer Use"))).toEqual([true, true, false]);
+      service.forceDisposeAll();
+    });
+
     it("does not let a local `/fast` suppress the directive for later real turns", async () => {
       const fixture = installClaudeResponseFixture({ sdkSessionId: "sdk-cu-fast", responseText: "ok" });
       const { service } = createService();

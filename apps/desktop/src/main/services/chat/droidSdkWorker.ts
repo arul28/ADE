@@ -34,6 +34,7 @@ import { settleWithin } from "../shared/utils";
 import { summarizeDroidAskUser } from "./droidSdkAskUser";
 import { ensureDroidSpawnsAreWindowless } from "./droidSdkWindowsHide";
 import { materializeWorkerImages, withOmittedImageHints } from "./workerAttachmentImages";
+import { cliSignInTransport } from "./droidSdkCliTransport";
 
 // Must run before the SDK spawns `droid`; see droidSdkWindowsHide.ts.
 ensureDroidSpawnsAreWindowless();
@@ -308,33 +309,6 @@ function sessionOptions(
     permissionHandler: requestPermission,
     askUserHandler: requestAskUser,
   };
-}
-
-/**
- * Droid's own sign-in, when there is no API key.
- *
- * From @factory/droid-sdk 0.7.0 the SDK's built-in transport throws "No
- * Factory API key found" unless `apiKey` or FACTORY_API_KEY is set, although
- * the Droid CLI it spawns can run on the user's `droid` login. Handing the SDK
- * a transport ADE opened itself skips that check and leaves auth to the CLI,
- * as it was before 0.7.0. With a key in the environment the SDK's own path is
- * used, unchanged. Each call opens a new transport: a session or client owns
- * and closes the one it is given.
- */
-async function cliSignInTransport(
-  sdk: DroidSdkModule,
-  init: Pick<DroidSdkWorkerInit, "droidPath" | "laneRoot">,
-): Promise<{ transport?: DroidSdkNodeTypes.CreateSessionOptions["transport"] }> {
-  if (process.env.FACTORY_API_KEY?.trim()) return {};
-  const transport = new sdk.ProcessTransport({
-    droidExecPath: init.droidPath,
-    cwd: init.laneRoot,
-    // ProcessTransport merges this with its host process environment before
-    // applying its default SDK environment handling.
-    env: { FACTORY_UPSTREAM_CLIENT_TYPE: "sdk" },
-  });
-  await transport.connect();
-  return { transport };
 }
 
 function resumeSessionOptions(init: DroidSdkWorkerInit): DroidSdkNodeTypes.ResumeSessionOptions {

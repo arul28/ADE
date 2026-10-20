@@ -6,6 +6,7 @@ import {
   acquireDroidSdkConnection,
   releaseDroidSdkConnection,
 } from "./droidSdkPool";
+import { cliSignInTransport } from "./droidSdkCliTransport";
 
 const forkMock = vi.hoisted(() => vi.fn());
 
@@ -113,6 +114,44 @@ function acquireForChat(chat: string) {
 
 afterEach(() => {
   forkMock.mockReset();
+  vi.unstubAllEnvs();
+});
+
+describe("Droid CLI sign-in transport", () => {
+  it.each([
+    { label: "uses the caller-owned CLI transport without a Factory key", apiKey: "", usesCliTransport: true },
+    { label: "leaves transport selection to the SDK when a Factory key exists", apiKey: "factory-key", usesCliTransport: false },
+  ])("$label", async ({ apiKey, usesCliTransport }) => {
+    vi.stubEnv("FACTORY_API_KEY", apiKey);
+    const connected = vi.fn().mockResolvedValue(undefined);
+    const constructed = vi.fn();
+    class FakeProcessTransport {
+      constructor(readonly options: unknown) {
+        constructed(options);
+      }
+
+      connect = connected;
+    }
+
+    const result = await cliSignInTransport(
+      { ProcessTransport: FakeProcessTransport } as any,
+      { droidPath: "/tools/droid", laneRoot: "/work/lane" },
+    );
+
+    expect(constructed).toHaveBeenCalledTimes(usesCliTransport ? 1 : 0);
+    if (usesCliTransport) {
+      expect(result.transport).toBeInstanceOf(FakeProcessTransport);
+      expect(connected).toHaveBeenCalledOnce();
+      expect((result.transport as unknown as FakeProcessTransport).options).toEqual({
+        droidExecPath: "/tools/droid",
+        cwd: "/work/lane",
+        env: { FACTORY_UPSTREAM_CLIENT_TYPE: "sdk" },
+      });
+    } else {
+      expect(result).toEqual({});
+      expect(connected).not.toHaveBeenCalled();
+    }
+  });
 });
 
 describe("Droid SDK pool", () => {
@@ -136,7 +175,9 @@ describe("Droid SDK pool", () => {
         ADE_DEFAULT_ROLE: "agent",
       },
       allowedMcpServerNames: [],
+      systemPromptAppend: "ADE session framing",
     };
+    child.initResultExtra = { systemPromptAppend: "ADE session framing" };
 
     const [first, second] = await Promise.all([
       acquireDroidSdkConnection(args),
@@ -158,6 +199,8 @@ describe("Droid SDK pool", () => {
     expect(second.pooled).toBe(first.pooled);
     expect(second.generation).toBe(first.generation);
     expect((child.initPayloads[0] as { allowedMcpServerNames?: string[] }).allowedMcpServerNames).toEqual([]);
+    expect(child.initPayloads[0]).toMatchObject({ systemPromptAppend: "ADE session framing" });
+    expect(first.pooled.systemPromptAppend).toBe("ADE session framing");
 
     releaseDroidSdkConnection(poolKey, first.generation);
     expect(child.disposeCount).toBe(0);

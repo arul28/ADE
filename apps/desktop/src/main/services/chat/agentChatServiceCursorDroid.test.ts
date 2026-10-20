@@ -912,10 +912,10 @@ describe("createAgentChatService", () => {
       runtime: "droid-sdk",
       mode: "coding",
     }));
-    // The first prompt of a Droid session carries ADE's framing, then the request.
+    // ADE's framing belongs to the Droid session and stays out of repeated turns.
     const firstPrompt = String(mockState.droidPromptCalls[0]?.promptText ?? "");
-    expect(firstPrompt.startsWith("system prompt")).toBe(true);
-    expect(firstPrompt).toContain("## User Request");
+    expect(firstPrompt).not.toContain("system prompt");
+    expect(firstPrompt).toContain("Use the selected Droid model.");
     const settingsOrder = mockState.droidPooled.updateSettings.mock.invocationCallOrder[0];
     const firstPromptOrder = mockState.droidPooled.sendPrompt.mock.invocationCallOrder[0];
     expect(settingsOrder).toBeDefined();

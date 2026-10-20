@@ -983,6 +983,7 @@ vi.mock("./droidSdkPool", () => ({
         onReady: null,
       },
       sdkSessionId,
+      systemPromptAppend: typeof args.systemPromptAppend === "string" ? args.systemPromptAppend : null,
       currentModelId: initialSettings.modelId ?? "claude-sonnet-4-5-20250929",
       availableModels,
       request: vi.fn(async (type: string) => {
@@ -1874,6 +1875,7 @@ function installClaudeWakeupFixture(args: {
 function installClaudeResponseFixture(args: {
   sdkSessionId: string;
   responseText: string;
+  compactAfterTurn?: number;
 }) {
   let streamCall = 0;
   const send = vi.fn().mockResolvedValue(undefined);
@@ -1889,6 +1891,14 @@ function installClaudeResponseFixture(args: {
           slash_commands: [],
         };
         return;
+      }
+      if (args.compactAfterTurn === streamCall - 1) {
+        yield {
+          type: "system",
+          subtype: "compact_boundary",
+          session_id: args.sdkSessionId,
+          compact_metadata: { trigger: "auto", pre_tokens: 150_000, post_tokens: 18_000 },
+        };
       }
       yield {
         type: "assistant",

@@ -106,15 +106,14 @@ describe("createAgentChatService", () => {
       await vi.waitFor(() => { expect(mockState.droidPromptCalls.length).toBe(1); });
       const first = JSON.stringify(mockState.droidPromptCalls[0]);
 
-      // Droid's SDK takes no system prompt, so ADE prepends the whole harness
-      // prompt to every turn. That harness carries the shared ADE guidance —
-      // the note/ask mechanics included — which is why this asserts the harness
-      // was built for this turn rather than reading the block out of the
-      // payload: `buildCodingAgentSystemPrompt` is mocked to a sentinel here.
+      // Droid keeps ADE's framing on the session system prompt. The test pool
+      // reports that channel to the runtime, so the user request contains no
+      // copy of the framing in-band. Other launch directives may still apply.
       expect(vi.mocked(buildCodingAgentSystemPrompt)).toHaveBeenCalledWith(
         expect.objectContaining({ runtime: "droid-sdk" }),
       );
-      expect(first).toContain("system prompt");
+      expect(first).not.toContain("system prompt");
+      expect(mockState.droidPromptCalls[0]?.promptText).toContain("first");
 
       // And the per-turn prefix must NOT carry a second copy. It used to, so
       // every Droid turn paid for the ADE block twice.
