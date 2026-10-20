@@ -47,7 +47,9 @@ resolve docs + the matching `ade-perf-*` skill via `references/doc-map.md`.
   (add `--project-root <path>` to open a different project). It shares `~/.ade`,
   starts its brain with `--no-sync`, respects chat runtime ownership, never
   touches the installed brain service, and prints a dev isolation report first.
-  Never hand-start `ade serve`, never set a fresh `ADE_HOME`, never copy secrets.
+  Never hand-start `ade serve` or copy `~/.ade` secrets. Use a separate
+  `ADE_HOME` only for deliberate scratch-home work; a new home shows the
+  account gate, and full project isolation also needs a throwaway project.
 - **Start it DETACHED, with its own socket.** The command runs in the foreground
   for as long as the app is open, so running it normally holds your turn open
   and the window dies with the turn. Background it, give the lane its own
@@ -100,8 +102,7 @@ Five rules that cost hours when ignored:
   on `~/.ade-alpha` that opens `~/Projects/ADE` writes the same `ade.db` as the
   installed brain. Any `ade` call run from inside a registered project opens it.
   Real isolation is a different home AND a throwaway project that no other brain
-  has registered (check `<home>/projects.json`). On 2026-09-22 a "separate"
-  test brain held the main project's `ade.db` open for 12 hours.
+  has registered (check `<home>/projects.json`).
 - **A dev brain outlives its app.** The launcher spawns it detached so it
   survives Electron restarts. After stopping a dev desktop, confirm its brain
   actually exited — one ran orphaned on the shared home for five hours.
@@ -114,13 +115,16 @@ Five rules that cost hours when ignored:
   `lsof <project>/.ade/ade.db`.
 - **A hand-started brain needs `--role cto`.** `ade serve` defaults to role
   `agent`, which refuses desktop, phone and web clients. Start it as
-  `ade --role cto serve`. A brain started from an agent's shell drops that
-  agent's chat identity itself and says so on stderr.
+  `ade --role cto serve`. A brain or dev app started from an agent shell
+  scrubs the inherited caller, lane/project/workspace, default-role, ADE
+  provider-home, and Claude parent-session env itself; no env prefix is needed.
+  On its own socket, a brain leaves chats it does not run to the installed
+  machine brain when that brain is live on the project, including scheduled
+  wakes, restart recovery, and prewarm. Other secondary brains do not make one
+  another yield.
 
-When you only need to read or drive a lane, prefer an isolated home
-(`ADE_HOME=$HOME/.ade-<name>` plus `--no-sync` on its own socket) with a
-throwaway project registered only there, over sharing `~/.ade` or a real
-project with the installed app.
+For full isolation, use a separate home and a throwaway project registered
+only there: a separate `ADE_HOME` does not isolate the project's `.ade/ade.db`.
 
 ---
 
