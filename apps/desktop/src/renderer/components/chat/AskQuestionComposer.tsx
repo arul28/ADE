@@ -6,7 +6,9 @@ import {
   answeredQuestionCount,
   buildAnswers,
   foldedSummary,
+  isLoneTypedReply,
   isQuestionAnswered,
+  loneTypedReplyAnswers,
   notePlaceholder,
   optionsForQuestion,
   ownQuestionValue,
@@ -316,6 +318,7 @@ export function AskQuestionComposer({
   const answered = answeredQuestionCount(questions, picksById, effectiveNotes);
   const canProceed = answerState(picks, note) !== "EMPTY";
   const canSend = questions.length > 1 ? answered === questions.length : canProceed;
+  const loneTypedReply = isLoneTypedReply({ picks, note, totalAnswered: answered, totalQuestions: questions.length });
 
   /* Select MARKS. It never advances — the note field is right below it, and
      yanking the card away mid-thought is the behaviour being deleted. */
@@ -338,6 +341,10 @@ export function AskQuestionComposer({
   const submit = useCallback(() => {
     onSubmit(buildAnswers(questions, picksById, effectiveNotes));
   }, [effectiveNotes, onSubmit, picksById, questions]);
+  const submitLoneReply = useCallback(() => {
+    if (!question) return;
+    onSubmit(loneTypedReplyAnswers(questions, question.id, note));
+  }, [note, onSubmit, question, questions]);
 
   /* Paging is the one place the host-owned answer has to be moved by hand:
      stash what the shared editor holds under the question being left, then hand
@@ -804,6 +811,18 @@ export function AskQuestionComposer({
           <span className="font-mono text-[length:calc(var(--chat-font-size)*10/14)] tracking-[0.1em] text-fg/26">
             {safePage + 1} / {questions.length}
           </span>
+        ) : null}
+        {loneTypedReply ? (
+          <button
+            type="button"
+            disabled={responding}
+            data-testid="ask-question-send-reply"
+            title="Send just this reply; the other questions stay unanswered"
+            onClick={submitLoneReply}
+            className="rounded-lg px-3 py-1.5 font-mono text-[length:calc(var(--chat-font-size)*10/14)] font-bold uppercase tracking-[0.11em] text-fg/62 transition-colors hover:bg-fg/[0.05] hover:text-fg/85 disabled:pointer-events-none disabled:opacity-40"
+          >
+            Send note
+          </button>
         ) : null}
         <button
           type="button"
