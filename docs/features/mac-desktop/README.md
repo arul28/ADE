@@ -375,6 +375,25 @@ names the holding lane.
    Windows the user claimed from their own apps are never quit: they go back to
    the main screen. `appsLeftOpen` now lists only an app that survived the
    force quit.
+   **A brain restart is not a stop.** The brain service (`bootstrap.ts`,
+   `handOffAppsOnExit`) spawns the driver with
+   `ADE_DESKTOP_DRIVER_HANDOFF_PATH`. A driver that exits with it set
+   (an update, a service restart, a driver respawn) quits nothing. It records
+   each lane's display size and every window it held (frame relative to the
+   display, minimized or not), moves the apps the lane opened to the main
+   screen, sends borrowed windows home, and writes it all, with each app's
+   pid, bundle id and launch time, to
+   `<project>/.ade/cache/mac-desktop-handoff.json`. The next service start
+   (and the service after a lost driver) reads the file once, re-creates each
+   lane's screen at its old size (not written as the resolution preference)
+   and takes the apps back with `app.adopt`: an opened app becomes the lane's
+   again, borrowed windows are claimed again, and each window returns to its
+   old frame. `app.adopt` refuses a pid that no longer runs that bundle from
+   that launch. The driver ignores `SIGPIPE`: the brain exits right after its
+   SIGTERM, and the first log line of the shutdown used to kill the driver
+   before it handed anything off. A handoff older than 15 minutes, a removed lane, or an app that
+   quit meanwhile is left alone. Unsaved work survives. The in-app runtime
+   (`main.ts`) does not set it: quitting ADE there still quits the lanes' apps.
 5. **Teardown.** Lane delete and lane archive destroy the display through the
    lane teardown step, next to the file watchers — a `destroy_mac_desktop` step
    that runs on every platform and reports "no display" off macOS. A chat that
@@ -835,6 +854,8 @@ removed — it never reaches the proof drawer.
 - **One stream start per lane, and a stop outranks it.** On the driver, `CaptureStartReservations` refuses a second stream or recording start for a lane that is already starting: the second would run nested inside the first's run-loop pump. A stop during that wait cancels the reservation, and the start tears down what it built instead of installing it. On the service, every asker joins that one in-flight start. `streamGenerations` is the lane's stop count. A stop or `forgetLane` bumps it, and a start that resumes under a newer generation is torn down and rejected. A stale restart is one registered unit; if a stop overtakes it, the restart leaves any newer run alone.
 - **Accessibility walks are on a clock.** `AXWalkBudget` sets a 1 s messaging timeout on every element a walk reads, a 2 s process-wide timeout for calls outside a walk (shorter than the service's 5 s health timeout), a 5 s deadline for one `observe` walk, and a 2 s deadline for one `wait` poll. The first call into an app that times out ends that app's walk, and later walks skip it for 5 s. The walk then returns what it already has.
 - **So is one `observe`'s capture.** `CaptureEngine.screenshotBudget` (5 s) bounds one screenshot's retries and its content lookups together, which is what keeps both halves of an observation inside the driver's 15 s watchdog: the walk's 5 s and the capture's 5 s, plus the window list, leave room under it. Without that bound a stalled ScreenCaptureKit call — a 10 s wait per attempt, five attempts, each re-resolving `SCShareableContent` — ran for the better part of a minute, and the watchdog answered `observe` with `internal_error` "did not complete within 15s" while the handler was alive and pumping the run loop. A frame that never arrives is not a failed observation: `observe` logs the capture failure, returns the element tree an agent acts on, and the next observation takes a fresh frame.
+- **Every driver runs from its own copy of the binary.** ScreenCaptureKit's daemon `replayd` keys clients by executable path (`uniqueClientIdentifierWithPID: using identifier from executablePath`). A brain runs one driver per open project plus App Control's recorder, all from the one bundled binary, and two live processes on one path make `replayd` cancel each other's connection forever: ReplayKit logs NSXPC error 4097 and the ScreenCaptureKit completion is never called, so every screenshot, observe frame and stream start waits out its timeout. `macDesktopDriverClient` therefore spawns `<tmp>/ade-desktop-driver-bin/<node pid>-<client>/ade-desktop-driver`, an APFS clone refreshed when the bundle's binary changes, removed on dispose and swept when its Node process is gone. A hard link or symlink resolves to the same path and does not help. If you see `RPDaemonProxy: connection INTERRUPTED` in a driver's unified log, look for a second process on the same path first.
+- **A screenshot does not stack on a stalled one.** A request that arrives while a screenshot waits runs inside that wait, and the outer one cannot return until the inner one has. Once a screenshot has waited more than `CaptureEngine.nestedScreenshotPatience` (1 s), a nested `capture.screenshot` is refused at once and a nested `observe` returns its element tree without a frame, so `observe` and `ping` keep answering while ScreenCaptureKit is slow.
 - **The driver's logs land in `brain.jsonl`.** stdout is the NDJSON protocol. Every helper log line goes to stderr, and `macDesktopDriverClient` copies each line into the brain logger at info as `mac_desktop.driver_stderr`. When the service runs in the brain, that file is `~/.ade/runtime/brain.jsonl`. Service events use the same logger (`mac_desktop.display_created`, `mac_desktop.stream_started`, `mac_desktop.driver_lost`, and the rest).
 - **The virtual display API is private.** `CGVirtualDisplay`,
   `CGVirtualDisplayDescriptor`, `CGVirtualDisplaySettings`, and

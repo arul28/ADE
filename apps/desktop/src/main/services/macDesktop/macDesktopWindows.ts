@@ -19,6 +19,7 @@ import {
   type MacDesktopWindowActionResult,
   type DesktopSeatProvider,
   type MacDesktopClaimArgs,
+  type MacDesktopHandedOffWindow,
   type MacDesktopEventPayload,
   type MacDesktopOpenArgs,
   type MacDesktopOpenResult,
@@ -315,6 +316,51 @@ export function createMacDesktopWindows(deps: MacDesktopWindowsDeps) {
     return { quit };
   };
 
+  /**
+   * Takes back an app a previous helper handed to the main screen when it
+   * exited (a brain restart): a launched app becomes the lane's own again,
+   * with the bookkeeping `open` gives a new one, and borrowed windows are
+   * claimed again. The helper puts each window back where it sat. False when
+   * the helper cannot adopt.
+   */
+  const adopt = async (args: {
+    laneId: string;
+    pid: number;
+    appName: string;
+    bundleId: string | null;
+    launchedAt: number | null;
+    launched: boolean;
+    windows: MacDesktopHandedOffWindow[];
+  }): Promise<boolean> => {
+    const seat = await deps.ensureProvider();
+    if (!seat.adoptApp) return false;
+    const reply = await seat.adoptApp({
+      laneId: args.laneId,
+      pid: args.pid,
+      bundleId: args.bundleId,
+      launchedAt: args.launchedAt,
+      launched: args.launched,
+      windows: args.windows,
+    });
+    for (const window of asWindows(reply.windows)) {
+      ownership.claimWindow({
+        laneId: args.laneId,
+        windowId: window.id,
+        pid: window.pid,
+        bundleId: window.bundleId,
+        appName: window.appName,
+        origin: args.launched ? "ade_launched" : "claimed",
+        singleInstance: window.singleInstance,
+      });
+    }
+    if (args.launched) {
+      ownership.watchLaunch({ laneId: args.laneId, pid: args.pid, target: args.appName, bundleId: args.bundleId });
+    }
+    ownership.touchDisplay(args.laneId);
+    deps.emit({ type: "windows-changed", laneId: args.laneId, windows: await listInternal(args.laneId) });
+    return true;
+  };
+
   const present = async (args: MacDesktopPresentArgs): Promise<{ moved: number }> => {
     const laneId = args.laneId.trim();
     deps.requireDisplay(laneId);
@@ -325,5 +371,5 @@ export function createMacDesktopWindows(deps: MacDesktopWindowsDeps) {
     return { moved: asNumber(reply.moved, 0) };
   };
 
-  return { listInternal, open, claimWindow, releaseWindow, quitApp, present, windowAction };
+  return { listInternal, open, adopt, claimWindow, releaseWindow, quitApp, present, windowAction };
 }

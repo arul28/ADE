@@ -173,7 +173,7 @@ public final class GestureGate: @unchecked Sendable {
             // Deferring all of them for the length of one gesture is the
             // cheaper half of that trade.
             return true
-        case .launch, .quitApp:
+        case .launch, .quitApp, .adoptApp:
             // Launching or re-activating an app raises a window, which can land
             // under the moving pointer mid-drag, and quitting one takes a
             // window out from under it. Any lane, same rationale as

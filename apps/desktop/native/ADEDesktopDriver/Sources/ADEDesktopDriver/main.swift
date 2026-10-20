@@ -139,6 +139,12 @@ final class DriverRuntime: NSObject {
     // -----------------------------------------------------------------------
 
     func run() {
+        // The brain that reads stdout and stderr can exit before this process
+        // does: a restart sends SIGTERM and then exits. The first log line of
+        // the shutdown then raised SIGPIPE, which ended the process silently
+        // before it handed off (or quit) the lanes' apps. With the signal
+        // ignored, a write to a closed pipe fails and the shutdown goes on.
+        signal(SIGPIPE, SIG_IGN)
         let application = NSApplication.shared
         application.setActivationPolicy(.accessory)
         // The default is about six seconds per call, and one stalled app could
@@ -271,6 +277,11 @@ final class DriverRuntime: NSObject {
         watchdog = nil
         permissionTimer?.invalidate()
         permissionTimer = nil
+        // A brain that restarts (an update, a service restart) names a file in
+        // `ADE_DESKTOP_DRIVER_HANDOFF_PATH`: the lanes' apps then stay running,
+        // move to the main screen, and are written there for the next brain to
+        // take back. Without it, the rule below.
+        handOffLaunchedAppsIfAsked()
         // The apps the lanes opened go with their displays, the same as on a
         // `stop`: quitting ADE is a deliberate stop of every lane. One grace
         // period for all lanes, then a force quit, so a save dialog cannot
@@ -286,6 +297,31 @@ final class DriverRuntime: NSObject {
         windows.dispose()
         displays.destroyAll()
         exit(0)
+    }
+
+    /// Writes the lanes and their apps (`WindowControl.handOffLanes`) as JSON to the handoff path, when the client
+    /// gave one. An empty list still writes, so a stale file from an earlier
+    /// exit cannot hand the next brain apps that are no longer the lanes'.
+    private func handOffLaunchedAppsIfAsked() {
+        guard let path = ProcessInfo.processInfo.environment["ADE_DESKTOP_DRIVER_HANDOFF_PATH"],
+              !path.isEmpty else { return }
+        let handed = windows.handOffLanes()
+        let body: [String: Any] = [
+            "writtenAt": Date().timeIntervalSince1970 * 1000,
+            "lanes": handed.lanes.map { $0.asJSON() },
+            "apps": handed.apps.map { $0.asJSON() },
+        ]
+        do {
+            let url = URL(fileURLWithPath: path)
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try JSONSerialization.data(withJSONObject: body).write(to: url, options: .atomic)
+            log("handed \(handed.apps.count) app(s) on \(handed.lanes.count) lane(s) to the main screen for the next brain")
+        } catch {
+            log("could not write the app handoff to \(path): \(error)")
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -442,6 +478,7 @@ final class DriverRuntime: NSObject {
         case .unparkWindow: return try unparkWindow(request)
         case .launch: return try launch(request)
         case .quitApp: return try quitApp(request)
+        case .adoptApp: return try adoptApp(request)
         case .present: return try present(request)
         case .observe: return try observe(request)
         case .input: return try input(request)
@@ -739,6 +776,41 @@ final class DriverRuntime: NSObject {
                     "released": .bool(entry.released),
                 ])
             }),
+        ]
+    }
+
+    private func adoptApp(_ request: DriverRequest) throws -> [String: JSONValue] {
+        let laneId = try request.requireString("laneId")
+        let pid = pid_t(try request.requireInt("pid"))
+        let recorded = (request.fields["windows"]?.arrayValue ?? []).compactMap { entry -> WindowControl.HandedOffWindow? in
+            guard let object = entry.objectValue, let id = object["id"]?.intValue else { return nil }
+            return WindowControl.HandedOffWindow(
+                id: CGWindowID(id),
+                frame: CGRect(
+                    x: object["x"]?.doubleValue ?? 0,
+                    y: object["y"]?.doubleValue ?? 0,
+                    width: object["width"]?.doubleValue ?? 0,
+                    height: object["height"]?.doubleValue ?? 0
+                ),
+                minimized: object["minimized"]?.boolValue ?? false
+            )
+        }
+        let result = try windows.adopt(
+            laneId: laneId,
+            pid: pid,
+            bundleId: request.string("bundleId"),
+            launchedAt: request.double("launchedAt"),
+            launched: request.bool("launched") ?? true,
+            windows: recorded
+        )
+        touch(laneId)
+        return [
+            "laneId": .string(laneId),
+            "pid": result.pid.map { JSONValue.int(Int($0)) } ?? .null,
+            "appName": result.appName.map(JSONValue.string) ?? .null,
+            "bundleId": result.bundleId.map(JSONValue.string) ?? .null,
+            "windows": .array(result.windows.map { .object($0.asJSON()) }),
+            "watching": .bool(result.watching),
         ]
     }
 
@@ -1055,7 +1127,9 @@ final class DriverRuntime: NSObject {
     }
 
     func log(_ message: String) {
-        FileHandle.standardError.write(Data("[ade-desktop-driver] \(message)\n".utf8))
+        // `write(_:)` raises an Objective-C exception on a closed pipe; this
+        // one throws, and a log line nobody can read is not worth a crash.
+        try? FileHandle.standardError.write(contentsOf: Data("[ade-desktop-driver] \(message)\n".utf8))
     }
 }
 
@@ -1078,7 +1152,7 @@ final class OutputWriter {
         defer { lock.unlock() }
         var line = data
         line.append(0x0A)
-        FileHandle.standardOutput.write(line)
+        try? FileHandle.standardOutput.write(contentsOf: line)
     }
 }
 
