@@ -914,7 +914,9 @@ describe("createAgentChatService", () => {
     }));
     // ADE's framing belongs to the Droid session and stays out of repeated turns.
     const firstPrompt = String(mockState.droidPromptCalls[0]?.promptText ?? "");
-    expect(firstPrompt).not.toContain("system prompt");
+    const sessionFraming = String(mockState.droidPooled?.systemPromptAppend ?? "");
+    expect(sessionFraming.length).toBeGreaterThan(0);
+    expect(firstPrompt).not.toContain(sessionFraming);
     expect(firstPrompt).toContain("Use the selected Droid model.");
     const settingsOrder = mockState.droidPooled.updateSettings.mock.invocationCallOrder[0];
     const firstPromptOrder = mockState.droidPooled.sendPrompt.mock.invocationCallOrder[0];

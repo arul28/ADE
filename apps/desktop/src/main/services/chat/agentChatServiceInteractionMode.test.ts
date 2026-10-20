@@ -112,7 +112,9 @@ describe("createAgentChatService", () => {
       expect(vi.mocked(buildCodingAgentSystemPrompt)).toHaveBeenCalledWith(
         expect.objectContaining({ runtime: "droid-sdk" }),
       );
-      expect(first).not.toContain("system prompt");
+      const sessionFraming = String(mockState.droidPooled?.systemPromptAppend ?? "");
+      expect(sessionFraming.length).toBeGreaterThan(0);
+      expect(first).not.toContain(sessionFraming);
       expect(mockState.droidPromptCalls[0]?.promptText).toContain("first");
 
       // And the per-turn prefix must NOT carry a second copy. It used to, so
