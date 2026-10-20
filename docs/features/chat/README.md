@@ -2926,7 +2926,7 @@ A restart is cheap in tokens: a resumed Claude thread reads its prefix from
 the prompt cache, and a Codex idle teardown keeps the delivered-directive
 keys (the resumed thread already holds them); continuity recovery clears them
 before it prepares its capsule, so the replacement thread is told again. A
-fresh Codex process's first turn waits up to 1.5 s for its skill list to reach
+fresh Codex runtime's first turn waits up to 1.5 s for its skill list to reach
 the chat's previous count for that catalog, because Codex adds remote plugin
 skills ~0.5 s after start and re-sends its whole skills block whenever the
 list changes.

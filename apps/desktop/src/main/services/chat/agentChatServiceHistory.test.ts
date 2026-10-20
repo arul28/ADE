@@ -16,7 +16,6 @@ import {
   path,
   readPersistedChatState,
   runGit,
-  spawn,
   streamText,
   tmpHomeRoot,
   tmpRoot,
@@ -28,13 +27,6 @@ import {
   writeTestTranscriptEnvelopes,
 } from "./agentChatService.testHarness";
 import { describe, expect, it, test, vi } from "vitest";
-
-function codexAppServerSpawnIndexes(): number[] {
-  return vi.mocked(spawn).mock.calls.flatMap((call, index) => {
-    const args = call[1] as unknown;
-    return Array.isArray(args) && args.includes("app-server") ? [index] : [];
-  });
-}
 
 describe("createAgentChatService", () => {
   // --------------------------------------------------------------------------
@@ -2711,7 +2703,6 @@ describe("createAgentChatService", () => {
           provider: "codex",
           model: "gpt-5.4",
         });
-        const appServerSpawnIndexesBefore = codexAppServerSpawnIndexes();
 
         await service.sendMessage({ sessionId: session.id, text: "Start before archiving." }, { awaitDispatch: true });
         const firstTurnStart = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
@@ -2728,34 +2719,63 @@ describe("createAgentChatService", () => {
             event.event.type === "status" && event.event.turnStatus === "completed" && event.event.turnId === "turn-1",
         );
 
-        await service.archiveSession({ sessionId: session.id });
-
-        const appServerCalls = codexAppServerSpawnIndexes();
-        expect(appServerCalls.length - appServerSpawnIndexesBefore.length).toBe(1);
-        const firstAppServerIndex = appServerCalls[appServerSpawnIndexesBefore.length]!;
-        const process = vi.mocked(spawn).mock.results[firstAppServerIndex]!.value as {
-          kill: (...args: unknown[]) => unknown;
-        };
-        expect(process.kill).toHaveBeenCalled();
-
-        await service.unarchiveSession({ sessionId: session.id });
-        await service.sendMessage({ sessionId: session.id, text: "Continue after unarchiving." }, { awaitDispatch: true });
-
-        const resumeRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/resume");
-        expect(resumeRequest?.params).toEqual(expect.objectContaining({ threadId: originalThreadId }));
-        let turnStarts = mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start");
-        expect(turnStarts).toHaveLength(2);
-        expect(codexAppServerSpawnIndexes()).toHaveLength(appServerSpawnIndexesBefore.length + 2);
-
+        // Keep another chat on the shared app-server so archiving this chat
+        // exercises its thread release instead of the last-client process exit.
+        const holdingSession = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.4",
+        });
+        await service.sendMessage({ sessionId: holdingSession.id, text: "Keep the shared app-server attached." }, { awaitDispatch: true });
+        const holdingThreadId = (mockState.codexRequestPayloads
+          .filter((payload) => payload.method === "turn/start")[1]?.params as { threadId?: string } | undefined)?.threadId;
+        expect(holdingThreadId).toEqual(expect.any(String));
         mockState.emitCodexPayload({
           jsonrpc: "2.0",
           method: "turn/completed",
-          params: { turn: { id: "turn-2", status: "completed" } },
+          params: { threadId: holdingThreadId, turn: { id: "turn-2", status: "completed" } },
         });
         await waitForEvent(
           events,
           (event): event is AgentChatEventEnvelope =>
             event.event.type === "status" && event.event.turnStatus === "completed" && event.event.turnId === "turn-2",
+        );
+
+        await service.archiveSession({ sessionId: session.id });
+
+        const unsubscribeIndex = mockState.codexRequestPayloads.findIndex((payload) =>
+          payload.method === "thread/unsubscribe"
+          && (payload.params as { threadId?: unknown } | undefined)?.threadId === originalThreadId,
+        );
+        expect(unsubscribeIndex).toBeGreaterThanOrEqual(0);
+
+        await service.unarchiveSession({ sessionId: session.id });
+        await service.sendMessage({ sessionId: session.id, text: "Continue after unarchiving." }, { awaitDispatch: true });
+
+        const resumeIndex = mockState.codexRequestPayloads.findIndex((payload) =>
+          payload.method === "thread/resume"
+          && (payload.params as { threadId?: unknown } | undefined)?.threadId === originalThreadId,
+        );
+        const resumeRequest = mockState.codexRequestPayloads[resumeIndex];
+        expect(resumeIndex).toBeGreaterThan(unsubscribeIndex);
+        expect(resumeRequest?.params).toEqual(expect.objectContaining({ threadId: originalThreadId }));
+        let turnStarts = mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start");
+        expect(turnStarts).toHaveLength(3);
+        const resumedTurnInput = (turnStarts[2]?.params as { threadId?: string; input?: Array<{ text?: unknown }> } | undefined);
+        expect(resumedTurnInput?.threadId).toBe(originalThreadId);
+        expect(resumedTurnInput?.input?.some(
+          (item) => typeof item.text === "string" && item.text.includes("Continue after unarchiving."),
+        )).toBe(true);
+
+        mockState.emitCodexPayload({
+          jsonrpc: "2.0",
+          method: "turn/completed",
+          params: { threadId: originalThreadId, turn: { id: "turn-3", status: "completed" } },
+        });
+        await waitForEvent(
+          events,
+          (event): event is AgentChatEventEnvelope =>
+            event.event.type === "status" && event.event.turnStatus === "completed" && event.event.turnId === "turn-3",
         );
 
         const queuedSession = await service.createSession({
@@ -2765,11 +2785,7 @@ describe("createAgentChatService", () => {
         });
         await service.sendMessage({ sessionId: queuedSession.id, text: "Start the queued-message case." }, { awaitDispatch: true });
         turnStarts = mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start");
-        const queuedThreadId = (turnStarts[2]?.params as { threadId?: string } | undefined)?.threadId;
-        const queuedProcessIndex = codexAppServerSpawnIndexes()[appServerSpawnIndexesBefore.length + 2]!;
-        const queuedProcess = vi.mocked(spawn).mock.results[queuedProcessIndex]!.value as {
-          kill: (...args: unknown[]) => unknown;
-        };
+        const queuedThreadId = (turnStarts[3]?.params as { threadId?: string } | undefined)?.threadId;
         const queued = await service.messageSession({
           sessionId: queuedSession.id,
           text: "Deliver this queued follow-up.",
@@ -2787,32 +2803,34 @@ describe("createAgentChatService", () => {
         mockState.emitCodexPayload({
           jsonrpc: "2.0",
           method: "turn/completed",
-          params: { turn: { id: "turn-3", status: "completed" } },
+          params: { threadId: queuedThreadId, turn: { id: "turn-4", status: "completed" } },
         });
         await service.archiveSession({ sessionId: queuedSession.id });
-        expect(queuedProcess.kill).not.toHaveBeenCalled();
+        expect(mockState.codexRequestPayloads.some((payload) =>
+          payload.method === "thread/unsubscribe"
+          && (payload.params as { threadId?: unknown } | undefined)?.threadId === queuedThreadId,
+        )).toBe(false);
 
         queuedTurnCompletion.release?.();
         await waitForEvent(
           events,
           (event): event is AgentChatEventEnvelope =>
-            event.event.type === "status" && event.event.turnStatus === "completed" && event.event.turnId === "turn-3",
+            event.event.type === "status" && event.event.turnStatus === "completed" && event.event.turnId === "turn-4",
         );
         await waitForFakeTimers(
-          () => expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start")).toHaveLength(4),
+          () => expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start")).toHaveLength(5),
           { steps: 100, realYield: true },
         );
         turnStarts = mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start");
-        expect((turnStarts[3]?.params as { threadId?: string } | undefined)?.threadId).toBe(queuedThreadId);
-        expect((turnStarts[3]?.params as { input?: Array<{ text?: unknown }> } | undefined)?.input?.some(
+        expect((turnStarts[4]?.params as { threadId?: string } | undefined)?.threadId).toBe(queuedThreadId);
+        expect((turnStarts[4]?.params as { input?: Array<{ text?: unknown }> } | undefined)?.input?.some(
           (item) => typeof item.text === "string" && item.text.includes("Deliver this queued follow-up."),
         )).toBe(true);
-        expect(queuedProcess.kill).not.toHaveBeenCalled();
 
         mockState.emitCodexPayload({
           jsonrpc: "2.0",
           method: "turn/completed",
-          params: { turn: { id: "turn-4", status: "completed" } },
+          params: { threadId: queuedThreadId, turn: { id: "turn-5", status: "completed" } },
         });
       } finally {
         queuedTurnCompletion.release?.();

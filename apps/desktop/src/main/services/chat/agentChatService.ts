@@ -2582,7 +2582,7 @@ type CodexRuntime = {
   kind: "codex";
   agentSkillRoots: string[];
   /**
-   * The skill-list wait before this process's first turn. The first send
+   * The skill-list wait before this runtime's first turn. The first send
    * starts it and every send awaits it, so a second send cannot overtake the
    * first. Never rejects.
    */
@@ -5547,7 +5547,7 @@ export const TURN_ACCEPTED_START_TIMEOUT_MS = 60_000;
 // holds 200-500 MB of provider and MCP processes.
 const SESSION_INACTIVITY_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes
 const SESSION_CLEANUP_INTERVAL_MS = 15 * 1000; // check every 15 seconds
-/** Longest a fresh Codex process's first turn waits for its skill list. */
+/** Longest a fresh Codex runtime's first turn waits for its skill list. */
 const CODEX_SKILL_CATALOG_SETTLE_MS = 1_500;
 const CODEX_SKILL_CATALOG_POLL_MS = 100;
 
@@ -42559,8 +42559,10 @@ export function createAgentChatService(args: {
   };
 
   /**
-   * Attempt once per process to hold its first turn until its skill count
-   * reaches the chat's prior count or this catalog's comparison baseline.
+   * Attempt once per chat runtime to hold its first turn until its skill
+   * count reaches the chat's prior count or this catalog's comparison
+   * baseline. A runtime on an already-warm shared app-server settles on the
+   * first list.
    * Codex rebuilds its skills block every turn and re-sends all of it (~6k
    * tokens here) when the list changed. A new `codex app-server` adds remote
    * plugin skills ~0.5-0.7 s after it starts, so a turn sent sooner sees a
