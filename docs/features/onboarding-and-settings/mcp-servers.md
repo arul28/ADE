@@ -218,6 +218,27 @@ Decided at launch by `resolveMcpRegistryForLaunch`
 A change reaches chats started after it. A running chat keeps what it started
 with.
 
+A registry server whose name the provider's own config also declares is left
+to that config for Cursor, Droid, Copilot, Qwen and Muse
+(`providerOwnMcpServerNames`). Those providers cannot drop their own copy of a
+server, and "Import" copies a server rather than moving it, so passing both
+would start two. Claude and Codex replace a same-named server from the launch,
+and OpenCode merges its config by name, so they get the registry's.
+
+## Your servers on ADE accounts
+
+An ADE account runs Claude or Codex on its own config home
+(`provider-homes/<provider>/<id>/`), and that home has none of the MCP servers
+configured for the machine's own login. So a Claude chat on an ADE account
+also gets the servers in the login's `.claude.json` (user scope, and the local
+scope for this project), and a Codex chat gets the login's `config.toml`
+`mcp_servers`, at launch (`mcpUserServersForLaunch.ts`). A name the account's
+own config has, a name the project's `.mcp.json` or `.codex/config.toml`
+declares, and a server switched off for the folder are left out; a chat in
+strict MCP mode gets none. Claude receives them through the launch's MCP
+config (on its command line, as registry servers already are); Codex through
+the thread config. Nothing is written to either config home.
+
 ## `npx` servers start without npm's launcher
 
 `npx <package>` keeps a whole npm CLI (`npm exec ...`) running as the parent
@@ -254,9 +275,14 @@ Which servers it applies to, per provider:
 | Cursor, Droid, Copilot, OpenCode, Muse, Qwen, Kimi, Grok, Devin, Antigravity | Unchanged. These cannot be shown to replace their own copy of a same-named server, and passing one would start a second. | Re-pointed (ADE hands these over itself) |
 | Pi | No MCP. | No MCP. |
 
-Codex side jobs (chat titles and other background utilities, `codex exec`)
-start none of the user's config.toml servers: each one gets
-`-c mcp_servers.<name>.enabled=false`. `-c mcp_servers={}` does not do this;
+Cursor one-shots (titles and other background utilities) run in strict MCP
+mode, which drops the project and plugin layers' servers; user-level ones
+still load, because ADE's tool-gate hook lives in that layer.
+
+Codex runs that need none of the user's servers start none of the
+config.toml ones: background utilities (`codex exec`, chat titles and the
+like), the private app-server a fork runs in, and the voice relay. Each gets
+`-c mcp_servers.<name>.enabled=false` per server (`codexMcpOff.ts`). `-c mcp_servers={}` does not do this;
 Codex merges an override table into config.toml, so an empty one changes
 nothing. Servers a Codex plugin adds are not in the file and still start.
 
@@ -272,5 +298,6 @@ nothing. Servers a Codex plugin adds are not in the file and still start.
 | `apps/desktop/src/main/services/mcp/mcpProviderConfigScan.ts` | Reading the five provider configs, including the Codex TOML tables. |
 | `apps/desktop/src/main/services/chat/mcpRegistryLaunch.ts` | The registry as one chat launch sees it. |
 | `apps/desktop/src/main/services/mcp/npxDirectLaunch.ts` | Runs an `npx` server's installed package with `node` when it is provably the copy npx would run. |
-| `apps/desktop/src/main/services/mcp/mcpUserServerNpxDirect.ts` | The Codex thread overlay and the Claude launch servers that re-point the user's own `npx` servers. |
+| `apps/desktop/src/main/services/mcp/mcpUserServersForLaunch.ts` | The user's own servers for one Claude or Codex launch: the machine login's servers on an ADE account, and `npx` servers re-pointed. |
+| `apps/desktop/src/main/services/mcp/codexMcpOff.ts` | Switches every config.toml server off by name for Codex runs that need none. |
 | `apps/desktop/src/renderer/components/settings/mcp/` | The page, the add and edit dialog, the hook and the layout CSS. |

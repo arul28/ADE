@@ -24,6 +24,7 @@ import { mcpServerDefinitionFromConfig, type McpServerDefinition } from "../../.
 import { parseJsonc } from "../../../shared/theme/jsonc";
 import type { McpConfigProvider, McpFoundServer, McpRegistryScan } from "../../../shared/types/mcpRegistry";
 import { pathsEqual } from "../shared/pathCompare";
+import { copilotConfigHome, factoryConfigHome, qwenConfigHome } from "../shared/providerConfigHomes";
 
 export type ScannedMcpServer = McpServerDefinition & { providers: McpConfigProvider[] };
 
@@ -361,4 +362,49 @@ export function toFoundServers(scan: ProviderMcpScan): McpRegistryScan {
     })),
     skipped: [...scan.skipped],
   };
+}
+
+/**
+ * The MCP server names a provider loads from its own config files for a chat
+ * in `cwd`, for the providers that cannot drop their own copy of a server.
+ * ADE then leaves out a registry server of the same name, which would
+ * otherwise start a second copy. Claude and Codex replace a same-named server
+ * from the launch and OpenCode merges its config by key, so they are not
+ * listed. A provider whose config ADE cannot read answers no names.
+ */
+export function providerOwnMcpServerNames(
+  provider: string,
+  args: { cwd: string; env?: NodeJS.ProcessEnv; homeDir?: string },
+): Set<string> {
+  const env = args.env ?? process.env;
+  const homeDir = args.homeDir ?? os.homedir();
+  const files: Array<{ file: string; key: string }> = [];
+  switch (provider) {
+    case "cursor":
+      files.push({ file: path.join(homeDir, ".cursor", "mcp.json"), key: "mcpServers" });
+      files.push({ file: path.join(args.cwd, ".cursor", "mcp.json"), key: "mcpServers" });
+      break;
+    case "droid":
+      files.push({ file: path.join(factoryConfigHome({ env, homeDir }), "mcp.json"), key: "mcpServers" });
+      files.push({ file: path.join(args.cwd, ".factory", "mcp.json"), key: "mcpServers" });
+      break;
+    case "copilot":
+      files.push({ file: path.join(copilotConfigHome({ env, homeDir }), "mcp-config.json"), key: "mcpServers" });
+      break;
+    case "qwen":
+      files.push({ file: path.join(qwenConfigHome({ env, homeDir }), "settings.json"), key: "mcpServers" });
+      files.push({ file: path.join(args.cwd, ".qwen", "settings.json"), key: "mcpServers" });
+      break;
+    case "muse":
+      files.push({ file: path.join(args.cwd, ".mcp.json"), key: "mcpServers" });
+      break;
+    default:
+      break;
+  }
+  const names = new Set<string>();
+  for (const { file, key } of files) {
+    const table = readJson(file)?.[key];
+    if (isRecord(table)) for (const name of Object.keys(table)) names.add(name.trim());
+  }
+  return names;
 }

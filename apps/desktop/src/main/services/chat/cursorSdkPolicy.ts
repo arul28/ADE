@@ -172,6 +172,10 @@ export const CURSOR_SDK_ONESHOT_POLICY: CursorSdkPermissionPolicy = Object.freez
   hardGuards: true,
   autoReview: false,
   tools: [],
+  // A one-shot runs no tools, so the project and plugin layers' MCP servers
+  // would start only to be denied. User-level servers still load (see
+  // `cursorSdkSettingSources`).
+  strictMcpConfig: true,
 });
 
 /**
