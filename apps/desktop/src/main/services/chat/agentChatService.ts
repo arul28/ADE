@@ -1065,6 +1065,7 @@ import {
   codexSkillsForCwd,
   codexSkillsListParams,
   existingAgentSkillRoots,
+  waitForCodexSkillCount,
   withoutAgentSkills,
   withoutAgentSkillsEnv,
   type CodexSkillsListResponse,
@@ -2580,8 +2581,12 @@ type PendingClaudeApproval = {
 type CodexRuntime = {
   kind: "codex";
   agentSkillRoots: string[];
-  /** Set once this process's first turn has waited for its skill list. */
-  skillCatalogSettled?: boolean;
+  /**
+   * The skill-list wait before this process's first turn. The first send
+   * starts it and every send awaits it, so a second send cannot overtake the
+   * first. Never rejects.
+   */
+  skillCatalogSettle: Promise<void> | null;
   serverVersion: CodexServerVersion | null;
   process: ChildProcessWithoutNullStreams;
   reader: readline.Interface;
@@ -2593,6 +2598,12 @@ type CodexRuntime = {
   activeTurnId: string | null;
   startedTurnId: string | null;
   awaitingTurnStart: boolean;
+  /**
+   * Held from the turn-start admission check until `turn/start` returns or
+   * fails. Only that check reads it: a send that awaits attachment staging
+   * keeps its place, and a second send is refused as a turn already active.
+   */
+  turnStartReserved: boolean;
   /** True while a pending replay/continuity prefix belongs to an in-flight turn/start. */
   turnStartContextConsumed: boolean;
   threadResumed: boolean;
@@ -26977,7 +26988,8 @@ export function createAgentChatService(args: {
       throw new Error(`Codex runtime is not available for session '${managed.session.id}'.`);
     }
     const runtime = managed.runtime;
-    await settleCodexSkillCatalog(managed, runtime);
+    runtime.skillCatalogSettle ??= settleCodexSkillCatalog(managed, runtime);
+    await runtime.skillCatalogSettle;
     const attachments = args.attachments ?? [];
     const resolvedAttachments = args.resolvedAttachments ?? attachments.map((attachment) => ({
       ...attachment,
@@ -27252,7 +27264,7 @@ export function createAgentChatService(args: {
     const pendingUserShell = parseCodexUserShellDraft(slashText) ?? parseCodexShellSlashCommand(slashText);
     const pendingMemoryCommand = parseCodexMemorySlashCommand(slashText);
     if (
-      (runtime.activeTurnId || runtime.awaitingTurnStart || runtime.turnStartContextConsumed)
+      (runtime.activeTurnId || runtime.awaitingTurnStart || runtime.turnStartContextConsumed || runtime.turnStartReserved)
       && !pendingUserShell
       && !pendingMemoryCommand
     ) {
@@ -27685,6 +27697,7 @@ export function createAgentChatService(args: {
     let consumedTurnContext: ConsumedTurnContextPrefix | null = null;
     const planningApprovalGuarded = managed.session.permissionMode === "plan";
     let result: { turn?: { id?: string } };
+    runtime.turnStartReserved = true;
     try {
       const reconstructionContext = suppressTurnContext
         ? ""
@@ -27764,6 +27777,7 @@ export function createAgentChatService(args: {
       });
     } catch (error) {
       const contextToRestore = runtime.turnStartContextConsumed ? consumedTurnContext : null;
+      runtime.turnStartReserved = false;
       runtime.awaitingTurnStart = false;
       runtime.turnStartContextConsumed = false;
       runtime.pendingTurnPlanningApprovalGuarded = null;
@@ -27775,6 +27789,7 @@ export function createAgentChatService(args: {
       }
       throw error;
     }
+    runtime.turnStartReserved = false;
     runtime.turnStartContextConsumed = false;
     markDispatched();
     persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
@@ -42148,6 +42163,7 @@ export function createAgentChatService(args: {
     const runtime: CodexRuntime = {
       kind: "codex",
       agentSkillRoots,
+      skillCatalogSettle: null,
       serverVersion: null,
       process: proc,
       reader,
@@ -42159,6 +42175,7 @@ export function createAgentChatService(args: {
       activeTurnId: null,
       startedTurnId: null,
       awaitingTurnStart: false,
+      turnStartReserved: false,
       turnStartContextConsumed: false,
       threadResumed: false,
       canAttachResumedTurnStart: false,
@@ -42513,12 +42530,10 @@ export function createAgentChatService(args: {
     mode: "recover_from_history" | "explicit_reset";
   };
 
-  /**
-   * Most skills any Codex process listed per worktree, so a chat's first turn
-   * ever has a count to wait for too. Remote plugin skills are the same for
-   * every chat on this machine; in memory only.
-   */
-  const codexSkillCountByCwd = new Map<string, number>();
+  /** Comparison baseline for each worktree and runtime skill catalog. */
+  const codexSkillCountByCatalog = new Map<string, number>();
+  const codexSkillCatalogKey = (cwd: string, runtime: CodexRuntime): string =>
+    `${cwd}\0${runtime.agentSkillRoots.join("\0")}`;
 
   const refreshCodexSkills = (
     managed: ManagedChatSession,
@@ -42531,9 +42546,10 @@ export function createAgentChatService(args: {
     ).then((response) => {
       const skills = codexSkillsForCwd(response, managed.laneWorktreePath);
       managed.codexSkillCount = Math.max(managed.codexSkillCount ?? 0, skills.length);
-      codexSkillCountByCwd.set(
-        managed.laneWorktreePath,
-        Math.max(codexSkillCountByCwd.get(managed.laneWorktreePath) ?? 0, skills.length),
+      const catalogKey = codexSkillCatalogKey(managed.laneWorktreePath, runtime);
+      codexSkillCountByCatalog.set(
+        catalogKey,
+        Math.max(codexSkillCountByCatalog.get(catalogKey) ?? 0, skills.length),
       );
       const commands = agentSkillSlashCommands(skills);
       runtime.slashCommands = adeSkillCatalogFor(managed.session) === "none"
@@ -42543,41 +42559,43 @@ export function createAgentChatService(args: {
   };
 
   /**
-   * Hold a fresh Codex process's first turn until it lists as many skills as
-   * the chat's last process (or any process in this worktree) did. Codex
-   * rebuilds its skills block every turn and re-sends all of it (~6k tokens
-   * here) when the list changed. A new
-   * `codex app-server` adds remote plugin skills ~0.5-0.7 s after it starts,
-   * so a turn sent sooner sees a short list and the next turn a long one:
-   * two re-sends per restart. Bounded, and a timeout adopts what it saw, so
-   * removed plugins cost one wait, not one per restart.
+   * Attempt once per process to hold its first turn until its skill count
+   * reaches the chat's prior count or this catalog's comparison baseline.
+   * Codex rebuilds its skills block every turn and re-sends all of it (~6k
+   * tokens here) when the list changed. A new `codex app-server` adds remote
+   * plugin skills ~0.5-0.7 s after it starts, so a turn sent sooner sees a
+   * short list and the next turn a long one: two re-sends per restart. The
+   * wait is bounded by the deadline; on timeout, the smaller count becomes the
+   * new baseline, so removed plugins cost one wait.
    */
   const settleCodexSkillCatalog = async (managed: ManagedChatSession, runtime: CodexRuntime): Promise<void> => {
-    if (runtime.skillCatalogSettled) return;
-    runtime.skillCatalogSettled = true;
-    const cwd = managed.laneWorktreePath;
-    const expected = Math.max(managed.codexSkillCount ?? 0, codexSkillCountByCwd.get(cwd) ?? 0);
-    if (expected <= 0) return;
-    const { forceReload: _forceReload, ...params } = codexSkillsListParams(cwd, runtime.agentSkillRoots);
-    const deadline = Date.now() + CODEX_SKILL_CATALOG_SETTLE_MS;
-    let seen = 0;
-    while (true) {
-      const count = await runtime.request<CodexSkillsListResponse>("skills/list", params)
-        .then((response) => codexSkillsForCwd(response, cwd).length)
-        .catch(() => null);
-      if (count == null) return;
-      seen = count;
-      if (count >= expected) return;
-      if (Date.now() >= deadline) break;
-      await new Promise((resolve) => setTimeout(resolve, CODEX_SKILL_CATALOG_POLL_MS));
+    try {
+      const cwd = managed.laneWorktreePath;
+      const catalogKey = codexSkillCatalogKey(cwd, runtime);
+      const expected = Math.max(managed.codexSkillCount ?? 0, codexSkillCountByCatalog.get(catalogKey) ?? 0);
+      if (expected <= 0) return;
+      const { forceReload: _forceReload, ...params } = codexSkillsListParams(cwd, runtime.agentSkillRoots);
+      const result = await waitForCodexSkillCount({
+        list: (timeoutMs) => runtime.request<CodexSkillsListResponse>("skills/list", params, { timeoutMs })
+          .then((response) => codexSkillsForCwd(response, cwd).length),
+        expected,
+        deadlineMs: CODEX_SKILL_CATALOG_SETTLE_MS,
+        pollMs: CODEX_SKILL_CATALOG_POLL_MS,
+      });
+      if (result.settled || result.seen === null) return;
+      logger.info("agent_chat.codex_skill_catalog_settle_timeout", {
+        sessionId: managed.session.id,
+        expected,
+        seen: result.seen,
+      });
+      managed.codexSkillCount = result.seen;
+      codexSkillCountByCatalog.set(catalogKey, result.seen);
+    } catch (error) {
+      logger.warn("agent_chat.codex_skill_catalog_settle_failed", {
+        sessionId: managed.session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
-    logger.info("agent_chat.codex_skill_catalog_settle_timeout", {
-      sessionId: managed.session.id,
-      expected,
-      seen,
-    });
-    managed.codexSkillCount = seen;
-    codexSkillCountByCwd.set(cwd, seen);
   };
 
   const resolveCodexThreadParams = (managed: ManagedChatSession): {
@@ -61292,6 +61310,21 @@ export function createAgentChatService(args: {
       return { ok: false, mode: args.mode, reason: "recovery_failed" };
     }
 
+    // Recovery opens a fresh provider thread, which has heard none of the
+    // epoch directives; forget them before the capsule is prepared. A
+    // recovery that sends nothing keeps the old thread, so it puts them back.
+    const priorLaneDirectiveKey = managed.lastLaneDirectiveKey;
+    const priorDeliveredDirectiveKeys = { ...managed.deliveredDirectiveKeys };
+    const restoreDirectives = (): void => {
+      managed.lastLaneDirectiveKey = priorLaneDirectiveKey;
+      managed.deliveredDirectiveKeys = priorDeliveredDirectiveKeys;
+      persistChatState(managed);
+    };
+    const failKeepingDirectives = () => {
+      restoreDirectives();
+      return { ok: false as const, mode: args.mode, reason: "recovery_failed" as const };
+    };
+    clearDeliveredDirectiveEpoch(managed);
     const capsule = buildContinuityCapsule(managed);
     let preparedCapsule: PreparedSendMessage | null;
     try {
@@ -61312,16 +61345,16 @@ export function createAgentChatService(args: {
         provider: managed.session.provider,
         error: error instanceof Error ? error.message : String(error),
       });
-      return { ok: false, mode: args.mode, reason: "recovery_failed" };
+      return failKeepingDirectives();
     }
     if (!preparedCapsule) {
-      return { ok: false, mode: args.mode, reason: "recovery_failed" };
+      return failKeepingDirectives();
     }
 
     if (managed.session.provider === "codex") {
       const runtime = await ensureCodexSessionRuntime(managed);
       if (runtime.activeTurnId || managed.session.status === "active") {
-        return { ok: false, mode: args.mode, reason: "recovery_failed" };
+        return failKeepingDirectives();
       }
       const originalResumeCommand = sessionService.get(sessionId)?.resumeCommand ?? null;
       let reconstructedThreadId = "";
@@ -61363,7 +61396,7 @@ export function createAgentChatService(args: {
         runtime.canAttachResumedTurnStart = false;
         sessionService.setResumeCommand(sessionId, originalResumeCommand);
         persistChatState(managed);
-        return { ok: false, mode: args.mode, reason: "recovery_failed" };
+        return failKeepingDirectives();
       }
       managed.session.continuityRecovery = {
         state: "reconstructed",
@@ -61381,8 +61414,12 @@ export function createAgentChatService(args: {
     if (managed.session.provider === "claude") {
       const runtime = ensureClaudeSessionRuntime(managed);
       let dispatched = false;
+      // Once the reset drops the old session id, that thread is gone and the
+      // reset has already forgotten its directives; nothing to put back.
+      let threadReset = false;
       try {
         await resetClaudeQuerySession(managed, runtime, "session_reset", { clearSdkSessionId: true });
+        threadReset = true;
         await sendMessage({
           sessionId,
           text: capsule,
@@ -61409,7 +61446,8 @@ export function createAgentChatService(args: {
       if (!dispatched) {
         managed.session.continuityRecovery = recovery;
         persistChatState(managed);
-        return { ok: false, mode: args.mode, reason: "recovery_failed" };
+        if (threadReset) return { ok: false, mode: args.mode, reason: "recovery_failed" };
+        return failKeepingDirectives();
       }
       const reconstructedThreadId = runtime.sdkSessionId?.trim() || "";
       managed.session.continuityRecovery = {
@@ -61424,6 +61462,7 @@ export function createAgentChatService(args: {
       emitContinuityRecoveryNotice(managed, managed.session.continuityRecovery);
       return { ok: true, mode: args.mode, threadId: reconstructedThreadId, capsulePreview: capsule };
     }
+    restoreDirectives();
     return { ok: false, mode: args.mode, reason: "unsupported_provider" };
     } finally {
       continuityRecoveryInFlight.delete(sessionId);
@@ -65993,16 +66032,19 @@ export function createAgentChatService(args: {
     }
     // An archived chat stops waiting on a provider start, so its bound goes with it.
     const archivedManaged = managedSessions.get(trimmedSessionId);
+    const turnStarting = Boolean(archivedManaged?.turnAcceptedAt);
     if (archivedManaged) clearTurnAccepted(archivedManaged);
-    // Nobody returns to an archived chat soon, so its resting runtime goes now
-    // rather than at the idle sweep. Same guards as the sweep, and the same
-    // resumable teardown, so unarchiving and sending picks the thread back up.
+    // This is the same teardown the idle sweep would run a few minutes later,
+    // with the same guards plus queued steers and an accepted start. Providers
+    // whose idle teardown keeps the thread resume it on the next send.
     if (
       archivedManaged?.runtime
       && !archivedManaged.closed
       && archivedManaged.session.status === "idle"
+      && !turnStarting
       && !hasLivePendingInput(archivedManaged)
       && !hasRuntimeActiveWorkload(archivedManaged.runtime)
+      && !("pendingSteers" in archivedManaged.runtime && archivedManaged.runtime.pendingSteers.length > 0)
     ) {
       teardownRuntime(archivedManaged, "idle_ttl");
     }

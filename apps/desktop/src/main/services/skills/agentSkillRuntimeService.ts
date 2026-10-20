@@ -199,6 +199,30 @@ export function codexSkillsForCwd(
   return Array.isArray(skills) ? skills : [];
 }
 
+/**
+ * Poll a Codex skill count until it reaches `expected` or `deadlineMs` passes.
+ * Each `list` call gets the time left as its timeout, so the deadline bounds
+ * the whole wait. `seen` is the last count read (null when none was read).
+ */
+export async function waitForCodexSkillCount(args: {
+  list: (timeoutMs: number) => Promise<number>;
+  expected: number;
+  deadlineMs: number;
+  pollMs: number;
+}): Promise<{ settled: boolean; seen: number | null }> {
+  const deadline = Date.now() + args.deadlineMs;
+  let seen: number | null = null;
+  while (true) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return { settled: false, seen };
+    seen = await args.list(remaining);
+    if (seen >= args.expected) return { settled: true, seen };
+    const remainingAfterList = deadline - Date.now();
+    if (remainingAfterList <= 0) return { settled: false, seen };
+    await new Promise((resolve) => setTimeout(resolve, Math.min(args.pollMs, remainingAfterList)));
+  }
+}
+
 export function agentSkillSlashCommands(
   skills: readonly RuntimeAgentSkill[],
 ): Array<{ name: string; description: string }> {
