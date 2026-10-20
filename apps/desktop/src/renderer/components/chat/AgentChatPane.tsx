@@ -5288,8 +5288,9 @@ export function AgentChatPane({
     }
     setDraft(value);
     draftsPerSessionRef.current.set(companionStateKey, value);
-    if (value.length > 0) clearPromptSuggestionForSession(selectedSessionId);
-  }, [clearPromptSuggestionForSession, companionStateKey, draftLaunchJobsScopeKey, selectedSessionId, updateSubmittedDraftTextEdit]);
+    // Typing only hides the suggestion (the composer offers it on an empty
+    // draft), so backspacing to empty brings it back.
+  }, [companionStateKey, draftLaunchJobsScopeKey, selectedSessionId, updateSubmittedDraftTextEdit]);
 
   // Publish this session's draft presence for the sidebar's row indicator.
   // Runs on every keystroke; the store no-ops when the boolean is unchanged,
