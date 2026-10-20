@@ -150,10 +150,12 @@ function npmSetup(env: NodeJS.ProcessEnv, homeDir: string, cwd: string, npxPath:
   if ([...projectRcs, userRc].some((rc) => rc == null)) return null;
   // The global config lives under npm's effective prefix, which the env,
   // project or user config can move; the built-in prefix is the fallback.
+  // `PREFIX` is npm's own override of its built-in default prefix.
+  const defaultPrefix = env.PREFIX?.trim() || builtinPrefix;
   const prefixBeforeGlobal = fromEnv("prefix")
     || (projectRcs as Array<Map<string, string>>).find((rc) => rc.has("prefix"))?.get("prefix")
     || userRc!.get("prefix")
-    || builtinPrefix;
+    || defaultPrefix;
   const globalRc = readNpmrc(fromEnv("globalconfig") || path.join(prefixBeforeGlobal, "etc", "npmrc"));
   if (globalRc == null) return null;
   // npm's precedence: env, project, user, global.
@@ -179,8 +181,8 @@ function npmSetup(env: NodeJS.ProcessEnv, homeDir: string, cwd: string, npxPath:
   const prefixes = new Set<string>();
   const configuredPrefix = lookup("prefix");
   if (configuredPrefix) prefixes.add(configuredPrefix);
-  // The built-in prefix, plus `%APPDATA%\npm` where `npm i -g` lands on Windows.
-  prefixes.add(builtinPrefix);
+  // The default prefix, plus `%APPDATA%\npm` where `npm i -g` lands on Windows.
+  prefixes.add(defaultPrefix);
   if (isWindows && env.APPDATA?.trim()) prefixes.add(path.join(env.APPDATA.trim(), "npm"));
   return {
     cacheDir,

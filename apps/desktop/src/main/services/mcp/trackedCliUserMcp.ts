@@ -68,6 +68,8 @@ function codexEntryCarriesSecret(entry: Record<string, unknown>): boolean {
   // npx's own switches take no value.
   const takesNoValue = (flag: string) => NPX_SWITCHES.has(flag);
   if (args.some((arg, index) => {
+    // `-phunter2` is a short flag with its value attached.
+    if (/^-[^-]./.test(arg) && !takesNoValue(arg)) return true;
     if (arg.startsWith("-")) return arg.includes("=");
     const previous = index > 0 ? args[index - 1]! : "";
     return previous.startsWith("-") && !takesNoValue(previous);

@@ -50,7 +50,9 @@ describe("the user's MCP servers at launch", () => {
       "",
     ].join("\n"));
     const accountConfig = write(path.join(accountHome, "config.toml"), '[mcp_servers.both]\ncommand = "/usr/local/bin/account-copy"\n');
-    write(path.join(project, ".codex", "config.toml"), '[mcp_servers.project_owned]\ncommand = "/usr/local/bin/project-copy"\n');
+    // A project's config comes with the repository; a table named like a
+    // prototype must not reach ADE's own objects.
+    write(path.join(project, ".codex", "config.toml"), '[mcp_servers.project_owned]\ncommand = "/usr/local/bin/project-copy"\n\n[mcp_servers.__proto__]\npolluted = true\n');
     const before = [fs.readFileSync(loginConfig, "utf8"), fs.readFileSync(accountConfig, "utf8")];
 
     const overlay = await resolveCodexUserServers(createNpxDirectLauncher({ fetchImpl: vi.fn() }), {
@@ -66,13 +68,17 @@ describe("the user's MCP servers at launch", () => {
     expect(overlay.repo).toMatchObject({ command: "/usr/local/bin/repo-mcp", args: ["serve"] });
     expect(overlay.docs).toMatchObject({ url: "https://docs.example/mcp" });
     expect([fs.readFileSync(loginConfig, "utf8"), fs.readFileSync(accountConfig, "utf8")]).toEqual(before);
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
   });
 
   it.each([
-    { label: "the registry confirms the installed version", registry: { version: "1.2.0" }, direct: true },
-    { label: "a newer version is out", registry: { version: "1.3.0" }, direct: false },
-    { label: "the registry cannot be reached", registry: null, direct: false },
-  ])("starts an npx server with node only when $label", async ({ registry, direct }) => {
+    { label: "the registry confirms the installed version", registry: { version: "1.2.0" }, direct: true, privateRegistry: false },
+    { label: "a newer version is out", registry: { version: "1.3.0" }, direct: false, privateRegistry: false },
+    { label: "the registry cannot be reached", registry: null, direct: false, privateRegistry: false },
+    // npm's global config under `PREFIX` names a private registry: the public
+    // one must not be asked about the package at all.
+    { label: "npm uses a private registry", registry: { version: "1.2.0" }, direct: false, privateRegistry: true },
+  ])("starts an npx server with node only when $label", async ({ registry, direct, privateRegistry }) => {
     const bin = path.join(root, "prefix", "bin");
     const npx = write(path.join(bin, "npx"), "#!/bin/sh\n");
     write(path.join(bin, process.platform === "win32" ? "node.exe" : "node"), "");
@@ -90,12 +96,14 @@ describe("the user's MCP servers at launch", () => {
     });
     const launcher = createNpxDirectLauncher({ fetchImpl: fetchImpl as unknown as typeof fetch, homeDir: path.join(root, "home") });
     const server = { command: npx, args: ["-y", "demo-mcp@latest", "--stdio"] };
-    const env = { PATH: bin, npm_config_cache: cache };
+    const customPrefix = path.join(root, "custom-prefix");
+    if (privateRegistry) write(path.join(customPrefix, "etc", "npmrc"), "registry=https://npm.internal.example/\n");
+    const env = { PATH: bin, npm_config_cache: cache, ...(privateRegistry ? { PREFIX: customPrefix } : {}) };
 
     await launcher.prepare([server], { cwd: project, env });
     const resolved = launcher.resolve({ ...server, cwd: project, env });
 
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(privateRegistry ? 0 : 1);
     if (!direct) {
       expect(resolved).toBeNull();
       return;
@@ -123,6 +131,10 @@ describe("the user's MCP servers at launch", () => {
       'command = "/usr/local/bin/y"',
       'args = ["-p", "hunter2"]',
       "",
+      "[mcp_servers.compact_flag]",
+      'command = "/usr/local/bin/w"',
+      'args = ["-pcorrecthorse"]',
+      "",
       "[mcp_servers.url_query]",
       'url = "https://mcp.example/mcp?key=query-secret"',
       "",
@@ -149,7 +161,7 @@ describe("the user's MCP servers at launch", () => {
 
     const codexLine = trackedCliUserMcpFlags("codex", codex).join(" ");
     expect(Object.keys(codex?.codex ?? {})).toEqual(["plain"]);
-    for (const secret of ["sk-live-env-secret", "hunter2", "query-secret"]) expect(codexLine).not.toContain(secret);
+    for (const secret of ["sk-live-env-secret", "hunter2", "correcthorse", "query-secret"]) expect(codexLine).not.toContain(secret);
     // Claude gets every server, secrets included, from a private file: only its path is on the line.
     const claudeFlags = trackedCliUserMcpFlags("claude", claude);
     expect(claudeFlags).toEqual(["--mcp-config", claude?.claudeConfigPath]);

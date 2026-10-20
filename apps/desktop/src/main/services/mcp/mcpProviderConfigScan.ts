@@ -202,8 +202,13 @@ function tomlListIsOpen(value: string): boolean {
  * `mcp_servers`, which is how Codex itself writes them. A server declared only
  * through an inline `mcp_servers = { ... }` table is not read.
  */
+/** Names that would reach `Object.prototype` through a plain object's index. */
+const UNSAFE_TABLE_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
 export function parseCodexMcpServers(configText: string): Record<string, Record<string, unknown>> {
-  const servers: Record<string, Record<string, unknown>> = {};
+  // A project's own config is read too, and that file comes with the
+  // repository: tables are prototype-free and prototype names are skipped.
+  const servers: Record<string, Record<string, unknown>> = Object.create(null);
   let target: Record<string, unknown> | null = null;
   const lines = configText.replace(/\r\n?/g, "\n").split("\n");
   for (let index = 0; index < lines.length; index += 1) {
@@ -214,12 +219,13 @@ export function parseCodexMcpServers(configText: string): Record<string, Record<
       const segments = splitTomlKey(header[1] ?? "");
       target = null;
       if (segments[0] !== "mcp_servers" || segments.length < 2 || segments.length > 3) continue;
-      const server = (servers[segments[1]!] ??= {});
+      if (segments.slice(1).some((segment) => UNSAFE_TABLE_KEYS.has(segment))) continue;
+      const server = (servers[segments[1]!] ??= Object.create(null) as Record<string, unknown>);
       if (segments.length === 2) {
         target = server;
       } else {
         const existing = server[segments[2]!];
-        const sub: Record<string, unknown> = isRecord(existing) ? existing : {};
+        const sub: Record<string, unknown> = isRecord(existing) ? existing : Object.create(null);
         server[segments[2]!] = sub;
         target = sub;
       }
@@ -235,7 +241,7 @@ export function parseCodexMcpServers(configText: string): Record<string, Record<
     }
     const key = splitTomlKey(line.slice(0, equals).trim());
     const value = parseTomlValue(line.slice(equals + 1));
-    if (key.length === 1 && value !== undefined) target[key[0]!] = value;
+    if (key.length === 1 && value !== undefined && !UNSAFE_TABLE_KEYS.has(key[0]!)) target[key[0]!] = value;
   }
   return servers;
 }
