@@ -414,6 +414,11 @@ export type TerminalSessionSummary = {
   settleOverride?: SessionSettleOverride | null;
   /** Auditable owner/policy that declared the current settled state. */
   settleSource?: SessionSettleSource | null;
+  /** Jev's last-turn completion probability; only high-confidence positives surface as a settle nudge. */
+  settleNudgeTurnId?: string | null;
+  settleNudgeDoneProbability?: number | null;
+  /** The turn whose suggestion the user dismissed by settling or un-settling. */
+  settleNudgeDismissedTurnId?: string | null;
   /**
    * Snooze is a synced VISIBILITY OVERLAY, never a lifecycle phase — it does
    * not touch `canonicalSessionState()`, only where the UI files the row.

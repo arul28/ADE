@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { randomUUID } from "node:crypto";
 import type { AdeDb, RemoteSettleTupleChange } from "../state/kvDb";
 import type { Logger } from "../logging/logger";
 import { deletePullRequestChatLinksForSessions } from "../prs/pullRequestRowCleanup";
@@ -80,6 +81,9 @@ type SessionRow = {
   lastTurnFailedAt: string | null;
   settleOverride: string | null;
   settleSource: string | null;
+  settleNudgeTurnId: string | null;
+  settleNudgeDoneProbability: number | null;
+  settleNudgeDismissedTurnId: string | null;
   snoozedUntil: string | null;
   snoozedAt: string | null;
   wokeAt: string | null;
@@ -154,6 +158,9 @@ const SESSION_COLUMNS = `
   s.last_turn_failed_at as lastTurnFailedAt,
   s.settle_override as settleOverride,
   s.settle_source as settleSource,
+  s.settle_nudge_turn_id as settleNudgeTurnId,
+  s.settle_nudge_done_probability as settleNudgeDoneProbability,
+  s.settle_nudge_dismissed_turn_id as settleNudgeDismissedTurnId,
   s.snoozed_until as snoozedUntil,
   s.snoozed_at as snoozedAt,
   s.woke_at as wokeAt,
@@ -830,6 +837,14 @@ export function createSessionService({
       lastTurnFailedAt: normalizeIsoTimestamp(row.lastTurnFailedAt),
       settleOverride: normalizeSettleOverride(row.settleOverride),
       settleSource: normalizeSettleSource(row.settleSource),
+      settleNudgeTurnId: normalizeOptionalText(row.settleNudgeTurnId, 512),
+      settleNudgeDoneProbability: typeof row.settleNudgeDoneProbability === "number"
+        && Number.isFinite(row.settleNudgeDoneProbability)
+        && row.settleNudgeDoneProbability >= 0
+        && row.settleNudgeDoneProbability <= 1
+        ? row.settleNudgeDoneProbability
+        : null,
+      settleNudgeDismissedTurnId: normalizeOptionalText(row.settleNudgeDismissedTurnId, 512),
       snoozedUntil: normalizeIsoTimestamp(row.snoozedUntil),
       snoozedAt: normalizeIsoTimestamp(row.snoozedAt),
       wokeAt: normalizeIsoTimestamp(row.wokeAt),
@@ -2516,6 +2531,47 @@ export function createSessionService({
       return writeSessionActivity(sessionId, value);
     },
 
+    /** Persist one successful Jev answer only while its source turn is still current. */
+    setSettleNudgeVerdict(args: {
+      sessionId: string;
+      turnId: string;
+      doneProbability: number;
+      expectedTurnMarker: string | null;
+      expectedLastActivityAt: string | null;
+    }): boolean {
+      const sessionId = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
+      const turnId = typeof args.turnId === "string" ? args.turnId.trim().slice(0, 512) : "";
+      const doneProbability = Number(args.doneProbability);
+      if (
+        !sessionId
+        || !turnId
+        || !Number.isFinite(doneProbability)
+        || doneProbability < 0
+        || doneProbability > 1
+      ) return false;
+      const expectedTurnMarker = normalizeOptionalText(args.expectedTurnMarker, 512);
+      const expectedLastActivityAt = normalizeIsoTimestamp(args.expectedLastActivityAt);
+      const changed = db.runChanged(
+        `update terminal_sessions
+            set settle_nudge_turn_id = ?,
+                settle_nudge_done_probability = ?,
+                settle_nudge_dismissed_turn_id = null
+          where id = ?
+            and settle_nudge_turn_id is ?
+            and last_output_at is ?
+            and status != 'running'
+            and archived_at is null
+            and settled_at is null
+            and settle_override is null
+            and attention_requested_at is null
+            and last_turn_failed_at is null
+            and (snoozed_until is null or snoozed_until <= ?)`,
+        [turnId, doneProbability, sessionId, expectedTurnMarker, expectedLastActivityAt, new Date().toISOString()],
+      );
+      if (changed > 0) emitChanged({ sessionId, reason: "meta-updated" });
+      return changed > 0;
+    },
+
     getStatusNoteUpdatedAt(sessionId: string): string | null {
       return statusNoteUpdatedAtById.get(sessionId.trim()) ?? null;
     },
@@ -2653,7 +2709,13 @@ export function createSessionService({
     clearTurnStartMarkers(sessionId: string): boolean {
       const changed = mutateSessionMeta(sessionId, (id) => {
         writeSettleLifecycle({
-          intent: { kind: "clearOnActivity", cause: "turn_start" },
+          intent: {
+            kind: "clearOnActivity",
+            cause: "turn_start",
+            // The pending marker invalidates any Jev answer already in flight.
+            // A unique value lets the eventual write fail its compare-and-set.
+            settleNudgeTurnId: `pending:${randomUUID()}`,
+          },
           extraSet: {
             last_turn_failed_at: null,
             attention_requested_at: null,

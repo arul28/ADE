@@ -3057,8 +3057,8 @@ final class DatabaseService {
       columnName: "last_turn_failed_at",
       definition: "text"
     )
-    // Settle override + snooze visibility overlay. Must mirror the desktop
-    // schema (kvDb.ts) exactly: `terminal_sessions` replicates through
+    // Settle override, the optional per-turn Jev hint, and snooze visibility
+    // overlay. Must mirror the desktop schema (kvDb.ts): `terminal_sessions` replicates through
     // cr-sqlite, and a column the phone does not know about surfaces as a
     // changeset-apply error here rather than failing on desktop. All nullable
     // with no unique index — `crsql_as_crr` rejects non-PK unique indices.
@@ -3070,6 +3070,21 @@ final class DatabaseService {
     try ensureColumn(
       tableName: "terminal_sessions",
       columnName: "settle_source",
+      definition: "text"
+    )
+    try ensureColumn(
+      tableName: "terminal_sessions",
+      columnName: "settle_nudge_turn_id",
+      definition: "text"
+    )
+    try ensureColumn(
+      tableName: "terminal_sessions",
+      columnName: "settle_nudge_done_probability",
+      definition: "real"
+    )
+    try ensureColumn(
+      tableName: "terminal_sessions",
+      columnName: "settle_nudge_dismissed_turn_id",
       definition: "text"
     )
     try ensureColumn(

@@ -160,6 +160,10 @@ and in tests.
   and the durable `.ade-owner` claim. They live under `services/chat/` because
   chat is the other writer, but `ptyService` is a first-class consumer — see
   [Pi session tracking](pty-and-sessions.md#pi-session-tracking).
+- `apps/desktop/src/main/services/chat/settleNudgeSweep.ts` — bounded brain
+  sweep over old, idle chat turns. It reads transcripts through
+  `agentChatService`, asks Jev at background priority, and stores an optional
+  per-turn verdict on the synced session row.
 - `apps/desktop/src/main/services/sessions/sessionService.ts` — persistence
   layer for `terminal_sessions` rows. CRUD, continuation metadata
   normalization, `reattach`, `reconcileStaleRunningSessions`, and the durable
@@ -2416,6 +2420,9 @@ them in the create-table statement (fresh databases) and adds them through
 halves — `apps/ios/ADE/Resources/DatabaseBootstrap.sql` for fresh installs and
 `Database.swift`'s `ensureColumn` migrations for upgrades. A missing iOS half
 does not fail on desktop; it surfaces as changeset-apply errors on the phone.
+The nullable `settle_nudge_turn_id`, `settle_nudge_done_probability`, and
+`settle_nudge_dismissed_turn_id` columns also replicate with this row. They do
+not affect canonical session state; iOS stores them for sync compatibility.
 
 ## Session lifecycle
 
@@ -2489,6 +2496,17 @@ does not fail on desktop; it surfaces as changeset-apply errors on the phone.
    idle state, and only then settles. A tracked CLI may dismiss an explicit
    `ade chat ask` marker; a raw provider TUI prompt instead shows **Resolve
    input to settle** and must be handled in the terminal.
+
+   A brain-side sweep checks up to 10 idle chat turns every 30 minutes after
+   they have been quiet for three hours. It asks optional Jev whether the last
+   assistant reply finished the request, then stores the probability on the
+   synced session row keyed to that turn. A high-confidence positive replaces
+   the row's ordinary status label with **Looks finished · Settle**. The pill
+   runs the same user settle action and never settles on its own. New turns,
+   settle/unsettle, snoozed rows, pending input, active work, and failed turns
+   do not show it. A failed Jev call leaves the existing row UI alone. The
+   `settle_nudge_*` columns are present in both desktop and iOS
+   schemas so phone sync accepts the verdict; iOS does not draw a badge.
 
 7. **Activity and escalation** — a new user turn clears a chat's settle,
    explicit attention, and last-turn-failure markers. PTY output clears settle
