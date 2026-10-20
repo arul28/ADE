@@ -486,4 +486,37 @@ describe("createSupervisedPtyLoader", () => {
     await vi.advanceTimersByTimeAsync(3_000);
     expect(child.kill).toHaveBeenCalledWith("SIGKILL");
   });
+
+  it("gives no new PTY to a shared host that missed a spawn deadline", async () => {
+    vi.useFakeTimers();
+    const stuckHost = createFakeChild({ emitExitOnKill: false });
+    const freshHost = createFakeChild();
+    mocks.fork.mockReturnValueOnce(stuckHost).mockReturnValueOnce(freshHost);
+    const loader = createSupervisedPtyLoader({ logger: createLogger() as any });
+    const sibling = loader().spawn("/bin/zsh", [], spawnOptions()) as HostedPty;
+    const siblingSpawn = stuckHost.sent[0] as { requestId: string; ptyId: string };
+    stuckHost.emitMessage({
+      type: "spawned",
+      requestId: siblingSpawn.requestId,
+      ptyId: siblingSpawn.ptyId,
+      pid: 123,
+      process: "/bin/zsh",
+      cols: 80,
+      rows: 24,
+    });
+    await sibling.__adePtyHostReady;
+    const late = loader().spawn("/bin/bash", [], spawnOptions()) as HostedPty;
+    const lateReady = late.__adePtyHostReady.catch((error: unknown) => error);
+
+    await vi.advanceTimersByTimeAsync(15_000);
+    await expect(lateReady).resolves.toEqual(expect.objectContaining({
+      message: expect.stringContaining("spawn timed out"),
+    }));
+
+    const next = loader().spawn("/bin/sh", [], spawnOptions()) as HostedPty;
+    expect(mocks.fork).toHaveBeenCalledTimes(2);
+    expect(freshHost.sent[0]).toEqual(expect.objectContaining({ type: "spawn", ptyId: next.__adePtyHostId }));
+    expect(stuckHost.sent.filter((message) => (message as { type?: string }).type === "spawn")).toHaveLength(2);
+    expect(stuckHost.kill).not.toHaveBeenCalled();
+  });
 });

@@ -63,6 +63,11 @@ type QueuedRequest = Exclude<ChildRequest, SpawnRequest>;
 type HostChildState = {
   child: ChildProcess;
   ptyIds: Set<string>;
+  /**
+   * Missed a spawn deadline or a kill grace: likely not processing IPC, so it
+   * keeps serving the PTYs it has but is never given a new one.
+   */
+  unresponsive?: boolean;
   stdoutTail: string;
   stderrTail: string;
 };
@@ -321,6 +326,7 @@ class SupervisedPtyHost {
       const error = new Error("PTY host spawn timed out.");
       this.logger.warn("pty.host_spawn_timeout", { ptyId });
       this.ptys.delete(ptyId);
+      this.markUnresponsive(ptyId);
       // A shared host outlives this PTY, so a spawn that completes late must
       // still be ended there; IPC order puts this after the spawn request.
       const disposing = this.disposeInHost(ptyId);
@@ -441,7 +447,7 @@ class SupervisedPtyHost {
   private childForNewPty(ptyId: string): HostChildState {
     for (const candidate of new Set(this.childrenByPty.values())) {
       const { child } = candidate;
-      if (child.killed || !child.connected || child.exitCode != null || child.signalCode != null) continue;
+      if (candidate.unresponsive || child.killed || !child.connected || child.exitCode != null || child.signalCode != null) continue;
       if (candidate.ptyIds.size >= MAX_PTYS_PER_HOST) continue;
       candidate.ptyIds.add(ptyId);
       this.childrenByPty.set(ptyId, candidate);
@@ -670,12 +676,18 @@ class SupervisedPtyHost {
       this.ptys.delete(ptyId);
       // Other terminals may share this host, so killing the host is not the
       // escalation it is for a host of one: the host kills this PTY instead.
+      this.markUnresponsive(ptyId);
       const disposing = this.disposeInHost(ptyId);
       this.detachPtyFromChild(ptyId, "SIGKILL", disposing);
       remote?.markHostExited(1);
     }, signal === "SIGKILL" ? HOST_SIGKILL_GRACE_MS : HOST_KILL_GRACE_MS);
     timer.unref?.();
     this.killTimers.set(ptyId, timer);
+  }
+
+  private markUnresponsive(ptyId: string): void {
+    const childState = this.childrenByPty.get(ptyId);
+    if (childState) childState.unresponsive = true;
   }
 
   /**

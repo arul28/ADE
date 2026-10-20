@@ -20,6 +20,7 @@ const [laneId, mode = "seq", timeoutArg] = positionalArgs();
 if (!laneId) throw new Error("usage: terminal-flood.mjs <laneId> [seq|yes] [timeoutSecs]");
 const socket = process.env.ADE_RUNTIME_SOCKET;
 const timeoutMs = Number(timeoutArg ?? 120) * 1000;
+if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error(`timeoutSecs must be a positive number, got ${timeoutArg}`);
 const flood = mode === "yes"
   ? "yes $'\\e[31mred\\e[0m plain \\e[1mbold\\e[0m text line for the flood benchmark' | head -c 200000000"
   : "seq 1 2000000";

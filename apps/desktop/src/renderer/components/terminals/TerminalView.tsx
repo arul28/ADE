@@ -2724,7 +2724,10 @@ function startHydration(runtime: CachedRuntime) {
     }
     runtime.replayLoadedBytes = null;
     void takePendingTerminalOffsetAnchor(runtime.sessionId);
-    const preferLivePending = runtime.displayedLiveDataBeforeHydration && data.source !== "snapshot";
+    // A resumed runtime cannot keep what it shows: that is the pre-park screen
+    // plus live chunks, missing what was printed while parked. Erase it and
+    // write the payload with the pending chunks instead (overlap is deduped).
+    const preferLivePending = runtime.displayedLiveDataBeforeHydration && data.source !== "snapshot" && !eraseStale;
     if (preferLivePending) {
       runtime.pendingHydrationChunks.length = 0;
       runtime.pendingHydrationBytes = 0;
