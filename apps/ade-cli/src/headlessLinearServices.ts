@@ -538,7 +538,8 @@ type GhAuthTokenResult = Pick<HeadlessGitHubTokenLookup, "token" | "ghCliPath" |
 
 /**
  * One `gh` lookup per {@link GITHUB_CREDENTIAL_CACHE_TTL_MS} for the whole
- * brain, shared by every project's GitHub service.
+ * brain, shared by every project's GitHub service. The TTL starts when a
+ * lookup begins.
  *
  * Every GitHub request, status read and background-pause check builds a
  * credential inventory, and each build asked `gh auth token` again. With the
@@ -547,9 +548,6 @@ type GhAuthTokenResult = Pick<HeadlessGitHubTokenLookup, "token" | "ghCliPath" |
  * on `hosts.yml` as well, which `gh auth login` and `gh auth logout` rewrite,
  * so signing in or out of `gh` takes effect on the next read, not after the TTL.
  */
-let ghAuthTokenCache: { result: GhAuthTokenResult; hostsSignature: string; expiresAt: number } | null = null;
-let ghAuthTokenInFlight: { hostsSignature: string; promise: Promise<GhAuthTokenResult> } | null = null;
-
 async function readGhHostsFileSignatureAsync(): Promise<string> {
   try {
     const stat = await fs.promises.stat(path.join(ghConfigDir(), "hosts.yml"));
@@ -561,35 +559,14 @@ async function readGhHostsFileSignatureAsync(): Promise<string> {
 
 /** Drops the shared `gh` lookup, for a forced GitHub status refresh. */
 function clearGhAuthTokenCache(): void {
-  ghAuthTokenCache = null;
-  ghAuthTokenInFlight = null;
+  ghAuthTokenCache.clear();
 }
 
 async function ghAuthTokenAsync(): Promise<GhAuthTokenResult> {
   if (process.env.ADE_DISABLE_GH_AUTH_FALLBACK === "1") {
     return { token: null, ghCliPath: null, ghAuthError: null };
   }
-  const hostsSignature = await readGhHostsFileSignatureAsync();
-  if (
-    ghAuthTokenCache
-    && ghAuthTokenCache.hostsSignature === hostsSignature
-    && ghAuthTokenCache.expiresAt > Date.now()
-  ) {
-    return ghAuthTokenCache.result;
-  }
-  if (ghAuthTokenInFlight?.hostsSignature === hostsSignature) return await ghAuthTokenInFlight.promise;
-  const promise = readGhAuthTokenUncachedAsync();
-  const inFlight = { hostsSignature, promise };
-  ghAuthTokenInFlight = inFlight;
-  try {
-    const result = await promise;
-    if (ghAuthTokenInFlight === inFlight) {
-      ghAuthTokenCache = { result, hostsSignature, expiresAt: Date.now() + GITHUB_CREDENTIAL_CACHE_TTL_MS };
-    }
-    return result;
-  } finally {
-    if (ghAuthTokenInFlight === inFlight) ghAuthTokenInFlight = null;
-  }
+  return await ghAuthTokenCache.read(await readGhHostsFileSignatureAsync());
 }
 
 async function readGhAuthTokenUncachedAsync(): Promise<GhAuthTokenResult> {
@@ -611,6 +588,11 @@ async function readGhAuthTokenUncachedAsync(): Promise<GhAuthTokenResult> {
       || "GitHub CLI is installed, but `gh auth token` did not return a token.",
   };
 }
+
+const ghAuthTokenCache = createExpiringPromiseCache<GhAuthTokenResult>({
+  ttlMs: GITHUB_CREDENTIAL_CACHE_TTL_MS,
+  build: readGhAuthTokenUncachedAsync,
+});
 
 /**
  * The origin URL from the repo-scoped git cache. It uses the short freshness
