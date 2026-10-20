@@ -42513,6 +42513,13 @@ export function createAgentChatService(args: {
     mode: "recover_from_history" | "explicit_reset";
   };
 
+  /**
+   * Most skills any Codex process listed per worktree, so a chat's first turn
+   * ever has a count to wait for too. Remote plugin skills are the same for
+   * every chat on this machine; in memory only.
+   */
+  const codexSkillCountByCwd = new Map<string, number>();
+
   const refreshCodexSkills = (
     managed: ManagedChatSession,
     runtime: CodexRuntime,
@@ -42524,6 +42531,10 @@ export function createAgentChatService(args: {
     ).then((response) => {
       const skills = codexSkillsForCwd(response, managed.laneWorktreePath);
       managed.codexSkillCount = Math.max(managed.codexSkillCount ?? 0, skills.length);
+      codexSkillCountByCwd.set(
+        managed.laneWorktreePath,
+        Math.max(codexSkillCountByCwd.get(managed.laneWorktreePath) ?? 0, skills.length),
+      );
       const commands = agentSkillSlashCommands(skills);
       runtime.slashCommands = adeSkillCatalogFor(managed.session) === "none"
         ? commands.filter((command) => !isAdeBundledSkillSlashCommand(command))
@@ -42533,8 +42544,9 @@ export function createAgentChatService(args: {
 
   /**
    * Hold a fresh Codex process's first turn until it lists as many skills as
-   * the chat's last process did. Codex rebuilds its skills block every turn
-   * and re-sends all of it (~6k tokens here) when the list changed. A new
+   * the chat's last process (or any process in this worktree) did. Codex
+   * rebuilds its skills block every turn and re-sends all of it (~6k tokens
+   * here) when the list changed. A new
    * `codex app-server` adds remote plugin skills ~0.5-0.7 s after it starts,
    * so a turn sent sooner sees a short list and the next turn a long one:
    * two re-sends per restart. Bounded, and a timeout adopts what it saw, so
@@ -42543,9 +42555,9 @@ export function createAgentChatService(args: {
   const settleCodexSkillCatalog = async (managed: ManagedChatSession, runtime: CodexRuntime): Promise<void> => {
     if (runtime.skillCatalogSettled) return;
     runtime.skillCatalogSettled = true;
-    const expected = managed.codexSkillCount ?? 0;
-    if (expected <= 0) return;
     const cwd = managed.laneWorktreePath;
+    const expected = Math.max(managed.codexSkillCount ?? 0, codexSkillCountByCwd.get(cwd) ?? 0);
+    if (expected <= 0) return;
     const { forceReload: _forceReload, ...params } = codexSkillsListParams(cwd, runtime.agentSkillRoots);
     const deadline = Date.now() + CODEX_SKILL_CATALOG_SETTLE_MS;
     let seen = 0;
@@ -42565,6 +42577,7 @@ export function createAgentChatService(args: {
       seen,
     });
     managed.codexSkillCount = seen;
+    codexSkillCountByCwd.set(cwd, seen);
   };
 
   const resolveCodexThreadParams = (managed: ManagedChatSession): {
