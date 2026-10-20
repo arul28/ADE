@@ -41,6 +41,20 @@ const targets = [
   ...PACKAGES.map((pkg) => ({ label: `packages/${pkg}`, cwd: path.join(repoRoot, "packages", pkg) })),
 ];
 
+// .nvmrc pins the Node CI uses. A newer Node can install "successfully" and
+// still leave packages broken (Electron's unzip stops partway on Node 26).
+const pinnedNode = (() => {
+  try {
+    return fs.readFileSync(path.join(repoRoot, ".nvmrc"), "utf8").trim().replace(/^v/, "");
+  } catch {
+    return null;
+  }
+})();
+const nodeMismatch = Boolean(pinnedNode) && pinnedNode.split(".")[0] !== process.versions.node.split(".")[0];
+if (nodeMismatch) {
+  console.warn(`[install:apps] warning: this is Node ${process.versions.node}, but .nvmrc pins ${pinnedNode}. Run \`nvm use\` (or put Node ${pinnedNode.split(".")[0]} first on PATH) if an install fails.`);
+}
+
 for (const target of targets) {
   if (!fs.existsSync(path.join(target.cwd, "package.json"))) {
     throw new Error(`[install:apps] ${target.label} has no package.json`);
@@ -55,6 +69,29 @@ for (const target of targets) {
   if (result.status !== 0) {
     throw new Error(`[install:apps] ${target.label} install failed with exit code ${result.status}`);
   }
+}
+
+// Electron's postinstall can exit 0 without finishing; verify both its final
+// path marker and the executable it names.
+const electronDir = path.join(repoRoot, "apps", "desktop", "node_modules", "electron");
+const electronPath = path.join(electronDir, "path.txt");
+const electronRelativePath = fs.existsSync(electronPath) ? fs.readFileSync(electronPath, "utf8").trim() : "";
+const electronDist = process.env.ELECTRON_OVERRIDE_DIST_PATH || path.join(electronDir, "dist");
+const electronExecutable = electronRelativePath ? path.join(electronDist, electronRelativePath) : null;
+if (!electronExecutable || !fs.existsSync(electronExecutable)) {
+  const repair = fs.existsSync(electronDir)
+    ? `run \`node install.js\` in ${path.relative(repoRoot, electronDir)}`
+    : "run `npm install` again in apps/desktop";
+  const missing = !fs.existsSync(electronPath)
+    ? `no ${path.relative(repoRoot, electronPath)}`
+    : !electronRelativePath
+      ? `an empty ${path.relative(repoRoot, electronPath)}`
+      : `missing ${path.relative(repoRoot, electronExecutable)}`;
+  throw new Error(
+    `[install:apps] Electron's binary didn't finish installing (${missing}).` +
+      (nodeMismatch ? ` Switch to Node ${pinnedNode} and` : "") +
+      ` ${repair}.`,
+  );
 }
 
 console.log(`[install:apps] installed ${targets.length} package(s)`);

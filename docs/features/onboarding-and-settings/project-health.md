@@ -32,7 +32,7 @@ Most checks matter after a project moves (see
 | `lane-folders` | Active lanes whose folder is gone | none (restore or archive) |
 | `git-links` | A lane's `.git` points at another repository or a missing folder, or the repository doesn't link back | `relink-lanes` (after a move): relative links, as the move writes them |
 | `symlinks` | Absolute links still pointing at the old folder | `relink-symlinks` |
-| `dependencies` | A checkout's install is missing or empty, or a lane's link to the main checkout's install is broken | `install-dependencies`: a terminal per checkout running its `setup` script or `<pm> install`. Lanes linked to the main checkout are fixed by installing the main checkout, never reinstalled one by one |
+| `dependencies` | A checkout's install is missing or empty, or a lane's link to the main checkout's install is broken | ADE skips well-formed scripts-only manifests, but unreadable manifests and workspace roots count as install units; pnpm workspaces use their shared root install. `install-dependencies` opens a terminal per checkout running its `setup` script or `<pm> install`. Lanes linked to the main checkout are fixed by installing the main checkout, never reinstalled one by one |
 | `virtualenvs` | A Python venv whose scripts name another folder | none (recreate) |
 | `agent-trust` | Claude Code, Codex or Copilot trusted the old folder but not this one | `carry-trust`: copies `~/.claude.json` `projects[...]`, Codex `config.toml` trust and Copilot `trustedFolders` (append only) |
 | `agent-history` | Other tools' history still filed under the old path | `move-history`: renames folders, never overwrites |
@@ -68,6 +68,9 @@ for eligible lanes.
 - **Dependencies in lanes.** ADE lanes usually link `node_modules` to the main
   checkout's. A lane is only expected to have its own top-level install; a
   missing `apps/*` install in a lane is normal.
+- **Malformed manifests.** A `package.json` that cannot be parsed or is not an
+  object remains an install unit so one half-edited lane manifest does not hide
+  the dependency check; ADE logs read failures locally.
 - **`~/.claude.json` is always included,** even when `CLAUDE_CONFIG_DIR` points
   at an ADE Claude home (as it does inside ADE's own agent processes).
 - **Failed reads stay visible as failures.** A failed lane read becomes a

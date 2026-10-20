@@ -230,6 +230,10 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     // GB to a USB drive takes far more than the 30s default. Progress arrives
     // on its own channel meanwhile.
     case IPC.projectMoveStart:
+    // Deleting the kept original removes the whole old copy before it answers;
+    // a 24 GB copy took minutes, and on the 30s default the renderer reported
+    // a failure while the delete went on and later succeeded.
+    case IPC.projectMoveCleanup:
       return 24 * 60 * 60_000;
     // On the 30s default the renderer showed a raw IPC timeout mid-repair.
     case IPC.recoveryRepair:

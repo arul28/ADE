@@ -135,8 +135,37 @@ function laneLinkProblem(projectRoot: string, laneRoot: string): string | null {
   return null;
 }
 
-function hasPackageInstall(root: string): boolean {
-  return exists(path.join(root, "package.json")) && lockfileKind(root) !== null;
+/**
+ * A folder whose install produces packages. A scripts-only package is not an
+ * install unit; a workspace root is, because its install creates dependencies
+ * for the member packages too.
+ */
+function hasPackageInstall(root: string, logger: Pick<Logger, "warn">): boolean {
+  const packageManager = lockfileKind(root);
+  if (packageManager === null) return false;
+  const manifestPath = path.join(root, "package.json");
+  if (!exists(manifestPath)) return false;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  } catch (error) {
+    // Mid-edit or broken: still an install unit, as before this check read it,
+    // so one bad lane manifest doesn't fail the whole dependency check.
+    logger.warn("project_health.package_manifest_unreadable", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return true;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return true;
+  const manifest = parsed as Record<string, unknown>;
+  // Workspaces install their members' packages into the root.
+  if (["dependencies", "devDependencies", "optionalDependencies", "workspaces"].some((field) => {
+    const deps = manifest[field];
+    return Boolean(deps) && typeof deps === "object" && Object.keys(deps as object).length > 0;
+  })) return true;
+  // pnpm keeps workspace membership in pnpm-workspace.yaml and the shared
+  // lockfile, not package.json's `workspaces` field or member lockfiles.
+  return packageManager === "pnpm" && exists(path.join(root, "pnpm-workspace.yaml"));
 }
 
 /** A virtualenv whose scripts name a folder other than its own was copied or moved, and its scripts break. */
@@ -165,7 +194,7 @@ function isEmptyDir(dir: string): boolean {
 }
 
 /** Folders in a checkout with their own package install: the checkout itself, `apps/*`, `packages/*`. */
-function installUnits(checkoutRoot: string): string[] {
+function installUnits(checkoutRoot: string, logger: Pick<Logger, "warn">): string[] {
   const units = [checkoutRoot];
   for (const group of ["apps", "packages"]) {
     try {
@@ -176,7 +205,7 @@ function installUnits(checkoutRoot: string): string[] {
       // no such group
     }
   }
-  return units.filter(hasPackageInstall);
+  return units.filter((unit) => hasPackageInstall(unit, logger));
 }
 
 type DependencyInstall = { checkout: Checkout; command: string };
@@ -190,7 +219,7 @@ type DependencyInstall = { checkout: Checkout; command: string };
  * installing the lane (that would replace a shared link with gigabytes of
  * copies). Links to anywhere else that is gone are reported as broken.
  */
-function dependencyPlan(ctx: Context): { installs: DependencyInstall[]; brokenLinks: string[] } {
+function dependencyPlan(ctx: Context, logger: Pick<Logger, "warn">): { installs: DependencyInstall[]; brokenLinks: string[] } {
   const primary = ctx.checkouts.find((checkout) => checkout.primary) ?? null;
   const needs = new Map<Checkout, Set<string>>();
   const brokenLinks: string[] = [];
@@ -199,7 +228,7 @@ function dependencyPlan(ctx: Context): { installs: DependencyInstall[]; brokenLi
     needs.get(checkout)!.add(unit);
   };
   for (const checkout of ctx.checkouts) {
-    for (const unit of installUnits(checkout.root)) {
+    for (const unit of installUnits(checkout.root, logger)) {
       const nodeModules = path.join(unit, "node_modules");
       let stat: fs.Stats | null = null;
       try {
@@ -223,7 +252,8 @@ function dependencyPlan(ctx: Context): { installs: DependencyInstall[]; brokenLi
       }
       const targetRoot = target ? path.dirname(target) : "";
       if (primary && targetRoot && isWithinPath(primary.root, targetRoot, true) && !isWithinPath(path.join(primary.root, ".ade"), targetRoot, true)) {
-        mark(primary, targetRoot);
+        // A link to a folder that installs nothing has nothing to resolve.
+        if (hasPackageInstall(targetRoot, logger)) mark(primary, targetRoot);
       } else {
         brokenLinks.push(nodeModules);
       }
@@ -592,7 +622,7 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
         }];
       }),
       run("dependencies", "Dependencies are installed", () => {
-        const plan = dependencyPlan(ctx);
+        const plan = dependencyPlan(ctx, deps.logger);
         if (!plan.installs.length && !plan.brokenLinks.length) return [];
         return [{
           id: "dependencies",
@@ -808,7 +838,7 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
         }
         case "install-dependencies": {
           if (!deps.openTerminal) throw new Error("Terminals aren't available here.");
-          for (const install of dependencyPlan(ctx).installs) {
+          for (const install of dependencyPlan(ctx, deps.logger).installs) {
             await deps.openTerminal({ laneId: install.checkout.laneId, cwd: install.checkout.root, title: "Install dependencies", command: install.command });
             done.push(`Started \`${install.command}\` in ${install.checkout.label}.`);
           }
