@@ -265,6 +265,78 @@ describe("window auto-start", () => {
     );
   });
 
+  function earlyResetScheduler() {
+    const spawn = vi.fn(() => childProcess());
+    const scheduler = createWindowAutoStartScheduler({
+      logger: logger() as Logger,
+      listInstances: () => [instance("claude")],
+      getProviderSettings: () => ({ smartBalance: false, autoStartWindows: true }),
+      spawn,
+      resolveClaudeExecutable: () => ({ path: "/bin/claude", source: "path" }) as never,
+    });
+    return { scheduler, spawn };
+  }
+
+  const weeklyOnly = (base: UsageSnapshot): UsageSnapshot => ({
+    ...base,
+    windows: [{ ...base.windows[0]!, windowType: "weekly", percentUsed: 10 }],
+  });
+
+  it.each([
+    ["the five-hour window disappears", (s: UsageSnapshot) => weeklyOnly(s)],
+    ["the five-hour window loses its reset", (s: UsageSnapshot) => ({
+      ...s, windows: [...weeklyOnly(s).windows, { ...s.windows[0]!, percentUsed: 0, resetsAt: "" }],
+    })],
+    ["the window comes back unused with a new end", (s: UsageSnapshot) => ({
+      ...s, windows: [{ ...s.windows[0]!, percentUsed: 0, resetsAt: new Date(NOW + 5 * 3_600_000).toISOString() }],
+    })],
+  ])("starts the next window right away when %s before its reset", async (_name, afterReset) => {
+    const { scheduler, spawn } = earlyResetScheduler();
+    const armed = snapshot(new Date(NOW + 3 * 3_600_000).toISOString());
+    scheduler.onSnapshot(armed);
+    scheduler.onSnapshot(afterReset(armed));
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(spawn).toHaveBeenCalledTimes(1);
+
+    // Another poll showing the same idle state inside the cooldown sends nothing more.
+    scheduler.onSnapshot(afterReset(armed));
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the armed reset while a poll returns no reading for the account", async () => {
+    const { scheduler, spawn } = earlyResetScheduler();
+    const resetAt = new Date(NOW + 60_000).toISOString();
+    scheduler.onSnapshot(snapshot(resetAt));
+    scheduler.onSnapshot({ ...snapshot(resetAt), windows: [] });
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(spawn).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it("still fires when a poll lands between the reset and the timer", async () => {
+    const { scheduler, spawn } = earlyResetScheduler();
+    const armed = snapshot(new Date(NOW + 60_000).toISOString());
+    scheduler.onSnapshot(armed);
+    await vi.advanceTimersByTimeAsync(62_000);
+    scheduler.onSnapshot(weeklyOnly(armed));
+
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts the next window when a banked reset is spent, before any poll sees it", async () => {
+    const { scheduler, spawn } = earlyResetScheduler();
+    scheduler.onSnapshot(snapshot(new Date(NOW + 3 * 3_600_000).toISOString()));
+
+    scheduler.onWindowReset("claude:claude");
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(spawn).toHaveBeenCalledTimes(1);
+  });
+
   it("does not arm an account with no five-hour window", () => {
     const scheduler = createWindowAutoStartScheduler({
       logger: logger() as Logger,

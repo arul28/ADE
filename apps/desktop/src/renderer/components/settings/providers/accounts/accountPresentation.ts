@@ -10,6 +10,7 @@
  * never heard of instead of dropping it.
  */
 import {
+  AUTOSTART_WINDOW_TYPE,
   providerInstanceHasAccount,
   type ProviderInstance,
   type ProviderInstanceProvider,
@@ -149,18 +150,21 @@ export function accountUsageLine(
 }
 
 /**
- * True when this provider reports a five-hour window at all.
+ * True when ADE can auto-start this provider's window and the provider reports
+ * that window at all.
  *
- * The auto-start toggle is about that window specifically, so a provider (or a
- * plan) with no five-hour window must not be offered a control that could never
- * do anything — an inert switch is a promise the product does not keep.
+ * The toggle is about that window specifically, so a provider ADE has no opener
+ * for, or a plan with no such window, must not be offered a control that could
+ * never do anything — an inert switch is a promise the product does not keep.
  */
-export function providerHasFiveHourWindow(
+export function providerOffersAutoStart(
   snapshot: UsageSnapshot | null,
   provider: ProviderInstanceProvider,
 ): boolean {
+  const windowType = AUTOSTART_WINDOW_TYPE[provider];
+  if (!windowType) return false;
   return (snapshot?.windows ?? []).some(
-    (window) => window.provider === provider && window.windowType === "five_hour",
+    (window) => window.provider === provider && window.windowType === windowType,
   );
 }
 

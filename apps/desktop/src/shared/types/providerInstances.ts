@@ -1,5 +1,6 @@
 import type { ClaudePromptCacheTtl } from "../claudePromptCache";
 import type { ProviderCompactionSettings } from "../compactionSettings";
+import type { UsageWindowType } from "./usage";
 /**
  * Provider accounts ("instances").
  *
@@ -130,6 +131,20 @@ export type ProviderInstanceSettings = {
    * operating system.
    */
   autoStartWindows: boolean;
+};
+
+/**
+ * The quota window ADE auto-starts for each provider, and the only providers
+ * that offer the toggle. A window qualifies only when the provider starts it on
+ * the first request after the last one ends (Claude's and Codex's five-hour
+ * windows). Rolling windows (OpenCode, Kimi), calendar or billing periods
+ * (Copilot, Cursor, Grok) and windows nobody has confirmed the start of (Muse)
+ * are left out: a request there opens nothing. The opener that sends the
+ * request lives with the scheduler in `windowAutoStart.ts`.
+ */
+export const AUTOSTART_WINDOW_TYPE: Partial<Record<ProviderInstanceProvider, UsageWindowType>> = {
+  claude: "five_hour",
+  codex: "five_hour",
 };
 
 export const DEFAULT_PROVIDER_INSTANCE_SETTINGS: ProviderInstanceSettings = {
