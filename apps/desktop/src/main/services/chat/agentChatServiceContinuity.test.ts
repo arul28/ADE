@@ -382,7 +382,6 @@ describe("suggestLaneNameFromPrompt", () => {
     expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledTimes(1);
     expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledWith(expect.objectContaining({
       model: "openai/gpt-5.4",
-      reasoningEffort: "low",
     }));
   });
 

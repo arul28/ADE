@@ -61,7 +61,7 @@ Two consequences reach ordinary agents, not just the CTO:
 - **Every agent can contribute.** `recordDiscovery` is a universal tool (also `ade actions run cto_memory.recordDiscovery`) that appends one timestamped, secret-redacted, tagged line to the discovery queue. There is deliberately no matching read tool on the worker side — a worker hands a finding up without gaining a view of what the CTO knows — and the action policy for the `cto_memory` domain is inverted (`allExcept`) so a method added there later is CTO-only by omission. The queue is byte-capped with archive eviction, and its read cursor is a byte offset that can re-deliver but never skip.
 - **Every project chat receives what memory knows about its lane.** `buildLaneMemoryContextSection(laneId)` returns the lane-tagged facts plus the rolling thread state, or nothing when there is nothing lane-scoped to say. `shouldInjectLaneMemoryContext` delivers it once per lane change, riding the same dedupe key as the lane execution directive, and never to the CTO (which already has all of memory) or a personal chat (which has no project lane).
 
-A nightly ADE-owned cron job on the CTO session distills the daily logs and the discovery queue into tagged durable facts, merges duplicates, and archives facts whose PR merged long ago. See [CTO › Nightly memory gardening](../cto/README.md#nightly-memory-gardening).
+A nightly ADE-owned cron job on the CTO session has the cheap helper model (not a CTO turn) distill the daily logs and the discovery queue into durable facts, merge duplicates, and retire facts that are no longer true, within fixed caps. See [CTO › Nightly memory gardening](../cto/README.md#nightly-memory-gardening).
 
 ### Flush and injection lifecycle
 
