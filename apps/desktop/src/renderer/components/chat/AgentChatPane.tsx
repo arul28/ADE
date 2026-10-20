@@ -105,6 +105,7 @@ import {
   PENDING_INPUT_SEND_BLOCKED_MESSAGE,
   isDismissiblePendingRequest,
   isNonBlockingPendingRequest,
+  isRedirectablePendingRequest,
 } from "../../../shared/pendingInputAnswers";
 import { resolveSubagentCapability } from "../../../shared/subagentCapabilities";
 import { formatSubagentModelChip, subagentModelAttribution } from "../../../shared/chatSubagents";
@@ -4412,6 +4413,9 @@ export function AgentChatPane({
   );
   const [sendOnEnter, setSendOnEnter] = useState(true);
   const [draft, setDraft] = useState("");
+  // The draft as typed right now, for a send that awaits before it dispatches.
+  const liveDraftRef = useRef(draft);
+  liveDraftRef.current = draft;
   const [submittedDraftTextEdit, setSubmittedDraftTextEdit] = useState<SubmittedDraftTextEdit | null>(null);
   const submittedDraftTextEditRef = useRef<SubmittedDraftTextEdit | null>(null);
   const [mentionLabels, setMentionLabels] = useState<Record<string, string>>({});
@@ -13677,8 +13681,15 @@ export function AgentChatPane({
     };
     if (selectedSessionId) {
       const sessionPending = resolvedPendingInputsBySession[selectedSessionId] ?? [];
-      const hasBlockingPending = sessionPending.some((entry) => entry.request.blocking);
-      if (hasBlockingPending || selectedSession?.awaitingInput === true) {
+      const blockingPending = sessionPending.filter((entry) => entry.request.blocking);
+      // Approvals do not block a send: it declines them first (below). A
+      // question, or a wait with no card to decline, still does.
+      const sendRedirectsPending = blockingPending.length > 0
+        && blockingPending.every((entry) => isRedirectablePendingRequest(entry.request));
+      if (
+        (blockingPending.length > 0 && !sendRedirectsPending)
+        || (blockingPending.length === 0 && selectedSession?.awaitingInput === true)
+      ) {
         setError(PENDING_INPUT_SEND_BLOCKED_MESSAGE);
         return;
       }
@@ -14150,6 +14161,29 @@ export function AgentChatPane({
         setBusy(false);
       }
       return;
+    }
+    // Sending while approvals wait declines them, then sends. It runs here,
+    // after the local commands above and right before dispatch, so only a
+    // message that is really going out declines anything. A failed decline
+    // sends nothing and keeps the draft; a draft edited while the declines
+    // were in flight is not sent either.
+    const redirectedPending = selectedSessionId
+      ? (resolvedPendingInputsBySession[selectedSessionId] ?? []).filter((entry) =>
+        entry.request.blocking && isRedirectablePendingRequest(entry.request))
+      : [];
+    if (redirectedPending.length > 0) {
+      submitInFlightRef.current = true;
+      setBusy(true);
+      setError(null);
+      try {
+        for (const entry of redirectedPending) {
+          if (!(await handleApproval(entry.itemId, "decline"))) return;
+        }
+      } finally {
+        submitInFlightRef.current = false;
+        setBusy(false);
+      }
+      if (liveDraftRef.current !== draft) return;
     }
     const draftSnapshot = draft;
     const attachmentsSnapshot = attachments;

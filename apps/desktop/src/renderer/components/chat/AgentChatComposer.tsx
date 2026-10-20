@@ -204,7 +204,11 @@ import {
   projectSecretSaveAnswers,
 } from "./ProjectSecretCard";
 import { projectSecretComposerNote, readProjectSecretRequestCard } from "../../../shared/projectSecretRequest";
-import { isAskQuestionRequest } from "../../../shared/pendingInputAnswers";
+import {
+  isAskQuestionRequest,
+  isRedirectablePendingRequest,
+  pendingInputRedirectPlaceholder,
+} from "../../../shared/pendingInputAnswers";
 import { approvalDetailIsRedundant, approvalRequestDetail } from "./approvalRequestDetail";
 import { formatCursorModeLabel } from "../../../shared/cursorModes";
 import { ChatProposedPlanCard } from "./ChatProposedPlanCard";
@@ -808,6 +812,8 @@ function getComposerInputLockMessage(pendingInput: PendingInputRequest | null | 
   if (isAskQuestionRequest(pendingInput)) {
     return "Answer the question in the composer, or decline it.";
   }
+  // The composer stays open for these: sending declines and redirects.
+  if (isRedirectablePendingRequest(pendingInput)) return null;
   return "Resolve the pending request above before sending another message.";
 }
 
@@ -3324,10 +3330,10 @@ function AgentChatComposerImpl({
    * Computed up here, ahead of `composerInputLocked`, because it is the one
    * blocking request that does NOT lock the input. The answer field IS this
    * composer's editor, re-homed inside the card — locking it would lock the
-   * thing the user is being asked to type into. Every other blocking request
-   * (approvals, elicitations) still hard-locks. The send path stays closed
-   * regardless: `submitComposerDraft` returns on `pendingInput.blocking`, and
-   * the footer that owns Send is not rendered while a question is up.
+   * thing the user is being asked to type into. Approvals leave the input open
+   * too, for a different reason (see `pendingRedirectActive`). For a question
+   * the send path stays closed: `submitComposerDraft` returns on
+   * `pendingInput.blocking`, and the footer that owns Send is not rendered.
    */
   const askQuestionActive = Boolean(
     pendingInput
@@ -3341,12 +3347,22 @@ function AgentChatComposerImpl({
     || iosElementContextItems.length > 0
     || appControlContextItems.length > 0
     || builtInBrowserContextItems.length > 0;
+  /**
+   * An approval (or plan, permissions, model choice) is waiting, and the
+   * composer stays open anyway: sending declines every waiting card, then
+   * delivers the message like any mid-turn send. The decline itself lives in
+   * the host's send path, right before dispatch, so only a real send declines.
+   */
+  const pendingRedirectActive = !askQuestionActive && isRedirectablePendingRequest(pendingInput);
   const externalInputLockMessage = normalizeComposerLabelText(inputLockMessage ?? "");
-  const composerInputLocked = (Boolean(pendingInput?.blocking) && !askQuestionActive)
+  const composerInputLocked = (Boolean(pendingInput?.blocking) && !askQuestionActive && !pendingRedirectActive)
     || Boolean(externalInputLockMessage);
+  const pendingRedirectPlaceholder = pendingRedirectActive && !externalInputLockMessage
+    ? pendingInputRedirectPlaceholder(pendingInput?.kind)
+    : null;
   const composerInputLockMessage = externalInputLockMessage || getComposerInputLockMessage(pendingInput);
   /** The next-prompt suggestion, while the empty composer would show it. */
-  const offeredPromptSuggestion = !turnActive && !composerInputLockMessage && !draft.length
+  const offeredPromptSuggestion = !turnActive && !composerInputLockMessage && !pendingRedirectPlaceholder && !draft.length
     ? promptSuggestion?.trim() || null
     : null;
   const composerInputContextLabel = normalizeComposerLabelText(messagePlaceholder ?? "") || "Chat message";
@@ -6480,7 +6496,9 @@ function AgentChatComposerImpl({
     if (event.key === "Escape") {
       event.preventDefault();
       if (attachmentPickerOpen) { setAttachmentPickerOpen(false); return; }
-      if (pendingInput) { onApproval("cancel"); return; }
+      // While a card waits under an open composer, Escape clears a typed
+      // redirect first; only an empty composer cancels the card.
+      if (pendingInput && !(pendingRedirectActive && draft.length)) { onApproval("cancel"); return; }
       if (draft.length) { onDraftChange(""); return; }
       if (offeredPromptSuggestion) onDismissPromptSuggestion?.();
       return;
@@ -7203,7 +7221,7 @@ function AgentChatComposerImpl({
   }, [composerMachineBinding, scheduleRequest]);
 
   const submitComposerDraft = useCallback(() => {
-    if (pendingInput?.blocking) {
+    if (pendingInput?.blocking && !pendingRedirectActive) {
       return;
     }
     if (pendingImageAttachments.length > 0) {
@@ -7259,7 +7277,7 @@ function AgentChatComposerImpl({
       return;
     }
     onSubmit();
-  }, [activeTurnHasContent, attachments.length, backgroundLaunchBusy, busy, cloudFileAttachmentsDelivered, cloudSessionLinked, composerInputLocked, contextAttachmentCount, contextAttachments, cloudCanLaunch, cloudHasEligibleModels, cloudModeActive, cloudModelReady, draft, hasComposerContextContent, onDraftChange, onSubmit, onSubmitBlocked, onSubmitToCloud, pendingImageAttachments.length, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length, singleModelBlockedMessage, singleModelReady]);
+  }, [activeTurnHasContent, attachments.length, backgroundLaunchBusy, busy, cloudFileAttachmentsDelivered, cloudSessionLinked, composerInputLocked, contextAttachmentCount, contextAttachments, cloudCanLaunch, cloudHasEligibleModels, cloudModeActive, cloudModelReady, draft, hasComposerContextContent, onDraftChange, onSubmit, onSubmitBlocked, onSubmitToCloud, pendingImageAttachments.length, pendingInput, pendingRedirectActive, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length, singleModelBlockedMessage, singleModelReady]);
 
   const submitActiveTurnDraft = useCallback(() => {
     if (effectiveActiveTurnSendMode === "queue") {
@@ -8799,7 +8817,7 @@ function AgentChatComposerImpl({
                     )}>
                       {answer
                         ? answer.placeholder
-                        : composerInputLockMessage ?? (turnActive ? "Steer the active turn..." : (messagePlaceholder || "Type to vibecode..."))}
+                        : composerInputLockMessage ?? pendingRedirectPlaceholder ?? (turnActive ? "Steer the active turn..." : (messagePlaceholder || "Type to vibecode..."))}
                     </div>
                   )
                 ) : null}
@@ -9026,7 +9044,7 @@ function AgentChatComposerImpl({
                   data-chat-composer-text=""
                   // A suggestion draws as its own one-line hint: a long placeholder
                   // would wrap, and the field sizes itself to fit it.
-                  placeholder={offeredPromptSuggestion ? "" : composerInputLockMessage ?? (turnActive ? "Steer the active turn..." : (messagePlaceholder || "Type to vibecode..."))}
+                  placeholder={offeredPromptSuggestion ? "" : composerInputLockMessage ?? pendingRedirectPlaceholder ?? (turnActive ? "Steer the active turn..." : (messagePlaceholder || "Type to vibecode..."))}
                   onKeyDown={handleKeyDown}
                   onPaste={handlePaste}
                   onCopy={handleCopy}
