@@ -24,7 +24,7 @@ import { mcpServerDefinitionFromConfig, type McpServerDefinition } from "../../.
 import { parseJsonc } from "../../../shared/theme/jsonc";
 import type { McpConfigProvider, McpFoundServer, McpRegistryScan } from "../../../shared/types/mcpRegistry";
 import { pathsEqual } from "../shared/pathCompare";
-import { copilotConfigHome, factoryConfigHome, qwenConfigHome } from "../shared/providerConfigHomes";
+import { factoryConfigHome, grokConfigHome, kimiCodeConfigHome, qwenConfigHome } from "../shared/providerConfigHomes";
 
 export type ScannedMcpServer = McpServerDefinition & { providers: McpConfigProvider[] };
 
@@ -368,9 +368,11 @@ export function toFoundServers(scan: ProviderMcpScan): McpRegistryScan {
  * The MCP server names a provider loads from its own config files for a chat
  * in `cwd`, for the providers that cannot drop their own copy of a server.
  * ADE then leaves out a registry server of the same name, which would
- * otherwise start a second copy. Claude and Codex replace a same-named server
- * from the launch and OpenCode merges its config by key, so they are not
- * listed. A provider whose config ADE cannot read answers no names.
+ * otherwise start a second copy (Droid, Qwen, Kimi, Grok, Devin, Antigravity:
+ * not shown to replace), or refuse the session's server (Muse). Claude, Codex,
+ * Copilot (probed) and Cursor (documented first-match precedence, inline
+ * first) replace a same-named server from the launch, and OpenCode merges its
+ * config by key, so they are not listed.
  */
 export function providerOwnMcpServerNames(
   provider: string,
@@ -378,32 +380,63 @@ export function providerOwnMcpServerNames(
 ): Set<string> {
   const env = args.env ?? process.env;
   const homeDir = args.homeDir ?? os.homedir();
-  const files: Array<{ file: string; key: string }> = [];
+  const files: Array<{ file: string; key: string; toml?: string }> = [];
   switch (provider) {
-    case "cursor":
-      files.push({ file: path.join(homeDir, ".cursor", "mcp.json"), key: "mcpServers" });
-      files.push({ file: path.join(args.cwd, ".cursor", "mcp.json"), key: "mcpServers" });
-      break;
     case "droid":
+      // The user file, and `.factory/mcp.json` in the folder and every folder above it.
       files.push({ file: path.join(factoryConfigHome({ env, homeDir }), "mcp.json"), key: "mcpServers" });
-      files.push({ file: path.join(args.cwd, ".factory", "mcp.json"), key: "mcpServers" });
-      break;
-    case "copilot":
-      files.push({ file: path.join(copilotConfigHome({ env, homeDir }), "mcp-config.json"), key: "mcpServers" });
+      for (let dir = path.resolve(args.cwd); ; dir = path.dirname(dir)) {
+        files.push({ file: path.join(dir, ".factory", "mcp.json"), key: "mcpServers" });
+        if (path.dirname(dir) === dir) break;
+      }
       break;
     case "qwen":
       files.push({ file: path.join(qwenConfigHome({ env, homeDir }), "settings.json"), key: "mcpServers" });
       files.push({ file: path.join(args.cwd, ".qwen", "settings.json"), key: "mcpServers" });
       break;
     case "muse":
+      // Muse refuses a session server whose name its own config already has,
+      // rather than starting either.
+      files.push({ file: path.join(env.XDG_CONFIG_HOME?.trim() || path.join(homeDir, ".config"), "muse", "settings.json"), key: "mcpServers" });
       files.push({ file: path.join(args.cwd, ".mcp.json"), key: "mcpServers" });
+      break;
+    case "kimi":
+      // `<KIMI_CODE_HOME>/mcp.json`, and the project's `.kimi-code/mcp.json`
+      // (docs) or `.mcp.json` (the bundled import skill names both).
+      files.push({ file: path.join(kimiCodeConfigHome({ env, homeDir }), "mcp.json"), key: "mcpServers" });
+      files.push({ file: path.join(args.cwd, ".kimi-code", "mcp.json"), key: "mcpServers" });
+      files.push({ file: path.join(args.cwd, ".mcp.json"), key: "mcpServers" });
+      break;
+    case "grok":
+      // `[mcp_servers.<name>]` in `<GROK_HOME>/config.toml` and `./.grok/config.toml`.
+      for (const file of [path.join(grokConfigHome({ env, homeDir }), "config.toml"), path.join(args.cwd, ".grok", "config.toml")]) {
+        const text = readText(file);
+        if (text != null) files.push({ file, key: "", toml: text });
+      }
+      break;
+    case "devin": {
+      // 3000.3+ keeps servers in `mcp_config.json` per scope; older builds
+      // kept `mcpServers` in `config.json` (migrated at startup).
+      const userDir = process.platform === "win32"
+        ? path.join(env.APPDATA?.trim() || path.join(homeDir, "AppData", "Roaming"), "devin")
+        : path.join(env.XDG_CONFIG_HOME?.trim() || path.join(homeDir, ".config"), "devin");
+      for (const dir of [userDir, path.join(args.cwd, ".devin")]) {
+        for (const file of ["mcp_config.json", "mcp_config.local.json", "config.json", "config.local.json"]) {
+          files.push({ file: path.join(dir, file), key: "mcpServers" });
+        }
+      }
+      break;
+    }
+    case "antigravity":
+      files.push({ file: path.join(homeDir, ".gemini", "config", "mcp_config.json"), key: "mcpServers" });
+      files.push({ file: path.join(args.cwd, ".agents", "mcp_config.json"), key: "mcpServers" });
       break;
     default:
       break;
   }
   const names = new Set<string>();
-  for (const { file, key } of files) {
-    const table = readJson(file)?.[key];
+  for (const { file, key, toml } of files) {
+    const table = toml != null ? parseCodexMcpServers(toml) : readJson(file)?.[key];
     if (isRecord(table)) for (const name of Object.keys(table)) names.add(name.trim());
   }
   return names;

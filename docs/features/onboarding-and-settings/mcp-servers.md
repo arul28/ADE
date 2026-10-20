@@ -219,11 +219,27 @@ A change reaches chats started after it. A running chat keeps what it started
 with.
 
 A registry server whose name the provider's own config also declares is left
-to that config for Cursor, Droid, Copilot, Qwen and Muse
-(`providerOwnMcpServerNames`). Those providers cannot drop their own copy of a
-server, and "Import" copies a server rather than moving it, so passing both
-would start two. Claude and Codex replace a same-named server from the launch,
-and OpenCode merges its config by name, so they get the registry's.
+to that config (`providerOwnMcpServerNames`) for Droid, Muse, Qwen, Kimi, Grok,
+Devin and Antigravity. "Import" copies a server rather than moving it; Droid
+was not shown to drop its own copy (two would start), and Muse refuses a
+session server whose name its config has. Claude, Codex and Copilot replace a
+same-named server from the launch (each probed: one process, the launch's
+command), Cursor documents that an inline server wins over its config layers,
+and OpenCode merges its config by name, so those get the registry's.
+
+| Provider | Own MCP config ADE reads for that check |
+|---|---|
+| Droid | `<FACTORY_HOME_OVERRIDE or ~>/.factory/mcp.json`, `.factory/mcp.json` in the folder and every folder above it |
+| Muse | `$XDG_CONFIG_HOME/muse/settings.json` (`~/.config/muse`), the workspace `.mcp.json` |
+| Qwen | `<QWEN_HOME>/settings.json`, `.qwen/settings.json` |
+| Kimi | `<KIMI_CODE_HOME>/mcp.json`, `.kimi-code/mcp.json`, `.mcp.json` |
+| Grok | `[mcp_servers.<name>]` in `<GROK_HOME>/config.toml` and `.grok/config.toml` |
+| Devin | `mcp_config.json` / `mcp_config.local.json` (3000.3+) and `config.json` / `config.local.json` (older) under `~/.config/devin` (`%APPDATA%\devin`) and `.devin` |
+| Antigravity | `~/.gemini/config/mcp_config.json`, `.agents/mcp_config.json` |
+
+ADE hands Qwen, Kimi, Grok, Devin and Antigravity chats no servers today (the
+ACP session gets an empty list), so for them the check only matters once it
+does.
 
 ## Your servers on ADE accounts
 
@@ -278,6 +294,14 @@ Which servers it applies to, per provider:
 Cursor one-shots (titles and other background utilities) run in strict MCP
 mode, which drops the project and plugin layers' servers; user-level ones
 still load, because ADE's tool-gate hook lives in that layer.
+
+Background jobs that still start the user's own servers, because the
+provider has no switch for it: Cursor (user layer, above), Droid
+(`droid exec`), Kimi, Grok, Devin (which also imports other tools' MCP
+configs by default) and Muse (a fresh `muse serve` loads its global
+servers). Claude (`--strict-mcp-config`), Codex (by name), Copilot (config
+discovery off and every configured name disabled), Qwen (`--safe-mode`), Pi
+(no MCP) and OpenCode (reuses the one shared server) start none.
 
 Codex runs that need none of the user's servers start none of the
 config.toml ones: background utilities (`codex exec`, chat titles and the
