@@ -62,6 +62,8 @@ type QueuedRequest = Exclude<ChildRequest, SpawnRequest>;
 type HostChildState = {
   child: ChildProcess;
   ptyIds: Set<string>;
+  /** Left empty while it finishes a dispose; never given a new PTY. */
+  retiring?: boolean;
   stdoutTail: string;
   stderrTail: string;
 };
@@ -322,8 +324,8 @@ class SupervisedPtyHost {
       this.ptys.delete(ptyId);
       // A shared host outlives this PTY, so a spawn that completes late must
       // still be ended there; IPC order puts this after the spawn request.
-      this.disposeInHost(ptyId);
-      this.detachPtyFromChild(ptyId, "SIGKILL");
+      const disposing = this.disposeInHost(ptyId);
+      this.detachPtyFromChild(ptyId, "SIGKILL", disposing ? HOST_SIGKILL_GRACE_MS : 0);
       pending.reject(error);
     }, HOST_SPAWN_TIMEOUT_MS);
     timer.unref?.();
@@ -440,7 +442,7 @@ class SupervisedPtyHost {
   private childForNewPty(ptyId: string): HostChildState {
     for (const candidate of new Set(this.childrenByPty.values())) {
       const { child } = candidate;
-      if (child.killed || !child.connected || child.exitCode != null || child.signalCode != null) continue;
+      if (candidate.retiring || child.killed || !child.connected || child.exitCode != null || child.signalCode != null) continue;
       if (candidate.ptyIds.size >= MAX_PTYS_PER_HOST) continue;
       candidate.ptyIds.add(ptyId);
       this.childrenByPty.set(ptyId, candidate);
@@ -631,13 +633,21 @@ class SupervisedPtyHost {
     }
   }
 
-  private detachPtyFromChild(ptyId: string, signal: NodeJS.Signals): void {
+  /** `stopAfterMs` gives an emptied host time to finish a dispose it was sent. */
+  private detachPtyFromChild(ptyId: string, signal: NodeJS.Signals, stopAfterMs = 0): void {
     const childState = this.childrenByPty.get(ptyId);
     this.clearKillTimer(ptyId);
     if (!childState) return;
     childState.ptyIds.delete(ptyId);
     this.childrenByPty.delete(ptyId);
-    if (childState.ptyIds.size === 0) this.stopChild(childState, signal);
+    if (childState.ptyIds.size > 0) return;
+    if (stopAfterMs <= 0) {
+      this.stopChild(childState, signal);
+      return;
+    }
+    childState.retiring = true;
+    const timer = setTimeout(() => this.stopChild(childState, signal), stopAfterMs);
+    timer.unref?.();
   }
 
   private scheduleForcedDetach(ptyId: string, signal?: string): void {
@@ -653,12 +663,8 @@ class SupervisedPtyHost {
       this.ptys.delete(ptyId);
       // Other terminals may share this host, so killing the host is not the
       // escalation it is for a host of one: the host kills this PTY instead.
-      this.disposeInHost(ptyId);
-      // Killing a Windows host does not end its PTY's process tree, and once
-      // detached the host's exit handler no longer covers it. No exit was
-      // reported for this PID, so it still names the PTY's process.
-      if (remote) this.killWindowsPtyTree(ptyId, remote.pid);
-      this.detachPtyFromChild(ptyId, "SIGKILL");
+      const disposing = this.disposeInHost(ptyId);
+      this.detachPtyFromChild(ptyId, "SIGKILL", disposing ? HOST_SIGKILL_GRACE_MS : 0);
       remote?.markHostExited(1);
     }, signal === "SIGKILL" ? HOST_SIGKILL_GRACE_MS : HOST_KILL_GRACE_MS);
     timer.unref?.();
@@ -666,13 +672,13 @@ class SupervisedPtyHost {
   }
 
   /**
-   * Ask the PTY's host to kill and forget it, through the host's live handle.
-   * Only for a host other PTYs keep alive: a host left with no PTYs is killed
-   * by detachPtyFromChild, which ends this one with it.
+   * Ask the PTY's host to kill and forget it, through the host's live handle
+   * (which, on Windows, also ends the PTY's process tree). Returns whether the
+   * request was sent, so an emptied host is given time to act on it.
    */
-  private disposeInHost(ptyId: string): void {
+  private disposeInHost(ptyId: string): boolean {
     const childState = this.childrenByPty.get(ptyId);
-    if (!childState || childState.ptyIds.size <= 1 || !childState.child.connected) return;
+    if (!childState || !childState.child.connected) return false;
     const report = (error: unknown) => {
       this.logger.warn("pty.host_dispose_send_failed", {
         ptyId,
@@ -683,22 +689,11 @@ class SupervisedPtyHost {
       childState.child.send({ type: "dispose", ptyId, signal: "SIGKILL" }, (error) => {
         if (error) report(error);
       });
+      return true;
     } catch (error) {
       report(error);
+      return false;
     }
-  }
-
-  private killWindowsPtyTree(ptyId: string, pid: number): void {
-    if (process.platform !== "win32" || !(pid > 0)) return;
-    killWindowsProcessTree(pid, (detail) => {
-      this.logger.warn("pty.host_orphan_tree_cleanup_failed", {
-        ptyId,
-        pid: detail.pid,
-        status: detail.status,
-        stderr: detail.stderr,
-        error: detail.error instanceof Error ? detail.error.message : String(detail.error ?? ""),
-      });
-    });
   }
 
   private clearKillTimer(ptyId: string): void {

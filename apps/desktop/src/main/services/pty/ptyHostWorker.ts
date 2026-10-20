@@ -1,5 +1,6 @@
 import type { IPty, IWindowsPtyForkOptions } from "node-pty";
 import * as nodePty from "node-pty";
+import { spawnSync } from "node:child_process";
 
 type SpawnMessage = {
   type: "spawn";
@@ -132,6 +133,12 @@ function disposePty(ptyId: string, signal?: string): void {
   resumeForExit(ptyId, pty);
   ptys.delete(ptyId);
   flow.delete(ptyId);
+  // On Windows, node-pty's kill() ends the ConPTY leader but not what it
+  // started, and `taskkill /T` can only find the tree while the leader lives.
+  // This host still holds the live PTY, so its PID cannot be stale here.
+  if (process.platform === "win32" && pty.pid > 0) {
+    spawnSync("taskkill.exe", ["/PID", String(pty.pid), "/T", "/F"], { windowsHide: true, timeout: 5_000 });
+  }
   try {
     killPty(pty, signal);
   } catch {
