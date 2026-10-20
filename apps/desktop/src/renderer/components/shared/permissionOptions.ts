@@ -4,6 +4,7 @@
 // ---------------------------------------------------------------------------
 
 import type { AgentChatPermissionMode, ChatSurfaceProfile } from "../../../shared/types";
+import { legacyPermissionToNative, modelPermissionOptions } from "../../../shared/modelPermissions";
 
 export type SafetyLevel = "safe" | "semi-auto" | "full-auto" | "danger" | "custom";
 
@@ -64,6 +65,21 @@ export function normalizePermissionModeForProfile(opts: {
 }
 
 /**
+ * Claude's and Codex's generic options say what the composer says: the native
+ * mode's name, and its sentence as the one-line description every permission
+ * menu shows. The long `detail` keeps the flag-level explanation.
+ */
+function withNativeWording(provider: "claude" | "codex", options: PermissionOption[]): PermissionOption[] {
+  const native = modelPermissionOptions(provider);
+  return options.map((option) => {
+    const value = legacyPermissionToNative(provider, option.value);
+    const mode = native.find((entry) => entry.value === value);
+    if (!mode) return option;
+    return { ...option, label: mode.label, shortDesc: mode.detail };
+  });
+}
+
+/**
  * Return the list of permission options appropriate for a given model family.
  *
  * @param opts.family   - ProviderFamily string (e.g. "anthropic", "openai", …)
@@ -100,7 +116,7 @@ export function getPermissionOptions(opts: {
 
   // Claude CLI models (anthropic)
   if (opts.isCliWrapped && opts.family === "anthropic") {
-    return [
+    return withNativeWording("claude", [
       {
         value: "default",
         label: "Manual",
@@ -146,12 +162,12 @@ export function getPermissionOptions(opts: {
         warning: "\u26a0 Only safe in containers, VMs, or sandboxed environments where actions can be reverted.",
         safety: "danger",
       },
-    ];
+    ]);
   }
 
   // Codex CLI (openai)
   if (opts.isCliWrapped && opts.family === "openai") {
-    return [
+    return withNativeWording("codex", [
       {
         value: "default",
         label: "Default permissions",
@@ -197,7 +213,7 @@ export function getPermissionOptions(opts: {
         gates: [],
         safety: "custom",
       },
-    ];
+    ]);
   }
 
   // Factory Droid CLI

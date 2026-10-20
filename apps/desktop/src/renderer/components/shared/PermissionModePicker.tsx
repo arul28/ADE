@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { POPOVER_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { createPortal } from "react-dom";
 import { fixedMenuAboveAnchorStyle } from "../../lib/fixedMenuPlacement";
@@ -26,7 +26,10 @@ import { toneText } from "../lanes/laneDesignTokens";
  * It used to live inside `AgentChatComposer.tsx` as a private component, which
  * is why the handoff modal shipped with a model picker and nothing else — there
  * was no permission control it could reach without duplicating one. Anything
- * that lets a user choose how a chat starts should render this, not a lookalike.
+ * that lets a user choose how a chat starts should render this, not a lookalike:
+ * the composer, the launch controls, the PR resolver, the automation forms and
+ * the handoff tab all do, and `ade-ui/no-adhoc-permission-picker` flags a new
+ * `<select>` or listbox for permission modes.
  */
 
 const PERMISSION_MODE_MENU_WIDTH = 264;
@@ -56,7 +59,6 @@ export type PermissionModeIconKind = "manual" | "auto" | "edit" | "plan" | "full
 export type PermissionModePickerOption<Value extends string = string> = {
   value: Value;
   label: string;
-  triggerLabel?: string;
   detail: string;
   tone: PermissionModeTone;
   icon: PermissionModeIconKind;
@@ -185,6 +187,10 @@ export function PermissionModePicker<Value extends string>({
   title?: string;
 }) {
   const [open, setOpen] = useState(false);
+  // The menu opens above the pill (the composer sits at the bottom of the
+  // window). A pill near the top of a page has no room there, so the menu
+  // measures itself before paint and drops below instead.
+  const [openBelow, setOpenBelow] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
   // Inside a dialog the list portals into it: a modal dialog blocks pointer
   // events and focus everywhere outside its content.
@@ -226,6 +232,7 @@ export function PermissionModePicker<Value extends string>({
         disabled={disabled || !onSelect}
         onClick={() => {
           if (disabled || !onSelect) return;
+          setOpenBelow(false);
           setOpen((current) => !current);
         }}
         className={cn(
@@ -240,7 +247,7 @@ export function PermissionModePicker<Value extends string>({
           <PermissionModeGlyph icon={selectedOption.icon} size={9} />
         </span>
         <span className="ade-chat-composer-permission-label truncate font-medium leading-none">
-          {selectedOption.triggerLabel ?? selectedOption.label}
+          {selectedOption.label}
         </span>
         <CaretDown
           size={10}
@@ -263,8 +270,16 @@ export function PermissionModePicker<Value extends string>({
                 options={options}
                 selectedValue={selectedValue}
                 style={{
-                  ...fixedMenuAboveAnchorStyle(rect, { width: PERMISSION_MODE_MENU_WIDTH }),
+                  ...fixedMenuAboveAnchorStyle(rect, { width: PERMISSION_MODE_MENU_WIDTH, below: openBelow }),
                   pointerEvents: "auto",
+                }}
+                onClippedAbove={openBelow ? undefined : (menuHeight) => {
+                  // Drop below only where that side has more room; otherwise a
+                  // short window clips the menu at the bottom instead.
+                  const pill = ref.current?.getBoundingClientRect();
+                  if (!pill) return;
+                  const roomBelow = window.innerHeight - pill.bottom;
+                  if (roomBelow >= menuHeight || roomBelow > pill.top) setOpenBelow(true);
                 }}
                 onSelect={(value) => {
                   onSelect?.(value);
@@ -293,13 +308,22 @@ function PermissionModeMenu<Value extends string>({
   selectedValue,
   style,
   onSelect,
+  onClippedAbove,
 }: {
   ariaLabel: string;
   options: Array<PermissionModePickerOption<Value>>;
   selectedValue: Value;
   style: React.CSSProperties;
   onSelect: (value: Value) => void;
+  /** Called before paint, with the menu's height, when it would start above the window. */
+  onClippedAbove?: (menuHeight: number) => void;
 }) {
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  useLayoutEffect(() => {
+    if (!onClippedAbove) return;
+    const rect = rootRef.current?.getBoundingClientRect();
+    if (rect && rect.top < 0) onClippedAbove(rect.height);
+  }, [onClippedAbove]);
   const selectedIndex = Math.max(0, options.findIndex((option) => option.value === selectedValue));
   const [pointedIndex, setPointedIndex] = useState<number | null>(null);
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
@@ -341,6 +365,7 @@ function PermissionModeMenu<Value extends string>({
 
   return (
     <div
+      ref={rootRef}
       data-permission-mode-picker-dropdown
       className={cn("absolute overflow-hidden rounded-2xl p-2.5", POPOVER_SURFACE_CLASS)}
       style={style}
@@ -354,7 +379,7 @@ function PermissionModeMenu<Value extends string>({
         </span>
         <span>Permissions</span>
         <span className="truncate font-semibold" style={{ color: toneText(`rgb(${selectedTone.rgb})`) }}>
-          {selected.triggerLabel ?? selected.label}
+          {selected.label}
         </span>
       </div>
       <div

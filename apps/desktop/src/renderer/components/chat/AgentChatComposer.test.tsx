@@ -2016,11 +2016,11 @@ describe("AgentChatComposer", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Codex permission mode" }));
 
-    expect(screen.getByRole("option", { name: "Default permissions" })).toBeTruthy();
-    expect(screen.getByRole("option", { name: "Edit mode" })).toBeTruthy();
-    expect(screen.getByRole("option", { name: "Plan mode" })).toBeTruthy();
-    expect(screen.getByRole("option", { name: "Full access" })).toBeTruthy();
-    expect(screen.getByRole("option", { name: "Custom (config.toml)" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "Default" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "Edit" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "Plan" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "Full auto" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "Config" })).toBeTruthy();
     expect(screen.queryByDisplayValue("ADE flags")).toBeNull();
     expect(screen.queryByDisplayValue("On request")).toBeNull();
     expect(screen.queryByDisplayValue("Workspace write")).toBeNull();
@@ -2031,7 +2031,7 @@ describe("AgentChatComposer", () => {
     renderComposer({ onCodexPresetChange });
 
     fireEvent.click(screen.getByRole("button", { name: "Codex permission mode" }));
-    fireEvent.click(screen.getByRole("option", { name: "Plan mode" }));
+    fireEvent.click(screen.getByRole("option", { name: "Plan" }));
 
     expect(onCodexPresetChange).toHaveBeenCalledWith({
       codexApprovalPolicy: "on-request",
@@ -2040,7 +2040,7 @@ describe("AgentChatComposer", () => {
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Codex permission mode" }));
-    fireEvent.click(screen.getByRole("option", { name: "Edit mode" }));
+    fireEvent.click(screen.getByRole("option", { name: "Edit" }));
 
     expect(onCodexPresetChange).toHaveBeenCalledWith({
       codexApprovalPolicy: "untrusted",
@@ -2049,7 +2049,7 @@ describe("AgentChatComposer", () => {
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Codex permission mode" }));
-    fireEvent.click(screen.getByRole("option", { name: "Full access" }));
+    fireEvent.click(screen.getByRole("option", { name: "Full auto" }));
 
     expect(onCodexPresetChange).toHaveBeenCalledWith({
       codexApprovalPolicy: "never",

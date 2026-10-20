@@ -7,7 +7,13 @@ import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { useModelRecents } from "../shared/ModelPicker/useModelRecents";
-import { permissionControlsForModel, patchPermissionConfig, selectedPermissionMode } from "../automations/permissionControls";
+import {
+  patchPermissionConfig,
+  permissionControlsForModel,
+  permissionPickerOptionsForModel,
+  selectedPermissionMode,
+} from "../automations/permissionControls";
+import { PermissionModePicker } from "../shared/PermissionModePicker";
 import { navigateToAppTarget } from "../../lib/openExternal";
 import { confirmDialog } from "../ui/dialog";
 import { Banner } from "../ui/notice/Banner";
@@ -298,18 +304,16 @@ export function LinearAgentSection({ connected, pin = null }: { connected: boole
               </Field>
             ) : null}
             <Field label="Permissions">
-              <select
-                className="ade-settings-input"
-                style={{ height: 32 }}
-                disabled={!permissionMeta}
-                value={permissionMeta ? selectedPermissionMode(permissionConfig, effectiveModelId) : ""}
-                onChange={(event) => setPermissionConfig(patchPermissionConfig(permissionConfig, effectiveModelId, event.target.value))}
-              >
-                <option value="">Rule default</option>
-                {(permissionMeta?.options ?? []).map((option) => (
-                  <option key={option.value} value={option.value}>{option.label}</option>
-                ))}
-              </select>
+              {/* The pill sits in a row as tall as the model and reasoning triggers beside it. */}
+              <div style={{ height: 32, display: "flex", alignItems: "center" }}>
+                <PermissionModePicker
+                  ariaLabel="Delegation permission mode"
+                  selectedValue={permissionMeta ? selectedPermissionMode(permissionConfig, effectiveModelId) : ""}
+                  options={permissionPickerOptionsForModel(permissionMeta, "Uses ADE's default permission for this model.")}
+                  disabled={!permissionMeta}
+                  onSelect={(value) => setPermissionConfig(patchPermissionConfig(permissionConfig, effectiveModelId, value))}
+                />
+              </div>
             </Field>
           </div>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>

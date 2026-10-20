@@ -4,8 +4,14 @@ import { getAppDefaultModelDescriptor, getDefaultModelDescriptor } from "../../.
 import type { ModelConfig, ThinkingLevel } from "../../../../shared/types";
 import { ModelPicker } from "../../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../../shared/ModelPicker/ReasoningEffortPicker";
-import { labelCls, selectCls } from "../designTokens";
-import { permissionControlsForModel, patchPermissionConfig, selectedPermissionMode } from "../permissionControls";
+import { labelCls } from "../designTokens";
+import {
+  patchPermissionConfig,
+  permissionControlsForModel,
+  permissionPickerOptionsForModel,
+  selectedPermissionMode,
+} from "../permissionControls";
+import { PermissionModePicker } from "../../shared/PermissionModePicker";
 import { cn } from "../../ui/cn";
 import { AUTOMATION_AGENT_LIMIT_MAX_MIN } from "../../../../shared/automationLimits";
 import type { WorkflowStep } from "./draftBridge";
@@ -30,26 +36,20 @@ function PermissionPicker({
   if (!meta) return null;
   const current = selectedPermissionMode(step.permissionConfig, modelId);
   return (
-    <label className="block space-y-1">
+    <div className="block space-y-1">
       <span className={labelCls}>Permissions</span>
-      <select
-        className={selectCls}
-        value={current}
-        onChange={(e) =>
+      <PermissionModePicker
+        ariaLabel="Step permission mode"
+        selectedValue={current}
+        options={permissionPickerOptionsForModel(meta, "Uses the permission the rule sets for this model.")}
+        onSelect={(value) =>
           onChange({
             ...step,
-            permissionConfig: patchPermissionConfig(step.permissionConfig, modelId, e.target.value),
+            permissionConfig: patchPermissionConfig(step.permissionConfig, modelId, value),
           })
         }
-      >
-        <option value="">Rule default</option>
-        {meta.options.map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
-        ))}
-      </select>
-    </label>
+      />
+    </div>
   );
 }
 

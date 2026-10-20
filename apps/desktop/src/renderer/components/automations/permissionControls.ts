@@ -2,6 +2,8 @@ import { cursorPermissionFromMisfiledOpenCode } from "../../../shared/cursorMode
 import { resolveModelDescriptor } from "../../../shared/modelRegistry";
 import type { AgentChatPermissionMode, AutomationRuleDraft } from "../../../shared/types";
 import { familyToPermissionKey, getPermissionOptions } from "../shared/permissionOptions";
+import type { PermissionModePickerOption } from "../shared/PermissionModePicker";
+import { genericPermissionPickerOptions } from "../../lib/modelPermissionOptions";
 
 type AutomationPermissionConfig = NonNullable<AutomationRuleDraft["permissionConfig"]>;
 
@@ -11,11 +13,29 @@ export function permissionControlsForModel(modelId: string) {
   const key = familyToPermissionKey(descriptor.family, descriptor.isCliWrapped);
   return {
     key,
+    // A model that is not CLI-wrapped gets ADE's API option list, whose words
+    // are not its provider's native modes; they wear the generic tones.
+    presentationProvider: descriptor.isCliWrapped ? key : null,
     options: getPermissionOptions({
       family: descriptor.family,
       isCliWrapped: descriptor.isCliWrapped,
     }),
   };
+}
+
+/**
+ * The permission menu's rows for an automation form: "Rule default" (no
+ * override, stored as an empty value) and then the model's modes, wearing the
+ * composer's tones. `ruleDefaultDetail` says what the empty value falls back to.
+ */
+export function permissionPickerOptionsForModel(
+  meta: ReturnType<typeof permissionControlsForModel>,
+  ruleDefaultDetail: string,
+): Array<PermissionModePickerOption<string>> {
+  return [
+    { value: "", label: "Rule default", detail: ruleDefaultDetail, tone: "slate", icon: "config" },
+    ...(meta ? genericPermissionPickerOptions<string>(meta.presentationProvider, meta.options) : []),
+  ];
 }
 
 function codexSandboxForMode(mode: AgentChatPermissionMode) {

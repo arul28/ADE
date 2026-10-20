@@ -50,10 +50,10 @@ export const CLAUDE_PERMISSION_MODES: ReadonlyArray<ModelPermissionOption<AgentC
 ];
 
 /**
- * Codex's presets, each a fixed (approval policy, sandbox) pair. The chat
- * composer's footer names these from ADE's generic vocabulary
- * (`getPermissionOptions`) instead, so its words differ: "Default permissions",
- * "Full access", ... Which wording wins is an open product decision.
+ * Codex's presets, each a fixed (approval policy, sandbox) pair. These names
+ * are the ones every surface shows, the composer's pill included; ADE's generic
+ * Codex options (`getPermissionOptions`) borrow them too. The detail line says
+ * what each pair is.
  */
 export const CODEX_PERMISSION_MODES: ReadonlyArray<ModelPermissionOption<CodexPermissionPreset>> = [
   { value: "default", label: "Default", detail: "Ask on request with workspace write sandbox." },
@@ -107,11 +107,7 @@ export const MUSE_PLAN_MODE: ModelPermissionOption<"plan"> = {
   detail: "Read-only Muse turns for planning, with ADE's plan guidance.",
 };
 
-/**
- * GitHub Copilot's modes as the chat composer offers them. Not reachable from
- * `modelPermissionOptions("copilot")`, which still answers with OpenCode's
- * modes for the model chip; that mismatch is an open product decision.
- */
+/** GitHub Copilot's own modes, the values `--copilot-permission-mode` accepts. */
 export const COPILOT_PERMISSION_MODES: ReadonlyArray<ModelPermissionOption<AgentChatCopilotPermissionMode>> = [
   { value: "plan", label: "Plan", detail: "Read-only planning mode." },
   { value: "ask", label: "Ask", detail: "Ask before each action." },
@@ -164,6 +160,7 @@ export function modelPermissionOptions(provider: string | null | undefined): Rea
   if (p === "cursor") return CURSOR_PERMISSION_MODES;
   if (isDroidProvider(p)) return DROID_PERMISSION_MODES;
   if (p === "muse") return MUSE_PERMISSION_MODES;
+  if (p === "copilot") return COPILOT_PERMISSION_MODES;
   return OPENCODE_PERMISSION_MODES;
 }
 
@@ -175,6 +172,7 @@ export function defaultModelPermission(provider: string | null | undefined): str
   if (p === "cursor") return "agent";
   if (isDroidProvider(p)) return "auto-low";
   if (p === "muse") return DEFAULT_MUSE_PERMISSION_MODE;
+  if (p === "copilot") return "ask";
   return "edit";
 }
 
@@ -226,6 +224,20 @@ export function legacyPermissionToNative(provider: string | null | undefined, le
     return native ?? null;
   }
   if (p === "muse") return musePermissionModeFromLegacyPermissionMode(legacy) ?? null;
+  if (p === "copilot") {
+    // The launch path's own mapping (`agentChatService`): anything that is not
+    // plan, edit or full-auto starts in Ask.
+    switch (legacy) {
+      case "plan": return "plan";
+      case "edit": return "auto-edit";
+      case "full-auto": return "full-auto";
+      case "default":
+      case "auto":
+      case "config-toml":
+        return "ask";
+      default: return null;
+    }
+  }
   // OpenCode / Pi / ACP tail: `default` and `auto` both mean the cautious
   // editing tier; `edit` is that tier's native name.
   switch (legacy) {
@@ -298,5 +310,19 @@ export function nativePermissionToCliMode(provider: string | null | undefined, n
     return legacyPermissionModeFromDroidPermissionMode(native as AgentChatDroidPermissionMode) ?? null;
   }
   if (p === "muse") return legacyPermissionModeFromMusePermissionMode(native) ?? null;
+  if (p === "copilot") {
+    // Lossy for Assisted, which has no generic word: it reads back as `edit`,
+    // which launches Auto-edit. `ade chat create` takes the exact mode through
+    // `--copilot-permission-mode`; see `modelMentions.ts`.
+    switch (native) {
+      case "plan": return "plan";
+      case "ask": return "default";
+      case "assisted":
+      case "auto-edit":
+        return "edit";
+      case "full-auto": return "full-auto";
+      default: return null;
+    }
+  }
   return isModelPermissionValue(p, native) ? native : null;
 }

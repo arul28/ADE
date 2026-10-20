@@ -156,7 +156,6 @@ import {
 } from "./composerEffortFrame";
 import { useModelRecents } from "../shared/ModelPicker/useModelRecents";
 import type { CursorCloudServiceTier } from "../../../shared/types/config";
-import { getPermissionOptions, type PermissionOption } from "../shared/permissionOptions";
 import { ContextUsageDial } from "./usage/ContextUsageDial";
 import { resolveContextCompactControl } from "../../../shared/contextCompaction";
 import type { ContextUsageViewModel } from "./usage/contextUsageModel";
@@ -268,6 +267,7 @@ import {
 } from "./chatAttachmentStaging";
 import {
   CLAUDE_PERMISSION_MODES,
+  CODEX_PERMISSION_MODES,
   DROID_PERMISSION_MODES,
   OPENCODE_PERMISSION_MODES,
 } from "../../../shared/modelPermissions";
@@ -1463,10 +1463,7 @@ function resolveCodexPermissionPreset(args: {
   return "custom";
 }
 
-function isCodexPresetOption(option: PermissionOption): option is PermissionOption & { value: Exclude<CodexPermissionPreset, "custom"> } {
-  return option.value === "default" || option.value === "edit" || option.value === "plan" || option.value === "full-auto" || option.value === "config-toml";
-}
-
+const CODEX_MODE_OPTIONS = modelPermissionPickerOptions("codex", CODEX_PERMISSION_MODES);
 const OPENCODE_PERMISSION_OPTIONS = modelPermissionPickerOptions("opencode", OPENCODE_PERMISSION_MODES);
 const DROID_PERMISSION_OPTIONS = modelPermissionPickerOptions("droid", DROID_PERMISSION_MODES);
 
@@ -5779,10 +5776,6 @@ function AgentChatComposerImpl({
     codexSandbox: csUse,
     codexConfigSource: ccsUse,
   });
-  const codexPresetOptions = useMemo(
-    () => getPermissionOptions({ family: "openai", isCliWrapped: true }).filter(isCodexPresetOption),
-    [],
-  );
   const applyCodexPreset = useCallback((preset: Exclude<CodexPermissionPreset, "custom">) => {
     let next: {
       codexApprovalPolicy: AgentChatCodexApprovalPolicy;
@@ -5939,7 +5932,7 @@ function AgentChatComposerImpl({
     }
 
     if (sp === "codex") {
-      const codexModeOptions = modelPermissionPickerOptions("codex", codexPresetOptions);
+      const codexModeOptions: Array<PermissionModePickerOption<CodexPermissionPreset>> = CODEX_MODE_OPTIONS;
       const codexCustomOption: PermissionModePickerOption<CodexPermissionPreset> = {
         value: "custom",
         label: "Custom",
@@ -6051,7 +6044,6 @@ function AgentChatComposerImpl({
     claudeSelectionMode,
     applyCodexPreset,
     codexPreset,
-    codexPresetOptions,
     codexCustomSummary,
     nativeControlsDisabled,
     hideNativeControls,

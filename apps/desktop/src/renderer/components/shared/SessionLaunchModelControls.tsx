@@ -24,7 +24,7 @@ import { resolveModelDescriptorWithRuntimeCatalog } from "./ModelPicker/modelCat
 import { getModelById, resolveProviderGroupForModel } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
 import { PermissionModePicker, type PermissionModePickerOption } from "./PermissionModePicker";
-import { modelPermissionPickerOptions } from "../../lib/modelPermissionOptions";
+import { COPILOT_PERMISSION_PICKER_OPTIONS, modelPermissionPickerOptions } from "../../lib/modelPermissionOptions";
 import { useRootAppStore } from "../../state/appStore";
 import { resolveHarnessLaunchTarget } from "../settings/harnesses/harnessLaunchTarget";
 
@@ -34,19 +34,16 @@ const COMPOSER_MODEL_TRIGGER = "max-w-[min(9.5rem,34vw)] shrink min-w-[4.5rem]";
 /** Codex's preset word, including the two states ADE has no preset row for. */
 type CodexPermissionPreset = ReturnType<typeof codexPresetFromControls>;
 
-/**
- * Wording drift, kept on purpose until the canonical sentence is chosen: this
- * launch menu has always described Claude's Auto more briefly than the chat
- * composer does. Every other Claude string comes from the shared owner.
- */
-const CLAUDE_LAUNCH_PERMISSION_MODES = CLAUDE_PERMISSION_MODES.map((mode) =>
-  mode.value === "auto" ? { ...mode, detail: "Claude judges each tool call." } : mode);
-
 /** Codex's launch presets; config.toml joins only when it is already the state. */
 const CODEX_LAUNCH_PRESETS = CODEX_PERMISSION_MODES.filter(
   (mode): mode is (typeof mode) & { value: Exclude<CodexPermissionPreset, "custom" | "config-toml"> } => mode.value !== "config-toml",
 );
 const CODEX_CONFIG_TOML_MODE = CODEX_PERMISSION_MODES.find((mode) => mode.value === "config-toml")!;
+
+const CURSOR_PICKER_OPTIONS = modelPermissionPickerOptions("cursor", CURSOR_PERMISSION_MODES);
+const DROID_PICKER_OPTIONS = modelPermissionPickerOptions("droid", DROID_PERMISSION_MODES);
+const MUSE_PICKER_OPTIONS = modelPermissionPickerOptions("muse", MUSE_PERMISSION_MODES);
+const OPENCODE_PICKER_OPTIONS = modelPermissionPickerOptions("opencode", OPENCODE_PERMISSION_MODES);
 
 function SessionTypeToggle({
   value,
@@ -105,17 +102,17 @@ function LaunchNativePermissionControls({
   const descriptor = resolveModelDescriptorWithRuntimeCatalog(modelId) ?? getModelById(modelId);
   const provider = descriptor ? resolveProviderGroupForModel(descriptor) : "opencode";
 
-  // Claude and Codex open the chat composer's own permission menu
+  // Every provider opens the chat composer's own permission menu
   // (`PermissionModePicker`), never a lookalike: it portals into the dialog it
   // is opened from and places itself against the viewport, so a scrolling
-  // dialog body cannot clip it. The providers below still use a native
-  // `<select>`, which the browser draws itself and cannot clip.
+  // dialog body cannot clip it. Copilot has its own arm: its launch reads
+  // `copilotPermissionMode`, not OpenCode's field.
   if (provider === "claude") {
     return (
       <PermissionModePicker
         ariaLabel="Claude permission mode"
         selectedValue={claudeSelectionMode(nativeControls)}
-        options={modelPermissionPickerOptions("claude", CLAUDE_LAUNCH_PERMISSION_MODES)}
+        options={modelPermissionPickerOptions("claude", CLAUDE_PERMISSION_MODES)}
         disabled={disabled}
         onSelect={(mode) => onNativeControlsChange(applyClaudePermissionSelection(mode, nativeControls))}
       />
@@ -155,83 +152,61 @@ function LaunchNativePermissionControls({
   }
 
   if (provider === "cursor") {
-    const modeValue = nativeControls.cursorModeId ?? "agent";
     return (
-      <label className="inline-flex h-6 items-center gap-1.5 rounded-md border border-fg/[0.06] bg-fg/[0.03] px-1.5">
-        <span className="text-[9px] font-semibold uppercase tracking-wide text-muted-fg/55">Mode</span>
-        <select
-          value={modeValue}
-          disabled={disabled}
-          onChange={(event) => onNativeControlsChange({ ...nativeControls, cursorModeId: event.target.value })}
-          className="max-w-[7rem] bg-transparent text-[10.5px] text-fg/82 outline-none disabled:opacity-45"
-        >
-          {CURSOR_PERMISSION_MODES.map((mode) => (
-            <option key={mode.value} value={mode.value}>{mode.label}</option>
-          ))}
-        </select>
-      </label>
+      <PermissionModePicker
+        ariaLabel="Cursor mode"
+        selectedValue={nativeControls.cursorModeId ?? "agent"}
+        options={CURSOR_PICKER_OPTIONS}
+        disabled={disabled}
+        onSelect={(cursorModeId) => onNativeControlsChange({ ...nativeControls, cursorModeId })}
+      />
     );
   }
 
   if (provider === "droid") {
     return (
-      <label className="inline-flex h-6 items-center gap-1.5 rounded-md border border-fg/[0.06] bg-fg/[0.03] px-1.5">
-        <span className="text-[9px] font-semibold uppercase tracking-wide text-muted-fg/55">Autonomy</span>
-        <select
-          value={nativeControls.droidPermissionMode}
-          disabled={disabled}
-          onChange={(event) => onNativeControlsChange({
-            ...nativeControls,
-            droidPermissionMode: event.target.value as NativeControlState["droidPermissionMode"],
-          })}
-          className="max-w-[7rem] bg-transparent text-[10.5px] text-fg/82 outline-none disabled:opacity-45"
-        >
-          {DROID_PERMISSION_MODES.map((option) => (
-            <option key={option.value} value={option.value} title={option.detail}>{option.label}</option>
-          ))}
-        </select>
-      </label>
+      <PermissionModePicker
+        ariaLabel="Droid autonomy mode"
+        selectedValue={nativeControls.droidPermissionMode}
+        options={DROID_PICKER_OPTIONS}
+        disabled={disabled}
+        onSelect={(droidPermissionMode) => onNativeControlsChange({ ...nativeControls, droidPermissionMode })}
+      />
     );
   }
 
   if (provider === "muse") {
     return (
-      <label className="inline-flex h-6 items-center gap-1.5 rounded-md border border-fg/[0.06] bg-fg/[0.03] px-1.5">
-        <span className="text-[9px] font-semibold uppercase tracking-wide text-muted-fg/55">Approvals</span>
-        <select
-          value={nativeControls.musePermissionMode}
-          disabled={disabled}
-          onChange={(event) => onNativeControlsChange({
-            ...nativeControls,
-            musePermissionMode: event.target.value as NativeControlState["musePermissionMode"],
-          })}
-          className="max-w-[7rem] bg-transparent text-[10.5px] text-fg/82 outline-none disabled:opacity-45"
-        >
-          {MUSE_PERMISSION_MODES.map((option) => (
-            <option key={option.value} value={option.value} title={option.detail}>{option.label}</option>
-          ))}
-        </select>
-      </label>
+      <PermissionModePicker
+        ariaLabel="Muse approval mode"
+        selectedValue={nativeControls.musePermissionMode}
+        options={MUSE_PICKER_OPTIONS}
+        disabled={disabled}
+        onSelect={(musePermissionMode) => onNativeControlsChange({ ...nativeControls, musePermissionMode })}
+      />
+    );
+  }
+
+  if (provider === "copilot") {
+    return (
+      <PermissionModePicker
+        ariaLabel="Copilot permission mode"
+        selectedValue={nativeControls.copilotPermissionMode ?? "ask"}
+        options={COPILOT_PERMISSION_PICKER_OPTIONS}
+        disabled={disabled}
+        onSelect={(copilotPermissionMode) => onNativeControlsChange({ ...nativeControls, copilotPermissionMode })}
+      />
     );
   }
 
   return (
-    <label className="inline-flex h-6 items-center gap-1.5 rounded-md border border-fg/[0.06] bg-fg/[0.03] px-1.5">
-      <span className="text-[9px] font-semibold uppercase tracking-wide text-muted-fg/55">Permissions</span>
-      <select
-        value={nativeControls.opencodePermissionMode}
-        disabled={disabled}
-        onChange={(event) => onNativeControlsChange({
-          ...nativeControls,
-          opencodePermissionMode: event.target.value as NativeControlState["opencodePermissionMode"],
-        })}
-        className="max-w-[7rem] bg-transparent text-[10.5px] text-fg/82 outline-none disabled:opacity-45"
-      >
-        {OPENCODE_PERMISSION_MODES.map((option) => (
-          <option key={option.value} value={option.value}>{option.label}</option>
-        ))}
-      </select>
-    </label>
+    <PermissionModePicker
+      ariaLabel="OpenCode permission mode"
+      selectedValue={nativeControls.opencodePermissionMode}
+      options={OPENCODE_PICKER_OPTIONS}
+      disabled={disabled}
+      onSelect={(opencodePermissionMode) => onNativeControlsChange({ ...nativeControls, opencodePermissionMode })}
+    />
   );
 }
 

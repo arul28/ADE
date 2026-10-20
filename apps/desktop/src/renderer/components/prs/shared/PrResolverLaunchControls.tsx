@@ -10,7 +10,9 @@ import { deriveConfiguredModelIds } from "../../../lib/modelOptions";
 import { ModelPicker } from "../../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../../shared/ModelPicker/ReasoningEffortPicker";
 import { cn } from "../../ui/cn";
-import { getPermissionOptions, safetyColors } from "../../shared/permissionOptions";
+import { getPermissionOptions } from "../../shared/permissionOptions";
+import { PermissionModePicker } from "../../shared/PermissionModePicker";
+import { genericPermissionPickerOptions } from "../../../lib/modelPermissionOptions";
 
 type PrResolverLaunchControlsBaseProps = {
   modelId: string;
@@ -108,16 +110,6 @@ function toLegacyPermissionMode(mode: AgentChatPermissionMode, providerGroup: Mo
   return "guarded_edit";
 }
 
-function labelForPermissionOption(value: AgentChatPermissionMode, label: string, providerGroup: ModelProviderGroup): string {
-  if (providerGroup === "claude") {
-    if (value === "default") return "Manual";
-    if (value === "edit") return "Accept edits";
-    if (value === "plan") return "Plan";
-    if (value === "full-auto") return "Bypass";
-  }
-  return label;
-}
-
 export function PrResolverLaunchControls({
   modelId,
   reasoningEffort,
@@ -149,8 +141,17 @@ export function PrResolverLaunchControls({
 
   const descriptor = getModelById(modelId);
   const providerGroup = descriptor ? resolveProviderGroupForModel(descriptor) : "opencode";
-  const permissionOptions = permissionOptionsForModel(descriptor, permissionValueMode);
+  const permissionOptions = React.useMemo(
+    () => permissionOptionsForModel(descriptor, permissionValueMode),
+    [descriptor, permissionValueMode],
+  );
   const activePermissionMode = normalizePermissionModeForModel(permissionMode, descriptor, permissionValueMode);
+  const pickerOptions = React.useMemo(
+    // A model that is not CLI-wrapped gets ADE's API option list, whose words
+    // are not its provider's native modes.
+    () => genericPermissionPickerOptions(descriptor?.isCliWrapped ? providerGroup : null, permissionOptions),
+    [descriptor?.isCliWrapped, permissionOptions, providerGroup],
+  );
 
   const emitPermissionMode = React.useCallback((nextAgentMode: AgentChatPermissionMode) => {
     const nextMode = permissionValueMode === "legacy"
@@ -177,28 +178,14 @@ export function PrResolverLaunchControls({
         onChange={(next) => onReasoningEffortChange(next ?? "")}
         disabled={disabled}
       />
-      <div className="flex items-center gap-px border border-border/10 bg-surface-recessed/40">
-        {permissionOptions.map((option) => {
-          const colors = safetyColors(option.safety);
-          const active = activePermissionMode === option.value;
-          return (
-            <button
-              key={option.value}
-              type="button"
-              className={cn(
-                "px-2 py-1 font-mono text-[9px] font-bold uppercase tracking-wider transition-colors",
-                active ? `${colors.activeBg} text-fg/80` : "text-muted-fg/35 hover:text-muted-fg/60",
-                permissionLocked || disabled ? "cursor-not-allowed opacity-50" : "",
-              )}
-              disabled={disabled || permissionLocked}
-              onClick={() => emitPermissionMode(option.value)}
-              title={permissionLocked ? "Permission is fixed for the current resolver session." : option.shortDesc}
-            >
-              {labelForPermissionOption(option.value, option.label, providerGroup)}
-            </button>
-          );
-        })}
-      </div>
+      <PermissionModePicker
+        ariaLabel="Resolver permission mode"
+        selectedValue={activePermissionMode}
+        options={pickerOptions}
+        disabled={disabled || permissionLocked}
+        onSelect={emitPermissionMode}
+        title={permissionLocked ? "Permission is fixed for the current resolver session." : undefined}
+      />
       {permissionLocked ? (
         <span className="font-mono text-[10px] text-fg/45">
           Launch-time permission locked for this resolver session.

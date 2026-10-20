@@ -99,10 +99,16 @@ import {
   AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES,
 } from "../../../shared/types/chat";
 import {
+  CLAUDE_PERMISSION_MODES as CLAUDE_NATIVE_PERMISSION_MODES,
+  CODEX_PERMISSION_MODES as CODEX_NATIVE_PERMISSION_MODES,
+  CURSOR_PERMISSION_MODES as CURSOR_NATIVE_PERMISSION_MODES,
+  DROID_PERMISSION_MODES as DROID_NATIVE_PERMISSION_MODES,
   MUSE_PERMISSION_MODES as MUSE_NATIVE_PERMISSION_MODES,
   musePermissionModeFromLegacyPermissionMode,
   OPENCODE_PERMISSION_MODES as OPENCODE_NATIVE_PERMISSION_MODES,
 } from "../../../shared/modelPermissions";
+import { modelPermissionPickerOptions } from "../../lib/modelPermissionOptions";
+import { PermissionModePicker, type PermissionModePickerOption } from "../shared/PermissionModePicker";
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import {
   PENDING_INPUT_SEND_BLOCKED_MESSAGE,
@@ -2303,28 +2309,22 @@ function clampHandoffReasoningToModel(current: string | null, descriptor: ModelD
   return tiers[0] ?? null;
 }
 
-const HANDOFF_CLAUDE_MODES: Array<{ value: AgentChatClaudePermissionMode; label: string }> = [
-  { value: "default", label: "Manual" },
-  { value: "acceptEdits", label: "Accept edits" },
-  { value: "auto", label: "Auto" },
-  { value: "plan", label: "Plan" },
-  { value: "bypassPermissions", label: "Bypass" },
-];
-
-const HANDOFF_DROID_MODES: Array<{ value: AgentChatDroidPermissionMode; label: string }> = [
-  { value: "read-only", label: "Read-only" },
-  { value: "auto-low", label: "Auto low" },
-  { value: "auto-medium", label: "Auto medium" },
-  { value: "auto-high", label: "Auto high" },
-  // "AGI", as the composer's own picker names it. The "(orchestrator)" gloss
-  // was the last place ADE's removed orchestration vocabulary still showed.
-  { value: "agi", label: "AGI" },
-];
-
-const handoffSelectCls = cn(
-  "h-8 w-full min-w-0 rounded-md border border-fg/[0.06] bg-fg/[0.03] px-2 font-sans text-[10px] text-fg/70",
-  "outline-none transition-colors duration-150 focus:border-violet-400/30",
-);
+// The handoff tab's permission rows: the shared vocabulary, in the composer's
+// order and with its names.
+const HANDOFF_CLAUDE_OPTIONS = modelPermissionPickerOptions("claude", CLAUDE_NATIVE_PERMISSION_MODES);
+const HANDOFF_CODEX_OPTIONS: Array<PermissionModePickerOption<HandoffCodexPreset>> =
+  modelPermissionPickerOptions("codex", CODEX_NATIVE_PERMISSION_MODES);
+const HANDOFF_CODEX_CUSTOM_OPTION: PermissionModePickerOption<HandoffCodexPreset> = {
+  value: "custom",
+  label: "Custom",
+  detail: "Non-standard policy; choosing a mode replaces it.",
+  tone: "slate",
+  icon: "config",
+};
+const HANDOFF_OPENCODE_OPTIONS = modelPermissionPickerOptions("opencode", OPENCODE_NATIVE_PERMISSION_MODES);
+const HANDOFF_DROID_OPTIONS = modelPermissionPickerOptions("droid", DROID_NATIVE_PERMISSION_MODES);
+const HANDOFF_MUSE_OPTIONS = modelPermissionPickerOptions("muse", MUSE_NATIVE_PERMISSION_MODES);
+const HANDOFF_CURSOR_OPTIONS = modelPermissionPickerOptions("cursor", CURSOR_NATIVE_PERMISSION_MODES);
 
 function migrateOldPrefs(): string | null {
   try {
@@ -7454,8 +7454,6 @@ export function AgentChatPane({
       }),
     [handoffCodexApprovalPolicy, handoffCodexSandbox, handoffCodexConfigSource],
   );
-  const handoffCodexSelectValue: "default" | "edit" | "plan" | "full-auto" | "config-toml" =
-    handoffCodexPermissionPreset === "custom" ? "default" : handoffCodexPermissionPreset;
   const handoffBlocked = turnActive || selectedSessionAwaitingInput || handoffBusy;
   // The cross-machine modal picks its own destination model, so derive its
   // provider independently of the local-handoff picker. Reasoning/permission
@@ -15992,30 +15990,28 @@ export function AgentChatPane({
     ? [AUTO_CREATE_LANE_OPTION, ...handoffLaneSourceLanes]
     : [AUTO_CREATE_LANE_OPTION];
   // Provider-native permission controls, shared by the fork and brief tabs.
+  // Every provider opens the composer's own permission menu.
   const handoffPermissionControls = handoffTargetProvider ? (
     <div className="space-y-1.5">
       <div className="text-[9px] font-medium uppercase tracking-[0.12em] text-muted-fg/45">Permission mode</div>
       {handoffTargetProvider === "claude" ? (
-        <select
-          value={handoffClaudePermissionMode}
-          onChange={(e) => setHandoffClaudePermissionMode(e.target.value as AgentChatClaudePermissionMode)}
-          className={handoffSelectCls}
-          aria-label="Claude permission mode for handoff"
-        >
-          {HANDOFF_CLAUDE_MODES.map((m) => (
-            <option key={m.value} value={m.value}>
-              {m.label}
-            </option>
-          ))}
-        </select>
+        <PermissionModePicker
+          ariaLabel="Claude permission mode for handoff"
+          selectedValue={handoffClaudePermissionMode}
+          options={HANDOFF_CLAUDE_OPTIONS}
+          onSelect={setHandoffClaudePermissionMode}
+        />
       ) : null}
       {handoffTargetProvider === "codex" ? (
         <div className="space-y-0.5">
-          <select
-            value={handoffCodexSelectValue}
-            title={handoffCodexPermissionPreset === "custom" ? "Non-standard policy; choosing a mode replaces it." : undefined}
-            onChange={(e) => {
-              const next = e.target.value as "default" | "plan" | "full-auto" | "config-toml";
+          <PermissionModePicker
+            ariaLabel="Codex permission mode for handoff"
+            selectedValue={handoffCodexPermissionPreset}
+            options={handoffCodexPermissionPreset === "custom"
+              ? [...HANDOFF_CODEX_OPTIONS, HANDOFF_CODEX_CUSTOM_OPTION]
+              : HANDOFF_CODEX_OPTIONS}
+            onSelect={(next) => {
+              if (next === "custom") return;
               const updated = handoffApplyCodexPreset(next, {
                 cap: handoffCodexApprovalPolicy,
                 sandbox: handoffCodexSandbox,
@@ -16024,14 +16020,7 @@ export function AgentChatPane({
               setHandoffCodexSandbox(updated.codexSandbox);
               setHandoffCodexConfigSource(updated.codexConfigSource);
             }}
-            className={handoffSelectCls}
-            aria-label="Codex permission mode for handoff"
-          >
-            <option value="default">Default — write + prompts on risk</option>
-            <option value="plan">Plan — read only + prompts</option>
-            <option value="full-auto">Full auto — no prompts</option>
-            <option value="config-toml">Use codex config.toml</option>
-          </select>
+          />
           {modelSupportsFastMode(handoffTargetDescriptor) ? (
             <button
               type="button"
@@ -16055,62 +16044,36 @@ export function AgentChatPane({
         </div>
       ) : null}
       {handoffTargetProvider === "opencode" ? (
-        <select
-          value={handoffOpenCodePermissionMode}
-          onChange={(e) => setHandoffOpenCodePermissionMode(e.target.value as AgentChatOpenCodePermissionMode)}
-          className={handoffSelectCls}
-          aria-label="OpenCode permission mode for handoff"
-        >
-          {OPENCODE_NATIVE_PERMISSION_MODES.map((m) => (
-            <option key={m.value} value={m.value}>
-              {m.label}
-            </option>
-          ))}
-        </select>
+        <PermissionModePicker
+          ariaLabel="OpenCode permission mode for handoff"
+          selectedValue={handoffOpenCodePermissionMode}
+          options={HANDOFF_OPENCODE_OPTIONS}
+          onSelect={setHandoffOpenCodePermissionMode}
+        />
       ) : null}
       {handoffTargetProvider === "droid" ? (
-        <select
-          value={handoffDroidPermissionMode}
-          onChange={(e) => setHandoffDroidPermissionMode(e.target.value as AgentChatDroidPermissionMode)}
-          className={handoffSelectCls}
-          aria-label="Droid autonomy mode for handoff"
-        >
-          {HANDOFF_DROID_MODES.map((m) => (
-            <option key={m.value} value={m.value}>
-              {m.label}
-            </option>
-          ))}
-        </select>
+        <PermissionModePicker
+          ariaLabel="Droid autonomy mode for handoff"
+          selectedValue={handoffDroidPermissionMode}
+          options={HANDOFF_DROID_OPTIONS}
+          onSelect={setHandoffDroidPermissionMode}
+        />
       ) : null}
       {handoffTargetProvider === "muse" ? (
-        <select
-          value={handoffMusePermissionMode}
-          onChange={(e) => setHandoffMusePermissionMode(e.target.value as AgentChatMusePermissionMode)}
-          className={handoffSelectCls}
-          aria-label="Muse approval mode for handoff"
-        >
-          {MUSE_NATIVE_PERMISSION_MODES.map((m) => (
-            <option key={m.value} value={m.value}>
-              {m.label}
-            </option>
-          ))}
-        </select>
+        <PermissionModePicker
+          ariaLabel="Muse approval mode for handoff"
+          selectedValue={handoffMusePermissionMode}
+          options={HANDOFF_MUSE_OPTIONS}
+          onSelect={setHandoffMusePermissionMode}
+        />
       ) : null}
       {handoffTargetProvider === "cursor" ? (
-        <select
-          value={handoffCursorModeId?.trim() || "agent"}
-          onChange={(e) => {
-            setHandoffCursorModeId(e.target.value || "agent");
-          }}
-          className={handoffSelectCls}
-          aria-label="Cursor agent mode for handoff"
-        >
-          {CURSOR_AVAILABLE_MODE_IDS.map((modeId) => (
-            <option key={modeId} value={modeId}>
-              {modeId}
-            </option>
-          ))}
-        </select>
+        <PermissionModePicker
+          ariaLabel="Cursor agent mode for handoff"
+          selectedValue={handoffCursorModeId?.trim() || "agent"}
+          options={HANDOFF_CURSOR_OPTIONS}
+          onSelect={(modeId) => setHandoffCursorModeId(modeId || "agent")}
+        />
       ) : null}
     </div>
   ) : null;

@@ -209,11 +209,16 @@ export function buildModelMentionDetail(
   // `--permissions` speaks the generic vocabulary, so map it back for the flags.
   const nativePermission = resolveModelPermissionValue(info.provider, mention.permission);
   const cliPermission = nativePermissionToCliMode(info.provider, nativePermission);
+  // Copilot's Assisted has no generic word, so a new Copilot chat takes the
+  // chip's own mode. `ade chat handoff` has no such flag and keeps the generic one.
+  const createPermissionFlag = info.provider === "copilot" && nativePermission
+    ? `--copilot-permission-mode ${shellQuote(nativePermission)}`
+    : cliPermission ? `--permissions ${shellQuote(cliPermission)}` : null;
   const flags = [
     `--provider ${shellQuote(info.provider)}`,
     `--model ${shellQuote(mention.modelId)}`,
     effort ? `--reasoning-effort ${shellQuote(effort)}` : null,
-    cliPermission ? `--permissions ${shellQuote(cliPermission)}` : null,
+    createPermissionFlag,
   ].filter(Boolean).join(" ");
   const handoffFlags = [
     `--model ${shellQuote(mention.modelId)}`,

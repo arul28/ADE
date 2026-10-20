@@ -75,13 +75,12 @@ describe("PrResolverLaunchControls", () => {
       permissionMode: "default",
     });
 
-    expect(screen.getByRole("button", { name: "Manual" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Accept edits" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Plan" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Bypass" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Resolver permission mode" }));
+    expect(screen.getAllByRole("option").map((option) => option.getAttribute("aria-label")))
+      .toEqual(["Manual", "Accept edits", "Plan mode", "Bypass"]);
 
-    await user.click(screen.getByRole("button", { name: "Manual" }));
-    expect(props.onPermissionModeChange).toHaveBeenCalledWith("default");
+    await user.click(screen.getByRole("option", { name: "Bypass" }));
+    expect(props.onPermissionModeChange).toHaveBeenCalledWith("full-auto");
   });
 
   it("uses Work-tab Codex presets, including config.toml", async () => {
@@ -91,12 +90,11 @@ describe("PrResolverLaunchControls", () => {
       permissionMode: "default",
     });
 
-    expect(screen.getByRole("button", { name: "Default permissions" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Plan mode" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Full access" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Custom (config.toml)" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Resolver permission mode" }));
+    expect(screen.getAllByRole("option").map((option) => option.getAttribute("aria-label")))
+      .toEqual(["Default", "Plan", "Full auto", "Config"]);
 
-    await user.click(screen.getByRole("button", { name: "Custom (config.toml)" }));
+    await user.click(screen.getByRole("option", { name: "Config" }));
     expect(props.onPermissionModeChange).toHaveBeenCalledWith("config-toml");
   });
 

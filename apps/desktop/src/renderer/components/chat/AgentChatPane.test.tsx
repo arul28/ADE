@@ -5794,7 +5794,7 @@ describe("AgentChatPane submit recovery", () => {
     renderPane(session);
 
     fireEvent.click(await screen.findByRole("button", { name: "Codex permission mode" }));
-    fireEvent.click(await screen.findByRole("option", { name: "Full access" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Full auto" }));
 
     await waitFor(() => {
       expect(updateSession).toHaveBeenCalledWith(expect.objectContaining({
@@ -6948,9 +6948,9 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));
     await clickEnabledModelOption(new RegExp(escapeRegExp(claudeLabel), "i"));
 
-    const permissionSelect = await screen.findByLabelText("Claude permission mode for handoff") as HTMLSelectElement;
-    expect(within(permissionSelect).getByRole("option", { name: "Auto" })).toBeTruthy();
-    fireEvent.change(permissionSelect, { target: { value: "plan" } });
+    fireEvent.click(await screen.findByRole("button", { name: "Claude permission mode for handoff" }));
+    expect(screen.getByRole("option", { name: "Auto" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("option", { name: "Plan mode" }));
     fireEvent.click(await screen.findByRole("button", { name: "Start brief handoff" }));
 
     await waitFor(() => {
@@ -9913,7 +9913,7 @@ describe("AgentChatPane submit recovery", () => {
     expect(await screen.findByRole("button", { name: new RegExp(`current: ${escapeRegExp(codexLabel)}`, "i") })).toBeTruthy();
 
     fireEvent.click(await screen.findByRole("button", { name: "Codex permission mode" }));
-    fireEvent.click(await screen.findByRole("option", { name: "Plan mode" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Plan" }));
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Launch Codex in plan mode." } });
