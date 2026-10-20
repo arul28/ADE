@@ -109,6 +109,7 @@ import {
 } from "../../desktop/src/main/services/cto/linearLaneCardService";
 import { createAiIntegrationService } from "../../desktop/src/main/services/ai/aiIntegrationService";
 import { createJevService, type JevService } from "../../desktop/src/main/services/jev/jevService";
+import { createSettleNudgeSweep } from "../../desktop/src/main/services/chat/settleNudgeSweep";
 import { initApiKeyStore } from "../../desktop/src/main/services/ai/apiKeyStore";
 import type { createSyncService } from "./services/sync/syncService";
 import type { SharedSyncListener } from "./services/sync/sharedSyncListener";
@@ -2551,6 +2552,11 @@ export async function createAdeRuntime(args: {
     }
     agentChatServiceHolder.current = agentChatService;
     teardown.push(() => agentChatService?.forceDisposeAll?.());
+    if (resolvedArgs.chatRuntime === "agent" && agentChatService) {
+      const settleNudgeSweep = createSettleNudgeSweep({ sessionService, agentChatService, jevService });
+      settleNudgeSweep.start();
+      teardown.push(() => settleNudgeSweep.dispose());
+    }
     // The broker judges an attached video against the chat's turn start.
     computerUseArtifactBrokerService.setChatTurnStartResolver(
       (sessionId) => agentChatService?.getTurnStartedAt?.(sessionId) ?? null,

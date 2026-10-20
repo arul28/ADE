@@ -23,7 +23,7 @@ export type SettleLifecycleIntent =
    * settling window; a human decision aborts it. Outside the window both behave
    * identically, exactly as before.
    */
-  | { kind: "clearOnActivity"; cause: SettleClearCause }
+  | { kind: "clearOnActivity"; cause: SettleClearCause; settleNudgeTurnId?: string }
   /** Declared unsettle: drops a `'settled'` pin but preserves `'active'`. */
   | { kind: "unsettleDeclared" }
   | { kind: "override"; value: SessionSettleOverride | null; source: SessionSettleSource }
@@ -99,24 +99,32 @@ export function createSettleLifecycleWriter(db: AdeDb): SettleLifecycleWriter {
     switch (intent.kind) {
       case "settle":
         return {
-          sql: "settled_at = coalesce(settled_at, ?), settle_override = null, settle_source = ?",
+          sql: "settled_at = coalesce(settled_at, ?), settle_override = null, settle_source = ?, "
+            + "settle_nudge_dismissed_turn_id = settle_nudge_turn_id",
           params: [intent.settledAt, intent.source],
         };
       case "clearOnActivity":
-        return { sql: "settled_at = null, settle_override = null, settle_source = null", params: [] };
+        return {
+          sql: "settled_at = null, settle_override = null, settle_source = null, "
+            + "settle_nudge_turn_id = ?, settle_nudge_done_probability = null, "
+            + "settle_nudge_dismissed_turn_id = null",
+          params: [intent.cause === "turn_start" ? intent.settleNudgeTurnId ?? null : null],
+        };
       case "unsettleDeclared":
         return {
           sql:
             "settled_at = null, "
             + "settle_override = case when settle_override = 'settled' then null else settle_override end, "
-            + "settle_source = null",
+            + "settle_source = null, "
+            + "settle_nudge_dismissed_turn_id = settle_nudge_turn_id",
           params: [],
         };
       case "override":
         return {
           sql:
             "settle_override = ?, "
-            + "settle_source = case when ? = 'settled' then ? when settled_at is null then null else settle_source end",
+            + "settle_source = case when ? = 'settled' then ? when settled_at is null then null else settle_source end, "
+            + "settle_nudge_dismissed_turn_id = settle_nudge_turn_id",
           params: [intent.value, intent.value, intent.source],
         };
       case "observeRemote":

@@ -2920,6 +2920,9 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
       last_turn_failed_at text,
       settle_override text,
       settle_source text,
+      settle_nudge_turn_id text,
+      settle_nudge_done_probability real,
+      settle_nudge_dismissed_turn_id text,
       snoozed_until text,
       snoozed_at text,
       woke_at text,
@@ -2949,8 +2952,9 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   safeAddColumn(db, "alter table terminal_sessions add column attention_message text");
   safeAddColumn(db, "alter table terminal_sessions add column attention_source text");
   safeAddColumn(db, "alter table terminal_sessions add column last_turn_failed_at text");
-  // Explicit settle override ('settled' | 'active' | null), plus the snooze visibility overlay
-  // (snoozed_until / snoozed_at) and its "woke" marker. All nullable with NO
+  // Explicit settle override ('settled' | 'active' | null), the optional
+  // per-turn Jev settle nudge, and the snooze visibility overlay
+  // (snoozed_until / snoozed_at) with its "woke" marker. All nullable with NO
   // unique index: `terminal_sessions` replicates to iOS through cr-sqlite and
   // `crsql_as_crr` rejects any non-PK unique index. The same columns exist in
   // apps/ios/ADE/Resources/DatabaseBootstrap.sql + Database.swift's
@@ -2958,6 +2962,9 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   // surfaces as changeset-apply errors on the phone.
   safeAddColumn(db, "alter table terminal_sessions add column settle_override text");
   safeAddColumn(db, "alter table terminal_sessions add column settle_source text");
+  safeAddColumn(db, "alter table terminal_sessions add column settle_nudge_turn_id text");
+  safeAddColumn(db, "alter table terminal_sessions add column settle_nudge_done_probability real");
+  safeAddColumn(db, "alter table terminal_sessions add column settle_nudge_dismissed_turn_id text");
   safeAddColumn(db, "alter table terminal_sessions add column snoozed_until text");
   safeAddColumn(db, "alter table terminal_sessions add column snoozed_at text");
   safeAddColumn(db, "alter table terminal_sessions add column woke_at text");
