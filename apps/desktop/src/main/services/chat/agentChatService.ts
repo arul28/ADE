@@ -10851,6 +10851,14 @@ export function createAgentChatService(args: {
   laneService: ReturnType<typeof createLaneService>;
   sessionService: ReturnType<typeof createSessionService>;
   processRegistry?: ProcessRegistryService | null;
+  /**
+   * True for a brain serving on its own `--socket` (a dev or hand-started
+   * brain) rather than its home's machine socket. While another brain is live
+   * on the project, such a brain leaves the chats it does not run to that
+   * brain: it fires none of their scheduled work and recovers, resumes and
+   * prewarms none of them on its own. Explicit sends still work.
+   */
+  yieldsUnownedChatsToSiblingBrains?: boolean;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   db?: (
     Pick<AdeDb, "getJson" | "setJson">
@@ -11055,6 +11063,7 @@ export function createAgentChatService(args: {
     laneService,
     sessionService,
     processRegistry,
+    yieldsUnownedChatsToSiblingBrains = false,
     projectConfigService,
     db,
     lookupLaneAppleDevice: injectedLaneAppleDeviceLookup,
@@ -19690,8 +19699,9 @@ export function createAgentChatService(args: {
      */
     options?: { quiet?: boolean },
   ): boolean => {
-    const state = persisted === undefined ? readPersistedState(sessionId) : persisted;
-    const owner = state?.runtimeOwner ?? null;
+    const owner = persisted === undefined
+      ? readPersistedState(sessionId)?.runtimeOwner ?? null
+      : persisted?.runtimeOwner ?? null;
     const decision = chatRuntimeOwnershipDecision(owner);
     if (!decision.adoptable && options?.quiet !== true) {
       logger.warn("agent_chat.runtime_owned_by_other_brain", {
@@ -19701,17 +19711,50 @@ export function createAgentChatService(args: {
         verdict: decision.verdict,
       });
     }
-    if (decision.adoptable && accountUnknownFromOtherHome(state)) {
+    return decision.adoptable;
+  };
+
+  /**
+   * May this brain take the chat up ON ITS OWN — restart recovery and its
+   * resume wake, prewarm, a due scheduled wake — with nobody asking? Stricter
+   * than `chatRuntimeAdoptable`, which also answers for explicit sends.
+   */
+  const chatAutoAdoptable = (
+    sessionId: string,
+    persisted?: PersistedChatState | null,
+    options?: { quiet?: boolean },
+  ): boolean => {
+    const state = persisted === undefined ? readPersistedState(sessionId) : persisted;
+    if (!chatRuntimeAdoptable(sessionId, state, options)) return false;
+    if (accountUnknownFromOtherHome(state)) {
       if (options?.quiet !== true) {
         logger.warn("agent_chat.runtime_account_unknown_here", {
           sessionId,
           instanceId: state?.instanceId ?? null,
-          ownerAdeHome: owner?.adeHome ?? null,
+          ownerAdeHome: state?.runtimeOwner?.adeHome ?? null,
         });
       }
       return false;
     }
-    return decision.adoptable;
+    return !yieldsToSiblingBrain(state);
+  };
+
+  /**
+   * A dev or hand-started brain (see `yieldsUnownedChatsToSiblingBrains`)
+   * leaves a chat it does not run to the other brain on this project. On
+   * 2026-10-20 a dev brain on the shared home won the claim for another lane's
+   * scheduled "/ship 1821" wake and ran that turn with the dev lane's code.
+   * Its own chats stay its own: its stamp, or its dead predecessor on the same
+   * socket (a restart keeps the socket; a sibling brain has its own).
+   */
+  const yieldsToSiblingBrain = (state: PersistedChatState | null | undefined): boolean => {
+    if (!yieldsUnownedChatsToSiblingBrains || !processRegistry) return false;
+    const owner = state?.runtimeOwner ?? null;
+    const verdict = chatRuntimeOwnershipDecision(owner).verdict;
+    if (verdict === "self") return false;
+    if (owner?.socketPath && runtimeSocketPath && pathsEqual(owner.socketPath, runtimeSocketPath)) return false;
+    const selfPid = processRegistry.pid ?? process.pid;
+    return processRegistry.listLiveProcessIdentities().some((identity) => identity.pid !== selfPid);
   };
 
   /**
@@ -26763,7 +26806,7 @@ export function createAgentChatService(args: {
     // same as "no runtime". A second brain on the same ADE home sees every
     // sibling-owned chat that way, and recovering one closes the sibling's
     // in-flight turn as interrupted. Only the owner (or nobody) may recover.
-    if (row.status === "detached" && chatRuntimeAdoptable(sessionId, persisted)) {
+    if (row.status === "detached" && chatAutoAdoptable(sessionId, persisted)) {
       try {
         recoverDetachedChatAfterRestart(
           managed,
@@ -65993,7 +66036,7 @@ export function createAgentChatService(args: {
         if (!loaded) {
           // Loading is what recovers it; the loader checks runtime ownership.
           ensureManagedSession(row.id);
-        } else if (!loaded.runtime && !loaded.deleted && chatRuntimeAdoptable(row.id, undefined, { quiet: true })) {
+        } else if (!loaded.runtime && !loaded.deleted && chatAutoAdoptable(row.id, undefined, { quiet: true })) {
           // Loaded while its row still read "running" (the dead owner is only
           // detected by the rescan), so the loader never recovered it.
           const events = readTranscriptEnvelopes(loaded);
@@ -67385,7 +67428,7 @@ export function createAgentChatService(args: {
     if (!managed) return;
     // Prewarm starts a provider process with nobody watching, which is the
     // quietest possible way to end up with two brains driving one chat.
-    if (!chatRuntimeAdoptable(sessionId)) return;
+    if (!chatAutoAdoptable(sessionId)) return;
     refreshManagedLaneLaunchContext(managed, { purpose: "warm this chat" });
 
     const descriptor = getModelById(modelId) ?? resolveModelAlias(modelId);
@@ -70075,8 +70118,10 @@ export function createAgentChatService(args: {
         return ptyService?.canAcceptScheduledTurn(schedule.sessionId) !== true;
       }
       // Another live brain runs this chat and fires the row at its own turn
-      // boundary; firing it here would start a second provider process.
+      // boundary; firing it here would start a second provider process. A
+      // brain that leaves unowned chats to a live sibling waits for it too.
       if (liveForeignChatRuntimeOwner(schedule.sessionId)) return true;
+      if (!chatAutoAdoptable(schedule.sessionId, undefined, { quiet: true })) return true;
       const liveManaged = managedSessions.get(schedule.sessionId);
       const liveRuntime = liveManaged?.runtime?.kind === "claude" ? liveManaged.runtime : null;
       // Never enqueue a scheduler-owned wake behind a foreground turn. Queued

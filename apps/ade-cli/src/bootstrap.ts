@@ -248,6 +248,7 @@ import {
 } from "../../desktop/src/shared/types/builtInBrowser";
 import { WORK_TOOLS_STATE_CHANGED_EVENT } from "../../desktop/src/shared/types/workTools";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
+import { servesMachineRuntimeEndpoint } from "./services/runtime/brainHeartbeat";
 import { readExistingOsBoundKeyMaterialAsync } from "./services/credentials/osBoundKeyMaterial";
 import { createBrainLogger } from "./services/runtime/brainLogger";
 import { createPushRegistrationStore } from "./services/push/pushRegistrationStore";
@@ -2407,6 +2408,9 @@ export async function createAdeRuntime(args: {
         laneService,
         sessionService,
         processRegistry,
+        // A dev or hand-started brain (its own --socket) leaves the chats it does
+        // not run to the machine brain on this project.
+        yieldsUnownedChatsToSiblingBrains: !servesMachineRuntimeEndpoint(runtimeSocketPath, resolveMachineAdeLayout().socketPath),
         projectConfigService,
         db,
         aiIntegrationService,
