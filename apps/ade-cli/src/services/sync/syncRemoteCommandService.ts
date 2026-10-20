@@ -5404,7 +5404,7 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
       .generateAutoLaneIdentity(parseSuggestLaneNameArgs(payload)));
   register("chat.getImageDataUrl", { viewerAllowed: true }, async (payload) => {
     const filePath = resolveAllowedProjectPath(args, payload.path, "chat.getImageDataUrl");
-    const { dataUrl } = await readImageFileAsDataUrl(filePath, args.logger);
+    const { dataUrl } = await readImageFileAsDataUrl(filePath, { logger: args.logger });
     return { dataUrl };
   });
   register("chat.listSessions", { viewerAllowed: true }, async (payload) => {

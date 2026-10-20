@@ -2,9 +2,7 @@ import { normalizeCompactionSettings } from "../../../shared/compactionSettings"
 import fs from "node:fs";
 import { parseGitHubIssueCreateInput, parseGitHubIssueUpdate } from "../../../shared/laneGitHubIssue";
 import { parseGitHubIssueListState } from "../../../shared/githubIssueList";
-import nodePath from "node:path";
-import { imageBytesToDataUrl } from "../chat/imageAttachmentConverter";
-import { sniffImageMimeType } from "../../../shared/imageSniff";
+import { readImageFileAsDataUrl } from "../chat/imageAttachmentConverter";
 import type { Logger } from "../logging/logger";
 import { randomUUID } from "node:crypto";
 import type { AdeRuntime } from "../../../../../ade-cli/src/bootstrap";
@@ -739,19 +737,7 @@ async function getAgentChatImageDataUrl(
   logger: Pick<Logger, "warn">,
 ): Promise<{ dataUrl: string }> {
   const imagePath = resolveAgentChatImagePath(projectRoot, arg.path);
-  const stat = await fs.promises.stat(imagePath);
-  if (!stat.isFile()) {
-    throw new Error("Path is not a file.");
-  }
-  if (stat.size > MAX_TEMP_ATTACHMENT_BYTES) {
-    throw new Error(legacyAttachmentCapMessage("Image"));
-  }
-  const data = await fs.promises.readFile(imagePath);
-  const mimeType = sniffImageMimeType(data);
-  if (!mimeType) {
-    throw new Error("Path is not an image.");
-  }
-  const { dataUrl } = await imageBytesToDataUrl(data, nodePath.basename(imagePath), mimeType, { logger });
+  const { dataUrl } = await readImageFileAsDataUrl(imagePath, { logger });
   return { dataUrl };
 }
 

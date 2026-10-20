@@ -706,7 +706,7 @@ export class PersonalChatScope {
         if (requestedPath !== attachmentsRoot && !requestedPath.startsWith(`${attachmentsRoot}${path.sep}`)) {
           throw new Error("Personal chat attachment path is outside the attachment store.");
         }
-        result = await readImageFileAsDataUrl(requestedPath, runtime.logger);
+        result = await readImageFileAsDataUrl(requestedPath, { logger: runtime.logger });
         break;
       }
       // The agent's own row reports. A personal chat's `ade chat activity`

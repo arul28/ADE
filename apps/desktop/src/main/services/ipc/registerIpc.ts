@@ -92,10 +92,10 @@ import { isAgentChatTurnRecoveryAction } from "../../../shared/types/chat";
 import { isAgentChatStopMode } from "../../../shared/chatStopModes";
 import {
   convertImageBufferToJpeg,
-  imageBytesToDataUrl,
+  readImageFile,
+  readImageFileAsDataUrl,
   ImageAttachmentConversionError,
 } from "../chat/imageAttachmentConverter";
-import { sniffImageMimeType } from "../../../shared/imageSniff";
 import type { AcpChatProvider, ConvertImageToJpegResult } from "../../../shared/types/chat";
 import { appendEvent as perfAppend, isRunActive as isPerfRunActive } from "../perf/perfLog";
 import { buildPrAiResolutionContextKey, isAdeUsageRangePreset, isAdeUsageScope } from "../../../shared/types";
@@ -3872,27 +3872,6 @@ export function registerIpc({
   const MAX_IMAGE_BYTES = LEGACY_MAX_CHAT_ATTACHMENT_BYTES;
   const MAX_TEMP_ATTACHMENT_BYTES = LEGACY_MAX_CHAT_ATTACHMENT_BYTES;
 
-  /**
-   * Read an allow-listed image file from disk after a stat-based size check,
-   * sniff its bytes for a known image magic, and return both the bytes and
-   * the sniffed MIME type. Throws if the file is too large, isn't a regular
-   * file, or doesn't look like a supported image.
-   */
-  const readImageFileAndSniffMime = async (filePath: string): Promise<{ data: Buffer; mimeType: string }> => {
-    const stat = await fs.promises.stat(filePath);
-    if (!stat.isFile()) {
-      throw new Error("Path is not a file.");
-    }
-    if (stat.size > MAX_IMAGE_BYTES) {
-      throw new Error(legacyAttachmentCapMessage("Image"));
-    }
-    const data = await fs.promises.readFile(filePath);
-    const mimeType = sniffImageMimeType(data);
-    if (!mimeType) {
-      throw new Error("Path is not an image.");
-    }
-    return { data, mimeType };
-  };
 
   /**
    * The directory a staged chat attachment lands in. Inside the project's
@@ -4082,10 +4061,7 @@ export function registerIpc({
     // animations all share that loop). The MIME type is derived from the
     // file's *bytes*, not its extension, so a renderer can't smuggle
     // arbitrary text/binary back as a base64 `image/png` data URL.
-    const { data, mimeType } = await readImageFileAndSniffMime(filePath);
-    const { dataUrl } = await imageBytesToDataUrl(data, path.basename(filePath), mimeType, {
-      logger: getCtx().logger,
-    });
+    const { dataUrl } = await readImageFileAsDataUrl(filePath, { logger: getCtx().logger });
     return { dataUrl };
   });
 
@@ -4097,7 +4073,7 @@ export function registerIpc({
     // attempt a sync read of a 100 MB binary on the main process). We then
     // hand the already-read buffer to `nativeImage.createFromBuffer` so the
     // file isn't read a second time off the main thread.
-    const { data } = await readImageFileAndSniffMime(filePath);
+    const { data } = await readImageFile(filePath, MAX_IMAGE_BYTES);
     const image = nativeImage.createFromBuffer(data);
     if (image.isEmpty()) {
       throw new Error("Unable to read image.");

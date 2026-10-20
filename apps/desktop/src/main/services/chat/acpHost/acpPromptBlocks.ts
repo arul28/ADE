@@ -13,7 +13,6 @@ import {
   attachmentAgentPath,
   attachmentIsReferenceOnly,
   attachmentPathHint,
-  getImageAttachmentMediaType,
   type AgentChatFileRef,
 } from "../../../../shared/types/chat";
 import { labelAttachments } from "../../../../shared/attachmentLabels";
@@ -26,7 +25,7 @@ import {
 import {
   fitImageForProviderInline,
   isProviderImageByteMediaType,
-  normalizeImageMediaType,
+  declaredImageMediaType,
 } from "../providerInlineImage";
 import { sniffImageMimeType } from "../../../../shared/imageSniff";
 import type { AcpImagePromptBehavior } from "./acpHostTypes";
@@ -40,15 +39,6 @@ export type AcpResolvedAttachment = AgentChatFileRef & {
 type AcpTextBlock = Extract<AcpContentBlock, { type: "text" }>;
 
 const MAX_INLINE_TEXT_BYTES = 512 * 1024;
-
-/**
- * The image type an attachment is sent as: the sender's MIME when it gave one,
- * else the extension's. Null when neither names an image type.
- */
-function imageMimeType(filePath: string, declared?: string | null): string | null {
-  return normalizeImageMediaType(declared)
-    || getImageAttachmentMediaType(filePath.split(/[?#]/u, 1)[0] ?? "");
-}
 
 function textBlock(text: string): AcpTextBlock {
   return { type: "text", text };
@@ -82,7 +72,7 @@ export async function buildAcpPromptBlocks(
       if (!url) {
         blocks.push(attachmentUnavailableText(attachment));
       } else if (args.agentSupportsImages && args.imagePrompt) {
-        const mimeType = imageMimeType(url);
+        const mimeType = declaredImageMediaType(url);
         if (mimeType && !isProviderImageByteMediaType(mimeType)) {
           blocks.push(textBlock(`\n${imageAttachmentReferenceText(url, mimeType)}`));
           continue;
@@ -111,10 +101,10 @@ export async function buildAcpPromptBlocks(
     // TIFF, HEIC, BMP, ICO and SVG are not image bytes any provider accepts:
     // the agent gets the path and opens the file with its own tools.
     const declaredImageMimeType = attachment.type === "image"
-      ? imageMimeType(attachmentAgentPath(attachment), attachment.mimeType)
+      ? declaredImageMediaType(attachmentAgentPath(attachment), attachment.mimeType)
       : null;
     if (declaredImageMimeType && !isProviderImageByteMediaType(declaredImageMimeType)) {
-      blocks.push(textBlock(`\n${imageAttachmentReferenceText(attachment.path, declaredImageMimeType)}`));
+      blocks.push(textBlock(`\n${imageAttachmentReferenceText(attachmentAgentPath(attachment), declaredImageMimeType)}`));
       continue;
     }
 
@@ -125,7 +115,7 @@ export async function buildAcpPromptBlocks(
         // that are no provider image type stay a path reference.
         const mimeType = declaredImageMimeType ?? sniffImageMimeType(bytes);
         if (!mimeType || !isProviderImageByteMediaType(mimeType)) {
-          blocks.push(textBlock(`\n${imageAttachmentReferenceText(attachment.path, mimeType ?? "unknown type")}`));
+          blocks.push(textBlock(`\n${imageAttachmentReferenceText(attachmentAgentPath(attachment), mimeType ?? "unknown type")}`));
         } else if (!args.agentSupportsImages || !args.imagePrompt) {
           blocks.push(textBlock(`\nImage attachment omitted: ${attachment.path} (this provider does not support image prompts).`));
         } else {

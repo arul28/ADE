@@ -7,6 +7,7 @@ import { imageAttachmentReferenceText, imageNotInlinedText } from "./attachmentI
 import {
   fitImageForProviderInline,
   isProviderImageByteMediaType,
+  declaredImageMediaType,
   normalizeImageMediaType,
 } from "./providerInlineImage";
 
@@ -121,8 +122,7 @@ async function materializeOneWorkerImage(
     if (!filePath || !rootPath) {
       throw new Error(`${label} image is missing data, path, or url.`);
     }
-    const declaredMimeType = normalizeImageMediaType(image.mimeType)
-      ?? getImageAttachmentMediaType(filePath);
+    const declaredMimeType = declaredImageMediaType(filePath, image.mimeType);
     if (declaredMimeType && !isProviderImageByteMediaType(declaredMimeType)) {
       return { omitted: imageAttachmentReferenceText(filePath, declaredMimeType) };
     }

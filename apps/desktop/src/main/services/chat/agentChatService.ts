@@ -454,7 +454,7 @@ import { MAX_PROVIDER_INLINE_FILE_BYTES } from "../../../shared/chatAttachmentLi
 import {
   fitImageForProviderInline,
   isProviderImageByteMediaType,
-  normalizeImageMediaType,
+  declaredImageMediaType,
 } from "./providerInlineImage";
 import { projectAttachmentsDir } from "../../../shared/chatAttachmentStagingFs";
 import { isRemoteOrDataUri } from "../../../shared/chatImageUrls";
@@ -734,7 +734,6 @@ import {
   type AgentChatResourceLink,
   type AgentChatWorkflowProgress,
   attachmentIsReferenceOnly,
-  getImageAttachmentMediaType,
   CLAUDE_SYNTHETIC_MODEL,
   DEFAULT_ATTACHMENT_ONLY_PROMPT,
   hasPastedTextPromptAttachment,
@@ -12440,15 +12439,15 @@ export function createAgentChatService(args: {
         continue;
       }
       if (attachment.type === "image") {
-        // Every local image here has a path, and Codex reads that file
-        // itself, so there is no byte-only case to default a type for: an
-        // image with no type from the sender or its name stays a reference.
-        const imageMimeType = normalizeImageMediaType(attachment.mimeType)
-          ?? getImageAttachmentMediaType(attachment.path);
-        if (!imageMimeType || !isProviderImageByteMediaType(imageMimeType)) {
+        // A type that names a format no provider takes as image bytes (TIFF,
+        // HEIC, SVG…) goes as a path reference. An image with no type from the
+        // sender or its name still goes as `localImage`: Codex reads and
+        // decodes that file itself, as it always has.
+        const imageMimeType = declaredImageMediaType(attachment.path, attachment.mimeType);
+        if (imageMimeType && !isProviderImageByteMediaType(imageMimeType)) {
           items.push({
             type: "text",
-            text: imageAttachmentReferenceText(attachment.path, imageMimeType ?? "unknown type"),
+            text: imageAttachmentReferenceText(attachment.path, imageMimeType),
             text_elements: [],
           });
           continue;

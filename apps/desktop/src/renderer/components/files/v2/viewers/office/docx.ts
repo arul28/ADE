@@ -458,21 +458,18 @@ export async function openDocx(bytes: Uint8Array): Promise<WordDocument> {
   notices.charts = elementsNS(doc, "chart").length;
   notices.textBoxes = elementsNS(doc, "txbxContent").length;
   notices.shapes = elementsNS(doc, "sp").length;
-  // A part that is missing or not valid XML counts as nothing to show.
-  const countInPart = async (path: string, name: string) => {
+  // A part that is missing or not valid XML counts as nothing to show. Word
+  // also writes separator and continuation-separator entries into the
+  // footnote and endnote parts; those carry a `w:type`, real notes do not.
+  const countInPart = async (path: string, name: string, notesOnly = false) => {
     if (!zip.entries.has(path)) return 0;
     const part = parseXml((await zip.readText(path)) ?? "");
-    return part ? elementsNS(part, name).length : 0;
+    if (!part) return 0;
+    const found = elementsNS(part, name);
+    return notesOnly ? found.filter((element) => !val(element, "type")).length : found.length;
   };
-  // The first two footnotes/endnotes are Word's separator entries.
-  notices.footnotes = Math.max(
-    0,
-    (await countInPart("word/footnotes.xml", "footnote")) - 1,
-  );
-  notices.endnotes = Math.max(
-    0,
-    (await countInPart("word/endnotes.xml", "endnote")) - 1,
-  );
+  notices.footnotes = await countInPart("word/footnotes.xml", "footnote", true);
+  notices.endnotes = await countInPart("word/endnotes.xml", "endnote", true);
   notices.comments = await countInPart("word/comments.xml", "comment");
   notices.headers = Array.from(zip.entries.keys()).filter((name) =>
     /^word\/header\d+\.xml$/.test(name),

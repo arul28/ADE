@@ -7,6 +7,7 @@ import {
   formatAttachmentSize,
 } from "../../../shared/chatAttachmentLimits";
 import { sniffImageMimeType } from "../../../shared/imageSniff";
+import { getImageAttachmentMediaType } from "../../../shared/types/chat";
 import { imageDimensions, type ImageDimensions } from "../shared/imageDimensions";
 import type { Logger } from "../logging/logger";
 
@@ -67,6 +68,15 @@ export function normalizeImageMediaType(mediaType: string | null | undefined): s
   const normalized = mediaType?.split(";", 1)[0]?.trim().toLowerCase() ?? "";
   if (!normalized.startsWith("image/")) return null;
   return normalized === "image/jpg" ? "image/jpeg" : normalized;
+}
+
+/**
+ * The image type an attachment is sent as: the sender's MIME when it gave one,
+ * else the one its path's extension names. Null when neither names an image.
+ */
+export function declaredImageMediaType(filePath: string, declared?: string | null): string | null {
+  return normalizeImageMediaType(declared)
+    ?? getImageAttachmentMediaType(filePath.split(/[?#]/u, 1)[0] ?? "");
 }
 
 /** Return whether a provider accepts this MIME type as image bytes. */

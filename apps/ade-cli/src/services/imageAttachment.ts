@@ -11,30 +11,11 @@ import {
 } from "../../../desktop/src/shared/chatAttachmentStagingFs";
 import { sniffImageMimeType } from "../../../desktop/src/shared/imageSniff";
 import { IMAGE_ATTACHMENT_MEDIA_TYPES } from "../../../desktop/src/shared/types/chat";
-import { imageBytesToDataUrl } from "../../../desktop/src/main/services/chat/imageAttachmentConverter";
-import type { Logger } from "../../../desktop/src/main/services/logging/logger";
+export { readImageFileAsDataUrl } from "../../../desktop/src/main/services/chat/imageAttachmentConverter";
 
 // The base64/in-memory ceiling, single-sourced so the constant and every
 // rejection message that renders it stay in step.
 const MAX_IMAGE_BYTES = LEGACY_MAX_CHAT_ATTACHMENT_BYTES;
-
-/**
- * Read an image file as the data URL a chat thumbnail shows. The type comes
- * from the bytes, and TIFF or HEIC is converted to JPEG on the way, since no
- * client can draw those formats.
- */
-export async function readImageFileAsDataUrl(
-  filePath: string,
-  logger?: Pick<Logger, "warn">,
-): Promise<{ dataUrl: string; mimeType: string }> {
-  const stat = await fs.promises.stat(filePath);
-  if (!stat.isFile()) throw new Error("Path is not a file.");
-  if (stat.size > MAX_IMAGE_BYTES) throw new Error(legacyAttachmentCapMessage("Image"));
-  const data = await fs.promises.readFile(filePath);
-  const mimeType = sniffImageMimeType(data);
-  if (!mimeType) throw new Error("Path is not an image.");
-  return imageBytesToDataUrl(data, path.basename(filePath), mimeType, { logger });
-}
 
 function normalizeImageMime(mime: unknown, filename: string): string {
   const raw = typeof mime === "string" ? mime.trim().toLowerCase() : "";

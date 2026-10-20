@@ -496,7 +496,18 @@ function ImageAttachmentPreview({
           onClick={preview.open}
         >
           {dataUrl ? (
-            <img src={dataUrl} alt={name} className="h-full w-full object-cover" draggable={false} />
+            <img
+              src={dataUrl}
+              alt={name}
+              className="h-full w-full object-cover"
+              draggable={false}
+              // A host without a TIFF/HEIC decoder sends the original bytes,
+              // which this renderer cannot draw: fall back to the placeholder.
+              onError={() => {
+                setDataUrl(null);
+                setPreviewFailed(true);
+              }}
+            />
           ) : (
             <span className="flex h-full w-full items-center justify-center bg-black/18 text-current/60">
               <Image size={18} weight="bold" />
