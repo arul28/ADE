@@ -51,14 +51,15 @@ export function buildLaneTemplateSetupPrompt(args: {
     "- Do not change the project's package manager, its settings, or its lockfiles.",
     "- Never make a lane share a writable package folder with the main checkout without telling me the risk: an install in the lane then changes the main checkout too.",
     "- Each install or setup command may run up to 20 minutes.",
+    "- Setup commands run on the lane's own machine in a plain shell (`/bin/sh -c` on macOS and Linux, `cmd.exe` on Windows) with that machine's login-shell PATH. Aliases, shell functions and anything set only in an interactive shell are not there. Each machine can have its own Node, Python or package manager in its own place, so check what each machine resolves (`command -v npm`, `node -v`) before you rely on a tool or a version.",
     "",
     "## Check it before you call it done",
     "1. Save the template and set it as the default on the machines I choose.",
-    "2. Create a test lane with it (`ade lanes create --name template-test --template <id>`), and wait for setup to finish.",
+    "2. On every machine you saved it to, create a test lane with it (`ade lanes create --name template-test --template <id>`, plus `--machine \"<name>\"` for another machine), and wait for setup to finish. A template that works on this machine can fail on another one: a different OS, shell, or tool location. Do the checks below on each machine.",
     "3. Check that each package folder in the test lane is the lane's own folder, not a link, unless I asked for links.",
     "4. Run one quick check in the test lane (a typecheck, one test, or a build step).",
     "5. Check that the main checkout's package folders did not change.",
     "6. Measure the real disk the test lane uses with the free space before and after (`df`). `du` and Finder count space-saving clones at full size.",
-    "7. Delete the test lane (`ade lanes delete <lane> --force`) and tell me what the template does, how long setup took, and how much disk a lane uses.",
+    "7. Delete each test lane (`ade lanes delete <lane> --force`, with `--machine` for another machine) and tell me what the template does, and for each machine how long setup took and how much disk a lane uses.",
   ].join("\n");
 }
