@@ -922,6 +922,17 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Scheduled work",
   },
   {
+    id: "agents.model-hint",
+    label: "Suggest a model and effort while typing",
+    keywords: ["jev", "model hint", "effort", "suggest", "cheapest model", "opencode"],
+    tab: "notifications",
+    anchor: "model-hint",
+    // `.ade/local.yaml` of the project on the machine that runs its chats.
+    scope: "machine-repo",
+    web: "hidden",
+    group: "Smart decisions",
+  },
+  {
     id: "agents.budget",
     label: "Spend cap",
     keywords: ["budget", "cost", "limit", "dollars", "spend"],

@@ -118,6 +118,7 @@ import {
   type ModelChipSegment,
 } from "./composerModelChip";
 import { ModelChipSegmentMenu } from "./ModelChipSegmentMenu";
+import { ComposerModelHintChip } from "./ComposerModelHintChip";
 import { formatModelMentionToken, parseModelMentionToken, parseModelMentions } from "../../../shared/modelMentions";
 import {
   activeTurnDispatchModes,
@@ -2470,6 +2471,7 @@ function AgentChatComposerImpl({
   showAppControlToggle = false,
   appControlOpen = false,
   onToggleAppControl,
+  chatHasMessages = false,
 }: {
   surfaceMode?: ChatSurfaceMode;
   /**
@@ -3400,6 +3402,14 @@ function AgentChatComposerImpl({
   // The chat-scope pin is null when the chat is on the tab's machine, which
   // keeps the unpinned route (transition guard + local fallback) there.
   const chatRuntimePin = useChatRuntimeScope().pin;
+  // Which chat (or the draft) had its model picked by hand: Jev's hint then
+  // keeps that model and suggests only an effort.
+  const [modelPickedByHandFor, setModelPickedByHandFor] = useState<string | null>(null);
+  const handPickKey = sessionId ?? "draft";
+  const handleModelPickerChange = useCallback((nextModelId: string, options?: ModelPickerSelection) => {
+    setModelPickedByHandFor(handPickKey);
+    onModelChange(nextModelId, options);
+  }, [handPickKey, onModelChange]);
   const chatRuntimePinRef = useRef(chatRuntimePin);
   chatRuntimePinRef.current = chatRuntimePin;
   const chatRuntimePinKey = chatRuntimePin?.key ?? null;
@@ -8298,7 +8308,7 @@ function AgentChatComposerImpl({
               <>
                 <ModelPicker
                   value={modelId}
-                  onChange={onModelChange}
+                  onChange={handleModelPickerChange}
                   {...(activeHarnessPreset ? { activePreset: activeHarnessPreset } : {})}
                   activePresetId={activeHarnessPresetId}
                   openRequestKey={modelPickerOpenRequestKey}
@@ -8341,6 +8351,21 @@ function AgentChatComposerImpl({
                   copilotAutoTier={copilotAutoTier}
                   copilotAutoTierPending={copilotAutoTierPending}
                   {...(onCopilotAutoTierChange ? { onCopilotAutoTierChange } : {})}
+                />
+                <ComposerModelHintChip
+                  draft={draft}
+                  attachments={attachments}
+                  laneName={scheduledSendContext?.laneName ?? null}
+                  chatHasHistory={chatHasMessages}
+                  modelId={modelId}
+                  reasoningEffort={reasoningEffort}
+                  allowedModelIds={constrainModelSelection ? availableModelIds ?? null : null}
+                  pin={modelRuntimePin}
+                  sessionId={sessionId ?? null}
+                  modelChosen={modelPickedByHandFor === handPickKey || chatHasMessages}
+                  hidden={turnActive || modelSelectionLocked || !modelId || Boolean(activeHarnessPreset)}
+                  onModelChange={onModelChange}
+                  onReasoningEffortChange={onReasoningEffortChange}
                 />
               </>
             ) : null}

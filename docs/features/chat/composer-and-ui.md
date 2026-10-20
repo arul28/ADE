@@ -958,6 +958,41 @@ chat pane mount, which happens either way.
   GPT-5.6 displays Light / Medium / High / Extra High / Ultra; ordinary Max
   is hidden for that family, and Ultra explains that it can delegate to
   multiple agents and use limits faster.
+- **Model hint (Jev).** `ComposerModelHintChip` sits right of the effort
+  picker and suggests the cheapest model and effort that do the prompt being
+  typed well, from the models the chat's machine can run. It asks only after
+  700 ms without typing, for a prompt of at least 25 characters, and not
+  again until the text has changed by 10% or more; an answer about older text
+  never renders under newer text. One interactive `ai.jevDecide` call
+  (feature `model_hint`) reads the task: difficulty (trivial / routine /
+  substantial / hard), kind, whether it needs images, a long context or a
+  fast reply. `modelHint.ts` then picks deterministically from
+  `usage.getModelCatalog`: it drops models that miss a hard need (image
+  input, speech input, a 400k context), keeps the levels whose Coding Agent
+  Index quality clears the bar for that difficulty and kind (`QUALITY_BAR`),
+  and takes free and plan-included before metered, the chat's own harness
+  first, then the cheapest per Intelligence Index task (the quickest when a
+  fast reply matters). It stays quiet when the current pick already clears
+  the bar within 1.5× of the cheapest. The chip reads `Sonnet 5.5 · low?`, or
+  `↓ low effort?` when only the effort differs; hovering shows the reason and
+  the Artificial Analysis attribution. A click applies the model through the
+  model picker's own `onModelChange` and then the effort through
+  `onReasoningEffortChange`, as if the user had picked both; the × hides it
+  for this prompt. It never changes anything by itself.
+  A model the user chose is kept: when they picked it by hand in this chat
+  or draft, or the chat already has turns, only an effort on that model is
+  suggested. Two dismissed model suggestions in one chat do the same. A
+  model the registry does not rate is never suggested; on its own levels it
+  can still get an effort hint, which then follows the difficulty (trivial →
+  low, routine → medium, substantial → high, hard → xhigh). The chip is
+  hidden while a turn runs, when the picker is locked, for a Custom (preset)
+  pick, and in parallel launch. It needs Smart decisions
+  (`ai.chat.smartDecisionsEnabled`) and an OpenCode Zen sign-in, and Settings
+  › Notifications › Smart decisions › **Model hint** (`ai.chat.modelHintMode`:
+  `model_and_effort`, the default, `effort_only`, or `off`). Any failure (Jev
+  null or unsure, no catalogue, no candidate) shows no chip. The catalogue
+  and the setting are cached per machine (10 minutes and 1 minute) and every
+  call goes to the composer's `modelRuntimePin`.
 - **Voice dictation.** Dictation types for you. It is not the Codex voice
   conversation button. When voice input is enabled and the bundled
   model is installed, a mic button appears beside Send. Capture is

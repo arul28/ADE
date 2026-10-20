@@ -2085,6 +2085,15 @@ declare global {
         getModelDetail?: (
           args: import("../shared/types").GetAdeUsageModelDetailArgs,
         ) => Promise<import("../shared/types").AdeUsageModelDetail | null>;
+        /**
+         * Every model the machine `pin` names can run, with its registry
+         * profile. Null without a runtime. Optional on the bridge: an older
+         * preload or web host may not expose it.
+         */
+        getModelCatalog?: (
+          args?: { provider?: string },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ catalog: import("../main/services/router/modelCatalog").UserModelCatalog } | null>;
         getModelPriceOverrides?: () => Promise<import("../shared/types").AdeUsagePriceOverrides | null>;
         /**
          * This machine's GitHub contribution calendar (the profile's year of

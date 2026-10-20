@@ -7,7 +7,7 @@
  */
 
 /** Who is asking. Closed so the summary log can count per feature; extend it here. */
-export const JEV_FEATURES = ["turn_end", "cli_status", "settle_nudge", "palette", "lane_emoji"] as const;
+export const JEV_FEATURES = ["turn_end", "cli_status", "settle_nudge", "palette", "lane_emoji", "model_hint"] as const;
 export type JevFeature = (typeof JEV_FEATURES)[number];
 
 /**

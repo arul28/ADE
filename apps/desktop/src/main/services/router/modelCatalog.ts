@@ -34,6 +34,9 @@ export type UserCatalogEffort = {
   /** True when Artificial Analysis did not measure this level and the score was scaled. */
   effortScaled: boolean;
   quality: RouteQuality;
+  /** What one Intelligence Index task cost and took at this level: a relative size, not a bill. */
+  costPerIndexTaskUsd: number | null;
+  secondsPerIndexTask: number | null;
 };
 
 export type UserCatalogModel = {
@@ -129,6 +132,8 @@ export function buildUserModelCatalog(models: readonly CatalogModel[], snapshot:
         registrySlug: route.registrySlug,
         effortScaled: route.quality.effortScaled,
         quality: route.quality,
+        costPerIndexTaskUsd: route.costPerIndexTaskUsd,
+        secondsPerIndexTask: route.secondsPerIndexTask,
       })),
       profile,
       codingAgents: snapshot.agents

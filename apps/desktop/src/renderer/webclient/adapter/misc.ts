@@ -1316,6 +1316,7 @@ function createUsageStubs(call: MiscCall): Partial<Window["ade"]["usage"]> {
     refresh: () => call("usage.refreshQuota", {}, null, false),
     getCostBreakdown: (args) => call("usage.getCostBreakdown", args, null),
     getModelDetail: (args) => call("usage.getModelDetail", args, null),
+    getModelCatalog: (args = {}) => call("usage.getModelCatalog", args, null),
     getModelPriceOverrides: () => call("usage.getModelPriceOverrides", {}, null),
     // A save writes the host's price list: never replayed from a cached read.
     setModelPriceOverride: (args) => call<AdeUsagePriceOverrides>("usage.setModelPriceOverride", args, () => {

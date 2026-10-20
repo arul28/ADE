@@ -2109,6 +2109,13 @@ export type AiChatConfig = {
    * with an OpenCode Zen sign-in. Lives in `.ade/local.yaml`.
    */
   smartDecisionsEnabled?: boolean;
+  /**
+   * Jev's model and effort hint beside the composer's pickers (needs Smart
+   * decisions on). `model_and_effort` (the default) may suggest another model
+   * while the model is the untouched default; `effort_only` only suggests an
+   * effort on the chosen model; `off` shows nothing.
+   */
+  modelHintMode?: "model_and_effort" | "effort_only" | "off";
 };
 export type AiConfig = {
   compaction?: Record<string, ProviderCompactionSettings>;

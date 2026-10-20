@@ -31,6 +31,7 @@ import {
   useActivitySettings,
 } from "./ActivitySettingsControls";
 import { AiFeaturesSection } from "./AiFeaturesSection";
+import { ModelHintSection } from "./ModelHintSection";
 import "./NotificationsSection.css";
 
 /**
@@ -316,6 +317,7 @@ export function NotificationsSection() {
             />
             <ActivityPrivacySection model={model} />
             <AiFeaturesSection />
+            <ModelHintSection />
           </div>
         </div>
       </ModernPage>

@@ -152,6 +152,7 @@ import type { DiskPressureSnapshot } from "../main/services/storage/diskPressure
 // recording record is unit 2C's shape and re-declaring it here is how the two
 // drift.
 import type { SimRecording } from "../main/services/ios/recording/simRecordingService";
+import type { UserModelCatalog } from "../main/services/router/modelCatalog";
 import type {
   ArchiveActionArgs,
   ArchiveActionResult,
@@ -6603,6 +6604,15 @@ const adeBridge = {
     getModelDetail: async (args: GetAdeUsageModelDetailArgs): Promise<AdeUsageModelDetail | null> =>
       callProjectRuntimeActionOr("usage", "getModelDetail", { args }, () =>
         ipcRenderer.invoke(IPC.usageGetModelDetail, args),
+      ),
+    // The models the machine `pin` names can run, with their registry
+    // profiles. No local IPC: without a runtime there is no catalogue.
+    getModelCatalog: async (
+      args: { provider?: string } = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ catalog: UserModelCatalog } | null> =>
+      callPinnedOrBoundRuntimeActionOr<{ catalog: UserModelCatalog } | null>(
+        pin, "usage", "getModelCatalog", { args }, async () => null,
       ),
     // Machine-level (this computer's `gh` login), so main answers it directly.
     getGithubContributions: async (): Promise<GithubContributionCalendar | null> =>
