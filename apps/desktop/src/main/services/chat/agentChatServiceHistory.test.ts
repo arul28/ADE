@@ -2704,7 +2704,7 @@ describe("createAgentChatService", () => {
       vi.useFakeTimers();
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
-      let releaseQueuedTurnCompletion: (() => void) | null = null;
+      const queuedTurnCompletion: { release?: () => void } = {};
       try {
         const session = await service.createSession({
           laneId: "lane-1",
@@ -2778,7 +2778,7 @@ describe("createAgentChatService", () => {
         expect(queued).toMatchObject({ queued: true, delivery: "queued" });
 
         const completionGate = new Promise<void>((resolve) => {
-          releaseQueuedTurnCompletion = resolve;
+          queuedTurnCompletion.release = resolve;
         });
         vi.mocked(runGit).mockImplementationOnce(async () => {
           await completionGate;
@@ -2792,7 +2792,7 @@ describe("createAgentChatService", () => {
         await service.archiveSession({ sessionId: queuedSession.id });
         expect(queuedProcess.kill).not.toHaveBeenCalled();
 
-        releaseQueuedTurnCompletion();
+        queuedTurnCompletion.release?.();
         await waitForEvent(
           events,
           (event): event is AgentChatEventEnvelope =>
@@ -2815,7 +2815,7 @@ describe("createAgentChatService", () => {
           params: { turn: { id: "turn-4", status: "completed" } },
         });
       } finally {
-        releaseQueuedTurnCompletion?.();
+        queuedTurnCompletion.release?.();
         service.forceDisposeAll();
         vi.useRealTimers();
       }
