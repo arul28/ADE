@@ -606,6 +606,24 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
       assertWebRuntimePinRoutable("ai.getStatus", pin, infra);
       return await call("ai.getStatus", args, aiStatus());
     },
+    // The connected brain answers; offline, or on any failure, `null` means
+    // the caller's own logic decides, exactly as on desktop.
+    jevDecide: async (request: unknown, pin?: RuntimePinArg) => {
+      try {
+        assertWebRuntimePinRoutable("ai.jevDecide", pin, infra);
+        return await call("ai.jevDecide", request, null);
+      } catch {
+        return null;
+      }
+    },
+    jevStatus: async (pin?: RuntimePinArg) => {
+      try {
+        assertWebRuntimePinRoutable("ai.jevStatus", pin, infra);
+        return await call("ai.jevStatus", undefined, null);
+      } catch {
+        return null;
+      }
+    },
     getOpenCodeRuntimeDiagnostics: async () => ({ installed: false, available: false, diagnostics: [] }),
     isOpenCodeInstalled: async (pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("ai.isOpenCodeInstalled", pin, infra);

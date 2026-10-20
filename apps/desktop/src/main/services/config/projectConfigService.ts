@@ -343,6 +343,8 @@ function coerceAiChatConfig(value: unknown): AiConfig["chat"] {
   if (continueAfterRestart != null) chat.continueAfterRestart = continueAfterRestart;
   const promptSuggestionsEnabled = asBool(value.promptSuggestionsEnabled);
   if (promptSuggestionsEnabled != null) chat.promptSuggestionsEnabled = promptSuggestionsEnabled;
+  const smartDecisionsEnabled = asBool(value.smartDecisionsEnabled);
+  if (smartDecisionsEnabled != null) chat.smartDecisionsEnabled = smartDecisionsEnabled;
   const piExtensionsEnabled = asBool(value.piExtensionsEnabled);
   if (piExtensionsEnabled != null) chat.piExtensionsEnabled = piExtensionsEnabled;
   const claudePluginUiEnabled = asBool(value.claudePluginUiEnabled);

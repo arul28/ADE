@@ -108,6 +108,7 @@ import {
   publishLinearLaneCard,
 } from "../../desktop/src/main/services/cto/linearLaneCardService";
 import { createAiIntegrationService } from "../../desktop/src/main/services/ai/aiIntegrationService";
+import { createJevService, type JevService } from "../../desktop/src/main/services/jev/jevService";
 import { initApiKeyStore } from "../../desktop/src/main/services/ai/apiKeyStore";
 import type { createSyncService } from "./services/sync/syncService";
 import type { SharedSyncListener } from "./services/sync/sharedSyncListener";
@@ -456,6 +457,8 @@ export type AdeRuntime = {
   ptyService: ReturnType<typeof createPtyService>;
   testService: ReturnType<typeof createTestService>;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService> | null;
+  /** Jev decisions (`ai.jevDecide`); absent on runtimes that never ask. */
+  jevService?: JevService | null;
   agentChatService?: ReturnType<typeof createAgentChatService> | null;
   chatLaunchService?: ChatLaunchService | null;
   cursorCloudFleetService?: ReturnType<typeof createCursorCloudFleetService> | null;
@@ -1429,6 +1432,13 @@ export async function createAdeRuntime(args: {
         fetchRemote: resolvedArgs.chatRuntime === "agent" && !embeddedRuntime,
       },
     });
+
+    const jevService = createJevService({
+      logger,
+      isEnabled: () => projectConfigService.get().effective.ai?.chat?.smartDecisionsEnabled !== false,
+      appVersion: process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION || null,
+    });
+    teardown.push(() => jevService.dispose());
 
     const conflictService = createConflictService({
       db,
@@ -3606,6 +3616,7 @@ export async function createAdeRuntime(args: {
       searchService,
       externalSessionsService,
       aiIntegrationService,
+      jevService,
       agentChatService,
       chatLaunchService,
       cursorCloudFleetService,
