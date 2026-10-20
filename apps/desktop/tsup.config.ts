@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { defineConfig } from "tsup";
 import { assertPublicPostHogToken } from "../../scripts/posthog/publicPostHogToken";
+import { asciiBundleSource } from "../../scripts/build/asciiBundleSource";
 
 const posthogProjectToken = process.env.ADE_POSTHOG_PROJECT_TOKEN?.trim() ?? "";
 const devMainReadyMarker = process.env.ADE_DEV_MAIN_READY_MARKER?.trim() ?? "";
@@ -55,6 +56,8 @@ export default defineConfig({
         );
       }
     : undefined,
+  // Keeps the bundle's source pure ASCII, which V8 stores at one byte per character; see the plugin.
+  plugins: [asciiBundleSource()],
   // Inline build-time env variables so they're available in the packaged app.
   define: {
     "process.env.ADE_LINEAR_CLIENT_ID": JSON.stringify(process.env.ADE_LINEAR_CLIENT_ID ?? ""),

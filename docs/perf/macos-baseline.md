@@ -676,6 +676,44 @@ is now watched with one recursive native watch (`watchTree`,
 | Longest event-loop block on open and close | same | 30 ms | 2 ms | 20 ms |
 | The same block with chokidar's own native mode (why polling was chosen) | same, `WITH_NATIVE_CHOKIDAR=1` | 13,207 ms | not used | - |
 
+### Brain: memory a loaded brain keeps
+
+Measured 2026-10-20 on this Mac (Node 26.3), lane `ademark-brain-memory`.
+The installed brain logs its memory every five minutes as
+`brain.memory_sample` (`rssBytes`, `heapUsedBytes`, `externalBytes`) in
+`<ADE_HOME>/runtime/brain.jsonl`, `~/.ade/runtime/brain.jsonl` for the
+installed app. That log is how the installed numbers below were read; nothing
+attached to the installed brain.
+
+The installed brain, for scale (41 registered projects, about 150 child
+processes): 706 MB footprint after 9.5 h, peak 2,426 MB; `heapUsedBytes`
+126 MB at start, climbing to about 480 MB by hour 9. About 580 MB of the
+footprint is the V8 heap; native malloc is about 30 MB.
+
+The dev brain rows run on a throwaway `ADE_HOME`, six throwaway projects, a
+clean provider environment, an inspector on the dev brain only, and a forced
+GC before each read. Load: 12 Claude Haiku chats (two turns each, large shell
+output), a history read of each, 6 archived, then 11 idle minutes.
+
+| Metric | How | Before | Baseline | Ceiling |
+|---|---|---:|---:|---:|
+| Dev brain after the load and 11 idle minutes: heap used / footprint | `bench2.sh` style run: `cdp.mjs mem` and `footprint`, same load both sides | 115.1 MB / 245 MB | 101.9 MB / 209 MB | proposed, needs approval: 120 MB / 260 MB |
+| Brain bundle source text held for the life of the process | heap snapshot, largest string | 44.0 MB (two bytes per character) | 22.0 MB (ASCII) | 23 MB |
+| Chat event rings, one project: the 51 chats the installed brain served in its last 9.5 h, rebuilt from their real transcripts with the ring's caps (4,000 events, 4 M characters) | `ring-sim.mjs` (one-off, no bench file yet) | 98.5 MB, held until restart | 0 after 10 quiet minutes; 29 MB for the 23 chats active in the busiest 10 minutes measured | proposed, needs approval: 0 when every chat is quiet |
+| Parsed transcript windows, one project (32 chats × 2 MB tail) | `tcache-sim.mjs` (one-off) | 47.4 MB, refilled every 10 min by the stale-run sweep | 0 when no history read in 10 min | proposed, needs approval: 0 when no reads |
+| Slash-command discovery, retained per cached folder (this repository) | `disc-measure.ts` (one-off) | 1.36 MB | 0.12 MB | 0.25 MB |
+
+Electron main's bundle had the same two-byte source: 18.7 M characters, 37 MB
+held, about 19 MB as ASCII (`scripts/build/asciiBundleSource.ts` covers both
+bundles). Not measured in a running app: the dev app was not launched for this
+lane.
+
+The event ring and the transcript windows were bounded by count per project
+(64 and 32 chats), never by time, so a long-lived brain kept every recent
+chat's history until it restarted, once per open project. A chat quiet for
+10 minutes now gives both back; its transcript already holds every event, and
+the idle release skips a chat whose transcript had a failed append (the count caps still apply).
+
 The events are the same as the poller's: `tree-watcher-parity.mts` runs both
 on one temp tree through 18 kinds of file operation (create, change, delete,
 directory trees, renames, moves in and out, atomic saves, slow writes, bursts,
