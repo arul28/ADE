@@ -6,11 +6,16 @@ import type { RemoteMcpScope } from "../../../../desktop/src/shared/types/remote
  * Which `ade` commands a remote AI app may run, by the scope of its connection.
  *
  * `write` is full access: the app can do what the person could do in a
- * terminal. The only commands refused are the ones that would outlive or get
+ * terminal. The commands refused are the ones that would outlive or get
  * around the switch that grants the access (managing remote access itself,
  * minting account tokens, signing the machine in or out), or that cannot work
  * without a terminal and would cut the connection (the brain's own lifecycle,
  * interactive setup, `ade code`, a hard reset).
+ *
+ * Both scopes fail closed. Every top-level command is either in
+ * FULL_ACCESS_COMMANDS or in BLOCKED_COMMANDS; a command in neither is refused,
+ * so a new `ade` command is unavailable remotely until someone decides which
+ * list it belongs in (and, if it only reads, adds it to READ_ONLY_COMMANDS).
  *
  * `read` is an allowlist of commands that only read. Anything not on the list
  * is refused, so a new command is read-only-unavailable until someone adds it.
@@ -35,6 +40,24 @@ const BLOCKED_COMMANDS: ReadonlyMap<string, string> = new Map([
   ["code", "`ade code` needs a terminal."],
   ["desktop", "Opening the desktop app is done on the computer itself."],
   ["account", "Account tokens outlive ADE MCP, so they are created on the computer itself."],
+]);
+
+/**
+ * Every other top-level command, with the spellings the CLI accepts. Full
+ * access runs these; read-only runs the subset in READ_ONLY_COMMANDS.
+ */
+const FULL_ACCESS_COMMANDS: ReadonlySet<string> = new Set([
+  "action", "actions", "ade-browser", "agent", "agents", "app", "app-control", "apple", "apps", "archive",
+  "archived", "artifact", "artifacts", "ask", "auth", "auto-update", "automation", "automations", "browser",
+  "built-in-browser", "builtin-browser", "chat", "chats", "computer", "computer-use", "config", "coord",
+  "coordinator", "create", "cursor", "desk", "diff", "diffs", "disk", "doctor", "drafts", "electron", "file",
+  "files", "gh", "git", "github", "harness", "harnesses", "health", "help", "history", "init", "ios", "ios-sim",
+  "issue", "jira", "lane", "lanes", "linear", "link", "mac-desk", "mac-desktop", "machine", "machines", "new",
+  "notify", "open", "operation", "operations", "pr", "project", "projects", "proof", "provider", "providers",
+  "proxy", "prs", "pty", "quota", "quotas", "report-issue", "router", "scene", "scenes", "screen", "search",
+  "secret", "secrets", "session", "sessions", "setting", "settings", "shell", "simulator", "skill", "skills",
+  "status", "storage", "sync", "term", "terminal", "test", "tests", "tools", "tools-pane", "triage", "ui",
+  "update", "updates", "usage", "version", "windows-desk", "windows-desktop", "work", "work-tools", "worktools",
 ]);
 
 /**
@@ -139,6 +162,12 @@ export function checkRemoteAdeCommand(input: unknown, scope: RemoteMcpScope): Re
   const command = COMMAND_ALIASES.get(args[0]!) ?? args[0]!;
   const blocked = BLOCKED_COMMANDS.get(command);
   if (blocked) return { ok: false, reason: `\`ade ${command}\` is not available remotely. ${blocked}` };
+  if (!FULL_ACCESS_COMMANDS.has(args[0]!)) {
+    return {
+      ok: false,
+      reason: `\`ade ${args[0]}\` isn't enabled for ADE MCP. Run \`ade help\` for the commands it can use.`,
+    };
+  }
   // ADE MCP is switched on per computer. Forwarding to another machine would
   // reach one whose owner may have it off.
   if (args.some((word) => MACHINE_TARGET_FLAG.test(word))) {
@@ -148,6 +177,9 @@ export function checkRemoteAdeCommand(input: unknown, scope: RemoteMcpScope): Re
     };
   }
   const words = positionalWords(args);
+  if (isServiceSignInCommand(command, words)) {
+    return { ok: false, reason: `\`ade ${command} ${words.slice(0, 2).join(" ")}\` is not available remotely. ${SERVICE_SIGN_IN_REASON}` };
+  }
   // Renaming, removing or re-pairing account machines outlives revoking the
   // connection, like account tokens; reading the roster is fine.
   if (command === "machines" && !MACHINE_READ_SUBCOMMANDS.has(words[0] ?? "list")) {
@@ -166,10 +198,49 @@ export function checkRemoteAdeCommand(input: unknown, scope: RemoteMcpScope): Re
 
 const COMMAND_WORD = /^[a-z][a-z0-9-]*$/;
 /** Spellings the CLI treats as the same command. */
-const COMMAND_ALIASES: ReadonlyMap<string, string> = new Map([["action", "actions"], ["machine", "machines"]]);
+const COMMAND_ALIASES: ReadonlyMap<string, string> = new Map([["action", "actions"], ["machine", "machines"], ["gh", "github"]]);
 /** `ade machines` subcommands that only read the roster. */
 const MACHINE_READ_SUBCOMMANDS: ReadonlySet<string> = new Set(["list", "ls", "show", "view", "get", "info"]);
 const MACHINE_TARGET_FLAG = /^--(?:machine|all-machines|machine-project)(?:=|$)/;
+const SERVICE_SIGN_IN_REASON =
+  "Signing this computer in or out of a service (GitHub, Linear, Jira, an AI provider) outlives ADE MCP, so it is done on the computer itself.";
+/** `ade github` groups that manage the machine's GitHub App authorization. */
+const GITHUB_AUTH_GROUPS: ReadonlySet<string> = new Set(["app-auth", "app", "auth"]);
+/** Spellings of `ade github app-auth login` and `clear`. */
+const GITHUB_AUTH_CHANGES: ReadonlySet<string> = new Set(["login", "authorize", "start", "clear", "logout", "sign-out"]);
+/**
+ * Service credential actions, by domain; `true` means every action. The CLI
+ * runs full access as `cto`, which these actions otherwise allow.
+ */
+const SERVICE_SIGN_IN_ACTIONS: ReadonlyMap<string, ReadonlySet<string> | true> = new Map<string, ReadonlySet<string> | true>([
+  ["github", new Set(["setToken", "clearToken", "startAppUserDeviceAuth", "pollAppUserDeviceAuth", "clearAppUserAuth"])],
+  ["linear_credentials", true],
+  ["linear_oauth", true],
+  ["jira", new Set(["connect", "disconnect"])],
+  // Installing the ADE agent in Linear runs an OAuth consent and stores its token.
+  ["linear_agent", new Set(["startInstall", "uninstall"])],
+  ["ai", new Set([
+    "storeApiCredential", "removeApiCredential", "storeApiKey", "deleteApiKey",
+    "setOpencodeProviderKey", "clearOpencodeProviderKey", "opencodeOAuthStart", "opencodeCloudConnect",
+    "opencodeAccountRemove", "piLoginStart", "piLoginSubmit", "cursorAuthLogin", "cursorAuthLogout",
+    "antigravitySignInStart", "antigravitySignInComplete",
+  ])],
+]);
+
+/** Spellings of `ade providers opencode accounts remove`, which signs OpenCode out. */
+const OPENCODE_ACCOUNT_REMOVALS: ReadonlySet<string> = new Set(["remove", "rm", "delete"]);
+
+/** Signing this machine in or out of a connected service. */
+function isServiceSignInCommand(command: string, words: readonly string[]): boolean {
+  if (command === "github") return GITHUB_AUTH_GROUPS.has(words[0] ?? "") && GITHUB_AUTH_CHANGES.has(words[1] ?? "");
+  if (command === "jira") return words[0] === "connect" || words[0] === "disconnect";
+  if (command === "providers") {
+    return words[0] === "opencode" && (words[1] === "accounts" || words[1] === "account")
+      && OPENCODE_ACCOUNT_REMOVALS.has(words[2] ?? "");
+  }
+  return false;
+}
+
 /** `ade actions` subcommands that call RPC tools by name, around the action table. */
 const RAW_ACTION_DOORS: ReadonlySet<string> = new Set(["call", "direct", "tool"]);
 
@@ -206,6 +277,10 @@ function checkActionsCommand(words: readonly string[], scope: RemoteMcpScope): R
   }
   if (target.domain === "account" && target.action !== "status") {
     return { ok: false, reason: `\`${name}\` is not available remotely. ${BLOCKED_COMMANDS.get("account")}` };
+  }
+  const signIn = SERVICE_SIGN_IN_ACTIONS.get(target.domain);
+  if (signIn === true || signIn?.has(target.action)) {
+    return { ok: false, reason: `\`${name}\` is not available remotely. ${SERVICE_SIGN_IN_REASON}` };
   }
   if (scope === "read") {
     const access = Object.hasOwn(ADE_ACTION_ACCESS, target.domain) ? ADE_ACTION_ACCESS[target.domain] : undefined;

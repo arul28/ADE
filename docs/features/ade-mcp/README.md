@@ -115,7 +115,7 @@ create a connection on any machine.
 
 | Level | Runs | CLI role |
 |---|---|---|
-| Read & write (default) | Any `ade` command except the blocked list below. | `cto` (a person's terminal) |
+| Read & write (default) | Any command in `FULL_ACCESS_COMMANDS`, minus the refusals below. | `cto` (a person's terminal) |
 | Read only | An allowlist of reading commands (`describeReadOnlyCommands()`), plus `ade actions run` for actions `adeActionAccess` declares `read` and that return no secret. | `agent` |
 
 Refused at every level, because they would outlive or get around the switch
@@ -125,14 +125,28 @@ that grants access, or cut the connection:
   `reset`, `brain`, `serve`, `runtime`, `rpc`, `code` and `desktop`, and every
   `machines` (or `machine`) subcommand except `list`/`show` (renaming,
   removing or re-pairing account machines);
+- signing this computer in or out of a connected service:
+  `github app-auth login|clear` (and their aliases, and `gh`),
+  `jira connect|disconnect` and `providers opencode accounts remove`;
 - through `ade actions` (or its alias `action`): any `remote_mcp.*` action, any
-  `account.*` action except `status` (tokens, sign-out), in both the
+  `account.*` action except `status` (tokens, sign-out), the GitHub, Linear and
+  Jira credential actions (`github.setToken|clearToken|*AppUser*Auth`,
+  `linear_credentials.*`, `linear_oauth.*`, `linear_agent.startInstall|uninstall`,
+  `jira.connect|disconnect`, and the AI provider sign-in and API-key actions in
+  `ai`), in both the
   `<domain.action>` and `<domain> <action>` spellings, and the raw tool doors
   `actions call|direct|tool`;
 - a first word that is not a plain command word, so `--socket`, `--headless`,
   `--role` and a socket path cannot move a call to another brain or role;
 - `--machine`, `--all-machines` and `--machine-project`: ADE MCP is switched
   on per computer, so a call never forwards to another machine.
+
+Both levels fail closed: a top-level command in neither
+`FULL_ACCESS_COMMANDS` nor `BLOCKED_COMMANDS` is refused, so a new `ade`
+command is off for ADE MCP until someone classifies it. When you add a
+command, put it in one of those lists (and in `READ_ONLY_COMMANDS` if it only
+reads). `remoteMcpCommandPolicy.test.ts` fails for any command with help text
+that is in neither, and `/quality` checks it (review rule 12).
 
 Read only also refuses `search --rebuild`. The user-only action gate keeps
 every `remote_mcp` action (reads included) away from any client but the

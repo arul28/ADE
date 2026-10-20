@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { HELP_BY_COMMAND } from "../../cli";
 import { checkRemoteAdeCommand } from "./remoteMcpCommandPolicy";
 
 /**
@@ -19,6 +20,15 @@ describe("checkRemoteAdeCommand", () => {
     ["write", "the raw RPC tool door", ["actions", "call", "run_ade_action"]],
     ["write", "forwarding to another machine", ["chat", "send", "x", "--machine", "desktop"]],
     ["write", "removing a machine from the account, through the `machine` alias", ["machine", "remove", "key"]],
+    ["write", "a command nobody has enabled for ADE MCP", ["not-a-real-command", "run"]],
+    ["write", "signing the machine in to GitHub", ["github", "app-auth", "login"]],
+    ["write", "clearing GitHub sign-in through the `gh` alias", ["gh", "app", "clear"]],
+    ["write", "a GitHub sign-in through actions", ["actions", "run", "github.startAppUserDeviceAuth"]],
+    ["write", "a Linear credential through actions, split spelling", ["actions", "run", "linear_credentials", "setToken"]],
+    ["write", "disconnecting Jira", ["jira", "disconnect"]],
+    ["write", "installing the ADE agent in Linear through actions", ["actions", "run", "linear_agent.startInstall"]],
+    ["write", "an AI provider sign-in through actions", ["actions", "run", "ai", "cursorAuthLogin"]],
+    ["write", "signing OpenCode out", ["providers", "opencode", "accounts", "rm", "acct"]],
     ["read", "creating a lane", ["lanes", "create", "--name", "x"]],
     ["read", "a flag before the subcommand", ["lanes", "--text", "create"]],
     ["read", "a write action through actions", ["actions", "run", "lane", "create"]],
@@ -38,6 +48,7 @@ describe("checkRemoteAdeCommand", () => {
     ["read", ["ade", "git", "status", "--lane", "x"], ["git", "status", "--lane", "x"]],
     ["read", ["actions", "run", "lane", "list"], ["actions", "run", "lane", "list"]],
     ["read", ["search", "login bug", "--text"], ["search", "login bug", "--text"]],
+    ["read", ["github", "app-auth", "status"], ["github", "app-auth", "status"]],
     ["write", ["lanes", "create", "--name", "fix-login"], ["lanes", "create", "--name", "fix-login"]],
     ["write", ["action", "run", "lane.create", "--arg", "name=x"], ["action", "run", "lane.create", "--arg", "name=x"]],
   ] as const)("%s access runs %j", (scope, input, expected) => {
@@ -46,4 +57,14 @@ describe("checkRemoteAdeCommand", () => {
     expect(verdict.ok ? verdict.args : []).toEqual(expected);
     expect(verdict.ok ? verdict.args[0] : "").not.toBe("ade");
   });
+
+  // Full access fails closed, so a new command is unreachable until someone
+  // decides whether ADE MCP may run it. This catches the deciding being skipped.
+  it.each([...new Set(Object.keys(HELP_BY_COMMAND).map((key) => key.split(" ")[0]!))])(
+    "`ade %s` is classified for ADE MCP",
+    (command) => {
+      const verdict = checkRemoteAdeCommand([command, "--help"], "write");
+      expect(verdict.ok ? "" : verdict.reason).not.toMatch(/isn't enabled for ADE MCP/);
+    },
+  );
 });
