@@ -16,6 +16,7 @@ import {
   getProjectWorkSummary,
 } from "../../desktop/src/main/services/projects/projectDetailService";
 import { inspectProjectPath } from "../../desktop/src/main/services/projects/projectPathInspector";
+import { withTimeout } from "../../desktop/src/main/services/shared/withTimeout";
 import { createProjectScaffoldService } from "../../desktop/src/main/services/projects/projectScaffoldService";
 import { runGit } from "../../desktop/src/main/services/git/git";
 import { githubExtraHeaderGitEnv } from "../../desktop/src/main/services/chat/handoffGitBundle";
@@ -906,6 +907,34 @@ export async function decorateProjectListWithIcons<T extends { rootPath: string;
 
 /** Stats past this are left unknown, so a hung network mount can't stall the list. */
 const LIST_FOLDER_CHECK_BUDGET_MS = 250;
+/** How long one folder answer is reused; the list is read often and folders rarely move. */
+const FOLDER_PRESENCE_TTL_MS = 10_000;
+
+/**
+ * One stat per folder at a time, its answer reused for a few seconds. A stat
+ * on an unreachable drive holds a libuv thread until the OS gives up, so a
+ * fresh stat on every list would pile up behind it and starve the brain's
+ * other file, crypto and zlib work.
+ */
+const folderPresence = new Map<string, { settledAt: number | null; check: Promise<boolean | undefined> }>();
+
+function checkFolderPresence(rootPath: string): Promise<boolean | undefined> {
+  const cached = folderPresence.get(rootPath);
+  // A pending stat is reused however long it takes.
+  if (cached && (cached.settledAt === null || Date.now() - cached.settledAt < FOLDER_PRESENCE_TTL_MS)) {
+    return cached.check;
+  }
+  const entry: { settledAt: number | null; check: Promise<boolean | undefined> } = {
+    settledAt: null,
+    check: fs.promises.stat(rootPath).then(
+      (stat) => stat.isDirectory(),
+      (error: NodeJS.ErrnoException) => (error?.code === "ENOENT" || error?.code === "ENOTDIR" ? false : undefined),
+    ),
+  };
+  folderPresence.set(rootPath, entry);
+  void entry.check.then(() => { entry.settledAt = Date.now(); });
+  return entry.check;
+}
 
 /**
  * Whether each project's folder is on this machine, by index: `false` when it
@@ -919,22 +948,13 @@ async function readProjectFolderPresence(
   budgetMs = LIST_FOLDER_CHECK_BUDGET_MS,
 ): Promise<Array<boolean | undefined>> {
   const presence = new Array<boolean | undefined>(records.length).fill(undefined);
-  let timer: ReturnType<typeof setTimeout> | null = null;
+  // Drop answers past their time, so a removed project's folder isn't kept forever.
+  for (const [rootPath, entry] of folderPresence) {
+    if (entry.settledAt !== null && Date.now() - entry.settledAt >= FOLDER_PRESENCE_TTL_MS) folderPresence.delete(rootPath);
+  }
   const checks = Promise.all(records.map((record, index) =>
-    fs.promises.stat(record.rootPath).then(
-      (stat) => { presence[index] = stat.isDirectory(); },
-      (error: NodeJS.ErrnoException) => {
-        if (error?.code === "ENOENT" || error?.code === "ENOTDIR") presence[index] = false;
-      },
-    )));
-  await Promise.race([
-    checks,
-    new Promise<void>((resolve) => {
-      timer = setTimeout(resolve, budgetMs);
-      timer.unref?.();
-    }),
-  ]);
-  if (timer) clearTimeout(timer);
+    checkFolderPresence(record.rootPath).then((value) => { presence[index] = value; })));
+  await withTimeout(checks, budgetMs);
   // A copy, so a stat that lands after the deadline can't change an answer
   // that was already sent.
   return [...presence];

@@ -18,6 +18,7 @@ export function registerAppBundleOwnershipIpc(args: { logger?: Logger } = {}): v
     isPackaged: app.isPackaged,
     appVersion: app.getVersion(),
   });
+  const logger = args.logger ?? { warn: () => {} };
   let lastLoggedState: string | null = null;
 
   const logStatus = (status: AppBundleOwnershipStatus) => {
@@ -36,7 +37,7 @@ export function registerAppBundleOwnershipIpc(args: { logger?: Logger } = {}): v
   };
 
   ipcMain.handle(IPC.appBundleOwnershipGetStatus, async (event, options: unknown) => {
-    if (!isTrustedAdeRendererSenderOrWarn(event, args.logger ?? { warn: () => {} }, IPC.appBundleOwnershipGetStatus)) {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.appBundleOwnershipGetStatus)) {
       throw new Error("This check is only available to the ADE window.");
     }
     const refresh = Boolean(options && typeof options === "object" && (options as { refresh?: unknown }).refresh === true);
@@ -46,15 +47,18 @@ export function registerAppBundleOwnershipIpc(args: { logger?: Logger } = {}): v
   });
 
   ipcMain.handle(IPC.appBundleOwnershipFix, async (event) => {
-    if (!isTrustedAdeRendererSenderOrWarn(event, args.logger ?? { warn: () => {} }, IPC.appBundleOwnershipFix)) {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.appBundleOwnershipFix)) {
       throw new Error("This fix is only available to the ADE window.");
     }
     const result = await service.fix();
-    args.logger?.info("app_bundle_ownership.fix", {
+    const meta = {
       outcome: result.outcome,
+      detail: result.detail,
       state: result.status.state,
       problemPaths: result.status.problemPaths,
-    });
+    };
+    if (result.outcome === "failed") logger.warn("app_bundle_ownership.fix", meta);
+    else args.logger?.info("app_bundle_ownership.fix", meta);
     logStatus(result.status);
     return result;
   });

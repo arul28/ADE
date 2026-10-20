@@ -6,6 +6,7 @@ import type {
   RemoteRuntimeUpdateAndRestartResult,
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
+import { isRecord } from "../shared/utils";
 
 /**
  * "Update & restart" for a Windows machine on an ADE build whose app cannot
@@ -24,6 +25,8 @@ import type { Logger } from "../logging/logger";
  */
 
 const POLL_INTERVAL_MS = 3_000;
+/** Progress reads refused in a row, on a live connection, before ADE gives up. */
+const MAX_READ_FAILURES = 3;
 const TERMINAL_COLS = 120;
 const TERMINAL_ROWS = 30;
 
@@ -32,10 +35,6 @@ type CallAction = (
   projectId: string,
   request: RemoteRuntimeActionRequest,
 ) => Promise<RemoteRuntimeActionResult>;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value));
-}
 
 /** The lane to open the terminal in: the primary lane, or any lane. */
 function pickLaneId(result: unknown): string | null {
@@ -65,8 +64,12 @@ export function remoteTerminalUpdateCommands(targetVersion: string | null): {
     powershell:
       "$ade = (Get-Command ade -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source; "
       + "if (-not $ade) { $ade = Join-Path $env:LOCALAPPDATA 'ADE\\bin\\ade.cmd' }; "
-      + `& $ade brain update${versionArgs}; exit $LASTEXITCODE`,
-    cmd: `ade brain update${versionArgs} & exit /b %ERRORLEVEL%`,
+      + "if (-not (Test-Path -LiteralPath $ade)) { exit 127 }; "
+      // A command that never ran leaves $LASTEXITCODE null, which `exit` reads as 0.
+      + `& $ade brain update${versionArgs}; if ($null -eq $LASTEXITCODE) { exit 1 }; exit $LASTEXITCODE`,
+    // Not `& exit /b %ERRORLEVEL%`: cmd expands that when it reads the line,
+    // before `ade` runs, so it would report the previous command's code.
+    cmd: `ade brain update${versionArgs} && exit 0 || exit 1`,
     "git-bash": `ade brain update${versionArgs}; exit $?`,
   };
 }
@@ -125,6 +128,8 @@ export async function updateViaRemoteTerminal(args: {
   status: RemoteRuntimeConnectionStatus;
   targetVersion: string | null;
   callAction: CallAction;
+  /** Whether the paired connection to that machine is still up. */
+  isConnected: () => boolean;
   logger: Pick<Logger, "info" | "warn">;
   timeoutMs: number;
   now?: () => number;
@@ -133,6 +138,9 @@ export async function updateViaRemoteTerminal(args: {
   const { status, targetVersion, callAction, logger } = args;
   const targetId = status.target.id;
   const now = args.now ?? Date.now;
+  // From the start, so finding a lane and opening the terminal count too and the
+  // whole run stays inside the IPC timeout set just above it.
+  const deadline = now() + args.timeoutMs;
   const sleep = args.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const manualHint = `On that PC, open a terminal and run: ade brain update${targetVersion ? ` --version ${targetVersion}` : ""}`;
 
@@ -184,7 +192,7 @@ export async function updateViaRemoteTerminal(args: {
   }
   logger.info("remote_update.terminal_started", { targetId, projectId: project.projectId, sessionId, targetVersion });
 
-  const deadline = now() + args.timeoutMs;
+  let readFailures = 0;
   while (now() < deadline) {
     await sleep(POLL_INTERVAL_MS);
     let outcome: ReturnType<typeof terminalOutcome>;
@@ -195,14 +203,23 @@ export async function updateViaRemoteTerminal(args: {
         arg: sessionId,
       })).result);
     } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
       // The update stops the brain that owns this terminal, which drops the
       // connection: that is the install starting, not a failure.
-      logger.info("remote_update.terminal_connection_ended", {
-        targetId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      return staged(status, targetVersion);
+      if (!args.isConnected()) {
+        logger.info("remote_update.terminal_connection_ended", { targetId, error: detail });
+        return staged(status, targetVersion);
+      }
+      // Still connected, so the machine refused the read: try again, and give
+      // up only when it keeps refusing.
+      readFailures += 1;
+      logger.warn("remote_update.terminal_read_failed", { targetId, sessionId, attempt: readFailures, error: detail });
+      if (readFailures >= MAX_READ_FAILURES) {
+        return failed(status, targetVersion, `Couldn't read the update's progress on ${status.target.name}: ${detail}. ${manualHint}`);
+      }
+      continue;
     }
+    readFailures = 0;
     if (!outcome) continue;
     logger.info("remote_update.terminal_finished", { targetId, exitCode: outcome.exitCode });
     if (outcome.exitCode === 0) return staged(status, targetVersion);

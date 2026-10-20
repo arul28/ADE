@@ -64,6 +64,8 @@ export type AppBundleOwnershipFixResult = {
   message: string;
   /** The status read again after the fix ran. */
   status: AppBundleOwnershipStatus;
+  /** What macOS reported when the command failed, for the log. */
+  detail?: string;
 };
 
 /** `window.ade.appBundleOwnership`. Absent on the web client. */

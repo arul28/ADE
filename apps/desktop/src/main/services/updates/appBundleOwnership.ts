@@ -182,10 +182,10 @@ export function createAppBundleOwnershipService(deps: AppBundleOwnershipDeps) {
         status: before,
       };
     }
-    // Only ever the exact bundle this process runs from, re-derived here rather
-    // than trusted from anywhere else.
-    const bundlePath = resolveAppBundlePath(execPath);
-    if (!bundlePath || bundlePath !== before.bundlePath || !Number.isInteger(uid) || uid < 0 || !Number.isInteger(gid) || gid < 0) {
+    // `before` was just derived from this process's own executable, so the
+    // bundle is the one ADE runs from, never a path passed in from outside.
+    const bundlePath = before.bundlePath;
+    if (!Number.isInteger(uid) || uid < 0 || !Number.isInteger(gid) || gid < 0) {
       return { outcome: "failed", message: "ADE couldn't tell which account to give its files to.", status: before };
     }
     // The owner and path reach the shell only through AppleScript's
@@ -208,7 +208,7 @@ export function createAppBundleOwnershipService(deps: AppBundleOwnershipDeps) {
         return { outcome: "cancelled", message: "You cancelled the password prompt. Nothing was changed.", status: after };
       }
       if (after.state === "ok") return { outcome: "fixed", message: "ADE's files belong to your account again.", status: after };
-      return { outcome: "failed", message: "macOS wouldn't change the owner of ADE's files.", status: after };
+      return { outcome: "failed", message: "macOS wouldn't change the owner of ADE's files.", status: after, detail: result.stderr.trim() || undefined };
     }
     if (after.state === "ok") {
       return {

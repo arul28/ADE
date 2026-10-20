@@ -8,6 +8,7 @@ import { APP_BANNER_PRIORITY, useAppBanner } from "../ui/notice";
 import { Dialog } from "../ui/dialog";
 import { showToast } from "./toast/toastStore";
 import { CopyableCommand } from "../settings/providers/providerUi";
+import { captureError } from "../../../shared/sentry/capture";
 
 /** Read the bundle a little after the window settles, never on the boot path. */
 const FIRST_CHECK_DELAY_MS = 8_000;
@@ -39,7 +40,8 @@ export function AppBundleOwnershipBanner(): JSX.Element | null {
         (next) => {
           if (!cancelled) setStatus(next);
         },
-        () => {},
+        // No banner is the right answer to a failed check; Sentry still hears of it.
+        (error: unknown) => captureError(error, { fingerprint: ["app-bundle-ownership", "status-read"] }),
       );
     }, FIRST_CHECK_DELAY_MS);
     return () => {
@@ -98,9 +100,11 @@ export function AppBundleOwnershipBanner(): JSX.Element | null {
           tone: "warning",
           icon: <LockKey size={13} weight="bold" />,
           title: "ADE will ask for your password on every update",
-          detail: status.ownerName
+          detail: status.ownerName === "root"
             ? "Its app files belong to the administrator account, so macOS can only update it as administrator."
-            : "Your account can't change its app files, so macOS can only update it as administrator.",
+            : status.ownerName
+              ? "Its app files belong to another account, so macOS can only update it as administrator."
+              : "Your account can't change its app files, so macOS can only update it as administrator.",
           actions: [
             {
               label: fixing ? "Fixing…" : "Fix it",

@@ -99,6 +99,7 @@ import {
   type WorkBoardColumn,
 } from "../../../shared/types/chat";
 import { showToast } from "../app/toast/toastStore";
+import { copyTextToClipboard } from "../../lib/launchPromptClipboard";
 import { Banner } from "../ui/notice";
 import { findGridSetForSession } from "../../lib/workGrid";
 import { iconGlyph } from "../lanes/laneIconGlyph";
@@ -1315,13 +1316,10 @@ export const SessionListPane = React.memo(function SessionListPane({
   // when it has nothing retained to show: a blip on a machine whose chats are
   // still listed is not worth a notice.
   const machineReadFailures = useMemo(
-    () => Object.values(crossMachineEntries)
-      .filter((entry) =>
-        entry.machineId !== activeMachineId
-        && entry.online
-        && Boolean(entry.error)
-        && entry.sessions.length === 0)
-      .map((entry) => ({ machineId: entry.machineId, machineName: entry.machineName, error: entry.error as string })),
+    () => Object.values(crossMachineEntries).flatMap((entry) =>
+      entry.machineId !== activeMachineId && entry.online && entry.error && entry.sessions.length === 0
+        ? [{ machineId: entry.machineId, machineName: entry.machineName, error: entry.error }]
+        : []),
     [activeMachineId, crossMachineEntries],
   );
   const localMachineFilteredOut = workSessionFilters.machine.length > 0
@@ -4190,7 +4188,18 @@ export const SessionListPane = React.memo(function SessionListPane({
               tone: "warning",
               icon: <Desktop size={13} weight="bold" />,
               title: `Couldn't load chats from ${failure.machineName}`,
-              detail: failure.error,
+              detail: "That machine is connected but didn't send its chats. ADE tries again on its own.",
+              actions: [{
+                label: "Copy error",
+                variant: "link",
+                onClick: () => {
+                  void copyTextToClipboard(failure.error).then((copied) => {
+                    showToast(copied
+                      ? { title: "Error copied", tone: "success" }
+                      : { title: "Couldn't copy the error", tone: "error" });
+                  });
+                },
+              }],
             }}
           />
         </div>

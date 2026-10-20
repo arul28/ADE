@@ -11,19 +11,19 @@
  * electron-updater manifest (`latest.yml` / `latest-mac.yml`) -- the same digest
  * the auto-updater checks.
  */
-import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { pipeline } from "node:stream/promises";
 import {
   DEFAULT_ADE_RELEASE_REPO,
+  manifestNameForPlatform,
   releaseAssetUrl,
+  sha512Base64,
 } from "../lib/releaseAssets";
 import { resolveDefaultDesktopAppName } from "./doctor";
 
-export { DEFAULT_ADE_RELEASE_REPO };
+export { DEFAULT_ADE_RELEASE_REPO, manifestNameForPlatform, sha512Base64 };
 
 export type DesktopManifestEntry = {
   /** Asset file name as named by the manifest. */
@@ -37,10 +37,6 @@ export type DownloadProgress = {
   totalBytes: number | null;
   bytesPerSecond: number | null;
 };
-
-export function manifestNameForPlatform(platform: NodeJS.Platform): string {
-  return platform === "darwin" ? "latest-mac.yml" : "latest.yml";
-}
 
 /**
  * Thin argument-order adapter over the canonical `releaseAssetUrl`. The release
@@ -91,22 +87,6 @@ export function parseDesktopManifest(
     }
   }
   return null;
-}
-
-/**
- * Streamed, not buffered: the file this hashes is the ~1 GB desktop installer,
- * and a single allocation that size is an out-of-memory kill mid-install on a
- * small VM or container -- one that grows with every release. The shell code
- * this replaced streamed it too (`[IO.File]::OpenRead` -> `ComputeHash`).
- */
-export async function sha512Base64(filePath: string): Promise<string> {
-  const hash = createHash("sha512");
-  // Fed by hand rather than piped into `hash` as a stream: ending its writable
-  // side finalizes the digest internally, and `hash.digest()` would then throw.
-  await pipeline(fs.createReadStream(filePath), async (source) => {
-    for await (const chunk of source) hash.update(chunk as Uint8Array);
-  });
-  return hash.digest("base64");
 }
 
 const RETRYABLE_ATTEMPTS = 3;

@@ -1582,6 +1582,8 @@ export function registerRuntimeBridge({
           targetVersion,
           callAction: (targetId, projectId, request) =>
             remoteConnectionService.callAction(targetId, projectId, request),
+          isConnected: () => remoteConnectionService.snapshot().connections
+            .some((connection) => connection.target.id === target.id && connection.state === "connected"),
           logger: getMachineMainLogger(),
           timeoutMs: REMOTE_MACHINE_UPDATE_TIMEOUT_MS,
         });

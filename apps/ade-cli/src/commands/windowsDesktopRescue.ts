@@ -1,11 +1,11 @@
 import { spawn, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import fs from "node:fs";
 import { promises as fsp } from "node:fs";
 import path from "node:path";
 import YAML from "yaml";
 import { compareUpdateVersions } from "../../../desktop/src/shared/updateVersions";
-import { releaseAssetUrl } from "../lib/releaseAssets";
+import { terminateProcessTree } from "../../../desktop/src/main/services/shared/processExecution";
+import { manifestNameForPlatform, releaseAssetUrl, sha512Base64 } from "../lib/releaseAssets";
 import { resolveTrustedWindowsTool } from "../lib/trustedWindowsTools";
 import { readWindowsServiceBrainCommand } from "../serviceManager/installWindows";
 
@@ -28,7 +28,7 @@ import { readWindowsServiceBrainCommand } from "../serviceManager/installWindows
  */
 
 const INSTALLER_TIMEOUT_MS = 15 * 60_000;
-const UPDATE_FEED_ASSET = "latest.yml";
+const UPDATE_FEED_ASSET = manifestNameForPlatform("win32");
 
 export type WindowsDesktopRescuePlan = {
   appExe: string;
@@ -115,12 +115,6 @@ export function planWindowsDesktopRescue(args: {
   return { plan: { ...app, installedVersion, targetVersion: args.targetVersion } };
 }
 
-async function sha512Base64(filePath: string): Promise<string> {
-  const hash = createHash("sha512");
-  for await (const chunk of fs.createReadStream(filePath)) hash.update(chunk as Buffer);
-  return hash.digest("base64");
-}
-
 /** The installer's sha512 as the release's update feed publishes it. */
 function feedSha512(feedText: string, installerName: string, targetVersion: string): string {
   const feed = YAML.parse(feedText) as {
@@ -161,7 +155,12 @@ function verifyInstallerSigner(installerPath: string, appExe: string, env: NodeJ
   if (facts.installerStatus !== "Valid") {
     throw new Error(`The downloaded installer's signature is not valid (${facts.installerStatus || "unknown"}).`);
   }
-  if (facts.appStatus === "Valid" && facts.installerSubject !== facts.appSubject) {
+  // Fail closed: with no valid signer on the installed app there is nothing to
+  // match, and any publisher's valid certificate would pass.
+  if (facts.appStatus !== "Valid") {
+    throw new Error(`The installed ADE app's signature is not valid (${facts.appStatus || "unknown"}), so the installer's publisher can't be confirmed.`);
+  }
+  if (facts.installerSubject !== facts.appSubject) {
     throw new Error(`The downloaded installer is signed by "${facts.installerSubject}", not by the installed app's signer.`);
   }
 }
@@ -179,11 +178,12 @@ function isDesktopAppRunning(appExe: string, env: NodeJS.ProcessEnv): boolean {
   return read.status === 0 && Number(read.stdout) > 0;
 }
 
-function runInstaller(installerPath: string, args: string[]): Promise<number | null> {
+function runInstaller(installerPath: string, args: string[], env: NodeJS.ProcessEnv): Promise<number | null> {
   return new Promise((resolve) => {
-    const child = spawn(installerPath, args, { stdio: "ignore", windowsHide: true });
+    const child = spawn(installerPath, args, { env, stdio: "ignore", windowsHide: true });
     const timer = setTimeout(() => {
-      try { child.kill(); } catch { /* already gone */ }
+      // The installer runs the old build's uninstaller as a child; kill the tree.
+      terminateProcessTree(child);
       resolve(null);
     }, INSTALLER_TIMEOUT_MS);
     child.once("error", () => {
@@ -234,23 +234,136 @@ export async function runWindowsDesktopRescue(
 
   await args.onStep(`Installing ADE ${plan.targetVersion} over ${plan.installedVersion}.`);
   // The same arguments electron-updater gives the installer: an update, silent.
-  // The installer stops whatever still runs from the install folder, and its
-  // setup step registers and starts the new build's background service.
-  const exitCode = await runInstaller(installerPath, ["--updated", "/S", ...(reopen ? ["--force-run"] : [])]);
+  // The installer stops whatever still runs from the install folder. On an
+  // update its setup step leaves the background service to the relaunched app,
+  // so with the app closed the service is started here instead.
+  const exitCode = await runInstaller(installerPath, ["--updated", "/S", ...(reopen ? ["--force-run"] : [])], withoutHelperEnv(args.env));
   if (exitCode === 0) {
-    return { ok: true, message: `Installed ADE ${plan.targetVersion}; its background service is starting.` };
+    if (reopen) return { ok: true, message: `Installed ADE ${plan.targetVersion}; it is reopening and starts its background service.` };
+    const started = startAppService(plan, args.env);
+    return started.ok
+      ? { ok: true, message: `Installed ADE ${plan.targetVersion} and started its background service.` }
+      : { ok: false, message: `Installed ADE ${plan.targetVersion}, but its background service did not start (${started.detail}). Open ADE on this PC to start it.` };
   }
 
   // The old app is still in place. Put its service back so the machine stays
-  // reachable, using that app's own CLI so the service runs the app's brain.
-  const restore = spawnSync(
-    plan.appExe,
-    [path.win32.join(plan.installDir, "resources", "ade-cli", "cli.cjs"), "serve", "--install-service"],
-    { env: { ...args.env, ELECTRON_RUN_AS_NODE: "1" }, encoding: "utf8", windowsHide: true, timeout: 120_000 },
-  );
-  const restored = restore.status === 0 ? "Its previous background service was restarted." : "Restarting its previous background service also failed.";
+  // reachable, through that app's own CLI so the service runs the app's brain.
+  const restored = startAppService(plan, args.env).ok
+    ? "Its previous background service was restarted."
+    : "Restarting its previous background service also failed.";
   return {
     ok: false,
     message: `The ADE ${plan.targetVersion} installer ${exitCode === null ? "did not finish" : `exited with code ${exitCode}`}. ${restored}`,
   };
+}
+
+/**
+ * `env` without what belongs to this update helper. It runs the standalone
+ * runtime, so its runtime root and module paths point into the update's
+ * staging folder (a service registered with them would load from a folder
+ * that is about to be deleted), and it carries the helper's own permissions,
+ * which must not reach the app the installer reopens or its agent shells.
+ */
+function withoutHelperEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const next: NodeJS.ProcessEnv = { ...env };
+  for (const key of [
+    "ADE_RUNTIME_ROOT",
+    "ADE_RUNTIME_NODE_MODULES",
+    "ADE_RESOLVED_RUNTIME_ROOT",
+    "NODE_PATH",
+    "ADE_CLI_PATH",
+    "ADE_CLI_ENTRY_PATH",
+    "ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION",
+    "ADE_BRAIN_UPDATE_APPLY",
+    "ELECTRON_RUN_AS_NODE",
+  ]) {
+    delete next[key];
+  }
+  return next;
+}
+
+/** The environment the installed app's CLI runs in, as its installer's setup step gives it (windows-install-setup.ps1). */
+function appCliEnv(plan: WindowsDesktopRescuePlan, env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const resources = path.win32.join(plan.installDir, "resources");
+  return {
+    ...withoutHelperEnv(env),
+    ADE_PACKAGE_CHANNEL: "stable",
+    ADE_DESKTOP_APP_NAME: path.win32.basename(plan.appExe, ".exe"),
+    ADE_DISABLE_CLI_AUTO_INSTALL: "1",
+    ELECTRON_RUN_AS_NODE: "1",
+    NODE_PATH: [
+      path.win32.join(resources, "app.asar.unpacked", "node_modules"),
+      path.win32.join(resources, "app.asar", "node_modules"),
+    ].join(";"),
+  };
+}
+
+/**
+ * Registers and starts the installed app's background service with that app's
+ * own CLI. `brain start`, not `serve --install-service`: the latter registers
+ * at whatever ADE_DEFAULT_ROLE is, and unset that is `agent`, which refuses the
+ * desktop app and the phone.
+ */
+function startAppService(plan: WindowsDesktopRescuePlan, env: NodeJS.ProcessEnv): { ok: boolean; detail: string } {
+  const result = spawnSync(
+    plan.appExe,
+    [path.win32.join(plan.installDir, "resources", "ade-cli", "cli.cjs"), "brain", "start", "--json"],
+    { env: appCliEnv(plan, env), encoding: "utf8", windowsHide: true, timeout: 120_000 },
+  );
+  if (result.status === 0) return { ok: true, detail: "" };
+  let message: string | null = null;
+  try {
+    const parsed = JSON.parse(result.stdout ?? "") as { message?: unknown };
+    message = typeof parsed.message === "string" && parsed.message.trim() ? parsed.message.trim() : null;
+  } catch {
+    // Not JSON: an early failure before the CLI could answer.
+  }
+  const lastErrorLine = (result.stderr ?? "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean).pop();
+  return { ok: false, detail: result.error?.message ?? message ?? lastErrorLine ?? `exit ${result.status}` };
+}
+
+/**
+ * The Windows half of `brain update --apply-staged`: when a stable desktop app
+ * is installed, the update is that app's installer and nothing else. Returns
+ * the finished outcome, or (no app here) why the app was left alone so the
+ * caller can go on with a runtime-only update and say so.
+ *
+ * The app owns this machine's brain. Pointing its service at the standalone
+ * runtime would be undone the next time the app starts, and a failed swap left
+ * the service naming a deleted file.
+ */
+export async function applyWindowsDesktopUpdate(args: {
+  targetVersion: string;
+  repo: string;
+  stagingDir: string;
+  env: NodeJS.ProcessEnv;
+  downloadFile: (url: string, outPath: string) => Promise<void>;
+  stopService: () => { ok: boolean; message: string };
+  writeStatus: (state: "applying" | "succeeded" | "failed", message: string, error?: string) => Promise<void>;
+}): Promise<
+  | { finished: { ok: boolean; applied: boolean; message: string } }
+  | { runtimeOnly: string }
+> {
+  const decision = planWindowsDesktopRescue({ env: args.env, targetVersion: args.targetVersion });
+  if ("skipped" in decision) {
+    if (decision.reason === "no_app") return { runtimeOnly: decision.skipped };
+    const ok = decision.reason === "app_current";
+    const message = ok
+      ? `Nothing to install: ${decision.skipped}.`
+      : `The ADE app was not updated because ${decision.skipped}. Nothing was changed.`;
+    await args.writeStatus(ok ? "succeeded" : "failed", message, ok ? undefined : message);
+    return { finished: { ok, applied: false, message } };
+  }
+  const { plan } = decision;
+  await args.writeStatus("applying", `Updating the ADE app from ${plan.installedVersion} to ${plan.targetVersion}.`);
+  const outcome = await runWindowsDesktopRescue(plan, {
+    repo: args.repo,
+    stagingDir: args.stagingDir,
+    env: args.env,
+    downloadFile: args.downloadFile,
+    stopService: args.stopService,
+    onStep: (message) => args.writeStatus("applying", message),
+  });
+  await args.writeStatus(outcome.ok ? "succeeded" : "failed", outcome.message, outcome.ok ? undefined : outcome.message);
+  return { finished: { ok: outcome.ok, applied: outcome.ok, message: outcome.message } };
 }
