@@ -130,6 +130,10 @@ const WebConnectionsChip = React.lazy(() =>
 const RECENT_PROJECTS_CACHE_TTL_MS = 2_500;
 const PHONE_SYNC_STARTUP_DELAY_MS = 5_000;
 const RESOURCE_PRESSURE_SAMPLE_MS = 2_000;
+// While the indicator is hidden, a sample only decides whether to show it.
+// Each one runs a machine-wide `ps` in Electron main (about 17 ms of CPU), so a
+// calm app checks every 10 s and speeds up once there is load to track.
+const RESOURCE_PRESSURE_CALM_SAMPLE_MS = 10_000;
 let recentProjectsCache:
   | { rows: RecentProjectSummary[]; fetchedAtMs: number }
   | null = null;
@@ -279,8 +283,11 @@ function useResourcePressureUsage(enabled: boolean): AppResourceUsageSnapshot | 
 
     let cancelled = false;
     let requestVersion = 0;
+    let timer: number | undefined;
+    // A hidden window schedules nothing; showing or focusing it samples again.
     const refresh = () => {
-      if (document.visibilityState !== "visible") return;
+      window.clearTimeout(timer);
+      if (cancelled || document.visibilityState !== "visible") return;
       const version = ++requestVersion;
       void getAppResourceUsageCoalesced()
         .then((snapshot) => {
@@ -291,11 +298,14 @@ function useResourcePressureUsage(enabled: boolean): AppResourceUsageSnapshot | 
           setUsage((previous) => (
             resourcePressureIndicatorKey(previous) === resourcePressureIndicatorKey(snapshot) ? previous : snapshot
           ));
+          timer = window.setTimeout(
+            refresh,
+            appResourcePressureLevel(snapshot) > 0 ? RESOURCE_PRESSURE_SAMPLE_MS : RESOURCE_PRESSURE_CALM_SAMPLE_MS,
+          );
         })
     };
 
     refresh();
-    const interval = window.setInterval(refresh, RESOURCE_PRESSURE_SAMPLE_MS);
     const refreshWhenVisible = () => {
       if (document.visibilityState === "visible") refresh();
     };
@@ -303,7 +313,7 @@ function useResourcePressureUsage(enabled: boolean): AppResourceUsageSnapshot | 
     document.addEventListener("visibilitychange", refreshWhenVisible);
     return () => {
       cancelled = true;
-      window.clearInterval(interval);
+      window.clearTimeout(timer);
       window.removeEventListener("focus", refresh);
       document.removeEventListener("visibilitychange", refreshWhenVisible);
     };

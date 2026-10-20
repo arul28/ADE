@@ -4,6 +4,27 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
+const { ghAuthExecMock } = vi.hoisted(() => ({ ghAuthExecMock: vi.fn() }));
+
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return {
+    ...actual,
+    execFile: (...args: Parameters<typeof actual.execFile>) => {
+      const commandArgs = args[1];
+      if (
+        Array.isArray(commandArgs)
+        && commandArgs[0] === "auth"
+        && commandArgs[1] === "token"
+        && ghAuthExecMock.getMockImplementation()
+      ) {
+        return ghAuthExecMock(...args);
+      }
+      return actual.execFile(...args);
+    },
+  };
+});
+
 const originalDisableGhAuthFallback = process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
 
 afterAll(() => {
@@ -57,6 +78,7 @@ const HEADLESS_GITHUB_ENV_KEYS = [
   "GITHUB_TOKEN",
   "GH_TOKEN",
   "GH_CONFIG_DIR",
+  "ADE_DISABLE_OFF_THREAD_SPAWN",
 ] as const;
 
 function isolateHeadlessGithubAuth(prefix: string, options: { emptyGhConfig?: boolean } = {}) {
@@ -1948,6 +1970,102 @@ describe("headlessLinearServices", () => {
         "Bearer ghu_app_user_token",
       ]);
     } finally {
+      environment.restore();
+    }
+  });
+
+  it("shares the gh lookup across projects and refreshes it after config or status invalidation", async () => {
+    const environment = isolateHeadlessGithubAuth("ade-headless-gh-token-cache-", {
+      emptyGhConfig: true,
+    });
+    process.env.ADE_DISABLE_OFF_THREAD_SPAWN = "1";
+    delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
+    const hostsFile = path.join(process.env.GH_CONFIG_DIR!, "hosts.yml");
+    fs.writeFileSync(hostsFile, "github.com:\n  user: before\n");
+    const futureMtime = new Date(Date.now() + Math.random() * 10_000);
+    fs.utimesSync(hostsFile, futureMtime, futureMtime);
+    const tokens = ["gho_first", "gho_after_config_change", "gho_after_force_refresh"];
+    ghAuthExecMock.mockImplementation((_file, _args, _options, callback) => {
+      const token = tokens[ghAuthExecMock.mock.calls.length - 1];
+      (callback as (error: null, stdout: string, stderr: string) => void)(null, `${token}\n`, "");
+      return undefined;
+    });
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ login: "octocat" }), {
+      status: 200,
+      headers: { "content-type": "application/json", "x-oauth-scopes": "repo, workflow" },
+    })) as unknown as typeof fetch;
+    const firstProject = createHeadlessGitHubService(
+      "/tmp/ade-project-one",
+      { debug() {}, info() {}, warn() {}, error() {} } as any,
+      { fetchImpl },
+    );
+    const secondProject = createHeadlessGitHubService(
+      "/tmp/ade-project-two",
+      { debug() {}, info() {}, warn() {}, error() {} } as any,
+      { fetchImpl },
+    );
+
+    try {
+      await expect(Promise.all([
+        firstProject.getReadTokenOrThrowAsync(),
+        secondProject.getReadTokenOrThrowAsync(),
+      ])).resolves.toEqual(["gho_first", "gho_first"]);
+      expect(ghAuthExecMock).toHaveBeenCalledTimes(1);
+
+      fs.writeFileSync(hostsFile, "github.com:\n  user: changed\n  note: new config revision\n");
+      const changedConfigToken = await secondProject.getReadTokenOrThrowAsync();
+      expect(changedConfigToken).toBe("gho_after_config_change");
+      expect(ghAuthExecMock).toHaveBeenCalledTimes(2);
+
+      await firstProject.getStatus({ forceRefresh: true });
+      await expect(secondProject.getReadTokenOrThrowAsync()).resolves.toBe("gho_after_force_refresh");
+      expect(ghAuthExecMock).toHaveBeenCalledTimes(3);
+      expect(fetchImpl).toHaveBeenCalled();
+    } finally {
+      ghAuthExecMock.mockReset();
+      environment.restore();
+    }
+  });
+
+  it("does not let a cleared in-flight gh lookup replace the newer credential", async () => {
+    const environment = isolateHeadlessGithubAuth("ade-headless-gh-token-cache-race-", {
+      emptyGhConfig: true,
+    });
+    process.env.ADE_DISABLE_OFF_THREAD_SPAWN = "1";
+    delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
+    const hostsFile = path.join(process.env.GH_CONFIG_DIR!, "hosts.yml");
+    fs.writeFileSync(hostsFile, "github.com:\n  user: race\n");
+    const callbacks: Array<(error: null, stdout: string, stderr: string) => void> = [];
+    ghAuthExecMock.mockImplementation((_file, _args, _options, callback) => {
+      callbacks.push(callback as (error: null, stdout: string, stderr: string) => void);
+      return undefined;
+    });
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ login: "octocat" }), {
+      status: 200,
+      headers: { "content-type": "application/json", "x-oauth-scopes": "repo, workflow" },
+    })) as unknown as typeof fetch;
+    const githubService = createHeadlessGitHubService(
+      "/tmp/ade-project",
+      { debug() {}, info() {}, warn() {}, error() {} } as any,
+      { fetchImpl },
+    );
+
+    try {
+      const oldLookup = githubService.getReadTokenOrThrowAsync();
+      await vi.waitFor(() => expect(callbacks).toHaveLength(1));
+
+      const forcedRefresh = githubService.getStatus({ forceRefresh: true });
+      await vi.waitFor(() => expect(callbacks).toHaveLength(2));
+      callbacks[1](null, "gho_new\n", "");
+      await forcedRefresh;
+      callbacks[0](null, "gho_old\n", "");
+
+      await expect(oldLookup).resolves.toBe("gho_old");
+      await expect(githubService.getReadTokenOrThrowAsync()).resolves.toBe("gho_new");
+      expect(callbacks).toHaveLength(2);
+      expect(fetchImpl).toHaveBeenCalled();
+    } finally {
+      ghAuthExecMock.mockReset();
       environment.restore();
     }
   });

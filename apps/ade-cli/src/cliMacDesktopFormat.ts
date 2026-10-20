@@ -29,6 +29,7 @@ import {
   MAC_DESKTOP_WINDOW_NOT_FOUND_CODE,
   WINDOWS_DESKTOP_CANCELLED_CODE,
   WINDOWS_DESKTOP_CONSENT_REQUIRED_CODE,
+  WINDOWS_DESKTOP_ELEVATED_WINDOW_CODE,
   WINDOWS_DESKTOP_HELD_CODE,
   WINDOWS_DESKTOP_LOCKED_CODE,
   WINDOWS_DESKTOP_NEXT_STEP,
@@ -36,6 +37,7 @@ import {
   WINDOWS_DESKTOP_SETUP_REQUIRED_CODE,
   WINDOWS_DESKTOP_SIGN_IN_FAILED_CODE,
   WINDOWS_DESKTOP_WRONG_PASSWORD_CODE,
+  WINDOWS_DESKTOP_WINDOW_ACTION_FAILED_CODE,
   describeDesktopSeat,
   desktopProductName,
   desktopSeatKind,
@@ -154,6 +156,14 @@ const MAC_DESKTOP_ERROR_HINTS: ReadonlyArray<readonly [code: string, hint: strin
   [WINDOWS_DESKTOP_NOT_CONSOLE_SESSION_CODE, WINDOWS_DESKTOP_NEXT_STEP.not_console_session],
   [WINDOWS_DESKTOP_CONSENT_REQUIRED_CODE, WINDOWS_DESKTOP_NEXT_STEP.consent],
   [
+    WINDOWS_DESKTOP_ELEVATED_WINDOW_CODE,
+    "Ask the user to close or minimize the administrator window on the lane's screen, or stop the program that opens it at sign-in. Do not close it yourself; it may be a service they need.",
+  ],
+  [
+    WINDOWS_DESKTOP_WINDOW_ACTION_FAILED_CODE,
+    "Windows could not complete that window action. Inspect the lane screen, then list the windows again with: ade screen windows --text",
+  ],
+  [
     WINDOWS_DESKTOP_WRONG_PASSWORD_CODE,
     "The saved Windows password was rejected and forgotten. Ask the user to save their current password in the Windows Desktop pane.",
   ],
@@ -191,17 +201,25 @@ function macDesktopElementLine(element: JsonObject): string {
 }
 
 /** The `windows` footer every observation and action result ends with. */
-function macDesktopWindowsFooter(windows: JsonObject[]): string[] {
-  if (!windows.length) return ["", "windows  (none parked)"];
-  return [
+function macDesktopWindowsFooter(windows: JsonObject[], options: { elevatedWarning?: boolean } = {}): string[] {
+  const hasElevatedWindow = windows.some((window) => window.elevated === true);
+  const lines = !windows.length ? ["", "windows  (none parked)"] : [
     "",
     `windows  ${windows.length}`,
     ...windows.map((window) => {
       const title = asString(window.title);
-      return `  #${window.id ?? "?"} ${asString(window.appName) ?? "?"}`
+      const appName = asString(window.appName) ?? "?";
+      return `  #${window.id ?? "?"} ${appName}${window.elevated === true ? " [admin]" : ""}`
         + `${title ? ` — ${title}` : ""}`;
     }),
   ];
+  if (hasElevatedWindow && options.elevatedWarning) {
+    lines.push(
+      "",
+      "Warning: An administrator window is on this screen; ADE cannot click, type into, focus past or minimize it.",
+    );
+  }
+  return lines;
 }
 
 /**
@@ -401,7 +419,10 @@ export function formatMacDesktopStatus(value: unknown): string {
       "Windows are parked in an off-screen region of the main display — this Mac has no virtual display.",
     );
   }
-  sections.push(...macDesktopWindowsFooter(windows));
+  sections.push(...macDesktopWindowsFooter(windows, { elevatedWarning: windowsHost && holdsPrivate }));
+  if (windowsHost && holdsPrivate) {
+    sections.push("", "This private seat is a real sign-in; sign-in tasks and startup apps run there too.");
+  }
   if (lanes.length) {
     sections.push(
       "",
@@ -540,11 +561,12 @@ export function formatMacDesktopStop(value: unknown): string {
 
 export function formatMacDesktopWindows(value: unknown): string {
   const windows = firstArray(value, ["windows", "result"]);
-  return renderTable(
+  const table = renderTable(
     ["id", "app", "title", "lane", "origin", "display"],
     windows.map((window) => [
       window.id,
-      window.appName,
+      // Leading, so the column's truncation of a long app name cannot cut it.
+      window.elevated === true ? `[admin] ${asString(window.appName) ?? ""}`.trim() : window.appName,
       window.title,
       window.laneId,
       window.origin,
@@ -553,6 +575,9 @@ export function formatMacDesktopWindows(value: unknown): string {
     "(no windows)",
     { fullColumns: ["id", "lane"] },
   );
+  return windows.some((window) => window.elevated === true)
+    ? `${table}\n\nWarning: An administrator window is on this screen; ADE cannot click, type into, focus past or minimize it.`
+    : table;
 }
 
 /**

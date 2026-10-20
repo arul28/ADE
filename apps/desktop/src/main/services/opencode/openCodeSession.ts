@@ -3,7 +3,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { pinnedToolDownload } from "../../../../../ade-cli/src/services/tools/onDemand";
 import type { OpenCodeClient, OpenCodeEvent } from "@opencode/client";
-import type { ModelDescriptor } from "../../../shared/modelRegistry";
+import { resolveOpenCodeFastEffortSelection, type ModelDescriptor } from "../../../shared/modelRegistry";
 import { resolveUserOpenCodeDataRoot } from "../../../shared/opencodeDataHome";
 import type { Logger } from "../logging/logger";
 import { ADE_OPENCODE_LAUNCH_ENV } from "../../../shared/cliLaunch";
@@ -331,6 +331,12 @@ async function readLastAssistantText(client: OpenCodeClient, sessionId: string):
   return { text: "", inputTokens: null, outputTokens: null };
 }
 
+function helperModelRef(descriptor: ModelDescriptor, reasoningEffort: string | null | undefined): OpenCodeModelRef {
+  const base = resolveOpenCodeModelRef(descriptor);
+  const { variant } = resolveOpenCodeFastEffortSelection(descriptor, { fastMode: false, reasoningEffort });
+  return variant ? { ...base, variant } : base;
+}
+
 /**
  * One-shot helper prompt (titles, lane names, summaries): an ephemeral session
  * on the shared server under the `ade-helper` agent, deleted afterwards so it
@@ -341,6 +347,8 @@ export async function runOpenCodeTextPrompt(args: {
   config: BuildOpenCodeConfigArgs;
   directory: string;
   modelDescriptor: ModelDescriptor;
+  /** Sent as the model's effort variant; ignored when the model has no such tier. */
+  reasoningEffort?: string | null;
   prompt: string;
   system?: string;
   agent?: OpenCodeAgentProfile;
@@ -376,7 +384,7 @@ export async function runOpenCodeTextPrompt(args: {
     const created = await client.session.create({
       location: { directory: args.directory },
       agent: args.agent ?? "ade-helper",
-      model: resolveOpenCodeModelRef(args.modelDescriptor),
+      model: helperModelRef(args.modelDescriptor, args.reasoningEffort),
     });
     sessionId = created.id;
     await applyOpenCodeSessionContext({ client, sessionId }, { instructions: args.system });

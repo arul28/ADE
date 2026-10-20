@@ -4,6 +4,7 @@ import {
   describeBrainRoleCeiling,
   describeDroppedCallerIdentity,
   dropInheritedCallerIdentity,
+  dropInheritedAgentLocation,
 } from "./brainInheritedIdentity";
 
 describe("dropInheritedCallerIdentity", () => {
@@ -11,14 +12,25 @@ describe("dropInheritedCallerIdentity", () => {
     const env: NodeJS.ProcessEnv = {
       ADE_CHAT_SESSION_ID: "43e71799-c4c1-4d55-aef5-2d14c8104cc9",
       ADE_RUN_ID: "run-1",
+      ADE_LANE_ID: "lane-1",
+      ADE_PROJECT_ROOT: "/work/.ade/worktrees/lane-1",
+      ADE_WORKSPACE_ROOT: "/work/.ade/worktrees/lane-1",
+      ADE_BROWSER_ACTOR_TOKEN: "browser-token",
       ADE_DEFAULT_ROLE: "cto",
       ADE_HOME: "/Users/me/.ade-alpha",
       PATH: "/usr/bin",
     };
 
     const dropped = dropInheritedCallerIdentity(env);
+    const droppedLocation = dropInheritedAgentLocation(env, dropped);
 
     expect(dropped).toEqual(["ADE_CHAT_SESSION_ID", "ADE_RUN_ID"]);
+    expect(droppedLocation).toEqual([
+      "ADE_LANE_ID",
+      "ADE_PROJECT_ROOT",
+      "ADE_WORKSPACE_ROOT",
+      "ADE_BROWSER_ACTOR_TOKEN",
+    ]);
     for (const key of BRAIN_INHERITED_CALLER_ENV_KEYS) expect(env[key]).toBeUndefined();
     expect(env).toEqual({
       ADE_DEFAULT_ROLE: "cto",
@@ -28,9 +40,14 @@ describe("dropInheritedCallerIdentity", () => {
   });
 
   it("removes a blank key without reporting it, and reports nothing for a clean env", () => {
-    const env: NodeJS.ProcessEnv = { ADE_CHAT_SESSION_ID: "  " };
+    const env: NodeJS.ProcessEnv = {
+      ADE_CHAT_SESSION_ID: "  ",
+      ADE_PROJECT_ROOT: "/operator/selected/project",
+    };
     expect(dropInheritedCallerIdentity(env)).toEqual([]);
     expect("ADE_CHAT_SESSION_ID" in env).toBe(false);
+    expect(dropInheritedAgentLocation(env, [])).toEqual([]);
+    expect(env.ADE_PROJECT_ROOT).toBe("/operator/selected/project");
     expect(dropInheritedCallerIdentity({ PATH: "/usr/bin" })).toEqual([]);
   });
 });

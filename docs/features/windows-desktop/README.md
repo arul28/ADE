@@ -56,6 +56,14 @@ The private seat shows the user's wallpaper and taskbar, because it is the same
 account; every surface states the seat in words so an agent does not mistake it
 for the user's screen.
 
+It is a real sign-in. Logon tasks and startup apps run in the private session as
+well. An elevated administrator window can take its foreground, and Windows
+blocks the un-elevated driver from controlling it. `ade screen status --text`
+and `ade screen windows --text` mark elevated windows `[admin]` and explain the
+limit. Ask the user to close or minimize that window on the lane screen, or stop
+the task or app that opens it at sign-in; ADE does not close it because it may
+be a service they need.
+
 ### Real input and the lease
 
 - **Private:** real input (point clicks, drags, `--real`) needs no lease. The
@@ -176,12 +184,16 @@ CLI and the pane unchanged:
   `WINDOWS_DESKTOP_CANCELLED` — the interactive sign-in step.
 - `WINDOWS_DESKTOP_CONSENT_REQUIRED` — a shared seat was asked for without the
   user's consent, or the user said no. Enforced in the service, not by prompt.
+- `WINDOWS_DESKTOP_ELEVATED_WINDOW` — an administrator window holds focus or is
+  the input target. Windows blocks an un-elevated driver from controlling it;
+  the user resolves it on the lane screen.
+- `WINDOWS_DESKTOP_WINDOW_ACTION_FAILED` — Windows could not focus or minimize
+  the requested window, and it is not known to be elevated.
 
 Each code prints a one-line next step in the CLI (`macDesktopErrorHint`). The
-service's message states only the fact; the next step for the Windows codes
-comes from one table, `WINDOWS_DESKTOP_NEXT_STEP` in
-`apps/desktop/src/shared/desktopSeat.ts`, which the status `next` line and
-the agent-facing refusals read too.
+private-seat availability and consent next steps come from
+`WINDOWS_DESKTOP_NEXT_STEP` in `apps/desktop/src/shared/desktopSeat.ts`; window
+control errors carry their own screen-specific advice.
 
 The native driver retires itself (exit code 75) when its UI thread is wedged
 after a teardown, or an operation passes its hard deadline, after replying.

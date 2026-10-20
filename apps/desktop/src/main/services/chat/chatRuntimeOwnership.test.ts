@@ -80,15 +80,20 @@ describe("decideChatRuntimeOwnership", () => {
     ).toEqual(expected);
   });
 
-  it("ignores a claim made against a different ADE home, whose pid means nothing here", () => {
-    expect(
-      decideChatRuntimeOwnership({
-        owner: owner({ adeHome: "/Users/x/.ade-other" }),
-        self: SELF,
-        // Same pid IS live locally — the home mismatch must win anyway.
-        isProcessIdentityLive: () => true,
-      }),
-    ).toEqual({ adoptable: true, verdict: "foreign-home" });
+  it.each([
+    ["live in the shared process registry", true, false, "live-foreign-brain"],
+    ["dead", false, true, "foreign-home"],
+  ] as const)("handles a different ADE home's owner when it is %s", (_label, live, adoptable, verdict) => {
+    const decision = decideChatRuntimeOwnership({
+      owner: owner({ adeHome: "/Users/x/.ade-other" }),
+      self: SELF,
+      // The process registry is project-wide, so a pid remains meaningful
+      // when the other brain uses a different ADE home.
+      isProcessIdentityLive: () => live,
+    });
+
+    expect(decision.adoptable).toBe(adoptable);
+    expect(decision.verdict).toBe(verdict);
   });
 
   it("still defends a claim when neither side recorded an ADE home", () => {

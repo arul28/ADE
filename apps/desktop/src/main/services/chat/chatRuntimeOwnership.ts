@@ -54,7 +54,7 @@ export type ChatRuntimeOwnershipVerdict =
   | "legacy"
   /** This very brain process holds it. */
   | "self"
-  /** Claimed against a different ADE home, so its pid says nothing here. */
+  /** Claimed against a different ADE home by a brain no longer heartbeating here. */
   | "foreign-home"
   /** Claimed by a brain instance this machine can no longer find. */
   | "dead-owner"
@@ -135,14 +135,17 @@ export function decideChatRuntimeOwnership(args: {
   ) {
     return { adoptable: true, verdict: "self" };
   }
-  // A stamp from another ADE home describes a process in another install's
-  // registry; its pid is meaningless against ours, so it cannot hold a lock.
-  if (owner.adeHome && args.self.adeHome && !pathsEqual(owner.adeHome, args.self.adeHome, args.platform)) {
-    return { adoptable: true, verdict: "foreign-home" };
-  }
-  // Same home, different brain id: adoptable only once its process is gone.
+  // Another brain: adoptable only once its process is gone. This holds across
+  // ADE homes too. The process registry lives in the PROJECT database, so a
+  // brain under another home that opened this project heartbeats into the same
+  // registry. On 2026-10-20 a brain on a scratch home skipped this probe,
+  // adopted five chats the installed brain was running, and resumed them on an
+  // account it did not have.
   if (args.isProcessIdentityLive(owner.pid, owner.startedAt ?? null)) {
     return { adoptable: false, verdict: "live-foreign-brain" };
+  }
+  if (owner.adeHome && args.self.adeHome && !pathsEqual(owner.adeHome, args.self.adeHome, args.platform)) {
+    return { adoptable: true, verdict: "foreign-home" };
   }
   return { adoptable: true, verdict: "dead-owner" };
 }

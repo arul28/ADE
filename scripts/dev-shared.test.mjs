@@ -9,6 +9,7 @@ import {
   laneSlugForWorktree,
   laneUserDataPath,
   listDevUserDataFolders,
+  devDesktopUserDataFolder,
   prepareLaneUserData,
   pruneStaleDevUserData,
   removeIfStillStale,
@@ -167,6 +168,11 @@ test("detached dev runtime keeps the cto role when launched from an agent shell"
       ADE_LANE_ID: "lane-1",
       ADE_PROJECT_ROOT: "/dev/ADE/.ade/worktrees/lane-1",
       ADE_WORKSPACE_ROOT: "/dev/ADE/.ade/worktrees/lane-1",
+      ADE_HOME: "/Users/dev/.ade",
+      CLAUDE_CONFIG_DIR: "/Users/dev/agent-home/provider-homes/claude/work",
+      CODEX_HOME: "/Users/dev/.codex-custom",
+      CLAUDECODE: "1",
+      CLAUDE_CODE_ENTRYPOINT: "sdk-ts",
       ADE_PERF_RUN_ID: "perf-run-1",
       PATH: "/usr/bin",
     },
@@ -181,6 +187,10 @@ test("detached dev runtime keeps the cto role when launched from an agent shell"
   assert.equal(env.ADE_WORKSPACE_ROOT, undefined);
   // The daemon's own project root wins over the agent shell's worktree.
   assert.equal(env.ADE_PROJECT_ROOT, "/dev/ADE");
+  assert.equal(env.CLAUDE_CONFIG_DIR, undefined);
+  assert.equal(env.CODEX_HOME, "/Users/dev/.codex-custom");
+  assert.equal(env.CLAUDECODE, undefined);
+  assert.equal(env.CLAUDE_CODE_ENTRYPOINT, undefined);
   // Perf runs must still reach the daemon (chatTextProbe depends on it).
   assert.equal(env.ADE_PERF_RUN_ID, "perf-run-1");
   assert.equal(env.PATH, "/usr/bin");
@@ -365,6 +375,25 @@ test("per-lane dev user data: the primary checkout keeps the shared folder, a la
     prepareLaneUserData(laneRoot, { appDataPath }),
     path.join(appDataPath, "ade-desktop-dev-my-lane-1234abcd"),
   );
+
+  const sharedFolder = path.join(appDataPath, "ade-desktop-dev");
+  fs.mkdirSync(sharedFolder, { recursive: true });
+  fs.writeFileSync(path.join(sharedFolder, "ade-state.json"), '{"recentProjects":["default"]}');
+  const scratchHomeFolder = devDesktopUserDataFolder(projectRoot, {
+    appDataPath,
+    adeHome: "/Users/dev/.ade-agent-scratch",
+    isDefaultHome: false,
+  });
+  const otherScratchHomeFolder = devDesktopUserDataFolder(projectRoot, {
+    appDataPath,
+    adeHome: "/Users/dev/.ade-test-scratch",
+    isDefaultHome: false,
+  });
+
+  assert.ok(scratchHomeFolder);
+  assert.notEqual(scratchHomeFolder, sharedFolder);
+  assert.notEqual(scratchHomeFolder, otherScratchHomeFolder);
+  assert.equal(fs.existsSync(path.join(scratchHomeFolder, "ade-state.json")), false);
 });
 
 test("per-lane dev user data: a long lane slug keeps its lane-id tail so two lanes never share a folder", () => {

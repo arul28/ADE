@@ -1,0 +1,1 @@
+function e(e){let t=typeof e==`string`?e.trim().toLowerCase():``;return t===`alpha`||t===`beta`?t:`stable`}var t={stable:`ADE`,beta:`ADE Beta`,alpha:`ADE Alpha`};function n(e){return t[e]}function r(e){return e===`beta`?` · Beta`:e===`alpha`?` · Alpha`:``}export{e as n,r,n as t};

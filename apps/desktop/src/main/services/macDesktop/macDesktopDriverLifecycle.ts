@@ -57,6 +57,8 @@ export type MacDesktopDriverLifecycleDeps = {
   /** Builds the seat provider. Defaults to the Mac virtual-display provider. */
   createProvider?: ((client: MacDesktopDriverClient) => DesktopSeatProvider) | null;
   createDriverClient?: MacDesktopDriverClientFactory | null;
+  /** Extra environment for the default client's helper (see `MacDesktopDriverClientDeps.env`). */
+  driverEnv?: Readonly<Record<string, string>> | null;
   assertSupported: () => void;
   serviceError: (code: string, message: string) => Error;
   permissionError: (which: "screenRecording" | "accessibility") => Error;
@@ -219,6 +221,7 @@ export function createMacDesktopDriverLifecycle(
           ...(deps.driverLabel ? { driverLabel: deps.driverLabel } : {}),
           resolveExecutablePath: deps.resolveExecutablePath
             ?? (() => resolveMacDesktopDriverBinary({ platform: deps.platform, logger: deps.logger })),
+          ...(deps.driverEnv ? { env: deps.driverEnv } : {}),
           onHealthChanged,
           onDriverLost,
         });

@@ -44,9 +44,9 @@ export const BRAIN_HEARTBEAT_FILE = "heartbeat.json";
  */
 export function servesMachineRuntimeEndpoint(requestedSocketPath: string, machineSocketPath: string): boolean {
   if (isAdeRuntimeNamedPipePath(requestedSocketPath)) {
-    // Named pipes are compared verbatim: there is no filesystem to resolve
-    // them against, and case-insensitivity is the pipe server's business.
-    return requestedSocketPath === machineSocketPath;
+    // Named pipes have no filesystem path to resolve, and Windows treats their
+    // names case-insensitively.
+    return requestedSocketPath.toLowerCase() === machineSocketPath.toLowerCase();
   }
   return pathsEqual(path.resolve(requestedSocketPath), path.resolve(machineSocketPath));
 }

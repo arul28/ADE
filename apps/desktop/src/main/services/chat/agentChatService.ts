@@ -8,6 +8,7 @@ import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
 import { withImportedTurnBoundaries } from "../../../shared/importedTurnBoundaries";
 import { parseForeignCallerSessionId } from "../../../shared/runtimeClientNames";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { createCodexAppServerPool, type CodexAppServerClient, type CodexAppServerHost } from "./codexAppServerPool";
 import { createHash, randomUUID } from "node:crypto";
 // Static import so bundlers (tsup → apps/ade-cli brain) include the module; a
 // dynamic import() with a variable path is left unresolved in cli.cjs and fails
@@ -439,7 +440,6 @@ import {
   stableStringify,
 } from "../shared/utils";
 import {
-  backgroundUtilityReasoningEffort,
   NATIVE_TITLE_POLL_MS,
   NATIVE_TITLE_WAIT_MS,
 } from "../../../shared/backgroundUtilityModel";
@@ -948,8 +948,9 @@ import {
   CTO_INTRO_ONBOARDING_STEP,
   CTO_INTRO_PROMPT,
   CTO_MEMORY_GARDENER_CRON,
+  CTO_MEMORY_GARDENER_ID_PREFIX,
   CTO_MEMORY_GARDENER_ONBOARDING_STEP,
-  CTO_MEMORY_GARDENER_PROMPT,
+  CTO_MEMORY_GARDENER_DESCRIPTION,
   CTO_MEMORY_GARDENER_TITLE,
 } from "../cto/ctoPromptContent";
 import { buildCodingAgentSystemPrompt } from "../ai/tools/systemPrompt";
@@ -1064,6 +1065,7 @@ import {
   codexSkillsForCwd,
   codexSkillsListParams,
   existingAgentSkillRoots,
+  waitForCodexSkillCount,
   withoutAgentSkills,
   withoutAgentSkillsEnv,
   type CodexSkillsListResponse,
@@ -1137,8 +1139,10 @@ import type { CtoMemoryService } from "../cto/ctoMemoryService";
 import {
   buildContinuityCapturePrompt,
   buildContinuitySnapshot,
+  buildGardeningPrompt,
   CAPTURE_KNOWN_FACTS,
   parseContinuityCapture,
+  parseGardeningPlan,
   type ContinuityCaptureEntry,
 } from "../cto/ctoMemoryCapture";
 import type { IssueTracker } from "../cto/issueTracker";
@@ -2577,6 +2581,12 @@ type PendingClaudeApproval = {
 type CodexRuntime = {
   kind: "codex";
   agentSkillRoots: string[];
+  /**
+   * The skill-list wait before this runtime's first turn. The first send
+   * starts it and every send awaits it, so a second send cannot overtake the
+   * first. Never rejects.
+   */
+  skillCatalogSettle: Promise<void> | null;
   serverVersion: CodexServerVersion | null;
   process: ChildProcessWithoutNullStreams;
   reader: readline.Interface;
@@ -2588,6 +2598,12 @@ type CodexRuntime = {
   activeTurnId: string | null;
   startedTurnId: string | null;
   awaitingTurnStart: boolean;
+  /**
+   * Held from the turn-start admission check until `turn/start` returns or
+   * fails. Only that check reads it: a send that awaits attachment staging
+   * keeps its place, and a second send is refused as a turn already active.
+   */
+  turnStartReserved: boolean;
   /** True while a pending replay/continuity prefix belongs to an in-flight turn/start. */
   turnStartContextConsumed: boolean;
   threadResumed: boolean;
@@ -5040,6 +5056,12 @@ type ManagedChatSession = {
    * than persisting it.
    */
   deliveredDirectiveKeys: EpochDirectiveKeys;
+  /**
+   * Most skills a Codex process has listed for this chat. In memory only. A
+   * new process loads plugin skills in the background, and a turn sent before
+   * they arrive makes Codex re-send its whole skills block twice.
+   */
+  codexSkillCount?: number;
   runtimeInvalidated: boolean;
   /** True when a transient Qwen effort update is the reason the runtime is invalidated. */
   acpReasoningEffortInvalidated: boolean;
@@ -5435,6 +5457,54 @@ const WORKING_ACTIVITY_DETAIL = "Preparing response";
 const DEFAULT_RUN_SESSION_TURN_TIMEOUT_MS = 300_000;
 const DEFAULT_COLLABORATION_MODES_LIST_TIMEOUT_MS = 1_500;
 const CODEX_REQUEST_TIMEOUT_MS = 30_000;
+/**
+ * How long a Codex app-server keeps a thread loaded after its chat
+ * unsubscribed (Codex's default is 30 minutes). Zero: a chat leaving a shared
+ * process unloads its thread at once, which stops the thread's MCP servers and
+ * releases its writer lock, exactly as stopping a private process did. A
+ * thread still loaded here would refuse its chat's `thread/resume` on any other
+ * process ("already has an active writer"), e.g. after a Codex version switch.
+ */
+const CODEX_SHARED_THREAD_UNLOAD_DELAY_SECS = 0;
+/** How long a chat leaving a shared app-server waits for its thread to be released before the process is presumed stuck. */
+const CODEX_SHARED_RELEASE_TIMEOUT_MS = 10_000;
+/**
+ * The env that says which chat is running. On a shared Codex app-server these
+ * travel with the chat's thread (`shell_environment_policy.set`) instead of on
+ * the process, so every chat's commands still see their own chat, lane and
+ * parent. Everything else in the env must match for chats to share a process.
+ */
+const CODEX_THREAD_IDENTITY_ENV_KEYS = [
+  "ADE_CHAT_SESSION_ID",
+  "ADE_LANE_ID",
+  "ADE_WORKSPACE_ROOT",
+  "ADE_PARENT_CHAT_SESSION_ID",
+  "ADE_SPAWN_KIND",
+  "ADE_PARENT_MACHINE",
+  "ADE_LINEAR_ISSUE_IDS",
+  "ADE_LINEAR_CONTEXT_FILE",
+  "PWD",
+] as const;
+
+/** `ADE_CODEX_SHARED_APP_SERVER=0` gives every Codex chat its own app-server again. */
+function codexSharedAppServerEnabled(): boolean {
+  return process.env.ADE_CODEX_SHARED_APP_SERVER?.trim() !== "0";
+}
+
+function codexSharedProcessEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const processEnv: NodeJS.ProcessEnv = { ...env };
+  for (const key of CODEX_THREAD_IDENTITY_ENV_KEYS) delete processEnv[key];
+  return processEnv;
+}
+
+function codexThreadIdentityEnv(env: NodeJS.ProcessEnv): Record<string, string> {
+  const identity: Record<string, string> = {};
+  for (const key of CODEX_THREAD_IDENTITY_ENV_KEYS) {
+    const value = env[key];
+    if (typeof value === "string") identity[key] = value;
+  }
+  return identity;
+}
 const CODEX_INLINE_COMMAND_TIMEOUT_MS = 10_000;
 /** A fork runs in its own app-server, so this also covers that process starting. */
 const CODEX_EPHEMERAL_FORK_TIMEOUT_MS = 30_000;
@@ -5478,9 +5548,16 @@ export const TURN_ACCEPTED_START_TIMEOUT_MS = 60_000;
 // can always interrupt manually if something is genuinely stuck.
 // One idle window for every harness. OpenCode once had a 1-minute one; it
 // released the chat's hold on the shared server while OpenCode background
-// work was still due to wake the agent, so that wake-up reached nobody.
-const SESSION_INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+// work was still due to wake the agent, so that wake-up reached nobody (that
+// work is now exempt, see `hasRuntimeActiveWorkload`). Three minutes, not
+// five: a resumed Claude thread reads its whole prefix back from the prompt
+// cache and a resumed Codex thread adds ~200 tokens, while each idle chat
+// holds 200-500 MB of provider and MCP processes.
+const SESSION_INACTIVITY_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes
 const SESSION_CLEANUP_INTERVAL_MS = 15 * 1000; // check every 15 seconds
+/** Longest a fresh Codex runtime's first turn waits for its skill list. */
+const CODEX_SKILL_CATALOG_SETTLE_MS = 1_500;
+const CODEX_SKILL_CATALOG_POLL_MS = 100;
 
 /**
  * How long Compact first holds a message for a provider whose `/compact` is an
@@ -5512,6 +5589,20 @@ type PendingTranscriptWrite = {
 const pendingTranscriptWrites = new Map<string, PendingTranscriptWrite>();
 const transcriptWriteFlushInFlight = new Map<string, Promise<void>>();
 const checkedTranscriptTails = new Set<string>();
+/**
+ * Transcripts with an append that threw (ENOSPC, a removed folder). That
+ * batch is gone, so the event ring is the only copy of its events for as long
+ * as the process runs; a later append that lands does not bring it back.
+ */
+const failedTranscriptAppends = new Set<string>();
+
+/** True once every queued append to this file has landed. */
+function transcriptWritesSettled(filePath: string): boolean {
+  const normalizedPath = normalizeTranscriptWritePath(filePath);
+  return !pendingTranscriptWrites.has(normalizedPath)
+    && !transcriptWriteFlushInFlight.has(normalizedPath)
+    && !failedTranscriptAppends.has(normalizedPath);
+}
 
 function normalizeTranscriptWritePath(filePath: string): string {
   return path.resolve(filePath);
@@ -5567,6 +5658,7 @@ function flushQueuedTranscriptWrite(
       // newline, so the next flush must re-check and heal it.
       checkedTranscriptTails.add(normalizedPath);
     } catch (error) {
+      failedTranscriptAppends.add(normalizedPath);
       // Transcript persistence is best effort; callers still receive live events.
       if (options?.throwOnError) throw error;
     }
@@ -10715,6 +10807,13 @@ function provesWorkAfterTurnFailure(event: AgentChatEvent): boolean {
   }
 }
 
+class ScheduledWakeRetryableRefusalError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ScheduledWakeRetryableRefusalError";
+  }
+}
+
 export function createAgentChatService(args: {
   projectRoot: string;
   /**
@@ -10889,6 +10988,8 @@ export function createAgentChatService(args: {
   laneService: ReturnType<typeof createLaneService>;
   sessionService: ReturnType<typeof createSessionService>;
   processRegistry?: ProcessRegistryService | null;
+  /** The installed machine brain's pid when it is live on this project. */
+  machineBrainPid?: () => number | null;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   db?: (
     Pick<AdeDb, "getJson" | "setJson">
@@ -11093,6 +11194,7 @@ export function createAgentChatService(args: {
     laneService,
     sessionService,
     processRegistry,
+    machineBrainPid,
     projectConfigService,
     db,
     lookupLaneAppleDevice: injectedLaneAppleDeviceLookup,
@@ -11250,14 +11352,14 @@ export function createAgentChatService(args: {
   const codexThreadConfigArgsFor = async (
     managed: ManagedChatSession,
     reasoningEffort: string | null | undefined,
-  ): Promise<{ config?: Record<string, unknown> }> => {
+  ): Promise<{ config: Record<string, unknown> }> => {
     const callerServers = callerMcpServersForLaunch(managed);
     const callerStrict = managed.session.strictMcpConfig === true;
     // A host policy that refuses the whole Computer Use server gets no such
     // server: starting it would only add tools the gate then denies.
     const policy = managed.session.permissionPolicy ?? null;
     const policyRefusesComputerUse = policy != null && policyRefusesMcpServer(policy, "computer_use", "codex");
-    return codexThreadConfigArgs({
+    const args = codexThreadConfigArgs({
       reasoningEffort,
       computerUse: policyRefusesComputerUse ? null : await resolveCodexComputerUseMcp(),
       callerServers,
@@ -11265,7 +11367,24 @@ export function createAgentChatService(args: {
         ? await resolveCodexConfiguredMcpServerNames()
         : null,
     });
+    const compact = compactionSettingsFor(managed);
+    const window = resolveSessionModelDescriptor(managed.session)?.contextWindow;
+    return {
+      config: {
+        ...args.config,
+        ...codexThreadIdentityConfig(managed).config,
+        ...(compact.atTokens ? { model_auto_compact_token_limit: Math.min(compact.atTokens, window || compact.atTokens) } : {}),
+      },
+    };
   };
+  /**
+   * The chat's identity for the agent's shell commands, carried by its thread:
+   * a shared app-server's process env names no chat (`codexSharedProcessEnv`).
+   * Forks send it too, or a forked thread would keep the source chat's.
+   */
+  const codexThreadIdentityConfig = (managed: ManagedChatSession): { config: Record<string, unknown> } => ({
+    config: { shell_environment_policy: { set: codexThreadIdentityEnv(buildAgentRuntimeEnv(managed)) } },
+  });
   const notifiedSettledTurns = new Set<string>();
   const cancelledQueueRecoveries = new Map<string, {
     sessionId: string;
@@ -11446,14 +11565,22 @@ export function createAgentChatService(args: {
       return pinned;
     }
     if (resolved.fellBack) {
+      // Keep the pointers when another home may still own the account, or a
+      // live brain is still using them. Same-home removals still clear them.
+      const foreignOwner = liveForeignChatRuntimeOwner(managed.session.id);
+      const unknownFromOtherHome = accountUnknownFromOtherHome(readPersistedState(managed.session.id));
       logger.info("agent_chat.provider_instance_fell_back", {
         sessionId: managed.session.id,
         provider,
         requestedId,
         instanceId: resolved.instance.id,
+        ...(foreignOwner ? { keptForOwnerPid: foreignOwner.pid } : {}),
+        ...(unknownFromOtherHome ? { keptForUnknownHomeAccount: true } : {}),
       });
-      delete managed.session.instanceId;
-      forgetProviderThreadPointer(managed);
+      if (!foreignOwner && !unknownFromOtherHome) {
+        delete managed.session.instanceId;
+        forgetProviderThreadPointer(managed);
+      }
     }
     return resolved.instance;
   };
@@ -11789,6 +11916,14 @@ export function createAgentChatService(args: {
   const forgetProviderThreadPointer = (managed: ManagedChatSession): void => {
     delete managed.session.threadId;
     managed.claudeBackgroundResumeSessionId = null;
+    // A live Claude runtime holds its own copy, read right after the launch
+    // env resolves the account: left set, the launch that fell back still
+    // resumed the old account's thread ("No conversation found", 2026-10-20)
+    // and persisted the id back.
+    if (managed.runtime?.kind === "claude") {
+      managed.runtime.sdkSessionId = null;
+      managed.runtime.forkFromSdkSessionId = null;
+    }
     try {
       const persisted = readPersistedState(managed.session.id);
       if (!persisted) return;
@@ -12032,6 +12167,14 @@ export function createAgentChatService(args: {
   const CHAT_EVENT_HISTORY_RESPONSE_MAX_CHARS = 8_000_000;
   const eventHistoryBySession = new Map<string, AgentChatEventEnvelope[]>();
   const envelopeSpliceRepairAttemptedSessionIds = new Set<string>();
+  // The count caps above bound these caches per project, not over time: a brain
+  // kept every recent chat's ring and parsed transcript windows until restart.
+  // Rebuilt from the real transcripts of one day's 51 chats, that was 98 MB of
+  // rings and 47 MB of windows in one project. A chat quiet this long gives
+  // both back; its transcript on disk already holds every event.
+  const CHAT_EVENT_HISTORY_IDLE_RELEASE_MS = 10 * 60 * 1000;
+  const eventHistoryTouchedAt = new Map<string, number>();
+  const transcriptHistoryCacheUsedAt = new Map<string, number>();
 
   const safeJsonChars = (value: unknown): number => {
     try {
@@ -12115,6 +12258,7 @@ export function createAgentChatService(args: {
   const touchEventHistoryRing = (sessionId: string, envelopes: AgentChatEventEnvelope[]): void => {
     eventHistoryBySession.delete(sessionId);
     eventHistoryBySession.set(sessionId, envelopes);
+    eventHistoryTouchedAt.set(sessionId, Date.now());
     while (eventHistoryBySession.size > CHAT_EVENT_HISTORY_BUFFER_MAX_SESSIONS) {
       const oldestSessionId = eventHistoryBySession.keys().next().value;
       if (typeof oldestSessionId !== "string" || oldestSessionId === sessionId) break;
@@ -12256,7 +12400,6 @@ export function createAgentChatService(args: {
     prompt: string;
     systemPrompt?: string;
     timeoutMs?: number;
-    reasoningEffort?: string | null;
     imagePaths?: string[];
     jsonSchema?: unknown;
     taskType: "session_title" | "session_summary" | "handoff_summary" | "continuity_summary";
@@ -12267,8 +12410,8 @@ export function createAgentChatService(args: {
      */
     providerAccount?: ProviderTaskAccount;
   }) => {
-    const reasoningEffort = args.reasoningEffort
-      ?? backgroundUtilityReasoningEffort(args.modelId);
+    // The effort is not the caller's: every background call runs at its
+    // model's lowest tier (`backgroundUtilityReasoningEffort`).
     return await aiIntegrationService.summarizeTerminal({
       ...(args.providerAccount ? { providerAccount: args.providerAccount } : {}),
       cwd: args.cwd,
@@ -12276,7 +12419,6 @@ export function createAgentChatService(args: {
       prompt: args.prompt,
       systemPrompt: args.systemPrompt,
       timeoutMs: args.timeoutMs,
-      reasoningEffort,
       imagePaths: args.imagePaths,
       jsonSchema: args.jsonSchema,
       taskType: args.taskType,
@@ -14679,6 +14821,8 @@ export function createAgentChatService(args: {
     endOffset: number;
     envelopeStartOffsetByIdentity: WeakMap<AgentChatEventEnvelope, number | null>;
   }> => {
+    // Only a history read keeps this chat's parsed windows; see releaseIdleChatHistory.
+    transcriptHistoryCacheUsedAt.set(sessionId, Date.now());
     const managed = managedSessions.get(sessionId);
     let transcriptPath = await resolveBestTranscriptPathForSessionIdAsync(
       sessionId,
@@ -15773,6 +15917,47 @@ export function createAgentChatService(args: {
   };
 
   /**
+   * One prompt to the session-intelligence helper model of an identity
+   * thread's vendor (the same model that names chats). Null when there is no
+   * helper or every attempt failed; each failure is logged under `failureEvent`.
+   */
+  const runIdentityHelperPrompt = async (
+    managed: ManagedChatSession,
+    args: { prompt: string; failureEvent: string; meta?: Record<string, unknown> },
+  ): Promise<string | null> => {
+    const auth = await detectAuth().catch(() => []);
+    const candidateModelIds = buildSessionIntelligenceModelCandidates({
+      availableModels: await getAvailableRegistryModels(auth),
+      provider: managed.session.provider,
+      sessionModelId: managed.session.modelId,
+      sessionModel: managed.session.model,
+    });
+    if (!candidateModelIds.length) return null;
+    const { result } = await runNamingAcrossProviders<string>(candidateModelIds, {
+      run: async (descriptor) => {
+        const response = await runSessionIntelligencePrompt({
+          cwd: managed.laneWorktreePath,
+          modelId: descriptor.id,
+          prompt: args.prompt,
+          taskType: "continuity_summary",
+          providerAccount: sessionProviderAccount(managed),
+        });
+        const text = response.text.trim();
+        return text.length ? text : null;
+      },
+      onFailure: (failure) => {
+        logger.warn(args.failureEvent, {
+          sessionId: managed.session.id,
+          ...args.meta,
+          modelId: failure.descriptor.id,
+          error: failure.error instanceof Error ? failure.error.message : String(failure.error),
+        });
+      },
+    });
+    return result;
+  };
+
+  /**
    * ADE's memory pass over an identity thread: one call to the cheap helper
    * model on the vendor the chat already uses, reading ADE's own transcript.
    * Returns the rolling summary, and files any durable facts it found into the
@@ -15785,42 +15970,16 @@ export function createAgentChatService(args: {
   ): Promise<string | null> => {
     const entries = collectCaptureEntries(managed);
     if (!entries.length) return null;
-    const auth = await detectAuth().catch(() => []);
-    const availableModels = await getAvailableRegistryModels(auth);
-    const candidateModelIds = buildSessionIntelligenceModelCandidates({
-      availableModels,
-      provider: managed.session.provider,
-      sessionModelId: managed.session.modelId,
-      sessionModel: managed.session.model,
-    });
-    if (!candidateModelIds.length) return null;
     const memory = managed.session.identityKey === "cto" ? ctoMemoryService : null;
-    const prompt = buildContinuityCapturePrompt({
-      reason,
-      entries,
-      knownFacts: memory?.listKnownFacts(CAPTURE_KNOWN_FACTS) ?? [],
-      previousSummary: managed.continuitySummary,
-    });
-    const { result } = await runNamingAcrossProviders<string>(candidateModelIds, {
-      run: async (descriptor) => {
-        const response = await runSessionIntelligencePrompt({
-          cwd: managed.laneWorktreePath,
-          modelId: descriptor.id,
-          prompt,
-          taskType: "continuity_summary",
-          providerAccount: sessionProviderAccount(managed),
-        });
-        const text = response.text.trim();
-        return text.length ? text : null;
-      },
-      onFailure: (failure) => {
-        logger.warn("agent_chat.identity_continuity_summary_failed", {
-          sessionId: managed.session.id,
-          reason,
-          modelId: failure.descriptor.id,
-          error: failure.error instanceof Error ? failure.error.message : String(failure.error),
-        });
-      },
+    const result = await runIdentityHelperPrompt(managed, {
+      prompt: buildContinuityCapturePrompt({
+        reason,
+        entries,
+        knownFacts: memory?.listKnownFacts(CAPTURE_KNOWN_FACTS) ?? [],
+        previousSummary: managed.continuitySummary,
+      }),
+      failureEvent: "agent_chat.identity_continuity_summary_failed",
+      meta: { reason },
     });
     if (!result) return null;
     const capture = parseContinuityCapture(result);
@@ -15843,6 +16002,36 @@ export function createAgentChatService(args: {
       }
     }
     return capture.summary;
+  };
+
+  /**
+   * The nightly memory gardening, run by ADE on the cheap helper model.
+   *
+   * It used to be a scheduled prompt delivered to the CTO as an ordinary
+   * turn: a full turn on the CTO's own model every night, added to the
+   * thread it was meant to keep small. Now the scheduled row only marks the
+   * time. ADE hands the helper the facts and the recent log, and applies its
+   * plan within fixed caps. The row stays in Chat Info, so the person can
+   * still see, pause, or delete it.
+   */
+  const runCtoMemoryGardening = async (sessionId: string): Promise<void> => {
+    const memory = ctoMemoryService;
+    if (!memory) return;
+    // Nothing was journaled lately, so nothing new to distill: skip the call.
+    if (!memory.hasRecentDailyEntries(2)) return;
+    const managed = managedSessions.get(sessionId) ?? ensureManagedSession(sessionId);
+    const { prompt, shown } = buildGardeningPrompt({
+      facts: memory.listGardeningFacts(),
+      recentLog: memory.readRecentDailyEntries(2, 8_000),
+      discoveries: memory.readNewDiscoveries({ maxChars: 4_000, advance: false }).text,
+    });
+    const result = await runIdentityHelperPrompt(managed, {
+      prompt,
+      failureEvent: "agent_chat.cto_memory_gardening_failed",
+    });
+    if (!result) return;
+    const applied = memory.applyGardeningPlan(parseGardeningPlan(result, shown));
+    logger.info("agent_chat.cto_memory_gardened", { sessionId, ...applied });
   };
 
   const maybeRefreshIdentityContinuitySummary = async (
@@ -17969,7 +18158,6 @@ export function createAgentChatService(args: {
                 modelId: descriptor.id,
                 systemPrompt: LANE_NAME_FROM_PROMPT_SYSTEM_PROMPT,
                 prompt: `Opening request:\n${prompt.slice(0, 2000)}`,
-                reasoningEffort: "low",
                 imagePaths,
                 jsonSchema: AUTO_LANE_IDENTITY_JSON_SCHEMA,
                 taskType: "session_title",
@@ -19670,11 +19858,12 @@ export function createAgentChatService(args: {
      * is a steady state, and one warn per chat per pass buries the log.
      */
     options?: { quiet?: boolean },
+    ownershipDecision?: ChatRuntimeOwnershipDecision,
   ): boolean => {
     const owner = persisted === undefined
       ? readPersistedState(sessionId)?.runtimeOwner ?? null
       : persisted?.runtimeOwner ?? null;
-    const decision = chatRuntimeOwnershipDecision(owner);
+    const decision = ownershipDecision ?? chatRuntimeOwnershipDecision(owner);
     if (!decision.adoptable && options?.quiet !== true) {
       logger.warn("agent_chat.runtime_owned_by_other_brain", {
         sessionId,
@@ -19684,6 +19873,81 @@ export function createAgentChatService(args: {
       });
     }
     return decision.adoptable;
+  };
+
+  /**
+   * May this brain take the chat up ON ITS OWN — restart recovery and its
+   * resume wake, prewarm, a due scheduled wake — with nobody asking? Stricter
+   * than `chatRuntimeAdoptable`, which also answers for explicit sends.
+   */
+  const chatAutoAdoptable = (
+    sessionId: string,
+    persisted?: PersistedChatState | null,
+    options?: { quiet?: boolean },
+  ): boolean => {
+    const state = persisted === undefined ? readPersistedState(sessionId) : persisted;
+    const decision = chatRuntimeOwnershipDecision(state?.runtimeOwner ?? null);
+    if (!chatRuntimeAdoptable(sessionId, state, options, decision)) return false;
+    if (accountUnknownFromOtherHome(state)) {
+      if (options?.quiet !== true) {
+        logger.warn("agent_chat.runtime_account_unknown_here", {
+          sessionId,
+          instanceId: state?.instanceId ?? null,
+          ownerAdeHome: state?.runtimeOwner?.adeHome ?? null,
+        });
+      }
+      return false;
+    }
+    return !yieldsToMachineBrain(state, decision.verdict);
+  };
+
+  /**
+   * A dev or hand-started brain leaves unattended work to the installed
+   * machine brain when it is live on this project. The 2026-10-20 incident
+   * involved a dev brain on the shared home winning the claim for another
+   * lane's scheduled "/ship 1821" wake and running it with the dev lane's code.
+   * Its own chats stay its own: its stamp, or its dead predecessor on the same
+   * socket (a restart keeps the socket; a sibling brain has its own).
+   */
+  const yieldsToMachineBrain = (
+    state: PersistedChatState | null | undefined,
+    verdict: ChatRuntimeOwnershipDecision["verdict"],
+  ): boolean => {
+    if (!machineBrainPid || !processRegistry) return false;
+    const owner = state?.runtimeOwner ?? null;
+    if (verdict === "self") return false;
+    if (owner?.socketPath && runtimeSocketPath && pathsEqual(owner.socketPath, runtimeSocketPath)) return false;
+    const selfPid = processRegistry.pid ?? process.pid;
+    const installedBrainPid = machineBrainPid();
+    return installedBrainPid !== null
+      && installedBrainPid !== selfPid
+      && processRegistry.listLiveProcessIdentities().some((identity) => identity.pid === installedBrainPid);
+  };
+
+  /**
+   * A chat last run under another ADE home on an account this brain's home
+   * does not have. Its provider thread lives in that account's config home, so
+   * this brain could only resume it on a different account, which fails ("No
+   * conversation found") and drops the chat's account pointer on the way.
+   * Unattended work stays with a brain whose home knows the account, and an
+   * explicit send is refused with guidance. A missing account under THIS
+   * brain's home is a real removal and keeps the fallback.
+   */
+  const accountUnknownFromOtherHome = (state: PersistedChatState | null | undefined): boolean => {
+    const instanceId = state?.instanceId?.trim();
+    const ownerHome = state?.runtimeOwner?.adeHome;
+    if (!instanceId || !ownerHome || !isProviderInstanceProvider(state.provider)) return false;
+    if (pathsEqual(ownerHome, brainAdeHome)) return false;
+    try {
+      return getMachineProviderInstanceStore().get(instanceId) === null;
+    } catch (error) {
+      logger.warn("agent_chat.account_lookup_failed", {
+        instanceId,
+        ownerAdeHome: ownerHome,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return true;
+    }
   };
 
   /** The persisted owner stamp when it names another live brain process. */
@@ -26040,6 +26304,12 @@ export function createAgentChatService(args: {
         // OpenCode session that had to rediscover the whole thread.
         || managed.runtime.kind === "opencode")
       && reasonAllowsPreservation;
+    // Codex keeps its thread id on the session, not in runtime state, and the
+    // next send resumes that thread (a failed resume throws rather than opening
+    // a new one). The resumed thread already holds the lane and computer-use
+    // directives; forgetting them re-sent ~10k chars on every idle restart.
+    const preserveDeliveredDirectives = preserveProviderResumeState
+      || (managed.runtime.kind === "codex" && reasonAllowsPreservation && Boolean(managed.session.threadId));
     if (managed.runtime.kind === "codex") {
       const runtime = managed.runtime;
       failOpenCodexCompactions(managed, runtime, "teardown");
@@ -26050,11 +26320,13 @@ export function createAgentChatService(args: {
         && !managed.deleted;
       runtime.suppressExitError = true;
       clearCodexNoFirstEventWatchdog(runtime);
-      try { runtime.reader.close(); } catch { /* ignore */ }
-      runtime.killTimer = terminateChildProcessTree(
-        runtime.process,
-        runtime.killTimer,
-      );
+      if (!releaseCodexRuntimeHost(managed, runtime)) {
+        try { runtime.reader.close(); } catch { /* ignore */ }
+        runtime.killTimer = terminateChildProcessTree(
+          runtime.process,
+          runtime.killTimer,
+        );
+      }
       rejectPendingCodexRequests(
         runtime.pending,
         `Codex app-server runtime was torn down (${openCodeReason}).`,
@@ -26274,7 +26546,7 @@ export function createAgentChatService(args: {
     }
     managed.runtimeInvalidated = !preserveProviderResumeState;
     managed.acpReasoningEffortInvalidated = false;
-    if (!preserveProviderResumeState) {
+    if (!preserveDeliveredDirectives) {
       clearDeliveredDirectiveEpoch(managed);
     }
   };
@@ -26752,7 +27024,7 @@ export function createAgentChatService(args: {
     // same as "no runtime". A second brain on the same ADE home sees every
     // sibling-owned chat that way, and recovering one closes the sibling's
     // in-flight turn as interrupted. Only the owner (or nobody) may recover.
-    if (row.status === "detached" && chatRuntimeAdoptable(sessionId, persisted)) {
+    if (row.status === "detached" && chatAutoAdoptable(sessionId, persisted)) {
       try {
         recoverDetachedChatAfterRestart(
           managed,
@@ -26895,6 +27167,8 @@ export function createAgentChatService(args: {
       throw new Error(`Codex runtime is not available for session '${managed.session.id}'.`);
     }
     const runtime = managed.runtime;
+    runtime.skillCatalogSettle ??= settleCodexSkillCatalog(managed, runtime);
+    await runtime.skillCatalogSettle;
     const attachments = args.attachments ?? [];
     const resolvedAttachments = args.resolvedAttachments ?? attachments.map((attachment) => ({
       ...attachment,
@@ -27169,7 +27443,7 @@ export function createAgentChatService(args: {
     const pendingUserShell = parseCodexUserShellDraft(slashText) ?? parseCodexShellSlashCommand(slashText);
     const pendingMemoryCommand = parseCodexMemorySlashCommand(slashText);
     if (
-      (runtime.activeTurnId || runtime.awaitingTurnStart || runtime.turnStartContextConsumed)
+      (runtime.activeTurnId || runtime.awaitingTurnStart || runtime.turnStartContextConsumed || runtime.turnStartReserved)
       && !pendingUserShell
       && !pendingMemoryCommand
     ) {
@@ -27602,6 +27876,7 @@ export function createAgentChatService(args: {
     let consumedTurnContext: ConsumedTurnContextPrefix | null = null;
     const planningApprovalGuarded = managed.session.permissionMode === "plan";
     let result: { turn?: { id?: string } };
+    runtime.turnStartReserved = true;
     try {
       const reconstructionContext = suppressTurnContext
         ? ""
@@ -27681,6 +27956,7 @@ export function createAgentChatService(args: {
       });
     } catch (error) {
       const contextToRestore = runtime.turnStartContextConsumed ? consumedTurnContext : null;
+      runtime.turnStartReserved = false;
       runtime.awaitingTurnStart = false;
       runtime.turnStartContextConsumed = false;
       runtime.pendingTurnPlanningApprovalGuarded = null;
@@ -27692,6 +27968,7 @@ export function createAgentChatService(args: {
       }
       throw error;
     }
+    runtime.turnStartReserved = false;
     runtime.turnStartContextConsumed = false;
     markDispatched();
     persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
@@ -37648,7 +37925,10 @@ export function createAgentChatService(args: {
     let childSessionId = found?.[1].childSessionId ?? null;
     if (!childSessionId) {
       const ids = new Set([args.agentId, args.taskId].filter((id): id is string => Boolean(id)));
-      for (const envelope of eventHistoryBySession.get(managed.session.id) ?? []) {
+      // A quiet chat's ring is released (see releaseIdleChatHistory); the
+      // transcript tail holds the same `subagent_started` events.
+      const recent = eventHistoryBySession.get(managed.session.id) ?? readRecentTranscriptEnvelopes(managed);
+      for (const envelope of recent) {
         const event = envelope.event;
         if (event.type !== "subagent_started" || !event.providerSessionId) continue;
         if (ids.has(event.taskId) || (event.agentId && ids.has(event.agentId))) childSessionId = event.providerSessionId;
@@ -41835,6 +42115,88 @@ export function createAgentChatService(args: {
   /** Runtimes that already reacted to a version refusal (once each). */
   const codexVersionRejectionHandled = new WeakSet<CodexRuntime>();
 
+  /** The app-server process each Codex runtime talks through, and its seat on it. */
+  const codexHostByRuntime = new WeakMap<CodexRuntime, { host: CodexAppServerHost; client: CodexAppServerClient }>();
+  const codexRedactionByClient = new WeakMap<CodexAppServerClient, (text: string) => string>();
+  /**
+   * A chat that left a shared app-server releases its thread there
+   * (interrupt + unsubscribe); its next runtime waits for that, so a resume
+   * never races the release.
+   */
+  const codexHostReleases = new WeakMap<ManagedChatSession, Promise<void>>();
+  const codexAppServerPool = createCodexAppServerPool({
+    terminate: terminateChildProcessTree,
+    threadIdOf: extractCodexThreadId,
+    parseLine: parseJsonLine,
+    onStderr: (text, clients) => {
+      // Codex's rmcp client prints the URL of an MCP server it failed to
+      // reach, and an embedder's URL can carry a token in its query string.
+      let line = text;
+      for (const client of clients) line = codexRedactionByClient.get(client)?.(line) ?? line;
+      logger.warn("agent_chat.codex_stderr", {
+        sessionId: clients[0]?.label ?? null,
+        ...(clients.length > 1 ? { sessionIds: clients.map((client) => client.label) } : {}),
+        line,
+      });
+    },
+    logger,
+  });
+
+  /**
+   * Takes a Codex runtime off its app-server. A private process (or the last
+   * chat on a shared one) is stopped, as before sharing. On a shared process
+   * the chat's running turn is interrupted and its threads unsubscribed, so
+   * nothing of it keeps running unseen; a process that cannot answer that is
+   * presumed stuck and stopped, and every chat on it recovers as from a crash.
+   */
+  const releaseCodexRuntimeHost = (managed: ManagedChatSession | null, runtime: CodexRuntime): boolean => {
+    const seat = codexHostByRuntime.get(runtime);
+    if (!seat) return false;
+    codexHostByRuntime.delete(runtime);
+    const { host, client } = seat;
+    const ownThreadId = managed?.session.threadId ?? null;
+    const turnId = runtime.activeTurnId ?? runtime.startedTurnId ?? null;
+    const threadIds = [ownThreadId, ...runtime.codexSubagentThreads.keys()].filter((id): id is string => Boolean(id));
+    // A process that already exited holds nothing to release.
+    if (host.detach(client, threadIds) === 0 || !threadIds.length || host.isGone()) return true;
+    const release = (async () => {
+      if (ownThreadId && turnId) {
+        await host.request("turn/interrupt", { threadId: ownThreadId, turnId }, CODEX_SHARED_RELEASE_TIMEOUT_MS)
+          .catch((error: unknown) => {
+            // Usually the turn already ended; a timeout means the process is
+            // not answering, which the unsubscribe below then settles.
+            const detail = {
+              sessionId: managed?.session.id ?? null,
+              turnId,
+              error: error instanceof Error ? error.message : String(error),
+            };
+            if (isCodexRequestTimeoutError(error)) logger.warn("agent_chat.codex_shared_release_interrupt_failed", detail);
+            else logger.debug("agent_chat.codex_shared_release_interrupt_failed", detail);
+          });
+      }
+      for (const threadId of threadIds) {
+        const closed = host.waitForThreadClosed(threadId, CODEX_SHARED_RELEASE_TIMEOUT_MS);
+        const result = await host.request<{ status?: unknown }>("thread/unsubscribe", { threadId }, CODEX_SHARED_RELEASE_TIMEOUT_MS);
+        // Only a thread this connection had loaded is unloaded (and announced).
+        // One still loaded keeps its writer lock, so the chat could not
+        // resume it on any other process: treat the process as stuck.
+        if (result?.status === "unsubscribed" && !(await closed)) {
+          throw new Error(`Codex did not unload thread ${threadId} within ${CODEX_SHARED_RELEASE_TIMEOUT_MS}ms.`);
+        }
+      }
+    })().catch((error: unknown) => {
+      logger.warn("agent_chat.codex_shared_release_failed", {
+        sessionId: managed?.session.id ?? null,
+        pid: host.process.pid ?? null,
+        chats: host.clientCount(),
+        error: error instanceof Error ? error.message : String(error),
+      });
+      host.kill();
+    });
+    if (managed) codexHostReleases.set(managed, release);
+    return true;
+  };
+
   /**
    * OpenAI refused this chat's model for the Codex that ran (its exact
    * per-model sentence, `providerVersionRejection.ts`). `codexFallForward.ts`
@@ -41882,7 +42244,15 @@ export function createAgentChatService(args: {
     }
   };
 
-  const startCodexRuntime = async (managed: ManagedChatSession): Promise<CodexRuntime> => {
+  /**
+   * `shared` asks for a chat's runtime on a pooled app-server (unless
+   * `ADE_CODEX_SHARED_APP_SERVER=0`); one-off callers (model list, cleanup)
+   * ask for a private process. Required, so no caller gets either by default.
+   */
+  const startCodexRuntime = async (
+    managed: ManagedChatSession,
+    options: { shared: boolean },
+  ): Promise<CodexRuntime> => {
     const codexDownload = chatPinnedToolDownload(managed, "codex", "Codex");
     if (codexDownload) await codexDownload;
     logger.info("agent_chat.codex_runtime_start", {
@@ -41913,33 +42283,66 @@ export function createAgentChatService(args: {
       });
       throw error;
     }
-    // Reasoning effort travels with the thread (codexThreadConfigArgs), never on
-    // the process: `-c` outranks the user's config.toml and would apply to every
-    // thread on this app-server, not just this chat.
-    const compact = compactionSettingsFor(managed);
-    const window = resolveSessionModelDescriptor(managed.session)?.contextWindow;
+    // Reasoning effort, the compaction point and the chat's identity travel
+    // with the thread (codexThreadConfigArgsFor), never on the process: `-c`
+    // outranks the user's config.toml and would apply to every thread on this
+    // app-server, not just this chat.
     const appServerArgs = [
       "app-server",
       // ADE's pinned Codex never checks for (or offers) its own update.
       ...CODEX_NO_UPDATE_CHECK_ARGS,
-      ...(compact.atTokens ? ["-c", `model_auto_compact_token_limit=${Math.min(compact.atTokens, window || compact.atTokens)}`] : []),
+      // A chat that leaves a shared process unsubscribes its thread; unload it
+      // (its MCP servers, its writer lock) at once, as stopping a private
+      // process did.
+      "-c", `thread_unload_delay_secs=${CODEX_SHARED_THREAD_UNLOAD_DELAY_SECS}`,
     ];
-    const invocation = resolveCliSpawnInvocation(codexExecutable, appServerArgs);
-    const proc = spawn(invocation.command, invocation.args, {
-      cwd: managed.laneWorktreePath,
-      env: spawnEnv,
-      stdio: ["pipe", "pipe", "pipe"],
-      detached: process.platform !== "win32",
-      windowsVerbatimArguments: invocation.windowsVerbatimArguments,
-      windowsHide: true,
+    const optOutNotificationMethods = managed.session.runtimeMode === "print"
+      ? [
+          "item/agentMessage/delta",
+          "item/reasoning/summaryTextDelta",
+          "item/reasoning/textDelta",
+          "item/commandExecution/outputDelta",
+        ]
+      : [];
+    const sharedProcess = options.shared && codexSharedAppServerEnabled();
+    const processEnv = sharedProcess ? codexSharedProcessEnv(spawnEnv) : spawnEnv;
+    // Personal chats run in their own scratch directory; project chats share
+    // the project root (a thread's own cwd, sent with thread/start, decides
+    // where its commands run and which project config applies).
+    const processCwd = sharedProcess && !isPersonalSession(managed.session) ? projectRoot : managed.laneWorktreePath;
+    const agentSkillRoots = adeSkillCatalogFor(managed.session) === "none" ? [] : existingAgentSkillRoots(spawnEnv);
+    const hostKey = sharedProcess
+      ? createHash("sha256").update(JSON.stringify({
+          executable: codexExecutable,
+          args: appServerArgs,
+          cwd: processCwd,
+          env: Object.entries(processEnv).filter(([, value]) => value != null).sort(([a], [b]) => a.localeCompare(b)),
+          optOutNotificationMethods,
+          agentSkillRoots,
+        })).digest("hex")
+      : null;
+    const host = codexAppServerPool.acquire({
+      key: hostKey,
+      spawn: () => {
+        const invocation = resolveCliSpawnInvocation(codexExecutable, appServerArgs);
+        return spawn(invocation.command, invocation.args, {
+          cwd: processCwd,
+          env: processEnv,
+          stdio: ["pipe", "pipe", "pipe"],
+          detached: process.platform !== "win32",
+          windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+          windowsHide: true,
+        });
+      },
     });
-
-    const reader = readline.createInterface({ input: proc.stdout });
+    const proc = host.process;
+    const reader = host.reader;
     const pending = new Map<string, PendingRpc>();
 
     const runtime: CodexRuntime = {
       kind: "codex",
-      agentSkillRoots: adeSkillCatalogFor(managed.session) === "none" ? [] : existingAgentSkillRoots(spawnEnv),
+      agentSkillRoots,
+      skillCatalogSettle: null,
       serverVersion: null,
       process: proc,
       reader,
@@ -41951,6 +42354,7 @@ export function createAgentChatService(args: {
       activeTurnId: null,
       startedTurnId: null,
       awaitingTurnStart: false,
+      turnStartReserved: false,
       turnStartContextConsumed: false,
       threadResumed: false,
       canAttachResumedTurnStart: false,
@@ -42009,8 +42413,8 @@ export function createAgentChatService(args: {
       dynamicTools: new Map(),
       dynamicToolSpecs: [],
       request: async <T = unknown>(method: string, params?: unknown, options?: CodexRequestOptions): Promise<T> => {
-        const id = runtime.nextRequestId;
-        runtime.nextRequestId += 1;
+        const id = host.nextRequestId();
+        runtime.nextRequestId = id + 1;
 
         const payload: JsonRpcEnvelope = {
           id,
@@ -42036,6 +42440,7 @@ export function createAgentChatService(args: {
           if (timeoutMs != null) {
             timer = setTimeout(() => {
               pending.delete(key);
+              host.forgetResponse(id);
               logger.warn("agent_chat.codex_request_timeout", {
                 sessionId: managed.session.id,
                 method,
@@ -42057,10 +42462,12 @@ export function createAgentChatService(args: {
               reject(error);
             },
           });
+          host.expectResponse(id, hostClient, handleCodexResponse);
           try {
-            proc.stdin.write(`${JSON.stringify(payload)}\n`);
+            host.write(payload);
           } catch (error) {
             pending.delete(key);
+            host.forgetResponse(id);
             clearPendingTimer();
             reject(error instanceof Error ? error : new Error(String(error)));
           }
@@ -42087,54 +42494,22 @@ export function createAgentChatService(args: {
     };
     codexLaunchByRuntime.set(runtime, { resolution: codexResolution, env: spawnEnv });
 
-    reader.on("line", (line) => {
-      const payload = parseJsonLine(line);
-      if (!payload) return;
+    function handleCodexResponse(payload: JsonRpcEnvelope): void {
+      if (payload.id == null) return;
+      const key = String(payload.id);
+      const request = pending.get(key);
+      if (!request) return;
+      pending.delete(key);
 
-      if (payload.method && payload.id != null) {
-        handleCodexServerRequest(managed, runtime, payload);
+      if (payload.error) {
+        const error = new Error(payload.error.message || "Codex request failed.") as Error & { code?: number };
+        if (typeof payload.error.code === "number") error.code = payload.error.code;
+        request.reject(error);
         return;
       }
 
-      if (payload.method) {
-        void handleCodexNotification(managed, runtime, payload).catch((error) => {
-          logger.warn("agent_chat.codex_notification_failed", {
-            sessionId: managed.session.id,
-            method: payload.method,
-            error: error instanceof Error ? error.message : String(error)
-          });
-        });
-        return;
-      }
-
-      if (payload.id != null) {
-        const key = String(payload.id);
-        const request = pending.get(key);
-        if (!request) return;
-        pending.delete(key);
-
-        if (payload.error) {
-          const error = new Error(payload.error.message || "Codex request failed.") as Error & { code?: number };
-          if (typeof payload.error.code === "number") error.code = payload.error.code;
-          request.reject(error);
-          return;
-        }
-
-        request.resolve(payload.result);
-      }
-    });
-
-    proc.stderr.on("data", (chunk: Buffer) => {
-      const text = chunk.toString("utf8").trim();
-      if (!text.length) return;
-      logger.warn("agent_chat.codex_stderr", {
-        sessionId: managed.session.id,
-        // Codex's rmcp client prints the URL of an MCP server it failed to
-        // reach, and an embedder's URL can carry a token in its query string.
-        line: redactCallerMcpText(text, managed.session.mcpServers),
-        cwd: managed.laneWorktreePath,
-      });
-    });
+      request.resolve(payload.result);
+    }
 
     // A replaced runtime's process can exit long after its successor started.
     // The approvals settled here are this runtime's, but the local cards belong
@@ -42145,7 +42520,7 @@ export function createAgentChatService(args: {
       settleCodexPendingInputs(managed, runtime, { planApprovals: "preserve-cards" });
     };
 
-    proc.on("error", (error) => {
+    const onProcessError = (error: Error) => {
       const redactedError = redactCallerMcpText(
         error instanceof Error ? error.message : String(error),
         managed.session.mcpServers,
@@ -42169,9 +42544,9 @@ export function createAgentChatService(args: {
         turnId: runtime.activeTurnId,
         ...(runtime.activeTurnId ? { turnStatus: "failed" as const } : {}),
       });
-    });
+    };
 
-    proc.on("exit", (code, signal) => {
+    const onProcessExit = (code: number | null, signal: NodeJS.Signals | null) => {
       const message = `Codex app-server exited (code=${code ?? "null"}, signal=${signal ?? "null"}).`;
       codexVoice.onRuntimeExit(managed, runtime);
       const hadPendingRequests = pending.size > 0;
@@ -42193,30 +42568,60 @@ export function createAgentChatService(args: {
         turnId: runtime.activeTurnId,
         ...(runtime.activeTurnId ? { turnStatus: "failed" as const } : {}),
       });
-    });
+    };
 
-    const optOutNotificationMethods = managed.session.runtimeMode === "print"
-      ? [
-          "item/agentMessage/delta",
-          "item/reasoning/summaryTextDelta",
-          "item/reasoning/textDelta",
-          "item/commandExecution/outputDelta",
-        ]
-      : [];
-    const initializeResponse = await runtime.request<{ userAgent?: unknown }>("initialize", {
-      clientInfo: {
-        name: "ade_desktop",
-        title: "ADE Desktop",
-        version: appVersion
+    const hostClient: CodexAppServerClient = {
+      label: managed.session.id,
+      ownsThread: (threadId) => managed.session.threadId === threadId || runtime.codexSubagentThreads.has(threadId),
+      awaitingThread: () => !managed.session.threadId,
+      deliver: (payload) => {
+        if (payload.id != null) {
+          handleCodexServerRequest(managed, runtime, payload as JsonRpcEnvelope);
+          return;
+        }
+        void handleCodexNotification(managed, runtime, payload as JsonRpcEnvelope).catch((error) => {
+          logger.warn("agent_chat.codex_notification_failed", {
+            sessionId: managed.session.id,
+            method: payload.method,
+            error: error instanceof Error ? error.message : String(error)
+          });
+        });
       },
-      capabilities: {
-        experimentalApi: true,
-        optOutNotificationMethods,
-        // ADE renders MCP Apps, so a server that asks before it registers a
-        // tool with a page is told so.
-        extensions: { "io.modelcontextprotocol/ui": { mimeTypes: [MCP_APP_RESOURCE_MIME_TYPE] } },
-      }
-    });
+      onProcessError,
+      onProcessExit,
+    };
+    codexHostByRuntime.set(runtime, { host, client: hostClient });
+    codexRedactionByClient.set(hostClient, (text) => redactCallerMcpText(text, managed.session.mcpServers));
+    host.attach(hostClient);
+    if (host.clientCount() > 1) {
+      logger.info("agent_chat.codex_shared_app_server_join", {
+        sessionId: managed.session.id,
+        pid: proc.pid ?? null,
+        chats: host.clientCount(),
+      });
+    }
+
+    let initializeResponse: { userAgent?: unknown } | undefined;
+    try {
+      initializeResponse = await host.initialize<{ userAgent?: unknown }>({
+        clientInfo: {
+          name: "ade_desktop",
+          title: "ADE Desktop",
+          version: appVersion
+        },
+        capabilities: {
+          experimentalApi: true,
+          optOutNotificationMethods,
+          // ADE renders MCP Apps, so a server that asks before it registers a
+          // tool with a page is told so.
+          extensions: { "io.modelcontextprotocol/ui": { mimeTypes: [MCP_APP_RESOURCE_MIME_TYPE] } },
+        }
+      }, CODEX_REQUEST_TIMEOUT_MS);
+    } catch (error) {
+      runtime.suppressExitError = true;
+      host.detach(hostClient);
+      throw error;
+    }
     runtime.serverVersion = parseCodexServerVersion(initializeResponse?.userAgent);
 
     const collaborationModesRequest = runtime.request<unknown>("collaborationMode/list", {})
@@ -42236,7 +42641,6 @@ export function createAgentChatService(args: {
       }),
     ]).then(() => undefined);
 
-    runtime.notify("initialized");
     readCodexAccount(runtime);
     const bundledSkillRoots = runtime.agentSkillRoots;
     if (bundledSkillRoots.length) {
@@ -42283,7 +42687,12 @@ export function createAgentChatService(args: {
 
   const attachNewCodexRuntime = async (managed: ManagedChatSession): Promise<CodexRuntime> => {
     runtimeBudget.enforce(managed.session.id);
-    const runtime = await startCodexRuntime(managed);
+    const release = codexHostReleases.get(managed);
+    if (release) {
+      await release;
+      if (codexHostReleases.get(managed) === release) codexHostReleases.delete(managed);
+    }
+    const runtime = await startCodexRuntime(managed, { shared: true });
     runtimeCompactionSettings.set(runtime, compactionSignatureFor(managed));
     managed.runtime = runtime;
     managed.runtimeInvalidated = false;
@@ -42300,6 +42709,11 @@ export function createAgentChatService(args: {
     mode: "recover_from_history" | "explicit_reset";
   };
 
+  /** Comparison baseline for each worktree and runtime skill catalog. */
+  const codexSkillCountByCatalog = new Map<string, number>();
+  const codexSkillCatalogKey = (cwd: string, runtime: CodexRuntime): string =>
+    `${cwd}\0${runtime.agentSkillRoots.join("\0")}`;
+
   const refreshCodexSkills = (
     managed: ManagedChatSession,
     runtime: CodexRuntime,
@@ -42309,13 +42723,60 @@ export function createAgentChatService(args: {
       "skills/list",
       codexSkillsListParams(managed.laneWorktreePath, extraUserRoots),
     ).then((response) => {
-      const commands = agentSkillSlashCommands(
-        codexSkillsForCwd(response, managed.laneWorktreePath),
+      const skills = codexSkillsForCwd(response, managed.laneWorktreePath);
+      managed.codexSkillCount = Math.max(managed.codexSkillCount ?? 0, skills.length);
+      const catalogKey = codexSkillCatalogKey(managed.laneWorktreePath, runtime);
+      codexSkillCountByCatalog.set(
+        catalogKey,
+        Math.max(codexSkillCountByCatalog.get(catalogKey) ?? 0, skills.length),
       );
+      const commands = agentSkillSlashCommands(skills);
       runtime.slashCommands = adeSkillCatalogFor(managed.session) === "none"
         ? commands.filter((command) => !isAdeBundledSkillSlashCommand(command))
         : commands;
     }).catch(() => { /* skills/list not supported — prompt/CLI fallback remains available */ });
+  };
+
+  /**
+   * Attempt once per chat runtime to hold its first turn until its skill
+   * count reaches the chat's prior count or this catalog's comparison
+   * baseline. A runtime on an already-warm shared app-server settles on the
+   * first list.
+   * Codex rebuilds its skills block every turn and re-sends all of it (~6k
+   * tokens here) when the list changed. A new `codex app-server` adds remote
+   * plugin skills ~0.5-0.7 s after it starts, so a turn sent sooner sees a
+   * short list and the next turn a long one: two re-sends per restart. The
+   * wait is bounded by the deadline; on timeout, the smaller count becomes the
+   * new baseline, so removed plugins cost one wait.
+   */
+  const settleCodexSkillCatalog = async (managed: ManagedChatSession, runtime: CodexRuntime): Promise<void> => {
+    try {
+      const cwd = managed.laneWorktreePath;
+      const catalogKey = codexSkillCatalogKey(cwd, runtime);
+      const expected = Math.max(managed.codexSkillCount ?? 0, codexSkillCountByCatalog.get(catalogKey) ?? 0);
+      if (expected <= 0) return;
+      const { forceReload: _forceReload, ...params } = codexSkillsListParams(cwd, runtime.agentSkillRoots);
+      const result = await waitForCodexSkillCount({
+        list: (timeoutMs) => runtime.request<CodexSkillsListResponse>("skills/list", params, { timeoutMs })
+          .then((response) => codexSkillsForCwd(response, cwd).length),
+        expected,
+        deadlineMs: CODEX_SKILL_CATALOG_SETTLE_MS,
+        pollMs: CODEX_SKILL_CATALOG_POLL_MS,
+      });
+      if (result.settled || result.seen === null) return;
+      logger.info("agent_chat.codex_skill_catalog_settle_timeout", {
+        sessionId: managed.session.id,
+        expected,
+        seen: result.seen,
+      });
+      managed.codexSkillCount = result.seen;
+      codexSkillCountByCatalog.set(catalogKey, result.seen);
+    } catch (error) {
+      logger.warn("agent_chat.codex_skill_catalog_settle_failed", {
+        sessionId: managed.session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   };
 
   const resolveCodexThreadParams = (managed: ManagedChatSession): {
@@ -44805,7 +45266,7 @@ export function createAgentChatService(args: {
     let runtime: CodexRuntime | null = null;
 
     try {
-      runtime = await startCodexRuntime(tempSession);
+      runtime = await startCodexRuntime(tempSession, { shared: false });
       const response = await runtime.request<{ data?: Array<Record<string, unknown>> }>("model/list", {});
       const rows = Array.isArray(response?.data) ? response.data : [];
       const appServerModels = rows
@@ -44912,12 +45373,8 @@ export function createAgentChatService(args: {
       tempSession.endedNotified = true;
       tempSession.session.status = "ended";
       try {
-        runtime?.reader.close();
-      } catch {
-        // ignore
-      }
-      try {
-        if (runtime) {
+        if (runtime && !releaseCodexRuntimeHost(null, runtime)) {
+          runtime.reader.close();
           terminateChildProcessTree(runtime.process, null);
         }
       } catch {
@@ -48809,6 +49266,7 @@ export function createAgentChatService(args: {
       const forkResponse = await runtime.request<CodexThreadLifecycleResponse>("thread/fork", {
         threadId: transport.nativeSessionId,
         excludeTurns: true,
+        ...codexThreadIdentityConfig(args.managed),
       });
       const forkedThreadId = typeof forkResponse.thread?.id === "string" ? forkResponse.thread.id.trim() : "";
       if (!forkedThreadId) throw new Error("Codex thread/fork did not return a new thread id.");
@@ -50046,7 +50504,7 @@ export function createAgentChatService(args: {
         if (forkedProviderRuntime && managed.runtime === forkedProviderRuntime) {
           teardownRuntime(managed, "ended_session");
         }
-        freshRuntime = await startCodexRuntime(managed);
+        freshRuntime = await startCodexRuntime(managed, { shared: false });
         managed.runtime = freshRuntime;
         managed.runtimeInvalidated = false;
         await freshRuntime.request("thread/archive", {
@@ -50104,6 +50562,7 @@ export function createAgentChatService(args: {
         const forkResponse = await runtime.request<CodexThreadLifecycleResponse>("thread/fork", {
           threadId: sourceThread.responseThreadId,
           excludeTurns: true,
+          ...codexThreadIdentityConfig(managed),
         });
         const forkedThreadId = typeof forkResponse.thread?.id === "string" ? forkResponse.thread.id.trim() : "";
         if (!forkedThreadId) {
@@ -50677,6 +51136,14 @@ export function createAgentChatService(args: {
       ? getProviderRuntimeHealth("claude")
       : null;
     if (
+      (managed.session.provider === "claude" || managed.session.provider === "codex")
+      && accountUnknownFromOtherHome(readPersistedState(sessionId))
+    ) {
+      throw new Error(
+        `This chat ran on a ${managed.session.provider} account that this ADE (home ${brainAdeHome}) does not have, so it cannot resume its conversation here. Open it from the ADE where it was created, or start a new chat.`,
+      );
+    }
+    if (
       managed.session.provider === "claude"
       && claudeRuntimeHealth?.state === "auth-failed"
     ) {
@@ -50839,6 +51306,7 @@ export function createAgentChatService(args: {
             ? null
             : buildMacDesktopDirective(
                 macDesktopRuntime?.hasDisplaySync(executionContext.laneId ?? null) === true,
+                macDesktopRuntime?.seatHostPlatform?.() ?? null,
               ),
           shouldInjectAppleDeviceDirective ? appleDevice.directive : null,
           contextAttachmentPrompt || null,
@@ -57561,6 +58029,12 @@ export function createAgentChatService(args: {
       ? await applyChatMentionExpansion(rawArgs)
       : rawArgs;
     let args = expandedArgs;
+    const throwForScheduledWakeRefusal = (reason: string, retryable = false): void => {
+      if (args.metadata?.scheduledWake) {
+        if (retryable) throw new ScheduledWakeRetryableRefusalError(reason);
+        throw new Error(reason);
+      }
+    };
     const dispatchStartedAt = Date.now();
     const managed = ensureManagedSession(args.sessionId);
     // A send during an account switch runs on the account the chat lands on.
@@ -57578,6 +58052,9 @@ export function createAgentChatService(args: {
     if (routableText) {
       const diskDecision = diskPressureMonitor?.canPerform("chat_turn");
       if (diskDecision && !diskDecision.allowed) {
+        // A scheduled wake retries once the disk clears; posting the refusal
+        // first would leave a failed turn for work that is still pending.
+        throwForScheduledWakeRefusal(diskDecision.message, true);
         emitDiskPressureSendFailure(managed, diskDecision.state, diskDecision.message);
         return;
       }
@@ -57585,6 +58062,7 @@ export function createAgentChatService(args: {
         const blocked = launchRouteBlockReason(managed);
         if (blocked) {
           emitLaunchRouteSteerFailure(managed, args, blocked);
+          throwForScheduledWakeRefusal(blocked);
           return;
         }
       }
@@ -57596,6 +58074,7 @@ export function createAgentChatService(args: {
         managed.launchRouteFellBack = false;
         if (blocked) {
           emitLaunchRouteSendFailure(managed, args, blocked);
+          throwForScheduledWakeRefusal(blocked);
           return;
         }
       }
@@ -61035,7 +61514,22 @@ export function createAgentChatService(args: {
       return { ok: false, mode: args.mode, reason: "recovery_failed" };
     }
 
+    // Recovery opens a fresh provider thread, which has heard none of the
+    // epoch directives; forget them before the capsule is prepared. A
+    // recovery that sends nothing keeps the old thread, so it puts them back.
+    const priorLaneDirectiveKey = managed.lastLaneDirectiveKey;
+    const priorDeliveredDirectiveKeys = { ...managed.deliveredDirectiveKeys };
+    const restoreDirectives = (): void => {
+      managed.lastLaneDirectiveKey = priorLaneDirectiveKey;
+      managed.deliveredDirectiveKeys = priorDeliveredDirectiveKeys;
+      persistChatState(managed);
+    };
+    const failKeepingDirectives = () => {
+      restoreDirectives();
+      return { ok: false as const, mode: args.mode, reason: "recovery_failed" as const };
+    };
     const capsule = buildContinuityCapsule(managed);
+    clearDeliveredDirectiveEpoch(managed);
     let preparedCapsule: PreparedSendMessage | null;
     try {
       preparedCapsule = prepareSendMessage({
@@ -61055,16 +61549,19 @@ export function createAgentChatService(args: {
         provider: managed.session.provider,
         error: error instanceof Error ? error.message : String(error),
       });
-      return { ok: false, mode: args.mode, reason: "recovery_failed" };
+      return failKeepingDirectives();
     }
     if (!preparedCapsule) {
-      return { ok: false, mode: args.mode, reason: "recovery_failed" };
+      return failKeepingDirectives();
     }
 
     if (managed.session.provider === "codex") {
-      const runtime = await ensureCodexSessionRuntime(managed);
+      const runtime = await ensureCodexSessionRuntime(managed).catch((error: unknown) => {
+        restoreDirectives();
+        throw error;
+      });
       if (runtime.activeTurnId || managed.session.status === "active") {
-        return { ok: false, mode: args.mode, reason: "recovery_failed" };
+        return failKeepingDirectives();
       }
       const originalResumeCommand = sessionService.get(sessionId)?.resumeCommand ?? null;
       let reconstructedThreadId = "";
@@ -61106,7 +61603,7 @@ export function createAgentChatService(args: {
         runtime.canAttachResumedTurnStart = false;
         sessionService.setResumeCommand(sessionId, originalResumeCommand);
         persistChatState(managed);
-        return { ok: false, mode: args.mode, reason: "recovery_failed" };
+        return failKeepingDirectives();
       }
       managed.session.continuityRecovery = {
         state: "reconstructed",
@@ -61122,10 +61619,20 @@ export function createAgentChatService(args: {
       return { ok: true, mode: args.mode, threadId: reconstructedThreadId, capsulePreview: capsule };
     }
     if (managed.session.provider === "claude") {
-      const runtime = ensureClaudeSessionRuntime(managed);
+      let runtime: ClaudeRuntime;
+      try {
+        runtime = ensureClaudeSessionRuntime(managed);
+      } catch (error) {
+        restoreDirectives();
+        throw error;
+      }
       let dispatched = false;
+      // Once the reset drops the old session id, that thread is gone and the
+      // reset has already forgotten its directives; nothing to put back.
+      let threadReset = false;
       try {
         await resetClaudeQuerySession(managed, runtime, "session_reset", { clearSdkSessionId: true });
+        threadReset = true;
         await sendMessage({
           sessionId,
           text: capsule,
@@ -61152,7 +61659,8 @@ export function createAgentChatService(args: {
       if (!dispatched) {
         managed.session.continuityRecovery = recovery;
         persistChatState(managed);
-        return { ok: false, mode: args.mode, reason: "recovery_failed" };
+        if (threadReset) return { ok: false, mode: args.mode, reason: "recovery_failed" };
+        return failKeepingDirectives();
       }
       const reconstructedThreadId = runtime.sdkSessionId?.trim() || "";
       managed.session.continuityRecovery = {
@@ -61167,6 +61675,7 @@ export function createAgentChatService(args: {
       emitContinuityRecoveryNotice(managed, managed.session.continuityRecovery);
       return { ok: true, mode: args.mode, threadId: reconstructedThreadId, capsulePreview: capsule };
     }
+    restoreDirectives();
     return { ok: false, mode: args.mode, reason: "unsupported_provider" };
     } finally {
       continuityRecoveryInFlight.delete(sessionId);
@@ -63202,10 +63711,10 @@ export function createAgentChatService(args: {
       const fireAt = nextChatScheduledCronFireAt(CTO_MEMORY_GARDENER_CRON, createdAt);
       if (fireAt == null) return;
       await scheduledWorkScheduler.upsert({
-        id: `cto-memory-gardener:${managed.session.id}`,
+        id: `${CTO_MEMORY_GARDENER_ID_PREFIX}${managed.session.id}`,
         sessionId: managed.session.id,
         kind: "cron",
-        prompt: CTO_MEMORY_GARDENER_PROMPT,
+        prompt: CTO_MEMORY_GARDENER_DESCRIPTION,
         reason: CTO_MEMORY_GARDENER_TITLE,
         cron: CTO_MEMORY_GARDENER_CRON,
         fireAt,
@@ -65738,7 +66247,22 @@ export function createAgentChatService(args: {
     }
     // An archived chat stops waiting on a provider start, so its bound goes with it.
     const archivedManaged = managedSessions.get(trimmedSessionId);
+    const turnStarting = Boolean(archivedManaged?.turnAcceptedAt);
     if (archivedManaged) clearTurnAccepted(archivedManaged);
+    // This is the same teardown the idle sweep would run a few minutes later,
+    // with the same guards plus queued steers and an accepted start. Providers
+    // whose idle teardown keeps the thread resume it on the next send.
+    if (
+      archivedManaged?.runtime
+      && !archivedManaged.closed
+      && archivedManaged.session.status === "idle"
+      && !turnStarting
+      && !hasLivePendingInput(archivedManaged)
+      && !hasRuntimeActiveWorkload(archivedManaged.runtime)
+      && !("pendingSteers" in archivedManaged.runtime && archivedManaged.runtime.pendingSteers.length > 0)
+    ) {
+      teardownRuntime(archivedManaged, "idle_ttl");
+    }
     sessionService.archiveSession(trimmedSessionId);
     notifyChatSessionEnded(trimmedSessionId);
   };
@@ -65881,9 +66405,44 @@ export function createAgentChatService(args: {
     });
   };
 
+  /**
+   * Give back the history a quiet chat no longer needs in memory: its event
+   * ring once every event in it is on disk, and parsed transcript windows no
+   * read has used lately. Both rebuild from the transcript on the next read.
+   */
+  const releaseIdleChatHistory = (now: number): void => {
+    for (const [sessionId, touchedAt] of eventHistoryTouchedAt) {
+      if (!eventHistoryBySession.has(sessionId)) {
+        eventHistoryTouchedAt.delete(sessionId);
+        continue;
+      }
+      if (now - touchedAt < CHAT_EVENT_HISTORY_IDLE_RELEASE_MS) continue;
+      const managed = managedSessions.get(sessionId);
+      if (managed?.session.status === "active") continue;
+      // After a failed append, the ring is the only copy of those events.
+      if (!transcriptWritesSettled(path.join(chatTranscriptsDir, `${sessionId}.jsonl`))) continue;
+      if (managed && !transcriptWritesSettled(managed.transcriptPath)) continue;
+      eventHistoryBySession.delete(sessionId);
+      eventHistoryTouchedAt.delete(sessionId);
+    }
+    // Picking a transcript path parses a window too, and the stale-run sweep
+    // does that for every chat every ten minutes. Only a history read counts
+    // as use, so the sweep's windows go at the next tick instead of keeping
+    // the cache full on a machine nobody is using.
+    for (const sessionId of transcriptHistoryCacheBySession.keys()) {
+      const usedAt = transcriptHistoryCacheUsedAt.get(sessionId);
+      if (usedAt !== undefined && now - usedAt < CHAT_EVENT_HISTORY_IDLE_RELEASE_MS) continue;
+      transcriptHistoryCacheBySession.delete(sessionId);
+    }
+    for (const [sessionId, usedAt] of transcriptHistoryCacheUsedAt) {
+      if (now - usedAt >= CHAT_EVENT_HISTORY_IDLE_RELEASE_MS) transcriptHistoryCacheUsedAt.delete(sessionId);
+    }
+  };
+
   // --- Session inactivity cleanup ---
   const sessionCleanupTimer = setInterval(() => {
     const now = Date.now();
+    releaseIdleChatHistory(now);
     for (const [, managed] of managedSessions) {
       if (!managed.runtime || managed.closed) continue;
       if (managed.session.status !== "idle") continue;
@@ -65988,7 +66547,7 @@ export function createAgentChatService(args: {
         if (!loaded) {
           // Loading is what recovers it; the loader checks runtime ownership.
           ensureManagedSession(row.id);
-        } else if (!loaded.runtime && !loaded.deleted && chatRuntimeAdoptable(row.id, undefined, { quiet: true })) {
+        } else if (!loaded.runtime && !loaded.deleted && chatAutoAdoptable(row.id, undefined, { quiet: true })) {
           // Loaded while its row still read "running" (the dead owner is only
           // detected by the rescan), so the loader never recovered it.
           const events = readTranscriptEnvelopes(loaded);
@@ -67380,7 +67939,7 @@ export function createAgentChatService(args: {
     if (!managed) return;
     // Prewarm starts a provider process with nobody watching, which is the
     // quietest possible way to end up with two brains driving one chat.
-    if (!chatRuntimeAdoptable(sessionId)) return;
+    if (!chatAutoAdoptable(sessionId)) return;
     refreshManagedLaneLaunchContext(managed, { purpose: "warm this chat" });
 
     const descriptor = getModelById(modelId) ?? resolveModelAlias(modelId);
@@ -69001,6 +69560,7 @@ export function createAgentChatService(args: {
         ? await runtime.request<CodexThreadLifecycleResponse>("thread/fork", {
             threadId,
             beforeTurnId: targetTurnId,
+            ...codexThreadIdentityConfig(managed),
           }, { timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS })
         : await runtime.request<CodexThreadLifecycleResponse>("thread/rollback", {
             threadId,
@@ -70070,8 +70630,13 @@ export function createAgentChatService(args: {
         return ptyService?.canAcceptScheduledTurn(schedule.sessionId) !== true;
       }
       // Another live brain runs this chat and fires the row at its own turn
-      // boundary; firing it here would start a second provider process.
+      // boundary; firing it here would start a second provider process. A
+      // brain that leaves unowned chats to a live installed brain waits for it too.
       if (liveForeignChatRuntimeOwner(schedule.sessionId)) return true;
+      if (!chatAutoAdoptable(schedule.sessionId, undefined, { quiet: true })) return true;
+      // Low disk refuses every turn until it clears. Wait quietly here: firing
+      // would post the refusal into the chat on every retry.
+      if (diskPressureMonitor?.canPerform("chat_turn").allowed === false) return true;
       const liveManaged = managedSessions.get(schedule.sessionId);
       const liveRuntime = liveManaged?.runtime?.kind === "claude" ? liveManaged.runtime : null;
       // Never enqueue a scheduler-owned wake behind a foreground turn. Queued
@@ -70150,20 +70715,49 @@ export function createAgentChatService(args: {
         }
         return { complete: true };
       }
-      await messageSession({
-        sessionId: schedule.sessionId,
-        text: schedule.prompt,
-        kind: "wake",
-        metadata: {
-          scheduledWake: {
-            scheduleId: schedule.id,
-            kind: schedule.kind,
-            firedAt,
-            reason: schedule.reason ?? schedule.prompt,
-            ...(context.late ? { late: true } : {}),
+      if (schedule.id.startsWith(CTO_MEMORY_GARDENER_ID_PREFIX)) {
+        try {
+          await runCtoMemoryGardening(schedule.sessionId);
+        } catch (error) {
+          logger.warn("agent_chat.cto_memory_gardening_failed", {
+            sessionId: schedule.sessionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        return;
+      }
+      // The send runs with `awaitDispatch: false`, so a throw here is a refusal
+      // before any turn started (provider signed out, pending input, a full
+      // queue): nothing was delivered, and no turn exists to settle the row
+      // later. It used to stay "fired" forever. Close it with the reason; a
+      // retry would only hit the same refusal.
+      try {
+        await messageSession({
+          sessionId: schedule.sessionId,
+          text: schedule.prompt,
+          kind: "wake",
+          metadata: {
+            scheduledWake: {
+              scheduleId: schedule.id,
+              kind: schedule.kind,
+              firedAt,
+              reason: schedule.reason ?? schedule.prompt,
+              ...(context.late ? { late: true } : {}),
+            },
           },
-        },
-      });
+        });
+      } catch (error) {
+        // The owner brain fires it at its own boundary: give the claim back.
+        if (error instanceof ChatRuntimeOwnedElsewhereError) return { retry: true };
+        const reason = error instanceof Error ? error.message : String(error);
+        logger.warn("agent_chat.scheduled_wake_refused", {
+          sessionId: schedule.sessionId,
+          scheduleId: schedule.id,
+          error: reason,
+        });
+        if (error instanceof ScheduledWakeRetryableRefusalError) return { retry: true };
+        return { complete: true, outcomeSummary: `Not delivered: ${reason}` };
+      }
     },
     onTransition: async (schedule, status) => {
       if (schedule.id.startsWith("cron-tool:")) {

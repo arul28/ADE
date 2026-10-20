@@ -9,13 +9,14 @@ import {
   canConnectToSocket,
   devRuntimeEnv,
   ensureRuntime,
+  resolveDevAdeHome,
   resolveDevSocketPath,
   resolveProjectRoot,
   runNpm,
   repoRoot,
   shutdownRuntime,
 } from "./dev-shared.mjs";
-import { prepareLaneUserData, pruneStaleDevUserData } from "./dev-user-data.mjs";
+import { devDesktopUserDataFolder, pruneStaleDevUserData } from "./dev-user-data.mjs";
 
 function usage() {
   return [
@@ -138,13 +139,19 @@ function laneUserDataEnv() {
     process.stdout.write(`[ade] user data : ${process.env.ADE_DESKTOP_USER_DATA_PATH} (ADE_DESKTOP_USER_DATA_PATH)\n`);
     return {};
   }
+  const { home, isDefault } = resolveDevAdeHome();
   let folder = null;
   try {
-    folder = prepareLaneUserData(repoRoot);
+    folder = devDesktopUserDataFolder(repoRoot, { adeHome: home, isDefaultHome: isDefault });
     for (const entry of pruneStaleDevUserData({ keep: folder })) {
       process.stdout.write(`[ade] removed stale dev user data ${entry.folder} (${entry.reason})\n`);
     }
   } catch (error) {
+    if (!isDefault) {
+      throw new Error(
+        `Could not prepare dev user data for ADE_HOME ${home}: ${error instanceof Error ? error.message : String(error)}. Set ADE_DESKTOP_USER_DATA_PATH to an explicit folder to continue.`,
+      );
+    }
     process.stderr.write(
       `[ade] warning: lane user data not prepared, using the shared folder: ${error instanceof Error ? error.message : String(error)}\n`,
     );

@@ -97,6 +97,45 @@ describe("macDesktopDriverClient restart", () => {
 
     client.dispose();
   });
+
+  it("gives two Darwin clients separate private copies and removes only the disposed client's copy", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mac-driver-client-copies-"));
+    tempDirs.push(dir);
+    const source = path.join(dir, "ade-desktop-driver");
+    const bytes = Buffer.from("private desktop driver bytes");
+    fs.writeFileSync(source, bytes);
+    fs.chmodSync(source, 0o755);
+
+    const spawnedPaths: string[] = [];
+    let nextPid = 301;
+    const spawnProcess = vi.fn((command: string) => {
+      spawnedPaths.push(command);
+      const child = createChild(nextPid);
+      nextPid += 1;
+      return child;
+    });
+    const makeClient = () => createMacDesktopDriverClient({
+      logger,
+      platform: "darwin",
+      resolveExecutablePath: () => source,
+      spawnProcess: spawnProcess as unknown as typeof import("node:child_process").spawn,
+    });
+    const first = makeClient();
+    const second = makeClient();
+
+    await Promise.all([first.ensureStarted(), second.ensureStarted()]);
+
+    expect(spawnedPaths).toHaveLength(2);
+    expect(new Set(spawnedPaths).size).toBe(2);
+    expect(spawnedPaths).not.toContain(source);
+    expect(spawnedPaths.map((copy) => fs.readFileSync(copy))).toEqual([bytes, bytes]);
+    expect(spawnedPaths.every((copy) => fs.existsSync(copy))).toBe(true);
+
+    first.dispose();
+    expect(fs.existsSync(spawnedPaths[0])).toBe(false);
+    expect(fs.existsSync(spawnedPaths[1])).toBe(true);
+    second.dispose();
+  });
 });
 
 describe("macDesktopDriverClient when the helper stops answering", () => {

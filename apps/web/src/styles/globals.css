@@ -194,3 +194,42 @@ body {
     transform: translateX(0);
   }
 }
+
+/* Home hero entrance. Content starts visible enough to read and only moves a
+   few pixels, so a slow bundle never leaves a blank first screen. */
+@keyframes ade-rise {
+  from { opacity: 0.001; transform: translateY(10px); }
+  to { opacity: 1; transform: none; }
+}
+.ade-rise { animation: ade-rise 0.55s var(--ease-out) both; }
+.ade-rise-slow { animation: ade-rise 0.9s var(--ease-out) both; }
+/* Gentle idle float for the hero's terminal and phone. `translate` is its own
+   property, so it composes with the rotate and hover scale on the parents. */
+@keyframes ade-float {
+  0%, 100% { translate: 0 0; }
+  50% { translate: 0 -8px; }
+}
+.ade-float { position: relative; animation: ade-float 6s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .ade-rise,
+  .ade-rise-slow,
+  .ade-float { animation: none; }
+}
+
+/* A busy agent's progress bar: a slice that slides across the track. */
+@keyframes ade-progress {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(200%); }
+}
+.ade-progress { animation: ade-progress 2.4s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .ade-progress { animation: none; } }
+
+/* Data moving along a connection: the dashes march toward the far end. */
+@keyframes ade-dash { to { stroke-dashoffset: -18; } }
+.ade-dash { animation: ade-dash 1.6s linear infinite; }
+@media (prefers-reduced-motion: reduce) { .ade-dash { animation: none; } }
+
+/* A tool tab that just opened slides in from the left. */
+@keyframes ade-tab-in { from { opacity: 0; transform: translateX(-6px); } to { opacity: 1; transform: none; } }
+.ade-tab-in { animation: ade-tab-in 0.35s cubic-bezier(0.22, 1, 0.36, 1) both; }
+@media (prefers-reduced-motion: reduce) { .ade-tab-in { animation: none; } }

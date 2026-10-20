@@ -9,6 +9,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { isPidAlive } from "./dev-shared.mjs";
 
 // Twin: the dev folder name in apps/desktop/src/main/desktopUserDataPath.ts.
@@ -61,15 +62,54 @@ function readMarker(folder) {
 }
 
 /**
+ * The suffix that keys a user-data folder to a non-default ADE home.
+ *
+ * The app copies the projects its profile remembers into whatever ADE home it
+ * runs on (`readMachineRegistryRecentProjects` and the machine-state
+ * migration in apps/desktop). A lane profile used with `~/.ade` remembers the
+ * owner's real project, so the same profile under a scratch `ADE_HOME`
+ * registered that project there and a scratch dev brain opened its database
+ * (2026-10-20). A home of its own gets a profile of its own.
+ */
+export function adeHomeUserDataSuffix(adeHome) {
+  const resolved = path.resolve(adeHome);
+  const name = path.basename(resolved).toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^[-.]+|-+$/g, "") || "home";
+  return `home-${name.slice(0, 40)}-${createHash("sha256").update(resolved).digest("hex").slice(0, 8)}`;
+}
+
+/**
+ * The folder `dev:desktop` gives this launch: the lane's (or, for the primary
+ * checkout, null = the shared one) on the default home, and a home-specific,
+ * unseeded one on any other home. Created and marked here.
+ */
+export function devDesktopUserDataFolder(
+  worktreeRoot,
+  { appDataPath = electronAppDataPath(), adeHome = null, isDefaultHome = true, now = Date.now() } = {},
+) {
+  if (isDefaultHome || !adeHome) return prepareLaneUserData(worktreeRoot, { appDataPath, now });
+  const base = laneUserDataPath(worktreeRoot, appDataPath) ?? path.join(appDataPath, BASE_DEV_USER_DATA_NAME);
+  return prepareLaneUserData(worktreeRoot, {
+    appDataPath,
+    now,
+    folder: `${base}-${adeHomeUserDataSuffix(adeHome)}`,
+    // The shared profile's recents are the default home's projects.
+    seed: false,
+  });
+}
+
+/**
  * Create (first use: seed) the lane's folder and stamp its marker. Returns the
  * folder, or null when the worktree keeps the shared one.
  */
-export function prepareLaneUserData(worktreeRoot, { appDataPath = electronAppDataPath(), now = Date.now() } = {}) {
-  const folder = laneUserDataPath(worktreeRoot, appDataPath);
+export function prepareLaneUserData(
+  worktreeRoot,
+  { appDataPath = electronAppDataPath(), now = Date.now(), folder: explicitFolder = null, seed = true } = {},
+) {
+  const folder = explicitFolder ?? laneUserDataPath(worktreeRoot, appDataPath);
   if (!folder) return null;
   const created = !fs.existsSync(folder);
   fs.mkdirSync(folder, { recursive: true });
-  if (created) {
+  if (created && seed) {
     const base = path.join(appDataPath, BASE_DEV_USER_DATA_NAME);
     for (const name of SEEDED_FILES) {
       try {

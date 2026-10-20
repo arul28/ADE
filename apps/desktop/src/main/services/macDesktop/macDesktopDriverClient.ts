@@ -20,6 +20,8 @@
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 import type { Logger } from "../logging/logger";
 
@@ -53,6 +55,7 @@ export const MAC_DESKTOP_DRIVER_OPS = {
   unparkWindow: "window.unpark",
   launch: "app.launch",
   quitApp: "app.quit",
+  adoptApp: "app.adopt",
   present: "present",
   observe: "observe",
   input: "input",
@@ -147,6 +150,90 @@ const RESTART_KILL_GRACE_MS = 1_000;
 /** One stderr line longer than this is cut before it reaches the log. */
 const MAX_STDERR_LINE_CHARS = 2_000;
 
+/**
+ * Where each macOS client keeps its own copy of the helper binary:
+ * `<tmp>/ade-desktop-driver-bin/<node pid>-<client>/ade-desktop-driver`.
+ *
+ * ScreenCaptureKit's daemon, `replayd`, keys its clients by executable path
+ * (`uniqueClientIdentifierWithPID: using identifier from executablePath`), not
+ * by process. Every project a brain opens runs its own helper, App Control's
+ * window recorder runs another, and a second brain may run more, all from the
+ * one binary in the app bundle. When a second of them connects, `replayd`
+ * cancels the first one's connection; the first reconnects and cancels the
+ * second, and the two bounce for as long as both live. A request caught in that
+ * fails with NSXPC 4097 inside ReplayKit and the ScreenCaptureKit completion
+ * handler is never called, so every screenshot, observe frame and stream start
+ * waits out its whole timeout. A hard link resolves to the same path, so each
+ * client gets a real copy (an APFS clone, so no disk is spent).
+ *
+ * Not `ade-desktop-driver`: the helper writes its scratch captures there.
+ */
+const PRIVATE_DRIVER_COPY_ROOT = path.join(os.tmpdir(), "ade-desktop-driver-bin");
+let privateDriverCopySlots = 0;
+let privateDriverCopiesSwept = false;
+
+/** Removes the copies of Node processes that are gone. Once per process. */
+function sweepPrivateDriverCopies(): void {
+  if (privateDriverCopiesSwept) return;
+  privateDriverCopiesSwept = true;
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(PRIVATE_DRIVER_COPY_ROOT);
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    const ownerPid = Number.parseInt(entry.split("-")[0] ?? "", 10);
+    if (!Number.isInteger(ownerPid) || ownerPid <= 0 || ownerPid === process.pid) continue;
+    try {
+      process.kill(ownerPid, 0);
+      continue;
+    } catch (error) {
+      // EPERM is a live process this user cannot signal: not ours to clear.
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") continue;
+    }
+    try {
+      fs.rmSync(path.join(PRIVATE_DRIVER_COPY_ROOT, entry), { recursive: true, force: true });
+    } catch {
+      // Swept again by the next process.
+    }
+  }
+}
+
+/**
+ * This client's copy of `source`, refreshed when the bundle's binary changed
+ * (an app update). Falls back to `source` itself when the copy cannot be made:
+ * a helper that shares its path is degraded, a helper that cannot start is gone.
+ */
+function privateDriverCopy(source: string, slot: string, logger: Logger): string {
+  const directory = path.join(PRIVATE_DRIVER_COPY_ROOT, slot);
+  const target = path.join(directory, path.basename(source));
+  try {
+    const from = fs.statSync(source);
+    try {
+      const current = fs.statSync(target);
+      if (current.size === from.size && current.mtimeMs === from.mtimeMs) return target;
+    } catch {
+      // No copy yet.
+    }
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    // Staged and renamed, so a restart never runs a half-written binary.
+    const staging = `${target}.${process.pid}.tmp`;
+    fs.copyFileSync(source, staging, fs.constants.COPYFILE_FICLONE);
+    fs.chmodSync(staging, 0o755);
+    fs.utimesSync(staging, from.atime, from.mtime);
+    fs.renameSync(staging, target);
+    return target;
+  } catch (error) {
+    logger.warn("mac_desktop.driver_private_copy_failed", {
+      source,
+      target,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return source;
+  }
+}
+
 export class MacDesktopDriverError extends Error {
   readonly code: string;
 
@@ -206,6 +293,12 @@ export type MacDesktopDriverClientDeps = {
   /** Arguments the helper is spawned with. Windows: `host --ade-home <dir>`. */
   driverArgs?: readonly string[];
   /**
+   * Extra environment for the helper. The brain service passes
+   * `ADE_DESKTOP_DRIVER_HANDOFF_PATH`, which makes a helper that exits hand
+   * the lanes' apps to the main screen instead of quitting them.
+   */
+  env?: Readonly<Record<string, string>> | null;
+  /**
    * Ask the helper to shut down over stdin (`{"type":"quit"}`) and wait a grace
    * before killing it. Windows only: `SIGTERM`/`kill` is `TerminateProcess`
    * there, which would skip the native child sign-out the driver must do.
@@ -256,6 +349,8 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
   const quitGraceMs = deps.quitGraceMs ?? 5_000;
   const spawnProcess = deps.spawnProcess ?? spawn;
   const requestTimeoutMs = deps.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+  /** This client's copy directory name; see {@link PRIVATE_DRIVER_COPY_ROOT}. */
+  const privateCopySlot = platform === "darwin" ? `${process.pid}-${++privateDriverCopySlots}` : null;
 
   let child: ChildProcessWithoutNullStreams | null = null;
   let childReady = false;
@@ -630,10 +725,15 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
         ));
         return;
       }
+      let launchPath = binary;
+      if (privateCopySlot) {
+        sweepPrivateDriverCopies();
+        launchPath = privateDriverCopy(binary, privateCopySlot, deps.logger);
+      }
       let spawned: ChildProcessWithoutNullStreams;
       try {
-        spawned = spawnProcess(binary, [...driverArgs], {
-          env: { ...process.env, LC_ALL: "en_US.UTF-8" },
+        spawned = spawnProcess(launchPath, [...driverArgs], {
+          env: { ...process.env, ...deps.env, LC_ALL: "en_US.UTF-8" },
           stdio: ["pipe", "pipe", "pipe"],
           windowsHide: true,
         }) as ChildProcessWithoutNullStreams;
@@ -991,6 +1091,15 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
           running.once("close", () => clearTimeout(killTimer));
         } else {
           running.kill();
+        }
+      }
+      // A running process keeps its unlinked binary; the next client gets a
+      // slot of its own.
+      if (privateCopySlot) {
+        try {
+          fs.rmSync(path.join(PRIVATE_DRIVER_COPY_ROOT, privateCopySlot), { recursive: true, force: true });
+        } catch {
+          // Swept when this process is gone.
         }
       }
     },

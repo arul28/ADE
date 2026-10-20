@@ -48,6 +48,8 @@ constexpr const char* kSignInFailed = "WINDOWS_DESKTOP_SIGN_IN_FAILED";
 constexpr const char* kWrongPassword = "WINDOWS_DESKTOP_WRONG_PASSWORD";
 constexpr const char* kNotConsoleSession = "WINDOWS_DESKTOP_NOT_CONSOLE_SESSION";
 constexpr const char* kCancelled = "WINDOWS_DESKTOP_CANCELLED";
+constexpr const char* kElevatedWindow = "WINDOWS_DESKTOP_ELEVATED_WINDOW";
+constexpr const char* kWindowActionFailed = "WINDOWS_DESKTOP_WINDOW_ACTION_FAILED";
 // Driver-local faults.
 constexpr const char* kUnknownOp = "unknown_op";
 constexpr const char* kProtocolError = "protocol_error";

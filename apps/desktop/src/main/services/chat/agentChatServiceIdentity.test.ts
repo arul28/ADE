@@ -10,6 +10,7 @@ import {
   createScheduledWorkDb,
   createService,
   fs,
+  installClaudeResponseFixture,
   mapPermissionToClaude,
   mapPermissionToCodex,
   mockState,
@@ -221,7 +222,7 @@ describe("createAgentChatService", () => {
       // spawn arg would apply to every thread on this app-server.
       expect(spawn).toHaveBeenCalledWith(
         "codex",
-        ["app-server", "-c", "check_for_update_on_startup=false"],
+        expect.arrayContaining(["app-server"]),
         expect.any(Object),
       );
       const spawnArgs = vi.mocked(spawn).mock.calls[0]?.[1] as string[] | undefined;
@@ -350,7 +351,7 @@ describe("createAgentChatService", () => {
       expect(getAdeCliAgentEnv).toHaveBeenCalled();
       expect(spawn).toHaveBeenCalledWith(
         "codex",
-        ["app-server", "-c", "check_for_update_on_startup=false"],
+        expect.arrayContaining(["app-server"]),
         expect.objectContaining({
           env: expect.objectContaining({
             PATH: "/tmp/ade-cli/bin",
@@ -365,6 +366,20 @@ describe("createAgentChatService", () => {
       );
       const spawnArgs = spawnCall?.[1] as string[] | undefined;
       expect(spawnArgs).toBeDefined();
+      // One app-server serves many chats, so the process env names none of
+      // them; this chat's identity rides on its thread, where its shell
+      // commands (and `ade`) read it.
+      const spawnEnv = (spawnCall?.[2] as { env?: NodeJS.ProcessEnv } | undefined)?.env ?? {};
+      expect(spawnEnv.ADE_CHAT_SESSION_ID).toBeUndefined();
+      expect(spawnEnv.ADE_LANE_ID).toBeUndefined();
+      const threadStart = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/start");
+      const threadShellEnv = (threadStart?.params as { config?: { shell_environment_policy?: { set?: Record<string, string> } } } | undefined)
+        ?.config?.shell_environment_policy?.set;
+      expect(threadShellEnv).toEqual(expect.objectContaining({
+        ADE_CHAT_SESSION_ID: session.id,
+        ADE_LANE_ID: "lane-2",
+        ADE_WORKSPACE_ROOT: fs.realpathSync(laneRootPath),
+      }));
       expect(spawnArgs).not.toContain("--disable");
       expect(spawnArgs).not.toContain("browser_use");
       expect(spawnArgs).not.toContain("computer_use");
@@ -2249,6 +2264,56 @@ describe("createAgentChatService", () => {
           pausedFlag: true,
         }),
       ]);
+    });
+
+    it("starts a fresh Claude thread when the saved provider account was removed", async () => {
+      installClaudeResponseFixture({ sdkSessionId: "sdk-old-account", responseText: "Primed." });
+      const scheduledWork = createScheduledWorkDb();
+      const { service, sessionService } = createService({ db: scheduledWork.db });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "prime the old account thread",
+        timeoutMs: 15_000,
+      });
+      const primed = readPersistedChatState(session.id);
+      expect(primed.sdkSessionId).toBe("sdk-old-account");
+      await service.dispose({ sessionId: session.id });
+      sessionService.reopen(session.id);
+
+      writePersistedChatState(session.id, {
+        ...primed,
+        instanceId: "gone-account",
+        sdkSessionId: "sdk-old-account",
+        forkFromSdkSessionId: "sdk-old-account",
+      });
+      const fresh = installClaudeResponseFixture({
+        sdkSessionId: "sdk-fresh-account",
+        responseText: "Started on the available account.",
+      });
+      vi.mocked(claudeSdkResumeSessionCompat).mockClear();
+
+      const resumed = createService({ db: scheduledWork.db }).service;
+      await resumed.resumeSession({ sessionId: session.id });
+      const result = await resumed.runSessionTurn({
+        sessionId: session.id,
+        text: "continue after account removal",
+        timeoutMs: 15_000,
+      });
+
+      const saved = readPersistedChatState(session.id);
+      expect(result.sdkSessionId).toBe("sdk-fresh-account");
+      expect(claudeSdkResumeSessionCompat).not.toHaveBeenCalledWith("sdk-old-account", expect.anything());
+      expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+      expect(fresh.send).toHaveBeenCalledWith(expect.stringContaining("continue after account removal"));
+      expect(saved.sdkSessionId).toBe("sdk-fresh-account");
+      expect(saved.forkFromSdkSessionId).not.toBe("sdk-old-account");
+      expect(saved.instanceId).not.toBe("gone-account");
+      resumed.forceDisposeAll();
     });
 
     it("persists a continuity snapshot and requires explicit recovery after identity session reset errors", async () => {

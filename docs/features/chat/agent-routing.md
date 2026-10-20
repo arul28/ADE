@@ -48,7 +48,7 @@ for vendored runtimes without changing the union.
 | Provider | Runtime | Adapter location |
 |---|---|---|
 | `claude` | `@anthropic-ai/claude-agent-sdk` `query()` stream with an ADE async input pump, `startup()` warmup, ADE's pinned Claude Code binary (with the [fall-forward](../onboarding-and-settings/agent-tools-cache.md#claude-fall-forward) override when Anthropic refuses the pin), SDK sessions, hooks, output styles, plugins, context usage, rewind, and slash-command dispatch. | `agentChatService.ts` (inline; the file carries the full Claude adapter). |
-| `codex` | Pinned `@openai/codex` 0.162.1 `codex app-server` subprocess, JSON-RPC protocol. Spawn failures surface as error events. | `agentChatService.ts` (Codex adapter and thread config); executable resolution via `services/ai/codexExecutable.ts`. |
+| `codex` | Pinned `@openai/codex` 0.162.1 `codex app-server` subprocess, JSON-RPC protocol, shared by every chat whose process would launch identically (see [One app-server for many Codex chats](#one-app-server-for-many-codex-chats)). Spawn failures surface as error events. | `agentChatService.ts` (Codex adapter and thread config); the shared process in `codexAppServerPool.ts`; executable resolution via `services/ai/codexExecutable.ts`. |
 | `opencode` | OpenCode server runtime: the provider catalog and model list come from OpenCode/Models.dev, with provider-native OAuth, API-key, custom, and local-server paths. | `agentChatService.ts` (OpenCode adapter); inventory in `openCodeInventory.ts`; auth in `openCodeAuthService.ts`. |
 | `cursor` | Official `@cursor/sdk` running in a Node worker pool. ADE owns permissions, hooks, and the system prompt; the SDK owns the model + tool execution. Slash commands are discovered from `.cursor/commands/`, `.cursor/agents/`, built-in subagents, and Agent Skill roots via `cursorSlashCommandDiscovery.ts`. A transport failure can wedge the server-side agent thread while the worker process stays alive, so every local turn carries a 90 s first-event watchdog and one automatic recycle-and-resend — see [Cursor thread recycling and the first-event watchdog](README.md#cursor-thread-recycling-and-the-first-event-watchdog). | `cursorSdkPool.ts`, `cursorSdkWorker.ts`, `cursorSdkProtocol.ts`, `cursorSdkPolicy.ts`, `cursorSdkSystemPrompt.ts`, `cursorSdkEventMapper.ts`, `cursorSdkErrors.ts`, `cursorSlashCommandDiscovery.ts`. |
 | `copilot` | ADE's pinned Copilot runtime (`copilot` tools-cache pin, version-paired with `@github/copilot-sdk`) driven through `@github/copilot-sdk` over stdio. Each Copilot chat gets its own forked worker. Workers are keyed by the CLI path, `COPILOT_HOME`, and the environment, which carries the chat id. The model list is `client.listModels()`; an Auto-only plan shows one `auto` model. Permissions use ADE's five levels (plan, ask, assisted, auto-edit, full-auto). Background utility tasks run on a session that never starts a user MCP server. | `copilotSdkPool.ts`, `copilotSdkWorker.ts`, `copilotSdkProtocol.ts`, `copilotSdkEventMapper.ts`, `copilotModelsDiscovery.ts`, `ai/copilotSdkLoader.ts`; the Copilot branch of `agentChatService.ts`. Full design: [copilot-sdk-provider.md](copilot-sdk-provider.md). |
@@ -525,7 +525,50 @@ request, so a turn sent after the toggle goes off inherits the config again.
 Reasoning effort travels **per thread** (`codexThreadConfigArgs`), never as a
 `-c model_reasoning_effort=…` flag on the `codex app-server` process. That flag
 outranks the user's `config.toml` and applies to every thread on that
-app-server, not just the chat that set it.
+app-server, not just the chat that set it. The same holds for the compaction
+point and the chat's identity (below): one app-server serves many chats.
+
+#### One app-server for many Codex chats
+
+Codex chats share one `codex app-server` process when it would be launched
+identically for them: the same Codex build, account (`CODEX_HOME` or the
+provider instance), harness preset, skill roots, notification opt-outs, and
+the rest of the env. `codexAppServerPool.ts` owns the process and its JSON-RPC
+transport; each chat keeps its own `CodexRuntime` with its per-thread state.
+Measured on 0.162.1, each extra process costs ~90 MB footprint plus a
+code-mode host, and an extra thread in a shared one ~10 MB
+([numbers](../../perf/macos-baseline.md#codex-chats-app-server-processes)).
+
+- **Identity per thread.** The env that names the chat (`ADE_CHAT_SESSION_ID`,
+  `ADE_LANE_ID`, `ADE_WORKSPACE_ROOT`, `ADE_PARENT_CHAT_SESSION_ID`,
+  `ADE_SPAWN_KIND`, `ADE_PARENT_MACHINE`, the Linear context vars, `PWD`) is
+  removed from the process env and sent with the thread as
+  `shell_environment_policy.set` on `thread/start`, `thread/resume` and
+  `thread/fork`, so the agent's `ade` commands still resolve their own chat.
+  Codex's native subagents inherit their parent thread's value. Project chats
+  run the process in the project root; each thread's `cwd` decides where its
+  commands run and which project `.codex/config.toml` applies.
+- **Routing.** Every thread notification and server request carries its
+  `threadId`; the pool delivers it to the chat that owns the thread (its own
+  thread or a subagent thread it registered). Lines for a brand-new thread wait
+  (up to 10 s) until the chat that started it records the id. Process-wide
+  notifications (`account/*`, rate limits) go to every chat, and the startup
+  `configWarning` / `deprecationNotice` are replayed to a chat that joins later.
+  A process with a single chat delivers everything to it, as before.
+- **Leaving.** A chat that tears down (idle, eviction, restart, close) does not
+  stop a process other chats use: it interrupts its running turn, then
+  `thread/unsubscribe`s its threads, and the process runs with
+  `thread_unload_delay_secs=0`, so Codex unloads the thread at once (its MCP
+  servers stop, its writer lock is released) and says `thread/closed`. The
+  chat's next runtime waits for that before resuming. The last chat to leave
+  stops the process. A process that cannot answer the unsubscribe in 10 s is
+  presumed stuck and stopped.
+- **Crashes.** When the process exits, every chat on it gets the exit (turn
+  failed, `Codex app-server exited …`), and each resumes its thread on a new
+  process with its next message.
+- **Off switch.** `ADE_CODEX_SHARED_APP_SERVER=0` in the brain's env gives every
+  chat its own process again. One-off processes (the model list, an import's
+  cleanup, a fork handoff in `codexEphemeralFork.ts`) are never shared.
 
 **Droid.** `resolveSessionDroidPermissionModeOrNull` returns the mode the user
 actually chose, or `null`. Droid has no "use my config" mode — `cliLaunch`
@@ -633,7 +676,7 @@ one `context_compact` lifecycle, and adds a guarded Claude fallback at 97%.
 | Provider | Compacts by itself | ADE setting applied as | `/compact` in ADE | Context window source |
 |---|---|---|---|---|
 | Claude | Yes (`auto` window from Anthropic, per model) | SDK query `settings.autoCompactWindow` (100k–1M); subagents get `autoCompactWindow` on each `agents` entry | Passed to the SDK as a slash command | `modelUsage[].contextWindow`, else the registry; `getContextUsage().raw_max_tokens` is the compaction point |
-| Codex | Yes | `codex app-server -c model_auto_compact_token_limit=<n>`, capped at the model window | `thread/compact/start`; custom instructions are not supported, and ADE says so | `thread/tokenUsage/updated` `modelContextWindow`; occupancy is `last` only, never the cumulative total |
+| Codex | Yes | `model_auto_compact_token_limit=<n>` in the thread's config (`thread/start`, `thread/resume`), capped at the model window | `thread/compact/start`; custom instructions are not supported, and ADE says so | `thread/tokenUsage/updated` `modelContextWindow`; occupancy is `last` only, never the cumulative total |
 | OpenCode | Yes | OpenCode config `compaction: { buffer, keep: { tokens } }` | `session.command` when the server lists `compact` | `min(models.dev limit.context, ADE registry)` |
 | Pi | Yes | `settingsManager.applyOverrides({ compaction: { reserveTokens, keepRecentTokens } })` | `sdk.compact()` | SDK `context_usage` |
 | Cursor | Yes | None ("This provider compacts by itself. ADE cannot change when.") | Not supported | The SDK's per-model window or the preCompact hook's `context_window_size` |

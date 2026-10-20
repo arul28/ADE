@@ -131,3 +131,6 @@ T3CODE_RESEARCH_*.md
 # MusicKit / App Store Connect private keys. Never in the repo.
 *.p8
 AuthKey_*.p8
+
+# Vercel CLI link for deploying the website by hand.
+.vercel

@@ -492,9 +492,12 @@ describe("createAgentChatService", () => {
       expect(forkProc).not.toBe(forkedChatProc);
       expect(forkProc!.stdin.end).toHaveBeenCalled();
       const forkProcClosedAt = forkProc!.stdin.end.mock.invocationCallOrder[0]!;
-      const firstForkedChatRequestAt = Math.min(
-        ...writesTo(forkedChatProc!).map(({ order }) => order),
-      );
+      // The forked chat may share an app-server with the source chat, so
+      // only its requests that name the forked thread need the lock.
+      const forkedThreadRequests = writesTo(forkedChatProc!)
+        .filter(({ payload }) => JSON.stringify(payload).includes("forked-thread-lock"));
+      expect(forkedThreadRequests.length, "the forked chat used its thread").toBeGreaterThan(0);
+      const firstForkedChatRequestAt = Math.min(...forkedThreadRequests.map(({ order }) => order));
       expect(forkProcClosedAt).toBeLessThan(firstForkedChatRequestAt);
     });
 
@@ -1976,9 +1979,15 @@ describe("createAgentChatService", () => {
       const lifecycleRequest = mockState.codexRequestPayloads.find((payload) => payload.method === expectedMethod);
       expect(lifecycleRequest).toBeDefined();
       if (expectedMethod === "thread/fork") {
+        // The rewound thread is still this chat's: its shell keeps naming it.
         expect(lifecycleRequest?.params).toEqual({
           threadId: "source-thread-1",
           beforeTurnId: "turn-target",
+          config: {
+            shell_environment_policy: {
+              set: expect.objectContaining({ ADE_CHAT_SESSION_ID: source.id, ADE_LANE_ID: "lane-1" }),
+            },
+          },
         });
         expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/rollback")).toBe(false);
         expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/revert")).toBe(false);

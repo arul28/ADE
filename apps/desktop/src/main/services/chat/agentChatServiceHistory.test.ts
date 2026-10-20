@@ -4,6 +4,7 @@ import {
   claudeSdkResumeSessionCompat,
   createAgentChatService,
   createService,
+  flushAllQueuedTranscriptWrites,
   fs,
   getSessionMessages,
   getSubagentMessages,
@@ -21,6 +22,7 @@ import {
   turnDiffMockState,
   waitFor,
   waitForEvent,
+  waitForFakeTimers,
   writePersistedChatState,
   writeTestTranscriptEnvelopes,
 } from "./agentChatService.testHarness";
@@ -870,6 +872,63 @@ describe("createAgentChatService", () => {
         await service.getChatEventHistory(session.id);
       }
       expect(service.residentChatEventHistorySessionCount()).toBe(0);
+    });
+
+    it("releases a quiet chat's event ring only once every event is on disk", async () => {
+      vi.useFakeTimers();
+      let service: ReturnType<typeof createService>["service"] | undefined;
+      try {
+        ({ service } = createService());
+        const chatA = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+        const chatB = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+        const durablePathA = path.join(tmpRoot, ".ade", "transcripts", "chat", `${chatA.id}.jsonl`);
+        const originalAppend = fs.promises.appendFile.bind(fs.promises);
+        const appendFault = vi.spyOn(fs.promises, "appendFile").mockImplementation(async (candidate, data, options) => {
+          if (path.resolve(String(candidate)) === path.resolve(durablePathA)) {
+            throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+          }
+          return await originalAppend(candidate, data, options);
+        });
+
+        try {
+          await expect(service.emitAdeCard({
+            sessionId: chatA.id,
+            card: { cardId: "lost-a", variant: "proof_artifact", state: "live", title: "Lost A", fallbackText: "Lost A" },
+          })).rejects.toThrow(/no space left/i);
+        } finally {
+          appendFault.mockRestore();
+        }
+
+        await expect(service.emitAdeCard({
+          sessionId: chatA.id,
+          card: { cardId: "landed-a", variant: "proof_artifact", state: "live", title: "Landed A", fallbackText: "Landed A" },
+        })).resolves.toBeUndefined();
+        await expect(service.emitAdeCard({
+          sessionId: chatB.id,
+          card: { cardId: "landed-b", variant: "proof_artifact", state: "live", title: "Landed B", fallbackText: "Landed B" },
+        })).resolves.toBeUndefined();
+        expect(service.residentChatEventHistorySessionCount()).toBe(2);
+
+        // History after the release comes from disk, so read it with the real parser.
+        const actualTranscript = await vi.importActual<typeof import("../../../shared/chatTranscript")>(
+          "../../../shared/chatTranscript",
+        );
+        vi.mocked(parseAgentChatTranscript).mockImplementation(actualTranscript.parseAgentChatTranscript);
+        // The appends are real file I/O; fake time must not run past them.
+        await flushAllQueuedTranscriptWrites();
+        await vi.advanceTimersByTimeAsync(11 * 60 * 1_000);
+
+        expect(service.residentChatEventHistorySessionCount()).toBe(1);
+        const historyA = await service.getChatEventHistory(chatA.id);
+        const historyB = await service.getChatEventHistory(chatB.id);
+        const cardIdsA = historyA.events.flatMap((entry) => entry.event.type === "ade_card" ? [entry.event.cardId] : []);
+        const cardIdsB = historyB.events.flatMap((entry) => entry.event.type === "ade_card" ? [entry.event.cardId] : []);
+        expect(cardIdsA).toEqual(expect.arrayContaining(["lost-a", "landed-a"]));
+        expect(cardIdsB).toContain("landed-b");
+      } finally {
+        vi.useRealTimers();
+        service?.forceDisposeAll();
+      }
     });
 
     it("hydrates through the async path without synchronous realpath or transcript flushing", async () => {
@@ -2629,6 +2688,153 @@ describe("createAgentChatService", () => {
         expect(events.find((event) => event.event.type === "status" && event.event.turnStatus === "failed")).toBeUndefined();
         expect(events.find((event) => event.event.type === "status" && event.event.turnStatus === "interrupted")).toBeUndefined();
       } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("stops a plain idle Codex runtime on archive and keeps a queued follow-up alive", async () => {
+      vi.useFakeTimers();
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const queuedTurnCompletion: { release?: () => void } = {};
+      try {
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.4",
+        });
+
+        await service.sendMessage({ sessionId: session.id, text: "Start before archiving." }, { awaitDispatch: true });
+        const firstTurnStart = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
+        const originalThreadId = (firstTurnStart?.params as { threadId?: string } | undefined)?.threadId;
+        expect(originalThreadId).toEqual(expect.any(String));
+        mockState.emitCodexPayload({
+          jsonrpc: "2.0",
+          method: "turn/completed",
+          params: { turn: { id: "turn-1", status: "completed" } },
+        });
+        await waitForEvent(
+          events,
+          (event): event is AgentChatEventEnvelope =>
+            event.event.type === "status" && event.event.turnStatus === "completed" && event.event.turnId === "turn-1",
+        );
+
+        // Keep another chat on the shared app-server so archiving this chat
+        // exercises its thread release instead of the last-client process exit.
+        const holdingSession = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.4",
+        });
+        await service.sendMessage({ sessionId: holdingSession.id, text: "Keep the shared app-server attached." }, { awaitDispatch: true });
+        const holdingThreadId = (mockState.codexRequestPayloads
+          .filter((payload) => payload.method === "turn/start")[1]?.params as { threadId?: string } | undefined)?.threadId;
+        expect(holdingThreadId).toEqual(expect.any(String));
+        mockState.emitCodexPayload({
+          jsonrpc: "2.0",
+          method: "turn/completed",
+          params: { threadId: holdingThreadId, turn: { id: "turn-2", status: "completed" } },
+        });
+        await waitForEvent(
+          events,
+          (event): event is AgentChatEventEnvelope =>
+            event.event.type === "status" && event.event.turnStatus === "completed" && event.event.turnId === "turn-2",
+        );
+
+        await service.archiveSession({ sessionId: session.id });
+
+        const unsubscribeIndex = mockState.codexRequestPayloads.findIndex((payload) =>
+          payload.method === "thread/unsubscribe"
+          && (payload.params as { threadId?: unknown } | undefined)?.threadId === originalThreadId,
+        );
+        expect(unsubscribeIndex).toBeGreaterThanOrEqual(0);
+
+        await service.unarchiveSession({ sessionId: session.id });
+        await service.sendMessage({ sessionId: session.id, text: "Continue after unarchiving." }, { awaitDispatch: true });
+
+        const resumeIndex = mockState.codexRequestPayloads.findIndex((payload) =>
+          payload.method === "thread/resume"
+          && (payload.params as { threadId?: unknown } | undefined)?.threadId === originalThreadId,
+        );
+        const resumeRequest = mockState.codexRequestPayloads[resumeIndex];
+        expect(resumeIndex).toBeGreaterThan(unsubscribeIndex);
+        expect(resumeRequest?.params).toEqual(expect.objectContaining({ threadId: originalThreadId }));
+        let turnStarts = mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start");
+        expect(turnStarts).toHaveLength(3);
+        const resumedTurnInput = (turnStarts[2]?.params as { threadId?: string; input?: Array<{ text?: unknown }> } | undefined);
+        expect(resumedTurnInput?.threadId).toBe(originalThreadId);
+        expect(resumedTurnInput?.input?.some(
+          (item) => typeof item.text === "string" && item.text.includes("Continue after unarchiving."),
+        )).toBe(true);
+
+        mockState.emitCodexPayload({
+          jsonrpc: "2.0",
+          method: "turn/completed",
+          params: { threadId: originalThreadId, turn: { id: "turn-3", status: "completed" } },
+        });
+        await waitForEvent(
+          events,
+          (event): event is AgentChatEventEnvelope =>
+            event.event.type === "status" && event.event.turnStatus === "completed" && event.event.turnId === "turn-3",
+        );
+
+        const queuedSession = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.4",
+        });
+        await service.sendMessage({ sessionId: queuedSession.id, text: "Start the queued-message case." }, { awaitDispatch: true });
+        turnStarts = mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start");
+        const queuedThreadId = (turnStarts[3]?.params as { threadId?: string } | undefined)?.threadId;
+        const queued = await service.messageSession({
+          sessionId: queuedSession.id,
+          text: "Deliver this queued follow-up.",
+          kind: "wake",
+        });
+        expect(queued).toMatchObject({ queued: true, delivery: "queued" });
+
+        const completionGate = new Promise<void>((resolve) => {
+          queuedTurnCompletion.release = resolve;
+        });
+        vi.mocked(runGit).mockImplementationOnce(async () => {
+          await completionGate;
+          return { stdout: "queued-head\n", stderr: "", exitCode: 0 };
+        });
+        mockState.emitCodexPayload({
+          jsonrpc: "2.0",
+          method: "turn/completed",
+          params: { threadId: queuedThreadId, turn: { id: "turn-4", status: "completed" } },
+        });
+        await service.archiveSession({ sessionId: queuedSession.id });
+        expect(mockState.codexRequestPayloads.some((payload) =>
+          payload.method === "thread/unsubscribe"
+          && (payload.params as { threadId?: unknown } | undefined)?.threadId === queuedThreadId,
+        )).toBe(false);
+
+        queuedTurnCompletion.release?.();
+        await waitForEvent(
+          events,
+          (event): event is AgentChatEventEnvelope =>
+            event.event.type === "status" && event.event.turnStatus === "completed" && event.event.turnId === "turn-4",
+        );
+        await waitForFakeTimers(
+          () => expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start")).toHaveLength(5),
+          { steps: 100, realYield: true },
+        );
+        turnStarts = mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start");
+        expect((turnStarts[4]?.params as { threadId?: string } | undefined)?.threadId).toBe(queuedThreadId);
+        expect((turnStarts[4]?.params as { input?: Array<{ text?: unknown }> } | undefined)?.input?.some(
+          (item) => typeof item.text === "string" && item.text.includes("Deliver this queued follow-up."),
+        )).toBe(true);
+
+        mockState.emitCodexPayload({
+          jsonrpc: "2.0",
+          method: "turn/completed",
+          params: { threadId: queuedThreadId, turn: { id: "turn-5", status: "completed" } },
+        });
+      } finally {
+        queuedTurnCompletion.release?.();
+        service.forceDisposeAll();
         vi.useRealTimers();
       }
     });

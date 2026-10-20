@@ -47,7 +47,10 @@ function snapshot() {
 
 function pick(snap) {
   const procs = [];
-  const main = [...snap].find(([, p]) => p.cmd.includes(`--remote-debugging-port=${port}`) && !p.cmd.includes("--type="));
+  // A launcher (npm, the dev script) can carry the same port flag; the Electron
+  // main is the one whose children are Chromium helpers (`--type=`).
+  const hasHelpers = (pid) => [...snap.values()].some((p) => p.ppid === pid && p.cmd.includes("--type="));
+  const main = [...snap].find(([pid, p]) => p.cmd.includes(`--remote-debugging-port=${port}`) && !p.cmd.includes("--type=") && hasHelpers(pid));
   if (!main) throw new Error(`no Electron main with --remote-debugging-port=${port}`);
   procs.push(["main", main[0]]);
   for (const [pid, p] of snap) {

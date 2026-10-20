@@ -49,8 +49,6 @@ export type LaneOverlayOverrides = {
   portRange?: { start: number; end: number };
   /** Proxy hostname override (e.g. "feat-auth.localhost") */
   proxyHostname?: string;
-  /** Compute backend override */
-  computeBackend?: "local" | "vps" | "daytona";
   /** Lane environment initialization config override */
   envInit?: LaneEnvInitConfig;
 };

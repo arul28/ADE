@@ -10,6 +10,7 @@ import {
   codexConfigHome,
 } from "../../../../desktop/src/main/services/shared/providerConfigHomes";
 import { pathsEqual } from "../../../../desktop/src/main/services/shared/pathCompare";
+import { isAdeProviderHomePath } from "../../../../desktop/src/shared/parentAgentEnv";
 import { resolveMachineAdeDir } from "../projects/machineLayout";
 import {
   ensurePrivateDirectory,
@@ -26,6 +27,7 @@ import {
   CLAUDE_MAIN_PROMPT_CACHE_TTL_ENV,
   CLAUDE_SUBAGENT_PROMPT_CACHE_TTL_ENV,
   DEFAULT_PROVIDER_INSTANCE_SETTINGS,
+  PROVIDER_INSTANCE_ENV_KEY,
   PROVIDER_INSTANCE_PROVIDERS,
   defaultProviderInstanceId,
   isDefaultProviderInstanceId,
@@ -273,9 +275,23 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
    * the registry would make ADE read one directory and launch against another.
    */
   function baseConfigHome(provider: ProviderInstanceProvider): string {
+    const baseEnv = inheritsAccountHome(provider) ? { ...env, [PROVIDER_INSTANCE_ENV_KEY[provider]]: undefined } : env;
     return provider === "claude"
-      ? claudeConfigHome({ env, homeDir })
-      : codexConfigHome({ env, homeDir });
+      ? claudeConfigHome({ env: baseEnv, homeDir })
+      : codexConfigHome({ env: baseEnv, homeDir });
+  }
+
+  /**
+   * True when this process inherited one ACCOUNT's config home (an agent
+   * shell's `CLAUDE_CONFIG_DIR`/`CODEX_HOME` inside ADE's provider homes)
+   * rather than the machine's own setting. That is not where the base
+   * identity lives, so it is neither the base config home nor read as the
+   * base account: reading it recorded a false "replaced account" on the
+   * shared registry (2026-10-20).
+   */
+  function inheritsAccountHome(provider: ProviderInstanceProvider): boolean {
+    const value = env[PROVIDER_INSTANCE_ENV_KEY[provider]]?.trim();
+    return Boolean(value && isAdeProviderHomePath(value, options.adeDir));
   }
 
   function readFile(): RegistryFile {
@@ -747,6 +763,11 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     record: Pick<StoredInstance, "id" | "provider" | "configHome">,
   ): Promise<{ readable: boolean; account: { email?: string; plan?: string } }> {
     const provider = record.provider;
+    // The base identity's reader follows the process env, which here names
+    // another account; "unreadable" keeps what was known.
+    if (isDefaultProviderInstanceId(record.id) && !options.readAccount && inheritsAccountHome(provider)) {
+      return { readable: false, account: {} };
+    }
     const scopedHome = isDefaultProviderInstanceId(record.id) ? undefined : record.configHome;
     try {
       const account = options.readAccount

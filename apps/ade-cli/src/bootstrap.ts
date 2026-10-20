@@ -248,6 +248,7 @@ import {
 } from "../../desktop/src/shared/types/builtInBrowser";
 import { WORK_TOOLS_STATE_CHANGED_EVENT } from "../../desktop/src/shared/types/workTools";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
+import { BRAIN_HEARTBEAT_STALE_MS, readBrainHeartbeat, servesMachineRuntimeEndpoint } from "./services/runtime/brainHeartbeat";
 import { readExistingOsBoundKeyMaterialAsync } from "./services/credentials/osBoundKeyMaterial";
 import { createBrainLogger } from "./services/runtime/brainLogger";
 import { createPushRegistrationStore } from "./services/push/pushRegistrationStore";
@@ -905,10 +906,12 @@ export async function createAdeRuntime(args: {
   const runtimeSocketPath = typeof resolvedArgs.runtimeSocketPath === "string"
     ? resolvedArgs.runtimeSocketPath.trim() || paths.socketPath
     : paths.socketPath;
+  const machineRuntimeLayout = resolveMachineAdeLayout();
+  const servesMachineEndpoint = servesMachineRuntimeEndpoint(runtimeSocketPath, machineRuntimeLayout.socketPath);
   const sessionActivityReportingEnabled = !embeddedRuntime && Boolean(runtimeSocketPath);
   const logger = createFileLogger(path.join(paths.logsDir, "ade-cli.jsonl"));
   const diskPressureMonitor = createDiskPressureMonitor({
-    roots: [projectRoot, resolveMachineAdeLayout().adeDir],
+    roots: [projectRoot, machineRuntimeLayout.adeDir],
   });
   // An embedded runtime is a guest inside an external process. It must never
   // take machine-brain authority, host a sync listener, or answer for the
@@ -2055,6 +2058,10 @@ export async function createAdeRuntime(args: {
         },
         readSetting: <T,>(key: string): T | null => db.getJson<T>(key),
         writeSetting: (key: string, value: unknown) => db.setJson(key, value),
+        // This brain's exits are restarts (an update, a service restart): the
+        // lanes' apps wait on the main screen and the next brain takes them
+        // back, instead of quitting with their unsaved work.
+        handOffAppsOnExit: true,
         captureAnalytics: (properties) => captureMacDesktopAnalytics({
           analytics: productAnalyticsService,
           properties,
@@ -2403,6 +2410,16 @@ export async function createAdeRuntime(args: {
         laneService,
         sessionService,
         processRegistry,
+        // A non-machine socket yields chats it does not run to the installed
+        // brain only while that brain is live on this project.
+        ...(!servesMachineEndpoint ? {
+          // A crashed machine brain stops beating; only a fresh beat counts,
+          // so a reused pid cannot hold this brain's unattended work.
+          machineBrainPid: () => {
+            const beat = readBrainHeartbeat(machineRuntimeLayout.runtimeDir);
+            return beat && Date.now() - beat.ts <= BRAIN_HEARTBEAT_STALE_MS ? beat.pid : null;
+          },
+        } : {}),
         projectConfigService,
         db,
         aiIntegrationService,

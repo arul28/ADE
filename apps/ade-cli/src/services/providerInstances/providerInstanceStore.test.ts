@@ -410,6 +410,62 @@ describe("providerInstanceStore", () => {
     expect(store.get("claude")?.signedIn).toBe(false);
   });
 
+  it.each([
+    ["claude", "CLAUDE_CONFIG_DIR", true, false],
+    ["claude", "CLAUDE_CONFIG_DIR", true, true],
+    ["claude", "CLAUDE_CONFIG_DIR", false, false],
+    ["codex", "CODEX_HOME", true, false],
+    ["codex", "CODEX_HOME", true, true],
+    ["codex", "CODEX_HOME", false, false],
+  ] as const)("keeps the base %s account when its environment names %s (%s, custom home %s)", async (provider, envKey, insideProviderHomes, customAdeHome) => {
+    const seeded = makeStore({
+      readAccount: async (readProvider) => readProvider === provider ? { email: "machine@example.com" } : {},
+    });
+    await seeded.store.refreshAccounts(provider);
+
+    const configHome = insideProviderHomes
+      ? path.join(
+        customAdeHome ? seeded.homeDir : seeded.adeDir,
+        ...(customAdeHome ? ["agent-home"] : []),
+        "provider-homes",
+        provider,
+        "agent-account",
+      )
+      : path.join(path.dirname(seeded.adeDir), `user-${provider}-config`);
+    fs.mkdirSync(configHome, { recursive: true });
+    if (provider === "claude") {
+      fs.writeFileSync(path.join(configHome, ".claude.json"), JSON.stringify({
+        oauthAccount: { emailAddress: "agent@example.com" },
+      }));
+    } else {
+      const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
+      const idToken = `${encode({ alg: "RS256" })}.${encode({ email: "agent@example.com" })}.signature`;
+      fs.writeFileSync(path.join(configHome, "auth.json"), JSON.stringify({ tokens: { id_token: idToken } }));
+    }
+
+    const previousEnv = process.env[envKey];
+    process.env[envKey] = configHome;
+    try {
+      const store = createProviderInstanceStore({
+        adeDir: seeded.adeDir,
+        homeDir: seeded.homeDir,
+        env: { [envKey]: configHome },
+        resolveBinary: (name) => `/bin/${name}`,
+      });
+      const refreshed = await store.refreshAccounts(provider);
+      const base = refreshed.find((instance) => instance.id === provider);
+
+      expect(base?.account?.email).toBe(insideProviderHomes ? "machine@example.com" : "agent@example.com");
+      expect(base?.replacedAccount?.email).toBe(insideProviderHomes ? undefined : "machine@example.com");
+      expect(base?.configHome).toBe(insideProviderHomes
+        ? path.join(seeded.homeDir, provider === "claude" ? ".claude" : ".codex")
+        : configHome);
+    } finally {
+      if (previousEnv === undefined) delete process.env[envKey];
+      else process.env[envKey] = previousEnv;
+    }
+  });
+
   it("reports a broken login as signed out, keeps its email, and emits once per flip", async () => {
     const { store, changes } = makeStore({
       readAccount: async () => ({ email: "known@example.com", plan: "Claude Max" }),

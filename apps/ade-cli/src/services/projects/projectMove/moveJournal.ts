@@ -18,11 +18,16 @@ function projectMovesDir(): string {
 /** Written into a project's old folder when it moves, so nothing opens the kept copy by mistake. */
 const PROJECT_MOVED_MARKER = path.join(".ade", "moved-to.json");
 
+/** Where the moved marker of `root` lives. */
+export function movedMarkerPath(root: string): string {
+  return path.join(root, PROJECT_MOVED_MARKER);
+}
+
 export type MovedMarker = { movedTo: string | null; moveId: string | null };
 
 /** The moved marker in `root`, or null when `root` is not a kept copy. */
 export function readMovedMarker(root: string): MovedMarker | null {
-  const marker = path.join(root, PROJECT_MOVED_MARKER);
+  const marker = movedMarkerPath(root);
   if (!fs.existsSync(marker)) return null;
   try {
     const parsed = JSON.parse(fs.readFileSync(marker, "utf8")) as { movedTo?: unknown; moveId?: unknown };

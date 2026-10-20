@@ -109,10 +109,14 @@ export type ChatScheduledWorkSchedulerOptions = {
   claimFire?(schedule: ChatScheduledWorkRecord): boolean;
   /** Gives up a claim whose delivery is being retried at a later boundary. */
   releaseFire?(schedule: ChatScheduledWorkRecord): void;
+  /**
+   * `complete` settles the occurrence now; `outcomeSummary` says how (a wake
+   * the chat refused before any turn started has no turn to settle it later).
+   */
   fire(
     schedule: ChatScheduledWorkRecord,
     context: { late: boolean },
-  ): Promise<void | { complete: true } | { retry: true }>;
+  ): Promise<void | { complete: true; outcomeSummary?: string } | { retry: true }>;
   onTransition?: (
     schedule: ChatScheduledWorkRecord,
     status: ChatScheduledWorkStatus,
@@ -439,10 +443,14 @@ export function createChatScheduledWorkScheduler(
 
     let complete = false;
     let retry = false;
+    let outcomeSummary: string | undefined;
     try {
       const result = await options.fire(cloneSchedule(schedule), { late });
       complete = result != null && "complete" in result && result.complete === true;
       retry = result != null && "retry" in result && result.retry === true;
+      if (result != null && "outcomeSummary" in result && result.outcomeSummary) {
+        outcomeSummary = result.outcomeSummary;
+      }
     } catch {
       // A delivery may have reached the session before its caller failed. Keep
       // one-shots fired and advance crons so a retry cannot double-deliver.
@@ -464,6 +472,7 @@ export function createChatScheduledWorkScheduler(
       if (current.status === "scheduled") armBusyDeferRetry(current);
       return;
     }
+    if (outcomeSummary) current.outcomeSummary = outcomeSummary;
     if (current.kind !== "cron") {
       if (!complete) return;
       markTerminal(current, "done");

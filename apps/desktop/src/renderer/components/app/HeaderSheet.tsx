@@ -63,7 +63,9 @@ export function HeaderSheet({
     }
   };
   const panelPositionClassName = cn(
-    "absolute right-3 top-10 max-h-[calc(100vh-72px)]",
+    // `100vh` is screen pixels, but hosted web zooms <body>, which scales this
+    // length again; dividing by the zoom keeps the sheet inside the window.
+    "absolute right-3 top-10 max-h-[calc(100vh_/_var(--ade-web-zoom-factor,1)_-_72px)]",
     !bare && "overflow-y-auto",
     width ?? "w-[min(620px,calc(100vw-24px))]",
   );

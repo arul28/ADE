@@ -33,6 +33,11 @@ bool isAppWindow(HWND hwnd);
 
 std::wstring processImagePath(DWORD pid);
 std::wstring appNameForExe(const std::wstring& exePath);
+bool isWindowElevated(HWND hwnd);
+bool selfElevated();
+// Refuses control when an un-elevated driver would target an administrator
+// window or the administrator window that currently holds focus.
+void failIfElevatedWindow(HWND target = nullptr, bool checkForeground = true);
 DWORD parentProcessId(DWORD pid);
 // The pid and every descendant alive now.
 std::set<DWORD> processTree(DWORD root);
