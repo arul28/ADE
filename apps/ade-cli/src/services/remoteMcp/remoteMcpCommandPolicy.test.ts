@@ -22,6 +22,7 @@ describe("checkRemoteAdeCommand", () => {
     ["write", "removing a machine from the account, through the `machine` alias", ["machine", "remove", "key"]],
     ["write", "a command nobody has enabled for ADE MCP", ["not-a-real-command", "run"]],
     ["write", "signing the machine in to GitHub", ["github", "app-auth", "login"]],
+    ["write", "clearing GitHub sign-in through the `gh` alias", ["gh", "app", "clear"]],
     ["write", "a GitHub sign-in through actions", ["actions", "run", "github.startAppUserDeviceAuth"]],
     ["write", "a Linear credential through actions, split spelling", ["actions", "run", "linear_credentials", "setToken"]],
     ["write", "disconnecting Jira", ["jira", "disconnect"]],

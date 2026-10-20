@@ -198,7 +198,7 @@ export function checkRemoteAdeCommand(input: unknown, scope: RemoteMcpScope): Re
 
 const COMMAND_WORD = /^[a-z][a-z0-9-]*$/;
 /** Spellings the CLI treats as the same command. */
-const COMMAND_ALIASES: ReadonlyMap<string, string> = new Map([["action", "actions"], ["machine", "machines"]]);
+const COMMAND_ALIASES: ReadonlyMap<string, string> = new Map([["action", "actions"], ["machine", "machines"], ["gh", "github"]]);
 /** `ade machines` subcommands that only read the roster. */
 const MACHINE_READ_SUBCOMMANDS: ReadonlySet<string> = new Set(["list", "ls", "show", "view", "get", "info"]);
 const MACHINE_TARGET_FLAG = /^--(?:machine|all-machines|machine-project)(?:=|$)/;
