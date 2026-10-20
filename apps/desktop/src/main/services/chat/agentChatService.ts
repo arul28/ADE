@@ -12447,7 +12447,7 @@ export function createAgentChatService(args: {
         if (imageMimeType && !isProviderImageByteMediaType(imageMimeType)) {
           items.push({
             type: "text",
-            text: imageAttachmentReferenceText(attachment.path, imageMimeType),
+            text: imageAttachmentReferenceText(attachmentAgentPath(attachment), imageMimeType),
             text_elements: [],
           });
           continue;

@@ -26,6 +26,8 @@ function asciiAt(bytes: Uint8Array, start: number, end: number): string {
  * Return the MIME type of a supported image from its leading bytes, or null
  * when the bytes match no supported format.
  */
+const BMP_DIB_HEADER_SIZES: ReadonlySet<number> = new Set([12, 40, 52, 56, 64, 108, 124]);
+
 export function sniffImageMimeType(bytes: Uint8Array): string | null {
   if (bytes.length >= 8
     && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4E && bytes[3] === 0x47
@@ -55,7 +57,10 @@ export function sniffImageMimeType(bytes: Uint8Array): string | null {
     if (HEIC_FTYP_BRANDS.has(brand)) return "image/heic";
     if (HEIF_FTYP_BRANDS.has(brand)) return "image/heif";
   }
-  if (bytes.length >= 2 && bytes[0] === 0x42 && bytes[1] === 0x4D) {
+  // "BM" alone matches plenty of text; a real BMP follows it with a known
+  // DIB header size at offset 14 (12, 40, 52, 56, 64, 108 or 124 bytes).
+  if (bytes.length >= 18 && bytes[0] === 0x42 && bytes[1] === 0x4D
+    && BMP_DIB_HEADER_SIZES.has(bytes[14]! | (bytes[15]! << 8) | (bytes[16]! << 16) | (bytes[17]! << 24))) {
     return "image/bmp";
   }
   if (bytes.length >= 4

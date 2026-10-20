@@ -111,9 +111,10 @@ export async function buildAcpPromptBlocks(
     try {
       const bytes = await args.readAttachmentBytes(attachment);
       if (attachment.type === "image") {
-        // No type from the sender or the name: the bytes decide, and bytes
-        // that are no provider image type stay a path reference.
-        const mimeType = declaredImageMimeType ?? sniffImageMimeType(bytes);
+        // Once the bytes are read they decide, so a TIFF named `.png` is not
+        // inlined as a PNG; the declared type is the fallback when sniffing
+        // finds nothing. A type no provider takes stays a path reference.
+        const mimeType = sniffImageMimeType(bytes) ?? declaredImageMimeType;
         if (!mimeType || !isProviderImageByteMediaType(mimeType)) {
           blocks.push(textBlock(`\n${imageAttachmentReferenceText(attachmentAgentPath(attachment), mimeType ?? "unknown type")}`));
         } else if (!args.agentSupportsImages || !args.imagePrompt) {

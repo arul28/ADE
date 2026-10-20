@@ -26,6 +26,9 @@ function clampScale(value: number): number {
  *   tracks the pointer at any app zoom level.
  * - Pointerdowns on buttons inside the surface (an error banner's actions)
  *   are left alone so they still click.
+ * - Wheel zoom is a native listener attached through `wheelRef`, because
+ *   React's root wheel listener is passive: its `preventDefault()` could not
+ *   stop a pinch from zooming the whole page in the web client.
  */
 export function usePanZoom({ initialFit = true }: { initialFit?: boolean } = {}) {
   const [fit, setFit] = useState(initialFit);
@@ -51,16 +54,26 @@ export function usePanZoom({ initialFit = true }: { initialFit?: boolean } = {})
     setOffset({ x: 0, y: 0 });
   }, [initialFit]);
 
+  const wheelCleanupRef = useRef<(() => void) | null>(null);
+  /** Attach to the pan surface; zooms on ctrl/⌘ + wheel and trackpad pinch. */
+  const wheelRef = useCallback((element: HTMLElement | null) => {
+    wheelCleanupRef.current?.();
+    wheelCleanupRef.current = null;
+    if (!element) return;
+    const onWheel = (event: WheelEvent) => {
+      if (!event.ctrlKey && !event.metaKey) return;
+      event.preventDefault();
+      zoomBy(event.deltaY < 0 ? WHEEL_ZOOM_STEP : 1 / WHEEL_ZOOM_STEP);
+    };
+    element.addEventListener("wheel", onWheel, { passive: false });
+    wheelCleanupRef.current = () => element.removeEventListener("wheel", onWheel);
+  }, [zoomBy]);
+
   const endDrag = () => {
     dragRef.current = null;
   };
 
   const panHandlers = {
-    onWheel: (event: React.WheelEvent) => {
-      if (!event.ctrlKey && !event.metaKey) return;
-      event.preventDefault();
-      zoomBy(event.deltaY < 0 ? WHEEL_ZOOM_STEP : 1 / WHEEL_ZOOM_STEP);
-    },
     onPointerDown: (event: React.PointerEvent<HTMLElement>) => {
       if (fit || event.button !== 0) return;
       if ((event.target as Element | null)?.closest?.("button")) return;
@@ -95,5 +108,6 @@ export function usePanZoom({ initialFit = true }: { initialFit?: boolean } = {})
     setView,
     reset,
     panHandlers,
+    wheelRef,
   };
 }

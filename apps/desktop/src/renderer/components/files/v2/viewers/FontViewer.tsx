@@ -166,8 +166,8 @@ function FontHeader({
           model={{
             id: "woff2-container",
             tone: "info",
-            title: `WOFF2 container · ${info.containerTableCount ?? "?"} tables · ${containerSummary}`,
-            detail: "Detailed metadata is unavailable; ADE uses the browser font engine for the preview.",
+            title: "Font details aren't available for WOFF2",
+            detail: `The preview uses the browser's font engine. Container: ${info.containerTableCount ?? "?"} tables, ${containerSummary}.`,
           }}
         />
       ) : null}

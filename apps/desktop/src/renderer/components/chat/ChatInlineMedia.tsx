@@ -259,7 +259,14 @@ function InlineImage({
       className="block max-w-full cursor-zoom-in overflow-hidden rounded-xl text-left"
       aria-label={`Open ${name} in Files`}
     >
-      <img src={url} alt={alt || name} className="max-h-[360px] max-w-full rounded-xl object-contain" />
+      <img
+        src={url}
+        alt={alt || name}
+        className="max-h-[360px] max-w-full rounded-xl object-contain"
+        // A corrupt file reaches here with an image extension; show the chip
+        // rather than a broken picture.
+        onError={() => setFailed(true)}
+      />
     </button>
   );
 }

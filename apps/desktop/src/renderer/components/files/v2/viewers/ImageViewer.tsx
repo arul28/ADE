@@ -273,6 +273,7 @@ function ImageCanvas({
   checkerboard,
   onError,
   panHandlers,
+  wheelRef,
 }: {
   src: string | null;
   error: string | null;
@@ -284,6 +285,7 @@ function ImageCanvas({
   checkerboard: boolean;
   onError: () => void;
   panHandlers: ReturnType<typeof usePanZoom>["panHandlers"];
+  wheelRef: ReturnType<typeof usePanZoom>["wheelRef"];
 }) {
   return (
     <div
@@ -294,6 +296,7 @@ function ImageCanvas({
           ? "conic-gradient(#8882 25%, transparent 0 50%, #8882 0 75%, transparent 0) 0 0 / 18px 18px"
           : undefined,
       }}
+      ref={wheelRef}
       {...panHandlers}
     >
       {error ? (
@@ -494,6 +497,7 @@ export function ImageViewer(props: ViewerProps) {
             setError("This image format could not be decoded by the viewer.")
           }
           panHandlers={view.panHandlers}
+          wheelRef={view.wheelRef}
         />
       )}
     </div>

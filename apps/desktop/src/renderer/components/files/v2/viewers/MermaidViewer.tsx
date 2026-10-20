@@ -131,7 +131,14 @@ function MermaidErrorBanner({
             error.kind === "load"
               ? "Couldn't load the diagram renderer"
               : "Diagram couldn’t be rendered",
-          detail: `${error.error}${line ? ` (line ${line})` : ""}`,
+          // Mermaid's raw parser output (source excerpt, caret, token list) is
+          // not notice copy; the line is what the reader needs to fix it.
+          detail:
+            error.kind === "load"
+              ? "The diagram renderer did not load. Try again."
+              : line
+                ? `Mermaid could not parse line ${line}. Edit the source to fix it.`
+                : "Mermaid could not parse this diagram. Edit the source to fix it.",
           actions:
             error.kind === "load"
               ? [{ label: "Retry", onClick: onRetry }]
@@ -149,12 +156,19 @@ export function MermaidViewer(props: ViewerProps) {
     readViewerMode<Mode>(tab.id, "diagram"),
   );
   const view = usePanZoom({ initialFit: false });
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  // One stable ref for the viewport: the element is both measured for "fit"
+  // and the surface the wheel-zoom listener is attached to.
+  const { wheelRef } = view;
+  const setViewport = useCallback((element: HTMLDivElement | null) => {
+    viewportRef.current = element;
+    wheelRef(element);
+  }, [wheelRef]);
   const [liveText, setLiveText] = useState<string | null>(null);
   const [renderedSvg, setRenderedSvg] = useState<string | null>(null);
   const [error, setError] = useState<MermaidFailure | null>(null);
   // Bumped by Retry: remounting the diagram re-runs a failed renderer import.
   const [renderAttempt, setRenderAttempt] = useState(0);
-  const viewportRef = useRef<HTMLDivElement | null>(null);
   const dirty = mode === "diagram" && registry.isDirty(tab.id);
 
   const setMode = (next: Mode) => {
@@ -241,7 +255,7 @@ export function MermaidViewer(props: ViewerProps) {
         <CodeViewer {...props} />
       ) : (
         <div
-          ref={viewportRef}
+          ref={setViewport}
           className="relative min-h-0 min-w-0 flex-1 overflow-auto"
           {...view.panHandlers}
         >

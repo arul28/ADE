@@ -1,6 +1,7 @@
 // The one OOXML media extension → MIME map both the Word and PowerPoint
 // readers use, so a format added for one is never silently missing from the
-// other.
+// other. Only formats an `<img>` can draw are listed: a TIFF picture is
+// counted as not shown rather than handed to an element that cannot decode it.
 
 const MEDIA_MIME_BY_EXTENSION: Record<string, string> = {
   png: "image/png",
@@ -10,18 +11,7 @@ const MEDIA_MIME_BY_EXTENSION: Record<string, string> = {
   bmp: "image/bmp",
   webp: "image/webp",
   svg: "image/svg+xml",
-  tif: "image/tiff",
-  tiff: "image/tiff",
 };
-
-/** Formats an `<img>` decodes natively as a bitmap: no SVG, no TIFF. */
-const BROWSER_RASTER_MIME_TYPES = new Set([
-  "image/png",
-  "image/jpeg",
-  "image/gif",
-  "image/bmp",
-  "image/webp",
-]);
 
 /**
  * The MIME type for a package media part, from its extension, or null when
@@ -35,6 +25,6 @@ export function ooxmlMediaMimeType(
 ): string | null {
   const ext = path.slice(path.lastIndexOf(".") + 1).toLowerCase();
   const mimeType = MEDIA_MIME_BY_EXTENSION[ext] ?? null;
-  if (mimeType && options.browserRasterOnly && !BROWSER_RASTER_MIME_TYPES.has(mimeType)) return null;
+  if (mimeType === "image/svg+xml" && options.browserRasterOnly) return null;
   return mimeType;
 }

@@ -1594,7 +1594,7 @@ describe("createAgentChatService", () => {
             }),
             expect.objectContaining({
               type: "text",
-              text: `[Image attached (image/svg+xml): ${svgPath}]`,
+              text: expect.stringMatching(/^\[Image attached \(image\/svg\+xml\): .*codex-steer-diagram\.svg\]$/),
             }),
           ]),
         }),
