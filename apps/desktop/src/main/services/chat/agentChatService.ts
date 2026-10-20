@@ -10677,6 +10677,13 @@ export type RequestChatInputArgs = {
   }>;
 };
 
+class ScheduledWakeRetryableRefusalError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ScheduledWakeRetryableRefusalError";
+  }
+}
+
 export function createAgentChatService(args: {
   projectRoot: string;
   /**
@@ -10851,14 +10858,8 @@ export function createAgentChatService(args: {
   laneService: ReturnType<typeof createLaneService>;
   sessionService: ReturnType<typeof createSessionService>;
   processRegistry?: ProcessRegistryService | null;
-  /**
-   * True for a brain serving on its own `--socket` (a dev or hand-started
-   * brain) rather than its home's machine socket. While another brain is live
-   * on the project, such a brain leaves the chats it does not run to that
-   * brain: it fires none of their scheduled work and recovers, resumes and
-   * prewarms none of them on its own. Explicit sends still work.
-   */
-  yieldsUnownedChatsToSiblingBrains?: boolean;
+  /** The installed machine brain's pid when it is live on this project. */
+  machineBrainPid?: () => number | null;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   db?: (
     Pick<AdeDb, "getJson" | "setJson">
@@ -11063,7 +11064,7 @@ export function createAgentChatService(args: {
     laneService,
     sessionService,
     processRegistry,
-    yieldsUnownedChatsToSiblingBrains = false,
+    machineBrainPid,
     projectConfigService,
     db,
     lookupLaneAppleDevice: injectedLaneAppleDeviceLookup,
@@ -19739,35 +19740,39 @@ export function createAgentChatService(args: {
       }
       return false;
     }
-    return !yieldsToSiblingBrain(state, decision.verdict);
+    return !yieldsToMachineBrain(state, decision.verdict);
   };
 
   /**
-   * A dev or hand-started brain (see `yieldsUnownedChatsToSiblingBrains`)
-   * leaves a chat it does not run to the other brain on this project. On
-   * 2026-10-20 a dev brain on the shared home won the claim for another lane's
-   * scheduled "/ship 1821" wake and ran that turn with the dev lane's code.
+   * A dev or hand-started brain leaves unattended work to the installed
+   * machine brain when it is live on this project. The 2026-10-20 incident
+   * involved a dev brain on the shared home winning the claim for another
+   * lane's scheduled "/ship 1821" wake and running it with the dev lane's code.
    * Its own chats stay its own: its stamp, or its dead predecessor on the same
    * socket (a restart keeps the socket; a sibling brain has its own).
    */
-  const yieldsToSiblingBrain = (
+  const yieldsToMachineBrain = (
     state: PersistedChatState | null | undefined,
     verdict: ChatRuntimeOwnershipDecision["verdict"],
   ): boolean => {
-    if (!yieldsUnownedChatsToSiblingBrains || !processRegistry) return false;
+    if (!machineBrainPid || !processRegistry) return false;
     const owner = state?.runtimeOwner ?? null;
     if (verdict === "self") return false;
     if (owner?.socketPath && runtimeSocketPath && pathsEqual(owner.socketPath, runtimeSocketPath)) return false;
     const selfPid = processRegistry.pid ?? process.pid;
-    return processRegistry.listLiveProcessIdentities().some((identity) => identity.pid !== selfPid);
+    const installedBrainPid = machineBrainPid();
+    return installedBrainPid !== null
+      && installedBrainPid !== selfPid
+      && processRegistry.listLiveProcessIdentities().some((identity) => identity.pid === installedBrainPid);
   };
 
   /**
    * A chat last run under another ADE home on an account this brain's home
    * does not have. Its provider thread lives in that account's config home, so
    * this brain could only resume it on a different account, which fails ("No
-   * conversation found") and drops the chat's account pointer on the way. Left
-   * to a brain whose home knows the account. A missing account under THIS
+   * conversation found") and drops the chat's account pointer on the way.
+   * Unattended work stays with a brain whose home knows the account, and an
+   * explicit send is refused with guidance. A missing account under THIS
    * brain's home is a real removal and keeps the fallback.
    */
   const accountUnknownFromOtherHome = (state: PersistedChatState | null | undefined): boolean => {
@@ -50739,6 +50744,14 @@ export function createAgentChatService(args: {
       ? getProviderRuntimeHealth("claude")
       : null;
     if (
+      (managed.session.provider === "claude" || managed.session.provider === "codex")
+      && accountUnknownFromOtherHome(readPersistedState(sessionId))
+    ) {
+      throw new Error(
+        `This chat ran on a ${managed.session.provider} account that this ADE (home ${brainAdeHome}) does not have, so it cannot resume its conversation here. Open it from the ADE where it was created, or start a new chat.`,
+      );
+    }
+    if (
       managed.session.provider === "claude"
       && claudeRuntimeHealth?.state === "auth-failed"
     ) {
@@ -57623,8 +57636,11 @@ export function createAgentChatService(args: {
       ? await applyChatMentionExpansion(rawArgs)
       : rawArgs;
     let args = expandedArgs;
-    const throwForScheduledWakeRefusal = (reason: string): void => {
-      if (args.metadata?.scheduledWake) throw new Error(reason);
+    const throwForScheduledWakeRefusal = (reason: string, retryable = false): void => {
+      if (args.metadata?.scheduledWake) {
+        if (retryable) throw new ScheduledWakeRetryableRefusalError(reason);
+        throw new Error(reason);
+      }
     };
     const dispatchStartedAt = Date.now();
     const managed = ensureManagedSession(args.sessionId);
@@ -57644,7 +57660,7 @@ export function createAgentChatService(args: {
       const diskDecision = diskPressureMonitor?.canPerform("chat_turn");
       if (diskDecision && !diskDecision.allowed) {
         emitDiskPressureSendFailure(managed, diskDecision.state, diskDecision.message);
-        throwForScheduledWakeRefusal(diskDecision.message);
+        throwForScheduledWakeRefusal(diskDecision.message, true);
         return;
       }
       if (options?.routeActiveToSteer && canRouteActiveSendToSteer(managed)) {
@@ -70135,9 +70151,12 @@ export function createAgentChatService(args: {
       }
       // Another live brain runs this chat and fires the row at its own turn
       // boundary; firing it here would start a second provider process. A
-      // brain that leaves unowned chats to a live sibling waits for it too.
+      // brain that leaves unowned chats to a live installed brain waits for it too.
       if (liveForeignChatRuntimeOwner(schedule.sessionId)) return true;
       if (!chatAutoAdoptable(schedule.sessionId, undefined, { quiet: true })) return true;
+      // Low disk refuses every turn until it clears. Wait quietly here: firing
+      // would post the refusal into the chat on every retry.
+      if (diskPressureMonitor?.canPerform("chat_turn").allowed === false) return true;
       const liveManaged = managedSessions.get(schedule.sessionId);
       const liveRuntime = liveManaged?.runtime?.kind === "claude" ? liveManaged.runtime : null;
       // Never enqueue a scheduler-owned wake behind a foreground turn. Queued
@@ -70256,6 +70275,7 @@ export function createAgentChatService(args: {
           scheduleId: schedule.id,
           error: reason,
         });
+        if (error instanceof ScheduledWakeRetryableRefusalError) return { retry: true };
         return { complete: true, outcomeSummary: `Not delivered: ${reason}` };
       }
     },

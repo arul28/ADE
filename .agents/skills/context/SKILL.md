@@ -118,8 +118,10 @@ Five rules that cost hours when ignored:
   `ade --role cto serve`. A brain or dev app started from an agent shell
   scrubs the inherited caller, lane/project/workspace, default-role, ADE
   provider-home, and Claude parent-session env itself; no env prefix is needed.
-  On its own socket, a brain leaves chats it does not run to a live sibling,
-  including scheduled wakes, restart recovery, and prewarm.
+  On its own socket, a brain leaves chats it does not run to the installed
+  machine brain when that brain is live on the project, including scheduled
+  wakes, restart recovery, and prewarm. Other secondary brains do not make one
+  another yield.
 
 For full isolation, use a separate home and a throwaway project registered
 only there: a separate `ADE_HOME` does not isolate the project's `.ade/ade.db`.

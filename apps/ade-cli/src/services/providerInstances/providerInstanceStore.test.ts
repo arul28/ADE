@@ -411,18 +411,26 @@ describe("providerInstanceStore", () => {
   });
 
   it.each([
-    ["claude", "CLAUDE_CONFIG_DIR", true],
-    ["claude", "CLAUDE_CONFIG_DIR", false],
-    ["codex", "CODEX_HOME", true],
-    ["codex", "CODEX_HOME", false],
-  ] as const)("keeps the base %s account when its environment names %s (%s)", async (provider, envKey, insideProviderHomes) => {
+    ["claude", "CLAUDE_CONFIG_DIR", true, false],
+    ["claude", "CLAUDE_CONFIG_DIR", true, true],
+    ["claude", "CLAUDE_CONFIG_DIR", false, false],
+    ["codex", "CODEX_HOME", true, false],
+    ["codex", "CODEX_HOME", true, true],
+    ["codex", "CODEX_HOME", false, false],
+  ] as const)("keeps the base %s account when its environment names %s (%s, custom home %s)", async (provider, envKey, insideProviderHomes, customAdeHome) => {
     const seeded = makeStore({
       readAccount: async (readProvider) => readProvider === provider ? { email: "machine@example.com" } : {},
     });
     await seeded.store.refreshAccounts(provider);
 
     const configHome = insideProviderHomes
-      ? path.join(seeded.adeDir, "provider-homes", provider, "agent-account")
+      ? path.join(
+        customAdeHome ? seeded.homeDir : seeded.adeDir,
+        ...(customAdeHome ? ["agent-home"] : []),
+        "provider-homes",
+        provider,
+        "agent-account",
+      )
       : path.join(path.dirname(seeded.adeDir), `user-${provider}-config`);
     fs.mkdirSync(configHome, { recursive: true });
     if (provider === "claude") {

@@ -71,11 +71,11 @@ export function isAdeProviderHomePath(
       && !pathApi.isAbsolute(relative)
     ) return true;
   }
-  // Any ADE home (`~/.ade`, `~/.ade-alpha`, …): an agent of one channel can
+  // Any ADE home, including custom ADE_HOME names: an agent of one channel can
   // start a brain under another.
   const parts = resolved.split(/[\\/]+/u).map(comparisonPath);
   return parts.some((part, index) => (
-    part === "provider-homes" && index > 0 && parts[index - 1]?.startsWith(".ade") && index < parts.length - 1
+    part === "provider-homes" && index < parts.length - 1
   ));
 }
 

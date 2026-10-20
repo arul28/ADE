@@ -505,6 +505,7 @@ export type GlobalOptions = {
   projectRoot: string | null;
   workspaceRoot: string | null;
   role: "cto" | "agent" | "external" | "evaluator";
+  roleExplicit?: boolean;
   headless: boolean;
   requireSocket: boolean;
   socketPath: string | null;
@@ -5561,6 +5562,7 @@ const GLOBAL_VALUE_FLAG_HANDLERS: Record<CliGlobalValueFlag, (options: GlobalOpt
   },
   "--role": (options, value) => {
     options.role = parseRole(value);
+    options.roleExplicit = true;
   },
   "--timeout-ms": (options, value) => {
     const parsed = Number.parseInt(value, 10);
@@ -24959,8 +24961,10 @@ async function runServe(
   // not lend that agent's identity to every client it serves.
   const droppedCallerIdentityKeys = dropInheritedCallerIdentity(process.env);
   const droppedAgentEnvKeys = dropInheritedAgentLocation(process.env, droppedCallerIdentityKeys);
-  // CLI options already captured the role for this brain. Do not pass the
-  // agent shell's default role on to child processes.
+  if (droppedCallerIdentityKeys.length > 0 && !options.roleExplicit) {
+    options.role = resolveAdeDefaultRole(undefined, "agent");
+  }
+  // Do not pass the agent shell's default role on to child processes.
   if (droppedCallerIdentityKeys.length > 0 && process.env.ADE_DEFAULT_ROLE !== undefined) {
     if (process.env.ADE_DEFAULT_ROLE.trim()) droppedAgentEnvKeys.push("ADE_DEFAULT_ROLE");
     delete process.env.ADE_DEFAULT_ROLE;

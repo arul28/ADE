@@ -835,10 +835,14 @@ in `chatRuntimeOwnership.ts`:
   non-adoptable while that process is live, even when the brains use different
   `ADE_HOME` folders: both see the project's shared process registry. A dead
   owner's chat can be adopted when its provider account is available here.
-- **A non-machine socket yields unattended work to a live sibling.** It does
-  not take over chats it is not running: startup recovery, prewarm, and
-  scheduled wakes skip them. Its own chats and messages sent to it directly
-  still work. With no live sibling, ordinary adoption rules apply.
+- **A chat from an unknown cross-home account cannot resume here.** An explicit
+  send to its Claude or Codex conversation is refused before launch with a
+  direction to open it from the ADE that owns the account or start a new chat.
+- **A non-machine socket yields unattended work to the installed machine
+  brain when that brain is live on this project.** It does not take over chats
+  it is not running: startup recovery, prewarm, and scheduled wakes skip them.
+  Its own chats and messages sent to it directly still work. Other secondary
+  brains do not make one another yield.
 - **A non-owner never re-stamps or releases.** Without a runtime, a persist
   keeps whatever owner is on disk, and a teardown releases only its own or a
   dead brain's stamp.
@@ -848,7 +852,8 @@ in `chatRuntimeOwnership.ts`:
   `chatWaitTargetMatches` never matches such a chat (except a real end), its
   wait registry does not fire waiters whose caller it does not run, and its
   scheduler defers scheduled work for that chat to the owner. A non-machine
-  socket also leaves unowned chats alone while a sibling brain is live.
+  socket also leaves unowned chats alone while the installed machine brain is
+  live on this project.
 - **The CLI says which brain it reached.** When a chat result names an owner on
   a different socket, `ade` writes one warning line to stderr.
 
@@ -1078,9 +1083,10 @@ defers them.
 Every brain that opens the project (the machine brain, dev runtimes from other
 lanes, a second `ade serve`) can see the same rows. A brain on the machine
 socket, or the owner of a chat, arms its timer as usual. A brain on a separate
-socket leaves chats it does not run to a live sibling: it does not claim or
-deliver their scheduled wakes. For work it may deliver, the brain claims the
-occurrence with an `insert or ignore` of
+socket leaves chats it does not run to the installed machine brain when that
+brain is live on this project: it does not claim or deliver their scheduled
+wakes. Other secondary brains do not make one another yield. For work it may
+deliver, the brain claims the occurrence with an `insert or ignore` of
 `agent-chat:scheduled-work:claim:<id>@<fireAt>` into the project's `kv` table.
 Only the brain whose insert lands delivers. Other eligible brains log
 `agent_chat.scheduled_work_claimed_elsewhere` and settle nothing on the
@@ -1093,9 +1099,10 @@ next claim.
 
 If `messageSession` refuses a wake before a turn starts (for example, because
 the provider is signed out or dispatch is blocked), the occurrence completes
-with `Not delivered: <reason>`. There is no turn to settle later. A refusal
-because another brain owns the chat releases the claim so the owning brain can
-deliver it.
+with `Not delivered: <reason>`. A disk-pressure refusal releases the claim and
+retries because storage pressure can clear. There is no turn to settle after a
+terminal refusal. A refusal because another brain owns the chat releases the
+claim so the owning brain can deliver it.
 
 Session teardown distinguishes deliberate end from runtime lifecycle. Deleting
 or archiving a chat cancels every durable schedule owned by that chat.

@@ -36,5 +36,10 @@ describe("stripParentClaudeSessionEnv", () => {
       "c:\\users\\me\\.ade",
       "win32",
     )).toBe(false);
+    expect(isAdeProviderHomePath(
+      "/tmp/agent-home/provider-homes/claude/account",
+      "/Users/me/.ade",
+    )).toBe(true);
+    expect(isAdeProviderHomePath("/tmp/agent-home/provider-homes", "/Users/me/.ade")).toBe(false);
   });
 });

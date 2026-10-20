@@ -939,8 +939,6 @@ function isAdeProviderHomePath(dir, adeHome, platform = process.platform) {
   const parts = resolved.split(/[\\/]+/u).map(comparePath);
   return parts.some((part, index) => (
     part === "provider-homes"
-    && index > 0
-    && parts[index - 1]?.startsWith(".ade")
     && index < parts.length - 1
   ));
 }

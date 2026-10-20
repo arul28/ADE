@@ -851,6 +851,7 @@ describe("ADE CLI", () => {
 
     expect(parsed.options.projectRoot).toBe(path.resolve("/tmp/project"));
     expect(parsed.options.role).toBe("cto");
+    expect(parsed.options.roleExplicit).toBe(true);
     expect(parsed.command).toEqual([
       "actions",
       "run",
@@ -899,6 +900,16 @@ describe("ADE CLI", () => {
     try {
       const parsed = parseCliArgs(["lanes", "list"]);
       expect(parsed.options.role).toBe("agent");
+      expect(parsed.options.roleExplicit).toBeUndefined();
+
+      process.env.ADE_DEFAULT_ROLE = "cto";
+      const inherited = parseCliArgs(["serve"]);
+      expect(inherited.options.role).toBe("cto");
+      expect(inherited.options.roleExplicit).toBeUndefined();
+
+      const explicit = parseCliArgs(["--role", "agent", "serve"]);
+      expect(explicit.options.role).toBe("agent");
+      expect(explicit.options.roleExplicit).toBe(true);
     } finally {
       if (previousRole === undefined) delete process.env.ADE_DEFAULT_ROLE;
       else process.env.ADE_DEFAULT_ROLE = previousRole;

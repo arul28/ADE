@@ -237,8 +237,10 @@ markers, and `CLAUDE_CONFIG_DIR` / `CODEX_HOME` values that point inside ADE's
 provider homes; the dev launcher applies the same cleanup. No shell-level env
 prefix is needed. Project chat ownership is checked against the shared process
 registry across ADE homes, so a separate home does not make a live chat
-adoptable. A brain on a non-machine socket yields chats it is not running to a
-live sibling, including restart recovery, prewarm, and scheduled wakes. See
+adoptable. A brain on a non-machine socket yields chats it is not running to
+the installed machine brain when that brain is live on this project, including
+restart recovery, prewarm, and scheduled wakes. Other secondary brains do not
+make one another yield. See
 [Chat runtime ownership](./features/chat/README.md#one-brain-per-chat).
 
 **Trusted agent provenance on chat messages.** The three chat actions whose caller metadata is persisted onto a `user_message` — `chat.messageSession`, `chat.sendMessage`, `chat.steer` — pass through `withTrustedAgentProvenance` in `adeRpcServer.ts` before any role- or scope-specific branch. It deletes every host-authored provenance key (the list is exported from `apps/desktop/src/main/services/chat/spawnMissionOwnership.ts`), then re-derives `spawnDispatch` when the caller is the target's persisted direct parent, or `agentRelay` when any other bound agent is the caller. Positional invocation of those three actions is rejected outright — they take object arguments (`--input-json`) — so metadata cannot route around the re-derivation, and the automation service strips the same keys before dispatching a `chat` action from rule config. This provenance decides whether a spawned child's turn completion wakes its parent and for how long the parent keeps that claim, so no caller, elevated or not, may supply it. See [features/chat/README.md](./features/chat/README.md#mission-ownership-decides-the-wake).
