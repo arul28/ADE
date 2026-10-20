@@ -191,8 +191,8 @@ bodies, captured through a local pass-through proxy (`ANTHROPIC_BASE_URL`).
 
 | Metric | Bare CLI | Before | Baseline | Ceiling |
 |---|---|---|---|---|
-| Claude chat, first turn (`hi`) | 30,624 | 63,575 (+32,951) | 39,369 (+8,745) | proposed, needs approval: +11,000 over bare |
-| Codex chat, first turn (`hi`) | 27,716 | 32,324 (+4,608) | 30,258 (+2,542) | proposed, needs approval: +3,200 over bare |
+| Claude chat, first turn (`hi`) | 30,624 | 63,575 (+32,951) | 39,369 (+8,745) | +11,000 over bare |
+| Codex chat, first turn (`hi`) | 27,716 | 32,324 (+4,608) | 30,258 (+2,542) | +3,200 over bare |
 | Computer-use block in the first message (Mac host, lane screen available) | — | 9,775 chars with the lane directive | 2,629 chars with the lane directive | — |
 
 Per-turn cost on the providers that have no instruction channel but the user
@@ -206,11 +206,13 @@ bare `ok`. Droid (no API key here), Cursor (rate-limited), Kimi, Qwen and Muse
 
 | Metric | Before | Baseline | Ceiling |
 |---|---|---|---|
-| Antigravity, turn 2 growth | +5,254 | +670 | proposed, needs approval: +1,000 |
-| Grok, turn 2 growth (Grok's own per-turn reminders are ~900 of it) | +2,733 | +1,020 | proposed, needs approval: +1,300 |
-| Pi, turn 2 growth | +1,593 | +56 | proposed, needs approval: +200 |
-| Copilot, turn 2 growth | +818 | +44 | proposed, needs approval: +200 |
+| Antigravity, turn 2 growth | +5,254 | +670 | +1,000 |
+| Grok, turn 2 growth (Grok's own per-turn reminders are ~900 of it) | +2,733 | +1,020 | +1,300 |
+| Pi, turn 2 growth | +1,593 | +56 | +200 |
+| Copilot, turn 2 growth | +818 | +44 | +200 |
 | Claude, a second new chat in the same lane: tokens written to cache | 26,384 | 0 (40,916 read) | — |
+
+Ceilings in the two tables above approved by the owner on 2026-10-20.
 
 Most of the Claude gap was `ENABLE_TOOL_SEARCH=auto`, which ADE forced on
 every query: "auto" only defers tool schemas once they pass a share of the

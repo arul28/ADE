@@ -288,6 +288,13 @@ export type DroidSdkWorkerInit = {
   mcpServers?: unknown[];
   /** MCP server names ADE owns and the session may retain; all other tools are disabled per session. */
   allowedMcpServerNames?: string[];
+  /**
+   * ADE's framing, appended to Droid's own system prompt when this worker
+   * creates a session (`systemPrompt: { type: "preset", preset: "droid" }`).
+   * Droid keeps it for the life of the session, resume and fork included; a
+   * resumed session keeps whatever it was created with.
+   */
+  systemPromptAppend?: string | null;
 };
 
 /**
@@ -331,6 +338,11 @@ export type DroidSdkReady = {
    * next worker.
    */
   statedReasoningEffort?: DroidSdkReasoningEffort | null;
+  /**
+   * The append this worker created the session with. `null` when it resumed
+   * a session, whose system prompt it cannot see.
+   */
+  systemPromptAppend?: string | null;
 };
 
 export type DroidSdkPermissionRequest = {

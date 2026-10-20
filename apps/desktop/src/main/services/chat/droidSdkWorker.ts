@@ -59,6 +59,8 @@ let session: DroidSession | null = null;
  * on every resume) would exit a mode ADE does not own.
  */
 let enteredSpecMode = false;
+/** ADE's framing this worker's session was created with, when it created it. */
+let sessionSystemPromptAppend: string | null = null;
 /**
  * The most recent settings ADE pushed. Re-applied when the source branch is
  * re-opened after a `fork()` retired its handle, so the source is not reset to
@@ -300,6 +302,9 @@ function sessionOptions(
     specModeModelId: settings.specModeModelId?.trim() || undefined,
     specModeReasoningEffort: coerceReasoning(settings.specModeReasoningEffort),
     ...(init.mcpServers?.length ? { mcpServers: init.mcpServers as DroidSdkNodeTypes.CreateSessionOptions["mcpServers"] } : {}),
+    ...(init.systemPromptAppend?.trim()
+      ? { systemPrompt: { type: "preset" as const, preset: "droid" as const, append: init.systemPromptAppend } }
+      : {}),
     permissionHandler: requestPermission,
     askUserHandler: requestAskUser,
   };
@@ -484,6 +489,7 @@ function buildReady(): DroidSdkReady {
     currentModelId: modelId.length ? modelId : null,
     availableModels: [],
     statedReasoningEffort: statedReasoningEffort(),
+    systemPromptAppend: sessionSystemPromptAppend,
   };
 }
 
@@ -597,6 +603,9 @@ async function initWorker(init: DroidSdkWorkerInit): Promise<DroidSdkReady> {
   disposed = false;
   latestSettings = init.settings;
   pendingResumeSessionId = null;
+  // A resumed session keeps the system prompt it was created with, which this
+  // worker cannot see; only a session it creates is known to carry ADE's.
+  sessionSystemPromptAppend = null;
   const sdk = await getSdk();
   const resumeId = init.resumeSessionId?.trim();
   // A resumed session still carries whatever an earlier worker stated.
@@ -622,11 +631,13 @@ async function initWorker(init: DroidSdkWorkerInit): Promise<DroidSdkReady> {
         detail: { resumeSessionId: resumeId, error: errorMessage(error) },
       });
       session = await sdk.createSession(sessionOptions(sdk, init, init.settings));
+      sessionSystemPromptAppend = init.systemPromptAppend?.trim() ? init.systemPromptAppend : null;
       enteredSpecMode = init.settings.interactionMode === "spec";
       recordCreatedSessionEfforts(init.settings);
     }
   } else {
     session = await sdk.createSession(sessionOptions(sdk, init, init.settings));
+    sessionSystemPromptAppend = init.systemPromptAppend?.trim() ? init.systemPromptAppend : null;
     enteredSpecMode = init.settings.interactionMode === "spec";
     recordCreatedSessionEfforts(init.settings);
   }

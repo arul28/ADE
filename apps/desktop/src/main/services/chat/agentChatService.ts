@@ -22570,6 +22570,19 @@ export function createAgentChatService(args: {
       // event with no state is not evidence that the compaction finished.
       if (event.state === "completed" || event.state === "failed") settleCompactionWaiters(managed.session.id);
       if (managed.session.identityKey) observeIdentityCompaction(managed, event);
+      // What ADE said once in the thread's user turns (the lane directive,
+      // computer-use and lane-screen blocks, lane guidance where it rides
+      // in-band) survives a compaction only if the provider's summary kept
+      // it. Forget it was delivered, so the next turn says it once more. A
+      // `context_compact` with no state comes from a completion-only source.
+      if (
+        event.state === "completed"
+        || (event.type === "context_compact" && event.state === undefined)
+      ) {
+        clearDeliveredDirectiveEpoch(managed);
+        // Muse tracks its first-turn framing on the runtime instead.
+        if (managed.runtime?.kind === "muse") managed.runtime.instructionsDelivered = false;
+      }
     }
     if (event.type === "context_compact") {
       if (event.state === "failed") {
@@ -56863,6 +56876,48 @@ export function createAgentChatService(args: {
     }
   };
 
+  /**
+   * ADE's framing for a Droid session: the harness prompt, the skills Droid
+   * cannot see itself, and the session lineage. It goes in as the session's
+   * system prompt when ADE creates the session (Droid keeps it through
+   * resume, fork and compaction), so no turn needs to carry it.
+   */
+  const buildDroidFraming = (managed: ManagedChatSession): string => {
+    const droidPermissionMode = resolveSessionDroidPermissionModeOrNull(managed.session);
+    const droidInteractionMode = resolveDroidSdkInteractionMode(managed.session);
+    const droidActivityGuidance = buildSessionActivityGuidance(
+      managed.session,
+      droidPermissionMode !== null
+        && droidPermissionMode !== "read-only"
+        && droidPermissionMode !== "agi"
+        && droidInteractionMode !== "spec",
+    );
+    const droidHarnessPrompt = isPersonalSession(managed.session)
+      ? resolvePersonalPromptFor(managed.session, managed.laneWorktreePath, droidActivityGuidance)
+      : buildCodingAgentSystemPrompt({
+          cwd: managed.laneWorktreePath,
+          mode: droidInteractionMode === "spec" ? "planning" : "coding",
+          permissionMode: toHarnessPermissionMode(managed.session.permissionMode),
+          interactive: true,
+          runtime: "droid-sdk",
+          adeSkillRoots: adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }),
+          sessionActivityGuidance: droidActivityGuidance,
+        });
+    // Droid reads only `.factory/skills`, so the project's and the user's own
+    // skills (`.claude/skills`, `.agents/skills`) are listed for it, as they
+    // are for Claude. A personal chat has no project to list.
+    const droidSkillListing = isPersonalSession(managed.session)
+      ? []
+      : buildDroidSkillListing(managed.laneWorktreePath, adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }));
+    return [
+      droidHarnessPrompt,
+      ...(droidSkillListing.length ? ["", ...droidSkillListing] : []),
+      ...(isPersonalSession(managed.session)
+        ? []
+        : ["", buildAdeSessionLineageGuidance(managed.session, spawnSelfReportOpts(managed.session)) ?? ""]),
+    ].join("\n").trim();
+  };
+
   const ensureDroidRuntime = async (managed: ManagedChatSession): Promise<DroidRuntime> => {
     const launchModelId = resolveDroidRuntimeModelId(managed.session);
     const poolKey = droidPoolKeyFor(managed);
@@ -56929,6 +56984,7 @@ export function createAgentChatService(args: {
       const persisted = readPersistedState(managed.session.id);
       const acquired = await acquireDroidSdkConnection({
         poolKey,
+        systemPromptAppend: buildDroidFraming(managed),
         droidPath: droidExecutable.path,
         workspacePath: managed.laneWorktreePath,
         sessionId: managed.session.id,
@@ -56983,6 +57039,9 @@ export function createAgentChatService(args: {
         throw new Error("Droid session closed during setup.");
       }
       managed.runtime = rt;
+      // A session this worker created carries ADE's framing as its system
+      // prompt: record it delivered for that session, so no turn repeats it.
+      if (pooled.systemPromptAppend) markLaneGuidanceDelivered(managed, pooled.sdkSessionId, pooled.systemPromptAppend);
       wireDroidSdkBridgeHandlers(managed, rt);
       await ensureDroidSessionState(managed, rt);
       persistChatState(managed);
@@ -57127,43 +57186,14 @@ export function createAgentChatService(args: {
       }
 
       runtime.eventMapperState = createDroidSdkEventMapperState();
-      const droidPermissionMode = resolveSessionDroidPermissionModeOrNull(managed.session);
-      const droidInteractionMode = resolveDroidSdkInteractionMode(managed.session);
-      const droidActivityGuidance = buildSessionActivityGuidance(
-        managed.session,
-        droidPermissionMode !== null
-          && droidPermissionMode !== "read-only"
-          && droidPermissionMode !== "agi"
-          && droidInteractionMode !== "spec",
-      );
-      const droidHarnessPrompt = isPersonalSession(managed.session)
-        ? resolvePersonalPromptFor(managed.session, managed.laneWorktreePath, droidActivityGuidance)
-        : buildCodingAgentSystemPrompt({
-            cwd: managed.laneWorktreePath,
-            mode: droidInteractionMode === "spec" ? "planning" : "coding",
-            permissionMode: toHarnessPermissionMode(managed.session.permissionMode),
-            interactive: true,
-            runtime: "droid-sdk",
-            adeSkillRoots: adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }),
-            sessionActivityGuidance: droidActivityGuidance,
-          });
-      // Droid reads only `.factory/skills`, so the project's and the user's
-      // own skills (`.claude/skills`, `.agents/skills`) are listed for it, as
-      // they are for Claude. A personal chat has no project to list.
-      const droidSkillListing = isPersonalSession(managed.session)
-        ? []
-        : buildDroidSkillListing(managed.laneWorktreePath, adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }));
-      // Droid's SDK takes no system prompt, so ADE's framing rides the user
-      // turn — once per Droid session (see laneGuidanceKey), not every turn:
-      // it was the whole harness prompt plus the skill listing on each send.
-      const droidFraming = [
-        droidHarnessPrompt,
-        ...(droidSkillListing.length ? ["", ...droidSkillListing] : []),
-        ...(isPersonalSession(managed.session)
-          ? []
-          : ["", buildAdeSessionLineageGuidance(managed.session, spawnSelfReportOpts(managed.session)) ?? ""]),
-      ].join("\n");
-      const droidLaneGuidance = undeliveredLaneGuidance(managed, runtime.sdkSessionId, droidFraming);
+      // ADE's framing is the session's system prompt (set when ADE created
+      // it, see ensureDroidRuntime). It rides the user turn only when the
+      // session does not carry this exact text: one created by an older ADE,
+      // or one whose mode has changed since. Then it goes once per session.
+      const droidFraming = buildDroidFraming(managed);
+      const droidLaneGuidance = runtime.sdk.systemPromptAppend === droidFraming
+        ? null
+        : undeliveredLaneGuidance(managed, runtime.sdkSessionId, droidFraming);
       const sdkInput = droidLaneGuidance
         ? [droidLaneGuidance, "", "## User Request", composed].join("\n")
         : composed;

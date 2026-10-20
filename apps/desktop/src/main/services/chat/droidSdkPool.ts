@@ -40,6 +40,8 @@ export type DroidSdkPooled = {
   process: ChildProcess;
   bridge: DroidSdkBridge;
   sdkSessionId: string | null;
+  /** The ADE framing the worker created `sdkSessionId` with; null after a resume. */
+  systemPromptAppend: string | null;
   currentModelId: string | null;
   availableModels: DroidSdkReady["availableModels"];
   request: <T = unknown>(type: DroidSdkWorkerRequest["type"], payload?: unknown) => Promise<T>;
@@ -131,6 +133,8 @@ export async function acquireDroidSdkConnection(args: {
   settings: DroidSdkSessionSettings;
   mcpServers?: unknown[];
   allowedMcpServerNames?: readonly string[];
+  /** ADE's framing for Droid's system prompt; used only when a session is created. */
+  systemPromptAppend?: string | null;
   baseEnv?: NodeJS.ProcessEnv;
   logger?: Logger;
 }): Promise<{ pooled: DroidSdkPooled; generation: number }> {
@@ -229,6 +233,7 @@ async function createDroidSdkConnection(args: Parameters<typeof acquireDroidSdkC
     process: child,
     bridge,
     sdkSessionId: null,
+    systemPromptAppend: null,
     currentModelId: null,
     availableModels: [],
     request: <T = unknown>(type: DroidSdkWorkerRequest["type"], payload?: unknown) => {
@@ -286,6 +291,7 @@ async function createDroidSdkConnection(args: Parameters<typeof acquireDroidSdkC
     }
     if (message.type === "ready") {
       pooled.sdkSessionId = message.ready.sessionId;
+      pooled.systemPromptAppend = message.ready.systemPromptAppend ?? null;
       pooled.currentModelId = message.ready.currentModelId;
       pooled.availableModels = message.ready.availableModels;
       bridge.onReady?.(message.ready);
@@ -385,6 +391,7 @@ async function createDroidSdkConnection(args: Parameters<typeof acquireDroidSdkC
     ...(args.allowedMcpServerNames
       ? { allowedMcpServerNames: [...args.allowedMcpServerNames] }
       : {}),
+    ...(args.systemPromptAppend?.trim() ? { systemPromptAppend: args.systemPromptAppend } : {}),
   };
   let ready: DroidSdkReady;
   try {
@@ -398,6 +405,7 @@ async function createDroidSdkConnection(args: Parameters<typeof acquireDroidSdkC
     throw error;
   }
   pooled.sdkSessionId = ready.sessionId;
+  pooled.systemPromptAppend = ready.systemPromptAppend ?? null;
   pooled.currentModelId = ready.currentModelId;
   pooled.availableModels = ready.availableModels;
   const generation = ++droidSdkGenCounter;
