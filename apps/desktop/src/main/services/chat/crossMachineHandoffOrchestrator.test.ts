@@ -257,8 +257,8 @@ function createBatchHarness() {
       awaitingInput: false,
       permissionLevel: "full-auto",
       provider: "claude",
-      model: "anthropic/claude-sonnet-4-5",
-      modelId: "anthropic/claude-sonnet-4-5",
+      model: "anthropic/claude-opus-5-5",
+      modelId: "anthropic/claude-opus-5-5",
       title: "Child task",
     },
     {
@@ -271,8 +271,8 @@ function createBatchHarness() {
       awaitingInput: false,
       permissionLevel: "full-auto",
       provider: "claude",
-      model: "anthropic/claude-sonnet-4-5",
-      modelId: "anthropic/claude-sonnet-4-5",
+      model: "anthropic/claude-opus-5-5",
+      modelId: "anthropic/claude-opus-5-5",
       title: "Other task",
     },
     {
@@ -285,8 +285,8 @@ function createBatchHarness() {
       awaitingInput: false,
       permissionLevel: "full-auto",
       provider: "claude",
-      model: "anthropic/claude-sonnet-4-5",
-      modelId: "anthropic/claude-sonnet-4-5",
+      model: "anthropic/claude-opus-5-5",
+      modelId: "anthropic/claude-opus-5-5",
       title: "Parent task",
     },
   ];
@@ -372,7 +372,7 @@ function createBatchHarness() {
                 id: deterministicChatSessionId(`cross-machine-handoff:${capsule.handoffId}`),
                 laneId: capsule.batchMove!.destinationLaneId,
                 provider: "claude",
-                model: "anthropic/claude-sonnet-4-5",
+                model: "anthropic/claude-opus-5-5",
               },
               reusedLane: false,
               reusedSession: false,
@@ -403,6 +403,10 @@ function createBatchHarness() {
     listPersisted: () => [...persistedMoves.entries()].map(([sessionId, value]) => ({ sessionId, value })),
     readBatch: (batchId) => persistedBatches.get(batchId) ?? null,
     writeBatch: (batchId, record) => {
+      if (!record) {
+        persistedBatches.delete(batchId);
+        return;
+      }
       persistedBatches.set(batchId, structuredClone(record));
       signal(record);
     },
@@ -513,7 +517,7 @@ describe("cross-machine move orchestrator", () => {
     });
 
     const partial = await h.waitFor(started.batchId, (record) => record.state === "partial");
-    const stateById = new Map(partial.items.map((item) => [item.id, item.state]));
+    const stateById = Object.fromEntries(partial.items.map((item) => [item.id, item.state]));
     expect(stateById).toMatchObject({
       "lane:lane-root": "unknown",
       "lane:lane-child": "blocked",

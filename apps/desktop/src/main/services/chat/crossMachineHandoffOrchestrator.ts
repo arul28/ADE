@@ -17,9 +17,9 @@
  * Rules that came from T3 Code's thread handoff and the ADE review of it:
  * - A busy chat moves only when asked to wait (`whenTurnEnds`), and then any
  *   newer message from the person cancels the move: new instructions win.
- * - An agent may move its own chat or a descendant it started; non-full-auto
- *   targets and all unrelated chats need the person's approval. An agent's
- *   move runs at the source chat's permission level, mapped to the target
+ * - An agent may move its own chat or a descendant it started without
+ *   asking; moving any other chat needs the person's approval. An agent's
+ *   move runs at the moved chat's permission level, mapped to the target
  *   model's provider (never broader).
  * - Once destination acceptance starts, a lost answer is `unknown`, never
  *   `failed`, and it is never replayed automatically. An `unknown` move blocks
@@ -1083,8 +1083,7 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
         }
         // An agent's move runs at the LOWER of the chat's level when it asked
         // and its level now: the person may have lowered access while the
-        // move waited. A move full-auto let through goes back for approval
-        // once the chat is no longer full-auto.
+        // move waited. A move of an unrelated chat still needs the person.
         if (persisted.record.requestedBy === "agent") {
           const levelNow = deps.getSource(sessionId)?.permissionLevel ?? null;
           const asked = persisted.request.agentSourceLevel ?? null;
@@ -1093,7 +1092,7 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
             : (isPermissionLevel(levelNow) ? levelNow : "ask");
           if (
             !persisted.request.approvedByPerson
-            && (persisted.record.requestedFor === "other" || level !== "full-auto")
+            && persisted.record.requestedFor === "other"
           ) {
             const waiting = write(sessionId, persisted, { state: "awaiting_approval", checkpoint: null });
             deps.showApprovalCard(sessionId, crossMachineMoveApprovalCard(waiting.record, true));
