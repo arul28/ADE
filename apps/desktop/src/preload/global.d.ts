@@ -1,4 +1,5 @@
 import type { MuseBinaryStatus } from "../shared/museBinary";
+import type { JevAnswers, JevDecideRequest, JevQuestions, JevStatus } from "../shared/types/jev";
 import type { MuseSettingsRequest, MuseSettingsResult, MuseSettingsRunArgs } from "../shared/museSettings";
 import type { HomeWidgetsBridge } from "../shared/types/homeWidgets";
 import type { MusicBridge } from "../shared/types/music";
@@ -1607,6 +1608,14 @@ declare global {
         exportEnv: () => Promise<ProjectSecretsExportResult>;
       };
       ai: {
+        /**
+         * Ask Jev (OpenCode Zen's free decision model) on the machine `pin`
+         * names. `null` on any failure: not signed in, turned off, rate
+         * limited, slow, or an unusable answer. Use your existing logic then.
+         */
+        jevDecide: <Q extends JevQuestions>(request: JevDecideRequest<Q>, pin?: OpenProjectBinding | null) => Promise<JevAnswers<Q> | null>;
+        /** The helper's availability, breaker and counts; `null` when that machine cannot say. */
+        jevStatus: (pin?: OpenProjectBinding | null) => Promise<JevStatus | null>;
         getStatus: (args?: {
           force?: boolean;
           refreshOpenCodeInventory?: boolean;

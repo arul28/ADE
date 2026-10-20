@@ -44,6 +44,7 @@ import {
   storeApiCredential,
 } from "../ai/apiKeyStore";
 import type { ApiCredentialStoreArgs } from "../../../shared/types/apiCredentials";
+import type { JevDecideRequest } from "../../../shared/types/jev";
 import type {
   AntigravitySignInCancelArgs,
   AntigravitySignInCompleteArgs,
@@ -2417,6 +2418,11 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
   return {
     getStatus: (args?: { force?: boolean; refreshOpenCodeInventory?: boolean }) =>
       buildAiSettingsStatus(aiIntegrationService, args),
+    // Jev decisions for renderer features and `ade actions run`. A runtime
+    // without the helper answers like a failed call: null, use the fallback.
+    jevDecide: (args?: JevDecideRequest) =>
+      runtime.jevService && args ? runtime.jevService.decide(args) : Promise.resolve(null),
+    jevStatus: () => runtime.jevService?.status() ?? null,
     opencodeAuthMethods: () => listOpenCodeAuthMethods(buildOpenCodeAuthDeps()),
     opencodeOAuthStart: (args?: { providerId?: string; methodIndex?: number; inputs?: Record<string, string> }) =>
       startOpenCodeOAuth(buildOpenCodeAuthDeps(), {
