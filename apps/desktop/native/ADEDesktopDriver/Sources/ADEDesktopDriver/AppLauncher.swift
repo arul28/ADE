@@ -6,6 +6,7 @@
 
 import AppKit
 import CoreGraphics
+import Darwin
 import Foundation
 import ADEDesktopDriverCore
 
@@ -307,8 +308,8 @@ extension WindowControl {
         let pid: pid_t
         let appName: String
         let bundleId: String?
-        /// `launchDate` in ms since 1970: with the bundle id, what tells the
-        /// same instance from a process that reused its pid.
+        /// Kernel process start time in ms since 1970: with the bundle id, what
+        /// tells this instance from a process that reused its pid.
         let launchedAt: Double?
         let launched: Bool
         let windows: [HandedOffWindow]
@@ -361,7 +362,7 @@ extension WindowControl {
                     pid: pid,
                     appName: running.localizedName ?? windows.first?.appName ?? "pid \(pid)",
                     bundleId: running.bundleIdentifier,
-                    launchedAt: running.launchDate.map { $0.timeIntervalSince1970 * 1000 },
+                    launchedAt: Self.processStartTimeMilliseconds(pid: pid),
                     launched: launchedApps.isLaunched(pid: pid, byLane: laneId),
                     windows: windows.map { window in
                         HandedOffWindow(
@@ -415,7 +416,7 @@ extension WindowControl {
         guard let running = NSRunningApplication(processIdentifier: pid),
               !running.isTerminated,
               running.bundleIdentifier == bundleId,
-              Self.sameLaunch(running.launchDate, recorded: launchedAt)
+              Self.sameLaunch(Self.processStartTimeMilliseconds(pid: pid), recorded: launchedAt)
         else {
             throw DriverError(
                 code: DriverErrorCode.windowNotFound,
@@ -462,12 +463,23 @@ extension WindowControl {
         return LaunchResult(pid: pid, appName: appName, bundleId: bundleId, windows: parked, watching: launched)
     }
 
-    /// A recorded launch moment matches when it is within a second; a record
-    /// without one matches on the bundle id alone.
-    static func sameLaunch(_ launchDate: Date?, recorded: Double?) -> Bool {
-        guard let recorded else { return true }
-        guard let launchDate else { return false }
-        return abs(launchDate.timeIntervalSince1970 * 1000 - recorded) < 1000
+    /// `NSRunningApplication.launchDate` can be nil for a live app. The kernel
+    /// start time is present for every live process; nil here means sysctl failed.
+    static func processStartTimeMilliseconds(pid: pid_t) -> Double? {
+        var process = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        guard sysctl(&mib, u_int(mib.count), &process, &size, nil, 0) == 0,
+              size >= MemoryLayout<kinfo_proc>.size else { return nil }
+        let start = process.kp_proc.p_starttime
+        return Double(start.tv_sec) * 1000 + Double(start.tv_usec) / 1000
+    }
+
+    /// A recorded process start time matches only when both reads succeeded
+    /// and they are within a second.
+    static func sameLaunch(_ current: Double?, recorded: Double?) -> Bool {
+        guard let current, let recorded else { return false }
+        return abs(current - recorded) < 1000
     }
 
     /// Quits an instance a launch started for a lane that is gone, and

@@ -94,6 +94,8 @@ final class DriverRuntime: NSObject {
     /// A watched pane needs the transition quickly; 10 seconds of a stale
     /// "denied" screen after the user toggles the grant reads as broken.
     private static let watchedPermissionProbeInterval: TimeInterval = 3
+    /// Keep in sync with MAC_DESKTOP_HANDOFF_MAX_AGE_MS in macDesktopHandoff.ts.
+    private static let handoffMaxAgeMs: Double = 15 * 60_000
 
     private var signalSources: [DispatchSourceSignal] = []
     private var isShuttingDown = false
@@ -299,24 +301,78 @@ final class DriverRuntime: NSObject {
         exit(0)
     }
 
-    /// Writes the lanes and their apps (`WindowControl.handOffLanes`) as JSON to the handoff path, when the client
-    /// gave one. An empty list still writes, so a stale file from an earlier
-    /// exit cannot hand the next brain apps that are no longer the lanes'.
+    /// Merges this driver's app handoff with a concurrent brain write. Each app
+    /// expires 15 minutes after it was handed off; lanes without kept apps are dropped.
     private func handOffLaunchedAppsIfAsked() {
         guard let path = ProcessInfo.processInfo.environment["ADE_DESKTOP_DRIVER_HANDOFF_PATH"],
               !path.isEmpty else { return }
         let handed = windows.handOffLanes()
-        let body: [String: Any] = [
-            "writtenAt": Date().timeIntervalSince1970 * 1000,
-            "lanes": handed.lanes.map { $0.asJSON() },
-            "apps": handed.apps.map { $0.asJSON() },
-        ]
+        let handedOffAt = Date().timeIntervalSince1970 * 1000
+        var lanes = handed.lanes.map { $0.asJSON() }
+        var apps = handed.apps.map { app -> [String: Any] in
+            var entry = app.asJSON()
+            entry["handedOffAt"] = handedOffAt
+            return entry
+        }
         do {
             let url = URL(fileURLWithPath: path)
             try FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
+            // The brain and helper may write during the same shutdown window, so merge entries before replacing the file.
+            if FileManager.default.fileExists(atPath: path) {
+                do {
+                    let existingData = try Data(contentsOf: url)
+                    guard let existing = try JSONSerialization.jsonObject(with: existingData) as? [String: Any],
+                          let existingLanes = existing["lanes"] as? [[String: Any]],
+                          let existingApps = existing["apps"] as? [[String: Any]] else {
+                        throw NSError(domain: "ADEDesktopDriver.Handoff", code: 1, userInfo: [NSLocalizedDescriptionKey: "invalid handoff file"])
+                    }
+                    let currentPids = Set(handed.apps.map { Int($0.pid) })
+                    let currentLaneIds = Set(handed.lanes.map(\.laneId))
+                    let keptExistingApps = existingApps.filter { entry in
+                        guard let existingHandedOffAt = entry["handedOffAt"] as? NSNumber,
+                              existingHandedOffAt.doubleValue.isFinite,
+                              let pid = entry["pid"] as? NSNumber else {
+                            log("skipping existing app handoff with invalid identity or handedOffAt")
+                            return false
+                        }
+                        if handedOffAt - existingHandedOffAt.doubleValue > Self.handoffMaxAgeMs {
+                            log("expiring handed-off app pid \(pid.intValue) after 15 minutes")
+                            return false
+                        }
+                        return !currentPids.contains(pid.intValue)
+                    }
+                    var mergedLanes: [String: [String: Any]] = [:]
+                    for entry in existingLanes {
+                        guard let laneId = entry["laneId"] as? String,
+                              let width = entry["width"] as? NSNumber,
+                              let height = entry["height"] as? NSNumber,
+                              width.doubleValue.isFinite, width.doubleValue > 0,
+                              height.doubleValue.isFinite, height.doubleValue > 0 else {
+                            log("skipping existing handoff lane with invalid size")
+                            continue
+                        }
+                        if !currentLaneIds.contains(laneId) {
+                            mergedLanes[laneId] = ["laneId": laneId, "width": width, "height": height]
+                        }
+                    }
+                    for lane in handed.lanes {
+                        mergedLanes[lane.laneId] = lane.asJSON()
+                    }
+                    apps = keptExistingApps + apps
+                    lanes = Array(mergedLanes.values)
+                } catch {
+                    log("could not merge existing app handoff at \(path): \(error)")
+                }
+            }
+            let keptLaneIds = Set(apps.compactMap { $0["laneId"] as? String })
+            lanes = lanes.filter { entry in
+                guard let laneId = entry["laneId"] as? String else { return false }
+                return keptLaneIds.contains(laneId)
+            }
+            let body: [String: Any] = ["lanes": lanes, "apps": apps]
             try JSONSerialization.data(withJSONObject: body).write(to: url, options: .atomic)
             log("handed \(handed.apps.count) app(s) on \(handed.lanes.count) lane(s) to the main screen for the next brain")
         } catch {
@@ -970,13 +1026,19 @@ final class DriverRuntime: NSObject {
             ?? Self.scratchPath(laneId: laneId, suffix: "shot", extension: "png")
         let windowId = request.int("windowId").map { CGWindowID($0) }
             ?? (handle.displayId == 0 ? windows.listWindows(laneId: laneId).first?.id : nil)
-        let size = try capture.screenshot(
-            laneId: laneId,
-            displayId: handle.displayId,
-            windowId: windowId,
-            path: path,
-            budget: CaptureEngine.explicitScreenshotBudget
-        )
+        let size: (width: Int, height: Int)
+        do {
+            size = try capture.screenshot(
+                laneId: laneId,
+                displayId: handle.displayId,
+                windowId: windowId,
+                path: path,
+                budget: CaptureEngine.explicitScreenshotBudget
+            )
+        } catch {
+            log("screenshot on lane \(laneId) captured no frame: \(error)")
+            throw error
+        }
         touch(laneId)
         return [
             "laneId": .string(laneId),

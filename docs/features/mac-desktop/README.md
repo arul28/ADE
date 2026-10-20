@@ -121,7 +121,8 @@ required.
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/Geometry.swift` | The global/display-local conversion and the offscreen-fallback arithmetic. |
 | `apps/desktop/scripts/build-mac-desktop-driver.mjs` | Builds the universal `ade-desktop-driver` into `resources/native`. |
 | `apps/desktop/src/shared/types/macDesktop.ts` | The cross-process contract, including the `DesktopSeatProvider` interface every seat backend implements (Mac here, Windows in `windowsDesktop/`). Re-exports the seat wording from `shared/desktopSeat.ts`. |
-| `apps/desktop/src/main/services/macDesktop/macDesktopService.ts` | The runtime service: lane to display, idle release, the lease, events, and teardown. The window lifecycle, observation/input, streaming and recording halves are their own modules and are handed the service's registries and gates. | 
+| `apps/desktop/src/main/services/macDesktop/macDesktopService.ts` | The runtime service: lane to display, idle release, the lease, events, and teardown. The window lifecycle, handoff, observation/input, streaming and recording halves are their own modules and are handed the service's registries and gates. |
+| `apps/desktop/src/main/services/macDesktop/macDesktopHandoff.ts` | Claims and restores apps handed off when a brain restarts, and retries transient failures before the handoff expires. |
 | `apps/desktop/src/main/services/macDesktop/macDesktopDriverLifecycle.ts` | The driver process, permission probes, and health reconciliation. `createMacDesktopDriverLifecycle` is the only owner of the helper client. |
 | `apps/desktop/src/main/services/macDesktop/macDesktopSeatProvider.ts` | `createMacVirtualDisplayProvider` — the macOS `DesktopSeatProvider`. One method per driver op; the only file that knows the op names. The Windows sibling is `windowsDesktop/windowsDesktopSeatProvider.ts` (see [Windows Desktop](../windows-desktop/README.md#source-file-map)). |
 | `apps/desktop/src/main/services/macDesktop/macDesktopInput.ts` | The observation and input half: the one capture path, target→driver payload, who a call claims to be for the lease check, and the eight acting commands built on it. |
@@ -382,17 +383,21 @@ names the holding lane.
    each lane's display size and every window it held (frame relative to the
    display, minimized or not), moves the apps the lane opened to the main
    screen, sends borrowed windows home, and writes it all, with each app's
-   pid, bundle id and launch time, to
+   pid, bundle id and kernel process start time, to
    `<project>/.ade/cache/mac-desktop-handoff.json`. The next service start
-   (and the service after a lost driver) reads the file once, re-creates each
+   (and the service after a lost driver) claims the file, re-creates each
    lane's screen at its old size (not written as the resolution preference)
    and takes the apps back with `app.adopt`: an opened app becomes the lane's
    again, borrowed windows are claimed again, and each window returns to its
-   old frame. `app.adopt` refuses a pid that no longer runs that bundle from
-   that launch. The driver ignores `SIGPIPE`: the brain exits right after its
+   old frame. Services atomically claim the file so only one restores it.
+   Transient driver or display-start failures are written back with each app's
+   original handoff time and retried until its 15-minute expiry; an explicit
+   stop or lane removal cancels that lane's pending restore. `app.adopt` compares the pid,
+   bundle id and kernel process start time, since `NSRunningApplication`'s launch
+   date can be nil. The driver ignores `SIGPIPE`: the brain exits right after its
    SIGTERM, and the first log line of the shutdown used to kill the driver
-   before it handed anything off. A handoff older than 15 minutes, a removed lane, or an app that
-   quit meanwhile is left alone. Unsaved work survives. The in-app runtime
+   before it handed anything off. A removed lane or an app that quit meanwhile
+   is left alone. Unsaved work survives. The in-app runtime
    (`main.ts`) does not set it: quitting ADE there still quits the lanes' apps.
 5. **Teardown.** Lane delete and lane archive destroy the display through the
    lane teardown step, next to the file watchers — a `destroy_mac_desktop` step

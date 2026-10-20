@@ -19,7 +19,6 @@ import path from "node:path";
 import { createDemoEngineSet, type DemoEngineSet } from "../demoVideo/demoEngines";
 import type { Logger } from "../logging/logger";
 import {
-  type MacDesktopHandedOffWindow,
   MAC_DESKTOP_DEFAULT_RESOLUTION,
   MAC_DESKTOP_IDLE_RELEASE_MS,
   MAC_DESKTOP_MACOS_ONLY_MESSAGE,
@@ -113,6 +112,7 @@ import { createMacDesktopObservations, MacDesktopObservationError } from "./macD
 import { createMacDesktopInput } from "./macDesktopInput";
 import { createMacDesktopDriverLifecycle, type MacDesktopDriverLifecycle } from "./macDesktopDriverLifecycle";
 import { createMacDesktopRecording, readCaptureBytes } from "./macDesktopRecording";
+import { createMacDesktopHandoff, MAC_DESKTOP_HANDOFF_FILE } from "./macDesktopHandoff";
 import {
   asAppsLeftOpen,
   asNullableString,
@@ -256,36 +256,7 @@ export type MacDesktopServiceDeps = {
   handOffAppsOnExit?: boolean | null;
 };
 
-/** Where an exiting helper writes the apps it handed off, under the project. */
-const MAC_DESKTOP_HANDOFF_FILE = path.join(".ade", "cache", "mac-desktop-handoff.json");
-
-/**
- * How old a handoff can be and still be taken back. A restart takes seconds to
- * a few minutes; an app that has sat on the main screen longer than this is
- * the user's now, and pulling it off their screen would be a surprise.
- */
-const MAC_DESKTOP_HANDOFF_MAX_AGE_MS = 15 * 60_000;
-
 type DriverDisplayReply = MacDesktopDisplay & { displayId?: number | null };
-
-/** One app an exiting helper took off a lane (see `handOffAppsOnExit`). */
-type HandedOffApp = {
-  laneId: string;
-  pid: number;
-  appName: string;
-  bundleId: string | null;
-  launchedAt: number | null;
-  /** The lane opened it; otherwise the lane borrowed `windows` from the user's app. */
-  launched: boolean;
-  windows: MacDesktopHandedOffWindow[];
-};
-
-type HandoffFile = {
-  writtenAt: number;
-  /** Each lane's display size, so the next one is made the same. */
-  lanes: Map<string, { width: number; height: number }>;
-  apps: HandedOffApp[];
-};
 
 /** A CoreGraphics display id, or null when the driver reports none. */
 function asNullableDisplayId(raw: unknown): number | null {
@@ -422,6 +393,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
   });
 
   let disposed = false;
+  let handoffLifecycle: ReturnType<typeof createMacDesktopHandoff> | null = null;
   let driverLifecycle: MacDesktopDriverLifecycle;
   /**
    * laneId → the last display start or stop queued for the lane.
@@ -939,7 +911,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     streaming.clear();
     // A helper that exited on a signal handed its lanes' apps off on the way
     // out; the replacement takes them back.
-    scheduleHandoffRestore(1_000);
+    handoffLifecycle?.schedule(1_000);
   };
 
   driverLifecycle = createMacDesktopDriverLifecycle({
@@ -1227,6 +1199,22 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     return done;
   };
 
+  handoffLifecycle = createMacDesktopHandoff({
+    logger: deps.logger,
+    now,
+    handoffPath,
+    isDisposed: () => disposed,
+    ...(deps.resolveLaneWorktreePath ? { resolveLaneWorktreePath: deps.resolveLaneWorktreePath } : {}),
+    hasDisplay: (laneId) => ownership.hasDisplay(laneId),
+    startLane: (laneId, size) => runLifecycle(
+      laneId,
+      "start",
+      () => startInternal({ laneId }, size),
+    ),
+    adopt: (app) => windowLifecycle.adopt(app),
+  });
+  handoffLifecycle.schedule(2_000);
+
   const destroyDisplay = async (
     laneId: string,
     reason: "stopped" | "idle" | "lane_removed" | "driver_lost",
@@ -1474,6 +1462,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     async stop(args: MacDesktopStopArgs): Promise<MacDesktopStopResult> {
       assertSupported();
       const laneId = args.laneId.trim();
+      handoffLifecycle?.cancelLane(laneId);
       const result = await runLifecycle(laneId, "stop", () => destroyDisplay(laneId, "stopped"));
       return {
         stopped: result.destroyed,
@@ -1749,6 +1738,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     async destroyForLane(laneId: string): Promise<{ destroyed: boolean }> {
       const trimmed = laneId?.trim();
       if (!trimmed) return { destroyed: false };
+      handoffLifecycle?.cancelLane(trimmed);
       if (!seatSupported) return { destroyed: false };
       const result = await runLifecycle(trimmed, "stop", () => destroyDisplay(trimmed, "lane_removed")).catch((error: unknown) => {
         deps.logger.debug("mac_desktop.destroy_for_lane_failed", {
@@ -1786,6 +1776,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     dispose(): void {
       if (disposed) return;
       disposed = true;
+      handoffLifecycle?.dispose();
       if (sweepTimer) {
         clearInterval(sweepTimer);
         sweepTimer = null;
@@ -1798,145 +1789,6 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     },
   };
 
-  // -------------------------------------------------------------------------
-  // Taking back apps a restart handed off
-  // -------------------------------------------------------------------------
-
-  let restoringHandoff: Promise<void> | null = null;
-
-  const readHandoff = (file: string): HandoffFile | null => {
-    let raw: string;
-    try {
-      raw = fs.readFileSync(file, "utf8");
-    } catch {
-      return null;
-    }
-    // Read once: a handoff is taken back at most one time, whatever happens next.
-    try {
-      fs.rmSync(file, { force: true });
-    } catch {
-      // A file that cannot be removed is still read only once per process.
-    }
-    try {
-      const parsed = asRecord(JSON.parse(raw));
-      const apps = (Array.isArray(parsed?.apps) ? parsed.apps : []).flatMap((entry): HandedOffApp[] => {
-        const app = asRecord(entry);
-        const laneId = asNullableString(app?.laneId)?.trim();
-        const pid = typeof app?.pid === "number" ? app.pid : null;
-        if (!laneId || !pid) return [];
-        return [{
-          laneId,
-          pid,
-          appName: asNullableString(app?.appName) ?? `pid ${pid}`,
-          bundleId: asNullableString(app?.bundleId),
-          launchedAt: typeof app?.launchedAt === "number" ? app.launchedAt : null,
-          launched: app?.launched !== false,
-          windows: (Array.isArray(app?.windows) ? app.windows : []).flatMap((raw): MacDesktopHandedOffWindow[] => {
-            const window = asRecord(raw);
-            const num = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) ? value : 0);
-            if (typeof window?.id !== "number") return [];
-            return [{
-              id: window.id,
-              x: num(window.x),
-              y: num(window.y),
-              width: num(window.width),
-              height: num(window.height),
-              minimized: window.minimized === true,
-            }];
-          }),
-        }];
-      });
-      const lanes = new Map<string, { width: number; height: number }>();
-      for (const entry of Array.isArray(parsed?.lanes) ? parsed.lanes : []) {
-        const lane = asRecord(entry);
-        const laneId = asNullableString(lane?.laneId)?.trim();
-        if (laneId && typeof lane?.width === "number" && typeof lane?.height === "number" && lane.width > 0 && lane.height > 0) {
-          lanes.set(laneId, { width: lane.width, height: lane.height });
-        }
-      }
-      return { writtenAt: typeof parsed?.writtenAt === "number" ? parsed.writtenAt : 0, lanes, apps };
-    } catch {
-      return null;
-    }
-  };
-
-  const isProcessAlive = (pid: number): boolean => {
-    try {
-      process.kill(pid, 0);
-      return true;
-    } catch (error) {
-      return (error as NodeJS.ErrnoException).code === "EPERM";
-    }
-  };
-
-  /**
-   * Re-creates each lane's screen at its old size and takes its apps back,
-   * each window where it sat. A lane that is gone,
-   * an app that quit meanwhile, or a pid that is now another process is left
-   * where it is: on the user's main screen, or not at all.
-   */
-  const restoreHandedOffApps = async (file: string): Promise<void> => {
-    const handoff = readHandoff(file);
-    if (!handoff || handoff.apps.length === 0) return;
-    const ageMs = now() - handoff.writtenAt;
-    if (ageMs > MAC_DESKTOP_HANDOFF_MAX_AGE_MS) {
-      deps.logger.info("mac_desktop.handoff_expired", { ageMs, apps: handoff.apps.length });
-      return;
-    }
-    const byLane = new Map<string, HandedOffApp[]>();
-    for (const app of handoff.apps) {
-      if (!isProcessAlive(app.pid)) continue;
-      byLane.set(app.laneId, [...(byLane.get(app.laneId) ?? []), app]);
-    }
-    let restored = 0;
-    for (const [laneId, apps] of byLane) {
-      if (disposed) return;
-      try {
-        if (deps.resolveLaneWorktreePath && !(await Promise.resolve(deps.resolveLaneWorktreePath(laneId)))) continue;
-        // The same size it had, not the current default.
-        if (!ownership.getDisplay(laneId)) {
-          await runLifecycle(laneId, "start", () => startInternal({ laneId }, handoff.lanes.get(laneId) ?? null));
-        }
-        for (const app of apps) {
-          try {
-            if (await windowLifecycle.adopt(app)) restored += 1;
-          } catch (error) {
-            deps.logger.info("mac_desktop.handoff_app_skipped", {
-              laneId,
-              pid: app.pid,
-              appName: app.appName,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          }
-        }
-      } catch (error) {
-        deps.logger.warn("mac_desktop.handoff_lane_failed", {
-          laneId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-    deps.logger.info("mac_desktop.handoff_restored", {
-      handedOff: handoff.apps.length,
-      restored,
-      lanes: [...byLane.keys()],
-    });
-  };
-
-  function scheduleHandoffRestore(delayMs: number): void {
-    const file = handoffPath;
-    if (!file || disposed || restoringHandoff || !fs.existsSync(file)) return;
-    const timer = setTimeout(() => {
-      if (disposed || restoringHandoff) return;
-      restoringHandoff = restoreHandedOffApps(file).finally(() => {
-        restoringHandoff = null;
-      });
-    }, delayMs);
-    timer.unref?.();
-  }
-
-  // The brain that just started takes back what the last one handed off.
-  scheduleHandoffRestore(2_000);
 
   return Object.assign(api, {
     /** The sync half of `getDisplay`, for the prompt gate and the lane marker. */
