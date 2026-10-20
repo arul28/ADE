@@ -10,6 +10,7 @@ import {
   createScheduledWorkDb,
   createService,
   fs,
+  installClaudeResponseFixture,
   mapPermissionToClaude,
   mapPermissionToCodex,
   mockState,
@@ -2249,6 +2250,56 @@ describe("createAgentChatService", () => {
           pausedFlag: true,
         }),
       ]);
+    });
+
+    it("starts a fresh Claude thread when the saved provider account was removed", async () => {
+      installClaudeResponseFixture({ sdkSessionId: "sdk-old-account", responseText: "Primed." });
+      const scheduledWork = createScheduledWorkDb();
+      const { service, sessionService } = createService({ db: scheduledWork.db });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "prime the old account thread",
+        timeoutMs: 15_000,
+      });
+      const primed = readPersistedChatState(session.id);
+      expect(primed.sdkSessionId).toBe("sdk-old-account");
+      await service.dispose({ sessionId: session.id });
+      sessionService.reopen(session.id);
+
+      writePersistedChatState(session.id, {
+        ...primed,
+        instanceId: "gone-account",
+        sdkSessionId: "sdk-old-account",
+        forkFromSdkSessionId: "sdk-old-account",
+      });
+      const fresh = installClaudeResponseFixture({
+        sdkSessionId: "sdk-fresh-account",
+        responseText: "Started on the available account.",
+      });
+      vi.mocked(claudeSdkResumeSessionCompat).mockClear();
+
+      const resumed = createService({ db: scheduledWork.db }).service;
+      await resumed.resumeSession({ sessionId: session.id });
+      const result = await resumed.runSessionTurn({
+        sessionId: session.id,
+        text: "continue after account removal",
+        timeoutMs: 15_000,
+      });
+
+      const saved = readPersistedChatState(session.id);
+      expect(result.sdkSessionId).toBe("sdk-fresh-account");
+      expect(claudeSdkResumeSessionCompat).not.toHaveBeenCalledWith("sdk-old-account", expect.anything());
+      expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+      expect(fresh.send).toHaveBeenCalledWith(expect.stringContaining("continue after account removal"));
+      expect(saved.sdkSessionId).toBe("sdk-fresh-account");
+      expect(saved.forkFromSdkSessionId).not.toBe("sdk-old-account");
+      expect(saved.instanceId).not.toBe("gone-account");
+      resumed.forceDisposeAll();
     });
 
     it("persists a continuity snapshot and requires explicit recovery after identity session reset errors", async () => {

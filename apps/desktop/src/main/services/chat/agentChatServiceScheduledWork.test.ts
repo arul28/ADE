@@ -563,6 +563,200 @@ describe("createAgentChatService", () => {
       service.forceDisposeAll();
     });
 
+    it("leaves detached chats and their scheduled wakes to a live sibling brain", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(SCHEDULE_TEST_START);
+      const scheduledWork = createScheduledWorkDb();
+      const starter = createService({ db: scheduledWork.db });
+      const unowned = await starter.service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      const unownedWake = await starter.service.createScheduledWork({
+        sessionId: unowned.id,
+        delaySeconds: 60,
+        prompt: "Do not run this from a sibling brain.",
+      });
+      const foreignAccount = await starter.service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      const foreignWake = await starter.service.createScheduledWork({
+        sessionId: foreignAccount.id,
+        delaySeconds: 60,
+        prompt: "Keep this account's wake with its home.",
+      });
+      await starter.service.disposeAll();
+      starter.sessionService.end({ sessionId: unowned.id, status: "detached" });
+      starter.sessionService.end({ sessionId: foreignAccount.id, status: "detached" });
+
+      writePersistedChatState(unowned.id, {
+        ...readPersistedChatState(unowned.id),
+        runtimeOwner: null,
+      });
+      writePersistedChatState(foreignAccount.id, {
+        ...readPersistedChatState(foreignAccount.id),
+        instanceId: "account-from-another-home",
+        sdkSessionId: "sdk-foreign-account",
+        forkFromSdkSessionId: "sdk-foreign-account",
+        runtimeOwner: {
+          brainId: "brain-from-another-home",
+          pid: 987_654_321,
+          startedAt: "2026-10-01T00:00:00.000Z",
+          adeHome: "/Users/other/.ade",
+          socketPath: "/tmp/other-brain.sock",
+          claimedAt: "2026-10-01T00:00:00.000Z",
+        },
+      });
+
+      const processRegistry = {
+        pid: process.pid,
+        startedAt: "2026-10-20T12:00:00.000Z",
+        isProcessIdentityLive: (pid: number) => pid === process.pid || pid === 4242,
+        listLiveProcessIdentities: () => [
+          { pid: process.pid, startedAt: "2026-10-20T12:00:00.000Z" },
+          { pid: 4242, startedAt: "2026-10-20T11:59:00.000Z" },
+        ],
+      };
+      const events: AgentChatEventEnvelope[] = [];
+      const sibling = createService({
+        db: scheduledWork.db,
+        processRegistry,
+        runtimeSocketPath: "/tmp/dev-brain.sock",
+        yieldsUnownedChatsToSiblingBrains: true,
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      await sibling.service.refreshScheduledWork();
+      vi.mocked(claudeSdkResumeSessionCompat).mockClear();
+
+      await sibling.service.getChatTranscript({ sessionId: unowned.id });
+      await sibling.service.getChatTranscript({ sessionId: foreignAccount.id });
+      expect(claudeSdkResumeSessionCompat).not.toHaveBeenCalled();
+      expect(sibling.sessionService.get(unowned.id)?.status).toBe("detached");
+      expect(sibling.sessionService.get(foreignAccount.id)?.status).toBe("detached");
+      expect(readPersistedChatState(foreignAccount.id)).toMatchObject({
+        instanceId: "account-from-another-home",
+        sdkSessionId: "sdk-foreign-account",
+        forkFromSdkSessionId: "sdk-foreign-account",
+      });
+
+      // Isolate the account-home gate from the sibling-brain policy: with no
+      // live sibling and a dead owner stamp, the missing account still keeps
+      // this brain from recovering the chat.
+      const accountOnlyBrain = createService({
+        db: scheduledWork.db,
+        processRegistry: {
+          pid: process.pid,
+          startedAt: "2026-10-20T12:00:00.000Z",
+          isProcessIdentityLive: () => false,
+          listLiveProcessIdentities: () => [{ pid: process.pid, startedAt: "2026-10-20T12:00:00.000Z" }],
+        },
+      });
+      await accountOnlyBrain.service.getChatTranscript({ sessionId: foreignAccount.id });
+      expect(accountOnlyBrain.sessionService.get(foreignAccount.id)?.status).toBe("detached");
+      expect(readPersistedChatState(foreignAccount.id)).toMatchObject({
+        instanceId: "account-from-another-home",
+        sdkSessionId: "sdk-foreign-account",
+        forkFromSdkSessionId: "sdk-foreign-account",
+      });
+      accountOnlyBrain.service.forceDisposeAll();
+
+      const { send } = installClaudeResponseFixture({
+        sdkSessionId: "sdk-owned-by-dev-brain",
+        responseText: "The dev brain's own chat ran.",
+      });
+      const ownChat = await sibling.service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      await sibling.service.runSessionTurn({
+        sessionId: ownChat.id,
+        text: "Prime the dev brain's own chat.",
+        timeoutMs: 15_000,
+      });
+      expect(readPersistedChatState(ownChat.id).runtimeOwner).toMatchObject({
+        pid: process.pid,
+        socketPath: "/tmp/dev-brain.sock",
+      });
+      send.mockClear();
+      const ownWake = await sibling.service.createScheduledWork({
+        sessionId: ownChat.id,
+        delaySeconds: 60,
+        prompt: "Run the dev brain's own wake.",
+      });
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      await waitForFakeTimerCondition(
+        () => scheduledWork.readState()?.schedules.find((item) => item.id === ownWake.item.id)?.status === "done",
+        "the dev brain's own scheduled wake to finish",
+      );
+
+      expect(scheduledWork.readState()?.schedules.find((item) => item.id === unownedWake.item.id)?.status)
+        .toBe("scheduled");
+      expect(scheduledWork.readState()?.schedules.find((item) => item.id === foreignWake.item.id)?.status)
+        .toBe("scheduled");
+      expect(send).toHaveBeenCalledWith(expect.stringContaining("Run the dev brain's own wake."));
+      expect(events.some((event) => (
+        event.sessionId === unowned.id || event.sessionId === foreignAccount.id
+      ) && event.event.type === "user_message" && event.event.metadata?.scheduledWake != null)).toBe(false);
+      sibling.service.forceDisposeAll();
+    });
+
+    it("settles a scheduled wake refused before dispatch with its reason", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(SCHEDULE_TEST_START);
+      const scheduledWork = createScheduledWorkDb();
+      const events: AgentChatEventEnvelope[] = [];
+      const diskPressureMonitor = {
+        canPerform: vi.fn(() => ({
+          allowed: false,
+          state: "exhausted" as const,
+          code: "disk_full" as const,
+          message: "ADE paused new work because storage is full.",
+        })),
+      };
+      const { service } = createService({
+        db: scheduledWork.db,
+        diskPressureMonitor,
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      claudeSdkCreateSessionCompat.mockClear();
+      claudeSdkResumeSessionCompat.mockClear();
+      const wake = await service.createScheduledWork({
+        sessionId: session.id,
+        delaySeconds: 60,
+        prompt: "This wake is refused before its turn starts.",
+      });
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      await waitForFakeTimerCondition(
+        () => scheduledWork.readState()?.schedules.find((item) => item.id === wake.item.id)?.status === "done",
+        "the refused one-shot wake to settle",
+      );
+
+      expect(scheduledWork.readState()?.schedules.find((item) => item.id === wake.item.id)).toMatchObject({
+        status: "done",
+        outcomeSummary: "Not delivered: ADE paused new work because storage is full.",
+      });
+      expect(diskPressureMonitor.canPerform).toHaveBeenCalled();
+      expect(claudeSdkCreateSessionCompat).not.toHaveBeenCalled();
+      expect(claudeSdkResumeSessionCompat).not.toHaveBeenCalled();
+      expect(events.some((event) =>
+        event.sessionId === session.id
+        && event.event.type === "user_message"
+        && event.event.metadata?.scheduledWake?.scheduleId === wake.item.id
+      )).toBe(false);
+      service.forceDisposeAll();
+    });
+
     it("expands an ADE skill when a scheduled wake delivers its prompt", async () => {
       vi.useFakeTimers();
       vi.setSystemTime(SCHEDULE_TEST_START);

@@ -64,7 +64,7 @@ npm run dev
 
 That aliases to `npm run dev:desktop`: it rebuilds `apps/ade-cli`, refreshes the shared dev runtime at `/tmp/ade-runtime-dev.sock` when needed, launches the Electron desktop app, and points desktop at that runtime. This is the normal desktop-dev flow.
 
-**This is the only supported way to run a dev app on a machine that also runs the installed ADE.** The dev brain shares `~/.ade` (your account, projects, and sync identity are served by the installed brain) and is started with `--no-sync`, so it can never take the machine-wide sync host lease. It stamps and respects chat runtime ownership, so it never adopts a chat the installed brain is driving, and an `ade chat send`/`steer`/`interrupt` that reaches it for such a chat is refused with the owner's socket instead of starting a second agent process. An unpackaged app never installs or repairs the launchd brain service. The launcher prints a dev isolation report (state root, socket, sync, project, installed brain untouched) before the window opens; read it. Do not start `ade serve` by hand, do not set a fresh `ADE_HOME` (a never-signed-in home shows the account gate), and do not copy `~/.ade` secrets into another home. `ADE_DEV_RUNTIME_SYNC=1` opts a dev brain into sync on purpose and is almost never what you want.
+**This is the only supported way to run a dev app on a machine that also runs the installed ADE.** The dev brain shares `~/.ade` (your account, projects, and sync identity are served by the installed brain) and is started with `--no-sync`, so it can never take the machine-wide sync host lease. Its own socket keeps it from taking over chats run by the installed brain, including across different ADE homes. While the installed brain is live, the dev brain leaves chats it does not run to it: it does not recover or prewarm them or fire their scheduled wakes. Its own chats and messages sent directly to it still work; a send, steer or interrupt for a chat another brain runs is refused with the owner's socket instead of starting a second provider process. An unpackaged app never installs or repairs the launchd brain service. The launcher prints a dev isolation report (state root, socket, sync, project, installed brain untouched) before the window opens; read it. Do not start `ade serve` by hand or copy `~/.ade` secrets into another home. Use a separate `ADE_HOME` only for deliberate scratch-home work; a new home shows the account gate, and full project isolation also needs a throwaway project. `ADE_DEV_RUNTIME_SYNC=1` opts a dev brain into sync on purpose and is almost never what you want.
 
 ### If you are an agent, start it detached
 
@@ -167,35 +167,25 @@ best effort: if it cannot be opened the runtime still starts (with `stdio:
 "ignore"`, as before). The startup line printed by `dev:desktop` names the path
 whenever the log is in use.
 
-The detached runtime also gets a **sanitized environment**. It inherits the rest
-of the shell env (`PATH`, `HOME`, `ADE_PERF_RUN_ID`, …), but variables that
-identify the *launching* agent shell rather than the shared daemon are stripped
-by name: `ADE_DEFAULT_ROLE`, `ADE_CHAT_SESSION_ID`,
-`ADE_PARENT_CHAT_SESSION_ID`, `ADE_SPAWN_KIND`, the
-run identity (`ADE_RUN_ID`, `ADE_STEP_ID`, `ADE_ATTEMPT_ID`,
-`ADE_OWNER_ID`), and the location binding (`ADE_LANE_ID`, `ADE_PROJECT_ROOT`,
-`ADE_WORKSPACE_ROOT`). This matters when an ADE chat is what launched the
-script: `ptyService` stamps `ADE_DEFAULT_ROLE=agent` on every tracked agent CLI
-terminal, and any caller context carrying a `chatSessionId` downgrades a `cto`
-default to an agent — either one clamps the shared dev brain to an agent role
-and breaks project-wide desktop actions such as importing external sessions. The
-daemon's own role is computed from the sanitized env, never read back out of the
-shell that was just stripped, and its project/workspace comes from its own
-arguments. `ADE_RUNTIME_PARENT_PID` / `ADE_RUNTIME_IDLE_EXIT_MS` are removed for
-the separate reason that a shared daemon must outlive the process that launched
-it.
+The dev launcher sanitizes the detached runtime's environment before it starts.
+It removes inherited caller and run identity (`ADE_CHAT_SESSION_ID`, parent
+chat, spawn, browser token, and run ids), lane/project/workspace bindings
+(`ADE_LANE_ID`, `ADE_PROJECT_ROOT`, `ADE_WORKSPACE_ROOT`), and the agent's
+`ADE_DEFAULT_ROLE`. It also removes `CLAUDE_CONFIG_DIR` and `CODEX_HOME` only
+when they point inside an ADE `provider-homes` directory, plus the
+`CLAUDECODE` / `CLAUDE_CODE_*` markers that identify a parent Claude session.
+The shell's `PATH`, `HOME`, performance-run id, and provider paths outside ADE
+are retained. The detached runtime also drops `ADE_RUNTIME_PARENT_PID` and
+`ADE_RUNTIME_IDLE_EXIT_MS` so it outlives the process that launched it.
 
-A brain started any other way — `ade serve` or `~/.ade-<channel>/bin/ade serve`
-typed into an agent's shell — now drops the caller identity itself at startup
-(`brainInheritedIdentity.ts`: the chat, spawn, browser-token and run keys above)
-and prints `ADE: This brain was started from an agent's shell. It ignores that
-agent's identity …`. Before that, such a brain clamped EVERY client to the
-launching agent, desktop included, and the Mac Desktop panel answered "Action
-'mac_desktop.startStream' requires elevated role." (2026-09-22). The role
-ceiling is not changed for you: a plain `ade serve` still defaults to `agent`,
-and it now says so — `ADE: This brain serves at role agent, so ADE desktop,
-phone and web clients (role cto) will be refused.` Start a hand-run brain that a
-desktop will connect to as `ade --role cto serve`.
+A hand-started brain performs the same cleanup when it detects an agent shell:
+it drops caller identity, lane/project/workspace bindings and inherited default
+role itself, and removes ADE provider-home paths and Claude parent-session
+markers before serving. The dev app's main process strips the provider-home
+paths and Claude markers as well. No `env -u` prefix is needed. The startup
+message reports the inherited values it removed. A plain `ade serve` still
+defaults to role `agent`, which refuses desktop, phone and web clients; start a
+hand-run brain for those clients as `ade --role cto serve`.
 
 A separate `ADE_HOME` does not isolate a PROJECT. Machine state lives in the
 home, but each project keeps its own database in `<project>/.ade/ade.db`. A
@@ -453,13 +443,14 @@ existed, and the agents running under the installed brain died with the lease.
 Set `ADE_DEV_RUNTIME_SYNC=1` only when a dev brain must host sync on purpose,
 and never on a machine whose installed ADE is doing real work.
 
-`--no-sync` guards the sync lease and **nothing else**. A dev brain started
-this way still attaches to the same `~/.ade` database as the installed app,
-and two brains on one database can only have one owner for a given chat, so
-the other's agents can stop with no explanation. Starting a brain on a home
-that already has one now prints who else is there and logs
-`brain.home_shared`; if you see that, decide which brain you meant to have.
-List them, with their homes, before assuming:
+`--no-sync` guards the sync lease; it does not isolate project data. A dev
+brain still opens the same project `.ade/ade.db` as the installed app. Runtime
+ownership keeps a live chat with its owner across ADE homes, and a dev brain on
+its own socket leaves the installed brain's other chats and scheduled work
+alone. The shared database still contains the same project state, so use a
+throwaway project when you need full data isolation. Starting a brain on a home
+that already has one prints who else is there and logs `brain.home_shared`.
+List the brains, with their homes, before assuming:
 
 ```bash
 pgrep -alf "cli.cjs serve|/bin/ade serve"
@@ -474,7 +465,8 @@ exit after 20 idle minutes (`ADE_RUNTIME_IDLE_EXIT_MS`, set in
 `0` disables it) on the launch command to raise or clear it, for example when
 testing in the dev app for longer than the budget. For work that only needs to read or drive a lane, give the brain
 its own home — `ADE_HOME=$HOME/.ade-<name>` on its own socket — instead of
-sharing `~/.ade`. Because the dev
+sharing `~/.ade`. A separate home keeps machine-level state separate, while a
+throwaway project is still required to isolate project data. Because the dev
 brain does not host sync it never publishes to the account, which is why the
 Connections card is not testable this way; everything on the Mac Desktop pane
 is. Use `--project-root` to point the dev app at a throwaway project so the
