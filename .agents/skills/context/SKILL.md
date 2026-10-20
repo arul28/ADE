@@ -70,9 +70,11 @@ resolve docs + the matching `ade-perf-*` skill via `references/doc-map.md`.
   app unless that is the task: either takes the machine away from the user's
   installed ADE. When you are done, stop the app's process group and confirm
   its brain exited (`pgrep -fl "<your socket>"`).
-- **Close the dev app before you edit its code.** It relaunches its window on
-  every saved change and jumps to the front over the user's work. Stop it
-  before a batch of edits and start it again when you need to look
+- **Close the dev app before you edit its main-process code.** A saved change
+  under `apps/desktop/src/main`, the preload or `src/shared` rebuilds main and
+  relaunches the window, which jumps to the front over the user's work
+  (renderer-only edits hot-reload in place). Stop it before such a batch of
+  edits and start it again when you need to look
   (`npm run dev:desktop:attach -- --socket <your socket>` reopens just the
   window if your dev brain is still up and you did not change brain code).
 - `docs/README.md` — the internal-docs navigation map.
