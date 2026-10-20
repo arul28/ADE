@@ -2431,12 +2431,22 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     DESTINATION; the chat moves from here. Add --effort,
                                                     --permissions, --include-changes (bring uncommitted and unpushed
                                                     work), --clone (set the repo up there), --when-turn-ends (queue
-                                                    it; a newer user message cancels it). An agent moves only its
-                                                    own chat, keeps its permissions, and waits for the person's
-                                                    approval unless the chat is full-auto.
+                                                    it; a newer user message cancels it). A full-auto self/descendant
+                                                    move may proceed without approval; other self/descendant moves
+                                                    and all unrelated chats need the person's approval. Moves keep
+                                                    the source chat's permissions.
+                                                    The source is locked after arrival until the person chooses
+                                                    Work here instead.
     $ ade chat handoff <session> --options --json   Where the chat can go, and what blocks it (with fixes)
     $ ade chat handoff <session> --cancel           Keep a queued or awaiting move here, or dismiss an unknown one
     $ ade chat handoff <session> --retry            Retry a failed or unknown move with the same choices
+    $ ade chat move --machine "Mac Studio" <session> [<session>…]
+                                                    Move selected chats, their lanes, and descendants in tree order
+    $ ade chat move --machine "Mac Studio" --all    Move every active Work chat and its lanes on this brain
+                                                    Defaults to fork; --brief sends a short context summary.
+                                                    Also: --no-descendants, --no-changes, --interrupt, --note "…"
+    $ ade chat move --status <batch-id>              Show batch progress and per-item state
+    $ ade chat move --retry <batch-id>               Resume remaining batch items
     $ ade chat fork <session> --model openai/gpt-5.6-sol
                                                     Carry this conversation into a new chat (same provider)
     $ ade chat fork <session> --model <model> --through-turn <turn-id>
@@ -10070,6 +10080,57 @@ function buildChatPlan(args: string[]): CliPlan {
       label: "chat actions",
       steps: [listActionsStep("actions", "chat")],
     };
+  if (sub === "move") {
+    const statusBatchId = readValue(args, ["--status"]);
+    const retryBatchId = readValue(args, ["--retry"]);
+    if (statusBatchId !== null && retryBatchId !== null) {
+      throw new CliUsageError("Use either --status <batch-id> or --retry <batch-id>.");
+    }
+    if (statusBatchId !== null || retryBatchId !== null) {
+      if (firstStandalonePositional(args) !== null) {
+        throw new CliUsageError("chat move --status/--retry takes only a batch id.");
+      }
+      const batchId = statusBatchId ?? retryBatchId!;
+      const action = statusBatchId !== null ? "getCrossMachineBatchMove" : "retryCrossMachineBatchMove";
+      return {
+        kind: "execute",
+        label: statusBatchId !== null ? "chat move status" : "chat move retry",
+        steps: [actionStep("result", "chat", action, { batchId })],
+      };
+    }
+    const machine = readValue(args, ["--machine"]);
+    if (machine === null || !machine.trim()) {
+      throw new CliUsageError("chat move requires --machine <name> (see `ade machines list`).");
+    }
+    const allWorkOnThisMachine = readFlag(args, ["--all"]);
+    const includeDescendants = !readFlag(args, ["--no-descendants"]);
+    const mode = readFlag(args, ["--brief"]) ? "brief" : "fork";
+    const includeChanges = !readFlag(args, ["--no-changes"]);
+    const whenBusy = readFlag(args, ["--interrupt"]) ? "interrupt" : "wait";
+    const note = readValue(args, ["--note"]);
+    const sessionIds = standalonePositionals(args);
+    if (allWorkOnThisMachine && sessionIds.length > 0) {
+      throw new CliUsageError("Use --all or list session ids, not both.");
+    }
+    if (!allWorkOnThisMachine && sessionIds.length === 0) {
+      throw new CliUsageError("chat move requires --all or at least one session id.");
+    }
+    return {
+      kind: "execute",
+      label: "chat move batch to another machine",
+      steps: [
+        actionStep("result", "chat", "startCrossMachineBatchMove", {
+          machine,
+          ...(allWorkOnThisMachine ? { allWorkOnThisMachine: true } : { sessionIds }),
+          includeDescendants,
+          mode,
+          includeChanges,
+          whenBusy,
+          ...(note !== null ? { note } : {}),
+        }),
+      ],
+    };
+  }
   // Linear session-scoped subcommands resolve their own session id AFTER
   // consuming --issue-id (so firstPositional can't mistake an issue id flag value
   // for the session), so they opt out of the shared positional grab here.

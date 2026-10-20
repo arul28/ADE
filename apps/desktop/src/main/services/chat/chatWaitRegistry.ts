@@ -7,6 +7,7 @@ import {
   type ChatWaitForResult,
 } from "../../../shared/chatWait";
 import type { AgentChatMessageSessionArgs } from "../../../shared/types";
+import { isMovedAwayChatError, type CrossMachineMoveLock } from "../../../shared/crossMachineMoveLock";
 import type { Logger } from "../logging/logger";
 
 /**
@@ -40,6 +41,8 @@ export type ChatWaitRegistryDeps = {
    * runs the chat to be woken may fire one.
    */
   ownedByAnotherBrain: (sessionId: string) => boolean;
+  /** Locked destinations keep their waiter pending for the return or resume-here choice. */
+  getMovedAwayTarget?: (sessionId: string) => CrossMachineMoveLock | null;
   /**
    * Throws when another live brain runs the chat a new waiter would deliver
    * to. Only that brain can deliver it, and it reads waiters at startup only,
@@ -136,6 +139,7 @@ export function createChatWaitRegistry(deps: ChatWaitRegistryDeps) {
     const due: Array<{ waiter: ChatWaiter; outcome: "matched" | "expired" }> = [];
     for (const waiter of [...waiters]) {
       const deliverTo = waiter.action.kind === "send" ? waiter.action.sessionId : waiter.callerSessionId;
+      if (deliverTo && deps.getMovedAwayTarget?.(deliverTo)) continue;
       if (deliverTo && deps.ownedByAnotherBrain(deliverTo)) continue;
       const results = await Promise.all(waiter.targetSessionIds.map((target) => targetMatches(target, waiter)));
       const matched = waiter.mode === "all" ? results.every(Boolean) : results.some(Boolean);
@@ -156,6 +160,15 @@ export function createChatWaitRegistry(deps: ChatWaitRegistryDeps) {
         await fire(waiter, outcome);
         logger.info("agent_chat.wait_fired", { waiterId: waiter.id, outcome, action: waiter.action.kind });
       } catch (error) {
+        if (isMovedAwayChatError(error)) {
+          if (!waiters.some((candidate) => candidate.id === waiter.id)) {
+            waiters.push(waiter);
+            persist();
+            syncBackstop();
+            scheduleCheck();
+          }
+          continue;
+        }
         logger.warn("agent_chat.wait_fire_failed", {
           waiterId: waiter.id,
           error: error instanceof Error ? error.message : String(error),

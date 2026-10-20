@@ -6448,6 +6448,8 @@ export function createLaneService({
         name?: string;
         description?: string;
         baseBranch?: string;
+        /** Record an existing lane as this lane's parent without rebasing. */
+        parentLaneId?: string | null;
         /**
          * Push the branch to origin when it tracks nothing. Default true. A
          * cross-machine move carrying unpushed commits passes false: arriving
@@ -6460,6 +6462,10 @@ export function createLaneService({
       const rawRef = (args.branchRef ?? "").trim();
       if (!rawRef) throw new Error("branchRef is required");
       if (rawRef.includes("\0")) throw new Error("Invalid branchRef");
+      const parentLaneId = args.parentLaneId?.trim() || null;
+      const parent = parentLaneId ? getLaneRow(parentLaneId) : null;
+      if (parentLaneId && !parent) throw new Error(`Parent lane not found in this project: ${parentLaneId}`);
+      if (parent && parent.status === "archived") throw new Error("Parent lane is archived");
 
       let branchRef = rawRef;
       let remoteRefToTrack: string | null = null;
@@ -6532,14 +6538,8 @@ export function createLaneService({
         );
         worktreeAdded = true;
 
-        // Imported branches are always root lanes. No caller passes
-        // parentLaneId — if a child lane is wanted, the "child" creation
-        // mode is used instead.
-        const parentLaneId: string | null = null;
-        const parent = parentLaneId ? getLaneRow(parentLaneId) : null;
-        if (parentLaneId && !parent) throw new Error(`Parent lane not found: ${parentLaneId}`);
-        if (parent && parent.status === "archived") throw new Error("Parent lane is archived");
-
+        // Preserve a remote lane tree by recording the parent directly. This
+        // import intentionally uses the given branch as-is and never rebases.
         const baseRef = args.baseBranch?.trim() || defaultBaseRef;
         const laneColor = allocateLaneColorForProject();
 

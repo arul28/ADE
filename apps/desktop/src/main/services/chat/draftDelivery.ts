@@ -1,4 +1,5 @@
 import type { AgentChatFileRef, DraftEntry } from "../../../shared/types/chat";
+import { isMovedAwayChatError } from "../../../shared/crossMachineMoveLock";
 import type { Logger } from "../logging/logger";
 
 /**
@@ -50,6 +51,8 @@ export type DraftDeliveryDeps = {
   now: () => number;
   /** Whether the chat a schedule points at still exists and can receive a turn. */
   targetChatExists: (sessionId: string) => boolean;
+  /** A moved-away target stays armed until the person chooses to work here. */
+  isChatMovedAway?: (sessionId: string) => boolean;
   /** Deliver the draft into an existing chat as a real user turn. */
   sendToChat: (args: {
     sessionId: string;
@@ -107,6 +110,12 @@ export async function deliverDraft(
   deps: DraftDeliveryDeps,
 ): Promise<DraftDeliveryOutcome> {
   const nowMs = deps.now();
+  const targetSessionId = draft.targetKind === "existing" ? draft.targetSessionId?.trim() : null;
+  // A move-away lock pauses the draft before lateness rules run: even a strict
+  // draft must remain pending so it can deliver if the chat returns here.
+  if (targetSessionId && deps.targetChatExists(targetSessionId) && deps.isChatMovedAway?.(targetSessionId)) {
+    return { status: "retry", error: "This chat continues on another machine." };
+  }
   const fireAt = draft.scheduledAt ? Date.parse(draft.scheduledAt) : Number.NaN;
   const latenessMs = Number.isFinite(fireAt) ? nowMs - fireAt : 0;
 
@@ -137,18 +146,22 @@ export async function deliverDraft(
         thinking: draft.thinking ?? null,
       });
     } else {
-      const sessionId = draft.targetSessionId?.trim();
+      const sessionId = targetSessionId;
       if (!sessionId) {
         return { status: "blocked", error: "This send has no chat to go to. Pick one." };
       }
       if (!deps.targetChatExists(sessionId)) {
         return { status: "blocked", error: "The chat this send was aimed at is gone. Pick another target." };
       }
+      if (deps.isChatMovedAway?.(sessionId)) {
+        return { status: "retry", error: "This chat continues on another machine." };
+      }
       await deps.sendToChat({ sessionId, text: draft.text, attachments });
     }
     return { status: "sent", firedAt: new Date(nowMs).toISOString() };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    if (isMovedAwayChatError(error)) return { status: "retry", error: message };
     deps.logger.warn("draft.deliver_failed", { draftId: draft.id, message });
     if (error instanceof DraftDeliveryUnsupportedError) {
       // Retrying cannot help; surface it so the row says why.

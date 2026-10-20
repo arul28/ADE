@@ -286,6 +286,7 @@ export function decodeCrossMachineDestinationPreflightResult(
     ...(laneFastForward ? { laneFastForward } : {}),
     // Absent on older destinations; only an explicit true means support.
     ...(record.gitBundleSupport === true ? { gitBundleSupport: true } : {}),
+    ...(record.batchMoveSupport === 1 ? { batchMoveSupport: 1 } : {}),
   };
 }
 
@@ -316,5 +317,8 @@ export function decodeAcceptCrossMachineHandoffResult(
     session: sessionRecord as unknown as AgentChatSession,
     reusedLane: requireBoolean(record.reusedLane, "Destination lane reuse status"),
     reusedSession: requireBoolean(record.reusedSession, "Destination chat reuse status"),
+    ...(Array.isArray(record.warnings)
+      ? { warnings: requireStringList(record.warnings, "Destination handoff warnings") }
+      : {}),
   };
 }

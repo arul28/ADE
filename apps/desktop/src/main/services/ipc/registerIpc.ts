@@ -509,6 +509,10 @@ import type {
   AgentChatCrossMachineHandoffRecord,
   AgentChatResolveCrossMachineHandoffApprovalArgs,
   AgentChatStartCrossMachineHandoffArgs,
+  AgentChatStartCrossMachineBatchMoveArgs,
+  AgentChatGetCrossMachineBatchMoveArgs,
+  AgentChatRetryCrossMachineBatchMoveArgs,
+  AgentChatCrossMachineBatchMoveRecord,
   AgentChatInterruptArgs,
   AgentChatInterruptResult,
   AgentChatStopTaskArgs,
@@ -9202,6 +9206,27 @@ export function registerIpc({
     IPC.agentChatAcknowledgeCrossMachineHandoff,
     async (_event, arg: AgentChatAcknowledgeCrossMachineHandoffArgs): Promise<AgentChatCrossMachineHandoffRecord | null> =>
       await ensureAgentChatContext().agentChatService.acknowledgeCrossMachineHandoff(arg),
+  );
+  ipcMain.handle(
+    IPC.agentChatStartCrossMachineBatchMove,
+    async (_event, arg: AgentChatStartCrossMachineBatchMoveArgs): Promise<AgentChatCrossMachineBatchMoveRecord> => {
+      const { requestedBy: _ignored, requestingSessionId: _ignoredSession, ...startArgs } =
+        (arg ?? {}) as AgentChatStartCrossMachineBatchMoveArgs & { requestedBy?: unknown; requestingSessionId?: unknown };
+      return await ensureAgentChatContext().agentChatService.startCrossMachineBatchMove({
+        ...startArgs,
+        requestedBy: "user",
+      });
+    },
+  );
+  ipcMain.handle(
+    IPC.agentChatGetCrossMachineBatchMove,
+    async (_event, arg: AgentChatGetCrossMachineBatchMoveArgs): Promise<AgentChatCrossMachineBatchMoveRecord | null> =>
+      await ensureAgentChatContext().agentChatService.getCrossMachineBatchMove(arg),
+  );
+  ipcMain.handle(
+    IPC.agentChatRetryCrossMachineBatchMove,
+    async (_event, arg: AgentChatRetryCrossMachineBatchMoveArgs): Promise<AgentChatCrossMachineBatchMoveRecord> =>
+      await ensureAgentChatContext().agentChatService.retryCrossMachineBatchMove(arg),
   );
 
   ipcMain.handle(IPC.agentChatSend, async (_event, arg: AgentChatSendArgs): Promise<void> => {

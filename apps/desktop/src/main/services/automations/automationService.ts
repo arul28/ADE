@@ -89,6 +89,7 @@ import {
 } from "../../../shared/automationLimits";
 import { SessionTurnAbandonedError } from "../chat/sessionTurnLimits";
 import { PENDING_INPUT_SEND_BLOCKED_MESSAGE } from "../../../shared/pendingInputAnswers";
+import { isMovedAwayChatError } from "../../../shared/crossMachineMoveLock";
 
 const execFileAsync = promisify(execFile);
 
@@ -3299,6 +3300,7 @@ export function createAutomationService({
       }
       return { status: "succeeded", output };
     } catch (error) {
+      if (isMovedAwayChatError(error)) return { status: "skipped", output: "" };
       return {
         status: "failed",
         output: error instanceof Error ? error.message : String(error),

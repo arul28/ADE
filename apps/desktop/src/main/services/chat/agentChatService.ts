@@ -10,6 +10,7 @@ import { parseForeignCallerSessionId } from "../../../shared/runtimeClientNames"
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createCodexAppServerPool, type CodexAppServerClient, type CodexAppServerHost } from "./codexAppServerPool";
 import { createHash, randomUUID } from "node:crypto";
+import { deterministicChatSessionId } from "../../../shared/deterministicChatSessionId";
 // Static import so bundlers (tsup → apps/ade-cli brain) include the module; a
 // dynamic import() with a variable path is left unresolved in cli.cjs and fails
 // at runtime ("Cannot find module .../externalSessions/claudeSessionTransplant").
@@ -185,6 +186,12 @@ import {
 import { readCodexIsBlocking } from "../../../shared/codexRequestUserInput";
 import { redactCommandLine } from "../../../shared/secretRedaction";
 import { codedError } from "../../../shared/codedError";
+import {
+  crossMachineMoveLock as readCrossMachineMoveLock,
+  isMovedAwayChatError,
+  MovedAwayChatError,
+  type CrossMachineMoveLock,
+} from "../../../shared/crossMachineMoveLock";
 import { isUserOnlyConsentCard, USER_ONLY_CONSENT_CARD_REFUSAL } from "../../../shared/types/macDesktop";
 import { personalHostPathContext, validatePersonalAttachmentRoots } from "./personalHostPaths";
 import { MAX_PERSONAL_CHAT_ATTACHMENT_ROOTS } from "../../../shared/types/personalChats";
@@ -494,6 +501,13 @@ import type {
   AgentChatContinuityRecoveryResult,
   AgentChatCrossMachineDestinationPreflightArgs,
   AgentChatCrossMachineDestinationPreflightResult,
+  AgentChatCrossMachineBatchMoveRecord,
+  AgentChatCrossMachineHandoffOrigin,
+  AgentChatCrossMachineLaneImportArgs,
+  AgentChatCrossMachineLaneImportResult,
+  AgentChatStartCrossMachineBatchMoveArgs,
+  AgentChatGetCrossMachineBatchMoveArgs,
+  AgentChatRetryCrossMachineBatchMoveArgs,
   AgentChatCrossMachineForkTransport,
   AgentChatCrossMachineHandoffCapsule,
   AgentChatCodexClearGoalArgs,
@@ -824,6 +838,7 @@ import {
 } from "./crossMachineForkTransport";
 import {
   HANDOFF_GIT_BUNDLE_TOO_LARGE_MESSAGE,
+  applyHandoffGitBundle,
   landHandoffGitBundle,
   packHandoffGitBundle,
   readHandoffWorkingTreeSha,
@@ -838,6 +853,9 @@ import {
   type CrossMachineHandoffOrchestrator,
   type CrossMachineHandoffPersisted,
   type CrossMachineHandoffTransport,
+  type CrossMachineBatchChat,
+  type CrossMachineBatchLane,
+  type CrossMachineSourceInspection,
   type CrossMachineMoveOutcome,
 } from "./crossMachineHandoffOrchestrator";
 import { createCrossMachineHandoffSource, isPersonAuthoredUserMessage } from "./crossMachineHandoffSource";
@@ -2288,6 +2306,7 @@ type PersistedChatState = {
   /** See SpawnLineageSessionFields.launchedBySessionId. */
   launchedBySessionId?: string;
   spawnKind?: AgentChatSession["spawnKind"];
+  crossMachineOrigin?: AgentChatCrossMachineHandoffOrigin | null;
   subagentTakeoverPromptShownAt?: string | null;
   pendingTranscriptReplay?: string | null;
   /** See ManagedChatSession.claudeFreshThreadPending. */
@@ -5259,6 +5278,23 @@ type CrossMachineHandoffRecord = {
   forkMaterializedAt?: string | null;
 };
 
+type CrossMachineLaneImportRecord = {
+  version: 1;
+  importId: string;
+  fingerprint: string;
+  state: "importing" | "complete" | "failed";
+  laneId: string | null;
+  reusedLane: boolean;
+  carriedChanges: boolean;
+  snapshotSha: string | null;
+  warnings: string[];
+  setupStatus?: "running" | "completed" | "failed" | "not_configured";
+  setupRunnerId?: string | null;
+  setupMessage?: string | null;
+  updatedAt: string;
+  lastError: string | null;
+};
+
 const CROSS_MACHINE_HANDOFF_DEFAULT_PROMPT =
   "This chat was handed off from another ADE machine. Continue the same task from the handoff brief, verify the destination workspace state, and keep working from the next open action.";
 const FORK_SAME_PROVIDER_MESSAGE =
@@ -5279,14 +5315,6 @@ function sanitizePortableReferenceUrl(value: string | null | undefined): string 
   } catch {
     return null;
   }
-}
-
-function deterministicChatSessionId(idempotencyKey: string): string {
-  const bytes = createHash("sha256").update(`ade-agent-chat:${idempotencyKey}`, "utf8").digest().subarray(0, 16);
-  bytes[6] = (bytes[6]! & 0x0f) | 0x50;
-  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
-  const hex = bytes.toString("hex");
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 type SessionTurnCollector = {
@@ -9804,6 +9832,7 @@ const SPAWN_LINEAGE_FIELD_NAMES = [
   "orchestrationParentSessionId",
   "launchedBySessionId",
   "spawnKind",
+  "crossMachineOrigin",
   "subagentTakeoverPromptShownAt",
 ] as const;
 
@@ -9827,6 +9856,19 @@ function hydrateSpawnLineageFields(
   const spawnKind = record.spawnKind;
   if (typeof spawnKind === "string" && VALID_AGENT_CHAT_SPAWN_KINDS.has(spawnKind)) {
     out.spawnKind = spawnKind as "subagent" | "peer";
+  }
+  const origin = record.crossMachineOrigin;
+  if (origin && typeof origin === "object" && !Array.isArray(origin)) {
+    const candidate = origin as Partial<AgentChatCrossMachineHandoffOrigin>;
+    if ([candidate.machineKey, candidate.machineName, candidate.sessionId, candidate.laneId]
+      .every((field) => typeof field === "string" && field.trim().length > 0)) {
+      out.crossMachineOrigin = {
+        machineKey: candidate.machineKey!.trim(),
+        machineName: candidate.machineName!.trim(),
+        sessionId: candidate.sessionId!.trim(),
+        laneId: candidate.laneId!.trim(),
+      };
+    }
   }
   const shownAt = record.subagentTakeoverPromptShownAt;
   if (typeof shownAt === "string" && shownAt.trim().length) {
@@ -21136,6 +21178,12 @@ export function createAgentChatService(args: {
     const sessionId = managed.session.id;
     const pending = pendingUsageLimitMoves.get(sessionId);
     if (!pending) return;
+    if (getCrossMachineMoveLock(sessionId, "usage_limit_resume")) {
+      if (pending.fallbackTimer) clearTimeout(pending.fallbackTimer);
+      pending.fallbackTimer = setTimeout(() => runPendingUsageLimitMove(managed), USAGE_LIMIT_MOVE_WAIT_MS);
+      pending.fallbackTimer.unref?.();
+      return;
+    }
     pendingUsageLimitMoves.delete(sessionId);
     if (pending.fallbackTimer) clearTimeout(pending.fallbackTimer);
     // The fallback timer can outlive the chat.
@@ -21158,6 +21206,12 @@ export function createAgentChatService(args: {
       if (handedOff.ok || handedOff.reason === "handoff_in_flight") return;
       if (!turnId || !compactOnlyTurns.has(turnId)) publishUsageLimitResumeArm(managed, turnId, alternate);
     })().catch((error) => {
+      if (isMovedAwayChatError(error)) {
+        const retry = { ...pending, fallbackTimer: setTimeout(() => runPendingUsageLimitMove(managed), 0) };
+        retry.fallbackTimer.unref?.();
+        pendingUsageLimitMoves.set(sessionId, retry);
+        return;
+      }
       logger.warn("agent_chat.usage_limit_move_failed", {
         sessionId,
         error: error instanceof Error ? error.message : String(error),
@@ -21427,6 +21481,7 @@ export function createAgentChatService(args: {
   }: { sessionId: string }): Promise<AgentChatContinueUsageLimitOnAlternateResult> => {
     const normalizedSessionId = sessionId.trim();
     if (!normalizedSessionId) throw new Error("Chat session id is required.");
+    assertChatNotMovedAway(normalizedSessionId);
     const already = usageLimitHandedOffTargets.get(normalizedSessionId);
     if (already) return { ok: true, sessionId: already };
     const managed = ensureManagedSession(normalizedSessionId);
@@ -39490,9 +39545,20 @@ export function createAgentChatService(args: {
   // agent themselves when such a job finishes; Codex does not, so for Codex ADE
   // watches the terminals the agent holds and wakes it when one is gone.
   const heldCodexTerminals = new Map<string, Set<string>>();
+  const pendingHeldCodexTerminalCompletions = new Map<string, Set<string>>();
   let heldCodexTerminalTimer: ReturnType<typeof setInterval> | null = null;
 
+  const retainHeldCodexCompletion = (sessionId: string, commands: string[]): void => {
+    const pending = pendingHeldCodexTerminalCompletions.get(sessionId) ?? new Set<string>();
+    for (const command of commands) pending.add(command);
+    pendingHeldCodexTerminalCompletions.set(sessionId, pending);
+  };
+
   function wakeForEndedHeldWork(sessionId: string, commands: string[]): void {
+    if (getCrossMachineMoveLock(sessionId, "held_completion")) {
+      retainHeldCodexCompletion(sessionId, commands);
+      return;
+    }
     const list = commands.map((command) => `- ${command.replace(/\s+/g, " ").slice(0, 200)}`).join("\n");
     void messageSession({
       sessionId,
@@ -39500,6 +39566,10 @@ export function createAgentChatService(args: {
       text: `${commands.length === 1 ? "A background command you were waiting on has finished" : "Background commands you were waiting on have finished"}:\n${list}\nCheck its output and carry on.`,
       metadata: { hostContinuation: { reason: "background_work_ended" } },
     }).catch((error) => {
+      if (isMovedAwayChatError(error)) {
+        retainHeldCodexCompletion(sessionId, commands);
+        return;
+      }
       logger.warn("agent_chat.held_background_wake_failed", {
         sessionId,
         error: error instanceof Error ? error.message : String(error),
@@ -39508,16 +39578,23 @@ export function createAgentChatService(args: {
   }
 
   const pollHeldCodexTerminals = (): void => {
-    for (const [sessionId, held] of [...heldCodexTerminals]) {
+    const sessionIds = new Set([...heldCodexTerminals.keys(), ...pendingHeldCodexTerminalCompletions.keys()]);
+    for (const sessionId of sessionIds) {
+      const held = heldCodexTerminals.get(sessionId);
+      const pending = pendingHeldCodexTerminalCompletions.get(sessionId);
       const managed = managedSessions.get(sessionId);
       const runtime = managed?.runtime?.kind === "codex" ? managed.runtime : null;
-      if (!managed || !runtime || held.size === 0) {
+      if (!managed || !runtime || (held?.size ?? 0) === 0) {
         heldCodexTerminals.delete(sessionId);
-        continue;
+      } else {
+        void refreshCodexBackgroundTerminals(managed, runtime, { changesOnly: true });
       }
-      void refreshCodexBackgroundTerminals(managed, runtime, { changesOnly: true });
+      if (pending?.size && !getCrossMachineMoveLock(sessionId, "held_completion")) {
+        pendingHeldCodexTerminalCompletions.delete(sessionId);
+        wakeForEndedHeldWork(sessionId, [...pending]);
+      }
     }
-    if (heldCodexTerminals.size === 0 && heldCodexTerminalTimer) {
+    if (heldCodexTerminals.size === 0 && pendingHeldCodexTerminalCompletions.size === 0 && heldCodexTerminalTimer) {
       clearInterval(heldCodexTerminalTimer);
       heldCodexTerminalTimer = null;
     }
@@ -41145,6 +41222,7 @@ export function createAgentChatService(args: {
         stallReason === "no_output"
         && !managed.codexAutomaticRecoveryAttempted
       ) {
+        if (getCrossMachineMoveLock(managed.session.id, "turn_recovery")) return;
         if (persistCodexAutomaticRecoveryAttempt(managed)) {
           emitCodexTurnRecovery(managed, {
             turnId,
@@ -46156,6 +46234,17 @@ export function createAgentChatService(args: {
             delivery.onDelivered?.();
             return;
           }
+          if (getCrossMachineMoveLock(parentSessionId, "subagent_report")) {
+            emitChatEvent(parent, {
+              type: "system_notice",
+              noticeKind: resultStatus === "failed" ? "warning" : "info",
+              status: "spawn_completed",
+              message: spawnCompletedNoticeMessage(childTitle),
+              detail: { spawnCompletion },
+            });
+            delivery.onDelivered?.();
+            return;
+          }
           // The CTO thread takes one line per child turn and nothing else. The
           // subagent_result card and the wake divider each restate the child's
           // closing summary, which is the transcript dump a coordinator thread
@@ -46239,6 +46328,20 @@ export function createAgentChatService(args: {
           delivery.onDelivered?.();
           return;
         } catch (error) {
+          if (isMovedAwayChatError(error)) {
+            const parent = managedSessions.get(parentSessionId) ?? ensureManagedSession(parentSessionId);
+            if (!parentAlreadyHasCompletion(parent)) {
+              emitChatEvent(parent, {
+                type: "system_notice",
+                noticeKind: resultStatus === "failed" ? "warning" : "info",
+                status: "spawn_completed",
+                message: spawnCompletedNoticeMessage(childTitle),
+                detail: { spawnCompletion },
+              });
+            }
+            delivery.onDelivered?.();
+            return;
+          }
           lastError = error;
           if (isMissingParentError(error, parentSessionId) || !parentChatStillExists(parentSessionId)) {
             delivery.onParentGone("parent_missing_during_delivery");
@@ -48137,6 +48240,58 @@ export function createAgentChatService(args: {
 
   const crossMachineHandoffRecordKey = (handoffId: string): string =>
     `agent-chat-cross-machine-handoff:v1:${handoffId}`;
+  const crossMachineLaneImportRecordKey = (importId: string): string =>
+    `agent-chat-cross-machine-lane-import:v1:${importId}`;
+  const readCrossMachineLaneImportRecord = (importId: string): CrossMachineLaneImportRecord | null => {
+    const value = db?.getJson<unknown>(crossMachineLaneImportRecordKey(importId));
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const record = value as Partial<CrossMachineLaneImportRecord>;
+    if (record.version !== 1 || record.importId !== importId || typeof record.fingerprint !== "string") return null;
+    if (record.state !== "importing" && record.state !== "complete" && record.state !== "failed") return null;
+    return record as CrossMachineLaneImportRecord;
+  };
+  const persistCrossMachineLaneImportRecord = (record: CrossMachineLaneImportRecord): void => {
+    db?.setJson(crossMachineLaneImportRecordKey(record.importId), record);
+  };
+  const beginCrossMachineLaneImportSetup = (args: {
+    importId: string;
+    runnerId: string;
+  }): { claimed: boolean; status: CrossMachineLaneImportRecord["setupStatus"] } => {
+    const importId = requireCrossMachineHandoffId(args.importId);
+    const runnerId = args.runnerId.trim();
+    if (!runnerId || runnerId.length > 200) throw new Error("The lane setup runner id is invalid.");
+    const record = readCrossMachineLaneImportRecord(importId);
+    if (!record || record.state !== "complete") throw new Error("The batch lane import is not ready for setup.");
+    if (record.setupStatus === "completed" || record.setupStatus === "failed" || record.setupStatus === "not_configured") {
+      return { claimed: false, status: record.setupStatus };
+    }
+    if (record.setupStatus === "running" && record.setupRunnerId === runnerId) {
+      return { claimed: false, status: "running" };
+    }
+    persistCrossMachineLaneImportRecord({
+      ...record,
+      setupStatus: "running",
+      setupRunnerId: runnerId,
+      updatedAt: nowIso(),
+    });
+    return { claimed: true, status: "running" };
+  };
+  const updateCrossMachineLaneImportSetup = (
+    args: { importId: string; status: "completed" | "failed" | "not_configured"; message?: string | null },
+  ): CrossMachineLaneImportRecord => {
+    const importId = requireCrossMachineHandoffId(args.importId);
+    const record = readCrossMachineLaneImportRecord(importId);
+    if (!record) throw new Error("The batch lane import record was not found.");
+    const next: CrossMachineLaneImportRecord = {
+      ...record,
+      setupStatus: args.status,
+      setupRunnerId: null,
+      setupMessage: args.message?.slice(0, 1_000) ?? null,
+      updatedAt: nowIso(),
+    };
+    persistCrossMachineLaneImportRecord(next);
+    return next;
+  };
 
   const destinationGitEnv = async (): Promise<NodeJS.ProcessEnv> => {
     let token = "";
@@ -48243,6 +48398,61 @@ export function createAgentChatService(args: {
     }
     if (capsule.source.spawnKind != null && capsule.source.spawnKind !== "subagent" && capsule.source.spawnKind !== "peer") {
       throw new Error("The handoff capsule has an invalid source spawn type.");
+    }
+    if (capsule.sourceLane !== undefined) {
+      assertPortableText(capsule.sourceLane.laneId, 200, "source lane id");
+      assertPortableText(capsule.sourceLane.name, 200, "source lane name");
+      if (capsule.sourceLane.parentLaneId != null) assertPortableText(capsule.sourceLane.parentLaneId, 200, "source parent lane id");
+    }
+    if (capsule.destinationParentLaneId !== undefined) {
+      assertPortableText(capsule.destinationParentLaneId, 200, "destination parent lane id");
+    }
+    if (capsule.parentLink !== undefined) {
+      assertPortableText(capsule.parentLink.destinationParentSessionId, 200, "destination parent chat id");
+      if (capsule.parentLink.spawnKind !== "subagent" && capsule.parentLink.spawnKind !== "peer") {
+        throw new Error("The handoff capsule has an invalid destination parent link.");
+      }
+    }
+    if (capsule.origin !== undefined) {
+      for (const [value, label] of [
+        [capsule.origin.machineKey, "origin machine key"],
+        [capsule.origin.machineName, "origin machine name"],
+        [capsule.origin.sessionId, "origin chat id"],
+        [capsule.origin.laneId, "origin lane id"],
+      ] as const) assertPortableText(value, 300, label);
+    }
+    if (capsule.scheduledWork !== undefined) {
+      if (!Array.isArray(capsule.scheduledWork) || capsule.scheduledWork.length > 50) {
+        throw new Error("The handoff capsule has too many scheduled jobs.");
+      }
+      for (const schedule of capsule.scheduledWork) {
+        if (!schedule || !["wakeup", "cron", "loop"].includes(schedule.kind)) {
+          throw new Error("The handoff capsule has an invalid scheduled job.");
+        }
+        assertPortableText(schedule.prompt, 8_192, "scheduled job prompt", { allowEmpty: true });
+        if (Buffer.byteLength(schedule.prompt, "utf8") > 8_192) {
+          throw new Error("The handoff capsule has a scheduled job prompt longer than 8 KB.");
+        }
+        if (schedule.reason != null) assertPortableText(schedule.reason, 500, "scheduled job reason", { allowEmpty: true });
+        if (schedule.cron != null) assertPortableText(schedule.cron, 500, "scheduled cron", { allowEmpty: true });
+        if (schedule.runAt != null && !Number.isFinite(Date.parse(schedule.runAt))) throw new Error("The handoff capsule has an invalid scheduled run time.");
+        if (schedule.expiresAt != null && !Number.isFinite(Date.parse(schedule.expiresAt))) throw new Error("The handoff capsule has an invalid scheduled expiry.");
+        if (schedule.paused != null && typeof schedule.paused !== "boolean") throw new Error("The handoff capsule has an invalid scheduled job pause state.");
+        if (schedule.kind === "cron" && (typeof schedule.cron !== "string" || !schedule.cron.trim())) {
+          throw new Error("The handoff capsule has a cron job without a schedule.");
+        }
+      }
+    }
+    if (capsule.batchMove !== undefined) {
+      requireCrossMachineHandoffId(capsule.batchMove.batchId);
+      requireCrossMachineHandoffId(capsule.batchMove.laneImportId);
+      assertPortableText(capsule.batchMove.destinationLaneId, 200, "destination lane id");
+      if (typeof capsule.batchMove.carriedChanges !== "boolean") throw new Error("The handoff capsule has invalid batch change metadata.");
+      if (capsule.batchMove.snapshotSha != null && !/^[0-9a-f]{40,64}$/i.test(capsule.batchMove.snapshotSha)) {
+        throw new Error("The handoff capsule has an invalid batch snapshot commit.");
+      }
+      if (capsule.batchMove.note != null) assertPortableText(capsule.batchMove.note, 4_000, "batch continuation note", { allowEmpty: true });
+      if (capsule.batchMove.modeFallbackReason != null) assertPortableText(capsule.batchMove.modeFallbackReason, 500, "mode fallback reason", { allowEmpty: true });
     }
     if (!/^[0-9a-f]{40,64}$/i.test(capsule.source.headSha)) {
       throw new Error("The handoff capsule has an invalid source commit.");
@@ -48407,6 +48617,7 @@ export function createAgentChatService(args: {
     db,
     outboxDir: path.join(layout.cacheDir, "cross-machine", "outbox"),
   });
+  const getCrossMachineLocalMachineKey = args.getLocalMachineKey;
 
   /**
    * Refuses on the same blockers the move's options list
@@ -48457,7 +48668,7 @@ export function createAgentChatService(args: {
     if (!includeChanges && remoteHeadSha !== headSha) {
       throw new Error("The remote branch does not point at the source lane's current commit. Push again, then retry.");
     }
-    return { lane, branchRef, headSha, rawOriginUrl, originUrl, remoteHeadSha };
+    return { lane, branchRef, headSha, rawOriginUrl, originUrl, remoteHeadSha, changes: inspection.changes };
   };
 
   const readCrossMachineForkMainFile = (filePath: string): Buffer => {
@@ -48645,7 +48856,7 @@ export function createAgentChatService(args: {
       { includeChanges },
     );
     // Leave room in the ~20 MiB transport frame for the rest of the capsule.
-    const gitBundle = includeChanges
+    const gitBundle = includeChanges && !args.batchMove
       ? await packHandoffGitBundle({
           worktreePath: lane.worktreePath,
           branchRef,
@@ -48776,6 +48987,44 @@ export function createAgentChatService(args: {
     // lane is named after its branch instead.
     const rawSourceLaneName = lane.laneType === "primary" ? branchRef : lane.name;
     const sourceLaneName = portableText(rawSourceLaneName).slice(0, 200);
+    let scheduledWork: NonNullable<AgentChatCrossMachineHandoffCapsule["scheduledWork"]> | undefined;
+    if (args.batchMove) {
+      const scheduler = scheduledWorkScheduler;
+      if (!scheduler) throw new Error("Scheduled work is not ready yet. Try the batch move again in a moment.");
+      const activeSchedules = scheduler.list(sourceSessionId)
+        .filter((item) => (item.status === "scheduled" || item.status === "paused") && !item.terminalAt);
+      if (activeSchedules.length > 50) {
+        throw new Error("This chat has more than 50 active scheduled jobs. Reduce them before moving the batch.");
+      }
+      scheduledWork = activeSchedules.slice(0, 50).map((item) => {
+        const prompt = portableText(item.prompt);
+        if (Buffer.byteLength(prompt, "utf8") > 8_192) {
+          throw new Error(`Scheduled work '${item.id}' has a prompt longer than 8 KB. Shorten it before moving the batch.`);
+        }
+        return {
+          kind: item.kind,
+          prompt,
+          ...(item.reason ? { reason: portableText(item.reason).slice(0, 500) } : {}),
+          ...(item.kind === "cron" && item.cron ? { cron: item.cron } : {}),
+          ...(item.kind !== "cron" && item.fireAt != null ? { runAt: new Date(item.fireAt).toISOString() } : {}),
+          ...(item.expiresAt != null ? { expiresAt: new Date(item.expiresAt).toISOString() } : {}),
+          ...(item.pausedFlag ? { paused: true } : {}),
+        };
+      });
+    }
+    const localMachineKey = getCrossMachineLocalMachineKey?.()?.trim() || "";
+    const currentOrigin: AgentChatCrossMachineHandoffOrigin | undefined = managed.session.crossMachineOrigin
+      ?? (localMachineKey
+        ? {
+            machineKey: localMachineKey,
+            machineName: sourceMachineName,
+            sessionId: sourceSessionId,
+            laneId: lane.id,
+          }
+        : undefined);
+    if (args.batchMove && !currentOrigin) {
+      throw new Error("This brain cannot identify its machine, so the batch move cannot save a return address.");
+    }
     const targetReasoningEffort = args.reasoningEffort !== undefined
       ? args.reasoningEffort
       : managed.session.reasoningEffort;
@@ -48824,6 +49073,14 @@ export function createAgentChatService(args: {
           }
           : {}),
       },
+      ...(args.sourceLane
+        ? { sourceLane: args.sourceLane }
+        : { sourceLane: { laneId: lane.id, parentLaneId: lane.parentLaneId ?? null, name: sourceLaneName } }),
+      ...(args.destinationParentLaneId ? { destinationParentLaneId: args.destinationParentLaneId } : {}),
+      ...(args.parentLink ? { parentLink: args.parentLink } : {}),
+      ...(scheduledWork ? { scheduledWork } : {}),
+      ...(currentOrigin ? { origin: currentOrigin } : {}),
+      ...(args.batchMove ? { batchMove: args.batchMove } : {}),
       target: {
         targetModelId: targetDescriptor.id,
         ...(targetReasoningEffort !== undefined ? { reasoningEffort: targetReasoningEffort } : {}),
@@ -48909,6 +49166,7 @@ export function createAgentChatService(args: {
       throw new CrossMachineSourceStaleError("The source chat model changed after the handoff was prepared. Review the handoff again.");
     }
     const gitBundle = args.capsule.gitBundle;
+    const batchMove = args.capsule.batchMove;
     // The move's own choice: one that asked for changes but had none to carry
     // was prepared under the relaxed rules, so it is checked under them too.
     const includeChanges = args.includeChanges ?? Boolean(gitBundle);
@@ -48920,6 +49178,9 @@ export function createAgentChatService(args: {
     ) {
       throw new CrossMachineSourceStaleError("The source branch changed after the handoff was prepared. Run the checks again before sending.");
     }
+    if (batchMove && !batchMove.carriedChanges && current.changes !== null) {
+      throw new CrossMachineSourceStaleError("The source lane changed after its batch import was prepared. Run the checks again before sending.");
+    }
     if (includeChanges) {
       // Re-pack-free check: the working tree must still be what travels (the
       // snapshot, or the tip when nothing was uncommitted), and origin must
@@ -48930,8 +49191,13 @@ export function createAgentChatService(args: {
       let preparedTree = "";
       try {
         currentTree = await readHandoffWorkingTreeSha({ worktreePath: current.lane.worktreePath });
+        const preparedCommit = gitBundle
+          ? gitBundle.snapshotSha ?? gitBundle.branchHeadSha
+          : batchMove?.carriedChanges
+            ? batchMove.snapshotSha ?? args.capsule.source.headSha
+            : current.headSha;
         preparedTree = await requireGitOutputForHandoff(
-          ["rev-parse", `${gitBundle ? gitBundle.snapshotSha ?? gitBundle.branchHeadSha : current.headSha}^{tree}`],
+          ["rev-parse", `${preparedCommit}^{tree}`],
           current.lane.worktreePath,
           changedMessage,
         );
@@ -48940,10 +49206,11 @@ export function createAgentChatService(args: {
         throw new Error("ADE couldn't read the source lane's files to compare them with the prepared handoff.");
       }
       if (!currentTree || currentTree !== preparedTree) throw new CrossMachineSourceStaleError(changedMessage);
-      if (!gitBundle && current.remoteHeadSha !== current.headSha) {
+      const carriedChanges = Boolean(gitBundle || batchMove?.carriedChanges);
+      if (!carriedChanges && current.remoteHeadSha !== current.headSha) {
         throw new Error("Publish this branch so origin has the current commit, then hand off again.");
       }
-      if (gitBundle && current.remoteHeadSha && current.remoteHeadSha !== current.headSha) {
+      if (carriedChanges && current.remoteHeadSha && current.remoteHeadSha !== current.headSha) {
         const ancestor = await runGit(["merge-base", "--is-ancestor", current.remoteHeadSha, current.headSha], {
           cwd: current.lane.worktreePath,
           timeoutMs: 15_000,
@@ -48981,6 +49248,10 @@ export function createAgentChatService(args: {
   ): Promise<AgentChatCrossMachineDestinationPreflightResult> => {
     // With a bundle, the commits need not be on origin: they arrive with it.
     const hasGitBundle = args.hasGitBundle === true;
+    const batchLaneImport = args.batchLaneImportId
+      ? readCrossMachineLaneImportRecord(args.batchLaneImportId)
+      : null;
+    const ownedLaneId = internal.ownedLaneId ?? batchLaneImport?.laneId ?? null;
     const blockingErrors: string[] = [];
     const warnings: string[] = [];
     const targetId = args.targetModelId?.trim();
@@ -49082,7 +49353,7 @@ export function createAgentChatService(args: {
     if (branchRef) {
       const lanes = await laneService.list({ includeArchived: false, includeStatus: true });
       const existingLane = lanes.find((lane) => lane.branchRef.replace(/^refs\/heads\//, "") === branchRef) ?? null;
-      if (existingLane && hasGitBundle && internal.ownedLaneId === existingLane.id) {
+      if (existingLane && hasGitBundle && ownedLaneId === existingLane.id) {
         existingLaneId = existingLane.id;
       } else if (existingLane && hasGitBundle && existingLane.laneType === "primary") {
         // Carried changes land in a lane of their own, never in the person's
@@ -49224,7 +49495,173 @@ export function createAgentChatService(args: {
       ...(forkHandoffSupport ? { forkHandoffSupport } : {}),
       ...(laneFastForward ? { laneFastForward } : {}),
       gitBundleSupport: true,
+      batchMoveSupport: 1,
     };
+  };
+
+  const importCrossMachineHandoffLane = async (
+    payload: AgentChatCrossMachineLaneImportArgs,
+  ): Promise<AgentChatCrossMachineLaneImportResult> => {
+    const importId = requireCrossMachineHandoffId(payload.importId);
+    if (!payload.sourceLane || typeof payload.sourceLane.name !== "string" || !payload.sourceLane.name.trim()) {
+      throw new Error("The batch lane import is missing its source lane details.");
+    }
+    const branchRef = await requireGitBranchForHandoff(payload.branchRef, projectRoot);
+    const headSha = payload.headSha?.trim() ?? "";
+    if (!/^[0-9a-f]{40,64}$/i.test(headSha)) throw new Error("The batch lane import has an invalid source commit.");
+    if (payload.gitBundle) {
+      validateHandoffGitBundle({ source: { headSha }, gitBundle: payload.gitBundle } as AgentChatCrossMachineHandoffCapsule);
+    }
+    if (payload.sourceLane.parentLaneId && !payload.destinationParentLaneId) {
+      throw new Error("The destination parent lane must arrive before this lane.");
+    }
+    const parentLane = payload.destinationParentLaneId
+      ? await laneService.getSummary(payload.destinationParentLaneId, { includeStatus: false })
+      : null;
+    if (payload.destinationParentLaneId && (!parentLane || parentLane.archivedAt)) {
+      throw new Error("The destination parent lane is unavailable or archived.");
+    }
+    const origin = await requireGitOutputForHandoff(
+      ["remote", "get-url", "origin"],
+      projectRoot,
+      "The destination project does not have an origin remote.",
+    );
+    if (
+      normalizeGitRemoteIdentity(origin) !== normalizeGitRemoteIdentity(payload.originUrl)
+      || sanitizePortableGitRemote(payload.originUrl) !== payload.originUrl
+    ) {
+      throw new Error("The destination project points at a different Git repository than the batch lane import.");
+    }
+
+    const fingerprint = createHash("sha256").update(stableStringify(payload), "utf8").digest("hex");
+    const prior = readCrossMachineLaneImportRecord(importId);
+    if (prior && prior.fingerprint !== fingerprint) {
+      throw new Error("This batch lane import id is already bound to different lane contents.");
+    }
+    if (prior?.state === "complete" && prior.laneId) {
+      const completedLane = await laneService.getSummary(prior.laneId, { includeStatus: false });
+      if (!completedLane || completedLane.archivedAt) throw new Error("The lane imported by this batch was removed or archived.");
+      return {
+        importId,
+        laneId: prior.laneId,
+        reusedLane: prior.reusedLane,
+        carriedChanges: prior.carriedChanges,
+        snapshotSha: prior.snapshotSha,
+        warnings: prior.warnings,
+        ...(prior.setupStatus ? { setupStatus: prior.setupStatus } : {}),
+      };
+    }
+    let record: CrossMachineLaneImportRecord = prior ?? {
+      version: 1,
+      importId,
+      fingerprint,
+      state: "importing",
+      laneId: null,
+      reusedLane: false,
+      carriedChanges: Boolean(payload.gitBundle),
+      snapshotSha: payload.gitBundle?.snapshotSha ?? null,
+      warnings: [],
+      setupStatus: "running",
+      setupMessage: null,
+      updatedAt: nowIso(),
+      lastError: null,
+    };
+    record = { ...record, state: "importing", updatedAt: nowIso(), lastError: null };
+    persistCrossMachineLaneImportRecord(record);
+
+    const warnings: string[] = [...record.warnings];
+    try {
+      const lanes = await laneService.list({ includeArchived: false, includeStatus: true });
+      let lane = record.laneId ? lanes.find((candidate) => candidate.id === record.laneId) ?? null : null;
+      lane ??= lanes.find((candidate) => candidate.branchRef.replace(/^refs\/heads\//, "") === branchRef) ?? null;
+      const reusedLane = lane !== null && !record.laneId;
+      if (reusedLane && lane && payload.destinationParentLaneId && lane.parentLaneId !== payload.destinationParentLaneId) {
+        warnings.push(`Reused lane '${lane.name}' keeps its existing parent.`);
+      }
+      if (lane && !payload.gitBundle) {
+        const status = await runGit(["status", "--porcelain=v1"], { cwd: lane.worktreePath, timeoutMs: 15_000 });
+        const currentHead = await runGit(["rev-parse", "HEAD"], { cwd: lane.worktreePath, timeoutMs: 8_000 });
+        if (status.exitCode !== 0 || status.stdout.trim()) throw new Error(`Existing destination lane '${lane.name}' has uncommitted changes.`);
+        if (currentHead.exitCode !== 0 || currentHead.stdout.trim() !== headSha) {
+          throw new Error(`Existing destination lane '${lane.name}' is not at source commit ${headSha}.`);
+        }
+      }
+      if (payload.gitBundle) {
+        lane = await applyHandoffGitBundle({
+          projectRoot,
+          handoffId: importId,
+          branchRef,
+          bundle: payload.gitBundle,
+          fetchEnv: await destinationGitEnv(),
+          target: lane
+            ? { kind: "existing_worktree", worktreePath: lane.worktreePath }
+            : {
+                kind: "attach",
+                attach: async (branch) => {
+                  const imported = await laneService.importBranch({
+                    branchRef: branch,
+                    name: payload.sourceLane.name,
+                    description: `Received from ${payload.sourceMachineName}`,
+                    parentLaneId: payload.destinationParentLaneId ?? null,
+                    publishUpstream: false,
+                  });
+                  lane = imported;
+                  record = { ...record, laneId: imported.id, updatedAt: nowIso() };
+                  persistCrossMachineLaneImportRecord(record);
+                  return {
+                    worktreePath: imported.worktreePath,
+                    undo: async () => { await laneService.delete({ laneId: imported.id, deleteBranch: false, force: true }); },
+                  };
+                },
+              },
+        }).then(() => lane);
+        if (!lane) throw new Error("ADE could not select the destination lane for the carried changes.");
+      } else if (!lane) {
+        const remote = await runGit(["ls-remote", "--heads", "origin", `refs/heads/${branchRef}`], {
+          cwd: projectRoot,
+          timeoutMs: 30_000,
+          env: await destinationGitEnv(),
+        });
+        const remoteHead = remote.stdout.trim().split(/\s+/)[0]?.trim() || null;
+        if (remote.exitCode !== 0 || remoteHead !== headSha) {
+          throw new Error(`Origin no longer has '${branchRef}' at the source commit.`);
+        }
+        lane = await laneService.importBranch({
+          branchRef,
+          name: payload.sourceLane.name,
+          description: `Received from ${payload.sourceMachineName}`,
+          parentLaneId: payload.destinationParentLaneId ?? null,
+          publishUpstream: false,
+        });
+        record = { ...record, laneId: lane.id, updatedAt: nowIso() };
+        persistCrossMachineLaneImportRecord(record);
+      }
+      record = {
+        ...record,
+        state: "complete",
+        laneId: lane.id,
+        reusedLane,
+        carriedChanges: Boolean(payload.gitBundle),
+        snapshotSha: payload.gitBundle?.snapshotSha ?? null,
+        warnings: [...new Set(warnings)],
+        updatedAt: nowIso(),
+        lastError: null,
+      };
+      persistCrossMachineLaneImportRecord(record);
+      return {
+        importId,
+        laneId: lane.id,
+        reusedLane,
+        carriedChanges: record.carriedChanges,
+        snapshotSha: record.snapshotSha,
+        warnings: record.warnings,
+        setupStatus: record.setupStatus ?? "running",
+      };
+    } catch (error) {
+      record = { ...record, state: "failed", updatedAt: nowIso(), lastError: error instanceof Error ? error.message : String(error) };
+      persistCrossMachineLaneImportRecord(record);
+      throw error;
+    }
   };
 
   const fastForwardCrossMachineHandoffLane = async (
@@ -49365,6 +49802,60 @@ export function createAgentChatService(args: {
       "## User continuation instruction",
       capsule.continuationPrompt,
     ].filter((line): line is string => line != null).join("\n");
+  };
+
+  const buildBatchArrivalPrompt = (
+    capsule: AgentChatCrossMachineHandoffCapsule,
+    lanePath: string,
+    setupStatus: CrossMachineLaneImportRecord["setupStatus"],
+  ): string => {
+    const setup = setupStatus === "completed"
+      ? "completed"
+      : setupStatus === "failed"
+        ? "failed; the lane is usable and setup can be retried"
+        : setupStatus === "not_configured"
+          ? "not configured on this machine"
+          : "still running in the background";
+    const parentNotice = capsule.source.orchestrationParentSessionId && !capsule.parentLink
+      ? "The original parent chat remains on the source machine. This chat arrived without a local parent link."
+      : null;
+    return [
+      `ADE moved this chat from ${capsule.source.machineName} to ${os.hostname().trim() || "this machine"}.`,
+      `Its new worktree is ${lanePath}.`,
+      "Processes from the source machine did not travel: dev apps, typechecks, terminals, background shells, and monitors must be started again here.",
+      `Lane environment setup is ${setup}.`,
+      "Ignored files such as .env, node_modules, and build output did not travel.",
+      "Continue the task from where it stopped and rerun any check it was waiting on.",
+      parentNotice,
+      capsule.batchMove?.modeFallbackReason ? `ADE used a brief because: ${capsule.batchMove.modeFallbackReason}` : null,
+      capsule.batchMove?.note ? `Batch note: ${capsule.batchMove.note}` : null,
+      capsule.continuationPrompt !== CROSS_MACHINE_HANDOFF_DEFAULT_PROMPT
+        ? `Continuation instruction: ${capsule.continuationPrompt}`
+        : null,
+      "",
+      capsule.brief,
+    ].filter((line): line is string => line != null).join("\n\n");
+  };
+
+  const recreateCrossMachineScheduledWork = async (
+    capsule: AgentChatCrossMachineHandoffCapsule,
+    destinationSessionId: string,
+  ): Promise<void> => {
+    const scheduler = scheduledWorkScheduler;
+    if (!scheduler) throw new Error("Scheduled work is not ready yet. Try the handoff again in a moment.");
+    for (const [index, item] of (capsule.scheduledWork ?? []).entries()) {
+      await scheduler.upsert({
+        id: deterministicChatSessionId(`cross-machine-schedule:${capsule.handoffId}:${index}`),
+        sessionId: destinationSessionId,
+        kind: item.kind,
+        prompt: item.prompt,
+        ...(item.reason ? { reason: item.reason } : {}),
+        ...(item.cron ? { cron: item.cron } : {}),
+        ...(item.runAt ? { fireAt: Date.parse(item.runAt) } : {}),
+        ...(item.expiresAt ? { expiresAt: Date.parse(item.expiresAt) } : {}),
+        ...(item.paused ? { status: "paused", pausedFlag: true } : {}),
+      });
+    }
   };
 
   const crossMachineHandoffAcceptInFlight = new Map<string, {
@@ -49560,7 +50051,7 @@ export function createAgentChatService(args: {
       }
     };
     const sourceParent = capsule.source.orchestrationParentSessionId?.trim();
-    if (sourceParent && !ensureManagedSession(arrivedSessionId).session.orchestrationParentSessionId) {
+    if (!capsule.batchMove && sourceParent && !ensureManagedSession(arrivedSessionId).session.orchestrationParentSessionId) {
       // `remote:<this machine>:<chat>` on the source is a plain chat id here.
       const localParent = parseForeignCallerSessionId(sourceParent)?.chatSessionId ?? sourceParent;
       const parent = parentChatStillExists(localParent)
@@ -49595,6 +50086,15 @@ export function createAgentChatService(args: {
     const priorRecord = readCrossMachineHandoffRecord(handoffId);
     if (priorRecord && priorRecord.capsuleFingerprint !== expectedFingerprint) {
       throw new Error("This handoff replay identifier is already bound to different content.");
+    }
+    const batchLaneRecord = capsule.batchMove
+      ? readCrossMachineLaneImportRecord(capsule.batchMove.laneImportId)
+      : null;
+    if (capsule.batchMove && (
+      batchLaneRecord?.state !== "complete"
+      || batchLaneRecord.laneId !== capsule.batchMove.destinationLaneId
+    )) {
+      throw new Error("The destination lane import has not completed for this batch chat.");
     }
     if (
       (priorRecord?.state === "complete" || priorRecord?.state === "dispatched")
@@ -49639,8 +50139,14 @@ export function createAgentChatService(args: {
       ...(capsule.mode === "fork"
         ? { mode: "fork" as const, sourceProvider: capsule.source.provider }
         : {}),
-      ...(capsule.gitBundle ? { hasGitBundle: true } : {}),
-    }, { ownedLaneId: priorRecord?.laneId ?? null });
+      ...(capsule.gitBundle || capsule.batchMove?.carriedChanges ? { hasGitBundle: true } : {}),
+      ...(capsule.batchMove
+        ? { requireBatchMoveSupport: true, batchLaneImportId: capsule.batchMove.laneImportId }
+        : {}),
+    }, { ownedLaneId: priorRecord?.laneId ?? batchLaneRecord?.laneId ?? null });
+    if (capsule.batchMove && destinationPreflight.batchMoveSupport !== 1) {
+      throw new Error("This ADE destination needs an update to accept batch moves safely.");
+    }
     if (capsule.mode === "fork" && destinationPreflight.forkHandoffSupport?.supported === false) {
       throw new Error(
         destinationPreflight.forkHandoffSupport.reason || "This machine can't accept a fork handoff.",
@@ -49664,7 +50170,7 @@ export function createAgentChatService(args: {
 
     try {
       // A bundle carries the commits itself; origin only supplies its base.
-      if (!capsule.gitBundle) {
+      if (!capsule.gitBundle && !capsule.batchMove?.carriedChanges) {
         const fetch = await runGit(["fetch", "origin", `refs/heads/${branchRef}:refs/remotes/origin/${branchRef}`], {
           cwd: projectRoot,
           timeoutMs: 60_000,
@@ -49684,9 +50190,14 @@ export function createAgentChatService(args: {
       }
 
       let lanes = await laneService.list({ includeArchived: false, includeStatus: true });
-      let destinationLane = record.laneId ? lanes.find((lane) => lane.id === record.laneId) ?? null : null;
+      let destinationLane = capsule.batchMove
+        ? lanes.find((lane) => lane.id === capsule.batchMove!.destinationLaneId) ?? null
+        : record.laneId ? lanes.find((lane) => lane.id === record.laneId) ?? null : null;
+      if (capsule.batchMove && !destinationLane) {
+        throw new Error("The imported destination lane is missing for this batch chat.");
+      }
       // Carried changes never land in the primary checkout (see landHandoffGitBundle).
-      destinationLane ??= lanes.find((lane) =>
+      if (!capsule.batchMove) destinationLane ??= lanes.find((lane) =>
         lane.branchRef.replace(/^refs\/heads\//, "") === branchRef
         && !(capsule.gitBundle && lane.laneType === "primary")) ?? null;
       const reusedLane = Boolean(destinationLane);
@@ -49779,6 +50290,12 @@ export function createAgentChatService(args: {
         acpPermissionMode: capsule.target.acpPermissionMode,
         cursorModeId: capsule.target.cursorModeId,
         cursorConfigValues: capsule.target.cursorConfigValues,
+        ...(capsule.parentLink
+          ? {
+              orchestrationParentSessionId: capsule.parentLink.destinationParentSessionId,
+              spawnKind: capsule.parentLink.spawnKind,
+            }
+          : {}),
         surface: "work",
         idempotencyKey: `cross-machine-handoff:${handoffId}`,
       });
@@ -49786,6 +50303,15 @@ export function createAgentChatService(args: {
       persistCrossMachineHandoffRecord(record);
 
       const destinationManaged = ensureManagedSession(session.id);
+      if (capsule.origin) destinationManaged.session.crossMachineOrigin = capsule.origin;
+      persistChatState(destinationManaged);
+      await recreateCrossMachineScheduledWork(capsule, session.id);
+      const laneImportOutcome = capsule.batchMove
+        ? readCrossMachineLaneImportRecord(capsule.batchMove.laneImportId)
+        : null;
+      const batchArrivalPrompt = capsule.batchMove
+        ? buildBatchArrivalPrompt(capsule, destinationLane.worktreePath, laneImportOutcome?.setupStatus)
+        : null;
       const markDispatched = (): void => {
         const dispatchedRecord: CrossMachineHandoffRecord = {
           ...record,
@@ -49816,15 +50342,15 @@ export function createAgentChatService(args: {
             persistCrossMachineHandoffRecord(record);
           }
 
-          const continuationPrompt = capsule.continuationPrompt.trim();
+          const continuationPrompt = batchArrivalPrompt ?? capsule.continuationPrompt.trim();
           if (
             continuationPrompt
-            && capsule.continuationPrompt !== CROSS_MACHINE_HANDOFF_DEFAULT_PROMPT
+            && (batchArrivalPrompt !== null || capsule.continuationPrompt !== CROSS_MACHINE_HANDOFF_DEFAULT_PROMPT)
           ) {
             await sendMessage({
               sessionId: session.id,
-              text: capsule.continuationPrompt,
-              displayText: capsule.continuationPrompt,
+              text: continuationPrompt,
+              displayText: continuationPrompt,
               metadata: {
                 kind: "cross_machine_handoff",
                 crossMachineHandoffId: handoffId,
@@ -49845,10 +50371,12 @@ export function createAgentChatService(args: {
       } else {
         await sendMessage({
           sessionId: session.id,
-          text: buildCrossMachineHandoffPrompt(capsule),
+          text: batchArrivalPrompt ?? buildCrossMachineHandoffPrompt(capsule),
           displayText: [
             `Chat handed off from ${capsule.source.machineName}`,
-            capsule.continuationPrompt !== CROSS_MACHINE_HANDOFF_DEFAULT_PROMPT
+            capsule.batchMove
+              ? `New worktree: ${destinationLane.worktreePath}`
+              : capsule.continuationPrompt !== CROSS_MACHINE_HANDOFF_DEFAULT_PROMPT
               ? `Continuation note: ${capsule.continuationPrompt}`
               : "Continue from the handoff brief.",
           ].join("\n\n"),
@@ -49866,7 +50394,13 @@ export function createAgentChatService(args: {
         });
       }
 
-      if (!reusedSession) {
+      const hasArrivalNotice = readTranscriptEnvelopes(destinationManaged).some(({ event }) => {
+        if (event.type !== "system_notice" || event.status !== "cross_machine_handoff_arrived") return false;
+        const detail = event.detail as Record<string, unknown> | null | undefined;
+        const arrival = detail?.crossMachineHandoffArrival as Record<string, unknown> | null | undefined;
+        return arrival?.handoffId === handoffId;
+      });
+      if (!hasArrivalNotice) {
         // The one durable fact the destination chat keeps about where it came
         // from; the renderer's arrival banner reads it (never a transcript row).
         // Written last so it sits after a fork's imported history.
@@ -49874,7 +50408,9 @@ export function createAgentChatService(args: {
           type: "system_notice",
           noticeKind: "info",
           status: "cross_machine_handoff_arrived",
-          message: `Arrived from ${capsule.source.machineName}`,
+          message: capsule.batchMove
+            ? `Arrived from ${capsule.source.machineName}; lane setup ${laneImportOutcome?.setupStatus ?? "status unavailable"}.`
+            : `Arrived from ${capsule.source.machineName}`,
           detail: {
             crossMachineHandoffArrival: {
               handoffId,
@@ -49883,6 +50419,14 @@ export function createAgentChatService(args: {
               mode: capsule.mode === "fork" ? "fork" : "brief",
               unpushedCommits: capsule.gitBundle?.unpushedCommitCount ?? 0,
               changedFiles: capsule.gitBundle?.changedFileCount ?? 0,
+              ...(capsule.batchMove ? {
+                batchId: capsule.batchMove.batchId,
+                destinationLanePath: destinationLane.worktreePath,
+                carriedChanges: capsule.batchMove.carriedChanges,
+                laneSetupStatus: laneImportOutcome?.setupStatus ?? "unknown",
+                laneSetupMessage: laneImportOutcome?.setupMessage ?? null,
+                warnings: laneImportOutcome?.warnings ?? [],
+              } : {}),
             },
           },
         });
@@ -49895,8 +50439,9 @@ export function createAgentChatService(args: {
         handoffId,
         laneId: destinationLane.id,
         session: ensureManagedSession(session.id).session,
-        reusedLane,
+        reusedLane: capsule.batchMove ? batchLaneRecord?.reusedLane ?? false : reusedLane,
         reusedSession,
+        ...(capsule.batchMove && batchLaneRecord?.warnings.length ? { warnings: batchLaneRecord.warnings } : {}),
       };
     } catch (error) {
       if (record.state !== "dispatched" && record.state !== "complete") {
@@ -50058,6 +50603,32 @@ export function createAgentChatService(args: {
   // sweep can find every move without opening every chat.
   const readCrossMachineMove = crossMachineSource.readMove;
 
+  const movedAwaySkipLogKeys = new Set<string>();
+  const getCrossMachineMoveLock = (sessionId: string, path: string): CrossMachineMoveLock | null => {
+    const lock = readCrossMachineMoveLock(readCrossMachineMove(sessionId)?.record);
+    if (!lock) return null;
+    const key = `${sessionId}\0${path}\0${lock.handoffId}`;
+    if (!movedAwaySkipLogKeys.has(key)) {
+      movedAwaySkipLogKeys.add(key);
+      while (movedAwaySkipLogKeys.size > 512) {
+        const oldest = movedAwaySkipLogKeys.values().next().value;
+        if (oldest === undefined) break;
+        movedAwaySkipLogKeys.delete(oldest);
+      }
+      logger.info("agent_chat.moved_away_skip", {
+        sessionId,
+        path,
+        targetMachineName: lock.targetMachineName,
+      });
+    }
+    return lock;
+  };
+
+  const assertChatNotMovedAway = (sessionId: string): void => {
+    const lock = readCrossMachineMoveLock(readCrossMachineMove(sessionId)?.record);
+    if (lock) throw new MovedAwayChatError(sessionId, lock);
+  };
+
   const writeCrossMachineMove = (sessionId: string, value: CrossMachineHandoffPersisted | null): void => {
     crossMachineSource.writeMove(sessionId, value);
     const managed = managedSessions.get(sessionId);
@@ -50109,6 +50680,116 @@ export function createAgentChatService(args: {
     writePersisted: writeCrossMachineMove,
     chatExists: (sessionId) => tryManagedSession(sessionId) !== null,
     listPersisted: crossMachineSource.listMoves,
+    readBatch: crossMachineSource.readBatch,
+    writeBatch: crossMachineSource.writeBatch,
+    listBatches: crossMachineSource.listBatches,
+    listBatchChats: async (): Promise<CrossMachineBatchChat[]> => sessionService
+      .list({ limit: null, toolTypes: CHAT_SESSION_TOOL_TYPES })
+      .filter((row) => isChatToolType(row.toolType))
+      .map((row) => {
+        const managed = managedSessions.get(row.id) ?? null;
+        const lineage = managed?.session ?? readPersistedState(row.id);
+        const blocked = managed ? resolveHandoffBlockedReason(managed) : null;
+        const rowState = row as typeof row & {
+          archivedAt?: string | null;
+          settledAt?: string | null;
+          surface?: string | null;
+        };
+        const activeWork = rowState.archivedAt == null
+          && rowState.settledAt == null
+          && (lineage?.surface ?? rowState.surface ?? "work") === "work";
+        return {
+          sessionId: row.id,
+          laneId: lineage?.laneId ?? row.laneId,
+          parentSessionId: lineage?.orchestrationParentSessionId ?? null,
+          spawnKind: lineage?.spawnKind ?? "subagent",
+          isWorkChat: activeWork,
+          turnActive: blocked?.kind === "turn_active" || row.status === "running" || row.status === "detached",
+          awaitingInput: blocked?.kind === "awaiting_input",
+          permissionLevel: managed ? sessionPermissionLevel(managed.session, "ask") : null,
+          provider: lineage?.provider ?? "",
+          model: lineage?.model ?? row.model ?? "",
+          modelId: lineage?.modelId ?? null,
+          title: row.title ?? null,
+        };
+      }),
+    listBatchLanes: async (): Promise<CrossMachineBatchLane[]> => (await laneService
+      .list({ includeArchived: false, includeStatus: false }))
+      .map((lane) => ({
+        laneId: lane.id,
+        parentLaneId: lane.parentLaneId ?? null,
+        name: lane.name,
+        branchRef: lane.branchRef ?? "",
+      })),
+    inspectBatchLane: async (laneId): Promise<CrossMachineSourceInspection> => {
+      const lane = await laneService.getSummary(laneId, { includeStatus: true });
+      if (!lane) throw new Error(`The source lane '${laneId}' could not be loaded.`);
+      return crossMachineSource.inspectLane(lane);
+    },
+    getSourceMachineName: () => os.hostname().trim() || "source machine",
+    prepareBatchLane: async ({ batchId, importId, lane, destinationParentLaneId, includeChanges, sourceMachineName }) => {
+      const summary = await laneService.getSummary(lane.laneId, { includeStatus: true });
+      if (!summary) throw new Error(`The source lane '${lane.name}' could not be loaded.`);
+      const inspection = await crossMachineSource.inspectLane(summary);
+      const blockers = inspection.blockers.filter((blocker) => !(includeChanges && blocker.clearedByIncludeChanges));
+      if (blockers.length) throw new Error(`Lane '${lane.name}' can't move yet:\n${describeCrossMachineBlockers(blockers)}`);
+      if (!inspection.originUrl || !inspection.rawOriginUrl || !inspection.branchRef || !inspection.headSha) {
+        throw new Error(`Lane '${lane.name}' needs a published branch and origin before it can move.`);
+      }
+      const remote = await runGit(["ls-remote", "--heads", "origin", `refs/heads/${inspection.branchRef}`], {
+        cwd: summary.worktreePath,
+        timeoutMs: 30_000,
+      });
+      if (remote.exitCode !== 0) throw new Error(`ADE could not read '${inspection.branchRef}' on origin. ${remote.stderr.trim()}`.trim());
+      const remoteHeadSha = remote.stdout.trim().split(/\s+/)[0]?.trim() || null;
+      const gitBundle = includeChanges
+        ? await packHandoffGitBundle({
+            worktreePath: summary.worktreePath,
+            branchRef: inspection.branchRef,
+            handoffId: importId,
+            remoteBranchSha: remoteHeadSha,
+            maxEncodedBytes: CROSS_MACHINE_FORK_ENCODED_BUDGET_BYTES - 1024 * 1024,
+          })
+        : null;
+      if (!gitBundle && remoteHeadSha !== inspection.headSha) {
+        throw new Error(`Publish '${inspection.branchRef}' or include its changes before moving lane '${lane.name}'.`);
+      }
+      return {
+        importId,
+        sourceMachineName,
+        sourceLane: { laneId: lane.laneId, parentLaneId: lane.parentLaneId, name: lane.name },
+        ...(destinationParentLaneId ? { destinationParentLaneId } : {}),
+        branchRef: inspection.branchRef,
+        headSha: inspection.headSha,
+        originUrl: inspection.rawOriginUrl,
+        ...(gitBundle ? { gitBundle } : {}),
+      };
+    },
+    validateBatchLane: async (payload) => {
+      const summary = await laneService.getSummary(payload.sourceLane.laneId, { includeStatus: true });
+      if (!summary) throw new CrossMachineSourceStaleError("The source lane was removed after the batch was prepared.");
+      const current = await crossMachineSource.inspectLane(summary);
+      if (
+        current.branchRef !== payload.branchRef
+        || current.headSha !== payload.headSha
+        || normalizeGitRemoteIdentity(current.originUrl) !== normalizeGitRemoteIdentity(payload.originUrl)
+      ) throw new CrossMachineSourceStaleError("The source lane changed after the batch was prepared. Review the batch again.");
+      if (payload.gitBundle) {
+        validateHandoffGitBundle({ source: { headSha: payload.headSha }, gitBundle: payload.gitBundle } as AgentChatCrossMachineHandoffCapsule);
+        const tree = await readHandoffWorkingTreeSha({ worktreePath: summary.worktreePath });
+        const expected = await requireGitOutputForHandoff(
+          ["rev-parse", `${payload.gitBundle.snapshotSha ?? payload.headSha}^{tree}`],
+          summary.worktreePath,
+          "ADE could not verify the prepared lane changes.",
+        );
+        if (tree !== expected) throw new CrossMachineSourceStaleError("The source lane files changed after the batch was prepared.");
+      } else if (current.changes !== null) {
+        throw new CrossMachineSourceStaleError("The source lane has changes that were not included in the batch.");
+      }
+    },
+    interruptBatchChat: async (sessionId) => {
+      await interruptProviderTurn({ sessionId, mode: "stop_and_clear" });
+    },
     inspectSource: async (sessionId) => {
       // Deleted between getSource and here: the same answer getSource gives.
       const managed = tryManagedSession(sessionId);
@@ -50164,7 +50845,23 @@ export function createAgentChatService(args: {
     notifyPerson: notifyCrossMachineHandoff
       ? (sessionId, record, title) => notifyCrossMachineHandoff({ sessionId, record, title })
       : undefined,
-    onMoveOutcome: onCrossMachineMoveOutcome,
+    onMoveOutcome: (event) => {
+      const scheduler = scheduledWorkScheduler;
+      if (event.outcome === "continued" && scheduler) {
+        for (const schedule of scheduler.list(event.sessionId)) {
+          if (schedule.status === "scheduled" || schedule.status === "paused") {
+            void scheduler.cancel(schedule.id).catch((error) => {
+              logger.warn("agent_chat.cross_machine_handoff_schedule_cancel_failed", {
+                sessionId: event.sessionId,
+                scheduleId: schedule.id,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            });
+          }
+        }
+      }
+      onCrossMachineMoveOutcome?.(event);
+    },
     logger,
   });
   // Only the brain owns moves. A host without a transport (the desktop's own
@@ -57408,7 +58105,12 @@ export function createAgentChatService(args: {
 
   const executePreparedSendMessage = async (prepared: PreparedSendMessage): Promise<void> => withDirectiveDispatch(
     prepared.managed,
-    () => executePreparedSendMessageInner(prepared),
+    () => {
+      const path = movedAwayPathForMessage(prepared.metadata);
+      const lock = getCrossMachineMoveLock(prepared.sessionId, path);
+      if (lock) throw new MovedAwayChatError(prepared.sessionId, lock);
+      return executePreparedSendMessageInner(prepared);
+    },
   );
 
   const executePreparedSendMessageInner = async (prepared: PreparedSendMessage): Promise<void> => {
@@ -58109,6 +58811,8 @@ export function createAgentChatService(args: {
     options?: SendMessageOptions,
   ): Promise<void | AgentChatSteerResult> {
     assertChatRuntimeOwnedHere(args.sessionId, "send to");
+    const movedAway = getCrossMachineMoveLock(args.sessionId, "send_message");
+    if (movedAway) throw new MovedAwayChatError(args.sessionId, movedAway);
     const managed = ensureManagedSession(args.sessionId);
     await accountSwitchesInFlight.get(args.sessionId)?.catch(() => undefined);
     const reviewed = takeThreadReviewForSend(args);
@@ -58675,6 +59379,8 @@ export function createAgentChatService(args: {
     // A steer can be queued without starting a turn, so it is refused here as
     // well as in `prepareSendMessage`.
     assertChatRuntimeOwnedHere(steerArgs.sessionId, "steer");
+    const movedAway = getCrossMachineMoveLock(steerArgs.sessionId, "steer");
+    if (movedAway) throw new MovedAwayChatError(steerArgs.sessionId, movedAway);
     assertNoRerunInFlight(managedSessions.get(steerArgs.sessionId));
     const expandedArgs = await materializePastedTextPrompt(await applyChatMentionExpansion(steerArgs));
     const {
@@ -59747,6 +60453,21 @@ export function createAgentChatService(args: {
     throw new Error(`Unsupported chat message kind: ${String(kind)}`);
   };
 
+  const movedAwayPathForMessage = (metadata: AgentChatEventMetadata | null | undefined): string => {
+    if (!metadata) return "message_session";
+    if (metadata.boardMove) return "session_board_move";
+    if (metadata.scheduledWake) return "scheduled_work";
+    if (metadata.prWatchWake) return "pr_watch";
+    if (metadata.spawnCompletion) return "subagent_report";
+    if (metadata.usageLimitResume) return "usage_limit_resume";
+    const continuation = metadata.hostContinuation;
+    if (continuation && typeof continuation === "object") {
+      if (continuation.reason === "chat_wait") return "chat_wait";
+      if (continuation.reason === "background_work_ended") return "held_completion";
+    }
+    return "message_session";
+  };
+
   const messageSession = async (
     {
       sessionId,
@@ -59759,6 +60480,9 @@ export function createAgentChatService(args: {
     options?: { trustedSpawnCompletion?: boolean },
   ): Promise<AgentChatMessageSessionResult> => {
     assertChatRuntimeOwnedHere(sessionId, "message");
+    const movedAwayPath = movedAwayPathForMessage(metadata);
+    const lock = getCrossMachineMoveLock(sessionId, movedAwayPath);
+    if (lock) throw new MovedAwayChatError(sessionId, lock);
     const managed = ensureManagedSession(sessionId);
     const normalizedKind = normalizeMessageSessionKind(kind);
     const statusBefore = managed.session.status;
@@ -61989,6 +62713,7 @@ export function createAgentChatService(args: {
   }: AgentChatRecoverCodexTurnArgs, internal?: {
     automatic?: boolean;
   }): Promise<AgentChatRecoverCodexTurnResult> => {
+    assertChatNotMovedAway(sessionId);
     const normalizedTurnId = turnId.trim();
     if (!normalizedTurnId) throw new Error("Codex recovery requires a turn id.");
     const managed = ensureManagedSession(sessionId);
@@ -62101,6 +62826,7 @@ export function createAgentChatService(args: {
   const recoverTurn = async (
     args: AgentChatRecoverTurnArgs,
   ): Promise<AgentChatRecoverTurnResult> => {
+    assertChatNotMovedAway(args.sessionId);
     const legacyAction = {
       wait: "wait",
       nudge: "steer",
@@ -63014,6 +63740,7 @@ export function createAgentChatService(args: {
     sessionExists: (sessionId) => Boolean(sessionService.get(sessionId)),
     messageSession: (args) => messageSession(args),
     ownedByAnotherBrain: (sessionId) => liveForeignChatRuntimeOwner(sessionId) != null,
+    getMovedAwayTarget: (sessionId) => getCrossMachineMoveLock(sessionId, "chat_wait"),
     assertDeliverableHere: (sessionId) => assertChatRuntimeOwnedHere(sessionId, "arm a wait that wakes"),
     whenReady: () => scheduledWorkReady,
   });
@@ -63720,6 +64447,7 @@ export function createAgentChatService(args: {
   }: AgentChatResumeUsageLimitNowArgs): Promise<AgentChatResumeUsageLimitNowResult> => {
     const normalizedSessionId = sessionId.trim();
     if (!normalizedSessionId) throw new Error("Chat session id is required.");
+    assertChatNotMovedAway(normalizedSessionId);
     await scheduledWorkReady;
     const managed = ensureManagedSession(normalizedSessionId);
     const liveLimit = resolveUsageLimitResumeState(managed.usageLimitResume ?? null);
@@ -65133,6 +65861,7 @@ export function createAgentChatService(args: {
    */
   const respondToInput = async (args: AgentChatRespondToInputArgs): Promise<void> => {
     assertChatRuntimeOwnedHere(args.sessionId, "answer input for");
+    assertChatNotMovedAway(args.sessionId);
     await deliverInputResponse(args);
     const answeredSession = managedSessions.get(args.sessionId);
     if (answeredSession) answeredSession.turnFailureMarked = false;
@@ -70295,6 +71024,8 @@ export function createAgentChatService(args: {
     onDispatched?: () => void;
   }): Promise<AgentChatBackgroundTurnResult> => {
     assertChatRuntimeOwnedHere(sessionId, "run a turn in");
+    const movedAway = getCrossMachineMoveLock(sessionId, "run_session_turn");
+    if (movedAway) throw new MovedAwayChatError(sessionId, movedAway);
     const managed = ensureManagedSession(sessionId);
     const trimmed = text.trim();
     if (!trimmed.length) {
@@ -70922,6 +71653,7 @@ export function createAgentChatService(args: {
       return "ended";
     },
     shouldDefer: (schedule) => {
+      if (getCrossMachineMoveLock(schedule.sessionId, "scheduled_work")) return true;
       const row = sessionService.get(schedule.sessionId);
       if (row?.tracked && isTrackedAgentCliToolType(row.toolType)) {
         // A quiet-output heuristic is not a turn boundary: a CLI can think for
@@ -70976,6 +71708,7 @@ export function createAgentChatService(args: {
       db?.run?.("delete from kv where key = ?", [scheduledWorkClaimKey(schedule)]);
     },
     fire: async (schedule, context) => {
+      if (getCrossMachineMoveLock(schedule.sessionId, "scheduled_work")) return { retry: true };
       const firedAt = new Date(schedule.lastFiredAt ?? Date.now()).toISOString();
       const row = sessionService.get(schedule.sessionId);
       if (row?.tracked && isTrackedAgentCliToolType(row.toolType)) {
@@ -71049,6 +71782,7 @@ export function createAgentChatService(args: {
       } catch (error) {
         // The owner brain fires it at its own boundary: give the claim back.
         if (error instanceof ChatRuntimeOwnedElsewhereError) return { retry: true };
+        if (isMovedAwayChatError(error)) return { retry: true };
         const reason = error instanceof Error ? error.message : String(error);
         logger.warn("agent_chat.scheduled_wake_refused", {
           sessionId: schedule.sessionId,
@@ -71165,6 +71899,7 @@ export function createAgentChatService(args: {
       const row = sessionService.get(sessionId);
       return Boolean(row && !row.archivedAt);
     },
+    isChatMovedAway: (sessionId: string) => Boolean(getCrossMachineMoveLock(sessionId, "draft_delivery")),
     attachmentsReady: (draft: DraftEntry) => draftAttachmentsReady(draft, fs.existsSync),
     sendToChat: async ({ sessionId, text, attachments }: {
       sessionId: string;
@@ -71461,11 +72196,15 @@ export function createAgentChatService(args: {
     prepareCrossMachineHandoff,
     validateCrossMachineSource,
     preflightCrossMachineDestination,
+    importCrossMachineHandoffLane,
+    beginCrossMachineLaneImportSetup,
+    updateCrossMachineLaneImportSetup,
     fastForwardCrossMachineHandoffLane,
     acceptCrossMachineHandoff,
     markCrossMachineHandoff,
     getCrossMachineHandoffOptions: (options: AgentChatCrossMachineHandoffSessionArgs) =>
       requireCrossMachineHandoff().getOptions(options.sourceSessionId),
+    getCrossMachineMoveLock,
     previewCrossMachineHandoff: (previewArgs: AgentChatPreviewCrossMachineHandoffArgs) =>
       requireCrossMachineHandoff().preview(previewArgs),
     /**
@@ -71474,11 +72213,33 @@ export function createAgentChatService(args: {
      * desktop or CTO) stamps it, so a path that forgets errs toward approval.
      */
     startCrossMachineHandoff: (
-      startArgs: AgentChatStartCrossMachineHandoffArgs & { requestedBy?: "user" | "agent" },
+      startArgs: AgentChatStartCrossMachineHandoffArgs & {
+        requestedBy?: "user" | "agent";
+        requestedFor?: "self" | "descendant" | "other";
+        requestedBySessionId?: string | null;
+        requestedByTitle?: string | null;
+      },
     ) => {
-      const { requestedBy, ...rest } = startArgs;
-      return requireCrossMachineHandoff().start(rest, { requestedBy: requestedBy === "user" ? "user" : "agent" });
+      const { requestedBy, requestedFor, requestedBySessionId, requestedByTitle, ...rest } = startArgs;
+      return requireCrossMachineHandoff().start(rest, {
+        requestedBy: requestedBy === "user" ? "user" : "agent",
+        ...(requestedFor ? { requestedFor } : {}),
+        ...(requestedBySessionId !== undefined ? { requestedBySessionId } : {}),
+        ...(requestedByTitle !== undefined ? { requestedByTitle } : {}),
+      });
     },
+    startCrossMachineBatchMove: (startArgs: AgentChatStartCrossMachineBatchMoveArgs) => {
+      const { requestedBy, requestingSessionId, ...rest } = startArgs;
+      return requireCrossMachineHandoff().startBatch({
+        ...rest,
+        requestedBy: requestedBy === "user" ? "user" : "agent",
+        ...(requestingSessionId !== undefined ? { requestingSessionId } : {}),
+      });
+    },
+    getCrossMachineBatchMove: (getArgs: AgentChatGetCrossMachineBatchMoveArgs) =>
+      requireCrossMachineHandoff().getBatch(getArgs.batchId),
+    retryCrossMachineBatchMove: (retryArgs: AgentChatRetryCrossMachineBatchMoveArgs) =>
+      requireCrossMachineHandoff().retryBatch(retryArgs.batchId),
     cancelCrossMachineHandoff: async (cancelArgs: AgentChatCrossMachineHandoffSessionArgs) =>
       requireCrossMachineHandoff().cancel(cancelArgs.sourceSessionId),
     retryCrossMachineHandoff: async (retryArgs: AgentChatRetryCrossMachineHandoffArgs) =>
@@ -71489,8 +72250,15 @@ export function createAgentChatService(args: {
         approvalArgs.handoffId,
         approvalArgs.approve === true,
       ),
-    acknowledgeCrossMachineHandoff: async (ackArgs: AgentChatAcknowledgeCrossMachineHandoffArgs) =>
-      requireCrossMachineHandoff().acknowledge(ackArgs.sourceSessionId, ackArgs.handoffId),
+    acknowledgeCrossMachineHandoff: async (ackArgs: AgentChatAcknowledgeCrossMachineHandoffArgs) => {
+      const result = await requireCrossMachineHandoff().acknowledge(ackArgs.sourceSessionId, ackArgs.handoffId);
+      const managed = managedSessions.get(ackArgs.sourceSessionId);
+      if (managed) {
+        runPendingUsageLimitMove(managed);
+        pollHeldCodexTerminals();
+      }
+      return result;
+    },
     emitAdeCard,
     sendMessage,
     getClaudePluginUi,

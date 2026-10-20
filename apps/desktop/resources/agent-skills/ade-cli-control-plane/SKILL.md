@@ -577,14 +577,20 @@ another machine has), move the chat itself rather than starting a child:
 ade chat handoff <session> --options --json        # where it can go, blockers and their fixes
 ade chat handoff <session> --machine "Mac mini" --model <model> \
   --prompt "what to do first there" --when-turn-ends
+ade chat move --machine "Mac Studio" <session> [<session>…]
+ade chat move --machine "Mac Studio" --all          # every active Work chat on this brain
+ade chat move --status <batch-id>                    # progress for every lane and chat
+ade chat move --retry <batch-id>                     # resume remaining items in dependency order
 ```
 
 - `--machine` here is the DESTINATION; the command runs on this machine.
   Brief by default; `--fork` carries full history (same provider only).
   Don't add `--machine` to `--cancel`/`--retry`/`--options`; it is refused.
-- You can only move your own chat, and it runs there at its own permission
-  level (mapped to the target model's provider, never broader): any
-  `--permissions`/`--sandbox` you pass is dropped.
+- A self/descendant move can proceed without approval. Moving any unrelated
+  chat needs the person's approval. The moved chat runs there at its own
+  permission level mapped to the target model's provider, never broader: any
+  `--permissions`/`--sandbox`
+  you pass is dropped.
 - If the last move is `unknown` (its answer was lost), a new move is refused.
   Tell the user to check the other machine; `--retry` resends it, `--cancel`
   dismisses it. A retry is refused when the chat changed since it was sent.
@@ -592,11 +598,24 @@ ade chat handoff <session> --machine "Mac mini" --model <model> \
   your turn ends, and any new message from the user cancels it.
 - `--include-changes` brings uncommitted and unpushed work; otherwise push
   first (`ade git push --lane <lane>`). `--clone` sets a missing repo up there.
-- Unless the chat is full-auto, the user approves your request from the chat's
+- For an unrelated chat, the user approves your request from the chat's
   banner. Say that you asked, and stop; do not retry while it waits. If they
   deny it, don't ask again (a new request is refused for two minutes).
 - Your `--prompt` is the first message the chat gets there, so write it as the
   next instruction to yourself.
+- `chat move` is a batch: selected chats expand to descendants by default, and
+  their lanes plus ancestor lanes arrive root first. Fork is the default;
+  `--brief` requests briefs, while a chat that cannot fork falls back to a
+  brief with the reason recorded in its arrival. Use `--no-descendants` to
+  select only the named chats, `--no-changes` to leave local changes behind,
+  `--interrupt` to stop active turns before moving, and `--note` for a note
+  every arrived chat receives. `--all` selects active Work chats in this
+  project on the current brain. Busy chats otherwise wait for their turn to
+  end. A lost answer or failed item can leave its dependents blocked; check
+  `--status`, then retry the batch after resolving the reported issue.
+- After the destination starts, the source chat cannot start turns or deliver
+  automatic work until the person chooses **Work here instead**. Scheduled
+  work stays pending while the source is locked.
 
 ## Archived lanes, chats, and shells
 

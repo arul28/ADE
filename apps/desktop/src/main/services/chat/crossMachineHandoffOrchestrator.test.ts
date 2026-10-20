@@ -17,16 +17,21 @@ import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { CROSS_MACHINE_PERMISSION_FIELDS, pickNewerCrossMachineHandoffRecord } from "../../../shared/crossMachineHandoff";
 import type {
+  AgentChatCrossMachineBatchMoveRecord,
+  AgentChatCrossMachineLaneImportArgs,
   AgentChatCrossMachineHandoffCapsule,
   AgentChatCrossMachineHandoffRecord,
   AgentChatPrepareCrossMachineHandoffArgs,
   AgentChatPrepareCrossMachineHandoffResult,
   AgentChatStartCrossMachineHandoffArgs,
 } from "../../../shared/types";
+import { deterministicChatSessionId } from "../../../shared/deterministicChatSessionId";
 import {
   createCrossMachineHandoffOrchestrator,
   CrossMachineSourceStaleError,
+  type CrossMachineHandoffOutbox,
   type CrossMachineHandoffPersisted,
+  type CrossMachinePreparedCapsule,
   type CrossMachineMoveOutcome,
 } from "./crossMachineHandoffOrchestrator";
 import { createCrossMachineHandoffSource, isPersonAuthoredUserMessage } from "./crossMachineHandoffSource";
@@ -240,12 +245,307 @@ function createHarness(options: { permissionLevel?: string; turnActive?: boolean
   };
 }
 
+function createBatchHarness() {
+  const chats = [
+    {
+      sessionId: "chat-child",
+      laneId: "lane-child",
+      parentSessionId: "chat-parent",
+      spawnKind: "peer" as const,
+      isWorkChat: true,
+      turnActive: false,
+      awaitingInput: false,
+      permissionLevel: "full-auto",
+      provider: "claude",
+      model: "anthropic/claude-sonnet-4-5",
+      modelId: "anthropic/claude-sonnet-4-5",
+      title: "Child task",
+    },
+    {
+      sessionId: "chat-other",
+      laneId: "lane-other",
+      parentSessionId: null,
+      spawnKind: "subagent" as const,
+      isWorkChat: true,
+      turnActive: false,
+      awaitingInput: false,
+      permissionLevel: "full-auto",
+      provider: "claude",
+      model: "anthropic/claude-sonnet-4-5",
+      modelId: "anthropic/claude-sonnet-4-5",
+      title: "Other task",
+    },
+    {
+      sessionId: "chat-parent",
+      laneId: "lane-child",
+      parentSessionId: null,
+      spawnKind: "subagent" as const,
+      isWorkChat: true,
+      turnActive: false,
+      awaitingInput: false,
+      permissionLevel: "full-auto",
+      provider: "claude",
+      model: "anthropic/claude-sonnet-4-5",
+      modelId: "anthropic/claude-sonnet-4-5",
+      title: "Parent task",
+    },
+  ];
+  const lanes = [
+    { laneId: "lane-child", parentLaneId: "lane-root", name: "Child lane", branchRef: "feature/child" },
+    { laneId: "lane-other", parentLaneId: null, name: "Other lane", branchRef: "feature/other" },
+    { laneId: "lane-root", parentLaneId: null, name: "Root lane", branchRef: "feature/root" },
+  ];
+  const persistedMoves = new Map<string, CrossMachineHandoffPersisted>();
+  const persistedBatches = new Map<string, AgentChatCrossMachineBatchMoveRecord>();
+  const preparedCapsules = new Map<string, CrossMachinePreparedCapsule>();
+  const preparedLanes = new Map<string, AgentChatCrossMachineLaneImportArgs>();
+  const accepted: AgentChatCrossMachineHandoffCapsule[] = [];
+  const laneImportCalls: AgentChatCrossMachineLaneImportArgs[] = [];
+  let loseRootLaneImportAnswer = true;
+  const waiters: Array<{
+    batchId: string;
+    predicate: (record: AgentChatCrossMachineBatchMoveRecord) => boolean;
+    resolve: (record: AgentChatCrossMachineBatchMoveRecord) => void;
+  }> = [];
+  const signal = (record: AgentChatCrossMachineBatchMoveRecord): void => {
+    for (let index = waiters.length - 1; index >= 0; index -= 1) {
+      const waiter = waiters[index]!;
+      if (waiter.batchId === record.batchId && waiter.predicate(record)) {
+        waiters.splice(index, 1);
+        waiter.resolve(structuredClone(record));
+      }
+    }
+  };
+  const outbox: CrossMachineHandoffOutbox = {
+    read: (handoffId) => preparedCapsules.get(handoffId) ?? null,
+    write: (handoffId, value) => preparedCapsules.set(handoffId, structuredClone(value)),
+    remove: (handoffId) => { preparedCapsules.delete(handoffId); },
+    readLane: (importId) => preparedLanes.get(importId) ?? null,
+    writeLane: (importId, value) => preparedLanes.set(importId, structuredClone(value)),
+    removeLane: (importId) => { preparedLanes.delete(importId); },
+  };
+  const orchestrator = createCrossMachineHandoffOrchestrator({
+    transport: () => ({
+      listMachines: async () => [{ machineKey: "mac-studio", name: "Mac Studio", online: true, isThisMachine: false }],
+      callAction: async (input) => {
+        const machine = { machineKey: "mac-studio", name: "Mac Studio" };
+        if (input.action === "preflightCrossMachineDestination") {
+          return {
+            machine,
+            result: {
+              ...READY_PREFLIGHT,
+              batchMoveSupport: 1,
+              gitBundleSupport: true,
+              forkHandoffSupport: { supported: true },
+            },
+          };
+        }
+        if (input.action === "importCrossMachineHandoffLane") {
+          const payload = input.args as AgentChatCrossMachineLaneImportArgs;
+          laneImportCalls.push(structuredClone(payload));
+          if (payload.sourceLane.laneId === "lane-root" && loseRootLaneImportAnswer) {
+            loseRootLaneImportAnswer = false;
+            throw new Error("lost answer");
+          }
+          return {
+            machine,
+            result: {
+              importId: payload.importId,
+              laneId: `destination-${payload.sourceLane.laneId}`,
+              reusedLane: false,
+              carriedChanges: Boolean(payload.gitBundle),
+              snapshotSha: payload.gitBundle?.snapshotSha ?? null,
+              warnings: [],
+              setupStatus: "completed",
+            },
+          };
+        }
+        if (input.action === "acceptCrossMachineHandoff") {
+          const { capsule } = input.args as { capsule: AgentChatCrossMachineHandoffCapsule };
+          accepted.push(structuredClone(capsule));
+          return {
+            machine,
+            result: {
+              handoffId: capsule.handoffId,
+              laneId: capsule.batchMove!.destinationLaneId,
+              session: {
+                id: deterministicChatSessionId(`cross-machine-handoff:${capsule.handoffId}`),
+                laneId: capsule.batchMove!.destinationLaneId,
+                provider: "claude",
+                model: "anthropic/claude-sonnet-4-5",
+              },
+              reusedLane: false,
+              reusedSession: false,
+            },
+          };
+        }
+        throw new Error(`unexpected destination action ${input.action}`);
+      },
+      isLostAnswer: (error) => error instanceof Error && error.message === "lost answer",
+    }),
+    getSource: (sessionId) => {
+      const chat = chats.find((candidate) => candidate.sessionId === sessionId);
+      return chat ? {
+        sessionId,
+        isWorkChat: chat.isWorkChat,
+        turnActive: chat.turnActive,
+        awaitingInput: chat.awaitingInput,
+        permissionLevel: chat.permissionLevel,
+        provider: chat.provider,
+        title: chat.title,
+      } : null;
+    },
+    readPersisted: (sessionId) => persistedMoves.get(sessionId) ?? null,
+    writePersisted: (sessionId, value) => {
+      if (value) persistedMoves.set(sessionId, structuredClone(value));
+      else persistedMoves.delete(sessionId);
+    },
+    listPersisted: () => [...persistedMoves.entries()].map(([sessionId, value]) => ({ sessionId, value })),
+    readBatch: (batchId) => persistedBatches.get(batchId) ?? null,
+    writeBatch: (batchId, record) => {
+      persistedBatches.set(batchId, structuredClone(record));
+      signal(record);
+    },
+    listBatches: () => [...persistedBatches.values()],
+    listBatchChats: async () => structuredClone(chats),
+    listBatchLanes: async () => structuredClone(lanes),
+    inspectBatchLane: async (laneId) => ({
+      originUrl: ORIGIN,
+      rawOriginUrl: ORIGIN,
+      branchRef: lanes.find((lane) => lane.laneId === laneId)!.branchRef,
+      headSha: "a".repeat(40),
+      blockers: [],
+      changes: null,
+    }),
+    prepareBatchLane: async ({ importId, lane, destinationParentLaneId, sourceMachineName }) => ({
+      importId,
+      sourceMachineName,
+      sourceLane: { laneId: lane.laneId, parentLaneId: lane.parentLaneId, name: lane.name },
+      ...(destinationParentLaneId ? { destinationParentLaneId } : {}),
+      branchRef: lane.branchRef,
+      headSha: "a".repeat(40),
+      originUrl: ORIGIN,
+    }),
+    validateBatchLane: async () => {},
+    inspectSource: async (sessionId) => {
+      const lane = lanes.find((candidate) => candidate.laneId === chats.find((chat) => chat.sessionId === sessionId)!.laneId)!;
+      return {
+        originUrl: ORIGIN,
+        rawOriginUrl: ORIGIN,
+        branchRef: lane.branchRef,
+        headSha: "a".repeat(40),
+        blockers: [],
+        changes: null,
+      };
+    },
+    chatExists: () => true,
+    listUserMessageIds: () => [],
+    prepare: async (args) => {
+      const sourceChat = chats.find((chat) => chat.sessionId === args.sourceSessionId)!;
+      const sourceLane = lanes.find((lane) => lane.laneId === sourceChat.laneId)!;
+      return {
+        capsule: {
+          version: 1,
+          handoffId: args.handoffId,
+          createdAt: "2026-10-07T10:00:00.000Z",
+          source: {
+            machineName: "MacBook",
+            sessionId: sourceChat.sessionId,
+            provider: "claude",
+            model: sourceChat.model,
+            title: sourceChat.title,
+            laneName: sourceLane.name,
+            branchRef: sourceLane.branchRef,
+            headSha: "a".repeat(40),
+            originUrl: ORIGIN,
+            ...(sourceChat.parentSessionId ? { orchestrationParentSessionId: sourceChat.parentSessionId } : {}),
+            spawnKind: sourceChat.spawnKind,
+          },
+          sourceLane: args.sourceLane,
+          ...(args.destinationParentLaneId ? { destinationParentLaneId: args.destinationParentLaneId } : {}),
+          ...(args.parentLink ? { parentLink: args.parentLink } : {}),
+          ...(args.batchMove ? { batchMove: args.batchMove } : {}),
+          target: { targetModelId: args.targetModelId },
+          brief: "Continue the task.",
+          artifacts: { fileChanges: [], commands: [], errors: [] },
+          linearIssues: [],
+          continuationPrompt: "Continue the task.",
+        } as AgentChatCrossMachineHandoffCapsule,
+        capsuleFingerprint: `fingerprint-${args.handoffId}`,
+        usedFallbackSummary: false,
+        sanitizedSensitiveContext: false,
+      };
+    },
+    validateSource: async () => {},
+    markSource: async () => {},
+    outbox,
+    showApprovalCard: () => {},
+    noticeEnded: () => {},
+    logger: { info: () => {}, warn: () => {} },
+  });
+
+  return {
+    orchestrator,
+    accepted,
+    laneImportCalls,
+    record: (batchId: string) => persistedBatches.get(batchId) ?? null,
+    waitFor: (batchId: string, predicate: (record: AgentChatCrossMachineBatchMoveRecord) => boolean) => {
+      const current = persistedBatches.get(batchId);
+      if (current && predicate(current)) return Promise.resolve(structuredClone(current));
+      return new Promise<AgentChatCrossMachineBatchMoveRecord>((resolve) => waiters.push({ batchId, predicate, resolve }));
+    },
+  };
+}
+
 /** A lost answer, as the runtime transport reports it. */
 const lostAnswer = () => {
   throw new Error("Remote ADE service connection closed: socket closed");
 };
 
 describe("cross-machine move orchestrator", () => {
+  it("resumes batch trees in dependency order while an unknown branch leaves unrelated work moving", async () => {
+    const h = createBatchHarness();
+    const started = await h.orchestrator.startBatch({
+      machine: "Mac Studio",
+      sessionIds: ["chat-parent", "chat-other"],
+      mode: "fork",
+      includeChanges: false,
+    });
+
+    const partial = await h.waitFor(started.batchId, (record) => record.state === "partial");
+    const stateById = new Map(partial.items.map((item) => [item.id, item.state]));
+    expect(stateById).toMatchObject({
+      "lane:lane-root": "unknown",
+      "lane:lane-child": "blocked",
+      "lane:lane-other": "continued",
+      "chat:chat-parent": "blocked",
+      "chat:chat-child": "blocked",
+      "chat:chat-other": "continued",
+    });
+    expect(h.laneImportCalls.map((item) => item.sourceLane.laneId)).toEqual(["lane-other", "lane-root"]);
+    expect(h.accepted.map((capsule) => capsule.source.sessionId)).toEqual(["chat-other"]);
+
+    await h.orchestrator.retryBatch(started.batchId);
+    const completed = await h.waitFor(started.batchId, (record) => record.state === "completed");
+    expect(completed.items.every((item) => item.state === "continued")).toBe(true);
+    expect(h.laneImportCalls.map((item) => item.sourceLane.laneId)).toEqual([
+      "lane-other",
+      "lane-root",
+      "lane-root",
+      "lane-child",
+    ]);
+    const importedChildLane = h.laneImportCalls.find((item) => item.sourceLane.laneId === "lane-child");
+    expect(importedChildLane?.destinationParentLaneId).toBe("destination-lane-root");
+    const parentIndex = h.accepted.findIndex((capsule) => capsule.source.sessionId === "chat-parent");
+    const childIndex = h.accepted.findIndex((capsule) => capsule.source.sessionId === "chat-child");
+    expect(parentIndex).toBeGreaterThanOrEqual(0);
+    expect(childIndex).toBeGreaterThan(parentIndex);
+    expect(h.accepted[childIndex]?.parentLink).toEqual({
+      destinationParentSessionId: deterministicChatSessionId(`cross-machine-handoff:${started.batchId}:chat:chat-parent`),
+      spawnKind: "peer",
+    });
+  });
+
   it.each([
     { label: "a new message from the person", ids: { messageId: "m-new" }, metadata: null, cancels: true },
     { label: "a new steer from the person", ids: { steerId: "steer-new" }, metadata: null, cancels: true },
@@ -314,7 +614,7 @@ describe("cross-machine move orchestrator", () => {
     { model: "ollama/llama-3.3", level: "auto-edit", fields: { opencodePermissionMode: "edit", permissionMode: "default" }, label: "ask before changes" },
     // An ACP provider (Kimi) that can't auto-accept edits steps down too.
     { model: "moonshot/k3", level: "auto-edit", fields: { acpPermissionMode: "default", permissionMode: "default" }, label: "ask before changes" },
-  ])("an agent's move to $model runs at the chat's own $level level, after approval", async ({ model, level, fields, label }) => {
+  ])("an agent's self move to $model runs at the chat's own $level level without approval", async ({ model, level, fields, label }) => {
     const h = createHarness({ permissionLevel: level });
     // Everything an agent could ask for to widen its access is dropped.
     const record = await h.start({
@@ -327,12 +627,9 @@ describe("cross-machine move orchestrator", () => {
       acpPermissionMode: "yolo",
     } as Partial<AgentChatStartCrossMachineHandoffArgs>, "agent");
 
-    expect(record).toMatchObject({ state: "awaiting_approval", requestedBy: "agent", targetPermissionLabel: label });
-    expect(h.cards).toEqual([expect.objectContaining({ handoffId: record.handoffId, live: true })]);
-    expect(h.cards[0]!.subtitle).toContain(label);
-    expect(h.prepared).toHaveLength(0);
+    expect(record).toMatchObject({ state: "sending", requestedBy: "agent", targetPermissionLabel: label });
+    expect(h.cards).toEqual([]);
 
-    h.orchestrator.resolveApproval(SESSION, record.handoffId, true);
     expect(await h.settled()).toMatchObject({ state: "continued" });
     const sent = h.prepared[0]! as Record<string, unknown>;
     const permissionFields = Object.fromEntries(
@@ -341,22 +638,18 @@ describe("cross-machine move orchestrator", () => {
     expect(permissionFields).toEqual(fields);
   });
 
-  it("an agent's queued move rechecks the chat's access before it is sent", async () => {
-    // Full-auto let the agent's move through without asking; then the person
-    // lowered the chat to ask while the move waited for the turn to end.
+  it("an agent's queued self move keeps the chat's current access level", async () => {
+    // The person lowered the chat to ask while the move waited for the turn
+    // to end. The move proceeds at that lower level without approval.
     const h = createHarness({ permissionLevel: "full-auto", turnActive: true });
     const queued = await h.start({ whenTurnEnds: true, targetModelId: "anthropic/claude-fable-5-1" }, "agent");
     expect(queued.state).toBe("pending");
     h.chat.permissionLevel = "ask";
     h.chat.turnActive = false;
     h.orchestrator.onTurnSettled(SESSION);
-    await vi.waitFor(() => expect(h.record()?.state).toBe("awaiting_approval"));
-    expect(h.prepared).toHaveLength(0);
-    expect(h.notified.map((record) => record.state)).toContain("awaiting_approval");
-
-    // Approved: it runs at the lower level the chat has now, never the old one.
-    h.orchestrator.resolveApproval(SESSION, queued.handoffId, true);
     expect(await h.settled()).toMatchObject({ state: "continued", targetPermissionLabel: "ask before changes" });
+    expect(h.cards).toEqual([]);
+    expect(h.notified.map((record) => record.state)).not.toContain("awaiting_approval");
     expect(h.prepared[0]).toMatchObject({ claudePermissionMode: "default", permissionMode: "default" });
   });
 
@@ -417,6 +710,25 @@ describe("cross-machine move orchestrator", () => {
     expect(h.hasOutbox(second.handoffId)).toBe(true);
     expect(h.prepared.map((args) => args.handoffId)).toEqual([first.handoffId, second.handoffId]);
     expect(h.accepted).toHaveLength(2);
+  });
+
+  it("a new move revokes an earlier Work here instead choice", async () => {
+    const h = createHarness();
+    const first = await h.start();
+    expect(await h.settled()).toMatchObject({ handoffId: first.handoffId, state: "continued" });
+
+    const persisted = h.store.readMove(SESSION)!;
+    h.store.writeMove(SESSION, {
+      ...persisted,
+      record: { ...persisted.record, resumedHere: true },
+    });
+
+    const second = await h.start();
+    expect(await h.settled()).toMatchObject({
+      handoffId: second.handoffId,
+      state: "continued",
+      resumedHere: false,
+    });
   });
 
   it.each(["unknown", "failed"] as const)(

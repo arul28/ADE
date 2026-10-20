@@ -62,6 +62,7 @@ import { readRuntimeFileWatchSenderId, toRuntimeFileWatchArgs } from "../../desk
 import { createFileWatchLedger } from "../../desktop/src/main/services/files/fileWatchLedger";
 import { captureAppControlAnalytics } from "../../desktop/src/main/services/analytics/agentTurnProductAnalytics";
 import { stripHostAuthoredMessageProvenance } from "../../desktop/src/main/services/chat/spawnMissionOwnership";
+import { isMovedAwayChatError } from "../../desktop/src/shared/crossMachineMoveLock";
 import { runGit } from "../../desktop/src/main/services/git/git";
 import { resolvePathWithinRoot } from "../../desktop/src/main/services/shared/utils";
 import { getDefaultModelDescriptor } from "../../desktop/src/shared/modelRegistry";
@@ -1955,6 +1956,7 @@ const CALLER_ERROR_CODES = new Set<number>([
  * for the caller and left nothing behind for anyone else.
  */
 function reportFailedAction(actionName: string, error: unknown): void {
+  if (isMovedAwayChatError(error)) return;
   if (error instanceof JsonRpcError && CALLER_ERROR_CODES.has(error.code)) return;
   if (isExpectedFailure(error)) return;
   if (isExpectedOutcome(error)) {
@@ -3384,7 +3386,8 @@ function scopeTerminalAdeActionArgs(
 
 /**
  * The move actions that name a source chat (`sourceSessionId`). A chat-bound
- * agent may aim them only at its own chat; see runTool. Approving a move is
+ * agent may aim them at its own chat or descendants; a start for another chat
+ * is allowed through only as an approval request. See runTool. Approval is
  * user-only (ADE_ACTION_USER_ONLY), so it is not here.
  */
 const CROSS_MACHINE_MOVE_ACTIONS = new Set([
@@ -3395,6 +3398,28 @@ const CROSS_MACHINE_MOVE_ACTIONS = new Set([
   "previewCrossMachineHandoff",
   "getCrossMachineHandoffOptions",
 ]);
+
+function crossMachineMoveRelation(
+  runtime: AdeRuntime,
+  callerSessionId: string | null,
+  targetSessionId: string | null,
+): "self" | "descendant" | "other" {
+  if (!callerSessionId || !targetSessionId) return "other";
+  if (callerSessionId === targetSessionId) return "self";
+  const visited = new Set<string>();
+  let currentSessionId: string | null = targetSessionId;
+  for (let depth = 0; depth < 32 && currentSessionId; depth += 1) {
+    if (visited.has(currentSessionId)) return "other";
+    visited.add(currentSessionId);
+    const parentSessionId = asOptionalTrimmedString(
+      runtime.sessionService.get(currentSessionId)?.orchestrationParentSessionId,
+    );
+    if (!parentSessionId) return "other";
+    if (parentSessionId === callerSessionId) return "descendant";
+    currentSessionId = parentSessionId;
+  }
+  return "other";
+}
 
 const SCOPED_CHAT_ACTIONS = new Set([
   "getChatEventHistory",
@@ -5271,10 +5296,13 @@ const GLOBAL_ASK_USER_RATE_LIMIT = {
   windowMs: 60_000,
   events: [] as number[]
 };
+const CROSS_MACHINE_MOVE_TARGET_RATE_LIMIT = { maxCalls: 6, windowMs: 60_000 };
+const crossMachineMoveTargetEvents = new Map<string, number[]>();
 
 /** @internal Exported for test cleanup only. */
 export function _resetGlobalAskUserRateLimit(): void {
   GLOBAL_ASK_USER_RATE_LIMIT.events = [];
+  crossMachineMoveTargetEvents.clear();
 }
 
 function ensureAskUserAllowed(session: SessionState): void {
@@ -5296,6 +5324,23 @@ function ensureAskUserAllowed(session: SessionState): void {
 
   session.askUserEvents.push(now);
   GLOBAL_ASK_USER_RATE_LIMIT.events.push(now);
+}
+
+function ensureCrossMachineMoveAskAllowed(targetSessionId: string): void {
+  const now = Date.now();
+  for (const [sessionId, events] of crossMachineMoveTargetEvents) {
+    const recent = events.filter((ts) => ts >= now - CROSS_MACHINE_MOVE_TARGET_RATE_LIMIT.windowMs);
+    if (recent.length === 0) crossMachineMoveTargetEvents.delete(sessionId);
+    else crossMachineMoveTargetEvents.set(sessionId, recent);
+  }
+  const targetEvents = crossMachineMoveTargetEvents.get(targetSessionId) ?? [];
+  const targetCutoff = now - CROSS_MACHINE_MOVE_TARGET_RATE_LIMIT.windowMs;
+  const recentTargetEvents = targetEvents.filter((ts) => ts >= targetCutoff);
+  if (recentTargetEvents.length >= CROSS_MACHINE_MOVE_TARGET_RATE_LIMIT.maxCalls) {
+    throw new JsonRpcError(JsonRpcErrorCode.policyDenied, "cross-machine move approval rate limit exceeded for this chat.");
+  }
+  recentTargetEvents.push(now);
+  crossMachineMoveTargetEvents.set(targetSessionId, recentTargetEvents);
 }
 
 async function runTool(args: {
@@ -5780,31 +5825,60 @@ async function runTool(args: {
       // only the CTO thread itself (callerIsTrustedCto) speaks for the person.
       const callerIsPerson = mayUseUserOnlyActions(session)
         || (callerIsCto && await callerIsTrustedCto(runtime, session));
-      // A chat-bound agent moves, cancels, retries or previews ITS OWN chat
-      // only, the way SCOPED_CHAT_ACTIONS holds it to its own row. An unbound
-      // caller keeps project-wide reach, and its start still needs approval.
+      // A chat-bound agent may act on itself or a descendant it started. A
+      // start against another chat is allowed through only as an approval
+      // request; other move actions remain limited to its own subtree.
       const boundChatSessionId = asOptionalTrimmedString(callerCtx.chatSessionId)
         ?? asOptionalTrimmedString(session.identity.chatSessionId);
       const requestedSourceSessionId = asOptionalTrimmedString(rawObjectArgs.sourceSessionId);
-      if (!callerIsPerson && boundChatSessionId && requestedSourceSessionId !== boundChatSessionId) {
+      const requestedFor = crossMachineMoveRelation(runtime, boundChatSessionId, requestedSourceSessionId);
+      if (
+        !callerIsPerson
+        && boundChatSessionId
+        && requestedFor === "other"
+        && action !== "startCrossMachineHandoff"
+      ) {
         chatAccessDenied(`run_ade_action:chat.${action}`, {
           callerChatSessionId: boundChatSessionId,
           requestedSessionId: requestedSourceSessionId,
         });
       }
       if (action === "startCrossMachineHandoff") {
-        // Who asked decides whether the person must approve the move, so it is
-        // derived from the caller's identity and never taken from its
-        // arguments. The orchestrator then sets an agent's move to the source
-        // chat's own permission level, whatever permissions it passed.
-        const { requestedBy: _ignoredRequestedBy, ...startArgs } = rawObjectArgs;
+        // Who asked and which chat they asked to move are trusted host facts,
+        // never caller-provided claims. The orchestrator applies the source
+        // chat's permission level and sends unrelated-chat requests to approval.
+        const {
+          requestedBy: _ignoredRequestedBy,
+          requestedFor: _ignoredRequestedFor,
+          requestedBySessionId: _ignoredRequestedBySessionId,
+          requestedByTitle: _ignoredRequestedByTitle,
+          sourceChatTitle: _ignoredSourceChatTitle,
+          ...startArgs
+        } = rawObjectArgs;
         if (callerIsPerson) {
           scopedObjectArgs = { ...startArgs, requestedBy: "user" };
         } else {
-          // Each agent start may put an approval card (and a push) in front of
-          // the person, so it shares ask_user's rate limit.
-          ensureAskUserAllowed(session);
-          scopedObjectArgs = { ...startArgs, requestedBy: "agent" };
+          if (!requestedSourceSessionId) {
+            throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "chat.startCrossMachineHandoff requires sourceSessionId.");
+          }
+          // The request budget and deny cooldown are scoped to the chat being
+          // moved, so one chat cannot spend another chat's approval budget.
+          ensureCrossMachineMoveAskAllowed(requestedSourceSessionId);
+          const requester = boundChatSessionId ? runtime.sessionService.get(boundChatSessionId) : null;
+          scopedObjectArgs = {
+            ...startArgs,
+            requestedBy: "agent",
+            requestedFor,
+            requestedBySessionId: boundChatSessionId,
+            requestedByTitle: asOptionalTrimmedString(requester?.title)
+              ?? (boundChatSessionId
+                ? `Agent chat ${boundChatSessionId}`
+                : session.identity.runId
+                  ? `Agent run ${session.identity.runId}`
+                  : asOptionalTrimmedString(session.identity.callerId)
+                    ? `Agent process ${asOptionalTrimmedString(session.identity.callerId)}`
+                    : null),
+          };
         }
       }
     }
@@ -8668,6 +8742,7 @@ export function createAdeRpcRequestHandler(args: {
         return result;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        const movedAway = isMovedAwayChatError(error);
         // `run_ade_action` carries every domain action; name the real one, or
         // all of them share one Sentry issue whatever actually failed.
         reportFailedAction(
@@ -8677,8 +8752,15 @@ export function createAdeRpcRequestHandler(args: {
         return {
           ok: false,
           error: {
-            code: error instanceof JsonRpcError ? error.code : JsonRpcErrorCode.toolFailed,
+            code: movedAway
+              ? error.code
+              : error instanceof JsonRpcError ? error.code : JsonRpcErrorCode.toolFailed,
             message,
+            ...(movedAway ? {
+              sessionId: error.sessionId,
+              destinationSessionId: error.targetSessionId,
+              targetMachineName: error.targetMachineName,
+            } : {}),
             ...(error instanceof JsonRpcError && error.data !== undefined
               ? { data: error.data }
               : {}),

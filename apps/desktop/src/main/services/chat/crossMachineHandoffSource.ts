@@ -8,6 +8,8 @@ import fs from "node:fs";
 import path from "node:path";
 import type {
   AgentChatCrossMachineHandoffBlocker,
+  AgentChatCrossMachineBatchMoveRecord,
+  AgentChatCrossMachineLaneImportArgs,
   AgentChatCrossMachineHandoffRecord,
   AgentChatEventMetadata,
   LaneSummary,
@@ -39,6 +41,7 @@ export type CrossMachineHandoffSourceDeps = {
 };
 
 const MOVE_KEY_PREFIX = "agent-chat-cross-machine-move:v1:";
+const BATCH_KEY_PREFIX = "agent-chat-cross-machine-batch:v1:";
 
 /**
  * Whether a user_message came from the person. Host-authored deliveries (a
@@ -77,6 +80,26 @@ export function createCrossMachineHandoffSource(deps: CrossMachineHandoffSourceD
       if (value) moves.push({ sessionId, value });
     }
     return moves;
+  };
+
+  const batchKey = (batchId: string): string => `${BATCH_KEY_PREFIX}${batchId}`;
+  const readBatch = (batchId: string): AgentChatCrossMachineBatchMoveRecord | null => {
+    const value = deps.db?.getJson<unknown>(batchKey(batchId));
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const record = value as Partial<AgentChatCrossMachineBatchMoveRecord>;
+    if (record.batchId !== batchId || !Array.isArray(record.items)) return null;
+    return record as AgentChatCrossMachineBatchMoveRecord;
+  };
+  const writeBatch = (batchId: string, value: AgentChatCrossMachineBatchMoveRecord | null): void => {
+    deps.db?.setJson(batchKey(batchId), value);
+  };
+  const listBatches = (): AgentChatCrossMachineBatchMoveRecord[] => {
+    const rows = deps.db?.all?.<{ key: string }>("select key from kv where key like ?", [`${BATCH_KEY_PREFIX}%`]) ?? [];
+    return rows.flatMap((row) => {
+      const id = row.key.slice(BATCH_KEY_PREFIX.length);
+      const value = readBatch(id);
+      return value ? [value] : [];
+    });
   };
 
   /**
@@ -234,6 +257,8 @@ export function createCrossMachineHandoffSource(deps: CrossMachineHandoffSourceD
   const outboxPath = (handoffId: string): string =>
     // Handoff ids may hold `:`, which Windows file names cannot.
     path.join(deps.outboxDir, `${handoffId.replace(/[^A-Za-z0-9._-]/g, "_")}.json`);
+  const laneOutboxPath = (importId: string): string =>
+    path.join(deps.outboxDir, `${importId.replace(/[^A-Za-z0-9._-]/g, "_")}.lane.json`);
 
   const outbox: CrossMachineHandoffOutbox = {
     read: (handoffId) => {
@@ -273,9 +298,35 @@ export function createCrossMachineHandoffSource(deps: CrossMachineHandoffSourceD
         // A leftover outbox file is only a stale copy of a capsule.
       }
     },
+    readLane: (importId) => {
+      try {
+        const parsed = JSON.parse(fs.readFileSync(laneOutboxPath(importId), "utf8")) as Partial<AgentChatCrossMachineLaneImportArgs>;
+        if (
+          parsed.importId !== importId
+          || typeof parsed.branchRef !== "string"
+          || typeof parsed.headSha !== "string"
+          || typeof parsed.originUrl !== "string"
+          || !parsed.sourceLane
+        ) return null;
+        return parsed as AgentChatCrossMachineLaneImportArgs;
+      } catch {
+        return null;
+      }
+    },
+    writeLane: (importId, payload) => {
+      fs.mkdirSync(deps.outboxDir, { recursive: true });
+      writeFileAtomic(laneOutboxPath(importId), JSON.stringify(payload), { fsync: true });
+    },
+    removeLane: (importId) => {
+      try {
+        fs.rmSync(laneOutboxPath(importId), { force: true });
+      } catch {
+        // A leftover lane payload is reconciled by importId at the destination.
+      }
+    },
   };
 
-  return { readMove, writeMove, listMoves, inspect, inspectLane, outbox };
+  return { readMove, writeMove, listMoves, readBatch, writeBatch, listBatches, inspect, inspectLane, outbox };
 }
 
 export type CrossMachineHandoffSourceStore = ReturnType<typeof createCrossMachineHandoffSource>;
