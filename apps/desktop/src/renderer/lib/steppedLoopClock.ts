@@ -119,11 +119,21 @@ function seek(loop: SteppedLoop, nowMs: number): void {
   loop.animation.currentTime = nowMs + SEEK_EPSILON_MS;
 }
 
-// CSS can change a loop's timing after it was adopted: Settings → Reduce
-// motion turns every animation into one 0.01 ms iteration, and a rule can
-// swap a duration. Such a loop goes back to CSS.
-function timingKey(timing: ComputedEffectTiming | EffectTiming): string {
-  return [timing.duration, timing.delay, timing.iterations, timing.direction, timing.easing, timing.iterationStart].join("|");
+// CSS can change a loop's timing after it was adopted, on the same animation
+// object: Settings → Reduce motion turns every animation into one 0.01 ms
+// iteration, and a rule can swap a duration or a timing function (which lands
+// on the keyframes). Such a loop goes back to CSS.
+function timingKey(effect: KeyframeEffect): string {
+  const timing = effect.getTiming();
+  return [
+    timing.duration,
+    timing.delay,
+    timing.iterations,
+    timing.direction,
+    timing.easing,
+    timing.iterationStart,
+    ...effect.getKeyframes().map((keyframe) => keyframe.easing),
+  ].join("|");
 }
 
 function release(animation: CSSAnimation): void {
@@ -140,7 +150,7 @@ function catchUp(loop: SteppedLoop, nowMs: number): "kept" | "gone" | "retimed" 
   const { animation } = loop;
   const effect = animation.effect as KeyframeEffect | null;
   if (animation.playState === "idle" || !effect?.target?.isConnected) return "gone";
-  if (timingKey(effect.getTiming()) !== loop.timing) {
+  if (timingKey(effect) !== loop.timing) {
     release(animation);
     return "retimed";
   }
@@ -207,7 +217,7 @@ export function adoptSteppedLoop(animation: CSSAnimation): void {
 
   const loop: SteppedLoop = {
     animation,
-    timing: timingKey(timing),
+    timing: timingKey(effect),
     durationMs,
     delayMs: timing.delay ?? 0,
     changes,
