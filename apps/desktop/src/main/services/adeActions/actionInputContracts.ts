@@ -290,7 +290,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     },
     getModelSheet: {
       description:
-        "List every model this machine can run, grouped by model family and organized by the kind of task it suits: a 0-1 score per task kind (question, research, review, small_edit, feature, debugging, refactor, writing, vision, audio) at each measured effort, the best effort per kind, speed and cost tiers, billing and harness, how unmatched names were matched, and plain-English notes (summary, strengths, weaknesses, best for, avoid for). Registry data is based on Artificial Analysis (artificialanalysis.ai).",
+        "List every model this machine can run, grouped by model family and organized by the kind of task it suits: a 0-1 score per task kind (question, research, review, small_edit, feature, debugging, refactor, writing, vision) at each measured effort, the best effort per kind, speed and cost tiers, billing and harness, how unmatched names were matched, and plain-English notes (summary, strengths, weaknesses, best for, avoid for). Registry data is based on Artificial Analysis (artificialanalysis.ai).",
       input: "object { provider?: \"claude\" | \"codex\" | \"opencode\" | \"cursor\" }",
       example: "ade models sheet --text",
     },

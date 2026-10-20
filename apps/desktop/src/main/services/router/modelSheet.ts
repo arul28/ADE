@@ -31,8 +31,7 @@ import curatedNotes from "./modelSheetNotes.json";
 
 /**
  * The kinds of task the sheet scores. The composer's classifier (Jev) sorts a
- * prompt into the first eight; `media` there splits into `vision` and `audio`
- * here, since no model is good at both for the same reasons.
+ * prompt into the first eight; its separate `media` hint is not a sheet kind.
  */
 export const MODEL_SHEET_TASK_KINDS = [
   "question",
@@ -44,7 +43,6 @@ export const MODEL_SHEET_TASK_KINDS = [
   "refactor",
   "writing",
   "vision",
-  "audio",
 ] as const;
 export type ModelSheetTaskKind = (typeof MODEL_SHEET_TASK_KINDS)[number];
 
@@ -73,9 +71,7 @@ type MetricKey =
   | "knowledgeAccuracy"
   | "hallucinationRate"
   | "slop"
-  | "codingAgentIndex"
-  | "speechQuality"
-  | "speechReasoning";
+  | "codingAgentIndex";
 
 type MetricDef = { label: string; lowerIsBetter?: boolean };
 
@@ -102,8 +98,6 @@ export const MODEL_SHEET_METRICS: Record<MetricKey, MetricDef> = {
   hallucinationRate: { label: "AA-Omniscience hallucination rate", lowerIsBetter: true },
   slop: { label: "PersonalityBench slop", lowerIsBetter: true },
   codingAgentIndex: { label: "Coding Agent Index (mean over harnesses)" },
-  speechQuality: { label: "Speech-to-speech quality index" },
-  speechReasoning: { label: "Big Bench Audio" },
 };
 
 type KindWeights = {
@@ -173,12 +167,6 @@ export const TASK_KIND_WEIGHTS: Record<ModelSheetTaskKind, KindWeights> = {
   vision: {
     weights: { mmmuPro: 0.8, intelligenceIndex: 0.2 },
     requires: ["mmmuPro"],
-  },
-  // Speech in or out: only the speech-to-speech leaderboard rates an LLM on
-  // audio, and only when a row links to the LLM by exact name.
-  audio: {
-    weights: { speechQuality: 0.6, speechReasoning: 0.4 },
-    requires: ["speechQuality"],
   },
 };
 
@@ -331,10 +319,6 @@ function metricReaders(snapshot: ModelRegistrySnapshot): Record<MetricKey, Metri
     list.push(row.score);
     agentScores.set(row.modelSlug, list);
   }
-  const speech = new Map<string, Record<string, number>>();
-  for (const row of snapshot.media ?? []) {
-    if (row.kind === "speech-to-speech" && row.modelSlug && !speech.has(row.modelSlug)) speech.set(row.modelSlug, row.scores);
-  }
   const evalOf = (key: string): MetricReader => (model) => model.evals?.[key] ?? null;
   return {
     intelligenceIndex: (model) => model.intelligenceIndex,
@@ -361,8 +345,6 @@ function metricReaders(snapshot: ModelRegistrySnapshot): Record<MetricKey, Metri
       const scores = agentScores.get(model.slug);
       return scores?.length ? scores.reduce((sum, score) => sum + score, 0) / scores.length : null;
     },
-    speechQuality: (model) => speech.get(model.slug)?.qualityIndex ?? null,
-    speechReasoning: (model) => speech.get(model.slug)?.bigBenchAudio ?? null,
   };
 }
 
@@ -373,24 +355,14 @@ function isCurrent(model: ModelRegistryModel): boolean {
 
 /**
  * Scores every registry variant on every task kind. Each metric is min-max
- * normalized over current variants (speech metrics over every speech-to-speech
- * row, since few rows link to an LLM).
+ * normalized over current variants.
  */
 export function scoreTaskKinds(snapshot: ModelRegistrySnapshot): Map<string, Partial<Record<ModelSheetTaskKind, number>>> {
   const readers = metricReaders(snapshot);
   const current = snapshot.models.filter(isCurrent);
   const ranges = new Map<MetricKey, { min: number; max: number }>();
   for (const key of Object.keys(readers) as MetricKey[]) {
-    let values: number[];
-    if (key === "speechQuality" || key === "speechReasoning") {
-      const field = key === "speechQuality" ? "qualityIndex" : "bigBenchAudio";
-      values = (snapshot.media ?? [])
-        .filter((row) => row.kind === "speech-to-speech")
-        .map((row) => row.scores[field])
-        .filter((value): value is number => typeof value === "number");
-    } else {
-      values = current.map(readers[key]).filter((value): value is number => value != null && Number.isFinite(value));
-    }
+    const values = current.map(readers[key]).filter((value): value is number => value != null && Number.isFinite(value));
     if (values.length >= 2) ranges.set(key, { min: Math.min(...values), max: Math.max(...values) });
   }
   const normalized = (key: MetricKey, model: ModelRegistryModel): number | null => {
@@ -477,8 +449,41 @@ const KIND_WORDS: Record<ModelSheetTaskKind, string> = {
   refactor: "refactors",
   writing: "writing",
   vision: "images and screenshots",
-  audio: "audio",
 };
+
+/** Premium or slow models are a poor fit for the sheet's quick task kinds. */
+function enforceQuickTaskNotes(
+  notes: ModelSheetNotes,
+  speed: ModelSheetSpeedTier | null,
+  cost: ModelSheetCostTier | null,
+): ModelSheetNotes {
+  if (speed !== "slow" && cost !== "premium") return notes;
+
+  const quickKinds = ["question", "small_edit"] as const;
+  const avoidFor = [...notes.avoidFor];
+  for (const kind of quickKinds) {
+    const existing = avoidFor.find((entry) => entry.kind === kind);
+    const why = existing?.why ?? "";
+    const reasons = [
+      ...(cost === "premium" && !why.toLowerCase().includes("overkill")
+        ? [`overkill for ${kind === "question" ? "quick questions" : "small edits"}`]
+        : []),
+      ...(speed === "slow" && !why.toLowerCase().includes("slow for quick tasks")
+        ? ["slow for quick tasks"]
+        : []),
+    ];
+    if (existing) {
+      existing.why = [existing.why, ...reasons].filter(Boolean).join("; ");
+    } else {
+      avoidFor.push({ kind, why: reasons.join("; ") });
+    }
+  }
+  return {
+    ...notes,
+    bestFor: notes.bestFor.filter((entry) => !quickKinds.includes(entry.kind as (typeof quickKinds)[number])),
+    avoidFor,
+  };
+}
 
 /**
  * Words from the numbers, for a family without curated notes: kinds in the top
@@ -672,9 +677,10 @@ export function buildModelSheet(snapshot: ModelRegistrySnapshot, catalog: UserMo
     const unmatchedNote = !family && members[0]!.match
       ? `${members[0]!.match.reason}${members[0]!.match.relation === "nearest-sibling" && members[0]!.match.registryFamily ? ` Nearest measured model: ${members[0]!.match.registryFamily} (not used for scores).` : ""}`
       : null;
-    const notes: ModelSheetNotes = curated
+    const rawNotes: ModelSheetNotes = curated
       ? { ...curated, source: "curated" }
       : generatedNotes(name, headline, headlineModel, percentile);
+    const notes = enforceQuickTaskNotes(rawNotes, headline?.speed ?? null, headline?.cost ?? null);
     if (unmatchedNote) notes.notes = [unmatchedNote, ...notes.notes];
     families.push({
       family,

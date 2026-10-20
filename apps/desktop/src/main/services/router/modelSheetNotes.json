@@ -61,10 +61,6 @@
       ],
       "bestFor": [
         {
-          "kind": "question",
-          "why": "the top question score you can run: GPQA 0.95 and high knowledge accuracy"
-        },
-        {
           "kind": "debugging",
           "why": "high Terminal-Bench and Codex agent score"
         },
@@ -76,11 +72,15 @@
       "avoidFor": [
         {
           "kind": "small_edit",
-          "why": "the price buys nothing on a trivial change"
+          "why": "overkill for small edits at a premium price"
         },
         {
           "kind": "writing",
           "why": "writing scores trail its coding scores"
+        },
+        {
+          "kind": "question",
+          "why": "overkill for quick questions at a premium price"
         }
       ],
       "notes": [
@@ -361,10 +361,6 @@
           "why": "AA-LCR 0.89, the highest runnable"
         },
         {
-          "kind": "question",
-          "why": "GPQA 0.94"
-        },
-        {
           "kind": "vision",
           "why": "MMMU-Pro 0.81"
         }
@@ -377,6 +373,14 @@
         {
           "kind": "feature",
           "why": "weak agentic coding"
+        },
+        {
+          "kind": "question",
+          "why": "slow for quick tasks"
+        },
+        {
+          "kind": "small_edit",
+          "why": "slow for quick tasks"
         }
       ],
       "notes": [
@@ -605,10 +609,6 @@
           "why": "GDPval 0.59"
         },
         {
-          "kind": "question",
-          "why": "GPQA 0.94"
-        },
-        {
           "kind": "review",
           "why": "solid review score"
         }
@@ -617,6 +617,14 @@
         {
           "kind": "debugging",
           "why": "Terminal-Bench 0.33"
+        },
+        {
+          "kind": "question",
+          "why": "overkill for quick questions at a premium price"
+        },
+        {
+          "kind": "small_edit",
+          "why": "overkill for small edits at a premium price"
         }
       ],
       "notes": [
@@ -888,10 +896,6 @@
         {
           "kind": "writing",
           "why": "GDPval 0.60 and very little slop"
-        },
-        {
-          "kind": "question",
-          "why": "good knowledge accuracy, few made-up facts"
         }
       ],
       "avoidFor": [
@@ -901,7 +905,11 @@
         },
         {
           "kind": "small_edit",
-          "why": "slow and costly for small changes"
+          "why": "overkill for small edits at a premium price; slow for quick tasks"
+        },
+        {
+          "kind": "question",
+          "why": "overkill for quick questions at a premium price; slow for quick tasks"
         }
       ],
       "notes": [],
@@ -1113,10 +1121,6 @@
         {
           "kind": "vision",
           "why": "MMMU-Pro 0.80"
-        },
-        {
-          "kind": "question",
-          "why": "few made-up facts"
         }
       ],
       "avoidFor": [
@@ -1127,6 +1131,14 @@
         {
           "kind": "writing",
           "why": "GDPval 0.13"
+        },
+        {
+          "kind": "question",
+          "why": "slow for quick tasks"
+        },
+        {
+          "kind": "small_edit",
+          "why": "slow for quick tasks"
         }
       ],
       "notes": [],
@@ -1190,10 +1202,6 @@
       ],
       "bestFor": [
         {
-          "kind": "small_edit",
-          "why": "SciCode 0.59, Terminal-Bench 0.42"
-        },
-        {
           "kind": "writing",
           "why": "GDPval 0.58"
         },
@@ -1206,6 +1214,10 @@
         {
           "kind": "question",
           "why": "knowledge accuracy 0.34"
+        },
+        {
+          "kind": "small_edit",
+          "why": "overkill for small edits at a premium price; slow for quick tasks"
         }
       ],
       "notes": [
@@ -1309,7 +1321,7 @@
         }
       ],
       "notes": [
-        "ADE maps qwen3.8-max to this August snapshot; Artificial Analysis now lists a newer 0902 version (qwen3-8-max-0902) that scores better."
+        "This August snapshot is superseded by 0902; ADE now routes qwen3.8-max to the newer family."
       ],
       "basis": [
         "GPQA 0.93",
@@ -1379,7 +1391,7 @@
         }
       ],
       "notes": [
-        "Artificial Analysis now lists a newer October build (deepseek-v4-1-flash-1017) that scores higher; ADE maps to the September one.",
+        "This September snapshot is superseded by 1017; ADE now routes deepseek-v4.1-flash to the newer family.",
         "Open weights."
       ],
       "basis": [
@@ -2062,23 +2074,24 @@
       ]
     },
     "qwen3-8-max-0902": {
-      "summary": "The current Qwen3.8 Max: balanced and solid at every kind, but extremely slow and expensive per task.",
+      "summary": "Qwen3.8 Max 0902 is balanced across coding and writing, with strong image understanding; it is extremely slow and premium per task.",
       "strengths": [
-        "Balanced coding and writing",
-        "Image input"
+        "Vision (MMMU-Pro 0.83)",
+        "Solid review and refactor scores",
+        "Balanced coding and writing"
       ],
       "weaknesses": [
-        "Extremely slow per task",
-        "Expensive per task"
+        "Extremely slow: 34 minutes per index task",
+        "Premium cost: $5.41 per index task"
       ],
       "bestFor": [
         {
           "kind": "review",
-          "why": "good review score"
+          "why": "task-kind score 0.77"
         },
         {
-          "kind": "writing",
-          "why": "GDPval 0.58"
+          "kind": "research",
+          "why": "task-kind score 0.75"
         },
         {
           "kind": "vision",
@@ -2087,57 +2100,66 @@
       ],
       "avoidFor": [
         {
+          "kind": "question",
+          "why": "overkill for quick questions; slow for quick tasks"
+        },
+        {
           "kind": "small_edit",
-          "why": "34 minutes per index task"
+          "why": "overkill for small edits; slow for quick tasks: 34 minutes per index task"
         }
       ],
       "notes": [
-        "ADE's qwen3.8-max routes map to the older August snapshot, not this one."
+        "Artificial Analysis lists one 0902 build with no effort label; every advertised route effort uses this measured build without effort scaling.",
+        "First answer token took 53 s on a long prompt."
       ],
       "basis": [
-        "Terminal-Bench 4.0 0.39",
-        "GDPval 0.58",
-        "2045 s and $5.41 per index task"
+        "Intelligence Index 45.4",
+        "Terminal-Bench 4.0 0.39, SciCode 0.52, AA-LCR 0.80",
+        "GDPval 0.58, MMMU-Pro 0.83",
+        "2045 s and $5.41 per index task; 40 tokens/s"
       ]
     },
     "deepseek-v4-1-flash-1017": {
-      "summary": "DeepSeek's October Flash build: cheap, fast output, solid at refactors and features for the price.",
+      "summary": "DeepSeek V4.1 Flash 1017 improves on the September build at a mid price, with strong research and refactor scores but frequent made-up facts.",
       "strengths": [
-        "Cheap and fast",
-        "Refactors and features for the price",
+        "Long-context research (AA-LCR 0.83)",
+        "Fast output and a 10.7 s first token",
+        "Improved Terminal-Bench and SciCode scores over September",
         "Image input"
       ],
       "weaknesses": [
-        "Makes up facts"
+        "Frequent made-up facts",
+        "Agentic coding is not frontier-level"
       ],
       "bestFor": [
         {
+          "kind": "research",
+          "why": "AA-LCR 0.83 and task-kind score 0.77"
+        },
+        {
           "kind": "refactor",
-          "why": "AA-LCR 0.83"
+          "why": "task-kind score 0.74"
         },
         {
-          "kind": "feature",
-          "why": "Terminal-Bench 0.34"
-        },
-        {
-          "kind": "writing",
-          "why": "GDPval 0.62"
+          "kind": "review",
+          "why": "task-kind score 0.72"
         }
       ],
       "avoidFor": [
         {
           "kind": "question",
-          "why": "hallucination rate 0.67"
+          "why": "Omniscience hallucination rate 0.67"
         }
       ],
       "notes": [
         "Open weights.",
-        "Newer than the build ADE maps deepseek-v4.1-flash to."
+        "The 1017 build is now the route used for deepseek-v4.1-flash and deepseek-flash."
       ],
       "basis": [
-        "Terminal-Bench 4.0 0.34",
-        "GDPval 0.62",
-        "209 tokens/s, $0.26 per index task"
+        "Intelligence Index 45.1, Terminal-Bench 4.0 0.34, SciCode 0.56",
+        "AA-LCR 0.83, GDPval 0.62",
+        "Omniscience hallucination rate 0.67",
+        "209 tokens/s, 10.7 s first token, $0.26 per index task"
       ]
     },
     "ling-3-1-flash": {
@@ -2188,16 +2210,20 @@
         {
           "kind": "writing",
           "why": "GDPval 0.55"
-        },
-        {
-          "kind": "question",
-          "why": "GPQA 0.94"
         }
       ],
       "avoidFor": [
         {
           "kind": "debugging",
           "why": "Terminal-Bench 0.11"
+        },
+        {
+          "kind": "question",
+          "why": "overkill for quick questions at a premium price; slow for quick tasks"
+        },
+        {
+          "kind": "small_edit",
+          "why": "overkill for small edits at a premium price; slow for quick tasks"
         }
       ],
       "notes": [

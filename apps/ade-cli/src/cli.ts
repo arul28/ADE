@@ -3617,7 +3617,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
 
   The model sheet organizes the same models by the kind of task they suit:
   a 0-1 score per task kind (question, research, review, small edit, feature,
-  debugging, refactor, writing, vision, audio) from weighted benchmarks, the
+  debugging, refactor, writing, vision) from weighted benchmarks, the
   best effort per kind, speed and cost tiers, and plain-English notes: what
   each model family is good for and what to avoid it for.
 
@@ -28508,7 +28508,7 @@ function formatModelsSheet(value: unknown): string {
   const kinds = Array.isArray(sheet.kinds) ? sheet.kinds.map(String) : [];
   const short: Record<string, string> = {
     question: "ask", research: "rsrch", review: "review", small_edit: "edit", feature: "feat",
-    debugging: "debug", refactor: "refac", writing: "write", vision: "vision", audio: "audio",
+    debugging: "debug", refactor: "refac", writing: "write", vision: "vision",
   };
   const score = (input: unknown): string => (typeof input === "number" ? input.toFixed(2) : "—");
   const billing = (input: unknown): string => {
