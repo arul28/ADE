@@ -71,16 +71,24 @@ for (const target of targets) {
   }
 }
 
-// Electron downloads its binary in a postinstall that can exit 0 without
-// finishing; `path.txt` is the last thing it writes.
+// Electron's postinstall can exit 0 without finishing; verify both its final
+// path marker and the executable it names.
 const electronDir = path.join(repoRoot, "apps", "desktop", "node_modules", "electron");
 const electronPath = path.join(electronDir, "path.txt");
-if (!fs.existsSync(electronPath)) {
+const electronRelativePath = fs.existsSync(electronPath) ? fs.readFileSync(electronPath, "utf8").trim() : "";
+const electronDist = process.env.ELECTRON_OVERRIDE_DIST_PATH || path.join(electronDir, "dist");
+const electronExecutable = electronRelativePath ? path.join(electronDist, electronRelativePath) : null;
+if (!electronExecutable || !fs.existsSync(electronExecutable)) {
   const repair = fs.existsSync(electronDir)
     ? `run \`node install.js\` in ${path.relative(repoRoot, electronDir)}`
     : "run `npm install` again in apps/desktop";
+  const missing = !fs.existsSync(electronPath)
+    ? `no ${path.relative(repoRoot, electronPath)}`
+    : !electronRelativePath
+      ? `an empty ${path.relative(repoRoot, electronPath)}`
+      : `missing ${path.relative(repoRoot, electronExecutable)}`;
   throw new Error(
-    `[install:apps] Electron's binary didn't finish installing (no ${path.relative(repoRoot, electronPath)}).` +
+    `[install:apps] Electron's binary didn't finish installing (${missing}).` +
       (nodeMismatch ? ` Switch to Node ${pinnedNode} and` : "") +
       ` ${repair}.`,
   );

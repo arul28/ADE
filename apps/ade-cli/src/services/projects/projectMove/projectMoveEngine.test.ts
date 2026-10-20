@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProjectMoveRecord } from "../../../../../desktop/src/shared/types/projectMove";
+import { nonAsarFs } from "../../../../../desktop/src/main/services/shared/nonAsarFs";
 import { openKvDb } from "../../../../../desktop/src/main/services/state/kvDb";
 import { loadNodeSqlite } from "../../../../../desktop/src/main/services/projects/readOnlySqlite";
 import { ProjectRegistry } from "../projectRegistry";
@@ -12,8 +13,8 @@ import { carryCodexTrust } from "./moveAgentHistory";
 import { rewritePathsInDatabase } from "./moveDatabase";
 import { relativeToRoot } from "./moveGitLinks";
 import { previousProjectRoots } from "./movePreviousRoots";
-import { currentBootMinute, isMoveProcessAlive, listMoveRecords, markMoveActive, readMovedMarker, writeMoveRecord } from "./moveJournal";
-import { recoverInterruptedMoves, runProjectMove } from "./projectMoveEngine";
+import { currentBootMinute, isMoveProcessAlive, listMoveRecords, markMoveActive, readMovedMarker, writeMovedMarker, writeMoveRecord } from "./moveJournal";
+import { deleteParkedOriginal, recoverInterruptedMoves, runProjectMove } from "./projectMoveEngine";
 import { copyLocation } from "./projectMovePreflight";
 
 const logger = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} } as never;
@@ -300,6 +301,134 @@ function moveRecord(overrides: Partial<ProjectMoveRecord> & Pick<ProjectMoveReco
     ...overrides,
   };
 }
+
+function cleanupRecord(parked: string, destination: string): ProjectMoveRecord {
+  return moveRecord({
+    moveId: "move_cleanup",
+    sourceRoot: path.join(tmp, "old-project"),
+    destinationRoot: destination,
+    originalParkedAt: parked,
+    state: "done",
+    cleanup: { choice: "pending" },
+    switched: true,
+    copyCreated: true,
+  });
+}
+
+describe.skipIf(process.platform !== "darwin")("deleteParkedOriginal", () => {
+  it.each(["parked project root", "parked .ade directory"])("refuses a symlinked %s without touching its target", async (kind) => {
+    const destination = path.join(tmp, "drive", "new-project");
+    const parked = path.join(tmp, "drive", "old-project");
+    const outside = path.join(tmp, "outside-original");
+    fs.mkdirSync(destination, { recursive: true });
+    fs.mkdirSync(outside, { recursive: true });
+    writeMovedMarker(outside, { movedTo: destination, moveId: "move_cleanup" });
+
+    const protectedPath = kind === "parked project root"
+      ? path.join(outside, "keep.txt")
+      : path.join(outside, ".ade", "keep.txt");
+    fs.writeFileSync(protectedPath, "preserve this data\n");
+    fs.mkdirSync(path.dirname(parked), { recursive: true });
+    if (kind === "parked project root") {
+      fs.symlinkSync(outside, parked, "dir");
+    } else {
+      fs.mkdirSync(parked);
+      fs.symlinkSync(path.join(outside, ".ade"), path.join(parked, ".ade"), "dir");
+    }
+
+    await expect(deleteParkedOriginal(cleanupRecord(parked, destination))).rejects.toThrow();
+    expect(fs.readFileSync(protectedPath, "utf8")).toBe("preserve this data\n");
+    expect(readMovedMarker(parked)).toMatchObject({ movedTo: destination, moveId: "move_cleanup" });
+    expect(fs.lstatSync(kind === "parked project root" ? parked : path.join(parked, ".ade")).isSymbolicLink()).toBe(true);
+  });
+
+  it("treats a missing folder as deleted only while its parent still exists", async () => {
+    const destination = path.join(tmp, "drive", "new-project");
+    const presentParent = path.join(tmp, "drive", "old-project-parent");
+    fs.mkdirSync(destination, { recursive: true });
+    fs.mkdirSync(presentParent, { recursive: true });
+    const gonePath = path.join(presentParent, "parked-original");
+    const goneRecord = cleanupRecord(gonePath, destination);
+
+    await expect(deleteParkedOriginal(goneRecord)).resolves.toBeUndefined();
+    expect(fs.existsSync(presentParent)).toBe(true);
+    expect(fs.existsSync(destination)).toBe(true);
+    expect(goneRecord.originalParkedAt).toBe(gonePath);
+
+    const missingParent = path.join(tmp, "unplugged-drive", "old-project-parent");
+    const parkedOnMissingDrive = path.join(missingParent, "parked-original");
+    const disconnectedRecord = cleanupRecord(parkedOnMissingDrive, destination);
+    await expect(deleteParkedOriginal(disconnectedRecord)).rejects.toThrow(/drive.*isn't connected/u);
+    expect(fs.existsSync(missingParent)).toBe(false);
+    expect(fs.existsSync(destination)).toBe(true);
+    expect(disconnectedRecord.originalParkedAt).toBe(parkedOnMissingDrive);
+  });
+
+  it("propagates an inaccessible parked path instead of treating it as deleted", async () => {
+    const destination = path.join(tmp, "drive", "new-project");
+    const parked = path.join(tmp, "drive", "parked-original");
+    const protectedFile = path.join(parked, "keep.txt");
+    fs.mkdirSync(destination, { recursive: true });
+    fs.mkdirSync(parked, { recursive: true });
+    fs.writeFileSync(protectedFile, "preserve this data\n");
+    writeMovedMarker(parked, { movedTo: destination, moveId: "move_cleanup" });
+    const record = cleanupRecord(parked, destination);
+    const realExists = fs.existsSync.bind(fs);
+    const realLstat = nonAsarFs.promises.lstat.bind(nonAsarFs.promises);
+    const denied = Object.assign(new Error("permission denied"), { code: "EACCES" });
+    const lstatSpy = vi.spyOn(nonAsarFs.promises, "lstat").mockImplementation(async (target) => {
+      if (path.resolve(String(target)) === parked) throw denied;
+      return realLstat(target);
+    });
+    const existsSpy = vi.spyOn(fs, "existsSync").mockImplementation((target) => {
+      if (path.resolve(String(target)) === parked) return false;
+      return realExists(target);
+    });
+    try {
+      await expect(deleteParkedOriginal(record)).rejects.toMatchObject({ code: "EACCES" });
+    } finally {
+      lstatSpy.mockRestore();
+      existsSpy.mockRestore();
+    }
+
+    expect(fs.readFileSync(protectedFile, "utf8")).toBe("preserve this data\n");
+    expect(readMovedMarker(parked)).toMatchObject({ movedTo: destination, moveId: "move_cleanup" });
+    expect(fs.existsSync(parked)).toBe(true);
+  });
+
+  it("restores the move marker after a partial final removal so deletion can be retried", async () => {
+    const destination = path.join(tmp, "drive", "new-project");
+    const parked = path.join(tmp, "drive", "parked-original");
+    const marker = path.join(parked, ".ade", "moved-to.json");
+    const adeDir = path.dirname(marker);
+    fs.mkdirSync(destination, { recursive: true });
+    fs.mkdirSync(adeDir, { recursive: true });
+    writeMovedMarker(parked, { movedTo: destination, moveId: "move_cleanup" });
+    const record = cleanupRecord(parked, destination);
+    const realRm = nonAsarFs.promises.rm.bind(nonAsarFs.promises);
+    let failAfterRemovingMarker = true;
+    const rmSpy = vi.spyOn(nonAsarFs.promises, "rm").mockImplementation(async (target, options) => {
+      if (path.resolve(String(target)) === parked && failAfterRemovingMarker) {
+        failAfterRemovingMarker = false;
+        await realRm(marker, { force: true });
+        await realRm(adeDir, { recursive: true, force: false });
+        throw Object.assign(new Error("simulated parent removal failure"), { code: "EBUSY" });
+      }
+      return realRm(target, options);
+    });
+    try {
+      await expect(deleteParkedOriginal(record)).rejects.toMatchObject({ code: "EBUSY" });
+      expect(readMovedMarker(parked)).toMatchObject({ movedTo: destination, moveId: "move_cleanup" });
+      expect(fs.existsSync(marker)).toBe(true);
+
+      await expect(deleteParkedOriginal(record)).resolves.toBeUndefined();
+      expect(fs.existsSync(parked)).toBe(false);
+      expect(fs.existsSync(destination)).toBe(true);
+    } finally {
+      rmSpy.mockRestore();
+    }
+  });
+});
 
 describe("carryCodexTrust", () => {
   const before = (entries: string) => `model = "gpt-5"\n${entries}`;

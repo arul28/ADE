@@ -630,7 +630,10 @@ async function verifyGit(args: {
 export async function deleteParkedOriginal(record: ProjectMoveRecord): Promise<void> {
   const parked = record.originalParkedAt;
   if (!parked) throw new Error("ADE has no record of where the original was kept.");
-  if (!fs.existsSync(parked)) {
+  try {
+    await nonAsarFs.promises.lstat(parked);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     // Gone already (removed by hand, or by an earlier delete that ADE stopped
     // waiting for). Only when its parent is there: a missing parent is a
     // drive that isn't connected, not a deleted folder.
@@ -650,7 +653,7 @@ export async function deleteParkedOriginal(record: ProjectMoveRecord): Promise<v
       throw new Error(`The lane at ${lane.lanePath} still keeps its git data in the old copy, so ADE won't delete it yet.`);
     }
   }
-  await removeKeepingMarkerLast(parked);
+  await removeKeepingMarkerLast(parked, record.destinationRoot, record.moveId);
 }
 
 /**
@@ -659,7 +662,7 @@ export async function deleteParkedOriginal(record: ProjectMoveRecord): Promise<v
  * Electron, whose `fs` reads a lane's `default_app.asar` as a folder, and a
  * recursive remove then reports success and leaves the archive behind.
  */
-async function removeKeepingMarkerLast(root: string): Promise<void> {
+async function removeKeepingMarkerLast(root: string, movedTo: string, moveId: string): Promise<void> {
   const marker = movedMarkerPath(root);
   for (const directory of [root, path.dirname(marker)]) {
     const stat = await nonAsarFs.promises.lstat(directory);
@@ -677,6 +680,44 @@ async function removeKeepingMarkerLast(root: string): Promise<void> {
   };
   await removeAllBut(root);
   if (fs.existsSync(path.dirname(marker))) await removeAllBut(path.dirname(marker));
-  await nonAsarFs.promises.rm(root, { recursive: true, force: false, maxRetries: 2 });
-  if (fs.existsSync(root)) throw new Error(`ADE couldn't remove everything in ${root}. Try again, or delete what's left in Finder.`);
+  const restoreMarkerIfNeeded = async () => {
+    let rootStat: Awaited<ReturnType<typeof nonAsarFs.promises.lstat>>;
+    try {
+      rootStat = await nonAsarFs.promises.lstat(root);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+      throw new Error(`ADE won't restore the moved marker because ${root} isn't a directory it can safely write to.`);
+    }
+    const adeDir = path.dirname(marker);
+    try {
+      const adeStat = await nonAsarFs.promises.lstat(adeDir);
+      if (!adeStat.isDirectory() || adeStat.isSymbolicLink()) {
+        throw new Error(`ADE won't restore the moved marker because ${adeDir} isn't a directory it can safely write to.`);
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      await nonAsarFs.promises.mkdir(adeDir);
+    }
+    if (readMovedMarker(root)?.moveId !== moveId) writeMovedMarker(root, { movedTo, moveId });
+  };
+  try {
+    await nonAsarFs.promises.rm(root, { recursive: true, force: false, maxRetries: 2 });
+  } catch (error) {
+    try {
+      await restoreMarkerIfNeeded();
+    } catch (restoreError) {
+      throw new AggregateError(
+        [error, restoreError],
+        `ADE couldn't remove everything in ${root}, and couldn't restore the moved marker. Try again, or delete what's left in Finder.`,
+      );
+    }
+    throw error;
+  }
+  if (fs.existsSync(root)) {
+    await restoreMarkerIfNeeded();
+    throw new Error(`ADE couldn't remove everything in ${root}. Try again, or delete what's left in Finder.`);
+  }
 }
