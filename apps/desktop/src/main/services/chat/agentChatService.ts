@@ -5506,6 +5506,20 @@ type PendingTranscriptWrite = {
 const pendingTranscriptWrites = new Map<string, PendingTranscriptWrite>();
 const transcriptWriteFlushInFlight = new Map<string, Promise<void>>();
 const checkedTranscriptTails = new Set<string>();
+/**
+ * Transcripts whose last append threw (ENOSPC, a removed folder). The event
+ * ring is then the only copy of those events, so it must not be released
+ * until an append to the same file lands again.
+ */
+const failedTranscriptAppends = new Set<string>();
+
+/** True once every queued append to this file has landed. */
+function transcriptWritesSettled(filePath: string): boolean {
+  const normalizedPath = normalizeTranscriptWritePath(filePath);
+  return !pendingTranscriptWrites.has(normalizedPath)
+    && !transcriptWriteFlushInFlight.has(normalizedPath)
+    && !failedTranscriptAppends.has(normalizedPath);
+}
 
 function normalizeTranscriptWritePath(filePath: string): string {
   return path.resolve(filePath);
@@ -5560,7 +5574,9 @@ function flushQueuedTranscriptWrite(
       // append that threw (e.g. ENOSPC) can leave the file without a trailing
       // newline, so the next flush must re-check and heal it.
       checkedTranscriptTails.add(normalizedPath);
+      failedTranscriptAppends.delete(normalizedPath);
     } catch (error) {
+      failedTranscriptAppends.add(normalizedPath);
       // Transcript persistence is best effort; callers still receive live events.
       if (options?.throwOnError) throw error;
     }
@@ -11994,6 +12010,14 @@ export function createAgentChatService(args: {
   const CHAT_EVENT_HISTORY_RESPONSE_MAX_CHARS = 8_000_000;
   const eventHistoryBySession = new Map<string, AgentChatEventEnvelope[]>();
   const envelopeSpliceRepairAttemptedSessionIds = new Set<string>();
+  // The count caps above bound these caches per project, not over time: a brain
+  // kept every recent chat's ring and parsed transcript windows until restart.
+  // Rebuilt from the real transcripts of one day's 51 chats, that was 98 MB of
+  // rings and 47 MB of windows in one project. A chat quiet this long gives
+  // both back; its transcript on disk already holds every event.
+  const CHAT_EVENT_HISTORY_IDLE_RELEASE_MS = 10 * 60 * 1000;
+  const eventHistoryTouchedAt = new Map<string, number>();
+  const transcriptHistoryCacheUsedAt = new Map<string, number>();
 
   const safeJsonChars = (value: unknown): number => {
     try {
@@ -12077,6 +12101,7 @@ export function createAgentChatService(args: {
   const touchEventHistoryRing = (sessionId: string, envelopes: AgentChatEventEnvelope[]): void => {
     eventHistoryBySession.delete(sessionId);
     eventHistoryBySession.set(sessionId, envelopes);
+    eventHistoryTouchedAt.set(sessionId, Date.now());
     while (eventHistoryBySession.size > CHAT_EVENT_HISTORY_BUFFER_MAX_SESSIONS) {
       const oldestSessionId = eventHistoryBySession.keys().next().value;
       if (typeof oldestSessionId !== "string" || oldestSessionId === sessionId) break;
@@ -14639,6 +14664,8 @@ export function createAgentChatService(args: {
     endOffset: number;
     envelopeStartOffsetByIdentity: WeakMap<AgentChatEventEnvelope, number | null>;
   }> => {
+    // Only a history read keeps this chat's parsed windows; see releaseIdleChatHistory.
+    transcriptHistoryCacheUsedAt.set(sessionId, Date.now());
     const managed = managedSessions.get(sessionId);
     let transcriptPath = await resolveBestTranscriptPathForSessionIdAsync(
       sessionId,
@@ -37615,7 +37642,10 @@ export function createAgentChatService(args: {
     let childSessionId = found?.[1].childSessionId ?? null;
     if (!childSessionId) {
       const ids = new Set([args.agentId, args.taskId].filter((id): id is string => Boolean(id)));
-      for (const envelope of eventHistoryBySession.get(managed.session.id) ?? []) {
+      // A quiet chat's ring is released (see releaseIdleChatHistory); the
+      // transcript tail holds the same `subagent_started` events.
+      const recent = eventHistoryBySession.get(managed.session.id) ?? readRecentTranscriptEnvelopes(managed);
+      for (const envelope of recent) {
         const event = envelope.event;
         if (event.type !== "subagent_started" || !event.providerSessionId) continue;
         if (ids.has(event.taskId) || (event.agentId && ids.has(event.agentId))) childSessionId = event.providerSessionId;
@@ -65842,9 +65872,44 @@ export function createAgentChatService(args: {
     });
   };
 
+  /**
+   * Give back the history a quiet chat no longer needs in memory: its event
+   * ring once every event in it is on disk, and parsed transcript windows no
+   * read has used lately. Both rebuild from the transcript on the next read.
+   */
+  const releaseIdleChatHistory = (now: number): void => {
+    for (const [sessionId, touchedAt] of eventHistoryTouchedAt) {
+      if (!eventHistoryBySession.has(sessionId)) {
+        eventHistoryTouchedAt.delete(sessionId);
+        continue;
+      }
+      if (now - touchedAt < CHAT_EVENT_HISTORY_IDLE_RELEASE_MS) continue;
+      const managed = managedSessions.get(sessionId);
+      if (managed?.session.status === "active") continue;
+      // Until an append lands, the ring is the only copy of its events.
+      if (!transcriptWritesSettled(path.join(chatTranscriptsDir, `${sessionId}.jsonl`))) continue;
+      if (managed && !transcriptWritesSettled(managed.transcriptPath)) continue;
+      eventHistoryBySession.delete(sessionId);
+      eventHistoryTouchedAt.delete(sessionId);
+    }
+    // Picking a transcript path parses a window too, and the stale-run sweep
+    // does that for every chat every ten minutes. Only a history read counts
+    // as use, so the sweep's windows go at the next tick instead of keeping
+    // the cache full on a machine nobody is using.
+    for (const sessionId of transcriptHistoryCacheBySession.keys()) {
+      const usedAt = transcriptHistoryCacheUsedAt.get(sessionId);
+      if (usedAt !== undefined && now - usedAt < CHAT_EVENT_HISTORY_IDLE_RELEASE_MS) continue;
+      transcriptHistoryCacheBySession.delete(sessionId);
+    }
+    for (const [sessionId, usedAt] of transcriptHistoryCacheUsedAt) {
+      if (now - usedAt >= CHAT_EVENT_HISTORY_IDLE_RELEASE_MS) transcriptHistoryCacheUsedAt.delete(sessionId);
+    }
+  };
+
   // --- Session inactivity cleanup ---
   const sessionCleanupTimer = setInterval(() => {
     const now = Date.now();
+    releaseIdleChatHistory(now);
     for (const [, managed] of managedSessions) {
       if (!managed.runtime || managed.closed) continue;
       if (managed.session.status !== "idle") continue;
