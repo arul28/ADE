@@ -8943,21 +8943,11 @@ export function buildComputerUseDirective(
   // rides the first turn of every chat on every provider, so every line here
   // is paid by chats that never touch a screen (it was ~9.4k chars).
   const ownScreen = Boolean(options.macDesktopAvailable || options.windowsDesktopAvailable);
-  // Exactly one seat is set per host: the seat follows the platform of the
-  // machine that runs this chat, not the machine the user is looking at.
-  let laneScreenLine: string | null = null;
-  if (options.windowsDesktopAvailable) {
-    laneScreenLine = "This lane has its own Windows screen: use `ade screen` (also `ade windows-desktop`; it is not a Mac) for any Windows app — start, open, observe, then act on the handles it returns. The default seat is private; the user's main desktop needs their yes (`ade screen start --shared --reason \"…\"`), never `--allow-prompt` or `--consent` yourself.";
-  } else if (options.macDesktopAvailable) {
-    laneScreenLine = "This lane has its own macOS screen: use `ade mac-desktop` for any macOS app — `start` (viewing does not start it), `open`, `observe`, then act on the handles it returns. It never touches the user's screen or pointer. If it refuses, report it; do not fall back to the user's real screen.";
-  }
-
   // --- Header (always when we have any capability) ---
   sections.push(
     [
       "## Computer Use",
       "Read the **ade-computer-use** skill before your first screen action; it picks the surface: an iOS app → `ade apple`, a dev Electron app's DOM → `ade app-control`, a web page or localhost → `ade browser` (shares the user's sign-ins; `--profile <name>` for another account; attach to the user's own browser only when they ask).",
-      ...(laneScreenLine ? [laneScreenLine] : []),
       "The user's own screen, apps and windows are not yours to change. Never close, quit, hide, minimize or reset an app or window you did not open for this task; act on the user's real screen only when the user explicitly asks.",
       ownScreen
         ? "`mcp__computer_use`, `osascript`, `cliclick`, `screencapture` and any other tool outside `ade` that clicks, types or captures drive the user's real screen: use them only when the user asks you to operate their screen, and do not bootstrap `@oai/sky` through `node_repl` as a substitute."
@@ -43896,7 +43886,10 @@ export function createAgentChatService(args: {
       // that variable. With no per-chat value left in it, a second chat in the
       // lane reads the whole system prompt from the prompt cache instead of
       // writing it again (2026-10-20: 26.5k cache-write tokens per new chat).
-      const claudeSessionIdFromEnvironment = !assistantSession;
+      // Claude's Windows shell can be Git Bash or PowerShell. Until the
+      // provider shell is known, keep the session id literal instead of
+      // emitting the PowerShell-only `$env:` reference.
+      const claudeSessionIdFromEnvironment = !assistantSession && process.platform !== "win32";
       const claudeActivityGuidance = buildSessionActivityGuidance(
         managed.session,
         !hadPlanIntentAtOptionBuildStart && managed.session.interactionMode !== "plan",
@@ -51454,13 +51447,14 @@ export function createAgentChatService(args: {
     // directive at all (there is nothing to say), so a capability that is lost
     // entirely is not revoked mid-session — the agent simply stops being told
     // it is available on the next turn that re-announces.
+    const laneScreenHostPlatform = macDesktopRuntime?.seatHostPlatform?.();
+    const laneScreenCapabilityAvailable = macDesktopRuntime?.supportsLaneDisplaySync?.() === true;
+    const laneScreenActive = macDesktopRuntime?.hasDisplaySync(executionContext.laneId ?? null) === true;
     const computerUseDirective = personalSession
       ? null
       : buildComputerUseDirective(computerUseArtifactBrokerRef?.getBackendStatus() ?? null, {
-        macDesktopAvailable: macDesktopRuntime?.supportsLaneDisplaySync?.() === true
-          && macDesktopRuntime?.seatHostPlatform?.() !== "win32",
-        windowsDesktopAvailable: macDesktopRuntime?.supportsLaneDisplaySync?.() === true
-          && macDesktopRuntime?.seatHostPlatform?.() === "win32",
+        macDesktopAvailable: laneScreenCapabilityAvailable && laneScreenHostPlatform !== "win32",
+        windowsDesktopAvailable: laneScreenCapabilityAvailable && laneScreenHostPlatform === "win32",
       });
     const computerUseDirectiveKey = computerUseDirective
       ? `${laneDirectiveKey ?? "no-lane"}::${computerUseDirectiveFingerprint(computerUseDirective)}`
@@ -51488,16 +51482,16 @@ export function createAgentChatService(args: {
         });
     const shouldInjectAppleDeviceDirective = appleDevice != null
       && managed.deliveredDirectiveKeys.appleDevice !== appleDevice.key;
-    // The lane-screen line names the screen of the machine that runs this
-    // chat — a Windows brain's lane screen is a Windows Desktop driven with
-    // `ade screen`, not a Mac. It used to ride every turn, Mac-worded on every
-    // host; it is now sent when the lane gains a screen (or the screen
-    // changes) and again only after the provider thread is replaced.
+    // This is the single lane-screen delivery path. It announces the private
+    // screen when the host can provide one, then changes when that screen is
+    // active so the epoch key re-announces the current state. Windows uses
+    // `ade screen`, not a Mac command.
     const laneScreenDirective = personalSession
       ? null
       : buildMacDesktopDirective(
-          macDesktopRuntime?.hasDisplaySync(executionContext.laneId ?? null) === true,
-          macDesktopRuntime?.seatHostPlatform?.(),
+          laneScreenCapabilityAvailable,
+          laneScreenHostPlatform,
+          laneScreenActive,
         );
     const laneScreenDirectiveKey = laneScreenDirective
       ? `${laneDirectiveKey ?? "no-lane"}::${directiveTextFingerprint(laneScreenDirective)}`

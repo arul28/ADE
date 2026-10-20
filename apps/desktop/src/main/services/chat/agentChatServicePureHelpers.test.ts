@@ -87,15 +87,15 @@ describe("buildComputerUseDirective", () => {
     expect(result).toMatch(/Never close, quit, hide, minimize or reset an app or window you did not open/);
   });
 
-  // The lane screen is the screen of the machine running the chat. A Windows
-  // brain's agent was once told it had a macOS screen (2026-10-20).
+  // Screen guidance has a separate epoch-scoped directive. This block keeps
+  // proof capture host-specific without repeating the lane-screen announcement.
   it.each([
-    { host: "Mac", options: { macDesktopAvailable: true }, command: "`ade mac-desktop`", proof: "`ade mac-desktop proof`", wrongHost: /macOS[^\n]*ade screen|Windows/ },
-    { host: "Windows", options: { windowsDesktopAvailable: true }, command: "`ade screen`", proof: "`ade screen proof`", wrongHost: /macOS|mac-desktop|Mac Desktop/ },
-  ])("sends a $host host's agent to the lane screen first, and fences the real-screen tools", ({ options, command, proof, wrongHost }) => {
+    { host: "Mac", options: { macDesktopAvailable: true }, proof: "`ade mac-desktop proof`", wrongHost: /macOS[^\n]*ade screen|Windows/ },
+    { host: "Windows", options: { windowsDesktopAvailable: true }, proof: "`ade screen proof`", wrongHost: /macOS|mac-desktop|Mac Desktop/ },
+  ])("keeps $host proof capture host-specific and fences the real-screen tools", ({ options, proof, wrongHost }) => {
     const result = buildComputerUseDirective(makeBackendStatus({ localFallback: true }), options)!;
-    expect(result).toContain(command);
     expect(result).toContain(proof);
+    expect(result).not.toContain("This lane has its own");
     expect(result).not.toMatch(wrongHost);
     // The manual is the skill; the block names it before the first action.
     expect(result).toContain("**ade-computer-use**");
@@ -107,11 +107,11 @@ describe("buildComputerUseDirective", () => {
     expect(result).not.toMatch(/`ade proof capture` and `ade proof record` are refused/);
   });
 
-  it("keeps a Mac host's agent off the user's screen when the lane screen refuses", () => {
+  it("leaves lane-screen instructions to the epoch-scoped screen directive", () => {
     const result = buildComputerUseDirective(makeBackendStatus({ localFallback: true }), {
       macDesktopAvailable: true,
     })!;
-    expect(result).toMatch(/do not fall back to the user's real screen/);
+    expect(result).not.toMatch(/This lane (?:can start|has) its own (?:macOS|Windows) screen/);
   });
 
   it("says nothing about a lane screen on a host that cannot give one", () => {
