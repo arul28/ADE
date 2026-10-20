@@ -824,6 +824,10 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   keybindings: ["get", "set"],
   ai: [
     "getStatus",
+    // The shared Jev helper: a typed question to OpenCode Zen's free decision
+    // model, null on any failure. Renderer features on any machine call it.
+    "jevDecide",
+    "jevStatus",
     "getOpenCodeRuntimeDiagnostics",
     "isOpenCodeInstalled",
     "museBinaryStatus",

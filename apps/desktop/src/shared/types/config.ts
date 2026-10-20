@@ -2102,6 +2102,13 @@ export type AiChatConfig = {
    * in `.ade/local.yaml`, so it is per project and per machine.
    */
   promptSuggestionsEnabled?: boolean;
+  /**
+   * "Smart decisions (OpenCode Jev)": let ADE ask OpenCode Zen's free Jev
+   * model small yes/no questions (did a turn end on a question?) before its
+   * built-in rules. On unless set to false; only does anything on a machine
+   * with an OpenCode Zen sign-in. Lives in `.ade/local.yaml`.
+   */
+  smartDecisionsEnabled?: boolean;
 };
 export type AiConfig = {
   compaction?: Record<string, ProviderCompactionSettings>;

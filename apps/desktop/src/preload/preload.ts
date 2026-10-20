@@ -13,6 +13,7 @@ import type { MuseBinaryStatus } from "../shared/museBinary";
 import type { MuseSettingsRequest, MuseSettingsResult, MuseSettingsRunArgs } from "../shared/museSettings";
 import { SENTRY_ENABLED_ARGV } from "../shared/sentry/config";
 import type { GitHubIssueTemplateSet } from "../shared/githubIssueTemplates";
+import type { JevAnswers, JevDecideRequest, JevQuestions, JevStatus } from "../shared/types/jev";
 import type {
   JiraComment,
   JiraConnectArgs,
@@ -5434,6 +5435,20 @@ const adeBridge = {
       ),
   },
   ai: {
+    // The shared Jev helper on the machine `pin` names. `null` is the normal
+    // "use your fallback" answer, so a lost connection or an older brain
+    // without the action reads the same as a failed call and never throws.
+    jevDecide: <Q extends JevQuestions>(
+      request: JevDecideRequest<Q>,
+      pin?: OpenProjectBinding | null,
+    ): Promise<JevAnswers<Q> | null> =>
+      callPinnedOrBoundRuntimeActionOr<JevAnswers<Q> | null>(pin, "ai", "jevDecide", { args: request }, async () => null)
+        .then((answers) => answers ?? null)
+        .catch(() => null),
+    jevStatus: (pin?: OpenProjectBinding | null): Promise<JevStatus | null> =>
+      callPinnedOrBoundRuntimeActionOr<JevStatus | null>(pin, "ai", "jevStatus", {}, async () => null)
+        .then((status) => status ?? null)
+        .catch(() => null),
     getStatus: async (args?: {
       force?: boolean;
       refreshOpenCodeInventory?: boolean;
